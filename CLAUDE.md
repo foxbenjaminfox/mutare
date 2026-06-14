@@ -60,10 +60,15 @@ contract between them is the whole game.
   stable** mutant ids. Honors `:paths`/`:exclude`, `:only_files` (for `--since`), and `:skip_ids`
   (for poison recovery — the id counter advances even for skipped ids, so ids stay stable across
   rebuilds; this stability is relied upon).
-- **`Mutare.Sandbox`** — copies the target project to a temp dir and overwrites the metamutant
-  sources. Injects a **dependency-free bootstrap** into `test_helper.exs`: reads
-  `MUTANT_UNDER_TEST` into `:persistent_term`, plus a portable timeout watcher that `System.halt/1`s
-  the run itself after the cap (no killing an OS process tree).
+- **`Mutare.Sandbox`** — workspace materialization. Copies the target project to a temp dir and
+  overwrites the metamutant sources. Injects a **dependency-free bootstrap** into `test_helper.exs`:
+  reads `MUTANT_UNDER_TEST` into `:persistent_term`, plus a portable timeout watcher that
+  `System.halt/1`s the run itself after the cap (no killing an OS process tree).
+- **`Mutare.Sandbox.Command`** — command execution against a materialized sandbox: `mix/4` and
+  `timed_mix/4` spawn a fresh `mix` OS process with `MIX_ENV=test`/`MUTANT_UNDER_TEST` set. Owns the
+  *run side* of the timeout contract — the env var the cap travels in (`timeout_env/0`) and the exit
+  code a timeout signals (`timeout_exit/0`); the `Mutare.Sandbox` bootstrap renders the watcher that
+  honours them, and the runner reads `timeout_exit/0` to classify a capped run as `:timeout`.
 - **`Mutare.Runner`** — the orchestrator. Compiles the sandbox **once** (recovering from
   compile-poisoning, see below), runs a coverage probe, then runs `:workers` mutants concurrently
   via `Task.async_stream`, each a fresh `mix test` OS process. Per-mutant wall-clock cap; a
@@ -86,11 +91,12 @@ contract between them is the whole game.
 
 ### Cross-cutting things that bite
 
-- **The selection contract is split across three modules and baked into generated code.** The
-  `:persistent_term` key (`:mutare_active`), the env var (`MUTANT_UNDER_TEST`), and the timeout
-  env/exit code are defined in `Mutare.Selector` / `Mutare.Sandbox` but *emitted into the
-  metamutant* by `Mutare.Transform`. Keep them in sync — change them in one place and the
-  metamutant stops responding.
+- **The selection contract is split across modules and baked into generated code.** The
+  `:persistent_term` key (`:mutare_active`) and the selector env var (`MUTANT_UNDER_TEST`) are
+  defined in `Mutare.Selector`; the timeout env var and exit code in `Mutare.Sandbox.Command`. They
+  are *emitted into generated code* — the selectors into the metamutant by `Mutare.Transform`, the
+  reader and timeout watcher into the test bootstrap by `Mutare.Sandbox`. Keep them in sync — change
+  one in isolation and the metamutant stops responding.
 - **Two renderers, on purpose.** The metamutant is a throwaway build artifact (AST rewrite via
   `Sourceror.to_string`, only needs to compile); the report patches the original source. Don't
   try to make one serve both.

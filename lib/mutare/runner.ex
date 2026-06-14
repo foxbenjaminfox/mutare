@@ -25,14 +25,16 @@ defmodule Mutare.Runner do
   The cap is enforced *portably* by the mutant run **halting itself** — the
   injected watcher (see `Mutare.Sandbox`) calls `System.halt/1` after the
   deadline — rather than the runner killing an OS process tree (which needs
-  platform-specific signals). A capped run exits with `Sandbox.timeout_exit/0`,
-  which we count as `:timeout` (a kill — the hang is observable misbehavior).
+  platform-specific signals). A capped run exits with
+  `Mutare.Sandbox.Command.timeout_exit/0`, which we count as `:timeout` (a kill —
+  the hang is observable misbehavior).
   """
 
   alias Mutare.{Poison, Result, Sandbox, Schema, Site}
   alias Mutare.Runner.Probe
+  alias Mutare.Sandbox.Command
 
-  @timeout_exit Sandbox.timeout_exit()
+  @timeout_exit Command.timeout_exit()
 
   @type run :: %{
           schema: Schema.t(),
@@ -156,7 +158,7 @@ defmodule Mutare.Runner do
 
   # The one compilation.
   defp compile(sandbox) do
-    case Sandbox.mix(sandbox, ["compile"], "0") do
+    case Command.mix(sandbox, ["compile"], "0") do
       {_output, 0} -> :ok
       {output, _status} -> {:error, :compile_failed, output}
     end
@@ -183,7 +185,7 @@ defmodule Mutare.Runner do
 
   defp run_mutant(sandbox, site, test_args, cap) do
     {ms, output, status} =
-      Sandbox.timed_mix(sandbox, ["test" | test_args], Integer.to_string(site.id), cap)
+      Command.timed_mix(sandbox, ["test" | test_args], Integer.to_string(site.id), cap)
 
     %Result{site: site, status: classify_status(status), duration_ms: ms, output: output}
   end
