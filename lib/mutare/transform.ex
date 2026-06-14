@@ -135,6 +135,7 @@ defmodule Mutare.Transform do
       column: range.start[:column],
       range: range,
       mutator: mutator.name(),
+      kind: mutator.kind(),
       original_op: original_op,
       mutated_op: mutated_op,
       original_code: Sourceror.to_string(original_node),

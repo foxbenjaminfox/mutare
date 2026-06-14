@@ -14,4 +14,7 @@ defmodule Mutare do
 
   @doc "Transform a source string into `{metamutant_source, [%Mutare.Site{}]}`."
   defdelegate transform_string(source, opts \\ []), to: Mutare.Transform
+
+  @doc "Run mutation testing against the project at `root`. See `Mutare.Runner.run/2`."
+  defdelegate run(root \\ ".", opts \\ []), to: Mutare.Runner
 end
