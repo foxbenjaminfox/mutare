@@ -68,12 +68,23 @@ defmodule Mutare.ConfigTest do
       assert Config.mutator_modules([:arithmetic, :relational]) == [Arithmetic, Relational]
     end
 
+    test "accepts a custom module implementing the behaviour, mixed with families" do
+      assert Config.mutator_modules([:arithmetic, Mutare.Test.BooleanMutator]) ==
+               [Arithmetic, Mutare.Test.BooleanMutator]
+    end
+
     test "raises on an unknown family, listing the known ones" do
       error = assert_raise ArgumentError, fn -> Config.mutator_modules([:bogus_family]) end
       message = Exception.message(error)
-      assert message =~ "unknown mutator family :bogus_family"
+      assert message =~ "unknown mutator :bogus_family"
       assert message =~ "arithmetic"
       assert message =~ "relational"
+    end
+
+    test "raises on a module that does not implement the behaviour" do
+      error = assert_raise ArgumentError, fn -> Config.mutator_modules([Enum]) end
+      assert Exception.message(error) =~ "implementing Mutare.Mutator"
+      assert Exception.message(error) =~ "missing mutate/1"
     end
   end
 end

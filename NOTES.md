@@ -213,3 +213,12 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
 - **Dependency-free bootstrap.** The sandbox injects a plain
   `:persistent_term.put` snippet into `test_helper.exs`, so targets need nothing
   added to their deps.
+- **Custom mutators (done).** `Mutare.Mutator` is the public extension point:
+  `mutate/1` + `name/0`. `:mutators` in `.mutare.exs` accepts built-in family
+  atoms *and* any module implementing the behaviour (validated, with a helpful
+  error otherwise). Dropped the old `kind/0` callback — it was vestigial and
+  misleading: placement (in-place selector vs lifting into a guard) is decided
+  by the node's *position*, not declared by the mutator. Limit: `mutate/1` does
+  node-level mutations; structural mutations (clause-drop) remain built-in only,
+  not expressible by a custom mutator. CLI `--mutators` CSV is for built-in
+  families (short names); custom modules go in `.mutare.exs`.

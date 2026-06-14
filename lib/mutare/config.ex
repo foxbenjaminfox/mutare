@@ -48,10 +48,14 @@ defmodule Mutare.Config do
     |> normalize_mutators()
   end
 
-  @doc "Resolve mutator family atoms to modules. Raises on an unknown family."
-  @spec mutator_modules([atom()]) :: [module()]
-  def mutator_modules(families) when is_list(families) do
-    Enum.map(families, &fetch_module!/1)
+  @doc """
+  Resolve a list of mutators to modules. Each entry is either a built-in family
+  atom (`:arithmetic`, `:relational`) or a module implementing `Mutare.Mutator`
+  (a custom mutator). Raises `ArgumentError` on anything else.
+  """
+  @spec mutator_modules([atom() | module()]) :: [module()]
+  def mutator_modules(mutators) when is_list(mutators) do
+    Enum.map(mutators, &resolve!/1)
   end
 
   # --- internals -----------------------------------------------------------
@@ -65,14 +69,34 @@ defmodule Mutare.Config do
   defp normalize_mutators(config) do
     case Keyword.get(config, :mutators, :all) do
       :all -> Keyword.delete(config, :mutators)
-      families -> Keyword.put(config, :mutators, mutator_modules(families))
+      mutators -> Keyword.put(config, :mutators, mutator_modules(mutators))
     end
   end
 
-  defp fetch_module!(family) do
-    Map.get(@registry, family) ||
-      raise ArgumentError,
-            "unknown mutator family #{inspect(family)}; known: #{known_families()}"
+  defp resolve!(name) do
+    cond do
+      Map.has_key?(@registry, name) ->
+        Map.fetch!(@registry, name)
+
+      Mutare.Mutator.implemented_by?(name) ->
+        name
+
+      true ->
+        raise ArgumentError, unknown_mutator_message(name)
+    end
+  end
+
+  defp unknown_mutator_message(name) do
+    base =
+      "unknown mutator #{inspect(name)}: expected a built-in family " <>
+        "(#{known_families()}) or a module implementing Mutare.Mutator"
+
+    # A loaded module that just isn't a mutator gets a more specific nudge.
+    if is_atom(name) and Code.ensure_loaded?(name) do
+      base <> " (#{inspect(name)} is missing mutate/1 or name/0)"
+    else
+      base
+    end
   end
 
   defp known_families, do: @registry |> Map.keys() |> Enum.map_join(", ", &to_string/1)

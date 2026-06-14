@@ -54,8 +54,7 @@ standalone ignores the next line; ignored mutants are excluded from the score:
 def discounted(amount, percent), do: amount - amount * percent / 100  # mutare:ignore
 ```
 
-`--since`, the custom-mutator API, and the compile-poisoning pre-filter are still
-to come.
+`--since` and the compile-poisoning pre-filter are still to come.
 
 ## Usage
 
@@ -72,12 +71,32 @@ Optional `.mutare.exs`:
 [
   paths: ["lib"],
   exclude: ["lib/generated/**"],
-  mutators: :all,
+  # built-in family atoms and/or your own modules implementing Mutare.Mutator
+  mutators: [:arithmetic, :relational, MyApp.Mutators.Boolean],
   min_score: 70,
   workers: System.schedulers_online(),
   timeout_multiplier: 3.0,
   test_selection: :coverage
 ]
+```
+
+### Custom mutators
+
+A mutator is any module implementing the two-callback `Mutare.Mutator`
+behaviour — `mutate/1` (an AST node → `:skip` or a list of mutated nodes) and
+`name/0`. List it under `:mutators` above. Placement (in-place vs lifted into a
+guard) is decided by *where the node sits*, so the same `mutate/1` works in both:
+
+```elixir
+defmodule MyApp.Mutators.Boolean do
+  @behaviour Mutare.Mutator
+  @impl true
+  def name, do: :boolean
+  @impl true
+  def mutate({:and, meta, [l, r]}), do: [{:or, meta, [l, r]}]
+  def mutate({:or, meta, [l, r]}), do: [{:and, meta, [l, r]}]
+  def mutate(_node), do: :skip
+end
 ```
 
 Example output:

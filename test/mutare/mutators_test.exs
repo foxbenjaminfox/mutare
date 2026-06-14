@@ -30,9 +30,8 @@ defmodule Mutare.MutatorsTest do
       assert Arithmetic.mutate({:x, [], nil}) == :skip
     end
 
-    test "name and kind" do
+    test "name" do
       assert Arithmetic.name() == :arithmetic
-      assert Arithmetic.kind() == :in_place
     end
 
     test "skips a multiplicative identity right operand (a * 1, a / 1)" do
@@ -97,9 +96,8 @@ defmodule Mutare.MutatorsTest do
       assert Relational.mutate(:atom) == :skip
     end
 
-    test "name and kind" do
+    test "name" do
       assert Relational.name() == :relational
-      assert Relational.kind() == :in_place
     end
   end
 end

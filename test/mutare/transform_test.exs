@@ -57,6 +57,27 @@ defmodule Mutare.TransformTest do
     assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
   end
 
+  test "a custom mutator plugs in for both in-place and lifted delivery" do
+    source = """
+    defmodule X do
+      def body(a, b), do: a and b
+      def guarded(a, b) when a and b, do: :ok
+    end
+    """
+
+    {meta, sites} = Mutare.transform_string(source, mutators: [Mutare.Test.BooleanMutator])
+
+    # body `a and b` → in-place; guard `a and b` → lifted. The author wrote one
+    # `mutate/1`; placement is decided by position.
+    assert %Site{mutator: :boolean, original_op: :and, mutated_op: :or, kind: :in_place} =
+             Enum.find(sites, &(&1.kind == :in_place))
+
+    assert %Site{mutator: :boolean, original_op: :and, mutated_op: :or, kind: :lifted} =
+             Enum.find(sites, &(&1.kind == :lifted))
+
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
+
   test "nested operator sites both get their own selector" do
     {meta, sites} =
       Mutare.transform_string("defmodule N do\n  def f(a, b), do: a + b == 0\nend\n")

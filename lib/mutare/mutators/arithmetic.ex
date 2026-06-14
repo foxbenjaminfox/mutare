@@ -45,9 +45,6 @@ defmodule Mutare.Mutators.Arithmetic do
   def name, do: :arithmetic
 
   @impl Mutare.Mutator
-  def kind, do: :in_place
-
-  @impl Mutare.Mutator
   def mutate({op, meta, [left, right]}) do
     case Map.fetch(@swaps, op) do
       {:ok, replacements} ->
