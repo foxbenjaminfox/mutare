@@ -71,86 +71,9 @@ defmodule Mutare.Transform do
   """
 
   alias Mutare.Site
+  alias Mutare.Transform.{Candidate, Ctx, Render}
 
   @default_mutators [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
-
-  # Threading context for a single transform pass. Two roles live here, kept
-  # visibly apart: read-only config (`file`, `mutators`, `skip_ids`), set once;
-  # and accumulators (`next_id`, `group`, `sites`), updated as ids are assigned
-  # and sites recorded. A struct (not a bare map) makes the split explicit and a
-  # stray field name fail loudly. The whole struct is threaded through every
-  # stage — never destructured into loose values — so the shape stays uniform.
-  defmodule Ctx do
-    @moduledoc false
-
-    @type t :: %__MODULE__{
-            file: String.t(),
-            mutators: [module()],
-            skip_ids: MapSet.t(),
-            next_id: pos_integer(),
-            group: non_neg_integer(),
-            sites: [Mutare.Site.t()]
-          }
-
-    defstruct [
-      # config — read-only for the pass
-      :file,
-      :mutators,
-      :skip_ids,
-      # accumulators — threaded and updated
-      next_id: 1,
-      group: 0,
-      sites: []
-    ]
-  end
-
-  # One mutation candidate: the typed, pre-id description of a single mutant,
-  # produced by the analyzer and consumed by emission. It replaces the old
-  # untyped `%{type: …}` maps *and* the in-place call shape, so there is one
-  # vocabulary for "what to mutate, where, and how it is delivered".
-  #
-  # `context` is the source of truth; `kind`/`operation` are its consequences:
-  #
-  #   * `:runtime_body`  → `:in_place`, `:replace`  — a body expression
-  #   * `:guard`         → `:lifted`,   `:replace`  — a `when`-guard operator
-  #   * `:clause_drop`   → `:lifted`,   `:delete`   — a whole clause removed
-  #
-  # The excluded contexts — `:pattern`, `:compile_time` (module-attribute
-  # values), `:capture_arity` (the `/` in `&fun/arity`) — never become
-  # candidates; the analyzer skips them outright (see `skip_node?/1`).
-  #
-  # `:guard` candidates carry `mutated_clauses` — the whole clause group with
-  # this one guard swapped, materialised at analysis time so emission never has
-  # to re-find the node. `:clause_drop` carries only `clause_index`.
-  defmodule Candidate do
-    @moduledoc false
-
-    @type context :: :runtime_body | :guard | :clause_drop
-
-    @type t :: %__MODULE__{
-            context: context(),
-            kind: :in_place | :lifted,
-            operation: :replace | :delete,
-            mutator: module() | nil,
-            original: Macro.t(),
-            mutated: Macro.t() | nil,
-            range: map(),
-            clause_index: non_neg_integer() | nil,
-            mutated_clauses: [Macro.t()] | nil
-          }
-
-    defstruct [
-      :context,
-      :kind,
-      :operation,
-      :mutator,
-      :original,
-      :mutated,
-      :range,
-      :clause_index,
-      :mutated_clauses
-    ]
-  end
 
   @doc """
   Transform a source string into `{metamutant_source, [%Site{}], next_id}`.
@@ -183,11 +106,7 @@ defmodule Mutare.Transform do
       |> Sourceror.parse_string!()
       |> transform_node(ctx)
 
-    metamutant =
-      transformed
-      |> strip_annotations()
-      |> normalize_keyword_blocks()
-      |> Sourceror.to_string()
+    metamutant = Render.to_source(transformed)
 
     ignored = Mutare.Ignore.ignored_lines(source)
     sites = Enum.map(Enum.reverse(ctx.sites), &%{&1 | ignored: &1.line in ignored})
@@ -395,7 +314,11 @@ defmodule Mutare.Transform do
 
           {[], ctx}
         else
-          ctx = %{ctx | next_id: id + 1, sites: [lifted_site(id, candidate, ctx.file) | ctx.sites]}
+          ctx = %{
+            ctx
+            | next_id: id + 1,
+              sites: [lifted_site(id, candidate, ctx.file) | ctx.sites]
+          }
 
           defs =
             candidate
@@ -738,44 +661,15 @@ defmodule Mutare.Transform do
 
   # (case :persistent_term.get(:mutare_active, 0) do <id> -> <mutated> ; _ -> <default> end)
   #
-  # Wrapped in a single-expression block so it renders safely in any position
-  # (a bare `case` as a `key: value` value crashes Sourceror's formatter).
+  # The selector is `Render.block_wrap`ped so it renders safely in any position.
   defp build_case(default_node, mutant_clauses) do
     selector = Mutare.Metamutant.subject_ast()
     catch_all = {:->, [], [[{:_, [], nil}], default_node]}
     case_node = {:case, [], [selector, [do: mutant_clauses ++ [catch_all]]]}
-    {:__block__, [], [case_node]}
+    Render.block_wrap(case_node)
   end
 
   # === shared helpers ========================================================
-
-  # Sourceror represents a keyword-syntax key (`do:`, `else:`, but also `ms:`,
-  # `env:`, any `key: value`) as `{:__block__, [format: :keyword], [key]}`. The
-  # formatter crashes when such a pair's value becomes a `case`. We flip every
-  # keyword-format key back to a plain atom key, which renders fine everywhere.
-  # Metamutant only; the diff report patches the original source.
-  defp normalize_keyword_blocks(ast) do
-    Macro.prewalk(ast, fn
-      {{:__block__, meta, [key]}, value} = pair when is_atom(key) and is_list(meta) ->
-        if Keyword.get(meta, :format) == :keyword, do: {key, value}, else: pair
-
-      other ->
-        other
-    end)
-  end
-
-  # Remove the analyzer's internal annotations before rendering. `:mutare`
-  # (in-place candidates) and `:mutare_tag` (guard target references) are
-  # bookkeeping that must never reach the source.
-  defp strip_annotations(ast) do
-    Macro.prewalk(ast, fn
-      {form, meta, args} when is_list(meta) ->
-        {form, meta |> Keyword.delete(:mutare) |> Keyword.delete(:mutare_tag), args}
-
-      other ->
-        other
-    end)
-  end
 
   defp function_ref?({name, _meta, context}) when is_atom(name) and is_atom(context), do: true
   defp function_ref?({{:., _, _}, _meta, args}) when is_list(args), do: true

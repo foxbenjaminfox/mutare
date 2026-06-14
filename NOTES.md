@@ -37,10 +37,10 @@ Two `:cover` gotchas worth remembering (both handled in `Mutare.Coverage`):
 
 ### Keyword-`do:` normalization (Sourceror workaround) `[done, watch]`
 Sourceror's formatter raises when rendering `def f, do: <case>` (keyword block
-whose value is a multi-line `case`). `Mutare.Transform.normalize_keyword_blocks/1`
-flips every keyword-format key back to a plain atom key before rendering.
-Metamutant only; the report is unaffected. Keep an eye on Sourceror releases in
-case this becomes unnecessary.
+whose value is a multi-line `case`). `Mutare.Transform.Render` flips every
+keyword-format key back to a plain atom key before rendering (and `block_wrap`s
+a bare selector `case` for the same reason). Metamutant only; the report is
+unaffected. Keep an eye on Sourceror releases in case this becomes unnecessary.
 
 ### Non-body operator positions
 Context is now classified *positively* by `Mutare.Transform`'s `skip_node?/1`
@@ -85,6 +85,14 @@ Three things this bought, vs. the prior implicit version:
   positional key existed.
 - Mutators are invoked **once** per in-place site (in `annotate`'s walk), not
   twice (the old `capture_ranges` + `wrap_site` pair).
+- **Shared vocabulary lives in its own files.** `Transform.Candidate` and
+  `Transform.Ctx` (the typed structs threaded through every stage) and
+  `Transform.Render` (the Sourceror workarounds: `to_source/1` strips
+  annotations + normalizes keyword blocks; `block_wrap/1` shields a bare
+  selector `case`) are split out of `transform.ex` so the semantic pipeline
+  isn't interleaved with vocabulary and rendering friction. The lift/clause and
+  in-place machinery stays in `Transform` — it shares the `Ctx` id-threading
+  discipline too tightly to separate cleanly (cohesion is the feature here).
 
 ### Function lifting (M2): sharp edges `[various]`
 - **Recursion bounces through the dispatcher.** A self-call inside a lifted copy
