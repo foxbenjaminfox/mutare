@@ -56,10 +56,17 @@ mutant wall-clock cap (`baseline × multiplier`, timeout = killed) is M4.
 Every mutant runs the entire suite serially. Coverage-driven test selection and
 no-coverage skipping are M3; parallel workers are M4.
 
-### Equivalent mutants `[later]`
-The demo's `percent: 0` survivors are equivalent *under that test data*. No
-`# mutare:ignore` annotation or suspected-equivalent reporting yet (DESIGN lists
-the mitigations).
+### Equivalent mutants `[partial]`
+Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the
+arithmetic mutator skips swaps on identity right-operands (`a * 1`, `a / 1`,
+`a + 0`, `a - 0`) — only the right operand, since `1 * a → 1 / a` (reciprocal)
+and `0 - a → 0 + a` (sign flip) are real, and `div`/`rem` are never identities.
+Caveats are `==`-invisible (int→float for `*`/`/`; `-0.0` for `+`/`-`) — see
+`Mutare.Mutators.Arithmetic`.
+
+Still open: the demo's `percent: 0` survivors are equivalent only *under that
+test data* (not statically), and there's no `# mutare:ignore` annotation or
+suspected-equivalent reporting yet.
 
 ### Self-hosting: tests that touch `:mutare_active` `[dogfood artifact]`
 Mutation-testing Mutare *with Mutare* has a trap: Mutare's own `selector_test`
@@ -95,11 +102,18 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
   structurally instead of us enumerating them.
 - **Real test gap (fixed):** `Report.summary/1`'s no-coverage branch was
   untested (`no_coverage > 0` survived). Test added.
-- **Real test gap (TODO):** the `mix mutare` score gate (`score < min_score`)
-  and banner have no unit tests — survivors at `lib/mix/tasks/mutare.ex:126,103`.
-  Needs a testable seam or a task-level test; deferred.
-- **Equivalent mutant:** `number / 1` → `number * 1` in `fmt/1` is unkillable
-  (same value). A good real example for the equivalent-mutant story.
+- **Real test gap (fixed):** the `mix mutare` score gate (`score < min_score`)
+  had no tests. Resolved by extracting the decision into the pure
+  `Report.passes_gate?/2` (unit-tested at the boundary) and the option handling
+  into `Mutare.Config` (unit-tested); the task is now a thin shell with a fast
+  failure-path test plus one slow end-to-end test. The cosmetic banner mutant
+  (`root == "."`) is left as an accepted low-value survivor.
+- **Near-equivalent mutant (now skipped):** `number / 1` → `number * 1` in the
+  task's `fmt/1`. This looked equivalent but isn't quite — `/` always yields a
+  float, so `number * 1` on an integer would crash `:erlang.float_to_binary`;
+  it survived in the dogfood only for lack of coverage. The arithmetic mutator
+  now skips identity right-operands (`* 1`, `/ 1`, `+ 0`, `- 0`), so this site
+  produces no mutant at all (see below).
 
 ## Decisions log
 
