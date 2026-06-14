@@ -303,30 +303,14 @@ defmodule Mutare.Transform do
     # A skipped (poisoned) id records its site but emits no copy/dispatcher clause.
     {mut_results, ctx} =
       Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
-        id = ctx.next_id
-
-        if id in ctx.skip_ids do
-          ctx = %{
-            ctx
-            | next_id: id + 1,
-              sites: [poison(lifted_site(id, candidate, ctx.file)) | ctx.sites]
-          }
-
-          {[], ctx}
-        else
-          ctx = %{
-            ctx
-            | next_id: id + 1,
-              sites: [lifted_site(id, candidate, ctx.file) | ctx.sites]
-          }
-
+        claim_id(ctx, candidate, &lifted_site/3, fn id, candidate ->
           defs =
             candidate
             |> apply_lifted_candidate(clauses)
             |> Enum.map(&rename_clause(&1, :"#{base}_m#{id}", :defp))
 
-          {[{id, defs}], ctx}
-        end
+          {id, defs}
+        end)
       end)
 
     mut_ids = Enum.map(mut_results, &elem(&1, 0))
@@ -467,8 +451,12 @@ defmodule Mutare.Transform do
   defp apply_lifted_candidate(%Candidate{context: :clause_drop, clause_index: index}, clauses),
     do: List.delete_at(clauses, index)
 
-  # Build the %Site{} for one lifted candidate. Transform owns the candidate's
-  # shape and picks the constructor; Site owns the struct fields.
+  # Build the %Site{} for one candidate. Transform owns the candidate's shape and
+  # picks the constructor; Site owns the struct fields.
+  defp in_place_site(id, %Candidate{} = c, file) do
+    Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
+  end
+
   defp lifted_site(id, %Candidate{context: :guard} = c, file) do
     Site.lifted_guard(id, file, c.range, c.original, c.mutated, c.mutator)
   end
@@ -624,28 +612,10 @@ defmodule Mutare.Transform do
 
   defp emit_site(node, candidates, ctx) do
     {clauses, ctx} =
-      Enum.reduce(candidates, {[], ctx}, fn candidate, {clauses, ctx} ->
-        id = ctx.next_id
-
-        site =
-          Site.in_place(
-            id,
-            ctx.file,
-            candidate.range,
-            candidate.original,
-            candidate.mutated,
-            candidate.mutator
-          )
-
-        ctx = %{ctx | next_id: id + 1}
-
-        if id in ctx.skip_ids do
-          # Poisoned: record the site, but emit no clause (so it can't poison).
-          {clauses, %{ctx | sites: [poison(site) | ctx.sites]}}
-        else
-          clause = {:->, [], [[id], candidate.mutated]}
-          {[clause | clauses], %{ctx | sites: [site | ctx.sites]}}
-        end
+      Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
+        claim_id(ctx, candidate, &in_place_site/3, fn id, candidate ->
+          {:->, [], [[id], candidate.mutated]}
+        end)
       end)
 
     default = strip_candidates(node)
@@ -653,7 +623,29 @@ defmodule Mutare.Transform do
     # All mutations here skipped → no selector; emit the node unchanged.
     case clauses do
       [] -> {default, ctx}
-      _ -> {build_case(default, Enum.reverse(clauses)), ctx}
+      _ -> {build_case(default, clauses), ctx}
+    end
+  end
+
+  # The single owner of the id-claim + site-record dance that poison recovery
+  # leans on. Both the in-place path (emit_site/3) and the lifted path (lift/3)
+  # route every candidate through here, so ids advance identically — even for a
+  # skipped (poisoned) id — and stay stable across rebuilds. Keeping this in one
+  # place is what stops the two paths from drifting out of lockstep.
+  #
+  # `site_fn.(id, candidate, file)` builds the %Site{}; `emit_fn.(id, candidate)`
+  # builds the artifact (an in-place `->` clause, or a lifted `{id, defs}` pair).
+  # Returns `{[], ctx}` for a poisoned id (site recorded, nothing emitted) or
+  # `{[artifact], ctx}` otherwise — list-shaped to drop into a `flat_map_reduce`.
+  defp claim_id(ctx, candidate, site_fn, emit_fn) do
+    id = ctx.next_id
+    site = site_fn.(id, candidate, ctx.file)
+    ctx = %{ctx | next_id: id + 1}
+
+    if id in ctx.skip_ids do
+      {[], %{ctx | sites: [poison(site) | ctx.sites]}}
+    else
+      {[emit_fn.(id, candidate)], %{ctx | sites: [site | ctx.sites]}}
     end
   end
 
