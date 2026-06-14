@@ -179,9 +179,8 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
 - **Compile-poisoning #2 (fixed):** the `/` in a `&fun/arity` capture is an
   arity separator, not division; mutating it produced an invalid `&(case …)`.
   Fixed by excluding capture-arity `/` (and guard operators) from in-place sites.
-  There may be more poisoning shapes lurking — the design's "compile each
-  candidate in isolation and drop poisoners" safety net (M4) would catch unknowns
-  structurally instead of us enumerating them.
+  More poisoning shapes may lurk — but the compile-poisoning pre-filter (now
+  done, below) is the backstop that catches unknowns without us enumerating them.
 - **Real test gap (fixed):** `Report.summary/1`'s no-coverage branch was
   untested (`no_coverage > 0` survived). Test added.
 - **Real test gap (fixed):** the `mix mutare` score gate (`score < min_score`)
@@ -213,6 +212,20 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
 - **Dependency-free bootstrap.** The sandbox injects a plain
   `:persistent_term.put` snippet into `test_helper.exs`, so targets need nothing
   added to their deps.
+- **Compile-poisoning pre-filter (done).** Rather than the design's "compile
+  each candidate in isolation" (N compiles, and a candidate isn't compilable in
+  isolation anyway — it needs its context), Mutare **recovers** from the one
+  metamutant compile it already does: on failure, `Mutare.Poison` maps the
+  error's `file:line` to the offending mutant id (re-parsing the selector
+  clauses), the transform drops it (`:skip_ids` — record the site `:poisoned`,
+  emit no selector; the id counter still advances so ids stay stable across
+  rebuilds), and we recompile, bounded. Zero extra cost when nothing poisons
+  (the common case); a few recompiles when it does. `:poisoned` mutants are
+  reported and excluded from the denominator. So this — not `# mutare:ignore` —
+  is what rescues a poisoning mutant. Caveats: line→id mapping is best-effort
+  (if it can't map, it falls back to the old abort); a poisoner is dropped at
+  *line* granularity if its error can't be pinned to one clause; and `:skip_ids`
+  drops by id, which is only stable because the counter advances for skips.
 - **Custom mutators (done).** `Mutare.Mutator` is the public extension point:
   `mutate/1` + `name/0`. `:mutators` in `.mutare.exs` accepts built-in family
   atoms *and* any module implementing the behaviour (validated, with a helpful

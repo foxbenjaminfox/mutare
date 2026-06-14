@@ -64,6 +64,10 @@ defmodule Mutare.Transform do
       file: Keyword.get(opts, :file, "nofile"),
       mutators: Keyword.get(opts, :mutators, @default_mutators),
       next_id: Keyword.get(opts, :start_id, 1),
+      # Mutant ids to drop (e.g. compile-poisoning, found by the runner): their
+      # site is still recorded (`poisoned: true`, for the denominator and id
+      # stability) but no selector/copy is generated, so the metamutant compiles.
+      skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
       group: 0,
       sites: []
     }
@@ -236,17 +240,29 @@ defmodule Mutare.Transform do
     orig_defs = Enum.map(orig_clauses, &rename_clause(&1, :"#{base}_orig", :defp))
 
     # One private copy per lifted mutation (original bodies, one change applied).
+    # A skipped (poisoned) id records its site but emits no copy/dispatcher clause.
     {mut_results, ctx} =
-      Enum.map_reduce(lifted_muts, ctx, fn mut, ctx ->
+      Enum.flat_map_reduce(lifted_muts, ctx, fn mut, ctx ->
         id = ctx.next_id
-        ctx = %{ctx | next_id: id + 1, sites: [lifted_site(id, mut, ctx.file) | ctx.sites]}
 
-        defs =
-          clauses
-          |> apply_lifted_mutation(mut)
-          |> Enum.map(&rename_clause(&1, :"#{base}_m#{id}", :defp))
+        if id in ctx.skip_ids do
+          ctx = %{
+            ctx
+            | next_id: id + 1,
+              sites: [poison(lifted_site(id, mut, ctx.file)) | ctx.sites]
+          }
 
-        {{id, defs}, ctx}
+          {[], ctx}
+        else
+          ctx = %{ctx | next_id: id + 1, sites: [lifted_site(id, mut, ctx.file) | ctx.sites]}
+
+          defs =
+            clauses
+            |> apply_lifted_mutation(mut)
+            |> Enum.map(&rename_clause(&1, :"#{base}_m#{id}", :defp))
+
+          {[{id, defs}], ctx}
+        end
       end)
 
     mut_ids = Enum.map(mut_results, &elem(&1, 0))
@@ -442,7 +458,7 @@ defmodule Mutare.Transform do
       Macro.postwalk(node, {ctx.next_id, ctx.sites}, fn current, {id, sites} = acc ->
         case Map.fetch(ranges, node_key(current)) do
           {:ok, %{range: range, node: original}} ->
-            wrap_site(current, original, range, ctx.file, ctx.mutators, id, sites)
+            wrap_site(current, original, range, ctx.file, ctx.mutators, id, sites, ctx.skip_ids)
 
           :error ->
             {current, acc}
@@ -452,19 +468,30 @@ defmodule Mutare.Transform do
     {transformed, %{ctx | next_id: next_id, sites: sites}}
   end
 
-  defp wrap_site(node, original_node, range, file, mutators, id, sites) do
+  defp wrap_site(node, original_node, range, file, mutators, id, sites, skip_ids) do
     {clauses, new_sites, next_id} =
       original_node
       |> mutations(mutators)
       |> Enum.reduce({[], sites, id}, fn {mutator, mutated_node}, {clauses, sites, cur_id} ->
         site = build_site(cur_id, file, range, original_node, mutated_node, mutator)
-        clause = {:->, [], [[cur_id], mutated_node]}
-        {[clause | clauses], [site | sites], cur_id + 1}
+
+        if cur_id in skip_ids do
+          # Poisoned: record the site, but emit no clause (so it can't poison).
+          {clauses, [poison(site) | sites], cur_id + 1}
+        else
+          clause = {:->, [], [[cur_id], mutated_node]}
+          {[clause | clauses], [site | sites], cur_id + 1}
+        end
       end)
 
-    case_node = build_case(node, Enum.reverse(clauses))
-    {case_node, {next_id, new_sites}}
+    # All mutations here skipped → no selector; emit the node unchanged.
+    case clauses do
+      [] -> {node, {next_id, new_sites}}
+      _ -> {build_case(node, Enum.reverse(clauses)), {next_id, new_sites}}
+    end
   end
+
+  defp poison(%Site{} = site), do: %{site | poisoned: true}
 
   defp build_site(id, file, range, original_node, mutated_node, mutator) do
     {original_op, _, _} = original_node

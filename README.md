@@ -54,7 +54,10 @@ standalone ignores the next line; ignored mutants are excluded from the score:
 def discounted(amount, percent), do: amount - amount * percent / 100  # mutare:ignore
 ```
 
-`--since` and the compile-poisoning pre-filter are still to come.
+If a mutant won't compile (e.g. a custom mutator emits something invalid), it
+would normally sink the whole single build — so Mutare detects the offending
+mutant from the compile error, drops it (reported as *poisoned*, excluded from
+the score), and rebuilds. `--since` (changed-files CI mode) is still to come.
 
 ## Usage
 

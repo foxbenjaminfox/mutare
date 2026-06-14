@@ -76,6 +76,7 @@ defmodule Mix.Tasks.Mutare do
   defp progress(%Result{status: :survived}), do: IO.write("S")
   defp progress(%Result{status: :no_coverage}), do: IO.write("-")
   defp progress(%Result{status: :ignored}), do: IO.write("i")
+  defp progress(%Result{status: :poisoned}), do: IO.write("x")
   defp progress(%Result{}), do: IO.write("?")
 
   defp report(run, config) do

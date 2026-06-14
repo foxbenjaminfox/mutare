@@ -41,7 +41,7 @@ defmodule Mutare.Runner do
   which we count as `:timeout` (a kill — the hang is observable misbehavior).
   """
 
-  alias Mutare.{Coverage, Result, Sandbox, Schema, Site}
+  alias Mutare.{Coverage, Poison, Result, Sandbox, Schema, Site}
 
   @timeout_exit Sandbox.timeout_exit()
 
@@ -79,11 +79,13 @@ defmodule Mutare.Runner do
       {:error, :nothing_to_mutate,
        "no mutation sites found under #{inspect(opts[:paths] || ["lib"])}"}
     else
-      sandbox = Sandbox.prepare(root, schema, opts)
       reporter = Keyword.get(opts, :reporter, fn _result -> :ok end)
       mode = Keyword.get(opts, :test_selection, :coverage)
 
-      with :ok <- compile(sandbox),
+      # Prepare + compile, recovering from compile-poisoning by dropping the
+      # offending mutants and rebuilding. `schema` here may differ from the input
+      # (poisoners flagged), which is what the run reports against.
+      with {:ok, schema, sandbox} <- prepare_compiling(schema, root, opts),
            {:ok, baseline_ms, selection} <- probe(sandbox, schema, mode) do
         cap = timeout_cap(baseline_ms, opts)
         workers = Keyword.get(opts, :workers, System.schedulers_online())
@@ -123,6 +125,39 @@ defmodule Mutare.Runner do
         # false-timeout a slow-but-finite mutant. A true infinite loop runs far
         # past any floor, so we still catch it.
         max(round(baseline_ms * multiplier), 10_000)
+    end
+  end
+
+  # Materialise the schema and compile it once, recovering from compile-poisoning.
+  @poison_attempts 25
+
+  defp prepare_compiling(
+         schema,
+         root,
+         opts,
+         skip_ids \\ MapSet.new(),
+         attempts \\ @poison_attempts
+       ) do
+    sandbox = Sandbox.prepare(root, schema, opts)
+
+    case compile(sandbox) do
+      :ok ->
+        {:ok, schema, sandbox}
+
+      {:error, :compile_failed, output} = failure ->
+        poison = Poison.ids(output, schema.metamutants)
+
+        if attempts > 0 and not MapSet.subset?(poison, skip_ids) do
+          # Drop the poisoning mutants and rebuild. Ids are stable across rebuilds
+          # (the transform advances its counter for skipped ids), so accumulated
+          # `skip_ids` keep referring to the same mutations.
+          skip_ids = MapSet.union(skip_ids, poison)
+          schema = Schema.build(root, Keyword.put(opts, :skip_ids, skip_ids))
+          prepare_compiling(schema, root, opts, skip_ids, attempts - 1)
+        else
+          # Couldn't identify (or keep making progress on) the poison → give up.
+          failure
+        end
     end
   end
 
@@ -233,6 +268,10 @@ defmodule Mutare.Runner do
   defp cover_name(file), do: String.replace(file, ~r/[^A-Za-z0-9]/, "_")
 
   # === per-mutant runs =======================================================
+
+  defp classify(_sandbox, %Site{poisoned: true} = site, _selection, _cap) do
+    %Result{site: site, status: :poisoned, duration_ms: 0, output: nil}
+  end
 
   defp classify(_sandbox, %Site{ignored: true} = site, _selection, _cap) do
     %Result{site: site, status: :ignored, duration_ms: 0, output: nil}
