@@ -181,11 +181,14 @@ treat it as noise.) See `Mutare.Mutators.Arithmetic`.
 `# mutare:ignore` (done) is the manual escape hatch: a trailing comment ignores
 its line, a standalone comment the next line; matching mutants are recorded
 `:ignored` — not run, kept out of the score's denominator (`killed / (total −
-no_coverage − ignored)`), surfaced in the summary. Line-based and text-scanned
-(a literal `"# mutare:ignore"` string would also match — rare). It still
-*generates* the (unused) selector for an ignored mutant, so it does **not**
-rescue a compile-poisoning mutant — that's the compile-poisoning pre-filter's
-job, not ignore's. Suspected-equivalent auto-reporting is still future work.
+no_coverage − ignored)`), surfaced in the summary. Line-based, but parsed from
+Sourceror's comment metadata (`Mutare.Ignore`), not a raw-text scan — each
+comment's `previous_eol_count` (`0` ⇒ trailing, `≥ 1` ⇒ standalone) drives the
+classification, and a literal `"# mutare:ignore"` *string* is never mistaken for
+a directive (the old text scan accepted it). It still *generates* the (unused)
+selector for an ignored mutant, so it does **not** rescue a compile-poisoning
+mutant — that's the compile-poisoning pre-filter's job, not ignore's.
+Suspected-equivalent auto-reporting is still future work.
 
 ### Self-hosting: tests that touch `:mutare_active` `[dogfood artifact]`
 Mutation-testing Mutare *with Mutare* has a trap: Mutare's own `selector_test`

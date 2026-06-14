@@ -23,7 +23,7 @@ defmodule Mutare.Transform do
        `__orig`/`__mut` copies behind a dispatcher.
     5. **Render** — annotations are stripped and the tree is rendered to source
        (with a Sourceror keyword-block workaround); `# mutare:ignore` directives
-       are applied to the recorded sites.
+       (parsed by `Mutare.Ignore`) are applied to the recorded sites.
 
   Carrying the `Candidate` in the node's *own* metadata is what lets emission
   find "this exact node" without a fragile `{line, column}` identity: metadata is
@@ -189,27 +189,10 @@ defmodule Mutare.Transform do
       |> normalize_keyword_blocks()
       |> Sourceror.to_string()
 
-    ignore = ignore_lines(source)
-    sites = Enum.map(Enum.reverse(ctx.sites), &%{&1 | ignored: &1.line in ignore})
+    ignored = Mutare.Ignore.ignored_lines(source)
+    sites = Enum.map(Enum.reverse(ctx.sites), &%{&1 | ignored: &1.line in ignored})
 
     {metamutant, sites, ctx.next_id}
-  end
-
-  # Lines suppressed by a `# mutare:ignore` comment. A *trailing* comment
-  # (`code # mutare:ignore`) suppresses its own line; a *standalone* comment
-  # suppresses the next line. Text-scanned, so the (rare) literal string
-  # `"# mutare:ignore"` would also match — acceptable for now.
-  defp ignore_lines(source) do
-    source
-    |> String.split("\n")
-    |> Enum.with_index(1)
-    |> Enum.reduce(MapSet.new(), fn {text, lineno}, acc ->
-      cond do
-        Regex.match?(~r/^\s*#\s*mutare:ignore\b/, text) -> MapSet.put(acc, lineno + 1)
-        Regex.match?(~r/#\s*mutare:ignore\b/, text) -> MapSet.put(acc, lineno)
-        true -> acc
-      end
-    end)
   end
 
   # === module / statement structure =========================================

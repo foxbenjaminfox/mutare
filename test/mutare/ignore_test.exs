@@ -26,6 +26,20 @@ defmodule Mutare.IgnoreTest do
       # metamutant still compiles.
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
+
+    test "a string literal that reads like the directive is not a directive" do
+      # Directives come from parsed comment metadata, not a raw-text scan, so a
+      # string that merely *contains* `# mutare:ignore` suppresses nothing.
+      source = """
+      defmodule Ig do
+        def a(x), do: x + String.length("# mutare:ignore")
+      end
+      """
+
+      {_meta, sites, _next_id} = Mutare.transform_string(source)
+
+      assert [%{line: 2, ignored: false}] = sites
+    end
   end
 
   describe "end to end" do
