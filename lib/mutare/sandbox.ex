@@ -45,11 +45,15 @@ defmodule Mutare.Sandbox do
   Prepare a sandbox for `schema` taken from `root`. Returns the sandbox path.
 
   Options: `:sandbox` — target directory (default: a fresh temp dir).
+
+  The sandbox must be disjoint from the project tree: it cannot be the project
+  root, contain it, or be contained by it.
   """
   @spec prepare(Path.t(), Schema.t(), keyword()) :: Path.t()
   def prepare(root, %Schema{} = schema, opts \\ []) do
     sandbox = Keyword.get_lazy(opts, :sandbox, &default_sandbox/0)
 
+    validate_paths!(root, sandbox)
     File.rm_rf!(sandbox)
     File.mkdir_p!(sandbox)
 
@@ -109,6 +113,103 @@ defmodule Mutare.Sandbox do
   defp default_sandbox do
     Path.join(System.tmp_dir!(), "mutare_sandbox_#{System.unique_integer([:positive])}")
   end
+
+  defp validate_paths!(root, sandbox) do
+    root = resolve_path(root)
+    expanded_sandbox = Path.expand(sandbox)
+
+    sandbox_paths =
+      [
+        resolve_path(expanded_sandbox),
+        expanded_sandbox
+        |> Path.dirname()
+        |> resolve_path()
+        |> Path.join(Path.basename(expanded_sandbox))
+      ]
+      |> Enum.uniq()
+
+    case Enum.find_value(sandbox_paths, &overlap(&1, root)) do
+      nil ->
+        :ok
+
+      relation ->
+        raise ArgumentError,
+              "unsafe sandbox path #{inspect(sandbox)}: it #{relation} the project root " <>
+                "#{inspect(root)}; choose a directory outside the project tree"
+    end
+  end
+
+  defp overlap(path, root) do
+    cond do
+      same_path?(path, root) -> "is"
+      descendant?(path, root) -> "is inside"
+      descendant?(root, path) -> "contains"
+      true -> nil
+    end
+  end
+
+  defp same_path?(left, right), do: path_components(left) == path_components(right)
+
+  defp descendant?(path, parent) do
+    path_parts = path_components(path)
+    parent_parts = path_components(parent)
+
+    length(path_parts) > length(parent_parts) and
+      Enum.take(path_parts, length(parent_parts)) == parent_parts
+  end
+
+  defp path_components(path) do
+    parts = Path.split(path)
+
+    case :os.type() do
+      {:win32, _} -> Enum.map(parts, &case_fold/1)
+      {:unix, :darwin} -> Enum.map(parts, &case_fold/1)
+      _ -> parts
+    end
+  end
+
+  defp case_fold(part), do: part |> String.normalize(:nfc) |> String.downcase()
+
+  # Resolve symlinks component-by-component so an existing symlinked parent
+  # cannot make a lexically external sandbox land inside the project tree.
+  defp resolve_path(path, links_left \\ 40) do
+    path
+    |> Path.expand()
+    |> Path.split()
+    |> then(fn [root | parts] -> resolve_parts(root, parts, links_left) end)
+  end
+
+  defp resolve_parts(path, [], _links_left), do: path
+
+  defp resolve_parts(path, [part | rest], links_left) do
+    candidate = Path.join(path, part)
+
+    case File.read_link(candidate) do
+      {:ok, _target} when links_left == 0 ->
+        raise ArgumentError, "cannot validate path with more than 40 symbolic links"
+
+      {:ok, target} ->
+        target =
+          case Path.type(target) do
+            :absolute -> target
+            _ -> Path.expand(target, path)
+          end
+
+        resolve_path(join_parts(target, rest), links_left - 1)
+
+      {:error, :einval} ->
+        resolve_parts(candidate, rest, links_left)
+
+      {:error, :enoent} ->
+        join_parts(candidate, rest)
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "cannot validate path #{inspect(candidate)}: #{:file.format_error(reason)}"
+    end
+  end
+
+  defp join_parts(path, parts), do: Enum.reduce(parts, path, &Path.join(&2, &1))
 
   defp copy_project(root, sandbox) do
     for entry <- File.ls!(root), entry not in @excluded do
