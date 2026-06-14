@@ -24,8 +24,14 @@ See [`DESIGN.md`](DESIGN.md) for the full rationale and roadmap.
 - baseline-first execution, kill/survive classification
 - survivors reported as one-line diffs at `file:line`, plus a mutation score
 
-Guards/clause-drop (function lifting), the coverage probe, parallel workers,
-timeouts and `--since` are later milestones.
+**Milestone 2 — function lifting + dispatcher** (in progress):
+
+- `when` **guard mutations**, delivered by duplicating the clause group and
+  dispatching to the active copy — a `case` can't live in a guard
+- coexists with in-place selectors (which still apply inside the lifted copies)
+
+Clause-drop, the coverage probe, parallel workers, timeouts and `--since` are
+later milestones.
 
 ## Usage
 

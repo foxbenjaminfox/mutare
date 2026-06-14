@@ -70,7 +70,7 @@ defmodule Mutare.TransformTest do
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
-  test "operators inside `when` guards are not mutated (would compile-poison)" do
+  test "guard operators become lifted mutants; body operators stay in-place" do
     source = """
     defmodule G do
       def f(x) when x >= 0 and x < 100, do: x + 1
@@ -80,11 +80,18 @@ defmodule Mutare.TransformTest do
 
     {meta, sites} = Mutare.transform_string(source)
 
-    # Only the body `x + 1` is mutated; the guard's >= and < are skipped.
-    assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
-    # And the metamutant must actually compile (no `case` in a guard).
-    assert {:ok, _} = Code.string_to_quoted(meta)
+    # Guards are lifted: >= -> {>, <=} and < -> {<=, >}; the body `+` is in-place.
+    lifted = Enum.filter(sites, &(&1.kind == :lifted))
+    assert Enum.frequencies_by(lifted, & &1.original_op) == %{:>= => 2, :< => 2}
+
+    assert [%Site{kind: :in_place, mutator: :arithmetic, original_op: :+}] =
+             Enum.filter(sites, &(&1.kind == :in_place))
+
+    # A `case` must never appear inside a guard (that would compile-poison).
     refute meta =~ "when (case"
+    refute meta =~ "when case"
+    assert meta =~ "__mutare_f_1_orig"
+    assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
   test "the `/` in a &fun/arity capture is not mutated (it is arity, not division)" do

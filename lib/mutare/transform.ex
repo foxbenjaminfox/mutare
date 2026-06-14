@@ -1,36 +1,46 @@
 defmodule Mutare.Transform do
   @moduledoc """
-  Source → metamutant transform (M1: in-place selector only).
+  Source → metamutant transform.
 
-  Every operator site the mutators recognise is wrapped in a tail-position
-  `case` that reads the active mutant id from `:persistent_term`:
+  Two mechanisms, chosen by where a mutation lands:
+
+  ## In-place selector (body expressions)
+
+  An operator inside a body is wrapped in a tail-position `case` reading the
+  active mutant id from `:persistent_term`:
 
       # source:   total >= threshold
       case :persistent_term.get(:mutare_active, 0) do
         17 -> total > threshold     # mutant 17:  >= → >
-        18 -> total < threshold     # mutant 18:  >= → <
         _  -> total >= threshold    # baseline + every other mutant
       end
 
-  One `case` per site, one clause per mutant, the original in the catch-all so
-  the baseline (and every non-matching id) runs unchanged.
+  Substituting a node with a value-equivalent `case` preserves its position, so
+  tail calls stay tail calls (LCO). Nested sites work because the catch-all holds
+  the *transformed* children, reachable whenever an outer mutant is inactive.
 
-  ## Nesting and tail position
+  ## Function lifting + dispatcher (guards, dispatch)
 
-  We rewrite the AST in place and render the result with `Sourceror.to_string`.
-  Substituting a node with a `case` that yields the same value keeps whatever
-  position the node held — so a site in tail position stays a tail call (LCO is
-  preserved) without any special handling.
+  A `case` is illegal in a `when` guard, and guards drive dispatch *across*
+  clauses, so guard mutations cannot be done in place. Instead the whole clause
+  group is duplicated — once unchanged (`__orig`), once per mutation (`__mut`) —
+  and a bare catch-all dispatcher forwards args to the active copy by id:
 
-  Nested sites (e.g. `a + b > c`) are handled by putting the *transformed*
-  children in the catch-all branch: when an outer mutant is inactive, control
-  falls through to the catch-all and any inner selector is still reachable.
-  The mutant branches reuse the original (untransformed) operands — sound
-  because exactly one mutant is ever active, so inner selectors in a mutant
-  branch would take their own baseline anyway.
+      def f(a) do
+        case :persistent_term.get(:mutare_active, 0) do
+          5 -> __mutare_f_1_m5(a)     # guard mutated in this copy
+          _ -> __mutare_f_1_orig(a)
+        end
+      end
+      defp __mutare_f_1_orig(a) when a >= 1, do: ...   # in-place applies here
+      defp __mutare_f_1_m5(a) when a > 1, do: ...       # one guard changed
 
-  Ranges are captured against the *original* AST and refer to original-source
-  coordinates, which is what the diff report patches against.
+  In-place selectors live only in `__orig` (and in non-lifted code); the `__mut`
+  copies reuse the original bodies — sound because exactly one mutant is ever
+  active. The public `f/arity` is unchanged at the module boundary.
+
+  Ranges are captured against the *original* AST, which is what the diff report
+  patches against.
   """
 
   alias Mutare.Site
@@ -50,146 +60,319 @@ defmodule Mutare.Transform do
   """
   @spec transform_string(String.t(), keyword()) :: {String.t(), [Site.t()]}
   def transform_string(source, opts \\ []) when is_binary(source) do
-    file = Keyword.get(opts, :file, "nofile")
-    mutators = Keyword.get(opts, :mutators, @default_mutators)
-    start_id = Keyword.get(opts, :start_id, 1)
+    ctx = %{
+      file: Keyword.get(opts, :file, "nofile"),
+      mutators: Keyword.get(opts, :mutators, @default_mutators),
+      next_id: Keyword.get(opts, :start_id, 1),
+      sites: []
+    }
 
-    quoted = Sourceror.parse_string!(source)
-
-    # Some operator occurrences cannot host an in-place `case` without breaking
-    # compilation (compile-poisoning). We drop those sites before wrapping:
-    #
-    #   * inside `when` guards — a `case` is illegal in a guard (lifted, later);
-    #   * the `/` in a `&fun/arity` capture — it is an arity separator, not
-    #     division, so wrapping it yields an invalid capture.
-    ranges =
-      quoted
-      |> capture_ranges(mutators)
-      |> Map.drop(MapSet.to_list(unsafe_keys(quoted)))
-
-    {mutated_ast, {_next_id, sites_rev}} =
-      Macro.postwalk(quoted, {start_id, []}, fn node, {id, sites} = acc ->
-        case Map.fetch(ranges, node_key(node)) do
-          {:ok, %{range: range, node: original_node}} ->
-            wrap_site(node, original_node, range, file, mutators, id, sites)
-
-          :error ->
-            {node, acc}
-        end
-      end)
+    {transformed, ctx} =
+      source
+      |> Sourceror.parse_string!()
+      |> transform_node(ctx)
 
     metamutant =
-      mutated_ast
+      transformed
       |> normalize_keyword_blocks()
       |> Sourceror.to_string()
 
-    {metamutant, Enum.reverse(sites_rev)}
+    {metamutant, Enum.reverse(ctx.sites)}
   end
 
-  # --- internals -----------------------------------------------------------
+  # === module / statement structure =========================================
 
-  # Sourceror represents a keyword-syntax key (`do:`, `else:`, but also `ms:`,
-  # `env:`, any `key: value`) as `{:__block__, [format: :keyword], [key]}`. The
-  # formatter crashes when such a pair's value becomes a `case` — whether that's
-  # a `def f, do: <case>` body or a `%{ms: <case>}` map field. We flip every
-  # keyword-format key back to a plain atom key, which renders fine everywhere.
-  # This only affects the throwaway metamutant; the diff report patches the
-  # original source, so author-facing formatting is untouched.
-  defp normalize_keyword_blocks(ast) do
-    Macro.prewalk(ast, fn
-      {{:__block__, meta, [key]}, value} = pair when is_atom(key) and is_list(meta) ->
-        if Keyword.get(meta, :format) == :keyword, do: {key, value}, else: pair
-
-      other ->
-        other
-    end)
+  # A module: transform the body of its do-block(s).
+  defp transform_node({:defmodule, meta, [alias_node, do_keyword]}, ctx)
+       when is_list(do_keyword) do
+    {do_keyword, ctx} = transform_do_keyword(do_keyword, ctx)
+    {{:defmodule, meta, [alias_node, do_keyword]}, ctx}
   end
 
-  # Union of all node keys that must not be wrapped in an in-place selector.
-  defp unsafe_keys(quoted) do
-    MapSet.union(guard_keys(quoted), capture_arity_keys(quoted))
-  end
-
-  # Keys of the `/` node in every `&fun/arity` / `&Mod.fun/arity` capture, where
-  # `/` is syntax (arity separator), not division. We must NOT catch the
-  # division in a body capture like `& &1 / 2`, so we only match when the left
-  # side is a plain function reference and the right side is an integer literal —
-  # exactly the shape Elixir parses as a capture-by-name.
-  defp capture_arity_keys(quoted) do
-    {_ast, keys} =
-      Macro.prewalk(quoted, MapSet.new(), fn
-        {:&, _meta, [{:/, _smeta, [left, right]} = slash]} = node, acc ->
-          if function_ref?(left) and integer_literal?(right) do
-            {node, add_key(acc, slash)}
-          else
-            {node, acc}
-          end
-
-        node, acc ->
-          {node, acc}
-      end)
-
-    keys
-  end
-
-  # A local (`name`) or remote (`Mod.fun`) function reference — not a call, not `&N`.
-  defp function_ref?({name, _meta, context}) when is_atom(name) and is_atom(context), do: true
-  defp function_ref?({{:., _, _}, _meta, args}) when is_list(args), do: true
-  defp function_ref?(_), do: false
-
-  defp integer_literal?(n) when is_integer(n), do: true
-  defp integer_literal?({:__block__, _meta, [n]}) when is_integer(n), do: true
-  defp integer_literal?(_), do: false
-
-  defp add_key(set, node) do
-    case node_key(node) do
-      nil -> set
-      key -> MapSet.put(set, key)
+  # A block: either a module body (contains clauses → group + lift) or an
+  # ordinary sequence (recurse so nested modules are still reached).
+  defp transform_node({:__block__, meta, statements}, ctx) do
+    if Enum.any?(statements, &clause_signature/1) do
+      {statements, ctx} = transform_statements(statements, ctx)
+      {{:__block__, meta, statements}, ctx}
+    else
+      {statements, ctx} = Enum.map_reduce(statements, ctx, &transform_node/2)
+      {{:__block__, meta, statements}, ctx}
     end
   end
 
-  # Keys of every node that lives inside a `when` guard. A guard clause is
-  # `{:when, _, [head | guards]}`; the head holds patterns (never our operators),
-  # the rest is guard code where a `case` cannot go.
-  defp guard_keys(quoted) do
-    {_ast, keys} =
-      Macro.prewalk(quoted, MapSet.new(), fn
-        {:when, _meta, [_head | guards]} = node, acc when guards != [] ->
-          {node, Enum.reduce(guards, acc, &collect_keys/2)}
+  # Anything else is an expression: mutate operators in place.
+  defp transform_node(node, ctx), do: in_place(node, ctx)
 
-        node, acc ->
-          {node, acc}
-      end)
+  defp transform_do_keyword(keyword, ctx) do
+    Enum.map_reduce(keyword, ctx, fn
+      {{:__block__, _, [:do]} = key, body}, ctx ->
+        {body, ctx} = transform_body(body, ctx)
+        {{key, body}, ctx}
 
-    keys
+      {:do, body}, ctx ->
+        {body, ctx} = transform_body(body, ctx)
+        {{:do, body}, ctx}
+
+      entry, ctx ->
+        {entry, ctx}
+    end)
   end
 
-  defp collect_keys(ast, acc) do
-    {_ast, keys} =
-      Macro.prewalk(ast, acc, fn node, inner ->
-        case node_key(node) do
-          nil -> {node, inner}
-          key -> {node, MapSet.put(inner, key)}
+  defp transform_body({:__block__, meta, statements}, ctx) do
+    {statements, ctx} = transform_statements(statements, ctx)
+    {{:__block__, meta, statements}, ctx}
+  end
+
+  defp transform_body(single, ctx) do
+    case transform_statements([single], ctx) do
+      {[one], ctx} -> {one, ctx}
+      {many, ctx} -> {{:__block__, [], many}, ctx}
+    end
+  end
+
+  defp transform_statements(statements, ctx) do
+    statements
+    |> chunk_clause_runs()
+    |> Enum.flat_map_reduce(ctx, fn
+      {:clauses, clauses}, ctx ->
+        transform_clause_group(clauses, ctx)
+
+      {:other, statement}, ctx ->
+        {node, ctx} = transform_node(statement, ctx)
+        {[node], ctx}
+    end)
+  end
+
+  # Group maximal runs of consecutive clauses that share {visibility, name, arity}.
+  defp chunk_clause_runs(statements) do
+    statements
+    |> Enum.reduce([], fn statement, acc ->
+      case {clause_signature(statement), acc} do
+        {nil, acc} ->
+          [{:other, statement} | acc]
+
+        {sig, [{:clauses, sig, clauses} | rest]} ->
+          [{:clauses, sig, [statement | clauses]} | rest]
+
+        {sig, acc} ->
+          [{:clauses, sig, [statement]} | acc]
+      end
+    end)
+    |> Enum.map(fn
+      {:clauses, _sig, clauses} -> {:clauses, Enum.reverse(clauses)}
+      other -> other
+    end)
+    |> Enum.reverse()
+  end
+
+  # === clause groups: lift, or mutate bodies in place ========================
+
+  defp transform_clause_group(clauses, ctx) do
+    {_vis, name, _arity} = clause_signature(hd(clauses))
+    guard_muts = guard_mutations(clauses, ctx.mutators)
+
+    if guard_muts != [] and liftable?(name, clauses) do
+      lift(clauses, guard_muts, ctx)
+    else
+      Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
+        {clause, ctx} = in_place(clause, ctx)
+        {[clause], ctx}
+      end)
+    end
+  end
+
+  defp lift(clauses, guard_muts, ctx) do
+    {vis, name, arity} = clause_signature(hd(clauses))
+    base = "__mutare_#{name}_#{arity}"
+
+    # The unchanged copy carries the in-place selectors (body mutations).
+    {orig_clauses, ctx} =
+      Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
+        {clause, ctx} = in_place(clause, ctx)
+        {[clause], ctx}
+      end)
+
+    orig_defs = Enum.map(orig_clauses, &rename_clause(&1, :"#{base}_orig", :defp))
+
+    # One private copy per guard mutation (original bodies, one guard changed).
+    {mut_results, ctx} =
+      Enum.map_reduce(guard_muts, ctx, fn mut, ctx ->
+        id = ctx.next_id
+        ctx = %{ctx | next_id: id + 1, sites: [lifted_site(id, mut, ctx.file) | ctx.sites]}
+
+        defs =
+          clauses
+          |> apply_guard_mutation(mut)
+          |> Enum.map(&rename_clause(&1, :"#{base}_m#{id}", :defp))
+
+        {{id, defs}, ctx}
+      end)
+
+    mut_ids = Enum.map(mut_results, &elem(&1, 0))
+    mut_defs = Enum.flat_map(mut_results, &elem(&1, 1))
+    dispatcher = build_dispatcher(vis, name, arity, mut_ids, base)
+
+    {[dispatcher | orig_defs] ++ mut_defs, ctx}
+  end
+
+  # def f(mutare_arg1, ...) do
+  #   case :persistent_term.get(:mutare_active, 0) do
+  #     <id> -> <base>_m<id>(mutare_arg1, ...) ; _ -> <base>_orig(mutare_arg1, ...)
+  #   end
+  # end
+  defp build_dispatcher(vis, name, arity, mut_ids, base) do
+    args = dispatcher_args(arity)
+    selector = {{:., [], [:persistent_term, :get]}, [], [@selector_key, @baseline]}
+
+    mut_clauses =
+      Enum.map(mut_ids, fn id -> {:->, [], [[id], {:"#{base}_m#{id}", [], args}]} end)
+
+    catch_all = {:->, [], [[{:_, [], nil}], {:"#{base}_orig", [], args}]}
+    body = {:case, [], [selector, [do: mut_clauses ++ [catch_all]]]}
+
+    {vis, [], [{name, [], args}, [do: body]]}
+  end
+
+  defp dispatcher_args(0), do: []
+  defp dispatcher_args(arity), do: Enum.map(1..arity, &{:"mutare_arg#{&1}", [], nil})
+
+  defp rename_clause({_vis, meta, [head | rest]}, new_name, new_vis) do
+    {new_vis, meta, [rename_head(head, new_name) | rest]}
+  end
+
+  defp rename_head({:when, meta, [call | guards]}, new_name),
+    do: {:when, meta, [rename_call(call, new_name) | guards]}
+
+  defp rename_head(call, new_name), do: rename_call(call, new_name)
+
+  defp rename_call({_name, meta, args}, new_name), do: {new_name, meta, args}
+
+  # === guard mutations =======================================================
+
+  # Every operator the mutators recognise, in every clause's guard. Delivered by
+  # lifting (a guard can't host a `case`), but the mutation set is the same swap
+  # logic the in-place mutators use — and operator swaps stay guard-safe.
+  defp guard_mutations(clauses, mutators) do
+    clauses
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {clause, index} ->
+      clause
+      |> guards_of()
+      |> Enum.flat_map(fn guard ->
+        {_guard, muts} =
+          Macro.postwalk(guard, [], fn node, acc ->
+            extra =
+              node
+              |> mutations(mutators)
+              |> Enum.map(fn {mutator, mutated} ->
+                %{
+                  clause_index: index,
+                  key: node_key(node),
+                  original: node,
+                  mutated: mutated,
+                  mutator: mutator,
+                  range: Sourceror.get_range(node)
+                }
+              end)
+
+            {node, acc ++ extra}
+          end)
+
+        muts
+      end)
+    end)
+  end
+
+  defp guards_of({_vis, _meta, [{:when, _, [_call | guards]} | _rest]}), do: guards
+  defp guards_of(_), do: []
+
+  defp apply_guard_mutation(clauses, mut) do
+    List.update_at(clauses, mut.clause_index, fn
+      {vis, meta, [{:when, when_meta, [call | guards]} | rest]} ->
+        guards = Enum.map(guards, &replace_node(&1, mut.key, mut.mutated))
+        {vis, meta, [{:when, when_meta, [call | guards]} | rest]}
+    end)
+  end
+
+  defp replace_node(ast, key, replacement) do
+    Macro.prewalk(ast, fn node ->
+      if node_key(node) == key, do: replacement, else: node
+    end)
+  end
+
+  defp lifted_site(id, mut, file) do
+    %Site{
+      id: id,
+      file: file,
+      line: mut.range.start[:line],
+      column: mut.range.start[:column],
+      range: mut.range,
+      mutator: mut.mutator.name(),
+      kind: :lifted,
+      original_op: elem(mut.original, 0),
+      mutated_op: elem(mut.mutated, 0),
+      original_code: Sourceror.to_string(mut.original),
+      mutated_code: Sourceror.to_string(mut.mutated),
+      original_node: mut.original,
+      mutated_node: mut.mutated
+    }
+  end
+
+  # === clause signatures & liftability ======================================
+
+  defp clause_signature({vis, _meta, [head | _rest]}) when vis in [:def, :defp] do
+    case name_arity(head) do
+      {name, arity} -> {vis, name, arity}
+      :error -> nil
+    end
+  end
+
+  defp clause_signature(_), do: nil
+
+  defp name_arity({:when, _, [call | _guards]}), do: name_arity(call)
+  defp name_arity({name, _, args}) when is_atom(name) and is_list(args), do: {name, length(args)}
+  defp name_arity({name, _, context}) when is_atom(name) and is_atom(context), do: {name, 0}
+  defp name_arity(_), do: :error
+
+  # We can only lift functions whose name is a plain identifier (operator names
+  # like `<>` can't be spelled as `__mutare_<>_2_orig(...)`) and which have no
+  # default arguments (those expand to multiple arities; normalize-then-lift is
+  # later work). Such groups fall back to in-place only.
+  defp liftable?(name, clauses) do
+    Regex.match?(~r/\A[a-z_][a-zA-Z0-9_]*[?!]?\z/, Atom.to_string(name)) and
+      not Enum.any?(clauses, &default_args?/1)
+  end
+
+  defp default_args?({_vis, _meta, [head | _rest]}) do
+    head |> head_args() |> Enum.any?(&match?({:\\, _, _}, &1))
+  end
+
+  defp head_args({:when, _, [call | _guards]}), do: head_args(call)
+  defp head_args({_name, _, args}) when is_list(args), do: args
+  defp head_args(_), do: []
+
+  # === in-place transform (M1) ===============================================
+
+  # Apply the in-place selector transform to one subtree, threading ids/sites.
+  defp in_place(node, ctx) do
+    ranges =
+      node
+      |> capture_ranges(ctx.mutators)
+      |> Map.drop(MapSet.to_list(unsafe_keys(node)))
+
+    {transformed, {next_id, sites}} =
+      Macro.postwalk(node, {ctx.next_id, ctx.sites}, fn current, {id, sites} = acc ->
+        case Map.fetch(ranges, node_key(current)) do
+          {:ok, %{range: range, node: original}} ->
+            wrap_site(current, original, range, ctx.file, ctx.mutators, id, sites)
+
+          :error ->
+            {current, acc}
         end
       end)
 
-    keys
-  end
-
-  # First pass over the untouched AST: record each site's source range, keyed by
-  # its (line, column) so we can recover it in the post-pass after children have
-  # been rewritten.
-  defp capture_ranges(quoted, mutators) do
-    {_ast, ranges} =
-      Macro.prewalk(quoted, %{}, fn node, acc ->
-        if site?(node, mutators) do
-          {node, Map.put(acc, node_key(node), %{range: Sourceror.get_range(node), node: node})}
-        else
-          {node, acc}
-        end
-      end)
-
-    ranges
+    {transformed, %{ctx | next_id: next_id, sites: sites}}
   end
 
   defp wrap_site(node, original_node, range, file, mutators, id, sites) do
@@ -217,7 +400,7 @@ defmodule Mutare.Transform do
       column: range.start[:column],
       range: range,
       mutator: mutator.name(),
-      kind: mutator.kind(),
+      kind: :in_place,
       original_op: original_op,
       mutated_op: mutated_op,
       original_code: Sourceror.to_string(original_node),
@@ -227,22 +410,111 @@ defmodule Mutare.Transform do
     }
   end
 
-  # (case :persistent_term.get(:mutare_active, 0) do
-  #    <id> -> <mutated> ; ... ; _ -> <default>
-  #  end)
+  # (case :persistent_term.get(:mutare_active, 0) do <id> -> <mutated> ; _ -> <default> end)
   #
-  # The `case` is wrapped in a single-expression block (i.e. parenthesised).
-  # Semantically transparent — and tail-position-preserving — but it makes the
-  # node render safely in *any* position. Without it, Sourceror's formatter
-  # crashes when a bare `case` lands as the value of a `key: value` pair in a
-  # map or keyword literal (e.g. `%{ms: case ... end}`).
+  # Wrapped in a single-expression block so it renders safely in any position
+  # (a bare `case` as a `key: value` value crashes Sourceror's formatter).
   defp build_case(default_node, mutant_clauses) do
-    selector =
-      {{:., [], [:persistent_term, :get]}, [], [@selector_key, @baseline]}
-
+    selector = {{:., [], [:persistent_term, :get]}, [], [@selector_key, @baseline]}
     catch_all = {:->, [], [[{:_, [], nil}], default_node]}
     case_node = {:case, [], [selector, [do: mutant_clauses ++ [catch_all]]]}
     {:__block__, [], [case_node]}
+  end
+
+  # === shared helpers ========================================================
+
+  # Sourceror represents a keyword-syntax key (`do:`, `else:`, but also `ms:`,
+  # `env:`, any `key: value`) as `{:__block__, [format: :keyword], [key]}`. The
+  # formatter crashes when such a pair's value becomes a `case`. We flip every
+  # keyword-format key back to a plain atom key, which renders fine everywhere.
+  # Metamutant only; the diff report patches the original source.
+  defp normalize_keyword_blocks(ast) do
+    Macro.prewalk(ast, fn
+      {{:__block__, meta, [key]}, value} = pair when is_atom(key) and is_list(meta) ->
+        if Keyword.get(meta, :format) == :keyword, do: {key, value}, else: pair
+
+      other ->
+        other
+    end)
+  end
+
+  defp unsafe_keys(quoted) do
+    MapSet.union(guard_keys(quoted), capture_arity_keys(quoted))
+  end
+
+  # Keys of operators inside `&fun/arity` captures, where `/` is an arity
+  # separator (not division). We must not catch `& &1 / 2`, so we only match a
+  # plain function reference over an integer literal.
+  defp capture_arity_keys(quoted) do
+    {_ast, keys} =
+      Macro.prewalk(quoted, MapSet.new(), fn
+        {:&, _meta, [{:/, _smeta, [left, right]} = slash]} = node, acc ->
+          if function_ref?(left) and integer_literal?(right) do
+            {node, add_key(acc, slash)}
+          else
+            {node, acc}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    keys
+  end
+
+  defp function_ref?({name, _meta, context}) when is_atom(name) and is_atom(context), do: true
+  defp function_ref?({{:., _, _}, _meta, args}) when is_list(args), do: true
+  defp function_ref?(_), do: false
+
+  defp integer_literal?(n) when is_integer(n), do: true
+  defp integer_literal?({:__block__, _meta, [n]}) when is_integer(n), do: true
+  defp integer_literal?(_), do: false
+
+  defp add_key(set, node) do
+    case node_key(node) do
+      nil -> set
+      key -> MapSet.put(set, key)
+    end
+  end
+
+  # Keys of every node inside a `when` guard — in-place must not touch those
+  # (a `case` is illegal in a guard); guard mutations are lifted instead.
+  defp guard_keys(quoted) do
+    {_ast, keys} =
+      Macro.prewalk(quoted, MapSet.new(), fn
+        {:when, _meta, [_head | guards]} = node, acc when guards != [] ->
+          {node, Enum.reduce(guards, acc, &collect_keys/2)}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    keys
+  end
+
+  defp collect_keys(ast, acc) do
+    {_ast, keys} =
+      Macro.prewalk(ast, acc, fn node, inner ->
+        case node_key(node) do
+          nil -> {node, inner}
+          key -> {node, MapSet.put(inner, key)}
+        end
+      end)
+
+    keys
+  end
+
+  defp capture_ranges(quoted, mutators) do
+    {_ast, ranges} =
+      Macro.prewalk(quoted, %{}, fn node, acc ->
+        if site?(node, mutators) do
+          {node, Map.put(acc, node_key(node), %{range: Sourceror.get_range(node), node: node})}
+        else
+          {node, acc}
+        end
+      end)
+
+    ranges
   end
 
   defp mutations(node, mutators) do

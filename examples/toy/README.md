@@ -12,14 +12,22 @@ mix mutare examples/toy
 Expected (abridged):
 
 ```
-mutare in examples/toy: 8 mutants across 1 file(s)
-...SSS..
+mutare in examples/toy: 12 mutants across 1 file(s)
+...SS.SS.S..
 
 lib/toy/cart.ex:21  [arithmetic, in-place]  SURVIVED
 -    amount - amount * percent / 100
 +    amount + amount * percent / 100
+
+lib/toy/cart.ex:20  [relational, lifted]  SURVIVED
+-  def apply_discount(amount, percent) when percent >= 0 and percent <= 100 do
++  def apply_discount(amount, percent) when percent >= 0 and percent < 100 do
+
+lib/toy/cart.ex:26  [relational, in-place]  SURVIVED
+-    subtotal >= @free_shipping_threshold
++    subtotal > @free_shipping_threshold
 ...
-mutation score: 62.5%  (5 killed, 3 survived, 8 total)
+mutation score: 58.3%  (7 killed, 5 survived, 12 total)
 ```
 
 Why those survive:
@@ -27,7 +35,10 @@ Why those survive:
 - `apply_discount/2` is only exercised with `percent: 0`, which zeroes the
   discount term — so `-`/`/` mutations there are indistinguishable from the
   original (**weak test data**).
+- The `when` guard in `apply_discount/2` is mutated via **function lifting**
+  (`[lifted]`): a `case` can't live in a guard, so Mutare duplicates the clause
+  and dispatches. Its bounds (`>= 0`, `<= 100`) are never tested away from the
+  `percent: 0` happy path, so the widening mutants survive (**missing boundary
+  tests**).
 - `free_shipping?/1` is never tested at/above the threshold, so `>= -> >` slips
   through (**missing boundary test**).
-- The `when` guard in `apply_discount/2` is **not** mutated — in-place mutators
-  skip guards (that's the lifted mechanism, a later milestone).
