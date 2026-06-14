@@ -45,6 +45,75 @@ defmodule Mutare.Site do
     poisoned: false
   ]
 
+  # === construction ==========================================================
+  #
+  # Named constructors own the struct's shape — how each field is derived from
+  # the mutation (op extraction, code rendering, location). `Mutare.Transform`
+  # decides *which* one to call from a node's position; it never stuffs fields.
+
+  @doc """
+  An in-place mutation: an operator swapped behind a selector `case` in a
+  function body. `range` locates the original node; `mutator` is the module
+  that produced `mutated_node`.
+  """
+  @spec in_place(pos_integer(), String.t(), map(), Macro.t(), Macro.t(), module()) :: t()
+  def in_place(id, file, range, original_node, mutated_node, mutator) do
+    replace(id, file, range, original_node, mutated_node, mutator, :in_place)
+  end
+
+  @doc """
+  A guard mutation, delivered by lifting (a `case` can't live in a `when`). Same
+  operator-swap shape as `in_place/6`, recorded as `:lifted`.
+  """
+  @spec lifted_guard(pos_integer(), String.t(), map(), Macro.t(), Macro.t(), module()) :: t()
+  def lifted_guard(id, file, range, original_node, mutated_node, mutator) do
+    replace(id, file, range, original_node, mutated_node, mutator, :lifted)
+  end
+
+  @doc """
+  A dropped function clause — a `:lifted`, `:delete` mutation. The clause is
+  removed entirely, so there is no mutated node, op, or code.
+  """
+  @spec clause_drop(pos_integer(), String.t(), map(), Macro.t()) :: t()
+  def clause_drop(id, file, range, clause_node) do
+    %__MODULE__{
+      id: id,
+      file: file,
+      line: range.start[:line],
+      column: range.start[:column],
+      range: range,
+      mutator: :clause_drop,
+      kind: :lifted,
+      operation: :delete,
+      original_op: nil,
+      mutated_op: nil,
+      original_code: Sourceror.to_string(clause_node),
+      mutated_code: "",
+      original_node: clause_node,
+      mutated_node: nil
+    }
+  end
+
+  # In-place and lifted-guard sites differ only in `kind`: both are an operator
+  # swap recorded with the original/mutated nodes, their ops, and rendered code.
+  defp replace(id, file, range, original_node, mutated_node, mutator, kind) do
+    %__MODULE__{
+      id: id,
+      file: file,
+      line: range.start[:line],
+      column: range.start[:column],
+      range: range,
+      mutator: mutator.name(),
+      kind: kind,
+      original_op: elem(original_node, 0),
+      mutated_op: elem(mutated_node, 0),
+      original_code: Sourceror.to_string(original_node),
+      mutated_code: Sourceror.to_string(mutated_node),
+      original_node: original_node,
+      mutated_node: mutated_node
+    }
+  end
+
   @doc "Human-readable one-liner, e.g. `relational  >= → >` or `clause_drop  (drop) <clause>`."
   @spec describe(t()) :: String.t()
   def describe(%__MODULE__{operation: :delete} = site) do

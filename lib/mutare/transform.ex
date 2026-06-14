@@ -372,42 +372,14 @@ defmodule Mutare.Transform do
     end)
   end
 
+  # Build the %Site{} for one lifted mutation. Transform owns the `mut` map's
+  # shape and picks the constructor; Site owns the struct fields.
   defp lifted_site(id, %{type: :guard} = mut, file) do
-    %Site{
-      id: id,
-      file: file,
-      line: mut.range.start[:line],
-      column: mut.range.start[:column],
-      range: mut.range,
-      mutator: mut.mutator.name(),
-      kind: :lifted,
-      operation: :replace,
-      original_op: elem(mut.original, 0),
-      mutated_op: elem(mut.mutated, 0),
-      original_code: Sourceror.to_string(mut.original),
-      mutated_code: Sourceror.to_string(mut.mutated),
-      original_node: mut.original,
-      mutated_node: mut.mutated
-    }
+    Site.lifted_guard(id, file, mut.range, mut.original, mut.mutated, mut.mutator)
   end
 
   defp lifted_site(id, %{type: :drop} = mut, file) do
-    %Site{
-      id: id,
-      file: file,
-      line: mut.range.start[:line],
-      column: mut.range.start[:column],
-      range: mut.range,
-      mutator: :clause_drop,
-      kind: :lifted,
-      operation: :delete,
-      original_op: nil,
-      mutated_op: nil,
-      original_code: Sourceror.to_string(mut.clause),
-      mutated_code: "",
-      original_node: mut.clause,
-      mutated_node: nil
-    }
+    Site.clause_drop(id, file, mut.range, mut.clause)
   end
 
   # === clause signatures & liftability ======================================
@@ -471,7 +443,7 @@ defmodule Mutare.Transform do
       original_node
       |> mutations(mutators)
       |> Enum.reduce({[], sites, id}, fn {mutator, mutated_node}, {clauses, sites, cur_id} ->
-        site = build_site(cur_id, file, range, original_node, mutated_node, mutator)
+        site = Site.in_place(cur_id, file, range, original_node, mutated_node, mutator)
 
         if cur_id in skip_ids do
           # Poisoned: record the site, but emit no clause (so it can't poison).
@@ -490,27 +462,6 @@ defmodule Mutare.Transform do
   end
 
   defp poison(%Site{} = site), do: %{site | poisoned: true}
-
-  defp build_site(id, file, range, original_node, mutated_node, mutator) do
-    {original_op, _, _} = original_node
-    {mutated_op, _, _} = mutated_node
-
-    %Site{
-      id: id,
-      file: file,
-      line: range.start[:line],
-      column: range.start[:column],
-      range: range,
-      mutator: mutator.name(),
-      kind: :in_place,
-      original_op: original_op,
-      mutated_op: mutated_op,
-      original_code: Sourceror.to_string(original_node),
-      mutated_code: Sourceror.to_string(mutated_node),
-      original_node: original_node,
-      mutated_node: mutated_node
-    }
-  end
 
   # (case :persistent_term.get(:mutare_active, 0) do <id> -> <mutated> ; _ -> <default> end)
   #
