@@ -23,30 +23,6 @@ defmodule Mutare.Coverage do
   # so it is legitimately undefined at compile time.
   @compile {:no_warn_undefined, :cover}
 
-  @doc """
-  The set of mutant ids whose selector line is covered by `coverdata_path`.
-
-  `metamutant_sources` are the rendered metamutant strings (one per file).
-  Returns `{:ok, MapSet.t()}`, or `{:error, reason}` if coverage is unavailable
-  (the caller should then run every mutant rather than skip any).
-  """
-  @spec covered_ids([String.t()], Path.t()) :: {:ok, MapSet.t()} | {:error, term()}
-  def covered_ids(metamutant_sources, coverdata_path) do
-    case hits(coverdata_path) do
-      {:ok, hits} ->
-        covered =
-          for {id, module_line} <- index(metamutant_sources),
-              MapSet.member?(hits, module_line),
-              into: MapSet.new(),
-              do: id
-
-        {:ok, covered}
-
-      error ->
-        error
-    end
-  end
-
   @doc "Merge selector indices for several metamutant sources: `%{id => {module, line}}`."
   @spec index([String.t()]) :: %{pos_integer() => {module(), pos_integer()}}
   def index(metamutant_sources) do

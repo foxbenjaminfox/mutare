@@ -26,16 +26,34 @@ defmodule Mutare.Runner.Probe do
   alias Mutare.{Coverage, Schema}
   alias Mutare.Sandbox.Command
 
-  @type selection :: :all | %{pos_integer() => [String.t()]}
+  @typedoc """
+  What the probe decided for one mutant:
+
+    * `{:run, test_args}` — its selector line is covered; run `mix test` with
+      these args (`[]` = whole suite, file-granular args otherwise).
+    * `:no_coverage` — no test covers its line; skip it and keep it out of the
+      score's denominator.
+  """
+  @type outcome :: {:run, [String.t()]} | :no_coverage
+
+  @typedoc """
+  What the probe decided for the whole run:
+
+    * `:run_all` — coverage is unusable or uncertain (couldn't read coverdata, or
+      not a single line registered a hit, which means `:cover` itself likely
+      failed). Run *every* mutant against the whole suite — never skip on doubt.
+    * `{:selective, outcomes}` — a per-mutant decision. `outcomes` is **total**:
+      every mutant id maps to an explicit `outcome`, so a `:no_coverage` mutant
+      is named, never implied by a missing key.
+  """
+  @type selection :: :run_all | {:selective, %{pos_integer() => outcome()}}
 
   @doc """
   Run the probe and build the per-mutant test selection.
 
-  Returns `{:ok, baseline_ms, selection}` where `selection` is either `:all`
-  (run every mutant against the whole suite) or `%{id => test_args}` — ids
-  present run with those `mix test` args (`[]` = whole suite); ids absent are
-  `:no_coverage`. A red probe means the baseline isn't green → `{:error,
-  :baseline_failed, output}`.
+  Returns `{:ok, baseline_ms, selection}` (see `t:selection/0` — either `:run_all`
+  or `{:selective, outcomes}`). A red probe means the baseline isn't green →
+  `{:error, :baseline_failed, output}`.
   """
   @spec run(Path.t(), Schema.t(), :coverage | :full) ::
           {:ok, non_neg_integer(), selection()} | {:error, :baseline_failed, String.t()}
@@ -49,16 +67,36 @@ defmodule Mutare.Runner.Probe do
 
     if status == 0 do
       coverdata = Path.join(sandbox, "cover/mutare.coverdata")
+      index = Coverage.index(Map.values(schema.metamutants))
 
       selection =
-        case Coverage.covered_ids(Map.values(schema.metamutants), coverdata) do
-          {:ok, covered} -> Map.new(covered, &{&1, []})
-          {:error, _reason} -> :all
+        case Coverage.hits(coverdata) do
+          {:ok, hits} -> whole_suite_selection(index, hits)
+          {:error, _reason} -> :run_all
         end
 
       {:ok, ms, selection}
     else
       {:error, :baseline_failed, output}
+    end
+  end
+
+  # Full mode: a covered mutant runs the whole suite (`[]`), the rest are
+  # `:no_coverage` — total over every mutant id. An empty hit set means `:cover`
+  # recorded nothing (it likely failed), not that everything is genuinely
+  # uncovered, so we don't skip the world — run everything instead.
+  defp whole_suite_selection(index, hits) do
+    if MapSet.size(hits) == 0 do
+      :run_all
+    else
+      outcomes =
+        Map.new(index, fn {id, module_line} ->
+          if MapSet.member?(hits, module_line),
+            do: {id, {:run, []}},
+            else: {id, :no_coverage}
+        end)
+
+      {:selective, outcomes}
     end
   end
 
@@ -75,22 +113,22 @@ defmodule Mutare.Runner.Probe do
           {:error, output} ->
             {:error, :baseline_failed, output}
 
-          # A coverdata read failed: coverage is uncertain. Run every covered
-          # mutant against the whole suite rather than risk skipping one whose
-          # only covering file we couldn't read (false :no_coverage).
+          # A coverdata read failed: coverage is uncertain. Run every mutant
+          # against the whole suite rather than risk a false `:no_coverage` for
+          # one whose only covering file we couldn't read.
           {:uncertain, ms} ->
-            {:ok, ms, :all}
+            {:ok, ms, :run_all}
 
           {:ok, ms, file_hits} ->
-            {:ok, ms, selection(index, file_hits)}
+            {:ok, ms, per_file_selection(index, file_hits)}
         end
     end
   end
 
-  # Run each test file with --cover (green-checked), collecting its hit set.
-  # A green run whose coverdata we can't read is `:uncertain` — we must not turn
-  # an unreadable file into an empty hit set, which would silently drop mutants
-  # to :no_coverage. Bail to conservative (:all) execution instead.
+  # Run each test file with --cover (green-checked), collecting its hit set. A
+  # green run whose coverdata we can't read is `:uncertain` — we must not turn an
+  # unreadable file into an empty hit set, which would silently drop mutants to
+  # `:no_coverage`. Bail to conservative (`:run_all`) execution instead.
   defp run_files(sandbox, files) do
     Enum.reduce_while(files, {:ok, 0, %{}}, fn file, {:ok, ms, acc} ->
       name = cover_name(file)
@@ -108,17 +146,23 @@ defmodule Mutare.Runner.Probe do
     end)
   end
 
-  # Build %{id => covering files}. If nothing was covered at all, cover probably
-  # failed — fall back to running everything (:all) rather than skip the world.
-  defp selection(index, file_hits) do
+  # Per mutant, the test files that cover its line — total over every mutant id,
+  # with `:no_coverage` named explicitly (never implied by a missing key). If not
+  # a single file covered anything, `:cover` likely failed (rather than the suite
+  # genuinely covering nothing), so run everything instead of skipping the world.
+  defp per_file_selection(index, file_hits) do
     if Enum.all?(file_hits, fn {_file, hits} -> MapSet.size(hits) == 0 end) do
-      :all
+      :run_all
     else
-      for {id, module_line} <- index,
-          files = covering_files(file_hits, module_line),
-          files != [],
-          into: %{},
-          do: {id, files}
+      outcomes =
+        Map.new(index, fn {id, module_line} ->
+          case covering_files(file_hits, module_line) do
+            [] -> {id, :no_coverage}
+            files -> {id, {:run, files}}
+          end
+        end)
+
+      {:selective, outcomes}
     end
   end
 

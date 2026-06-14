@@ -174,12 +174,21 @@ defmodule Mutare.Runner do
     %Result{site: site, status: :ignored, duration_ms: 0, output: nil}
   end
 
-  defp classify(sandbox, site, :all, cap), do: run_mutant(sandbox, site, [], cap)
+  defp classify(sandbox, site, :run_all, cap), do: run_mutant(sandbox, site, [], cap)
 
-  defp classify(sandbox, site, selection, cap) when is_map(selection) do
-    case Map.fetch(selection, site.id) do
-      {:ok, test_args} -> run_mutant(sandbox, site, test_args, cap)
-      :error -> %Result{site: site, status: :no_coverage, duration_ms: 0, output: nil}
+  defp classify(sandbox, site, {:selective, outcomes}, cap) do
+    case Map.fetch(outcomes, site.id) do
+      {:ok, {:run, test_args}} ->
+        run_mutant(sandbox, site, test_args, cap)
+
+      {:ok, :no_coverage} ->
+        %Result{site: site, status: :no_coverage, duration_ms: 0, output: nil}
+
+      # `outcomes` is total over every mutant id, so this is unreachable in
+      # practice; a missing id is a bug, not a no-coverage signal — run it rather
+      # than silently drop a mutant from the score.
+      :error ->
+        run_mutant(sandbox, site, [], cap)
     end
   end
 

@@ -165,6 +165,16 @@ Caveat: `:coverage` runs each test file *in isolation* for the probe, so a suite
 with cross-file dependencies (a test relying on state another file set up) can
 fail the baseline; use `:full` there.
 
+The probe's decision is **typed**, not an overloaded value (`Mutare.Runner.Probe`):
+`selection` is `:run_all | {:selective, %{id => outcome}}`, where `outcome` is
+`{:run, test_args} | :no_coverage`. The `{:selective, _}` map is **total** — every
+mutant id has an explicit outcome, so `:no_coverage` is *named*, never implied by a
+missing key. `:run_all` is the single conservative fallback: it covers an unreadable
+coverdata (don't risk a false `:no_coverage` for a file we couldn't read) *and* an
+all-empty hit set (`:cover` recorded nothing → it likely failed, so don't skip the
+world). Both modes share it. The rule throughout: never skip on doubt — run
+everything rather than silently drop a mutant from the score's denominator.
+
 ### Equivalent mutants `[partial]`
 Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the
 arithmetic mutator skips the multiplicative-identity swap on a right operand
