@@ -24,14 +24,17 @@ See [`DESIGN.md`](DESIGN.md) for the full rationale and roadmap.
 - baseline-first execution, kill/survive classification
 - survivors reported as one-line diffs at `file:line`, plus a mutation score
 
-**Milestone 2 — function lifting + dispatcher** (in progress):
+**Milestone 2 — function lifting + dispatcher.** For mutations that touch
+*dispatch*, the clause group is duplicated and a bare catch-all dispatcher routes
+to the active copy by id:
 
-- `when` **guard mutations**, delivered by duplicating the clause group and
-  dispatching to the active copy — a `case` can't live in a guard
-- coexists with in-place selectors (which still apply inside the lifted copies)
+- **guard mutations** — operator swaps inside `when` (a `case` can't live in a
+  guard)
+- **clause-drop** — remove one clause of a multi-clause function
+- coexists with in-place selectors, which still apply inside the lifted `__orig`
+  copy; the public `f/arity` is unchanged at the module boundary
 
-Clause-drop, the coverage probe, parallel workers, timeouts and `--since` are
-later milestones.
+The coverage probe, parallel workers, timeouts and `--since` are later milestones.
 
 ## Usage
 

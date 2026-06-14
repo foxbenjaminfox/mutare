@@ -15,12 +15,13 @@ defmodule Mutare.Site do
           range: map() | nil,
           mutator: atom(),
           kind: :in_place | :lifted,
-          original_op: atom(),
-          mutated_op: atom(),
+          operation: :replace | :delete,
+          original_op: atom() | nil,
+          mutated_op: atom() | nil,
           original_code: String.t(),
           mutated_code: String.t(),
           original_node: Macro.t(),
-          mutated_node: Macro.t()
+          mutated_node: Macro.t() | nil
         }
 
   defstruct [
@@ -36,11 +37,16 @@ defmodule Mutare.Site do
     :original_code,
     :mutated_code,
     :original_node,
-    :mutated_node
+    :mutated_node,
+    operation: :replace
   ]
 
-  @doc "Human-readable one-liner, e.g. `relational  >= → >`."
+  @doc "Human-readable one-liner, e.g. `relational  >= → >` or `clause_drop  (drop) <clause>`."
   @spec describe(t()) :: String.t()
+  def describe(%__MODULE__{operation: :delete} = site) do
+    "#{site.mutator}  (drop) #{site.original_code}"
+  end
+
   def describe(%__MODULE__{} = site) do
     "#{site.mutator}  #{site.original_code} → #{site.mutated_code}"
   end

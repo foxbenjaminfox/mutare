@@ -27,6 +27,14 @@ defmodule Mutare.Report do
 
   @doc "A `-`/`+` diff of the line(s) the mutation touches."
   @spec diff(Site.t(), String.t()) :: String.t()
+  def diff(%Site{operation: :delete} = site, source) do
+    # Clause-drop: the whole clause is removed, so show its lines as deletions.
+    lines = String.split(source, "\n")
+
+    site.range.start[:line]..site.range.end[:line]
+    |> Enum.map_join("\n", &("-" <> line_at(lines, &1)))
+  end
+
   def diff(%Site{} = site, source) do
     patched = patch(site, source)
     original_lines = String.split(source, "\n")

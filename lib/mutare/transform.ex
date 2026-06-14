@@ -64,6 +64,7 @@ defmodule Mutare.Transform do
       file: Keyword.get(opts, :file, "nofile"),
       mutators: Keyword.get(opts, :mutators, @default_mutators),
       next_id: Keyword.get(opts, :start_id, 1),
+      group: 0,
       sites: []
     }
 
@@ -170,10 +171,10 @@ defmodule Mutare.Transform do
 
   defp transform_clause_group(clauses, ctx) do
     {_vis, name, _arity} = clause_signature(hd(clauses))
-    guard_muts = guard_mutations(clauses, ctx.mutators)
+    lifted_muts = lifted_mutations(clauses, ctx.mutators)
 
-    if guard_muts != [] and liftable?(name, clauses) do
-      lift(clauses, guard_muts, ctx)
+    if lifted_muts != [] and liftable?(name, clauses) do
+      lift(clauses, lifted_muts, ctx)
     else
       Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
         {clause, ctx} = in_place(clause, ctx)
@@ -182,9 +183,28 @@ defmodule Mutare.Transform do
     end
   end
 
-  defp lift(clauses, guard_muts, ctx) do
+  # All lifted mutations for a clause group: guard operator swaps + clause drops.
+  defp lifted_mutations(clauses, mutators) do
+    guard_mutations(clauses, mutators) ++ clause_drop_mutations(clauses)
+  end
+
+  # Drop one clause of a multi-clause function. Inputs the dropped clause handled
+  # now fall to a later clause (or raise FunctionClauseError) — killed if tested.
+  defp clause_drop_mutations(clauses) when length(clauses) < 2, do: []
+
+  defp clause_drop_mutations(clauses) do
+    clauses
+    |> Enum.with_index()
+    |> Enum.map(fn {clause, index} ->
+      %{type: :drop, clause_index: index, clause: clause, range: Sourceror.get_range(clause)}
+    end)
+  end
+
+  defp lift(clauses, lifted_muts, ctx) do
     {vis, name, arity} = clause_signature(hd(clauses))
-    base = "__mutare_#{name}_#{arity}"
+    group = ctx.group + 1
+    ctx = %{ctx | group: group}
+    base = base_name(name, arity, group)
 
     # The unchanged copy carries the in-place selectors (body mutations).
     {orig_clauses, ctx} =
@@ -195,15 +215,15 @@ defmodule Mutare.Transform do
 
     orig_defs = Enum.map(orig_clauses, &rename_clause(&1, :"#{base}_orig", :defp))
 
-    # One private copy per guard mutation (original bodies, one guard changed).
+    # One private copy per lifted mutation (original bodies, one change applied).
     {mut_results, ctx} =
-      Enum.map_reduce(guard_muts, ctx, fn mut, ctx ->
+      Enum.map_reduce(lifted_muts, ctx, fn mut, ctx ->
         id = ctx.next_id
         ctx = %{ctx | next_id: id + 1, sites: [lifted_site(id, mut, ctx.file) | ctx.sites]}
 
         defs =
           clauses
-          |> apply_guard_mutation(mut)
+          |> apply_lifted_mutation(mut)
           |> Enum.map(&rename_clause(&1, :"#{base}_m#{id}", :defp))
 
         {{id, defs}, ctx}
@@ -237,6 +257,16 @@ defmodule Mutare.Transform do
   defp dispatcher_args(0), do: []
   defp dispatcher_args(arity), do: Enum.map(1..arity, &{:"mutare_arg#{&1}", [], nil})
 
+  # Private base name for a lifted group. The trailing `g<group>` makes it unique
+  # even across non-consecutive clause groups of the same name/arity; `?`/`!`
+  # (valid only at the end of a function name) are replaced so they can sit mid-
+  # identifier in `<base>_orig` / `<base>_m<id>`. The public dispatcher keeps the
+  # real name (including any `?`/`!`).
+  defp base_name(name, arity, group) do
+    sanitized = name |> Atom.to_string() |> String.replace(["?", "!"], "_")
+    "__mutare_#{sanitized}_#{arity}_g#{group}"
+  end
+
   defp rename_clause({_vis, meta, [head | rest]}, new_name, new_vis) do
     {new_vis, meta, [rename_head(head, new_name) | rest]}
   end
@@ -267,6 +297,7 @@ defmodule Mutare.Transform do
               |> mutations(mutators)
               |> Enum.map(fn {mutator, mutated} ->
                 %{
+                  type: :guard,
                   clause_index: index,
                   key: node_key(node),
                   original: node,
@@ -287,6 +318,12 @@ defmodule Mutare.Transform do
   defp guards_of({_vis, _meta, [{:when, _, [_call | guards]} | _rest]}), do: guards
   defp guards_of(_), do: []
 
+  defp apply_lifted_mutation(clauses, %{type: :guard} = mut),
+    do: apply_guard_mutation(clauses, mut)
+
+  defp apply_lifted_mutation(clauses, %{type: :drop} = mut),
+    do: List.delete_at(clauses, mut.clause_index)
+
   defp apply_guard_mutation(clauses, mut) do
     List.update_at(clauses, mut.clause_index, fn
       {vis, meta, [{:when, when_meta, [call | guards]} | rest]} ->
@@ -301,7 +338,7 @@ defmodule Mutare.Transform do
     end)
   end
 
-  defp lifted_site(id, mut, file) do
+  defp lifted_site(id, %{type: :guard} = mut, file) do
     %Site{
       id: id,
       file: file,
@@ -310,12 +347,32 @@ defmodule Mutare.Transform do
       range: mut.range,
       mutator: mut.mutator.name(),
       kind: :lifted,
+      operation: :replace,
       original_op: elem(mut.original, 0),
       mutated_op: elem(mut.mutated, 0),
       original_code: Sourceror.to_string(mut.original),
       mutated_code: Sourceror.to_string(mut.mutated),
       original_node: mut.original,
       mutated_node: mut.mutated
+    }
+  end
+
+  defp lifted_site(id, %{type: :drop} = mut, file) do
+    %Site{
+      id: id,
+      file: file,
+      line: mut.range.start[:line],
+      column: mut.range.start[:column],
+      range: mut.range,
+      mutator: :clause_drop,
+      kind: :lifted,
+      operation: :delete,
+      original_op: nil,
+      mutated_op: nil,
+      original_code: Sourceror.to_string(mut.clause),
+      mutated_code: "",
+      original_node: mut.clause,
+      mutated_node: nil
     }
   end
 

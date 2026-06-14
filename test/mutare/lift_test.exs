@@ -47,23 +47,44 @@ defmodule Mutare.LiftTest do
       {meta, _} = Mutare.transform_string(@source)
 
       assert meta =~ "def classify(mutare_arg1) do"
-      assert meta =~ "defp __mutare_classify_1_orig"
-      assert meta =~ "defp __mutare_classify_1_m"
+      assert meta =~ ~r/defp __mutare_classify_1_g\d+_orig/
+      assert meta =~ ~r/defp __mutare_classify_1_g\d+_m\d+/
 
-      # classify guard >= -> {>, <=}, bump guard > -> {>=, <} = 4 lifted;
-      # bump body n + 1 -> n - 1 = 1 in-place.
-      assert Enum.count(sites, &(&1.kind == :lifted)) == 4
+      # Per function (each 2 clauses, clause 1 guarded): 2 guard swaps + 2 clause
+      # drops = 4 lifted. Plus bump's body `n + 1` in place.
+      assert Enum.count(sites, &(&1.operation == :replace and &1.kind == :lifted)) == 4
+      assert Enum.count(sites, &(&1.mutator == :clause_drop)) == 4
 
       assert [%Site{kind: :in_place, original_op: :+}] =
                Enum.filter(sites, &(&1.kind == :in_place))
     end
 
-    test "does NOT lift an unguarded multi-clause function (M2a scope)" do
+    test "lifts an unguarded multi-clause function for clause-drop (M2b)" do
       {meta, sites} =
         Mutare.transform_string("defmodule M do\n  def g(0), do: :z\n  def g(_), do: :o\nend\n")
 
-      refute meta =~ "__mutare_g"
-      assert sites == []
+      assert meta =~ "def g(mutare_arg1) do"
+      assert meta =~ ~r/defp __mutare_g_1_g\d+_orig/
+      # two clauses → two clause-drop mutants, no guard mutants
+      assert Enum.count(sites, &(&1.mutator == :clause_drop)) == 2
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "lifts functions whose names end in ? or ! (sanitized private names)" do
+      source = """
+      defmodule Mutare.OkFixture do
+        def ok?(n) when n > 0, do: true
+        def ok?(_), do: false
+      end
+      """
+
+      {meta, _sites} = Mutare.transform_string(source)
+
+      # public dispatcher keeps `ok?`; private copies sanitize the `?`
+      assert meta =~ "def ok?(mutare_arg1) do"
+      refute meta =~ ~r/defp __mutare_ok\?/
+      assert {:ok, _} = Code.string_to_quoted(meta)
+      assert [{_mod, _}] = Code.compile_string(meta)
     end
 
     test "falls back to in-place (no lift) for default args and operator names" do
@@ -120,6 +141,27 @@ defmodule Mutare.LiftTest do
     end
   end
 
+  describe "clause drop (M2b)" do
+    defp drop_id(sites, line) do
+      site = Enum.find(sites, &(&1.mutator == :clause_drop and &1.line == line))
+      assert site, "no clause-drop site on line #{line}"
+      site.id
+    end
+
+    test "dropping a clause sends its inputs to a later clause", %{sites: sites} do
+      # drop `def classify(n) when n >= 0` (line 2)
+      Selector.put(drop_id(sites, 2))
+      assert F.classify(5) == :neg
+    end
+
+    test "dropping the catch-all makes the function non-exhaustive", %{sites: sites} do
+      # drop `def classify(_)` (line 3)
+      Selector.put(drop_id(sites, 3))
+      assert F.classify(5) == :nonneg
+      assert_raise FunctionClauseError, fn -> F.classify(-1) end
+    end
+  end
+
   test "report renders a lifted guard mutant as a one-line diff", %{sites: sites} do
     site =
       Enum.find(sites, &(&1.kind == :lifted and &1.original_op == :>= and &1.mutated_op == :>))
@@ -127,5 +169,12 @@ defmodule Mutare.LiftTest do
     assert Report.diff(site, @source) ==
              "-  def classify(n) when n >= 0, do: :nonneg\n" <>
                "+  def classify(n) when n > 0, do: :nonneg"
+  end
+
+  test "report renders a clause-drop mutant as removed lines", %{sites: sites} do
+    site = Enum.find(sites, &(&1.mutator == :clause_drop and &1.line == 3))
+
+    assert Report.header(site) == "lift.ex:3  [clause_drop, lifted]  SURVIVED"
+    assert Report.diff(site, @source) == "-  def classify(_), do: :neg"
   end
 end

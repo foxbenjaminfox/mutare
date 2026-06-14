@@ -30,22 +30,43 @@ metadata onto every injected node. Decide when building M3.
 
 ### Keyword-`do:` normalization (Sourceror workaround) `[done, watch]`
 Sourceror's formatter raises when rendering `def f, do: <case>` (keyword block
-whose value is a multi-line `case`). `Mutare.Transform.normalize_do_blocks/1`
-flips every do-family keyword block to block form before rendering. Metamutant
-only; the report is unaffected. Keep an eye on Sourceror releases in case this
-becomes unnecessary.
+whose value is a multi-line `case`). `Mutare.Transform.normalize_keyword_blocks/1`
+flips every keyword-format key back to a plain atom key before rendering.
+Metamutant only; the report is unaffected. Keep an eye on Sourceror releases in
+case this becomes unnecessary.
 
-### Non-body operator positions `[M2 for guards/clauses]`
-- **Guards:** in-place mutators now skip operators inside `when` (fixed — a
-  `case` in a guard is a compile error and would poison the whole build).
-  Mutating guards properly is the **lifted** mechanism in M2.
-- **Module-attribute expressions** (`@x 1 + 2`): currently wrapped. They compile
+### Non-body operator positions
+- **Guards:** mutated via lifting (M2) — operators in a `when` are swapped in a
+  duplicated clause group, since a `case` can't live in a guard. In-place still
+  skips them.
+- **Module-attribute expressions** (`@x 1 + 2`): wrapped in place. They compile
   (persistent_term reads the default at compile time → original) but the mutant
   is frozen at compile time and can never activate — an inert/equivalent mutant.
   Harmless but wasteful; could be excluded like guards.
-- **Default arg values** (`def f(a \\ b + 1)`): currently mutated; compiles and
-  is evaluated at call time, so it's a live mutant. Design says normalize
-  defaults away before lifting — relevant in M2.
+- **Default arg values** (`def f(a \\ b + 1)`): mutated in place; live mutant.
+  Note such functions are *not lifted* (defaults expand to multiple arities;
+  normalize-then-lift is deferred), so they get no guard/clause-drop mutants.
+
+### Function lifting (M2): sharp edges `[various]`
+- **Recursion bounces through the dispatcher.** A self-call inside a lifted copy
+  hits the public dispatcher and re-dispatches — correct, LCO survives, but ~2×
+  the calls. Self-call redirection (point self-calls at the active copy) is
+  deferred (DESIGN open question / v2).
+- **Error provenance shifts.** `FunctionClauseError` now raises from the lifted
+  private fn (`__mutare_f_1_g3_orig`), so its message names that, not `f`.
+  Irrelevant to kill/survive; mildly ugly in raw error output.
+- **`@doc`/`@spec`/`@impl`** ride on the public dispatcher because we emit it
+  *first* in the lifted group (attributes attach to the next def). Private copies
+  are `defp` (no docs needed). Not exhaustively tested across attribute shapes.
+- **Not lifted (fall back to in-place):** functions with default args, and
+  operator-named functions (`def a ~> b` — can't be spelled `__mutare_~>_2_…`).
+- **Private names** are `__mutare_<name>_<arity>_g<group>_{orig,m<id>}`: the
+  `g<group>` counter keeps them unique even for non-consecutive same-name clause
+  groups, and `?`/`!` (legal only at a name's end) are replaced so they can sit
+  mid-identifier. The public dispatcher keeps the real name.
+- **Lifting duplicates whole functions** (K+1 copies for K lifted mutants), so
+  code size / single-compile time grows with mutation density on overloaded
+  functions — the accepted cost (first-order ⇒ no copy sharing).
 
 ### No timeouts `[M4]`
 A mutation can turn a terminating loop infinite; a mutant run would hang. Per-

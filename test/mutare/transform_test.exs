@@ -80,17 +80,18 @@ defmodule Mutare.TransformTest do
 
     {meta, sites} = Mutare.transform_string(source)
 
-    # Guards are lifted: >= -> {>, <=} and < -> {<=, >}; the body `+` is in-place.
-    lifted = Enum.filter(sites, &(&1.kind == :lifted))
-    assert Enum.frequencies_by(lifted, & &1.original_op) == %{:>= => 2, :< => 2}
+    # Guards are lifted: >= -> {>, <=} and < -> {<=, >} (operation :replace).
+    guards = Enum.filter(sites, &(&1.kind == :lifted and &1.operation == :replace))
+    assert Enum.frequencies_by(guards, & &1.original_op) == %{:>= => 2, :< => 2}
 
+    # The body `+` stays in-place.
     assert [%Site{kind: :in_place, mutator: :arithmetic, original_op: :+}] =
              Enum.filter(sites, &(&1.kind == :in_place))
 
     # A `case` must never appear inside a guard (that would compile-poison).
     refute meta =~ "when (case"
     refute meta =~ "when case"
-    assert meta =~ "__mutare_f_1_orig"
+    assert meta =~ ~r/__mutare_f_1_g\d+_orig/
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
