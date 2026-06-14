@@ -69,4 +69,21 @@ defmodule Mutare.TransformTest do
     assert meta |> String.split(":persistent_term.get") |> length() == 3
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
+
+  test "operators inside `when` guards are not mutated (would compile-poison)" do
+    source = """
+    defmodule G do
+      def f(x) when x >= 0 and x < 100, do: x + 1
+      def f(_), do: 0
+    end
+    """
+
+    {meta, sites} = Mutare.transform_string(source)
+
+    # Only the body `x + 1` is mutated; the guard's >= and < are skipped.
+    assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
+    # And the metamutant must actually compile (no `case` in a guard).
+    assert {:ok, _} = Code.string_to_quoted(meta)
+    refute meta =~ "when (case"
+  end
 end

@@ -55,7 +55,15 @@ defmodule Mutare.Transform do
     start_id = Keyword.get(opts, :start_id, 1)
 
     quoted = Sourceror.parse_string!(source)
-    ranges = capture_ranges(quoted, mutators)
+
+    # In-place selectors are `case` expressions, which are illegal inside guards
+    # (`when ...`). Mutating a guard operator in place would compile-poison the
+    # whole build, so we drop guard-position sites here — guards belong to the
+    # lifted mechanism (a later milestone).
+    ranges =
+      quoted
+      |> capture_ranges(mutators)
+      |> Map.drop(MapSet.to_list(guard_keys(quoted)))
 
     {mutated_ast, {_next_id, sites_rev}} =
       Macro.postwalk(quoted, {start_id, []}, fn node, {id, sites} = acc ->
@@ -92,6 +100,34 @@ defmodule Mutare.Transform do
       other ->
         other
     end)
+  end
+
+  # Keys of every node that lives inside a `when` guard. A guard clause is
+  # `{:when, _, [head | guards]}`; the head holds patterns (never our operators),
+  # the rest is guard code where a `case` cannot go.
+  defp guard_keys(quoted) do
+    {_ast, keys} =
+      Macro.prewalk(quoted, MapSet.new(), fn
+        {:when, _meta, [_head | guards]} = node, acc when guards != [] ->
+          {node, Enum.reduce(guards, acc, &collect_keys/2)}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    keys
+  end
+
+  defp collect_keys(ast, acc) do
+    {_ast, keys} =
+      Macro.prewalk(ast, acc, fn node, inner ->
+        case node_key(node) do
+          nil -> {node, inner}
+          key -> {node, MapSet.put(inner, key)}
+        end
+      end)
+
+    keys
   end
 
   # First pass over the untouched AST: record each site's source range, keyed by

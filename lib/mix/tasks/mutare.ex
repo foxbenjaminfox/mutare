@@ -8,6 +8,7 @@ defmodule Mix.Tasks.Mutare do
   per mutant and reports the survivors as diffs.
 
       mix mutare                          # mutate everything under lib/
+      mix mutare path/to/project          # target another project directory
       mix mutare --only lib/billing       # scope to a path
       mix mutare --mutators relational    # only some mutator families
       mix mutare --min-score 70           # fail (CI) if the score is below 70
@@ -35,13 +36,14 @@ defmodule Mix.Tasks.Mutare do
 
   @impl Mix.Task
   def run(argv) do
-    {flags, _argv} = OptionParser.parse!(argv, strict: @switches)
-    config = config_file() |> merge_flags(flags)
+    {flags, rest} = OptionParser.parse!(argv, strict: @switches)
+    root = List.first(rest) || "."
+    config = config_file(root) |> merge_flags(flags)
 
-    schema = Schema.build(".", config)
-    announce(schema)
+    schema = Schema.build(root, config)
+    announce(schema, root)
 
-    case Runner.run_with_schema(schema, ".", Keyword.put(config, :reporter, &progress/1)) do
+    case Runner.run_with_schema(schema, root, Keyword.put(config, :reporter, &progress/1)) do
       {:ok, run} -> report(run, config)
       {:error, reason, detail} -> Mix.raise(format_error(reason, detail))
     end
@@ -49,9 +51,11 @@ defmodule Mix.Tasks.Mutare do
 
   # --- config --------------------------------------------------------------
 
-  defp config_file do
-    if File.exists?(".mutare.exs") do
-      {config, _binding} = Code.eval_file(".mutare.exs")
+  defp config_file(root) do
+    path = Path.join(root, ".mutare.exs")
+
+    if File.exists?(path) do
+      {config, _binding} = Code.eval_file(path)
       config
     else
       []
@@ -94,9 +98,10 @@ defmodule Mix.Tasks.Mutare do
 
   # --- output --------------------------------------------------------------
 
-  defp announce(%Schema{} = schema) do
+  defp announce(%Schema{} = schema, root) do
     files = schema.metamutants |> map_size()
-    Mix.shell().info("mutare: #{Schema.count(schema)} mutants across #{files} file(s)")
+    where = if root == ".", do: "", else: " in #{root}"
+    Mix.shell().info("mutare#{where}: #{Schema.count(schema)} mutants across #{files} file(s)")
 
     for {file, reason} <- schema.skipped,
         do: Mix.shell().info("  skipped #{file}: #{inspect(reason)}")
