@@ -12,7 +12,7 @@ defmodule Mutare do
   `Mutare.Selector` for runtime selection.
   """
 
-  @doc "Transform a source string into `{metamutant_source, [%Mutare.Site{}]}`."
+  @doc "Transform a source string into `{metamutant_source, [%Mutare.Site{}], next_id}`."
   defdelegate transform_string(source, opts \\ []), to: Mutare.Transform
 
   @doc "Run mutation testing against the project at `root`. See `Mutare.Runner.run/2`."

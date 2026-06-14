@@ -78,7 +78,11 @@ defmodule Mutare.Transform do
   end
 
   @doc """
-  Transform a source string into `{metamutant_source, [%Site{}]}`.
+  Transform a source string into `{metamutant_source, [%Site{}], next_id}`.
+
+  `next_id` is the first mutant id left unassigned — what the next file in a
+  schema should start from. It equals `:start_id` when nothing was mutated, so
+  the caller never has to recover it from the last site.
 
   Options:
 
@@ -86,7 +90,7 @@ defmodule Mutare.Transform do
     * `:mutators` — list of mutator modules (default arithmetic + relational)
     * `:start_id` — first mutant id to assign (default `1`)
   """
-  @spec transform_string(String.t(), keyword()) :: {String.t(), [Site.t()]}
+  @spec transform_string(String.t(), keyword()) :: {String.t(), [Site.t()], pos_integer()}
   def transform_string(source, opts \\ []) when is_binary(source) do
     ctx = %Ctx{
       file: Keyword.get(opts, :file, "nofile"),
@@ -112,7 +116,7 @@ defmodule Mutare.Transform do
     ignore = ignore_lines(source)
     sites = Enum.map(Enum.reverse(ctx.sites), &%{&1 | ignored: &1.line in ignore})
 
-    {metamutant, sites}
+    {metamutant, sites, ctx.next_id}
   end
 
   # Lines suppressed by a `# mutare:ignore` comment. A *trailing* comment

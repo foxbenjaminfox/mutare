@@ -32,7 +32,7 @@ defmodule Mutare.MetamutantTest do
       end
       """
 
-      {meta, sites} = Mutare.transform_string(source, file: "lib/demo/thing.ex")
+      {meta, sites, _next_id} = Mutare.transform_string(source, file: "lib/demo/thing.ex")
       clauses = Metamutant.selector_clauses(meta)
 
       # one descriptor per site, ids preserved
@@ -56,7 +56,7 @@ defmodule Mutare.MetamutantTest do
       end
       """
 
-      {meta, sites} = Mutare.transform_string(source)
+      {meta, sites, _next_id} = Mutare.transform_string(source)
       clauses = Metamutant.selector_clauses(meta)
 
       lifted_ids = for s <- sites, s.kind == :lifted, do: s.id
@@ -79,7 +79,7 @@ defmodule Mutare.MetamutantTest do
       end
       """
 
-      {meta, _sites} = Mutare.transform_string(source)
+      {meta, _sites, _next_id} = Mutare.transform_string(source)
       clauses = Metamutant.selector_clauses(meta)
 
       assert length(clauses) == 2

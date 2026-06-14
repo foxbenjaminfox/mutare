@@ -15,7 +15,7 @@ defmodule Mutare.CoverageTest do
       end
       """
 
-      {meta, sites} = Mutare.transform_string(source, file: "lib/demo/thing.ex")
+      {meta, sites, _next_id} = Mutare.transform_string(source, file: "lib/demo/thing.ex")
       index = Coverage.selector_index(meta)
 
       # every site is reachable through some selector/dispatcher

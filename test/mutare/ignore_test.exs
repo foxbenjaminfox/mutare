@@ -15,7 +15,7 @@ defmodule Mutare.IgnoreTest do
       end
       """
 
-      {meta, sites} = Mutare.transform_string(source)
+      {meta, sites, _next_id} = Mutare.transform_string(source)
       ignored? = Map.new(sites, &{&1.line, &1.ignored})
 
       assert ignored?[2] == true

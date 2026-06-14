@@ -67,19 +67,22 @@ defmodule Mutare.Schema do
     source = File.read!(file)
 
     case safe_transform(source, rel, next_id, opts) do
-      {:ok, _meta, []} ->
+      {:ok, _meta, [], next_id} ->
         # Parsed fine but nothing to mutate: keep the original, record source.
         {%{schema | sources: Map.put(schema.sources, rel, source)}, next_id}
 
-      {:ok, meta, sites} ->
+      {:ok, meta, sites, next_id} ->
+        # Transform hands back the next free id directly, so we never recover it
+        # from the last site. Sites accumulate reversed (prepend in O(1) per
+        # file, not a growing `++`); finalize/1 flips the list back to order once.
         schema = %{
           schema
-          | sites: schema.sites ++ sites,
+          | sites: Enum.reverse(sites, schema.sites),
             metamutants: Map.put(schema.metamutants, rel, meta),
             sources: Map.put(schema.sources, rel, source)
         }
 
-        {schema, List.last(sites).id + 1}
+        {schema, next_id}
 
       {:error, reason} ->
         {%{schema | skipped: [{rel, reason} | schema.skipped]}, next_id}
@@ -88,13 +91,15 @@ defmodule Mutare.Schema do
 
   defp safe_transform(source, rel, next_id, opts) do
     opts = Keyword.merge(opts, file: rel, start_id: next_id)
-    {meta, sites} = Mutare.Transform.transform_string(source, opts)
-    {:ok, meta, sites}
+    {meta, sites, next_id} = Mutare.Transform.transform_string(source, opts)
+    {:ok, meta, sites, next_id}
   rescue
     error -> {:error, error}
   end
 
-  defp finalize(%__MODULE__{} = schema), do: %{schema | skipped: Enum.reverse(schema.skipped)}
+  defp finalize(%__MODULE__{} = schema) do
+    %{schema | sites: Enum.reverse(schema.sites), skipped: Enum.reverse(schema.skipped)}
+  end
 
   defp discover(root, paths, exclude) do
     excluded = Enum.flat_map(exclude, &Path.wildcard(Path.join(root, &1)))

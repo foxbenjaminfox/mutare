@@ -21,7 +21,7 @@ defmodule Mutare.LiftTest do
   """
 
   setup_all do
-    {metamutant, sites} = Mutare.transform_string(@source, file: "lift.ex")
+    {metamutant, sites, _next_id} = Mutare.transform_string(@source, file: "lift.ex")
     [{_module, _binary}] = Code.compile_string(metamutant)
     %{sites: sites}
   end
@@ -44,7 +44,7 @@ defmodule Mutare.LiftTest do
 
   describe "structure" do
     test "lifts a guarded group into dispatcher + __orig + __mut copies", %{sites: sites} do
-      {meta, _} = Mutare.transform_string(@source)
+      {meta, _, _} = Mutare.transform_string(@source)
 
       assert meta =~ "def classify(mutare_arg1) do"
       assert meta =~ ~r/defp __mutare_classify_1_g\d+_orig/
@@ -60,7 +60,7 @@ defmodule Mutare.LiftTest do
     end
 
     test "lifts an unguarded multi-clause function for clause-drop (M2b)" do
-      {meta, sites} =
+      {meta, sites, _next_id} =
         Mutare.transform_string("defmodule M do\n  def g(0), do: :z\n  def g(_), do: :o\nend\n")
 
       assert meta =~ "def g(mutare_arg1) do"
@@ -78,7 +78,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {meta, _sites} = Mutare.transform_string(source)
+      {meta, _sites, _next_id} = Mutare.transform_string(source)
 
       # public dispatcher keeps `ok?`; private copies sanitize the `?`
       assert meta =~ "def ok?(mutare_arg1) do"
@@ -88,12 +88,12 @@ defmodule Mutare.LiftTest do
     end
 
     test "falls back to in-place (no lift) for default args and operator names" do
-      {defaulted, _} =
+      {defaulted, _, _} =
         Mutare.transform_string("defmodule M do\n  def h(a, b \\\\ 1) when a > b, do: a\nend\n")
 
       refute defaulted =~ "__mutare_h"
 
-      {operator, _} =
+      {operator, _, _} =
         Mutare.transform_string("defmodule M do\n  def a ~> b when b > 0, do: a\nend\n")
 
       refute operator =~ "__mutare"

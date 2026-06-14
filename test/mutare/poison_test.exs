@@ -9,12 +9,12 @@ defmodule Mutare.PoisonTest do
 
   describe "transform :skip_ids" do
     test "a skipped id is recorded :poisoned with no selector, so it compiles" do
-      {meta, [site]} = Mutare.transform_string(@src, @poison)
+      {meta, [site], _next_id} = Mutare.transform_string(@src, @poison)
 
       # Without skipping, the poison mutant is in the metamutant (won't compile).
       assert meta =~ "mutare_unbound_xyz"
 
-      {meta2, [site2]} =
+      {meta2, [site2], _next_id} =
         Mutare.transform_string(@src, Keyword.put(@poison, :skip_ids, MapSet.new([site.id])))
 
       assert site2.id == site.id
@@ -30,7 +30,7 @@ defmodule Mutare.PoisonTest do
 
   describe "Poison.ids/2" do
     test "maps a compile error's file:line to the mutant id at that line" do
-      {meta, [site]} = Mutare.transform_string(@src, @poison)
+      {meta, [site], _next_id} = Mutare.transform_string(@src, @poison)
 
       line =
         meta

@@ -18,7 +18,7 @@ defmodule Mutare.TransformTest do
   """
 
   test "discovers every arithmetic and relational site, ids assigned sequentially" do
-    {_meta, sites} = Mutare.transform_string(@sample, file: "sample.ex")
+    {_meta, sites, _next_id} = Mutare.transform_string(@sample, file: "sample.ex")
 
     # >= -> {>, <=}  (2),  + -> -  (1)
     assert length(sites) == 3
@@ -27,7 +27,7 @@ defmodule Mutare.TransformTest do
   end
 
   test "records operators, lines and a readable description" do
-    {_meta, [s1, s2, s3]} = Mutare.transform_string(@sample)
+    {_meta, [s1, s2, s3], _next_id} = Mutare.transform_string(@sample)
 
     assert %Site{mutator: :relational, original_op: :>=, mutated_op: :>, line: 3} = s1
     assert %Site{mutator: :relational, original_op: :>=, mutated_op: :<=, line: 3} = s2
@@ -38,22 +38,23 @@ defmodule Mutare.TransformTest do
   end
 
   test "metamutant bakes in the persistent_term selector with the shared key" do
-    {meta, _sites} = Mutare.transform_string(@sample)
+    {meta, _sites, _next_id} = Mutare.transform_string(@sample)
     assert meta =~ ":persistent_term.get(#{inspect(Mutare.Selector.key())}, 0)"
   end
 
   test "metamutant is valid, compilable Elixir" do
-    {meta, _sites} = Mutare.transform_string(@sample)
+    {meta, _sites, _next_id} = Mutare.transform_string(@sample)
     assert {:ok, _ast} = Code.string_to_quoted(meta)
   end
 
   test ":start_id offsets the first id" do
-    {_meta, sites} = Mutare.transform_string(@sample, start_id: 100)
+    {_meta, sites, _next_id} = Mutare.transform_string(@sample, start_id: 100)
     assert Enum.map(sites, & &1.id) == [100, 101, 102]
   end
 
   test ":mutators selects which families run" do
-    {_meta, sites} = Mutare.transform_string(@sample, mutators: [Mutare.Mutators.Arithmetic])
+    {_meta, sites, _next_id} =
+      Mutare.transform_string(@sample, mutators: [Mutare.Mutators.Arithmetic])
     assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
   end
 
@@ -65,7 +66,7 @@ defmodule Mutare.TransformTest do
     end
     """
 
-    {meta, sites} = Mutare.transform_string(source, mutators: [Mutare.Test.BooleanMutator])
+    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: [Mutare.Test.BooleanMutator])
 
     # body `a and b` → in-place; guard `a and b` → lifted. The author wrote one
     # `mutate/1`; placement is decided by position.
@@ -79,7 +80,7 @@ defmodule Mutare.TransformTest do
   end
 
   test "nested operator sites both get their own selector" do
-    {meta, sites} =
+    {meta, sites, _next_id} =
       Mutare.transform_string("defmodule N do\n  def f(a, b), do: a + b == 0\nend\n")
 
     # + -> - (1) and == -> != (1)
@@ -99,7 +100,7 @@ defmodule Mutare.TransformTest do
     end
     """
 
-    {meta, sites} = Mutare.transform_string(source)
+    {meta, sites, _next_id} = Mutare.transform_string(source)
 
     # Guards are lifted: >= -> {>, <=} and < -> {<=, >} (operation :replace).
     guards = Enum.filter(sites, &(&1.kind == :lifted and &1.operation == :replace))
@@ -124,7 +125,7 @@ defmodule Mutare.TransformTest do
     end
     """
 
-    {meta, sites} = Mutare.transform_string(source)
+    {meta, sites, _next_id} = Mutare.transform_string(source)
 
     # Only the body `x * 2` is a site; the capture's `/1` is left alone.
     assert [%Site{mutator: :arithmetic, original_op: :*}] = sites
@@ -132,7 +133,8 @@ defmodule Mutare.TransformTest do
   end
 
   test "division in a capture body (`& &1 / 2`) is still mutated" do
-    {_meta, sites} = Mutare.transform_string("defmodule C do\n  def half, do: &(&1 / 2)\nend\n")
+    {_meta, sites, _next_id} =
+      Mutare.transform_string("defmodule C do\n  def half, do: &(&1 / 2)\nend\n")
     assert [%Site{mutator: :arithmetic, original_op: :/, mutated_op: :*}] = sites
   end
 end
