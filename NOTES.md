@@ -80,11 +80,26 @@ A mutation can turn a terminating loop infinite; a mutant run would hang. Per-
 mutant wall-clock cap (`baseline × multiplier`, timeout = killed) is M4.
 `System.cmd/3` has no timeout, so this needs a Port/Task with kill.
 
-### Whole-suite, single worker `[M3b / M4]`
-No-coverage skipping is done (M3a). Still pending: coverage-driven *test
-selection* — running only the tests that touch a mutant's line, rather than the
-whole suite (M3b, needs per-test coverage) — and parallel workers (M4). Covered
-mutants still each run the entire suite serially.
+### Test selection — file-granular (M3b done) `[refine / M4]`
+Coverage-driven *test selection* is done at **test-file** granularity: each test
+file runs once with `--cover`, and a mutant runs only the files that cover its
+line (`:no_coverage` if none). `test_selection: :full` (or `--full`) reverts to
+whole-suite-per-mutant.
+
+Why file-granular, not per-individual-test: per-test coverage needs to snapshot
+`:cover` around each test, but **ExUnit formatter events are async casts** — a
+formatter's `:cover.reset/analyse` races with test execution (confirmed: the
+first test saw every line, the second saw none). The only synchronous per-test
+hooks are `setup`/`on_exit`, which can't be injected globally. Per-file avoids
+this (aggregate cover per file, no race) and is also *safer* for the indirect-
+kill case: if any test in a file covers the line, the whole file runs, so a test
+that kills the mutant without touching the line itself is still included as long
+as a sibling does. True per-test would need N per-test `mix` runs (one boot each)
+— deferred. Parallel workers are M4; covered mutants still run serially.
+
+Caveat: `:coverage` runs each test file *in isolation* for the probe, so a suite
+with cross-file dependencies (a test relying on state another file set up) can
+fail the baseline; use `:full` there.
 
 ### Equivalent mutants `[partial]`
 Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the

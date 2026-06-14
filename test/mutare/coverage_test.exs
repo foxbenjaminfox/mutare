@@ -54,6 +54,61 @@ defmodule Mutare.CoverageTest do
     end
   end
 
+  describe "test-file selection (end to end)" do
+    @tag :runner
+    test "a mutant runs only the test files that cover it" do
+      base = Path.join(System.tmp_dir!(), "mutare_sel_#{System.unique_integer([:positive])}")
+      project = Path.join(base, "sel")
+      sandbox = Path.join(base, "sandbox")
+      write_two_module_project(project)
+      on_exit(fn -> File.rm_rf!(base) end)
+
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
+
+      by_op = Map.new(run.results, &{&1.site.original_op, &1})
+
+      # Calc.add's `+` mutant is covered only by calc_test.exs → that file alone
+      # runs (1 test), not the whole 2-test suite — and it's killed.
+      calc = by_op[:+]
+      assert calc.status == :killed
+      assert calc.output =~ "1 test"
+      refute calc.output =~ "2 tests"
+
+      # Greeter.shout's `*` mutant likewise runs only greeter_test.exs, killed.
+      greeter = by_op[:*]
+      assert greeter.status == :killed
+      assert greeter.output =~ "1 test"
+    end
+  end
+
+  defp write_two_module_project(project) do
+    write(project, "mix.exs", """
+    defmodule Sel.MixProject do
+      use Mix.Project
+      def project, do: [app: :sel, version: "0.1.0", elixir: "~> 1.15"]
+      def application, do: []
+    end
+    """)
+
+    write(project, "lib/calc.ex", "defmodule Calc do\n  def add(a, b), do: a + b\nend\n")
+    write(project, "lib/greeter.ex", "defmodule Greeter do\n  def shout(n), do: n * 2\nend\n")
+    write(project, "test/test_helper.exs", "ExUnit.start()\n")
+
+    write(project, "test/calc_test.exs", """
+    defmodule CalcTest do
+      use ExUnit.Case
+      test "add", do: assert(Calc.add(2, 3) == 5)
+    end
+    """)
+
+    write(project, "test/greeter_test.exs", """
+    defmodule GreeterTest do
+      use ExUnit.Case
+      test "shout", do: assert(Greeter.shout(3) == 6)
+    end
+    """)
+  end
+
   defp write_project(project) do
     write(project, "mix.exs", """
     defmodule Cov.MixProject do

@@ -42,6 +42,13 @@ defmodule Mutare.ConfigTest do
       assert merged[:sandbox] == "/tmp/sb"
     end
 
+    test "--full sets test_selection: :full; otherwise it's left to default" do
+      assert Config.merge([], full: true)[:test_selection] == :full
+      refute Keyword.has_key?(Config.merge([], []), :test_selection)
+      # file config still flows through
+      assert Config.merge([test_selection: :full], [])[:test_selection] == :full
+    end
+
     test "file config mutators: :all resolves to the default set (key omitted)" do
       refute Keyword.has_key?(Config.merge([mutators: :all], []), :mutators)
     end

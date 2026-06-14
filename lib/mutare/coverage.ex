@@ -34,21 +34,34 @@ defmodule Mutare.Coverage do
   """
   @spec covered_ids([String.t()], Path.t()) :: {:ok, MapSet.t()} | {:error, term()}
   def covered_ids(metamutant_sources, coverdata_path) do
+    case hits(coverdata_path) do
+      {:ok, hits} ->
+        covered =
+          for {id, module_line} <- index(metamutant_sources),
+              MapSet.member?(hits, module_line),
+              into: MapSet.new(),
+              do: id
+
+        {:ok, covered}
+
+      error ->
+        error
+    end
+  end
+
+  @doc "Merge selector indices for several metamutant sources: `%{id => {module, line}}`."
+  @spec index([String.t()]) :: %{pos_integer() => {module(), pos_integer()}}
+  def index(metamutant_sources) do
+    Enum.reduce(metamutant_sources, %{}, fn source, acc ->
+      Map.merge(acc, selector_index(source))
+    end)
+  end
+
+  @doc "Per-line hit set `{module, line}` from a `.coverdata` file."
+  @spec hits(Path.t()) :: {:ok, MapSet.t()} | {:error, term()}
+  def hits(coverdata_path) do
     if File.exists?(coverdata_path) do
-      index =
-        Enum.reduce(metamutant_sources, %{}, fn source, acc ->
-          Map.merge(acc, selector_index(source))
-        end)
-
-      hits = hit_lines(coverdata_path)
-
-      covered =
-        for {id, module_line} <- index,
-            MapSet.member?(hits, module_line),
-            into: MapSet.new(),
-            do: id
-
-      {:ok, covered}
+      {:ok, hit_lines(coverdata_path)}
     else
       {:error, :no_coverdata}
     end

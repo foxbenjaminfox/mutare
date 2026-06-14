@@ -12,6 +12,8 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --only lib/billing       # scope to a path
       mix mutare --mutators relational    # only some mutator families
       mix mutare --min-score 70           # fail (CI) if the score is below 70
+      mix mutare --full                   # run the whole suite per mutant
+                                          #   (no per-file test selection)
 
   Configuration may also live in `.mutare.exs` (a keyword list); CLI flags win.
 
@@ -27,7 +29,13 @@ defmodule Mix.Tasks.Mutare do
 
   alias Mutare.{Config, Report, Result, Runner, Schema}
 
-  @switches [only: :string, mutators: :string, min_score: :float, sandbox: :string]
+  @switches [
+    only: :string,
+    mutators: :string,
+    min_score: :float,
+    sandbox: :string,
+    full: :boolean
+  ]
 
   @impl Mix.Task
   def run(argv) do

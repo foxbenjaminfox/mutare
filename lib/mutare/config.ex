@@ -32,9 +32,10 @@ defmodule Mutare.Config do
   Merge `file_config` with parsed CLI `flags` into resolved options.
 
   Recognised flags: `:only` (→ `:paths`), `:mutators` (CSV → modules),
-  `:min_score`, `:sandbox`. A `:mutators` value of `:all` (or none) resolves to
-  "use the default set" by omitting the key, so `Mutare.Transform` picks it.
-  Raises `ArgumentError` on an unknown mutator family.
+  `:min_score`, `:sandbox`, `:full` (→ `test_selection: :full`). A `:mutators`
+  value of `:all` (or none) resolves to "use the default set" by omitting the
+  key, so `Mutare.Transform` picks it. Raises `ArgumentError` on an unknown
+  mutator family.
   """
   @spec merge(keyword(), keyword()) :: keyword()
   def merge(file_config, flags) do
@@ -42,6 +43,7 @@ defmodule Mutare.Config do
     |> put_unless_nil(:paths, flags[:only] && [flags[:only]])
     |> put_unless_nil(:min_score, flags[:min_score])
     |> put_unless_nil(:sandbox, flags[:sandbox])
+    |> put_unless_nil(:test_selection, flags[:full] && :full)
     |> put_unless_nil(:mutators, flags[:mutators] && parse_families(flags[:mutators]))
     |> normalize_mutators()
   end
