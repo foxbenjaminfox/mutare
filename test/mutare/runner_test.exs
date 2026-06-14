@@ -1,7 +1,7 @@
 defmodule Mutare.RunnerTest do
   @moduledoc """
-  End-to-end walking skeleton: generate a tiny project, run mutation testing
-  against it with real `mix test` subprocesses, and prove the whole loop —
+  End-to-end runner coverage: generate a tiny project, run mutation testing
+  against it with real `mix test` subprocesses, and prove the whole loop:
   compile once, kill/survive classification, and a survivor diff.
   """
   use ExUnit.Case, async: false

@@ -13,9 +13,9 @@ defmodule Toy.Cart do
   @doc """
   Apply a whole-number percentage discount to an amount.
 
-  The `when` guard is intentionally present: Mutare's in-place mutators must
-  *skip* operators inside guards (a `case` is illegal there), so none of these
-  comparisons become mutants in M1 — only the body arithmetic does.
+  The `when` guard is intentionally present to demonstrate function lifting:
+  guard comparisons become lifted mutants, while the body arithmetic uses
+  in-place selectors.
   """
   def apply_discount(amount, percent) when percent >= 0 and percent <= 100 do
     amount - amount * percent / 100

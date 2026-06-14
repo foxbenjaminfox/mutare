@@ -448,7 +448,7 @@ defmodule Mutare.Transform do
   defp head_args({_name, _, args}) when is_list(args), do: args
   defp head_args(_), do: []
 
-  # === in-place transform (M1) ===============================================
+  # === in-place transform ====================================================
 
   # Apply the in-place selector transform to one subtree, threading the ctx.
   defp in_place(node, ctx) do

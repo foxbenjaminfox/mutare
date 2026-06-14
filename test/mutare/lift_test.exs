@@ -1,7 +1,7 @@
 defmodule Mutare.LiftTest do
   @moduledoc """
-  Function lifting + dispatcher (M2): guard mutations delivered by duplicating
-  the clause group, proven end to end with one compile and runtime switching.
+  Function lifting and dispatchers deliver guard mutations by duplicating the
+  clause group, proven end to end with one compile and runtime switching.
   """
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
@@ -59,7 +59,7 @@ defmodule Mutare.LiftTest do
                Enum.filter(sites, &(&1.kind == :in_place))
     end
 
-    test "lifts an unguarded multi-clause function for clause-drop (M2b)" do
+    test "lifts an unguarded multi-clause function for clause-drop" do
       {meta, sites, _next_id} =
         Mutare.transform_string("defmodule M do\n  def g(0), do: :z\n  def g(_), do: :o\nend\n")
 
@@ -141,7 +141,7 @@ defmodule Mutare.LiftTest do
     end
   end
 
-  describe "clause drop (M2b)" do
+  describe "clause drop" do
     defp drop_id(sites, line) do
       site = Enum.find(sites, &(&1.mutator == :clause_drop and &1.line == line))
       assert site, "no clause-drop site on line #{line}"

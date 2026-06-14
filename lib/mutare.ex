@@ -7,9 +7,12 @@ defmodule Mutare do
   every mutant behind a `:persistent_term` runtime switch — compiles it once,
   then runs the suite once per mutant by flipping `MUTANT_UNDER_TEST`.
 
-  M1 (walking skeleton) wires up the in-place selector for arithmetic and
-  relational mutators end to end. See `Mutare.Transform` for the rewrite and
-  `Mutare.Selector` for runtime selection.
+  Body mutations use in-place selectors, while guard and clause mutations use
+  function lifting and dispatchers. The runner adds coverage-guided test
+  selection, compile-poison recovery, parallel execution, timeouts, ignore
+  annotations, and changed-file scoping via `--since`.
+
+  See `Mutare.Transform` for source rewriting and `Mutare.Runner` for execution.
   """
 
   @doc "Transform a source string into `{metamutant_source, [%Mutare.Site{}], next_id}`."
