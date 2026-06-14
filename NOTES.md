@@ -226,6 +226,13 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
   (if it can't map, it falls back to the old abort); a poisoner is dropped at
   *line* granularity if its error can't be pinned to one clause; and `:skip_ids`
   drops by id, which is only stable because the counter advances for skips.
+- **`--since <ref>` (done).** `Mutare.Changes.since/2` runs `git diff
+  --name-only --relative <ref>` with `root` as cwd, giving root-relative changed
+  files (committed + uncommitted); `Schema`'s `:only_files` intersects discovered
+  files with that set, so it composes with `--only`/paths. Limits: untracked new
+  files aren't reported by `git diff` (commit them); only the changed files
+  themselves are mutated, not files that transitively depend on them; `--since`
+  assumes `root` is inside the repo.
 - **Custom mutators (done).** `Mutare.Mutator` is the public extension point:
   `mutate/1` + `name/0`. `:mutators` in `.mutare.exs` accepts built-in family
   atoms *and* any module implementing the behaviour (validated, with a helpful

@@ -49,6 +49,16 @@ defmodule Mutare.SchemaTest do
     assert Schema.count(schema) == 1
   end
 
+  test ":only_files restricts to the given root-relative paths (e.g. --since)", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/b.ex", "defmodule B do\n  def g(x), do: x + 1\nend\n")
+
+    schema = Schema.build(root, only_files: MapSet.new(["lib/b.ex"]))
+
+    assert Map.keys(schema.sources) == ["lib/b.ex"]
+    assert Enum.all?(schema.sites, &(&1.file == "lib/b.ex"))
+  end
+
   test "unparseable files are skipped, not fatal", %{root: root} do
     write(root, "lib/ok.ex", "defmodule Ok do\n  def f(x), do: x + 1\nend\n")
     write(root, "lib/bad.ex", "defmodule Bad do\n  def ( oops\nend\n")

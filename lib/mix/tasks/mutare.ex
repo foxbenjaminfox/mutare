@@ -10,6 +10,7 @@ defmodule Mix.Tasks.Mutare do
       mix mutare                          # mutate everything under lib/
       mix mutare path/to/project          # target another project directory
       mix mutare --only lib/billing       # scope to a path
+      mix mutare --since master             # only files changed vs a git ref (CI)
       mix mutare --mutators relational    # only some mutator families
       mix mutare --min-score 70           # fail (CI) if the score is below 70
       mix mutare --full                   # run the whole suite per mutant
@@ -34,14 +35,15 @@ defmodule Mix.Tasks.Mutare do
     mutators: :string,
     min_score: :float,
     sandbox: :string,
-    full: :boolean
+    full: :boolean,
+    since: :string
   ]
 
   @impl Mix.Task
   def run(argv) do
     {flags, rest} = OptionParser.parse!(argv, strict: @switches)
     root = List.first(rest) || "."
-    config = resolve_config(root, flags)
+    config = root |> resolve_config(flags) |> scope_to_changes(root, flags)
 
     schema = Schema.build(root, config)
     announce(schema, root)
@@ -56,6 +58,20 @@ defmodule Mix.Tasks.Mutare do
     Config.merge(Config.load(root), flags)
   rescue
     error in ArgumentError -> Mix.raise(Exception.message(error))
+  end
+
+  # `--since <ref>` restricts mutation to files changed versus that git ref.
+  defp scope_to_changes(config, root, flags) do
+    case flags[:since] do
+      nil ->
+        config
+
+      ref ->
+        case Mutare.Changes.since(root, ref) do
+          {:ok, files} -> Keyword.put(config, :only_files, files)
+          {:error, detail} -> Mix.raise("`--since #{ref}` failed:\n#{detail}")
+        end
+    end
   end
 
   # --- output --------------------------------------------------------------

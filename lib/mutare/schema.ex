@@ -36,8 +36,14 @@ defmodule Mutare.Schema do
 
     root
     |> discover(paths, exclude)
+    |> restrict(root, Keyword.get(opts, :only_files))
     |> from_files(root, opts)
   end
+
+  # Intersect discovered files with an explicit set of root-relative paths
+  # (e.g. `mix mutare --since master` → files a branch changed).
+  defp restrict(files, _root, nil), do: files
+  defp restrict(files, root, only), do: Enum.filter(files, &(relative(&1, root) in only))
 
   @doc "Build a schema from an explicit list of files (paths recorded relative to `root`)."
   @spec from_files([Path.t()], Path.t(), keyword()) :: t()

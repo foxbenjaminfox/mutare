@@ -57,15 +57,19 @@ def discounted(amount, percent), do: amount - amount * percent / 100  # mutare:i
 If a mutant won't compile (e.g. a custom mutator emits something invalid), it
 would normally sink the whole single build — so Mutare detects the offending
 mutant from the compile error, drops it (reported as *poisoned*, excluded from
-the score), and rebuilds. `--since` (changed-files CI mode) is still to come.
+the score), and rebuilds.
+
+This completes the design's milestones (M1–M4).
 
 ## Usage
 
 ```
 mix mutare                          # mutate everything under lib/
 mix mutare --only lib/billing       # scope to a path
+mix mutare --since main             # only files changed vs a git ref (CI)
 mix mutare --mutators relational    # choose mutator families
 mix mutare --min-score 70           # fail (CI) below a score
+mix mutare --full                   # whole suite per mutant (no test selection)
 ```
 
 Optional `.mutare.exs`:
