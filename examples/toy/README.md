@@ -12,12 +12,8 @@ mix mutare examples/toy
 Expected (abridged):
 
 ```
-mutare in examples/toy: 12 mutants across 1 file(s)
-...SS.SS.S..
-
-lib/toy/cart.ex:21  [arithmetic, in-place]  SURVIVED
--    amount - amount * percent / 100
-+    amount + amount * percent / 100
+mutare in examples/toy: 13 mutants across 1 file(s)
+.-..SS.SS.S..
 
 lib/toy/cart.ex:20  [relational, lifted]  SURVIVED
 -  def apply_discount(amount, percent) when percent >= 0 and percent <= 100 do
@@ -27,10 +23,13 @@ lib/toy/cart.ex:26  [relational, in-place]  SURVIVED
 -    subtotal >= @free_shipping_threshold
 +    subtotal > @free_shipping_threshold
 ...
-mutation score: 58.3%  (7 killed, 5 survived, 12 total)
+mutation score: 58.3%  (7 killed, 5 survived, 1 no-coverage, 13 total)
 ```
 
-Why those survive:
+The `-` in the progress line is a **no-coverage** skip, and it's excluded from
+the score's denominator (13 − 1 = 12).
+
+Why those survive (or skip):
 
 - `apply_discount/2` is only exercised with `percent: 0`, which zeroes the
   discount term — so `-`/`/` mutations there are indistinguishable from the
@@ -42,3 +41,6 @@ Why those survive:
   tests**).
 - `free_shipping?/1` is never tested at/above the threshold, so `>= -> >` slips
   through (**missing boundary test**).
+- `late_fee/1` has **no test at all**, so its mutant is on a line no test runs.
+  The coverage probe marks it **no-coverage** and skips it (it can never be
+  killed, so it doesn't drag the score).

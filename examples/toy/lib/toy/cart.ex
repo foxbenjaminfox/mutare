@@ -37,4 +37,7 @@ defmodule Toy.Cart do
       discounted + shipping
     end
   end
+
+  @doc "Late fee for an overdue invoice. Intentionally has *no test* at all."
+  def late_fee(days_overdue), do: days_overdue * 2
 end

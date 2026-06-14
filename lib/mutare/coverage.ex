@@ -1,0 +1,166 @@
+defmodule Mutare.Coverage do
+  @moduledoc """
+  The schema doubles as a coverage probe.
+
+  Every mutant lives behind a selector/dispatcher `case` that reads
+  `:persistent_term`. That `case`'s subject runs on *every* execution of the
+  code path, so a single `:cover` run over the baseline tells us which mutants'
+  code is exercised — for free, from the build we already made.
+
+  We work entirely in **metamutant line space**: we locate each selector `case`
+  in the rendered metamutant (mapping the mutant ids it hosts → the line of its
+  catch-all `_ ->` branch) and intersect with cover's per-line hits. At baseline
+  every live selector takes its catch-all, so that line is hit iff the code ran.
+  (We key on the catch-all body's line, not the `case` keyword line: cover does
+  not count the `case` line of a selector nested on a continuation line.) No
+  metamutant↔original line mapping is needed — the original line is for the report.
+
+  A mutant whose selector line no test executes can never be killed
+  (`:no_coverage`): skip it and keep it out of the score's denominator.
+  """
+
+  # `:cover` is added to the code path at runtime (it lives in OTP's :tools),
+  # so it is legitimately undefined at compile time.
+  @compile {:no_warn_undefined, :cover}
+
+  @key Mutare.Selector.key()
+
+  @doc """
+  The set of mutant ids whose selector line is covered by `coverdata_path`.
+
+  `metamutant_sources` are the rendered metamutant strings (one per file).
+  Returns `{:ok, MapSet.t()}`, or `{:error, reason}` if coverage is unavailable
+  (the caller should then run every mutant rather than skip any).
+  """
+  @spec covered_ids([String.t()], Path.t()) :: {:ok, MapSet.t()} | {:error, term()}
+  def covered_ids(metamutant_sources, coverdata_path) do
+    if File.exists?(coverdata_path) do
+      index =
+        Enum.reduce(metamutant_sources, %{}, fn source, acc ->
+          Map.merge(acc, selector_index(source))
+        end)
+
+      hits = hit_lines(coverdata_path)
+
+      covered =
+        for {id, module_line} <- index,
+            MapSet.member?(hits, module_line),
+            into: MapSet.new(),
+            do: id
+
+      {:ok, covered}
+    else
+      {:error, :no_coverdata}
+    end
+  rescue
+    error -> {:error, error}
+  end
+
+  @doc """
+  Map every mutant id to `{module, line}` of the selector `case` that hosts it,
+  by re-parsing a rendered metamutant. A module stack (pushed/popped via
+  `Macro.traverse/4`) attributes each selector to its enclosing module.
+  """
+  @spec selector_index(String.t()) :: %{pos_integer() => {module(), pos_integer()}}
+  def selector_index(metamutant_source) do
+    ast = Code.string_to_quoted!(metamutant_source, columns: true)
+
+    {_ast, {_stack, index}} =
+      Macro.traverse(
+        ast,
+        {[], %{}},
+        &enter/2,
+        &leave/2
+      )
+
+    index
+  end
+
+  # --- traversal -----------------------------------------------------------
+
+  defp enter({:defmodule, _meta, [alias_node | _]} = node, {stack, index}) do
+    {node, {[module_name(alias_node) | stack], index}}
+  end
+
+  defp enter({:case, _meta, [subject, [do: clauses]]} = node, {stack, index}) do
+    if selector?(subject) do
+      module = List.first(stack)
+      line = catch_all_line(clauses)
+      index = Enum.reduce(clause_ids(clauses), index, &Map.put(&2, &1, {module, line}))
+      {node, {stack, index}}
+    else
+      {node, {stack, index}}
+    end
+  end
+
+  defp enter(node, acc), do: {node, acc}
+
+  defp leave({:defmodule, _meta, _args} = node, {stack, index}) do
+    {node, {tl(stack), index}}
+  end
+
+  defp leave(node, acc), do: {node, acc}
+
+  defp selector?({{:., _, [:persistent_term, :get]}, _, [key | _]}), do: key == @key
+  defp selector?(_), do: false
+
+  defp clause_ids(clauses) do
+    for {:->, _, [[pattern], _body]} <- clauses, is_integer(pattern), do: pattern
+  end
+
+  # Line of the catch-all (`_ ->`) clause's body — the line cover counts when a
+  # selector runs at baseline.
+  defp catch_all_line(clauses) do
+    Enum.find_value(clauses, fn
+      {:->, _, [[{:_, _, _}], body]} -> node_line(body)
+      _ -> nil
+    end)
+  end
+
+  defp node_line({_form, meta, _args}) when is_list(meta), do: Keyword.get(meta, :line)
+  defp node_line(_), do: nil
+
+  defp module_name({:__aliases__, _, parts}), do: Module.concat(parts)
+  defp module_name(_), do: nil
+
+  # --- cover ---------------------------------------------------------------
+
+  defp hit_lines(coverdata_path) do
+    ensure_cover_loaded!()
+    # Fresh cover each call so repeated runs in one VM (tests) don't accumulate.
+    _ = :cover.stop()
+    {:ok, _pid} = :cover.start()
+    :ok = :cover.import(String.to_charlist(coverdata_path))
+
+    for {{module, line}, {covered, _not_covered}} <- analyse_lines(),
+        covered > 0 and line > 0,
+        into: MapSet.new(),
+        do: {module, line}
+  end
+
+  defp analyse_lines do
+    # OTP versions differ: {:result, ok, fail} (multi-module), {:ok, list}, or
+    # {list, fail}. Normalise to the list of {{module, line}, {cov, not_cov}}.
+    case :cover.analyse(:coverage, :line) do
+      {:result, results, _failures} -> results
+      {:ok, results} -> results
+      {results, _failures} when is_list(results) -> results
+    end
+  end
+
+  # `:cover` ships in OTP's `:tools`, which a mix project doesn't put on the code
+  # path by default — add it from the OTP lib dir on demand.
+  defp ensure_cover_loaded! do
+    unless Code.ensure_loaded?(:cover) do
+      [to_string(:code.root_dir()), "lib", "tools-*", "ebin"]
+      |> Path.join()
+      |> Path.wildcard()
+      |> case do
+        [ebin | _] -> :code.add_pathz(String.to_charlist(ebin))
+        [] -> :ok
+      end
+
+      Code.ensure_loaded(:cover)
+    end
+  end
+end

@@ -34,7 +34,13 @@ to the active copy by id:
 - coexists with in-place selectors, which still apply inside the lifted `__orig`
   copy; the public `f/arity` is unchanged at the module boundary
 
-The coverage probe, parallel workers, timeouts and `--since` are later milestones.
+**Milestone 3 — coverage probe** (no-coverage skipping done):
+
+- the baseline runs with `--cover`; a mutant whose selector line no test executes
+  is **no-coverage** — skipped, and excluded from the score's denominator
+- per-mutant *test selection* (run only the covering tests) is the next step
+
+Parallel workers, timeouts and `--since` are later milestones.
 
 ## Usage
 

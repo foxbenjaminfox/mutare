@@ -8,11 +8,16 @@ defmodule Mutare.Runner do
   incremental compiler finds nothing to rebuild — the per-mutant cost is process
   boot plus the suite, never recompilation.
 
-  M1 is whole-suite, single worker. Coverage-driven test selection, parallel
-  workers, and timeouts arrive in later milestones.
+  The baseline runs with `--cover`, which doubles as a coverage probe: a mutant
+  whose selector line no test executes can never be killed, so it is recorded as
+  `:no_coverage` and skipped (and kept out of the score's denominator). If
+  coverage is unavailable we fall back to running every mutant.
+
+  Still whole-suite per mutant, single worker — coverage-driven *test selection*
+  (run only the covering tests) and parallel workers are later milestones.
   """
 
-  alias Mutare.{Result, Sandbox, Schema}
+  alias Mutare.{Coverage, Result, Sandbox, Schema}
 
   @type run :: %{
           schema: Schema.t(),
@@ -53,9 +58,11 @@ defmodule Mutare.Runner do
 
       with :ok <- compile(sandbox),
            {:ok, baseline_ms} <- baseline(sandbox) do
+        covered = covered_ids(schema, sandbox)
+
         results =
           Enum.map(schema.sites, fn site ->
-            result = run_mutant(sandbox, site)
+            result = classify(sandbox, site, covered)
             reporter.(result)
             result
           end)
@@ -73,14 +80,34 @@ defmodule Mutare.Runner do
     end
   end
 
-  # Baseline must be green; a red or flaky suite makes mutation testing meaningless.
+  # Baseline must be green; a red or flaky suite makes mutation testing
+  # meaningless. `--cover` collects the coverage probe in the same run.
   defp baseline(sandbox) do
-    {micros, {output, status}} = :timer.tc(fn -> mix(sandbox, ["test"], "0") end)
+    args = ["test", "--cover", "--export-coverage", "mutare"]
+    {micros, {output, status}} = :timer.tc(fn -> mix(sandbox, args, "0") end)
 
     if status == 0 do
       {:ok, div(micros, 1000)}
     else
       {:error, :baseline_failed, output}
+    end
+  end
+
+  # `MapSet` of covered ids, or `:all` when coverage couldn't be determined.
+  defp covered_ids(schema, sandbox) do
+    coverdata = Path.join(sandbox, "cover/mutare.coverdata")
+
+    case Coverage.covered_ids(Map.values(schema.metamutants), coverdata) do
+      {:ok, covered} -> covered
+      {:error, _reason} -> :all
+    end
+  end
+
+  defp classify(sandbox, site, covered) do
+    if covered == :all or MapSet.member?(covered, site.id) do
+      run_mutant(sandbox, site)
+    else
+      %Result{site: site, status: :no_coverage, duration_ms: 0, output: nil}
     end
   end
 

@@ -6,15 +6,22 @@ for later. Items are tagged with the milestone that should resolve them.
 
 ## Deferred / known limitations
 
-### Metamutant line preservation `[M3]`
-In-place selectors wrap a site in a multi-line `case`, so line numbers **shift**
-in the metamutant build artifact. This is fine today: M1 runs the whole suite
-(no line mapping needed) and the diff **report patches the original source**, not
-the metamutant — so author-facing output and stack traces against the original
-are unaffected. But the **coverage probe (M3)** intersects metamutant site lines
-with a `:cover` run, which needs metamutant-line ↔ original-line correspondence.
-Options to revisit then: emit single-line wrappers, or stamp the original `line:`
-metadata onto every injected node. Decide when building M3.
+### Metamutant line preservation — RESOLVED (avoided) `[M3, done]`
+In-place selectors and lifted copies shift line numbers in the metamutant, so we
+worried the coverage probe would need a metamutant↔original line map. It doesn't.
+The probe works **entirely in metamutant line space**: `Mutare.Coverage` re-parses
+the rendered metamutant, maps each mutant id → the line of its selector's catch-all
+(`_ ->`) branch, and intersects with `:cover`'s per-line hits on the baseline. The
+original line is only ever used by the report (which patches the original source),
+so the two never need to be related. No line preservation required.
+
+Two `:cover` gotchas worth remembering (both handled in `Mutare.Coverage`):
+- `:cover.analyse(:coverage, :line)` returns `{:result, ok, fail}` (3-tuple) on
+  this OTP, not the documented `{:ok, _}`.
+- cover does **not** count the `case` keyword line of a selector nested on a
+  continuation line (`acc +\n  case … end`); it counts the catch-all body line.
+  So we key coverage on the catch-all body line, which is hit iff the selector
+  ran at baseline.
 
 ### Sandbox isolation & dependencies `[M4 / open question]`
 `Mutare.Sandbox` copies the whole project (excluding `_build`/`.git`, keeping
@@ -73,9 +80,11 @@ A mutation can turn a terminating loop infinite; a mutant run would hang. Per-
 mutant wall-clock cap (`baseline × multiplier`, timeout = killed) is M4.
 `System.cmd/3` has no timeout, so this needs a Port/Task with kill.
 
-### Whole-suite, single worker `[M3 / M4]`
-Every mutant runs the entire suite serially. Coverage-driven test selection and
-no-coverage skipping are M3; parallel workers are M4.
+### Whole-suite, single worker `[M3b / M4]`
+No-coverage skipping is done (M3a). Still pending: coverage-driven *test
+selection* — running only the tests that touch a mutant's line, rather than the
+whole suite (M3b, needs per-test coverage) — and parallel workers (M4). Covered
+mutants still each run the entire suite serially.
 
 ### Equivalent mutants `[partial]`
 Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the
