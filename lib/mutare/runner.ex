@@ -141,7 +141,11 @@ defmodule Mutare.Runner do
           # (the transform advances its counter for skipped ids), so accumulated
           # `skip_ids` keep referring to the same mutations.
           skip_ids = MapSet.union(skip_ids, poison)
-          schema = Schema.build(root, Keyword.put(opts, :skip_ids, skip_ids))
+          # Rebuild against the *same* files this schema covers (not a fresh
+          # discovery), so a restricted schema (`from_files/3`, `:only_files`,
+          # `:exclude`) can't silently expand. Forward the original transform
+          # opts so `:mutators` survive; ids stay stable across rebuilds.
+          schema = Schema.rebuild(schema, root, Keyword.put(opts, :skip_ids, skip_ids))
           prepare_compiling(schema, root, opts, skip_ids, attempts - 1)
         else
           # Couldn't identify (or keep making progress on) the poison → give up.

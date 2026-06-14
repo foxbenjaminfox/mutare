@@ -12,13 +12,14 @@ defmodule Mutare.Schema do
   alias Mutare.Site
 
   @type t :: %__MODULE__{
+          files: [String.t()],
           sites: [Site.t()],
           metamutants: %{optional(String.t()) => String.t()},
           sources: %{optional(String.t()) => String.t()},
           skipped: [{String.t(), term()}]
         }
 
-  defstruct sites: [], metamutants: %{}, sources: %{}, skipped: []
+  defstruct files: [], sites: [], metamutants: %{}, sources: %{}, skipped: []
 
   @doc """
   Build a schema by discovering files under `root`.
@@ -48,12 +49,36 @@ defmodule Mutare.Schema do
   @doc "Build a schema from an explicit list of files (paths recorded relative to `root`)."
   @spec from_files([Path.t()], Path.t(), keyword()) :: t()
   def from_files(files, root \\ ".", opts \\ []) do
+    # Record the ordered, root-relative input list so the schema can be rebuilt
+    # against exactly these files (see `rebuild/3`) without re-discovering.
+    initial = %__MODULE__{files: Enum.map(files, &relative(&1, root))}
+
     files
-    |> Enum.reduce({%__MODULE__{}, 1}, fn file, {schema, next_id} ->
+    |> Enum.reduce({initial, 1}, fn file, {schema, next_id} ->
       add_file(schema, file, root, next_id, opts)
     end)
     |> elem(0)
     |> finalize()
+  end
+
+  @doc """
+  Rebuild a schema against the *same* files it was originally built from.
+
+  Poison recovery (`Mutare.Runner`) relies on this: re-discovering via `build/2`
+  would ignore any restriction baked into the supplied schema (a custom
+  `from_files/3` set, or an `:only_files`/`:exclude`-restricted `build/2`) and
+  could silently expand to a different file set. Replaying the recorded file list
+  preserves the restriction and keeps mutant ids stable (the transform advances
+  its id counter even for `:skip_ids`).
+
+  Pass through the original transform opts (e.g. `:mutators`) merged with the new
+  `:skip_ids`.
+  """
+  @spec rebuild(t(), Path.t(), keyword()) :: t()
+  def rebuild(%__MODULE__{files: files}, root \\ ".", opts \\ []) do
+    files
+    |> Enum.map(&Path.join(root, &1))
+    |> from_files(root, opts)
   end
 
   @doc "Total number of mutants in the schema."
