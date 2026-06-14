@@ -78,7 +78,7 @@ defmodule Mutare.Transform do
 
     metamutant =
       mutated_ast
-      |> normalize_do_blocks()
+      |> normalize_keyword_blocks()
       |> Sourceror.to_string()
 
     {metamutant, Enum.reverse(sites_rev)}
@@ -86,16 +86,17 @@ defmodule Mutare.Transform do
 
   # --- internals -----------------------------------------------------------
 
-  # Sourceror represents a keyword-style block (`def f, do: x`) as
-  # `{{:__block__, [format: :keyword], [:do]}, body}`. The formatter cannot
-  # render such a block when its body becomes a multi-line `case`, so we flip
-  # every do-family keyword block to plain block form before rendering. This
-  # only affects the throwaway metamutant; the diff report patches the original
-  # source, so author-facing formatting is untouched.
-  defp normalize_do_blocks(ast) do
+  # Sourceror represents a keyword-syntax key (`do:`, `else:`, but also `ms:`,
+  # `env:`, any `key: value`) as `{:__block__, [format: :keyword], [key]}`. The
+  # formatter crashes when such a pair's value becomes a `case` — whether that's
+  # a `def f, do: <case>` body or a `%{ms: <case>}` map field. We flip every
+  # keyword-format key back to a plain atom key, which renders fine everywhere.
+  # This only affects the throwaway metamutant; the diff report patches the
+  # original source, so author-facing formatting is untouched.
+  defp normalize_keyword_blocks(ast) do
     Macro.prewalk(ast, fn
-      {{:__block__, _meta, [kw]}, value} when kw in [:do, :else, :catch, :rescue, :after] ->
-        {kw, value}
+      {{:__block__, meta, [key]}, value} = pair when is_atom(key) and is_list(meta) ->
+        if Keyword.get(meta, :format) == :keyword, do: {key, value}, else: pair
 
       other ->
         other
@@ -181,15 +182,22 @@ defmodule Mutare.Transform do
     }
   end
 
-  # case :persistent_term.get(:mutare_active, 0) do
-  #   <id> -> <mutated> ; ... ; _ -> <default>
-  # end
+  # (case :persistent_term.get(:mutare_active, 0) do
+  #    <id> -> <mutated> ; ... ; _ -> <default>
+  #  end)
+  #
+  # The `case` is wrapped in a single-expression block (i.e. parenthesised).
+  # Semantically transparent — and tail-position-preserving — but it makes the
+  # node render safely in *any* position. Without it, Sourceror's formatter
+  # crashes when a bare `case` lands as the value of a `key: value` pair in a
+  # map or keyword literal (e.g. `%{ms: case ... end}`).
   defp build_case(default_node, mutant_clauses) do
     selector =
       {{:., [], [:persistent_term, :get]}, [], [@selector_key, @baseline]}
 
     catch_all = {:->, [], [[{:_, [], nil}], default_node]}
-    {:case, [], [selector, [do: mutant_clauses ++ [catch_all]]]}
+    case_node = {:case, [], [selector, [do: mutant_clauses ++ [catch_all]]]}
+    {:__block__, [], [case_node]}
   end
 
   defp mutations(node, mutators) do
