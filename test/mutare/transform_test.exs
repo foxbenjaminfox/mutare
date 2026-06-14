@@ -55,6 +55,7 @@ defmodule Mutare.TransformTest do
   test ":mutators selects which families run" do
     {_meta, sites, _next_id} =
       Mutare.transform_string(@sample, mutators: [Mutare.Mutators.Arithmetic])
+
     assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
   end
 
@@ -66,7 +67,8 @@ defmodule Mutare.TransformTest do
     end
     """
 
-    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: [Mutare.Test.BooleanMutator])
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, mutators: [Mutare.Test.BooleanMutator])
 
     # body `a and b` → in-place; guard `a and b` → lifted. The author wrote one
     # `mutate/1`; placement is decided by position.
@@ -135,6 +137,7 @@ defmodule Mutare.TransformTest do
   test "division in a capture body (`& &1 / 2`) is still mutated" do
     {_meta, sites, _next_id} =
       Mutare.transform_string("defmodule C do\n  def half, do: &(&1 / 2)\nend\n")
+
     assert [%Site{mutator: :arithmetic, original_op: :/, mutated_op: :*}] = sites
   end
 end
