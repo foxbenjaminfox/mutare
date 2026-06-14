@@ -68,4 +68,15 @@ defmodule Mutare.SchemaTest do
     assert Schema.count(schema) == 1
     assert [{"lib/bad.ex", _reason}] = schema.skipped
   end
+
+  test "an internal error during transform crashes; it is not swallowed as a skip",
+       %{root: root} do
+    # Source parses fine, so the failure is in the transform itself — a tool bug,
+    # not bad input. It must surface, not vanish into `schema.skipped`.
+    write(root, "lib/ok.ex", "defmodule Ok do\n  def f(x), do: x + 1\nend\n")
+
+    assert_raise RuntimeError, "boom from mutator", fn ->
+      Schema.build(root, mutators: [Mutare.Test.RaisingMutator])
+    end
+  end
 end

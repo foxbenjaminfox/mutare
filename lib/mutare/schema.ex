@@ -4,9 +4,11 @@ defmodule Mutare.Schema do
   its metamutant, with globally-unique mutant ids threaded across files.
 
   This is the manifest the runner compiles once and the report reads from.
-  Files that have no mutation sites, or that fail to parse/transform, are left
-  out of `:metamutants` (their originals are used as-is) but never crash the
-  build — a single unparseable file should not sink the run.
+  Files that have no mutation sites, or that *fail to parse*, are left out of
+  `:metamutants` (their originals are used as-is) but never crash the build — a
+  single unparseable file should not sink the run. A failure *after* a clean
+  parse (transform or render) is a bug in this tool, not bad input, and is left
+  to crash: see `safe_transform/4`.
   """
 
   alias Mutare.Site
@@ -114,12 +116,21 @@ defmodule Mutare.Schema do
     end
   end
 
+  # Only an *unparseable source* is skipped: the three exceptions below are the
+  # ones Elixir's parser (via `Sourceror.parse_string!`) raises on malformed
+  # input, and there is nothing the tool can do about a file it cannot read as
+  # Elixir. Every other exception means the parse succeeded and we then failed
+  # while transforming or rendering — i.e. a bug in this tool (a bad clause, a
+  # construct the transform mishandles, a Sourceror formatter crash). Swallowing
+  # those as "skipped files" is exactly how the two compile-poisoning bugs hid
+  # (see NOTES.md); let them crash so they surface.
   defp safe_transform(source, rel, next_id, opts) do
     opts = Keyword.merge(opts, file: rel, start_id: next_id)
     {meta, sites, next_id} = Mutare.Transform.transform_string(source, opts)
     {:ok, meta, sites, next_id}
   rescue
-    error -> {:error, error}
+    error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
+      {:error, error}
   end
 
   defp finalize(%__MODULE__{} = schema) do
