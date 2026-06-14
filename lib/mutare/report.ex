@@ -76,7 +76,8 @@ defmodule Mutare.Report do
   """
   @spec score([Result.t()]) :: float()
   def score(results) do
-    killed = count(results, :killed)
+    # A timeout is a kill (the mutation caused a hang).
+    killed = count(results, :killed) + count(results, :timeout)
     no_coverage = count(results, :no_coverage)
     denominator = length(results) - no_coverage
 
@@ -95,11 +96,14 @@ defmodule Mutare.Report do
   @spec summary([Result.t()]) :: String.t()
   def summary(results) do
     killed = count(results, :killed)
+    timeout = count(results, :timeout)
     survived = count(results, :survived)
     no_coverage = count(results, :no_coverage)
 
     tally =
-      ["#{killed} killed", "#{survived} survived"]
+      ["#{killed} killed"]
+      |> maybe_add(timeout > 0, "#{timeout} timeout")
+      |> Kernel.++(["#{survived} survived"])
       |> maybe_add(no_coverage > 0, "#{no_coverage} no-coverage")
       |> Kernel.++(["#{length(results)} total"])
       |> Enum.join(", ")

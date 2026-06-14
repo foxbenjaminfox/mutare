@@ -42,7 +42,13 @@ to the active copy by id:
   only the files that cover its line (file-granular; `--full` runs the whole
   suite per mutant)
 
-Parallel workers, timeouts and `--since` are later milestones.
+**Milestone 4 (in progress) — parallel workers + timeouts.** Mutants run
+`:workers` at a time; each run is capped (`baseline × :timeout_multiplier`), and
+a mutation that hangs (e.g. a loop turned infinite) is caught — the run halts
+itself after the deadline (portable; no process-killing) and counts as a kill.
+
+`--since`, `# mutare:ignore`, the custom-mutator API, and the compile-poisoning
+pre-filter are still to come.
 
 ## Usage
 
@@ -60,7 +66,10 @@ Optional `.mutare.exs`:
   paths: ["lib"],
   exclude: ["lib/generated/**"],
   mutators: :all,
-  min_score: 70
+  min_score: 70,
+  workers: System.schedulers_online(),
+  timeout_multiplier: 3.0,
+  test_selection: :coverage
 ]
 ```
 

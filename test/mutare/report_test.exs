@@ -35,6 +35,24 @@ defmodule Mutare.ReportTest do
     assert Report.score(results) == 2 / 3 * 100
   end
 
+  test "score/1 counts a timeout as a kill" do
+    results = [
+      %Result{status: :killed},
+      %Result{status: :timeout},
+      %Result{status: :survived}
+    ]
+
+    # 2 kills (killed + timeout) / 3 total
+    assert Report.score(results) == 2 / 3 * 100
+  end
+
+  test "summary/1 surfaces timeouts when present" do
+    results = [%Result{status: :killed}, %Result{status: :timeout}, %Result{status: :survived}]
+
+    assert Report.summary(results) ==
+             "mutation score: 66.7%  (1 killed, 1 timeout, 1 survived, 3 total)"
+  end
+
   test "score/1 excludes no_coverage from the denominator" do
     results = [
       %Result{status: :killed},

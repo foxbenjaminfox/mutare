@@ -17,8 +17,18 @@ defmodule Mutare.Sandbox do
 
   @excluded ~w(_build .git .elixir_ls .lexical cover)
 
+  @timeout_env "MUTARE_TIMEOUT"
+  @timeout_exit 124
+
   # Kept in sync with Mutare.Selector so the bootstrap matches what the
   # metamutant reads.
+  #
+  # The timeout watcher is how Mutare enforces a per-mutant wall-clock cap
+  # *portably*: instead of the runner killing a hung OS process tree (which
+  # needs platform-specific signals), the mutant process halts *itself* after
+  # the deadline. `System.halt/1` stops the VM immediately and uncatchably, and
+  # the BEAM preempts a looping process so the watcher always gets to run; if the
+  # suite finishes first the watcher dies with the VM. Exit 124 ⇒ timed out.
   @bootstrap """
   # ---- injected by Mutare: select the active mutant from the environment ----
   :persistent_term.put(
@@ -29,6 +39,13 @@ defmodule Mutare.Sandbox do
       raw -> String.to_integer(raw)
     end
   )
+
+  # ---- injected by Mutare: per-mutant timeout (self-halt; no external kill) --
+  case System.get_env(#{inspect(@timeout_env)}) do
+    nil -> :ok
+    "" -> :ok
+    raw -> spawn(fn -> Process.sleep(String.to_integer(raw)); System.halt(#{@timeout_exit}) end)
+  end
   # ---------------------------------------------------------------------------
   """
 
@@ -54,6 +71,14 @@ defmodule Mutare.Sandbox do
   @doc "The bootstrap snippet prepended to the sandbox's test helper."
   @spec bootstrap() :: String.t()
   def bootstrap, do: @bootstrap
+
+  @doc "Env var the runner sets to give a mutant run its wall-clock cap (ms)."
+  @spec timeout_env() :: String.t()
+  def timeout_env, do: @timeout_env
+
+  @doc "Exit code the self-halt watcher uses, signalling a timed-out mutant."
+  @spec timeout_exit() :: non_neg_integer()
+  def timeout_exit, do: @timeout_exit
 
   # --- internals -----------------------------------------------------------
 

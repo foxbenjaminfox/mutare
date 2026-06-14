@@ -72,6 +72,7 @@ defmodule Mix.Tasks.Mutare do
   end
 
   defp progress(%Result{status: :killed}), do: IO.write(".")
+  defp progress(%Result{status: :timeout}), do: IO.write("T")
   defp progress(%Result{status: :survived}), do: IO.write("S")
   defp progress(%Result{status: :no_coverage}), do: IO.write("-")
   defp progress(%Result{}), do: IO.write("?")

@@ -26,10 +26,24 @@ defmodule Mutare.Runner do
   (without touching the line itself) is still included, as long as a sibling test
   in its file does touch the line.
 
-  Single worker still; parallel workers and timeouts are M4.
+  ## Parallel workers and timeouts
+
+  The per-mutant phase runs `:workers` mutants concurrently (default
+  `System.schedulers_online/0`), each its own `mix test` OS process in the shared
+  sandbox. Each run has a wall-clock cap (`baseline × :timeout_multiplier`,
+  default 3.0, with a floor; or an explicit `:timeout` in ms): a mutation can
+  turn a terminating loop infinite, so the run is capped.
+
+  The cap is enforced *portably* by the mutant run **halting itself** — the
+  injected watcher (see `Mutare.Sandbox`) calls `System.halt/1` after the
+  deadline — rather than the runner killing an OS process tree (which needs
+  platform-specific signals). A capped run exits with `Sandbox.timeout_exit/0`,
+  which we count as `:timeout` (a kill — the hang is observable misbehavior).
   """
 
   alias Mutare.{Coverage, Result, Sandbox, Schema}
+
+  @timeout_exit Sandbox.timeout_exit()
 
   @type run :: %{
           schema: Schema.t(),
@@ -71,15 +85,44 @@ defmodule Mutare.Runner do
 
       with :ok <- compile(sandbox),
            {:ok, baseline_ms, selection} <- probe(sandbox, schema, mode) do
+        cap = timeout_cap(baseline_ms, opts)
+        workers = Keyword.get(opts, :workers, System.schedulers_online())
+
         results =
-          Enum.map(schema.sites, fn site ->
-            result = classify(sandbox, site, selection)
-            reporter.(result)
-            result
-          end)
+          schema.sites
+          |> Task.async_stream(
+            fn site ->
+              result = classify(sandbox, site, selection, cap)
+              reporter.(result)
+              result
+            end,
+            max_concurrency: workers,
+            ordered: true,
+            timeout: :infinity
+          )
+          |> Enum.map(fn {:ok, result} -> result end)
 
         {:ok, %{schema: schema, results: results, sandbox: sandbox, baseline_ms: baseline_ms}}
       end
+    end
+  end
+
+  # Per-mutant wall-clock cap. An explicit `:timeout` (ms) wins; otherwise
+  # baseline × `:timeout_multiplier` (default 3.0), with a floor so tiny suites
+  # don't get an absurdly small cap. A mutation can turn a terminating loop
+  # infinite, so without a cap a single mutant could hang the whole run.
+  defp timeout_cap(baseline_ms, opts) do
+    case Keyword.get(opts, :timeout) do
+      ms when is_integer(ms) and ms > 0 ->
+        ms
+
+      _ ->
+        multiplier = Keyword.get(opts, :timeout_multiplier, 3.0)
+        # A generous floor: under parallel workers the baseline (measured
+        # uncontended) underestimates a mutant's wall time, so a tight cap would
+        # false-timeout a slow-but-finite mutant. A true infinite loop runs far
+        # past any floor, so we still catch it.
+        max(round(baseline_ms * multiplier), 10_000)
     end
   end
 
@@ -191,33 +234,45 @@ defmodule Mutare.Runner do
 
   # === per-mutant runs =======================================================
 
-  defp classify(sandbox, site, :all), do: run_mutant(sandbox, site, [])
+  defp classify(sandbox, site, :all, cap), do: run_mutant(sandbox, site, [], cap)
 
-  defp classify(sandbox, site, selection) when is_map(selection) do
+  defp classify(sandbox, site, selection, cap) when is_map(selection) do
     case Map.fetch(selection, site.id) do
-      {:ok, test_args} -> run_mutant(sandbox, site, test_args)
+      {:ok, test_args} -> run_mutant(sandbox, site, test_args, cap)
       :error -> %Result{site: site, status: :no_coverage, duration_ms: 0, output: nil}
     end
   end
 
-  defp run_mutant(sandbox, site, test_args) do
+  defp run_mutant(sandbox, site, test_args, cap) do
     {micros, {output, status}} =
-      :timer.tc(fn -> mix(sandbox, ["test" | test_args], Integer.to_string(site.id)) end)
+      :timer.tc(fn -> mix(sandbox, ["test" | test_args], Integer.to_string(site.id), cap) end)
 
     %Result{
       site: site,
-      # exit 0 means every test passed *despite* the mutation → it SURVIVED.
-      status: if(status == 0, do: :survived, else: :killed),
+      status: classify_status(status),
       duration_ms: div(micros, 1000),
       output: output
     }
   end
 
-  defp mix(sandbox, args, mutant_id) do
-    System.cmd("mix", args,
-      cd: sandbox,
-      stderr_to_stdout: true,
-      env: [{"MIX_ENV", "test"}, {Mutare.Selector.env_var(), mutant_id}]
-    )
+  # exit 0 = every test passed despite the mutation → SURVIVED; the watcher's
+  # exit code = the mutation caused a hang we capped (:timeout, a kill); any
+  # other non-zero = a test failed → KILLED.
+  defp classify_status(0), do: :survived
+  defp classify_status(status) when status == @timeout_exit, do: :timeout
+  defp classify_status(_status), do: :killed
+
+  # Run `mix <args>` in the sandbox as a fresh OS process. `cap` (ms, or nil)
+  # is passed to the injected timeout watcher, which halts the run itself if it
+  # overruns — so there is no process tree to kill and nothing platform-specific.
+  defp mix(sandbox, args, mutant_id, cap \\ nil) do
+    env =
+      [{"MIX_ENV", "test"}, {Mutare.Selector.env_var(), mutant_id}]
+      |> maybe_cap(cap)
+
+    System.cmd("mix", args, cd: sandbox, stderr_to_stdout: true, env: env)
   end
+
+  defp maybe_cap(env, nil), do: env
+  defp maybe_cap(env, cap), do: [{Sandbox.timeout_env(), Integer.to_string(cap)} | env]
 end

@@ -75,10 +75,37 @@ case this becomes unnecessary.
   code size / single-compile time grows with mutation density on overloaded
   functions — the accepted cost (first-order ⇒ no copy sharing).
 
-### No timeouts `[M4]`
-A mutation can turn a terminating loop infinite; a mutant run would hang. Per-
-mutant wall-clock cap (`baseline × multiplier`, timeout = killed) is M4.
-`System.cmd/3` has no timeout, so this needs a Port/Task with kill.
+### Timeouts — portable self-halt (M4 done) `[refine]`
+A mutation can turn a terminating loop infinite. Each mutant run gets a
+wall-clock cap (`baseline × :timeout_multiplier`, default 3.0, floored; or an
+explicit `:timeout` ms), and a timeout counts as a kill (`:timeout`).
+
+The cap is enforced **portably, with no process-killing**: the injected sandbox
+watcher (`Mutare.Sandbox`) spawns a process that `System.halt(124)`s after the
+deadline. The BEAM preempts a looping process, so the watcher always runs (even
+on a tight infinite loop — confirmed); if the suite finishes first the watcher
+dies with the VM; exit 124 ⇒ timed out. This replaced an earlier Port + `kill`/
+`ps` process-group approach (Unix-only, and `Port.close` alone did *not* kill a
+hung beam — SIGTERM is trapped). Caveat: a hang that wedges *every* scheduler in
+a non-yielding NIF could starve the watcher — not reachable from mutating Elixir
+source, so not handled.
+
+False-timeout guard: the cap floor is 10 s. The baseline is measured uncontended
+but mutants run under parallel-worker contention, so a tight cap was
+false-timing-out slow-but-finite mutants (a non-deterministic false kill, seen in
+testing). A true infinite loop overruns any floor, so the generous floor keeps
+correctness without missing real hangs. Per-covering-file caps would be tighter
+and more precise — a refinement.
+
+### Parallel workers (M4 done) `[refine]`
+The per-mutant phase runs `:workers` mutants concurrently (default
+`System.schedulers_online/0`) via `Task.async_stream` in the shared sandbox.
+Concurrent `mix test` in one sandbox contends on mix's build lock ("Waiting for
+lock…") and, since each spawns a full BEAM, oversubscribes CPU — a real but
+bounded overhead (4 workers gave ~2.4× in a spike). The design's open question —
+per-worker `MIX_BUILD_PATH` vs full source copy — would remove the contention;
+deferred. Default workers may be worth lowering from schedulers_online to cut
+oversubscription.
 
 ### Test selection — file-granular (M3b done) `[refine / M4]`
 Coverage-driven *test selection* is done at **test-file** granularity: each test
@@ -95,7 +122,7 @@ this (aggregate cover per file, no race) and is also *safer* for the indirect-
 kill case: if any test in a file covers the line, the whole file runs, so a test
 that kills the mutant without touching the line itself is still included as long
 as a sibling does. True per-test would need N per-test `mix` runs (one boot each)
-— deferred. Parallel workers are M4; covered mutants still run serially.
+— deferred.
 
 Caveat: `:coverage` runs each test file *in isolation* for the probe, so a suite
 with cross-file dependencies (a test relying on state another file set up) can
