@@ -9,11 +9,10 @@ defmodule Mutare.Poison do
   module which mutant ids the compile error points at, drops them, and rebuilds.
 
   We map each error's `file:line` to the mutant id whose selector clause body
-  sits on that line (by re-parsing the metamutant). The poison is always in a
-  mutant clause — the catch-all is the original, which compiled.
+  sits on that line (by re-parsing the metamutant via `Mutare.Metamutant`). The
+  poison is always in a mutant clause — the catch-all is the original, which
+  compiled.
   """
-
-  @key Mutare.Selector.key()
 
   @doc """
   Mutant ids implicated by `compile_output`, given `%{file => metamutant source}`.
@@ -41,29 +40,8 @@ defmodule Mutare.Poison do
   end
 
   defp ids_at_line(source, line) do
-    {_ast, ids} =
-      source
-      |> Code.string_to_quoted!(columns: true)
-      |> Macro.prewalk([], fn
-        {:case, _meta, [subject, [do: clauses]]} = node, acc ->
-          if selector?(subject),
-            do: {node, acc ++ ids_in_clauses(clauses, line)},
-            else: {node, acc}
-
-        node, acc ->
-          {node, acc}
-      end)
-
-    ids
+    for clause <- Mutare.Metamutant.selector_clauses(source),
+        clause.clause_line == line,
+        do: clause.id
   end
-
-  defp ids_in_clauses(clauses, line) do
-    for {:->, _, [[id], body]} <- clauses, is_integer(id), node_line(body) == line, do: id
-  end
-
-  defp selector?({{:., _, [:persistent_term, :get]}, _, [key | _]}), do: key == @key
-  defp selector?(_), do: false
-
-  defp node_line({_form, meta, _args}) when is_list(meta), do: Keyword.get(meta, :line)
-  defp node_line(_), do: nil
 end

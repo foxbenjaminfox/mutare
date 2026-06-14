@@ -23,8 +23,6 @@ defmodule Mutare.Coverage do
   # so it is legitimately undefined at compile time.
   @compile {:no_warn_undefined, :cover}
 
-  @key Mutare.Selector.key()
-
   @doc """
   The set of mutant ids whose selector line is covered by `coverdata_path`.
 
@@ -70,71 +68,17 @@ defmodule Mutare.Coverage do
   end
 
   @doc """
-  Map every mutant id to `{module, line}` of the selector `case` that hosts it,
-  by re-parsing a rendered metamutant. A module stack (pushed/popped via
-  `Macro.traverse/4`) attributes each selector to its enclosing module.
+  Map every mutant id to `{module, line}` of the selector `case` that hosts it.
+
+  The line is the selector's catch-all body line — taken at baseline whenever the
+  code runs. Delegates the metamutant walk to `Mutare.Metamutant`.
   """
   @spec selector_index(String.t()) :: %{pos_integer() => {module(), pos_integer()}}
   def selector_index(metamutant_source) do
-    ast = Code.string_to_quoted!(metamutant_source, columns: true)
-
-    {_ast, {_stack, index}} =
-      Macro.traverse(
-        ast,
-        {[], %{}},
-        &enter/2,
-        &leave/2
-      )
-
-    index
+    for clause <- Mutare.Metamutant.selector_clauses(metamutant_source),
+        into: %{},
+        do: {clause.id, {clause.module, clause.catch_all_line}}
   end
-
-  # --- traversal -----------------------------------------------------------
-
-  defp enter({:defmodule, _meta, [alias_node | _]} = node, {stack, index}) do
-    {node, {[module_name(alias_node) | stack], index}}
-  end
-
-  defp enter({:case, _meta, [subject, [do: clauses]]} = node, {stack, index}) do
-    if selector?(subject) do
-      module = List.first(stack)
-      line = catch_all_line(clauses)
-      index = Enum.reduce(clause_ids(clauses), index, &Map.put(&2, &1, {module, line}))
-      {node, {stack, index}}
-    else
-      {node, {stack, index}}
-    end
-  end
-
-  defp enter(node, acc), do: {node, acc}
-
-  defp leave({:defmodule, _meta, _args} = node, {stack, index}) do
-    {node, {tl(stack), index}}
-  end
-
-  defp leave(node, acc), do: {node, acc}
-
-  defp selector?({{:., _, [:persistent_term, :get]}, _, [key | _]}), do: key == @key
-  defp selector?(_), do: false
-
-  defp clause_ids(clauses) do
-    for {:->, _, [[pattern], _body]} <- clauses, is_integer(pattern), do: pattern
-  end
-
-  # Line of the catch-all (`_ ->`) clause's body — the line cover counts when a
-  # selector runs at baseline.
-  defp catch_all_line(clauses) do
-    Enum.find_value(clauses, fn
-      {:->, _, [[{:_, _, _}], body]} -> node_line(body)
-      _ -> nil
-    end)
-  end
-
-  defp node_line({_form, meta, _args}) when is_list(meta), do: Keyword.get(meta, :line)
-  defp node_line(_), do: nil
-
-  defp module_name({:__aliases__, _, parts}), do: Module.concat(parts)
-  defp module_name(_), do: nil
 
   # --- cover ---------------------------------------------------------------
 

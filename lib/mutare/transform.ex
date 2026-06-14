@@ -46,8 +46,6 @@ defmodule Mutare.Transform do
   alias Mutare.Site
 
   @default_mutators [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
-  @selector_key Mutare.Selector.key()
-  @baseline Mutare.Selector.baseline()
 
   @doc """
   Transform a source string into `{metamutant_source, [%Site{}]}`.
@@ -279,7 +277,7 @@ defmodule Mutare.Transform do
   # end
   defp build_dispatcher(vis, name, arity, mut_ids, base) do
     args = dispatcher_args(arity)
-    selector = {{:., [], [:persistent_term, :get]}, [], [@selector_key, @baseline]}
+    selector = Mutare.Metamutant.subject_ast()
 
     mut_clauses =
       Enum.map(mut_ids, fn id -> {:->, [], [[id], {:"#{base}_m#{id}", [], args}]} end)
@@ -519,7 +517,7 @@ defmodule Mutare.Transform do
   # Wrapped in a single-expression block so it renders safely in any position
   # (a bare `case` as a `key: value` value crashes Sourceror's formatter).
   defp build_case(default_node, mutant_clauses) do
-    selector = {{:., [], [:persistent_term, :get]}, [], [@selector_key, @baseline]}
+    selector = Mutare.Metamutant.subject_ast()
     catch_all = {:->, [], [[{:_, [], nil}], default_node]}
     case_node = {:case, [], [selector, [do: mutant_clauses ++ [catch_all]]]}
     {:__block__, [], [case_node]}
