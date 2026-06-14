@@ -80,7 +80,39 @@ defmodule Mutare.Sandbox do
   @spec timeout_exit() :: non_neg_integer()
   def timeout_exit, do: @timeout_exit
 
+  @doc """
+  Run `mix <args>` in `sandbox` as a fresh OS process, returning
+  `{output, exit_status}`.
+
+  `MIX_ENV=test` and `MUTANT_UNDER_TEST=<mutant_id>` are always set. `cap` (ms,
+  or `nil`) is handed to the injected timeout watcher, which halts the run itself
+  if it overruns — so there is no process tree to kill and nothing
+  platform-specific.
+  """
+  @spec mix(Path.t(), [String.t()], String.t(), pos_integer() | nil) ::
+          {String.t(), non_neg_integer()}
+  def mix(sandbox, args, mutant_id, cap \\ nil) do
+    env =
+      [{"MIX_ENV", "test"}, {Mutare.Selector.env_var(), mutant_id}]
+      |> maybe_cap(cap)
+
+    System.cmd("mix", args, cd: sandbox, stderr_to_stdout: true, env: env)
+  end
+
+  @doc """
+  Like `mix/4`, but wall-clock-timed: returns `{elapsed_ms, output, exit_status}`.
+  """
+  @spec timed_mix(Path.t(), [String.t()], String.t(), pos_integer() | nil) ::
+          {non_neg_integer(), String.t(), non_neg_integer()}
+  def timed_mix(sandbox, args, mutant_id, cap \\ nil) do
+    {micros, {output, status}} = :timer.tc(fn -> mix(sandbox, args, mutant_id, cap) end)
+    {div(micros, 1000), output, status}
+  end
+
   # --- internals -----------------------------------------------------------
+
+  defp maybe_cap(env, nil), do: env
+  defp maybe_cap(env, cap), do: [{@timeout_env, Integer.to_string(cap)} | env]
 
   defp default_sandbox do
     Path.join(System.tmp_dir!(), "mutare_sandbox_#{System.unique_integer([:positive])}")
