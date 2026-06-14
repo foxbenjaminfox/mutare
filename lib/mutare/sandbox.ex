@@ -16,8 +16,8 @@ defmodule Mutare.Sandbox do
   per-mutant timeout cap the bootstrap honours) lives in `Mutare.Sandbox.Command`.
   """
 
+  alias Mutare.{Options, Schema}
   alias Mutare.Sandbox.Command
-  alias Mutare.Schema
 
   @excluded ~w(_build .git .elixir_ls .lexical cover)
 
@@ -49,14 +49,16 @@ defmodule Mutare.Sandbox do
   @doc """
   Prepare a sandbox for `schema` taken from `root`. Returns the sandbox path.
 
-  Options: `:sandbox` — target directory (default: a fresh temp dir).
+  `opts` is a `Mutare.Options` (or a keyword list resolved into one); its
+  `:sandbox` field is the target directory (default: a fresh temp dir).
 
   The sandbox must be disjoint from the project tree: it cannot be the project
-  root, contain it, or be contained by it.
+  root, contain it, or be contained by it. `Options` validates the *shape* of the
+  path; this disjointness check is enforced here because it is relative to `root`.
   """
-  @spec prepare(Path.t(), Schema.t(), keyword()) :: Path.t()
+  @spec prepare(Path.t(), Schema.t(), Options.t() | keyword()) :: Path.t()
   def prepare(root, %Schema{} = schema, opts \\ []) do
-    sandbox = Keyword.get_lazy(opts, :sandbox, &default_sandbox/0)
+    sandbox = Options.new(opts).sandbox || default_sandbox()
 
     validate_paths!(root, sandbox)
     File.rm_rf!(sandbox)

@@ -28,7 +28,7 @@ defmodule Mix.Tasks.Mutare do
   """
   use Mix.Task
 
-  alias Mutare.{Config, Report, Result, Runner, Schema}
+  alias Mutare.{Config, Options, Report, Result, Runner, Schema}
 
   @switches [
     only: :string,
@@ -43,19 +43,25 @@ defmodule Mix.Tasks.Mutare do
   def run(argv) do
     {flags, rest} = OptionParser.parse!(argv, strict: @switches)
     root = List.first(rest) || "."
-    config = root |> resolve_config(flags) |> scope_to_changes(root, flags)
+    options = resolve_options(root, flags)
 
-    schema = Schema.build(root, config)
+    schema = Schema.build(root, options)
     announce(schema, root)
 
-    case Runner.run_with_schema(schema, root, Keyword.put(config, :reporter, &progress/1)) do
-      {:ok, run} -> report(run, config)
+    case Runner.run_with_schema(schema, root, %{options | reporter: &progress/1}) do
+      {:ok, run} -> report(run, options)
       {:error, reason, detail} -> Mix.raise(format_error(reason, detail))
     end
   end
 
-  defp resolve_config(root, flags) do
-    Config.merge(Config.load(root), flags)
+  # Resolve `.mutare.exs` + CLI flags into a validated `Mutare.Options`. Both an
+  # unknown mutator (from `Config`) and an invalid option (from `Options.new/1`)
+  # raise `ArgumentError`, surfaced here as a clean Mix failure.
+  defp resolve_options(root, flags) do
+    Config.load(root)
+    |> Config.merge(flags)
+    |> scope_to_changes(root, flags)
+    |> Options.new()
   rescue
     error in ArgumentError -> Mix.raise(Exception.message(error))
   end
@@ -95,10 +101,10 @@ defmodule Mix.Tasks.Mutare do
   defp progress(%Result{status: :poisoned}), do: IO.write("x")
   defp progress(%Result{}), do: IO.write("?")
 
-  defp report(run, config) do
+  defp report(run, %Options{} = options) do
     Mix.shell().info("\n")
     Mix.shell().info(Report.render(run.results, run.schema.sources))
-    gate(run.results, config[:min_score])
+    gate(run.results, options.min_score)
   end
 
   defp gate(results, min_score) do

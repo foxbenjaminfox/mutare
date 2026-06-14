@@ -30,7 +30,7 @@ defmodule Mutare.Runner do
   the hang is observable misbehavior).
   """
 
-  alias Mutare.{Poison, Result, Sandbox, Schema, Site}
+  alias Mutare.{Options, Poison, Result, Sandbox, Schema, Site}
   alias Mutare.Runner.Probe
   alias Mutare.Sandbox.Command
 
@@ -49,37 +49,42 @@ defmodule Mutare.Runner do
   @doc """
   Run mutation testing against the project at `root`.
 
-  Returns `{:ok, run}` or `{:error, reason, detail}`. Options are forwarded to
-  `Mutare.Schema.build/2` and `Mutare.Sandbox.prepare/3`.
+  `opts` is a `Mutare.Options` (or a keyword list resolved into one). Returns
+  `{:ok, run}` or `{:error, reason, detail}`.
   """
-  @spec run(Path.t(), keyword()) :: {:ok, run()} | error()
+  @spec run(Path.t(), Options.t() | keyword()) :: {:ok, run()} | error()
   def run(root \\ ".", opts \\ []) do
-    schema = Schema.build(root, opts)
-    run_with_schema(schema, root, opts)
+    options = Options.new(opts)
+    schema = Schema.build(root, options)
+    run_with_schema(schema, root, options)
   end
 
   @doc """
   Run a pre-built schema (lets a caller report the mutant count before launching).
 
-  Recognised options: `:sandbox` (forwarded) and `:reporter`, a 1-arity
-  function called with each `Mutare.Result` as it completes — for live progress.
+  `opts` is a `Mutare.Options` (or a keyword list resolved into one). Beyond the
+  schema/sandbox fields, it uses `:reporter` — a 1-arity function called with each
+  `Mutare.Result` as it completes, for live progress — and `:test_selection`,
+  `:workers`, `:timeout`, `:timeout_multiplier`.
   """
-  @spec run_with_schema(Schema.t(), Path.t(), keyword()) :: {:ok, run()} | error()
+  @spec run_with_schema(Schema.t(), Path.t(), Options.t() | keyword()) ::
+          {:ok, run()} | error()
   def run_with_schema(%Schema{} = schema, root \\ ".", opts \\ []) do
+    options = Options.new(opts)
+
     if Schema.count(schema) == 0 do
-      {:error, :nothing_to_mutate,
-       "no mutation sites found under #{inspect(opts[:paths] || ["lib"])}"}
+      {:error, :nothing_to_mutate, "no mutation sites found under #{inspect(options.paths)}"}
     else
-      reporter = Keyword.get(opts, :reporter, fn _result -> :ok end)
-      mode = Keyword.get(opts, :test_selection, :coverage)
+      reporter = options.reporter || fn _result -> :ok end
+      mode = options.test_selection
 
       # Prepare + compile, recovering from compile-poisoning by dropping the
       # offending mutants and rebuilding. `schema` here may differ from the input
       # (poisoners flagged), which is what the run reports against.
-      with {:ok, schema, sandbox} <- prepare_compiling(schema, root, opts),
+      with {:ok, schema, sandbox} <- prepare_compiling(schema, root, options),
            {:ok, baseline_ms, selection} <- Probe.run(sandbox, schema, mode) do
-        cap = timeout_cap(baseline_ms, opts)
-        workers = Keyword.get(opts, :workers, System.schedulers_online())
+        cap = timeout_cap(baseline_ms, options)
+        workers = options.workers
 
         results =
           schema.sites
@@ -104,19 +109,14 @@ defmodule Mutare.Runner do
   # baseline × `:timeout_multiplier` (default 3.0), with a floor so tiny suites
   # don't get an absurdly small cap. A mutation can turn a terminating loop
   # infinite, so without a cap a single mutant could hang the whole run.
-  defp timeout_cap(baseline_ms, opts) do
-    case Keyword.get(opts, :timeout) do
-      ms when is_integer(ms) and ms > 0 ->
-        ms
+  defp timeout_cap(_baseline_ms, %Options{timeout: ms}) when is_integer(ms) and ms > 0, do: ms
 
-      _ ->
-        multiplier = Keyword.get(opts, :timeout_multiplier, 3.0)
-        # A generous floor: under parallel workers the baseline (measured
-        # uncontended) underestimates a mutant's wall time, so a tight cap would
-        # false-timeout a slow-but-finite mutant. A true infinite loop runs far
-        # past any floor, so we still catch it.
-        max(round(baseline_ms * multiplier), 10_000)
-    end
+  defp timeout_cap(baseline_ms, %Options{timeout_multiplier: multiplier}) do
+    # A generous floor: under parallel workers the baseline (measured
+    # uncontended) underestimates a mutant's wall time, so a tight cap would
+    # false-timeout a slow-but-finite mutant. A true infinite loop runs far
+    # past any floor, so we still catch it.
+    max(round(baseline_ms * multiplier), 10_000)
   end
 
   # Materialise the schema and compile it once, recovering from compile-poisoning.
@@ -125,11 +125,11 @@ defmodule Mutare.Runner do
   defp prepare_compiling(
          schema,
          root,
-         opts,
+         %Options{} = options,
          skip_ids \\ MapSet.new(),
          attempts \\ @poison_attempts
        ) do
-    sandbox = Sandbox.prepare(root, schema, opts)
+    sandbox = Sandbox.prepare(root, schema, options)
 
     case compile(sandbox) do
       :ok ->
@@ -144,11 +144,11 @@ defmodule Mutare.Runner do
           # `skip_ids` keep referring to the same mutations.
           skip_ids = MapSet.union(skip_ids, poison)
           # Rebuild against the *same* files this schema covers (not a fresh
-          # discovery), so a restricted schema (`from_files/3`, `:only_files`,
-          # `:exclude`) can't silently expand. Forward the original transform
-          # opts so `:mutators` survive; ids stay stable across rebuilds.
-          schema = Schema.rebuild(schema, root, Keyword.put(opts, :skip_ids, skip_ids))
-          prepare_compiling(schema, root, opts, skip_ids, attempts - 1)
+          # discovery), so a restricted schema (`from_files/4`, `:only_files`,
+          # `:exclude`) can't silently expand. Forward the original options so
+          # `:mutators` survive; ids stay stable across rebuilds.
+          schema = Schema.rebuild(schema, root, options, skip_ids)
+          prepare_compiling(schema, root, options, skip_ids, attempts - 1)
         else
           # Couldn't identify (or keep making progress on) the poison → give up.
           failure

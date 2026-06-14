@@ -1,0 +1,208 @@
+defmodule Mutare.OptionsTest do
+  use ExUnit.Case, async: true
+
+  alias Mutare.Options
+
+  describe "new/1 defaults" do
+    test "an empty keyword list resolves to documented defaults" do
+      options = Options.new([])
+
+      assert options.paths == ["lib"]
+      assert options.exclude == []
+      assert options.mutators == nil
+      assert options.only_files == nil
+      assert options.test_selection == :coverage
+      assert options.timeout == nil
+      assert options.timeout_multiplier == 3.0
+      assert options.sandbox == nil
+      assert options.min_score == nil
+      assert options.reporter == nil
+    end
+
+    test ":workers defaults to the scheduler count (a concrete positive integer)" do
+      assert Options.new([]).workers == System.schedulers_online()
+    end
+  end
+
+  describe "new/1 idempotency" do
+    test "an existing struct is returned unchanged" do
+      options = Options.new(workers: 4, timeout: 1_000)
+      assert Options.new(options) == options
+    end
+  end
+
+  describe "new/1 unknown keys" do
+    test "rejects an unknown option" do
+      error = assert_raise ArgumentError, fn -> Options.new(worker: 4) end
+      assert Exception.message(error) =~ "unknown option(s) [:worker]"
+    end
+  end
+
+  describe ":paths" do
+    test "accepts a non-empty list of strings" do
+      assert Options.new(paths: ["lib", "src"]).paths == ["lib", "src"]
+    end
+
+    test "rejects an empty list" do
+      assert_raise ArgumentError, ~r/:paths must be a non-empty list/, fn ->
+        Options.new(paths: [])
+      end
+    end
+
+    test "rejects a non-list and non-string elements" do
+      assert_raise ArgumentError, fn -> Options.new(paths: "lib") end
+      assert_raise ArgumentError, fn -> Options.new(paths: [:lib]) end
+    end
+  end
+
+  describe ":exclude" do
+    test "accepts a list of strings" do
+      assert Options.new(exclude: ["lib/gen/**"]).exclude == ["lib/gen/**"]
+    end
+
+    test "rejects non-string elements" do
+      assert_raise ArgumentError, ~r/:exclude must be a list of strings/, fn ->
+        Options.new(exclude: [~r/x/])
+      end
+    end
+  end
+
+  describe ":test_selection" do
+    test "accepts :coverage and :full" do
+      assert Options.new(test_selection: :coverage).test_selection == :coverage
+      assert Options.new(test_selection: :full).test_selection == :full
+    end
+
+    test "rejects any other mode" do
+      assert_raise ArgumentError, ~r/:test_selection must be :coverage or :full/, fn ->
+        Options.new(test_selection: :partial)
+      end
+    end
+  end
+
+  describe ":workers" do
+    test "accepts a positive integer" do
+      assert Options.new(workers: 8).workers == 8
+    end
+
+    test "rejects zero, negatives, and non-integers" do
+      for bad <- [0, -1, 2.5, "4"] do
+        assert_raise ArgumentError, ~r/:workers must be a positive integer/, fn ->
+          Options.new(workers: bad)
+        end
+      end
+    end
+
+    test "an explicit nil falls back to the scheduler-count default" do
+      assert Options.new(workers: nil).workers == System.schedulers_online()
+    end
+  end
+
+  describe ":timeout" do
+    test "accepts nil or a positive integer (ms)" do
+      assert Options.new(timeout: nil).timeout == nil
+      assert Options.new(timeout: 2_000).timeout == 2_000
+    end
+
+    test "rejects zero, negatives, and non-integers" do
+      for bad <- [0, -5, 1.5, "2000"] do
+        assert_raise ArgumentError, ~r/:timeout must be a positive integer/, fn ->
+          Options.new(timeout: bad)
+        end
+      end
+    end
+  end
+
+  describe ":timeout_multiplier" do
+    test "accepts a positive number" do
+      assert Options.new(timeout_multiplier: 2).timeout_multiplier == 2
+      assert Options.new(timeout_multiplier: 1.5).timeout_multiplier == 1.5
+    end
+
+    test "rejects zero, negatives, and non-numbers" do
+      for bad <- [0, -1.0, "3"] do
+        assert_raise ArgumentError, ~r/:timeout_multiplier must be a positive number/, fn ->
+          Options.new(timeout_multiplier: bad)
+        end
+      end
+    end
+  end
+
+  describe ":sandbox" do
+    test "accepts nil or a non-empty path string" do
+      assert Options.new(sandbox: nil).sandbox == nil
+      assert Options.new(sandbox: "/tmp/sb").sandbox == "/tmp/sb"
+    end
+
+    test "rejects an empty string or a non-string" do
+      assert_raise ArgumentError, ~r/:sandbox must be a non-empty path string/, fn ->
+        Options.new(sandbox: "")
+      end
+
+      assert_raise ArgumentError, fn -> Options.new(sandbox: :tmp) end
+    end
+  end
+
+  describe ":min_score" do
+    test "accepts nil or a number in 0..100" do
+      assert Options.new(min_score: nil).min_score == nil
+      assert Options.new(min_score: 0).min_score == 0
+      assert Options.new(min_score: 70.0).min_score == 70.0
+      assert Options.new(min_score: 100).min_score == 100
+    end
+
+    test "rejects out-of-range and non-numbers" do
+      for bad <- [-1, 101, "70"] do
+        assert_raise ArgumentError, ~r/:min_score must be a number between 0 and 100/, fn ->
+          Options.new(min_score: bad)
+        end
+      end
+    end
+  end
+
+  describe ":only_files" do
+    test "accepts nil, a MapSet, or a list (normalised to a MapSet)" do
+      assert Options.new(only_files: nil).only_files == nil
+
+      set = MapSet.new(["lib/a.ex"])
+      assert Options.new(only_files: set).only_files == set
+      assert Options.new(only_files: ["lib/a.ex"]).only_files == set
+    end
+
+    test "rejects other shapes" do
+      assert_raise ArgumentError, ~r/:only_files/, fn -> Options.new(only_files: "lib/a.ex") end
+    end
+  end
+
+  describe ":mutators" do
+    test "accepts nil (default set) or a list of modules" do
+      assert Options.new(mutators: nil).mutators == nil
+      mods = [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
+      assert Options.new(mutators: mods).mutators == mods
+    end
+
+    test "rejects a non-list or non-atom elements" do
+      assert_raise ArgumentError, ~r/:mutators must be a list of modules/, fn ->
+        Options.new(mutators: :arithmetic)
+      end
+
+      assert_raise ArgumentError, fn -> Options.new(mutators: ["Arithmetic"]) end
+    end
+  end
+
+  describe ":reporter" do
+    test "accepts nil or a 1-arity function" do
+      assert Options.new(reporter: nil).reporter == nil
+      fun = fn _result -> :ok end
+      assert Options.new(reporter: fun).reporter == fun
+    end
+
+    test "rejects a non-function or a wrong arity" do
+      assert_raise ArgumentError, ~r/:reporter must be a 1-arity function/, fn ->
+        Options.new(reporter: fn -> :ok end)
+      end
+
+      assert_raise ArgumentError, fn -> Options.new(reporter: :nope) end
+    end
+  end
+end

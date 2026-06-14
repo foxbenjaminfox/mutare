@@ -8,10 +8,10 @@ defmodule Mutare.Schema do
   `:metamutants` (their originals are used as-is) but never crash the build — a
   single unparseable file should not sink the run. A failure *after* a clean
   parse (transform or render) is a bug in this tool, not bad input, and is left
-  to crash: see `safe_transform/4`.
+  to crash: see `safe_transform/5`.
   """
 
-  alias Mutare.Site
+  alias Mutare.{Options, Site}
 
   @type t :: %__MODULE__{
           files: [String.t()],
@@ -26,21 +26,19 @@ defmodule Mutare.Schema do
   @doc """
   Build a schema by discovering files under `root`.
 
-  Options:
-
-    * `:paths` — directories to scan (default `["lib"]`)
-    * `:exclude` — wildcard patterns (relative to `root`) to drop
-    * `:mutators` — passed through to `Mutare.Transform`
+  `opts` is a `Mutare.Options` (or a keyword list resolved into one). It reads
+  `:paths` (directories to scan), `:exclude` (wildcard patterns dropped),
+  `:only_files` (restrict to an explicit set, e.g. `--since`), and `:mutators`
+  (passed through to `Mutare.Transform`).
   """
-  @spec build(Path.t(), keyword()) :: t()
+  @spec build(Path.t(), Options.t() | keyword()) :: t()
   def build(root, opts \\ []) do
-    paths = Keyword.get(opts, :paths, ["lib"])
-    exclude = Keyword.get(opts, :exclude, [])
+    options = Options.new(opts)
 
     root
-    |> discover(paths, exclude)
-    |> restrict(root, Keyword.get(opts, :only_files))
-    |> from_files(root, opts)
+    |> discover(options.paths, options.exclude)
+    |> restrict(root, options.only_files)
+    |> from_files(root, options)
   end
 
   # Intersect discovered files with an explicit set of root-relative paths
@@ -48,16 +46,23 @@ defmodule Mutare.Schema do
   defp restrict(files, _root, nil), do: files
   defp restrict(files, root, only), do: Enum.filter(files, &(relative(&1, root) in only))
 
-  @doc "Build a schema from an explicit list of files (paths recorded relative to `root`)."
-  @spec from_files([Path.t()], Path.t(), keyword()) :: t()
-  def from_files(files, root \\ ".", opts \\ []) do
+  @doc """
+  Build a schema from an explicit list of files (paths recorded relative to `root`).
+
+  `skip_ids` is poison-recovery state (mutant ids to drop), threaded separately
+  from the user `Options` because it is internal transform plumbing, not config.
+  """
+  @spec from_files([Path.t()], Path.t(), Options.t() | keyword(), MapSet.t()) :: t()
+  def from_files(files, root \\ ".", opts \\ [], skip_ids \\ MapSet.new()) do
+    options = Options.new(opts)
+
     # Record the ordered, root-relative input list so the schema can be rebuilt
-    # against exactly these files (see `rebuild/3`) without re-discovering.
+    # against exactly these files (see `rebuild/4`) without re-discovering.
     initial = %__MODULE__{files: Enum.map(files, &relative(&1, root))}
 
     files
     |> Enum.reduce({initial, 1}, fn file, {schema, next_id} ->
-      add_file(schema, file, root, next_id, opts)
+      add_file(schema, file, root, next_id, options, skip_ids)
     end)
     |> elem(0)
     |> finalize()
@@ -68,19 +73,19 @@ defmodule Mutare.Schema do
 
   Poison recovery (`Mutare.Runner`) relies on this: re-discovering via `build/2`
   would ignore any restriction baked into the supplied schema (a custom
-  `from_files/3` set, or an `:only_files`/`:exclude`-restricted `build/2`) and
+  `from_files/4` set, or an `:only_files`/`:exclude`-restricted `build/2`) and
   could silently expand to a different file set. Replaying the recorded file list
   preserves the restriction and keeps mutant ids stable (the transform advances
   its id counter even for `:skip_ids`).
 
-  Pass through the original transform opts (e.g. `:mutators`) merged with the new
-  `:skip_ids`.
+  Pass through the original `Options` (so `:mutators` survive) and the new
+  accumulated `skip_ids`.
   """
-  @spec rebuild(t(), Path.t(), keyword()) :: t()
-  def rebuild(%__MODULE__{files: files}, root \\ ".", opts \\ []) do
+  @spec rebuild(t(), Path.t(), Options.t() | keyword(), MapSet.t()) :: t()
+  def rebuild(%__MODULE__{files: files}, root \\ ".", opts \\ [], skip_ids \\ MapSet.new()) do
     files
     |> Enum.map(&Path.join(root, &1))
-    |> from_files(root, opts)
+    |> from_files(root, opts, skip_ids)
   end
 
   @doc "Total number of mutants in the schema."
@@ -89,11 +94,11 @@ defmodule Mutare.Schema do
 
   # --- internals -----------------------------------------------------------
 
-  defp add_file(schema, file, root, next_id, opts) do
+  defp add_file(schema, file, root, next_id, options, skip_ids) do
     rel = relative(file, root)
     source = File.read!(file)
 
-    case safe_transform(source, rel, next_id, opts) do
+    case safe_transform(source, rel, next_id, options, skip_ids) do
       {:ok, _meta, [], next_id} ->
         # Parsed fine but nothing to mutate: keep the original, record source.
         {%{schema | sources: Map.put(schema.sources, rel, source)}, next_id}
@@ -124,14 +129,19 @@ defmodule Mutare.Schema do
   # construct the transform mishandles, a Sourceror formatter crash). Swallowing
   # those as "skipped files" is exactly how the two compile-poisoning bugs hid
   # (see NOTES.md); let them crash so they surface.
-  defp safe_transform(source, rel, next_id, opts) do
-    opts = Keyword.merge(opts, file: rel, start_id: next_id)
+  defp safe_transform(source, rel, next_id, %Options{} = options, skip_ids) do
+    opts = transform_opts(options) ++ [file: rel, start_id: next_id, skip_ids: skip_ids]
     {meta, sites, next_id} = Mutare.Transform.transform_string(source, opts)
     {:ok, meta, sites, next_id}
   rescue
     error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
       {:error, error}
   end
+
+  # Only forward `:mutators` when set; `nil` lets `Mutare.Transform` use its
+  # default mutator set (we never hard-code that default here).
+  defp transform_opts(%Options{mutators: nil}), do: []
+  defp transform_opts(%Options{mutators: modules}), do: [mutators: modules]
 
   defp finalize(%__MODULE__{} = schema) do
     %{schema | sites: Enum.reverse(schema.sites), skipped: Enum.reverse(schema.skipped)}

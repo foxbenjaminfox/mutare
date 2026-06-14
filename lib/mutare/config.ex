@@ -2,8 +2,9 @@ defmodule Mutare.Config do
   @moduledoc """
   Resolve Mutare options from an optional `.mutare.exs` file and CLI flags.
 
-  CLI flags win over file config. The result is a keyword list suitable for
-  `Mutare.Schema.build/2` and `Mutare.Runner.run_with_schema/3`.
+  CLI flags win over file config. The result is a keyword list that
+  `Mutare.Options.new/1` validates and resolves into the `Mutare.Options` struct
+  threaded through the rest of the pipeline.
   """
 
   @registry %{

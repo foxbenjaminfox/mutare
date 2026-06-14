@@ -283,3 +283,18 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
   node-level mutations; structural mutations (clause-drop) remain built-in only,
   not expressible by a custom mutator. CLI `--mutators` CSV is for built-in
   families (short names); custom modules go in `.mutare.exs`.
+- **Validated options struct (done).** The shared keyword list that threaded
+  through `Config → Schema → Runner → Sandbox` is now `Mutare.Options`, built and
+  validated once by `Options.new/1` at each public entry point (idempotent on a
+  struct, so the pipeline normalizes once and passes the struct down). Validation
+  was previously scattered (the `:timeout` positive-int check lived inline in the
+  runner) or absent (`:workers`, `:test_selection`, `:paths`, `:sandbox` shape) —
+  an invalid `:test_selection` silently fell through to the coverage probe, a
+  zero/negative `:workers` reached `Task.async_stream`. `new/1` now rejects
+  unknown keys and bad values up front with `ArgumentError`, surfaced by the mix
+  task as a clean failure (same path that already caught unknown mutators).
+  Deliberately *not* options: per-file transform plumbing (`:file`, `:start_id`,
+  `:skip_ids`) stays a keyword list internal to `Schema`, and `skip_ids` (poison
+  recovery state) is threaded as an explicit `Schema`/`Runner` argument rather
+  than a config field; the sandbox **disjointness** check stays in `Sandbox`
+  (it's relative to `root` — `Options` only validates the path's shape).
