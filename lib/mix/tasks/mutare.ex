@@ -25,12 +25,7 @@ defmodule Mix.Tasks.Mutare do
   """
   use Mix.Task
 
-  alias Mutare.{Report, Result, Runner, Schema}
-
-  @registry %{
-    arithmetic: Mutare.Mutators.Arithmetic,
-    relational: Mutare.Mutators.Relational
-  }
+  alias Mutare.{Config, Report, Result, Runner, Schema}
 
   @switches [only: :string, mutators: :string, min_score: :float, sandbox: :string]
 
@@ -38,7 +33,7 @@ defmodule Mix.Tasks.Mutare do
   def run(argv) do
     {flags, rest} = OptionParser.parse!(argv, strict: @switches)
     root = List.first(rest) || "."
-    config = config_file(root) |> merge_flags(flags)
+    config = resolve_config(root, flags)
 
     schema = Schema.build(root, config)
     announce(schema, root)
@@ -49,52 +44,11 @@ defmodule Mix.Tasks.Mutare do
     end
   end
 
-  # --- config --------------------------------------------------------------
-
-  defp config_file(root) do
-    path = Path.join(root, ".mutare.exs")
-
-    if File.exists?(path) do
-      {config, _binding} = Code.eval_file(path)
-      config
-    else
-      []
-    end
+  defp resolve_config(root, flags) do
+    Config.merge(Config.load(root), flags)
+  rescue
+    error in ArgumentError -> Mix.raise(Exception.message(error))
   end
-
-  defp merge_flags(config, flags) do
-    config
-    |> maybe_put(:paths, flags[:only] && [flags[:only]])
-    |> maybe_put(:mutators, flags[:mutators] && parse_mutators(flags[:mutators]))
-    |> maybe_put(:min_score, flags[:min_score])
-    |> maybe_put(:sandbox, flags[:sandbox])
-    |> Keyword.update(:mutators, :all, & &1)
-    |> resolve_mutators()
-  end
-
-  defp parse_mutators(csv) do
-    csv
-    |> String.split(",", trim: true)
-    |> Enum.map(&String.trim/1)
-    |> Enum.map(&String.to_existing_atom/1)
-  end
-
-  defp resolve_mutators(config) do
-    case Keyword.get(config, :mutators, :all) do
-      :all -> Keyword.delete(config, :mutators)
-      families -> Keyword.put(config, :mutators, Enum.map(families, &registry!/1))
-    end
-  end
-
-  defp registry!(family) do
-    Map.get(@registry, family) ||
-      Mix.raise("unknown mutator family #{inspect(family)}; known: #{known_families()}")
-  end
-
-  defp known_families, do: @registry |> Map.keys() |> Enum.map_join(", ", &to_string/1)
-
-  defp maybe_put(config, _key, nil), do: config
-  defp maybe_put(config, key, value), do: Keyword.put(config, key, value)
 
   # --- output --------------------------------------------------------------
 
@@ -115,17 +69,14 @@ defmodule Mix.Tasks.Mutare do
 
   defp report(run, config) do
     Mix.shell().info("\n")
-    rendered = Report.render(run.results, run.schema.sources)
-    Mix.shell().info(rendered)
-    gate(Report.score(run.results), config[:min_score])
+    Mix.shell().info(Report.render(run.results, run.schema.sources))
+    gate(run.results, config[:min_score])
   end
 
-  defp gate(_score, nil), do: :ok
-
-  defp gate(score, min_score) do
-    if score < min_score do
+  defp gate(results, min_score) do
+    unless Report.passes_gate?(results, min_score) do
       Mix.raise(
-        "mutation score #{fmt(score)}% is below the required minimum of #{fmt(min_score)}%"
+        "mutation score #{fmt(Report.score(results))}% is below the required minimum of #{fmt(min_score)}%"
       )
     end
   end

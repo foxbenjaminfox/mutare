@@ -75,6 +75,14 @@ defmodule Mutare.Report do
     if denominator <= 0, do: 100.0, else: killed / denominator * 100
   end
 
+  @doc """
+  Whether `results` meet a minimum score (a percentage). A `nil` minimum always
+  passes — this is the CI gate's decision, kept pure here so it is testable.
+  """
+  @spec passes_gate?([Result.t()], number() | nil) :: boolean()
+  def passes_gate?(_results, nil), do: true
+  def passes_gate?(results, min_score), do: score(results) >= min_score
+
   @doc "One-line tally, e.g. `mutation score: 66.7%  (2 killed, 1 survived, 3 total)`."
   @spec summary([Result.t()]) :: String.t()
   def summary(results) do

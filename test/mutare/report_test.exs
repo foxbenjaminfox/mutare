@@ -63,6 +63,26 @@ defmodule Mutare.ReportTest do
              "mutation score: 50.0%  (1 killed, 1 survived, 1 no-coverage, 3 total)"
   end
 
+  describe "passes_gate?/2" do
+    defp gate_results(killed, survived) do
+      List.duplicate(%Result{status: :killed}, killed) ++
+        List.duplicate(%Result{status: :survived}, survived)
+    end
+
+    test "a nil minimum always passes" do
+      assert Report.passes_gate?(gate_results(0, 3), nil)
+    end
+
+    test "passes when the score meets or exceeds the minimum (boundary included)" do
+      assert Report.passes_gate?(gate_results(2, 2), 50.0)
+      assert Report.passes_gate?(gate_results(3, 1), 50.0)
+    end
+
+    test "fails when the score is below the minimum" do
+      refute Report.passes_gate?(gate_results(1, 3), 50.0)
+    end
+  end
+
   test "render/2 lists survivors as diffs plus a summary line" do
     sites = [site(:>), site(:<=)]
     sources = %{"lib/billing.ex" => @source}
