@@ -71,17 +71,15 @@ defmodule Mutare.Report do
   end
 
   @doc """
-  Mutation score as a percentage: `killed / (total − no_coverage − ignored)`.
+  Mutation score as a percentage:
+  `killed / (total − no_coverage − ignored − poisoned)`.
   Returns `100.0` when the denominator is zero (nothing to test).
   """
   @spec score([Result.t()]) :: float()
   def score(results) do
-    # A timeout is a kill (the mutation caused a hang).
-    killed = count(results, :killed) + count(results, :timeout)
-    excluded = count(results, :no_coverage) + count(results, :ignored) + count(results, :poisoned)
-    denominator = length(results) - excluded
-
-    if denominator <= 0, do: 100.0, else: killed / denominator * 100
+    results
+    |> tally()
+    |> score_from_tally()
   end
 
   @doc """
@@ -95,12 +93,14 @@ defmodule Mutare.Report do
   @doc "One-line tally, e.g. `mutation score: 66.7%  (2 killed, 1 survived, 3 total)`."
   @spec summary([Result.t()]) :: String.t()
   def summary(results) do
-    killed = count(results, :killed)
-    timeout = count(results, :timeout)
-    survived = count(results, :survived)
-    no_coverage = count(results, :no_coverage)
-    ignored = count(results, :ignored)
-    poisoned = count(results, :poisoned)
+    counts = tally(results)
+    killed = count(counts, :killed)
+    timeout = count(counts, :timeout)
+    survived = count(counts, :survived)
+    no_coverage = count(counts, :no_coverage)
+    ignored = count(counts, :ignored)
+    poisoned = count(counts, :poisoned)
+    total = total(counts)
 
     tally =
       ["#{killed} killed"]
@@ -109,10 +109,11 @@ defmodule Mutare.Report do
       |> maybe_add(no_coverage > 0, "#{no_coverage} no-coverage")
       |> maybe_add(ignored > 0, "#{ignored} ignored")
       |> maybe_add(poisoned > 0, "#{poisoned} poisoned")
-      |> Kernel.++(["#{length(results)} total"])
+      |> Kernel.++(["#{total} total"])
       |> Enum.join(", ")
 
-    "mutation score: #{:erlang.float_to_binary(score(results), decimals: 1)}%  (#{tally})"
+    score = score_from_tally(counts)
+    "mutation score: #{:erlang.float_to_binary(score, decimals: 1)}%  (#{tally})"
   end
 
   # --- internals -----------------------------------------------------------
@@ -122,7 +123,20 @@ defmodule Mutare.Report do
 
   defp line_at(lines, n), do: Enum.at(lines, n - 1, "")
 
-  defp count(results, status), do: Enum.count(results, &(&1.status == status))
+  defp tally(results), do: Enum.frequencies_by(results, & &1.status)
+
+  defp score_from_tally(counts) do
+    # A timeout is a kill (the mutation caused a hang).
+    killed = count(counts, :killed) + count(counts, :timeout)
+    excluded = count(counts, :no_coverage) + count(counts, :ignored) + count(counts, :poisoned)
+    denominator = total(counts) - excluded
+
+    if denominator <= 0, do: 100.0, else: killed / denominator * 100
+  end
+
+  defp count(counts, status), do: Map.get(counts, status, 0)
+
+  defp total(counts), do: counts |> Map.values() |> Enum.sum()
 
   defp maybe_add(list, true, item), do: list ++ [item]
   defp maybe_add(list, false, _item), do: list
