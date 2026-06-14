@@ -41,7 +41,7 @@ defmodule Mutare.Runner do
   which we count as `:timeout` (a kill — the hang is observable misbehavior).
   """
 
-  alias Mutare.{Coverage, Result, Sandbox, Schema}
+  alias Mutare.{Coverage, Result, Sandbox, Schema, Site}
 
   @timeout_exit Sandbox.timeout_exit()
 
@@ -233,6 +233,10 @@ defmodule Mutare.Runner do
   defp cover_name(file), do: String.replace(file, ~r/[^A-Za-z0-9]/, "_")
 
   # === per-mutant runs =======================================================
+
+  defp classify(_sandbox, %Site{ignored: true} = site, _selection, _cap) do
+    %Result{site: site, status: :ignored, duration_ms: 0, output: nil}
+  end
 
   defp classify(sandbox, site, :all, cap), do: run_mutant(sandbox, site, [], cap)
 

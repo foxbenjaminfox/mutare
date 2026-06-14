@@ -141,9 +141,14 @@ tested. (`a * 1` vs `a / 1` is also not strictly equivalent — `/` yields a flo
 — but that int→float difference is `==`-invisible and rarely intentional, so we
 treat it as noise.) See `Mutare.Mutators.Arithmetic`.
 
-Still open: the demo's `percent: 0` survivors are equivalent only *under that
-test data* (not statically), and there's no `# mutare:ignore` annotation or
-suspected-equivalent reporting yet.
+`# mutare:ignore` (done) is the manual escape hatch: a trailing comment ignores
+its line, a standalone comment the next line; matching mutants are recorded
+`:ignored` — not run, kept out of the score's denominator (`killed / (total −
+no_coverage − ignored)`), surfaced in the summary. Line-based and text-scanned
+(a literal `"# mutare:ignore"` string would also match — rare). It still
+*generates* the (unused) selector for an ignored mutant, so it does **not**
+rescue a compile-poisoning mutant — that's the compile-poisoning pre-filter's
+job, not ignore's. Suspected-equivalent auto-reporting is still future work.
 
 ### Self-hosting: tests that touch `:mutare_active` `[dogfood artifact]`
 Mutation-testing Mutare *with Mutare* has a trap: Mutare's own `selector_test`

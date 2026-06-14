@@ -63,6 +63,22 @@ defmodule Mutare.ReportTest do
     assert Report.score(results) == 50.0
   end
 
+  test "score/1 excludes ignored from the denominator" do
+    results = [
+      %Result{status: :killed},
+      %Result{status: :survived},
+      %Result{status: :ignored}
+    ]
+
+    # 1 killed / (3 - 1 ignored) = 50%
+    assert Report.score(results) == 50.0
+  end
+
+  test "summary/1 surfaces ignored when present" do
+    results = [%Result{status: :killed}, %Result{status: :survived}, %Result{status: :ignored}]
+    assert Report.summary(results) =~ "1 ignored"
+  end
+
   test "score/1 is 100.0 when there is nothing to test" do
     assert Report.score([]) == 100.0
     assert Report.score([%Result{status: :no_coverage}]) == 100.0

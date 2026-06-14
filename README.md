@@ -47,8 +47,15 @@ to the active copy by id:
 a mutation that hangs (e.g. a loop turned infinite) is caught — the run halts
 itself after the deadline (portable; no process-killing) and counts as a kill.
 
-`--since`, `# mutare:ignore`, the custom-mutator API, and the compile-poisoning
-pre-filter are still to come.
+Suppress a known-equivalent mutant with a comment — trailing ignores its line,
+standalone ignores the next line; ignored mutants are excluded from the score:
+
+```elixir
+def discounted(amount, percent), do: amount - amount * percent / 100  # mutare:ignore
+```
+
+`--since`, the custom-mutator API, and the compile-poisoning pre-filter are still
+to come.
 
 ## Usage
 

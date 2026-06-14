@@ -16,6 +16,7 @@ defmodule Mutare.Site do
           mutator: atom(),
           kind: :in_place | :lifted,
           operation: :replace | :delete,
+          ignored: boolean(),
           original_op: atom() | nil,
           mutated_op: atom() | nil,
           original_code: String.t(),
@@ -38,7 +39,8 @@ defmodule Mutare.Site do
     :mutated_code,
     :original_node,
     :mutated_node,
-    operation: :replace
+    operation: :replace,
+    ignored: false
   ]
 
   @doc "Human-readable one-liner, e.g. `relational  >= → >` or `clause_drop  (drop) <clause>`."
