@@ -43,16 +43,48 @@ Metamutant only; the report is unaffected. Keep an eye on Sourceror releases in
 case this becomes unnecessary.
 
 ### Non-body operator positions
+Context is now classified *positively* by `Mutare.Transform`'s `skip_node?/1`
+(see "Transform pipeline" below), not subtracted by a blacklist. The positions:
 - **Guards:** mutated via lifting (M2) — operators in a `when` are swapped in a
-  duplicated clause group, since a `case` can't live in a guard. In-place still
-  skips them.
-- **Module-attribute expressions** (`@x 1 + 2`): wrapped in place. They compile
-  (persistent_term reads the default at compile time → original) but the mutant
-  is frozen at compile time and can never activate — an inert/equivalent mutant.
-  Harmless but wasteful; could be excluded like guards.
+  duplicated clause group, since a `case` can't live in a guard. The analyzer
+  skips the whole `when` (its head patterns included) for in-place.
+- **Module-attribute expressions** (`@x 1 + 2`): **excluded** (context
+  `:compile_time`). Such a value is frozen at compile time — `persistent_term`
+  reads the default → original — so a selector there could never activate (an
+  inert/equivalent mutant). Previously these were wrapped in place and wasted;
+  the classifier now skips the whole `@<name> <value>` definition. (A bare
+  attribute *read*, `@x`, has no value list and is not skipped.) Pinned by a
+  transform_test.
 - **Default arg values** (`def f(a \\ b + 1)`): mutated in place; live mutant.
   Note such functions are *not lifted* (defaults expand to multiple arities;
   normalize-then-lift is deferred), so they get no guard/clause-drop mutants.
+
+### Transform pipeline — explicit stages `[refactor, done]`
+`Mutare.Transform` is an explicit pipeline rather than a walk-everything-then-
+subtract design. Stages: **analyze** (`annotate/2` attaches a typed
+`Transform.Candidate` to each mutatable node's own `meta[:mutare]`), **classify**
+(a `skip`-depth counter via `skip_node?/1` names contexts as it descends —
+mutating: `:runtime_body`/`:guard`/`:clause_drop`; excluded: `:pattern`,
+`:compile_time`, `:capture_arity`), **assign + emit** (`emit/2`, a bottom-up
+`Macro.postwalk`, hands out ids in post-order DFS; the counter advances for
+`:skip_ids` so ids stay stable across poison-recovery rebuilds), and **render**
+(strip the `:mutare`/`:mutare_tag` annotations, then `Sourceror.to_string`).
+
+Three things this bought, vs. the prior implicit version:
+- The growing **blacklist** (`unsafe_keys`/`guard_keys`/`capture_arity_keys`) is
+  gone — excluded contexts are *named positively* in `skip_node?/1`. To exclude
+  a new context, add a clause there; don't reintroduce subtractive key sets.
+- **Untyped lifted maps** (`%{type: :guard, …}` / `%{type: :drop, …}`) are now
+  the typed `Transform.Candidate` struct (`context`/`kind`/`operation`), shared
+  by in-place and lifted alike.
+- **`{line, column}` node identity** is gone. In-place candidates ride in the
+  node's intrinsic `meta[:mutare]`; guard targets are tagged with a unique
+  `meta[:mutare_tag]` and the mutated clause group is materialized once at
+  analysis time (`Candidate.mutated_clauses`). Metadata survives `Macro`
+  rebuilds and can't collide across duplicate subtrees — the reason the
+  positional key existed.
+- Mutators are invoked **once** per in-place site (in `annotate`'s walk), not
+  twice (the old `capture_ranges` + `wrap_site` pair).
 
 ### Function lifting (M2): sharp edges `[various]`
 - **Recursion bounces through the dispatcher.** A self-call inside a lifted copy

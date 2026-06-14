@@ -1,8 +1,34 @@
 defmodule Mutare.Transform do
   @moduledoc """
-  Source → metamutant transform.
+  Source → metamutant transform, expressed as an explicit pipeline.
 
-  Two mechanisms, chosen by where a mutation lands:
+  Rather than walk every node and then *subtract* the positions that must not be
+  mutated (the old blacklist), the transform classifies each node's context
+  *positively* and routes it. One pipeline, run per subtree:
+
+    1. **Analyze** — `annotate/2` walks the AST and, for every node a mutator
+       recognises *in a mutating context*, attaches a typed `Candidate` to the
+       node's own metadata (`meta[:mutare]`). Mutators run **once**, here.
+    2. **Classify** — the analyzer carries a `skip` depth so it can name each
+       context as it descends. Mutating contexts (`:runtime_body` →
+       in-place, `:guard`/`:clause_drop` → lifted) become candidates; the
+       excluded contexts (`:pattern`, `:compile_time`, `:capture_arity`) are
+       skipped wholesale — no candidate is ever produced there.
+    3. **Assign** — `emit/2` walks the annotated tree bottom-up and hands each
+       candidate the next mutant id. Ids are assigned in post-order DFS and the
+       counter advances even for `:skip_ids`, so ids stay stable across the
+       poison-recovery rebuilds the runner relies on.
+    4. **Emit** — an in-place candidate becomes a tail-position selector `case`;
+       a clause group with lifted candidates is duplicated into
+       `__orig`/`__mut` copies behind a dispatcher.
+    5. **Render** — annotations are stripped and the tree is rendered to source
+       (with a Sourceror keyword-block workaround); `# mutare:ignore` directives
+       are applied to the recorded sites.
+
+  Carrying the `Candidate` in the node's *own* metadata is what lets emission
+  find "this exact node" without a fragile `{line, column}` identity: metadata is
+  intrinsic to the node and rides through any `Macro` rebuild, so duplicate
+  subtrees can never collide.
 
   ## In-place selector (body expressions)
 
@@ -78,6 +104,54 @@ defmodule Mutare.Transform do
     ]
   end
 
+  # One mutation candidate: the typed, pre-id description of a single mutant,
+  # produced by the analyzer and consumed by emission. It replaces the old
+  # untyped `%{type: …}` maps *and* the in-place call shape, so there is one
+  # vocabulary for "what to mutate, where, and how it is delivered".
+  #
+  # `context` is the source of truth; `kind`/`operation` are its consequences:
+  #
+  #   * `:runtime_body`  → `:in_place`, `:replace`  — a body expression
+  #   * `:guard`         → `:lifted`,   `:replace`  — a `when`-guard operator
+  #   * `:clause_drop`   → `:lifted`,   `:delete`   — a whole clause removed
+  #
+  # The excluded contexts — `:pattern`, `:compile_time` (module-attribute
+  # values), `:capture_arity` (the `/` in `&fun/arity`) — never become
+  # candidates; the analyzer skips them outright (see `skip_node?/1`).
+  #
+  # `:guard` candidates carry `mutated_clauses` — the whole clause group with
+  # this one guard swapped, materialised at analysis time so emission never has
+  # to re-find the node. `:clause_drop` carries only `clause_index`.
+  defmodule Candidate do
+    @moduledoc false
+
+    @type context :: :runtime_body | :guard | :clause_drop
+
+    @type t :: %__MODULE__{
+            context: context(),
+            kind: :in_place | :lifted,
+            operation: :replace | :delete,
+            mutator: module() | nil,
+            original: Macro.t(),
+            mutated: Macro.t() | nil,
+            range: map(),
+            clause_index: non_neg_integer() | nil,
+            mutated_clauses: [Macro.t()] | nil
+          }
+
+    defstruct [
+      :context,
+      :kind,
+      :operation,
+      :mutator,
+      :original,
+      :mutated,
+      :range,
+      :clause_index,
+      :mutated_clauses
+    ]
+  end
+
   @doc """
   Transform a source string into `{metamutant_source, [%Site{}], next_id}`.
 
@@ -111,6 +185,7 @@ defmodule Mutare.Transform do
 
     metamutant =
       transformed
+      |> strip_annotations()
       |> normalize_keyword_blocks()
       |> Sourceror.to_string()
 
@@ -233,7 +308,7 @@ defmodule Mutare.Transform do
     |> Enum.reduce(%{}, fn {signature, clauses}, groups ->
       {_vis, name, _arity} = signature
 
-      if lifted_mutations(clauses, mutators) != [] and liftable?(name, clauses) do
+      if lifted_candidates(clauses, mutators) != [] and liftable?(name, clauses) do
         Map.put(groups, signature, clauses)
       else
         groups
@@ -269,10 +344,10 @@ defmodule Mutare.Transform do
 
   defp transform_clause_group(clauses, ctx) do
     {_vis, name, _arity} = clause_signature(hd(clauses))
-    lifted_muts = lifted_mutations(clauses, ctx.mutators)
+    candidates = lifted_candidates(clauses, ctx.mutators)
 
-    if lifted_muts != [] and liftable?(name, clauses) do
-      lift(clauses, lifted_muts, ctx)
+    if candidates != [] and liftable?(name, clauses) do
+      lift(clauses, candidates, ctx)
     else
       Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
         {clause, ctx} = in_place(clause, ctx)
@@ -281,24 +356,33 @@ defmodule Mutare.Transform do
     end
   end
 
-  # All lifted mutations for a clause group: guard operator swaps + clause drops.
-  defp lifted_mutations(clauses, mutators) do
-    guard_mutations(clauses, mutators) ++ clause_drop_mutations(clauses)
+  # All lifted candidates for a clause group: guard operator swaps + clause drops.
+  defp lifted_candidates(clauses, mutators) do
+    guard_candidates(clauses, mutators) ++ clause_drop_candidates(clauses)
   end
 
   # Drop one clause of a multi-clause function. Inputs the dropped clause handled
   # now fall to a later clause (or raise FunctionClauseError) — killed if tested.
-  defp clause_drop_mutations(clauses) when length(clauses) < 2, do: []
+  defp clause_drop_candidates(clauses) when length(clauses) < 2, do: []
 
-  defp clause_drop_mutations(clauses) do
+  defp clause_drop_candidates(clauses) do
     clauses
     |> Enum.with_index()
     |> Enum.map(fn {clause, index} ->
-      %{type: :drop, clause_index: index, clause: clause, range: Sourceror.get_range(clause)}
+      %Candidate{
+        context: :clause_drop,
+        kind: :lifted,
+        operation: :delete,
+        mutator: nil,
+        original: clause,
+        mutated: nil,
+        range: Sourceror.get_range(clause),
+        clause_index: index
+      }
     end)
   end
 
-  defp lift(clauses, lifted_muts, ctx) do
+  defp lift(clauses, candidates, ctx) do
     {vis, name, arity} = clause_signature(hd(clauses))
     group = ctx.group + 1
     ctx = %{ctx | group: group}
@@ -313,26 +397,26 @@ defmodule Mutare.Transform do
 
     orig_defs = Enum.map(orig_clauses, &rename_clause(&1, :"#{base}_orig", :defp))
 
-    # One private copy per lifted mutation (original bodies, one change applied).
+    # One private copy per lifted candidate (original bodies, one change applied).
     # A skipped (poisoned) id records its site but emits no copy/dispatcher clause.
     {mut_results, ctx} =
-      Enum.flat_map_reduce(lifted_muts, ctx, fn mut, ctx ->
+      Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
         id = ctx.next_id
 
         if id in ctx.skip_ids do
           ctx = %{
             ctx
             | next_id: id + 1,
-              sites: [poison(lifted_site(id, mut, ctx.file)) | ctx.sites]
+              sites: [poison(lifted_site(id, candidate, ctx.file)) | ctx.sites]
           }
 
           {[], ctx}
         else
-          ctx = %{ctx | next_id: id + 1, sites: [lifted_site(id, mut, ctx.file) | ctx.sites]}
+          ctx = %{ctx | next_id: id + 1, sites: [lifted_site(id, candidate, ctx.file) | ctx.sites]}
 
           defs =
-            clauses
-            |> apply_lifted_mutation(mut)
+            candidate
+            |> apply_lifted_candidate(clauses)
             |> Enum.map(&rename_clause(&1, :"#{base}_m#{id}", :defp))
 
           {[{id, defs}], ctx}
@@ -387,74 +471,104 @@ defmodule Mutare.Transform do
 
   defp rename_call({_name, meta, args}, new_name), do: {new_name, meta, args}
 
-  # === guard mutations =======================================================
+  # === lifted candidates: guard swaps & clause drops =========================
 
-  # Every operator the mutators recognise, in every clause's guard. Delivered by
-  # lifting (a guard can't host a `case`), but the mutation set is the same swap
-  # logic the in-place mutators use — and operator swaps stay guard-safe.
-  defp guard_mutations(clauses, mutators) do
+  # Every operator the mutators recognise, in every clause's guard, as a typed
+  # `:guard` candidate. Delivered by lifting (a guard can't host a `case`), but
+  # the mutation set is the same swap logic the in-place mutators use — and
+  # operator swaps stay guard-safe. Each candidate carries the whole clause group
+  # with that one guard already swapped (`mutated_clauses`), so emission never
+  # re-finds the node: the target is tagged in metadata and replaced once, here.
+  defp guard_candidates(clauses, mutators) do
     clauses
     |> Enum.with_index()
     |> Enum.flat_map(fn {clause, index} ->
-      clause
-      |> guards_of()
-      |> Enum.flat_map(fn guard ->
-        {_guard, muts} =
-          Macro.postwalk(guard, [], fn node, acc ->
-            extra =
-              node
-              |> mutations(mutators)
-              |> Enum.map(fn {mutator, mutated} ->
-                %{
-                  type: :guard,
-                  clause_index: index,
-                  key: node_key(node),
-                  original: node,
-                  mutated: mutated,
-                  mutator: mutator,
-                  range: Sourceror.get_range(node)
-                }
-              end)
+      guard_candidates_for(clause, index, clauses, mutators)
+    end)
+  end
 
-            {node, acc ++ extra}
+  defp guard_candidates_for(clause, index, clauses, mutators) do
+    case guards_of(clause) do
+      [] ->
+        []
+
+      guards ->
+        {tagged_guards, {_next, targets}} =
+          Enum.map_reduce(guards, {0, []}, fn guard, acc -> tag_targets(guard, acc, mutators) end)
+
+        tagged_clause = put_guards(clause, tagged_guards)
+
+        targets
+        |> Enum.reverse()
+        |> Enum.flat_map(fn {tag, original, muts} ->
+          Enum.map(muts, fn {mutator, mutated} ->
+            mutated_clause = replace_tag(tagged_clause, tag, mutated)
+
+            %Candidate{
+              context: :guard,
+              kind: :lifted,
+              operation: :replace,
+              mutator: mutator,
+              original: original,
+              mutated: mutated,
+              range: Sourceror.get_range(original),
+              clause_index: index,
+              mutated_clauses: List.replace_at(clauses, index, mutated_clause)
+            }
           end)
+        end)
+    end
+  end
 
-        muts
-      end)
+  # Tag every mutatable operator in a guard with a unique `meta[:mutare_tag]`
+  # (an explicit, collision-free reference — the replacement for `{line,
+  # column}`), accumulating `{tag, original_node, mutations}`. Post-order DFS
+  # (children before parents), matching the in-place emit ordering so guard ids
+  # are assigned in the same order. `mutate/1` runs on the node as visited, and
+  # a nested guard operator's child may already carry a `:mutare_tag` — harmless,
+  # since tags don't affect ranges/rendering and are stripped before output.
+  defp tag_targets(guard, acc, mutators) do
+    Macro.postwalk(guard, acc, fn node, {next, targets} ->
+      case mutations(node, mutators) do
+        [] -> {node, {next, targets}}
+        muts -> {put_tag(node, next), {next + 1, [{next, node, muts} | targets]}}
+      end
+    end)
+  end
+
+  defp put_tag({form, meta, args}, tag), do: {form, [{:mutare_tag, tag} | meta], args}
+
+  defp replace_tag(ast, tag, replacement) do
+    Macro.prewalk(ast, fn
+      {_form, meta, _args} = node when is_list(meta) ->
+        if Keyword.get(meta, :mutare_tag) == tag, do: replacement, else: node
+
+      node ->
+        node
     end)
   end
 
   defp guards_of({_vis, _meta, [{:when, _, [_call | guards]} | _rest]}), do: guards
   defp guards_of(_), do: []
 
-  defp apply_lifted_mutation(clauses, %{type: :guard} = mut),
-    do: apply_guard_mutation(clauses, mut)
+  defp put_guards({vis, meta, [{:when, when_meta, [call | _guards]} | rest]}, new_guards),
+    do: {vis, meta, [{:when, when_meta, [call | new_guards]} | rest]}
 
-  defp apply_lifted_mutation(clauses, %{type: :drop} = mut),
-    do: List.delete_at(clauses, mut.clause_index)
+  # Materialise a lifted candidate into the mutated clause group.
+  defp apply_lifted_candidate(%Candidate{context: :guard, mutated_clauses: clauses}, _clauses),
+    do: clauses
 
-  defp apply_guard_mutation(clauses, mut) do
-    List.update_at(clauses, mut.clause_index, fn
-      {vis, meta, [{:when, when_meta, [call | guards]} | rest]} ->
-        guards = Enum.map(guards, &replace_node(&1, mut.key, mut.mutated))
-        {vis, meta, [{:when, when_meta, [call | guards]} | rest]}
-    end)
-  end
+  defp apply_lifted_candidate(%Candidate{context: :clause_drop, clause_index: index}, clauses),
+    do: List.delete_at(clauses, index)
 
-  defp replace_node(ast, key, replacement) do
-    Macro.prewalk(ast, fn node ->
-      if node_key(node) == key, do: replacement, else: node
-    end)
-  end
-
-  # Build the %Site{} for one lifted mutation. Transform owns the `mut` map's
+  # Build the %Site{} for one lifted candidate. Transform owns the candidate's
   # shape and picks the constructor; Site owns the struct fields.
-  defp lifted_site(id, %{type: :guard} = mut, file) do
-    Site.lifted_guard(id, file, mut.range, mut.original, mut.mutated, mut.mutator)
+  defp lifted_site(id, %Candidate{context: :guard} = c, file) do
+    Site.lifted_guard(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
-  defp lifted_site(id, %{type: :drop} = mut, file) do
-    Site.clause_drop(id, file, mut.range, mut.clause)
+  defp lifted_site(id, %Candidate{context: :clause_drop} = c, file) do
+    Site.clause_drop(id, file, c.range, c.original)
   end
 
   # === clause signatures & liftability ======================================
@@ -490,45 +604,150 @@ defmodule Mutare.Transform do
   defp head_args({_name, _, args}) when is_list(args), do: args
   defp head_args(_), do: []
 
-  # === in-place transform ====================================================
+  # === in-place transform: analyze (annotate) then assign/emit ===============
 
-  # Apply the in-place selector transform to one subtree, threading the ctx.
+  # Apply the in-place selector transform to one subtree: annotate mutating body
+  # nodes with their candidates, then emit selectors as ids are assigned.
   defp in_place(node, ctx) do
-    ranges =
-      node
-      |> capture_ranges(ctx.mutators)
-      |> Map.drop(MapSet.to_list(unsafe_keys(node)))
+    node
+    |> annotate(ctx.mutators)
+    |> emit(ctx)
+  end
 
+  # --- analyze: classify context, attach candidates (mutators run once here) --
+
+  # Walk the subtree carrying a `skip` depth. Entering an excluded context
+  # (`skip_node?/1`) raises the depth so its whole subtree is skipped; outside
+  # any such context, a node a mutator recognises gets a `:runtime_body`
+  # candidate attached to its own metadata. Nodes are visited pre-order, so a
+  # tagged node still holds its original (un-annotated) children — exactly what
+  # the report wants to render. Ids are *not* assigned here; emission does that
+  # bottom-up to keep post-order id ordering.
+  defp annotate(node, mutators) do
+    {annotated, _skip} =
+      Macro.traverse(
+        node,
+        0,
+        fn current, skip -> enter_annotate(current, skip, mutators) end,
+        &leave_annotate/2
+      )
+
+    annotated
+  end
+
+  defp enter_annotate(node, skip, mutators) do
+    cond do
+      skip_node?(node) ->
+        {node, skip + 1}
+
+      skip > 0 ->
+        {node, skip}
+
+      true ->
+        case mutations(node, mutators) do
+          [] -> {node, skip}
+          muts -> {put_candidates(node, build_candidates(node, muts)), skip}
+        end
+    end
+  end
+
+  defp leave_annotate(node, skip) do
+    if skip_node?(node), do: {node, skip - 1}, else: {node, skip}
+  end
+
+  # The excluded contexts, recognised positively (this is what replaces the old
+  # `unsafe_keys`/`guard_keys`/`capture_arity_keys` blacklist):
+  #
+  #   * `:when` guards — a `case` can't live in a guard; guard mutations are
+  #     lifted instead. Skipping the whole `when` also skips the head patterns
+  #     (`:pattern` — never a mutating context anyway).
+  #   * module-attribute *definitions* (`@x <expr>`) — `:compile_time`. The
+  #     value is frozen at compile time, so a selector there is inert. (A bare
+  #     attribute *read*, `@x`, has no value list and is not skipped.)
+  #   * the `/` in a `&fun/arity` capture — `:capture_arity`, an arity separator,
+  #     not division. `& &1 / 2` (real division) does not match and is mutated.
+  defp skip_node?({:when, _meta, [_call | guards]}) when guards != [], do: true
+  defp skip_node?({:@, _meta, [{_name, _attr_meta, [_value]}]}), do: true
+
+  defp skip_node?({:&, _meta, [{:/, _smeta, [left, right]}]}),
+    do: function_ref?(left) and integer_literal?(right)
+
+  defp skip_node?(_), do: false
+
+  defp build_candidates(node, muts) do
+    range = Sourceror.get_range(node)
+
+    Enum.map(muts, fn {mutator, mutated} ->
+      %Candidate{
+        context: :runtime_body,
+        kind: :in_place,
+        operation: :replace,
+        mutator: mutator,
+        original: node,
+        mutated: mutated,
+        range: range
+      }
+    end)
+  end
+
+  defp put_candidates({form, meta, args}, candidates),
+    do: {form, [{:mutare, candidates} | meta], args}
+
+  defp candidates_of({_form, meta, _args}) when is_list(meta), do: Keyword.get(meta, :mutare, [])
+  defp candidates_of(_), do: []
+
+  defp strip_candidates({form, meta, args}) when is_list(meta),
+    do: {form, Keyword.delete(meta, :mutare), args}
+
+  defp strip_candidates(node), do: node
+
+  # --- assign + emit: ids in post-order, selectors built from candidates ------
+
+  # Bottom-up walk: a node's children are wrapped before it is, so ids are
+  # assigned in post-order DFS (children before parents) — and the catch-all of
+  # an outer selector holds the already-wrapped children, keeping nested sites
+  # reachable when the outer mutant is inactive.
+  defp emit(node, ctx) do
     Macro.postwalk(node, ctx, fn current, ctx ->
-      case Map.fetch(ranges, node_key(current)) do
-        {:ok, %{range: range, node: original}} -> wrap_site(current, original, range, ctx)
-        :error -> {current, ctx}
+      case candidates_of(current) do
+        [] -> {current, ctx}
+        candidates -> emit_site(current, candidates, ctx)
       end
     end)
   end
 
-  defp wrap_site(node, original_node, range, ctx) do
+  defp emit_site(node, candidates, ctx) do
     {clauses, ctx} =
-      original_node
-      |> mutations(ctx.mutators)
-      |> Enum.reduce({[], ctx}, fn {mutator, mutated_node}, {clauses, ctx} ->
+      Enum.reduce(candidates, {[], ctx}, fn candidate, {clauses, ctx} ->
         id = ctx.next_id
-        site = Site.in_place(id, ctx.file, range, original_node, mutated_node, mutator)
+
+        site =
+          Site.in_place(
+            id,
+            ctx.file,
+            candidate.range,
+            candidate.original,
+            candidate.mutated,
+            candidate.mutator
+          )
+
         ctx = %{ctx | next_id: id + 1}
 
         if id in ctx.skip_ids do
           # Poisoned: record the site, but emit no clause (so it can't poison).
           {clauses, %{ctx | sites: [poison(site) | ctx.sites]}}
         else
-          clause = {:->, [], [[id], mutated_node]}
+          clause = {:->, [], [[id], candidate.mutated]}
           {[clause | clauses], %{ctx | sites: [site | ctx.sites]}}
         end
       end)
 
+    default = strip_candidates(node)
+
     # All mutations here skipped → no selector; emit the node unchanged.
     case clauses do
-      [] -> {node, ctx}
-      _ -> {build_case(node, Enum.reverse(clauses)), ctx}
+      [] -> {default, ctx}
+      _ -> {build_case(default, Enum.reverse(clauses)), ctx}
     end
   end
 
@@ -562,28 +781,17 @@ defmodule Mutare.Transform do
     end)
   end
 
-  defp unsafe_keys(quoted) do
-    MapSet.union(guard_keys(quoted), capture_arity_keys(quoted))
-  end
+  # Remove the analyzer's internal annotations before rendering. `:mutare`
+  # (in-place candidates) and `:mutare_tag` (guard target references) are
+  # bookkeeping that must never reach the source.
+  defp strip_annotations(ast) do
+    Macro.prewalk(ast, fn
+      {form, meta, args} when is_list(meta) ->
+        {form, meta |> Keyword.delete(:mutare) |> Keyword.delete(:mutare_tag), args}
 
-  # Keys of operators inside `&fun/arity` captures, where `/` is an arity
-  # separator (not division). We must not catch `& &1 / 2`, so we only match a
-  # plain function reference over an integer literal.
-  defp capture_arity_keys(quoted) do
-    {_ast, keys} =
-      Macro.prewalk(quoted, MapSet.new(), fn
-        {:&, _meta, [{:/, _smeta, [left, right]} = slash]} = node, acc ->
-          if function_ref?(left) and integer_literal?(right) do
-            {node, add_key(acc, slash)}
-          else
-            {node, acc}
-          end
-
-        node, acc ->
-          {node, acc}
-      end)
-
-    keys
+      other ->
+        other
+    end)
   end
 
   defp function_ref?({name, _meta, context}) when is_atom(name) and is_atom(context), do: true
@@ -594,53 +802,6 @@ defmodule Mutare.Transform do
   defp integer_literal?({:__block__, _meta, [n]}) when is_integer(n), do: true
   defp integer_literal?(_), do: false
 
-  defp add_key(set, node) do
-    case node_key(node) do
-      nil -> set
-      key -> MapSet.put(set, key)
-    end
-  end
-
-  # Keys of every node inside a `when` guard — in-place must not touch those
-  # (a `case` is illegal in a guard); guard mutations are lifted instead.
-  defp guard_keys(quoted) do
-    {_ast, keys} =
-      Macro.prewalk(quoted, MapSet.new(), fn
-        {:when, _meta, [_head | guards]} = node, acc when guards != [] ->
-          {node, Enum.reduce(guards, acc, &collect_keys/2)}
-
-        node, acc ->
-          {node, acc}
-      end)
-
-    keys
-  end
-
-  defp collect_keys(ast, acc) do
-    {_ast, keys} =
-      Macro.prewalk(ast, acc, fn node, inner ->
-        case node_key(node) do
-          nil -> {node, inner}
-          key -> {node, MapSet.put(inner, key)}
-        end
-      end)
-
-    keys
-  end
-
-  defp capture_ranges(quoted, mutators) do
-    {_ast, ranges} =
-      Macro.prewalk(quoted, %{}, fn node, acc ->
-        if site?(node, mutators) do
-          {node, Map.put(acc, node_key(node), %{range: Sourceror.get_range(node), node: node})}
-        else
-          {node, acc}
-        end
-      end)
-
-    ranges
-  end
-
   defp mutations(node, mutators) do
     Enum.flat_map(mutators, fn mutator ->
       case mutator.mutate(node) do
@@ -649,11 +810,4 @@ defmodule Mutare.Transform do
       end
     end)
   end
-
-  defp site?(node, mutators), do: mutations(node, mutators) != []
-
-  defp node_key({_op, meta, _args}) when is_list(meta),
-    do: {Keyword.get(meta, :line), Keyword.get(meta, :column)}
-
-  defp node_key(_), do: nil
 end

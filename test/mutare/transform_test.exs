@@ -140,4 +140,21 @@ defmodule Mutare.TransformTest do
 
     assert [%Site{mutator: :arithmetic, original_op: :/, mutated_op: :*}] = sites
   end
+
+  test "module-attribute (compile-time) expressions are not mutated" do
+    source = """
+    defmodule A do
+      @threshold 1 + 2
+      def limit, do: @threshold
+      def bump(n), do: n + @threshold
+    end
+    """
+
+    {meta, sites, _next_id} = Mutare.transform_string(source)
+
+    # The `1 + 2` in the attribute definition is compile-time and inert, so it
+    # produces no mutant. Only the runtime body `n + @threshold` is mutated.
+    assert [%Site{mutator: :arithmetic, original_op: :+, line: 4}] = sites
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
 end

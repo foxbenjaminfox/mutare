@@ -36,13 +36,26 @@ fixtures) only exist under `MIX_ENV=test`.
 The pipeline, in dependency order. A change usually touches one stage; understanding the
 contract between them is the whole game.
 
-- **`Mutare.Transform`** — the heart. `source → {metamutant_source, [%Site{}]}`. Two mechanisms,
-  chosen *by where a node sits*, never declared by the mutator:
+- **`Mutare.Transform`** — the heart. `source → {metamutant_source, [%Site{}], next_id}`. An
+  explicit staged pipeline (analyze → classify → assign → emit → render), not a walk-everything-
+  then-subtract blacklist. Context is classified *positively* and routed; mutators run **once**.
+  - **analyze (`annotate/2`)** walks the AST and attaches a typed `Transform.Candidate` to each
+    mutatable node's *own metadata* (`meta[:mutare]`) — which is why there's no fragile
+    `{line, column}` node identity and no double mutator invocation.
+  - **classify** is a `skip`-depth counter (`skip_node?/1`) that names contexts as it descends.
+    Mutating contexts: `:runtime_body` → in-place, `:guard`/`:clause_drop` → lifted. Excluded
+    contexts produce no candidate: `:pattern` (clause heads), `:compile_time` (module-attribute
+    values like `@x 1 + 2` — frozen at compile time, so a selector there is inert), and
+    `:capture_arity` (the `/` in `&fun/arity`, an arity separator not division).
+  - **assign + emit (`emit/2`)** is a bottom-up `Macro.postwalk` so ids are assigned in
+    post-order DFS; the id counter advances even for `:skip_ids` (poison recovery relies on it).
   - **in-place selector** for body expressions: wrap the operator in a tail-position
     `case :persistent_term.get(:mutare_active, 0) do <id> -> mutated; _ -> original end`.
   - **function lifting + dispatcher** for `when` guards and clause structure (a `case` can't
     live in a guard): duplicate the whole clause group into private `__orig`/`__mut` copies and
     make the public `f/arity` a bare dispatcher. In-place selectors live only in `__orig`.
+    Guard targets are tagged via `meta[:mutare_tag]` and the mutated clause group is materialized
+    once at analysis time (`Candidate.mutated_clauses`), so emission never re-finds the node.
 - **`Mutare.Schema`** — runs `Transform` across discovered files, threading **globally-unique,
   stable** mutant ids. Honors `:paths`/`:exclude`, `:only_files` (for `--since`), and `:skip_ids`
   (for poison recovery — the id counter advances even for skipped ids, so ids stay stable across
@@ -84,8 +97,9 @@ contract between them is the whole game.
 - **Two line spaces, decoupled.** Coverage matches in metamutant-line space; the report works in
   original-line space. They never need to be related — don't reintroduce a mapping between them.
 - **Compile-safety is layered.** Built-in mutators are compile-safe by construction (operator
-  swaps reuse operands); dangerous positions (guards, the `/` in `&fun/arity` captures) are
-  excluded structurally; the poison pre-filter is the backstop for the unknown (e.g. custom
+  swaps reuse operands); dangerous/inert positions (guards, module-attribute values, the `/` in
+  `&fun/arity` captures) are excluded *positively* by the context classifier (`skip_node?/1`),
+  not by a blacklist; the poison pre-filter is the backstop for the unknown (e.g. custom
   mutators). A mutation that won't compile would sink the whole single build.
 
 ## Adding a mutator
