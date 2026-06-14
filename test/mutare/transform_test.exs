@@ -86,4 +86,24 @@ defmodule Mutare.TransformTest do
     assert {:ok, _} = Code.string_to_quoted(meta)
     refute meta =~ "when (case"
   end
+
+  test "the `/` in a &fun/arity capture is not mutated (it is arity, not division)" do
+    source = """
+    defmodule C do
+      def run, do: Enum.map([1, 2], &double/1)
+      def double(x), do: x * 2
+    end
+    """
+
+    {meta, sites} = Mutare.transform_string(source)
+
+    # Only the body `x * 2` is a site; the capture's `/1` is left alone.
+    assert [%Site{mutator: :arithmetic, original_op: :*}] = sites
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
+
+  test "division in a capture body (`& &1 / 2`) is still mutated" do
+    {_meta, sites} = Mutare.transform_string("defmodule C do\n  def half, do: &(&1 / 2)\nend\n")
+    assert [%Site{mutator: :arithmetic, original_op: :/, mutated_op: :*}] = sites
+  end
 end

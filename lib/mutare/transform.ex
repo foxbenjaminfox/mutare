@@ -56,14 +56,16 @@ defmodule Mutare.Transform do
 
     quoted = Sourceror.parse_string!(source)
 
-    # In-place selectors are `case` expressions, which are illegal inside guards
-    # (`when ...`). Mutating a guard operator in place would compile-poison the
-    # whole build, so we drop guard-position sites here — guards belong to the
-    # lifted mechanism (a later milestone).
+    # Some operator occurrences cannot host an in-place `case` without breaking
+    # compilation (compile-poisoning). We drop those sites before wrapping:
+    #
+    #   * inside `when` guards — a `case` is illegal in a guard (lifted, later);
+    #   * the `/` in a `&fun/arity` capture — it is an arity separator, not
+    #     division, so wrapping it yields an invalid capture.
     ranges =
       quoted
       |> capture_ranges(mutators)
-      |> Map.drop(MapSet.to_list(guard_keys(quoted)))
+      |> Map.drop(MapSet.to_list(unsafe_keys(quoted)))
 
     {mutated_ast, {_next_id, sites_rev}} =
       Macro.postwalk(quoted, {start_id, []}, fn node, {id, sites} = acc ->
@@ -101,6 +103,49 @@ defmodule Mutare.Transform do
       other ->
         other
     end)
+  end
+
+  # Union of all node keys that must not be wrapped in an in-place selector.
+  defp unsafe_keys(quoted) do
+    MapSet.union(guard_keys(quoted), capture_arity_keys(quoted))
+  end
+
+  # Keys of the `/` node in every `&fun/arity` / `&Mod.fun/arity` capture, where
+  # `/` is syntax (arity separator), not division. We must NOT catch the
+  # division in a body capture like `& &1 / 2`, so we only match when the left
+  # side is a plain function reference and the right side is an integer literal —
+  # exactly the shape Elixir parses as a capture-by-name.
+  defp capture_arity_keys(quoted) do
+    {_ast, keys} =
+      Macro.prewalk(quoted, MapSet.new(), fn
+        {:&, _meta, [{:/, _smeta, [left, right]} = slash]} = node, acc ->
+          if function_ref?(left) and integer_literal?(right) do
+            {node, add_key(acc, slash)}
+          else
+            {node, acc}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    keys
+  end
+
+  # A local (`name`) or remote (`Mod.fun`) function reference — not a call, not `&N`.
+  defp function_ref?({name, _meta, context}) when is_atom(name) and is_atom(context), do: true
+  defp function_ref?({{:., _, _}, _meta, args}) when is_list(args), do: true
+  defp function_ref?(_), do: false
+
+  defp integer_literal?(n) when is_integer(n), do: true
+  defp integer_literal?({:__block__, _meta, [n]}) when is_integer(n), do: true
+  defp integer_literal?(_), do: false
+
+  defp add_key(set, node) do
+    case node_key(node) do
+      nil -> set
+      key -> MapSet.put(set, key)
+    end
   end
 
   # Keys of every node that lives inside a `when` guard. A guard clause is

@@ -50,6 +50,19 @@ defmodule Mutare.ReportTest do
     assert Report.score([%Result{status: :no_coverage}]) == 100.0
   end
 
+  test "summary/1 includes a no-coverage count only when present" do
+    refute Report.summary([%Result{status: :killed}]) =~ "no-coverage"
+
+    results = [
+      %Result{status: :killed},
+      %Result{status: :survived},
+      %Result{status: :no_coverage}
+    ]
+
+    assert Report.summary(results) ==
+             "mutation score: 50.0%  (1 killed, 1 survived, 1 no-coverage, 3 total)"
+  end
+
   test "render/2 lists survivors as diffs plus a summary line" do
     sites = [site(:>), site(:<=)]
     sources = %{"lib/billing.ex" => @source}

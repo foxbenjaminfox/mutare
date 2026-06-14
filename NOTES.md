@@ -61,6 +61,46 @@ The demo's `percent: 0` survivors are equivalent *under that test data*. No
 `# mutare:ignore` annotation or suspected-equivalent reporting yet (DESIGN lists
 the mitigations).
 
+### Self-hosting: tests that touch `:mutare_active` `[dogfood artifact]`
+Mutation-testing Mutare *with Mutare* has a trap: Mutare's own `selector_test`
+and `integration_test` call `Selector.put/1` on `:mutare_active` — the very key
+the runner uses to hold the active mutant. Since `:persistent_term` is global and
+the whole suite shares one BEAM, those tests reset the active mutant to baseline
+mid-run, so any mutant whose only killing test runs *after* them registers a
+**false survivor** (confirmed: `runner.ex` mutants survive in the full suite but
+die when `runner_test` runs alone). Normal targets never touch this key, so it's
+a self-hosting artifact only. If we want clean self-dogfooding later: run those
+selector-touching tests in a separate pass, or make the key configurable so the
+suite-under-test and the harness don't collide.
+
+### Surface skipped files more loudly `[soon]`
+`Schema`/`safe_transform` skips a file that fails to transform (good — one bad
+file shouldn't sink the run) and the task prints `skipped <file>: <reason>` in
+its banner. But that's easy to miss, and it's exactly how the two
+compile-poisoning bugs below hid. Consider a `--strict` mode that fails on any
+skip, and/or making poisoning structural exclusions (below) the norm.
+
+## Dogfooding findings (M1)
+
+Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
+
+- **Compile-poisoning #1 (fixed):** a `case`-valued map/keyword field
+  (`%{ms: div(x, 1000)}`) crashed Sourceror's formatter → file silently skipped.
+  Fixed by block-wrapping the selector + generalising keyword-key normalization.
+- **Compile-poisoning #2 (fixed):** the `/` in a `&fun/arity` capture is an
+  arity separator, not division; mutating it produced an invalid `&(case …)`.
+  Fixed by excluding capture-arity `/` (and guard operators) from in-place sites.
+  There may be more poisoning shapes lurking — the design's "compile each
+  candidate in isolation and drop poisoners" safety net (M4) would catch unknowns
+  structurally instead of us enumerating them.
+- **Real test gap (fixed):** `Report.summary/1`'s no-coverage branch was
+  untested (`no_coverage > 0` survived). Test added.
+- **Real test gap (TODO):** the `mix mutare` score gate (`score < min_score`)
+  and banner have no unit tests — survivors at `lib/mix/tasks/mutare.ex:126,103`.
+  Needs a testable seam or a task-level test; deferred.
+- **Equivalent mutant:** `number / 1` → `number * 1` in `fmt/1` is unkillable
+  (same value). A good real example for the equivalent-mutant story.
+
 ## Decisions log
 
 - **Two renderers.** The metamutant is produced by AST rewrite + `Sourceror.to_string`
