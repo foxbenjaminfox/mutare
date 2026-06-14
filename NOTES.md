@@ -67,10 +67,15 @@ case this becomes unnecessary.
   are `defp` (no docs needed). Not exhaustively tested across attribute shapes.
 - **Not lifted (fall back to in-place):** functions with default args, and
   operator-named functions (`def a ~> b` — can't be spelled `__mutare_~>_2_…`).
-- **Private names** are `__mutare_<name>_<arity>_g<group>_{orig,m<id>}`: the
-  `g<group>` counter keeps them unique even for non-consecutive same-name clause
-  groups, and `?`/`!` (legal only at a name's end) are replaced so they can sit
-  mid-identifier. The public dispatcher keeps the real name.
+- **Non-consecutive clauses are one lift unit.** A public dispatcher is a
+  catch-all, so lifting only one consecutive run would make later clauses of the
+  same signature unreachable. Transform gathers every clause for a lifted
+  signature, emits one complete dispatcher/copy set at the first occurrence,
+  and leaves intervening definitions in place.
+- **Private names** are `__mutare_<name>_<arity>_g<group>_{orig,m<id>}`. The
+  group counter keeps generated names unique, and `?`/`!` (legal only at a
+  name's end) are replaced so they can sit mid-identifier. The public dispatcher
+  keeps the real name.
 - **Lifting duplicates whole functions** (K+1 copies for K lifted mutants), so
   code size / single-compile time grows with mutation density on overloaded
   functions — the accepted cost (first-order ⇒ no copy sharing).

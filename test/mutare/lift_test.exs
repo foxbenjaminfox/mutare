@@ -70,6 +70,37 @@ defmodule Mutare.LiftTest do
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
+    test "lifts all clauses when a function is split by another definition" do
+      source = """
+      defmodule Mutare.NonConsecutiveLiftFixture do
+        def f(x) when x > 0, do: :positive
+        def g, do: :g
+        def f(_), do: :other
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source)
+
+      assert length(Regex.scan(~r/def f\(mutare_arg1\)/, meta)) == 1
+      assert Enum.count(sites, &(&1.mutator == :clause_drop)) == 2
+      assert [{Mutare.NonConsecutiveLiftFixture, _}] = Code.compile_string(meta)
+
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.NonConsecutiveLiftFixture, :f, [1]) == :positive
+      assert apply(Mutare.NonConsecutiveLiftFixture, :f, [-1]) == :other
+      assert apply(Mutare.NonConsecutiveLiftFixture, :g, []) == :g
+
+      guard_id =
+        Enum.find_value(sites, fn
+          %Site{original_op: :>, mutated_op: :>=, id: id} -> id
+          _site -> nil
+        end)
+
+      Selector.put(guard_id)
+      assert apply(Mutare.NonConsecutiveLiftFixture, :f, [0]) == :positive
+      assert apply(Mutare.NonConsecutiveLiftFixture, :f, [-1]) == :other
+    end
+
     test "lifts functions whose names end in ? or ! (sanitized private names)" do
       source = """
       defmodule Mutare.OkFixture do

@@ -22,9 +22,10 @@ defmodule Mutare.Transform do
   ## Function lifting + dispatcher (guards, dispatch)
 
   A `case` is illegal in a `when` guard, and guards drive dispatch *across*
-  clauses, so guard mutations cannot be done in place. Instead the whole clause
-  group is duplicated — once unchanged (`__orig`), once per mutation (`__mut`) —
-  and a bare catch-all dispatcher forwards args to the active copy by id:
+  clauses, so guard mutations cannot be done in place. Instead every clause for
+  the function signature is duplicated — once unchanged (`__orig`), once per
+  mutation (`__mut`) — and a bare catch-all dispatcher forwards args to the
+  active copy by id:
 
       def f(a) do
         case :persistent_term.get(:mutare_active, 0) do
@@ -188,19 +189,61 @@ defmodule Mutare.Transform do
   end
 
   defp transform_statements(statements, ctx) do
-    statements
-    |> chunk_clause_runs()
-    |> Enum.flat_map_reduce(ctx, fn
-      {:clauses, clauses}, ctx ->
-        transform_clause_group(clauses, ctx)
+    complete_groups = complete_lift_groups(statements, ctx.mutators)
 
-      {:other, statement}, ctx ->
-        {node, ctx} = transform_node(statement, ctx)
-        {[node], ctx}
+    {transformed, {ctx, _emitted}} =
+      statements
+      |> chunk_clause_runs()
+      |> Enum.flat_map_reduce({ctx, MapSet.new()}, fn
+        {:clauses, clauses}, {ctx, emitted} ->
+          signature = clause_signature(hd(clauses))
+
+          case Map.fetch(complete_groups, signature) do
+            {:ok, complete_clauses} ->
+              if signature in emitted do
+                {[], {ctx, emitted}}
+              else
+                {nodes, ctx} = transform_clause_group(complete_clauses, ctx)
+                {nodes, {ctx, MapSet.put(emitted, signature)}}
+              end
+
+            :error ->
+              {nodes, ctx} = transform_clause_group(clauses, ctx)
+              {nodes, {ctx, emitted}}
+          end
+
+        {:other, statement}, {ctx, emitted} ->
+          {node, ctx} = transform_node(statement, ctx)
+          {[node], {ctx, emitted}}
+      end)
+
+    {transformed, ctx}
+  end
+
+  # A lifted dispatcher is a catch-all for its public signature, so it must own
+  # every clause of that function even when another definition appears between
+  # clauses. Otherwise the dispatcher makes later clauses unreachable.
+  #
+  # Only pre-group signatures that will actually lift. Non-lifted definitions
+  # keep their original statement positions.
+  defp complete_lift_groups(statements, mutators) do
+    statements
+    |> Enum.filter(&clause_signature/1)
+    |> Enum.group_by(&clause_signature/1)
+    |> Enum.reduce(%{}, fn {signature, clauses}, groups ->
+      {_vis, name, _arity} = signature
+
+      if lifted_mutations(clauses, mutators) != [] and liftable?(name, clauses) do
+        Map.put(groups, signature, clauses)
+      else
+        groups
+      end
     end)
   end
 
   # Group maximal runs of consecutive clauses that share {visibility, name, arity}.
+  # Complete liftable functions are joined across these runs by
+  # complete_lift_groups/2.
   defp chunk_clause_runs(statements) do
     statements
     |> Enum.reduce([], fn statement, acc ->
@@ -324,11 +367,10 @@ defmodule Mutare.Transform do
   defp dispatcher_args(0), do: []
   defp dispatcher_args(arity), do: Enum.map(1..arity, &{:"mutare_arg#{&1}", [], nil})
 
-  # Private base name for a lifted group. The trailing `g<group>` makes it unique
-  # even across non-consecutive clause groups of the same name/arity; `?`/`!`
-  # (valid only at the end of a function name) are replaced so they can sit mid-
-  # identifier in `<base>_orig` / `<base>_m<id>`. The public dispatcher keeps the
-  # real name (including any `?`/`!`).
+  # Private base name for a lifted group. The trailing `g<group>` keeps generated
+  # names unique; `?`/`!` (valid only at the end of a function name) are replaced
+  # so they can sit mid-identifier in `<base>_orig` / `<base>_m<id>`. The public
+  # dispatcher keeps the real name (including any `?`/`!`).
   defp base_name(name, arity, group) do
     sanitized = name |> Atom.to_string() |> String.replace(["?", "!"], "_")
     "__mutare_#{sanitized}_#{arity}_g#{group}"
