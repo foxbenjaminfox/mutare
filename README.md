@@ -66,7 +66,7 @@ This completes the design's milestones (M1–M4).
 ```
 mix mutare                          # mutate everything under lib/
 mix mutare --only lib/billing       # scope to a path
-mix mutare --since main             # only files changed vs a git ref (CI)
+mix mutare --since master           # only files changed vs a git ref (CI)
 mix mutare --mutators relational    # choose mutator families
 mix mutare --min-score 70           # fail (CI) below a score
 mix mutare --full                   # whole suite per mutant (no test selection)
