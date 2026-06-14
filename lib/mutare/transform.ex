@@ -47,6 +47,36 @@ defmodule Mutare.Transform do
 
   @default_mutators [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
 
+  # Threading context for a single transform pass. Two roles live here, kept
+  # visibly apart: read-only config (`file`, `mutators`, `skip_ids`), set once;
+  # and accumulators (`next_id`, `group`, `sites`), updated as ids are assigned
+  # and sites recorded. A struct (not a bare map) makes the split explicit and a
+  # stray field name fail loudly. The whole struct is threaded through every
+  # stage — never destructured into loose values — so the shape stays uniform.
+  defmodule Ctx do
+    @moduledoc false
+
+    @type t :: %__MODULE__{
+            file: String.t(),
+            mutators: [module()],
+            skip_ids: MapSet.t(),
+            next_id: pos_integer(),
+            group: non_neg_integer(),
+            sites: [Mutare.Site.t()]
+          }
+
+    defstruct [
+      # config — read-only for the pass
+      :file,
+      :mutators,
+      :skip_ids,
+      # accumulators — threaded and updated
+      next_id: 1,
+      group: 0,
+      sites: []
+    ]
+  end
+
   @doc """
   Transform a source string into `{metamutant_source, [%Site{}]}`.
 
@@ -58,16 +88,15 @@ defmodule Mutare.Transform do
   """
   @spec transform_string(String.t(), keyword()) :: {String.t(), [Site.t()]}
   def transform_string(source, opts \\ []) when is_binary(source) do
-    ctx = %{
+    ctx = %Ctx{
       file: Keyword.get(opts, :file, "nofile"),
       mutators: Keyword.get(opts, :mutators, @default_mutators),
       next_id: Keyword.get(opts, :start_id, 1),
       # Mutant ids to drop (e.g. compile-poisoning, found by the runner): their
       # site is still recorded (`poisoned: true`, for the denominator and id
       # stability) but no selector/copy is generated, so the metamutant compiles.
-      skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
-      group: 0,
-      sites: []
+      skip_ids: Keyword.get(opts, :skip_ids, MapSet.new())
+      # `group` and `sites` start at their struct defaults (0 / []).
     }
 
     {transformed, ctx} =
@@ -417,47 +446,43 @@ defmodule Mutare.Transform do
 
   # === in-place transform (M1) ===============================================
 
-  # Apply the in-place selector transform to one subtree, threading ids/sites.
+  # Apply the in-place selector transform to one subtree, threading the ctx.
   defp in_place(node, ctx) do
     ranges =
       node
       |> capture_ranges(ctx.mutators)
       |> Map.drop(MapSet.to_list(unsafe_keys(node)))
 
-    {transformed, {next_id, sites}} =
-      Macro.postwalk(node, {ctx.next_id, ctx.sites}, fn current, {id, sites} = acc ->
-        case Map.fetch(ranges, node_key(current)) do
-          {:ok, %{range: range, node: original}} ->
-            wrap_site(current, original, range, ctx.file, ctx.mutators, id, sites, ctx.skip_ids)
-
-          :error ->
-            {current, acc}
-        end
-      end)
-
-    {transformed, %{ctx | next_id: next_id, sites: sites}}
+    Macro.postwalk(node, ctx, fn current, ctx ->
+      case Map.fetch(ranges, node_key(current)) do
+        {:ok, %{range: range, node: original}} -> wrap_site(current, original, range, ctx)
+        :error -> {current, ctx}
+      end
+    end)
   end
 
-  defp wrap_site(node, original_node, range, file, mutators, id, sites, skip_ids) do
-    {clauses, new_sites, next_id} =
+  defp wrap_site(node, original_node, range, ctx) do
+    {clauses, ctx} =
       original_node
-      |> mutations(mutators)
-      |> Enum.reduce({[], sites, id}, fn {mutator, mutated_node}, {clauses, sites, cur_id} ->
-        site = Site.in_place(cur_id, file, range, original_node, mutated_node, mutator)
+      |> mutations(ctx.mutators)
+      |> Enum.reduce({[], ctx}, fn {mutator, mutated_node}, {clauses, ctx} ->
+        id = ctx.next_id
+        site = Site.in_place(id, ctx.file, range, original_node, mutated_node, mutator)
+        ctx = %{ctx | next_id: id + 1}
 
-        if cur_id in skip_ids do
+        if id in ctx.skip_ids do
           # Poisoned: record the site, but emit no clause (so it can't poison).
-          {clauses, [poison(site) | sites], cur_id + 1}
+          {clauses, %{ctx | sites: [poison(site) | ctx.sites]}}
         else
-          clause = {:->, [], [[cur_id], mutated_node]}
-          {[clause | clauses], [site | sites], cur_id + 1}
+          clause = {:->, [], [[id], mutated_node]}
+          {[clause | clauses], %{ctx | sites: [site | ctx.sites]}}
         end
       end)
 
     # All mutations here skipped → no selector; emit the node unchanged.
     case clauses do
-      [] -> {node, {next_id, new_sites}}
-      _ -> {build_case(node, Enum.reverse(clauses)), {next_id, new_sites}}
+      [] -> {node, ctx}
+      _ -> {build_case(node, Enum.reverse(clauses)), ctx}
     end
   end
 
