@@ -74,6 +74,12 @@ defmodule Mutare.Runner.Probe do
           {:error, output} ->
             {:error, :baseline_failed, output}
 
+          # A coverdata read failed: coverage is uncertain. Run every covered
+          # mutant against the whole suite rather than risk skipping one whose
+          # only covering file we couldn't read (false :no_coverage).
+          {:uncertain, ms} ->
+            {:ok, ms, :all}
+
           {:ok, ms, file_hits} ->
             {:ok, ms, selection(index, file_hits)}
         end
@@ -81,6 +87,9 @@ defmodule Mutare.Runner.Probe do
   end
 
   # Run each test file with --cover (green-checked), collecting its hit set.
+  # A green run whose coverdata we can't read is `:uncertain` — we must not turn
+  # an unreadable file into an empty hit set, which would silently drop mutants
+  # to :no_coverage. Bail to conservative (:all) execution instead.
   defp run_files(sandbox, files) do
     Enum.reduce_while(files, {:ok, 0, %{}}, fn file, {:ok, ms, acc} ->
       name = cover_name(file)
@@ -88,13 +97,10 @@ defmodule Mutare.Runner.Probe do
       {file_ms, output, status} = Sandbox.timed_mix(sandbox, args, "0")
 
       if status == 0 do
-        hits =
-          case Coverage.hits(Path.join(sandbox, "cover/#{name}.coverdata")) do
-            {:ok, hits} -> hits
-            {:error, _} -> MapSet.new()
-          end
-
-        {:cont, {:ok, ms + file_ms, Map.put(acc, file, hits)}}
+        case Coverage.hits(Path.join(sandbox, "cover/#{name}.coverdata")) do
+          {:ok, hits} -> {:cont, {:ok, ms + file_ms, Map.put(acc, file, hits)}}
+          {:error, _reason} -> {:halt, {:uncertain, ms + file_ms}}
+        end
       else
         {:halt, {:error, output}}
       end
