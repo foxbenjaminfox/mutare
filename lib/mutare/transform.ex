@@ -176,11 +176,11 @@ defmodule Mutare.Transform do
           signature = clause_signature(hd(clauses))
 
           case Map.fetch(complete_groups, signature) do
-            {:ok, complete_clauses} ->
+            {:ok, {complete_clauses, candidates}} ->
               if signature in emitted do
                 {[], {ctx, emitted}}
               else
-                {nodes, ctx} = transform_clause_group(complete_clauses, ctx)
+                {nodes, ctx} = lift(complete_clauses, candidates, ctx)
                 {nodes, {ctx, MapSet.put(emitted, signature)}}
               end
 
@@ -201,19 +201,18 @@ defmodule Mutare.Transform do
   # every clause of that function even when another definition appears between
   # clauses. Otherwise the dispatcher makes later clauses unreachable.
   #
-  # Only pre-group signatures that will actually lift. Non-lifted definitions
-  # keep their original statement positions.
+  # Only pre-group signatures that will actually lift. Each entry carries the
+  # plan's candidates alongside the clauses, so `transform_statements/2` lifts
+  # straight from here without recomputing them — the guard mutators run once
+  # per signature. Non-lifted definitions keep their original statement positions.
   defp complete_lift_groups(statements, mutators) do
     statements
     |> Enum.filter(&clause_signature/1)
     |> Enum.group_by(&clause_signature/1)
     |> Enum.reduce(%{}, fn {signature, clauses}, groups ->
-      {_vis, name, _arity} = signature
-
-      if lifted_candidates(clauses, mutators) != [] and liftable?(name, clauses) do
-        Map.put(groups, signature, clauses)
-      else
-        groups
+      case lift_plan(clauses, mutators) do
+        {:lift, candidates} -> Map.put(groups, signature, {clauses, candidates})
+        :in_place -> groups
       end
     end)
   end
@@ -244,17 +243,33 @@ defmodule Mutare.Transform do
 
   # === clause groups: lift, or mutate bodies in place ========================
 
+  # Transform a run of consecutive same-signature clauses that wasn't pre-grouped
+  # for lifting (so its complete group stays in place). A run can still lift on
+  # its own — recompute the plan against just these clauses.
   defp transform_clause_group(clauses, ctx) do
+    case lift_plan(clauses, ctx.mutators) do
+      {:lift, candidates} ->
+        lift(clauses, candidates, ctx)
+
+      :in_place ->
+        Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
+          {clause, ctx} = in_place(clause, ctx)
+          {[clause], ctx}
+        end)
+    end
+  end
+
+  # The lift decision, in one place. A clause group lifts when the mutators find
+  # a guard swap (or there are droppable clauses) and the group can host a
+  # dispatcher. Returns the candidates so callers lift without recomputing them.
+  defp lift_plan(clauses, mutators) do
     {_vis, name, _arity} = clause_signature(hd(clauses))
-    candidates = lifted_candidates(clauses, ctx.mutators)
+    candidates = lifted_candidates(clauses, mutators)
 
     if candidates != [] and liftable?(name, clauses) do
-      lift(clauses, candidates, ctx)
+      {:lift, candidates}
     else
-      Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
-        {clause, ctx} = in_place(clause, ctx)
-        {[clause], ctx}
-      end)
+      :in_place
     end
   end
 
