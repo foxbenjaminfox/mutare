@@ -52,6 +52,18 @@ defmodule Mutare.CoverageTest do
       # no-coverage mutants are excluded from the denominator
       assert Enum.count(run.results, &(&1.status == :no_coverage)) == 1
     end
+
+    @tag :runner
+    test "a covered mutant in a relative nested module is run" do
+      base = Path.join(System.tmp_dir!(), "mutare_nested_#{System.unique_integer([:positive])}")
+      project = Path.join(base, "nested")
+      sandbox = Path.join(base, "sandbox")
+      write_nested_module_project(project)
+      on_exit(fn -> File.rm_rf!(base) end)
+
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
+      assert [%Result{status: :killed}] = run.results
+    end
   end
 
   describe "test-file selection (end to end)" do
@@ -140,6 +152,33 @@ defmodule Mutare.CoverageTest do
       test "classify positive" do
         assert Cov.classify(5) == 6
       end
+    end
+    """)
+  end
+
+  defp write_nested_module_project(project) do
+    write(project, "mix.exs", """
+    defmodule Nested.MixProject do
+      use Mix.Project
+      def project, do: [app: :nested, version: "0.1.0", elixir: "~> 1.15"]
+      def application, do: []
+    end
+    """)
+
+    write(project, "lib/outer.ex", """
+    defmodule Outer do
+      defmodule Inner do
+        def add(a, b), do: a + b
+      end
+    end
+    """)
+
+    write(project, "test/test_helper.exs", "ExUnit.start()\n")
+
+    write(project, "test/outer_test.exs", """
+    defmodule OuterTest do
+      use ExUnit.Case
+      test "nested add", do: assert(Outer.Inner.add(2, 3) == 5)
     end
     """)
   end

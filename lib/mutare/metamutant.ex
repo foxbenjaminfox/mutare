@@ -82,7 +82,8 @@ defmodule Mutare.Metamutant do
   # --- traversal -----------------------------------------------------------
 
   defp enter({:defmodule, _meta, [alias_node | _]} = node, {stack, clauses}) do
-    {node, {[module_name(alias_node) | stack], clauses}}
+    parent = List.first(stack)
+    {node, {[module_name(alias_node, parent) | stack], clauses}}
   end
 
   defp enter({:case, _meta, [subject, [do: do_clauses]]} = node, {stack, clauses}) do
@@ -121,6 +122,21 @@ defmodule Mutare.Metamutant do
   defp node_line({_form, meta, _args}) when is_list(meta), do: Keyword.get(meta, :line)
   defp node_line(_), do: nil
 
-  defp module_name({:__aliases__, _, parts}), do: Module.concat(parts)
-  defp module_name(_), do: nil
+  defp module_name({:__aliases__, _, [Elixir | _] = parts}, _parent),
+    do: Module.concat(parts)
+
+  defp module_name(
+         {:__aliases__, _, [{:__MODULE__, _, _} | parts]},
+         parent
+       )
+       when is_atom(parent),
+       do: Module.concat([parent | parts])
+
+  defp module_name({:__aliases__, _, parts}, nil), do: Module.concat(parts)
+
+  defp module_name({:__aliases__, _, parts}, parent) when is_atom(parent),
+    do: Module.concat([parent | parts])
+
+  defp module_name(module, _parent) when is_atom(module), do: module
+  defp module_name(_, _parent), do: nil
 end

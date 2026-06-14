@@ -85,5 +85,21 @@ defmodule Mutare.MetamutantTest do
       assert length(clauses) == 2
       assert Enum.all?(clauses, &(&1.module == Demo))
     end
+
+    test "resolves a relative nested module against its enclosing module" do
+      source = """
+      defmodule Outer do
+        defmodule Inner do
+          def add(a, b), do: a + b
+        end
+      end
+      """
+
+      {meta, _sites, _next_id} = Mutare.transform_string(source)
+      clauses = Metamutant.selector_clauses(meta)
+
+      assert clauses != []
+      assert Enum.all?(clauses, &(&1.module == Outer.Inner))
+    end
   end
 end
