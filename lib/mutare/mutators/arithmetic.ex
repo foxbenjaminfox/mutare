@@ -5,25 +5,27 @@ defmodule Mutare.Mutators.Arithmetic do
   In-place and compile-safe by construction — swapping one binary arithmetic
   operator for another always type-checks at compile time.
 
-  ## Identity operands are skipped
+  ## Multiplicative identity is skipped
 
-  When the **right** operand is the operator pair's identity element, the swap
-  produces a value equal to the original, so we emit no mutant — an equivalent
-  mutant can never be killed and only inflates the score's denominator:
+  `a * 1` and `a / 1` are skipped — swapping `*`↔`/` there leaves the value
+  unchanged, so the mutant would be equivalent and only inflate the score's
+  denominator. Only the **right** operand qualifies: `1 * a` → `1 / a` is a
+  reciprocal, a real change.
 
-    * `a * 1` → `a / 1`  and  `a / 1` → `a * 1`  (multiplicative identity)
-    * `a + 0` → `a - 0`  and  `a - 0` → `a + 0`  (additive identity)
+  Caveat (rare, `==`-invisible): `/` always yields a float, so for integer `a`,
+  `a * 1` and `a / 1` differ in *type* — equal under `==`, not under `===`. We
+  treat that as equivalent for scoring.
 
-  Only the *right* operand qualifies. `1 * a` → `1 / a` is a reciprocal and
-  `0 - a` → `0 + a` flips a sign — both real changes. And `div`/`rem` are never
-  skipped: `div(a, 1)` is `a` but `rem(a, 1)` is always `0`.
+  ## Additive identity is NOT skipped
 
-  Two caveats, both rare and invisible to `==`:
+  We deliberately keep `a + 0` and `a - 0` as mutants. Adding/subtracting a
+  literal zero has one genuine, test-observable use: normalizing floating-point
+  negative zero (`x + 0.0` turns `-0.0` into `0.0`, but `x - 0.0` keeps it). If
+  an author writes that on purpose, the `+`↔`-` mutant is precisely the check
+  that they actually test the result — so we surface it rather than hide it.
 
-    * `*`/`/`: for integer `a`, `a * 1` and `a / 1` differ in *type* (`/` always
-      yields a float) — equal under `==`, not under `===`.
-    * `+`/`-`: `a + 0` and `a - 0` differ only when `a` is `-0.0`
-      (`-0.0 + 0 == 0.0` vs `-0.0 - 0 == -0.0`), and even then they compare equal.
+  `div`/`rem` are never identities either: `div(a, 1)` is `a`, but `rem(a, 1)`
+  is always `0`.
   """
   @behaviour Mutare.Mutator
 
@@ -36,8 +38,8 @@ defmodule Mutare.Mutators.Arithmetic do
     :rem => [:div]
   }
 
-  # operator => right-operand value that makes the swap an identity (no-op)
-  @identity %{:* => 1, :/ => 1, :+ => 0, :- => 0}
+  # operator => right-operand value that makes the swap an equivalent no-op
+  @identity %{:* => 1, :/ => 1}
 
   @impl Mutare.Mutator
   def name, do: :arithmetic

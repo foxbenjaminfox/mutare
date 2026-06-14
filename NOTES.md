@@ -58,11 +58,16 @@ no-coverage skipping are M3; parallel workers are M4.
 
 ### Equivalent mutants `[partial]`
 Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the
-arithmetic mutator skips swaps on identity right-operands (`a * 1`, `a / 1`,
-`a + 0`, `a - 0`) — only the right operand, since `1 * a → 1 / a` (reciprocal)
-and `0 - a → 0 + a` (sign flip) are real, and `div`/`rem` are never identities.
-Caveats are `==`-invisible (int→float for `*`/`/`; `-0.0` for `+`/`-`) — see
-`Mutare.Mutators.Arithmetic`.
+arithmetic mutator skips the multiplicative-identity swap on a right operand
+(`a * 1`, `a / 1`) — only the right operand, since `1 * a → 1 / a` is a
+reciprocal. `div`/`rem` are never identities (`rem(a, 1)` is `0`).
+
+We deliberately do **not** skip `a + 0` / `a - 0`: adding/subtracting a literal
+zero is genuinely observable when normalizing `-0.0` (`x + 0.0` clears the sign,
+`x - 0.0` keeps it), so that mutant is a real check on whether such code is
+tested. (`a * 1` vs `a / 1` is also not strictly equivalent — `/` yields a float
+— but that int→float difference is `==`-invisible and rarely intentional, so we
+treat it as noise.) See `Mutare.Mutators.Arithmetic`.
 
 Still open: the demo's `percent: 0` survivors are equivalent only *under that
 test data* (not statically), and there's no `# mutare:ignore` annotation or
@@ -112,7 +117,7 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
   task's `fmt/1`. This looked equivalent but isn't quite — `/` always yields a
   float, so `number * 1` on an integer would crash `:erlang.float_to_binary`;
   it survived in the dogfood only for lack of coverage. The arithmetic mutator
-  now skips identity right-operands (`* 1`, `/ 1`, `+ 0`, `- 0`), so this site
+  now skips multiplicative-identity right-operands (`* 1`, `/ 1`), so this site
   produces no mutant at all (see below).
 
 ## Decisions log
