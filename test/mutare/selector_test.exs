@@ -23,17 +23,27 @@ defmodule Mutare.SelectorTest do
     assert :persistent_term.get(Selector.key()) == 7
   end
 
-  test "activate_from_env/0 reads the env var" do
+  test "bootstrap AST reads the env var" do
     System.put_env(Selector.env_var(), "42")
-    assert Selector.activate_from_env() == 42
+    Code.eval_quoted(Selector.bootstrap_ast())
     assert Selector.active() == 42
   end
 
-  test "activate_from_env/0 falls back to baseline when unset or empty" do
+  test "bootstrap AST falls back to baseline when unset or empty" do
     System.delete_env(Selector.env_var())
-    assert Selector.activate_from_env() == 0
+    Selector.put(7)
+    Code.eval_quoted(Selector.bootstrap_ast())
+    assert Selector.active() == 0
 
     System.put_env(Selector.env_var(), "")
-    assert Selector.activate_from_env() == 0
+    Selector.put(7)
+    Code.eval_quoted(Selector.bootstrap_ast())
+    assert Selector.active() == 0
+  end
+
+  test "sandbox renders the canonical bootstrap AST" do
+    rendered = Macro.to_string(Selector.bootstrap_ast())
+
+    assert Mutare.Sandbox.bootstrap() =~ rendered
   end
 end

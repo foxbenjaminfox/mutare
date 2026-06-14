@@ -209,9 +209,10 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
   active).
 - **ids are per-mutation, global.** A single source site (one `>=`) can yield
   several mutants, each its own id; ids are threaded across files by `Schema`.
-- **Dependency-free bootstrap.** The sandbox injects a plain
-  `:persistent_term.put` snippet into `test_helper.exs`, so targets need nothing
-  added to their deps.
+- **Dependency-free bootstrap.** `Mutare.Selector.bootstrap_ast/0` is the
+  canonical env→`:persistent_term` activation code. The sandbox renders that AST
+  into `test_helper.exs`, so targets need nothing added to their deps and there
+  is no second env-parsing implementation to drift.
 - **Compile-poisoning pre-filter (done).** Rather than the design's "compile
   each candidate in isolation" (N compiles, and a candidate isn't compilable in
   isolation anyway — it needs its context), Mutare **recovers** from the one

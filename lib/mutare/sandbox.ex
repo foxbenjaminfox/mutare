@@ -20,25 +20,17 @@ defmodule Mutare.Sandbox do
   @timeout_env "MUTARE_TIMEOUT"
   @timeout_exit 124
 
-  # Kept in sync with Mutare.Selector so the bootstrap matches what the
-  # metamutant reads.
-  #
   # The timeout watcher is how Mutare enforces a per-mutant wall-clock cap
   # *portably*: instead of the runner killing a hung OS process tree (which
   # needs platform-specific signals), the mutant process halts *itself* after
   # the deadline. `System.halt/1` stops the VM immediately and uncatchably, and
   # the BEAM preempts a looping process so the watcher always gets to run; if the
   # suite finishes first the watcher dies with the VM. Exit 124 ⇒ timed out.
+  @selector_bootstrap Macro.to_string(Mutare.Selector.bootstrap_ast())
+
   @bootstrap """
   # ---- injected by Mutare: select the active mutant from the environment ----
-  :persistent_term.put(
-    #{inspect(Mutare.Selector.key())},
-    case System.get_env(#{inspect(Mutare.Selector.env_var())}) do
-      nil -> #{Mutare.Selector.baseline()}
-      "" -> #{Mutare.Selector.baseline()}
-      raw -> String.to_integer(raw)
-    end
-  )
+  #{@selector_bootstrap}
 
   # ---- injected by Mutare: per-mutant timeout (self-halt; no external kill) --
   case System.get_env(#{inspect(@timeout_env)}) do

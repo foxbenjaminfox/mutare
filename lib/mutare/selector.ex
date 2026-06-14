@@ -7,8 +7,9 @@ defmodule Mutare.Selector do
   for write-once/read-many). Every selector site in the metamutant reads this
   key on each execution.
 
-  The metamutant bakes in the literal key (`#{inspect(:mutare_active)}`) and a
-  default of `0`, so this module and `Mutare.Transform` must agree on both.
+  This module owns both sides of that contract: `Mutare.Metamutant` uses its key
+  and baseline when building selectors, while `Mutare.Sandbox` renders
+  `bootstrap_ast/0` into the target project's dependency-free test bootstrap.
   """
 
   @key :mutare_active
@@ -28,27 +29,35 @@ defmodule Mutare.Selector do
   def baseline, do: @baseline
 
   @doc """
-  Read `MUTANT_UNDER_TEST` and stash it. Returns the activated id.
-  Called once from the target project's test bootstrap.
-  """
-  @spec activate_from_env() :: non_neg_integer()
-  def activate_from_env do
-    id =
-      case System.get_env(@env_var) do
-        nil -> @baseline
-        "" -> @baseline
-        raw -> String.to_integer(raw)
-      end
+  Dependency-free code that reads the selector environment variable and stores
+  the active mutant id.
 
-    put(id)
-    id
+  `Mutare.Sandbox` renders this AST directly into the target project's test
+  bootstrap, so the target does not need Mutare as a dependency.
+  """
+  @spec bootstrap_ast() :: Macro.t()
+  def bootstrap_ast do
+    key = @key
+    env_var = @env_var
+    baseline = @baseline
+
+    quote do
+      :persistent_term.put(
+        unquote(key),
+        case System.get_env(unquote(env_var)) do
+          nil -> unquote(baseline)
+          "" -> unquote(baseline)
+          raw -> String.to_integer(raw)
+        end
+      )
+    end
   end
 
-  @doc "Set the active mutant id directly (used by tests and in-process runs)."
+  @doc "Set the active mutant id directly for in-process execution."
   @spec put(non_neg_integer()) :: :ok
   def put(id) when is_integer(id) and id >= 0, do: :persistent_term.put(@key, id)
 
-  @doc "The currently active mutant id (`0` if unset)."
+  @doc "The active mutant id for in-process execution (`0` if unset)."
   @spec active() :: non_neg_integer()
   def active, do: :persistent_term.get(@key, @baseline)
 end
