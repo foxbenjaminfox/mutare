@@ -2,6 +2,7 @@ defmodule Mutare.CoverageTest do
   use ExUnit.Case, async: false
 
   alias Mutare.{Coverage, Result}
+  alias Mutare.Test.Project
 
   @moduletag timeout: 180_000
 
@@ -33,11 +34,30 @@ defmodule Mutare.CoverageTest do
   describe "no-coverage skipping (end to end)" do
     @tag :runner
     test "a mutant on an unexecuted line is :no_coverage and is not run" do
-      base = Path.join(System.tmp_dir!(), "mutare_cov_#{System.unique_integer([:positive])}")
-      project = Path.join(base, "cov")
-      sandbox = Path.join(base, "sandbox")
-      write_project(project)
-      on_exit(fn -> File.rm_rf!(base) end)
+      %{project: project, sandbox: sandbox} =
+        Project.build(:cov, %{
+          "lib/cov.ex" => """
+          defmodule Cov do
+            def classify(x) do
+              if x > 0 do
+                x + 1
+              else
+                x - 1
+              end
+            end
+          end
+          """,
+          "test/cov_test.exs" => """
+          defmodule CovTest do
+            use ExUnit.Case
+
+            # Only the positive branch is ever exercised.
+            test "classify positive" do
+              assert Cov.classify(5) == 6
+            end
+          end
+          """
+        })
 
       assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
 
@@ -55,11 +75,22 @@ defmodule Mutare.CoverageTest do
 
     @tag :runner
     test "a covered mutant in a relative nested module is run" do
-      base = Path.join(System.tmp_dir!(), "mutare_nested_#{System.unique_integer([:positive])}")
-      project = Path.join(base, "nested")
-      sandbox = Path.join(base, "sandbox")
-      write_nested_module_project(project)
-      on_exit(fn -> File.rm_rf!(base) end)
+      %{project: project, sandbox: sandbox} =
+        Project.build(:nested, %{
+          "lib/outer.ex" => """
+          defmodule Outer do
+            defmodule Inner do
+              def add(a, b), do: a + b
+            end
+          end
+          """,
+          "test/outer_test.exs" => """
+          defmodule OuterTest do
+            use ExUnit.Case
+            test "nested add", do: assert(Outer.Inner.add(2, 3) == 5)
+          end
+          """
+        })
 
       assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
       assert [%Result{status: :killed}] = run.results
@@ -69,11 +100,23 @@ defmodule Mutare.CoverageTest do
   describe "test-file selection (end to end)" do
     @tag :runner
     test "a mutant runs only the test files that cover it" do
-      base = Path.join(System.tmp_dir!(), "mutare_sel_#{System.unique_integer([:positive])}")
-      project = Path.join(base, "sel")
-      sandbox = Path.join(base, "sandbox")
-      write_two_module_project(project)
-      on_exit(fn -> File.rm_rf!(base) end)
+      %{project: project, sandbox: sandbox} =
+        Project.build(:sel, %{
+          "lib/calc.ex" => "defmodule Calc do\n  def add(a, b), do: a + b\nend\n",
+          "lib/greeter.ex" => "defmodule Greeter do\n  def shout(n), do: n * 2\nend\n",
+          "test/calc_test.exs" => """
+          defmodule CalcTest do
+            use ExUnit.Case
+            test "add", do: assert(Calc.add(2, 3) == 5)
+          end
+          """,
+          "test/greeter_test.exs" => """
+          defmodule GreeterTest do
+            use ExUnit.Case
+            test "shout", do: assert(Greeter.shout(3) == 6)
+          end
+          """
+        })
 
       assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
 
@@ -91,101 +134,5 @@ defmodule Mutare.CoverageTest do
       assert greeter.status == :killed
       assert greeter.output =~ "1 test"
     end
-  end
-
-  defp write_two_module_project(project) do
-    write(project, "mix.exs", """
-    defmodule Sel.MixProject do
-      use Mix.Project
-      def project, do: [app: :sel, version: "0.1.0", elixir: "~> 1.15"]
-      def application, do: []
-    end
-    """)
-
-    write(project, "lib/calc.ex", "defmodule Calc do\n  def add(a, b), do: a + b\nend\n")
-    write(project, "lib/greeter.ex", "defmodule Greeter do\n  def shout(n), do: n * 2\nend\n")
-    write(project, "test/test_helper.exs", "ExUnit.start()\n")
-
-    write(project, "test/calc_test.exs", """
-    defmodule CalcTest do
-      use ExUnit.Case
-      test "add", do: assert(Calc.add(2, 3) == 5)
-    end
-    """)
-
-    write(project, "test/greeter_test.exs", """
-    defmodule GreeterTest do
-      use ExUnit.Case
-      test "shout", do: assert(Greeter.shout(3) == 6)
-    end
-    """)
-  end
-
-  defp write_project(project) do
-    write(project, "mix.exs", """
-    defmodule Cov.MixProject do
-      use Mix.Project
-      def project, do: [app: :cov, version: "0.1.0", elixir: "~> 1.15"]
-      def application, do: []
-    end
-    """)
-
-    write(project, "lib/cov.ex", """
-    defmodule Cov do
-      def classify(x) do
-        if x > 0 do
-          x + 1
-        else
-          x - 1
-        end
-      end
-    end
-    """)
-
-    write(project, "test/test_helper.exs", "ExUnit.start()\n")
-
-    write(project, "test/cov_test.exs", """
-    defmodule CovTest do
-      use ExUnit.Case
-
-      # Only the positive branch is ever exercised.
-      test "classify positive" do
-        assert Cov.classify(5) == 6
-      end
-    end
-    """)
-  end
-
-  defp write_nested_module_project(project) do
-    write(project, "mix.exs", """
-    defmodule Nested.MixProject do
-      use Mix.Project
-      def project, do: [app: :nested, version: "0.1.0", elixir: "~> 1.15"]
-      def application, do: []
-    end
-    """)
-
-    write(project, "lib/outer.ex", """
-    defmodule Outer do
-      defmodule Inner do
-        def add(a, b), do: a + b
-      end
-    end
-    """)
-
-    write(project, "test/test_helper.exs", "ExUnit.start()\n")
-
-    write(project, "test/outer_test.exs", """
-    defmodule OuterTest do
-      use ExUnit.Case
-      test "nested add", do: assert(Outer.Inner.add(2, 3) == 5)
-    end
-    """)
-  end
-
-  defp write(project, rel, contents) do
-    path = Path.join(project, rel)
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, contents)
   end
 end

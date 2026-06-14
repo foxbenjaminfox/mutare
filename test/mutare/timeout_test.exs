@@ -7,16 +7,27 @@ defmodule Mutare.TimeoutTest do
   use ExUnit.Case, async: false
 
   alias Mutare.Result
+  alias Mutare.Test.Project
 
   @moduletag :runner
   @moduletag timeout: 180_000
 
   test "an infinite-loop mutation is capped and counts as a timeout (a kill)" do
-    base = Path.join(System.tmp_dir!(), "mutare_to_#{System.unique_integer([:positive])}")
-    project = Path.join(base, "loop")
-    sandbox = Path.join(base, "sandbox")
-    write_project(project)
-    on_exit(fn -> File.rm_rf!(base) end)
+    %{project: project, sandbox: sandbox} =
+      Project.build(:loop, %{
+        "lib/loop.ex" => """
+        defmodule Loop do
+          def count_down(0), do: :done
+          def count_down(n), do: count_down(n - 1)
+        end
+        """,
+        "test/loop_test.exs" => """
+        defmodule LoopTest do
+          use ExUnit.Case
+          test "counts down to done", do: assert(Loop.count_down(5) == :done)
+        end
+        """
+      })
 
     # Small explicit cap so the hang is caught quickly.
     assert {:ok, run} = Mutare.run(project, sandbox: sandbox, timeout: 2_000)
@@ -33,37 +44,5 @@ defmodule Mutare.TimeoutTest do
 
     # A timeout is a kill: it isn't a survivor.
     refute Enum.any?(run.results, &(&1.status == :survived and &1.site.original_op == :-))
-  end
-
-  defp write_project(project) do
-    write(project, "mix.exs", """
-    defmodule Loop.MixProject do
-      use Mix.Project
-      def project, do: [app: :loop, version: "0.1.0", elixir: "~> 1.15"]
-      def application, do: []
-    end
-    """)
-
-    write(project, "lib/loop.ex", """
-    defmodule Loop do
-      def count_down(0), do: :done
-      def count_down(n), do: count_down(n - 1)
-    end
-    """)
-
-    write(project, "test/test_helper.exs", "ExUnit.start()\n")
-
-    write(project, "test/loop_test.exs", """
-    defmodule LoopTest do
-      use ExUnit.Case
-      test "counts down to done", do: assert(Loop.count_down(5) == :done)
-    end
-    """)
-  end
-
-  defp write(project, rel, contents) do
-    path = Path.join(project, rel)
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, contents)
   end
 end

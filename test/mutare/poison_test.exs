@@ -3,6 +3,7 @@ defmodule Mutare.PoisonTest do
   use ExUnit.Case, async: false
 
   alias Mutare.{Poison, Result}
+  alias Mutare.Test.Project
 
   @poison [mutators: [Mutare.Test.PoisonMutator], file: "lib/p.ex"]
   @src "defmodule P do\n  def f(a, b), do: a + b\nend\n"
@@ -51,11 +52,24 @@ defmodule Mutare.PoisonTest do
     @tag :runner
     @tag timeout: 180_000
     test "a poisoning mutant is dropped (:poisoned) and the rest of the run proceeds" do
-      base = Path.join(System.tmp_dir!(), "mutare_pz_#{System.unique_integer([:positive])}")
-      project = Path.join(base, "p")
-      sandbox = Path.join(base, "sandbox")
-      write_project(project)
-      on_exit(fn -> File.rm_rf!(base) end)
+      %{project: project, sandbox: sandbox} =
+        Project.build(:p, %{
+          "lib/p.ex" => """
+          defmodule P do
+            def add(a, b), do: a + b
+            def gte?(a, b), do: a >= b
+          end
+          """,
+          "test/p_test.exs" => """
+          defmodule PTest do
+            use ExUnit.Case
+            test "gte boundary" do
+              assert P.gte?(5, 5)
+              refute P.gte?(4, 5)
+            end
+          end
+          """
+        })
 
       mutators = [Mutare.Test.PoisonMutator, Mutare.Mutators.Relational]
       assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: mutators)
@@ -68,40 +82,5 @@ defmodule Mutare.PoisonTest do
       assert Enum.count(run.results, &(&1.status == :killed)) == 2
       assert Mutare.Report.score(run.results) == 100.0
     end
-  end
-
-  defp write_project(project) do
-    write(project, "mix.exs", """
-    defmodule P.MixProject do
-      use Mix.Project
-      def project, do: [app: :p, version: "0.1.0", elixir: "~> 1.15"]
-      def application, do: []
-    end
-    """)
-
-    write(project, "lib/p.ex", """
-    defmodule P do
-      def add(a, b), do: a + b
-      def gte?(a, b), do: a >= b
-    end
-    """)
-
-    write(project, "test/test_helper.exs", "ExUnit.start()\n")
-
-    write(project, "test/p_test.exs", """
-    defmodule PTest do
-      use ExUnit.Case
-      test "gte boundary" do
-        assert P.gte?(5, 5)
-        refute P.gte?(4, 5)
-      end
-    end
-    """)
-  end
-
-  defp write(project, rel, contents) do
-    path = Path.join(project, rel)
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, contents)
   end
 end

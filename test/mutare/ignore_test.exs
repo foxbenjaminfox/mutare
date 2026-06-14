@@ -3,6 +3,7 @@ defmodule Mutare.IgnoreTest do
   use ExUnit.Case, async: false
 
   alias Mutare.Result
+  alias Mutare.Test.Project
 
   describe "transform marking" do
     test "a trailing comment ignores its line; a standalone ignores the next line" do
@@ -46,11 +47,21 @@ defmodule Mutare.IgnoreTest do
     @tag :runner
     @tag timeout: 180_000
     test "an ignored mutant is :ignored (not run) and kept out of the score" do
-      base = Path.join(System.tmp_dir!(), "mutare_ig_#{System.unique_integer([:positive])}")
-      project = Path.join(base, "ig")
-      sandbox = Path.join(base, "sandbox")
-      write_project(project)
-      on_exit(fn -> File.rm_rf!(base) end)
+      %{project: project, sandbox: sandbox} =
+        Project.build(:ig, %{
+          "lib/ig.ex" => """
+          defmodule Ig do
+            def keep(x), do: x + 1
+            def skip(x), do: x + 1 # mutare:ignore
+          end
+          """,
+          "test/ig_test.exs" => """
+          defmodule IgTest do
+            use ExUnit.Case
+            test "keep", do: assert(Ig.keep(1) == 2)
+          end
+          """
+        })
 
       assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
 
@@ -67,36 +78,4 @@ defmodule Mutare.IgnoreTest do
   end
 
   defp skip_line, do: 3
-
-  defp write_project(project) do
-    write(project, "mix.exs", """
-    defmodule Ig.MixProject do
-      use Mix.Project
-      def project, do: [app: :ig, version: "0.1.0", elixir: "~> 1.15"]
-      def application, do: []
-    end
-    """)
-
-    write(project, "lib/ig.ex", """
-    defmodule Ig do
-      def keep(x), do: x + 1
-      def skip(x), do: x + 1 # mutare:ignore
-    end
-    """)
-
-    write(project, "test/test_helper.exs", "ExUnit.start()\n")
-
-    write(project, "test/ig_test.exs", """
-    defmodule IgTest do
-      use ExUnit.Case
-      test "keep", do: assert(Ig.keep(1) == 2)
-    end
-    """)
-  end
-
-  defp write(project, rel, contents) do
-    path = Path.join(project, rel)
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, contents)
-  end
 end

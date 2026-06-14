@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.MutareTest do
   use ExUnit.Case, async: false
 
+  alias Mutare.Test.Project
+
   setup do
     # Capture Mix.shell output as messages to this process.
     Mix.shell(Mix.Shell.Process)
@@ -10,7 +12,7 @@ defmodule Mix.Tasks.MutareTest do
 
   describe "fast failure paths (no subprocess)" do
     test "raises when there are no mutation sites" do
-      root = tmp_dir()
+      root = Project.tmp_dir(:task)
       File.mkdir_p!(Path.join(root, "lib"))
       File.write!(Path.join(root, "lib/empty.ex"), "defmodule Empty do\n  def f, do: :ok\nend\n")
       on_exit(fn -> File.rm_rf!(root) end)
@@ -30,7 +32,7 @@ defmodule Mix.Tasks.MutareTest do
   @tag :runner
   @tag timeout: 180_000
   test "end to end against the toy: prints survivors and score, and gates on --min-score" do
-    sandbox = tmp_dir()
+    sandbox = Project.tmp_dir(:task)
     on_exit(fn -> File.rm_rf!(sandbox) end)
 
     # The toy scores 62.5%, so a 100% floor must fail the build.
@@ -43,10 +45,6 @@ defmodule Mix.Tasks.MutareTest do
     assert Enum.any?(messages, &(&1 =~ ~r/\d+ mutants across/))
     assert Enum.any?(messages, &(&1 =~ "SURVIVED"))
     assert Enum.any?(messages, &(&1 =~ "mutation score:"))
-  end
-
-  defp tmp_dir do
-    Path.join(System.tmp_dir!(), "mutare_task_#{System.unique_integer([:positive])}")
   end
 
   defp shell_info(acc \\ []) do
