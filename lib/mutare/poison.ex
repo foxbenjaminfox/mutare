@@ -8,23 +8,31 @@ defmodule Mutare.Poison do
   variable, an undefined local call, …). Rather than abort, the runner asks this
   module which mutant ids the compile error points at, drops them, and rebuilds.
 
-  We map each error's `file:line` to the mutant id whose selector clause body
-  sits on that line (by re-parsing the metamutant via `Mutare.Metamutant`). The
-  poison is always in a mutant clause — the catch-all is the original, which
-  compiled.
-  """
+  We map each error's `file:line` to the mutant id(s) whose *generated code*
+  spans that line, using the stored `Mutare.Manifest` (see `Manifest.ids_at_line/2`).
+  The manifest records the full line range of every mutant's generated code — its
+  selector clause body, and for a lifted mutant the private `defp` copies where its
+  guard/clause-drop code actually lives — so a poison is found whether the error
+  points at the clause, a later line of a multiline body, a lifted private
+  definition, or (as a coarse fallback) the surrounding `case`. Matching only the
+  selector clause's *start line*, as we used to, missed all but the first of those.
 
-  @doc """
-  Mutant ids implicated by `compile_output`, given `%{file => metamutant source}`.
   Returns an empty set when nothing could be mapped (the caller then aborts).
   """
-  @spec ids(String.t(), %{optional(String.t()) => String.t()}) :: MapSet.t()
-  def ids(compile_output, metamutants) do
+
+  alias Mutare.Manifest
+
+  @doc """
+  Mutant ids implicated by `compile_output`, given `%{file => Mutare.Manifest}`.
+  Returns an empty set when nothing could be mapped (the caller then aborts).
+  """
+  @spec ids(String.t(), %{optional(String.t()) => Manifest.t()}) :: MapSet.t()
+  def ids(compile_output, manifests) do
     compile_output
     |> error_locations()
     |> Enum.flat_map(fn {file, line} ->
-      case Map.fetch(metamutants, file) do
-        {:ok, source} -> ids_at_line(source, line)
+      case Map.fetch(manifests, file) do
+        {:ok, manifest} -> Manifest.ids_at_line(manifest, line)
         :error -> []
       end
     end)
@@ -37,11 +45,5 @@ defmodule Mutare.Poison do
     |> Regex.scan(output)
     |> Enum.map(fn [_match, file, line] -> {file, String.to_integer(line)} end)
     |> Enum.uniq()
-  end
-
-  defp ids_at_line(source, line) do
-    for clause <- Mutare.Metamutant.selector_clauses(source),
-        clause.clause_line == line,
-        do: clause.id
   end
 end

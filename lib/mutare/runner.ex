@@ -173,7 +173,7 @@ defmodule Mutare.Runner do
         {:ok, schema, sandbox}
 
       {:error, :compile_failed, output} = failure ->
-        poison = Poison.ids(output, schema.metamutants)
+        poison = Poison.ids(output, schema.manifests)
 
         if attempts > 0 and not MapSet.subset?(poison, skip_ids) do
           # Drop the poisoning mutants and rebuild. Ids are stable across rebuilds

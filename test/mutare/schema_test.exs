@@ -39,6 +39,20 @@ defmodule Mutare.SchemaTest do
     assert Map.has_key?(schema.sources, "lib/empty.ex")
   end
 
+  test "a manifest is stored for each mutated file, alongside its metamutant", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/empty.ex", "defmodule Empty do\n  def h, do: :ok\nend\n")
+
+    schema = Schema.build(root)
+
+    assert %Mutare.Manifest{} = schema.manifests["lib/a.ex"]
+    refute Map.has_key?(schema.manifests, "lib/empty.ex")
+
+    # every site's id has a coverage location in its file's manifest
+    coverage = Mutare.Manifest.coverage(schema.manifests["lib/a.ex"])
+    assert Enum.all?(schema.sites, &Map.has_key?(coverage, &1.id))
+  end
+
   test ":exclude drops matching files entirely", %{root: root} do
     write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
     write(root, "lib/generated/g.ex", "defmodule G do\n  def f(x), do: x + 1\nend\n")

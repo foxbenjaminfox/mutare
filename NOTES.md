@@ -9,11 +9,11 @@ for later. Items are tagged with the milestone that should resolve them.
 ### Metamutant line preservation — RESOLVED (avoided) `[M3, done]`
 In-place selectors and lifted copies shift line numbers in the metamutant, so we
 worried the coverage probe would need a metamutant↔original line map. It doesn't.
-The probe works **entirely in metamutant line space**: `Mutare.Coverage` re-parses
-the rendered metamutant, maps each mutant id → the line of its selector's catch-all
-(`_ ->`) branch, and intersects with `:cover`'s per-line hits on the baseline. The
-original line is only ever used by the report (which patches the original source),
-so the two never need to be related. No line preservation required.
+The probe works **entirely in metamutant line space**: each mutant id maps to the
+line of its selector's catch-all (`_ ->`) branch (read from the stored
+`Mutare.Manifest`, see below) and intersects with `:cover`'s per-line hits on the
+baseline. The original line is only ever used by the report (which patches the
+original source), so the two never need to be related. No line preservation required.
 
 Two `:cover` gotchas worth remembering (both handled in `Mutare.Coverage`):
 - `:cover.analyse(:coverage, :line)` returns `{:result, ok, fail}` (3-tuple) on
@@ -22,6 +22,42 @@ Two `:cover` gotchas worth remembering (both handled in `Mutare.Coverage`):
   continuation line (`acc +\n  case … end`); it counts the catch-all body line.
   So we key coverage on the catch-all body line, which is hit iff the selector
   ran at baseline.
+
+### Per-mutant metamutant manifest `[done]`
+`Mutare.Manifest` is the per-file, per-mutant readback of *where each mutant lives
+in its rendered metamutant*. `Schema` builds one per mutated file (once, from the
+rendered source) and stores it under `:manifests`; `Coverage` and `Poison` read it
+instead of each re-parsing the metamutant (Coverage on every probe, Poison on every
+compile error). It carries two things per mutant: the **coverage location**
+(`{module, catch-all line}`) and the **generated line ranges**.
+
+The ranges fixed a real poison-recovery gap. The old mapping matched a compile
+error's line only against a selector clause body's *start* line, so it missed every
+poison whose bad code isn't there:
+- **lifted mutations** (a custom mutator poisoning a `when` guard produced
+  `MapSet.new([])` → abort): the bad code lives in a generated private
+  `defp __mutare_…_m<id>`, lines below the dispatcher clause that merely *calls* it;
+- **multiline bodies**: an in-place mutant can fault on any line of its body;
+- **structural errors**: the compiler sometimes points at the surrounding `case`.
+
+So the manifest records the full ranges of each mutant's generated code — its
+selector clause body, its lifted private copies, and the whole `case` attributed to
+every id it hosts. `Manifest.ids_at_line/2` resolves an error line by **narrowest
+containing range**: a specific clause/def wins, so a precise error drops exactly the
+offending mutant; only a structural error that nothing narrower contains falls back
+to the whole-`case` range (dropping every mutant it hosts — a bounded over-drop that
+still recovers, never the old abort).
+
+Implementation notes:
+- Ranges only exist *after* rendering, so the manifest re-parses with
+  `Sourceror.parse_string!` (for `Sourceror.get_range/1`) — not `Code.string_to_quoted`.
+  Sourceror wraps every literal in `{:__block__, _, [literal]}`, so
+  `Mutare.Metamutant.subject?/1` was made tolerant of that wrapping (one recognizer,
+  both parsers); the integer clause patterns are likewise unwrapped.
+- A lifted private copy is attributed to its id by name (`~r/\A__mutare_.*_m(\d+)\z/`);
+  `…_orig` and user code never match, so they're left out.
+- `Mutare.Metamutant` shrank to just the selector-subject AST contract
+  (`subject_ast/0` + `subject?/1`); the metamutant *walk* now lives in `Mutare.Manifest`.
 
 ### Sandbox isolation & dependencies `[M4 / open question]`
 `Mutare.Sandbox` copies the whole project (excluding `_build`/`.git`, keeping
@@ -389,16 +425,18 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
   each candidate in isolation" (N compiles, and a candidate isn't compilable in
   isolation anyway — it needs its context), Mutare **recovers** from the one
   metamutant compile it already does: on failure, `Mutare.Poison` maps the
-  error's `file:line` to the offending mutant id (re-parsing the selector
-  clauses), the transform drops it (`:skip_ids` — record the site `:poisoned`,
-  emit no selector; the id counter still advances so ids stay stable across
-  rebuilds), and we recompile, bounded. Zero extra cost when nothing poisons
-  (the common case); a few recompiles when it does. `:poisoned` mutants are
-  reported and excluded from the denominator. So this — not `# mutare:ignore` —
-  is what rescues a poisoning mutant. Caveats: line→id mapping is best-effort
-  (if it can't map, it falls back to the old abort); a poisoner is dropped at
-  *line* granularity if its error can't be pinned to one clause; and `:skip_ids`
-  drops by id, which is only stable because the counter advances for skips.
+  error's `file:line` to the offending mutant id(s) via the stored
+  `Mutare.Manifest` (see the manifest entry below), the transform drops them
+  (`:skip_ids` — record the site `:poisoned`, emit no selector; the id counter
+  still advances so ids stay stable across rebuilds), and we recompile, bounded.
+  Zero extra cost when nothing poisons (the common case); a few recompiles when
+  it does. `:poisoned` mutants are reported and excluded from the denominator.
+  So this — not `# mutare:ignore` — is what rescues a poisoning mutant. Caveats:
+  line→id mapping is still best-effort (if a line lands in no generated range it
+  falls back to the old abort); the whole-`case` fallback over-drops (every
+  mutant the `case` hosts) for a structural error it can't pin to one clause; and
+  `:skip_ids` drops by id, which is only stable because the counter advances for
+  skips.
 - **`--since <ref>` (done).** `Mutare.Changes.since/2` runs `git diff
   --name-only --relative <ref>` with `root` as cwd, giving root-relative changed
   files (committed + uncommitted); `Schema`'s `:only_files` intersects discovered

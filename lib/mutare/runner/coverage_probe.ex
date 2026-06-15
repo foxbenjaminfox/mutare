@@ -76,7 +76,7 @@ defmodule Mutare.Runner.CoverageProbe do
 
     with 0 <- status,
          {:ok, hits} <- Coverage.hits(Path.join(sandbox, "cover/mutare.coverdata")) do
-      index = Coverage.index(Map.values(schema.metamutants))
+      index = Coverage.index(Map.values(schema.manifests))
       whole_suite_selection(index, hits)
     else
       _ -> :run_all
@@ -118,7 +118,7 @@ defmodule Mutare.Runner.CoverageProbe do
             :run_all
 
           {:ok, file_hits} ->
-            index = Coverage.index(Map.values(schema.metamutants))
+            index = Coverage.index(Map.values(schema.manifests))
             per_file_selection(index, file_hits)
         end
     end

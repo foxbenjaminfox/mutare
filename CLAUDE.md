@@ -64,7 +64,14 @@ contract between them is the whole game.
 - **`Mutare.Schema`** — runs `Transform` across discovered files, threading **globally-unique,
   stable** mutant ids. Honors `:paths`/`:exclude`, `:only_files` (for `--since`), and `:skip_ids`
   (for poison recovery — the id counter advances even for skipped ids, so ids stay stable across
-  rebuilds; this stability is relied upon).
+  rebuilds; this stability is relied upon). Per mutated file it also stores a **`Mutare.Manifest`**
+  (built once from the rendered metamutant), which Coverage and Poison read back.
+- **`Mutare.Manifest`** — the per-file, per-mutant map of *where each mutant lives in its
+  rendered metamutant*: coverage locations (`{module, catch-all line}` for Coverage) and full
+  **generated line ranges** (selector clause bodies, lifted private `defp` copies, and a
+  whole-`case` fallback — for Poison). Built once by `Schema` (re-parsing the metamutant via
+  `Sourceror` for `get_range/1`), so the two consumers don't each re-walk the source. `Mutare.Metamutant`
+  owns the selector-subject AST and the `subject?/1` recognizer this walk uses.
 - **`Mutare.Sandbox`** — workspace materialization. Copies the target project to a temp dir and
   overwrites the metamutant sources. Injects a **dependency-free bootstrap** into `test_helper.exs`:
   reads `MUTANT_UNDER_TEST` into `:persistent_term`, plus a portable timeout watcher that
@@ -99,14 +106,16 @@ contract between them is the whole game.
   isolation) degrades to `:run_all`. Split from the baseline on purpose — folding the two
   conflated a green check that never ran the suite together with a `baseline_ms` summed over N
   per-file process boots (an inflated cap). See `NOTES.md`.
-- **`Mutare.Coverage`** — the probe. Works **entirely in metamutant line space**: re-parses the
-  rendered metamutant to map each mutant id to its selector's catch-all line, intersects with
-  `:cover` per-line hits. No-coverage mutants are skipped; per-test-file selection runs only
-  covering files per mutant. (`:cover` lives in OTP `:tools`, which this module adds to the code
-  path at runtime.)
+- **`Mutare.Coverage`** — the probe. Works **entirely in metamutant line space**: reads each
+  mutant's catch-all line from the stored `Mutare.Manifest` and intersects with `:cover` per-line
+  hits. No-coverage mutants are skipped; per-test-file selection runs only covering files per
+  mutant. (`:cover` lives in OTP `:tools`, which this module adds to the code path at runtime.)
 - **`Mutare.Poison`** — on a failed metamutant compile, maps the error's `file:line` to the
-  offending mutant id (re-parsing selector clauses). The runner drops it via `:skip_ids` and
-  rebuilds, bounded. Zero cost when nothing poisons.
+  offending mutant id(s) via the manifest's **generated line ranges** (`Manifest.ids_at_line/2`,
+  narrowest range wins). This catches poison anywhere a mutant's code lives — a multiline body, a
+  lifted private `defp`, or (as a coarse fallback) the surrounding `case` — not just a selector
+  clause's start line. The runner drops the implicated ids via `:skip_ids` and rebuilds, bounded.
+  Zero cost when nothing poisons.
 - **`Mutare.Report`** — diffs each *surviving* mutant against the **original** source via
   `Sourceror.patch_string` (clean one-line diffs), and computes the score:
   `killed / (total − no_coverage − ignored − poisoned − harness_error)`.

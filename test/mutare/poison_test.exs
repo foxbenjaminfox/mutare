@@ -2,7 +2,7 @@ defmodule Mutare.PoisonTest do
   @moduledoc "Compile-poisoning: detect the offending mutant, drop it, recover."
   use ExUnit.Case, async: false
 
-  alias Mutare.{Poison, Result}
+  alias Mutare.{Manifest, Poison, Result}
   alias Mutare.Test.Project
 
   @poison [mutators: [Mutare.Test.PoisonMutator], file: "lib/p.ex"]
@@ -30,7 +30,7 @@ defmodule Mutare.PoisonTest do
   end
 
   describe "Poison.ids/2" do
-    test "maps a compile error's file:line to the mutant id at that line" do
+    test "maps a compile error's file:line to the mutant whose generated code spans it" do
       {meta, [site], _next_id} = Mutare.transform_string(@src, @poison)
 
       line =
@@ -40,7 +40,8 @@ defmodule Mutare.PoisonTest do
         |> Kernel.+(1)
 
       error = "lib/p.ex:#{line}:5: undefined variable \"mutare_unbound_xyz\""
-      assert Poison.ids(error, %{"lib/p.ex" => meta}) == MapSet.new([site.id])
+      manifests = %{"lib/p.ex" => Manifest.from_source(meta)}
+      assert Poison.ids(error, manifests) == MapSet.new([site.id])
     end
 
     test "returns empty when nothing maps (caller then aborts)" do
@@ -80,6 +81,46 @@ defmodule Mutare.PoisonTest do
 
       # gte?/2's relational mutants still ran and were killed.
       assert Enum.count(run.results, &(&1.status == :killed)) == 2
+      assert Mutare.Report.score(run.results) == 100.0
+    end
+
+    @tag :runner
+    @tag timeout: 180_000
+    test "a poison in a guard (lifted, bad code in a private defp) is dropped, not aborted" do
+      # The regression: a guard mutation's poison lives in a generated private
+      # `defp __mutare_…_m<id>`, lines away from its dispatcher clause. The old
+      # line→id mapping matched only the dispatcher clause's start line, so it
+      # found nothing (MapSet.new([])) and the whole run aborted. The manifest's
+      # generated ranges cover the private definition, so it's now identifiable.
+      %{project: project, sandbox: sandbox} =
+        Project.build(:pg, %{
+          "lib/pg.ex" => """
+          defmodule Pg do
+            def gte?(a, b) when a + 0 >= b, do: true
+            def gte?(_, _), do: false
+          end
+          """,
+          "test/pg_test.exs" => """
+          defmodule PgTest do
+            use ExUnit.Case
+            test "gte boundary" do
+              assert Pg.gte?(5, 5)
+              refute Pg.gte?(4, 5)
+            end
+          end
+          """
+        })
+
+      mutators = [Mutare.Test.PoisonMutator, Mutare.Mutators.Relational]
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: mutators)
+
+      # the guard's `+` poisons (→ unbound var in the lifted copy) → dropped.
+      assert [%Result{site: %{original_op: :+}, status: :poisoned}] =
+               Enum.filter(run.results, &(&1.status == :poisoned))
+
+      # the surviving lifted mutants (guard relational swaps + clause drops) ran;
+      # the boundary test kills them, so the run completes rather than aborting.
+      refute Enum.empty?(Enum.filter(run.results, &(&1.status == :killed)))
       assert Mutare.Report.score(run.results) == 100.0
     end
   end

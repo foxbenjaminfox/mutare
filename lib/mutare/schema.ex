@@ -3,25 +3,31 @@ defmodule Mutare.Schema do
   The mutant schema for a whole project: every in-scope source transformed into
   its metamutant, with globally-unique mutant ids threaded across files.
 
-  This is the manifest the runner compiles once and the report reads from.
+  This is what the runner compiles once and the report reads from.
   Files that have no mutation sites, or that *fail to parse*, are left out of
   `:metamutants` (their originals are used as-is) but never crash the build — a
   single unparseable file should not sink the run. A failure *after* a clean
   parse (transform or render) is a bug in this tool, not bad input, and is left
   to crash: see `safe_transform/5`.
+
+  Alongside each file's metamutant source we store its `Mutare.Manifest` (under
+  `:manifests`): the per-mutant coverage locations and generated line ranges,
+  computed once here so the coverage probe and poison recovery read them back
+  rather than re-parsing the rendered metamutant on every probe and compile error.
   """
 
-  alias Mutare.{Options, Site}
+  alias Mutare.{Manifest, Options, Site}
 
   @type t :: %__MODULE__{
           files: [String.t()],
           sites: [Site.t()],
           metamutants: %{optional(String.t()) => String.t()},
+          manifests: %{optional(String.t()) => Manifest.t()},
           sources: %{optional(String.t()) => String.t()},
           skipped: [{String.t(), term()}]
         }
 
-  defstruct files: [], sites: [], metamutants: %{}, sources: %{}, skipped: []
+  defstruct files: [], sites: [], metamutants: %{}, manifests: %{}, sources: %{}, skipped: []
 
   @doc """
   Build a schema by discovering files under `root`.
@@ -107,10 +113,17 @@ defmodule Mutare.Schema do
         # Transform hands back the next free id directly, so we never recover it
         # from the last site. Sites accumulate reversed (prepend in O(1) per
         # file, not a growing `++`); finalize/1 flips the list back to order once.
+        #
+        # The manifest (per-mutant coverage location + generated line ranges) is
+        # built here, once, from the rendered metamutant — so the coverage probe
+        # and poison recovery read it back instead of each re-parsing the source.
+        # A rebuild (poison recovery) regenerates it for the new metamutant, so it
+        # always matches the stored source.
         schema = %{
           schema
           | sites: Enum.reverse(sites, schema.sites),
             metamutants: Map.put(schema.metamutants, rel, meta),
+            manifests: Map.put(schema.manifests, rel, Manifest.from_source(meta)),
             sources: Map.put(schema.sources, rel, source)
         }
 

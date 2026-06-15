@@ -1,13 +1,13 @@
 defmodule Mutare.CoverageTest do
   use ExUnit.Case, async: false
 
-  alias Mutare.{Coverage, Result}
+  alias Mutare.{Coverage, Manifest, Result}
   alias Mutare.Test.Project
 
   @moduletag timeout: 180_000
 
-  describe "selector_index/1" do
-    test "maps every mutant id to its selector's {module, metamutant line}" do
+  describe "index/1" do
+    test "merges manifests to map every mutant id to its selector's {module, line}" do
       source = """
       defmodule Demo.Thing do
         def gte?(a, b), do: a >= b
@@ -17,7 +17,7 @@ defmodule Mutare.CoverageTest do
       """
 
       {meta, sites, _next_id} = Mutare.transform_string(source, file: "lib/demo/thing.ex")
-      index = Coverage.selector_index(meta)
+      index = Coverage.index([Manifest.from_source(meta)])
 
       # every site is reachable through some selector/dispatcher
       assert Enum.all?(sites, &Map.has_key?(index, &1.id))
@@ -28,6 +28,20 @@ defmodule Mutare.CoverageTest do
       lifted_ids = for s <- sites, s.kind == :lifted, do: s.id
       lifted_lines = lifted_ids |> Enum.map(&elem(index[&1], 1)) |> Enum.uniq()
       assert length(lifted_lines) == 1
+    end
+
+    test "merges across files, ids globally unique so maps never collide" do
+      a = "defmodule A do\n  def f(a, b), do: a + b\nend\n"
+      b = "defmodule B do\n  def g(a, b), do: a - b\nend\n"
+
+      {meta_a, sites_a, next} = Mutare.transform_string(a, file: "lib/a.ex")
+      {meta_b, sites_b, _} = Mutare.transform_string(b, file: "lib/b.ex", start_id: next)
+
+      index = Coverage.index([Manifest.from_source(meta_a), Manifest.from_source(meta_b)])
+
+      ids = Enum.map(sites_a ++ sites_b, & &1.id)
+      assert map_size(index) == length(ids)
+      assert Enum.all?(ids, &Map.has_key?(index, &1))
     end
   end
 

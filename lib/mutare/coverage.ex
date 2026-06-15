@@ -7,13 +7,14 @@ defmodule Mutare.Coverage do
   code path, so a single `:cover` run over the baseline tells us which mutants'
   code is exercised — for free, from the build we already made.
 
-  We work entirely in **metamutant line space**: we locate each selector `case`
-  in the rendered metamutant (mapping the mutant ids it hosts → the line of its
-  catch-all `_ ->` branch) and intersect with cover's per-line hits. At baseline
+  We work entirely in **metamutant line space**: each mutant's coverage location
+  (the `{module, line}` of its selector's catch-all `_ ->` branch) is read from the
+  stored `Mutare.Manifest` and intersected with cover's per-line hits. At baseline
   every live selector takes its catch-all, so that line is hit iff the code ran.
-  (We key on the catch-all body's line, not the `case` keyword line: cover does
-  not count the `case` line of a selector nested on a continuation line.) No
-  metamutant↔original line mapping is needed — the original line is for the report.
+  (The manifest keys on the catch-all body's line, not the `case` keyword line:
+  cover does not count the `case` line of a selector nested on a continuation
+  line.) No metamutant↔original line mapping is needed — the original line is for
+  the report.
 
   A mutant whose selector line no test executes can never be killed
   (`:no_coverage`): skip it and keep it out of the score's denominator.
@@ -21,15 +22,21 @@ defmodule Mutare.Coverage do
 
   require Logger
 
+  alias Mutare.Manifest
+
   # `:cover` is added to the code path at runtime (it lives in OTP's :tools),
   # so it is legitimately undefined at compile time.
   @compile {:no_warn_undefined, :cover}
 
-  @doc "Merge selector indices for several metamutant sources: `%{id => {module, line}}`."
-  @spec index([String.t()]) :: %{pos_integer() => {module(), pos_integer()}}
-  def index(metamutant_sources) do
-    Enum.reduce(metamutant_sources, %{}, fn source, acc ->
-      Map.merge(acc, selector_index(source))
+  @doc """
+  Merge the per-file manifests' coverage locations: `%{id => {module, line}}`.
+
+  Mutant ids are globally unique across files, so the maps never collide.
+  """
+  @spec index([Manifest.t()]) :: %{pos_integer() => {module(), pos_integer()}}
+  def index(manifests) do
+    Enum.reduce(manifests, %{}, fn manifest, acc ->
+      Map.merge(acc, Manifest.coverage(manifest))
     end)
   end
 
@@ -53,19 +60,6 @@ defmodule Mutare.Coverage do
       )
 
       {:error, error}
-  end
-
-  @doc """
-  Map every mutant id to `{module, line}` of the selector `case` that hosts it.
-
-  The line is the selector's catch-all body line — taken at baseline whenever the
-  code runs. Delegates the metamutant walk to `Mutare.Metamutant`.
-  """
-  @spec selector_index(String.t()) :: %{pos_integer() => {module(), pos_integer()}}
-  def selector_index(metamutant_source) do
-    for clause <- Mutare.Metamutant.selector_clauses(metamutant_source),
-        into: %{},
-        do: {clause.id, {clause.module, clause.catch_all_line}}
   end
 
   # --- cover ---------------------------------------------------------------
