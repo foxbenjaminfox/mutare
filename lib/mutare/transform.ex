@@ -70,6 +70,8 @@ defmodule Mutare.Transform do
   patches against.
   """
 
+  require Logger
+
   alias Mutare.Site
   alias Mutare.Transform.{Candidate, Ctx, Render}
 
@@ -166,60 +168,67 @@ defmodule Mutare.Transform do
   end
 
   defp transform_statements(statements, ctx) do
-    complete_groups = complete_lift_groups(statements, ctx.mutators)
+    chunks = chunk_clause_runs(statements)
+    non_consecutive = non_consecutive_signatures(chunks)
+    warn_non_consecutive(non_consecutive, ctx.file)
 
-    {transformed, {ctx, _emitted}} =
-      statements
-      |> chunk_clause_runs()
-      |> Enum.flat_map_reduce({ctx, MapSet.new()}, fn
-        {:clauses, clauses}, {ctx, emitted} ->
-          signature = clause_signature(hd(clauses))
-
-          case Map.fetch(complete_groups, signature) do
-            {:ok, {complete_clauses, candidates}} ->
-              if signature in emitted do
-                {[], {ctx, emitted}}
-              else
-                {nodes, ctx} = lift(complete_clauses, candidates, ctx)
-                {nodes, {ctx, MapSet.put(emitted, signature)}}
-              end
-
-            :error ->
-              {nodes, ctx} = transform_clause_group(clauses, ctx)
-              {nodes, {ctx, emitted}}
+    {transformed, ctx} =
+      Enum.flat_map_reduce(chunks, ctx, fn
+        {:clauses, clauses}, ctx ->
+          if clause_signature(hd(clauses)) in non_consecutive do
+            # Non-consecutive heads can't be lifted (for now). A dispatcher is a
+            # catch-all for the whole signature, so lifting one run would shadow
+            # the others; and lifting every run as one unit relocates each
+            # clause's body to the dispatcher's position — which silently changes
+            # semantics when a compile-time `@attr` read between the heads resolves
+            # differently there (`@a 1; def f(0), do: @a; @a 2; def f(1), do: @a`).
+            # Fall back to in-place; guard/clause-drop mutants are simply not
+            # offered for such functions.
+            in_place_clauses(clauses, ctx)
+          else
+            transform_clause_group(clauses, ctx)
           end
 
-        {:other, statement}, {ctx, emitted} ->
+        {:other, statement}, ctx ->
           {node, ctx} = transform_node(statement, ctx)
-          {[node], {ctx, emitted}}
+          {[node], ctx}
       end)
 
     {transformed, ctx}
   end
 
-  # A lifted dispatcher is a catch-all for its public signature, so it must own
-  # every clause of that function even when another definition appears between
-  # clauses. Otherwise the dispatcher makes later clauses unreachable.
-  #
-  # Only pre-group signatures that will actually lift. Each entry carries the
-  # plan's candidates alongside the clauses, so `transform_statements/2` lifts
-  # straight from here without recomputing them — the guard mutators run once
-  # per signature. Non-lifted definitions keep their original statement positions.
-  defp complete_lift_groups(statements, mutators) do
-    statements
-    |> Enum.filter(&clause_signature/1)
-    |> Enum.group_by(&clause_signature/1)
-    |> Enum.reduce(%{}, fn {signature, clauses}, groups ->
-      case lift_plan(clauses, mutators) do
-        {:lift, candidates} -> Map.put(groups, signature, {clauses, candidates})
-        :in_place -> groups
-      end
+  # Signatures whose clauses are split across more than one consecutive run —
+  # something (another definition, a module attribute) appears between them.
+  # These are the functions Transform refuses to lift.
+  defp non_consecutive_signatures(chunks) do
+    chunks
+    |> Enum.flat_map(fn
+      {:clauses, clauses} -> [clause_signature(hd(clauses))]
+      {:other, _statement} -> []
+    end)
+    |> Enum.frequencies()
+    |> Enum.flat_map(fn
+      {signature, count} when count > 1 -> [signature]
+      {_signature, _count} -> []
+    end)
+    |> MapSet.new()
+  end
+
+  # Lifting is silently disabled for non-consecutive clauses, which costs that
+  # function its guard and clause-drop mutants. Warn once per signature so the
+  # gap is visible (and actionable — grouping the clauses restores lifting).
+  defp warn_non_consecutive(signatures, file) do
+    Enum.each(signatures, fn {_vis, name, arity} ->
+      Logger.warning(
+        "#{file}: clauses of #{name}/#{arity} are non-consecutive — not lifting " <>
+          "(no guard or clause-drop mutants for it); group the clauses to enable lifting"
+      )
     end)
   end
 
   # Group maximal runs of consecutive clauses that share {visibility, name, arity}.
-  # Complete liftable functions are joined across these runs by
-  # complete_lift_groups/2.
+  # A signature appearing in more than one run is "non-consecutive" (see
+  # non_consecutive_signatures/1) and is never lifted.
   defp chunk_clause_runs(statements) do
     statements
     |> Enum.reduce([], fn statement, acc ->
@@ -248,15 +257,17 @@ defmodule Mutare.Transform do
   # its own — recompute the plan against just these clauses.
   defp transform_clause_group(clauses, ctx) do
     case lift_plan(clauses, ctx.mutators) do
-      {:lift, candidates} ->
-        lift(clauses, candidates, ctx)
-
-      :in_place ->
-        Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
-          {clause, ctx} = in_place(clause, ctx)
-          {[clause], ctx}
-        end)
+      {:lift, candidates} -> lift(clauses, candidates, ctx)
+      :in_place -> in_place_clauses(clauses, ctx)
     end
+  end
+
+  # Transform each clause in place (body selectors only), preserving its position.
+  defp in_place_clauses(clauses, ctx) do
+    Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
+      {clause, ctx} = in_place(clause, ctx)
+      {[clause], ctx}
+    end)
   end
 
   # The lift decision, in one place. A clause group lifts when the mutators find
@@ -306,12 +317,7 @@ defmodule Mutare.Transform do
     base = base_name(name, arity, group)
 
     # The unchanged copy carries the in-place selectors (body mutations).
-    {orig_clauses, ctx} =
-      Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
-        {clause, ctx} = in_place(clause, ctx)
-        {[clause], ctx}
-      end)
-
+    {orig_clauses, ctx} = in_place_clauses(clauses, ctx)
     orig_defs = Enum.map(orig_clauses, &rename_clause(&1, :"#{base}_orig", :defp))
 
     # One private copy per lifted candidate (original bodies, one change applied).

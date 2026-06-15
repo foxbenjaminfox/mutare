@@ -119,13 +119,37 @@ Three things this bought, vs. the prior implicit version:
 - **`@doc`/`@spec`/`@impl`** ride on the public dispatcher because we emit it
   *first* in the lifted group (attributes attach to the next def). Private copies
   are `defp` (no docs needed). Not exhaustively tested across attribute shapes.
-- **Not lifted (fall back to in-place):** functions with default args, and
-  operator-named functions (`def a ~> b` — can't be spelled `__mutare_~>_2_…`).
-- **Non-consecutive clauses are one lift unit.** A public dispatcher is a
-  catch-all, so lifting only one consecutive run would make later clauses of the
-  same signature unreachable. Transform gathers every clause for a lifted
-  signature, emits one complete dispatcher/copy set at the first occurrence,
-  and leaves intervening definitions in place.
+- **Not lifted (fall back to in-place):** functions with default args,
+  operator-named functions (`def a ~> b` — can't be spelled `__mutare_~>_2_…`),
+  and functions with non-consecutive clauses (see the dedicated note below).
+- **Non-consecutive clauses are not lifted (for now).** When a function's
+  clauses are split across more than one run — something (another definition, a
+  module attribute) appears between them — Transform refuses to lift the whole
+  signature and falls back to in-place for every clause
+  (`non_consecutive_signatures/1`, fed by `chunk_clause_runs/1`'s run chunking).
+  Two reasons it can't safely lift: a public dispatcher is a catch-all, so
+  lifting only one consecutive run would make the other clauses unreachable; and
+  lifting *every* run as one unit (the previous behaviour) relocated each
+  clause's body to the dispatcher's position, which silently changes semantics
+  when a compile-time `@attr` read between the heads resolves to a different
+  value there. The motivating break:
+
+  ```elixir
+  @a 1
+  def f(0), do: @a    # reads @a == 1
+  @a 2
+  def f(1), do: @a    # reads @a == 2 — but a copy emitted at the dispatcher
+                      # (first occurrence) would read @a == 1
+  ```
+
+  Cost: such functions get no guard/clause-drop mutants (body in-place mutants
+  still apply). The skip is **not silent** — `warn_non_consecutive/2` logs a
+  `Logger.warning` once per non-consecutive signature (file + `name/arity`),
+  pointing at the fix (group the clauses). **Deferred:** the cases we *can* lift
+  safely — e.g. heads separated only by another `def`, with no compile-time read
+  whose value differs across the split — are worth recovering later
+  (normalize/relocate the reads, or detect attribute-independence and lift). For
+  now the blanket refusal is the conservative, always-correct choice.
 - **Private names** are `__mutare_<name>_<arity>_g<group>_{orig,m<id>}`. The
   group counter keeps generated names unique, and `?`/`!` (legal only at a
   name's end) are replaced so they can sit mid-identifier. The public dispatcher

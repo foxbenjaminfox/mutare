@@ -6,6 +6,8 @@ defmodule Mutare.LiftTest do
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Mutare.{Report, Selector, Site}
 
   @compile {:no_warn_undefined, Mutare.LiftFixture}
@@ -70,7 +72,7 @@ defmodule Mutare.LiftTest do
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
-    test "lifts all clauses when a function is split by another definition" do
+    test "does not lift a function whose clauses are split by another definition" do
       source = """
       defmodule Mutare.NonConsecutiveLiftFixture do
         def f(x) when x > 0, do: :positive
@@ -79,26 +81,46 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.transform_string(source)
+      {{meta, sites, _next_id}, log} =
+        with_log(fn -> Mutare.transform_string(source, file: "nc.ex") end)
 
-      assert length(Regex.scan(~r/def f\(mutare_arg1\)/, meta)) == 1
-      assert Enum.count(sites, &(&1.mutator == :clause_drop)) == 2
+      # Non-consecutive heads fall back to in-place: no dispatcher, no lifted
+      # guard/clause-drop mutants. The clauses keep their original positions, so
+      # `f/1` stays reachable across the intervening `def g`.
+      refute meta =~ "__mutare_f"
+      assert Enum.count(sites, &(&1.kind == :lifted)) == 0
+      assert log =~ "nc.ex: clauses of f/1 are non-consecutive — not lifting"
       assert [{Mutare.NonConsecutiveLiftFixture, _}] = Code.compile_string(meta)
 
       Selector.put(Selector.baseline())
       assert apply(Mutare.NonConsecutiveLiftFixture, :f, [1]) == :positive
+      assert apply(Mutare.NonConsecutiveLiftFixture, :f, [0]) == :other
       assert apply(Mutare.NonConsecutiveLiftFixture, :f, [-1]) == :other
       assert apply(Mutare.NonConsecutiveLiftFixture, :g, []) == :g
+    end
 
-      guard_id =
-        Enum.find_value(sites, fn
-          %Site{original_op: :>, mutated_op: :>=, id: id} -> id
-          _site -> nil
-        end)
+    test "non-consecutive heads keep compile-time @attr reads in position" do
+      # If `f/1`'s clauses were lifted into copies emitted at the dispatcher's
+      # position, both bodies would read `@a` as its *last* value (2). Refusing to
+      # lift keeps each `@a` read where it was written, so the values stay distinct.
+      source = """
+      defmodule Mutare.NonConsecutiveAttrFixture do
+        @a 1
+        def f(0), do: @a
+        @a 2
+        def f(1), do: @a
+      end
+      """
 
-      Selector.put(guard_id)
-      assert apply(Mutare.NonConsecutiveLiftFixture, :f, [0]) == :positive
-      assert apply(Mutare.NonConsecutiveLiftFixture, :f, [-1]) == :other
+      {{meta, _sites, _next_id}, _log} =
+        with_log(fn -> Mutare.transform_string(source) end)
+
+      refute meta =~ "__mutare_f"
+      assert [{Mutare.NonConsecutiveAttrFixture, _}] = Code.compile_string(meta)
+
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.NonConsecutiveAttrFixture, :f, [0]) == 1
+      assert apply(Mutare.NonConsecutiveAttrFixture, :f, [1]) == 2
     end
 
     test "lifts functions whose names end in ? or ! (sanitized private names)" do
