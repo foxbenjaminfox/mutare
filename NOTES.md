@@ -35,6 +35,20 @@ Two `:cover` gotchas worth remembering (both handled in `Mutare.Coverage`):
 - The design's open question stands: full source copy vs per-worker
   `MIX_BUILD_PATH` against one shared schema build — measure on a large umbrella.
 
+### Sandbox ownership marker `[done]`
+`prepare/3` used to `File.rm_rf!` the sandbox path unconditionally — fine for the
+default temp dir, but a foot-gun for a user-supplied `--sandbox` (a typo could
+wipe a real directory). It now `claim!`s the path first and only proceeds when
+the path is **absent** (create), an **empty directory** (adopt), or a directory
+carrying our **ownership marker** (a previous sandbox — wipe and reuse).
+Everything else (a non-empty unmarked dir, a regular file, a symlink) is refused
+untouched. The marker is `.mutare_sandbox`, whose first line is a fixed
+signature; ownership is decided by reading the contents, not trusting the name,
+so a coincidental dotfile can't authorise a deletion. `lstat` (not `stat`) keeps
+a symlink from being followed to a directory we'd then clear. The reuse branch
+is what keeps poison recovery cheap: the runner rebuilds the *same* sandbox path
+repeatedly, and each rebuild is condition 3.
+
 ### Keyword-`do:` normalization (Sourceror workaround) `[done, watch]`
 Sourceror's formatter raises when rendering `def f, do: <case>` (keyword block
 whose value is a multi-line `case`). `Mutare.Transform.Render` flips every

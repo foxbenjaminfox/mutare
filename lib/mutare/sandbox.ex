@@ -21,6 +21,29 @@ defmodule Mutare.Sandbox do
 
   @excluded ~w(_build .git .elixir_ls .lexical cover)
 
+  # A sandbox is a throwaway copy we compile, mutate, and wipe. Before clearing a
+  # directory we must be sure it is *ours* — not, say, a path `--sandbox` was
+  # pointed at by mistake — so we never `rm_rf!` arbitrary user data. We take a
+  # path only when it is one of:
+  #
+  #   1. absent — we create it;
+  #   2. an empty directory — we adopt it; or
+  #   3. a directory carrying our ownership marker — a sandbox from an earlier
+  #      run, which we wipe and reuse (poison recovery rebuilds the same path).
+  #
+  # Anything else — a non-empty directory we never marked, a regular file, a
+  # symlink — is refused untouched. The marker is a small dotfile whose first
+  # line is a fixed signature; we verify its contents (not just its name) so a
+  # coincidental file cannot hand us ownership of a directory we did not create.
+  @marker_name ".mutare_sandbox"
+  @marker_signature "mutare-sandbox-ownership-marker"
+  @marker_body """
+  #{@marker_signature}
+
+  This directory is a Mutare sandbox: a throwaway, compiled-and-mutated copy of a
+  target project. Mutare wipes and rebuilds it on every run — keep nothing here.
+  """
+
   # The bootstrap is two dependency-free snippets, each rendered the same way from
   # a quoted AST its owner defines: the mutant selector
   # (`Mutare.Selector.bootstrap_ast/0`) and the per-mutant timeout watcher
@@ -52,14 +75,17 @@ defmodule Mutare.Sandbox do
   The sandbox must be disjoint from the project tree: it cannot be the project
   root, contain it, or be contained by it. `Options` validates the *shape* of the
   path; this disjointness check is enforced here because it is relative to `root`.
+
+  To avoid deleting arbitrary data, the target path is only used when it is
+  absent, an empty directory, or a directory carrying Mutare's ownership marker
+  (a sandbox from an earlier run); anything else is refused untouched.
   """
   @spec prepare(Path.t(), Schema.t(), Options.t() | keyword()) :: Path.t()
   def prepare(root, %Schema{} = schema, opts \\ []) do
     sandbox = Options.new(opts).sandbox || default_sandbox()
 
     validate_paths!(root, sandbox)
-    File.rm_rf!(sandbox)
-    File.mkdir_p!(sandbox)
+    claim!(sandbox)
 
     copy_project(root, sandbox)
     write_metamutants(sandbox, schema)
@@ -76,6 +102,54 @@ defmodule Mutare.Sandbox do
 
   defp default_sandbox do
     Path.join(System.tmp_dir!(), "mutare_sandbox_#{System.unique_integer([:positive])}")
+  end
+
+  # Take ownership of the sandbox path, then leave our marker. `lstat` (not
+  # `stat`) so a symlink is seen as a symlink, never followed to a directory we
+  # would then wipe.
+  defp claim!(sandbox) do
+    case File.lstat(sandbox) do
+      {:error, :enoent} ->
+        File.mkdir_p!(sandbox)
+
+      {:ok, %File.Stat{type: :directory}} ->
+        cond do
+          owned?(sandbox) -> reset!(sandbox)
+          File.ls!(sandbox) == [] -> :ok
+          true -> refuse!(sandbox, "is a non-empty directory without Mutare's ownership marker")
+        end
+
+      {:ok, %File.Stat{type: type}} ->
+        refuse!(sandbox, "is a #{type}, not a directory")
+
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "inspect sandbox", path: sandbox
+    end
+
+    File.write!(marker_path(sandbox), @marker_body)
+  end
+
+  # Ours iff the marker is a regular file whose contents start with our
+  # signature — verified, so a coincidental dotfile can't grant ownership.
+  defp owned?(sandbox) do
+    path = marker_path(sandbox)
+
+    match?({:ok, %File.Stat{type: :regular}}, File.lstat(path)) and
+      match?({:ok, @marker_signature <> _}, File.read(path))
+  end
+
+  defp reset!(sandbox) do
+    File.rm_rf!(sandbox)
+    File.mkdir_p!(sandbox)
+  end
+
+  defp marker_path(sandbox), do: Path.join(sandbox, @marker_name)
+
+  defp refuse!(sandbox, reason) do
+    raise ArgumentError,
+          "refusing to use sandbox #{inspect(sandbox)}: it #{reason}. Mutare only writes " <>
+            "to a path that is absent, an empty directory, or a previous Mutare sandbox; " <>
+            "point it at a fresh or empty directory."
   end
 
   defp validate_paths!(root, sandbox) do

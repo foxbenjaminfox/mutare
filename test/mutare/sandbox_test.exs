@@ -65,6 +65,79 @@ defmodule Mutare.SandboxTest do
     assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
   end
 
+  @marker ".mutare_sandbox"
+
+  test "creates the sandbox and leaves an ownership marker when it is absent", context do
+    sandbox = Path.join(context.base, "sandbox")
+    refute File.exists?(sandbox)
+
+    assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+    assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
+    assert File.regular?(Path.join(sandbox, @marker))
+  end
+
+  test "adopts an existing empty directory", context do
+    sandbox = Path.join(context.base, "sandbox")
+    File.mkdir_p!(sandbox)
+
+    assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+    assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
+    assert File.regular?(Path.join(sandbox, @marker))
+  end
+
+  test "reuses a marked sandbox, clearing its stale contents", context do
+    sandbox = Path.join(context.base, "sandbox")
+
+    # First run marks and populates it.
+    assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+    stale = Path.join(sandbox, "stale.txt")
+    File.write!(stale, "stale")
+
+    # Second run on the same (now owned) path wipes the stale file and rebuilds.
+    assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+    refute File.exists?(stale)
+    assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
+    assert File.regular?(Path.join(sandbox, @marker))
+  end
+
+  test "refuses a non-empty directory it does not own, untouched", context do
+    sandbox = Path.join(context.base, "sandbox")
+    bystander = Path.join(sandbox, "important.txt")
+    File.mkdir_p!(sandbox)
+    File.write!(bystander, "precious")
+
+    assert_refused(context.project, sandbox, context.schema)
+    assert File.read!(bystander) == "precious"
+    refute File.exists?(Path.join(sandbox, @marker))
+  end
+
+  test "refuses a directory whose marker has foreign contents", context do
+    sandbox = Path.join(context.base, "sandbox")
+    File.mkdir_p!(sandbox)
+    File.write!(Path.join(sandbox, @marker), "not really ours")
+    File.write!(Path.join(sandbox, "important.txt"), "precious")
+
+    assert_refused(context.project, sandbox, context.schema)
+    assert File.read!(Path.join(sandbox, "important.txt")) == "precious"
+  end
+
+  test "refuses a regular file at the sandbox path, untouched", context do
+    sandbox = Path.join(context.base, "sandbox")
+    File.write!(sandbox, "i am a file")
+
+    assert_refused(context.project, sandbox, context.schema)
+    assert File.read!(sandbox) == "i am a file"
+  end
+
+  defp assert_refused(root, sandbox, schema) do
+    error =
+      assert_raise ArgumentError, fn ->
+        Sandbox.prepare(root, schema, sandbox: sandbox)
+      end
+
+    assert Exception.message(error) =~ "refusing to use sandbox"
+  end
+
   defp assert_unsafe(root, sandbox, schema, relation) do
     error =
       assert_raise ArgumentError, fn ->
