@@ -1,7 +1,12 @@
-defmodule Mutare.Runner.Probe do
+defmodule Mutare.Runner.CoverageProbe do
   @moduledoc """
-  The coverage probe: run the baseline once (green-checked) and decide, per
-  mutant, which test files to run.
+  Decide, per mutant, which test files to run — coverage-driven test selection.
+
+  Runs *after* `Mutare.Runner.Baseline` has confirmed the suite green and measured
+  the timing; this module is purely about coverage and never green-checks or times
+  anything. Keeping the two apart is the point: folding coverage into the baseline
+  made `baseline_ms` a sum of per-file process boots (an inflated timeout cap), and
+  meant the suite was never confirmed green *together* — only file-by-file.
 
   Two modes, set by `:test_selection`:
 
@@ -18,9 +23,12 @@ defmodule Mutare.Runner.Probe do
   (without touching the line itself) is still included, as long as a sibling test
   in its file does touch the line.
 
-  The probe doubles as the green baseline check: it runs the baseline mutant
-  (`MUTANT_UNDER_TEST=0`), so a red probe means the baseline isn't green and the
-  run aborts.
+  Coverage is advisory, never authoritative. Anything uncertain — an unreadable
+  coverdata, a `--cover` run that recorded nothing, or a probe file that isn't
+  green *in isolation* (a cross-file dependency) — degrades to `:run_all`: we
+  never skip a mutant on doubt. A probe file failing in isolation is no longer a
+  red baseline (the baseline already proved the suite green together); it is just
+  coverage we couldn't gather, so we run everything rather than abort.
   """
 
   alias Mutare.{Coverage, Schema, Selector}
@@ -39,9 +47,10 @@ defmodule Mutare.Runner.Probe do
   @typedoc """
   What the probe decided for the whole run:
 
-    * `:run_all` — coverage is unusable or uncertain (couldn't read coverdata, or
-      not a single line registered a hit, which means `:cover` itself likely
-      failed). Run *every* mutant against the whole suite — never skip on doubt.
+    * `:run_all` — coverage is unusable or uncertain (couldn't read coverdata, a
+      probe file wasn't green in isolation, or not a single line registered a hit,
+      which means `:cover` itself likely failed). Run *every* mutant against the
+      whole suite — never skip on doubt.
     * `{:selective, outcomes}` — a per-mutant decision. `outcomes` is **total**:
       every mutant id maps to an explicit `outcome`, so a `:no_coverage` mutant
       is named, never implied by a missing key.
@@ -49,35 +58,28 @@ defmodule Mutare.Runner.Probe do
   @type selection :: :run_all | {:selective, %{pos_integer() => outcome()}}
 
   @doc """
-  Run the probe and build the per-mutant test selection.
+  Build the per-mutant test selection (see `t:selection/0`).
 
-  Returns `{:ok, baseline_ms, selection}` (see `t:selection/0` — either `:run_all`
-  or `{:selective, outcomes}`). A red probe means the baseline isn't green →
-  `{:error, :baseline_failed, output}`.
+  Never fails: every uncertainty degrades to the conservative `:run_all`. The
+  green check and timing live in `Mutare.Runner.Baseline`, which runs first.
   """
-  @spec run(Path.t(), Schema.t(), :coverage | :full) ::
-          {:ok, non_neg_integer(), selection()} | {:error, :baseline_failed, String.t()}
+  @spec run(Path.t(), Schema.t(), :coverage | :full) :: selection()
   def run(sandbox, %Schema{} = schema, :full), do: aggregate_probe(sandbox, schema)
   def run(sandbox, %Schema{} = schema, :coverage), do: per_file_probe(sandbox, schema)
 
-  # One aggregate `--cover` run: covered mutants run the whole suite.
+  # One aggregate `--cover` run: covered mutants run the whole suite. A non-green
+  # cover run (anomalous — the baseline already passed) or an unreadable coverdata
+  # is coverage we can't trust → `:run_all`.
   defp aggregate_probe(sandbox, schema) do
     args = ["test", "--cover", "--export-coverage", "mutare"]
-    {ms, output, status} = Command.timed_mix(sandbox, args, Selector.baseline())
+    {_output, status} = Command.mix(sandbox, args, Selector.baseline())
 
-    if status == 0 do
-      coverdata = Path.join(sandbox, "cover/mutare.coverdata")
+    with 0 <- status,
+         {:ok, hits} <- Coverage.hits(Path.join(sandbox, "cover/mutare.coverdata")) do
       index = Coverage.index(Map.values(schema.metamutants))
-
-      selection =
-        case Coverage.hits(coverdata) do
-          {:ok, hits} -> whole_suite_selection(index, hits)
-          {:error, _reason} -> :run_all
-        end
-
-      {:ok, ms, selection}
+      whole_suite_selection(index, hits)
     else
-      {:error, :baseline_failed, output}
+      _ -> :run_all
     end
   end
 
@@ -107,43 +109,38 @@ defmodule Mutare.Runner.Probe do
         aggregate_probe(sandbox, schema)
 
       files ->
-        index = Coverage.index(Map.values(schema.metamutants))
-
+        # A probe file that wasn't green in isolation, or a coverdata we couldn't
+        # read: coverage is uncertain. Run every mutant against the whole suite
+        # rather than risk a false `:no_coverage` for one whose only covering file
+        # we couldn't read.
         case run_files(sandbox, files) do
-          {:error, output} ->
-            {:error, :baseline_failed, output}
+          :uncertain ->
+            :run_all
 
-          # A coverdata read failed: coverage is uncertain. Run every mutant
-          # against the whole suite rather than risk a false `:no_coverage` for
-          # one whose only covering file we couldn't read.
-          {:uncertain, ms} ->
-            {:ok, ms, :run_all}
-
-          {:ok, ms, file_hits} ->
-            {:ok, ms, per_file_selection(index, file_hits)}
+          {:ok, file_hits} ->
+            index = Coverage.index(Map.values(schema.metamutants))
+            per_file_selection(index, file_hits)
         end
     end
   end
 
-  # Run each test file with --cover (green-checked), collecting its hit set. A
-  # green run whose coverdata we can't read is `:uncertain` — we must not turn an
-  # unreadable file into an empty hit set, which would silently drop mutants to
-  # `:no_coverage`. Bail to conservative (`:run_all`) execution instead.
+  # Run each test file with --cover, collecting its hit set. A file that isn't
+  # green in isolation or whose coverdata we can't read is `:uncertain` — we must
+  # not turn an unreadable/failed file into an empty hit set, which would silently
+  # drop mutants to `:no_coverage`. The caller bails to conservative `:run_all`.
   defp run_files(sandbox, files) do
     files
     |> Enum.with_index()
-    |> Enum.reduce_while({:ok, 0, %{}}, fn {file, index}, {:ok, ms, acc} ->
+    |> Enum.reduce_while({:ok, %{}}, fn {file, index}, {:ok, acc} ->
       name = cover_name(file, index)
       args = ["test", file, "--cover", "--export-coverage", name]
-      {file_ms, output, status} = Command.timed_mix(sandbox, args, Selector.baseline())
+      {_output, status} = Command.mix(sandbox, args, Selector.baseline())
 
-      if status == 0 do
-        case Coverage.hits(Path.join(sandbox, "cover/#{name}.coverdata")) do
-          {:ok, hits} -> {:cont, {:ok, ms + file_ms, Map.put(acc, file, hits)}}
-          {:error, _reason} -> {:halt, {:uncertain, ms + file_ms}}
-        end
+      with 0 <- status,
+           {:ok, hits} <- Coverage.hits(Path.join(sandbox, "cover/#{name}.coverdata")) do
+        {:cont, {:ok, Map.put(acc, file, hits)}}
       else
-        {:halt, {:error, output}}
+        _ -> {:halt, :uncertain}
       end
     end)
   end

@@ -8,11 +8,15 @@ defmodule Mutare.Runner do
   incremental compiler finds nothing to rebuild — the per-mutant cost is process
   boot plus the suite, never recompilation.
 
-  ## Coverage probe (test selection)
+  ## Baseline + coverage probe
 
-  Before the per-mutant loop we run a coverage probe (`Mutare.Runner.Probe`),
-  which doubles as the green baseline check and, per mutant, picks the test files
-  it needs (or marks it `:no_coverage`). See that module for the selection modes.
+  Before the per-mutant loop we run the suite green once (`Mutare.Runner.Baseline`)
+  — the authoritative green check, and the timing the per-mutant timeout cap is
+  scaled from — then build a per-mutant test selection
+  (`Mutare.Runner.CoverageProbe`), which picks the test files each mutant needs (or
+  marks it `:no_coverage`). The two are split on purpose: a red baseline aborts,
+  while coverage is advisory and degrades to running everything. See those modules
+  for the selection modes.
 
   ## Parallel workers and timeouts
 
@@ -31,7 +35,7 @@ defmodule Mutare.Runner do
   """
 
   alias Mutare.{Options, Poison, Result, Sandbox, Schema, Selector, Site}
-  alias Mutare.Runner.Probe
+  alias Mutare.Runner.{Baseline, CoverageProbe}
   alias Mutare.Sandbox.Command
 
   @timeout_exit Command.timeout_exit()
@@ -82,7 +86,8 @@ defmodule Mutare.Runner do
       # offending mutants and rebuilding. `schema` here may differ from the input
       # (poisoners flagged), which is what the run reports against.
       with {:ok, schema, sandbox} <- prepare_compiling(schema, root, options),
-           {:ok, baseline_ms, selection} <- Probe.run(sandbox, schema, mode) do
+           {:ok, baseline_ms} <- Baseline.run(sandbox) do
+        selection = CoverageProbe.run(sandbox, schema, mode)
         cap = timeout_cap(baseline_ms, options)
         workers = options.workers
 

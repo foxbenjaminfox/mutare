@@ -70,9 +70,19 @@ contract between them is the whole game.
   code a timeout signals (`timeout_exit/0`); the `Mutare.Sandbox` bootstrap renders the watcher that
   honours them, and the runner reads `timeout_exit/0` to classify a capped run as `:timeout`.
 - **`Mutare.Runner`** — the orchestrator. Compiles the sandbox **once** (recovering from
-  compile-poisoning, see below), runs a coverage probe, then runs `:workers` mutants concurrently
-  via `Task.async_stream`, each a fresh `mix test` OS process. Per-mutant wall-clock cap; a
-  timeout is a kill (`:timeout`). Returns `%{schema, results, sandbox, baseline_ms}`.
+  compile-poisoning, see below), runs the baseline green then a coverage probe, then runs
+  `:workers` mutants concurrently via `Task.async_stream`, each a fresh `mix test` OS process.
+  Per-mutant wall-clock cap; a timeout is a kill (`:timeout`). Returns
+  `%{schema, results, sandbox, baseline_ms}`.
+- **`Mutare.Runner.Baseline`** — one whole-suite `mix test` (no `--cover`) at the baseline mutant:
+  the authoritative green check (a red suite aborts with `:baseline_failed`) and the source of
+  `baseline_ms` (a *single* run's wall-clock — the per-mutant timeout cap is scaled from it).
+- **`Mutare.Runner.CoverageProbe`** — coverage-driven test selection, run after the baseline.
+  Returns a bare `selection` (`:run_all | {:selective, %{id => outcome}}`) and **can't fail**:
+  every uncertainty (unreadable coverdata, an all-empty hit set, a probe file that's red in
+  isolation) degrades to `:run_all`. Split from the baseline on purpose — folding the two
+  conflated a green check that never ran the suite together with a `baseline_ms` summed over N
+  per-file process boots (an inflated cap). See `NOTES.md`.
 - **`Mutare.Coverage`** — the probe. Works **entirely in metamutant line space**: re-parses the
   rendered metamutant to map each mutant id to its selector's catch-all line, intersects with
   `:cover` per-line hits. No-coverage mutants are skipped; per-test-file selection runs only

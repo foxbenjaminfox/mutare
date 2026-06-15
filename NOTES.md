@@ -209,18 +209,44 @@ as a sibling does. True per-test would need N per-test `mix` runs (one boot each
 — deferred.
 
 Caveat: `:coverage` runs each test file *in isolation* for the probe, so a suite
-with cross-file dependencies (a test relying on state another file set up) can
-fail the baseline; use `:full` there.
+with cross-file dependencies (a test relying on state another file set up) can't
+gather clean per-file coverage. That no longer fails the baseline (see below) — a
+probe file that's red in isolation just degrades the whole run to `:run_all` (you
+lose selection but stay correct). Use `:full` to keep coverage-based no-coverage
+skipping in that case.
 
-The probe's decision is **typed**, not an overloaded value (`Mutare.Runner.Probe`):
-`selection` is `:run_all | {:selective, %{id => outcome}}`, where `outcome` is
-`{:run, test_args} | :no_coverage`. The `{:selective, _}` map is **total** — every
-mutant id has an explicit outcome, so `:no_coverage` is *named*, never implied by a
-missing key. `:run_all` is the single conservative fallback: it covers an unreadable
-coverdata (don't risk a false `:no_coverage` for a file we couldn't read) *and* an
-all-empty hit set (`:cover` recorded nothing → it likely failed, so don't skip the
-world). Both modes share it. The rule throughout: never skip on doubt — run
-everything rather than silently drop a mutant from the score's denominator.
+The probe's decision is **typed**, not an overloaded value
+(`Mutare.Runner.CoverageProbe`): `selection` is `:run_all | {:selective, %{id =>
+outcome}}`, where `outcome` is `{:run, test_args} | :no_coverage`. The
+`{:selective, _}` map is **total** — every mutant id has an explicit outcome, so
+`:no_coverage` is *named*, never implied by a missing key. `:run_all` is the single
+conservative fallback: it covers an unreadable coverdata (don't risk a false
+`:no_coverage` for a file we couldn't read), a probe file that isn't green in
+isolation, *and* an all-empty hit set (`:cover` recorded nothing → it likely
+failed, so don't skip the world). Both modes share it. The rule throughout: never
+skip on doubt — run everything rather than silently drop a mutant from the score's
+denominator.
+
+### Baseline split from the coverage probe (done)
+The probe used to *double* as the green baseline check, which conflated two
+concerns and got both subtly wrong. `Mutare.Runner.Baseline` now runs the whole
+suite once (no `--cover`) as the authoritative green check and the source of
+`baseline_ms`; `Mutare.Runner.CoverageProbe` runs afterwards and only decides test
+selection. Two bugs the split fixes:
+- **Inflated timeout cap.** The old `:coverage` probe summed each per-file `mix
+  test` run's wall-clock into `baseline_ms` — so `baseline_ms` carried N process
+  boots, and `baseline × multiplier` produced a cap far larger than one real suite
+  run. The cap is scaled from a *single* whole-suite run now.
+- **Suite never confirmed green together.** Running files one at a time never
+  exercises the suite as a whole, so a cross-file dependency could pass file-by-file
+  yet the suite's real state went unchecked. The baseline run checks it once,
+  together. Because the green check is now separate, a probe file that's red *in
+  isolation* is no longer a baseline failure — coverage degrades to `:run_all`
+  instead of aborting the run.
+Cost: one extra whole-suite `mix test` per run (the baseline), negligible against
+the hundreds of per-mutant runs, bought for correctness and a clean contract —
+`Baseline.run/1` is the only thing that can abort with `:baseline_failed`;
+`CoverageProbe.run/3` can't fail (it returns a bare `selection`).
 
 ### Equivalent mutants `[partial]`
 Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the
