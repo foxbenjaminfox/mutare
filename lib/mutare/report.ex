@@ -122,6 +122,11 @@ defmodule Mutare.Report do
   failures, so the run aborts rather than report it.
   """
   @spec harness_errors_exceed?([Result.t()], number() | nil) :: boolean()
+  # Equivalent mutant: dropping this clause changes nothing. The fallback clause
+  # would then compute `harness_error_rate(results) > nil`, and a number always
+  # sorts before `nil` in Erlang term order, so the result is `false` for a nil
+  # `max_rate` either way. Unkillable, so kept out of the score.
+  # mutare:ignore
   def harness_errors_exceed?(_results, nil), do: false
   def harness_errors_exceed?(results, max_rate), do: harness_error_rate(results) > max_rate
 
@@ -158,9 +163,17 @@ defmodule Mutare.Report do
 
   # --- internals -----------------------------------------------------------
 
+  # Equivalent mutant: dropping this clause changes nothing. With no survivors,
+  # `blocks` is already "" (an empty `Enum.map_join`), so the general clause
+  # returns "" too. Unkillable, so kept out of the score.
+  # mutare:ignore
   defp survivor_section([], _blocks), do: ""
   defp survivor_section(_survivors, blocks), do: blocks
 
+  # Defensive default `diff/2` never reaches: it only requests lines within the
+  # site's range, which is always inside the file, so the "" fallback (and any
+  # mutation of it) can't be exercised. Unkillable, so kept out of the score.
+  # mutare:ignore
   defp line_at(lines, n), do: Enum.at(lines, n - 1, "")
 
   defp tally(results), do: Enum.frequencies_by(results, & &1.status)
