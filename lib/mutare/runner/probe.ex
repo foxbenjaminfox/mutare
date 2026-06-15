@@ -58,7 +58,7 @@ defmodule Mutare.Runner.Probe do
   @spec run(Path.t(), Schema.t(), :coverage | :full) ::
           {:ok, non_neg_integer(), selection()} | {:error, :baseline_failed, String.t()}
   def run(sandbox, %Schema{} = schema, :full), do: aggregate_probe(sandbox, schema)
-  def run(sandbox, %Schema{} = schema, _coverage), do: per_file_probe(sandbox, schema)
+  def run(sandbox, %Schema{} = schema, :coverage), do: per_file_probe(sandbox, schema)
 
   # One aggregate `--cover` run: covered mutants run the whole suite.
   defp aggregate_probe(sandbox, schema) do
