@@ -130,8 +130,10 @@ defmodule Mutare.Runner.Probe do
   # unreadable file into an empty hit set, which would silently drop mutants to
   # `:no_coverage`. Bail to conservative (`:run_all`) execution instead.
   defp run_files(sandbox, files) do
-    Enum.reduce_while(files, {:ok, 0, %{}}, fn file, {:ok, ms, acc} ->
-      name = cover_name(file)
+    files
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, 0, %{}}, fn {file, index}, {:ok, ms, acc} ->
+      name = cover_name(file, index)
       args = ["test", file, "--cover", "--export-coverage", name]
       {file_ms, output, status} = Command.timed_mix(sandbox, args, "0")
 
@@ -178,5 +180,13 @@ defmodule Mutare.Runner.Probe do
     |> Enum.sort()
   end
 
-  defp cover_name(file), do: String.replace(file, ~r/[^A-Za-z0-9]/, "_")
+  # Each file needs its own `cover/<name>.coverdata`. Sanitizing the path alone is
+  # lossy — `test/foo_bar_test.exs` and `test/foo/bar_test.exs` both collapse to
+  # `test_foo_bar_test_exs` — so colliding files would share a coverdata file and
+  # clobber each other's hits. Appending the index makes the name unique: the file
+  # list is sorted and distinct, so each index is too, regardless of iteration
+  # order (so it stays collision-free even if the per-file probe is parallelized).
+  defp cover_name(file, index) do
+    "#{String.replace(file, ~r/[^A-Za-z0-9]/, "_")}_#{index}"
+  end
 end
