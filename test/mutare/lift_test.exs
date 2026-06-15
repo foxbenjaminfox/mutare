@@ -72,6 +72,34 @@ defmodule Mutare.LiftTest do
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
+    test "salts generated names when the target already defines a __mutare_ name" do
+      # The target hand-writes the exact name the default scheme would generate
+      # for classify/1's `__orig` copy (lift group 1). With a fixed prefix this
+      # is a duplicate `defp` that sinks the single metamutant build; the scan
+      # must shift the prefix so the generated copies dodge it.
+      source = """
+      defmodule Mutare.PrefixCollisionFixture do
+        def __mutare_classify_1_g1_orig(_), do: :preexisting
+
+        def classify(n) when n >= 0, do: :nonneg
+        def classify(_), do: :neg
+      end
+      """
+
+      {meta, _sites, _next_id} = Mutare.transform_string(source, file: "collision.ex")
+
+      # The pre-existing target definition is left untouched...
+      assert meta =~ "def __mutare_classify_1_g1_orig(_)"
+      # ...and the generated copies move to a salted, still-`__mutare_` prefix.
+      assert meta =~ ~r/defp __mutare_0_classify_1_g1_orig/
+      assert meta =~ ~r/defp __mutare_0_classify_1_g1_m\d+/
+      refute meta =~ ~r/defp __mutare_classify_1_g1_orig/
+
+      # The real proof: it compiles. A fixed prefix would raise "def
+      # __mutare_classify_1_g1_orig/1 already defined".
+      assert [{Mutare.PrefixCollisionFixture, _}] = Code.compile_string(meta)
+    end
+
     test "does not lift a function whose clauses are split by another definition" do
       source = """
       defmodule Mutare.NonConsecutiveLiftFixture do

@@ -105,6 +105,14 @@ defmodule Mutare.Transform do
   # family registered in `Mutare.Mutators` is part of the default automatically.
   @default_mutators Mutare.Mutators.all()
 
+  # The canonical prefix for generated private (lifted) names. `generated_prefix/1`
+  # derives a per-file, collision-free variant of it (see that function).
+  @base_prefix "__mutare_"
+
+  # def-like forms whose names a generated private `defp` could duplicate — the
+  # set `generated_prefix/1` scans the source for.
+  @def_forms ~w(def defp defmacro defmacrop defguard defguardp defdelegate)a
+
   @doc """
   Transform a source string into `{metamutant_source, [%Site{}], next_id}`.
 
@@ -132,6 +140,9 @@ defmodule Mutare.Transform do
     }
 
     parsed = Sourceror.parse_string!(source)
+    # Pin a generated-name prefix this source provably never collides with before
+    # any lifting assigns private names (see `generated_prefix/1`).
+    ctx = %{ctx | prefix: generated_prefix(parsed)}
     {transformed, ctx} = transform_node(parsed, ctx)
 
     metamutant = Render.to_source(transformed)
@@ -237,7 +248,7 @@ defmodule Mutare.Transform do
   defp emit_function_plan(%FunctionPlan{signature: {vis, name, arity}} = plan, ctx) do
     group = ctx.group + 1
     ctx = %{ctx | group: group}
-    base = base_name(name, arity, group)
+    base = base_name(name, arity, group, ctx.prefix)
 
     {orig_clauses, ctx} = in_place_clauses(plan.clauses, ctx)
     orig_defs = Enum.map(orig_clauses, &rename_clause(&1, :"#{base}_orig", :defp))
@@ -282,14 +293,68 @@ defmodule Mutare.Transform do
   defp dispatcher_args(0), do: []
   defp dispatcher_args(arity), do: Enum.map(1..arity, &{:"mutare_arg#{&1}", [], nil})
 
-  # Private base name for a lifted group. The trailing `g<group>` keeps generated
-  # names unique; `?`/`!` (valid only at the end of a function name) are replaced
-  # so they can sit mid-identifier in `<base>_orig` / `<base>_m<id>`. The public
-  # dispatcher keeps the real name (including any `?`/`!`).
-  defp base_name(name, arity, group) do
+  # Private base name for a lifted group. `prefix` is the file's collision-free
+  # generated-name prefix (`Ctx.prefix`, normally `"__mutare_"`); the trailing
+  # `g<group>` keeps generated names unique across groups; `?`/`!` (valid only at
+  # the end of a function name) are replaced so they can sit mid-identifier in
+  # `<base>_orig` / `<base>_m<id>`. The public dispatcher keeps the real name
+  # (including any `?`/`!`).
+  defp base_name(name, arity, group, prefix) do
     sanitized = name |> Atom.to_string() |> String.replace(["?", "!"], "_")
-    "__mutare_#{sanitized}_#{arity}_g#{group}"
+    "#{prefix}#{sanitized}_#{arity}_g#{group}"
   end
+
+  # === generated-name collision avoidance ====================================
+
+  # The prefix for this file's generated private (lifted) names. With the
+  # canonical `"__mutare_"` a clash with a hand-written target definition is
+  # near-impossible — but a single clash is catastrophic (a duplicate `defp`
+  # sinks the *one* metamutant build with a cryptic compile error), so we pick a
+  # prefix the source provably never collides with. Every candidate still starts
+  # with `"__mutare_"`, so `Mutare.Manifest`'s `__mutare_…_m<id>` recogniser keeps
+  # working unchanged.
+  defp generated_prefix(ast) do
+    names = defined_names(ast)
+    Enum.find(prefix_candidates(), &free?(&1, names))
+  end
+
+  # `"__mutare_"`, then `"__mutare_0_"`, `"__mutare_1_"`, … — a lazily-grown
+  # family, all sharing the `"__mutare_"` stem. Only finitely many can be "taken"
+  # (one per colliding source name), so `Enum.find/2` always terminates.
+  defp prefix_candidates do
+    Stream.concat(
+      [@base_prefix],
+      Stream.map(Stream.iterate(0, &(&1 + 1)), &"#{@base_prefix}#{&1}_")
+    )
+  end
+
+  # A prefix is free when no source definition name begins with it: then no
+  # `<prefix>…` name we generate can equal an existing one.
+  defp free?(prefix, names), do: not Enum.any?(names, &String.starts_with?(&1, prefix))
+
+  # Every name defined by a def-like form anywhere in the source (functions,
+  # macros, guards, delegates) — the names a generated private `defp` could
+  # duplicate. Over-collecting (e.g. a name inside a quoted macro body) is safe:
+  # it can only make us salt a prefix we'd otherwise have kept.
+  defp defined_names(ast) do
+    {_ast, names} =
+      Macro.prewalk(ast, MapSet.new(), fn
+        {form, _meta, [head | _]} = node, acc when form in @def_forms ->
+          case def_name(head) do
+            nil -> {node, acc}
+            name -> {node, MapSet.put(acc, Atom.to_string(name))}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    names
+  end
+
+  defp def_name({:when, _meta, [call | _guards]}), do: def_name(call)
+  defp def_name({name, _meta, _args}) when is_atom(name), do: name
+  defp def_name(_), do: nil
 
   defp rename_clause({_vis, meta, [head | rest]}, new_name, new_vis) do
     {new_vis, meta, [rename_head(head, new_name) | rest]}

@@ -260,10 +260,24 @@ near-identical copies for N guard mutants. Both are fixed:
   whose value differs across the split — are worth recovering later
   (normalize/relocate the reads, or detect attribute-independence and lift). For
   now the blanket refusal is the conservative, always-correct choice.
-- **Private names** are `__mutare_<name>_<arity>_g<group>_{orig,m<id>}`. The
-  group counter keeps generated names unique, and `?`/`!` (legal only at a
-  name's end) are replaced so they can sit mid-identifier. The public dispatcher
-  keeps the real name.
+- **Private names** are `<prefix><name>_<arity>_g<group>_{orig,m<id>}`. The
+  group counter keeps generated names unique *among themselves*, and `?`/`!`
+  (legal only at a name's end) are replaced so they can sit mid-identifier. The
+  public dispatcher keeps the real name.
+- **The prefix is collision-checked, not a fixed string.** `<prefix>` is
+  normally `__mutare_`, but a single clash with a hand-written target definition
+  is catastrophic — a duplicate `defp` sinks the *one* metamutant build with a
+  cryptic compile error — so `Transform.generated_prefix/1` scans the source's
+  own def-like names (`@def_forms`) once per file and shifts to `__mutare_0_`,
+  `__mutare_1_`, … (the first stem no existing name is a prefix of) when the
+  target already defines a `__mutare_`-prefixed name. Every candidate still
+  *starts* with `__mutare_`, so `Manifest`'s `~r/\A__mutare_.*_m(\d+)\z/`
+  recogniser keeps working unchanged. Common case (no `__mutare_` names in the
+  target): zero change, prefix stays `__mutare_`. The dispatcher's `mutare_argN`
+  params are fresh locals in a generated head and can't collide, so they need no
+  such treatment. (The selector's `:persistent_term` key is a *separate* global
+  collision surface — deliberately left as the fixed `:mutare_active`; see the
+  self-hosting note below.)
 - **Lifting duplicates whole functions** (K+1 copies for K lifted mutants), so
   code size / single-compile time grows with mutation density on overloaded
   functions — the accepted cost (first-order ⇒ no copy sharing).
