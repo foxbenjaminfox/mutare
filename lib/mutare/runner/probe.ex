@@ -23,7 +23,7 @@ defmodule Mutare.Runner.Probe do
   run aborts.
   """
 
-  alias Mutare.{Coverage, Schema}
+  alias Mutare.{Coverage, Schema, Selector}
   alias Mutare.Sandbox.Command
 
   @typedoc """
@@ -63,7 +63,7 @@ defmodule Mutare.Runner.Probe do
   # One aggregate `--cover` run: covered mutants run the whole suite.
   defp aggregate_probe(sandbox, schema) do
     args = ["test", "--cover", "--export-coverage", "mutare"]
-    {ms, output, status} = Command.timed_mix(sandbox, args, "0")
+    {ms, output, status} = Command.timed_mix(sandbox, args, Selector.baseline())
 
     if status == 0 do
       coverdata = Path.join(sandbox, "cover/mutare.coverdata")
@@ -135,7 +135,7 @@ defmodule Mutare.Runner.Probe do
     |> Enum.reduce_while({:ok, 0, %{}}, fn {file, index}, {:ok, ms, acc} ->
       name = cover_name(file, index)
       args = ["test", file, "--cover", "--export-coverage", name]
-      {file_ms, output, status} = Command.timed_mix(sandbox, args, "0")
+      {file_ms, output, status} = Command.timed_mix(sandbox, args, Selector.baseline())
 
       if status == 0 do
         case Coverage.hits(Path.join(sandbox, "cover/#{name}.coverdata")) do

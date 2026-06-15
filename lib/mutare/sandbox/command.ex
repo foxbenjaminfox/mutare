@@ -66,16 +66,17 @@ defmodule Mutare.Sandbox.Command do
   Run `mix <args>` in `sandbox` as a fresh OS process, returning
   `{output, exit_status}`.
 
-  `MIX_ENV=test` and `MUTANT_UNDER_TEST=<mutant_id>` are always set. `cap` (ms,
-  or `nil`) is handed to the injected timeout watcher, which halts the run itself
-  if it overruns — so there is no process tree to kill and nothing
-  platform-specific.
+  `MIX_ENV=test` and `MUTANT_UNDER_TEST=<mutant_id>` are always set; `mutant_id`
+  is the integer the metamutant switches on (`Mutare.Selector.baseline/0` for a
+  baseline run), rendered into the env var here. `cap` (ms, or `nil`) is handed
+  to the injected timeout watcher, which halts the run itself if it overruns — so
+  there is no process tree to kill and nothing platform-specific.
   """
-  @spec mix(Path.t(), [String.t()], String.t(), pos_integer() | nil) ::
+  @spec mix(Path.t(), [String.t()], non_neg_integer(), pos_integer() | nil) ::
           {String.t(), non_neg_integer()}
   def mix(sandbox, args, mutant_id, cap \\ nil) do
     env =
-      [{"MIX_ENV", "test"}, {Mutare.Selector.env_var(), mutant_id}]
+      [{"MIX_ENV", "test"}, {Mutare.Selector.env_var(), Integer.to_string(mutant_id)}]
       |> maybe_cap(cap)
 
     System.cmd("mix", args, cd: sandbox, stderr_to_stdout: true, env: env)
@@ -84,7 +85,7 @@ defmodule Mutare.Sandbox.Command do
   @doc """
   Like `mix/4`, but wall-clock-timed: returns `{elapsed_ms, output, exit_status}`.
   """
-  @spec timed_mix(Path.t(), [String.t()], String.t(), pos_integer() | nil) ::
+  @spec timed_mix(Path.t(), [String.t()], non_neg_integer(), pos_integer() | nil) ::
           {non_neg_integer(), String.t(), non_neg_integer()}
   def timed_mix(sandbox, args, mutant_id, cap \\ nil) do
     {micros, {output, status}} = :timer.tc(fn -> mix(sandbox, args, mutant_id, cap) end)

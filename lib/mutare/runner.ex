@@ -30,7 +30,7 @@ defmodule Mutare.Runner do
   the hang is observable misbehavior).
   """
 
-  alias Mutare.{Options, Poison, Result, Sandbox, Schema, Site}
+  alias Mutare.{Options, Poison, Result, Sandbox, Schema, Selector, Site}
   alias Mutare.Runner.Probe
   alias Mutare.Sandbox.Command
 
@@ -158,7 +158,7 @@ defmodule Mutare.Runner do
 
   # The one compilation.
   defp compile(sandbox) do
-    case Command.mix(sandbox, ["compile"], "0") do
+    case Command.mix(sandbox, ["compile"], Selector.baseline()) do
       {_output, 0} -> :ok
       {output, _status} -> {:error, :compile_failed, output}
     end
@@ -194,7 +194,7 @@ defmodule Mutare.Runner do
 
   defp run_mutant(sandbox, site, test_args, cap) do
     {ms, output, status} =
-      Command.timed_mix(sandbox, ["test" | test_args], Integer.to_string(site.id), cap)
+      Command.timed_mix(sandbox, ["test" | test_args], site.id, cap)
 
     %Result{site: site, status: classify_status(status), duration_ms: ms, output: output}
   end
