@@ -62,9 +62,12 @@ defmodule Mutare.Config do
   # --- internals -----------------------------------------------------------
 
   defp parse_families(csv) do
+    # `to_atom`, not `to_existing_atom`: a typo'd family must reach `resolve!/1`
+    # so it gets the descriptive `unknown_mutator_message`, not a bare
+    # `ArgumentError` from atom-table lookup before we can explain it.
     csv
     |> String.split(",", trim: true)
-    |> Enum.map(&(&1 |> String.trim() |> String.to_existing_atom()))
+    |> Enum.map(&(&1 |> String.trim() |> String.to_atom()))
   end
 
   defp normalize_mutators(config) do

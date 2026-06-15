@@ -101,14 +101,14 @@ defmodule Mutare.Transform do
       # `group` and `sites` start at their struct defaults (0 / []).
     }
 
-    {transformed, ctx} =
-      source
-      |> Sourceror.parse_string!()
-      |> transform_node(ctx)
+    parsed = Sourceror.parse_string!(source)
+    {transformed, ctx} = transform_node(parsed, ctx)
 
     metamutant = Render.to_source(transformed)
 
-    ignored = Mutare.Ignore.ignored_lines(source)
+    # Reuse the AST we just parsed — its comment metadata is intact (transform
+    # works on copies), so `Ignore` need not re-parse the source.
+    ignored = Mutare.Ignore.ignored_lines_from_ast(parsed)
     sites = Enum.map(Enum.reverse(ctx.sites), &%{&1 | ignored: &1.line in ignored})
 
     {metamutant, sites, ctx.next_id}

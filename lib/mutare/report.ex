@@ -103,13 +103,16 @@ defmodule Mutare.Report do
     total = total(counts)
 
     tally =
-      ["#{killed} killed"]
-      |> maybe_add(timeout > 0, "#{timeout} timeout")
-      |> Kernel.++(["#{survived} survived"])
-      |> maybe_add(no_coverage > 0, "#{no_coverage} no-coverage")
-      |> maybe_add(ignored > 0, "#{ignored} ignored")
-      |> maybe_add(poisoned > 0, "#{poisoned} poisoned")
-      |> Kernel.++(["#{total} total"])
+      [
+        "#{killed} killed",
+        if(timeout > 0, do: "#{timeout} timeout"),
+        "#{survived} survived",
+        if(no_coverage > 0, do: "#{no_coverage} no-coverage"),
+        if(ignored > 0, do: "#{ignored} ignored"),
+        if(poisoned > 0, do: "#{poisoned} poisoned"),
+        "#{total} total"
+      ]
+      |> Enum.reject(&is_nil/1)
       |> Enum.join(", ")
 
     score = score_from_tally(counts)
@@ -137,7 +140,4 @@ defmodule Mutare.Report do
   defp count(counts, status), do: Map.get(counts, status, 0)
 
   defp total(counts), do: counts |> Map.values() |> Enum.sum()
-
-  defp maybe_add(list, true, item), do: list ++ [item]
-  defp maybe_add(list, false, _item), do: list
 end

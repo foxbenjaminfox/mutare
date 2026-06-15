@@ -82,7 +82,7 @@ defmodule Mutare.Schema do
   accumulated `skip_ids`.
   """
   @spec rebuild(t(), Path.t(), Options.t() | keyword(), MapSet.t()) :: t()
-  def rebuild(%__MODULE__{files: files}, root \\ ".", opts \\ [], skip_ids \\ MapSet.new()) do
+  def rebuild(%__MODULE__{files: files}, root, opts, skip_ids) do
     files
     |> Enum.map(&Path.join(root, &1))
     |> from_files(root, opts, skip_ids)

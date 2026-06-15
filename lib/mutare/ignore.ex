@@ -33,6 +33,18 @@ defmodule Mutare.Ignore do
   def ignored_lines(source) when is_binary(source) do
     source
     |> Sourceror.parse_string!()
+    |> ignored_lines_from_ast()
+  end
+
+  @doc """
+  Like `ignored_lines/1`, but for an AST already parsed by `Sourceror`.
+
+  `Mutare.Transform` parses each file once and passes that AST straight in,
+  avoiding a second full `Sourceror.parse_string!` per file.
+  """
+  @spec ignored_lines_from_ast(Macro.t()) :: MapSet.t(pos_integer())
+  def ignored_lines_from_ast(ast) do
+    ast
     |> comments()
     |> Enum.filter(&directive?/1)
     |> Enum.reduce(MapSet.new(), fn comment, acc ->
