@@ -3,6 +3,11 @@ defmodule Mutare.SchemaTest do
 
   alias Mutare.Schema
 
+  # Count-asserting tests pin the two operator-swap families so the higher-volume
+  # default mutators (literals etc.) can't change the exact site totals; these
+  # tests are about id threading / file scoping, not the default set.
+  @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
+
   setup do
     root = Path.join(System.tmp_dir!(), "mutare_schema_#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(root, "lib/sub"))
@@ -20,7 +25,7 @@ defmodule Mutare.SchemaTest do
     write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
     write(root, "lib/sub/b.ex", "defmodule B do\n  def g(a, b), do: a >= b\nend\n")
 
-    schema = Schema.build(root)
+    schema = Schema.build(root, mutators: @probe)
 
     # a.ex sorts before sub/b.ex: + -> - (id 1), then >= -> {>, <=} (ids 2, 3)
     assert Schema.count(schema) == 3
@@ -57,7 +62,7 @@ defmodule Mutare.SchemaTest do
     write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
     write(root, "lib/generated/g.ex", "defmodule G do\n  def f(x), do: x + 1\nend\n")
 
-    schema = Schema.build(root, exclude: ["lib/generated/**"])
+    schema = Schema.build(root, exclude: ["lib/generated/**"], mutators: @probe)
 
     assert Map.keys(schema.sources) == ["lib/a.ex"]
     assert Schema.count(schema) == 1
@@ -77,7 +82,7 @@ defmodule Mutare.SchemaTest do
     write(root, "lib/ok.ex", "defmodule Ok do\n  def f(x), do: x + 1\nend\n")
     write(root, "lib/bad.ex", "defmodule Bad do\n  def ( oops\nend\n")
 
-    schema = Schema.build(root)
+    schema = Schema.build(root, mutators: @probe)
 
     assert Schema.count(schema) == 1
     assert [{"lib/bad.ex", _reason}] = schema.skipped

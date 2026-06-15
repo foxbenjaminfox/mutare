@@ -9,6 +9,11 @@ defmodule Mutare.RunnerTest do
   alias Mutare.{Report, Result}
   alias Mutare.Test.Project
 
+  # Pin to the operator-swap families: this fixture is built around a precise
+  # 3-mutant scenario (the missing boundary test), so the higher-volume default
+  # mutators are excluded to keep the counts and score deterministic.
+  @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
+
   @moduletag :runner
   # Several `mix` subprocesses (compile + baseline + one per mutant).
   @moduletag timeout: 180_000
@@ -42,7 +47,7 @@ defmodule Mutare.RunnerTest do
     project: project,
     sandbox: sandbox
   } do
-    assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
+    assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
 
     assert length(run.results) == 3
     assert Enum.count(run.results, &(&1.status == :killed)) == 2
@@ -57,7 +62,7 @@ defmodule Mutare.RunnerTest do
     project: project,
     sandbox: sandbox
   } do
-    assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
+    assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
 
     report = Report.render(run.results, run.schema.sources)
 
@@ -68,7 +73,7 @@ defmodule Mutare.RunnerTest do
   end
 
   test "compiles once: no per-mutant recompilation", %{project: project, sandbox: sandbox} do
-    assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
+    assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
 
     # If the one-compile invariant holds, no mutant run rebuilds anything.
     for %Result{output: output} <- run.results do

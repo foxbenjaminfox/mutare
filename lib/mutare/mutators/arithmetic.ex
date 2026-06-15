@@ -1,9 +1,18 @@
 defmodule Mutare.Mutators.Arithmetic do
   @moduledoc """
-  Arithmetic operator swaps: `+`↔`-`, `*`↔`/`, `div`↔`rem`.
+  Arithmetic operator swaps: `+`↔`-`, `*`↔`/`, `div`↔`rem`, plus unary-minus
+  removal (`-x` → `x`).
 
   In-place and compile-safe by construction — swapping one binary arithmetic
-  operator for another always type-checks at compile time.
+  operator for another always type-checks at compile time, and dropping a unary
+  minus leaves a sub-expression that already type-checked.
+
+  ## Unary-minus removal (`-x` → `x`)
+
+  The classic "invert negatives" mutation: a sign flip the suite should notice.
+  It is distinguished from binary subtraction purely by arity (one operand vs
+  two). `-0` (a literal zero) is skipped — `-0 == 0`, so the mutant is
+  equivalent.
 
   ## Multiplicative identity is skipped
 
@@ -45,6 +54,11 @@ defmodule Mutare.Mutators.Arithmetic do
   def name, do: :arithmetic
 
   @impl Mutare.Mutator
+  # Unary minus (arity 1) — drop the negation, except on a literal zero.
+  def mutate({:-, _meta, [operand]}) do
+    if literal_value(operand) == 0, do: :skip, else: [operand]
+  end
+
   def mutate({op, meta, [left, right]}) do
     case Map.fetch(@swaps, op) do
       {:ok, replacements} ->

@@ -2,17 +2,34 @@ defmodule Mutare.MutatorsTest do
   use ExUnit.Case, async: true
 
   alias Mutare.Mutators
-  alias Mutare.Mutators.{Arithmetic, Relational}
+
+  alias Mutare.Mutators.{
+    Arithmetic,
+    Collection,
+    Conditional,
+    FloatLiteral,
+    List,
+    Literal,
+    Logical,
+    Relational,
+    StringLiteral
+  }
 
   describe "registry (single source of truth)" do
-    test "all/0 is the registry's modules, in order — the default/`:all` set" do
+    test "all/0 is every registered module, in order — the default/`:all` set" do
       assert Mutators.all() == Keyword.values(Mutators.registry())
-      assert Mutators.all() == [Arithmetic, Relational]
+
+      assert Mutators.all() ==
+               [Arithmetic, Relational, Logical, Literal] ++
+                 [Conditional, List, Collection, StringLiteral, FloatLiteral]
     end
 
-    test "families/0 are the registry's keys, in order" do
+    test "families/0 are the registry's keys, in order — all on by default" do
       assert Mutators.families() == Keyword.keys(Mutators.registry())
-      assert Mutators.families() == [:arithmetic, :relational]
+
+      assert Mutators.families() ==
+               [:arithmetic, :relational, :logical, :literal] ++
+                 [:conditional, :list, :collection, :string, :float]
     end
 
     test "resolve/1 maps family atoms to modules, preserving order" do
@@ -26,6 +43,10 @@ defmodule Mutare.MutatorsTest do
 
     test "resolve/1 is idempotent on already-resolved modules" do
       assert Mutators.resolve(Mutators.all()) == Mutators.all()
+    end
+
+    test "resolve/1 maps any registered family by name" do
+      assert Mutators.resolve([:conditional, :collection]) == [Conditional, Collection]
     end
 
     test "resolve/1 raises on an unknown family, listing the known ones" do
@@ -70,8 +91,13 @@ defmodule Mutare.MutatorsTest do
       assert Arithmetic.mutate({:+, meta, operands}) == [{:-, meta, operands}]
     end
 
-    test "skips unary minus (arity 1)" do
-      assert Arithmetic.mutate({:-, [], [{:x, [], nil}]}) == :skip
+    test "strips unary minus (arity 1): -x → x" do
+      assert Arithmetic.mutate({:-, [], [{:x, [], nil}]}) == [{:x, [], nil}]
+    end
+
+    test "skips unary minus on a literal zero (-0 == 0 is equivalent)" do
+      assert Arithmetic.mutate({:-, [], [0]}) == :skip
+      assert Arithmetic.mutate({:-, [], [{:__block__, [token: "0"], [0]}]}) == :skip
     end
 
     test "skips non-arithmetic nodes" do
@@ -151,4 +177,159 @@ defmodule Mutare.MutatorsTest do
       assert Relational.name() == :relational
     end
   end
+
+  describe "Logical" do
+    test "swaps the strict and relaxed boolean connectives" do
+      l = {:a, [], nil}
+      r = {:b, [], nil}
+      assert Logical.mutate({:and, [], [l, r]}) == [{:or, [], [l, r]}]
+      assert Logical.mutate({:or, [], [l, r]}) == [{:and, [], [l, r]}]
+      assert Logical.mutate({:&&, [], [l, r]}) == [{:||, [], [l, r]}]
+      assert Logical.mutate({:||, [], [l, r]}) == [{:&&, [], [l, r]}]
+    end
+
+    test "strips a negation: not x → x and !x → x" do
+      x = {:x, [], nil}
+      assert Logical.mutate({:not, [], [x]}) == [x]
+      assert Logical.mutate({:!, [], [x]}) == [x]
+    end
+
+    test "skips non-logical nodes" do
+      assert Logical.mutate({:+, [], [1, 2]}) == :skip
+      assert Logical.mutate({:x, [], nil}) == :skip
+    end
+
+    test "name" do
+      assert Logical.name() == :logical
+    end
+  end
+
+  describe "Literal" do
+    test "mutates an integer to n+1, n-1 and 0, deduped and never itself" do
+      assert render(Literal.mutate(parse("2"))) == ["3", "1", "0"]
+      assert render(Literal.mutate(parse("1"))) == ["2", "0"]
+      assert render(Literal.mutate(parse("0"))) == ["1", "-1"]
+    end
+
+    test "flips a boolean" do
+      assert render(Literal.mutate(parse("true"))) == ["false"]
+      assert render(Literal.mutate(parse("false"))) == ["true"]
+    end
+
+    test "emits clean metadata so the new value renders (not the original token)" do
+      # The original carries `token: \"1\"`; reusing it would render \"1\".
+      assert render(Literal.mutate(parse("1"))) == ["2", "0"]
+      assert Enum.all?(Literal.mutate(parse("1")), fn {:__block__, meta, _} -> meta == [] end)
+    end
+
+    test "skips non-integer, non-boolean literals and operators" do
+      assert Literal.mutate(parse("1.5")) == :skip
+      assert Literal.mutate(parse(~s("s"))) == :skip
+      assert Literal.mutate({:+, [], [1, 2]}) == :skip
+    end
+
+    test "name" do
+      assert Literal.name() == :literal
+    end
+  end
+
+  describe "Conditional" do
+    test "replaces a boolean-valued node with the constants true and false" do
+      assert render(Conditional.mutate(parse("a > b"))) == ["true", "false"]
+      assert render(Conditional.mutate(parse("a == b"))) == ["true", "false"]
+      assert render(Conditional.mutate(parse("a in b"))) == ["true", "false"]
+      assert render(Conditional.mutate(parse("a and b"))) == ["true", "false"]
+      assert render(Conditional.mutate(parse("not a"))) == ["true", "false"]
+    end
+
+    test "skips nodes that are not boolean-valued" do
+      assert Conditional.mutate(parse("a + b")) == :skip
+      assert Conditional.mutate(parse("1")) == :skip
+    end
+
+    test "name" do
+      assert Conditional.name() == :conditional
+    end
+  end
+
+  describe "List" do
+    test "swaps ++ and --" do
+      l = {:a, [], nil}
+      r = {:b, [], nil}
+      assert List.mutate({:++, [], [l, r]}) == [{:--, [], [l, r]}]
+      assert List.mutate({:--, [], [l, r]}) == [{:++, [], [l, r]}]
+    end
+
+    test "collapses a non-empty list literal to []" do
+      assert render(List.mutate(parse("[1, 2, 3]"))) == ["[]"]
+      assert render(List.mutate(parse("[a | b]"))) == ["[]"]
+    end
+
+    test "leaves an empty list literal alone" do
+      assert List.mutate(parse("[]")) == :skip
+    end
+
+    test "name" do
+      assert List.name() == :list
+    end
+  end
+
+  describe "Collection" do
+    test "swaps complementary Enum/List calls, keeping arguments" do
+      assert render(Collection.mutate(parse("Enum.filter(xs, f)"))) == ["Enum.reject(xs, f)"]
+      assert render(Collection.mutate(parse("Enum.reject(xs, f)"))) == ["Enum.filter(xs, f)"]
+      assert render(Collection.mutate(parse("Enum.all?(xs, f)"))) == ["Enum.any?(xs, f)"]
+      assert render(Collection.mutate(parse("Enum.min(xs)"))) == ["Enum.max(xs)"]
+      assert render(Collection.mutate(parse("List.first(xs)"))) == ["List.last(xs)"]
+    end
+
+    test "skips unrelated remote calls and other modules' functions" do
+      assert Collection.mutate(parse("Enum.map(xs, f)")) == :skip
+      assert Collection.mutate(parse("Other.filter(xs, f)")) == :skip
+      assert Collection.mutate(parse("local(xs)")) == :skip
+    end
+
+    test "name" do
+      assert Collection.name() == :collection
+    end
+  end
+
+  describe "StringLiteral" do
+    test "mutates a non-empty string into both the empty string and the sentinel" do
+      assert render(StringLiteral.mutate(parse(~s("hello")))) == [~s(""), ~s("mutare")]
+    end
+
+    test "drops the replacement that already equals the original" do
+      # "" can't become "" again; "mutare" can't become "mutare" again
+      assert render(StringLiteral.mutate(parse(~s("")))) == [~s("mutare")]
+      assert render(StringLiteral.mutate(parse(~s("mutare")))) == [~s("")]
+    end
+
+    test "skips non-string literals" do
+      assert StringLiteral.mutate(parse("1")) == :skip
+      assert StringLiteral.mutate(parse(":atom")) == :skip
+    end
+
+    test "name" do
+      assert StringLiteral.name() == :string
+    end
+  end
+
+  describe "FloatLiteral" do
+    test "mutates a float to x+1.0, x-1.0 and 0.0, deduped and never itself" do
+      assert render(FloatLiteral.mutate(parse("1.5"))) == ["2.5", "0.5", "0.0"]
+      assert render(FloatLiteral.mutate(parse("0.0"))) == ["1.0", "-1.0"]
+    end
+
+    test "skips integers" do
+      assert FloatLiteral.mutate(parse("1")) == :skip
+    end
+
+    test "name" do
+      assert FloatLiteral.name() == :float
+    end
+  end
+
+  defp parse(source), do: Sourceror.parse_string!(source)
+  defp render(nodes), do: Enum.map(nodes, &Sourceror.to_string/1)
 end

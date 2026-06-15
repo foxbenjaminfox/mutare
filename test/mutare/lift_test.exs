@@ -22,8 +22,16 @@ defmodule Mutare.LiftTest do
   end
   """
 
+  # Pin to the operator-swap families: this fixture exercises lifting mechanics
+  # (guard swaps, clause drops, in-place bodies), so the default literal mutator —
+  # which would also lift `0`/`1` constants in the guards and bodies — is excluded
+  # to keep the asserted site counts about lifting, not constants.
+  @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
+
   setup_all do
-    {metamutant, sites, _next_id} = Mutare.transform_string(@source, file: "lift.ex")
+    {metamutant, sites, _next_id} =
+      Mutare.transform_string(@source, file: "lift.ex", mutators: @probe)
+
     [{_module, _binary}] = Code.compile_string(metamutant)
     %{sites: sites}
   end
@@ -159,7 +167,11 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {meta, _sites, _next_id} = Mutare.transform_string(source)
+      # Pin to the operator-swap families: this checks private-name sanitization,
+      # and the default conditional mutator would rewrite the guard to `when true`
+      # (making the catch-all clause unreachable — a benign but noisy generated
+      # warning when this metamutant is compiled below).
+      {meta, _sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
       # public dispatcher keeps `ok?`; private copies sanitize the `?`
       assert meta =~ "def ok?(mutare_arg1) do"

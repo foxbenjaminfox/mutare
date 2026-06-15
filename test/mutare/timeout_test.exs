@@ -29,8 +29,15 @@ defmodule Mutare.TimeoutTest do
         """
       })
 
-    # Small explicit cap so the hang is caught quickly.
-    assert {:ok, run} = Mutare.run(project, sandbox: sandbox, timeout: 2_000)
+    # Small explicit cap so the hang is caught quickly. Pin to the arithmetic
+    # family so the run is the one `n - 1 → n + 1` site this test is about (the
+    # default literal mutator would add more infinite-loop mutants to wait on).
+    assert {:ok, run} =
+             Mutare.run(project,
+               sandbox: sandbox,
+               timeout: 2_000,
+               mutators: [Mutare.Mutators.Arithmetic]
+             )
 
     # `count_down(n - 1)` mutated to `n + 1` never reaches 0 → infinite recursion.
     hang =

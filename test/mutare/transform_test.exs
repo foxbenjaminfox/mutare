@@ -3,6 +3,13 @@ defmodule Mutare.TransformTest do
 
   alias Mutare.Site
 
+  # These tests probe *context routing* (which positions are mutated vs pruned),
+  # not the default mutator set. Pin them to the two operator-swap families so
+  # adding higher-volume defaults (literals, logical, …) can't perturb the exact
+  # site counts they assert. Positive coverage of the new defaults lives in its
+  # own test below and in mutators_test.exs.
+  @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
+
   @sample """
   defmodule Sample do
     def classify(total, threshold) do
@@ -18,7 +25,8 @@ defmodule Mutare.TransformTest do
   """
 
   test "discovers every arithmetic and relational site, ids assigned sequentially" do
-    {_meta, sites, _next_id} = Mutare.transform_string(@sample, file: "sample.ex")
+    {_meta, sites, _next_id} =
+      Mutare.transform_string(@sample, file: "sample.ex", mutators: @probe)
 
     # >= -> {>, <=}  (2),  + -> -  (1)
     assert length(sites) == 3
@@ -27,7 +35,7 @@ defmodule Mutare.TransformTest do
   end
 
   test "records operators, lines and a readable description" do
-    {_meta, [s1, s2, s3], _next_id} = Mutare.transform_string(@sample)
+    {_meta, [s1, s2, s3], _next_id} = Mutare.transform_string(@sample, mutators: @probe)
 
     assert %Site{mutator: :relational, original_op: :>=, mutated_op: :>, line: 3} = s1
     assert %Site{mutator: :relational, original_op: :>=, mutated_op: :<=, line: 3} = s2
@@ -48,7 +56,7 @@ defmodule Mutare.TransformTest do
   end
 
   test ":start_id offsets the first id" do
-    {_meta, sites, _next_id} = Mutare.transform_string(@sample, start_id: 100)
+    {_meta, sites, _next_id} = Mutare.transform_string(@sample, start_id: 100, mutators: @probe)
     assert Enum.map(sites, & &1.id) == [100, 101, 102]
   end
 
@@ -83,7 +91,9 @@ defmodule Mutare.TransformTest do
 
   test "nested operator sites both get their own selector" do
     {meta, sites, _next_id} =
-      Mutare.transform_string("defmodule N do\n  def f(a, b), do: a + b == 0\nend\n")
+      Mutare.transform_string("defmodule N do\n  def f(a, b), do: a + b == 0\nend\n",
+        mutators: @probe
+      )
 
     # + -> - (1) and == -> != (1)
     assert Enum.map(sites, &{&1.mutator, &1.original_op}) ==
@@ -102,7 +112,7 @@ defmodule Mutare.TransformTest do
     end
     """
 
-    {meta, sites, _next_id} = Mutare.transform_string(source)
+    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     # Guards are lifted: >= -> {>, <=} and < -> {<=, >} (operation :replace).
     guards = Enum.filter(sites, &(&1.kind == :lifted and &1.operation == :replace))
@@ -127,7 +137,7 @@ defmodule Mutare.TransformTest do
     end
     """
 
-    {meta, sites, _next_id} = Mutare.transform_string(source)
+    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     # Only the body `x * 2` is a site; the capture's `/1` is left alone.
     assert [%Site{mutator: :arithmetic, original_op: :*}] = sites
@@ -136,7 +146,9 @@ defmodule Mutare.TransformTest do
 
   test "division in a capture body (`& &1 / 2`) is still mutated" do
     {_meta, sites, _next_id} =
-      Mutare.transform_string("defmodule C do\n  def half, do: &(&1 / 2)\nend\n")
+      Mutare.transform_string("defmodule C do\n  def half, do: &(&1 / 2)\nend\n",
+        mutators: @probe
+      )
 
     assert [%Site{mutator: :arithmetic, original_op: :/, mutated_op: :*}] = sites
   end
@@ -150,7 +162,7 @@ defmodule Mutare.TransformTest do
     end
     """
 
-    {meta, sites, _next_id} = Mutare.transform_string(source)
+    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     # The `1 + 2` in the attribute definition is compile-time and inert, so it
     # produces no mutant. Only the runtime body `n + @threshold` is mutated.
@@ -160,7 +172,7 @@ defmodule Mutare.TransformTest do
 
   test "a bitstring value and its size(...) arg mutate; the spec side is excluded" do
     source = "defmodule B do\n  def f(n), do: <<(n + 1)::size(n * 8)>>\nend\n"
-    {meta, sites, _next_id} = Mutare.transform_string(source)
+    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     # The value `n + 1` and the runtime `size(n * 8)` argument both mutate; a
     # `case` is legal in both positions.
@@ -172,7 +184,7 @@ defmodule Mutare.TransformTest do
 
   test "bitstring spec separators are not mutated (a swapped `-` is an illegal specifier)" do
     source = "defmodule B do\n  def f(x), do: <<x::integer-big-size(16)>>\nend\n"
-    {meta, sites, _next_id} = Mutare.transform_string(source)
+    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     assert sites == []
     refute meta =~ "integer + big"
@@ -181,14 +193,14 @@ defmodule Mutare.TransformTest do
 
   test "bitstring unit(...) args are not mutated" do
     source = "defmodule B do\n  def f(x), do: <<x::size(1)-unit(8)>>\nend\n"
-    {_meta, sites, _next_id} = Mutare.transform_string(source)
+    {_meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     assert sites == []
   end
 
   test "a bitstring in a pattern is excluded; the body still mutates" do
     source = "defmodule B do\n  def f(<<x::size(8)>>), do: x + 1\nend\n"
-    {_meta, sites, _next_id} = Mutare.transform_string(source)
+    {_meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
   end
@@ -202,7 +214,7 @@ defmodule Mutare.TransformTest do
     end
     """
 
-    {meta, sites, _next_id} = Mutare.transform_string(source)
+    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     # The `+`/`-` inside the macro bodies run at expansion time and never see the
     # runtime selector; only the real body `x * 2` mutates.
@@ -212,14 +224,14 @@ defmodule Mutare.TransformTest do
 
   test "a defmacro with a non-quote arithmetic body is still excluded" do
     source = "defmodule M do\n  defmacro c, do: 1 + 2\nend\n"
-    {_meta, sites, _next_id} = Mutare.transform_string(source)
+    {_meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     assert sites == []
   end
 
   test "a default-argument value runs at call time and still mutates" do
     source = "defmodule D do\n  def f(x \\\\ 1 + 2), do: x\nend\n"
-    {_meta, sites, _next_id} = Mutare.transform_string(source)
+    {_meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
   end
@@ -236,7 +248,7 @@ defmodule Mutare.TransformTest do
     end
     """
 
-    {meta, sites, _next_id} = Mutare.transform_string(source)
+    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     # A case-clause guard is not a def/defp guard (lifting only applies to
     # those), and a `case` can't live in a guard — so `n > 1` stays unmutated.
@@ -249,7 +261,7 @@ defmodule Mutare.TransformTest do
 
   test "comprehension filters and bodies mutate; the generator pattern does not" do
     source = "defmodule F do\n  def f(xs), do: for(x <- xs, x > 0, do: x + 1)\nend\n"
-    {meta, sites, _next_id} = Mutare.transform_string(source)
+    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     # Filter `x > 0` (2 relational swaps) and body `x + 1` (1 swap) both mutate;
     # the generator pattern `x` does not.
@@ -269,7 +281,7 @@ defmodule Mutare.TransformTest do
     end
     """
 
-    {_meta, sites, _next_id} = Mutare.transform_string(source)
+    {_meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     # The `->` left side in a `cond` is a runtime condition, not a pattern.
     assert Enum.frequencies_by(sites, & &1.original_op) == %{:> => 2}
@@ -288,9 +300,31 @@ defmodule Mutare.TransformTest do
     end
     """
 
-    {meta, sites, _next_id} = Mutare.transform_string(source)
+    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
+
+  test "the default set fires the expanded families (logical, literal, conditional, …)" do
+    source = """
+    defmodule D do
+      def f(a, b), do: a and b + 1
+      def flag, do: true
+    end
+    """
+
+    {meta, sites, _next_id} = Mutare.transform_string(source)
+    by = Enum.frequencies_by(sites, & &1.mutator)
+
+    # b + 1 → b - 1
+    assert by[:arithmetic] == 1
+    # a and _ → a or _
+    assert by[:logical] == 1
+    # (a and _) → true / false
+    assert by[:conditional] == 2
+    # 1 → {2, 0}; true → false
+    assert by[:literal] == 3
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 end

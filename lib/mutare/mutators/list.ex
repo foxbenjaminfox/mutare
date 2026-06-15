@@ -1,0 +1,30 @@
+defmodule Mutare.Mutators.List do
+  @moduledoc """
+  List operator and literal mutations:
+
+    * `++` ↔ `--` (list concatenation ↔ difference)
+    * a non-empty list literal → `[]`
+
+  In-place and compile-safe — the operator swap reuses both operands, and an
+  empty list is legal wherever a list literal was. `++`/`--` are not guard-legal,
+  so the compiler guarantees a source guard never contains one; the literal
+  collapse to `[]` is a constant and stays guard-safe.
+  """
+  @behaviour Mutare.Mutator
+
+  @impl Mutare.Mutator
+  def name, do: :list
+
+  @impl Mutare.Mutator
+  def mutate({:++, meta, [left, right]}), do: [{:--, meta, [left, right]}]
+  def mutate({:--, meta, [left, right]}), do: [{:++, meta, [left, right]}]
+
+  # A list literal parses as `{:__block__, meta, [[elem, ...]]}`; collapse a
+  # non-empty one to `[]`. The empty list is left alone (mutating it to itself
+  # is a no-op).
+  def mutate({:__block__, _meta, [elements]}) when is_list(elements) and elements != [] do
+    [{:__block__, [], [[]]}]
+  end
+
+  def mutate(_node), do: :skip
+end

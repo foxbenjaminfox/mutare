@@ -37,7 +37,11 @@ defmodule Mutare.IgnoreTest do
       end
       """
 
-      {_meta, sites, _next_id} = Mutare.transform_string(source)
+      # Pin to arithmetic so the lone site is the `+`; the default string mutator
+      # would otherwise also mutate the "# mutare:ignore" *string literal*, which
+      # is beside the point here (this test is about the comment directive).
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.Arithmetic])
 
       assert [%{line: 2, ignored: false}] = sites
     end
@@ -63,7 +67,11 @@ defmodule Mutare.IgnoreTest do
           """
         })
 
-      assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
+      # Pin to a single operator-swap family so `skip/1` has exactly one mutant
+      # (the test asserts a single ignored result); the default literal mutator
+      # would add more, off-topic for what this checks.
+      assert {:ok, run} =
+               Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Arithmetic])
 
       ignored = Enum.filter(run.results, &(&1.status == :ignored))
 

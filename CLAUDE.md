@@ -133,13 +133,18 @@ contract between them is the whole game.
   `Sourceror.patch_string` (clean one-line diffs), and computes the score:
   `killed / (total − no_coverage − ignored − poisoned − harness_error)`.
 - **`Mutare.Mutator`** + **`Mutare.Mutators.*`** — the public extension behaviour (`mutate/1`,
-  `name/0`) and built-in families (Arithmetic, Relational).
+  `name/0`) and the built-in families, **all on by default**: Arithmetic (binary swaps +
+  unary-minus removal), Relational, Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip), Literal
+  (integers `n`→`{n±1, 0}`, `true`↔`false`), Conditional (a boolean-valued node → `true`/`false`),
+  List (`++`↔`--`, non-empty list literal → `[]`), Collection (`Enum`/`List` predicate swaps),
+  StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral. A user narrows the
+  set by listing a subset under `:mutators`.
 - **`Mutare.Mutators`** — the **single ordered registry** of built-in families and the one place
-  mutator lists are resolved/validated. `all/0` is the default set (an unset `:mutators`/`:all`),
-  `resolve/1` maps family atoms + custom modules to validated modules. `Transform` (its default),
-  `Config` (the CLI/`.mutare.exs` path), and `Options` (the direct `Mutare.run/2` API) all derive
-  from it — so a family registered here is part of `:all` and validated everywhere, with no second
-  list to drift.
+  mutator lists are resolved/validated. `all/0` is the default set (every registered module — an
+  unset `:mutators`/`:all`); `families/0` is every registered atom; `resolve/1` maps any family atom
+  + custom modules to validated modules. `Transform` (its default), `Config` (the CLI/`.mutare.exs`
+  path), and `Options` (the direct `Mutare.run/2` API) all derive from it — so a family registered
+  here is part of `:all` and resolvable/validated everywhere, with no second list to drift.
 - **`Mutare.Config`** / **`Mutare.Changes`** / **`Mix.Tasks.Mutare`** — `.mutare.exs` + CLI flag
   resolution, `git diff` for `--since`, and the CLI entry point.
 
@@ -165,10 +170,16 @@ contract between them is the whole game.
 ## Adding a mutator
 
 Implement `Mutare.Mutator` (`mutate/1` returning `:skip` or a list of mutated nodes that reuse
-the original operands; `name/0`). Register a built-in by adding it to `Mutare.Mutators`'s ordered
-`@registry` — the only edit, since the default set (`:all`) and resolution both follow from it;
-users list custom modules directly under `:mutators` in `.mutare.exs`. Do **not** decide in-place
-vs lifted — placement is positional. `test/support/boolean_mutator.ex` is a working example.
+the original operands; `name/0`). Register a built-in by adding a `family: Module` entry to
+`Mutare.Mutators`'s ordered `@registry` — the only edit, since the default set (`:all`),
+`families/0` and resolution all follow from it (everything registered is on by default). Users
+list custom modules directly under `:mutators` in `.mutare.exs`. Do **not** decide in-place vs
+lifted — placement is positional. `test/support/boolean_mutator.ex` is a working example.
+
+Remember the Sourceror **clean-meta** rule for literal-valued mutators: a literal parses as
+`{:__block__, meta, [value]}` and renders from a `:token` string in `meta`, so reusing the
+original meta would render the *original* text even after changing the value (a silent equivalent
+no-op). Emit replacements with fresh metadata (`{:__block__, [], [value]}`).
 
 ## Result statuses
 

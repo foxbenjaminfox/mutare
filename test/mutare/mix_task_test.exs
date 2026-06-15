@@ -35,7 +35,7 @@ defmodule Mix.Tasks.MutareTest do
     sandbox = Project.tmp_dir(:task)
     on_exit(fn -> File.rm_rf!(sandbox) end)
 
-    # The toy scores 62.5%, so a 100% floor must fail the build.
+    # The toy has surviving mutants (well under 100%), so a 100% floor must fail.
     assert_raise Mix.Error, ~r/below the required minimum/, fn ->
       Mix.Tasks.Mutare.run(["examples/toy", "--min-score", "100", "--sandbox", sandbox])
     end

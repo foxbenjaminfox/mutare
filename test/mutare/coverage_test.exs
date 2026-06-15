@@ -6,6 +6,11 @@ defmodule Mutare.CoverageTest do
 
   @moduletag timeout: 180_000
 
+  # Pin the end-to-end runs to the operator-swap families: these tests assert
+  # coverage classification and test-file selection, not mutant volume, so the
+  # higher-volume default mutators (literals) are excluded for determinism/speed.
+  @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
+
   describe "index/1" do
     test "merges manifests to map every mutant id to its selector's {module, line}" do
       source = """
@@ -73,7 +78,7 @@ defmodule Mutare.CoverageTest do
           """
         })
 
-      assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
 
       by_op = Map.new(run.results, &{&1.site.original_op, &1})
 
@@ -106,7 +111,7 @@ defmodule Mutare.CoverageTest do
           """
         })
 
-      assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
       assert [%Result{status: :killed}] = run.results
     end
   end
@@ -132,7 +137,7 @@ defmodule Mutare.CoverageTest do
           """
         })
 
-      assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
 
       by_op = Map.new(run.results, &{&1.site.original_op, &1})
 

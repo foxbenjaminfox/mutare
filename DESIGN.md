@@ -111,17 +111,22 @@ Pure functions over AST nodes; they never touch source text — the transform ap
 @callback mutate(Macro.t()) :: :skip | [Macro.t()]
 ```
 
-| Family | Examples | Realization |
-|---|---|---|
-| Arithmetic | `+`↔`-`, `*`↔`/`, `div`/`rem` swap | in-place |
-| Relational | `>`↔`>=`, `<`↔`<=`, `==`↔`!=` | in-place |
-| Boolean / logic | `and`↔`or`, `&&`↔`\|\|`, wrap condition in `not` | in-place |
-| Literals | integers ±1, `true`↔`false`, `nil` sentinel, empty↔non-empty list | in-place |
-| Branch swap | exchange `if`/`else` (and `case`/`cond` branch) bodies | in-place |
-| **Guards** | negate / widen / narrow a `when` comparison | **lifted** |
-| **Clause drop** | remove one clause of a multi-clause function | **lifted** |
+Realization is **positional, not declared** by the mutator: the same `mutate/1` is delivered in-place in a body or by lifting in a `when` guard, decided by where the matched node sits (see *Function lifting*). All built-in families are **on by default**; a user narrows the set by listing a subset under `:mutators`.
 
-Mutators are a registry; users add their own via the behaviour. The `in-place` ones must emit compile-safe substitutions by construction (see compile-poisoning); the `lifted` ones must stay guard-safe where they touch a `when`.
+| Family | Examples |
+|---|---|
+| Arithmetic | `+`↔`-`, `*`↔`/`, `div`↔`rem`, unary `-x`→`x` |
+| Relational | `>`↔`>=`, `<`↔`<=`, `==`↔`!=`, direction flips |
+| Logical | `and`↔`or`, `&&`↔`\|\|`, strip `not`/`!` |
+| Literal | integers `n`→`{n±1, 0}`, `true`↔`false` |
+| Conditional | a boolean-valued node → `true` / `false` ("remove conditionals") |
+| List | `++`↔`--`, non-empty list literal → `[]` |
+| Collection | `Enum.filter`↔`reject`, `all?`↔`any?`, `min`↔`max`, … |
+| StringLiteral | a string → `""` *and* `"mutare"` (drops the one matching the original) |
+| FloatLiteral | floats `x`→`{x±1.0, 0.0}` |
+| **Clause drop** | remove one clause of a multi-clause function (structural) |
+
+Guard and clause-drop mutants are the **lifted** ones (a `case` can't live in a `when`); everything else is delivered in place when it sits in a body. Mutators are a registry (`Mutare.Mutators`); users add their own via the behaviour. Every mutation must be compile-safe by construction (one poisoned branch sinks the single build) and guard-safe where it can reach a `when` — built-ins satisfy both: operator swaps reuse operands, literal swaps stay the same kind, and the families that touch operators the parser forbids in guards (`&&`/`||`/`!`/`++`/`--`) can never appear there. Clause-drop is structural (not expressible by a node-level `mutate/1`) and stays built-in.
 
 ## Execution model
 
@@ -160,7 +165,7 @@ Some mutations produce a program semantically identical to the original (`x * 1`
 mix mutare                      # build the schema, run all mutants
 mix mutare --only lib/billing   # scope to a path
 mix mutare --since master         # changed files vs a git ref (CI mode)
-mix mutare --mutators relational,boolean
+mix mutare --mutators relational,logical,conditional
 ```
 
 ```elixir

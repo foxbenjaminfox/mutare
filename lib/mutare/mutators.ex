@@ -5,9 +5,12 @@ defmodule Mutare.Mutators do
   Owns the *ordered* registry mapping a built-in family atom to its module; every
   consumer derives from it, so there is no second list to keep in sync:
 
-    * `all/0` is the default mutator set — what an unset `:mutators` (or `:all`)
-      means to `Mutare.Transform`. Adding a family to the registry adds it to the
-      default; nothing else changes.
+    * `all/0` is the default mutator set — every built-in module, in order — what
+      an unset `:mutators` (or `:all`) means to `Mutare.Transform`. All built-in
+      families are on by default; a user narrows the set by listing a subset
+      under `:mutators`.
+    * `families/0` is every registered family atom; `resolve/1` accepts any of
+      them by name.
     * `resolve/1` turns a user-supplied list (built-in family atoms and/or custom
       modules implementing `Mutare.Mutator`) into modules, validating each. Both
       the CLI/`.mutare.exs` path (`Mutare.Config`) and the direct API
@@ -21,13 +24,21 @@ defmodule Mutare.Mutators do
 
   # Ordered on purpose: this is the order mutants are offered in, and the order
   # `all/0` returns. Register a new built-in family by adding it here — that is
-  # the only edit; `all/0`, `families/0`, and `resolve/1` all follow.
+  # the only edit; `all/0`, `families/0`, and `resolve/1` all follow. Everything
+  # registered is on by default.
   @registry [
     arithmetic: Mutare.Mutators.Arithmetic,
-    relational: Mutare.Mutators.Relational
+    relational: Mutare.Mutators.Relational,
+    logical: Mutare.Mutators.Logical,
+    literal: Mutare.Mutators.Literal,
+    conditional: Mutare.Mutators.Conditional,
+    list: Mutare.Mutators.List,
+    collection: Mutare.Mutators.Collection,
+    string: Mutare.Mutators.StringLiteral,
+    float: Mutare.Mutators.FloatLiteral
   ]
 
-  @doc "The ordered `family => module` registry of built-in mutators."
+  @doc "The ordered `family => module` registry of every built-in mutator."
   @spec registry() :: [{atom(), module()}]
   def registry, do: @registry
 
@@ -35,23 +46,23 @@ defmodule Mutare.Mutators do
   @spec all() :: [module()]
   def all, do: Keyword.values(@registry)
 
-  @doc "Known built-in family atoms, in registry order."
+  @doc "Every known built-in family atom, in registry order."
   @spec families() :: [atom()]
   def families, do: Keyword.keys(@registry)
 
   @doc """
   Resolve a list of built-in family atoms and/or `Mutare.Mutator` modules into
-  modules. Each entry is either a built-in family atom (`:arithmetic`,
-  `:relational`) or a module implementing the behaviour. Raises `ArgumentError`
-  on an unknown family or a module that does not implement `Mutare.Mutator`.
+  modules. Each entry is either a registered family atom or a module implementing
+  the behaviour. Raises `ArgumentError` on an unknown family or a module that
+  does not implement `Mutare.Mutator`.
   """
   @spec resolve([atom() | module()]) :: [module()]
   def resolve(mutators) when is_list(mutators), do: Enum.map(mutators, &resolve!/1)
 
   defp resolve!(name) do
     cond do
-      is_atom(name) and Keyword.has_key?(@registry, name) ->
-        Keyword.fetch!(@registry, name)
+      is_atom(name) and Keyword.has_key?(registry(), name) ->
+        Keyword.fetch!(registry(), name)
 
       Mutare.Mutator.implemented_by?(name) ->
         name

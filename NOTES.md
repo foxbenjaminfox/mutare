@@ -372,6 +372,66 @@ the hundreds of per-mutant runs, bought for correctness and a clean contract —
 `Baseline.run/1` is the only thing that can abort with `:baseline_failed`;
 `CoverageProbe.run/3` can't fail (it returns a bare `selection`).
 
+### Expanded default mutator set `[done]`
+The built-ins grew from arithmetic+relational to a fuller catalog, **all on by
+default**: **arithmetic** (now also unary `-x`→`x`), **relational**, **logical**
+(`and`↔`or`, `&&`↔`||`, strip `not`/`!`), **literal** (integers `n`→`{n±1, 0}`,
+`true`↔`false`), **conditional** (a boolean-valued node → `true`/`false`,
+"remove conditionals"), **list** (`++`↔`--`, non-empty list literal → `[]`),
+**collection** (`Enum`/`List` predicate swaps), **string** (a string → `""` *and*
+the sentinel `"mutare"`, dropping whichever already matches), and **float**.
+`Mutare.Mutators`'s `@registry` is the single ordered source of truth; `all/0`
+returns every registered module, so registering a family makes it default.
+(We briefly split a `:default`/`:optional` tier mirroring PIT's default-vs-
+extended set, then dropped it as overly conservative — every built-in earns its
+place by default; a user narrows via `:mutators`.)
+
+Three non-obvious things settled here:
+
+- **Literal mutators must emit clean metadata.** Sourceror parses a literal as
+  `{:__block__, meta, [value]}` and renders it back from a `:token` string in
+  `meta`. Reusing the original meta would render the *original* text (`token:
+  "1"` prints `1`) even after changing the value — a silent equivalent no-op
+  that defeats the mutant. `Literal`/`FloatLiteral`/`StringLiteral` therefore
+  build `{:__block__, [], [value]}` with fresh meta. (Verified: reuse-meta
+  renders `1`, clean-meta renders `2`.)
+- **Guard-safety is free for the new families, by two different routes.** Every
+  mutator also runs on `when`-guard nodes (the lift path tags them), so a new
+  family must stay guard-legal there. `logical`'s `and`/`or` and the stripped
+  `not`, plus `literal`/`conditional` constants, are all guard-legal; the rest
+  (`&&`/`||`/`!`, `++`/`--`, `Enum`/`List` calls) are *forbidden in guards by
+  the parser*, so a source guard can never contain one and the mutator is only
+  ever asked to swap them in a body. Either way: no guard poison.
+- **`Site.original_op`/`mutated_op` are `:__block__` for literal sites** (they
+  come from `elem(node, 0)`), which is fine — reports use the rendered
+  `original_code`/`mutated_code` (`1 → 2`), not the op atom; the op fields are
+  only used by tests/lookups that key on real operators.
+
+Knock-on test work: the routing-focused `transform_test`/`schema_test`/
+`lift_test`/runner fixtures that asserted exact site counts now **pin
+`mutators:`** to the operator-swap families (`@probe`) — they test context
+routing and lifting mechanics, not the default set, so pinning keeps their
+counts stable while positive coverage of the new defaults lives in
+`mutators_test` and one dedicated `transform_test`.
+
+### Return-value mutators `[deferred]`
+The one big family still missing — and PIT's largest, highest-yield group:
+replace a function's **return value** (its body's tail position) with a fixed
+constant of a compatible shape (`nil`, `0`, `""`, `[]`, `:ok`, flip a returned
+boolean). Very high signal: it directly asks "does any test pin what this
+function returns?".
+
+Why it isn't a `Mutare.Mutator`: those are *node-level* (`mutate/1` rewrites a
+matched node wherever it occurs). A return-value mutation is **structural** — it
+targets the *tail expression of each clause body*, a position only the transform
+knows. It's the same shape as clause-drop (built-in, structural, not expressible
+via `mutate/1`). So it needs a new transform path: identify each clause's tail
+expression (the in-place selector already wraps tail position, so the machinery
+is close) and offer constant-replacement candidates there, gated on
+compile-safety (a bare constant always compiles) and equivalence (skip when the
+tail already *is* that constant). Defer until someone picks it up; capture here so
+the "why not a mutator" reasoning isn't re-derived.
+
 ### Equivalent mutants `[partial]`
 Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the
 arithmetic mutator skips the multiplicative-identity swap on a right operand
