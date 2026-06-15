@@ -6,14 +6,17 @@ defmodule Mutare.Transform do
   mutated (the old blacklist), the transform classifies each node's context
   *positively* and routes it. One pipeline, run per subtree:
 
-    1. **Analyze** — `annotate/2` walks the AST and, for every node a mutator
-       recognises *in a mutating context*, attaches a typed `Candidate` to the
-       node's own metadata (`meta[:mutare]`). Mutators run **once**, here.
-    2. **Classify** — the analyzer carries a `skip` depth so it can name each
-       context as it descends. Mutating contexts (`:runtime_body` →
-       in-place, `:guard`/`:clause_drop` → lifted) become candidates; the
-       excluded contexts (`:pattern`, `:compile_time`, `:capture_arity`) are
-       skipped wholesale — no candidate is ever produced there.
+    1. **Analyze + classify** — `analyze/3` is one context-threaded recursive
+       descent: it *names the context* of each position as it descends and, for
+       every node a mutator recognises *in a mutating context*, attaches a typed
+       `Candidate` to the node's own metadata (`meta[:mutare]`). Mutators run
+       **once**, here. Routing is positional (the spec side of a `::` goes one
+       way, the value side another), which is why it can't be a flat
+       `Macro.traverse` accumulator. Two contexts are threaded — `:runtime`
+       (mutate, → in-place; `:guard`/`:clause_drop` come from the lift path) and
+       `:pattern` (don't mutate, but keep descending so default-arg values and
+       `size()` args are reached); the rest (`:compile_time`, `:spec`, `:guard`,
+       `:capture_arity`) are recognised and pruned, producing no candidate.
     3. **Assign** — `emit/2` walks the annotated tree bottom-up and hands each
        candidate the next mutant id. Ids are assigned in post-order DFS and the
        counter advances even for `:skip_ids`, so ids stay stable across the
@@ -529,65 +532,146 @@ defmodule Mutare.Transform do
     |> emit(ctx)
   end
 
-  # --- analyze: classify context, attach candidates (mutators run once here) --
+  # --- analyze: classify context positively, attach candidates -----------------
 
-  # Walk the subtree carrying a `skip` depth. Entering an excluded context
-  # (`skip_node?/1`) raises the depth so its whole subtree is skipped; outside
-  # any such context, a node a mutator recognises gets a `:runtime_body`
-  # candidate attached to its own metadata. Nodes are visited pre-order, so a
-  # tagged node still holds its original (un-annotated) children — exactly what
-  # the report wants to render. Ids are *not* assigned here; emission does that
-  # bottom-up to keep post-order id ordering.
-  defp annotate(node, mutators) do
-    {annotated, _skip} =
-      Macro.traverse(
-        node,
-        0,
-        fn current, skip -> enter_annotate(current, skip, mutators) end,
-        &leave_annotate/2
-      )
+  # A syntax-directed walk that *names the context* of each position as it
+  # descends, rather than subtracting a blacklist from "everything is a runtime
+  # body". Routing is positional, so child → context is a pattern match — which a
+  # single `Macro.traverse` accumulator can't express (it can't send the spec
+  # side of a `::` one way and the value side another). Two contexts are threaded:
+  #
+  #   * `:runtime` — mutate in place. A node a mutator recognises gets a
+  #     `:runtime_body` candidate attached to its own metadata; the candidate is
+  #     built from the *raw* node (un-annotated children — what the report
+  #     renders) before we descend.
+  #   * `:pattern` — never mutate, but keep descending so nested runtime escapes
+  #     (default-argument values, `size(...)` args) are still reached.
+  #
+  # The remaining contexts are recognised positively and realised as pruned
+  # subtrees or dedicated helpers (named here, matched in the clauses below):
+  #
+  #   * `:compile_time` — module-attribute values (`@x <expr>`) and macro bodies
+  #     (`defmacro`/`defmacrop`). Frozen at compile time / macro-expansion time,
+  #     so a runtime selector there can never activate. Pruned whole.
+  #   * `:spec` — the type-specifier side of a bitstring `::` segment. A `case`
+  #     is illegal there and a swapped `-` separator is an illegal specifier;
+  #     only `size(expr)` args are a genuine runtime sub-position (`analyze_spec/3`).
+  #   * `:guard` — `when` guards, owned by the lift path (a `case` can't live in a
+  #     guard). Pruned here; `tag_targets/3` mutates them by lifting instead.
+  #   * `:capture_arity` — the `/` in `&fun/arity`, an arity separator not
+  #     division. Pruned; real division (`& &1 / 2`) still mutates.
+  #
+  # Ids are *not* assigned here; emission does that bottom-up to keep post-order
+  # id ordering.
+  defp annotate(node, mutators), do: analyze(node, :runtime, mutators)
 
-    annotated
+  # `when` guard (position-independent: also covers case/fn clause guards): the
+  # lift path owns guard mutation, so the in-place walk never touches one.
+  defp analyze({:when, _meta, [_call | guards]} = node, _context, _mutators)
+       when guards != [],
+       do: node
+
+  # module attribute `@x <value>`: compile-time, pruned whole. A bare `@x` read
+  # has an atom context (not a single-value list) and falls through to runtime.
+  defp analyze({:@, _meta, [{_name, _am, [_value]}]} = node, _context, _mutators), do: node
+
+  # `defmacro`/`defmacrop`: compile-time / macro-generated, pruned whole.
+  defp analyze({vis, _meta, _args} = node, _context, _mutators)
+       when vis in [:defmacro, :defmacrop],
+       do: node
+
+  # `&fun/arity` capture: the `/` is arity, not division — pruned. Anything else
+  # under `&` (e.g. `& &1 / 2`) keeps mutating.
+  defp analyze({:&, _meta, [{:/, _smeta, [left, right]}]} = node, context, mutators) do
+    if function_ref?(left) and integer_literal?(right),
+      do: node,
+      else: recurse(node, context, mutators)
   end
 
-  defp enter_annotate(node, skip, mutators) do
-    cond do
-      skip_node?(node) ->
-        {node, skip + 1}
+  # A `def`/`defp` clause reaching the in-place path (one that did not lift): the
+  # head is a pattern, the body keyword is runtime.
+  defp analyze({vis, meta, [head, body_kw]}, _context, mutators)
+       when vis in [:def, :defp] and is_list(body_kw) do
+    {vis, meta, [analyze(head, :pattern, mutators), analyze_do_blocks(body_kw, mutators)]}
+  end
 
-      skip > 0 ->
-        {node, skip}
+  # bitstring: each segment's value keeps the surrounding context; the spec side
+  # is excluded except for `size(expr)` args (`analyze_segment/3`).
+  defp analyze({:<<>>, meta, segments}, context, mutators) do
+    {:<<>>, meta, Enum.map(segments, &analyze_segment(&1, context, mutators))}
+  end
 
-      true ->
-        case mutations(node, mutators) do
-          [] -> {node, skip}
-          muts -> {put_candidates(node, build_candidates(node, muts)), skip}
-        end
+  # match `=`: the left side is a pattern, the right keeps the context.
+  defp analyze({:=, meta, [lhs, rhs]}, context, mutators) do
+    {:=, meta, [analyze(lhs, :pattern, mutators), analyze(rhs, context, mutators)]}
+  end
+
+  # default argument inside a pattern (`x \\ expr`): the variable is a pattern,
+  # but the default runs at call time → runtime (don't regress its mutation).
+  defp analyze({:\\, meta, [var, default]}, :pattern, mutators) do
+    {:\\, meta, [analyze(var, :pattern, mutators), analyze(default, :runtime, mutators)]}
+  end
+
+  # a generic runtime node: build the candidate from the raw node (so `original`
+  # keeps un-annotated children), then descend into the children.
+  defp analyze({_form, _meta, _args} = node, :runtime, mutators) do
+    case mutations(node, mutators) do
+      [] ->
+        recurse(node, :runtime, mutators)
+
+      muts ->
+        node
+        |> put_candidates(build_candidates(node, muts))
+        |> recurse(:runtime, mutators)
     end
   end
 
-  defp leave_annotate(node, skip) do
-    if skip_node?(node), do: {node, skip - 1}, else: {node, skip}
+  # anything else — a node in a non-runtime context, or a container/leaf:
+  # descend without mutating so boundary forms (`\\`, `<<>>`) still fire on
+  # children, but attach no candidate here.
+  defp analyze(node, context, mutators), do: recurse(node, context, mutators)
+
+  # Generic structural descent over every Sourceror node shape, re-analyzing the
+  # children in the same context.
+  defp recurse({form, meta, args}, context, mutators) when is_list(args),
+    do: {form, meta, Enum.map(args, &analyze(&1, context, mutators))}
+
+  defp recurse({form, meta, arg}, _context, _mutators), do: {form, meta, arg}
+
+  defp recurse({left, right}, context, mutators),
+    do: {analyze(left, context, mutators), analyze(right, context, mutators)}
+
+  defp recurse(list, context, mutators) when is_list(list),
+    do: Enum.map(list, &analyze(&1, context, mutators))
+
+  defp recurse(other, _context, _mutators), do: other
+
+  # The body keyword of a clause (`[do: …, rescue: …, after: …]`, possibly with
+  # Sourceror's `{:__block__, _, [:do]}` keys): every block value is runtime.
+  defp analyze_do_blocks(body_kw, mutators) do
+    Enum.map(body_kw, fn {key, value} -> {key, analyze(value, :runtime, mutators)} end)
   end
 
-  # The excluded contexts, recognised positively (this is what replaces the old
-  # `unsafe_keys`/`guard_keys`/`capture_arity_keys` blacklist):
-  #
-  #   * `:when` guards — a `case` can't live in a guard; guard mutations are
-  #     lifted instead. Skipping the whole `when` also skips the head patterns
-  #     (`:pattern` — never a mutating context anyway).
-  #   * module-attribute *definitions* (`@x <expr>`) — `:compile_time`. The
-  #     value is frozen at compile time, so a selector there is inert. (A bare
-  #     attribute *read*, `@x`, has no value list and is not skipped.)
-  #   * the `/` in a `&fun/arity` capture — `:capture_arity`, an arity separator,
-  #     not division. `& &1 / 2` (real division) does not match and is mutated.
-  defp skip_node?({:when, _meta, [_call | guards]}) when guards != [], do: true
-  defp skip_node?({:@, _meta, [{_name, _attr_meta, [_value]}]}), do: true
+  # A bitstring segment `<<value::spec>>`: the value keeps the surrounding
+  # context; the spec side is excluded except for `size(expr)` args.
+  defp analyze_segment({:"::", meta, [value, spec]}, context, mutators) do
+    {:"::", meta, [analyze(value, context, mutators), analyze_spec(spec, context, mutators)]}
+  end
 
-  defp skip_node?({:&, _meta, [{:/, _smeta, [left, right]}]}),
-    do: function_ref?(left) and integer_literal?(right)
+  defp analyze_segment(segment, context, mutators), do: analyze(segment, context, mutators)
 
-  defp skip_node?(_), do: false
+  # The type-specifier side of a bitstring segment. Separators (`-`), type atoms
+  # and `unit(...)` stay raw — a swapped `-` is an illegal specifier and a `case`
+  # is illegal in a spec. `size(expr)` is the one runtime sub-position: its arg is
+  # recursed in the segment's context (mutated in a body, pruned in a pattern).
+  defp analyze_spec({:-, meta, [left, right]}, context, mutators),
+    do:
+      {:-, meta, [analyze_spec(left, context, mutators), analyze_spec(right, context, mutators)]}
+
+  defp analyze_spec({:size, meta, [arg]}, context, mutators),
+    do: {:size, meta, [analyze(arg, context, mutators)]}
+
+  defp analyze_spec(other, _context, _mutators), do: other
 
   defp build_candidates(node, muts) do
     range = Sourceror.get_range(node)

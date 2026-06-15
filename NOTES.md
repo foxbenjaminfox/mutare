@@ -57,37 +57,80 @@ a bare selector `case` for the same reason). Metamutant only; the report is
 unaffected. Keep an eye on Sourceror releases in case this becomes unnecessary.
 
 ### Non-body operator positions
-Context is now classified *positively* by `Mutare.Transform`'s `skip_node?/1`
-(see "Transform pipeline" below), not subtracted by a blacklist. The positions:
+Context is classified *positively* by `Mutare.Transform`'s `analyze/3`, a
+context-threaded recursive walk (see "Transform pipeline" below), not subtracted
+by a blacklist. The positions:
 - **Guards:** mutated via lifting (M2) — operators in a `when` are swapped in a
   duplicated clause group, since a `case` can't live in a guard. The analyzer
-  skips the whole `when` (its head patterns included) for in-place.
+  returns the whole `when` untouched for in-place (its head patterns included);
+  this is position-independent, so `case`/`fn` clause guards are skipped too.
 - **Module-attribute expressions** (`@x 1 + 2`): **excluded** (context
   `:compile_time`). Such a value is frozen at compile time — `persistent_term`
   reads the default → original — so a selector there could never activate (an
-  inert/equivalent mutant). Previously these were wrapped in place and wasted;
-  the classifier now skips the whole `@<name> <value>` definition. (A bare
-  attribute *read*, `@x`, has no value list and is not skipped.) Pinned by a
-  transform_test.
+  inert/equivalent mutant). The analyzer prunes the whole `@<name> <value>`
+  definition. (A bare attribute *read*, `@x`, has no value list and is not
+  skipped.) Pinned by a transform_test.
+- **Macro bodies** (`defmacro`/`defmacrop`): **excluded** (also `:compile_time`).
+  A macro body runs at expansion time, before `MUTANT_UNDER_TEST` is set at test
+  runtime, so a selector there is frozen on the default → inert — exactly the
+  module-attribute problem. (A macro *can* `quote` runtime code, but per
+  PHILOSOPHY "instrumenting macro-generated code is a different tool"; the whole
+  macro is pruned.) Previously these mutants were emitted and silently wasted.
+- **Bitstring type specifiers** (the right of `::` in `<<>>`): **excluded**
+  (context `:spec`), *except* `size(expr)` args. A `case` is illegal as a bare
+  spec / in `unit(...)`, and swapping the `-` separator yields an illegal
+  specifier (`integer-big` → `integer+big`) — both compile-poison the single
+  build. The analyzer keeps separators / type atoms / `unit()` raw but recurses
+  into `size(expr)` args (a `case` *is* legal in `size`), so a body's
+  `<<x::size(n*8)>>` still yields a real, killable size mutant; in a pattern the
+  size arg is pruned. The value side (left of `::`) mutates normally.
 - **Default arg values** (`def f(a \\ b + 1)`): mutated in place; live mutant.
-  Note such functions are *not lifted* (defaults expand to multiple arities;
-  normalize-then-lift is deferred), so they get no guard/clause-drop mutants.
+  The head is a pattern, but `\\`'s default runs at call time, so the analyzer
+  routes it back to `:runtime`. Note such functions are *not lifted* (defaults
+  expand to multiple arities; normalize-then-lift is deferred), so they get no
+  guard/clause-drop mutants.
+- **Patterns** (clause heads, `=` match LHS): routed to `:pattern` and not
+  mutated. Built-in arithmetic/relational operators can't legally appear in a
+  pattern anyway, so this mainly shields *custom* mutators. **Deferred:**
+  clause-pattern / generator routing for `case`/`fn`/`with`/`for`/`receive`/
+  `try`/`cond` — those `->`/`<-` LHS positions still walk as `:runtime` (a
+  custom mutator there is poison-backstopped). Beware when adding it: a `cond`
+  `->` LHS and `for`/`with` filters are *runtime* and must keep mutating; only
+  `case`/`fn`/`receive`/`try` and `<-` generator LHS are patterns.
+
+### Guard tagger is not bitstring-spec-aware `[deferred]`
+`tag_targets/3` (the lifted-guard path) is a context-free `Macro.postwalk` that
+runs mutators on every guard node. A multi-specifier bitstring *pattern* inside a
+`when` guard could therefore lift a `-`-separator swap that compile-poisons (the
+`size()`-arg subcase only produces a legal direct swap — lifting never emits a
+`case`). Exotic and poison-backstopped, so left as-is. The clean fix shares the
+`analyze_spec/3` spec-exclusion descent between `analyze/3` and `tag_targets/3`.
 
 ### Transform pipeline — explicit stages `[refactor, done]`
 `Mutare.Transform` is an explicit pipeline rather than a walk-everything-then-
-subtract design. Stages: **analyze** (`annotate/2` attaches a typed
-`Transform.Candidate` to each mutatable node's own `meta[:mutare]`), **classify**
-(a `skip`-depth counter via `skip_node?/1` names contexts as it descends —
-mutating: `:runtime_body`/`:guard`/`:clause_drop`; excluded: `:pattern`,
-`:compile_time`, `:capture_arity`), **assign + emit** (`emit/2`, a bottom-up
-`Macro.postwalk`, hands out ids in post-order DFS; the counter advances for
-`:skip_ids` so ids stay stable across poison-recovery rebuilds), and **render**
-(strip the `:mutare`/`:mutare_tag` annotations, then `Sourceror.to_string`).
+subtract design. Stages: **analyze + classify** (`analyze/3` is a single
+context-threaded recursive descent: it *names the context* of each position as
+it descends and attaches a typed `Transform.Candidate` to each mutatable node's
+own `meta[:mutare]`), **assign + emit** (`emit/2`, a bottom-up `Macro.postwalk`,
+hands out ids in post-order DFS; the counter advances for `:skip_ids` so ids
+stay stable across poison-recovery rebuilds), and **render** (strip the
+`:mutare`/`:mutare_tag` annotations, then `Sourceror.to_string`).
+
+`analyze/3` threads two contexts — `:runtime` (mutate) and `:pattern` (don't
+mutate, but keep descending so nested runtime escapes like default-arg values
+and `size()` args are still reached). The other contexts are *recognised and
+pruned* by dedicated clauses: `:compile_time` (module-attribute values, macro
+bodies), `:spec` (bitstring type specifiers, via `analyze_spec/3`), `:guard`
+(`when`, owned by the lift path), `:capture_arity` (`&fun/arity`). Routing is
+positional, which a single `Macro.traverse` accumulator can't express (it can't
+send the spec side of a `::` one way and the value side another) — that
+limitation is what forced the earlier `skip`-depth blacklist.
 
 Three things this bought, vs. the prior implicit version:
-- The growing **blacklist** (`unsafe_keys`/`guard_keys`/`capture_arity_keys`) is
-  gone — excluded contexts are *named positively* in `skip_node?/1`. To exclude
-  a new context, add a clause there; don't reintroduce subtractive key sets.
+- The growing **blacklist** (`unsafe_keys`/`guard_keys`/`capture_arity_keys`,
+  then the `skip_node?/1` depth counter) is gone — context is *named positively*
+  in `analyze/3`. To classify a new context, add a clause (route its children);
+  don't reintroduce a subtractive key set or a flat skip-depth.
 - **Untyped lifted maps** (`%{type: :guard, …}` / `%{type: :drop, …}`) are now
   the typed `Transform.Candidate` struct (`context`/`kind`/`operation`), shared
   by in-place and lifted alike.

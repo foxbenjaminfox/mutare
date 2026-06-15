@@ -39,14 +39,19 @@ contract between them is the whole game.
 - **`Mutare.Transform`** — the heart. `source → {metamutant_source, [%Site{}], next_id}`. An
   explicit staged pipeline (analyze → classify → assign → emit → render), not a walk-everything-
   then-subtract blacklist. Context is classified *positively* and routed; mutators run **once**.
-  - **analyze (`annotate/2`)** walks the AST and attaches a typed `Transform.Candidate` to each
-    mutatable node's *own metadata* (`meta[:mutare]`) — which is why there's no fragile
-    `{line, column}` node identity and no double mutator invocation.
-  - **classify** is a `skip`-depth counter (`skip_node?/1`) that names contexts as it descends.
-    Mutating contexts: `:runtime_body` → in-place, `:guard`/`:clause_drop` → lifted. Excluded
-    contexts produce no candidate: `:pattern` (clause heads), `:compile_time` (module-attribute
-    values like `@x 1 + 2` — frozen at compile time, so a selector there is inert), and
-    `:capture_arity` (the `/` in `&fun/arity`, an arity separator not division).
+  - **analyze + classify (`analyze/3`)** is a single context-threaded recursive descent: it
+    *names the context* of each position as it descends (routing is positional — the spec side of
+    a `::` goes one way, the value side another, which a flat `Macro.traverse` accumulator can't
+    express) and attaches a typed `Transform.Candidate` to each mutatable node's *own metadata*
+    (`meta[:mutare]`) — which is why there's no fragile `{line, column}` node identity and no
+    double mutator invocation. Two contexts are threaded: `:runtime` → in-place (`:guard`/
+    `:clause_drop` are produced by the separate lift path), and `:pattern` (don't mutate, but keep
+    descending so default-arg values and `size()` args are still reached). The rest are recognised
+    and pruned by dedicated clauses: `:compile_time` (module-attribute values like `@x 1 + 2`
+    **and** `defmacro`/`defmacrop` bodies — frozen at compile/expansion time, so a selector there
+    is inert), `:spec` (a bitstring type specifier — separators/`unit()`/type atoms excluded, but
+    `size(expr)` args recursed; `analyze_spec/3`), and `:capture_arity` (the `/` in `&fun/arity`,
+    an arity separator not division).
   - **assign + emit (`emit/2`)** is a bottom-up `Macro.postwalk` so ids are assigned in
     post-order DFS; the id counter advances even for `:skip_ids` (poison recovery relies on it).
   - **in-place selector** for body expressions: wrap the operator in a tail-position

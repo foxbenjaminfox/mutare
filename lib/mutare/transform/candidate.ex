@@ -12,10 +12,10 @@ defmodule Mutare.Transform.Candidate do
   #   * `:guard`         → `:lifted`,   `:replace`  — a `when`-guard operator
   #   * `:clause_drop`   → `:lifted`,   `:delete`   — a whole clause removed
   #
-  # The excluded contexts — `:pattern`, `:compile_time` (module-attribute
-  # values), `:capture_arity` (the `/` in `&fun/arity`) — never become
-  # candidates; the analyzer skips them outright (see `Mutare.Transform`'s
-  # `skip_node?/1`).
+  # The excluded contexts — `:pattern`, `:compile_time` (module-attribute values
+  # and macro bodies), `:spec` (a bitstring type specifier), `:capture_arity`
+  # (the `/` in `&fun/arity`) — never become candidates; the analyzer classifies
+  # them positively and skips them (see `Mutare.Transform`'s `analyze/3`).
   #
   # `:guard` candidates carry `mutated_clauses` — the whole clause group with
   # this one guard swapped, materialised at analysis time so emission never has

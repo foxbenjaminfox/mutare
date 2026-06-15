@@ -157,4 +157,140 @@ defmodule Mutare.TransformTest do
     assert [%Site{mutator: :arithmetic, original_op: :+, line: 4}] = sites
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
+
+  test "a bitstring value and its size(...) arg mutate; the spec side is excluded" do
+    source = "defmodule B do\n  def f(n), do: <<(n + 1)::size(n * 8)>>\nend\n"
+    {meta, sites, _next_id} = Mutare.transform_string(source)
+
+    # The value `n + 1` and the runtime `size(n * 8)` argument both mutate; a
+    # `case` is legal in both positions.
+    assert Enum.frequencies_by(sites, &{&1.mutator, &1.original_op}) ==
+             %{{:arithmetic, :+} => 1, {:arithmetic, :*} => 1}
+
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
+
+  test "bitstring spec separators are not mutated (a swapped `-` is an illegal specifier)" do
+    source = "defmodule B do\n  def f(x), do: <<x::integer-big-size(16)>>\nend\n"
+    {meta, sites, _next_id} = Mutare.transform_string(source)
+
+    assert sites == []
+    refute meta =~ "integer + big"
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
+
+  test "bitstring unit(...) args are not mutated" do
+    source = "defmodule B do\n  def f(x), do: <<x::size(1)-unit(8)>>\nend\n"
+    {_meta, sites, _next_id} = Mutare.transform_string(source)
+
+    assert sites == []
+  end
+
+  test "a bitstring in a pattern is excluded; the body still mutates" do
+    source = "defmodule B do\n  def f(<<x::size(8)>>), do: x + 1\nend\n"
+    {_meta, sites, _next_id} = Mutare.transform_string(source)
+
+    assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
+  end
+
+  test "defmacro/defmacrop bodies are compile-time and not mutated" do
+    source = """
+    defmodule M do
+      defmacro plus(a, b), do: quote(do: unquote(a) + unquote(b))
+      defmacrop minus(a, b), do: quote(do: unquote(a) - unquote(b))
+      def use(x), do: x * 2
+    end
+    """
+
+    {meta, sites, _next_id} = Mutare.transform_string(source)
+
+    # The `+`/`-` inside the macro bodies run at expansion time and never see the
+    # runtime selector; only the real body `x * 2` mutates.
+    assert [%Site{mutator: :arithmetic, original_op: :*}] = sites
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
+
+  test "a defmacro with a non-quote arithmetic body is still excluded" do
+    source = "defmodule M do\n  defmacro c, do: 1 + 2\nend\n"
+    {_meta, sites, _next_id} = Mutare.transform_string(source)
+
+    assert sites == []
+  end
+
+  test "a default-argument value runs at call time and still mutates" do
+    source = "defmodule D do\n  def f(x \\\\ 1 + 2), do: x\nend\n"
+    {_meta, sites, _next_id} = Mutare.transform_string(source)
+
+    assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
+  end
+
+  test "a case-clause guard is not mutated in place; the clause body is" do
+    source = """
+    defmodule K do
+      def f(x) do
+        case x do
+          n when n > 1 -> n + 1
+          _ -> 0
+        end
+      end
+    end
+    """
+
+    {meta, sites, _next_id} = Mutare.transform_string(source)
+
+    # A case-clause guard is not a def/defp guard (lifting only applies to
+    # those), and a `case` can't live in a guard — so `n > 1` stays unmutated.
+    # The clause body `n + 1` mutates in place.
+    assert [%Site{mutator: :arithmetic, original_op: :+, kind: :in_place}] = sites
+    refute meta =~ "when (case"
+    refute meta =~ "when case"
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
+
+  test "comprehension filters and bodies mutate; the generator pattern does not" do
+    source = "defmodule F do\n  def f(xs), do: for(x <- xs, x > 0, do: x + 1)\nend\n"
+    {meta, sites, _next_id} = Mutare.transform_string(source)
+
+    # Filter `x > 0` (2 relational swaps) and body `x + 1` (1 swap) both mutate;
+    # the generator pattern `x` does not.
+    assert Enum.frequencies_by(sites, & &1.original_op) == %{:> => 2, :+ => 1}
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
+
+  test "a cond-clause condition is runtime and still mutates" do
+    source = """
+    defmodule C do
+      def f(a) do
+        cond do
+          a > 1 -> :hi
+          true -> :lo
+        end
+      end
+    end
+    """
+
+    {_meta, sites, _next_id} = Mutare.transform_string(source)
+
+    # The `->` left side in a `cond` is a runtime condition, not a pattern.
+    assert Enum.frequencies_by(sites, & &1.original_op) == %{:> => 2}
+  end
+
+  test "with/else blocks are walked without corrupting the metamutant" do
+    source = """
+    defmodule W do
+      def f(m) do
+        with {:ok, n} <- m do
+          n + 1
+        else
+          _ -> 0
+        end
+      end
+    end
+    """
+
+    {meta, sites, _next_id} = Mutare.transform_string(source)
+
+    assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
 end
