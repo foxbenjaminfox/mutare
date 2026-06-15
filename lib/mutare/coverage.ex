@@ -19,6 +19,8 @@ defmodule Mutare.Coverage do
   (`:no_coverage`): skip it and keep it out of the score's denominator.
   """
 
+  require Logger
+
   # `:cover` is added to the code path at runtime (it lives in OTP's :tools),
   # so it is legitimately undefined at compile time.
   @compile {:no_warn_undefined, :cover}
@@ -40,7 +42,17 @@ defmodule Mutare.Coverage do
       {:error, :no_coverdata}
     end
   rescue
-    error -> {:error, error}
+    # Broad on purpose: `:cover` variance surfaces as MatchError (start/import),
+    # CaseClauseError (analyse shape), or ErlangError — all degrade to `:run_all`
+    # (slow-but-correct), never a false `:no_coverage`. Log so a genuine defect
+    # doesn't hide as a silent, mysteriously-slow run-all fallback.
+    error ->
+      Logger.warning(
+        "coverage probe failed (#{coverdata_path}), falling back to run-all: " <>
+          Exception.message(error)
+      )
+
+      {:error, error}
   end
 
   @doc """
