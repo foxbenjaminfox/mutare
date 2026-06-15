@@ -79,6 +79,31 @@ defmodule Mutare.ReportTest do
     assert Report.summary(results) =~ "1 ignored"
   end
 
+  test "score/1 excludes harness_error from the denominator (an infra failure is not a kill)" do
+    results = [
+      %Result{status: :killed},
+      %Result{status: :survived},
+      %Result{status: :harness_error}
+    ]
+
+    # 1 killed / (3 - 1 harness_error) = 50% — the harness error is neither a
+    # kill nor part of the denominator.
+    assert Report.score(results) == 50.0
+  end
+
+  test "summary/1 surfaces harness errors only when present" do
+    refute Report.summary([%Result{status: :killed}]) =~ "harness-error"
+
+    results = [
+      %Result{status: :killed},
+      %Result{status: :survived},
+      %Result{status: :harness_error}
+    ]
+
+    assert Report.summary(results) ==
+             "mutation score: 50.0%  (1 killed, 1 survived, 1 harness-error, 3 total)"
+  end
+
   test "score/1 is 100.0 when there is nothing to test" do
     assert Report.score([]) == 100.0
     assert Report.score([%Result{status: :no_coverage}]) == 100.0

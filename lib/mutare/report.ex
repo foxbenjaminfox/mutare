@@ -72,7 +72,7 @@ defmodule Mutare.Report do
 
   @doc """
   Mutation score as a percentage:
-  `killed / (total − no_coverage − ignored − poisoned)`.
+  `killed / (total − no_coverage − ignored − poisoned − harness_error)`.
   Returns `100.0` when the denominator is zero (nothing to test).
   """
   @spec score([Result.t()]) :: float()
@@ -100,6 +100,7 @@ defmodule Mutare.Report do
     no_coverage = count(counts, :no_coverage)
     ignored = count(counts, :ignored)
     poisoned = count(counts, :poisoned)
+    harness_error = count(counts, :harness_error)
     total = total(counts)
 
     tally =
@@ -110,6 +111,7 @@ defmodule Mutare.Report do
         if(no_coverage > 0, do: "#{no_coverage} no-coverage"),
         if(ignored > 0, do: "#{ignored} ignored"),
         if(poisoned > 0, do: "#{poisoned} poisoned"),
+        if(harness_error > 0, do: "#{harness_error} harness-error"),
         "#{total} total"
       ]
       |> Enum.reject(&is_nil/1)
@@ -131,7 +133,13 @@ defmodule Mutare.Report do
   defp score_from_tally(counts) do
     # A timeout is a kill (the mutation caused a hang).
     killed = count(counts, :killed) + count(counts, :timeout)
-    excluded = count(counts, :no_coverage) + count(counts, :ignored) + count(counts, :poisoned)
+
+    # A harness error never reached a verdict, so — like no-coverage/ignored/
+    # poisoned — it is excluded from the denominator, not counted as a kill.
+    excluded =
+      count(counts, :no_coverage) + count(counts, :ignored) + count(counts, :poisoned) +
+        count(counts, :harness_error)
+
     denominator = total(counts) - excluded
 
     if denominator <= 0, do: 100.0, else: killed / denominator * 100

@@ -32,13 +32,21 @@ defmodule Mutare.Runner do
   platform-specific signals). A capped run exits with
   `Mutare.Sandbox.Command.timeout_exit/0`, which we count as `:timeout` (a kill —
   the hang is observable misbehavior).
+
+  ## Outcomes vs. exit codes
+
+  `Mutare.Sandbox.Command` owns the exit-code contract and decodes each mutant
+  run into a typed outcome; the runner only maps that onto a `Mutare.Result`
+  status. The point of the typing is the `:harness_error` case — a run that never
+  reached a verdict (a compile error, a missing dependency, a filesystem race).
+  Such a run says *nothing* about the mutation, so it is recorded as
+  `:harness_error` and kept out of the score's denominator, never silently
+  miscounted as a kill the way a raw "non-zero ⇒ killed" rule would.
   """
 
   alias Mutare.{Options, Poison, Result, Sandbox, Schema, Selector, Site}
   alias Mutare.Runner.{Baseline, CoverageProbe}
   alias Mutare.Sandbox.Command
-
-  @timeout_exit Command.timeout_exit()
 
   @type run :: %{
           schema: Schema.t(),
@@ -198,16 +206,23 @@ defmodule Mutare.Runner do
   end
 
   defp run_mutant(sandbox, site, test_args, cap) do
-    {ms, output, status} =
-      Command.timed_mix(sandbox, ["test" | test_args], site.id, cap)
+    result = Command.timed_test(sandbox, test_args, site.id, cap)
 
-    %Result{site: site, status: classify_status(status), duration_ms: ms, output: output}
+    %Result{
+      site: site,
+      status: status_for(result.outcome),
+      duration_ms: result.duration_ms,
+      output: result.output
+    }
   end
 
-  # exit 0 = every test passed despite the mutation → SURVIVED; the watcher's
-  # exit code = the mutation caused a hang we capped (:timeout, a kill); any
-  # other non-zero = a test failed → KILLED.
-  defp classify_status(0), do: :survived
-  defp classify_status(status) when status == @timeout_exit, do: :timeout
-  defp classify_status(_status), do: :killed
+  # Map a run's typed outcome (decoded by `Mutare.Sandbox.Command`, which owns the
+  # exit-code contract) onto a result status. A `:harness_error` — the suite never
+  # reached a verdict (compile error, missing dep, filesystem race) — is *not* a
+  # kill: it says nothing about the mutation, so it's recorded separately and kept
+  # out of the score's denominator rather than inflating the kill count.
+  defp status_for(:passed), do: :survived
+  defp status_for(:failed), do: :killed
+  defp status_for(:timeout), do: :timeout
+  defp status_for(:harness_error), do: :harness_error
 end

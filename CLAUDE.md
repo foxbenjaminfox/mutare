@@ -71,13 +71,21 @@ contract between them is the whole game.
   `System.halt/1`s the run itself after the cap (no killing an OS process tree).
 - **`Mutare.Sandbox.Command`** — command execution against a materialized sandbox: `mix/4` and
   `timed_mix/4` spawn a fresh `mix` OS process with `MIX_ENV=test`/`MUTANT_UNDER_TEST` set. Owns the
-  *run side* of the timeout contract — the env var the cap travels in (`timeout_env/0`) and the exit
-  code a timeout signals (`timeout_exit/0`); the `Mutare.Sandbox` bootstrap renders the watcher that
-  honours them, and the runner reads `timeout_exit/0` to classify a capped run as `:timeout`.
+  *run side* of the **exit-code contract** and decodes it into a typed
+  `Mutare.Sandbox.Command.Result` (`timed_test/4`): `0`→`:passed`, `failure_exit/0`→`:failed`,
+  `timeout_exit/0`→`:timeout`, anything else→`:harness_error` (the total decoder is `outcome/1`).
+  The pivot is `--exit-status failure_exit/0`, forced onto every mutant `mix test`: a clean ExUnit
+  failure (a kill) exits with that distinctive code, while a compile error / missing dep / broken
+  helper exits `1` — so a harness error is no longer indistinguishable from a kill. Also owns the
+  timeout sub-contract — the env var the cap travels in (`timeout_env/0`) and the exit code a
+  timeout signals (`timeout_exit/0`); the `Mutare.Sandbox` bootstrap renders the watcher that
+  honours them.
 - **`Mutare.Runner`** — the orchestrator. Compiles the sandbox **once** (recovering from
   compile-poisoning, see below), runs the baseline green then a coverage probe, then runs
   `:workers` mutants concurrently via `Task.async_stream`, each a fresh `mix test` OS process.
-  Per-mutant wall-clock cap; a timeout is a kill (`:timeout`). Returns
+  Per-mutant wall-clock cap; a timeout is a kill (`:timeout`). Maps each run's typed
+  `Command.outcome` onto a result status — notably `:harness_error` (an infra failure that never
+  reached a verdict) stays out of the score, never charged as a kill. Returns
   `%{schema, results, sandbox, baseline_ms}`.
 - **`Mutare.Runner.Baseline`** — one whole-suite `mix test` (no `--cover`) at the baseline mutant:
   the authoritative green check (a red suite aborts with `:baseline_failed`) and the source of
@@ -98,7 +106,7 @@ contract between them is the whole game.
   rebuilds, bounded. Zero cost when nothing poisons.
 - **`Mutare.Report`** — diffs each *surviving* mutant against the **original** source via
   `Sourceror.patch_string` (clean one-line diffs), and computes the score:
-  `killed / (total − no_coverage − ignored − poisoned)`.
+  `killed / (total − no_coverage − ignored − poisoned − harness_error)`.
 - **`Mutare.Mutator`** + **`Mutare.Mutators.*`** — the public extension behaviour (`mutate/1`,
   `name/0`) and built-in families (Arithmetic, Relational).
 - **`Mutare.Config`** / **`Mutare.Changes`** / **`Mix.Tasks.Mutare`** — `.mutare.exs` + CLI flag
@@ -132,6 +140,9 @@ lifted — placement is positional. `test/support/boolean_mutator.ex` is a worki
 
 ## Result statuses
 
-`:killed` / `:survived` (the product is the survivor diffs, not the headline score), plus three
+`:killed` / `:survived` (the product is the survivor diffs, not the headline score), plus four
 that are excluded from the denominator: `:no_coverage` (no test runs the line), `:ignored`
-(`# mutare:ignore`), `:poisoned` (dropped — wouldn't compile). `:timeout` counts as a kill.
+(`# mutare:ignore`), `:poisoned` (dropped — wouldn't compile), and `:harness_error` (the mutant
+run never reached a verdict — a compile error, missing dep, or filesystem race — so it measures
+nothing about the mutation; classified by `Mutare.Sandbox.Command`'s exit-code contract, **not**
+charged as a kill). `:timeout` counts as a kill.

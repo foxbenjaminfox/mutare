@@ -430,3 +430,30 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
   recovery state) is threaded as an explicit `Schema`/`Runner` argument rather
   than a config field; the sandbox **disjointness** check stays in `Sandbox`
   (it's relative to `root` — `Options` only validates the path's shape).
+- **Harness errors are not kills (done).** The runner used to treat *every*
+  non-zero `mix test` exit as a kill (`classify_status/1`: `0 → survived`,
+  timeout-code `→ :timeout`, everything else `→ :killed`). But "everything else"
+  conflated a real test failure (the mutation was caught) with the harness never
+  reaching a verdict at all — a compile error, a missing dependency, a broken
+  `test_helper`, a filesystem race. Those exit `1` (or a signal code), and
+  counting them as kills silently inflates the score with infrastructure noise.
+  The fix makes the two separable: every mutant `mix test` is now run with
+  `--exit-status 101` (`Mutare.Sandbox.Command.failure_exit/0`), the code mix
+  uses **only** on its `failures > 0` path; harness failures still exit `1`. So
+  the exit-code contract `Mutare.Sandbox.Command` owns becomes total —
+  `0 → :passed`, `101 → :failed`, `124 → :timeout`, *anything else* →
+  `:harness_error` (decoded by `outcome/1`, returned in the typed
+  `Mutare.Sandbox.Command.Result` from `timed_test/4`). The runner maps
+  `:harness_error → :harness_error`, a new `Mutare.Result` status excluded from
+  the score's denominator (like `:no_coverage`/`:ignored`/`:poisoned`) and
+  surfaced in the summary (`E` in the progress stream). **The gotcha that pins
+  the design:** `ExUnit.configure(exit_status: …)` in `test_helper.exs` does
+  *not* work — `mix test` re-configures ExUnit from its own options *after*
+  loading the helper (`"so the task options override test_helper.exs"`), so the
+  helper's value is discarded; the `--exit-status` CLI flag is the only lever,
+  and it lives at the run side (`Command`) next to the timeout exit code, not in
+  the injected bootstrap. **Deferred:** a transient harness error (e.g. a
+  filesystem race) could be *retried* before being recorded; for now we record
+  it once and exclude it. Worth escalating later — a `Logger.warning` per harness
+  error, or aborting the run if they exceed a threshold (a poisoned sandbox
+  shouldn't masquerade as a clean low-error run).
