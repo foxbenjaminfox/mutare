@@ -59,6 +59,8 @@ defmodule Mutare.Runner do
   alias Mutare.Runner.{Baseline, CoverageProbe}
   alias Mutare.Sandbox.Command
 
+  require Logger
+
   @type run :: %{
           schema: Schema.t(),
           results: [Result.t()],
@@ -242,6 +244,8 @@ defmodule Mutare.Runner do
     if result.outcome == :harness_error and retries > 0 do
       run_mutant(sandbox, site, test_args, cap, retries - 1)
     else
+      if result.outcome == :harness_error, do: warn_harness_error(site, result)
+
       %Result{
         site: site,
         status: status_for(result.outcome),
@@ -249,6 +253,19 @@ defmodule Mutare.Runner do
         output: result.output
       }
     end
+  end
+
+  # A persistent harness error (retries exhausted) is recorded out of the score —
+  # but silence would hide infrastructure breakage behind a count buried in the
+  # summary. Warn once, naming the mutant and its exit code, so it's actionable;
+  # the full `mix` output stays on the `Mutare.Result` for inspection.
+  defp warn_harness_error(%Site{} = site, result) do
+    Logger.warning(
+      "#{site.file}:#{site.line}: mutant #{site.id} failed at the harness level " <>
+        "(exit #{result.exit_status}) — the suite never reached a verdict (a compile error, " <>
+        "a missing dependency, or a filesystem/lock race). Not counted as killed or survived; " <>
+        "see the mutant's output to diagnose the sandbox."
+    )
   end
 
   # Map a run's typed outcome (decoded by `Mutare.Sandbox.Command`, which owns the

@@ -514,8 +514,19 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
     (`:baseline_failed`) and never reaches this guard; the guard catches the
     *partial* case where baseline passed but many per-mutant runs then failed.
     The decision is pure and tested (`Report.harness_errors_exceed?/2`, mirroring
-    `passes_gate?/2`); the runner owns the abort + message. **Note:** the abort's
-    trigger (intermittent post-baseline breakage) isn't deterministically
-    reproducible without mocking, so it's covered by the pure-decision tests
-    rather than an end-to-end one. **Still deferred:** a `Logger.warning` per
-    persistent harness error (loud per-mutant surfacing beyond the summary count).
+    `passes_gate?/2`); the runner owns the abort + message.
+  - **Per-mutant warning** (`warn_harness_error/2`). Each *persistent* harness
+    error (retries exhausted) emits a `Logger.warning` naming the mutant
+    (`file:line`, id) and its exit code, so infrastructure breakage is loud
+    during the run, not just a count in the summary. Fires once per mutant at the
+    point of recording, never per retry attempt; the full `mix` output stays on
+    the `Mutare.Result` for diagnosis.
+  **Testing the post-baseline path.** A real post-baseline harness error can't
+  come from a broken sandbox (that fails the baseline first and never reaches the
+  per-mutant phase), so `harness_test.exs`'s `through the runner` tests *simulate*
+  one deterministically: the target test reads the public `:mutare_active` key and
+  `System.halt`s with an off-contract code for exactly one mutant, leaving the
+  baseline (id 0) green. That drives the warning, the abort guard, the retry-warns-
+  once behaviour, and the score exclusion end to end through `Mutare.run/2` — on
+  top of the pure-decision tests (`harness_errors_exceed?/2`) and the
+  classification tests (a broken compile → `:harness_error`).
