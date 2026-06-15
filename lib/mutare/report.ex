@@ -90,6 +90,41 @@ defmodule Mutare.Report do
   def passes_gate?(_results, nil), do: true
   def passes_gate?(results, min_score), do: score(results) >= min_score
 
+  @doc """
+  Fraction (0.0..1.0) of the mutants that actually *ran* which ended in a
+  `:harness_error`.
+
+  "Ran" is `:killed`/`:survived`/`:timeout`/`:harness_error` — the runs that
+  reached (or tried to reach) a verdict. `:no_coverage`/`:ignored`/`:poisoned`
+  never launched a `mix test`, so they are not part of this denominator: this
+  rate measures how broken the *running* was, not how much was skipped. Returns
+  `0.0` when nothing ran. The runner compares it to `:max_harness_error_rate` to
+  decide whether to abort; kept pure here so it is testable (cf. `passes_gate?/2`).
+  """
+  @spec harness_error_rate([Result.t()]) :: float()
+  def harness_error_rate(results) do
+    counts = tally(results)
+    errors = count(counts, :harness_error)
+
+    ran =
+      errors + count(counts, :killed) + count(counts, :survived) + count(counts, :timeout)
+
+    if ran == 0, do: 0.0, else: errors / ran
+  end
+
+  @doc """
+  Whether `harness_error_rate/1` exceeds `max_rate` (a fraction in 0.0..1.0). A
+  `nil` `max_rate` disables the check (always `false`).
+
+  This is the runner's abort decision, kept pure here so it is testable — the
+  mirror of `passes_gate?/2` for the harness-error guard. When it is `true` the
+  score would be computed over a denominator hollowed out by infrastructure
+  failures, so the run aborts rather than report it.
+  """
+  @spec harness_errors_exceed?([Result.t()], number() | nil) :: boolean()
+  def harness_errors_exceed?(_results, nil), do: false
+  def harness_errors_exceed?(results, max_rate), do: harness_error_rate(results) > max_rate
+
   @doc "One-line tally, e.g. `mutation score: 66.7%  (2 killed, 1 survived, 3 total)`."
   @spec summary([Result.t()]) :: String.t()
   def summary(results) do

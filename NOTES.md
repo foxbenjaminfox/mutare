@@ -452,8 +452,32 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
   loading the helper (`"so the task options override test_helper.exs"`), so the
   helper's value is discarded; the `--exit-status` CLI flag is the only lever,
   and it lives at the run side (`Command`) next to the timeout exit code, not in
-  the injected bootstrap. **Deferred:** a transient harness error (e.g. a
-  filesystem race) could be *retried* before being recorded; for now we record
-  it once and exclude it. Worth escalating later — a `Logger.warning` per harness
-  error, or aborting the run if they exceed a threshold (a poisoned sandbox
-  shouldn't masquerade as a clean low-error run).
+  the injected bootstrap.
+- **Harness-error retry + abort threshold (done).** Two knobs harden the above
+  against flakiness and systemic breakage, both configurable via `.mutare.exs`
+  and CLI (`--harness-retries`, `--max-harness-error-rate`):
+  - **Retry** (`:harness_retries`, default `1`). A harness error can be
+    *transient* (a filesystem/lock race under parallel workers), so the runner
+    re-runs a harness-erroring mutant up to N times before recording it — a fresh
+    `mix` boot is its own natural backoff. Only `:harness_error` is retried; a
+    real verdict (passed/failed/timeout) never is. Retry lives in the runner's
+    `run_mutant/5`, *not* in `Command` — `Command` does one clean run and reports
+    its outcome; whether to re-run is an orchestration decision. (So
+    `Command.timed_test/4` and `harness_test.exs` see exactly one run.)
+  - **Abort threshold** (`:max_harness_error_rate`, default `0.5`, `nil`/`1.0`
+    disables). After the per-mutant phase, if *persistent* harness errors exceed
+    this fraction of the mutants that **ran** (`:killed`/`:survived`/`:timeout`/
+    `:harness_error` — skipped ones never launched a run, so they don't dilute
+    the rate), the run aborts with `{:error, :too_many_harness_errors, detail}`
+    instead of reporting a score over a denominator the broken sandbox has
+    hollowed out. The denominator is "ran", not "total", on purpose: a project
+    full of `:no_coverage` mutants shouldn't mask a high error rate among the few
+    that executed. A *uniformly* broken sandbox fails the baseline first
+    (`:baseline_failed`) and never reaches this guard; the guard catches the
+    *partial* case where baseline passed but many per-mutant runs then failed.
+    The decision is pure and tested (`Report.harness_errors_exceed?/2`, mirroring
+    `passes_gate?/2`); the runner owns the abort + message. **Note:** the abort's
+    trigger (intermittent post-baseline breakage) isn't deterministically
+    reproducible without mocking, so it's covered by the pure-decision tests
+    rather than an end-to-end one. **Still deferred:** a `Logger.warning` per
+    persistent harness error (loud per-mutant surfacing beyond the summary count).

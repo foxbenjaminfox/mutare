@@ -14,6 +14,8 @@ defmodule Mutare.OptionsTest do
       assert options.test_selection == :coverage
       assert options.timeout == nil
       assert options.timeout_multiplier == 3.0
+      assert options.harness_retries == 1
+      assert options.max_harness_error_rate == 0.5
       assert options.sandbox == nil
       assert options.min_score == nil
       assert options.reporter == nil
@@ -123,6 +125,38 @@ defmodule Mutare.OptionsTest do
       for bad <- [0, -1.0, "3"] do
         assert_raise ArgumentError, ~r/:timeout_multiplier must be a positive number/, fn ->
           Options.new(timeout_multiplier: bad)
+        end
+      end
+    end
+  end
+
+  describe ":harness_retries" do
+    test "accepts a non-negative integer" do
+      assert Options.new(harness_retries: 0).harness_retries == 0
+      assert Options.new(harness_retries: 3).harness_retries == 3
+    end
+
+    test "rejects negatives and non-integers" do
+      for bad <- [-1, 1.5, "2"] do
+        assert_raise ArgumentError, ~r/:harness_retries must be a non-negative integer/, fn ->
+          Options.new(harness_retries: bad)
+        end
+      end
+    end
+  end
+
+  describe ":max_harness_error_rate" do
+    test "accepts nil (disabled) or a number in 0.0..1.0" do
+      assert Options.new(max_harness_error_rate: nil).max_harness_error_rate == nil
+      assert Options.new(max_harness_error_rate: 0).max_harness_error_rate == 0
+      assert Options.new(max_harness_error_rate: 0.3).max_harness_error_rate == 0.3
+      assert Options.new(max_harness_error_rate: 1.0).max_harness_error_rate == 1.0
+    end
+
+    test "rejects out-of-range and non-numbers" do
+      for bad <- [-0.1, 1.5, "0.5"] do
+        assert_raise ArgumentError, ~r/:max_harness_error_rate must be a number/, fn ->
+          Options.new(max_harness_error_rate: bad)
         end
       end
     end

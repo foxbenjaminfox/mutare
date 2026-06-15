@@ -15,6 +15,11 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --min-score 70           # fail (CI) if the score is below 70
       mix mutare --full                   # run the whole suite per mutant
                                           #   (no per-file test selection)
+      mix mutare --harness-retries 2      # re-run a mutant up to 2× if its run
+                                          #   fails at the harness level (infra)
+      mix mutare --max-harness-error-rate 0.3
+                                          # abort if >30% of the mutants that ran
+                                          #   failed at the harness level (1.0 = off)
 
   Configuration may also live in `.mutare.exs` (a keyword list); CLI flags win.
 
@@ -36,7 +41,9 @@ defmodule Mix.Tasks.Mutare do
     min_score: :float,
     sandbox: :string,
     full: :boolean,
-    since: :string
+    since: :string,
+    harness_retries: :integer,
+    max_harness_error_rate: :float
   ]
 
   @impl Mix.Task
@@ -118,6 +125,8 @@ defmodule Mix.Tasks.Mutare do
   defp fmt(number), do: :erlang.float_to_binary(number / 1, decimals: 1)
 
   defp format_error(:nothing_to_mutate, detail), do: detail
+
+  defp format_error(:too_many_harness_errors, detail), do: detail
 
   defp format_error(:compile_failed, detail) do
     "the metamutant failed to compile (compile-poisoning).\n\n" <> tail(detail)

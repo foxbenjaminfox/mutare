@@ -85,7 +85,10 @@ contract between them is the whole game.
   `:workers` mutants concurrently via `Task.async_stream`, each a fresh `mix test` OS process.
   Per-mutant wall-clock cap; a timeout is a kill (`:timeout`). Maps each run's typed
   `Command.outcome` onto a result status — notably `:harness_error` (an infra failure that never
-  reached a verdict) stays out of the score, never charged as a kill. Returns
+  reached a verdict) stays out of the score, never charged as a kill. Two knobs guard against
+  flaky/broken infra: `:harness_retries` (re-run a harness-erroring mutant before recording it)
+  and `:max_harness_error_rate` (abort `{:error, :too_many_harness_errors, …}` when persistent
+  harness errors exceed that fraction of the mutants that *ran*). Returns
   `%{schema, results, sandbox, baseline_ms}`.
 - **`Mutare.Runner.Baseline`** — one whole-suite `mix test` (no `--cover`) at the baseline mutant:
   the authoritative green check (a red suite aborts with `:baseline_failed`) and the source of

@@ -42,9 +42,20 @@ defmodule Mutare.Runner do
   Such a run says *nothing* about the mutation, so it is recorded as
   `:harness_error` and kept out of the score's denominator, never silently
   miscounted as a kill the way a raw "non-zero ⇒ killed" rule would.
+
+  Two knobs harden this against flakiness and systemic breakage:
+
+    * `:harness_retries` (default 1) re-runs a harness-errored mutant before
+      recording it, so a *transient* failure (a filesystem/lock race) gets
+      another chance; a real verdict is never retried.
+    * `:max_harness_error_rate` (default 0.5, `nil` to disable) aborts the whole
+      run — `{:error, :too_many_harness_errors, detail}` — when persistent
+      harness errors exceed that fraction of the mutants that *ran*. Past that,
+      the sandbox is broken, not the mutations tested, and a score over the
+      surviving denominator would mislead; better to fail loudly.
   """
 
-  alias Mutare.{Options, Poison, Result, Sandbox, Schema, Selector, Site}
+  alias Mutare.{Options, Poison, Report, Result, Sandbox, Schema, Selector, Site}
   alias Mutare.Runner.{Baseline, CoverageProbe}
   alias Mutare.Sandbox.Command
 
@@ -56,7 +67,11 @@ defmodule Mutare.Runner do
         }
 
   @type error ::
-          {:error, :compile_failed | :baseline_failed | :nothing_to_mutate, String.t()}
+          {:error,
+           :compile_failed
+           | :baseline_failed
+           | :nothing_to_mutate
+           | :too_many_harness_errors, String.t()}
 
   @doc """
   Run mutation testing against the project at `root`.
@@ -77,7 +92,9 @@ defmodule Mutare.Runner do
   `opts` is a `Mutare.Options` (or a keyword list resolved into one). Beyond the
   schema/sandbox fields, it uses `:reporter` — a 1-arity function called with each
   `Mutare.Result` as it completes, for live progress — and `:test_selection`,
-  `:workers`, `:timeout`, `:timeout_multiplier`.
+  `:workers`, `:timeout`, `:timeout_multiplier`, `:harness_retries` (re-run a
+  harness-errored mutant before recording it), and `:max_harness_error_rate`
+  (abort if too many runs fail at the harness level).
   """
   @spec run_with_schema(Schema.t(), Path.t(), Options.t() | keyword()) ::
           {:ok, run()} | error()
@@ -99,11 +116,13 @@ defmodule Mutare.Runner do
         cap = timeout_cap(baseline_ms, options)
         workers = options.workers
 
+        retries = options.harness_retries
+
         results =
           schema.sites
           |> Task.async_stream(
             fn site ->
-              result = classify(sandbox, site, selection, cap)
+              result = classify(sandbox, site, selection, cap, retries)
               reporter.(result)
               result
             end,
@@ -113,7 +132,12 @@ defmodule Mutare.Runner do
           )
           |> Enum.map(fn {:ok, result} -> result end)
 
-        {:ok, %{schema: schema, results: results, sandbox: sandbox, baseline_ms: baseline_ms}}
+        run = %{schema: schema, results: results, sandbox: sandbox, baseline_ms: baseline_ms}
+
+        case harness_error_guard(results, options) do
+          :ok -> {:ok, run}
+          {:error, _reason, _detail} = error -> error
+        end
       end
     end
   end
@@ -179,20 +203,21 @@ defmodule Mutare.Runner do
 
   # === per-mutant runs =======================================================
 
-  defp classify(_sandbox, %Site{poisoned: true} = site, _selection, _cap) do
+  defp classify(_sandbox, %Site{poisoned: true} = site, _selection, _cap, _retries) do
     %Result{site: site, status: :poisoned, duration_ms: 0, output: nil}
   end
 
-  defp classify(_sandbox, %Site{ignored: true} = site, _selection, _cap) do
+  defp classify(_sandbox, %Site{ignored: true} = site, _selection, _cap, _retries) do
     %Result{site: site, status: :ignored, duration_ms: 0, output: nil}
   end
 
-  defp classify(sandbox, site, :run_all, cap), do: run_mutant(sandbox, site, [], cap)
+  defp classify(sandbox, site, :run_all, cap, retries),
+    do: run_mutant(sandbox, site, [], cap, retries)
 
-  defp classify(sandbox, site, {:selective, outcomes}, cap) do
+  defp classify(sandbox, site, {:selective, outcomes}, cap, retries) do
     case Map.fetch(outcomes, site.id) do
       {:ok, {:run, test_args}} ->
-        run_mutant(sandbox, site, test_args, cap)
+        run_mutant(sandbox, site, test_args, cap, retries)
 
       {:ok, :no_coverage} ->
         %Result{site: site, status: :no_coverage, duration_ms: 0, output: nil}
@@ -201,19 +226,29 @@ defmodule Mutare.Runner do
       # practice; a missing id is a bug, not a no-coverage signal — run it rather
       # than silently drop a mutant from the score.
       :error ->
-        run_mutant(sandbox, site, [], cap)
+        run_mutant(sandbox, site, [], cap, retries)
     end
   end
 
-  defp run_mutant(sandbox, site, test_args, cap) do
+  # A `:harness_error` means the suite never reached a verdict (a compile error,
+  # a missing dep, a filesystem/lock race). Some of those are *transient*, so we
+  # re-run before recording — a fresh `mix` boot is its own natural backoff. A
+  # real verdict (passed/failed/timeout) is never retried. `retries` exhausting
+  # records the harness error as-is; the run-level guard decides if too many
+  # persisted.
+  defp run_mutant(sandbox, site, test_args, cap, retries) do
     result = Command.timed_test(sandbox, test_args, site.id, cap)
 
-    %Result{
-      site: site,
-      status: status_for(result.outcome),
-      duration_ms: result.duration_ms,
-      output: result.output
-    }
+    if result.outcome == :harness_error and retries > 0 do
+      run_mutant(sandbox, site, test_args, cap, retries - 1)
+    else
+      %Result{
+        site: site,
+        status: status_for(result.outcome),
+        duration_ms: result.duration_ms,
+        output: result.output
+      }
+    end
   end
 
   # Map a run's typed outcome (decoded by `Mutare.Sandbox.Command`, which owns the
@@ -225,4 +260,31 @@ defmodule Mutare.Runner do
   defp status_for(:failed), do: :killed
   defp status_for(:timeout), do: :timeout
   defp status_for(:harness_error), do: :harness_error
+
+  # Persistent harness errors (after per-mutant retries) hollow out the score's
+  # denominator — many mutants measured nothing. Past `:max_harness_error_rate`
+  # (a fraction of the mutants that *ran*; `nil` disables) we abort rather than
+  # report a score the broken sandbox makes meaningless. The decision is
+  # `Report`'s (pure, tested, mirroring `passes_gate?`); the message is here.
+  defp harness_error_guard(results, %Options{max_harness_error_rate: max_rate}) do
+    if Report.harness_errors_exceed?(results, max_rate) do
+      {:error, :too_many_harness_errors, harness_error_detail(results, max_rate)}
+    else
+      :ok
+    end
+  end
+
+  defp harness_error_detail(results, max_rate) do
+    errors = Enum.count(results, &(&1.status == :harness_error))
+    rate = Report.harness_error_rate(results)
+
+    "#{errors} mutant run(s) failed at the harness level — #{pct(rate)} of the mutants that " <>
+      "ran, above the --max-harness-error-rate limit of #{pct(max_rate)}. A harness error " <>
+      "means the suite never reached a verdict (a compile error, a missing dependency, or a " <>
+      "filesystem/lock problem), so the score would be computed over a denominator hollowed " <>
+      "out by infrastructure failures. Inspect a harness-errored mutant's output and fix the " <>
+      "sandbox, or raise --max-harness-error-rate to proceed anyway."
+  end
+
+  defp pct(rate), do: "#{:erlang.float_to_binary(rate * 100 / 1, decimals: 1)}%"
 end

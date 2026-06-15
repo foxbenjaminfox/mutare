@@ -6,8 +6,9 @@ defmodule Mutare.Options do
   `Mutare.Schema`, `Mutare.Runner`, and `Mutare.Sandbox`. `new/1` resolves an
   (already config-merged) keyword list — or another `Options` — into a struct,
   validating every field up front, so a bad `:workers`, `:timeout`,
-  `:test_selection`, `:paths`, or `:sandbox` fails loudly at the edge with an
-  `ArgumentError` instead of misbehaving silently deep in the pipeline.
+  `:test_selection`, `:paths`, `:sandbox`, `:harness_retries`, or
+  `:max_harness_error_rate` fails loudly at the edge with an `ArgumentError`
+  instead of misbehaving silently deep in the pipeline.
 
   `new/1` is idempotent on a struct, so the pipeline can normalise once at each
   public entry point (`Mutare.run/2`, `Mutare.Schema.build/2`,
@@ -33,6 +34,8 @@ defmodule Mutare.Options do
           workers: pos_integer(),
           timeout: pos_integer() | nil,
           timeout_multiplier: number(),
+          harness_retries: non_neg_integer(),
+          max_harness_error_rate: number() | nil,
           sandbox: String.t() | nil,
           min_score: number() | nil,
           reporter: (Result.t() -> any()) | nil
@@ -46,12 +49,15 @@ defmodule Mutare.Options do
             workers: nil,
             timeout: nil,
             timeout_multiplier: 3.0,
+            harness_retries: 1,
+            max_harness_error_rate: 0.5,
             sandbox: nil,
             min_score: nil,
             reporter: nil
 
   @keys ~w(paths exclude mutators only_files test_selection workers timeout
-           timeout_multiplier sandbox min_score reporter)a
+           timeout_multiplier harness_retries max_harness_error_rate sandbox
+           min_score reporter)a
 
   @doc """
   Resolve and validate options.
@@ -77,6 +83,9 @@ defmodule Mutare.Options do
       workers: validate_workers!(Keyword.get(opts, :workers) || System.schedulers_online()),
       timeout: validate_timeout!(Keyword.get(opts, :timeout)),
       timeout_multiplier: validate_multiplier!(Keyword.get(opts, :timeout_multiplier, 3.0)),
+      harness_retries: validate_harness_retries!(Keyword.get(opts, :harness_retries, 1)),
+      max_harness_error_rate:
+        validate_harness_error_rate!(Keyword.get(opts, :max_harness_error_rate, 0.5)),
       sandbox: validate_sandbox!(Keyword.get(opts, :sandbox)),
       min_score: validate_min_score!(Keyword.get(opts, :min_score)),
       reporter: validate_reporter!(Keyword.get(opts, :reporter))
@@ -163,6 +172,25 @@ defmodule Mutare.Options do
 
   defp validate_multiplier!(other) do
     raise ArgumentError, ":timeout_multiplier must be a positive number, got: #{inspect(other)}"
+  end
+
+  defp validate_harness_retries!(n) when is_integer(n) and n >= 0, do: n
+
+  defp validate_harness_retries!(other) do
+    raise ArgumentError, ":harness_retries must be a non-negative integer, got: #{inspect(other)}"
+  end
+
+  # nil disables the abort guard; otherwise a fraction (0.0..1.0) of the mutants
+  # that *ran* — above it, the run aborts rather than report a hollowed-out score.
+  defp validate_harness_error_rate!(nil), do: nil
+
+  defp validate_harness_error_rate!(rate) when is_number(rate) and rate >= 0 and rate <= 1,
+    do: rate
+
+  defp validate_harness_error_rate!(other) do
+    raise ArgumentError,
+          ":max_harness_error_rate must be a number between 0.0 and 1.0, or nil, " <>
+            "got: #{inspect(other)}"
   end
 
   defp validate_sandbox!(nil), do: nil

@@ -122,6 +122,66 @@ defmodule Mutare.ReportTest do
              "mutation score: 50.0%  (1 killed, 1 survived, 1 no-coverage, 3 total)"
   end
 
+  describe "harness_error_rate/1" do
+    test "is 0.0 when nothing ran" do
+      assert Report.harness_error_rate([]) == 0.0
+
+      # no_coverage/ignored/poisoned never launched a run — not a denominator.
+      assert Report.harness_error_rate([
+               %Result{status: :no_coverage},
+               %Result{status: :ignored},
+               %Result{status: :poisoned}
+             ]) == 0.0
+    end
+
+    test "is the fraction of the mutants that *ran* which harness-errored" do
+      results = [
+        %Result{status: :killed},
+        %Result{status: :survived},
+        %Result{status: :timeout},
+        %Result{status: :harness_error}
+      ]
+
+      # 1 harness error / 4 that ran.
+      assert Report.harness_error_rate(results) == 0.25
+    end
+
+    test "excludes skipped statuses from the denominator (measures broken running, not skips)" do
+      results = [
+        %Result{status: :harness_error},
+        %Result{status: :killed},
+        # These never ran, so they must not dilute the rate.
+        %Result{status: :no_coverage},
+        %Result{status: :ignored},
+        %Result{status: :poisoned}
+      ]
+
+      # 1 harness error / 2 that ran (harness_error + killed) = 0.5, not 1/5.
+      assert Report.harness_error_rate(results) == 0.5
+    end
+  end
+
+  describe "harness_errors_exceed?/2" do
+    defp half_errored do
+      [%Result{status: :harness_error}, %Result{status: :killed}]
+    end
+
+    test "a nil threshold disables the check" do
+      refute Report.harness_errors_exceed?(half_errored(), nil)
+    end
+
+    test "true only strictly above the threshold (the boundary does not abort)" do
+      # rate is 0.5
+      refute Report.harness_errors_exceed?(half_errored(), 0.5)
+      refute Report.harness_errors_exceed?(half_errored(), 0.6)
+      assert Report.harness_errors_exceed?(half_errored(), 0.4)
+    end
+
+    test "is false when nothing ran (no false abort on an all-skipped run)" do
+      refute Report.harness_errors_exceed?([%Result{status: :no_coverage}], 0.0)
+    end
+  end
+
   describe "passes_gate?/2" do
     defp gate_results(killed, survived) do
       List.duplicate(%Result{status: :killed}, killed) ++

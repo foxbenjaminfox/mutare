@@ -49,6 +49,19 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([test_selection: :full], [])[:test_selection] == :full
     end
 
+    test "--harness-retries and --max-harness-error-rate pass through; flags win over file" do
+      merged = Config.merge([], harness_retries: 2, max_harness_error_rate: 0.3)
+      assert merged[:harness_retries] == 2
+      assert merged[:max_harness_error_rate] == 0.3
+
+      # absent flags leave the keys to their defaults (omitted here)
+      refute Keyword.has_key?(Config.merge([], []), :harness_retries)
+      refute Keyword.has_key?(Config.merge([], []), :max_harness_error_rate)
+
+      # CLI flag overrides file config
+      assert Config.merge([harness_retries: 0], harness_retries: 5)[:harness_retries] == 5
+    end
+
     test "file config mutators: :all resolves to the default set (key omitted)" do
       refute Keyword.has_key?(Config.merge([mutators: :all], []), :mutators)
     end
