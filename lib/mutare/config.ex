@@ -7,15 +7,6 @@ defmodule Mutare.Config do
   threaded through the rest of the pipeline.
   """
 
-  @registry %{
-    arithmetic: Mutare.Mutators.Arithmetic,
-    relational: Mutare.Mutators.Relational
-  }
-
-  @doc "Known mutator family => module."
-  @spec registry() :: %{atom() => module()}
-  def registry, do: @registry
-
   @doc "Load `.mutare.exs` from `root`, or `[]` when it is absent."
   @spec load(Path.t()) :: keyword()
   def load(root) do
@@ -53,21 +44,20 @@ defmodule Mutare.Config do
   end
 
   @doc """
-  Resolve a list of mutators to modules. Each entry is either a built-in family
-  atom (`:arithmetic`, `:relational`) or a module implementing `Mutare.Mutator`
-  (a custom mutator). Raises `ArgumentError` on anything else.
+  Resolve a list of mutators to modules via the `Mutare.Mutators` catalog. Each
+  entry is either a built-in family atom (`:arithmetic`, `:relational`) or a
+  module implementing `Mutare.Mutator`. Raises `ArgumentError` on anything else.
   """
   @spec mutator_modules([atom() | module()]) :: [module()]
-  def mutator_modules(mutators) when is_list(mutators) do
-    Enum.map(mutators, &resolve!/1)
-  end
+  defdelegate mutator_modules(mutators), to: Mutare.Mutators, as: :resolve
 
   # --- internals -----------------------------------------------------------
 
   defp parse_families(csv) do
-    # `to_atom`, not `to_existing_atom`: a typo'd family must reach `resolve!/1`
-    # so it gets the descriptive `unknown_mutator_message`, not a bare
-    # `ArgumentError` from atom-table lookup before we can explain it.
+    # `to_atom`, not `to_existing_atom`: a typo'd family must reach the
+    # `Mutare.Mutators` resolver so it gets the descriptive "unknown mutator"
+    # message, not a bare `ArgumentError` from atom-table lookup before we can
+    # explain it.
     csv
     |> String.split(",", trim: true)
     |> Enum.map(&(&1 |> String.trim() |> String.to_atom()))
@@ -79,34 +69,6 @@ defmodule Mutare.Config do
       mutators -> Keyword.put(config, :mutators, mutator_modules(mutators))
     end
   end
-
-  defp resolve!(name) do
-    cond do
-      Map.has_key?(@registry, name) ->
-        Map.fetch!(@registry, name)
-
-      Mutare.Mutator.implemented_by?(name) ->
-        name
-
-      true ->
-        raise ArgumentError, unknown_mutator_message(name)
-    end
-  end
-
-  defp unknown_mutator_message(name) do
-    base =
-      "unknown mutator #{inspect(name)}: expected a built-in family " <>
-        "(#{known_families()}) or a module implementing Mutare.Mutator"
-
-    # A loaded module that just isn't a mutator gets a more specific nudge.
-    if is_atom(name) and Code.ensure_loaded?(name) do
-      base <> " (#{inspect(name)} is missing mutate/1 or name/0)"
-    else
-      base
-    end
-  end
-
-  defp known_families, do: @registry |> Map.keys() |> Enum.map_join(", ", &to_string/1)
 
   defp put_unless_nil(config, _key, nil), do: config
   defp put_unless_nil(config, key, value), do: Keyword.put(config, key, value)

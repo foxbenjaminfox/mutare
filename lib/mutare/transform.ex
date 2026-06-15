@@ -78,7 +78,9 @@ defmodule Mutare.Transform do
   alias Mutare.Site
   alias Mutare.Transform.{Candidate, Ctx, Render}
 
-  @default_mutators [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
+  # The default set is the built-in catalog's `all/0` — one source of truth, so a
+  # family registered in `Mutare.Mutators` is part of the default automatically.
+  @default_mutators Mutare.Mutators.all()
 
   @doc """
   Transform a source string into `{metamutant_source, [%Site{}], next_id}`.

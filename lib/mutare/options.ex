@@ -121,14 +121,18 @@ defmodule Mutare.Options do
     end
   end
 
-  # Mutators arrive already resolved to modules (`Mutare.Config` maps family
-  # atoms and validates custom modules). `nil` means "let `Mutare.Transform`
-  # pick its default set", so we only shape-check a supplied list.
+  # Resolve and validate `:mutators` through the one `Mutare.Mutators` catalog, so
+  # the direct API (`Mutare.run/2`, `Options.new/1`) resolves family atoms and
+  # rejects non-mutator modules exactly as the CLI/`.mutare.exs` path does — a
+  # built-in already mapped to a module by `Mutare.Config` passes through
+  # unchanged (resolution is idempotent). `nil` means "let `Mutare.Transform` pick
+  # its default set". The shape check stays here so a non-atom element (e.g. a
+  # string) gets the clear "list of modules" error, not an "unknown mutator" one.
   defp validate_mutators!(nil), do: nil
 
   defp validate_mutators!(modules) when is_list(modules) do
     if Enum.all?(modules, &is_atom/1) do
-      modules
+      Mutare.Mutators.resolve(modules)
     else
       raise ArgumentError, ":mutators must be a list of modules, got: #{inspect(modules)}"
     end

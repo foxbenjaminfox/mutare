@@ -1,7 +1,58 @@
 defmodule Mutare.MutatorsTest do
   use ExUnit.Case, async: true
 
+  alias Mutare.Mutators
   alias Mutare.Mutators.{Arithmetic, Relational}
+
+  describe "registry (single source of truth)" do
+    test "all/0 is the registry's modules, in order — the default/`:all` set" do
+      assert Mutators.all() == Keyword.values(Mutators.registry())
+      assert Mutators.all() == [Arithmetic, Relational]
+    end
+
+    test "families/0 are the registry's keys, in order" do
+      assert Mutators.families() == Keyword.keys(Mutators.registry())
+      assert Mutators.families() == [:arithmetic, :relational]
+    end
+
+    test "resolve/1 maps family atoms to modules, preserving order" do
+      assert Mutators.resolve([:relational, :arithmetic]) == [Relational, Arithmetic]
+    end
+
+    test "resolve/1 accepts a custom module implementing the behaviour, mixed with families" do
+      assert Mutators.resolve([:arithmetic, Mutare.Test.BooleanMutator]) ==
+               [Arithmetic, Mutare.Test.BooleanMutator]
+    end
+
+    test "resolve/1 is idempotent on already-resolved modules" do
+      assert Mutators.resolve(Mutators.all()) == Mutators.all()
+    end
+
+    test "resolve/1 raises on an unknown family, listing the known ones" do
+      message =
+        assert_raise(ArgumentError, fn -> Mutators.resolve([:bogus_family]) end)
+        |> Exception.message()
+
+      assert message =~ "unknown mutator :bogus_family"
+      assert message =~ "arithmetic"
+      assert message =~ "relational"
+    end
+
+    test "resolve/1 raises on a module that does not implement the behaviour" do
+      message =
+        assert_raise(ArgumentError, fn -> Mutators.resolve([Enum]) end)
+        |> Exception.message()
+
+      assert message =~ "implementing Mutare.Mutator"
+      assert message =~ "missing mutate/1"
+    end
+
+    test "resolve/1 reports a non-atom entry rather than crashing on a guard" do
+      assert_raise ArgumentError, ~r/unknown mutator "Arithmetic"/, fn ->
+        Mutators.resolve(["Arithmetic"])
+      end
+    end
+  end
 
   describe "Arithmetic" do
     test "swaps binary arithmetic operators" do

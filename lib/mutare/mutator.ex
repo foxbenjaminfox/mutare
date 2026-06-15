@@ -53,11 +53,15 @@ defmodule Mutare.Mutator do
   @doc "Short family name, shown in reports (e.g. `:arithmetic`)."
   @callback name() :: atom()
 
-  @doc "Whether `module` is a module that implements this behaviour."
-  @spec implemented_by?(module()) :: boolean()
+  @doc "Whether `term` is a module that implements this behaviour."
+  @spec implemented_by?(term()) :: boolean()
   def implemented_by?(module) when is_atom(module) do
     Code.ensure_loaded?(module) and
       function_exported?(module, :mutate, 1) and
       function_exported?(module, :name, 0)
   end
+
+  # Total over any term: a non-atom (e.g. a string in `.mutare.exs`) is simply
+  # not a mutator, so resolution reports it rather than crashing on the guard.
+  def implemented_by?(_term), do: false
 end

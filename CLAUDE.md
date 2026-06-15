@@ -121,6 +121,12 @@ contract between them is the whole game.
   `killed / (total − no_coverage − ignored − poisoned − harness_error)`.
 - **`Mutare.Mutator`** + **`Mutare.Mutators.*`** — the public extension behaviour (`mutate/1`,
   `name/0`) and built-in families (Arithmetic, Relational).
+- **`Mutare.Mutators`** — the **single ordered registry** of built-in families and the one place
+  mutator lists are resolved/validated. `all/0` is the default set (an unset `:mutators`/`:all`),
+  `resolve/1` maps family atoms + custom modules to validated modules. `Transform` (its default),
+  `Config` (the CLI/`.mutare.exs` path), and `Options` (the direct `Mutare.run/2` API) all derive
+  from it — so a family registered here is part of `:all` and validated everywhere, with no second
+  list to drift.
 - **`Mutare.Config`** / **`Mutare.Changes`** / **`Mix.Tasks.Mutare`** — `.mutare.exs` + CLI flag
   resolution, `git diff` for `--since`, and the CLI entry point.
 
@@ -146,9 +152,10 @@ contract between them is the whole game.
 ## Adding a mutator
 
 Implement `Mutare.Mutator` (`mutate/1` returning `:skip` or a list of mutated nodes that reuse
-the original operands; `name/0`). Register a built-in in `Mutare.Config`'s `@registry`; users
-list custom modules directly under `:mutators` in `.mutare.exs`. Do **not** decide in-place vs
-lifted — placement is positional. `test/support/boolean_mutator.ex` is a working example.
+the original operands; `name/0`). Register a built-in by adding it to `Mutare.Mutators`'s ordered
+`@registry` — the only edit, since the default set (`:all`) and resolution both follow from it;
+users list custom modules directly under `:mutators` in `.mutare.exs`. Do **not** decide in-place
+vs lifted — placement is positional. `test/support/boolean_mutator.ex` is a working example.
 
 ## Result statuses
 

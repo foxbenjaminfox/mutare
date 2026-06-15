@@ -215,6 +215,23 @@ defmodule Mutare.OptionsTest do
       assert Options.new(mutators: mods).mutators == mods
     end
 
+    test "resolves built-in family atoms via the catalog (direct API parity with the CLI)" do
+      assert Options.new(mutators: [:relational, :arithmetic]).mutators ==
+               [Mutare.Mutators.Relational, Mutare.Mutators.Arithmetic]
+    end
+
+    test "validates that supplied modules implement the behaviour" do
+      assert_raise ArgumentError, ~r/implementing Mutare.Mutator/, fn ->
+        Options.new(mutators: [Enum])
+      end
+    end
+
+    test "rejects an unknown family atom" do
+      assert_raise ArgumentError, ~r/unknown mutator :bogus/, fn ->
+        Options.new(mutators: [:bogus])
+      end
+    end
+
     test "rejects a non-list or non-atom elements" do
       assert_raise ArgumentError, ~r/:mutators must be a list of modules/, fn ->
         Options.new(mutators: :arithmetic)
