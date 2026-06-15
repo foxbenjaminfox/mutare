@@ -1,37 +1,53 @@
 defmodule Mutare.Transform do
   @moduledoc """
-  Source → metamutant transform, expressed as an explicit pipeline.
+  Source → metamutant transform, expressed as an explicit pipeline over a small
+  intermediate representation.
 
   Rather than walk every node and then *subtract* the positions that must not be
   mutated (the old blacklist), the transform classifies each node's context
-  *positively* and routes it. One pipeline, run per subtree:
+  *positively*, builds a plan, then renders it. The plan is three typed pieces:
+
+    * `Mutare.Transform.ModulePlan` — a statement sequence (a module body)
+      classified into items: a clause group to **lift**, a clause group to keep
+      **in place**, or any other **statement**. This is "module planning",
+      separated from emission.
+    * `Mutare.Transform.FunctionPlan` — one liftable clause group: its signature,
+      its clauses, a single shared *tagged* clause group, and the typed lifted
+      candidates (`Candidate.Guard` / `Candidate.Drop`) it admits.
+    * `Mutare.Transform.Candidate.{InPlace,Guard,Drop}` — the typed, pre-id
+      description of a single mutant. One struct per legal kind, so the redundant
+      `context`/`kind`/`operation` triple (and its illegal combinations) is gone.
+
+  The stages, run per subtree:
 
     1. **Analyze + classify** — `analyze/3` is one context-threaded recursive
        descent: it *names the context* of each position as it descends and, for
        every node a mutator recognises *in a mutating context*, attaches a typed
-       `Candidate` to the node's own metadata (`meta[:mutare]`). Mutators run
-       **once**, here. Routing is positional (the spec side of a `::` goes one
+       `Candidate.InPlace` to the node's own metadata (`meta[:mutare]`). Mutators
+       run **once**, here. Routing is positional (the spec side of a `::` goes one
        way, the value side another), which is why it can't be a flat
        `Macro.traverse` accumulator. Two contexts are threaded — `:runtime`
        (mutate, → in-place; `:guard`/`:clause_drop` come from the lift path) and
        `:pattern` (don't mutate, but keep descending so default-arg values and
        `size()` args are reached); the rest (`:compile_time`, `:spec`, `:guard`,
        `:capture_arity`) are recognised and pruned, producing no candidate.
-    3. **Assign** — `emit/2` walks the annotated tree bottom-up and hands each
-       candidate the next mutant id. Ids are assigned in post-order DFS and the
-       counter advances even for `:skip_ids`, so ids stay stable across the
-       poison-recovery rebuilds the runner relies on.
-    4. **Emit** — an in-place candidate becomes a tail-position selector `case`;
-       a clause group with lifted candidates is duplicated into
-       `__orig`/`__mut` copies behind a dispatcher.
+    2. **Plan** — a statement sequence is grouped into a `ModulePlan`; each
+       liftable clause group becomes a `FunctionPlan` carrying its lifted
+       candidates. No ids are assigned yet.
+    3. **Assign** — emission walks the plan and the annotated tree bottom-up and
+       hands each candidate the next mutant id. Ids are assigned in post-order DFS
+       and the counter advances even for `:skip_ids`, so ids stay stable across
+       the poison-recovery rebuilds the runner relies on.
+    4. **Emit** — an in-place candidate becomes a tail-position selector `case`; a
+       `FunctionPlan` is duplicated into `__orig`/`__mut` copies behind a dispatcher.
     5. **Render** — annotations are stripped and the tree is rendered to source
        (with a Sourceror keyword-block workaround); `# mutare:ignore` directives
        (parsed by `Mutare.Ignore`) are applied to the recorded sites.
 
-  Carrying the `Candidate` in the node's *own* metadata is what lets emission
-  find "this exact node" without a fragile `{line, column}` identity: metadata is
-  intrinsic to the node and rides through any `Macro` rebuild, so duplicate
-  subtrees can never collide.
+  Carrying the `Candidate.InPlace` in the node's *own* metadata is what lets
+  emission find "this exact node" without a fragile `{line, column}` identity:
+  metadata is intrinsic to the node and rides through any `Macro` rebuild, so
+  duplicate subtrees can never collide.
 
   ## In-place selector (body expressions)
 
@@ -71,12 +87,19 @@ defmodule Mutare.Transform do
 
   Ranges are captured against the *original* AST, which is what the diff report
   patches against.
+
+  ## Where the work lives
+
+  `Mutare.Transform.{ModulePlan,FunctionPlan,Candidate}` own the *vocabulary* —
+  the plan structs and pure discovery (chunking clauses, finding guard/drop
+  candidates). Emission — id assignment, site recording, building the selector
+  `case` and the dispatcher — stays here, because it shares the `Ctx`
+  id-threading discipline across the in-place and lifted paths too tightly to
+  split cleanly (`claim_id/4` is the single owner of that dance).
   """
 
-  require Logger
-
-  alias Mutare.Site
-  alias Mutare.Transform.{Candidate, Ctx, Render}
+  alias Mutare.{Mutator, Site}
+  alias Mutare.Transform.{Candidate, Ctx, FunctionPlan, ModulePlan, Render}
 
   # The default set is the built-in catalog's `all/0` — one source of truth, so a
   # family registered in `Mutare.Mutators` is part of the default automatically.
@@ -130,10 +153,10 @@ defmodule Mutare.Transform do
     {{:defmodule, meta, [alias_node, do_keyword]}, ctx}
   end
 
-  # A block: either a module body (contains clauses → group + lift) or an
+  # A block: either a module body (contains clauses → plan + emit) or an
   # ordinary sequence (recurse so nested modules are still reached).
   defp transform_node({:__block__, meta, statements}, ctx) do
-    if Enum.any?(statements, &clause_signature/1) do
+    if Enum.any?(statements, &ModulePlan.clause_signature/1) do
       {statements, ctx} = transform_statements(statements, ctx)
       {{:__block__, meta, statements}, ctx}
     else
@@ -172,99 +195,30 @@ defmodule Mutare.Transform do
     end
   end
 
+  # Plan the statement sequence, then emit it (assigning ids). The split is the
+  # whole point: `ModulePlan.build/3` decides *what* each statement is (a lifted
+  # group, an in-place group, or another statement), id-free; emission does the
+  # id-threading.
   defp transform_statements(statements, ctx) do
-    chunks = chunk_clause_runs(statements)
-    non_consecutive = non_consecutive_signatures(chunks)
-    warn_non_consecutive(non_consecutive, ctx.file)
-
-    {transformed, ctx} =
-      Enum.flat_map_reduce(chunks, ctx, fn
-        {:clauses, clauses}, ctx ->
-          if clause_signature(hd(clauses)) in non_consecutive do
-            # Non-consecutive heads can't be lifted (for now). A dispatcher is a
-            # catch-all for the whole signature, so lifting one run would shadow
-            # the others; and lifting every run as one unit relocates each
-            # clause's body to the dispatcher's position — which silently changes
-            # semantics when a compile-time `@attr` read between the heads resolves
-            # differently there (`@a 1; def f(0), do: @a; @a 2; def f(1), do: @a`).
-            # Fall back to in-place; guard/clause-drop mutants are simply not
-            # offered for such functions.
-            in_place_clauses(clauses, ctx)
-          else
-            transform_clause_group(clauses, ctx)
-          end
-
-        {:other, statement}, ctx ->
-          {node, ctx} = transform_node(statement, ctx)
-          {[node], ctx}
-      end)
-
-    {transformed, ctx}
-  end
-
-  # Signatures whose clauses are split across more than one consecutive run —
-  # something (another definition, a module attribute) appears between them.
-  # These are the functions Transform refuses to lift.
-  defp non_consecutive_signatures(chunks) do
-    chunks
-    |> Enum.flat_map(fn
-      {:clauses, clauses} -> [clause_signature(hd(clauses))]
-      {:other, _statement} -> []
-    end)
-    |> Enum.frequencies()
-    |> Enum.flat_map(fn
-      {signature, count} when count > 1 -> [signature]
-      {_signature, _count} -> []
-    end)
-    |> MapSet.new()
-  end
-
-  # Lifting is silently disabled for non-consecutive clauses, which costs that
-  # function its guard and clause-drop mutants. Warn once per signature so the
-  # gap is visible (and actionable — grouping the clauses restores lifting).
-  defp warn_non_consecutive(signatures, file) do
-    Enum.each(signatures, fn {_vis, name, arity} ->
-      Logger.warning(
-        "#{file}: clauses of #{name}/#{arity} are non-consecutive — not lifting " <>
-          "(no guard or clause-drop mutants for it); group the clauses to enable lifting"
-      )
-    end)
-  end
-
-  # Group maximal runs of consecutive clauses that share {visibility, name, arity}.
-  # A signature appearing in more than one run is "non-consecutive" (see
-  # non_consecutive_signatures/1) and is never lifted.
-  defp chunk_clause_runs(statements) do
     statements
-    |> Enum.reduce([], fn statement, acc ->
-      case {clause_signature(statement), acc} do
-        {nil, acc} ->
-          [{:other, statement} | acc]
-
-        {sig, [{:clauses, sig, clauses} | rest]} ->
-          [{:clauses, sig, [statement | clauses]} | rest]
-
-        {sig, acc} ->
-          [{:clauses, sig, [statement]} | acc]
-      end
-    end)
-    |> Enum.map(fn
-      {:clauses, _sig, clauses} -> {:clauses, Enum.reverse(clauses)}
-      other -> other
-    end)
-    |> Enum.reverse()
+    |> ModulePlan.build(ctx.mutators, ctx.file)
+    |> emit_module_plan(ctx)
   end
 
-  # === clause groups: lift, or mutate bodies in place ========================
+  # === emission: walk the plan, thread ids, render ===========================
 
-  # Transform a run of consecutive same-signature clauses that wasn't pre-grouped
-  # for lifting (so its complete group stays in place). A run can still lift on
-  # its own — recompute the plan against just these clauses.
-  defp transform_clause_group(clauses, ctx) do
-    case lift_plan(clauses, ctx.mutators) do
-      {:lift, candidates} -> lift(clauses, candidates, ctx)
-      :in_place -> in_place_clauses(clauses, ctx)
-    end
+  defp emit_module_plan(%ModulePlan{items: items}, ctx) do
+    Enum.flat_map_reduce(items, ctx, fn
+      {:lift, plan}, ctx ->
+        emit_function_plan(plan, ctx)
+
+      {:in_place, clauses}, ctx ->
+        in_place_clauses(clauses, ctx)
+
+      {:statement, statement}, ctx ->
+        {node, ctx} = transform_node(statement, ctx)
+        {[node], ctx}
+    end)
   end
 
   # Transform each clause in place (body selectors only), preserving its position.
@@ -275,64 +229,25 @@ defmodule Mutare.Transform do
     end)
   end
 
-  # The lift decision, in one place. A clause group lifts when the mutators find
-  # a guard swap (or there are droppable clauses) and the group can host a
-  # dispatcher. Returns the candidates so callers lift without recomputing them.
-  defp lift_plan(clauses, mutators) do
-    {_vis, name, _arity} = clause_signature(hd(clauses))
-    candidates = lifted_candidates(clauses, mutators)
-
-    if candidates != [] and liftable?(name, clauses) do
-      {:lift, candidates}
-    else
-      :in_place
-    end
-  end
-
-  # All lifted candidates for a clause group: guard operator swaps + clause drops.
-  defp lifted_candidates(clauses, mutators) do
-    guard_candidates(clauses, mutators) ++ clause_drop_candidates(clauses)
-  end
-
-  # Drop one clause of a multi-clause function. Inputs the dropped clause handled
-  # now fall to a later clause (or raise FunctionClauseError) — killed if tested.
-  defp clause_drop_candidates(clauses) when length(clauses) < 2, do: []
-
-  defp clause_drop_candidates(clauses) do
-    clauses
-    |> Enum.with_index()
-    |> Enum.map(fn {clause, index} ->
-      %Candidate{
-        context: :clause_drop,
-        kind: :lifted,
-        operation: :delete,
-        mutator: nil,
-        original: clause,
-        mutated: nil,
-        range: Sourceror.get_range(clause),
-        clause_index: index
-      }
-    end)
-  end
-
-  defp lift(clauses, candidates, ctx) do
-    {vis, name, arity} = clause_signature(hd(clauses))
+  # Emit a lifted clause group: the `__orig` copies (carrying in-place body
+  # selectors), one private `__mut` copy per lifted candidate, and the public
+  # dispatcher. In-place body ids are claimed first (in the `__orig` copies), then
+  # the lifted candidates in `FunctionPlan.candidates/1` order — preserving id
+  # ordering. A skipped (poisoned) id records its site but emits no copy/clause.
+  defp emit_function_plan(%FunctionPlan{signature: {vis, name, arity}} = plan, ctx) do
     group = ctx.group + 1
     ctx = %{ctx | group: group}
     base = base_name(name, arity, group)
 
-    # The unchanged copy carries the in-place selectors (body mutations).
-    {orig_clauses, ctx} = in_place_clauses(clauses, ctx)
+    {orig_clauses, ctx} = in_place_clauses(plan.clauses, ctx)
     orig_defs = Enum.map(orig_clauses, &rename_clause(&1, :"#{base}_orig", :defp))
 
-    # One private copy per lifted candidate (original bodies, one change applied).
-    # A skipped (poisoned) id records its site but emits no copy/dispatcher clause.
     {mut_results, ctx} =
-      Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
+      Enum.flat_map_reduce(FunctionPlan.candidates(plan), ctx, fn candidate, ctx ->
         claim_id(ctx, candidate, &lifted_site/3, fn id, candidate ->
           defs =
-            candidate
-            |> apply_lifted_candidate(clauses)
+            plan
+            |> FunctionPlan.mutated_clauses(candidate)
             |> Enum.map(&rename_clause(&1, :"#{base}_m#{id}", :defp))
 
           {id, defs}
@@ -387,142 +302,22 @@ defmodule Mutare.Transform do
 
   defp rename_call({_name, meta, args}, new_name), do: {new_name, meta, args}
 
-  # === lifted candidates: guard swaps & clause drops =========================
+  # === sites: pick the constructor from the candidate variant =================
 
-  # Every operator the mutators recognise, in every clause's guard, as a typed
-  # `:guard` candidate. Delivered by lifting (a guard can't host a `case`), but
-  # the mutation set is the same swap logic the in-place mutators use — and
-  # operator swaps stay guard-safe. Each candidate carries the whole clause group
-  # with that one guard already swapped (`mutated_clauses`), so emission never
-  # re-finds the node: the target is tagged in metadata and replaced once, here.
-  defp guard_candidates(clauses, mutators) do
-    clauses
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {clause, index} ->
-      guard_candidates_for(clause, index, clauses, mutators)
-    end)
-  end
-
-  defp guard_candidates_for(clause, index, clauses, mutators) do
-    case guards_of(clause) do
-      [] ->
-        []
-
-      guards ->
-        {tagged_guards, {_next, targets}} =
-          Enum.map_reduce(guards, {0, []}, fn guard, acc -> tag_targets(guard, acc, mutators) end)
-
-        tagged_clause = put_guards(clause, tagged_guards)
-
-        targets
-        |> Enum.reverse()
-        |> Enum.flat_map(fn {tag, original, muts} ->
-          Enum.map(muts, fn {mutator, mutated} ->
-            mutated_clause = replace_tag(tagged_clause, tag, mutated)
-
-            %Candidate{
-              context: :guard,
-              kind: :lifted,
-              operation: :replace,
-              mutator: mutator,
-              original: original,
-              mutated: mutated,
-              range: Sourceror.get_range(original),
-              clause_index: index,
-              mutated_clauses: List.replace_at(clauses, index, mutated_clause)
-            }
-          end)
-        end)
-    end
-  end
-
-  # Tag every mutatable operator in a guard with a unique `meta[:mutare_tag]`
-  # (an explicit, collision-free reference — the replacement for `{line,
-  # column}`), accumulating `{tag, original_node, mutations}`. Post-order DFS
-  # (children before parents), matching the in-place emit ordering so guard ids
-  # are assigned in the same order. `mutate/1` runs on the node as visited, and
-  # a nested guard operator's child may already carry a `:mutare_tag` — harmless,
-  # since tags don't affect ranges/rendering and are stripped before output.
-  defp tag_targets(guard, acc, mutators) do
-    Macro.postwalk(guard, acc, fn node, {next, targets} ->
-      case mutations(node, mutators) do
-        [] -> {node, {next, targets}}
-        muts -> {put_tag(node, next), {next + 1, [{next, node, muts} | targets]}}
-      end
-    end)
-  end
-
-  defp put_tag({form, meta, args}, tag), do: {form, [{:mutare_tag, tag} | meta], args}
-
-  defp replace_tag(ast, tag, replacement) do
-    Macro.prewalk(ast, fn
-      {_form, meta, _args} = node when is_list(meta) ->
-        if Keyword.get(meta, :mutare_tag) == tag, do: replacement, else: node
-
-      node ->
-        node
-    end)
-  end
-
-  defp guards_of({_vis, _meta, [{:when, _, [_call | guards]} | _rest]}), do: guards
-  defp guards_of(_), do: []
-
-  defp put_guards({vis, meta, [{:when, when_meta, [call | _guards]} | rest]}, new_guards),
-    do: {vis, meta, [{:when, when_meta, [call | new_guards]} | rest]}
-
-  # Materialise a lifted candidate into the mutated clause group.
-  defp apply_lifted_candidate(%Candidate{context: :guard, mutated_clauses: clauses}, _clauses),
-    do: clauses
-
-  defp apply_lifted_candidate(%Candidate{context: :clause_drop, clause_index: index}, clauses),
-    do: List.delete_at(clauses, index)
-
-  # Build the %Site{} for one candidate. Transform owns the candidate's shape and
-  # picks the constructor; Site owns the struct fields.
-  defp in_place_site(id, %Candidate{} = c, file) do
+  # Transform owns which constructor each candidate maps to; `Mutare.Site` owns
+  # the struct's fields. The candidate's *type* (not a stored `kind`/`operation`)
+  # selects the shape.
+  defp in_place_site(id, %Candidate.InPlace{} = c, file) do
     Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
-  defp lifted_site(id, %Candidate{context: :guard} = c, file) do
+  defp lifted_site(id, %Candidate.Guard{} = c, file) do
     Site.lifted_guard(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
-  defp lifted_site(id, %Candidate{context: :clause_drop} = c, file) do
+  defp lifted_site(id, %Candidate.Drop{} = c, file) do
     Site.clause_drop(id, file, c.range, c.original)
   end
-
-  # === clause signatures & liftability ======================================
-
-  defp clause_signature({vis, _meta, [head | _rest]}) when vis in [:def, :defp] do
-    case name_arity(head) do
-      {name, arity} -> {vis, name, arity}
-      :error -> nil
-    end
-  end
-
-  defp clause_signature(_), do: nil
-
-  defp name_arity({:when, _, [call | _guards]}), do: name_arity(call)
-  defp name_arity({name, _, args}) when is_atom(name) and is_list(args), do: {name, length(args)}
-  defp name_arity({name, _, context}) when is_atom(name) and is_atom(context), do: {name, 0}
-  defp name_arity(_), do: :error
-
-  # We can only lift functions whose name is a plain identifier (operator names
-  # like `<>` can't be spelled as `__mutare_<>_2_orig(...)`) and which have no
-  # default arguments (those expand to multiple arities; normalize-then-lift is
-  # later work). Such groups fall back to in-place only.
-  defp liftable?(name, clauses) do
-    Regex.match?(~r/\A[a-z_][a-zA-Z0-9_]*[?!]?\z/, Atom.to_string(name)) and
-      not Enum.any?(clauses, &default_args?/1)
-  end
-
-  defp default_args?({_vis, _meta, [head | _rest]}) do
-    head |> head_args() |> Enum.any?(&match?({:\\, _, _}, &1))
-  end
-
-  defp head_args({:when, _, [call | _guards]}), do: head_args(call)
-  defp head_args({_name, _, args}) when is_list(args), do: args
-  defp head_args(_), do: []
 
   # === in-place transform: analyze (annotate) then assign/emit ===============
 
@@ -543,9 +338,9 @@ defmodule Mutare.Transform do
   # side of a `::` one way and the value side another). Two contexts are threaded:
   #
   #   * `:runtime` — mutate in place. A node a mutator recognises gets a
-  #     `:runtime_body` candidate attached to its own metadata; the candidate is
-  #     built from the *raw* node (un-annotated children — what the report
-  #     renders) before we descend.
+  #     `Candidate.InPlace` attached to its own metadata; the candidate is built
+  #     from the *raw* node (un-annotated children — what the report renders)
+  #     before we descend.
   #   * `:pattern` — never mutate, but keep descending so nested runtime escapes
   #     (default-argument values, `size(...)` args) are still reached.
   #
@@ -559,7 +354,7 @@ defmodule Mutare.Transform do
   #     is illegal there and a swapped `-` separator is an illegal specifier;
   #     only `size(expr)` args are a genuine runtime sub-position (`analyze_spec/3`).
   #   * `:guard` — `when` guards, owned by the lift path (a `case` can't live in a
-  #     guard). Pruned here; `tag_targets/3` mutates them by lifting instead.
+  #     guard). Pruned here; `FunctionPlan` mutates them by lifting instead.
   #   * `:capture_arity` — the `/` in `&fun/arity`, an arity separator not
   #     division. Pruned; real division (`& &1 / 2`) still mutates.
   #
@@ -617,7 +412,7 @@ defmodule Mutare.Transform do
   # a generic runtime node: build the candidate from the raw node (so `original`
   # keeps un-annotated children), then descend into the children.
   defp analyze({_form, _meta, _args} = node, :runtime, mutators) do
-    case mutations(node, mutators) do
+    case Mutator.mutations(node, mutators) do
       [] ->
         recurse(node, :runtime, mutators)
 
@@ -679,15 +474,7 @@ defmodule Mutare.Transform do
     range = Sourceror.get_range(node)
 
     Enum.map(muts, fn {mutator, mutated} ->
-      %Candidate{
-        context: :runtime_body,
-        kind: :in_place,
-        operation: :replace,
-        mutator: mutator,
-        original: node,
-        mutated: mutated,
-        range: range
-      }
+      %Candidate.InPlace{mutator: mutator, original: node, mutated: mutated, range: range}
     end)
   end
 
@@ -735,10 +522,11 @@ defmodule Mutare.Transform do
   end
 
   # The single owner of the id-claim + site-record dance that poison recovery
-  # leans on. Both the in-place path (emit_site/3) and the lifted path (lift/3)
-  # route every candidate through here, so ids advance identically — even for a
-  # skipped (poisoned) id — and stay stable across rebuilds. Keeping this in one
-  # place is what stops the two paths from drifting out of lockstep.
+  # leans on. Both the in-place path (emit_site/3) and the lifted path
+  # (emit_function_plan/2) route every candidate through here, so ids advance
+  # identically — even for a skipped (poisoned) id — and stay stable across
+  # rebuilds. Keeping this in one place is what stops the two paths from drifting
+  # out of lockstep.
   #
   # `site_fn.(id, candidate, file)` builds the %Site{}; `emit_fn.(id, candidate)`
   # builds the artifact (an in-place `->` clause, or a lifted `{id, defs}` pair).
@@ -777,13 +565,4 @@ defmodule Mutare.Transform do
   defp integer_literal?(n) when is_integer(n), do: true
   defp integer_literal?({:__block__, _meta, [n]}) when is_integer(n), do: true
   defp integer_literal?(_), do: false
-
-  defp mutations(node, mutators) do
-    Enum.flat_map(mutators, fn mutator ->
-      case mutator.mutate(node) do
-        :skip -> []
-        nodes when is_list(nodes) -> Enum.map(nodes, &{mutator, &1})
-      end
-    end)
-  end
 end

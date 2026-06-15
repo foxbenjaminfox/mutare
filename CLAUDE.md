@@ -37,12 +37,24 @@ The pipeline, in dependency order. A change usually touches one stage; understan
 contract between them is the whole game.
 
 - **`Mutare.Transform`** — the heart. `source → {metamutant_source, [%Site{}], next_id}`. An
-  explicit staged pipeline (analyze → classify → assign → emit → render), not a walk-everything-
-  then-subtract blacklist. Context is classified *positively* and routed; mutators run **once**.
+  explicit staged pipeline (analyze → classify → **plan** → assign → emit → render) over a small
+  IR, not a walk-everything-then-subtract blacklist. Context is classified *positively* and
+  routed; mutators run **once**. The IR splits *vocabulary* (plan structs, owning discovery) from
+  *emission* (id assignment, site recording, AST building — kept in `Transform`):
+  - **`Transform.ModulePlan`** — a statement sequence classified into items: `{:lift, FunctionPlan}`,
+    `{:in_place, clauses}`, `{:statement, node}`. `build/3` does the run-chunking + non-consecutive
+    detection; `Transform.emit_module_plan/2` walks the items.
+  - **`Transform.FunctionPlan`** — one liftable clause group: signature, clauses, a single shared
+    *tagged* clause group, and its typed lifted candidates. `mutated_clauses/2` reconstructs a
+    mutant copy on demand (so the group is stored once, not per guard mutant).
+  - **`Transform.Candidate.{InPlace,Guard,Drop}`** — typed candidate variants (one struct per
+    legal kind), replacing the old single struct that redundantly stored `context`/`kind`/
+    `operation` and admitted illegal combinations. The matching `Site` constructor is chosen by
+    pattern-matching the variant at emit.
   - **analyze + classify (`analyze/3`)** is a single context-threaded recursive descent: it
     *names the context* of each position as it descends (routing is positional — the spec side of
     a `::` goes one way, the value side another, which a flat `Macro.traverse` accumulator can't
-    express) and attaches a typed `Transform.Candidate` to each mutatable node's *own metadata*
+    express) and attaches a typed `Candidate.InPlace` to each mutatable node's *own metadata*
     (`meta[:mutare]`) — which is why there's no fragile `{line, column}` node identity and no
     double mutator invocation. Two contexts are threaded: `:runtime` → in-place (`:guard`/
     `:clause_drop` are produced by the separate lift path), and `:pattern` (don't mutate, but keep
@@ -59,8 +71,9 @@ contract between them is the whole game.
   - **function lifting + dispatcher** for `when` guards and clause structure (a `case` can't
     live in a guard): duplicate the whole clause group into private `__orig`/`__mut` copies and
     make the public `f/arity` a bare dispatcher. In-place selectors live only in `__orig`.
-    Guard targets are tagged via `meta[:mutare_tag]` and the mutated clause group is materialized
-    once at analysis time (`Candidate.mutated_clauses`), so emission never re-finds the node.
+    Guard targets are tagged via `meta[:mutare_tag]` on a single shared clause group held by the
+    `FunctionPlan`; `FunctionPlan.mutated_clauses/2` materializes each mutant copy on demand, so
+    emission never re-finds the node and the group isn't copied per guard mutant.
 - **`Mutare.Schema`** — runs `Transform` across discovered files, threading **globally-unique,
   stable** mutant ids. Honors `:paths`/`:exclude`, `:only_files` (for `--since`), and `:skip_ids`
   (for poison recovery — the id counter advances even for skipped ids, so ids stay stable across

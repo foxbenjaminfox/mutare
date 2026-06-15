@@ -64,4 +64,22 @@ defmodule Mutare.Mutator do
   # Total over any term: a non-atom (e.g. a string in `.mutare.exs`) is simply
   # not a mutator, so resolution reports it rather than crashing on the guard.
   def implemented_by?(_term), do: false
+
+  @doc """
+  Run every mutator over `node`, flattening to `{mutator, mutated_node}` pairs.
+
+  The single place a node meets the mutator set. Both the in-place analyzer
+  (`Mutare.Transform`) and the lifted-guard planner (`Mutare.Transform.FunctionPlan`)
+  call this, so "which mutations does this node admit" has one answer regardless of
+  where the node sits — placement is decided afterwards, positionally.
+  """
+  @spec mutations(Macro.t(), [module()]) :: [{module(), Macro.t()}]
+  def mutations(node, mutators) do
+    Enum.flat_map(mutators, fn mutator ->
+      case mutator.mutate(node) do
+        :skip -> []
+        nodes when is_list(nodes) -> Enum.map(nodes, &{mutator, &1})
+      end
+    end)
+  end
 end

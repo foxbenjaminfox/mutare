@@ -146,10 +146,13 @@ runs mutators on every guard node. A multi-specifier bitstring *pattern* inside 
 `Mutare.Transform` is an explicit pipeline rather than a walk-everything-then-
 subtract design. Stages: **analyze + classify** (`analyze/3` is a single
 context-threaded recursive descent: it *names the context* of each position as
-it descends and attaches a typed `Transform.Candidate` to each mutatable node's
-own `meta[:mutare]`), **assign + emit** (`emit/2`, a bottom-up `Macro.postwalk`,
-hands out ids in post-order DFS; the counter advances for `:skip_ids` so ids
-stay stable across poison-recovery rebuilds), and **render** (strip the
+it descends and attaches a typed `Candidate.InPlace` to each mutatable node's
+own `meta[:mutare]`), **plan** (a statement sequence becomes a
+`Transform.ModulePlan` of classified items; each liftable clause group a
+`Transform.FunctionPlan` carrying its lifted candidates — id-free), **assign +
+emit** (`emit/2`, a bottom-up `Macro.postwalk`, plus `emit_function_plan/2`, hand
+out ids in post-order DFS; the counter advances for `:skip_ids` so ids stay
+stable across poison-recovery rebuilds), and **render** (strip the
 `:mutare`/`:mutare_tag` annotations, then `Sourceror.to_string`).
 
 `analyze/3` threads two contexts — `:runtime` (mutate) and `:pattern` (don't
@@ -168,24 +171,52 @@ Three things this bought, vs. the prior implicit version:
   in `analyze/3`. To classify a new context, add a clause (route its children);
   don't reintroduce a subtractive key set or a flat skip-depth.
 - **Untyped lifted maps** (`%{type: :guard, …}` / `%{type: :drop, …}`) are now
-  the typed `Transform.Candidate` struct (`context`/`kind`/`operation`), shared
-  by in-place and lifted alike.
+  **typed candidate variants** — one struct per legal kind (`Candidate.InPlace`,
+  `Candidate.Guard`, `Candidate.Drop`), shared by in-place and lifted alike.
 - **`{line, column}` node identity** is gone. In-place candidates ride in the
   node's intrinsic `meta[:mutare]`; guard targets are tagged with a unique
-  `meta[:mutare_tag]` and the mutated clause group is materialized once at
-  analysis time (`Candidate.mutated_clauses`). Metadata survives `Macro`
-  rebuilds and can't collide across duplicate subtrees — the reason the
+  `meta[:mutare_tag]` so emission never re-finds the node. Metadata survives
+  `Macro` rebuilds and can't collide across duplicate subtrees — the reason the
   positional key existed.
 - Mutators are invoked **once** per in-place site (in `annotate`'s walk), not
-  twice (the old `capture_ranges` + `wrap_site` pair).
-- **Shared vocabulary lives in its own files.** `Transform.Candidate` and
-  `Transform.Ctx` (the typed structs threaded through every stage) and
-  `Transform.Render` (the Sourceror workarounds: `to_source/1` strips
-  annotations + normalizes keyword blocks; `block_wrap/1` shields a bare
-  selector `case`) are split out of `transform.ex` so the semantic pipeline
-  isn't interleaved with vocabulary and rendering friction. The lift/clause and
-  in-place machinery stays in `Transform` — it shares the `Ctx` id-threading
-  discipline too tightly to separate cleanly (cohesion is the feature here).
+  twice (the old `capture_ranges` + `wrap_site` pair). `Mutator.mutations/2` is
+  the single "run the mutator set over a node" helper both `analyze/3` and
+  `FunctionPlan` call.
+- **Shared vocabulary lives in its own files.** The plan structs
+  (`Transform.ModulePlan`, `Transform.FunctionPlan`, the `Transform.Candidate.*`
+  variants), `Transform.Ctx` (threaded through every stage) and `Transform.Render`
+  (the Sourceror workarounds: `to_source/1` strips annotations + normalizes
+  keyword blocks; `block_wrap/1` shields a bare selector `case`) are split out of
+  `transform.ex` so the semantic pipeline isn't interleaved with vocabulary and
+  rendering friction. The plan modules own *discovery* (chunking clauses, finding
+  guard/drop candidates); the *emission* machinery (id assignment, site recording,
+  building the selector `case` and dispatcher) stays in `Transform` — it shares
+  the `Ctx` id-threading discipline across in-place and lifted paths too tightly
+  to separate cleanly (`claim_id/4` is the single owner of that dance).
+
+### Transform IR — typed candidate variants + plan structs `[refactor, done]`
+The earlier `%Candidate{}` was one struct that stored `context` *and* its two
+consequences (`kind`, `operation`) as separate fields, so the type admitted
+illegal combinations (a `:clause_drop` claiming to be `:in_place`/`:replace`)
+that only discipline kept out — and every **guard** candidate carried a full
+copy of the clause group with its one guard pre-swapped (`mutated_clauses`), N
+near-identical copies for N guard mutants. Both are fixed:
+- **One struct per legal kind.** `Candidate.{InPlace,Guard,Drop}` — the
+  `context`/`kind`/`operation` triple is gone; the variant *is* the kind, and the
+  matching `Site` constructor is chosen by pattern-matching the struct at emit
+  (`in_place_site/3` / `lifted_site/3`). Illegal states can't be built.
+- **The clause group is stored once.** `FunctionPlan` holds a single *tagged*
+  clause group (every mutatable guard operator marked with a unique
+  `meta[:mutare_tag]`, the tag counter threaded across clauses so tags are
+  group-unique); each `Candidate.Guard` carries only its `tag` + replacement.
+  `FunctionPlan.mutated_clauses/2` reconstructs a copy on demand
+  (`replace_tag/3` for a guard, `List.delete_at/2` for a drop). Leftover tags on
+  sibling operators are stripped before rendering, so the rendered metamutant is
+  identical to the old per-candidate-copy output.
+- **`ModulePlan` is the module-planning stage.** `build/3` chunks a statement
+  sequence into `{:lift, FunctionPlan}` / `{:in_place, clauses}` / `{:statement,
+  node}` items (run chunking, non-consecutive detection + the warning), and owns
+  `clause_signature/1`. `Transform.emit_module_plan/2` walks the items in order.
 
 ### Function lifting (M2): sharp edges `[various]`
 - **Recursion bounces through the dispatcher.** A self-call inside a lifted copy
