@@ -126,8 +126,9 @@ wall-clock cap (`baseline × :timeout_multiplier`, default 3.0, floored; or an
 explicit `:timeout` ms), and a timeout counts as a kill (`:timeout`).
 
 The cap is enforced **portably, with no process-killing**: the injected sandbox
-watcher (`Mutare.Sandbox`) spawns a process that `System.halt(124)`s after the
-deadline. The BEAM preempts a looping process, so the watcher always runs (even
+watcher (a quoted AST owned by `Mutare.Sandbox.Command.watcher_ast/0`, rendered
+into the bootstrap by `Mutare.Sandbox`) spawns a process that `System.halt(124)`s
+after the deadline. The BEAM preempts a looping process, so the watcher always runs (even
 on a tight infinite loop — confirmed); if the suite finishes first the watcher
 dies with the VM; exit 124 ⇒ timed out. This replaced an earlier Port + `kill`/
 `ps` process-group approach (Unix-only, and `Port.close` alone did *not* kill a
@@ -270,7 +271,13 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
 - **Dependency-free bootstrap.** `Mutare.Selector.bootstrap_ast/0` is the
   canonical env→`:persistent_term` activation code. The sandbox renders that AST
   into `test_helper.exs`, so targets need nothing added to their deps and there
-  is no second env-parsing implementation to drift.
+  is no second env-parsing implementation to drift. The timeout watcher is the
+  symmetric second half: `Mutare.Sandbox.Command.watcher_ast/0` is its canonical
+  quoted AST, owned next to the timeout env var and exit code, and the sandbox
+  renders it the *same* way (`Macro.to_string`). Both halves are therefore parsed
+  at build time and owned next to their constants — neither is assembled here as
+  an interpolated string (the watcher used to be a raw heredoc concatenated to the
+  rendered selector, an asymmetry now removed).
 - **Compile-poisoning pre-filter (done).** Rather than the design's "compile
   each candidate in isolation" (N compiles, and a candidate isn't compilable in
   isolation anyway — it needs its context), Mutare **recovers** from the one

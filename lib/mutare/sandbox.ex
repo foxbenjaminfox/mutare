@@ -21,28 +21,25 @@ defmodule Mutare.Sandbox do
 
   @excluded ~w(_build .git .elixir_ls .lexical cover)
 
-  # The timeout watcher is how Mutare enforces a per-mutant wall-clock cap
-  # *portably*: instead of the runner killing a hung OS process tree (which
-  # needs platform-specific signals), the mutant process halts *itself* after
-  # the deadline. `System.halt/1` stops the VM immediately and uncatchably, and
-  # the BEAM preempts a looping process so the watcher always gets to run; if the
-  # suite finishes first the watcher dies with the VM. The env var the cap
-  # arrives in and the exit code a timeout signals are owned by
-  # `Mutare.Sandbox.Command` (the run side of the same contract).
+  # The bootstrap is two dependency-free snippets, each rendered the same way from
+  # a quoted AST its owner defines: the mutant selector
+  # (`Mutare.Selector.bootstrap_ast/0`) and the per-mutant timeout watcher
+  # (`Mutare.Sandbox.Command.watcher_ast/0`). The watcher enforces the wall-clock
+  # cap *portably* — instead of the runner killing a hung OS process tree (which
+  # needs platform-specific signals), the mutant process halts *itself* after the
+  # deadline. `System.halt/1` stops the VM immediately and uncatchably, and the
+  # BEAM preempts a looping process so the watcher always gets to run; if the
+  # suite finishes first it dies with the VM. Each snippet stays owned next to its
+  # own constants and is parsed at build time, not assembled here as a string.
   @selector_bootstrap Macro.to_string(Mutare.Selector.bootstrap_ast())
-  @timeout_env Command.timeout_env()
-  @timeout_exit Command.timeout_exit()
+  @timeout_watcher Macro.to_string(Command.watcher_ast())
 
   @bootstrap """
   # ---- injected by Mutare: select the active mutant from the environment ----
   #{@selector_bootstrap}
 
   # ---- injected by Mutare: per-mutant timeout (self-halt; no external kill) --
-  case System.get_env(#{inspect(@timeout_env)}) do
-    nil -> :ok
-    "" -> :ok
-    raw -> spawn(fn -> Process.sleep(String.to_integer(raw)); System.halt(#{@timeout_exit}) end)
-  end
+  #{@timeout_watcher}
   # ---------------------------------------------------------------------------
   """
 

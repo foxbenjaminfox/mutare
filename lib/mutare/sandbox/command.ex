@@ -8,14 +8,15 @@ defmodule Mutare.Sandbox.Command do
   `MUTANT_UNDER_TEST=<mutant_id>` are always set; an optional `cap` (ms) bounds a
   run that overruns (a mutation can turn a terminating loop infinite).
 
-  This module owns the *run side* of the timeout contract — the env var the cap
-  travels in (`timeout_env/0`) and the exit code a timeout is signalled with
-  (`timeout_exit/0`). The cap is not enforced by killing a process tree (which
-  needs platform-specific signals); instead `Mutare.Sandbox` renders a watcher
-  into the target's test bootstrap that reads `timeout_env/0` and, after the
-  deadline, `System.halt/1`s the run itself with `timeout_exit/0`. So the two
-  ends of the contract live here, the watcher that honours it is injected there,
-  and the runner reads `timeout_exit/0` to classify a capped run as `:timeout`.
+  This module owns the *run side* of the timeout contract, all three pieces side
+  by side: the env var the cap travels in (`timeout_env/0`), the exit code a
+  timeout is signalled with (`timeout_exit/0`), and the watcher that honours them
+  as a dependency-free quoted AST (`watcher_ast/0`). The cap is not enforced by
+  killing a process tree (which needs platform-specific signals); instead the
+  watcher reads `timeout_env/0` and, after the deadline, `System.halt/1`s the run
+  itself with `timeout_exit/0`. `Mutare.Sandbox` renders `watcher_ast/0` into the
+  target's test bootstrap — the same way it renders `Mutare.Selector.bootstrap_ast/0`
+  — and the runner reads `timeout_exit/0` to classify a capped run as `:timeout`.
   """
 
   @timeout_env "MUTARE_TIMEOUT"
@@ -28,6 +29,38 @@ defmodule Mutare.Sandbox.Command do
   @doc "Exit code the self-halt watcher uses, signalling a timed-out mutant."
   @spec timeout_exit() :: non_neg_integer()
   def timeout_exit, do: @timeout_exit
+
+  @doc """
+  Dependency-free watcher that enforces a mutant run's wall-clock cap.
+
+  Reads `timeout_env/0`: with no cap it is inert, otherwise it spawns a process
+  that sleeps for the cap and then `System.halt/1`s the run with `timeout_exit/0`
+  — so the run halts *itself* and there is no process tree to kill.
+  `Mutare.Sandbox` renders this AST into the target project's test bootstrap,
+  mirroring how it renders `Mutare.Selector.bootstrap_ast/0`, so the target needs
+  nothing platform-specific and no dependency on Mutare.
+  """
+  @spec watcher_ast() :: Macro.t()
+  def watcher_ast do
+    timeout_env = @timeout_env
+    timeout_exit = @timeout_exit
+
+    quote do
+      case System.get_env(unquote(timeout_env)) do
+        nil ->
+          :ok
+
+        "" ->
+          :ok
+
+        raw ->
+          spawn(fn ->
+            Process.sleep(String.to_integer(raw))
+            System.halt(unquote(timeout_exit))
+          end)
+      end
+    end
+  end
 
   @doc """
   Run `mix <args>` in `sandbox` as a fresh OS process, returning
