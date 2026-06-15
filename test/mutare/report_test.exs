@@ -1,7 +1,7 @@
 defmodule Mutare.ReportTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.{Report, Result}
+  alias Mutare.{Report, Result, Site}
 
   @source """
   defmodule Billing do
@@ -10,6 +10,23 @@ defmodule Mutare.ReportTest do
     end
   end
   """
+
+  # A multi-line clause, for exercising the clause-drop (delete) diff path.
+  @drop_source """
+  defmodule M do
+    def f(0) do
+      :z
+    end
+
+    def f(_), do: :o
+  end
+  """
+
+  # A clause-drop site over `def f(0) do ... end` (lines 2..4 of @drop_source).
+  defp drop_site do
+    range = %{start: [line: 2, column: 3], end: [line: 4, column: 8]}
+    Site.clause_drop(1, "m.ex", range, Sourceror.parse_string!("def f(0) do\n  :z\nend"))
+  end
 
   defp site(op_to) do
     {_meta, sites, _next_id} = Mutare.transform_string(@source, file: "lib/billing.ex")
@@ -23,6 +40,15 @@ defmodule Mutare.ReportTest do
 
   test "header/1 reads file:line and mutator metadata" do
     assert Report.header(site(:>)) == "lib/billing.ex:3  [relational, in-place]  SURVIVED"
+  end
+
+  test "header/1 labels a lifted mutant as lifted" do
+    assert Report.header(drop_site()) == "m.ex:2  [clause_drop, lifted]  SURVIVED"
+  end
+
+  test "diff/2 of a clause-drop shows every line of the clause as a deletion" do
+    assert Report.diff(drop_site(), @drop_source) ==
+             "-  def f(0) do\n-    :z\n-  end"
   end
 
   test "score/1 = killed / (total - no_coverage)" do
@@ -107,6 +133,36 @@ defmodule Mutare.ReportTest do
   test "score/1 is 100.0 when there is nothing to test" do
     assert Report.score([]) == 100.0
     assert Report.score([%Result{status: :no_coverage}]) == 100.0
+  end
+
+  test "score/1 excludes poisoned from the denominator" do
+    results = [
+      %Result{status: :killed},
+      %Result{status: :survived},
+      %Result{status: :poisoned}
+    ]
+
+    # 1 killed / (3 - 1 poisoned) = 50% — poisoned is dropped, not a kill.
+    assert Report.score(results) == 50.0
+  end
+
+  test "score/1 of a lone survivor is 0.0 (denominator of 1, not forced to 100)" do
+    # Pins the `denominator <= 0` guard at its boundary: denom is 1 here, so the
+    # real ratio is reported rather than the nothing-to-test 100.0.
+    assert Report.score([%Result{status: :survived}]) == 0.0
+  end
+
+  test "summary/1 surfaces poisoned only when present" do
+    refute Report.summary([%Result{status: :killed}]) =~ "poisoned"
+
+    results = [
+      %Result{status: :killed},
+      %Result{status: :survived},
+      %Result{status: :poisoned}
+    ]
+
+    assert Report.summary(results) ==
+             "mutation score: 50.0%  (1 killed, 1 survived, 1 poisoned, 3 total)"
   end
 
   test "summary/1 includes a no-coverage count only when present" do
@@ -216,5 +272,51 @@ defmodule Mutare.ReportTest do
     assert out =~ "lib/billing.ex:3  [relational, in-place]  SURVIVED"
     assert out =~ "-    total >= threshold\n+    total > threshold"
     assert out =~ "mutation score: 50.0%  (1 killed, 1 survived, 2 total)"
+  end
+
+  test "render/2 with no survivors is just the summary (no leading blank lines)" do
+    results = [%Result{site: site(:>), status: :killed}]
+    assert Report.render(results, %{"lib/billing.ex" => @source}) == Report.summary(results)
+  end
+
+  test "render/2 includes only survivors, not killed mutants" do
+    sites = [site(:>), site(:<=)]
+    sources = %{"lib/billing.ex" => @source}
+
+    results = [
+      %Result{site: Enum.at(sites, 0), status: :survived},
+      %Result{site: Enum.at(sites, 1), status: :killed}
+    ]
+
+    out = Report.render(results, sources)
+
+    # the survivor (>= -> >) is shown; the killed mutant (>= -> <=) is not
+    assert out =~ "+    total > threshold"
+    refute out =~ "total <= threshold"
+  end
+
+  test "survivor/2 joins the header and diff with a single newline" do
+    assert Report.survivor(site(:>), @source) ==
+             "lib/billing.ex:3  [relational, in-place]  SURVIVED\n" <>
+               "-    total >= threshold\n+    total > threshold"
+  end
+
+  test "render/2 separates survivor blocks from each other and the summary with blank lines" do
+    sites = [site(:>), site(:<=)]
+    sources = %{"lib/billing.ex" => @source}
+
+    results = [
+      %Result{site: Enum.at(sites, 0), status: :survived},
+      %Result{site: Enum.at(sites, 1), status: :survived}
+    ]
+
+    expected =
+      Report.survivor(Enum.at(sites, 0), @source) <>
+        "\n\n" <>
+        Report.survivor(Enum.at(sites, 1), @source) <>
+        "\n\n" <>
+        Report.summary(results)
+
+    assert Report.render(results, sources) == expected
   end
 end
