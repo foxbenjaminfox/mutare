@@ -36,6 +36,7 @@ defmodule Mutare.Mutators do
     collection: Mutare.Mutators.Collection,
     string: Mutare.Mutators.StringLiteral,
     float: Mutare.Mutators.FloatLiteral,
+    atom: Mutare.Mutators.AtomLiteral,
     return_value: Mutare.Mutators.ReturnValue
   ]
 

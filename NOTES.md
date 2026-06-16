@@ -276,12 +276,35 @@ by a blacklist. The positions:
   guard/clause-drop mutants.
 - **Patterns** (clause heads, `=` match LHS): routed to `:pattern` and not
   mutated. Built-in arithmetic/relational operators can't legally appear in a
-  pattern anyway, so this mainly shields *custom* mutators. **Deferred:**
-  clause-pattern / generator routing for `case`/`fn`/`with`/`for`/`receive`/
-  `try`/`cond` — those `->`/`<-` LHS positions still walk as `:runtime` (a
-  custom mutator there is poison-backstopped). Beware when adding it: a `cond`
-  `->` LHS and `for`/`with` filters are *runtime* and must keep mutating; only
-  `case`/`fn`/`receive`/`try` and `<-` generator LHS are patterns.
+  pattern anyway, so this mainly shielded *custom* mutators — until the **atom**
+  mutator (the first built-in that matches a bare-atom node) made the gap bite.
+  **Now done** (was deferred): clause-pattern / generator routing for
+  `case`/`fn`/`with`/`for`/`receive`/`try`. A generic `->` clause routes a
+  clause's LHS to `:pattern` and the body to `:runtime`; a `<-` clause mirrors
+  `=` (LHS pattern, RHS context). The sharp edge the old note warned of is handled
+  by intercepting **`cond` first** (`analyze_cond_block/2`) so its `->` LHS stays
+  *runtime* — a cond clause's left is a condition, not a pattern — while `for`/`with`
+  filters (ordinary body positions) keep mutating untouched. Replaces the old
+  reliance on poison recovery for those LHS literals (e.g. `case x do 1 -> …`'s `1`
+  used to be mutated into an illegal `case`-in-pattern, then poison-dropped; now it
+  is never offered). The `try`-in-a-def-head path still routes via the older
+  `analyze_try_clause/2` (called from `analyze_do_blocks/2`); the generic `->`
+  clause covers every *other* construct, including a `try` outside a def head.
+
+### Keyword/block keys are labels, never runtime values
+The pair routing (`label_key?/1` + the 2-tuple `analyze` clause) is what lets the
+atom mutator exist. An atom in a *value* position (`{:ok, x}` tag, a `key: VALUE`)
+is mutatable; an atom in a *key* position is a structural label and must never be
+offered to a mutator — a selector `case` spliced into a key is malformed and
+**crashes `Sourceror.to_string` outright** (not a compile error, so *not*
+poison-recoverable; it sinks the whole file's render). Two key shapes, both
+`{:__block__, meta, [atom]}`: an **inline** keyword key (`a:`, `timeout:`, an inline
+`do:`/`else:`) carries `format: :keyword`; a **block** key (the `do`/`else`/`rescue`/
+`catch`/`after` that renders a `do … end`) carries *no* format marker, so it is
+recognised by its reserved atom (`@block_keys`). A plain atom literal — a tuple tag
+or a `%{:a => …}` arrow key — is neither, so it falls through and stays mutatable.
+This was invisible before atom because no prior built-in matched an atom node;
+integer/string/operator mutators never touch a `:do` key.
 
 ### Guard tagger is not bitstring-spec-aware `[deferred]`
 `tag_targets/3` (the lifted-guard path) is a context-free `Macro.postwalk` that
@@ -709,12 +732,16 @@ its body to `:runtime` — exactly how a function head/body split works. The rou
 is unambiguous *only* because these blocks always pattern-match; `cond`, whose
 clause left *is* runtime, is handled generically and must not be folded in.
 
-  > Still latent (deferred): the same `:runtime`-pattern issue affects `case`/`fn`/
-  > `with` clause patterns reached through ordinary body recursion (a literal/
-  > operator in such a pattern is mutated, then poison-recovered). A general fix
-  > needs per-construct handling (`cond`'s clause left is genuinely runtime, so no
-  > blanket `->` rule works); for now it stays masked by poison-recovery, same as
-  > before.
+  > **Resolved** (was deferred): the same `:runtime`-pattern issue affected
+  > `case`/`fn`/`with`/`receive`/`for` clause patterns reached through ordinary
+  > body recursion. The general fix anticipated here is now in place — a generic
+  > `->` `analyze` clause pattern-routes the LHS, with `cond` intercepted first so
+  > its genuinely-runtime condition keeps mutating (exactly the "no blanket `->`
+  > rule" caveat). See the "Patterns" note above. The atom mutator forced the
+  > issue: an atom in such a pattern is *very* common (`case x do :ok -> …`), so
+  > leaning on poison-recovery would have risked exhausting the bounded
+  > `@poison_attempts` budget — and, for a `do:` key, would have render-crashed
+  > before compile even ran.
 
 The `Site` each return mutant records (`Site.return_value/5`) has
 `mutator: :return_value`, `kind: :in_place`, and `nil` ops (there is no operator),

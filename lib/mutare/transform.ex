@@ -120,6 +120,12 @@ defmodule Mutare.Transform do
   # and is left to mutate only in place, like `:do`).
   @clause_block_keys [:rescue, :catch, :else]
 
+  # The keyword atoms that render a construct's `do … end` block (`do:` plus the
+  # `else`/`rescue`/`catch`/`after` tails). As *block* syntax these keys carry no
+  # `format: :keyword` marker, so `label_key?/1` recognises them by atom — protecting
+  # a key like `do:` from being mutated (which would not even render).
+  @block_keys [:do, :else, :rescue, :catch, :after]
+
   @doc """
   Transform a source string into `{metamutant_source, [%Site{}], next_id}`.
 
@@ -568,6 +574,32 @@ defmodule Mutare.Transform do
     {:=, meta, [analyze(lhs, :pattern, mutators), analyze(rhs, context, mutators)]}
   end
 
+  # `<-` generator/with-clause: the left is a pattern (matched against each value
+  # in `for x <- …`, or the right's result in `with {:ok, x} <- …`), the right keeps
+  # the context. Mirrors `=` — without it a literal in the LHS would be mutated.
+  defp analyze({:<-, meta, [lhs, rhs]}, context, mutators) do
+    {:<-, meta, [analyze(lhs, :pattern, mutators), analyze(rhs, context, mutators)]}
+  end
+
+  # `cond`: the one `->` construct whose clause *left* is a runtime condition, not
+  # a pattern — so it stays mutatable. Analyze its clauses keeping both sides
+  # runtime, intercepting them before the generic `->` clause (below) would wrongly
+  # pattern-route the conditions. The `:do` block key is protected by the
+  # keyword-pair clause.
+  defp analyze({:cond, meta, [blocks]}, _context, mutators) when is_list(blocks) do
+    {:cond, meta, [Enum.map(blocks, &analyze_cond_block(&1, mutators))]}
+  end
+
+  # A `->` clause in a pattern-matching construct (`case`/`fn`/`receive`/`with` else/
+  # a `try` block outside a def head/`for` reduce): the left is a pattern (never
+  # mutated — a selector `case` is illegal in a pattern and would poison the single
+  # build), the body is runtime. `cond` is excepted above; a `when` guard among the
+  # patterns is returned whole by the `:when` clause, so guards stay untouched.
+  defp analyze({:->, meta, [patterns, body]}, _context, mutators) when is_list(patterns) do
+    {:->, meta,
+     [Enum.map(patterns, &analyze(&1, :pattern, mutators)), analyze(body, :runtime, mutators)]}
+  end
+
   # default argument inside a pattern (`x \\ expr`): the variable is a pattern,
   # but the default runs at call time → runtime (don't regress its mutation).
   defp analyze({:\\, meta, [var, default]}, :pattern, mutators) do
@@ -586,6 +618,20 @@ defmodule Mutare.Transform do
         |> put_candidates(build_candidates(node, muts))
         |> recurse(:runtime, mutators)
     end
+  end
+
+  # A keyword/block pair (`key: value`, `%{a: …}`, a `do:`/`else:`/`rescue:`/
+  # `catch:`/`after:` block). The *key* is a structural label, never a runtime
+  # value, so it is not offered to a mutator — a selector spliced into a key
+  # position is malformed (it would not even render). Only the value is analyzed,
+  # in the surrounding context. A 2-tuple like `{:ok, x}` is *not* this — its `:ok`
+  # is a real runtime value — so `label_key?/1` admits only inline-keyword keys
+  # (the `format: :keyword` marker) or a block-key atom, and a tuple tag falls
+  # through to `recurse` and stays mutatable.
+  defp analyze({key, value} = pair, context, mutators) do
+    if label_key?(key),
+      do: {key, analyze(value, context, mutators)},
+      else: recurse(pair, context, mutators)
   end
 
   # anything else — a node in a non-runtime context, or a container/leaf:
@@ -634,6 +680,22 @@ defmodule Mutare.Transform do
   end
 
   defp analyze_try_clause(other, mutators), do: analyze(other, :runtime, mutators)
+
+  # One `cond` do-block: a `{key, clauses}` pair whose key is the `:do` label (kept
+  # raw, never mutated) and whose clauses each keep *both* sides runtime — a cond
+  # clause's left is a condition, not a pattern. Anything unexpected falls back to a
+  # plain runtime descent.
+  defp analyze_cond_block({key, clauses}, mutators) when is_list(clauses),
+    do: {key, Enum.map(clauses, &analyze_cond_clause(&1, mutators))}
+
+  defp analyze_cond_block(other, mutators), do: analyze(other, :runtime, mutators)
+
+  defp analyze_cond_clause({:->, meta, [conds, body]}, mutators) when is_list(conds) do
+    {:->, meta,
+     [Enum.map(conds, &analyze(&1, :runtime, mutators)), analyze(body, :runtime, mutators)]}
+  end
+
+  defp analyze_cond_clause(other, mutators), do: analyze(other, :runtime, mutators)
 
   # === return-value mutation =================================================
 
@@ -704,6 +766,18 @@ defmodule Mutare.Transform do
   defp key_atom({:__block__, _meta, [atom]}) when is_atom(atom), do: atom
   defp key_atom(atom) when is_atom(atom), do: atom
   defp key_atom(_), do: nil
+
+  # Is `key` the *label* side of a keyword/block pair (so never a runtime value)?
+  # Two kinds, both wrapped `{:__block__, meta, [atom]}`: an inline keyword key
+  # (`a:`, `timeout:`, `do:` written inline) carries `format: :keyword`; a block key
+  # (the `do`/`else`/`rescue`/`catch`/`after` that renders a `do … end`) carries no
+  # format marker, so it is recognised by its reserved atom. A plain atom literal in
+  # value position (a tuple tag `{:ok, x}`, a `%{:a => …}` arrow key) is neither, so
+  # it stays mutatable.
+  defp label_key?({:__block__, meta, [atom]}) when is_atom(atom) and is_list(meta),
+    do: Keyword.get(meta, :format) == :keyword or atom in @block_keys
+
+  defp label_key?(_), do: false
 
   # Find the tail expression of a `:do` block (the last statement of a multi-
   # statement block, else the whole single-expression value) and append a

@@ -361,6 +361,106 @@ defmodule Mutare.TransformTest do
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
+  describe "atom-literal context routing (keys and patterns are not mutated)" do
+    @atom [Mutare.Mutators.AtomLiteral]
+
+    test "value atoms mutate but keyword/map keys do not — and it renders" do
+      source = """
+      defmodule K do
+        def f(x), do: %{status: :active, a: :b}
+        def g(x), do: foo(x, timeout: :infinity)
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @atom)
+
+      # Values :active, :b, :infinity mutate (3); keys status/a/timeout do not.
+      assert length(sites) == 3
+      assert Enum.all?(sites, &(&1.mutator == :atom))
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "a `do:` block key is never mutated (it would otherwise fail to render)" do
+      # Regression: a selector spliced into a `case`/`if` `do:` key is malformed
+      # and crashed Sourceror's formatter outright (not even poison-recoverable).
+      source = """
+      defmodule B do
+        def f(x) do
+          case x do
+            :ok -> :done
+            _ -> :error
+          end
+        end
+
+        def g(x), do: if(x, do: :yes, else: :no)
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @atom)
+
+      # case bodies :done/:error + if values :yes/:no mutate (4); the :ok pattern
+      # and the do:/else: keys do not.
+      assert length(sites) == 4
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "case/fn/with/for/receive clause patterns are not mutated; bodies are" do
+      source = """
+      defmodule P do
+        def a(x) do
+          case x do
+            :ok -> :done
+          end
+        end
+
+        def b, do: Enum.map([], fn :ok -> :a end)
+        def c(l), do: for(:ok <- l, do: :hit)
+
+        def d do
+          with :ok <- run() do
+            :done
+          else
+            :bad -> :err
+          end
+        end
+
+        def e do
+          receive do
+            :msg -> :got
+          end
+        end
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @atom)
+
+      # Exactly the body atoms mutate; every `:ok`/`:bad`/`:msg` pattern is skipped.
+      # a:[:done] b:[:a] c:[:hit] d:[:done,:err] e:[:got] = 6 sites, no pattern atom.
+      assert length(sites) == 6
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "a literal in a case-clause pattern no longer poisons (latent-bug fix)" do
+      # Previously the `1` pattern was mutated into an illegal `case`-in-pattern and
+      # poison-recovered; now it is routed as a pattern and never offered.
+      source = """
+      defmodule L do
+        def f(x) do
+          case x do
+            1 -> :a
+            _ -> :b
+          end
+        end
+      end
+      """
+
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.Literal])
+
+      assert sites == []
+    end
+  end
+
   test "the default set fires the expanded families (logical, literal, conditional, …)" do
     source = """
     defmodule D do

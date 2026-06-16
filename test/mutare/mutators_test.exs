@@ -5,6 +5,7 @@ defmodule Mutare.MutatorsTest do
 
   alias Mutare.Mutators.{
     Arithmetic,
+    AtomLiteral,
     Collection,
     Conditional,
     FloatLiteral,
@@ -22,7 +23,8 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.all() ==
                [Arithmetic, Relational, Logical, Literal] ++
-                 [Conditional, List, Collection, StringLiteral, FloatLiteral, ReturnValue]
+                 [Conditional, List, Collection, StringLiteral, FloatLiteral, AtomLiteral] ++
+                 [ReturnValue]
     end
 
     test "families/0 are the registry's keys, in order — all on by default" do
@@ -30,7 +32,7 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.families() ==
                [:arithmetic, :relational, :logical, :literal] ++
-                 [:conditional, :list, :collection, :string, :float, :return_value]
+                 [:conditional, :list, :collection, :string, :float, :atom, :return_value]
     end
 
     test "resolve/1 maps family atoms to modules, preserving order" do
@@ -328,6 +330,34 @@ defmodule Mutare.MutatorsTest do
 
     test "name" do
       assert FloatLiteral.name() == :float
+    end
+  end
+
+  describe "AtomLiteral" do
+    test "mutates a literal atom into the sentinel atom" do
+      assert render(AtomLiteral.mutate(parse(":ok"))) == [":mutare"]
+      assert render(AtomLiteral.mutate(parse(":some_status"))) == [":mutare"]
+    end
+
+    test "drops the replacement that already equals the sentinel" do
+      assert AtomLiteral.mutate(parse(":mutare")) == :skip
+    end
+
+    test "skips true/false/nil (handled by Literal / Conditional, or absence)" do
+      assert AtomLiteral.mutate(parse("true")) == :skip
+      assert AtomLiteral.mutate(parse("false")) == :skip
+      assert AtomLiteral.mutate(parse("nil")) == :skip
+    end
+
+    test "skips non-atom literals and bare atoms (function names, etc.)" do
+      assert AtomLiteral.mutate(parse("1")) == :skip
+      assert AtomLiteral.mutate(parse(~s("str"))) == :skip
+      # A bare (un-`__block__`-wrapped) atom is never a literal node the analyzer offers.
+      assert AtomLiteral.mutate(:upcase) == :skip
+    end
+
+    test "name" do
+      assert AtomLiteral.name() == :atom
     end
   end
 

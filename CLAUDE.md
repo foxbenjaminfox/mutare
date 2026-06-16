@@ -58,7 +58,14 @@ contract between them is the whole game.
     (`meta[:mutare]`) — which is why there's no fragile `{line, column}` node identity and no
     double mutator invocation. Two contexts are threaded: `:runtime` → in-place (`:guard`/
     `:clause_drop` are produced by the separate lift path), and `:pattern` (don't mutate, but keep
-    descending so default-arg values and `size()` args are still reached). The rest are recognised
+    descending so default-arg values and `size()` args are still reached). Pattern routing covers
+    not just `def` heads and `=`/`<<>>` but every match position: a `<-` generator LHS and the
+    LHS of a `case`/`fn`/`receive`/`with`/`for`/`try` `->` clause (generic `->` clause), with
+    **`cond` excepted** (its `->` LHS is a runtime condition, kept mutatable — `analyze_cond_block/2`).
+    Orthogonally, a keyword/block **key** is never offered to a mutator: the 2-tuple pair clause
+    (`label_key?/1`) skips inline keys (`format: :keyword`) and `do:`/`else:`/`rescue:`/`catch:`/
+    `after:` block keys (`@block_keys`), so an atom-matching mutator can't splice a selector into a
+    `do:` key (which wouldn't even render) — while a tuple tag like `{:ok, x}` stays mutatable. The rest are recognised
     and pruned by dedicated clauses: `:compile_time` (module-attribute values like `@x 1 + 2`,
     `defmacro`/`defmacrop` bodies, `quote` blocks, **and** `import`/`alias`/`require`/`use`
     directives whose args must be compile-time literals — frozen at compile/expansion time, so a
@@ -176,7 +183,9 @@ contract between them is the whole game.
   unary-minus removal), Relational, Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip), Literal
   (integers `n`→`{n±1, 0}`, `true`↔`false`), Conditional (a boolean-valued node → `true`/`false`),
   List (`++`↔`--`, non-empty list literal → `[]`), Collection (`Enum`/`List` predicate swaps),
-  StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, and **ReturnValue**
+  StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, AtomLiteral (a
+  literal atom → the sentinel `:mutare`; `true`/`false`/`nil` excluded — Literal/Conditional own
+  them; keys and patterns excluded *positionally* by `Transform`, not the mutator), and **ReturnValue**
   (a `def`/`defp` clause's tail expression → a shape-directed *pair*: an empty/zero value and a
   non-empty/non-nil sentinel — numeric→`0`/`1`, `<>`→`""`/`"mutare"`, `++`/`--`→`[]`/`[:mutare]`,
   else→`nil`/`:mutare`; mirrors StringLiteral's pair, the sentinel catching `!= nil`-style weak
