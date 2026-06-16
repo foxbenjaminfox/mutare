@@ -657,12 +657,12 @@ defmodule Mutare.Transform do
   end
 
   # a generic runtime node: build the candidate from the raw node (so `original`
-  # keeps un-annotated children), then descend into the children — except a sigil,
-  # whose `<<>>` content and modifier list are its internal representation, not user
-  # sub-expressions. We offer the sigil node itself (so the sigil mutators —
-  # Regex/Charlist/DateTime — match it) but do not descend: a selector spliced into
-  # sigil content is illegal, and descending would also feed BitstringLiteral the
-  # sigil's content `<<>>`.
+  # keeps un-annotated children), then descend into the children. A sigil is offered
+  # as a whole (so the sigil mutators — Regex/Charlist/DateTime — match it), then
+  # descended *surgically* via `descend_sigil/2`: its content `<<>>` segments are
+  # analyzed (so an interpolated expression `~r/a#{b}c/` still mutates `b`), but the
+  # content `<<>>` *wrapper* itself is never offered — collapsing a sigil's content
+  # (BitstringLiteral) or splicing a selector into it is illegal.
   defp analyze({form, _meta, _args} = node, :runtime, mutators) do
     node =
       case Mutator.mutations(node, mutators) do
@@ -670,7 +670,9 @@ defmodule Mutare.Transform do
         muts -> put_candidates(node, build_candidates(node, muts))
       end
 
-    if sigil?(form), do: node, else: recurse(node, :runtime, mutators)
+    if sigil?(form),
+      do: descend_sigil(node, mutators),
+      else: recurse(node, :runtime, mutators)
   end
 
   # A keyword/block pair (`key: value`, `%{a: …}`, a `do:`/`else:`/`rescue:`/
@@ -924,7 +926,7 @@ defmodule Mutare.Transform do
 
   # Is this node form a sigil (`~r`, `~D`, `~w`, a custom `~X`)? Sigils parse as
   # `{:sigil_<name>, _, [<<>>, modifiers]}`; the analyzer offers the whole node to
-  # mutators but does not descend into its internal `<<>>`/modifiers.
+  # the sigil mutators and descends into its content via `descend_sigil/2`.
   defp sigil?(form) when is_atom(form) do
     case Atom.to_string(form) do
       "sigil_" <> _ -> true
@@ -933,6 +935,20 @@ defmodule Mutare.Transform do
   end
 
   defp sigil?(_), do: false
+
+  # Descend into a sigil's content `<<>>` *segments* (so an interpolated expression
+  # like `~r/a#{b}c/` still mutates `b` — a genuine runtime sub-position) without
+  # ever offering the content `<<>>` *wrapper* to a mutator: a sigil's content is
+  # not a user-written bitstring literal, so collapsing it (BitstringLiteral) or
+  # splicing a selector into it would be illegal. The modifier list is left raw; the
+  # sigil node itself was already offered to the sigil mutators by the caller. A
+  # bare-binary segment (`~r/foo/`'s `"foo"`) is descended too but offers nothing.
+  defp descend_sigil({sigil, meta, [{:<<>>, bmeta, segments}, modifiers]}, mutators) do
+    content = {:<<>>, bmeta, Enum.map(segments, &analyze_segment(&1, :runtime, mutators))}
+    {sigil, meta, [content, modifiers]}
+  end
+
+  defp descend_sigil(node, _mutators), do: node
 
   defp build_candidates(node, muts) do
     range = Sourceror.get_range(node)

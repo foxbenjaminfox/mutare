@@ -354,13 +354,15 @@ Three constructs share the `{:<<>>, …}` shape, and only the first should colla
     interpolations); its inner expressions still mutate (the node is descended);
   * a **sigil's content** `<<>>` (inside `~r/…/`, `~D[…]`) — *also* has no delimiter,
     so it is indistinguishable from a real literal at the node. The fix is in the
-    analyzer, not the mutator: the generic runtime clause now recognises a sigil
-    (`sigil?/1`, an atom-prefix test covering `~r`/`~D`/`~w`/custom) and offers the
-    whole node to the sigil mutators **without descending** into its `<<>>`/modifiers.
-    A selector spliced into sigil content is illegal anyway; the bonus is the sigil's
-    content never reaches BitstringLiteral. Cost: an interpolated expression *inside* a
-    sigil (`~s"#{x}"`) is no longer mutated — rare and low-value; plain interpolated
-    strings keep theirs.
+    analyzer, not the mutator: the generic runtime clause recognises a sigil
+    (`sigil?/1`, an atom-prefix test covering `~r`/`~D`/`~w`/custom), offers the whole
+    node to the sigil mutators, then descends *surgically* via `descend_sigil/2` —
+    it analyzes the content `<<>>`'s **segments** (so an interpolated expression like
+    `~r/a#{b}c/` still mutates `b`, and a genuine bitstring written *inside* an
+    interpolation still collapses) but never offers the content `<<>>` **wrapper**
+    itself. A selector spliced into sigil content (or BitstringLiteral collapsing it)
+    is illegal; routing through the segments instead of the wrapper keeps interpolated
+    sub-expressions mutating while the wrapper stays safe.
 
 ### Guard tagger is not bitstring-spec-aware `[deferred]`
 `tag_targets/3` (the lifted-guard path) is a context-free `Macro.postwalk` that

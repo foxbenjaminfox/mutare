@@ -88,9 +88,10 @@ contract between them is the whole game.
     `size(expr)` args recursed; `analyze_spec/3`), and `:capture_arity` (the `/` in `&fun/arity`,
     an arity separator not division). A `<<…>>` node is itself offered in a runtime body (so
     BitstringLiteral can collapse it to `<<>>`) while its segments still descend; a **sigil**
-    (`~r`/`~D`/`~w`/custom, `sigil?/1`) is offered as a whole but its internal `<<>>`/modifiers are
-    *not* descended — the sigil mutators own it, and a selector in sigil content would be illegal
-    (and would feed BitstringLiteral the sigil's content).
+    (`~r`/`~D`/`~w`/custom, `sigil?/1`) is offered as a whole, then descended *surgically*
+    (`descend_sigil/2`): its content `<<>>` **segments** are analyzed — so an interpolated
+    expression `~r/a#{b}c/` still mutates `b` — but the content `<<>>` **wrapper** is never offered
+    (collapsing it, or splicing a selector into sigil content, would be illegal).
   - **assign + emit (`emit/2`)** is a bottom-up `Macro.postwalk` so ids are assigned in
     post-order DFS; the id counter advances even for `:skip_ids` (poison recovery relies on it).
   - **in-place selector** for body expressions: wrap the operator in a tail-position

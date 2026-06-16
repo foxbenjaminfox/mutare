@@ -243,6 +243,20 @@ defmodule Mutare.TransformTest do
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
+  test "an interpolated expression inside a sigil still mutates; the content <<>> does not collapse" do
+    source = "defmodule S do\n  def f(b), do: ~r/a\#{b + 1}c/\nend\n"
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source,
+        mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.BitstringLiteral]
+      )
+
+    # `b + 1` inside the interpolation mutates; the sigil's content `<<>>` is never
+    # offered to BitstringLiteral (no :bitstring site).
+    assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
+
   test "defmacro/defmacrop bodies are compile-time and not mutated" do
     source = """
     defmodule M do
