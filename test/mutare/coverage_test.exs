@@ -72,6 +72,25 @@ defmodule Mutare.CoverageTest do
     end
   end
 
+  describe "record_ast/1 (ids render as a list, never a charlist)" do
+    # A bare list of small integers renders as a charlist (`[91, 92]` → `~c"[\\"`),
+    # and such a charlist can splice an unbalanced quote/backslash into the
+    # metamutant and break its re-parse (the real plug failure). The ids must
+    # always render as a list literal.
+    test "dangerous ids ([, \\, \") stay a list literal and re-parse cleanly" do
+      for ids <- [[91, 92], [34, 92], [9, 10], [1, 2, 3], [123, 456]] do
+        rendered = Sourceror.to_string(Recorder.record_ast(ids))
+
+        # `inspect/1` itself charlists a small-int list — force a list rendering.
+        as_list = inspect(ids, charlists: :as_lists)
+
+        refute rendered =~ "~c", "ids #{as_list} rendered as a charlist: #{rendered}"
+        assert rendered =~ "hit(#{as_list})"
+        assert {:ok, _} = Sourceror.parse_string(rendered)
+      end
+    end
+  end
+
   describe "no-coverage skipping (end to end)" do
     @tag :runner
     test "a mutant on an unexecuted line is :no_coverage and is not run" do

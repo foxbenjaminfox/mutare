@@ -103,16 +103,24 @@ defmodule Mutare.Coverage.Recorder do
   this selector's mutant `ids` ran (see the moduledoc for the gate).
 
   Hand-built (not `quote`d) to share the `mutare_active` binding `catch_all_pattern/0`
-  introduces and to splice `ids` as a plain literal list.
+  introduces and to splice `ids` as a literal list of integers.
   """
   @spec record_ast([pos_integer()]) :: Macro.t()
   def record_ast(ids) when is_list(ids) do
     active_zero = {:==, [], [{@var_name, [], nil}, 0]}
     track_read = {{:., [], [:persistent_term, :get]}, [], [@track_key, false]}
-    hit_call = {{:., [], [@helper_module, :hit]}, [], [ids]}
+    hit_call = {{:., [], [@helper_module, :hit]}, [], [ids_literal(ids)]}
 
     {:and, [], [{:and, [], [active_zero, track_read]}, hit_call]}
   end
+
+  # Build the ids list AST so `Sourceror.to_string` renders it as a list literal
+  # (`[91, 92]`), never a charlist. A *bare* list of small integers triggers the
+  # "small-int list is a charlist" heuristic (`[91, 92]` → `~c"[\\"`), whose
+  # rendering can splice an unbalanced quote/backslash into the metamutant and
+  # break its re-parse. Wrapping each id in a `:__block__` node leaves them
+  # ordinary integers at compile time while keeping the rendered form a list.
+  defp ids_literal(ids), do: Enum.map(ids, &{:__block__, [], [&1]})
 
   @doc """
   The `@compile {:no_warn_undefined, {<helper>, :hit, 1}}` attribute

@@ -533,6 +533,35 @@ near-identical copies for N guard mutants. Both are fixed:
   whose value differs across the split — are worth recovering later
   (normalize/relocate the reads, or detect attribute-independence and lift). For
   now the blanket refusal is the conservative, always-correct choice.
+- **Metaprogramming-augmented clauses are not lifted either.** Same hazard as
+  non-consecutive, different source: a function whose clause set is *grown at
+  compile time* by a module-level `for`/macro that `def`s the same name. The
+  generated clauses are invisible to the planner (they live inside an `{:other}`
+  statement, not as literal top-level `def`s), so the literal run looks complete
+  and consecutive and would be lifted — installing a catch-all dispatcher that
+  shadows every generated clause and forwards to an `__orig` missing them, a
+  guaranteed `FunctionClauseError` on baseline. The real break (plug
+  `Plug.Conn.Status.code/1`):
+
+  ```elixir
+  def code(integer) when integer in 100..999, do: integer
+  for {code, atom} <- statuses do
+    def code(unquote(atom)), do: unquote(code)   # code(:ok) → 200, etc.
+  end
+  ```
+
+  `metaprogrammed_def_names/1` collects every name `def`/`defp`'d *inside* a
+  non-clause statement (pruning nested `defmodule`/`defimpl`/`defprotocol`, a
+  different scope), and `plan_clause_group/4` refuses to lift any clause group
+  whose name is in that set — falling back to in-place exactly like the
+  non-consecutive case. Keyed by **name only** (not name/arity): a generated
+  head's arity can be obscured by metaprogramming, and over-refusing only costs
+  guard/clause-drop mutants, never correctness. Not silent —
+  `warn_metaprogrammed/2` logs once per blocked signature (it is not
+  user-fixable; the generated clauses are intentional). Note the sibling functions
+  `reason_atom/1` / `reason_phrase/1` in the same file were *already* safe via the
+  non-consecutive path (their two literal clauses straddle the `for`), so this
+  closes the remaining hole where the literal clauses happen to be consecutive.
 - **Private names** are `<prefix><name>_<arity>_g<group>_{orig,m<id>}`. The
   group counter keeps generated names unique *among themselves*, and `?`/`!`
   (legal only at a name's end) are replaced so they can sit mid-identifier. The
@@ -679,6 +708,21 @@ exit (the dump may be partial — e.g. `max_failures` aborts before later files)
 an unreadable dump, or an empty dump (the capture recorded nothing → it likely
 failed). The rule throughout: never skip on doubt — run everything rather than
 silently drop a mutant from the score's denominator.
+
+**The `hit([ids])` argument must render as a list, never a charlist.** The catch-all
+splices `MutareCov.hit([<ids>])` into the metamutant, where `<ids>` is a list of
+mutant ids. A *bare* list of small integers triggers Elixir/Sourceror's "small-int
+list is a charlist" printer heuristic: `[91, 92]` renders as `~c"[\"` (char 91 =
+`[`, 92 = `\`) — and there the trailing `\` escapes the closing quote, leaving an
+**unterminated charlist** that breaks the metamutant's re-parse (`Manifest.from_source`
+→ `Sourceror.parse_string!` crash) and takes down the whole run. It only bites when
+ids land on `\`/`"`/control chars, so it stayed hidden until a real target
+(`plug`) accrued ids in that range. `Recorder.record_ast/1` now wraps each id in a
+`{:__block__, [], [id]}` node (`ids_literal/1`), which keeps them ordinary integers
+at compile time but forces a list rendering. Any future hand-built integer-list
+literal spliced into generated code has the same trap — wrap, don't pass a bare
+list. (Note `inspect/1` charlists too, so tests assert against
+`inspect(ids, charlists: :as_lists)`.)
 
 ### Baseline split from the coverage probe (done)
 The probe used to *double* as the green baseline check, which conflated two

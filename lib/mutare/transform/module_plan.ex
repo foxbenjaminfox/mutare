@@ -41,7 +41,9 @@ defmodule Mutare.Transform.ModulePlan do
   def build(statements, mutators, file) do
     chunks = chunk_clause_runs(statements)
     non_consecutive = non_consecutive_signatures(chunks)
+    metaprogrammed = metaprogrammed_def_names(chunks)
     warn_non_consecutive(non_consecutive, file)
+    warn_metaprogrammed(metaprogrammed_signatures(chunks, metaprogrammed, non_consecutive), file)
 
     items =
       Enum.map(chunks, fn
@@ -49,7 +51,7 @@ defmodule Mutare.Transform.ModulePlan do
           {:statement, statement}
 
         {:clauses, clauses} ->
-          plan_clause_group(clauses, non_consecutive, mutators)
+          plan_clause_group(clauses, non_consecutive, metaprogrammed, mutators)
       end)
 
     %__MODULE__{items: items}
@@ -72,8 +74,9 @@ defmodule Mutare.Transform.ModulePlan do
 
   # --- clause-group classification ------------------------------------------
 
-  defp plan_clause_group(clauses, non_consecutive, mutators) do
+  defp plan_clause_group(clauses, non_consecutive, metaprogrammed, mutators) do
     signature = clause_signature(hd(clauses))
+    {_vis, name, _arity} = signature
 
     # Non-consecutive heads can't be lifted (for now). A dispatcher is a catch-all
     # for the whole signature, so lifting one run would shadow the others; and
@@ -82,7 +85,16 @@ defmodule Mutare.Transform.ModulePlan do
     # `@attr` read between the heads resolves differently there
     # (`@a 1; def f(0), do: @a; @a 2; def f(1), do: @a`). Fall back to in-place;
     # guard/clause-drop mutants are simply not offered for such functions.
-    if signature in non_consecutive do
+    #
+    # Same hazard, different source: a function whose clause set is *augmented by
+    # compile-time metaprogramming* — a module-level `for`/macro that `def`s the
+    # same name (`def code(integer) when …` beside `for … do def code(atom) …`).
+    # Those generated clauses are invisible here (they live inside an `{:other}`
+    # statement), so the run looks complete and consecutive; lifting it installs a
+    # catch-all dispatcher that shadows every metaprogrammed clause and forwards to
+    # an `__orig` missing them — a guaranteed `FunctionClauseError`. Refuse to lift
+    # any name that is also defined inside a non-`def` statement.
+    if signature in non_consecutive or name in metaprogrammed do
       {:in_place, clauses}
     else
       case FunctionPlan.plan(signature, clauses, mutators) do
@@ -148,6 +160,71 @@ defmodule Mutare.Transform.ModulePlan do
       Logger.warning(
         "#{file}: clauses of #{name}/#{arity} are non-consecutive — not lifting " <>
           "(no guard or clause-drop mutants for it); group the clauses to enable lifting"
+      )
+    end)
+  end
+
+  # --- metaprogramming-augmented signatures ----------------------------------
+
+  # Names `def`/`defp`'d *inside* a non-clause statement (a module-level `for`,
+  # `if`, `Enum.each`, macro body, …). A function with such a name may gain
+  # clauses at compile time that aren't visible as top-level `def` statements, so
+  # its top-level run is not the whole function and must not be lifted (the
+  # dispatcher would shadow the generated clauses). Nested module/protocol bodies
+  # are a different scope — their defs can't add clauses here — so the walk is
+  # pruned at those boundaries.
+  defp metaprogrammed_def_names(chunks) do
+    chunks
+    |> Enum.flat_map(fn
+      {:other, statement} -> nested_def_names(statement)
+      {:clauses, _clauses} -> []
+    end)
+    |> MapSet.new()
+  end
+
+  defp nested_def_names(statement) do
+    {_ast, names} =
+      Macro.prewalk(statement, [], fn
+        {form, _meta, _args}, acc when form in [:defmodule, :defimpl, :defprotocol] ->
+          # Prune: return a leaf so prewalk does not descend into the nested scope.
+          {:__mutare_pruned__, acc}
+
+        {form, _meta, [head | _rest]} = node, acc when form in [:def, :defp] ->
+          case name_arity(head) do
+            {name, _arity} -> {node, [name | acc]}
+            :error -> {node, acc}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    names
+  end
+
+  # The top-level clause-group signatures blocked from lifting *only* by
+  # metaprogramming (already-non-consecutive ones are warned separately), for the
+  # warning. Deduplicated by signature.
+  defp metaprogrammed_signatures(chunks, metaprogrammed, non_consecutive) do
+    chunks
+    |> Enum.flat_map(fn
+      {:clauses, clauses} -> [clause_signature(hd(clauses))]
+      {:other, _statement} -> []
+    end)
+    |> Enum.uniq()
+    |> Enum.filter(fn {_vis, name, _arity} = sig ->
+      name in metaprogrammed and sig not in non_consecutive
+    end)
+  end
+
+  # Mirror of warn_non_consecutive/2 for the metaprogramming case. Not user-fixable
+  # (the generated clauses are intentional), but the coverage gap should still be
+  # visible.
+  defp warn_metaprogrammed(signatures, file) do
+    Enum.each(signatures, fn {_vis, name, arity} ->
+      Logger.warning(
+        "#{file}: clauses of #{name}/#{arity} are augmented by compile-time " <>
+          "metaprogramming — not lifting (no guard or clause-drop mutants for it)"
       )
     end)
   end

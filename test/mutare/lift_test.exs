@@ -159,6 +159,38 @@ defmodule Mutare.LiftTest do
       assert apply(Mutare.NonConsecutiveAttrFixture, :f, [1]) == 2
     end
 
+    test "does not lift a function whose clauses are augmented by metaprogramming" do
+      # `code/1`'s literal clauses are consecutive, but a module-level `for`
+      # generates more `code/1` clauses at compile time. Lifting would install a
+      # catch-all dispatcher that shadows the generated clauses and forwards to an
+      # `__orig` missing them — `code(:ok)` would raise FunctionClauseError. The
+      # mirror of the plug `Plug.Conn.Status.code/1` baseline failure.
+      source = """
+      defmodule Mutare.MetaprogrammedLiftFixture do
+        @pairs [ok: 200, not_found: 404]
+
+        def code(integer) when integer in 100..999, do: integer
+
+        for {atom, code} <- @pairs do
+          def code(unquote(atom)), do: unquote(code)
+        end
+      end
+      """
+
+      {{meta, sites, _next_id}, log} =
+        with_log(fn -> Mutare.transform_string(source, file: "meta.ex") end)
+
+      refute meta =~ "__mutare_code"
+      assert Enum.count(sites, &(&1.kind == :lifted)) == 0
+      assert log =~ "meta.ex: clauses of code/1 are augmented by compile-time metaprogramming"
+      assert [{Mutare.MetaprogrammedLiftFixture, _}] = Code.compile_string(meta)
+
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.MetaprogrammedLiftFixture, :code, [200]) == 200
+      assert apply(Mutare.MetaprogrammedLiftFixture, :code, [:ok]) == 200
+      assert apply(Mutare.MetaprogrammedLiftFixture, :code, [:not_found]) == 404
+    end
+
     test "lifts functions whose names end in ? or ! (sanitized private names)" do
       source = """
       defmodule Mutare.OkFixture do
