@@ -1193,6 +1193,34 @@ Net: `lib/plug/router` went from 7 poisons to 0; the two pipe-stage swaps now ru
 as real (killed) mutants. The 5 illegal `match?`-pattern "mutants" are correctly
 never generated (site count drops), since they were never legal mutations.
 
+A second sweep over the rest of plug (`lib/plug/conn` and ultimately all of `lib`,
+~6k sites) surfaced two more — both in the **lift path**, both confirmed real by
+reproducing the single function in isolation (the scope scan over-reports: one
+"implementation not provided" error in `Plug.Conn.Utils` dragged 18 line-adjacent
+ids — valid `conditional`/`list` guard mutants in *other* functions — down with it
+as poison-recovery collateral, all of which came back once the real cause was fixed):
+
+- **`pattern_wildcard` on a bitstring segment specifier (fixed):** `<<binary::binary>>`
+  parses its type specifier `binary` as a node identical to the value variable
+  `binary` (`{:binary, [], nil}`). `PatternWildcard` counted both → a phantom
+  "duplicate" → wildcarded it, emitting `<<binary::_>>` ("unknown bitstring specifier
+  `_`") or `<<_::binary>>` (stranding the body's `binary` → "undefined variable").
+  Fixed by walking only the *value* side of a `::` segment (`walk_vars` clause),
+  mirroring the `:spec` exclusion the in-place path already applies. (`PatternSwap`
+  is unaffected — it only swaps siblings inside explicit tuple/list/map containers,
+  never a `::` segment.)
+- **`clause_drop` orphaning a bodiless function head (fixed):** `Plug.Conn.Utils`
+  declares `def validate_utf8!(binary, exception, context)` (a bodiless header, for
+  docs/grouping) followed by one body-bearing clause. `build_drops` counted the
+  header as a droppable clause, so `length == 2` offered drops — and the mutant that
+  drops the *impl* left a bodiless `defp …(args)` with no body ("implementation not
+  provided for predefined …"). Fixed by counting only **body-bearing** clauses
+  (`[head, body | _]`, vs a header's lone `[head]`): a header is never a drop target,
+  and ≥ 2 *impls* are required, so a drop always leaves a real implementation behind.
+
+After both fixes the entire plug `lib` (~6k mutation sites) renders and compiles as
+a metamutant with **zero** poisons.
+
 ## Decisions log
 
 - **Two renderers.** The metamutant is produced by AST rewrite + `Sourceror.to_string`

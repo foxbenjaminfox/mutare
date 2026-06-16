@@ -45,6 +45,28 @@ defmodule Mutare.Mutators.PatternWildcardTest do
     end
   end
 
+  describe "bitstring segment specifiers are not variables" do
+    # `<<v::spec>>` parses its type specifier (`binary`, `integer`, a `size(k)` ref)
+    # as plain-var-shaped nodes identical to the value var. They must not be counted
+    # or wildcarded — replacing one yields an illegal `<<v::_>>`, and counting one
+    # invents a phantom duplicate of a same-named value/arg (the plug poison).
+    test "a type specifier atom is not a duplicate of the same-named value var" do
+      assert wildcards("<<binary::binary>>", [:binary]) == []
+    end
+
+    test "an arg is not a duplicate of a same-named specifier atom" do
+      assert wildcards("<<rest::binary>>, binary", [:binary]) == []
+    end
+
+    test "a variable inside a size() specifier is never counted or wildcarded" do
+      assert wildcards("<<n::size(k)>>, k", []) == []
+    end
+
+    test "the value side of a segment is still a real, wildcardable variable" do
+      assert wildcards("<<x::binary>>, x", [:x]) == ["f(<<_::binary>>, x)", "f(<<x::binary>>, _)"]
+    end
+  end
+
   describe "no-ops" do
     test "a variable that appears once is never wildcarded" do
       assert wildcards("x, y") == []

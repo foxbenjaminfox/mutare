@@ -519,15 +519,32 @@ defmodule Mutare.Transform.FunctionPlan do
 
   # Drop one clause of a multi-clause function. Inputs the dropped clause handled
   # now fall to a later clause (or raise FunctionClauseError) — killed if tested.
-  defp build_drops(clauses) when length(clauses) < 2, do: []
-
+  #
+  # Only *body-bearing* clauses are droppable, and at least two must remain in play:
+  # a **bodiless head** (`def f(a, b)` with no `do` — a header declaration, e.g. for
+  # default args or docs) is not a clause to drop. Dropping it is a no-op, and
+  # dropping the implementation while a header remains leaves a `defp …(args)` with
+  # no body → "implementation not provided" (a poison). The `clause_index` stays the
+  # position in the *full* clause list (what `drop_clause/2` deletes by), so the
+  # header is simply never offered as a drop and never left as the lone clause.
   defp build_drops(clauses) do
-    clauses
-    |> Enum.with_index()
-    |> Enum.map(fn {clause, index} ->
-      %Candidate.Drop{clause_index: index, original: clause, range: Sourceror.get_range(clause)}
-    end)
+    droppable =
+      for {clause, index} <- Enum.with_index(clauses), body_bearing?(clause), do: {clause, index}
+
+    if length(droppable) < 2 do
+      []
+    else
+      Enum.map(droppable, fn {clause, index} ->
+        %Candidate.Drop{clause_index: index, original: clause, range: Sourceror.get_range(clause)}
+      end)
+    end
   end
+
+  # A real clause carries a body keyword (`[head, [do: …]]`); a bodiless head is just
+  # `[head]`. (A `when` guard lives *inside* the head, so a guarded clause with a body
+  # is still `[head_with_when, body_kw]` — two elements — and counts as body-bearing.)
+  defp body_bearing?({_vis, _meta, [_head, _body | _]}), do: true
+  defp body_bearing?(_), do: false
 
   # === liftability ===========================================================
 

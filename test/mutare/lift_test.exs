@@ -80,6 +80,41 @@ defmodule Mutare.LiftTest do
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
+    test "a bodiless function head is not a droppable clause" do
+      # `def f(a, b, c)` with no body is a header declaration (default args / docs),
+      # not a real clause. With one body-bearing clause the function is effectively
+      # single-clause: no drop is offered. Dropping the impl while the header
+      # remained would emit a bodiless `defp …(args)` → "implementation not provided"
+      # (the plug `Plug.Conn.Utils.validate_utf8!/3` poison). Must compile.
+      source = """
+      defmodule Mutare.BodilessHeadFixture do
+        def f(a, b, c)
+        def f(<<x::binary>>, b, c), do: {byte_size(x), b, c}
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source)
+
+      assert Enum.count(sites, &(&1.mutator == :clause_drop)) == 0
+      assert [{Mutare.BodilessHeadFixture, _}] = Code.compile_string(meta)
+    end
+
+    test "a bodiless head with two impls drops only the impls, never the header" do
+      source = """
+      defmodule Mutare.BodilessHeadTwoFixture do
+        def f(a)
+        def f(0), do: :zero
+        def f(n), do: :other
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source)
+
+      # Two body-bearing clauses → two drops; the header (index 0) is never dropped.
+      assert Enum.count(sites, &(&1.mutator == :clause_drop)) == 2
+      assert [{Mutare.BodilessHeadTwoFixture, _}] = Code.compile_string(meta)
+    end
+
     test "salts generated names when the target already defines a __mutare_ name" do
       # The target hand-writes the exact name the default scheme would generate
       # for classify/1's `__orig` copy (lift group 1). With a fixed prefix this

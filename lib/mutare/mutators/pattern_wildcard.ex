@@ -41,6 +41,10 @@ defmodule Mutare.Mutators.PatternWildcard do
   are always clean). No mutation ever emits a hard compile error.
 
   `_`, `_`-prefixed names, and pinned variables (`^x`) are never counted or replaced.
+  Nor is the **specifier side of a bitstring segment** (`<<v::binary>>`, `<<v::size(k)>>`):
+  a type atom like `binary` parses identically to a variable, so counting it would
+  invent a phantom duplicate of a same-named value/arg, and replacing it yields an
+  illegal `<<v::_>>`. The walk descends only the *value* side of a `::` segment.
   """
   @behaviour Mutare.Mutator
 
@@ -111,6 +115,19 @@ defmodule Mutare.Mutators.PatternWildcard do
   # result. Pins (`^x`) are opaque — neither counted nor descended — so a pinned
   # variable is never wildcarded.
   defp walk_vars({:^, _meta, _args} = pin, acc, _fun), do: {pin, acc}
+
+  # A bitstring segment `value::spec` (`<<binary::binary>>`, `<<n::size(k)>>`): only
+  # the *value* side is a pattern-variable position. The spec side's type atoms
+  # (`binary`, `integer`, …) parse as plain vars (`{:binary, [], nil}`) but are
+  # specifiers, not variables — counting one would invent a phantom "duplicate" of a
+  # same-named value var, and replacing it yields an illegal `<<v::_>>` specifier (or
+  # strands the real var, since the spec atom isn't a binding). Walk the value side
+  # only; the spec rides through untouched and uncounted. (Mirrors the `:spec`
+  # exclusion `Mutare.Transform.analyze_spec/3` applies on the in-place path.)
+  defp walk_vars({:"::", meta, [value, spec]}, acc, fun) do
+    {value, acc} = walk_vars(value, acc, fun)
+    {{:"::", meta, [value, spec]}, acc}
+  end
 
   defp walk_vars(node, {index, acc}, fun) do
     if var_name(node) do
