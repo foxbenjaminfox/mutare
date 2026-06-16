@@ -39,7 +39,7 @@ defmodule Mutare.Transform.FunctionPlan do
   # in-place `:pattern` routing in `Mutare.Transform`.
 
   alias Mutare.Mutator
-  alias Mutare.Transform.Candidate
+  alias Mutare.Transform.{Candidate, PatternStructure}
 
   @type signature :: {:def | :defp, atom(), non_neg_integer()}
 
@@ -450,7 +450,7 @@ defmodule Mutare.Transform.FunctionPlan do
   # (`PatternSwap`/`PatternWildcard`, or any custom mutator), so this needs no hard-coded
   # list — toggling them off via `:mutators` simply drops them from `mutators`.
   defp build_pattern_structures(clauses, mutators) do
-    case Enum.filter(mutators, &pattern_structure_mutator?/1) do
+    case PatternStructure.mutators(mutators) do
       [] ->
         []
 
@@ -496,13 +496,8 @@ defmodule Mutare.Transform.FunctionPlan do
     end
   end
 
-  defp pattern_structure_mutator?(mutator),
-    do: Code.ensure_loaded?(mutator) and function_exported?(mutator, :pattern_mutations, 2)
-
   # The variable names read in a clause's guard(s) and body — the `used_outside` set a
   # structural pattern mutator needs to know a variable stays bound after wildcarding.
-  # Over-collecting (any `{name, _, ctx}` with atom `ctx`, including a mere rebinding) is
-  # the safe direction: it can only make the mutator keep a binding, never strand one.
   defp clause_used_outside({_vis, _meta, [head | rest]}) do
     guards =
       case head do
@@ -510,20 +505,7 @@ defmodule Mutare.Transform.FunctionPlan do
         _ -> []
       end
 
-    collect_var_names(guards ++ rest)
-  end
-
-  defp collect_var_names(ast) do
-    {_ast, names} =
-      Macro.prewalk(ast, MapSet.new(), fn
-        {name, _meta, ctx} = node, acc when is_atom(name) and is_atom(ctx) ->
-          {node, MapSet.put(acc, name)}
-
-        node, acc ->
-          {node, acc}
-      end)
-
-    names
+    PatternStructure.used_names(guards ++ rest)
   end
 
   # The clause's head *call* node (`{name, meta, args}`), peeling any `when` — the node

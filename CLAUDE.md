@@ -51,16 +51,22 @@ contract between them is the whole game.
     one tag counter through guards and head-pattern literals, so a `def f(0) when …` lifts both
     kinds together; `build_pattern_structures/2` is a separate (untagged, index-based) pass for the
     structural rewrites.
-  - **`Transform.Candidate.{InPlace,Guard,Pattern,PatternStructure,Drop}`** — typed candidate variants
-    (one struct per legal kind), replacing the old single struct that redundantly stored
-    `context`/`kind`/`operation` and admitted illegal combinations. `Pattern` (a head-pattern literal
-    swap) is a mechanical twin of `Guard` — both tag a node in the shared group and replace it in a
-    `__mut` copy — but a distinct kind (head, not `when`; literal families only). `PatternStructure`
-    (a variable swap or duplicate→wildcard) also lives in the head but spans sibling positions /
-    repeated variables that a single tag can't capture, so it is applied by **whole-clause
-    replacement by index** (like `Drop`), carrying the mutated head args. The matching `Site`
-    constructor is chosen by pattern-matching the variant at emit (`Guard`/`Pattern`/`PatternStructure`
-    → `Site.lifted_replace/6`).
+  - **`Transform.Candidate.{InPlace,Guard,Pattern,PatternStructure,CasePattern,Drop}`** — typed
+    candidate variants (one struct per legal kind), replacing the old single struct that redundantly
+    stored `context`/`kind`/`operation` and admitted illegal combinations. `Pattern` (a head-pattern
+    literal swap) is a mechanical twin of `Guard` — both tag a node in the shared group and replace it
+    in a `__mut` copy — but a distinct kind (head, not `when`; literal families only).
+    `PatternStructure` (a variable swap or duplicate→wildcard in a `def`/`defp` head) spans sibling
+    positions / repeated variables that a single tag can't capture, so it is applied by **whole-clause
+    replacement by index** (like `Drop`), carrying the mutated head args. `CasePattern` is the *same*
+    swap/wildcard families on a `case` *clause* pattern but delivered **in place** (a `case` isn't
+    liftable): the whole `case` is wrapped in a selector whose mutant branch is a copy with one
+    clause's pattern restructured (`replacement`), the diff staying focused on the pattern. The
+    matching `Site` constructor is chosen by pattern-matching the variant at emit
+    (`Guard`/`Pattern`/`PatternStructure` → `Site.lifted_replace/6`; `InPlace`/`Return`/`CasePattern`
+    → `Site.in_place/6` family, the selector branch chosen by `branch_node/1`). The structural
+    discovery primitives shared by the def-head and `case` paths live in
+    `Transform.PatternStructure` (`mutators/1`, `used_names/1`, `node_mutations/3`).
   - **analyze + classify (`analyze/3`)** is a single context-threaded recursive descent: it
     *names the context* of each position as it descends (routing is positional — the spec side of
     a `::` goes one way, the value side another, which a flat `Macro.traverse` accumulator can't
@@ -73,6 +79,10 @@ contract between them is the whole game.
     not just `def` heads and `=`/`<<>>` but every match position: a `<-` generator LHS and the
     LHS of a `case`/`fn`/`receive`/`with`/`for`/`try` `->` clause (generic `->` clause), with
     **`cond` excepted** (its `->` LHS is a runtime condition, kept mutatable — `analyze_cond_block/2`).
+    A `case` clause's pattern stays unmutated *in place* but is **additionally** offered to the
+    structural pattern families (swap/wildcard) by a dedicated `case` analyze clause, which attaches
+    a `Candidate.CasePattern` to the whole `case` node (the mutant wraps the case in a selector — see
+    the families below).
     Orthogonally, a keyword/block **key** is never offered to a mutator: the 2-tuple pair clause
     (`label_key?/1`) skips inline keys (`format: :keyword`) and `do:`/`else:`/`rescue:`/`catch:`/
     `after:` block keys (`@block_keys`), so an atom-matching mutator can't splice a selector into a
@@ -250,20 +260,26 @@ contract between them is the whole game.
   value). It is registered (unlike `clause_drop`, the other structural built-in) so it is toggleable
   like any family. It is *delivered in place* (a tail is a body position), so a `Candidate.Return`
   is appended to the tail node's `meta[:mutare]` and shares the tail's selector `case` with any
-  operator swap there. Two more **structural** families mutate `def`/`defp` *head patterns* (and
-  only there — the only pattern position Mutare lifts), delivered by the same lift machinery as
-  head literals: **PatternSwap** (`:pattern_swap` — swap two distinct-named variables inside a
-  container: `{x, y}`→`{y, x}`, `[a, b]`→`[b, a]`, map values; never transposes top-level args, and
-  always compile-safe since it only reorders existing bindings) and **PatternWildcard**
-  (`:pattern_wildcard` — where a variable repeats in the head, replace an occurrence with `_`,
-  dropping the equality constraint: `f(x, x)`→`f(_, x)`). Both are structural like ReturnValue
-  (`mutate/1` is `:skip`; the real logic is `pattern_mutations/2`, an **optional `Mutare.Mutator`
-  callback** that `FunctionPlan.build_pattern_structures/2` discovers via `function_exported?/2`),
-  registered (toggleable/ignorable), and on by default. PatternWildcard takes the clause's
-  body/guard-used variable names so it never strands a binding (thin one occurrence when a binding
-  survives; otherwise wildcard both — `equal?(x, x), do: true`→`equal?(_, _)`); broadening a
-  non-final clause to irrefutable is a benign "cannot match" warning that only poisons under
-  `--warnings-as-errors` (single-clause functions are always clean — see NOTES).
+  operator swap there. Two more **structural** families mutate *patterns* — **PatternSwap**
+  (`:pattern_swap` — swap two distinct-named variables inside a container: `{x, y}`→`{y, x}`,
+  `[a, b]`→`[b, a]`, map values; never transposes top-level args, and always compile-safe since it
+  only reorders existing bindings) and **PatternWildcard** (`:pattern_wildcard` — where a variable
+  repeats, replace an occurrence with `_`, dropping the equality constraint: `f(x, x)`→`f(_, x)`).
+  They cover **two pattern positions**: a `def`/`defp` *head* (delivered by lifting, like head
+  literals — `Candidate.PatternStructure`) and a `case` *clause* pattern (delivered **in place** —
+  `Candidate.CasePattern` — by wrapping the whole `case` in a selector whose mutant branch is a copy
+  with one clause's pattern restructured, sound because `case` clause bindings never escape their
+  body). Other pattern positions (`=`, `fn`/`with`/`receive`, …) are deliberately out of scope: `=`
+  is infeasible (a selector `case` around a match would lose its bindings), the rest are deferred.
+  Both families are structural like ReturnValue (`mutate/1` is `:skip`; the real logic is
+  `pattern_mutations/2`, an **optional `Mutare.Mutator` callback** discovered via
+  `function_exported?/2` — by `FunctionPlan.build_pattern_structures/2` for heads and by
+  `Transform`'s `case` analyze clause via `Transform.PatternStructure.node_mutations/3`), registered
+  (toggleable/ignorable), and on by default. PatternWildcard takes the clause's body/guard-used
+  variable names so it never strands a binding (thin one occurrence when a binding survives;
+  otherwise wildcard both — `equal?(x, x), do: true`→`equal?(_, _)`); broadening a non-final clause
+  to irrefutable is a benign "cannot match" warning that only poisons under `--warnings-as-errors`
+  (single-clause functions / a sole `case` clause are always clean — see NOTES).
 - **`Mutare.Mutators`** — the **single ordered registry** of built-in families and the one place
   mutator lists are resolved/validated. `all/0` is the default set (every registered module — an
   unset `:mutators`/`:all`); `families/0` is every registered atom; `resolve/1` maps any family atom

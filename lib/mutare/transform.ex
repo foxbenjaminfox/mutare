@@ -101,7 +101,7 @@ defmodule Mutare.Transform do
 
   alias Mutare.{Mutator, Site}
   alias Mutare.Coverage.Recorder
-  alias Mutare.Transform.{Candidate, Ctx, FunctionPlan, ModulePlan, Render}
+  alias Mutare.Transform.{Candidate, Ctx, FunctionPlan, ModulePlan, PatternStructure, Render}
 
   # The default set is the built-in catalog's `all/0` — one source of truth, so a
   # family registered in `Mutare.Mutators` is part of the default automatically.
@@ -445,6 +445,13 @@ defmodule Mutare.Transform do
     Site.return_value(id, file, c.range, c.original, c.mutated)
   end
 
+  # A `case` clause-pattern mutation is delivered in place (the whole case is wrapped in a
+  # selector). The diff stays focused on the pattern (`original`/`mutated`); the selector
+  # branch carries the whole mutated case (`branch_node/1`), not these nodes.
+  defp in_place_site(id, %Candidate.CasePattern{} = c, file) do
+    Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
+  end
+
   defp lifted_site(id, %Candidate.Guard{} = c, file) do
     Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
   end
@@ -647,6 +654,32 @@ defmodule Mutare.Transform do
     {:cond, meta, [Enum.map(blocks, &analyze_cond_block(&1, mutators))]}
   end
 
+  # `case`: a runtime expression whose *clause patterns* are additionally mutatable by the
+  # structural pattern families (`PatternSwap`/`PatternWildcard`). A `case` can't be lifted
+  # (it isn't a function clause group) and a selector `case` is illegal *inside* a pattern,
+  # so each pattern mutant is delivered by wrapping the **whole** case in an in-place
+  # selector whose mutant branch is a copy of the case with one clause's pattern
+  # restructured — sound because a `case` clause's bindings are local to its body and never
+  # escape. The case is still analyzed normally (subject + clause *bodies* mutate; the
+  # `->` clause routing sends patterns to `:pattern`), and the `Candidate.CasePattern`
+  # candidates are attached to the case node so emission hosts them in the same selector.
+  defp analyze({:case, _meta, [_subject, blocks]} = node, :runtime, mutators)
+       when is_list(blocks) do
+    analyzed = recurse(node, :runtime, mutators)
+
+    # Node-level mutator candidates (a custom mutator matching the whole `case`; built-ins
+    # match none) plus the structural clause-pattern candidates — both hosted by one
+    # selector, exactly as the generic runtime clause would have offered the former.
+    candidates =
+      build_candidates(node, Mutator.mutations(node, mutators)) ++
+        case_pattern_candidates(node, mutators)
+
+    case candidates do
+      [] -> analyzed
+      _ -> put_candidates(analyzed, candidates)
+    end
+  end
+
   # A `->` clause in a pattern-matching construct (`case`/`fn`/`receive`/`with` else/
   # a `try` block outside a def head/`for` reduce): the left is a pattern (never
   # mutated — a selector `case` is illegal in a pattern and would poison the single
@@ -773,6 +806,84 @@ defmodule Mutare.Transform do
   end
 
   defp analyze_defimpl_arg(other, _mutators), do: other
+
+  # === case-pattern structure mutation =======================================
+
+  # The `Candidate.CasePattern`s a `case` admits: for each clause, run the structural
+  # pattern mutators (`PatternSwap`/`PatternWildcard`) over its pattern, and for each
+  # mutation build a candidate whose `replacement` is a copy of the *whole* case with that
+  # one clause's pattern restructured. Operates on the raw (pre-analysis) case so the
+  # replacement carries the original clause bodies (no nested selectors — first-order,
+  # exactly like a lifted `__mut` copy).
+  defp case_pattern_candidates({:case, _meta, [_subject, blocks]} = raw_case, mutators) do
+    case PatternStructure.mutators(mutators) do
+      [] -> []
+      structural -> case_clause_candidates(raw_case, blocks, structural)
+    end
+  end
+
+  defp case_clause_candidates(raw_case, [{_do_key, clauses}], structural) when is_list(clauses) do
+    clauses
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {clause, index} ->
+      clause_pattern_candidates(raw_case, clauses, index, clause, structural)
+    end)
+  end
+
+  # A `case` only ever has a single `do` block; anything else (shouldn't occur) → no mutants.
+  defp case_clause_candidates(_raw_case, _blocks, _structural), do: []
+
+  defp clause_pattern_candidates(raw_case, _clauses, index, clause, structural) do
+    with {pattern, used} <- clause_pattern_and_used(clause),
+         %{} = range <- Sourceror.get_range(pattern) do
+      pattern
+      |> PatternStructure.node_mutations(used, structural)
+      |> Enum.map(fn {mutator, mutated} ->
+        %Candidate.CasePattern{
+          mutator: mutator,
+          original: pattern,
+          mutated: mutated,
+          replacement: replace_case_pattern(raw_case, index, mutated),
+          range: range
+        }
+      end)
+    else
+      _ -> []
+    end
+  end
+
+  # A case clause's pattern (peeling any `when`) and the names read in its guard+body —
+  # the `used_outside` set the wildcard family needs. A clause matches a single value, so
+  # its LHS is a one-element list; anything else → `nil` (skip).
+  defp clause_pattern_and_used({:->, _meta, [[lhs], body]}) do
+    {pattern, guard} =
+      case lhs do
+        {:when, _wm, [pat, g]} -> {pat, [g]}
+        pat -> {pat, []}
+      end
+
+    {pattern, PatternStructure.used_names(guard ++ [body])}
+  end
+
+  defp clause_pattern_and_used(_clause), do: nil
+
+  # The whole case with clause `index`'s pattern replaced by `mutated` (its guard, if any,
+  # and body preserved; the original `do`-block key kept) — the selector branch for one
+  # case-pattern mutant.
+  defp replace_case_pattern({:case, meta, [subject, [{do_key, clauses}]]}, index, mutated) do
+    new_clause = put_case_pattern(Enum.at(clauses, index), mutated)
+    {:case, meta, [subject, [{do_key, List.replace_at(clauses, index, new_clause)}]]}
+  end
+
+  defp put_case_pattern({:->, meta, [[lhs], body]}, mutated) do
+    new_lhs =
+      case lhs do
+        {:when, wm, [_pat, guard]} -> {:when, wm, [mutated, guard]}
+        _pat -> mutated
+      end
+
+    {:->, meta, [[new_lhs], body]}
+  end
 
   # === return-value mutation =================================================
 
@@ -995,7 +1106,7 @@ defmodule Mutare.Transform do
     {clauses, ctx} =
       Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
         claim_id(ctx, candidate, &in_place_site/3, fn id, candidate ->
-          {:->, [], [[id], candidate.mutated]}
+          {:->, [], [[id], branch_node(candidate)]}
         end)
       end)
 
@@ -1007,6 +1118,12 @@ defmodule Mutare.Transform do
       _ -> {build_case(default, clauses), ctx}
     end
   end
+
+  # The selector-branch value for an in-place candidate. A `CasePattern` carries the whole
+  # mutated `case` (`replacement`); for every other in-place candidate the branch *is* its
+  # `mutated` node (an operator swap, a return constant).
+  defp branch_node(%Candidate.CasePattern{replacement: replacement}), do: replacement
+  defp branch_node(candidate), do: candidate.mutated
 
   # The single owner of the id-claim + site-record dance that poison recovery
   # leans on. Both the in-place path (emit_site/3) and the lifted path

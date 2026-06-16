@@ -27,6 +27,11 @@ defmodule Mutare.Transform.Candidate do
   #     variables that a single `meta[:mutare_tag]` can't capture, so it is applied by
   #     whole-clause replacement by index (like `Drop`). Structural (the
   #     `PatternSwap`/`PatternWildcard` families own the logic via `pattern_mutations/2`).
+  #   * `Candidate.CasePattern` — the *same* swap/wildcard families applied to a `case`
+  #     *clause* pattern, but delivered **in place**: a `case` isn't liftable, so the whole
+  #     `case` is wrapped in a selector whose mutant branch is a copy with one clause's
+  #     pattern restructured. The diff stays focused on the pattern (`original`/`mutated`),
+  #     while the selector branch carries the whole mutated `case` (`replacement`).
   #   * `Candidate.Return`  — a function clause's *tail expression* replaced with a
   #     constant (`nil`/`0`/`""`/`[]`), delivered by an in-place selector `case`
   #     (the tail is a body position). Structural, like `Drop`: it targets a
@@ -137,6 +142,30 @@ defmodule Mutare.Transform.Candidate do
     defstruct [:clause_index, :mutator, :mutated_args, :original, :mutated, :range]
   end
 
+  defmodule CasePattern do
+    @moduledoc false
+
+    # A `case` *clause-pattern* restructuring (variable swap / duplicate→wildcard),
+    # delivered **in place**. A `case` can't be lifted (it isn't a function clause group)
+    # and a selector can't live inside a pattern, so the mutant is delivered by wrapping
+    # the *whole* `case` in an in-place selector whose mutant branch is a copy of the case
+    # with one clause's pattern restructured — sound because a `case` clause's bindings are
+    # local to its body and never escape. `replacement` is that whole mutated `case` (the
+    # selector branch); `original`/`mutated` are the clause *pattern* before/after (the
+    # focused one-line diff), and `range` locates that pattern. `mutator` is the structural
+    # family (`PatternSwap`/`PatternWildcard`). Recorded as an `:in_place` `Mutare.Site`.
+
+    @type t :: %__MODULE__{
+            mutator: module(),
+            original: Macro.t(),
+            mutated: Macro.t(),
+            replacement: Macro.t(),
+            range: map()
+          }
+
+    defstruct [:mutator, :original, :mutated, :replacement, :range]
+  end
+
   defmodule Drop do
     @moduledoc false
 
@@ -179,6 +208,7 @@ defmodule Mutare.Transform.Candidate do
           | Guard.t()
           | Pattern.t()
           | PatternStructure.t()
+          | CasePattern.t()
           | Drop.t()
           | Return.t()
 end
