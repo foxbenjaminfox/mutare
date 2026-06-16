@@ -70,10 +70,14 @@ defmodule Mutare.Runner.CoverageProbe do
   """
   @spec run(Path.t(), Schema.t(), :coverage | :full) :: selection()
   def run(sandbox, %Schema{} = schema, mode) when mode in [:coverage, :full] do
-    dump = Path.join(sandbox, Recorder.dump_file())
+    # Absolute paths: an umbrella runs each app's suite with cwd = the app dir, so
+    # the dump must land at one fixed place and the test-file paths must be
+    # normalised against the sandbox root, not whichever app is running.
+    root = Path.expand(sandbox)
+    dump = Path.join(root, Recorder.dump_file())
     File.rm(dump)
 
-    with 0 <- probe!(sandbox),
+    with 0 <- probe!(sandbox, root, dump),
          {:ok, coverage} <- Coverage.read_dump(dump) do
       select(mode, schema, coverage)
     else
@@ -84,11 +88,17 @@ defmodule Mutare.Runner.CoverageProbe do
   # One instrumented baseline run: the metamutant self-records coverage. We don't
   # cap it (it is a baseline-equivalent run), but a non-zero exit means the dump
   # may be partial (for example `max_failures` can abort before later files run),
-  # so the caller treats it as uncertainty → `:run_all`.
-  defp probe!(sandbox) do
-    {_output, status} =
-      Command.mix(sandbox, ["test"], Selector.baseline(), nil, [{Recorder.env_var(), "1"}])
+  # so the caller treats it as uncertainty → `:run_all`. The dump path and the
+  # path-normalisation root travel in env vars so the helper, running with a
+  # per-app cwd in an umbrella, writes one union dump with root-relative keys.
+  defp probe!(sandbox, root, dump) do
+    env = [
+      {Recorder.env_var(), "1"},
+      {Recorder.dump_path_env(), dump},
+      {Recorder.root_env(), root}
+    ]
 
+    {_output, status} = Command.mix(sandbox, ["test"], Selector.baseline(), nil, env)
     status
   end
 

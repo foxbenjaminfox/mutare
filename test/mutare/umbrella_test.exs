@@ -84,6 +84,27 @@ defmodule Mutare.UmbrellaTest do
            "unexpected non-kills: #{inspect(Enum.reject(run.results, &(&1.status == :killed)) |> Enum.map(&{&1.site.file, &1.status}))}"
   end
 
+  test "coverage records root-relative test files and selects per file", %{
+    umbrella: umbrella,
+    sandbox: sandbox
+  } do
+    assert {:ok, run} = Mutare.run(umbrella, sandbox: sandbox, mutators: @probe)
+
+    # The probe's dump is keyed by *umbrella-root-relative* test files, not the
+    # app-relative paths a per-app cwd would otherwise produce.
+    assert {:ok, coverage} = Mutare.Coverage.read_dump(Path.join(sandbox, "mutare_cov.terms"))
+    keys = Map.keys(coverage.by_file)
+    assert "apps/core/test/core_test.exs" in keys
+    assert "apps/web/test/web_test.exs" in keys
+
+    # web's `*` lives only in Web.total, exercised only by web_test.exs — so that
+    # mutant runs that one file (1 test), not the whole umbrella suite.
+    web = Enum.find(run.results, &(&1.site.file == "apps/web/lib/web.ex"))
+    assert web.status == :killed
+    assert web.output =~ "1 test"
+    refute web.output =~ "2 tests"
+  end
+
   test "a mutant in core is killed only through a cross-app web test" do
     # core has no test of its own here; only WebTest (in a *different* app)
     # exercises Core.double through Web. The mutant must still be killed — proving

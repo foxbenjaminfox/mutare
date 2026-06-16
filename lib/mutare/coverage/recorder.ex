@@ -53,6 +53,13 @@ defmodule Mutare.Coverage.Recorder do
   @dump_file "mutare_cov.terms"
   @helper_module :mutare_cov
 
+  # An umbrella runs each app's suite with cwd = that app's dir, so the dump must
+  # be written to (and the test-file paths normalised against) absolute locations
+  # the probe controls, not cwd-relative ones. The probe sets these; the helper
+  # reads them, falling back to the cwd-relative behaviour when unset (single app).
+  @dump_path_env "MUTARE_COV_DUMP"
+  @root_env "MUTARE_COV_ROOT"
+
   # The catch-all binds the selector subject to this variable so `record_ast/1`
   # can reuse it (no second `:persistent_term` read). `Mutare.Transform` uses
   # `catch_all_pattern/0`; both must agree on the name.
@@ -69,6 +76,14 @@ defmodule Mutare.Coverage.Recorder do
   @doc "The file (relative to the sandbox) the end-of-suite dump is written to."
   @spec dump_file() :: String.t()
   def dump_file, do: @dump_file
+
+  @doc "Env var the probe sets to the absolute path the dump is written to."
+  @spec dump_path_env() :: String.t()
+  def dump_path_env, do: @dump_path_env
+
+  @doc "Env var the probe sets to the absolute root test-file paths are relative to."
+  @spec root_env() :: String.t()
+  def root_env, do: @root_env
 
   @doc "The dependency-free helper module emitted into the sandbox."
   @spec helper_module() :: module()
@@ -114,6 +129,8 @@ defmodule Mutare.Coverage.Recorder do
     attr = @attr_table
     dump_file = @dump_file
     helper = @helper_module
+    dump_path_env = @dump_path_env
+    root_env = @root_env
 
     quote do
       defmodule unquote(helper) do
@@ -148,7 +165,13 @@ defmodule Mutare.Coverage.Recorder do
             end)
 
           payload = %{aggregate: aggregate, by_file: by_file}
-          File.write!(unquote(dump_file), :erlang.term_to_binary(payload))
+          # Every umbrella app's `after_suite` calls this; the ETS tables are
+          # shared and accumulate-only, so each write is the full union and the
+          # last app to finish wins. The path is absolute (set by the probe) so a
+          # per-app cwd doesn't scatter N partial dumps. Do NOT split this into
+          # per-app files — the single union is the point.
+          dump_path = System.get_env(unquote(dump_path_env)) || unquote(dump_file)
+          File.write!(dump_path, :erlang.term_to_binary(payload))
         end
 
         defp label do
@@ -167,7 +190,11 @@ defmodule Mutare.Coverage.Recorder do
           with {:module, _} <- Code.ensure_loaded(mod),
                info when is_list(info) <- mod.module_info(:compile),
                source when not is_nil(source) <- Keyword.get(info, :source) do
-            source |> to_string() |> Path.relative_to_cwd()
+            # Normalise against the absolute root (the umbrella/sandbox root the
+            # probe set), so an umbrella app's cwd doesn't strip the `apps/<app>/`
+            # prefix. Unset (single app) ⇒ cwd, i.e. the old `relative_to_cwd`.
+            root = System.get_env(unquote(root_env)) || File.cwd!()
+            source |> to_string() |> Path.relative_to(root)
           else
             _ -> nil
           end

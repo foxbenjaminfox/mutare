@@ -87,10 +87,18 @@ Verified Mix mechanics that shape the later steps (Elixir source):
 - `mix test apps/foo/test/x.exs` **from the umbrella root** routes only to foo
   (other apps return `:ok`) — so per-mutant scoping needs no `cd`, just
   umbrella-root-relative paths.
-- A shared umbrella build does **not** put sibling ebins on an app's code path
-  (only that app's declared `in_umbrella` deps), **but** `mix compile` builds every
-  app under `apps/` regardless of dep edges — so a generated `apps/mutare_support`
-  is compiled automatically and only needs its ebin appended to the path.
+- `mix compile` builds every app under `apps/` regardless of dep edges, and an
+  umbrella `mix test` puts every app's ebin on the code path before recursing — so
+  a generated `apps/mutare_support` is both compiled and **loadable from any app's
+  run with no dep edge and no `Code.append_path`** (empirically confirmed; the
+  cargo-research note that sibling ebins aren't auto-on-path was about per-`in_project`
+  loadpaths, not the umbrella's global one). Its child `mix.exs` only needs
+  `build_path: "../../_build"` to share the one build.
+- A compiled module's `module_info(:compile)[:source]` is **absolute**, while each
+  app's suite runs with cwd = its own dir — so the coverage helper writes the dump
+  to an absolute path (`MUTARE_COV_DUMP`) and normalises test-file keys against the
+  sandbox root (`MUTARE_COV_ROOT`), not cwd, or it would scatter N partial dumps
+  with app-relative keys.
 
 Staged delivery (each a commit): **(1, done)** copy-root/mutate-scope split +
 detection + umbrella discovery + `--app`/`--workspace`; classification is inert
@@ -99,6 +107,11 @@ until the bootstrap is injected per app, so step 1 alone reports all-survivors.
 ETS create-once guard → baseline genuinely mutated, kills (incl. cross-app) work;
 coverage still degrades to `:run_all` because the `:mutare_cov` helper isn't
 reachable in the umbrella yet (the probe records nothing → run-all).
+**(3, done)** generated `apps/mutare_support` child app holding `:mutare_cov`
+(auto-compiled, auto-on-path) + absolute dump (`MUTARE_COV_DUMP`) + root-relative
+test-file keys (`MUTARE_COV_ROOT`) → coverage selection works in umbrellas, keyed
+by `apps/<app>/test/...`, and per-mutant runs already route to the owning app
+(Mix scopes `mix test apps/foo/...` from the umbrella root).
 **(3)** generated `apps/mutare_support` coverage app + absolute dump path +
 umbrella-root-relative coverage keys → coverage selection works. **(4)** scope
 broad (`:run_all`/unattributed/`:full`) runs to the owning app + its dependents via

@@ -107,7 +107,7 @@ defmodule Mutare.Sandbox do
 
     copy_project(root, sandbox)
     write_metamutants(sandbox, schema)
-    write_coverage_helper(sandbox)
+    write_coverage_helper(sandbox, options)
     inject_bootstrap(sandbox, options)
 
     sandbox
@@ -283,11 +283,23 @@ defmodule Mutare.Sandbox do
   end
 
   # The dependency-free coverage helper is compiled with the app, so the
-  # metamutant's per-site `hit/1` call resolves. It is written under a generated
-  # `lib/` path chosen not to overwrite copied target source; the helper module
-  # uses an Erlang-style atom name to avoid likely Elixir module collisions such
-  # as a target's own `MutareCov`.
-  defp write_coverage_helper(sandbox) do
+  # metamutant's per-site `hit/1` call resolves. The helper module uses an
+  # Erlang-style atom name to avoid Elixir module collisions (e.g. a target's own
+  # `MutareCov`).
+  #
+  # A single app's root `lib/` is compiled, so the helper goes there under a
+  # generated path chosen not to overwrite copied source. An umbrella root has no
+  # compiled `lib/`, so the helper instead becomes a generated child app under
+  # `apps/` — which `mix compile` builds with the rest and whose ebin the umbrella
+  # puts on every app's code path (verified: no per-app dep edit needed).
+  defp write_coverage_helper(sandbox, %Options{project: %{umbrella?: true}}) do
+    dir = support_app_dir(sandbox)
+    File.mkdir_p!(Path.join(dir, "lib"))
+    File.write!(Path.join(dir, "mix.exs"), support_mix_exs(Path.basename(dir)))
+    File.write!(Path.join(dir, "lib/mutare_cov.ex"), @coverage_helper <> "\n")
+  end
+
+  defp write_coverage_helper(sandbox, _options) do
     path = coverage_helper_path(sandbox)
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, @coverage_helper <> "\n")
@@ -301,6 +313,35 @@ defmodule Mutare.Sandbox do
     end)
     |> Stream.map(&Path.join(sandbox, &1))
     |> Enum.find(&(not File.exists?(&1)))
+  end
+
+  # A generated child app under `apps/`, named to avoid colliding with a real app.
+  # `Mutare.Project` reserves the `mutare_support` prefix so it is never mutated.
+  defp support_app_dir(sandbox) do
+    Stream.iterate(0, &(&1 + 1))
+    |> Stream.map(fn
+      0 -> "mutare_support"
+      n -> "mutare_support_#{n}"
+    end)
+    |> Stream.map(&Path.join([sandbox, "apps", &1]))
+    |> Enum.find(&(not File.exists?(&1)))
+  end
+
+  # Minimal child `mix.exs`: only `build_path` matters — it shares the umbrella's
+  # single `_build`, so the app compiles once with the rest and its ebin is on the
+  # path. No config/deps, so nothing here depends on the target's config layout.
+  defp support_mix_exs(app) do
+    """
+    defmodule #{Macro.camelize(app)}.MixProject do
+      use Mix.Project
+
+      def project do
+        [app: :#{app}, version: "0.0.0", build_path: "../../_build", elixir: "~> 1.10", deps: []]
+      end
+
+      def application, do: []
+    end
+    """
   end
 
   # Inject the bootstrap into every test helper whose suite the runner will drive.
