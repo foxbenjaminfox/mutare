@@ -209,6 +209,38 @@ defmodule Mutare.TransformCorpusTest do
       ],
       min_sites: 1,
       expect_log: ~r{clauses of f/1 are non-consecutive}
+    },
+    %{
+      name: "try clauses: rescue/catch/else patterns are matches; their tails return",
+      # Every `rescue`/`catch`/`else` clause *pattern* is a match, not runtime
+      # code: the `e in RuntimeError` and the literal `1` below would each get a
+      # selector `case` spliced into a pattern position (illegal Elixir, a
+      # poison) if the analyzer treated them as runtime. The clause *bodies* are
+      # return paths and do mutate; the `after` block is not a return path (its
+      # value is discarded), but its body still mutates in place.
+      source: """
+      defmodule Mutare.Corpus.TryReturns do
+        def run(x) do
+          risky(x) + 0
+        rescue
+          e in RuntimeError -> {:rescued, Exception.message(e)}
+        else
+          1 -> :one
+          n -> n * 2
+        after
+          :swallowed
+        end
+
+        defp risky(:boom), do: raise("boom")
+        defp risky(n), do: n
+      end
+      """,
+      probes: [
+        {Mutare.Corpus.TryReturns, :run, [1]},
+        {Mutare.Corpus.TryReturns, :run, [3]},
+        {Mutare.Corpus.TryReturns, :run, [:boom]}
+      ],
+      min_sites: 6
     }
   ]
 

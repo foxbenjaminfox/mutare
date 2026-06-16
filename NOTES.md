@@ -606,15 +606,27 @@ in-place body selectors).
 original tail is kept in the selector catch-all, so variables the clause binds stay
 used (no unused-variable poison under `--warnings-as-errors`).
 
-**Which constant (shape-directed, one per tail).** Mis-inferring the shape is only
-cosmetic — *any* constant compiles and is valid signal — so inference stays small
-and unambiguous, defaulting to `nil`:
+**Which constants (a contrasting *pair*, shape-directed).** Mis-inferring the
+shape is only cosmetic — *any* constant compiles and is valid signal — so
+inference stays small and unambiguous, defaulting to `nil`. Each eligible tail
+yields **two** replacements (mirroring `StringLiteral`'s `""`+`"mutare"` pair):
+the shape's empty/zero value, and a non-empty/non-nil **sentinel**:
 
-  - a numeric expression (`a + b`, `x * 2`, `div(a, b)`, `-n`) → `0`
-  - a string concatenation (`a <> b`) → `""`
-  - a list expression (`a ++ b`, `xs -- ys`) → `[]`
+  - a numeric expression (`a + b`, `x * 2`, `div(a, b)`, `-n`) → `0` and `1`
+  - a string concatenation (`a <> b`) → `""` and `"mutare"`
+  - a list expression (`a ++ b`, `xs -- ys`) → `[]` and `[:mutare]`
   - anything else the tests might pin (variable, call, tuple, map, `:ok`/`:error`
-    atom, `if`/`case`/`with` result, …) → `nil`
+    atom, `if`/`case`/`with` result, …) → `nil` and `:mutare`
+
+The two halves catch *opposite* weak assertions. The empty/zero value dies to a
+test that checks the result is present/non-empty/non-nil but survives one that
+pins the exact value; the sentinel is the mirror — it dies to a test pinning the
+value but survives one that only checks `!= nil` / truthiness / "list non-empty".
+A result the suite never constrains leaves *both* alive (a doubly-loud survivor).
+A sentinel equal to the original tail — reachable only for a bare-atom tail like
+`def f, do: :mutare` — is dropped as an equivalent no-op, exactly as
+`StringLiteral` drops the half equal to its source string (`Mutators.ReturnValue`'s
+`equivalent_to?/2`; literal tails can't reach here, so only atoms can collide).
 
 **What it deliberately *skips* (no redundant or low-value mutant):**
   - **boolean-valued tails** (a comparison/logical operator) — `Conditional`
@@ -630,14 +642,38 @@ and unambiguous, defaulting to `nil`:
     whole (PHILOSOPHY: "macro-generated code is a different tool"); keeping
     return-value off it too is the simpler, consistent boundary.
 
-**Deferred refinements:** only the `:do` block's tail is targeted — a
-`rescue`/`catch`/`else`/`after` clause tail is also a return path, left for later;
-and only a single contrasting constant is emitted (a second, e.g. a non-`nil`
-sentinel to catch code that checks `!= nil` but not the value — mirroring
-`StringLiteral`'s `""`+`"mutare"` pair — could strengthen it). The `Site` it records
-(`Site.return_value/5`) has `mutator: :return_value`, `kind: :in_place`, and `nil`
-ops (there is no operator), shaped like the clause-drop site that also carries no
-op.
+**All return paths, not just `:do` (done).** A `def`/`defp` body has more return
+paths than its `:do` block: each `rescue`/`catch`/`else` clause body also returns
+(a rescued/caught error, or an `else` match on the do result). All four are now
+targeted (`Transform.annotate_returns/3` → `annotate_block_returns/3`): the `:do`
+tail via `attach_return/2`, and each clause body tail via `attach_clause_returns/2`.
+**`:after` is deliberately excluded** — `try` discards the after block's value, so
+its tail is *not* a return path (a mutant there would be unobservable). The after
+*body* still mutates in place; only its return-value candidate is withheld.
+
+This surfaced (and fixed) a **latent pattern-context bug**. `rescue`/`catch`/`else`
+are clause lists whose *left side is a match*, but the old `analyze_do_blocks/2`
+analyzed every block value in `:runtime` — so a mutator could splice a selector
+`case` into a rescue/else *pattern* (e.g. `e in RuntimeError` got a `Conditional`
+`true`/`false`, a literal `1` pattern got a `Literal` swap), which is **illegal
+Elixir** and poisoned the single build. It was *masked* by poison-recovery (the
+runner dropped the ids and rebuilt), so results were correct but a rebuild was
+wasted and a legitimately-impossible mutation was mislabeled `:poisoned`. The fix
+(`analyze_try_clause/2`) routes each try-clause's patterns to `:pattern` and only
+its body to `:runtime` — exactly how a function head/body split works. The routing
+is unambiguous *only* because these blocks always pattern-match; `cond`, whose
+clause left *is* runtime, is handled generically and must not be folded in.
+
+  > Still latent (deferred): the same `:runtime`-pattern issue affects `case`/`fn`/
+  > `with` clause patterns reached through ordinary body recursion (a literal/
+  > operator in such a pattern is mutated, then poison-recovered). A general fix
+  > needs per-construct handling (`cond`'s clause left is genuinely runtime, so no
+  > blanket `->` rule works); for now it stays masked by poison-recovery, same as
+  > before.
+
+The `Site` each return mutant records (`Site.return_value/5`) has
+`mutator: :return_value`, `kind: :in_place`, and `nil` ops (there is no operator),
+shaped like the clause-drop site that also carries no op.
 
 ### Equivalent mutants `[partial]`
 Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the

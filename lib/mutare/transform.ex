@@ -114,6 +114,12 @@ defmodule Mutare.Transform do
   # set `generated_prefix/1` scans the source for.
   @def_forms ~w(def defp defmacro defmacrop defguard defguardp defdelegate)a
 
+  # The try-style body blocks whose clause bodies are *return paths*
+  # (`rescue`/`catch`/`else`). Their left side is always a match, and their tails
+  # return — unlike `:after`, whose value `try` discards (so it is no return path
+  # and is left to mutate only in place, like `:do`).
+  @clause_block_keys [:rescue, :catch, :else]
+
   @doc """
   Transform a source string into `{metamutant_source, [%Site{}], next_id}`.
 
@@ -446,7 +452,8 @@ defmodule Mutare.Transform do
   #     division. Pruned; real division (`& &1 / 2`) still mutates.
   #
   # On top of the node-level operator candidates, the `def`/`defp` clause is *also*
-  # a structural site: its `:do` block's tail expression is a return-value position
+  # a structural site: the tail of each of its return-path blocks (`:do`, and each
+  # `rescue`/`catch`/`else` clause body) is a return-value position
   # (`annotate_returns/3`), where a `Candidate.Return` constant is appended to the
   # tail node's own metadata — delivered by the same in-place selector, on the same
   # node, as any operator candidate there.
@@ -564,23 +571,45 @@ defmodule Mutare.Transform do
 
   defp recurse(other, _context, _mutators), do: other
 
-  # The body keyword of a clause (`[do: …, rescue: …, after: …]`, possibly with
-  # Sourceror's `{:__block__, _, [:do]}` keys): every block value is runtime.
+  # The body keyword of a clause (`[do: …, rescue: …, catch: …, else: …,
+  # after: …]`, possibly with Sourceror's `{:__block__, _, [:do]}` keys). `:do`
+  # and `:after` are ordinary runtime bodies. `:rescue`/`:catch`/`:else` are
+  # *clause lists* whose left side is a match, not runtime code, so each clause's
+  # patterns are analyzed in `:pattern` (never mutated — a selector `case` spliced
+  # into a rescue/else pattern is illegal Elixir and would poison the single
+  # build) and only its body in `:runtime`. (`cond`, whose clause left *is*
+  # runtime, is handled generically; here the routing is unambiguous because these
+  # blocks always pattern-match.)
   defp analyze_do_blocks(body_kw, mutators) do
-    Enum.map(body_kw, fn {key, value} -> {key, analyze(value, :runtime, mutators)} end)
+    Enum.map(body_kw, fn {key, value} ->
+      if clause_block_key?(key) and is_list(value),
+        do: {key, Enum.map(value, &analyze_try_clause(&1, mutators))},
+        else: {key, analyze(value, :runtime, mutators)}
+    end)
   end
+
+  # One `rescue`/`catch`/`else` clause: its patterns are matches (`:pattern`), its
+  # body is runtime. A `when` guard among the patterns is returned whole by the
+  # `:when` clause of `analyze/3` (guard mutation in a try clause isn't supported).
+  defp analyze_try_clause({:->, meta, [patterns, body]}, mutators) when is_list(patterns) do
+    patterns = Enum.map(patterns, &analyze(&1, :pattern, mutators))
+    {:->, meta, [patterns, analyze(body, :runtime, mutators)]}
+  end
+
+  defp analyze_try_clause(other, mutators), do: analyze(other, :runtime, mutators)
 
   # === return-value mutation =================================================
 
-  # Attach a return-value candidate to the *tail expression* of the clause's `:do`
-  # block — the position a `def`/`defp` clause returns from. This is structural
-  # (the tail is a position no node-level mutator can match), so it runs only when
-  # the `Mutare.Mutators.ReturnValue` family is enabled, and only over the `:do`
-  # block (a `rescue`/`catch`/`else`/`after` tail is also a return path — deferred,
-  # see NOTES).
+  # Attach return-value candidates to the *tail expression(s)* of the clause's
+  # return-path blocks — the positions a `def`/`defp` clause returns from. This is
+  # structural (a tail is a position no node-level mutator can match), so it runs
+  # only when the `Mutare.Mutators.ReturnValue` family is enabled. The `:do` block
+  # returns from its body tail; a `rescue`/`catch`/`else` block returns from
+  # *every* clause body's tail (a rescued/caught error or an `else` match is a
+  # return path too). `:after` is excluded — `try` discards its value.
   #
   # `analyzed_kw` carries the already-attached operator candidates; `raw_kw` is the
-  # pre-analysis copy, used only to build the candidate's clean `original`/`range`
+  # pre-analysis copy, used only to build each candidate's clean `original`/`range`
   # (so the diff renders the author's tail, un-annotated). The two are structurally
   # identical — analysis only adds metadata — so `map_tail/3` can navigate them in
   # lockstep to the same tail node. `ReturnValue.replacements/1` decides the
@@ -590,18 +619,54 @@ defmodule Mutare.Transform do
       [analyzed_kw, raw_kw]
       |> Enum.zip()
       |> Enum.map(fn {{key, analyzed_value}, {_key, raw_value}} ->
-        if do_key?(key),
-          do: {key, attach_return(analyzed_value, raw_value)},
-          else: {key, analyzed_value}
+        {key, annotate_block_returns(key, analyzed_value, raw_value)}
       end)
     else
       analyzed_kw
     end
   end
 
-  defp do_key?({:__block__, _meta, [:do]}), do: true
-  defp do_key?(:do), do: true
-  defp do_key?(_), do: false
+  # Route one body block to its return path(s): the `:do` body tail, each
+  # `rescue`/`catch`/`else` clause body tail, or — for `:after` (value discarded)
+  # and any other key — nothing.
+  defp annotate_block_returns(key, analyzed, raw) do
+    cond do
+      do_key?(key) -> attach_return(analyzed, raw)
+      clause_block_key?(key) -> attach_clause_returns(analyzed, raw)
+      true -> analyzed
+    end
+  end
+
+  # rescue/catch/else: a list of `->` clauses; each clause body's tail is a return
+  # path. Walk the analyzed and raw clause lists in lockstep (structurally
+  # identical) and append a return candidate to each clause body's tail.
+  defp attach_clause_returns(analyzed_clauses, raw_clauses)
+       when is_list(analyzed_clauses) and is_list(raw_clauses) and
+              length(analyzed_clauses) == length(raw_clauses) do
+    [analyzed_clauses, raw_clauses]
+    |> Enum.zip()
+    |> Enum.map(fn {analyzed, raw} -> attach_clause_return(analyzed, raw) end)
+  end
+
+  defp attach_clause_returns(analyzed_clauses, _raw), do: analyzed_clauses
+
+  defp attach_clause_return(
+         {:->, meta, [patterns, analyzed_body]},
+         {:->, _rmeta, [_raw_patterns, raw_body]}
+       ) do
+    {:->, meta, [patterns, attach_return(analyzed_body, raw_body)]}
+  end
+
+  defp attach_clause_return(analyzed, _raw), do: analyzed
+
+  defp do_key?(key), do: key_atom(key) == :do
+  defp clause_block_key?(key), do: key_atom(key) in @clause_block_keys
+
+  # The bare keyword atom, whether plain (`:do`) or Sourceror-wrapped
+  # (`{:__block__, _, [:do]}`).
+  defp key_atom({:__block__, _meta, [atom]}) when is_atom(atom), do: atom
+  defp key_atom(atom) when is_atom(atom), do: atom
+  defp key_atom(_), do: nil
 
   # Find the tail expression of a `:do` block (the last statement of a multi-
   # statement block, else the whole single-expression value) and append a

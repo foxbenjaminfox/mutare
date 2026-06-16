@@ -52,29 +52,36 @@ defmodule Mutare.ReturnValueTest do
 
   defp mutated_codes(tail), do: tail |> return_sites() |> Enum.map(& &1.mutated_code)
 
-  describe "replacements/1 (which constant, and which tails are skipped)" do
-    test "a computed numeric tail becomes 0" do
-      assert mutated_codes("a + b") == ["0"]
-      assert mutated_codes("a * b") == ["0"]
-      assert mutated_codes("div(a, b)") == ["0"]
-      assert mutated_codes("-a") == ["0"]
+  describe "replacements/1 (the contrasting pair, and which tails are skipped)" do
+    test "a computed numeric tail becomes the pair 0 and 1" do
+      assert mutated_codes("a + b") == ["0", "1"]
+      assert mutated_codes("a * b") == ["0", "1"]
+      assert mutated_codes("div(a, b)") == ["0", "1"]
+      assert mutated_codes("-a") == ["0", "1"]
     end
 
-    test "a string concatenation becomes \"\"" do
-      assert mutated_codes(~s("x" <> b)) == [~s("")]
+    test "a string concatenation becomes \"\" and the \"mutare\" sentinel" do
+      assert mutated_codes(~s("x" <> b)) == [~s(""), ~s("mutare")]
     end
 
-    test "a list concatenation becomes []" do
-      assert mutated_codes("a ++ b") == ["[]"]
-      assert mutated_codes("a -- b") == ["[]"]
+    test "a list concatenation becomes [] and the [:mutare] sentinel" do
+      assert mutated_codes("a ++ b") == ["[]", "[:mutare]"]
+      assert mutated_codes("a -- b") == ["[]", "[:mutare]"]
     end
 
-    test "a variable, call, tuple, map, or atom tail becomes nil" do
-      assert mutated_codes("a") == ["nil"]
-      assert mutated_codes("foo(a)") == ["nil"]
-      assert mutated_codes("{:ok, a}") == ["nil"]
-      assert mutated_codes("%{a: a}") == ["nil"]
-      assert mutated_codes(":ok") == ["nil"]
+    test "a variable, call, tuple, map, or atom tail becomes nil and the :mutare sentinel" do
+      assert mutated_codes("a") == ["nil", ":mutare"]
+      assert mutated_codes("foo(a)") == ["nil", ":mutare"]
+      assert mutated_codes("{:ok, a}") == ["nil", ":mutare"]
+      assert mutated_codes("%{a: a}") == ["nil", ":mutare"]
+      assert mutated_codes(":ok") == ["nil", ":mutare"]
+    end
+
+    test "a sentinel equal to the tail is dropped (no equivalent mutant)" do
+      # A bare `:mutare` tail would otherwise get a `:mutare` sentinel — an
+      # equivalent no-op — so only the `nil` half survives. (The mirror of
+      # StringLiteral dropping the half equal to its source string.)
+      assert mutated_codes(":mutare") == ["nil"]
     end
 
     test "a boolean-valued tail is skipped (Conditional already forces true/false)" do
@@ -114,7 +121,7 @@ defmodule Mutare.ReturnValueTest do
 
   describe "the recorded Site" do
     test "is :return_value, :in_place, operator-free, with the right diff and line" do
-      [site] = return_sites("a + b")
+      [empty, sentinel] = return_sites("a + b")
 
       assert %Site{
                mutator: :return_value,
@@ -125,9 +132,13 @@ defmodule Mutare.ReturnValueTest do
                original_code: "a + b",
                mutated_code: "0",
                line: 2
-             } = site
+             } = empty
 
-      assert Site.describe(site) == "return_value  a + b → 0"
+      assert %Site{mutator: :return_value, original_code: "a + b", mutated_code: "1", line: 2} =
+               sentinel
+
+      assert Site.describe(empty) == "return_value  a + b → 0"
+      assert Site.describe(sentinel) == "return_value  a + b → 1"
     end
   end
 
@@ -145,8 +156,12 @@ defmodule Mutare.ReturnValueTest do
       {_meta, sites, _} = Mutare.transform_string(source, mutators: @only)
       returns = Enum.filter(sites, &(&1.mutator == :return_value))
 
-      # `y = x + 1` (line 3) is not the tail; only `y * 2` (line 4) is.
-      assert [%Site{line: 4, original_code: "y * 2", mutated_code: "0"}] = returns
+      # `y = x + 1` (line 3) is not the tail; only `y * 2` (line 4) is — and it
+      # gets the contrasting pair (0 and 1).
+      assert [
+               %Site{line: 4, original_code: "y * 2", mutated_code: "0"},
+               %Site{line: 4, original_code: "y * 2", mutated_code: "1"}
+             ] = returns
     end
 
     test "every clause of a lifted (guarded) group returns from its __orig copy" do
@@ -162,25 +177,90 @@ defmodule Mutare.ReturnValueTest do
 
       returns = Enum.filter(sites, &(&1.mutator == :return_value))
 
-      # Both clause tails get a return mutant (n + 1 → 0, :zero → nil), and they
+      # Both clause tails get the pair (n + 1 → 0/1, :zero → nil/:mutare), and they
       # live in the lifted `__orig` copy alongside the in-place selectors.
-      assert MapSet.new(returns, & &1.mutated_code) == MapSet.new(["0", "nil"])
+      assert MapSet.new(returns, & &1.mutated_code) == MapSet.new(["0", "1", "nil", ":mutare"])
       assert meta =~ ~r/defp __mutare_g_1_g\d+_orig/
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
-    test "an operator swap and a return mutant share one selector at the tail node" do
+    test "an operator swap and the return pair share one selector at the tail node" do
       # `a + b` is both an arithmetic site and a return-value site: one selector
-      # `case` hosts both mutant clauses (a - b, and 0).
+      # `case` hosts all three mutant clauses (a - b, and 0, and 1).
       {meta, sites, _} =
         Mutare.transform_string("defmodule T do\n  def f(a, b), do: a + b\nend\n",
           mutators: [Mutare.Mutators.Arithmetic, ReturnValue]
         )
 
-      assert Enum.map(sites, & &1.mutator) == [:arithmetic, :return_value]
-      # one selector subject only (both mutants live under it)
+      assert Enum.map(sites, & &1.mutator) == [:arithmetic, :return_value, :return_value]
+      # one selector subject only (all mutants live under it)
       assert meta |> String.split(":persistent_term.get(:mutare_active") |> length() == 2
       assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+  end
+
+  describe "return paths beyond the :do block (rescue / catch / else; after excluded)" do
+    # A function body with every return-path block. The :do tail, plus each
+    # rescue/catch/else clause body tail, is a return path; the after block is not
+    # (try discards its value).
+    @try_source """
+    defmodule T do
+      def f(x) do
+        compute(x)
+      rescue
+        e in RuntimeError -> {:error, e}
+      catch
+        :throw, v -> v
+      else
+        {:ok, n} -> n + 1
+      after
+        cleanup(x)
+      end
+    end
+    """
+
+    defp try_returns do
+      {_meta, sites, _} = Mutare.transform_string(@try_source, mutators: @only)
+      Enum.filter(sites, &(&1.mutator == :return_value))
+    end
+
+    test "rescue, catch, and else clause tails each get the contrasting pair" do
+      by_original = Enum.group_by(try_returns(), & &1.original_code, & &1.mutated_code)
+
+      assert by_original["compute(x)"] == ["nil", ":mutare"]
+      assert by_original["{:error, e}"] == ["nil", ":mutare"]
+      assert by_original["v"] == ["nil", ":mutare"]
+      assert by_original["n + 1"] == ["0", "1"]
+    end
+
+    test "the after block is not a return path (its value is discarded by try)" do
+      refute Enum.any?(try_returns(), &(&1.original_code == "cleanup(x)"))
+    end
+
+    test "a rescue/else pattern is never mutated, so the metamutant still compiles" do
+      # `e in RuntimeError` is a rescue *pattern*: a Conditional `true`/`false`
+      # selector spliced there would be illegal Elixir. With the full mutator set
+      # the metamutant must carry no such mutant and still compile.
+      source = """
+      defmodule Mutare.ReturnValueRescuePattern do
+        def f(x) do
+          risky(x)
+        rescue
+          e in RuntimeError -> handle(e)
+        end
+
+        defp risky(x), do: x
+        defp handle(_), do: :err
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source)
+
+      refute Enum.any?(sites, &(&1.mutator == :conditional))
+      assert {:ok, _} = Code.string_to_quoted(meta)
+
+      assert {[{Mutare.ReturnValueRescuePattern, _}], _log} =
+               with_log(fn -> Code.compile_string(meta) end)
     end
   end
 

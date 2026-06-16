@@ -21,18 +21,31 @@ defmodule Mutare.Mutators.ReturnValue do
   tail is a body position, so a `case` is legal there. `clause_drop` is the other
   structural built-in, but it is lifted.)
 
-  ## Which constant
+  ## Which constants (a contrasting *pair*)
 
   Any bare constant compiles and is a valid signal, so the choice is about
-  *contrast* — picking a value different enough from the real return that a test
+  *contrast* — picking values different enough from the real return that a test
   asserting on it would notice — and about *not duplicating* the node-level
-  families. One replacement per tail, chosen by the tail's syntactic shape:
+  families. Like `Mutare.Mutators.StringLiteral`'s `""`+`"mutare"` pair, each
+  eligible tail yields **two** replacements, shape-directed:
 
-    * a numeric expression (`a + b`, `x * 2`, `div(a, b)`, `-n`) → `0`
-    * a string concatenation (`a <> b`) → `""`
-    * a list expression (`a ++ b`, `xs -- ys`) → `[]`
-    * anything else whose value the tests might pin (a variable, a function call,
-      a tuple, a map, an `:ok`/`:error` atom, an `if`/`case`/`with` result, …) → `nil`
+    | tail shape                                   | empty/zero | sentinel   |
+    |----------------------------------------------|------------|------------|
+    | numeric (`a + b`, `x * 2`, `div(a, b)`, `-n`)| `0`        | `1`        |
+    | string concatenation (`a <> b`)              | `""`       | `"mutare"` |
+    | list expression (`a ++ b`, `xs -- ys`)       | `[]`       | `[:mutare]`|
+    | anything else (variable, call, tuple, map,   | `nil`      | `:mutare`  |
+    | `:ok`/`:error` atom, `if`/`case`/`with`, …)  |            |            |
+
+  The two halves catch *opposite* weak assertions. The **empty/zero** value is
+  killed by a test that asserts the result is present/non-empty/non-nil but
+  survives one that pins the exact value; the **non-empty/non-nil sentinel** is
+  the mirror — it is killed by a test pinning the value but survives one that only
+  checks `!= nil` (or truthiness, or "the list is non-empty"). A function whose
+  result the suite never constrains leaves *both* alive, a doubly-loud survivor.
+  (A sentinel that would equal the original tail — only possible when the tail is
+  itself a bare atom, e.g. `def f, do: :mutare` — is dropped as an equivalent
+  no-op, exactly as `StringLiteral` drops the half equal to its source string.)
 
   ## What it deliberately leaves alone (no redundant mutant)
 
@@ -62,9 +75,16 @@ defmodule Mutare.Mutators.ReturnValue do
 
   alias Mutare.Mutators.Conditional
 
-  # Operators whose result is unambiguously a number — so `0` is the contrasting
-  # "empty" return. Both binary (`a + b`) and unary (`-n`) forms reach here.
+  # Operators whose result is unambiguously a number — so `0`/`1` are the
+  # contrasting pair. Both binary (`a + b`) and unary (`-n`) forms reach here.
   @numeric_ops [:+, :-, :*, :/, :div, :rem]
+
+  # The non-nil/non-empty sentinel word, shared across the shapes (`:mutare`,
+  # `[:mutare]`, `"mutare"`) — the same recognizable marker `StringLiteral` uses,
+  # so a surviving sentinel reads unambiguously in a report as "the value is not
+  # pinned, only its presence". Numeric tails use `1` (no string sentinel fits).
+  @sentinel "mutare"
+  @sentinel_atom :mutare
 
   @impl Mutare.Mutator
   def name, do: :return_value
@@ -79,8 +99,9 @@ defmodule Mutare.Mutators.ReturnValue do
   The constant replacements for one clause-tail expression, as clean-meta AST
   nodes ready to splice into a selector clause. Returns `[]` when the tail should
   get no return mutant (a boolean-valued expression, a literal a value family
-  already mutates, or `nil`); otherwise a one-element list with the shape-directed
-  constant. See the moduledoc for the rules.
+  already mutates, or `nil`); otherwise the contrasting *pair* — the shape's
+  empty/zero value and its non-empty/non-nil sentinel — minus any half that would
+  equal the original tail. See the moduledoc for the rules.
   """
   @spec replacements(Macro.t()) :: [Macro.t()]
   def replacements(tail) do
@@ -89,7 +110,7 @@ defmodule Mutare.Mutators.ReturnValue do
       quote_block?(tail) -> []
       redundant_literal?(tail) -> []
       nil_tail?(tail) -> []
-      true -> [contrasting_constant(tail)]
+      true -> contrasting_constants(tail)
     end
   end
 
@@ -122,20 +143,48 @@ defmodule Mutare.Mutators.ReturnValue do
   defp quote_block?({:quote, _meta, args}) when is_list(args), do: true
   defp quote_block?(_), do: false
 
-  # --- the contrasting constant ---------------------------------------------
+  # --- the contrasting pair -------------------------------------------------
 
-  defp contrasting_constant({op, _meta, args}) when op in @numeric_ops and is_list(args),
-    do: const(0)
+  # The empty/zero half and the sentinel half, with any half equal to the
+  # original tail dropped (reachable only for a bare-atom tail — numeric/string/
+  # list literals are excluded upstream by `redundant_literal?/1`).
+  defp contrasting_constants(tail) do
+    [empty_constant(tail), sentinel_constant(tail)]
+    |> Enum.reject(&equivalent_to?(&1, tail))
+  end
 
-  defp contrasting_constant({:<>, _meta, [_left, _right]}), do: empty_string()
+  defp empty_constant({op, _meta, args}) when op in @numeric_ops and is_list(args), do: const(0)
+  defp empty_constant({:<>, _meta, [_left, _right]}), do: string_const("")
+  defp empty_constant({op, _meta, [_left, _right]}) when op in [:++, :--], do: const([])
+  defp empty_constant(_other), do: const(nil)
 
-  defp contrasting_constant({op, _meta, [_left, _right]}) when op in [:++, :--],
-    do: const([])
+  defp sentinel_constant({op, _meta, args}) when op in @numeric_ops and is_list(args),
+    do: const(1)
 
-  defp contrasting_constant(_other), do: const(nil)
+  defp sentinel_constant({:<>, _meta, [_left, _right]}), do: string_const(@sentinel)
+
+  defp sentinel_constant({op, _meta, [_left, _right]}) when op in [:++, :--],
+    do: const([@sentinel_atom])
+
+  defp sentinel_constant(_other), do: const(@sentinel_atom)
+
+  # True when a replacement constant carries the same value as the tail. Only
+  # bare atoms can collide (every other constant differs from its pair by
+  # construction, and literal tails never reach here), so it suffices to compare
+  # atom values.
+  defp equivalent_to?(replacement, tail) do
+    case {atom_value(replacement), atom_value(tail)} do
+      {{:atom, v}, {:atom, v}} -> true
+      _ -> false
+    end
+  end
+
+  defp atom_value({:__block__, _meta, [v]}) when is_atom(v), do: {:atom, v}
+  defp atom_value(v) when is_atom(v), do: {:atom, v}
+  defp atom_value(_), do: nil
 
   # Clean metadata so Sourceror renders from the value, not a stale `:token`
   # (the same rule the literal mutators follow).
   defp const(value), do: {:__block__, [], [value]}
-  defp empty_string, do: {:__block__, [delimiter: ~s(")], [""]}
+  defp string_const(value), do: {:__block__, [delimiter: ~s(")], [value]}
 end
