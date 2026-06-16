@@ -412,6 +412,80 @@ defmodule Mutare.TransformTest do
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
+  describe "match?/2 pattern-context routing" do
+    test "the first arg is a pattern (literals there are not mutated); the matched expr is runtime" do
+      source = """
+      defmodule MatchQ do
+        def f(s, n) do
+          match?("x" <> _, s) and n + 1 > 0
+        end
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: @probe ++ [Mutare.Mutators.StringLiteral])
+
+      # The string `"x"` lives in the `match?` pattern, so it is never offered to a
+      # mutator (splicing a selector there is "case not allowed in matches"). The
+      # runtime `n + 1`/`> 0` around it still mutate.
+      assert Enum.frequencies_by(sites, & &1.mutator) == %{arithmetic: 1, relational: 2}
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "a literal inside a tuple pattern in match? is still not mutated" do
+      source = """
+      defmodule MatchTuple do
+        def f(pair), do: match?({"_" <> _v, _m}, pair)
+      end
+      """
+
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.StringLiteral, Mutare.Mutators.TupleLiteral]
+        )
+
+      # No string-empty/tuple-empty mutation reaches the match? pattern.
+      assert sites == []
+    end
+  end
+
+  describe "a selector cannot be a bare pipe target (|> hoisting)" do
+    # `x |> case … end` *parses* but fails to compile (`Kernel.|>/2` can't pipe into
+    # a `case`), so these assert the metamutant **compiles**, not just parses.
+    test "a mutated middle/first pipe stage compiles" do
+      source = """
+      defmodule PipeFirst do
+        def f(xs), do: xs |> Enum.reject(& &1) |> Enum.map(& &1)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.Collection])
+
+      assert Enum.any?(sites, &(&1.mutator == :collection))
+      # The diff still shows the bare stage swap, not the whole pipe.
+      assert Enum.any?(sites, &(&1.mutated_code == "Enum.filter(& &1)"))
+      assert_compiles(meta)
+    end
+
+    test "a mutated last pipe stage that is also the function tail compiles" do
+      source = """
+      defmodule PipeTail do
+        def f(xs), do: xs |> Enum.map(& &1) |> Enum.reject(& &1)
+      end
+      """
+
+      # Collection swaps the trailing `Enum.reject`; ReturnValue additionally wraps
+      # the whole tail pipe — so the selector lands in the ReturnValue catch-all.
+      {meta, _sites, _next_id} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.Collection, Mutare.Mutators.ReturnValue]
+        )
+
+      assert_compiles(meta)
+    end
+  end
+
   describe "atom-literal context routing (keys and patterns are not mutated)" do
     @atom [Mutare.Mutators.AtomLiteral]
 
@@ -795,5 +869,16 @@ defmodule Mutare.TransformTest do
       assert meta =~ "#{helper}.hit("
       assert meta =~ @attr
     end
+  end
+
+  # Assert the metamutant actually *compiles*. A bug like a selector `case` spliced
+  # as a bare pipe target parses cleanly but fails at compile (macro expansion), so
+  # `Code.string_to_quoted/1` is not enough. The `:mutare_cov` test stand-in and
+  # `:persistent_term` make the selector/coverage calls resolvable; stderr (e.g.
+  # redefinition notices) is swallowed.
+  defp assert_compiles(meta) do
+    ExUnit.CaptureIO.capture_io(:stderr, fn ->
+      assert [_ | _] = Code.compile_string(meta)
+    end)
   end
 end

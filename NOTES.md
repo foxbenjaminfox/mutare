@@ -296,6 +296,15 @@ by a blacklist. The positions:
   is never offered). The `try`-in-a-def-head path still routes via the older
   `analyze_try_clause/2` (called from `analyze_do_blocks/2`); the generic `->`
   clause covers every *other* construct, including a `try` outside a def head.
+  **`match?/2`** is the one *non-syntactic* pattern position: a macro whose first
+  argument is a match context (it expands to `case expr do pattern -> true; _ ->
+  false end`). It looks like an ordinary call, so without a dedicated `analyze`
+  clause its pattern arg was routed `:runtime` and a literal/tuple/string there was
+  mutated in place — splicing a `case` into a pattern ("case not allowed in
+  matches"). Now routed like `=`: arg 1 `:pattern`, arg 2 the surrounding context.
+  Only the bare `match?/2` form (how it is always written); a qualified
+  `Kernel.match?/2` is left to poison fallback. Found dogfooding `plug` — see
+  "Real-world poisons (plug/router)" below.
 
 ### Keyword/block keys are labels, never runtime values
 The pair routing (`label_key?/1` + the 2-tuple `analyze` clause) is what lets the
@@ -739,7 +748,7 @@ build-path effect, verified), multiplies per-mutant process boots by the machine
 count, and forfeits this first-failure early-exit. Out of scope for now.
 
 ### Mutations that break the *test suite's* compilation are kills `[done]`
-Surfaced dogfooding `mix mutare ~/programs/plug` on `lib/plug/router`: 17 of 187
+Surfaced mutation testing on the plug library's `lib/plug/router`: 17 of 187
 mutants landed as `:harness_error` (≈9%), all on `Plug.Router.Utils` functions
 (`build_path_clause`, `parse_suffix`, `split`). Root cause — and it is **not** a
 worker race (proven: `workers: 1` reproduces the exact same 17): these functions run
@@ -1142,6 +1151,47 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
   it survived in the dogfood only for lack of coverage. The arithmetic mutator
   now skips multiplicative-identity right-operands (`* 1`, `/ 1`), so this site
   produces no mutant at all (see below).
+
+## Real-world poisons (plug/router) `[done]`
+
+Running `mix mutare --only lib/plug/router` on the plug library surfaced three distinct
+poison shapes — none Mutare-specific, all idiomatic Elixir. The goal each time was
+to **catch it positively at the transform stage** so poisoning stays a fallback for
+the genuinely-unknown (e.g. custom mutators), not a routine outcome on real code.
+
+- **Coverage-id charlist (crash, fixed):** the very first symptom wasn't even a
+  poison — it was a *hard crash* in `Manifest.from_source` (`Sourceror.parse_string!`
+  on the rendered metamutant), because `Coverage.Recorder.record_ast/1` spliced the
+  site's mutant ids as a **bare integer list** that the renderer printed as a
+  charlist (`~c"…"`), and ids like `92`/`10` then produced un-re-parseable source.
+  Fixed by `ids_literal/1` (wrap each id in `{:__block__, [], [id]}`); see "The
+  `hit([ids])` argument must render as a list, never a charlist" above for the full
+  mechanism. (Latent until a file accrued enough ids to land on those byte values.)
+- **`match?/2` pattern arg (5 of the 7 poisons, fixed):** `match?("_" <> _, x)` and
+  `match?({"_" <> _v, _m}, x)` — `match?/2`'s first arg is a *match context*, but it
+  reads as an ordinary call, so the string/tuple literals there were mutated in
+  place, splicing a selector `case` into a pattern ("case not allowed in matches").
+  Fixed by routing `match?/2`'s first arg `:pattern` (see "Non-body operator
+  positions" → Patterns). Two of the "7" were *collateral*: poison maps a compile
+  error's line → every mutant id whose generated code spans it, so the valid
+  `Enum.reject`→`Enum.filter` swaps sharing those lines were dropped too. Handling
+  the root cause both removed the 5 real poisons and recovered the 2 valid mutants.
+- **Selector as a pipe target (2 of the 7, fixed):** the recovered `reject`→`filter`
+  swaps then revealed a second, independent shape — a mutated **pipe stage**.
+  `x |> Enum.reject(f)` puts the call right of a `|>`; wrapping it in the selector
+  yields `x |> case … end`, which *parses* but fails `Kernel.|>/2` expansion
+  ("misplaced operator `->`") — so `Code.string_to_quoted` was not enough to catch
+  it (the regression tests `Code.compile_string`). Fixed by hoisting the pipe into
+  the selector (`hoist_pipe/1`): each branch becomes `lhs |> <branch>`, leaving a
+  standalone `case` that is itself a valid pipe LHS, so chained pipes nest. Two
+  spots needed it: the parent `|>` in the emit postwalk (a plain pipe stage), and
+  `emit_site`'s catch-all default (a tail pipe that *also* carries a ReturnValue
+  candidate, so the `|>` node goes through `emit_site` rather than the postwalk's
+  pipe branch). The bare stage stays the Site's recorded node, so diffs are clean.
+
+Net: `lib/plug/router` went from 7 poisons to 0; the two pipe-stage swaps now run
+as real (killed) mutants. The 5 illegal `match?`-pattern "mutants" are correctly
+never generated (site count drops), since they were never legal mutations.
 
 ## Decisions log
 

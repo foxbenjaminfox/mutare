@@ -65,6 +65,13 @@ defmodule Mutare.Transform do
   tail calls stay tail calls (LCO). Nested sites work because the catch-all holds
   the *transformed* children, reachable whenever an outer mutant is inactive.
 
+  One position the selector `case` is *not* legal in: the right side of a pipe.
+  `x |> case … end` parses but fails to compile (`Kernel.|>/2` cannot pipe into a
+  `case`), so when a mutated node is a **pipe stage**, emission hoists the pipe
+  *into* the selector — each branch becomes `lhs |> <branch>` — so the `case` is a
+  standalone expression (`hoist_pipe/1`). The Site still records the bare stage, so
+  the diff is unchanged.
+
   ## Function lifting + dispatcher (guards, dispatch)
 
   A `case` is illegal in a `when` guard, and guards drive dispatch *across*
@@ -645,6 +652,18 @@ defmodule Mutare.Transform do
     {:<-, meta, [analyze(lhs, :pattern, mutators), analyze(rhs, context, mutators)]}
   end
 
+  # `match?(pattern, expr)`: a macro whose *first* argument is a match context, not
+  # a runtime value — it expands to `case expr do pattern -> true; _ -> false end`.
+  # So route it like `=`: the pattern side is `:pattern` (never mutated in place — a
+  # selector `case` spliced there is "case not allowed in matches", and a literal
+  # swap rewrites a pattern, not a value), the matched expression keeps the context.
+  # Without this, mutating a string/tuple/atom literal inside the pattern poisons the
+  # single build. Matches only the bare `match?/2` call (how it is always written);
+  # a qualified `Kernel.match?/2` is rare enough to leave to the poison fallback.
+  defp analyze({:match?, meta, [pattern, expr]}, context, mutators) do
+    {:match?, meta, [analyze(pattern, :pattern, mutators), analyze(expr, context, mutators)]}
+  end
+
   # `cond`: the one `->` construct whose clause *left* is a runtime condition, not
   # a pattern — so it stays mutatable. Analyze its clauses keeping both sides
   # runtime, intercepting them before the generic `->` clause (below) would wrongly
@@ -1144,11 +1163,46 @@ defmodule Mutare.Transform do
   defp emit(node, ctx) do
     Macro.postwalk(node, ctx, fn current, ctx ->
       case candidates_of(current) do
-        [] -> {current, ctx}
+        # A `|>` never carries candidates itself, but its already-emitted RHS may
+        # now be a selector `case` — illegal as a pipe target — so rewrite it here.
+        [] -> {hoist_pipe(current), ctx}
         candidates -> emit_site(current, candidates, ctx)
       end
     end)
   end
+
+  # `x |> case … end` does not compile — `Kernel.|>/2` cannot pipe into a `case`.
+  # When emit wrapped a *pipe stage* (the call right of a `|>`) in a selector, the
+  # selector lands in exactly that illegal RHS position. Run on the parent `|>`
+  # during the same postwalk (the RHS is already emitted), this hoists the pipe
+  # *into* the selector: each branch becomes `lhs |> <that branch's expr>`, so the
+  # `case` is a standalone expression — and a valid pipe LHS for any later stage,
+  # which keeps chained pipes (`a |> b |> c`) working as the rewrite nests. The
+  # bare stage stays the Site's recorded node, so the diff is unaffected.
+  defp hoist_pipe(
+         {:|>, _meta, [lhs, {:__block__, bmeta, [{:case, cmeta, [subject, [do: clauses]]}]}]} =
+           node
+       ) do
+    if Mutare.Metamutant.subject?(subject) do
+      piped =
+        Enum.map(clauses, fn {:->, m, [pat, body]} -> {:->, m, [pat, pipe_tail(lhs, body)]} end)
+
+      {:__block__, bmeta, [{:case, cmeta, [subject, [do: piped]]}]}
+    else
+      node
+    end
+  end
+
+  defp hoist_pipe(node), do: node
+
+  # Pipe `lhs` into a selector clause body. A mutant clause body is a single
+  # expression (the mutated stage), piped whole; the catch-all body is a block
+  # whose head is the coverage record and whose tail is the original stage, so only
+  # the tail is piped (the record must stay a bare statement before it).
+  defp pipe_tail(lhs, {:__block__, bmeta, stmts}) when stmts != [],
+    do: {:__block__, bmeta, List.update_at(stmts, -1, &{:|>, [], [lhs, &1]})}
+
+  defp pipe_tail(lhs, body), do: {:|>, [], [lhs, body]}
 
   defp emit_site(node, candidates, ctx) do
     {clauses, ctx} =
@@ -1158,7 +1212,11 @@ defmodule Mutare.Transform do
         end)
       end)
 
-    default = strip_candidates(node)
+    # `hoist_pipe`: when this node is itself a `|>` (e.g. its tail carries a
+    # ReturnValue candidate) whose RHS is an already-emitted selector, the selector
+    # would sit illegally as a pipe target inside this default/catch-all — hoist the
+    # pipe into it. A no-op for every other node shape.
+    default = hoist_pipe(strip_candidates(node))
 
     # All mutations here skipped → no selector; emit the node unchanged.
     case clauses do

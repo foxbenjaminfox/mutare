@@ -76,8 +76,10 @@ contract between them is the whole game.
     `:clause_drop`, and a **`def`/`defp` head-pattern literal**, are produced by the separate lift
     path), and `:pattern` (don't mutate *in place*, but keep descending so default-arg values and
     `size()` args are still reached). Pattern routing covers
-    not just `def` heads and `=`/`<<>>` but every match position: a `<-` generator LHS and the
-    LHS of a `case`/`fn`/`receive`/`with`/`for`/`try` `->` clause (generic `->` clause), with
+    not just `def` heads and `=`/`<<>>` but every match position: a `<-` generator LHS, the
+    LHS of a `case`/`fn`/`receive`/`with`/`for`/`try` `->` clause (generic `->` clause), and the
+    **first argument of `match?/2`** (a macro whose pattern side is a match context — without this a
+    literal/tuple there would be mutated in place, splicing a `case` into a pattern), with
     **`cond` excepted** (its `->` LHS is a runtime condition, kept mutatable — `analyze_cond_block/2`).
     A `case`/`receive`/`fn` clause's pattern stays unmutated *in place* but is **additionally**
     offered to the structural pattern families (swap/wildcard) by dedicated analyze clauses, which
@@ -111,7 +113,12 @@ contract between them is the whole game.
   - **assign + emit (`emit/2`)** is a bottom-up `Macro.postwalk` so ids are assigned in
     post-order DFS; the id counter advances even for `:skip_ids` (poison recovery relies on it).
   - **in-place selector** for body expressions: wrap the operator in a tail-position
-    `case :persistent_term.get(:mutare_active, 0) do <id> -> mutated; _ -> original end`.
+    `case :persistent_term.get(:mutare_active, 0) do <id> -> mutated; _ -> original end`. One
+    illegal spot for that `case`: the RHS of a pipe (`x |> case … end` parses but won't compile —
+    `|>` can't pipe into a `case`), so when the mutated node is a **pipe stage** emission *hoists
+    the pipe into the selector* (`hoist_pipe/1`, run on the parent `|>` in the same postwalk *and*
+    on `emit_site`'s default for a tail pipe that also carries a ReturnValue): each branch becomes
+    `lhs |> <branch>`. The Site keeps the bare stage, so the diff is unchanged.
   - **function lifting + dispatcher** for `when` guards, **head-pattern literals**, **head-pattern
     structure rewrites** (variable swap / duplicate→wildcard), and clause structure (a `case` can't
     live in a guard or a pattern): duplicate the whole clause group into private `__orig`/`__mut`
@@ -199,7 +206,10 @@ contract between them is the whole game.
   `helper_source/0` (the `MutareCov` module `Sandbox` writes in), and `bootstrap_ast/0`. The
   catch-all records the site's mutant ids into shared ETS *synchronously, in the test process*,
   gated `mutare_active == 0 and :persistent_term.get(:mutare_track, false) and MutareCov.hit(ids)`
-  — inert on per-mutant runs (short-circuits on the id compare) and outside the probe.
+  — inert on per-mutant runs (short-circuits on the id compare) and outside the probe. The `ids`
+  list is spliced as `__block__`-wrapped integers (`ids_literal/1`), never a bare list: a bare
+  integer list is indistinguishable from a charlist in quoted form, so the renderer would emit
+  `~c"…"` for printable ids — and ids like `\`/newline then produce un-re-parseable source.
 - **`Mutare.Coverage`** — reads back the probe's dump: `%{aggregate, by_file}`, both keyed by
   **mutant id**. `aggregate` (process-agnostic: any process that ran the line) is the no-coverage
   signal; `by_file` (labeled test processes only) drives per-file selection. No `:cover`, no
