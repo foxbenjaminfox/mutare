@@ -45,20 +45,26 @@ contract between them is the whole game.
     `{:in_place, clauses}`, `{:statement, node}`. `build/3` does the run-chunking + non-consecutive
     detection; `Transform.emit_module_plan/2` walks the items.
   - **`Transform.FunctionPlan`** — one liftable clause group: signature, clauses, a single shared
-    *tagged* clause group, and its typed lifted candidates. `mutated_clauses/2` reconstructs a
-    mutant copy on demand (so the group is stored once, not per guard mutant).
-  - **`Transform.Candidate.{InPlace,Guard,Drop}`** — typed candidate variants (one struct per
+    *tagged* clause group, and its typed lifted candidates (guard swaps, head-pattern literal
+    swaps, clause drops). `mutated_clauses/2` reconstructs a mutant copy on demand (so the group is
+    stored once, not per mutant). `build_lifted/2` threads one tag counter through guards and
+    head-pattern literals, so a `def f(0) when …` lifts both kinds together.
+  - **`Transform.Candidate.{InPlace,Guard,Pattern,Drop}`** — typed candidate variants (one struct per
     legal kind), replacing the old single struct that redundantly stored `context`/`kind`/
-    `operation` and admitted illegal combinations. The matching `Site` constructor is chosen by
-    pattern-matching the variant at emit.
+    `operation` and admitted illegal combinations. `Pattern` (a head-pattern literal swap) is a
+    mechanical twin of `Guard` — both tag a node in the shared group and replace it in a `__mut`
+    copy — but a distinct kind (head, not `when`; literal families only). The matching `Site`
+    constructor is chosen by pattern-matching the variant at emit (`Guard`/`Pattern` →
+    `Site.lifted_replace/6`).
   - **analyze + classify (`analyze/3`)** is a single context-threaded recursive descent: it
     *names the context* of each position as it descends (routing is positional — the spec side of
     a `::` goes one way, the value side another, which a flat `Macro.traverse` accumulator can't
     express) and attaches a typed `Candidate.InPlace` to each mutatable node's *own metadata*
     (`meta[:mutare]`) — which is why there's no fragile `{line, column}` node identity and no
     double mutator invocation. Two contexts are threaded: `:runtime` → in-place (`:guard`/
-    `:clause_drop` are produced by the separate lift path), and `:pattern` (don't mutate, but keep
-    descending so default-arg values and `size()` args are still reached). Pattern routing covers
+    `:clause_drop`, and a **`def`/`defp` head-pattern literal**, are produced by the separate lift
+    path), and `:pattern` (don't mutate *in place*, but keep descending so default-arg values and
+    `size()` args are still reached). Pattern routing covers
     not just `def` heads and `=`/`<<>>` but every match position: a `<-` generator LHS and the
     LHS of a `case`/`fn`/`receive`/`with`/`for`/`try` `->` clause (generic `->` clause), with
     **`cond` excepted** (its `->` LHS is a runtime condition, kept mutatable — `analyze_cond_block/2`).
@@ -89,12 +95,17 @@ contract between them is the whole game.
     post-order DFS; the id counter advances even for `:skip_ids` (poison recovery relies on it).
   - **in-place selector** for body expressions: wrap the operator in a tail-position
     `case :persistent_term.get(:mutare_active, 0) do <id> -> mutated; _ -> original end`.
-  - **function lifting + dispatcher** for `when` guards and clause structure (a `case` can't
-    live in a guard): duplicate the whole clause group into private `__orig`/`__mut` copies and
-    make the public `f/arity` a bare dispatcher. In-place selectors live only in `__orig`.
-    Guard targets are tagged via `meta[:mutare_tag]` on a single shared clause group held by the
-    `FunctionPlan`; `FunctionPlan.mutated_clauses/2` materializes each mutant copy on demand, so
-    emission never re-finds the node and the group isn't copied per guard mutant.
+  - **function lifting + dispatcher** for `when` guards, **head-pattern literals**, and clause
+    structure (a `case` can't live in a guard or a pattern): duplicate the whole clause group into
+    private `__orig`/`__mut` copies and make the public `f/arity` a bare dispatcher. In-place
+    selectors live only in `__orig`. Guard *and* head-literal targets are tagged via
+    `meta[:mutare_tag]` on a single shared clause group held by the `FunctionPlan`;
+    `FunctionPlan.mutated_clauses/2` materializes each mutant copy on demand, so emission never
+    re-finds the node and the group isn't copied per mutant. A head pattern admits **only
+    literal-valued mutations** (`tag_pattern_targets/3` offers a node to the mutators iff it is a
+    scalar literal and keeps a mutation iff its replacement is too — so the `__mut` copy is always a
+    legal pattern; specs and keyword/map *keys* are skipped). Both sides of a `%{1 => 2}` map
+    pattern mutate.
 - **`Mutare.Schema`** — runs `Transform` across discovered files, threading **globally-unique,
   stable** mutant ids. Honors `:paths`/`:exclude`, `:only_files` (for `--since`), and `:skip_ids`
   (for poison recovery — the id counter advances even for skipped ids, so ids stay stable across
@@ -196,7 +207,8 @@ contract between them is the whole game.
   List (`++`↔`--`, non-empty list literal → `[]`), Collection (`Enum`/`List` predicate swaps),
   StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, AtomLiteral (a
   literal atom → the sentinel `:mutare`; `true`/`false`/`nil` excluded — Literal/Conditional own
-  them; keys and patterns excluded *positionally* by `Transform`, not the mutator), CharlistLiteral
+  them; keys excluded *positionally* by `Transform`, not the mutator — and patterns excluded
+  *in place*, though a `def`/`defp` head literal is mutated by lifting), CharlistLiteral
   (a `~c"…"` sigil → `~c""` *and* `~c"mutare"`; the legacy `'…'` form is a list literal already
   emptied by List), MapLiteral (a non-empty `%{…}` → `%{}`; map updates / a struct's field map
   excluded), TupleLiteral (a non-empty tuple → `{}`, both the `{a, b}` and `{:{}, …}` shapes),
@@ -208,7 +220,10 @@ contract between them is the whole game.
   value, since these sigils are compile-time-validated), AliasLiteral (a module alias used **as a
   value** → the sentinel `Mutare.Mutant`; a *call-module* `Foo.bar()`, a struct name `%Foo{}`, and
   `defimpl`/`defprotocol`/`defdelegate` module references are excluded *positionally* by `Transform`,
-  so only value positions like `apply(Foo, …)` mutate), and **ReturnValue**
+  so only value positions like `apply(Foo, …)` mutate). These newer compound/struct literal
+  families participate in head-pattern lifting only where their node is a *scalar* literal — so a
+  literal inside a tuple/map pattern mutates, but the `%{}`/`{}`/sigil wrappers themselves are not
+  offered in a head (the lift filter keeps only literal-valued replacements). And **ReturnValue**
   (a `def`/`defp` clause's tail expression → a shape-directed *pair*: an empty/zero value and a
   non-empty/non-nil sentinel — numeric→`0`/`1`, `<>`→`""`/`"mutare"`, `++`/`--`→`[]`/`[:mutare]`,
   else→`nil`/`:mutare`; mirrors StringLiteral's pair, the sentinel catching `!= nil`-style weak

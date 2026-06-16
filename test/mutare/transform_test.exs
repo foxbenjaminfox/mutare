@@ -1,3 +1,21 @@
+defmodule Mutare.TransformTest.PlusOneMutator do
+  @moduledoc """
+  A custom mutator that rewrites an integer literal `n` to `n + 1` — an *operator*
+  expression. Legal in a body, but illegal in a pattern, so it exercises the
+  head-pattern literal filter (only literal-valued replacements survive a head).
+  """
+  @behaviour Mutare.Mutator
+
+  @impl Mutare.Mutator
+  def name, do: :plus_one
+
+  @impl Mutare.Mutator
+  def mutate({:__block__, _meta, [n]}) when is_integer(n),
+    do: [{:+, [], [{:__block__, [], [n]}, {:__block__, [], [1]}]}]
+
+  def mutate(_node), do: :skip
+end
+
 defmodule Mutare.TransformTest do
   use ExUnit.Case, async: true
 
@@ -565,6 +583,133 @@ defmodule Mutare.TransformTest do
       assert [%Site{mutator: :alias}] = sites
       assert meta =~ "defimpl P, for: Foo"
       assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+  end
+
+  describe "head-pattern literal lifting" do
+    @literal [Mutare.Mutators.Literal]
+
+    test "a literal in a def head is mutated by lifting (not in place)" do
+      # A `case` selector is illegal in a pattern, so a head literal can only be
+      # mutated by duplicating the clause group — like a guard. A single-clause
+      # function with no guard now lifts solely to carry the head mutant.
+      source = "defmodule H do\n  def f(1), do: :ok\nend\n"
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @literal)
+
+      assert [
+               %Site{mutator: :literal, kind: :lifted, original_code: "1", mutated_code: "2"},
+               %Site{mutator: :literal, kind: :lifted, original_code: "1", mutated_code: "0"}
+             ] =
+               Enum.sort_by(sites, & &1.id)
+
+      assert meta =~ "def f(mutare_arg1) do"
+      assert [{H, _}] = Code.compile_string(meta)
+    end
+
+    test "both the key and the value of a map pattern mutate (%{1 => 2})" do
+      source = "defmodule H do\n  def f(%{1 => 2}), do: :ok\nend\n"
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @literal)
+
+      # the `1` key → {2, 0}; the `2` value → {3, 1, 0}; both lifted, none in place.
+      assert Enum.all?(sites, &(&1.kind == :lifted and &1.mutator == :literal))
+
+      assert MapSet.new(sites, &{&1.original_code, &1.mutated_code}) ==
+               MapSet.new([{"1", "2"}, {"1", "0"}, {"2", "3"}, {"2", "1"}, {"2", "0"}])
+
+      assert [{H, _}] = Code.compile_string(meta)
+    end
+
+    test "a key mutation that would duplicate a sibling key is dropped (not poisoned)" do
+      # `%{1 => a, 0 => b}`: `1 → 0` and `0 → 1` would each make a duplicate map key
+      # (a compile error). We detect the collision and drop just those mutations,
+      # rather than emitting them and relying on poison recovery — the rest survive.
+      source = "defmodule H do\n  def f(%{1 => a, 0 => b}), do: {a, b}\nend\n"
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @literal)
+
+      pairs = MapSet.new(sites, &{&1.original_code, &1.mutated_code})
+      # the non-colliding mutations remain...
+      assert MapSet.member?(pairs, {"1", "2"})
+      assert MapSet.member?(pairs, {"0", "-1"})
+      # ...and the colliding ones (1 → 0, 0 → 1) are gone.
+      refute MapSet.member?(pairs, {"1", "0"})
+      refute MapSet.member?(pairs, {"0", "1"})
+
+      # The proof it mattered: the metamutant compiles (a duplicate key would not).
+      assert [{H, _}] = Code.compile_string(meta)
+    end
+
+    test "a bitstring type specifier in a head is not mutated (it could be illegal)" do
+      # The value side mutates, but the spec side (`size(8)`) is skipped: a `unit(0)`
+      # / `size`-literal swap risks an illegal specifier that would poison the build.
+      source = "defmodule H do\n  def f(<<8::size(8)>>), do: :ok\nend\n"
+      {_meta, sites, _next_id} = Mutare.transform_string(source, mutators: @literal)
+
+      # Only the value `8` (left of `::`) mutates; the spec `size(8)` is untouched.
+      assert [
+               %Site{kind: :lifted, original_code: "8", mutated_code: "9"},
+               %Site{kind: :lifted, original_code: "8", mutated_code: "7"},
+               %Site{kind: :lifted, original_code: "8", mutated_code: "0"}
+             ] =
+               Enum.sort_by(sites, & &1.id)
+    end
+
+    test "a keyword/map key in a head is a label and is not mutated" do
+      source = "defmodule H do\n  def f(%{a: 1}), do: :ok\nend\n"
+      {_meta, sites, _next_id} = Mutare.transform_string(source, mutators: @literal)
+
+      # The `:a` key is skipped; only the `1` value lifts.
+      assert MapSet.new(sites, & &1.mutated_code) == MapSet.new(["2", "0"])
+    end
+
+    test "head literals and guard operators lift together, sharing the dispatcher" do
+      source = """
+      defmodule H do
+        def f(0, x) when x > 0, do: :a
+        def f(_, _), do: :b
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.Literal, Mutare.Mutators.Relational]
+        )
+
+      lifted = Enum.filter(sites, &(&1.kind == :lifted and &1.operation == :replace))
+      # guard `>` → {>=, <} (relational); head `0` → {1, -1} (literal). Both lifted.
+      assert Enum.any?(lifted, &(&1.mutator == :relational and &1.original_op == :>))
+      assert Enum.any?(lifted, &(&1.mutator == :literal and &1.original_code == "0"))
+
+      assert meta =~ ~r/def f\(mutare_arg1, mutare_arg2\) do/
+      assert [{H, _}] = Code.compile_string(meta)
+    end
+
+    test "a non-liftable function (default arg) gets no head-literal mutant" do
+      # Default args expand to multiple arities, so the group is not lifted — and a
+      # head literal there falls back to the in-place `:pattern` routing, unmutated.
+      source = "defmodule H do\n  def f(1, b \\\\ 2), do: b\nend\n"
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @literal)
+
+      refute meta =~ "__mutare_f"
+      # Only the default value `2` (runtime) mutates; the head `1` does not.
+      assert MapSet.new(sites, &{&1.original_code, &1.kind}) ==
+               MapSet.new([{"2", :in_place}])
+    end
+
+    test "a mutator that would emit a pattern-illegal node is filtered out of heads" do
+      # The compile-safety net: only literal-valued mutations survive in a pattern.
+      # This mutator rewrites an integer to `n + 1` (an operator — illegal in a
+      # pattern), so it must produce no *head* site (and the metamutant compiles),
+      # while still mutating the same literal in a body position.
+      source = "defmodule H do\n  def f(1), do: 9\nend\n"
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.TransformTest.PlusOneMutator])
+
+      # No lifted head site — the `1` head mutant was filtered (would not compile).
+      refute Enum.any?(sites, &(&1.kind == :lifted))
+      # The body `9` still mutates in place.
+      assert [%Site{kind: :in_place, original_code: "9"}] = sites
+      assert [{H, _}] = Code.compile_string(meta)
     end
   end
 

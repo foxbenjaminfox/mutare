@@ -64,11 +64,15 @@ defmodule Mutare.Site do
   end
 
   @doc """
-  A guard mutation, delivered by lifting (a `case` can't live in a `when`). Same
-  operator-swap shape as `in_place/6`, recorded as `:lifted`.
+  A mutation delivered by lifting (duplicating the clause group behind a
+  dispatcher) rather than by an in-place selector `case` — because the mutated
+  node sits where a `case` is illegal: inside a `when` guard, or inside a clause
+  *head* pattern (a literal swap). Same replacement shape as `in_place/6`, recorded
+  as `:lifted`; `mutator` distinguishes a guard operator swap (`:relational`, …)
+  from a head-pattern literal swap (`:literal`, …).
   """
-  @spec lifted_guard(pos_integer(), String.t(), map(), Macro.t(), Macro.t(), module()) :: t()
-  def lifted_guard(id, file, range, original_node, mutated_node, mutator) do
+  @spec lifted_replace(pos_integer(), String.t(), map(), Macro.t(), Macro.t(), module()) :: t()
+  def lifted_replace(id, file, range, original_node, mutated_node, mutator) do
     replace(id, file, range, original_node, mutated_node, mutator, :lifted)
   end
 
@@ -124,8 +128,9 @@ defmodule Mutare.Site do
     }
   end
 
-  # In-place and lifted-guard sites differ only in `kind`: both are an operator
-  # swap recorded with the original/mutated nodes, their ops, and rendered code.
+  # In-place and lifted sites differ only in `kind`: both are a node replacement
+  # recorded with the original/mutated nodes, their ops, and rendered code. (For a
+  # literal swap the "op" is `:__block__` — the same as an in-place literal site.)
   defp replace(id, file, range, original_node, mutated_node, mutator, kind) do
     %__MODULE__{
       id: id,

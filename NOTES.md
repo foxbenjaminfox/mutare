@@ -223,8 +223,10 @@ context-threaded recursive walk (see "Transform pipeline" below), not subtracted
 by a blacklist. The positions:
 - **Guards:** mutated via lifting (M2) — operators in a `when` are swapped in a
   duplicated clause group, since a `case` can't live in a guard. The analyzer
-  returns the whole `when` untouched for in-place (its head patterns included);
-  this is position-independent, so `case`/`fn` clause guards are skipped too.
+  returns the whole `when` untouched for *in-place*; this is position-independent,
+  so `case`/`fn` clause guards are skipped too. (The clause *head's* literals are
+  not mutated in place either, but they **are** mutated by the same lift path — see
+  "Head-pattern literals are lifted" below.)
 - **Module-attribute expressions** (`@x 1 + 2`): **excluded** (context
   `:compile_time`). Such a value is frozen at compile time — `persistent_term`
   reads the default → original — so a selector there could never activate (an
@@ -275,9 +277,13 @@ by a blacklist. The positions:
   expand to multiple arities; normalize-then-lift is deferred), so they get no
   guard/clause-drop mutants.
 - **Patterns** (clause heads, `=` match LHS): routed to `:pattern` and not
-  mutated. Built-in arithmetic/relational operators can't legally appear in a
-  pattern anyway, so this mainly shielded *custom* mutators — until the **atom**
-  mutator (the first built-in that matches a bare-atom node) made the gap bite.
+  mutated **in place** (a selector `case` is illegal in a pattern). Built-in
+  arithmetic/relational operators can't legally appear in a pattern anyway, so this
+  mainly shielded *custom* mutators — until the **atom** mutator (the first built-in
+  that matches a bare-atom node) made the gap bite. (A `def`/`defp` *head* pattern's
+  literals are nonetheless mutated — by **lifting**, not in place — see "Head-pattern
+  literals are lifted" below; `=`-LHS and `case`/`fn`/… clause patterns stay
+  unmutated, having no lift path.)
   **Now done** (was deferred): clause-pattern / generator routing for
   `case`/`fn`/`with`/`for`/`receive`/`try`. A generic `->` clause routes a
   clause's LHS to `:pattern` and the body to `:runtime`; a `<-` clause mirrors
@@ -363,6 +369,49 @@ runs mutators on every guard node. A multi-specifier bitstring *pattern* inside 
 `size()`-arg subcase only produces a legal direct swap — lifting never emits a
 `case`). Exotic and poison-backstopped, so left as-is. The clean fix shares the
 `analyze_spec/3` spec-exclusion descent between `analyze/3` and `tag_targets/3`.
+
+### Head-pattern literals are lifted `[done]`
+A literal in a `def`/`defp` *head* — `def f(1)`, `def f(%{1 => 2})`,
+`def f(:go)` — can't be mutated in place (a selector `case` is illegal in a
+pattern), so for a long time heads were left untouched (the in-place `:pattern`
+routing skips them). Now they are mutated by the **same lift machinery as guards**:
+`FunctionPlan.build_pattern_literals/3` tags each mutatable head literal in the
+shared tagged clause group (continuing the guard tag counter so tags are unique
+group-wide), and each `Candidate.Pattern` materializes a `__mut` copy with that one
+literal swapped — `def f(2)`, etc. The `Site` is a `:lifted` replace, identical in
+shape to a guard's (`Site.lifted_replace/6`), with the literal mutator's name.
+
+Consequences worth knowing:
+- A function now lifts if it admits a guard swap, a head-pattern literal swap, **or**
+  a clause drop — so a single-clause, unguarded `def f(1)` lifts solely to carry its
+  head mutant (the dispatcher widens the public function's domain, but the observable
+  result — a `FunctionClauseError` for an unmatched input — is preserved, exactly as
+  for any other lifted function).
+- **Only literal-valued mutations** are admitted in a head: `tag_pattern_targets/3`
+  offers a node to the mutators *only* when it is a scalar literal and keeps a
+  mutation *only* when its replacement is also a scalar literal. That selects exactly
+  the literal families (Literal/Float/String/Atom, and any future literal mutator —
+  no registry edit needed) and fences out a custom mutator that would splice a
+  pattern-illegal node (e.g. `1` → `n + 1`) into a head, which would poison the
+  single build.
+- Unlike the guard tagger above, this pattern walk **is** spec-aware: it descends
+  explicitly (not a blind `Macro.postwalk`), skipping the spec side of a bitstring
+  `::` (a `unit(0)` swap would not compile) and keyword/map *keys* (labels, not
+  values) — mirroring `analyze/3`'s `:pattern` routing. Both the key and value of a
+  `%{1 => 2}` map pattern mutate (neither is a `format: :keyword` label).
+- Not lifted ⇒ no head mutants: default-arg functions and operator-named functions
+  fall back to in-place (so their head literals are unmutated), same as their
+  guard/clause-drop mutants.
+- **Duplicate map keys are caught directly, not via poison.** Mutating one map key
+  to equal a sibling (`%{1 => a, 0 => b}` → `%{0 => a, 0 => b}`) is a compile error,
+  so the map clause of `tag_pattern_targets/3` filters each key's mutations against
+  the map's full key-value set (`map_key_values/1`) before tagging — covering arrow
+  keys *and* keyword keys (`%{:x => …, mutare: …}`), since a mutated arrow key
+  colliding with a keyword key is just as illegal. A mutation never reproduces the
+  original value, so "in the full set" means "equals a *sibling*". This avoids the
+  poison round-trip for the common case; only a collision through a *structured* key
+  (`%{{1, 2} => a, {0, 2} => b}` — that key descends generically) stays
+  poison-backstopped.
 
 ### Transform pipeline — explicit stages `[refactor, done]`
 `Mutare.Transform` is an explicit pipeline rather than a walk-everything-then-

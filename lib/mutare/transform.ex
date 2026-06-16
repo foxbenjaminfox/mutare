@@ -13,8 +13,8 @@ defmodule Mutare.Transform do
       separated from emission.
     * `Mutare.Transform.FunctionPlan` — one liftable clause group: its signature,
       its clauses, a single shared *tagged* clause group, and the typed lifted
-      candidates (`Candidate.Guard` / `Candidate.Drop`) it admits.
-    * `Mutare.Transform.Candidate.{InPlace,Guard,Drop}` — the typed, pre-id
+      candidates (`Candidate.Guard` / `Candidate.Pattern` / `Candidate.Drop`) it admits.
+    * `Mutare.Transform.Candidate.{InPlace,Guard,Pattern,Drop}` — the typed, pre-id
       description of a single mutant. One struct per legal kind, so the redundant
       `context`/`kind`/`operation` triple (and its illegal combinations) is gone.
 
@@ -27,9 +27,10 @@ defmodule Mutare.Transform do
        run **once**, here. Routing is positional (the spec side of a `::` goes one
        way, the value side another), which is why it can't be a flat
        `Macro.traverse` accumulator. Two contexts are threaded — `:runtime`
-       (mutate, → in-place; `:guard`/`:clause_drop` come from the lift path) and
-       `:pattern` (don't mutate, but keep descending so default-arg values and
-       `size()` args are reached); the rest (`:compile_time`, `:spec`, `:guard`,
+       (mutate, → in-place; `:guard`/`:clause_drop`/head-pattern literals come from
+       the lift path) and
+       `:pattern` (don't mutate in place, but keep descending so default-arg values
+       and `size()` args are reached); the rest (`:compile_time`, `:spec`, `:guard`,
        `:capture_arity`) are recognised and pruned, producing no candidate.
     2. **Plan** — a statement sequence is grouped into a `ModulePlan`; each
        liftable clause group becomes a `FunctionPlan` carrying its lifted
@@ -445,7 +446,14 @@ defmodule Mutare.Transform do
   end
 
   defp lifted_site(id, %Candidate.Guard{} = c, file) do
-    Site.lifted_guard(id, file, c.range, c.original, c.mutated, c.mutator)
+    Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
+  end
+
+  # A head-pattern literal swap is lifted (a `case` is illegal in a pattern) and
+  # records the same `:lifted` replacement shape as a guard — only the mutator
+  # name (a literal family) and the position differ.
+  defp lifted_site(id, %Candidate.Pattern{} = c, file) do
+    Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
   defp lifted_site(id, %Candidate.Drop{} = c, file) do

@@ -15,8 +15,12 @@ defmodule Mutare.Transform.Candidate do
   #     selector `case` (was `:runtime_body` / `:in_place` / `:replace`).
   #   * `Candidate.Guard`   — a `when`-guard operator swap, delivered by lifting
   #     (a `case` can't live in a guard) (was `:guard` / `:lifted` / `:replace`).
-  #   * `Candidate.Drop`    — a whole clause removed, delivered by lifting (was
-  #     `:clause_drop` / `:lifted` / `:delete`).
+  #   * `Candidate.Pattern` — a head-pattern literal swap, delivered by lifting (a
+  #     selector `case` is illegal in a pattern). Mechanically a twin of `Guard` —
+  #     both tag a node in the shared clause group and replace it in a `__mut` copy
+  #     — but a distinct kind: a different position (the clause *head*, not its
+  #     `when`) and a different mutator family (only literal-valued mutations are
+  #     pattern-legal).
   #   * `Candidate.Return`  — a function clause's *tail expression* replaced with a
   #     constant (`nil`/`0`/`""`/`[]`), delivered by an in-place selector `case`
   #     (the tail is a body position). Structural, like `Drop`: it targets a
@@ -28,10 +32,13 @@ defmodule Mutare.Transform.Candidate do
   # Placement (in-place vs lifted) stays positional: the analyzer picks the
   # variant from where the node sits, the mutator never declares it.
   #
-  # The excluded positions — `:pattern`, `:compile_time` (module-attribute values
-  # and macro bodies), `:spec` (a bitstring type specifier), `:capture_arity`
-  # (the `/` in `&fun/arity`) — never become candidates at all; the analyzer
-  # classifies them positively and skips them (see `Mutare.Transform`'s `analyze/3`).
+  # The excluded positions — `:compile_time` (module-attribute values and macro
+  # bodies), `:spec` (a bitstring type specifier), `:capture_arity` (the `/` in
+  # `&fun/arity`) — never become candidates at all; the analyzer classifies them
+  # positively and skips them (see `Mutare.Transform`'s `analyze/3`). `:pattern` is
+  # excluded *in place* (a `case` is illegal in a pattern), but a `def`/`defp` head
+  # pattern's *literals* are mutated by lifting (`Candidate.Pattern`), the same way
+  # guards are.
 
   defmodule InPlace do
     @moduledoc false
@@ -61,6 +68,30 @@ defmodule Mutare.Transform.Candidate do
     # `FunctionPlan.mutated_clauses/2` reconstructs the mutated group by replacing
     # the tagged node with `mutated`, so emission never re-finds the node and the
     # group is stored once per function, not once per guard mutant.
+
+    @type t :: %__MODULE__{
+            tag: non_neg_integer(),
+            mutator: module(),
+            original: Macro.t(),
+            mutated: Macro.t(),
+            range: map()
+          }
+
+    defstruct [:tag, :mutator, :original, :mutated, :range]
+  end
+
+  defmodule Pattern do
+    @moduledoc false
+
+    # A head-pattern literal swap, delivered by lifting. Structurally identical to
+    # `Guard` (it carries a `tag` into the shared tagged clause group held on the
+    # `Mutare.Transform.FunctionPlan`, plus the replacement node), but it lives in
+    # a clause *head* rather than a `when` guard. Because a selector `case` is
+    # illegal in a pattern, a literal in a head (`def f(1, %{0 => k})`) can only be
+    # mutated by duplicating the whole clause group — exactly the guard mechanism.
+    # `FunctionPlan.mutated_clauses/2` materializes the mutant copy by replacing the
+    # tagged literal with `mutated`. Only mutations whose replacement is itself a
+    # literal are admitted, so the `__mut` copy is always a legal pattern.
 
     @type t :: %__MODULE__{
             tag: non_neg_integer(),
@@ -110,5 +141,5 @@ defmodule Mutare.Transform.Candidate do
     defstruct [:original, :mutated, :range]
   end
 
-  @type t :: InPlace.t() | Guard.t() | Drop.t() | Return.t()
+  @type t :: InPlace.t() | Guard.t() | Pattern.t() | Drop.t() | Return.t()
 end

@@ -255,6 +255,69 @@ defmodule Mutare.LiftTest do
     end
   end
 
+  describe "head-pattern literal mutants (compiled, switched at runtime)" do
+    @pattern_source """
+    defmodule Mutare.PatternLiftFixture do
+      def classify(%{1 => 2}), do: :exact
+      def classify(_), do: :other
+
+      def kind(:go), do: :going
+      def kind(_), do: :stopped
+    end
+    """
+
+    @compile {:no_warn_undefined, Mutare.PatternLiftFixture}
+
+    setup do
+      {meta, sites, _next_id} = Mutare.transform_string(@pattern_source, file: "pat.ex")
+      [{_module, _binary}] = Code.compile_string(meta)
+      on_exit(fn -> Selector.put(Selector.baseline()) end)
+      %{sites: sites}
+    end
+
+    defp pattern_id(sites, from, to) do
+      site =
+        Enum.find(
+          sites,
+          &(&1.kind == :lifted and &1.original_code == from and &1.mutated_code == to)
+        )
+
+      assert site, "no lifted #{from} -> #{to} pattern site"
+      site.id
+    end
+
+    test "baseline dispatches exactly like the original" do
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.PatternLiftFixture, :classify, [%{1 => 2}]) == :exact
+      assert apply(Mutare.PatternLiftFixture, :classify, [%{1 => 3}]) == :other
+      assert apply(Mutare.PatternLiftFixture, :kind, [:go]) == :going
+      assert apply(Mutare.PatternLiftFixture, :kind, [:nope]) == :stopped
+    end
+
+    test "mutating a map key in the head changes which clause matches", %{sites: sites} do
+      # `%{1 => 2}` → `%{0 => 2}`: the original input no longer hits the first clause.
+      Selector.put(pattern_id(sites, "1", "0"))
+      assert apply(Mutare.PatternLiftFixture, :classify, [%{1 => 2}]) == :other
+      assert apply(Mutare.PatternLiftFixture, :classify, [%{0 => 2}]) == :exact
+    end
+
+    test "mutating an atom in the head changes which clause matches", %{sites: sites} do
+      # `:go` → `:mutare`: `kind(:go)` now falls through to the catch-all.
+      Selector.put(pattern_id(sites, ":go", ":mutare"))
+      assert apply(Mutare.PatternLiftFixture, :kind, [:go]) == :stopped
+      assert apply(Mutare.PatternLiftFixture, :kind, [:mutare]) == :going
+    end
+
+    test "the report renders a head-literal mutant as a one-line diff", %{sites: sites} do
+      site = Enum.find(sites, &(&1.original_code == ":go" and &1.kind == :lifted))
+
+      assert Report.header(site) == "pat.ex:5  [atom, lifted]  SURVIVED"
+
+      assert Report.diff(site, @pattern_source) ==
+               "-  def kind(:go), do: :going\n+  def kind(:mutare), do: :going"
+    end
+  end
+
   test "report renders a lifted guard mutant as a one-line diff", %{sites: sites} do
     site =
       Enum.find(sites, &(&1.kind == :lifted and &1.original_op == :>= and &1.mutated_op == :>))
