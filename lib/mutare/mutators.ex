@@ -44,7 +44,9 @@ defmodule Mutare.Mutators do
     regex: Mutare.Mutators.RegexLiteral,
     datetime: Mutare.Mutators.DateTimeLiteral,
     alias: Mutare.Mutators.AliasLiteral,
-    return_value: Mutare.Mutators.ReturnValue
+    return_value: Mutare.Mutators.ReturnValue,
+    pattern_swap: Mutare.Mutators.PatternSwap,
+    pattern_wildcard: Mutare.Mutators.PatternWildcard
   ]
 
   @doc "The ordered `family => module` registry of every built-in mutator."

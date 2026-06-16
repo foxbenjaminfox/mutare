@@ -46,16 +46,21 @@ contract between them is the whole game.
     detection; `Transform.emit_module_plan/2` walks the items.
   - **`Transform.FunctionPlan`** — one liftable clause group: signature, clauses, a single shared
     *tagged* clause group, and its typed lifted candidates (guard swaps, head-pattern literal
-    swaps, clause drops). `mutated_clauses/2` reconstructs a mutant copy on demand (so the group is
-    stored once, not per mutant). `build_lifted/2` threads one tag counter through guards and
-    head-pattern literals, so a `def f(0) when …` lifts both kinds together.
-  - **`Transform.Candidate.{InPlace,Guard,Pattern,Drop}`** — typed candidate variants (one struct per
-    legal kind), replacing the old single struct that redundantly stored `context`/`kind`/
-    `operation` and admitted illegal combinations. `Pattern` (a head-pattern literal swap) is a
-    mechanical twin of `Guard` — both tag a node in the shared group and replace it in a `__mut`
-    copy — but a distinct kind (head, not `when`; literal families only). The matching `Site`
-    constructor is chosen by pattern-matching the variant at emit (`Guard`/`Pattern` →
-    `Site.lifted_replace/6`).
+    swaps, head-pattern **structure** rewrites, clause drops). `mutated_clauses/2` reconstructs a
+    mutant copy on demand (so the group is stored once, not per mutant). `build_lifted/2` threads
+    one tag counter through guards and head-pattern literals, so a `def f(0) when …` lifts both
+    kinds together; `build_pattern_structures/2` is a separate (untagged, index-based) pass for the
+    structural rewrites.
+  - **`Transform.Candidate.{InPlace,Guard,Pattern,PatternStructure,Drop}`** — typed candidate variants
+    (one struct per legal kind), replacing the old single struct that redundantly stored
+    `context`/`kind`/`operation` and admitted illegal combinations. `Pattern` (a head-pattern literal
+    swap) is a mechanical twin of `Guard` — both tag a node in the shared group and replace it in a
+    `__mut` copy — but a distinct kind (head, not `when`; literal families only). `PatternStructure`
+    (a variable swap or duplicate→wildcard) also lives in the head but spans sibling positions /
+    repeated variables that a single tag can't capture, so it is applied by **whole-clause
+    replacement by index** (like `Drop`), carrying the mutated head args. The matching `Site`
+    constructor is chosen by pattern-matching the variant at emit (`Guard`/`Pattern`/`PatternStructure`
+    → `Site.lifted_replace/6`).
   - **analyze + classify (`analyze/3`)** is a single context-threaded recursive descent: it
     *names the context* of each position as it descends (routing is positional — the spec side of
     a `::` goes one way, the value side another, which a flat `Macro.traverse` accumulator can't
@@ -96,17 +101,19 @@ contract between them is the whole game.
     post-order DFS; the id counter advances even for `:skip_ids` (poison recovery relies on it).
   - **in-place selector** for body expressions: wrap the operator in a tail-position
     `case :persistent_term.get(:mutare_active, 0) do <id> -> mutated; _ -> original end`.
-  - **function lifting + dispatcher** for `when` guards, **head-pattern literals**, and clause
-    structure (a `case` can't live in a guard or a pattern): duplicate the whole clause group into
-    private `__orig`/`__mut` copies and make the public `f/arity` a bare dispatcher. In-place
-    selectors live only in `__orig`. Guard *and* head-literal targets are tagged via
-    `meta[:mutare_tag]` on a single shared clause group held by the `FunctionPlan`;
-    `FunctionPlan.mutated_clauses/2` materializes each mutant copy on demand, so emission never
-    re-finds the node and the group isn't copied per mutant. A head pattern admits **only
-    literal-valued mutations** (`tag_pattern_targets/3` offers a node to the mutators iff it is a
-    scalar literal and keeps a mutation iff its replacement is too — so the `__mut` copy is always a
-    legal pattern; specs and keyword/map *keys* are skipped). Both sides of a `%{1 => 2}` map
-    pattern mutate.
+  - **function lifting + dispatcher** for `when` guards, **head-pattern literals**, **head-pattern
+    structure rewrites** (variable swap / duplicate→wildcard), and clause structure (a `case` can't
+    live in a guard or a pattern): duplicate the whole clause group into private `__orig`/`__mut`
+    copies and make the public `f/arity` a bare dispatcher. In-place selectors live only in `__orig`.
+    Guard *and* head-literal targets are tagged via `meta[:mutare_tag]` on a single shared clause
+    group held by the `FunctionPlan`; `FunctionPlan.mutated_clauses/2` materializes each mutant copy
+    on demand, so emission never re-finds the node and the group isn't copied per mutant. A head
+    pattern admits **only literal-valued mutations** for the literal families (`tag_pattern_targets/3`
+    offers a node to the mutators iff it is a scalar literal and keeps a mutation iff its replacement
+    is too — so the `__mut` copy is always a legal pattern; specs and keyword/map *keys* are skipped).
+    Both sides of a `%{1 => 2}` map pattern mutate. The **structure** rewrites (`PatternSwap`,
+    `PatternWildcard`) are pattern-legal by construction and applied by whole-clause replacement, not
+    tagging.
 - **`Mutare.Schema`** — runs `Transform` across discovered files, threading **globally-unique,
   stable** mutant ids. Honors `:paths`/`:exclude`, `:only_files` (for `--since`), and `:skip_ids`
   (for poison recovery — the id counter advances even for skipped ids, so ids stay stable across
@@ -243,7 +250,20 @@ contract between them is the whole game.
   value). It is registered (unlike `clause_drop`, the other structural built-in) so it is toggleable
   like any family. It is *delivered in place* (a tail is a body position), so a `Candidate.Return`
   is appended to the tail node's `meta[:mutare]` and shares the tail's selector `case` with any
-  operator swap there.
+  operator swap there. Two more **structural** families mutate `def`/`defp` *head patterns* (and
+  only there — the only pattern position Mutare lifts), delivered by the same lift machinery as
+  head literals: **PatternSwap** (`:pattern_swap` — swap two distinct-named variables inside a
+  container: `{x, y}`→`{y, x}`, `[a, b]`→`[b, a]`, map values; never transposes top-level args, and
+  always compile-safe since it only reorders existing bindings) and **PatternWildcard**
+  (`:pattern_wildcard` — where a variable repeats in the head, replace an occurrence with `_`,
+  dropping the equality constraint: `f(x, x)`→`f(_, x)`). Both are structural like ReturnValue
+  (`mutate/1` is `:skip`; the real logic is `pattern_mutations/2`, an **optional `Mutare.Mutator`
+  callback** that `FunctionPlan.build_pattern_structures/2` discovers via `function_exported?/2`),
+  registered (toggleable/ignorable), and on by default. PatternWildcard takes the clause's
+  body/guard-used variable names so it never strands a binding (thin one occurrence when a binding
+  survives; otherwise wildcard both — `equal?(x, x), do: true`→`equal?(_, _)`); broadening a
+  non-final clause to irrefutable is a benign "cannot match" warning that only poisons under
+  `--warnings-as-errors` (single-clause functions are always clean — see NOTES).
 - **`Mutare.Mutators`** — the **single ordered registry** of built-in families and the one place
   mutator lists are resolved/validated. `all/0` is the default set (every registered module — an
   unset `:mutators`/`:all`); `families/0` is every registered atom; `resolve/1` maps any family atom
@@ -295,6 +315,13 @@ Remember the Sourceror **clean-meta** rule for literal-valued mutators: a litera
 `{:__block__, meta, [value]}` and renders from a `:token` string in `meta`, so reusing the
 original meta would render the *original* text even after changing the value (a silent equivalent
 no-op). Emit replacements with fresh metadata (`{:__block__, [], [value]}`).
+
+For a *structural head-pattern* mutator (restructuring a whole `def`/`defp` head — variable
+swaps, wildcards), `mutate/1` is `:skip` and you instead implement the optional callback
+`pattern_mutations(head_args, used_outside)` (returning mutated arg lists);
+`Mutare.Transform.FunctionPlan` discovers it by export and delivers each by lifting. You must
+return only pattern-legal, compile-safe arg lists (`PatternSwap`/`PatternWildcard` are the
+built-in examples). `ReturnValue` is the analogous structural-but-in-place case (`replacements/1`).
 
 ## Result statuses
 

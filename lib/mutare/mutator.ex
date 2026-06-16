@@ -53,6 +53,25 @@ defmodule Mutare.Mutator do
   @doc "Short family name, shown in reports (e.g. `:arithmetic`)."
   @callback name() :: atom()
 
+  @doc """
+  Optional structural hook for mutating a `def`/`defp` clause **head pattern** as a
+  whole — restructurings that `mutate/1` can't express because they span sibling
+  positions or repeated variables (variable swaps, duplicate-variable wildcarding).
+
+  Given a clause's head argument patterns and `used_outside` (the set of variable names
+  read in the clause body/guard), it returns a list of mutated argument lists, one per
+  mutant. `Mutare.Transform.FunctionPlan` discovers implementers by
+  `function_exported?(mod, :pattern_mutations, 2)` and delivers each by lifting (a
+  selector `case` is illegal in a pattern), so an implementer must return only
+  *pattern-legal*, compile-safe argument lists. See `Mutare.Mutators.PatternSwap` and
+  `Mutare.Mutators.PatternWildcard`. A mutator without this callback simply takes no
+  part in head-pattern restructuring.
+  """
+  @callback pattern_mutations(head_args :: [Macro.t()], used_outside :: MapSet.t()) ::
+              [[Macro.t()]]
+
+  @optional_callbacks pattern_mutations: 2
+
   @doc "Whether `term` is a module that implements this behaviour."
   @spec implemented_by?(term()) :: boolean()
   def implemented_by?(module) when is_atom(module) do

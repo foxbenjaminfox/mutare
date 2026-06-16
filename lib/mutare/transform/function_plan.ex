@@ -49,10 +49,19 @@ defmodule Mutare.Transform.FunctionPlan do
           tagged_clauses: [Macro.t()],
           guards: [Candidate.Guard.t()],
           patterns: [Candidate.Pattern.t()],
+          pattern_structures: [Candidate.PatternStructure.t()],
           drops: [Candidate.Drop.t()]
         }
 
-  defstruct [:signature, :clauses, :tagged_clauses, :guards, :patterns, :drops]
+  defstruct [
+    :signature,
+    :clauses,
+    :tagged_clauses,
+    :guards,
+    :patterns,
+    :pattern_structures,
+    :drops
+  ]
 
   @doc """
   Plan a consecutive same-signature clause group.
@@ -65,15 +74,18 @@ defmodule Mutare.Transform.FunctionPlan do
   @spec plan(signature(), [Macro.t()], [module()]) :: {:lift, t()} | :in_place
   def plan({_vis, name, _arity} = signature, clauses, mutators) do
     {tagged_clauses, guards, patterns} = build_lifted(clauses, mutators)
+    pattern_structures = build_pattern_structures(clauses, mutators)
     drops = build_drops(clauses)
 
-    if (guards != [] or patterns != [] or drops != []) and liftable?(name, clauses) do
+    if (guards != [] or patterns != [] or pattern_structures != [] or drops != []) and
+         liftable?(name, clauses) do
       plan = %__MODULE__{
         signature: signature,
         clauses: clauses,
         tagged_clauses: tagged_clauses,
         guards: guards,
         patterns: patterns,
+        pattern_structures: pattern_structures,
         drops: drops
       }
 
@@ -85,14 +97,20 @@ defmodule Mutare.Transform.FunctionPlan do
 
   @doc """
   The lifted candidates of this group: guard swaps, then head-pattern literal
-  swaps, then clause drops.
+  swaps, then head-pattern structure rewrites (variable swaps / wildcards), then
+  clause drops.
 
   Emission walks these in order to assign ids and build one private `defp` copy
   per candidate, so the order fixes id assignment within a lifted function.
   """
   @spec candidates(t()) :: [Candidate.t()]
-  def candidates(%__MODULE__{guards: guards, patterns: patterns, drops: drops}),
-    do: guards ++ patterns ++ drops
+  def candidates(%__MODULE__{
+        guards: guards,
+        patterns: patterns,
+        pattern_structures: pattern_structures,
+        drops: drops
+      }),
+      do: guards ++ patterns ++ pattern_structures ++ drops
 
   @doc """
   Materialize one candidate's mutated clause group — the bodies of its private copy.
@@ -113,6 +131,14 @@ defmodule Mutare.Transform.FunctionPlan do
         mutated: mutated
       }),
       do: replace_tag(tagged, tag, mutated)
+
+  def mutated_clauses(%__MODULE__{clauses: clauses}, %Candidate.PatternStructure{
+        clause_index: index,
+        mutated_args: mutated_args
+      }) do
+    clause = Enum.at(clauses, index)
+    List.replace_at(clauses, index, put_head_args(clause, mutated_args))
+  end
 
   def mutated_clauses(%__MODULE__{clauses: clauses}, %Candidate.Drop{clause_index: index}),
     do: List.delete_at(clauses, index)
@@ -410,6 +436,102 @@ defmodule Mutare.Transform.FunctionPlan do
     do: Keyword.get(meta, :format) == :keyword
 
   defp label_key?(_), do: false
+
+  # === head-pattern structure candidates =====================================
+
+  # Discover whole-head pattern restructurings (variable swaps, duplicate-variable
+  # wildcards) for each clause. Unlike guards/literals these don't tag a single node:
+  # the rewrite spans sibling positions or repeated variables (and a 2-tuple/list has
+  # no taggable meta), so each candidate carries the mutated head args and is applied by
+  # whole-clause replacement (`mutated_clauses/2`, like a `Drop`). A clause is indexed
+  # so the replacement targets the right one.
+  #
+  # The participating mutators are the enabled ones exporting `pattern_mutations/2`
+  # (`PatternSwap`/`PatternWildcard`, or any custom mutator), so this needs no hard-coded
+  # list — toggling them off via `:mutators` simply drops them from `mutators`.
+  defp build_pattern_structures(clauses, mutators) do
+    case Enum.filter(mutators, &pattern_structure_mutator?/1) do
+      [] ->
+        []
+
+      structural ->
+        clauses
+        |> Enum.with_index()
+        |> Enum.flat_map(&pattern_structures_for(&1, structural))
+    end
+  end
+
+  defp pattern_structures_for({clause, index}, structural) do
+    case clause_head_args(clause) do
+      [] ->
+        []
+
+      args ->
+        call = clause_head_call(clause)
+
+        # A head with no rangeable call can't be diffed; skip rather than emit a site
+        # the report would crash on (mirrors the return-value `get_range` guard).
+        case Sourceror.get_range(call) do
+          %{} = range ->
+            used = clause_used_outside(clause)
+
+            Enum.flat_map(structural, fn mutator ->
+              args
+              |> mutator.pattern_mutations(used)
+              |> Enum.map(fn mutated_args ->
+                %Candidate.PatternStructure{
+                  clause_index: index,
+                  mutator: mutator,
+                  mutated_args: mutated_args,
+                  original: call,
+                  mutated: put_call_args(call, mutated_args),
+                  range: range
+                }
+              end)
+            end)
+
+          _ ->
+            []
+        end
+    end
+  end
+
+  defp pattern_structure_mutator?(mutator),
+    do: Code.ensure_loaded?(mutator) and function_exported?(mutator, :pattern_mutations, 2)
+
+  # The variable names read in a clause's guard(s) and body — the `used_outside` set a
+  # structural pattern mutator needs to know a variable stays bound after wildcarding.
+  # Over-collecting (any `{name, _, ctx}` with atom `ctx`, including a mere rebinding) is
+  # the safe direction: it can only make the mutator keep a binding, never strand one.
+  defp clause_used_outside({_vis, _meta, [head | rest]}) do
+    guards =
+      case head do
+        {:when, _, [_call | gs]} -> gs
+        _ -> []
+      end
+
+    collect_var_names(guards ++ rest)
+  end
+
+  defp collect_var_names(ast) do
+    {_ast, names} =
+      Macro.prewalk(ast, MapSet.new(), fn
+        {name, _meta, ctx} = node, acc when is_atom(name) and is_atom(ctx) ->
+          {node, MapSet.put(acc, name)}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    names
+  end
+
+  # The clause's head *call* node (`{name, meta, args}`), peeling any `when` — the node
+  # the report ranges and renders (`f(x, x)` → `f(_, x)`), guard left intact.
+  defp clause_head_call({_vis, _meta, [head | _rest]}), do: head_call(head)
+
+  defp head_call({:when, _meta, [call | _guards]}), do: call
+  defp head_call(call), do: call
 
   # === clause-drop candidates ================================================
 

@@ -21,6 +21,12 @@ defmodule Mutare.Transform.Candidate do
   #     — but a distinct kind: a different position (the clause *head*, not its
   #     `when`) and a different mutator family (only literal-valued mutations are
   #     pattern-legal).
+  #   * `Candidate.PatternStructure` — a whole-head pattern restructuring (a variable
+  #     swap, or a duplicate-variable wildcarding), delivered by lifting. Like `Pattern`
+  #     it lives in a clause head, but the rewrite spans sibling positions / repeated
+  #     variables that a single `meta[:mutare_tag]` can't capture, so it is applied by
+  #     whole-clause replacement by index (like `Drop`). Structural (the
+  #     `PatternSwap`/`PatternWildcard` families own the logic via `pattern_mutations/2`).
   #   * `Candidate.Return`  — a function clause's *tail expression* replaced with a
   #     constant (`nil`/`0`/`""`/`[]`), delivered by an in-place selector `case`
   #     (the tail is a body position). Structural, like `Drop`: it targets a
@@ -104,6 +110,33 @@ defmodule Mutare.Transform.Candidate do
     defstruct [:tag, :mutator, :original, :mutated, :range]
   end
 
+  defmodule PatternStructure do
+    @moduledoc false
+
+    # A whole-head *pattern restructuring* of one clause, delivered by lifting — a
+    # variable swap (`{x, y}` → `{y, x}`) or a duplicate-variable wildcarding
+    # (`f(x, x)` → `f(_, x)`). Like `Pattern` it lives in a clause head and is delivered
+    # by duplicating the clause group; unlike `Pattern` (a single tagged literal node) the
+    # rewrite spans/replaces sub-patterns that may have no taggable metadata (a 2-tuple,
+    # a list), so it is applied by **whole-clause replacement by index** — the same
+    # mechanism as `Drop`. `clause_index` says which clause to rebuild;
+    # `Mutare.Transform.FunctionPlan.mutated_clauses/2` swaps in `mutated_args` as that
+    # clause's head pattern args. `original`/`mutated` are the clause's head *call* node
+    # before/after (always rangeable, so the report renders a clean one-line diff), and
+    # `mutator` is the structural family that produced it (`PatternSwap`/`PatternWildcard`).
+
+    @type t :: %__MODULE__{
+            clause_index: non_neg_integer(),
+            mutator: module(),
+            mutated_args: [Macro.t()],
+            original: Macro.t(),
+            mutated: Macro.t(),
+            range: map()
+          }
+
+    defstruct [:clause_index, :mutator, :mutated_args, :original, :mutated, :range]
+  end
+
   defmodule Drop do
     @moduledoc false
 
@@ -141,5 +174,11 @@ defmodule Mutare.Transform.Candidate do
     defstruct [:original, :mutated, :range]
   end
 
-  @type t :: InPlace.t() | Guard.t() | Pattern.t() | Drop.t() | Return.t()
+  @type t ::
+          InPlace.t()
+          | Guard.t()
+          | Pattern.t()
+          | PatternStructure.t()
+          | Drop.t()
+          | Return.t()
 end

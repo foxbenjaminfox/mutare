@@ -415,6 +415,64 @@ Consequences worth knowing:
   (`%{{1, 2} => a, {0, 2} => b}` — that key descends generically) stays
   poison-backstopped.
 
+### Head-pattern *structure* mutators `[done]`
+Two families restructure a `def`/`defp` *head pattern* as a whole, beyond the literal
+swaps above: **`PatternSwap`** (`:pattern_swap`) exchanges two distinct-named variables
+inside a container (`{x, y}`→`{y, x}`, `[a, b]`→`[b, a]`, a map's *values*); and
+**`PatternWildcard`** (`:pattern_wildcard`) replaces one occurrence of a repeated
+variable with `_` (`equal?(x, x)`→`equal?(_, x)`), dropping the non-linear equality
+constraint. Both are **structural** like `ReturnValue`/`clause_drop` (the target is a
+whole-pattern shape, not a node a `mutate/1` could match), **registered** and on by
+default, and delivered **head-only via lifting** (the only pattern position Mutare
+lifts; `=`-LHS and `case`/`fn` clause patterns are out of scope — see "Patterns" above).
+
+Several design choices worth remembering:
+
+- **Structural via an optional callback, discovered by export.** `mutate/1` is `:skip`;
+  the real entry point is `Mutare.Mutator.pattern_mutations/2` (`@optional_callbacks`),
+  taking `(head_args, used_outside)` and returning mutated head-arg lists.
+  `FunctionPlan.build_pattern_structures/2` runs every *enabled* mutator that
+  `function_exported?(_, :pattern_mutations, 2)` — so no hard-coded list (unlike the
+  `ReturnValue in mutators` check), toggling is just list membership, and a custom
+  mutator can opt in. A function now also lifts if it admits a swap/wildcard (so a
+  single-clause `def f({x, y})` lifts solely to carry its swap mutant, like head
+  literals).
+
+- **Whole-clause replacement, not tagging.** Guards/head-literals tag *one* node via
+  `meta[:mutare_tag]` and `replace_tag` it in the `__mut` copy. A swap/wildcard spans
+  *two* sibling positions or repeated variables — and a 2-tuple/list has no taggable
+  meta (Sourceror keeps small tuples/lists as raw `{a, b}`/`[…]` with no `{f, m, a}`
+  wrapper). So `Candidate.PatternStructure` carries the mutated head args and is applied
+  by `List.replace_at` on the clause (the same index-based mechanism as `Candidate.Drop`),
+  via the existing `put_head_args/2`. The `Site` records at the **head-call level**
+  (`original`/`mutated` = `f(x, x)`/`f(_, x)`), which always has a `Sourceror` range
+  (the diff line is the full `def` either way), sidestepping the no-range nodes.
+
+- **Compile-safety — swap is total, wildcard is `used_outside`-guided.** A swap only
+  reorders existing variables: the bound-name set and its usage are invariant (no
+  unbound/unused var), and refutability is preserved (`{x,y}`/`{y,x}` both need a
+  2-tuple), so it never shadows a later clause — always clean. Wildcard must not strand a
+  binding, so `FunctionPlan.clause_used_outside/1` collects the variable names read in the
+  clause's guard+body (**over-collecting is the safe direction** — it can only keep a
+  binding we didn't need, never remove one a body reads, which would be an *unbound*
+  hard error). The rule: a duplicate used elsewhere, or appearing ≥3 times, **thins** one
+  occurrence per mutant (a binding survives); a duplicate appearing exactly twice and read
+  nowhere gets the **orphan-fix** — *both* occurrences → `_` (`equal?(x, x), do: true`→
+  `equal?(_, _)`), since thinning to one would leave an unused var.
+
+- **WAE shadowing is poison-backstopped, not pre-excluded.** Broadening a non-final
+  clause to an irrefutable pattern (`f(_, x)`/`f(_, _)` match anything) makes later
+  same-arity clauses unreachable — a *warning* ("this clause cannot match"), and an
+  unused-var is likewise only a warning. Both fail **only** under `--warnings-as-errors`,
+  where poison-recovery drops them: a compile collects *all* such warnings at once and a
+  `__mut` copy's whole range maps to its id, so a batch recovers in ≈1 rebuild (far under
+  `@poison_attempts`). We deliberately *don't* pre-skip these (they're valid Elixir that
+  runs fine without WAE, and the wildcard's whole point is broadening the match), matching
+  the project's "poison is the backstop for the genuinely-uncompilable" stance. The only
+  residual exotic case is a head variable *rebound* (not read) in the body — `used_outside`
+  over-counts it as used → a thin mutant with an unused var → WAE poison; rare, documented,
+  bounded. **Single-clause functions are always clean** (nothing to shadow).
+
 ### Transform pipeline — explicit stages `[refactor, done]`
 `Mutare.Transform` is an explicit pipeline rather than a walk-everything-then-
 subtract design. Stages: **analyze + classify** (`analyze/3` is a single

@@ -456,6 +456,13 @@ defmodule Mutare.Transform do
     Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
+  # A head-pattern structure rewrite (variable swap / wildcard) is lifted too, and
+  # records the same `:lifted` replacement shape — `original`/`mutated` are the clause's
+  # head call node before/after (`f(x, x)` → `f(_, x)`), so the diff is a clean one-liner.
+  defp lifted_site(id, %Candidate.PatternStructure{} = c, file) do
+    Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
+  end
+
   defp lifted_site(id, %Candidate.Drop{} = c, file) do
     Site.clause_drop(id, file, c.range, c.original)
   end
