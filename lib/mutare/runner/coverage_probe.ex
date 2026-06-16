@@ -30,9 +30,10 @@ defmodule Mutare.Runner.CoverageProbe do
   touching the line itself) is still included, as long as a sibling test in its
   file does touch the line.
 
-  Coverage is advisory, never authoritative. Anything uncertain — an unreadable or
-  empty dump (the probe recorded nothing, so the capture itself likely failed) —
-  degrades to `:run_all`: we never skip a mutant on doubt.
+  Coverage is advisory, never authoritative. Anything uncertain — a non-zero
+  probe exit, an unreadable dump, or an empty dump (the probe recorded nothing,
+  so the capture itself likely failed) — degrades to `:run_all`: we never skip a
+  mutant on doubt.
   """
 
   alias Mutare.{Coverage, Schema, Selector}
@@ -69,21 +70,26 @@ defmodule Mutare.Runner.CoverageProbe do
   """
   @spec run(Path.t(), Schema.t(), :coverage | :full) :: selection()
   def run(sandbox, %Schema{} = schema, mode) when mode in [:coverage, :full] do
-    probe!(sandbox)
+    dump = Path.join(sandbox, Recorder.dump_file())
+    File.rm(dump)
 
-    case Coverage.read_dump(Path.join(sandbox, Recorder.dump_file())) do
-      {:ok, coverage} -> select(mode, schema, coverage)
-      {:error, _} -> :run_all
+    with 0 <- probe!(sandbox),
+         {:ok, coverage} <- Coverage.read_dump(dump) do
+      select(mode, schema, coverage)
+    else
+      _ -> :run_all
     end
   end
 
   # One instrumented baseline run: the metamutant self-records coverage. We don't
-  # cap it (it is a baseline-equivalent run) and we don't gate on its exit status —
-  # coverage is advisory, and the dump is written by `after_suite` regardless of
-  # whether a flaky test failed. A run that never produces a dump (a compile error,
-  # say) surfaces as an unreadable dump → `:run_all`.
+  # cap it (it is a baseline-equivalent run), but a non-zero exit means the dump
+  # may be partial (for example `max_failures` can abort before later files run),
+  # so the caller treats it as uncertainty → `:run_all`.
   defp probe!(sandbox) do
-    Command.mix(sandbox, ["test"], Selector.baseline(), nil, [{Recorder.env_var(), "1"}])
+    {_output, status} =
+      Command.mix(sandbox, ["test"], Selector.baseline(), nil, [{Recorder.env_var(), "1"}])
+
+    status
   end
 
   # An empty aggregate means the capture recorded nothing (it likely failed), not

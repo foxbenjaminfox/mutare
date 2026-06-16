@@ -112,6 +112,63 @@ defmodule Mutare.CoverageTest do
       assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
       assert [%Result{status: :killed}] = run.results
     end
+
+    @tag :runner
+    test "coverage tracking includes code reached from test_helper setup" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:helper_cov, %{
+          "lib/startup.ex" => """
+          defmodule Startup do
+            def touch, do: 1 + 1
+          end
+          """,
+          "test/test_helper.exs" => """
+          Startup.touch()
+          ExUnit.start()
+          """,
+          "test/startup_test.exs" => """
+          defmodule StartupTest do
+            use ExUnit.Case
+            test "unrelated green test", do: assert(true)
+          end
+          """
+        })
+
+      assert {:ok, run} =
+               Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Arithmetic])
+
+      # The only execution of Startup.touch/0 happens in test_helper.exs before
+      # any test process is labeled. That is covered-but-unattributed, so it must
+      # run the whole suite rather than being skipped as :no_coverage.
+      assert [%Result{status: :survived, duration_ms: ms, output: output}] = run.results
+      assert ms > 0
+      assert output =~ "1 test"
+    end
+
+    @tag :runner
+    test "a target lib/mutare_cov.ex is preserved and can still host mutants" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:cov_name_collision, %{
+          "lib/mutare_cov.ex" => """
+          defmodule MutareCov do
+            def value, do: 40 + 2
+          end
+          """,
+          "test/mutare_cov_test.exs" => """
+          defmodule MutareCovTest do
+            use ExUnit.Case
+            test "value", do: assert(MutareCov.value() == 42)
+          end
+          """
+        })
+
+      assert {:ok, run} =
+               Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Arithmetic])
+
+      assert [%Result{status: :killed}] = run.results
+      assert File.read!(Path.join(sandbox, "lib/mutare_cov.ex")) =~ "def value"
+      assert File.regular?(Path.join(sandbox, "lib/__mutare__/coverage_helper.ex"))
+    end
   end
 
   describe "test-file selection (end to end)" do
@@ -150,6 +207,44 @@ defmodule Mutare.CoverageTest do
       greeter = by_op[:*]
       assert greeter.status == :killed
       assert greeter.output =~ "1 test"
+    end
+
+    @tag :runner
+    test "a non-zero coverage probe falls back to running every mutant" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:probe_failure, %{
+          "lib/probe_failure.ex" => """
+          defmodule ProbeFailure do
+            def first, do: 1 + 1
+            def second, do: 3 + 4
+          end
+          """,
+          "test/test_helper.exs" => "ExUnit.start(seed: 0, max_failures: 1)\n",
+          "test/probe_failure_test.exs" => """
+          defmodule ProbeFailureTest do
+            use ExUnit.Case
+
+            test "first then probe-only failure" do
+              assert ProbeFailure.first() == 2
+
+              if System.get_env("MUTARE_COVERAGE") do
+                flunk("probe-only failure")
+              end
+            end
+
+            test "second" do
+              assert ProbeFailure.second() == 7
+            end
+          end
+          """
+        })
+
+      assert {:ok, run} =
+               Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Arithmetic])
+
+      assert length(run.results) == 2
+      assert Enum.all?(run.results, &(&1.status == :killed))
+      refute Enum.any?(run.results, &(&1.status == :no_coverage))
     end
   end
 end

@@ -11,13 +11,14 @@ defmodule Mutare.Coverage.Recorder do
       catch-all. At baseline, under a tracking flag, it records the site's mutant
       ids into shared ETS — in whatever process runs the line, including the test
       process. (`Mutare.Selector` owns the *selection* contract the same way.)
-    * `helper_source/0` — a dependency-free `MutareCov` module
+    * `helper_source/0` — a dependency-free helper module
       (`Mutare.Sandbox` writes it into the sandbox) holding the ETS writes and the
       end-of-suite dump, so the per-site code stays a single call and the
       OTP-version-tolerant label read lives in one place.
-    * `bootstrap_ast/0` — appended to the sandbox test bootstrap; when the probe
-      env var is set it creates the tables, flips the tracking flag, and registers
-      the `ExUnit.after_suite/1` dump.
+    * `setup_ast/0` and `after_suite_ast/0` — injected around the target's
+      `test_helper.exs`; when the probe env var is set, setup creates the tables
+      and flips the tracking flag before user helper code runs, while the
+      after-suite hook is registered after the helper has started ExUnit.
 
   ## Why this, not `:cover`
 
@@ -32,16 +33,16 @@ defmodule Mutare.Coverage.Recorder do
   ## The gate (why it is inert outside the probe)
 
   The spliced expression is `mutare_active == 0 and
-  :persistent_term.get(:mutare_track, false) and MutareCov.hit([<ids>])`:
+  :persistent_term.get(:mutare_track, false) and <helper>.hit([<ids>])`:
 
     * per-mutant runs (`mutare_active != 0`) short-circuit on the integer compare —
       ~zero hot-loop cost;
     * the baseline green run and Mutare's own unit tests (`:mutare_track` unset)
-      short-circuit on the persistent-term read — `MutareCov` is never *called*;
+      short-circuit on the persistent-term read — the helper is never *called*;
     * only the probe run (`MUTARE_COVERAGE` set → `:mutare_track` true,
       `mutare_active == 0`) records.
 
-  `MutareCov.hit/1` returns `true` so the `and` chain stays boolean (an `:ets`
+  The helper's `hit/1` returns `true` so the `and` chain stays boolean (an `:ets`
   call returns an int/`true` and would raise `BadBooleanError` mid-`and`).
   """
 
@@ -50,6 +51,7 @@ defmodule Mutare.Coverage.Recorder do
   @agg_table :mutare_cov_agg
   @attr_table :mutare_cov_attr
   @dump_file "mutare_cov.terms"
+  @helper_module :mutare_cov
 
   # The catch-all binds the selector subject to this variable so `record_ast/1`
   # can reuse it (no second `:persistent_term` read). `Mutare.Transform` uses
@@ -67,6 +69,10 @@ defmodule Mutare.Coverage.Recorder do
   @doc "The file (relative to the sandbox) the end-of-suite dump is written to."
   @spec dump_file() :: String.t()
   def dump_file, do: @dump_file
+
+  @doc "The dependency-free helper module emitted into the sandbox."
+  @spec helper_module() :: module()
+  def helper_module, do: @helper_module
 
   @doc """
   The catch-all clause pattern that binds the selector subject: `mutare_active`.
@@ -88,13 +94,13 @@ defmodule Mutare.Coverage.Recorder do
   def record_ast(ids) when is_list(ids) do
     active_zero = {:==, [], [{@var_name, [], nil}, 0]}
     track_read = {{:., [], [:persistent_term, :get]}, [], [@track_key, false]}
-    hit_call = {{:., [], [{:__aliases__, [], [:MutareCov]}, :hit]}, [], [ids]}
+    hit_call = {{:., [], [@helper_module, :hit]}, [], [ids]}
 
     {:and, [], [{:and, [], [active_zero, track_read]}, hit_call]}
   end
 
   @doc """
-  Source of the dependency-free `MutareCov` helper `Mutare.Sandbox` writes into
+  Source of the dependency-free coverage helper `Mutare.Sandbox` writes into
   the sandbox (compiled once, with the app).
 
   `hit/1` records into the shared ETS tables; `dump/1` (run by `after_suite`)
@@ -107,9 +113,10 @@ defmodule Mutare.Coverage.Recorder do
     agg = @agg_table
     attr = @attr_table
     dump_file = @dump_file
+    helper = @helper_module
 
     quote do
-      defmodule MutareCov do
+      defmodule unquote(helper) do
         @moduledoc false
 
         def hit(ids) do
@@ -171,15 +178,15 @@ defmodule Mutare.Coverage.Recorder do
   end
 
   @doc """
-  The bootstrap snippet `Mutare.Sandbox` appends to the sandbox test helper
-  (after `ExUnit.start/0`, which `after_suite/1` needs).
+  The setup snippet `Mutare.Sandbox` prepends before the target's test helper.
 
-  Inert unless `env_var/0` is set: only the probe run creates the tables, sets the
-  tracking flag, and registers the dump. The tables are owned by the test-helper
+  Inert unless `env_var/0` is set: only the probe run creates the tables and sets
+  the tracking flag. This runs before user helper code so coverage caused by app
+  startup or helper setup is not missed. The tables are owned by the test-helper
   process, which hosts the `at_exit` suite run and so outlives it.
   """
-  @spec bootstrap_ast() :: Macro.t()
-  def bootstrap_ast do
+  @spec setup_ast() :: Macro.t()
+  def setup_ast do
     env_var = @env_var
     track_key = @track_key
     agg = @agg_table
@@ -187,11 +194,40 @@ defmodule Mutare.Coverage.Recorder do
 
     quote do
       if System.get_env(unquote(env_var)) not in [nil, ""] do
-        :persistent_term.put(unquote(track_key), true)
         :ets.new(unquote(agg), [:named_table, :public, :set, write_concurrency: true])
         :ets.new(unquote(attr), [:named_table, :public, :set, write_concurrency: true])
-        ExUnit.after_suite(&MutareCov.dump/1)
+        :persistent_term.put(unquote(track_key), true)
       end
+    end
+  end
+
+  @doc """
+  The after-suite snippet `Mutare.Sandbox` appends after the target's test helper.
+
+  `ExUnit.after_suite/1` requires ExUnit to have been started, so registration
+  stays after the user's helper even though coverage tracking starts before it.
+  """
+  @spec after_suite_ast() :: Macro.t()
+  def after_suite_ast do
+    env_var = @env_var
+    helper = @helper_module
+
+    quote do
+      if System.get_env(unquote(env_var)) not in [nil, ""] do
+        ExUnit.after_suite(&unquote(helper).dump/1)
+      end
+    end
+  end
+
+  @doc """
+  Combined coverage bootstrap kept for callers that do not need to split setup
+  from after-suite registration.
+  """
+  @spec bootstrap_ast() :: Macro.t()
+  def bootstrap_ast do
+    quote do
+      unquote(setup_ast())
+      unquote(after_suite_ast())
     end
   end
 end

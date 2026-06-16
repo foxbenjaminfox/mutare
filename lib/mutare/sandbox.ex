@@ -67,15 +67,19 @@ defmodule Mutare.Sandbox do
   # ---------------------------------------------------------------------------
   """
 
-  # The coverage probe needs the metamutant to record into ETS that only exists
-  # once `ExUnit.after_suite/1` is registerable — i.e. *after* `ExUnit.start/0`.
-  # So this snippet is appended below the project's helper (which calls
-  # `ExUnit.start/0`), not prepended like the selector/timeout bootstrap. Inert
-  # unless the probe env var is set (see `Mutare.Coverage.Recorder`).
+  # The coverage probe must start tracking before user `test_helper.exs` code,
+  # because helpers often start the app or touch mutated code. `ExUnit.after_suite/1`
+  # is only registerable after `ExUnit.start/0`, though, so coverage is injected
+  # in two pieces around the user's helper.
   @coverage_helper Recorder.helper_source()
-  @coverage_bootstrap """
-  # ---- injected by Mutare: coverage capture (inert unless probing) ----------
-  #{Macro.to_string(Recorder.bootstrap_ast())}
+  @coverage_setup """
+  # ---- injected by Mutare: coverage setup (inert unless probing) ------------
+  #{Macro.to_string(Recorder.setup_ast())}
+  # ---------------------------------------------------------------------------
+  """
+  @coverage_after_suite """
+  # ---- injected by Mutare: coverage dump (inert unless probing) -------------
+  #{Macro.to_string(Recorder.after_suite_ast())}
   # ---------------------------------------------------------------------------
   """
 
@@ -277,19 +281,35 @@ defmodule Mutare.Sandbox do
     end
   end
 
-  # The dependency-free coverage helper (`MutareCov`) is compiled with the app, so
-  # the metamutant's per-site `MutareCov.hit/1` resolves. A single global module
-  # (not per file), written under `lib/` where `mix` compiles it.
+  # The dependency-free coverage helper is compiled with the app, so the
+  # metamutant's per-site `hit/1` call resolves. It is written under a generated
+  # `lib/` path chosen not to overwrite copied target source; the helper module
+  # uses an Erlang-style atom name to avoid likely Elixir module collisions such
+  # as a target's own `MutareCov`.
   defp write_coverage_helper(sandbox) do
-    path = Path.join(sandbox, "lib/mutare_cov.ex")
+    path = coverage_helper_path(sandbox)
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, @coverage_helper <> "\n")
+  end
+
+  defp coverage_helper_path(sandbox) do
+    Stream.iterate(0, &(&1 + 1))
+    |> Stream.map(fn
+      0 -> "lib/__mutare__/coverage_helper.ex"
+      n -> "lib/__mutare__/coverage_helper_#{n}.ex"
+    end)
+    |> Stream.map(&Path.join(sandbox, &1))
+    |> Enum.find(&(not File.exists?(&1)))
   end
 
   defp inject_bootstrap(sandbox) do
     helper = Path.join(sandbox, "test/test_helper.exs")
     File.mkdir_p!(Path.dirname(helper))
     existing = if File.exists?(helper), do: File.read!(helper), else: "ExUnit.start()\n"
-    File.write!(helper, @bootstrap <> "\n" <> existing <> "\n" <> @coverage_bootstrap)
+
+    File.write!(
+      helper,
+      @bootstrap <> "\n" <> @coverage_setup <> "\n" <> existing <> "\n" <> @coverage_after_suite
+    )
   end
 end

@@ -356,8 +356,14 @@ no race:
   `Process.set_label({case, name})` (proc-dict `:"$process_label"` on OTP 26,
   `:proc_lib.get_label/1` on 27+) → maps to the test *file* → per-file selection.
 
-An `ExUnit.after_suite/1` hook (synchronous, registered from the bootstrap *after*
-`ExUnit.start/0`) dumps both to a term file the probe reads.
+The bootstrap is split around the target's `test_helper.exs`: the setup half is
+prepended before user helper code creates the ETS tables and flips
+`:mutare_track`, so app startup or helper setup that touches mutated code is
+captured; the dump half is appended after the helper, because
+`ExUnit.after_suite/1` is only registerable after `ExUnit.start/0`. The helper
+module itself is written under a generated `lib/__mutare__/…` path with an
+Erlang-style atom module name, so a target's own `lib/mutare_cov.ex` /
+`MutareCov` source is neither overwritten nor redefined.
 
 Why not the obvious thing — one `--cover` run with a formatter snapshotting per
 test: **ExUnit formatter events are async casts**, so a formatter's
@@ -383,10 +389,11 @@ explicit outcome, so `:no_coverage` is *named*, never implied by a missing key.
 Reconciliation, per id: never ran → `:no_coverage`; ran with attributed files →
 `{:run, files}`; ran but **unattributed** (covered only by an unlabeled process —
 `setup_all`/`on_exit`/a spawned task) → `{:run, []}` (whole suite), *not*
-`:no_coverage`. `:run_all` is the single conservative fallback: an unreadable or
-empty dump (the capture recorded nothing → it likely failed). The rule throughout:
-never skip on doubt — run everything rather than silently drop a mutant from the
-score's denominator.
+`:no_coverage`. `:run_all` is the single conservative fallback: a non-zero probe
+exit (the dump may be partial — e.g. `max_failures` aborts before later files),
+an unreadable dump, or an empty dump (the capture recorded nothing → it likely
+failed). The rule throughout: never skip on doubt — run everything rather than
+silently drop a mutant from the score's denominator.
 
 ### Baseline split from the coverage probe (done)
 The probe used to *double* as the green baseline check, which conflated two
