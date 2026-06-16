@@ -57,7 +57,7 @@ defmodule Mutare.Runner do
       surviving denominator would mislead; better to fail loudly.
   """
 
-  alias Mutare.{Options, Poison, Report, Result, Sandbox, Schema, Selector, Site}
+  alias Mutare.{Options, Poison, Project, Report, Result, Sandbox, Schema, Selector, Site}
   alias Mutare.Runner.{Baseline, CoverageProbe}
   alias Mutare.Sandbox.Command
 
@@ -86,7 +86,8 @@ defmodule Mutare.Runner do
   """
   @spec run(Path.t(), Options.t() | keyword()) :: {:ok, run()} | error()
   def run(root \\ ".", opts \\ []) do
-    options = Options.new(opts)
+    options = ensure_project(Options.new(opts), root)
+    root = options.project.copy_root
     schema = Schema.build(root, options)
     run_with_schema(schema, root, options)
   end
@@ -105,7 +106,8 @@ defmodule Mutare.Runner do
   @spec run_with_schema(Schema.t(), Path.t(), Options.t() | keyword()) ::
           {:ok, run()} | error()
   def run_with_schema(%Schema{} = schema, root \\ ".", opts \\ []) do
-    options = Options.new(opts)
+    options = ensure_project(Options.new(opts), root)
+    root = options.project.copy_root
 
     if Schema.count(schema) == 0 do
       {:error, :nothing_to_mutate, "no mutation sites found under #{inspect(options.paths)}"}
@@ -147,6 +149,16 @@ defmodule Mutare.Runner do
       end
     end
   end
+
+  # Resolve a `Mutare.Project` from the target if the caller didn't supply one (the
+  # Mix task does; `Mutare.run/2` and direct callers may not). Its `copy_root` is
+  # then the authoritative root for every path operation below — the umbrella root
+  # for an umbrella, the project root otherwise.
+  defp ensure_project(%Options{project: nil} = options, root) do
+    %{options | project: Project.resolve(root)}
+  end
+
+  defp ensure_project(%Options{} = options, _root), do: options
 
   # Per-mutant wall-clock cap. An explicit `:timeout` (ms) wins; otherwise
   # baseline × `:timeout_multiplier` (default 3.0), with a floor so tiny suites

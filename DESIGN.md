@@ -210,5 +210,5 @@ This says, to the character: nothing in the suite distinguishes `>` from `>=` at
 - Worker isolation by full source copy vs per-worker `MIX_BUILD_PATH` against the shared schema build — measure on a large umbrella.
 - Self-call redirection inside lifted copies: ship in v2, or defer until profiling shows recursion cost matters?
 - ~~Per-test coverage source: `:cover` line intersection vs an in-schema counter under a tracking flag.~~ **Resolved:** self-recording in the metamutant under a tracking flag (see *The schema doubles as a coverage probe*). `:cover` can't attribute per-test in one run without an async-formatter snapshot that races test execution.
-- Umbrella projects: one schema per app and aggregate, or treat the umbrella as one corpus?
+- ~~Umbrella projects: one schema per app and aggregate, or treat the umbrella as one corpus?~~ **Resolved:** treat the umbrella as one corpus — copy the whole umbrella (so `in_umbrella` siblings resolve), thread one globally-unique id space, and mutate a scoped subset of apps. The split is *copy-root* (the umbrella root, materialised) vs *mutate-scope* (which `apps/*` get metamutants), resolved by `Mutare.Project`. See NOTES.md *Umbrella support*.
 - Compile-poisoning pre-filter: always-on (safe, costs one isolated compile per candidate at discovery) vs opt-in for projects with adventurous custom mutators?

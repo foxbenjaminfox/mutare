@@ -67,6 +67,41 @@ Implementation notes:
 - The design's open question stands: full source copy vs per-worker
   `MIX_BUILD_PATH` against one shared schema build — measure on a large umbrella.
 
+### Umbrella support `[M5 / in progress]`
+Following the cargo-mutants precedent: **copy the whole umbrella, mutate a scoped
+subset of apps.** The whole tree travels to the sandbox so `in_umbrella` sibling
+deps and the shared `deps/`/`config/` keep resolving for free; only selected
+`apps/*` get metamutants. The organising split is **copy-root** (what's
+materialised — the umbrella root) vs **mutate-scope** (which apps are mutated),
+resolved by `Mutare.Project` from the target path + `--app`/`--workspace` and
+threaded as `Options.project`. The rest of the pipeline keeps treating its `root`
+positional as authoritative — it's just the umbrella root now — and reads
+`Options.project` only for scope. A non-umbrella project resolves to
+`copy_root == root` with a single `%{dir: "."}` scope, so the single-app path is
+byte-for-byte unchanged.
+
+Verified Mix mechanics that shape the later steps (Elixir source):
+- `mix test` is `@recursive`: **one OS process, one BEAM**, apps run sequentially,
+  each via `Mix.Project.in_project` which `File.cd!`s into `apps/<app>`. So each
+  app has its own cwd, but ETS/`:persistent_term` are shared across all of them.
+- `mix test apps/foo/test/x.exs` **from the umbrella root** routes only to foo
+  (other apps return `:ok`) — so per-mutant scoping needs no `cd`, just
+  umbrella-root-relative paths.
+- A shared umbrella build does **not** put sibling ebins on an app's code path
+  (only that app's declared `in_umbrella` deps), **but** `mix compile` builds every
+  app under `apps/` regardless of dep edges — so a generated `apps/mutare_support`
+  is compiled automatically and only needs its ebin appended to the path.
+
+Staged delivery (each a commit): **(1)** copy-root/mutate-scope split + detection +
+umbrella discovery + `--app`/`--workspace` — *this step*; classification still
+inert because the bootstrap isn't injected per app yet, so an umbrella run reports
+all-survivors until step 2. **(2)** per-app bootstrap injection (every app's
+`test/test_helper.exs`) + ETS create-once guard → baseline genuinely mutated.
+**(3)** generated `apps/mutare_support` coverage app + absolute dump path +
+umbrella-root-relative coverage keys → coverage selection works. **(4)** scope
+broad (`:run_all`/unattributed/`:full`) runs to the owning app + its dependents via
+the umbrella dep graph, never below (a cross-app killer must live in a dependent).
+
 ### Sandbox ownership marker `[done]`
 `prepare/3` used to `File.rm_rf!` the sandbox path unconditionally — fine for the
 default temp dir, but a foot-gun for a user-supplied `--sandbox` (a typo could

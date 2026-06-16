@@ -42,10 +42,23 @@ defmodule Mutare.Schema do
     options = Options.new(opts)
 
     root
-    |> discover(options.paths, options.exclude)
+    |> discover(scoped_paths(options), options.exclude)
     |> restrict(root, options.only_files)
     |> from_files(root, options)
   end
+
+  # In an umbrella the source roots live under each mutated app
+  # (`apps/foo/lib`), so prefix every `:paths` entry with each scope app's dir.
+  # No project, or a single-app project (`dir: "."`), leaves `:paths` untouched —
+  # so the non-umbrella pipeline is byte-for-byte unchanged.
+  defp scoped_paths(%Options{project: nil, paths: paths}), do: paths
+
+  defp scoped_paths(%Options{project: %{mutate_scope: scope}, paths: paths}) do
+    for %{dir: dir} <- scope, base <- paths, uniq: true, do: join_scope(dir, base)
+  end
+
+  defp join_scope(".", base), do: base
+  defp join_scope(dir, base), do: Path.join(dir, base)
 
   # Intersect discovered files with an explicit set of root-relative paths
   # (e.g. `mix mutare --since master` → files a branch changed).

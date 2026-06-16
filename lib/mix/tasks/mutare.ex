@@ -9,6 +9,9 @@ defmodule Mix.Tasks.Mutare do
 
       mix mutare                          # mutate everything under lib/
       mix mutare path/to/project          # target another project directory
+      mix mutare apps/billing             # mutate one umbrella app (copies the umbrella)
+      mix mutare --app billing,web        # mutate specific umbrella apps
+      mix mutare --workspace              # mutate every app in an umbrella
       mix mutare --only lib/billing       # scope to a path
       mix mutare --since master             # only files changed vs a git ref (CI)
       mix mutare --mutators relational    # only some mutator families
@@ -47,7 +50,7 @@ defmodule Mix.Tasks.Mutare do
   """
   use Mix.Task
 
-  alias Mutare.{Config, Options, Report, Result, Runner, Schema}
+  alias Mutare.{Config, Options, Project, Report, Result, Runner, Schema}
 
   @switches [
     only: :string,
@@ -60,17 +63,21 @@ defmodule Mix.Tasks.Mutare do
     harness_retries: :integer,
     max_harness_error_rate: :float,
     format: :string,
-    output: :string
+    output: :string,
+    app: :string,
+    workspace: :boolean
   ]
 
   @impl Mix.Task
   def run(argv) do
     {flags, rest} = OptionParser.parse!(argv, strict: @switches)
-    root = List.first(rest) || "."
-    options = resolve_options(root, flags)
+    target = List.first(rest) || "."
+    project = resolve_project(target, flags)
+    options = resolve_options(project, flags)
+    root = project.copy_root
 
     schema = Schema.build(root, options)
-    announce(schema, root)
+    announce(schema, project)
 
     case Runner.run_with_schema(schema, root, %{options | reporter: &progress/1}) do
       {:ok, run} -> report(run, options)
@@ -78,13 +85,28 @@ defmodule Mix.Tasks.Mutare do
     end
   end
 
+  # Resolve the target path + `--app`/`--workspace` into copy-root and
+  # mutate-scope. A bad `--app` (no matching umbrella app) raises `ArgumentError`,
+  # surfaced as a clean Mix failure like the other resolution errors.
+  defp resolve_project(target, flags) do
+    Project.resolve(target, apps: parse_apps(flags[:app]), workspace: flags[:workspace] || false)
+  rescue
+    error in ArgumentError -> Mix.raise(Exception.message(error))
+  end
+
+  defp parse_apps(nil), do: nil
+  defp parse_apps(csv), do: csv |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+
   # Resolve `.mutare.exs` + CLI flags into a validated `Mutare.Options`. Both an
   # unknown mutator (from `Config`) and an invalid option (from `Options.new/1`)
-  # raise `ArgumentError`, surfaced here as a clean Mix failure.
-  defp resolve_options(root, flags) do
-    Config.load(root)
+  # raise `ArgumentError`, surfaced here as a clean Mix failure. `.mutare.exs` and
+  # `--since` resolve against the copy-root (the umbrella root for an umbrella).
+  defp resolve_options(%Project{} = project, flags) do
+    project.copy_root
+    |> Config.load()
     |> Config.merge(flags)
-    |> scope_to_changes(root, flags)
+    |> scope_to_changes(project.copy_root, flags)
+    |> Keyword.put(:project, project)
     |> Options.new()
   rescue
     error in ArgumentError -> Mix.raise(Exception.message(error))
@@ -106,16 +128,25 @@ defmodule Mix.Tasks.Mutare do
 
   # --- output --------------------------------------------------------------
 
-  defp announce(%Schema{} = schema, root) do
+  defp announce(%Schema{} = schema, %Project{} = project) do
     files = schema.metamutants |> map_size()
-    where = if root == ".", do: "", else: " in #{root}"
-    Mix.shell().info("mutare#{where}: #{Schema.count(schema)} mutants across #{files} file(s)")
+
+    Mix.shell().info(
+      "mutare#{scope_label(project)}: #{Schema.count(schema)} mutants across #{files} file(s)"
+    )
 
     for {file, reason} <- schema.skipped,
         do: Mix.shell().info("  skipped #{file}: #{inspect(reason)}")
 
     Mix.shell().info("compiling metamutant once, baseline first…\n")
   end
+
+  defp scope_label(%Project{umbrella?: true, mutate_scope: scope}) do
+    " (umbrella: #{scope |> Enum.map(& &1.app) |> Enum.join(", ")})"
+  end
+
+  defp scope_label(%Project{copy_root: "."}), do: ""
+  defp scope_label(%Project{copy_root: root}), do: " in #{root}"
 
   defp progress(%Result{status: :killed}), do: IO.write(".")
   defp progress(%Result{status: :timeout}), do: IO.write("T")

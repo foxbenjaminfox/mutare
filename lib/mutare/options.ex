@@ -23,7 +23,7 @@ defmodule Mutare.Options do
       only validate the shape of `:sandbox`.
   """
 
-  alias Mutare.Result
+  alias Mutare.{Project, Result}
 
   @type t :: %__MODULE__{
           paths: [String.t()],
@@ -40,7 +40,8 @@ defmodule Mutare.Options do
           sandbox: String.t() | nil,
           min_score: number() | nil,
           reporters: [{:human | :json | :html | :sarif, String.t() | nil}],
-          reporter: (Result.t() -> any()) | nil
+          reporter: (Result.t() -> any()) | nil,
+          project: Project.t() | nil
         }
 
   defstruct paths: ["lib"],
@@ -57,11 +58,12 @@ defmodule Mutare.Options do
             sandbox: nil,
             min_score: nil,
             reporters: [{:human, nil}],
-            reporter: nil
+            reporter: nil,
+            project: nil
 
   @keys ~w(paths exclude mutators only_files test_selection workers timeout
            timeout_multiplier baseline_runs harness_retries max_harness_error_rate
-           sandbox min_score reporters reporter)a
+           sandbox min_score reporters reporter project)a
 
   # Output formats a reporter entry may name. `:human` is the console report
   # (`Mutare.Report`); the rest are the machine renderers under `Mutare.Report.*`.
@@ -98,7 +100,8 @@ defmodule Mutare.Options do
       sandbox: validate_sandbox!(Keyword.get(opts, :sandbox)),
       min_score: validate_min_score!(Keyword.get(opts, :min_score)),
       reporters: validate_reporters!(Keyword.get(opts, :reporters, [{:human, nil}])),
-      reporter: validate_reporter!(Keyword.get(opts, :reporter))
+      reporter: validate_reporter!(Keyword.get(opts, :reporter)),
+      project: validate_project!(Keyword.get(opts, :project))
     }
   end
 
@@ -259,5 +262,15 @@ defmodule Mutare.Options do
 
   defp validate_reporter!(other) do
     raise ArgumentError, ":reporter must be a 1-arity function, got: #{inspect(other)}"
+  end
+
+  # Derived state, not raw user config: the entry points (`Mutare.Runner.run/2`,
+  # the Mix task) resolve a `Mutare.Project` from the target path + scope flags and
+  # set it here. `nil` is treated as a single-app project downstream.
+  defp validate_project!(nil), do: nil
+  defp validate_project!(%Project{} = project), do: project
+
+  defp validate_project!(other) do
+    raise ArgumentError, ":project must be a Mutare.Project or nil, got: #{inspect(other)}"
   end
 end
