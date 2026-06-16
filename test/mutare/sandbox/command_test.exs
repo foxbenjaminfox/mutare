@@ -43,6 +43,55 @@ defmodule Mutare.Sandbox.CommandTest do
     end
   end
 
+  describe "outcome/2 refines a harness error with the run's output" do
+    @test_compile_error """
+    == Compilation error in file test/plug/router_test.exs ==
+    ** (ArgumentError) errors were found at the given arguments:
+        (plug) lib/plug/router/utils.ex:338: Plug.Router.Utils.build_path_clause/3
+        test/plug/router_test.exs:26: (module)
+    """
+
+    test "a per-mutant test-suite compile failure (exit 1) is a kill, not infra" do
+      # The mutation broke code that runs at the test modules' compile time, so the
+      # suite can't build with it — detected. The lib compiled once at baseline, so
+      # this fresh compile error can only be a re-evaluated test script.
+      assert Command.outcome(1, @test_compile_error) == :suite_compile_error
+    end
+
+    test "a real harness error (missing dep, exit 1) stays a harness error" do
+      missing_dep = "Unchecked dependencies for environment test:\n* mime (Hex package)"
+      assert Command.outcome(1, missing_dep) == :harness_error
+    end
+
+    test "a lib-file compile error is not a suite compile error (fail safe)" do
+      # A compile error in a lib source is unexpected (the lib compiled at
+      # baseline) — treat it as infra, never silently as a kill.
+      lib_error = "== Compilation error in file lib/plug/router/utils.ex ==\n** (CompileError)"
+      assert Command.outcome(1, lib_error) == :harness_error
+      refute Command.suite_compile_error?(lib_error)
+    end
+
+    test "output never overrides a real verdict (pass/fail/timeout win)" do
+      # The refinement only applies to the otherwise-`:harness_error` case.
+      assert Command.outcome(0, @test_compile_error) == :passed
+      assert Command.outcome(Command.failure_exit(), @test_compile_error) == :failed
+      assert Command.outcome(Command.timeout_exit(), @test_compile_error) == :timeout
+    end
+
+    test "suite_compile_error?/1 matches only a .exs under a test/ dir" do
+      assert Command.suite_compile_error?(@test_compile_error)
+      # umbrella app test path
+      assert Command.suite_compile_error?(
+               "== Compilation error in file apps/x/test/x_test.exs =="
+             )
+
+      # no banner, a lib .ex, or a non-test .exs script: not a suite compile error
+      refute Command.suite_compile_error?("1) test foo (MyTest)\n   Assertion failed")
+      refute Command.suite_compile_error?("== Compilation error in file lib/foo.ex ==")
+      refute Command.suite_compile_error?("== Compilation error in file priv/seeds.exs ==")
+    end
+  end
+
   describe "test_argv/1 builds the kill-detection mix test argv" do
     # A flag and its value are passed as two adjacent argv elements.
     defp flag_value(argv, flag) do

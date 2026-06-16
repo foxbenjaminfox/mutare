@@ -318,6 +318,11 @@ defmodule Mutare.Runner do
   defp status_for(:failed), do: :killed
   defp status_for(:timeout), do: :timeout
   defp status_for(:harness_error), do: :harness_error
+  # The mutation broke the test suite's own compilation — it can't even build
+  # with the mutant active, so it was detected: a kill. `Command.outcome/2`
+  # separates this from a genuine harness/infra compile failure (which stays
+  # `:harness_error`); only a per-mutant *test-script* compile error lands here.
+  defp status_for(:suite_compile_error), do: :killed
 
   # Persistent harness errors (after per-mutant retries) hollow out the score's
   # denominator — many mutants measured nothing. Past `:max_harness_error_rate`

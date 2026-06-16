@@ -23,8 +23,14 @@ defmodule Mutare.Sandbox.Command do
     * anything else — the suite never returned a verdict: a `:harness_error`,
       which says nothing about the mutation and is kept out of the score.
 
-  `outcome/1` is the single, total decoder of that contract; `timed_test/4`
-  applies the `--exit-status` flag and returns a typed `Mutare.Sandbox.Command.Result`.
+  `outcome/1` is the single, total decoder of that *exit-code* contract.
+  `outcome/2` refines its one ambiguous case (exit `1`) with the run's output:
+  exit `1` is both a real harness failure *and* a mutation that broke the **test
+  suite's** compilation (it ran at the test modules' compile time). The latter is
+  a detected mutant — a kill, not infra — and is told apart by a test-script
+  compile-error banner (`suite_compile_error?/1`), the only place this module
+  reads output. `timed_test/4` applies the `--exit-status` flag and returns a
+  typed `Mutare.Sandbox.Command.Result` decoded via `outcome/2`.
 
   ## Kill detection stops at the first failure
 
@@ -55,7 +61,8 @@ defmodule Mutare.Sandbox.Command do
   @failure_exit 101
 
   @typedoc """
-  What a `mix test` mutant run did, decoded from its exit status:
+  What a `mix test` mutant run did, decoded from its exit status (and, for the
+  last case, its output):
 
     * `:passed` — exit `0`: every test passed despite the mutation.
     * `:failed` — exit `failure_exit/0`: a test failed (a clean ExUnit failure).
@@ -63,8 +70,15 @@ defmodule Mutare.Sandbox.Command do
     * `:harness_error` — any other exit: the suite never ran to a verdict (a
       compile error, a missing dependency, a filesystem race, an OS signal). Not
       a statement about the mutation — the harness itself failed.
+    * `:suite_compile_error` — a refinement of `:harness_error`: the *test suite*
+      failed to compile because the mutation broke code that runs at the test
+      modules' compile time (a `Plug.Router` route macro calling a mutated
+      `Plug.Router.Utils` helper, an `EEx`/`use`-time call, a compile-time
+      `@attr` expression…). The mutation *was* detected — the suite can't even
+      build with it — so the runner counts it as a kill, not an infra failure
+      (see `outcome/2`).
   """
-  @type outcome :: :passed | :failed | :timeout | :harness_error
+  @type outcome :: :passed | :failed | :timeout | :harness_error | :suite_compile_error
 
   @doc "Env var the runner sets to give a mutant run its wall-clock cap (ms)."
   @spec timeout_env() :: String.t()
@@ -95,6 +109,58 @@ defmodule Mutare.Sandbox.Command do
   def outcome(status) when status == @failure_exit, do: :failed
   def outcome(status) when status == @timeout_exit, do: :timeout
   def outcome(_status), do: :harness_error
+
+  @doc """
+  Decode an exit status *refined by the run's output* — the only place this
+  module looks past the exit code, and only to split one ambiguous case.
+
+  Exit `1` covers both a real harness failure (a missing dep, an infra compile
+  error) *and* a mutation that broke the test suite's own compilation. They are
+  indistinguishable by code, but they are not the same verdict: the latter means
+  the mutation was *detected* (the suite can't build with it), so it is a kill,
+  not an infra failure left out of the score.
+
+  We can tell them apart because the metamutant lib is compiled **once** before
+  any mutant runs (poison handled at baseline), so a *fresh* compilation error
+  during a per-mutant `mix test` can't come from the lib — it can only be a
+  re-evaluated `.exs` **test** file the mutation broke at load time. So when an
+  otherwise-`:harness_error` run's output reports a compilation error in a test
+  script (`suite_compile_error?/1`), it is `:suite_compile_error`. Everything
+  else (a lib-file compile error, a missing dep, no marker at all) stays
+  `:harness_error` — fail safe: an ambiguous failure is never counted as a kill.
+  """
+  @spec outcome(non_neg_integer(), String.t()) :: outcome()
+  def outcome(status, output) when is_binary(output) do
+    case outcome(status) do
+      :harness_error ->
+        if suite_compile_error?(output), do: :suite_compile_error, else: :harness_error
+
+      decoded ->
+        decoded
+    end
+  end
+
+  @doc """
+  Whether `output` reports a `mix` compilation error in a **test script** — the
+  signature of a mutation that broke the test suite's compilation (see
+  `outcome/2`). Matches Elixir's `== Compilation error in file <path> ==` banner
+  only when `<path>` is a `.exs` under a `test/` directory; a lib-file error or
+  no banner is not one. Pure, so the discriminator is unit-testable.
+  """
+  @spec suite_compile_error?(String.t()) :: boolean()
+  def suite_compile_error?(output) when is_binary(output) do
+    case Regex.run(~r/== Compilation error in file (\S+) ==/, output) do
+      [_, file] -> test_script?(file)
+      nil -> false
+    end
+  end
+
+  # A re-evaluated test script: a `.exs` under a `test/` directory (covers an
+  # umbrella's `apps/<app>/test/…` too). Lib sources are `.ex` and compiled once
+  # at baseline, so they never produce a per-mutant compile error here.
+  defp test_script?(file) do
+    String.ends_with?(file, ".exs") and "test" in Path.split(file)
+  end
 
   @doc """
   Dependency-free watcher that enforces a mutant run's wall-clock cap.
@@ -194,7 +260,7 @@ defmodule Mutare.Sandbox.Command do
     {ms, output, status} = timed_mix(sandbox, test_argv(test_args), mutant_id, cap)
 
     %Result{
-      outcome: outcome(status),
+      outcome: outcome(status, output),
       exit_status: status,
       output: output,
       duration_ms: ms

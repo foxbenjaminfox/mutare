@@ -649,6 +649,48 @@ axis); `mix test --partitions` is the wrong tool — it only filters test files 
 build-path effect, verified), multiplies per-mutant process boots by the machine
 count, and forfeits this first-failure early-exit. Out of scope for now.
 
+### Mutations that break the *test suite's* compilation are kills `[done]`
+Surfaced dogfooding `mix mutare ~/programs/plug` on `lib/plug/router`: 17 of 187
+mutants landed as `:harness_error` (≈9%), all on `Plug.Router.Utils` functions
+(`build_path_clause`, `parse_suffix`, `split`). Root cause — and it is **not** a
+worker race (proven: `workers: 1` reproduces the exact same 17): these functions run
+at the *test modules'* **compile time**, because the plug test scripts `use
+Plug.Router` and the `get`/`match` route macros call them via `Plug.Router.__route__`
+while the `.exs` test file is being compiled. `.exs` test files are re-evaluated every
+`mix test` run, so the mutated helper runs each time; when the mutation makes it raise
+(an empty `:binary.compile_pattern("")` → `ArgumentError`, a mutated guard → `nil`
+`MatchError`/`FunctionClauseError`, AliasLiteral's `raise Mutare.Mutant` sentinel),
+the **test module fails to compile** and `mix test` exits `1`.
+
+Exit `1` is the one ambiguous code in the contract — a real harness failure (missing
+dep, infra compile error) *and* this. But they are different verdicts: a mutation that
+stops the suite from even building **was detected** — that is a kill, the standard
+mutation-testing reading, not an infra failure dropped from the score. The two are
+tellable apart because the **metamutant lib compiles exactly once** before any mutant
+runs (poison handled at baseline), so a *fresh* compile error during a per-mutant `mix
+test` cannot come from the lib — only from a re-evaluated `.exs` test script the
+mutation broke at load time.
+
+So `Command.outcome/2` refines `outcome/1`'s exit-`1`→`:harness_error` case with the
+run's output: a `== Compilation error in file <path> ==` banner whose `<path>` is a
+`.exs` under a `test/` dir (`suite_compile_error?/1`) → `:suite_compile_error`, which
+`Runner.status_for/1` maps to `:killed`. Anything else — a lib-file compile error, a
+missing dep, no banner — **stays `:harness_error`** (fail safe: an ambiguous failure
+is never charged as a kill). This is the **only** place the contract reads output
+rather than just the exit code; the split is deliberate and confined to this one case.
+A `:suite_compile_error` never reaches the reporters — it becomes `Result.status ==
+:killed` in the runner — so the `Result`/Stryker status vocabulary is untouched. It is
+also not retried (only `:harness_error` is) and skips the per-mutant harness warning.
+Effect on the plug run: 83.7% (128 killed, 17 harness-error) → 85.3% (145 killed, 0
+harness-error), and the misleading "fix your sandbox" warnings vanish.
+
+Deferred: the same shape exists for *any* compile-time-executed code (compile-time
+`@attr` expressions, `EEx`/`use`-time calls, custom route DSLs). The discriminator is
+general (any test-script compile error), so those are covered too — but if a target
+compiled lib modules *lazily* per-run (it doesn't today; the metamutant is built
+once), a lib compile error here could be a real kill we conservatively keep as a
+harness error. Acceptable while "lib compiles once" holds.
+
 ### Test selection — self-recorded coverage (M3b done, race-free redesign) `[done]`
 Coverage-driven *test selection* is done at **test-file** granularity from a
 **single instrumented `mix test` run** at baseline (`MUTARE_COVERAGE=1`). A mutant

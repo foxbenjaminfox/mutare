@@ -135,7 +135,14 @@ contract between them is the whole game.
   `timed_mix/4` spawn a fresh `mix` OS process with `MIX_ENV=test`/`MUTANT_UNDER_TEST` set. Owns the
   *run side* of the **exit-code contract** and decodes it into a typed
   `Mutare.Sandbox.Command.Result` (`timed_test/4`): `0`→`:passed`, `failure_exit/0`→`:failed`,
-  `timeout_exit/0`→`:timeout`, anything else→`:harness_error` (the total decoder is `outcome/1`).
+  `timeout_exit/0`→`:timeout`, anything else→`:harness_error` (the total exit-code decoder is
+  `outcome/1`). `outcome/2` refines the one ambiguous code (`1`) with the run's *output*: a mutation
+  that breaks the **test suite's** own compilation (it ran at the test modules' compile time —
+  exit `1` with a `.exs`-under-`test/` compile-error banner, `suite_compile_error?/1`) is
+  `:suite_compile_error`, which the runner counts as a **kill** (the suite couldn't build with it →
+  detected); a real infra/lib compile error / missing dep stays `:harness_error` (fail safe). This
+  is the *only* place the contract reads output, justified because the lib compiles **once** so a
+  fresh per-mutant compile error can only be a re-evaluated test script the mutation broke.
   The pivot is `--exit-status failure_exit/0`, forced onto every mutant `mix test`: a clean ExUnit
   failure (a kill) exits with that distinctive code, while a compile error / missing dep / broken
   helper exits `1` — so a harness error is no longer indistinguishable from a kill. Also owns the

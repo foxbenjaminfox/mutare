@@ -87,6 +87,27 @@ defmodule Mutare.HarnessTest do
     refute status in [0, Command.failure_exit()]
   end
 
+  test "a test SUITE that can't compile is a kill, not a harness error" do
+    # The lib is fine; the *test script* fails to compile. In a real run that is
+    # a mutation breaking code that runs at the test modules' compile time (a
+    # `Plug.Router` route macro calling a mutated helper, say) — the suite can't
+    # build with the mutant, so it was detected: a kill. `outcome/2` tells this
+    # apart from the lib/infra compile error above via the test-script banner.
+    %{project: project} =
+      Project.build(:harness_test_compile, %{
+        "lib/m.ex" => "defmodule M do\n  def add(a, b), do: a + b\nend\n",
+        # Syntax error in the test script ⇒ exit 1 with a test-file compile banner.
+        "test/m_test.exs" => "defmodule MTest do\n  use ExUnit.Case\n  def broken(, do: :x\nend\n"
+      })
+
+    assert %Result{outcome: :suite_compile_error, exit_status: status} =
+             Command.timed_test(project, [], 0)
+
+    # Still exit 1 (a compile error), but the output refinement makes it a kill,
+    # not the infra `:harness_error` a bare exit-code read would give.
+    refute status in [0, Command.failure_exit()]
+  end
+
   describe "through the runner" do
     # Pinned to `:arithmetic` so `def f(a, b), do: a + b` yields exactly one mutant
     # (`+`→`-`, id 1) — the default set would also add a return-value mutant
