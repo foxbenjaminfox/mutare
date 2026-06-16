@@ -20,15 +20,27 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --max-harness-error-rate 0.3
                                           # abort if >30% of the mutants that ran
                                           #   failed at the harness level (1.0 = off)
+      mix mutare --format json --output mutare.json
+                                          # write a machine report to a file; the
+                                          #   human report still prints to console
+      mix mutare --format sarif           # emit SARIF to stdout (suppresses the
+                                          #   human report to avoid a collision)
+
+  `--format` is one of `human` (the default console report), `json` (the
+  mutation-testing-elements / Stryker report schema), `html` (that JSON in the
+  interactive report viewer), or `sarif` (survivors as findings for GitHub code
+  scanning).
 
   Configuration may also live in `.mutare.exs` (a keyword list); CLI flags win.
+  Use `reporters:` to emit several formats at once (a bare atom goes to stdout):
 
       # .mutare.exs
       [
         paths: ["lib"],
         exclude: ["lib/generated/**"],
         mutators: :all,
-        min_score: 70
+        min_score: 70,
+        reporters: [:human, {:json, "mutare.json"}, {:sarif, "mutare.sarif"}]
       ]
   """
   use Mix.Task
@@ -43,7 +55,9 @@ defmodule Mix.Tasks.Mutare do
     full: :boolean,
     since: :string,
     harness_retries: :integer,
-    max_harness_error_rate: :float
+    max_harness_error_rate: :float,
+    format: :string,
+    output: :string
   ]
 
   @impl Mix.Task
@@ -110,9 +124,30 @@ defmodule Mix.Tasks.Mutare do
 
   defp report(run, %Options{} = options) do
     Mix.shell().info("\n")
-    Mix.shell().info(Report.render(run.results, run.schema.sources))
+    Enum.each(options.reporters, fn {format, path} -> emit(format, path, run, options) end)
     gate(run.results, options.min_score)
   end
+
+  # A `nil` path means stdout (the console); a path means write the rendered
+  # report to that file and note where it went.
+  defp emit(format, nil, run, options) do
+    Mix.shell().info(render_for(format, run, options))
+  end
+
+  defp emit(format, path, run, options) do
+    File.write!(path, render_for(format, run, options))
+    Mix.shell().info("wrote #{format} report to #{path}")
+  end
+
+  defp render_for(:human, run, _options), do: Report.render(run.results, run.schema.sources)
+
+  defp render_for(format, run, options) do
+    renderer(format).render(run.results, run.schema.sources, min_score: options.min_score)
+  end
+
+  defp renderer(:json), do: Report.Json
+  defp renderer(:html), do: Report.Html
+  defp renderer(:sarif), do: Report.Sarif
 
   defp gate(results, min_score) do
     unless Report.passes_gate?(results, min_score) do

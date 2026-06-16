@@ -31,20 +31,40 @@ defmodule Mix.Tasks.MutareTest do
 
   @tag :runner
   @tag timeout: 180_000
-  test "end to end against the toy: prints survivors and score, and gates on --min-score" do
+  test "end to end against the toy: prints survivors, writes a JSON report, and gates on --min-score" do
     sandbox = Project.tmp_dir(:task)
+    out = Path.join(System.tmp_dir!(), "mutare_report_#{System.unique_integer([:positive])}.json")
     on_exit(fn -> File.rm_rf!(sandbox) end)
+    on_exit(fn -> File.rm(out) end)
 
     # The toy has surviving mutants (well under 100%), so a 100% floor must fail.
+    # `--format json --output` adds a file reporter; both reporters run *before*
+    # the gate, so the human report prints and the JSON is written even on a fail.
     assert_raise Mix.Error, ~r/below the required minimum/, fn ->
-      Mix.Tasks.Mutare.run(["examples/toy", "--min-score", "100", "--sandbox", sandbox])
+      Mix.Tasks.Mutare.run([
+        "examples/toy",
+        "--min-score",
+        "100",
+        "--format",
+        "json",
+        "--output",
+        out,
+        "--sandbox",
+        sandbox
+      ])
     end
 
-    # The report is printed before the gate fires.
+    # The human report is printed before the gate fires.
     messages = shell_info()
     assert Enum.any?(messages, &(&1 =~ ~r/\d+ mutants across/))
     assert Enum.any?(messages, &(&1 =~ "SURVIVED"))
     assert Enum.any?(messages, &(&1 =~ "mutation score:"))
+    assert Enum.any?(messages, &(&1 =~ "wrote json report to #{out}"))
+
+    # …and the machine report was written and is a valid report-schema document.
+    doc = out |> File.read!() |> JSON.decode!()
+    assert doc["schemaVersion"] == "1.0"
+    assert map_size(doc["files"]) > 0
   end
 
   defp shell_info(acc \\ []) do

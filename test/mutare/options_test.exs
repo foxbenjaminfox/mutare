@@ -241,6 +241,34 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":reporters" do
+    test "defaults to the human reporter on stdout" do
+      assert Options.new([]).reporters == [{:human, nil}]
+    end
+
+    test "accepts a list of {format, path | nil} tuples" do
+      reporters = [{:human, nil}, {:json, "out.json"}, {:sarif, nil}]
+      assert Options.new(reporters: reporters).reporters == reporters
+    end
+
+    test "rejects an unknown format" do
+      assert_raise ArgumentError, ~r/format in/, fn ->
+        Options.new(reporters: [{:xml, "out.xml"}])
+      end
+    end
+
+    test "rejects malformed entries" do
+      # a bare atom is not a {format, path} tuple
+      assert_raise ArgumentError, fn -> Options.new(reporters: [:json]) end
+      # an empty path string
+      assert_raise ArgumentError, fn -> Options.new(reporters: [{:json, ""}]) end
+      # not a list at all
+      assert_raise ArgumentError, ~r/:reporters must be a list/, fn ->
+        Options.new(reporters: "json")
+      end
+    end
+  end
+
   describe ":reporter" do
     test "accepts nil or a 1-arity function" do
       assert Options.new(reporter: nil).reporter == nil

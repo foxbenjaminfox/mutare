@@ -38,6 +38,7 @@ defmodule Mutare.Options do
           max_harness_error_rate: number() | nil,
           sandbox: String.t() | nil,
           min_score: number() | nil,
+          reporters: [{:human | :json | :html | :sarif, String.t() | nil}],
           reporter: (Result.t() -> any()) | nil
         }
 
@@ -53,11 +54,16 @@ defmodule Mutare.Options do
             max_harness_error_rate: 0.5,
             sandbox: nil,
             min_score: nil,
+            reporters: [{:human, nil}],
             reporter: nil
 
   @keys ~w(paths exclude mutators only_files test_selection workers timeout
            timeout_multiplier harness_retries max_harness_error_rate sandbox
-           min_score reporter)a
+           min_score reporters reporter)a
+
+  # Output formats a reporter entry may name. `:human` is the console report
+  # (`Mutare.Report`); the rest are the machine renderers under `Mutare.Report.*`.
+  @formats ~w(human json html sarif)a
 
   @doc """
   Resolve and validate options.
@@ -88,6 +94,7 @@ defmodule Mutare.Options do
         validate_harness_error_rate!(Keyword.get(opts, :max_harness_error_rate, 0.5)),
       sandbox: validate_sandbox!(Keyword.get(opts, :sandbox)),
       min_score: validate_min_score!(Keyword.get(opts, :min_score)),
+      reporters: validate_reporters!(Keyword.get(opts, :reporters, [{:human, nil}])),
       reporter: validate_reporter!(Keyword.get(opts, :reporter))
     }
   end
@@ -210,6 +217,29 @@ defmodule Mutare.Options do
   defp validate_min_score!(other) do
     raise ArgumentError,
           ":min_score must be a number between 0 and 100, or nil, got: #{inspect(other)}"
+  end
+
+  # `:reporters` is the list of *output formats* (the single source of truth for
+  # format validation). Distinct from `:reporter` below, the live per-mutant
+  # progress callback. Each entry is `{format, path | nil}` — `nil` path = stdout.
+  defp validate_reporters!(reporters) when is_list(reporters) do
+    Enum.map(reporters, &validate_reporter_entry!/1)
+  end
+
+  defp validate_reporters!(other) do
+    raise ArgumentError,
+          ":reporters must be a list of {format, path | nil} tuples, got: #{inspect(other)}"
+  end
+
+  defp validate_reporter_entry!({format, path})
+       when format in @formats and (is_nil(path) or (is_binary(path) and path != "")) do
+    {format, path}
+  end
+
+  defp validate_reporter_entry!(other) do
+    raise ArgumentError,
+          ":reporters entries must be {format, path | nil} with format in " <>
+            "#{inspect(@formats)}, got: #{inspect(other)}"
   end
 
   defp validate_reporter!(nil), do: nil

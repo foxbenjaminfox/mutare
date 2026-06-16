@@ -87,6 +87,7 @@ mix mutare --since master           # only files changed vs a git ref (CI)
 mix mutare --mutators relational    # choose mutator families
 mix mutare --min-score 70           # fail (CI) below a score
 mix mutare --full                   # whole suite per mutant (no test selection)
+mix mutare --format json --output mutare.json   # machine-readable report to a file
 ```
 
 Optional `.mutare.exs`:
@@ -100,9 +101,31 @@ Optional `.mutare.exs`:
   min_score: 70,
   workers: System.schedulers_online(),
   timeout_multiplier: 3.0,
-  test_selection: :coverage
+  test_selection: :coverage,
+  # emit several reports at once (a bare atom goes to stdout)
+  reporters: [:human, {:json, "mutare.json"}, {:sarif, "mutare.sarif"}]
 ]
 ```
+
+### Machine-readable output
+
+By default Mutare prints the human report to the console. `--format` selects a
+machine format, and `--output PATH` writes it to a file (otherwise it goes to
+stdout). To emit more than one format in a single run, list `reporters:` in
+`.mutare.exs` (above).
+
+- **`json`** — the [mutation-testing-elements](https://github.com/stryker-mutator/mutation-testing-elements)
+  / Stryker **report schema**. A standardized, versioned document covering every
+  mutant (not just survivors), ready for the Stryker dashboard and other tooling.
+- **`html`** — that same JSON embedded in the official interactive report viewer:
+  a single self-contained file with a file tree, inline mutant annotations on the
+  source, and the score. (Opening it fetches the viewer bundle from a CDN.)
+- **`sarif`** — surviving mutants as SARIF 2.1.0 findings, so GitHub code scanning
+  shows each one as an inline annotation on the pull-request diff.
+
+When a machine format is written to a file, the human report still prints to the
+console; when it takes stdout (no `--output`), the human report is suppressed to
+avoid a collision.
 
 ### Custom mutators
 

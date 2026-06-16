@@ -41,6 +41,7 @@ defmodule Mutare.Config do
     |> put_unless_nil(:max_harness_error_rate, flags[:max_harness_error_rate])
     |> put_unless_nil(:mutators, flags[:mutators] && parse_families(flags[:mutators]))
     |> normalize_mutators()
+    |> resolve_reporters(flags)
   end
 
   @doc """
@@ -50,6 +51,40 @@ defmodule Mutare.Config do
   """
   @spec mutator_modules([atom() | module()]) :: [module()]
   defdelegate mutator_modules(mutators), to: Mutare.Mutators, as: :resolve
+
+  # Resolve output reporters. `--format` (CLI) wins over a `.mutare.exs`
+  # `reporters:` list. With `--format` and `--output`, the machine format writes
+  # to the file *and* the human report still prints to the console; with
+  # `--format` alone the machine format takes stdout and the human report is
+  # dropped (they would collide). The valid-format check is left to
+  # `Mutare.Options`, so a typo'd `--format` gets the descriptive error there.
+  defp resolve_reporters(config, flags) do
+    case flags[:format] do
+      nil ->
+        case Keyword.fetch(config, :reporters) do
+          {:ok, reporters} -> Keyword.put(config, :reporters, normalize_reporters(reporters))
+          :error -> config
+        end
+
+      format ->
+        Keyword.put(config, :reporters, cli_reporters(String.to_atom(format), flags[:output]))
+    end
+  end
+
+  defp cli_reporters(format, nil), do: [{format, nil}]
+  defp cli_reporters(format, output), do: [{:human, nil}, {format, output}]
+
+  # Normalise a `.mutare.exs` `reporters:` list: a bare format atom means
+  # "to stdout" (`{atom, nil}`); a `{format, path}` tuple is kept. Anything else
+  # passes through untouched for `Mutare.Options` to reject with a clear message.
+  defp normalize_reporters(reporters) when is_list(reporters) do
+    Enum.map(reporters, fn
+      format when is_atom(format) -> {format, nil}
+      other -> other
+    end)
+  end
+
+  defp normalize_reporters(other), do: other
 
   # --- internals -----------------------------------------------------------
 

@@ -728,3 +728,52 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
   once behaviour, and the score exclusion end to end through `Mutare.run/2` — on
   top of the pure-decision tests (`harness_errors_exceed?/2`) and the
   classification tests (a broken compile → `:harness_error`).
+- **Machine-readable output (done).** Three reporters join the human console
+  report, as pure renderers under `Mutare.Report.*` (`(results, sources, opts) ->
+  String.t()`, mirroring `Mutare.Report`); all IO stays in `Mix.Tasks.Mutare`,
+  which iterates `options.reporters` (`[{format, path | nil}]`, `nil` = stdout).
+  The pipeline is untouched — this is a pure additive output stage over the
+  existing `run.results` + `run.schema.sources`.
+  - **JSON is the foundation, in the Stryker schema.** Rather than invent a
+    Mutare-shaped JSON, `Mutare.Report.Json` emits the standardized, versioned
+    [mutation-testing-elements](https://github.com/stryker-mutator/mutation-testing-elements)
+    report schema. The payoff is large: it drops into the Stryker dashboard, and
+    it lets HTML ride for free (below). The fit is almost suspicious — our
+    `Mutare.Result.status/0` maps **7-for-7** onto the schema's `MutantStatus`:
+    `:killed→Killed`, `:survived→Survived`, `:no_coverage→NoCoverage`,
+    `:timeout→Timeout`, `:ignored→Ignored`, `:poisoned→CompileError`,
+    `:harness_error→RuntimeError` (the one place the two vocabularies meet, a
+    single map in `Json`). Everything the schema needs is already on `%Site{}`
+    (`id`, `mutator`, `mutated_code`→`replacement`, `range`→`location`) and
+    `schema.sources` (the per-file `source`, root-relative keys = the schema's
+    file keys). We emit **all** mutants, not just survivors, and `schemaVersion`
+    `"1.0"` (no v2-only feature is used). Thresholds: we have one gate
+    (`:min_score`), not a band, so a set gate collapses both bounds onto it
+    (`{high: n, low: n}`); absent, Stryker's conventional `{80, 60}`.
+  - **HTML is the JSON in the official viewer, not a bespoke renderer.**
+    `Mutare.Report.Html` embeds the `Json` document into the
+    `mutation-test-report-app` web component (pinned unpkg bundle) by setting its
+    `.report` property in an inline script. So the interactive report (file tree,
+    inline annotations, score) costs ~30 lines and stays in sync with the schema.
+    The one sharp edge: a `</script>` inside embedded source would close our
+    inline `<script>` early, so we neutralise `</`→`<\/` — a valid JSON string
+    escape, so the payload stays both inert-as-HTML and decodable-as-JSON.
+    Tradeoff: viewing fetches the bundle from a CDN (vendoring is a later toggle).
+  - **SARIF is survivors-only.** A killed/skipped mutant is not actionable; a
+    *survivor* is a located gap, which is what SARIF models — so
+    `Mutare.Report.Sarif` emits one `warning`-level result (rule `surviving-mutant`)
+    per `:survived`, reusing `Site.describe/1` verbatim as the message and the
+    site range as a 1-based `region`. GitHub code scanning then annotates the PR.
+  - **Built-in `JSON`, not a new dependency.** Encoding uses the stdlib `JSON`
+    module (Elixir 1.18+), so the project floor bumped `~> 1.15 → ~> 1.18` — no
+    new dep (keeps the one-dep, dependency-free ethos), and no CI matrix existed
+    to break.
+  - **`:reporters` vs `:reporter`.** Deliberately distinct: `:reporters` is the
+    output-format list (validated in `Options`, the single source of truth for
+    format validation); `:reporter` is the pre-existing live per-mutant progress
+    callback. The collision rule lives in `Config.resolve_reporters/2`: `--format`
+    with `--output` writes the machine format to a file *and* keeps the human
+    report on the console; `--format` alone takes stdout and drops the human
+    report (they'd interleave). `.mutare.exs` `reporters:` is the multi-format
+    path (a bare atom normalises to stdout). The `--min-score` gate is orthogonal
+    to format (it's an exit code) and runs after all reporters regardless.

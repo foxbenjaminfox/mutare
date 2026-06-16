@@ -150,7 +150,17 @@ contract between them is the whole game.
   Zero cost when nothing poisons.
 - **`Mutare.Report`** — diffs each *surviving* mutant against the **original** source via
   `Sourceror.patch_string` (clean one-line diffs), and computes the score:
-  `killed / (total − no_coverage − ignored − poisoned − harness_error)`.
+  `killed / (total − no_coverage − ignored − poisoned − harness_error)`. This is the default
+  *human* reporter.
+- **`Mutare.Report.{Json,Html,Sarif}`** — the **machine** reporters, pure renderers paralleling
+  `Mutare.Report` (`(results, sources, opts) → String.t()`; all IO stays in the Mix task). **Json**
+  emits the standardized *mutation-testing-elements / Stryker* report schema (every mutant, keyed
+  by file; `Result.status` maps 7-for-7 onto the schema's `MutantStatus` — the one place the two
+  vocabularies meet). **Html** embeds that JSON into the `mutation-test-report-app` web component
+  (no bespoke renderer; neutralises `</` so embedded source can't close the inline `<script>`).
+  **Sarif** emits survivors-only as SARIF 2.1.0 findings for GitHub code scanning (reuses
+  `Site.describe/1` as the message). Encoding is the stdlib `JSON` module — hence the `elixir`
+  floor is `~> 1.18`. Selected via the `:reporters` option (below).
 - **`Mutare.Mutator`** + **`Mutare.Mutators.*`** — the public extension behaviour (`mutate/1`,
   `name/0`) and the built-in families, **all on by default**: Arithmetic (binary swaps +
   unary-minus removal), Relational, Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip), Literal
@@ -165,7 +175,13 @@ contract between them is the whole game.
   path), and `Options` (the direct `Mutare.run/2` API) all derive from it — so a family registered
   here is part of `:all` and resolvable/validated everywhere, with no second list to drift.
 - **`Mutare.Config`** / **`Mutare.Changes`** / **`Mix.Tasks.Mutare`** — `.mutare.exs` + CLI flag
-  resolution, `git diff` for `--since`, and the CLI entry point.
+  resolution, `git diff` for `--since`, and the CLI entry point. Output formats resolve here too:
+  `--format`/`--output` (CLI) and `reporters:` (`.mutare.exs`) become the `Mutare.Options`
+  `:reporters` list (`[{format, path | nil}]`, `nil` = stdout). `Config.resolve_reporters/2` owns
+  the **collision rule** — `--format` *with* `--output` keeps the human report on the console and
+  writes the machine format to the file; `--format` *alone* takes stdout and drops the human
+  report. Note `:reporters` (output formats; `Options` validates the format set) is distinct from
+  `:reporter` (the live per-mutant progress callback the task sets).
 
 ### Cross-cutting things that bite
 

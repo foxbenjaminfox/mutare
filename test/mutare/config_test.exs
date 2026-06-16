@@ -74,6 +74,27 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([paths: ["lib"]], only: "lib/only")[:paths] == ["lib/only"]
       assert Config.merge([min_score: 50], min_score: 90.0)[:min_score] == 90.0
     end
+
+    test "--format with --output writes a file reporter alongside the console report" do
+      assert Config.merge([], format: "json", output: "out.json")[:reporters] ==
+               [{:human, nil}, {:json, "out.json"}]
+    end
+
+    test "--format alone sends the machine format to stdout and drops the human report" do
+      assert Config.merge([], format: "sarif")[:reporters] == [{:sarif, nil}]
+    end
+
+    test "without --format, .mutare.exs reporters are used (bare atoms normalised to stdout)" do
+      refute Keyword.has_key?(Config.merge([], []), :reporters)
+
+      assert Config.merge([reporters: [:human, {:json, "r.json"}]], [])[:reporters] ==
+               [{:human, nil}, {:json, "r.json"}]
+    end
+
+    test "--format wins over .mutare.exs reporters" do
+      merged = Config.merge([reporters: [:sarif]], format: "json", output: "o.json")
+      assert merged[:reporters] == [{:human, nil}, {:json, "o.json"}]
+    end
   end
 
   describe "mutator_modules/1" do
