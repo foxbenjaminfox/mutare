@@ -17,6 +17,7 @@ defmodule Mutare.Sandbox do
   """
 
   alias Mutare.{Options, Schema}
+  alias Mutare.Coverage.Recorder
   alias Mutare.Sandbox.Command
 
   @excluded ~w(_build .git .elixir_ls .lexical cover)
@@ -66,6 +67,18 @@ defmodule Mutare.Sandbox do
   # ---------------------------------------------------------------------------
   """
 
+  # The coverage probe needs the metamutant to record into ETS that only exists
+  # once `ExUnit.after_suite/1` is registerable — i.e. *after* `ExUnit.start/0`.
+  # So this snippet is appended below the project's helper (which calls
+  # `ExUnit.start/0`), not prepended like the selector/timeout bootstrap. Inert
+  # unless the probe env var is set (see `Mutare.Coverage.Recorder`).
+  @coverage_helper Recorder.helper_source()
+  @coverage_bootstrap """
+  # ---- injected by Mutare: coverage capture (inert unless probing) ----------
+  #{Macro.to_string(Recorder.bootstrap_ast())}
+  # ---------------------------------------------------------------------------
+  """
+
   @doc """
   Prepare a sandbox for `schema` taken from `root`. Returns the sandbox path.
 
@@ -89,6 +102,7 @@ defmodule Mutare.Sandbox do
 
     copy_project(root, sandbox)
     write_metamutants(sandbox, schema)
+    write_coverage_helper(sandbox)
     inject_bootstrap(sandbox)
 
     sandbox
@@ -263,10 +277,19 @@ defmodule Mutare.Sandbox do
     end
   end
 
+  # The dependency-free coverage helper (`MutareCov`) is compiled with the app, so
+  # the metamutant's per-site `MutareCov.hit/1` resolves. A single global module
+  # (not per file), written under `lib/` where `mix` compiles it.
+  defp write_coverage_helper(sandbox) do
+    path = Path.join(sandbox, "lib/mutare_cov.ex")
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, @coverage_helper <> "\n")
+  end
+
   defp inject_bootstrap(sandbox) do
     helper = Path.join(sandbox, "test/test_helper.exs")
     File.mkdir_p!(Path.dirname(helper))
     existing = if File.exists?(helper), do: File.read!(helper), else: "ExUnit.start()\n"
-    File.write!(helper, @bootstrap <> "\n" <> existing)
+    File.write!(helper, @bootstrap <> "\n" <> existing <> "\n" <> @coverage_bootstrap)
   end
 end

@@ -53,9 +53,11 @@ defmodule Mutare.SchemaTest do
     assert %Mutare.Manifest{} = schema.manifests["lib/a.ex"]
     refute Map.has_key?(schema.manifests, "lib/empty.ex")
 
-    # every site's id has a coverage location in its file's manifest
-    coverage = Mutare.Manifest.coverage(schema.manifests["lib/a.ex"])
-    assert Enum.all?(schema.sites, &Map.has_key?(coverage, &1.id))
+    # every site's id appears in its file's manifest regions (Poison's mapping)
+    region_ids =
+      schema.manifests["lib/a.ex"].regions |> Enum.flat_map(& &1.ids) |> MapSet.new()
+
+    assert Enum.all?(schema.sites, &MapSet.member?(region_ids, &1.id))
   end
 
   test ":exclude drops matching files entirely", %{root: root} do

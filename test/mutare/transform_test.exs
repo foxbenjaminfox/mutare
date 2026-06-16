@@ -99,8 +99,9 @@ defmodule Mutare.TransformTest do
     assert Enum.map(sites, &{&1.mutator, &1.original_op}) ==
              [{:arithmetic, :+}, {:relational, :==}]
 
-    # two independent selectors are present
-    assert meta |> String.split(":persistent_term.get") |> length() == 3
+    # two independent selectors are present (count the selector *subject*; the
+    # catch-all coverage record also reads `:persistent_term.get(:mutare_track, …)`)
+    assert meta |> String.split(":persistent_term.get(:mutare_active") |> length() == 3
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 

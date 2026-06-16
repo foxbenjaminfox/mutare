@@ -2,17 +2,17 @@ defmodule Mutare.Manifest do
   @moduledoc """
   A per-mutant map of where each mutant lives in its rendered metamutant.
 
-  `Mutare.Transform` writes the metamutant; this is what the readers read back.
-  It is built **once per file** (`from_source/1`), stored on the `Mutare.Schema`,
-  and shared by the two consumers so the metamutant is walked once, not per probe
-  and per poison attempt:
+  `Mutare.Transform` writes the metamutant; this is what `Mutare.Poison` reads
+  back. It is built **once per file** (`from_source/1`) and stored on the
+  `Mutare.Schema`, so the metamutant is walked once, not per poison attempt.
 
-    * **`Mutare.Coverage`** wants each mutant's *coverage location* — the
-      `{module, line}` of its selector's catch-all body, the line `:cover` counts
-      at baseline whenever the code runs.
-    * **`Mutare.Poison`** wants each mutant's *generated ranges* — the metamutant
-      line spans of the code that exists only because of that mutant, so a compile
-      error's line maps back to the mutant id that owns it.
+  **`Mutare.Poison`** wants each mutant's *generated ranges* — the metamutant line
+  spans of the code that exists only because of that mutant, so a compile error's
+  line maps back to the mutant id that owns it.
+
+  (Coverage no longer lives here: the metamutant self-records coverage at runtime
+  — see `Mutare.Coverage.Recorder` — keyed by mutant id directly, so there is no
+  metamutant `{module, line}` location to precompute.)
 
   ## Why ranges, not a single line
 
@@ -58,15 +58,11 @@ defmodule Mutare.Manifest do
   @typedoc """
   One file's manifest:
 
-    * `:coverage` — `%{id => {module, line}}`, the catch-all body line `:cover` counts;
     * `:regions` — generated line ranges, for mapping a compile error back to a mutant.
   """
-  @type t :: %__MODULE__{
-          coverage: %{pos_integer() => {module() | nil, pos_integer()}},
-          regions: [region()]
-        }
+  @type t :: %__MODULE__{regions: [region()]}
 
-  defstruct coverage: %{}, regions: []
+  defstruct regions: []
 
   @mutant_def ~r/\A__mutare_.*_m(\d+)\z/
 
@@ -81,10 +77,9 @@ defmodule Mutare.Manifest do
   def from_source(metamutant_source) do
     ast = Sourceror.parse_string!(metamutant_source)
 
-    {_ast, {_stack, coverage, regions}} =
-      Macro.traverse(ast, {[], %{}, []}, &enter/2, &leave/2)
+    {_ast, regions} = Macro.traverse(ast, [], &enter/2, &leave/2)
 
-    %__MODULE__{coverage: coverage, regions: Enum.reverse(regions)}
+    %__MODULE__{regions: Enum.reverse(regions)}
   end
 
   @doc """
@@ -111,30 +106,14 @@ defmodule Mutare.Manifest do
     end
   end
 
-  @doc "The per-mutant coverage locations: `%{id => {module, line}}`."
-  @spec coverage(t()) :: %{pos_integer() => {module() | nil, pos_integer()}}
-  def coverage(%__MODULE__{coverage: coverage}), do: coverage
-
   # --- traversal -----------------------------------------------------------
 
-  defp enter({:defmodule, _meta, [alias_node | _]} = node, {stack, coverage, regions}) do
-    parent = List.first(stack)
-    {node, {[module_name(alias_node, parent) | stack], coverage, regions}}
-  end
-
   # A selector `case` (in-place selector or lifted dispatcher). Record each mutant
-  # clause's coverage location + body range, plus a whole-`case` fallback range.
-  defp enter({:case, _meta, [subject, kw]} = node, {stack, coverage, regions}) do
+  # clause's body range, plus a whole-`case` fallback range.
+  defp enter({:case, _meta, [subject, kw]} = node, regions) do
     with true <- Metamutant.subject?(subject),
          clauses when is_list(clauses) <- do_block(kw) do
-      module = List.first(stack)
-      catch_all = catch_all_line(clauses)
       mutants = for {:->, _, [[patt], body]} <- clauses, id = clause_id(patt), do: {id, body}
-
-      coverage =
-        Enum.reduce(mutants, coverage, fn {id, _body}, acc ->
-          Map.put(acc, id, {module, catch_all})
-        end)
 
       # Each mutant clause body (catches in-place mutants, multiline included),
       # then the whole-`case` fallback (every id it hosts) as a coarse backstop.
@@ -143,34 +122,27 @@ defmodule Mutare.Manifest do
           push(range_region([id], body), acc)
         end)
 
-      regions = push(case_fallback(node, mutants), regions)
-
-      {node, {stack, coverage, regions}}
+      {node, push(case_fallback(node, mutants), regions)}
     else
-      _ -> {node, {stack, coverage, regions}}
+      _ -> {node, regions}
     end
   end
 
   # A lifted private copy (`defp __mutare_…_m<id>(…)`): its whole definition is the
   # mutant's generated code — where guard / clause-drop poison actually lives.
-  defp enter({vis, _meta, [head | _]} = node, {stack, coverage, regions})
-       when vis in [:def, :defp] do
+  defp enter({vis, _meta, [head | _]} = node, regions) when vis in [:def, :defp] do
     regions =
       case mutant_id(head) do
         nil -> regions
         id -> push(range_region([id], node), regions)
       end
 
-    {node, {stack, coverage, regions}}
+    {node, regions}
   end
 
-  defp enter(node, acc), do: {node, acc}
+  defp enter(node, regions), do: {node, regions}
 
-  defp leave({:defmodule, _meta, _args} = node, {stack, coverage, regions}) do
-    {node, {tl(stack), coverage, regions}}
-  end
-
-  defp leave(node, acc), do: {node, acc}
+  defp leave(node, regions), do: {node, regions}
 
   # --- regions -------------------------------------------------------------
 
@@ -219,18 +191,6 @@ defmodule Mutare.Manifest do
   defp clause_id(id) when is_integer(id), do: id
   defp clause_id(_), do: nil
 
-  # Line of the catch-all (`_ ->`) clause's body — the line cover counts when the
-  # selector runs at baseline.
-  defp catch_all_line(clauses) do
-    Enum.find_value(clauses, fn
-      {:->, _, [[{:_, _, _}], body]} -> node_line(body)
-      _ -> nil
-    end)
-  end
-
-  defp node_line({_form, meta, _args}) when is_list(meta), do: Keyword.get(meta, :line)
-  defp node_line(_), do: nil
-
   # The mutant id encoded in a generated private copy's name (`__mutare_…_m<id>`),
   # or `nil` for any other definition (the public dispatcher, `…_orig`, user code).
   defp mutant_id({:when, _meta, [call | _guards]}), do: mutant_id(call)
@@ -243,21 +203,4 @@ defmodule Mutare.Manifest do
   end
 
   defp mutant_id(_), do: nil
-
-  # --- module attribution --------------------------------------------------
-
-  defp module_name({:__aliases__, _, [Elixir | _] = parts}, _parent),
-    do: Module.concat(parts)
-
-  defp module_name({:__aliases__, _, [{:__MODULE__, _, _} | parts]}, parent)
-       when is_atom(parent),
-       do: Module.concat([parent | parts])
-
-  defp module_name({:__aliases__, _, parts}, nil), do: Module.concat(parts)
-
-  defp module_name({:__aliases__, _, parts}, parent) when is_atom(parent),
-    do: Module.concat([parent | parts])
-
-  defp module_name(module, _parent) when is_atom(module), do: module
-  defp module_name(_, _parent), do: nil
 end

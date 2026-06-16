@@ -8,28 +8,24 @@ for later. Items are tagged with the milestone that should resolve them.
 
 ### Metamutant line preservation — RESOLVED (avoided) `[M3, done]`
 In-place selectors and lifted copies shift line numbers in the metamutant, so we
-worried the coverage probe would need a metamutant↔original line map. It doesn't.
-The probe works **entirely in metamutant line space**: each mutant id maps to the
-line of its selector's catch-all (`_ ->`) branch (read from the stored
-`Mutare.Manifest`, see below) and intersects with `:cover`'s per-line hits on the
-baseline. The original line is only ever used by the report (which patches the
-original source), so the two never need to be related. No line preservation required.
-
-Two `:cover` gotchas worth remembering (both handled in `Mutare.Coverage`):
-- `:cover.analyse(:coverage, :line)` returns `{:result, ok, fail}` (3-tuple) on
-  this OTP, not the documented `{:ok, _}`.
-- cover does **not** count the `case` keyword line of a selector nested on a
-  continuation line (`acc +\n  case … end`); it counts the catch-all body line.
-  So we key coverage on the catch-all body line, which is hit iff the selector
-  ran at baseline.
+worried coverage would need a metamutant↔original line map. It doesn't — coverage
+keys by **mutant id** (the metamutant self-records ids, see *Test selection* below),
+not by line at all. Poison still works in metamutant line space (a compile error's
+line → the mutant id whose generated code spans it, via `Mutare.Manifest`), and the
+original line is only ever used by the report. So no line space ever needs relating
+to another. (Originally coverage *did* key on a line — the selector's catch-all body
+line intersected with `:cover` hits — which carried two `:cover` gotchas, an OTP-
+specific `analyse` shape and cover not counting a nested selector's `case` line;
+self-recording by id retired both along with `:cover`.)
 
 ### Per-mutant metamutant manifest `[done]`
 `Mutare.Manifest` is the per-file, per-mutant readback of *where each mutant lives
 in its rendered metamutant*. `Schema` builds one per mutated file (once, from the
-rendered source) and stores it under `:manifests`; `Coverage` and `Poison` read it
-instead of each re-parsing the metamutant (Coverage on every probe, Poison on every
-compile error). It carries two things per mutant: the **coverage location**
-(`{module, catch-all line}`) and the **generated line ranges**.
+rendered source) and stores it under `:manifests`; **`Poison`** reads it instead of
+re-parsing the metamutant on every compile error. It carries the **generated line
+ranges** of each mutant's code. (It used to also carry a coverage location, but
+coverage now self-records by id — see *Test selection* — so the manifest is
+Poison-only.)
 
 The ranges fixed a real poison-recovery gap. The old mapping matched a compile
 error's line only against a selector clause body's *start* line, so it missed every
@@ -315,41 +311,58 @@ per-worker `MIX_BUILD_PATH` vs full source copy — would remove the contention;
 deferred. Default workers may be worth lowering from schedulers_online to cut
 oversubscription.
 
-### Test selection — file-granular (M3b done) `[refine / M4]`
-Coverage-driven *test selection* is done at **test-file** granularity: each test
-file runs once with `--cover`, and a mutant runs only the files that cover its
-line (`:no_coverage` if none). `test_selection: :full` (or `--full`) reverts to
-whole-suite-per-mutant.
+### Test selection — self-recorded coverage (M3b done, race-free redesign) `[done]`
+Coverage-driven *test selection* is done at **test-file** granularity from a
+**single instrumented `mix test` run** at baseline (`MUTARE_COVERAGE=1`). A mutant
+runs only the files that covered its line (`:no_coverage` if no test ran it at
+all). `test_selection: :full` (or `--full`) reverts to whole-suite-per-mutant
+(no-coverage detection only). `:cover` is gone entirely.
 
-Why file-granular, not per-individual-test: per-test coverage needs to snapshot
-`:cover` around each test, but **ExUnit formatter events are async casts** — a
-formatter's `:cover.reset/analyse` races with test execution (confirmed: the
-first test saw every line, the second saw none). The only synchronous per-test
-hooks are `setup`/`on_exit`, which can't be injected globally. Per-file avoids
-this (aggregate cover per file, no race) and is also *safer* for the indirect-
-kill case: if any test in a file covers the line, the whole file runs, so a test
-that kills the mutant without touching the line itself is still included as long
-as a sibling does. True per-test would need N per-test `mix` runs (one boot each)
-— deferred.
+**How the capture is race-free.** The metamutant self-records. Every selector
+catch-all runs at baseline, *in whatever process runs the line* — including the
+test process, synchronously. So under a tracking flag the catch-all writes the
+site's mutant ids into shared ETS:
+`mutare_active == 0 and :persistent_term.get(:mutare_track, false) and MutareCov.hit(ids)`
+(`Mutare.Coverage.Recorder` owns this; `MutareCov` is a dependency-free helper
+`Sandbox` writes into the sandbox). Two keys, accumulate-only, **never reset** →
+no race:
+- **aggregate** `{id}` — written by any process → process-agnostic no-coverage
+  detection.
+- **attribution** `{{label, id}}` — `label` is the test process's
+  `Process.set_label({case, name})` (proc-dict `:"$process_label"` on OTP 26,
+  `:proc_lib.get_label/1` on 27+) → maps to the test *file* → per-file selection.
 
-Caveat: `:coverage` runs each test file *in isolation* for the probe, so a suite
-with cross-file dependencies (a test relying on state another file set up) can't
-gather clean per-file coverage. That no longer fails the baseline (see below) — a
-probe file that's red in isolation just degrades the whole run to `:run_all` (you
-lose selection but stay correct). Use `:full` to keep coverage-based no-coverage
-skipping in that case.
+An `ExUnit.after_suite/1` hook (synchronous, registered from the bootstrap *after*
+`ExUnit.start/0`) dumps both to a term file the probe reads.
 
-The probe's decision is **typed**, not an overloaded value
-(`Mutare.Runner.CoverageProbe`): `selection` is `:run_all | {:selective, %{id =>
-outcome}}`, where `outcome` is `{:run, test_args} | :no_coverage`. The
-`{:selective, _}` map is **total** — every mutant id has an explicit outcome, so
-`:no_coverage` is *named*, never implied by a missing key. `:run_all` is the single
-conservative fallback: it covers an unreadable coverdata (don't risk a false
-`:no_coverage` for a file we couldn't read), a probe file that isn't green in
-isolation, *and* an all-empty hit set (`:cover` recorded nothing → it likely
-failed, so don't skip the world). Both modes share it. The rule throughout: never
-skip on doubt — run everything rather than silently drop a mutant from the score's
-denominator.
+Why not the obvious thing — one `--cover` run with a formatter snapshotting per
+test: **ExUnit formatter events are async casts**, so a formatter's
+`:cover.reset/analyse` races test execution (confirmed once: the first test saw
+every line, the second saw none — fast `async: false` modules lose coverage). The
+only *synchronous* per-test code is `setup`/the test body, which we can't inject
+into the target's modules — but the metamutant *is* code we generate and that runs
+there. So the capture lives in the metamutant, not in an external observer of a
+global table. (The previous workaround ran each test file as its own `--cover`
+subprocess — N boots, race-free but slow, and lost coverage driven by `setup_all`
+to a false `:no_coverage`; the aggregate-vs-attribution split fixes that too.)
+
+Gate cost: per-mutant runs short-circuit on the integer compare (`active != 0`) →
+~zero hot-loop overhead; the baseline green run and Mutare's own unit tests
+short-circuit on the persistent-term read (`:mutare_track` unset) so `MutareCov` is
+never *called* there. `MutareCov.hit/1` returns `true` so the `and` chain stays
+boolean (an `:ets` write returns an int/`true` → would raise `BadBooleanError`).
+
+The probe's decision is **typed** (`Mutare.Runner.CoverageProbe`): `selection` is
+`:run_all | {:selective, %{id => outcome}}`, `outcome` is `{:run, test_args} |
+:no_coverage`. The `{:selective, _}` map is **total** — every mutant id has an
+explicit outcome, so `:no_coverage` is *named*, never implied by a missing key.
+Reconciliation, per id: never ran → `:no_coverage`; ran with attributed files →
+`{:run, files}`; ran but **unattributed** (covered only by an unlabeled process —
+`setup_all`/`on_exit`/a spawned task) → `{:run, []}` (whole suite), *not*
+`:no_coverage`. `:run_all` is the single conservative fallback: an unreadable or
+empty dump (the capture recorded nothing → it likely failed). The rule throughout:
+never skip on doubt — run everything rather than silently drop a mutant from the
+score's denominator.
 
 ### Baseline split from the coverage probe (done)
 The probe used to *double* as the green baseline check, which conflated two

@@ -22,48 +22,6 @@ defmodule Mutare.ManifestTest do
     |> Kernel.+(1)
   end
 
-  describe "from_source/1 — coverage locations" do
-    test "maps every mutant id to its selector's {module, line}" do
-      source = """
-      defmodule Demo.Thing do
-        def gte?(a, b), do: a >= b
-        def step(n) when n > 0, do: n + 1
-        def step(_), do: 0
-      end
-      """
-
-      {meta, sites, _next} = Mutare.transform_string(source, file: "lib/demo/thing.ex")
-      coverage = Manifest.coverage(Manifest.from_source(meta))
-
-      assert Enum.all?(sites, &Map.has_key?(coverage, &1.id))
-
-      assert Enum.all?(coverage, fn {_id, {mod, line}} ->
-               mod == Demo.Thing and is_integer(line)
-             end)
-
-      # lifted dispatcher clauses share their dispatcher's catch-all line
-      lifted_ids = for s <- sites, s.kind == :lifted, do: s.id
-      lifted_lines = lifted_ids |> Enum.map(&elem(coverage[&1], 1)) |> Enum.uniq()
-      assert length(lifted_lines) == 1
-    end
-
-    test "resolves a relative nested module against its enclosing module" do
-      source = """
-      defmodule Outer do
-        defmodule Inner do
-          def add(a, b), do: a + b
-        end
-      end
-      """
-
-      {meta, _sites, _next} = Mutare.transform_string(source)
-      coverage = Manifest.coverage(Manifest.from_source(meta))
-
-      assert coverage != %{}
-      assert Enum.all?(coverage, fn {_id, {mod, _line}} -> mod == Outer.Inner end)
-    end
-  end
-
   describe "ids_at_line/2 — mapping a compile error to its mutant" do
     test "an in-place poison maps to the mutant at that line" do
       src = "defmodule P do\n  def f(a, b), do: a + b\nend\n"

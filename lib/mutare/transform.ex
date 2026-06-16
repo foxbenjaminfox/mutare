@@ -99,6 +99,7 @@ defmodule Mutare.Transform do
   """
 
   alias Mutare.{Mutator, Site}
+  alias Mutare.Coverage.Recorder
   alias Mutare.Transform.{Candidate, Ctx, FunctionPlan, ModulePlan, Render}
 
   # The default set is the built-in catalog's `all/0` — one source of truth, so a
@@ -295,7 +296,7 @@ defmodule Mutare.Transform do
     mut_clauses =
       Enum.map(mut_ids, fn id -> {:->, [], [[id], {:"#{base}_m#{id}", [], args}]} end)
 
-    catch_all = {:->, [], [[{:_, [], nil}], {:"#{base}_orig", [], args}]}
+    catch_all = catch_all_clause(mut_ids, {:"#{base}_orig", [], args})
     body = {:case, [], [selector, [do: mut_clauses ++ [catch_all]]]}
 
     {vis, [], [{name, [], args}, [do: body]]}
@@ -627,9 +628,23 @@ defmodule Mutare.Transform do
   # The selector is `Render.block_wrap`ped so it renders safely in any position.
   defp build_case(default_node, mutant_clauses) do
     selector = Mutare.Metamutant.subject_ast()
-    catch_all = {:->, [], [[{:_, [], nil}], default_node]}
+    ids = for {:->, _, [[id], _]} <- mutant_clauses, do: id
+    catch_all = catch_all_clause(ids, default_node)
     case_node = {:case, [], [selector, [do: mutant_clauses ++ [catch_all]]]}
     Render.block_wrap(case_node)
+  end
+
+  # The selector catch-all (`mutare_active -> …`): the baseline + every-inactive-
+  # mutant branch. It carries the coverage record (inert outside the probe, see
+  # `Mutare.Coverage.Recorder`) *before* the original, so the original stays the
+  # clause's last expression — preserving tail position / LCO in the dispatcher.
+  # With no ids to attribute (an all-poisoned lifted group) there is nothing to
+  # record, so the plain `_ ->` is emitted unchanged.
+  defp catch_all_clause([], default_node), do: {:->, [], [[{:_, [], nil}], default_node]}
+
+  defp catch_all_clause(ids, default_node) do
+    body = {:__block__, [], [Recorder.record_ast(ids), default_node]}
+    {:->, [], [[Recorder.catch_all_pattern()], body]}
   end
 
   # === shared helpers ========================================================

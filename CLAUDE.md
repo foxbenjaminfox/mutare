@@ -80,15 +80,19 @@ contract between them is the whole game.
   rebuilds; this stability is relied upon). Per mutated file it also stores a **`Mutare.Manifest`**
   (built once from the rendered metamutant), which Coverage and Poison read back.
 - **`Mutare.Manifest`** — the per-file, per-mutant map of *where each mutant lives in its
-  rendered metamutant*: coverage locations (`{module, catch-all line}` for Coverage) and full
-  **generated line ranges** (selector clause bodies, lifted private `defp` copies, and a
-  whole-`case` fallback — for Poison). Built once by `Schema` (re-parsing the metamutant via
-  `Sourceror` for `get_range/1`), so the two consumers don't each re-walk the source. `Mutare.Metamutant`
-  owns the selector-subject AST and the `subject?/1` recognizer this walk uses.
+  rendered metamutant*: the full **generated line ranges** (selector clause bodies, lifted
+  private `defp` copies, and a whole-`case` fallback) that **Poison** maps a compile error back
+  to a mutant id with. Built once by `Schema` (re-parsing the metamutant via `Sourceror` for
+  `get_range/1`). `Mutare.Metamutant` owns the selector-subject AST and the `subject?/1`
+  recognizer this walk uses. (Coverage no longer lives here — the metamutant self-records it at
+  runtime, keyed by mutant id, so there is no `{module, line}` location to precompute.)
 - **`Mutare.Sandbox`** — workspace materialization. Copies the target project to a temp dir and
   overwrites the metamutant sources. Injects a **dependency-free bootstrap** into `test_helper.exs`:
   reads `MUTANT_UNDER_TEST` into `:persistent_term`, plus a portable timeout watcher that
-  `System.halt/1`s the run itself after the cap (no killing an OS process tree).
+  `System.halt/1`s the run itself after the cap (no killing an OS process tree). Also writes the
+  dependency-free `MutareCov` coverage helper (`lib/mutare_cov.ex`) and appends the coverage
+  bootstrap *after* `ExUnit.start/0` (it registers an `after_suite` dump) — both inert unless the
+  probe sets `MUTARE_COVERAGE` (see `Mutare.Coverage.Recorder`).
 - **`Mutare.Sandbox.Command`** — command execution against a materialized sandbox: `mix/4` and
   `timed_mix/4` spawn a fresh `mix` OS process with `MIX_ENV=test`/`MUTANT_UNDER_TEST` set. Owns the
   *run side* of the **exit-code contract** and decodes it into a typed
@@ -113,16 +117,28 @@ contract between them is the whole game.
 - **`Mutare.Runner.Baseline`** — one whole-suite `mix test` (no `--cover`) at the baseline mutant:
   the authoritative green check (a red suite aborts with `:baseline_failed`) and the source of
   `baseline_ms` (a *single* run's wall-clock — the per-mutant timeout cap is scaled from it).
-- **`Mutare.Runner.CoverageProbe`** — coverage-driven test selection, run after the baseline.
-  Returns a bare `selection` (`:run_all | {:selective, %{id => outcome}}`) and **can't fail**:
-  every uncertainty (unreadable coverdata, an all-empty hit set, a probe file that's red in
-  isolation) degrades to `:run_all`. Split from the baseline on purpose — folding the two
-  conflated a green check that never ran the suite together with a `baseline_ms` summed over N
-  per-file process boots (an inflated cap). See `NOTES.md`.
-- **`Mutare.Coverage`** — the probe. Works **entirely in metamutant line space**: reads each
-  mutant's catch-all line from the stored `Mutare.Manifest` and intersects with `:cover` per-line
-  hits. No-coverage mutants are skipped; per-test-file selection runs only covering files per
-  mutant. (`:cover` lives in OTP `:tools`, which this module adds to the code path at runtime.)
+- **`Mutare.Runner.CoverageProbe`** — coverage-driven test selection, run after the baseline. A
+  **single** instrumented `mix test` at baseline (`MUTARE_COVERAGE=1`), then it reads the dump.
+  Per mutant: never ran → `:no_coverage`; covered with attributed test files → those files;
+  covered but **unattributed** (its code ran only in an unlabeled process — `setup_all`,
+  `on_exit`, a spawned task) → whole suite, *not* `:no_coverage`. Returns a bare `selection`
+  (`:run_all | {:selective, %{id => outcome}}`) and **can't fail**: an unreadable/empty dump
+  degrades to `:run_all`. Split from the baseline on purpose — folding the two conflated a green
+  check that never ran the suite together with a `baseline_ms` summed over N per-file process
+  boots (an inflated cap). See `NOTES.md`.
+- **`Mutare.Coverage.Recorder`** — the **generated** side of coverage capture (owns the contract
+  the metamutant and the bootstrap share): `record_ast/1` (spliced into every selector catch-all),
+  `helper_source/0` (the `MutareCov` module `Sandbox` writes in), and `bootstrap_ast/0`. The
+  catch-all records the site's mutant ids into shared ETS *synchronously, in the test process*,
+  gated `mutare_active == 0 and :persistent_term.get(:mutare_track, false) and MutareCov.hit(ids)`
+  — inert on per-mutant runs (short-circuits on the id compare) and outside the probe.
+- **`Mutare.Coverage`** — reads back the probe's dump: `%{aggregate, by_file}`, both keyed by
+  **mutant id**. `aggregate` (process-agnostic: any process that ran the line) is the no-coverage
+  signal; `by_file` (labeled test processes only) drives per-file selection. No `:cover`, no
+  coverdata, no metamutant↔original line mapping. Why self-record, not `:cover`: cover's table is
+  global (`{module, line}`, no per-process partition), so per-test attribution in one run needs an
+  async-formatter snapshot that **races** test execution and loses fast `async: false` modules'
+  coverage; recording in the metamutant captures it in-process, accumulate-only (no reset).
 - **`Mutare.Poison`** — on a failed metamutant compile, maps the error's `file:line` to the
   offending mutant id(s) via the manifest's **generated line ranges** (`Manifest.ids_at_line/2`,
   narrowest range wins). This catches poison anywhere a mutant's code lives — a multiline body, a
@@ -152,15 +168,18 @@ contract between them is the whole game.
 
 - **The selection contract is split across modules and baked into generated code.** The
   `:persistent_term` key (`:mutare_active`) and the selector env var (`MUTANT_UNDER_TEST`) are
-  defined in `Mutare.Selector`; the timeout env var and exit code in `Mutare.Sandbox.Command`. They
-  are *emitted into generated code* — the selectors into the metamutant by `Mutare.Transform`, the
-  reader and timeout watcher into the test bootstrap by `Mutare.Sandbox`. Keep them in sync — change
-  one in isolation and the metamutant stops responding.
+  defined in `Mutare.Selector`; the timeout env var and exit code in `Mutare.Sandbox.Command`; the
+  coverage-capture contract (the `MUTARE_COVERAGE` env var, the `:mutare_track` flag, the ETS table
+  names, the `MutareCov` helper, the dump file) in `Mutare.Coverage.Recorder`. They are *emitted
+  into generated code* — the selectors and coverage record into the metamutant by `Mutare.Transform`,
+  the reader/timeout watcher/coverage bootstrap+helper into the bootstrap by `Mutare.Sandbox`. Keep
+  them in sync — change one in isolation and the metamutant stops responding.
 - **Two renderers, on purpose.** The metamutant is a throwaway build artifact (AST rewrite via
   `Sourceror.to_string`, only needs to compile); the report patches the original source. Don't
   try to make one serve both.
-- **Two line spaces, decoupled.** Coverage matches in metamutant-line space; the report works in
-  original-line space. They never need to be related — don't reintroduce a mapping between them.
+- **Two line spaces, decoupled.** Poison maps a compile error in metamutant-line space (via
+  `Manifest`); the report works in original-line space. They never need to be related — don't
+  reintroduce a mapping between them. (Coverage uses neither: it keys by mutant id.)
 - **Compile-safety is layered.** Built-in mutators are compile-safe by construction (operator
   swaps reuse operands); dangerous/inert positions (guards, module-attribute values, the `/` in
   `&fun/arity` captures) are excluded *positively* by the context classifier (`skip_node?/1`),

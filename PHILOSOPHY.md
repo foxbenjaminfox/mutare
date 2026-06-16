@@ -146,9 +146,11 @@ the plan.** Repeatedly, the move was: don't theorize about whether `:cover` impo
 works across processes, or whether a `Port` kill reaps the BEAM, or whether a
 formatter can snapshot per-test coverage — *try it small first*. The most
 important one failed: the planned per-test coverage via an ExUnit formatter was
-unworkable (formatter events are async; coverage snapshots race), so test
-selection became file-granular instead. The design serves what the tools
-actually do, not what we assumed they'd do.
+unworkable (formatter events are async; coverage snapshots race). The fix wasn't to
+give up on per-test capture but to move it where code *does* run synchronously per
+test — into the metamutant itself, which self-records coverage in the test process
+(the formatter was the wrong observer, not the wrong goal). The design serves what
+the tools actually do, not what we assumed they'd do.
 
 **Dogfood, because the tool is its own hardest test.** Running Mutare on its own
 source found real compile-poisoning bugs (a `case`-valued map field, a

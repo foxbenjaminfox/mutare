@@ -1,7 +1,9 @@
 defmodule Mutare.CoverageTest do
   use ExUnit.Case, async: false
 
-  alias Mutare.{Coverage, Manifest, Result}
+  import ExUnit.CaptureLog, only: [capture_log: 1]
+
+  alias Mutare.{Coverage, Result}
   alias Mutare.Test.Project
 
   @moduletag timeout: 180_000
@@ -11,42 +13,38 @@ defmodule Mutare.CoverageTest do
   # higher-volume default mutators (literals) are excluded for determinism/speed.
   @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
 
-  describe "index/1" do
-    test "merges manifests to map every mutant id to its selector's {module, line}" do
-      source = """
-      defmodule Demo.Thing do
-        def gte?(a, b), do: a >= b
-        def step(n) when n > 0, do: n + 1
-        def step(_), do: 0
-      end
-      """
+  describe "read_dump/1" do
+    @tag :tmp_dir
+    test "decodes the aggregate and per-file id lists into MapSets", %{tmp_dir: dir} do
+      path = Path.join(dir, "dump.terms")
 
-      {meta, sites, _next_id} = Mutare.transform_string(source, file: "lib/demo/thing.ex")
-      index = Coverage.index([Manifest.from_source(meta)])
+      payload = %{
+        aggregate: [1, 2, 3],
+        by_file: %{"test/a_test.exs" => [1, 2], "test/b_test.exs" => [3]}
+      }
 
-      # every site is reachable through some selector/dispatcher
-      assert Enum.all?(sites, &Map.has_key?(index, &1.id))
-      # ids are attributed to the right module
-      assert Enum.all?(index, fn {_id, {mod, line}} -> mod == Demo.Thing and is_integer(line) end)
+      File.write!(path, :erlang.term_to_binary(payload))
 
-      # the lifted ids for step/1 all share the dispatcher's line
-      lifted_ids = for s <- sites, s.kind == :lifted, do: s.id
-      lifted_lines = lifted_ids |> Enum.map(&elem(index[&1], 1)) |> Enum.uniq()
-      assert length(lifted_lines) == 1
+      assert {:ok, %{aggregate: aggregate, by_file: by_file}} = Coverage.read_dump(path)
+      assert aggregate == MapSet.new([1, 2, 3])
+      assert by_file["test/a_test.exs"] == MapSet.new([1, 2])
+      assert by_file["test/b_test.exs"] == MapSet.new([3])
     end
 
-    test "merges across files, ids globally unique so maps never collide" do
-      a = "defmodule A do\n  def f(a, b), do: a + b\nend\n"
-      b = "defmodule B do\n  def g(a, b), do: a - b\nend\n"
+    @tag :tmp_dir
+    test "errors (for run-all fallback) on a missing dump", %{tmp_dir: dir} do
+      assert capture_log(fn ->
+               assert {:error, _} = Coverage.read_dump(Path.join(dir, "absent.terms"))
+             end) =~ "falling back to run-all"
+    end
 
-      {meta_a, sites_a, next} = Mutare.transform_string(a, file: "lib/a.ex")
-      {meta_b, sites_b, _} = Mutare.transform_string(b, file: "lib/b.ex", start_id: next)
+    @tag :tmp_dir
+    test "errors (for run-all fallback) on a garbled dump", %{tmp_dir: dir} do
+      path = Path.join(dir, "garbage.terms")
+      File.write!(path, "this is not an erlang term")
 
-      index = Coverage.index([Manifest.from_source(meta_a), Manifest.from_source(meta_b)])
-
-      ids = Enum.map(sites_a ++ sites_b, & &1.id)
-      assert map_size(index) == length(ids)
-      assert Enum.all?(ids, &Map.has_key?(index, &1))
+      assert capture_log(fn -> assert {:error, _} = Coverage.read_dump(path) end) =~
+               "falling back to run-all"
     end
   end
 

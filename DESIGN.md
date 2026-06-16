@@ -96,12 +96,12 @@ active =
 
 ## The schema doubles as a coverage probe
 
-Because every site has a known source line, intersecting site locations with a single `:cover` run tells us which tests exercise which site — for free, from the build we already made. That feeds two things that were separate work in a recompiling design:
+Every site sits behind a selector whose catch-all runs on every baseline execution of that line — so the metamutant can **self-record coverage**. Under a tracking flag (set only for one instrumented baseline run), the catch-all records the site's mutant ids into shared ETS *synchronously, in the test process*, keyed by the running test's label; an `after_suite` hook dumps it. That single run feeds two things that were separate work in a recompiling design:
 
-- **No-coverage detection.** A mutant on a line no relevant test executes can never be killed; skip it and keep it out of the score's denominator.
-- **Test selection.** Run only the tests that touch the mutated line, not the whole suite, per mutant.
+- **No-coverage detection.** A mutant whose line no test executes (process-agnostic aggregate) can never be killed; skip it and keep it out of the score's denominator.
+- **Test selection.** Run only the test *files* that covered the line, per mutant. A covered-but-unattributed mutant (its code ran only in an unlabeled process) runs the whole suite.
 
-(Alternatively the baseline `_` branch can bump a per-site, per-test counter under a tracking flag; the `:cover` intersection is cheaper to build first.)
+This is the *per-site, per-test counter under a tracking flag* sketched as the alternative in the original design — chosen over a `:cover` line intersection because cover's table is global (`{module, line}`, no per-process partition), so attributing coverage to a test in one run needs an async-formatter snapshot that **races** test execution and loses fast `async: false` modules' coverage. Self-recording captures it in-process, accumulate-only, with no race. (`Mutare.Coverage.Recorder` owns the generated side; `Mutare.Coverage` reads the dump.)
 
 ## Mutators
 
@@ -208,6 +208,6 @@ This says, to the character: nothing in the suite distinguishes `>` from `>=` at
 
 - Worker isolation by full source copy vs per-worker `MIX_BUILD_PATH` against the shared schema build — measure on a large umbrella.
 - Self-call redirection inside lifted copies: ship in v2, or defer until profiling shows recursion cost matters?
-- Per-test coverage source: `:cover` line intersection (cheap, needs line→test bookkeeping) vs an in-schema counter under a tracking flag.
+- ~~Per-test coverage source: `:cover` line intersection vs an in-schema counter under a tracking flag.~~ **Resolved:** self-recording in the metamutant under a tracking flag (see *The schema doubles as a coverage probe*). `:cover` can't attribute per-test in one run without an async-formatter snapshot that races test execution.
 - Umbrella projects: one schema per app and aggregate, or treat the umbrella as one corpus?
 - Compile-poisoning pre-filter: always-on (safe, costs one isolated compile per candidate at discovery) vs opt-in for projects with adventurous custom mutators?

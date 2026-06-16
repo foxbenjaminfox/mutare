@@ -123,14 +123,18 @@ defmodule Mutare.Sandbox.Command do
   is the integer the metamutant switches on (`Mutare.Selector.baseline/0` for a
   baseline run), rendered into the env var here. `cap` (ms, or `nil`) is handed
   to the injected timeout watcher, which halts the run itself if it overruns — so
-  there is no process tree to kill and nothing platform-specific.
+  there is no process tree to kill and nothing platform-specific. `extra_env` adds
+  further variables (the coverage probe sets its capture flag this way).
   """
-  @spec mix(Path.t(), [String.t()], non_neg_integer(), pos_integer() | nil) ::
+  @spec mix(Path.t(), [String.t()], non_neg_integer(), pos_integer() | nil, [
+          {String.t(), String.t()}
+        ]) ::
           {String.t(), non_neg_integer()}
-  def mix(sandbox, args, mutant_id, cap \\ nil) do
+  def mix(sandbox, args, mutant_id, cap \\ nil, extra_env \\ []) do
     env =
       [{"MIX_ENV", "test"}, {Mutare.Selector.env_var(), Integer.to_string(mutant_id)}]
       |> maybe_cap(cap)
+      |> Kernel.++(extra_env)
 
     System.cmd("mix", args, cd: sandbox, stderr_to_stdout: true, env: env)
   end
