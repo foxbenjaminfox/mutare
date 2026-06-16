@@ -43,4 +43,14 @@ defmodule Mutare.Mutators.Conditional do
   end
 
   def mutate(_node), do: :skip
+
+  @doc """
+  Whether `op` is one of the boolean-valued operators this mutator forces to
+  `true`/`false`. The single definition of "boolean-valued operator", shared with
+  `Mutare.Mutators.ReturnValue` so it can skip a boolean tail rather than emit a
+  return mutant that would just duplicate this family's `true`/`false`.
+  """
+  @spec boolean_op?(atom()) :: boolean()
+  def boolean_op?(op) when is_atom(op), do: op in @boolean_ops
+  def boolean_op?(_), do: false
 end

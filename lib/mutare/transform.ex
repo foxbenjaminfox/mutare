@@ -388,6 +388,13 @@ defmodule Mutare.Transform do
     Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
+  # A return-value mutation is delivered in place (the tail is a body position),
+  # but it is structural — no node-level `mutator`, no operator — so it gets its
+  # own `Site` constructor (`:return_value` mutator, `nil` ops).
+  defp in_place_site(id, %Candidate.Return{} = c, file) do
+    Site.return_value(id, file, c.range, c.original, c.mutated)
+  end
+
   defp lifted_site(id, %Candidate.Guard{} = c, file) do
     Site.lifted_guard(id, file, c.range, c.original, c.mutated, c.mutator)
   end
@@ -437,6 +444,12 @@ defmodule Mutare.Transform do
   #     guard). Pruned here; `FunctionPlan` mutates them by lifting instead.
   #   * `:capture_arity` — the `/` in `&fun/arity`, an arity separator not
   #     division. Pruned; real division (`& &1 / 2`) still mutates.
+  #
+  # On top of the node-level operator candidates, the `def`/`defp` clause is *also*
+  # a structural site: its `:do` block's tail expression is a return-value position
+  # (`annotate_returns/3`), where a `Candidate.Return` constant is appended to the
+  # tail node's own metadata — delivered by the same in-place selector, on the same
+  # node, as any operator candidate there.
   #
   # Ids are *not* assigned here; emission does that bottom-up to keep post-order
   # id ordering.
@@ -488,11 +501,16 @@ defmodule Mutare.Transform do
       else: recurse(node, context, mutators)
   end
 
-  # A `def`/`defp` clause reaching the in-place path (one that did not lift): the
-  # head is a pattern, the body keyword is runtime.
+  # A `def`/`defp` clause reaching the in-place path (one that did not lift, or an
+  # `__orig` copy of one that did): the head is a pattern, the body keyword is
+  # runtime, and the `:do` block's *tail expression* is additionally a return-value
+  # position (only the transform knows where a clause returns — see
+  # `annotate_returns/3`).
   defp analyze({vis, meta, [head, body_kw]}, _context, mutators)
        when vis in [:def, :defp] and is_list(body_kw) do
-    {vis, meta, [analyze(head, :pattern, mutators), analyze_do_blocks(body_kw, mutators)]}
+    head = analyze(head, :pattern, mutators)
+    analyzed_kw = analyze_do_blocks(body_kw, mutators)
+    {vis, meta, [head, annotate_returns(analyzed_kw, body_kw, mutators)]}
   end
 
   # bitstring: each segment's value keeps the surrounding context; the spec side
@@ -551,6 +569,93 @@ defmodule Mutare.Transform do
   defp analyze_do_blocks(body_kw, mutators) do
     Enum.map(body_kw, fn {key, value} -> {key, analyze(value, :runtime, mutators)} end)
   end
+
+  # === return-value mutation =================================================
+
+  # Attach a return-value candidate to the *tail expression* of the clause's `:do`
+  # block — the position a `def`/`defp` clause returns from. This is structural
+  # (the tail is a position no node-level mutator can match), so it runs only when
+  # the `Mutare.Mutators.ReturnValue` family is enabled, and only over the `:do`
+  # block (a `rescue`/`catch`/`else`/`after` tail is also a return path — deferred,
+  # see NOTES).
+  #
+  # `analyzed_kw` carries the already-attached operator candidates; `raw_kw` is the
+  # pre-analysis copy, used only to build the candidate's clean `original`/`range`
+  # (so the diff renders the author's tail, un-annotated). The two are structurally
+  # identical — analysis only adds metadata — so `map_tail/3` can navigate them in
+  # lockstep to the same tail node. `ReturnValue.replacements/1` decides the
+  # constant(s) (or that the tail is ineligible).
+  defp annotate_returns(analyzed_kw, raw_kw, mutators) do
+    if Mutare.Mutators.ReturnValue in mutators do
+      [analyzed_kw, raw_kw]
+      |> Enum.zip()
+      |> Enum.map(fn {{key, analyzed_value}, {_key, raw_value}} ->
+        if do_key?(key),
+          do: {key, attach_return(analyzed_value, raw_value)},
+          else: {key, analyzed_value}
+      end)
+    else
+      analyzed_kw
+    end
+  end
+
+  defp do_key?({:__block__, _meta, [:do]}), do: true
+  defp do_key?(:do), do: true
+  defp do_key?(_), do: false
+
+  # Find the tail expression of a `:do` block (the last statement of a multi-
+  # statement block, else the whole single-expression value) and append a
+  # return-value candidate per `ReturnValue.replacement`. The candidates ride in
+  # the tail node's own `meta[:mutare]` — *after* any operator candidates already
+  # there — so emission builds one selector `case` hosting both an operator swap
+  # and the return constant on the same node, ids in attachment order.
+  defp attach_return(analyzed_value, raw_value) do
+    map_tail(analyzed_value, raw_value, fn analyzed_tail, raw_tail ->
+      case Mutare.Mutators.ReturnValue.replacements(raw_tail) do
+        [] -> analyzed_tail
+        replacements -> append_return_candidates(analyzed_tail, raw_tail, replacements)
+      end
+    end)
+  end
+
+  # Apply `fun` to the tail of a (possibly block) value, in lockstep on the
+  # analyzed and raw copies. A statement sequence (`>= 2` statements) returns the
+  # body with its last statement mapped; anything else is itself the tail. A
+  # single-statement `:__block__` (a Sourceror-wrapped literal like `{:__block__,
+  # _, [:ok]}`) is intentionally *not* unwrapped — the wrapping block is the node
+  # we attach to.
+  defp map_tail({:__block__, meta, a_stmts}, {:__block__, _rmeta, r_stmts}, fun)
+       when length(a_stmts) >= 2 and length(a_stmts) == length(r_stmts) do
+    {a_init, [a_last]} = Enum.split(a_stmts, -1)
+    {_r_init, [r_last]} = Enum.split(r_stmts, -1)
+    {:__block__, meta, a_init ++ [fun.(a_last, r_last)]}
+  end
+
+  defp map_tail(analyzed_value, raw_value, fun), do: fun.(analyzed_value, raw_value)
+
+  # Append a `Candidate.Return` per replacement to the tail node's metadata,
+  # preserving any operator candidates already there (so operator ids precede the
+  # return id at a shared node). The candidate's `original`/`range` come from the
+  # *raw* tail, so the diff is clean. A tail we can't annotate (a non-`{f,m,a}`
+  # node, or one Sourceror can't range) gets no return mutant.
+  defp append_return_candidates({form, meta, args} = node, raw_tail, replacements)
+       when is_list(meta) do
+    case Sourceror.get_range(raw_tail) do
+      %{} = range ->
+        candidates =
+          Enum.map(replacements, fn replacement ->
+            %Candidate.Return{original: raw_tail, mutated: replacement, range: range}
+          end)
+
+        existing = Keyword.get(meta, :mutare, [])
+        {form, Keyword.put(meta, :mutare, existing ++ candidates), args}
+
+      _ ->
+        node
+    end
+  end
+
+  defp append_return_candidates(node, _raw_tail, _replacements), do: node
 
   # A bitstring segment `<<value::spec>>`: the value keeps the surrounding
   # context; the spec side is excluded except for `size(expr)` args.

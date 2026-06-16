@@ -14,7 +14,9 @@ defmodule Mix.Tasks.MutareTest do
     test "raises when there are no mutation sites" do
       root = Project.tmp_dir(:task)
       File.mkdir_p!(Path.join(root, "lib"))
-      File.write!(Path.join(root, "lib/empty.ex"), "defmodule Empty do\n  def f, do: :ok\nend\n")
+      # `do: nil` has no mutation sites (a `nil` tail is skipped by return-value);
+      # `do: :ok` would now yield a `:ok → nil` return mutant.
+      File.write!(Path.join(root, "lib/empty.ex"), "defmodule Empty do\n  def f, do: nil\nend\n")
       on_exit(fn -> File.rm_rf!(root) end)
 
       assert_raise Mix.Error, ~r/no mutation sites/, fn ->

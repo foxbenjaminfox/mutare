@@ -12,6 +12,7 @@ defmodule Mutare.MutatorsTest do
     Literal,
     Logical,
     Relational,
+    ReturnValue,
     StringLiteral
   }
 
@@ -21,7 +22,7 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.all() ==
                [Arithmetic, Relational, Logical, Literal] ++
-                 [Conditional, List, Collection, StringLiteral, FloatLiteral]
+                 [Conditional, List, Collection, StringLiteral, FloatLiteral, ReturnValue]
     end
 
     test "families/0 are the registry's keys, in order — all on by default" do
@@ -29,7 +30,7 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.families() ==
                [:arithmetic, :relational, :logical, :literal] ++
-                 [:conditional, :list, :collection, :string, :float]
+                 [:conditional, :list, :collection, :string, :float, :return_value]
     end
 
     test "resolve/1 maps family atoms to modules, preserving order" do

@@ -17,6 +17,11 @@ defmodule Mutare.Transform.Candidate do
   #     (a `case` can't live in a guard) (was `:guard` / `:lifted` / `:replace`).
   #   * `Candidate.Drop`    — a whole clause removed, delivered by lifting (was
   #     `:clause_drop` / `:lifted` / `:delete`).
+  #   * `Candidate.Return`  — a function clause's *tail expression* replaced with a
+  #     constant (`nil`/`0`/`""`/`[]`), delivered by an in-place selector `case`
+  #     (the tail is a body position). Structural, like `Drop`: it targets a
+  #     position only the transform knows (the clause's return), not a node a
+  #     `mutate/1` mutator could match — but it is *delivered* in place, not lifted.
   #
   # `kind`/`operation` no longer live on the candidate — they're implied by the
   # struct, and recovered at emission when the matching `Mutare.Site` is built.
@@ -84,5 +89,26 @@ defmodule Mutare.Transform.Candidate do
     defstruct [:clause_index, :original, :range]
   end
 
-  @type t :: InPlace.t() | Guard.t() | Drop.t()
+  defmodule Return do
+    @moduledoc false
+
+    # A function clause's tail expression replaced with a constant, delivered by
+    # the in-place selector (the tail is a body position, so a `case` is legal
+    # there). Shaped exactly like `InPlace` for emission — `mutated` is the
+    # replacement constant, `original` the raw tail, `range` locates it — but it
+    # is a distinct kind because there is no node-level `mutator`: the candidate
+    # is discovered *structurally* (the transform names the tail) and the
+    # constant carries no operator, so the recorded `Mutare.Site` has a
+    # `:return_value` mutator and `nil` ops (`Site.return_value/5`).
+
+    @type t :: %__MODULE__{
+            original: Macro.t(),
+            mutated: Macro.t(),
+            range: map()
+          }
+
+    defstruct [:original, :mutated, :range]
+  end
+
+  @type t :: InPlace.t() | Guard.t() | Drop.t() | Return.t()
 end

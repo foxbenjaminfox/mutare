@@ -88,10 +88,14 @@ defmodule Mutare.HarnessTest do
   end
 
   describe "through the runner" do
-    # `def f(a, b), do: a + b` yields exactly one mutant (`+`→`-`, id 1). The test
-    # halts with 99 (off-contract: not 0/pass, not the failure or timeout codes)
-    # only when that mutant is active, so the baseline (id 0) is green and the
-    # one mutant always lands as a harness error.
+    # Pinned to `:arithmetic` so `def f(a, b), do: a + b` yields exactly one mutant
+    # (`+`→`-`, id 1) — the default set would also add a return-value mutant
+    # (`a + b → 0`), which these tests (about the harness-error mechanism, not the
+    # mutator set) don't want. The test halts with 99 (off-contract: not 0/pass, not
+    # the failure or timeout codes) only when that mutant is active, so the baseline
+    # (id 0) stays green and the one mutant always lands as a harness error.
+    @arithmetic_only [mutators: [Mutare.Mutators.Arithmetic]]
+
     defp halting_project(tag) do
       Project.build(tag, %{
         "lib/h.ex" => "defmodule H do\n  def f(a, b), do: a + b\nend\n",
@@ -115,7 +119,7 @@ defmodule Mutare.HarnessTest do
       {result, log} =
         with_log(fn ->
           # No retry (the failure is deterministic, not transient) keeps it quick.
-          Mutare.run(project, sandbox: sandbox, harness_retries: 0)
+          Mutare.run(project, [sandbox: sandbox, harness_retries: 0] ++ @arithmetic_only)
         end)
 
       # The lone mutant harness-errors → 100% of the mutants that ran → abort,
@@ -135,10 +139,10 @@ defmodule Mutare.HarnessTest do
         with_log(fn ->
           # Disable the abort to inspect the recorded result; one retry exercises
           # the retry path (the halt repeats, so it stays a harness error).
-          Mutare.run(project,
-            sandbox: sandbox,
-            harness_retries: 1,
-            max_harness_error_rate: nil
+          Mutare.run(
+            project,
+            [sandbox: sandbox, harness_retries: 1, max_harness_error_rate: nil] ++
+              @arithmetic_only
           )
         end)
 

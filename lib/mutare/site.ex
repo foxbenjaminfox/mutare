@@ -96,6 +96,34 @@ defmodule Mutare.Site do
     }
   end
 
+  @doc """
+  A return-value mutation: a function clause's tail expression replaced with a
+  constant (`nil`/`0`/`""`/`[]`) behind an in-place selector `case`. Structural
+  (the transform names the tail; there is no node-level mutator), so the recorded
+  `mutator` is the fixed `:return_value` and there are no operator atoms — but it
+  *is* `:in_place` (a tail is a body position), with the original tail and the
+  replacement constant kept for the diff.
+  """
+  @spec return_value(pos_integer(), String.t(), map(), Macro.t(), Macro.t()) :: t()
+  def return_value(id, file, range, original_node, mutated_node) do
+    %__MODULE__{
+      id: id,
+      file: file,
+      line: range.start[:line],
+      column: range.start[:column],
+      range: range,
+      mutator: :return_value,
+      kind: :in_place,
+      operation: :replace,
+      original_op: nil,
+      mutated_op: nil,
+      original_code: Sourceror.to_string(original_node),
+      mutated_code: Sourceror.to_string(mutated_node),
+      original_node: original_node,
+      mutated_node: mutated_node
+    }
+  end
+
   # In-place and lifted-guard sites differ only in `kind`: both are an operator
   # swap recorded with the original/mutated nodes, their ops, and rendered code.
   defp replace(id, file, range, original_node, mutated_node, mutator, kind) do

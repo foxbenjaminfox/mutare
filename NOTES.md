@@ -458,23 +458,70 @@ routing and lifting mechanics, not the default set, so pinning keeps their
 counts stable while positive coverage of the new defaults lives in
 `mutators_test` and one dedicated `transform_test`.
 
-### Return-value mutators `[deferred]`
-The one big family still missing — and PIT's largest, highest-yield group:
-replace a function's **return value** (its body's tail position) with a fixed
-constant of a compatible shape (`nil`, `0`, `""`, `[]`, `:ok`, flip a returned
-boolean). Very high signal: it directly asks "does any test pin what this
-function returns?".
+### Return-value mutators `[done]`
+PIT's largest, highest-yield group, now implemented: replace a function clause's
+**return value** (its body's tail expression) with a fixed constant. Very high
+signal — it asks directly "does any test pin what this function returns?". On by
+default (`:return_value` family).
 
-Why it isn't a `Mutare.Mutator`: those are *node-level* (`mutate/1` rewrites a
-matched node wherever it occurs). A return-value mutation is **structural** — it
-targets the *tail expression of each clause body*, a position only the transform
-knows. It's the same shape as clause-drop (built-in, structural, not expressible
-via `mutate/1`). So it needs a new transform path: identify each clause's tail
-expression (the in-place selector already wraps tail position, so the machinery
-is close) and offer constant-replacement candidates there, gated on
-compile-safety (a bare constant always compiles) and equivalence (skip when the
-tail already *is* that constant). Defer until someone picks it up; capture here so
-the "why not a mutator" reasoning isn't re-derived.
+**Why it's structural, not a `Mutare.Mutator`.** Node-level mutators (`mutate/1`)
+rewrite a matched node *wherever it occurs*; a return-value mutation targets the
+*tail expression of a clause body*, a position only the transform knows. So the
+real work is `Mutare.Mutators.ReturnValue.replacements/1` (a pure tail→constants
+function), invoked by `Transform` once per `def`/`defp` `:do`-block tail it finds
+(`annotate_returns/3`). The module still implements the behaviour — `name/0` is
+`:return_value`, `mutate/1` is `:skip` — purely so it sits in the `Mutare.Mutators`
+registry and inherits everything that follows from membership: on-by-default,
+named in reports, selectable/validatable via `:mutators`, filterable by
+`# mutare:ignore[return_value]`. (Contrast `clause_drop`, the *other* structural
+built-in, which is always-on and not in the registry — return-value is registered
+because it is high-volume and users will reasonably want to toggle it.)
+
+**Delivery reuses the in-place selector.** A tail is a body position, so the
+constant goes behind the same tail-position `case` as an operator swap — no new
+emission machinery. The candidate (`Candidate.Return`) is *appended* to the tail
+node's `meta[:mutare]`, so when the tail is also an operator site (`a + b`) one
+selector hosts both mutants (`… -> a - b ; … -> 0 ; _ -> a + b`). It rides through
+the in-place clause path, so it applies to non-lifted clauses *and* the `__orig`
+copies of lifted ones (the `__mut` copies reuse the original body, exactly like
+in-place body selectors).
+
+**Compile-safety is free.** A bare constant is legal in any tail position, and the
+original tail is kept in the selector catch-all, so variables the clause binds stay
+used (no unused-variable poison under `--warnings-as-errors`).
+
+**Which constant (shape-directed, one per tail).** Mis-inferring the shape is only
+cosmetic — *any* constant compiles and is valid signal — so inference stays small
+and unambiguous, defaulting to `nil`:
+
+  - a numeric expression (`a + b`, `x * 2`, `div(a, b)`, `-n`) → `0`
+  - a string concatenation (`a <> b`) → `""`
+  - a list expression (`a ++ b`, `xs -- ys`) → `[]`
+  - anything else the tests might pin (variable, call, tuple, map, `:ok`/`:error`
+    atom, `if`/`case`/`with` result, …) → `nil`
+
+**What it deliberately *skips* (no redundant or low-value mutant):**
+  - **boolean-valued tails** (a comparison/logical operator) — `Conditional`
+    already forces them to `true`/`false`; mutating here would just duplicate that.
+    The "boolean-valued op" test is `Conditional.boolean_op?/1`, the single
+    definition shared between the two families.
+  - **bare literals a value family already mutates** — integer/float/string/list
+    literals and booleans (`Literal`/`FloatLiteral`/`StringLiteral`/`List` cover
+    the node). A bare *atom* like `:ok` is **not** in this set (no family mutates
+    arbitrary atoms), so `def save(_), do: :ok` *does* get `:ok → nil`.
+  - **a `nil` tail** — `nil → nil` is equivalent; `nil → other` is low signal.
+  - **a `quote` block** — macro-AST construction, which the analyzer already keeps
+    whole (PHILOSOPHY: "macro-generated code is a different tool"); keeping
+    return-value off it too is the simpler, consistent boundary.
+
+**Deferred refinements:** only the `:do` block's tail is targeted — a
+`rescue`/`catch`/`else`/`after` clause tail is also a return path, left for later;
+and only a single contrasting constant is emitted (a second, e.g. a non-`nil`
+sentinel to catch code that checks `!= nil` but not the value — mirroring
+`StringLiteral`'s `""`+`"mutare"` pair — could strengthen it). The `Site` it records
+(`Site.return_value/5`) has `mutator: :return_value`, `kind: :in_place`, and `nil`
+ops (there is no operator), shaped like the clause-drop site that also carries no
+op.
 
 ### Equivalent mutants `[partial]`
 Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the

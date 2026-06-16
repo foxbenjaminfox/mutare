@@ -171,8 +171,15 @@ contract between them is the whole game.
   unary-minus removal), Relational, Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip), Literal
   (integers `n`→`{n±1, 0}`, `true`↔`false`), Conditional (a boolean-valued node → `true`/`false`),
   List (`++`↔`--`, non-empty list literal → `[]`), Collection (`Enum`/`List` predicate swaps),
-  StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral. A user narrows the
-  set by listing a subset under `:mutators`.
+  StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, and **ReturnValue**
+  (a `def`/`defp` clause's tail expression → a shape-directed constant: numeric→`0`, `<>`→`""`,
+  `++`/`--`→`[]`, else→`nil`). A user narrows the set by listing a subset under `:mutators`.
+  **ReturnValue is *structural*** — its target (a clause's return position) isn't a node a
+  `mutate/1` could match, so its `mutate/1` is `:skip` and the real logic is `replacements/1`,
+  which `Transform` calls at each clause tail (`annotate_returns/3`); it is registered (unlike
+  `clause_drop`, the other structural built-in) so it is toggleable like any family. It is
+  *delivered in place* (a tail is a body position), so a `Candidate.Return` is appended to the
+  tail node's `meta[:mutare]` and shares the tail's selector `case` with any operator swap there.
 - **`Mutare.Mutators`** — the **single ordered registry** of built-in families and the one place
   mutator lists are resolved/validated. `all/0` is the default set (every registered module — an
   unset `:mutators`/`:all`); `families/0` is every registered atom; `resolve/1` maps any family atom

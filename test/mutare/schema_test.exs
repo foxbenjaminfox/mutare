@@ -35,7 +35,9 @@ defmodule Mutare.SchemaTest do
 
   test "files with no sites are sources-only, not metamutants", %{root: root} do
     write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
-    write(root, "lib/empty.ex", "defmodule Empty do\n  def h, do: :ok\nend\n")
+    # `do: nil` is genuinely site-less: a `nil` tail is skipped by return-value
+    # (returning nil is equivalent), and no other family mutates it.
+    write(root, "lib/empty.ex", "defmodule Empty do\n  def h, do: nil\nend\n")
 
     schema = Schema.build(root)
 
@@ -46,7 +48,9 @@ defmodule Mutare.SchemaTest do
 
   test "a manifest is stored for each mutated file, alongside its metamutant", %{root: root} do
     write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
-    write(root, "lib/empty.ex", "defmodule Empty do\n  def h, do: :ok\nend\n")
+    # `do: nil` is genuinely site-less: a `nil` tail is skipped by return-value
+    # (returning nil is equivalent), and no other family mutates it.
+    write(root, "lib/empty.ex", "defmodule Empty do\n  def h, do: nil\nend\n")
 
     schema = Schema.build(root)
 

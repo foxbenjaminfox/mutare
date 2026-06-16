@@ -35,7 +35,8 @@ defmodule Mutare.Mutators do
     list: Mutare.Mutators.List,
     collection: Mutare.Mutators.Collection,
     string: Mutare.Mutators.StringLiteral,
-    float: Mutare.Mutators.FloatLiteral
+    float: Mutare.Mutators.FloatLiteral,
+    return_value: Mutare.Mutators.ReturnValue
   ]
 
   @doc "The ordered `family => module` registry of every built-in mutator."
