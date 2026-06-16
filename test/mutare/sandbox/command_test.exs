@@ -43,6 +43,36 @@ defmodule Mutare.Sandbox.CommandTest do
     end
   end
 
+  describe "test_argv/1 builds the kill-detection mix test argv" do
+    # A flag and its value are passed as two adjacent argv elements.
+    defp flag_value(argv, flag) do
+      case Enum.find_index(argv, &(&1 == flag)) do
+        nil -> nil
+        i -> Enum.at(argv, i + 1)
+      end
+    end
+
+    test "forces the failure exit status so a kill is distinct from a harness error" do
+      assert flag_value(Command.test_argv([]), "--exit-status") ==
+               Integer.to_string(Command.failure_exit())
+    end
+
+    test "forces --max-failures 1, since one failure is enough to declare a kill" do
+      assert flag_value(Command.test_argv([]), "--max-failures") == "1"
+    end
+
+    test "appends the caller's test args (file-granular selection) after the flags" do
+      argv = Command.test_argv(["test/foo_test.exs", "test/bar_test.exs"])
+      # The forced flags come first; the selection is appended verbatim at the tail.
+      assert List.starts_with?(argv, ["test", "--exit-status", "101", "--max-failures", "1"])
+      assert Enum.take(argv, -2) == ["test/foo_test.exs", "test/bar_test.exs"]
+    end
+
+    test "a whole-suite run ([] args) carries only the forced flags" do
+      assert Command.test_argv([]) == ["test", "--exit-status", "101", "--max-failures", "1"]
+    end
+  end
+
   test "watcher AST carries the timeout env var and exit code" do
     rendered = Macro.to_string(Command.watcher_ast())
 

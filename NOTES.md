@@ -451,6 +451,38 @@ per-worker `MIX_BUILD_PATH` vs full source copy — would remove the contention;
 deferred. Default workers may be worth lowering from schedulers_online to cut
 oversubscription.
 
+### Kill detection stops at the first failure (`--max-failures 1`) `[done]`
+A mutant is killed the moment *any* test fails — the verdict is killed-vs-survived,
+not *which* test — so `Mutare.Sandbox.Command.timed_test/4` forces `--max-failures 1`
+onto every per-mutant `mix test` (alongside the `--exit-status` kill code). ExUnit
+then stops scheduling tests at the first failure: a strict speedup on the **kill
+path**, the common case for a healthy suite, where the old behaviour ran the whole
+suite to completion only to throw the rest away. A **survivor** run never reaches the
+cap (0 failures), so it still runs the whole selected suite — survival genuinely
+requires every test to pass, and that cost is unavoidable.
+
+Safe against the exit-code contract: `mix test`'s exit status is driven *solely* by
+`failures > 0` (verified in `Mix.Tasks.Test`), and `--max-failures 1` guarantees ≥1
+failure on the failing path, so a kill still exits `failure_exit/0` → `:failed`. A
+harness error (compile error / missing dep → 0 *test* failures, exit 1) and a timeout
+(the watcher's `System.halt`) are both orthogonal to the flag. The argv is built by
+the pure, unit-tested `Command.test_argv/1`, so the contract is checked without
+spawning `mix`.
+
+Scoped to the kill path *only*. The baseline (`Runner.Baseline`, a whole-suite green
+check and the `baseline_ms` timing source) and the coverage probe
+(`Runner.CoverageProbe`, which must run every test to record coverage) bypass
+`timed_test/4` (they call `timed_mix`/`mix` directly), so neither is truncated — both
+run the suite to the end as before. The per-mutant timeout cap is still scaled from a
+*full*-suite baseline, which stays conservative (a killed mutant now finishes earlier,
+not later).
+
+Adjacent idea, **not** pursued: distributing mutation testing by sharding *mutants*
+across machines (stable ids + the mergeable Stryker-schema JSON make this the natural
+axis); `mix test --partitions` is the wrong tool — it only filters test files (no
+build-path effect, verified), multiplies per-mutant process boots by the machine
+count, and forfeits this first-failure early-exit. Out of scope for now.
+
 ### Test selection — self-recorded coverage (M3b done, race-free redesign) `[done]`
 Coverage-driven *test selection* is done at **test-file** granularity from a
 **single instrumented `mix test` run** at baseline (`MUTARE_COVERAGE=1`). A mutant

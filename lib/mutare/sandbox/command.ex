@@ -26,6 +26,19 @@ defmodule Mutare.Sandbox.Command do
   `outcome/1` is the single, total decoder of that contract; `timed_test/4`
   applies the `--exit-status` flag and returns a typed `Mutare.Sandbox.Command.Result`.
 
+  ## Kill detection stops at the first failure
+
+  A mutant is killed the moment *any* test fails — the verdict is killed-vs-survived,
+  not *which* tests fail — so `timed_test/4` also forces `--max-failures 1`. ExUnit
+  then stops scheduling tests at the first failure, which is a strict speedup on the
+  kill path (the common case for a healthy suite) and changes nothing else: the
+  exit-status path is driven solely by `failures > 0` (so one failure still exits
+  `failure_exit/0` → `:failed`), and an all-pass survivor run never reaches the cap,
+  so it still runs the whole (selected) suite to confirm survival. This is the kill
+  path *only* — the baseline (`Mutare.Runner.Baseline`, a whole-suite green check and
+  the timing source) and the coverage probe (`Mutare.Runner.CoverageProbe`, which
+  must run every test to capture coverage) bypass `timed_test/4` and are unaffected.
+
   The timeout half also owns its env var (`timeout_env/0`) and the watcher that
   honours it as a dependency-free quoted AST (`watcher_ast/0`). The cap is not
   enforced by killing a process tree (which needs platform-specific signals);
@@ -150,18 +163,35 @@ defmodule Mutare.Sandbox.Command do
   end
 
   @doc """
+  Build the `mix test` argv for a mutant kill-detection run from `test_args`.
+
+  Always prepends `test --exit-status #{@failure_exit} --max-failures 1`:
+
+    * `--exit-status #{@failure_exit}` makes a clean test failure (a kill)
+      distinguishable from a harness error — see the moduledoc.
+    * `--max-failures 1` stops ExUnit at the first failure, since one failing test
+      is enough to declare a kill (also see the moduledoc).
+
+  `test_args` are the extra arguments (`[]` = whole suite, file-granular args
+  otherwise). Pure, so the contract is unit-testable without spawning `mix`.
+  """
+  @spec test_argv([String.t()]) :: [String.t()]
+  def test_argv(test_args) do
+    ["test", "--exit-status", Integer.to_string(@failure_exit), "--max-failures", "1" | test_args]
+  end
+
+  @doc """
   Run the suite against mutant `mutant_id`, wall-clock-timed, and return a typed
   `Mutare.Sandbox.Command.Result`.
 
   `test_args` are extra `mix test` arguments (`[]` = whole suite, file-granular
-  args otherwise). `--exit-status #{@failure_exit}` is always injected so a clean
-  test failure (the mutation was killed) is distinguishable from a harness error
-  — see the moduledoc. `cap` (ms, or `nil`) bounds an overrun via the watcher.
+  args otherwise); they are folded into the kill-detection argv by `test_argv/1`
+  (forcing `--exit-status #{@failure_exit}` and `--max-failures 1`). `cap` (ms, or
+  `nil`) bounds an overrun via the watcher.
   """
   @spec timed_test(Path.t(), [String.t()], non_neg_integer(), pos_integer() | nil) :: Result.t()
   def timed_test(sandbox, test_args, mutant_id, cap \\ nil) do
-    args = ["test", "--exit-status", Integer.to_string(@failure_exit) | test_args]
-    {ms, output, status} = timed_mix(sandbox, args, mutant_id, cap)
+    {ms, output, status} = timed_mix(sandbox, test_argv(test_args), mutant_id, cap)
 
     %Result{
       outcome: outcome(status),

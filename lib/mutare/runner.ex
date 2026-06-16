@@ -6,7 +6,8 @@ defmodule Mutare.Runner do
   time, run the baseline green, then launch one `mix test` process per mutant
   with `MUTANT_UNDER_TEST` set. Sources never change between runs, so mix's
   incremental compiler finds nothing to rebuild — the per-mutant cost is process
-  boot plus the suite, never recompilation.
+  boot plus the suite (only up to the first failure for a kill, via
+  `--max-failures 1`; see `Mutare.Sandbox.Command`), never recompilation.
 
   ## Baseline + coverage probe
 
