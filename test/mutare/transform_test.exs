@@ -382,4 +382,52 @@ defmodule Mutare.TransformTest do
     assert by[:literal] == 3
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
+
+  describe "coverage helper xref warning" do
+    # The selector catch-alls call `:mutare_cov.hit/1`, a helper that in an umbrella
+    # lives in a generated sibling app the mutated app declares no dep on — so it
+    # may be compiled later and draw a benign "undefined function" xref warning.
+    # `Transform` prepends `@compile {:no_warn_undefined, …}` to every module body
+    # to silence it; the call still resolves at runtime. (Suppression itself can
+    # only be observed where the helper is absent — Mutare's own VM ships a
+    # `:mutare_cov` test stand-in — so the end-to-end check lives in
+    # `Mutare.UmbrellaTest`; here we pin that the attribute is emitted, per module.)
+    @attr "@compile {:no_warn_undefined, {#{inspect(Mutare.Coverage.Recorder.helper_module())}, :hit, 1}}"
+
+    @multi_module """
+    defmodule Outer do
+      defmodule Inner do
+        def add(a, b), do: a + b
+      end
+
+      def sub(a, b), do: a - b
+    end
+
+    defimpl String.Chars, for: Outer do
+      def to_string(_), do: "a" <> "b"
+    end
+    """
+
+    test "every module (incl. nested and defimpl) carries the no-warn attribute" do
+      {meta, _sites, _next_id} = Mutare.transform_string(@multi_module)
+
+      # One per module body: Outer, Inner, and the String.Chars impl.
+      occurrences = meta |> String.split(@attr) |> length() |> Kernel.-(1)
+      assert occurrences == 3
+      assert {:ok, _ast} = Code.string_to_quoted(meta)
+    end
+
+    test "the attribute targets exactly the MFA the catch-all calls (no drift)" do
+      # If the helper module/arity ever drifts from what `record_ast/1` emits, the
+      # attribute would stop matching the call and the warning would silently
+      # return — so assert both reference the same `<helper>.hit(...)`.
+      helper = inspect(Mutare.Coverage.Recorder.helper_module())
+
+      {meta, _sites, _next_id} =
+        Mutare.transform_string("defmodule M do\n  def f(a, b), do: a + b\nend\n")
+
+      assert meta =~ "#{helper}.hit("
+      assert meta =~ @attr
+    end
+  end
 end

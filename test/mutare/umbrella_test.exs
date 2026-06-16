@@ -84,6 +84,29 @@ defmodule Mutare.UmbrellaTest do
            "unexpected non-kills: #{inspect(Enum.reject(run.results, &(&1.status == :killed)) |> Enum.map(&{&1.site.file, &1.status}))}"
   end
 
+  test "the metamutant build is warning-clean and compiles once", %{
+    umbrella: umbrella,
+    sandbox: sandbox
+  } do
+    assert {:ok, run} = Mutare.run(umbrella, sandbox: sandbox, mutators: @probe)
+    assert [_ | _] = run.results
+
+    # The coverage helper (`:mutare_cov`) lives in a generated sibling app the
+    # mutated apps declare no dep on, so the umbrella may compile a caller before
+    # it — an xref "undefined function" warning that mix replays from its manifest
+    # on every `mix test` *without* recompiling. `Transform`'s per-module
+    # `@compile {:no_warn_undefined, …}` silences it. Per-mutant runs reuse the one
+    # build, so a clean output proves both properties at once: no warning leaks,
+    # and compile-once still holds (no per-mutant recompile).
+    for result <- run.results do
+      refute result.output =~ "is undefined",
+             "undefined-function warning leaked for #{result.site.file}:\n#{result.output}"
+
+      refute result.output =~ "Compiling",
+             "per-mutant run recompiled (compile-once broken) for #{result.site.file}:\n#{result.output}"
+    end
+  end
+
   test "coverage records root-relative test files and selects per file", %{
     umbrella: umbrella,
     sandbox: sandbox

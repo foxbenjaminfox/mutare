@@ -115,6 +115,28 @@ defmodule Mutare.Coverage.Recorder do
   end
 
   @doc """
+  The `@compile {:no_warn_undefined, {<helper>, :hit, 1}}` attribute
+  `Mutare.Transform` prepends to every metamutant module body.
+
+  Each module's selector catch-alls call the coverage helper's `hit/1` (see
+  `record_ast/1`). In an umbrella the helper lives in a generated sibling app the
+  mutated app declares no dep on, so `mix` may compile the caller before the
+  helper and the compiler's xref check draws a benign "undefined function"
+  warning. The call still resolves at runtime; this attribute suppresses only the
+  compile-time check, and is a harmless no-op where the helper is co-compiled (a
+  single-app target, which never warns) — so `Transform` can emit it
+  unconditionally.
+  """
+  @spec no_warn_attr_ast() :: Macro.t()
+  def no_warn_attr_ast do
+    helper = @helper_module
+
+    quote do
+      @compile {:no_warn_undefined, {unquote(helper), :hit, 1}}
+    end
+  end
+
+  @doc """
   Source of the dependency-free coverage helper `Mutare.Sandbox` writes into
   the sandbox (compiled once, with the app).
 

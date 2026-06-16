@@ -124,15 +124,28 @@ only reaches it through a declared dep, so owning-app + dependents is a safe
 superset — we never narrow below it. Attributed coverage selections (step 3) are
 left untouched.
 
-Known cosmetic artifact: because a mutated app does **not** declare a dep on
-`mutare_support`, the umbrella may compile the app before `mutare_support`, so each
-metamutant's `:mutare_cov.hit/1` call draws an "undefined function" **compile
-warning**. It is benign — `mix` re-emits it from the manifest cache on every run
-*without* recompiling (compile-once holds; verified `output !~ "Compiling"`), and
-coverage works regardless (the call resolves at runtime). Editing each mutated
-app's `mix.exs` to add `{:mutare_support, in_umbrella: true}` would silence it and
-pin compile order, but that means rewriting user `mix.exs` files — deferred as not
-worth the risk for a buried-in-`output` cosmetic line.
+Former cosmetic artifact, now silenced `[done]`: because a mutated app does
+**not** declare a dep on `mutare_support`, the umbrella may compile the app before
+`mutare_support`, so each metamutant's `:mutare_cov.hit/1` call drew an "undefined
+function" xref **compile warning** that `mix` then re-emits from the manifest cache
+on every `mix test` *without* recompiling (so it leaked into per-mutant `output`).
+It was always benign — coverage works regardless (the call resolves at runtime) —
+but it is now suppressed at the source: `Transform` prepends
+`@compile {:no_warn_undefined, {:mutare_cov, :hit, 1}}` to **every metamutant module
+body** (the attribute AST is owned by `Coverage.Recorder.no_warn_attr_ast/0`, beside
+the helper-module constant it references; a post-`transform_node` prewalk reaches
+`defmodule` *and* `defimpl` — `defprotocol` has no bodies). The discarded
+alternative was injecting `{:mutare_support, in_umbrella: true}` into each mutated
+app's `mix.exs`: it would pin compile order too, but `deps` is arbitrary Elixir
+(computed lists, inline, read-from-file), so no static rewrite is robust, and it
+breaks the sandbox-edit boundary (we only ever generate metamutants + wrap the
+trivial `test_helper.exs`, never rewrite the load-bearing `mix.exs`) — all for a
+warning the attribute kills with zero risk. The attribute suppresses only the
+compile-time check; it is a harmless no-op on single-app targets (helper
+co-compiled, never warned) and where a module has no coverage call, so `Transform`
+emits it unconditionally. Verified end-to-end: `Mutare.UmbrellaTest` asserts no
+per-mutant `output =~ "is undefined"` **and** `!~ "Compiling"` (warning gone,
+compile-once intact).
 **(3)** generated `apps/mutare_support` coverage app + absolute dump path +
 umbrella-root-relative coverage keys → coverage selection works. **(4)** scope
 broad (`:run_all`/unattributed/`:full`) runs to the owning app + its dependents via

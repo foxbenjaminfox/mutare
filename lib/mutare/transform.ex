@@ -152,7 +152,7 @@ defmodule Mutare.Transform do
     ctx = %{ctx | prefix: generated_prefix(parsed)}
     {transformed, ctx} = transform_node(parsed, ctx)
 
-    metamutant = Render.to_source(transformed)
+    metamutant = transformed |> silence_helper_xref() |> Render.to_source()
 
     # Reuse the AST we just parsed — its comment metadata is intact (transform
     # works on copies), so `Ignore` need not re-parse the source. A directive may
@@ -172,6 +172,43 @@ defmodule Mutare.Transform do
       %{reason: reason} -> %{site | ignored: true, ignore_reason: reason}
     end
   end
+
+  # Prepend `@compile {:no_warn_undefined, {:mutare_cov, :hit, 1}}` to every module
+  # body, so the coverage `hit/1` call in each selector catch-all draws no xref
+  # warning when the umbrella compiles a mutated app before the generated helper
+  # app (see `Mutare.Coverage.Recorder.no_warn_attr_ast/0`). Both `defmodule` and
+  # `defimpl` define modules with mutatable bodies; `defprotocol` has no bodies (so
+  # no `hit/1` call) and is left alone. A prewalk reaches nested modules too — an
+  # ancestor without its own call gets a harmless no-op attribute.
+  defp silence_helper_xref(ast) do
+    attr = Recorder.no_warn_attr_ast()
+
+    Macro.prewalk(ast, fn
+      {form, meta, args} when form in [:defmodule, :defimpl] and is_list(args) and args != [] ->
+        {init, [do_keyword]} = Enum.split(args, -1)
+        {form, meta, init ++ [prepend_module_attr(do_keyword, attr)]}
+
+      other ->
+        other
+    end)
+  end
+
+  # Prepend `attr` as the first statement of a module's `do` body. Handles both
+  # Sourceror's keyword-block key (`{:__block__, _, [:do]}`) and a plain `:do`, and
+  # both a block body and a single-expression body. A last arg that is not a `do`
+  # keyword list passes through untouched.
+  defp prepend_module_attr(do_keyword, attr) when is_list(do_keyword) do
+    Enum.map(do_keyword, fn
+      {{:__block__, _, [:do]} = key, body} -> {key, prepend_statement(body, attr)}
+      {:do, body} -> {:do, prepend_statement(body, attr)}
+      other -> other
+    end)
+  end
+
+  defp prepend_module_attr(do_keyword, _attr), do: do_keyword
+
+  defp prepend_statement({:__block__, meta, stmts}, attr), do: {:__block__, meta, [attr | stmts]}
+  defp prepend_statement(single, attr), do: {:__block__, [], [attr, single]}
 
   # === module / statement structure =========================================
 
