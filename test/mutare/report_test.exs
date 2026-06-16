@@ -301,6 +301,41 @@ defmodule Mutare.ReportTest do
                "-    total >= threshold\n+    total > threshold"
   end
 
+  test "ignored/1 renders file:line, mutator, and a reason when present" do
+    with_reason = %Site{
+      file: "lib/x.ex",
+      line: 9,
+      mutator: :arithmetic,
+      ignore_reason: "deliberate"
+    }
+
+    without = %Site{file: "lib/x.ex", line: 9, mutator: :arithmetic, ignore_reason: nil}
+
+    assert Report.ignored(with_reason) == "lib/x.ex:9  [arithmetic]  IGNORED  — deliberate"
+    assert Report.ignored(without) == "lib/x.ex:9  [arithmetic]  IGNORED"
+  end
+
+  test "render/2 lists ignored mutants (with reasons) between survivors and the summary" do
+    survivor = %Result{site: site(:>), status: :survived}
+
+    ignored =
+      %Result{
+        status: :ignored,
+        site: %Site{file: "lib/x.ex", line: 9, mutator: :arithmetic, ignore_reason: "deliberate"}
+      }
+
+    results = [survivor, ignored]
+    out = Report.render(results, %{"lib/billing.ex" => @source})
+
+    assert out =~ "lib/x.ex:9  [arithmetic]  IGNORED  — deliberate"
+
+    # ordering: survivors, then the ignored roll-call, then the summary tally.
+    assert index(out, "SURVIVED") < index(out, "IGNORED")
+    assert index(out, "IGNORED") < index(out, "mutation score")
+  end
+
+  defp index(haystack, needle), do: haystack |> :binary.match(needle) |> elem(0)
+
   test "render/2 separates survivor blocks from each other and the summary with blank lines" do
     sites = [site(:>), site(:<=)]
     sources = %{"lib/billing.ex" => @source}

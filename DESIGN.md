@@ -157,7 +157,7 @@ Mutare:              1 × compile_schema  +  N × (process_boot + covering_tests
 
 ## Equivalent mutants
 
-Some mutations produce a program semantically identical to the original (`x * 1` vs `x / 1`, a bound never reached) and can never be killed, inflating the denominator. Undecidable in general. Mitigations: don't emit obviously-equivalent mutations; honor a `# mutare:ignore` annotation on a node or range; report suspected-equivalent survivors separately so they don't drag the score.
+Some mutations produce a program semantically identical to the original (`x * 1` vs `x / 1`, a bound never reached) and can never be killed, inflating the denominator. Undecidable in general. Mitigations: don't emit obviously-equivalent mutations; honor a `# mutare:ignore` annotation — optionally scoped to specific mutator families with a `[family, …]` filter and carrying a free-text reason that the report surfaces, so each exclusion documents *why* it's equivalent; report suspected-equivalent survivors separately so they don't drag the score.
 
 ## CLI & config
 

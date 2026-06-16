@@ -148,11 +148,22 @@ defmodule Mutare.Transform do
     metamutant = Render.to_source(transformed)
 
     # Reuse the AST we just parsed — its comment metadata is intact (transform
-    # works on copies), so `Ignore` need not re-parse the source.
-    ignored = Mutare.Ignore.ignored_lines_from_ast(parsed)
-    sites = Enum.map(Enum.reverse(ctx.sites), &%{&1 | ignored: &1.line in ignored})
+    # works on copies), so `Ignore` need not re-parse the source. A directive may
+    # be scoped to a mutator family, so the decision is per `{line, mutator}`, not
+    # per line; a matching directive's reason rides along onto the site.
+    directives = Mutare.Ignore.directives_from_ast(parsed)
+    sites = Enum.map(Enum.reverse(ctx.sites), &apply_ignore(&1, directives))
 
     {metamutant, sites, ctx.next_id}
+  end
+
+  # Mark a site ignored (and record the reason) when a `# mutare:ignore` directive
+  # on its line admits its mutator. Untouched sites pass through unchanged.
+  defp apply_ignore(site, directives) do
+    case Mutare.Ignore.directive_for(directives, site.line, site.mutator) do
+      nil -> site
+      %{reason: reason} -> %{site | ignored: true, ignore_reason: reason}
+    end
   end
 
   # === module / statement structure =========================================

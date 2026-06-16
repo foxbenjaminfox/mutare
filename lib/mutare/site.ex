@@ -17,6 +17,7 @@ defmodule Mutare.Site do
           kind: :in_place | :lifted,
           operation: :replace | :delete,
           ignored: boolean(),
+          ignore_reason: String.t() | nil,
           poisoned: boolean(),
           original_op: atom() | nil,
           mutated_op: atom() | nil,
@@ -42,6 +43,7 @@ defmodule Mutare.Site do
     :mutated_node,
     operation: :replace,
     ignored: false,
+    ignore_reason: nil,
     poisoned: false
   ]
 

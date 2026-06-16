@@ -448,13 +448,35 @@ treat it as noise.) See `Mutare.Mutators.Arithmetic`.
 `# mutare:ignore` (done) is the manual escape hatch: a trailing comment ignores
 its line, a standalone comment the next line; matching mutants are recorded
 `:ignored` — not run, kept out of the score's denominator (`killed / (total −
-no_coverage − ignored)`), surfaced in the summary. Line-based, but parsed from
-Sourceror's comment metadata (`Mutare.Ignore`), not a raw-text scan — each
-comment's `previous_eol_count` (`0` ⇒ trailing, `≥ 1` ⇒ standalone) drives the
+no_coverage − ignored)`), surfaced in the summary. Parsed from Sourceror's
+comment metadata (`Mutare.Ignore`), not a raw-text scan — each comment's
+`previous_eol_count` (`0` ⇒ trailing, `≥ 1` ⇒ standalone) drives the
 classification, and a literal `"# mutare:ignore"` *string* is never mistaken for
 a directive (the old text scan accepted it). It still *generates* the (unused)
 selector for an ignored mutant, so it does **not** rescue a compile-poisoning
 mutant — that's the compile-poisoning pre-filter's job, not ignore's.
+
+**Granular ignores + reasons (done).** The directive grew two optional parts
+after the keyword (a `[family, …]` filter, then free-text), so `Mutare.Ignore`
+now returns `%{line => [%Ignore.Directive{}]}` instead of a bare line set, and
+`Transform` decides per `{line, mutator}` (a `Directive` carries `mutators :: :all
+| MapSet`, matched against `site.mutator` by name). The reason rides onto
+`Site.ignore_reason` and `Report` prints an `IGNORED  — reason` roll-call between
+the survivors and the summary. Two deliberate design calls worth remembering:
+
+* **The bracket is the *only* thing that makes a token a filter.** Without it,
+  every trailing word is prose — so a reason can never accidentally suppress a
+  family (`# mutare:ignore arithmetic is fine here` ignores *all* mutants, reason
+  "arithmetic is fine here"; only `[arithmetic]` scopes). This is what keeps the
+  "extra explanatory text" and "granular filter" features from colliding.
+* **Filtering fails safe toward *running* the mutant.** An unknown family (a
+  typo) or an empty `[]` matches nothing, so the mutant runs and can surface as a
+  survivor — the self-correcting failure mode — rather than being silently
+  hidden. We deliberately *don't* validate filter tokens against the active
+  mutator set: custom mutators have arbitrary `name/0` values that `Ignore` (which
+  sees only source) can't know, so a warning there would false-positive. If we
+  ever want typo-warnings, cross-check in `Transform`, which knows the live set.
+
 Suspected-equivalent auto-reporting is still future work.
 
 ### Self-hosting: tests that touch `:mutare_active` `[dogfood artifact]`

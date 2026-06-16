@@ -54,6 +54,23 @@ standalone ignores the next line; ignored mutants are excluded from the score:
 def discounted(amount, percent), do: amount - amount * percent / 100  # mutare:ignore
 ```
 
+Add a free-text reason (surfaced in the report so the exclusion documents
+itself), and/or narrow the directive to specific mutator families with a
+`[...]` filter — bracketed families are suppressed, everything else still runs:
+
+```elixir
+# mutare:ignore everything on the next line is exercised elsewhere
+def passthrough(x), do: x + 0
+
+def parity(n), do: rem(n, 2) == 0  # mutare:ignore[arithmetic] only `rem` is equivalent here
+```
+
+A filter accepts the built-in family names (`arithmetic`, `relational`,
+`logical`, `literal`, `conditional`, `list`, `collection`, `string`, `float`),
+plus `clause_drop` and any custom mutator's `name/0`. Filtering fails safe: an
+unknown name (a typo) or an empty `[]` matches nothing, so the mutant runs
+rather than being silently hidden.
+
 If a mutant won't compile (e.g. a custom mutator emits something invalid), it
 would normally sink the whole single build — so Mutare detects the offending
 mutant from the compile error, drops it (reported as *poisoned*, excluded from

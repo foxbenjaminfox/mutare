@@ -54,6 +54,21 @@ defmodule Mutare.Report do
   end
 
   @doc """
+  One line for an ignored mutant, e.g.
+  `lib/x.ex:42  [arithmetic]  IGNORED  — off-by-one is intentional`.
+
+  The trailing `— reason` is present only when the directive carried one, so a
+  bare `# mutare:ignore` reads as `… IGNORED` with nothing after it.
+  """
+  @spec ignored(Site.t()) :: String.t()
+  def ignored(%Site{} = site) do
+    "#{site.file}:#{site.line}  [#{site.mutator}]  IGNORED#{reason_suffix(site)}"
+  end
+
+  defp reason_suffix(%Site{ignore_reason: nil}), do: ""
+  defp reason_suffix(%Site{ignore_reason: reason}), do: "  — #{reason}"
+
+  @doc """
   Render the whole report from results and a `%{file => original_source}` map.
   """
   @spec render([Result.t()], %{optional(String.t()) => String.t()}) :: String.t()
@@ -65,7 +80,7 @@ defmodule Mutare.Report do
         survivor(site, Map.fetch!(sources, site.file))
       end)
 
-    [survivor_section(survivors, blocks), summary(results)]
+    [survivor_section(survivors, blocks), ignored_section(results), summary(results)]
     |> Enum.reject(&(&1 == ""))
     |> Enum.join("\n\n")
   end
@@ -169,6 +184,15 @@ defmodule Mutare.Report do
   # mutare:ignore
   defp survivor_section([], _blocks), do: ""
   defp survivor_section(_survivors, blocks), do: blocks
+
+  # The `# mutare:ignore` roll-call: one line per ignored mutant, each carrying
+  # its reason (when given), so an exclusion documents itself in the output. Empty
+  # when nothing was ignored — `render/2` then drops the blank section.
+  defp ignored_section(results) do
+    results
+    |> Enum.filter(&(&1.status == :ignored))
+    |> Enum.map_join("\n", fn %Result{site: site} -> ignored(site) end)
+  end
 
   # Defensive default `diff/2` never reaches: it only requests lines within the
   # site's range, which is always inside the file, so the "" fallback (and any

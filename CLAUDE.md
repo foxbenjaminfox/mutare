@@ -185,7 +185,28 @@ no-op). Emit replacements with fresh metadata (`{:__block__, [], [value]}`).
 
 `:killed` / `:survived` (the product is the survivor diffs, not the headline score), plus four
 that are excluded from the denominator: `:no_coverage` (no test runs the line), `:ignored`
-(`# mutare:ignore`), `:poisoned` (dropped — wouldn't compile), and `:harness_error` (the mutant
+(`# mutare:ignore` — see below), `:poisoned` (dropped — wouldn't compile), and `:harness_error` (the mutant
 run never reached a verdict — a compile error, missing dep, or filesystem race — so it measures
 nothing about the mutation; classified by `Mutare.Sandbox.Command`'s exit-code contract, **not**
 charged as a kill). `:timeout` counts as a kill.
+
+### The `# mutare:ignore` directive (`Mutare.Ignore`)
+
+Parsed from Sourceror's comment metadata (not a raw-text scan), so a literal string that *reads*
+like the directive is never mistaken for one. Trailing ⇒ own line, standalone ⇒ next line
+(`previous_eol_count` decides). The grammar after the keyword has two optional, ordered parts:
+
+```
+# mutare:ignore                              suppress every mutant on the line
+# mutare:ignore <free text>                  suppress all; the text is recorded as the reason
+# mutare:ignore[arithmetic, relational]      suppress only those mutator families
+# mutare:ignore[literal] off-by-one is fine  filter + reason together
+```
+
+The `[...]` **filter** matches a site's `mutator` name (the families in `Mutare.Mutators`, plus
+`clause_drop` and any custom `name/0`); without brackets, *all* mutators match. Filtering fails
+**safe** — an unknown name or empty `[]` matches nothing, so the mutant runs rather than hides,
+and bracket-less trailing words are always prose, never an accidental filter. The matched
+directive's reason rides onto the `Site` (`ignore_reason`) and `Mutare.Report` lists each ignored
+mutant with it. `Mutare.Ignore.directives_from_ast/1` returns `%{line => [%Ignore.Directive{}]}`;
+`Transform` applies it per `{line, mutator}`, not per line.

@@ -28,6 +28,67 @@ defmodule Mutare.IgnoreTest do
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
+    test "a trailing reason is captured on the site and suppresses the whole line" do
+      source = """
+      defmodule Ig do
+        def a(x), do: x + 1   # mutare:ignore equivalent under integer math
+      end
+      """
+
+      {_meta, sites, _next_id} = Mutare.transform_string(source)
+
+      assert sites != []
+      assert Enum.all?(sites, & &1.ignored)
+      assert Enum.all?(sites, &(&1.ignore_reason == "equivalent under integer math"))
+    end
+
+    test "a `[family]` filter suppresses only that family; siblings still run" do
+      source = """
+      defmodule Ig do
+        def a(x), do: x + 1 > 2   # mutare:ignore[arithmetic] adding 1 is noise
+      end
+      """
+
+      {_meta, sites, _next_id} = Mutare.transform_string(source)
+      by_mutator = Enum.group_by(sites, & &1.mutator)
+
+      # The arithmetic mutant is ignored (with its reason)...
+      assert Enum.all?(by_mutator[:arithmetic], & &1.ignored)
+      assert Enum.all?(by_mutator[:arithmetic], &(&1.ignore_reason == "adding 1 is noise"))
+
+      # ...while relational/conditional/literal mutants on the same line still run.
+      others = Enum.flat_map(~w(relational conditional literal)a, &(by_mutator[&1] || []))
+      assert others != []
+      refute Enum.any?(others, & &1.ignored)
+    end
+
+    test "a `[a, b]` filter suppresses each listed family" do
+      source = """
+      defmodule Ig do
+        def a(x), do: x + 1 > 2   # mutare:ignore[arithmetic, relational]
+      end
+      """
+
+      {_meta, sites, _next_id} = Mutare.transform_string(source)
+      ignored = Enum.group_by(sites, & &1.ignored, & &1.mutator)
+
+      assert MapSet.new(ignored[true]) == MapSet.new([:arithmetic, :relational])
+      refute Enum.empty?(ignored[false])
+    end
+
+    test "an unknown family in a filter fails safe: it suppresses nothing" do
+      source = """
+      defmodule Ig do
+        def a(x), do: x + 1   # mutare:ignore[arithmetc]
+      end
+      """
+
+      {_meta, sites, _next_id} = Mutare.transform_string(source)
+
+      # Typo'd family matches no mutator, so the mutant runs rather than hides.
+      refute Enum.any?(sites, & &1.ignored)
+    end
+
     test "a string literal that reads like the directive is not a directive" do
       # Directives come from parsed comment metadata, not a raw-text scan, so a
       # string that merely *contains* `# mutare:ignore` suppresses nothing.
@@ -45,6 +106,47 @@ defmodule Mutare.IgnoreTest do
 
       assert [%{line: 2, ignored: false}] = sites
     end
+  end
+
+  describe "directive parsing" do
+    alias Mutare.Ignore
+    alias Mutare.Ignore.Directive
+
+    test "a bare directive admits every mutator and carries no reason" do
+      directives = Ignore.directives("x = 1 # mutare:ignore")
+      assert %Directive{line: 1, mutators: :all, reason: nil} = directive_on(directives, 1)
+      assert Ignore.directive_for(directives, 1, :anything)
+    end
+
+    test "a `[...]` filter only admits the listed mutators" do
+      directives = Ignore.directives("x = 1 # mutare:ignore[arithmetic, literal]")
+
+      assert Ignore.directive_for(directives, 1, :arithmetic)
+      assert Ignore.directive_for(directives, 1, :literal)
+      refute Ignore.directive_for(directives, 1, :relational)
+    end
+
+    test "the filter also matches non-family mutator names (clause_drop, custom)" do
+      directives = Ignore.directives("x = 1 # mutare:ignore[clause_drop]")
+      assert Ignore.directive_for(directives, 1, :clause_drop)
+    end
+
+    test "a reason survives alongside a filter" do
+      directives = Ignore.directives("x = 1 # mutare:ignore[arithmetic]  documented on purpose")
+      assert %Directive{reason: "documented on purpose"} = directive_on(directives, 1)
+    end
+
+    test "an empty `[]` filter admits nothing (fail-safe)" do
+      directives = Ignore.directives("x = 1 # mutare:ignore[]")
+      refute Ignore.directive_for(directives, 1, :arithmetic)
+    end
+
+    test "a standalone directive targets the next line" do
+      directives = Ignore.directives("# mutare:ignore[relational] why\nx = 1")
+      assert %Directive{line: 2, reason: "why"} = directive_on(directives, 2)
+    end
+
+    defp directive_on(directives, line), do: directives |> Map.fetch!(line) |> hd()
   end
 
   describe "end to end" do
