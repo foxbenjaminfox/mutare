@@ -60,9 +60,10 @@ contract between them is the whole game.
     `:clause_drop` are produced by the separate lift path), and `:pattern` (don't mutate, but keep
     descending so default-arg values and `size()` args are still reached). The rest are recognised
     and pruned by dedicated clauses: `:compile_time` (module-attribute values like `@x 1 + 2`,
-    `defmacro`/`defmacrop` bodies, **and** `import`/`alias`/`require`/`use` directives whose args
-    must be compile-time literals — frozen at compile/expansion time, so a selector there is inert,
-    or in a directive arg like `import …, only: [f: 1]` outright illegal), `:spec` (a bitstring type
+    `defmacro`/`defmacrop` bodies, `quote` blocks, **and** `import`/`alias`/`require`/`use`
+    directives whose args must be compile-time literals — frozen at compile/expansion time, so a
+    selector there is inert, or in a directive arg like `import …, only: [f: 1]` / a quoted
+    pattern outright illegal), `:spec` (a bitstring type
     specifier — separators/`unit()`/type atoms excluded, but
     `size(expr)` args recursed; `analyze_spec/3`), and `:capture_arity` (the `/` in `&fun/arity`,
     an arity separator not division).

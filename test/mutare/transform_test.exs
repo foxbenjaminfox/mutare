@@ -237,6 +237,35 @@ defmodule Mutare.TransformTest do
     assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
   end
 
+  test "a quote block is compile-time; runtime code around it still mutates" do
+    source = """
+    defmodule Q do
+      def build(x) do
+        _ = x + 1
+
+        quote do
+          case unquote(x) do
+            "" -> 0
+            _ -> 1
+          end
+        end
+      end
+    end
+    """
+
+    # Default set on purpose: `literal`/`string` *would* mutate the `""` clause
+    # head and the `0`/`1` bodies inside the quote — splicing a selector `case`
+    # into a quoted *pattern* (illegal where the AST is later compiled, a poison
+    # the pre-filter can't see). The whole quote is pruned, so the only sites are
+    # from `x + 1` on line 3, outside the quote.
+    {meta, sites, _next_id} = Mutare.transform_string(source)
+
+    assert sites != []
+    assert Enum.all?(sites, &(&1.line == 3))
+    assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
+
   test "import/alias/require directives are compile-time and never mutated" do
     source = """
     defmodule D do

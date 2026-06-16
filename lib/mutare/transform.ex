@@ -425,10 +425,11 @@ defmodule Mutare.Transform do
   # subtrees or dedicated helpers (named here, matched in the clauses below):
   #
   #   * `:compile_time` — module-attribute values (`@x <expr>`), macro bodies
-  #     (`defmacro`/`defmacrop`), and lexical directives (`import`/`alias`/
-  #     `require`/`use`, whose args must be compile-time literals). Frozen at
-  #     compile / macro-expansion time, so a runtime selector there can never
-  #     activate — and inside a directive arg would not even be legal. Pruned whole.
+  #     (`defmacro`/`defmacrop`), `quote` blocks (AST construction), and lexical
+  #     directives (`import`/`alias`/`require`/`use`, whose args must be
+  #     compile-time literals). Frozen at compile / macro-expansion time, so a
+  #     runtime selector there can never activate — and inside a directive arg, or
+  #     a quoted pattern/guard, would not even be legal. Pruned whole.
   #   * `:spec` — the type-specifier side of a bitstring `::` segment. A `case`
   #     is illegal there and a swapped `-` separator is an illegal specifier;
   #     only `size(expr)` args are a genuine runtime sub-position (`analyze_spec/3`).
@@ -464,6 +465,19 @@ defmodule Mutare.Transform do
   # the directive rides through untouched and in position.
   defp analyze({form, _meta, args} = node, _context, _mutators)
        when form in [:import, :alias, :require, :use] and is_list(args),
+       do: node
+
+  # `quote`: its body is compile-time AST *construction*, not runtime code. The
+  # literals there become part of the code the quote *generates* — instrumenting
+  # which is out of scope (PHILOSOPHY: "macro-generated code is a different tool"),
+  # exactly like a `defmacro` body. Worse, a selector `case` spliced into a quoted
+  # pattern or guard (e.g. `quote do: (case x do "" -> … end)`) is valid *as a
+  # quote* but illegal where the AST is later compiled — a poison the pre-filter
+  # can't see, because the metamutant itself compiles. Pruned whole. (This also
+  # prunes any `unquote(expr)` runtime sub-positions inside; mutating those is
+  # deferred — see NOTES — and losing them is acceptable per the philosophy above.)
+  defp analyze({:quote, _meta, args} = node, _context, _mutators)
+       when is_list(args),
        do: node
 
   # `&fun/arity` capture: the `/` is arity, not division — pruned. Anything else
