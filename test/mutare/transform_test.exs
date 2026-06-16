@@ -440,6 +440,33 @@ defmodule Mutare.TransformTest do
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
+    test "a struct's field map is not emptied, but its field values still mutate" do
+      source = """
+      defmodule S do
+        def f, do: %User{name: :bob}
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.MapLiteral, Mutare.Mutators.AtomLiteral]
+        )
+
+      # No :map site (the struct's `%{}` wrapper is not offered); the field value
+      # :bob still gets an :atom site.
+      assert Enum.frequencies_by(sites, & &1.mutator) == %{atom: 1}
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "a standalone map literal IS emptied" do
+      source = "defmodule M do\n  def f, do: %{a: 1}\nend\n"
+
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.MapLiteral])
+
+      assert [%Site{mutator: :map}] = sites
+    end
+
     test "a literal in a case-clause pattern no longer poisons (latent-bug fix)" do
       # Previously the `1` pattern was mutated into an illegal `case`-in-pattern and
       # poison-recovered; now it is routed as a pattern and never offered.

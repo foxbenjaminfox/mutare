@@ -65,7 +65,9 @@ contract between them is the whole game.
     Orthogonally, a keyword/block **key** is never offered to a mutator: the 2-tuple pair clause
     (`label_key?/1`) skips inline keys (`format: :keyword`) and `do:`/`else:`/`rescue:`/`catch:`/
     `after:` block keys (`@block_keys`), so an atom-matching mutator can't splice a selector into a
-    `do:` key (which wouldn't even render) — while a tuple tag like `{:ok, x}` stays mutatable. The rest are recognised
+    `do:` key (which wouldn't even render) — while a tuple tag like `{:ok, x}` stays mutatable.
+    Similarly a `%Struct{…}`'s inner `%{}` is descended for its field *values* but the `%{}` wrapper
+    itself is not offered, so MapLiteral can't empty a struct (which would drop required fields). The rest are recognised
     and pruned by dedicated clauses: `:compile_time` (module-attribute values like `@x 1 + 2`,
     `defmacro`/`defmacrop` bodies, `quote` blocks, **and** `import`/`alias`/`require`/`use`
     directives whose args must be compile-time literals — frozen at compile/expansion time, so a
@@ -185,7 +187,13 @@ contract between them is the whole game.
   List (`++`↔`--`, non-empty list literal → `[]`), Collection (`Enum`/`List` predicate swaps),
   StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, AtomLiteral (a
   literal atom → the sentinel `:mutare`; `true`/`false`/`nil` excluded — Literal/Conditional own
-  them; keys and patterns excluded *positionally* by `Transform`, not the mutator), and **ReturnValue**
+  them; keys and patterns excluded *positionally* by `Transform`, not the mutator), CharlistLiteral
+  (a `~c"…"` sigil → `~c""` *and* `~c"mutare"`; the legacy `'…'` form is a list literal already
+  emptied by List), MapLiteral (a non-empty `%{…}` → `%{}`; map updates / a struct's field map
+  excluded), TupleLiteral (a non-empty tuple → `{}`, both the `{a, b}` and `{:{}, …}` shapes),
+  RegexLiteral (a `~r/…/` → `~r//` *and* `~r/mutare/`, flags preserved), DateTimeLiteral (a
+  `~D`/`~T`/`~N`/`~U` sigil shifted by one unit — parsed/re-serialised so it stays a valid calendar
+  value, since these sigils are compile-time-validated), and **ReturnValue**
   (a `def`/`defp` clause's tail expression → a shape-directed *pair*: an empty/zero value and a
   non-empty/non-nil sentinel — numeric→`0`/`1`, `<>`→`""`/`"mutare"`, `++`/`--`→`[]`/`[:mutare]`,
   else→`nil`/`:mutare`; mirrors StringLiteral's pair, the sentinel catching `!= nil`-style weak

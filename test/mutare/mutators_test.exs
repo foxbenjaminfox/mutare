@@ -6,15 +6,20 @@ defmodule Mutare.MutatorsTest do
   alias Mutare.Mutators.{
     Arithmetic,
     AtomLiteral,
+    CharlistLiteral,
     Collection,
     Conditional,
+    DateTimeLiteral,
     FloatLiteral,
     List,
     Literal,
     Logical,
+    MapLiteral,
     Relational,
+    RegexLiteral,
     ReturnValue,
-    StringLiteral
+    StringLiteral,
+    TupleLiteral
   }
 
   describe "registry (single source of truth)" do
@@ -24,6 +29,7 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.all() ==
                [Arithmetic, Relational, Logical, Literal] ++
                  [Conditional, List, Collection, StringLiteral, FloatLiteral, AtomLiteral] ++
+                 [CharlistLiteral, MapLiteral, TupleLiteral, RegexLiteral, DateTimeLiteral] ++
                  [ReturnValue]
     end
 
@@ -32,7 +38,8 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.families() ==
                [:arithmetic, :relational, :logical, :literal] ++
-                 [:conditional, :list, :collection, :string, :float, :atom, :return_value]
+                 [:conditional, :list, :collection, :string, :float, :atom] ++
+                 [:charlist, :map, :tuple, :regex, :datetime, :return_value]
     end
 
     test "resolve/1 maps family atoms to modules, preserving order" do
@@ -358,6 +365,114 @@ defmodule Mutare.MutatorsTest do
 
     test "name" do
       assert AtomLiteral.name() == :atom
+    end
+  end
+
+  describe "CharlistLiteral" do
+    test "mutates a ~c sigil into the empty charlist and the sentinel" do
+      assert render(CharlistLiteral.mutate(parse(~S|~c"abc"|))) == [~S|~c""|, ~S|~c"mutare"|]
+    end
+
+    test "drops the replacement that already equals the original" do
+      assert render(CharlistLiteral.mutate(parse(~S|~c""|))) == [~S|~c"mutare"|]
+      assert render(CharlistLiteral.mutate(parse(~S|~c"mutare"|))) == [~S|~c""|]
+    end
+
+    test "leaves the legacy '...' form alone (owned by List, which empties it)" do
+      assert CharlistLiteral.mutate(parse("'abc'")) == :skip
+    end
+
+    test "skips strings and other literals" do
+      assert CharlistLiteral.mutate(parse(~s("abc"))) == :skip
+      assert CharlistLiteral.mutate(parse(":abc")) == :skip
+    end
+
+    test "name" do
+      assert CharlistLiteral.name() == :charlist
+    end
+  end
+
+  describe "MapLiteral" do
+    test "collapses a non-empty map literal to %{}" do
+      assert render(MapLiteral.mutate(parse("%{a: 1, b: 2}"))) == ["%{}"]
+      assert render(MapLiteral.mutate(parse("%{1 => 2}"))) == ["%{}"]
+    end
+
+    test "skips the empty map and a map update" do
+      assert MapLiteral.mutate(parse("%{}")) == :skip
+      assert MapLiteral.mutate(parse("%{m | a: 1}")) == :skip
+    end
+
+    test "name" do
+      assert MapLiteral.name() == :map
+    end
+  end
+
+  describe "TupleLiteral" do
+    test "collapses a non-empty tuple literal to {} (both 2- and 3+-arity)" do
+      assert render(TupleLiteral.mutate(parse("{1, 2}"))) == ["{}"]
+      assert render(TupleLiteral.mutate(parse("{1, 2, 3}"))) == ["{}"]
+      assert render(TupleLiteral.mutate(parse("{:ok}"))) == ["{}"]
+    end
+
+    test "skips the empty tuple" do
+      assert TupleLiteral.mutate(parse("{}")) == :skip
+    end
+
+    test "name" do
+      assert TupleLiteral.name() == :tuple
+    end
+  end
+
+  describe "RegexLiteral" do
+    test "mutates a ~r pattern into the empty pattern and the sentinel" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/foo/|))) == [~S|~r//|, ~S|~r/mutare/|]
+    end
+
+    test "preserves modifier flags" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/foo/i|))) == [~S|~r//i|, ~S|~r/mutare/i|]
+    end
+
+    test "drops the replacement that already equals the original" do
+      assert render(RegexLiteral.mutate(parse(~S|~r//|))) == [~S|~r/mutare/|]
+    end
+
+    test "name" do
+      assert RegexLiteral.name() == :regex
+    end
+  end
+
+  describe "DateTimeLiteral" do
+    test "shifts each calendar sigil by one unit, staying valid" do
+      assert render(DateTimeLiteral.mutate(parse("~D[2020-01-31]"))) == ["~D[2020-02-01]"]
+      assert render(DateTimeLiteral.mutate(parse("~T[23:59:59]"))) == ["~T[00:00:00]"]
+
+      assert render(DateTimeLiteral.mutate(parse("~N[2020-01-01 00:00:00]"))) ==
+               ["~N[2020-01-02T00:00:00]"]
+
+      assert render(DateTimeLiteral.mutate(parse("~U[2020-01-01 00:00:00Z]"))) ==
+               ["~U[2020-01-02T00:00:00Z]"]
+    end
+
+    test "every shifted result is a real, re-parseable sigil" do
+      for src <- [
+            "~D[2020-12-31]",
+            "~T[12:00:00]",
+            "~N[2020-02-28 23:59:59]",
+            "~U[1999-12-31 23:59:59Z]"
+          ] do
+        [mutated] = DateTimeLiteral.mutate(parse(src))
+        assert {:ok, _} = Code.string_to_quoted(Sourceror.to_string(mutated))
+      end
+    end
+
+    test "skips non-calendar sigils and other literals" do
+      assert DateTimeLiteral.mutate(parse(~S|~r/foo/|)) == :skip
+      assert DateTimeLiteral.mutate(parse("1")) == :skip
+    end
+
+    test "name" do
+      assert DateTimeLiteral.name() == :datetime
     end
   end
 

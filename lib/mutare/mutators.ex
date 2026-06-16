@@ -37,6 +37,11 @@ defmodule Mutare.Mutators do
     string: Mutare.Mutators.StringLiteral,
     float: Mutare.Mutators.FloatLiteral,
     atom: Mutare.Mutators.AtomLiteral,
+    charlist: Mutare.Mutators.CharlistLiteral,
+    map: Mutare.Mutators.MapLiteral,
+    tuple: Mutare.Mutators.TupleLiteral,
+    regex: Mutare.Mutators.RegexLiteral,
+    datetime: Mutare.Mutators.DateTimeLiteral,
     return_value: Mutare.Mutators.ReturnValue
   ]
 

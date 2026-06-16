@@ -569,6 +569,16 @@ defmodule Mutare.Transform do
     {:<<>>, meta, Enum.map(segments, &analyze_segment(&1, context, mutators))}
   end
 
+  # `%Struct{…}`: the inner `%{…}` is the struct's *field map*, not a standalone
+  # map literal — collapsing it to `%{}` (MapLiteral) would drop required fields /
+  # change the struct, not shrink "the same" value. Descend into the field map's
+  # contents (so each field *value* still mutates, keys stay protected) but never
+  # offer the `%{}` wrapper itself to a mutator. The alias rides through untouched.
+  defp analyze({:%, meta, [aliases, {:%{}, mmeta, pairs}]}, context, mutators)
+       when is_list(pairs) do
+    {:%, meta, [aliases, {:%{}, mmeta, Enum.map(pairs, &analyze(&1, context, mutators))}]}
+  end
+
   # match `=`: the left side is a pattern, the right keeps the context.
   defp analyze({:=, meta, [lhs, rhs]}, context, mutators) do
     {:=, meta, [analyze(lhs, :pattern, mutators), analyze(rhs, context, mutators)]}
