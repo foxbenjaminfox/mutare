@@ -119,6 +119,19 @@ by a blacklist. The positions:
   The default `literal`/`list` mutators are what reach the `only:` list, so the
   regression test must run with the default set — `@probe` (arithmetic+relational)
   doesn't touch it.
+- **`quote` blocks**: **excluded** (also `:compile_time`). A `quote` *constructs
+  AST* — its literals become part of the code the quote generates, which is out of
+  scope (PHILOSOPHY: "macro-generated code is a different tool"), exactly like a
+  `defmacro` body. And it is a *silent* poison if mutated: a selector `case`
+  spliced into a quoted pattern/guard (e.g. `quote do: (case x do "" -> … end)`,
+  as in `Selector.bootstrap_ast`) is valid *as a quote* — the metamutant compiles
+  — but illegal where the AST is later expanded/`Code.eval_quoted`'d, so the
+  pre-filter never sees it and it surfaces as a baseline failure. The analyzer
+  prunes the whole `quote`. **Deferred:** `unquote(expr)` args are runtime
+  sub-positions (they run when the quote is built) and are currently pruned along
+  with the body; mutating them precisely (route `unquote` back to `:runtime`, like
+  the `\\` default) is future work — losing them is acceptable per the philosophy
+  above, and `bootstrap_ast`'s unquotes are inert (vars/atoms) anyway.
 - **Bitstring type specifiers** (the right of `::` in `<<>>`): **excluded**
   (context `:spec`), *except* `size(expr)` args. A `case` is illegal as a bare
   spec / in `unit(...)`, and swapping the `-` separator yields an illegal
@@ -503,17 +516,44 @@ the survivors and the summary. Two deliberate design calls worth remembering:
 
 Suspected-equivalent auto-reporting is still future work.
 
-### Self-hosting: tests that touch `:mutare_active` `[dogfood artifact]`
-Mutation-testing Mutare *with Mutare* has a trap: Mutare's own `selector_test`
-and `integration_test` call `Selector.put/1` on `:mutare_active` — the very key
-the runner uses to hold the active mutant. Since `:persistent_term` is global and
-the whole suite shares one BEAM, those tests reset the active mutant to baseline
-mid-run, so any mutant whose only killing test runs *after* them registers a
-**false survivor** (confirmed: `runner.ex` mutants survive in the full suite but
-die when `runner_test` runs alone). Normal targets never touch this key, so it's
-a self-hosting artifact only. If we want clean self-dogfooding later: run those
-selector-touching tests in a separate pass, or make the key configurable so the
-suite-under-test and the harness don't collide.
+### Self-hosting: tests that touch `:mutare_active` `[dogfood artifact, partly mitigated]`
+Mutation-testing Mutare *with Mutare* has a trap: several of Mutare's own tests
+(`selector_test`, `integration_test`, `lift_test`, `transform_corpus_test`) call
+`Selector.put/1` on `:mutare_active` — the very key the runner uses to hold the
+active mutant. Since `:persistent_term` is global and the whole suite shares one
+BEAM, those tests reset the active mutant mid-run, so any mutant whose only
+killing test runs *after* them registers a **false survivor** (confirmed:
+`runner.ex` mutants survive in the full suite but die when `runner_test` runs
+alone). Normal targets never touch this key, so it's a self-hosting artifact only.
+
+What's in place now (dogfood run, M-ignore work):
+- **Sandbox skips `:runner` tests.** `test/test_helper.exs` calls
+  `ExUnit.configure(exclude: [:runner])` iff `MUTANT_UNDER_TEST` is set — which is
+  true on every per-mutant run (and the baseline) but never on a normal `mix
+  test`. Those tests shell out to nested `mix test`; running them per mutant would
+  be a fork bomb. (It does *not* fix the collision — the remaining saboteurs above
+  aren't `:runner`-tagged.)
+- **`Selector.put/1` is `# mutare:ignore`d.** Its only mutants are in the
+  active-mutant guard, and the only way to exercise `put/1` is to *call* it, which
+  overwrites `:mutare_active` — so under dogfooding the mutant either deactivates
+  itself (false survivor) or crashes a setup `put` (false kill). Neither measures
+  the mutation. Excluded with a reason; on a normal target the guard is killable.
+- **`Selector.bootstrap_ast` / `Command.watcher_ast` no longer break the
+  baseline.** Both build a `quote` containing a `case … "" -> …` clause; the
+  transform used to mutate the `""` *pattern* inside the quote and wrap it in a
+  selector `case`. That compiles fine *as a quote* but is an illegal pattern where
+  the AST is later compiled (`selector_test` evals `bootstrap_ast()`), so the
+  **baseline run failed and aborted the whole dogfood** — a poison the pre-filter
+  can't see (the metamutant itself compiled). Fixed by classifying `quote` as
+  compile-time (pruned whole, like `defmacro`); see "Non-body operator positions".
+
+Still open for *clean* whole-suite self-dogfooding: the remaining saboteurs
+(`lift_test`/`integration_test`/`transform_corpus_test`) still collide, so
+`Transform`-and-friends mutants keyed off them show false survivors. `# mutare:ignore`
+is the wrong tool there — those are real, killable mutants, not equivalents. The
+proper fix is isolation: run the selector-touching tests in a separate pass, or
+make the harness key configurable so the suite-under-test and the harness don't
+share `:mutare_active`.
 
 ### Surface skipped files more loudly `[soon]`
 `Schema`/`safe_transform` skips a file that fails to transform (good — one bad

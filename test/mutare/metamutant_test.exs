@@ -30,6 +30,11 @@ defmodule Mutare.MetamutantTest do
     test "subject?/1 rejects a different key and non-selectors" do
       refute Metamutant.subject?({{:., [], [:persistent_term, :get]}, [], [:other_key, 0]})
 
+      # A `<mod>.get(:mutare_active, 0)` whose module isn't `:persistent_term` must
+      # be rejected — pins the `unwrap(mod) == :persistent_term` half of the guard,
+      # which a `→ true` mutation would otherwise leave a (covered) survivor.
+      refute Metamutant.subject?({{:., [], [:ets, :get]}, [], [Selector.key(), 0]})
+
       refute Metamutant.subject?(
                {{:., [], [{:__block__, [], [:persistent_term]}, :get]}, [],
                 [{:__block__, [], [:other_key]}, {:__block__, [], [0]}]}

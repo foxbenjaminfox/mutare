@@ -55,6 +55,14 @@ defmodule Mutare.Selector do
 
   @doc "Set the active mutant id directly for in-process execution."
   @spec put(non_neg_integer()) :: :ok
+  # Self-hosting artifact: every mutant here lives in the active-mutant guard, and
+  # exercising `put/1` *overwrites* `:mutare_active` — the very key the harness
+  # flips to select the mutant under test. So when Mutare mutation-tests itself,
+  # these mutants either deactivate themselves (the call resets the active id →
+  # false survivor) or crash a test's setup/teardown `put` (false kill); neither
+  # says anything about the mutation. Excluded only under dogfooding; on a normal
+  # target this guard is killable by a `put(<invalid>)` test.
+  # mutare:ignore self-hosting: exercising put/1 overwrites the :mutare_active selector key
   def put(id) when is_integer(id) and id >= 0, do: :persistent_term.put(@key, id)
 
   @doc "The active mutant id for in-process execution (`0` if unset)."
