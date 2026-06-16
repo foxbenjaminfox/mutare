@@ -105,6 +105,64 @@ defmodule Mutare.UmbrellaTest do
     refute web.output =~ "2 tests"
   end
 
+  test "a broad (:full) run is narrowed to the owning app + its dependents" do
+    # core <- web (web depends on core); solo is independent. A whole-suite-per
+    # -mutant (:full) run of a core mutant must touch core + web (the possible
+    # killers) but NOT solo — narrowing by the dependency graph, never below it.
+    over =
+      Mutare.Test.Umbrella.build(:scope_umbrella, %{
+        core: %{
+          files: %{
+            "lib/core.ex" => "defmodule Core do\n  def double(x), do: x * 2\nend\n",
+            "test/core_test.exs" => """
+            defmodule CoreTest do
+              use ExUnit.Case
+              test "double", do: assert(Core.double(3) == 6)
+            end
+            """
+          }
+        },
+        web: %{
+          deps: [:core],
+          files: %{
+            "lib/web.ex" => "defmodule Web do\n  def run(x), do: Core.double(x) + 1\nend\n",
+            "test/web_test.exs" => """
+            defmodule WebTest do
+              use ExUnit.Case
+              test "run", do: assert(Web.run(3) == 7)
+            end
+            """
+          }
+        },
+        solo: %{
+          files: %{
+            "lib/solo.ex" => "defmodule Solo do\n  def f, do: :ok\nend\n",
+            "test/solo_test.exs" => """
+            defmodule SoloTest do
+              use ExUnit.Case
+              test "f", do: assert(Solo.f() == :ok)
+            end
+            """
+          }
+        }
+      })
+
+    assert {:ok, run} =
+             Mutare.run(over.umbrella,
+               sandbox: over.sandbox,
+               mutators: @probe,
+               test_selection: :full,
+               project: Mutare.Project.resolve(over.umbrella, apps: ["core"])
+             )
+
+    core = Enum.find(run.results, &(&1.site.file == "apps/core/lib/core.ex"))
+    assert core.status == :killed
+    # The umbrella prints `==> <app>` only for apps it actually runs. core's
+    # dependent (web) ran; the independent solo was excluded by the narrowing.
+    assert core.output =~ "==> web"
+    refute core.output =~ "solo"
+  end
+
   test "a mutant in core is killed only through a cross-app web test" do
     # core has no test of its own here; only WebTest (in a *different* app)
     # exercises Core.double through Web. The mutant must still be killed — proving

@@ -121,6 +121,11 @@ defmodule Mutare.Runner do
       with {:ok, schema, sandbox} <- prepare_compiling(schema, root, options),
            {:ok, baseline_ms} <- Baseline.run(sandbox, options.baseline_runs) do
         selection = CoverageProbe.run(sandbox, schema, mode)
+        # Per owning app, the test dirs a whole-suite run may be narrowed to (the
+        # app + its dependents). Empty for a single project — see `broaden/3`.
+        scopes =
+          Project.app_test_scopes(options.project, sandbox, Path.join(sandbox, "_build/test/lib"))
+
         cap = timeout_cap(baseline_ms, options)
         workers = options.workers
 
@@ -130,7 +135,7 @@ defmodule Mutare.Runner do
           schema.sites
           |> Task.async_stream(
             fn site ->
-              result = classify(sandbox, site, selection, cap, retries)
+              result = classify(sandbox, site, selection, cap, retries, scopes)
               reporter.(result)
               result
             end,
@@ -221,21 +226,21 @@ defmodule Mutare.Runner do
 
   # === per-mutant runs =======================================================
 
-  defp classify(_sandbox, %Site{poisoned: true} = site, _selection, _cap, _retries) do
+  defp classify(_sandbox, %Site{poisoned: true} = site, _selection, _cap, _retries, _scopes) do
     %Result{site: site, status: :poisoned, duration_ms: 0, output: nil}
   end
 
-  defp classify(_sandbox, %Site{ignored: true} = site, _selection, _cap, _retries) do
+  defp classify(_sandbox, %Site{ignored: true} = site, _selection, _cap, _retries, _scopes) do
     %Result{site: site, status: :ignored, duration_ms: 0, output: nil}
   end
 
-  defp classify(sandbox, site, :run_all, cap, retries),
-    do: run_mutant(sandbox, site, [], cap, retries)
+  defp classify(sandbox, site, :run_all, cap, retries, scopes),
+    do: run_mutant(sandbox, site, broaden([], site, scopes), cap, retries)
 
-  defp classify(sandbox, site, {:selective, outcomes}, cap, retries) do
+  defp classify(sandbox, site, {:selective, outcomes}, cap, retries, scopes) do
     case Map.fetch(outcomes, site.id) do
       {:ok, {:run, test_args}} ->
-        run_mutant(sandbox, site, test_args, cap, retries)
+        run_mutant(sandbox, site, broaden(test_args, site, scopes), cap, retries)
 
       {:ok, :no_coverage} ->
         %Result{site: site, status: :no_coverage, duration_ms: 0, output: nil}
@@ -244,7 +249,26 @@ defmodule Mutare.Runner do
       # practice; a missing id is a bug, not a no-coverage signal — run it rather
       # than silently drop a mutant from the score.
       :error ->
-        run_mutant(sandbox, site, [], cap, retries)
+        run_mutant(sandbox, site, broaden([], site, scopes), cap, retries)
+    end
+  end
+
+  # A whole-suite run (`[]` args) in an umbrella would run *every* app. Narrow it to
+  # the mutant's owning app + its dependents (`scopes`, the safe superset of
+  # possible killers; see `Mutare.Project.app_test_scopes/3`). A non-empty selection
+  # (coverage already attributed it to specific files) is left untouched, and an
+  # empty scope (single project, unknown app, or an unreadable graph) means run
+  # everything — never narrow on doubt.
+  defp broaden([], %Site{file: file}, scopes) when map_size(scopes) > 0 do
+    Map.get(scopes, owning_app(file), [])
+  end
+
+  defp broaden(test_args, _site, _scopes), do: test_args
+
+  defp owning_app(file) do
+    case Path.split(file) do
+      ["apps", app | _] -> String.to_atom(app)
+      _ -> nil
     end
   end
 

@@ -67,6 +67,54 @@ defmodule Mutare.Project do
     File.dir?(Path.join(dir, "apps")) and declares_apps_path?(Path.join(dir, "mix.exs"))
   end
 
+  @doc """
+  Per mutate-scope app, the root-relative `test/` dirs a broad (whole-suite) run
+  may be narrowed to: the app itself plus every app that (transitively) depends on
+  it. A mutant in app A can only be killed by a test that executes A's code, and a
+  sibling executes A's code only through a declared dependency — so this set is a
+  safe superset of A's possible killers; narrowing below it would risk a false
+  survivor, so we never do.
+
+  The graph is read **authoritatively** from the compiled `.app` files' runtime
+  `applications` lists (which capture both `in_umbrella` and `path:` siblings), so
+  it requires a compiled `build_lib` (`<sandbox>/_build/<env>/lib`). Only dirs that
+  actually exist under `sandbox` are returned. Returns `%{}` (⇒ no narrowing, run
+  the whole umbrella) for a single app or if the graph can't be read — degrading
+  safe, never narrow on doubt.
+  """
+  @spec app_test_scopes(t(), Path.t(), Path.t()) :: %{atom() => [String.t()]}
+  def app_test_scopes(project, sandbox, build_lib)
+
+  def app_test_scopes(
+        %__MODULE__{umbrella?: true, apps: apps, mutate_scope: scope},
+        sandbox,
+        build_lib
+      ) do
+    names = MapSet.new(apps, & &1.app)
+    dir_of = Map.new(apps, fn %{app: app, dir: dir} -> {app, dir} end)
+
+    case forward_deps(apps, build_lib, names) do
+      {:ok, forward} ->
+        reverse = invert(forward, names)
+
+        Map.new(scope, fn %{app: app} ->
+          dirs =
+            reverse
+            |> closure(app)
+            |> Enum.map(&Path.join(dir_of[&1], "test"))
+            |> Enum.filter(&File.dir?(Path.join(sandbox, &1)))
+            |> Enum.sort()
+
+          {app, dirs}
+        end)
+
+      :error ->
+        %{}
+    end
+  end
+
+  def app_test_scopes(_project, _sandbox, _build_lib), do: %{}
+
   # --- internals -----------------------------------------------------------
 
   defp single_app(target) do
@@ -145,6 +193,55 @@ defmodule Mutare.Project do
   defp app_name(%{app: app}), do: to_string(app)
   defp app_dir?(path), do: File.regular?(Path.join(path, "mix.exs"))
   defp reserved?(name), do: String.starts_with?(name, @reserved_prefix)
+
+  # Forward runtime deps (among umbrella apps) from each app's compiled `.app`. Any
+  # unreadable/unparsable `.app` makes the whole graph untrustworthy → `:error`, so
+  # the caller degrades to the safe whole-umbrella run rather than guess.
+  defp forward_deps(apps, build_lib, names) do
+    Enum.reduce_while(apps, {:ok, %{}}, fn %{app: app}, {:ok, acc} ->
+      case app_runtime_deps(build_lib, app, names) do
+        {:ok, deps} -> {:cont, {:ok, Map.put(acc, app, deps)}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp app_runtime_deps(build_lib, app, names) do
+    path = Path.join([build_lib, to_string(app), "ebin", "#{app}.app"])
+
+    case :file.consult(to_charlist(path)) do
+      {:ok, [{:application, ^app, props}]} ->
+        deps = props |> Keyword.get(:applications, []) |> Enum.filter(&MapSet.member?(names, &1))
+        {:ok, deps}
+
+      _ ->
+        :error
+    end
+  end
+
+  # Reverse the forward graph: `%{app => [apps that directly depend on it]}`.
+  defp invert(forward, names) do
+    base = Map.new(names, &{&1, []})
+
+    Enum.reduce(forward, base, fn {app, deps}, acc ->
+      Enum.reduce(deps, acc, fn dep, acc -> Map.update(acc, dep, [app], &[app | &1]) end)
+    end)
+  end
+
+  # `app` plus every app transitively reachable through `reverse` (its dependents).
+  defp closure(reverse, app) do
+    grow(reverse, [app], MapSet.new())
+  end
+
+  defp grow(_reverse, [], seen), do: MapSet.to_list(seen)
+
+  defp grow(reverse, [app | rest], seen) do
+    if MapSet.member?(seen, app) do
+      grow(reverse, rest, seen)
+    else
+      grow(reverse, Map.get(reverse, app, []) ++ rest, MapSet.put(seen, app))
+    end
+  end
 
   defp umbrella_app?(dir) do
     parent = Path.dirname(dir)

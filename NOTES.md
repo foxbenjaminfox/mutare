@@ -112,6 +112,27 @@ reachable in the umbrella yet (the probe records nothing → run-all).
 test-file keys (`MUTARE_COV_ROOT`) → coverage selection works in umbrellas, keyed
 by `apps/<app>/test/...`, and per-mutant runs already route to the owning app
 (Mix scopes `mix test apps/foo/...` from the umbrella root).
+**(4, done)** narrow the broad (`[]`, whole-umbrella) runs — `:run_all`, the
+unattributed coverage case, and `:full` mode — to the mutant's owning app **plus
+its transitive dependents**, passing those `apps/<app>/test` dirs instead of
+running every app. The dependency graph is read **authoritatively** from the
+compiled `.app` files' runtime `applications` lists (`:file.consult`), which
+capture both `in_umbrella` and `path:` siblings, so it can't under-report a sibling
+edge the way regex-parsing `mix.exs` could; an unreadable `.app` degrades to no
+narrowing (whole umbrella). A killer must execute the mutant's code, and a sibling
+only reaches it through a declared dep, so owning-app + dependents is a safe
+superset — we never narrow below it. Attributed coverage selections (step 3) are
+left untouched.
+
+Known cosmetic artifact: because a mutated app does **not** declare a dep on
+`mutare_support`, the umbrella may compile the app before `mutare_support`, so each
+metamutant's `:mutare_cov.hit/1` call draws an "undefined function" **compile
+warning**. It is benign — `mix` re-emits it from the manifest cache on every run
+*without* recompiling (compile-once holds; verified `output !~ "Compiling"`), and
+coverage works regardless (the call resolves at runtime). Editing each mutated
+app's `mix.exs` to add `{:mutare_support, in_umbrella: true}` would silence it and
+pin compile order, but that means rewriting user `mix.exs` files — deferred as not
+worth the risk for a buried-in-`output` cosmetic line.
 **(3)** generated `apps/mutare_support` coverage app + absolute dump path +
 umbrella-root-relative coverage keys → coverage selection works. **(4)** scope
 broad (`:run_all`/unattributed/`:full`) runs to the owning app + its dependents via
