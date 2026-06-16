@@ -145,6 +145,22 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":baseline_runs" do
+    test "defaults to 1 and accepts a positive integer" do
+      assert Options.new([]).baseline_runs == 1
+      assert Options.new(baseline_runs: 1).baseline_runs == 1
+      assert Options.new(baseline_runs: 3).baseline_runs == 3
+    end
+
+    test "rejects zero, negatives, and non-integers" do
+      for bad <- [0, -1, 1.5, "2"] do
+        assert_raise ArgumentError, ~r/:baseline_runs must be a positive integer/, fn ->
+          Options.new(baseline_runs: bad)
+        end
+      end
+    end
+  end
+
   describe ":max_harness_error_rate" do
     test "accepts nil (disabled) or a number in 0.0..1.0" do
       assert Options.new(max_harness_error_rate: nil).max_harness_error_rate == nil

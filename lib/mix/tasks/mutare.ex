@@ -15,6 +15,8 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --min-score 70           # fail (CI) if the score is below 70
       mix mutare --full                   # run the whole suite per mutant
                                           #   (no per-file test selection)
+      mix mutare --baseline-runs 2        # run the baseline 2×; abort if a test
+                                          #   flakes (passes one run, fails another)
       mix mutare --harness-retries 2      # re-run a mutant up to 2× if its run
                                           #   fails at the harness level (infra)
       mix mutare --max-harness-error-rate 0.3
@@ -54,6 +56,7 @@ defmodule Mix.Tasks.Mutare do
     sandbox: :string,
     full: :boolean,
     since: :string,
+    baseline_runs: :integer,
     harness_retries: :integer,
     max_harness_error_rate: :float,
     format: :string,
@@ -169,6 +172,12 @@ defmodule Mix.Tasks.Mutare do
 
   defp format_error(:baseline_failed, detail) do
     "baseline suite is not green; mutation testing needs a passing suite.\n\n" <> tail(detail)
+  end
+
+  defp format_error(:baseline_flaky, detail) do
+    "baseline suite is flaky (passed on some runs, failed on others); mutation " <>
+      "testing needs a deterministically green suite — a flaky test manufactures " <>
+      "false kills. Fix or quarantine the test(s), then re-run.\n\n" <> detail
   end
 
   defp tail(output) do

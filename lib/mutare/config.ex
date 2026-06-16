@@ -25,7 +25,8 @@ defmodule Mutare.Config do
 
   Recognised flags: `:only` (→ `:paths`), `:mutators` (CSV → modules),
   `:min_score`, `:sandbox`, `:full` (→ `test_selection: :full`),
-  `:harness_retries`, `:max_harness_error_rate`. A `:mutators` value of `:all`
+  `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`. A `:mutators`
+  value of `:all`
   (or none) resolves to "use the default set" by omitting the key, so
   `Mutare.Transform` picks it. Raises `ArgumentError` on an unknown mutator
   family.
@@ -37,6 +38,7 @@ defmodule Mutare.Config do
     |> put_unless_nil(:min_score, flags[:min_score])
     |> put_unless_nil(:sandbox, flags[:sandbox])
     |> put_unless_nil(:test_selection, flags[:full] && :full)
+    |> put_unless_nil(:baseline_runs, flags[:baseline_runs])
     |> put_unless_nil(:harness_retries, flags[:harness_retries])
     |> put_unless_nil(:max_harness_error_rate, flags[:max_harness_error_rate])
     |> put_unless_nil(:mutators, flags[:mutators] && parse_families(flags[:mutators]))

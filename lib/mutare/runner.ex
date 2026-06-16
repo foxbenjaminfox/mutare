@@ -15,8 +15,10 @@ defmodule Mutare.Runner do
   scaled from — then build a per-mutant test selection
   (`Mutare.Runner.CoverageProbe`), which picks the test files each mutant needs (or
   marks it `:no_coverage`). The two are split on purpose: a red baseline aborts,
-  while coverage is advisory and degrades to running everything. See those modules
-  for the selection modes.
+  while coverage is advisory and degrades to running everything. The baseline can
+  be run more than once (`:baseline_runs`) to catch a flaky suite: runs that
+  disagree abort with `:baseline_flaky` rather than let a flaky test manufacture
+  false kills. See those modules for the selection modes.
 
   ## Parallel workers and timeouts
 
@@ -72,6 +74,7 @@ defmodule Mutare.Runner do
           {:error,
            :compile_failed
            | :baseline_failed
+           | :baseline_flaky
            | :nothing_to_mutate
            | :too_many_harness_errors, String.t()}
 
@@ -94,9 +97,10 @@ defmodule Mutare.Runner do
   `opts` is a `Mutare.Options` (or a keyword list resolved into one). Beyond the
   schema/sandbox fields, it uses `:reporter` — a 1-arity function called with each
   `Mutare.Result` as it completes, for live progress — and `:test_selection`,
-  `:workers`, `:timeout`, `:timeout_multiplier`, `:harness_retries` (re-run a
-  harness-errored mutant before recording it), and `:max_harness_error_rate`
-  (abort if too many runs fail at the harness level).
+  `:workers`, `:timeout`, `:timeout_multiplier`, `:baseline_runs` (re-run the
+  baseline to catch a flaky suite), `:harness_retries` (re-run a harness-errored
+  mutant before recording it), and `:max_harness_error_rate` (abort if too many
+  runs fail at the harness level).
   """
   @spec run_with_schema(Schema.t(), Path.t(), Options.t() | keyword()) ::
           {:ok, run()} | error()
@@ -113,7 +117,7 @@ defmodule Mutare.Runner do
       # offending mutants and rebuilding. `schema` here may differ from the input
       # (poisoners flagged), which is what the run reports against.
       with {:ok, schema, sandbox} <- prepare_compiling(schema, root, options),
-           {:ok, baseline_ms} <- Baseline.run(sandbox) do
+           {:ok, baseline_ms} <- Baseline.run(sandbox, options.baseline_runs) do
         selection = CoverageProbe.run(sandbox, schema, mode)
         cap = timeout_cap(baseline_ms, options)
         workers = options.workers

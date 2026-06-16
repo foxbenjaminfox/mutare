@@ -117,9 +117,14 @@ contract between them is the whole game.
   and `:max_harness_error_rate` (abort `{:error, :too_many_harness_errors, …}` when persistent
   harness errors exceed that fraction of the mutants that *ran*). Returns
   `%{schema, results, sandbox, baseline_ms}`.
-- **`Mutare.Runner.Baseline`** — one whole-suite `mix test` (no `--cover`) at the baseline mutant:
+- **`Mutare.Runner.Baseline`** — a whole-suite `mix test` (no `--cover`) at the baseline mutant:
   the authoritative green check (a red suite aborts with `:baseline_failed`) and the source of
-  `baseline_ms` (a *single* run's wall-clock — the per-mutant timeout cap is scaled from it).
+  `baseline_ms` (a *single* run's wall-clock — the per-mutant timeout cap is scaled from it). With
+  `:baseline_runs` > 1 it runs the suite up to N times (short-circuiting on disagreement) to catch
+  a **flaky** suite: all green → proceed (`baseline_ms` = the slowest green run); all red →
+  `:baseline_failed`; mixed → `:baseline_flaky` (abort, naming the disagreeing tests — a flaky test
+  manufactures false kills). The all-green/all-red/mixed decision is the pure, tested
+  `Baseline.classify/1`.
 - **`Mutare.Runner.CoverageProbe`** — coverage-driven test selection, run after the baseline. A
   **single** instrumented `mix test` at baseline (`MUTARE_COVERAGE=1`), then it reads the dump.
   Per mutant: never ran → `:no_coverage`; covered with attributed test files → those files;

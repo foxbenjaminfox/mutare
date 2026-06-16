@@ -6,8 +6,8 @@ defmodule Mutare.Options do
   `Mutare.Schema`, `Mutare.Runner`, and `Mutare.Sandbox`. `new/1` resolves an
   (already config-merged) keyword list — or another `Options` — into a struct,
   validating every field up front, so a bad `:workers`, `:timeout`,
-  `:test_selection`, `:paths`, `:sandbox`, `:harness_retries`, or
-  `:max_harness_error_rate` fails loudly at the edge with an `ArgumentError`
+  `:test_selection`, `:paths`, `:sandbox`, `:baseline_runs`, `:harness_retries`,
+  or `:max_harness_error_rate` fails loudly at the edge with an `ArgumentError`
   instead of misbehaving silently deep in the pipeline.
 
   `new/1` is idempotent on a struct, so the pipeline can normalise once at each
@@ -34,6 +34,7 @@ defmodule Mutare.Options do
           workers: pos_integer(),
           timeout: pos_integer() | nil,
           timeout_multiplier: number(),
+          baseline_runs: pos_integer(),
           harness_retries: non_neg_integer(),
           max_harness_error_rate: number() | nil,
           sandbox: String.t() | nil,
@@ -50,6 +51,7 @@ defmodule Mutare.Options do
             workers: nil,
             timeout: nil,
             timeout_multiplier: 3.0,
+            baseline_runs: 1,
             harness_retries: 1,
             max_harness_error_rate: 0.5,
             sandbox: nil,
@@ -58,8 +60,8 @@ defmodule Mutare.Options do
             reporter: nil
 
   @keys ~w(paths exclude mutators only_files test_selection workers timeout
-           timeout_multiplier harness_retries max_harness_error_rate sandbox
-           min_score reporters reporter)a
+           timeout_multiplier baseline_runs harness_retries max_harness_error_rate
+           sandbox min_score reporters reporter)a
 
   # Output formats a reporter entry may name. `:human` is the console report
   # (`Mutare.Report`); the rest are the machine renderers under `Mutare.Report.*`.
@@ -89,6 +91,7 @@ defmodule Mutare.Options do
       workers: validate_workers!(Keyword.get(opts, :workers) || System.schedulers_online()),
       timeout: validate_timeout!(Keyword.get(opts, :timeout)),
       timeout_multiplier: validate_multiplier!(Keyword.get(opts, :timeout_multiplier, 3.0)),
+      baseline_runs: validate_baseline_runs!(Keyword.get(opts, :baseline_runs, 1)),
       harness_retries: validate_harness_retries!(Keyword.get(opts, :harness_retries, 1)),
       max_harness_error_rate:
         validate_harness_error_rate!(Keyword.get(opts, :max_harness_error_rate, 0.5)),
@@ -189,6 +192,15 @@ defmodule Mutare.Options do
 
   defp validate_harness_retries!(other) do
     raise ArgumentError, ":harness_retries must be a non-negative integer, got: #{inspect(other)}"
+  end
+
+  # At least one run — you always need a green check; N>1 re-runs the baseline to
+  # catch a test that disagrees with itself (`Mutare.Runner.Baseline`).
+  defp validate_baseline_runs!(n) when is_integer(n) and n >= 1, do: n
+
+  defp validate_baseline_runs!(other) do
+    raise ArgumentError,
+          ":baseline_runs must be a positive integer (>= 1), got: #{inspect(other)}"
   end
 
   # nil disables the abort guard; otherwise a fraction (0.0..1.0) of the mutants

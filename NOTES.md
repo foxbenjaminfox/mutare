@@ -777,3 +777,37 @@ Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:
     report (they'd interleave). `.mutare.exs` `reporters:` is the multi-format
     path (a bare atom normalises to stdout). The `--min-score` gate is orthogonal
     to format (it's an exit code) and runs after all reporters regardless.
+- **Baseline flakiness detection (done).** A flaky test — one that passes/fails
+  nondeterministically *regardless of the mutant* — manufactures **false kills**:
+  when it goes red during a mutant's run that mutant is scored `:killed`, hiding a
+  real survivor. The dangerous direction, since the diff is the product and we
+  must never lie. Flakiness is a property of the *suite*, not of any one mutant,
+  so we catch it at the **baseline** — `O(N)` runs, independent of the mutant
+  count — rather than re-running every mutant. `--baseline-runs N` (`:baseline_runs`,
+  default **1** = unchanged behaviour, opt-in, zero added cost) runs the suite up
+  to N times; `Mutare.Runner.Baseline.classify/1` (pure, unit-tested, mirroring
+  `Report.harness_errors_exceed?/2`) decides: all green → `{:ok, slowest_green_ms}`
+  (the slowest green run keeps the timeout cap conservative); all red →
+  `:baseline_failed` (unchanged); **mixed** → `:baseline_flaky`, aborting and
+  naming the disagreeing tests (best-effort `*_test.exs:NN` parse, falling back to
+  the output tail — message-only, so brittleness is harmless). Collection
+  short-circuits the instant a pass and a fail are both seen. Wiring mirrors
+  `:harness_retries` exactly (mix `@switches` → `Config.merge` → `Options` field +
+  `validate_baseline_runs!` (≥ 1, *not* ≥ 0 — you always need one green check) →
+  `Runner` → new `format_error(:baseline_flaky, _)`). The end-to-end `:runner` test
+  makes a suite deterministically flaky via a counter file persisted in the reused
+  sandbox cwd (red on run 1, green on run 2).
+  - **Decision: abort-and-name, not quarantine.** Matches DESIGN's "abort loudly"
+    and "mitigate, don't pretend": we refuse to score a flaky suite rather than
+    guess which tests to drop. **Deferred** as a follow-up: *quarantine* the flaky
+    tests and proceed over the stable subset (needs the exclusion threaded through
+    the baseline re-measure, the coverage probe, *and* every per-mutant run — and a
+    reduced-suite score is a soundness caveat to surface).
+  - **Deferred — Layer 2 (`--runs`/rerun-kills).** A residual flake only visible
+    under one mutant's timing escapes a green baseline. The fix: re-run each
+    *killed* mutant up to N times and demote to `:survived` if any re-run fails to
+    kill (**unanimous-kill** — the honest combine rule; "any-kill" defends the
+    wrong direction). Under unanimous-kill only kills need re-running, so the honest
+    rule is also the cheap one; it's a near-copy of the `:harness_retries` machinery
+    in `run_mutant/5`. Orthogonal to harness retries (that's infra flakiness, this
+    is test flakiness). Not built here.
