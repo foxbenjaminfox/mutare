@@ -108,6 +108,17 @@ by a blacklist. The positions:
   module-attribute problem. (A macro *can* `quote` runtime code, but per
   PHILOSOPHY "instrumenting macro-generated code is a different tool"; the whole
   macro is pruned.) Previously these mutants were emitted and silently wasted.
+- **Lexical directives** (`import`/`alias`/`require`/`use`): **excluded** (also
+  `:compile_time`). Their arguments are resolved at compile/expansion time, and
+  some positions *must* be a literal — `import …, only: [f: 1]` requires a literal
+  keyword list, so a selector `case` around the `[f: 1]` (or its `1` arity) is not
+  inert but outright **illegal**, and would compile-poison the single build. The
+  analyzer prunes the whole directive call. Found by the adversarial transform
+  corpus (the `macros` and `aliases/imports` entries failed to compile until the
+  classifier got this clause); pinned now by both the corpus and a transform_test.
+  The default `literal`/`list` mutators are what reach the `only:` list, so the
+  regression test must run with the default set — `@probe` (arithmetic+relational)
+  doesn't touch it.
 - **Bitstring type specifiers** (the right of `::` in `<<>>`): **excluded**
   (context `:spec`), *except* `size(expr)` args. A `case` is illegal as a bare
   spec / in `unit(...)`, and swapping the `-` separator yields an illegal

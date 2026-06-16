@@ -424,9 +424,11 @@ defmodule Mutare.Transform do
   # The remaining contexts are recognised positively and realised as pruned
   # subtrees or dedicated helpers (named here, matched in the clauses below):
   #
-  #   * `:compile_time` — module-attribute values (`@x <expr>`) and macro bodies
-  #     (`defmacro`/`defmacrop`). Frozen at compile time / macro-expansion time,
-  #     so a runtime selector there can never activate. Pruned whole.
+  #   * `:compile_time` — module-attribute values (`@x <expr>`), macro bodies
+  #     (`defmacro`/`defmacrop`), and lexical directives (`import`/`alias`/
+  #     `require`/`use`, whose args must be compile-time literals). Frozen at
+  #     compile / macro-expansion time, so a runtime selector there can never
+  #     activate — and inside a directive arg would not even be legal. Pruned whole.
   #   * `:spec` — the type-specifier side of a bitstring `::` segment. A `case`
   #     is illegal there and a swapped `-` separator is an illegal specifier;
   #     only `size(expr)` args are a genuine runtime sub-position (`analyze_spec/3`).
@@ -452,6 +454,16 @@ defmodule Mutare.Transform do
   # `defmacro`/`defmacrop`: compile-time / macro-generated, pruned whole.
   defp analyze({vis, _meta, _args} = node, _context, _mutators)
        when vis in [:defmacro, :defmacrop],
+       do: node
+
+  # `import`/`alias`/`require`/`use`: lexical directives resolved at compile time.
+  # Their arguments are not a runtime position — an `import`'s `only:`/`except:`
+  # must be a *literal* keyword list, an `alias`'s `as:` a literal atom, a `use`'s
+  # options are handed to a macro at expansion — so a runtime selector there is at
+  # best inert and at worst illegal (it makes the single build fail). Pruned whole;
+  # the directive rides through untouched and in position.
+  defp analyze({form, _meta, args} = node, _context, _mutators)
+       when form in [:import, :alias, :require, :use] and is_list(args),
        do: node
 
   # `&fun/arity` capture: the `/` is arity, not division — pruned. Anything else

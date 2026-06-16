@@ -237,6 +237,31 @@ defmodule Mutare.TransformTest do
     assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
   end
 
+  test "import/alias/require directives are compile-time and never mutated" do
+    source = """
+    defmodule D do
+      alias Enum, as: E
+      import List, only: [first: 1]
+      require Integer
+
+      def total(xs), do: E.sum(xs) + 1
+    end
+    """
+
+    # Pinned to the *default* set on purpose: the `literal`/`list` families would
+    # mutate the `1` arity and the `[first: 1]` keyword list in `import`'s `only:`
+    # if the directive weren't pruned — and a selector `case` there makes `only:`
+    # a non-literal, which fails to compile and sinks the single build. So the
+    # directive lines (2..4) must carry no site; only the runtime body (line 6) does.
+    {meta, sites, _next_id} = Mutare.transform_string(source)
+
+    refute Enum.any?(sites, &(&1.line in 2..4))
+    assert Enum.any?(sites, &(&1.line == 6))
+    # The `only:` list rides through verbatim — no selector wrapped around it.
+    assert meta =~ "only: [first: 1]"
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
+
   test "a case-clause guard is not mutated in place; the clause body is" do
     source = """
     defmodule K do
