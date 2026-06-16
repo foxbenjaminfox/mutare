@@ -95,7 +95,12 @@ contract between them is the whole game.
   `System.halt/1`s the run itself after the cap (no killing an OS process tree). Also writes the
   dependency-free `MutareCov` coverage helper (`lib/mutare_cov.ex`) and appends the coverage
   bootstrap *after* `ExUnit.start/0` (it registers an `after_suite` dump) — both inert unless the
-  probe sets `MUTARE_COVERAGE` (see `Mutare.Coverage.Recorder`).
+  probe sets `MUTARE_COVERAGE` (see `Mutare.Coverage.Recorder`). Two materialisation modes:
+  **fresh** (default — wipe & re-copy a throwaway dir, recompile cold) and **kept**
+  (`:keep_sandbox`/`--keep-sandbox` — preserve the sandbox *and its `_build`* between runs and
+  re-materialise via `sync/3`: rewrite a file only when its bytes change so unchanged files keep
+  their mtime and mix's incremental compiler reuses `_build`; prune what's gone; never touch
+  `@excluded` dirs). For CI build caching; see `NOTES.md` for the cache pattern.
 - **`Mutare.Sandbox.Command`** — command execution against a materialized sandbox: `mix/4` and
   `timed_mix/4` spawn a fresh `mix` OS process with `MIX_ENV=test`/`MUTANT_UNDER_TEST` set. Owns the
   *run side* of the **exit-code contract** and decodes it into a typed
@@ -205,9 +210,10 @@ contract between them is the whole game.
   into generated code* — the selectors and coverage record into the metamutant by `Mutare.Transform`,
   the reader/timeout watcher/coverage bootstrap+helper into the bootstrap by `Mutare.Sandbox`. Keep
   them in sync — change one in isolation and the metamutant stops responding.
-- **Two renderers, on purpose.** The metamutant is a throwaway build artifact (AST rewrite via
+- **Two renderers, on purpose.** The metamutant is a build artifact (AST rewrite via
   `Sourceror.to_string`, only needs to compile); the report patches the original source. Don't
-  try to make one serve both.
+  try to make one serve both. Normally throwaway, but `--keep-sandbox` optionally caches the
+  compiled sandbox across runs (still a build artifact — the *report* never reads it).
 - **Two line spaces, decoupled.** Poison maps a compile error in metamutant-line space (via
   `Manifest`); the report works in original-line space. They never need to be related — don't
   reintroduce a mapping between them. (Coverage uses neither: it keys by mutant id.)

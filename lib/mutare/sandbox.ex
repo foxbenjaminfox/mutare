@@ -12,6 +12,17 @@ defmodule Mutare.Sandbox do
   build path is an open question (see DESIGN.md) to settle by measuring on a
   large umbrella.
 
+  Two materialisation modes, chosen by `:keep_sandbox`:
+
+    * **fresh (default)** — a throwaway dir is wiped (`reset!/1`) and re-copied
+      every run, so the metamutant recompiles cold. Always correct, no caching.
+    * **kept (`keep_sandbox: true`)** — the sandbox (and its compiled `_build`)
+      is *preserved* between runs and re-materialised by `sync/4`: a file is
+      rewritten only when its desired content differs (unchanged files keep their
+      mtime, so mix's incremental compiler reuses `_build`), and files Mutare no
+      longer owns are pruned. Intended for CI build caching; pair with a stable
+      `:sandbox` path. See `NOTES.md` for the cache pattern.
+
   Materialising the workspace lives here; running `mix` against it (and the
   per-mutant timeout cap the bootstrap honours) lives in `Mutare.Sandbox.Command`.
   """
@@ -41,8 +52,8 @@ defmodule Mutare.Sandbox do
   @marker_body """
   #{@marker_signature}
 
-  This directory is a Mutare sandbox: a throwaway, compiled-and-mutated copy of a
-  target project. Mutare wipes and rebuilds it on every run — keep nothing here.
+  This directory is a Mutare sandbox: a compiled-and-mutated copy of a target
+  project. Mutare overwrites and prunes it on every run — keep nothing here.
   """
 
   # The bootstrap is two dependency-free snippets, each rendered the same way from
@@ -83,6 +94,13 @@ defmodule Mutare.Sandbox do
   # ---------------------------------------------------------------------------
   """
 
+  # Stable relative paths for the two files Mutare generates (vs. copies). The
+  # coverage helper's collision-avoiding `_N` suffix is a fresh-mode-only fallback;
+  # `keep_sandbox` materialisation always reuses this base path.
+  @helper_rel "test/test_helper.exs"
+  @default_helper "ExUnit.start()\n"
+  @coverage_helper_rel "lib/__mutare__/coverage_helper.ex"
+
   @doc """
   Prepare a sandbox for `schema` taken from `root`. Returns the sandbox path.
 
@@ -100,15 +118,21 @@ defmodule Mutare.Sandbox do
   @spec prepare(Path.t(), Schema.t(), Options.t() | keyword()) :: Path.t()
   def prepare(root, %Schema{} = schema, opts \\ []) do
     options = Options.new(opts)
-    sandbox = options.sandbox || default_sandbox()
+    sandbox = options.sandbox || default_sandbox(root, options.keep_sandbox)
 
     validate_paths!(root, sandbox)
-    claim!(sandbox)
+    claim!(sandbox, options.keep_sandbox)
 
-    copy_project(root, sandbox)
-    write_metamutants(sandbox, schema)
-    write_coverage_helper(sandbox, options)
-    inject_bootstrap(sandbox, options)
+    if options.keep_sandbox do
+      # Reuse the existing sandbox (and its `_build`): re-materialise it in place,
+      # touching only what changed and pruning what's gone.
+      sync(root, sandbox, schema, options)
+    else
+      copy_project(root, sandbox)
+      write_metamutants(sandbox, schema)
+      write_coverage_helper(sandbox, options)
+      inject_bootstrap(sandbox, options)
+    end
 
     sandbox
   end
@@ -119,21 +143,35 @@ defmodule Mutare.Sandbox do
 
   # --- internals -----------------------------------------------------------
 
-  defp default_sandbox do
+  # Fresh mode gets a unique throwaway dir. Kept mode needs a *stable* path so the
+  # next run finds the same `_build`: derive it deterministically from the project
+  # root (a per-project temp dir), unless the caller pinned `:sandbox` explicitly.
+  defp default_sandbox(_root, false) do
     Path.join(System.tmp_dir!(), "mutare_sandbox_#{System.unique_integer([:positive])}")
+  end
+
+  defp default_sandbox(root, true) do
+    digest =
+      :crypto.hash(:sha256, Path.expand(root))
+      |> Base.url_encode64(padding: false)
+      |> binary_part(0, 16)
+
+    Path.join(System.tmp_dir!(), "mutare_sandbox_#{digest}")
   end
 
   # Take ownership of the sandbox path, then leave our marker. `lstat` (not
   # `stat`) so a symlink is seen as a symlink, never followed to a directory we
   # would then wipe.
-  defp claim!(sandbox) do
+  defp claim!(sandbox, keep?) do
     case File.lstat(sandbox) do
       {:error, :enoent} ->
         File.mkdir_p!(sandbox)
 
       {:ok, %File.Stat{type: :directory}} ->
         cond do
-          owned?(sandbox) -> reset!(sandbox)
+          # Keep mode reuses an owned dir *in place* (sync re-materialises it);
+          # fresh mode wipes it. Either way the path is ours to write.
+          owned?(sandbox) -> unless keep?, do: reset!(sandbox)
           File.ls!(sandbox) == [] -> :ok
           true -> refuse!(sandbox, "is a non-empty directory without Mutare's ownership marker")
         end
@@ -145,7 +183,7 @@ defmodule Mutare.Sandbox do
         raise File.Error, reason: reason, action: "inspect sandbox", path: sandbox
     end
 
-    File.write!(marker_path(sandbox), @marker_body)
+    put_if_changed(marker_path(sandbox), @marker_body)
   end
 
   # Ours iff the marker is a regular file whose contents start with our
@@ -308,7 +346,7 @@ defmodule Mutare.Sandbox do
   defp coverage_helper_path(sandbox) do
     Stream.iterate(0, &(&1 + 1))
     |> Stream.map(fn
-      0 -> "lib/__mutare__/coverage_helper.ex"
+      0 -> @coverage_helper_rel
       n -> "lib/__mutare__/coverage_helper_#{n}.ex"
     end)
     |> Stream.map(&Path.join(sandbox, &1))
@@ -344,6 +382,17 @@ defmodule Mutare.Sandbox do
     """
   end
 
+  defp support_app_rel(root), do: Path.join("apps", support_app_name(root))
+
+  defp support_app_name(root) do
+    Stream.iterate(0, &(&1 + 1))
+    |> Stream.map(fn
+      0 -> "mutare_support"
+      n -> "mutare_support_#{n}"
+    end)
+    |> Enum.find(&(not File.exists?(Path.join([root, "apps", &1]))))
+  end
+
   # Inject the bootstrap into every test helper whose suite the runner will drive.
   # A single project has one (`test/test_helper.exs`); an umbrella runs each app's
   # suite sequentially in one BEAM (cwd = the app dir), so each app with a `test/`
@@ -351,29 +400,163 @@ defmodule Mutare.Sandbox do
   # mutant in one app can be killed by a test in another, and the selector must be
   # live in whichever app's process runs the line.
   defp inject_bootstrap(sandbox, %Options{} = options) do
-    for helper_dir <- helper_dirs(sandbox, options.project) do
-      inject_one(Path.join(helper_dir, "test/test_helper.exs"))
+    for helper_rel <- helper_rels(sandbox, options.project) do
+      inject_one(Path.join(sandbox, helper_rel))
     end
   end
 
-  defp helper_dirs(sandbox, %{umbrella?: true, apps: apps}) do
+  defp helper_rels(root, %{umbrella?: true, apps: apps}) do
     for %{dir: dir} <- apps,
-        app_dir = Path.join(sandbox, dir),
+        app_dir = Path.join(root, dir),
         File.dir?(Path.join(app_dir, "test")),
-        do: app_dir
+        do: Path.join([dir, "test", "test_helper.exs"])
   end
 
   # A single app (no project, or a non-umbrella one) keeps the pre-umbrella
   # behavior: the root helper, created if absent.
-  defp helper_dirs(sandbox, _project), do: [sandbox]
+  defp helper_rels(_root, _project), do: [@helper_rel]
 
   defp inject_one(helper) do
     File.mkdir_p!(Path.dirname(helper))
-    existing = if File.exists?(helper), do: File.read!(helper), else: "ExUnit.start()\n"
+    existing = if File.exists?(helper), do: File.read!(helper), else: @default_helper
+    File.write!(helper, helper_contents(existing))
+  end
 
-    File.write!(
-      helper,
-      @bootstrap <> "\n" <> @coverage_setup <> "\n" <> existing <> "\n" <> @coverage_after_suite
-    )
+  # Wrap the user's test helper with the selector/timeout bootstrap and the
+  # coverage probe (split around `ExUnit.start/0`; see the constants above). Shared
+  # by both the fresh and keep paths so the rendered helper can't drift.
+  defp helper_contents(user_source) do
+    @bootstrap <> "\n" <> @coverage_setup <> "\n" <> user_source <> "\n" <> @coverage_after_suite
+  end
+
+  # === keep-sandbox incremental materialisation ==============================
+
+  # Re-materialise an owned sandbox in place. A managed file is rewritten only when
+  # its desired content differs (an unchanged file keeps its mtime, so mix's
+  # incremental compiler reuses `_build`); files Mutare no longer owns are pruned.
+  # `@excluded` dirs (notably `_build`/`cover`) are never read, written, or pruned,
+  # so the compiled artifacts survive between runs.
+  defp sync(root, sandbox, %Schema{} = schema, %Options{} = options) do
+    overrides = override_files(root, schema, options)
+    sources = source_rel_paths(root)
+    source_set = MapSet.new(sources)
+    managed = MapSet.union(source_set, MapSet.new([@marker_name | Map.keys(overrides)]))
+
+    # 1. mirror every source file, applying generated overrides (metamutant source
+    #    and the injected test helper) in place of the original.
+    for rel <- sources do
+      content = Map.get_lazy(overrides, rel, fn -> File.read!(Path.join(root, rel)) end)
+      put_if_changed(Path.join(sandbox, rel), content)
+    end
+
+    # 2. write generated files that have no backing source (the coverage helper,
+    #    and the test helper when the target ships none).
+    for {rel, content} <- overrides, not MapSet.member?(source_set, rel) do
+      put_if_changed(Path.join(sandbox, rel), content)
+    end
+
+    # 3. drop anything left in the sandbox that Mutare should no longer own.
+    prune(sandbox, managed)
+  end
+
+  # The files Mutare generates rather than copies, keyed by sandbox-relative path
+  # (the same key space as `Schema.metamutants` and `source_rel_paths/1`).
+  defp override_files(root, %Schema{metamutants: metamutants}, %Options{} = options) do
+    metamutants
+    |> Map.merge(coverage_helper_files(root, options.project))
+    |> Map.merge(helper_files(root, options.project))
+  end
+
+  defp coverage_helper_files(root, %{umbrella?: true}) do
+    app_rel = support_app_rel(root)
+    app = Path.basename(app_rel)
+
+    %{
+      Path.join([app_rel, "mix.exs"]) => support_mix_exs(app),
+      Path.join([app_rel, "lib", "mutare_cov.ex"]) => @coverage_helper <> "\n"
+    }
+  end
+
+  defp coverage_helper_files(_root, _project) do
+    %{@coverage_helper_rel => @coverage_helper <> "\n"}
+  end
+
+  defp helper_files(root, project) do
+    Map.new(helper_rels(root, project), fn rel ->
+      user_helper =
+        case File.read(Path.join(root, rel)) do
+          {:ok, source} -> source
+          _ -> @default_helper
+        end
+
+      {rel, helper_contents(user_helper)}
+    end)
+  end
+
+  # Write only when the bytes actually change, so unchanged files keep their mtime.
+  # A size check short-circuits the full read for the common unchanged-large-file
+  # case.
+  defp put_if_changed(path, content) do
+    unless same_content?(path, content) do
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, content)
+    end
+  end
+
+  defp same_content?(path, content) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular, size: size}} when size == byte_size(content) ->
+        File.read(path) == {:ok, content}
+
+      _ ->
+        false
+    end
+  end
+
+  # File rel-paths under `root` (skipping `@excluded` at the top level, matching
+  # `copy_project/2`), keyed exactly like `Schema.metamutants` (`relative/2`).
+  defp source_rel_paths(root) do
+    for entry <- File.ls!(root),
+        entry not in @excluded,
+        rel <- walk(root, Path.join(root, entry)) do
+      rel
+    end
+  end
+
+  defp walk(root, path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :directory}} ->
+        for child <- File.ls!(path), rel <- walk(root, Path.join(path, child)), do: rel
+
+      {:ok, %File.Stat{type: :regular}} ->
+        [path |> Path.relative_to(root) |> to_string()]
+
+      _ ->
+        []
+    end
+  end
+
+  # Delete sandbox files not in `managed`, then any directory left empty. Never
+  # descends `@excluded` dirs, so `_build`/`cover` and their artifacts survive.
+  defp prune(sandbox, managed) do
+    for entry <- File.ls!(sandbox), entry not in @excluded do
+      prune_path(Path.join(sandbox, entry), entry, managed)
+    end
+  end
+
+  defp prune_path(path, rel, managed) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :directory}} ->
+        for child <- File.ls!(path),
+            do: prune_path(Path.join(path, child), Path.join(rel, child), managed)
+
+        if File.ls!(path) == [], do: File.rmdir!(path)
+
+      {:ok, %File.Stat{type: :regular}} ->
+        unless MapSet.member?(managed, rel), do: File.rm!(path)
+
+      _ ->
+        :ok
+    end
   end
 end

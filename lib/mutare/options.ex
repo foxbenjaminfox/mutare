@@ -6,9 +6,9 @@ defmodule Mutare.Options do
   `Mutare.Schema`, `Mutare.Runner`, and `Mutare.Sandbox`. `new/1` resolves an
   (already config-merged) keyword list — or another `Options` — into a struct,
   validating every field up front, so a bad `:workers`, `:timeout`,
-  `:test_selection`, `:paths`, `:sandbox`, `:baseline_runs`, `:harness_retries`,
-  or `:max_harness_error_rate` fails loudly at the edge with an `ArgumentError`
-  instead of misbehaving silently deep in the pipeline.
+  `:test_selection`, `:paths`, `:sandbox`, `:keep_sandbox`, `:baseline_runs`,
+  `:harness_retries`, or `:max_harness_error_rate` fails loudly at the edge with
+  an `ArgumentError` instead of misbehaving silently deep in the pipeline.
 
   `new/1` is idempotent on a struct, so the pipeline can normalise once at each
   public entry point (`Mutare.run/2`, `Mutare.Schema.build/2`,
@@ -38,6 +38,7 @@ defmodule Mutare.Options do
           harness_retries: non_neg_integer(),
           max_harness_error_rate: number() | nil,
           sandbox: String.t() | nil,
+          keep_sandbox: boolean(),
           min_score: number() | nil,
           reporters: [{:human | :json | :html | :sarif, String.t() | nil}],
           reporter: (Result.t() -> any()) | nil,
@@ -56,6 +57,7 @@ defmodule Mutare.Options do
             harness_retries: 1,
             max_harness_error_rate: 0.5,
             sandbox: nil,
+            keep_sandbox: false,
             min_score: nil,
             reporters: [{:human, nil}],
             reporter: nil,
@@ -63,7 +65,7 @@ defmodule Mutare.Options do
 
   @keys ~w(paths exclude mutators only_files test_selection workers timeout
            timeout_multiplier baseline_runs harness_retries max_harness_error_rate
-           sandbox min_score reporters reporter project)a
+           sandbox keep_sandbox min_score reporters reporter project)a
 
   # Output formats a reporter entry may name. `:human` is the console report
   # (`Mutare.Report`); the rest are the machine renderers under `Mutare.Report.*`.
@@ -98,6 +100,7 @@ defmodule Mutare.Options do
       max_harness_error_rate:
         validate_harness_error_rate!(Keyword.get(opts, :max_harness_error_rate, 0.5)),
       sandbox: validate_sandbox!(Keyword.get(opts, :sandbox)),
+      keep_sandbox: validate_keep_sandbox!(Keyword.get(opts, :keep_sandbox, false)),
       min_score: validate_min_score!(Keyword.get(opts, :min_score)),
       reporters: validate_reporters!(Keyword.get(opts, :reporters, [{:human, nil}])),
       reporter: validate_reporter!(Keyword.get(opts, :reporter)),
@@ -224,6 +227,12 @@ defmodule Mutare.Options do
 
   defp validate_sandbox!(other) do
     raise ArgumentError, ":sandbox must be a non-empty path string or nil, got: #{inspect(other)}"
+  end
+
+  defp validate_keep_sandbox!(value) when is_boolean(value), do: value
+
+  defp validate_keep_sandbox!(other) do
+    raise ArgumentError, ":keep_sandbox must be true or false, got: #{inspect(other)}"
   end
 
   defp validate_min_score!(nil), do: nil

@@ -80,4 +80,29 @@ defmodule Mutare.RunnerTest do
       refute output =~ "Compiling", "a mutant run recompiled:\n#{output}"
     end
   end
+
+  test "keep_sandbox reuses the sandbox and its build across runs", %{
+    project: project,
+    sandbox: sandbox
+  } do
+    assert {:ok, first} =
+             Mutare.run(project, sandbox: sandbox, mutators: @probe, keep_sandbox: true)
+
+    assert Enum.count(first.results, &(&1.status == :killed)) == 2
+
+    # The first run compiled the metamutant in place; that build must survive.
+    build = Path.join(sandbox, "_build")
+    assert File.dir?(build)
+    [marker | _] = Path.wildcard(Path.join(build, "**/*.beam"))
+    assert File.exists?(marker), "expected compiled .beam artifacts after the first run"
+
+    # A second kept run against the unchanged source is still correct, and the
+    # earlier build artifact is still present (it was reused, not wiped).
+    assert {:ok, second} =
+             Mutare.run(project, sandbox: sandbox, mutators: @probe, keep_sandbox: true)
+
+    assert Enum.count(second.results, &(&1.status == :killed)) == 2
+    assert [_] = Enum.filter(second.results, &(&1.status == :survived))
+    assert File.exists?(marker)
+  end
 end

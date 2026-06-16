@@ -82,6 +82,23 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":keep_sandbox" do
+    test "defaults to false" do
+      assert Options.new([]).keep_sandbox == false
+    end
+
+    test "accepts true and false" do
+      assert Options.new(keep_sandbox: true).keep_sandbox == true
+      assert Options.new(keep_sandbox: false).keep_sandbox == false
+    end
+
+    test "rejects a non-boolean" do
+      assert_raise ArgumentError, ~r/:keep_sandbox must be true or false/, fn ->
+        Options.new(keep_sandbox: "yes")
+      end
+    end
+  end
+
   describe ":workers" do
     test "accepts a positive integer" do
       assert Options.new(workers: 8).workers == 8

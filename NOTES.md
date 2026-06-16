@@ -152,6 +152,51 @@ a symlink from being followed to a directory we'd then clear. The reuse branch
 is what keeps poison recovery cheap: the runner rebuilds the *same* sandbox path
 repeatedly, and each rebuild is condition 3.
 
+### `--keep-sandbox`: incremental materialisation for CI caching `[done]`
+The default sandbox is throwaway: a fresh dir per run, or an owned `--sandbox`
+that `reset!/1` wipes (`rm_rf` + `mkdir`) and re-copies. So "compile once" was
+**per run** — `_build` is discarded between runs and the metamutant recompiles
+cold every time. `--keep-sandbox` (`Options.keep_sandbox`, default `false`) makes
+the sandbox *survive* between runs so mix's incremental compiler does almost
+nothing on a re-run. The precondition is already true: the metamutant is
+deterministic for identical input (stable mutant ids), so an unchanged source
+file produces a byte-identical metamutant.
+
+`prepare/3` branches on the flag:
+- `claim!/2` skips `reset!` on an owned dir (keeps `_build`/`deps`/sources).
+- `default_sandbox/2` returns a **stable** per-project temp dir (a SHA-256 of the
+  expanded root) instead of a random one, so `mix mutare --keep-sandbox` alone
+  reuses the same path. CI usually pins `--sandbox <cache>` instead.
+- `sync/3` re-materialises in place: `put_if_changed/2` rewrites a file **only
+  when its bytes differ** (size-check, then compare), so an unchanged file keeps
+  its mtime — which is the whole trick, since mix keys staleness on source mtime
+  vs. the compile manifest (`File.cp_r!`/`File.write!` both bump mtime to now,
+  verified, which is why a plain copy would defeat the cache even with `_build`
+  preserved). `prune/2` deletes sandbox files Mutare no longer owns (a source
+  deleted since last run), and **never descends `@excluded`** dirs, so
+  `_build`/`cover` artifacts survive.
+
+Subtleties the sync handles that a naive "don't wipe" wouldn't:
+- The injected test helper is assembled from the **root's original** helper
+  (`override_files/3`), never re-read from the already-injected sandbox copy —
+  so re-runs don't stack bootstraps.
+- The coverage helper goes to a **fixed** path (`@coverage_helper_rel`); the
+  `_N` collision-avoiding suffix is a fresh-mode-only fallback. On reuse a second
+  `coverage_helper_1.ex` would be a duplicate-module compile error; `prune/2`
+  removes any stray one.
+- Override keys are kept in the **same key space** as `Schema.metamutants`
+  (`Path.relative_to(file, root)`), so a metamutant always overrides its original
+  rather than the original silently winning (which would make mutation testing a
+  no-op).
+- Poison recovery (which re-`prepare`s the same path) becomes incremental too:
+  only the dropped mutants' metamutant files change, so only those recompile.
+
+CI pattern: `--sandbox <cache-dir> --keep-sandbox`, and cache `<cache-dir>/_build`
+and `<cache-dir>/deps` keyed on `mix.lock`. tar-based caches (e.g. GitHub
+`actions/cache`) preserve mtimes, which is what makes the cross-run incremental
+compile work. Still out of scope: `mix deps.get` in the sandbox (unchanged), and
+the `MIX_BUILD_PATH` worker-isolation question below.
+
 ### Keyword-`do:` normalization (Sourceror workaround) `[done, watch]`
 Sourceror's formatter raises when rendering `def f, do: <case>` (keyword block
 whose value is a multi-line `case`). `Mutare.Transform.Render` flips every

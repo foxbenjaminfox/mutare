@@ -25,11 +25,22 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --max-harness-error-rate 0.3
                                           # abort if >30% of the mutants that ran
                                           #   failed at the harness level (1.0 = off)
+      mix mutare --sandbox /tmp/mut --keep-sandbox
+                                          # reuse the sandbox + its build cache
+                                          #   across runs (CI); see below
       mix mutare --format json --output mutare.json
                                           # write a machine report to a file; the
                                           #   human report still prints to console
       mix mutare --format sarif           # emit SARIF to stdout (suppresses the
                                           #   human report to avoid a collision)
+
+  By default Mutare materialises a throwaway sandbox copy and recompiles the
+  metamutant cold every run. `--keep-sandbox` instead **preserves** the sandbox
+  between runs and re-materialises it incrementally (only changed files are
+  rewritten, so mix's compiler reuses the cached `_build`). On CI, pair it with
+  `--sandbox <path>` pointed at a cached directory (cache `<path>/_build` and
+  `<path>/deps`, keyed on `mix.lock`); locally, `--keep-sandbox` alone reuses a
+  stable per-project temp dir.
 
   `--format` is one of `human` (the default console report), `json` (the
   mutation-testing-elements / Stryker report schema), `html` (that JSON in the
@@ -57,6 +68,7 @@ defmodule Mix.Tasks.Mutare do
     mutators: :string,
     min_score: :float,
     sandbox: :string,
+    keep_sandbox: :boolean,
     full: :boolean,
     since: :string,
     baseline_runs: :integer,

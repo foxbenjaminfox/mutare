@@ -24,7 +24,7 @@ defmodule Mutare.Config do
   Merge `file_config` with parsed CLI `flags` into resolved options.
 
   Recognised flags: `:only` (→ `:paths`), `:mutators` (CSV → modules),
-  `:min_score`, `:sandbox`, `:full` (→ `test_selection: :full`),
+  `:min_score`, `:sandbox`, `:keep_sandbox`, `:full` (→ `test_selection: :full`),
   `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`. A `:mutators`
   value of `:all`
   (or none) resolves to "use the default set" by omitting the key, so
@@ -37,6 +37,7 @@ defmodule Mutare.Config do
     |> put_unless_nil(:paths, flags[:only] && [flags[:only]])
     |> put_unless_nil(:min_score, flags[:min_score])
     |> put_unless_nil(:sandbox, flags[:sandbox])
+    |> put_unless_nil(:keep_sandbox, flags[:keep_sandbox])
     |> put_unless_nil(:test_selection, flags[:full] && :full)
     |> put_unless_nil(:baseline_runs, flags[:baseline_runs])
     |> put_unless_nil(:harness_retries, flags[:harness_retries])

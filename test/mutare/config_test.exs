@@ -49,6 +49,13 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([test_selection: :full], [])[:test_selection] == :full
     end
 
+    test "--keep-sandbox passes through; otherwise it's left to default" do
+      assert Config.merge([], keep_sandbox: true)[:keep_sandbox] == true
+      refute Keyword.has_key?(Config.merge([], []), :keep_sandbox)
+      # file config still flows through
+      assert Config.merge([keep_sandbox: true], [])[:keep_sandbox] == true
+    end
+
     test "--harness-retries and --max-harness-error-rate pass through; flags win over file" do
       merged = Config.merge([], harness_retries: 2, max_harness_error_rate: 0.3)
       assert merged[:harness_retries] == 2
