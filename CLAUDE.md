@@ -80,7 +80,11 @@ contract between them is the whole game.
     pattern outright illegal), `:spec` (a bitstring type
     specifier — separators/`unit()`/type atoms excluded, but
     `size(expr)` args recursed; `analyze_spec/3`), and `:capture_arity` (the `/` in `&fun/arity`,
-    an arity separator not division).
+    an arity separator not division). A `<<…>>` node is itself offered in a runtime body (so
+    BitstringLiteral can collapse it to `<<>>`) while its segments still descend; a **sigil**
+    (`~r`/`~D`/`~w`/custom, `sigil?/1`) is offered as a whole but its internal `<<>>`/modifiers are
+    *not* descended — the sigil mutators own it, and a selector in sigil content would be illegal
+    (and would feed BitstringLiteral the sigil's content).
   - **assign + emit (`emit/2`)** is a bottom-up `Macro.postwalk` so ids are assigned in
     post-order DFS; the id counter advances even for `:skip_ids` (poison recovery relies on it).
   - **in-place selector** for body expressions: wrap the operator in a tail-position
@@ -196,7 +200,10 @@ contract between them is the whole game.
   (a `~c"…"` sigil → `~c""` *and* `~c"mutare"`; the legacy `'…'` form is a list literal already
   emptied by List), MapLiteral (a non-empty `%{…}` → `%{}`; map updates / a struct's field map
   excluded), TupleLiteral (a non-empty tuple → `{}`, both the `{a, b}` and `{:{}, …}` shapes),
-  RegexLiteral (a `~r/…/` → `~r//` *and* `~r/mutare/`, flags preserved), DateTimeLiteral (a
+  BitstringLiteral (a non-empty `<<…>>` → `<<>>`; an interpolated string `"…#{…}…"` is a `<<>>`
+  *with* a delimiter and is excluded, and a sigil's content `<<>>` is never offered — `Transform`
+  doesn't descend into sigils), RegexLiteral (a `~r/…/` → `~r//` *and* `~r/mutare/`, flags
+  preserved), DateTimeLiteral (a
   `~D`/`~T`/`~N`/`~U` sigil shifted by one unit — parsed/re-serialised so it stays a valid calendar
   value, since these sigils are compile-time-validated), AliasLiteral (a module alias used **as a
   value** → the sentinel `Mutare.Mutant`; a *call-module* `Foo.bar()`, a struct name `%Foo{}`, and

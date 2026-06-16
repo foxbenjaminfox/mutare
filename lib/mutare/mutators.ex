@@ -40,6 +40,7 @@ defmodule Mutare.Mutators do
     charlist: Mutare.Mutators.CharlistLiteral,
     map: Mutare.Mutators.MapLiteral,
     tuple: Mutare.Mutators.TupleLiteral,
+    bitstring: Mutare.Mutators.BitstringLiteral,
     regex: Mutare.Mutators.RegexLiteral,
     datetime: Mutare.Mutators.DateTimeLiteral,
     alias: Mutare.Mutators.AliasLiteral,

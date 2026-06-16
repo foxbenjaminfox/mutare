@@ -583,7 +583,20 @@ defmodule Mutare.Transform do
   end
 
   # bitstring: each segment's value keeps the surrounding context; the spec side
-  # is excluded except for `size(expr)` args (`analyze_segment/3`).
+  # is excluded except for `size(expr)` args (`analyze_segment/3`). In a runtime
+  # body the `<<…>>` node is *also* offered to mutators (BitstringLiteral collapses
+  # it to `<<>>`) — built from the raw node so the diff renders the author's
+  # literal, with the analyzed segments kept underneath so their own selectors stay
+  # reachable. In a pattern (or any non-runtime context) it is only descended.
+  defp analyze({:<<>>, meta, segments} = node, :runtime, mutators) do
+    analyzed = {:<<>>, meta, Enum.map(segments, &analyze_segment(&1, :runtime, mutators))}
+
+    case Mutator.mutations(node, mutators) do
+      [] -> analyzed
+      muts -> put_candidates(analyzed, build_candidates(node, muts))
+    end
+  end
+
   defp analyze({:<<>>, meta, segments}, context, mutators) do
     {:<<>>, meta, Enum.map(segments, &analyze_segment(&1, context, mutators))}
   end
@@ -636,17 +649,20 @@ defmodule Mutare.Transform do
   end
 
   # a generic runtime node: build the candidate from the raw node (so `original`
-  # keeps un-annotated children), then descend into the children.
-  defp analyze({_form, _meta, _args} = node, :runtime, mutators) do
-    case Mutator.mutations(node, mutators) do
-      [] ->
-        recurse(node, :runtime, mutators)
+  # keeps un-annotated children), then descend into the children — except a sigil,
+  # whose `<<>>` content and modifier list are its internal representation, not user
+  # sub-expressions. We offer the sigil node itself (so the sigil mutators —
+  # Regex/Charlist/DateTime — match it) but do not descend: a selector spliced into
+  # sigil content is illegal, and descending would also feed BitstringLiteral the
+  # sigil's content `<<>>`.
+  defp analyze({form, _meta, _args} = node, :runtime, mutators) do
+    node =
+      case Mutator.mutations(node, mutators) do
+        [] -> node
+        muts -> put_candidates(node, build_candidates(node, muts))
+      end
 
-      muts ->
-        node
-        |> put_candidates(build_candidates(node, muts))
-        |> recurse(:runtime, mutators)
-    end
+    if sigil?(form), do: node, else: recurse(node, :runtime, mutators)
   end
 
   # A keyword/block pair (`key: value`, `%{a: …}`, a `do:`/`else:`/`rescue:`/
@@ -897,6 +913,18 @@ defmodule Mutare.Transform do
     do: {:size, meta, [analyze(arg, context, mutators)]}
 
   defp analyze_spec(other, _context, _mutators), do: other
+
+  # Is this node form a sigil (`~r`, `~D`, `~w`, a custom `~X`)? Sigils parse as
+  # `{:sigil_<name>, _, [<<>>, modifiers]}`; the analyzer offers the whole node to
+  # mutators but does not descend into its internal `<<>>`/modifiers.
+  defp sigil?(form) when is_atom(form) do
+    case Atom.to_string(form) do
+      "sigil_" <> _ -> true
+      _ -> false
+    end
+  end
+
+  defp sigil?(_), do: false
 
   defp build_candidates(node, muts) do
     range = Sourceror.get_range(node)

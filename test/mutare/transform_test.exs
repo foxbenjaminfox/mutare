@@ -206,6 +206,25 @@ defmodule Mutare.TransformTest do
     assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
   end
 
+  test "a bitstring literal collapses to <<>>; a sigil's content is not offered" do
+    source = """
+    defmodule B do
+      def f, do: <<1, 2, 3>>
+      def g, do: ~r/foo/
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source,
+        mutators: [Mutare.Mutators.BitstringLiteral, Mutare.Mutators.RegexLiteral]
+      )
+
+    # The `<<1, 2, 3>>` literal gets one :bitstring site; `~r/foo/`'s inner `<<>>`
+    # content is *not* offered to BitstringLiteral (only RegexLiteral's two).
+    assert Enum.frequencies_by(sites, & &1.mutator) == %{bitstring: 1, regex: 2}
+    assert {:ok, _} = Code.string_to_quoted(meta)
+  end
+
   test "defmacro/defmacrop bodies are compile-time and not mutated" do
     source = """
     defmodule M do

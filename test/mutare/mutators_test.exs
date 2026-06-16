@@ -7,6 +7,7 @@ defmodule Mutare.MutatorsTest do
     AliasLiteral,
     Arithmetic,
     AtomLiteral,
+    BitstringLiteral,
     CharlistLiteral,
     Collection,
     Conditional,
@@ -30,8 +31,8 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.all() ==
                [Arithmetic, Relational, Logical, Literal] ++
                  [Conditional, List, Collection, StringLiteral, FloatLiteral, AtomLiteral] ++
-                 [CharlistLiteral, MapLiteral, TupleLiteral, RegexLiteral, DateTimeLiteral] ++
-                 [AliasLiteral, ReturnValue]
+                 [CharlistLiteral, MapLiteral, TupleLiteral, BitstringLiteral, RegexLiteral] ++
+                 [DateTimeLiteral, AliasLiteral, ReturnValue]
     end
 
     test "families/0 are the registry's keys, in order — all on by default" do
@@ -40,7 +41,7 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.families() ==
                [:arithmetic, :relational, :logical, :literal] ++
                  [:conditional, :list, :collection, :string, :float, :atom] ++
-                 [:charlist, :map, :tuple, :regex, :datetime, :alias, :return_value]
+                 [:charlist, :map, :tuple, :bitstring, :regex, :datetime, :alias, :return_value]
     end
 
     test "resolve/1 maps family atoms to modules, preserving order" do
@@ -422,6 +423,32 @@ defmodule Mutare.MutatorsTest do
 
     test "name" do
       assert TupleLiteral.name() == :tuple
+    end
+  end
+
+  describe "BitstringLiteral" do
+    test "collapses a non-empty bitstring literal to <<>>" do
+      assert render(BitstringLiteral.mutate(parse("<<1, 2, 3>>"))) == ["<<>>"]
+      assert render(BitstringLiteral.mutate(parse(~S|<<"abc">>|))) == ["<<>>"]
+    end
+
+    test "skips the empty bitstring" do
+      assert BitstringLiteral.mutate(parse("<<>>")) == :skip
+    end
+
+    test "skips an interpolated string (a `<<>>` written as a string)" do
+      # `"a#{x}b"` parses as a `<<>>` carrying a delimiter — StringLiteral's domain.
+      assert BitstringLiteral.mutate(parse(~S|"a#{x}b"|)) == :skip
+      assert BitstringLiteral.mutate(parse(~S|"#{x}"|)) == :skip
+    end
+
+    test "skips a plain string and other literals" do
+      assert BitstringLiteral.mutate(parse(~s("abc"))) == :skip
+      assert BitstringLiteral.mutate(parse("[1, 2]")) == :skip
+    end
+
+    test "name" do
+      assert BitstringLiteral.name() == :bitstring
     end
   end
 

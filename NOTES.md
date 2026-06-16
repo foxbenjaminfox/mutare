@@ -332,6 +332,30 @@ aggressive than the literals (it makes nonexistent-module references that crash 
 invoked), but it stays compile-safe: an alias-as-value is just an atom, so a
 reference to a missing module compiles and only fails when actually called — the kill.
 
+### Bitstring collapse and the sigil non-descent (BitstringLiteral)
+`BitstringLiteral` (`:bitstring`, default-on) collapses a non-empty `<<…>>` to `<<>>`,
+the binary sibling of List/Map/Tuple emptying. To offer the `<<…>>` *node* (not just
+its segments) the `<<>>` analyze clause gained a runtime arm that builds a candidate
+from the raw node while keeping the analyzed segments underneath (so byte/string/expr
+selectors stay reachable); a pattern `<<a, b>>` is the non-runtime arm and is only
+descended.
+
+Three constructs share the `{:<<>>, …}` shape, and only the first should collapse:
+
+  * a real `<<…>>` literal — *no* `delimiter` in its meta → collapse;
+  * an **interpolated string** `"a#{x}b"` — a `<<>>` *with* `delimiter: "\""` →
+    skipped by the mutator (it is StringLiteral's domain, which itself skips
+    interpolations); its inner expressions still mutate (the node is descended);
+  * a **sigil's content** `<<>>` (inside `~r/…/`, `~D[…]`) — *also* has no delimiter,
+    so it is indistinguishable from a real literal at the node. The fix is in the
+    analyzer, not the mutator: the generic runtime clause now recognises a sigil
+    (`sigil?/1`, an atom-prefix test covering `~r`/`~D`/`~w`/custom) and offers the
+    whole node to the sigil mutators **without descending** into its `<<>>`/modifiers.
+    A selector spliced into sigil content is illegal anyway; the bonus is the sigil's
+    content never reaches BitstringLiteral. Cost: an interpolated expression *inside* a
+    sigil (`~s"#{x}"`) is no longer mutated — rare and low-value; plain interpolated
+    strings keep theirs.
+
 ### Guard tagger is not bitstring-spec-aware `[deferred]`
 `tag_targets/3` (the lifted-guard path) is a context-free `Macro.postwalk` that
 runs mutators on every guard node. A multi-specifier bitstring *pattern* inside a
