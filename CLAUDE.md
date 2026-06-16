@@ -67,7 +67,12 @@ contract between them is the whole game.
     `after:` block keys (`@block_keys`), so an atom-matching mutator can't splice a selector into a
     `do:` key (which wouldn't even render) — while a tuple tag like `{:ok, x}` stays mutatable.
     Similarly a `%Struct{…}`'s inner `%{}` is descended for its field *values* but the `%{}` wrapper
-    itself is not offered, so MapLiteral can't empty a struct (which would drop required fields). The rest are recognised
+    itself is not offered, so MapLiteral can't empty a struct (which would drop required fields). A
+    module alias is mutatable only as a *value*: the module side of a remote call (`Foo.bar()`) sits
+    in the call's `{:., …}` *form* position, which the descent treats as opaque (so it is never
+    reached — same as `:erlang.foo()`), and `defimpl`/`defprotocol`/`defdelegate` module references
+    are pruned (a `defimpl` body still mutates) — so AliasLiteral hits `apply(Foo, …)` but not a
+    call/struct/impl name. The rest are recognised
     and pruned by dedicated clauses: `:compile_time` (module-attribute values like `@x 1 + 2`,
     `defmacro`/`defmacrop` bodies, `quote` blocks, **and** `import`/`alias`/`require`/`use`
     directives whose args must be compile-time literals — frozen at compile/expansion time, so a
@@ -193,7 +198,10 @@ contract between them is the whole game.
   excluded), TupleLiteral (a non-empty tuple → `{}`, both the `{a, b}` and `{:{}, …}` shapes),
   RegexLiteral (a `~r/…/` → `~r//` *and* `~r/mutare/`, flags preserved), DateTimeLiteral (a
   `~D`/`~T`/`~N`/`~U` sigil shifted by one unit — parsed/re-serialised so it stays a valid calendar
-  value, since these sigils are compile-time-validated), and **ReturnValue**
+  value, since these sigils are compile-time-validated), AliasLiteral (a module alias used **as a
+  value** → the sentinel `Mutare.Mutant`; a *call-module* `Foo.bar()`, a struct name `%Foo{}`, and
+  `defimpl`/`defprotocol`/`defdelegate` module references are excluded *positionally* by `Transform`,
+  so only value positions like `apply(Foo, …)` mutate), and **ReturnValue**
   (a `def`/`defp` clause's tail expression → a shape-directed *pair*: an empty/zero value and a
   non-empty/non-nil sentinel — numeric→`0`/`1`, `<>`→`""`/`"mutare"`, `++`/`--`→`[]`/`[:mutare]`,
   else→`nil`/`:mutare`; mirrors StringLiteral's pair, the sentinel catching `!= nil`-style weak

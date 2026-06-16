@@ -530,6 +530,25 @@ defmodule Mutare.Transform do
        when form in [:import, :alias, :require, :use] and is_list(args),
        do: node
 
+  # `defprotocol`/`defdelegate`: pure compile-time module references with no runtime
+  # body to mutate — `defprotocol` declares signatures, `defdelegate` forwards to a
+  # `to:` module. A selector spliced into the protocol name / delegation target would
+  # not compile (it expects a literal module), so prune whole. (Relevant once an alias
+  # mutator can match the module references they carry.)
+  defp analyze({form, _meta, _args} = node, _context, _mutators)
+       when form in [:defprotocol, :defdelegate],
+       do: node
+
+  # `defimpl`: the protocol alias and the `for:` type are compile-time module
+  # references (a selector there won't compile), but the `do:` block *is* runtime —
+  # its implementation defs must still mutate. Analyze only the `do:` value, passing
+  # the protocol-alias arg and every non-`do:` keyword entry (notably `for:`) through
+  # raw. This handles both the block form (`for:`/`do:` in separate args) and the
+  # inline form (folded into one keyword).
+  defp analyze({:defimpl, meta, args}, _context, mutators) when is_list(args) do
+    {:defimpl, meta, Enum.map(args, &analyze_defimpl_arg(&1, mutators))}
+  end
+
   # `quote`: its body is compile-time AST *construction*, not runtime code. The
   # literals there become part of the code the quote *generates* — instrumenting
   # which is out of scope (PHILOSOPHY: "macro-generated code is a different tool"),
@@ -706,6 +725,21 @@ defmodule Mutare.Transform do
   end
 
   defp analyze_cond_clause(other, mutators), do: analyze(other, :runtime, mutators)
+
+  # One argument of a `defimpl`: a keyword list holding the `do:` block (its body is
+  # runtime — analyze it) alongside compile-time entries like `for:` (pass raw). The
+  # leading protocol-alias argument is not a list, so it passes through untouched.
+  defp analyze_defimpl_arg(kw, mutators) when is_list(kw) do
+    Enum.map(kw, fn
+      {key, value} = pair ->
+        if do_key?(key), do: {key, analyze(value, :runtime, mutators)}, else: pair
+
+      other ->
+        other
+    end)
+  end
+
+  defp analyze_defimpl_arg(other, _mutators), do: other
 
   # === return-value mutation =================================================
 

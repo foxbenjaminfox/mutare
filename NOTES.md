@@ -306,6 +306,32 @@ or a `%{:a => …}` arrow key — is neither, so it falls through and stays muta
 This was invisible before atom because no prior built-in matched an atom node;
 integer/string/operator mutators never touch a `:do` key.
 
+### Module aliases mutate only as a value (AliasLiteral)
+`AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
+(`apply(Foo, …)`, `is_struct(x, Foo)`, `[A, B]`, a behaviour/strategy arg) to the
+sentinel `Mutare.Mutant`. The "as a value, not as a name" rule is almost entirely
+*free* from existing positional routing:
+
+  * **Call-module position** (`Foo.bar()`) — the `{:., _, [mod, fun]}` dot lives in
+    the call node's *form* position, and `recurse/3` only descends into `args`, never
+    `form` (the same reason `:erlang.foo()`'s `:erlang` is untouched). So the call
+    module is never reached — no special case needed.
+  * **Struct name** (`%Foo{…}`) — the `:%` clause keeps the alias arg raw (it already
+    did, for the struct-map exclusion).
+  * **`defmodule` name** — handled at `transform_node` (only the body is transformed).
+  * **Directives / `@behaviour` / specs** — already pruned (`:compile_time`).
+
+The one *new* exclusion alias forced: `defimpl`/`defprotocol`/`defdelegate` carry
+compile-time module references (protocol name, `for:` type, `to:` target) that a
+selector can't legally replace — they'd poison (and, in protocol-heavy code, risk
+exhausting `@poison_attempts`). `defprotocol`/`defdelegate` are pruned whole (no
+runtime body lost); `defimpl` keeps its **body** mutating (`analyze_defimpl_arg/2`
+analyzes only the `do:` value, passing the protocol alias and `for:` type through
+raw — handling both the block and inline keyword shapes). Alias mutation is more
+aggressive than the literals (it makes nonexistent-module references that crash when
+invoked), but it stays compile-safe: an alias-as-value is just an atom, so a
+reference to a missing module compiles and only fails when actually called — the kill.
+
 ### Guard tagger is not bitstring-spec-aware `[deferred]`
 `tag_targets/3` (the lifted-guard path) is a context-free `Macro.postwalk` that
 runs mutators on every guard node. A multi-specifier bitstring *pattern* inside a

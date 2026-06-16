@@ -4,6 +4,7 @@ defmodule Mutare.MutatorsTest do
   alias Mutare.Mutators
 
   alias Mutare.Mutators.{
+    AliasLiteral,
     Arithmetic,
     AtomLiteral,
     CharlistLiteral,
@@ -30,7 +31,7 @@ defmodule Mutare.MutatorsTest do
                [Arithmetic, Relational, Logical, Literal] ++
                  [Conditional, List, Collection, StringLiteral, FloatLiteral, AtomLiteral] ++
                  [CharlistLiteral, MapLiteral, TupleLiteral, RegexLiteral, DateTimeLiteral] ++
-                 [ReturnValue]
+                 [AliasLiteral, ReturnValue]
     end
 
     test "families/0 are the registry's keys, in order — all on by default" do
@@ -39,7 +40,7 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.families() ==
                [:arithmetic, :relational, :logical, :literal] ++
                  [:conditional, :list, :collection, :string, :float, :atom] ++
-                 [:charlist, :map, :tuple, :regex, :datetime, :return_value]
+                 [:charlist, :map, :tuple, :regex, :datetime, :alias, :return_value]
     end
 
     test "resolve/1 maps family atoms to modules, preserving order" do
@@ -473,6 +474,32 @@ defmodule Mutare.MutatorsTest do
 
     test "name" do
       assert DateTimeLiteral.name() == :datetime
+    end
+  end
+
+  describe "AliasLiteral" do
+    test "replaces a fully-literal alias with the sentinel alias" do
+      assert render(AliasLiteral.mutate(parse("Foo"))) == ["Mutare.Mutant"]
+      assert render(AliasLiteral.mutate(parse("Foo.Bar.Baz"))) == ["Mutare.Mutant"]
+    end
+
+    test "drops the replacement that already equals the sentinel" do
+      assert AliasLiteral.mutate(parse("Mutare.Mutant")) == :skip
+    end
+
+    test "skips a dynamic alias (a segment that is not an atom)" do
+      # `__MODULE__.Sub` — the first segment is `{:__MODULE__, _, nil}`, not an atom.
+      assert AliasLiteral.mutate(parse("__MODULE__.Sub")) == :skip
+    end
+
+    test "skips non-alias nodes" do
+      assert AliasLiteral.mutate(parse(":foo")) == :skip
+      assert AliasLiteral.mutate(parse("foo")) == :skip
+      assert AliasLiteral.mutate(parse("1")) == :skip
+    end
+
+    test "name" do
+      assert AliasLiteral.name() == :alias
     end
   end
 

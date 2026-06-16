@@ -42,6 +42,7 @@ defmodule Mutare.Mutators do
     tuple: Mutare.Mutators.TupleLiteral,
     regex: Mutare.Mutators.RegexLiteral,
     datetime: Mutare.Mutators.DateTimeLiteral,
+    alias: Mutare.Mutators.AliasLiteral,
     return_value: Mutare.Mutators.ReturnValue
   ]
 

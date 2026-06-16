@@ -488,6 +488,67 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "alias context routing (value vs. module/name position)" do
+    @alias [Mutare.Mutators.AliasLiteral]
+
+    test "an alias used as a value mutates; the call-module position does not" do
+      source = """
+      defmodule D do
+        def run, do: apply(Greeter, :hello, [])
+        def direct, do: Greeter.hello()
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @alias)
+
+      # apply(Greeter, …) → Greeter is a value (1 site); Greeter.hello() is a
+      # call-module position (opaque form) and is not offered.
+      assert [%Site{mutator: :alias, line: 2}] = sites
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "struct names and directives are not mutated; value args are" do
+      source = """
+      defmodule D do
+        alias Foo.Bar
+        def f(x), do: %Bar{a: x}
+        def g(x), do: struct(Bar, a: x)
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @alias)
+
+      # The `alias` directive and the `%Bar{}` struct name are excluded; only the
+      # `struct(Bar, …)` value argument mutates.
+      assert [%Site{mutator: :alias, line: 4}] = sites
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "defimpl/defprotocol/defdelegate module references are not mutated (poison-clean)" do
+      source = """
+      defmodule D do
+        defdelegate foo(x), to: Helper
+      end
+
+      defprotocol P do
+        def encode(x)
+      end
+
+      defimpl P, for: Foo do
+        def encode(x), do: apply(Helper, :run, [x])
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @alias)
+
+      # The defdelegate `to:`, the protocol name, and the `for:` type are excluded;
+      # the defimpl *body* still mutates its value alias `Helper`.
+      assert [%Site{mutator: :alias}] = sites
+      assert meta =~ "defimpl P, for: Foo"
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+  end
+
   test "the default set fires the expanded families (logical, literal, conditional, …)" do
     source = """
     defmodule D do
