@@ -67,8 +67,50 @@ defmodule Mutare.UmbrellaTest do
 
     # Mutant locations are root-relative to the umbrella, under each app's lib/.
     assert Enum.all?(run.results, &String.starts_with?(&1.site.file, "apps/"))
+  end
 
-    # NOTE: per-app bootstrap injection lands in Step 2; until then the selector
-    # never activates in an umbrella, so kill classification is not asserted here.
+  test "the selector activates per app: every mutant is killed", %{
+    umbrella: umbrella,
+    sandbox: sandbox
+  } do
+    assert {:ok, run} = Mutare.run(umbrella, sandbox: sandbox, mutators: @probe)
+
+    # The fixture's tests pin every site (core's `+`, web's `*`), so a working
+    # per-app selector kills them all. A false survivor here means the bootstrap
+    # did not activate in some app — the catastrophic umbrella failure mode.
+    refute run.results == []
+
+    assert Enum.all?(run.results, &(&1.status == :killed)),
+           "unexpected non-kills: #{inspect(Enum.reject(run.results, &(&1.status == :killed)) |> Enum.map(&{&1.site.file, &1.status}))}"
+  end
+
+  test "a mutant in core is killed only through a cross-app web test" do
+    # core has no test of its own here; only WebTest (in a *different* app)
+    # exercises Core.double through Web. The mutant must still be killed — proving
+    # the selector is live when a sibling app's suite runs the mutated line.
+    over =
+      Mutare.Test.Umbrella.build(:cross_umbrella, %{
+        core: %{
+          files: %{"lib/core.ex" => "defmodule Core do\n  def double(x), do: x * 2\nend\n"}
+        },
+        web: %{
+          deps: [:core],
+          files: %{
+            "lib/web.ex" => "defmodule Web do\n  def run(x), do: Core.double(x)\nend\n",
+            "test/web_test.exs" => """
+            defmodule WebTest do
+              use ExUnit.Case
+              test "run", do: assert(Web.run(3) == 6)
+            end
+            """
+          }
+        }
+      })
+
+    assert {:ok, run} = Mutare.run(over.umbrella, sandbox: over.sandbox, mutators: @probe)
+
+    assert [_ | _] = run.results
+    assert Enum.all?(run.results, &(&1.status == :killed))
+    assert Enum.all?(run.results, &(&1.site.file == "apps/core/lib/core.ex"))
   end
 end

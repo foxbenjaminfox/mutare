@@ -92,11 +92,13 @@ Verified Mix mechanics that shape the later steps (Elixir source):
   app under `apps/` regardless of dep edges — so a generated `apps/mutare_support`
   is compiled automatically and only needs its ebin appended to the path.
 
-Staged delivery (each a commit): **(1)** copy-root/mutate-scope split + detection +
-umbrella discovery + `--app`/`--workspace` — *this step*; classification still
-inert because the bootstrap isn't injected per app yet, so an umbrella run reports
-all-survivors until step 2. **(2)** per-app bootstrap injection (every app's
-`test/test_helper.exs`) + ETS create-once guard → baseline genuinely mutated.
+Staged delivery (each a commit): **(1, done)** copy-root/mutate-scope split +
+detection + umbrella discovery + `--app`/`--workspace`; classification is inert
+until the bootstrap is injected per app, so step 1 alone reports all-survivors.
+**(2, done)** per-app bootstrap injection (every app's `test/test_helper.exs`) +
+ETS create-once guard → baseline genuinely mutated, kills (incl. cross-app) work;
+coverage still degrades to `:run_all` because the `:mutare_cov` helper isn't
+reachable in the umbrella yet (the probe records nothing → run-all).
 **(3)** generated `apps/mutare_support` coverage app + absolute dump path +
 umbrella-root-relative coverage keys → coverage selection works. **(4)** scope
 broad (`:run_all`/unattributed/`:full`) runs to the owning app + its dependents via

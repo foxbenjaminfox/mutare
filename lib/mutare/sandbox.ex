@@ -99,7 +99,8 @@ defmodule Mutare.Sandbox do
   """
   @spec prepare(Path.t(), Schema.t(), Options.t() | keyword()) :: Path.t()
   def prepare(root, %Schema{} = schema, opts \\ []) do
-    sandbox = Options.new(opts).sandbox || default_sandbox()
+    options = Options.new(opts)
+    sandbox = options.sandbox || default_sandbox()
 
     validate_paths!(root, sandbox)
     claim!(sandbox)
@@ -107,7 +108,7 @@ defmodule Mutare.Sandbox do
     copy_project(root, sandbox)
     write_metamutants(sandbox, schema)
     write_coverage_helper(sandbox)
-    inject_bootstrap(sandbox)
+    inject_bootstrap(sandbox, options)
 
     sandbox
   end
@@ -302,8 +303,30 @@ defmodule Mutare.Sandbox do
     |> Enum.find(&(not File.exists?(&1)))
   end
 
-  defp inject_bootstrap(sandbox) do
-    helper = Path.join(sandbox, "test/test_helper.exs")
+  # Inject the bootstrap into every test helper whose suite the runner will drive.
+  # A single project has one (`test/test_helper.exs`); an umbrella runs each app's
+  # suite sequentially in one BEAM (cwd = the app dir), so each app with a `test/`
+  # tree gets its own copy — and *every* app, not just the mutated ones, because a
+  # mutant in one app can be killed by a test in another, and the selector must be
+  # live in whichever app's process runs the line.
+  defp inject_bootstrap(sandbox, %Options{} = options) do
+    for helper_dir <- helper_dirs(sandbox, options.project) do
+      inject_one(Path.join(helper_dir, "test/test_helper.exs"))
+    end
+  end
+
+  defp helper_dirs(sandbox, %{umbrella?: true, apps: apps}) do
+    for %{dir: dir} <- apps,
+        app_dir = Path.join(sandbox, dir),
+        File.dir?(Path.join(app_dir, "test")),
+        do: app_dir
+  end
+
+  # A single app (no project, or a non-umbrella one) keeps the pre-umbrella
+  # behavior: the root helper, created if absent.
+  defp helper_dirs(sandbox, _project), do: [sandbox]
+
+  defp inject_one(helper) do
     File.mkdir_p!(Path.dirname(helper))
     existing = if File.exists?(helper), do: File.read!(helper), else: "ExUnit.start()\n"
 

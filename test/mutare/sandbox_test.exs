@@ -1,7 +1,8 @@
 defmodule Mutare.SandboxTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.{Sandbox, Schema}
+  alias Mutare.{Project, Sandbox, Schema}
+  alias Mutare.Test.Umbrella
 
   setup do
     base =
@@ -127,6 +128,30 @@ defmodule Mutare.SandboxTest do
 
     assert_refused(context.project, sandbox, context.schema)
     assert File.read!(sandbox) == "i am a file"
+  end
+
+  test "injects the bootstrap into every umbrella app's helper, not a root one" do
+    %{umbrella: umbrella, sandbox: sandbox} =
+      Umbrella.build(:bootstrap_demo, %{
+        core: %{files: %{"lib/core.ex" => "defmodule Core do\n  def f, do: 1\nend\n"}},
+        web: %{deps: [:core], files: %{"lib/web.ex" => "defmodule Web do\n  def g, do: 2\nend\n"}}
+      })
+
+    project = Project.resolve(umbrella)
+    schema = Schema.build(umbrella, project: project)
+
+    assert Sandbox.prepare(umbrella, schema, sandbox: sandbox, project: project) == sandbox
+
+    for app <- ["core", "web"] do
+      helper = File.read!(Path.join(sandbox, "apps/#{app}/test/test_helper.exs"))
+      assert helper =~ "injected by Mutare: select the active mutant"
+      assert helper =~ "injected by Mutare: coverage setup"
+      # The app's own helper content is preserved.
+      assert helper =~ "ExUnit.start()"
+    end
+
+    # An umbrella has no root suite, so no root helper should be created.
+    refute File.exists?(Path.join(sandbox, "test/test_helper.exs"))
   end
 
   defp assert_refused(root, sandbox, schema) do

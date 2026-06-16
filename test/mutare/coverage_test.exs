@@ -4,6 +4,7 @@ defmodule Mutare.CoverageTest do
   import ExUnit.CaptureLog, only: [capture_log: 1]
 
   alias Mutare.{Coverage, Result}
+  alias Mutare.Coverage.Recorder
   alias Mutare.Test.Project
 
   @moduletag timeout: 180_000
@@ -45,6 +46,29 @@ defmodule Mutare.CoverageTest do
 
       assert capture_log(fn -> assert {:error, _} = Coverage.read_dump(path) end) =~
                "falling back to run-all"
+    end
+  end
+
+  describe "setup_ast/0 (umbrella shares one BEAM)" do
+    test "creating the coverage tables twice is a no-op, not a :badarg" do
+      System.put_env(Recorder.env_var(), "1")
+
+      on_exit(fn ->
+        System.delete_env(Recorder.env_var())
+        :persistent_term.erase(Recorder.track_key())
+
+        for table <- [:mutare_cov_agg, :mutare_cov_attr], :ets.whereis(table) != :undefined do
+          :ets.delete(table)
+        end
+      end)
+
+      ast = Recorder.setup_ast()
+
+      # Two apps' test helpers evaluate this in the same VM; without the
+      # create-once guard the second :ets.new would raise :badarg.
+      assert {_, _} = Code.eval_quoted(ast)
+      assert {_, _} = Code.eval_quoted(ast)
+      assert :ets.whereis(:mutare_cov_agg) != :undefined
     end
   end
 

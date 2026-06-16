@@ -194,8 +194,15 @@ defmodule Mutare.Coverage.Recorder do
 
     quote do
       if System.get_env(unquote(env_var)) not in [nil, ""] do
-        :ets.new(unquote(agg), [:named_table, :public, :set, write_concurrency: true])
-        :ets.new(unquote(attr), [:named_table, :public, :set, write_concurrency: true])
+        # An umbrella runs every app's `test_helper.exs` in one BEAM, so the tables
+        # must be created once and shared. Guard on the aggregate table's existence
+        # (both are created together) so the second app's setup is a no-op rather
+        # than an `:ets.new` `:badarg`.
+        if :ets.whereis(unquote(agg)) == :undefined do
+          :ets.new(unquote(agg), [:named_table, :public, :set, write_concurrency: true])
+          :ets.new(unquote(attr), [:named_table, :public, :set, write_concurrency: true])
+        end
+
         :persistent_term.put(unquote(track_key), true)
       end
     end
