@@ -59,10 +59,10 @@ contract between them is the whole game.
     `PatternStructure` (a variable swap or duplicate→wildcard in a `def`/`defp` head) spans sibling
     positions / repeated variables that a single tag can't capture, so it is applied by **whole-clause
     replacement by index** (like `Drop`), carrying the mutated head args. `CasePattern` is the *same*
-    swap/wildcard families on a `case` *clause* pattern but delivered **in place** (a `case` isn't
-    liftable): the whole `case` is wrapped in a selector whose mutant branch is a copy with one
-    clause's pattern restructured (`replacement`), the diff staying focused on the pattern. The
-    matching `Site` constructor is chosen by pattern-matching the variant at emit
+    swap/wildcard families on a `case`/`receive`/`fn` *clause* pattern but delivered **in place**
+    (none is liftable): the whole construct is wrapped in a selector whose mutant branch is a copy
+    (`replacement`) with one clause's pattern restructured, the diff staying focused on the pattern.
+    The matching `Site` constructor is chosen by pattern-matching the variant at emit
     (`Guard`/`Pattern`/`PatternStructure` → `Site.lifted_replace/6`; `InPlace`/`Return`/`CasePattern`
     → `Site.in_place/6` family, the selector branch chosen by `branch_node/1`). The structural
     discovery primitives shared by the def-head and `case` paths live in
@@ -79,10 +79,11 @@ contract between them is the whole game.
     not just `def` heads and `=`/`<<>>` but every match position: a `<-` generator LHS and the
     LHS of a `case`/`fn`/`receive`/`with`/`for`/`try` `->` clause (generic `->` clause), with
     **`cond` excepted** (its `->` LHS is a runtime condition, kept mutatable — `analyze_cond_block/2`).
-    A `case` clause's pattern stays unmutated *in place* but is **additionally** offered to the
-    structural pattern families (swap/wildcard) by a dedicated `case` analyze clause, which attaches
-    a `Candidate.CasePattern` to the whole `case` node (the mutant wraps the case in a selector — see
-    the families below).
+    A `case`/`receive`/`fn` clause's pattern stays unmutated *in place* but is **additionally**
+    offered to the structural pattern families (swap/wildcard) by dedicated analyze clauses, which
+    attach a `Candidate.CasePattern` to the whole construct node (the mutant wraps it in a selector —
+    see the families below; `attach_clause_pattern_candidates/4` is the shared core, parameterized by
+    the construct's clause list + a rebuild closure).
     Orthogonally, a keyword/block **key** is never offered to a mutator: the 2-tuple pair clause
     (`label_key?/1`) skips inline keys (`format: :keyword`) and `do:`/`else:`/`rescue:`/`catch:`/
     `after:` block keys (`@block_keys`), so an atom-matching mutator can't splice a selector into a
@@ -265,21 +266,23 @@ contract between them is the whole game.
   `[a, b]`→`[b, a]`, map values; never transposes top-level args, and always compile-safe since it
   only reorders existing bindings) and **PatternWildcard** (`:pattern_wildcard` — where a variable
   repeats, replace an occurrence with `_`, dropping the equality constraint: `f(x, x)`→`f(_, x)`).
-  They cover **two pattern positions**: a `def`/`defp` *head* (delivered by lifting, like head
-  literals — `Candidate.PatternStructure`) and a `case` *clause* pattern (delivered **in place** —
-  `Candidate.CasePattern` — by wrapping the whole `case` in a selector whose mutant branch is a copy
-  with one clause's pattern restructured, sound because `case` clause bindings never escape their
-  body). Other pattern positions (`=`, `fn`/`with`/`receive`, …) are deliberately out of scope: `=`
-  is infeasible (a selector `case` around a match would lose its bindings), the rest are deferred.
+  They cover a `def`/`defp` *head* (delivered by lifting, like head literals —
+  `Candidate.PatternStructure`) and the *clause* patterns of `case`/`receive`/`fn` (delivered **in
+  place** — `Candidate.CasePattern` — by wrapping the whole construct in a selector whose mutant
+  branch is a copy with one clause's pattern restructured, sound because those clause bindings never
+  escape their body; an fn arg-list works like a head — each arg a position, though a duplicate
+  *across* fn args is not seen, only within one). Remaining positions are out of scope: `=` is
+  infeasible (a selector `case` around a match would lose its bindings), and `with`/`for`/`try` are
+  deferred.
   Both families are structural like ReturnValue (`mutate/1` is `:skip`; the real logic is
   `pattern_mutations/2`, an **optional `Mutare.Mutator` callback** discovered via
   `function_exported?/2` — by `FunctionPlan.build_pattern_structures/2` for heads and by
-  `Transform`'s `case` analyze clause via `Transform.PatternStructure.node_mutations/3`), registered
-  (toggleable/ignorable), and on by default. PatternWildcard takes the clause's body/guard-used
-  variable names so it never strands a binding (thin one occurrence when a binding survives;
-  otherwise wildcard both — `equal?(x, x), do: true`→`equal?(_, _)`); broadening a non-final clause
-  to irrefutable is a benign "cannot match" warning that only poisons under `--warnings-as-errors`
-  (single-clause functions / a sole `case` clause are always clean — see NOTES).
+  `Transform`'s `case`/`receive`/`fn` analyze clauses via `Transform.PatternStructure.node_mutations/3`),
+  registered (toggleable/ignorable), and on by default. PatternWildcard takes the clause's
+  body/guard-used variable names so it never strands a binding (thin one occurrence when a binding
+  survives; otherwise wildcard both — `equal?(x, x), do: true`→`equal?(_, _)`); broadening a
+  non-final clause to irrefutable is a benign "cannot match" warning that only poisons under
+  `--warnings-as-errors` (single-clause functions / a sole clause are always clean — see NOTES).
 - **`Mutare.Mutators`** — the **single ordered registry** of built-in families and the one place
   mutator lists are resolved/validated. `all/0` is the default set (every registered module — an
   unset `:mutators`/`:all`); `families/0` is every registered atom; `resolve/1` maps any family atom

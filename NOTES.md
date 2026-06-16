@@ -415,7 +415,7 @@ Consequences worth knowing:
   (`%{{1, 2} => a, {0, 2} => b}` — that key descends generically) stays
   poison-backstopped.
 
-### Pattern-structure mutators (head + `case`) `[done]`
+### Pattern-structure mutators (head + `case`/`receive`/`fn`) `[done]`
 Two families restructure a *whole pattern*, beyond the literal swaps above:
 **`PatternSwap`** (`:pattern_swap`) exchanges two distinct-named variables inside a
 container (`{x, y}`→`{y, x}`, `[a, b]`→`[b, a]`, a map's *values*); and
@@ -423,17 +423,25 @@ container (`{x, y}`→`{y, x}`, `[a, b]`→`[b, a]`, a map's *values*); and
 variable with `_` (`equal?(x, x)`→`equal?(_, x)`), dropping the non-linear equality
 constraint. Both are **structural** like `ReturnValue`/`clause_drop` (the target is a
 whole-pattern shape, not a node a `mutate/1` could match), **registered** and on by
-default. They cover **two pattern positions**, by two deliveries:
+default. They cover several pattern positions, by two deliveries:
 
 - a `def`/`defp` *head* pattern — **lifted** (`Candidate.PatternStructure`), like head
   literals; and
-- a `case` *clause* pattern — **in place** (`Candidate.CasePattern`), since a `case`
-  isn't a function clause group to lift.
+- a `case`/`receive`/`fn` *clause* pattern — **in place** (`Candidate.CasePattern`), since
+  none is a function clause group to lift.
 
-`=`-LHS is excluded (a selector `case` around a match would lose its bindings); other
-clause constructs (`fn`/`with`/`receive`/`for`/`try`) are deferred. The shared discovery
-primitives (`mutators/1`, `used_names/1`, `node_mutations/3`) live in
-`Transform.PatternStructure`, used by both paths.
+The three in-place constructs share one analyze path (`attach_clause_pattern_candidates/4`)
+parameterized by *the clause list* and *a rebuild closure* — the only things that differ
+(`case` has a subject + a single `do` block; `receive` has a `do` block plus an optional
+`after` whose timeout is **not** a pattern and is skipped; `fn` *is* its clauses, with
+multi-argument heads). Each clause's pattern *positions* are iterated, so a single-pattern
+`case`/`receive` clause and a multi-arg `fn` clause are handled uniformly; a duplicate
+*across* fn arguments (`fn x, x -> …`) is not seen (each position is mutated independently),
+only a duplicate *within* one argument (`fn {x, x} -> …`) — a small, rare gap.
+
+`=`-LHS is excluded (a selector `case` around a match would lose its bindings); `with`/
+`for`/`try` are deferred. The shared discovery primitives (`mutators/1`, `used_names/1`,
+`node_mutations/3`) live in `Transform.PatternStructure`, used by every path.
 
 Several design choices worth remembering:
 
@@ -448,25 +456,25 @@ Several design choices worth remembering:
   single result is unwrapped). A function now also lifts if it admits a swap/wildcard (so a
   single-clause `def f({x, y})` lifts solely to carry its swap mutant, like head literals).
 
-- **Whole-clause replacement (head), whole-`case` wrap (`case`) — not tagging.**
-  Guards/head-literals tag *one* node via `meta[:mutare_tag]` and `replace_tag` it in the
-  `__mut` copy. A swap/wildcard spans *two* sibling positions or repeated variables — and a
-  2-tuple/list has no taggable meta (Sourceror keeps small tuples/lists as raw
-  `{a, b}`/`[…]` with no `{f, m, a}` wrapper). So in a **head**,
+- **Whole-clause replacement (head), whole-construct wrap (`case`/`receive`/`fn`) — not
+  tagging.** Guards/head-literals tag *one* node via `meta[:mutare_tag]` and `replace_tag`
+  it in the `__mut` copy. A swap/wildcard spans *two* sibling positions or repeated
+  variables — and a 2-tuple/list has no taggable meta (Sourceror keeps small tuples/lists as
+  raw `{a, b}`/`[…]` with no `{f, m, a}` wrapper). So in a **head**,
   `Candidate.PatternStructure` carries the mutated head args and is applied by
   `List.replace_at` on the clause (the same index-based mechanism as `Candidate.Drop`), via
   the existing `put_head_args/2`; the `Site` records at the **head-call level**
-  (`original`/`mutated` = `f(x, x)`/`f(_, x)`), always rangeable. In a **`case`**,
-  `Candidate.CasePattern` is delivered by the *in-place selector*: the whole `case` is
-  wrapped in a `case :persistent_term.get(:mutare_active, 0) do <id> -> <mutated case> ; _
-  -> <original case> end`, where `replacement` is a copy of the case with one clause's
-  pattern restructured (sound — `case` clause bindings never escape their body). The diff
-  stays focused on the **clause pattern** (`{x, y}`→`{y, x}`), which *is* rangeable here
-  (Sourceror block-wraps the clause pattern with meta, unlike a bare head arg). The mutant
-  branch is the raw mutated case (no nested selectors — first-order, like a lifted `__mut`
-  copy); the selector's catch-all holds the fully-transformed case, so nested body mutants
-  stay reachable. `branch_node/1` picks `replacement` for a `CasePattern`, `mutated` for
-  every other in-place candidate.
+  (`original`/`mutated` = `f(x, x)`/`f(_, x)`), always rangeable. In a **`case`/`receive`/`fn`**,
+  `Candidate.CasePattern` is delivered by the *in-place selector*: the whole construct is
+  wrapped in a `case :persistent_term.get(:mutare_active, 0) do <id> -> <mutated construct> ;
+  _ -> <original construct> end`, where `replacement` is a copy with one clause's pattern
+  restructured (sound — these clause bindings never escape their body). The diff stays
+  focused on the **clause pattern** (`{x, y}`→`{y, x}`), which *is* rangeable here (Sourceror
+  block-wraps a clause pattern with meta, unlike a bare head arg). The mutant branch is the
+  raw mutated construct (no nested selectors — first-order, like a lifted `__mut` copy); the
+  selector's catch-all holds the fully-transformed construct, so nested body mutants stay
+  reachable. `branch_node/1` picks `replacement` for a `CasePattern`, `mutated` for every
+  other in-place candidate.
 
 - **Compile-safety — swap is total, wildcard is `used_outside`-guided.** A swap only
   reorders existing variables: the bound-name set and its usage are invariant (no
@@ -492,8 +500,9 @@ Several design choices worth remembering:
   residual exotic case is a head variable *rebound* (not read) in the body — `used_outside`
   over-counts it as used → a thin mutant with an unused var → WAE poison; rare, documented,
   bounded. **Single-clause functions are always clean** (nothing to shadow). The same holds
-  for a `case`: broadening one clause can shadow a *later* clause (e.g. the trailing `_ ->`)
-  — WAE-poison-dropped, harmless otherwise; a `case` with a single clause is always clean.
+  for `case`/`receive`/`fn`: broadening one clause can shadow a *later* clause (e.g. a
+  trailing `_ ->`) — WAE-poison-dropped, harmless otherwise; a construct with a single clause
+  is always clean.
 
 ### Transform pipeline — explicit stages `[refactor, done]`
 `Mutare.Transform` is an explicit pipeline rather than a walk-everything-then-
