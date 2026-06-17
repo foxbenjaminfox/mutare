@@ -341,15 +341,13 @@ defmodule Mutare.Transform do
   end
 
   # Does `node` define a function via metaprogramming — a `def`/`defp` reached inside
-  # a non-`def` statement? Nested `defmodule`/`defimpl`/`defprotocol` open a different
-  # scope (their defs belong to *that* module, not this one), so the walk is pruned at
-  # those boundaries, mirroring `ModulePlan.nested_def_names/1`.
+  # a non-`def` statement? Unlike `ModulePlan.nested_def_names/1`, this intentionally
+  # descends into nested scopes: a module-level `for`/`if` whose only definition is a
+  # scoped `defmodule`/`defimpl` is still a compile-time scaffold, so its own
+  # expressions must stay inert while the scoped runtime body is reached.
   defp metaprogrammed_def?(node) do
     {_ast, found?} =
       Macro.prewalk(node, false, fn
-        {form, _meta, _args}, acc when form in [:defmodule, :defimpl, :defprotocol] ->
-          {:__mutare_pruned__, acc}
-
         {form, _meta, _args} = n, _acc when form in [:def, :defp] ->
           {n, true}
 

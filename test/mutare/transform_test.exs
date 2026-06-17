@@ -1111,6 +1111,54 @@ defmodule Mutare.TransformTest do
       refute Enum.any?(sites, &(&1.original_code == "[1, 2]"))
       assert_compiles(meta)
     end
+
+    test "a scaffold whose definition is scoped in defimpl still leaves the generator inert" do
+      source = """
+      defprotocol Enc do
+        def enc(x)
+      end
+
+      defmodule ScopedImpls do
+        for type <- [Foo] do
+          defimpl Enc, for: type do
+            def enc(x), do: x + 1
+          end
+        end
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.List]
+        )
+
+      assert meta =~ "for type <- [Foo] do"
+      refute Enum.any?(sites, &(&1.original_code == "[Foo]"))
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+      assert_compiles(meta)
+    end
+
+    test "a scaffold whose definition is scoped in defmodule still leaves the condition inert" do
+      source = """
+      defmodule ScopedModules do
+        if true do
+          defmodule Inner do
+            def value, do: 1 + 2
+          end
+        end
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.Literal]
+        )
+
+      assert meta =~ "if true do"
+      refute Enum.any?(sites, &(&1.original_code == "true"))
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+      assert_compiles(meta)
+    end
   end
 
   # Assert the metamutant actually *compiles*. A bug like a selector `case` spliced
