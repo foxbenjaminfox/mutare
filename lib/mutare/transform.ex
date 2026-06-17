@@ -1050,6 +1050,29 @@ defmodule Mutare.Transform do
     {:for, meta, Enum.map(args, &analyze_for_arg(&1, mutators))}
   end
 
+  # `not in`: `x not in y` parses as `not(x in y)` — a `:not` wrapping an `:in`.
+  # Both nodes are boolean-valued, so the inner `in` would otherwise be offered to
+  # mutators and produce only *redundant* mutants: Conditional forcing it to
+  # `true`/`false` yields `not true`/`not false`, exactly the outer `not` forced to
+  # `false`/`true`; and Relational's `in` → `not in` yields `not(x not in y)` ≡
+  # `x in y`, exactly Logical's strip of the outer `not`. So the inner `in` node is
+  # not offered to any mutator (only its operands descend); the outer `not` is
+  # offered normally (Logical strips it → `x in y`, the strongest membership
+  # mutation, and Conditional forces it `true`/`false`). The only families matching
+  # an `in` node are Conditional and Relational — both redundant under a `not` — so
+  # this drops exactly the redundant mutants and nothing of value.
+  defp analyze({:not, meta, [{:in, in_meta, [left, right]}]} = node, :runtime, mutators) do
+    inner =
+      {:in, in_meta, [analyze(left, :runtime, mutators), analyze(right, :runtime, mutators)]}
+
+    rebuilt = {:not, meta, [inner]}
+
+    case Mutator.mutations(node, mutators) do
+      [] -> rebuilt
+      muts -> put_candidates(rebuilt, build_candidates(node, muts))
+    end
+  end
+
   # a generic runtime node: build the candidate from the raw node (so `original`
   # keeps un-annotated children), then descend into the children. A sigil is offered
   # as a whole (so the sigil mutators — Regex/Charlist/DateTime — match it), then

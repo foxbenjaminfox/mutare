@@ -1301,6 +1301,39 @@ once at compile time with mutant 0, so a selector on its condition could never a
 (the `analyze_cond_clause` guard and the `:runtime`-only `if`/`unless` clause enforce
 this).
 
+### Membership: `in` ↔ `not in`, and the `not(in)` redundancy `[done]`
+`Relational` flips membership polarity, `x in y → x not in y` — the membership
+analogue of `== → !=`, and the one swap whose replacement isn't a sibling
+operator but a `not`-wrapped node (`x not in y` parses as `not(x in y)`, so the
+mutation wraps the original `in` node in a fresh-meta `:not`; the formatter
+renders it back). It's compile- and guard-safe (`not in` is legal wherever `in`
+is), so it reaches `when` guards via lifting for free, like the other relational
+swaps. The reverse direction is *not* a Relational swap: `Logical` already strips
+the `not` from a `not in` (`not in → in`), so emitting it here would duplicate
+that.
+
+The interesting part is the **redundancy under a `not`**. Because `x not in y`
+is `not(x in y)`, both the `:not` and the inner `:in` are boolean-valued, and the
+*only* families that match an `:in` node are `Conditional` and `Relational`.
+Offering the inner `in` produces purely redundant mutants:
+
+- `Conditional` forcing the inner `in` to `true`/`false` yields `not true`/`not
+  false` — exactly the outer `not` forced to `false`/`true` (which `Conditional`
+  already emits). A pair that always shares a verdict with the outer pair.
+- `Relational`'s `in → not in` on the inner `in` yields `not(x not in y)` ≡ `x in
+  y` — exactly `Logical`'s strip of the outer `not`.
+
+So an `:in` node that is the *direct operand* of a `:not` is **never offered to
+any mutator** (its operands still descend, so a literal in `x` / `y` still
+mutates). This drops exactly the redundant mutants and nothing of value: a plain
+`x in y` keeps its three (`not in`, `true`, `false`); a `x not in y` keeps its
+three (`in`, `true`, `false`) instead of six. The suppression lives in **two**
+parallel descents — `Transform.analyze` (the `{:not, _, [{:in, …}]}` runtime
+clause, for bodies) and `FunctionPlan.tag_walk` (the matching guard clause) —
+because guards offer nodes through a separate path and the same redundancy arises
+there. The rule is uniform (any mutator, not just the two built-ins) so a future
+membership mutator inherits it.
+
 ### Equivalent mutants `[partial]`
 Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the
 arithmetic mutator skips the multiplicative-identity swap on a right operand

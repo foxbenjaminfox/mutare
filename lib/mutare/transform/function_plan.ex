@@ -234,6 +234,18 @@ defmodule Mutare.Transform.FunctionPlan do
   # is taggable) and the args still descend (a literal/operator argument still mutates).
   defp tag_targets(guard, acc, mutators), do: tag_walk(guard, acc, mutators)
 
+  # `not in` in a guard: `x not in y` is `not(x in y)`. The inner `in` is descended
+  # (so a literal operand still mutates) but never *offered* to a mutator — exactly
+  # as the in-place analyzer does (see `Mutare.Transform`): Conditional forcing it
+  # `true`/`false` would duplicate the outer `not`'s, and Relational's `in` → `not in`
+  # would re-negate to `x in y`, duplicating Logical's strip of the outer `not`. The
+  # outer `not` is still offered (strip / true / false).
+  defp tag_walk({:not, meta, [{:in, in_meta, [left, right]}]}, acc, mutators) do
+    {left, acc} = tag_walk(left, acc, mutators)
+    {right, acc} = tag_walk(right, acc, mutators)
+    offer_target({:not, meta, [{:in, in_meta, [left, right]}]}, acc, mutators)
+  end
+
   # An n-ary node: descend its args (not its form), then offer the node itself.
   defp tag_walk({form, meta, args}, acc, mutators) when is_list(args) do
     {args, acc} = Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))

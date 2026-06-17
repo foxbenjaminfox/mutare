@@ -303,7 +303,10 @@ contract between them is the whole game.
   floor is `~> 1.18`. Selected via the `:reporters` option (below).
 - **`Mutare.Mutator`** + **`Mutare.Mutators.*`** — the public extension behaviour (`mutate/1`,
   `name/0`) and the built-in families, **all on by default**: Arithmetic (binary swaps +
-  unary-minus removal), Relational, Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip), Literal
+  unary-minus removal), Relational (ordering/equality swaps, plus membership `in`→`not in` —
+  the polarity flip for `in`, mirroring `==`→`!=`; the reverse is Logical's `not` strip, and an
+  `in` directly under a `not` is left unmutated to avoid duplicating it — see NOTES "Membership"),
+  Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip), Literal
   (integers `n`→`{n±1, 0}`, `true`↔`false`), Conditional (a boolean-valued node → `true`/`false`),
   IfCondition (the *positional* sibling of Conditional — forces an `if`/`unless`/`cond`
   **condition** to `true`/`false`, reaching the conditions no value family proves boolean at the

@@ -28,6 +28,10 @@ defmodule Mutare.TransformTest do
   # own test below and in mutators_test.exs.
   @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
 
+  # The families that together exercise membership: Relational flips `in` → `not in`,
+  # Logical strips a `not`, Conditional forces a boolean to true/false.
+  @membership [Mutare.Mutators.Relational, Mutare.Mutators.Conditional, Mutare.Mutators.Logical]
+
   @sample """
   defmodule Sample do
     def classify(total, threshold) do
@@ -863,6 +867,75 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "membership (`in` / `not in`) mutation and redundancy suppression" do
+    test "Relational flips `in` to `not in`" do
+      assert Mutare.Mutators.Relational.mutate(Sourceror.parse_string!("x in y"))
+             |> Enum.map(&Sourceror.to_string/1) == ["x not in y"]
+    end
+
+    test "a body `x in y` gets `not in` plus the true/false pair, and compiles" do
+      {meta, triples} = membership_triples("def f(x, y), do: x in y")
+
+      assert triples == [
+               {:relational, "x in y", "x not in y"},
+               {:conditional, "x in y", "true"},
+               {:conditional, "x in y", "false"}
+             ]
+
+      assert_compiles(meta)
+    end
+
+    test "a body `x not in y` strips to `in` (Logical) plus true/false — the inner `in` is not re-offered" do
+      {meta, triples} = membership_triples("def f(x, y), do: x not in y")
+
+      # Logical strips the outer `not` (the strongest membership mutation) and
+      # Conditional forces the whole thing true/false. The inner `in` is suppressed,
+      # so there is NO `not(x not in y)` (Relational re-negation, ≡ the strip) and NO
+      # `not true`/`not false` (Conditional on the inner `in`, ≡ the outer true/false):
+      # exactly these three mutants, nothing redundant.
+      assert {:logical, "x not in y", "x in y"} in triples
+      assert {:conditional, "x not in y", "true"} in triples
+      assert {:conditional, "x not in y", "false"} in triples
+      refute Enum.any?(triples, fn {m, _o, _mut} -> m == :relational end)
+      assert length(triples) == 3
+      assert_compiles(meta)
+    end
+
+    test "a guard `x in [..]` flips to `not in` (lifted) plus true/false, and compiles" do
+      {meta, triples} =
+        membership_triples("""
+        def f(x) when x in [1, 2, 3], do: :ok
+        def f(_x), do: :no
+        """)
+
+      assert {:relational, "x in [1, 2, 3]", "x not in [1, 2, 3]"} in triples
+      assert {:conditional, "x in [1, 2, 3]", "true"} in triples
+      assert {:conditional, "x in [1, 2, 3]", "false"} in triples
+      assert_compiles(meta)
+    end
+
+    test "a guard `x not in [..]` strips to `in` plus true/false — inner `in` suppressed in guards too" do
+      {meta, triples} =
+        membership_triples("""
+        def f(x) when x not in [1, 2, 3], do: :ok
+        def f(_x), do: :no
+        """)
+
+      # Only the membership families on the guard node (clause_drop sites are
+      # unrelated). The inner `in` is suppressed in guards too, so exactly the strip
+      # and the true/false pair survive — no Relational re-negation, no extra pair.
+      membership =
+        Enum.filter(triples, fn {m, _o, _mut} -> m in [:relational, :conditional, :logical] end)
+
+      assert {:logical, "x not in [1, 2, 3]", "x in [1, 2, 3]"} in membership
+      assert {:conditional, "x not in [1, 2, 3]", "true"} in membership
+      assert {:conditional, "x not in [1, 2, 3]", "false"} in membership
+      refute Enum.any?(membership, fn {m, _o, _mut} -> m == :relational end)
+      assert length(membership) == 3
+      assert_compiles(meta)
+    end
+  end
+
   describe "DefaultDrop (drop a trailing default/fallback argument)" do
     test "drops a non-nil default (piped and not), skips a nil default, and compiles" do
       source = """
@@ -1571,6 +1644,16 @@ defmodule Mutare.TransformTest do
 
     assert_compiles(meta)
     for s <- sites, s.mutator == :numeric, do: {s.original_code, s.mutated_code}
+  end
+
+  # Transform a `def` body with the membership-relevant families and return the
+  # `{mutator, original_code, mutated_code}` triples (relational/conditional/logical),
+  # alongside the metamutant source so the caller can assert it compiles.
+  defp membership_triples(body) do
+    source = "defmodule M do\n  #{String.trim_trailing(body)}\nend\n"
+    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @membership)
+    triples = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
+    {meta, triples}
   end
 
   defp assert_compiles(meta) do
