@@ -5,8 +5,12 @@ defmodule Mutare.Mutators.Collection do
     * `Enum.filter` ↔ `Enum.reject`
     * `Enum.all?` ↔ `Enum.any?`
     * `Enum.min` ↔ `Enum.max`
+    * `Enum.min_by` ↔ `Enum.max_by`
     * `Enum.take` ↔ `Enum.drop`
+    * `Enum.take_while` ↔ `Enum.drop_while`
+    * `Enum.sum` ↔ `Enum.product`
     * `List.first` ↔ `List.last`
+    * `List.foldl` ↔ `List.foldr`
 
   Each pair shares the same arities, so swapping the function name while keeping
   the argument list always compiles. These are remote calls — never legal in a
@@ -26,10 +30,18 @@ defmodule Mutare.Mutators.Collection do
     {[:Enum], :any?} => {[:Enum], :all?},
     {[:Enum], :min} => {[:Enum], :max},
     {[:Enum], :max} => {[:Enum], :min},
+    {[:Enum], :min_by} => {[:Enum], :max_by},
+    {[:Enum], :max_by} => {[:Enum], :min_by},
     {[:Enum], :take} => {[:Enum], :drop},
     {[:Enum], :drop} => {[:Enum], :take},
+    {[:Enum], :take_while} => {[:Enum], :drop_while},
+    {[:Enum], :drop_while} => {[:Enum], :take_while},
+    {[:Enum], :sum} => {[:Enum], :product},
+    {[:Enum], :product} => {[:Enum], :sum},
     {[:List], :first} => {[:List], :last},
-    {[:List], :last} => {[:List], :first}
+    {[:List], :last} => {[:List], :first},
+    {[:List], :foldl} => {[:List], :foldr},
+    {[:List], :foldr} => {[:List], :foldl}
   }
 
   @impl Mutare.Mutator

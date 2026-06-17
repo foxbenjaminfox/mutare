@@ -300,6 +300,26 @@ defmodule Mutare.MutatorsTest do
       assert render(Collection.mutate(parse("List.first(xs)"))) == ["List.last(xs)"]
     end
 
+    test "swaps the additional Enum/List pairs, keeping arguments" do
+      assert render(Collection.mutate(parse("Enum.min_by(xs, f)"))) == ["Enum.max_by(xs, f)"]
+      assert render(Collection.mutate(parse("Enum.max_by(xs, f)"))) == ["Enum.min_by(xs, f)"]
+
+      assert render(Collection.mutate(parse("Enum.take_while(xs, f)"))) ==
+               ["Enum.drop_while(xs, f)"]
+
+      assert render(Collection.mutate(parse("Enum.drop_while(xs, f)"))) ==
+               ["Enum.take_while(xs, f)"]
+
+      assert render(Collection.mutate(parse("Enum.sum(xs)"))) == ["Enum.product(xs)"]
+      assert render(Collection.mutate(parse("Enum.product(xs)"))) == ["Enum.sum(xs)"]
+
+      assert render(Collection.mutate(parse("List.foldl(xs, acc, f)"))) ==
+               ["List.foldr(xs, acc, f)"]
+
+      assert render(Collection.mutate(parse("List.foldr(xs, acc, f)"))) ==
+               ["List.foldl(xs, acc, f)"]
+    end
+
     test "skips unrelated remote calls and other modules' functions" do
       assert Collection.mutate(parse("Enum.map(xs, f)")) == :skip
       assert Collection.mutate(parse("Other.filter(xs, f)")) == :skip
