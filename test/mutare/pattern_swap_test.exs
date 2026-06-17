@@ -40,6 +40,46 @@ defmodule Mutare.Mutators.PatternSwapTest do
     end
   end
 
+  describe "bitstrings" do
+    test "swaps the values of two segments, keeping the specs pinned in place" do
+      assert swaps("<<a::integer, b::integer>>") == ["f(<<b::integer, a::integer>>)"]
+      assert swaps("<<a::8, b::16>>") == ["f(<<b::8, a::16>>)"]
+    end
+
+    test "swaps bare (spec-less) segments" do
+      assert swaps("<<a, b>>") == ["f(<<b, a>>)"]
+    end
+
+    test "swaps every distinct pair across three segments" do
+      assert swaps("<<a::8, b::16, c::8>>") ==
+               [
+                 "f(<<b::8, a::16, c::8>>)",
+                 "f(<<c::8, b::16, a::8>>)",
+                 "f(<<a::8, c::16, b::8>>)"
+               ]
+    end
+
+    test "swaps a bitstring segment value nested inside another container" do
+      assert swaps("{<<a::8, b::8>>, c}") == ["f({<<b::8, a::8>>, c})"]
+    end
+
+    # A value read as a size elsewhere in the binary must not be relocated — Elixir
+    # requires it bound earlier in the same binary, so moving it is a CompileError.
+    test "never moves a value that is read as a size" do
+      assert swaps("<<n, rest::binary-size(n)>>") == []
+    end
+
+    test "swaps other segment values while leaving a size variable in place" do
+      assert swaps("<<a::8, n::8, rest::binary-size(n)>>") ==
+               ["f(<<rest::8, n::8, a::binary-size(n)>>)"]
+    end
+
+    test "does not swap same-named segment values (wildcard's domain) or literals" do
+      assert swaps("<<a::8, a::8>>") == []
+      assert swaps("<<a::8, 5::8>>") == []
+    end
+  end
+
   describe "scope" do
     test "does not transpose top-level arguments (containers only)" do
       assert swaps("x, y") == []

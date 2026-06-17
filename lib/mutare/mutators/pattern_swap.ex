@@ -1,7 +1,8 @@
 defmodule Mutare.Mutators.PatternSwap do
   @moduledoc """
   Swap two variables inside a pattern container — `{x, y}` → `{y, x}`,
-  `[a, b]` → `[b, a]`, `%{k1: x, k2: y}` → `%{k1: y, k2: x}`.
+  `[a, b]` → `[b, a]`, `%{k1: x, k2: y}` → `%{k1: y, k2: x}`, and the segment *values*
+  of a bitstring `<<a::8, b::16>>` → `<<b::8, a::16>>`.
 
   This asks a precise question: *does any test depend on which value lands in which
   position?* If a function destructures `{lat, lng}` and nothing distinguishes the two,
@@ -24,9 +25,10 @@ defmodule Mutare.Mutators.PatternSwap do
   ## Scope and compile-safety
 
   Only `def`/`defp` *heads* are mutated (the only pattern position Mutare lifts), and
-  only **within containers** — tuples, lists, and the *values* of a map pattern. The
-  top-level argument list is deliberately not a swap site (transposing whole arguments
-  is a separate, noisier mutation the project chose not to emit).
+  only **within containers** — tuples, lists, the *values* of a map pattern, and the
+  segment *values* of a bitstring (the bindable left of each `::`, the spec staying put).
+  The top-level argument list is deliberately not a swap site (transposing whole
+  arguments is a separate, noisier mutation the project chose not to emit).
 
   A swap is **always compile-safe**: it only reorders existing variables, so the set of
   bound names and their usage is unchanged (no unbound or unused variable can appear),
@@ -34,7 +36,10 @@ defmodule Mutare.Mutators.PatternSwap do
   2-tuple), so it can never make a clause shadow a later one. Only two **distinct-named
   plain variables** are swapped — a same-name swap (`{x, x}`) is a no-op (and is the
   `Mutare.Mutators.PatternWildcard` family's domain), and `_`/`_`-prefixed names and
-  pinned `^x` variables are never swapped.
+  pinned `^x` variables are never swapped. For a bitstring the type/size specs stay pinned
+  to their positions, and a value read as a *size* elsewhere in the same binary
+  (`<<n, rest::binary-size(n)>>`) is never moved — Elixir requires a size variable to be
+  bound earlier in the binary, so relocating its binding would not compile.
   """
   @behaviour Mutare.Mutator
 
@@ -76,6 +81,12 @@ defmodule Mutare.Mutators.PatternSwap do
   # An n-tuple `{:{}, _, elems}` (arity ≠ 2) — siblings are the elements.
   defp own_swaps({:{}, meta, elems}) when is_list(elems),
     do: sibling_swaps(elems, &{:{}, meta, &1})
+
+  # A bitstring pattern `<<v1::s1, v2::s2, …>>` — siblings are the segment *values* (the
+  # bindable left of each `::`); each type/size spec stays pinned to its position
+  # (`<<a::8, b::16>>` → `<<b::8, a::16>>`).
+  defp own_swaps({:<<>>, meta, segments}) when is_list(segments),
+    do: bitstring_value_swaps(meta, segments)
 
   # A map pattern — siblings are the *values* (keys stay fixed). Swapping values
   # across two keys: `%{a: x, b: y}` → `%{a: y, b: x}`.
@@ -120,6 +131,48 @@ defmodule Mutare.Mutators.PatternSwap do
     end
   end
 
+  # Swap the *values* of two bitstring segments whose values are distinct-named
+  # variables, leaving each type/size spec in place. A value read as a size elsewhere in
+  # the binary is excluded (`swappable_segment_var/2`) — moving its binding would strand
+  # the size read (Elixir requires it bound earlier in the same binary).
+  defp bitstring_value_swaps(meta, segments) do
+    spec_reads = spec_var_names(segments)
+
+    vars =
+      for {seg, i} <- Enum.with_index(segments),
+          name = swappable_segment_var(seg, spec_reads),
+          do: {i, name}
+
+    for {i, ni} <- vars, {j, nj} <- vars, i < j, ni != nj do
+      {:<<>>, meta, swap_segment_values(segments, i, j)}
+    end
+  end
+
+  # The bindable variable name of a segment's value, or `nil` — also `nil` for a value
+  # read as a size elsewhere in the binary (`spec_reads`), which must not be relocated.
+  defp swappable_segment_var(seg, spec_reads) do
+    case var_name(segment_value(seg)) do
+      nil -> nil
+      name -> if MapSet.member?(spec_reads, name), do: nil, else: name
+    end
+  end
+
+  defp swap_segment_values(segments, i, j) do
+    vi = segment_value(Enum.at(segments, i))
+    vj = segment_value(Enum.at(segments, j))
+
+    segments
+    |> List.replace_at(i, put_segment_value(Enum.at(segments, i), vj))
+    |> List.replace_at(j, put_segment_value(Enum.at(segments, j), vi))
+  end
+
+  # A segment is either a bare value or `value :: spec`; read/replace only its value side.
+  defp segment_value({:"::", _meta, [value, _spec]}), do: value
+  defp segment_value(seg), do: seg
+
+  defp put_segment_value({:"::", meta, [_value, spec]}, value), do: {:"::", meta, [value, spec]}
+  defp put_segment_value(_seg, value), do: value
+
   # --- child swaps: recurse, lifting each nested variant back into place ----------
 
   defp child_swaps({form, meta, args}) when is_list(args) do
@@ -147,6 +200,34 @@ defmodule Mutare.Mutators.PatternSwap do
     a = Enum.at(list, i)
     b = Enum.at(list, j)
     list |> List.replace_at(i, b) |> List.replace_at(j, a)
+  end
+
+  # The variable-shaped names appearing in any bitstring **spec** (the right of `::`)
+  # among `segments` — the `n` in `<<n, rest::binary-size(n)>>`, plus bare type atoms
+  # like `integer` (indistinguishable from a variable in the AST). A value with such a
+  # name is excluded from swapping; over-collecting type atoms is the safe direction — it
+  # can only decline a swap, never produce an illegal one. (Mirrors the same helper in
+  # `Mutare.Mutators.PatternWildcard`.)
+  defp spec_var_names(segments) do
+    {_ast, names} =
+      Macro.prewalk(segments, MapSet.new(), fn
+        {:"::", _meta, [_value, spec]} = node, acc -> {node, collect_var_names(spec, acc)}
+        node, acc -> {node, acc}
+      end)
+
+    names
+  end
+
+  defp collect_var_names(spec, acc) do
+    {_ast, names} =
+      Macro.prewalk(spec, acc, fn node, acc ->
+        case var_name(node) do
+          nil -> {node, acc}
+          name -> {node, MapSet.put(acc, name)}
+        end
+      end)
+
+    names
   end
 
   # The name of a swappable variable node, or `nil`. A plain variable is
