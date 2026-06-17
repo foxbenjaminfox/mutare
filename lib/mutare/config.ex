@@ -70,8 +70,17 @@ defmodule Mutare.Config do
         end
 
       format ->
-        Keyword.put(config, :reporters, cli_reporters(String.to_atom(format), flags[:output]))
+        Keyword.put(config, :reporters, cli_reporters(to_format(format), flags[:output]))
     end
+  end
+
+  # Map a CLI `--format` string to its atom *without* `String.to_atom/1` — which
+  # would intern an arbitrary user string into the (never-collected) atom table. A
+  # known format resolves to its atom; an unknown one is left as the raw string, so
+  # `Mutare.Options` rejects it with the descriptive "format in [...]" error rather
+  # than a bare lookup failure. `Mutare.Options.formats/0` is the single source.
+  defp to_format(format) do
+    Enum.find(Mutare.Options.formats(), format, &(Atom.to_string(&1) == format))
   end
 
   defp cli_reporters(format, nil), do: [{format, nil}]

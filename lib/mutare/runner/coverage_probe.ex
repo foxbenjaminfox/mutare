@@ -40,6 +40,8 @@ defmodule Mutare.Runner.CoverageProbe do
   alias Mutare.Coverage.Recorder
   alias Mutare.Sandbox.Command
 
+  require Logger
+
   @typedoc """
   What the probe decided for one mutant:
 
@@ -98,8 +100,30 @@ defmodule Mutare.Runner.CoverageProbe do
       {Recorder.root_env(), root}
     ]
 
-    {_output, status} = Command.mix(sandbox, ["test"], Selector.baseline(), nil, env)
-    status
+    case Command.mix(sandbox, ["test"], Selector.baseline(), nil, env) do
+      {_output, 0} ->
+        0
+
+      {output, status} ->
+        # The baseline already confirmed the suite green, so a non-zero probe is
+        # unexpected — and silently degrading to run-all (every covered mutant runs
+        # the whole suite) is a big, invisible slowdown. Surface it.
+        Logger.warning(
+          "coverage probe exited #{status}; falling back to run-all selection " <>
+            "(every covered mutant runs the whole suite). Probe output:\n#{probe_tail(output)}"
+        )
+
+        status
+    end
+  end
+
+  # The last few lines of the probe's captured output — enough to point at the
+  # failure without dumping a whole suite run into the log.
+  defp probe_tail(output) do
+    output
+    |> String.split("\n")
+    |> Enum.take(-15)
+    |> Enum.join("\n")
   end
 
   # An empty aggregate means the capture recorded nothing (it likely failed), not

@@ -204,12 +204,11 @@ defmodule Mix.Tasks.Mutare do
     Mix.shell().info("wrote #{format} report to #{path}")
   end
 
-  defp render_for(:human, run, _options), do: Report.render(run.results, run.schema.sources)
-
   defp render_for(format, run, options) do
     renderer(format).render(run.results, run.schema.sources, min_score: options.min_score)
   end
 
+  defp renderer(:human), do: Report
   defp renderer(:json), do: Report.Json
   defp renderer(:html), do: Report.Html
   defp renderer(:sarif), do: Report.Sarif

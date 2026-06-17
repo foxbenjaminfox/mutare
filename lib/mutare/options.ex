@@ -79,6 +79,14 @@ defmodule Mutare.Options do
   @formats ~w(human json html sarif)a
 
   @doc """
+  The output formats a reporter entry may name (`:human`, `:json`, `:html`,
+  `:sarif`) — the single source of truth, so `Mutare.Config` can map a CLI
+  `--format` string without re-listing them or interning arbitrary input.
+  """
+  @spec formats() :: [atom()]
+  def formats, do: @formats
+
+  @doc """
   Resolve and validate options.
 
   Accepts a keyword list (typically `Mutare.Config.merge/2`'s output, plus

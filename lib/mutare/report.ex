@@ -86,6 +86,14 @@ defmodule Mutare.Report do
   end
 
   @doc """
+  Conform to the machine reporters' `(results, sources, opts)` signature so all
+  four formats dispatch uniformly. The human report ignores `opts` — the score
+  gate is applied separately by the Mix task, not rendered here.
+  """
+  @spec render([Result.t()], %{optional(String.t()) => String.t()}, keyword()) :: String.t()
+  def render(results, sources, _opts), do: render(results, sources)
+
+  @doc """
   Mutation score as a percentage:
   `killed / (total − no_coverage − ignored − poisoned − harness_error)`.
   Returns `100.0` when the denominator is zero (nothing to test).
