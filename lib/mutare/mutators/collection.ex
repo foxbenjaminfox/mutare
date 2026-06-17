@@ -25,10 +25,13 @@ defmodule Mutare.Mutators.Collection do
   a pipe stage's node arity is ambiguous and off-by-one. See `NOTES.md`.
 
   On by default — the Elixir-flavoured family. High signal on idiomatic
-  collection code. It recognises only unaliased `Enum`/`List` calls by name, so a
-  shadowing alias simply isn't matched (no false mutation).
+  collection code. It recognises `Enum`/`List` calls by their resolved module
+  (`Mutare.Transform.Aliases`), so an aliased `E.filter` (`alias Enum, as: E`) is
+  matched while a shadowing `alias MyApp.Enum` is correctly left alone.
   """
   @behaviour Mutare.Mutator
+
+  alias Mutare.Transform.Aliases
 
   # {alias_path, function} => {alias_path, function}
   @swaps %{
@@ -56,11 +59,13 @@ defmodule Mutare.Mutators.Collection do
   def name, do: :collection
 
   @impl Mutare.Mutator
-  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod}, fun]}, call_meta, args})
+  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args})
       when is_list(args) do
-    case Map.fetch(@swaps, {mod, fun}) do
-      {:ok, {new_mod, new_fun}} ->
-        [{{:., dot_meta, [{:__aliases__, alias_meta, new_mod}, new_fun]}, call_meta, args}]
+    case Map.fetch(@swaps, {Aliases.resolved_module(alias_meta, mod), fun}) do
+      {:ok, {_new_mod, new_fun}} ->
+        # Reuse the literal alias node, so an aliased `E.filter` mutates to `E.reject`
+        # (the swap stays within the module, so the resolved/literal module agree).
+        [{{:., dot_meta, [aliases, new_fun]}, call_meta, args}]
 
       :error ->
         :skip

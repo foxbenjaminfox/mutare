@@ -69,8 +69,13 @@ defmodule Mutare.Mutators.ModeSwap do
   a non-mutating context, and AtomLiteral never sees it. Ownership is claimed **only
   where a swap is actually produced** (it reads the same `swap_sites/4` as `mutate/2`),
   so an unrecognised atom or a variable in a mode position stays available to AtomLiteral.
+
+  Recognises the stdlib modules by their resolved module (`Mutare.Transform.Aliases`), so
+  an aliased call (`alias DateTime, as: DT; DT.truncate(dt, :second)`) is matched too.
   """
   @behaviour Mutare.Mutator
+
+  alias Mutare.Transform.Aliases
 
   # Ordered magnitude ladders. A swap is to the adjacent finer/coarser member *within
   # the same ladder*, so the replacement is always legal for that function (truncate
@@ -121,7 +126,7 @@ defmodule Mutare.Mutators.ModeSwap do
         %{piped: piped?}
       )
       when is_list(args) do
-    case rule(mod, fun, args, piped?) do
+    case rule(Aliases.resolved_module(alias_meta, mod), fun, args, piped?) do
       {:ok, positions, group} ->
         rebuild = fn new_args ->
           {{:., dot_meta, [{:__aliases__, alias_meta, mod}, fun]}, call_meta, new_args}
@@ -144,9 +149,9 @@ defmodule Mutare.Mutators.ModeSwap do
   # already covers via the whole call. Same positions as `mutate/2` produces — both read
   # `swap_sites/4`, so ownership and mutation never drift.
   @impl Mutare.Mutator
-  def owned_args({{:., _dm, [{:__aliases__, _am, mod}, fun]}, _cm, args}, %{piped: piped?})
+  def owned_args({{:., _dm, [{:__aliases__, am, mod}, fun]}, _cm, args}, %{piped: piped?})
       when is_list(args) do
-    case rule(mod, fun, args, piped?) do
+    case rule(Aliases.resolved_module(am, mod), fun, args, piped?) do
       {:ok, positions, group} ->
         args |> swap_sites(positions, group, piped?) |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
 

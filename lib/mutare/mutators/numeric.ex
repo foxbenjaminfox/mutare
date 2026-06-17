@@ -49,13 +49,16 @@ defmodule Mutare.Mutators.Numeric do
 
   ## Scope and known gaps
 
-  Recognises only the **unaliased** `Float`/`Kernel` modules and bare `Kernel` calls; a
-  shadowing `alias`/`import` (vanishingly rare for `Kernel`) is matched by name and so
-  could mis-swap — the same caveat the `Enum.`/`String.` families carry. `Float.round` is
-  intentionally absent — round-to-nearest has no complementary `Float` sibling. `div`↔`rem`
-  lives in `Mutare.Mutators.Arithmetic` (it is an operator swap, not a call). On by default.
+  The qualified `Float`/`Kernel` forms are recognised by their **resolved** module
+  (`Mutare.Transform.Aliases`), so an aliased `F.ceil` (`alias Float, as: F`) is matched.
+  Bare `Kernel` calls can't be aliased; an `import` that rebinds them is not resolved (out
+  of scope — see `Mutare.Transform.Aliases`). `Float.round` is intentionally absent —
+  round-to-nearest has no complementary `Float` sibling. `div`↔`rem` lives in
+  `Mutare.Mutators.Arithmetic` (it is an operator swap, not a call). On by default.
   """
   @behaviour Mutare.Mutator
+
+  alias Mutare.Transform.Aliases
 
   # Bare `Kernel` calls keyed on {name, effective_arity} => [sibling names]. The arity
   # is what proves a bare `floor`/`max` is the Kernel one (and not a same-named user
@@ -92,11 +95,12 @@ defmodule Mutare.Mutators.Numeric do
   # an arity-blind remote rename — the swap keeps the argument list and the sibling exists
   # at the same arity, so no pipe context is needed.
   @impl Mutare.Mutator
-  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod}, fun]}, call_meta, args})
+  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args})
       when is_list(args) do
-    case Map.fetch(@remote_swaps, {mod, fun}) do
-      {:ok, {new_mod, new_fun}} ->
-        [{{:., dot_meta, [{:__aliases__, alias_meta, new_mod}, new_fun]}, call_meta, args}]
+    case Map.fetch(@remote_swaps, {Aliases.resolved_module(alias_meta, mod), fun}) do
+      {:ok, {_new_mod, new_fun}} ->
+        # Reuse the literal alias node (the swap stays within `Float`/`Kernel`).
+        [{{:., dot_meta, [aliases, new_fun]}, call_meta, args}]
 
       :error ->
         :skip

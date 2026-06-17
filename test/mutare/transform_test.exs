@@ -700,6 +700,64 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "alias resolution (aliased remote calls still mutate)" do
+    test "an aliased Enum call mutates, and the diff keeps the alias" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            alias Enum, as: E
+            def f(xs), do: E.filter(xs, & &1)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
+      # Recognised through the alias, and the mutant keeps `E.` (not `Enum.`).
+      assert {"E.filter(xs, & &1)", "E.reject(xs, & &1)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "an aliased String / Float call mutates through its family, keeping the alias" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            alias String, as: S
+            alias Float, as: F
+            def up(x), do: S.upcase(x)
+            def down(x), do: F.ceil(x)
+          end
+          """,
+          mutators: [Mutare.Mutators.StringCall, Mutare.Mutators.Numeric]
+        )
+
+      by = fn m -> for s <- sites, s.mutator == m, do: {s.original_code, s.mutated_code} end
+      assert {"S.upcase(x)", "S.downcase(x)"} in by.(:string_call)
+      assert {"F.ceil(x)", "F.floor(x)"} in by.(:numeric)
+      assert_compiles(meta)
+    end
+
+    test "aliasing a stdlib name to a local module is NOT matched (shadow is respected)" do
+      # `alias MyApp.Enum` rebinds `Enum` to a local module, so `Enum.filter` must NOT be
+      # treated as the stdlib Enum. (No compile here — MyApp.Enum is fictional; the point
+      # is the *absence* of a Collection site.)
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            alias MyApp.Enum
+            def f(xs), do: Enum.filter(xs, & &1)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      refute Enum.any?(sites, &(&1.mutator == :collection))
+    end
+  end
+
   describe "StringCall (complementary String call swaps)" do
     test "swaps a String call in place, records the bare swap, and compiles" do
       source = """

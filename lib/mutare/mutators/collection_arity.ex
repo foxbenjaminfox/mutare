@@ -36,9 +36,12 @@ defmodule Mutare.Mutators.CollectionArity do
   `count/1`, `count_until/2` all exist), so the single metamutant build always
   compiles. `Enum` calls are never guard-legal, so guard-safety is automatic.
 
-  On by default. The arity-changing sibling of `Mutare.Mutators.Collection`.
+  On by default. The arity-changing sibling of `Mutare.Mutators.Collection`. Recognises
+  `Enum` by its resolved module (`Mutare.Transform.Aliases`), so an aliased call is matched.
   """
   @behaviour Mutare.Mutator
+
+  alias Mutare.Transform.Aliases
 
   # {alias_path, function, effective_arity} => {new_function, kept_effective_indices}.
   # Every rule keeps effective index 0 (the enumerable); in a pipe that index is the
@@ -63,16 +66,17 @@ defmodule Mutare.Mutators.CollectionArity do
 
   @impl Mutare.Mutator
   def mutate(
-        {{:., dot_meta, [{:__aliases__, alias_meta, [:Enum] = mod}, fun]}, call_meta, args},
+        {{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args},
         %{piped: piped?}
       )
       when is_list(args) do
     eff_arity = length(args) + if(piped?, do: 1, else: 0)
 
-    case Map.fetch(@rules, {mod, fun, eff_arity}) do
+    case Map.fetch(@rules, {Aliases.resolved_module(alias_meta, mod), fun, eff_arity}) do
       {:ok, {new_fun, keep}} ->
         new_args = kept_visible_args(args, keep, piped?)
-        [{{:., dot_meta, [{:__aliases__, alias_meta, mod}, new_fun]}, call_meta, new_args}]
+        # Reuse the literal alias node (every rule stays within `Enum`).
+        [{{:., dot_meta, [aliases, new_fun]}, call_meta, new_args}]
 
       :error ->
         :skip

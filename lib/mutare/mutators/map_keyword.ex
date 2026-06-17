@@ -25,11 +25,14 @@ defmodule Mutare.Mutators.MapKeyword do
   is automatic. High signal: the conditional-write distinctions are classic untested
   edges (the already-present and still-absent paths a happy-path test never hits).
 
-  On by default. Recognises only unaliased `Map`/`Keyword` calls by name, so a
-  shadowing alias isn't matched (no false mutation). The family atom is `:map_keyword`
-  (`:map` is `MapLiteral`).
+  On by default. Recognises `Map`/`Keyword` by their resolved module
+  (`Mutare.Transform.Aliases`), so an aliased call is matched while a shadowing
+  `alias MyApp.Map` is left alone. The family atom is `:map_keyword` (`:map` is
+  `MapLiteral`).
   """
   @behaviour Mutare.Mutator
+
+  alias Mutare.Transform.Aliases
 
   # The conditional-write lattice (function => complementary functions). Applied to
   # both Map and Keyword, which expose the identical set — defined once so the two
@@ -47,12 +50,12 @@ defmodule Mutare.Mutators.MapKeyword do
   def name, do: :map_keyword
 
   @impl Mutare.Mutator
-  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod}, fun]}, call_meta, args})
+  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args})
       when is_list(args) do
-    with true <- mod in @modules,
+    with true <- Aliases.resolved_module(alias_meta, mod) in @modules,
          {:ok, new_funs} <- Map.fetch(@swaps, fun) do
       Enum.map(new_funs, fn new_fun ->
-        {{:., dot_meta, [{:__aliases__, alias_meta, mod}, new_fun]}, call_meta, args}
+        {{:., dot_meta, [aliases, new_fun]}, call_meta, args}
       end)
     else
       _ -> :skip

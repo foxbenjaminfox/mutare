@@ -56,9 +56,12 @@ defmodule Mutare.Mutators.CallRemoval do
       compile-safe, honest no-op that rides the existing `hoist_pipe` path unchanged.
 
   On by default. `Function.identity/1` exists since Elixir 1.10 (well under the 1.18
-  floor); these are remote calls, so guard-safety is automatic.
+  floor); these are remote calls, so guard-safety is automatic. Recognises the targets by
+  their resolved module (`Mutare.Transform.Aliases`), so an aliased call is matched too.
   """
   @behaviour Mutare.Mutator
+
+  alias Mutare.Transform.Aliases
 
   # {alias_path, function} — arity-agnostic: every arity of these has its input as
   # the first argument and returns a same-typed value, so removal is always legal.
@@ -102,10 +105,10 @@ defmodule Mutare.Mutators.CallRemoval do
   def mutate(_node), do: :skip
 
   @impl Mutare.Mutator
-  def mutate({{:., _dm, [{:__aliases__, _am, mod}, fun]}, _cm, args}, %{piped: piped?})
+  def mutate({{:., _dm, [{:__aliases__, am, mod}, fun]}, _cm, args}, %{piped: piped?})
       when is_list(args) do
     cond do
-      not MapSet.member?(@removable, {mod, fun}) -> :skip
+      not MapSet.member?(@removable, {Aliases.resolved_module(am, mod), fun}) -> :skip
       # Piped: the input is the |> LHS, supplied to identity by the pipe.
       piped? -> [identity_call()]
       # Non-piped: drop the call, keep its first argument (the input).

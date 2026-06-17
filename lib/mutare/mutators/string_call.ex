@@ -18,9 +18,13 @@ defmodule Mutare.Mutators.StringCall do
   On by default — high signal on the affix/case/predicate functions that anchor
   string-handling logic, exactly where an off-by-direction bug hides. Distinct
   from `Mutare.Mutators.StringLiteral` (the `:string` family), which mutates the
-  string *value*; this mutates the *call*.
+  string *value*; this mutates the *call*. Recognises `String` by its resolved
+  module (`Mutare.Transform.Aliases`), so an aliased `S.upcase` (`alias String, as: S`)
+  is matched too.
   """
   @behaviour Mutare.Mutator
+
+  alias Mutare.Transform.Aliases
 
   # {alias_path, function} => {alias_path, function}
   @swaps %{
@@ -42,11 +46,12 @@ defmodule Mutare.Mutators.StringCall do
   def name, do: :string_call
 
   @impl Mutare.Mutator
-  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod}, fun]}, call_meta, args})
+  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args})
       when is_list(args) do
-    case Map.fetch(@swaps, {mod, fun}) do
-      {:ok, {new_mod, new_fun}} ->
-        [{{:., dot_meta, [{:__aliases__, alias_meta, new_mod}, new_fun]}, call_meta, args}]
+    case Map.fetch(@swaps, {Aliases.resolved_module(alias_meta, mod), fun}) do
+      {:ok, {_new_mod, new_fun}} ->
+        # Reuse the literal alias node (the swap stays within `String`).
+        [{{:., dot_meta, [aliases, new_fun]}, call_meta, args}]
 
       :error ->
         :skip

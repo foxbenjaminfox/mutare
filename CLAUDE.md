@@ -41,6 +41,18 @@ contract between them is the whole game.
   IR, not a walk-everything-then-subtract blacklist. Context is classified *positively* and
   routed; mutators run **once**. The IR splits *vocabulary* (plan structs, owning discovery) from
   *emission* (id assignment, site recording, AST building — kept in `Transform`):
+  - **`Transform.Aliases`** — a lexical-`alias` resolution **pre-pass** run on the parsed AST
+    before planning. It threads a scoped alias env (folding left-to-right over each statement
+    sequence; nested scopes inherit, child aliases don't leak) and stamps each *call-module*
+    `__aliases__` node with the module it resolves to (`meta[:mutare_alias]`, only when it
+    differs from the written path). `resolved_module/2` is the reader the call-matching mutator
+    families (Collection/StringCall/MapKeyword/CollectionArity/ModeSwap/CallRemoval/DefaultDrop/
+    Numeric) use to recognise an aliased `S.upcase` as `String.upcase` — while still rebuilding
+    from the node's own (aliased) `__aliases__`, so the diff keeps `S.` and the swap stays
+    within the module. It also fixes a latent shadow bug: `alias MyApp.Enum` now resolves
+    `Enum.filter` to the *local* module, so a family no longer wrongly fires on it. `import`
+    is **not** resolved (needs the export list + local-shadowing rules; out of scope), and
+    `use`-injected aliases are invisible without macro expansion.
   - **`Transform.ModulePlan`** — a statement sequence classified into items: `{:lift, FunctionPlan}`,
     `{:in_place, clauses}`, `{:statement, node}`. `build/3` does the run-chunking + non-consecutive
     detection; `Transform.emit_module_plan/2` walks the items.
@@ -290,7 +302,8 @@ contract between them is the whole game.
   via the optional `mutate/2` callback, since a stage's effective arity is ambiguous in a pipe),
   StringCall (complementary `String` call swaps — `starts_with?`↔`ends_with?`, `upcase`↔`downcase`,
   `trim_leading`↔`trim_trailing`, `replace_prefix`↔`replace_suffix`, `pad_leading`↔`pad_trailing`,
-  `first`↔`last`; the `String` sibling of Collection, recognising only unaliased `String.` calls),
+  `first`↔`last`; the `String` sibling of Collection, recognising `String.` calls by their
+  alias-resolved module — see `Mutare.Transform.Aliases`),
   MapKeyword (the conditional-write lattice for `Map`/`Keyword` — `put`↔`put_new`↔`replace`↔
   `replace!`, swapping along the insert-new / overwrite-existing / raise-on-absent axes; all `/3`,
   arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),
