@@ -120,7 +120,7 @@ defmodule Mutare.LiftTest do
 
       {meta, sites, _next_id} = Mutare.transform_string(source)
 
-      assert Enum.count(sites, &(&1.mutator == :clause_drop)) == 0
+      refute Enum.any?(sites, &(&1.mutator == :clause_drop))
       assert [{Mutare.BodilessHeadFixture, _}] = Code.compile_string(meta)
     end
 
@@ -221,7 +221,7 @@ defmodule Mutare.LiftTest do
       # guard/clause-drop mutants. The clauses keep their original positions, so
       # `f/1` stays reachable across the intervening `def g`.
       refute meta =~ "__mutare_f"
-      assert Enum.count(sites, &(&1.kind == :lifted)) == 0
+      refute Enum.any?(sites, &(&1.kind == :lifted))
       assert log =~ "nc.ex: clauses of f/1 are non-consecutive — not lifting"
       assert [{Mutare.NonConsecutiveLiftFixture, _}] = Code.compile_string(meta)
 
@@ -278,7 +278,7 @@ defmodule Mutare.LiftTest do
         with_log(fn -> Mutare.transform_string(source, file: "meta.ex") end)
 
       refute meta =~ "__mutare_code"
-      assert Enum.count(sites, &(&1.kind == :lifted)) == 0
+      refute Enum.any?(sites, &(&1.kind == :lifted))
       assert log =~ "meta.ex: clauses of code/1 are augmented by compile-time metaprogramming"
       assert [{Mutare.MetaprogrammedLiftFixture, _}] = Code.compile_string(meta)
 

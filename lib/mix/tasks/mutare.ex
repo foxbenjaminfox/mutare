@@ -182,7 +182,7 @@ defmodule Mix.Tasks.Mutare do
   end
 
   defp scope_label(%Project{umbrella?: true, mutate_scope: scope}) do
-    " (umbrella: #{scope |> Enum.map(& &1.app) |> Enum.join(", ")})"
+    " (umbrella: #{Enum.map_join(scope, ", ", & &1.app)})"
   end
 
   defp scope_label(%Project{copy_root: "."}), do: ""
