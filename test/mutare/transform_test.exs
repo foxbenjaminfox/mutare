@@ -871,6 +871,111 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "metaprogramming scaffold (def created inside if/for) routes to compile-time" do
+    # A module body runs *once*, at compile time, with mutant 0 active — so a selector
+    # spliced into the scaffold that *defines* functions (the `if` condition, the `for`
+    # generator, an unquoted head pattern) could never activate at runtime. Those are
+    # left inert; only the generated `def` *bodies* (runtime) are mutated. Lifting stays
+    # off for such functions (no guard/clause-drop/head-pattern mutants).
+
+    test "a conditionally-defined function: the `if` condition is inert, the body mutates" do
+      source = """
+      defmodule Cond do
+        @enabled true
+
+        if @enabled do
+          def discount(price), do: price * 2
+        end
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source)
+
+      # Nothing mutates the `if @enabled` condition; it renders verbatim.
+      assert meta =~ "if @enabled do"
+      refute Enum.any?(sites, &(&1.original_code == "@enabled"))
+      # The body still mutates (`price * 2` → arithmetic, the `2` literal, a return).
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+      assert_compiles(meta)
+    end
+
+    test "a comprehension of heads: the generator is inert, every body mutates" do
+      source = """
+      defmodule Heads do
+        for tier <- [:gold, :silver, :bronze] do
+          def perks(unquote(tier)), do: length([1, 2, 3])
+        end
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source)
+
+      # The generator literal survives verbatim — not rewritten into a selector — so
+      # no atom/list mutant is offered on it (those would be compile-time-inert).
+      assert meta =~ "for tier <- [:gold, :silver, :bronze] do"
+
+      refute Enum.any?(
+               sites,
+               &(&1.original_code in (~w(:gold :silver :bronze) ++
+                                        ["[:gold, :silver, :bronze]"]))
+             )
+
+      # The constant body `length([1, 2, 3])` still mutates (the inner list → `[]`).
+      assert Enum.any?(sites, &(&1.mutator == :list))
+      assert_compiles(meta)
+    end
+
+    test "mixed: a normal head and metaprogrammed heads of one function both mutate, independently" do
+      source = """
+      defmodule Mixed do
+        def code(0), do: 53
+
+        for n <- 1..3 do
+          def code(unquote(n)), do: unquote(n) * 10
+        end
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source)
+
+      # The `1..3` generator is compile-time: its endpoints are not mutated.
+      assert meta =~ "for n <- 1..3 do"
+      refute Enum.any?(sites, &(&1.original_code in ~w(1 3)))
+
+      # `code/1` is not lifted (its clause set is augmented by the comprehension), so
+      # both the top-level head body (`53`) and the metaprogrammed head body
+      # (`unquote(n) * 10`) mutate in place.
+      assert Enum.all?(sites, &(&1.kind == :in_place))
+      assert Enum.any?(sites, &(&1.original_code == "53"))
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+      assert_compiles(meta)
+    end
+
+    test "several scaffolds nested (for inside if): the body is still reached, the scaffold inert" do
+      source = """
+      defmodule Nested do
+        @enabled true
+
+        if @enabled do
+          for n <- [1, 2] do
+            def double(unquote(n)), do: unquote(n) + unquote(n)
+          end
+        end
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source)
+
+      assert meta =~ "if @enabled do"
+      assert meta =~ "for n <- [1, 2] do"
+      # The body `unquote(n) + unquote(n)` mutates through two layers of scaffold...
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+      # ...while the `[1, 2]` generator stays inert.
+      refute Enum.any?(sites, &(&1.original_code == "[1, 2]"))
+      assert_compiles(meta)
+    end
+  end
+
   # Assert the metamutant actually *compiles*. A bug like a selector `case` spliced
   # as a bare pipe target parses cleanly but fails at compile (macro expansion), so
   # `Code.string_to_quoted/1` is not enough. The `:mutare_cov` test stand-in and

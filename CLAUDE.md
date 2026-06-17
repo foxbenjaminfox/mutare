@@ -72,15 +72,25 @@ contract between them is the whole game.
     a `::` goes one way, the value side another, which a flat `Macro.traverse` accumulator can't
     express) and attaches a typed `Candidate.InPlace` to each mutatable node's *own metadata*
     (`meta[:mutare]`) — which is why there's no fragile `{line, column}` node identity and no
-    double mutator invocation. Two contexts are threaded: `:runtime` → in-place (`:guard`/
+    double mutator invocation. Three contexts are threaded: `:runtime` → in-place (`:guard`/
     `:clause_drop`, and a **`def`/`defp` head-pattern literal**, are produced by the separate lift
-    path), and `:pattern` (don't mutate *in place*, but keep descending so default-arg values and
-    `size()` args are still reached). Pattern routing covers
+    path), `:pattern` (don't mutate *in place*, but keep descending so default-arg values and
+    `size()` args are still reached), and `:scaffold` — a module-level `for`/`if`/`unless`/… that
+    *defines* functions via compile-time metaprogramming (entered by `transform_statement/2` when
+    `metaprogrammed_def?/1` finds a nested `def`). Like `:pattern` it never mutates in place (a
+    module body runs **once**, at compile time, with mutant 0 — so a selector on the `for` generator
+    / `if` condition / unquoted head pattern could never activate, only adding inert no-coverage
+    noise), but the one runtime escape it reaches is a generated `def`/`defp` **body** (the def
+    clause flips it back to `:runtime`); `body_context/1` propagates `:scaffold` through nested
+    scaffolds and `case`/`cond`/… arms. The *mixed* case (a function with both a normal head and
+    metaprogrammed heads, e.g. plug's `code/1`) falls out for free — the top head goes in-place via
+    `metaprogrammed_def_names`, the `for` heads via `:scaffold`, both bodies mutating independently
+    (no lifting ⇒ no dispatcher ⇒ no shadowing). Pattern routing covers
     not just `def` heads and `=`/`<<>>` but every match position: a `<-` generator LHS, the
     LHS of a `case`/`fn`/`receive`/`with`/`for`/`try` `->` clause (generic `->` clause), and the
     **first argument of `match?/2`** (a macro whose pattern side is a match context — without this a
     literal/tuple there would be mutated in place, splicing a `case` into a pattern), with
-    **`cond` excepted** (its `->` LHS is a runtime condition, kept mutatable — `analyze_cond_block/2`).
+    **`cond` excepted** (its `->` LHS is a runtime condition, kept mutatable — `analyze_cond_block/3`).
     A `case`/`receive`/`fn` clause's pattern stays unmutated *in place* but is **additionally**
     offered to the structural pattern families (swap/wildcard) by dedicated analyze clauses, which
     attach a `Candidate.CasePattern` to the whole construct node (the mutant wraps it in a selector —

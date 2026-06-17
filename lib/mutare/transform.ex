@@ -26,11 +26,14 @@ defmodule Mutare.Transform do
        `Candidate.InPlace` to the node's own metadata (`meta[:mutare]`). Mutators
        run **once**, here. Routing is positional (the spec side of a `::` goes one
        way, the value side another), which is why it can't be a flat
-       `Macro.traverse` accumulator. Two contexts are threaded — `:runtime`
+       `Macro.traverse` accumulator. Three contexts are threaded — `:runtime`
        (mutate, → in-place; `:guard`/`:clause_drop`/head-pattern literals come from
-       the lift path) and
-       `:pattern` (don't mutate in place, but keep descending so default-arg values
-       and `size()` args are reached); the rest (`:compile_time`, `:spec`, `:guard`,
+       the lift path), `:pattern` (don't mutate in place, but keep descending so
+       default-arg values and `size()` args are reached), and `:scaffold` (a
+       compile-time module-level `for`/`if`/… that *defines* functions: descend but
+       never mutate its own expressions — they run once at compile time, so a
+       selector there is inert — yet still reach each generated `def` body, which
+       flips back to `:runtime`); the rest (`:compile_time`, `:spec`, `:guard`,
        `:capture_arity`) are recognised and pruned, producing no candidate.
     2. **Plan** — a statement sequence is grouped into a `ModulePlan`; each
        liftable clause group becomes a `FunctionPlan` carrying its lifted
@@ -296,7 +299,7 @@ defmodule Mutare.Transform do
         in_place_clauses(clauses, ctx)
 
       {:statement, statement}, ctx ->
-        {node, ctx} = transform_node(statement, ctx)
+        {node, ctx} = transform_statement(statement, ctx)
         {[node], ctx}
     end)
   end
@@ -307,6 +310,54 @@ defmodule Mutare.Transform do
       {clause, ctx} = in_place(clause, ctx)
       {[clause], ctx}
     end)
+  end
+
+  # A non-clause-group module statement (an `{:other}` in the plan). Three routes:
+  #
+  #   * a nested `defmodule`/`__block__` recurses through the full planner
+  #     (`transform_node`), so an inner module is lifted/mutated like a top-level one;
+  #   * a statement that **defines a function via compile-time metaprogramming** — a
+  #     `for`/`if`/`unless`/`with`/… that wraps a `def`/`defp` — is analyzed as a
+  #     compile-time **`:scaffold`**. A module body runs **once, at compile time, with
+  #     mutant 0 active**, so a selector spliced into the scaffold's *own* expressions
+  #     (the `if` condition, the `for` generator/filters, an unquoted head pattern)
+  #     could never activate at runtime — it would only add inert no-coverage mutants
+  #     and waste poison-recovery rounds. The `:scaffold` descent does **not** mutate
+  #     those, but still reaches each generated `def` and mutates its *body*
+  #     (`:runtime`, via the def clause), and its head stays `:pattern` (unmutated;
+  #     these functions are not lifted). Nesting (`for` in `if` in …) is handled for
+  #     free — `:scaffold` propagates through the generic descent;
+  #   * any other statement (a plain top-level expression that defines nothing) keeps
+  #     the in-place `:runtime` path, unchanged.
+  defp transform_statement({:defmodule, _meta, _args} = node, ctx), do: transform_node(node, ctx)
+  defp transform_statement({:__block__, _meta, _args} = node, ctx), do: transform_node(node, ctx)
+
+  defp transform_statement(node, ctx) do
+    if metaprogrammed_def?(node) do
+      node |> analyze(:scaffold, ctx.mutators) |> emit(ctx)
+    else
+      in_place(node, ctx)
+    end
+  end
+
+  # Does `node` define a function via metaprogramming — a `def`/`defp` reached inside
+  # a non-`def` statement? Nested `defmodule`/`defimpl`/`defprotocol` open a different
+  # scope (their defs belong to *that* module, not this one), so the walk is pruned at
+  # those boundaries, mirroring `ModulePlan.nested_def_names/1`.
+  defp metaprogrammed_def?(node) do
+    {_ast, found?} =
+      Macro.prewalk(node, false, fn
+        {form, _meta, _args}, acc when form in [:defmodule, :defimpl, :defprotocol] ->
+          {:__mutare_pruned__, acc}
+
+        {form, _meta, _args} = n, _acc when form in [:def, :defp] ->
+          {n, true}
+
+        n, acc ->
+          {n, acc}
+      end)
+
+    found?
   end
 
   # Emit a lifted clause group: the `__orig` copies (carrying in-place body
@@ -497,7 +548,7 @@ defmodule Mutare.Transform do
   # descends, rather than subtracting a blacklist from "everything is a runtime
   # body". Routing is positional, so child → context is a pattern match — which a
   # single `Macro.traverse` accumulator can't express (it can't send the spec
-  # side of a `::` one way and the value side another). Two contexts are threaded:
+  # side of a `::` one way and the value side another). Three contexts are threaded:
   #
   #   * `:runtime` — mutate in place. A node a mutator recognises gets a
   #     `Candidate.InPlace` attached to its own metadata; the candidate is built
@@ -505,6 +556,15 @@ defmodule Mutare.Transform do
   #     before we descend.
   #   * `:pattern` — never mutate, but keep descending so nested runtime escapes
   #     (default-argument values, `size(...)` args) are still reached.
+  #   * `:scaffold` — a module-level `for`/`if`/`unless`/… that *defines* functions
+  #     via compile-time metaprogramming (entered from `transform_statement/2`).
+  #     Like `:pattern` it never mutates in place and keeps descending — the module
+  #     body runs once, at compile time, with mutant 0 active, so a selector spliced
+  #     into the scaffold's own expressions (an `if` condition, a `for` generator, an
+  #     unquoted head pattern) could never activate — but the one runtime escape it
+  #     reaches is a generated `def`/`defp` body (the def clause flips it back to
+  #     `:runtime`). `body_context/1` propagates `:scaffold` through `case`/`cond`/…
+  #     arms so nested scaffolds stay inert too.
   #
   # The remaining contexts are recognised positively and realised as pruned
   # subtrees or dedicated helpers (named here, matched in the clauses below):
@@ -669,8 +729,9 @@ defmodule Mutare.Transform do
   # runtime, intercepting them before the generic `->` clause (below) would wrongly
   # pattern-route the conditions. The `:do` block key is protected by the
   # keyword-pair clause.
-  defp analyze({:cond, meta, [blocks]}, _context, mutators) when is_list(blocks) do
-    {:cond, meta, [Enum.map(blocks, &analyze_cond_block(&1, mutators))]}
+  defp analyze({:cond, meta, [blocks]}, context, mutators) when is_list(blocks) do
+    body_ctx = body_context(context)
+    {:cond, meta, [Enum.map(blocks, &analyze_cond_block(&1, body_ctx, mutators))]}
   end
 
   # `case`/`receive`/`fn`: runtime expressions whose *clause patterns* are additionally
@@ -702,11 +763,17 @@ defmodule Mutare.Transform do
   # A `->` clause in a pattern-matching construct (`case`/`fn`/`receive`/`with` else/
   # a `try` block outside a def head/`for` reduce): the left is a pattern (never
   # mutated — a selector `case` is illegal in a pattern and would poison the single
-  # build), the body is runtime. `cond` is excepted above; a `when` guard among the
-  # patterns is returned whole by the `:when` clause, so guards stay untouched.
-  defp analyze({:->, meta, [patterns, body]}, _context, mutators) when is_list(patterns) do
+  # build), the body inherits the construct's liveness (`body_context/1`): `:runtime`
+  # normally, `:scaffold` when this construct itself wraps a metaprogrammed `def` at
+  # module level (so the arm's own code is left compile-time-inert). `cond` is
+  # excepted above; a `when` guard among the patterns is returned whole by the
+  # `:when` clause, so guards stay untouched.
+  defp analyze({:->, meta, [patterns, body]}, context, mutators) when is_list(patterns) do
     {:->, meta,
-     [Enum.map(patterns, &analyze(&1, :pattern, mutators)), analyze(body, :runtime, mutators)]}
+     [
+       Enum.map(patterns, &analyze(&1, :pattern, mutators)),
+       analyze(body, body_context(context), mutators)
+     ]}
   end
 
   # default argument inside a pattern (`x \\ expr`): the variable is a pattern,
@@ -796,20 +863,22 @@ defmodule Mutare.Transform do
   defp analyze_try_clause(other, mutators), do: analyze(other, :runtime, mutators)
 
   # One `cond` do-block: a `{key, clauses}` pair whose key is the `:do` label (kept
-  # raw, never mutated) and whose clauses each keep *both* sides runtime — a cond
-  # clause's left is a condition, not a pattern. Anything unexpected falls back to a
-  # plain runtime descent.
-  defp analyze_cond_block({key, clauses}, mutators) when is_list(clauses),
-    do: {key, Enum.map(clauses, &analyze_cond_clause(&1, mutators))}
+  # raw, never mutated) and whose clauses each keep *both* sides in `context` — a cond
+  # clause's left is a condition, not a pattern. `context` is the construct's liveness
+  # (`:runtime` for an ordinary cond; `:scaffold` for a module-level cond that wraps a
+  # metaprogrammed `def`, keeping its conditions compile-time-inert). Anything
+  # unexpected falls back to a plain descent in that context.
+  defp analyze_cond_block({key, clauses}, context, mutators) when is_list(clauses),
+    do: {key, Enum.map(clauses, &analyze_cond_clause(&1, context, mutators))}
 
-  defp analyze_cond_block(other, mutators), do: analyze(other, :runtime, mutators)
+  defp analyze_cond_block(other, context, mutators), do: analyze(other, context, mutators)
 
-  defp analyze_cond_clause({:->, meta, [conds, body]}, mutators) when is_list(conds) do
+  defp analyze_cond_clause({:->, meta, [conds, body]}, context, mutators) when is_list(conds) do
     {:->, meta,
-     [Enum.map(conds, &analyze(&1, :runtime, mutators)), analyze(body, :runtime, mutators)]}
+     [Enum.map(conds, &analyze(&1, context, mutators)), analyze(body, context, mutators)]}
   end
 
-  defp analyze_cond_clause(other, mutators), do: analyze(other, :runtime, mutators)
+  defp analyze_cond_clause(other, context, mutators), do: analyze(other, context, mutators)
 
   # One argument of a `defimpl`: a keyword list holding the `do:` block (its body is
   # runtime — analyze it) alongside compile-time entries like `for:` (pass raw). The
@@ -1281,6 +1350,15 @@ defmodule Mutare.Transform do
   end
 
   # === shared helpers ========================================================
+
+  # The liveness a child *body* inherits from its construct. A `:scaffold`
+  # (compile-time metaprogramming) parent keeps its child bodies compile-time too —
+  # so a `case`/`cond`/`with`/`fn` that wraps a `def` at module level does not mutate
+  # its own arms — while every other context yields an ordinary runtime body. The one
+  # construct that flips a `:scaffold` descent back to `:runtime` is a `def`/`defp`
+  # body, done explicitly in its own clause (a generated function's body *is* runtime).
+  defp body_context(:scaffold), do: :scaffold
+  defp body_context(_), do: :runtime
 
   defp function_ref?({name, _meta, context}) when is_atom(name) and is_atom(context), do: true
   defp function_ref?({{:., _, _}, _meta, args}) when is_list(args), do: true

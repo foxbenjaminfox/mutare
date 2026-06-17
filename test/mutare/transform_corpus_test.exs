@@ -241,6 +241,39 @@ defmodule Mutare.TransformCorpusTest do
         {Mutare.Corpus.TryReturns, :run, [:boom]}
       ],
       min_sites: 6
+    },
+    %{
+      name:
+        "metaprogramming: a def created inside an if/for has its body mutated, the scaffold inert",
+      # `feature/1` is conditionally defined, `code/n` gains heads from a comprehension
+      # (constant name, `unquote` only in the pattern), and `code/1` also has a normal
+      # top-level head. The `if @enabled` condition and the `1..3` generator run *once*,
+      # at compile time, so a selector there could never activate — those stay verbatim;
+      # every function *body* (`x * 2 + 1`, `53`, `unquote(n) * 10`) is runtime and
+      # mutates, including the metaprogrammed heads and the plain head side by side.
+      # Lifting is (correctly) refused for `code/1` — see the augmented-clauses note.
+      source: """
+      defmodule Mutare.Corpus.Meta do
+        @enabled true
+
+        if @enabled do
+          def feature(x), do: x * 2 + 1
+        end
+
+        def code(0), do: 53
+
+        for n <- 1..3 do
+          def code(unquote(n)), do: unquote(n) * 10
+        end
+      end
+      """,
+      probes: [
+        {Mutare.Corpus.Meta, :feature, [5]},
+        {Mutare.Corpus.Meta, :code, [0]},
+        {Mutare.Corpus.Meta, :code, [1]},
+        {Mutare.Corpus.Meta, :code, [3]}
+      ],
+      min_sites: 6
     }
   ]
 
