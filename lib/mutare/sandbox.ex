@@ -202,6 +202,7 @@ defmodule Mutare.Sandbox do
 
   defp marker_path(sandbox), do: Path.join(sandbox, @marker_name)
 
+  @spec refuse!(Path.t(), String.t()) :: no_return()
   defp refuse!(sandbox, reason) do
     raise ArgumentError,
           "refusing to use sandbox #{inspect(sandbox)}: it #{reason}. Mutare only writes " <>

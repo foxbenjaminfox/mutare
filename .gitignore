@@ -22,5 +22,9 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 mutare-*.tar
 
+# Dialyzer PLT files.
+/priv/plts/*.plt
+/priv/plts/*.plt.hash
+
 .claude/worktrees
 .claude/settings.local.json

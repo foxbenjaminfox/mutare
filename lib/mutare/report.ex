@@ -13,7 +13,7 @@ defmodule Mutare.Report do
   @doc "Apply a single mutation to the original source string."
   @spec patch(Site.t(), String.t()) :: String.t()
   def patch(%Site{} = site, source) do
-    Sourceror.patch_string(source, [%{range: site.range, change: site.mutated_code}])
+    Sourceror.patch_string(source, [Sourceror.Patch.new(site.range, site.mutated_code)])
   end
 
   @doc "Header line for a surviving mutant, e.g. `lib/x.ex:42  [relational, in-place]  SURVIVED`."

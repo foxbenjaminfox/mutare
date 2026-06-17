@@ -104,7 +104,7 @@ defmodule Mutare.Sandbox.Command do
   Decode a `mix test` mutant-run exit status into its `t:outcome/0` — the single,
   total reading of this module's exit-code contract (see the moduledoc).
   """
-  @spec outcome(non_neg_integer()) :: outcome()
+  @spec outcome(non_neg_integer()) :: :passed | :failed | :timeout | :harness_error
   def outcome(0), do: :passed
   def outcome(status) when status == @failure_exit, do: :failed
   def outcome(status) when status == @timeout_exit, do: :timeout

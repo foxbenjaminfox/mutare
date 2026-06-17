@@ -33,8 +33,8 @@ defmodule Mutare.Mutators.DateTimeLiteral do
       when sigil in @sigils and is_binary(content) do
     case shift(sigil, content) do
       {:ok, shifted} -> [{sigil, meta, [{:<<>>, bmeta, [shifted]}, modifiers]}]
-      # `from_iso8601` failure surfaces as `{:error, _}` (or `:error`) here — either
-      # way, no mutant rather than invalid source.
+      # `from_iso8601` failure surfaces as `{:error, _}` here — no mutant rather
+      # than invalid source.
       _ -> :skip
     end
   end
@@ -60,8 +60,4 @@ defmodule Mutare.Mutators.DateTimeLiteral do
     with {:ok, dt, _offset} <- DateTime.from_iso8601(s),
          do: {:ok, DateTime.to_iso8601(DateTime.add(dt, 86_400))}
   end
-
-  # `from_iso8601` returns `{:error, reason}` on failure; collapse anything that is
-  # not an `{:ok, …}` shift to `:error`.
-  defp shift(_sigil, _content), do: :error
 end
