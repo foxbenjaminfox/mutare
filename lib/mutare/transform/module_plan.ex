@@ -92,9 +92,9 @@ defmodule Mutare.Transform.ModulePlan do
     # same name (`def code(integer) when …` beside `for … do def code(atom) …`).
     # Those generated clauses are invisible here (they live inside an `{:other}`
     # statement), so the run looks complete and consecutive; lifting it installs a
-    # catch-all dispatcher that shadows every metaprogrammed clause and forwards to
-    # an `__orig` missing them — a guaranteed `FunctionClauseError`. Refuse to lift
-    # any name that is also defined inside a non-`def` statement.
+    # dispatcher that shadows every metaprogrammed clause and forwards to a lifted
+    # group missing them — a guaranteed `FunctionClauseError`. Refuse to lift any
+    # name that is also defined inside a non-`def` statement.
     if signature in non_consecutive or name in metaprogrammed do
       {:in_place, clauses}
     else

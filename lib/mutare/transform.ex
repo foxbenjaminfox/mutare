@@ -43,7 +43,8 @@ defmodule Mutare.Transform do
        and the counter advances even for `:skip_ids`, so ids stay stable across
        the poison-recovery rebuilds the runner relies on.
     4. **Emit** — an in-place candidate becomes a tail-position selector `case`; a
-       `FunctionPlan` is duplicated into `__orig`/`__mut` copies behind a dispatcher.
+       `FunctionPlan` becomes one private function (threading the active id as an
+       extra arg) behind a dispatcher, each mutant a single guarded clause.
     5. **Render** — annotations are stripped and the tree is rendered to source
        (with a Sourceror keyword-block workaround); `# mutare:ignore` directives
        (parsed by `Mutare.Ignore`) are applied to the recorded sites.
@@ -78,23 +79,28 @@ defmodule Mutare.Transform do
   ## Function lifting + dispatcher (guards, dispatch)
 
   A `case` is illegal in a `when` guard, and guards drive dispatch *across*
-  clauses, so guard mutations cannot be done in place. Instead every clause for
-  the function signature is duplicated — once unchanged (`__orig`), once per
-  mutation (`__mut`) — and a bare catch-all dispatcher forwards args to the
-  active copy by id:
+  clauses, so guard mutations (and head-pattern / clause-drop mutations) cannot be
+  done in place. Instead the whole clause group becomes **one** private function
+  that takes the active mutant id as an extra first arg (`mutare_active`); the
+  public `f/arity` becomes a dispatcher that reads the id and forwards. Each source
+  clause is emitted **once** as an original gated `when mutare_active !== <id>` for
+  every mutant that overrides/drops it; each mutant adds a **single** clause gated
+  `when mutare_active === <id>`, placed before the original it replaces:
 
       def f(a) do
-        case :persistent_term.get(:mutare_active, 0) do
-          5 -> __mutare_f_1_m5(a)     # guard mutated in this copy
-          _ -> __mutare_f_1_orig(a)
-        end
+        mutare_active = :persistent_term.get(:mutare_active, 0)
+        __mutare_f_1_g1(mutare_active, a)
       end
-      defp __mutare_f_1_orig(a) when a >= 1, do: ...   # in-place applies here
-      defp __mutare_f_1_m5(a) when a > 1, do: ...       # one guard changed
+      defp __mutare_f_1_g1(mutare_active, a) when mutare_active === 5 and a > 1, do: ...  # mutant 5: guard >= → >
+      defp __mutare_f_1_g1(mutare_active, a) when mutare_active !== 5 and a >= 1, do: ... # original (in-place applies here)
 
-  In-place selectors live only in `__orig` (and in non-lifted code); the `__mut`
-  copies reuse the original bodies — sound because exactly one mutant is ever
-  active. The public `f/arity` is unchanged at the module boundary.
+  Exactly one clause wins for any `(id, args)`: the mutant when its id is active and
+  its head/guard match, else the original. This is **per-clause**: a mutant touching
+  one clause no longer copies the other N−1, so a group with C clauses and M mutants
+  emits ~C+M clauses, not C×M (see NOTES "lifting blowup"). In-place selectors live
+  only in the *original* clauses (and non-lifted code); a mutant clause reuses the
+  raw body — sound because exactly one mutant is ever active. The public `f/arity`
+  is unchanged at the module boundary.
 
   Ranges are captured against the *original* AST, which is what the diff report
   patches against.
@@ -418,55 +424,166 @@ defmodule Mutare.Transform do
 
   defp block_key?(key), do: key_atom(key) in @block_keys
 
-  # Emit a lifted clause group: the `__orig` copies (carrying in-place body
-  # selectors), one private `__mut` copy per lifted candidate, and the public
-  # dispatcher. In-place body ids are claimed first (in the `__orig` copies), then
-  # the lifted candidates in `FunctionPlan.candidates/1` order — preserving id
-  # ordering. A skipped (poisoned) id records its site but emits no copy/clause.
+  # A lifted clause group becomes ONE private function `<base>` plus a public
+  # dispatcher. Each *source* clause is emitted once as a `<base>` clause that
+  # takes the active mutant id as an extra first argument (`mutare_active`); each
+  # lifted mutant adds a single extra `<base>` clause, gated `when mutare_active
+  # === <id>`, placed *before* the source clause it overrides — so a mutant
+  # touching one clause no longer duplicates the other N-1 (the C×M → C+M win; see
+  # NOTES "lifting blowup"). The original clauses are gated `when mutare_active !==
+  # <id>` for every mutant that overrides or drops them, so exactly one wins for
+  # any (id, args): the mutant when its id is active and its head/guard match, else
+  # the original. Ids are assigned exactly as before — in-place **body** ids first
+  # (`in_place_clauses` over the source clauses), then the lifted candidates in
+  # `candidates/1` order — so the scheme is invisible to ids, Sites, and coverage.
   defp emit_function_plan(%FunctionPlan{signature: {vis, name, arity}} = plan, ctx) do
     group = ctx.group + 1
     ctx = %{ctx | group: group}
-    base = base_name(name, arity, group, ctx.prefix)
+    base = :"#{base_name(name, arity, group, ctx.prefix)}"
 
+    # Source clauses with in-place body selectors — claims the body ids first.
     {orig_clauses, ctx} = in_place_clauses(plan.clauses, ctx)
-    orig_defs = Enum.map(orig_clauses, &rename_clause(&1, :"#{base}_orig", :defp))
 
-    {mut_results, ctx} =
+    # Then the lifted candidates, in order, each claiming its id. Non-skipped ones
+    # yield `{id, clause_index, mutated_clause | :drop}`; a skipped (poisoned) id
+    # yields nothing here (its site is still recorded), so it is neither emitted as
+    # a mutant clause nor excluded from its original — i.e. it behaves as baseline.
+    {claimed, ctx} =
       Enum.flat_map_reduce(FunctionPlan.candidates(plan), ctx, fn candidate, ctx ->
         claim_id(ctx, candidate, &lifted_site/3, fn id, candidate ->
-          defs =
-            plan
-            |> FunctionPlan.mutated_clauses(candidate)
-            |> Enum.map(&rename_clause(&1, :"#{base}_m#{id}", :defp))
-
-          {id, defs}
+          {index, clause} = FunctionPlan.mutated_clause(plan, candidate)
+          {id, index, clause}
         end)
       end)
 
-    mut_ids = Enum.map(mut_results, &elem(&1, 0))
-    mut_defs = Enum.flat_map(mut_results, &elem(&1, 1))
-    dispatcher = build_dispatcher(vis, name, arity, mut_ids, base)
+    mut_ids = Enum.map(claimed, fn {id, _i, _c} -> id end)
+    # Every claimed candidate overrides (guard/literal/structure) or drops its
+    # clause, so its id excludes that clause's *original* version.
+    excluded = Enum.group_by(claimed, fn {_id, i, _c} -> i end, fn {id, _i, _c} -> id end)
 
-    {[dispatcher | orig_defs] ++ mut_defs, ctx}
+    lifted =
+      orig_clauses
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {orig, index} ->
+        mutant_clauses =
+          for {id, ^index, clause} <- claimed,
+              clause != :drop,
+              do: lifted_mutant(base, id, clause)
+
+        mutant_clauses ++ [lifted_original(base, orig, Map.get(excluded, index, []))]
+      end)
+
+    {[build_dispatcher(vis, name, arity, mut_ids, base) | lifted], ctx}
   end
 
-  # def f(mutare_arg1, ...) do
-  #   case :persistent_term.get(:mutare_active, 0) do
-  #     <id> -> <base>_m<id>(mutare_arg1, ...) ; _ -> <base>_orig(mutare_arg1, ...)
+  # The public dispatcher: read the active mutant id once, record coverage for the
+  # group's lifted ids (inert off the probe — see `Mutare.Coverage.Recorder`), then
+  # tail-call the lifted function with the id threaded as the extra first argument.
+  #   def f(mutare_arg1, ...) do
+  #     mutare_active = :persistent_term.get(:mutare_active, 0)
+  #     <record ids>
+  #     <base>(mutare_active, mutare_arg1, ...)
   #   end
-  # end
   defp build_dispatcher(vis, name, arity, mut_ids, base) do
     args = dispatcher_args(arity)
-    selector = Mutare.Metamutant.subject_ast()
+    var = Recorder.catch_all_pattern()
+    read = {:=, [], [var, Mutare.Metamutant.subject_ast()]}
+    call = {base, [], [var | args]}
 
-    mut_clauses =
-      Enum.map(mut_ids, fn id -> {:->, [], [[id], {:"#{base}_m#{id}", [], args}]} end)
-
-    catch_all = catch_all_clause(mut_ids, {:"#{base}_orig", [], args})
-    body = {:case, [], [selector, [do: mut_clauses ++ [catch_all]]]}
+    body =
+      case mut_ids do
+        [] -> {:__block__, [], [read, call]}
+        ids -> {:__block__, [], [read, Recorder.record_ast(ids), call]}
+      end
 
     {vis, [], [{name, [], args}, [do: body]]}
   end
+
+  # One lifted *mutant* clause: the candidate's single mutated source clause,
+  # renamed to `<base>`, given the `mutare_active` extra arg, and gated `when
+  # mutare_active === <id> [and <its own guard>]`. Raw body (no in-place selectors):
+  # only one mutant is ever active, so a body selector here could never fire.
+  defp lifted_mutant(base, id, clause) do
+    {clause_meta, call_meta, args, guards, body} = clause_parts(clause)
+    gate = {:===, [], [Recorder.catch_all_pattern(), id_literal(id)]}
+    guard = and_into_guard(gate, combine_guards(guards))
+    lifted_clause(base, clause_meta, call_meta, args, guard, body)
+  end
+
+  # One lifted *original* clause: the source clause (with its in-place body
+  # selectors), renamed to `<base>`, given the `mutare_active` extra arg, and gated
+  # `when mutare_active !== <id>` for each `id` that overrides/drops it — so it
+  # yields to its mutant clauses when their id is active, and behaves normally
+  # otherwise (including for any skipped/poisoned id, which is never excluded).
+  defp lifted_original(base, clause, excluded_ids) do
+    {clause_meta, call_meta, args, guards, body} = clause_parts(clause)
+    guard = merge_guards(exclusion_guard(excluded_ids), combine_guards(guards))
+    lifted_clause(base, clause_meta, call_meta, args, guard, body)
+  end
+
+  # Assemble a `<base>` clause: `defp <base>(mutare_active, <args...>) [when <guard>], <body>`.
+  # The source clause's `meta` (its line) is preserved on the `defp` and the head call
+  # — *not* reset to `[]` — so `Sourceror`'s line-assigning normalizer stays anchored to
+  # the original source lines. Without it the body's `[]`-meta selector clauses (`<id>
+  # -> …`) get stale lines, and a bare integer id then renders as a `:line`-but-no-
+  # `:token` literal that crashes the Elixir formatter.
+  defp lifted_clause(base, clause_meta, call_meta, args, guard, body) do
+    call = {base, call_meta, [Recorder.catch_all_pattern() | args]}
+    head = if guard, do: {:when, [], [call, guard]}, else: call
+    {:defp, clause_meta, [head | body]}
+  end
+
+  # Deconstruct a function clause into `{clause_meta, head_call_meta, head_args,
+  # guards, body_kw}`. A 0-arity head carries a `nil` arg context rather than a
+  # list, which becomes `[]`.
+  defp clause_parts({_vis, clause_meta, [head | body]}) do
+    {call, guards} =
+      case head do
+        {:when, _meta, [call | gs]} -> {call, gs}
+        call -> {call, []}
+      end
+
+    {_name, call_meta, args} = call
+    {clause_meta, call_meta, if(is_list(args), do: args, else: []), guards, body}
+  end
+
+  # AND `gate` into a guard expression, distributing over a top-level `when`
+  # (`a when b` is the guard's OR) so each alternative becomes `gate and <alt>` — a
+  # `when` may never appear *inside* `and`, so we recurse to the leaves. `nil` (no
+  # original guard) leaves just the gate.
+  defp and_into_guard(gate, nil), do: gate
+
+  defp and_into_guard(gate, {:when, meta, alts}),
+    do: {:when, meta, Enum.map(alts, &and_into_guard(gate, &1))}
+
+  defp and_into_guard(gate, expr), do: {:and, [], [gate, expr]}
+
+  # Collapse a clause's guard list (`guards_of` yields `[]` or a single expr;
+  # multiple is a defensive `and`-fold) into one expression or `nil`.
+  defp combine_guards([]), do: nil
+  defp combine_guards([guard]), do: guard
+  defp combine_guards([g | rest]), do: Enum.reduce(rest, g, &{:and, [], [&2, &1]})
+
+  # `mutare_active !== id1 and mutare_active !== id2 …` (chained `!==`, not `not in
+  # [list]` — a bare small-integer list can render as a charlist). `nil` for none.
+  defp exclusion_guard([]), do: nil
+
+  defp exclusion_guard(ids) do
+    ids
+    |> Enum.map(&{:!==, [], [Recorder.catch_all_pattern(), id_literal(&1)]})
+    |> Enum.reduce(&{:and, [], [&2, &1]})
+  end
+
+  defp merge_guards(nil, orig), do: orig
+  defp merge_guards(excl, nil), do: excl
+  defp merge_guards(excl, orig), do: and_into_guard(excl, orig)
+
+  # A generated integer-id literal with clean (empty) metadata. A *bare* integer
+  # makes Sourceror's normalizer assign a `:line` but no `:token`, which then
+  # crashes the Elixir formatter (`Keyword.fetch!(meta, :token)`); the clean-meta
+  # `{:__block__, [], [n]}` shape renders via the inspect path instead (the same
+  # rule literal mutators follow — see CLAUDE.md).
+  defp id_literal(id), do: {:__block__, [], [id]}
 
   defp dispatcher_args(0), do: []
   defp dispatcher_args(arity), do: Enum.map(1..arity, &{:"mutare_arg#{&1}", [], nil})
@@ -474,9 +591,9 @@ defmodule Mutare.Transform do
   # Private base name for a lifted group. `prefix` is the file's collision-free
   # generated-name prefix (`Ctx.prefix`, normally `"__mutare_"`); the trailing
   # `g<group>` keeps generated names unique across groups; `?`/`!` (valid only at
-  # the end of a function name) are replaced so they can sit mid-identifier in
-  # `<base>_orig` / `<base>_m<id>`. The public dispatcher keeps the real name
-  # (including any `?`/`!`).
+  # the end of a function name) are replaced so the sanitized base is a legal
+  # identifier (e.g. `ok?` → `__mutare_ok__1_g1`). The public dispatcher keeps the
+  # real name (including any `?`/`!`).
   defp base_name(name, arity, group, prefix) do
     sanitized = name |> Atom.to_string() |> String.replace(["?", "!"], "_")
     "#{prefix}#{sanitized}_#{arity}_g#{group}"
@@ -488,9 +605,9 @@ defmodule Mutare.Transform do
   # canonical `"__mutare_"` a clash with a hand-written target definition is
   # near-impossible — but a single clash is catastrophic (a duplicate `defp`
   # sinks the *one* metamutant build with a cryptic compile error), so we pick a
-  # prefix the source provably never collides with. Every candidate still starts
-  # with `"__mutare_"`, so `Mutare.Manifest`'s `__mutare_…_m<id>` recogniser keeps
-  # working unchanged.
+  # prefix the source provably never collides with. (`Mutare.Manifest` recognises a
+  # lifted mutant clause by its `mutare_active === <id>` gate, not the name, so the
+  # salt is invisible to it.)
   defp generated_prefix(ast) do
     names = defined_names(ast)
     Enum.find(prefix_candidates(), &free?(&1, names))
@@ -533,17 +650,6 @@ defmodule Mutare.Transform do
   defp def_name({:when, _meta, [call | _guards]}), do: def_name(call)
   defp def_name({name, _meta, _args}) when is_atom(name), do: name
   defp def_name(_), do: nil
-
-  defp rename_clause({_vis, meta, [head | rest]}, new_name, new_vis) do
-    {new_vis, meta, [rename_head(head, new_name) | rest]}
-  end
-
-  defp rename_head({:when, meta, [call | guards]}, new_name),
-    do: {:when, meta, [rename_call(call, new_name) | guards]}
-
-  defp rename_head(call, new_name), do: rename_call(call, new_name)
-
-  defp rename_call({_name, meta, args}, new_name), do: {new_name, meta, args}
 
   # === sites: pick the constructor from the candidate variant =================
 
@@ -722,8 +828,8 @@ defmodule Mutare.Transform do
       else: recurse(node, context, mutators)
   end
 
-  # A `def`/`defp` clause reaching the in-place path (one that did not lift, or an
-  # `__orig` copy of one that did): the head is a pattern, the body keyword is
+  # A `def`/`defp` clause reaching the in-place path (one that did not lift, or the
+  # *original* clause of a lifted group): the head is a pattern, the body keyword is
   # runtime, and the `:do` block's *tail expression* is additionally a return-value
   # position (only the transform knows where a clause returns — see
   # `annotate_returns/3`).
@@ -1071,7 +1177,7 @@ defmodule Mutare.Transform do
   # For each clause and each *pattern position* in its head, run the structural mutators and
   # build a `Candidate.CasePattern` whose `replacement` is the whole construct with just that
   # one position restructured (raw clauses → first-order, no nested selectors, like a lifted
-  # `__mut` copy). The diff stays focused on the single changed pattern (always rangeable —
+  # mutant clause). The diff stays focused on the single changed pattern (always rangeable —
   # Sourceror block-wraps a clause pattern).
   defp clause_list_candidates(_clauses, _rebuild_fn, []), do: []
 

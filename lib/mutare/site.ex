@@ -64,12 +64,12 @@ defmodule Mutare.Site do
   end
 
   @doc """
-  A mutation delivered by lifting (duplicating the clause group behind a
-  dispatcher) rather than by an in-place selector `case` — because the mutated
-  node sits where a `case` is illegal: inside a `when` guard, or inside a clause
-  *head* pattern (a literal swap). Same replacement shape as `in_place/6`, recorded
-  as `:lifted`; `mutator` distinguishes a guard operator swap (`:relational`, …)
-  from a head-pattern literal swap (`:literal`, …).
+  A mutation delivered by lifting (a single id-gated clause in the lifted private
+  function behind a dispatcher) rather than by an in-place selector `case` — because
+  the mutated node sits where a `case` is illegal: inside a `when` guard, or inside a
+  clause *head* pattern (a literal swap). Same replacement shape as `in_place/6`,
+  recorded as `:lifted`; `mutator` distinguishes a guard operator swap
+  (`:relational`, …) from a head-pattern literal swap (`:literal`, …).
   """
   @spec lifted_replace(pos_integer(), String.t(), map(), Macro.t(), Macro.t(), module()) :: t()
   def lifted_replace(id, file, range, original_node, mutated_node, mutator) do

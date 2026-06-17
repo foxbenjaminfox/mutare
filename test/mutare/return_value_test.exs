@@ -164,7 +164,7 @@ defmodule Mutare.ReturnValueTest do
              ] = returns
     end
 
-    test "every clause of a lifted (guarded) group returns from its __orig copy" do
+    test "every clause of a lifted (guarded) group gets return mutants in its original clause" do
       source = """
       defmodule T do
         def g(n) when n > 0, do: n + 1
@@ -177,10 +177,11 @@ defmodule Mutare.ReturnValueTest do
 
       returns = Enum.filter(sites, &(&1.mutator == :return_value))
 
-      # Both clause tails get the pair (n + 1 → 0/1, :zero → nil/:mutare), and they
-      # live in the lifted `__orig` copy alongside the in-place selectors.
+      # Both clause tails get the pair (n + 1 → 0/1, :zero → nil/:mutare), delivered
+      # as in-place selectors in each clause's *original* (non-mutant) version inside
+      # the lifted private group.
       assert MapSet.new(returns, & &1.mutated_code) == MapSet.new(["0", "1", "nil", ":mutare"])
-      assert meta =~ ~r/defp __mutare_g_1_g\d+_orig/
+      assert meta =~ ~r/defp __mutare_g_1_g\d+\(/
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 

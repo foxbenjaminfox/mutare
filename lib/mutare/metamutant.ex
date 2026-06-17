@@ -42,7 +42,16 @@ defmodule Mutare.Metamutant do
   `:persistent_term.get(<key>, <baseline>)`.
   """
   @spec subject_ast() :: Macro.t()
-  def subject_ast, do: {{:., [], [:persistent_term, :get]}, [], [@key, @baseline]}
+  def subject_ast do
+    # Block-wrap the literal args (the clean-meta convention). Bare literals render
+    # fine as a `case` *subject*, but as a match RHS — `mutare_active =
+    # :persistent_term.get(:mutare_active, 0)` in a lifted dispatcher — the Elixir
+    # formatter's `force_args?/2` inspects the call args and crashes on a bare atom
+    # (it expects `{_, meta, _}` nodes). Wrapping makes every spliced subject render
+    # cleanly in any position; `subject?/1` sees through the wrapping.
+    {{:., [], [:persistent_term, :get]}, [],
+     [{:__block__, [], [@key]}, {:__block__, [], [@baseline]}]}
+  end
 
   @doc """
   Whether `node` is a selector subject — the predicate `Mutare.Manifest` walks with.

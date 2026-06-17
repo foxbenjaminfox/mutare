@@ -12,10 +12,10 @@ defmodule Mutare.Poison do
   spans that line, via a `Mutare.Manifest` built on demand from the file's
   rendered metamutant (see `Manifest.ids_at_line/2`). The manifest records the
   full line range of every mutant's generated code — its selector clause body,
-  and for a lifted mutant the private `defp` copies where its guard/clause-drop
-  code actually lives — so a poison is found whether the error points at the
-  clause, a later line of a multiline body, a lifted private definition, or (as a
-  coarse fallback) the surrounding `case`. Matching only the selector clause's
+  and for a lifted mutant the gated clause (`when mutare_active === <id>`) where its
+  guard/head-pattern code actually lives — so a poison is found whether the error
+  points at the clause, a later line of a multiline body, a lifted mutant clause, or
+  (as a coarse fallback) the surrounding `case`. Matching only the selector clause's
   *start line*, as we used to, missed all but the first of those.
 
   The manifest is built **here, lazily**, only for the file(s) a compile error

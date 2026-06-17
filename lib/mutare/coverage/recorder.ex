@@ -104,15 +104,24 @@ defmodule Mutare.Coverage.Recorder do
 
   Hand-built (not `quote`d) to share the `mutare_active` binding `catch_all_pattern/0`
   introduces and to splice `ids` as a literal list of integers.
+
+  Literal args carry clean (empty) metadata — the `0` especially: a *bare* integer
+  makes Sourceror's normalizer assign it a `:line` but no `:token`, which crashes
+  the Elixir formatter when this expression is rendered as a statement in a `def`
+  body (a lifted dispatcher's coverage record). Clean-meta `{:__block__, [], [lit]}`
+  renders via the inspect path in any position (the same rule literal mutators
+  follow — see CLAUDE.md).
   """
   @spec record_ast([pos_integer()]) :: Macro.t()
   def record_ast(ids) when is_list(ids) do
-    active_zero = {:==, [], [{@var_name, [], nil}, 0]}
-    track_read = {{:., [], [:persistent_term, :get]}, [], [@track_key, false]}
+    active_zero = {:==, [], [{@var_name, [], nil}, literal(0)]}
+    track_read = {{:., [], [:persistent_term, :get]}, [], [literal(@track_key), literal(false)]}
     hit_call = {{:., [], [@helper_module, :hit]}, [], [ids_literal(ids)]}
 
     {:and, [], [{:and, [], [active_zero, track_read]}, hit_call]}
   end
+
+  defp literal(value), do: {:__block__, [], [value]}
 
   # Build the ids list AST so `Sourceror.to_string` renders it as a list literal
   # (`[91, 92]`), never a charlist. A *bare* list of small integers triggers the

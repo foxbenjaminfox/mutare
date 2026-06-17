@@ -46,16 +46,17 @@ contract between them is the whole game.
     detection; `Transform.emit_module_plan/2` walks the items.
   - **`Transform.FunctionPlan`** — one liftable clause group: signature, clauses, a single shared
     *tagged* clause group, and its typed lifted candidates (guard swaps, head-pattern literal
-    swaps, head-pattern **structure** rewrites, clause drops). `mutated_clauses/2` reconstructs a
-    mutant copy on demand (so the group is stored once, not per mutant). `build_lifted/2` threads
-    one tag counter through guards and head-pattern literals, so a `def f(0) when …` lifts both
-    kinds together; `build_pattern_structures/2` is a separate (untagged, index-based) pass for the
-    structural rewrites.
+    swaps, head-pattern **structure** rewrites, clause drops). `mutated_clause/2` reconstructs the
+    *single* clause a candidate mutates (plus its index), on demand — emission gates it by id, so a
+    mutant touching one clause never copies the rest (the **per-clause** lifting; see "Adding a
+    mutator" / NOTES "lifting blowup"). `build_lifted/2` threads one tag counter through guards and
+    head-pattern literals, so a `def f(0) when …` lifts both kinds together;
+    `build_pattern_structures/2` is a separate (untagged, index-based) pass for the structural rewrites.
   - **`Transform.Candidate.{InPlace,Guard,Pattern,PatternStructure,CasePattern,Drop}`** — typed
     candidate variants (one struct per legal kind), replacing the old single struct that redundantly
     stored `context`/`kind`/`operation` and admitted illegal combinations. `Pattern` (a head-pattern
     literal swap) is a mechanical twin of `Guard` — both tag a node in the shared group and replace it
-    in a `__mut` copy — but a distinct kind (head, not `when`; literal families only).
+    in the one gated mutant clause — but a distinct kind (head, not `when`; literal families only).
     `PatternStructure` (a variable swap or duplicate→wildcard in a `def`/`defp` head) spans sibling
     positions / repeated variables that a single tag can't capture, so it is applied by **whole-clause
     replacement by index** (like `Drop`), carrying the mutated head args. `CasePattern` is the *same*
@@ -137,28 +138,40 @@ contract between them is the whole game.
     `lhs |> <branch>`. The Site keeps the bare stage, so the diff is unchanged.
   - **function lifting + dispatcher** for `when` guards, **head-pattern literals**, **head-pattern
     structure rewrites** (variable swap / duplicate→wildcard), and clause structure (a `case` can't
-    live in a guard or a pattern): duplicate the whole clause group into private `__orig`/`__mut`
-    copies and make the public `f/arity` a bare dispatcher. In-place selectors live only in `__orig`.
-    Guard *and* head-literal targets are tagged via `meta[:mutare_tag]` on a single shared clause
-    group held by the `FunctionPlan`; `FunctionPlan.mutated_clauses/2` materializes each mutant copy
-    on demand, so emission never re-finds the node and the group isn't copied per mutant. A head
-    pattern admits **only literal-valued mutations** for the literal families (`tag_pattern_targets/3`
-    offers a node to the mutators iff it is a scalar literal and keeps a mutation iff its replacement
-    is too — so the `__mut` copy is always a legal pattern; specs and keyword/map *keys* are skipped).
+    live in a guard or a pattern): the clause group becomes **one** private function `__mutare_…_g<n>`
+    that takes the active id as an extra first arg (`mutare_active`), and the public `f/arity` becomes
+    a dispatcher that reads the id and tail-calls it. Each source clause is emitted **once** (gated
+    `when mutare_active !== <id>` for the mutants that override/drop it, carrying the in-place body
+    selectors); each mutant is a **single** clause gated `when mutare_active === <id> …`, placed
+    before the original — so a mutant touching one clause never copies the others (`C+M` clauses, not
+    `C×M`; the per-clause lifting, NOTES "lifting blowup"). The dispatcher body carries the coverage
+    record (it used to live in the old dispatcher `case`'s catch-all). Guard *and* head-literal
+    targets are tagged via `meta[:mutare_tag]` on a single shared clause group held by the
+    `FunctionPlan`; `FunctionPlan.mutated_clause/2` materializes the one affected clause (+ index) on
+    demand. A head pattern admits **only literal-valued mutations** for the literal families
+    (`tag_pattern_targets/3` offers a node to the mutators iff it is a scalar literal and keeps a
+    mutation iff its replacement is too — so the mutant clause is always a legal pattern; specs and
+    keyword/map *keys* are skipped). Two rendering invariants the lifting relies on: a lifted clause
+    keeps its **source `meta`** (so Sourceror doesn't assign stale lines to the `[]`-meta selector ids
+    in its body), and every generated integer id is clean-meta `{:__block__, [], [n]}` (a bare int
+    gets a `:line` but no `:token` and crashes the formatter).
     Both sides of a `%{1 => 2}` map pattern mutate. The **structure** rewrites (`PatternSwap`,
     `PatternWildcard`) are pattern-legal by construction and applied by whole-clause replacement, not
     tagging.
 - **`Mutare.Schema`** — runs `Transform` across discovered files, threading **globally-unique,
   stable** mutant ids. Honors `:paths`/`:exclude`, `:only_files` (for `--since`), and `:skip_ids`
   (for poison recovery — the id counter advances even for skipped ids, so ids stay stable across
-  rebuilds; this stability is relied upon). Per mutated file it also stores a **`Mutare.Manifest`**
-  (built once from the rendered metamutant), which Coverage and Poison read back.
+  rebuilds; this stability is relied upon). Per mutated file it stores the **rendered metamutant
+  source** (`:metamutants`); the `Mutare.Manifest` is *not* precomputed — it is built lazily by
+  Poison only on a failed compile (rare).
 - **`Mutare.Manifest`** — the per-file, per-mutant map of *where each mutant lives in its
-  rendered metamutant*: the full **generated line ranges** (selector clause bodies, lifted
-  private `defp` copies, and a whole-`case` fallback) that **Poison** maps a compile error back
-  to a mutant id with. Built once by `Schema` (re-parsing the metamutant via `Sourceror` for
-  `get_range/1`). `Mutare.Metamutant` owns the selector-subject AST and the `subject?/1`
-  recognizer this walk uses. (Coverage no longer lives here — the metamutant self-records it at
+  rendered metamutant*: the full **generated line ranges** (selector clause bodies, lifted mutant
+  clauses gated `when mutare_active === <id>`, and a whole-`case` fallback) that **Poison** maps a
+  compile error back to a mutant id with. Built **lazily** by `Poison` from the stored metamutant,
+  via the fast `Code.string_to_quoted!` parse (not `Sourceror.parse_string!` — same token metadata
+  `get_range/1` reads, far faster on a big file). `Mutare.Metamutant` owns the selector-subject AST
+  and the `subject?/1` recognizer this walk uses. (Coverage no longer lives here — the metamutant
+  self-records it at
   runtime, keyed by mutant id, so there is no `{module, line}` location to precompute.)
 - **`Mutare.Sandbox`** — workspace materialization. Copies the target project to a temp dir and
   overwrites the metamutant sources. Injects a **dependency-free bootstrap** into `test_helper.exs`:

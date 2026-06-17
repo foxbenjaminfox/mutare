@@ -24,10 +24,10 @@ defmodule Mutare.Manifest do
   a selector clause body* only. That missed every poison whose bad code isn't on
   that exact line:
 
-    * **lifted mutations** — a guard/clause-drop mutant's code lives in a generated
-      private `defp __mutare_…_m<id>` definition, not in the dispatcher clause
-      (which only *calls* it). The error points into the `defp`, lines away from
-      the dispatcher clause;
+    * **lifted mutations** — a guard/head-pattern mutant's code lives in a generated
+      `defp <base>(mutare_active, …) when mutare_active === <id> …` clause, not in
+      the dispatcher (which only forwards). The error points into that gated clause,
+      away from the dispatcher;
     * **multiline bodies** — an in-place mutant whose body spans several lines can
       fault on any of them, not just the first;
     * **structural errors** — the compiler sometimes points at the surrounding
@@ -37,8 +37,8 @@ defmodule Mutare.Manifest do
 
     * each selector clause body (`<id> -> <mutated>`) — catches in-place mutants,
       including multiline bodies;
-    * each lifted private definition (`defp __mutare_…_m<id>`) — catches guard and
-      clause-drop poison, whose code lives away from the dispatcher;
+    * each lifted mutant clause (gated `when mutare_active === <id>`) — catches a
+      guard/head-pattern poison, whose code lives away from the dispatcher;
     * the whole selector `case`, attributed to *all* the mutant ids it hosts — the
       coarse fallback for a structural error that points at the `case` itself.
 
@@ -49,9 +49,20 @@ defmodule Mutare.Manifest do
   old "couldn't map it → abort").
 
   Ranges are in **metamutant line space**, which only exists after rendering, so
-  the manifest is built by re-parsing the rendered metamutant with
-  `Sourceror.parse_string!` (whose metadata `Sourceror.get_range/1` needs) and
-  recognising selectors via `Mutare.Metamutant.subject?/1`.
+  the manifest is built by re-parsing the rendered metamutant and ranging its
+  generated nodes with `Sourceror.get_range/1`, recognising selectors via
+  `Mutare.Metamutant.subject?/1`.
+
+  The re-parse uses Elixir's own `Code.string_to_quoted!` (with `:token_metadata`
+  + `:columns`), **not** `Sourceror.parse_string!`. `get_range/1` only needs that
+  token metadata (`:line`/`:column`/`:closing`/`:end`/`:end_of_expression`), which
+  the stdlib parser already produces; what `Sourceror.parse_string!` *adds* is a
+  comment-merging pass that is quadratic on a large metamutant (a lifted 1.8 MB
+  file re-parses in ~0.6 s here, versus minutes for Sourceror) and that the
+  manifest never reads. A `:literal_encoder` reproduces Sourceror's
+  `{:__block__, meta, [literal]}` wrapping so the recognisers — already tolerant of
+  both shapes — see exactly what they did before; the two parses yield identical
+  ranges. (Sourceror is still the *renderer*; only this readback parse changed.)
   """
 
   alias Mutare.Metamutant
@@ -68,22 +79,35 @@ defmodule Mutare.Manifest do
 
   defstruct regions: []
 
-  @mutant_def ~r/\A__mutare_.*_m(\d+)\z/
-
   @doc """
   Build a manifest from one file's rendered metamutant source.
 
-  Re-parses with `Sourceror.parse_string!` (for `Sourceror.get_range/1`) and walks
-  the tree once, attributing every selector clause, lifted private definition, and
-  selector `case` to the mutant id(s) it belongs to.
+  Re-parses (for `Sourceror.get_range/1`) and walks the tree once, attributing
+  every selector clause, lifted private definition, and selector `case` to the
+  mutant id(s) it belongs to.
   """
   @spec from_source(String.t()) :: t()
   def from_source(metamutant_source) do
-    ast = Sourceror.parse_string!(metamutant_source)
+    ast = parse(metamutant_source)
 
     {_ast, regions} = Macro.traverse(ast, [], &enter/2, &leave/2)
 
     %__MODULE__{regions: Enum.reverse(regions)}
+  end
+
+  # Parse the rendered metamutant into an AST `Sourceror.get_range/1` can range.
+  # `Code.string_to_quoted!` with `:token_metadata`/`:columns` gives `get_range`
+  # everything it reads, far faster than `Sourceror.parse_string!` (whose extra
+  # comment-merging pass is quadratic on a megabyte-scale lifted file). The
+  # `:literal_encoder` mirrors Sourceror's `{:__block__, meta, [literal]}` wrapping
+  # so the recognisers (`Metamutant.subject?/1`, `clause_id/1`, `key_atom/1`) see
+  # the shape they already handle — the two parses produce identical ranges.
+  defp parse(source) do
+    Code.string_to_quoted!(source,
+      columns: true,
+      token_metadata: true,
+      literal_encoder: fn literal, meta -> {:ok, {:__block__, meta, [literal]}} end
+    )
   end
 
   @doc """
@@ -132,8 +156,10 @@ defmodule Mutare.Manifest do
     end
   end
 
-  # A lifted private copy (`defp __mutare_…_m<id>(…)`): its whole definition is the
-  # mutant's generated code — where guard / clause-drop poison actually lives.
+  # A lifted mutant clause (`defp <base>(mutare_active, …) when mutare_active ===
+  # <id> …`): its whole definition is that mutant's generated code — where a guard /
+  # head-pattern poison lives. Original clauses (gated `mutare_active !== …`) and the
+  # dispatcher carry no gate, so `mutant_id/1` returns `nil` and they're skipped.
   defp enter({vis, _meta, [head | _]} = node, regions) when vis in [:def, :defp] do
     regions =
       case mutant_id(head) do
@@ -195,16 +221,26 @@ defmodule Mutare.Manifest do
   defp clause_id(id) when is_integer(id), do: id
   defp clause_id(_), do: nil
 
-  # The mutant id encoded in a generated private copy's name (`__mutare_…_m<id>`),
-  # or `nil` for any other definition (the public dispatcher, `…_orig`, user code).
-  defp mutant_id({:when, _meta, [call | _guards]}), do: mutant_id(call)
-
-  defp mutant_id({name, _meta, _args}) when is_atom(name) do
-    case Regex.run(@mutant_def, Atom.to_string(name)) do
-      [_, id] -> String.to_integer(id)
-      nil -> nil
-    end
-  end
-
+  # The mutant id a *lifted mutant clause* carries in its `when mutare_active ===
+  # <id> …` gate (the leftmost conjunct `Transform.lifted_mutant/3` emits), or `nil`
+  # for everything else: a lifted *original* clause (gated `mutare_active !== …`),
+  # the public dispatcher, and user code. This is how a poison inside a generated
+  # guard/head maps back to its mutant now that each lifted mutant is a single gated
+  # clause rather than a `_m<id>`-named full copy.
+  defp mutant_id({:when, _meta, [_call | guards]}), do: Enum.find_value(guards, &gate_id/1)
   defp mutant_id(_), do: nil
+
+  # Find a `mutare_active === <id>` gate anywhere in a guard, returning `<id>`. Only
+  # the gate's `===` against the `mutare_active` var matches — a source guard's own
+  # `===` (LHS some other var) is skipped, and the originals' `!==` exclusions never
+  # match — so a clause is a mutant iff this finds an id.
+  defp gate_id({:===, _meta, [{:mutare_active, _, _}, id_node]}), do: literal_int(id_node)
+  defp gate_id({_form, _meta, args}) when is_list(args), do: Enum.find_value(args, &gate_id/1)
+  defp gate_id(list) when is_list(list), do: Enum.find_value(list, &gate_id/1)
+  defp gate_id({left, right}), do: gate_id(left) || gate_id(right)
+  defp gate_id(_), do: nil
+
+  defp literal_int({:__block__, _meta, [id]}) when is_integer(id), do: id
+  defp literal_int(id) when is_integer(id), do: id
+  defp literal_int(_), do: nil
 end

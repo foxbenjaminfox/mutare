@@ -20,8 +20,9 @@ defmodule Mutare.Mutators.PatternSwap do
   `:mutators`, filterable by `# mutare:ignore[pattern_swap]`.
 
   Delivery is **lifting**: a selector `case` is illegal in a pattern, so the clause
-  group is duplicated into `__orig`/`__mut` copies behind a dispatcher, exactly as
-  head-pattern literals and guards are (see `Mutare.Transform.FunctionPlan`).
+  group becomes one private function behind a dispatcher, with this swap a single
+  clause gated by its id, exactly as head-pattern literals and guards are (see
+  `Mutare.Transform.FunctionPlan`).
 
   ## Scope and compile-safety
 

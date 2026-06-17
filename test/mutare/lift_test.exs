@@ -1,7 +1,9 @@
 defmodule Mutare.LiftTest do
   @moduledoc """
-  Function lifting and dispatchers deliver guard mutations by duplicating the
-  clause group, proven end to end with one compile and runtime switching.
+  Function lifting and dispatchers deliver guard mutations by routing the clause
+  group through one private function (taking the active id as an extra arg), each
+  mutant a single guarded clause — proven end to end with one compile and runtime
+  switching.
   """
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
@@ -53,12 +55,12 @@ defmodule Mutare.LiftTest do
   end
 
   describe "structure" do
-    test "lifts a guarded group into dispatcher + __orig + __mut copies", %{sites: sites} do
+    test "lifts a guarded group into a dispatcher + one guarded private function", %{sites: sites} do
       {meta, _, _} = Mutare.transform_string(@source)
 
       assert meta =~ "def classify(mutare_arg1) do"
-      assert meta =~ ~r/defp __mutare_classify_1_g\d+_orig/
-      assert meta =~ ~r/defp __mutare_classify_1_g\d+_m\d+/
+      assert meta =~ ~r/defp __mutare_classify_1_g\d+\(/
+      assert meta =~ ~r/when mutare_active === \d+/
 
       # Per function (each 2 clauses, clause 1 guarded): 2 guard swaps + 2 clause
       # drops = 4 lifted. Plus bump's body `n + 1` in place.
@@ -74,7 +76,7 @@ defmodule Mutare.LiftTest do
         Mutare.transform_string("defmodule M do\n  def g(0), do: :z\n  def g(_), do: :o\nend\n")
 
       assert meta =~ "def g(mutare_arg1) do"
-      assert meta =~ ~r/defp __mutare_g_1_g\d+_orig/
+      assert meta =~ ~r/defp __mutare_g_1_g\d+\(mutare_active,/
       # two clauses → two clause-drop mutants, no guard mutants
       assert Enum.count(sites, &(&1.mutator == :clause_drop)) == 2
       assert {:ok, _} = Code.string_to_quoted(meta)
@@ -116,10 +118,10 @@ defmodule Mutare.LiftTest do
     end
 
     test "salts generated names when the target already defines a __mutare_ name" do
-      # The target hand-writes the exact name the default scheme would generate
-      # for classify/1's `__orig` copy (lift group 1). With a fixed prefix this
-      # is a duplicate `defp` that sinks the single metamutant build; the scan
-      # must shift the prefix so the generated copies dodge it.
+      # The target hand-writes a name under the `__mutare_` stem the default scheme
+      # would generate into for classify/1 (lift group 1). With a fixed prefix the
+      # generated private function could clash and sink the single metamutant build;
+      # the scan must shift the prefix so the generated names dodge it.
       source = """
       defmodule Mutare.PrefixCollisionFixture do
         def __mutare_classify_1_g1_orig(_), do: :preexisting
@@ -133,13 +135,15 @@ defmodule Mutare.LiftTest do
 
       # The pre-existing target definition is left untouched...
       assert meta =~ "def __mutare_classify_1_g1_orig(_)"
-      # ...and the generated copies move to a salted, still-`__mutare_` prefix.
-      assert meta =~ ~r/defp __mutare_0_classify_1_g1_orig/
-      assert meta =~ ~r/defp __mutare_0_classify_1_g1_m\d+/
-      refute meta =~ ~r/defp __mutare_classify_1_g1_orig/
+      # ...and the generated private group moves to a salted, still-`__mutare_` prefix.
+      assert meta =~ ~r/defp __mutare_0_classify_1_g1\(/
 
-      # The real proof: it compiles. A fixed prefix would raise "def
-      # __mutare_classify_1_g1_orig/1 already defined".
+      assert meta =~
+               ~r/defp __mutare_0_classify_1_g1\(mutare_active, n\) when mutare_active === \d+/
+
+      refute meta =~ ~r/defp __mutare_classify_1_g1\(/
+
+      # The real proof: it compiles. A fixed prefix risks an "already defined" clash.
       assert [{Mutare.PrefixCollisionFixture, _}] = Code.compile_string(meta)
     end
 

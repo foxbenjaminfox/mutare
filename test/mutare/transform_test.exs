@@ -144,7 +144,12 @@ defmodule Mutare.TransformTest do
     # A `case` must never appear inside a guard (that would compile-poison).
     refute meta =~ "when (case"
     refute meta =~ "when case"
-    assert meta =~ ~r/__mutare_f_1_g\d+_orig/
+
+    # Lifted into one private group that takes the active id as an extra arg, with
+    # each guard mutant a single clause gated `when mutare_active === <id> …` — not
+    # a full per-mutant copy of the clause group.
+    assert meta =~ ~r/defp __mutare_f_1_g\d+\(mutare_active,/
+    assert meta =~ ~r/when mutare_active === \d+ and/
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 

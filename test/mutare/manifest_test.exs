@@ -32,18 +32,19 @@ defmodule Mutare.ManifestTest do
       assert Manifest.ids_at_line(manifest, line) == [site.id]
     end
 
-    test "a lifted-guard poison maps to its mutant, even though the bad code lives in a private defp" do
+    test "a lifted-guard poison maps to its mutant, even though the bad code lives in a generated clause" do
       # Regression: the old line→id mapping matched only a selector clause's start
-      # line, so a guard poison (whose code sits in `defp __mutare_…_m<id>`, lines
-      # below the dispatcher clause) mapped to nothing → MapSet.new([]) → abort.
+      # line, so a guard poison (whose code sits in a generated lifted clause, gated
+      # by its id — not the public dispatcher) mapped to nothing → abort.
       {meta, sites, _next} = Mutare.transform_string(@lifted_src, mutators: @lifted_mutators)
       manifest = Manifest.from_source(meta)
 
       poison = Enum.find(sites, &(&1.mutator == :poison))
       line = line_of(meta, "mutare_unbound_xyz")
 
-      # the bad code is inside a private definition, not the dispatcher clause
-      assert meta |> String.split("\n") |> Enum.at(line - 1) =~ ~r/defp __mutare_/
+      # the bad code sits in a generated lifted mutant clause, gated by its id —
+      # lines away from the public dispatcher a naive start-line match would find
+      assert meta |> String.split("\n") |> Enum.at(line - 1) =~ ~r/mutare_active === \d+/
       assert Manifest.ids_at_line(manifest, line) == [poison.id]
     end
 
@@ -67,10 +68,17 @@ defmodule Mutare.ManifestTest do
       assert Manifest.ids_at_line(manifest, region.lo) == [site.id]
     end
 
-    test "a structural error at the surrounding case maps to every mutant it hosts" do
-      {meta, sites, _next} = Mutare.transform_string(@lifted_src, mutators: @lifted_mutators)
+    test "a structural error at the surrounding in-place case maps to every mutant it hosts" do
+      # One node with several mutations (an integer → n+1, n-1, 0) shares a single
+      # in-place selector `case`. An error the compiler points at the `case` itself
+      # (not one clause body) maps to *every* id the case hosts — the coarse fallback
+      # that still recovers the build. (Lifted mutants are each their own gated
+      # clause now, so they map precisely; the coarse net is the in-place case.)
+      src = "defmodule D do\n  def f, do: 5\nend\n"
+      {meta, sites, _next} = Mutare.transform_string(src, mutators: [Mutare.Mutators.Literal])
       manifest = Manifest.from_source(meta)
 
+      assert length(sites) > 1
       case_line = line_of(meta, "persistent_term.get")
 
       assert Enum.sort(Manifest.ids_at_line(manifest, case_line)) ==

@@ -1,9 +1,9 @@
 defmodule Mutare.PatternLiftTest do
   @moduledoc """
   Pattern-structure mutants (variable swap, duplicate→wildcard) are delivered by the
-  same lifting machinery as head-pattern literals — duplicating the clause group into
-  `__orig`/`__mut` copies behind a dispatcher — proven with one compile and runtime
-  switching.
+  same lifting machinery as head-pattern literals — the clause group becomes one
+  private function (taking the active id as an extra arg) behind a dispatcher, with
+  each mutant a single guarded clause — proven with one compile and runtime switching.
   """
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
@@ -52,10 +52,12 @@ defmodule Mutare.PatternLiftTest do
     site.id
   end
 
-  test "the group is lifted into dispatcher + __orig + __mut copies", %{meta: meta} do
+  test "the group is lifted into a dispatcher + one guarded private function", %{meta: meta} do
     assert meta =~ "def coord(mutare_arg1) do"
-    assert meta =~ ~r/defp __mutare_coord_1_g\d+_orig/
-    assert meta =~ ~r/defp __mutare_coord_1_g\d+_m\d+/
+    # one private group taking the active id as an extra arg…
+    assert meta =~ ~r/defp __mutare_coord_1_g\d+\(mutare_active,/
+    # …with the swap mutant as a single clause gated by its id
+    assert meta =~ ~r/when mutare_active === \d+/
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 

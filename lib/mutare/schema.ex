@@ -166,13 +166,46 @@ defmodule Mutare.Schema do
   # construct the transform mishandles, a Sourceror formatter crash). Swallowing
   # those as "skipped files" is exactly how the two compile-poisoning bugs hid
   # (see NOTES.md); let them crash so they surface.
+  #
+  # The transform runs in a **throwaway process** (`Task.async`/`await`): its
+  # heavy, short-lived ASTs — the rendered metamutant tree, Sourceror's render
+  # buffers — die with that process instead of accumulating in the scan's
+  # long-lived heap, where they otherwise made every GC scan the growing set of
+  # held metamutants and inflated a big file's transform several-fold (see NOTES
+  # "Scan is transform-bound, and the loop heap makes it worse"). The result is
+  # plain data (strings, sites, id), cheap to copy back, and `from_files` awaits
+  # each file before the next, so sequential `start_id` threading is unchanged.
+  #
+  # The worker classifies its own outcome rather than crashing: an unparseable
+  # source degrades to `{:error, _}` (a skipped file); any *other* exception is a
+  # tool bug, captured with its stacktrace and **re-raised in this process** — so
+  # it still surfaces with its original type and trace (the `assert_raise`
+  # contract, and the "let it crash so it surfaces" rule above), not as an opaque
+  # `Task` exit. Catching in the worker (not letting it crash) is what keeps the
+  # surfaced error faithful across the process hop.
   defp safe_transform(source, rel, next_id, %Options{} = options, skip_ids) do
     opts = transform_opts(options) ++ [file: rel, start_id: next_id, skip_ids: skip_ids]
-    {meta, sites, next_id} = Mutare.Transform.transform_string(source, opts)
-    {:ok, meta, sites, next_id}
-  rescue
-    error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
-      {:error, error}
+
+    outcome =
+      fn ->
+        try do
+          {meta, sites, next_id} = Mutare.Transform.transform_string(source, opts)
+          {:ok, meta, sites, next_id}
+        rescue
+          error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
+            {:error, error}
+
+          other ->
+            {:raise, other, __STACKTRACE__}
+        end
+      end
+      |> Task.async()
+      |> Task.await(:infinity)
+
+    case outcome do
+      {:raise, error, stacktrace} -> reraise(error, stacktrace)
+      result -> result
+    end
   end
 
   # Only forward `:mutators` when set; `nil` lets `Mutare.Transform` use its

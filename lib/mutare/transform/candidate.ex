@@ -17,10 +17,10 @@ defmodule Mutare.Transform.Candidate do
   #     (a `case` can't live in a guard) (was `:guard` / `:lifted` / `:replace`).
   #   * `Candidate.Pattern` — a head-pattern literal swap, delivered by lifting (a
   #     selector `case` is illegal in a pattern). Mechanically a twin of `Guard` —
-  #     both tag a node in the shared clause group and replace it in a `__mut` copy
-  #     — but a distinct kind: a different position (the clause *head*, not its
-  #     `when`) and a different mutator family (only literal-valued mutations are
-  #     pattern-legal).
+  #     both tag a node in the shared clause group and replace it in the one gated
+  #     mutant clause — but a distinct kind: a different position (the clause *head*,
+  #     not its `when`) and a different mutator family (only literal-valued mutations
+  #     are pattern-legal).
   #   * `Candidate.PatternStructure` — a whole-head pattern restructuring (a variable
   #     swap, or a duplicate-variable wildcarding), delivered by lifting. Like `Pattern`
   #     it lives in a clause head, but the rewrite spans sibling positions / repeated
@@ -72,23 +72,23 @@ defmodule Mutare.Transform.Candidate do
   defmodule Guard do
     @moduledoc false
 
-    # A `when`-guard operator swap, delivered by lifting. Rather than carry a full
-    # copy of the clause group with this one guard swapped, it carries only `tag`
-    # — a unique `meta[:mutare_tag]` marking the target node inside the *shared*
-    # tagged clause group held once on the `Mutare.Transform.FunctionPlan`.
-    # `FunctionPlan.mutated_clauses/2` reconstructs the mutated group by replacing
-    # the tagged node with `mutated`, so emission never re-finds the node and the
-    # group is stored once per function, not once per guard mutant.
+    # A `when`-guard operator swap, delivered by lifting. It carries `tag` — a
+    # unique `meta[:mutare_tag]` marking the target node inside the *shared* tagged
+    # clause group held once on the `Mutare.Transform.FunctionPlan` — plus the
+    # `clause_index` it lives in. `FunctionPlan.mutated_clause/2` reconstructs *just
+    # that one clause* by replacing the tagged node with `mutated`; emission emits it
+    # as a single dispatcher clause gated `when mutare_active === <id>`.
 
     @type t :: %__MODULE__{
             tag: non_neg_integer(),
+            clause_index: non_neg_integer(),
             mutator: module(),
             original: Macro.t(),
             mutated: Macro.t(),
             range: map()
           }
 
-    defstruct [:tag, :mutator, :original, :mutated, :range]
+    defstruct [:tag, :clause_index, :mutator, :original, :mutated, :range]
   end
 
   defmodule Pattern do
@@ -96,23 +96,24 @@ defmodule Mutare.Transform.Candidate do
 
     # A head-pattern literal swap, delivered by lifting. Structurally identical to
     # `Guard` (it carries a `tag` into the shared tagged clause group held on the
-    # `Mutare.Transform.FunctionPlan`, plus the replacement node), but it lives in
-    # a clause *head* rather than a `when` guard. Because a selector `case` is
-    # illegal in a pattern, a literal in a head (`def f(1, %{0 => k})`) can only be
-    # mutated by duplicating the whole clause group — exactly the guard mechanism.
-    # `FunctionPlan.mutated_clauses/2` materializes the mutant copy by replacing the
+    # `Mutare.Transform.FunctionPlan`, plus its `clause_index` and the replacement
+    # node), but it lives in a clause *head* rather than a `when` guard. Because a
+    # selector `case` is illegal in a pattern, a literal in a head (`def f(1, %{0 =>
+    # k})`) can only be mutated by lifting — exactly the guard mechanism.
+    # `FunctionPlan.mutated_clause/2` materializes the mutant clause by replacing the
     # tagged literal with `mutated`. Only mutations whose replacement is itself a
-    # literal are admitted, so the `__mut` copy is always a legal pattern.
+    # literal are admitted, so the gated mutant clause is always a legal pattern.
 
     @type t :: %__MODULE__{
             tag: non_neg_integer(),
+            clause_index: non_neg_integer(),
             mutator: module(),
             original: Macro.t(),
             mutated: Macro.t(),
             range: map()
           }
 
-    defstruct [:tag, :mutator, :original, :mutated, :range]
+    defstruct [:tag, :clause_index, :mutator, :original, :mutated, :range]
   end
 
   defmodule PatternStructure do
@@ -120,13 +121,12 @@ defmodule Mutare.Transform.Candidate do
 
     # A whole-head *pattern restructuring* of one clause, delivered by lifting — a
     # variable swap (`{x, y}` → `{y, x}`) or a duplicate-variable wildcarding
-    # (`f(x, x)` → `f(_, x)`). Like `Pattern` it lives in a clause head and is delivered
-    # by duplicating the clause group; unlike `Pattern` (a single tagged literal node) the
-    # rewrite spans/replaces sub-patterns that may have no taggable metadata (a 2-tuple,
-    # a list), so it is applied by **whole-clause replacement by index** — the same
-    # mechanism as `Drop`. `clause_index` says which clause to rebuild;
-    # `Mutare.Transform.FunctionPlan.mutated_clauses/2` swaps in `mutated_args` as that
-    # clause's head pattern args. `original`/`mutated` are the clause's head *call* node
+    # (`f(x, x)` → `f(_, x)`). Like `Pattern` it lives in a clause head; unlike `Pattern`
+    # (a single tagged literal node) the rewrite spans/replaces sub-patterns that may have
+    # no taggable metadata (a 2-tuple, a list), so it is applied by **whole-clause
+    # rebuild by index** — the same mechanism as `Drop`. `clause_index` says which clause
+    # to rebuild; `Mutare.Transform.FunctionPlan.mutated_clause/2` swaps in `mutated_args`
+    # as that clause's head pattern args. `original`/`mutated` are the clause's head *call* node
     # before/after (always rangeable, so the report renders a clean one-line diff), and
     # `mutator` is the structural family that produced it (`PatternSwap`/`PatternWildcard`).
 
@@ -169,9 +169,10 @@ defmodule Mutare.Transform.Candidate do
   defmodule Drop do
     @moduledoc false
 
-    # A whole function clause removed, delivered by lifting. There is no mutated
-    # node — `clause_index` says which clause `FunctionPlan.mutated_clauses/2`
-    # deletes; `original` is the clause itself (for the diff) and `range` locates it.
+    # A whole function clause removed, delivered by lifting. There is no mutant
+    # clause — `clause_index` says which clause's *original* is gated off (its
+    # `FunctionPlan.mutated_clause/2` returns `:drop`) when this id is active;
+    # `original` is the clause itself (for the diff) and `range` locates it.
 
     @type t :: %__MODULE__{
             clause_index: non_neg_integer(),

@@ -57,11 +57,25 @@ to the whole-`case` range (dropping every mutant it hosts — a bounded over-dro
 still recovers, never the old abort).
 
 Implementation notes:
-- Ranges only exist *after* rendering, so the manifest re-parses with
-  `Sourceror.parse_string!` (for `Sourceror.get_range/1`) — not `Code.string_to_quoted`.
-  Sourceror wraps every literal in `{:__block__, _, [literal]}`, so
-  `Mutare.Metamutant.subject?/1` was made tolerant of that wrapping (one recognizer,
-  both parsers); the integer clause patterns are likewise unwrapped.
+- Ranges only exist *after* rendering, so the manifest re-parses for
+  `Sourceror.get_range/1`. The re-parse is `Code.string_to_quoted!` (with
+  `:token_metadata` + `:columns`), **not** `Sourceror.parse_string!`. `get_range/1`
+  reads only token metadata (`:line`/`:column`/`:closing`/`:end`/
+  `:end_of_expression`), which the stdlib parser already emits; Sourceror's *extra*
+  comment-merging pass is quadratic on a large metamutant and is precisely what the
+  manifest doesn't need. On this repo's own `transform.ex` (a 1.8 MB lifted
+  metamutant from a 25-clause `analyze/3`) the Sourceror re-parse alone took **~6.5
+  min**, dwarfing the ~20 s transform and making `mix mutare` *on Mutare itself*
+  look hung mid-scan; the stdlib parse is **~0.65 s** and yields **byte-identical
+  regions** (verified across all 4437). A `:literal_encoder` reproduces Sourceror's
+  `{:__block__, _, [literal]}` wrapping, so `Mutare.Metamutant.subject?/1` (made
+  tolerant of that wrapping — one recognizer, both parsers) and the integer
+  clause-pattern unwrapping keep working unchanged. (Sourceror remains the
+  *renderer*; only this readback parse moved.)
+  NB this only tamed cause #2 (the slow re-parse). Cause #1 — lifting duplicates
+  the *whole* clause group per mutant, so `analyze/3`'s 25 clauses × ~100 lift
+  candidates ≈ 2500 generated clause-defs → the 1.8 MB blowup and the ~20 s
+  transform/render — is still open. See "lifting blowup" below.
 - A lifted private copy is attributed to its id by name (`~r/\A__mutare_.*_m(\d+)\z/`);
   `…_orig` and user code never match, so they're left out.
 - `Mutare.Metamutant` shrank to just the selector-subject AST contract
@@ -79,22 +93,65 @@ the scan's `Enum.reduce`** — a ~7× penalty. The cause is the **accumulating l
 heap**: by the time the big file is reached, the process holds ~60 rendered
 metamutant strings + ~5k `Site` structs live, and `Sourceror.to_string`'s heavy
 allocation makes every GC scan that whole live set (superlinear in held state). So
-the cost isn't intrinsic to the file — it's the company it keeps.
+the cost isn't intrinsic to the file — it's the company it keeps. (Independently
+reproduced: ~24 s in isolation → ~167–180 s inside the accumulating reduce; the
+sequential throwaway-process run below lands at ~24 s, matching the isolated sum.)
 
-Measured ladder (same machine), for when this is picked up:
+Measured ladder (same machine):
 - eager manifest (old):            ~500 s+
 - lazy manifest (done):            ~280 s
 - sequential, transform each file in a **throwaway process** (accumulator stays in
-  the parent, off the render's heap): ~67 s — ~5-line change, exact id-threading
-  preserved, lowest risk;
-- **parallel** across files (`Task.async_stream`, schedulers_online): ~26 s — the
-  real target (~11× vs today), but mutant ids are baked into each metamutant's
-  selector clauses, so concurrent files can't thread `next_id` sequentially. Needs
-  the id assignment decoupled from the per-file render: either two-phase (id-free
-  count/plan → prefix-sum id ranges → emit+render in parallel), or a count pre-pass
-  then a parallel render pass with each file's `start_id` known up front. The
-  plan/emit split already exists in the IR (`ModulePlan`/`FunctionPlan` are id-free;
-  emission threads ids), so the decoupling is aligned with the design.
+  the parent, off the render's heap) — **`[done]`**: `safe_transform/5` runs the
+  per-file `Transform.transform_string` inside a `Task.async`/`await`, so its
+  transient ASTs die with the worker instead of inflating the loop heap. Exact
+  `start_id` threading is preserved (each file is awaited before the next), and the
+  `try/rescue` for unparseable sources moved *inside* the worker so a bad file still
+  skips rather than crashing the scan. **Measured ~24 s** on this repo's `lib/`
+  (down from ~180 s — the loop-heap penalty is gone; the scan now ≈ the isolated
+  per-file sum).
+- per-clause lifting — **`[done]`**: with the lifting blowup fixed (below) the big
+  file's metamutant shrank ~4.6× (1.8 MB → ~0.4 MB), so its transform/render dropped
+  from ~20 s to ~2.7 s and the **whole sequential scan to ~7.6 s** (~5.7k mutants).
+- **parallel** across files (`Task.async_stream`, schedulers_online): **`[deferred,
+  next]`**. With the loop heap gone *and* the metamutant shrunk, the sequential run
+  is already ~7.6 s here (CPU-bound on one big file), so the win is mostly on
+  many-core hosts / projects without one dominant file. The blocker is unchanged:
+  mutant ids are baked into each metamutant's selector clauses, so concurrent files
+  can't thread `next_id` sequentially. Needs the id assignment decoupled from the
+  per-file render: either two-phase (id-free count/plan → prefix-sum id ranges →
+  emit+render in parallel), or a count pre-pass then a parallel render pass with each
+  file's `start_id` known up front. The plan/emit split already exists in the IR
+  (`ModulePlan`/`FunctionPlan` are id-free; emission threads ids), so the decoupling
+  is aligned with the design.
+
+#### Why the metamutant was so big — lifting blowup on huge clause groups `[done]`
+The loop heap above scans the *volume* of generated code, and one mechanism used to
+dominate that volume. The old `emit_function_plan/1` emitted, **per lifted
+candidate, a full copy of the *entire* clause group** (the old
+`FunctionPlan.mutated_clauses/2` returned all clauses with one node changed, each a
+`defp __mutare_…_m<id>`). Cost was `candidates × clauses` clause-defs, both factors
+growing with clause count — ~quadratic for a big dispatcher. Mutare's own
+`analyze/3` was the pathological case: 25 clauses × ~100 lift candidates (its heads
+are wall-to-wall tuple destructuring → PatternSwap/PatternWildcard, plus guards and
+clause-drops) ≈ 2475 generated clause-defs — ~85% of `transform.ex`'s metamutant,
+which rendered to ~1.8 MB / 39k lines and took ~20 s to transform.
+
+**Fixed by lifting per-clause.** A lifted candidate touches exactly one clause, so
+emission now threads the active id as an extra arg (`mutare_active`) and emits each
+source clause **once** (gated `when mutare_active !== <id>` for the mutants that
+override/drop it) plus **one** gated clause per mutant (`when mutare_active === <id>
+…`) — `C+M` clauses, not `C×M`. (`FunctionPlan.mutated_clause/2` returns the single
+affected clause + index; `Transform.lifted_mutant/3`/`lifted_original/3` assemble
+them; the dispatcher's coverage record moved out of the old `case` catch-all into the
+dispatcher body.) `transform.ex`'s metamutant shrank to ~0.4 MB / 11k lines (~4.6×),
+its transform/render to ~2.7 s, the whole scan to ~7.6 s. `Mutare.Manifest` maps a
+lifted poison by the clause's `mutare_active === <id>` gate (no longer a `_m<id>`
+name). Two sharp edges this surfaced (both fixed): a lifted clause must keep its
+**source `meta`** (else Sourceror assigns stale lines to the `[]`-meta in-place
+selector ids inside it and the formatter crashes), and every generated integer
+literal must be clean-meta `{:__block__, [], [n]}` — a *bare* int gets a `:line` but
+no `:token` from Sourceror's normalizer and crashes the formatter (`subject_ast/0`
+and `record_ast/1`'s `0` were latently bare; now wrapped).
 
 ### Sandbox isolation & dependencies `[M4 / open question]`
 `Mutare.Sandbox` copies the whole project (excluding `_build`/`.git`, keeping

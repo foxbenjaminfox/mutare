@@ -5,8 +5,11 @@ defmodule Mutare.MetamutantTest do
 
   describe "subject_ast/0 and subject?/1" do
     test "subject_ast/0 builds the persistent_term.get node Transform splices in" do
+      # Literal args are block-wrapped (clean-meta) so the node renders cleanly in
+      # any position, including a lifted dispatcher's match RHS.
       assert Metamutant.subject_ast() ==
-               {{:., [], [:persistent_term, :get]}, [], [Selector.key(), Selector.baseline()]}
+               {{:., [], [:persistent_term, :get]}, [],
+                [{:__block__, [], [Selector.key()]}, {:__block__, [], [Selector.baseline()]}]}
     end
 
     test "subject?/1 recognises the subject regardless of metadata" do
