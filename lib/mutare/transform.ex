@@ -1031,6 +1031,25 @@ defmodule Mutare.Transform do
     {:|>, meta, [analyze(lhs, :runtime, mutators), analyze_pipe_stage(rhs, mutators)]}
   end
 
+  # `for` comprehension: its generators (`<-`), filters, `:into`/`:reduce` options
+  # and `:do`/`:reduce` body all descend as ordinary runtime, but the **`:uniq`**
+  # option must be a *literal boolean* — the `for` special form rejects any
+  # non-literal there (`:uniq option for comprehensions only accepts a boolean`),
+  # so a selector `case` spliced into its value (Literal/Conditional firing on the
+  # `true`/`false`) would poison the single build. The `:uniq` value alone is held
+  # back from mutators (`analyze_for_arg/2`); the node itself is still offered for
+  # parity with the generic clause (no built-in matches `for`).
+  defp analyze({:for, _meta, args} = node, :runtime, mutators) when is_list(args) do
+    offered =
+      case Mutator.mutations(node, mutators) do
+        [] -> node
+        muts -> put_candidates(node, build_candidates(node, muts))
+      end
+
+    {:for, meta, args} = offered
+    {:for, meta, Enum.map(args, &analyze_for_arg(&1, mutators))}
+  end
+
   # a generic runtime node: build the candidate from the raw node (so `original`
   # keeps un-annotated children), then descend into the children. A sigil is offered
   # as a whole (so the sigil mutators — Regex/Charlist/DateTime — match it), then
@@ -1087,6 +1106,23 @@ defmodule Mutare.Transform do
   end
 
   defp analyze_pipe_stage(other, mutators), do: analyze(other, :runtime, mutators)
+
+  # One argument of a `for`: a generator/filter is descended as ordinary runtime,
+  # while the trailing options/body keyword list keeps its `:uniq` value untouched
+  # (a `for`-special-form literal-boolean slot — see the `for` analyze clause).
+  # Every other option (`:into`/`:reduce`) and the `:do`/`:reduce` body descend as
+  # before via the generic keyword-pair clause.
+  defp analyze_for_arg(opts, mutators) when is_list(opts) do
+    Enum.map(opts, fn
+      {key, _value} = pair ->
+        if key_atom(key) == :uniq, do: pair, else: analyze(pair, :runtime, mutators)
+
+      other ->
+        analyze(other, :runtime, mutators)
+    end)
+  end
+
+  defp analyze_for_arg(arg, mutators), do: analyze(arg, :runtime, mutators)
 
   # Recurse a runtime call's arguments, but route any positions a mutator has *claimed*
   # (its optional `owned_args/2`) through the non-mutating `:owned` context — so a leaf
