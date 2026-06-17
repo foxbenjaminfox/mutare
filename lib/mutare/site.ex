@@ -152,10 +152,22 @@ defmodule Mutare.Site do
   @doc "Human-readable one-liner, e.g. `relational  >= → >` or `clause_drop  (drop) <clause>`."
   @spec describe(t()) :: String.t()
   def describe(%__MODULE__{operation: :delete} = site) do
-    "#{site.mutator}  (drop) #{site.original_code}"
+    "#{site.mutator}  (drop) #{one_line(site.original_code)}"
   end
 
   def describe(%__MODULE__{} = site) do
-    "#{site.mutator}  #{site.original_code} → #{site.mutated_code}"
+    "#{site.mutator}  #{one_line(site.original_code)} → #{one_line(site.mutated_code)}"
+  end
+
+  # Sourceror renders a multi-line node (a dropped `case` clause, a wrapped tuple,
+  # a multi-line return) as multi-line code. `describe/1` promises a *one*-liner —
+  # and its consumers depend on it: the live status block counts list elements, not
+  # physical rows, so an embedded newline in the in-flight activity line would
+  # under-erase and leave stale rows on screen; a SARIF message wants one line too.
+  # Collapse each newline (plus the indentation around it) to a single space; spaces
+  # *within* a line (e.g. inside a string literal) are left intact. The raw
+  # `original_code`/`mutated_code` fields stay multi-line for the diff/JSON reports.
+  defp one_line(code) do
+    code |> String.replace(~r/\s*\n\s*/, " ") |> String.trim()
   end
 end

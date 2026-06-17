@@ -40,5 +40,33 @@ defmodule Mutare.SiteTest do
 
       assert Site.describe(site) == "relational  a >= b → a > b"
     end
+
+    test "collapses multi-line code to a single line (the activity line is one row)" do
+      # A multi-line node (e.g. a dropped `case` clause) renders as multi-line code;
+      # describe/1 must flatten it, or an embedded newline breaks the live block's
+      # cursor accounting and leaves the description on screen after it moves on.
+      site = %Site{
+        mutator: :return_value,
+        operation: :replace,
+        original_code: "case x do\n  1 -> :a\n  2 -> :b\nend",
+        mutated_code: ":mutare"
+      }
+
+      described = Site.describe(site)
+
+      refute described =~ "\n"
+      assert described == "return_value  case x do 1 -> :a 2 -> :b end → :mutare"
+    end
+
+    test "leaves spaces within a line (e.g. inside a string literal) intact" do
+      site = %Site{
+        mutator: :string_literal,
+        operation: :replace,
+        original_code: ~s("a  b"),
+        mutated_code: ~s("")
+      }
+
+      assert Site.describe(site) == ~s(string_literal  "a  b" → "")
+    end
   end
 end
