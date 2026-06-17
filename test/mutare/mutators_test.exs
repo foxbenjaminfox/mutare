@@ -1014,12 +1014,166 @@ defmodule Mutare.MutatorsTest do
       assert render(RegexLiteral.mutate(parse(~S|~r/foo/|))) == [~S|~r//|, ~S|~r/mutare/|]
     end
 
-    test "preserves modifier flags" do
-      assert render(RegexLiteral.mutate(parse(~S|~r/foo/i|))) == [~S|~r//i|, ~S|~r/mutare/i|]
+    test "preserves modifier flags on the whole-pattern replacements" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/foo/i|))) ==
+               [~S|~r//i|, ~S|~r/mutare/i|, ~S|~r/foo/|]
     end
 
     test "drops the replacement that already equals the original" do
       assert render(RegexLiteral.mutate(parse(~S|~r//|))) == [~S|~r/mutare/|]
+    end
+
+    test "drops a leading ^ anchor" do
+      assert ~S|~r/abc/| in render(RegexLiteral.mutate(parse(~S|~r/^abc/|)))
+    end
+
+    test "drops an unescaped trailing $ anchor" do
+      assert ~S|~r/abc/| in render(RegexLiteral.mutate(parse(~S|~r/abc$/|)))
+    end
+
+    test "drops each anchor of ^abc$ independently" do
+      mutants = render(RegexLiteral.mutate(parse(~S|~r/^abc$/|)))
+      assert ~S|~r/abc$/| in mutants
+      assert ~S|~r/^abc/| in mutants
+    end
+
+    test "leaves an escaped trailing $ alone" do
+      refute ~S|~r/abc\$/| in render(RegexLiteral.mutate(parse(~S|~r/abc\$/|)))
+      assert render(RegexLiteral.mutate(parse(~S|~r/abc\$/|))) == [~S|~r//|, ~S|~r/mutare/|]
+    end
+
+    test "complements a \\d/\\w/\\s shorthand and swaps each quantifier, in source order" do
+      # `\d` → `\D` and `+` → `*` interleave left-to-right across the two stages.
+      assert render(RegexLiteral.mutate(parse(~S|~r/\d+\.\d+/|))) ==
+               [
+                 ~S|~r//|,
+                 ~S|~r/mutare/|,
+                 ~S|~r/\D+\.\d+/|,
+                 ~S|~r/\d*\.\d+/|,
+                 ~S|~r/\d+\.\D+/|,
+                 ~S|~r/\d+\.\d*/|
+               ]
+
+      assert ~S|~r/\d/| in render(RegexLiteral.mutate(parse(~S|~r/\D/|)))
+    end
+
+    test "complements a \\b word boundary only outside a character class" do
+      assert ~S|~r/\B/| in render(RegexLiteral.mutate(parse(~S|~r/\b/|)))
+      # inside a class \b is a backspace — only the class negation is offered
+      assert render(RegexLiteral.mutate(parse(~S|~r/[\b]/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/[^\b]/|]
+    end
+
+    test "does not treat an escaped backslash as a shorthand" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/\\d/|))) == [~S|~r//|, ~S|~r/mutare/|]
+    end
+
+    test "toggles a character class between matching and negated" do
+      assert ~S|~r/[^abc]/| in render(RegexLiteral.mutate(parse(~S|~r/[abc]/|)))
+      assert ~S|~r/[abc]/| in render(RegexLiteral.mutate(parse(~S|~r/[^abc]/|)))
+    end
+
+    test "negates a class with a literal leading ] correctly" do
+      assert ~S|~r/[^]a]/| in render(RegexLiteral.mutate(parse(~S|~r/[]a]/|)))
+    end
+
+    test "offers both negation and shorthand swaps inside one class" do
+      mutants = render(RegexLiteral.mutate(parse(~S|~r/[\d]/|)))
+      assert ~S|~r/[^\d]/| in mutants
+      assert ~S|~r/[\D]/| in mutants
+    end
+
+    test "drops a leading \\A and a trailing \\z/\\Z anchor" do
+      assert ~S|~r/start/| in render(RegexLiteral.mutate(parse(~S|~r/\Astart/|)))
+      assert ~S|~r/end/| in render(RegexLiteral.mutate(parse(~S|~r/end\z/|)))
+      assert ~S|~r/end/| in render(RegexLiteral.mutate(parse(~S|~r/end\Z/|)))
+      # an escaped backslash before z is not an anchor
+      assert render(RegexLiteral.mutate(parse(~S|~r/end\\z/|))) == [~S|~r//|, ~S|~r/mutare/|]
+    end
+
+    test "swaps a + quantifier to * and back" do
+      assert ~S|~r/\d*/| in render(RegexLiteral.mutate(parse(~S|~r/\d+/|)))
+      assert ~S|~r/a+/| in render(RegexLiteral.mutate(parse(~S|~r/a*/|)))
+    end
+
+    test "leaves a lazy/possessive suffix and a quantifier inside a class alone" do
+      # the `+` swaps to `*`; the trailing lazy `?` is a suffix, not a fresh quantifier
+      assert render(RegexLiteral.mutate(parse(~S|~r/a+?/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a*?/|]
+
+      # `*`/`+` inside a class are literal — only the class negation is offered
+      assert render(RegexLiteral.mutate(parse(~S|~r/[*+]/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/[^*+]/|]
+    end
+
+    test "turns an optional ? mandatory (drop it, and raise it to +)" do
+      mutants = render(RegexLiteral.mutate(parse(~S|~r/colou?r/|)))
+      assert ~S|~r/colour/| in mutants
+      assert ~S|~r/colou+r/| in mutants
+    end
+
+    test "does not treat a ? group marker as an optional quantifier" do
+      # the `?` in `(?:…)` is a group marker, not a quantifier — nothing to mutate here
+      assert render(RegexLiteral.mutate(parse(~S|~r/(?:ab)/|))) == [~S|~r//|, ~S|~r/mutare/|]
+    end
+
+    test "nudges a bounded quantifier's counts by one, staying in range" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{3}/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{2}/|, ~S|~r/a{4}/|]
+
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{8,}/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{7,}/|, ~S|~r/a{9,}/|]
+
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{2,4}/|))) ==
+               [
+                 ~S|~r//|,
+                 ~S|~r/mutare/|,
+                 ~S|~r/a{1,4}/|,
+                 ~S|~r/a{3,4}/|,
+                 ~S|~r/a{2,3}/|,
+                 ~S|~r/a{2,5}/|
+               ]
+
+      # a lower bound never goes below zero
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{0,2}/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{1,2}/|, ~S|~r/a{0,1}/|, ~S|~r/a{0,3}/|]
+    end
+
+    test "leaves a non-quantifier brace alone" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{b}/|))) == [~S|~r//|, ~S|~r/mutare/|]
+    end
+
+    test "drops one branch of a top-level alternation" do
+      mutants = render(RegexLiteral.mutate(parse(~S"~r/a|b|c/")))
+      assert ~S"~r/b|c/" in mutants
+      assert ~S"~r/a|c/" in mutants
+      assert ~S"~r/a|b/" in mutants
+    end
+
+    test "drops one branch of an alternation inside a capturing group" do
+      mutants = render(RegexLiteral.mutate(parse(~S"~r/^(GET|POST)$/")))
+      assert ~S"~r/^(POST)$/" in mutants
+      assert ~S"~r/^(GET)$/" in mutants
+    end
+
+    test "does not touch alternation inside a non-capturing group" do
+      refute ~S"~r/(?:a)/" in render(RegexLiteral.mutate(parse(~S"~r/(?:a|b)/")))
+      refute ~S"~r/(?:b)/" in render(RegexLiteral.mutate(parse(~S"~r/(?:a|b)/")))
+    end
+
+    test "does not treat a pipe inside a character class as alternation" do
+      # `|` is a literal inside `[…]`, so only the class negation is offered
+      assert render(RegexLiteral.mutate(parse(~S"~r/[a|b]/"))) ==
+               [~S"~r//", ~S"~r/mutare/", ~S"~r/[^a|b]/"]
+    end
+
+    test "drops each present modifier flag one at a time" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/foo/uis|))) ==
+               [~S|~r//uis|, ~S|~r/mutare/uis|, ~S|~r/foo/is|, ~S|~r/foo/us|, ~S|~r/foo/ui|]
+    end
+
+    test "skips an interpolated pattern" do
+      assert RegexLiteral.mutate(parse(~S|~r/a#{b}c/|)) == :skip
     end
 
     test "name" do

@@ -377,8 +377,20 @@ contract between them is the whole game.
   excluded), TupleLiteral (a non-empty tuple → `{}`, both the `{a, b}` and `{:{}, …}` shapes),
   BitstringLiteral (a non-empty `<<…>>` → `<<>>`; an interpolated string `"…#{…}…"` is a `<<>>`
   *with* a delimiter and is excluded, and a sigil's content `<<>>` is never offered — `Transform`
-  doesn't descend into sigils), RegexLiteral (a `~r/…/` → `~r//` *and* `~r/mutare/`, flags
-  preserved), DateTimeLiteral (a
+  doesn't descend into sigils), RegexLiteral (a `~r/…/` mutated along several independent axes,
+  each occurrence/flag its own mutant: whole-pattern → `~r//` *and* `~r/mutare/` (flags preserved);
+  drop a leading `^`/`\A` or unescaped trailing `$`/`\z`/`\Z` anchor; complement a `\d`/`\w`/`\s`
+  shorthand (`\d`↔`\D`, anywhere) and `\b`↔`\B` (outside a character class only — inside, `\b` is a
+  backspace); toggle a class's negation (`[abc]`↔`[^abc]`); swap a `+`↔`*` quantifier, turn an
+  optional `?` mandatory (drop it / raise it to `+`), and nudge a `{n}`/`{n,}`/`{n,m}` bound by one
+  (kept in `0 ≤ n ≤ m`); drop one branch of an alternation at the top level or inside a *capturing*
+  group (`(GET|POST)`→`(GET)`/`(POST)`; `(?:…)`/lookarounds skipped); and drop a present modifier
+  flag one at a time (`~r/x/uis`→`~r/x/is`,`~r/x/us`,`~r/x/ui`). Two escape/class-aware walks keep each
+  transform pattern-legal — one prefix-string pass for the per-token swaps (escaped `\\$`/`\\d`/`\]`
+  left alone, a leading `]` in a class literal, a lazy/possessive suffix and a `(?…` group marker not
+  treated as quantifiers), one index-based pass with a group-frame stack for alternation — and the
+  metamutant's compile-time regex validation is the backstop, since only non-interpolated patterns (a
+  single static binary operand) are touched), DateTimeLiteral (a
   `~D`/`~T`/`~N`/`~U` sigil shifted by one unit — parsed/re-serialised so it stays a valid calendar
   value, since these sigils are compile-time-validated), AliasLiteral (a module alias used **as a
   value** → the sentinel `Mutare.Mutant`; a *call-module* `Foo.bar()`, a struct name `%Foo{}`, and
