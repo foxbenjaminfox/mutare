@@ -60,9 +60,11 @@ defmodule Mutare.Coverage.Recorder do
   @dump_path_env "MUTARE_COV_DUMP"
   @root_env "MUTARE_COV_ROOT"
 
-  # The catch-all binds the selector subject to this variable so `record_ast/1`
-  # can reuse it (no second `:persistent_term` read). `Mutare.Transform` uses
-  # `catch_all_pattern/0`; both must agree on the name.
+  # The canonical name the catch-all binds the selector subject to, so the coverage
+  # record can reuse it (no second `:persistent_term` read). It is only a *default*:
+  # `Mutare.Transform` passes a per-file, collision-free name (salted away from a
+  # source identifier of the same name) into `catch_all_pattern/1` and `record_ast/2`,
+  # and the catch-all pattern and the record's gate must always agree on it.
   @var_name :mutare_active
 
   @doc "Env var the probe sets to turn coverage recording on for one run."
@@ -89,21 +91,28 @@ defmodule Mutare.Coverage.Recorder do
   @spec helper_module() :: module()
   def helper_module, do: @helper_module
 
-  @doc """
-  The catch-all clause pattern that binds the selector subject: `mutare_active`.
+  @doc "The canonical selector-subject variable name (`:mutare_active`); the default `var`."
+  @spec var_name() :: atom()
+  def var_name, do: @var_name
 
-  `Mutare.Transform` uses this in place of the old `_` so `record_ast/1` can read
-  the active id without a second `:persistent_term` lookup.
+  @doc """
+  The catch-all clause pattern that binds the selector subject to `var` (default
+  `mutare_active`).
+
+  `Mutare.Transform` uses this in place of the old `_` so `record_ast/2` can read
+  the active id without a second `:persistent_term` lookup — passing the same
+  per-file `var` to both.
   """
-  @spec catch_all_pattern() :: Macro.t()
-  def catch_all_pattern, do: {@var_name, [], nil}
+  @spec catch_all_pattern(atom()) :: Macro.t()
+  def catch_all_pattern(var \\ @var_name), do: {var, [], nil}
 
   @doc """
   The expression `Mutare.Transform` prepends to a catch-all body to record that
   this selector's mutant `ids` ran (see the moduledoc for the gate).
 
-  Hand-built (not `quote`d) to share the `mutare_active` binding `catch_all_pattern/0`
-  introduces and to splice `ids` as a literal list of integers.
+  Hand-built (not `quote`d) to share the `var` binding `catch_all_pattern/1`
+  introduces (the same per-file name must be passed to both) and to splice `ids` as
+  a literal list of integers.
 
   Literal args carry clean (empty) metadata — the `0` especially: a *bare* integer
   makes Sourceror's normalizer assign it a `:line` but no `:token`, which crashes
@@ -112,9 +121,9 @@ defmodule Mutare.Coverage.Recorder do
   renders via the inspect path in any position (the same rule literal mutators
   follow — see CLAUDE.md).
   """
-  @spec record_ast([pos_integer()]) :: Macro.t()
-  def record_ast(ids) when is_list(ids) do
-    active_zero = {:==, [], [{@var_name, [], nil}, literal(0)]}
+  @spec record_ast([pos_integer()], atom()) :: Macro.t()
+  def record_ast(ids, var \\ @var_name) when is_list(ids) do
+    active_zero = {:==, [], [{var, [], nil}, literal(0)]}
     track_read = {{:., [], [:persistent_term, :get]}, [], [literal(@track_key), literal(false)]}
     hit_call = {{:., [], [@helper_module, :hit]}, [], [ids_literal(ids)]}
 

@@ -132,12 +132,12 @@ defmodule Mutare.Transform do
   # family registered in `Mutare.Mutators` is part of the default automatically.
   @default_mutators Mutare.Mutators.all()
 
-  # The canonical prefix for generated private (lifted) names. `generated_prefix/1`
+  # The canonical prefix for generated private (lifted) names. `generated_names/1`
   # derives a per-file, collision-free variant of it (see that function).
   @base_prefix "__mutare_"
 
-  # def-like forms whose names a generated private `defp` could duplicate — the
-  # set `generated_prefix/1` scans the source for.
+  # def-like forms whose names a generated private `defp` could duplicate — part of
+  # the identifier set `generated_names/1` scans the source for.
   @def_forms ~w(def defp defmacro defmacrop defguard defguardp defdelegate)a
 
   # The try-style body blocks whose clause bodies are *return paths*
@@ -204,9 +204,11 @@ defmodule Mutare.Transform do
     }
 
     parsed = Sourceror.parse_string!(source)
-    # Pin a generated-name prefix this source provably never collides with before
-    # any lifting assigns private names (see `generated_prefix/1`).
-    ctx = %{ctx | prefix: generated_prefix(parsed)}
+    # Pin the generated names this source provably never collides with before any
+    # lifting assigns them: the private-function prefix and the dispatch variable
+    # (see `generated_names/1`).
+    {prefix, active_var} = generated_names(parsed)
+    ctx = %{ctx | prefix: prefix, active_var: active_var}
     # Resolve `alias`es first, stamping each call's module position with the module it
     # refers to (`Mutare.Transform.Aliases`), so the call-matching mutators recognise an
     # aliased `S.upcase` as `String.upcase`. `parsed` itself stays pristine for the
@@ -453,6 +455,7 @@ defmodule Mutare.Transform do
     group = ctx.group + 1
     ctx = %{ctx | group: group}
     base = :"#{base_name(name, arity, group, ctx.prefix)}"
+    var = ctx.active_var
 
     # Source clauses with in-place body selectors — claims the body ids first.
     {orig_clauses, ctx} = in_place_clauses(plan.clauses, ctx)
@@ -481,12 +484,12 @@ defmodule Mutare.Transform do
         mutant_clauses =
           for {id, ^index, clause} <- claimed,
               clause != :drop,
-              do: lifted_mutant(base, id, clause)
+              do: lifted_mutant(base, id, clause, var)
 
-        mutant_clauses ++ [lifted_original(base, orig, Map.get(excluded, index, []))]
+        mutant_clauses ++ [lifted_original(base, orig, Map.get(excluded, index, []), var)]
       end)
 
-    {[build_dispatcher(vis, name, arity, mut_ids, base) | lifted], ctx}
+    {[build_dispatcher(vis, name, arity, mut_ids, base, var) | lifted], ctx}
   end
 
   # The public dispatcher: read the active mutant id once, record coverage for the
@@ -497,16 +500,16 @@ defmodule Mutare.Transform do
   #     <record ids>
   #     <base>(mutare_active, mutare_arg1, ...)
   #   end
-  defp build_dispatcher(vis, name, arity, mut_ids, base) do
+  defp build_dispatcher(vis, name, arity, mut_ids, base, var) do
     args = dispatcher_args(arity)
-    var = Recorder.catch_all_pattern()
-    read = {:=, [], [var, Mutare.Metamutant.subject_ast()]}
-    call = {base, [], [var | args]}
+    var_node = Recorder.catch_all_pattern(var)
+    read = {:=, [], [var_node, Mutare.Metamutant.subject_ast()]}
+    call = {base, [], [var_node | args]}
 
     body =
       case mut_ids do
         [] -> {:__block__, [], [read, call]}
-        ids -> {:__block__, [], [read, Recorder.record_ast(ids), call]}
+        ids -> {:__block__, [], [read, Recorder.record_ast(ids, var), call]}
       end
 
     {vis, [], [{name, [], args}, [do: body]]}
@@ -516,11 +519,11 @@ defmodule Mutare.Transform do
   # renamed to `<base>`, given the `mutare_active` extra arg, and gated `when
   # mutare_active === <id> [and <its own guard>]`. Raw body (no in-place selectors):
   # only one mutant is ever active, so a body selector here could never fire.
-  defp lifted_mutant(base, id, clause) do
+  defp lifted_mutant(base, id, clause, var) do
     {clause_meta, call_meta, args, guards, body} = clause_parts(clause)
-    gate = {:===, [], [Recorder.catch_all_pattern(), id_literal(id)]}
+    gate = {:===, [], [Recorder.catch_all_pattern(var), id_literal(id)]}
     guard = and_into_guard(gate, combine_guards(guards))
-    lifted_clause(base, clause_meta, call_meta, args, guard, body)
+    lifted_clause(base, clause_meta, call_meta, args, guard, body, var)
   end
 
   # One lifted *original* clause: the source clause (with its in-place body
@@ -528,10 +531,10 @@ defmodule Mutare.Transform do
   # `when mutare_active !== <id>` for each `id` that overrides/drops it — so it
   # yields to its mutant clauses when their id is active, and behaves normally
   # otherwise (including for any skipped/poisoned id, which is never excluded).
-  defp lifted_original(base, clause, excluded_ids) do
+  defp lifted_original(base, clause, excluded_ids, var) do
     {clause_meta, call_meta, args, guards, body} = clause_parts(clause)
-    guard = merge_guards(exclusion_guard(excluded_ids), combine_guards(guards))
-    lifted_clause(base, clause_meta, call_meta, args, guard, body)
+    guard = merge_guards(exclusion_guard(excluded_ids, var), combine_guards(guards))
+    lifted_clause(base, clause_meta, call_meta, args, guard, body, var)
   end
 
   # Assemble a `<base>` clause: `defp <base>(mutare_active, <args...>) [when <guard>], <body>`.
@@ -540,8 +543,8 @@ defmodule Mutare.Transform do
   # the original source lines. Without it the body's `[]`-meta selector clauses (`<id>
   # -> …`) get stale lines, and a bare integer id then renders as a `:line`-but-no-
   # `:token` literal that crashes the Elixir formatter.
-  defp lifted_clause(base, clause_meta, call_meta, args, guard, body) do
-    call = {base, call_meta, [Recorder.catch_all_pattern() | args]}
+  defp lifted_clause(base, clause_meta, call_meta, args, guard, body, var) do
+    call = {base, call_meta, [Recorder.catch_all_pattern(var) | args]}
     head = if guard, do: {:when, [], [call, guard]}, else: call
     {:defp, clause_meta, [head | body]}
   end
@@ -579,11 +582,11 @@ defmodule Mutare.Transform do
 
   # `mutare_active !== id1 and mutare_active !== id2 …` (chained `!==`, not `not in
   # [list]` — a bare small-integer list can render as a charlist). `nil` for none.
-  defp exclusion_guard([]), do: nil
+  defp exclusion_guard([], _var), do: nil
 
-  defp exclusion_guard(ids) do
+  defp exclusion_guard(ids, var) do
     ids
-    |> Enum.map(&{:!==, [], [Recorder.catch_all_pattern(), id_literal(&1)]})
+    |> Enum.map(&{:!==, [], [Recorder.catch_all_pattern(var), id_literal(&1)]})
     |> Enum.reduce(&{:and, [], [&2, &1]})
   end
 
@@ -614,16 +617,36 @@ defmodule Mutare.Transform do
 
   # === generated-name collision avoidance ====================================
 
-  # The prefix for this file's generated private (lifted) names. With the
-  # canonical `"__mutare_"` a clash with a hand-written target definition is
-  # near-impossible — but a single clash is catastrophic (a duplicate `defp`
-  # sinks the *one* metamutant build with a cryptic compile error), so we pick a
-  # prefix the source provably never collides with. (`Mutare.Manifest` recognises a
-  # lifted mutant clause by its `mutare_active === <id>` gate, not the name, so the
-  # salt is invisible to it.)
-  defp generated_prefix(ast) do
-    names = defined_names(ast)
-    Enum.find(prefix_candidates(), &free?(&1, names))
+  # The generated names this file provably never collides with: the private-function
+  # prefix, and the dispatch variable. With the canonical `"__mutare_"` /
+  # `mutare_active` a clash with hand-written code is near-impossible — but a single
+  # clash is catastrophic (a duplicate `defp` sinks the *one* metamutant build; a
+  # captured variable silently miscompiles a lifted clause — its gated head would
+  # bind a user value instead of the active id). So we pick names the source provably
+  # never uses, from one scan of every identifier it mentions (definitions *and*
+  # variables). (`Mutare.Manifest` recognises a lifted mutant clause by its
+  # `<active_var> === <id>` gate, not the name, so the salt is invisible to it.)
+  defp generated_names(ast) do
+    taken = taken_names(ast)
+    prefix = Enum.find(prefix_candidates(), &free?(&1, taken))
+    {prefix, active_var(taken)}
+  end
+
+  # The dispatch variable: the readable `mutare_active` unless the source already
+  # uses that identifier, then `mutare_active_0`, `mutare_active_1`, … until free.
+  # A numeric suffix (not the `__mutare_` prefix) keeps it a normal, non-underscore
+  # name — a leading-underscore variable that's then *read* warns ("used after being
+  # set"). The candidate family is infinite and `taken` finite, so this terminates.
+  defp active_var(taken) do
+    canonical = Recorder.var_name()
+
+    if MapSet.member?(taken, Atom.to_string(canonical)) do
+      Stream.iterate(0, &(&1 + 1))
+      |> Stream.map(&:"#{canonical}_#{&1}")
+      |> Enum.find(&(not MapSet.member?(taken, Atom.to_string(&1))))
+    else
+      canonical
+    end
   end
 
   # `"__mutare_"`, then `"__mutare_0_"`, `"__mutare_1_"`, … — a lazily-grown
@@ -636,15 +659,17 @@ defmodule Mutare.Transform do
     )
   end
 
-  # A prefix is free when no source definition name begins with it: then no
-  # `<prefix>…` name we generate can equal an existing one.
-  defp free?(prefix, names), do: not Enum.any?(names, &String.starts_with?(&1, prefix))
+  # A prefix is free when no identifier the source mentions begins with it: then no
+  # `<prefix>…` name we generate (a private function, or `<prefix>active`) can equal
+  # one already in scope.
+  defp free?(prefix, taken), do: not Enum.any?(taken, &String.starts_with?(&1, prefix))
 
-  # Every name defined by a def-like form anywhere in the source (functions,
-  # macros, guards, delegates) — the names a generated private `defp` could
-  # duplicate. Over-collecting (e.g. a name inside a quoted macro body) is safe:
-  # it can only make us salt a prefix we'd otherwise have kept.
-  defp defined_names(ast) do
+  # Every identifier the source mentions: names defined by a def-like form
+  # (functions, macros, guards, delegates) a generated `defp` could duplicate, *and*
+  # every variable/bare-name node the dispatch variable could capture or be captured
+  # by. Over-collecting (e.g. a name inside a quoted macro body) is safe — it can
+  # only make us salt a name we'd otherwise have kept.
+  defp taken_names(ast) do
     {_ast, names} =
       Macro.prewalk(ast, MapSet.new(), fn
         {form, _meta, [head | _]} = node, acc when form in @def_forms ->
@@ -652,6 +677,11 @@ defmodule Mutare.Transform do
             nil -> {node, acc}
             name -> {node, MapSet.put(acc, Atom.to_string(name))}
           end
+
+        # A variable (or bare zero-arg name): `context` is its hygiene context
+        # (`nil`/a module), never the arg list a call carries.
+        {name, _meta, context} = node, acc when is_atom(name) and is_atom(context) ->
+          {node, MapSet.put(acc, Atom.to_string(name))}
 
         node, acc ->
           {node, acc}
@@ -1626,7 +1656,7 @@ defmodule Mutare.Transform do
     # All mutations here skipped → no selector; emit the node unchanged.
     case clauses do
       [] -> {default, ctx}
-      _ -> {build_case(default, clauses), ctx}
+      _ -> {build_case(default, clauses, ctx.active_var), ctx}
     end
   end
 
@@ -1664,25 +1694,25 @@ defmodule Mutare.Transform do
   # (case :persistent_term.get(:mutare_active, 0) do <id> -> <mutated> ; _ -> <default> end)
   #
   # The selector is `Render.block_wrap`ped so it renders safely in any position.
-  defp build_case(default_node, mutant_clauses) do
+  defp build_case(default_node, mutant_clauses, var) do
     selector = Mutare.Metamutant.subject_ast()
     ids = for {:->, _, [[id], _]} <- mutant_clauses, do: id
-    catch_all = catch_all_clause(ids, default_node)
+    catch_all = catch_all_clause(ids, default_node, var)
     case_node = {:case, [], [selector, [do: mutant_clauses ++ [catch_all]]]}
     Render.block_wrap(case_node)
   end
 
-  # The selector catch-all (`mutare_active -> …`): the baseline + every-inactive-
-  # mutant branch. It carries the coverage record (inert outside the probe, see
+  # The selector catch-all (`<var> -> …`): the baseline + every-inactive-mutant
+  # branch. It carries the coverage record (inert outside the probe, see
   # `Mutare.Coverage.Recorder`) *before* the original, so the original stays the
   # clause's last expression — preserving tail position / LCO in the dispatcher.
   # With no ids to attribute (an all-poisoned lifted group) there is nothing to
   # record, so the plain `_ ->` is emitted unchanged.
-  defp catch_all_clause([], default_node), do: {:->, [], [[{:_, [], nil}], default_node]}
+  defp catch_all_clause([], default_node, _var), do: {:->, [], [[{:_, [], nil}], default_node]}
 
-  defp catch_all_clause(ids, default_node) do
-    body = {:__block__, [], [Recorder.record_ast(ids), default_node]}
-    {:->, [], [[Recorder.catch_all_pattern()], body]}
+  defp catch_all_clause(ids, default_node, var) do
+    body = {:__block__, [], [Recorder.record_ast(ids, var), default_node]}
+    {:->, [], [[Recorder.catch_all_pattern(var)], body]}
   end
 
   # === shared helpers ========================================================

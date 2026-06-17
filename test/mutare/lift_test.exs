@@ -147,6 +147,41 @@ defmodule Mutare.LiftTest do
       assert [{Mutare.PrefixCollisionFixture, _}] = Code.compile_string(meta)
     end
 
+    test "salts the dispatch variable when the source uses `mutare_active` itself" do
+      # A lifted function whose own variable is named `mutare_active` would clash with
+      # the generated dispatch variable: the gated head `f(mutare_active, mutare_active)`
+      # would silently mean "match when the id equals the user's value", and the guard
+      # would read the wrong binding. The dispatch var must salt away from it.
+      source = """
+      defmodule Mutare.ActiveVarCollisionFixture do
+        def f(mutare_active) when mutare_active > 0, do: mutare_active * 2
+        def f(_), do: 0
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, file: "av.ex", mutators: @probe)
+
+      # the dispatch variable salts to `mutare_active_0`; the user's `mutare_active`
+      # stays its own variable, so the gate reads the id and the body reads the user value
+      assert meta =~ "mutare_active_0 = :persistent_term.get"
+      assert meta =~ ~r/when mutare_active_0 === \d+/
+      assert [{Mutare.ActiveVarCollisionFixture, _}] = Code.compile_string(meta)
+
+      # baseline behaves like the original…
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.ActiveVarCollisionFixture, :f, [3]) == 6
+      assert apply(Mutare.ActiveVarCollisionFixture, :f, [0]) == 0
+
+      # …and a guard mutant (`>` → `<`) really flips dispatch: f(3) now falls through
+      # to `f(_) -> 0`, proving the salted gate and the user variable coexist correctly.
+      flip = Enum.find(sites, &(&1.original_op == :> and &1.mutated_op == :<))
+      assert flip, "expected a `>` → `<` guard mutant"
+      Selector.put(flip.id)
+      assert apply(Mutare.ActiveVarCollisionFixture, :f, [3]) == 0
+    after
+      Selector.put(Selector.baseline())
+    end
+
     test "does not lift a function whose clauses are split by another definition" do
       source = """
       defmodule Mutare.NonConsecutiveLiftFixture do

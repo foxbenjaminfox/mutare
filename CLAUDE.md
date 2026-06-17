@@ -155,8 +155,9 @@ contract between them is the whole game.
   - **function lifting + dispatcher** for `when` guards, **head-pattern literals**, **head-pattern
     structure rewrites** (variable swap / duplicate→wildcard), and clause structure (a `case` can't
     live in a guard or a pattern): the clause group becomes **one** private function `__mutare_…_g<n>`
-    that takes the active id as an extra first arg (`mutare_active`), and the public `f/arity` becomes
-    a dispatcher that reads the id and tail-calls it. Each source clause is emitted **once** (gated
+    that takes the active id as an extra first arg (`mutare_active` — per-file, collision-free; see the
+    invariants below), and the public `f/arity` becomes a dispatcher that reads the id and tail-calls
+    it. Each source clause is emitted **once** (gated
     `when mutare_active !== <id>` for the mutants that override/drop it, carrying the in-place body
     selectors); each mutant is a **single** clause gated `when mutare_active === <id> …`, placed
     before the original — so a mutant touching one clause never copies the others (`C+M` clauses, not
@@ -167,10 +168,15 @@ contract between them is the whole game.
     demand. A head pattern admits **only literal-valued mutations** for the literal families
     (`tag_pattern_targets/3` offers a node to the mutators iff it is a scalar literal and keeps a
     mutation iff its replacement is too — so the mutant clause is always a legal pattern; specs and
-    keyword/map *keys* are skipped). Two rendering invariants the lifting relies on: a lifted clause
-    keeps its **source `meta`** (so Sourceror doesn't assign stale lines to the `[]`-meta selector ids
-    in its body), and every generated integer id is clean-meta `{:__block__, [], [n]}` (a bare int
-    gets a `:line` but no `:token` and crashes the formatter).
+    keyword/map *keys* are skipped). Invariants the lifting relies on: a lifted clause keeps its
+    **source `meta`** (so Sourceror doesn't assign stale lines to the `[]`-meta selector ids in its
+    body); every generated integer id is clean-meta `{:__block__, [], [n]}` (a bare int gets a `:line`
+    but no `:token` and crashes the formatter); and the dispatch variable is **per-file collision-free**
+    — `generated_names/1` salts `mutare_active` → `mutare_active_0`, … (and the `__mutare_` prefix) away
+    from any identifier the source uses, since a source variable named `mutare_active` in a lifted
+    function would otherwise be silently captured by the gated head (`def f(mutare_active, mutare_active)`
+    is a legal equality match — wrong dispatch, no error). `Mutare.Coverage.Recorder` owns the canonical
+    name + the `catch_all_pattern/1`·`record_ast/2` builders that take it.
     Both sides of a `%{1 => 2}` map pattern mutate. The **structure** rewrites (`PatternSwap`,
     `PatternWildcard`) are pattern-legal by construction and applied by whole-clause replacement, not
     tagging.
