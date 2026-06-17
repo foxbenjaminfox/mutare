@@ -130,7 +130,7 @@ defmodule Mutare.Sandbox do
     else
       copy_project(root, sandbox)
       write_metamutants(sandbox, schema)
-      write_coverage_helper(sandbox, options)
+      write_coverage_helper(root, sandbox, options)
       inject_bootstrap(sandbox, options)
     end
 
@@ -331,39 +331,45 @@ defmodule Mutare.Sandbox do
   # compiled `lib/`, so the helper instead becomes a generated child app under
   # `apps/` — which `mix compile` builds with the rest and whose ebin the umbrella
   # puts on every app's code path (verified: no per-app dep edit needed).
-  defp write_coverage_helper(sandbox, %Options{project: %{umbrella?: true}}) do
-    dir = support_app_dir(sandbox)
+  defp write_coverage_helper(root, sandbox, %Options{project: %{umbrella?: true}}) do
+    app = support_app_name(root)
+    dir = Path.join([sandbox, "apps", app])
     File.mkdir_p!(Path.join(dir, "lib"))
-    File.write!(Path.join(dir, "mix.exs"), support_mix_exs(Path.basename(dir)))
+    File.write!(Path.join(dir, "mix.exs"), support_mix_exs(app))
     File.write!(Path.join(dir, "lib/mutare_cov.ex"), @coverage_helper <> "\n")
   end
 
-  defp write_coverage_helper(sandbox, _options) do
+  defp write_coverage_helper(_root, sandbox, _options) do
     path = coverage_helper_path(sandbox)
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, @coverage_helper <> "\n")
   end
 
-  defp coverage_helper_path(sandbox) do
+  # The first name in a generated family — `zero`, then `suffixed.(1)`,
+  # `suffixed.(2)`, … — that `taken?` rejects: the shared "pick a generated name
+  # that doesn't collide with what's already there" primitive. The family is
+  # infinite and the taken set finite, so `Enum.find/2` always terminates.
+  defp first_free(zero, suffixed, taken?) do
     Stream.iterate(0, &(&1 + 1))
     |> Stream.map(fn
-      0 -> @coverage_helper_rel
-      n -> "lib/__mutare__/coverage_helper_#{n}.ex"
+      0 -> zero
+      n -> suffixed.(n)
     end)
-    |> Stream.map(&Path.join(sandbox, &1))
-    |> Enum.find(&(not File.exists?(&1)))
+    |> Enum.find(&(not taken?.(&1)))
   end
 
-  # A generated child app under `apps/`, named to avoid colliding with a real app.
-  # `Mutare.Project` reserves the `mutare_support` prefix so it is never mutated.
-  defp support_app_dir(sandbox) do
-    Stream.iterate(0, &(&1 + 1))
-    |> Stream.map(fn
-      0 -> "mutare_support"
-      n -> "mutare_support_#{n}"
-    end)
-    |> Stream.map(&Path.join([sandbox, "apps", &1]))
-    |> Enum.find(&(not File.exists?(&1)))
+  # The sandbox path for a single app's coverage helper. The `_N` suffix is only
+  # reached if a copied source already occupies the base path — a fresh-mode-only
+  # fallback (kept mode always reuses `@coverage_helper_rel`).
+  defp coverage_helper_path(sandbox) do
+    rel =
+      first_free(
+        @coverage_helper_rel,
+        &"lib/__mutare__/coverage_helper_#{&1}.ex",
+        &File.exists?(Path.join(sandbox, &1))
+      )
+
+    Path.join(sandbox, rel)
   end
 
   # Minimal child `mix.exs`: only `build_path` matters — it shares the umbrella's
@@ -385,13 +391,19 @@ defmodule Mutare.Sandbox do
 
   defp support_app_rel(root), do: Path.join("apps", support_app_name(root))
 
+  # The umbrella coverage helper lives in a generated child app under `apps/`, named
+  # to avoid colliding with a real app (`Mutare.Project` reserves the `mutare_support`
+  # prefix so it is never mutated). Probed against the **project root** as the single
+  # source of truth for both modes: in kept mode the name must stay stable across runs
+  # (the sandbox accumulates the previous run's app, so probing *it* would drift the
+  # name and defeat the `_build` cache), and in fresh mode the sandbox is a copy of
+  # root, so the two agree.
   defp support_app_name(root) do
-    Stream.iterate(0, &(&1 + 1))
-    |> Stream.map(fn
-      0 -> "mutare_support"
-      n -> "mutare_support_#{n}"
-    end)
-    |> Enum.find(&(not File.exists?(Path.join([root, "apps", &1]))))
+    first_free(
+      "mutare_support",
+      &"mutare_support_#{&1}",
+      &File.exists?(Path.join([root, "apps", &1]))
+    )
   end
 
   # Inject the bootstrap into every test helper whose suite the runner will drive.
