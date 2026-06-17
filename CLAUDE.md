@@ -264,7 +264,8 @@ contract between them is the whole game.
   StringCall (complementary `String` call swaps — `starts_with?`↔`ends_with?`, `upcase`↔`downcase`,
   `trim_leading`↔`trim_trailing`, `replace_prefix`↔`replace_suffix`, `pad_leading`↔`pad_trailing`,
   `first`↔`last`; the `String` sibling of Collection, recognising only unaliased `String.` calls),
-  MapKeyword (`Map.put`↔`put_new`, `Keyword.put`↔`put_new` — overwrite vs insert-if-absent;
+  MapKeyword (the conditional-write lattice for `Map`/`Keyword` — `put`↔`put_new`↔`replace`↔
+  `replace!`, swapping along the insert-new / overwrite-existing / raise-on-absent axes; all `/3`,
   arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),
   CallRemoval (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/`dedup`/`shuffle`,
   `List.flatten`, `String.trim`/`downcase`/`upcase`/… — leaving its first arg; in a pipe the stage

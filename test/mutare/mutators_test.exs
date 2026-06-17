@@ -425,20 +425,32 @@ defmodule Mutare.MutatorsTest do
   end
 
   describe "MapKeyword" do
-    test "swaps put and put_new on Map and Keyword, keeping arguments" do
-      assert render(MapKeyword.mutate(parse("Map.put(m, k, v)"))) == ["Map.put_new(m, k, v)"]
-      assert render(MapKeyword.mutate(parse("Map.put_new(m, k, v)"))) == ["Map.put(m, k, v)"]
+    test "swaps along the conditional-write lattice (Map), keeping arguments" do
+      assert render(MapKeyword.mutate(parse("Map.put(m, k, v)"))) ==
+               ["Map.put_new(m, k, v)", "Map.replace(m, k, v)"]
 
+      assert render(MapKeyword.mutate(parse("Map.put_new(m, k, v)"))) ==
+               ["Map.put(m, k, v)", "Map.replace(m, k, v)"]
+
+      assert render(MapKeyword.mutate(parse("Map.replace(m, k, v)"))) ==
+               ["Map.put(m, k, v)", "Map.put_new(m, k, v)", "Map.replace!(m, k, v)"]
+
+      assert render(MapKeyword.mutate(parse("Map.replace!(m, k, v)"))) ==
+               ["Map.replace(m, k, v)"]
+    end
+
+    test "the same lattice applies to Keyword" do
       assert render(MapKeyword.mutate(parse("Keyword.put(kw, k, v)"))) ==
-               ["Keyword.put_new(kw, k, v)"]
+               ["Keyword.put_new(kw, k, v)", "Keyword.replace(kw, k, v)"]
 
-      assert render(MapKeyword.mutate(parse("Keyword.put_new(kw, k, v)"))) ==
-               ["Keyword.put(kw, k, v)"]
+      assert render(MapKeyword.mutate(parse("Keyword.replace!(kw, k, v)"))) ==
+               ["Keyword.replace(kw, k, v)"]
     end
 
     test "skips unrelated functions and other modules" do
       assert MapKeyword.mutate(parse("Map.delete(m, k)")) == :skip
       assert MapKeyword.mutate(parse("Map.put_new_lazy(m, k, f)")) == :skip
+      assert MapKeyword.mutate(parse("Map.update!(m, k, f)")) == :skip
       assert MapKeyword.mutate(parse("Other.put(m, k, v)")) == :skip
       assert MapKeyword.mutate(parse("put(m, k, v)")) == :skip
     end

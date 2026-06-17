@@ -124,7 +124,7 @@ Realization is **positional, not declared** by the mutator: the same `mutate/1` 
 | Collection | `Enum.filter`↔`reject`, `all?`↔`any?`, `min`↔`max`, … (arity-blind renames) |
 | CollectionArity | arity-*changing* `Enum` calls: `sort`/`sort_by`→`reverse` (drop comparator/key), `count/2`→`count/1`, `count_until/3`→`/2`, `reverse/1`↔`sort/1` — **pipe-aware** (via `mutate/2`) |
 | StringCall | `String.starts_with?`↔`ends_with?`, `upcase`↔`downcase`, `trim_leading`↔`trailing`, `first`↔`last`, … |
-| MapKeyword | `Map.put`↔`put_new`, `Keyword.put`↔`put_new` (overwrite vs insert-if-absent; arity-blind) |
+| MapKeyword | conditional-write lattice for `Map`/`Keyword`: `put`↔`put_new`↔`replace`↔`replace!` (overwrite / insert-if-absent / update-if-present / raise; arity-blind) |
 | CallRemoval | remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/`dedup`, `List.flatten`, `String.trim`/`downcase`, … → its first arg (in a pipe: `Function.identity()`); **pipe-aware** |
 | StringLiteral | a string → `""` *and* `"mutare"` (drops the one matching the original) |
 | FloatLiteral | floats `x`→`{x±1.0, 0.0}` |

@@ -923,8 +923,9 @@ default**: **arithmetic** (now also unary `-x`→`x`), **relational**, **logical
 `reverse/1`↔`sort/1` — pipe-aware via `mutate/2`), **string_call** (complementary
 `String` call swaps — `starts_with?`↔`ends_with?`, `upcase`↔`downcase`,
 `trim_leading`↔`trim_trailing`, `first`↔`last`, …; the `String` sibling of
-`collection`), **map_keyword** (`Map.put`↔`put_new`, `Keyword.put`↔`put_new` —
-overwrite vs insert-if-absent; arity-blind; `:map` is taken by `MapLiteral`),
+`collection`), **map_keyword** (the conditional-write lattice for `Map`/`Keyword`:
+`put`↔`put_new`↔`replace`↔`replace!` along the insert-new / overwrite-existing /
+raise-on-absent axes; all `/3`, arity-blind; `:map` is taken by `MapLiteral`),
 **call_removal** (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/
 `dedup`/`shuffle`, `List.flatten`, `String.trim`/`downcase`/… — leaving its first
 arg; in a pipe, replace the stage with `Function.identity()`; pipe-aware via
