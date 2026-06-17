@@ -20,12 +20,24 @@ self-recording by id retired both along with `:cover`.)
 
 ### Per-mutant metamutant manifest `[done]`
 `Mutare.Manifest` is the per-file, per-mutant readback of *where each mutant lives
-in its rendered metamutant*. `Schema` builds one per mutated file (once, from the
-rendered source) and stores it under `:manifests`; **`Poison`** reads it instead of
-re-parsing the metamutant on every compile error. It carries the **generated line
-ranges** of each mutant's code. (It used to also carry a coverage location, but
-coverage now self-records by id — see *Test selection* — so the manifest is
-Poison-only.)
+in its rendered metamutant*. **`Poison`** builds one **lazily** (`from_source/1`),
+on a failed compile, only for the file(s) the error names — passing
+`schema.metamutants` (the rendered sources) to `Poison.ids/2`, which memoizes the
+manifest within one recovery so a file faulting on several lines is parsed once. It
+carries the **generated line ranges** of each mutant's code. (It used to also carry a
+coverage location, but coverage now self-records by id — see *Test selection* — so
+the manifest is Poison-only.)
+
+It used to be built **eagerly by `Schema`**, once per mutated file during the scan,
+and stored under `:manifests`. That was the scan's dominant cost and pure waste on
+the happy path: a manifest is read *only* on a compile failure (rare — built-in
+mutators are compile-safe), yet `Manifest.from_source/1` re-parses the whole rendered
+metamutant with `Sourceror.parse_string!`, which is **super-linear** in file size.
+The metamutant is ~25× the source (every mutant embeds an original+mutant selector
+branch), so a 1500-line file becomes a ~40k-line metamutant whose re-parse alone took
+**minutes** — building all of them up front added several minutes to every run and
+threw them away. Deferring to the poison path removed that from healthy runs. (The
+scan is still transform/render-bound; see *Scan is transform-bound* below.)
 
 The ranges fixed a real poison-recovery gap. The old mapping matched a compile
 error's line only against a selector clause body's *start* line, so it missed every
@@ -54,6 +66,35 @@ Implementation notes:
   `…_orig` and user code never match, so they're left out.
 - `Mutare.Metamutant` shrank to just the selector-subject AST contract
   (`subject_ast/0` + `subject?/1`); the metamutant *walk* now lives in `Mutare.Manifest`.
+
+### Scan is transform-bound, and the loop heap makes it worse `[deferred]`
+After the manifest went lazy (above), the scan (`Schema.from_files` → `Transform`
+per file) is dominated by `Sourceror.to_string` rendering each metamutant, and one
+big file dominates the whole scan. Measured on this repo's own `lib/` (62 files,
+~5.6k mutants): the scan is ~280 s, and `lib/mutare/transform.ex` (1500 lines →
+39k-line metamutant) is essentially all of it.
+
+The sharp surprise: that file transforms in **~30 s in isolation but ~220 s inside
+the scan's `Enum.reduce`** — a ~7× penalty. The cause is the **accumulating loop
+heap**: by the time the big file is reached, the process holds ~60 rendered
+metamutant strings + ~5k `Site` structs live, and `Sourceror.to_string`'s heavy
+allocation makes every GC scan that whole live set (superlinear in held state). So
+the cost isn't intrinsic to the file — it's the company it keeps.
+
+Measured ladder (same machine), for when this is picked up:
+- eager manifest (old):            ~500 s+
+- lazy manifest (done):            ~280 s
+- sequential, transform each file in a **throwaway process** (accumulator stays in
+  the parent, off the render's heap): ~67 s — ~5-line change, exact id-threading
+  preserved, lowest risk;
+- **parallel** across files (`Task.async_stream`, schedulers_online): ~26 s — the
+  real target (~11× vs today), but mutant ids are baked into each metamutant's
+  selector clauses, so concurrent files can't thread `next_id` sequentially. Needs
+  the id assignment decoupled from the per-file render: either two-phase (id-free
+  count/plan → prefix-sum id ranges → emit+render in parallel), or a count pre-pass
+  then a parallel render pass with each file's `start_id` known up front. The
+  plan/emit split already exists in the IR (`ModulePlan`/`FunctionPlan` are id-free;
+  emission threads ids), so the decoupling is aligned with the design.
 
 ### Sandbox isolation & dependencies `[M4 / open question]`
 `Mutare.Sandbox` copies the whole project (excluding `_build`/`.git`, keeping

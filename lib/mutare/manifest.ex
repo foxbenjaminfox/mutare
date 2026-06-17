@@ -3,8 +3,12 @@ defmodule Mutare.Manifest do
   A per-mutant map of where each mutant lives in its rendered metamutant.
 
   `Mutare.Transform` writes the metamutant; this is what `Mutare.Poison` reads
-  back. It is built **once per file** (`from_source/1`) and stored on the
-  `Mutare.Schema`, so the metamutant is walked once, not per poison attempt.
+  back. It is built **lazily** (`from_source/1`), by `Mutare.Poison` on a failed
+  compile, only for the file(s) the error names — not eagerly during the scan,
+  where re-parsing every rendered metamutant was the scan's dominant cost yet is
+  read only when a compile actually fails (rare — built-in mutators are
+  compile-safe). `Poison` memoizes it within one recovery so a file faulting on
+  several lines is walked once.
 
   **`Mutare.Poison`** wants each mutant's *generated ranges* — the metamutant line
   spans of the code that exists only because of that mutant, so a compile error's

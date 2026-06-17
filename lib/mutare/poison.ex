@@ -9,13 +9,22 @@ defmodule Mutare.Poison do
   module which mutant ids the compile error points at, drops them, and rebuilds.
 
   We map each error's `file:line` to the mutant id(s) whose *generated code*
-  spans that line, using the stored `Mutare.Manifest` (see `Manifest.ids_at_line/2`).
-  The manifest records the full line range of every mutant's generated code — its
-  selector clause body, and for a lifted mutant the private `defp` copies where its
-  guard/clause-drop code actually lives — so a poison is found whether the error
-  points at the clause, a later line of a multiline body, a lifted private
-  definition, or (as a coarse fallback) the surrounding `case`. Matching only the
-  selector clause's *start line*, as we used to, missed all but the first of those.
+  spans that line, via a `Mutare.Manifest` built on demand from the file's
+  rendered metamutant (see `Manifest.ids_at_line/2`). The manifest records the
+  full line range of every mutant's generated code — its selector clause body,
+  and for a lifted mutant the private `defp` copies where its guard/clause-drop
+  code actually lives — so a poison is found whether the error points at the
+  clause, a later line of a multiline body, a lifted private definition, or (as a
+  coarse fallback) the surrounding `case`. Matching only the selector clause's
+  *start line*, as we used to, missed all but the first of those.
+
+  The manifest is built **here, lazily**, only for the file(s) a compile error
+  names — not eagerly for every mutated file during the scan. That eager build
+  was pure waste: a manifest is read only on a failed compile (rare — built-in
+  mutators are compile-safe), yet a full `Sourceror.parse_string!` of a large
+  metamutant is by far the most expensive step of the scan (a 1500-line source
+  whose metamutant is ~40k lines took *minutes* to re-parse). Deferring it to the
+  poison path removes that cost from every healthy run.
 
   Returns an empty set when nothing could be mapped (the caller then aborts).
   """
@@ -23,20 +32,45 @@ defmodule Mutare.Poison do
   alias Mutare.Manifest
 
   @doc """
-  Mutant ids implicated by `compile_output`, given `%{file => Mutare.Manifest}`.
-  Returns an empty set when nothing could be mapped (the caller then aborts).
+  Mutant ids implicated by `compile_output`, given `%{file => metamutant_source}`.
+
+  Builds the per-file `Mutare.Manifest` lazily — only for the file(s) an error
+  names — and memoizes it across error locations, so a file faulting on several
+  lines is parsed once. Returns an empty set when nothing could be mapped (the
+  caller then aborts).
   """
-  @spec ids(String.t(), %{optional(String.t()) => Manifest.t()}) :: MapSet.t()
-  def ids(compile_output, manifests) do
-    compile_output
-    |> error_locations()
-    |> Enum.flat_map(fn {file, line} ->
-      case Map.fetch(manifests, file) do
-        {:ok, manifest} -> Manifest.ids_at_line(manifest, line)
-        :error -> []
-      end
-    end)
-    |> MapSet.new()
+  @spec ids(String.t(), %{optional(String.t()) => String.t()}) :: MapSet.t()
+  def ids(compile_output, metamutants) do
+    {ids, _cache} =
+      compile_output
+      |> error_locations()
+      |> Enum.flat_map_reduce(%{}, fn {file, line}, cache ->
+        case manifest_for(file, metamutants, cache) do
+          {nil, cache} -> {[], cache}
+          {manifest, cache} -> {Manifest.ids_at_line(manifest, line), cache}
+        end
+      end)
+
+    MapSet.new(ids)
+  end
+
+  # The manifest for `file`, built once from its stored metamutant source and
+  # memoized in `cache`. A `nil` (file not in the map) is cached too, so a stray
+  # error line in an untracked file isn't re-resolved.
+  defp manifest_for(file, metamutants, cache) do
+    case cache do
+      %{^file => manifest} ->
+        {manifest, cache}
+
+      _ ->
+        manifest =
+          case Map.fetch(metamutants, file) do
+            {:ok, source} -> Manifest.from_source(source)
+            :error -> nil
+          end
+
+        {manifest, Map.put(cache, file, manifest)}
+    end
   end
 
   # `file:line` pairs from compiler output, e.g. `lib/foo.ex:5:12` or `lib/foo.ex:5`.

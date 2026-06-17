@@ -77,7 +77,8 @@ defmodule Mutare.SchemaTest do
     assert Map.has_key?(schema.sources, "lib/empty.ex")
   end
 
-  test "a manifest is stored for each mutated file, alongside its metamutant", %{root: root} do
+  test "no manifest is stored eagerly; Poison can still build one from the metamutant",
+       %{root: root} do
     write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
     # `do: nil` is genuinely site-less: a `nil` tail is skipped by return-value
     # (returning nil is equivalent), and no other family mutates it.
@@ -85,12 +86,16 @@ defmodule Mutare.SchemaTest do
 
     schema = Schema.build(root)
 
-    assert %Mutare.Manifest{} = schema.manifests["lib/a.ex"]
-    refute Map.has_key?(schema.manifests, "lib/empty.ex")
+    # Manifests are no longer precomputed by the scan — that re-parse is the
+    # scan's dominant cost and is read only on a failed compile. The schema keeps
+    # the metamutant source; Poison re-derives the manifest from it on demand.
+    refute Map.has_key?(Map.from_struct(schema), :manifests)
+    assert Map.has_key?(schema.metamutants, "lib/a.ex")
 
-    # every site's id appears in its file's manifest regions (Poison's mapping)
-    region_ids =
-      schema.manifests["lib/a.ex"].regions |> Enum.flat_map(& &1.ids) |> MapSet.new()
+    # Built lazily from the stored metamutant, every site's id is still mappable
+    # (the property Poison's compile-error → id mapping relies on).
+    manifest = Mutare.Manifest.from_source(schema.metamutants["lib/a.ex"])
+    region_ids = manifest.regions |> Enum.flat_map(& &1.ids) |> MapSet.new()
 
     assert Enum.all?(schema.sites, &MapSet.member?(region_ids, &1.id))
   end

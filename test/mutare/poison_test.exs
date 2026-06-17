@@ -2,7 +2,7 @@ defmodule Mutare.PoisonTest do
   @moduledoc "Compile-poisoning: detect the offending mutant, drop it, recover."
   use ExUnit.Case, async: false
 
-  alias Mutare.{Manifest, Poison, Result}
+  alias Mutare.{Poison, Result}
   alias Mutare.Test.Project
 
   @poison [mutators: [Mutare.Test.PoisonMutator], file: "lib/p.ex"]
@@ -40,8 +40,10 @@ defmodule Mutare.PoisonTest do
         |> Kernel.+(1)
 
       error = "lib/p.ex:#{line}:5: undefined variable \"mutare_unbound_xyz\""
-      manifests = %{"lib/p.ex" => Manifest.from_source(meta)}
-      assert Poison.ids(error, manifests) == MapSet.new([site.id])
+      # `Poison.ids/2` now takes the metamutant *sources* and builds the manifest
+      # lazily, so the scan never pays for it on a healthy run.
+      metamutants = %{"lib/p.ex" => meta}
+      assert Poison.ids(error, metamutants) == MapSet.new([site.id])
     end
 
     test "returns empty when nothing maps (caller then aborts)" do
