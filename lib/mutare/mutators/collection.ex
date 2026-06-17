@@ -8,6 +8,7 @@ defmodule Mutare.Mutators.Collection do
     * `Enum.min_by` ↔ `Enum.max_by`
     * `Enum.take` ↔ `Enum.drop`
     * `Enum.take_while` ↔ `Enum.drop_while`
+    * `Enum.take_every` ↔ `Enum.drop_every`
     * `Enum.sum` ↔ `Enum.product`
     * `List.first` ↔ `List.last`
     * `List.foldl` ↔ `List.foldr`
@@ -47,6 +48,8 @@ defmodule Mutare.Mutators.Collection do
     {[:Enum], :drop} => {[:Enum], :take},
     {[:Enum], :take_while} => {[:Enum], :drop_while},
     {[:Enum], :drop_while} => {[:Enum], :take_while},
+    {[:Enum], :take_every} => {[:Enum], :drop_every},
+    {[:Enum], :drop_every} => {[:Enum], :take_every},
     {[:Enum], :sum} => {[:Enum], :product},
     {[:Enum], :product} => {[:Enum], :sum},
     {[:List], :first} => {[:List], :last},

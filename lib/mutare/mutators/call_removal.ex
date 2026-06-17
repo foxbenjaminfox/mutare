@@ -10,6 +10,7 @@ defmodule Mutare.Mutators.CallRemoval do
 
     * `Enum.sort` / `Enum.sort_by` / `Enum.reverse` / `Enum.shuffle`
     * `Enum.uniq` / `Enum.uniq_by` / `Enum.dedup` / `Enum.dedup_by`
+    * `Enum.intersperse` (drops the separators, returning the un-interspersed input)
     * `List.flatten`
     * `String.trim` / `String.trim_leading` / `String.trim_trailing`
     * `String.downcase` / `String.upcase` / `String.capitalize`
@@ -81,6 +82,7 @@ defmodule Mutare.Mutators.CallRemoval do
                {[:Enum], :uniq_by},
                {[:Enum], :dedup},
                {[:Enum], :dedup_by},
+               {[:Enum], :intersperse},
                {[:List], :flatten},
                {[:String], :trim},
                {[:String], :trim_leading},

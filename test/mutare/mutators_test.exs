@@ -320,6 +320,12 @@ defmodule Mutare.MutatorsTest do
       assert render(Collection.mutate(parse("Enum.drop_while(xs, f)"))) ==
                ["Enum.take_while(xs, f)"]
 
+      assert render(Collection.mutate(parse("Enum.take_every(xs, n)"))) ==
+               ["Enum.drop_every(xs, n)"]
+
+      assert render(Collection.mutate(parse("Enum.drop_every(xs, n)"))) ==
+               ["Enum.take_every(xs, n)"]
+
       assert render(Collection.mutate(parse("Enum.sum(xs)"))) == ["Enum.product(xs)"]
       assert render(Collection.mutate(parse("Enum.product(xs)"))) == ["Enum.sum(xs)"]
 
@@ -506,6 +512,7 @@ defmodule Mutare.MutatorsTest do
       assert removal("Enum.sort(xs, :desc)", false) == ["xs"]
       assert removal("Enum.reverse(xs)", false) == ["xs"]
       assert removal("Enum.uniq_by(xs, f)", false) == ["xs"]
+      assert removal("Enum.intersperse(xs, 0)", false) == ["xs"]
       assert removal("List.flatten(xs)", false) == ["xs"]
       assert removal("String.trim(s)", false) == ["s"]
       assert removal("String.downcase(s)", false) == ["s"]
@@ -558,6 +565,7 @@ defmodule Mutare.MutatorsTest do
       assert removal("Enum.sort(:desc)", true) == ["Function.identity()"]
       assert removal("String.trim()", true) == ["Function.identity()"]
       assert removal("Enum.uniq()", true) == ["Function.identity()"]
+      assert removal("Enum.intersperse(0)", true) == ["Function.identity()"]
       # `s |> String.normalize(:nfc)` — the form is the LHS-less visible arg, so we
       # must return identity, never the `:nfc` atom.
       assert removal("String.normalize(:nfc)", true) == ["Function.identity()"]
