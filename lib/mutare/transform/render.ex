@@ -49,6 +49,9 @@ defmodule Mutare.Transform.Render do
   # bookkeeping that must never reach the source.
   defp strip_annotations(ast) do
     Macro.prewalk(ast, fn
+      # Equivalent: stripping is belt-and-suspenders — any leftover :mutare/:mutare_tag
+      # metadata never reaches the rendered source (Sourceror ignores unknown meta keys).
+      # mutare:ignore[pattern_swap] form/meta swap only flips which binding is_list tests
       {form, meta, args} when is_list(meta) ->
         {form, meta |> Keyword.delete(:mutare) |> Keyword.delete(:mutare_tag), args}
 

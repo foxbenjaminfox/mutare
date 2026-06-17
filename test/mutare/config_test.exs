@@ -108,6 +108,13 @@ defmodule Mutare.ConfigTest do
       merged = Config.merge([reporters: [:sarif]], format: "json", output: "o.json")
       assert merged[:reporters] == [{:human, nil}, {:json, "o.json"}]
     end
+
+    test "a non-list reporters value passes through untouched (for Options to reject)" do
+      # A malformed reporters value (here a bare atom, not a list) is passed
+      # through unchanged so Mutare.Options can reject it with a clear message —
+      # not silently dropped/rewritten.
+      assert Config.merge([reporters: :json], [])[:reporters] == :json
+    end
   end
 
   describe "mutator_modules/1" do

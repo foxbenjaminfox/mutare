@@ -46,6 +46,22 @@ defmodule Mutare.Runner.BaselineTest do
       assert detail =~ "Could not pin the flaky test"
       assert detail =~ "opaque failure, no test path here"
     end
+
+    test "the fallback tail keeps only the last lines, newline-joined" do
+      # No `_test.exs:NN` location parses, so flaky_detail falls back to tail/1:
+      # the *last* 20 lines, joined by newlines. A 25-line run drops the first 5.
+      output = Enum.map_join(1..25, "\n", &"line #{&1}")
+
+      assert {:error, :baseline_flaky, detail} =
+               Baseline.classify([{:pass, 10}, {:fail, output}])
+
+      # Last 20 lines are present and newline-joined (not first-20, not run together).
+      assert detail =~ "line 25"
+      assert detail =~ "line 6\nline 7"
+      # The first 5 lines are dropped by take(-20) (not take(20) / the whole output).
+      refute detail =~ "line 5\n"
+      refute detail =~ "line 1\n"
+    end
   end
 
   describe "run/2 (flaky baseline, end to end)" do

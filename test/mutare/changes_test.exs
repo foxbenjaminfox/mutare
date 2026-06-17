@@ -57,6 +57,10 @@ defmodule Mutare.ChangesTest do
   test "errors on a bad ref", %{repo: repo} do
     assert {:error, detail} = Changes.since(repo, "no-such-ref")
     assert is_binary(detail)
+    # The detail is trimmed: git's stderr carries a trailing newline, so a
+    # non-trimmed detail would not equal its own trimmed form.
+    assert detail == String.trim(detail)
+    assert detail != ""
   end
 
   test "errors outside a git repository" do
@@ -65,6 +69,18 @@ defmodule Mutare.ChangesTest do
     on_exit(fn -> File.rm_rf!(dir) end)
 
     assert {:error, _} = Changes.since(dir, "HEAD")
+  end
+
+  test "rescues a raised failure into an error tuple rather than crashing", %{repo: repo} do
+    # The rescue clause turns any failure to even invoke git into a clean
+    # `{:error, message}`. A non-binary ref makes `System.cmd/3` raise (its args
+    # must all be binaries) — a deterministic, process-local way to drive the
+    # rescue without mutating the global PATH (which would race the async suite).
+    bad_ref = :not_a_binary
+
+    assert {:error, message} = Changes.since(repo, bad_ref)
+    assert is_binary(message)
+    assert message != ""
   end
 
   defp git!(repo, args) do

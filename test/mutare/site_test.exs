@@ -68,5 +68,19 @@ defmodule Mutare.SiteTest do
 
       assert Site.describe(site) == ~s(string_literal  "a  b" → "")
     end
+
+    test "trims edge whitespace left after collapsing newlines" do
+      # A node rendered with leading indentation or a trailing newline leaves
+      # stray edge whitespace once the newlines collapse to spaces; one_line
+      # trims it so the one-liner has no leading/trailing padding.
+      site = %Site{
+        mutator: :return_value,
+        operation: :replace,
+        original_code: "  foo\n  bar\n",
+        mutated_code: "  :mutare  "
+      }
+
+      assert Site.describe(site) == "return_value  foo bar → :mutare"
+    end
   end
 end
