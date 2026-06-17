@@ -11,6 +11,8 @@ defmodule Mutare.Mutators.FloatLiteral do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
+
   @impl Mutare.Mutator
   def name, do: :float
 
@@ -19,7 +21,7 @@ defmodule Mutare.Mutators.FloatLiteral do
     [f + 1.0, f - 1.0, 0.0]
     |> Enum.uniq()
     |> Enum.reject(&(&1 == f))
-    |> Enum.map(&{:__block__, [], [&1]})
+    |> Enum.map(&AST.literal/1)
   end
 
   def mutate(_node), do: :skip

@@ -32,6 +32,8 @@ defmodule Mutare.Mutators.AtomLiteral do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
+
   @sentinel :mutare
 
   @impl Mutare.Mutator
@@ -43,7 +45,7 @@ defmodule Mutare.Mutators.AtomLiteral do
 
   # Any other literal atom → the sentinel, unless it already is the sentinel.
   def mutate({:__block__, _meta, [a]}) when is_atom(a) and a != @sentinel,
-    do: [{:__block__, [], [@sentinel]}]
+    do: [AST.literal(@sentinel)]
 
   def mutate(_node), do: :skip
 end

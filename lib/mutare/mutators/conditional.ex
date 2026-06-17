@@ -16,6 +16,8 @@ defmodule Mutare.Mutators.Conditional do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
+
   @boolean_ops [
     :>,
     :>=,
@@ -39,7 +41,7 @@ defmodule Mutare.Mutators.Conditional do
 
   @impl Mutare.Mutator
   def mutate({op, _meta, args}) when op in @boolean_ops and is_list(args) do
-    [{:__block__, [], [true]}, {:__block__, [], [false]}]
+    [AST.literal(true), AST.literal(false)]
   end
 
   def mutate(_node), do: :skip

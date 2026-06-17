@@ -70,7 +70,7 @@ defmodule Mutare.Mutators.CollectionArity do
         %{piped: piped?}
       )
       when is_list(args) do
-    eff_arity = length(args) + if(piped?, do: 1, else: 0)
+    eff_arity = Mutare.Mutator.effective_arity(args, piped?)
 
     case Map.fetch(@rules, {Aliases.resolved_module(alias_meta, mod), fun, eff_arity}) do
       {:ok, {new_fun, keep}} ->

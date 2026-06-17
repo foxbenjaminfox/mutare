@@ -73,6 +73,7 @@ defmodule Mutare.Mutators.ReturnValue do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
   alias Mutare.Mutators.Conditional
 
   # Operators whose result is unambiguously a number — so `0`/`1` are the
@@ -153,20 +154,22 @@ defmodule Mutare.Mutators.ReturnValue do
     |> Enum.reject(&equivalent_to?(&1, tail))
   end
 
-  defp empty_constant({op, _meta, args}) when op in @numeric_ops and is_list(args), do: const(0)
-  defp empty_constant({:<>, _meta, [_left, _right]}), do: string_const("")
-  defp empty_constant({op, _meta, [_left, _right]}) when op in [:++, :--], do: const([])
-  defp empty_constant(_other), do: const(nil)
+  defp empty_constant({op, _meta, args}) when op in @numeric_ops and is_list(args),
+    do: AST.literal(0)
+
+  defp empty_constant({:<>, _meta, [_left, _right]}), do: AST.literal("")
+  defp empty_constant({op, _meta, [_left, _right]}) when op in [:++, :--], do: AST.literal([])
+  defp empty_constant(_other), do: AST.literal(nil)
 
   defp sentinel_constant({op, _meta, args}) when op in @numeric_ops and is_list(args),
-    do: const(1)
+    do: AST.literal(1)
 
-  defp sentinel_constant({:<>, _meta, [_left, _right]}), do: string_const(@sentinel)
+  defp sentinel_constant({:<>, _meta, [_left, _right]}), do: AST.literal(@sentinel)
 
   defp sentinel_constant({op, _meta, [_left, _right]}) when op in [:++, :--],
-    do: const([@sentinel_atom])
+    do: AST.literal([@sentinel_atom])
 
-  defp sentinel_constant(_other), do: const(@sentinel_atom)
+  defp sentinel_constant(_other), do: AST.literal(@sentinel_atom)
 
   # True when a replacement constant carries the same value as the tail. Only
   # bare atoms can collide (every other constant differs from its pair by
@@ -182,9 +185,4 @@ defmodule Mutare.Mutators.ReturnValue do
   defp atom_value({:__block__, _meta, [v]}) when is_atom(v), do: {:atom, v}
   defp atom_value(v) when is_atom(v), do: {:atom, v}
   defp atom_value(_), do: nil
-
-  # Clean metadata so Sourceror renders from the value, not a stale `:token`
-  # (the same rule the literal mutators follow).
-  defp const(value), do: {:__block__, [], [value]}
-  defp string_const(value), do: {:__block__, [delimiter: ~s(")], [value]}
 end

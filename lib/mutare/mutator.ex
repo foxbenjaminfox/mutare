@@ -48,7 +48,7 @@ defmodule Mutare.Mutator do
   Context threaded to the optional `mutate/2` at each runtime call site. Currently
   carries only `:piped` — whether the node is the right-hand side of a `|>` (so its
   effective first argument is the pipe's left side, *not* present in the node's own
-  args). A mutator computes effective arity as `length(args) + if(piped, do: 1, else: 0)`.
+  args). A mutator computes effective arity with `effective_arity/2`.
   """
   @type context :: %{piped: boolean()}
 
@@ -117,6 +117,19 @@ defmodule Mutare.Mutator do
   @callback owned_args(Macro.t(), context()) :: [non_neg_integer()]
 
   @optional_callbacks pattern_mutations: 2, mutate: 2, owned_args: 2
+
+  @doc """
+  The **effective arity** of a call node given its pipe context.
+
+  A pipe stage (`x |> f(a)`) carries one fewer argument than the source reads: its
+  effective first argument is the `|>` left side, which Elixir splices in only after
+  this transform runs, so it is *not* in the node's own `args`. A pipe-aware mutator
+  (`mutate/2`) recovers the real arity as `length(args) + if(piped?, do: 1, else: 0)`.
+  The single home for that off-by-one — see `Mutare.Mutators.CollectionArity` et al.
+  """
+  @spec effective_arity([Macro.t()], boolean()) :: non_neg_integer()
+  def effective_arity(args, piped?) when is_list(args),
+    do: length(args) + if(piped?, do: 1, else: 0)
 
   @doc "Whether `term` is a module that implements this behaviour."
   @spec implemented_by?(term()) :: boolean()

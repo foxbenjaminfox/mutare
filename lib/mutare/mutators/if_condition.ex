@@ -45,6 +45,7 @@ defmodule Mutare.Mutators.IfCondition do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
   alias Mutare.Mutators.Conditional
 
   @impl Mutare.Mutator
@@ -65,7 +66,7 @@ defmodule Mutare.Mutators.IfCondition do
   """
   @spec replacements(Macro.t()) :: [Macro.t()]
   def replacements(condition) do
-    if skip?(condition), do: [], else: [const(true), const(false)]
+    if skip?(condition), do: [], else: [AST.literal(true), AST.literal(false)]
   end
 
   # --- eligibility ----------------------------------------------------------
@@ -91,8 +92,4 @@ defmodule Mutare.Mutators.IfCondition do
   defp skip?(literal) when literal in [true, false, nil], do: true
 
   defp skip?(_), do: false
-
-  # Clean metadata so Sourceror renders from the value, not a stale `:token` — the
-  # same rule the literal mutators (and `Conditional`) follow.
-  defp const(value), do: {:__block__, [], [value]}
 end

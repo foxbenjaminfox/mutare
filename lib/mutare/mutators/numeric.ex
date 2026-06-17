@@ -116,7 +116,7 @@ defmodule Mutare.Mutators.Numeric do
   @impl Mutare.Mutator
   def mutate({fun, meta, args}, %{piped: piped?})
       when is_atom(fun) and is_list(args) do
-    eff_arity = length(args) + if(piped?, do: 1, else: 0)
+    eff_arity = Mutare.Mutator.effective_arity(args, piped?)
 
     case Map.fetch(@kernel_swaps, {fun, eff_arity}) do
       {:ok, siblings} -> Enum.map(siblings, &{&1, meta, args})

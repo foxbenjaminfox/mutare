@@ -12,6 +12,8 @@ defmodule Mutare.Mutators.StringLiteral do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
+
   @sentinel "mutare"
 
   @impl Mutare.Mutator
@@ -21,7 +23,7 @@ defmodule Mutare.Mutators.StringLiteral do
   def mutate({:__block__, _meta, [s]}) when is_binary(s) do
     ["", @sentinel]
     |> Enum.reject(&(&1 == s))
-    |> Enum.map(&{:__block__, [delimiter: ~s(")], [&1]})
+    |> Enum.map(&AST.literal/1)
   end
 
   def mutate(_node), do: :skip

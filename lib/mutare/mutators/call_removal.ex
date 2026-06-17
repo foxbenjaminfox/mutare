@@ -147,7 +147,7 @@ defmodule Mutare.Mutators.CallRemoval do
   # 1 : 0), since a pipe stage's node carries one fewer arg than the source reads.
   def mutate({fun, _meta, args}, %{piped: piped?})
       when is_atom(fun) and is_list(args) do
-    eff_arity = length(args) + if(piped?, do: 1, else: 0)
+    eff_arity = Mutare.Mutator.effective_arity(args, piped?)
     removal(MapSet.member?(@bare_removable, {fun, eff_arity}), piped?, args)
   end
 

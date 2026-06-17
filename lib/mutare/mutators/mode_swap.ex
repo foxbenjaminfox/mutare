@@ -75,6 +75,7 @@ defmodule Mutare.Mutators.ModeSwap do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
   alias Mutare.Transform.Aliases
 
   # Ordered magnitude ladders. A swap is to the adjacent finer/coarser member *within
@@ -165,7 +166,7 @@ defmodule Mutare.Mutators.ModeSwap do
   # The rule for a call at its *effective* arity (visible args + the piped value), or
   # `:error` when no rule applies.
   defp rule(mod, fun, args, piped?) do
-    eff_arity = length(args) + if(piped?, do: 1, else: 0)
+    eff_arity = Mutare.Mutator.effective_arity(args, piped?)
 
     case Map.fetch(@rules, {mod, fun, eff_arity}) do
       {:ok, {positions, group}} -> {:ok, positions, group}
@@ -187,7 +188,7 @@ defmodule Mutare.Mutators.ModeSwap do
     end
   end
 
-  defp replace_arg(args, vis, atom), do: List.replace_at(args, vis, atom_node(atom))
+  defp replace_arg(args, vis, atom), do: List.replace_at(args, vis, AST.literal(atom))
 
   # An effective index → the index into the node's *visible* args. When piped, the
   # effective arg 0 is the `|>` left side (not present), so it can't be reached and the
@@ -227,7 +228,4 @@ defmodule Mutare.Mutators.ModeSwap do
 
   defp mode_atom(a) when is_atom(a) and a not in [true, false, nil], do: [a]
   defp mode_atom(_node), do: []
-
-  # Fresh metadata so Sourceror renders the new atom, not the original's token.
-  defp atom_node(atom), do: {:__block__, [], [atom]}
 end

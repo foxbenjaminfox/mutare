@@ -12,6 +12,8 @@ defmodule Mutare.Mutators.List do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
+
   @impl Mutare.Mutator
   def name, do: :list
 
@@ -23,7 +25,7 @@ defmodule Mutare.Mutators.List do
   # non-empty one to `[]`. The empty list is left alone (mutating it to itself
   # is a no-op).
   def mutate({:__block__, _meta, [elements]}) when is_list(elements) and elements != [] do
-    [{:__block__, [], [[]]}]
+    [AST.literal([])]
   end
 
   def mutate(_node), do: :skip

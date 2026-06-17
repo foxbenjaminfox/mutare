@@ -31,6 +31,8 @@ defmodule Mutare.Mutators.Math do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
+
   # fun => sibling fun(s) to swap to. Every sibling exists at the same arity in
   # `:math`, so an arity-blind rename keeping the argument list always compiles.
   @swaps %{
@@ -62,7 +64,7 @@ defmodule Mutare.Mutators.Math do
       # `:math.pi()`/`tau()` are `/0`; gate on the empty arg list so a hypothetical
       # same-named call with arguments is never collapsed to a constant.
       Map.has_key?(@constants, fun) and args == [] ->
-        [literal(Map.fetch!(@constants, fun))]
+        [AST.literal(Map.fetch!(@constants, fun))]
 
       Map.has_key?(@swaps, fun) ->
         for new_fun <- Map.fetch!(@swaps, fun),
@@ -80,8 +82,4 @@ defmodule Mutare.Mutators.Math do
   defp math_module?({:__block__, _meta, [:math]}), do: true
   defp math_module?(:math), do: true
   defp math_module?(_node), do: false
-
-  # Fresh metadata so Sourceror renders the value, not a stale `:token` from the
-  # original (the clean-meta rule that bites every literal-valued mutator).
-  defp literal(value), do: {:__block__, [], [value]}
 end

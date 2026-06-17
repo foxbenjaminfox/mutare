@@ -28,6 +28,8 @@ defmodule Mutare.Mutators.Literal do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
+
   @impl Mutare.Mutator
   def name, do: :literal
 
@@ -36,13 +38,10 @@ defmodule Mutare.Mutators.Literal do
     [n + 1, n - 1, 0]
     |> Enum.uniq()
     |> Enum.reject(&(&1 == n))
-    |> Enum.map(&literal/1)
+    |> Enum.map(&AST.literal/1)
   end
 
-  def mutate({:__block__, _meta, [b]}) when is_boolean(b), do: [literal(not b)]
+  def mutate({:__block__, _meta, [b]}) when is_boolean(b), do: [AST.literal(not b)]
 
   def mutate(_node), do: :skip
-
-  # Fresh metadata so Sourceror renders from the value, not a stale `:token`.
-  defp literal(value), do: {:__block__, [], [value]}
 end
