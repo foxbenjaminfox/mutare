@@ -477,6 +477,19 @@ defmodule Mutare.MutatorsTest do
       assert removal("List.flatten(xs)", false) == ["xs"]
       assert removal("String.trim(s)", false) == ["s"]
       assert removal("String.downcase(s)", false) == ["s"]
+      # The newer string transforms — reorder, normalize, sanitize, pad.
+      assert removal("String.reverse(s)", false) == ["s"]
+      assert removal("String.normalize(s, :nfc)", false) == ["s"]
+      assert removal("String.replace_invalid(s)", false) == ["s"]
+      assert removal("String.pad_leading(s, 5)", false) == ["s"]
+      assert removal("String.pad_trailing(s, 5, \"x\")", false) == ["s"]
+    end
+
+    test "excludes content-changing / selecting String calls (not tidying transforms)" do
+      assert CallRemoval.mutate(parse("String.replace(s, a, b)"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse("String.slice(s, 1, 3)"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse("String.first(s)"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse("String.split(s, \",\")"), %{piped: false}) == :skip
     end
 
     test "piped: replaces the stage with Function.identity() (a no-op the pipe feeds)" do
@@ -486,6 +499,10 @@ defmodule Mutare.MutatorsTest do
       assert removal("Enum.sort(:desc)", true) == ["Function.identity()"]
       assert removal("String.trim()", true) == ["Function.identity()"]
       assert removal("Enum.uniq()", true) == ["Function.identity()"]
+      # `s |> String.normalize(:nfc)` — the form is the LHS-less visible arg, so we
+      # must return identity, never the `:nfc` atom.
+      assert removal("String.normalize(:nfc)", true) == ["Function.identity()"]
+      assert removal("String.pad_leading(5)", true) == ["Function.identity()"]
     end
 
     test "excludes map/filter/reduce and unrelated calls" do

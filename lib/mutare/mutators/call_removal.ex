@@ -1,8 +1,8 @@
 defmodule Mutare.Mutators.CallRemoval do
   @moduledoc """
-  Remove a *transparent transform* — a call that reorders, dedups, or normalizes
-  its first argument — leaving the raw input. The classic "non-void method call
-  removal" operator, asking: does this tidying step matter, or did someone *forget*
+  Remove a *transparent transform* — a call that reorders, strips, pads, dedups, or
+  normalizes its first argument — leaving the raw input. The classic "non-void method
+  call removal" operator, asking: does this tidying step matter, or did someone *forget*
   it and nothing noticed?
 
   Targets (any arity — the first argument is always the value being transformed, and
@@ -13,6 +13,12 @@ defmodule Mutare.Mutators.CallRemoval do
     * `List.flatten`
     * `String.trim` / `String.trim_leading` / `String.trim_trailing`
     * `String.downcase` / `String.upcase` / `String.capitalize`
+    * `String.reverse` / `String.normalize` / `String.replace_invalid`
+    * `String.pad_leading` / `String.pad_trailing`
+
+  Kept to transforms whose removal yields a same-typed, plausibly-interchangeable value
+  — so `String.replace`/`slice`/`first` (which change *which* characters, or select a
+  part) are excluded, the string-side counterpart of dropping `map`/`filter`/`reduce`.
 
   Deliberately *excludes* `map`/`filter`/`reduce` and friends: those change *which*
   data is present, not just its order/shape, so their removal is a coarser, noisier
@@ -56,7 +62,12 @@ defmodule Mutare.Mutators.CallRemoval do
                {[:String], :trim_trailing},
                {[:String], :downcase},
                {[:String], :upcase},
-               {[:String], :capitalize}
+               {[:String], :capitalize},
+               {[:String], :reverse},
+               {[:String], :normalize},
+               {[:String], :replace_invalid},
+               {[:String], :pad_leading},
+               {[:String], :pad_trailing}
              ])
 
   @impl Mutare.Mutator

@@ -282,9 +282,11 @@ contract between them is the whole game.
   `replace!`, swapping along the insert-new / overwrite-existing / raise-on-absent axes; all `/3`,
   arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),
   CallRemoval (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/`dedup`/`shuffle`,
-  `List.flatten`, `String.trim`/`downcase`/`upcase`/… — leaving its first arg; in a pipe the stage
-  becomes `Function.identity()` (`x |> Enum.sort()` → `x |> Function.identity()` ≡ `x`); pipe-aware
-  via the optional `mutate/2`, so `map`/`filter`/`reduce` are deliberately excluded),
+  `List.flatten`, `String.trim`/`downcase`/`upcase`/`reverse`/`normalize`/`replace_invalid`/
+  `pad_leading`/`pad_trailing`/… — leaving its first arg; in a pipe the stage becomes
+  `Function.identity()` (`x |> Enum.sort()` → `x |> Function.identity()` ≡ `x`); pipe-aware via the
+  optional `mutate/2`, so `map`/`filter`/`reduce` — and the content-changing/selecting
+  `String.replace`/`slice`/`first` — are deliberately excluded),
   DefaultDrop (drop a trailing default/fallback arg, reverting to the implicit `nil` —
   `Map.get`/`pop`/`Keyword.get`/`Enum.at`/`List.first`/`last` `/n`→`/n-1`, and `get_lazy`/`pop_lazy`
   renamed to the base lookup; skips a literal-`nil` default as equivalent; pipe-aware via `mutate/2`),
