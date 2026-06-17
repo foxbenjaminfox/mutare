@@ -51,6 +51,8 @@ defmodule Mutare.Mutators.PatternWildcard do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.Transform.PatternStructure
+
   @impl Mutare.Mutator
   def name, do: :pattern_wildcard
 
@@ -79,7 +81,7 @@ defmodule Mutare.Mutators.PatternWildcard do
     # — still makes `n` look like a wildcardable duplicate, so spec-read names are excluded
     # outright. `used_outside` can't express this: it only keeps *some* binding alive, not
     # the specific in-binary one the size depends on.
-    spec_reads = spec_var_names(head_args)
+    spec_reads = PatternStructure.spec_var_names(head_args)
     occurrences = collect_occurrences(head_args)
     counts = Enum.frequencies(Enum.map(occurrences, &elem(&1, 0)))
 
@@ -103,7 +105,9 @@ defmodule Mutare.Mutators.PatternWildcard do
   # the same node in both passes.
   defp collect_occurrences(args) do
     {_args, {_next, acc}} =
-      walk_list(args, {0, []}, fn var, index, acc -> {var, [{var_name(var), index} | acc]} end)
+      walk_list(args, {0, []}, fn var, index, acc ->
+        {var, [{PatternStructure.var_name(var), index} | acc]}
+      end)
 
     Enum.reverse(acc)
   end
@@ -119,33 +123,6 @@ defmodule Mutare.Mutators.PatternWildcard do
       end)
 
     args
-  end
-
-  # The variable-shaped names appearing in any bitstring **spec** (the right of `::`) in
-  # the head — the `n` in `<<n, rest::binary-size(n)>>`, plus bare type atoms like
-  # `integer` (indistinguishable from a variable in the AST). Excluded from wildcarding
-  # (see `pattern_mutations/2`); over-collecting type atoms is the safe direction — it can
-  # only decline to mutate a name, never strand a binding.
-  defp spec_var_names(head_args) do
-    {_ast, names} =
-      Macro.prewalk(head_args, MapSet.new(), fn
-        {:"::", _meta, [_value, spec]} = node, acc -> {node, collect_var_names(spec, acc)}
-        node, acc -> {node, acc}
-      end)
-
-    names
-  end
-
-  defp collect_var_names(spec, acc) do
-    {_ast, names} =
-      Macro.prewalk(spec, acc, fn node, acc ->
-        case var_name(node) do
-          nil -> {node, acc}
-          name -> {node, MapSet.put(acc, name)}
-        end
-      end)
-
-    names
   end
 
   # --- variable walk (shared by both passes) --------------------------------------
@@ -170,7 +147,7 @@ defmodule Mutare.Mutators.PatternWildcard do
   end
 
   defp walk_vars(node, {index, acc}, fun) do
-    if var_name(node) do
+    if PatternStructure.var_name(node) do
       {replacement, acc} = fun.(node, index, acc)
       {replacement, {index + 1, acc}}
     else
@@ -195,14 +172,4 @@ defmodule Mutare.Mutators.PatternWildcard do
 
   defp walk_list(list, acc, fun),
     do: Enum.map_reduce(list, acc, fn node, acc -> walk_vars(node, acc, fun) end)
-
-  # The name of a countable/replaceable variable, or `nil`. Same rule as
-  # `Mutare.Mutators.PatternSwap`: a plain `{name, _meta, ctx}` with atom `name`/`ctx`,
-  # excluding `_` and `_`-prefixed (already-ignored) names.
-  defp var_name({name, _meta, ctx}) when is_atom(name) and is_atom(ctx) do
-    string = Atom.to_string(name)
-    if name == :_ or String.starts_with?(string, "_"), do: nil, else: name
-  end
-
-  defp var_name(_node), do: nil
 end

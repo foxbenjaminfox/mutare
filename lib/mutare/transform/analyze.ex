@@ -200,11 +200,7 @@ defmodule Mutare.Transform.Analyze do
   # reachable. In a pattern (or any non-runtime context) it is only descended.
   defp analyze({:<<>>, meta, segments} = node, :runtime, mutators) do
     analyzed = {:<<>>, meta, Enum.map(segments, &analyze_segment(&1, :runtime, mutators))}
-
-    case Mutator.mutations(node, mutators) do
-      [] -> analyzed
-      muts -> put_candidates(analyzed, build_candidates(node, muts))
-    end
+    offer(analyzed, node, mutators)
   end
 
   defp analyze({:<<>>, meta, segments}, context, mutators) do
@@ -275,10 +271,7 @@ defmodule Mutare.Transform.Analyze do
 
     rebuilt = {form, meta, [analyzed_condition, analyze(body_kw, :runtime, mutators)]}
 
-    case Mutator.mutations(node, mutators) do
-      [] -> rebuilt
-      muts -> put_candidates(rebuilt, build_candidates(node, muts))
-    end
+    offer(rebuilt, node, mutators)
   end
 
   # `case`/`receive`/`fn`: runtime expressions whose *clause patterns* are additionally
@@ -349,13 +342,7 @@ defmodule Mutare.Transform.Analyze do
   # back from mutators (`analyze_for_arg/2`); the node itself is still offered for
   # parity with the generic clause (no built-in matches `for`).
   defp analyze({:for, _meta, args} = node, :runtime, mutators) when is_list(args) do
-    offered =
-      case Mutator.mutations(node, mutators) do
-        [] -> node
-        muts -> put_candidates(node, build_candidates(node, muts))
-      end
-
-    {:for, meta, args} = offered
+    {:for, meta, args} = offer(node, node, mutators)
     {:for, meta, Enum.map(args, &analyze_for_arg(&1, mutators))}
   end
 
@@ -376,10 +363,7 @@ defmodule Mutare.Transform.Analyze do
 
     rebuilt = {:not, meta, [inner]}
 
-    case Mutator.mutations(node, mutators) do
-      [] -> rebuilt
-      muts -> put_candidates(rebuilt, build_candidates(node, muts))
-    end
+    offer(rebuilt, node, mutators)
   end
 
   # a generic runtime node: build the candidate from the raw node (so `original`
@@ -390,11 +374,7 @@ defmodule Mutare.Transform.Analyze do
   # content `<<>>` *wrapper* itself is never offered — collapsing a sigil's content
   # (BitstringLiteral) or splicing a selector into it is illegal.
   defp analyze({form, _meta, _args} = node, :runtime, mutators) do
-    node =
-      case Mutator.mutations(node, mutators) do
-        [] -> node
-        muts -> put_candidates(node, build_candidates(node, muts))
-      end
+    node = offer(node, node, mutators)
 
     if sigil?(form),
       do: descend_sigil(node, mutators),
@@ -428,12 +408,7 @@ defmodule Mutare.Transform.Analyze do
   # `hoist_pipe/1` lifts the pipe in — a mutated 0-arg `Enum.reverse()` stage becomes
   # `lhs |> Enum.reverse()`. A non-call RHS (rare) is analyzed normally.
   defp analyze_pipe_stage({_form, _meta, args} = node, mutators) when is_list(args) do
-    node =
-      case Mutator.mutations(node, mutators, %{piped: true}) do
-        [] -> node
-        muts -> put_candidates(node, build_candidates(node, muts))
-      end
-
+    node = offer(node, node, mutators, %{piped: true})
     recurse_runtime(node, mutators, true)
   end
 
@@ -937,6 +912,18 @@ defmodule Mutare.Transform.Analyze do
   end
 
   defp descend_sigil(node, _mutators), do: node
+
+  # Offer `raw` to the mutators; if any fire, attach their candidates — built from
+  # `raw`, so the diff renders the author's node — to `subject`, the already-analyzed
+  # node whose children carry their own selectors. `subject` *is* `raw` at most sites;
+  # the `<<>>`/`if`/`not in` clauses pass an analyzed/rebuilt subject distinct from the
+  # raw node the candidate records. `context` carries the pipe flag (`Mutator.mutations`).
+  defp offer(subject, raw, mutators, context \\ %{piped: false}) do
+    case Mutator.mutations(raw, mutators, context) do
+      [] -> subject
+      muts -> put_candidates(subject, build_candidates(raw, muts))
+    end
+  end
 
   defp build_candidates(node, muts) do
     range = Sourceror.get_range(node)

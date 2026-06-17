@@ -59,4 +59,49 @@ defmodule Mutare.Transform.PatternStructure do
       end)
     end)
   end
+
+  @doc """
+  The name of a plain variable node, or `nil`. A plain variable is `{name, _meta, ctx}`
+  with an atom `name` and an atom `ctx` (`nil` or a module); `_`, `_`-prefixed names
+  (intentionally ignored), and pins (`^x`, whose ctx is a list) are excluded. The strict
+  "is this a swappable / wildcardable variable" notion both structural families share.
+  """
+  @spec var_name(Macro.t()) :: atom() | nil
+  def var_name({name, _meta, ctx}) when is_atom(name) and is_atom(ctx) do
+    string = Atom.to_string(name)
+    if name == :_ or String.starts_with?(string, "_"), do: nil, else: name
+  end
+
+  def var_name(_node), do: nil
+
+  @doc """
+  The variable-shaped names appearing in any bitstring **spec** (the right of `::`)
+  within `ast` — the `n` in `<<n, rest::binary-size(n)>>`, plus bare type atoms like
+  `integer` (indistinguishable from a variable in the AST). The structural families
+  exclude a value with such a name from swapping / wildcarding; over-collecting type
+  atoms is the safe direction — it can only decline a mutation, never produce an illegal
+  one (an `<<v::_>>` specifier) or strand a binding.
+  """
+  @spec spec_var_names(Macro.t()) :: MapSet.t()
+  def spec_var_names(ast) do
+    {_ast, names} =
+      Macro.prewalk(ast, MapSet.new(), fn
+        {:"::", _meta, [_value, spec]} = node, acc -> {node, collect_var_names(spec, acc)}
+        node, acc -> {node, acc}
+      end)
+
+    names
+  end
+
+  defp collect_var_names(spec, acc) do
+    {_ast, names} =
+      Macro.prewalk(spec, acc, fn node, acc ->
+        case var_name(node) do
+          nil -> {node, acc}
+          name -> {node, MapSet.put(acc, name)}
+        end
+      end)
+
+    names
+  end
 end

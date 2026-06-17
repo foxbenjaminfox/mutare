@@ -54,6 +54,8 @@ defmodule Mutare.Mutators.PatternSwap do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.Transform.PatternStructure
+
   @impl Mutare.Mutator
   def name, do: :pattern_swap
 
@@ -202,7 +204,7 @@ defmodule Mutare.Mutators.PatternSwap do
   # the binary is excluded (`swappable_segment_var/2`) — moving its binding would strand
   # the size read (Elixir requires it bound earlier in the same binary).
   defp bitstring_value_swaps(meta, segments) do
-    spec_reads = spec_var_names(segments)
+    spec_reads = PatternStructure.spec_var_names(segments)
 
     vars =
       for {seg, i} <- Enum.with_index(segments),
@@ -269,52 +271,14 @@ defmodule Mutare.Mutators.PatternSwap do
     list |> List.replace_at(i, b) |> List.replace_at(j, a)
   end
 
-  # The variable-shaped names appearing in any bitstring **spec** (the right of `::`)
-  # among `segments` — the `n` in `<<n, rest::binary-size(n)>>`, plus bare type atoms
-  # like `integer` (indistinguishable from a variable in the AST). A value with such a
-  # name is excluded from swapping; over-collecting type atoms is the safe direction — it
-  # can only decline a swap, never produce an illegal one. (Mirrors the same helper in
-  # `Mutare.Mutators.PatternWildcard`.)
-  defp spec_var_names(segments) do
-    {_ast, names} =
-      Macro.prewalk(segments, MapSet.new(), fn
-        {:"::", _meta, [_value, spec]} = node, acc -> {node, collect_var_names(spec, acc)}
-        node, acc -> {node, acc}
-      end)
-
-    names
-  end
-
-  defp collect_var_names(spec, acc) do
-    {_ast, names} =
-      Macro.prewalk(spec, acc, fn node, acc ->
-        case var_name(node) do
-          nil -> {node, acc}
-          name -> {node, MapSet.put(acc, name)}
-        end
-      end)
-
-    names
-  end
-
   # The swap identity of a node, or `nil`. A swappable sibling is either a plain variable
   # or a **pinned** variable `^name` (`{:^, _, [var]}`); both swap as whole nodes keyed by
   # `name`, so `{^a, ^b}` → `{^b, ^a}`, and a pin can trade places with a distinct-named
   # plain binding (`{^a, b}` → `{b, ^a}`). Reordering pins is safe — a pin only
   # *references* an outer binding (it cannot bind), so the original could only have
   # compiled if that binding already exists, and a swap never unbinds it. `swap_name/1` is
-  # used everywhere a swappable position is collected; `var_name/1` stays the strict
-  # plain-variable notion used to read names *inside* a node (e.g. bitstring specs).
-  defp swap_name({:^, _meta, [var]}), do: var_name(var)
-  defp swap_name(node), do: var_name(node)
-
-  # The name of a plain variable node, or `nil`. A plain variable is `{name, _meta, ctx}`
-  # with an atom `name` and an atom `ctx` (`nil` or a module); `_`, `_`-prefixed names
-  # (intentionally ignored), and pins (`^x`, whose ctx is a list) are excluded.
-  defp var_name({name, _meta, ctx}) when is_atom(name) and is_atom(ctx) do
-    string = Atom.to_string(name)
-    if name == :_ or String.starts_with?(string, "_"), do: nil, else: name
-  end
-
-  defp var_name(_node), do: nil
+  # used everywhere a swappable position is collected; `PatternStructure.var_name/1` is
+  # the strict plain-variable notion used to read names *inside* a node (e.g. specs).
+  defp swap_name({:^, _meta, [var]}), do: PatternStructure.var_name(var)
+  defp swap_name(node), do: PatternStructure.var_name(node)
 end
