@@ -33,7 +33,8 @@ defmodule Mutare.MutatorsTest do
     ReturnValue,
     StringCall,
     StringLiteral,
-    TupleLiteral
+    TupleLiteral,
+    WordListLiteral
   }
 
   describe "registry (single source of truth)" do
@@ -44,8 +45,9 @@ defmodule Mutare.MutatorsTest do
                [Arithmetic, Relational, Logical, Literal, Conditional, IfCondition, List] ++
                  [Collection, CollectionArity, StringCall, MapKeyword, CallRemoval, DefaultDrop] ++
                  [ModeSwap, Numeric, Math, Integer, StringLiteral, FloatLiteral, AtomLiteral] ++
-                 [CharlistLiteral, MapLiteral, TupleLiteral, BitstringLiteral, RegexLiteral] ++
-                 [DateTimeLiteral, AliasLiteral, ReturnValue, PatternSwap, PatternWildcard]
+                 [CharlistLiteral, WordListLiteral, MapLiteral, TupleLiteral, BitstringLiteral] ++
+                 [RegexLiteral, DateTimeLiteral, AliasLiteral, ReturnValue, PatternSwap] ++
+                 [PatternWildcard]
     end
 
     test "families/0 are the registry's keys, in order — all on by default" do
@@ -55,8 +57,8 @@ defmodule Mutare.MutatorsTest do
                [:arithmetic, :relational, :logical, :literal, :conditional, :if_condition, :list] ++
                  [:collection, :collection_arity, :string_call, :map_keyword, :call_removal] ++
                  [:default_drop, :mode_swap, :numeric, :math, :integer, :string, :float] ++
-                 [:atom, :charlist, :map, :tuple, :bitstring, :regex, :datetime, :alias] ++
-                 [:return_value, :pattern_swap, :pattern_wildcard]
+                 [:atom, :charlist, :word_list, :map, :tuple, :bitstring, :regex] ++
+                 [:datetime, :alias, :return_value, :pattern_swap, :pattern_wildcard]
     end
 
     test "resolve/1 maps family atoms to modules, preserving order" do
@@ -1012,6 +1014,41 @@ defmodule Mutare.MutatorsTest do
 
     test "name" do
       assert CharlistLiteral.name() == :charlist
+    end
+  end
+
+  describe "WordListLiteral" do
+    test "mutates a ~w sigil into the empty word list and the sentinel" do
+      assert render(WordListLiteral.mutate(parse("~w(foo bar baz)"))) == ["~w()", "~w(mutare)"]
+    end
+
+    test "mutates an uppercase ~W sigil the same way" do
+      assert render(WordListLiteral.mutate(parse("~W(foo bar)"))) == ["~W()", "~W(mutare)"]
+    end
+
+    test "preserves the modifier so the element type is unchanged" do
+      assert render(WordListLiteral.mutate(parse("~w(foo bar)a"))) == ["~w()a", "~w(mutare)a"]
+      assert render(WordListLiteral.mutate(parse("~w(foo bar)c"))) == ["~w()c", "~w(mutare)c"]
+    end
+
+    test "drops the replacement that already equals the original (by words produced)" do
+      assert render(WordListLiteral.mutate(parse("~w()"))) == ["~w(mutare)"]
+      assert render(WordListLiteral.mutate(parse("~w(mutare)"))) == ["~w()"]
+      # whitespace-only already produces [], so the empty mutant is not re-emitted
+      assert render(WordListLiteral.mutate(parse("~w(   )"))) == ["~w(mutare)"]
+    end
+
+    test "skips an interpolated ~w (parsed as multiple <<>> parts, not a static binary)" do
+      assert WordListLiteral.mutate(parse(~S|~w(foo #{x} bar)|)) == :skip
+    end
+
+    test "skips other sigils and list literals (owned elsewhere)" do
+      assert WordListLiteral.mutate(parse(~S|~c"abc"|)) == :skip
+      assert WordListLiteral.mutate(parse("[1, 2, 3]")) == :skip
+    end
+
+    test "name" do
+      assert WordListLiteral.name() == :word_list
     end
   end
 

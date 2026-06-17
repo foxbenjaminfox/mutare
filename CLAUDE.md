@@ -399,7 +399,12 @@ contract between them is the whole game.
   them; keys excluded *positionally* by `Transform`, not the mutator — and patterns excluded
   *in place*, though a `def`/`defp` head literal is mutated by lifting), CharlistLiteral
   (a `~c"…"` sigil → `~c""` *and* `~c"mutare"`; the legacy `'…'` form is a list literal already
-  emptied by List), MapLiteral (a non-empty `%{…}` → `%{}`; map updates / a struct's field map
+  emptied by List), WordListLiteral (a `~w(…)`/`~W(…)` word list — a list literal in disguise —
+  → the empty list `~w()` *and* the single-element sentinel `~w(mutare)`, modifier preserved so
+  the element type is unchanged (`~w(a b)a` → `~w()a`/`~w(mutare)a`); the List/Charlist analog,
+  equivalence judged on the *words produced* (`String.split/1`) so a whitespace-only `~w(   )`
+  doesn't re-emit the empty mutant; interpolated `~w` is skipped — multiple `<<>>` parts, like
+  Charlist/Regex), MapLiteral (a non-empty `%{…}` → `%{}`; map updates / a struct's field map
   excluded), TupleLiteral (a non-empty tuple → `{}`, both the `{a, b}` and `{:{}, …}` shapes),
   BitstringLiteral (a non-empty `<<…>>` → `<<>>`; an interpolated string `"…#{…}…"` is a `<<>>`
   *with* a delimiter and is excluded, and a sigil's content `<<>>` is never offered — `Transform`
