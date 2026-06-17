@@ -60,6 +60,33 @@ defmodule Mutare.Mutators.PatternSwapTest do
       assert swaps("%{lat: la, lng: ln}") == ["f(%{lat: ln, lng: la})"]
     end
 
+    # A keyword list renders bracket-less as the sole call argument, so `[a: y, b: x]`
+    # prints as `f(a: y, b: x)` — same AST.
+    test "swaps keyword-list values, keeping labels fixed" do
+      assert swaps("[a: x, b: y]") == ["f(a: y, b: x)"]
+    end
+
+    test "swaps every distinct keyword-value pair across three entries" do
+      assert swaps("[a: x, b: y, c: z]") ==
+               ["f(a: y, b: x, c: z)", "f(a: z, b: y, c: x)", "f(a: x, b: z, c: y)"]
+    end
+
+    test "does not cross-swap keyword values that are not distinct variables" do
+      assert swaps("[a: x, b: x]") == []
+      assert swaps("[a: x, b: 1]") == []
+    end
+
+    test "swaps within a keyword value without cross-swapping entries" do
+      assert swaps("[a: {x, y}, b: z]") == ["f(a: {y, x}, b: z)"]
+    end
+
+    # A plain 2-tuple list element is not a keyword entry: it keeps its ordinary
+    # element-swap (both members), and its second member is never cross-swapped with
+    # another element's as if it were a value.
+    test "a list of plain tuples is not treated as keyword pairs" do
+      assert swaps("[{x, y}, {a, b}]") == ["f([{y, x}, {a, b}])", "f([{x, y}, {b, a}])"]
+    end
+
     test "swaps the field values of a struct pattern" do
       assert swaps("%Point{x: a, y: b}") == ["f(%Point{x: b, y: a})"]
     end

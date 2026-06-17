@@ -1,8 +1,9 @@
 defmodule Mutare.Mutators.PatternSwap do
   @moduledoc """
   Swap two variables inside a pattern container — `{x, y}` → `{y, x}`,
-  `[a, b]` → `[b, a]`, `%{k1: x, k2: y}` → `%{k1: y, k2: x}`, and the segment *values*
-  of a bitstring `<<a::8, b::16>>` → `<<b::8, a::16>>`.
+  `[a, b]` → `[b, a]`, `%{k1: x, k2: y}` → `%{k1: y, k2: x}`, the *values* of a keyword
+  list `[a: x, b: y]` → `[a: y, b: x]`, and the segment *values* of a bitstring
+  `<<a::8, b::16>>` → `<<b::8, a::16>>`.
 
   This asks a precise question: *does any test depend on which value lands in which
   position?* If a function destructures `{lat, lng}` and nothing distinguishes the two,
@@ -25,8 +26,9 @@ defmodule Mutare.Mutators.PatternSwap do
   ## Scope and compile-safety
 
   Only `def`/`defp` *heads* are mutated (the only pattern position Mutare lifts), and
-  only **within containers** — tuples, lists, the *values* of a map pattern, and the
-  segment *values* of a bitstring (the bindable left of each `::`, the spec staying put).
+  only **within containers** — tuples, lists, the *values* of a map or keyword-list
+  pattern (labels stay fixed), and the segment *values* of a bitstring (the bindable left
+  of each `::`, the spec staying put).
   The top-level argument list is deliberately not a swap site (transposing whole
   arguments is a separate, noisier mutation the project chose not to emit).
 
@@ -115,7 +117,7 @@ defmodule Mutare.Mutators.PatternSwap do
   # never the `_`, whereas `[a, b | c]` swaps only a/b (c is the tail).
   defp own_swaps(node) when is_list(node) do
     {elements, rebuild} = list_shape(node)
-    sibling_swaps(elements, rebuild)
+    sibling_swaps(elements, rebuild) ++ keyword_value_swaps(elements, rebuild)
   end
 
   defp own_swaps(_node), do: []
@@ -153,20 +155,46 @@ defmodule Mutare.Mutators.PatternSwap do
   end
 
   # Swap the *values* of two map pairs whose values are distinct-named variables (or
-  # pins), leaving the keys in place.
-  defp map_value_swaps(meta, pairs) do
+  # pins), leaving the keys in place. Every `key => value` pair qualifies.
+  defp map_value_swaps(meta, pairs),
+    do: pair_value_swaps(pairs, fn _pair -> true end, &{:%{}, meta, &1})
+
+  # The keyword-list analogue: swap the *values* of two entries (`[a: x, b: y]` →
+  # `[a: y, b: x]`), labels fixed. Only entries with a real keyword label
+  # (`keyword_pair?/1`) qualify, so a plain 2-tuple list element keeps its ordinary
+  # element-swap behaviour and is never treated as a key/value pair. `rebuild` is
+  # `list_shape/1`'s, so a keyword cons tail (rare) is preserved.
+  defp keyword_value_swaps(elements, rebuild),
+    do: pair_value_swaps(elements, &keyword_pair?/1, rebuild)
+
+  # Swap the values of two `{key, value}` pairs (distinct-named variables/pins) among
+  # `pairs`, keeping keys fixed; `eligible?` selects which pairs may participate and
+  # `rebuild` reassembles the container from the updated pair list. Shared by the map and
+  # keyword-list value swaps.
+  defp pair_value_swaps(pairs, eligible?, rebuild) do
     vars =
       for {pair, i} <- Enum.with_index(pairs),
-          match?({_k, _v}, pair),
+          eligible?.(pair),
           name = swap_name(elem(pair, 1)),
           do: {i, name}
 
     for {i, ni} <- vars, {j, nj} <- vars, i < j, ni != nj do
       {ki, vi} = Enum.at(pairs, i)
       {kj, vj} = Enum.at(pairs, j)
-      {:%{}, meta, pairs |> List.replace_at(i, {ki, vj}) |> List.replace_at(j, {kj, vi})}
+      rebuild.(pairs |> List.replace_at(i, {ki, vj}) |> List.replace_at(j, {kj, vi}))
     end
   end
+
+  # A keyword-list entry: a 2-tuple whose key is an inline keyword label (`a:`), carrying
+  # Sourceror's `format: :keyword` marker. Distinguishes `[a: x]` from a plain tuple
+  # element `[{x, y}]` (which Sourceror wraps in a `:__block__`, not a bare 2-tuple).
+  defp keyword_pair?({key, _value}), do: label_key?(key)
+  defp keyword_pair?(_), do: false
+
+  defp label_key?({:__block__, meta, [atom]}) when is_atom(atom) and is_list(meta),
+    do: Keyword.get(meta, :format) == :keyword
+
+  defp label_key?(_), do: false
 
   # Swap the *values* of two bitstring segments whose values are distinct-named
   # variables, leaving each type/size spec in place. A value read as a size elsewhere in
