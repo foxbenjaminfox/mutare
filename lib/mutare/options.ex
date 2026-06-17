@@ -23,7 +23,7 @@ defmodule Mutare.Options do
       only validate the shape of `:sandbox`.
   """
 
-  alias Mutare.{Project, Result}
+  alias Mutare.{Project, Result, Site}
 
   @type t :: %__MODULE__{
           paths: [String.t()],
@@ -42,6 +42,8 @@ defmodule Mutare.Options do
           min_score: number() | nil,
           reporters: [{:human | :json | :html | :sarif, String.t() | nil}],
           reporter: (Result.t() -> any()) | nil,
+          on_phase: (atom() | tuple() -> any()) | nil,
+          on_start: (Site.t() -> any()) | nil,
           project: Project.t() | nil
         }
 
@@ -61,11 +63,13 @@ defmodule Mutare.Options do
             min_score: nil,
             reporters: [{:human, nil}],
             reporter: nil,
+            on_phase: nil,
+            on_start: nil,
             project: nil
 
   @keys ~w(paths exclude mutators only_files test_selection workers timeout
            timeout_multiplier baseline_runs harness_retries max_harness_error_rate
-           sandbox keep_sandbox min_score reporters reporter project)a
+           sandbox keep_sandbox min_score reporters reporter on_phase on_start project)a
 
   # Output formats a reporter entry may name. `:human` is the console report
   # (`Mutare.Report`); the rest are the machine renderers under `Mutare.Report.*`.
@@ -104,6 +108,8 @@ defmodule Mutare.Options do
       min_score: validate_min_score!(Keyword.get(opts, :min_score)),
       reporters: validate_reporters!(Keyword.get(opts, :reporters, [{:human, nil}])),
       reporter: validate_reporter!(Keyword.get(opts, :reporter)),
+      on_phase: validate_callback!(:on_phase, Keyword.get(opts, :on_phase)),
+      on_start: validate_callback!(:on_start, Keyword.get(opts, :on_start)),
       project: validate_project!(Keyword.get(opts, :project))
     }
   end
@@ -271,6 +277,16 @@ defmodule Mutare.Options do
 
   defp validate_reporter!(other) do
     raise ArgumentError, ":reporter must be a 1-arity function, got: #{inspect(other)}"
+  end
+
+  # `:on_phase` (a phase term) and `:on_start` (a `Mutare.Site`) are the live
+  # progress hooks the runner fires alongside `:reporter` — both 1-arity, both
+  # optional (`nil` = no-op), validated identically.
+  defp validate_callback!(_key, nil), do: nil
+  defp validate_callback!(_key, fun) when is_function(fun, 1), do: fun
+
+  defp validate_callback!(key, other) do
+    raise ArgumentError, "#{inspect(key)} must be a 1-arity function, got: #{inspect(other)}"
   end
 
   # Derived state, not raw user config: the entry points (`Mutare.Runner.run/2`,

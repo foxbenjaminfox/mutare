@@ -242,7 +242,21 @@ contract between them is the whole game.
 - **`Mutare.Report`** — diffs each *surviving* mutant against the **original** source via
   `Sourceror.patch_string` (clean one-line diffs), and computes the score:
   `killed / (total − no_coverage − ignored − poisoned − harness_error)`. This is the default
-  *human* reporter.
+  *human* reporter, rendered **after** the run completes.
+- **`Mutare.Report.Live`** — the **live** human progress (a `GenServer`), the interactive
+  counterpart to `Mutare.Report`'s after-the-fact diffs. cargo-mutants-style: it shows what the
+  runner is *currently doing* (the phase, then the in-flight mutant), leaves a permanent line
+  behind for each survivor / timeout / harness-error as it happens, and — on a tty — paints a
+  live status block (spinner + activity + a counter with an ETA) at the bottom, driven by an
+  internal tick timer so it animates while the foreground blocks in `Task.async_stream`. All
+  output goes to **stderr** (so a machine report on stdout is never corrupted); animation is
+  gated on `detect_ansi/0` (a real stderr tty + `IO.ANSI.enabled?`), degrading to plain
+  scrollback (phase notes + leave-behind lines, no cursor codes) for pipes/CI. The Mix task owns
+  it: it starts the server, wires the run's three live hooks to it (`:reporter` → `report/2`,
+  `:on_phase` → `phase/2`, `:on_start` → `started/2`), and calls `finish/1` to tear the block
+  down **before** the final `Mutare.Report` prints. Because the rendering is pure
+  (`status_block/2`, `leave_behind/1`, `humanize_secs/1`, `eta_secs/3`, `truncate/2`) and the
+  state a plain map, the visible output is unit-tested without a terminal or a clock.
 - **`Mutare.Report.{Json,Html,Sarif}`** — the **machine** reporters, pure renderers paralleling
   `Mutare.Report` (`(results, sources, opts) → String.t()`; all IO stays in the Mix task). **Json**
   emits the standardized *mutation-testing-elements / Stryker* report schema (every mutant, keyed
@@ -339,7 +353,11 @@ contract between them is the whole game.
   the **collision rule** — `--format` *with* `--output` keeps the human report on the console and
   writes the machine format to the file; `--format` *alone* takes stdout and drops the human
   report. Note `:reporters` (output formats; `Options` validates the format set) is distinct from
-  `:reporter` (the live per-mutant progress callback the task sets).
+  the three **live-progress hooks** the task wires to `Mutare.Report.Live`: `:reporter` (per
+  completed `Result`), `:on_phase` (the run's phase as it advances `:compiling` → `:baseline` →
+  `:coverage_probe` → `{:running, total}`), and `:on_start` (each `Site` as its run begins). All
+  three are 1-arity, optional (`nil` = no-op), and validated in `Options`; `Mutare.Runner` fires
+  them but knows nothing of the display.
 
 ### Cross-cutting things that bite
 

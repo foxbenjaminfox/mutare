@@ -109,12 +109,23 @@ Optional `.mutare.exs`:
 ]
 ```
 
+### Live progress
+
+While a run is in flight, Mutare shows live progress on **stderr**: the current
+phase (compiling once, baseline, coverage probe), then a permanent line for each
+surviving mutant the moment it's found (plus timeouts and harness errors), and —
+in a terminal — a status block at the bottom with a spinner, the mutant currently
+under test, and a counter with an ETA. Piped or on CI it degrades to plain
+scrollback (no cursor tricks). The detailed survivor diffs and the score still
+print to **stdout** at the end, so `mix mutare > report.txt` captures the report
+while you watch progress on the terminal.
+
 ### Machine-readable output
 
-By default Mutare prints the human report to the console. `--format` selects a
-machine format, and `--output PATH` writes it to a file (otherwise it goes to
-stdout). To emit more than one format in a single run, list `reporters:` in
-`.mutare.exs` (above).
+By default Mutare prints the human report to the console (stdout). `--format`
+selects a machine format, and `--output PATH` writes it to a file (otherwise it
+goes to stdout). To emit more than one format in a single run, list `reporters:`
+in `.mutare.exs` (above).
 
 - **`json`** — the [mutation-testing-elements](https://github.com/stryker-mutator/mutation-testing-elements)
   / Stryker **report schema**. A standardized, versioned document covering every

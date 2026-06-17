@@ -61,7 +61,8 @@ defmodule Mix.Tasks.Mutare do
   """
   use Mix.Task
 
-  alias Mutare.{Config, Options, Project, Report, Result, Runner, Schema}
+  alias Mutare.{Config, Options, Project, Report, Runner, Schema}
+  alias Mutare.Report.Live
 
   @switches [
     only: :string,
@@ -91,9 +92,28 @@ defmodule Mix.Tasks.Mutare do
     schema = Schema.build(root, options)
     announce(schema, project)
 
-    case Runner.run_with_schema(schema, root, %{options | reporter: &progress/1}) do
-      {:ok, run} -> report(run, options)
-      {:error, reason, detail} -> Mix.raise(format_error(reason, detail))
+    {:ok, live} = Live.start_link()
+
+    options = %{
+      options
+      | reporter: &Live.report(live, &1),
+        on_phase: &Live.phase(live, &1),
+        on_start: &Live.started(live, &1)
+    }
+
+    try do
+      result = Runner.run_with_schema(schema, root, options)
+      # Tear the live status block down before anything else prints, so the final
+      # report / error lands on a clean terminal (the block lives on stderr).
+      Live.finish(live)
+
+      case result do
+        {:ok, run} -> report(run, options)
+        {:error, reason, detail} -> Mix.raise(format_error(reason, detail))
+      end
+    after
+      # Backstop for an unexpected raise mid-run; `finish/1` is idempotent.
+      Live.finish(live)
     end
   end
 
@@ -150,7 +170,9 @@ defmodule Mix.Tasks.Mutare do
     for {file, reason} <- schema.skipped,
         do: Mix.shell().info("  skipped #{file}: #{inspect(reason)}")
 
-    Mix.shell().info("compiling metamutant once, baseline first…\n")
+    # The phase progress (compiling, baseline, coverage probe, then the per-mutant
+    # loop) is shown live by `Mutare.Report.Live`, so we don't pre-announce it here.
+    Mix.shell().info("")
   end
 
   defp scope_label(%Project{umbrella?: true, mutate_scope: scope}) do
@@ -160,16 +182,7 @@ defmodule Mix.Tasks.Mutare do
   defp scope_label(%Project{copy_root: "."}), do: ""
   defp scope_label(%Project{copy_root: root}), do: " in #{root}"
 
-  defp progress(%Result{status: :killed}), do: IO.write(".")
-  defp progress(%Result{status: :timeout}), do: IO.write("T")
-  defp progress(%Result{status: :survived}), do: IO.write("S")
-  defp progress(%Result{status: :no_coverage}), do: IO.write("-")
-  defp progress(%Result{status: :ignored}), do: IO.write("i")
-  defp progress(%Result{status: :poisoned}), do: IO.write("x")
-  defp progress(%Result{status: :harness_error}), do: IO.write("E")
-
   defp report(run, %Options{} = options) do
-    Mix.shell().info("\n")
     Enum.each(options.reporters, fn {format, path} -> emit(format, path, run, options) end)
     gate(run.results, options.min_score)
   end

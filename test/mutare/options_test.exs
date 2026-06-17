@@ -317,4 +317,31 @@ defmodule Mutare.OptionsTest do
       assert_raise ArgumentError, fn -> Options.new(reporter: :nope) end
     end
   end
+
+  describe ":on_phase / :on_start" do
+    test "default to nil" do
+      options = Options.new([])
+      assert options.on_phase == nil
+      assert options.on_start == nil
+    end
+
+    test "accept nil or a 1-arity function" do
+      phase = fn _phase -> :ok end
+      start = fn _site -> :ok end
+      options = Options.new(on_phase: phase, on_start: start)
+      assert options.on_phase == phase
+      assert options.on_start == start
+      assert Options.new(on_phase: nil, on_start: nil).on_phase == nil
+    end
+
+    test "reject a non-function or a wrong arity" do
+      assert_raise ArgumentError, ~r/:on_phase must be a 1-arity function/, fn ->
+        Options.new(on_phase: fn -> :ok end)
+      end
+
+      assert_raise ArgumentError, ~r/:on_start must be a 1-arity function/, fn ->
+        Options.new(on_start: :nope)
+      end
+    end
+  end
 end

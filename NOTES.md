@@ -1196,6 +1196,47 @@ its banner. But that's easy to miss, and it's exactly how the two
 compile-poisoning bugs below hid. Consider a `--strict` mode that fails on any
 skip, and/or making poisoning structural exclusions (below) the norm.
 
+### Live human progress (`Mutare.Report.Live`) `[done]`
+The human run used to print a test-runner stream of symbols (`.`/`S`/`T`/…) via a
+bare `IO.write` in the Mix task. It's now a cargo-mutants-style live display: phase
+notes as the run advances, a permanent line left behind for each survivor (the
+product) plus timeouts and harness errors (problems worth surfacing live), and — on
+a tty — a bottom status block (spinner + the in-flight mutant + a counter with an
+ETA) that animates via an internal tick timer. Design decisions worth remembering:
+
+- **It's a `GenServer`, because the hooks fire concurrently.** `:reporter`/`:on_start`
+  are called from many `Task.async_stream` workers at once, so every terminal write
+  must funnel through one owner. Reports/starts/phases are `cast`s (workers never
+  block on rendering); `finish/1` is a `call`, and since all casts were *sent* (mailbox
+  delivery complete) before the stream returned, FIFO guarantees `finish` sees the
+  final state and clears the block before the after-the-fact `Mutare.Report` prints.
+- **stderr, always; animation, conditionally.** Output goes to stderr so a machine
+  report piped to stdout (`--format json > f`) is never corrupted. Animation is gated
+  on `detect_ansi/0` = a real **stderr** tty (`:io.columns/1` succeeds) *and*
+  `IO.ANSI.enabled?`. We key on stderr (not stdout) deliberately; the cost is that
+  redirecting stdout (which flips `IO.ANSI.enabled?` off at boot) drops us to plain
+  mode even if stderr is a tty — acceptable (safe, just less fancy). Plain mode =
+  phase notes + leave-behind lines as ordinary scrollback, no cursor codes, no spinner
+  — exactly what CI logs want.
+- **Three hooks on the runner, which knows nothing of the display.** Added `:on_phase`
+  (`:compiling` → `:baseline` → `:coverage_probe` → `{:running, total}`) and `:on_start`
+  (each `Site`) alongside the existing `:reporter`, all 1-arity/optional/`nil`-default,
+  validated in `Options`. The runner fires them; the Mix task binds them to `Live`.
+  `:on_start` exists only so the activity line shows an *actually in-flight* mutant
+  rather than the last completed one.
+- **Rendering is pure, IO is a thin shell.** `status_block/2`, `leave_behind/1`,
+  `humanize_secs/1`, `eta_secs/3`, `truncate/2` take a plain state map / scalars and
+  return strings (clock passed in as `now_ms`), so the visible output is unit-tested
+  with no terminal and no time. The server only wraps them in cursor codes
+  (`\r\e[2K` + `\e[1A\e[2K` per extra line to erase, then redraw) and a
+  `System.monotonic_time` read.
+- **Known caveat:** `Mutare.Runner.warn_harness_error/2` logs to stderr too, so a
+  harness-error warning mid-run can interleave with the status block and nudge the
+  cursor accounting for one frame (self-heals on the next redraw). Rare path; left as-is.
+- **Deferred touches:** a per-worker multi-line in-flight view (chose aggregate +
+  one activity line), and a permanent "baseline green in Ns" timing note (would need
+  threading `baseline_ms` through `:on_phase`).
+
 ## Dogfooding findings (M1)
 
 Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:

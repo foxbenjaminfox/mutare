@@ -97,8 +97,11 @@ defmodule Mutare.Runner do
   Run a pre-built schema (lets a caller report the mutant count before launching).
 
   `opts` is a `Mutare.Options` (or a keyword list resolved into one). Beyond the
-  schema/sandbox fields, it uses `:reporter` — a 1-arity function called with each
-  `Mutare.Result` as it completes, for live progress — and `:test_selection`,
+  schema/sandbox fields, it uses three live-progress hooks — `:reporter` (a
+  1-arity function called with each `Mutare.Result` as it completes), `:on_phase`
+  (called with the phase as the run moves through `:compiling` → `:baseline` →
+  `:coverage_probe` → `{:running, total}`), and `:on_start` (called with each
+  `Mutare.Site` just before its run begins) — and `:test_selection`,
   `:workers`, `:timeout`, `:timeout_multiplier`, `:baseline_runs` (re-run the
   baseline to catch a flaky suite), `:harness_retries` (re-run a harness-errored
   mutant before recording it), and `:max_harness_error_rate` (abort if too many
@@ -114,13 +117,18 @@ defmodule Mutare.Runner do
       {:error, :nothing_to_mutate, "no mutation sites found under #{inspect(options.paths)}"}
     else
       reporter = options.reporter || fn _result -> :ok end
+      on_phase = options.on_phase || fn _phase -> :ok end
+      on_start = options.on_start || fn _site -> :ok end
       mode = options.test_selection
+
+      on_phase.(:compiling)
 
       # Prepare + compile, recovering from compile-poisoning by dropping the
       # offending mutants and rebuilding. `schema` here may differ from the input
       # (poisoners flagged), which is what the run reports against.
       with {:ok, schema, sandbox} <- prepare_compiling(schema, root, options),
-           {:ok, baseline_ms} <- Baseline.run(sandbox, options.baseline_runs) do
+           {:ok, baseline_ms} <- run_baseline(on_phase, sandbox, options.baseline_runs) do
+        on_phase.(:coverage_probe)
         selection = CoverageProbe.run(sandbox, schema, mode)
         # Per owning app, the test dirs a whole-suite run may be narrowed to (the
         # app + its dependents). Empty for a single project — see `broaden/3`.
@@ -132,10 +140,13 @@ defmodule Mutare.Runner do
 
         retries = options.harness_retries
 
+        on_phase.({:running, length(schema.sites)})
+
         results =
           schema.sites
           |> Task.async_stream(
             fn site ->
+              on_start.(site)
               result = classify(sandbox, site, selection, cap, retries, scopes)
               reporter.(result)
               result
@@ -154,6 +165,14 @@ defmodule Mutare.Runner do
         end
       end
     end
+  end
+
+  # Announce the baseline phase, then run it. A thin wrapper so the `:baseline`
+  # notification fires immediately before `Baseline.run/2` inside the `with`
+  # chain (where a bare side effect between `<-` clauses can't live).
+  defp run_baseline(on_phase, sandbox, baseline_runs) do
+    on_phase.(:baseline)
+    Baseline.run(sandbox, baseline_runs)
   end
 
   # Resolve a `Mutare.Project` from the target if the caller didn't supply one (the
