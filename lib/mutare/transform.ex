@@ -343,15 +343,15 @@ defmodule Mutare.Transform do
   end
 
   defp transform_statement(node, ctx) do
-    cond do
-      Analyze.module_scaffold_statement?(node) ->
-        node |> Analyze.scaffold(ctx.mutators) |> emit(ctx)
-
-      Analyze.module_macro_block_statement?(node) ->
-        node |> Analyze.analyze_module_macro_block(ctx.mutators) |> emit(ctx)
-
-      true ->
-        node |> Analyze.scaffold(ctx.mutators) |> emit(ctx)
+    # Scaffold is the default. Only an *unknown* macro call carrying a `do` block
+    # takes the DSL route — and a known scaffold form (`if`/`for`/`case`/… with a
+    # `do … end`) *also* looks like a macro-with-block, so it must be excluded here
+    # or it would wrongly route to `analyze_module_macro_block` instead of scaffolding.
+    if Analyze.module_macro_block_statement?(node) and
+         not Analyze.module_scaffold_statement?(node) do
+      node |> Analyze.analyze_module_macro_block(ctx.mutators) |> emit(ctx)
+    else
+      node |> Analyze.scaffold(ctx.mutators) |> emit(ctx)
     end
   end
 
