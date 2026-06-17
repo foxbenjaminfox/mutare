@@ -10,6 +10,7 @@ defmodule Mutare.MutatorsTest do
     BitstringLiteral,
     CharlistLiteral,
     Collection,
+    CollectionArity,
     Conditional,
     DateTimeLiteral,
     FloatLiteral,
@@ -32,8 +33,8 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.all() == Keyword.values(Mutators.registry())
 
       assert Mutators.all() ==
-               [Arithmetic, Relational, Logical, Literal] ++
-                 [Conditional, List, Collection, StringCall, StringLiteral, FloatLiteral] ++
+               [Arithmetic, Relational, Logical, Literal, Conditional, List] ++
+                 [Collection, CollectionArity, StringCall, StringLiteral, FloatLiteral] ++
                  [AtomLiteral, CharlistLiteral, MapLiteral, TupleLiteral, BitstringLiteral] ++
                  [RegexLiteral, DateTimeLiteral, AliasLiteral, ReturnValue] ++
                  [PatternSwap, PatternWildcard]
@@ -43,8 +44,8 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.families() == Keyword.keys(Mutators.registry())
 
       assert Mutators.families() ==
-               [:arithmetic, :relational, :logical, :literal] ++
-                 [:conditional, :list, :collection, :string_call, :string, :float, :atom] ++
+               [:arithmetic, :relational, :logical, :literal, :conditional, :list] ++
+                 [:collection, :collection_arity, :string_call, :string, :float, :atom] ++
                  [:charlist, :map, :tuple, :bitstring, :regex, :datetime, :alias, :return_value] ++
                  [:pattern_swap, :pattern_wildcard]
     end
@@ -331,6 +332,52 @@ defmodule Mutare.MutatorsTest do
     end
   end
 
+  describe "CollectionArity" do
+    test "never fires node-locally (mutate/1 is always :skip)" do
+      assert CollectionArity.mutate(parse("Enum.sort(xs, f)")) == :skip
+      assert CollectionArity.mutate(parse("Enum.reverse(xs)")) == :skip
+    end
+
+    test "sort/sort_by collapse to reverse, dropping refining args (non-piped)" do
+      assert arity("Enum.sort(xs)", false) == ["Enum.reverse(xs)"]
+      assert arity("Enum.sort(xs, :desc)", false) == ["Enum.reverse(xs)"]
+      assert arity("Enum.reverse(xs)", false) == ["Enum.sort(xs)"]
+      assert arity("Enum.sort_by(xs, key)", false) == ["Enum.reverse(xs)"]
+      assert arity("Enum.sort_by(xs, key, sorter)", false) == ["Enum.reverse(xs)"]
+    end
+
+    test "count/count_until drop their predicate (non-piped)" do
+      assert arity("Enum.count(xs, p)", false) == ["Enum.count(xs)"]
+      assert arity("Enum.count_until(xs, fun, lim)", false) == ["Enum.count_until(xs, lim)"]
+    end
+
+    test "piped: effective arity is +1, so the visible-arg-stripping shifts" do
+      # `xs |> Enum.sort(:desc)` reaches us as a 1-arg node, effective arity 2 →
+      # drop the comparator, leaving a 0-arg stage the pipe feeds.
+      assert arity("Enum.sort(:desc)", true) == ["Enum.reverse()"]
+      assert arity("Enum.sort()", true) == ["Enum.reverse()"]
+      assert arity("Enum.count(p)", true) == ["Enum.count()"]
+      assert arity("Enum.count_until(fun, lim)", true) == ["Enum.count_until(lim)"]
+      assert arity("Enum.sort_by(key)", true) == ["Enum.reverse()"]
+    end
+
+    test "reverse/2 is reverse(list, tail) — an unrelated op — never mutated, piped or not" do
+      assert CollectionArity.mutate(parse("Enum.reverse(xs, tail)"), %{piped: false}) == :skip
+      # piped reverse/2: 1 visible arg, effective arity 2 — still recognised and skipped
+      assert CollectionArity.mutate(parse("Enum.reverse(tail)"), %{piped: true}) == :skip
+    end
+
+    test "skips functions with nothing to drop, and other modules" do
+      assert CollectionArity.mutate(parse("Enum.count(xs)"), %{piped: false}) == :skip
+      assert CollectionArity.mutate(parse("Enum.map(xs, f)"), %{piped: false}) == :skip
+      assert CollectionArity.mutate(parse("List.sort(xs, f)"), %{piped: false}) == :skip
+    end
+
+    test "name" do
+      assert CollectionArity.name() == :collection_arity
+    end
+  end
+
   describe "StringCall" do
     test "swaps complementary String calls, keeping arguments" do
       assert render(StringCall.mutate(parse(~s|String.starts_with?(s, p)|))) ==
@@ -601,4 +648,9 @@ defmodule Mutare.MutatorsTest do
 
   defp parse(source), do: Sourceror.parse_string!(source)
   defp render(nodes), do: Enum.map(nodes, &Sourceror.to_string/1)
+
+  # CollectionArity's mutate/2 receives %{piped: piped?}; effective arity =
+  # visible args + (piped? 1 : 0).
+  defp arity(src, piped?),
+    do: render(Mutare.Mutators.CollectionArity.mutate(parse(src), %{piped: piped?}))
 end

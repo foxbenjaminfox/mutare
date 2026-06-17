@@ -486,6 +486,71 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "CollectionArity (pipe-aware, arity-changing Enum mutations)" do
+    test "non-piped: drops the comparator/predicate, and compiles" do
+      assert {"Enum.sort(xs, & &1)", "Enum.reverse(xs)"} in arity_sites("""
+             defmodule A do
+               def f(xs), do: Enum.sort(xs, & &1)
+             end
+             """)
+
+      assert {"Enum.count(xs, p)", "Enum.count(xs)"} in arity_sites("""
+             defmodule A do
+               def f(xs, p), do: Enum.count(xs, p)
+             end
+             """)
+    end
+
+    test "piped sort/2: the comparator is dropped (the fix), and the metamutant compiles" do
+      # The naive node-local version mis-mutated this to Enum.reverse(:desc); the
+      # pipe-aware path sees effective arity 2 and drops the comparator.
+      sites =
+        arity_sites("""
+        defmodule A do
+          def f(xs), do: xs |> Enum.sort(:desc)
+        end
+        """)
+
+      assert {"Enum.sort(:desc)", "Enum.reverse()"} in sites
+    end
+
+    test "piped count_until/3 drops the predicate but keeps the limit, and compiles" do
+      sites =
+        arity_sites("""
+        defmodule A do
+          def f(xs, fun, lim), do: xs |> Enum.count_until(fun, lim)
+        end
+        """)
+
+      assert {"Enum.count_until(fun, lim)", "Enum.count_until(lim)"} in sites
+    end
+
+    test "chained pipes with arity-changing stages compile" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule A do
+            def f(xs, key), do: xs |> Enum.sort_by(key) |> Enum.reverse() |> Enum.join(",")
+          end
+          """,
+          mutators: [Mutare.Mutators.CollectionArity]
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :collection_arity))
+      assert_compiles(meta)
+    end
+
+    test "reverse/2 (reverse(list, tail)) is never mutated, piped or not" do
+      assert [] ==
+               arity_sites("""
+               defmodule A do
+                 def f(xs, t), do: Enum.reverse(xs, t)
+                 def g(xs, t), do: xs |> Enum.reverse(t)
+               end
+               """)
+    end
+  end
+
   describe "StringCall (complementary String call swaps)" do
     test "swaps a String call in place, records the bare swap, and compiles" do
       source = """
@@ -998,6 +1063,16 @@ defmodule Mutare.TransformTest do
   # `Code.string_to_quoted/1` is not enough. The `:mutare_cov` test stand-in and
   # `:persistent_term` make the selector/coverage calls resolvable; stderr (e.g.
   # redefinition notices) is swallowed.
+  # Transform with only CollectionArity, assert the metamutant compiles, and return
+  # the `{original_code, mutated_code}` pairs of its sites (for the pipe-aware tests).
+  defp arity_sites(source) do
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, mutators: [Mutare.Mutators.CollectionArity])
+
+    assert_compiles(meta)
+    for s <- sites, s.mutator == :collection_arity, do: {s.original_code, s.mutated_code}
+  end
+
   defp assert_compiles(meta) do
     ExUnit.CaptureIO.capture_io(:stderr, fn ->
       assert [_ | _] = Code.compile_string(meta)

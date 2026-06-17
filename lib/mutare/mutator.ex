@@ -44,6 +44,14 @@ defmodule Mutare.Mutator do
       [mutators: [:arithmetic, :relational, MyApp.Mutators.Boolean]]
   """
 
+  @typedoc """
+  Context threaded to the optional `mutate/2` at each runtime call site. Currently
+  carries only `:piped` — whether the node is the right-hand side of a `|>` (so its
+  effective first argument is the pipe's left side, *not* present in the node's own
+  args). A mutator computes effective arity as `length(args) + if(piped, do: 1, else: 0)`.
+  """
+  @type context :: %{piped: boolean()}
+
   @doc """
   Return `:skip` when the mutator does not apply to `node`, otherwise a list of
   mutated nodes (one per mutant).
@@ -52,6 +60,22 @@ defmodule Mutare.Mutator do
 
   @doc "Short family name, shown in reports (e.g. `:arithmetic`)."
   @callback name() :: atom()
+
+  @doc """
+  Optional **pipe-aware** variant of `mutate/1`, for mutations whose legality
+  depends on a call's *effective arity* — which is ambiguous from the node alone,
+  because Elixir expands `|>` only after this transform runs, so a pipe stage's
+  node carries one fewer argument than the source reads.
+
+  `Mutare.Transform` invokes it at every runtime call position with a `context`
+  (`%{piped: boolean}`); a mutator uses `context.piped` to recover the effective
+  arity. Used for arity-*changing* call mutations (dropping a refining argument,
+  collapsing to a coarser call) that `mutate/1` cannot express safely — see
+  `Mutare.Mutators.CollectionArity`. A mutator that implements this typically
+  returns `:skip` from `mutate/1` (it never fires node-locally). Discovered by
+  `function_exported?(mod, :mutate, 2)`; a mutator without it takes no part.
+  """
+  @callback mutate(Macro.t(), context()) :: :skip | [Macro.t()]
 
   @doc """
   Optional structural hook for mutating a `def`/`defp` clause **head pattern** as a
@@ -70,7 +94,7 @@ defmodule Mutare.Mutator do
   @callback pattern_mutations(head_args :: [Macro.t()], used_outside :: MapSet.t()) ::
               [[Macro.t()]]
 
-  @optional_callbacks pattern_mutations: 2
+  @optional_callbacks pattern_mutations: 2, mutate: 2
 
   @doc "Whether `term` is a module that implements this behaviour."
   @spec implemented_by?(term()) :: boolean()
@@ -91,14 +115,25 @@ defmodule Mutare.Mutator do
   (`Mutare.Transform`) and the lifted-guard planner (`Mutare.Transform.FunctionPlan`)
   call this, so "which mutations does this node admit" has one answer regardless of
   where the node sits — placement is decided afterwards, positionally.
+
+  Each mutator's `mutate/1` is always run; its optional `mutate/2` is *also* run
+  (with `context`) when implemented, so pipe-aware/arity-changing mutators
+  participate at runtime call positions. `context` defaults to a non-piped node;
+  the transform passes `%{piped: true}` for a `|>` right-hand side.
   """
-  @spec mutations(Macro.t(), [module()]) :: [{module(), Macro.t()}]
-  def mutations(node, mutators) do
+  @spec mutations(Macro.t(), [module()], context()) :: [{module(), Macro.t()}]
+  def mutations(node, mutators, context \\ %{piped: false}) do
     Enum.flat_map(mutators, fn mutator ->
-      case mutator.mutate(node) do
-        :skip -> []
-        nodes when is_list(nodes) -> Enum.map(nodes, &{mutator, &1})
-      end
+      tag(mutator, mutator.mutate(node)) ++ contextual(mutator, node, context)
     end)
   end
+
+  defp contextual(mutator, node, context) do
+    if function_exported?(mutator, :mutate, 2),
+      do: tag(mutator, mutator.mutate(node, context)),
+      else: []
+  end
+
+  defp tag(_mutator, :skip), do: []
+  defp tag(mutator, nodes) when is_list(nodes), do: Enum.map(nodes, &{mutator, &1})
 end

@@ -121,7 +121,8 @@ Realization is **positional, not declared** by the mutator: the same `mutate/1` 
 | Literal | integers `n`→`{n±1, 0}`, `true`↔`false` |
 | Conditional | a boolean-valued node → `true` / `false` ("remove conditionals") |
 | List | `++`↔`--`, non-empty list literal → `[]` |
-| Collection | `Enum.filter`↔`reject`, `all?`↔`any?`, `min`↔`max`, … |
+| Collection | `Enum.filter`↔`reject`, `all?`↔`any?`, `min`↔`max`, … (arity-blind renames) |
+| CollectionArity | arity-*changing* `Enum` calls: `sort`/`sort_by`→`reverse` (drop comparator/key), `count/2`→`count/1`, `count_until/3`→`/2`, `reverse/1`↔`sort/1` — **pipe-aware** (via `mutate/2`) |
 | StringCall | `String.starts_with?`↔`ends_with?`, `upcase`↔`downcase`, `trim_leading`↔`trailing`, `first`↔`last`, … |
 | StringLiteral | a string → `""` *and* `"mutare"` (drops the one matching the original) |
 | FloatLiteral | floats `x`→`{x±1.0, 0.0}` |

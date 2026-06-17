@@ -918,7 +918,9 @@ default**: **arithmetic** (now also unary `-x`→`x`), **relational**, **logical
 **collection** (complementary `Enum`/`List` call swaps — `filter`↔`reject`,
 `all?`↔`any?`, `min`↔`max`, `min_by`↔`max_by`, `take`↔`drop`,
 `take_while`↔`drop_while`, `sum`↔`product`, `List.first`↔`last`,
-`List.foldl`↔`foldr`), **string_call** (complementary
+`List.foldl`↔`foldr`), **collection_arity** (arity-*changing* `Enum` calls:
+`sort`/`sort_by`→`reverse`, `count/2`→`count/1`, `count_until/3`→`/2`,
+`reverse/1`↔`sort/1` — pipe-aware via `mutate/2`), **string_call** (complementary
 `String` call swaps — `starts_with?`↔`ends_with?`, `upcase`↔`downcase`,
 `trim_leading`↔`trim_trailing`, `first`↔`last`, …; the `String` sibling of
 `collection`), **string** (a string → `""` *and* the sentinel `"mutare"`,
@@ -931,21 +933,31 @@ place by default; a user narrows via `:mutators`.)
 
 Four non-obvious things settled here:
 
-- **`collection` (and `string_call`) must stay arity-blind — a rename only,
-  never adding/dropping an argument.** It's tempting to add `Enum.sort`↔
-  `Enum.reverse`, but their 2-arg forms diverge (`Enum.reverse/2` is
-  `reverse(list, tail)`, unrelated), so the swap would have to *discriminate on
-  arity*. That can't be done correctly from a node-local `mutate/1`, because
-  Elixir doesn't expand `|>` until after Mutare sees the AST: a pipe stage's call
+- **`collection`/`string_call` stay arity-blind; arity-*changing* call mutations
+  live in `collection_arity`, and need pipe-context.** A rename that keeps the arg
+  list (`filter`↔`reject`) is valid at every arity, piped or not — that's why
+  `collection` is built that way. But an arity-changing mutation (`Enum.sort/2` →
+  `Enum.reverse/1`, dropping the comparator; `count/2`→`count/1`) must know the
+  call's *effective* arity, and that is **ambiguous from the node alone in a
+  pipe**: Elixir doesn't expand `|>` until after Mutare sees the AST, so a stage's
   node carries one fewer argument than the source reads (the piped value is the
-  `|>` LHS). So `xs |> Enum.sort(:desc)` reaches the mutator as `Enum.sort(:desc)`
-  — a 1-arg node indistinguishable from a non-piped `Enum.sort(list)`. Empirically
-  an arity-aware version mis-mutated the dominant pipe idiom three ways (a piped
-  `sort/1` silently skipped, a piped `sort/2` rewritten to `reverse(xs, :desc)`
-  garbage, a piped `reverse/2` wrongly swapped to `sort/2`). A pure rename, by
-  contrast, is valid at every arity, piped or not — which is exactly why the
-  family is built that way. Threading pipe-context to mutators would lift the
-  restriction, but it's a bigger change than the one pair is worth; deferred.
+  `|>` LHS). `xs |> Enum.sort(:desc)` reaches a mutator as a 1-arg `Enum.sort(:desc)`,
+  indistinguishable from a non-piped `Enum.sort(list)`. A first, node-local attempt
+  mis-mutated the dominant pipe idiom three ways (a piped `sort/1` silently skipped,
+  a piped `sort/2` rewritten to `reverse(xs, :desc)` garbage, a piped `reverse/2`
+  wrongly swapped to `sort/2`). The fix is to **thread pipe-context to the mutator**:
+  the `Mutare.Mutator` behaviour gained an optional `mutate/2` callback that
+  `Transform` invokes at every runtime call position with `%{piped: boolean}` (a
+  dedicated `:|>` analyze clause routes the RHS through `analyze_pipe_stage/2` with
+  `piped: true`; everywhere else defaults to `false`). The mutator computes
+  `effective_arity = length(args) + if(piped, do: 1, else: 0)` and emits a normal
+  `Candidate.InPlace` — so the existing selector + `hoist_pipe` machinery delivers
+  it unchanged, and the diff stays honest (`xs |> Enum.sort(:desc)` → `xs |>
+  Enum.reverse()`, no shim). With effective arity in hand it even *correctly skips*
+  `Enum.reverse/2` in a pipe (the case the naive version botched). The earlier
+  alternative — a runtime shim module (`reverse/2` ignoring its 2nd arg) — was
+  rejected: it needs a build-critical injected module and forces the diff to diverge
+  from what runs. `collection_arity` is on by default.
 - **Literal mutators must emit clean metadata.** Sourceror parses a literal as
   `{:__block__, meta, [value]}` and renders it back from a `:token` string in
   `meta`. Reusing the original meta would render the *original* text (`token:

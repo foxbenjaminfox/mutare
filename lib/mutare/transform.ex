@@ -782,6 +782,17 @@ defmodule Mutare.Transform do
     {:\\, meta, [analyze(var, :pattern, mutators), analyze(default, :runtime, mutators)]}
   end
 
+  # `|>` pipe: the right side is a call whose *effective* first argument is the piped
+  # left side — which is the `|>` node's LHS, **not** present in the call's own args.
+  # So a pipe stage carries one fewer argument than the source reads, which makes a
+  # node-local mutator misjudge its arity. Route the RHS through `analyze_pipe_stage/2`
+  # so an arity-changing mutator (`CollectionArity`) is offered the node *as piped*
+  # and sees the true arity; the LHS is an ordinary runtime expression. (Arity-blind
+  # mutators are unaffected — they ignore the flag.)
+  defp analyze({:|>, meta, [lhs, rhs]}, :runtime, mutators) do
+    {:|>, meta, [analyze(lhs, :runtime, mutators), analyze_pipe_stage(rhs, mutators)]}
+  end
+
   # a generic runtime node: build the candidate from the raw node (so `original`
   # keeps un-annotated children), then descend into the children. A sigil is offered
   # as a whole (so the sigil mutators — Regex/Charlist/DateTime — match it), then
@@ -819,6 +830,25 @@ defmodule Mutare.Transform do
   # descend without mutating so boundary forms (`\\`, `<<>>`) still fire on
   # children, but attach no candidate here.
   defp analyze(node, context, mutators), do: recurse(node, context, mutators)
+
+  # The right side of a `|>` (see the `:|>` clause of `analyze/3`): offer it to
+  # mutators *as piped* (so an arity-changing mutator sees the effective arity =
+  # visible args + 1), then descend its arguments as ordinary runtime. Mirrors the
+  # generic runtime clause (a pipe stage is never a sigil). The resulting candidate
+  # is a normal `Candidate.InPlace`, so emission wraps it in a selector and
+  # `hoist_pipe/1` lifts the pipe in — a mutated 0-arg `Enum.reverse()` stage becomes
+  # `lhs |> Enum.reverse()`. A non-call RHS (rare) is analyzed normally.
+  defp analyze_pipe_stage({_form, _meta, args} = node, mutators) when is_list(args) do
+    node =
+      case Mutator.mutations(node, mutators, %{piped: true}) do
+        [] -> node
+        muts -> put_candidates(node, build_candidates(node, muts))
+      end
+
+    recurse(node, :runtime, mutators)
+  end
+
+  defp analyze_pipe_stage(other, mutators), do: analyze(other, :runtime, mutators)
 
   # Generic structural descent over every Sourceror node shape, re-analyzing the
   # children in the same context.

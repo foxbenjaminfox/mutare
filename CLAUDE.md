@@ -96,6 +96,12 @@ contract between them is the whole game.
     attach a `Candidate.CasePattern` to the whole construct node (the mutant wraps it in a selector —
     see the families below; `attach_clause_pattern_candidates/4` is the shared core, parameterized by
     the construct's clause list + a rebuild closure).
+    A dedicated **`:|>` clause** routes a pipe's RHS through `analyze_pipe_stage/2`, which offers the
+    stage to mutators with `%{piped: true}` (everywhere else defaults to `%{piped: false}`): a pipe
+    stage's node carries one fewer arg than the source reads (the piped value is the `|>` LHS, not in
+    the call), so an arity-changing mutator (CollectionArity, via the optional `mutate/2` callback)
+    needs the flag to recover the *effective* arity. The mutated stage is a plain `Candidate.InPlace`,
+    so the existing selector + `hoist_pipe` path delivers it unchanged.
     Orthogonally, a keyword/block **key** is never offered to a mutator: the 2-tuple pair clause
     (`label_key?/1`) skips inline keys (`format: :keyword`) and `do:`/`else:`/`rescue:`/`catch:`/
     `after:` block keys (`@block_keys`), so an atom-matching mutator can't splice a selector into a
@@ -250,7 +256,11 @@ contract between them is the whole game.
   `name/0`) and the built-in families, **all on by default**: Arithmetic (binary swaps +
   unary-minus removal), Relational, Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip), Literal
   (integers `n`→`{n±1, 0}`, `true`↔`false`), Conditional (a boolean-valued node → `true`/`false`),
-  List (`++`↔`--`, non-empty list literal → `[]`), Collection (`Enum`/`List` predicate swaps),
+  List (`++`↔`--`, non-empty list literal → `[]`), Collection (`Enum`/`List` predicate swaps,
+  **arity-blind** — a rename keeping the arg list, valid at any arity/pipe position),
+  CollectionArity (the arity-*changing* sibling — `Enum.sort`/`sort_by`→`reverse` dropping the
+  comparator/key, `count/2`→`count/1`, `count_until/3`→`/2`, `reverse/1`↔`sort/1`; **pipe-aware**
+  via the optional `mutate/2` callback, since a stage's effective arity is ambiguous in a pipe),
   StringCall (complementary `String` call swaps — `starts_with?`↔`ends_with?`, `upcase`↔`downcase`,
   `trim_leading`↔`trim_trailing`, `replace_prefix`↔`replace_suffix`, `pad_leading`↔`pad_trailing`,
   `first`↔`last`; the `String` sibling of Collection, recognising only unaliased `String.` calls),
@@ -364,6 +374,13 @@ swaps, wildcards), `mutate/1` is `:skip` and you instead implement the optional 
 `Mutare.Transform.FunctionPlan` discovers it by export and delivers each by lifting. You must
 return only pattern-legal, compile-safe arg lists (`PatternSwap`/`PatternWildcard` are the
 built-in examples). `ReturnValue` is the analogous structural-but-in-place case (`replacements/1`).
+
+For an *arity-changing call* mutator (dropping a refining argument, collapsing to a coarser call),
+`mutate/1` is `:skip` and you implement the optional callback `mutate(node, %{piped: boolean})`
+instead — `Transform` invokes it at each runtime call position with whether the node is a `|>` RHS,
+so you can compute the *effective* arity (`length(args) + if(piped, do: 1, else: 0)`). You must
+only ever *remove* args or rename to a function that exists at the lower arity (stay compile-safe);
+`CollectionArity` is the built-in example.
 
 ## Result statuses
 
