@@ -551,6 +551,73 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "ModeSwap (pipe-aware mode/unit atom swaps)" do
+    test "swaps the truncate precision in place, records the bare swap, and compiles" do
+      sites =
+        mode_sites("""
+        defmodule M do
+          def at(dt), do: DateTime.truncate(dt, :second)
+        end
+        """)
+
+      assert {"DateTime.truncate(dt, :second)", "DateTime.truncate(dt, :millisecond)"} in sites
+    end
+
+    test "piped truncate: the precision is the lone visible arg, and compiles" do
+      # The naive node-local view would misread the unit's position; the pipe-aware
+      # path sees effective arity 2 and swaps the visible arg 0.
+      sites =
+        mode_sites("""
+        defmodule M do
+          def at(dt), do: dt |> DateTime.truncate(:second)
+        end
+        """)
+
+      assert {"DateTime.truncate(:second)", "DateTime.truncate(:millisecond)"} in sites
+    end
+
+    test "calendar unit and Unicode case mode mutate, and compile together" do
+      sites =
+        mode_sites("""
+        defmodule M do
+          def later(dt, n), do: DateTime.add(dt, n, :minute)
+          def shout(s), do: String.upcase(s, :default)
+        end
+        """)
+
+      assert {"DateTime.add(dt, n, :minute)", "DateTime.add(dt, n, :second)"} in sites
+      assert {"DateTime.add(dt, n, :minute)", "DateTime.add(dt, n, :hour)"} in sites
+      assert {"String.upcase(s, :default)", "String.upcase(s, :ascii)"} in sites
+    end
+
+    test "ModeSwap owns its mode atom, so AtomLiteral defers there but fires elsewhere" do
+      # Both families active. `:second` is a ModeSwap-owned precision; `:ok` is a plain
+      # value atom; `:weird` is an invalid precision ModeSwap can't swap.
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def at(dt), do: {DateTime.truncate(dt, :second), :ok}
+            def bad(dt), do: DateTime.truncate(dt, :weird)
+          end
+          """,
+          mutators: [Mutare.Mutators.ModeSwap, Mutare.Mutators.AtomLiteral]
+        )
+
+      by = fn mutator -> for s <- sites, s.mutator == mutator, do: s.original_code end
+
+      # ModeSwap swapped the owned precision (its site records the whole call);
+      # AtomLiteral was *not* offered the :second leaf.
+      assert "DateTime.truncate(dt, :second)" in by.(:mode_swap)
+      refute ":second" in by.(:atom)
+
+      # AtomLiteral still fires on the unowned atoms — a plain value and an atom
+      # ModeSwap produced no swap for (claim-iff-produce).
+      assert ":ok" in by.(:atom)
+      assert ":weird" in by.(:atom)
+    end
+  end
+
   describe "StringCall (complementary String call swaps)" do
     test "swaps a String call in place, records the bare swap, and compiles" do
       source = """
@@ -1291,6 +1358,16 @@ defmodule Mutare.TransformTest do
 
     assert_compiles(meta)
     for s <- sites, s.mutator == :collection_arity, do: {s.original_code, s.mutated_code}
+  end
+
+  # Transform with only ModeSwap, assert the metamutant compiles, and return the
+  # `{original_code, mutated_code}` pairs of its sites.
+  defp mode_sites(source) do
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, mutators: [Mutare.Mutators.ModeSwap])
+
+    assert_compiles(meta)
+    for s <- sites, s.mutator == :mode_swap, do: {s.original_code, s.mutated_code}
   end
 
   defp assert_compiles(meta) do

@@ -21,6 +21,7 @@ defmodule Mutare.MutatorsTest do
     Logical,
     MapKeyword,
     MapLiteral,
+    ModeSwap,
     PatternSwap,
     PatternWildcard,
     Relational,
@@ -38,7 +39,7 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.all() ==
                [Arithmetic, Relational, Logical, Literal, Conditional, List] ++
                  [Collection, CollectionArity, StringCall, MapKeyword, CallRemoval, DefaultDrop] ++
-                 [StringLiteral, FloatLiteral, AtomLiteral, CharlistLiteral, MapLiteral] ++
+                 [ModeSwap, StringLiteral, FloatLiteral, AtomLiteral, CharlistLiteral, MapLiteral] ++
                  [TupleLiteral, BitstringLiteral, RegexLiteral, DateTimeLiteral, AliasLiteral] ++
                  [ReturnValue, PatternSwap, PatternWildcard]
     end
@@ -49,8 +50,9 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.families() ==
                [:arithmetic, :relational, :logical, :literal, :conditional, :list] ++
                  [:collection, :collection_arity, :string_call, :map_keyword, :call_removal] ++
-                 [:default_drop, :string, :float, :atom, :charlist, :map, :tuple, :bitstring] ++
-                 [:regex, :datetime, :alias, :return_value, :pattern_swap, :pattern_wildcard]
+                 [:default_drop, :mode_swap, :string, :float, :atom, :charlist, :map] ++
+                 [:tuple, :bitstring, :regex, :datetime, :alias] ++
+                 [:return_value, :pattern_swap, :pattern_wildcard]
     end
 
     test "resolve/1 maps family atoms to modules, preserving order" do
@@ -553,6 +555,115 @@ defmodule Mutare.MutatorsTest do
     end
   end
 
+  describe "ModeSwap" do
+    test "never fires node-locally (mutate/1 is always :skip)" do
+      assert ModeSwap.mutate(parse("DateTime.truncate(dt, :second)")) == :skip
+      assert ModeSwap.mutate(parse("String.upcase(s, :ascii)")) == :skip
+    end
+
+    test "truncate precision: swaps to adjacent ladder neighbours only (non-piped)" do
+      # `:second` is an endpoint of {microsecond, millisecond, second} — one neighbour.
+      assert mode("DateTime.truncate(dt, :second)", false) == [
+               "DateTime.truncate(dt, :millisecond)"
+             ]
+
+      # `:millisecond` is interior — both neighbours, finer then coarser.
+      assert mode("Time.truncate(t, :millisecond)", false) ==
+               ["Time.truncate(t, :microsecond)", "Time.truncate(t, :second)"]
+
+      assert mode("NaiveDateTime.truncate(n, :microsecond)", false) ==
+               ["NaiveDateTime.truncate(n, :millisecond)"]
+    end
+
+    test "calendar unit (add/diff, arg 2) walks the full ladder, never escaping it" do
+      assert mode("DateTime.add(dt, n, :minute)", false) ==
+               ["DateTime.add(dt, n, :second)", "DateTime.add(dt, n, :hour)"]
+
+      # `:day` is the coarse endpoint — one neighbour.
+      assert mode("DateTime.diff(a, b, :day)", false) == ["DateTime.diff(a, b, :hour)"]
+      assert mode("Time.add(t, n, :nanosecond)", false) == ["Time.add(t, n, :microsecond)"]
+      # The optional 4th time-zone-database arg leaves the unit at position 2.
+      assert mode("DateTime.add(dt, n, :second, tz)", false) ==
+               ["DateTime.add(dt, n, :millisecond, tz)", "DateTime.add(dt, n, :minute, tz)"]
+    end
+
+    test "System clock units, including :native and convert_time_unit's two positions" do
+      assert mode("System.system_time(:millisecond)", false) ==
+               ["System.system_time(:microsecond)", "System.system_time(:second)"]
+
+      # :native isn't on the magnitude ladder — mapped to a concrete unit.
+      assert mode("System.monotonic_time(:native)", false) == ["System.monotonic_time(:second)"]
+
+      # Both unit arguments are swapped, each independently.
+      assert mode("System.convert_time_unit(t, :second, :millisecond)", false) ==
+               [
+                 "System.convert_time_unit(t, :millisecond, :millisecond)",
+                 "System.convert_time_unit(t, :second, :microsecond)",
+                 "System.convert_time_unit(t, :second, :second)"
+               ]
+    end
+
+    test "Unicode case mode and normalization form swap to a behavioural sibling" do
+      assert mode("String.upcase(s, :default)", false) == ["String.upcase(s, :ascii)"]
+      assert mode("String.downcase(s, :ascii)", false) == ["String.downcase(s, :default)"]
+      # The exotic modes fall back to the common contrast.
+      assert mode("String.capitalize(s, :turkic)", false) == ["String.capitalize(s, :default)"]
+      assert mode("String.normalize(s, :nfc)", false) == ["String.normalize(s, :nfd)"]
+      assert mode("String.normalize(s, :nfkd)", false) == ["String.normalize(s, :nfkc)"]
+    end
+
+    test "piped: effective arity is +1, so the mode atom is the lone visible arg" do
+      # `dt |> DateTime.truncate(:second)` — effective arity 2, the precision at visible 0.
+      assert mode("DateTime.truncate(:second)", true) == ["DateTime.truncate(:millisecond)"]
+
+      assert mode("DateTime.add(n, :minute)", true) ==
+               ["DateTime.add(n, :second)", "DateTime.add(n, :hour)"]
+
+      assert mode("String.upcase(:default)", true) == ["String.upcase(:ascii)"]
+    end
+
+    test "a non-atom or unrecognised atom in the mode position yields nothing" do
+      # A variable unit can't be swapped statically.
+      assert ModeSwap.mutate(parse("DateTime.truncate(dt, unit)"), %{piped: false}) == :skip
+      # An integer parts-per-second unit is not an atom.
+      assert ModeSwap.mutate(parse("System.system_time(1000)"), %{piped: false}) == :skip
+      # An atom outside the function's legal set has no in-set neighbour.
+      assert ModeSwap.mutate(parse("DateTime.truncate(dt, :bogus)"), %{piped: false}) == :skip
+    end
+
+    test "skips unrelated functions, arities, and modules" do
+      # truncate/1 has no precision arg; add/2 has no unit (defaults to :second).
+      assert ModeSwap.mutate(parse("DateTime.truncate(dt)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("DateTime.add(dt, n)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("Other.truncate(dt, :second)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("String.split(s, p)"), %{piped: false}) == :skip
+    end
+
+    test "owned_args claims exactly the visible positions it swaps (so AtomLiteral defers)" do
+      assert ModeSwap.owned_args(parse("DateTime.truncate(dt, :second)"), %{piped: false}) == [1]
+      assert ModeSwap.owned_args(parse("DateTime.add(dt, n, :minute)"), %{piped: false}) == [2]
+      # both unit positions of convert_time_unit, deduplicated despite two swaps each.
+      assert ModeSwap.owned_args(parse("System.convert_time_unit(t, :second, :millisecond)"), %{
+               piped: false
+             }) == [1, 2]
+
+      # piped: the precision is the lone visible arg 0.
+      assert ModeSwap.owned_args(parse("DateTime.truncate(:second)"), %{piped: true}) == [0]
+    end
+
+    test "owned_args claims nothing where it produces no swap (atom stays AtomLiteral's)" do
+      # A variable can't be swapped; an unrecognised atom has no in-set neighbour; and
+      # an unrelated call owns nothing — in all three AtomLiteral remains free to fire.
+      assert ModeSwap.owned_args(parse("DateTime.truncate(dt, unit)"), %{piped: false}) == []
+      assert ModeSwap.owned_args(parse("DateTime.truncate(dt, :bogus)"), %{piped: false}) == []
+      assert ModeSwap.owned_args(parse("String.length(s)"), %{piped: false}) == []
+    end
+
+    test "name" do
+      assert ModeSwap.name() == :mode_swap
+    end
+  end
+
   describe "StringLiteral" do
     test "mutates a non-empty string into both the empty string and the sentinel" do
       assert render(StringLiteral.mutate(parse(~s("hello")))) == [~s(""), ~s("mutare")]
@@ -790,4 +901,7 @@ defmodule Mutare.MutatorsTest do
 
   defp dropd(src, piped?),
     do: render(Mutare.Mutators.DefaultDrop.mutate(parse(src), %{piped: piped?}))
+
+  defp mode(src, piped?),
+    do: render(Mutare.Mutators.ModeSwap.mutate(parse(src), %{piped: piped?}))
 end

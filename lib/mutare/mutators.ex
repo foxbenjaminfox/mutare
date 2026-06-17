@@ -39,6 +39,7 @@ defmodule Mutare.Mutators do
     map_keyword: Mutare.Mutators.MapKeyword,
     call_removal: Mutare.Mutators.CallRemoval,
     default_drop: Mutare.Mutators.DefaultDrop,
+    mode_swap: Mutare.Mutators.ModeSwap,
     string: Mutare.Mutators.StringLiteral,
     float: Mutare.Mutators.FloatLiteral,
     atom: Mutare.Mutators.AtomLiteral,

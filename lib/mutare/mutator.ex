@@ -94,7 +94,29 @@ defmodule Mutare.Mutator do
   @callback pattern_mutations(head_args :: [Macro.t()], used_outside :: MapSet.t()) ::
               [[Macro.t()]]
 
-  @optional_callbacks pattern_mutations: 2, mutate: 2
+  @doc """
+  Optional hook by which a mutator claims **exclusive ownership** of one or more of a
+  call's *argument positions*, so the transform does not also offer those leaves to
+  *other* mutators in place.
+
+  Given a runtime call node and the same `context` as `mutate/2` (`%{piped: boolean}`),
+  it returns the **visible** argument indices (into the node's own arg list, the piped
+  value excluded) that this mutator already covers via the *whole call* — positions
+  where another mutator firing in place would only add a redundant, often nonsensical
+  mutant. `Mutare.Mutators.ModeSwap` is the built-in user: it swaps a unit/mode atom
+  (`DateTime.truncate(dt, :second)` → `:millisecond`) by rewriting the call, so it owns
+  that atom's position and `Mutare.Mutators.AtomLiteral` no longer turns the same
+  `:second` into the sentinel `:mutare` (a mutant that would just raise).
+
+  A mutator should claim a position **only when it actually mutates it** (so a position
+  it leaves untouched — an unrecognised atom, a variable — stays available to others).
+  `Mutare.Transform` discovers implementers by `function_exported?(mod, :owned_args, 2)`
+  and routes owned positions through a non-mutating context; a mutator without this
+  callback claims nothing.
+  """
+  @callback owned_args(Macro.t(), context()) :: [non_neg_integer()]
+
+  @optional_callbacks pattern_mutations: 2, mutate: 2, owned_args: 2
 
   @doc "Whether `term` is a module that implements this behaviour."
   @spec implemented_by?(term()) :: boolean()

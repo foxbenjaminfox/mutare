@@ -606,7 +606,7 @@ defmodule Mutare.Transform do
   # descends, rather than subtracting a blacklist from "everything is a runtime
   # body". Routing is positional, so child → context is a pattern match — which a
   # single `Macro.traverse` accumulator can't express (it can't send the spec
-  # side of a `::` one way and the value side another). Three contexts are threaded:
+  # side of a `::` one way and the value side another). Four contexts are threaded:
   #
   #   * `:runtime` — mutate in place. A node a mutator recognises gets a
   #     `Candidate.InPlace` attached to its own metadata; the candidate is built
@@ -614,6 +614,11 @@ defmodule Mutare.Transform do
   #     before we descend.
   #   * `:pattern` — never mutate, but keep descending so nested runtime escapes
   #     (default-argument values, `size(...)` args) are still reached.
+  #   * `:owned` — a call argument a mutator has *claimed* (its optional
+  #     `owned_args/2`): like `:pattern` it never mutates in place but keeps
+  #     descending. Routed by `recurse_runtime/3` so a leaf the claimant already
+  #     covers via the whole call (a ModeSwap unit/mode atom) isn't *also* mutated
+  #     in place by another mutator (AtomLiteral → a redundant, raising `:mutare`).
   #   * `:scaffold` — a module-level non-clause statement entered from
   #     `transform_statement/2`. Like `:pattern` it never mutates in place and keeps
   #     descending — the module body runs once, at compile time, with mutant 0
@@ -867,7 +872,7 @@ defmodule Mutare.Transform do
 
     if sigil?(form),
       do: descend_sigil(node, mutators),
-      else: recurse(node, :runtime, mutators)
+      else: recurse_runtime(node, mutators, false)
   end
 
   # A keyword/block pair (`key: value`, `%{a: …}`, a `do:`/`else:`/`rescue:`/
@@ -903,10 +908,47 @@ defmodule Mutare.Transform do
         muts -> put_candidates(node, build_candidates(node, muts))
       end
 
-    recurse(node, :runtime, mutators)
+    recurse_runtime(node, mutators, true)
   end
 
   defp analyze_pipe_stage(other, mutators), do: analyze(other, :runtime, mutators)
+
+  # Recurse a runtime call's arguments, but route any positions a mutator has *claimed*
+  # (its optional `owned_args/2`) through the non-mutating `:owned` context — so a leaf
+  # the claimant already covers via the *whole call* (a ModeSwap unit/mode atom) isn't
+  # *also* offered to another mutator in place (AtomLiteral turning `:second` into a
+  # redundant, always-raising `:mutare`). With no claimant the owned set is empty and
+  # this is exactly `recurse(node, :runtime, …)` — so non-owning calls are unaffected.
+  # `piped?` is threaded because ownership, like arity, depends on the pipe position.
+  defp recurse_runtime({form, meta, args} = node, mutators, piped?) when is_list(args) do
+    case owned_arg_indices(node, mutators, %{piped: piped?}) do
+      [] ->
+        recurse(node, :runtime, mutators)
+
+      owned ->
+        args =
+          args
+          |> Enum.with_index()
+          |> Enum.map(fn {arg, i} ->
+            analyze(arg, if(i in owned, do: :owned, else: :runtime), mutators)
+          end)
+
+        {form, meta, args}
+    end
+  end
+
+  defp recurse_runtime(node, mutators, _piped?), do: recurse(node, :runtime, mutators)
+
+  # The visible argument indices some active mutator claims exclusive ownership of at this
+  # call (via the optional `owned_args/2` callback), unioned. Cheap when nobody implements
+  # it — the `function_exported?/2` filter short-circuits before any call.
+  defp owned_arg_indices(node, mutators, context) do
+    for mutator <- mutators,
+        function_exported?(mutator, :owned_args, 2),
+        i <- mutator.owned_args(node, context),
+        uniq: true,
+        do: i
+  end
 
   # Generic structural descent over every Sourceror node shape, re-analyzing the
   # children in the same context.

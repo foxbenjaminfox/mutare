@@ -288,6 +288,16 @@ contract between them is the whole game.
   DefaultDrop (drop a trailing default/fallback arg, reverting to the implicit `nil` —
   `Map.get`/`pop`/`Keyword.get`/`Enum.at`/`List.first`/`last` `/n`→`/n-1`, and `get_lazy`/`pop_lazy`
   renamed to the base lookup; skips a literal-`nil` default as equivalent; pipe-aware via `mutate/2`),
+  ModeSwap (swap a **mode/unit atom** drawn from a closed set for a sibling of the same set, in a
+  known argument position of a known stdlib function — `DateTime`/`NaiveDateTime`/`Time`
+  `add`/`diff`/`truncate` and `System.system_time`/`monotonic_time`/`os_time`/`convert_time_unit`
+  units walk a per-function magnitude **ladder** by one adjacent step, so the swap stays in the
+  function's *legal* set — `truncate` never reaches `:minute` — and is always observable;
+  `String.upcase`/`downcase`/`capitalize` casing `:default`↔`:ascii` and `String.normalize` form
+  `:nfc`↔`:nfd`/`:nfkc`↔`:nfkd`. The semantic sibling of Collection/StringCall — it swaps an *option
+  value*, not a function name or arg count. A non-atom / unrecognised-atom position yields nothing,
+  swaps are never the original; **pipe-aware** via `mutate/2`, the rule keyed on *effective* arity
+  with each mode position mapped from effective to visible index),
   StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, AtomLiteral (a
   literal atom → the sentinel `:mutare`; `true`/`false`/`nil` excluded — Literal/Conditional own
   them; keys excluded *positionally* by `Transform`, not the mutator — and patterns excluded
