@@ -419,11 +419,28 @@ defmodule Mutare.MutatorsTest do
                ["String.pad_trailing(s, 8, \"0\")"]
     end
 
+    test "swaps the Erlang :string directional/case pairs" do
+      assert render(StringCall.mutate(parse(":string.uppercase(s)"))) == [":string.lowercase(s)"]
+      assert render(StringCall.mutate(parse(":string.lowercase(s)"))) == [":string.uppercase(s)"]
+      assert render(StringCall.mutate(parse(":string.to_upper(s)"))) == [":string.to_lower(s)"]
+      assert render(StringCall.mutate(parse(":string.to_lower(s)"))) == [":string.to_upper(s)"]
+      assert render(StringCall.mutate(parse(":string.left(s, 8)"))) == [":string.right(s, 8)"]
+
+      assert render(StringCall.mutate(parse(":string.right(s, 8, ?0)"))) == [
+               ":string.left(s, 8, ?0)"
+             ]
+    end
+
     test "skips unrelated String functions and other modules' calls" do
       assert StringCall.mutate(parse("String.length(s)")) == :skip
       assert StringCall.mutate(parse("String.split(s, \",\")")) == :skip
       assert StringCall.mutate(parse("Path.starts_with?(s, p)")) == :skip
       assert StringCall.mutate(parse("starts_with?(s, p)")) == :skip
+      # :string functions without a directional twin (`centre` has no opposite),
+      # and other Erlang modules
+      assert StringCall.mutate(parse(":string.centre(s, 8)")) == :skip
+      assert StringCall.mutate(parse(":string.length(s)")) == :skip
+      assert StringCall.mutate(parse(":unicode.characters_to_binary(s)")) == :skip
     end
 
     test "name" do
@@ -487,13 +504,40 @@ defmodule Mutare.MutatorsTest do
       assert removal("String.replace_invalid(s)", false) == ["s"]
       assert removal("String.pad_leading(s, 5)", false) == ["s"]
       assert removal("String.pad_trailing(s, 5, \"x\")", false) == ["s"]
+      # slice selects a part; removing it returns the whole input ("was the slice exercised?")
+      assert removal("String.slice(s, 1, 3)", false) == ["s"]
+      assert removal("String.slice(s, 1..3)", false) == ["s"]
     end
 
-    test "excludes content-changing / selecting String calls (not tidying transforms)" do
+    test "removes the analogous Erlang :string transparent transforms" do
+      # case, trim, reverse, pad/justify, substring-select — each returns its input
+      assert removal(":string.lowercase(s)", false) == ["s"]
+      assert removal(":string.to_upper(s)", false) == ["s"]
+      assert removal(":string.titlecase(s)", false) == ["s"]
+      assert removal(":string.casefold(s)", false) == ["s"]
+      assert removal(":string.trim(s)", false) == ["s"]
+      assert removal(":string.strip(s, :both)", false) == ["s"]
+      assert removal(":string.chomp(s)", false) == ["s"]
+      assert removal(":string.reverse(s)", false) == ["s"]
+      assert removal(":string.pad(s, 8)", false) == ["s"]
+      assert removal(":string.left(s, 8)", false) == ["s"]
+      assert removal(":string.centre(s, 8)", false) == ["s"]
+      assert removal(":string.slice(s, 1, 3)", false) == ["s"]
+      assert removal(":string.substr(s, 2)", false) == ["s"]
+      assert removal(":string.sub_string(s, 2, 4)", false) == ["s"]
+      # piped: a no-op stage the pipe feeds
+      assert removal(":string.slice(1, 3)", true) == ["Function.identity()"]
+    end
+
+    test "excludes content-changing / non-transform String and :string calls" do
       assert CallRemoval.mutate(parse("String.replace(s, a, b)"), %{piped: false}) == :skip
-      assert CallRemoval.mutate(parse("String.slice(s, 1, 3)"), %{piped: false}) == :skip
       assert CallRemoval.mutate(parse("String.first(s)"), %{piped: false}) == :skip
       assert CallRemoval.mutate(parse("String.split(s, \",\")"), %{piped: false}) == :skip
+      # :string — split/replace change content; prefix can return :nomatch; other modules
+      assert CallRemoval.mutate(parse(":string.split(s, \",\")"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse(":string.replace(s, a, b)"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse(":string.prefix(s, p)"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse(":lists.reverse(s)"), %{piped: false}) == :skip
     end
 
     test "piped: replaces the stage with Function.identity() (a no-op the pipe feeds)" do
@@ -507,6 +551,7 @@ defmodule Mutare.MutatorsTest do
       # must return identity, never the `:nfc` atom.
       assert removal("String.normalize(:nfc)", true) == ["Function.identity()"]
       assert removal("String.pad_leading(5)", true) == ["Function.identity()"]
+      assert removal("String.slice(1, 3)", true) == ["Function.identity()"]
     end
 
     test "excludes map/filter/reduce and unrelated calls" do

@@ -9,6 +9,17 @@ defmodule Mutare.Mutators.StringCall do
     * `String.pad_leading` ↔ `String.pad_trailing`
     * `String.first` ↔ `String.last`
 
+  …plus the Erlang `:string` module's directional/case pairs:
+
+    * `:string.uppercase` ↔ `:string.lowercase`  (analogue of `upcase`/`downcase`)
+    * `:string.to_upper` ↔ `:string.to_lower`     (the legacy case pair)
+    * `:string.left` ↔ `:string.right`            (justify/pad direction — the
+      analogue of `pad_leading`/`pad_trailing`)
+
+  (The trim/predicate pairs have no `:string` twin — there the *direction* is an
+  argument atom, e.g. `:string.trim(s, :leading)`, not a distinct function name,
+  so renaming cannot express the swap.)
+
   Each pair shares its arities, so swapping the function name while keeping the
   argument list always compiles. These are remote calls — never legal in a guard
   — so guard-safety is automatic. The sibling of `Mutare.Mutators.Collection`
@@ -42,6 +53,17 @@ defmodule Mutare.Mutators.StringCall do
     {[:String], :last} => {[:String], :first}
   }
 
+  # Erlang `:string` module — the module is a bare atom in the AST, not an
+  # `{:__aliases__, …}` node. function => function (same module).
+  @erlang_swaps %{
+    uppercase: :lowercase,
+    lowercase: :uppercase,
+    to_upper: :to_lower,
+    to_lower: :to_upper,
+    left: :right,
+    right: :left
+  }
+
   @impl Mutare.Mutator
   def name, do: :string_call
 
@@ -58,5 +80,21 @@ defmodule Mutare.Mutators.StringCall do
     end
   end
 
+  # `:string.uppercase(s)` and friends. The module is the atom `:string` — wrapped
+  # by Sourceror as `{:__block__, _, [:string]}`, but a bare atom in plain AST.
+  def mutate({{:., dot_meta, [{:__block__, _, [:string]} = mod, fun]}, call_meta, args})
+      when is_list(args),
+      do: swap_erlang(dot_meta, mod, fun, call_meta, args)
+
+  def mutate({{:., dot_meta, [:string, fun]}, call_meta, args}) when is_list(args),
+    do: swap_erlang(dot_meta, :string, fun, call_meta, args)
+
   def mutate(_node), do: :skip
+
+  defp swap_erlang(dot_meta, mod, fun, call_meta, args) do
+    case Map.fetch(@erlang_swaps, fun) do
+      {:ok, new_fun} -> [{{:., dot_meta, [mod, new_fun]}, call_meta, args}]
+      :error -> :skip
+    end
+  end
 end

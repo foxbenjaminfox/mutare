@@ -773,6 +773,24 @@ defmodule Mutare.TransformTest do
       assert Enum.any?(sites, &(&1.mutated_code == ~s|String.ends_with?(s, "x")|))
       assert_compiles(meta)
     end
+
+    test "an Erlang :string call node is offered, swapped, and compiles" do
+      source = """
+      defmodule S do
+        def up(s), do: :string.uppercase(s)
+        def down(s), do: s |> :string.lowercase()
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
+
+      pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
+      assert {":string.uppercase(s)", ":string.lowercase(s)"} in pairs
+      # piped: the recorded stage is the bare LHS-less call
+      assert {":string.lowercase()", ":string.uppercase()"} in pairs
+      assert_compiles(meta)
+    end
   end
 
   describe "CallRemoval (transparent transform removal)" do
@@ -793,6 +811,23 @@ defmodule Mutare.TransformTest do
       # Piped: each stage becomes a no-op the pipe feeds.
       assert {"String.trim()", "Function.identity()"} in pairs
       assert {"String.downcase()", "Function.identity()"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "String.slice removal returns the whole input and compiles" do
+      source = """
+      defmodule R do
+        def a(s), do: String.slice(s, 1, 3)
+        def b(s), do: s |> String.slice(1..3)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+
+      pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
+      assert {"String.slice(s, 1, 3)", "s"} in pairs
+      assert {"String.slice(1..3)", "Function.identity()"} in pairs
       assert_compiles(meta)
     end
 

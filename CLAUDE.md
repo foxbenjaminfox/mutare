@@ -315,20 +315,29 @@ contract between them is the whole game.
   via the optional `mutate/2` callback, since a stage's effective arity is ambiguous in a pipe),
   StringCall (complementary `String` call swaps — `starts_with?`↔`ends_with?`, `upcase`↔`downcase`,
   `trim_leading`↔`trim_trailing`, `replace_prefix`↔`replace_suffix`, `pad_leading`↔`pad_trailing`,
-  `first`↔`last`; the `String` sibling of Collection, recognising `String.` calls by their
-  alias-resolved module — see `Mutare.Transform.Aliases`),
+  `first`↔`last`, plus the Erlang `:string` case pair `uppercase`↔`lowercase` (the `:string` module
+  is a bare atom in the AST — Sourceror-wrapped as `{:__block__, _, [:string]}` — so a dedicated
+  clause matches it; the other affix/predicate pairs have no `:string` function-name twin, their
+  direction being an argument atom); the `String` sibling of Collection, recognising `String.`/
+  `:string.` calls by their alias-resolved module — see `Mutare.Transform.Aliases`),
   MapKeyword (the conditional-write lattice for `Map`/`Keyword` — `put`↔`put_new`↔`replace`↔
   `replace!`, swapping along the insert-new / overwrite-existing / raise-on-absent axes; all `/3`,
   arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),
   CallRemoval (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/`dedup`/`shuffle`,
   `List.flatten`, `String.trim`/`downcase`/`upcase`/`reverse`/`normalize`/`replace_invalid`/
-  `pad_leading`/`pad_trailing`/…, **and `Kernel.abs`** (`abs(x)` → `x`) — leaving its first arg; in
-  a pipe the stage becomes `Function.identity()` (`x |> Enum.sort()` → `x |> Function.identity()` ≡
-  `x`); pipe-aware via the optional `mutate/2`, so `map`/`filter`/`reduce` — and the
-  content-changing/selecting `String.replace`/`slice`/`first` — are deliberately excluded. The remote
-  targets are arity-blind; bare `abs` is removed only at its *effective* arity (`/1`, the safeguard
-  that a bare unqualified `abs` is the `Kernel` one, like Numeric's bare-`Kernel` path) and, being
-  guard-safe, reaches `when` guards via lifting),
+  `pad_leading`/`pad_trailing`/`slice`/…, **and `Kernel.abs`** (`abs(x)` → `x`), and the analogous
+  Erlang `:string` ones (`trim`/`strip`/`chomp`,
+  `lowercase`/`uppercase`/`titlecase`/`casefold`/`to_lower`/`to_upper`, `reverse`,
+  `pad`/`left`/`right`/`centre`, `slice`/`substr`/`sub_string`) — leaving its first arg; in a pipe the
+  stage becomes `Function.identity()` (`x |> Enum.sort()` → `x |> Function.identity()` ≡ `x`);
+  pipe-aware via the optional `mutate/2`. The module key is normalized by `module_key/1` (an
+  alias-resolved path `[:String]` or a bare atom `:string`). `slice`/`substr`/`sub_string` are
+  included (removing them returns the whole input — "is the slice exercised?"), but content-changing
+  `map`/`filter`/`reduce` and `String`/`:string` `replace`/`split` (and `String.first`,
+  `:string.prefix`) are deliberately excluded. The remote targets are arity-blind; bare `abs` is
+  removed only at its *effective* arity (`/1`, the safeguard that a bare unqualified `abs` is the
+  `Kernel` one, like Numeric's bare-`Kernel` path) and, being guard-safe, reaches `when` guards via
+  lifting),
   DefaultDrop (drop a trailing default/fallback arg, reverting to the implicit `nil` —
   `Map.get`/`pop`/`Keyword.get`/`Enum.at`/`List.first`/`last` `/n`→`/n-1`, and `get_lazy`/`pop_lazy`
   renamed to the base lookup; skips a literal-`nil` default as equivalent; pipe-aware via `mutate/2`),

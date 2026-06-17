@@ -14,16 +14,21 @@ defmodule Mutare.Mutators.CallRemoval do
     * `String.trim` / `String.trim_leading` / `String.trim_trailing`
     * `String.downcase` / `String.upcase` / `String.capitalize`
     * `String.reverse` / `String.normalize` / `String.replace_invalid`
-    * `String.pad_leading` / `String.pad_trailing`
+    * `String.pad_leading` / `String.pad_trailing` / `String.slice`
     * `Kernel.abs` (`abs(x)` → `x`)
+    * the analogous Erlang `:string` transforms — `trim`/`strip`/`chomp`,
+      `lowercase`/`uppercase`/`titlecase`/`casefold`/`to_lower`/`to_upper`, `reverse`,
+      `pad`/`left`/`right`/`centre`, `slice`/`substr`/`sub_string`
 
-  Kept to transforms whose removal yields a same-typed, plausibly-interchangeable value
-  — so `String.replace`/`slice`/`first` (which change *which* characters, or select a
-  part) are excluded, the string-side counterpart of dropping `map`/`filter`/`reduce`.
-  `abs` fits squarely: `abs(x)` and `x` are both numbers and *equal* for every
-  non-negative input, so a suite that only ever exercises non-negative values can't
-  tell them apart — exactly the "did someone forget the `abs` and nothing noticed?"
-  signal.
+  Kept to transforms whose removal yields a same-typed, plausibly-interchangeable value.
+  `String.slice` (and `:string.slice`/`substr`/`sub_string`) are included even though they
+  *select* a part — removing them returns the whole input, a clean "is the slice actually
+  exercised?" probe — but `String`/`:string` `replace`/`split` (and `String.first`,
+  `:string.prefix`, which can return `:nomatch`) stay excluded, since they change *which*
+  characters are present or change the type. `abs` fits squarely: `abs(x)` and `x` are both
+  numbers and *equal* for every non-negative input, so a suite that only ever exercises
+  non-negative values can't tell them apart — exactly the "did someone forget the `abs` and
+  nothing noticed?" signal.
 
   Deliberately *excludes* `map`/`filter`/`reduce` and friends: those change *which*
   data is present, not just its order/shape, so their removal is a coarser, noisier
@@ -63,8 +68,10 @@ defmodule Mutare.Mutators.CallRemoval do
 
   alias Mutare.Transform.Aliases
 
-  # {alias_path, function} — arity-agnostic: every arity of these has its input as
-  # the first argument and returns a same-typed value, so removal is always legal.
+  # {module_key, function} — arity-agnostic: every arity of these has its input as the
+  # first argument and returns a same-typed value, so removal is always legal. The module
+  # key is an alias path (`[:String]`) for an Elixir module, or a bare atom (`:string`)
+  # for an Erlang one (see `module_key/1`).
   @removable MapSet.new([
                {[:Enum], :sort},
                {[:Enum], :sort_by},
@@ -86,9 +93,29 @@ defmodule Mutare.Mutators.CallRemoval do
                {[:String], :replace_invalid},
                {[:String], :pad_leading},
                {[:String], :pad_trailing},
+               {[:String], :slice},
                # Qualified `Kernel.abs(x)` — the prefix proves it; `abs` exists only at
                # /1, so arity-agnostic removal is safe (`Kernel.abs(x)` → `x`).
-               {[:Kernel], :abs}
+               {[:Kernel], :abs},
+               # Erlang :string — the same transparent transforms (case, trim,
+               # reverse, pad/justify, substring-select), each returning a string.
+               {:string, :lowercase},
+               {:string, :uppercase},
+               {:string, :titlecase},
+               {:string, :casefold},
+               {:string, :to_lower},
+               {:string, :to_upper},
+               {:string, :trim},
+               {:string, :strip},
+               {:string, :chomp},
+               {:string, :reverse},
+               {:string, :pad},
+               {:string, :left},
+               {:string, :right},
+               {:string, :centre},
+               {:string, :slice},
+               {:string, :substr},
+               {:string, :sub_string}
              ])
 
   # Bare `Kernel` calls keyed on {name, effective_arity}. Like Numeric's bare-Kernel
@@ -104,17 +131,11 @@ defmodule Mutare.Mutators.CallRemoval do
   @impl Mutare.Mutator
   def mutate(_node), do: :skip
 
+  # A remote call — Elixir (alias-resolved) or Erlang `:string`.
   @impl Mutare.Mutator
-  def mutate({{:., _dm, [{:__aliases__, am, mod}, fun]}, _cm, args}, %{piped: piped?})
-      when is_list(args) do
-    cond do
-      not MapSet.member?(@removable, {Aliases.resolved_module(am, mod), fun}) -> :skip
-      # Piped: the input is the |> LHS, supplied to identity by the pipe.
-      piped? -> [identity_call()]
-      # Non-piped: drop the call, keep its first argument (the input).
-      args == [] -> :skip
-      true -> [hd(args)]
-    end
+  def mutate({{:., _dm, [mod, fun]}, _cm, args}, %{piped: piped?})
+      when is_list(args) and is_atom(fun) do
+    removal(removable?(mod, fun), piped?, args)
   end
 
   # A bare `Kernel` call (`abs(x)`): removed only at its effective arity, so a same-named
@@ -123,17 +144,33 @@ defmodule Mutare.Mutators.CallRemoval do
   def mutate({fun, _meta, args}, %{piped: piped?})
       when is_atom(fun) and is_list(args) do
     eff_arity = length(args) + if(piped?, do: 1, else: 0)
-
-    cond do
-      not MapSet.member?(@bare_removable, {fun, eff_arity}) -> :skip
-      # `value |> abs()` — 0 visible args; the input is the |> LHS, fed to identity.
-      piped? -> [identity_call()]
-      # `abs(x)` — drop the call, keep its only argument.
-      true -> [hd(args)]
-    end
+    removal(MapSet.member?(@bare_removable, {fun, eff_arity}), piped?, args)
   end
 
   def mutate(_node, _context), do: :skip
+
+  defp removable?(mod, fun) do
+    case module_key(mod) do
+      nil -> false
+      key -> MapSet.member?(@removable, {key, fun})
+    end
+  end
+
+  # An Elixir module is an alias path (resolved through any lexical `alias`); an Erlang
+  # module is a bare atom — wrapped by Sourceror as `{:__block__, _, [:string]}`. Anything
+  # else (a variable receiver, an attribute) has no static module and is never removable.
+  defp module_key({:__aliases__, meta, path}) when is_list(path),
+    do: Aliases.resolved_module(meta, path)
+
+  defp module_key({:__block__, _meta, [atom]}) when is_atom(atom), do: atom
+  defp module_key(atom) when is_atom(atom), do: atom
+  defp module_key(_), do: nil
+
+  # Decide the removal given membership + pipe context.
+  defp removal(false, _piped?, _args), do: :skip
+  defp removal(true, true, _args), do: [identity_call()]
+  defp removal(true, false, []), do: :skip
+  defp removal(true, false, args), do: [hd(args)]
 
   defp identity_call do
     {{:., [], [{:__aliases__, [], [:Function]}, :identity]}, [], []}
