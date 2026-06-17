@@ -3,18 +3,41 @@ defmodule Mutare.ChangesTest do
 
   alias Mutare.Changes
 
-  setup do
-    repo = Path.join(System.tmp_dir!(), "mutare_git_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(Path.join(repo, "lib"))
-    on_exit(fn -> File.rm_rf!(repo) end)
+  # Build one committed repo once, then give each test a filesystem copy
+  # (`cp_r`, no subprocess). Spawning `git init`/`config`/`add`/`commit` per test
+  # dominated this module's runtime; `Changes.since` only needs a ready repo, and
+  # a copied `.git` is a fully working one. Identity is set with `-c` flags on the
+  # commit so no separate `git config` spawns are needed.
+  setup_all do
+    template =
+      Path.join(System.tmp_dir!(), "mutare_git_template_#{System.unique_integer([:positive])}")
 
-    git!(repo, ["init", "-q"])
-    git!(repo, ["config", "user.email", "test@example.com"])
-    git!(repo, ["config", "user.name", "Test"])
-    File.write!(Path.join(repo, "lib/a.ex"), "defmodule A do\n  def f, do: 1\nend\n")
-    File.write!(Path.join(repo, "lib/b.ex"), "defmodule B do\n  def g, do: 2\nend\n")
-    git!(repo, ["add", "."])
-    git!(repo, ["commit", "-q", "-m", "init"])
+    File.mkdir_p!(Path.join(template, "lib"))
+    on_exit(fn -> File.rm_rf!(template) end)
+
+    git!(template, ["init", "-q"])
+    File.write!(Path.join(template, "lib/a.ex"), "defmodule A do\n  def f, do: 1\nend\n")
+    File.write!(Path.join(template, "lib/b.ex"), "defmodule B do\n  def g, do: 2\nend\n")
+    git!(template, ["add", "."])
+
+    git!(template, [
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "user.name=Test",
+      "commit",
+      "-q",
+      "-m",
+      "init"
+    ])
+
+    %{template: template}
+  end
+
+  setup %{template: template} do
+    repo = Path.join(System.tmp_dir!(), "mutare_git_#{System.unique_integer([:positive])}")
+    File.cp_r!(template, repo)
+    on_exit(fn -> File.rm_rf!(repo) end)
 
     %{repo: repo}
   end

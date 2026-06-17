@@ -24,6 +24,22 @@ defmodule Mutare.LiftTest do
   end
   """
 
+  # The head-pattern fixture (exercised by the describe block far below). Defined
+  # up here so the module-level `setup_all` can compile it once for all of that
+  # block's tests — `setup_all` cannot live inside a `describe`, and a per-test
+  # `setup` would recompile it for every test.
+  @pattern_source """
+  defmodule Mutare.PatternLiftFixture do
+    def classify(%{1 => 2}), do: :exact
+    def classify(_), do: :other
+
+    def kind(:go), do: :going
+    def kind(_), do: :stopped
+  end
+  """
+
+  @compile {:no_warn_undefined, Mutare.PatternLiftFixture}
+
   # Pin to the operator-swap families: this fixture exercises lifting mechanics
   # (guard swaps, clause drops, in-place bodies), so the default literal mutator —
   # which would also lift `0`/`1` constants in the guards and bodies — is excluded
@@ -35,7 +51,14 @@ defmodule Mutare.LiftTest do
       Mutare.transform_string(@source, file: "lift.ex", mutators: @probe)
 
     [{_module, _binary}] = Code.compile_string(metamutant)
-    %{sites: sites}
+
+    # Compiled once and switched at runtime by the head-pattern describe block.
+    {pattern_meta, pattern_sites, _next_id} =
+      Mutare.transform_string(@pattern_source, file: "pat.ex")
+
+    [{_module, _binary}] = Code.compile_string(pattern_meta)
+
+    %{sites: sites, pattern_sites: pattern_sites}
   end
 
   setup do
@@ -402,25 +425,6 @@ defmodule Mutare.LiftTest do
   end
 
   describe "head-pattern literal mutants (compiled, switched at runtime)" do
-    @pattern_source """
-    defmodule Mutare.PatternLiftFixture do
-      def classify(%{1 => 2}), do: :exact
-      def classify(_), do: :other
-
-      def kind(:go), do: :going
-      def kind(_), do: :stopped
-    end
-    """
-
-    @compile {:no_warn_undefined, Mutare.PatternLiftFixture}
-
-    setup do
-      {meta, sites, _next_id} = Mutare.transform_string(@pattern_source, file: "pat.ex")
-      [{_module, _binary}] = Code.compile_string(meta)
-      on_exit(fn -> Selector.put(Selector.baseline()) end)
-      %{sites: sites}
-    end
-
     defp pattern_id(sites, from, to) do
       site =
         Enum.find(
@@ -440,21 +444,21 @@ defmodule Mutare.LiftTest do
       assert apply(Mutare.PatternLiftFixture, :kind, [:nope]) == :stopped
     end
 
-    test "mutating a map key in the head changes which clause matches", %{sites: sites} do
+    test "mutating a map key in the head changes which clause matches", %{pattern_sites: sites} do
       # `%{1 => 2}` → `%{0 => 2}`: the original input no longer hits the first clause.
       Selector.put(pattern_id(sites, "1", "0"))
       assert apply(Mutare.PatternLiftFixture, :classify, [%{1 => 2}]) == :other
       assert apply(Mutare.PatternLiftFixture, :classify, [%{0 => 2}]) == :exact
     end
 
-    test "mutating an atom in the head changes which clause matches", %{sites: sites} do
+    test "mutating an atom in the head changes which clause matches", %{pattern_sites: sites} do
       # `:go` → `:mutare`: `kind(:go)` now falls through to the catch-all.
       Selector.put(pattern_id(sites, ":go", ":mutare"))
       assert apply(Mutare.PatternLiftFixture, :kind, [:go]) == :stopped
       assert apply(Mutare.PatternLiftFixture, :kind, [:mutare]) == :going
     end
 
-    test "the report renders a head-literal mutant as a one-line diff", %{sites: sites} do
+    test "the report renders a head-literal mutant as a one-line diff", %{pattern_sites: sites} do
       site = Enum.find(sites, &(&1.original_code == ":go" and &1.kind == :lifted))
 
       assert Report.header(site) == "pat.ex:5  [atom, lifted]  SURVIVED"
