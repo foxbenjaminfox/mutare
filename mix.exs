@@ -9,7 +9,8 @@ defmodule Mutare.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      dialyzer: dialyzer()
+      dialyzer: dialyzer(),
+      aliases: aliases()
     ]
   end
 
@@ -40,6 +41,12 @@ defmodule Mutare.MixProject do
       # is intentionally left off: it fights idiomatic fire-and-forget side-effect
       # calls (File.rm/1, etc.) with no genuine bugs to show for it here.
       flags: [:error_handling, :extra_return, :missing_return]
+    ]
+  end
+
+  defp aliases do
+    [
+      check: ["format --check-formatted", "credo", "dialyzer"]
     ]
   end
 end
