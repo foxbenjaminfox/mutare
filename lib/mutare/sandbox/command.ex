@@ -200,20 +200,23 @@ defmodule Mutare.Sandbox.Command do
 
   `MIX_ENV=test` and `MUTANT_UNDER_TEST=<mutant_id>` are always set; `mutant_id`
   is the integer the metamutant switches on (`Mutare.Selector.baseline/0` for a
-  baseline run), rendered into the env var here. `cap` (ms, or `nil`) is handed
-  to the injected timeout watcher, which halts the run itself if it overruns — so
-  there is no process tree to kill and nothing platform-specific. `extra_env` adds
-  further variables (the coverage probe sets its capture flag this way).
+  baseline run), rendered into the env var here. `opts`:
+
+    * `:cap` (ms, or `nil`) — handed to the injected timeout watcher, which halts
+      the run itself if it overruns, so there is no process tree to kill and
+      nothing platform-specific.
+    * `:env` — further environment variables (the coverage probe sets its capture
+      flag this way).
   """
-  @spec mix(Path.t(), [String.t()], non_neg_integer(), pos_integer() | nil, [
-          {String.t(), String.t()}
-        ]) ::
-          {String.t(), non_neg_integer()}
-  def mix(sandbox, args, mutant_id, cap \\ nil, extra_env \\ []) do
+  @spec mix(Path.t(), [String.t()], non_neg_integer(),
+          cap: pos_integer() | nil,
+          env: [{String.t(), String.t()}]
+        ) :: {String.t(), non_neg_integer()}
+  def mix(sandbox, args, mutant_id, opts \\ []) do
     env =
       [{"MIX_ENV", "test"}, {Mutare.Selector.env_var(), Integer.to_string(mutant_id)}]
-      |> maybe_cap(cap)
-      |> Kernel.++(extra_env)
+      |> maybe_cap(opts[:cap])
+      |> Kernel.++(opts[:env] || [])
 
     System.cmd("mix", args, cd: sandbox, stderr_to_stdout: true, env: env)
   end
@@ -224,7 +227,7 @@ defmodule Mutare.Sandbox.Command do
   @spec timed_mix(Path.t(), [String.t()], non_neg_integer(), pos_integer() | nil) ::
           {non_neg_integer(), String.t(), non_neg_integer()}
   def timed_mix(sandbox, args, mutant_id, cap \\ nil) do
-    {micros, {output, status}} = :timer.tc(fn -> mix(sandbox, args, mutant_id, cap) end)
+    {micros, {output, status}} = :timer.tc(fn -> mix(sandbox, args, mutant_id, cap: cap) end)
     {div(micros, 1000), output, status}
   end
 

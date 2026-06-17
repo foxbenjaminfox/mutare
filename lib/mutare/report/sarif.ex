@@ -21,7 +21,7 @@ defmodule Mutare.Report.Sarif do
 
   @doc "Render the survivors in `results` as a SARIF 2.1.0 log string."
   @spec render([Result.t()], %{optional(String.t()) => String.t()}, keyword()) :: String.t()
-  def render(results, _sources \\ %{}, _opts \\ []) do
+  def render(results, _sources, _opts \\ []) do
     survivors = Enum.filter(results, &(&1.status == :survived))
 
     %{

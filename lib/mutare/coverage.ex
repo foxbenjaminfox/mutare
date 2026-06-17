@@ -49,7 +49,7 @@ defmodule Mutare.Coverage do
   """
   @spec read_dump(Path.t()) :: {:ok, t()} | {:error, term()}
   def read_dump(path) do
-    with {:ok, binary} <- read_file(path),
+    with {:ok, binary} <- File.read(path),
          {:ok, %{aggregate: aggregate, by_file: by_file}} <- decode(binary),
          true <- is_list(aggregate) and is_map(by_file) do
       {:ok,
@@ -68,13 +68,6 @@ defmodule Mutare.Coverage do
       other ->
         Logger.warning("coverage dump has unexpected shape (#{path}), falling back to run-all")
         {:error, {:bad_shape, other}}
-    end
-  end
-
-  defp read_file(path) do
-    case File.read(path) do
-      {:ok, binary} -> {:ok, binary}
-      {:error, reason} -> {:error, reason}
     end
   end
 

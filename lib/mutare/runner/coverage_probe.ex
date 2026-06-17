@@ -100,7 +100,7 @@ defmodule Mutare.Runner.CoverageProbe do
       {Recorder.root_env(), root}
     ]
 
-    case Command.mix(sandbox, ["test"], Selector.baseline(), nil, env) do
+    case Command.mix(sandbox, ["test"], Selector.baseline(), env: env) do
       {_output, 0} ->
         0
 
