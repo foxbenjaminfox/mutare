@@ -27,6 +27,11 @@ defmodule Mutare.Transform.Aliases do
   # ## Scope and limits
   #
   #   * Handles `alias Foo.Bar`, `alias Foo.Bar, as: Baz`, and `alias Foo.{Bar, Baz}`.
+  #   * An alias whose target is itself aliased is resolved through the env *before*
+  #     binding, so the stored value is always the fully-expanded module — never another
+  #     alias. `alias MyApp, as: String; alias String, as: S` binds `S` to `MyApp` (the
+  #     real module), not the intermediate `String`, so a later `S.upcase` is not mistaken
+  #     for a stdlib `String` call.
   #   * Lexical and textual: an alias applies only to siblings *after* it and to nested
   #     scopes (a nested `defmodule`/function body inherits the enclosing aliases); aliases
   #     declared inside a child scope do not leak back out. This falls out of folding the
@@ -112,12 +117,16 @@ defmodule Mutare.Transform.Aliases do
   defp register(_stmt, env), do: env
 
   # `alias Foo.{Bar, Baz}` — the multi-alias special form: each child rides on the base.
+  # The base is resolved through the env first, so `alias X, as: Foo; alias Foo.{Bar}`
+  # binds `Bar` to the real `X.Bar`, not the written `Foo.Bar`.
   defp register_alias([{{:., _, [{:__aliases__, _, base}, :{}]}, _, children} | _], env)
        when is_list(base) and is_list(children) do
     if atoms?(base) do
+      resolved_base = resolve(base, env)
+
       Enum.reduce(children, env, fn
         {:__aliases__, _, seg}, env when is_list(seg) ->
-          if atoms?(seg), do: bind(env, base ++ seg), else: env
+          if atoms?(seg), do: bind(env, base ++ seg, resolved_base ++ seg), else: env
 
         _other, env ->
           env
@@ -131,20 +140,23 @@ defmodule Mutare.Transform.Aliases do
   defp register_alias([{:__aliases__, _, path}, opts], env) when is_list(path) do
     cond do
       not atoms?(path) -> env
-      (name = as_name(opts)) != nil -> Map.put(env, name, path)
-      true -> bind(env, path)
+      (name = as_name(opts)) != nil -> Map.put(env, name, resolve(path, env))
+      true -> bind(env, path, resolve(path, env))
     end
   end
 
   # `alias Foo.Bar` — the introduced name is the last segment.
   defp register_alias([{:__aliases__, _, path}], env) when is_list(path) do
-    if atoms?(path), do: bind(env, path), else: env
+    if atoms?(path), do: bind(env, path, resolve(path, env)), else: env
   end
 
   defp register_alias(_args, env), do: env
 
-  # Bind the last segment of `path` to the full `path`.
-  defp bind(env, path), do: Map.put(env, List.last(path), path)
+  # Bind the introduced name (the last segment of the *written* path) to the *resolved*
+  # path. The name comes from what was written so an aliased single-segment target keeps
+  # its written name even when resolution expands it (`alias X, as: Foo; alias Foo` binds
+  # `Foo`, not `X`).
+  defp bind(env, written, resolved), do: Map.put(env, List.last(written), resolved)
 
   # The `as:` target's single segment, or nil. Handles Sourceror's block-wrapped key.
   defp as_name(opts) when is_list(opts) do

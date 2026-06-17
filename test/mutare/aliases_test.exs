@@ -84,6 +84,52 @@ defmodule Mutare.AliasesTest do
       assert calls[:upcase] == {[:String], [:String]}
     end
 
+    test "an alias whose target is itself aliased resolves through the env (not the intermediate)" do
+      # The chained-alias bug: `alias MyApp, as: String` rebinds `String` to a local module,
+      # then `alias String, as: S` must bind `S` to MyApp (the real module) — NOT to the
+      # intermediate `String`, which would make `S.upcase` masquerade as a stdlib call.
+      calls =
+        resolved("""
+        defmodule M do
+          alias MyApp, as: String
+          alias String, as: S
+          def up(x), do: S.upcase(x)
+        end
+        """)
+
+      assert calls[:upcase] == {[:S], [:MyApp]}
+    end
+
+    test "a multi-alias on an aliased base resolves the base through the env" do
+      calls =
+        resolved("""
+        defmodule M do
+          alias My.Lib, as: Lib
+          alias Lib.{Strings, Lists}
+          def up(x), do: Strings.upcase(x)
+          def rev(x), do: Lists.reverse(x)
+        end
+        """)
+
+      assert calls[:upcase] == {[:Strings], [:My, :Lib, :Strings]}
+      assert calls[:reverse] == {[:Lists], [:My, :Lib, :Lists]}
+    end
+
+    test "a plain alias on an aliased single-segment target keeps the written name" do
+      # `alias MyApp, as: String` then a bare `alias String`: the introduced name is the
+      # written `String`, bound to the resolved MyApp.
+      calls =
+        resolved("""
+        defmodule M do
+          alias MyApp, as: String
+          alias String
+          def up(x), do: String.upcase(x)
+        end
+        """)
+
+      assert calls[:upcase] == {[:String], [:MyApp]}
+    end
+
     test "a __MODULE__-relative alias is left unresolved (can't name a concrete module)" do
       calls =
         resolved("""
