@@ -62,8 +62,10 @@ defmodule Mutare.Mutators.CallRemoval do
       compile-safe, honest no-op that rides the existing `hoist_pipe` path unchanged.
 
   On by default. `Function.identity/1` exists since Elixir 1.10 (well under the 1.18
-  floor); these are remote calls, so guard-safety is automatic. Recognises the targets by
-  their resolved module (`Mutare.Transform.Aliases`), so an aliased call is matched too.
+  floor); these are remote calls, so guard-safety is automatic. Elixir targets are
+  recognised by their **resolved** module (`Mutare.Transform.Aliases`), so an aliased
+  call is matched too; the Erlang `:string` targets are matched on the literal atom (an
+  `alias :string, as: S` is not resolved, so only the direct `:string.foo` form is seen).
   """
   @behaviour Mutare.Mutator
 

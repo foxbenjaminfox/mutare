@@ -30,15 +30,19 @@ defmodule Mutare.Mutators.StringCall do
   Each pair shares its arities, so swapping the function name while keeping the
   argument list always compiles. These are remote calls — never legal in a guard
   — so guard-safety is automatic. The sibling of `Mutare.Mutators.Collection`
-  (the `Enum`/`List` swaps); both recognise only **unaliased** calls by name, so
-  a shadowing alias simply isn't matched (no false mutation).
+  (the `Enum`/`List` swaps).
+
+  `String` is matched by its **resolved** module (`Mutare.Transform.Aliases`): an
+  aliased `S.upcase` (`alias String, as: S`) is matched, while a *shadowing*
+  `alias MyApp.String` resolves to the local module and is correctly left alone.
+  `:string` is matched on the literal atom in its direct `:string.foo` form — the
+  alias pre-pass resolves only Elixir-module (`__aliases__`) aliases, so an
+  `alias :string, as: S` is not seen through and that `S.foo` form is missed.
 
   On by default — high signal on the affix/case/predicate functions that anchor
   string-handling logic, exactly where an off-by-direction bug hides. Distinct
   from `Mutare.Mutators.StringLiteral` (the `:string` family), which mutates the
-  string *value*; this mutates the *call*. Recognises `String` by its resolved
-  module (`Mutare.Transform.Aliases`), so an aliased `S.upcase` (`alias String, as: S`)
-  is matched too.
+  string *value*; this mutates the *call*.
   """
   @behaviour Mutare.Mutator
 

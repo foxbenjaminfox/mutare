@@ -19,11 +19,15 @@ defmodule Mutare.Mutators.Math do
   the whole call with a plain float literal that is the right shape but the wrong
   value — a magnitude any test pinning down the geometry will catch.
 
-  `:math` is an **atom module** — it cannot be aliased or shadowed — so a match on
-  the literal `:math` is unambiguous (no false mutation, no need for the
-  arity/`import` safeguards `Numeric` carries for bare `Kernel` calls). Every
-  `:math` function is a remote call (never guard-legal), so guard-safety is
-  automatic and these are always delivered in place. On by default.
+  `:math` is matched on the **literal atom**. The atom form `:math.sin` can't be
+  *shadowed* — `:math` always names the Erlang module — so the match is unambiguous
+  (no false mutation, no need for the arity/`import` safeguards `Numeric` carries for
+  bare `Kernel` calls). An `alias :math, as: M` *does* compile, but the alias pre-pass
+  resolves only Elixir-module (`__aliases__`) aliases, so the aliased `M.sin` form is
+  not seen through (only the direct `:math.foo` is matched) — an accepted gap, since
+  `:math` is overwhelmingly written directly. Every `:math` function is a remote call
+  (never guard-legal), so guard-safety is automatic and these are always delivered in
+  place. On by default.
   """
   @behaviour Mutare.Mutator
 

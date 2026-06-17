@@ -8,10 +8,11 @@ defmodule Mutare.Mutators.Integer do
     * `Integer.is_even` ↔ `Integer.is_odd` — the parity predicates
 
   Each pair shares its arity (`mod`/`floor_div` are `/2`, `is_even`/`is_odd` are
-  `/1`), so renaming while keeping the argument list always compiles. The sibling
-  of `Mutare.Mutators.Collection`/`StringCall`; it recognises only **unaliased**
-  `Integer.` calls by name, so a shadowing alias simply isn't matched (no false
-  mutation).
+  `/1`), so renaming while keeping the argument list always compiles. It matches the
+  **literal** `Integer.` path and — unlike the alias-resolving `Collection`/`StringCall`
+  — does *not* consult `Mutare.Transform.Aliases`: a renamed `alias Integer, as: I`
+  is missed, and a *shadowing* `alias MyApp.Integer` is not seen through (so it would
+  fire on the local module). `Integer` is rarely aliased, so this is an accepted gap.
 
   `Integer.is_even`/`is_odd` are **guard-safe macros**, so they appear in `when`
   clauses as well as bodies. A guard swap is delivered by lifting (a selector

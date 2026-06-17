@@ -330,8 +330,10 @@ contract between them is the whole game.
   trim/predicate pairs have no `:string` function-name twin, their direction being an argument atom).
   Also one **call→operator** substitution: `String.equivalent?(a, b)` (Unicode-canonical equality)
   → raw `a == b`, dropping normalization (arity tells the pipe context apart — `equivalent?/1` doesn't
-  exist, so a 1-arg call is a `|>` stage → `a |> Kernel.==(b)`). The `String` sibling of Collection,
-  recognising `String.`/`:string.` calls by their alias-resolved module — see `Mutare.Transform.Aliases`),
+  exist, so a 1-arg call is a `|>` stage → `a |> Kernel.==(b)`). The `String` sibling of Collection:
+  `String.` is matched by its alias-resolved module (`Mutare.Transform.Aliases`), while `:string.` is
+  matched on the literal atom (the alias pre-pass resolves only Elixir-module aliases, so an
+  `alias :string, as: S` is *not* seen through — only the direct `:string.foo` form is recognised)),
   MapKeyword (the conditional-write lattice for `Map`/`Keyword` — `put`↔`put_new`↔`replace`↔
   `replace!`, swapping along the insert-new / overwrite-existing / raise-on-absent axes; all `/3`,
   arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),
@@ -377,12 +379,16 @@ contract between them is the whole game.
   here),
   Math (the Erlang `:math` module — `pi()`→`3.0`, `tau()`→`6.0`, co-function swaps
   `sin`↔`cos`/`asin`↔`acos`/`sinh`↔`cosh`/`asinh`↔`acosh`, and the log trio `log`↔`log2`↔`log10`;
-  the floating-point cousin of Numeric. `:math` is an *atom module* — it can't be aliased — so a
-  match on the literal `:math` is unambiguous and the renames are arity-blind (every sibling exists
-  at the same `:math` arity); the `pi`/`tau` constants emit a fresh float literal. All `:math` calls
-  are remote — never guard-legal — so always in place),
+  the floating-point cousin of Numeric. `:math` is matched on the literal atom — the `:math.foo`
+  form can't be *shadowed* (it always names the Erlang module), so the match is unambiguous and the
+  renames are arity-blind (every sibling exists at the same `:math` arity); an `alias :math, as: M`
+  compiles but the pre-pass resolves only Elixir-module aliases, so the aliased `M.foo` form is a
+  known miss. The `pi`/`tau` constants emit a fresh float literal. All `:math` calls are remote —
+  never guard-legal — so always in place),
   Integer (the `Integer` module — `mod`↔`floor_div` (the two halves of floored division) and
-  `is_even`↔`is_odd`; a Collection-style arity-blind remote rename. `is_even`/`is_odd` are
+  `is_even`↔`is_odd`; a Collection-style arity-blind remote rename, but matched on the *literal*
+  `Integer.` path — it does **not** alias-resolve, so a renamed `alias Integer, as: I` is missed and
+  a shadowing `alias MyApp.Integer` is not seen through (a rare, accepted gap). `is_even`/`is_odd` are
   **guard-safe macros**, so they appear in `when` clauses too and their swap is delivered by lifting
   — the source's existing `require Integer` covers the `is_odd` copy. A guard-safe *qualified* macro
   exposes a subtlety: the `Integer` alias in the call's *form* position must **not** be offered to
