@@ -126,6 +126,7 @@ Realization is **positional, not declared** by the mutator: the same `mutate/1` 
 | StringCall | `String.starts_with?`↔`ends_with?`, `upcase`↔`downcase`, `trim_leading`↔`trailing`, `first`↔`last`, … |
 | MapKeyword | conditional-write lattice for `Map`/`Keyword`: `put`↔`put_new`↔`replace`↔`replace!` (overwrite / insert-if-absent / update-if-present / raise; arity-blind) |
 | CallRemoval | remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/`dedup`, `List.flatten`, `String.trim`/`downcase`, … → its first arg (in a pipe: `Function.identity()`); **pipe-aware** |
+| DefaultDrop | drop a trailing default/fallback — `Map.get`/`pop`/`Keyword.get`/`Enum.at`/`List.first`/`last` `/n`→`/n-1`, `get_lazy`/`pop_lazy`→base (skips a literal-`nil` default); **pipe-aware** |
 | StringLiteral | a string → `""` *and* `"mutare"` (drops the one matching the original) |
 | FloatLiteral | floats `x`→`{x±1.0, 0.0}` |
 | **Return value** | a function clause's return-path tail (`:do`, and each `rescue`/`catch`/`else` clause body) → a contrasting *pair*: empty/zero + a non-nil sentinel (numeric→`0`/`1`, `<>`→`""`/`"mutare"`, `++`/`--`→`[]`/`[:mutare]`, else→`nil`/`:mutare`) — structural, in place |

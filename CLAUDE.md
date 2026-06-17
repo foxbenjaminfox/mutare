@@ -271,6 +271,9 @@ contract between them is the whole game.
   `List.flatten`, `String.trim`/`downcase`/`upcase`/… — leaving its first arg; in a pipe the stage
   becomes `Function.identity()` (`x |> Enum.sort()` → `x |> Function.identity()` ≡ `x`); pipe-aware
   via the optional `mutate/2`, so `map`/`filter`/`reduce` are deliberately excluded),
+  DefaultDrop (drop a trailing default/fallback arg, reverting to the implicit `nil` —
+  `Map.get`/`pop`/`Keyword.get`/`Enum.at`/`List.first`/`last` `/n`→`/n-1`, and `get_lazy`/`pop_lazy`
+  renamed to the base lookup; skips a literal-`nil` default as equivalent; pipe-aware via `mutate/2`),
   StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, AtomLiteral (a
   literal atom → the sentinel `:mutare`; `true`/`false`/`nil` excluded — Literal/Conditional own
   them; keys excluded *positionally* by `Transform`, not the mutator — and patterns excluded

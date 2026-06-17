@@ -603,6 +603,30 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "DefaultDrop (drop a trailing default/fallback argument)" do
+    test "drops a non-nil default (piped and not), skips a nil default, and compiles" do
+      source = """
+      defmodule D do
+        def a(m, k), do: Map.get(m, k, :default)
+        def b(m, k), do: m |> Map.get(k, :default)
+        def c(m, k), do: Map.get(m, k, nil)
+        def d(m, k, f), do: Keyword.get_lazy(m, k, f)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.DefaultDrop])
+
+      pairs = for s <- sites, s.mutator == :default_drop, do: {s.original_code, s.mutated_code}
+      assert {"Map.get(m, k, :default)", "Map.get(m, k)"} in pairs
+      assert {"Map.get(k, :default)", "Map.get(k)"} in pairs
+      assert {"Keyword.get_lazy(m, k, f)", "Keyword.get(m, k)"} in pairs
+      # The nil-default call (def c) is equivalent — no mutant.
+      refute Enum.any?(pairs, fn {orig, _} -> orig =~ "nil" end)
+      assert_compiles(meta)
+    end
+  end
+
   describe "MapKeyword (put/put_new overwrite-semantics swaps)" do
     test "swaps put/put_new in place, records the bare swap, and compiles — including in a pipe" do
       source = """

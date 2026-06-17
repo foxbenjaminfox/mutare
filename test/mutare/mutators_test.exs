@@ -14,6 +14,7 @@ defmodule Mutare.MutatorsTest do
     CollectionArity,
     Conditional,
     DateTimeLiteral,
+    DefaultDrop,
     FloatLiteral,
     List,
     Literal,
@@ -36,7 +37,7 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.all() ==
                [Arithmetic, Relational, Logical, Literal, Conditional, List] ++
-                 [Collection, CollectionArity, StringCall, MapKeyword, CallRemoval] ++
+                 [Collection, CollectionArity, StringCall, MapKeyword, CallRemoval, DefaultDrop] ++
                  [StringLiteral, FloatLiteral, AtomLiteral, CharlistLiteral, MapLiteral] ++
                  [TupleLiteral, BitstringLiteral, RegexLiteral, DateTimeLiteral, AliasLiteral] ++
                  [ReturnValue, PatternSwap, PatternWildcard]
@@ -48,8 +49,8 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.families() ==
                [:arithmetic, :relational, :logical, :literal, :conditional, :list] ++
                  [:collection, :collection_arity, :string_call, :map_keyword, :call_removal] ++
-                 [:string, :float, :atom, :charlist, :map, :tuple, :bitstring, :regex] ++
-                 [:datetime, :alias, :return_value, :pattern_swap, :pattern_wildcard]
+                 [:default_drop, :string, :float, :atom, :charlist, :map, :tuple, :bitstring] ++
+                 [:regex, :datetime, :alias, :return_value, :pattern_swap, :pattern_wildcard]
     end
 
     test "resolve/1 maps family atoms to modules, preserving order" do
@@ -498,6 +499,60 @@ defmodule Mutare.MutatorsTest do
     end
   end
 
+  describe "DefaultDrop" do
+    test "never fires node-locally (mutate/1 is always :skip)" do
+      assert DefaultDrop.mutate(parse("Map.get(m, k, :d)")) == :skip
+    end
+
+    test "non-piped: drops a non-nil trailing default, reverting to the /2 lookup" do
+      assert dropd("Map.get(m, k, :default)", false) == ["Map.get(m, k)"]
+      assert dropd("Keyword.get(kw, k, 0)", false) == ["Keyword.get(kw, k)"]
+      assert dropd("Map.pop(m, k, :d)", false) == ["Map.pop(m, k)"]
+      assert dropd("Enum.at(xs, i, :none)", false) == ["Enum.at(xs, i)"]
+      assert dropd("List.first(xs, :empty)", false) == ["List.first(xs)"]
+      assert dropd("List.last(xs, :empty)", false) == ["List.last(xs)"]
+    end
+
+    test "a literal nil default is skipped (equivalent — nil is the implicit default)" do
+      assert DefaultDrop.mutate(parse("Map.get(m, k, nil)"), %{piped: false}) == :skip
+      assert DefaultDrop.mutate(parse("Keyword.get(kw, k, nil)"), %{piped: false}) == :skip
+      # but a non-nil falsy default (false, 0) is a real difference — still dropped.
+      assert dropd("Map.get(m, k, false)", false) == ["Map.get(m, k)"]
+      assert dropd("Map.get(m, k, 0)", false) == ["Map.get(m, k)"]
+    end
+
+    test "_lazy forms rename to the base lookup and drop the fallback fun" do
+      assert dropd("Map.get_lazy(m, k, f)", false) == ["Map.get(m, k)"]
+      assert dropd("Keyword.get_lazy(kw, k, f)", false) == ["Keyword.get(kw, k)"]
+      assert dropd("Map.pop_lazy(m, k, f)", false) == ["Map.pop(m, k)"]
+    end
+
+    test "piped: effective arity is +1, so a /3 reaches us as 2 visible args" do
+      # `m |> Map.get(k, :d)` — drop the trailing visible default, leaving the /2 stage.
+      assert dropd("Map.get(k, :default)", true) == ["Map.get(k)"]
+      assert dropd("List.first(:empty)", true) == ["List.first()"]
+      assert dropd("Map.get_lazy(k, f)", true) == ["Map.get(k)"]
+      # A piped nil default is still equivalent → skipped.
+      assert DefaultDrop.mutate(parse("Map.get(k, nil)"), %{piped: true}) == :skip
+    end
+
+    test "a /2 lookup (no default) is not mutated — needs the piped flag to tell apart" do
+      # non-piped Map.get/2: nothing to drop.
+      assert DefaultDrop.mutate(parse("Map.get(m, k)"), %{piped: false}) == :skip
+      # piped Map.get/2 (`m |> Map.get(k)`): also /2 effective, nothing to drop.
+      assert DefaultDrop.mutate(parse("Map.get(k)"), %{piped: true}) == :skip
+    end
+
+    test "skips unrelated functions and modules" do
+      assert DefaultDrop.mutate(parse("Map.fetch(m, k)"), %{piped: false}) == :skip
+      assert DefaultDrop.mutate(parse("Other.get(m, k, :d)"), %{piped: false}) == :skip
+    end
+
+    test "name" do
+      assert DefaultDrop.name() == :default_drop
+    end
+  end
+
   describe "StringLiteral" do
     test "mutates a non-empty string into both the empty string and the sentinel" do
       assert render(StringLiteral.mutate(parse(~s("hello")))) == [~s(""), ~s("mutare")]
@@ -732,4 +787,7 @@ defmodule Mutare.MutatorsTest do
 
   defp removal(src, piped?),
     do: render(Mutare.Mutators.CallRemoval.mutate(parse(src), %{piped: piped?}))
+
+  defp dropd(src, piped?),
+    do: render(Mutare.Mutators.DefaultDrop.mutate(parse(src), %{piped: piped?}))
 end

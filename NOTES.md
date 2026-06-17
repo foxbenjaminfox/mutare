@@ -934,8 +934,11 @@ raise-on-absent axes; all `/3`, arity-blind; `:map` is taken by `MapLiteral`),
 **call_removal** (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/
 `dedup`/`shuffle`, `List.flatten`, `String.trim`/`downcase`/… — leaving its first
 arg; in a pipe, replace the stage with `Function.identity()`; pipe-aware via
-`mutate/2`), **string** (a string → `""` *and* the sentinel `"mutare"`, dropping
-whichever already matches), and **float**.
+`mutate/2`), **default_drop** (drop a trailing default/fallback — `Map.get`/`pop`/
+`Keyword.get`/`Enum.at`/`List.first`/`last` `/n`→`/n-1`, `get_lazy`/`pop_lazy`→base;
+skips a literal-`nil` default as equivalent; pipe-aware via `mutate/2`), **string**
+(a string → `""` *and* the sentinel `"mutare"`, dropping whichever already matches),
+and **float**.
 `Mutare.Mutators`'s `@registry` is the single ordered source of truth; `all/0`
 returns every registered module, so registering a family makes it default.
 (We briefly split a `:default`/`:optional` tier mirroring PIT's default-vs-
