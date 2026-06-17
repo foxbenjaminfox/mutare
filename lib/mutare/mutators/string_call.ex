@@ -78,28 +78,10 @@ defmodule Mutare.Mutators.StringCall do
   @impl Mutare.Mutator
   def name, do: :string_call
 
-  @impl Mutare.Mutator
-  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args})
-      when is_list(args) do
-    case Aliases.resolved_module(alias_meta, mod) do
-      # `String.equivalent?(a, b)` → raw `a == b`, alias-resolved like the swaps.
-      [:String] when fun == :equivalent? ->
-        equivalent_substitution(args)
-
-      resolved ->
-        case Map.fetch(@swaps, {resolved, fun}) do
-          {:ok, {_new_mod, new_fun}} ->
-            # Reuse the literal alias node (the swap stays within `String`).
-            [{{:., dot_meta, [aliases, new_fun]}, call_meta, args}]
-
-          :error ->
-            :skip
-        end
-    end
-  end
-
   # `:string.uppercase(s)` and friends. The module is the atom `:string` — wrapped
-  # by Sourceror as `{:__block__, _, [:string]}`, but a bare atom in plain AST.
+  # by Sourceror as `{:__block__, _, [:string]}`, but a bare atom in plain AST. These
+  # bare-atom clauses come first; the resolved-alias case below handles `String.…`.
+  @impl Mutare.Mutator
   def mutate({{:., dot_meta, [{:__block__, _, [:string]} = mod, fun]}, call_meta, args})
       when is_list(args),
       do: swap_erlang(dot_meta, mod, fun, call_meta, args)
@@ -107,7 +89,23 @@ defmodule Mutare.Mutators.StringCall do
   def mutate({{:., dot_meta, [:string, fun]}, call_meta, args}) when is_list(args),
     do: swap_erlang(dot_meta, :string, fun, call_meta, args)
 
-  def mutate(_node), do: :skip
+  def mutate(node) do
+    case Aliases.resolved_call(node) do
+      # `String.equivalent?(a, b)` → raw `a == b`, alias-resolved like the swaps.
+      {[:String], :equivalent?, args, _rebuild} ->
+        equivalent_substitution(args)
+
+      {module, fun, args, rebuild} ->
+        case Map.fetch(@swaps, {module, fun}) do
+          # `rebuild` reuses the written alias node (the swap stays within `String`).
+          {:ok, {_new_mod, new_fun}} -> [rebuild.(new_fun, args)]
+          :error -> :skip
+        end
+
+      nil ->
+        :skip
+    end
+  end
 
   # `String.equivalent?(a, b)` compares strings for Unicode canonical equivalence;
   # substituting raw `==` drops the normalization, so the mutant survives unless a

@@ -95,19 +95,15 @@ defmodule Mutare.Mutators.Numeric do
   # an arity-blind remote rename — the swap keeps the argument list and the sibling exists
   # at the same arity, so no pipe context is needed.
   @impl Mutare.Mutator
-  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args})
-      when is_list(args) do
-    case Map.fetch(@remote_swaps, {Aliases.resolved_module(alias_meta, mod), fun}) do
-      {:ok, {_new_mod, new_fun}} ->
-        # Reuse the literal alias node (the swap stays within `Float`/`Kernel`).
-        [{{:., dot_meta, [aliases, new_fun]}, call_meta, args}]
-
-      :error ->
-        :skip
+  def mutate(node) do
+    with {module, fun, args, rebuild} <- Aliases.resolved_call(node),
+         {:ok, {_new_mod, new_fun}} <- Map.fetch(@remote_swaps, {module, fun}) do
+      # `rebuild` reuses the written alias node (the swap stays within `Float`/`Kernel`).
+      [rebuild.(new_fun, args)]
+    else
+      _ -> :skip
     end
   end
-
-  def mutate(_node), do: :skip
 
   # Bare `Kernel` `min`/`max`/`round`/`trunc`/`ceil`/`floor`: the swap is offered only at
   # the function's true (effective) arity, so a same-named user call at another arity is

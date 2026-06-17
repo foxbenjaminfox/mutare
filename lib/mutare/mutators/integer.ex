@@ -38,18 +38,14 @@ defmodule Mutare.Mutators.Integer do
   def name, do: :integer
 
   @impl Mutare.Mutator
-  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args})
-      when is_list(args) do
-    case Map.fetch(@swaps, {Aliases.resolved_module(alias_meta, mod), fun}) do
-      {:ok, {_new_mod, new_fun}} ->
-        # Reuse the literal alias node (the swap stays within `Integer`), so an aliased
-        # `I.is_even` mutates to `I.is_odd`, not `Integer.is_odd`.
-        [{{:., dot_meta, [aliases, new_fun]}, call_meta, args}]
-
-      :error ->
-        :skip
+  def mutate(node) do
+    with {module, fun, args, rebuild} <- Aliases.resolved_call(node),
+         {:ok, {_new_mod, new_fun}} <- Map.fetch(@swaps, {module, fun}) do
+      # `rebuild` reuses the written alias node (the swap stays within `Integer`), so an
+      # aliased `I.is_even` mutates to `I.is_odd`, not `Integer.is_odd`.
+      [rebuild.(new_fun, args)]
+    else
+      _ -> :skip
     end
   end
-
-  def mutate(_node), do: :skip
 end

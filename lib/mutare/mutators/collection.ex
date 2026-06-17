@@ -62,18 +62,14 @@ defmodule Mutare.Mutators.Collection do
   def name, do: :collection
 
   @impl Mutare.Mutator
-  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args})
-      when is_list(args) do
-    case Map.fetch(@swaps, {Aliases.resolved_module(alias_meta, mod), fun}) do
-      {:ok, {_new_mod, new_fun}} ->
-        # Reuse the literal alias node, so an aliased `E.filter` mutates to `E.reject`
-        # (the swap stays within the module, so the resolved/literal module agree).
-        [{{:., dot_meta, [aliases, new_fun]}, call_meta, args}]
-
-      :error ->
-        :skip
+  def mutate(node) do
+    with {module, fun, args, rebuild} <- Aliases.resolved_call(node),
+         {:ok, {_new_mod, new_fun}} <- Map.fetch(@swaps, {module, fun}) do
+      # `rebuild` reuses the written alias node, so an aliased `E.filter` mutates to
+      # `E.reject` (the swap stays within the module).
+      [rebuild.(new_fun, args)]
+    else
+      _ -> :skip
     end
   end
-
-  def mutate(_node), do: :skip
 end

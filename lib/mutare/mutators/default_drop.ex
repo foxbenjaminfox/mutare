@@ -37,12 +37,13 @@ defmodule Mutare.Mutators.DefaultDrop do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
   alias Mutare.Transform.Aliases
 
   # {alias_path, function, effective_arity} => base function the call collapses to.
   # The operation is uniform: drop the trailing (default/fallback) argument, rename to
   # this function. The implicit default of each base is nil, so a literal-nil trailing
-  # arg is skipped as equivalent (`nil_literal?/1`).
+  # arg is skipped as equivalent (`AST.nil_literal?/1`).
   @rules %{
     {[:Map], :get, 3} => :get,
     {[:Keyword], :get, 3} => :get,
@@ -66,32 +67,31 @@ defmodule Mutare.Mutators.DefaultDrop do
   def mutate(_node), do: :skip
 
   @impl Mutare.Mutator
-  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod}, fun]}, call_meta, args}, %{
-        piped: piped?
-      })
-      when is_list(args) do
-    eff_arity = Mutare.Mutator.effective_arity(args, piped?)
+  def mutate(node, %{piped: piped?}) do
+    case Aliases.resolved_call(node) do
+      {module, fun, args, rebuild} ->
+        eff_arity = Mutare.Mutator.effective_arity(args, piped?)
 
-    case Map.fetch(@rules, {Aliases.resolved_module(alias_meta, mod), fun, eff_arity}) do
-      {:ok, new_fun} ->
-        {dropped, kept} = List.pop_at(args, -1)
+        case Map.fetch(@rules, {module, fun, eff_arity}) do
+          {:ok, new_fun} ->
+            {dropped, kept} = List.pop_at(args, -1)
 
-        if nil_literal?(dropped) do
-          # Equivalent: the explicit default already equals the implicit one.
-          :skip
-        else
-          [{{:., dot_meta, [{:__aliases__, alias_meta, mod}, new_fun]}, call_meta, kept}]
+            if AST.nil_literal?(dropped) do
+              # Equivalent: the explicit default already equals the implicit one.
+              :skip
+            else
+              # `rebuild` reuses the written alias node.
+              [rebuild.(new_fun, kept)]
+            end
+
+          :error ->
+            :skip
         end
 
-      :error ->
+      nil ->
         :skip
     end
   end
 
   def mutate(_node, _context), do: :skip
-
-  # A literal `nil` — bare, or Sourceror's block-wrapped form.
-  defp nil_literal?(nil), do: true
-  defp nil_literal?({:__block__, _meta, [nil]}), do: true
-  defp nil_literal?(_), do: false
 end

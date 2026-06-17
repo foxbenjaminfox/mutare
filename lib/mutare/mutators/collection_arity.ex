@@ -65,36 +65,33 @@ defmodule Mutare.Mutators.CollectionArity do
   def mutate(_node), do: :skip
 
   @impl Mutare.Mutator
-  def mutate(
-        {{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args},
-        %{piped: piped?}
-      )
-      when is_list(args) do
-    eff_arity = Mutare.Mutator.effective_arity(args, piped?)
+  def mutate(node, %{piped: piped?}) do
+    case Aliases.resolved_call(node) do
+      {module, fun, args, rebuild} ->
+        eff_arity = Mutare.Mutator.effective_arity(args, piped?)
 
-    case Map.fetch(@rules, {Aliases.resolved_module(alias_meta, mod), fun, eff_arity}) do
-      {:ok, {new_fun, keep}} ->
-        new_args = kept_visible_args(args, keep, piped?)
-        # Reuse the literal alias node (every rule stays within `Enum`).
-        [{{:., dot_meta, [aliases, new_fun]}, call_meta, new_args}]
+        case Map.fetch(@rules, {module, fun, eff_arity}) do
+          {:ok, {new_fun, keep}} ->
+            # `rebuild` reuses the written alias node (every rule stays within `Enum`).
+            [rebuild.(new_fun, kept_visible_args(args, keep, piped?))]
 
-      :error ->
+          :error ->
+            :skip
+        end
+
+      nil ->
         :skip
     end
   end
 
   def mutate(_node, _context), do: :skip
 
-  # Translate kept *effective* indices to the *visible* argument list. When piped,
-  # effective index 0 is the `|>` left side (not in `args`), so it's omitted and the
-  # remaining effective indices shift down by one.
-  defp kept_visible_args(args, keep, true) do
+  # Translate kept *effective* indices to the *visible* argument list, dropping any
+  # that map to the (absent) piped value — see `Mutare.Mutator.visible_index/2`.
+  defp kept_visible_args(args, keep, piped?) do
     keep
-    |> Enum.reject(&(&1 == 0))
-    |> Enum.map(&Enum.fetch!(args, &1 - 1))
-  end
-
-  defp kept_visible_args(args, keep, false) do
-    Enum.map(keep, &Enum.fetch!(args, &1))
+    |> Enum.map(&Mutare.Mutator.visible_index(&1, piped?))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&Enum.fetch!(args, &1))
   end
 end

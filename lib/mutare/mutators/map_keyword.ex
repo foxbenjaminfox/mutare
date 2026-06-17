@@ -50,17 +50,14 @@ defmodule Mutare.Mutators.MapKeyword do
   def name, do: :map_keyword
 
   @impl Mutare.Mutator
-  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args})
-      when is_list(args) do
-    with true <- Aliases.resolved_module(alias_meta, mod) in @modules,
+  def mutate(node) do
+    with {module, fun, args, rebuild} <- Aliases.resolved_call(node),
+         true <- module in @modules,
          {:ok, new_funs} <- Map.fetch(@swaps, fun) do
-      Enum.map(new_funs, fn new_fun ->
-        {{:., dot_meta, [aliases, new_fun]}, call_meta, args}
-      end)
+      # `rebuild` reuses the written alias node (the swap stays within `Map`/`Keyword`).
+      Enum.map(new_funs, &rebuild.(&1, args))
     else
       _ -> :skip
     end
   end
-
-  def mutate(_node), do: :skip
 end

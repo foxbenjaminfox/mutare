@@ -43,6 +43,8 @@ defmodule Mutare.Transform.Aliases do
   #     local-shadowing rules (reconstructing the compiler on unexpanded source), and
   #     `use`-injected aliases are invisible without macro expansion. Both out of scope.
 
+  alias Mutare.AST
+
   @meta_key :mutare_alias
 
   @doc "Annotate every call-module alias node with the module it resolves to."
@@ -58,6 +60,39 @@ defmodule Mutare.Transform.Aliases do
     do: Keyword.get(alias_meta, @meta_key, literal_path)
 
   def resolved_module(_alias_meta, literal_path), do: literal_path
+
+  @doc """
+  Deconstruct an Elixir remote call `Mod.fun(args)` and resolve its module
+  through the lexical alias env, returning `{module, fun, args, rebuild}` — or
+  `nil` for anything that isn't such a call.
+
+  `module` is the resolved path (`[:String]` for an aliased `S.upcase`);
+  `fun`/`args` are the called function and its argument list. `rebuild` is
+  `(new_fun, new_args -> Macro.t())`, which reconstructs the call **reusing the
+  written alias node and the original `.`/call metadata** — so a mutator that
+  renames `S.filter` to `S.reject` keeps the `S.` the source wrote, the diff
+  stays minimal, and the swap stays within the module.
+
+  The single home for the remote-call AST shape and the alias-resolution step
+  every call-matching mutator family (Collection, StringCall, MapKeyword,
+  CollectionArity, ModeSwap, DefaultDrop, Numeric, Integer) would otherwise
+  repeat. A family with extra shapes (`:string`/`Kernel`/bare calls) keeps its
+  own clauses for those and uses this for the Elixir-alias case.
+  """
+  @spec resolved_call(Macro.t()) ::
+          {[atom()], atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
+  def resolved_call(
+        {{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args}
+      )
+      when is_list(args) do
+    rebuild = fn new_fun, new_args ->
+      {{:., dot_meta, [aliases, new_fun]}, call_meta, new_args}
+    end
+
+    {resolved_module(alias_meta, mod), fun, args, rebuild}
+  end
+
+  def resolved_call(_node), do: nil
 
   # --- the scoped walk -------------------------------------------------------
 
@@ -161,16 +196,12 @@ defmodule Mutare.Transform.Aliases do
   # The `as:` target's single segment, or nil. Handles Sourceror's block-wrapped key.
   defp as_name(opts) when is_list(opts) do
     Enum.find_value(opts, fn
-      {key, {:__aliases__, _, [name]}} when is_atom(name) -> if key_atom(key) == :as, do: name
+      {key, {:__aliases__, _, [name]}} when is_atom(name) -> if AST.key_atom(key) == :as, do: name
       _ -> nil
     end)
   end
 
   defp as_name(_opts), do: nil
-
-  defp key_atom({:__block__, _, [atom]}), do: atom
-  defp key_atom(atom) when is_atom(atom), do: atom
-  defp key_atom(_), do: nil
 
   defp atoms?(list), do: Enum.all?(list, &is_atom/1)
 end

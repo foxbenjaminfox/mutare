@@ -122,23 +122,25 @@ defmodule Mutare.Mutators.ModeSwap do
   def mutate(_node), do: :skip
 
   @impl Mutare.Mutator
-  def mutate(
-        {{:., dot_meta, [{:__aliases__, alias_meta, mod}, fun]}, call_meta, args},
-        %{piped: piped?}
-      )
-      when is_list(args) do
-    case rule(Aliases.resolved_module(alias_meta, mod), fun, args, piped?) do
-      {:ok, positions, group} ->
-        rebuild = fn new_args ->
-          {{:., dot_meta, [{:__aliases__, alias_meta, mod}, fun]}, call_meta, new_args}
+  def mutate(node, %{piped: piped?}) do
+    case Aliases.resolved_call(node) do
+      {module, fun, args, rebuild} ->
+        case rule(module, fun, args, piped?) do
+          {:ok, positions, group} ->
+            case swap_sites(args, positions, group, piped?) do
+              [] ->
+                :skip
+
+              sites ->
+                # `rebuild` keeps the same function and written alias, swapping only args.
+                Enum.map(sites, fn {vis, atom} -> rebuild.(fun, replace_arg(args, vis, atom)) end)
+            end
+
+          :error ->
+            :skip
         end
 
-        case swap_sites(args, positions, group, piped?) do
-          [] -> :skip
-          sites -> Enum.map(sites, fn {vis, atom} -> rebuild.(replace_arg(args, vis, atom)) end)
-        end
-
-      :error ->
+      nil ->
         :skip
     end
   end
@@ -150,13 +152,18 @@ defmodule Mutare.Mutators.ModeSwap do
   # already covers via the whole call. Same positions as `mutate/2` produces — both read
   # `swap_sites/4`, so ownership and mutation never drift.
   @impl Mutare.Mutator
-  def owned_args({{:., _dm, [{:__aliases__, am, mod}, fun]}, _cm, args}, %{piped: piped?})
-      when is_list(args) do
-    case rule(Aliases.resolved_module(am, mod), fun, args, piped?) do
-      {:ok, positions, group} ->
-        args |> swap_sites(positions, group, piped?) |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+  def owned_args(node, %{piped: piped?}) do
+    case Aliases.resolved_call(node) do
+      {module, fun, args, _rebuild} ->
+        case rule(module, fun, args, piped?) do
+          {:ok, positions, group} ->
+            args |> swap_sites(positions, group, piped?) |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
 
-      :error ->
+          :error ->
+            []
+        end
+
+      nil ->
         []
     end
   end
@@ -180,7 +187,7 @@ defmodule Mutare.Mutators.ModeSwap do
   # The single source of both the mutants and the owned positions.
   defp swap_sites(args, positions, group, piped?) do
     for pos <- positions,
-        vis = visible_index(pos, piped?),
+        vis = Mutare.Mutator.visible_index(pos, piped?),
         vis != nil,
         atom <- mode_atom(Enum.at(args, vis)),
         new_atom <- swaps(group, atom) do
@@ -189,13 +196,6 @@ defmodule Mutare.Mutators.ModeSwap do
   end
 
   defp replace_arg(args, vis, atom), do: List.replace_at(args, vis, AST.literal(atom))
-
-  # An effective index → the index into the node's *visible* args. When piped, the
-  # effective arg 0 is the `|>` left side (not present), so it can't be reached and the
-  # rest shift down by one.
-  defp visible_index(pos, false), do: pos
-  defp visible_index(0, true), do: nil
-  defp visible_index(pos, true), do: pos - 1
 
   # The legal sibling atoms for a swap. Ladders return the adjacent neighbour(s);
   # the System-only `:native` maps to a concrete unit; mode sets are a lookup.
