@@ -105,6 +105,34 @@ defmodule Mutare.Mutators.PatternSwapTest do
     end
   end
 
+  describe "pins" do
+    test "swaps two pinned variables, like plain bindings" do
+      assert swaps("{^a, ^b}") == ["f({^b, ^a})"]
+      assert swaps("[^a, ^b]") == ["f([^b, ^a])"]
+      assert swaps("<<^a::8, ^b::8>>") == ["f(<<^b::8, ^a::8>>)"]
+    end
+
+    test "swaps pinned map values, keeping keys fixed" do
+      assert swaps("%{k1: ^a, k2: ^b}") == ["f(%{k1: ^b, k2: ^a})"]
+    end
+
+    test "swaps a pin with a distinct-named plain binding" do
+      assert swaps("{^a, b}") == ["f({b, ^a})"]
+    end
+
+    test "swaps pins in all the same shapes as bindings (cons, non-adjacent)" do
+      assert swaps("[^a, ^b, ^c | _]") ==
+               ["f([^b, ^a, ^c | _])", "f([^c, ^b, ^a | _])", "f([^a, ^c, ^b | _])"]
+
+      assert swaps("{^a, 1, ^b}") == ["f({^b, 1, ^a})"]
+    end
+
+    test "does not swap a pin and a plain binding of the same name (a no-op)" do
+      assert swaps("{^a, ^a}") == []
+      assert swaps("{^a, a}") == []
+    end
+  end
+
   describe "scope" do
     test "does not transpose top-level arguments (containers only)" do
       assert swaps("x, y") == []
@@ -129,8 +157,7 @@ defmodule Mutare.Mutators.PatternSwapTest do
       assert swaps("{x, {1, 2}}") == []
     end
 
-    test "does not swap pinned or underscore variables" do
-      assert swaps("{^x, y}") == []
+    test "does not swap underscore variables" do
       assert swaps("{x, _}") == []
       assert swaps("{x, _ignored}") == []
     end

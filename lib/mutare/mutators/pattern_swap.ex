@@ -30,13 +30,21 @@ defmodule Mutare.Mutators.PatternSwap do
   The top-level argument list is deliberately not a swap site (transposing whole
   arguments is a separate, noisier mutation the project chose not to emit).
 
-  A swap is **always compile-safe**: it only reorders existing variables, so the set of
-  bound names and their usage is unchanged (no unbound or unused variable can appear),
-  and a container's refutability is preserved (`{x, y}` and `{y, x}` both still require a
-  2-tuple), so it can never make a clause shadow a later one. Only two **distinct-named
-  plain variables** are swapped — a same-name swap (`{x, x}`) is a no-op (and is the
-  `Mutare.Mutators.PatternWildcard` family's domain), and `_`/`_`-prefixed names and
-  pinned `^x` variables are never swapped. For a bitstring the type/size specs stay pinned
+  A swap is **compile-safe**: it only reorders existing variables/pins, so the set of
+  bound names and their usage is unchanged (no unbound or unused variable can appear).
+  **Pins participate** (`{^a, ^b}` → `{^b, ^a}`, and a pin can trade places with a
+  distinct-named binding, `{^a, b}` → `{b, ^a}`): a pin only *references* a binding from an
+  enclosing scope, so if the original compiled the reference still resolves after the swap
+  — pins therefore show up wherever an outer variable is in scope (`case`/`fn`/`receive`
+  clauses), essentially never in a `def` head. The only nuance pins add over plain
+  bindings is that they change *which* value a position must equal, so in a rare
+  multi-clause arrangement a swap can broaden one clause to shadow a later same-arity one
+  — a benign "cannot match" warning that fails only under `--warnings-as-errors` and is
+  then dropped by poison-recovery (a plain-binding swap, which preserves refutability
+  exactly, can never even do that). Only two **distinct-named** variables/pins are swapped
+  — a same-name swap (`{x, x}`, `{^a, a}`) is a no-op (repetition is the
+  `Mutare.Mutators.PatternWildcard` family's domain), and `_`/`_`-prefixed names are never
+  swapped. For a bitstring the type/size specs stay pinned
   to their positions, and a value read as a *size* elsewhere in the same binary
   (`<<n, rest::binary-size(n)>>`) is never moved — Elixir requires a size variable to be
   bound earlier in the binary, so relocating its binding would not compile.
@@ -134,22 +142,23 @@ defmodule Mutare.Mutators.PatternSwap do
   end
 
   # For each unordered pair of distinct-named variable siblings, rebuild the container
-  # with those two positions exchanged.
+  # with those two positions exchanged. A sibling is a plain variable *or* a pin
+  # (`swap_name/1`).
   defp sibling_swaps(elements, rebuild) do
-    vars = for {e, i} <- Enum.with_index(elements), name = var_name(e), do: {i, name}
+    vars = for {e, i} <- Enum.with_index(elements), name = swap_name(e), do: {i, name}
 
     for {i, ni} <- vars, {j, nj} <- vars, i < j, ni != nj do
       rebuild.(swap_at(elements, i, j))
     end
   end
 
-  # Swap the *values* of two map pairs whose values are distinct-named variables,
-  # leaving the keys in place.
+  # Swap the *values* of two map pairs whose values are distinct-named variables (or
+  # pins), leaving the keys in place.
   defp map_value_swaps(meta, pairs) do
     vars =
       for {pair, i} <- Enum.with_index(pairs),
           match?({_k, _v}, pair),
-          name = var_name(elem(pair, 1)),
+          name = swap_name(elem(pair, 1)),
           do: {i, name}
 
     for {i, ni} <- vars, {j, nj} <- vars, i < j, ni != nj do
@@ -176,10 +185,11 @@ defmodule Mutare.Mutators.PatternSwap do
     end
   end
 
-  # The bindable variable name of a segment's value, or `nil` — also `nil` for a value
-  # read as a size elsewhere in the binary (`spec_reads`), which must not be relocated.
+  # The swappable name of a segment's value (a plain variable or a pin), or `nil` — also
+  # `nil` for a value read as a size elsewhere in the binary (`spec_reads`), which must not
+  # be relocated.
   defp swappable_segment_var(seg, spec_reads) do
-    case var_name(segment_value(seg)) do
+    case swap_name(segment_value(seg)) do
       nil -> nil
       name -> if MapSet.member?(spec_reads, name), do: nil, else: name
     end
@@ -258,10 +268,20 @@ defmodule Mutare.Mutators.PatternSwap do
     names
   end
 
-  # The name of a swappable variable node, or `nil`. A plain variable is
-  # `{name, _meta, ctx}` with an atom `name` and an atom `ctx` (`nil` or a module);
-  # `_`, `_`-prefixed names (intentionally ignored), and pins (`^x`, whose ctx is a
-  # list) are excluded.
+  # The swap identity of a node, or `nil`. A swappable sibling is either a plain variable
+  # or a **pinned** variable `^name` (`{:^, _, [var]}`); both swap as whole nodes keyed by
+  # `name`, so `{^a, ^b}` → `{^b, ^a}`, and a pin can trade places with a distinct-named
+  # plain binding (`{^a, b}` → `{b, ^a}`). Reordering pins is safe — a pin only
+  # *references* an outer binding (it cannot bind), so the original could only have
+  # compiled if that binding already exists, and a swap never unbinds it. `swap_name/1` is
+  # used everywhere a swappable position is collected; `var_name/1` stays the strict
+  # plain-variable notion used to read names *inside* a node (e.g. bitstring specs).
+  defp swap_name({:^, _meta, [var]}), do: var_name(var)
+  defp swap_name(node), do: var_name(node)
+
+  # The name of a plain variable node, or `nil`. A plain variable is `{name, _meta, ctx}`
+  # with an atom `name` and an atom `ctx` (`nil` or a module); `_`, `_`-prefixed names
+  # (intentionally ignored), and pins (`^x`, whose ctx is a list) are excluded.
   defp var_name({name, _meta, ctx}) when is_atom(name) and is_atom(ctx) do
     string = Atom.to_string(name)
     if name == :_ or String.starts_with?(string, "_"), do: nil, else: name
