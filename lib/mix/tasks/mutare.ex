@@ -89,19 +89,25 @@ defmodule Mix.Tasks.Mutare do
     options = resolve_options(project, flags)
     root = project.copy_root
 
-    schema = Schema.build(root, options)
-    announce(schema, project)
-
     {:ok, live} = Live.start_link()
 
-    options = %{
-      options
-      | reporter: &Live.report(live, &1),
-        on_phase: &Live.phase(live, &1),
-        on_start: &Live.started(live, &1)
-    }
-
     try do
+      # The scan (discovery + transform of every source) runs before the runner, so
+      # we drive its live progress directly from here — `:on_scan` updates the block
+      # per file. `clear/1` tears that block down before the count prints to stdout
+      # so the two don't collide; the runner then redraws its own phases.
+      Live.phase(live, :scanning)
+      schema = Schema.build(root, %{options | on_scan: &Live.scanned(live, &1)})
+      Live.clear(live)
+      announce(schema, project)
+
+      options = %{
+        options
+        | reporter: &Live.report(live, &1),
+          on_phase: &Live.phase(live, &1),
+          on_start: &Live.started(live, &1)
+      }
+
       result = Runner.run_with_schema(schema, root, options)
       # Tear the live status block down before anything else prints, so the final
       # report / error lands on a clean terminal (the block lives on stderr).

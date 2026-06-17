@@ -1238,6 +1238,22 @@ ETA) that animates via an internal tick timer. Design decisions worth rememberin
 - **Known caveat:** `Mutare.Runner.warn_harness_error/2` logs to stderr too, so a
   harness-error warning mid-run can interleave with the status block and nudge the
   cursor accounting for one frame (self-heals on the next redraw). Rare path; left as-is.
+- **Scan progress, before the runner.** The pre-run scan (mutant discovery —
+  `Mutare.Schema` transforming every source) used to be a silent gap before the live
+  display started; now it's the first live phase (`:scanning`), showing a spinner +
+  per-file progress + a running mutant tally (`scanning for mutants — 3/12 file(s) ·
+  47 found`). The scan runs in the Mix task (not the runner), so it's driven directly:
+  the task enters the phase, `Mutare.Schema.from_files/4` fires a new optional
+  `:on_scan` hook (a `%{done, total, found}` map) per file, bound to `Live.scanned/2`.
+  Two wrinkles: (1) **poison recovery re-scans**, and we don't want the display yanked
+  back to a scan mid-run — `Schema.rebuild/4` clears `:on_scan`, and the runner's
+  options never carry it. (2) The "N mutants across M files" count prints to **stdout**
+  (`Mix.shell`) while the scan block sits on **stderr**; writing the count then would
+  splice it onto the scan line. So the task calls `Live.clear/1` (a *non-terminal*
+  erase, distinct from `finish/1` — it drops to idle but keeps the tick alive) to wipe
+  the block, leaving the cursor at column 0 for a clean stdout write; the runner's
+  first phase (`:compiling`) then redraws fresh. In plain mode the scan note prints
+  once and per-file ticks stay silent (no CI-log flooding).
 - **Deferred touches:** a per-worker multi-line in-flight view (chose aggregate +
   one activity line), and a permanent "baseline green in Ns" timing note (would need
   threading `baseline_ms` through `:on_phase`).

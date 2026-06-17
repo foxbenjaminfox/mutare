@@ -4,11 +4,16 @@ defmodule Mutare.Report.Live do
 
   This is the *interactive* face of a run, distinct from `Mutare.Report` (the
   final survivor diffs + score) and the machine renderers under `Mutare.Report.*`:
-  it shows what the runner is **currently doing** as it goes, leaves a permanent
-  line behind for each mutant it finds (survivors) or trips over (timeouts,
-  harness errors), and — when attached to a terminal — paints a live-updating
-  status block at the bottom (a spinner, the activity line, and a counter with an
-  ETA).
+  it shows what the run is **currently doing** as it goes — starting with the
+  pre-run **scan** (per-file mutant discovery, via `scanned/2`), then the runner's
+  phases — leaves a permanent line behind for each mutant it finds (survivors) or
+  trips over (timeouts, harness errors), and — when attached to a terminal — paints
+  a live-updating status block at the bottom (a spinner, the activity line, and a
+  counter with an ETA).
+
+  The scan runs *before* the runner (in the Mix task), so its progress is driven
+  directly rather than through `:on_phase`; `clear/1` tears the scan block down
+  before the mutant count prints to stdout so the two don't collide on one line.
 
   ## Why a process
 
@@ -48,8 +53,12 @@ defmodule Mutare.Report.Live do
   # A braille spinner — one frame per tick. Cosmetic; only drawn in ANSI mode.
   @frames ~w(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 
-  # The pre-mutant phases the runner announces, in order, and how each reads.
+  # The pre-mutant phases announced, in order, and how each reads. `:scanning` is
+  # the pre-run mutant discovery (driven by the Mix task, before the runner); the
+  # rest are the runner's. `:scanning` carries live per-file progress on top of
+  # this label — see `scan_activity/1`.
   @phase_labels %{
+    scanning: "scanning for mutants…",
     compiling: "compiling metamutant (once)…",
     baseline: "running baseline suite…",
     coverage_probe: "probing coverage…"
@@ -78,9 +87,22 @@ defmodule Mutare.Report.Live do
     GenServer.start_link(__MODULE__, opts)
   end
 
-  @doc "Announce a phase transition (`:compiling`, `:baseline`, `:coverage_probe`, `{:running, total}`)."
+  @doc "Announce a phase transition (`:scanning`, `:compiling`, `:baseline`, `:coverage_probe`, `{:running, total}`)."
   @spec phase(GenServer.server(), atom() | {:running, non_neg_integer()}) :: :ok
   def phase(server, phase), do: GenServer.cast(server, {:phase, phase})
+
+  @doc """
+  Update scan progress during the `:scanning` phase: files processed so far out of
+  the total, and the running count of mutants found. Refreshes the status block
+  (animated only in ANSI mode — in plain mode the one-time `:scanning` note already
+  printed, so per-file ticks are silent).
+  """
+  @spec scanned(GenServer.server(), %{
+          done: non_neg_integer(),
+          total: non_neg_integer(),
+          found: non_neg_integer()
+        }) :: :ok
+  def scanned(server, progress), do: GenServer.cast(server, {:scan, progress})
 
   @doc "Note that a mutant run has started (drives the current-activity line)."
   @spec started(GenServer.server(), Site.t()) :: :ok
@@ -89,6 +111,14 @@ defmodule Mutare.Report.Live do
   @doc "Record a completed mutant result (moves the counter; may leave a line behind)."
   @spec report(GenServer.server(), Result.t()) :: :ok
   def report(server, %Result{} = result), do: GenServer.cast(server, {:report, result})
+
+  @doc """
+  Erase the current status block but keep the reporter live — used to clear the
+  scan block before the mutant count prints to stdout, so the two don't collide on
+  one line. A synchronous `call` so the erase is flushed before the caller writes.
+  """
+  @spec clear(GenServer.server()) :: :ok
+  def clear(server), do: GenServer.call(server, :clear)
 
   @doc "Tear down the status block, leaving the terminal clean for the final report."
   @spec finish(GenServer.server()) :: :ok
@@ -106,6 +136,7 @@ defmodule Mutare.Report.Live do
       counts: %{},
       started_at: nil,
       phase: nil,
+      scan: nil,
       current: nil,
       spinner: 0,
       drawn: 0,
@@ -137,6 +168,10 @@ defmodule Mutare.Report.Live do
     end
   end
 
+  def handle_cast({:scan, progress}, state) do
+    {:noreply, refresh(%{state | scan: progress})}
+  end
+
   def handle_cast({:start, %Site{} = site}, state) do
     state = %{state | current: site}
     {:noreply, if(state.ansi, do: redraw(state), else: state)}
@@ -161,6 +196,12 @@ defmodule Mutare.Report.Live do
   def handle_info(:tick, state), do: {:noreply, %{state | ticking: false}}
 
   @impl true
+  def handle_call(:clear, _from, state) do
+    # Erase the block and drop to idle, but stay live (the tick keeps running, the
+    # next phase redraws). Distinct from `:finish`, which is terminal.
+    {:reply, :ok, %{erase(state) | phase: :idle, scan: nil}}
+  end
+
   def handle_call(:finish, _from, state) do
     {:reply, :ok, %{erase(state) | finished: true, phase: :idle}}
   end
@@ -178,6 +219,10 @@ defmodule Mutare.Report.Live do
       truncate(spin(state) <> " " <> activity(state), state.width),
       truncate(counter(state, now), state.width)
     ]
+  end
+
+  def status_block(%{phase: :scanning} = state, _now) do
+    [truncate(spin(state) <> " " <> scan_activity(state), state.width)]
   end
 
   def status_block(%{phase: phase} = state, _now) when is_map_key(@phase_labels, phase) do
@@ -225,6 +270,14 @@ defmodule Mutare.Report.Live do
   # placeholder before the first one is picked up.
   defp activity(%{current: nil}), do: "testing mutants…"
   defp activity(%{current: %Site{} = site}), do: "testing #{descriptor(site)}"
+
+  # The scanning line's payload: per-file progress with a running mutant tally
+  # once the first file is in, else the bare label (during file discovery).
+  defp scan_activity(%{scan: %{done: done, total: total, found: found}}) do
+    "scanning for mutants — #{done}/#{total} file(s) · #{found} found"
+  end
+
+  defp scan_activity(_state), do: @phase_labels.scanning
 
   # `done/total · X survived · Y killed[ · …extras] · elapsed[ · ~eta left]`.
   defp counter(state, now) do

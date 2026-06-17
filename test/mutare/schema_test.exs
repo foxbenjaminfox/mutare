@@ -33,6 +33,37 @@ defmodule Mutare.SchemaTest do
     assert Enum.map(schema.sites, & &1.file) == ["lib/a.ex", "lib/sub/b.ex", "lib/sub/b.ex"]
   end
 
+  test ":on_scan fires once per file with cumulative progress", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/sub/b.ex", "defmodule B do\n  def g(a, b), do: a >= b\nend\n")
+
+    test_pid = self()
+
+    Schema.build(root, mutators: @probe, on_scan: &send(test_pid, {:scan, &1}))
+
+    # One update per file, in path order, total fixed, `found` accumulating the
+    # running mutant tally (a.ex: 1 site; sub/b.ex: 2 more → 3).
+    assert_received {:scan, %{done: 1, total: 2, found: 1}}
+    assert_received {:scan, %{done: 2, total: 2, found: 3}}
+    refute_received {:scan, _}
+  end
+
+  test "rebuild re-scans silently (drops any :on_scan hook)", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+
+    test_pid = self()
+    schema = Schema.build(root, mutators: @probe)
+
+    Schema.rebuild(
+      schema,
+      root,
+      [mutators: @probe, on_scan: &send(test_pid, {:scan, &1})],
+      MapSet.new()
+    )
+
+    refute_received {:scan, _}
+  end
+
   test "files with no sites are sources-only, not metamutants", %{root: root} do
     write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
     # `do: nil` is genuinely site-less: a `nil` tail is skipped by return-value

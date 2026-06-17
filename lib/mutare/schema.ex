@@ -74,14 +74,22 @@ defmodule Mutare.Schema do
   @spec from_files([Path.t()], Path.t(), Options.t() | keyword(), MapSet.t()) :: t()
   def from_files(files, root \\ ".", opts \\ [], skip_ids \\ MapSet.new()) do
     options = Options.new(opts)
+    on_scan = options.on_scan || fn _progress -> :ok end
+    total = length(files)
 
     # Record the ordered, root-relative input list so the schema can be rebuilt
     # against exactly these files (see `rebuild/4`) without re-discovering.
     initial = %__MODULE__{files: Enum.map(files, &relative(&1, root))}
 
     files
-    |> Enum.reduce({initial, 1}, fn file, {schema, next_id} ->
-      add_file(schema, file, root, next_id, options, skip_ids)
+    |> Enum.with_index(1)
+    |> Enum.reduce({initial, 1}, fn {file, done}, {schema, next_id} ->
+      {schema, next_id} = add_file(schema, file, root, next_id, options, skip_ids)
+      # Live scan progress (no-op unless a hook is set; cleared by `rebuild/4`, so
+      # poison-recovery re-scans stay silent). `next_id - 1` is the running mutant
+      # tally, since the id counter starts at 1.
+      on_scan.(%{done: done, total: total, found: next_id - 1})
+      {schema, next_id}
     end)
     |> elem(0)
     |> finalize()
@@ -102,6 +110,10 @@ defmodule Mutare.Schema do
   """
   @spec rebuild(t(), Path.t(), Options.t() | keyword(), MapSet.t()) :: t()
   def rebuild(%__MODULE__{files: files}, root, opts, skip_ids) do
+    # Poison recovery re-scans silently: drop any `:on_scan` hook so the live
+    # reporter isn't yanked back to a scan display in the middle of a run.
+    opts = %{Options.new(opts) | on_scan: nil}
+
     files
     |> Enum.map(&Path.join(root, &1))
     |> from_files(root, opts, skip_ids)

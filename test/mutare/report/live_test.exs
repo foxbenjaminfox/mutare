@@ -74,6 +74,22 @@ defmodule Mutare.Report.LiveTest do
       assert Live.status_block(state, 0) == ["⠋ compiling metamutant (once)…"]
     end
 
+    test "the scanning phase shows the bare label before any file is in" do
+      state = %{phase: :scanning, scan: nil, width: 80, spinner: 0}
+      assert Live.status_block(state, 0) == ["⠋ scanning for mutants…"]
+    end
+
+    test "the scanning phase shows per-file progress and a running mutant tally" do
+      state = %{
+        phase: :scanning,
+        scan: %{done: 3, total: 12, found: 47},
+        width: 80,
+        spinner: 0
+      }
+
+      assert Live.status_block(state, 0) == ["⠋ scanning for mutants — 3/12 file(s) · 47 found"]
+    end
+
     test "idle / finished shows nothing" do
       assert Live.status_block(%{phase: :idle}, 0) == []
     end
@@ -121,6 +137,28 @@ defmodule Mutare.Report.LiveTest do
   end
 
   describe "end to end (plain mode)" do
+    test "the scan phase notes once and per-file ticks stay silent (no scrollback spam)" do
+      {:ok, io} = StringIO.open("")
+      {:ok, live} = Live.start_link(device: io, ansi: false, width: 80)
+
+      Live.phase(live, :scanning)
+      Live.scanned(live, %{done: 1, total: 2, found: 4})
+      Live.scanned(live, %{done: 2, total: 2, found: 9})
+      # `clear/1` (a call) flushes; it leaves the reporter live for the run that follows.
+      Live.clear(live)
+      Live.phase(live, :compiling)
+      Live.finish(live)
+
+      {_in, out} = StringIO.contents(io)
+
+      assert out =~ "scanning for mutants…"
+      assert out =~ "compiling metamutant (once)…"
+      # Plain mode never prints the per-file progress line (it would flood CI logs).
+      refute out =~ "1/2"
+      refute out =~ "2/2 file(s)"
+      refute out =~ "\e["
+    end
+
     test "writes phase notes and a line per survivor/problem, but not per kill" do
       {:ok, io} = StringIO.open("")
       {:ok, live} = Live.start_link(device: io, ansi: false, width: 80)

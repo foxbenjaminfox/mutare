@@ -44,6 +44,7 @@ defmodule Mutare.Options do
           reporter: (Result.t() -> any()) | nil,
           on_phase: (atom() | tuple() -> any()) | nil,
           on_start: (Site.t() -> any()) | nil,
+          on_scan: (map() -> any()) | nil,
           project: Project.t() | nil
         }
 
@@ -65,11 +66,13 @@ defmodule Mutare.Options do
             reporter: nil,
             on_phase: nil,
             on_start: nil,
+            on_scan: nil,
             project: nil
 
   @keys ~w(paths exclude mutators only_files test_selection workers timeout
            timeout_multiplier baseline_runs harness_retries max_harness_error_rate
-           sandbox keep_sandbox min_score reporters reporter on_phase on_start project)a
+           sandbox keep_sandbox min_score reporters reporter on_phase on_start
+           on_scan project)a
 
   # Output formats a reporter entry may name. `:human` is the console report
   # (`Mutare.Report`); the rest are the machine renderers under `Mutare.Report.*`.
@@ -110,6 +113,7 @@ defmodule Mutare.Options do
       reporter: validate_reporter!(Keyword.get(opts, :reporter)),
       on_phase: validate_callback!(:on_phase, Keyword.get(opts, :on_phase)),
       on_start: validate_callback!(:on_start, Keyword.get(opts, :on_start)),
+      on_scan: validate_callback!(:on_scan, Keyword.get(opts, :on_scan)),
       project: validate_project!(Keyword.get(opts, :project))
     }
   end
@@ -279,9 +283,11 @@ defmodule Mutare.Options do
     raise ArgumentError, ":reporter must be a 1-arity function, got: #{inspect(other)}"
   end
 
-  # `:on_phase` (a phase term) and `:on_start` (a `Mutare.Site`) are the live
-  # progress hooks the runner fires alongside `:reporter` — both 1-arity, both
-  # optional (`nil` = no-op), validated identically.
+  # `:on_phase` (a phase term), `:on_start` (a `Mutare.Site`) and `:on_scan` (a
+  # `%{done, total, found}` scan-progress map) are the live progress hooks fired
+  # alongside `:reporter` — `:on_scan` by `Mutare.Schema` during the pre-run scan,
+  # the rest by the runner. All 1-arity, all optional (`nil` = no-op), validated
+  # identically.
   defp validate_callback!(_key, nil), do: nil
   defp validate_callback!(_key, fun) when is_function(fun, 1), do: fun
 
