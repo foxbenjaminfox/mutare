@@ -791,6 +791,24 @@ defmodule Mutare.TransformTest do
       assert {":string.lowercase()", ":string.uppercase()"} in pairs
       assert_compiles(meta)
     end
+
+    test "String.equivalent? becomes raw ==, direct and piped, and compiles" do
+      source = """
+      defmodule S do
+        def a?(a, b), do: String.equivalent?(a, b)
+        def b?(a, b), do: a |> String.equivalent?(b)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
+
+      pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
+      assert {"String.equivalent?(a, b)", "a == b"} in pairs
+      # piped: the LHS-less stage; the |> feeds the left operand at runtime
+      assert {"String.equivalent?(b)", "Kernel.==(b)"} in pairs
+      assert_compiles(meta)
+    end
   end
 
   describe "CallRemoval (transparent transform removal)" do

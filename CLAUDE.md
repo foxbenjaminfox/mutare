@@ -315,11 +315,14 @@ contract between them is the whole game.
   via the optional `mutate/2` callback, since a stage's effective arity is ambiguous in a pipe),
   StringCall (complementary `String` call swaps — `starts_with?`↔`ends_with?`, `upcase`↔`downcase`,
   `trim_leading`↔`trim_trailing`, `replace_prefix`↔`replace_suffix`, `pad_leading`↔`pad_trailing`,
-  `first`↔`last`, plus the Erlang `:string` case pair `uppercase`↔`lowercase` (the `:string` module
-  is a bare atom in the AST — Sourceror-wrapped as `{:__block__, _, [:string]}` — so a dedicated
-  clause matches it; the other affix/predicate pairs have no `:string` function-name twin, their
-  direction being an argument atom); the `String` sibling of Collection, recognising `String.`/
-  `:string.` calls by their alias-resolved module — see `Mutare.Transform.Aliases`),
+  `first`↔`last`, plus the Erlang `:string` directional/case pairs `uppercase`↔`lowercase`,
+  `to_upper`↔`to_lower`, `left`↔`right` (the `:string` module is a bare atom in the AST —
+  Sourceror-wrapped as `{:__block__, _, [:string]}` — so a dedicated clause matches it; the
+  trim/predicate pairs have no `:string` function-name twin, their direction being an argument atom).
+  Also one **call→operator** substitution: `String.equivalent?(a, b)` (Unicode-canonical equality)
+  → raw `a == b`, dropping normalization (arity tells the pipe context apart — `equivalent?/1` doesn't
+  exist, so a 1-arg call is a `|>` stage → `a |> Kernel.==(b)`). The `String` sibling of Collection,
+  recognising `String.`/`:string.` calls by their alias-resolved module — see `Mutare.Transform.Aliases`),
   MapKeyword (the conditional-write lattice for `Map`/`Keyword` — `put`↔`put_new`↔`replace`↔
   `replace!`, swapping along the insert-new / overwrite-existing / raise-on-absent axes; all `/3`,
   arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),

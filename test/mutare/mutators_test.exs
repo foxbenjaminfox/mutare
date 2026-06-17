@@ -419,6 +419,17 @@ defmodule Mutare.MutatorsTest do
                ["String.pad_trailing(s, 8, \"0\")"]
     end
 
+    test "substitutes String.equivalent?(a, b) with raw == (dropping normalization)" do
+      assert render(StringCall.mutate(parse("String.equivalent?(a, b)"))) == ["a == b"]
+
+      assert render(StringCall.mutate(parse(~s|String.equivalent?(x, "foo")|))) == [
+               ~s|x == "foo"|
+             ]
+
+      # a 1-arg call is only reachable as a `|>` stage — becomes `a |> Kernel.==(b)`
+      assert render(StringCall.mutate(parse("String.equivalent?(b)"))) == ["Kernel.==(b)"]
+    end
+
     test "swaps the Erlang :string directional/case pairs" do
       assert render(StringCall.mutate(parse(":string.uppercase(s)"))) == [":string.lowercase(s)"]
       assert render(StringCall.mutate(parse(":string.lowercase(s)"))) == [":string.uppercase(s)"]

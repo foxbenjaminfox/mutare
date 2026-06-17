@@ -20,6 +20,13 @@ defmodule Mutare.Mutators.StringCall do
   argument atom, e.g. `:string.trim(s, :leading)`, not a distinct function name,
   so renaming cannot express the swap.)
 
+  It also makes one **call → operator** substitution: `String.equivalent?(a, b)`
+  (Unicode-canonical equality) → raw `a == b`, dropping the normalization. The
+  mutant survives unless a test feeds canonically-equivalent-but-distinct
+  encodings — pointing at exactly that gap. Arity tells the pipe context apart
+  (`equivalent?/1` doesn't exist, so a 1-arg call is always a `|>` stage):
+  `a |> String.equivalent?(b)` becomes `a |> Kernel.==(b)`.
+
   Each pair shares its arities, so swapping the function name while keeping the
   argument list always compiles. These are remote calls — never legal in a guard
   — so guard-safety is automatic. The sibling of `Mutare.Mutators.Collection`
@@ -70,13 +77,20 @@ defmodule Mutare.Mutators.StringCall do
   @impl Mutare.Mutator
   def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args})
       when is_list(args) do
-    case Map.fetch(@swaps, {Aliases.resolved_module(alias_meta, mod), fun}) do
-      {:ok, {_new_mod, new_fun}} ->
-        # Reuse the literal alias node (the swap stays within `String`).
-        [{{:., dot_meta, [aliases, new_fun]}, call_meta, args}]
+    case Aliases.resolved_module(alias_meta, mod) do
+      # `String.equivalent?(a, b)` → raw `a == b`, alias-resolved like the swaps.
+      [:String] when fun == :equivalent? ->
+        equivalent_substitution(args)
 
-      :error ->
-        :skip
+      resolved ->
+        case Map.fetch(@swaps, {resolved, fun}) do
+          {:ok, {_new_mod, new_fun}} ->
+            # Reuse the literal alias node (the swap stays within `String`).
+            [{{:., dot_meta, [aliases, new_fun]}, call_meta, args}]
+
+          :error ->
+            :skip
+        end
     end
   end
 
@@ -90,6 +104,18 @@ defmodule Mutare.Mutators.StringCall do
     do: swap_erlang(dot_meta, :string, fun, call_meta, args)
 
   def mutate(_node), do: :skip
+
+  # `String.equivalent?(a, b)` compares strings for Unicode canonical equivalence;
+  # substituting raw `==` drops the normalization, so the mutant survives unless a
+  # test feeds canonically-equivalent-but-distinct encodings. Arity disambiguates the
+  # pipe context (`String.equivalent?/1` doesn't exist, so a 1-arg call is always a
+  # `|>` stage): piped, `a |> String.equivalent?(b)` becomes `a |> Kernel.==(b)`.
+  defp equivalent_substitution([a, b]), do: [{:==, [], [a, b]}]
+
+  defp equivalent_substitution([b]),
+    do: [{{:., [], [{:__aliases__, [], [:Kernel]}, :==]}, [], [b]}]
+
+  defp equivalent_substitution(_), do: :skip
 
   defp swap_erlang(dot_meta, mod, fun, call_meta, args) do
     case Map.fetch(@erlang_swaps, fun) do
