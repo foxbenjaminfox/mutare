@@ -247,6 +247,46 @@ defmodule Mutare.LiftTest do
       assert [{_mod, _}] = Code.compile_string(meta)
     end
 
+    test "lifts a guard-safe qualified macro (Integer.is_even) without mutating its module alias" do
+      # `Integer.is_even/1` is a guard-safe macro, so `Integer.is_even(n)` in a `when`
+      # lifts like any guard swap (delivered as `Integer.is_odd(n)` in the `__mut`
+      # copy). The regression this pins: the `Integer` alias sits in the call's *form*
+      # position — a name, not a value — so `AliasLiteral` must NOT swap it. A
+      # `when Mutare.Mutant.is_even(n)` copy is guard-illegal and would poison the
+      # single build. The in-place analyzer keeps a remote call's module opaque; the
+      # guard tagger must do the same (it once used a context-free `Macro.postwalk`).
+      source = """
+      defmodule Mutare.IntegerGuardFixture do
+        require Integer
+        def parity(n) when Integer.is_even(n), do: :even
+        def parity(_n), do: :odd
+      end
+      """
+
+      probe = [Mutare.Mutators.Integer, Mutare.Mutators.AliasLiteral]
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, file: "intguard.ex", mutators: probe)
+
+      # The guard swap is delivered by lifting...
+      assert [%Site{kind: :lifted, mutator: :integer}] =
+               Enum.filter(sites, &(&1.mutator == :integer))
+
+      # ...and the `Integer` alias in the guard's call position is left untouched.
+      assert Enum.filter(sites, &(&1.mutator == :alias)) == []
+
+      # The real proof: it compiles. AliasLiteral firing in the guard would poison it.
+      assert [{Mutare.IntegerGuardFixture, _}] = Code.compile_string(meta)
+
+      # Runtime: flipping the lifted is_odd mutant flips the parity verdict.
+      swap = Enum.find(sites, &(&1.mutator == :integer))
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.IntegerGuardFixture, :parity, [2]) == :even
+      Selector.put(swap.id)
+      assert apply(Mutare.IntegerGuardFixture, :parity, [2]) == :odd
+      Selector.put(Selector.baseline())
+    end
+
     test "falls back to in-place (no lift) for default args and operator names" do
       {defaulted, _, _} =
         Mutare.transform_string("defmodule M do\n  def h(a, b \\\\ 1) when a > b, do: a\nend\n")

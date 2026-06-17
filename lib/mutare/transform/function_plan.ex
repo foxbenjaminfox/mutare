@@ -211,13 +211,43 @@ defmodule Mutare.Transform.FunctionPlan do
   # Post-order DFS so children are tagged before parents. A nested operator's child
   # may already carry a `:mutare_tag` — harmless, since tags don't affect
   # ranges/rendering and are stripped before output.
-  defp tag_targets(guard, acc, mutators) do
-    Macro.postwalk(guard, acc, fn node, {next, targets} ->
-      case Mutator.mutations(node, mutators) do
-        [] -> {node, {next, targets}}
-        muts -> {put_tag(node, next), {next + 1, [{next, node, muts} | targets]}}
-      end
-    end)
+  #
+  # This is an explicit descent (not `Macro.postwalk`) so it can mirror the in-place
+  # analyzer's `recurse`: descend a node's *args* only, never its *form*. That keeps
+  # the module side of a remote call opaque — without it the `Integer` of a guard-safe
+  # `Integer.is_even(n)` would be offered to `AliasLiteral` and swapped into a
+  # guard-illegal `Mutare.Mutant.is_even(n)`, poisoning the lifted `__mut` copy
+  # (`Macro.postwalk` descends the `{:., _, [mod, fun]}` form and visits that alias).
+  # The whole call node is still offered (so the call itself — `is_even` → `is_odd` —
+  # is taggable) and the args still descend (a literal/operator argument still mutates).
+  defp tag_targets(guard, acc, mutators), do: tag_walk(guard, acc, mutators)
+
+  # An n-ary node: descend its args (not its form), then offer the node itself.
+  defp tag_walk({form, meta, args}, acc, mutators) when is_list(args) do
+    {args, acc} = Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))
+    offer_target({form, meta, args}, acc, mutators)
+  end
+
+  # A 2-tuple (a keyword/map pair shape): descend both sides; never node-offered
+  # (`Mutator.mutations` matches no bare 2-tuple).
+  defp tag_walk({left, right}, acc, mutators) do
+    {left, acc} = tag_walk(left, acc, mutators)
+    {right, acc} = tag_walk(right, acc, mutators)
+    {{left, right}, acc}
+  end
+
+  defp tag_walk(list, acc, mutators) when is_list(list),
+    do: Enum.map_reduce(list, acc, &tag_walk(&1, &2, mutators))
+
+  # A leaf — a var (`{:x, _, nil}`), a bare literal, an atom: offer it (a bare `0` in
+  # `x > 0` is mutatable) but there is nothing to descend.
+  defp tag_walk(leaf, acc, mutators), do: offer_target(leaf, acc, mutators)
+
+  defp offer_target(node, {next, targets}, mutators) do
+    case Mutator.mutations(node, mutators) do
+      [] -> {node, {next, targets}}
+      muts -> {put_tag(node, next), {next + 1, [{next, node, muts} | targets]}}
+    end
   end
 
   defp put_tag({form, meta, args}, tag), do: {form, [{:mutare_tag, tag} | meta], args}

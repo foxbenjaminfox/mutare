@@ -41,6 +41,8 @@ defmodule Mutare.Mutators do
     default_drop: Mutare.Mutators.DefaultDrop,
     mode_swap: Mutare.Mutators.ModeSwap,
     numeric: Mutare.Mutators.Numeric,
+    math: Mutare.Mutators.Math,
+    integer: Mutare.Mutators.Integer,
     string: Mutare.Mutators.StringLiteral,
     float: Mutare.Mutators.FloatLiteral,
     atom: Mutare.Mutators.AtomLiteral,

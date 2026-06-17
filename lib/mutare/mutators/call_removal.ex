@@ -15,15 +15,30 @@ defmodule Mutare.Mutators.CallRemoval do
     * `String.downcase` / `String.upcase` / `String.capitalize`
     * `String.reverse` / `String.normalize` / `String.replace_invalid`
     * `String.pad_leading` / `String.pad_trailing`
+    * `Kernel.abs` (`abs(x)` → `x`)
 
   Kept to transforms whose removal yields a same-typed, plausibly-interchangeable value
   — so `String.replace`/`slice`/`first` (which change *which* characters, or select a
   part) are excluded, the string-side counterpart of dropping `map`/`filter`/`reduce`.
+  `abs` fits squarely: `abs(x)` and `x` are both numbers and *equal* for every
+  non-negative input, so a suite that only ever exercises non-negative values can't
+  tell them apart — exactly the "did someone forget the `abs` and nothing noticed?"
+  signal.
 
   Deliberately *excludes* `map`/`filter`/`reduce` and friends: those change *which*
   data is present, not just its order/shape, so their removal is a coarser, noisier
   mutation. This family keeps to transforms whose removal yields a same-typed,
   plausibly-interchangeable value.
+
+  ## `abs`: bare vs qualified `Kernel`
+
+  A *qualified* `Kernel.abs(x)` carries the prefix that proves the function, so it is
+  removed arity-blind alongside the remote targets. A *bare* `abs(x)` has no prefix to
+  prove it is the `Kernel` one (not a same-named user function), so — like the bare
+  `Kernel` calls in `Mutare.Mutators.Numeric` — it is removed only at `abs`'s true
+  *effective* arity (`/1`), recovered with the pipe flag (a pipe stage carries one
+  fewer argument than the source reads). `abs/1` is guard-safe, so a bare `abs` in a
+  `when` is removed too, delivered by lifting (`abs(x) > 0` → `x > 0`, guard-legal).
 
   ## Why it's pipe-aware (`mutate/2`, never `mutate/1`)
 
@@ -67,8 +82,16 @@ defmodule Mutare.Mutators.CallRemoval do
                {[:String], :normalize},
                {[:String], :replace_invalid},
                {[:String], :pad_leading},
-               {[:String], :pad_trailing}
+               {[:String], :pad_trailing},
+               # Qualified `Kernel.abs(x)` — the prefix proves it; `abs` exists only at
+               # /1, so arity-agnostic removal is safe (`Kernel.abs(x)` → `x`).
+               {[:Kernel], :abs}
              ])
+
+  # Bare `Kernel` calls keyed on {name, effective_arity}. Like Numeric's bare-Kernel
+  # handling, the arity is what proves a bare `abs(x)` is the Kernel `abs/1` rather than
+  # a same-named user function at another arity — so a user's `abs/2` is left alone.
+  @bare_removable MapSet.new([{:abs, 1}])
 
   @impl Mutare.Mutator
   def name, do: :call_removal
@@ -87,6 +110,22 @@ defmodule Mutare.Mutators.CallRemoval do
       piped? -> [identity_call()]
       # Non-piped: drop the call, keep its first argument (the input).
       args == [] -> :skip
+      true -> [hd(args)]
+    end
+  end
+
+  # A bare `Kernel` call (`abs(x)`): removed only at its effective arity, so a same-named
+  # user call at another arity is never touched. Effective arity = visible args + (piped?
+  # 1 : 0), since a pipe stage's node carries one fewer arg than the source reads.
+  def mutate({fun, _meta, args}, %{piped: piped?})
+      when is_atom(fun) and is_list(args) do
+    eff_arity = length(args) + if(piped?, do: 1, else: 0)
+
+    cond do
+      not MapSet.member?(@bare_removable, {fun, eff_arity}) -> :skip
+      # `value |> abs()` — 0 visible args; the input is the |> LHS, fed to identity.
+      piped? -> [identity_call()]
+      # `abs(x)` — drop the call, keep its only argument.
       true -> [hd(args)]
     end
   end

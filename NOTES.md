@@ -978,9 +978,12 @@ default**: **arithmetic** (now also unary `-x`→`x`), **relational**, **logical
 `put`↔`put_new`↔`replace`↔`replace!` along the insert-new / overwrite-existing /
 raise-on-absent axes; all `/3`, arity-blind; `:map` is taken by `MapLiteral`),
 **call_removal** (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/
-`dedup`/`shuffle`, `List.flatten`, `String.trim`/`downcase`/… — leaving its first
-arg; in a pipe, replace the stage with `Function.identity()`; pipe-aware via
-`mutate/2`), **default_drop** (drop a trailing default/fallback — `Map.get`/`pop`/
+`dedup`/`shuffle`, `List.flatten`, `String.trim`/`downcase`/…, and `Kernel.abs`
+(`abs(x)`→`x`) — leaving its first arg; in a pipe, replace the stage with
+`Function.identity()`; pipe-aware via `mutate/2`. The remote targets are arity-blind;
+a bare `abs` is removed only at effective arity `/1` — the safeguard that a bare
+unqualified `abs` is the `Kernel` one, mirroring Numeric's bare-`Kernel` path — and,
+being guard-safe, reaches `when` guards via lifting), **default_drop** (drop a trailing default/fallback — `Map.get`/`pop`/
 `Keyword.get`/`Enum.at`/`List.first`/`last` `/n`→`/n-1`, `get_lazy`/`pop_lazy`→base;
 skips a literal-`nil` default as equivalent; pipe-aware via `mutate/2`), **string**
 (a string → `""` *and* the sentinel `"mutare"`, dropping whichever already matches),
@@ -1043,6 +1046,44 @@ Knock-on test work: the routing-focused `transform_test`/`schema_test`/
 routing and lifting mechanics, not the default set, so pinning keeps their
 counts stable while positive coverage of the new defaults lives in
 `mutators_test` and one dedicated `transform_test`.
+
+### Math + Integer families `[done]`
+Two more remote-call families, both on by default:
+
+- **`math`** (`Mutare.Mutators.Math`) — the Erlang `:math` module:
+  `pi()`→`3.0`, `tau()`→`6.0` (a fresh float literal of the right shape, wrong
+  value), the co-function swaps `sin`↔`cos` / `asin`↔`acos` / `sinh`↔`cosh` /
+  `asinh`↔`acosh`, and the logarithm trio `log`↔`log2`↔`log10` (each maps to the
+  other two). `:math` is an **atom module** — it cannot be aliased or shadowed — so
+  matching the literal `:math` (Sourceror-wrapped `{:__block__, _, [:math]}`) is
+  unambiguous, and every function in a swap group exists at the same `:math` arity,
+  so the renames are arity-blind. All `:math` calls are remote → never guard-legal →
+  always in place.
+- **`integer`** (`Mutare.Mutators.Integer`) — `mod`↔`floor_div` (the two halves of
+  floored division) and `is_even`↔`is_odd`; a Collection-style arity-blind remote
+  rename keyed on `{[:Integer], fun}`.
+
+**The non-obvious part: a guard-legal *qualified* macro broke the old "guard-safety
+is free" assumption.** The expanded-set note above argued no built-in can poison a
+guard because each is either guard-legal (constants, `and`/`or`) *or* parser-
+forbidden in guards (`Enum`/`List` calls, `++`). `Integer.is_even`/`is_odd` are the
+first family members that are **guard-legal qualified remote macros** — they *do*
+appear in `when` clauses (the source's existing `require Integer` carries to the
+lifted copy, so `is_odd` compiles). That exposed a latent bug in the guard lift
+path: `FunctionPlan.tag_targets` used a context-free `Macro.postwalk`, which visits
+the `{:__aliases__, _, [:Integer]}` node sitting in the call's *form* position and
+offered it to `AliasLiteral` — minting a `when Mutare.Mutant.is_even(n)` mutant that
+is **illegal in a guard** ("cannot invoke remote function … inside a guard") and
+poisons the single build. The in-place analyzer never hit this because its `recurse`
+descends a node's *args* only, never its *form*, keeping a remote call's module
+opaque (the same reason `:erlang.foo()`'s module is untouched). The fix makes the
+guard tagger mirror that: `tag_targets` is now an explicit post-order `tag_walk`
+(args only, never form), so the whole call node and its arguments are still offered
+(the `is_even`→`is_odd` swap, a literal argument) but the module alias is not. This
+is *positive* compile-safety — fixing it at the classifier rather than leaning on
+poison recovery, per the project's standing preference. (`:math`'s atom module never
+reaches a guard — `:math` calls aren't guard-legal — so only the `Integer` path
+needed the fix, but the fix is general: any guard-safe qualified macro is now safe.)
 
 ### Return-value mutators `[done]`
 PIT's largest, highest-yield group, now implemented: replace a function clause's

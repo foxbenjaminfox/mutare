@@ -16,11 +16,13 @@ defmodule Mutare.MutatorsTest do
     DateTimeLiteral,
     DefaultDrop,
     FloatLiteral,
+    Integer,
     List,
     Literal,
     Logical,
     MapKeyword,
     MapLiteral,
+    Math,
     ModeSwap,
     Numeric,
     PatternSwap,
@@ -40,9 +42,9 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.all() ==
                [Arithmetic, Relational, Logical, Literal, Conditional, List] ++
                  [Collection, CollectionArity, StringCall, MapKeyword, CallRemoval, DefaultDrop] ++
-                 [ModeSwap, Numeric, StringLiteral, FloatLiteral, AtomLiteral, CharlistLiteral] ++
-                 [MapLiteral, TupleLiteral, BitstringLiteral, RegexLiteral, DateTimeLiteral] ++
-                 [AliasLiteral, ReturnValue, PatternSwap, PatternWildcard]
+                 [ModeSwap, Numeric, Math, Integer, StringLiteral, FloatLiteral, AtomLiteral] ++
+                 [CharlistLiteral, MapLiteral, TupleLiteral, BitstringLiteral, RegexLiteral] ++
+                 [DateTimeLiteral, AliasLiteral, ReturnValue, PatternSwap, PatternWildcard]
     end
 
     test "families/0 are the registry's keys, in order — all on by default" do
@@ -51,8 +53,8 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.families() ==
                [:arithmetic, :relational, :logical, :literal, :conditional, :list] ++
                  [:collection, :collection_arity, :string_call, :map_keyword, :call_removal] ++
-                 [:default_drop, :mode_swap, :numeric, :string, :float, :atom, :charlist, :map] ++
-                 [:tuple, :bitstring, :regex, :datetime, :alias] ++
+                 [:default_drop, :mode_swap, :numeric, :math, :integer, :string, :float] ++
+                 [:atom, :charlist, :map, :tuple, :bitstring, :regex, :datetime, :alias] ++
                  [:return_value, :pattern_swap, :pattern_wildcard]
     end
 
@@ -514,6 +516,30 @@ defmodule Mutare.MutatorsTest do
       assert CallRemoval.mutate(parse("local(xs)"), %{piped: false}) == :skip
     end
 
+    test "bare Kernel abs/1 is removed, leaving its argument" do
+      assert removal("abs(x)", false) == ["x"]
+      assert removal("abs(a - b)", false) == ["a - b"]
+      # Piped `value |> abs()` — 0 visible args, effective arity 1 → identity.
+      assert removal("abs()", true) == ["Function.identity()"]
+    end
+
+    test "qualified Kernel.abs is removed arity-blind (the prefix proves it)" do
+      assert removal("Kernel.abs(x)", false) == ["x"]
+      assert removal("Kernel.abs()", true) == ["Function.identity()"]
+    end
+
+    test "a same-named call at the wrong arity is left alone (arity guards bare abs)" do
+      # No Kernel.abs/2 or /0 — so these must be user functions, untouched.
+      assert CallRemoval.mutate(parse("abs(x, y)"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse("abs()"), %{piped: false}) == :skip
+      # Piped `abs(x)` would be effective arity 2 — not the Kernel abs/1.
+      assert CallRemoval.mutate(parse("abs(x)"), %{piped: true}) == :skip
+    end
+
+    test "abs never fires node-locally (mutate/1 is always :skip)" do
+      assert CallRemoval.mutate(parse("abs(x)")) == :skip
+    end
+
     test "name" do
       assert CallRemoval.name() == :call_removal
     end
@@ -753,6 +779,86 @@ defmodule Mutare.MutatorsTest do
 
     test "name" do
       assert Numeric.name() == :numeric
+    end
+  end
+
+  describe "Math" do
+    test "co-function swaps (sin/cos, asin/acos, sinh/cosh, asinh/acosh)" do
+      assert render(Math.mutate(parse(":math.sin(x)"))) == [":math.cos(x)"]
+      assert render(Math.mutate(parse(":math.cos(x)"))) == [":math.sin(x)"]
+      assert render(Math.mutate(parse(":math.asin(x)"))) == [":math.acos(x)"]
+      assert render(Math.mutate(parse(":math.acos(x)"))) == [":math.asin(x)"]
+      assert render(Math.mutate(parse(":math.sinh(x)"))) == [":math.cosh(x)"]
+      assert render(Math.mutate(parse(":math.cosh(x)"))) == [":math.sinh(x)"]
+      assert render(Math.mutate(parse(":math.asinh(x)"))) == [":math.acosh(x)"]
+      assert render(Math.mutate(parse(":math.acosh(x)"))) == [":math.asinh(x)"]
+    end
+
+    test "the logarithm trio each maps to the other two bases" do
+      assert render(Math.mutate(parse(":math.log(x)"))) == [":math.log2(x)", ":math.log10(x)"]
+      assert render(Math.mutate(parse(":math.log2(x)"))) == [":math.log(x)", ":math.log10(x)"]
+      assert render(Math.mutate(parse(":math.log10(x)"))) == [":math.log(x)", ":math.log2(x)"]
+    end
+
+    test "constants pi/tau become a nearby-but-wrong float literal" do
+      assert render(Math.mutate(parse(":math.pi()"))) == ["3.0"]
+      assert render(Math.mutate(parse(":math.tau()"))) == ["6.0"]
+    end
+
+    test "the constant swap only fires at arity 0" do
+      # No `:math.pi/1` exists, but stay defensive: a same-named call with an
+      # argument is never collapsed to the bare constant.
+      assert Math.mutate(parse(":math.pi(x)")) == :skip
+    end
+
+    test "preserves the argument list on a rename" do
+      assert render(Math.mutate(parse(":math.sin(a + b)"))) == [":math.cos(a + b)"]
+    end
+
+    test "skips :math functions outside the families and other atom modules" do
+      assert Math.mutate(parse(":math.sqrt(x)")) == :skip
+      assert Math.mutate(parse(":math.pow(x, y)")) == :skip
+      assert Math.mutate(parse(":lists.sort(x)")) == :skip
+      assert Math.mutate(parse("Math.sin(x)")) == :skip
+    end
+
+    test "skips non-call nodes" do
+      assert Math.mutate(parse("x + y")) == :skip
+      assert Math.mutate(parse("foo(x)")) == :skip
+      assert Math.mutate(42) == :skip
+    end
+
+    test "name" do
+      assert Math.name() == :math
+    end
+  end
+
+  describe "Integer" do
+    test "mod ↔ floor_div swap (arity-blind rename, args preserved)" do
+      assert render(Integer.mutate(parse("Integer.mod(a, b)"))) == ["Integer.floor_div(a, b)"]
+      assert render(Integer.mutate(parse("Integer.floor_div(a, b)"))) == ["Integer.mod(a, b)"]
+    end
+
+    test "is_even ↔ is_odd swap (the guard-safe parity predicates)" do
+      assert render(Integer.mutate(parse("Integer.is_even(n)"))) == ["Integer.is_odd(n)"]
+      assert render(Integer.mutate(parse("Integer.is_odd(n)"))) == ["Integer.is_even(n)"]
+    end
+
+    test "skips unrelated Integer calls and other modules" do
+      assert Integer.mutate(parse("Integer.gcd(a, b)")) == :skip
+      assert Integer.mutate(parse("Integer.parse(s)")) == :skip
+      assert Integer.mutate(parse("Enum.mod(a, b)")) == :skip
+      assert Integer.mutate(parse(":math.sin(x)")) == :skip
+    end
+
+    test "skips non-call nodes" do
+      assert Integer.mutate(parse("a + b")) == :skip
+      assert Integer.mutate(parse("n")) == :skip
+      assert Integer.mutate(:atom) == :skip
+    end
+
+    test "name" do
+      assert Integer.name() == :integer
     end
   end
 

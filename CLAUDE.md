@@ -283,10 +283,13 @@ contract between them is the whole game.
   arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),
   CallRemoval (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/`dedup`/`shuffle`,
   `List.flatten`, `String.trim`/`downcase`/`upcase`/`reverse`/`normalize`/`replace_invalid`/
-  `pad_leading`/`pad_trailing`/… — leaving its first arg; in a pipe the stage becomes
-  `Function.identity()` (`x |> Enum.sort()` → `x |> Function.identity()` ≡ `x`); pipe-aware via the
-  optional `mutate/2`, so `map`/`filter`/`reduce` — and the content-changing/selecting
-  `String.replace`/`slice`/`first` — are deliberately excluded),
+  `pad_leading`/`pad_trailing`/…, **and `Kernel.abs`** (`abs(x)` → `x`) — leaving its first arg; in
+  a pipe the stage becomes `Function.identity()` (`x |> Enum.sort()` → `x |> Function.identity()` ≡
+  `x`); pipe-aware via the optional `mutate/2`, so `map`/`filter`/`reduce` — and the
+  content-changing/selecting `String.replace`/`slice`/`first` — are deliberately excluded. The remote
+  targets are arity-blind; bare `abs` is removed only at its *effective* arity (`/1`, the safeguard
+  that a bare unqualified `abs` is the `Kernel` one, like Numeric's bare-`Kernel` path) and, being
+  guard-safe, reaches `when` guards via lifting),
   DefaultDrop (drop a trailing default/fallback arg, reverting to the implicit `nil` —
   `Map.get`/`pop`/`Keyword.get`/`Enum.at`/`List.first`/`last` `/n`→`/n-1`, and `get_lazy`/`pop_lazy`
   renamed to the base lookup; skips a literal-`nil` default as equivalent; pipe-aware via `mutate/2`),
@@ -312,6 +315,20 @@ contract between them is the whole game.
   complementary *pairs*, not a full mesh, to keep signal high and avoid equivalent survivors; the
   guard-safe `Kernel` swaps also reach `when` guards via lifting. `div`↔`rem` is Arithmetic's, not
   here),
+  Math (the Erlang `:math` module — `pi()`→`3.0`, `tau()`→`6.0`, co-function swaps
+  `sin`↔`cos`/`asin`↔`acos`/`sinh`↔`cosh`/`asinh`↔`acosh`, and the log trio `log`↔`log2`↔`log10`;
+  the floating-point cousin of Numeric. `:math` is an *atom module* — it can't be aliased — so a
+  match on the literal `:math` is unambiguous and the renames are arity-blind (every sibling exists
+  at the same `:math` arity); the `pi`/`tau` constants emit a fresh float literal. All `:math` calls
+  are remote — never guard-legal — so always in place),
+  Integer (the `Integer` module — `mod`↔`floor_div` (the two halves of floored division) and
+  `is_even`↔`is_odd`; a Collection-style arity-blind remote rename. `is_even`/`is_odd` are
+  **guard-safe macros**, so they appear in `when` clauses too and their swap is delivered by lifting
+  — the source's existing `require Integer` covers the `is_odd` copy. A guard-safe *qualified* macro
+  exposes a subtlety: the `Integer` alias in the call's *form* position must **not** be offered to
+  AliasLiteral (`when Mutare.Mutant.is_even(n)` is guard-illegal and would poison) — so the guard
+  tagger keeps a remote call's module opaque, mirroring the in-place analyzer; see
+  `Transform.FunctionPlan` and NOTES),
   StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, AtomLiteral (a
   literal atom → the sentinel `:mutare`; `true`/`false`/`nil` excluded — Literal/Conditional own
   them; keys excluded *positionally* by `Transform`, not the mutator — and patterns excluded
