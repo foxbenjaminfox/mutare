@@ -31,6 +31,31 @@ defmodule Mutare.Mutators.PatternSwapTest do
       assert swaps("[a, b]") == ["f([b, a])"]
     end
 
+    test "swaps non-adjacent variables across an intervening literal" do
+      assert swaps("{a, 1, b}") == ["f({b, 1, a})"]
+      assert swaps("[a, 1, b]") == ["f([b, 1, a])"]
+    end
+
+    test "treats every element before a cons tail as a swap sibling, tail fixed" do
+      # `[a, b, c | _]` parses with `c` inside the `{:|, …}` node; all three proper
+      # elements are still symmetric, while the `_` tail stays pinned.
+      assert swaps("[a, b, c | _]") == [
+               "f([b, a, c | _])",
+               "f([c, b, a | _])",
+               "f([a, c, b | _])"
+             ]
+    end
+
+    test "a cons tail variable is not swapped with the head elements" do
+      # In `[a, b | c]` the `c` *is* the tail (binds the remainder), so only a/b swap.
+      assert swaps("[a, b | c]") == ["f([b, a | c])"]
+      assert swaps("[a, b | rest]") == ["f([b, a | rest])"]
+    end
+
+    test "a cons list with a single proper element has nothing to swap" do
+      assert swaps("[h | t]") == []
+    end
+
     test "swaps map values, keeping keys fixed" do
       assert swaps("%{lat: la, lng: ln}") == ["f(%{lat: ln, lng: la})"]
     end

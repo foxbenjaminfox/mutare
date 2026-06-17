@@ -100,10 +100,38 @@ defmodule Mutare.Mutators.PatternSwap do
     sibling_swaps([a, b], fn [x, y] -> {x, y} end)
   end
 
-  # A list pattern `[a, b, …]` — siblings are the elements.
-  defp own_swaps(node) when is_list(node), do: sibling_swaps(node, & &1)
+  # A list pattern `[a, b, …]` — siblings are the elements. A cons tail (`[a, b | t]`,
+  # parsed as a trailing `{:|, _, [last, t]}`) is unwrapped first: the elements *before*
+  # the bar — including `last` — are all swap-symmetric, while the tail `t` (which binds
+  # the *remainder*, not one element) stays pinned. So `[a, b, c | _]` swaps a/b/c but
+  # never the `_`, whereas `[a, b | c]` swaps only a/b (c is the tail).
+  defp own_swaps(node) when is_list(node) do
+    {elements, rebuild} = list_shape(node)
+    sibling_swaps(elements, rebuild)
+  end
 
   defp own_swaps(_node), do: []
+
+  # Split a list pattern into its swappable {elements, rebuild} pair. A proper list keeps
+  # its elements as-is; a cons list moves the pre-bar element out of the `{:|, …}` node so
+  # it joins the others, and `rebuild` re-wraps the last element back into the cons with
+  # the original tail and `:|` metadata.
+  defp list_shape(node) do
+    case List.last(node) do
+      {:|, cons_meta, [last, tail]} ->
+        elements = List.replace_at(node, length(node) - 1, last)
+
+        rebuild = fn elems ->
+          {init, [new_last]} = Enum.split(elems, length(elems) - 1)
+          init ++ [{:|, cons_meta, [new_last, tail]}]
+        end
+
+        {elements, rebuild}
+
+      _ ->
+        {node, & &1}
+    end
+  end
 
   # For each unordered pair of distinct-named variable siblings, rebuild the container
   # with those two positions exchanged.
