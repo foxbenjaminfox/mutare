@@ -40,6 +40,7 @@ defmodule Mutare.Mutators do
     call_removal: Mutare.Mutators.CallRemoval,
     default_drop: Mutare.Mutators.DefaultDrop,
     mode_swap: Mutare.Mutators.ModeSwap,
+    numeric: Mutare.Mutators.Numeric,
     string: Mutare.Mutators.StringLiteral,
     float: Mutare.Mutators.FloatLiteral,
     atom: Mutare.Mutators.AtomLiteral,

@@ -618,6 +618,83 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "Numeric (complementary Kernel/Float numeric swaps)" do
+    test "swaps bare Kernel min/max and round/ceil, records the swaps, and compiles" do
+      sites =
+        numeric_sites("""
+        defmodule M do
+          def clamp(x, lo, hi), do: min(max(x, lo), hi)
+          def near(x), do: round(x)
+          def up(x), do: ceil(x)
+        end
+        """)
+
+      assert {"max(x, lo)", "min(x, lo)"} in sites
+      assert {"min(max(x, lo), hi)", "max(max(x, lo), hi)"} in sites
+      assert {"round(x)", "trunc(x)"} in sites
+      assert {"ceil(x)", "floor(x)"} in sites
+    end
+
+    test "piped Kernel call: effective arity sees the true arity, and compiles" do
+      # `x |> max(0)` reaches the mutator as a 1-arg node; the pipe-aware path reads
+      # effective arity 2 and offers the min/max swap on the visible stage.
+      sites =
+        numeric_sites("""
+        defmodule M do
+          def floor_zero(x), do: x |> max(0)
+          def whole(x), do: x |> floor()
+        end
+        """)
+
+      assert {"max(0)", "min(0)"} in sites
+      assert {"floor()", "ceil()"} in sites
+    end
+
+    test "swaps Float.ceil ↔ Float.floor (arity-blind), and compiles" do
+      source = """
+      defmodule F do
+        def up(x), do: Float.ceil(x, 2)
+        def down(x), do: Float.floor(x)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.Numeric])
+
+      pairs = for s <- sites, s.mutator == :numeric, do: {s.original_code, s.mutated_code}
+      assert {"Float.ceil(x, 2)", "Float.floor(x, 2)"} in pairs
+      assert {"Float.floor(x)", "Float.ceil(x)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "swaps Kernel-qualified calls (arity-blind, like the Float pair), and compiles" do
+      sites =
+        numeric_sites("""
+        defmodule M do
+          def clamp(x, lo, hi), do: Kernel.min(Kernel.max(x, lo), hi)
+          def near(x), do: Kernel.round(x)
+        end
+        """)
+
+      assert {"Kernel.max(x, lo)", "Kernel.min(x, lo)"} in sites
+      assert {"Kernel.round(x)", "Kernel.trunc(x)"} in sites
+    end
+
+    test "swaps a Kernel numeric call inside a guard via lifting, and compiles" do
+      # `min`/`max`/`round`/… are guard-safe, so a swap is legal in a `when` and is
+      # delivered by lifting the clause group.
+      sites =
+        numeric_sites("""
+        defmodule G do
+          def small?(x) when floor(x) < 10, do: true
+          def small?(_), do: false
+        end
+        """)
+
+      assert {"floor(x)", "ceil(x)"} in sites
+    end
+  end
+
   describe "StringCall (complementary String call swaps)" do
     test "swaps a String call in place, records the bare swap, and compiles" do
       source = """
@@ -1368,6 +1445,16 @@ defmodule Mutare.TransformTest do
 
     assert_compiles(meta)
     for s <- sites, s.mutator == :mode_swap, do: {s.original_code, s.mutated_code}
+  end
+
+  # Transform with only Numeric, assert the metamutant compiles, and return the
+  # `{original_code, mutated_code}` pairs of its sites.
+  defp numeric_sites(source) do
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, mutators: [Mutare.Mutators.Numeric])
+
+    assert_compiles(meta)
+    for s <- sites, s.mutator == :numeric, do: {s.original_code, s.mutated_code}
   end
 
   defp assert_compiles(meta) do

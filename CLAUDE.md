@@ -300,6 +300,18 @@ contract between them is the whole game.
   value*, not a function name or arg count. A non-atom / unrecognised-atom position yields nothing,
   swaps are never the original; **pipe-aware** via `mutate/2`, the rule keyed on *effective* arity
   with each mode position mapped from effective to visible index),
+  Numeric (complementary numeric-builtin swaps — `Kernel` `min`↔`max` (the `Enum` twins are
+  Collection's), `round`↔`trunc`, `ceil`↔`floor`, and `Float.ceil`↔`Float.floor`; the arithmetic
+  sibling of Collection/StringCall. A *qualified* call — `Float.ceil`/`floor` or an explicitly
+  `Kernel.`-qualified `min`/`max`/`round`/… — is an arity-blind remote rename done in `mutate/1`
+  like Collection (the qualifier proves the function; every sibling exists at the same arity). A
+  *bare* `Kernel` call has no module prefix to prove it is the `Kernel` one, so arity is the
+  safeguard — the swap is offered only at the function's *effective* arity (min/max `/2`, the
+  rounding coercions `/1`), making it **pipe-aware** via `mutate/2` so a same-named user call at
+  another arity is left alone. round/trunc/ceil/floor are offered as the two
+  complementary *pairs*, not a full mesh, to keep signal high and avoid equivalent survivors; the
+  guard-safe `Kernel` swaps also reach `when` guards via lifting. `div`↔`rem` is Arithmetic's, not
+  here),
   StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, AtomLiteral (a
   literal atom → the sentinel `:mutare`; `true`/`false`/`nil` excluded — Literal/Conditional own
   them; keys excluded *positionally* by `Transform`, not the mutator — and patterns excluded

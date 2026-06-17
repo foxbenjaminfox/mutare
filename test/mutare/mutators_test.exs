@@ -22,6 +22,7 @@ defmodule Mutare.MutatorsTest do
     MapKeyword,
     MapLiteral,
     ModeSwap,
+    Numeric,
     PatternSwap,
     PatternWildcard,
     Relational,
@@ -39,9 +40,9 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.all() ==
                [Arithmetic, Relational, Logical, Literal, Conditional, List] ++
                  [Collection, CollectionArity, StringCall, MapKeyword, CallRemoval, DefaultDrop] ++
-                 [ModeSwap, StringLiteral, FloatLiteral, AtomLiteral, CharlistLiteral, MapLiteral] ++
-                 [TupleLiteral, BitstringLiteral, RegexLiteral, DateTimeLiteral, AliasLiteral] ++
-                 [ReturnValue, PatternSwap, PatternWildcard]
+                 [ModeSwap, Numeric, StringLiteral, FloatLiteral, AtomLiteral, CharlistLiteral] ++
+                 [MapLiteral, TupleLiteral, BitstringLiteral, RegexLiteral, DateTimeLiteral] ++
+                 [AliasLiteral, ReturnValue, PatternSwap, PatternWildcard]
     end
 
     test "families/0 are the registry's keys, in order — all on by default" do
@@ -50,7 +51,7 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.families() ==
                [:arithmetic, :relational, :logical, :literal, :conditional, :list] ++
                  [:collection, :collection_arity, :string_call, :map_keyword, :call_removal] ++
-                 [:default_drop, :mode_swap, :string, :float, :atom, :charlist, :map] ++
+                 [:default_drop, :mode_swap, :numeric, :string, :float, :atom, :charlist, :map] ++
                  [:tuple, :bitstring, :regex, :datetime, :alias] ++
                  [:return_value, :pattern_swap, :pattern_wildcard]
     end
@@ -681,6 +682,80 @@ defmodule Mutare.MutatorsTest do
     end
   end
 
+  describe "Numeric" do
+    test "Float.ceil ↔ Float.floor swap in mutate/1 (arity-blind rename)" do
+      assert render(Numeric.mutate(parse("Float.ceil(x)"))) == ["Float.floor(x)"]
+      assert render(Numeric.mutate(parse("Float.floor(x)"))) == ["Float.ceil(x)"]
+      # Any arity — the /2 precision form renames too.
+      assert render(Numeric.mutate(parse("Float.ceil(x, 2)"))) == ["Float.floor(x, 2)"]
+      assert render(Numeric.mutate(parse("Float.floor(x, 2)"))) == ["Float.ceil(x, 2)"]
+    end
+
+    test "Float.round and unrelated Float/other calls are not swapped" do
+      assert Numeric.mutate(parse("Float.round(x, 2)")) == :skip
+      assert Numeric.mutate(parse("Float.to_string(x)")) == :skip
+      assert Numeric.mutate(parse("Other.ceil(x)")) == :skip
+    end
+
+    test "Kernel-qualified calls swap in mutate/1 (arity-blind, qualifier proves it)" do
+      assert render(Numeric.mutate(parse("Kernel.min(a, b)"))) == ["Kernel.max(a, b)"]
+      assert render(Numeric.mutate(parse("Kernel.max(a, b)"))) == ["Kernel.min(a, b)"]
+      assert render(Numeric.mutate(parse("Kernel.round(x)"))) == ["Kernel.trunc(x)"]
+      assert render(Numeric.mutate(parse("Kernel.trunc(x)"))) == ["Kernel.round(x)"]
+      assert render(Numeric.mutate(parse("Kernel.ceil(x)"))) == ["Kernel.floor(x)"]
+      assert render(Numeric.mutate(parse("Kernel.floor(x)"))) == ["Kernel.ceil(x)"]
+    end
+
+    test "mutate/1 never fires on a bare Kernel call (those need effective arity)" do
+      assert Numeric.mutate(parse("min(a, b)")) == :skip
+      assert Numeric.mutate(parse("floor(x)")) == :skip
+    end
+
+    test "Kernel min ↔ max swap at arity 2 (non-piped)" do
+      assert numeric("min(a, b)", false) == ["max(a, b)"]
+      assert numeric("max(a, b)", false) == ["min(a, b)"]
+    end
+
+    test "Kernel round/trunc and ceil/floor swap as complementary pairs at arity 1" do
+      assert numeric("round(x)", false) == ["trunc(x)"]
+      assert numeric("trunc(x)", false) == ["round(x)"]
+      assert numeric("ceil(x)", false) == ["floor(x)"]
+      assert numeric("floor(x)", false) == ["ceil(x)"]
+    end
+
+    test "a same-named call at the wrong arity is left alone (arity guards the bare call)" do
+      # No Kernel.min/3 or Kernel.floor/2 — so these must be user functions, untouched.
+      assert Numeric.mutate(parse("min(a, b, c)"), %{piped: false}) == :skip
+      assert Numeric.mutate(parse("floor(x, y)"), %{piped: false}) == :skip
+      assert Numeric.mutate(parse("round(x, y)"), %{piped: false}) == :skip
+    end
+
+    test "piped: effective arity is +1, so a piped /1 reaches us as 0 visible args" do
+      # `x |> floor()` — 0 visible args, effective arity 1 → still swapped.
+      assert numeric("floor()", true) == ["ceil()"]
+      assert numeric("round()", true) == ["trunc()"]
+      # `value |> max(0)` — 1 visible arg, effective arity 2 → the min/max pair.
+      assert numeric("max(0)", true) == ["min(0)"]
+      assert numeric("min(0)", true) == ["max(0)"]
+    end
+
+    test "piped /1 read non-piped (1 visible arg, effective arity 2) is not a min/max" do
+      # `floor(x)` non-piped is arity 1 (swaps); piped it would be effective arity 2,
+      # which floor has no rule for — so a piped floor/1-shaped node yields nothing.
+      assert Numeric.mutate(parse("floor(x)"), %{piped: true}) == :skip
+    end
+
+    test "skips operators and non-numeric calls" do
+      assert Numeric.mutate(parse("a + b"), %{piped: false}) == :skip
+      assert Numeric.mutate(parse("foo(a, b)"), %{piped: false}) == :skip
+      assert Numeric.mutate(parse("abs(x)"), %{piped: false}) == :skip
+    end
+
+    test "name" do
+      assert Numeric.name() == :numeric
+    end
+  end
+
   describe "StringLiteral" do
     test "mutates a non-empty string into both the empty string and the sentinel" do
       assert render(StringLiteral.mutate(parse(~s("hello")))) == [~s(""), ~s("mutare")]
@@ -921,4 +996,7 @@ defmodule Mutare.MutatorsTest do
 
   defp mode(src, piped?),
     do: render(Mutare.Mutators.ModeSwap.mutate(parse(src), %{piped: piped?}))
+
+  defp numeric(src, piped?),
+    do: render(Mutare.Mutators.Numeric.mutate(parse(src), %{piped: piped?}))
 end

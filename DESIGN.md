@@ -124,6 +124,7 @@ Realization is **positional, not declared** by the mutator: the same `mutate/1` 
 | Collection | `Enum.filter`↔`reject`, `all?`↔`any?`, `min`↔`max`, … (arity-blind renames) |
 | CollectionArity | arity-*changing* `Enum` calls: `sort`/`sort_by`→`reverse` (drop comparator/key), `count/2`→`count/1`, `count_until/3`→`/2`, `reverse/1`↔`sort/1` — **pipe-aware** (via `mutate/2`) |
 | StringCall | `String.starts_with?`↔`ends_with?`, `upcase`↔`downcase`, `trim_leading`↔`trailing`, `first`↔`last`, … |
+| Numeric | complementary numeric builtins: `Kernel` `min`↔`max`, `round`↔`trunc`, `ceil`↔`floor`, `Float.ceil`↔`Float.floor` — qualified forms (`Float.`/`Kernel.`) are arity-blind renames, bare-`Kernel` swaps are **pipe-aware** (arity-checked); `div`↔`rem` lives in Arithmetic |
 | MapKeyword | conditional-write lattice for `Map`/`Keyword`: `put`↔`put_new`↔`replace`↔`replace!` (overwrite / insert-if-absent / update-if-present / raise; arity-blind) |
 | CallRemoval | remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/`dedup`, `List.flatten`, `String.trim`/`downcase`, … → its first arg (in a pipe: `Function.identity()`); **pipe-aware** |
 | DefaultDrop | drop a trailing default/fallback — `Map.get`/`pop`/`Keyword.get`/`Enum.at`/`List.first`/`last` `/n`→`/n-1`, `get_lazy`/`pop_lazy`→base (skips a literal-`nil` default); **pipe-aware** |
