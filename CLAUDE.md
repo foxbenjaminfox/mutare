@@ -264,6 +264,8 @@ contract between them is the whole game.
   StringCall (complementary `String` call swaps — `starts_with?`↔`ends_with?`, `upcase`↔`downcase`,
   `trim_leading`↔`trim_trailing`, `replace_prefix`↔`replace_suffix`, `pad_leading`↔`pad_trailing`,
   `first`↔`last`; the `String` sibling of Collection, recognising only unaliased `String.` calls),
+  MapKeyword (`Map.put`↔`put_new`, `Keyword.put`↔`put_new` — overwrite vs insert-if-absent;
+  arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),
   StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, AtomLiteral (a
   literal atom → the sentinel `:mutare`; `true`/`false`/`nil` excluded — Literal/Conditional own
   them; keys excluded *positionally* by `Transform`, not the mutator — and patterns excluded

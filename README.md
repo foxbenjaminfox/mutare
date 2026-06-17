@@ -67,7 +67,7 @@ def parity(n), do: rem(n, 2) == 0  # mutare:ignore[arithmetic] only `rem` is equ
 
 A filter accepts the built-in family names (`arithmetic`, `relational`,
 `logical`, `literal`, `conditional`, `list`, `collection`, `collection_arity`,
-`string_call`, `string`, `float`),
+`string_call`, `map_keyword`, `string`, `float`),
 plus `clause_drop` and any custom mutator's `name/0`. Filtering fails safe: an
 unknown name (a typo) or an empty `[]` matches nothing, so the mutant runs
 rather than being silently hidden.

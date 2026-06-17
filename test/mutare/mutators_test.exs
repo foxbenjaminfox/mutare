@@ -17,6 +17,7 @@ defmodule Mutare.MutatorsTest do
     List,
     Literal,
     Logical,
+    MapKeyword,
     MapLiteral,
     PatternSwap,
     PatternWildcard,
@@ -34,9 +35,9 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.all() ==
                [Arithmetic, Relational, Logical, Literal, Conditional, List] ++
-                 [Collection, CollectionArity, StringCall, StringLiteral, FloatLiteral] ++
-                 [AtomLiteral, CharlistLiteral, MapLiteral, TupleLiteral, BitstringLiteral] ++
-                 [RegexLiteral, DateTimeLiteral, AliasLiteral, ReturnValue] ++
+                 [Collection, CollectionArity, StringCall, MapKeyword, StringLiteral] ++
+                 [FloatLiteral, AtomLiteral, CharlistLiteral, MapLiteral, TupleLiteral] ++
+                 [BitstringLiteral, RegexLiteral, DateTimeLiteral, AliasLiteral, ReturnValue] ++
                  [PatternSwap, PatternWildcard]
     end
 
@@ -45,9 +46,9 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.families() ==
                [:arithmetic, :relational, :logical, :literal, :conditional, :list] ++
-                 [:collection, :collection_arity, :string_call, :string, :float, :atom] ++
-                 [:charlist, :map, :tuple, :bitstring, :regex, :datetime, :alias, :return_value] ++
-                 [:pattern_swap, :pattern_wildcard]
+                 [:collection, :collection_arity, :string_call, :map_keyword, :string] ++
+                 [:float, :atom, :charlist, :map, :tuple, :bitstring, :regex, :datetime] ++
+                 [:alias, :return_value, :pattern_swap, :pattern_wildcard]
     end
 
     test "resolve/1 maps family atoms to modules, preserving order" do
@@ -419,6 +420,30 @@ defmodule Mutare.MutatorsTest do
 
     test "name" do
       assert StringCall.name() == :string_call
+    end
+  end
+
+  describe "MapKeyword" do
+    test "swaps put and put_new on Map and Keyword, keeping arguments" do
+      assert render(MapKeyword.mutate(parse("Map.put(m, k, v)"))) == ["Map.put_new(m, k, v)"]
+      assert render(MapKeyword.mutate(parse("Map.put_new(m, k, v)"))) == ["Map.put(m, k, v)"]
+
+      assert render(MapKeyword.mutate(parse("Keyword.put(kw, k, v)"))) ==
+               ["Keyword.put_new(kw, k, v)"]
+
+      assert render(MapKeyword.mutate(parse("Keyword.put_new(kw, k, v)"))) ==
+               ["Keyword.put(kw, k, v)"]
+    end
+
+    test "skips unrelated functions and other modules" do
+      assert MapKeyword.mutate(parse("Map.delete(m, k)")) == :skip
+      assert MapKeyword.mutate(parse("Map.put_new_lazy(m, k, f)")) == :skip
+      assert MapKeyword.mutate(parse("Other.put(m, k, v)")) == :skip
+      assert MapKeyword.mutate(parse("put(m, k, v)")) == :skip
+    end
+
+    test "name" do
+      assert MapKeyword.name() == :map_keyword
     end
   end
 

@@ -568,6 +568,26 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "MapKeyword (put/put_new overwrite-semantics swaps)" do
+    test "swaps put/put_new in place, records the bare swap, and compiles — including in a pipe" do
+      source = """
+      defmodule M do
+        def a(m, k, v), do: Map.put(m, k, v)
+        def b(kw, k, v), do: kw |> Keyword.put_new(k, v)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.MapKeyword])
+
+      mutated = for s <- sites, s.mutator == :map_keyword, do: s.mutated_code
+      assert "Map.put_new(m, k, v)" in mutated
+      # Arity-blind, so it is correct as a pipe stage with no special handling.
+      assert "Keyword.put(k, v)" in mutated
+      assert_compiles(meta)
+    end
+  end
+
   describe "atom-literal context routing (keys and patterns are not mutated)" do
     @atom [Mutare.Mutators.AtomLiteral]
 
