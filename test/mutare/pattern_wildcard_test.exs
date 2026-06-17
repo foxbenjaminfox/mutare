@@ -65,6 +65,13 @@ defmodule Mutare.Mutators.PatternWildcardTest do
     test "the value side of a segment is still a real, wildcardable variable" do
       assert wildcards("<<x::binary>>, x", [:x]) == ["f(<<_::binary>>, x)", "f(<<x::binary>>, _)"]
     end
+
+    # A size variable bound in-binary *and* again as a plain arg looks like a duplicate,
+    # but wildcarding the in-binary binding strands the `size(n)` read (a CompileError).
+    # A spec-read name is excluded from wildcarding even when bound elsewhere.
+    test "a name read in a spec is excluded even when bound again outside the bitstring" do
+      assert wildcards("<<n, rest::binary-size(n)>>, n", []) == []
+    end
   end
 
   describe "no-ops" do

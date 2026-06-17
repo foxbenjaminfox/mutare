@@ -44,7 +44,10 @@ defmodule Mutare.Mutators.PatternWildcard do
   Nor is the **specifier side of a bitstring segment** (`<<v::binary>>`, `<<v::size(k)>>`):
   a type atom like `binary` parses identically to a variable, so counting it would
   invent a phantom duplicate of a same-named value/arg, and replacing it yields an
-  illegal `<<v::_>>`. The walk descends only the *value* side of a `::` segment.
+  illegal `<<v::_>>`. The walk descends only the *value* side of a `::` segment. A name
+  *read* in a spec (a `size(k)` reference) is excluded from wildcarding entirely, even
+  when it is also bound elsewhere in the head (`f(<<n, r::size(n)>>, n)`): a size variable
+  must be bound earlier in the same bitstring, so wildcarding that binding strands the read.
   """
   @behaviour Mutare.Mutator
 
@@ -67,11 +70,21 @@ defmodule Mutare.Mutators.PatternWildcard do
   @impl Mutare.Mutator
   @spec pattern_mutations([Macro.t()], MapSet.t()) :: [[Macro.t()]]
   def pattern_mutations(head_args, used_outside) when is_list(head_args) do
+    # A name *read* inside a bitstring spec (the `n` in `<<n, rest::binary-size(n)>>`)
+    # must be left wholly alone — even when the same name is also bound elsewhere in the
+    # head. Elixir requires a size variable to be bound *earlier in the same bitstring*,
+    # so wildcarding that binding strands the read (`<<_, rest::binary-size(n)>>`, a hard
+    # CompileError). The walk already never *counts* a spec read (it descends only the
+    # value side of `::`), but a same-named binding elsewhere — `f(<<n, r::size(n)>>, n)`
+    # — still makes `n` look like a wildcardable duplicate, so spec-read names are excluded
+    # outright. `used_outside` can't express this: it only keeps *some* binding alive, not
+    # the specific in-binary one the size depends on.
+    spec_reads = spec_var_names(head_args)
     occurrences = collect_occurrences(head_args)
     counts = Enum.frequencies(Enum.map(occurrences, &elem(&1, 0)))
 
     counts
-    |> Enum.filter(fn {_name, count} -> count >= 2 end)
+    |> Enum.filter(fn {name, count} -> count >= 2 and not MapSet.member?(spec_reads, name) end)
     |> Enum.flat_map(fn {name, count} ->
       indices = for {n, i} <- occurrences, n == name, do: i
 
@@ -106,6 +119,33 @@ defmodule Mutare.Mutators.PatternWildcard do
       end)
 
     args
+  end
+
+  # The variable-shaped names appearing in any bitstring **spec** (the right of `::`) in
+  # the head — the `n` in `<<n, rest::binary-size(n)>>`, plus bare type atoms like
+  # `integer` (indistinguishable from a variable in the AST). Excluded from wildcarding
+  # (see `pattern_mutations/2`); over-collecting type atoms is the safe direction — it can
+  # only decline to mutate a name, never strand a binding.
+  defp spec_var_names(head_args) do
+    {_ast, names} =
+      Macro.prewalk(head_args, MapSet.new(), fn
+        {:"::", _meta, [_value, spec]} = node, acc -> {node, collect_var_names(spec, acc)}
+        node, acc -> {node, acc}
+      end)
+
+    names
+  end
+
+  defp collect_var_names(spec, acc) do
+    {_ast, names} =
+      Macro.prewalk(spec, acc, fn node, acc ->
+        case var_name(node) do
+          nil -> {node, acc}
+          name -> {node, MapSet.put(acc, name)}
+        end
+      end)
+
+    names
   end
 
   # --- variable walk (shared by both passes) --------------------------------------
