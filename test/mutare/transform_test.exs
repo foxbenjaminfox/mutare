@@ -568,6 +568,41 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "CallRemoval (transparent transform removal)" do
+    test "non-piped removal returns the first arg; piped removal uses Function.identity — both compile" do
+      source = """
+      defmodule R do
+        def a(xs), do: Enum.sort(xs, :desc)
+        def b(s), do: s |> String.trim() |> String.downcase()
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+
+      pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
+      # Non-piped: the whole transform collapses to its input.
+      assert {"Enum.sort(xs, :desc)", "xs"} in pairs
+      # Piped: each stage becomes a no-op the pipe feeds.
+      assert {"String.trim()", "Function.identity()"} in pairs
+      assert {"String.downcase()", "Function.identity()"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "map/filter are not removable" do
+      source = """
+      defmodule R do
+        def f(xs), do: xs |> Enum.map(& &1) |> Enum.filter(& &1)
+      end
+      """
+
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+
+      assert [] == Enum.filter(sites, &(&1.mutator == :call_removal))
+    end
+  end
+
   describe "MapKeyword (put/put_new overwrite-semantics swaps)" do
     test "swaps put/put_new in place, records the bare swap, and compiles — including in a pipe" do
       source = """

@@ -925,8 +925,11 @@ default**: **arithmetic** (now also unary `-x`→`x`), **relational**, **logical
 `trim_leading`↔`trim_trailing`, `first`↔`last`, …; the `String` sibling of
 `collection`), **map_keyword** (`Map.put`↔`put_new`, `Keyword.put`↔`put_new` —
 overwrite vs insert-if-absent; arity-blind; `:map` is taken by `MapLiteral`),
-**string** (a string → `""` *and* the sentinel `"mutare"`, dropping whichever
-already matches), and **float**.
+**call_removal** (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/
+`dedup`/`shuffle`, `List.flatten`, `String.trim`/`downcase`/… — leaving its first
+arg; in a pipe, replace the stage with `Function.identity()`; pipe-aware via
+`mutate/2`), **string** (a string → `""` *and* the sentinel `"mutare"`, dropping
+whichever already matches), and **float**.
 `Mutare.Mutators`'s `@registry` is the single ordered source of truth; `all/0`
 returns every registered module, so registering a family makes it default.
 (We briefly split a `:default`/`:optional` tier mirroring PIT's default-vs-

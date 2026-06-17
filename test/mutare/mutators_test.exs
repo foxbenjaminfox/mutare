@@ -8,6 +8,7 @@ defmodule Mutare.MutatorsTest do
     Arithmetic,
     AtomLiteral,
     BitstringLiteral,
+    CallRemoval,
     CharlistLiteral,
     Collection,
     CollectionArity,
@@ -35,10 +36,10 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.all() ==
                [Arithmetic, Relational, Logical, Literal, Conditional, List] ++
-                 [Collection, CollectionArity, StringCall, MapKeyword, StringLiteral] ++
-                 [FloatLiteral, AtomLiteral, CharlistLiteral, MapLiteral, TupleLiteral] ++
-                 [BitstringLiteral, RegexLiteral, DateTimeLiteral, AliasLiteral, ReturnValue] ++
-                 [PatternSwap, PatternWildcard]
+                 [Collection, CollectionArity, StringCall, MapKeyword, CallRemoval] ++
+                 [StringLiteral, FloatLiteral, AtomLiteral, CharlistLiteral, MapLiteral] ++
+                 [TupleLiteral, BitstringLiteral, RegexLiteral, DateTimeLiteral, AliasLiteral] ++
+                 [ReturnValue, PatternSwap, PatternWildcard]
     end
 
     test "families/0 are the registry's keys, in order — all on by default" do
@@ -46,9 +47,9 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.families() ==
                [:arithmetic, :relational, :logical, :literal, :conditional, :list] ++
-                 [:collection, :collection_arity, :string_call, :map_keyword, :string] ++
-                 [:float, :atom, :charlist, :map, :tuple, :bitstring, :regex, :datetime] ++
-                 [:alias, :return_value, :pattern_swap, :pattern_wildcard]
+                 [:collection, :collection_arity, :string_call, :map_keyword, :call_removal] ++
+                 [:string, :float, :atom, :charlist, :map, :tuple, :bitstring, :regex] ++
+                 [:datetime, :alias, :return_value, :pattern_swap, :pattern_wildcard]
     end
 
     test "resolve/1 maps family atoms to modules, preserving order" do
@@ -447,6 +448,44 @@ defmodule Mutare.MutatorsTest do
     end
   end
 
+  describe "CallRemoval" do
+    test "never fires node-locally (mutate/1 is always :skip)" do
+      assert CallRemoval.mutate(parse("Enum.sort(xs)")) == :skip
+      assert CallRemoval.mutate(parse("String.trim(s)")) == :skip
+    end
+
+    test "non-piped: drops the transform, returning its first argument" do
+      assert removal("Enum.sort(xs)", false) == ["xs"]
+      assert removal("Enum.sort(xs, :desc)", false) == ["xs"]
+      assert removal("Enum.reverse(xs)", false) == ["xs"]
+      assert removal("Enum.uniq_by(xs, f)", false) == ["xs"]
+      assert removal("List.flatten(xs)", false) == ["xs"]
+      assert removal("String.trim(s)", false) == ["s"]
+      assert removal("String.downcase(s)", false) == ["s"]
+    end
+
+    test "piped: replaces the stage with Function.identity() (a no-op the pipe feeds)" do
+      # `x |> Enum.sort(:desc)` reaches us as a 1-arg node; the piped flag means the
+      # input is the |> LHS, so we must NOT return the comparator — identity instead.
+      assert removal("Enum.sort()", true) == ["Function.identity()"]
+      assert removal("Enum.sort(:desc)", true) == ["Function.identity()"]
+      assert removal("String.trim()", true) == ["Function.identity()"]
+      assert removal("Enum.uniq()", true) == ["Function.identity()"]
+    end
+
+    test "excludes map/filter/reduce and unrelated calls" do
+      assert CallRemoval.mutate(parse("Enum.map(xs, f)"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse("Enum.filter(xs, f)"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse("Enum.reduce(xs, 0, f)"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse("Other.sort(xs)"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse("local(xs)"), %{piped: false}) == :skip
+    end
+
+    test "name" do
+      assert CallRemoval.name() == :call_removal
+    end
+  end
+
   describe "StringLiteral" do
     test "mutates a non-empty string into both the empty string and the sentinel" do
       assert render(StringLiteral.mutate(parse(~s("hello")))) == [~s(""), ~s("mutare")]
@@ -678,4 +717,7 @@ defmodule Mutare.MutatorsTest do
   # visible args + (piped? 1 : 0).
   defp arity(src, piped?),
     do: render(Mutare.Mutators.CollectionArity.mutate(parse(src), %{piped: piped?}))
+
+  defp removal(src, piped?),
+    do: render(Mutare.Mutators.CallRemoval.mutate(parse(src), %{piped: piped?}))
 end

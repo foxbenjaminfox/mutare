@@ -266,6 +266,10 @@ contract between them is the whole game.
   `first`↔`last`; the `String` sibling of Collection, recognising only unaliased `String.` calls),
   MapKeyword (`Map.put`↔`put_new`, `Keyword.put`↔`put_new` — overwrite vs insert-if-absent;
   arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),
+  CallRemoval (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/`dedup`/`shuffle`,
+  `List.flatten`, `String.trim`/`downcase`/`upcase`/… — leaving its first arg; in a pipe the stage
+  becomes `Function.identity()` (`x |> Enum.sort()` → `x |> Function.identity()` ≡ `x`); pipe-aware
+  via the optional `mutate/2`, so `map`/`filter`/`reduce` are deliberately excluded),
   StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, AtomLiteral (a
   literal atom → the sentinel `:mutare`; `true`/`false`/`nil` excluded — Literal/Conditional own
   them; keys excluded *positionally* by `Transform`, not the mutator — and patterns excluded

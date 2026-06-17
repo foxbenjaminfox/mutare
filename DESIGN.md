@@ -125,6 +125,7 @@ Realization is **positional, not declared** by the mutator: the same `mutate/1` 
 | CollectionArity | arity-*changing* `Enum` calls: `sort`/`sort_by`→`reverse` (drop comparator/key), `count/2`→`count/1`, `count_until/3`→`/2`, `reverse/1`↔`sort/1` — **pipe-aware** (via `mutate/2`) |
 | StringCall | `String.starts_with?`↔`ends_with?`, `upcase`↔`downcase`, `trim_leading`↔`trailing`, `first`↔`last`, … |
 | MapKeyword | `Map.put`↔`put_new`, `Keyword.put`↔`put_new` (overwrite vs insert-if-absent; arity-blind) |
+| CallRemoval | remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/`dedup`, `List.flatten`, `String.trim`/`downcase`, … → its first arg (in a pipe: `Function.identity()`); **pipe-aware** |
 | StringLiteral | a string → `""` *and* `"mutare"` (drops the one matching the original) |
 | FloatLiteral | floats `x`→`{x±1.0, 0.0}` |
 | **Return value** | a function clause's return-path tail (`:do`, and each `rescue`/`catch`/`else` clause body) → a contrasting *pair*: empty/zero + a non-nil sentinel (numeric→`0`/`1`, `<>`→`""`/`"mutare"`, `++`/`--`→`[]`/`[:mutare]`, else→`nil`/`:mutare`) — structural, in place |

@@ -37,6 +37,7 @@ defmodule Mutare.Mutators do
     collection_arity: Mutare.Mutators.CollectionArity,
     string_call: Mutare.Mutators.StringCall,
     map_keyword: Mutare.Mutators.MapKeyword,
+    call_removal: Mutare.Mutators.CallRemoval,
     string: Mutare.Mutators.StringLiteral,
     float: Mutare.Mutators.FloatLiteral,
     atom: Mutare.Mutators.AtomLiteral,
