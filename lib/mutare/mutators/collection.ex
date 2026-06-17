@@ -16,6 +16,14 @@ defmodule Mutare.Mutators.Collection do
   the argument list always compiles. These are remote calls — never legal in a
   guard — so guard-safety is automatic.
 
+  Note the family is deliberately **arity-blind**: it only renames, never adds or
+  drops an argument. That is what keeps it correct in a pipe, where the stage's
+  node has one fewer argument than the source reads (the piped value is the `|>`
+  LHS, not in the call) — a rename valid at every arity stays valid there. An
+  arity-*discriminating* swap (e.g. `Enum.sort`↔`Enum.reverse`, whose 2-arg forms
+  diverge — `reverse/2` is `reverse(list, tail)`) can't be expressed here, because
+  a pipe stage's node arity is ambiguous and off-by-one. See `NOTES.md`.
+
   On by default — the Elixir-flavoured family. High signal on idiomatic
   collection code. It recognises only unaliased `Enum`/`List` calls by name, so a
   shadowing alias simply isn't matched (no false mutation).
