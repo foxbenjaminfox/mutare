@@ -131,6 +131,20 @@ defmodule Mutare.Mutator do
   def effective_arity(args, piped?) when is_list(args),
     do: length(args) + if(piped?, do: 1, else: 0)
 
+  @doc """
+  Map an **effective** argument index to the index into a call node's *visible*
+  `args`, given pipe context — the inverse of the `effective_arity/2` off-by-one.
+
+  When piped, effective index `0` is the `|>` left side, which isn't in the
+  node's own `args`, so it has no visible index (`nil`) and every later index
+  shifts down by one. Unpiped, effective and visible indices coincide. The single
+  home for that mapping — see `Mutare.Mutators.{ModeSwap,CollectionArity}`.
+  """
+  @spec visible_index(non_neg_integer(), boolean()) :: non_neg_integer() | nil
+  def visible_index(pos, false), do: pos
+  def visible_index(0, true), do: nil
+  def visible_index(pos, true), do: pos - 1
+
   @doc "Whether `term` is a module that implements this behaviour."
   @spec implemented_by?(term()) :: boolean()
   def implemented_by?(module) when is_atom(module) do

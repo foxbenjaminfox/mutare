@@ -65,6 +65,7 @@ defmodule Mutare.Manifest do
   ranges. (Sourceror is still the *renderer*; only this readback parse changed.)
   """
 
+  alias Mutare.AST
   alias Mutare.Metamutant
 
   @typedoc "A generated line range and the mutant ids whose code occupies it."
@@ -100,7 +101,7 @@ defmodule Mutare.Manifest do
   # everything it reads, far faster than `Sourceror.parse_string!` (whose extra
   # comment-merging pass is quadratic on a megabyte-scale lifted file). The
   # `:literal_encoder` mirrors Sourceror's `{:__block__, meta, [literal]}` wrapping
-  # so the recognisers (`Metamutant.subject?/1`, `clause_id/1`, `key_atom/1`) see
+  # so the recognisers (`Metamutant.subject?/1`, `clause_id/1`, `AST.key_atom/1`) see
   # the shape they already handle — the two parses produce identical ranges.
   defp parse(source) do
     Code.string_to_quoted!(source,
@@ -204,16 +205,12 @@ defmodule Mutare.Manifest do
   # The `do:` clause list of a `case`, tolerant of Sourceror's keyword-key wrapping.
   defp do_block(kw) when is_list(kw) do
     Enum.find_value(kw, fn
-      {key, value} -> if key_atom(key) == :do, do: value
+      {key, value} -> if AST.key_atom(key) == :do, do: value
       _ -> nil
     end)
   end
 
   defp do_block(_), do: nil
-
-  defp key_atom({:__block__, _meta, [atom]}) when is_atom(atom), do: atom
-  defp key_atom(atom) when is_atom(atom), do: atom
-  defp key_atom(_), do: nil
 
   # The integer pattern of a mutant clause (`<id> -> …`); `nil` for the catch-all.
   # Sourceror wraps the literal in a `:__block__`; a bare integer is also accepted.

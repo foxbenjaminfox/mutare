@@ -14,7 +14,7 @@ defmodule Mutare.Mutators.StringLiteral do
 
   alias Mutare.AST
 
-  @sentinel "mutare"
+  @sentinel AST.sentinel_string()
 
   @impl Mutare.Mutator
   def name, do: :string

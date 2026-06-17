@@ -44,7 +44,9 @@ defmodule Mutare.Mutators.RegexLiteral do
   """
   @behaviour Mutare.Mutator
 
-  @sentinel "mutare"
+  alias Mutare.AST
+
+  @sentinel AST.sentinel_string()
 
   # `\d`/`\w`/`\s` mean the same inside or outside a character class, so they can be
   # complemented anywhere; `\b` is a word boundary outside a class but a backspace

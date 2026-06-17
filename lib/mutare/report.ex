@@ -106,6 +106,13 @@ defmodule Mutare.Report do
   end
 
   @doc """
+  Format a percentage value (already on a 0..100 scale) to one decimal place,
+  without a trailing `%`. The single home for the score/percent number format.
+  """
+  @spec percent(number()) :: String.t()
+  def percent(value), do: :erlang.float_to_binary(value / 1, decimals: 1)
+
+  @doc """
   Whether `results` meet a minimum score (a percentage). A `nil` minimum always
   passes — this is the CI gate's decision, kept pure here so it is testable.
   """
@@ -182,7 +189,7 @@ defmodule Mutare.Report do
       |> Enum.join(", ")
 
     score = score_from_tally(counts)
-    "mutation score: #{:erlang.float_to_binary(score, decimals: 1)}%  (#{tally})"
+    "mutation score: #{percent(score)}%  (#{tally})"
   end
 
   # --- internals -----------------------------------------------------------

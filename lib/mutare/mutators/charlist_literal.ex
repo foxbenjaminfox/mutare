@@ -17,7 +17,9 @@ defmodule Mutare.Mutators.CharlistLiteral do
   """
   @behaviour Mutare.Mutator
 
-  @sentinel "mutare"
+  alias Mutare.AST
+
+  @sentinel AST.sentinel_string()
 
   @impl Mutare.Mutator
   def name, do: :charlist

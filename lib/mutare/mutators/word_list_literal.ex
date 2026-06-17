@@ -23,7 +23,9 @@ defmodule Mutare.Mutators.WordListLiteral do
   """
   @behaviour Mutare.Mutator
 
-  @sentinel "mutare"
+  alias Mutare.AST
+
+  @sentinel AST.sentinel_string()
 
   @impl Mutare.Mutator
   def name, do: :word_list

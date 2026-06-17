@@ -84,8 +84,8 @@ defmodule Mutare.Mutators.ReturnValue do
   # `[:mutare]`, `"mutare"`) — the same recognizable marker `StringLiteral` uses,
   # so a surviving sentinel reads unambiguously in a report as "the value is not
   # pinned, only its presence". Numeric tails use `1` (no string sentinel fits).
-  @sentinel "mutare"
-  @sentinel_atom :mutare
+  @sentinel AST.sentinel_string()
+  @sentinel_atom AST.sentinel_atom()
 
   @impl Mutare.Mutator
   def name, do: :return_value
@@ -110,7 +110,7 @@ defmodule Mutare.Mutators.ReturnValue do
       boolean_valued?(tail) -> []
       quote_block?(tail) -> []
       redundant_literal?(tail) -> []
-      nil_tail?(tail) -> []
+      AST.nil_literal?(tail) -> []
       true -> contrasting_constants(tail)
     end
   end
@@ -134,10 +134,6 @@ defmodule Mutare.Mutators.ReturnValue do
     do: true
 
   defp redundant_literal?(_), do: false
-
-  defp nil_tail?({:__block__, _meta, [nil]}), do: true
-  defp nil_tail?(nil), do: true
-  defp nil_tail?(_), do: false
 
   # A `quote` block builds macro AST — compile-time territory the transform leaves
   # whole (see the moduledoc). Keep return-value off it too.

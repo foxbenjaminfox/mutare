@@ -216,12 +216,10 @@ defmodule Mix.Tasks.Mutare do
   defp gate(results, min_score) do
     unless Report.passes_gate?(results, min_score) do
       Mix.raise(
-        "mutation score #{fmt(Report.score(results))}% is below the required minimum of #{fmt(min_score)}%"
+        "mutation score #{Report.percent(Report.score(results))}% is below the required minimum of #{Report.percent(min_score)}%"
       )
     end
   end
-
-  defp fmt(number), do: :erlang.float_to_binary(number / 1, decimals: 1)
 
   defp format_error(:nothing_to_mutate, detail), do: detail
 

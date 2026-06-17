@@ -37,6 +37,7 @@ defmodule Mutare.Transform.FunctionPlan do
   # (a `unit(0)` would not compile; a key is a label, not a value), mirroring the
   # in-place `:pattern` routing in `Mutare.Transform`.
 
+  alias Mutare.AST
   alias Mutare.Mutator
   alias Mutare.Transform.{Candidate, PatternStructure}
 
@@ -395,7 +396,7 @@ defmodule Mutare.Transform.FunctionPlan do
   # value. A non-label pair — a tuple `{1, 2}` or an arrow entry `1 => 2` — has no
   # `format: :keyword` key, so both sides descend and both literals mutate.
   defp tag_pattern_targets({key, value}, acc, mutators) do
-    if label_key?(key) do
+    if AST.keyword_label?(key) do
       {value, acc} = tag_pattern_targets(value, acc, mutators)
       {{key, value}, acc}
     else
@@ -441,7 +442,9 @@ defmodule Mutare.Transform.FunctionPlan do
   # sibling key. The value always descends normally.
   defp tag_map_pair({key, value}, key_values, acc, mutators) do
     {key, acc} =
-      if label_key?(key), do: {key, acc}, else: tag_pattern_key(key, key_values, acc, mutators)
+      if AST.keyword_label?(key),
+        do: {key, acc},
+        else: tag_pattern_key(key, key_values, acc, mutators)
 
     {value, acc} = tag_pattern_targets(value, acc, mutators)
     {{key, value}, acc}
@@ -490,14 +493,6 @@ defmodule Mutare.Transform.FunctionPlan do
         into: MapSet.new(),
         do: value
   end
-
-  # A keyword/map *key* (`format: :keyword`) — a structural label, never offered to
-  # a mutator. Block keys (`do:` …) can't appear in a head, so the value-side
-  # `@block_keys` check in `Mutare.Transform.label_key?/1` isn't needed here.
-  defp label_key?({:__block__, meta, [atom]}) when is_atom(atom) and is_list(meta),
-    do: Keyword.get(meta, :format) == :keyword
-
-  defp label_key?(_), do: false
 
   # === head-pattern structure candidates =====================================
 

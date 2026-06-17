@@ -14,6 +14,7 @@ defmodule Mutare.Transform.Analyze do
   # `module_scaffold_statement?/1` / `module_macro_block_statement?/1` /
   # `analyze_module_macro_block/2` that `Mutare.Transform.transform_statement/2` routes on.
 
+  alias Mutare.AST
   alias Mutare.Mutator
   alias Mutare.Transform.{Candidate, PatternStructure}
 
@@ -422,7 +423,7 @@ defmodule Mutare.Transform.Analyze do
   defp analyze_for_arg(opts, mutators) when is_list(opts) do
     Enum.map(opts, fn
       {key, _value} = pair ->
-        if key_atom(key) == :uniq, do: pair, else: analyze(pair, :runtime, mutators)
+        if AST.key_atom(key) == :uniq, do: pair, else: analyze(pair, :runtime, mutators)
 
       other ->
         analyze(other, :runtime, mutators)
@@ -579,12 +580,12 @@ defmodule Mutare.Transform.Analyze do
   # (preserving an `after` block). An absent `do` (shouldn't happen) → no clauses and an
   # identity rebuild, so the construct is still analyzed but offers no pattern mutants.
   defp receive_do_clauses(blocks, meta) do
-    case Enum.find(blocks, fn {key, _value} -> key_atom(key) == :do end) do
+    case Enum.find(blocks, fn {key, _value} -> AST.key_atom(key) == :do end) do
       {_do_key, clauses} when is_list(clauses) ->
         rebuild = fn new ->
           new_blocks =
             Enum.map(blocks, fn {key, value} ->
-              if key_atom(key) == :do, do: {key, new}, else: {key, value}
+              if AST.key_atom(key) == :do, do: {key, new}, else: {key, value}
             end)
 
           {:receive, meta, [new_blocks]}
@@ -741,26 +742,17 @@ defmodule Mutare.Transform.Analyze do
 
   defp attach_clause_return(analyzed, _raw), do: analyzed
 
-  defp do_key?(key), do: key_atom(key) == :do
-  defp clause_block_key?(key), do: key_atom(key) in @clause_block_keys
-
-  # The bare keyword atom, whether plain (`:do`) or Sourceror-wrapped
-  # (`{:__block__, _, [:do]}`).
-  defp key_atom({:__block__, _meta, [atom]}) when is_atom(atom), do: atom
-  defp key_atom(atom) when is_atom(atom), do: atom
-  defp key_atom(_), do: nil
+  defp do_key?(key), do: AST.key_atom(key) == :do
+  defp clause_block_key?(key), do: AST.key_atom(key) in @clause_block_keys
 
   # Is `key` the *label* side of a keyword/block pair (so never a runtime value)?
-  # Two kinds, both wrapped `{:__block__, meta, [atom]}`: an inline keyword key
-  # (`a:`, `timeout:`, `do:` written inline) carries `format: :keyword`; a block key
-  # (the `do`/`else`/`rescue`/`catch`/`after` that renders a `do … end`) carries no
-  # format marker, so it is recognised by its reserved atom. A plain atom literal in
-  # value position (a tuple tag `{:ok, x}`, a `%{:a => …}` arrow key) is neither, so
-  # it stays mutatable.
-  defp label_key?({:__block__, meta, [atom]}) when is_atom(atom) and is_list(meta),
-    do: Keyword.get(meta, :format) == :keyword or atom in @block_keys
-
-  defp label_key?(_), do: false
+  # Two kinds: an inline keyword key (`a:`, `timeout:`, `do:` written inline) carries
+  # `format: :keyword` (the shared `AST.keyword_label?/1` check); a block key (the
+  # `do`/`else`/`rescue`/`catch`/`after` that renders a `do … end`) carries no format
+  # marker, so it is recognised by its reserved atom (`block_key?/1`). A plain atom
+  # literal in value position (a tuple tag `{:ok, x}`, a `%{:a => …}` arrow key) is
+  # neither, so it stays mutatable.
+  defp label_key?(key), do: AST.keyword_label?(key) or block_key?(key)
 
   # Find the tail expression of a `:do` block (the last statement of a multi-
   # statement block, else the whole single-expression value) and append a
@@ -974,7 +966,7 @@ defmodule Mutare.Transform.Analyze do
     end)
   end
 
-  defp block_key?(key), do: key_atom(key) in @block_keys
+  defp block_key?(key), do: AST.key_atom(key) in @block_keys
 
   # === shared helpers ========================================================
 

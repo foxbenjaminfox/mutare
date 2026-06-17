@@ -368,5 +368,5 @@ defmodule Mutare.Runner do
       "sandbox, or raise --max-harness-error-rate to proceed anyway."
   end
 
-  defp pct(rate), do: "#{:erlang.float_to_binary(rate * 100 / 1, decimals: 1)}%"
+  defp pct(rate), do: "#{Report.percent(rate * 100)}%"
 end

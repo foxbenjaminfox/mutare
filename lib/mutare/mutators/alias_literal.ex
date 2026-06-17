@@ -32,7 +32,9 @@ defmodule Mutare.Mutators.AliasLiteral do
   """
   @behaviour Mutare.Mutator
 
-  @sentinel [:Mutare, :Mutant]
+  alias Mutare.AST
+
+  @sentinel AST.sentinel_alias()
 
   @impl Mutare.Mutator
   def name, do: :alias

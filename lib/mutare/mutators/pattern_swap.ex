@@ -54,6 +54,7 @@ defmodule Mutare.Mutators.PatternSwap do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
   alias Mutare.Transform.PatternStructure
 
   @impl Mutare.Mutator
@@ -191,13 +192,8 @@ defmodule Mutare.Mutators.PatternSwap do
   # A keyword-list entry: a 2-tuple whose key is an inline keyword label (`a:`), carrying
   # Sourceror's `format: :keyword` marker. Distinguishes `[a: x]` from a plain tuple
   # element `[{x, y}]` (which Sourceror wraps in a `:__block__`, not a bare 2-tuple).
-  defp keyword_pair?({key, _value}), do: label_key?(key)
+  defp keyword_pair?({key, _value}), do: AST.keyword_label?(key)
   defp keyword_pair?(_), do: false
-
-  defp label_key?({:__block__, meta, [atom]}) when is_atom(atom) and is_list(meta),
-    do: Keyword.get(meta, :format) == :keyword
-
-  defp label_key?(_), do: false
 
   # Swap the *values* of two bitstring segments whose values are distinct-named
   # variables, leaving each type/size spec in place. A value read as a size elsewhere in

@@ -26,4 +26,54 @@ defmodule Mutare.AST do
   @spec literal(term()) :: Macro.t()
   def literal(value) when is_binary(value), do: {:__block__, [delimiter: ~s(")], [value]}
   def literal(value), do: {:__block__, [], [value]}
+
+  @doc """
+  The bare keyword atom of a key node, whether plain (`:do`) or Sourceror-wrapped
+  (`{:__block__, _, [:do]}`); `nil` for anything that isn't an atom key.
+  """
+  @spec key_atom(Macro.t()) :: atom() | nil
+  def key_atom({:__block__, _meta, [atom]}) when is_atom(atom), do: atom
+  def key_atom(atom) when is_atom(atom), do: atom
+  def key_atom(_), do: nil
+
+  @doc """
+  Whether `node` is an *inline keyword label* — the key side of an `a: x` pair,
+  which Sourceror wraps as `{:__block__, meta, [atom]}` carrying a
+  `format: :keyword` marker. Such a key is a structural label, never a runtime
+  value, so it must not be offered to a mutator.
+
+  This is the head/pattern-context check (`format: :keyword` only). The value
+  context additionally treats block keys (`do`/`else`/…) as labels — that fuller
+  rule lives in `Mutare.Transform.Analyze`, which owns the block-key set.
+  """
+  @spec keyword_label?(Macro.t()) :: boolean()
+  def keyword_label?({:__block__, meta, [atom]}) when is_atom(atom) and is_list(meta),
+    do: Keyword.get(meta, :format) == :keyword
+
+  def keyword_label?(_), do: false
+
+  @doc """
+  Whether `node` is a `nil` literal in either bare or Sourceror-wrapped form.
+  """
+  @spec nil_literal?(Macro.t()) :: boolean()
+  def nil_literal?(nil), do: true
+  def nil_literal?({:__block__, _meta, [nil]}), do: true
+  def nil_literal?(_), do: false
+
+  @doc """
+  The survivor sentinel as a string: a value distinctive enough to flag a
+  surviving mutant in a report, yet unlikely to occur in real code. The literal
+  families (`StringLiteral`, `ReturnValue`, …) all substitute it, so the single
+  word lives here.
+  """
+  @spec sentinel_string() :: String.t()
+  def sentinel_string, do: "mutare"
+
+  @doc "The survivor sentinel as an atom (`:mutare`)."
+  @spec sentinel_atom() :: atom()
+  def sentinel_atom, do: :mutare
+
+  @doc "The survivor sentinel as a module-alias path (`Mutare.Mutant`)."
+  @spec sentinel_alias() :: [atom()]
+  def sentinel_alias, do: [:Mutare, :Mutant]
 end

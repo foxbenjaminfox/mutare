@@ -34,7 +34,7 @@ defmodule Mutare.Mutators.AtomLiteral do
 
   alias Mutare.AST
 
-  @sentinel :mutare
+  @sentinel AST.sentinel_atom()
 
   @impl Mutare.Mutator
   def name, do: :atom
