@@ -29,7 +29,7 @@ defmodule Mutare.Transform do
        `Macro.traverse` accumulator. Three contexts are threaded — `:runtime`
        (mutate, → in-place; `:guard`/`:clause_drop`/head-pattern literals come from
        the lift path), `:pattern` (don't mutate in place, but keep descending so
-       default-arg values and `size()` args are reached), and `:scaffold` (a
+       default-arg values and `size()` args are reached), and `:scaffold` (a known
        compile-time module-level statement: descend but never mutate its own
        expressions — they run once at compile time, so a selector there is inert —
        yet still reach any explicit `def` body, which flips back to `:runtime`);
@@ -136,6 +136,31 @@ defmodule Mutare.Transform do
   # `format: :keyword` marker, so `label_key?/1` recognises them by atom — protecting
   # a key like `do:` from being mutated (which would not even render).
   @block_keys [:do, :else, :rescue, :catch, :after]
+
+  # Module-level forms whose block/children are known compile-time structure.
+  # Unknown module-level macro calls with a block are handled separately so a DSL
+  # that unquotes its `do` body into generated runtime functions keeps body mutants.
+  @module_scaffold_forms [
+    :@,
+    :if,
+    :unless,
+    :for,
+    :case,
+    :cond,
+    :with,
+    :try,
+    :receive,
+    :quote,
+    :defmacro,
+    :defmacrop,
+    :defimpl,
+    :defprotocol,
+    :defdelegate,
+    :import,
+    :alias,
+    :require,
+    :use
+  ]
 
   @doc """
   Transform a source string into `{metamutant_source, [%Site{}], next_id}`.
@@ -312,7 +337,7 @@ defmodule Mutare.Transform do
     end)
   end
 
-  # A non-clause-group module statement (an `{:other}` in the plan). Three routes:
+  # A non-clause-group module statement (an `{:other}` in the plan). Four routes:
   #
   #   * a nested `defmodule` recurses through the full planner
   #     (`transform_node`), so an inner module is lifted/mutated like a top-level one;
@@ -320,7 +345,10 @@ defmodule Mutare.Transform do
   #     children back through this module-statement pipeline — clause groups still
   #     plan together, nested scopes still recurse, and compile-time-only children
   #     stay scaffolded instead of falling into the runtime expression walk;
-  #   * every other module statement is compile-time **`:scaffold`**. A module body
+  #   * an unknown module-level macro call with a block keeps the macro shell and
+  #     non-block args compile-time, but analyzes block bodies as runtime because
+  #     a DSL macro may unquote them into generated functions;
+  #   * known compile-time module statements are **`:scaffold`**. A module body
   #     runs **once, at compile time, with mutant 0 active**, so a selector spliced
   #     into the statement's own expressions (an `if` condition, a `for` generator,
   #     a bare module-body calculation, an unquoted generated head pattern) could
@@ -337,7 +365,58 @@ defmodule Mutare.Transform do
     {{:__block__, meta, statements}, ctx}
   end
 
-  defp transform_statement(node, ctx), do: node |> analyze(:scaffold, ctx.mutators) |> emit(ctx)
+  defp transform_statement(node, ctx) do
+    cond do
+      module_scaffold_statement?(node) ->
+        node |> analyze(:scaffold, ctx.mutators) |> emit(ctx)
+
+      module_macro_block_statement?(node) ->
+        node |> analyze_module_macro_block(ctx.mutators) |> emit(ctx)
+
+      true ->
+        node |> analyze(:scaffold, ctx.mutators) |> emit(ctx)
+    end
+  end
+
+  defp module_scaffold_statement?({form, _meta, _args}) when form in @module_scaffold_forms,
+    do: true
+
+  defp module_scaffold_statement?(_node), do: false
+
+  defp module_macro_block_statement?({_form, _meta, args}) when is_list(args) and args != [] do
+    case List.last(args) do
+      kw when is_list(kw) -> block_keyword_list?(kw)
+      _other -> false
+    end
+  end
+
+  defp module_macro_block_statement?(_node), do: false
+
+  defp block_keyword_list?(kw) do
+    Enum.any?(kw, fn
+      {key, _value} -> block_key?(key)
+      _other -> false
+    end)
+  end
+
+  defp analyze_module_macro_block({form, meta, args}, mutators) do
+    {init, [last]} = Enum.split(args, -1)
+    init = Enum.map(init, &analyze(&1, :scaffold, mutators))
+    {form, meta, init ++ [analyze_module_macro_block_arg(last, mutators)]}
+  end
+
+  defp analyze_module_macro_block_arg(kw, mutators) when is_list(kw) do
+    Enum.map(kw, fn
+      {key, value} ->
+        context = if block_key?(key), do: :runtime, else: :scaffold
+        {key, analyze(value, context, mutators)}
+
+      other ->
+        analyze(other, :scaffold, mutators)
+    end)
+  end
+
+  defp block_key?(key), do: key_atom(key) in @block_keys
 
   # Emit a lifted clause group: the `__orig` copies (carrying in-place body
   # selectors), one private `__mut` copy per lifted candidate, and the public

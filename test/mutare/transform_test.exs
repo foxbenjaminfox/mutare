@@ -1103,6 +1103,35 @@ defmodule Mutare.TransformTest do
       assert_compiles(meta)
     end
 
+    test "an unknown module-level macro block keeps its generated runtime body mutatable" do
+      source = """
+      defmodule RuntimeDSL do
+        defmacro runtime_fun(name, do: body) do
+          quote do
+            def unquote(name)(), do: unquote(body)
+          end
+        end
+      end
+
+      defmodule UsesRuntimeDSL do
+        import RuntimeDSL
+
+        runtime_fun :value do
+          1 + 2
+        end
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.AtomLiteral]
+        )
+
+      refute Enum.any?(sites, &(&1.original_code == ":value"))
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic and &1.original_code == "1 + 2"))
+      assert_compiles(meta)
+    end
+
     test "a conditionally-defined function: the `if` condition is inert, the body mutates" do
       source = """
       defmodule Cond do

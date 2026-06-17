@@ -17,8 +17,8 @@ defmodule Mutare.Transform.ModulePlan do
   #     still mutate); used for groups that can't or needn't lift, and for
   #     non-consecutive clauses (see below);
   #   * `{:statement, node}`       — any other statement, classified by
-  #     `Mutare.Transform` as a nested scope, a statement block, or compile-time
-  #     scaffold.
+  #     `Mutare.Transform` as a nested scope, a statement block, a macro block, or
+  #     compile-time scaffold.
 
   require Logger
 
