@@ -21,7 +21,7 @@ mix test test/mutare/transform_test.exs          # a single file
 mix test test/mutare/transform_test.exs:42       # a single test (by line)
 mix format
 mix compile --warnings-as-errors      # CI-style; the project is kept warnings-clean
-mix mutare examples/toy               # run the tool against the bundled demo project
+mix mutare examples/auth              # run the tool against a bundled demo project
 mix run script.exs                    # ad-hoc exploration in the lib context (uses MIX_ENV=dev)
 ```
 

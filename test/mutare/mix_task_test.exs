@@ -33,18 +33,19 @@ defmodule Mix.Tasks.MutareTest do
 
   @tag :runner
   @tag timeout: 180_000
-  test "end to end against the toy: prints survivors, writes a JSON report, and gates on --min-score" do
+  test "end to end against an example: prints survivors, writes a JSON report, and gates on --min-score" do
     sandbox = Project.tmp_dir(:task)
     out = Path.join(System.tmp_dir!(), "mutare_report_#{System.unique_integer([:positive])}.json")
     on_exit(fn -> File.rm_rf!(sandbox) end)
     on_exit(fn -> File.rm(out) end)
 
-    # The toy has surviving mutants (well under 100%), so a 100% floor must fail.
-    # `--format json --output` adds a file reporter; both reporters run *before*
-    # the gate, so the human report prints and the JSON is written even on a fail.
+    # The example has surviving mutants (well under 100%), so a 100% floor must
+    # fail. `--format json --output` adds a file reporter; both reporters run
+    # *before* the gate, so the human report prints and the JSON is written even
+    # on a fail.
     assert_raise Mix.Error, ~r/below the required minimum/, fn ->
       Mix.Tasks.Mutare.run([
-        "examples/toy",
+        "examples/auth",
         "--min-score",
         "100",
         "--format",

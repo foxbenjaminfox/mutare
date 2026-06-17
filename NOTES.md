@@ -59,8 +59,8 @@ Implementation notes:
 `Mutare.Sandbox` copies the whole project (excluding `_build`/`.git`, keeping
 `deps`) to a temp dir. Consequences:
 - **Path deps don't resolve in the copy.** A target using `{:mutare, path: ...}`
-  (or any local path dep) breaks in `/tmp`. That's why the example is driven via
-  `mix mutare examples/toy` (positional root) rather than depending on Mutare.
+  (or any local path dep) breaks in `/tmp`. That's why the examples are driven via
+  `mix mutare examples/<name>` (positional root) rather than depending on Mutare.
   Hex deps are fine (they're under the copied `deps/`).
 - We don't run `mix deps.get` in the sandbox; relies on the original having
   fetched deps already. Fine for the common case, revisit for robustness.
