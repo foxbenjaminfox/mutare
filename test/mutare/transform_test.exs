@@ -1008,12 +1008,57 @@ defmodule Mutare.TransformTest do
     end
   end
 
-  describe "metaprogramming scaffold (def created inside if/for) routes to compile-time" do
+  describe "module-level compile-time statements route through scaffold context" do
     # A module body runs *once*, at compile time, with mutant 0 active — so a selector
-    # spliced into the scaffold that *defines* functions (the `if` condition, the `for`
-    # generator, an unquoted head pattern) could never activate at runtime. Those are
-    # left inert; only the generated `def` *bodies* (runtime) are mutated. Lifting stays
-    # off for such functions (no guard/clause-drop/head-pattern mutants).
+    # spliced into a module-level statement (the `if` condition, the `for` generator,
+    # an unquoted generated head pattern, or a bare compile-time calculation) could
+    # never activate at runtime. Those are left inert; explicit `def` *bodies*
+    # reached from the scaffold still mutate. Lifting stays off for such functions
+    # (no guard/clause-drop/head-pattern mutants).
+
+    test "an if with no definitions is inert, while ordinary function bodies still mutate" do
+      source = """
+      defmodule CompileOnlyIf do
+        if true do
+          Module.put_attribute(__MODULE__, :compile_only, 1 + 2)
+        end
+
+        def run(x), do: x + 3
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.Literal]
+        )
+
+      assert meta =~ "if true do"
+      refute Enum.any?(sites, &(&1.original_code in ["true", "1 + 2"]))
+      assert Enum.any?(sites, &(&1.original_code == "x + 3"))
+      assert_compiles(meta)
+    end
+
+    test "a for with no definitions is inert, while ordinary function bodies still mutate" do
+      source = """
+      defmodule CompileOnlyFor do
+        for n <- [1, 2] do
+          Module.put_attribute(__MODULE__, :seen, n + 1)
+        end
+
+        def run(x), do: x + 10
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.List]
+        )
+
+      assert meta =~ "for n <- [1, 2] do"
+      refute Enum.any?(sites, &(&1.original_code in ["[1, 2]", "n + 1"]))
+      assert Enum.any?(sites, &(&1.original_code == "x + 10"))
+      assert_compiles(meta)
+    end
 
     test "a conditionally-defined function: the `if` condition is inert, the body mutates" do
       source = """

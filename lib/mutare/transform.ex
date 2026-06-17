@@ -30,10 +30,10 @@ defmodule Mutare.Transform do
        (mutate, → in-place; `:guard`/`:clause_drop`/head-pattern literals come from
        the lift path), `:pattern` (don't mutate in place, but keep descending so
        default-arg values and `size()` args are reached), and `:scaffold` (a
-       compile-time module-level `for`/`if`/… that *defines* functions: descend but
-       never mutate its own expressions — they run once at compile time, so a
-       selector there is inert — yet still reach each generated `def` body, which
-       flips back to `:runtime`); the rest (`:compile_time`, `:spec`, `:guard`,
+       compile-time module-level statement: descend but never mutate its own
+       expressions — they run once at compile time, so a selector there is inert —
+       yet still reach any explicit `def` body, which flips back to `:runtime`);
+       the rest (`:compile_time`, `:spec`, `:guard`,
        `:capture_arity`) are recognised and pruned, producing no candidate.
     2. **Plan** — a statement sequence is grouped into a `ModulePlan`; each
        liftable clause group becomes a `FunctionPlan` carrying its lifted
@@ -312,51 +312,33 @@ defmodule Mutare.Transform do
     end)
   end
 
-  # A non-clause-group module statement (an `{:other}` in the plan). Three routes:
+  # A non-clause-group module statement (an `{:other}` in the plan). Two routes:
   #
   #   * a nested `defmodule`/`__block__` recurses through the full planner
   #     (`transform_node`), so an inner module is lifted/mutated like a top-level one;
-  #   * a statement that **defines a function via compile-time metaprogramming** — a
-  #     `for`/`if`/`unless`/`with`/… that wraps a `def`/`defp` — is analyzed as a
-  #     compile-time **`:scaffold`**. A module body runs **once, at compile time, with
-  #     mutant 0 active**, so a selector spliced into the scaffold's *own* expressions
-  #     (the `if` condition, the `for` generator/filters, an unquoted head pattern)
-  #     could never activate at runtime — it would only add inert no-coverage mutants
-  #     and waste poison-recovery rounds. The `:scaffold` descent does **not** mutate
-  #     those, but still reaches each generated `def` and mutates its *body*
-  #     (`:runtime`, via the def clause), and its head stays `:pattern` (unmutated;
-  #     these functions are not lifted). Nesting (`for` in `if` in …) is handled for
-  #     free — `:scaffold` propagates through the generic descent;
-  #   * any other statement (a plain top-level expression that defines nothing) keeps
-  #     the in-place `:runtime` path, unchanged.
-  defp transform_statement({:defmodule, _meta, _args} = node, ctx), do: transform_node(node, ctx)
-  defp transform_statement({:__block__, _meta, _args} = node, ctx), do: transform_node(node, ctx)
-
+  #   * every other module statement is compile-time **`:scaffold`**. A module body
+  #     runs **once, at compile time, with mutant 0 active**, so a selector spliced
+  #     into the statement's own expressions (an `if` condition, a `for` generator,
+  #     a bare module-body calculation, an unquoted generated head pattern) could
+  #     never activate at runtime — it would only add inert no-coverage mutants and
+  #     waste poison-recovery rounds. The `:scaffold` descent does **not** mutate
+  #     those, but still reaches any explicit `def`/`defp` and mutates its *body*
+  #     (`:runtime`, via the def clause), while its head stays `:pattern`
+  #     (unmutated; these functions are not lifted). Nesting (`for` in `if` in …)
+  #     is handled for free — `:scaffold` propagates through the generic descent.
   defp transform_statement(node, ctx) do
-    if metaprogrammed_def?(node) do
-      node |> analyze(:scaffold, ctx.mutators) |> emit(ctx)
-    else
-      in_place(node, ctx)
+    case module_statement_class(node) do
+      :nested_scope ->
+        transform_node(node, ctx)
+
+      :compile_time ->
+        node |> analyze(:scaffold, ctx.mutators) |> emit(ctx)
     end
   end
 
-  # Does `node` define a function via metaprogramming — a `def`/`defp` reached inside
-  # a non-`def` statement? Unlike `ModulePlan.nested_def_names/1`, this intentionally
-  # descends into nested scopes: a module-level `for`/`if` whose only definition is a
-  # scoped `defmodule`/`defimpl` is still a compile-time scaffold, so its own
-  # expressions must stay inert while the scoped runtime body is reached.
-  defp metaprogrammed_def?(node) do
-    {_ast, found?} =
-      Macro.prewalk(node, false, fn
-        {form, _meta, _args} = n, _acc when form in [:def, :defp] ->
-          {n, true}
-
-        n, acc ->
-          {n, acc}
-      end)
-
-    found?
-  end
+  defp module_statement_class({:defmodule, _meta, _args}), do: :nested_scope
+  defp module_statement_class({:__block__, _meta, _args}), do: :nested_scope
+  defp module_statement_class(_node), do: :compile_time
 
   # Emit a lifted clause group: the `__orig` copies (carrying in-place body
   # selectors), one private `__mut` copy per lifted candidate, and the public
@@ -554,15 +536,15 @@ defmodule Mutare.Transform do
   #     before we descend.
   #   * `:pattern` — never mutate, but keep descending so nested runtime escapes
   #     (default-argument values, `size(...)` args) are still reached.
-  #   * `:scaffold` — a module-level `for`/`if`/`unless`/… that *defines* functions
-  #     via compile-time metaprogramming (entered from `transform_statement/2`).
-  #     Like `:pattern` it never mutates in place and keeps descending — the module
-  #     body runs once, at compile time, with mutant 0 active, so a selector spliced
-  #     into the scaffold's own expressions (an `if` condition, a `for` generator, an
-  #     unquoted head pattern) could never activate — but the one runtime escape it
-  #     reaches is a generated `def`/`defp` body (the def clause flips it back to
-  #     `:runtime`). `body_context/1` propagates `:scaffold` through `case`/`cond`/…
-  #     arms so nested scaffolds stay inert too.
+  #   * `:scaffold` — a module-level non-clause statement entered from
+  #     `transform_statement/2`. Like `:pattern` it never mutates in place and keeps
+  #     descending — the module body runs once, at compile time, with mutant 0
+  #     active, so a selector spliced into the statement's own expressions (an `if`
+  #     condition, a `for` generator, an unquoted generated head pattern, or any
+  #     other bare module-body calculation) could never activate — but the one
+  #     runtime escape it reaches is an explicit `def`/`defp` body (the def clause
+  #     flips it back to `:runtime`). `body_context/1` propagates `:scaffold`
+  #     through `case`/`cond`/… arms so nested scaffolds stay inert too.
   #
   # The remaining contexts are recognised positively and realised as pruned
   # subtrees or dedicated helpers (named here, matched in the clauses below):

@@ -7,8 +7,8 @@ defmodule Mutare.Transform.ModulePlan do
   # This is the "module planning" stage, split out of the emission loop. It is
   # pure and id-free: it groups consecutive same-signature clauses into runs,
   # decides per run whether to lift (delegating to `FunctionPlan.plan/3`), and
-  # leaves everything else to be transformed in place. `Mutare.Transform` then
-  # walks `items` in order, threading ids and rendering each.
+  # leaves everything else for `Mutare.Transform`'s module-statement classifier.
+  # `Mutare.Transform` then walks `items` in order, threading ids and rendering each.
   #
   # An item is one of:
   #
@@ -16,8 +16,8 @@ defmodule Mutare.Transform.ModulePlan do
   #   * `{:in_place, [clause]}`    — a clause group whose clauses stay put (bodies
   #     still mutate); used for groups that can't or needn't lift, and for
   #     non-consecutive clauses (see below);
-  #   * `{:statement, node}`       — any other statement, transformed in place
-  #     (a nested module recurses, a bare expression gets body selectors).
+  #   * `{:statement, node}`       — any other statement, classified by
+  #     `Mutare.Transform` as either a nested scope or compile-time scaffold.
 
   require Logger
 

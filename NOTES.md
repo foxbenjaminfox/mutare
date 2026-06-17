@@ -660,30 +660,35 @@ near-identical copies for N guard mutants. Both are fixed:
   `reason_atom/1` / `reason_phrase/1` in the same file were *already* safe via the
   non-consecutive path (their two literal clauses straddle the `for`), so this
   closes the remaining hole where the literal clauses happen to be consecutive.
-- **Metaprogrammed def *bodies* are still mutated (the scaffold is not)** `[done]`.
-  Lifting is out for a `def` created inside a module-level `for`/`if`/`unless`/… (see
-  the two notes above), but the generated function's *body* is ordinary runtime code
-  and should mutate. It already did — the def clause re-enters `:runtime` for its body
-  regardless of the surrounding context — but the surrounding **scaffold** was mutated
-  too: a `for tier <- [:gold, :silver, :bronze]` offered atom/list mutants on the
-  generator, an `if cond` on its condition. Those are **inert**: a module body runs
-  *once*, at compile time, with mutant 0 active, so a selector spliced into the
-  scaffold's own expressions can never activate at runtime — pure no-coverage noise
-  that also burns poison-recovery rounds. The fix is a third analyze context,
-  **`:scaffold`** (`body_context/1`, entered from `Transform.transform_statement/2`
-  when `metaprogrammed_def?/1` finds a `def`/`defp` inside a non-`def` statement):
-  descend but never offer a candidate — *except* a `def`/`defp` body, which flips back
-  to `:runtime`. It propagates through arbitrary nesting (`for` in `if` in …) and
-  through `case`/`cond`/`with`/`fn` arms (the `->`/`cond` clauses inherit liveness via
-  `body_context/1`, so a scaffold-wrapping construct keeps its own arms inert). The
-  unquoted head pattern (`def code(unquote(atom))`) is analyzed `:pattern` and never
-  mutated — correct, since these are not lifted. **Crucially**, the *mixed* case works
-  for free: when a function has both a normal top-level head and metaprogrammed heads
-  (`def code(0), do: 53` beside the `for`), the top head falls back to in-place via
-  `metaprogrammed_def_names` and the `for` heads route through `:scaffold` — both
-  bodies mutate in place, independently (no dispatcher, so no shadowing). Still
-  **out of scope**: mutating inside `unquote(expr)` (compile-time splice; deferred, as
-  for `quote`), and lifting any of these (head-pattern/guard/clause-drop mutants).
+- **Module-level compile-time statements are scaffolded; def bodies still mutate**
+  `[done]`. Lifting is out for a `def` created inside a module-level
+  `for`/`if`/`unless`/… (see the two notes above), but the generated function's
+  *body* is ordinary runtime code and should mutate. It already did — the def clause
+  re-enters `:runtime` for its body regardless of the surrounding context — but the
+  surrounding **scaffold** was mutated too: a `for tier <- [:gold, :silver, :bronze]`
+  offered atom/list mutants on the generator, an `if cond` on its condition. Those
+  are **inert**: a module body runs *once*, at compile time, with mutant 0 active, so
+  a selector spliced into the scaffold's own expressions can never activate at
+  runtime — pure no-coverage noise that also burns poison-recovery rounds.
+
+  The fix is a third analyze context, **`:scaffold`** (`body_context/1`, entered from
+  `Transform.transform_statement/2` for every non-clause module statement except a
+  direct nested `defmodule`/`__block__`): descend but never offer a candidate —
+  *except* a `def`/`defp` body, which flips back to `:runtime`. This covers both
+  metaprogrammed definitions and compile-time-only module statements with no
+  definitions (`if true do Module.put_attribute(..., 1 + 2) end`, `for n <- [1, 2]`
+  doing compile-time work, etc.). It propagates through arbitrary nesting (`for` in
+  `if` in …) and through `case`/`cond`/`with`/`fn` arms (the `->`/`cond` clauses
+  inherit liveness via `body_context/1`, so a scaffold-wrapping construct keeps its
+  own arms inert). The unquoted head pattern (`def code(unquote(atom))`) is analyzed
+  `:pattern` and never mutated — correct, since these are not lifted. **Crucially**,
+  the *mixed* case works for free: when a function has both a normal top-level head
+  and metaprogrammed heads (`def code(0), do: 53` beside the `for`), the top head
+  falls back to in-place via `metaprogrammed_def_names` and the `for` heads route
+  through `:scaffold` — both bodies mutate in place, independently (no dispatcher, so
+  no shadowing). Still **out of scope**: mutating inside `unquote(expr)` (compile-time
+  splice; deferred, as for `quote`), and lifting any of these
+  (head-pattern/guard/clause-drop mutants).
 - **Private names** are `<prefix><name>_<arity>_g<group>_{orig,m<id>}`. The
   group counter keeps generated names unique *among themselves*, and `?`/`!`
   (legal only at a name's end) are replaced so they can sit mid-identifier. The
