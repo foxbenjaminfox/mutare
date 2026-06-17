@@ -760,6 +760,40 @@ defmodule Mutare.TransformTest do
 
       refute Enum.any?(sites, &(&1.mutator == :collection))
     end
+
+    test "Integer routes through the same machinery — aliased matched, shadow respected" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            require Integer
+            alias Integer, as: I
+            def even?(n) when I.is_even(n), do: I.mod(n, 2)
+          end
+          """,
+          mutators: [Mutare.Mutators.Integer]
+        )
+
+      pairs = for s <- sites, s.mutator == :integer, do: {s.original_code, s.mutated_code}
+      # Recognised through the alias (guard swap is lifted), and the mutant keeps `I.`.
+      assert {"I.is_even(n)", "I.is_odd(n)"} in pairs
+      assert {"I.mod(n, 2)", "I.floor_div(n, 2)"} in pairs
+      assert_compiles(meta)
+
+      # A shadowing `alias MyApp.Integer` resolves away from stdlib — no Integer site.
+      {_meta, shadow_sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            alias MyApp.Integer
+            def f(a, b), do: Integer.mod(a, b)
+          end
+          """,
+          mutators: [Mutare.Mutators.Integer]
+        )
+
+      refute Enum.any?(shadow_sites, &(&1.mutator == :integer))
+    end
   end
 
   describe "StringCall (complementary String call swaps)" do

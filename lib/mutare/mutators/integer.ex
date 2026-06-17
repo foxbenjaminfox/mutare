@@ -8,11 +8,11 @@ defmodule Mutare.Mutators.Integer do
     * `Integer.is_even` ↔ `Integer.is_odd` — the parity predicates
 
   Each pair shares its arity (`mod`/`floor_div` are `/2`, `is_even`/`is_odd` are
-  `/1`), so renaming while keeping the argument list always compiles. It matches the
-  **literal** `Integer.` path and — unlike the alias-resolving `Collection`/`StringCall`
-  — does *not* consult `Mutare.Transform.Aliases`: a renamed `alias Integer, as: I`
-  is missed, and a *shadowing* `alias MyApp.Integer` is not seen through (so it would
-  fire on the local module). `Integer` is rarely aliased, so this is an accepted gap.
+  `/1`), so renaming while keeping the argument list always compiles. Like the other
+  call-matching families, it matches `Integer` by its **resolved** module
+  (`Mutare.Transform.Aliases`): a renamed `alias Integer, as: I` is matched (and
+  mutates `I.is_even` → `I.is_odd`), while a shadowing `alias MyApp.Integer` resolves
+  to the local module and is correctly left alone.
 
   `Integer.is_even`/`is_odd` are **guard-safe macros**, so they appear in `when`
   clauses as well as bodies. A guard swap is delivered by lifting (a selector
@@ -22,6 +22,8 @@ defmodule Mutare.Mutators.Integer do
   in place. On by default.
   """
   @behaviour Mutare.Mutator
+
+  alias Mutare.Transform.Aliases
 
   # {alias_path, function} => {alias_path, function}. Each pair shares its arity, so
   # the rename keeping the argument list always compiles.
@@ -36,11 +38,13 @@ defmodule Mutare.Mutators.Integer do
   def name, do: :integer
 
   @impl Mutare.Mutator
-  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod}, fun]}, call_meta, args})
+  def mutate({{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args})
       when is_list(args) do
-    case Map.fetch(@swaps, {mod, fun}) do
-      {:ok, {new_mod, new_fun}} ->
-        [{{:., dot_meta, [{:__aliases__, alias_meta, new_mod}, new_fun]}, call_meta, args}]
+    case Map.fetch(@swaps, {Aliases.resolved_module(alias_meta, mod), fun}) do
+      {:ok, {_new_mod, new_fun}} ->
+        # Reuse the literal alias node (the swap stays within `Integer`), so an aliased
+        # `I.is_even` mutates to `I.is_odd`, not `Integer.is_odd`.
+        [{{:., dot_meta, [aliases, new_fun]}, call_meta, args}]
 
       :error ->
         :skip

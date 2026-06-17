@@ -4,8 +4,8 @@ defmodule Mutare.Transform.Aliases do
   # recognises an aliased remote call.
   #
   # The call-matching mutator families (Collection, StringCall, MapKeyword,
-  # CollectionArity, ModeSwap, CallRemoval, DefaultDrop, Numeric) recognise a remote call
-  # by its *literal* module path — `Enum.filter`, `String.upcase`. An `alias` rebinds that
+  # CollectionArity, ModeSwap, CallRemoval, DefaultDrop, Numeric, Integer) recognise a remote
+  # call by its *literal* module path — `Enum.filter`, `String.upcase`. An `alias` rebinds that
   # path (`alias String, as: S; S.upcase(x)`), so without resolution the call hides from
   # every one of them — and worse, `alias MyApp.Enum` makes a *local* module masquerade as
   # the stdlib one, so a family would wrongly fire on it.

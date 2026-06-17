@@ -45,9 +45,9 @@ contract between them is the whole game.
     before planning. It threads a scoped alias env (folding left-to-right over each statement
     sequence; nested scopes inherit, child aliases don't leak) and stamps each *call-module*
     `__aliases__` node with the module it resolves to (`meta[:mutare_alias]`, only when it
-    differs from the written path). `resolved_module/2` is the reader the call-matching mutator
-    families (Collection/StringCall/MapKeyword/CollectionArity/ModeSwap/CallRemoval/DefaultDrop/
-    Numeric) use to recognise an aliased `S.upcase` as `String.upcase` — while still rebuilding
+    differs from the written path). `resolved_module/2` is the reader **every** call-matching
+    mutator family (Collection/StringCall/MapKeyword/CollectionArity/ModeSwap/CallRemoval/
+    DefaultDrop/Numeric/Integer) uses to recognise an aliased `S.upcase` as `String.upcase` — while still rebuilding
     from the node's own (aliased) `__aliases__`, so the diff keeps `S.` and the swap stays
     within the module. It also fixes a latent shadow bug: `alias MyApp.Enum` now resolves
     `Enum.filter` to the *local* module, so a family no longer wrongly fires on it. `import`
@@ -386,9 +386,8 @@ contract between them is the whole game.
   known miss. The `pi`/`tau` constants emit a fresh float literal. All `:math` calls are remote —
   never guard-legal — so always in place),
   Integer (the `Integer` module — `mod`↔`floor_div` (the two halves of floored division) and
-  `is_even`↔`is_odd`; a Collection-style arity-blind remote rename, but matched on the *literal*
-  `Integer.` path — it does **not** alias-resolve, so a renamed `alias Integer, as: I` is missed and
-  a shadowing `alias MyApp.Integer` is not seen through (a rare, accepted gap). `is_even`/`is_odd` are
+  `is_even`↔`is_odd`; a Collection-style arity-blind remote rename, alias-resolved through
+  `Mutare.Transform.Aliases` like the rest. `is_even`/`is_odd` are
   **guard-safe macros**, so they appear in `when` clauses too and their swap is delivered by lifting
   — the source's existing `require Integer` covers the `is_odd` copy. A guard-safe *qualified* macro
   exposes a subtlety: the `Integer` alias in the call's *form* position must **not** be offered to
