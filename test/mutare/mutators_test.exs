@@ -22,6 +22,7 @@ defmodule Mutare.MutatorsTest do
     Relational,
     RegexLiteral,
     ReturnValue,
+    StringCall,
     StringLiteral,
     TupleLiteral
   }
@@ -32,9 +33,10 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.all() ==
                [Arithmetic, Relational, Logical, Literal] ++
-                 [Conditional, List, Collection, StringLiteral, FloatLiteral, AtomLiteral] ++
-                 [CharlistLiteral, MapLiteral, TupleLiteral, BitstringLiteral, RegexLiteral] ++
-                 [DateTimeLiteral, AliasLiteral, ReturnValue, PatternSwap, PatternWildcard]
+                 [Conditional, List, Collection, StringCall, StringLiteral, FloatLiteral] ++
+                 [AtomLiteral, CharlistLiteral, MapLiteral, TupleLiteral, BitstringLiteral] ++
+                 [RegexLiteral, DateTimeLiteral, AliasLiteral, ReturnValue] ++
+                 [PatternSwap, PatternWildcard]
     end
 
     test "families/0 are the registry's keys, in order — all on by default" do
@@ -42,7 +44,7 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.families() ==
                [:arithmetic, :relational, :logical, :literal] ++
-                 [:conditional, :list, :collection, :string, :float, :atom] ++
+                 [:conditional, :list, :collection, :string_call, :string, :float, :atom] ++
                  [:charlist, :map, :tuple, :bitstring, :regex, :datetime, :alias, :return_value] ++
                  [:pattern_swap, :pattern_wildcard]
     end
@@ -306,6 +308,50 @@ defmodule Mutare.MutatorsTest do
 
     test "name" do
       assert Collection.name() == :collection
+    end
+  end
+
+  describe "StringCall" do
+    test "swaps complementary String calls, keeping arguments" do
+      assert render(StringCall.mutate(parse(~s|String.starts_with?(s, p)|))) ==
+               [~s|String.ends_with?(s, p)|]
+
+      assert render(StringCall.mutate(parse(~s|String.ends_with?(s, p)|))) ==
+               [~s|String.starts_with?(s, p)|]
+
+      assert render(StringCall.mutate(parse("String.upcase(s)"))) == ["String.downcase(s)"]
+      assert render(StringCall.mutate(parse("String.downcase(s)"))) == ["String.upcase(s)"]
+
+      assert render(StringCall.mutate(parse("String.trim_leading(s)"))) ==
+               ["String.trim_trailing(s)"]
+
+      assert render(StringCall.mutate(parse("String.replace_prefix(s, m, r)"))) ==
+               ["String.replace_suffix(s, m, r)"]
+
+      assert render(StringCall.mutate(parse("String.pad_leading(s, 8)"))) ==
+               ["String.pad_trailing(s, 8)"]
+
+      assert render(StringCall.mutate(parse("String.first(s)"))) == ["String.last(s)"]
+      assert render(StringCall.mutate(parse("String.last(s)"))) == ["String.first(s)"]
+    end
+
+    test "preserves arguments and metadata of multi-arity calls" do
+      assert render(StringCall.mutate(parse("String.upcase(s, :ascii)"))) ==
+               ["String.downcase(s, :ascii)"]
+
+      assert render(StringCall.mutate(parse("String.pad_leading(s, 8, \"0\")"))) ==
+               ["String.pad_trailing(s, 8, \"0\")"]
+    end
+
+    test "skips unrelated String functions and other modules' calls" do
+      assert StringCall.mutate(parse("String.length(s)")) == :skip
+      assert StringCall.mutate(parse("String.split(s, \",\")")) == :skip
+      assert StringCall.mutate(parse("Path.starts_with?(s, p)")) == :skip
+      assert StringCall.mutate(parse("starts_with?(s, p)")) == :skip
+    end
+
+    test "name" do
+      assert StringCall.name() == :string_call
     end
   end
 

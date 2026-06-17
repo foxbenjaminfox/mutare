@@ -122,6 +122,7 @@ Realization is **positional, not declared** by the mutator: the same `mutate/1` 
 | Conditional | a boolean-valued node → `true` / `false` ("remove conditionals") |
 | List | `++`↔`--`, non-empty list literal → `[]` |
 | Collection | `Enum.filter`↔`reject`, `all?`↔`any?`, `min`↔`max`, … |
+| StringCall | `String.starts_with?`↔`ends_with?`, `upcase`↔`downcase`, `trim_leading`↔`trailing`, `first`↔`last`, … |
 | StringLiteral | a string → `""` *and* `"mutare"` (drops the one matching the original) |
 | FloatLiteral | floats `x`→`{x±1.0, 0.0}` |
 | **Return value** | a function clause's return-path tail (`:do`, and each `rescue`/`catch`/`else` clause body) → a contrasting *pair*: empty/zero + a non-nil sentinel (numeric→`0`/`1`, `<>`→`""`/`"mutare"`, `++`/`--`→`[]`/`[:mutare]`, else→`nil`/`:mutare`) — structural, in place |

@@ -251,6 +251,9 @@ contract between them is the whole game.
   unary-minus removal), Relational, Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip), Literal
   (integers `n`→`{n±1, 0}`, `true`↔`false`), Conditional (a boolean-valued node → `true`/`false`),
   List (`++`↔`--`, non-empty list literal → `[]`), Collection (`Enum`/`List` predicate swaps),
+  StringCall (complementary `String` call swaps — `starts_with?`↔`ends_with?`, `upcase`↔`downcase`,
+  `trim_leading`↔`trim_trailing`, `replace_prefix`↔`replace_suffix`, `pad_leading`↔`pad_trailing`,
+  `first`↔`last`; the `String` sibling of Collection, recognising only unaliased `String.` calls),
   StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, AtomLiteral (a
   literal atom → the sentinel `:mutare`; `true`/`false`/`nil` excluded — Literal/Conditional own
   them; keys excluded *positionally* by `Transform`, not the mutator — and patterns excluded

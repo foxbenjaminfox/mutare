@@ -34,6 +34,7 @@ defmodule Mutare.Mutators do
     conditional: Mutare.Mutators.Conditional,
     list: Mutare.Mutators.List,
     collection: Mutare.Mutators.Collection,
+    string_call: Mutare.Mutators.StringCall,
     string: Mutare.Mutators.StringLiteral,
     float: Mutare.Mutators.FloatLiteral,
     atom: Mutare.Mutators.AtomLiteral,

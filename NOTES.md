@@ -915,8 +915,11 @@ default**: **arithmetic** (now also unary `-x`→`x`), **relational**, **logical
 (`and`↔`or`, `&&`↔`||`, strip `not`/`!`), **literal** (integers `n`→`{n±1, 0}`,
 `true`↔`false`), **conditional** (a boolean-valued node → `true`/`false`,
 "remove conditionals"), **list** (`++`↔`--`, non-empty list literal → `[]`),
-**collection** (`Enum`/`List` predicate swaps), **string** (a string → `""` *and*
-the sentinel `"mutare"`, dropping whichever already matches), and **float**.
+**collection** (`Enum`/`List` predicate swaps), **string_call** (complementary
+`String` call swaps — `starts_with?`↔`ends_with?`, `upcase`↔`downcase`,
+`trim_leading`↔`trim_trailing`, `first`↔`last`, …; the `String` sibling of
+`collection`), **string** (a string → `""` *and* the sentinel `"mutare"`,
+dropping whichever already matches), and **float**.
 `Mutare.Mutators`'s `@registry` is the single ordered source of truth; `all/0`
 returns every registered module, so registering a family makes it default.
 (We briefly split a `:default`/`:optional` tier mirroring PIT's default-vs-

@@ -486,6 +486,23 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "StringCall (complementary String call swaps)" do
+    test "swaps a String call in place, records the bare swap, and compiles" do
+      source = """
+      defmodule S do
+        def affix?(s), do: String.starts_with?(s, "x")
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
+
+      assert Enum.any?(sites, &(&1.mutator == :string_call))
+      assert Enum.any?(sites, &(&1.mutated_code == ~s|String.ends_with?(s, "x")|))
+      assert_compiles(meta)
+    end
+  end
+
   describe "atom-literal context routing (keys and patterns are not mutated)" do
     @atom [Mutare.Mutators.AtomLiteral]
 
