@@ -673,15 +673,17 @@ near-identical copies for N guard mutants. Both are fixed:
 
   The fix is a third analyze context, **`:scaffold`** (`body_context/1`, entered from
   `Transform.transform_statement/2` for every non-clause module statement except a
-  direct nested `defmodule`/`__block__`): descend but never offer a candidate —
-  *except* a `def`/`defp` body, which flips back to `:runtime`. This covers both
-  metaprogrammed definitions and compile-time-only module statements with no
-  definitions (`if true do Module.put_attribute(..., 1 + 2) end`, `for n <- [1, 2]`
-  doing compile-time work, etc.). It propagates through arbitrary nesting (`for` in
-  `if` in …) and through `case`/`cond`/`with`/`fn` arms (the `->`/`cond` clauses
-  inherit liveness via `body_context/1`, so a scaffold-wrapping construct keeps its
-  own arms inert). The unquoted head pattern (`def code(unquote(atom))`) is analyzed
-  `:pattern` and never mutated — correct, since these are not lifted. **Crucially**,
+  direct nested `defmodule`; parenthesized/semicolon `__block__` statements keep
+  their shape but classify each child individually): descend but never offer a
+  candidate — *except* a `def`/`defp` body, which flips back to `:runtime`. This
+  covers both metaprogrammed definitions and compile-time-only module statements
+  with no definitions (`if true do Module.put_attribute(..., 1 + 2) end`,
+  `for n <- [1, 2]` doing compile-time work, `(1 + 2; 3 + 4)`, etc.). It propagates
+  through arbitrary nesting (`for` in `if` in …) and through `case`/`cond`/`with`/`fn`
+  arms (the `->`/`cond` clauses inherit liveness via `body_context/1`, so a
+  scaffold-wrapping construct keeps its own arms inert). The unquoted head pattern
+  (`def code(unquote(atom))`) is analyzed `:pattern` and never mutated — correct,
+  since these are not lifted. **Crucially**,
   the *mixed* case works for free: when a function has both a normal top-level head
   and metaprogrammed heads (`def code(0), do: 53` beside the `for`), the top head
   falls back to in-place via `metaprogrammed_def_names` and the `for` heads route

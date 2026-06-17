@@ -1084,6 +1084,25 @@ defmodule Mutare.TransformTest do
       assert_compiles(meta)
     end
 
+    test "a parenthesized statement block with no definitions is inert" do
+      source = """
+      defmodule CompileOnlyBlock do
+        (1 + 2; 3 + 4)
+
+        def run(x), do: x + 5
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.Arithmetic])
+
+      assert meta =~ "1 + 2"
+      assert meta =~ "3 + 4"
+      refute Enum.any?(sites, &(&1.original_code in ["1 + 2", "3 + 4"]))
+      assert Enum.any?(sites, &(&1.original_code == "x + 5"))
+      assert_compiles(meta)
+    end
+
     test "a conditionally-defined function: the `if` condition is inert, the body mutates" do
       source = """
       defmodule Cond do

@@ -312,10 +312,14 @@ defmodule Mutare.Transform do
     end)
   end
 
-  # A non-clause-group module statement (an `{:other}` in the plan). Two routes:
+  # A non-clause-group module statement (an `{:other}` in the plan). Three routes:
   #
-  #   * a nested `defmodule`/`__block__` recurses through the full planner
+  #   * a nested `defmodule` recurses through the full planner
   #     (`transform_node`), so an inner module is lifted/mutated like a top-level one;
+  #   * a parenthesized/semicolon `__block__` keeps its block shape but sends its
+  #     children back through this module-statement pipeline — clause groups still
+  #     plan together, nested scopes still recurse, and compile-time-only children
+  #     stay scaffolded instead of falling into the runtime expression walk;
   #   * every other module statement is compile-time **`:scaffold`**. A module body
   #     runs **once, at compile time, with mutant 0 active**, so a selector spliced
   #     into the statement's own expressions (an `if` condition, a `for` generator,
@@ -326,19 +330,14 @@ defmodule Mutare.Transform do
   #     (`:runtime`, via the def clause), while its head stays `:pattern`
   #     (unmutated; these functions are not lifted). Nesting (`for` in `if` in …)
   #     is handled for free — `:scaffold` propagates through the generic descent.
-  defp transform_statement(node, ctx) do
-    case module_statement_class(node) do
-      :nested_scope ->
-        transform_node(node, ctx)
+  defp transform_statement({:defmodule, _meta, _args} = node, ctx), do: transform_node(node, ctx)
 
-      :compile_time ->
-        node |> analyze(:scaffold, ctx.mutators) |> emit(ctx)
-    end
+  defp transform_statement({:__block__, meta, statements}, ctx) do
+    {statements, ctx} = transform_statements(statements, ctx)
+    {{:__block__, meta, statements}, ctx}
   end
 
-  defp module_statement_class({:defmodule, _meta, _args}), do: :nested_scope
-  defp module_statement_class({:__block__, _meta, _args}), do: :nested_scope
-  defp module_statement_class(_node), do: :compile_time
+  defp transform_statement(node, ctx), do: node |> analyze(:scaffold, ctx.mutators) |> emit(ctx)
 
   # Emit a lifted clause group: the `__orig` copies (carrying in-place body
   # selectors), one private `__mut` copy per lifted candidate, and the public
