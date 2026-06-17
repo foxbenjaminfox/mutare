@@ -916,6 +916,32 @@ defmodule Mutare.Transform do
     {:cond, meta, [Enum.map(blocks, &analyze_cond_block(&1, body_ctx, mutators))]}
   end
 
+  # `if`/`unless`: the condition is an ordinary runtime expression *and* the one
+  # position `Mutare.Mutators.IfCondition` targets — it forces the condition to
+  # `true`/`false` (the "remove the decision" mutation) for the conditions a value
+  # family can't reach (a bare predicate call, `is_*`, a remote boolean), the
+  # boolean-operator ones being left to `Conditional`. So the condition is analyzed
+  # as runtime, then has its IfCondition candidate appended (`attach_if_condition/3`);
+  # the body keyword (`do:`/`else:` values) is analyzed exactly as the generic
+  # runtime clause would, and the whole node is still offered to mutators for parity
+  # (a custom mutator matching an `if`; the built-ins match none). Only `:runtime` —
+  # a module-level (`:scaffold`) `if` runs once at compile time, so its condition is
+  # inert and falls through to the non-mutating catch-all.
+  defp analyze({form, meta, [condition, body_kw]} = node, :runtime, mutators)
+       when form in [:if, :unless] and is_list(body_kw) do
+    analyzed_condition =
+      condition
+      |> analyze(:runtime, mutators)
+      |> attach_if_condition(condition, mutators)
+
+    rebuilt = {form, meta, [analyzed_condition, analyze(body_kw, :runtime, mutators)]}
+
+    case Mutator.mutations(node, mutators) do
+      [] -> rebuilt
+      muts -> put_candidates(rebuilt, build_candidates(node, muts))
+    end
+  end
+
   # `case`/`receive`/`fn`: runtime expressions whose *clause patterns* are additionally
   # mutatable by the structural pattern families (`PatternSwap`/`PatternWildcard`). None can
   # host a selector inside a pattern, and none is a liftable function clause group, so each
@@ -1123,8 +1149,19 @@ defmodule Mutare.Transform do
   defp analyze_cond_block(other, context, mutators), do: analyze(other, context, mutators)
 
   defp analyze_cond_clause({:->, meta, [conds, body]}, context, mutators) when is_list(conds) do
-    {:->, meta,
-     [Enum.map(conds, &analyze(&1, context, mutators)), analyze(body, context, mutators)]}
+    analyzed_conds =
+      Enum.map(conds, fn cond_node ->
+        analyzed = analyze(cond_node, context, mutators)
+
+        # Force the condition to true/false (IfCondition) only when it is live —
+        # a `:scaffold` cond (module-level metaprogramming) runs once at compile
+        # time with mutant 0, so a selector on its condition could never activate.
+        if context == :runtime,
+          do: attach_if_condition(analyzed, cond_node, mutators),
+          else: analyzed
+      end)
+
+    {:->, meta, [analyzed_conds, analyze(body, context, mutators)]}
   end
 
   defp analyze_cond_clause(other, context, mutators), do: analyze(other, context, mutators)
@@ -1405,6 +1442,56 @@ defmodule Mutare.Transform do
   end
 
   defp append_return_candidates(node, _raw_tail, _replacements), do: node
+
+  # Force an `if`/`unless`/`cond` *condition* to `true`/`false` via the in-place
+  # selector. `IfCondition.replacements/1` returns the `[true, false]` pair (or `[]`
+  # when the condition is a boolean operator `Conditional` already forces, a literal,
+  # or a binding `x = …` whose un-binding would poison the body — see that module).
+  # Gated on the family being enabled, like `annotate_returns/3`. The candidates are
+  # appended to the *analyzed* condition node — after any operator candidate already
+  # there, so one selector hosts both — with `original`/`range` taken from the *raw*
+  # condition for a clean diff.
+  defp attach_if_condition(analyzed_condition, raw_condition, mutators) do
+    if Mutare.Mutators.IfCondition in mutators do
+      case Mutare.Mutators.IfCondition.replacements(raw_condition) do
+        [] ->
+          analyzed_condition
+
+        replacements ->
+          append_condition_candidates(analyzed_condition, raw_condition, replacements)
+      end
+    else
+      analyzed_condition
+    end
+  end
+
+  # Append a `Candidate.InPlace` per replacement (`mutator` is the IfCondition
+  # *module*, since `Site.in_place/6` calls `.name()` on it) to the condition node's
+  # metadata, preserving any candidates already there. A condition we can't range
+  # (Sourceror returns nil) or that is not a `{f, m, a}` node gets no mutant.
+  defp append_condition_candidates({form, meta, args} = node, raw_condition, replacements)
+       when is_list(meta) do
+    case Sourceror.get_range(raw_condition) do
+      %{} = range ->
+        candidates =
+          Enum.map(replacements, fn mutated ->
+            %Candidate.InPlace{
+              mutator: Mutare.Mutators.IfCondition,
+              original: raw_condition,
+              mutated: mutated,
+              range: range
+            }
+          end)
+
+        existing = Keyword.get(meta, :mutare, [])
+        {form, Keyword.put(meta, :mutare, existing ++ candidates), args}
+
+      _ ->
+        node
+    end
+  end
+
+  defp append_condition_candidates(node, _raw_condition, _replacements), do: node
 
   # A bitstring segment `<<value::spec>>`: the value keeps the surrounding
   # context; the spec side is excluded except for `size(expr)` args.

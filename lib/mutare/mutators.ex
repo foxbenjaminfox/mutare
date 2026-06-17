@@ -32,6 +32,7 @@ defmodule Mutare.Mutators do
     logical: Mutare.Mutators.Logical,
     literal: Mutare.Mutators.Literal,
     conditional: Mutare.Mutators.Conditional,
+    if_condition: Mutare.Mutators.IfCondition,
     list: Mutare.Mutators.List,
     collection: Mutare.Mutators.Collection,
     collection_arity: Mutare.Mutators.CollectionArity,

@@ -1247,6 +1247,53 @@ The `Site` each return mutant records (`Site.return_value/5`) has
 `mutator: :return_value`, `kind: :in_place`, and `nil` ops (there is no operator),
 shaped like the clause-drop site that also carries no op.
 
+### IfCondition — force an `if`/`unless`/`cond` condition `[done]`
+The "remove the decision" mutation for conditions, asked directly: *is each branch
+this condition gates actually exercised?* On by default (`:if_condition`).
+
+**Why it exists alongside `Conditional`.** `Conditional` already forces a
+*boolean-valued node* — a comparison/membership/logical operator — to `true`/`false`
+wherever it occurs, which incidentally covers `if a > b`. But that fires only where
+the *node* proves it is boolean. A bare condition (`if user`, `if valid?(x)`,
+`if is_nil(v)`, `if Map.has_key?(m, k)`) carries no such proof at the node, so
+`Conditional` never touches it — yet *positionally* it is a boolean decision. That
+gap is exactly what `IfCondition` fills.
+
+**Why it's structural (like `ReturnValue`).** A condition *slot* is invisible to a
+node mutator — a `mutate/1` that forced any node to `true`/`false` would fire
+everywhere. So `mutate/1` is `:skip` and the real logic is
+`IfCondition.replacements/1`, called by `Transform` at the positions only it knows:
+the runtime `if`/`unless` analyze clause and `analyze_cond_clause`
+(`attach_if_condition/3`). Registered for the usual membership benefits
+(on-by-default, reportable, selectable, `# mutare:ignore[if_condition]`).
+
+**Delivery reuses the in-place selector**, appending a `Candidate.InPlace`
+(mutator = the `IfCondition` *module*, since `Site.in_place/6` calls `.name()` on it)
+to the *analyzed condition node*, after any operator candidate already there — so
+`if String.starts_with?(s, x)` gets one selector hosting the StringCall swap *and*
+the `true`/`false` pair. `original`/`range` come from the raw condition for a clean
+`if foo?(x)` → `if true` diff.
+
+**What it skips, and why each matters.** `replacements/1` returns `[]` for:
+  - a **boolean operator** (`Conditional.boolean_op?/1` — the shared definition, reused
+    exactly as `ReturnValue` reuses it). This is what makes "`&&`/`||` need no special
+    handling" true: they're boolean ops, already `Conditional`'s, so skipping them
+    avoids a duplicate `true`/`false` pair.
+  - a **literal `true`/`false`/`nil`** — degenerate (forcing `if true` to `true` is a
+    no-op; this also drops a `cond`'s `true ->` catch-all cleanly).
+  - a **binding condition** — `if user = fetch() do use(user) end`. An `if` condition's
+    bindings *leak* into its body, so replacing the condition with a constant strands an
+    unbound variable → the single build won't compile. (A parenthesised `(x = a; b)`
+    sequence is skipped for the same reason, via the multi-statement `__block__` clause.)
+    `Conditional` has the same latent hazard on `if (a = 1) > 0` but leans on
+    poison-recovery; `IfCondition` excludes it up front to stay **compile-safe by
+    construction**, per the layered-compile-safety rule.
+
+Only `:runtime` conditions are offered — a module-level (`:scaffold`) `if`/`cond` runs
+once at compile time with mutant 0, so a selector on its condition could never activate
+(the `analyze_cond_clause` guard and the `:runtime`-only `if`/`unless` clause enforce
+this).
+
 ### Equivalent mutants `[partial]`
 Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the
 arithmetic mutator skips the multiplicative-identity swap on a right operand

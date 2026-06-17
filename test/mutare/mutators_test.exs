@@ -16,6 +16,7 @@ defmodule Mutare.MutatorsTest do
     DateTimeLiteral,
     DefaultDrop,
     FloatLiteral,
+    IfCondition,
     Integer,
     List,
     Literal,
@@ -40,7 +41,7 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.all() == Keyword.values(Mutators.registry())
 
       assert Mutators.all() ==
-               [Arithmetic, Relational, Logical, Literal, Conditional, List] ++
+               [Arithmetic, Relational, Logical, Literal, Conditional, IfCondition, List] ++
                  [Collection, CollectionArity, StringCall, MapKeyword, CallRemoval, DefaultDrop] ++
                  [ModeSwap, Numeric, Math, Integer, StringLiteral, FloatLiteral, AtomLiteral] ++
                  [CharlistLiteral, MapLiteral, TupleLiteral, BitstringLiteral, RegexLiteral] ++
@@ -51,7 +52,7 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.families() == Keyword.keys(Mutators.registry())
 
       assert Mutators.families() ==
-               [:arithmetic, :relational, :logical, :literal, :conditional, :list] ++
+               [:arithmetic, :relational, :logical, :literal, :conditional, :if_condition, :list] ++
                  [:collection, :collection_arity, :string_call, :map_keyword, :call_removal] ++
                  [:default_drop, :mode_swap, :numeric, :math, :integer, :string, :float] ++
                  [:atom, :charlist, :map, :tuple, :bitstring, :regex, :datetime, :alias] ++

@@ -104,6 +104,10 @@ contract between them is the whole game.
     **first argument of `match?/2`** (a macro whose pattern side is a match context — without this a
     literal/tuple there would be mutated in place, splicing a `case` into a pattern), with
     **`cond` excepted** (its `->` LHS is a runtime condition, kept mutatable — `analyze_cond_block/3`).
+    The runtime `if`/`unless` clause and `analyze_cond_clause` *additionally* offer their
+    **condition** to IfCondition (`attach_if_condition/3` appends a `Candidate.InPlace` forcing it to
+    `true`/`false` — only when live, i.e. `:runtime`, never `:scaffold`), so the same selector hosts
+    both that and any operator swap already on the condition node.
     A `case`/`receive`/`fn` clause's pattern stays unmutated *in place* but is **additionally**
     offered to the structural pattern families (swap/wildcard) by dedicated analyze clauses, which
     attach a `Candidate.CasePattern` to the whole construct node (the mutant wraps it in a selector —
@@ -295,6 +299,15 @@ contract between them is the whole game.
   `name/0`) and the built-in families, **all on by default**: Arithmetic (binary swaps +
   unary-minus removal), Relational, Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip), Literal
   (integers `n`→`{n±1, 0}`, `true`↔`false`), Conditional (a boolean-valued node → `true`/`false`),
+  IfCondition (the *positional* sibling of Conditional — forces an `if`/`unless`/`cond`
+  **condition** to `true`/`false`, reaching the conditions no value family proves boolean at the
+  node: a bare predicate call, `is_*`, a remote boolean. Structural like ReturnValue (`mutate/1` is
+  `:skip`; the real logic is `replacements/1`, called by `Transform` at each condition slot it
+  routes — see the `if`/`unless` analyze clause + `analyze_cond_clause`), delivered **in place**.
+  Skips a boolean-operator condition — `Conditional.boolean_op?/1`, so `&&`/`||`/`and`/`or`/`not`/`!`/
+  comparisons are left to Conditional, no duplicate — a literal `true`/`false`/`nil`, and a binding
+  `if x = … do` (the leaked binding would be unbound once the condition is forced, poisoning the
+  body); compile-safe by construction),
   List (`++`↔`--`, non-empty list literal → `[]`), Collection (`Enum`/`List` predicate swaps,
   **arity-blind** — a rename keeping the arg list, valid at any arity/pipe position),
   CollectionArity (the arity-*changing* sibling — `Enum.sort`/`sort_by`→`reverse` dropping the
