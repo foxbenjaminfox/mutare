@@ -18,6 +18,12 @@ defmodule Mutare.Mutators.CallRemoval do
     * `String.downcase` / `String.upcase` / `String.capitalize`
     * `String.reverse` / `String.normalize` / `String.replace_invalid`
     * `String.pad_leading` / `String.pad_trailing` / `String.slice`
+    * `URI.encode_www_form` / `URI.decode_www_form` (both `binary() -> binary()`,
+      so dropping the percent-en/decoding step returns the raw binary — "does any
+      test actually depend on the form-encoding?")
+    * `NaiveDateTime.beginning_of_day` / `NaiveDateTime.end_of_day` (each returns a
+      `NaiveDateTime` for the same day, so dropping the day-boundary normalization
+      leaves the original timestamp)
     * `Kernel.abs` (`abs(x)` → `x`)
     * the `Kernel` binary slicers — `binary_slice/2`, `binary_slice/3`,
       `binary_part/3` (each selects a sub-binary; removing it returns the whole
@@ -118,6 +124,14 @@ defmodule Mutare.Mutators.CallRemoval do
                {[:String], :pad_leading},
                {[:String], :pad_trailing},
                {[:String], :slice},
+               # `URI` form-encoding — `binary() -> binary()`, so removal returns the
+               # raw binary (the en/decoding step is the "is it exercised?" probe).
+               {[:URI], :encode_www_form},
+               {[:URI], :decode_www_form},
+               # `NaiveDateTime` day-boundary normalizers — each maps a timestamp to a
+               # `NaiveDateTime` on the same day, so removal returns the original.
+               {[:NaiveDateTime], :beginning_of_day},
+               {[:NaiveDateTime], :end_of_day},
                # Qualified `Kernel.abs(x)` — the prefix proves it; `abs` exists only at
                # /1, so arity-agnostic removal is safe (`Kernel.abs(x)` → `x`).
                {[:Kernel], :abs},

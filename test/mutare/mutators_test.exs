@@ -527,6 +527,14 @@ defmodule Mutare.MutatorsTest do
              ]
     end
 
+    test "swaps the Erlang :binary first/last pair (the byte-level String.first/last twin)" do
+      assert render(StringCall.mutate(parse(":binary.first(b)"))) == [":binary.last(b)"]
+      assert render(StringCall.mutate(parse(":binary.last(b)"))) == [":binary.first(b)"]
+      # other :binary functions have no directional twin
+      assert StringCall.mutate(parse(":binary.match(b, p)")) == :skip
+      assert StringCall.mutate(parse(":binary.part(b, 0, 2)")) == :skip
+    end
+
     test "skips unrelated String functions and other modules' calls" do
       assert StringCall.mutate(parse("String.length(s)")) == :skip
       assert StringCall.mutate(parse("String.split(s, \",\")")) == :skip
@@ -610,6 +618,12 @@ defmodule Mutare.MutatorsTest do
       # slice selects a part; removing it returns the whole input ("was the slice exercised?")
       assert removal("String.slice(s, 1, 3)", false) == ["s"]
       assert removal("String.slice(s, 1..3)", false) == ["s"]
+      # URI form-encoding (binary -> binary) and the NaiveDateTime day-boundary
+      # normalizers — same-typed transforms whose removal returns the input.
+      assert removal("URI.encode_www_form(s)", false) == ["s"]
+      assert removal("URI.decode_www_form(s)", false) == ["s"]
+      assert removal("NaiveDateTime.beginning_of_day(n)", false) == ["n"]
+      assert removal("NaiveDateTime.end_of_day(n)", false) == ["n"]
     end
 
     test "removes the analogous Erlang :string transparent transforms" do
@@ -656,6 +670,8 @@ defmodule Mutare.MutatorsTest do
       assert removal("String.normalize(:nfc)", true) == ["Function.identity()"]
       assert removal("String.pad_leading(5)", true) == ["Function.identity()"]
       assert removal("String.slice(1, 3)", true) == ["Function.identity()"]
+      assert removal("URI.encode_www_form()", true) == ["Function.identity()"]
+      assert removal("NaiveDateTime.beginning_of_day()", true) == ["Function.identity()"]
     end
 
     test "excludes map/filter/reduce and unrelated calls" do

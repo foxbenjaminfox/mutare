@@ -2,14 +2,19 @@ defmodule Mutare.Mutators.OperandSwap do
   @moduledoc """
   Operand-order swaps for **non-commutative** binary operators: `a - b` → `b - a`,
   `a / b` → `b / a`, `a ** b` → `b ** a`, `a <> b` → `b <> a`, `a ++ b` → `b ++ a`,
-  `a -- b` → `b -- a`, and the function-call forms `div(a, b)` → `div(b, a)`,
-  `rem(a, b)` → `rem(b, a)`.
+  `a -- b` → `b -- a`, the bare-`Kernel` function-call forms `div(a, b)` → `div(b, a)`,
+  `rem(a, b)` → `rem(b, a)`, and the **non-commutative date/time calls**
+  `DateTime.before?(a, b)` → `DateTime.before?(b, a)` (likewise `after?`),
+  `DateTime.compare(a, b)` → `DateTime.compare(b, a)`, and
+  `DateTime.diff(a, b, unit)` → `DateTime.diff(b, a, unit)` (with the `Time` /
+  `NaiveDateTime` twins).
 
   The complement of `Mutare.Mutators.Arithmetic`/`List`, which swap the *operator*
   and keep the operands; this keeps the operator and swaps the operands. It catches
   the symmetric class of bugs those miss — code that gets the operator right but the
   argument order wrong (`elapsed = finish - start` written `start - finish`,
-  `path <> sep` written `sep <> path`).
+  `path <> sep` written `sep <> path`, `DateTime.before?(deadline, now)` written
+  `DateTime.before?(now, deadline)`).
 
   In-place and **compile-safe by construction**: the mutant reuses both original
   operand subtrees, just transposed, so whatever type-checked before still does.
@@ -35,7 +40,9 @@ defmodule Mutare.Mutators.OperandSwap do
     * **Comparison operators** (`>`, `>=`, `<`, `<=`) — swapping operands is
       semantically identical to flipping direction (`a > b` ≡ `b < a`... and
       `b > a` ≡ `a < b`), which `Mutare.Mutators.Relational` already produces. An
-      operand swap here would only manufacture a duplicate mutant.
+      operand swap here would only manufacture a duplicate mutant. (This is about the
+      *operators*: the date/time comparison *call* `DateTime.before?` is included — no
+      family flips its direction, so the swap is not a duplicate. See below.)
     * **Commutative operators** (`+`, `*`, `==`, `!=`, `===`, `!==`, `and`, `or`,
       `&&`, `||`) — the result is order-independent, so the mutant is equivalent and
       would only inflate the denominator. (Boolean ops can differ in *side-effect*
@@ -44,6 +51,32 @@ defmodule Mutare.Mutators.OperandSwap do
       compile-safe (the RHS must be enumerable), so it is left out.
     * **`=`, `|>`** — swapping operands changes binding / data-flow semantics and is
       not compile-safe.
+
+  ## Remote non-commutative calls (`DateTime`/`Time`/`NaiveDateTime`)
+
+  The operand-swap idea applied to named *calls*, exactly as `div`/`rem` are: keep the
+  function, transpose the first two arguments. Three date/time families qualify, on every
+  calendar type (`DateTime`, `Time`, `NaiveDateTime`):
+
+    * `before?(a, b)` → `before?(b, a)` and `after?(a, b)` → `after?(b, a)` — the
+      chronological-comparison direction flip (`before?(b, a)` ≡ `after?(a, b)`). No
+      operator/relational family covers a `before?`/`after?` call, so this is the *only*
+      mutator that probes them — not a duplicate of the excluded comparison operators above.
+    * `compare(a, b)` → `compare(b, a)` — the three-way comparison; the swap inverts
+      `:lt` ↔ `:gt` (and leaves `:eq`), the same direction flip as `before?`.
+    * `diff(a, b)` / `diff(a, b, unit)` → `diff(b, a)` / `diff(b, a, unit)` — negates
+      the difference. The **trailing `unit`** is kept untouched: it is a mode atom that
+      `Mutare.Mutators.ModeSwap` already mutates (`{[:DateTime], :diff, 3}` et al.), so
+      the two families cover the call's two independent axes (argument order, time unit)
+      as separate mutants.
+
+  Resolved through the shared `Mutare.Transform.Calls` reader, so direct, aliased
+  (`alias DateTime, as: DT; DT.before?(a, b)`), and bare-imported forms all match, while
+  a shadowing `alias MyApp.DateTime` resolves elsewhere and is left alone. Like the
+  `div`/`rem` call forms these are **non-piped only**: a piped stage
+  (`a |> DateTime.before?(b)`) draws its first operand from the pipe, so the node holds
+  only one local operand and there is nothing to transpose. Structurally identical first
+  two operands (`DateTime.diff(t, t)`) are skipped, as for the operators.
 
   ## Identical operands are skipped
 
@@ -62,6 +95,8 @@ defmodule Mutare.Mutators.OperandSwap do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.Transform.Calls
+
   # The non-commutative binary *operators* whose operands we transpose. Always written
   # infix (arity 2, never piped), so a plain `mutate/1` is enough. The call-form
   # `div`/`rem` are handled in `mutate/2` (they need the effective-arity safeguard).
@@ -69,6 +104,26 @@ defmodule Mutare.Mutators.OperandSwap do
 
   # Bare `Kernel` call-form operators, swappable only at effective arity 2.
   @call_operators [:div, :rem]
+
+  # Non-commutative *remote* stdlib calls whose first two arguments we transpose (the
+  # operand-swap idea applied to a named call, as `div`/`rem` are). Keyed by the
+  # resolved module (`Mutare.Transform.Calls`): the chronological comparisons `before?`
+  # / `after?` / `compare` and the difference `diff` on every calendar type. `diff`'s
+  # trailing time-unit atom is left in place — `Mutare.Mutators.ModeSwap` mutates that axis.
+  @remote_swaps MapSet.new([
+                  {[:DateTime], :before?},
+                  {[:Time], :before?},
+                  {[:NaiveDateTime], :before?},
+                  {[:DateTime], :after?},
+                  {[:Time], :after?},
+                  {[:NaiveDateTime], :after?},
+                  {[:DateTime], :compare},
+                  {[:Time], :compare},
+                  {[:NaiveDateTime], :compare},
+                  {[:DateTime], :diff},
+                  {[:Time], :diff},
+                  {[:NaiveDateTime], :diff}
+                ])
 
   @impl Mutare.Mutator
   def name, do: :operand_swap
@@ -92,6 +147,22 @@ defmodule Mutare.Mutators.OperandSwap do
     if Mutare.Mutator.effective_arity(args, false) == 2 and not same?(left, right),
       do: [{op, meta, [right, left]}],
       else: :skip
+  end
+
+  # Non-commutative *remote* stdlib calls (`DateTime.before?`/`diff` and twins):
+  # transpose the first two arguments, keeping the rest (`diff`'s trailing unit rides
+  # along — ModeSwap owns it). Resolved through `Mutare.Transform.Calls`, so direct,
+  # aliased, and imported forms all match and a shadowing alias resolves elsewhere.
+  # Non-piped only: a piped stage draws its first operand from the pipe, so it has only
+  # one local operand to swap — the `[a, b | rest]` destructure fails and it is skipped.
+  def mutate(node, %{piped: false}) do
+    with {module, fun, [a, b | rest], rebuild} <- Calls.resolved_call(node),
+         true <- MapSet.member?(@remote_swaps, {module, fun}),
+         false <- same?(a, b) do
+      [rebuild.(fun, [b, a | rest])]
+    else
+      _ -> :skip
+    end
   end
 
   def mutate(_node, _context), do: :skip

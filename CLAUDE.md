@@ -470,13 +470,21 @@ contract between them is the whole game.
   gated on **effective arity 2** and pipe-aware via `mutate/2`, never swapping a same-named
   user `div/3`), OperandSwap (the *operand-order* sibling of Arithmetic/List — it keeps the
   operator and transposes the operands of the **non-commutative** binary operators `a - b`→`b - a`,
-  `/`, `**`, `<>`, `++`, `--`, and the `div`/`rem` call forms; compile-safe by construction (reuses
+  `/`, `**`, `<>`, `++`, `--`, the `div`/`rem` call forms, and the **non-commutative date/time
+  calls** `{DateTime,Time,NaiveDateTime}.before?`/`.after?`/`.compare`→swap the two args and
+  `.diff`→swap the *first two* args (the trailing time-unit stays — ModeSwap owns that axis, so
+  the two families cover diff's argument-order and unit as separate mutants); the remote calls
+  resolve through
+  `Mutare.Transform.Calls` (direct/aliased/imported all match, a shadowing alias resolves
+  elsewhere) and, like `div`/`rem`, are **non-piped only** (a piped stage draws its first operand
+  from the pipe, so there is nothing local to transpose); compile-safe by construction (reuses
   both operand subtrees). Commutative operators (`+`/`*`/`==`/…) are excluded as guaranteed
-  equivalent no-ops, and **comparisons** (`>`/`>=`/`<`/`<=`) are deliberately excluded because an
-  operand swap there equals Relational's direction flip — including them would only duplicate
-  it; `in` is excluded as not-compile-safe when swapped. Structurally identical operands (`x - x`)
-  are skipped. Guard-legal ops (`-`/`/`/`div`/`rem`) reach `when` guards via lifting like
-  Arithmetic), Relational (ordering/equality swaps, plus membership `in`→`not in` —
+  equivalent no-ops, and **comparison operators** (`>`/`>=`/`<`/`<=`) are deliberately excluded
+  because an operand swap there equals Relational's direction flip — including them would only
+  duplicate it (the `before?` *call* is included: no family flips its direction, so it is not a
+  duplicate); `in` is excluded as not-compile-safe when swapped. Structurally identical operands
+  (`x - x`, `DateTime.diff(t, t)`) are skipped. Guard-legal ops (`-`/`/`/`div`/`rem`) reach `when`
+  guards via lifting like Arithmetic), Relational (ordering/equality swaps, plus membership `in`→`not in` —
   the polarity flip for `in`, mirroring `==`→`!=`; the reverse is Logical's `not` strip, and an
   `in` directly under a `not` is left unmutated to avoid duplicating it — see NOTES "Membership"),
   Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip), Literal
@@ -503,7 +511,8 @@ contract between them is the whole game.
   `replace_leading`↔`replace_trailing`, `pad_leading`↔`pad_trailing`, `first`↔`last`,
   `graphemes`↔`codepoints`, plus the Erlang `:string` directional/case pairs `uppercase`↔`lowercase`,
   `to_upper`↔`to_lower`, `left`↔`right` (the trim/predicate pairs have no `:string` function-name
-  twin, their direction being an argument atom).
+  twin, their direction being an argument atom), and the Erlang `:binary` byte pair
+  `first`↔`last` (the byte-level twin of `String.first`/`last`).
   Also one **call→operator** substitution: `String.equivalent?(a, b)` (Unicode-canonical equality)
   → raw `a == b`, dropping normalization (arity tells the pipe context apart — `equivalent?/1` doesn't
   exist, so a 1-arg call is a `|>` stage → `a |> Kernel.==(b)`). The `String` sibling of Collection:
@@ -517,7 +526,9 @@ contract between them is the whole game.
   CallRemoval (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/`dedup`/`shuffle`,
   the lazy `Stream` twins `uniq`/`uniq_by`/`dedup`/`dedup_by`/`intersperse`,
   `List.flatten`, `String.trim`/`downcase`/`upcase`/`reverse`/`normalize`/`replace_invalid`/
-  `pad_leading`/`pad_trailing`/`slice`/…, **and `Kernel.abs`** (`abs(x)` → `x`), **the `Kernel`
+  `pad_leading`/`pad_trailing`/`slice`/…, `URI.encode_www_form`/`decode_www_form` (both
+  `binary()->binary()`), `NaiveDateTime.beginning_of_day`/`end_of_day` (each returns a same-day
+  `NaiveDateTime`), **and `Kernel.abs`** (`abs(x)` → `x`), **the `Kernel`
   binary slicers** `binary_slice/2`·`/3` and `binary_part/3` (→ the whole binary; `binary_part/2`
   is not a `Kernel` function, so its sole form `:erlang.binary_part/2`·`/3` is removed instead),
   and the analogous Erlang `:string` ones (`trim`/`strip`/`chomp`,

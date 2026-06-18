@@ -18,6 +18,12 @@ defmodule Mutare.Mutators.StringCall do
     * `:string.left` ↔ `:string.right`            (justify/pad direction — the
       analogue of `pad_leading`/`pad_trailing`)
 
+  …plus the Erlang `:binary` module's first/last pair — the byte-level twin of
+  `String.first`/`String.last`:
+
+    * `:binary.first` ↔ `:binary.last`            (the first vs last *byte* of a
+      binary, where `String.first`/`last` take the first/last grapheme)
+
   (The trim/predicate pairs have no `:string` twin — there the *direction* is an
   argument atom, e.g. `:string.trim(s, :leading)`, not a distinct function name,
   so renaming cannot express the swap.)
@@ -34,12 +40,12 @@ defmodule Mutare.Mutators.StringCall do
   — so guard-safety is automatic. The sibling of `Mutare.Mutators.Collection`
   (the `Enum`/`List` swaps).
 
-  Both `String` and the Erlang `:string` module are matched by their **resolved** module
-  through the shared `Mutare.Transform.Calls` reader, so the direct, aliased, and bare
-  imported forms all match: `String.upcase`, `alias String, as: S; S.upcase`, and
-  `import String; upcase` — and likewise `:string.uppercase`, `alias :string, as: S;
-  S.uppercase`, and `import :string; uppercase`. A *shadowing* `alias MyApp.String` resolves
-  to the local module and is correctly left alone.
+  `String`, the Erlang `:string` module, and the Erlang `:binary` module are all matched by
+  their **resolved** module through the shared `Mutare.Transform.Calls` reader, so the direct,
+  aliased, and bare imported forms all match: `String.upcase`, `alias String, as: S; S.upcase`,
+  and `import String; upcase` — and likewise `:string.uppercase`, `alias :string, as: S;
+  S.uppercase`, `import :string; uppercase`, and `:binary.first`. A *shadowing*
+  `alias MyApp.String` resolves to the local module and is correctly left alone.
 
   On by default — high signal on the affix/case/predicate functions that anchor
   string-handling logic, exactly where an off-by-direction bug hides. Distinct
@@ -81,7 +87,11 @@ defmodule Mutare.Mutators.StringCall do
     {:string, :to_upper} => :to_lower,
     {:string, :to_lower} => :to_upper,
     {:string, :left} => :right,
-    {:string, :right} => :left
+    {:string, :right} => :left,
+    # The Erlang `:binary` module's first/last byte pair — the byte-level twin of
+    # `String.first`/`String.last` (both `:binary` functions return a byte).
+    {:binary, :first} => :last,
+    {:binary, :last} => :first
   }
 
   @impl Mutare.Mutator

@@ -9,7 +9,7 @@ defmodule Mutare.OperandSwapTest do
   alias Mutare.Mutators.OperandSwap
   alias Mutare.{Selector, Site}
 
-  @compile {:no_warn_undefined, Mutare.OperandSwapFixture}
+  @compile {:no_warn_undefined, [Mutare.OperandSwapFixture, Mutare.OperandSwapDateTimeFixture]}
 
   # Isolate the family: with only OperandSwap enabled, every site is a transpose.
   @only [OperandSwap]
@@ -60,6 +60,73 @@ defmodule Mutare.OperandSwapTest do
     test "describe/1 renders the transpose" do
       [site] = swap_sites("a - b")
       assert Site.describe(site) == "operand_swap  a - b → b - a"
+    end
+  end
+
+  describe "swaps non-commutative date/time calls (operand-swap of a named call)" do
+    test "before?/after?/compare transpose their two arguments, on every calendar type" do
+      for mod <- ["DateTime", "Time", "NaiveDateTime"], fun <- ["before?", "after?", "compare"] do
+        assert mutated_codes("#{mod}.#{fun}(a, b)") == ["#{mod}.#{fun}(b, a)"]
+      end
+    end
+
+    test "diff transposes the first two args, keeping the trailing unit (ModeSwap owns it)" do
+      assert mutated_codes("DateTime.diff(a, b)") == ["DateTime.diff(b, a)"]
+      assert mutated_codes("DateTime.diff(a, b, :second)") == ["DateTime.diff(b, a, :second)"]
+      assert mutated_codes("Time.diff(a, b, :second)") == ["Time.diff(b, a, :second)"]
+
+      assert mutated_codes("NaiveDateTime.diff(a, b, :hour)") ==
+               ["NaiveDateTime.diff(b, a, :hour)"]
+    end
+
+    test "a piped stage is skipped — its first operand comes from the pipe" do
+      assert swap_sites("a |> DateTime.before?(b)") == []
+      assert swap_sites("a |> DateTime.diff(b, :second)") == []
+    end
+
+    test "structurally identical first two operands are not swapped" do
+      assert swap_sites("DateTime.diff(a, a)") == []
+    end
+
+    test "an unrelated module, or a function not in the table, is left alone" do
+      assert swap_sites("Foo.before?(a, b)") == []
+      # add/2 is not an operand-order swap (commutative-ish offset, no entry in the table)
+      assert swap_sites("DateTime.add(a, b)") == []
+    end
+
+    test "an aliased call still matches (resolution is shared via Calls)" do
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule T do
+            alias DateTime, as: DT
+            def f(a, b), do: DT.before?(a, b)
+          end
+          """,
+          mutators: @only
+        )
+
+      assert [%Site{mutator: :operand_swap, mutated_code: "DT.before?(b, a)"}] =
+               Enum.filter(sites, &(&1.mutator == :operand_swap))
+    end
+
+    test "a shadowing alias resolves to the local module and is left alone" do
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule T do
+            alias MyApp.DateTime
+            def f(a, b), do: DateTime.before?(a, b)
+          end
+          """,
+          mutators: @only
+        )
+
+      assert Enum.filter(sites, &(&1.mutator == :operand_swap)) == []
+    end
+
+    test "a body remote-call swap is delivered in place" do
+      assert [%Site{kind: :in_place}] = swap_sites("DateTime.before?(a, b)")
     end
   end
 
@@ -131,6 +198,32 @@ defmodule Mutare.OperandSwapTest do
       assert Mutare.OperandSwapFixture.sub(10, 3) == 7
       Selector.put(site.id)
       assert Mutare.OperandSwapFixture.sub(10, 3) == -7
+    end
+  end
+
+  describe "runtime semantics of a remote call swap (one compile, flip the selector)" do
+    setup do
+      source = """
+      defmodule Mutare.OperandSwapDateTimeFixture do
+        def earlier?(a, b), do: DateTime.before?(a, b)
+      end
+      """
+
+      {metamutant, sites, _} = Mutare.transform_string(source, mutators: @only)
+      [site] = Enum.filter(sites, &(&1.mutator == :operand_swap))
+      Code.compile_string(metamutant)
+      Selector.put(Selector.baseline())
+      on_exit(fn -> Selector.put(Selector.baseline()) end)
+      %{site: site}
+    end
+
+    test "baseline checks `a before b`; the mutant checks `b before a`", %{site: site} do
+      earlier = ~U[2020-01-01 00:00:00Z]
+      later = ~U[2020-01-02 00:00:00Z]
+
+      assert Mutare.OperandSwapDateTimeFixture.earlier?(earlier, later) == true
+      Selector.put(site.id)
+      assert Mutare.OperandSwapDateTimeFixture.earlier?(earlier, later) == false
     end
   end
 end
