@@ -592,6 +592,41 @@ defmodule Mutare.TransformTest do
       # The DSL body is skipped; with no mutator registered for it, nothing mutates.
       assert sites == []
     end
+
+    @piped_source """
+    defmodule PipedQuery do
+      import Mutare.Test.QueryDSL
+
+      def run(q, y) do
+        q |> where(1 == y)
+      end
+    end
+    """
+
+    test "a piped macro stage is routed too (effective arity, visible routing)" do
+      # `q |> where(1 == y)` is `where(q, 1 == y)` — effective arity 2 matches the
+      # registered `where/2`; the condition (the macro's second/`:skip` arg) is left raw,
+      # so core never mutates `1 == y` even though it is a *piped* stage.
+      {meta, sites, _next_id} =
+        Mutare.transform_string(@piped_source,
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
+          macros: [{Mutare.Test.QueryDSL, :where, 2, [:expression, :skip]}]
+        )
+
+      assert sites == []
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "without the registration, a piped stage's body still mutates (the skip is doing the work)" do
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(@piped_source,
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal]
+        )
+
+      # `1 == y` and the `1` literal mutate when `where` is just an ordinary piped call.
+      assert Enum.any?(sites, &(&1.mutator == :relational))
+      assert Enum.any?(sites, &(&1.mutator == :literal))
+    end
   end
 
   describe "a selector cannot be a bare pipe target (|> hoisting)" do

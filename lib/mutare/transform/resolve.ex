@@ -29,7 +29,7 @@ defmodule Mutare.Transform.Resolve do
   # (the tracked `Kernel` selector, default `:all`), and `piped?` (whether the current node is
   # a `|>` right-hand side — so `Imports` can recover a piped call's effective arity).
 
-  alias Mutare.Macros
+  alias Mutare.{Macros, Mutator}
   alias Mutare.Transform.{Aliases, Imports}
 
   @macro_key :mutare_macro
@@ -91,7 +91,8 @@ defmodule Mutare.Transform.Resolve do
   # `Imports.stamp` so it can read the just-applied import / Kernel-displacement marks.
   defp walk({fun, meta, args}, env) when is_atom(fun) and is_list(args) do
     meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, env.piped)
-    meta = stamp_macro(meta, bare_module_key(fun, length(args), meta), fun, args, env)
+    arity = Mutator.effective_arity(args, env.piped)
+    meta = stamp_macro(meta, bare_module_key(fun, arity, meta), fun, args, env)
     {fun, meta, descend(args, env)}
   end
 
@@ -116,19 +117,26 @@ defmodule Mutare.Transform.Resolve do
   end
 
   # Stamp a call's meta with the argument routing of the known macro it resolves to, or leave
-  # it unchanged. Skipped for a piped call: a pattern-context macro is never piped into its
-  # pattern argument, and a pipe stage's written arity differs from what is registered. The
-  # routing is sized to the visible arg count, so the analyzer can route position-by-position.
+  # it unchanged. Pipe-aware: a stage `lhs |> macro(a, b)` is `macro(lhs, a, b)`, so the match
+  # uses the *effective* arity (visible + 1) and the looked-up routing is for the effective
+  # positions. The piped value (effective position 0 — the `|>` LHS, analyzed by the `:|>`
+  # clause, not part of this node's args) is dropped, so the stamp carries only the routing for
+  # the **visible** args — which is what the analyzer routes. This is what protects a piped DSL
+  # stage (`q |> where([p], p.x == 1)`): without it core would descend into the condition.
   defp stamp_macro(meta, module_key, fun, args, env) do
-    if env.piped do
-      meta
-    else
-      case Macros.routing(env.macros, module_key, fun, length(args)) do
-        nil -> meta
-        routing -> [{@macro_key, routing} | meta]
-      end
+    arity = Mutator.effective_arity(args, env.piped)
+
+    case Macros.routing(env.macros, module_key, fun, arity) do
+      nil -> meta
+      routing -> [{@macro_key, visible_routing(routing, env.piped)} | meta]
     end
   end
+
+  # Drop the piped value's treatment (effective position 0) so the stamp lines up with the
+  # node's visible args; un-piped, every position is visible. A piped call always has effective
+  # arity >= 1, so the routing list is non-empty and `tl/1` is safe.
+  defp visible_routing(routing, true), do: tl(routing)
+  defp visible_routing(routing, false), do: routing
 
   # The module key a *bare* call resolves to, for known-macro matching: the imported module
   # if stamped, else `[:Kernel]` only when the name is a genuine `Kernel` export *and* not

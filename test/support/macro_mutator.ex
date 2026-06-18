@@ -10,6 +10,14 @@ defmodule Mutare.Test.QueryDSL do
   defmacro query(clauses) do
     quote do: unquote(clauses)
   end
+
+  @doc """
+  A pipeable stage (`query |> where(condition)`) — the query-builder shape, where the
+  piped value is the first effective argument and the condition is an opaque DSL body.
+  """
+  defmacro where(query, _condition) do
+    quote do: unquote(query)
+  end
 end
 
 defmodule Mutare.Test.QueryMutator do

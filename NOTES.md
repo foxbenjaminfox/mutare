@@ -665,13 +665,22 @@ Three load-bearing decisions:
   Resolution at the *call site* still reflects (via `Imports`), where the target app's deps are
   loadable.
 
+**Pipe-aware** (the query-builder shape `q |> where([p], p.x == 1) |> order_by(...)`, where each
+stage is a piped macro and the piped value is effective arg 0). `Resolve.stamp_macro` matches on
+the *effective* arity (`Mutator.effective_arity` = visible + 1 when piped) and stamps only the
+**visible**-position routing (it drops the piped value's treatment, effective position 0 — the
+`|>` LHS, analyzed by the `:|>` clause, not part of the stage node's args). `Analyze`'s
+`analyze_pipe_stage` reads the stamp the same way the generic clause does. Without this, core
+would descend into a piped `:skip` stage's DSL body and mutate/poison it — the bug that a naive
+"don't stamp piped calls" introduced (a piped macro stage is the *common* DSL shape, not a rarity).
+
 Limitations (documented): a whole `import SomeDsl` resolves a bare macro call only when `SomeDsl`
 is loadable at transform time (the inherited `Imports` limit — a selective `import …, only:` is
-definitive without reflection, and a real `mix mutare` run has the target's deps loaded); a
-piped macro call is never stamped (a pattern-context macro is never piped into its pattern arg);
-and a known macro in a `:scaffold`/compile-time position isn't routed (it's already non-mutating
-there, so `:skip` would be a no-op anyway). `pattern_mutations/2`-style head restructuring of
-macro args is out of scope. `test/support/macro_mutator.ex` is the worked `macros/0` example.
+definitive without reflection, and a real `mix mutare` run has the target's deps loaded); and a
+known macro in a `:scaffold`/compile-time position isn't routed (it's already non-mutating there,
+so `:skip` would be a no-op anyway). `pattern_mutations/2`-style head restructuring of macro args
+is out of scope. `test/support/macro_mutator.ex` is the worked `macros/0` example (with a piped
+`where/2` stage).
 
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**

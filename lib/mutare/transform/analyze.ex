@@ -506,9 +506,19 @@ defmodule Mutare.Transform.Analyze do
   # is a normal `Candidate.InPlace`, so emission wraps it in a selector and
   # `hoist_pipe/1` lifts the pipe in — a mutated 0-arg `Enum.reverse()` stage becomes
   # `lhs |> Enum.reverse()`. A non-call RHS (rare) is analyzed normally.
-  defp analyze_pipe_stage({_form, _meta, args} = node, mutators) when is_list(args) do
-    node = offer(node, node, mutators, %{piped: true})
-    recurse_runtime(node, mutators, true)
+  #
+  # A piped **known-macro** stage (`q |> where([p], p.x == 1)`, the query-builder shape)
+  # routes its arguments by treatment too — `Resolve` already stamped the *visible*-position
+  # routing (the piped value dropped), so a `:skip` DSL body is left raw instead of mutated.
+  defp analyze_pipe_stage({_form, meta, args} = node, mutators) when is_list(args) do
+    case macro_routing(meta) do
+      nil ->
+        node = offer(node, node, mutators, %{piped: true})
+        recurse_runtime(node, mutators, true)
+
+      routing ->
+        analyze_known_macro(node, routing, mutators, %{piped: true})
+    end
   end
 
   defp analyze_pipe_stage(other, mutators), do: analyze(other, :runtime, mutators)
@@ -522,11 +532,12 @@ defmodule Mutare.Transform.Analyze do
 
   # Analyze a known-macro call: offer the *whole* node to mutators (so a custom mutator
   # registered for the macro still fires — e.g. an Ecto query mutator on `from(...)`),
-  # then route each argument by its declared treatment instead of the default all-runtime
-  # descent. `mark_call_option_keys/1` still runs (harmless for `:skip`/`:pattern` args,
-  # which carry no candidates; correct for `:expression` args, preserving option-key gating).
-  defp analyze_known_macro(node, routing, mutators) do
-    {form, meta, args} = offer(node, node, mutators)
+  # then route each *visible* argument by its declared treatment instead of the default
+  # all-runtime descent. `context` carries the pipe flag (so a pipe-aware custom mutator sees
+  # the effective arity); `mark_call_option_keys/1` still runs (harmless for `:skip`/`:pattern`
+  # args, which carry no candidates; correct for `:expression` args, preserving option-key gating).
+  defp analyze_known_macro(node, routing, mutators, context \\ %{piped: false}) do
+    {form, meta, args} = offer(node, node, mutators, context)
     mark_call_option_keys({form, meta, route_macro_args(args, routing, mutators)})
   end
 
