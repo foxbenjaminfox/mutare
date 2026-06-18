@@ -146,6 +146,14 @@ defmodule Mutare.Site do
   # recorded with the original/mutated nodes, their ops, and rendered code. (For a
   # literal swap the "op" is `:__block__` — the same as an in-place literal site.)
   defp replace(id, file, range, original_node, mutated_node, mutator, kind) do
+    # When the mutated node is a *keyword-list key* (`trim:`), its recorded `range`
+    # spans the `name:` source — colon included — so the report's textual patch must
+    # render it in keyword form too. `Sourceror.to_string/1` of the bare atom node
+    # gives `:trim`, which spliced over that span yields invalid `:mutare true`; the
+    # decision is read from the *original* node, since a mutated atom carries fresh,
+    # format-less meta. (`true`/`false`/`nil` keys included — they are atoms too.)
+    keyword_key? = keyword_key?(original_node)
+
     %__MODULE__{
       id: id,
       file: file,
@@ -156,12 +164,20 @@ defmodule Mutare.Site do
       kind: kind,
       original_op: elem(original_node, 0),
       mutated_op: elem(mutated_node, 0),
-      original_code: Sourceror.to_string(original_node),
-      mutated_code: Sourceror.to_string(mutated_node),
+      original_code: render_code(original_node, keyword_key?),
+      mutated_code: render_code(mutated_node, keyword_key?),
       original_node: original_node,
       mutated_node: mutated_node
     }
   end
+
+  defp keyword_key?({:__block__, meta, [atom]}) when is_atom(atom), do: meta[:format] == :keyword
+  defp keyword_key?(_node), do: false
+
+  defp render_code({:__block__, _meta, [atom]}, true) when is_atom(atom),
+    do: Macro.inspect_atom(:key, atom)
+
+  defp render_code(node, _keyword_key?), do: Sourceror.to_string(node)
 
   @doc "Human-readable one-liner, e.g. `relational  >= → >` or `clause_drop  (drop) <clause>`."
   @spec describe(t()) :: String.t()

@@ -1125,12 +1125,18 @@ defmodule Mutare.TransformTest do
 
       # Syntax sugar no longer hides the key: both the keys (status/a/timeout) and the
       # values (active/b/infinity) mutate — 6 sites — exactly as the arrow form would.
+      # A keyword *key* renders in keyword form (`status:`) so its diff stays legal; a
+      # value renders as a bare atom (`:active`).
       assert length(sites) == 6
       assert Enum.all?(sites, &(&1.mutator == :atom))
       descriptions = Enum.map_join(sites, "\n", &Mutare.Site.describe/1)
 
-      for atom <- ~w(status active a b timeout infinity) do
-        assert descriptions =~ ":#{atom} → :mutare"
+      for key <- ~w(status a timeout) do
+        assert descriptions =~ "#{key}: → mutare:"
+      end
+
+      for value <- ~w(active b infinity) do
+        assert descriptions =~ ":#{value} → :mutare"
       end
 
       assert {:ok, _} = Code.string_to_quoted(meta)
@@ -1142,9 +1148,10 @@ defmodule Mutare.TransformTest do
       {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @atom)
 
       # Both keys mutate; Sourceror renders the spliced selector in tuple form so the
-      # keyword list stays legal (`[a: 1]` has no arrow form).
+      # keyword list stays legal (`[a: 1]` has no arrow form). The diff renders each
+      # key in keyword form (`a:`) so a survivor reads as `[mutare: 1]`, not `[:mutare 1]`.
       assert Enum.map(sites, &Mutare.Site.describe/1) |> Enum.sort() ==
-               ["atom  :a → :mutare", "atom  :b → :mutare"]
+               ["atom  a: → mutare:", "atom  b: → mutare:"]
 
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
@@ -1316,7 +1323,7 @@ defmodule Mutare.TransformTest do
       source = "defmodule C do\n  def f(x), do: foo(x, timeout: 5, retries: 3)\nend\n"
       {keys, meta} = atom_keys(source, mutators: @kw)
 
-      assert keys == ["atom  :retries → :mutare", "atom  :timeout → :mutare"]
+      assert keys == ["atom  retries: → mutare:", "atom  timeout: → mutare:"]
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
@@ -1334,7 +1341,7 @@ defmodule Mutare.TransformTest do
     test "`call_option_keys: false` gates a piped call's trailing keyword key too" do
       source = "defmodule P do\n  def f(x), do: x |> foo(timeout: 5)\nend\n"
       assert {[], _} = atom_keys(source, mutators: @kw_off)
-      assert {["atom  :timeout → :mutare"], _} = atom_keys(source, mutators: @kw)
+      assert {["atom  timeout: → mutare:"], _} = atom_keys(source, mutators: @kw)
     end
 
     test "`call_option_keys: false` does NOT affect standalone map/keyword-list literal keys" do
@@ -1342,14 +1349,14 @@ defmodule Mutare.TransformTest do
       map = "defmodule M do\n  def f, do: %{timeout: 5}\nend\n"
       kwl = "defmodule K do\n  def f, do: [timeout: 5]\nend\n"
 
-      assert {["atom  :timeout → :mutare"], _} = atom_keys(map, mutators: @kw_off)
-      assert {["atom  :timeout → :mutare"], _} = atom_keys(kwl, mutators: @kw_off)
+      assert {["atom  timeout: → mutare:"], _} = atom_keys(map, mutators: @kw_off)
+      assert {["atom  timeout: → mutare:"], _} = atom_keys(kwl, mutators: @kw_off)
     end
 
     test "a tuple ending in a keyword list is not mistaken for call options" do
       # `{a, [b: 1]}` is a data tuple, not a call — its `:b` key mutates regardless.
       source = "defmodule T do\n  def f(a), do: {a, [b: 1]}\nend\n"
-      assert {["atom  :b → :mutare"], _} = atom_keys(source, mutators: @kw_off)
+      assert {["atom  b: → mutare:"], _} = atom_keys(source, mutators: @kw_off)
     end
 
     test "the opt is per-mutator: a different mutator's keys are unaffected" do

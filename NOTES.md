@@ -1666,6 +1666,39 @@ selection — `25 killed / 1 timeout / 39 survived / 76 no-coverage` (the dump c
 survived / 0 no-coverage`. The honest score replaces one inflated by charging every
 uncovered mutant's whole-suite timeout as a kill.
 
+### Report diff fidelity for call-final keyword args `[fixed]`
+A `mix mutare --only lib/mutare/ignore.ex` surfaced two *corrupt survivor diffs* on
+`|> String.split(re, trim: true)` — both in `Mutare.Report`, **not** the metamutant
+(which is built from the AST, compiles, and runs fine; only the diff a human reads
+was wrong):
+
+1. **`literal` `true → false` ate the closing paren** — `…, trim: false` (no `)`).
+   The site's recorded `range` was one column too wide. Root cause is upstream:
+   `Sourceror.get_range/1` sizes an atom literal as its name **plus one for a colon**
+   (`range.ex` `do_get_range/1`, the `+1` "Just the colon" branch) — correct for a
+   written `:foo` (leading colon) and a keyword key `foo:` (trailing colon), but
+   `true`/`false`/`nil` are written **bare**, so their range overshoots by one and the
+   textual patch eats the next char. Fixed with `Mutare.Transform.NodeRange.get/1`, a
+   `get_range` wrapper that trims the phantom column for a bare (non-`format: :keyword`,
+   no-delimiter) `true`/`false`/`nil` block. Every candidate-range site in `Analyze`
+   and `FunctionPlan` now goes through it (no-op for every other node), so the lifted
+   head-pattern case (`def f(true)` → `def f(false)`) is covered too.
+
+2. **`atom` keyword-key `trim: → :mutare` broke keyword syntax** — `…, :mutare true)`.
+   Here the range was *right* (it spans `trim:`, colon included); the *replacement*
+   was wrong. `Sourceror.to_string/1` of the bare mutated atom node gives `:mutare`,
+   and a standalone keyword-format block still renders `:mutare` (keyword form only
+   applies inside a pair). Fixed in `Mutare.Site`: when the **original** node is a
+   `format: :keyword` atom key, render `original_code`/`mutated_code` with
+   `Macro.inspect_atom(:key, atom)` → `trim:` / `mutare:`, so the splice stays legal
+   (`mutare: true`). The decision reads the *original* node because the mutated atom
+   carries fresh, format-less meta (the clean-meta rule). Arrow-form keys (`%{:a => 1}`)
+   and `nil:`/`true:` keys are untouched (the former isn't `format: :keyword`; the
+   latter keep their real trailing colon).
+
+Both are pure report-rendering fixes; the regression tests assert the diff text *and*
+that the patched source re-parses (`report_test.exs`, `transform/node_range_test.exs`).
+
 ### Surface skipped files more loudly `[soon]`
 `Schema`/`safe_transform` skips a file that fails to transform (good — one bad
 file shouldn't sink the run) and the task prints `skipped <file>: <reason>` in

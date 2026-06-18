@@ -51,6 +51,48 @@ defmodule Mutare.ReportTest do
              "-  def f(0) do\n-    :z\n-  end"
   end
 
+  # Regression: a call-final keyword argument (`String.split(x, trim: true)`) used
+  # to render corrupt survivor diffs — the boolean value's range was one column too
+  # wide (Sourceror counts a phantom colon for bare `true`/`false`/`nil`), eating the
+  # closing paren; and a keyword *key* rendered as a bare atom (`:mutare`), breaking
+  # keyword syntax. See `Mutare.Transform.NodeRange` and `Mutare.Site`.
+  describe "diff/2 of a call-final keyword argument" do
+    # `String.split/3` (pattern + options) — the shape from `ignore.ex` that first
+    # surfaced this. (`String.split/2` would read `trim: true` *as* the pattern.)
+    @kw_source """
+    defmodule M do
+      def f(x), do: String.split(x, ",", trim: true)
+    end
+    """
+
+    defp kw_site(mutator, original_code) do
+      {_meta, sites, _next} = Mutare.transform_string(@kw_source, mutators: [mutator])
+      Enum.find(sites, &(&1.original_code == original_code))
+    end
+
+    test "a boolean value swap keeps the closing paren (true/false range is not over-wide)" do
+      assert Report.diff(kw_site(Mutare.Mutators.Literal, "true"), @kw_source) ==
+               "-  def f(x), do: String.split(x, \",\", trim: true)\n" <>
+                 "+  def f(x), do: String.split(x, \",\", trim: false)"
+    end
+
+    test "a keyword-key swap renders in keyword form (`mutare:`, not `:mutare`)" do
+      assert Report.diff(kw_site(Mutare.Mutators.AtomLiteral, "trim:"), @kw_source) ==
+               "-  def f(x), do: String.split(x, \",\", trim: true)\n" <>
+                 "+  def f(x), do: String.split(x, \",\", mutare: true)"
+    end
+
+    test "both patched diffs re-parse as valid Elixir" do
+      for {mutator, original} <- [
+            {Mutare.Mutators.Literal, "true"},
+            {Mutare.Mutators.AtomLiteral, "trim:"}
+          ] do
+        patched = Report.patch(kw_site(mutator, original), @kw_source)
+        assert {:ok, _} = Code.string_to_quoted(patched)
+      end
+    end
+  end
+
   test "score/1 = killed / (total - no_coverage)" do
     results = [
       %Result{status: :killed},

@@ -39,7 +39,7 @@ defmodule Mutare.Transform.FunctionPlan do
 
   alias Mutare.AST
   alias Mutare.Mutator
-  alias Mutare.Transform.{Candidate, PatternStructure}
+  alias Mutare.Transform.{Candidate, NodeRange, PatternStructure}
 
   @type signature :: {:def | :defp, atom(), non_neg_integer()}
 
@@ -211,7 +211,7 @@ defmodule Mutare.Transform.FunctionPlan do
                 mutator: mutator,
                 original: original,
                 mutated: mutated,
-                range: Sourceror.get_range(original)
+                range: NodeRange.get(original)
               }
             end)
           end)
@@ -346,7 +346,7 @@ defmodule Mutare.Transform.FunctionPlan do
           mutator: mutator,
           original: original,
           mutated: mutated,
-          range: Sourceror.get_range(original)
+          range: NodeRange.get(original)
         }
       end)
     end)
@@ -547,7 +547,7 @@ defmodule Mutare.Transform.FunctionPlan do
 
         # A head with no rangeable call can't be diffed; skip rather than emit a site
         # the report would crash on (mirrors the return-value `get_range` guard).
-        case Sourceror.get_range(call) do
+        case NodeRange.get(call) do
           %{} = range ->
             used = clause_used_outside(clause)
             original = put_call_args(call, raw_args)
@@ -629,7 +629,7 @@ defmodule Mutare.Transform.FunctionPlan do
       []
     else
       Enum.map(droppable, fn {clause, index} ->
-        %Candidate.Drop{clause_index: index, original: clause, range: Sourceror.get_range(clause)}
+        %Candidate.Drop{clause_index: index, original: clause, range: NodeRange.get(clause)}
       end)
     end
   end

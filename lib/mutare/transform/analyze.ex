@@ -17,7 +17,7 @@ defmodule Mutare.Transform.Analyze do
   alias Mutare.AST
   alias Mutare.Mutator
   alias Mutare.Mutator.Spec
-  alias Mutare.Transform.{Candidate, PatternStructure}
+  alias Mutare.Transform.{Candidate, NodeRange, PatternStructure}
 
   # The try-style body blocks whose clause bodies are *return paths*
   # (`rescue`/`catch`/`else`). Their left side is always a match, and their tails
@@ -726,7 +726,7 @@ defmodule Mutare.Transform.Analyze do
   end
 
   defp position_candidates({pattern, pos}, clause, replace_clause, used, structural) do
-    case Sourceror.get_range(pattern) do
+    case NodeRange.get(pattern) do
       %{} = range ->
         pattern
         |> PatternStructure.node_mutations(used, structural)
@@ -878,7 +878,7 @@ defmodule Mutare.Transform.Analyze do
   # node, or one Sourceror can't range) gets no return mutant.
   defp append_return_candidates({form, meta, args} = node, raw_tail, replacements)
        when is_list(meta) do
-    case Sourceror.get_range(raw_tail) do
+    case NodeRange.get(raw_tail) do
       %{} = range ->
         candidates =
           Enum.map(replacements, fn replacement ->
@@ -925,7 +925,7 @@ defmodule Mutare.Transform.Analyze do
   # (Sourceror returns nil) or that is not a `{f, m, a}` node gets no mutant.
   defp append_condition_candidates({form, meta, args} = node, raw_condition, replacements, spec)
        when is_list(meta) do
-    case Sourceror.get_range(raw_condition) do
+    case NodeRange.get(raw_condition) do
       %{} = range ->
         candidates =
           Enum.map(replacements, fn mutated ->
@@ -1007,7 +1007,7 @@ defmodule Mutare.Transform.Analyze do
   end
 
   defp build_candidates(node, muts) do
-    range = Sourceror.get_range(node)
+    range = NodeRange.get(node)
 
     Enum.map(muts, fn {mutator, mutated} ->
       %Candidate.InPlace{mutator: mutator, original: node, mutated: mutated, range: range}
