@@ -73,7 +73,12 @@ defmodule Mutare.MacrosTest do
     test "match? and destructure are built in, routing arg 0 as a pattern" do
       registry = Macros.build([], [])
       assert Macros.routing(registry, [:Kernel], :match?, 2) == [:pattern, :expression]
-      assert Macros.routing(registry, [:Kernel], :destructure, 2) == [:pattern, :expression]
+      # `destructure`'s bindings escape, so arg 0 is the richer `:binding_pattern`
+      # (structural mutants in a value-discarded position); `match?`'s stay `:pattern`.
+      assert Macros.routing(registry, [:Kernel], :destructure, 2) == [
+               :binding_pattern,
+               :expression
+             ]
     end
 
     test "an unmatched module/name/arity returns nil" do

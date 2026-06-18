@@ -29,7 +29,18 @@ defmodule Mutare.Macro.Spec do
 
     * `:expression` (default) — analyze as `:runtime` (mutate normally).
     * `:pattern` — analyze as `:pattern` (descend so nested runtime escapes are
-      still reached, but never mutate the pattern itself). `match?`/`destructure`.
+      still reached, but never mutate the pattern itself). `match?`. The bindings the
+      pattern makes are **local** to the macro's expansion (a `case`/`fn`), so they do
+      not escape and the structural families have no observable swap to offer here.
+    * `:binding_pattern` — a `:pattern` whose bindings **escape into the enclosing
+      scope** (`destructure([x, y], v)` binds `x`/`y` for the rest of the block). Routed
+      exactly like `:pattern` for the in-place descent, but **additionally** offered to the
+      structural pattern families (swap/wildcard) when the macro call sits in a
+      *value-discarded* position — a non-final block statement or a `with` clause — where
+      the mutant is delivered by re-exporting the escaping bindings through a tuple
+      (`Mutare.Transform.emit_macro_pattern_site/3`), the `=`-match analogue. The
+      registrant vouches that the macro binds every variable named in the pattern and
+      accepts pattern-legal swap/wildcard rewrites (`destructure` does).
     * `:skip` — leave the argument **raw**: no descent, no mutation. The opaque
       DSL case (`Ecto.Query.from`'s body), and the mechanism behind "handled only
       by a custom mutator" — core skips the args, while the whole macro node is
@@ -42,7 +53,7 @@ defmodule Mutare.Macro.Spec do
   @type module_key :: [atom()] | atom()
 
   @typedoc "How one argument is routed."
-  @type treatment :: :expression | :pattern | :skip
+  @type treatment :: :expression | :pattern | :binding_pattern | :skip
 
   @type t :: %__MODULE__{
           module: module_key(),
@@ -54,7 +65,7 @@ defmodule Mutare.Macro.Spec do
   @enforce_keys [:module, :name, :arity, :args]
   defstruct [:module, :name, :arity, :args]
 
-  @treatments [:expression, :pattern, :skip]
+  @treatments [:expression, :pattern, :binding_pattern, :skip]
 
   @doc "The valid argument treatments — the single source of truth for validation."
   @spec treatments() :: [treatment()]

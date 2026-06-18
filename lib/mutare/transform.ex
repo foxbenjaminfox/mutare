@@ -798,6 +798,13 @@ defmodule Mutare.Transform do
     Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
+  # A binding-escaping macro's pattern mutation, delivered in place (the call is rewritten to
+  # a tuple-export selector — see `emit_macro_pattern_site/3`). The diff is the pattern
+  # before/after; the rewrite scaffolding never reaches a Site.
+  defp in_place_site(id, %Candidate.MacroPattern{} = c, file) do
+    Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
+  end
+
   defp lifted_site(id, %Candidate.Guard{} = c, file) do
     Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
   end
@@ -872,6 +879,12 @@ defmodule Mutare.Transform do
             # only ever carries `MatchPattern` candidates, so the head match is exhaustive.
             [%Candidate.MatchPattern{} | _] = candidates ->
               emit_match_site(current, candidates, ctx)
+
+            # A binding-escaping known macro (`destructure([x, y], v)`) in a value-discarded
+            # position is rewritten to the same tuple-export selector, but each branch runs
+            # the *macro* (with the original/mutated pattern) instead of a `case` match.
+            [%Candidate.MacroPattern{} | _] = candidates ->
+              emit_macro_pattern_site(current, candidates, ctx)
 
             candidates ->
               emit_site(current, candidates, ctx)
@@ -1045,6 +1058,65 @@ defmodule Mutare.Transform do
   # probe), then run the baseline inner case. Mirrors `catch_all_clause/3`.
   defp match_catch_all(ids, baseline_case, var) do
     body = {:__block__, [], [Recorder.record_ast(ids, var), baseline_case]}
+    {:->, [], [[Recorder.catch_all_pattern(var)], body]}
+  end
+
+  # === binding-escaping macro pattern mutation: tuple re-export ==============
+
+  # Rewrite a binding-escaping known-macro call (`destructure([x, y], v)`, declared
+  # `:binding_pattern`) in a value-discarded position so its pattern arg can be mutated. The
+  # `emit_match_site/3` mechanism with the inner `case rhs do <pat> -> {x, y} end` generalized
+  # to running the macro itself: the macro does the binding, those bindings escape, so — like a
+  # `=` — the call can't be wrapped in a selector (the bindings would be trapped in the branch).
+  # The bound variables are re-exported through a tuple and rebound outside:
+  #
+  #     {x, y} =
+  #       case <sel> do
+  #         <id> -> destructure(<mutated_pat>, v); {x, y}            # one per mutant (raw value)
+  #         mutare_active ->
+  #           <record ids>
+  #           destructure(<pat>, v); {x, y}                          # baseline (emitted value)
+  #       end
+  #
+  # `node` is the already-emitted macro/pipe call (nested mutations in the value arg in place),
+  # used for the baseline branch; each mutant branch runs `candidate.mutant_expr` (the *raw*
+  # call with the mutated pattern). Mirrors `emit_match_site/3` for id claiming, coverage, the
+  # shared export tuple, and the all-poisoned fallback.
+  defp emit_macro_pattern_site(node, candidates, ctx) do
+    %Candidate.MacroPattern{export: export} = hd(candidates)
+
+    {clauses, ctx} =
+      Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
+        claim_id(ctx, candidate, &in_place_site/3, fn id, candidate ->
+          {:->, [], [[id], macro_pattern_branch(candidate.mutant_expr, export)]}
+        end)
+      end)
+
+    baseline = strip_candidates(node)
+
+    # Every mutation here skipped (poisoned) → no selector; emit the macro call unchanged.
+    case clauses do
+      [] ->
+        {baseline, ctx}
+
+      _ ->
+        ids = for {:->, _, [[id], _]} <- clauses, do: id
+        selector = Mutare.Metamutant.subject_ast()
+        catch_all = macro_pattern_catch_all(ids, baseline, export, ctx.active_var)
+        case_node = {:case, [], [selector, [do: clauses ++ [catch_all]]]}
+        {{:=, [], [export, case_node]}, ctx}
+    end
+  end
+
+  # One selector branch body: run the macro (binding the pattern's vars into the branch
+  # scope), then yield the shared export tuple for the outer rebind. `{macro; export}`.
+  defp macro_pattern_branch(macro_call, export),
+    do: {:__block__, [], [macro_call, export]}
+
+  # The selector catch-all for a rewritten binding-pattern macro: record the hosted ids
+  # (inert outside the probe), run the baseline (emitted) macro, then yield the export.
+  defp macro_pattern_catch_all(ids, baseline, export, var) do
+    body = {:__block__, [], [Recorder.record_ast(ids, var), baseline, export]}
     {:->, [], [[Recorder.catch_all_pattern(var)], body]}
   end
 

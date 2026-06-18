@@ -40,10 +40,13 @@ defmodule Mutare.Macros do
   #     `case expr do pattern -> true; _ -> false end`); a literal there is a
   #     pattern, not a value.
   #   * `Kernel.destructure(left, right)` — arg 0 is a list of variables matched
-  #     against `right` (padding with `nil`), i.e. a pattern position.
+  #     against `right` (padding with `nil`), i.e. a pattern position. Its bindings
+  #     **escape** into the enclosing scope (unlike `match?`'s, which are local to its
+  #     `case` expansion), so it is `:binding_pattern` — additionally offered to the
+  #     structural families in a value-discarded position (see `Mutare.Macro.Spec`).
   @builtin [
     {Kernel, :match?, 2, [:pattern, :expression]},
-    {Kernel, :destructure, 2, [:pattern, :expression]}
+    {Kernel, :destructure, 2, [:binding_pattern, :expression]}
   ]
 
   @typedoc "A merged registry: a lookup from `{module_key, name, arity}` to its `Spec`."

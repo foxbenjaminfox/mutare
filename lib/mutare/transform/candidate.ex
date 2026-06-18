@@ -42,6 +42,11 @@ defmodule Mutare.Transform.Candidate do
   #     would stop escaping), so the bound variables are re-exported through a tuple and
   #     rebound outside: `{vars} = case rhs do <pat> -> {vars} end`, the pattern hosted in
   #     a selector. Delivered in place; recorded as an `:in_place` `Mutare.Site`.
+  #   * `Candidate.MacroPattern` — the same families on the **pattern arg of a binding-
+  #     escaping known macro** (`destructure([x, y], v)`, declared `:binding_pattern`) in a
+  #     value-discarded position. The `MatchPattern` mechanism with the inner `case rhs do
+  #     pat -> {vars} end` generalized to `macro(<pat>, …); {vars}` — the macro does the
+  #     binding, the tuple re-export carries the escaping vars out. Delivered in place.
   #   * `Candidate.Return`  — a function clause's *tail expression* replaced with a
   #     constant (`nil`/`0`/`""`/`[]`), delivered by an in-place selector `case`
   #     (the tail is a body position). Structural, like `Drop`: it targets a
@@ -300,6 +305,46 @@ defmodule Mutare.Transform.Candidate do
     defstruct [:mutator, :original, :mutated, :export, :raw_rhs, :range]
   end
 
+  defmodule MacroPattern do
+    @moduledoc false
+
+    # The same swap/wildcard families applied to the **pattern argument of a known macro
+    # whose bindings escape** (`:binding_pattern` — `Kernel.destructure`, or a
+    # user-registered macro), when the call sits in a **value-discarded position** (a
+    # non-final block statement or a `with` clause). It is the `MatchPattern` mechanism
+    # generalized from a `=` to a macro call: the macro itself does the binding, and those
+    # bindings escape to the enclosing scope — so, exactly like `MatchPattern`, wrapping the
+    # call in a selector would trap them inside the branch. The fix re-exports the bound
+    # variables through a tuple and rebinds them outside, running the macro (with the
+    # original or a mutated pattern) inside each selector branch:
+    #
+    #     {x, y} =
+    #       case <sel> do
+    #         <id> -> destructure(<mutated_pat>, v); {x, y}        # one per mutant
+    #         mutare_active -> <record>; destructure(<pat>, v); {x, y}   # baseline
+    #       end
+    #
+    # `original`/`mutated` are the pattern before/after (the focused one-line diff) and
+    # `range` locates it; `export` is the shared `{vars}` tuple (built from the pattern's
+    # `bound_var_names`, so every branch and the outer match agree); `mutant_expr` is the
+    # *raw* macro call (or `|>` pipe) with the mutated pattern substituted — what the mutant
+    # branch runs (the baseline branch runs the *emitted* call so nested mutations in the
+    # value arg still fire). Only bound-set-preserving mutations are admitted (swaps always;
+    # wildcards forced *thin*), so the export is consistent across branches. Recorded as an
+    # `:in_place` `Mutare.Site`, like `MatchPattern`.
+
+    @type t :: %__MODULE__{
+            mutator: module(),
+            original: Macro.t(),
+            mutated: Macro.t(),
+            export: Macro.t(),
+            mutant_expr: Macro.t(),
+            range: Sourceror.Range.t()
+          }
+
+    defstruct [:mutator, :original, :mutated, :export, :mutant_expr, :range]
+  end
+
   defmodule Drop do
     @moduledoc false
 
@@ -347,6 +392,7 @@ defmodule Mutare.Transform.Candidate do
           | RescueDrop.t()
           | CaseClause.t()
           | MatchPattern.t()
+          | MacroPattern.t()
           | Drop.t()
           | Return.t()
 end

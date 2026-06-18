@@ -565,12 +565,17 @@ defmodule Mutare.Transform.Analyze do
   # Route one macro argument by its declared treatment — shared by the visible-arg routing
   # (`route_macro_args/3`) and the piped-value reach-back (`analyze_piped_value/3`), so the
   # piped LHS is treated identically to a written first argument: `:expression` → ordinary
-  # runtime (mutate); `:pattern` → a match context (descend for nested runtime escapes, never
-  # mutate the pattern in place); `:skip` → leave the argument **raw** (no descent, no mutation
-  # — an opaque value the macro may accept even though it is neither a valid expression nor a
-  # valid pattern).
+  # runtime (mutate); `:pattern`/`:binding_pattern` → a match context (descend for nested
+  # runtime escapes, never mutate the pattern *in place*); `:skip` → leave the argument **raw**
+  # (no descent, no mutation — an opaque value the macro may accept even though it is neither a
+  # valid expression nor a valid pattern). `:binding_pattern` routes identically to `:pattern`
+  # here; its *extra* structural-mutant offering is delivered separately (the macro call sits in
+  # a value-discarded position — see `binding_pattern_macro/1` / `attach_macro_pattern_candidates/4`).
   defp route_macro_arg(arg, :skip, _mutators), do: arg
-  defp route_macro_arg(arg, :pattern, mutators), do: analyze(arg, :pattern, mutators)
+
+  defp route_macro_arg(arg, treatment, mutators) when treatment in [:pattern, :binding_pattern],
+    do: analyze(arg, :pattern, mutators)
+
   defp route_macro_arg(arg, _expression, mutators), do: analyze(arg, :runtime, mutators)
 
   # The left side of a `|>` whose right side is a known macro: the piped value is the macro's
@@ -610,10 +615,11 @@ defmodule Mutare.Transform.Analyze do
   end
 
   # A non-keyword qualifier — a generator (`<-`), a filter, or a **bare `=` match**.
-  # `analyze_statement/2` offers a `=` LHS to the structural pattern families (a `for`
-  # qualifier always discards its value, so the tuple-export rewrite is sound) and
-  # leaves generators/filters as ordinary runtime.
-  defp analyze_for_arg(arg, mutators), do: analyze_statement(arg, mutators)
+  # `analyze_match_statement/2` offers a `=` LHS to the structural pattern families (a `for`
+  # `=` qualifier discards its value, so the tuple-export rewrite is sound) and leaves
+  # generators/filters as ordinary runtime. (Unlike a block statement / `with` clause, a
+  # *bare macro call* qualifier is a filter, not value-discarded, so it stays unrewritten.)
+  defp analyze_for_arg(arg, mutators), do: analyze_match_statement(arg, mutators)
 
   # One entry of a struct's field map: keep the key (a compile-time field name) raw and
   # descend only the value. A struct update (`%S{base | a: 1}`) carries a `:|` node
@@ -1303,15 +1309,41 @@ defmodule Mutare.Transform.Analyze do
 
   # === match (`=`) pattern structure =========================================
 
-  # A non-final statement of a runtime block (see the `:__block__` clause). A `=` match
-  # is the one statement whose LHS pattern is offered to the structural families; every
-  # other statement is analyzed as an ordinary runtime expression.
-  defp analyze_statement({:=, _meta, [raw_lhs, raw_rhs]} = match, mutators) do
+  # A value-discarded position that may host a rewriteable pattern — a non-final statement of
+  # a runtime block (the `:__block__` clause) or a `with` clause. Two statement shapes offer a
+  # pattern to the structural families: a `=` match (its LHS → `MatchPattern`), and a
+  # **binding-escaping known macro** call (`destructure([x, y], v)`, declared
+  # `:binding_pattern`) whose pattern arg → `MacroPattern` — its bindings escape exactly like a
+  # `=`'s, so the same tuple-re-export delivery applies. Every other statement analyzes as an
+  # ordinary runtime expression. (A `for` qualifier uses `analyze_match_statement/2` instead:
+  # a bare macro call there is a *filter*, not value-discarded — only the `=` shape is safe.)
+  defp analyze_statement({:=, _meta, _operands} = match, mutators),
+    do: analyze_match_statement(match, mutators)
+
+  defp analyze_statement(node, mutators) do
+    case binding_pattern_macro(node) do
+      nil ->
+        analyze(node, :runtime, mutators)
+
+      {raw_pattern, rebuild_mutant} ->
+        node
+        |> analyze(:runtime, mutators)
+        |> attach_macro_pattern_candidates(raw_pattern, rebuild_mutant, mutators)
+    end
+  end
+
+  # The `=`-only value-discarded path: a `for` qualifier, and the `=` shape of
+  # `analyze_statement/2`. A `=` match's LHS goes to the structural families
+  # (`MatchPattern`); everything else (a `<-` generator, a filter, a plain expression)
+  # analyzes as ordinary runtime. A `for` qualifier deliberately stops here — a bare macro
+  # call as a qualifier is a *filter* (its truthiness selects iterations), so rewriting it to
+  # a binding would silently drop the filter; only a `=` (already a binding qualifier) is safe.
+  defp analyze_match_statement({:=, _meta, [raw_lhs, raw_rhs]} = match, mutators) do
     analyzed = analyze(match, :runtime, mutators)
     attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, mutators)
   end
 
-  defp analyze_statement(other, mutators), do: analyze(other, :runtime, mutators)
+  defp analyze_match_statement(other, mutators), do: analyze(other, :runtime, mutators)
 
   # Offer the `=`'s LHS to the structural pattern families and, if any fire, attach a
   # `Candidate.MatchPattern` per mutation to the analyzed match node — emission rewrites
@@ -1324,17 +1356,112 @@ defmodule Mutare.Transform.Analyze do
     end
   end
 
-  defp match_pattern_candidates(_raw_lhs, _raw_rhs, []), do: []
-
   defp match_pattern_candidates(raw_lhs, raw_rhs, structural) do
-    # Sourceror attaches the *statement's* leading comment to its leftmost leaf — which,
-    # for `<pat> = e`, is inside the LHS. Strip it so the recorded `original`/`mutated`
-    # (rendered by `Site` via `Sourceror.to_string`) and the generated inner-case patterns
-    # don't carry the comment. The range/diff is unaffected (it reads position metadata).
-    lhs = strip_comments(raw_lhs)
+    case pattern_export(raw_lhs, structural) do
+      nil ->
+        []
 
-    with %{} = range <- NodeRange.get(lhs),
-         [_ | _] = names <- PatternStructure.bound_var_names(lhs) do
+      {lhs, range, export, mutations} ->
+        Enum.map(mutations, fn {mutator, mutated} ->
+          %Candidate.MatchPattern{
+            mutator: mutator,
+            original: lhs,
+            mutated: mutated,
+            export: export,
+            raw_rhs: raw_rhs,
+            range: range
+          }
+        end)
+    end
+  end
+
+  # === binding-escaping macro pattern structure ==============================
+
+  # Recognise a value-discarded statement that is a **known macro whose pattern arg's
+  # bindings escape** (`:binding_pattern` — `Kernel.destructure`, or a user-registered macro),
+  # returning `{raw_pattern, rebuild_mutant}` — the raw pattern node and a closure that rebuilds
+  # the *raw* macro call with a (mutated) pattern in its place — or `nil` for anything else.
+  # Two written shapes resolve to a binding-pattern arg (`Mutare.Transform.Resolve` stamps both):
+  #
+  #   * **piped** `[x, y] |> destructure(v)` — the pattern is the `|>` LHS (effective arg 0),
+  #     stamped on the stage as `:mutare_macro_piped`. Rebuilds `<mutated> |> rhs`.
+  #   * **direct** `destructure([x, y], v)` — the pattern is the first arg whose routing
+  #     (`meta[:mutare_macro]`) is `:binding_pattern`. Rebuilds the call with that arg replaced.
+  #
+  # The other args are kept *raw* (the mutant branch runs the baseline value; the catch-all
+  # runs the emitted one, so a nested mutation there still fires — see `emit_macro_pattern_site/3`).
+  defp binding_pattern_macro({:|>, meta, [lhs, {_form, rhs_meta, _args} = rhs]})
+       when is_list(rhs_meta) do
+    case Keyword.get(rhs_meta, :mutare_macro_piped) do
+      :binding_pattern -> {lhs, fn mutated -> {:|>, meta, [mutated, rhs]} end}
+      _ -> nil
+    end
+  end
+
+  defp binding_pattern_macro({form, meta, args}) when is_list(meta) and is_list(args) do
+    with routing when is_list(routing) <- macro_routing(meta),
+         index when is_integer(index) <- Enum.find_index(routing, &(&1 == :binding_pattern)) do
+      {Enum.at(args, index),
+       fn mutated -> {form, meta, List.replace_at(args, index, mutated)} end}
+    else
+      _ -> nil
+    end
+  end
+
+  defp binding_pattern_macro(_node), do: nil
+
+  # Offer the macro's escaping pattern to the structural families and, if any fire, attach a
+  # `Candidate.MacroPattern` per mutation to the analyzed macro/pipe node — emission rewrites
+  # it to the tuple-export selector (`Mutare.Transform.emit_macro_pattern_site/3`). Each
+  # candidate carries the pattern before/after (the diff), the shared export tuple, and the
+  # *raw* mutant call (`rebuild_mutant.(mutated)`).
+  defp attach_macro_pattern_candidates(analyzed, raw_pattern, rebuild_mutant, mutators) do
+    case macro_pattern_candidates(
+           raw_pattern,
+           rebuild_mutant,
+           PatternStructure.mutators(mutators)
+         ) do
+      [] -> analyzed
+      candidates -> put_candidates(analyzed, candidates)
+    end
+  end
+
+  defp macro_pattern_candidates(raw_pattern, rebuild_mutant, structural) do
+    case pattern_export(raw_pattern, structural) do
+      nil ->
+        []
+
+      {pattern, range, export, mutations} ->
+        Enum.map(mutations, fn {mutator, mutated} ->
+          %Candidate.MacroPattern{
+            mutator: mutator,
+            original: pattern,
+            mutated: mutated,
+            export: export,
+            mutant_expr: rebuild_mutant.(mutated),
+            range: range
+          }
+        end)
+    end
+  end
+
+  # The shared discovery for a pattern whose bindings *escape* and are re-exported through a
+  # tuple — used by both the `=`-match (`MatchPattern`) and binding-pattern-macro
+  # (`MacroPattern`) rewrites, which build a different candidate per mutation. Returns
+  # `{pattern, range, export, [{mutator, mutated}]}` (the comment-stripped pattern, its range,
+  # the shared export tuple, and the structural mutations), or `nil` when no structural family
+  # is enabled, the pattern binds nothing, or it isn't rangeable.
+  defp pattern_export(_raw_pattern, []), do: nil
+
+  defp pattern_export(raw_pattern, structural) do
+    # Sourceror attaches the *statement's* leading comment to its leftmost leaf — which, for a
+    # `<pat> = e` or a piped `<pat> |> macro(…)`, is inside the pattern. Strip it so the
+    # recorded `original`/`mutated` (rendered by `Site` via `Sourceror.to_string`) and the
+    # generated branches don't carry it. The range/diff is unaffected (it reads positions).
+    pattern = strip_comments(raw_pattern)
+
+    with %{} = range <- NodeRange.get(pattern),
+         [_ | _] = names <- PatternStructure.bound_var_names(pattern) do
       # Repeat each bound variable in the export tuple as many times as it *occurs* in the
       # pattern, so a variable the source self-used (a repeated binding `{a, a}`, a size var
       # `<<n, r::size(n)>>`) keeps that self-use in the outer rebind `{a, a} = …` instead of
@@ -1342,7 +1469,7 @@ defmodule Mutare.Transform.Analyze do
       # the scope never reads it, a warning the original didn't have. The repeated positions
       # all come from the *same* binding, so the rebind's `{a, a} = {v, v}` constraint is
       # always trivially satisfied and never re-imposes the original `t[0] == t[1]` one.
-      counts = PatternStructure.occurrence_counts(lhs)
+      counts = PatternStructure.occurrence_counts(pattern)
       export = export_tuple(Enum.flat_map(names, &List.duplicate({&1, [], nil}, counts[&1])))
       # Pass the full bound set as `used_outside` so the wildcard family stays in *thin*
       # mode (replace one occurrence, keep the variable bound). Every admitted mutation
@@ -1351,20 +1478,9 @@ defmodule Mutare.Transform.Analyze do
       # is what lets the export repeat a variable safely; orphan-fix would strand it).
       used = MapSet.new(names)
 
-      lhs
-      |> PatternStructure.node_mutations(used, structural)
-      |> Enum.map(fn {mutator, mutated} ->
-        %Candidate.MatchPattern{
-          mutator: mutator,
-          original: lhs,
-          mutated: mutated,
-          export: export,
-          raw_rhs: raw_rhs,
-          range: range
-        }
-      end)
+      {pattern, range, export, PatternStructure.node_mutations(pattern, used, structural)}
     else
-      _ -> []
+      _ -> nil
     end
   end
 

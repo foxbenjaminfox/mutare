@@ -118,7 +118,7 @@ contract between them is the whole game.
     `FunctionPlan` (lifted def-clause guards/literals) and `Analyze` (the `case`/`receive`/`fn`
     clause-pattern/guard discovery). The walks keep a remote call's *form* opaque and a bitstring
     spec / keyword-or-map *key* unoffered (the subtleties live here once).
-  - **`Transform.Candidate.{InPlace,Guard,Pattern,PatternStructure,CaseClause,CasePattern,MatchPattern,Drop}`** —
+  - **`Transform.Candidate.{InPlace,Guard,Pattern,PatternStructure,CaseClause,CasePattern,MatchPattern,MacroPattern,Drop}`** —
     typed
     candidate variants (one struct per legal kind), replacing the old single struct that redundantly
     stored `context`/`kind`/`operation` and admitted illegal combinations. `Pattern` (a head-pattern
@@ -140,9 +140,14 @@ contract between them is the whole game.
     clause's, *escape* to the enclosing scope), so the bound variables are re-exported through a tuple
     and rebound outside — `{vars} = case rhs do <pat> -> {vars} end`, the pattern hosted in a selector
     (`emit_match_site/3`); the diff still shows just the LHS pattern.
+    `MacroPattern` is the same families on the **pattern arg of a binding-escaping known macro**
+    (`destructure([x, y], v)`, declared `:binding_pattern`) in a value-discarded statement/`with`
+    clause — the `MatchPattern` mechanism generalized from a `=` to running the macro itself inside
+    each selector branch (`{x, y} = case <sel> do <id> -> destructure(<mut>, v); {x, y} … end`,
+    `emit_macro_pattern_site/3`); both the direct and piped (`[x, y] |> destructure(v)`) forms route.
     The matching `Site` constructor is chosen by pattern-matching the variant at emit
     (`Guard`/`Pattern`/`PatternStructure` → `Site.lifted_replace/6`;
-    `InPlace`/`Return`/`CaseClause`/`CasePattern`/`MatchPattern`
+    `InPlace`/`Return`/`CaseClause`/`CasePattern`/`MatchPattern`/`MacroPattern`
     → `Site.in_place/6` family). The `case` tuple-the-scrutinee rewrite has its own emit
     (`emit_case_pattern_site/3`, reusing the lifting gates `exclusion_guard`/`and_into_guard`); for
     the others the selector branch is chosen by `branch_node/1`. The structural discovery primitives
@@ -195,6 +200,13 @@ contract between them is the whole game.
     In all three the match's value is discarded (only its bindings matter, and they escape to later
     statements/clauses), so re-exporting the bindings through a tuple is value-transparent. A *trailing*
     block match (the block's value) is left a plain `=`; so is a `<-` generator/clause LHS (deferred).
+    A **binding-escaping known macro** call (`destructure([x, y], v)`, declared `:binding_pattern`)
+    gets the *same* treatment on its pattern arg (`Candidate.MacroPattern` — the `=` mechanism with the
+    macro run inside each branch), but only in the **block-statement** and **`with`-clause** positions:
+    a `for` qualifier is excluded (`analyze_match_statement/2` routes only `=` there) because a bare
+    macro call as a qualifier is a *filter* (truthiness selects iterations) — rewriting it to a binding
+    would silently drop the filter. The directly-written and **piped** (`[x, y] |> destructure(v)`, the
+    LHS is effective arg 0) forms both route (`binding_pattern_macro/1`).
     A dedicated **`:|>` clause** routes a pipe's RHS through `analyze_pipe_stage/2`, which offers the
     stage to mutators with `%{piped: true}` (everywhere else defaults to `%{piped: false}`): a pipe
     stage's node carries one fewer arg than the source reads (the piped value is the `|>` LHS, not in
@@ -688,10 +700,14 @@ contract between them is the whole game.
 - **`Mutare.Macros`** + **`Mutare.Macro.Spec`** — the **known-macro registry**: macros whose
   arguments the transform routes specially instead of mutating as ordinary runtime values. A
   `Macro.Spec` (`%{module, name, arity, args}`, module a `Calls`-style key) declares a per-argument
-  treatment — `:expression` (mutate, default), `:pattern` (a match context — `match?`/`destructure`),
-  or `:skip` (leave raw — an opaque DSL body, e.g. `Ecto.Query.from`). `args` is a uniform atom or
-  a per-position list. Specs come from three merged sources (later wins): built-ins (`Kernel.match?/2`,
-  `Kernel.destructure/2`), the declarative **`:macros`** option, and an optional **`macros/0`**
+  treatment — `:expression` (mutate, default), `:pattern` (a match context with **local** bindings —
+  `match?`), `:binding_pattern` (a match context whose bindings **escape** into the enclosing scope —
+  `destructure`; routed like `:pattern`, but *additionally* earns structural swap/wildcard mutants in
+  a value-discarded position, delivered by `Candidate.MacroPattern`), or `:skip` (leave raw — an
+  opaque DSL body, e.g. `Ecto.Query.from`). `args` is a uniform atom or
+  a per-position list. Specs come from three merged sources (later wins): built-ins (`Kernel.match?/2`
+  arg 0 `:pattern`, `Kernel.destructure/2` arg 0 `:binding_pattern`), the declarative **`:macros`**
+  option, and an optional **`macros/0`**
   callback on any enabled `Mutare.Mutator` — so a library ships its custom mutator *and* its macro
   registration in one module (the user adds one `:mutators` entry; core stays DSL-agnostic). `build/2`
   merges them into a lookup `Resolve` stamps from; resolution of `:macros`/`macros/0` is
@@ -792,8 +808,11 @@ receive `opts` (structural head-pattern mutators aren't configurable yet — out
 For a *macro-aware* mutator (one that targets a macro whose arguments must be routed specially —
 a pattern, or an opaque DSL body), implement the optional callback `macros/0` returning
 `{module, name, arity, treatment}` / `{module, name, treatment}` entries (treatment
-`:expression`/`:pattern`/`:skip`). Listing the mutator in `:mutators` auto-registers them in the
-known-macro registry (`Mutare.Macros`), so a library ships its mutator and its macro routing in one
+`:expression`/`:pattern`/`:binding_pattern`/`:skip`; `:binding_pattern` is a pattern arg whose
+bindings *escape* the macro — a `destructure`-like macro — earning structural swap/wildcard mutants
+in a value-discarded position, no custom mutator needed). Listing the mutator in `:mutators`
+auto-registers them in the known-macro registry (`Mutare.Macros`), so a library ships its mutator
+and its macro routing in one
 module. The motivating case is Ecto: register `{Ecto.Query, :from, :any, :skip}` so core leaves the
 query DSL untouched, while `mutate/1` rewrites the query. The whole macro node is still offered to
 the mutator (`:skip` only stops core descending into the args). The no-mutator case (just route an

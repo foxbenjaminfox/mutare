@@ -18,6 +18,17 @@ defmodule Mutare.Test.QueryDSL do
   defmacro where(query, _condition) do
     quote do: unquote(query)
   end
+
+  @doc """
+  A **binding-escaping** macro (`unpack([a, b], value)`) — expands to a plain `=` match,
+  so its pattern's variables bind into the *enclosing* scope (the user-macro analog of
+  `Kernel.destructure`). Registered `:binding_pattern`, it earns structural pattern
+  mutants (swap/wildcard) on its pattern arg in a value-discarded position. A real,
+  loadable `defmacro` so a bare `import Mutare.Test.QueryDSL` resolves it by reflection.
+  """
+  defmacro unpack(pattern, value) do
+    quote do: unquote(pattern) = unquote(value)
+  end
 end
 
 defmodule Mutare.Test.SchemaDSL do

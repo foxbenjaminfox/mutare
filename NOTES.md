@@ -697,32 +697,54 @@ known macro in a `:scaffold`/compile-time position isn't routed (it's already no
 so `:skip` would be a no-op anyway). `test/support/macro_mutator.ex` is the worked `macros/0` example
 (with a piped `where/2` stage).
 
-**Deferred: structural pattern mutation of a macro's `:pattern` arg** (`destructure([x, y], v)` →
-`[y, x]`, swap/wildcard). A `:pattern`-routed macro arg is *safe* — it is descended-not-mutated, so
-no literal is mutated in place and no selector is spliced into pattern position (the whole point of
-the reach-back for the piped `[x, y] |> destructure(v)` form) — but it gets **no** structural
-(`PatternSwap`/`PatternWildcard`) mutants. This is a *general* gap, not piped-specific: the directly
-written `destructure([x, y], v)` has the identical hole, verified. The structural families don't fire
-from the generic `:pattern` context; they are wired at three positions, each with a delivery
-mechanism dictated by binding scope (`def` head → lifting; `case` clause → in-place selector copy,
-bindings clause-local; value-discarded `=` → tuple re-export, bindings escape), and a macro arg
-matches none. Wiring it up is a real feature, *not* a one-liner, because the right delivery — and even
-whether a mutation is observable — depends on the macro's binding semantics, which `:pattern` does not
-encode:
+**Structural pattern mutation of a binding-escaping macro arg (`:binding_pattern`)**
+(`destructure([x, y], v)` → `[y, x]`/wildcard). A bare `:pattern`-routed macro arg is *safe* —
+descended-not-mutated, so no literal is mutated in place and no selector is spliced into pattern
+position — but on its own it gets **no** structural (`PatternSwap`/`PatternWildcard`) mutants. The
+right delivery — and even whether a mutation is observable — depends on the macro's *binding
+semantics*, which the plain `:pattern` treatment doesn't encode:
 
-  - `destructure` binds into the **enclosing** scope (bindings escape), so a swap must use the
-    `MatchPattern` tuple re-export and only in a value-discarded position; an in-place selector copy
-    would trap the bindings inside the branch (`x + y` after → unbound → poison).
+  - `destructure` binds into the **enclosing** scope (bindings escape). In fact `destructure([x, y],
+    v)` expands to `[x, y] = Kernel.Utils.destructure(v, 2)` — a `=` match — so it is the `MatchPattern`
+    case exactly, except the `=` only appears *after* macro expansion (which Mutare doesn't do), so the
+    `=`-statement path never sees it. A swap must use the tuple re-export and only in a value-discarded
+    position; an in-place selector copy would trap the bindings inside the branch (`x - y` after →
+    unbound → poison).
   - `match?` binds **locally** (inside its `case` expansion), so a *swap* of distinct vars is an
     **equivalent mutant** (same boolean, nothing escapes) — pure noise — while a *wildcard* of a
     repeated var (`match?([a, a], v)` → `[_, a]`) *is* observable and, since match?'s value is used,
     wants the in-place selector delivery, not re-export.
 
-So there is no universal rule that is both safe and noise-free; it needs a per-macro declaration of
-"do these bindings escape (and is the value used)?", a richer treatment than today's `:pattern`, plus
-both delivery paths. Given the thin payoff (`destructure` is obscure; user macros with escaping
-pattern bindings are unusual) and that the routing fix already makes the area *safe*, the extra
-*mutants* are deferred — documented here rather than half-built.
+So the binding semantics are declared per-macro, by a **fourth treatment** beyond `:pattern`:
+`:binding_pattern` (`Mutare.Macro.Spec`) means "this pattern arg's bindings *escape*, and the call
+sits where its value is discarded". `Kernel.destructure`'s arg 0 is flipped to it (a built-in), and a
+user opts their own macro in via `:macros` / `macros/0` (e.g. `{MyDsl, :unpack, 2, [:binding_pattern,
+:expression]}`). The treatment routes identically to `:pattern` for the in-place descent (still safe
+everywhere); the *extra* structural mutants are delivered by the **`MacroPattern`** candidate — the
+`MatchPattern` tuple re-export generalized from a `=` to running the macro itself inside each selector
+branch (`{x, y} = case <sel> do <id> -> destructure(<mut>, v); {x, y} … end`). The shared discovery
+(`Analyze.pattern_export/3`: `bound_var_names`, per-occurrence export tuple, forced-thin wildcard) is
+factored out of the `=`-match path and reused verbatim. Both the directly-written `destructure([x, y],
+v)` and the **piped** `[x, y] |> destructure(v)` form route (the pipe LHS is effective arg 0, read
+back off the `:mutare_macro_piped` stamp); the mutant branch runs the *raw* call, the catch-all the
+*emitted* one (so a mutation in the value arg, `destructure([x, y], Enum.reverse(v))`, still fires).
+
+Position soundness mirrors `MatchPattern` with one extra exclusion. A block non-final statement and a
+`with` bare clause are genuinely value-discarded (verified: a `with` bare clause does *not*
+short-circuit on a falsy value), so the rewrite — whose value is the export tuple — is transparent.
+But a **`for` qualifier** is *not* a safe home for a bare macro call: there a bare expression is a
+**filter** (its truthiness selects iterations), so rewriting it to a `{vars} = …` binding qualifier
+would silently drop the filter. So `analyze_for_arg` routes only the `=` shape (already a binding
+qualifier) through the pattern path (`analyze_match_statement/2`); block/`with` use `analyze_statement/2`,
+which additionally recognizes a `:binding_pattern` macro call. The contract the opt-in vouches for: the
+macro binds *every* variable named in the pattern (so the export tuple is always fully bound) and
+accepts pattern-legal swap/wildcard rewrites — both true for `destructure`; a mis-declared user macro
+falls to the poison backstop.
+
+Still deferred: the `match?`-style **local-binding, value-used** case (the in-place selector-copy
+delivery, wildcard-of-repeat only). It is a *distinct* treatment from `:binding_pattern` (different
+binding scope, different delivery, only the wildcard is observable) and is left unbuilt — `match?`'s
+arg 0 stays plain `:pattern`.
 
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
