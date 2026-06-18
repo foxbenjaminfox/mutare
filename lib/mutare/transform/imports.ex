@@ -56,7 +56,11 @@ defmodule Mutare.Transform.Imports do
   #
   #   * Operator displacement (`import Kernel, except: [+: 2]` + a custom `+`) is out of
   #     scope: the operator families (Arithmetic/Relational/Logical) don't read the stamp.
-  #   * Like `alias`, `use`-injected and macro-generated imports are invisible.
+  #   * Like `alias`, `use`-injected and macro-generated imports are invisible — and unlike the
+  #     visible cases this can be *wrong*, not just missed: a `use` that re-imports a module we
+  #     target with `except:` (removing a function) and supplies it from elsewhere makes us
+  #     mis-resolve the bare call to the wrong module (see NOTES "Correctness boundary").
+  #     Fundamental to not expanding macros; rare in practice.
 
   alias Mutare.AST
   alias Mutare.Mutator
@@ -65,16 +69,28 @@ defmodule Mutare.Transform.Imports do
   @import_key :mutare_import
   @kernel_displaced_key :mutare_kernel_displaced
 
-  @typedoc "A module's in-scope import selection (its `kernel` slot uses the same shape)."
-  @type selector :: :all | {:only, MapSet.t()} | {:except, MapSet.t()} | {:only_kind, atom()}
+  @typedoc """
+  A module's in-scope import selection: a `{base, except}` pair (the `kernel` slot uses the
+  same shape). `base` is `:all`, `{:only, set}`, or `{:kind, :functions|:macros|:sigils}`;
+  `except` is the cumulative `{fun, arity}` set subtracted from it. Modelling `except` as a
+  *subtraction from the prior selection* — not "all minus except" — is what makes repeated
+  imports of the same module correct, per Elixir: `import Enum, only: [a, b]; import Enum,
+  except: [a]` leaves only `b`, and `import Enum; import Enum, except: [a]` leaves all-but-`a`.
+  """
+  @type selector :: {:all | {:only, MapSet.t()} | {:kind, atom()}, MapSet.t()}
+
+  @doc "The default whole-import selection (`import Mod` with no options); seeds the Kernel slot."
+  @spec default_selector() :: selector()
+  def default_selector, do: {:all, MapSet.new()}
 
   @doc """
   Fold an `import` directive into the `{imports, kernel}` environment, given the alias env in
-  force (to resolve `import E` where `E` is an alias). A whole import adds `{module => :all}`;
-  `only:`/`except:`/`only: :functions` narrow it (a re-import of the same module replaces its
-  selection); `import Kernel, …` replaces the tracked Kernel selector. Every non-import
-  statement passes the env through unchanged. Resolution is by *module*; exported arities are
-  checked later, at the call, by `stamp/6`.
+  force (to resolve `import E` where `E` is an alias). The directive's own selection
+  (`:all`/`only:`/`except:`/`only: :functions`) is **combined** with any prior import of the
+  same module: `only:`/a plain `import` replace the selection, `except:` subtracts from it (so
+  repeated imports of one module compose as Elixir does). `import Kernel, …` combines into the
+  tracked Kernel selector likewise. Every non-import statement passes the env through unchanged.
+  Resolution is by *module*; exported arities are checked later, at the call, by `stamp/6`.
   """
   @spec register(Macro.t(), map(), map(), selector()) :: {map(), selector()}
   def register({:import, _meta, args}, aliases, imports, kernel),
@@ -113,8 +129,11 @@ defmodule Mutare.Transform.Imports do
   # scope a sibling can be ambiguous (`import Stream, except: [filter: 2]; import Enum` makes a
   # bare `reject` both Stream's and Enum's) or resolve to the wrong module, so **qualify**
   # instead — `Calls` makes the qualifier alias-proof, so it always names the resolved module.
-  defp rebuild_kind(:all, imports, :all) when map_size(imports) == 1, do: :bare
-  defp rebuild_kind(_selector, _imports, _kernel), do: :qualify
+  defp rebuild_kind(selector, imports, kernel) do
+    if whole?(selector) and map_size(imports) == 1 and whole?(kernel),
+      do: :bare,
+      else: :qualify
+  end
 
   @doc """
   The import a bare call resolves to: `{module, :bare | :qualify}` (module an Elixir path
@@ -147,17 +166,20 @@ defmodule Mutare.Transform.Imports do
     end)
   end
 
-  # Does this import selection bring `fun/arity` into scope? `:only` is definitive from the
-  # source (no reflection); whole/except/kind selections need the module's real exports.
-  defp provides?(_module_key, {:only, set}, fun, arity), do: MapSet.member?(set, {fun, arity})
+  # Does this import selection bring `fun/arity` into scope? The function must be in `base`
+  # and not in the cumulative `except`. `{:only, set}` is definitive from the source (no
+  # reflection); `:all`/`{:kind, …}` need the module's real exports.
+  defp provides?(module_key, {base, except}, fun, arity) do
+    not MapSet.member?(except, {fun, arity}) and base_provides?(base, module_key, fun, arity)
+  end
 
-  defp provides?(module_key, {:except, set}, fun, arity),
-    do: not MapSet.member?(set, {fun, arity}) and exports?(module_key, fun, arity, :any)
+  defp base_provides?(:all, module_key, fun, arity), do: exports?(module_key, fun, arity, :any)
 
-  defp provides?(module_key, {:only_kind, kind}, fun, arity),
+  defp base_provides?({:only, set}, _module_key, fun, arity),
+    do: MapSet.member?(set, {fun, arity})
+
+  defp base_provides?({:kind, kind}, module_key, fun, arity),
     do: exports?(module_key, fun, arity, kind)
-
-  defp provides?(module_key, :all, fun, arity), do: exports?(module_key, fun, arity, :any)
 
   # Reflection. Conservative: a module that isn't loadable (a target/dep module, never one
   # our mutators target) exports nothing as far as we can prove, so it is left unresolved.
@@ -184,26 +206,19 @@ defmodule Mutare.Transform.Imports do
 
   # A bare `Kernel`-named call is displaced only when the Kernel selector has been narrowed
   # (`import Kernel, only:/except:`) and no longer provides it. With the default whole import
-  # (`:all`), nothing is displaced — the common path, and free of reflection.
-  defp displaced_from_kernel?(:all, _fun, _arity), do: false
+  # (`{:all, ∅}`), nothing is displaced — the common path, and free of reflection.
+  defp displaced_from_kernel?(kernel, fun, arity) do
+    not whole?(kernel) and kernel_function?(fun, arity) and
+      not provides?([:Kernel], kernel, fun, arity)
+  end
 
-  defp displaced_from_kernel?(selector, fun, arity),
-    do: kernel_function?(fun, arity) and not kernel_provides?(selector, fun, arity)
+  # A selection that imports everything (an unmodified `import Mod`): base `:all`, nothing
+  # excepted.
+  defp whole?({:all, except}), do: MapSet.size(except) == 0
+  defp whole?(_selector), do: false
 
   defp kernel_function?(fun, arity),
     do: function_exported?(Kernel, fun, arity) or macro_exported?(Kernel, fun, arity)
-
-  defp kernel_provides?({:only, set}, fun, arity), do: MapSet.member?(set, {fun, arity})
-  defp kernel_provides?({:except, set}, fun, arity), do: not MapSet.member?(set, {fun, arity})
-
-  defp kernel_provides?({:only_kind, :functions}, fun, arity),
-    do: function_exported?(Kernel, fun, arity)
-
-  defp kernel_provides?({:only_kind, :macros}, fun, arity),
-    do: macro_exported?(Kernel, fun, arity)
-
-  defp kernel_provides?({:only_kind, _kind}, _fun, _arity), do: false
-  defp kernel_provides?(:all, _fun, _arity), do: true
 
   # --- import directives -----------------------------------------------------
 
@@ -219,7 +234,7 @@ defmodule Mutare.Transform.Imports do
        do:
          put_import(
            Aliases.resolve_path(path, aliases),
-           selector_from_opts(opts),
+           op_from_opts(opts),
            imports,
            kernel
          )
@@ -231,29 +246,40 @@ defmodule Mutare.Transform.Imports do
 
   defp register_import([{:__block__, _meta, [atom]}, opts], _aliases, imports, kernel)
        when is_atom(atom) and is_list(opts),
-       do: put_import(atom, selector_from_opts(opts), imports, kernel)
+       do: put_import(atom, op_from_opts(opts), imports, kernel)
 
   defp register_import(_args, _aliases, imports, kernel), do: {imports, kernel}
 
   # Bind a resolved module key (an Elixir path `[:Enum]` or an Erlang atom `:binary`) to its
-  # selector. `Kernel` is special — it lives in the `kernel` slot (an implicit default whole
-  # import that a narrowing replaces); a `__MODULE__`-relative or otherwise non-module path
-  # is skipped.
-  defp put_import([:Kernel], selector, imports, _kernel), do: {imports, selector}
+  # selection, **combining** the directive's op with any prior import of that module. `Kernel`
+  # is special — it lives in the `kernel` slot (an implicit default whole import that a
+  # narrowing combines into); a `__MODULE__`-relative or otherwise non-module path is skipped.
+  defp put_import([:Kernel], op, imports, kernel), do: {imports, combine(kernel, op)}
 
-  defp put_import(module_key, selector, imports, kernel) do
+  defp put_import(module_key, op, imports, kernel) do
     if module_key?(module_key),
-      do: {Map.put(imports, module_key, selector), kernel},
+      do:
+        {Map.update(imports, module_key, combine(default_selector(), op), &combine(&1, op)),
+         kernel},
       else: {imports, kernel}
   end
+
+  # Combine an import directive's op with the module's prior selection. `:all` / `only:` /
+  # `only: :kind` *replace* the selection (clearing any prior except); `except:` *subtracts*
+  # from the prior base, accumulating the excluded set — the rule that makes repeated imports
+  # of one module compose correctly.
+  defp combine(_prior, :all), do: {:all, MapSet.new()}
+  defp combine(_prior, {:only, set}), do: {{:only, set}, MapSet.new()}
+  defp combine(_prior, {:only_kind, kind}), do: {{:kind, kind}, MapSet.new()}
+  defp combine({base, except}, {:except, e}), do: {base, MapSet.union(except, e)}
 
   defp module_key?(key) when is_atom(key), do: true
   defp module_key?(key) when is_list(key), do: atoms?(key)
   defp module_key?(_key), do: false
 
-  # `only:` wins over `except:` (a directive can't carry both); a directive with neither
-  # (`import M, warn: false`) is a whole import.
-  defp selector_from_opts(opts) do
+  # The directive's own op: `only:` wins over `except:` (a directive can't carry both); a
+  # directive with neither (`import M, warn: false`) is a whole import.
+  defp op_from_opts(opts) do
     case opt_value(opts, :only) do
       :none ->
         case opt_value(opts, :except) do
@@ -262,13 +288,13 @@ defmodule Mutare.Transform.Imports do
         end
 
       value ->
-        only_selector(value)
+        only_op(value)
     end
   end
 
   # `only: :functions`/`:macros`/`:sigils` is a kind filter; `only: [f: 1, ...]` is an
   # explicit name/arity set.
-  defp only_selector(value) do
+  defp only_op(value) do
     case kind_atom(value) do
       kind when kind in [:functions, :macros, :sigils] -> {:only_kind, kind}
       _other -> {:only, pairs_set(value)}

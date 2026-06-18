@@ -33,7 +33,8 @@ defmodule Mutare.Transform.Resolve do
 
   @doc "Stamp every remote call's module and every bare imported call with its resolved module."
   @spec annotate(Macro.t()) :: Macro.t()
-  def annotate(ast), do: walk(ast, %{aliases: %{}, imports: %{}, kernel: :all, piped: false})
+  def annotate(ast),
+    do: walk(ast, %{aliases: %{}, imports: %{}, kernel: Imports.default_selector(), piped: false})
 
   # A statement sequence: fold the env left-to-right so an `alias`/`import` extends it for the
   # *subsequent* siblings only. Each statement is walked under the env in force *before* it

@@ -568,33 +568,41 @@ moved there.
 - **Out of scope (documented limitations).** Operator displacement (`import Kernel,
   except: [+: 2]` + a custom `+`) — Arithmetic/Relational/Logical don't read the stamp. Like
   `alias`, `use`/macro-injected imports are invisible.
-- **Why it can never invoke the *wrong* function (correct, or poison — never silently
-  wrong).** The whole scheme rests on one Elixir fact (re-verified): calling a name provided
-  by more than one source — two imports, an import + a same-arity local, or an import + Kernel
-  — is a **compile error**, never a silent pick. (A local *definition* shadowing an import is
-  allowed; only the *call* errors — so a local that exists but isn't called doesn't perturb
-  resolution, and a different-arity local resolves distinctly.) Given that, for a swap
-  `fun`→`sibling` resolved to module `M` (`M` exports `fun` at the call arity; the swap table
-  guarantees `M` exports `sibling`):
+- **Correctness boundary: sound for what we can *see*; the macro hole can be genuinely wrong.**
+  For *visible* code the scheme is correct-or-poison-or-missed, resting on one Elixir fact
+  (re-verified): calling a name provided by more than one visible source — two imports, an
+  import + a same-arity local, or an import + Kernel — is a **compile error**, never a silent
+  pick. (A local *definition* shadowing an import is allowed; only the *call* errors — so an
+  uncalled local doesn't perturb resolution, and a different-arity local resolves distinctly.)
+  Given that, for a swap `fun`→`sibling` resolved to `M`:
     - **Qualified** rebuild (`Elixir.M.sibling` / `:m.sibling`) names `M` unambiguously, immune
-      to imports, aliases, and locals — correct if `M.sibling` exists, else a compile error.
-    - **Bare** rebuild (only for a sole whole import + default Kernel): `M` is always a provider
-      of `sibling` (it whole-imports it), so the bare call resolves to `M` (correct) *or* has a
-      second provider and is a compile error. It can **never** silently resolve to a *different*
-      module — that would require `M` not to provide `sibling`, but it always does.
-  So every path is correct-or-poison. The `use`/macro-injected-import hole degrades the same
-  way: to mis-resolve a hidden-import call to a visible module `M`, `M` would itself have to
-  export that name/arity — which makes the *original* call ambiguous and non-compiling, so it
-  is never transformed. The hole therefore costs **missed** resolutions, never a
-  wrong-but-compiling mutant. It can also **poison**, but *only the bare path*: a hidden import
-  that also exports the swap sibling makes our bare `reject` ambiguous (the metamutant preserves
-  the `use`, so the hidden import is in scope when it compiles). A **qualified** substitution is
-  immune — `Elixir.M.sibling` is not an unqualified call, so no import (hidden or visible) can
-  make it ambiguous. So the bare optimization carries a small residual poison risk (a hidden
-  overlapping import, or a sibling that collides with `Kernel`) that always-qualifying would
-  erase; we keep bare for the clean diff on the overwhelmingly common lone-`import Foo` case.
-  (Reflection reads the harness's stdlib, which is the same Elixir install the sandbox compiles
-  against — version skew is the only other residual, and benign.)
+      to imports/aliases/locals — correct if it exists, else a compile error.
+    - **Bare** rebuild (sole whole import + default Kernel): `M` always provides `sibling`, so a
+      bare call resolves to `M` (correct) or hits a second provider and won't compile (poison) —
+      never silently a *different* module.
+- **The `use`/macro hole is unsound, not merely lossy — it can produce a wrong-but-compiling
+  mutant.** (Corrects an earlier overclaim.) We don't expand macros, so a `use` injecting
+  `import Enum, except: [filter: 2]; import Hidden, only: [filter: 2]` defeats us: it
+  *re-imports Enum to remove filter* and supplies filter from `Hidden`. We still see only
+  `import Enum`, and reflection says Enum *exports* filter — but Enum no longer *provides* it
+  (the hidden `except` subtracted it), so the bare `filter` is really `Hidden.filter`. We
+  mis-resolve it to Enum, fire Collection (though Hidden isn't a target), and the mutant
+  compiles — calling `Hidden.reject` (bare) or `Elixir.Enum.reject` (qualified). Either way it's
+  wrong, not poison. Qualifying does **not** save it: the error is mis-resolving the *original*,
+  upstream of the rebuild. This needs a macro that shadows a stdlib function we target by
+  re-importing-with-`except` + a replacement (rare; verified reachable). Fundamental limit of
+  not expanding macros — documented, not fixed. (`use` that merely *adds* its own imports, the
+  common case, can't mis-resolve: to fool us a hidden import must make a visible-module call
+  ambiguous → poison, or remove a function via `except` → the wrong case above.)
+- **Same module imported multiple times — handled correctly (for visible imports).** Per Elixir
+  (verified): a later `only:` *replaces* the selection, a plain `import` resets to all, and a
+  later `except:` *subtracts from the prior selection* (not from all) — `import Enum, only:
+  [a, b]; import Enum, except: [a]` leaves only `b`. The env models each module as `{base,
+  except}` and `combine/2` folds these rules, so we neither over- nor under-estimate a
+  re-imported module's in-scope set. (The old `Map.put`-replace + all-minus-except model
+  over-estimated after a narrowing prior, which could itself mis-resolve — fixed.)
+  Reflection reads the harness's stdlib, the same Elixir the sandbox compiles against — version
+  skew is the only other residual, and benign.
 
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**

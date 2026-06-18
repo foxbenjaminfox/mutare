@@ -207,7 +207,7 @@ defmodule Mutare.ImportsTest do
       assert calls[:split] == {[:String], :qualify}
     end
 
-    test "a later only:/except: import of the same module replaces the earlier selection" do
+    test "a later only: import of the same module replaces the earlier selection" do
       calls =
         resolved("""
         defmodule M do
@@ -220,6 +220,41 @@ defmodule Mutare.ImportsTest do
 
       assert calls[:reject] == {[:Enum], :qualify}
       refute Map.has_key?(calls, :map)
+    end
+
+    test "a later except: subtracts from the prior selection, not from all" do
+      # `only [reject, sort]` then `except [reject]` leaves only `sort` — so `reject` is gone
+      # *and* `filter` (never in the `only`) must NOT be treated as imported. (The old
+      # all-minus-except model would wrongly have resolved `filter` to Enum.)
+      calls =
+        resolved("""
+        defmodule M do
+          import Enum, only: [reject: 2, sort: 1]
+          import Enum, except: [reject: 2]
+          def a(xs), do: sort(xs)
+          def b(xs, g), do: reject(xs, g)
+          def c(xs, g), do: filter(xs, g)
+        end
+        """)
+
+      assert calls[:sort] == {[:Enum], :qualify}
+      refute Map.has_key?(calls, :reject)
+      refute Map.has_key?(calls, :filter)
+    end
+
+    test "a later except: of a whole import subtracts (the common all-but-X idiom)" do
+      calls =
+        resolved("""
+        defmodule M do
+          import Enum
+          import Enum, except: [filter: 2]
+          def a(xs, g), do: reject(xs, g)
+          def b(xs, g), do: filter(xs, g)
+        end
+        """)
+
+      assert calls[:reject] == {[:Enum], :qualify}
+      refute Map.has_key?(calls, :filter)
     end
   end
 
