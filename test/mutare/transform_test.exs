@@ -627,6 +627,48 @@ defmodule Mutare.TransformTest do
       assert Enum.any?(sites, &(&1.mutator == :relational))
       assert Enum.any?(sites, &(&1.mutator == :literal))
     end
+
+    @schema_source """
+    defmodule UsesSchema do
+      import Mutare.Test.SchemaDSL
+
+      schema do
+        field(:age, default: 1 + 1)
+      end
+    end
+    """
+
+    @schema_mutators [
+      Mutare.Mutators.Arithmetic,
+      Mutare.Mutators.Literal,
+      Mutare.Mutators.AtomLiteral
+    ]
+
+    test "a `:skip` module-level macro block is left raw (the analyze_module_macro_block path)" do
+      {meta, sites, _next_id} =
+        Mutare.transform_string(@schema_source,
+          mutators: @schema_mutators,
+          macros: [{Mutare.Test.SchemaDSL, :schema, 1, :skip}]
+        )
+
+      # `schema do … end` is a *module-level* macro-with-block, routed through
+      # `analyze_module_macro_block/2`, not the generic runtime clause. Its `do` body is an
+      # opaque DSL (`:age`/`default:`/`1 + 1` are DSL syntax, not runtime values), so the
+      # `:skip` stamp must keep core out — otherwise core's "a block body may be unquoted
+      # into a function" guess mutates the DSL and can poison it.
+      assert sites == []
+      assert_compiles(meta)
+    end
+
+    test "without the registration, core mutates inside the module-level block body" do
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(@schema_source, mutators: @schema_mutators)
+
+      # The unknown-macro default analyzes a block body as runtime, so the DSL body's
+      # literals/operators mutate — exactly what the `:skip` registration prevents.
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic))
+      assert Enum.any?(sites, &(&1.mutator == :atom))
+    end
   end
 
   describe "a piped value reaches back to the macro's effective position-0 treatment" do

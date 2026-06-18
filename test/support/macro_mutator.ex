@@ -20,6 +20,26 @@ defmodule Mutare.Test.QueryDSL do
   end
 end
 
+defmodule Mutare.Test.SchemaDSL do
+  @moduledoc """
+  A fake module-level **block** DSL: a `schema do … end` macro whose `do` body is an
+  opaque DSL (the analog of `Ecto.Schema`'s `schema`). Used to test that a registered
+  `:skip` keeps Mutare core out of a *module-level* macro block body — the
+  `Mutare.Transform.Analyze.analyze_module_macro_block/2` path, which is distinct from
+  the runtime/argument macro path. A real, loadable `defmacro schema/1` so a bare
+  `import Mutare.Test.SchemaDSL` resolves by reflection.
+  """
+
+  @doc """
+  Discard the body — enough that a metamutant using it compiles whatever the (skipped,
+  raw) body contains. A real module-level macro that *defines a function*, mirroring how
+  a schema DSL generates code from an opaque block.
+  """
+  defmacro schema(do: _body) do
+    quote do: def(__fields__, do: [])
+  end
+end
+
 defmodule Mutare.Test.QueryMutator do
   @moduledoc """
   A reference **macro-aware** custom mutator, used in tests to exercise the

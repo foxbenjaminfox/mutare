@@ -1567,11 +1567,40 @@ defmodule Mutare.Transform.Analyze do
     end)
   end
 
+  # A module-level macro-with-block (`schema do … end`): init args are compile-time
+  # (`:scaffold`), and the block keyword's `do`/… body is analyzed as **`:runtime`**
+  # because an *unknown* DSL macro may `unquote` it into generated function bodies (so a
+  # literal there could be a real runtime value). A **registered known macro** overrides
+  # that guess per argument: a `:skip` arg (`{DSL, :schema, 1, :skip}`) is left **raw** —
+  # no descent, no mutation — so core never mutates inside an opaque DSL block body and
+  # can't poison the DSL the registry was meant to exclude. Only `:skip` is honoured here:
+  # the other treatments are compile-time-context-sensitive and the default path already
+  # does the right thing (`:expression` *is* the runtime-body guess, `:pattern` has no
+  # module-level use). `Resolve` stamps `meta[:mutare_macro]` for bare-imported and
+  # qualified forms alike, so both route.
   def analyze_module_macro_block({form, meta, args}, mutators) do
+    routing = macro_routing(meta)
     {init, [last]} = Enum.split(args, -1)
-    init = Enum.map(init, &analyze(&1, :scaffold, mutators))
-    {form, meta, init ++ [analyze_module_macro_block_arg(last, mutators)]}
+
+    init =
+      init
+      |> Enum.with_index()
+      |> Enum.map(fn {arg, i} ->
+        if skip_arg?(routing, i), do: arg, else: analyze(arg, :scaffold, mutators)
+      end)
+
+    last =
+      if skip_arg?(routing, length(args) - 1),
+        do: last,
+        else: analyze_module_macro_block_arg(last, mutators)
+
+    {form, meta, init ++ [last]}
   end
+
+  # Whether the macro argument at position `i` is routed `:skip` (a known macro's opaque
+  # arg). No stamp (`nil`) or a position past the routing list is the `:expression` default.
+  defp skip_arg?(nil, _i), do: false
+  defp skip_arg?(routing, i), do: Enum.at(routing, i, :expression) == :skip
 
   defp analyze_module_macro_block_arg(kw, mutators) when is_list(kw) do
     Enum.map(kw, fn

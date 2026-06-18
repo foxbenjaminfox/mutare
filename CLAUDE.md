@@ -689,8 +689,12 @@ contract between them is the whole game.
   existing alias/import/displacement resolution (a bare `match?` is `Kernel.match?` only when it
   resolves to Kernel — a local shadow is a compile error), so bare/qualified/aliased forms all route.
   `:skip` is also "owned only by a custom mutator": core skips the args, but the whole node is still
-  offered to every mutator, so the registering mutator fires. `Mutare.Options` validates `:macros`;
-  `Mutare.Schema` forwards it; `Transform` builds the registry and passes it to `Resolve.annotate/2`.
+  offered to every mutator, so the registering mutator fires. The stamp is honoured on **both**
+  routing paths: the generic runtime clause *and* the **module-level macro-block** path
+  (`analyze_module_macro_block/2`, e.g. `schema do … end`), which otherwise analyzes a block body as
+  runtime (a DSL may unquote it into a function) and would mutate an opaque `:skip` body. `Mutare.Options`
+  validates `:macros`; `Mutare.Schema` forwards it; `Transform` builds the registry and passes it to
+  `Resolve.annotate/2`.
 - **`Mutare.Config`** / **`Mutare.Changes`** / **`Mix.Tasks.Mutare`** — `.mutare.exs` + CLI flag
   resolution, `git diff` for `--since`, and the CLI entry point. Output formats resolve here too:
   `--format`/`--output` (CLI) and `reporters:` (`.mutare.exs`) become the `Mutare.Options`

@@ -1329,7 +1329,16 @@ near-identical copies for N guard mutants. Both are fixed:
   keeps its own arms inert). Unknown module-level macro calls with block keywords
   are the conservative exception: their shell and non-block args stay compile-time,
   but the block bodies are analyzed as runtime because a DSL may unquote them into
-  generated functions. The unquoted head pattern (`def code(unquote(atom))`) is
+  generated functions. A **registered known macro overrides that guess** per argument:
+  `analyze_module_macro_block/2` reads the `meta[:mutare_macro]` stamp, and a `:skip`
+  arg (`{DSL, :schema, 1, :skip}`) is left **raw** — no descent, no mutation. Without
+  this, the runtime-body guess mutates an opaque `schema do … end` DSL body (`:age`,
+  `default:`, `1 + 1`) and can poison the very DSL the registry was meant to exclude;
+  the generic runtime clause honoured the stamp, but this module-level path didn't until
+  it read the same stamp. Only `:skip` is honoured here (the other treatments are
+  compile-time-context-sensitive and the default already does the right thing —
+  `:expression` *is* the runtime-body guess; `:pattern` has no module-level use).
+  The unquoted head pattern (`def code(unquote(atom))`) is
   analyzed `:pattern` and never mutated — correct, since these are not lifted.
   **Crucially**,
   the *mixed* case works for free: when a function has both a normal top-level head
