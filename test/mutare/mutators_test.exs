@@ -32,6 +32,7 @@ defmodule Mutare.MutatorsTest do
     PatternWildcard,
     Relational,
     RegexLiteral,
+    RescueType,
     ReturnValue,
     StringCall,
     StringLiteral,
@@ -50,7 +51,7 @@ defmodule Mutare.MutatorsTest do
                  [ModeSwap, Numeric, Math, Integer, StringLiteral, FloatLiteral, AtomLiteral] ++
                  [CharlistLiteral, WordListLiteral, MapLiteral, TupleLiteral, BitstringLiteral] ++
                  [RegexLiteral, DateTimeLiteral, AliasLiteral, ReturnValue, PatternSwap] ++
-                 [PatternWildcard]
+                 [PatternWildcard, RescueType]
     end
 
     test "families/0 are the registry's keys, in order — all on by default" do
@@ -62,7 +63,14 @@ defmodule Mutare.MutatorsTest do
                  [:collection, :collection_arity, :string_call, :map_keyword, :call_removal] ++
                  [:default_drop, :mode_swap, :numeric, :math, :integer, :string, :float] ++
                  [:atom, :charlist, :word_list, :map, :tuple, :bitstring, :regex] ++
-                 [:datetime, :alias, :return_value, :pattern_swap, :pattern_wildcard]
+                 [
+                   :datetime,
+                   :alias,
+                   :return_value,
+                   :pattern_swap,
+                   :pattern_wildcard,
+                   :rescue_type
+                 ]
     end
 
     test "resolve/1 maps family atoms to specs, preserving order" do

@@ -342,6 +342,28 @@ defmodule Mutare.Transform.Analyze do
     attach_clause_pattern_candidates(node, clauses, rebuild, mutators)
   end
 
+  # `try`: a runtime expression whose `rescue` clauses are special — they match on
+  # *exception types* (`var in [A, B]` / `var` / `Type`), carry **no `when` guard**, and so
+  # can't be dispatched per-clause the way `case` is. `Mutare.Mutators.RescueType` narrows a
+  # `var in [A, B]` list (drop one type), delivered by the **whole-construct selector**
+  # (`Candidate.CasePattern`) — the whole `try` is wrapped, its mutant branch a copy with one
+  # rescue clause's type list shrunk (sound — a rescue binding is body-local). The construct
+  # is still analyzed normally (do/rescue-bodies/catch/else/after mutate; the rescue/else/
+  # catch patterns stay `:pattern`). Only the explicit `try` is handled here; the
+  # `def … rescue …` shorthand reaches `analyze_do_blocks/2` and is deferred.
+  defp analyze({:try, meta, [blocks]} = node, :runtime, mutators) when is_list(blocks) do
+    analyzed = recurse(node, :runtime, mutators)
+
+    candidates =
+      build_candidates(node, Mutator.mutations(node, mutators)) ++
+        rescue_type_candidates(blocks, meta, mutators)
+
+    case candidates do
+      [] -> analyzed
+      _ -> put_candidates(analyzed, candidates)
+    end
+  end
+
   # A `->` clause in a pattern-matching construct (`case`/`fn`/`receive`/`with` else/
   # a `try` block outside a def head/`for` reduce): the left is a pattern (never
   # mutated — a selector `case` is illegal in a pattern and would poison the single
@@ -1037,6 +1059,84 @@ defmodule Mutare.Transform.Analyze do
     {patterns, [_guard]} = Enum.split(when_args, -1)
     {:->, meta, [[{:when, wm, patterns ++ [new_guard]}], body]}
   end
+
+  # --- try: rescue exception-type narrowing (Candidate.CasePattern) -----------
+
+  # `Candidate.CasePattern`s that narrow a `rescue var in [A, B, ...]` exception list (drop
+  # one type), each `replacement` being the whole `try` with that one rescue clause's list
+  # shrunk. Gated on `Mutare.Mutators.RescueType` being enabled; the diff (`original`/
+  # `mutated`) is the `var in [...]` node before/after.
+  defp rescue_type_candidates(blocks, meta, mutators) do
+    case Spec.find(mutators, Mutare.Mutators.RescueType) do
+      nil -> []
+      spec -> rescue_clause_candidates(blocks, meta, spec)
+    end
+  end
+
+  defp rescue_clause_candidates(blocks, meta, spec) do
+    case Enum.find(blocks, fn {key, _v} -> AST.key_atom(key) == :rescue end) do
+      {_rescue_key, clauses} when is_list(clauses) ->
+        rebuild_try = fn new_clauses ->
+          new_blocks =
+            Enum.map(blocks, fn {key, v} ->
+              if AST.key_atom(key) == :rescue, do: {key, new_clauses}, else: {key, v}
+            end)
+
+          {:try, meta, [new_blocks]}
+        end
+
+        clauses
+        |> Enum.with_index()
+        |> Enum.flat_map(&rescue_type_drops(&1, clauses, rebuild_try, spec))
+
+      _ ->
+        []
+    end
+  end
+
+  # One rescue clause `var in [t1, ..., tn] -> body`: a `CasePattern` per type-drop, whose
+  # `replacement` is the whole `try` rebuilt with this clause's list narrowed. Other rescue
+  # shapes (`var`, `Type`, `var in Single`) yield nothing.
+  defp rescue_type_drops(
+         {{:->, cmeta, [[{:in, imeta, [var, types_node]}], body]}, index},
+         clauses,
+         rebuild_try,
+         spec
+       ) do
+    in_node = {:in, imeta, [var, types_node]}
+
+    with {wrap, types} when is_list(types) <- rescue_types(types_node),
+         %{} = range <- NodeRange.get(in_node) do
+      types
+      |> Mutare.Mutators.RescueType.drops()
+      |> Enum.map(fn kept ->
+        mutated_in = {:in, imeta, [var, wrap.(kept)]}
+        mutated_clause = {:->, cmeta, [[mutated_in], body]}
+
+        %Candidate.CasePattern{
+          mutator: spec,
+          original: in_node,
+          mutated: mutated_in,
+          replacement: rebuild_try.(List.replace_at(clauses, index, mutated_clause)),
+          range: range
+        }
+      end)
+    else
+      _ -> []
+    end
+  end
+
+  defp rescue_type_drops(_clause_indexed, _clauses, _rebuild_try, _spec), do: []
+
+  # The exception-type list of a rescue clause's `in [...]`, plus a closure to rebuild the
+  # list node from a narrowed list. Sourceror wraps the list literal in a `:__block__`
+  # (preserved so the mutant renders cleanly); a bare list is handled too. A single alias
+  # (`var in Single`) is not a list → `nil` (no drop).
+  defp rescue_types({:__block__, bmeta, [list]}) when is_list(list),
+    do: {fn new -> {:__block__, bmeta, [new]} end, list}
+
+  defp rescue_types(list) when is_list(list), do: {fn new -> new end, list}
+  defp rescue_types(_node), do: nil
 
   # === match (`=`) pattern structure =========================================
 

@@ -61,7 +61,8 @@ defmodule Mutare.Mutators do
     alias: Mutare.Mutators.AliasLiteral,
     return_value: Mutare.Mutators.ReturnValue,
     pattern_swap: Mutare.Mutators.PatternSwap,
-    pattern_wildcard: Mutare.Mutators.PatternWildcard
+    pattern_wildcard: Mutare.Mutators.PatternWildcard,
+    rescue_type: Mutare.Mutators.RescueType
   ]
 
   @doc "The ordered `family => module` registry of every built-in mutator."
