@@ -31,6 +31,21 @@ defmodule Auth.PolicyTest do
     assert Policy.normalize_email("  Alice@Example.COM ") == "alice@example.com"
   end
 
+  # authorize/2 succeeds on an unlocked account with a strong password. The
+  # fixture's email ("ada@example.com") has no upper-case letter, so it would fail
+  # `strong_password?/1` — which is exactly what kills the `{email, password}` swap
+  # in the `with` chain: swapped, the email is checked as the password and rejected.
+  test "authorize accepts an unlocked account with a strong password" do
+    assert Policy.authorize({"ada@example.com", "Sup3rSecret1"}, 0) == {:ok, "ada@example.com"}
+  end
+
+  # The denied paths exercise the with/else seam — a locked account and a weak
+  # password — but only loosely (they don't pin which rule did the rejecting).
+  test "authorize denies a locked account or a weak password" do
+    assert Policy.authorize({"ada@example.com", "Sup3rSecret1"}, 9) == {:error, :denied}
+    assert Policy.authorize({"ada@example.com", "weak"}, 0) == {:error, :denied}
+  end
+
   # NOTE: attempts_left/1 has no test at all — the coverage probe will mark its
   # mutants as no-coverage and leave them out of the score.
 end

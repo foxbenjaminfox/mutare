@@ -48,6 +48,19 @@ defmodule Mutare.MatchPatternTest do
       :noop
       {a, b} = t
     end
+
+    def for_pairs(list) do
+      for p <- list, {hi, lo} = p do
+        hi - lo
+      end
+    end
+
+    def with_pairs(input) do
+      with {:ok, payload} <- input,
+           {key, val} = payload do
+        val - key
+      end
+    end
   end
   """
 
@@ -129,6 +142,25 @@ defmodule Mutare.MatchPatternTest do
     test "swapping map values binds the other key's value", %{sites: sites} do
       Selector.put(id(sites, :pattern_swap, "%{lat: ln, lng: la}", 13))
       assert F.mapped(%{lat: 9, lng: 4}) == 4 - 9
+    end
+  end
+
+  describe "for / with qualifiers (value-discarded matches)" do
+    test "baseline for/with behave like the original" do
+      assert F.for_pairs([{5, 2}, {9, 3}]) == [3, 6]
+      assert F.with_pairs({:ok, {7, 2}}) == -5
+      # a non-matching `<-` still routes (returns the unmatched value, no else)
+      assert F.with_pairs(:error) == :error
+    end
+
+    test "a `for` `=` qualifier's pattern is mutated", %{sites: sites} do
+      Selector.put(id(sites, :pattern_swap, "{lo, hi}", 38))
+      assert F.for_pairs([{5, 2}, {9, 3}]) == [-3, -6]
+    end
+
+    test "a `with` `=` clause's pattern is mutated", %{sites: sites} do
+      Selector.put(id(sites, :pattern_swap, "{val, key}", 45))
+      assert F.with_pairs({:ok, {7, 2}}) == 5
     end
   end
 

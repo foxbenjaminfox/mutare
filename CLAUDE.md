@@ -105,11 +105,12 @@ contract between them is the whole game.
     swap/wildcard families on a `case`/`receive`/`fn` *clause* pattern but delivered **in place**
     (none is liftable): the whole construct is wrapped in a selector whose mutant branch is a copy
     (`replacement`) with one clause's pattern restructured, the diff staying focused on the pattern.
-    `MatchPattern` is those families on the LHS of a runtime **`=` match in statement position** (a
-    non-final block statement, where the match's value is discarded): a selector can't wrap the match
-    (its bindings, unlike a `case` clause's, *escape* to the enclosing scope), so the bound variables
-    are re-exported through a tuple and rebound outside — `{vars} = case rhs do <pat> -> {vars} end`,
-    the pattern hosted in a selector (`emit_match_site/3`); the diff still shows just the LHS pattern.
+    `MatchPattern` is those families on the LHS of a runtime **`=` match in a value-discarded
+    position** (a non-final block statement, a `for` qualifier, or a `with` clause): a selector
+    can't wrap the match (its bindings, unlike a `case` clause's, *escape* to the enclosing scope),
+    so the bound variables are re-exported through a tuple and rebound outside — `{vars} = case rhs
+    do <pat> -> {vars} end`, the pattern hosted in a selector (`emit_match_site/3`); the diff still
+    shows just the LHS pattern.
     The matching `Site` constructor is chosen by pattern-matching the variant at emit
     (`Guard`/`Pattern`/`PatternStructure` → `Site.lifted_replace/6`;
     `InPlace`/`Return`/`CasePattern`/`MatchPattern`
@@ -149,11 +150,13 @@ contract between them is the whole game.
     attach a `Candidate.CasePattern` to the whole construct node (the mutant wraps it in a selector —
     see the families below; `attach_clause_pattern_candidates/4` is the shared core, parameterized by
     the construct's clause list + a rebuild closure).
-    A runtime statement block's **non-final `=`-match statements** are *also* offered to those
-    families on their LHS (`analyze`'s `:__block__` clause → `analyze_statement/2` →
-    `attach_match_pattern_candidates/4`, attaching a `Candidate.MatchPattern`): a non-final statement
-    is in statement position (its value discarded), the one place re-exporting the bindings through a
-    tuple is value-transparent. A trailing match (the block's value) is left as a plain `=`.
+    A **value-discarded `=` match** is *also* offered those families on its LHS via
+    `analyze_statement/2` (→ `attach_match_pattern_candidates/4`, attaching a `Candidate.MatchPattern`),
+    routed from three positions: a runtime block's **non-final statements** (`analyze`'s `:__block__`
+    clause), a **`for` qualifier** (`analyze_for_arg/2`), and a **`with` clause** (the `:with` clause).
+    In all three the match's value is discarded (only its bindings matter, and they escape to later
+    statements/clauses), so re-exporting the bindings through a tuple is value-transparent. A *trailing*
+    block match (the block's value) is left a plain `=`; so is a `<-` generator/clause LHS (deferred).
     A dedicated **`:|>` clause** routes a pipe's RHS through `analyze_pipe_stage/2`, which offers the
     stage to mutators with `%{piped: true}` (everywhere else defaults to `%{piped: false}`): a pipe
     stage's node carries one fewer arg than the source reads (the piped value is the `|>` LHS, not in
@@ -566,19 +569,20 @@ contract between them is the whole game.
   place** — `Candidate.CasePattern` — by wrapping the whole construct in a selector whose mutant
   branch is a copy with one clause's pattern restructured, sound because those clause bindings never
   escape their body; an fn arg-list works like a head — each arg a position, though a duplicate
-  *across* fn args is not seen, only within one), and the LHS of a runtime **`=` match in statement
-  position** (a non-final block statement — delivered **in place** as `Candidate.MatchPattern`). The
-  `=` case looks infeasible — a selector `case` around a match would lose the bindings, which
-  *escape* to the enclosing scope (unlike a `case` clause's, local to its body) — but the bindings
-  are recovered by re-exporting them through a tuple and rebinding outside the selector: `{vars} =
-  case rhs do <pat> -> {vars} end`, the pattern hosted in a selector (`Transform.emit_match_site/3`).
-  Constrained to **statement position** (the match's value is discarded, so the export tuple is
-  value-transparent — a trailing `=` is left alone) and to **bound-set-preserving** mutations (the
-  wildcard family is forced into thin mode — one occurrence → `_`, the variable stays bound — by
-  passing the full bound set as `used_outside`, so the export is consistent across every branch). A
-  bare `x = e` yields no mutation (no container/repeat); a pin-only pattern (`{^a, ^b}` — admits a
-  swap but binds nothing to re-export) is skipped by the empty-bound guard. `with`/`for`/`try`
-  `<-`/clause LHSs are still deferred.
+  *across* fn args is not seen, only within one), and the LHS of a runtime **`=` match in a
+  value-discarded position** — a non-final block statement, a `for` qualifier, or a `with` clause —
+  delivered **in place** as `Candidate.MatchPattern`. The `=` case looks infeasible — a selector
+  `case` around a match would lose the bindings, which *escape* to the enclosing scope (unlike a
+  `case` clause's, local to its body) — but the bindings are recovered by re-exporting them through
+  a tuple and rebinding outside the selector: `{vars} = case rhs do <pat> -> {vars} end`, the pattern
+  hosted in a selector (`Transform.emit_match_site/3`). Constrained to a **value-discarded position**
+  (the match's value isn't consumed, so the export tuple is value-transparent — a trailing block `=`,
+  whose value *is* the block's, is left alone) and to **bound-set-preserving** mutations (the wildcard
+  family is forced into thin mode — one occurrence → `_`, the variable stays bound — by passing the
+  full bound set as `used_outside`, so the export is consistent across every branch). A bare `x = e`
+  yields no mutation (no container/repeat); a pin-only pattern (`{^a, ^b}` — admits a swap but binds
+  nothing to re-export) is skipped by the empty-bound guard. A `<-` generator/clause LHS and `try`
+  patterns are still deferred.
   Both families are structural like ReturnValue (`mutate/1` is `:skip`; the real logic is
   `pattern_mutations/2`, an **optional `Mutare.Mutator` callback** discovered via
   `function_exported?/2` — by `FunctionPlan.build_pattern_structures/2` for heads and by

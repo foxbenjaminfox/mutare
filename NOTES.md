@@ -668,8 +668,9 @@ default. They cover several pattern positions, by two deliveries:
   literals;
 - a `case`/`receive`/`fn` *clause* pattern — **in place** (`Candidate.CasePattern`), since
   none is a function clause group to lift; and
-- a runtime **`=`-match LHS in statement position** — **in place** (`Candidate.MatchPattern`,
-  see the next note).
+- a runtime **`=`-match LHS in a value-discarded position** (a non-final block statement, a
+  `for` qualifier, or a `with` clause) — **in place** (`Candidate.MatchPattern`, see the next
+  note).
 
 The three in-place constructs share one analyze path (`attach_clause_pattern_candidates/4`)
 parameterized by *the clause list* and *a rebuild closure* — the only things that differ
@@ -680,11 +681,11 @@ multi-argument heads). Each clause's pattern *positions* are iterated, so a sing
 *across* fn arguments (`fn x, x -> …`) is not seen (each position is mutated independently),
 only a duplicate *within* one argument (`fn {x, x} -> …`) — a small, rare gap.
 
-`with`/`for`/`try` `<-`/clause LHSs are deferred. The shared discovery primitives
+A `<-` generator/clause LHS and `try` patterns are deferred. The shared discovery primitives
 (`mutators/1`, `used_names/1`, `bound_var_names/1`, `node_mutations/3`) live in
 `Transform.PatternStructure`, used by every path.
 
-### `=`-match LHS in statement position `[done]`
+### `=`-match LHS in a value-discarded position `[done]`
 The old note here said `=`-LHS was *excluded* because "a selector `case` around a match
 would lose its bindings." It now mutates — by the rewrite the user proposed: a `<pat> = e`
 binds variables that *escape* to the enclosing scope (unlike a `case` clause's, which are
@@ -712,11 +713,16 @@ matches the **emitted** rhs, so a nested mutation in the matched expression stil
 
 Three deliberate constraints keep it sound:
 
-* **Statement position only.** The rewrite is applied solely to a **non-final** statement of
-  a runtime block (`Transform.Analyze`'s `:__block__` clause), where the match's value is
-  discarded — so swapping it for the export tuple is value-transparent. A *trailing* `=` (the
-  block's value) is left a plain match: a partial pattern (`%{a: v} = e`) reconstructs a
-  *different* value than the matched RHS, which a value-position consumer would see.
+* **Value-discarded positions only.** The rewrite is applied where the match's value is thrown
+  away (only its bindings matter), so swapping it for the export tuple is value-transparent.
+  Three routes, all via `analyze_statement/2`: a runtime block's **non-final statement**
+  (`:__block__` clause), a **`for` qualifier** (`analyze_for_arg/2`), and a **`with` clause**
+  (the `:with` clause). A `for` qualifier / `with` clause is *always* value-discarded (it only
+  binds/filters), so no position check is needed there; only a block needs the non-final test. A
+  *trailing* block `=` (whose value *is* the block's) is left a plain match: a partial pattern
+  (`%{a: v} = e`) reconstructs a *different* value than the matched RHS, which a value-position
+  consumer would see. A `with` `=` clause's non-match raises `MatchError` (it is **not** routed
+  to `else` — only `<-` is), which the rewrite's trailing raise clause preserves exactly.
 * **Bound-set-preserving mutations only.** The export tuple must be bound identically in every
   branch, so the wildcard family is forced into **thin** mode (one occurrence → `_`, the
   variable stays bound) by passing the full bound set as `used_outside`; swaps preserve the

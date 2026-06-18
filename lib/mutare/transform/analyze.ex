@@ -373,6 +373,28 @@ defmodule Mutare.Transform.Analyze do
     {:for, meta, Enum.map(args, &analyze_for_arg(&1, mutators))}
   end
 
+  # `with`: a chain of clauses (`<-`/`=`/bare-expr, every one value-discarded) followed by
+  # the trailing `[do: …, else: …]` keyword. A bare `=` clause is a match used solely for
+  # its bindings — which escape to later clauses and the `do` body — exactly the rewriteable
+  # position, so each clause routes through `analyze_statement/2` (a `=` gets a
+  # `Candidate.MatchPattern`; a `<-` keeps its LHS a `:pattern`; a bare expr is ordinary
+  # runtime). The keyword tail descends as usual (the `do` body's own non-final `=`
+  # statements are reached there too; `else` patterns stay `:pattern` via the generic `->`
+  # clause). A `<-` non-match routes to `else`, but a `=` non-match raises `MatchError`
+  # (which `else` never catches) — preserved by the rewrite's trailing raise clause. (A
+  # malformed `with` with no keyword tail falls back to the generic runtime descent.)
+  defp analyze({:with, meta, args} = node, :runtime, mutators)
+       when is_list(args) and args != [] do
+    if is_list(List.last(args)) do
+      {clauses, [body_kw]} = Enum.split(args, -1)
+      clauses = Enum.map(clauses, &analyze_statement(&1, mutators))
+      rebuilt = {:with, meta, clauses ++ [analyze(body_kw, :runtime, mutators)]}
+      offer(rebuilt, node, mutators)
+    else
+      node |> offer(node, mutators) |> recurse_runtime(mutators, false)
+    end
+  end
+
   # `not in`: `x not in y` parses as `not(x in y)` — a `:not` wrapping an `:in`.
   # Both nodes are boolean-valued, so the inner `in` would otherwise be offered to
   # mutators and produce only *redundant* mutants: Conditional forcing it to
@@ -445,13 +467,14 @@ defmodule Mutare.Transform.Analyze do
 
   defp analyze_pipe_stage(other, mutators), do: analyze(other, :runtime, mutators)
 
-  # One argument of a `for`: a generator/filter is descended as ordinary runtime,
-  # while the trailing options/body keyword list keeps every option *key* raw —
-  # `:into`/`:reduce`/`:uniq`/`:do` are `for`-special-form keywords, so mutating a key
-  # is a compile error (`unsupported option :mutare given to for`), unlike a free-form
-  # map/keyword key. The `:uniq` *value* must also be a literal boolean (a selector
-  # there would poison the build), so it is held back; every other value (`:into`/
-  # `:reduce` and the `:do`/`:reduce` body) descends as ordinary runtime.
+  # One argument of a `for`: a generator/filter/match is descended as a *statement*
+  # (its value is discarded — a qualifier only binds/filters), while the trailing
+  # options/body keyword list keeps every option *key* raw — `:into`/`:reduce`/`:uniq`/
+  # `:do` are `for`-special-form keywords, so mutating a key is a compile error
+  # (`unsupported option :mutare given to for`), unlike a free-form map/keyword key. The
+  # `:uniq` *value* must also be a literal boolean (a selector there would poison the
+  # build), so it is held back; every other value (`:into`/`:reduce` and the `:do`/
+  # `:reduce` body) descends as ordinary runtime.
   defp analyze_for_arg(opts, mutators) when is_list(opts) do
     Enum.map(opts, fn
       {key, value} ->
@@ -464,7 +487,11 @@ defmodule Mutare.Transform.Analyze do
     end)
   end
 
-  defp analyze_for_arg(arg, mutators), do: analyze(arg, :runtime, mutators)
+  # A non-keyword qualifier — a generator (`<-`), a filter, or a **bare `=` match**.
+  # `analyze_statement/2` offers a `=` LHS to the structural pattern families (a `for`
+  # qualifier always discards its value, so the tuple-export rewrite is sound) and
+  # leaves generators/filters as ordinary runtime.
+  defp analyze_for_arg(arg, mutators), do: analyze_statement(arg, mutators)
 
   # One entry of a struct's field map: keep the key (a compile-time field name) raw and
   # descend only the value. A struct update (`%S{base | a: 1}`) carries a `:|` node
@@ -825,7 +852,7 @@ defmodule Mutare.Transform.Analyze do
     # don't carry the comment. The range/diff is unaffected (it reads position metadata).
     lhs = strip_comments(raw_lhs)
 
-    with %{} = range <- Sourceror.get_range(lhs),
+    with %{} = range <- NodeRange.get(lhs),
          [_ | _] = names <- PatternStructure.bound_var_names(lhs) do
       export = export_tuple(Enum.map(names, &{&1, [], nil}))
       # Pass the full bound set as `used_outside` so the wildcard family stays in *thin*
