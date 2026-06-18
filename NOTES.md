@@ -1079,8 +1079,12 @@ import/alias-proof, like the `=`-match `MatchError` raise). It is **omitted** wh
 is already an unconditional catch-all (`exhaustive_clauses?/2` — an irrefutable pattern, no source
 guard, no exclusion ids), since the subject can then never fall through and the clause would be
 unreachable (Elixir warns "this clause cannot match"). Detecting irrefutability is sound-by-narrowness:
-only a bare `_`/var (`{atom, _, atom}`) counts; anything structured is assumed refutable, so at worst
-the fallback is added where unneeded — never wrongly omitted.
+a bare `_`/var (`{atom, _, atom}`) counts, **and** a *match chain* `a = b = … = z`
+(`{:=, _, [lhs, rhs]}`, recursively) counts when every operand does (`x = _ = y` binds three names and
+matches anything, but `x = {1, 2}` or `^x = y` is refutable); anything else structured is assumed
+refutable, so at worst the fallback is added where unneeded — never wrongly omitted. (Originally only
+the bare `_`/var was recognised, so an exhaustive `case` whose catch-all was a match chain wrongly got
+a second — unreachable — fallback.)
 
 **`Manifest`/poison.** The tupled `case`'s subject is `{<subject_ast>, <scrutinee>}`, recognised by
 `Metamutant.pattern_subject?/1` (it sees through the `:literal_encoder`'s `:__block__` wrap of the

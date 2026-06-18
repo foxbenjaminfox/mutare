@@ -1180,8 +1180,16 @@ defmodule Mutare.Transform do
 
   # A pattern that matches any value: `_`, `_name`, or a plain variable — the only nodes shaped
   # `{atom_name, _meta, atom_context}`. Anything structured (a literal `{:__block__, _, […]}`, a
-  # tuple/map/struct, a pin, a call) carries a *list* in that slot, so is refutable.
+  # tuple/map/struct, a pin, a call) carries a *list* in that slot, so is refutable — *except* a
+  # **match chain** `a = b = … = z` (`{:=, _, [lhs, rhs]}`, possibly nested), which is irrefutable
+  # exactly when every operand is: `x = _ = y` binds three names and matches anything, but `x = {1,
+  # 2}` (refutable rhs) or `^x = y` (a pin) is not. The `:=` node carries a *list* in its third
+  # slot, so it falls past the variable clause to the recursive one.
   defp irrefutable_pattern?({name, _meta, ctx}) when is_atom(name) and is_atom(ctx), do: true
+
+  defp irrefutable_pattern?({:=, _meta, [lhs, rhs]}),
+    do: irrefutable_pattern?(lhs) and irrefutable_pattern?(rhs)
+
   defp irrefutable_pattern?(_), do: false
 
   # Deconstruct an (already-emitted) `case` clause into `{meta, pattern, guard | nil, body}`.

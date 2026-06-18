@@ -49,6 +49,13 @@ defmodule Mutare.CasePatternTest do
         2 -> :two
       end
     end
+
+    def chained(n) do
+      case n do
+        1 -> :one
+        x = _ = y -> {x, y}
+      end
+    end
   end
   """
 
@@ -108,7 +115,9 @@ defmodule Mutare.CasePatternTest do
 
   test "a non-exhaustive case gets an unmatched fallback; exhaustive ones do not", %{meta: meta} do
     # Only `narrow` lacks a catch-all, so exactly one tupled `case` re-raises CaseClauseError on
-    # the bare subject — the rest (classify/swap/dup/label) keep their `_` clause and add none.
+    # the bare subject — the rest keep an unconditional catch-all and add none. `classify/swap/dup/
+    # label` use a plain `_`; `chained` uses a **match chain** `x = _ = y`, which is just as
+    # irrefutable, so it is recognised as exhaustive (not given a second fallback).
     assert meta =~ "Kernel.raise(Elixir.CaseClauseError, term: mutare_unmatched)"
     assert length(Regex.scan(~r/Kernel\.raise\(Elixir\.CaseClauseError/, meta)) == 1
   end
@@ -125,6 +134,13 @@ defmodule Mutare.CasePatternTest do
       assert F.label("x") == :unknown
       assert F.narrow(1) == :one
       assert F.narrow(2) == :two
+    end
+
+    test "a match-chain catch-all (x = _ = y) is exhaustive — no CaseClauseError" do
+      # The final clause binds every value (each operand of the `=` chain is a var/wildcard), so it
+      # is a catch-all just like a plain `_` — `chained` never falls through and never raises.
+      assert F.chained(1) == :one
+      assert F.chained(3) == {3, 3}
     end
 
     test "a non-exhaustive case raises CaseClauseError on the bare subject, not the tuple" do
