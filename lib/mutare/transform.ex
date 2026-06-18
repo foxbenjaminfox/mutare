@@ -648,6 +648,13 @@ defmodule Mutare.Transform do
     Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
+  # A `=`-match LHS pattern mutation, delivered in place (the match is rewritten to a
+  # tuple-export selector — see `emit_match_site/3`). The diff is the LHS pattern
+  # before/after (`original`/`mutated`); the rewrite scaffolding never reaches a Site.
+  defp in_place_site(id, %Candidate.MatchPattern{} = c, file) do
+    Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
+  end
+
   defp lifted_site(id, %Candidate.Guard{} = c, file) do
     Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
   end
@@ -702,6 +709,10 @@ defmodule Mutare.Transform do
         # `strip_candidates` clears any meta left by candidates the gate dropped (a
         # no-op when there were none), so the gated node renders clean.
         [] -> {hoist_pipe(strip_candidates(current)), ctx}
+        # A `=`-match in statement position is rewritten to a tuple-export selector
+        # (its bindings must escape, so it can't be wrapped like an ordinary node). It
+        # only ever carries `MatchPattern` candidates, so the head match is exhaustive.
+        [%Candidate.MatchPattern{} | _] = candidates -> emit_match_site(current, candidates, ctx)
         candidates -> emit_site(current, candidates, ctx)
       end
     end)
@@ -779,6 +790,77 @@ defmodule Mutare.Transform do
       [] -> {default, ctx}
       _ -> {build_case(default, clauses, ctx.active_var), ctx}
     end
+  end
+
+  # Rewrite a `=`-match in statement position so its LHS pattern can be mutated. A
+  # selector `case` can't wrap the match directly (the bindings made inside its branches
+  # would no longer escape to the enclosing scope), so the bound variables are re-exported
+  # through a tuple and rebound *outside* the selector:
+  #
+  #     {x, y} =
+  #       case <sel> do
+  #         <id> -> case <raw_rhs> do <mutated_pat> -> {x, y} end   # one per mutant
+  #         mutare_active ->
+  #           <record ids>
+  #           case <emitted_rhs> do <orig_pat> -> {x, y} end        # baseline + inactive
+  #       end
+  #
+  # The outer match (and the `{x, y}` each inner case returns) is the shared `export`
+  # tuple, so every branch binds the same variables. Mutant branches match the *raw* rhs
+  # (no nested selectors — only one mutant is ever active, so a body selector there could
+  # never fire), while the catch-all matches the *emitted* rhs so a nested mutation in the
+  # matched expression still fires when its (non-match) id is active. Mirrors `emit_site/3`
+  # / `build_case/3` for id claiming, coverage, and the all-poisoned fallback.
+  defp emit_match_site({:=, _meta, [_lhs, emitted_rhs]} = match_node, candidates, ctx) do
+    %Candidate.MatchPattern{export: export, original: original_lhs} = hd(candidates)
+
+    {clauses, ctx} =
+      Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
+        claim_id(ctx, candidate, &in_place_site/3, fn id, candidate ->
+          {:->, [], [[id], match_inner_case(candidate.raw_rhs, candidate.mutated, export)]}
+        end)
+      end)
+
+    # Every mutation here skipped (poisoned) → no selector; emit the match unchanged.
+    case clauses do
+      [] ->
+        {strip_candidates(match_node), ctx}
+
+      _ ->
+        ids = for {:->, _, [[id], _]} <- clauses, do: id
+        selector = Mutare.Metamutant.subject_ast()
+        baseline = match_inner_case(emitted_rhs, original_lhs, export)
+        catch_all = match_catch_all(ids, baseline, ctx.active_var)
+        case_node = {:case, [], [selector, [do: clauses ++ [catch_all]]]}
+        {{:=, [], [export, case_node]}, ctx}
+    end
+  end
+
+  # `case <rhs> do <pattern> -> <export>; u -> raise MatchError, term: u end` — re-binds
+  # the match by matching `rhs` against `pattern` and returning the shared export tuple.
+  # The trailing clause makes a non-match raise the *same* `MatchError` the original `=`
+  # raised (not a `CaseClauseError`): exact baseline semantics, and still a clean kill on
+  # a mutant whose pattern stopped matching. The pattern is a refutable container (a bare
+  # var / pin-only LHS is never offered), so that clause is always reachable.
+  defp match_inner_case(rhs, pattern, export) do
+    {:case, [], [rhs, [do: [{:->, [], [[pattern], export]}, match_raise_clause()]]]}
+  end
+
+  # `mutare_unmatched -> raise MatchError, term: mutare_unmatched`. The binding is local to
+  # this one clause body (a fresh case-clause pattern variable, used only here), so a
+  # fixed name can't capture or collide — unlike a lifted *head* arg, the gated-equality
+  # hazard `Names` salts against doesn't apply to a body case clause.
+  defp match_raise_clause do
+    unmatched = {:mutare_unmatched, [], nil}
+    raise_node = {:raise, [], [{:__aliases__, [], [:MatchError]}, [term: unmatched]]}
+    {:->, [], [[unmatched], raise_node]}
+  end
+
+  # The selector catch-all for a rewritten match: record the hosted ids (inert outside the
+  # probe), then run the baseline inner case. Mirrors `catch_all_clause/3`.
+  defp match_catch_all(ids, baseline_case, var) do
+    body = {:__block__, [], [Recorder.record_ast(ids, var), baseline_case]}
+    {:->, [], [[Recorder.catch_all_pattern(var)], body]}
   end
 
   # The selector-branch value for an in-place candidate. A `CasePattern` carries the whole

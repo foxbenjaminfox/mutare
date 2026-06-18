@@ -32,6 +32,11 @@ defmodule Mutare.Transform.Candidate do
   #     `case` is wrapped in a selector whose mutant branch is a copy with one clause's
   #     pattern restructured. The diff stays focused on the pattern (`original`/`mutated`),
   #     while the selector branch carries the whole mutated `case` (`replacement`).
+  #   * `Candidate.MatchPattern` — the same swap/wildcard families on the LHS of a runtime
+  #     `=` match *in statement position*. A selector can't wrap the match (its bindings
+  #     would stop escaping), so the bound variables are re-exported through a tuple and
+  #     rebound outside: `{vars} = case rhs do <pat> -> {vars} end`, the pattern hosted in
+  #     a selector. Delivered in place; recorded as an `:in_place` `Mutare.Site`.
   #   * `Candidate.Return`  — a function clause's *tail expression* replaced with a
   #     constant (`nil`/`0`/`""`/`[]`), delivered by an in-place selector `case`
   #     (the tail is a body position). Structural, like `Drop`: it targets a
@@ -175,6 +180,44 @@ defmodule Mutare.Transform.Candidate do
     defstruct [:mutator, :original, :mutated, :replacement, :range]
   end
 
+  defmodule MatchPattern do
+    @moduledoc false
+
+    # The *same* swap/wildcard families applied to the LHS pattern of a **runtime `=`
+    # match in statement position** (a non-final statement of a body block, where the
+    # match's value is discarded). A selector `case` can't live in a pattern and a `=`
+    # isn't a liftable clause group — but, unlike a `case` clause, an `=`'s bindings
+    # *escape* to the enclosing scope, so wrapping the whole match in a selector would
+    # lose them. The fix re-exports the bound variables through a tuple and rebinds them
+    # outside (the user's `<pat> = e` → `{vars} = case e do <pat> -> {vars} end` trick):
+    #
+    #     {x, y} =
+    #       case <sel> do
+    #         <id> -> case <raw_rhs> do {y, x} -> {x, y} end   # mutant: swapped binding
+    #         mutare_active -> <record>; case <rhs> do {x, y} -> {x, y} end   # baseline
+    #       end
+    #
+    # `original`/`mutated` are the LHS pattern before/after (the focused one-line diff)
+    # and `range` locates it; `export` is the shared `{vars}` tuple (built once from the
+    # pattern's `bound_var_names`, so every branch and the outer match agree on it);
+    # `raw_rhs` is the un-emitted matched expression the mutant branch matches (the
+    # baseline branch uses the *emitted* rhs, so nested mutations there still fire). Only
+    # mutations that preserve the bound-variable set are admitted (swaps always do;
+    # wildcards are forced to *thin* mode by passing the bound set as `used_outside`), so
+    # the export stays consistent across branches. Recorded as an `:in_place` `Mutare.Site`.
+
+    @type t :: %__MODULE__{
+            mutator: module(),
+            original: Macro.t(),
+            mutated: Macro.t(),
+            export: Macro.t(),
+            raw_rhs: Macro.t(),
+            range: Sourceror.Range.t()
+          }
+
+    defstruct [:mutator, :original, :mutated, :export, :raw_rhs, :range]
+  end
+
   defmodule Drop do
     @moduledoc false
 
@@ -219,6 +262,7 @@ defmodule Mutare.Transform.Candidate do
           | Pattern.t()
           | PatternStructure.t()
           | CasePattern.t()
+          | MatchPattern.t()
           | Drop.t()
           | Return.t()
 end

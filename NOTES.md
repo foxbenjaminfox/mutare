@@ -595,9 +595,11 @@ whole-pattern shape, not a node a `mutate/1` could match), **registered** and on
 default. They cover several pattern positions, by two deliveries:
 
 - a `def`/`defp` *head* pattern — **lifted** (`Candidate.PatternStructure`), like head
-  literals; and
+  literals;
 - a `case`/`receive`/`fn` *clause* pattern — **in place** (`Candidate.CasePattern`), since
-  none is a function clause group to lift.
+  none is a function clause group to lift; and
+- a runtime **`=`-match LHS in statement position** — **in place** (`Candidate.MatchPattern`,
+  see the next note).
 
 The three in-place constructs share one analyze path (`attach_clause_pattern_candidates/4`)
 parameterized by *the clause list* and *a rebuild closure* — the only things that differ
@@ -608,9 +610,67 @@ multi-argument heads). Each clause's pattern *positions* are iterated, so a sing
 *across* fn arguments (`fn x, x -> …`) is not seen (each position is mutated independently),
 only a duplicate *within* one argument (`fn {x, x} -> …`) — a small, rare gap.
 
-`=`-LHS is excluded (a selector `case` around a match would lose its bindings); `with`/
-`for`/`try` are deferred. The shared discovery primitives (`mutators/1`, `used_names/1`,
-`node_mutations/3`) live in `Transform.PatternStructure`, used by every path.
+`with`/`for`/`try` `<-`/clause LHSs are deferred. The shared discovery primitives
+(`mutators/1`, `used_names/1`, `bound_var_names/1`, `node_mutations/3`) live in
+`Transform.PatternStructure`, used by every path.
+
+### `=`-match LHS in statement position `[done]`
+The old note here said `=`-LHS was *excluded* because "a selector `case` around a match
+would lose its bindings." It now mutates — by the rewrite the user proposed: a `<pat> = e`
+binds variables that *escape* to the enclosing scope (unlike a `case` clause's, which are
+local to its body), so wrapping the whole match in a selector would strand them. Instead
+**re-export the bound variables through a tuple and rebind them outside** the selector:
+
+```
+{x, y} =
+  case <sel> do
+    <id> -> case <raw_rhs> do {y, x} -> {x, y} end       # mutant: swapped binding
+    mutare_active -> <record ids>; case <rhs> do {x, y} -> {x, y} end   # baseline
+  end
+```
+
+The outer `{x, y} =` (and the `{x, y}` each inner case returns) is one shared **export
+tuple** built from `PatternStructure.bound_var_names/1`, so every branch binds the same
+variables — that consistency is the whole trick. Discovery reuses `node_mutations/3` (the
+`case`-path primitive) and the diff reuses `Site.in_place/6` (`original`/`mutated` are the
+LHS pattern before/after), so only **emission** is new (`Transform.emit_match_site/3`): the
+existing in-place selector can't host it, because wrapping the *node* would put the binding
+`=` inside the selector branches where its bindings no longer escape. Mutant branches match
+the **raw** rhs (no nested selectors — only one mutant is ever active); the catch-all
+matches the **emitted** rhs, so a nested mutation in the matched expression still fires when
+*its* id is active (the match selector then takes its baseline branch).
+
+Three deliberate constraints keep it sound:
+
+* **Statement position only.** The rewrite is applied solely to a **non-final** statement of
+  a runtime block (`Transform.Analyze`'s `:__block__` clause), where the match's value is
+  discarded — so swapping it for the export tuple is value-transparent. A *trailing* `=` (the
+  block's value) is left a plain match: a partial pattern (`%{a: v} = e`) reconstructs a
+  *different* value than the matched RHS, which a value-position consumer would see.
+* **Bound-set-preserving mutations only.** The export tuple must be bound identically in every
+  branch, so the wildcard family is forced into **thin** mode (one occurrence → `_`, the
+  variable stays bound) by passing the full bound set as `used_outside`; swaps preserve the
+  set inherently. Orphan-fix (`{x, x}`→`{_, _}`, dropping the binding) is therefore never
+  emitted here.
+* **Bare matches and pin-only patterns drop out for free** — a bare `var = e` has no
+  container to swap / repeat to wildcard (`node_mutations/3` returns `[]`); a *pin-only*
+  pattern (`{^a, ^b} = e`) does admit a swap but **binds nothing** to re-export, so the
+  empty-bound guard (`bound_var_names/1` → `[]`) skips it (the assertion-only mutation an
+  empty `{} = case …` would express is left to the poison-free common case — a small,
+  deliberate gap).
+
+Non-match semantics are preserved exactly: each inner case carries a trailing `u -> raise
+MatchError, term: u` clause, so a value that doesn't match raises the *same* `MatchError`
+the original `=` did (not a `CaseClauseError`) — keeping the baseline identical and still a
+clean kill on a mutant whose pattern stopped matching. (The pattern is always a refutable
+container — a bare `var`/pin-only LHS is never offered — so that clause is always reachable;
+the binding is clause-local, so a fixed `mutare_unmatched` name can't capture or collide.)
+
+Known edge: a `{x, x} = e` whose `x` is *unused afterward* gains an "unused variable" warning
+the original (where the repetition counts as a use) didn't — harmless under the default
+warnings-tolerant metamutant compile, and poison-recoverable under a `--warnings-as-errors`
+target (the whole-`case` fallback range in `Manifest` maps it to the rewrite's ids), exactly
+as `PatternWildcard`'s "cannot match" warnings are handled.
 
 Several design choices worth remembering:
 

@@ -228,6 +228,22 @@ defmodule Mutare.Transform.Analyze do
     {:%, meta, [aliases, {:%{}, mmeta, pairs}]}
   end
 
+  # A runtime statement sequence: every statement but the **last** is in *statement
+  # position* — its value is discarded (only the block's final expression is its value).
+  # That is exactly where a `=` match can be rewritten to mutate its LHS pattern: a
+  # destructuring `=` there is used solely for its bindings, so re-exporting them through
+  # a tuple (`attach_match_pattern_candidates/4`) is value-transparent. A trailing `=`
+  # *is* the block's value, so it stays a plain match (its value would change — see
+  # `Candidate.MatchPattern`). Non-`=` statements analyze exactly as before. A single- or
+  # empty-statement block has no non-final statement, so it falls through to the generic
+  # recurse below (its lone statement is the value, analyzed normally).
+  defp analyze({:__block__, meta, stmts}, :runtime, mutators)
+       when is_list(stmts) and length(stmts) >= 2 do
+    {init, [last]} = Enum.split(stmts, -1)
+    init = Enum.map(init, &analyze_statement(&1, mutators))
+    {:__block__, meta, init ++ [analyze(last, :runtime, mutators)]}
+  end
+
   # match `=`: the left side is a pattern, the right keeps the context.
   defp analyze({:=, meta, [lhs, rhs]}, context, mutators) do
     {:=, meta, [analyze(lhs, :pattern, mutators), analyze(rhs, context, mutators)]}
@@ -776,6 +792,83 @@ defmodule Mutare.Transform.Analyze do
   defp put_clause_pattern_at({:->, meta, [lhs_list, body]}, pos, mutated) do
     {:->, meta, [List.replace_at(lhs_list, pos, mutated), body]}
   end
+
+  # === match (`=`) pattern structure =========================================
+
+  # A non-final statement of a runtime block (see the `:__block__` clause). A `=` match
+  # is the one statement whose LHS pattern is offered to the structural families; every
+  # other statement is analyzed as an ordinary runtime expression.
+  defp analyze_statement({:=, _meta, [raw_lhs, raw_rhs]} = match, mutators) do
+    analyzed = analyze(match, :runtime, mutators)
+    attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, mutators)
+  end
+
+  defp analyze_statement(other, mutators), do: analyze(other, :runtime, mutators)
+
+  # Offer the `=`'s LHS to the structural pattern families and, if any fire, attach a
+  # `Candidate.MatchPattern` per mutation to the analyzed match node — emission rewrites
+  # it to the tuple-export selector (`Mutare.Transform.emit_match_site/3`). Each candidate
+  # carries the LHS before/after (the diff), the shared export tuple, and the *raw* rhs.
+  defp attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, mutators) do
+    case match_pattern_candidates(raw_lhs, raw_rhs, PatternStructure.mutators(mutators)) do
+      [] -> analyzed
+      candidates -> put_candidates(analyzed, candidates)
+    end
+  end
+
+  defp match_pattern_candidates(_raw_lhs, _raw_rhs, []), do: []
+
+  defp match_pattern_candidates(raw_lhs, raw_rhs, structural) do
+    # Sourceror attaches the *statement's* leading comment to its leftmost leaf — which,
+    # for `<pat> = e`, is inside the LHS. Strip it so the recorded `original`/`mutated`
+    # (rendered by `Site` via `Sourceror.to_string`) and the generated inner-case patterns
+    # don't carry the comment. The range/diff is unaffected (it reads position metadata).
+    lhs = strip_comments(raw_lhs)
+
+    with %{} = range <- Sourceror.get_range(lhs),
+         [_ | _] = names <- PatternStructure.bound_var_names(lhs) do
+      export = export_tuple(Enum.map(names, &{&1, [], nil}))
+      # Pass the full bound set as `used_outside` so the wildcard family stays in *thin*
+      # mode (replace one occurrence, keep the variable bound). Every admitted mutation
+      # then preserves the bound set, so the export stays consistent across all branches.
+      used = MapSet.new(names)
+
+      lhs
+      |> PatternStructure.node_mutations(used, structural)
+      |> Enum.map(fn {mutator, mutated} ->
+        %Candidate.MatchPattern{
+          mutator: mutator,
+          original: lhs,
+          mutated: mutated,
+          export: export,
+          raw_rhs: raw_rhs,
+          range: range
+        }
+      end)
+    else
+      _ -> []
+    end
+  end
+
+  # Drop `:leading_comments`/`:trailing_comments` from every node's metadata. Used on the
+  # `=`-match LHS, whose leftmost leaf carries the statement's leading comment (Sourceror
+  # parks it there), so neither the recorded site nor the generated pattern repeats it.
+  defp strip_comments(ast) do
+    Macro.prewalk(ast, fn
+      {form, meta, args} when is_list(meta) ->
+        {form, meta |> Keyword.delete(:leading_comments) |> Keyword.delete(:trailing_comments),
+         args}
+
+      other ->
+        other
+    end)
+  end
+
+  # The tuple of bound variables shared by the outer match and every inner-case return.
+  # A 2-tuple is the unwrapped `{a, b}` Sourceror produces; one or 3+ vars use the
+  # explicit `{:{}, …}` n-tuple form (so a single binding exports as `{v}`).
+  defp export_tuple([a, b]), do: {a, b}
+  defp export_tuple(vars), do: {:{}, [], vars}
 
   # === return-value mutation =================================================
 

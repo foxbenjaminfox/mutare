@@ -25,4 +25,10 @@ defmodule Text.FormatTest do
   test "excerpt truncates long text and adds an ellipsis" do
     assert Format.excerpt("the quick brown fox", 9) == "the quick…"
   end
+
+  # The two names have *different* initials, so the `[first, last]` → `[last, first]`
+  # swap reverses the result and is killed. A same-initial fixture would let it survive.
+  test "initials abbreviates a two-part name" do
+    assert Format.initials("Ada Lovelace") == "A.L."
+  end
 end

@@ -31,6 +31,19 @@ defmodule Stats.SeriesTest do
     assert Series.top([3, 1, 4, 1, 5, 9, 2], 3) == [9, 5, 4]
   end
 
+  # midrange/1 destructures `{low, high}` then averages with a commutative `+`, so
+  # PatternSwap's `{high, low}` lands on the same value and survives — the destructuring
+  # twin of the symmetric-median survivor above.
+  test "midrange averages the smallest and largest" do
+    assert Series.midrange([3, 1, 4, 1, 5]) == 3.0
+  end
+
+  # spread/1 destructures the same `{low, high}` but subtracts, so the `{high, low}` swap
+  # negates the answer — this asymmetric fixture kills it.
+  test "spread is the distance between largest and smallest" do
+    assert Series.spread([3, 1, 4, 1, 5]) == 4
+  end
+
   # clamp/3 is exercised inside the range and past each end, but never with
   # low == high — so the guard boundary `low <= high` → `low < high` survives.
   test "clamp restricts a value to the range" do

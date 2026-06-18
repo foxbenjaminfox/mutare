@@ -76,6 +76,70 @@ defmodule Mutare.Transform.PatternStructure do
   def var_name(_node), do: nil
 
   @doc """
+  The distinct variable names a pattern **binds**, in first-occurrence order.
+
+  Unlike `used_names/1` (which over-collects every variable-shaped node, the safe
+  direction for a *used-outside* set), this is the **exact** binding set — what the
+  `=`-match rewrite re-exports through a tuple and rebinds in the outer scope (see
+  `Mutare.Transform`). It must be precise in *both* directions: over-collecting binds
+  a name the pattern never introduced (an unbound-variable error in the export tuple);
+  under-collecting strands a binding the rest of the scope reads. So binding positions
+  are classified positively, the way the in-place analyzer classifies contexts:
+
+    * a pin `^x` binds nothing (it *references* an outer binding) — skipped whole;
+    * a map/struct **key** is an expression matched against, not a binding — only the
+      *value* side of each pair is descended (`%{k => v}` binds `v`, never `k`);
+    * a bitstring **spec** (`size(n)`, type atoms) references/declares no new binding —
+      only the *value* side of a `::` segment is descended;
+    * `_` and `_`-prefixed names are not usable bindings (`var_name/1` excludes them).
+
+  Everything else — tuples, lists (incl. cons tails), nested matches (`x = pat`) — is a
+  structural descent. The result threads `Mutare.Transform`'s export tuple and outer
+  match, so its order/uniqueness is what keeps the two consistent.
+  """
+  @spec bound_var_names(Macro.t()) :: [atom()]
+  def bound_var_names(pattern) do
+    pattern |> collect_bound([]) |> Enum.reverse() |> Enum.uniq()
+  end
+
+  # A pin references an outer binding — it introduces nothing.
+  defp collect_bound({:^, _meta, _args}, acc), do: acc
+
+  # A bitstring segment `value :: spec`: only the value side binds (the spec's type
+  # atoms / `size(n)` references declare no new binding).
+  defp collect_bound({:"::", _meta, [value, _spec]}, acc), do: collect_bound(value, acc)
+
+  # A map/struct field map: keys are matched-against expressions, not bindings — descend
+  # only each pair's value. (`%Struct{…}` reaches here via the generic clause's descent
+  # into its inner `%{}`.)
+  defp collect_bound({:%{}, _meta, pairs}, acc) when is_list(pairs) do
+    Enum.reduce(pairs, acc, fn
+      {_key, value}, acc -> collect_bound(value, acc)
+      other, acc -> collect_bound(other, acc)
+    end)
+  end
+
+  # A plain variable in binding position — the one place a name is introduced.
+  defp collect_bound({name, _meta, ctx} = node, acc) when is_atom(name) and is_atom(ctx) do
+    case var_name(node) do
+      nil -> acc
+      bound_name -> [bound_name | acc]
+    end
+  end
+
+  # Any other operator/container node (tuple `{:{}, …}`, struct `%S{}`, nested `=`, …):
+  # descend its args structurally.
+  defp collect_bound({_form, _meta, args}, acc) when is_list(args),
+    do: Enum.reduce(args, acc, &collect_bound/2)
+
+  # A literal 2-tuple `{a, b}` (Sourceror leaves these unwrapped).
+  defp collect_bound({a, b}, acc), do: collect_bound(b, collect_bound(a, acc))
+
+  defp collect_bound(list, acc) when is_list(list), do: Enum.reduce(list, acc, &collect_bound/2)
+
+  defp collect_bound(_leaf, acc), do: acc
+
+  @doc """
   The variable-shaped names appearing in any bitstring **spec** (the right of `::`)
   within `ast` — the `n` in `<<n, rest::binary-size(n)>>`, plus bare type atoms like
   `integer` (indistinguishable from a variable in the AST). The structural families
