@@ -7,6 +7,18 @@ defmodule Mutare.Mutators.Arithmetic do
   operator for another always type-checks at compile time, and dropping a unary
   minus leaves a sub-expression that already type-checked.
 
+  ## `div`/`rem` are calls, not operators (arity-gated, pipe-aware)
+
+  Unlike `+`/`-`/`*`/`/` — genuine operators, always written infix at arity 2 — `div`
+  and `rem` are bare `Kernel` *function calls*, so a same-named user `div/3` would
+  otherwise be matched and swapped to a `rem/3` that may not exist, poisoning the
+  single build. The swap is therefore handled in `mutate/2` and offered only at
+  **effective arity 2** (the same bare-`Kernel` safeguard as `Mutare.Mutators.Numeric`).
+  Because the swap keeps the argument list, it is also valid as a pipe stage
+  (`x |> div(y)` → `x |> rem(y)`); the pipe flag recovers the effective arity, since a
+  stage carries one fewer argument than the source reads. Guard-legal, so a `div`/`rem`
+  in a `when` is delivered by lifting.
+
   ## Unary-minus removal (`-x` → `x`)
 
   The classic "invert negatives" mutation: a sign flip the suite should notice.
@@ -38,13 +50,20 @@ defmodule Mutare.Mutators.Arithmetic do
   """
   @behaviour Mutare.Mutator
 
+  # Genuine binary *operators* — always written infix (arity 2, never piped), so an
+  # arity-blind `mutate/1` is safe. (`div`/`rem` are *calls*, handled in `mutate/2`.)
   @swaps %{
     :+ => [:-],
     :- => [:+],
     :* => [:/],
-    :/ => [:*],
-    :div => [:rem],
-    :rem => [:div]
+    :/ => [:*]
+  }
+
+  # Bare `Kernel` call-form swaps, offered only at effective arity 2 — the same
+  # bare-`Kernel` safeguard `Mutare.Mutators.Numeric` uses (see `mutate/2`).
+  @call_swaps %{
+    div: [:rem],
+    rem: [:div]
   }
 
   # operator => right-operand value that makes the swap an equivalent no-op
@@ -74,6 +93,23 @@ defmodule Mutare.Mutators.Arithmetic do
   end
 
   def mutate(_node), do: :skip
+
+  # `div`/`rem` are bare `Kernel` calls, not operators. Swapping `div`↔`rem` keeps the
+  # argument list, so it is a valid rename at any position (a pipe stage included). The
+  # swap is gated on **effective arity 2** (pipe-aware, like the bare-`Kernel` rule in
+  # `Mutare.Mutators.Numeric`): a same-named user `div/3` is never rewritten to a `rem/3`
+  # that may not exist — which would poison the single build. A pipe stage carries one
+  # fewer arg than the source reads (`x |> div(y)` is `div/2`), so the flag recovers it.
+  @impl Mutare.Mutator
+  def mutate({fun, meta, args}, %{piped: piped?}) when fun in [:div, :rem] and is_list(args) do
+    if Mutare.Mutator.effective_arity(args, piped?) == 2 do
+      Enum.map(Map.fetch!(@call_swaps, fun), &{&1, meta, args})
+    else
+      :skip
+    end
+  end
+
+  def mutate(_node, _context), do: :skip
 
   defp identity_swap?(op, right) do
     case Map.fetch(@identity, op) do

@@ -1498,6 +1498,16 @@ On by default; a plain node→node in-place mutation, so it needs no new `Site`
 constructor and no `Transform` change — `mutate/1` returns the transposed node and
 the existing in-place/lift routing delivers it.
 
+The infix operators (`-`/`/`/`**`/`<>`/`++`/`--`) are always arity 2, never piped, so
+`mutate/1` handles them arity-blind. `div`/`rem` are bare `Kernel` *calls*, so they go
+through the pipe-aware `mutate/2` gated on **effective arity 2** — the same bare-`Kernel`
+safeguard `Numeric` uses (confirms the builtin over a same-named user `div/3`), which
+also guarantees the node holds *both* operands. A piped `x |> div(b)` draws its first
+operand from the pipe, so there's nothing local to transpose — skipped (it has only one
+visible arg, failing the `[left, right]` match). This differs from `Arithmetic`'s
+`div`↔`rem`, a *rename* that keeps the arg list and so works piped too; both share the
+arity gate, but only Arithmetic's variant is pipe-valid.
+
 **Compile-safe by construction** — the mutant reuses both original operand subtrees,
 just transposed, so whatever type-checked still does. Guard-safety is free the usual
 way: `-`/`/`/`div`/`rem` are guard-legal and reach `when` guards via lifting like

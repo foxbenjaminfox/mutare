@@ -135,8 +135,21 @@ defmodule Mutare.MutatorsTest do
       assert Arithmetic.mutate({:-, [], [1, 2]}) == [{:+, [], [1, 2]}]
       assert Arithmetic.mutate({:*, [], [1, 2]}) == [{:/, [], [1, 2]}]
       assert Arithmetic.mutate({:/, [], [1, 2]}) == [{:*, [], [1, 2]}]
-      assert Arithmetic.mutate({:div, [], [1, 2]}) == [{:rem, [], [1, 2]}]
-      assert Arithmetic.mutate({:rem, [], [1, 2]}) == [{:div, [], [1, 2]}]
+    end
+
+    test "swaps div/rem (call form) only at effective arity 2, pipe-aware" do
+      # div/rem are bare Kernel calls handled in mutate/2 (mutate/1 skips them).
+      assert Arithmetic.mutate({:div, [], [1, 2]}) == :skip
+      assert Arithmetic.mutate({:div, [], [1, 2]}, %{piped: false}) == [{:rem, [], [1, 2]}]
+      assert Arithmetic.mutate({:rem, [], [1, 2]}, %{piped: false}) == [{:div, [], [1, 2]}]
+
+      # Piped: the stage carries one fewer arg (`x |> div(2)` is div/2), so a 1-arg
+      # node at piped effective-arity 2 still swaps (the rename keeps the arg list).
+      assert Arithmetic.mutate({:div, [], [2]}, %{piped: true}) == [{:rem, [], [2]}]
+
+      # A same-named user call at another arity is left alone (not Kernel's div/2).
+      assert Arithmetic.mutate({:div, [], [1, 2, 3]}, %{piped: false}) == :skip
+      assert Arithmetic.mutate({:div, [], [2]}, %{piped: false}) == :skip
     end
 
     test "preserves operand AST and operator metadata" do
@@ -196,8 +209,8 @@ defmodule Mutare.MutatorsTest do
 
     test "div/rem are never treated as identity (rem(a, 1) is 0, not a)" do
       a = {:a, [], nil}
-      assert Arithmetic.mutate({:div, [], [a, 1]}) == [{:rem, [], [a, 1]}]
-      assert Arithmetic.mutate({:rem, [], [a, 1]}) == [{:div, [], [a, 1]}]
+      assert Arithmetic.mutate({:div, [], [a, 1]}, %{piped: false}) == [{:rem, [], [a, 1]}]
+      assert Arithmetic.mutate({:rem, [], [a, 1]}, %{piped: false}) == [{:div, [], [a, 1]}]
     end
 
     test "a non-identity literal (e.g. * 2) still mutates" do

@@ -397,8 +397,10 @@ contract between them is the whole game.
   `name/0`; optional `mutate/2`, `owned_args/2`, `pattern_mutations/2`) and the built-in families,
   **all on by default**. A user-supplied mutator may be *configured* via a `{module, opts}` entry
   in `:mutators` (the `opts` reach `mutate/2`/`owned_args/2` as `context.opts` — see
-  `Mutare.Mutator.Spec`): Arithmetic (binary swaps +
-  unary-minus removal), OperandSwap (the *operand-order* sibling of Arithmetic/List — it keeps the
+  `Mutare.Mutator.Spec`): Arithmetic (binary operator swaps `+`↔`-`/`*`↔`/` +
+  unary-minus removal; `div`↔`rem` are bare-`Kernel` *calls*, so — like Numeric — they're
+  gated on **effective arity 2** and pipe-aware via `mutate/2`, never swapping a same-named
+  user `div/3`), OperandSwap (the *operand-order* sibling of Arithmetic/List — it keeps the
   operator and transposes the operands of the **non-commutative** binary operators `a - b`→`b - a`,
   `/`, `**`, `<>`, `++`, `--`, and the `div`/`rem` call forms; compile-safe by construction (reuses
   both operand subtrees). Commutative operators (`+`/`*`/`==`/…) are excluded as guaranteed
