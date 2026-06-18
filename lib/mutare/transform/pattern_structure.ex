@@ -41,6 +41,31 @@ defmodule Mutare.Transform.PatternStructure do
   end
 
   @doc """
+  How many times each variable-shaped name *occurs* in `pattern` — every position, not
+  just bindings: a repeated binding (`{a, a}`), a bitstring size read (`<<n, r::size(n)>>`),
+  a pin (`{a, ^a}`). The `used_names/1` counterpart that keeps *counts*, not a set.
+
+  The `=`-match rewrite repeats each bound variable this many times in its export tuple, so
+  a variable the source self-used (repetition / a size read suppresses Elixir's "unused
+  variable" warning) keeps that self-use in the rebind — `{a, a} = …`, not `{a} = …` — and
+  doesn't gain a spurious warning the original never had. Over-counts harmlessly: a type
+  atom (`binary`) or any non-bound name is counted but never exported.
+  """
+  @spec occurrence_counts(Macro.t()) :: %{atom() => pos_integer()}
+  def occurrence_counts(pattern) do
+    {_ast, counts} =
+      Macro.prewalk(pattern, %{}, fn
+        {name, _meta, ctx} = node, acc when is_atom(name) and is_atom(ctx) ->
+          {node, Map.update(acc, name, 1, &(&1 + 1))}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    counts
+  end
+
+  @doc """
   Structural mutations of a *single* pattern node, as `{mutator, mutated_pattern}` pairs.
 
   The `pattern_mutations/2` contract takes the argument *list* of a head and never changes

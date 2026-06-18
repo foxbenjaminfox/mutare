@@ -772,6 +772,16 @@ Three deliberate constraints keep it sound:
   the *export* — `_x` is a genuine binding the rest of the scope can read (`{_x, y, z} = t;
   _x + y - z`), so omitting it leaves `_x` undefined after the rewrite, a hard **compile
   error**. Only bare `_` (which binds nothing usable) is dropped.
+* **The export repeats each variable by its pattern *occurrence count*** (`occurrence_counts/1`),
+  not once. A variable used only to *constrain* the pattern — a repeated binding (`{a, a} = t`)
+  or a bitstring size var (`<<n, r::size(n)>> = t`) — has its "unused variable" warning
+  suppressed in the original by that self-use (the 2nd+ occurrence is a read). A flat
+  single-occurrence export (`{a} = …`) would lose it and warn whenever the rest of the scope
+  never reads the var; repeating it to match the source (`{a, a} = …`) keeps the self-use, so
+  the metamutant's warning profile matches the original's. Sound because every repeated
+  position comes from the *same* binding, so the rebind's `{a, a} = {v, v}` constraint is
+  trivially satisfied and never re-imposes the original `t[0] == t[1]` one the mutant drops
+  (and forced-thin keeps the var bound in every branch, so the repeats always resolve).
 
 Non-match semantics are preserved exactly: each inner case carries a trailing `u ->
 Kernel.raise(Elixir.MatchError, term: u)` clause, so a value that doesn't match raises the
@@ -787,18 +797,17 @@ is the *absolute* alias (`__aliases__` led by `:Elixir`, which alias resolution 
 rewrites — an unqualified `MatchError` under `alias Foo, as: MatchError` or a nested
 `MatchError` module would raise the wrong exception).
 
-Known edges, both **only** warnings (harmless under the default warnings-tolerant metamutant
+Known edge, **only** a warning (harmless under the default warnings-tolerant metamutant
 compile; poison-recoverable under `--warnings-as-errors`, where the whole-`case` fallback range
-in `Manifest` maps them to the rewrite's ids — as for `PatternWildcard`'s "cannot match"):
-
-  * a `{x, x} = e` whose `x` is *unused afterward* gains an "unused variable" warning the
-    original (where the repetition counts as a use) didn't; and
-  * when the LHS has an `_`-prefixed binding alongside a real swap/wildcard target
-    (`{_keep, y, z} = t`), the inner case's return tuple **reads** `_keep` — an "underscored
-    variable used after being set" warning the original may not have had. Suppressing it would
-    mean aliasing every `_`-binding to a non-underscore temp in the inner patterns/returns
-    (fiddly around pins), not worth it for a build-artifact warning; the `_keep` binding itself
-    must still be re-exported (omitting it is the compile error above).
+in `Manifest` maps it to the rewrite's ids — as for `PatternWildcard`'s "cannot match"): when
+the LHS has an `_`-prefixed binding alongside a real swap/wildcard target (`{_keep, y, z} = t`),
+the inner case's return tuple **reads** `_keep` — an "underscored variable used after being set"
+warning the original may not have had. Suppressing it would mean aliasing every `_`-binding to a
+non-underscore temp in the inner patterns/returns (fiddly around pins), not worth it for a
+build-artifact warning; the `_keep` binding itself must still be re-exported (omitting it is the
+compile error above). (The *other* former edge — a `{x, x} = e` whose `x` is unused gaining a
+spurious "unused variable" warning — is gone: the occurrence-count export above repeats `x`, so
+its self-use carries over.)
 
 Several design choices worth remembering:
 

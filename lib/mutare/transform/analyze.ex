@@ -854,10 +854,20 @@ defmodule Mutare.Transform.Analyze do
 
     with %{} = range <- NodeRange.get(lhs),
          [_ | _] = names <- PatternStructure.bound_var_names(lhs) do
-      export = export_tuple(Enum.map(names, &{&1, [], nil}))
+      # Repeat each bound variable in the export tuple as many times as it *occurs* in the
+      # pattern, so a variable the source self-used (a repeated binding `{a, a}`, a size var
+      # `<<n, r::size(n)>>`) keeps that self-use in the outer rebind `{a, a} = …` instead of
+      # collapsing to `{a} = …` — which would warn "unused variable" whenever the rest of
+      # the scope never reads it, a warning the original didn't have. The repeated positions
+      # all come from the *same* binding, so the rebind's `{a, a} = {v, v}` constraint is
+      # always trivially satisfied and never re-imposes the original `t[0] == t[1]` one.
+      counts = PatternStructure.occurrence_counts(lhs)
+      export = export_tuple(Enum.flat_map(names, &List.duplicate({&1, [], nil}, counts[&1])))
       # Pass the full bound set as `used_outside` so the wildcard family stays in *thin*
       # mode (replace one occurrence, keep the variable bound). Every admitted mutation
-      # then preserves the bound set, so the export stays consistent across all branches.
+      # then preserves the bound set, so the export stays consistent across all branches —
+      # and every variable the export references stays bound in every branch (forced thin
+      # is what lets the export repeat a variable safely; orphan-fix would strand it).
       used = MapSet.new(names)
 
       lhs
@@ -891,9 +901,10 @@ defmodule Mutare.Transform.Analyze do
     end)
   end
 
-  # The tuple of bound variables shared by the outer match and every inner-case return.
-  # A 2-tuple is the unwrapped `{a, b}` Sourceror produces; one or 3+ vars use the
-  # explicit `{:{}, …}` n-tuple form (so a single binding exports as `{v}`).
+  # The tuple of bound-variable nodes (with per-variable multiplicity, see above) shared by
+  # the outer match and every inner-case return. A 2-element list is the unwrapped `{a, b}`
+  # Sourceror produces (also the `{a, a}` a single repeated binding yields); 1 or 3+ use the
+  # explicit `{:{}, …}` n-tuple form.
   defp export_tuple([a, b]), do: {a, b}
   defp export_tuple(vars), do: {:{}, [], vars}
 

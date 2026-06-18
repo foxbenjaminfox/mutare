@@ -242,6 +242,39 @@ defmodule Mutare.MatchPatternTest do
     end
   end
 
+  describe "self-constraint variables don't gain a spurious unused warning" do
+    # A variable used only to *constrain* the pattern — a repeated binding `{a, a}`, or a
+    # bitstring size var `<<n, r::size(n)>>` — has its "unused" warning suppressed in the
+    # original by that self-use. The export tuple repeats each bound var by its occurrence
+    # count, so the rebind keeps the self-use (`{a, a} = …`, not `{a} = …`) and the
+    # metamutant doesn't gain a warning the original never had.
+    test "a repeated binding constrains without a warning when the var is unused later" do
+      {meta, sites, _next} =
+        Mutare.transform_string(
+          "defmodule R do\n  def f(t) do\n    {a, a} = t\n    :ok\n  end\nend\n"
+        )
+
+      # the rewrite must actually fire, else the assertion below is vacuous
+      assert Enum.any?(sites, &(&1.mutator == :pattern_wildcard))
+      assert meta =~ "{a, a} ="
+
+      {_compiled, io} = ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+      refute io =~ "is unused"
+    end
+
+    test "a bitstring size variable does not warn when unused later" do
+      {meta, sites, _next} =
+        Mutare.transform_string(
+          "defmodule S do\n  def f(t) do\n    <<a, b, rest::binary-size(a)>> = t\n    {b, rest}\n  end\nend\n"
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :pattern_swap))
+
+      {_compiled, io} = ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+      refute io =~ ~s(variable "a" is unused)
+    end
+  end
+
   describe "duplicate → wildcard" do
     test "thinning one occurrence drops the equality match (two mutants)", %{sites: sites} do
       first = id(sites, :pattern_wildcard, "{_, a}", 8)
