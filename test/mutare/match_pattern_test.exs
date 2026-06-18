@@ -339,4 +339,41 @@ defmodule Mutare.MatchPatternTest do
     assert Report.diff(site, @source) ==
              "-    {x, y} = point\n+    {y, x} = point"
   end
+
+  describe "a bare `=` node is never offered to mutators (invariant)" do
+    # The dedicated `analyze({:=, …})` clause rebuilds the match WITHOUT `offer` (LHS → :pattern,
+    # RHS → context), so no mutator — built-in or custom — can produce a *whole-`=`* mutation.
+    # This is *why* the `MatchPattern` path is safe from the shadowing / binding-trap hazards the
+    # *macro* path has (there the node IS offered, so whole-call mutants must be re-homed into the
+    # tuple-export selector — see `Transform.Analyze.rehome_call_mutations/2` and NOTES "Whole-call
+    # mutants on a binding macro"). If this test fails, a `=` node has become offerable and a
+    # whole-`=` mutation of a value-discarded binding match now needs that same re-home.
+    @probe_source """
+    defmodule Mutare.AssignProbeFixture do
+      def go(pair) do
+        [x, y] = pair
+        probe()
+        x - y
+      end
+    end
+    """
+
+    test "a probe mutator matching `=` earns a site on an offered node but none on the `=`" do
+      # Sanity: the probe *does* target a `=` node — so an absent `=` site means the node was
+      # never offered, not that the mutator simply failed to match.
+      assert Mutare.Test.AssignMutator.mutate({:=, [], [{:x, [], nil}, {:y, [], nil}]}) != :skip
+
+      {_meta, sites, _next} =
+        Mutare.transform_string(@probe_source,
+          file: "probe.ex",
+          mutators: [Mutare.Test.AssignMutator]
+        )
+
+      # Liveness: the probe IS running in the pipeline — it mutated the offered `probe()` call.
+      assert Enum.find(sites, &(&1.mutator == :assign_probe and &1.line == 4))
+
+      # Invariant: the `=` on line 3 earned no mutant — the node was never offered.
+      refute Enum.any?(sites, &(&1.mutator == :assign_probe and &1.line == 3))
+    end
+  end
 end

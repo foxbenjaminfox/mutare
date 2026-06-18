@@ -249,7 +249,16 @@ defmodule Mutare.Transform.Analyze do
     {:__block__, meta, init ++ [analyze(last, :runtime, mutators)]}
   end
 
-  # match `=`: the left side is a pattern, the right keeps the context.
+  # match `=`: the left side is a pattern, the right keeps the context. The `=` node itself is
+  # deliberately **not** offered to mutators (no `offer/3` here) — there is no "mutate `=`" entry
+  # point, unlike the *macro* node (`analyze_known_macro` offers it so a `macros/0` mutator can
+  # fire). This is load-bearing: it is *why* the value-discarded-`=` path
+  # (`attach_match_pattern_candidates/4`) can prepend its `MatchPattern` candidates with
+  # `put_candidates` without shadowing anything, and why no whole-`=` mutation can trap the
+  # escaping bindings. If you ever start offering this node, mirror the macro path's
+  # `rehome_call_mutations/2`: re-home the whole-`=` mutation into the tuple-export selector
+  # (give `Candidate.MatchPattern` a `mutant_expr`-style field, as `MacroPattern` has). The
+  # invariant is guarded by `match_pattern_test.exs` ("a bare `=` node is never offered…").
   defp analyze({:=, meta, [lhs, rhs]}, context, mutators) do
     {:=, meta, [analyze(lhs, :pattern, mutators), analyze(rhs, context, mutators)]}
   end
@@ -1377,6 +1386,11 @@ defmodule Mutare.Transform.Analyze do
   # `Candidate.MatchPattern` per mutation to the analyzed match node — emission rewrites
   # it to the tuple-export selector (`Mutare.Transform.emit_match_site/3`). Each candidate
   # carries the LHS before/after (the diff), the shared export tuple, and the *raw* rhs.
+  #
+  # `put_candidates` (a plain prepend) is safe here — unlike the *macro* path, which had to
+  # re-home a shadowed whole-call mutation — because the `=` node is **never offered** to
+  # mutators (see the `analyze({:=, …})` clause), so the analyzed node carries no prior
+  # `:mutare` to shadow. If that ever changes, this needs the macro path's re-home.
   defp attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, mutators) do
     case match_pattern_candidates(raw_lhs, raw_rhs, PatternStructure.mutators(mutators)) do
       [] -> analyzed

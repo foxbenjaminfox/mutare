@@ -746,6 +746,44 @@ delivery, wildcard-of-repeat only). It is a *distinct* treatment from `:binding_
 binding scope, different delivery, only the wildcard is observable) and is left unbuilt — `match?`'s
 arg 0 stays plain `:pattern`.
 
+#### Whole-call mutants on a binding macro, and why `=` needs no mirror `[done]`
+
+The macro node is **offered to mutators** (`analyze_known_macro` → `offer`) so a *registering*
+custom mutator (`macros/0`) can mutate the whole call — the Ecto-style use, where the library
+ships both the macro registration and a DSL-aware rewrite. For a `:binding_pattern` macro that
+whole-call mutation is a hazard, in two ways the original `MacroPattern` commit got wrong:
+
+  - **It can't ride an ordinary in-place selector.** The macro's bindings *escape*, so a selector
+    wrapping the call traps them inside the branch (`x - y` after → unbound → poison) — exactly the
+    reason the pattern mutants use the tuple re-export.
+  - **It was silently shadowed.** `attach_macro_pattern_candidates` prepended the pattern candidates
+    with `put_candidates`, leaving the whole-call `InPlace` in a *second* `:mutare` entry — and
+    `Transform.candidates_of/1` reads only the first, so the whole-call mutant vanished whenever the
+    pattern also had a swap/wildcard.
+
+Both are fixed by **re-homing** each whole-call `InPlace` into a `MacroPattern` branch of the *one*
+tuple-export selector (`Analyze.rehome_call_mutations/2`): the branch runs the mutated call then the
+export tuple (like a pattern mutant), and the candidate is stripped off the node so emission doesn't
+*also* wrap it in a standalone selector. The **piped** form is the sharp case — the whole-call
+mutation lands on the `|>` RHS *child*, which the child postwalk would otherwise emit as a selector,
+making this site's baseline the illegal `pattern |> case … end` (a pipe into a `case`, which also
+traps the bindings). The pipe clause of `rehome_call_mutations/2` pulls it off the child (the baseline
+is then the bare `lhs |> stage`) and re-pipes the LHS into the mutated stage (`lhs |> <mutated>`).
+
+The **`=`-match (`MatchPattern`) path looks like it needs the same mirror but does not**, and the
+reason is worth recording because it's non-obvious and a later refactor could easily break it. A `=`
+node is **never offered to mutators**: the dedicated `analyze({:=, …})` clause rebuilds it (LHS →
+`:pattern`, RHS → context) *without* `offer`, and it precedes the generic runtime clause — so no
+mutator, built-in or custom, can ever produce a whole-`=` `InPlace`. So `attach_match_pattern_candidates`'s
+`put_candidates` has nothing to shadow, and there is no standalone-selector-traps-bindings case to
+avoid. The asymmetry is deliberate: the macro node is offered *on purpose* (the `macros/0` feature),
+the `=` operator has no "mutate the whole node" entry point. The invariant is guarded by a test
+(`match_pattern_test.exs`, "a bare `=` node is never offered…"): a probe mutator that *does* match `=`
+earns a site on an offered control node but **none** on the `=`. **If that test ever fails** — someone
+makes `=` offerable (e.g. an assignment-mutator family) — a whole-`=` mutation of a value-discarded
+binding match will then need the same re-home; the `mutant_expr`-carrying `MatchPattern` shape
+(prototyped and reverted in this work) is the fix, mirroring `rehome_call_mutations/2` exactly.
+
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
 (`apply(Foo, …)`, `is_struct(x, Foo)`, `[A, B]`, a behaviour/strategy arg) to the
