@@ -955,6 +955,87 @@ defmodule Mutare.TransformTest do
       assert_compiles(meta)
     end
 
+    test "a hidden except-plus-replacement import poisons instead of silently mis-resolving" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule HiddenImportReplacement do
+            def filter(xs, fun), do: Enum.map(xs, fun)
+
+            defmacro __using__(_) do
+              quote do
+                import Enum, except: [filter: 2]
+                import HiddenImportReplacement, only: [filter: 2]
+              end
+            end
+          end
+
+          defmodule ImpHiddenReplacement do
+            import Enum
+            use HiddenImportReplacement
+
+            def f(xs, fun), do: filter(xs, fun)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      assert [%{mutator: :collection, original_code: "filter(xs, fun)"} = site] = sites
+      assert meta =~ "import Elixir.Enum, only: [filter: 2]"
+
+      stderr =
+        assert_compile_error(
+          meta,
+          "imported from both Enum and HiddenImportReplacement",
+          "lib/hidden_import_replacement.ex"
+        )
+
+      assert Mutare.Poison.ids(stderr, %{"lib/hidden_import_replacement.ex" => meta}) ==
+               MapSet.new([site.id])
+    end
+
+    test "the import witness also protects lifted guard mutants" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule HiddenIntegerReplacement do
+            defmacro is_even(n), do: quote(do: is_integer(unquote(n)))
+
+            defmacro __using__(_) do
+              quote do
+                import Integer, except: [is_even: 1]
+                import HiddenIntegerReplacement, only: [is_even: 1]
+              end
+            end
+          end
+
+          defmodule ImpHiddenGuardReplacement do
+            import Integer
+            use HiddenIntegerReplacement
+
+            def f(n) when is_even(n), do: true
+            def f(_), do: false
+          end
+          """,
+          mutators: [Mutare.Mutators.Integer]
+        )
+
+      assert [%{kind: :lifted, mutator: :integer, original_code: "is_even(n)"} = site] =
+               Enum.filter(sites, &(&1.mutator == :integer))
+
+      assert meta =~ "import Elixir.Integer, only: [is_even: 1]"
+
+      stderr =
+        assert_compile_error(
+          meta,
+          "imported from both Integer and HiddenIntegerReplacement",
+          "lib/hidden_integer_replacement.ex"
+        )
+
+      assert Mutare.Poison.ids(stderr, %{"lib/hidden_integer_replacement.ex" => meta}) ==
+               MapSet.new([site.id])
+    end
+
     test "a same-named local function with no import is not mutated" do
       {_meta, sites, _} =
         Mutare.transform_string(
@@ -2206,5 +2287,15 @@ defmodule Mutare.TransformTest do
     ExUnit.CaptureIO.capture_io(:stderr, fn ->
       assert [_ | _] = Code.compile_string(meta)
     end)
+  end
+
+  defp assert_compile_error(meta, message, file) do
+    stderr =
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert_raise CompileError, fn -> Code.compile_string(meta, file) end
+      end)
+
+    assert stderr =~ message
+    stderr
   end
 end

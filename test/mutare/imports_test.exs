@@ -38,6 +38,14 @@ defmodule Mutare.ImportsTest do
       assert Imports.resolved_import(nil) == nil
     end
 
+    test "import_witness/1 returns the compile-time witness or nil" do
+      assert Imports.import_witness(mutare_import_witness: {[:Enum], :reject, 2}) ==
+               {[:Enum], :reject, 2}
+
+      assert Imports.import_witness(line: 1) == nil
+      assert Imports.import_witness(nil) == nil
+    end
+
     test "kernel_displaced?/1 reads the flag, defaulting false" do
       assert Imports.kernel_displaced?(mutare_kernel_displaced: true) == true
       assert Imports.kernel_displaced?(line: 1) == false

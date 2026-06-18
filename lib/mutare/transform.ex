@@ -115,6 +115,7 @@ defmodule Mutare.Transform do
   split cleanly (`claim_id/4` is the single owner of that dance).
   """
 
+  alias Mutare.AST
   alias Mutare.Site
   alias Mutare.Coverage.Recorder
   alias Mutare.Mutator.Spec
@@ -124,6 +125,7 @@ defmodule Mutare.Transform do
     Candidate,
     Ctx,
     FunctionPlan,
+    Imports,
     ModulePlan,
     Names,
     Render,
@@ -398,14 +400,14 @@ defmodule Mutare.Transform do
       Enum.flat_map_reduce(FunctionPlan.candidates(plan), ctx, fn candidate, ctx ->
         claim_id(ctx, candidate, &lifted_site/3, fn id, candidate ->
           {index, clause} = FunctionPlan.mutated_clause(plan, candidate)
-          {id, index, clause}
+          {id, index, clause, candidate_import_witness(candidate)}
         end)
       end)
 
-    mut_ids = Enum.map(claimed, fn {id, _i, _c} -> id end)
+    mut_ids = Enum.map(claimed, fn {id, _i, _c, _w} -> id end)
     # Every claimed candidate overrides (guard/literal/structure) or drops its
     # clause, so its id excludes that clause's *original* version.
-    excluded = Enum.group_by(claimed, fn {_id, i, _c} -> i end, fn {id, _i, _c} -> id end)
+    excluded = Enum.group_by(claimed, fn {_id, i, _c, _w} -> i end, fn {id, _i, _c, _w} -> id end)
 
     # Default arguments (`def f(a, b \\ 1)`) expand to multiple arities. They stay
     # on the public dispatcher — which keeps the original arity contract — while the
@@ -419,9 +421,9 @@ defmodule Mutare.Transform do
       |> Enum.with_index()
       |> Enum.flat_map(fn {orig, index} ->
         mutant_clauses =
-          for {id, ^index, clause} <- claimed,
+          for {id, ^index, clause, witness} <- claimed,
               clause != :drop,
-              do: lifted_mutant(base, id, clause, var, super_var)
+              do: lifted_mutant(base, id, clause, var, super_var, witness)
 
         # A bodiless header (`def f(a, b \\ 1)` with no `do`) declares defaults
         # only — it has no body to lift and no candidates target it. Its defaults
@@ -506,10 +508,11 @@ defmodule Mutare.Transform do
   # renamed to `<base>`, given the `mutare_active` extra arg, and gated `when
   # mutare_active === <id> [and <its own guard>]`. Raw body (no in-place selectors):
   # only one mutant is ever active, so a body selector here could never fire.
-  defp lifted_mutant(base, id, clause, var, super_var) do
+  defp lifted_mutant(base, id, clause, var, super_var, witness) do
     {clause_meta, call_meta, args, guards, body} = clause_parts(clause)
     gate = {:===, [], [Recorder.catch_all_pattern(var), id_literal(id)]}
     guard = and_into_guard(gate, combine_guards(guards))
+    body = prepend_import_witness(body, witness)
     lifted_clause(base, clause_meta, call_meta, args, guard, body, var, super_var)
   end
 
@@ -666,6 +669,67 @@ defmodule Mutare.Transform do
 
   defp dispatcher_args(0), do: []
   defp dispatcher_args(arity), do: Enum.map(1..arity, &{:"mutare_arg#{&1}", [], nil})
+
+  # A stamped bare imported call can be silently wrong when a macro hidden from our
+  # lexical pre-pass re-imports the same module with `except:` and replaces the function from
+  # another module. The generated witness re-imports the provider we believe the original call
+  # used, then references the same bare name/arity inside an unreachable expression. If a hidden
+  # replacement is also in scope, Elixir raises "imported from both ... ambiguous" during the
+  # single metamutant compile, and poison recovery drops the generated mutant instead of letting
+  # it run against the wrong provider.
+  defp candidate_import_witness(%{original: original}), do: node_import_witness(original)
+  defp candidate_import_witness(_candidate), do: nil
+
+  defp node_import_witness({_form, meta, _args}) when is_list(meta),
+    do: Imports.import_witness(meta)
+
+  defp node_import_witness(_node), do: nil
+
+  defp wrap_import_witness(node, nil), do: node
+
+  defp wrap_import_witness(node, witness),
+    do: {:__block__, [], [import_witness_ast(witness), node]}
+
+  defp prepend_import_witness(body, nil), do: body
+
+  defp prepend_import_witness([kw], witness) when is_list(kw) do
+    [
+      Enum.map(kw, fn
+        {key, expr} = entry ->
+          if AST.key_atom(key) == :do, do: {key, wrap_import_witness(expr, witness)}, else: entry
+
+        entry ->
+          entry
+      end)
+    ]
+  end
+
+  defp prepend_import_witness(body, _witness), do: body
+
+  defp import_witness_ast({module, fun, arity}) do
+    args = witness_args(arity)
+    call = {fun, [], args}
+    closure = {:fn, [], [{:->, [], [args, call]}]}
+    import_directive = {:import, [], [witness_module(module), [only: [{fun, arity}]]]}
+    true_body = {:__block__, [], [import_directive, closure]}
+
+    {:case, [],
+     [
+       {:__block__, [], [false]},
+       [
+         do: [
+           {:->, [], [[{:__block__, [], [true]}], true_body]},
+           {:->, [], [[{:_, [], nil}], {:__block__, [], [nil]}]}
+         ]
+       ]
+     ]}
+  end
+
+  defp witness_args(0), do: []
+  defp witness_args(arity), do: Enum.map(1..arity, &{:"mutare_import_arg#{&1}", [], nil})
+
+  defp witness_module(module) when is_list(module), do: {:__aliases__, [], [:"Elixir" | module]}
+  defp witness_module(module) when is_atom(module), do: {:__block__, [], [module]}
 
   # Private base name for a lifted group. `prefix` is the file's collision-free
   # generated-name prefix (`Ctx.prefix`, normally `"__mutare_"`); the trailing
@@ -828,7 +892,13 @@ defmodule Mutare.Transform do
     {clauses, ctx} =
       Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
         claim_id(ctx, candidate, &in_place_site/3, fn id, candidate ->
-          {:->, [], [[id], branch_node(candidate)]}
+          {:->, [],
+           [
+             [id],
+             candidate
+             |> branch_node()
+             |> wrap_import_witness(candidate_import_witness(candidate))
+           ]}
         end)
       end)
 

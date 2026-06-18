@@ -60,13 +60,17 @@ defmodule Mutare.Transform.Imports do
   #     visible cases this can be *wrong*, not just missed: a `use` that re-imports a module we
   #     target with `except:` (removing a function) and supplies it from elsewhere makes us
   #     mis-resolve the bare call to the wrong module (see NOTES "Correctness boundary").
-  #     Fundamental to not expanding macros; rare in practice.
+  #     Each stamped imported call therefore also carries a resolution witness: generated
+  #     mutant branches can re-import the believed provider in an unreachable expression,
+  #     turning that hidden replacement into an ambiguity compile error instead of a wrong
+  #     surviving mutant.
 
   alias Mutare.AST
   alias Mutare.Mutator
   alias Mutare.Transform.Aliases
 
   @import_key :mutare_import
+  @import_witness_key :mutare_import_witness
   @kernel_displaced_key :mutare_kernel_displaced
 
   @typedoc """
@@ -111,7 +115,11 @@ defmodule Mutare.Transform.Imports do
 
     case resolve_import(imports, fun, arity) do
       {module_key, selector} ->
-        [{@import_key, {module_key, rebuild_kind(selector, imports, kernel)}} | meta]
+        [
+          {@import_key, {module_key, rebuild_kind(selector, imports, kernel)}},
+          {@import_witness_key, {module_key, fun, arity}}
+          | meta
+        ]
 
       nil ->
         if displaced_from_kernel?(kernel, fun, arity),
@@ -144,6 +152,18 @@ defmodule Mutare.Transform.Imports do
   @spec resolved_import(keyword() | term()) :: {[atom()] | atom(), :bare | :qualify} | nil
   def resolved_import(meta) when is_list(meta), do: Keyword.get(meta, @import_key)
   def resolved_import(_meta), do: nil
+
+  @doc """
+  A compile-time witness for a stamped bare import: `{module, fun, effective_arity}`.
+
+  Emission can splice this into a generated mutant branch as an unreachable import/call check.
+  If macro expansion has secretly removed `fun/arity` from `module` and supplied it from another
+  import, the witness makes the conflict ambiguous at compile time instead of letting the mutant
+  silently call the wrong provider.
+  """
+  @spec import_witness(keyword() | term()) :: {[atom()] | atom(), atom(), non_neg_integer()} | nil
+  def import_witness(meta) when is_list(meta), do: Keyword.get(meta, @import_witness_key)
+  def import_witness(_meta), do: nil
 
   @doc """
   Whether a bare `Kernel`-named call has been displaced out of `Kernel` here (by

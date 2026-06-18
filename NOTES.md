@@ -568,7 +568,7 @@ moved there.
 - **Out of scope (documented limitations).** Operator displacement (`import Kernel,
   except: [+: 2]` + a custom `+`) — Arithmetic/Relational/Logical don't read the stamp. Like
   `alias`, `use`/macro-injected imports are invisible.
-- **Correctness boundary: sound for what we can *see*; the macro hole can be genuinely wrong.**
+- **Correctness boundary: sound for what we can *see*; the macro replacement hole is fail-loud.**
   For *visible* code the scheme is correct-or-poison-or-missed, resting on one Elixir fact
   (re-verified): calling a name provided by more than one visible source — two imports, an
   import + a same-arity local, or an import + Kernel — is a **compile error**, never a silent
@@ -580,20 +580,32 @@ moved there.
     - **Bare** rebuild (sole whole import + default Kernel): `M` always provides `sibling`, so a
       bare call resolves to `M` (correct) or hits a second provider and won't compile (poison) —
       never silently a *different* module.
-- **The `use`/macro hole is unsound, not merely lossy — it can produce a wrong-but-compiling
-  mutant.** (Corrects an earlier overclaim.) We don't expand macros, so a `use` injecting
+- **The `use`/macro hole is fail-loud now.** We don't expand macros, so a `use` injecting
   `import Enum, except: [filter: 2]; import Hidden, only: [filter: 2]` defeats us: it
   *re-imports Enum to remove filter* and supplies filter from `Hidden`. We still see only
   `import Enum`, and reflection says Enum *exports* filter — but Enum no longer *provides* it
   (the hidden `except` subtracted it), so the bare `filter` is really `Hidden.filter`. We
-  mis-resolve it to Enum, fire Collection (though Hidden isn't a target), and the mutant
-  compiles — calling `Hidden.reject` (bare) or `Elixir.Enum.reject` (qualified). Either way it's
-  wrong, not poison. Qualifying does **not** save it: the error is mis-resolving the *original*,
-  upstream of the rebuild. This needs a macro that shadows a stdlib function we target by
-  re-importing-with-`except` + a replacement (rare; verified reachable). Fundamental limit of
-  not expanding macros — documented, not fixed. (`use` that merely *adds* its own imports, the
-  common case, can't mis-resolve: to fool us a hidden import must make a visible-module call
-  ambiguous → poison, or remove a function via `except` → the wrong case above.)
+  mis-resolve it to Enum, and qualifying the mutant does **not** save it: the error is
+  mis-resolving the *original*, upstream of the rebuild. The mitigation is a generated
+  **import witness** on stamped bare-import mutant branches: an unreachable `case false` branch
+  re-imports the believed provider (`import Elixir.Enum, only: [filter: 2]`) and references the
+  same name/arity through a generated `fn …args -> fun(args) end` closure. In normal visible-import
+  code that compiles and is never run; in the hidden replacement shape Elixir reports "imported
+  from both …", which Poison maps back to the generated mutant id. This does not make
+  macro-generated imports visible, but it turns the known wrong-but-compiling shape into a poisoned
+  mutant. (A *call* `fun(args)`, not a capture `&fun/arity` — though both trigger the ambiguity,
+  even for guard macros: the original source was already a call, so a call is guaranteed legal
+  wherever the original compiled, with no function-vs-macro case analysis.)
+- **The witness is *complete* for compiling original code, not merely a mitigation** (re-verified
+  against the compiler). The except-plus-hidden-*import* replacement is the **only** reachable way
+  a hidden macro can silently redirect a *visible-module* bare call. The alternatives can't arise
+  or are already caught: a hidden *local* `def fun/arity` replacement would need the source to
+  *call* `fun` with both `import Enum` and the local in scope — itself a compile error
+  ("imported … conflicts with local function"), so the original wouldn't compile; a hidden import
+  that *adds* `fun` without an `except:` subtracting it leaves the original bare call ambiguous →
+  poison. And it never *false*-poisons: re-importing a module already in scope is harmless (Elixir
+  permits the duplicate), so the witness errors only when a genuinely-different second provider is
+  present — which, for compiling original code, can only be the hidden one we mean to catch.
 - **Same module imported multiple times — handled correctly (for visible imports).** Per Elixir
   (verified): a later `only:` *replaces* the selection, a plain `import` resets to all, and a
   later `except:` *subtracts from the prior selection* (not from all) — `import Enum, only:
