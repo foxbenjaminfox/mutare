@@ -31,6 +31,11 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([], only: "lib/billing")[:paths] == ["lib/billing"]
     end
 
+    test "--only accepts a single file, not just a directory" do
+      assert Config.merge([], only: "lib/billing/invoice.ex")[:paths] ==
+               ["lib/billing/invoice.ex"]
+    end
+
     test "--mutators resolves a CSV to specs, preserving order" do
       assert Config.merge([], mutators: "relational,arithmetic")[:mutators]
              |> Enum.map(& &1.module) == [Relational, Arithmetic]

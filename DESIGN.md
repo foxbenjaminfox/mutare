@@ -172,7 +172,7 @@ Some mutations produce a program semantically identical to the original (`x * 1`
 
 ```
 mix mutare                      # build the schema, run all mutants
-mix mutare --only lib/billing   # scope to a path
+mix mutare --only lib/billing   # scope to a path (a directory or a single .ex file)
 mix mutare --since master         # changed files vs a git ref (CI mode)
 mix mutare --mutators relational,logical,conditional
 ```

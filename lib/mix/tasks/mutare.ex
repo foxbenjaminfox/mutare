@@ -12,7 +12,8 @@ defmodule Mix.Tasks.Mutare do
       mix mutare apps/billing             # mutate one umbrella app (copies the umbrella)
       mix mutare --app billing,web        # mutate specific umbrella apps
       mix mutare --workspace              # mutate every app in an umbrella
-      mix mutare --only lib/billing       # scope to a path
+      mix mutare --only lib/billing       # scope to a directory
+      mix mutare --only lib/billing/invoice.ex  # …or a single file
       mix mutare --since master             # only files changed vs a git ref (CI)
       mix mutare --mutators relational    # only some mutator families
       mix mutare --min-score 70           # fail (CI) if the score is below 70

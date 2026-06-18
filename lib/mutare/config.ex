@@ -23,7 +23,8 @@ defmodule Mutare.Config do
   @doc """
   Merge `file_config` with parsed CLI `flags` into resolved options.
 
-  Recognised flags: `:only` (→ `:paths`), `:mutators` (CSV → modules),
+  Recognised flags: `:only` (→ `:paths`; a directory to scan or a single `.ex`
+  file), `:mutators` (CSV → modules),
   `:min_score`, `:sandbox`, `:keep_sandbox`, `:full` (→ `test_selection: :full`),
   `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`. A `:mutators`
   value of `:all`

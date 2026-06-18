@@ -35,7 +35,8 @@ defmodule Mutare.Schema do
   Build a schema by discovering files under `root`.
 
   `opts` is a `Mutare.Options` (or a keyword list resolved into one). It reads
-  `:paths` (directories to scan), `:exclude` (wildcard patterns dropped),
+  `:paths` (directories to scan recursively, or individual `.ex` files),
+  `:exclude` (wildcard patterns dropped),
   `:only_files` (restrict to an explicit set, e.g. `--since`), and `:mutators`
   (passed through to `Mutare.Transform`).
   """
@@ -221,10 +222,24 @@ defmodule Mutare.Schema do
     excluded = Enum.flat_map(exclude, &Path.wildcard(Path.join(root, &1)))
 
     paths
-    |> Enum.flat_map(fn path -> Path.wildcard(Path.join([root, path, "**", "*.ex"])) end)
+    |> Enum.flat_map(&expand(root, &1))
     |> Enum.uniq()
     |> Enum.reject(&(&1 in excluded))
     |> Enum.sort()
+  end
+
+  # A `:paths` entry (`--only`) is either a directory to scan recursively for
+  # `.ex` sources or a single `.ex` file (a glob in either position is honoured
+  # by `Path.wildcard`). The check is purely on the `.ex` extension, so it is
+  # additive: a directory entry globs `**/*.ex` exactly as before, while a `.ex`
+  # entry — which previously expanded to `<file>/**/*.ex` and matched nothing —
+  # is now taken verbatim. A non-existent entry yields nothing either way.
+  defp expand(root, path) do
+    if Path.extname(path) == ".ex" do
+      Path.wildcard(Path.join(root, path))
+    else
+      Path.wildcard(Path.join([root, path, "**", "*.ex"]))
+    end
   end
 
   defp relative(file, root) do

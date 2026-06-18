@@ -120,6 +120,37 @@ defmodule Mutare.SchemaTest do
     assert Enum.all?(schema.sites, &(&1.file == "lib/b.ex"))
   end
 
+  test ":paths may name a single .ex file, not just a directory", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/sub/b.ex", "defmodule B do\n  def g(a, b), do: a >= b\nend\n")
+
+    schema = Schema.build(root, paths: ["lib/sub/b.ex"], mutators: @probe)
+
+    assert Map.keys(schema.sources) == ["lib/sub/b.ex"]
+    assert Enum.all?(schema.sites, &(&1.file == "lib/sub/b.ex"))
+  end
+
+  test ":paths mixes file and directory entries (deduping overlap)", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/sub/b.ex", "defmodule B do\n  def g(a, b), do: a >= b\nend\n")
+    write(root, "other/c.ex", "defmodule C do\n  def h(x), do: x + 2\nend\n")
+
+    # `lib` (directory, recursive) ∪ `other/c.ex` (file); `lib/a.ex` is already
+    # under `lib`, so naming it too must not duplicate it.
+    schema = Schema.build(root, paths: ["lib", "lib/a.ex", "other/c.ex"], mutators: @probe)
+
+    assert Map.keys(schema.sources) |> Enum.sort() == ["lib/a.ex", "lib/sub/b.ex", "other/c.ex"]
+  end
+
+  test ":paths entry naming a missing file yields nothing (not fatal)", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+
+    schema = Schema.build(root, paths: ["lib/does_not_exist.ex"], mutators: @probe)
+
+    assert schema.sources == %{}
+    assert Schema.count(schema) == 0
+  end
+
   test "unparseable files are skipped, not fatal", %{root: root} do
     write(root, "lib/ok.ex", "defmodule Ok do\n  def f(x), do: x + 1\nend\n")
     write(root, "lib/bad.ex", "defmodule Bad do\n  def ( oops\nend\n")
