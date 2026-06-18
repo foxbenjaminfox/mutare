@@ -243,6 +243,51 @@ defmodule Mutare.SuperTest do
       assert mod.combine(1, 2) == {:base, 1, 2}
       assert mod.combine(:x, :y) == {:base, :y, :x}
     end
+
+    test "a super evaluated while building a quote is rewritten, not pruned as data" do
+      # `unquote(super(x))` and `bind_quoted: [r: super(...)]` both *run* `super` while
+      # the quote is constructed, so it is live — pruning the whole quote would leave a
+      # raw `super` in the relocated base and the metamutant would not compile. The two
+      # `tag` clauses cover the unquote form (lifted via the guard); `combine` the
+      # bind_quoted option form.
+      {meta, _sites, mod} =
+        transform("""
+          def tag(x) when is_integer(x), do: quote(do: unquote(super(x)))
+          def tag(x), do: quote(do: unquote(super(x)))
+
+          def combine(a, b) when is_integer(a) do
+            quote(bind_quoted: [r: super(a, b)], do: r)
+          end
+
+          def combine(a, b), do: super(b, a)
+        """)
+
+      # Both groups bound a closure and forward the live super — no raw `super(` left in
+      # any relocated base clause.
+      assert meta =~ ~r{mutare_super = &super/1}
+      assert meta =~ ~r{mutare_super = &super/2}
+      refute Regex.match?(~r/defp __mutare_(tag|combine).*?\bsuper\(/s, meta)
+
+      # Runtime: `unquote(super(5))` evaluates super (`{:base, 5}`) and injects it.
+      assert mod.tag(5) == {:base, 5}
+      # `bind_quoted: [r: super(1, 2)]` binds the *evaluated* super (`{:base, 1, 2}`)
+      # into the quoted body — so the returned AST embeds that value.
+      assert Macro.to_string(mod.combine(1, 2)) =~ "{:base, 1, 2}"
+    end
+
+    test "a genuinely-quoted super (not unquoted) stays data even beside a live one" do
+      # Mixed clause group: clause 1 has a live `unquote(super(x))`, clause 2 a quoted
+      # `super(x)` (data). The closure is bound (clause 1), but clause 2's super must
+      # ride along as a real `super` AST node, untouched.
+      {_meta, _sites, mod} =
+        transform("""
+          def tag(x) when is_integer(x), do: quote(do: unquote(super(x)))
+          def tag(x), do: quote(do: super(x))
+        """)
+
+      assert mod.tag(5) == {:base, 5}
+      assert {:super, _, [{:x, _, _}]} = mod.tag(:a)
+    end
   end
 
   describe "Super module" do
@@ -251,7 +296,12 @@ defmodule Mutare.SuperTest do
       assert Super.in_clauses?(clauses("def f(x) do\n  g = fn -> super(x) end\n  g.()\nend"))
       # A capture-only body (never a direct call) still counts as super-using.
       assert Super.in_clauses?(clauses("def f(x), do: apply(&super/1, [x])"))
+      # A super *evaluated* while building a quote is live, so it is detected...
+      assert Super.in_clauses?(clauses("def f(x), do: quote(do: unquote(super(x)))"))
+      assert Super.in_clauses?(clauses("def f(x), do: quote(bind_quoted: [y: super(x)], do: y)"))
+      # ...but a plain quoted super is data, and a doubly-quoted unquote is still data.
       refute Super.in_clauses?(clauses("def f(x), do: quote(do: super(x))"))
+      refute Super.in_clauses?(clauses("def f(x), do: quote(do: quote(do: unquote(super(x))))"))
       refute Super.in_clauses?(clauses("def f(x), do: x"))
     end
 
@@ -275,6 +325,26 @@ defmodule Mutare.SuperTest do
       assert rendered =~ "apply(sup, [a, b])"
       refute rendered =~ "super"
       refute rendered =~ ~r{&sup/}
+    end
+
+    test "rewrite/2 rewrites a live quoted super but leaves a deeper-quoted one as data" do
+      # `unquote(super(x))` is live (escapes the quote) → rewritten; a `super` nested in
+      # an inner quote (one unquote can't reach back out of two quotes) stays data.
+      [{:def, _, [_head | body]}] =
+        clauses("""
+        def f(x) do
+          quote do
+            unquote(super(x))
+            quote(do: unquote(super(x)))
+          end
+        end
+        """)
+
+      {rewritten, true} = Super.rewrite(body, :sup)
+      rendered = Macro.to_string(rewritten)
+      # Exactly one super became the closure call; one quoted super survives.
+      assert length(String.split(rendered, "sup.(x)")) - 1 == 1
+      assert length(String.split(rendered, "super(x)")) - 1 == 1
     end
   end
 

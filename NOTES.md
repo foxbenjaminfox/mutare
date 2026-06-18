@@ -1124,13 +1124,25 @@ edges, all handled:
   (never a direct `super(...)`) would read as super-free, lift without a closure, and
   leave an uncompilable `&super/arity` in the base. A `super` *called* inside a capture
   (`&super(&1)`) is the ordinary call form and rewrites to `&mutare_super.(&1)` by descent.
-- **`quote` is pruned.** A `super` inside `quote do … end` is quoted *data* (it names
-  whatever context the AST is later spliced into, not a live call here), so it is left
-  untouched — mirroring the in-place analyzer, which treats `quote` as `:compile_time`
-  and never descends it. Such a body reads as super-free, lifts **without** a closure,
-  and the quoted `super` rides along verbatim. (`super` only inside a `quote` is valid
-  source — verified.) Detection and rewrite share one walk (`Super` is `{ast, found?}`)
-  so they can never disagree on what counts as a live `super` (call or capture).
+- **`quote` is level-aware, not pruned.** A `super` inside `quote do … end` is usually
+  quoted *data* (it names whatever context the AST is later spliced into, not a live
+  call), so it is left untouched, and a body with only such `super`s reads as super-free
+  and lifts **without** a closure. But a quote can *evaluate* a `super` while building
+  the AST: `unquote(super(x))` (the unquote escapes the quote) and
+  `bind_quoted: [x: super(x)]` (a quote *option*, evaluated at construction) both run
+  the `super` now — so pruning the whole quote (the old behaviour) left those raw in the
+  relocated base and the metamutant failed to compile for valid source. The walk threads
+  a **quote-nesting level** (`walk/3`): a `super` is live (rewriteable) only at level 0;
+  `quote` raises the level for its *block* values (`do`/`else`/`after`/`catch`/`rescue`),
+  `unquote`/`unquote_splicing` lower it, and a quote's *option* values stay at the
+  quote's own level. So `unquote(super(x))` / `bind_quoted:` supers are detected and
+  rewritten, a plain quoted `super` stays data, and a `super` in an inner quote that one
+  `unquote` can't escape (level still > 0) correctly stays data. (Keyword keys are bare
+  atoms under `Code.string_to_quoted` but `{:__block__, _, [k]}` under Sourceror —
+  `block_key?/1` handles both.) Out of scope, like the analyzer: `quote unquote: false`
+  — a `super` in an `unquote(...)` there is data but would still be rewritten; harmless
+  unless that exact shape appears. Detection and rewrite share one walk (`Super` is
+  `{ast, found?}`) so they can never disagree on what counts as a live `super`.
 - **Defaults / heads are not scanned.** Only the body is inspected: a `super` in a
   default value rides on the dispatcher (the override, which may call `super`
   directly), and `super` can't appear in a head/`when`. Heads (bodiless or otherwise)

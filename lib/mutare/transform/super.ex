@@ -26,11 +26,19 @@ defmodule Mutare.Transform.Super do
   # shares the dispatcher/lifted-clause emission); this module owns only recognising
   # and rewriting the `super` nodes.
   #
-  # **Quote is pruned.** A `super` inside `quote do … end` is quoted *data* — it
-  # names whatever context the AST is later spliced into, not a live call here — so
-  # it is left untouched (mirroring the in-place analyzer, which treats `quote` as
-  # compile-time and never descends it). Such a body therefore reads as not using
-  # `super`, lifts without a closure, and the quoted `super` rides along as-is.
+  # **Quote is level-aware, not pruned.** A `super` inside `quote do … end` is usually
+  # quoted *data* — it names whatever context the AST is later spliced into, not a live
+  # call here — so it is left untouched, and a body with only such `super`s reads as
+  # super-free and lifts without a closure. But a quote can *evaluate* a `super` while
+  # building the AST: `unquote(super(x))` (the unquote escapes the quote) and
+  # `bind_quoted: [x: super(x)]` (an option, evaluated at construction) both run the
+  # `super` now. The walk tracks the quote-nesting level (`walk/3`): a `super` is live
+  # only at level 0; `quote` raises the level for its block, `unquote`/`unquote_splicing`
+  # lower it, and quote *option* values stay at the quote's level — so those live
+  # `super`s are detected and rewritten while the plain quoted ones are left as data.
+  # (Out of scope, like the analyzer: `quote unquote: false` — a rare `unquote(super …)`
+  # there is data, but would still be rewritten; harmless unless that exact shape is
+  # used.)
 
   @doc """
   Whether any clause's *body* contains a rewriteable `super` call or capture.
@@ -53,69 +61,131 @@ defmodule Mutare.Transform.Super do
   that base clause while still matching the shared arity.
   """
   @spec rewrite(Macro.t(), atom()) :: {Macro.t(), boolean()}
-  def rewrite(body, super_var), do: walk(body, super_var)
+  def rewrite(body, super_var), do: walk(body, super_var, 0)
 
   # A throwaway variable name for detection-only walks: the rewritten AST is
   # discarded, only `found?` is read, so the value is irrelevant — but reusing the
   # one walk keeps detection and rewriting provably in lock-step.
   @super_canary :__mutare_super_canary__
 
+  # `quote` keys whose value is the *quoted block* (data, one level deeper); every
+  # other quote option (`bind_quoted:`, `unquote:`, `location:`, …) is evaluated when
+  # the quote is built, at the quote's own level.
+  @quote_block_keys ~w(do else after catch rescue)a
+
   defp body_has_super?({_vis, _meta, [_head | body]}) do
-    {_ast, found} = walk(body, @super_canary)
+    {_ast, found} = walk(body, @super_canary, 0)
     found
   end
 
   defp body_has_super?(_), do: false
 
-  # Prune a quote: its contents are data, not a live `super` call (see moduledoc).
-  defp walk({:quote, _meta, _args} = node, _var), do: {node, false}
+  # `level` is the quote-nesting depth: 0 is live code, where a `super` runs and is
+  # rewritten; level > 0 is inside a `quote` block, where a `super` is quoted *data*.
+  # `quote` raises the level for its block, `unquote`/`unquote_splicing` lower it (they
+  # escape back toward live code), and a quote's *option* values (notably `bind_quoted`)
+  # stay at the quote's own level — so a `super` in `unquote(super(x))` or
+  # `bind_quoted: [x: super(x)]` is live at construction and *is* rewritten, while one
+  # in the plain quoted body is left as data.
 
-  # A `&super/arity` capture: `super` can only ever be captured at the function's full
-  # param count — its single legal arity ("super must be called with the same number
-  # of arguments as the current definition") — which is exactly the arity the closure
-  # is bound at, so the whole capture is value-identical to `<var>` and rewrites to the
-  # bare variable. (Not `&<var>/arity`: `<var>` is a *variable* holding the function,
-  # and `&name/arity` captures a *function* of that name — `&<var>/arity` would fail to
-  # compile.) The super node here carries an atom context, not an arg list, so the
-  # call clause below skips it; without this clause a capture-only body would read as
-  # super-free and lift without a closure, leaving an uncompilable `&super/arity`.
-  defp walk({:&, _meta, [{:/, _slash, [{:super, _smeta, ctx}, _arity]}]}, var)
+  # A `quote`: split its args (keyword lists) into block values (deeper) and option
+  # values (same level) — see `walk_quote_arg/3`.
+  defp walk({:quote, meta, args}, var, level) when is_list(args) do
+    {args, found} = walk_quote_args(args, var, level)
+    {{:quote, meta, args}, found}
+  end
+
+  # An `unquote`/`unquote_splicing` inside a quote escapes one level toward live code,
+  # so its argument is evaluated one level shallower. (At level 0 — not inside a quote,
+  # where these are invalid source anyway — it is descended as an ordinary call below.)
+  defp walk({unq, meta, [expr]}, var, level)
+       when unq in [:unquote, :unquote_splicing] and level > 0 do
+    {expr, found} = walk(expr, var, level - 1)
+    {{unq, meta, [expr]}, found}
+  end
+
+  # A `&super/arity` capture (only when live): `super` can only ever be captured at the
+  # function's full param count — its single legal arity ("super must be called with
+  # the same number of arguments as the current definition") — which is exactly the
+  # arity the closure is bound at, so the whole capture is value-identical to `<var>`
+  # and rewrites to the bare variable. (Not `&<var>/arity`: `<var>` is a *variable*
+  # holding the function, and `&name/arity` captures a *function* of that name —
+  # `&<var>/arity` would fail to compile.) The super node here carries an atom context,
+  # not an arg list, so the call clause below skips it; without this clause a
+  # capture-only body would lift without a closure, leaving an uncompilable `&super/`.
+  defp walk({:&, _meta, [{:/, _slash, [{:super, _smeta, ctx}, _arity]}]}, var, 0)
        when is_atom(ctx) do
     {{var, [], nil}, true}
   end
 
-  # A `super(args)` call: rewrite to `<var>.(args)`, still descending the args (a
-  # nested `super`, or one inside an argument, is rewritten too). Covers a `super`
-  # *called* inside a capture too (`&super(&1)` → `&<var>.(&1)`, via the n-ary descent
-  # below reaching this clause), distinct from the `&super/arity` shorthand above.
-  defp walk({:super, meta, args}, var) when is_list(args) do
-    {args, _found} = walk_many(args, var)
+  # A live `super(args)` call (level 0): rewrite to `<var>.(args)`, still descending the
+  # args (a nested `super`, or one inside an argument, is rewritten too). Covers a
+  # `super` *called* inside a capture too (`&super(&1)` → `&<var>.(&1)`, via the n-ary
+  # descent below reaching this clause), distinct from the `&super/arity` shorthand
+  # above. A quoted-data `super` (level > 0) falls to the n-ary clause below instead —
+  # left as-is, but still descended so a nested `unquote` within it is reached.
+  defp walk({:super, meta, args}, var, 0) when is_list(args) do
+    {args, _found} = walk_many(args, var, 0)
     {{{:., meta, [{var, [], nil}]}, meta, args}, true}
   end
 
   # Any other n-ary node: descend its form (a remote-call `{:., …}` / anon-call
-  # subject can be a node) and its args.
-  defp walk({form, meta, args}, var) when is_list(args) do
-    {form, found_form} = walk(form, var)
-    {args, found_args} = walk_many(args, var)
+  # subject can be a node) and its args, at the same level.
+  defp walk({form, meta, args}, var, level) when is_list(args) do
+    {form, found_form} = walk(form, var, level)
+    {args, found_args} = walk_many(args, var, level)
     {{form, meta, args}, found_form or found_args}
   end
 
   # A 2-tuple (a keyword/map pair shape): descend both sides.
-  defp walk({left, right}, var) do
-    {left, found_left} = walk(left, var)
-    {right, found_right} = walk(right, var)
+  defp walk({left, right}, var, level) do
+    {left, found_left} = walk(left, var, level)
+    {right, found_right} = walk(right, var, level)
     {{left, right}, found_left or found_right}
   end
 
-  defp walk(list, var) when is_list(list), do: walk_many(list, var)
+  defp walk(list, var, level) when is_list(list), do: walk_many(list, var, level)
 
   # A leaf (atom form, var, literal): nothing to rewrite.
-  defp walk(leaf, _var), do: {leaf, false}
+  defp walk(leaf, _var, _level), do: {leaf, false}
 
-  defp walk_many(list, var) do
+  # Each `quote` arg is a keyword list (an options list and/or the block list); walk
+  # every pair, sending a block key's value one level deeper and every option value
+  # (evaluated when the quote runs) at the quote's own level.
+  defp walk_quote_args(args, var, level) do
+    map_reduce(args, fn arg -> walk_quote_arg(arg, var, level) end)
+  end
+
+  defp walk_quote_arg(pairs, var, level) when is_list(pairs) do
+    map_reduce(pairs, fn
+      {key, value} ->
+        sublevel = if block_key?(key), do: level + 1, else: level
+        {value, found} = walk(value, var, sublevel)
+        {{key, value}, found}
+
+      other ->
+        walk(other, var, level + 1)
+    end)
+  end
+
+  # A non-keyword `quote` arg (unusual): treat wholesale as quoted data.
+  defp walk_quote_arg(other, var, level), do: walk(other, var, level + 1)
+
+  # A keyword key is a bare atom (`Code.string_to_quoted`) or `{:__block__, _, [atom]}`
+  # (Sourceror); recognise a block key in either form.
+  defp block_key?({:__block__, _meta, [key]}), do: block_key?(key)
+  defp block_key?(key) when is_atom(key), do: key in @quote_block_keys
+  defp block_key?(_), do: false
+
+  defp walk_many(list, var, level) do
+    map_reduce(list, fn node -> walk(node, var, level) end)
+  end
+
+  # `Enum.map_reduce` accumulating `found?` (any element found a live `super`), where
+  # `fun` returns the `{node, found?}` pair for one element.
+  defp map_reduce(list, fun) do
     Enum.map_reduce(list, false, fn node, acc ->
-      {node, found} = walk(node, var)
+      {node, found} = fun.(node)
       {node, acc or found}
     end)
   end
