@@ -9,8 +9,7 @@ defmodule Mutare.ChangesTest do
   # a copied `.git` is a fully working one. Identity is set with `-c` flags on the
   # commit so no separate `git config` spawns are needed.
   setup_all do
-    template =
-      Path.join(System.tmp_dir!(), "mutare_git_template_#{System.unique_integer([:positive])}")
+    template = fresh_tmp("mutare_git_template")
 
     File.mkdir_p!(Path.join(template, "lib"))
     on_exit(fn -> File.rm_rf!(template) end)
@@ -35,7 +34,7 @@ defmodule Mutare.ChangesTest do
   end
 
   setup %{template: template} do
-    repo = Path.join(System.tmp_dir!(), "mutare_git_#{System.unique_integer([:positive])}")
+    repo = fresh_tmp("mutare_git")
     File.cp_r!(template, repo)
     on_exit(fn -> File.rm_rf!(repo) end)
 
@@ -64,7 +63,7 @@ defmodule Mutare.ChangesTest do
   end
 
   test "errors outside a git repository" do
-    dir = Path.join(System.tmp_dir!(), "mutare_nogit_#{System.unique_integer([:positive])}")
+    dir = fresh_tmp("mutare_nogit")
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
 
@@ -85,5 +84,25 @@ defmodule Mutare.ChangesTest do
 
   defp git!(repo, args) do
     {_out, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
+  end
+
+  # A tmp path that can't collide with another live process or a prior run.
+  # `unique_integer` is unique only within *one* BEAM, but self-hosting runs this
+  # module in many parallel `mix test` processes that share `/tmp` — and a mutant
+  # that times out is `System.halt`ed, skipping `on_exit`, so its dir lingers. The
+  # OS pid disambiguates concurrent processes and won't be reused while this one is
+  # alive, so the name is unique by construction. We do *not* `rm_rf!` it first
+  # (that could silently clobber unrelated state and mask a real collision); the
+  # path must not already exist — if it does, fail loudly. The caller's `on_exit`
+  # owns cleanup.
+  defp fresh_tmp(prefix) do
+    name = "#{prefix}_#{System.pid()}_#{System.unique_integer([:positive])}"
+    path = Path.join(System.tmp_dir!(), name)
+
+    if File.exists?(path) do
+      raise "expected a fresh tmp path but #{path} already exists (stale leftover or pid reuse)"
+    end
+
+    path
   end
 end

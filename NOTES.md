@@ -1603,14 +1603,33 @@ bound to an atom — so the stand-in does `name = Recorder.fixture_module(); def
 name do …`. Verified: under the probe env the after-suite hook now writes a real
 `mutare_cov.terms` dump with no `UndefinedFunctionError`.
 
-Still degraded under self-host, but for *separate* reasons this fix unmasked (the
-probe used to die on `dump/1` before reaching them; both pre-date this change and
-are orthogonal to the helper name): (1) `Mutare.ChangesTest`'s `setup` flakily
-raises `File.CopyError` (permission denied on a `.git/objects/*` file) building its
-throwaway git repo; (2) `Mutare.CoverageTest` deletes the shared `:mutare_cov_agg`/
-`:mutare_cov_attr` ETS tables in `on_exit` (it tests `setup_ast/0`), which can break
-the end-of-suite dump and mid-probe `hit/1`. Both are self-host test-isolation
-artifacts, not the helper collision — deferred.
+This `dump/1` fix **unmasked** two further self-host probe breakers (the probe used
+to die on `dump/1` before reaching them; both pre-date this change and are orthogonal
+to the helper name) — now also fixed:
+
+1. **`Mutare.ChangesTest` flaky `File.CopyError`.** Its `setup` `cp_r`s a git-repo
+   template into a fresh tmp dir per test. The dir name used only
+   `System.unique_integer/1`, which is unique within *one* BEAM but yields the same
+   small integers across separate `mix test` BEAMs — and self-hosting runs this
+   module in many parallel mutant processes sharing `/tmp`, with timed-out mutants
+   `System.halt`ed past their `on_exit`, littering stale dirs. A reused name made
+   `cp_r` copy *over* a leftover read-only `.git/objects/*` file → `EACCES`. Fixed by
+   salting the name with the **OS pid** (`fresh_tmp/1`); it does **not** `rm_rf` a
+   pre-existing path (that could mask a real collision) but **raises** if one exists,
+   leaving cleanup to `on_exit`.
+2. **`Mutare.CoverageTest` tearing down shared probe state.** Its `setup_ast/0` test
+   blindly deleted the `:mutare_cov_agg`/`:mutare_cov_attr` ETS tables, the
+   `:mutare_track` flag, and `MUTARE_COVERAGE` in `on_exit`. Under the probe the
+   bootstrap *already* created those (and the metamutant records into them across the
+   whole suite), so the teardown suppressed coverage for every later test. Fixed with
+   the same save/restore discipline as `selector_test`: capture prior state, undo only
+   what the test introduced (drop a table only if it didn't pre-exist).
+
+Verified end-to-end: a self-host `mix mutare --only lib/mix` now runs real coverage
+selection — `25 killed / 1 timeout / 39 survived / 76 no-coverage` (the dump carries
+65 ids across 8 files) — versus the run-all fallback's `57 killed / 82 timeout / 2
+survived / 0 no-coverage`. The honest score replaces one inflated by charging every
+uncovered mutant's whole-suite timeout as a kill.
 
 ### Surface skipped files more loudly `[soon]`
 `Schema`/`safe_transform` skips a file that fails to transform (good — one bad

@@ -84,15 +84,25 @@ defmodule Mutare.CoverageTest do
 
   describe "setup_ast/0 (umbrella shares one BEAM)" do
     test "creating the coverage tables twice is a no-op, not a :badarg" do
+      # These coverage tables, the tracking flag, and the env var are all
+      # process-global, and this very suite runs *under the probe* when dogfooding —
+      # where the bootstrap has already created the tables and set the flag/env, and
+      # the metamutant records into them across the whole suite. Tearing down what we
+      # didn't create would suppress coverage for every later test (a spurious
+      # run-all). So restore exactly the prior state — only undo what this test
+      # introduced — the same discipline as `selector_test`'s key override.
+      saved_env = System.get_env(Recorder.env_var())
+      saved_track = :persistent_term.get(Recorder.track_key(), :unset)
+      agg_existed? = :ets.whereis(:mutare_cov_agg) != :undefined
+      attr_existed? = :ets.whereis(:mutare_cov_attr) != :undefined
+
       System.put_env(Recorder.env_var(), "1")
 
       on_exit(fn ->
-        System.delete_env(Recorder.env_var())
-        :persistent_term.erase(Recorder.track_key())
-
-        for table <- [:mutare_cov_agg, :mutare_cov_attr], :ets.whereis(table) != :undefined do
-          :ets.delete(table)
-        end
+        restore_env(Recorder.env_var(), saved_env)
+        restore_track(saved_track)
+        drop_table_unless(:mutare_cov_agg, agg_existed?)
+        drop_table_unless(:mutare_cov_attr, attr_existed?)
       end)
 
       ast = Recorder.setup_ast()
@@ -103,6 +113,21 @@ defmodule Mutare.CoverageTest do
       assert {_, _} = Code.eval_quoted(ast)
       assert :ets.whereis(:mutare_cov_agg) != :undefined
     end
+  end
+
+  defp restore_env(var, nil), do: System.delete_env(var)
+  defp restore_env(var, value), do: System.put_env(var, value)
+
+  defp restore_track(:unset), do: :persistent_term.erase(Recorder.track_key())
+  defp restore_track(value), do: :persistent_term.put(Recorder.track_key(), value)
+
+  # Drop a coverage table only if this test created it; leave a pre-existing one
+  # (under the probe, the bootstrap owns it and later tests still record into it).
+  defp drop_table_unless(_table, true = _pre_existed), do: :ok
+
+  defp drop_table_unless(table, false) do
+    if :ets.whereis(table) != :undefined, do: :ets.delete(table)
+    :ok
   end
 
   describe "record_ast/1 (ids render as a list, never a charlist)" do
