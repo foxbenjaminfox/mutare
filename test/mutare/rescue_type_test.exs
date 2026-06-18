@@ -58,6 +58,19 @@ defmodule Mutare.RescueTypeTest do
       e in ArgumentError -> {:db_arg, e.__struct__}
       e in RuntimeError -> {:db_run, e.__struct__}
     end
+
+    def def_inline(f),
+      do: f.(),
+      rescue: (e in [RuntimeError, ArgumentError] -> {:inline_caught, e.__struct__})
+
+    def def_inline_branches(f),
+      do: f.(),
+      rescue:
+        (e in ArgumentError ->
+           {:dib_arg, e.__struct__}
+
+         e in RuntimeError ->
+           {:dib_run, e.__struct__})
   end
   """
 
@@ -112,6 +125,21 @@ defmodule Mutare.RescueTypeTest do
   # Same, for `F.def_branches/1` (the multi-branch `def … rescue …` shorthand).
   defp def_branch_outcome(ex) do
     {:caught, F.def_branches(fn -> raise ex end)}
+  rescue
+    e -> {:propagated, e.__struct__}
+  end
+
+  # Same, for `F.def_inline/1` (the **inline keyword** `def …, rescue: (…)` shorthand,
+  # whose clause list Sourceror wraps in a `{:__block__, _, [clauses]}`).
+  defp def_inline_outcome(ex) do
+    {:caught, F.def_inline(fn -> raise ex end)}
+  rescue
+    e -> {:propagated, e.__struct__}
+  end
+
+  # Same, for `F.def_inline_branches/1` (the inline-keyword multi-branch shorthand).
+  defp def_inline_branch_outcome(ex) do
+    {:caught, F.def_inline_branches(fn -> raise ex end)}
   rescue
     e -> {:propagated, e.__struct__}
   end
@@ -333,6 +361,63 @@ defmodule Mutare.RescueTypeTest do
       assert Report.diff(site, @source) ==
                "-    e in [RuntimeError, ArgumentError] -> {:def_caught, e.__struct__}\n" <>
                  "+    e in [RuntimeError] -> {:def_caught, e.__struct__}"
+    end
+  end
+
+  describe "inline-keyword `def …, rescue: (…)` shorthand (Sourceror block-wraps the clause list)" do
+    test "a two-type list in an inline-keyword rescue is narrowed", %{sites: sites} do
+      drops = Enum.filter(sites, &(&1.mutator == :rescue_type and &1.line == 50))
+      assert length(drops) == 2
+      assert Enum.all?(drops, &(&1.kind == :in_place and &1.operation == :replace))
+    end
+
+    test "the block-wrapped clause list is not analyzed as a runtime list literal", %{
+      sites: sites
+    } do
+      # Regression: before `normalize_clause_blocks/1` the inline rescue value (Sourceror's
+      # `{:__block__, _, [clauses]}`) fell through `analyze_do_blocks/2`'s `is_list` guard and
+      # was analyzed as a runtime expression — so the clause *list* drew a `:list`→`[]` mutant
+      # and a selector `case` was spliced around the `->` clauses, poison. The list must never
+      # be a mutand, and the rescue narrowings (above) must appear instead.
+      refute Enum.any?(sites, &(&1.mutator == :list and &1.line == 50))
+    end
+
+    test "narrowing an inline-keyword rescue propagates the dropped type at runtime", %{
+      sites: sites
+    } do
+      Selector.put(rescue_site(sites, "e in [RuntimeError]", 50))
+      assert {:caught, {:inline_caught, RuntimeError}} = def_inline_outcome(RuntimeError)
+      assert {:propagated, ArgumentError} = def_inline_outcome(ArgumentError)
+
+      Selector.put(rescue_site(sites, "e in [ArgumentError]", 50))
+      assert {:propagated, RuntimeError} = def_inline_outcome(RuntimeError)
+      assert {:caught, {:inline_caught, ArgumentError}} = def_inline_outcome(ArgumentError)
+    end
+
+    test "an inline-keyword multi-branch shorthand drops each whole clause", %{sites: sites} do
+      drops = Enum.filter(sites, &(&1.mutator == :rescue_type and &1.line in [55, 58]))
+      assert length(drops) == 2
+      assert Enum.all?(drops, &(&1.kind == :in_place and &1.operation == :delete))
+    end
+
+    test "dropping an inline-keyword branch propagates its exception at runtime", %{sites: sites} do
+      Selector.put(rescue_drop_site(sites, 55))
+      assert {:propagated, ArgumentError} = def_inline_branch_outcome(ArgumentError)
+      assert {:caught, {:dib_run, RuntimeError}} = def_inline_branch_outcome(RuntimeError)
+
+      Selector.put(rescue_drop_site(sites, 58))
+      assert {:caught, {:dib_arg, ArgumentError}} = def_inline_branch_outcome(ArgumentError)
+      assert {:propagated, RuntimeError} = def_inline_branch_outcome(RuntimeError)
+    end
+
+    test "an inline-keyword shorthand still gets its granular return-value mutants", %{
+      sites: sites
+    } do
+      # The do-body tail (`f.()`, line 49) and the rescue-clause tail (line 50) are both
+      # return positions — normalizing + hosting in a synthesized `try` must keep them.
+      returns = Enum.filter(sites, &(&1.mutator == :return_value and &1.line in [49, 50]))
+      assert Enum.any?(returns, &(&1.line == 49)), "do-body tail return mutant missing"
+      assert Enum.any?(returns, &(&1.line == 50)), "rescue-clause tail return mutant missing"
     end
   end
 end

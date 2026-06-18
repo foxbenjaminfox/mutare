@@ -192,10 +192,13 @@ defmodule Mutare.Transform.Analyze do
   # runtime, and the `:do` block's *tail expression* is additionally a return-value
   # position (only the transform knows where a clause returns — see
   # `annotate_returns/3`). A `def … rescue …` shorthand additionally gets its rescue
-  # clauses narrowed/dropped (`host_def_rescue/3`).
+  # clauses narrowed/dropped (`host_def_rescue/3`). The body is first
+  # `normalize_clause_blocks/1`-ed so an **inline keyword** rescue/catch/else
+  # (`def f, do: …, rescue: (p -> b)`) reads like its block-form twin.
   defp analyze({vis, meta, [head, body_kw]}, _context, mutators)
        when vis in [:def, :defp] and is_list(body_kw) do
     head = analyze(head, :pattern, mutators)
+    body_kw = normalize_clause_blocks(body_kw)
     analyzed_kw = analyze_do_blocks(body_kw, mutators)
     annotated_kw = annotate_returns(analyzed_kw, body_kw, mutators)
     {vis, meta, [head, host_def_rescue(annotated_kw, body_kw, mutators)]}
@@ -751,6 +754,28 @@ defmodule Mutare.Transform.Analyze do
 
   defp recurse(other, _context, _mutators), do: other
 
+  # Normalize a clause's body keyword so an **inline keyword** rescue/catch/else block reads
+  # like its **block-form** twin. Written inline — `def f, do: …, rescue: (p -> b)` (the
+  # `rescue:`/`catch:`/`else:` value in `(…)` keyword form) — Sourceror wraps the clause list in
+  # a `{:__block__, _, [clauses]}`, whereas the block form (`def f do … rescue … end`) yields the
+  # bare list. Unwrap the former so every downstream consumer sees one shape: the clause routing
+  # in `analyze_do_blocks/2` (guarded on `is_list` — otherwise the whole rescue is mis-analyzed as
+  # a *runtime expression*, splicing a selector into a position no `->` clause may hold: poison),
+  # the rescue-clause-body return tails in `annotate_returns/3` (likewise `is_list`-guarded), and
+  # the rescue narrowing/clause-drop discovery in `host_def_rescue/3` → `rescue_type_candidates/3`
+  # (whose `:rescue` list guard would otherwise miss it, so the valid inline `def … rescue` form
+  # produced no `:rescue_type` mutants). A block-form body's clause values are already bare lists,
+  # so this is a no-op there; non-clause keys (`:do`/`:after`) are never unwrapped.
+  defp normalize_clause_blocks(body_kw) do
+    Enum.map(body_kw, fn
+      {key, {:__block__, _meta, [clauses]}} = pair when is_list(clauses) ->
+        if clause_block_key?(key), do: {key, clauses}, else: pair
+
+      pair ->
+        pair
+    end)
+  end
+
   # The body keyword of a clause (`[do: …, rescue: …, catch: …, else: …,
   # after: …]`, possibly with Sourceror's `{:__block__, _, [:do]}` keys). `:do`
   # and `:after` are ordinary runtime bodies. `:rescue`/`:catch`/`:else` are
@@ -770,7 +795,9 @@ defmodule Mutare.Transform.Analyze do
 
   # A `def … rescue …` shorthand (sugar for wrapping the body in a `try`) carries its
   # rescue/catch/else/after as **def-body blocks**, not a `try` node — so the `:try` analyze
-  # clause never sees it and `RescueType`'s narrowing / clause-drop would be skipped. Deliver
+  # clause never sees it and `RescueType`'s narrowing / clause-drop would be skipped. (`raw_body_kw`
+  # has already been `normalize_clause_blocks/1`-ed, so an inline-keyword rescue's clause list is a
+  # bare list here, not Sourceror's `{:__block__, _, [clauses]}` wrapper.) Deliver
   # them by **hosting the body in a synthesized `try`**: when the body has rescue candidates,
   # replace the whole body keyword with `[do: try]`, the `try` carrying those candidates, so the
   # same whole-construct selector that wraps an explicit `try` wraps this one. The hosted (catch-

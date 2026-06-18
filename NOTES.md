@@ -1229,6 +1229,22 @@ markers in the `try` meta (`[do: [], end: []]`, threaded to the candidates' rebu
 force the block form. `super`/quote and the rest compose unchanged, since the synthesized `try` is just
 another in-place body node.
 
+A parsing wrinkle on the **inline keyword** spelling of the shorthand (`def f, do: …, rescue: (p ->
+b)` — the `rescue:`/`catch:`/`else:` value written in `(…)` keyword form): Sourceror wraps the clause
+list in a `{:__block__, _, [clauses]}`, whereas the block form (`def f do … rescue … end`) yields the
+bare list every consumer expects. Left unnormalized this missed in **three** places at once — the
+clause routing in `analyze_do_blocks/2` (an `is_list` guard) fell through and analyzed the whole rescue
+as a *runtime expression*, so the clause **list** drew a `:list`→`[]` mutant and a selector `case` was
+spliced around the `->` clauses (**poison**, not just a missed mutant); `annotate_returns/3` skipped the
+rescue-clause-body return tails (same `is_list` guard); and `host_def_rescue/3` →
+`rescue_type_candidates/3` found no `:rescue` list to narrow, so the form produced no `:rescue_type`
+mutants. `Analyze.normalize_clause_blocks/1` unwraps the wrapper for the clause-block keys **once**, at
+the top of the `def`/`defp` clause, before all three run — so the inline spelling reads exactly like its
+block-form twin. It's a no-op on the block form (values already bare lists) and never touches `:do`/
+`:after`. Bonus: with the rescue value a bare clause list, Sourceror renders the whole `def` in block
+form regardless of the keys' lingering `format: :keyword` markers — so even the no-candidates path (the
+body returned un-hosted) emits valid Elixir.
+
 ### Transform pipeline — explicit stages `[refactor, done]`
 `Mutare.Transform` is an explicit pipeline rather than a walk-everything-then-
 subtract design. Stages: **analyze + classify** (`analyze/3` is a single
