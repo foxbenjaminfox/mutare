@@ -209,8 +209,10 @@ defmodule Mutare.Schema do
     end
   end
 
-  # Only forward `:mutators` when set; `nil` lets `Mutare.Transform` use its
-  # default mutator set (we never hard-code that default here).
+  # Only forward `:mutators` when set; `nil` lets `Mutare.Transform` use its default
+  # set (we never hard-code that default here). When set it carries the resolved
+  # `Mutare.Mutator.Spec`s — including any `{module, opts}` config (e.g. a mutator's
+  # `call_option_keys: false`), which the transform honours per spec.
   defp transform_opts(%Options{mutators: nil}), do: []
   defp transform_opts(%Options{mutators: specs}), do: [mutators: specs]
 

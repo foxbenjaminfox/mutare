@@ -58,15 +58,24 @@ defmodule Mutare.Transform.Candidate do
     # `meta[:mutare]` so emission finds "this exact node" without a fragile
     # `{line, column}` identity. `original` is the raw (un-annotated) node — what
     # the report renders — and `mutated` the replacement the mutator produced.
+    #
+    # `call_option_key?` flags an in-place candidate that mutates the *key* of a keyword
+    # list passed as a call's final argument (`foo(x, timeout: 5)` → `timeout:`). The
+    # analyzer tags it (it alone knows the call context); emission drops it when this
+    # candidate's own mutator was configured `{Module, call_option_keys: false}` (read
+    # from its `Mutare.Mutator.Spec.opts` in `Transform.gate_candidates/1`), so the key
+    # stays raw while its value still mutates. Default `false` — every other candidate is
+    # a normal mutation, never gated.
 
     @type t :: %__MODULE__{
             mutator: module(),
             original: Macro.t(),
             mutated: Macro.t(),
-            range: Sourceror.Range.t()
+            range: Sourceror.Range.t(),
+            call_option_key?: boolean()
           }
 
-    defstruct [:mutator, :original, :mutated, :range]
+    defstruct [:mutator, :original, :mutated, :range, call_option_key?: false]
   end
 
   defmodule Guard do

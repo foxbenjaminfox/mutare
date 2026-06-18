@@ -117,6 +117,7 @@ defmodule Mutare.Transform do
 
   alias Mutare.Site
   alias Mutare.Coverage.Recorder
+  alias Mutare.Mutator.Spec
 
   alias Mutare.Transform.{
     Aliases,
@@ -695,14 +696,36 @@ defmodule Mutare.Transform do
   # reachable when the outer mutant is inactive.
   defp emit(node, ctx) do
     Macro.postwalk(node, ctx, fn current, ctx ->
-      case candidates_of(current) do
+      case gate_candidates(candidates_of(current)) do
         # A `|>` never carries candidates itself, but its already-emitted RHS may
         # now be a selector `case` — illegal as a pipe target — so rewrite it here.
-        [] -> {hoist_pipe(current), ctx}
+        # `strip_candidates` clears any meta left by candidates the gate dropped (a
+        # no-op when there were none), so the gated node renders clean.
+        [] -> {hoist_pipe(strip_candidates(current)), ctx}
         candidates -> emit_site(current, candidates, ctx)
       end
     end)
   end
+
+  # Drop the candidates a mutator opts out of *before* id assignment, so they leave no
+  # id, selector, or site — they simply don't exist for this run (unlike a poisoned id,
+  # which is recorded). The only opt today is **per-mutator** and read straight from the
+  # candidate's own `Mutare.Mutator.Spec`: a mutator configured `{Module, call_option_keys:
+  # false}` suppresses its mutations of a *call-option key* (a key of a keyword list passed
+  # as a call's final argument, tagged `call_option_key?` by the analyzer) while still
+  # mutating everywhere else. Ids stay stable across a run's poison rebuilds because the
+  # mutator list — hence each spec's opts — is constant within a run.
+  defp gate_candidates(candidates) do
+    Enum.reject(candidates, fn
+      %Candidate.InPlace{call_option_key?: true, mutator: spec} -> call_option_keys_off?(spec)
+      _candidate -> false
+    end)
+  end
+
+  defp call_option_keys_off?(%Spec{opts: opts}) when is_list(opts),
+    do: Keyword.get(opts, :call_option_keys, true) == false
+
+  defp call_option_keys_off?(_spec), do: false
 
   # `x |> case … end` does not compile — `Kernel.|>/2` cannot pipe into a `case`.
   # When emit wrapped a *pipe stage* (the call right of a `|>`) in a selector, the

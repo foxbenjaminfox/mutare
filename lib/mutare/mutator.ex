@@ -71,6 +71,16 @@ defmodule Mutare.Mutator do
   The reserved `:as` key in `opts` overrides the recorded family name (so the same
   module can run twice under distinct names); it is stripped before `opts` reaches
   the mutator. See `Mutare.Mutator.Spec`.
+
+  Besides mutator-defined opts (read via `context.opts`, above), the **transform**
+  recognises one positional opt directly from the spec — `call_option_keys: false`,
+  which suppresses *this* mutator's mutations of a **call-option key** (a key of a
+  keyword list passed as a call's final argument, `foo(x, timeout: 5)` → `timeout:`).
+  It is positional — only the transform knows a node is a call-option key — so it can't
+  be a `mutate/2` decision, but the *choice* is the mutator's, carried in its spec:
+
+      # mutate option values but not the option names, for atom keys
+      [mutators: [..., {Mutare.Mutators.AtomLiteral, call_option_keys: false}]]
   """
 
   alias Mutare.Mutator.Spec

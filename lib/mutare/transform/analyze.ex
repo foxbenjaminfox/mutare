@@ -31,6 +31,11 @@ defmodule Mutare.Transform.Analyze do
   # a key like `do:` from being mutated (which would not even render).
   @block_keys [:do, :else, :rescue, :catch, :after]
 
+  # Data/structural forms that reach the generic runtime clause but are *not* calls,
+  # so a keyword-list-shaped trailing element (a `%{a: 1}` pair list, a `{a, [b: 1]}`
+  # tuple's last element) is never mistaken for a call's trailing options (`call_form?/1`).
+  @non_call_forms [:{}, :%{}, :<<>>, :__block__, :__aliases__]
+
   # Module-level forms whose block/children are known compile-time structure.
   # Unknown module-level macro calls with a block are handled separately so a DSL
   # that unquotes its `do` body into generated runtime functions keeps body mutants.
@@ -468,23 +473,86 @@ defmodule Mutare.Transform.Analyze do
   # this is exactly `recurse(node, :runtime, …)` — so non-owning calls are unaffected.
   # `piped?` is threaded because ownership, like arity, depends on the pipe position.
   defp recurse_runtime({form, meta, args} = node, mutators, piped?) when is_list(args) do
-    case owned_arg_indices(node, mutators, %{piped: piped?}) do
-      [] ->
-        recurse(node, :runtime, mutators)
+    analyzed =
+      case owned_arg_indices(node, mutators, %{piped: piped?}) do
+        [] ->
+          recurse(node, :runtime, mutators)
 
-      owned ->
-        args =
-          args
-          |> Enum.with_index()
-          |> Enum.map(fn {arg, i} ->
-            analyze(arg, if(i in owned, do: :owned, else: :runtime), mutators)
-          end)
+        owned ->
+          args =
+            args
+            |> Enum.with_index()
+            |> Enum.map(fn {arg, i} ->
+              analyze(arg, if(i in owned, do: :owned, else: :runtime), mutators)
+            end)
 
-        {form, meta, args}
-    end
+          {form, meta, args}
+      end
+
+    mark_call_option_keys(analyzed)
   end
 
   defp recurse_runtime(node, mutators, _piped?), do: recurse(node, :runtime, mutators)
+
+  # === call-option keys ======================================================
+
+  # When this runtime node is a *call* whose final argument is a keyword list
+  # (`foo(x, timeout: 5, retries: 3)` — the trailing-keyword sugar, the same AST as
+  # an explicit `[timeout: 5, …]` last arg), tag each of that list's *key* candidates
+  # `call_option_key?`. Emission (`Transform.gate_candidates/1`) then drops a tagged
+  # candidate whose mutator was configured `{Module, call_option_keys: false}` — leaving
+  # that option name unmutated while its value still mutates. A data/structural form
+  # (`%{}`, a 3+-tuple) is not a call, so its trailing element is left alone; only the
+  # call context (known here) can make this distinction. The marking is shallow: nested
+  # maps/lists inside an option *value* keep their own keys.
+  defp mark_call_option_keys({form, meta, args} = node) when is_list(args) and args != [] do
+    last = List.last(args)
+
+    if call_form?(form) and keyword_list_shaped?(last) do
+      {init, [_last]} = Enum.split(args, -1)
+      {form, meta, init ++ [tag_option_keys(last)]}
+    else
+      node
+    end
+  end
+
+  defp mark_call_option_keys(node), do: node
+
+  # A genuine call: a remote `Foo.bar(…)` (`{:., …}` form) or a local/operator call (an
+  # atom form), minus the data/structural forms that also reach the generic runtime
+  # clause and could carry a keyword-list-shaped trailing element without being a call.
+  defp call_form?({:., _meta, _args}), do: true
+  defp call_form?(form) when is_atom(form), do: form not in @non_call_forms
+  defp call_form?(_form), do: false
+
+  defp keyword_list_shaped?(list) when is_list(list) and list != [],
+    do: Enum.all?(list, &match?({_k, _v}, &1))
+
+  defp keyword_list_shaped?(_other), do: false
+
+  defp tag_option_keys(kw) do
+    Enum.map(kw, fn
+      {key, value} -> {tag_option_key(key), value}
+      other -> other
+    end)
+  end
+
+  # Stamp `call_option_key?` onto each candidate already attached to a key node. A key
+  # with no candidates (a block key, or a key no mutator matched) is left untouched.
+  defp tag_option_key({form, meta, kargs} = key) when is_list(meta) do
+    case Keyword.get(meta, :mutare) do
+      nil ->
+        key
+
+      candidates ->
+        {form, Keyword.put(meta, :mutare, Enum.map(candidates, &as_call_option/1)), kargs}
+    end
+  end
+
+  defp tag_option_key(key), do: key
+
+  defp as_call_option(%Candidate.InPlace{} = c), do: %{c | call_option_key?: true}
+  defp as_call_option(other), do: other
 
   # The visible argument indices some active mutator claims exclusive ownership of at this
   # call (via the optional `owned_args/2` callback), unioned. Cheap when nobody implements

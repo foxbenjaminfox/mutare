@@ -1201,6 +1201,81 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "call-option keys: a mutator's `call_option_keys: false` opt (keyword list as a call's final arg)" do
+    # Bare AtomLiteral mutates call-option keys; configured with `call_option_keys: false`
+    # it skips them. `Literal` rides along so an option *value* still mutates either way.
+    @kw [Mutare.Mutators.AtomLiteral, Mutare.Mutators.Literal]
+    @kw_off [{Mutare.Mutators.AtomLiteral, call_option_keys: false}, Mutare.Mutators.Literal]
+
+    defp atom_keys(source, opts) do
+      {meta, sites, _} = Mutare.transform_string(source, opts)
+
+      keys =
+        sites
+        |> Enum.filter(&(&1.mutator == :atom))
+        |> Enum.map(&Mutare.Site.describe/1)
+        |> Enum.sort()
+
+      {keys, meta}
+    end
+
+    test "default: a call's trailing keyword keys mutate" do
+      source = "defmodule C do\n  def f(x), do: foo(x, timeout: 5, retries: 3)\nend\n"
+      {keys, meta} = atom_keys(source, mutators: @kw)
+
+      assert keys == ["atom  :retries → :mutare", "atom  :timeout → :mutare"]
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "`call_option_keys: false`: the keys are left raw, but their values still mutate" do
+      source = "defmodule C do\n  def f(x), do: foo(x, timeout: 5, retries: 3)\nend\n"
+      {keys, meta} = atom_keys(source, mutators: @kw_off)
+
+      assert keys == []
+      # values still mutate, so the call isn't left untouched
+      {_m, sites, _} = Mutare.transform_string(source, mutators: @kw_off)
+      assert Enum.any?(sites, &(&1.mutator == :literal))
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "`call_option_keys: false` gates a piped call's trailing keyword key too" do
+      source = "defmodule P do\n  def f(x), do: x |> foo(timeout: 5)\nend\n"
+      assert {[], _} = atom_keys(source, mutators: @kw_off)
+      assert {["atom  :timeout → :mutare"], _} = atom_keys(source, mutators: @kw)
+    end
+
+    test "`call_option_keys: false` does NOT affect standalone map/keyword-list literal keys" do
+      # These aren't call arguments, so the opt leaves them mutating.
+      map = "defmodule M do\n  def f, do: %{timeout: 5}\nend\n"
+      kwl = "defmodule K do\n  def f, do: [timeout: 5]\nend\n"
+
+      assert {["atom  :timeout → :mutare"], _} = atom_keys(map, mutators: @kw_off)
+      assert {["atom  :timeout → :mutare"], _} = atom_keys(kwl, mutators: @kw_off)
+    end
+
+    test "a tuple ending in a keyword list is not mistaken for call options" do
+      # `{a, [b: 1]}` is a data tuple, not a call — its `:b` key mutates regardless.
+      source = "defmodule T do\n  def f(a), do: {a, [b: 1]}\nend\n"
+      assert {["atom  :b → :mutare"], _} = atom_keys(source, mutators: @kw_off)
+    end
+
+    test "the opt is per-mutator: a different mutator's keys are unaffected" do
+      # Integer keys are Literal's; configuring AtomLiteral off leaves them mutating.
+      source = "defmodule N do\n  def f(x), do: foo(x, [{1, :a}])\nend\n"
+
+      {_m, sites, _} = Mutare.transform_string(source, mutators: @kw_off)
+      assert Enum.any?(sites, &(&1.mutator == :literal and &1.line == 2))
+    end
+
+    test "gated keys leave no id gap — ids stay contiguous" do
+      source = "defmodule C do\n  def f(x), do: foo(x, timeout: 5, retries: 3)\nend\n"
+      {_m, sites, next_id} = Mutare.transform_string(source, mutators: @kw_off)
+
+      ids = sites |> Enum.map(& &1.id) |> Enum.sort()
+      assert ids == Enum.to_list(1..(next_id - 1))
+    end
+  end
+
   describe "alias context routing (value vs. module/name position)" do
     @alias [Mutare.Mutators.AliasLiteral]
 

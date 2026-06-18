@@ -132,6 +132,17 @@ contract between them is the whole game.
     `analyze_for_arg/2` — `unsupported option … given to for`). Other unknown DSL keyword options
     (e.g. an Ecto `field …, default: x` inside a macro `do` block) are left to the **poison backstop**
     if the macro rejects a mutated key — consistent with how the unknown is handled everywhere.
+    The key of a keyword list passed as a *call's final argument* (`foo(x, timeout: 5)` →
+    `timeout:`, the trailing-keyword sugar) is a **per-mutator opt-out**: `recurse_runtime/3` knows
+    the call context, so it tags those key candidates `call_option_key?` (via `mark_call_option_keys/1`,
+    `call_form?/1` distinguishing a real call from a `%{}`/tuple by `@non_call_forms`). A mutator
+    configured `{Module, call_option_keys: false}` (the `Mutare.Mutator.Spec` opts mechanism)
+    suppresses *its own* tagged candidates: `Transform.gate_candidates/1` reads each candidate's own
+    `Spec.opts` and drops it — *before* id assignment, so it leaves no id/site (ids stay contiguous;
+    the mutator list is constant within a run, so poison rebuilds stay stable). On by default (mutate);
+    the value still mutates regardless, and a *standalone* `%{a: 1}` / `[a: 1]` literal is unaffected
+    (not a call argument). Per-mutator: `{Mutare.Mutators.AtomLiteral, call_option_keys: false}` stops
+    atom keys, while another family's keys (an integer key → `Literal`) are untouched.
     Similarly a `%Struct{…}`'s inner `%{}` is descended for its field *values* but the `%{}` wrapper
     itself is not offered, so MapLiteral can't empty a struct (which would drop required fields). A
     module alias is mutatable only as a *value*: the module side of a remote call (`Foo.bar()`) sits
@@ -526,7 +537,10 @@ contract between them is the whole game.
   completed `Result`), `:on_phase` (the run's phase as it advances `:compiling` → `:baseline` →
   `:coverage_probe` → `{:running, total}`), and `:on_start` (each `Site` as its run begins). All
   three are 1-arity, optional (`nil` = no-op), and validated in `Options`; `Mutare.Runner` fires
-  them but knows nothing of the display.
+  them but knows nothing of the display. There is **no** top-level option for call-option-key
+  gating — it is per-mutator config (`{Module, call_option_keys: false}`), carried on the mutator's
+  `Mutare.Mutator.Spec` and read by `Transform.gate_candidates/1` (above), so it needs no Options
+  field, CLI flag, or `Schema`/`Ctx` plumbing.
 
 ### Cross-cutting things that bite
 

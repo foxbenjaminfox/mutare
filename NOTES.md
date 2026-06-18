@@ -443,6 +443,41 @@ unknown; a macro that silently ignores the unknown key yields a (rare) equivalen
 survivor instead. Module-level `defstruct name: 0` / `use Foo, opt: 1` keys are safe
 for a different reason: the module body is `:scaffold`, which never offers anything.
 
+### `call_option_keys: false` — a mutator opts out of call-trailing-keyword keys `[done]`
+A keyword list passed as a *call's final argument* (`foo(x, timeout: 5, retries: 3)` —
+the trailing-keyword sugar, the same AST as an explicit `[timeout: 5, …]` last arg) is
+the one place key mutation most often turns into noise: the keys are usually *option
+names* a function reads with `Keyword.get`, so mutating `timeout:` → `mutare:` either
+survives (the option silently ignored) or is an equivalent-ish always-default. A project
+switches *just those* off **per mutator** via the configurable-mutators `{module, opts}`
+mechanism: `mutators: [{Mutare.Mutators.AtomLiteral, call_option_keys: false}, …]`. The
+configured mutator still mutates option *values*, and keys of standalone `%{a: 1}` /
+`[a: 1]` literals and `Map`/`Keyword` data everywhere else — only its call-option keys go
+quiet.
+
+Why per-mutator (not a global flag / CLI option), and why a transform-side gate rather
+than `mutate/2`: the gate is **positional** (the call-key position is known only to the
+transform, never to a position-agnostic mutator), so a mutator's `mutate/1`/`mutate/2`
+can't decide it. But the *choice* is genuinely the mutator's config — so the candidate
+carries its `Mutare.Mutator.Spec`, and the transform reads `spec.opts` at gate time. No
+Options field, CLI flag, or `Ctx`/`Schema` plumbing; it composes with `{module, opts}` like
+any other mutator option, and is per-mutator for free (configure `AtomLiteral` and an
+integer key — `Literal`'s — is untouched).
+
+  * **Detect + tag in `Analyze`** (it alone knows the call context): `recurse_runtime/3`
+    post-processes its result with `mark_call_option_keys/1`, which — when the node is a
+    real call (`call_form?/1`: a remote `{:., …}` or an atom form not in `@non_call_forms`,
+    so a `%{}` map / `{}` tuple ending in a keyword-shaped list isn't mistaken for one) and
+    its last arg is keyword-list-shaped — stamps each *key* candidate `call_option_key?: true`
+    (a `Candidate.InPlace` field). Shallow: a nested map/list inside an option *value* keeps
+    its own keys. Piped calls (`x |> foo(opt: 1)`) go through `recurse_runtime` too.
+  * **Gate in `Transform`**: `emit`'s `gate_candidates/1` drops a `call_option_key?: true`
+    candidate when its own `spec.opts` say `call_option_keys: false` (`call_option_keys_off?/1`)
+    — *before* `claim_id`, so it consumes no id and records no site (unlike a poisoned id,
+    which is recorded). Ids stay **contiguous** and stable: the mutator list (hence each
+    spec's opts) is constant within a run, so poison rebuilds reproduce the same id sequence.
+    The unconfigured path drops nothing (zero overhead).
+
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
 (`apply(Foo, …)`, `is_struct(x, Foo)`, `[A, B]`, a behaviour/strategy arg) to the
