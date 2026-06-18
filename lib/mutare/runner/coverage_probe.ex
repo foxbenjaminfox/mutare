@@ -79,7 +79,7 @@ defmodule Mutare.Runner.CoverageProbe do
     dump = Path.join(root, Recorder.dump_file())
     File.rm(dump)
 
-    with 0 <- probe!(sandbox, root, dump),
+    with true <- Command.success?(probe!(sandbox, root, dump)),
          {:ok, coverage} <- Coverage.read_dump(dump) do
       select(mode, schema, coverage)
     else
@@ -100,21 +100,19 @@ defmodule Mutare.Runner.CoverageProbe do
       {Recorder.root_env(), root}
     ]
 
-    case Command.mix(sandbox, ["test"], Selector.baseline(), env: env) do
-      {_output, 0} ->
-        0
+    {output, status} = Command.mix(sandbox, ["test"], Selector.baseline(), env: env)
 
-      {output, status} ->
-        # The baseline already confirmed the suite green, so a non-zero probe is
-        # unexpected — and silently degrading to run-all (every covered mutant runs
-        # the whole suite) is a big, invisible slowdown. Surface it.
-        Logger.warning(
-          "coverage probe exited #{status}; falling back to run-all selection " <>
-            "(every covered mutant runs the whole suite). Probe output:\n#{probe_tail(output)}"
-        )
-
-        status
+    unless Command.success?(status) do
+      # The baseline already confirmed the suite green, so a non-zero probe is
+      # unexpected — and silently degrading to run-all (every covered mutant runs
+      # the whole suite) is a big, invisible slowdown. Surface it.
+      Logger.warning(
+        "coverage probe exited #{status}; falling back to run-all selection " <>
+          "(every covered mutant runs the whole suite). Probe output:\n#{probe_tail(output)}"
+      )
     end
+
+    status
   end
 
   # The last few lines of the probe's captured output — enough to point at the

@@ -236,12 +236,10 @@ defmodule Mutare.Runner do
     end
   end
 
-  # The one compilation.
+  # The one compilation. `Command.success?/1` owns the "0 means success" reading.
   defp compile(sandbox) do
-    case Command.mix(sandbox, ["compile"], Selector.baseline()) do
-      {_output, 0} -> :ok
-      {output, _status} -> {:error, :compile_failed, output}
-    end
+    {output, status} = Command.mix(sandbox, ["compile"], Selector.baseline())
+    if Command.success?(status), do: :ok, else: {:error, :compile_failed, output}
   end
 
   # === per-mutant runs =======================================================

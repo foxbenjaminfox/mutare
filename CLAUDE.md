@@ -217,8 +217,15 @@ contract between them is the whole game.
   exit `1` with a `.exs`-under-`test/` compile-error banner, `suite_compile_error?/1`) is
   `:suite_compile_error`, which the runner counts as a **kill** (the suite couldn't build with it →
   detected); a real infra/lib compile error / missing dep stays `:harness_error` (fail safe). This
-  is the *only* place the contract reads output, justified because the lib compiles **once** so a
-  fresh per-mutant compile error can only be a re-evaluated test script the mutation broke.
+  is the *only* place the contract reads output to form a *verdict*, justified because the lib
+  compiles **once** so a fresh per-mutant compile error can only be a re-evaluated test script the
+  mutation broke. It is also the single home for the rest of what mix's output/exit codes *mean*, so
+  nothing re-derives them: `success?/1` is the one reading of "exit `0` means success" (the metamutant
+  compile, `Baseline`, `CoverageProbe` all call it instead of matching a literal `0`), and the three
+  mix-output **patterns** live here too — `compile_error_banner/0`, `source_location_regex/0` (read by
+  `Mutare.Poison` for `file:line`s), and `test_location_regex/0` (read by `Mutare.Runner.Baseline` to
+  name flaky tests). Those three parse for *different* jobs (deliberately **not** merged) but share
+  one home, so a mix output-format change is a single fix.
   The pivot is `--exit-status failure_exit/0`, forced onto every mutant `mix test`: a clean ExUnit
   failure (a kill) exits with that distinctive code, while a compile error / missing dep / broken
   helper exits `1` — so a harness error is no longer indistinguishable from a kill. Also owns the

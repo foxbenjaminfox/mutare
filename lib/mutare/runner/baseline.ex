@@ -96,8 +96,10 @@ defmodule Mutare.Runner.Baseline do
     end)
   end
 
-  defp run_outcome(0, ms, _output), do: {:pass, ms}
-  defp run_outcome(_status, _ms, output), do: {:fail, output}
+  # `Command.success?/1` owns the "0 means success" reading of the exit code.
+  defp run_outcome(status, ms, output) do
+    if Command.success?(status), do: {:pass, ms}, else: {:fail, output}
+  end
 
   defp disagree?(outcomes) do
     Enum.any?(outcomes, &match?({:pass, _}, &1)) and
@@ -125,8 +127,10 @@ defmodule Mutare.Runner.Baseline do
     "the suite passed on some baseline runs and failed on others.\n\n" <> named
   end
 
+  # The `test_file:line` pattern is owned by `Mutare.Sandbox.Command` (the home of
+  # everything that parses mix's output), so a mix output-format change is one fix.
   defp failing_tests(output) do
-    ~r{([\w/.\-]+_test\.exs):(\d+)}
+    Command.test_location_regex()
     |> Regex.scan(output)
     |> Enum.map(fn [_match, file, line] -> "#{file}:#{line}" end)
     |> Enum.uniq()

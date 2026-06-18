@@ -20,6 +20,53 @@ defmodule Mutare.Sandbox.CommandTest do
     refute Command.failure_exit() in [0, 1, 2, Command.timeout_exit()]
   end
 
+  describe "success?/1 is the single home for \"0 means success\"" do
+    test "0 is the only success code" do
+      assert Command.success?(0)
+    end
+
+    test "every other exit code is not success" do
+      for status <- [1, 2, 3, Command.failure_exit(), Command.timeout_exit(), 137, 255] do
+        refute Command.success?(status), "exit #{status} must not read as success"
+      end
+    end
+
+    test "agrees with outcome/1 on the pass code" do
+      # The two readings of exit 0 must never drift apart.
+      assert Command.success?(0) == (Command.outcome(0) == :passed)
+    end
+  end
+
+  describe "mix output vocabulary (the shared patterns live here)" do
+    test "compile_error_banner/0 captures the offending file path" do
+      banner = "== Compilation error in file test/foo_test.exs ==\n** (ArgumentError)"
+      assert [_, "test/foo_test.exs"] = Regex.run(Command.compile_error_banner(), banner)
+    end
+
+    test "source_location_regex/0 matches any .ex/.exs file:line (Poison reads it)" do
+      assert [_, "lib/foo.ex", "5"] =
+               Regex.run(Command.source_location_regex(), "lib/foo.ex:5:12: error")
+
+      assert [_, "test/foo_test.exs", "42"] =
+               Regex.run(Command.source_location_regex(), "test/foo_test.exs:42")
+    end
+
+    test "test_location_regex/0 narrows to _test.exs files (Baseline reads it)" do
+      assert [_, "test/foo_test.exs", "9"] =
+               Regex.run(Command.test_location_regex(), "test/foo_test.exs:9")
+
+      # A lib source or a non-test script is not a test location.
+      refute Regex.run(Command.test_location_regex(), "lib/foo.ex:5")
+      refute Regex.run(Command.test_location_regex(), "test/support/helper.exs:5")
+    end
+
+    test "a test location is also a source location (the narrowing is consistent)" do
+      output = "test/foo_test.exs:42"
+      assert Regex.run(Command.test_location_regex(), output)
+      assert Regex.run(Command.source_location_regex(), output)
+    end
+  end
+
   describe "outcome/1 decodes the exit-code contract" do
     test "0 is a pass (the mutation survived)" do
       assert Command.outcome(0) == :passed

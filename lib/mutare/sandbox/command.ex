@@ -29,8 +29,25 @@ defmodule Mutare.Sandbox.Command do
   suite's** compilation (it ran at the test modules' compile time). The latter is
   a detected mutant — a kill, not infra — and is told apart by a test-script
   compile-error banner (`suite_compile_error?/1`), the only place this module
-  reads output. `timed_test/4` applies the `--exit-status` flag and returns a
-  typed `Mutare.Sandbox.Command.Result` decoded via `outcome/2`.
+  reads output to form a *verdict*. `timed_test/4` applies the `--exit-status`
+  flag and returns a typed `Mutare.Sandbox.Command.Result` decoded via `outcome/2`.
+
+  ## Mix output vocabulary
+
+  Three patterns recognise shapes in `mix`'s human-readable output, and all break
+  together if mix ever changes its format — so they live **here**, together, even
+  though each is read for a *different* job by a different module:
+
+    * `compile_error_banner/0` — the `== Compilation error in file <path> ==`
+      banner; read *here* by `suite_compile_error?/1` to tell a kill from infra.
+    * `source_location_regex/0` — a `<file>:<line>` reference; read by
+      `Mutare.Poison` to map a compile error back to a mutant id.
+    * `test_location_regex/0` — a `<test_file>:<line>` reference (a narrowing of
+      the above to `_test.exs`); read by `Mutare.Runner.Baseline` to name the
+      tests in a flaky run.
+
+  The consumers are deliberately *not* merged — they parse for different ends —
+  but sourcing every pattern from here gives a mix-output-format change one home.
 
   ## Kill detection stops at the first failure
 
@@ -57,6 +74,7 @@ defmodule Mutare.Sandbox.Command do
   alias Mutare.Sandbox.Command.Result
 
   @timeout_env "MUTARE_TIMEOUT"
+  @success_exit 0
   @timeout_exit 124
   @failure_exit 101
 
@@ -101,11 +119,21 @@ defmodule Mutare.Sandbox.Command do
   def failure_exit, do: @failure_exit
 
   @doc """
+  Whether `status` is the clean-success exit code (`0`).
+
+  The single home for the "zero means success" reading that every mix run which
+  *doesn't* go through `timed_test/4` — the one metamutant compile, the baseline,
+  the coverage probe — would otherwise re-derive by matching a literal `0`.
+  """
+  @spec success?(non_neg_integer()) :: boolean()
+  def success?(status), do: status == @success_exit
+
+  @doc """
   Decode a `mix test` mutant-run exit status into its `t:outcome/0` — the single,
   total reading of this module's exit-code contract (see the moduledoc).
   """
   @spec outcome(non_neg_integer()) :: :passed | :failed | :timeout | :harness_error
-  def outcome(0), do: :passed
+  def outcome(status) when status == @success_exit, do: :passed
   def outcome(status) when status == @failure_exit, do: :failed
   def outcome(status) when status == @timeout_exit, do: :timeout
   def outcome(_status), do: :harness_error
@@ -140,16 +168,51 @@ defmodule Mutare.Sandbox.Command do
     end
   end
 
+  # === Mix output vocabulary ==================================================
+  #
+  # Patterns recognising shapes in mix's human-readable output. Co-located here
+  # because they all break together if mix ever changes its format, though each
+  # is read for a different job by a different module (see the moduledoc).
+
+  @compile_error_banner ~r/== Compilation error in file (\S+) ==/
+  @source_location ~r{([\w/.\-]+\.exs?):(\d+)}
+  @test_location ~r{([\w/.\-]+_test\.exs):(\d+)}
+
+  @doc """
+  Regex matching mix's `== Compilation error in file <path> ==` banner, capturing
+  `<path>`. Read here by `suite_compile_error?/1`; exposed so the banner has a
+  single home.
+  """
+  @spec compile_error_banner() :: Regex.t()
+  def compile_error_banner, do: @compile_error_banner
+
+  @doc """
+  Regex matching a `<file>:<line>` source reference in mix output (an `.ex`/`.exs`
+  path and a line, e.g. `lib/foo.ex:5` or `test/foo_test.exs:42`), capturing the
+  file and the line. `Mutare.Poison` scans it to map a compile error back to a
+  mutant id; it lives here so mix's output shape has one home.
+  """
+  @spec source_location_regex() :: Regex.t()
+  def source_location_regex, do: @source_location
+
+  @doc """
+  Regex matching a `<test_file>:<line>` reference in mix output — a narrowing of
+  `source_location_regex/0` to `_test.exs` files, capturing the file and the line.
+  `Mutare.Runner.Baseline` scans it to name the tests in a flaky run.
+  """
+  @spec test_location_regex() :: Regex.t()
+  def test_location_regex, do: @test_location
+
   @doc """
   Whether `output` reports a `mix` compilation error in a **test script** — the
   signature of a mutation that broke the test suite's compilation (see
-  `outcome/2`). Matches Elixir's `== Compilation error in file <path> ==` banner
-  only when `<path>` is a `.exs` under a `test/` directory; a lib-file error or
-  no banner is not one. Pure, so the discriminator is unit-testable.
+  `outcome/2`). Matches the `compile_error_banner/0` only when the captured path
+  is a `.exs` under a `test/` directory; a lib-file error or no banner is not one.
+  Pure, so the discriminator is unit-testable.
   """
   @spec suite_compile_error?(String.t()) :: boolean()
   def suite_compile_error?(output) when is_binary(output) do
-    case Regex.run(~r/== Compilation error in file (\S+) ==/, output) do
+    case Regex.run(compile_error_banner(), output) do
       [_, file] -> test_script?(file)
       nil -> false
     end

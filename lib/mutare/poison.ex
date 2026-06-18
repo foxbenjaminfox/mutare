@@ -30,6 +30,7 @@ defmodule Mutare.Poison do
   """
 
   alias Mutare.Manifest
+  alias Mutare.Sandbox.Command
 
   @doc """
   Mutant ids implicated by `compile_output`, given `%{file => metamutant_source}`.
@@ -74,8 +75,10 @@ defmodule Mutare.Poison do
   end
 
   # `file:line` pairs from compiler output, e.g. `lib/foo.ex:5:12` or `lib/foo.ex:5`.
+  # The pattern is owned by `Mutare.Sandbox.Command` (the home of everything that
+  # parses mix's output), so a mix output-format change is a single fix there.
   defp error_locations(output) do
-    ~r{([\w/.\-]+\.exs?):(\d+)}
+    Command.source_location_regex()
     |> Regex.scan(output)
     |> Enum.map(fn [_match, file, line] -> {file, String.to_integer(line)} end)
     |> Enum.uniq()
