@@ -1,14 +1,15 @@
 defmodule Mutare.AliasesTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.Transform.Aliases
+  alias Mutare.Transform.{Aliases, Resolve}
 
-  # Annotate `source`, then return `{literal_path, resolved_path}` for every remote call,
-  # keyed by the called function name — the contract a mutator reads.
+  # Annotate `source` (through the unified resolution walk), then return
+  # `{literal_path, resolved_path}` for every remote call, keyed by the called function name —
+  # the contract a mutator reads.
   defp resolved(source) do
     source
     |> Sourceror.parse_string!()
-    |> Aliases.annotate()
+    |> Resolve.annotate()
     |> collect_calls()
   end
 

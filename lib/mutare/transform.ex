@@ -120,14 +120,14 @@ defmodule Mutare.Transform do
   alias Mutare.Mutator.Spec
 
   alias Mutare.Transform.{
-    Aliases,
     Analyze,
     Candidate,
     Ctx,
     FunctionPlan,
     ModulePlan,
     Names,
-    Render
+    Render,
+    Resolve
   }
 
   # The default set is the built-in catalog's `all/0` — one source of truth, so a
@@ -170,11 +170,13 @@ defmodule Mutare.Transform do
     # (see `Mutare.Transform.Names`).
     {prefix, active_var} = Names.generated_names(parsed)
     ctx = %{ctx | prefix: prefix, active_var: active_var}
-    # Resolve `alias`es first, stamping each call's module position with the module it
-    # refers to (`Mutare.Transform.Aliases`), so the call-matching mutators recognise an
-    # aliased `S.upcase` as `String.upcase`. `parsed` itself stays pristine for the
-    # comment-based ignore scan below.
-    {transformed, ctx} = transform_node(Aliases.annotate(parsed), ctx)
+    # Resolve `alias`es and `import`s in one lexical pass (`Mutare.Transform.Resolve`),
+    # stamping each call with the module it refers to, so the call-matching mutators recognise
+    # an aliased `S.upcase` as `String.upcase` and a bare imported `reject(xs, f)` (after
+    # `import Enum`) as `Enum.reject`. The two interleave in source order (an `alias` can
+    # rebind a later `import`'s module), which the single fold gets right by construction.
+    # `parsed` itself stays pristine for the comment-based ignore scan below.
+    {transformed, ctx} = transform_node(Resolve.annotate(parsed), ctx)
 
     metamutant = transformed |> silence_helper_xref() |> Render.to_source()
 

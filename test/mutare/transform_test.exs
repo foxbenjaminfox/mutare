@@ -815,6 +815,96 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "import resolution (bare imported calls mutate)" do
+    test "a whole-module import makes a bare call mutate, keeping it bare" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule ImpWhole do
+            import Enum
+            def f(xs), do: reject(xs, & &1)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
+      # Whole import ⇒ the sibling `filter` is imported too, so the mutant stays bare.
+      assert {"reject(xs, & &1)", "filter(xs, & &1)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "a selective import qualifies the mutant (the sibling may not be imported)" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule ImpOnly do
+            import Enum, only: [reject: 2]
+            def f(xs), do: reject(xs, & &1)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
+      # `filter/2` isn't imported, so the swap qualifies — always compile-safe.
+      assert {"reject(xs, & &1)", "Enum.filter(xs, & &1)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "a same-named local function with no import is not mutated" do
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule ImpLocal do
+            def reject(a, b), do: {a, b}
+            def f(xs), do: reject(xs, 1)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      refute Enum.any?(sites, &(&1.mutator == :collection))
+    end
+
+    test "a bare imported guard macro mutates via lifting and compiles" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule ImpGuard do
+            import Integer
+            def f(n) when is_even(n), do: n
+            def f(_), do: 0
+          end
+          """,
+          mutators: [Mutare.Mutators.Integer]
+        )
+
+      site = Enum.find(sites, &(&1.mutator == :integer))
+      assert %Site{kind: :lifted, original_code: "is_even(n)", mutated_code: "is_odd(n)"} = site
+      assert_compiles(meta)
+    end
+
+    test "a bare Kernel call displaced by `import Kernel, except:` is left alone" do
+      # `abs` is excepted from Kernel, so a bare `abs` here is some other module's — not the
+      # Kernel `abs/1` CallRemoval assumes. (No compile — the other module is fictional; the
+      # point is the *absence* of a removal site.)
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule ImpDisplaced do
+            import Kernel, except: [abs: 1]
+            import MyAbs
+            def f(x), do: abs(x)
+          end
+          """,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
+
+      refute Enum.any?(sites, &(&1.mutator == :call_removal))
+    end
+  end
+
   describe "StringCall (complementary String call swaps)" do
     test "swaps a String call in place, records the bare swap, and compiles" do
       source = """

@@ -44,16 +44,25 @@ defmodule Mutare.Transform.Render do
     end)
   end
 
-  # Remove the analyzer's internal annotations before rendering. `:mutare`
-  # (in-place candidates) and `:mutare_tag` (guard target references) are
-  # bookkeeping that must never reach the source.
+  # Remove the analyzer's internal annotations before rendering. `:mutare` (in-place
+  # candidates), `:mutare_tag` (guard target references), and the resolution stamps
+  # `:mutare_alias`/`:mutare_import`/`:mutare_kernel_displaced` are bookkeeping that must
+  # never reach the source.
+  @internal_meta_keys [
+    :mutare,
+    :mutare_tag,
+    :mutare_alias,
+    :mutare_import,
+    :mutare_kernel_displaced
+  ]
+
   defp strip_annotations(ast) do
     Macro.prewalk(ast, fn
-      # Equivalent: stripping is belt-and-suspenders — any leftover :mutare/:mutare_tag
-      # metadata never reaches the rendered source (Sourceror ignores unknown meta keys).
+      # Equivalent: stripping is belt-and-suspenders — any leftover annotation metadata
+      # never reaches the rendered source (Sourceror ignores unknown meta keys).
       # mutare:ignore[pattern_swap] form/meta swap only flips which binding is_list tests
       {form, meta, args} when is_list(meta) ->
-        {form, meta |> Keyword.delete(:mutare) |> Keyword.delete(:mutare_tag), args}
+        {form, Keyword.drop(meta, @internal_meta_keys), args}
 
       other ->
         other

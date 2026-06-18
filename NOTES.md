@@ -478,6 +478,65 @@ integer key — `Literal`'s — is untouched).
     spec's opts) is constant within a run, so poison rebuilds reproduce the same id sequence.
     The unconfigured path drops nothing (zero overhead).
 
+### import resolution — bare imported calls mutate `[done]`
+`Mutare.Transform.Imports` is the bare-call counterpart to the `alias` vocabulary: it stamps
+each bare call that resolves to an imported module (`meta[:mutare_import]`), so a bare
+`reject(xs, f)` after `import Enum` is mutated by Collection like `Enum.reject`. The unified
+reader `Mutare.Transform.Calls.resolved_call/1` recognises both shapes (alias-remote and
+bare-import) and the families switched to it (a one-line swap each); `Aliases.resolved_call`
+moved there.
+
+- **One walk, not two passes — aliases and imports interleave.** `alias`/`import` share one
+  lexical scope and *interact*: `import Foo.B; alias A.B; import B` imports two different
+  modules (the second `import B` sees the alias). So a single driver (`Mutare.Transform.Resolve`)
+  folds *both* envs together in source order — `Aliases` and `Imports` are now pure vocabulary
+  modules (env-building + stamping + reading rules), each cohesive, with no walk of their own.
+  This also kills the redundancy of the original two-pass version (an `Aliases.annotate` then an
+  `Imports.annotate`), where the second pass rebuilt the alias env just to resolve imports. The
+  env threads `aliases`, `imports`, the `Kernel` selector, and a `piped?` flag (for effective
+  arity); a `case`/body descent resets `piped?`, the `|>` clause sets it on the RHS.
+- **Why this is safe without rebuilding the compiler.** We only ever resolve to a *module*,
+  never a definition, and lean on the compiler: any **compiling** bare call is unambiguous.
+  Verified against Elixir: `import Enum` + a local `def reject/2`, two whole imports of
+  `reject/2`, and shadowing a `Kernel` name via a plain import are **all compile errors**
+  ("conflicts with local function" / "imported from both … ambiguous"). So if the source
+  compiles and `import Enum` is in scope and Enum exports `reject/2`, a bare `reject(x, y)`
+  *is* `Enum.reject/2`.
+- **Per-arity, so we reflect.** Resolution is strictly per-arity (`import M, only: [f: 1]`
+  then `f(1, 2)` is a compile error; `import Enum` + bare `min(a, b)` is *ambiguous* with
+  `Kernel.min/2` and won't compile, but `min(coll)` resolves to `Enum.min/1`). A whole/except
+  import therefore needs the module's exported arities — learned by **runtime reflection**
+  (`function_exported?`/`macro_exported?`). This is the one place the transform reads the
+  loaded environment; it's deterministic for the stdlib (always loaded, and the only modules
+  the families target) and conservatively skips an un-loadable module (a target/dep — never
+  targeted), so a user-module import simply isn't resolved. `only:`-listed arities are read
+  straight from the source (no reflection). A reflection-based decision can't silently
+  miscompile: even if a wrong attribution slipped through, the selective path *qualifies* the
+  swap, so a non-existent `Enum.fun/n` would poison rather than mis-behave.
+- **bare vs qualified diff.** The stamp carries the rebuild kind: a whole import (`:all`) →
+  `:bare` (the swap's sibling is importable too, clean diff `reject`→`filter`); any selective
+  import (`:only`/`:except`/`only: :functions`) → `:qualify` (`reject`→`Enum.filter`, always
+  compile-safe since the sibling may be out of scope). `except:` qualifies too — the sibling
+  could be the excepted name.
+- **Kernel is tracked, not reflected.** The default whole `import Kernel` is implicit, so
+  reflection can't tell you "the default set"; the env tracks a `Kernel` selector instead.
+  The **only** way to displace a `Kernel` function is `import Kernel, except:/only:` (a plain
+  import can't silently shadow `abs`/`min` — it errors, verified), so a bare `Kernel`-named
+  call is the `Kernel` one unless the selector says otherwise, in which case it's stamped
+  `meta[:mutare_kernel_displaced]` and the bare-`Kernel` families (`Numeric`'s min/max/round,
+  `CallRemoval`'s abs) skip it. Default-Kernel calls stay unstamped — zero change, zero
+  reflection on the common path (no `import Kernel` narrowing).
+- **Lifting comes for free.** The walk stamps guard call nodes too, so `import Integer; def
+  f(n) when is_even(n)` mutates to `is_odd(n)` via the existing lift path — no `FunctionPlan`
+  change. The metamutant keeps the source's `import Integer`, so the `is_odd` macro resolves.
+- **Out of scope (documented limitations).** Erlang atom-module imports (`import :lists`) and
+  bare imported `:string`/`:math` calls — those families match the literal atom form and
+  don't route through `resolved_call`; the import isn't tracked. Operator displacement
+  (`import Kernel, except: [+: 2]` + a custom `+`) — Arithmetic/Relational/Logical don't read
+  the stamp. Bare-imported transparent-transform *removal* (`import Enum; sort(xs)` →
+  `xs`) is also not covered: `CallRemoval` doesn't route through `resolved_call`. Like
+  `alias`, `use`/macro-injected imports are invisible.
+
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
 (`apply(Foo, …)`, `is_struct(x, Foo)`, `[A, B]`, a behaviour/strategy arg) to the

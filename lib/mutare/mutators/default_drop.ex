@@ -32,13 +32,13 @@ defmodule Mutare.Mutators.DefaultDrop do
 
   Every result reuses the surviving argument AST and the lower-arity form always exists,
   so the single build stays compile-safe; remote calls are guard-safe for free. On by
-  default. Recognises the lookups by their resolved module (`Mutare.Transform.Aliases`),
+  default. Recognises the lookups by their resolved module (`Mutare.Transform.Calls`),
   so an aliased call is matched too.
   """
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
-  alias Mutare.Transform.Aliases
+  alias Mutare.Transform.Calls
 
   # {alias_path, function, effective_arity} => base function the call collapses to.
   # The operation is uniform: drop the trailing (default/fallback) argument, rename to
@@ -68,7 +68,7 @@ defmodule Mutare.Mutators.DefaultDrop do
 
   @impl Mutare.Mutator
   def mutate(node, %{piped: piped?}) do
-    case Aliases.resolved_call(node) do
+    case Calls.resolved_call(node) do
       {module, fun, args, rebuild} ->
         eff_arity = Mutare.Mutator.effective_arity(args, piped?)
 

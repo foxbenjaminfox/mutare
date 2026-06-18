@@ -41,18 +41,47 @@ contract between them is the whole game.
   IR, not a walk-everything-then-subtract blacklist. Context is classified *positively* and
   routed; mutators run **once**. The IR splits *vocabulary* (plan structs, owning discovery) from
   *emission* (id assignment, site recording, AST building — kept in `Transform`):
-  - **`Transform.Aliases`** — a lexical-`alias` resolution **pre-pass** run on the parsed AST
-    before planning. It threads a scoped alias env (folding left-to-right over each statement
-    sequence; nested scopes inherit, child aliases don't leak) and stamps each *call-module*
-    `__aliases__` node with the module it resolves to (`meta[:mutare_alias]`, only when it
-    differs from the written path). `resolved_module/2` is the reader **every** call-matching
-    mutator family (Collection/StringCall/MapKeyword/CollectionArity/ModeSwap/CallRemoval/
-    DefaultDrop/Numeric/Integer) uses to recognise an aliased `S.upcase` as `String.upcase` — while still rebuilding
-    from the node's own (aliased) `__aliases__`, so the diff keeps `S.` and the swap stays
-    within the module. It also fixes a latent shadow bug: `alias MyApp.Enum` now resolves
-    `Enum.filter` to the *local* module, so a family no longer wrongly fires on it. `import`
-    is **not** resolved (needs the export list + local-shadowing rules; out of scope), and
-    `use`-injected aliases are invisible without macro expansion.
+  - **`Transform.Resolve`** — the lexical name-resolution **pre-pass**: one walk over the
+    parsed AST that threads a single scoped env and stamps every call with the module it
+    refers to, so the call-matching families recognise it. It is the *driver*; the rules live
+    in two vocabulary modules (`Aliases`, `Imports`). `alias` and `import` share one scope and
+    **interleave** — `import Foo.B; alias A.B; import B` imports two different modules — so they
+    must be folded *together*, in source order: one left-to-right fold per statement sequence
+    extends both envs (`Aliases.register` + `Imports.register`, the latter resolving its module
+    through the alias env in force) and walks each statement under its predecessors' env. Nested
+    scopes inherit; a child's additions don't leak. (One walk, not two passes — a second pass
+    would rebuild the same alias env to resolve imports.)
+  - **`Transform.Aliases`** — the `alias` *vocabulary* (env-building, resolution, stamping,
+    reading). `Resolve` folds a scoped alias env (`register/2`) and at each remote call stamps
+    the *call-module* `__aliases__` node with the module it resolves to (`stamp_module/2` →
+    `meta[:mutare_alias]`, only when it differs from the written path). `resolved_module/2` is
+    the reader that recognises an aliased `S.upcase` as `String.upcase` — while the mutator
+    still rebuilds from the node's own (aliased) `__aliases__`, so the diff keeps `S.` and the
+    swap stays within the module. It also fixes a latent shadow bug: `alias MyApp.Enum` resolves
+    `Enum.filter` to the *local* module, so a family no longer wrongly fires on it. `use`-injected
+    aliases are invisible without macro expansion.
+  - **`Transform.Imports`** — the `import` *vocabulary* (the bare-call counterpart). `Resolve`
+    folds the import env (`register/4`) and stamps each *bare-call* node (`stamp/6` →
+    `meta[:mutare_import] = {module, :bare | :qualify}`), so a bare `reject(xs, f)` after
+    `import Enum` is mutated like `Enum.reject`. Soundness rests on the compiler: any *compiling*
+    bare call is unambiguous (import+local same name/arity, dual whole-imports, and Kernel
+    shadowing via plain import all error), so resolution needs only a module — not a definition.
+    It is strictly **per-arity**, so exported arities are learned by **runtime reflection**
+    (`function_exported?`/`macro_exported?`; precise for stdlib, the only modules the families
+    target, and conservatively skipped for un-loadable modules). The stamp's `:bare`/`:qualify`
+    kind drives the rebuild diff: a whole import (`:all`) keeps the mutant bare (sibling
+    importable), a selective one qualifies it (`Enum.filter(...)`, always compile-safe). The
+    **only** way to displace a `Kernel` function is `import Kernel, except:/only:` — tracked as a
+    `Kernel` selector, stamping `meta[:mutare_kernel_displaced]` so the bare-`Kernel` families
+    (`Numeric`/`CallRemoval`) skip a displaced call. Out of scope: Erlang atom-module imports
+    (`import :lists`) and operator displacement (`import Kernel, except: [+: 2]`); like `Aliases`,
+    `use`/macro-injected imports are invisible.
+  - **`Transform.Calls`** — the single `resolved_call/1` reader **every** call-matching family
+    (Collection/StringCall/MapKeyword/CollectionArity/ModeSwap/DefaultDrop/Numeric/Integer)
+    uses, recognising both an alias-resolved remote call `Mod.fun(args)` (via `Aliases`) and a
+    bare import-stamped call (via `Imports`), returning a uniform `{module, fun, args, rebuild}`
+    where `rebuild` is bare or qualified per the import kind — so a family matches its swap
+    table and calls `rebuild.(new_fun, new_args)` without caring which shape it was.
   - **`Transform.ModulePlan`** — a statement sequence classified into items: `{:lift, FunctionPlan}`,
     `{:in_place, clauses}`, `{:statement, node}`. `build/3` does the run-chunking + non-consecutive
     detection; `Transform.emit_module_plan/2` walks the items.

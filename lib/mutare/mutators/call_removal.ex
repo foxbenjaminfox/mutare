@@ -52,9 +52,11 @@ defmodule Mutare.Mutators.CallRemoval do
   (not a same-named user function), so — like the bare `Kernel` calls in
   `Mutare.Mutators.Numeric` — it is removed only at the function's true *effective*
   arity (`abs/1`, `binary_slice/2`, `binary_slice/3`, `binary_part/3`), recovered with
-  the pipe flag (a pipe stage carries one fewer argument than the source reads). The
-  guard-safe ones (`abs/1`, `binary_part/3`) are also removed inside a `when`, delivered
-  by lifting (`abs(x) > 0` → `x > 0`, guard-legal).
+  the pipe flag (a pipe stage carries one fewer argument than the source reads). And when
+  `import Kernel, except:/only:` has displaced it
+  (`Mutare.Transform.Imports.kernel_displaced?/1`), the bare call names another module's
+  function, so it is left alone. The guard-safe ones (`abs/1`, `binary_part/3`) are also
+  removed inside a `when`, delivered by lifting (`abs(x) > 0` → `x > 0`, guard-legal).
 
   ## Why it's pipe-aware (`mutate/2`, never `mutate/1`)
 
@@ -79,7 +81,7 @@ defmodule Mutare.Mutators.CallRemoval do
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.Aliases
+  alias Mutare.Transform.{Aliases, Imports}
 
   # {module_key, function} — arity-agnostic: every arity of these has its input as the
   # first argument and returns a same-typed value, so removal is always legal. The module
@@ -176,11 +178,17 @@ defmodule Mutare.Mutators.CallRemoval do
 
   # A bare `Kernel` call (`abs(x)`): removed only at its effective arity, so a same-named
   # user call at another arity is never touched. Effective arity = visible args + (piped?
-  # 1 : 0), since a pipe stage's node carries one fewer arg than the source reads.
-  def mutate({fun, _meta, args}, %{piped: piped?})
+  # 1 : 0), since a pipe stage's node carries one fewer arg than the source reads. A bare
+  # `abs` displaced from `Kernel` by `import Kernel, except:/only:`
+  # (`Mutare.Transform.Imports`) is another module's function, so it is left alone.
+  def mutate({fun, meta, args}, %{piped: piped?})
       when is_atom(fun) and is_list(args) do
     eff_arity = Mutare.Mutator.effective_arity(args, piped?)
-    removal(MapSet.member?(@bare_removable, {fun, eff_arity}), piped?, args)
+
+    removable? =
+      MapSet.member?(@bare_removable, {fun, eff_arity}) and not Imports.kernel_displaced?(meta)
+
+    removal(removable?, piped?, args)
   end
 
   def mutate(_node, _context), do: :skip

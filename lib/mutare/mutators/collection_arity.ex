@@ -37,11 +37,12 @@ defmodule Mutare.Mutators.CollectionArity do
   compiles. `Enum` calls are never guard-legal, so guard-safety is automatic.
 
   On by default. The arity-changing sibling of `Mutare.Mutators.Collection`. Recognises
-  `Enum` by its resolved module (`Mutare.Transform.Aliases`), so an aliased call is matched.
+  `Enum` by its resolved module (`Mutare.Transform.Calls`), so an aliased or bare-imported
+  call is matched.
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.Aliases
+  alias Mutare.Transform.Calls
 
   # {alias_path, function, effective_arity} => {new_function, kept_effective_indices}.
   # Every rule keeps effective index 0 (the enumerable); in a pipe that index is the
@@ -66,7 +67,7 @@ defmodule Mutare.Mutators.CollectionArity do
 
   @impl Mutare.Mutator
   def mutate(node, %{piped: piped?}) do
-    case Aliases.resolved_call(node) do
+    case Calls.resolved_call(node) do
       {module, fun, args, rebuild} ->
         eff_arity = Mutare.Mutator.effective_arity(args, piped?)
 

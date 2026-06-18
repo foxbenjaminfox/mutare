@@ -26,13 +26,13 @@ defmodule Mutare.Mutators.MapKeyword do
   edges (the already-present and still-absent paths a happy-path test never hits).
 
   On by default. Recognises `Map`/`Keyword` by their resolved module
-  (`Mutare.Transform.Aliases`), so an aliased call is matched while a shadowing
+  (`Mutare.Transform.Calls`), so an aliased or bare-imported call is matched while a shadowing
   `alias MyApp.Map` is left alone. The family atom is `:map_keyword` (`:map` is
   `MapLiteral`).
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.Aliases
+  alias Mutare.Transform.Calls
 
   # The conditional-write lattice (function => complementary functions). Applied to
   # both Map and Keyword, which expose the identical set — defined once so the two
@@ -51,7 +51,7 @@ defmodule Mutare.Mutators.MapKeyword do
 
   @impl Mutare.Mutator
   def mutate(node) do
-    with {module, fun, args, rebuild} <- Aliases.resolved_call(node),
+    with {module, fun, args, rebuild} <- Calls.resolved_call(node),
          true <- module in @modules,
          {:ok, new_funs} <- Map.fetch(@swaps, fun) do
       # `rebuild` reuses the written alias node (the swap stays within `Map`/`Keyword`).

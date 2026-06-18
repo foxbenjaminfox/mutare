@@ -10,7 +10,8 @@ defmodule Mutare.Mutators.Integer do
   Each pair shares its arity (`mod`/`floor_div` are `/2`, `is_even`/`is_odd` are
   `/1`), so renaming while keeping the argument list always compiles. Like the other
   call-matching families, it matches `Integer` by its **resolved** module
-  (`Mutare.Transform.Aliases`): a renamed `alias Integer, as: I` is matched (and
+  (`Mutare.Transform.Calls`): a renamed `alias Integer, as: I`, and a bare imported
+  `is_even` (`import Integer`), are matched (and
   mutates `I.is_even` → `I.is_odd`), while a shadowing `alias MyApp.Integer` resolves
   to the local module and is correctly left alone.
 
@@ -23,7 +24,7 @@ defmodule Mutare.Mutators.Integer do
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.Aliases
+  alias Mutare.Transform.Calls
 
   # {alias_path, function} => {alias_path, function}. Each pair shares its arity, so
   # the rename keeping the argument list always compiles.
@@ -39,7 +40,7 @@ defmodule Mutare.Mutators.Integer do
 
   @impl Mutare.Mutator
   def mutate(node) do
-    with {module, fun, args, rebuild} <- Aliases.resolved_call(node),
+    with {module, fun, args, rebuild} <- Calls.resolved_call(node),
          {:ok, {_new_mod, new_fun}} <- Map.fetch(@swaps, {module, fun}) do
       # `rebuild` reuses the written alias node (the swap stays within `Integer`), so an
       # aliased `I.is_even` mutates to `I.is_odd`, not `Integer.is_odd`.

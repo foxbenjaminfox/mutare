@@ -36,12 +36,13 @@ defmodule Mutare.Mutators.Collection do
 
   On by default — the Elixir-flavoured family. High signal on idiomatic
   collection code. It recognises `Enum`/`List`/`Stream` calls by their resolved
-  module (`Mutare.Transform.Aliases`), so an aliased `E.filter` (`alias Enum, as:
-  E`) is matched while a shadowing `alias MyApp.Enum` is correctly left alone.
+  module (`Mutare.Transform.Calls`), so an aliased `E.filter` (`alias Enum, as: E`)
+  and a bare imported `filter` (`import Enum`) are both matched, while a shadowing
+  `alias MyApp.Enum` is correctly left alone.
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.Aliases
+  alias Mutare.Transform.Calls
 
   # {alias_path, function} => {alias_path, function}
   @swaps %{
@@ -81,7 +82,7 @@ defmodule Mutare.Mutators.Collection do
 
   @impl Mutare.Mutator
   def mutate(node) do
-    with {module, fun, args, rebuild} <- Aliases.resolved_call(node),
+    with {module, fun, args, rebuild} <- Calls.resolved_call(node),
          {:ok, {_new_mod, new_fun}} <- Map.fetch(@swaps, {module, fun}) do
       # `rebuild` reuses the written alias node, so an aliased `E.filter` mutates to
       # `E.reject` (the swap stays within the module).

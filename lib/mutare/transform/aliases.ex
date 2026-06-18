@@ -1,22 +1,24 @@
 defmodule Mutare.Transform.Aliases do
   @moduledoc false
-  # Lexical `alias` resolution for the transform — and the contract by which a mutator
-  # recognises an aliased remote call.
+  # The `alias` *vocabulary* — the env-building, resolution, stamping, and reading rules for
+  # `alias`, used by the unified lexical-resolution walk in `Mutare.Transform.Resolve`. (The
+  # walk itself, and the interleaving with `import`, live there; this module is pure rules.)
   #
-  # The call-matching mutator families (Collection, StringCall, MapKeyword,
-  # CollectionArity, ModeSwap, CallRemoval, DefaultDrop, Numeric, Integer) recognise a remote
-  # call by its *literal* module path — `Enum.filter`, `String.upcase`. An `alias` rebinds that
-  # path (`alias String, as: S; S.upcase(x)`), so without resolution the call hides from
-  # every one of them — and worse, `alias MyApp.Enum` makes a *local* module masquerade as
-  # the stdlib one, so a family would wrongly fire on it.
+  # The call-matching mutator families (Collection, StringCall, MapKeyword, CollectionArity,
+  # ModeSwap, CallRemoval, DefaultDrop, Numeric, Integer) recognise a remote call by its
+  # *literal* module path — `Enum.filter`, `String.upcase`. An `alias` rebinds that path
+  # (`alias String, as: S; S.upcase(x)`), so without resolution the call hides from every one
+  # of them — and worse, `alias MyApp.Enum` makes a *local* module masquerade as the stdlib
+  # one, so a family would wrongly fire on it.
   #
-  # `annotate/1` walks a parsed (Sourceror) AST once, accumulating a lexically-scoped alias
-  # environment, and stamps each *call-module* alias node with the module it actually refers
-  # to under `meta[:mutare_alias]` — but only when that differs from the written path, so an
-  # unaliased call carries no new metadata. `resolved_module/2` is the reader the mutators
-  # call: the stamped module, or the literal path when none. (An unknown atom meta key is
-  # ignored by Sourceror's renderer and never reaches compilation, so the stamp is invisible
-  # in both the metamutant and the diff — verified by tests.)
+  # `Resolve` folds a lexically-scoped alias env with `register/2` and, at each remote call,
+  # stamps the *call-module* `__aliases__` node with the module it actually refers to under
+  # `meta[:mutare_alias]` via `stamp_module/2` — but only when that differs from the written
+  # path, so an unaliased call carries no new metadata. `resolved_module/2` is the reader: the
+  # stamped module, or the literal path when none. (An unknown atom meta key is ignored by
+  # Sourceror's renderer and never reaches compilation, so the stamp is invisible in both the
+  # metamutant and the diff — verified by tests.) The remote-call reader the mutators actually
+  # call lives in `Mutare.Transform.Calls.resolved_call/1` (which folds in `resolved_module/2`).
   #
   # The diff is preserved because only *recognition* uses the resolved module: a mutator
   # still rebuilds from the node's own (aliased) `__aliases__`, so `S.upcase(x)` mutates to
@@ -34,26 +36,22 @@ defmodule Mutare.Transform.Aliases do
   #     for a stdlib `String` call.
   #   * Lexical and textual: an alias applies only to siblings *after* it and to nested
   #     scopes (a nested `defmodule`/function body inherits the enclosing aliases); aliases
-  #     declared inside a child scope do not leak back out. This falls out of folding the
-  #     environment left-to-right over each statement sequence and passing it *down* into
+  #     declared inside a child scope do not leak back out. This falls out of `Resolve`
+  #     folding the env left-to-right over each statement sequence and passing it *down* into
   #     children without bringing a child's additions back up.
   #   * A `__MODULE__`-relative alias (`alias __MODULE__.Sub`) cannot be resolved to a
   #     concrete module statically, so it is skipped (it never names a stdlib module).
-  #   * `import` is **not** resolved — that would need the imported module's export list and
-  #     local-shadowing rules (reconstructing the compiler on unexpanded source), and
-  #     `use`-injected aliases are invisible without macro expansion. Both out of scope.
+  #   * `use`-injected aliases are invisible without macro expansion (out of scope). `import`
+  #     resolution is the sibling vocabulary in `Mutare.Transform.Imports`.
 
   alias Mutare.AST
 
   @meta_key :mutare_alias
 
-  @doc "Annotate every call-module alias node with the module it resolves to."
-  @spec annotate(Macro.t()) :: Macro.t()
-  def annotate(ast), do: walk(ast, %{})
-
   @doc """
-  The module a call's `__aliases__` refers to: the resolved path stamped by `annotate/1`,
-  or the literal path when no alias applied. The reader half of the `:mutare_alias` contract.
+  The module a call's `__aliases__` refers to: the resolved path stamped by
+  `stamp_module/2`, or the literal path when no alias applied. The reader half of the
+  `:mutare_alias` contract.
   """
   @spec resolved_module(keyword(), [atom()]) :: [atom()]
   def resolved_module(alias_meta, literal_path) when is_list(alias_meta),
@@ -62,68 +60,43 @@ defmodule Mutare.Transform.Aliases do
   def resolved_module(_alias_meta, literal_path), do: literal_path
 
   @doc """
-  Deconstruct an Elixir remote call `Mod.fun(args)` and resolve its module
-  through the lexical alias env, returning `{module, fun, args, rebuild}` — or
-  `nil` for anything that isn't such a call.
-
-  `module` is the resolved path (`[:String]` for an aliased `S.upcase`);
-  `fun`/`args` are the called function and its argument list. `rebuild` is
-  `(new_fun, new_args -> Macro.t())`, which reconstructs the call **reusing the
-  written alias node and the original `.`/call metadata** — so a mutator that
-  renames `S.filter` to `S.reject` keeps the `S.` the source wrote, the diff
-  stays minimal, and the swap stays within the module.
-
-  The single home for the remote-call AST shape and the alias-resolution step
-  every call-matching mutator family (Collection, StringCall, MapKeyword,
-  CollectionArity, ModeSwap, DefaultDrop, Numeric, Integer) would otherwise
-  repeat. A family with extra shapes (`:string`/`Kernel`/bare calls) keeps its
-  own clauses for those and uses this for the Elixir-alias case.
+  Resolve a written module path against an alias env: a first segment that is an
+  aliased name expands to its target, the remaining segments riding along.
+  Anything else is verbatim. Exposed so the `import` pre-pass
+  (`Mutare.Transform.Imports`) can resolve an `import E` (where `E` is an alias)
+  through the *same* lexical alias environment, never reimplementing it.
   """
-  @spec resolved_call(Macro.t()) ::
-          {[atom()], atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
-  def resolved_call(
-        {{:., dot_meta, [{:__aliases__, alias_meta, mod} = aliases, fun]}, call_meta, args}
-      )
-      when is_list(args) do
-    rebuild = fn new_fun, new_args ->
-      {{:., dot_meta, [aliases, new_fun]}, call_meta, new_args}
+  @spec resolve_path([atom()] | term(), map()) :: [atom()] | term()
+  def resolve_path([first | rest], env) when is_atom(first) do
+    case Map.fetch(env, first) do
+      {:ok, base} -> base ++ rest
+      :error -> [first | rest]
     end
-
-    {resolved_module(alias_meta, mod), fun, args, rebuild}
   end
 
-  def resolved_call(_node), do: nil
+  def resolve_path(path, _env), do: path
 
-  # --- the scoped walk -------------------------------------------------------
+  @doc """
+  Extend an alias env with the binding(s) a statement introduces. Only an
+  `alias` directive changes it; every other statement passes through unchanged.
+  The unified resolution walk (`Mutare.Transform.Resolve`) folds the alias env with
+  this as it descends each statement sequence.
+  """
+  @spec register(Macro.t(), map()) :: map()
+  def register({:alias, _meta, args}, env), do: register_alias(args, env)
+  def register(_stmt, env), do: env
 
-  # A statement sequence: fold the env left-to-right so an `alias` extends it for the
-  # *subsequent* siblings only. Each statement is walked under the env in force *before*
-  # it (so an alias resolves nothing in its own line, and order is textual).
-  defp walk({:__block__, meta, stmts}, env) when is_list(stmts) do
-    {walked, _env} =
-      Enum.map_reduce(stmts, env, fn stmt, env ->
-        {walk(stmt, env), register(stmt, env)}
-      end)
+  @doc """
+  Stamp a call's `__aliases__` module node with the module it resolves to under the env,
+  but only when that differs from the written path (an unaliased call keeps clean
+  metadata). The write half of the `:mutare_alias` contract; called by
+  `Mutare.Transform.Resolve` at each remote call.
+  """
+  @spec stamp_module(Macro.t(), map()) :: Macro.t()
+  def stamp_module({:__aliases__, _meta, path} = node, env),
+    do: stamp(node, resolve_path(path, env))
 
-    {:__block__, meta, walked}
-  end
-
-  # A remote call `Mod.fun(...)`: stamp the module position with its resolved path (only
-  # when an alias changes it), then walk the arguments under the same env.
-  defp walk({{:., dot_meta, [{:__aliases__, _am, path} = aliases, fun]}, call_meta, args}, env)
-       when is_list(args) do
-    aliases = stamp(aliases, resolve(path, env))
-    {{:., dot_meta, [aliases, fun]}, call_meta, Enum.map(args, &walk(&1, env))}
-  end
-
-  defp walk({form, meta, args}, env) when is_list(args),
-    do: {form, meta, Enum.map(args, &walk(&1, env))}
-
-  defp walk({left, right}, env), do: {walk(left, env), walk(right, env)}
-
-  defp walk(list, env) when is_list(list), do: Enum.map(list, &walk(&1, env))
-
-  defp walk(node, _env), do: node
+  def stamp_module(node, _env), do: node
 
   # Stamp the resolved module onto the alias node's meta, but only when it differs from the
   # written path (an unaliased call keeps clean metadata).
@@ -133,23 +106,7 @@ defmodule Mutare.Transform.Aliases do
       else: {:__aliases__, [{@meta_key, resolved} | meta], path}
   end
 
-  # Resolve a written path against the env: a first segment that is an aliased name expands
-  # to its target, the remaining segments riding along. Anything else is verbatim.
-  defp resolve([first | rest], env) when is_atom(first) do
-    case Map.fetch(env, first) do
-      {:ok, base} -> base ++ rest
-      :error -> [first | rest]
-    end
-  end
-
-  defp resolve(path, _env), do: path
-
   # --- alias directives ------------------------------------------------------
-
-  # Extend the env with the binding(s) an `alias` statement introduces; every other
-  # statement leaves it unchanged.
-  defp register({:alias, _meta, args}, env), do: register_alias(args, env)
-  defp register(_stmt, env), do: env
 
   # `alias Foo.{Bar, Baz}` — the multi-alias special form: each child rides on the base.
   # The base is resolved through the env first, so `alias X, as: Foo; alias Foo.{Bar}`
@@ -157,7 +114,7 @@ defmodule Mutare.Transform.Aliases do
   defp register_alias([{{:., _, [{:__aliases__, _, base}, :{}]}, _, children} | _], env)
        when is_list(base) and is_list(children) do
     if atoms?(base) do
-      resolved_base = resolve(base, env)
+      resolved_base = resolve_path(base, env)
 
       Enum.reduce(children, env, fn
         {:__aliases__, _, seg}, env when is_list(seg) ->
@@ -175,14 +132,14 @@ defmodule Mutare.Transform.Aliases do
   defp register_alias([{:__aliases__, _, path}, opts], env) when is_list(path) do
     cond do
       not atoms?(path) -> env
-      (name = as_name(opts)) != nil -> Map.put(env, name, resolve(path, env))
-      true -> bind(env, path, resolve(path, env))
+      (name = as_name(opts)) != nil -> Map.put(env, name, resolve_path(path, env))
+      true -> bind(env, path, resolve_path(path, env))
     end
   end
 
   # `alias Foo.Bar` — the introduced name is the last segment.
   defp register_alias([{:__aliases__, _, path}], env) when is_list(path) do
-    if atoms?(path), do: bind(env, path, resolve(path, env)), else: env
+    if atoms?(path), do: bind(env, path, resolve_path(path, env)), else: env
   end
 
   defp register_alias(_args, env), do: env

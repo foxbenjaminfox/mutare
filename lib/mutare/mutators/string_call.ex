@@ -34,12 +34,13 @@ defmodule Mutare.Mutators.StringCall do
   — so guard-safety is automatic. The sibling of `Mutare.Mutators.Collection`
   (the `Enum`/`List` swaps).
 
-  `String` is matched by its **resolved** module (`Mutare.Transform.Aliases`): an
-  aliased `S.upcase` (`alias String, as: S`) is matched, while a *shadowing*
-  `alias MyApp.String` resolves to the local module and is correctly left alone.
-  `:string` is matched on the literal atom in its direct `:string.foo` form — the
-  alias pre-pass resolves only Elixir-module (`__aliases__`) aliases, so an
-  `alias :string, as: S` is not seen through and that `S.foo` form is missed.
+  `String` is matched by its **resolved** module (`Mutare.Transform.Calls`): an
+  aliased `S.upcase` (`alias String, as: S`) and a bare imported `upcase`
+  (`import String`) are matched, while a *shadowing* `alias MyApp.String` resolves
+  to the local module and is correctly left alone. `:string` is matched on the
+  literal atom in its direct `:string.foo` form — the alias/import pre-passes resolve
+  only Elixir-module (`__aliases__`) names, so neither `alias :string, as: S` nor
+  `import :string` is seen through (that `S.foo`/bare form is missed).
 
   On by default — high signal on the affix/case/predicate functions that anchor
   string-handling logic, exactly where an off-by-direction bug hides. Distinct
@@ -48,7 +49,7 @@ defmodule Mutare.Mutators.StringCall do
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.Aliases
+  alias Mutare.Transform.Calls
 
   # {alias_path, function} => {alias_path, function}
   @swaps %{
@@ -100,7 +101,7 @@ defmodule Mutare.Mutators.StringCall do
     do: swap_erlang(dot_meta, :string, fun, call_meta, args)
 
   def mutate(node) do
-    case Aliases.resolved_call(node) do
+    case Calls.resolved_call(node) do
       # `String.equivalent?(a, b)` → raw `a == b`, alias-resolved like the swaps.
       {[:String], :equivalent?, args, _rebuild} ->
         equivalent_substitution(args)

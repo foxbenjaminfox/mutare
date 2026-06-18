@@ -70,13 +70,13 @@ defmodule Mutare.Mutators.ModeSwap do
   where a swap is actually produced** (it reads the same `swap_sites/4` as `mutate/2`),
   so an unrecognised atom or a variable in a mode position stays available to AtomLiteral.
 
-  Recognises the stdlib modules by their resolved module (`Mutare.Transform.Aliases`), so
+  Recognises the stdlib modules by their resolved module (`Mutare.Transform.Calls`), so
   an aliased call (`alias DateTime, as: DT; DT.truncate(dt, :second)`) is matched too.
   """
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
-  alias Mutare.Transform.Aliases
+  alias Mutare.Transform.Calls
 
   # Ordered magnitude ladders. A swap is to the adjacent finer/coarser member *within
   # the same ladder*, so the replacement is always legal for that function (truncate
@@ -123,7 +123,7 @@ defmodule Mutare.Mutators.ModeSwap do
 
   @impl Mutare.Mutator
   def mutate(node, %{piped: piped?}) do
-    case Aliases.resolved_call(node) do
+    case Calls.resolved_call(node) do
       {module, fun, args, rebuild} ->
         case rule(module, fun, args, piped?) do
           {:ok, positions, group} ->
@@ -153,7 +153,7 @@ defmodule Mutare.Mutators.ModeSwap do
   # `swap_sites/4`, so ownership and mutation never drift.
   @impl Mutare.Mutator
   def owned_args(node, %{piped: piped?}) do
-    case Aliases.resolved_call(node) do
+    case Calls.resolved_call(node) do
       {module, fun, args, _rebuild} ->
         case rule(module, fun, args, piped?) do
           {:ok, positions, group} ->

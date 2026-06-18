@@ -50,15 +50,17 @@ defmodule Mutare.Mutators.Numeric do
   ## Scope and known gaps
 
   The qualified `Float`/`Kernel` forms are recognised by their **resolved** module
-  (`Mutare.Transform.Aliases`), so an aliased `F.ceil` (`alias Float, as: F`) is matched.
-  Bare `Kernel` calls can't be aliased; an `import` that rebinds them is not resolved (out
-  of scope — see `Mutare.Transform.Aliases`). `Float.round` is intentionally absent —
-  round-to-nearest has no complementary `Float` sibling. `div`↔`rem` lives in
-  `Mutare.Mutators.Arithmetic` (it is an operator swap, not a call). On by default.
+  (`Mutare.Transform.Calls`), so an aliased `F.ceil` (`alias Float, as: F`) is matched.
+  Bare `Kernel` calls can't be aliased, and the only way to rebind one is
+  `import Kernel, except:/only:` — when that displaces it, `Mutare.Transform.Imports` flags
+  the call (`kernel_displaced?/1`) and the bare path skips it, so it is never swapped as a
+  `Kernel` call it no longer is. `Float.round` is intentionally absent — round-to-nearest
+  has no complementary `Float` sibling. `div`↔`rem` lives in `Mutare.Mutators.Arithmetic`
+  (it is an operator swap, not a call). On by default.
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.Aliases
+  alias Mutare.Transform.{Calls, Imports}
 
   # Bare `Kernel` calls keyed on {name, effective_arity} => [sibling names]. The arity
   # is what proves a bare `floor`/`max` is the Kernel one (and not a same-named user
@@ -96,7 +98,7 @@ defmodule Mutare.Mutators.Numeric do
   # at the same arity, so no pipe context is needed.
   @impl Mutare.Mutator
   def mutate(node) do
-    with {module, fun, args, rebuild} <- Aliases.resolved_call(node),
+    with {module, fun, args, rebuild} <- Calls.resolved_call(node),
          {:ok, {_new_mod, new_fun}} <- Map.fetch(@remote_swaps, {module, fun}) do
       # `rebuild` reuses the written alias node (the swap stays within `Float`/`Kernel`).
       [rebuild.(new_fun, args)]
@@ -114,9 +116,16 @@ defmodule Mutare.Mutators.Numeric do
       when is_atom(fun) and is_list(args) do
     eff_arity = Mutare.Mutator.effective_arity(args, piped?)
 
-    case Map.fetch(@kernel_swaps, {fun, eff_arity}) do
-      {:ok, siblings} -> Enum.map(siblings, &{&1, meta, args})
-      :error -> :skip
+    # A bare `min`/`max`/`round`/… is the `Kernel` one *unless* it has been displaced by an
+    # `import Kernel, except:/only:` (`Mutare.Transform.Imports`) — then it names another
+    # module's function, so the swap would be wrong; skip it.
+    if Imports.kernel_displaced?(meta) do
+      :skip
+    else
+      case Map.fetch(@kernel_swaps, {fun, eff_arity}) do
+        {:ok, siblings} -> Enum.map(siblings, &{&1, meta, args})
+        :error -> :skip
+      end
     end
   end
 
