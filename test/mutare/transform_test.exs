@@ -856,6 +856,23 @@ defmodule Mutare.TransformTest do
   end
 
   describe "import resolution (bare imported calls mutate)" do
+    test "CallRemoval removes a bare imported transparent transform" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule ImpRemoval do
+            import Enum
+            def f(xs), do: sort(xs)
+          end
+          """,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
+
+      pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
+      assert {"sort(xs)", "xs"} in pairs
+      assert_compiles(meta)
+    end
+
     test "a whole-module import makes a bare call mutate, keeping it bare" do
       {meta, sites, _} =
         Mutare.transform_string(

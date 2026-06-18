@@ -77,11 +77,13 @@ contract between them is the whole game.
     (`import :lists`) and operator displacement (`import Kernel, except: [+: 2]`); like `Aliases`,
     `use`/macro-injected imports are invisible.
   - **`Transform.Calls`** — the single `resolved_call/1` reader **every** call-matching family
-    (Collection/StringCall/MapKeyword/CollectionArity/ModeSwap/DefaultDrop/Numeric/Integer)
-    uses, recognising both an alias-resolved remote call `Mod.fun(args)` (via `Aliases`) and a
-    bare import-stamped call (via `Imports`), returning a uniform `{module, fun, args, rebuild}`
-    where `rebuild` is bare or qualified per the import kind — so a family matches its swap
-    table and calls `rebuild.(new_fun, new_args)` without caring which shape it was.
+    (Collection/StringCall/MapKeyword/CollectionArity/ModeSwap/CallRemoval/DefaultDrop/Numeric/
+    Integer) uses, recognising both an alias-resolved remote call `Mod.fun(args)` (via `Aliases`)
+    and a bare import-stamped call (via `Imports`), returning a uniform `{module, fun, args,
+    rebuild}` where `rebuild` is bare or qualified per the import kind — so a family matches its
+    swap table and calls `rebuild.(new_fun, new_args)` without caring which shape it was.
+    (`CallRemoval` uses only the `module`/`fun`/`args`, not `rebuild`; its Erlang `:string`/
+    `:erlang` and bare-`Kernel` shapes — which `Calls` doesn't resolve — stay in its own clauses.)
   - **`Transform.ModulePlan`** — a statement sequence classified into items: `{:lift, FunctionPlan}`,
     `{:in_place, clauses}`, `{:statement, node}`. `build/3` does the run-chunking + non-consecutive
     detection; `Transform.emit_module_plan/2` walks the items.

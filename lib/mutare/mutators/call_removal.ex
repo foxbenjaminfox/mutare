@@ -75,18 +75,20 @@ defmodule Mutare.Mutators.CallRemoval do
 
   On by default. `Function.identity/1` exists since Elixir 1.10 (well under the 1.18
   floor); these are remote calls, so guard-safety is automatic. Elixir targets are
-  recognised by their **resolved** module (`Mutare.Transform.Aliases`), so an aliased
-  call is matched too; the Erlang `:string` targets are matched on the literal atom (an
-  `alias :string, as: S` is not resolved, so only the direct `:string.foo` form is seen).
+  recognised by their **resolved** module through the shared `Mutare.Transform.Calls`
+  reader, so an aliased call (`alias Enum, as: E; E.sort(x)`) *and* a bare imported one
+  (`import Enum; sort(x)`) are both matched; the Erlang `:string`/`:erlang` targets are
+  matched on the literal atom (an `alias`/`import` of an atom module is not resolved, so
+  only the direct `:string.foo` form is seen).
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.{Aliases, Imports}
+  alias Mutare.Transform.{Calls, Imports}
 
   # {module_key, function} — arity-agnostic: every arity of these has its input as the
   # first argument and returns a same-typed value, so removal is always legal. The module
-  # key is an alias path (`[:String]`) for an Elixir module, or a bare atom (`:string`)
-  # for an Erlang one (see `module_key/1`).
+  # key is a resolved alias path (`[:String]`) for an Elixir module (matched through
+  # `Calls.resolved_call`), or a bare atom (`:string`) for an Erlang one.
   @removable MapSet.new([
                {[:Enum], :sort},
                {[:Enum], :sort_by},
@@ -169,20 +171,35 @@ defmodule Mutare.Mutators.CallRemoval do
   @impl Mutare.Mutator
   def mutate(_node), do: :skip
 
-  # A remote call — Elixir (alias-resolved) or Erlang `:string`.
+  # An Elixir stdlib call recognised by its **resolved** module — an aliased remote
+  # (`Enum.sort(x)`) or a bare imported one (`import Enum; sort(x)`), both via the shared
+  # `Calls.resolved_call`. Anything it doesn't recognise (an Erlang `:string`/`:erlang`
+  # remote, or a bare `Kernel` call) falls to `removal_for/2`.
   @impl Mutare.Mutator
-  def mutate({{:., _dm, [mod, fun]}, _cm, args}, %{piped: piped?})
-      when is_list(args) and is_atom(fun) do
-    removal(removable?(mod, fun), piped?, args)
+  def mutate(node, %{piped: piped?}) do
+    case Calls.resolved_call(node) do
+      {module, fun, args, _rebuild} ->
+        removal(MapSet.member?(@removable, {module, fun}), piped?, args)
+
+      nil ->
+        removal_for(node, piped?)
+    end
   end
 
-  # A bare `Kernel` call (`abs(x)`): removed only at its effective arity, so a same-named
-  # user call at another arity is never touched. Effective arity = visible args + (piped?
-  # 1 : 0), since a pipe stage's node carries one fewer arg than the source reads. A bare
-  # `abs` displaced from `Kernel` by `import Kernel, except:/only:`
+  def mutate(_node, _context), do: :skip
+
+  # An Erlang `:string`/`:erlang` remote — its module is a bare atom (`Calls` resolves only
+  # Elixir-module names, so it leaves these to us).
+  defp removal_for({{:., _dm, [mod, fun]}, _cm, args}, piped?)
+       when is_list(args) and is_atom(fun),
+       do: removal(erlang_removable?(mod, fun), piped?, args)
+
+  # A bare `Kernel` call (`abs(x)`, the binary slicers): removed only at its effective
+  # arity, so a same-named user call at another arity is never touched. Effective arity =
+  # visible args + (piped? 1 : 0), since a pipe stage's node carries one fewer arg than the
+  # source reads. A bare call displaced from `Kernel` by `import Kernel, except:/only:`
   # (`Mutare.Transform.Imports`) is another module's function, so it is left alone.
-  def mutate({fun, meta, args}, %{piped: piped?})
-      when is_atom(fun) and is_list(args) do
+  defp removal_for({fun, meta, args}, piped?) when is_atom(fun) and is_list(args) do
     eff_arity = Mutare.Mutator.effective_arity(args, piped?)
 
     removable? =
@@ -191,24 +208,17 @@ defmodule Mutare.Mutators.CallRemoval do
     removal(removable?, piped?, args)
   end
 
-  def mutate(_node, _context), do: :skip
+  defp removal_for(_node, _piped?), do: :skip
 
-  defp removable?(mod, fun) do
-    case module_key(mod) do
-      nil -> false
-      key -> MapSet.member?(@removable, {key, fun})
-    end
-  end
+  # An Erlang module is a bare atom — wrapped by Sourceror as `{:__block__, _, [:string]}`,
+  # or bare in plain AST. Anything else has no static atom module and is never removable.
+  defp erlang_removable?({:__block__, _meta, [atom]}, fun) when is_atom(atom),
+    do: MapSet.member?(@removable, {atom, fun})
 
-  # An Elixir module is an alias path (resolved through any lexical `alias`); an Erlang
-  # module is a bare atom — wrapped by Sourceror as `{:__block__, _, [:string]}`. Anything
-  # else (a variable receiver, an attribute) has no static module and is never removable.
-  defp module_key({:__aliases__, meta, path}) when is_list(path),
-    do: Aliases.resolved_module(meta, path)
+  defp erlang_removable?(atom, fun) when is_atom(atom),
+    do: MapSet.member?(@removable, {atom, fun})
 
-  defp module_key({:__block__, _meta, [atom]}) when is_atom(atom), do: atom
-  defp module_key(atom) when is_atom(atom), do: atom
-  defp module_key(_), do: nil
+  defp erlang_removable?(_mod, _fun), do: false
 
   # Decide the removal given membership + pipe context.
   defp removal(false, _piped?, _args), do: :skip

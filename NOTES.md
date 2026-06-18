@@ -529,13 +529,18 @@ moved there.
 - **Lifting comes for free.** The walk stamps guard call nodes too, so `import Integer; def
   f(n) when is_even(n)` mutates to `is_odd(n)` via the existing lift path — no `FunctionPlan`
   change. The metamutant keeps the source's `import Integer`, so the `is_odd` macro resolves.
+- **Every `resolved_call` family gets bare imports for free — including `CallRemoval`.** The
+  call-matching families all route through `Calls.resolved_call`, so a bare imported call is
+  recognised wherever an aliased remote one is. `CallRemoval` was the lone holdout — it did its
+  own `Aliases.resolved_module` lookup (ad-hoc, and blind to imports) — and now routes its
+  Elixir-module case through `Calls.resolved_call` too, so `import Enum; sort(xs)` → `xs`. Its
+  Erlang `:string`/`:erlang` (atom-module) and bare-`Kernel` paths stay separate (`Calls`
+  resolves only Elixir-module names).
 - **Out of scope (documented limitations).** Erlang atom-module imports (`import :lists`) and
   bare imported `:string`/`:math` calls — those families match the literal atom form and
   don't route through `resolved_call`; the import isn't tracked. Operator displacement
   (`import Kernel, except: [+: 2]` + a custom `+`) — Arithmetic/Relational/Logical don't read
-  the stamp. Bare-imported transparent-transform *removal* (`import Enum; sort(xs)` →
-  `xs`) is also not covered: `CallRemoval` doesn't route through `resolved_call`. Like
-  `alias`, `use`/macro-injected imports are invisible.
+  the stamp. Like `alias`, `use`/macro-injected imports are invisible.
 
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
