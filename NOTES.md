@@ -585,9 +585,16 @@ moved there.
   So every path is correct-or-poison. The `use`/macro-injected-import hole degrades the same
   way: to mis-resolve a hidden-import call to a visible module `M`, `M` would itself have to
   export that name/arity — which makes the *original* call ambiguous and non-compiling, so it
-  is never transformed. The hole therefore costs **missed** resolutions (or poison), never a
-  wrong-but-compiling mutant. (Reflection reads the harness's stdlib, which is the same Elixir
-  install the sandbox compiles against — version skew is the only residual, and benign.)
+  is never transformed. The hole therefore costs **missed** resolutions, never a
+  wrong-but-compiling mutant. It can also **poison**, but *only the bare path*: a hidden import
+  that also exports the swap sibling makes our bare `reject` ambiguous (the metamutant preserves
+  the `use`, so the hidden import is in scope when it compiles). A **qualified** substitution is
+  immune — `Elixir.M.sibling` is not an unqualified call, so no import (hidden or visible) can
+  make it ambiguous. So the bare optimization carries a small residual poison risk (a hidden
+  overlapping import, or a sibling that collides with `Kernel`) that always-qualifying would
+  erase; we keep bare for the clean diff on the overwhelmingly common lone-`import Foo` case.
+  (Reflection reads the harness's stdlib, which is the same Elixir install the sandbox compiles
+  against — version skew is the only other residual, and benign.)
 
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
