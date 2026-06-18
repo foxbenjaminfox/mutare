@@ -211,7 +211,7 @@ defmodule Mutare.Schema do
   # Only forward `:mutators` when set; `nil` lets `Mutare.Transform` use its
   # default mutator set (we never hard-code that default here).
   defp transform_opts(%Options{mutators: nil}), do: []
-  defp transform_opts(%Options{mutators: modules}), do: [mutators: modules]
+  defp transform_opts(%Options{mutators: specs}), do: [mutators: specs]
 
   defp finalize(%__MODULE__{} = schema) do
     %{schema | sites: Enum.reverse(schema.sites), skipped: Enum.reverse(schema.skipped)}

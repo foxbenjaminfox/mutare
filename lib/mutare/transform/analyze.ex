@@ -16,6 +16,7 @@ defmodule Mutare.Transform.Analyze do
 
   alias Mutare.AST
   alias Mutare.Mutator
+  alias Mutare.Mutator.Spec
   alias Mutare.Transform.{Candidate, PatternStructure}
 
   # The try-style body blocks whose clause bodies are *return paths*
@@ -489,9 +490,9 @@ defmodule Mutare.Transform.Analyze do
   # call (via the optional `owned_args/2` callback), unioned. Cheap when nobody implements
   # it — the `function_exported?/2` filter short-circuits before any call.
   defp owned_arg_indices(node, mutators, context) do
-    for mutator <- mutators,
-        function_exported?(mutator, :owned_args, 2),
-        i <- mutator.owned_args(node, context),
+    for %Spec{module: module, opts: opts} <- mutators,
+        function_exported?(module, :owned_args, 2),
+        i <- module.owned_args(node, Map.put(context, :opts, opts)),
         uniq: true,
         do: i
   end
@@ -725,7 +726,7 @@ defmodule Mutare.Transform.Analyze do
   # lockstep to the same tail node. `ReturnValue.replacements/1` decides the
   # constant(s) (or that the tail is ineligible).
   defp annotate_returns(analyzed_kw, raw_kw, mutators) do
-    if Mutare.Mutators.ReturnValue in mutators do
+    if Spec.find(mutators, Mutare.Mutators.ReturnValue) do
       [analyzed_kw, raw_kw]
       |> Enum.zip()
       |> Enum.map(fn {{key, analyzed_value}, {_key, raw_value}} ->
@@ -835,31 +836,33 @@ defmodule Mutare.Transform.Analyze do
   # there, so one selector hosts both — with `original`/`range` taken from the *raw*
   # condition for a clean diff.
   defp attach_if_condition(analyzed_condition, raw_condition, mutators) do
-    if Mutare.Mutators.IfCondition in mutators do
-      case Mutare.Mutators.IfCondition.replacements(raw_condition) do
-        [] ->
-          analyzed_condition
+    case Spec.find(mutators, Mutare.Mutators.IfCondition) do
+      nil ->
+        analyzed_condition
 
-        replacements ->
-          append_condition_candidates(analyzed_condition, raw_condition, replacements)
-      end
-    else
-      analyzed_condition
+      spec ->
+        case Mutare.Mutators.IfCondition.replacements(raw_condition) do
+          [] ->
+            analyzed_condition
+
+          replacements ->
+            append_condition_candidates(analyzed_condition, raw_condition, replacements, spec)
+        end
     end
   end
 
   # Append a `Candidate.InPlace` per replacement (`mutator` is the IfCondition
-  # *module*, since `Site.in_place/6` calls `.name()` on it) to the condition node's
+  # *spec*, since `Site.in_place/6` reads its `name`) to the condition node's
   # metadata, preserving any candidates already there. A condition we can't range
   # (Sourceror returns nil) or that is not a `{f, m, a}` node gets no mutant.
-  defp append_condition_candidates({form, meta, args} = node, raw_condition, replacements)
+  defp append_condition_candidates({form, meta, args} = node, raw_condition, replacements, spec)
        when is_list(meta) do
     case Sourceror.get_range(raw_condition) do
       %{} = range ->
         candidates =
           Enum.map(replacements, fn mutated ->
             %Candidate.InPlace{
-              mutator: Mutare.Mutators.IfCondition,
+              mutator: spec,
               original: raw_condition,
               mutated: mutated,
               range: range
@@ -874,7 +877,7 @@ defmodule Mutare.Transform.Analyze do
     end
   end
 
-  defp append_condition_candidates(node, _raw_condition, _replacements), do: node
+  defp append_condition_candidates(node, _raw_condition, _replacements, _spec), do: node
 
   # A bitstring segment `<<value::spec>>`: the value keeps the surrounding
   # context; the spec side is excluded except for `size(expr)` args.

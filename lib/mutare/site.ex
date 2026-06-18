@@ -55,10 +55,11 @@ defmodule Mutare.Site do
 
   @doc """
   An in-place mutation: an operator swapped behind a selector `case` in a
-  function body. `range` locates the original node; `mutator` is the module
-  that produced `mutated_node`.
+  function body. `range` locates the original node; `mutator` is the
+  `Mutare.Mutator.Spec` that produced `mutated_node` (its `name` is recorded).
   """
-  @spec in_place(pos_integer(), String.t(), map(), Macro.t(), Macro.t(), module()) :: t()
+  @spec in_place(pos_integer(), String.t(), map(), Macro.t(), Macro.t(), Mutare.Mutator.Spec.t()) ::
+          t()
   def in_place(id, file, range, original_node, mutated_node, mutator) do
     replace(id, file, range, original_node, mutated_node, mutator, :in_place)
   end
@@ -68,10 +69,17 @@ defmodule Mutare.Site do
   function behind a dispatcher) rather than by an in-place selector `case` — because
   the mutated node sits where a `case` is illegal: inside a `when` guard, or inside a
   clause *head* pattern (a literal swap). Same replacement shape as `in_place/6`,
-  recorded as `:lifted`; `mutator` distinguishes a guard operator swap
-  (`:relational`, …) from a head-pattern literal swap (`:literal`, …).
+  recorded as `:lifted`; `mutator` (a `Mutare.Mutator.Spec`) distinguishes a guard
+  operator swap (`:relational`, …) from a head-pattern literal swap (`:literal`, …).
   """
-  @spec lifted_replace(pos_integer(), String.t(), map(), Macro.t(), Macro.t(), module()) :: t()
+  @spec lifted_replace(
+          pos_integer(),
+          String.t(),
+          map(),
+          Macro.t(),
+          Macro.t(),
+          Mutare.Mutator.Spec.t()
+        ) :: t()
   def lifted_replace(id, file, range, original_node, mutated_node, mutator) do
     replace(id, file, range, original_node, mutated_node, mutator, :lifted)
   end
@@ -138,7 +146,7 @@ defmodule Mutare.Site do
       line: range.start[:line],
       column: range.start[:column],
       range: range,
-      mutator: mutator.name(),
+      mutator: mutator.name,
       kind: kind,
       original_op: elem(original_node, 0),
       mutated_op: elem(mutated_node, 0),

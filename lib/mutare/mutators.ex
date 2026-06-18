@@ -11,16 +11,19 @@ defmodule Mutare.Mutators do
       under `:mutators`.
     * `families/0` is every registered family atom; `resolve/1` accepts any of
       them by name.
-    * `resolve/1` turns a user-supplied list (built-in family atoms and/or custom
-      modules implementing `Mutare.Mutator`) into modules, validating each. Both
-      the CLI/`.mutare.exs` path (`Mutare.Config`) and the direct API
+    * `resolve/1` turns a user-supplied list (built-in family atoms, custom
+      modules implementing `Mutare.Mutator`, and/or `{module, opts}` configured
+      entries) into `Mutare.Mutator.Spec` structs, validating each. Both the
+      CLI/`.mutare.exs` path (`Mutare.Config`) and the direct API
       (`Mutare.Options`, hence `Mutare.run/2`) route through it, so a family atom
-      resolves and a non-mutator module is rejected the same way wherever
-      mutators are supplied.
+      resolves, a configured entry carries its options, and a non-mutator module
+      is rejected the same way wherever mutators are supplied.
 
   The registry is an ordered keyword list (not a map) so `all/0` is deterministic
   and a new family slots into a defined position.
   """
+
+  alias Mutare.Mutator.Spec
 
   # Ordered on purpose: this is the order mutants are offered in, and the order
   # `all/0` returns. Register a new built-in family by adding it here — that is
@@ -73,15 +76,22 @@ defmodule Mutare.Mutators do
   def families, do: Keyword.keys(@registry)
 
   @doc """
-  Resolve a list of built-in family atoms and/or `Mutare.Mutator` modules into
-  modules. Each entry is either a registered family atom or a module implementing
-  the behaviour. Raises `ArgumentError` on an unknown family or a module that
-  does not implement `Mutare.Mutator`.
+  Resolve a list of mutator entries into `Mutare.Mutator.Spec` structs, preserving
+  order. Each entry is a registered family atom, a module implementing the
+  behaviour, a `{family_atom | module, opts}` configured pair, or an
+  already-resolved `%Spec{}` (idempotent). Raises `ArgumentError` on an unknown
+  family or a module that does not implement `Mutare.Mutator`.
   """
-  @spec resolve([atom() | module()]) :: [module()]
+  @spec resolve([atom() | module() | {atom() | module(), term()} | Spec.t()]) :: [Spec.t()]
   def resolve(mutators) when is_list(mutators), do: Enum.map(mutators, &resolve!/1)
 
-  defp resolve!(name) do
+  defp resolve!(%Spec{} = spec), do: spec
+  defp resolve!({entry, opts}), do: Spec.configured(to_module!(entry), opts)
+  defp resolve!(entry), do: Spec.for_module(to_module!(entry))
+
+  # An entry's module: a registered family atom maps via the registry, any other
+  # term must be a module implementing the behaviour.
+  defp to_module!(name) do
     cond do
       is_atom(name) and Keyword.has_key?(registry(), name) ->
         Keyword.fetch!(registry(), name)

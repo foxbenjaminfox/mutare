@@ -1099,6 +1099,41 @@ the hundreds of per-mutant runs, bought for correctness and a clean contract —
 `Baseline.run/1` is the only thing that can abort with `:baseline_failed`;
 `CoverageProbe.run/3` can't fail (it returns a bare `selection`).
 
+### Configurable mutators — `{module, opts}` `[done]`
+A custom mutator can be **parametrized**: a `:mutators` entry may be `{module, opts}`
+(not just a bare module/family atom). `Mutare.Mutators.resolve/1` now resolves every
+entry to a **`Mutare.Mutator.Spec`** `%Spec{module, name, opts}` — a bare built-in is a
+spec with empty opts and `module.name()`; idempotent on an already-resolved spec.
+
+Two design decisions, both load-bearing:
+
+- **How opts reach the mutator.** The behaviour's callbacks are pure functions over a
+  node, with no slot for config — except `mutate/2`/`owned_args/2`, which already take a
+  `context` map (`%{piped: …}`). So opts ride **in the context**: `mutations/3` builds a
+  per-spec context with `:opts` = the spec's opts and passes it to `mutate/2`; `owned_args/2`
+  gets it too. A configurable mutator therefore implements **`mutate/2`** (which is invoked
+  on every node, not just pipe stages) and reads `context.opts`. `mutate/1` is left
+  untouched (no context, no opts) — this avoided bumping every existing callback's arity and
+  reused the one channel that was already threaded. `pattern_mutations/2` is **not** opts-aware
+  (structural head-pattern mutators stay unconfigurable for now — out of scope, not a use case
+  yet). The change is backward-compatible: existing `mutate/2` clauses match `%{piped: p}`,
+  which still matches a map that *also* has `:opts`.
+
+- **Identity.** `name` defaults to `module.name()`, but a reserved **`:as`** key in `opts`
+  overrides it (and is stripped before opts reach the mutator). This matters because the
+  recorded name is what reports show *and* what the `# mutare:ignore[...]` filter matches —
+  so configuring the same module twice (`{M, as: :a, …}`, `{M, as: :b, …}`) needs distinct
+  names or the two would be indistinguishable. The `Spec` (not the bare module) is what
+  `Mutator.mutations/3` tags each mutation with, so `name`/`opts` travel through the candidates
+  into `Site` (which records `spec.name`).
+
+Plumbing: `Transform.transform_string` normalizes its `:mutators` opt through `resolve/1` at
+the boundary (so tests passing bare modules, the default set, and the Options/Config path all
+become specs); every internal consumer (`Mutator.mutations/3`, `analyze`'s `owned_arg_indices`
++ `ReturnValue`/`IfCondition` enablement via `Spec.find/2`, `PatternStructure`, `FunctionPlan`,
+`Site.replace`) reads `spec.module`/`spec.name`/`spec.opts`. The CLI's `--mutators` CSV can't
+express opts (strings only) — configured mutators are a `.mutare.exs`/`Mutare.run/2` feature.
+
 ### Expanded default mutator set `[done]`
 The built-ins grew from arithmetic+relational to a fuller catalog, **all on by
 default**: **arithmetic** (now also unary `-x`→`x`), **relational**, **logical**

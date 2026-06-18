@@ -1,0 +1,30 @@
+defmodule Mutare.Test.ConfigurableMutator do
+  @moduledoc """
+  A reference *configurable* custom mutator, used in tests to exercise the public
+  `{module, opts}` options-threading path.
+
+  It rewrites an integer literal to a replacement supplied via its configuration,
+  read from `context.opts` in `mutate/2` (a node-local mutator with no options
+  does nothing). Mirrors the configurable example in the `Mutare.Mutator` docs.
+  """
+  @behaviour Mutare.Mutator
+
+  @impl Mutare.Mutator
+  def name, do: :configurable
+
+  # Without options there is nothing to do — and `mutate/1` has no context to
+  # carry them, so the real logic lives in `mutate/2`.
+  @impl Mutare.Mutator
+  def mutate(_node), do: :skip
+
+  @impl Mutare.Mutator
+  def mutate({:__block__, _meta, [n]}, %{opts: opts}) when is_integer(n) do
+    case Keyword.get(opts, :replacement) do
+      nil -> :skip
+      # Clean meta so the new value renders (not the original token).
+      value -> [{:__block__, [], [value]}]
+    end
+  end
+
+  def mutate(_node, _context), do: :skip
+end

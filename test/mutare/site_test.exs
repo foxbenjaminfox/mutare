@@ -36,7 +36,8 @@ defmodule Mutare.SiteTest do
     test "renders an operator swap as original → mutated" do
       original = {:>=, [], [{:a, [], nil}, {:b, [], nil}]}
       mutated = {:>, [], [{:a, [], nil}, {:b, [], nil}]}
-      site = Site.in_place(1, "lib/x.ex", @range, original, mutated, Mutare.Mutators.Relational)
+      spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.Relational)
+      site = Site.in_place(1, "lib/x.ex", @range, original, mutated, spec)
 
       assert Site.describe(site) == "relational  a >= b → a > b"
     end

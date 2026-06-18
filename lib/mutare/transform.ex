@@ -143,14 +143,18 @@ defmodule Mutare.Transform do
   Options:
 
     * `:file` — path recorded on each site (default `"nofile"`)
-    * `:mutators` — list of mutator modules (default arithmetic + relational)
+    * `:mutators` — list of mutator entries (family atoms, modules, `{module, opts}`
+      pairs, or `Mutare.Mutator.Spec`s); defaults to the full built-in set
     * `:start_id` — first mutant id to assign (default `1`)
   """
   @spec transform_string(String.t(), keyword()) :: {String.t(), [Site.t()], pos_integer()}
   def transform_string(source, opts \\ []) when is_binary(source) do
     ctx = %Ctx{
       file: Keyword.get(opts, :file, "nofile"),
-      mutators: Keyword.get(opts, :mutators, @default_mutators),
+      # Normalize to `Mutare.Mutator.Spec`s — `:mutators` may arrive as family
+      # atoms / bare modules (tests, the default set) or already-resolved specs
+      # (the Options/Config path); `resolve/1` is idempotent on specs.
+      mutators: opts |> Keyword.get(:mutators, @default_mutators) |> Mutare.Mutators.resolve(),
       next_id: Keyword.get(opts, :start_id, 1),
       # Mutant ids to drop (e.g. compile-poisoning, found by the runner): their
       # site is still recorded (`poisoned: true`, for the denominator and id

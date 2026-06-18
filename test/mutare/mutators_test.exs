@@ -2,6 +2,7 @@ defmodule Mutare.MutatorsTest do
   use ExUnit.Case, async: true
 
   alias Mutare.Mutators
+  alias Mutare.Mutator.Spec
 
   alias Mutare.Mutators.{
     AliasLiteral,
@@ -61,21 +62,42 @@ defmodule Mutare.MutatorsTest do
                  [:datetime, :alias, :return_value, :pattern_swap, :pattern_wildcard]
     end
 
-    test "resolve/1 maps family atoms to modules, preserving order" do
-      assert Mutators.resolve([:relational, :arithmetic]) == [Relational, Arithmetic]
+    test "resolve/1 maps family atoms to specs, preserving order" do
+      assert Mutators.resolve([:relational, :arithmetic]) == [
+               %Spec{module: Relational, name: :relational, opts: []},
+               %Spec{module: Arithmetic, name: :arithmetic, opts: []}
+             ]
     end
 
     test "resolve/1 accepts a custom module implementing the behaviour, mixed with families" do
-      assert Mutators.resolve([:arithmetic, Mutare.Test.BooleanMutator]) ==
+      assert Mutators.resolve([:arithmetic, Mutare.Test.BooleanMutator]) |> Enum.map(& &1.module) ==
                [Arithmetic, Mutare.Test.BooleanMutator]
     end
 
-    test "resolve/1 is idempotent on already-resolved modules" do
-      assert Mutators.resolve(Mutators.all()) == Mutators.all()
+    test "resolve/1 is idempotent: re-resolving its own output is a no-op" do
+      specs = Mutators.resolve(Mutators.all())
+      assert Enum.map(specs, & &1.module) == Mutators.all()
+      assert Mutators.resolve(specs) == specs
     end
 
     test "resolve/1 maps any registered family by name" do
-      assert Mutators.resolve([:conditional, :collection]) == [Conditional, Collection]
+      assert Mutators.resolve([:conditional, :collection]) |> Enum.map(& &1.module) ==
+               [Conditional, Collection]
+    end
+
+    test "resolve/1 carries {module, opts} configuration, stripping the :as name override" do
+      assert Mutators.resolve([{Mutare.Test.BooleanMutator, threshold: 5}]) ==
+               [%Spec{module: Mutare.Test.BooleanMutator, name: :boolean, opts: [threshold: 5]}]
+
+      # `:as` renames the family (so the same module can run twice) and never
+      # reaches the mutator's opts.
+      assert Mutators.resolve([{Mutare.Test.BooleanMutator, as: :strict, threshold: 5}]) ==
+               [%Spec{module: Mutare.Test.BooleanMutator, name: :strict, opts: [threshold: 5]}]
+    end
+
+    test "resolve/1 accepts a built-in family atom in a configured pair too" do
+      assert Mutators.resolve([{:arithmetic, as: :arith2}]) ==
+               [%Spec{module: Arithmetic, name: :arith2, opts: []}]
     end
 
     test "resolve/1 raises on an unknown family, listing the known ones" do

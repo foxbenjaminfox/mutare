@@ -48,11 +48,13 @@ defmodule Mutare.Config do
   end
 
   @doc """
-  Resolve a list of mutators to modules via the `Mutare.Mutators` catalog. Each
-  entry is either a built-in family atom (`:arithmetic`, `:relational`) or a
-  module implementing `Mutare.Mutator`. Raises `ArgumentError` on anything else.
+  Resolve a list of mutators to `Mutare.Mutator.Spec`s via the `Mutare.Mutators`
+  catalog. Each entry is a built-in family atom (`:arithmetic`, `:relational`), a
+  module implementing `Mutare.Mutator`, or a `{module, opts}` configured pair.
+  Raises `ArgumentError` on anything else.
   """
-  @spec mutator_modules([atom() | module()]) :: [module()]
+  @spec mutator_modules([atom() | module() | {atom() | module(), term()}]) ::
+          [Mutare.Mutator.Spec.t()]
   defdelegate mutator_modules(mutators), to: Mutare.Mutators, as: :resolve
 
   # Resolve output reporters. `--format` (CLI) wins over a `.mutare.exs`

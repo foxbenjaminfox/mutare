@@ -11,11 +11,11 @@ defmodule Mutare.Transform.PatternStructure do
   # The two differ only in *delivery*; "which mutators participate", "which names are read
   # outside the pattern", and "run a mutator over a single pattern node" are identical.
 
-  @doc "The enabled mutators that implement the structural `pattern_mutations/2` hook."
-  @spec mutators([module()]) :: [module()]
+  @doc "The enabled mutator specs that implement the structural `pattern_mutations/2` hook."
+  @spec mutators([Mutare.Mutator.Spec.t()]) :: [Mutare.Mutator.Spec.t()]
   def mutators(enabled) do
-    Enum.filter(enabled, fn mutator ->
-      Code.ensure_loaded?(mutator) and function_exported?(mutator, :pattern_mutations, 2)
+    Enum.filter(enabled, fn %{module: module} ->
+      Code.ensure_loaded?(module) and function_exported?(module, :pattern_mutations, 2)
     end)
   end
 
@@ -48,11 +48,12 @@ defmodule Mutare.Transform.PatternStructure do
   element unwrapped — letting the `case` path reuse the exact same mutators as the def-head
   path, which works on the full arg list directly.
   """
-  @spec node_mutations(Macro.t(), MapSet.t(), [module()]) :: [{module(), Macro.t()}]
+  @spec node_mutations(Macro.t(), MapSet.t(), [Mutare.Mutator.Spec.t()]) ::
+          [{Mutare.Mutator.Spec.t(), Macro.t()}]
   def node_mutations(pattern, used_outside, structural_mutators) do
     Enum.flat_map(structural_mutators, fn mutator ->
       [pattern]
-      |> mutator.pattern_mutations(used_outside)
+      |> mutator.module.pattern_mutations(used_outside)
       |> Enum.flat_map(fn
         [mutated] -> [{mutator, mutated}]
         _other -> []

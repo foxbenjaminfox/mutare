@@ -31,9 +31,9 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([], only: "lib/billing")[:paths] == ["lib/billing"]
     end
 
-    test "--mutators resolves a CSV to modules, preserving order" do
-      assert Config.merge([], mutators: "relational,arithmetic")[:mutators] ==
-               [Relational, Arithmetic]
+    test "--mutators resolves a CSV to specs, preserving order" do
+      assert Config.merge([], mutators: "relational,arithmetic")[:mutators]
+             |> Enum.map(& &1.module) == [Relational, Arithmetic]
     end
 
     test "--min-score and --sandbox pass through" do
@@ -79,8 +79,9 @@ defmodule Mutare.ConfigTest do
       refute Keyword.has_key?(Config.merge([mutators: :all], []), :mutators)
     end
 
-    test "file config mutators list resolves to modules" do
-      assert Config.merge([mutators: [:relational]], [])[:mutators] == [Relational]
+    test "file config mutators list resolves to specs" do
+      assert Config.merge([mutators: [:relational]], [])[:mutators] ==
+               [Mutare.Mutator.Spec.for_module(Relational)]
     end
 
     test "CLI flags win over file config" do
@@ -118,13 +119,14 @@ defmodule Mutare.ConfigTest do
   end
 
   describe "mutator_modules/1" do
-    test "maps known families to modules" do
-      assert Config.mutator_modules([:arithmetic, :relational]) == [Arithmetic, Relational]
+    test "maps known families to specs" do
+      assert Config.mutator_modules([:arithmetic, :relational]) |> Enum.map(& &1.module) ==
+               [Arithmetic, Relational]
     end
 
     test "accepts a custom module implementing the behaviour, mixed with families" do
-      assert Config.mutator_modules([:arithmetic, Mutare.Test.BooleanMutator]) ==
-               [Arithmetic, Mutare.Test.BooleanMutator]
+      assert Config.mutator_modules([:arithmetic, Mutare.Test.BooleanMutator])
+             |> Enum.map(& &1.module) == [Arithmetic, Mutare.Test.BooleanMutator]
     end
 
     test "raises on an unknown family, listing the known ones" do

@@ -242,15 +242,26 @@ defmodule Mutare.OptionsTest do
   end
 
   describe ":mutators" do
-    test "accepts nil (default set) or a list of modules" do
+    test "accepts nil (default set) or a list of modules, resolved to specs" do
       assert Options.new(mutators: nil).mutators == nil
       mods = [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
-      assert Options.new(mutators: mods).mutators == mods
+      assert Options.new(mutators: mods).mutators |> Enum.map(& &1.module) == mods
     end
 
     test "resolves built-in family atoms via the catalog (direct API parity with the CLI)" do
-      assert Options.new(mutators: [:relational, :arithmetic]).mutators ==
+      assert Options.new(mutators: [:relational, :arithmetic]).mutators |> Enum.map(& &1.module) ==
                [Mutare.Mutators.Relational, Mutare.Mutators.Arithmetic]
+    end
+
+    test "accepts {module, opts} configured entries, carrying opts onto the spec" do
+      assert Options.new(mutators: [{Mutare.Test.BooleanMutator, as: :strict, k: 1}]).mutators ==
+               [
+                 %Mutare.Mutator.Spec{
+                   module: Mutare.Test.BooleanMutator,
+                   name: :strict,
+                   opts: [k: 1]
+                 }
+               ]
     end
 
     test "validates that supplied modules implement the behaviour" do

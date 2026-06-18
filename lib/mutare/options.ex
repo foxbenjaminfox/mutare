@@ -28,7 +28,7 @@ defmodule Mutare.Options do
   @type t :: %__MODULE__{
           paths: [String.t()],
           exclude: [String.t()],
-          mutators: [module()] | nil,
+          mutators: [Mutare.Mutator.Spec.t()] | nil,
           only_files: MapSet.t() | nil,
           test_selection: :coverage | :full,
           workers: pos_integer(),
@@ -155,22 +155,18 @@ defmodule Mutare.Options do
     end
   end
 
-  # Resolve and validate `:mutators` through the one `Mutare.Mutators` catalog, so
-  # the direct API (`Mutare.run/2`, `Options.new/1`) resolves family atoms and
-  # rejects non-mutator modules exactly as the CLI/`.mutare.exs` path does — a
-  # built-in already mapped to a module by `Mutare.Config` passes through
-  # unchanged (resolution is idempotent). `nil` means "let `Mutare.Transform` pick
-  # its default set". The shape check stays here so a non-atom element (e.g. a
-  # string) gets the clear "list of modules" error, not an "unknown mutator" one.
+  # Resolve and validate `:mutators` through the one `Mutare.Mutators` catalog into
+  # `Mutare.Mutator.Spec`s, so the direct API (`Mutare.run/2`, `Options.new/1`)
+  # resolves family atoms, accepts `{module, opts}` configured entries, and rejects
+  # non-mutator modules exactly as the CLI/`.mutare.exs` path does — a list already
+  # resolved by `Mutare.Config` passes through unchanged (resolution is idempotent).
+  # `nil` means "let `Mutare.Transform` pick its default set". `resolve/1` raises a
+  # descriptive "unknown mutator" error on a bad entry; the non-list clause keeps
+  # the clear "list of modules" message for an outright wrong shape.
   defp validate_mutators!(nil), do: nil
 
-  defp validate_mutators!(modules) when is_list(modules) do
-    if Enum.all?(modules, &is_atom/1) do
-      Mutare.Mutators.resolve(modules)
-    else
-      raise ArgumentError, ":mutators must be a list of modules, got: #{inspect(modules)}"
-    end
-  end
+  defp validate_mutators!(mutators) when is_list(mutators),
+    do: Mutare.Mutators.resolve(mutators)
 
   defp validate_mutators!(other) do
     raise ArgumentError, ":mutators must be a list of modules, got: #{inspect(other)}"

@@ -329,7 +329,10 @@ contract between them is the whole game.
   `Site.describe/1` as the message). Encoding is the stdlib `JSON` module — hence the `elixir`
   floor is `~> 1.18`. Selected via the `:reporters` option (below).
 - **`Mutare.Mutator`** + **`Mutare.Mutators.*`** — the public extension behaviour (`mutate/1`,
-  `name/0`) and the built-in families, **all on by default**: Arithmetic (binary swaps +
+  `name/0`; optional `mutate/2`, `owned_args/2`, `pattern_mutations/2`) and the built-in families,
+  **all on by default**. A user-supplied mutator may be *configured* via a `{module, opts}` entry
+  in `:mutators` (the `opts` reach `mutate/2`/`owned_args/2` as `context.opts` — see
+  `Mutare.Mutator.Spec`): Arithmetic (binary swaps +
   unary-minus removal), Relational (ordering/equality swaps, plus membership `in`→`not in` —
   the polarity flip for `in`, mirroring `==`→`!=`; the reverse is Logical's `not` strip, and an
   `in` directly under a `not` is left unmutated to avoid duplicating it — see NOTES "Membership"),
@@ -493,10 +496,25 @@ contract between them is the whole game.
   `--warnings-as-errors` (single-clause functions / a sole clause are always clean — see NOTES).
 - **`Mutare.Mutators`** — the **single ordered registry** of built-in families and the one place
   mutator lists are resolved/validated. `all/0` is the default set (every registered module — an
-  unset `:mutators`/`:all`); `families/0` is every registered atom; `resolve/1` maps any family atom
-  + custom modules to validated modules. `Transform` (its default), `Config` (the CLI/`.mutare.exs`
-  path), and `Options` (the direct `Mutare.run/2` API) all derive from it — so a family registered
-  here is part of `:all` and resolvable/validated everywhere, with no second list to drift.
+  unset `:mutators`/`:all`); `families/0` is every registered atom; `resolve/1` maps any entry —
+  a family atom, a custom module, a `{family|module, opts}` **configured pair**, or an
+  already-resolved `%Spec{}` (idempotent) — to validated **`Mutare.Mutator.Spec`** structs.
+  `Transform` (its default), `Config` (the CLI/`.mutare.exs` path), and `Options` (the direct
+  `Mutare.run/2` API) all derive from it — so a family registered here is part of `:all` and
+  resolvable/validated everywhere, with no second list to drift.
+- **`Mutare.Mutator.Spec`** — the resolved unit of "a mutator to run": `%Spec{module, name, opts}`.
+  Every mutator runs as a `Spec` (a bare built-in is one with empty `opts` and `module.name()`); a
+  `{module, opts}` entry carries per-instance `opts`, delivered to the **context-taking callbacks**
+  (`mutate/2`, `owned_args/2`) via the context map's `:opts` key — so a *configurable* mutator
+  reads its parameters there (and therefore implements `mutate/2`, since `mutate/1` has no context).
+  The reserved `:as` key in `opts` overrides the recorded `name`, so the **same module can run
+  twice under distinct names** — load-bearing because the recorded name is what reports show and
+  what the `# mutare:ignore[...]` filter matches, so two configs must be distinguishable. The
+  `Spec` (not the bare module) is what `Mutator.mutations/3` tags each mutation with and what
+  threads through the candidates into `Site` (which records `spec.name`); `Spec.find/2` is how the
+  structural families (`ReturnValue`/`IfCondition`) check enablement by module. `Transform`
+  normalizes its `:mutators` opt through `resolve/1` at the boundary, so every internal consumer
+  sees specs regardless of whether the caller passed atoms, modules, or specs.
 - **`Mutare.Config`** / **`Mutare.Changes`** / **`Mix.Tasks.Mutare`** — `.mutare.exs` + CLI flag
   resolution, `git diff` for `--since`, and the CLI entry point. Output formats resolve here too:
   `--format`/`--output` (CLI) and `reporters:` (`.mutare.exs`) become the `Mutare.Options`
@@ -567,6 +585,15 @@ instead — `Transform` invokes it at each runtime call position with whether th
 so you can compute the *effective* arity (`length(args) + if(piped, do: 1, else: 0)`). You must
 only ever *remove* args or rename to a function that exists at the lower arity (stay compile-safe);
 `CollectionArity` is the built-in example.
+
+For a *configurable* mutator, the user gives `{Module, opts}` (not a bare module) under
+`:mutators`. The `opts` arrive in the **context** of `mutate/2` (and `owned_args/2`) as
+`context.opts` — so a configurable mutator implements `mutate/2` and reads its parameters there
+(`mutate/1` has no context to carry them). A reserved `:as` key in `opts` renames the recorded
+family (so the same module can run twice under distinct names) and is stripped before `opts`
+reaches the mutator. `Mutare.Mutators.resolve/1` turns each entry into a `Mutare.Mutator.Spec`;
+`test/support/configurable_mutator.ex` is a working example. Note `pattern_mutations/2` does **not**
+receive `opts` (structural head-pattern mutators aren't configurable yet — out of scope).
 
 ## Result statuses
 

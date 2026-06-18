@@ -42,15 +42,56 @@ defmodule Mutare.Mutator do
   implementing this behaviour:
 
       [mutators: [:arithmetic, :relational, MyApp.Mutators.Boolean]]
+
+  ## Configuring one (`{module, opts}`)
+
+  To parametrize a mutator, give it `{module, opts}` instead of a bare module.
+  `opts` reaches the mutator through the `context` of `mutate/2` (and
+  `owned_args/2`) as `context.opts` — so a configurable mutator implements
+  `mutate/2`:
+
+      defmodule MyApp.Mutators.MagicNumber do
+        @behaviour Mutare.Mutator
+        def name, do: :magic_number
+        def mutate(_node), do: :skip
+
+        def mutate({:__block__, _m, [n]}, %{opts: opts}) when is_integer(n) do
+          case Keyword.get(opts, :swaps, %{})[n] do
+            nil -> :skip
+            to -> [{:__block__, [], [to]}]
+          end
+        end
+
+        def mutate(_node, _context), do: :skip
+      end
+
+      # .mutare.exs
+      [mutators: [:arithmetic, {MyApp.Mutators.MagicNumber, swaps: %{200 => 500}}]]
+
+  The reserved `:as` key in `opts` overrides the recorded family name (so the same
+  module can run twice under distinct names); it is stripped before `opts` reaches
+  the mutator. See `Mutare.Mutator.Spec`.
   """
 
+  alias Mutare.Mutator.Spec
+
   @typedoc """
-  Context threaded to the optional `mutate/2` at each runtime call site. Currently
-  carries only `:piped` — whether the node is the right-hand side of a `|>` (so its
-  effective first argument is the pipe's left side, *not* present in the node's own
-  args). A mutator computes effective arity with `effective_arity/2`.
+  Context threaded to the optional `mutate/2` and `owned_args/2` at each runtime
+  call site. Carries:
+
+    * `:piped` — whether the node is the right-hand side of a `|>` (so its
+      effective first argument is the pipe's left side, *not* present in the
+      node's own args). A mutator computes effective arity with `effective_arity/2`.
+    * `:opts` — the configured mutator's per-instance options (the `opts` of a
+      `{module, opts}` entry in `:mutators`, with any `:as` name override
+      stripped), or `[]` for an unconfigured mutator. This is how a configurable
+      mutator receives its parameters — see `Mutare.Mutator.Spec`.
+
+  `:opts` is `optional` in the type because the *base* context threaded through
+  `mutations/3` carries only `:piped`; `mutations/3` injects each spec's `:opts`
+  before invoking a mutator, so a callback always sees it at runtime.
   """
-  @type context :: %{piped: boolean()}
+  @type context :: %{:piped => boolean(), optional(:opts) => term()}
 
   @doc """
   Return `:skip` when the mutator does not apply to `node`, otherwise a list of
@@ -68,12 +109,18 @@ defmodule Mutare.Mutator do
   node carries one fewer argument than the source reads.
 
   `Mutare.Transform` invokes it at every runtime call position with a `context`
-  (`%{piped: boolean}`); a mutator uses `context.piped` to recover the effective
-  arity. Used for arity-*changing* call mutations (dropping a refining argument,
-  collapsing to a coarser call) that `mutate/1` cannot express safely — see
-  `Mutare.Mutators.CollectionArity`. A mutator that implements this typically
+  (`%{piped: boolean, opts: term}`); a mutator uses `context.piped` to recover the
+  effective arity. Used for arity-*changing* call mutations (dropping a refining
+  argument, collapsing to a coarser call) that `mutate/1` cannot express safely —
+  see `Mutare.Mutators.CollectionArity`. A mutator that implements this typically
   returns `:skip` from `mutate/1` (it never fires node-locally). Discovered by
   `function_exported?(mod, :mutate, 2)`; a mutator without it takes no part.
+
+  This is also the callback a **configurable** mutator implements to read its
+  options: `context.opts` carries the `opts` of its `{module, opts}` entry in
+  `:mutators` (see `Mutare.Mutator.Spec`). Unlike pipe-aware mutators it need not
+  return `:skip` from `mutate/1`, but since `mutate/1` has no context, a mutator
+  whose behaviour depends on its options matches its nodes here instead.
   """
   @callback mutate(Macro.t(), context()) :: :skip | [Macro.t()]
 
@@ -99,9 +146,10 @@ defmodule Mutare.Mutator do
   call's *argument positions*, so the transform does not also offer those leaves to
   *other* mutators in place.
 
-  Given a runtime call node and the same `context` as `mutate/2` (`%{piped: boolean}`),
-  it returns the **visible** argument indices (into the node's own arg list, the piped
-  value excluded) that this mutator already covers via the *whole call* — positions
+  Given a runtime call node and the same `context` as `mutate/2`
+  (`%{piped: boolean, opts: term}`), it returns the **visible** argument indices (into
+  the node's own arg list, the piped value excluded) that this mutator already covers
+  via the *whole call* — positions
   where another mutator firing in place would only add a redundant, often nonsensical
   mutant. `Mutare.Mutators.ModeSwap` is the built-in user: it swaps a unit/mode atom
   (`DateTime.truncate(dt, :second)` → `:millisecond`) by rewriting the call, so it owns
@@ -165,24 +213,29 @@ defmodule Mutare.Mutator do
   call this, so "which mutations does this node admit" has one answer regardless of
   where the node sits — placement is decided afterwards, positionally.
 
-  Each mutator's `mutate/1` is always run; its optional `mutate/2` is *also* run
-  (with `context`) when implemented, so pipe-aware/arity-changing mutators
-  participate at runtime call positions. `context` defaults to a non-piped node;
-  the transform passes `%{piped: true}` for a `|>` right-hand side.
+  Each entry is a `Mutare.Mutator.Spec` (a bare module is coerced to one); its
+  `mutate/1` is always run, and its optional `mutate/2` is *also* run when
+  implemented, with a per-spec `context` carrying the pipe flag **and** the spec's
+  `:opts`. So pipe-aware/arity-changing *and* configurable mutators both
+  participate here. `context` defaults to a non-piped node; the transform passes
+  `%{piped: true}` for a `|>` right-hand side. Each result is tagged with its
+  **spec** (not the bare module), so the family name and config travel with it.
   """
-  @spec mutations(Macro.t(), [module()], context()) :: [{module(), Macro.t()}]
+  @spec mutations(Macro.t(), [Spec.t() | module()], context()) :: [{Spec.t(), Macro.t()}]
   def mutations(node, mutators, context \\ %{piped: false}) do
-    Enum.flat_map(mutators, fn mutator ->
-      tag(mutator, mutator.mutate(node)) ++ contextual(mutator, node, context)
+    Enum.flat_map(mutators, fn entry ->
+      spec = Spec.coerce(entry)
+      ctx = Map.put(context, :opts, spec.opts)
+      tag(spec, spec.module.mutate(node)) ++ contextual(spec, node, ctx)
     end)
   end
 
-  defp contextual(mutator, node, context) do
-    if function_exported?(mutator, :mutate, 2),
-      do: tag(mutator, mutator.mutate(node, context)),
+  defp contextual(spec, node, context) do
+    if function_exported?(spec.module, :mutate, 2),
+      do: tag(spec, spec.module.mutate(node, context)),
       else: []
   end
 
-  defp tag(_mutator, :skip), do: []
-  defp tag(mutator, nodes) when is_list(nodes), do: Enum.map(nodes, &{mutator, &1})
+  defp tag(_spec, :skip), do: []
+  defp tag(spec, nodes) when is_list(nodes), do: Enum.map(nodes, &{spec, &1})
 end
