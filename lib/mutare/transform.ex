@@ -453,10 +453,10 @@ defmodule Mutare.Transform do
   # therefore always sees the full arity.
   #
   # `super_var` (non-`nil` only when a lifted body calls `super`) adds a closure
-  # `<super_var> = fn a1, …, aN -> super(a1, …, aN) end` bound here — `super` is legal
-  # inside the dispatcher (the overriding function), even in a closure — and threaded
-  # to the base as its second argument, so the relocated body can call `super`
-  # through it (`Mutare.Transform.Super`).
+  # `<super_var> = &super/arity` bound here — `super` is legal inside the dispatcher
+  # (the overriding function), even captured — and threaded to the base as its second
+  # argument, so the relocated body can call `super` through it
+  # (`Mutare.Transform.Super`).
   defp build_dispatcher(vis, name, arity, mut_ids, base, var, defaults, super_var) do
     call_args = dispatcher_args(arity)
     head_args = with_defaults(call_args, defaults)
@@ -473,14 +473,16 @@ defmodule Mutare.Transform do
   end
 
   # The super-forwarding closure binding for the dispatcher, plus the extra call arg
-  # that threads it to the base: `{[<super_var>], [<super_var> = fn … -> super(…) end]}`
-  # when the group uses `super`, else `{[], []}` (unchanged dispatcher).
+  # that threads it to the base: `{[<super_var>], [<super_var> = &super/arity]}` when
+  # the group uses `super`, else `{[], []}` (unchanged dispatcher). `&super/arity` is
+  # exactly `fn a1, …, aN -> super(a1, …, aN) end` — `super`'s only legal arity is the
+  # full param count, so the single capture forwards every legal call — but needs no
+  # synthesised arg list of its own.
   defp super_closure_binding(nil, _arity), do: {[], []}
 
   defp super_closure_binding(super_var, arity) do
     super_node = {super_var, [], nil}
-    args = dispatcher_args(arity)
-    closure = {:fn, [], [{:->, [], [args, {:super, [], args}]}]}
+    closure = {:&, [], [{:/, [], [{:super, [], nil}, arity]}]}
     {[super_node], [{:=, [], [super_node, closure]}]}
   end
 

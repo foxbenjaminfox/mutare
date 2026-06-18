@@ -9,19 +9,20 @@ defmodule Mutare.Transform.Super do
   # there is a compile error ("super is undefined").
   #
   # The fix keeps the rewrite local. The public dispatcher *is* the overriding
-  # function (it keeps the original name), and `super` is allowed inside a closure
-  # there, so the dispatcher binds
+  # function (it keeps the original name), and `super` is allowed captured there, so
+  # the dispatcher binds
   #
-  #     <super_var> = fn a1, …, aN -> super(a1, …, aN) end
+  #     <super_var> = &super/arity
   #
   # and passes that closure to the base as an extra argument; each `super(args)` in
-  # the lifted body is rewritten to `<super_var>.(args)`. The closure's arity is the
-  # function's full formal-parameter count — `super` must be called with *exactly*
-  # that arity ("super must be called with the same number of arguments as the
-  # current definition"), so one fixed-arity closure forwards every legal `super`
-  # call, defaults included. `Mutare.Transform` owns building the closure + threading
-  # the extra arg (it shares the dispatcher/lifted-clause emission); this module owns
-  # only recognising and rewriting the `super` nodes.
+  # the lifted body is rewritten to `<super_var>.(args)`. `&super/arity` is exactly
+  # `fn a1, …, aN -> super(a1, …, aN) end`, and the arity is the function's full
+  # formal-parameter count — `super` must be called with *exactly* that arity ("super
+  # must be called with the same number of arguments as the current definition"), so
+  # the single capture forwards every legal `super` call, defaults included.
+  # `Mutare.Transform` owns building the closure + threading the extra arg (it shares
+  # the dispatcher/lifted-clause emission); this module owns only recognising and
+  # rewriting the `super` nodes.
   #
   # **Quote is pruned.** A `super` inside `quote do … end` is quoted *data* — it
   # names whatever context the AST is later spliced into, not a live call here — so

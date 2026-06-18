@@ -1058,12 +1058,14 @@ So when `Mutare.Transform.Super.in_clauses?/1` finds a `super` in any clause **b
 the dispatcher binds
 
 ```elixir
-mutare_super = fn a1, …, aN -> super(a1, …, aN) end
+mutare_super = &super/arity
 ```
 
-and threads it to the base as the **second** argument (after `mutare_active`); each
-`super(args)` in the relocated body is rewritten to `mutare_super.(args)`
-(`Super.rewrite/2`). Sharp edges, all handled:
+(exactly `fn a1, …, aN -> super(a1, …, aN) end`, but the capture needs no synthesised
+arg list of its own — `super`'s only legal arity is the full param count) and threads
+it to the base as the **second** argument (after `mutare_active`); each `super(args)`
+in the relocated body is rewritten to `mutare_super.(args)` (`Super.rewrite/2`). Sharp
+edges, all handled:
 
 - **Per-clause unused param.** The base's arity is shared across clauses, so *every*
   base clause takes the closure param — but only the clauses whose own body calls

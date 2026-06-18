@@ -3,8 +3,8 @@ defmodule Mutare.SuperTest do
   `super` in a lifted function. Lifting relocates a clause body into a private
   `defp`, where `super` (legal only in the overriding function) would not compile.
   `Mutare.Transform.Super` keeps the rewrite local: the public dispatcher (still the
-  overriding function) binds a forwarding closure `<super_var> = fn … -> super(…) end`
-  and threads it to the base, where each `super(args)` becomes `<super_var>.(args)`.
+  overriding function) binds a forwarding closure `<super_var> = &super/arity` and
+  threads it to the base, where each `super(args)` becomes `<super_var>.(args)`.
 
   Proven end to end — one compile, runtime mutant switching — against a real
   `defoverridable` base, plus the structural and edge-case guarantees.
@@ -69,7 +69,7 @@ defmodule Mutare.SuperTest do
         )
 
       # The dispatcher (the overriding function) binds the forwarding closure...
-      assert meta =~ ~r/mutare_super = fn mutare_arg1 -> super\(mutare_arg1\) end/
+      assert meta =~ ~r{mutare_super = &super/1}
       # ...and threads it to the base as the second argument.
       assert meta =~ ~r/__mutare_greet_1_g\d+\(mutare_active, mutare_super,/
       # The relocated base clauses call super *through* the closure, never directly —
@@ -140,8 +140,7 @@ defmodule Mutare.SuperTest do
 
       # super's only legal arity is the full param count (2), so the closure is /2
       # and rides on the dispatcher; the default stays on the public head.
-      assert meta =~
-               ~r/mutare_super = fn mutare_arg1, mutare_arg2 -> super\(mutare_arg1, mutare_arg2\) end/
+      assert meta =~ ~r{mutare_super = &super/2}
 
       assert mod.combine(1) == {:base, 1, 99}
       assert mod.combine(1, 2) == {:base, 1, 2}
@@ -218,7 +217,7 @@ defmodule Mutare.SuperTest do
         """)
 
       # The generated closure variable must dodge the source's own `mutare_super`.
-      assert meta =~ ~r/mutare_super_0 = fn/
+      assert meta =~ ~r{mutare_super_0 = &super/1}
       assert [{_module, _binary}] = Code.compile_string(meta)
     end
   end
