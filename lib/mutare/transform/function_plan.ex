@@ -233,6 +233,12 @@ defmodule Mutare.Transform.FunctionPlan do
   # (`Macro.postwalk` descends the `{:., _, [mod, fun]}` form and visits that alias).
   # The whole call node is still offered (so the call itself — `is_even` → `is_odd` —
   # is taggable) and the args still descend (a literal/operator argument still mutates).
+  #
+  # The explicit descent also mirrors the analyzer's bitstring handling: a `<<…>>`
+  # construction is a legal guard, and its type-specifier side (`integer-size(8)`)
+  # must stay raw — a swapped `-` separator is an illegal specifier. `tag_segment/3`
+  # / `tag_spec/3` keep the spec opaque (except `size(expr)` args), exactly as
+  # `analyze_segment/3` / `analyze_spec/3` do in place.
   defp tag_targets(guard, acc, mutators), do: tag_walk(guard, acc, mutators)
 
   # `not in` in a guard: `x not in y` is `not(x in y)`. The inner `in` is descended
@@ -245,6 +251,19 @@ defmodule Mutare.Transform.FunctionPlan do
     {left, acc} = tag_walk(left, acc, mutators)
     {right, acc} = tag_walk(right, acc, mutators)
     offer_target({:not, meta, [{:in, in_meta, [left, right]}]}, acc, mutators)
+  end
+
+  # A bitstring construction in a guard (`<<x::integer-size(8)>> == <<0>>` is a
+  # legal guard). Mirror the in-place analyzer's `analyze_segment`/`analyze_spec`
+  # (`Mutare.Transform.Analyze`) instead of descending the segments blindly: tag
+  # each segment's *value* side, but keep the *spec* side raw — except `size(expr)`
+  # args, the one genuine runtime sub-position. A blind walk would offer the `-`
+  # separator to Arithmetic and lift `<<x::(integer + size(8))>>`, an "unknown
+  # bitstring specifier" that poisons the whole build. The `<<>>` node itself is
+  # still offered (BitstringLiteral collapses it to `<<>>`).
+  defp tag_walk({:<<>>, meta, segments}, acc, mutators) do
+    {segments, acc} = Enum.map_reduce(segments, acc, &tag_segment(&1, &2, mutators))
+    offer_target({:<<>>, meta, segments}, acc, mutators)
   end
 
   # An n-ary node: descend its args (not its form), then offer the node itself.
@@ -267,6 +286,33 @@ defmodule Mutare.Transform.FunctionPlan do
   # A leaf — a var (`{:x, _, nil}`), a bare literal, an atom: offer it (a bare `0` in
   # `x > 0` is mutatable) but there is nothing to descend.
   defp tag_walk(leaf, acc, mutators), do: offer_target(leaf, acc, mutators)
+
+  # A bitstring segment `<<value::spec>>`: tag-walk the value, keep the spec raw
+  # except `size(expr)` args (`tag_spec/3`). The twin of `analyze_segment/3`.
+  defp tag_segment({:"::", meta, [value, spec]}, acc, mutators) do
+    {value, acc} = tag_walk(value, acc, mutators)
+    {spec, acc} = tag_spec(spec, acc, mutators)
+    {{:"::", meta, [value, spec]}, acc}
+  end
+
+  defp tag_segment(segment, acc, mutators), do: tag_walk(segment, acc, mutators)
+
+  # The type-specifier side of a bitstring segment. Separators (`-`), type atoms
+  # and `unit(...)` stay raw — a swapped `-` is an illegal specifier. `size(expr)`
+  # is the one runtime sub-position: its arg is tag-walked (a literal/operator
+  # there still lifts a mutant). The twin of `analyze_spec/3`.
+  defp tag_spec({:-, meta, [left, right]}, acc, mutators) do
+    {left, acc} = tag_spec(left, acc, mutators)
+    {right, acc} = tag_spec(right, acc, mutators)
+    {{:-, meta, [left, right]}, acc}
+  end
+
+  defp tag_spec({:size, meta, [arg]}, acc, mutators) do
+    {arg, acc} = tag_walk(arg, acc, mutators)
+    {{:size, meta, [arg]}, acc}
+  end
+
+  defp tag_spec(other, acc, _mutators), do: {other, acc}
 
   defp offer_target(node, {next, targets}, mutators) do
     case Mutator.mutations(node, mutators) do

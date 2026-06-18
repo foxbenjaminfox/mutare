@@ -236,6 +236,46 @@ defmodule Mutare.TransformTest do
     assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
   end
 
+  test "a bitstring spec separator in a guard is not mutated (the lifted path is spec-aware)" do
+    # A multi-specifier bitstring construction is a *legal* guard. The guard is
+    # lifted (the `==` makes the clause lift), so its segments travel the tag
+    # walker, not the in-place analyzer. A blind walk would offer the `-`
+    # separator to Arithmetic and lift `<<x::(integer + size(8))>>`, an "unknown
+    # bitstring specifier" that poisons the whole build.
+    source = """
+    defmodule B do
+      def f(x) when <<x::integer-size(8)>> == <<0>>, do: :ok
+      def f(_), do: :no
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, mutators: [Mutare.Mutators.Arithmetic])
+
+    # The function lifts (it is multi-clause), so the guard travels the tag walker.
+    # The `-` separator yields no Arithmetic mutant; the metamutant compiles, not
+    # just parses.
+    refute Enum.any?(sites, &(&1.mutator == :arithmetic))
+    refute meta =~ "integer + size"
+    assert_compiles(meta)
+  end
+
+  test "a size(...) arg inside a guard bitstring still mutates (the runtime sub-position)" do
+    source = """
+    defmodule B do
+      def f(x) when <<x::integer-size(8)>> == <<0>>, do: :ok
+      def f(_), do: :no
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, mutators: [Mutare.Mutators.Literal])
+
+    # `size(8)`'s `8` is the one spec sub-position the lifted walker descends.
+    assert Enum.any?(sites, &(&1.original_code == "8"))
+    assert_compiles(meta)
+  end
+
   test "a bitstring literal collapses to <<>>; a sigil's content is not offered" do
     source = """
     defmodule B do

@@ -589,13 +589,24 @@ Three constructs share the `{:<<>>, …}` shape, and only the first should colla
     is illegal; routing through the segments instead of the wrapper keeps interpolated
     sub-expressions mutating while the wrapper stays safe.
 
-### Guard tagger is not bitstring-spec-aware `[deferred]`
-`tag_targets/3` (the lifted-guard path) is a context-free `Macro.postwalk` that
-runs mutators on every guard node. A multi-specifier bitstring *pattern* inside a
-`when` guard could therefore lift a `-`-separator swap that compile-poisons (the
-`size()`-arg subcase only produces a legal direct swap — lifting never emits a
-`case`). Exotic and poison-backstopped, so left as-is. The clean fix shares the
-`analyze_spec/3` spec-exclusion descent between `analyze/3` and `tag_targets/3`.
+### Guard tagger is now bitstring-spec-aware `[done]`
+`tag_targets/3` (the lifted-guard path) used to be a blind descent that ran
+mutators on every guard node. A multi-specifier bitstring *construction* is a
+legal guard (`def f(x) when <<x::integer-size(8)>> == <<0>>`), so the walk would
+offer the `-` separator to Arithmetic and lift `<<x::(integer + size(8))>>` — an
+"unknown bitstring specifier" that poisons the whole build. Exotic and
+poison-backstopped, but a wasted rebuild cycle, so it is now fixed at the source.
+
+`tag_walk/3` gained a `{:<<>>, …}` clause plus `tag_segment/3` / `tag_spec/3`,
+the mechanical twins of `analyze/3`'s `analyze_segment/3` / `analyze_spec/3`: a
+segment's *value* side is tag-walked, the *spec* side stays raw except `size(expr)`
+args (the one runtime sub-position — a literal/operator there still lifts a mutant).
+The `<<…>>` node itself is still offered (BitstringLiteral collapses it to `<<>>`).
+Not literally *shared* code — the two walkers have incompatible accumulator shapes
+(the analyzer returns a node and attaches `Candidate.InPlace` to meta; the tagger
+threads `{node, acc}` and tags nodes) — but parallel clauses cross-referencing each
+other, the same deliberate mirroring already established for `tag_walk` vs the
+analyzer's `recurse` (descend args, never the form).
 
 ### Head-pattern literals are lifted `[done]`
 A literal in a `def`/`defp` *head* — `def f(1)`, `def f(%{1 => 2})`,
