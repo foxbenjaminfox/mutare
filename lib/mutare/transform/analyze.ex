@@ -386,10 +386,16 @@ defmodule Mutare.Transform.Analyze do
   # So a pipe stage carries one fewer argument than the source reads, which makes a
   # node-local mutator misjudge its arity. Route the RHS through `analyze_pipe_stage/2`
   # so an arity-changing mutator (`CollectionArity`) is offered the node *as piped*
-  # and sees the true arity; the LHS is an ordinary runtime expression. (Arity-blind
-  # mutators are unaffected — they ignore the flag.)
+  # and sees the true arity. (Arity-blind mutators are unaffected — they ignore the flag.)
+  #
+  # The LHS is *usually* an ordinary runtime expression, but when the RHS is a **known
+  # macro** the piped value is that macro's effective argument 0, so it inherits position
+  # 0's treatment (`analyze_piped_value/3` — the "reach back"): a `1 |> match?(1)` pipes
+  # its LHS into match?'s **pattern** position, and a `:skip` macro may accept a LHS that
+  # is neither a valid expression nor a valid pattern. Treating it as runtime would splice
+  # a selector `case` into pattern/opaque position and poison the build.
   defp analyze({:|>, meta, [lhs, rhs]}, :runtime, mutators) do
-    {:|>, meta, [analyze(lhs, :runtime, mutators), analyze_pipe_stage(rhs, mutators)]}
+    {:|>, meta, [analyze_piped_value(lhs, rhs, mutators), analyze_pipe_stage(rhs, mutators)]}
   end
 
   # `for` comprehension: its generators (`<-`), filters, `:into`/`:reduce` options
@@ -541,21 +547,42 @@ defmodule Mutare.Transform.Analyze do
     mark_call_option_keys({form, meta, route_macro_args(args, routing, mutators)})
   end
 
-  # Route each argument by its treatment: `:expression` → ordinary runtime (mutate);
-  # `:pattern` → a match context (descend for nested runtime escapes, never mutate the
-  # pattern in place); `:skip` → leave the argument raw (no descent, no mutation — an
-  # opaque DSL body). A position past the routing list defaults to `:expression`.
+  # Route each argument by its treatment. A position past the routing list defaults to
+  # `:expression`.
   defp route_macro_args(args, routing, mutators) do
     args
     |> Enum.with_index()
     |> Enum.map(fn {arg, i} ->
-      case Enum.at(routing, i, :expression) do
-        :skip -> arg
-        :pattern -> analyze(arg, :pattern, mutators)
-        _expression -> analyze(arg, :runtime, mutators)
-      end
+      route_macro_arg(arg, Enum.at(routing, i, :expression), mutators)
     end)
   end
+
+  # Route one macro argument by its declared treatment — shared by the visible-arg routing
+  # (`route_macro_args/3`) and the piped-value reach-back (`analyze_piped_value/3`), so the
+  # piped LHS is treated identically to a written first argument: `:expression` → ordinary
+  # runtime (mutate); `:pattern` → a match context (descend for nested runtime escapes, never
+  # mutate the pattern in place); `:skip` → leave the argument **raw** (no descent, no mutation
+  # — an opaque value the macro may accept even though it is neither a valid expression nor a
+  # valid pattern).
+  defp route_macro_arg(arg, :skip, _mutators), do: arg
+  defp route_macro_arg(arg, :pattern, mutators), do: analyze(arg, :pattern, mutators)
+  defp route_macro_arg(arg, _expression, mutators), do: analyze(arg, :runtime, mutators)
+
+  # The left side of a `|>` whose right side is a known macro: the piped value is the macro's
+  # *effective argument 0*, so it inherits position 0's treatment, which `Resolve` recorded on
+  # the stage as `:mutare_macro_piped` (stamped only when it isn't the `:expression` default —
+  # so the common runtime LHS carries no stamp and falls through unchanged). Routing it through
+  # the same `route_macro_arg/3` as the visible args keeps the piped position in lockstep with
+  # a written first argument: a `1 |> match?(1)` LHS routes as `:pattern`, a `:skip` macro's LHS
+  # is left raw, and any other LHS stays ordinary runtime.
+  defp analyze_piped_value(lhs, {_form, rhs_meta, _args}, mutators) when is_list(rhs_meta) do
+    case Keyword.get(rhs_meta, :mutare_macro_piped) do
+      nil -> analyze(lhs, :runtime, mutators)
+      treatment -> route_macro_arg(lhs, treatment, mutators)
+    end
+  end
+
+  defp analyze_piped_value(lhs, _rhs, mutators), do: analyze(lhs, :runtime, mutators)
 
   # One argument of a `for`: a generator/filter/match is descended as a *statement*
   # (its value is discarded — a qualifier only binds/filters), while the trailing

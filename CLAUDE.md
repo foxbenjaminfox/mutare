@@ -53,7 +53,10 @@ contract between them is the whole game.
     would rebuild the same alias env to resolve imports.) The same pass also consults the
     **known-macro registry** (`Mutare.Macros`): when a resolved `{module, name, arity}` matches,
     it stamps the call's `meta[:mutare_macro]` with the per-argument routing the analyzer reads
-    (`match?`/`destructure`/a registered DSL macro — see `Mutare.Macros` below).
+    (`match?`/`destructure`/a registered DSL macro — see `Mutare.Macros` below). For a **piped**
+    stage (`x |> macro(...)`) the match uses the *effective* arity (visible + 1) and the piped value's
+    treatment (effective position 0, the `|>` LHS) rides on a second `meta[:mutare_macro_piped]` stamp
+    so the LHS can reach back to it — see the `:|>` clause below.
   - **`Transform.Aliases`** — the `alias` *vocabulary* (env-building, resolution, stamping,
     reading). `Resolve` folds a scoped alias env (`register/2`) and at each remote call stamps
     the *call-module* `__aliases__` node with the module it resolves to (`stamp_module/2` →
@@ -197,7 +200,14 @@ contract between them is the whole game.
     stage's node carries one fewer arg than the source reads (the piped value is the `|>` LHS, not in
     the call), so an arity-changing mutator (CollectionArity, via the optional `mutate/2` callback)
     needs the flag to recover the *effective* arity. The mutated stage is a plain `Candidate.InPlace`,
-    so the existing selector + `hoist_pipe` path delivers it unchanged.
+    so the existing selector + `hoist_pipe` path delivers it unchanged. The `|>` **LHS** is normally
+    ordinary runtime, but when the RHS is a **known macro** the piped value is that macro's effective
+    argument 0 and reaches back to position 0's treatment (`analyze_piped_value/3`, off a separate
+    `meta[:mutare_macro_piped]` stamp `Resolve` records for a non-`:expression` head): `1 |> match?(1)`
+    pipes its LHS into match?'s **pattern** position, and a `:skip` macro may accept a LHS that is
+    neither a valid expression nor a valid pattern — so the LHS goes through the *same*
+    `route_macro_arg/3` as a visible arg (treated exactly as if written as the macro's first argument),
+    never wrapping a pattern/opaque value in a selector (which would poison).
     Orthogonally, a **data** keyword/map key *is* mutatable: the 2-tuple pair clause skips only a
     **block key** (`do:`/`else:`/`rescue:`/`catch:`/`after:`, `block_key?/1` on `@block_keys`) — a
     selector spliced into a `do:` key is malformed and wouldn't render — but a `%{a: 1}` / `[a: 1]`

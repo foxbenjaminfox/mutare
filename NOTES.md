@@ -667,20 +667,62 @@ Three load-bearing decisions:
 
 **Pipe-aware** (the query-builder shape `q |> where([p], p.x == 1) |> order_by(...)`, where each
 stage is a piped macro and the piped value is effective arg 0). `Resolve.stamp_macro` matches on
-the *effective* arity (`Mutator.effective_arity` = visible + 1 when piped) and stamps only the
-**visible**-position routing (it drops the piped value's treatment, effective position 0 — the
-`|>` LHS, analyzed by the `:|>` clause, not part of the stage node's args). `Analyze`'s
-`analyze_pipe_stage` reads the stamp the same way the generic clause does. Without this, core
-would descend into a piped `:skip` stage's DSL body and mutate/poison it — the bug that a naive
-"don't stamp piped calls" introduced (a piped macro stage is the *common* DSL shape, not a rarity).
+the *effective* arity (`Mutator.effective_arity` = visible + 1 when piped) and splits the routing
+across **two** stamps: the **visible** positions ride on `meta[:mutare_macro]` (lining up with the
+stage node's own args, read by `analyze_pipe_stage` the same way the generic clause reads it), and
+the **piped value's** treatment (effective position 0 — the `|>` LHS, *not* in the stage node's
+args) is recorded separately on `meta[:mutare_macro_piped]`. Without the visible stamp, core would
+descend into a piped `:skip` stage's DSL body and mutate/poison it — the bug that a naive "don't
+stamp piped calls" introduced (a piped macro stage is the *common* DSL shape, not a rarity).
+
+**The piped value reaches back to position 0** (`|> match?` and friends). `|>` pipes *anything* into
+a macro — including syntax that is a pattern, or (for `:skip`) neither a valid expression nor a valid
+pattern: `1 |> match?(1)` is `match?(1, 1)`, whose LHS is the **pattern**, and `{1 + 1, _, …} |>
+silly()` is legal because `silly` discards its arg. Treating the `|>` LHS as ordinary `:runtime`
+(the old `analyze` `:|>` clause) wraps it in a selector `case` in pattern/opaque position → compile
+error → poison. So `Analyze.analyze_piped_value/3` reads `meta[:mutare_macro_piped]` off the stage
+and routes the LHS through the **same** `route_macro_arg/3` as a visible arg — the piped value is
+treated *exactly as if it were written as the macro's first positional argument* (`:pattern` →
+descend-don't-mutate, `:skip` → raw, `:expression` → runtime). The head is stamped only when it is
+**not** `:expression` (the common runtime LHS carries no stamp, falls through unchanged), so this is
+zero-cost everywhere but a piped pattern/`:skip` macro. Soundness is free: a non-trivial LHS isn't a
+valid pattern, so a `… |> match?(e)` that *compiles at all* already has a pattern-legal LHS — when
+it reaches us, `:pattern` is always right. This is a *positive* exclusion (the project philosophy),
+not leaning on the poison backstop, which would otherwise eat a wasted rebuild on this known shape.
 
 Limitations (documented): a whole `import SomeDsl` resolves a bare macro call only when `SomeDsl`
 is loadable at transform time (the inherited `Imports` limit — a selective `import …, only:` is
 definitive without reflection, and a real `mix mutare` run has the target's deps loaded); and a
 known macro in a `:scaffold`/compile-time position isn't routed (it's already non-mutating there,
-so `:skip` would be a no-op anyway). `pattern_mutations/2`-style head restructuring of macro args
-is out of scope. `test/support/macro_mutator.ex` is the worked `macros/0` example (with a piped
-`where/2` stage).
+so `:skip` would be a no-op anyway). `test/support/macro_mutator.ex` is the worked `macros/0` example
+(with a piped `where/2` stage).
+
+**Deferred: structural pattern mutation of a macro's `:pattern` arg** (`destructure([x, y], v)` →
+`[y, x]`, swap/wildcard). A `:pattern`-routed macro arg is *safe* — it is descended-not-mutated, so
+no literal is mutated in place and no selector is spliced into pattern position (the whole point of
+the reach-back for the piped `[x, y] |> destructure(v)` form) — but it gets **no** structural
+(`PatternSwap`/`PatternWildcard`) mutants. This is a *general* gap, not piped-specific: the directly
+written `destructure([x, y], v)` has the identical hole, verified. The structural families don't fire
+from the generic `:pattern` context; they are wired at three positions, each with a delivery
+mechanism dictated by binding scope (`def` head → lifting; `case` clause → in-place selector copy,
+bindings clause-local; value-discarded `=` → tuple re-export, bindings escape), and a macro arg
+matches none. Wiring it up is a real feature, *not* a one-liner, because the right delivery — and even
+whether a mutation is observable — depends on the macro's binding semantics, which `:pattern` does not
+encode:
+
+  - `destructure` binds into the **enclosing** scope (bindings escape), so a swap must use the
+    `MatchPattern` tuple re-export and only in a value-discarded position; an in-place selector copy
+    would trap the bindings inside the branch (`x + y` after → unbound → poison).
+  - `match?` binds **locally** (inside its `case` expansion), so a *swap* of distinct vars is an
+    **equivalent mutant** (same boolean, nothing escapes) — pure noise — while a *wildcard* of a
+    repeated var (`match?([a, a], v)` → `[_, a]`) *is* observable and, since match?'s value is used,
+    wants the in-place selector delivery, not re-export.
+
+So there is no universal rule that is both safe and noise-free; it needs a per-macro declaration of
+"do these bindings escape (and is the value used)?", a richer treatment than today's `:pattern`, plus
+both delivery paths. Given the thin payoff (`destructure` is obscure; user macros with escaping
+pattern bindings are unusual) and that the routing fix already makes the area *safe*, the extra
+*mutants* are deferred — documented here rather than half-built.
 
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**

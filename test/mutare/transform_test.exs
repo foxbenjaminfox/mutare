@@ -629,6 +629,83 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "a piped value reaches back to the macro's effective position-0 treatment" do
+    # `x |> macro(...)` is `macro(x, ...)`, so the piped value is the macro's effective
+    # argument 0 and must inherit position 0's treatment — even though it is the `|>` LHS,
+    # analyzed away from the call's own args. Otherwise a pattern/opaque piped value is
+    # mutated as runtime (a selector `case` spliced into pattern position) and poisons.
+
+    test "match?: the piped LHS is a pattern (not mutated) while the visible expr arg is" do
+      source = """
+      defmodule PipedMatch do
+        def f, do: 0 |> match?(1)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.Literal])
+
+      # `0 |> match?(1)` is `match?(0, 1)`: the piped `0` is match?'s **pattern** (effective
+      # arg 0), the visible `1` is the matched expression. Every site is on the expression
+      # `1`, none on the pattern `0` — and the metamutant must actually *compile* (a selector
+      # spliced into the pattern would be "case not allowed in matches").
+      assert sites != []
+      assert Enum.all?(sites, &(&1.mutator == :literal and &1.original_code == "1"))
+      assert_compiles(meta)
+    end
+
+    test "match?: a piped LHS that is the sole literal is left unmutated (pattern, not runtime)" do
+      source = """
+      defmodule PipedMatchOnly do
+        def f(n), do: 0 |> match?(n)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.Literal])
+
+      # The visible arg `n` is a variable; the only literal is the piped `0`, which is the
+      # pattern — so nothing is offered. Without the reach-back the `0` would be mutated in
+      # pattern position and poison the single build.
+      assert sites == []
+      assert_compiles(meta)
+    end
+
+    @skip_piped """
+    defmodule PipedSkip do
+      import Mutare.Test.QueryDSL
+
+      def run(y), do: (1 == y) |> where(:c)
+    end
+    """
+
+    test "a `:skip` position-0 treatment leaves the piped value raw (the macro owns it)" do
+      {meta, sites, _next_id} =
+        Mutare.transform_string(@skip_piped,
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
+          macros: [{Mutare.Test.QueryDSL, :where, 2, :skip}]
+        )
+
+      # `where` registered with a uniform `:skip`: its effective arg 0 — the piped `1 == y` —
+      # is left raw even though it sits in a *runtime* pipe position, so core mutates neither
+      # the comparison nor the `1`. This is the "macro accepts arbitrary syntax" case.
+      assert sites == []
+      assert_compiles(meta)
+    end
+
+    test "without the registration, the same piped value mutates (the reach-back is doing the work)" do
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(@skip_piped,
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal]
+        )
+
+      # Unregistered, `where` is an ordinary piped call, so its LHS `1 == y` is ordinary
+      # runtime and both the comparison and the `1` mutate.
+      assert Enum.any?(sites, &(&1.mutator == :relational))
+      assert Enum.any?(sites, &(&1.mutator == :literal))
+    end
+  end
+
   describe "a selector cannot be a bare pipe target (|> hoisting)" do
     # `x |> case … end` *parses* but fails to compile (`Kernel.|>/2` can't pipe into
     # a `case`), so these assert the metamutant **compiles**, not just parses.

@@ -33,6 +33,7 @@ defmodule Mutare.Transform.Resolve do
   alias Mutare.Transform.{Aliases, Imports}
 
   @macro_key :mutare_macro
+  @piped_macro_key :mutare_macro_piped
 
   @doc "Stamp every remote call's module and every bare imported call with its resolved module."
   @spec annotate(Macro.t()) :: Macro.t()
@@ -119,24 +120,32 @@ defmodule Mutare.Transform.Resolve do
   # Stamp a call's meta with the argument routing of the known macro it resolves to, or leave
   # it unchanged. Pipe-aware: a stage `lhs |> macro(a, b)` is `macro(lhs, a, b)`, so the match
   # uses the *effective* arity (visible + 1) and the looked-up routing is for the effective
-  # positions. The piped value (effective position 0 — the `|>` LHS, analyzed by the `:|>`
-  # clause, not part of this node's args) is dropped, so the stamp carries only the routing for
-  # the **visible** args — which is what the analyzer routes. This is what protects a piped DSL
-  # stage (`q |> where([p], p.x == 1)`): without it core would descend into the condition.
+  # positions. This is what protects a piped DSL stage (`q |> where([p], p.x == 1)`): without
+  # it core would descend into the condition.
   defp stamp_macro(meta, module_key, fun, args, env) do
     arity = Mutator.effective_arity(args, env.piped)
 
     case Macros.routing(env.macros, module_key, fun, arity) do
       nil -> meta
-      routing -> [{@macro_key, visible_routing(routing, env.piped)} | meta]
+      routing -> stamp_routing(meta, routing, env.piped)
     end
   end
 
-  # Drop the piped value's treatment (effective position 0) so the stamp lines up with the
-  # node's visible args; un-piped, every position is visible. A piped call always has effective
-  # arity >= 1, so the routing list is non-empty and `tl/1` is safe.
-  defp visible_routing(routing, true), do: tl(routing)
-  defp visible_routing(routing, false), do: routing
+  # Split the effective routing across the two stamps. Un-piped, every position is visible, so
+  # the whole routing rides on `@macro_key`. Piped, effective position 0 is the **piped value**
+  # (the `|>` LHS, analyzed by the `:|>` clause, *not* in this node's args): its treatment is
+  # recorded separately on `@piped_macro_key` so the analyzer can route the LHS by it — exactly
+  # as if it were written as the macro's first argument — while `@macro_key` carries the routing
+  # for the **visible** args, lining up with the node's own args. The head is stamped only when
+  # it isn't the `:expression` default (an ordinary runtime LHS needs no stamp — the common
+  # path), so a piped pattern/`:skip` macro is the only case that carries it. A piped call always
+  # has effective arity >= 1, so the routing list is non-empty and the head split is safe.
+  defp stamp_routing(meta, routing, false), do: [{@macro_key, routing} | meta]
+
+  defp stamp_routing(meta, [piped | visible], true) do
+    meta = [{@macro_key, visible} | meta]
+    if piped == :expression, do: meta, else: [{@piped_macro_key, piped} | meta]
+  end
 
   # The module key a *bare* call resolves to, for known-macro matching: the imported module
   # if stamped, else `[:Kernel]` only when the name is a genuine `Kernel` export *and* not
