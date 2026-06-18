@@ -49,6 +49,39 @@ defmodule Mutare.CoverageTest do
     end
   end
 
+  describe "fixture_module/0 (self-hosting: the stand-in cedes :mutare_cov)" do
+    # The env var is process-global and this very suite runs under dogfooding (where
+    # `Mutare.Sandbox.Command` sets the override), so save/restore it rather than
+    # blindly clearing — same discipline as `selector_test`'s key override.
+    setup do
+      saved = System.get_env(Recorder.fixture_override_env())
+
+      on_exit(fn ->
+        case saved do
+          nil -> System.delete_env(Recorder.fixture_override_env())
+          value -> System.put_env(Recorder.fixture_override_env(), value)
+        end
+      end)
+    end
+
+    test "is helper_module/0 unless MUTARE_COV_FIXTURE_MODULE overrides it" do
+      # The twin of the selection-key split: the real helper the sandbox writes keeps
+      # `:mutare_cov`; only Mutare's own `test/support/mutare_cov.ex` stand-in reads
+      # this override, so under dogfooding it cedes `:mutare_cov` to the real helper
+      # (whose `dump/1` the probe's `after_suite` needs). See NOTES "Self-hosting:
+      # the coverage helper module clashes with its test stand-in".
+      System.delete_env(Recorder.fixture_override_env())
+      assert Recorder.fixture_module() == Recorder.helper_module()
+
+      System.put_env(Recorder.fixture_override_env(), Recorder.suite_fixture_module())
+      assert Recorder.fixture_module() == String.to_atom(Recorder.suite_fixture_module())
+
+      # Blank is treated as unset (the same empty-string rule the selector key uses).
+      System.put_env(Recorder.fixture_override_env(), "")
+      assert Recorder.fixture_module() == Recorder.helper_module()
+    end
+  end
+
   describe "setup_ast/0 (umbrella shares one BEAM)" do
     test "creating the coverage tables twice is a no-op, not a :badarg" do
       System.put_env(Recorder.env_var(), "1")

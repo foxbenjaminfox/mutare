@@ -1565,6 +1565,53 @@ floor is 10 s; N parallel `mix test`s contend for CPU). That inflates the "kill"
 count with timeouts and is unrelated to the key collision — drop `:workers` to 1
 or raise `:timeout` for a clean self-run.
 
+### Self-hosting: the coverage helper module clashes with its test stand-in `[fixed — private fixture name]`
+The selector-key collision above has an exact twin in the **coverage helper**.
+`Mutare.Sandbox` writes the real helper (`Mutare.Coverage.Recorder.helper_source/0`,
+the atom module `:mutare_cov`, with `hit/1` **and** `dump/1`) into every sandbox.
+But Mutare's own source also ships `test/support/mutare_cov.ex` — a stand-in that
+defines the *same* atom module `:mutare_cov` (only `hit/1`), so that Mutare's unit
+tests can compile bare metamutants (whose selector catch-alls call `:mutare_cov.hit/1`)
+in the main VM where no real helper exists. When the target *is* Mutare, the sandbox
+compiles **both** (the stand-in lives under `test/support`, which `elixirc_paths(:test)`
+includes), so two modules claim `:mutare_cov` — a "redefining module" clash the
+stand-in (no `dump/1`) can win. The coverage **probe** registers
+`ExUnit.after_suite(&:mutare_cov.dump/1)`; a remote capture resolves lazily, so it
+fails not at registration but when the suite ends and the hook fires:
+`** (UndefinedFunctionError) function :mutare_cov.dump/1 is undefined or private`.
+The probe exits non-zero, `CoverageProbe` degrades to `:run_all`, and you get the
+warning *"coverage probe exited 1; falling back to run-all selection"*. Correct
+verdicts, but no coverage selection and no `:no_coverage` classification — and only
+when dogfooding (a normal target ships no `:mutare_cov`). The path de-collision
+(`lib/mutare_cov.ex` → `lib/__mutare__/coverage_helper.ex`) does **not** help: the
+clash is on the *module name*, not the file path, and the stand-in is a different
+file under `test/`.
+
+**The fix (a private name for the suite-under-test's stand-in).** Mirrors the
+selection-key split exactly. The stand-in's module name is now configurable:
+`Recorder.fixture_module/0` returns `helper_module/0` (`:mutare_cov`) unless
+`Recorder.fixture_override_env/0` (`MUTARE_COV_FIXTURE_MODULE`) names another, in
+which case the stand-in compiles under `Recorder.suite_fixture_module/0`
+(`:mutare_cov__suite_fixture`). `Mutare.Sandbox.Command` sets that env var on every
+sandbox `mix` (beside the `MUTARE_SELECTOR_KEY` override), so inside a sandbox the
+stand-in cedes `:mutare_cov` to the real written helper and the probe's `dump/1`
+resolves. The real helper, the metamutant's baked `hit/1` calls, and the bootstrap
+all keep `helper_module/0` (the override is unset in the harness process; a normal
+target has no stand-in, so it is inert). Implementation wrinkle: `defmodule` rejects
+a *remote-call* name expression ("invalid module name"), but accepts a **variable**
+bound to an atom — so the stand-in does `name = Recorder.fixture_module(); defmodule
+name do …`. Verified: under the probe env the after-suite hook now writes a real
+`mutare_cov.terms` dump with no `UndefinedFunctionError`.
+
+Still degraded under self-host, but for *separate* reasons this fix unmasked (the
+probe used to die on `dump/1` before reaching them; both pre-date this change and
+are orthogonal to the helper name): (1) `Mutare.ChangesTest`'s `setup` flakily
+raises `File.CopyError` (permission denied on a `.git/objects/*` file) building its
+throwaway git repo; (2) `Mutare.CoverageTest` deletes the shared `:mutare_cov_agg`/
+`:mutare_cov_attr` ETS tables in `on_exit` (it tests `setup_ast/0`), which can break
+the end-of-suite dump and mid-probe `hit/1`. Both are self-host test-isolation
+artifacts, not the helper collision — deferred.
+
 ### Surface skipped files more loudly `[soon]`
 `Schema`/`safe_transform` skips a file that fails to transform (good — one bad
 file shouldn't sink the run) and the task prints `skipped <file>: <reason>` in

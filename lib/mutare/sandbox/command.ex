@@ -284,7 +284,14 @@ defmodule Mutare.Sandbox.Command do
         # key so its own `Selector.put/1` calls can't clobber the harness's
         # active-mutant slot. Inert on a normal target (no `Mutare.Selector`
         # compiled in); see `Mutare.Selector`'s moduledoc.
-        {Mutare.Selector.override_env(), Mutare.Selector.suite_key()}
+        {Mutare.Selector.override_env(), Mutare.Selector.suite_key()},
+        # The same isolation for the coverage helper module name: give the
+        # suite-under-test's `test/support/mutare_cov.ex` stand-in a private name so
+        # it can't co-define `:mutare_cov` with the real helper the sandbox writes
+        # (a clash that breaks the probe's `dump/1`). Inert on a normal target (no
+        # such stand-in compiled in); see `Mutare.Coverage.Recorder`'s moduledoc.
+        {Mutare.Coverage.Recorder.fixture_override_env(),
+         Mutare.Coverage.Recorder.suite_fixture_module()}
       ]
       |> maybe_cap(opts[:cap])
       |> Kernel.++(opts[:env] || [])

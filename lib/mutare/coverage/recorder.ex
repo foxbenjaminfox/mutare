@@ -60,6 +60,27 @@ defmodule Mutare.Coverage.Recorder do
   @dump_path_env "MUTARE_COV_DUMP"
   @root_env "MUTARE_COV_ROOT"
 
+  # Self-hosting isolation for the helper module name, mirroring
+  # `Mutare.Selector`'s private selection key. When the target *is* Mutare, the
+  # sandbox holds **two** definitions of the helper module: the real one
+  # `Mutare.Sandbox` writes (`helper_module/0`, with `dump/1`) *and* Mutare's own
+  # `test/support/mutare_cov.ex` test stand-in. Two modules with the same atom name
+  # is a "redefining module" clash — the stand-in (which has no `dump/1`) can win,
+  # and the probe's `after_suite(&:mutare_cov.dump/1)` then raises
+  # `UndefinedFunctionError`, collapsing coverage to run-all (see NOTES,
+  # "Self-hosting coverage").
+  #
+  # So the *stand-in's* module name is configurable: `fixture_module/0` returns
+  # `helper_module/0` unless `fixture_override_env/0` names another.
+  # `Mutare.Sandbox.Command` sets that env var (to `suite_fixture_module/0`) on
+  # every sandbox `mix`, so the suite-under-test's stand-in compiles under a private
+  # name (`:mutare_cov__suite_fixture`) and never collides with the real helper the
+  # sandbox writes. The real helper, the metamutant's baked `hit/1` calls, and the
+  # bootstrap all keep `helper_module/0` (the override is unset in the harness
+  # process, and a normal target has no stand-in compiled in, so this is inert).
+  @fixture_override_env "MUTARE_COV_FIXTURE_MODULE"
+  @suite_fixture_module "mutare_cov__suite_fixture"
+
   # The canonical name the catch-all binds the selector subject to, so the coverage
   # record can reuse it (no second `:persistent_term` read). It is only a *default*:
   # `Mutare.Transform` passes a per-file, collision-free name (salted away from a
@@ -90,6 +111,30 @@ defmodule Mutare.Coverage.Recorder do
   @doc "The dependency-free helper module emitted into the sandbox."
   @spec helper_module() :: module()
   def helper_module, do: @helper_module
+
+  @doc """
+  The module name Mutare's `test/support/mutare_cov.ex` stand-in defines itself as.
+
+  `helper_module/0` (`:mutare_cov`) unless `fixture_override_env/0` names another —
+  the one knob self-hosting needs so the stand-in does not collide with the real
+  helper the sandbox writes (see the constant's comment above).
+  """
+  @spec fixture_module() :: module()
+  def fixture_module do
+    case System.get_env(@fixture_override_env) do
+      nil -> @helper_module
+      "" -> @helper_module
+      name -> String.to_atom(name)
+    end
+  end
+
+  @doc "Env var a sandbox run sets to give the suite-under-test's stand-in a private module name."
+  @spec fixture_override_env() :: String.t()
+  def fixture_override_env, do: @fixture_override_env
+
+  @doc "The private stand-in module name (`fixture_override_env/0`'s value) used under dogfooding."
+  @spec suite_fixture_module() :: String.t()
+  def suite_fixture_module, do: @suite_fixture_module
 
   @doc "The canonical selector-subject variable name (`:mutare_active`); the default `var`."
   @spec var_name() :: atom()
