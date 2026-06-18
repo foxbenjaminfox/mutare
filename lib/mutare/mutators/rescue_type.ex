@@ -55,9 +55,12 @@ defmodule Mutare.Mutators.RescueType do
   `Mutare.Transform.Analyze` (like the narrowing) and delivered by the same whole-`try`
   selector; both operations are recorded under this one `:rescue_type` family.
 
-  Only **explicit `try`** rescue clauses are mutated today; the `def … rescue …`
-  shorthand is deferred (it would need the def body restructured into an explicit
-  `try`, which conflicts with return-value/lifting analysis).
+  Both the **explicit `try`** and the **`def … rescue …` shorthand** are mutated. The
+  shorthand carries its rescue clauses as def-body blocks (no `try` node), so the transform
+  hosts the body in a synthesized `try` only for delivery (`def f do b rescue r end` ≡
+  `def f do try do b rescue r end end`); the shorthand's existing operator and *granular*
+  return-value mutants are preserved, and it works under lifting unchanged. See
+  `Mutare.Transform.Analyze.host_def_rescue/3`.
   """
   @behaviour Mutare.Mutator
 

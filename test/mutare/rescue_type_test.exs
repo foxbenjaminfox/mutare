@@ -51,6 +51,13 @@ defmodule Mutare.RescueTypeTest do
         e in RuntimeError -> {:branch_run, e.__struct__}
       end
     end
+
+    def def_branches(f) do
+      f.()
+    rescue
+      e in ArgumentError -> {:db_arg, e.__struct__}
+      e in RuntimeError -> {:db_run, e.__struct__}
+    end
   end
   """
 
@@ -91,6 +98,20 @@ defmodule Mutare.RescueTypeTest do
   # Same, for `F.branches/1` (the multi-branch `rescue e in A -> …; e in B -> …` form).
   defp branch_outcome(ex) do
     {:caught, F.branches(fn -> raise ex end)}
+  rescue
+    e -> {:propagated, e.__struct__}
+  end
+
+  # Same, for `F.def_body/1` (the `def … rescue …` shorthand, a two-type list).
+  defp def_body_outcome(ex) do
+    {:caught, F.def_body(fn -> raise ex end)}
+  rescue
+    e -> {:propagated, e.__struct__}
+  end
+
+  # Same, for `F.def_branches/1` (the multi-branch `def … rescue …` shorthand).
+  defp def_branch_outcome(ex) do
+    {:caught, F.def_branches(fn -> raise ex end)}
   rescue
     e -> {:propagated, e.__struct__}
   end
@@ -143,11 +164,6 @@ defmodule Mutare.RescueTypeTest do
 
   test "a single-type rescue is not mutated (nothing to narrow to)", %{sites: sites} do
     refute Enum.any?(sites, &(&1.mutator == :rescue_type and &1.line == 14))
-  end
-
-  test "a def-body `rescue` is deferred (only explicit `try` is mutated)", %{sites: sites} do
-    # The def-body rescue's bodies still mutate (atom/tuple), but its type list does not.
-    refute Enum.any?(sites, &(&1.mutator == :rescue_type and &1.line == 21))
   end
 
   test "two type-drop mutants are produced for a two-type list", %{sites: sites} do
@@ -260,6 +276,63 @@ defmodule Mutare.RescueTypeTest do
                sites,
                &(&1.mutator == :rescue_type and &1.operation == :delete and &1.line == 6)
              )
+    end
+  end
+
+  describe "`def … rescue …` shorthand (hosted in a synthesized `try`)" do
+    test "a two-type list in a shorthand rescue is narrowed", %{sites: sites} do
+      drops = Enum.filter(sites, &(&1.mutator == :rescue_type and &1.line == 21))
+      assert length(drops) == 2
+      assert Enum.all?(drops, &(&1.kind == :in_place and &1.operation == :replace))
+    end
+
+    test "narrowing a shorthand rescue propagates the dropped type at runtime", %{sites: sites} do
+      Selector.put(rescue_site(sites, "e in [RuntimeError]", 21))
+      assert {:caught, {:def_caught, RuntimeError}} = def_body_outcome(RuntimeError)
+      assert {:propagated, ArgumentError} = def_body_outcome(ArgumentError)
+
+      Selector.put(rescue_site(sites, "e in [ArgumentError]", 21))
+      assert {:propagated, RuntimeError} = def_body_outcome(RuntimeError)
+      assert {:caught, {:def_caught, ArgumentError}} = def_body_outcome(ArgumentError)
+    end
+
+    test "a shorthand still gets its granular return-value mutants (no regression)", %{
+      sites: sites
+    } do
+      # The do-body tail (`f.()`, line 19) and the rescue-clause tail (line 21) are both
+      # return positions — hosting the body in a synthesized `try` must not lose them.
+      returns = Enum.filter(sites, &(&1.mutator == :return_value and &1.line in [19, 21]))
+      assert Enum.any?(returns, &(&1.line == 19)), "do-body tail return mutant missing"
+      assert Enum.any?(returns, &(&1.line == 21)), "rescue-clause tail return mutant missing"
+    end
+
+    test "a multi-branch shorthand drops each whole clause", %{sites: sites} do
+      drops = Enum.filter(sites, &(&1.mutator == :rescue_type and &1.line in [44, 45]))
+      assert length(drops) == 2
+      assert Enum.all?(drops, &(&1.kind == :in_place and &1.operation == :delete))
+    end
+
+    test "dropping a shorthand branch propagates its exception at runtime", %{sites: sites} do
+      Selector.put(rescue_drop_site(sites, 44))
+      assert {:propagated, ArgumentError} = def_branch_outcome(ArgumentError)
+      assert {:caught, {:db_run, RuntimeError}} = def_branch_outcome(RuntimeError)
+
+      Selector.put(rescue_drop_site(sites, 45))
+      assert {:caught, {:db_arg, ArgumentError}} = def_branch_outcome(ArgumentError)
+      assert {:propagated, RuntimeError} = def_branch_outcome(RuntimeError)
+    end
+
+    test "renders a shorthand narrowing as a focused one-line diff", %{sites: sites} do
+      site =
+        Enum.find(
+          sites,
+          &(&1.mutator == :rescue_type and &1.line == 21 and
+              &1.mutated_code == "e in [RuntimeError]")
+        )
+
+      assert Report.diff(site, @source) ==
+               "-    e in [RuntimeError, ArgumentError] -> {:def_caught, e.__struct__}\n" <>
+                 "+    e in [RuntimeError] -> {:def_caught, e.__struct__}"
     end
   end
 end

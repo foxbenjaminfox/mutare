@@ -191,12 +191,14 @@ defmodule Mutare.Transform.Analyze do
   # *original* clause of a lifted group): the head is a pattern, the body keyword is
   # runtime, and the `:do` block's *tail expression* is additionally a return-value
   # position (only the transform knows where a clause returns — see
-  # `annotate_returns/3`).
+  # `annotate_returns/3`). A `def … rescue …` shorthand additionally gets its rescue
+  # clauses narrowed/dropped (`host_def_rescue/3`).
   defp analyze({vis, meta, [head, body_kw]}, _context, mutators)
        when vis in [:def, :defp] and is_list(body_kw) do
     head = analyze(head, :pattern, mutators)
     analyzed_kw = analyze_do_blocks(body_kw, mutators)
-    {vis, meta, [head, annotate_returns(analyzed_kw, body_kw, mutators)]}
+    annotated_kw = annotate_returns(analyzed_kw, body_kw, mutators)
+    {vis, meta, [head, host_def_rescue(annotated_kw, body_kw, mutators)]}
   end
 
   # bitstring: each segment's value keeps the surrounding context; the spec side
@@ -346,9 +348,9 @@ defmodule Mutare.Transform.Analyze do
   # multi-branch shape where each clause catches a single type and there is no list to narrow —
   # it drops a whole `rescue` clause (`Candidate.RescueDrop`, only when ≥2 clauses are present so
   # the `rescue` is never left empty). The construct is still analyzed normally (do/rescue-bodies/
-  # catch/else/after mutate; the rescue/else/catch patterns stay `:pattern`). Only the explicit
-  # `try` is handled here; the `def … rescue …` shorthand reaches `analyze_do_blocks/2` and is
-  # deferred.
+  # catch/else/after mutate; the rescue/else/catch patterns stay `:pattern`). This clause handles the
+  # explicit `try`; the `def … rescue …` shorthand carries the same blocks at the def-body level and
+  # is hosted in a synthesized `try` by `host_def_rescue/3` (off the same `rescue_type_candidates/3`).
   defp analyze({:try, meta, [blocks]} = node, :runtime, mutators) when is_list(blocks) do
     analyzed = recurse(node, :runtime, mutators)
 
@@ -758,6 +760,34 @@ defmodule Mutare.Transform.Analyze do
         do: {key, Enum.map(value, &analyze_try_clause(&1, mutators))},
         else: {key, analyze(value, :runtime, mutators)}
     end)
+  end
+
+  # A `def … rescue …` shorthand (sugar for wrapping the body in a `try`) carries its
+  # rescue/catch/else/after as **def-body blocks**, not a `try` node — so the `:try` analyze
+  # clause never sees it and `RescueType`'s narrowing / clause-drop would be skipped. Deliver
+  # them by **hosting the body in a synthesized `try`**: when the body has rescue candidates,
+  # replace the whole body keyword with `[do: try]`, the `try` carrying those candidates, so the
+  # same whole-construct selector that wraps an explicit `try` wraps this one. The hosted (catch-
+  # all) `try` is the **already-analyzed** body (`annotated_kw` — its do/rescue bodies keep their
+  # operator and *granular* return-value selectors), so nothing the shorthand already mutated is
+  # lost; the mutant branches are raw tries with one rescue clause narrowed/dropped. Sound and
+  # value-transparent: `def f do b rescue r end` ≡ `def f do try do b rescue r end end` (a `try`
+  # leaks no bindings, and the function's value is the try's). No rescue block / no candidates
+  # (`RescueType` off, or a single-type single-clause rescue) ⇒ the body keyword is untouched, so
+  # the shorthand's existing return/operator mutations are unaffected. Works under lifting for
+  # free: the relocated original clause's body becomes `[do: <selector>]` like any in-place body.
+  defp host_def_rescue(annotated_kw, raw_body_kw, mutators) do
+    # `do:`/`end:` block markers force Sourceror to render the synthesized `try` in block form
+    # (`try do … rescue … end`); a `[]`-meta `try` over the source's `{:__block__, …, [:do]}`
+    # block keys would otherwise render the invalid inline keyword form (`try do: …, rescue: …`).
+    # The marker values are empty (these are generated, lineless nodes); the same meta is threaded
+    # to the candidates' rebuilt mutant tries via `rescue_type_candidates/3`.
+    try_meta = [do: [], end: []]
+
+    case rescue_type_candidates(raw_body_kw, try_meta, mutators) do
+      [] -> annotated_kw
+      candidates -> [do: put_candidates({:try, try_meta, [annotated_kw]}, candidates)]
+    end
   end
 
   # One `rescue`/`catch`/`else` clause: its patterns are matches (`:pattern`), its

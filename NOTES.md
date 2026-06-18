@@ -1185,11 +1185,27 @@ branch makes its exception propagate while the other is still caught. (`Site.in_
 the bare `->` clause node in arrow syntax for `describe/1`; `Sourceror.to_string/1` would otherwise
 emit the call form `->(head, body)`.)
 
-**Only the explicit `try` is mutated.** The `def … rescue …` shorthand (sugar for wrapping the body
-in a `try`) reaches `analyze_do_blocks/2`, not the `:try` clause, and is **deferred**: delivering it
-would mean restructuring the def body into an explicit `try` wrapped in a selector, which collides
-with `annotate_returns/3` (which gives a def-body rescue *granular* return mutants per rescue-clause
-tail — lost if converted to a whole-`try`) and with lifting. A bounded, documented gap.
+**The `def … rescue …` shorthand is mutated too** (`host_def_rescue/3`). The shorthand is sugar for
+wrapping the body in a `try`, but it carries its rescue/catch/else/after as **def-body blocks**, not a
+`try` node — so the `:try` clause never sees it. The fix hosts the body in a **synthesized `try`**: the
+`def` clause runs `analyze_do_blocks/2` + `annotate_returns/3` as before, then — *only* when the body
+has rescue candidates — replaces the whole body keyword with `[do: try]`, the `try` carrying those
+candidates so the same whole-construct selector wraps it. The key ordering insight that dissolves the
+feared collision: `annotate_returns/3` runs **first**, on the original rescue-form keyword, so the
+shorthand's *granular* per-clause-tail return mutants are attached to the body's inner tails *before*
+the body is wrapped — the catch-all `try` is that already-analyzed body, so nothing is lost (verified:
+a shorthand keeps both its do-tail and rescue-tail return mutants). The mutant branches are raw tries
+with one rescue clause narrowed/dropped. Lifting needs **zero** special-casing: the relocated original
+clause's body becomes `[do: <selector>]` like any other in-place body (the rescue ids are body-selector
+ids, not lifted-candidate ids), while the guard/pattern mutant clauses keep the raw shorthand — both
+are valid base clauses. `def f do b rescue r end` ≡ `def f do try do b rescue r end end`, and a `try`
+leaks no bindings, so the rewrite is value-transparent.
+
+One rendering wrinkle: a `[]`-meta synthesized `try` over the source's `{:__block__, …, [:do]}` block
+keys renders the **invalid inline keyword form** (`try do: …, rescue: …`); empty `do:`/`end:` block
+markers in the `try` meta (`[do: [], end: []]`, threaded to the candidates' rebuilt mutant tries too)
+force the block form. `super`/quote and the rest compose unchanged, since the synthesized `try` is just
+another in-place body node.
 
 ### Transform pipeline — explicit stages `[refactor, done]`
 `Mutare.Transform` is an explicit pipeline rather than a walk-everything-then-

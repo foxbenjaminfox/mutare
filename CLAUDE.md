@@ -657,9 +657,13 @@ contract between them is the whole game.
   `Candidate.RescueDrop` whose mutant branch is the `try` with that clause removed, recorded as a
   `:delete` `:in_place` `Site` (`Site.in_place_drop/5`). Offered only when ≥2 clauses are present (a
   `try` can't carry an empty `rescue`), so always compile-safe; the dropped clause's head shape is
-  irrelevant (a bare-variable catch-all is droppable too). Only the explicit `try` is mutated; the
-  `def … rescue …` shorthand is deferred (it would need the def body restructured into a `try`,
-  conflicting with return-value/lifting analysis).
+  irrelevant (a bare-variable catch-all is droppable too). **Both** the explicit `try` and the
+  `def … rescue …` shorthand are mutated: the shorthand carries its rescue blocks at the def-body
+  level (no `try` node), so `Analyze.host_def_rescue/3` hosts the body in a **synthesized `try`** for
+  delivery (`def f do b rescue r end` ≡ `def f do try do b rescue r end end`) — run *after*
+  `annotate_returns/3`, so the shorthand keeps its operator and *granular* return-value mutants, and
+  it works under lifting unchanged (the relocated body becomes `[do: <selector>]` like any in-place
+  body).
 - **`Mutare.Mutators`** — the **single ordered registry** of built-in families and the one place
   mutator lists are resolved/validated. `all/0` is the default set (every registered module — an
   unset `:mutators`/`:all`); `families/0` is every registered atom; `resolve/1` maps any entry —

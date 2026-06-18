@@ -93,4 +93,37 @@ defmodule Mutare.RescueRunnerTest do
              &(&1.site.mutator == :rescue_type and &1.site.operation == :delete)
            )
   end
+
+  test "a `def … rescue …` shorthand rescue mutant is covered and killed end-to-end" do
+    %{project: project, sandbox: sandbox} =
+      Project.build(:shorthand, %{
+        "lib/shorthand.ex" => """
+        defmodule Shorthand do
+          def safe(f) do
+            f.()
+          rescue
+            e in [RuntimeError, ArgumentError] -> {:rescued, e.__struct__}
+          end
+        end
+        """,
+        "test/shorthand_test.exs" => """
+        defmodule ShorthandTest do
+          use ExUnit.Case
+
+          test "safe rescues both runtime and argument errors" do
+            assert Shorthand.safe(fn -> raise RuntimeError end) == {:rescued, RuntimeError}
+            assert Shorthand.safe(fn -> raise ArgumentError end) == {:rescued, ArgumentError}
+          end
+        end
+        """
+      })
+
+    assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
+
+    # The shorthand (no explicit `try`) is hosted in a synthesized `try`, so its two-type list
+    # is narrowed like any rescue. Both type-drops are covered and killed end-to-end.
+    assert length(run.results) == 2
+    assert Enum.all?(run.results, &(&1.status == :killed))
+    assert Enum.all?(run.results, &(&1.site.mutator == :rescue_type))
+  end
 end
