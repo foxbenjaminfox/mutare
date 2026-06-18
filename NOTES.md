@@ -1014,6 +1014,70 @@ near-identical copies for N guard mutants. Both are fixed:
   "lifting blowup"), so code size / single-compile time grows linearly with
   mutation density rather than multiplicatively.
 
+### `super` in a lifted body — forward through a dispatcher closure `[done]`
+`super` is a special form legal **only** inside the overriding function (it invokes
+the function it overrides). Lifting relocates a clause body into a private
+`defp __mutare_…`, whose name is **not** the overridden one — so a `super` there is a
+compile error ("super is undefined"), which (the lib compiles once) would sink the
+whole metamutant build for *every* lifted override that calls `super`. Real Phoenix /
+behaviour-heavy targets do this constantly (`def render(...), do: super(...)` over a
+`defoverridable`).
+
+The fix keeps the rewrite local and is **off unless a lifted body actually calls
+`super`** (the common path is byte-for-byte unchanged). The key facts:
+
+  - The public **dispatcher keeps the original name**, so it *is* the overriding
+    function — `super` is legal there, **including inside a closure** (verified).
+  - `super` must be called with **exactly** the function's full formal-parameter
+    count ("super must be called with the same number of arguments as the current
+    definition" — verified; even with default args, where the legal arity is the
+    *max*, i.e. the head's `length(args)`, which is exactly the `FunctionPlan`
+    signature arity). So **one fixed-arity closure forwards every legal `super`
+    call.**
+
+So when `Mutare.Transform.Super.in_clauses?/1` finds a `super` in any clause **body**,
+the dispatcher binds
+
+```elixir
+mutare_super = fn a1, …, aN -> super(a1, …, aN) end
+```
+
+and threads it to the base as the **second** argument (after `mutare_active`); each
+`super(args)` in the relocated body is rewritten to `mutare_super.(args)`
+(`Super.rewrite/2`). Sharp edges, all handled:
+
+- **Per-clause unused param.** The base's arity is shared across clauses, so *every*
+  base clause takes the closure param — but only the clauses whose own body calls
+  `super` use it. A clause that doesn't names the param `_mutare_super` (each base
+  clause is a separate `defp`, so the name can differ per clause), dodging the
+  unused-variable warning that would otherwise poison a `--warnings-as-errors` target.
+- **Collision-free name.** `mutare_super` is salted per-file exactly like
+  `mutare_active` (`Names.salted/2`, canonical `:mutare_super`) — it is *read* in the
+  base body, so it can't be underscore-prefixed (a read underscore var warns), and a
+  source variable named `mutare_super` would otherwise be captured (a `super(x)`
+  rewritten to `mutare_super.(x)` would call the user's value). Salts to
+  `mutare_super_0`, … when taken.
+- **`quote` is pruned.** A `super` inside `quote do … end` is quoted *data* (it names
+  whatever context the AST is later spliced into, not a live call here), so it is left
+  untouched — mirroring the in-place analyzer, which treats `quote` as `:compile_time`
+  and never descends it. Such a body reads as super-free, lifts **without** a closure,
+  and the quoted `super` rides along verbatim. (`super` only inside a `quote` is valid
+  source — verified.) Detection and rewrite share one walk (`Super` is `{ast, found?}`)
+  so they can never disagree on what counts as a live `super`.
+- **Defaults / heads are not scanned.** Only the body is inspected: a `super` in a
+  default value rides on the dispatcher (the override, which may call `super`
+  directly), and `super` can't appear in a head/`when`. Heads (bodiless or otherwise)
+  thus never trip detection.
+- **In-place functions need nothing.** A function that *isn't* lifted keeps its name,
+  so its `super` is already in the overriding function — untouched.
+
+`Mutare.Transform.Super` owns recognising/rewriting the `super` nodes (pure,
+testable); `Mutare.Transform` owns building the closure + threading the extra arg
+(`super_closure_binding/2`, `super_param/2`), since that shares the dispatcher /
+lifted-clause emission. Alternative considered and rejected: **skip-lifting** any
+`super`-using function (simpler, but costs it all guard/head-literal/clause-drop
+mutants — and these override functions are exactly the ones worth mutating).
+
 ### Default arguments are lifted `[done]`
 Default args (`def f(a, b \\ 1, c, d \\ 2)`) were left in-place for a long time —
 they "expand to multiple arities", which sounded like it needed a normalize pass

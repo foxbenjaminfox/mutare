@@ -252,6 +252,19 @@ contract between them is the whole game.
     the `\\`'s pattern, keeps the default raw); pattern structures strip-then-reattach the `\\`. Only
     operator-named and non-consecutive/metaprogrammed groups still fall back to in-place (see NOTES
     "Default arguments are lifted").
+    **`super`** is legal only inside the overriding function, so a `super` in a lifted body would not
+    compile in the relocated base `defp`. `Mutare.Transform.Super` keeps the rewrite local: when a
+    lifted clause *body* calls `super` (`Super.in_clauses?/1`), the dispatcher — which keeps the
+    original name and *is* the override, where `super` is legal even in a closure — binds
+    `mutare_super = fn a1, …, aN -> super(a1, …, aN) end` (one fixed-arity closure: `super`'s only
+    legal arity is the full param count, the signature arity, defaults included) and threads it to the
+    base as its second arg; each `super(args)` becomes `mutare_super.(args)` (`Super.rewrite/2`). Off
+    unless a body actually calls `super`, so the common path is unchanged. A base clause with no
+    `super` of its own still takes the shared param but names it `_mutare_super` (no unused warning);
+    `mutare_super` is salted per-file like `mutare_active` (`Names.salted/2`); a `super` inside `quote`
+    is quoted *data* and left untouched (the body reads as super-free, lifts without a closure),
+    mirroring the analyzer's `:compile_time` quote handling. In-place (non-lifted) functions keep their
+    name, so their `super` needs nothing (see NOTES "`super` in a lifted body").
 - **`Mutare.Schema`** — runs `Transform` across discovered files, threading **globally-unique,
   stable** mutant ids. Honors `:paths`/`:exclude`, `:only_files` (for `--since`), and `:skip_ids`
   (for poison recovery — the id counter advances even for skipped ids, so ids stay stable across

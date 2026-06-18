@@ -127,7 +127,8 @@ defmodule Mutare.Transform do
     ModulePlan,
     Names,
     Render,
-    Resolve
+    Resolve,
+    Super
   }
 
   # The default set is the built-in catalog's `all/0` — one source of truth, so a
@@ -166,10 +167,10 @@ defmodule Mutare.Transform do
 
     parsed = Sourceror.parse_string!(source)
     # Pin the generated names this source provably never collides with before any
-    # lifting assigns them: the private-function prefix and the dispatch variable
-    # (see `Mutare.Transform.Names`).
-    {prefix, active_var} = Names.generated_names(parsed)
-    ctx = %{ctx | prefix: prefix, active_var: active_var}
+    # lifting assigns them: the private-function prefix, the dispatch variable, and
+    # the super-forwarding closure variable (see `Mutare.Transform.Names`).
+    {prefix, active_var, super_var} = Names.generated_names(parsed)
+    ctx = %{ctx | prefix: prefix, active_var: active_var, super_var: super_var}
     # Resolve `alias`es and `import`s in one lexical pass (`Mutare.Transform.Resolve`),
     # stamping each call with the module it refers to, so the call-matching mutators recognise
     # an aliased `S.upcase` as `String.upcase` and a bare imported `reject(xs, f)` (after
@@ -380,6 +381,12 @@ defmodule Mutare.Transform do
     base = :"#{base_name(name, arity, group, ctx.prefix)}"
     var = ctx.active_var
 
+    # If any lifted body calls `super`, the relocated base copies can't (super is
+    # legal only in the overriding function). `super_var` is the closure variable the
+    # dispatcher binds and forwards (`Mutare.Transform.Super`); `nil` when the group
+    # is super-free, leaving the common path byte-for-byte unchanged.
+    super_var = if Super.in_clauses?(plan.clauses), do: ctx.super_var, else: nil
+
     # Source clauses with in-place body selectors — claims the body ids first.
     {orig_clauses, ctx} = in_place_clauses(plan.clauses, ctx)
 
@@ -414,7 +421,7 @@ defmodule Mutare.Transform do
         mutant_clauses =
           for {id, ^index, clause} <- claimed,
               clause != :drop,
-              do: lifted_mutant(base, id, clause, var)
+              do: lifted_mutant(base, id, clause, var, super_var)
 
         # A bodiless header (`def f(a, b \\ 1)` with no `do`) declares defaults
         # only — it has no body to lift and no candidates target it. Its defaults
@@ -422,11 +429,12 @@ defmodule Mutare.Transform do
         if bodiless_header?(orig) do
           mutant_clauses
         else
-          mutant_clauses ++ [lifted_original(base, orig, Map.get(excluded, index, []), var)]
+          mutant_clauses ++
+            [lifted_original(base, orig, Map.get(excluded, index, []), var, super_var)]
         end
       end)
 
-    {[build_dispatcher(vis, name, arity, mut_ids, base, var, defaults) | lifted], ctx}
+    {[build_dispatcher(vis, name, arity, mut_ids, base, var, defaults, super_var) | lifted], ctx}
   end
 
   # The public dispatcher: read the active mutant id once, record coverage for the
@@ -443,20 +451,37 @@ defmodule Mutare.Transform do
   # multi-arity contract — while the call to the base passes the *plain* vars (the
   # defaults are already resolved by the time the head's body runs). The base
   # therefore always sees the full arity.
-  defp build_dispatcher(vis, name, arity, mut_ids, base, var, defaults) do
+  #
+  # `super_var` (non-`nil` only when a lifted body calls `super`) adds a closure
+  # `<super_var> = fn a1, …, aN -> super(a1, …, aN) end` bound here — `super` is legal
+  # inside the dispatcher (the overriding function), even in a closure — and threaded
+  # to the base as its second argument, so the relocated body can call `super`
+  # through it (`Mutare.Transform.Super`).
+  defp build_dispatcher(vis, name, arity, mut_ids, base, var, defaults, super_var) do
     call_args = dispatcher_args(arity)
     head_args = with_defaults(call_args, defaults)
     var_node = Recorder.catch_all_pattern(var)
     read = {:=, [], [var_node, Mutare.Metamutant.subject_ast()]}
-    call = {base, [], [var_node | call_args]}
 
-    body =
-      case mut_ids do
-        [] -> {:__block__, [], [read, call]}
-        ids -> {:__block__, [], [read, Recorder.record_ast(ids, var), call]}
-      end
+    {super_args, super_stmts} = super_closure_binding(super_var, arity)
+    call = {base, [], [var_node | super_args] ++ call_args}
+
+    record = if mut_ids == [], do: [], else: [Recorder.record_ast(mut_ids, var)]
+    body = {:__block__, [], [read] ++ super_stmts ++ record ++ [call]}
 
     {vis, [], [{name, [], head_args}, [do: body]]}
+  end
+
+  # The super-forwarding closure binding for the dispatcher, plus the extra call arg
+  # that threads it to the base: `{[<super_var>], [<super_var> = fn … -> super(…) end]}`
+  # when the group uses `super`, else `{[], []}` (unchanged dispatcher).
+  defp super_closure_binding(nil, _arity), do: {[], []}
+
+  defp super_closure_binding(super_var, arity) do
+    super_node = {super_var, [], nil}
+    args = dispatcher_args(arity)
+    closure = {:fn, [], [{:->, [], [args, {:super, [], args}]}]}
+    {[super_node], [{:=, [], [super_node, closure]}]}
   end
 
   # Overlay each `\\ default` from `defaults` (position → expression) onto the
@@ -479,11 +504,11 @@ defmodule Mutare.Transform do
   # renamed to `<base>`, given the `mutare_active` extra arg, and gated `when
   # mutare_active === <id> [and <its own guard>]`. Raw body (no in-place selectors):
   # only one mutant is ever active, so a body selector here could never fire.
-  defp lifted_mutant(base, id, clause, var) do
+  defp lifted_mutant(base, id, clause, var, super_var) do
     {clause_meta, call_meta, args, guards, body} = clause_parts(clause)
     gate = {:===, [], [Recorder.catch_all_pattern(var), id_literal(id)]}
     guard = and_into_guard(gate, combine_guards(guards))
-    lifted_clause(base, clause_meta, call_meta, args, guard, body, var)
+    lifted_clause(base, clause_meta, call_meta, args, guard, body, var, super_var)
   end
 
   # One lifted *original* clause: the source clause (with its in-place body
@@ -491,22 +516,43 @@ defmodule Mutare.Transform do
   # `when mutare_active !== <id>` for each `id` that overrides/drops it — so it
   # yields to its mutant clauses when their id is active, and behaves normally
   # otherwise (including for any skipped/poisoned id, which is never excluded).
-  defp lifted_original(base, clause, excluded_ids, var) do
+  defp lifted_original(base, clause, excluded_ids, var, super_var) do
     {clause_meta, call_meta, args, guards, body} = clause_parts(clause)
     guard = merge_guards(exclusion_guard(excluded_ids, var), combine_guards(guards))
-    lifted_clause(base, clause_meta, call_meta, args, guard, body, var)
+    lifted_clause(base, clause_meta, call_meta, args, guard, body, var, super_var)
   end
 
-  # Assemble a `<base>` clause: `defp <base>(mutare_active, <args...>) [when <guard>], <body>`.
-  # The source clause's `meta` (its line) is preserved on the `defp` and the head call
-  # — *not* reset to `[]` — so `Sourceror`'s line-assigning normalizer stays anchored to
-  # the original source lines. Without it the body's `[]`-meta selector clauses (`<id>
-  # -> …`) get stale lines, and a bare integer id then renders as a `:line`-but-no-
-  # `:token` literal that crashes the Elixir formatter.
-  defp lifted_clause(base, clause_meta, call_meta, args, guard, body, var) do
-    call = {base, call_meta, [Recorder.catch_all_pattern(var) | args]}
+  # Assemble a `<base>` clause: `defp <base>(mutare_active, [<super_var>,] <args...>)
+  # [when <guard>], <body>`. The source clause's `meta` (its line) is preserved on the
+  # `defp` and the head call — *not* reset to `[]` — so `Sourceror`'s line-assigning
+  # normalizer stays anchored to the original source lines. Without it the body's
+  # `[]`-meta selector clauses (`<id> -> …`) get stale lines, and a bare integer id
+  # then renders as a `:line`-but-no-`:token` literal that crashes the Elixir formatter.
+  #
+  # When the group uses `super` (`super_var` non-`nil`), every base clause takes the
+  # forwarding closure as its second parameter; this clause's body is rewritten to call
+  # `super` through it. A clause whose own body has no `super` still takes the (shared)
+  # parameter but ignores it — named `_<super_var>` so it draws no unused-variable
+  # warning (`super_param/2`).
+  defp lifted_clause(base, clause_meta, call_meta, args, guard, body, var, super_var) do
+    {body, super_params} = super_param(body, super_var)
+    call = {base, call_meta, [Recorder.catch_all_pattern(var) | super_params] ++ args}
     head = if guard, do: {:when, [], [call, guard]}, else: call
     {:defp, clause_meta, [head | body]}
+  end
+
+  # The super-closure parameter for one base clause, plus its rewritten body. `nil`
+  # (super-free group) leaves both untouched. Otherwise the body's `super(...)` calls
+  # become `<super_var>.(...)`; the clause takes the closure as a parameter, named
+  # `<super_var>` when it is used and `_<super_var>` when this clause has no `super`
+  # (the parameter exists only to match the base's shared arity).
+  defp super_param(body, nil), do: {body, []}
+
+  defp super_param(body, super_var) do
+    case Super.rewrite(body, super_var) do
+      {body, true} -> {body, [{super_var, [], nil}]}
+      {body, false} -> {body, [{:"_#{super_var}", [], nil}]}
+    end
   end
 
   # Deconstruct a function clause into `{clause_meta, head_call_meta, head_args,

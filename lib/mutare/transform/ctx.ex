@@ -15,6 +15,7 @@ defmodule Mutare.Transform.Ctx do
           skip_ids: MapSet.t(),
           prefix: String.t(),
           active_var: atom(),
+          super_var: atom(),
           next_id: pos_integer(),
           group: non_neg_integer(),
           sites: [Mutare.Site.t()]
@@ -36,6 +37,11 @@ defmodule Mutare.Transform.Ctx do
     # `Mutare.Transform` salts it per file (off `prefix`) when the source already
     # uses that identifier, so a generated guard can't capture a user's variable.
     active_var: :mutare_active,
+    # The variable a dispatcher binds the super-forwarding closure to when a lifted
+    # body calls `super` (`Mutare.Transform.Super`). `:mutare_super` canonically;
+    # `Mutare.Transform` salts it per file like `active_var` so a `super(...)`
+    # rewritten to `<super_var>.(...)` can't capture a user's variable of that name.
+    super_var: :mutare_super,
     # accumulators — threaded and updated
     next_id: 1,
     group: 0,

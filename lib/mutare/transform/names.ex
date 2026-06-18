@@ -3,19 +3,23 @@ defmodule Mutare.Transform.Names do
 
   # Generated-name collision avoidance for one transform pass.
   #
-  # Lifting introduces two kinds of generated identifier into a file: private
-  # function names (`__mutare_<fun>_<arity>_g<n>`) and the dispatch variable the
-  # gated clauses read (`mutare_active`). With the canonical `"__mutare_"` /
-  # `mutare_active` a clash with hand-written code is near-impossible — but a single
+  # Lifting introduces three kinds of generated identifier into a file: private
+  # function names (`__mutare_<fun>_<arity>_g<n>`), the dispatch variable the gated
+  # clauses read (`mutare_active`), and the super-forwarding closure variable a
+  # dispatcher binds when a lifted body calls `super` (`mutare_super`; see
+  # `Mutare.Transform.Super`). With the canonical `"__mutare_"` / `mutare_active` /
+  # `mutare_super` a clash with hand-written code is near-impossible — but a single
   # clash is catastrophic (a duplicate `defp` sinks the *one* metamutant build; a
   # captured variable silently miscompiles a lifted clause — its gated head would
-  # bind a user value instead of the active id). So this module picks names the
-  # source provably never uses, from one scan of every identifier it mentions
-  # (definitions *and* variables).
+  # bind a user value instead of the active id, or a `super` call would forward a
+  # user's value instead of the closure). So this module picks names the source
+  # provably never uses, from one scan of every identifier it mentions (definitions
+  # *and* variables).
   #
-  # `Mutare.Transform` pins these once (into `Ctx.prefix`/`Ctx.active_var`) before
-  # any lifting assigns them; `Mutare.Manifest` recognises a lifted mutant clause by
-  # its `<active_var> === <id>` gate, not the name, so the salt is invisible to it.
+  # `Mutare.Transform` pins these once (into `Ctx.prefix`/`Ctx.active_var`/
+  # `Ctx.super_var`) before any lifting assigns them; `Mutare.Manifest` recognises a
+  # lifted mutant clause by its `<active_var> === <id>` gate, not the name, so the
+  # salt is invisible to it.
 
   alias Mutare.Coverage.Recorder
 
@@ -23,32 +27,39 @@ defmodule Mutare.Transform.Names do
   # derives a per-file, collision-free variant of it (see that function).
   @base_prefix "__mutare_"
 
+  # The canonical super-forwarding closure variable (see `Mutare.Transform.Super`).
+  # Like the dispatch variable it is read, so it is *not* underscore-prefixed (a
+  # leading-underscore variable that is then read warns); `salted/2` derives a
+  # collision-free variant when the source already uses the name.
+  @super_var :mutare_super
+
   # def-like forms whose names a generated private `defp` could duplicate — part of
   # the identifier set `generated_names/1` scans the source for.
   @def_forms ~w(def defp defmacro defmacrop defguard defguardp defdelegate)a
 
   @doc """
-  The collision-free `{prefix, active_var}` this source provably never uses.
+  The collision-free `{prefix, active_var, super_var}` this source provably never uses.
 
-  `prefix` is the private-function prefix; `active_var` the dispatch variable. Both
-  are derived from one scan of every identifier the source mentions, so a generated
-  name can never equal one already in scope.
+  `prefix` is the private-function prefix; `active_var` the dispatch variable;
+  `super_var` the super-forwarding closure variable. All three are derived from one
+  scan of every identifier the source mentions, so a generated name can never equal
+  one already in scope.
   """
-  @spec generated_names(Macro.t()) :: {String.t(), atom()}
+  @spec generated_names(Macro.t()) :: {String.t(), atom(), atom()}
   def generated_names(ast) do
     taken = taken_names(ast)
     prefix = Enum.find(prefix_candidates(), &free?(&1, taken))
-    {prefix, active_var(taken)}
+    {prefix, salted(Recorder.var_name(), taken), salted(@super_var, taken)}
   end
 
-  # The dispatch variable: the readable `mutare_active` unless the source already
-  # uses that identifier, then `mutare_active_0`, `mutare_active_1`, … until free.
-  # A numeric suffix (not the `__mutare_` prefix) keeps it a normal, non-underscore
-  # name — a leading-underscore variable that's then *read* warns ("used after being
-  # set"). The candidate family is infinite and `taken` finite, so this terminates.
-  defp active_var(taken) do
-    canonical = Recorder.var_name()
-
+  # A generated *variable* name the source provably never uses: the readable
+  # `canonical` unless the source already mentions it, then `canonical_0`,
+  # `canonical_1`, … until free. A numeric suffix (not the `__mutare_` prefix) keeps
+  # it a normal, non-underscore name — a leading-underscore variable that's then
+  # *read* warns ("used after being set"). The candidate family is infinite and
+  # `taken` finite, so this terminates. Used for both the dispatch variable
+  # (`mutare_active`) and the super-forwarding closure (`mutare_super`).
+  defp salted(canonical, taken) do
     if MapSet.member?(taken, Atom.to_string(canonical)) do
       Stream.iterate(0, &(&1 + 1))
       |> Stream.map(&:"#{canonical}_#{&1}")
