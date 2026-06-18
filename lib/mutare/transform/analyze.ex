@@ -1471,11 +1471,32 @@ defmodule Mutare.Transform.Analyze do
   # Re-home a binding macro's *whole-call* in-place mutations (a custom mutator's, attached by
   # `offer` during `analyze(:runtime)`) into `MacroPattern` candidates the tuple-export selector
   # hosts as extra branches, and return the node with them stripped (so emission doesn't *also*
-  # wrap the call in a standalone selector). A directly-written call carries them on its own
-  # meta; the piped stage carries them on the `|>` RHS child — handled in a later clause so the
-  # baseline never becomes `pattern |> case …`. For now a pipe is left untouched.
-  defp rehome_call_mutations({:|>, _meta, _args} = node, _export), do: {node, []}
+  # wrap the call in a standalone selector).
+  #
+  # A **piped** stage carries its mutations on the `|>` RHS *child* (`[x, y] |> destructure(v)`).
+  # Left in place, the child's postwalk would emit it as a selector `case`, and this node's
+  # baseline (`strip_candidates/1` in `emit_macro_pattern_site/3`) would become the illegal
+  # `pattern |> case …` — which also traps the macro's escaping bindings inside the branch. So
+  # the stage's mutations are pulled off the child (the baseline is then the bare emitted pipe)
+  # and each re-homed with `mutant_expr` the mutated stage piped back from the LHS pattern, so
+  # the mutant branch runs `lhs |> <mutated stage>` and the bindings reach the export tuple.
+  defp rehome_call_mutations({:|>, meta, [lhs, {form, rhs_meta, args}]}, export)
+       when is_list(rhs_meta) do
+    {inplace, others} =
+      rhs_meta |> Keyword.get(:mutare, []) |> Enum.split_with(&match?(%Candidate.InPlace{}, &1))
 
+    rhs = set_mutare({form, rhs_meta, args}, others)
+
+    call_candidates =
+      Enum.map(inplace, fn ip ->
+        call_mutation_candidate(ip, export, {:|>, meta, [lhs, ip.mutated]})
+      end)
+
+    {{:|>, meta, [lhs, rhs]}, call_candidates}
+  end
+
+  # A directly-written call carries its mutations on its own meta — re-home them with
+  # `mutant_expr` the mutated call itself.
   defp rehome_call_mutations({form, meta, args}, export) when is_list(meta) do
     {inplace, others} =
       meta |> Keyword.get(:mutare, []) |> Enum.split_with(&match?(%Candidate.InPlace{}, &1))

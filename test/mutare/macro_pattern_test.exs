@@ -319,4 +319,57 @@ defmodule Mutare.MacroPatternTest do
       assert mod.go([5, 2]) == 0
     end
   end
+
+  describe "a whole-call mutation coexists with the pattern mutants (piped form)" do
+    # The piped twin of the above. The stage `unpack(v)` carries the whole-call mutation on the
+    # `|>` RHS child; if it were emitted as its own selector, this site's baseline would become
+    # the illegal `[x, y] |> case … end` (a pipe into a `case`, which also traps the escaping
+    # bindings). The metamutant must compile and both mutants must switch.
+    @source """
+    defmodule Mutare.WholeCallPipedFixture do
+      import Mutare.Test.QueryDSL
+
+      def go(v) do
+        [x, y] |> unpack(v)
+        x - y
+      end
+    end
+    """
+
+    @compile {:no_warn_undefined, Mutare.WholeCallPipedFixture}
+
+    setup do
+      {meta, sites, _next} =
+        Mutare.transform_string(@source,
+          file: "whole_piped.ex",
+          mutators: [Mutare.Mutators.PatternSwap, Mutare.Test.UnpackMutator]
+        )
+
+      {[{mod, _}], _io} =
+        ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+
+      %{mod: mod, sites: sites}
+    end
+
+    test "both mutants get a site (the metamutant compiled)", %{sites: sites} do
+      assert Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 5))
+      assert Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
+    end
+
+    test "each mutant switches independently and the bindings escape", %{mod: mod, sites: sites} do
+      swap = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 5))
+      call = Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
+
+      Selector.put(Selector.baseline())
+      assert mod.go([5, 2]) == 3
+
+      # `[y, x] |> unpack(v)` → y = 5, x = 2.
+      Selector.put(swap.id)
+      assert mod.go([5, 2]) == 2 - 5
+
+      # `[x, y] |> unpack([9, 9])` → x = y = 9.
+      Selector.put(call.id)
+      assert mod.go([5, 2]) == 0
+    end
+  end
 end
