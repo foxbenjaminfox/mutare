@@ -933,6 +933,28 @@ defmodule Mutare.TransformTest do
       assert_compiles(meta)
     end
 
+    test "a whole import alongside another import qualifies, avoiding an ambiguous bare sibling" do
+      # `import Stream, except: [filter: 2]` leaves `Stream.reject` in scope; a bare swap of the
+      # whole-imported `filter`→`reject` would be ambiguous (Stream's *and* Enum's) and fail to
+      # compile. Qualifying to the real `Enum.reject` keeps it sound — `assert_compiles` proves
+      # there is no ambiguity.
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule ImpMulti do
+            import Stream, except: [filter: 2]
+            import Enum
+            def f(xs, fun), do: filter(xs, fun)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
+      assert {"filter(xs, fun)", "Elixir.Enum.reject(xs, fun)"} in pairs
+      assert_compiles(meta)
+    end
+
     test "a same-named local function with no import is not mutated" do
       {_meta, sites, _} =
         Mutare.transform_string(

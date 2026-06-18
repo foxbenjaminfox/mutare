@@ -513,11 +513,24 @@ moved there.
   straight from the source (no reflection). A reflection-based decision can't silently
   miscompile: even if a wrong attribution slipped through, the selective path *qualifies* the
   swap, so a non-existent `Enum.fun/n` would poison rather than mis-behave.
-- **bare vs qualified diff.** The stamp carries the rebuild kind: a whole import (`:all`) →
-  `:bare` (the swap's sibling is importable too, clean diff `reject`→`filter`); any selective
-  import (`:only`/`:except`/`only: :functions`) → `:qualify` (`reject`→`Elixir.Enum.filter`,
-  always compile-safe since the sibling may be out of scope). `except:` qualifies too — the
-  sibling could be the excepted name.
+- **bare vs qualified diff — and why bare is *narrow*.** The stamp carries the rebuild kind.
+  `:bare` keeps the clean diff (`reject`→`filter`) but is only sound when the swap's *sibling*
+  is unambiguously bare-callable to the same module, so it is used **only for a sole whole
+  import with an unmanipulated Kernel** (`rebuild_kind/3`). Everything else qualifies
+  (`reject`→`Elixir.Enum.filter`): a selective import's sibling may not be in scope, and — the
+  subtle one — a *second* import can make a bare sibling ambiguous or wrong even though the
+  original call was unambiguous. Two cases that motivated the narrowing (both verified):
+    - `import Stream, except: [filter: 2]; import Enum, only: [filter: 2]; filter(xs, f)` — `filter`
+      is the selective Enum one, but a bare `reject` would be `Stream.reject` (the *wrong* reject).
+      Selective ⇒ already qualified, so this was fine; it's the reason a whole import isn't enough.
+    - `import Stream, except: [filter: 2]; import Enum; filter(xs, f)` — `filter` is whole-Enum, but
+      a bare `reject` is *ambiguous* (Stream's and Enum's) and won't compile. Two imports in scope
+      ⇒ `map_size(imports) > 1` ⇒ qualify. (Under the old "any whole import → bare" rule this
+      silently poisoned the mutant.)
+  A bare sibling is never *wrong-but-surviving*: the mutator's sibling is always an export of the
+  resolved module, so an unambiguous bare call resolves to that module (correct), and an
+  ambiguous/Kernel-colliding one fails to compile (poison) — the residual under a sole import is
+  a custom mutator swapping to a `Kernel`-colliding name, backstopped by poison.
 - **The qualifier is alias-proof.** The import captured a specific module, but the generated
   qualifier names it at the *call site*, where a later `alias` may rebind that name — so
   `{:__aliases__, [], [:Enum]}` would compile under `alias String, as: Enum` as `String.filter`,

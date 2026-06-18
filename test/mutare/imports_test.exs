@@ -86,6 +86,22 @@ defmodule Mutare.ImportsTest do
 
       refute Map.has_key?(calls, :reject)
     end
+
+    test "a whole import that is not the sole import qualifies (a sibling could be ambiguous)" do
+      # `import Stream, except: [filter: 2]` keeps `Stream.reject` in scope, so a bare swap of
+      # `filter`→`reject` would be ambiguous. The whole `import Enum` resolves `filter`, but the
+      # rebuild must qualify (not bare) so the swap names the real Enum.
+      calls =
+        resolved("""
+        defmodule M do
+          import Stream, except: [filter: 2]
+          import Enum
+          def f(xs, fun), do: filter(xs, fun)
+        end
+        """)
+
+      assert calls[:filter] == {[:Enum], :qualify}
+    end
   end
 
   describe "selective import (only/except — qualified rebuild)" do
@@ -175,6 +191,7 @@ defmodule Mutare.ImportsTest do
       # `String`; then `import Enum` imports `String`. Both modules end up imported, so
       # `reject` resolves to the real Enum (String has none) and `split` to String (Enum.split
       # is /2). This only works because aliases and imports fold together, in source order.
+      # Two imports are in scope, so the rebuild qualifies (a bare sibling could be ambiguous).
       calls =
         resolved("""
         defmodule M do
@@ -186,8 +203,8 @@ defmodule Mutare.ImportsTest do
         end
         """)
 
-      assert calls[:reject] == {[:Enum], :bare}
-      assert calls[:split] == {[:String], :bare}
+      assert calls[:reject] == {[:Enum], :qualify}
+      assert calls[:split] == {[:String], :qualify}
     end
 
     test "a later only:/except: import of the same module replaces the earlier selection" do

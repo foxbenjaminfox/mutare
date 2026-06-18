@@ -37,14 +37,15 @@ defmodule Mutare.Transform.Imports do
   #
   # ## Diff: bare vs qualified rebuild
   #
-  # The stamp carries a `rebuild_kind`: `:bare` for a whole-module import (`:all`), where the
-  # swap's sibling (`reject`→`filter`) is guaranteed importable too, so the mutant stays bare
-  # (the clean diff); `:qualify` for any selective import (`:only`/`:except`/`only: :functions`),
-  # where the sibling may not be in scope, so the mutant is qualified
-  # (`reject`→`Elixir.Enum.filter(...)`) — always compile-safe. `Mutare.Transform.Calls` builds
-  # the matching rebuild closure, and makes the qualifier **alias-proof** (the `Elixir.` prefix),
-  # since the import captured a specific module but a later `alias` could otherwise rebind that
-  # name at the call site.
+  # The stamp carries a `rebuild_kind`. `:bare` keeps the clean diff (`reject`→`filter`) but is
+  # only sound when the swap's sibling is unambiguously bare-callable to the same module — so
+  # it is used only for the **sole whole import** with an unmanipulated `Kernel` (`rebuild_kind/3`).
+  # Otherwise (`:only`/`:except`/`only: :functions`, *or* a whole import that isn't the only one
+  # in scope) the mutant is `:qualify`'d (`reject`→`Elixir.Enum.filter(...)`): a selective
+  # import's sibling may not be imported, and a second import can make a bare sibling ambiguous
+  # or point it at the wrong module. `Mutare.Transform.Calls` builds the matching rebuild closure
+  # and makes the qualifier **alias-proof** (the `Elixir.` prefix / Erlang atom), so it always
+  # names the captured module regardless of aliases or imports at the call site.
   #
   # Erlang atom modules import the same way (`import :binary`; `import :binary, only: …`).
   # The module key is then the atom itself (`:binary`), and reflection works on it just as
@@ -94,8 +95,7 @@ defmodule Mutare.Transform.Imports do
 
     case resolve_import(imports, fun, arity) do
       {module_key, selector} ->
-        kind = if selector == :all, do: :bare, else: :qualify
-        [{@import_key, {module_key, kind}} | meta]
+        [{@import_key, {module_key, rebuild_kind(selector, imports, kernel)}} | meta]
 
       nil ->
         if displaced_from_kernel?(kernel, fun, arity),
@@ -103,6 +103,18 @@ defmodule Mutare.Transform.Imports do
           else: meta
     end
   end
+
+  # A **bare** rebuild (the clean diff `reject`→`filter`) is safe only when the swap's sibling
+  # is unambiguously bare-callable to the *same* module. That holds exactly when the resolved
+  # module is the **sole whole import** and `Kernel` is unmanipulated: the only other in-scope
+  # provider is then `Kernel`, and since a mutator's sibling is always an export of the
+  # resolved module, a bare sibling either resolves to that module (correct) or clashes with
+  # `Kernel` and won't compile (poison — never a wrong result). With *any other* import in
+  # scope a sibling can be ambiguous (`import Stream, except: [filter: 2]; import Enum` makes a
+  # bare `reject` both Stream's and Enum's) or resolve to the wrong module, so **qualify**
+  # instead — `Calls` makes the qualifier alias-proof, so it always names the resolved module.
+  defp rebuild_kind(:all, imports, :all) when map_size(imports) == 1, do: :bare
+  defp rebuild_kind(_selector, _imports, _kernel), do: :qualify
 
   @doc """
   The import a bare call resolves to: `{module, :bare | :qualify}` (module an Elixir path

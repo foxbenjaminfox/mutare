@@ -69,10 +69,14 @@ contract between them is the whole game.
     It is strictly **per-arity**, so exported arities are learned by **runtime reflection**
     (`function_exported?`/`macro_exported?`; precise for stdlib, the only modules the families
     target, and conservatively skipped for un-loadable modules). The stamp's `:bare`/`:qualify`
-    kind drives the rebuild diff: a whole import (`:all`) keeps the mutant bare (sibling
-    importable), a selective one qualifies it with an **alias-proof** `Elixir.`-prefixed module
-    (`Elixir.Enum.filter(...)`) — so a later `alias` rebinding that name can't redirect the
-    generated call (a real bug: `import Enum, only: [reject: 2]; alias String, as: Enum`). The
+    kind drives the rebuild diff: only a **sole whole import** (with `Kernel` unmanipulated)
+    keeps the mutant bare (the swap's sibling is then unambiguously bare-callable to the same
+    module); a selective import, *or* a whole import that isn't the only one in scope, qualifies
+    it with an **alias-proof** `Elixir.`-prefixed module (`Elixir.Enum.filter(...)`). Qualifying
+    fixes two real bugs — a later `alias` rebinding the name can't redirect the call
+    (`import Enum, only: [reject: 2]; alias String, as: Enum`), and a second overlapping import
+    can't make a bare sibling ambiguous (`import Stream, except: [filter: 2]; import Enum` — bare
+    `reject` would be both). The
     **only** way to displace a `Kernel` function is `import Kernel, except:/only:` — tracked as a
     `Kernel` selector, stamping `meta[:mutare_kernel_displaced]` so the bare-`Kernel` families
     (`Numeric`/`CallRemoval`) skip a displaced call. **Erlang atom modules** resolve the same way
