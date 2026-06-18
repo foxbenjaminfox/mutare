@@ -904,8 +904,32 @@ defmodule Mutare.TransformTest do
         )
 
       pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
-      # `filter/2` isn't imported, so the swap qualifies — always compile-safe.
-      assert {"reject(xs, & &1)", "Enum.filter(xs, & &1)"} in pairs
+      # `filter/2` isn't imported, so the swap qualifies — and the qualifier is alias-proof
+      # (`Elixir.`-prefixed), so it always names the real module, compile-safe.
+      assert {"reject(xs, & &1)", "Elixir.Enum.filter(xs, & &1)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "a qualified mutant bypasses a conflicting alias on the import's name" do
+      # `import Enum, only: [reject: 2]` captures the real Enum; a *later* `alias String, as:
+      # Enum` rebinds the name `Enum`. The mutant must call the real `Enum.filter` — a bare
+      # `Enum.filter` would compile as `String.filter/2` (which doesn't exist). The
+      # `Elixir.`-prefixed qualifier bypasses the alias; `assert_compiles` proves it (the
+      # metamutant keeps the alias in scope).
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule ImpAliasClash do
+            import Enum, only: [reject: 2]
+            alias String, as: Enum
+            def f(xs, fun), do: reject(xs, fun)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
+      assert {"reject(xs, fun)", "Elixir.Enum.filter(xs, fun)"} in pairs
       assert_compiles(meta)
     end
 

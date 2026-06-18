@@ -515,9 +515,16 @@ moved there.
   swap, so a non-existent `Enum.fun/n` would poison rather than mis-behave.
 - **bare vs qualified diff.** The stamp carries the rebuild kind: a whole import (`:all`) →
   `:bare` (the swap's sibling is importable too, clean diff `reject`→`filter`); any selective
-  import (`:only`/`:except`/`only: :functions`) → `:qualify` (`reject`→`Enum.filter`, always
-  compile-safe since the sibling may be out of scope). `except:` qualifies too — the sibling
-  could be the excepted name.
+  import (`:only`/`:except`/`only: :functions`) → `:qualify` (`reject`→`Elixir.Enum.filter`,
+  always compile-safe since the sibling may be out of scope). `except:` qualifies too — the
+  sibling could be the excepted name.
+- **The qualifier is alias-proof.** The import captured a specific module, but the generated
+  qualifier names it at the *call site*, where a later `alias` may rebind that name — so
+  `{:__aliases__, [], [:Enum]}` would compile under `alias String, as: Enum` as `String.filter`,
+  not the intended `Enum.filter`. `Calls` prefixes the path with `:Elixir` (the alias-bypass
+  escape hatch: `Elixir.Enum.filter`); an Erlang atom (`:binary.fun`) is never alias-expanded, so
+  it needs no prefix. Regression-tested with `import Enum, only: [reject: 2]; alias String, as:
+  Enum`.
 - **Kernel is tracked, not reflected.** The default whole `import Kernel` is implicit, so
   reflection can't tell you "the default set"; the env tracks a `Kernel` selector instead.
   The **only** way to displace a `Kernel` function is `import Kernel, except:/only:` (a plain

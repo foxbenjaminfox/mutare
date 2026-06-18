@@ -40,8 +40,11 @@ defmodule Mutare.Transform.Imports do
   # The stamp carries a `rebuild_kind`: `:bare` for a whole-module import (`:all`), where the
   # swap's sibling (`reject`→`filter`) is guaranteed importable too, so the mutant stays bare
   # (the clean diff); `:qualify` for any selective import (`:only`/`:except`/`only: :functions`),
-  # where the sibling may not be in scope, so the mutant is qualified (`Enum.filter(...)`) —
-  # always compile-safe. `Mutare.Transform.Calls` builds the matching rebuild closure.
+  # where the sibling may not be in scope, so the mutant is qualified
+  # (`reject`→`Elixir.Enum.filter(...)`) — always compile-safe. `Mutare.Transform.Calls` builds
+  # the matching rebuild closure, and makes the qualifier **alias-proof** (the `Elixir.` prefix),
+  # since the import captured a specific module but a later `alias` could otherwise rebind that
+  # name at the call site.
   #
   # Erlang atom modules import the same way (`import :binary`; `import :binary, only: …`).
   # The module key is then the atom itself (`:binary`), and reflection works on it just as

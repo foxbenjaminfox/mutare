@@ -70,7 +70,9 @@ contract between them is the whole game.
     (`function_exported?`/`macro_exported?`; precise for stdlib, the only modules the families
     target, and conservatively skipped for un-loadable modules). The stamp's `:bare`/`:qualify`
     kind drives the rebuild diff: a whole import (`:all`) keeps the mutant bare (sibling
-    importable), a selective one qualifies it (`Enum.filter(...)`, always compile-safe). The
+    importable), a selective one qualifies it with an **alias-proof** `Elixir.`-prefixed module
+    (`Elixir.Enum.filter(...)`) — so a later `alias` rebinding that name can't redirect the
+    generated call (a real bug: `import Enum, only: [reject: 2]; alias String, as: Enum`). The
     **only** way to displace a `Kernel` function is `import Kernel, except:/only:` — tracked as a
     `Kernel` selector, stamping `meta[:mutare_kernel_displaced]` so the bare-`Kernel` families
     (`Numeric`/`CallRemoval`) skip a displaced call. **Erlang atom modules** resolve the same way

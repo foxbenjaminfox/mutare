@@ -98,8 +98,12 @@ defmodule Mutare.Transform.Calls do
   defp erlang_module(atom) when is_atom(atom), do: atom
   defp erlang_module(_mod), do: nil
 
-  # Build the qualifier node for a `:qualify` rebuild: an `__aliases__` for an Elixir path,
-  # a wrapped atom for an Erlang module (so it renders `:binary.fun(...)`).
-  defp qualifier(module) when is_list(module), do: {:__aliases__, [], module}
+  # Build the qualifier node for a `:qualify` rebuild — naming the resolved module in a form
+  # that **bypasses lexical aliases**, since the import captured a specific module but a later
+  # `alias` may rebind that name at the call site (`import Enum, only: [reject: 2]; alias
+  # String, as: Enum` must still call the real `Enum.filter`, not `String.filter`). For an
+  # Elixir module the `Elixir.`-prefixed `__aliases__` is the alias-proof escape hatch
+  # (`Elixir.Enum.fun(...)`); an Erlang atom (`:binary.fun(...)`) is never alias-expanded.
+  defp qualifier(module) when is_list(module), do: {:__aliases__, [], [:"Elixir" | module]}
   defp qualifier(module) when is_atom(module), do: {:__block__, [], [module]}
 end
