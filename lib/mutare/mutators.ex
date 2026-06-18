@@ -31,6 +31,7 @@ defmodule Mutare.Mutators do
   # registered is on by default.
   @registry [
     arithmetic: Mutare.Mutators.Arithmetic,
+    operand_swap: Mutare.Mutators.OperandSwap,
     relational: Mutare.Mutators.Relational,
     logical: Mutare.Mutators.Logical,
     literal: Mutare.Mutators.Literal,

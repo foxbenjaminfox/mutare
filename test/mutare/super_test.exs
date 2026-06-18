@@ -36,7 +36,7 @@ defmodule Mutare.SuperTest do
     :ok
   end
 
-  defp transform(body) do
+  defp transform(body, mutators \\ nil) do
     source = """
     defmodule #{inspect(__MODULE__)}.Child do
       use #{@base_mod}
@@ -45,26 +45,35 @@ defmodule Mutare.SuperTest do
     end
     """
 
-    {meta, sites, _next} = Mutare.transform_string(source, file: "child.ex")
+    opts = [file: "child.ex"]
+    opts = if mutators, do: Keyword.put(opts, :mutators, mutators), else: opts
+
+    {meta, sites, _next} = Mutare.transform_string(source, opts)
     [{module, _binary}] = Code.compile_string(meta)
     {meta, sites, module}
   end
 
   describe "structure" do
     test "a lifted body's super is forwarded through a dispatcher closure" do
+      # Pinned mutator set: this test asserts the *exact* super-forwarding count, and
+      # OperandSwap would mutate the `<>` operators wrapping `super(name)`, duplicating
+      # it into selector branches (correctly forwarded, but perturbing the raw count).
+      # clause_drop (structural, always on) still lifts the group and forwards super.
       {meta, _sites, _mod} =
-        transform("""
-          def greet(name) when is_binary(name), do: "[" <> super(name) <> "]"
-          def greet(_), do: super("anon")
-        """)
+        transform(
+          """
+            def greet(name) when is_binary(name), do: "[" <> super(name) <> "]"
+            def greet(_), do: super("anon")
+          """,
+          [Mutare.Mutators.Relational]
+        )
 
       # The dispatcher (the overriding function) binds the forwarding closure...
       assert meta =~ ~r/mutare_super = fn mutare_arg1 -> super\(mutare_arg1\) end/
       # ...and threads it to the base as the second argument.
       assert meta =~ ~r/__mutare_greet_1_g\d+\(mutare_active, mutare_super,/
       # The relocated base clauses call super *through* the closure, never directly —
-      # one forwarded call per clause (the second wraps an in-place selector on its
-      # mutated `"anon"` literal, so match the closure call, not its argument).
+      # one forwarded call per clause.
       assert meta =~ "mutare_super.(name)"
       assert length(String.split(meta, "mutare_super.(")) - 1 == 2
       # No base clause keeps a bare `super(` — every one was rewritten to the closure.

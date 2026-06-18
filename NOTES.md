@@ -1488,6 +1488,37 @@ poison recovery, per the project's standing preference. (`:math`'s atom module n
 reaches a guard — `:math` calls aren't guard-legal — so only the `Integer` path
 needed the fix, but the fix is general: any guard-safe qualified macro is now safe.)
 
+### OperandSwap — operand-order swap for non-commutative operators `[done]`
+The operand-order sibling of the operator-swap families (`Arithmetic`/`List`): it
+**keeps the operator and transposes the operands** of a non-commutative binary
+operator — `a - b`→`b - a`, plus `/`, `**`, `<>`, `++`, `--`, and the `div`/`rem`
+call forms. It catches the symmetric bug class the operator swaps miss: right
+operator, wrong argument order (`elapsed = finish - start` written `start - finish`).
+On by default; a plain node→node in-place mutation, so it needs no new `Site`
+constructor and no `Transform` change — `mutate/1` returns the transposed node and
+the existing in-place/lift routing delivers it.
+
+**Compile-safe by construction** — the mutant reuses both original operand subtrees,
+just transposed, so whatever type-checked still does. Guard-safety is free the usual
+way: `-`/`/`/`div`/`rem` are guard-legal and reach `when` guards via lifting like
+Arithmetic; `**`/`<>`/`++`/`--` are parser-forbidden in guards, so they never reach
+one.
+
+**The two non-obvious exclusions (both about not minting useless mutants):**
+- **Comparisons (`>`/`>=`/`<`/`<=`) are excluded** even though they're
+  non-commutative — because an operand swap there is *semantically the direction
+  flip* `Relational` already produces (`b > a` ≡ `a < b`). Including them would only
+  duplicate Relational's mutant, inflating the denominator with no new signal.
+- **Commutative operators (`+`/`*`/`==`/`!=`/…) are excluded** as guaranteed
+  equivalent no-ops, and **`in` is excluded** because the swap (`[1,2] in x`) is
+  generally not compile-safe (the RHS of `in` must be enumerable) — the one operator
+  here where transposing isn't type-safe. `=`/`|>` likewise change binding/data-flow
+  and are out.
+
+Structurally identical operands (`x - x`, `5 / 5`) are skipped via a meta-stripping
+compare (`Macro.update_meta` then `==`) — the transpose is a no-op there, so emitting
+it would be an equivalent survivor. See `Mutare.Mutators.OperandSwap`.
+
 ### Return-value mutators `[done]`
 PIT's largest, highest-yield group, now implemented: replace a function clause's
 **return value** (its body's tail expression) with a fixed constant. Very high

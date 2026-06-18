@@ -398,7 +398,15 @@ contract between them is the whole game.
   **all on by default**. A user-supplied mutator may be *configured* via a `{module, opts}` entry
   in `:mutators` (the `opts` reach `mutate/2`/`owned_args/2` as `context.opts` — see
   `Mutare.Mutator.Spec`): Arithmetic (binary swaps +
-  unary-minus removal), Relational (ordering/equality swaps, plus membership `in`→`not in` —
+  unary-minus removal), OperandSwap (the *operand-order* sibling of Arithmetic/List — it keeps the
+  operator and transposes the operands of the **non-commutative** binary operators `a - b`→`b - a`,
+  `/`, `**`, `<>`, `++`, `--`, and the `div`/`rem` call forms; compile-safe by construction (reuses
+  both operand subtrees). Commutative operators (`+`/`*`/`==`/…) are excluded as guaranteed
+  equivalent no-ops, and **comparisons** (`>`/`>=`/`<`/`<=`) are deliberately excluded because an
+  operand swap there equals Relational's direction flip — including them would only duplicate
+  it; `in` is excluded as not-compile-safe when swapped. Structurally identical operands (`x - x`)
+  are skipped. Guard-legal ops (`-`/`/`/`div`/`rem`) reach `when` guards via lifting like
+  Arithmetic), Relational (ordering/equality swaps, plus membership `in`→`not in` —
   the polarity flip for `in`, mirroring `==`→`!=`; the reverse is Logical's `not` strip, and an
   `in` directly under a `not` is left unmutated to avoid duplicating it — see NOTES "Membership"),
   Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip), Literal
