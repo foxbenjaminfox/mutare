@@ -301,6 +301,32 @@ defmodule Mutare.ImportsTest do
     end
   end
 
+  describe "Erlang atom-module imports" do
+    test "a whole import of an atom module resolves a bare call to the atom (bare rebuild)" do
+      calls =
+        resolved("""
+        defmodule M do
+          import :binary
+          def f(x), do: split(x, ",")
+        end
+        """)
+
+      assert calls[:split] == {:binary, :bare}
+    end
+
+    test "a selective import of an atom module resolves the listed call (qualified rebuild)" do
+      calls =
+        resolved("""
+        defmodule M do
+          import :binary, only: [split: 2]
+          def f(x), do: split(x, ",")
+        end
+        """)
+
+      assert calls[:split] == {:binary, :qualify}
+    end
+  end
+
   describe "Kernel displacement" do
     test "a Kernel function excepted from Kernel is marked displaced" do
       calls =

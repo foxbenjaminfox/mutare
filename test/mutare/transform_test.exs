@@ -962,6 +962,59 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "atom-module (Erlang) resolution via alias / import" do
+    test "an aliased Erlang module mutates through its family, keeping the alias" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            alias :string, as: S
+            def f(x), do: S.uppercase(x)
+          end
+          """,
+          mutators: [Mutare.Mutators.StringCall]
+        )
+
+      pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
+      assert {"S.uppercase(x)", "S.lowercase(x)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "a bare imported Erlang call mutates (Math :math)" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            import :math
+            def f(x), do: sin(x)
+          end
+          """,
+          mutators: [Mutare.Mutators.Math]
+        )
+
+      pairs = for s <- sites, s.mutator == :math, do: {s.original_code, s.mutated_code}
+      assert {"sin(x)", "cos(x)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "a bare imported Erlang transparent transform is removed (CallRemoval :string)" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            import :string
+            def f(s), do: trim(s)
+          end
+          """,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
+
+      pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
+      assert {"trim(s)", "s"} in pairs
+      assert_compiles(meta)
+    end
+  end
+
   describe "StringCall (complementary String call swaps)" do
     test "swaps a String call in place, records the bare swap, and compiles" do
       source = """

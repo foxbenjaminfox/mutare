@@ -131,6 +131,20 @@ defmodule Mutare.AliasesTest do
       assert calls[:upcase] == {[:String], [:MyApp]}
     end
 
+    test "an alias of an Erlang atom module resolves the name to the atom" do
+      # `alias :binary, as: B` binds `B` to the atom `:binary` (not a path), so `B.split`
+      # resolves to `:binary` — the same module key a direct `:binary.split` carries.
+      calls =
+        resolved("""
+        defmodule M do
+          alias :binary, as: B
+          def f(x), do: B.split(x, ",")
+        end
+        """)
+
+      assert calls[:split] == {[:B], :binary}
+    end
+
     test "a __MODULE__-relative alias is left unresolved (can't name a concrete module)" do
       calls =
         resolved("""

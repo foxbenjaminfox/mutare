@@ -532,15 +532,22 @@ moved there.
 - **Every `resolved_call` family gets bare imports for free — including `CallRemoval`.** The
   call-matching families all route through `Calls.resolved_call`, so a bare imported call is
   recognised wherever an aliased remote one is. `CallRemoval` was the lone holdout — it did its
-  own `Aliases.resolved_module` lookup (ad-hoc, and blind to imports) — and now routes its
-  Elixir-module case through `Calls.resolved_call` too, so `import Enum; sort(xs)` → `xs`. Its
-  Erlang `:string`/`:erlang` (atom-module) and bare-`Kernel` paths stay separate (`Calls`
-  resolves only Elixir-module names).
-- **Out of scope (documented limitations).** Erlang atom-module imports (`import :lists`) and
-  bare imported `:string`/`:math` calls — those families match the literal atom form and
-  don't route through `resolved_call`; the import isn't tracked. Operator displacement
-  (`import Kernel, except: [+: 2]` + a custom `+`) — Arithmetic/Relational/Logical don't read
-  the stamp. Like `alias`, `use`/macro-injected imports are invisible.
+  own `Aliases.resolved_module` lookup (ad-hoc, and blind to imports) — and now routes through
+  `Calls.resolved_call` too, so `import Enum; sort(xs)` → `xs`.
+- **Atom modules resolve uniformly too (`:binary`, `:string`, `:math`).** `alias :binary, as: B`
+  and `import :binary` are both legal Elixir, and reflection works on an atom module exactly as
+  on an Elixir one (`function_exported?(:binary, …)`). So `Calls.resolved_call` returns the
+  *atom* (`:binary`) as the module key for a direct `:binary.split`, an aliased `B.split`, and a
+  bare imported `split` alike — and a mutator keys its table on `{:binary, fun}` once and catches
+  all three forms. This let `StringCall`, `Math`, and `CallRemoval` drop their bespoke `:string`/
+  `:math` clauses (the last Erlang-handling ad-hoc) and gain aliased/imported support for free;
+  the only shape left outside the reader is a bare `Kernel` call. The alias env binds an atom
+  name to the atom (not a path), so `Aliases.resolve_path`/`resolved_module` and the import env
+  (`module_key?`/`to_module`) accept an atom key beside a path. (`alias :binary` *without* `as:`
+  binds nothing — an atom has no last segment.)
+- **Out of scope (documented limitations).** Operator displacement (`import Kernel,
+  except: [+: 2]` + a custom `+`) — Arithmetic/Relational/Logical don't read the stamp. Like
+  `alias`, `use`/macro-injected imports are invisible.
 
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**

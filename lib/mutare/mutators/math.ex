@@ -19,19 +19,19 @@ defmodule Mutare.Mutators.Math do
   the whole call with a plain float literal that is the right shape but the wrong
   value — a magnitude any test pinning down the geometry will catch.
 
-  `:math` is matched on the **literal atom**. The atom form `:math.sin` can't be
-  *shadowed* — `:math` always names the Erlang module — so the match is unambiguous
-  (no false mutation, no need for the arity/`import` safeguards `Numeric` carries for
-  bare `Kernel` calls). An `alias :math, as: M` *does* compile, but the alias pre-pass
-  resolves only Elixir-module (`__aliases__`) aliases, so the aliased `M.sin` form is
-  not seen through (only the direct `:math.foo` is matched) — an accepted gap, since
-  `:math` is overwhelmingly written directly. Every `:math` function is a remote call
-  (never guard-legal), so guard-safety is automatic and these are always delivered in
-  place. On by default.
+  `:math` is recognised by its **resolved** module through the shared
+  `Mutare.Transform.Calls` reader, so the direct `:math.sin`, an aliased `alias :math, as: M;
+  M.sin`, and a bare imported `import :math; sin` all match — and the swap's `rebuild` keeps
+  whichever form was written. `:math` can't be *shadowed* (the atom always names the Erlang
+  module), so the match is unambiguous — no arity/`import` safeguard like the one `Numeric`
+  carries for bare `Kernel` calls is needed here. Every `:math` function is a remote call
+  (never guard-legal), so guard-safety is automatic and these are always delivered in place.
+  On by default.
   """
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Transform.Calls
 
   # fun => sibling fun(s) to swap to. Every sibling exists at the same arity in
   # `:math`, so an arity-blind rename keeping the argument list always compiles.
@@ -56,30 +56,26 @@ defmodule Mutare.Mutators.Math do
   def name, do: :math
 
   @impl Mutare.Mutator
-  def mutate({{:., dot_meta, [mod, fun]}, call_meta, args}) when is_list(args) do
-    cond do
-      not math_module?(mod) ->
-        :skip
+  def mutate(node) do
+    case Calls.resolved_call(node) do
+      {:math, fun, args, rebuild} -> mutate_math(fun, args, rebuild)
+      _other -> :skip
+    end
+  end
 
+  defp mutate_math(fun, args, rebuild) do
+    cond do
       # `:math.pi()`/`tau()` are `/0`; gate on the empty arg list so a hypothetical
       # same-named call with arguments is never collapsed to a constant.
       Map.has_key?(@constants, fun) and args == [] ->
         [AST.literal(Map.fetch!(@constants, fun))]
 
+      # `rebuild` keeps the written module (`:math`, an alias, or bare import).
       Map.has_key?(@swaps, fun) ->
-        for new_fun <- Map.fetch!(@swaps, fun),
-            do: {{:., dot_meta, [mod, new_fun]}, call_meta, args}
+        for new_fun <- Map.fetch!(@swaps, fun), do: rebuild.(new_fun, args)
 
       true ->
         :skip
     end
   end
-
-  def mutate(_node), do: :skip
-
-  # Sourceror wraps the atom module as `{:__block__, _, [:math]}`; accept a bare
-  # `:math` too so the mutator is robust to either quoting.
-  defp math_module?({:__block__, _meta, [:math]}), do: true
-  defp math_module?(:math), do: true
-  defp math_module?(_node), do: false
 end

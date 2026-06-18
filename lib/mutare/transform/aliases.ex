@@ -28,7 +28,9 @@ defmodule Mutare.Transform.Aliases do
   #
   # ## Scope and limits
   #
-  #   * Handles `alias Foo.Bar`, `alias Foo.Bar, as: Baz`, and `alias Foo.{Bar, Baz}`.
+  #   * Handles `alias Foo.Bar`, `alias Foo.Bar, as: Baz`, and `alias Foo.{Bar, Baz}`, plus
+  #     `alias :binary, as: B` for an Erlang atom module (bound to the atom; the `as:` is
+  #     mandatory, since an atom has no last segment to default the name from).
   #   * An alias whose target is itself aliased is resolved through the env *before*
   #     binding, so the stored value is always the fully-expanded module — never another
   #     alias. `alias MyApp, as: String; alias String, as: S` binds `S` to `MyApp` (the
@@ -53,7 +55,7 @@ defmodule Mutare.Transform.Aliases do
   `stamp_module/2`, or the literal path when no alias applied. The reader half of the
   `:mutare_alias` contract.
   """
-  @spec resolved_module(keyword(), [atom()]) :: [atom()]
+  @spec resolved_module(keyword(), [atom()]) :: [atom()] | atom()
   def resolved_module(alias_meta, literal_path) when is_list(alias_meta),
     do: Keyword.get(alias_meta, @meta_key, literal_path)
 
@@ -65,11 +67,18 @@ defmodule Mutare.Transform.Aliases do
   Anything else is verbatim. Exposed so the `import` pre-pass
   (`Mutare.Transform.Imports`) can resolve an `import E` (where `E` is an alias)
   through the *same* lexical alias environment, never reimplementing it.
+
+  A binding may be an Elixir-module **path** (`[:String]`) or an Erlang-module **atom**
+  (`:binary`, from `alias :binary, as: B`). An atom binding resolves a lone segment
+  (`B` → `:binary`); a trailing segment after it (`B.Sub`) is not a real module, so it is
+  left unresolved.
   """
-  @spec resolve_path([atom()] | term(), map()) :: [atom()] | term()
+  @spec resolve_path([atom()] | term(), map()) :: [atom()] | atom() | term()
   def resolve_path([first | rest], env) when is_atom(first) do
     case Map.fetch(env, first) do
-      {:ok, base} -> base ++ rest
+      {:ok, base} when is_list(base) -> base ++ rest
+      {:ok, base} when is_atom(base) and rest == [] -> base
+      {:ok, _base} -> [first | rest]
       :error -> [first | rest]
     end
   end
@@ -125,6 +134,15 @@ defmodule Mutare.Transform.Aliases do
       end)
     else
       env
+    end
+  end
+
+  # `alias :erlang_mod, as: Name` — an Erlang atom module bound to its `as:` name. (An atom
+  # has no last segment, so the `as:` is mandatory; `alias :binary` with none binds nothing.)
+  defp register_alias([{:__block__, _meta, [atom]}, opts], env) when is_atom(atom) do
+    case as_name(opts) do
+      nil -> env
+      name -> Map.put(env, name, atom)
     end
   end
 

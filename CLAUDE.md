@@ -73,17 +73,21 @@ contract between them is the whole game.
     importable), a selective one qualifies it (`Enum.filter(...)`, always compile-safe). The
     **only** way to displace a `Kernel` function is `import Kernel, except:/only:` — tracked as a
     `Kernel` selector, stamping `meta[:mutare_kernel_displaced]` so the bare-`Kernel` families
-    (`Numeric`/`CallRemoval`) skip a displaced call. Out of scope: Erlang atom-module imports
-    (`import :lists`) and operator displacement (`import Kernel, except: [+: 2]`); like `Aliases`,
-    `use`/macro-injected imports are invisible.
+    (`Numeric`/`CallRemoval`) skip a displaced call. **Erlang atom modules** resolve the same way
+    (`import :binary`; `alias :binary, as: B`) — the module key is the atom (`:binary`), reflected
+    on identically — so a bare/aliased atom-module call resolves like an Elixir one. Out of scope:
+    operator displacement (`import Kernel, except: [+: 2]`); like `Aliases`, `use`/macro-injected
+    imports are invisible.
   - **`Transform.Calls`** — the single `resolved_call/1` reader **every** call-matching family
     (Collection/StringCall/MapKeyword/CollectionArity/ModeSwap/CallRemoval/DefaultDrop/Numeric/
-    Integer) uses, recognising both an alias-resolved remote call `Mod.fun(args)` (via `Aliases`)
-    and a bare import-stamped call (via `Imports`), returning a uniform `{module, fun, args,
-    rebuild}` where `rebuild` is bare or qualified per the import kind — so a family matches its
-    swap table and calls `rebuild.(new_fun, new_args)` without caring which shape it was.
-    (`CallRemoval` uses only the `module`/`fun`/`args`, not `rebuild`; its Erlang `:string`/
-    `:erlang` and bare-`Kernel` shapes — which `Calls` doesn't resolve — stay in its own clauses.)
+    Integer/Math) uses. It recognises three shapes — an Elixir remote `Mod.fun(args)` (alias-
+    resolved), an Erlang remote `:binary.fun(args)`, and a bare import-stamped call — returning a
+    uniform `{module, fun, args, rebuild}` where `module` is an Elixir path (`[:Enum]`) or an
+    Erlang atom (`:binary`), and `rebuild` keeps the written form (bare/qualified per import kind,
+    alias preserved). So a family matches its swap table and calls `rebuild.(new_fun, new_args)`
+    without caring whether the call was direct, aliased, or imported, Elixir or Erlang. The lone
+    shape it doesn't resolve is a bare `Kernel` call (`abs`/`min`), keyed on effective arity in the
+    bare-`Kernel` families' own clauses.
   - **`Transform.ModulePlan`** — a statement sequence classified into items: `{:lift, FunctionPlan}`,
     `{:in_place, clauses}`, `{:statement, node}`. `build/3` does the run-chunking + non-consecutive
     detection; `Transform.emit_module_plan/2` walks the items.
@@ -439,15 +443,15 @@ contract between them is the whole game.
   `trim_leading`↔`trim_trailing`, `replace_prefix`↔`replace_suffix`,
   `replace_leading`↔`replace_trailing`, `pad_leading`↔`pad_trailing`, `first`↔`last`,
   `graphemes`↔`codepoints`, plus the Erlang `:string` directional/case pairs `uppercase`↔`lowercase`,
-  `to_upper`↔`to_lower`, `left`↔`right` (the `:string` module is a bare atom in the AST —
-  Sourceror-wrapped as `{:__block__, _, [:string]}` — so a dedicated clause matches it; the
-  trim/predicate pairs have no `:string` function-name twin, their direction being an argument atom).
+  `to_upper`↔`to_lower`, `left`↔`right` (the trim/predicate pairs have no `:string` function-name
+  twin, their direction being an argument atom).
   Also one **call→operator** substitution: `String.equivalent?(a, b)` (Unicode-canonical equality)
   → raw `a == b`, dropping normalization (arity tells the pipe context apart — `equivalent?/1` doesn't
   exist, so a 1-arg call is a `|>` stage → `a |> Kernel.==(b)`). The `String` sibling of Collection:
-  `String.` is matched by its alias-resolved module (`Mutare.Transform.Aliases`), while `:string.` is
-  matched on the literal atom (the alias pre-pass resolves only Elixir-module aliases, so an
-  `alias :string, as: S` is *not* seen through — only the direct `:string.foo` form is recognised)),
+  both `String` (`[:String]`) and `:string` are matched by their resolved module via
+  `Mutare.Transform.Calls`, so direct, aliased, and bare imported forms all match — `String.upcase`,
+  `S.upcase`, `import String; upcase`, and likewise `:string.uppercase`, `alias :string, as: S;
+  S.uppercase`, `import :string; uppercase`),
   MapKeyword (the conditional-write lattice for `Map`/`Keyword` — `put`↔`put_new`↔`replace`↔
   `replace!`, swapping along the insert-new / overwrite-existing / raise-on-absent axes; all `/3`,
   arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),
@@ -461,8 +465,10 @@ contract between them is the whole game.
   `lowercase`/`uppercase`/`titlecase`/`casefold`/`to_lower`/`to_upper`, `reverse`,
   `pad`/`left`/`right`/`centre`, `slice`/`substr`/`sub_string`) — leaving its first arg; in a pipe the
   stage becomes `Function.identity()` (`x |> Enum.sort()` → `x |> Function.identity()` ≡ `x`);
-  pipe-aware via the optional `mutate/2`. The module key is normalized by `module_key/1` (an
-  alias-resolved path `[:String]` or a bare atom `:string`/`:erlang`). `slice`/`substr`/`sub_string`
+  pipe-aware via the optional `mutate/2`. The module key (an Elixir path `[:String]` or a bare
+  atom `:string`/`:erlang`) comes from the shared `Mutare.Transform.Calls`, so direct, aliased,
+  and bare imported forms all match; only a bare `Kernel` call (`abs`/`binary_slice`) is keyed
+  separately on effective arity. `slice`/`substr`/`sub_string`
   and the binary slicers are
   included (removing them returns the whole input — "is the slice exercised?"), but content-changing
   `map`/`filter`/`reduce` and `String`/`:string` `replace`/`split` (and `String.first`,
@@ -498,12 +504,12 @@ contract between them is the whole game.
   here),
   Math (the Erlang `:math` module — `pi()`→`3.0`, `tau()`→`6.0`, co-function swaps
   `sin`↔`cos`/`asin`↔`acos`/`sinh`↔`cosh`/`asinh`↔`acosh`, and the log trio `log`↔`log2`↔`log10`;
-  the floating-point cousin of Numeric. `:math` is matched on the literal atom — the `:math.foo`
-  form can't be *shadowed* (it always names the Erlang module), so the match is unambiguous and the
-  renames are arity-blind (every sibling exists at the same `:math` arity); an `alias :math, as: M`
-  compiles but the pre-pass resolves only Elixir-module aliases, so the aliased `M.foo` form is a
-  known miss. The `pi`/`tau` constants emit a fresh float literal. All `:math` calls are remote —
-  never guard-legal — so always in place),
+  the floating-point cousin of Numeric. `:math` is recognised by its resolved module via
+  `Mutare.Transform.Calls`, so the direct `:math.foo`, an aliased `alias :math, as: M; M.foo`, and a
+  bare imported `import :math; foo` all match; `:math` can't be *shadowed* (the atom always names the
+  Erlang module), so the match is unambiguous and the renames are arity-blind (every sibling exists
+  at the same `:math` arity). The `pi`/`tau` constants emit a fresh float literal. All `:math` calls
+  are remote — never guard-legal — so always in place),
   Integer (the `Integer` module — `mod`↔`floor_div` (the two halves of floored division) and
   `is_even`↔`is_odd`; a Collection-style arity-blind remote rename, alias-resolved through
   `Mutare.Transform.Aliases` like the rest. `is_even`/`is_odd` are

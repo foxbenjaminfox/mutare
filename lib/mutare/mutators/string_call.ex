@@ -34,13 +34,12 @@ defmodule Mutare.Mutators.StringCall do
   — so guard-safety is automatic. The sibling of `Mutare.Mutators.Collection`
   (the `Enum`/`List` swaps).
 
-  `String` is matched by its **resolved** module (`Mutare.Transform.Calls`): an
-  aliased `S.upcase` (`alias String, as: S`) and a bare imported `upcase`
-  (`import String`) are matched, while a *shadowing* `alias MyApp.String` resolves
-  to the local module and is correctly left alone. `:string` is matched on the
-  literal atom in its direct `:string.foo` form — the alias/import pre-passes resolve
-  only Elixir-module (`__aliases__`) names, so neither `alias :string, as: S` nor
-  `import :string` is seen through (that `S.foo`/bare form is missed).
+  Both `String` and the Erlang `:string` module are matched by their **resolved** module
+  through the shared `Mutare.Transform.Calls` reader, so the direct, aliased, and bare
+  imported forms all match: `String.upcase`, `alias String, as: S; S.upcase`, and
+  `import String; upcase` — and likewise `:string.uppercase`, `alias :string, as: S;
+  S.uppercase`, and `import :string; uppercase`. A *shadowing* `alias MyApp.String` resolves
+  to the local module and is correctly left alone.
 
   On by default — high signal on the affix/case/predicate functions that anchor
   string-handling logic, exactly where an off-by-direction bug hides. Distinct
@@ -51,65 +50,55 @@ defmodule Mutare.Mutators.StringCall do
 
   alias Mutare.Transform.Calls
 
-  # {alias_path, function} => {alias_path, function}
+  # {module, function} => new_function. The module is an Elixir path (`[:String]`) or an
+  # Erlang atom (`:string`); the swap keeps the module, so only the new function name is
+  # stored. The shared `Calls.resolved_call` returns whichever module shape applies, so a
+  # direct, aliased, or imported call all key in here uniformly.
   @swaps %{
-    {[:String], :starts_with?} => {[:String], :ends_with?},
-    {[:String], :ends_with?} => {[:String], :starts_with?},
-    {[:String], :upcase} => {[:String], :downcase},
-    {[:String], :downcase} => {[:String], :upcase},
-    {[:String], :trim_leading} => {[:String], :trim_trailing},
-    {[:String], :trim_trailing} => {[:String], :trim_leading},
-    {[:String], :replace_prefix} => {[:String], :replace_suffix},
-    {[:String], :replace_suffix} => {[:String], :replace_prefix},
+    {[:String], :starts_with?} => :ends_with?,
+    {[:String], :ends_with?} => :starts_with?,
+    {[:String], :upcase} => :downcase,
+    {[:String], :downcase} => :upcase,
+    {[:String], :trim_leading} => :trim_trailing,
+    {[:String], :trim_trailing} => :trim_leading,
+    {[:String], :replace_prefix} => :replace_suffix,
+    {[:String], :replace_suffix} => :replace_prefix,
     # `replace_leading`/`replace_trailing` replace *every* leading/trailing run of
     # a match, a distinct pair from the single-occurrence `replace_prefix`/`suffix`.
-    {[:String], :replace_leading} => {[:String], :replace_trailing},
-    {[:String], :replace_trailing} => {[:String], :replace_leading},
-    {[:String], :pad_leading} => {[:String], :pad_trailing},
-    {[:String], :pad_trailing} => {[:String], :pad_leading},
-    {[:String], :first} => {[:String], :last},
-    {[:String], :last} => {[:String], :first},
+    {[:String], :replace_leading} => :replace_trailing,
+    {[:String], :replace_trailing} => :replace_leading,
+    {[:String], :pad_leading} => :pad_trailing,
+    {[:String], :pad_trailing} => :pad_leading,
+    {[:String], :first} => :last,
+    {[:String], :last} => :first,
     # The two ways to break a string into a list of single-character strings:
     # `graphemes` groups combining marks into one glyph, `codepoints` does not.
-    {[:String], :graphemes} => {[:String], :codepoints},
-    {[:String], :codepoints} => {[:String], :graphemes}
-  }
-
-  # Erlang `:string` module — the module is a bare atom in the AST, not an
-  # `{:__aliases__, …}` node. function => function (same module).
-  @erlang_swaps %{
-    uppercase: :lowercase,
-    lowercase: :uppercase,
-    to_upper: :to_lower,
-    to_lower: :to_upper,
-    left: :right,
-    right: :left
+    {[:String], :graphemes} => :codepoints,
+    {[:String], :codepoints} => :graphemes,
+    # The Erlang `:string` module's directional/case pairs.
+    {:string, :uppercase} => :lowercase,
+    {:string, :lowercase} => :uppercase,
+    {:string, :to_upper} => :to_lower,
+    {:string, :to_lower} => :to_upper,
+    {:string, :left} => :right,
+    {:string, :right} => :left
   }
 
   @impl Mutare.Mutator
   def name, do: :string_call
 
-  # `:string.uppercase(s)` and friends. The module is the atom `:string` — wrapped
-  # by Sourceror as `{:__block__, _, [:string]}`, but a bare atom in plain AST. These
-  # bare-atom clauses come first; the resolved-alias case below handles `String.…`.
   @impl Mutare.Mutator
-  def mutate({{:., dot_meta, [{:__block__, _, [:string]} = mod, fun]}, call_meta, args})
-      when is_list(args),
-      do: swap_erlang(dot_meta, mod, fun, call_meta, args)
-
-  def mutate({{:., dot_meta, [:string, fun]}, call_meta, args}) when is_list(args),
-    do: swap_erlang(dot_meta, :string, fun, call_meta, args)
-
   def mutate(node) do
     case Calls.resolved_call(node) do
-      # `String.equivalent?(a, b)` → raw `a == b`, alias-resolved like the swaps.
+      # `String.equivalent?(a, b)` → raw `a == b`, resolved like the swaps.
       {[:String], :equivalent?, args, _rebuild} ->
         equivalent_substitution(args)
 
       {module, fun, args, rebuild} ->
         case Map.fetch(@swaps, {module, fun}) do
-          # `rebuild` reuses the written alias node (the swap stays within `String`).
-          {:ok, {_new_mod, new_fun}} -> [rebuild.(new_fun, args)]
+          # `rebuild` reuses the written module node, so the swap stays within the module
+          # (and an aliased `S.upcase`/imported `upcase` keeps its written form).
+          {:ok, new_fun} -> [rebuild.(new_fun, args)]
           :error -> :skip
         end
 
@@ -129,11 +118,4 @@ defmodule Mutare.Mutators.StringCall do
     do: [{{:., [], [{:__aliases__, [], [:Kernel]}, :==]}, [], [b]}]
 
   defp equivalent_substitution(_), do: :skip
-
-  defp swap_erlang(dot_meta, mod, fun, call_meta, args) do
-    case Map.fetch(@erlang_swaps, fun) do
-      {:ok, new_fun} -> [{{:., dot_meta, [mod, new_fun]}, call_meta, args}]
-      :error -> :skip
-    end
-  end
 end

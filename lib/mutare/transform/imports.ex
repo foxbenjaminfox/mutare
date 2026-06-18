@@ -43,11 +43,13 @@ defmodule Mutare.Transform.Imports do
   # where the sibling may not be in scope, so the mutant is qualified (`Enum.filter(...)`) —
   # always compile-safe. `Mutare.Transform.Calls` builds the matching rebuild closure.
   #
+  # Erlang atom modules import the same way (`import :binary`; `import :binary, only: …`).
+  # The module key is then the atom itself (`:binary`), and reflection works on it just as
+  # for an Elixir module (`function_exported?(:binary, …)`); a bare `split` after
+  # `import :binary` resolves to `{:binary, …}`.
+  #
   # ## Scope and limits (beyond the inherited `alias` limits)
   #
-  #   * Erlang atom-module imports (`import :lists`) and bare imported `:string`/`:math`
-  #     calls are out of scope — those families match the literal atom form directly and
-  #     don't route through `resolved_call`. Such an import is simply not tracked.
   #   * Operator displacement (`import Kernel, except: [+: 2]` + a custom `+`) is out of
   #     scope: the operator families (Arithmetic/Relational/Logical) don't read the stamp.
   #   * Like `alias`, `use`-injected and macro-generated imports are invisible.
@@ -100,11 +102,12 @@ defmodule Mutare.Transform.Imports do
   end
 
   @doc """
-  The import a bare call resolves to: `{module_path, :bare | :qualify}` stamped by `stamp/6`,
-  or `nil` when the call resolves to nothing imported (a local, or the default `Kernel`). The
-  reader half of the `:mutare_import` contract.
+  The import a bare call resolves to: `{module, :bare | :qualify}` (module an Elixir path
+  `[:Enum]` or an Erlang atom `:binary`) stamped by `stamp/6`, or `nil` when the call resolves
+  to nothing imported (a local, or the default `Kernel`). The reader half of the
+  `:mutare_import` contract.
   """
-  @spec resolved_import(keyword() | term()) :: {[atom()], :bare | :qualify} | nil
+  @spec resolved_import(keyword() | term()) :: {[atom()] | atom(), :bare | :qualify} | nil
   def resolved_import(meta) when is_list(meta), do: Keyword.get(meta, @import_key)
   def resolved_import(_meta), do: nil
 
@@ -161,6 +164,7 @@ defmodule Mutare.Transform.Imports do
     do: function_exported?(module, fun, arity) or macro_exported?(module, fun, arity)
 
   defp to_module(path) when is_list(path), do: Module.concat(path)
+  defp to_module(atom) when is_atom(atom), do: atom
   defp to_module(_path), do: nil
 
   # A bare `Kernel`-named call is displaced only when the Kernel selector has been narrowed
@@ -188,32 +192,49 @@ defmodule Mutare.Transform.Imports do
 
   # --- import directives -----------------------------------------------------
 
-  # `import Mod` / `import E` (aliased) — a whole import.
+  # `import Mod` / `import E` (an Elixir module, possibly an alias) — resolve the written
+  # path through the alias env, so `import E` (and `import B` where `B` aliases an Erlang
+  # atom module) lands on the real module key.
   defp register_import([{:__aliases__, _meta, path}], aliases, imports, kernel)
        when is_list(path),
-       do: put_import(path, :all, aliases, imports, kernel)
+       do: put_import(Aliases.resolve_path(path, aliases), :all, imports, kernel)
 
-  # `import Mod, only:/except:/...` — a selective import (or just `warn: false`, → `:all`).
   defp register_import([{:__aliases__, _meta, path}, opts], aliases, imports, kernel)
        when is_list(path) and is_list(opts),
-       do: put_import(path, selector_from_opts(opts), aliases, imports, kernel)
+       do:
+         put_import(
+           Aliases.resolve_path(path, aliases),
+           selector_from_opts(opts),
+           imports,
+           kernel
+         )
 
-  # `import :erlang_module` (a Sourceror-wrapped atom) — out of scope; not tracked.
+  # `import :erlang_module` (a Sourceror-wrapped atom) — the module key is the atom itself.
+  defp register_import([{:__block__, _meta, [atom]}], _aliases, imports, kernel)
+       when is_atom(atom),
+       do: put_import(atom, :all, imports, kernel)
+
+  defp register_import([{:__block__, _meta, [atom]}, opts], _aliases, imports, kernel)
+       when is_atom(atom) and is_list(opts),
+       do: put_import(atom, selector_from_opts(opts), imports, kernel)
+
   defp register_import(_args, _aliases, imports, kernel), do: {imports, kernel}
 
-  # Bind a resolved module path to its selector. `Kernel` is special — it lives in the
-  # `kernel` slot (an implicit default whole import that a narrowing replaces); a
-  # `__MODULE__`-relative path can't name a concrete module, so it is skipped. Resolves the
-  # written path through the alias env so `import E` lands on the real module.
-  defp put_import(path, selector, aliases, imports, kernel) do
-    module_key = Aliases.resolve_path(path, aliases)
+  # Bind a resolved module key (an Elixir path `[:Enum]` or an Erlang atom `:binary`) to its
+  # selector. `Kernel` is special — it lives in the `kernel` slot (an implicit default whole
+  # import that a narrowing replaces); a `__MODULE__`-relative or otherwise non-module path
+  # is skipped.
+  defp put_import([:Kernel], selector, imports, _kernel), do: {imports, selector}
 
-    cond do
-      not atoms?(module_key) -> {imports, kernel}
-      module_key == [:Kernel] -> {imports, selector}
-      true -> {Map.put(imports, module_key, selector), kernel}
-    end
+  defp put_import(module_key, selector, imports, kernel) do
+    if module_key?(module_key),
+      do: {Map.put(imports, module_key, selector), kernel},
+      else: {imports, kernel}
   end
+
+  defp module_key?(key) when is_atom(key), do: true
+  defp module_key?(key) when is_list(key), do: atoms?(key)
+  defp module_key?(_key), do: false
 
   # `only:` wins over `except:` (a directive can't carry both); a directive with neither
   # (`import M, warn: false`) is a whole import.
