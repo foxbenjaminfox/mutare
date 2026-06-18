@@ -1442,16 +1442,71 @@ defmodule Mutare.Transform.Analyze do
   # it to the tuple-export selector (`Mutare.Transform.emit_macro_pattern_site/3`). Each
   # candidate carries the pattern before/after (the diff), the shared export tuple, and the
   # *raw* mutant call (`rebuild_mutant.(mutated)`).
+  #
+  # A custom mutator that registered this macro (`macros/0`) may *also* have produced a
+  # **whole-call** mutation — `analyze(:runtime)` offered the macro node to it, attaching a
+  # `Candidate.InPlace`. Such a mutation can't ride an ordinary in-place selector: the macro's
+  # bindings *escape*, so a selector wrapping the call would trap them inside the branch (and
+  # for a piped call would splice the illegal `pattern |> case …`). So `rehome_call_mutations/2`
+  # converts each into a `MacroPattern` branch of the *same* tuple-export selector — running the
+  # mutated call and exporting the bindings, exactly like a pattern mutant — and strips it off
+  # the node. Both kinds then live under a single `:mutare`; without this the prepended entry
+  # would silently shadow the whole-call mutants (`Transform.candidates_of/1` reads only the
+  # first `:mutare`).
   defp attach_macro_pattern_candidates(analyzed, raw_pattern, rebuild_mutant, mutators) do
     case macro_pattern_candidates(
            raw_pattern,
            rebuild_mutant,
            PatternStructure.mutators(mutators)
          ) do
-      [] -> analyzed
-      candidates -> put_candidates(analyzed, candidates)
+      [] ->
+        analyzed
+
+      [%Candidate.MacroPattern{export: export} | _] = pattern_candidates ->
+        {analyzed, call_candidates} = rehome_call_mutations(analyzed, export)
+        put_candidates(analyzed, call_candidates ++ pattern_candidates)
     end
   end
+
+  # Re-home a binding macro's *whole-call* in-place mutations (a custom mutator's, attached by
+  # `offer` during `analyze(:runtime)`) into `MacroPattern` candidates the tuple-export selector
+  # hosts as extra branches, and return the node with them stripped (so emission doesn't *also*
+  # wrap the call in a standalone selector). A directly-written call carries them on its own
+  # meta; the piped stage carries them on the `|>` RHS child — handled in a later clause so the
+  # baseline never becomes `pattern |> case …`. For now a pipe is left untouched.
+  defp rehome_call_mutations({:|>, _meta, _args} = node, _export), do: {node, []}
+
+  defp rehome_call_mutations({form, meta, args}, export) when is_list(meta) do
+    {inplace, others} =
+      meta |> Keyword.get(:mutare, []) |> Enum.split_with(&match?(%Candidate.InPlace{}, &1))
+
+    call_candidates = Enum.map(inplace, &call_mutation_candidate(&1, export, &1.mutated))
+    {set_mutare({form, meta, args}, others), call_candidates}
+  end
+
+  defp rehome_call_mutations(node, _export), do: {node, []}
+
+  # Convert one whole-call in-place mutation into a `MacroPattern` branch: the diff
+  # (`original`/`mutated`/`range`) stays the call/stage the mutator changed, while `mutant_expr`
+  # is what the branch *runs* — the (possibly piped) mutated call, before the export tuple.
+  defp call_mutation_candidate(%Candidate.InPlace{} = ip, export, mutant_expr) do
+    %Candidate.MacroPattern{
+      mutator: ip.mutator,
+      original: ip.original,
+      mutated: ip.mutated,
+      export: export,
+      mutant_expr: mutant_expr,
+      range: ip.range
+    }
+  end
+
+  # Re-set the node's `:mutare` to whatever candidates we are *not* re-homing (normally none — a
+  # macro call's own meta carries only its whole-call mutations), deleting the key when empty so
+  # `put_candidates/2` cons-es a single fresh entry.
+  defp set_mutare({form, meta, args}, []), do: {form, Keyword.delete(meta, :mutare), args}
+
+  defp set_mutare({form, meta, args}, others),
+    do: {form, Keyword.put(meta, :mutare, others), args}
 
   defp macro_pattern_candidates(raw_pattern, rebuild_mutant, structural) do
     case pattern_export(raw_pattern, structural) do

@@ -264,4 +264,59 @@ defmodule Mutare.MacroPatternTest do
       assert mod.go([5, 2]) == 2 - 5
     end
   end
+
+  describe "a whole-call mutation coexists with the pattern mutants (direct form)" do
+    # A custom mutator (`Mutare.Test.UnpackMutator`) that registers `unpack/2` and *also*
+    # mutates the whole call. The pattern `[x, y]` earns a `:pattern_swap` mutant, and the
+    # call earns the mutator's whole-call mutant. Both target the same binding-escaping call,
+    # so they must be delivered together through the one tuple-export selector — the whole-call
+    # mutant must not be silently dropped (it was shadowed by the prepended `:mutare`).
+    @source """
+    defmodule Mutare.WholeCallDirectFixture do
+      import Mutare.Test.QueryDSL
+
+      def go(v) do
+        unpack([x, y], v)
+        x - y
+      end
+    end
+    """
+
+    @compile {:no_warn_undefined, Mutare.WholeCallDirectFixture}
+
+    setup do
+      {meta, sites, _next} =
+        Mutare.transform_string(@source,
+          file: "whole.ex",
+          mutators: [Mutare.Mutators.PatternSwap, Mutare.Test.UnpackMutator]
+        )
+
+      {[{mod, _}], _io} =
+        ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+
+      %{mod: mod, sites: sites}
+    end
+
+    test "both the pattern-swap and the whole-call mutant get a site", %{sites: sites} do
+      assert Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 5))
+      # The whole-call mutant — silently dropped before the fix — now exists.
+      assert Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
+    end
+
+    test "each mutant switches independently and the bindings escape", %{mod: mod, sites: sites} do
+      swap = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 5))
+      call = Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
+
+      Selector.put(Selector.baseline())
+      assert mod.go([5, 2]) == 3
+
+      # `[y, x] = v` → y = 5, x = 2.
+      Selector.put(swap.id)
+      assert mod.go([5, 2]) == 2 - 5
+
+      # `[x, y] = [9, 9]` → x = y = 9.
+      Selector.put(call.id)
+      assert mod.go([5, 2]) == 0
+    end
+  end
 end

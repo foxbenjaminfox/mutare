@@ -80,3 +80,33 @@ defmodule Mutare.Test.QueryMutator do
 
   def mutate(_node), do: :skip
 end
+
+defmodule Mutare.Test.UnpackMutator do
+  @moduledoc """
+  A **macro-aware** custom mutator for a *binding-escaping* macro, used in tests to exercise
+  the interaction between a whole-call mutation and the structural pattern mutants.
+
+  It registers `Mutare.Test.QueryDSL.unpack/2` as `:binding_pattern` (so core mutates its
+  pattern arg with swap/wildcard) **and** mutates the *whole call* — replacing the value
+  argument with an arbitrary observable literal. Both kinds of mutant target the same
+  binding-escaping call, so the transform must deliver them through the one tuple-export
+  selector: the whole-call mutant must not be silently shadowed (the direct form) nor spliced
+  as `pattern |> case …` (the piped form).
+  """
+  @behaviour Mutare.Mutator
+
+  @impl Mutare.Mutator
+  def name, do: :unpack_call
+
+  @impl Mutare.Mutator
+  def macros, do: [{Mutare.Test.QueryDSL, :unpack, 2, [:binding_pattern, :expression]}]
+
+  @impl Mutare.Mutator
+  # `unpack(pattern, value)` (directly written) — replace the value, keeping the pattern.
+  def mutate({:unpack, meta, [pattern, _value]}), do: [{:unpack, meta, [pattern, [9, 9]]}]
+
+  # `unpack(value)` (a `|>` stage — the pattern is the piped LHS) — replace the visible value.
+  def mutate({:unpack, meta, [_value]}), do: [{:unpack, meta, [[9, 9]]}]
+
+  def mutate(_node), do: :skip
+end
