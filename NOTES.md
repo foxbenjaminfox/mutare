@@ -955,6 +955,25 @@ recording would *under*-attribute and break test selection. Each original clause
 records them all (idempotent union) — consistent with the function-head dispatcher, which records
 all of a group's ids on every call.
 
+**Non-exhaustive `case` (the unmatched fallback).** Tupling the subject changes what a *miss* does.
+A non-exhaustive source `case` raised `CaseClauseError` on the **bare** subject; the rewritten
+`case {active, subject} do …` instead falls through as `{active, subject}` — raising on the *wrong*
+term **and**, fatally, running **no** clause body, so the coverage record never fires. The probe
+runs at baseline: if the suite exercises this `case` *only* with values that match no original
+clause (a function tested purely for its error path), nothing records its ids and a pattern mutant
+that *would* re-target a clause to match that value is wrongly scored `:no_coverage` and never run —
+a false negative. (When the suite also hits *some* matching value, the full-id-set record above
+already covers every mutant, so the gap is exactly the match-nothing case.) Fix: a trailing
+`{<active>, mutare_unmatched} -> <record all ids>; Kernel.raise(Elixir.CaseClauseError, term:
+mutare_unmatched)` clause (`case_unmatched_clause/2`) restores both — it attributes the ids and
+re-raises the original error on the bare subject (`Kernel.raise`/`Elixir.CaseClauseError` spelled
+import/alias-proof, like the `=`-match `MatchError` raise). It is **omitted** when an original clause
+is already an unconditional catch-all (`exhaustive_clauses?/2` — an irrefutable pattern, no source
+guard, no exclusion ids), since the subject can then never fall through and the clause would be
+unreachable (Elixir warns "this clause cannot match"). Detecting irrefutability is sound-by-narrowness:
+only a bare `_`/var (`{atom, _, atom}`) counts; anything structured is assumed refutable, so at worst
+the fallback is added where unneeded — never wrongly omitted.
+
 **`Manifest`/poison.** The tupled `case`'s subject is `{<subject_ast>, <scrutinee>}`, recognised by
 `Metamutant.pattern_subject?/1` (it sees through the `:literal_encoder`'s `:__block__` wrap of the
 2-tuple). A tupled mutant clause's id is in its `when mutare_active === <id>` gate (reused

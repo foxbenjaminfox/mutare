@@ -1052,6 +1052,19 @@ defmodule Mutare.Transform do
   # them all, so a mutant killable by a value that matches a *different* clause is still
   # attributed (the probe runs at baseline). Every clause binds `mutare_active` and uses it
   # (originals via the record, mutants via the gate), so there is no unused-variable warning.
+  #
+  # A **non-exhaustive** source `case` needs one more clause. Without the rewrite an unmatched
+  # subject raised `CaseClauseError` on the *bare* subject; the tupled subject would instead
+  # fall through as `{active, subject}` — raising on the *wrong* term **and**, fatally, running
+  # no clause body, so the coverage record never fires and a pattern mutant that *would* make
+  # the value match is wrongly scored `:no_coverage` (at baseline the value falls through, so
+  # the probe never attributes the ids). So a trailing `{<active>, mutare_unmatched} -> <record
+  # all ids>; Kernel.raise(Elixir.CaseClauseError, term: mutare_unmatched)` clause restores
+  # both: it records the hosted ids and re-raises the original error on the bare subject
+  # (`case_unmatched_clause/2`). It is omitted when an original clause is already an
+  # unconditional catch-all (`exhaustive_clauses?/2`) — the subject can never fall through, so
+  # the clause would be unreachable and Elixir would warn "cannot match".
+  #
   # Mirrors `emit_function_plan/2` for gating and `emit_match_site/3` for the all-poisoned
   # fallback.
   defp emit_case_pattern_site(node, candidates, ctx) do
@@ -1075,7 +1088,7 @@ defmodule Mutare.Transform do
         excluded = Enum.group_by(claimed, fn {_id, i, _c} -> i end, fn {id, _i, _c} -> id end)
         mutants = Enum.group_by(claimed, fn {_id, i, _c} -> i end, fn {_id, _i, c} -> c end)
 
-        new_clauses =
+        rewritten =
           emitted_clauses
           |> Enum.with_index()
           |> Enum.flat_map(fn {emitted_clause, index} ->
@@ -1084,6 +1097,11 @@ defmodule Mutare.Transform do
 
             Map.get(mutants, index, []) ++ [original]
           end)
+
+        new_clauses =
+          if exhaustive_clauses?(emitted_clauses, excluded),
+            do: rewritten,
+            else: rewritten ++ [case_unmatched_clause(all_ids, var)]
 
         subject = {Mutare.Metamutant.subject_ast(), emitted_subject}
         {{:case, meta, [subject, [{do_key, new_clauses}]]}, ctx}
@@ -1113,6 +1131,46 @@ defmodule Mutare.Transform do
     record_body = {:__block__, [], [Recorder.record_ast(all_ids, var), body]}
     {:->, clause_meta, [[head], record_body]}
   end
+
+  # The trailing unmatched fallback for a non-exhaustive tupled `case`: `{<active>,
+  # mutare_unmatched} -> <record all ids>; Kernel.raise(Elixir.CaseClauseError, term:
+  # mutare_unmatched)`. The first tuple element binds `mutare_active` (used by the record) and
+  # `mutare_unmatched` binds the *bare* subject (used by the raise), so neither warns unused; it
+  # both attributes the hosted ids at baseline (else a value that matches no original clause
+  # falls through recording nothing, scoring a re-targeting mutant `:no_coverage`) and re-raises
+  # the same `CaseClauseError` the original `case` did, on the original term. `Kernel.raise` is
+  # qualified and `Elixir.CaseClauseError` absolute so the raise is independent of the target's
+  # imports/aliases (the rationale `match_raise_clause/0` spells out); `mutare_unmatched` is a
+  # case-clause-local pattern var, so a fixed name can't capture or collide.
+  defp case_unmatched_clause(all_ids, var) do
+    unmatched = {:mutare_unmatched, [], nil}
+    tuple = {Recorder.catch_all_pattern(var), unmatched}
+    raise_fun = {:., [], [{:__aliases__, [], [:Kernel]}, :raise]}
+    case_clause_error = {:__aliases__, [], [:"Elixir", :CaseClauseError]}
+    raise_node = {raise_fun, [], [case_clause_error, [term: unmatched]]}
+    body = {:__block__, [], [Recorder.record_ast(all_ids, var), raise_node]}
+    {:->, [], [[tuple], body]}
+  end
+
+  # Whether the rewritten clause list already matches every subject — an original clause is an
+  # unconditional catch-all (an irrefutable pattern, no source guard) that the rewrite leaves
+  # ungated (no mutant excludes it). When so the subject can never fall through, so the unmatched
+  # fallback would be an unreachable clause (Elixir warns "cannot match"); otherwise the subject
+  # may fall through and the fallback is needed (see `emit_case_pattern_site/3`).
+  defp exhaustive_clauses?(emitted_clauses, excluded) do
+    emitted_clauses
+    |> Enum.with_index()
+    |> Enum.any?(fn {clause, index} ->
+      {_meta, pattern, guard, _body} = emitted_clause_parts(clause)
+      irrefutable_pattern?(pattern) and is_nil(guard) and Map.get(excluded, index, []) == []
+    end)
+  end
+
+  # A pattern that matches any value: `_`, `_name`, or a plain variable — the only nodes shaped
+  # `{atom_name, _meta, atom_context}`. Anything structured (a literal `{:__block__, _, […]}`, a
+  # tuple/map/struct, a pin, a call) carries a *list* in that slot, so is refutable.
+  defp irrefutable_pattern?({name, _meta, ctx}) when is_atom(name) and is_atom(ctx), do: true
+  defp irrefutable_pattern?(_), do: false
 
   # Deconstruct an (already-emitted) `case` clause into `{meta, pattern, guard | nil, body}`.
   # A `case` clause has a single pattern; its guard (if any) is the last `when` arg (patterns

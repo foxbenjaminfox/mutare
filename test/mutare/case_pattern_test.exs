@@ -42,6 +42,13 @@ defmodule Mutare.CasePatternTest do
         _ -> :unknown
       end
     end
+
+    def narrow(n) do
+      case n do
+        1 -> :one
+        2 -> :two
+      end
+    end
   end
   """
 
@@ -99,6 +106,13 @@ defmodule Mutare.CasePatternTest do
     assert Enum.all?(clause_sites, &(&1.kind == :in_place))
   end
 
+  test "a non-exhaustive case gets an unmatched fallback; exhaustive ones do not", %{meta: meta} do
+    # Only `narrow` lacks a catch-all, so exactly one tupled `case` re-raises CaseClauseError on
+    # the bare subject — the rest (classify/swap/dup/label) keep their `_` clause and add none.
+    assert meta =~ "Kernel.raise(Elixir.CaseClauseError, term: mutare_unmatched)"
+    assert length(Regex.scan(~r/Kernel\.raise\(Elixir\.CaseClauseError/, meta)) == 1
+  end
+
   describe "behaviour under runtime switching" do
     test "baseline behaves like the original" do
       assert F.classify(1) == :one
@@ -109,6 +123,22 @@ defmodule Mutare.CasePatternTest do
       assert F.dup({1, 2}) == :diff
       assert F.label("go") == :start
       assert F.label("x") == :unknown
+      assert F.narrow(1) == :one
+      assert F.narrow(2) == :two
+    end
+
+    test "a non-exhaustive case raises CaseClauseError on the bare subject, not the tuple" do
+      # Without the unmatched fallback the tupled subject would raise on `{0, 3}`; the fallback
+      # re-raises the original error on the bare `3`, and — load-bearing — records the case's
+      # ids at baseline so a re-targeting mutant is not wrongly scored `:no_coverage`.
+      error = assert_raise CaseClauseError, fn -> F.narrow(3) end
+      assert error.term == 3
+    end
+
+    test "a re-targeting mutant makes a previously-unmatched value match", %{sites: sites} do
+      # `2 -> :two` becomes `3 -> :two`, so `narrow(3)` now matches instead of raising.
+      Selector.put(id(sites, :literal, "3", 34))
+      assert F.narrow(3) == :two
     end
 
     test "a literal pattern mutant re-targets the clause", %{sites: sites} do
