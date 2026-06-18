@@ -760,12 +760,19 @@ Three deliberate constraints keep it sound:
   _x + y - z`), so omitting it leaves `_x` undefined after the rewrite, a hard **compile
   error**. Only bare `_` (which binds nothing usable) is dropped.
 
-Non-match semantics are preserved exactly: each inner case carries a trailing `u -> raise
-MatchError, term: u` clause, so a value that doesn't match raises the *same* `MatchError`
-the original `=` did (not a `CaseClauseError`) — keeping the baseline identical and still a
-clean kill on a mutant whose pattern stopped matching. (The pattern is always a refutable
-container — a bare `var`/pin-only LHS is never offered — so that clause is always reachable;
-the binding is clause-local, so a fixed `mutare_unmatched` name can't capture or collide.)
+Non-match semantics are preserved exactly: each inner case carries a trailing `u ->
+Kernel.raise(Elixir.MatchError, term: u)` clause, so a value that doesn't match raises the
+*same* `MatchError` the original `=` did (not a `CaseClauseError`) — keeping the baseline
+identical and still a clean kill on a mutant whose pattern stopped matching. (The pattern is
+always a refutable container — a bare `var`/pin-only LHS is never offered — so that clause is
+always reachable; the binding is clause-local, so a fixed `mutare_unmatched` name can't
+capture or collide.) The raise is spelled to be **immune to the target's lexical
+environment**, since a real `=` always raises `Elixir.MatchError` regardless of imports or
+aliases: `Kernel.raise` is *qualified* (an unqualified `raise` breaks under `import Kernel,
+except: [raise: 2]` — the metamutant baseline would fail to compile), and `Elixir.MatchError`
+is the *absolute* alias (`__aliases__` led by `:Elixir`, which alias resolution never
+rewrites — an unqualified `MatchError` under `alias Foo, as: MatchError` or a nested
+`MatchError` module would raise the wrong exception).
 
 Known edges, both **only** warnings (harmless under the default warnings-tolerant metamutant
 compile; poison-recoverable under `--warnings-as-errors`, where the whole-`case` fallback range

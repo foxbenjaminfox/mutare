@@ -104,6 +104,28 @@ defmodule Mutare.MatchPatternTest do
     site.id
   end
 
+  # Transform + compile a one-off module carrying `directive` (an `import`/`alias` line)
+  # ahead of a destructuring `=`, returning the compiled module. Warnings are captured.
+  defp compile_with_directive(name, directive) do
+    src = """
+    defmodule #{name} do
+      #{directive}
+
+      def f(t) do
+        {x, y} = t
+        x - y
+      end
+    end
+    """
+
+    {meta, _sites, _next} = Mutare.transform_string(src, file: "lex.ex")
+
+    {[{module, _binary}], _io} =
+      ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+
+    module
+  end
+
   test "match-pattern mutants are delivered in place (not lifted)", %{sites: sites, meta: meta} do
     refute meta =~ "__mutare_classify"
     refute meta =~ "__mutare_eq"
@@ -181,6 +203,42 @@ defmodule Mutare.MatchPatternTest do
 
       Selector.put(id(sites, :pattern_swap, "{_keep, z, y}", 51))
       assert F.underscored({10, 5, 2}) == 10 + 2 - 5
+    end
+  end
+
+  describe "MatchError is raised independently of the target's lexical env" do
+    # A real `=` always raises Elixir.MatchError on a non-match. The rewrite's fallback
+    # clause must too — so it emits the *qualified, absolute* `Kernel.raise(Elixir.MatchError,
+    # …)`, not the lexically-resolved `raise MatchError`, which a module excluding
+    # `Kernel.raise/2` or aliasing `MatchError` would break or redirect.
+    test "the generated fallback is fully qualified" do
+      {meta, _sites, _next} =
+        Mutare.transform_string(
+          "defmodule Z do\n  def f(t) do\n    {x, y} = t\n    x - y\n  end\nend\n"
+        )
+
+      assert meta =~ "Kernel.raise(Elixir.MatchError, term:"
+      refute meta =~ "-> raise MatchError"
+    end
+
+    test "compiles and raises MatchError when Kernel.raise/2 is excluded" do
+      mod =
+        compile_with_directive(
+          "Mutare.MatchPatternExclFixture",
+          "import Kernel, except: [raise: 2]"
+        )
+
+      assert_raise MatchError, fn -> mod.f(:not_a_tuple) end
+    end
+
+    test "raises Elixir.MatchError even when MatchError is aliased away" do
+      mod =
+        compile_with_directive(
+          "Mutare.MatchPatternAliasFixture",
+          "alias ArgumentError, as: MatchError"
+        )
+
+      assert_raise MatchError, fn -> mod.f(:not_a_tuple) end
     end
   end
 

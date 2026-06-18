@@ -889,23 +889,37 @@ defmodule Mutare.Transform do
     end
   end
 
-  # `case <rhs> do <pattern> -> <export>; u -> raise MatchError, term: u end` — re-binds
-  # the match by matching `rhs` against `pattern` and returning the shared export tuple.
-  # The trailing clause makes a non-match raise the *same* `MatchError` the original `=`
-  # raised (not a `CaseClauseError`): exact baseline semantics, and still a clean kill on
+  # `case <rhs> do <pattern> -> <export>; u -> Kernel.raise(Elixir.MatchError, term: u) end`
+  # — re-binds the match by matching `rhs` against `pattern` and returning the shared export
+  # tuple. The trailing clause makes a non-match raise the *same* `MatchError` the original
+  # `=` raised (not a `CaseClauseError`): exact baseline semantics, and still a clean kill on
   # a mutant whose pattern stopped matching. The pattern is a refutable container (a bare
   # var / pin-only LHS is never offered), so that clause is always reachable.
   defp match_inner_case(rhs, pattern, export) do
     {:case, [], [rhs, [do: [{:->, [], [[pattern], export]}, match_raise_clause()]]]}
   end
 
-  # `mutare_unmatched -> raise MatchError, term: mutare_unmatched`. The binding is local to
-  # this one clause body (a fresh case-clause pattern variable, used only here), so a
-  # fixed name can't capture or collide — unlike a lifted *head* arg, the gated-equality
-  # hazard `Names` salts against doesn't apply to a body case clause.
+  # `mutare_unmatched -> Kernel.raise(Elixir.MatchError, term: mutare_unmatched)`.
+  #
+  # Both names are spelled to resolve **independently of the target module's lexical
+  # environment**, so the generated raise behaves identically to the `=` it replaces — which
+  # always raises `Elixir.MatchError` regardless of imports/aliases:
+  #
+  #   * `Kernel.raise` is *qualified*, so it survives `import Kernel, except: [raise: 2]`
+  #     (an exclusion only removes the *unqualified* macro); an unqualified `raise` there
+  #     would make the metamutant baseline fail to compile.
+  #   * `Elixir.MatchError` is the *absolute* form (`__aliases__` led by `:Elixir`, which
+  #     alias resolution never rewrites), so `alias Foo, as: MatchError` / a nested
+  #     `MatchError` module can't redirect it to the wrong exception.
+  #
+  # The binding is local to this one clause body (a fresh case-clause pattern variable, used
+  # only here), so a fixed name can't capture or collide — unlike a lifted *head* arg, the
+  # gated-equality hazard `Names` salts against doesn't apply to a body case clause.
   defp match_raise_clause do
     unmatched = {:mutare_unmatched, [], nil}
-    raise_node = {:raise, [], [{:__aliases__, [], [:MatchError]}, [term: unmatched]]}
+    raise_fun = {:., [], [{:__aliases__, [], [:Kernel]}, :raise]}
+    match_error = {:__aliases__, [], [:"Elixir", :MatchError]}
+    raise_node = {raise_fun, [], [match_error, [term: unmatched]]}
     {:->, [], [[unmatched], raise_node]}
   end
 
