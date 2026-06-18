@@ -404,20 +404,41 @@ by a blacklist. The positions:
   `Kernel.match?/2` is left to poison fallback. Found dogfooding `plug` — see
   "Real-world poisons (plug/router)" below.
 
-### Keyword/block keys are labels, never runtime values
-The pair routing (`label_key?/1` + the 2-tuple `analyze` clause) is what lets the
-atom mutator exist. An atom in a *value* position (`{:ok, x}` tag, a `key: VALUE`)
-is mutatable; an atom in a *key* position is a structural label and must never be
-offered to a mutator — a selector `case` spliced into a key is malformed and
-**crashes `Sourceror.to_string` outright** (not a compile error, so *not*
-poison-recoverable; it sinks the whole file's render). Two key shapes, both
-`{:__block__, meta, [atom]}`: an **inline** keyword key (`a:`, `timeout:`, an inline
-`do:`/`else:`) carries `format: :keyword`; a **block** key (the `do`/`else`/`rescue`/
-`catch`/`after` that renders a `do … end`) carries *no* format marker, so it is
-recognised by its reserved atom (`@block_keys`). A plain atom literal — a tuple tag
-or a `%{:a => …}` arrow key — is neither, so it falls through and stays mutatable.
-This was invisible before atom because no prior built-in matched an atom node;
-integer/string/operator mutators never touch a `:do` key.
+### Data keyword/map keys mutate; only block keys are labels `[changed]`
+The pair routing (`block_key?/1` + the 2-tuple `analyze` clause) is what lets the
+atom mutator reach a key. The original rule treated **every** keyword-shorthand key
+(`format: :keyword`) as a structural label, so `%{a: 1}` / `[a: 1]` silently differed
+from the arrow/tuple forms `%{:a => 1}` / `[{:a, 1}]` (whose keys always mutated) —
+syntax sugar disabling a mutator for no reason. Now only a **block key** (`do:`/
+`else:`/`rescue:`/`catch:`/`after:`, by reserved atom `@block_keys`, in either the
+inline `format: :keyword` or the `do … end` no-marker shape) is a label. The reason is
+narrow and real: a selector `case` spliced into a `do:` key is malformed and **crashes
+`Sourceror.to_string` outright** (not a compile error, so *not* poison-recoverable; it
+sinks the whole file's render). A *data* key has no such problem — Sourceror re-renders
+the spliced selector as an arrow (`%{(sel) => v}`) or a list tuple (`[{(sel), v}]`),
+both legal, so the `format: :keyword` marker left on the original key is harmless (no
+need to strip it).
+
+Two **compile-constrained** data-key positions can't go through the generic pair clause
+and are excluded positively, *upstream* of it:
+  * **Struct fields** (`analyze_struct_field/3`) — `%S{name: …}` → `%S{mutare: …}` is a
+    *compile* error (unknown struct field), so the key stays raw. Covers the update form
+    `%S{base | f: v}` too (its `:|` node carries the field list; a struct update with a
+    bad key is likewise a compile error). Plain **map** updates `%{m | k: v}` are *not*
+    excluded — there a wrong key is a runtime `KeyError`, compile-safe and a real (if
+    weak) mutant.
+  * **`for` options** (`analyze_for_arg/2`) — `into:`/`uniq:`/`reduce:`/`do:` are
+    special-form keywords; `for …, mutare: x` is `unsupported option :mutare given to
+    for`, a compile error. (The `:uniq` *value* is also held back — it must be a literal
+    boolean.)
+
+Everything else (free-form maps, keyword lists, a call's trailing options `foo(…,
+timeout: x)`) mutates. Unknown **DSL** keyword options (e.g. Ecto `field …, default: x`
+inside a macro `do` block that's analyzed as runtime) are left to the **poison
+backstop** if the macro rejects the mutated key — the standard treatment for the
+unknown; a macro that silently ignores the unknown key yields a (rare) equivalent
+survivor instead. Module-level `defstruct name: 0` / `use Foo, opt: 1` keys are safe
+for a different reason: the module body is `:scaffold`, which never offers anything.
 
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**

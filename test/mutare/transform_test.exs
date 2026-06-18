@@ -1014,10 +1014,10 @@ defmodule Mutare.TransformTest do
     end
   end
 
-  describe "atom-literal context routing (keys and patterns are not mutated)" do
+  describe "atom-literal context routing (data keys mutate; block keys/patterns do not)" do
     @atom [Mutare.Mutators.AtomLiteral]
 
-    test "value atoms mutate but keyword/map keys do not — and it renders" do
+    test "both values and data keyword/map keys mutate — and it renders" do
       source = """
       defmodule K do
         def f(x), do: %{status: :active, a: :b}
@@ -1027,9 +1027,66 @@ defmodule Mutare.TransformTest do
 
       {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @atom)
 
-      # Values :active, :b, :infinity mutate (3); keys status/a/timeout do not.
-      assert length(sites) == 3
+      # Syntax sugar no longer hides the key: both the keys (status/a/timeout) and the
+      # values (active/b/infinity) mutate — 6 sites — exactly as the arrow form would.
+      assert length(sites) == 6
       assert Enum.all?(sites, &(&1.mutator == :atom))
+      descriptions = Enum.map_join(sites, "\n", &Mutare.Site.describe/1)
+
+      for atom <- ~w(status active a b timeout infinity) do
+        assert descriptions =~ ":#{atom} → :mutare"
+      end
+
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "a keyword-list key mutates and renders as a tuple (like [{:a, 1}])" do
+      source = "defmodule KW do\n  def f, do: [a: 1, b: 2]\nend\n"
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @atom)
+
+      # Both keys mutate; Sourceror renders the spliced selector in tuple form so the
+      # keyword list stays legal (`[a: 1]` has no arrow form).
+      assert Enum.map(sites, &Mutare.Site.describe/1) |> Enum.sort() ==
+               ["atom  :a → :mutare", "atom  :b → :mutare"]
+
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "a struct's field keys are compile-constrained and never mutate (only values do)" do
+      # `%S{name: …}` → `%S{mutare: …}` is a *compile* error (unknown struct field),
+      # so the key must stay raw — both for the literal and the `%S{s | …}` update.
+      source = """
+      defmodule SF do
+        def f, do: %S{name: :bob, role: :admin}
+        def g(s), do: %S{s | role: :guest}
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @atom)
+
+      # Only the field *values* mutate (:bob, :admin, :guest); no field-name key.
+      assert Enum.map(sites, &Mutare.Site.describe/1) |> Enum.sort() ==
+               ["atom  :admin → :mutare", "atom  :bob → :mutare", "atom  :guest → :mutare"]
+
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "a `for` comprehension's option keys are special-form and never mutate" do
+      # `for ..., into: x` → `for ..., mutare: x` is `unsupported option :mutare given
+      # to for` (a compile error), so the option keys stay raw.
+      source = """
+      defmodule FC do
+        def f(l), do: for(x <- l, into: :acc, do: :hit)
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @atom)
+
+      # The option/body *values* :acc/:hit mutate; the :into/:do keys do not.
+      assert Enum.map(sites, &Mutare.Site.describe/1) |> Enum.sort() ==
+               ["atom  :acc → :mutare", "atom  :hit → :mutare"]
+
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 

@@ -211,11 +211,15 @@ defmodule Mutare.Transform.Analyze do
   # `%Struct{…}`: the inner `%{…}` is the struct's *field map*, not a standalone
   # map literal — collapsing it to `%{}` (MapLiteral) would drop required fields /
   # change the struct, not shrink "the same" value. Descend into the field map's
-  # contents (so each field *value* still mutates, keys stay protected) but never
-  # offer the `%{}` wrapper itself to a mutator. The alias rides through untouched.
+  # contents (so each field *value* still mutates) but never offer the `%{}` wrapper
+  # itself to a mutator, and — unlike a free-form map/keyword key — keep each field
+  # *key* raw: a struct field name is compile-time-checked, so mutating it to another
+  # atom names a field the struct doesn't define (a compile error, both for the
+  # literal `%S{a: 1}` and the update `%S{m | a: 1}` forms). The alias rides untouched.
   defp analyze({:%, meta, [aliases, {:%{}, mmeta, pairs}]}, context, mutators)
        when is_list(pairs) do
-    {:%, meta, [aliases, {:%{}, mmeta, Enum.map(pairs, &analyze(&1, context, mutators))}]}
+    pairs = Enum.map(pairs, &analyze_struct_field(&1, context, mutators))
+    {:%, meta, [aliases, {:%{}, mmeta, pairs}]}
   end
 
   # match `=`: the left side is a pattern, the right keeps the context.
@@ -382,16 +386,20 @@ defmodule Mutare.Transform.Analyze do
       else: recurse_runtime(node, mutators, false)
   end
 
-  # A keyword/block pair (`key: value`, `%{a: …}`, a `do:`/`else:`/`rescue:`/
-  # `catch:`/`after:` block). The *key* is a structural label, never a runtime
-  # value, so it is not offered to a mutator — a selector spliced into a key
-  # position is malformed (it would not even render). Only the value is analyzed,
-  # in the surrounding context. A 2-tuple like `{:ok, x}` is *not* this — its `:ok`
-  # is a real runtime value — so `label_key?/1` admits only inline-keyword keys
-  # (the `format: :keyword` marker) or a block-key atom, and a tuple tag falls
-  # through to `recurse` and stays mutatable.
+  # A keyword/map/block pair (`key: value`, `%{a: …}`, a `do:`/`else:`/`rescue:`/
+  # `catch:`/`after:` block). Only a **block key** is a pure structural label that
+  # must never be offered: a selector spliced into a `do:`/`else:`/… key is malformed
+  # and would not even render. A *data* key — `a:` in a map or keyword list, an
+  # option like `timeout:` in a call's trailing keywords — is a real runtime value:
+  # mutating it changes which entry the map/list carries, exactly like the arrow form
+  # `%{:a => …}` (which has always mutated). So a non-block pair descends both sides
+  # through `recurse` and the key stays mutatable; the keyword-shorthand `format:
+  # :keyword` marker on the original key is harmless — Sourceror renders the spliced
+  # selector as an arrow (`%{(sel) => v}`) or a tuple (`[{(sel), v}]`) automatically.
+  # Compile-time-constrained data keys (struct fields, `for` options) are kept raw by
+  # their own clauses, before reaching here.
   defp analyze({key, value} = pair, context, mutators) do
-    if label_key?(key),
+    if block_key?(key),
       do: {key, analyze(value, context, mutators)},
       else: recurse(pair, context, mutators)
   end
@@ -416,14 +424,18 @@ defmodule Mutare.Transform.Analyze do
   defp analyze_pipe_stage(other, mutators), do: analyze(other, :runtime, mutators)
 
   # One argument of a `for`: a generator/filter is descended as ordinary runtime,
-  # while the trailing options/body keyword list keeps its `:uniq` value untouched
-  # (a `for`-special-form literal-boolean slot — see the `for` analyze clause).
-  # Every other option (`:into`/`:reduce`) and the `:do`/`:reduce` body descend as
-  # before via the generic keyword-pair clause.
+  # while the trailing options/body keyword list keeps every option *key* raw —
+  # `:into`/`:reduce`/`:uniq`/`:do` are `for`-special-form keywords, so mutating a key
+  # is a compile error (`unsupported option :mutare given to for`), unlike a free-form
+  # map/keyword key. The `:uniq` *value* must also be a literal boolean (a selector
+  # there would poison the build), so it is held back; every other value (`:into`/
+  # `:reduce` and the `:do`/`:reduce` body) descends as ordinary runtime.
   defp analyze_for_arg(opts, mutators) when is_list(opts) do
     Enum.map(opts, fn
-      {key, _value} = pair ->
-        if AST.key_atom(key) == :uniq, do: pair, else: analyze(pair, :runtime, mutators)
+      {key, value} ->
+        if AST.key_atom(key) == :uniq,
+          do: {key, value},
+          else: {key, analyze(value, :runtime, mutators)}
 
       other ->
         analyze(other, :runtime, mutators)
@@ -431,6 +443,21 @@ defmodule Mutare.Transform.Analyze do
   end
 
   defp analyze_for_arg(arg, mutators), do: analyze(arg, :runtime, mutators)
+
+  # One entry of a struct's field map: keep the key (a compile-time field name) raw and
+  # descend only the value. A struct update (`%S{base | a: 1}`) carries a `:|` node
+  # whose right side is the field list — descend the base normally, recurse the fields.
+  defp analyze_struct_field({:|, meta, [base, fields]}, context, mutators) when is_list(fields) do
+    base = analyze(base, context, mutators)
+    fields = Enum.map(fields, &analyze_struct_field(&1, context, mutators))
+    {:|, meta, [base, fields]}
+  end
+
+  defp analyze_struct_field({key, value}, context, mutators),
+    do: {key, analyze(value, context, mutators)}
+
+  defp analyze_struct_field(other, context, mutators),
+    do: analyze(other, context, mutators)
 
   # Recurse a runtime call's arguments, but route any positions a mutator has *claimed*
   # (its optional `owned_args/2`) through the non-mutating `:owned` context — so a leaf
@@ -744,15 +771,6 @@ defmodule Mutare.Transform.Analyze do
 
   defp do_key?(key), do: AST.key_atom(key) == :do
   defp clause_block_key?(key), do: AST.key_atom(key) in @clause_block_keys
-
-  # Is `key` the *label* side of a keyword/block pair (so never a runtime value)?
-  # Two kinds: an inline keyword key (`a:`, `timeout:`, `do:` written inline) carries
-  # `format: :keyword` (the shared `AST.keyword_label?/1` check); a block key (the
-  # `do`/`else`/`rescue`/`catch`/`after` that renders a `do … end`) carries no format
-  # marker, so it is recognised by its reserved atom (`block_key?/1`). A plain atom
-  # literal in value position (a tuple tag `{:ok, x}`, a `%{:a => …}` arrow key) is
-  # neither, so it stays mutatable.
-  defp label_key?(key), do: AST.keyword_label?(key) or block_key?(key)
 
   # Find the tail expression of a `:do` block (the last statement of a multi-
   # statement block, else the whole single-expression value) and append a

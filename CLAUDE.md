@@ -119,10 +119,19 @@ contract between them is the whole game.
     the call), so an arity-changing mutator (CollectionArity, via the optional `mutate/2` callback)
     needs the flag to recover the *effective* arity. The mutated stage is a plain `Candidate.InPlace`,
     so the existing selector + `hoist_pipe` path delivers it unchanged.
-    Orthogonally, a keyword/block **key** is never offered to a mutator: the 2-tuple pair clause
-    (`label_key?/1`) skips inline keys (`format: :keyword`) and `do:`/`else:`/`rescue:`/`catch:`/
-    `after:` block keys (`@block_keys`), so an atom-matching mutator can't splice a selector into a
-    `do:` key (which wouldn't even render) — while a tuple tag like `{:ok, x}` stays mutatable.
+    Orthogonally, a **data** keyword/map key *is* mutatable: the 2-tuple pair clause skips only a
+    **block key** (`do:`/`else:`/`rescue:`/`catch:`/`after:`, `block_key?/1` on `@block_keys`) — a
+    selector spliced into a `do:` key is malformed and wouldn't render — but a `%{a: 1}` / `[a: 1]`
+    keyword-shorthand key descends like its arrow/tuple twin (`%{:a => 1}` / `[{:a, 1}]`), which
+    always mutated; syntax sugar no longer hides it. Sourceror re-renders the spliced selector as an
+    arrow (`%{(sel) => v}`) or tuple (`[{(sel), v}]`) automatically, so the `format: :keyword` marker
+    on the original key is harmless. The two **compile-constrained** key positions are excluded
+    positively by their own clauses, *before* the pair clause: a `%Struct{…}` field key
+    (`analyze_struct_field/3`, covering the `%S{m | f: v}` update form too — a wrong field name is a
+    compile error) and a `for` special-form option key (`into:`/`uniq:`/`reduce:`, in
+    `analyze_for_arg/2` — `unsupported option … given to for`). Other unknown DSL keyword options
+    (e.g. an Ecto `field …, default: x` inside a macro `do` block) are left to the **poison backstop**
+    if the macro rejects a mutated key — consistent with how the unknown is handled everywhere.
     Similarly a `%Struct{…}`'s inner `%{}` is descended for its field *values* but the `%{}` wrapper
     itself is not offered, so MapLiteral can't empty a struct (which would drop required fields). A
     module alias is mutatable only as a *value*: the module side of a remote call (`Foo.bar()`) sits
@@ -403,7 +412,8 @@ contract between them is the whole game.
   `Transform.FunctionPlan` and NOTES),
   StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, AtomLiteral (a
   literal atom → the sentinel `:mutare`; `true`/`false`/`nil` excluded — Literal/Conditional own
-  them; keys excluded *positionally* by `Transform`, not the mutator — and patterns excluded
+  them; *data* keyword/map keys mutate, but block keys / struct fields / `for`-option keys are
+  excluded *positionally* by `Transform`, not the mutator — and patterns excluded
   *in place*, though a `def`/`defp` head literal is mutated by lifting), CharlistLiteral
   (a `~c"…"` sigil → `~c""` *and* `~c"mutare"`; the legacy `'…'` form is a list literal already
   emptied by List), WordListLiteral (a `~w(…)`/`~W(…)` word list — a list literal in disguise —
