@@ -190,6 +190,33 @@ defmodule Mutare.Transform.Candidate do
     defstruct [:mutator, :original, :mutated, :replacement, :range]
   end
 
+  defmodule RescueDrop do
+    @moduledoc false
+
+    # A whole `rescue` *clause* removed from an explicit `try`, delivered **in place** by the
+    # **whole-construct selector** (like `CasePattern`). The structural twin of the type-list
+    # narrowing `Mutare.Mutators.RescueType` already does for a single `var in [A, B]` clause —
+    # for the idiomatic multi-branch shape (`rescue e in A -> …; e in B -> …`), where each branch
+    # catches a single type, there is no list to narrow, so the equivalent "is this exception's
+    # handling relied on?" question is asked by dropping one whole branch. Only offered when ≥2
+    # rescue clauses are present (a `try` cannot have an empty `rescue`), so the result always
+    # compiles; sound for the same reason as `CasePattern` — a rescue binding is body-local.
+    #
+    # `replacement` is the whole `try` rebuilt with this clause removed (the selector branch);
+    # `dropped` is the removed clause (for the focused `:delete` diff) and `range` locates it.
+    # `mutator` is the `RescueType` spec (the family owns both narrowing and dropping). Recorded
+    # as an `:in_place`, `:delete` `Mutare.Site` (`Site.in_place_drop/5`).
+
+    @type t :: %__MODULE__{
+            mutator: Mutare.Mutator.Spec.t(),
+            dropped: Macro.t(),
+            replacement: Macro.t(),
+            range: Sourceror.Range.t()
+          }
+
+    defstruct [:mutator, :dropped, :replacement, :range]
+  end
+
   defmodule CaseClause do
     @moduledoc false
 
@@ -317,6 +344,7 @@ defmodule Mutare.Transform.Candidate do
           | Pattern.t()
           | PatternStructure.t()
           | CasePattern.t()
+          | RescueDrop.t()
           | CaseClause.t()
           | MatchPattern.t()
           | Drop.t()

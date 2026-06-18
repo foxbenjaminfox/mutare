@@ -644,15 +644,22 @@ contract between them is the whole game.
   survives; otherwise wildcard both — `equal?(x, x), do: true`→`equal?(_, _)`); broadening a
   non-final clause to irrefutable is a benign "cannot match" warning that only poisons under
   `--warnings-as-errors` (single-clause functions / a sole clause are always clean — see NOTES).
-  And **RescueType** (`:rescue_type`) — narrows a `rescue var in [A, B, …]` exception list by
-  dropping one type (`[A, B]`→`[A]`/`[B]`; ≥2 types, never to empty, so always compile-safe),
-  asking "is each rescued exception actually relied on?". A `rescue` clause is **not** a standard
-  pattern — it matches on exception *types* and carries **no `when` guard** — so it can't be
-  dispatched per-clause like `case`; structural and positional (discovered only at a rescue-clause
-  head by `Transform`, `mutate/1` is `:skip`, the list logic is `RescueType.drops/1`), delivered
-  **in place** by the whole-construct selector (`Candidate.CasePattern`, wrapping the whole `try`).
-  Only the explicit `try` is mutated; the `def … rescue …` shorthand is deferred (it would need
-  the def body restructured into a `try`, conflicting with return-value/lifting analysis).
+  And **RescueType** (`:rescue_type`) — narrows what a `rescue` catches, asking "is each rescued
+  exception actually relied on?". A `rescue` clause is **not** a standard pattern — it matches on
+  exception *types* and carries **no `when` guard** — so it can't be dispatched per-clause like
+  `case`; structural and positional (discovered only at a rescue-clause head by `Transform`,
+  `mutate/1` is `:skip`), delivered **in place** by the whole-construct selector (wrapping the whole
+  `try`). Two operations, one family: (1) **drop one type** from a `rescue var in [A, B, …]` (or
+  bare `[A, B, …]`) list — `[A, B]`→`[A]`/`[B]`, ≥2 types, never to empty (`RescueType.drops/1`,
+  `Candidate.CasePattern` whose mutant branch is the `try` with the narrowed list); and (2) for the
+  idiomatic multi-branch shape `rescue e in A -> …; e in B -> …` (each branch a single type, so no
+  list to narrow) **drop a whole `rescue` clause** — `Analyze.rescue_clause_drops/3`,
+  `Candidate.RescueDrop` whose mutant branch is the `try` with that clause removed, recorded as a
+  `:delete` `:in_place` `Site` (`Site.in_place_drop/5`). Offered only when ≥2 clauses are present (a
+  `try` can't carry an empty `rescue`), so always compile-safe; the dropped clause's head shape is
+  irrelevant (a bare-variable catch-all is droppable too). Only the explicit `try` is mutated; the
+  `def … rescue …` shorthand is deferred (it would need the def body restructured into a `try`,
+  conflicting with return-value/lifting analysis).
 - **`Mutare.Mutators`** — the **single ordered registry** of built-in families and the one place
   mutator lists are resolved/validated. `all/0` is the default set (every registered module — an
   unset `:mutators`/`:all`); `families/0` is every registered atom; `resolve/1` maps any entry —

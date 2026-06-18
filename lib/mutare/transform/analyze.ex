@@ -339,13 +339,16 @@ defmodule Mutare.Transform.Analyze do
 
   # `try`: a runtime expression whose `rescue` clauses are special — they match on
   # *exception types* (`var in [A, B]` / `var` / `Type`), carry **no `when` guard**, and so
-  # can't be dispatched per-clause the way `case` is. `Mutare.Mutators.RescueType` narrows a
-  # `var in [A, B]` list (drop one type), delivered by the **whole-construct selector**
-  # (`Candidate.CasePattern`) — the whole `try` is wrapped, its mutant branch a copy with one
-  # rescue clause's type list shrunk (sound — a rescue binding is body-local). The construct
-  # is still analyzed normally (do/rescue-bodies/catch/else/after mutate; the rescue/else/
-  # catch patterns stay `:pattern`). Only the explicit `try` is handled here; the
-  # `def … rescue …` shorthand reaches `analyze_do_blocks/2` and is deferred.
+  # can't be dispatched per-clause the way `case` is. `Mutare.Mutators.RescueType` mutates them
+  # two ways, both delivered by the **whole-construct selector** (the whole `try` is wrapped,
+  # its mutant branch a copy of the `try` — sound, a rescue binding is body-local): it narrows a
+  # `var in [A, B]` list by dropping one type (`Candidate.CasePattern`), and — for the idiomatic
+  # multi-branch shape where each clause catches a single type and there is no list to narrow —
+  # it drops a whole `rescue` clause (`Candidate.RescueDrop`, only when ≥2 clauses are present so
+  # the `rescue` is never left empty). The construct is still analyzed normally (do/rescue-bodies/
+  # catch/else/after mutate; the rescue/else/catch patterns stay `:pattern`). Only the explicit
+  # `try` is handled here; the `def … rescue …` shorthand reaches `analyze_do_blocks/2` and is
+  # deferred.
   defp analyze({:try, meta, [blocks]} = node, :runtime, mutators) when is_list(blocks) do
     analyzed = recurse(node, :runtime, mutators)
 
@@ -1140,12 +1143,12 @@ defmodule Mutare.Transform.Analyze do
     {:->, meta, [[{:when, wm, patterns ++ [new_guard]}], body]}
   end
 
-  # --- try: rescue exception-type narrowing (Candidate.CasePattern) -----------
+  # --- try: rescue narrowing + clause drop (CasePattern / RescueDrop) ---------
 
-  # `Candidate.CasePattern`s that narrow a `rescue var in [A, B, ...]` exception list (drop
-  # one type), each `replacement` being the whole `try` with that one rescue clause's list
-  # shrunk. Gated on `Mutare.Mutators.RescueType` being enabled; the diff (`original`/
-  # `mutated`) is the `var in [...]` node before/after.
+  # The `rescue` mutations: per-clause type-list narrowings (`Candidate.CasePattern`, each
+  # `replacement` the whole `try` with one clause's list shrunk) plus whole-clause drops
+  # (`Candidate.RescueDrop`, the `try` with one clause removed). Gated on
+  # `Mutare.Mutators.RescueType` being enabled.
   defp rescue_type_candidates(blocks, meta, mutators) do
     case Spec.find(mutators, Mutare.Mutators.RescueType) do
       nil -> []
@@ -1165,14 +1168,48 @@ defmodule Mutare.Transform.Analyze do
           {:try, meta, [new_blocks]}
         end
 
-        clauses
-        |> Enum.with_index()
-        |> Enum.flat_map(&rescue_type_drops(&1, clauses, rebuild_try, spec))
+        narrowings =
+          clauses
+          |> Enum.with_index()
+          |> Enum.flat_map(&rescue_type_drops(&1, clauses, rebuild_try, spec))
+
+        narrowings ++ rescue_clause_drops(clauses, rebuild_try, spec)
 
       _ ->
         []
     end
   end
+
+  # The whole-clause counterpart of `rescue_type_drops/4`: drop each `rescue` branch in turn,
+  # `replacement` being the `try` with that one clause removed. This covers the idiomatic
+  # multi-branch shape `rescue e in A -> …; e in B -> …` — where each branch catches a single
+  # type, so there is no list for `rescue_type_drops` to narrow — by asking the same question one
+  # level up (is each branch's handling relied on?). Offered **only when ≥2 clauses are present**
+  # (a `try` can't carry an empty `rescue`), so every result still compiles; the head shape is
+  # irrelevant (a bare-variable catch-all clause is droppable too). The diff is a `:delete` of the
+  # dropped clause (`Candidate.RescueDrop`).
+  defp rescue_clause_drops(clauses, rebuild_try, spec) when length(clauses) >= 2 do
+    clauses
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {clause, index} ->
+      case NodeRange.get(clause) do
+        %{} = range ->
+          [
+            %Candidate.RescueDrop{
+              mutator: spec,
+              dropped: clause,
+              replacement: rebuild_try.(List.delete_at(clauses, index)),
+              range: range
+            }
+          ]
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  defp rescue_clause_drops(_clauses, _rebuild_try, _spec), do: []
 
   # One rescue clause — a `CasePattern` per type-drop, whose `replacement` is the whole `try`
   # rebuilt with this clause's exception-type list narrowed. Both list-bearing shapes are

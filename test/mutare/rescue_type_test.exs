@@ -9,7 +9,7 @@ defmodule Mutare.RescueTypeTest do
   # persistent_term is global; the fixture is compiled once for all tests.
   use ExUnit.Case, async: false
 
-  alias Mutare.{Report, Selector}
+  alias Mutare.{Report, Selector, Site}
 
   @source """
   defmodule Mutare.RescueTypeFixture do
@@ -40,6 +40,15 @@ defmodule Mutare.RescueTypeTest do
         f.()
       rescue
         [RuntimeError, ArgumentError] -> :bare_caught
+      end
+    end
+
+    def branches(f) do
+      try do
+        f.()
+      rescue
+        e in ArgumentError -> {:branch_arg, e.__struct__}
+        e in RuntimeError -> {:branch_run, e.__struct__}
       end
     end
   end
@@ -79,6 +88,13 @@ defmodule Mutare.RescueTypeTest do
     e -> {:propagated, e.__struct__}
   end
 
+  # Same, for `F.branches/1` (the multi-branch `rescue e in A -> …; e in B -> …` form).
+  defp branch_outcome(ex) do
+    {:caught, F.branches(fn -> raise ex end)}
+  rescue
+    e -> {:propagated, e.__struct__}
+  end
+
   defp rescue_site(sites, mutated_code, line) do
     site =
       Enum.find(
@@ -87,6 +103,18 @@ defmodule Mutare.RescueTypeTest do
       )
 
     assert site, "no rescue_type site #{inspect(mutated_code)} on line #{line}"
+    site.id
+  end
+
+  # A whole-clause-drop site (`operation: :delete`) on the given line.
+  defp rescue_drop_site(sites, line) do
+    site =
+      Enum.find(
+        sites,
+        &(&1.mutator == :rescue_type and &1.operation == :delete and &1.line == line)
+      )
+
+    assert site, "no rescue_type clause-drop site on line #{line}"
     site.id
   end
 
@@ -178,6 +206,60 @@ defmodule Mutare.RescueTypeTest do
       assert Report.diff(site, @source) ==
                "-      [RuntimeError, ArgumentError] -> :bare_caught\n" <>
                  "+      [RuntimeError] -> :bare_caught"
+    end
+  end
+
+  describe "multi-branch rescue (`rescue e in A -> …; e in B -> …`): drop a whole clause" do
+    test "baseline catches both exception types" do
+      assert {:caught, {:branch_arg, ArgumentError}} = branch_outcome(ArgumentError)
+      assert {:caught, {:branch_run, RuntimeError}} = branch_outcome(RuntimeError)
+    end
+
+    test "a single-type-per-branch rescue yields no type-list narrowings", %{sites: sites} do
+      # Each branch catches one type — there is no `in [A, B]` list to narrow, so the only
+      # rescue mutations on these clauses are whole-clause drops (`operation: :delete`).
+      branch = Enum.filter(sites, &(&1.mutator == :rescue_type and &1.line in [36, 37]))
+      assert branch != []
+      assert Enum.all?(branch, &(&1.operation == :delete))
+    end
+
+    test "one whole-clause-drop mutant per branch, delivered in place", %{sites: sites} do
+      drops = Enum.filter(sites, &(&1.mutator == :rescue_type and &1.line in [36, 37]))
+      assert length(drops) == 2
+      assert Enum.all?(drops, &(&1.kind == :in_place and &1.operation == :delete))
+    end
+
+    test "dropping a branch makes its exception propagate while the other is still caught", %{
+      sites: sites
+    } do
+      Selector.put(rescue_drop_site(sites, 36))
+      assert {:propagated, ArgumentError} = branch_outcome(ArgumentError)
+      assert {:caught, {:branch_run, RuntimeError}} = branch_outcome(RuntimeError)
+
+      Selector.put(rescue_drop_site(sites, 37))
+      assert {:caught, {:branch_arg, ArgumentError}} = branch_outcome(ArgumentError)
+      assert {:propagated, RuntimeError} = branch_outcome(RuntimeError)
+    end
+
+    test "renders a clause-drop as a `-` deletion of the whole branch", %{sites: sites} do
+      site = Enum.find(sites, &(&1.id == rescue_drop_site(sites, 36)))
+
+      assert Report.header(site) == "rt.ex:36  [rescue_type, in-place]  SURVIVED"
+
+      assert Report.diff(site, @source) ==
+               "-      e in ArgumentError -> {:branch_arg, e.__struct__}"
+
+      assert Site.describe(site) ==
+               "rescue_type  (drop) e in ArgumentError -> {:branch_arg, e.__struct__}"
+    end
+
+    test "a single-clause `try` is never offered a clause-drop", %{sites: sites} do
+      # `run/1` (line 6) has one rescue clause — dropping it would leave an empty `rescue`,
+      # so only type-list narrowings are produced there, never a `:delete`.
+      refute Enum.any?(
+               sites,
+               &(&1.mutator == :rescue_type and &1.operation == :delete and &1.line == 6)
+             )
     end
   end
 end

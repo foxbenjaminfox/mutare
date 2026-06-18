@@ -1133,7 +1133,7 @@ sibling nodes are stripped by `Render`).
 Deferred (still routed `:pattern`, unmutated): the `<-` generator/`with`-clause LHS, the `with`/`try`
 `else` clause pattern, and `try` patterns.
 
-### Rescue exception-type narrowing (`Mutare.Mutators.RescueType`) `[done]`
+### Rescue narrowing + clause drop (`Mutare.Mutators.RescueType`) `[done]`
 A `rescue` clause is **not** a standard Elixir pattern: it matches on exception *types* in one of a
 few shapes (`Type`, `var`, `var in [Type, …]`, or the **bare list** `[Type, …]` — a list with no
 `var in` binding), and — crucially — **cannot carry a `when` guard** (the compiler rejects it: "the
@@ -1166,6 +1166,24 @@ coverage unchanged. Verified end to end: dropping `ArgumentError` makes it propa
 `RuntimeError` is still caught, and vice versa — for both head shapes. It composes with body and
 return-value mutations on the same `try` (each gets its own selector branch — the whole-`try` rescue
 mutant uses a first-order copy, the catch-all the fully-emitted `try`).
+
+**Multi-branch rescues drop a whole clause.** The idiomatic way to handle several exception types
+*differently* is one clause each (`rescue e in A -> …; e in B -> …`). Each branch catches a single
+type, so there is no list for `rescue_type_drops/4` to narrow — the type-narrowing path would emit
+**nothing** at all on this very common shape. The structural twin closes the gap:
+`Analyze.rescue_clause_drops/3` drops each whole `rescue` branch in turn (`Candidate.RescueDrop`,
+`replacement` = the `try` with that clause removed), asking the same question one level up. It reuses
+the exact "≥2, never to empty" invariant — offered **only when the `rescue` has ≥2 clauses** (a `try`
+can't carry an empty `rescue`), so every result compiles — and the head shape is irrelevant (a
+bare-variable catch-all clause among others is droppable too, which narrowing can't touch). Delivery
+is the same whole-`try` selector; the only new wiring is a `:delete`, `:in_place` `Site`
+(`Site.in_place_drop/5` — like the lifted `clause_drop/4` but in place, since a rescue clause isn't
+lifted), so the diff is a `-` deletion of the dropped branch. Both operations are recorded under the
+one `:rescue_type` family (a clause drop *is* narrowing what the rescue catches, just forced to
+whole-clause granularity by the single-type-per-branch syntax). Verified end to end: dropping either
+branch makes its exception propagate while the other is still caught. (`Site.in_place_drop/5` renders
+the bare `->` clause node in arrow syntax for `describe/1`; `Sourceror.to_string/1` would otherwise
+emit the call form `->(head, body)`.)
 
 **Only the explicit `try` is mutated.** The `def … rescue …` shorthand (sugar for wrapping the body
 in a `try`) reaches `analyze_do_blocks/2`, not the `:try` clause, and is **deferred**: delivering it

@@ -35,6 +35,26 @@ defmodule Mutare.Mutators.RescueType do
   type (`var in A` / `rescue A`), a bare variable (`rescue e` — catches everything),
   and an empty drop (which would be `in []`, catching nothing) are left alone — none
   has a meaningful, compile-safe narrowing.
+
+  ## Multi-branch rescues: drop a whole clause
+
+  The idiomatic way to handle several exception types *differently* is one clause each:
+
+      rescue
+        e in ArgumentError -> handle_arg(e)
+        e in RuntimeError  -> handle_run(e)
+
+  Each branch catches a single type, so there is no list to narrow — but the same
+  question ("is each rescued exception's handling actually relied on?") is asked one
+  level up by **dropping a whole `rescue` branch**: drop the `ArgumentError` clause and
+  that exception propagates while `RuntimeError` is still caught, and vice versa. This is
+  the structural twin of list-narrowing, reusing the same "≥2, never to empty" invariant —
+  a clause is dropped **only when the `rescue` has two or more clauses** (a `try` cannot
+  carry an empty `rescue`), so every result compiles. The branch's head shape is irrelevant:
+  a bare-variable catch-all clause among others is droppable too. Discovered positionally by
+  `Mutare.Transform.Analyze` (like the narrowing) and delivered by the same whole-`try`
+  selector; both operations are recorded under this one `:rescue_type` family.
+
   Only **explicit `try`** rescue clauses are mutated today; the `def … rescue …`
   shorthand is deferred (it would need the def body restructured into an explicit
   `try`, which conflicts with return-value/lifting analysis).

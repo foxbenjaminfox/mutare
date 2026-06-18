@@ -115,6 +115,49 @@ defmodule Mutare.Site do
   end
 
   @doc """
+  A `rescue` clause dropped from an explicit `try` — a `:delete` mutation delivered
+  **in place** by the whole-`try` selector (not by lifting, so `:in_place`, unlike
+  `clause_drop/4`). The clause is removed entirely, so there is no mutated node, op,
+  or code; `mutator` is the family spec (`RescueType`) whose name the report and the
+  `# mutare:ignore[...]` filter read.
+  """
+  @spec in_place_drop(
+          pos_integer(),
+          String.t(),
+          Sourceror.Range.t(),
+          Macro.t(),
+          Mutare.Mutator.Spec.t()
+        ) :: t()
+  def in_place_drop(id, file, range, clause_node, mutator) do
+    %__MODULE__{
+      id: id,
+      file: file,
+      line: range.start[:line],
+      column: range.start[:column],
+      range: range,
+      mutator: mutator.name,
+      kind: :in_place,
+      operation: :delete,
+      original_op: nil,
+      mutated_op: nil,
+      original_code: clause_code(clause_node),
+      mutated_code: "",
+      original_node: clause_node,
+      mutated_node: nil
+    }
+  end
+
+  # A `rescue` clause is a bare `->` node, which `Sourceror.to_string/1` renders in
+  # call form (`->(head, body)`); render it in arrow syntax (`head -> body`) for the
+  # one-line `describe/1`/report summary. (The `-`/`+` diff reads source lines by range,
+  # so it is unaffected.) Rescue clauses carry one pattern and no `when` guard; anything
+  # else falls back to the default rendering.
+  defp clause_code({:->, _meta, [[head], body]}),
+    do: "#{Sourceror.to_string(head)} -> #{Sourceror.to_string(body)}"
+
+  defp clause_code(node), do: Sourceror.to_string(node)
+
+  @doc """
   A return-value mutation: a function clause's tail expression replaced with a
   constant (`nil`/`0`/`""`/`[]`) behind an in-place selector `case`. Structural
   (the transform names the tail; there is no node-level mutator), so the recorded

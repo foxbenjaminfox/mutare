@@ -777,6 +777,13 @@ defmodule Mutare.Transform do
     Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
+  # A whole `rescue` clause dropped from a `try`, delivered in place by the whole-`try`
+  # selector (`branch_node/1` returns the rebuilt try). The diff is a `:delete` of the
+  # dropped clause's lines (`Site.in_place_drop/5`), like a function `clause_drop`.
+  defp in_place_site(id, %Candidate.RescueDrop{} = c, file) do
+    Site.in_place_drop(id, file, c.range, c.dropped, c.mutator)
+  end
+
   # A `case` clause-pattern/guard mutation is delivered in place by the tuple-the-scrutinee
   # rewrite (`emit_case_pattern_site/3`). The diff is the pattern/guard before/after
   # (`original`/`mutated`); the rewrite scaffolding never reaches a Site.
@@ -1203,10 +1210,11 @@ defmodule Mutare.Transform do
 
   defp emitted_clause_parts({:->, meta, [[pattern], body]}), do: {meta, pattern, nil, body}
 
-  # The selector-branch value for an in-place candidate. A `CasePattern` carries the whole
-  # mutated `case` (`replacement`); for every other in-place candidate the branch *is* its
-  # `mutated` node (an operator swap, a return constant).
+  # The selector-branch value for an in-place candidate. A `CasePattern` (and a `RescueDrop`)
+  # carries the whole mutated construct (`replacement`); for every other in-place candidate the
+  # branch *is* its `mutated` node (an operator swap, a return constant).
   defp branch_node(%Candidate.CasePattern{replacement: replacement}), do: replacement
+  defp branch_node(%Candidate.RescueDrop{replacement: replacement}), do: replacement
   defp branch_node(candidate), do: candidate.mutated
 
   # The single owner of the id-claim + site-record dance that poison recovery

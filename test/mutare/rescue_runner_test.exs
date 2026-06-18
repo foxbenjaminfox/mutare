@@ -52,4 +52,45 @@ defmodule Mutare.RescueRunnerTest do
     assert Enum.all?(run.results, &(&1.status == :killed))
     assert Enum.all?(run.results, &(&1.site.mutator == :rescue_type))
   end
+
+  test "a multi-branch rescue clause-drop mutant is covered and killed end-to-end" do
+    %{project: project, sandbox: sandbox} =
+      Project.build(:branched, %{
+        "lib/branched.ex" => """
+        defmodule Branched do
+          def safe(f) do
+            try do
+              f.()
+            rescue
+              e in ArgumentError -> {:arg, e.__struct__}
+              e in RuntimeError -> {:run, e.__struct__}
+            end
+          end
+        end
+        """,
+        "test/branched_test.exs" => """
+        defmodule BranchedTest do
+          use ExUnit.Case
+
+          test "safe rescues both branches" do
+            assert Branched.safe(fn -> raise ArgumentError end) == {:arg, ArgumentError}
+            assert Branched.safe(fn -> raise RuntimeError end) == {:run, RuntimeError}
+          end
+        end
+        """
+      })
+
+    assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
+
+    # Each branch catches a single type, so there is nothing to narrow — the two mutants are
+    # whole-clause drops. Dropping either branch makes its exception propagate, failing the
+    # test, so both are killed and covered (not :no_coverage).
+    assert length(run.results) == 2
+    assert Enum.all?(run.results, &(&1.status == :killed))
+
+    assert Enum.all?(
+             run.results,
+             &(&1.site.mutator == :rescue_type and &1.site.operation == :delete)
+           )
+  end
 end
