@@ -359,13 +359,17 @@ contract between them is the whole game.
   `if x = … do` (the leaked binding would be unbound once the condition is forced, poisoning the
   body); compile-safe by construction),
   List (`++`↔`--`, non-empty list literal → `[]`), Collection (`Enum`/`List` predicate swaps,
-  **arity-blind** — a rename keeping the arg list, valid at any arity/pipe position),
+  **arity-blind** — a rename keeping the arg list, valid at any arity/pipe position — plus the
+  lazy `Stream` twins of the directional `Enum` pairs that exist in `Stream`: `filter`↔`reject`,
+  `take`↔`drop`, `take_while`↔`drop_while`, `take_every`↔`drop_every`; `Stream`'s eager reducers
+  like `all?`/`min`/`sum` have no lazy form so don't carry over),
   CollectionArity (the arity-*changing* sibling — `Enum.sort`/`sort_by`→`reverse` dropping the
   comparator/key, `count/2`→`count/1`, `count_until/3`→`/2`, `reverse/1`↔`sort/1`; **pipe-aware**
   via the optional `mutate/2` callback, since a stage's effective arity is ambiguous in a pipe),
   StringCall (complementary `String` call swaps — `starts_with?`↔`ends_with?`, `upcase`↔`downcase`,
-  `trim_leading`↔`trim_trailing`, `replace_prefix`↔`replace_suffix`, `pad_leading`↔`pad_trailing`,
-  `first`↔`last`, plus the Erlang `:string` directional/case pairs `uppercase`↔`lowercase`,
+  `trim_leading`↔`trim_trailing`, `replace_prefix`↔`replace_suffix`,
+  `replace_leading`↔`replace_trailing`, `pad_leading`↔`pad_trailing`, `first`↔`last`,
+  `graphemes`↔`codepoints`, plus the Erlang `:string` directional/case pairs `uppercase`↔`lowercase`,
   `to_upper`↔`to_lower`, `left`↔`right` (the `:string` module is a bare atom in the AST —
   Sourceror-wrapped as `{:__block__, _, [:string]}` — so a dedicated clause matches it; the
   trim/predicate pairs have no `:string` function-name twin, their direction being an argument atom).
@@ -379,20 +383,25 @@ contract between them is the whole game.
   `replace!`, swapping along the insert-new / overwrite-existing / raise-on-absent axes; all `/3`,
   arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),
   CallRemoval (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/`dedup`/`shuffle`,
+  the lazy `Stream` twins `uniq`/`uniq_by`/`dedup`/`dedup_by`/`intersperse`,
   `List.flatten`, `String.trim`/`downcase`/`upcase`/`reverse`/`normalize`/`replace_invalid`/
-  `pad_leading`/`pad_trailing`/`slice`/…, **and `Kernel.abs`** (`abs(x)` → `x`), and the analogous
-  Erlang `:string` ones (`trim`/`strip`/`chomp`,
+  `pad_leading`/`pad_trailing`/`slice`/…, **and `Kernel.abs`** (`abs(x)` → `x`), **the `Kernel`
+  binary slicers** `binary_slice/2`·`/3` and `binary_part/3` (→ the whole binary; `binary_part/2`
+  is not a `Kernel` function, so its sole form `:erlang.binary_part/2`·`/3` is removed instead),
+  and the analogous Erlang `:string` ones (`trim`/`strip`/`chomp`,
   `lowercase`/`uppercase`/`titlecase`/`casefold`/`to_lower`/`to_upper`, `reverse`,
   `pad`/`left`/`right`/`centre`, `slice`/`substr`/`sub_string`) — leaving its first arg; in a pipe the
   stage becomes `Function.identity()` (`x |> Enum.sort()` → `x |> Function.identity()` ≡ `x`);
   pipe-aware via the optional `mutate/2`. The module key is normalized by `module_key/1` (an
-  alias-resolved path `[:String]` or a bare atom `:string`). `slice`/`substr`/`sub_string` are
+  alias-resolved path `[:String]` or a bare atom `:string`/`:erlang`). `slice`/`substr`/`sub_string`
+  and the binary slicers are
   included (removing them returns the whole input — "is the slice exercised?"), but content-changing
   `map`/`filter`/`reduce` and `String`/`:string` `replace`/`split` (and `String.first`,
-  `:string.prefix`) are deliberately excluded. The remote targets are arity-blind; bare `abs` is
-  removed only at its *effective* arity (`/1`, the safeguard that a bare unqualified `abs` is the
-  `Kernel` one, like Numeric's bare-`Kernel` path) and, being guard-safe, reaches `when` guards via
-  lifting),
+  `:string.prefix`) are deliberately excluded. The remote targets are arity-blind; bare `abs` and the
+  bare binary slicers are
+  removed only at their *effective* arity (`abs/1`, `binary_slice/2`·`/3`, `binary_part/3` — the
+  safeguard that a bare unqualified call is the `Kernel` one, like Numeric's bare-`Kernel` path) and,
+  being guard-safe, `abs/1`/`binary_part/3` reach `when` guards via lifting),
   DefaultDrop (drop a trailing default/fallback arg, reverting to the implicit `nil` —
   `Map.get`/`pop`/`Keyword.get`/`Enum.at`/`List.first`/`last` `/n`→`/n-1`, and `get_lazy`/`pop_lazy`
   renamed to the base lookup; skips a literal-`nil` default as equivalent; pipe-aware via `mutate/2`),

@@ -360,10 +360,32 @@ defmodule Mutare.MutatorsTest do
                ["List.foldl(xs, acc, f)"]
     end
 
+    test "swaps the lazy Stream twins of the directional Enum pairs" do
+      assert render(Collection.mutate(parse("Stream.filter(xs, f)"))) == ["Stream.reject(xs, f)"]
+      assert render(Collection.mutate(parse("Stream.reject(xs, f)"))) == ["Stream.filter(xs, f)"]
+      assert render(Collection.mutate(parse("Stream.take(xs, n)"))) == ["Stream.drop(xs, n)"]
+      assert render(Collection.mutate(parse("Stream.drop(xs, n)"))) == ["Stream.take(xs, n)"]
+
+      assert render(Collection.mutate(parse("Stream.take_while(xs, f)"))) ==
+               ["Stream.drop_while(xs, f)"]
+
+      assert render(Collection.mutate(parse("Stream.drop_while(xs, f)"))) ==
+               ["Stream.take_while(xs, f)"]
+
+      assert render(Collection.mutate(parse("Stream.take_every(xs, n)"))) ==
+               ["Stream.drop_every(xs, n)"]
+
+      assert render(Collection.mutate(parse("Stream.drop_every(xs, n)"))) ==
+               ["Stream.take_every(xs, n)"]
+    end
+
     test "skips unrelated remote calls and other modules' functions" do
       assert Collection.mutate(parse("Enum.map(xs, f)")) == :skip
       assert Collection.mutate(parse("Other.filter(xs, f)")) == :skip
       assert Collection.mutate(parse("local(xs)")) == :skip
+      # Stream has no eager reducers, so those have no lazy twin to swap to.
+      assert Collection.mutate(parse("Stream.map(xs, f)")) == :skip
+      assert Collection.mutate(parse("Stream.into(xs, %{})")) == :skip
     end
 
     test "name" do
@@ -439,6 +461,15 @@ defmodule Mutare.MutatorsTest do
 
       assert render(StringCall.mutate(parse("String.first(s)"))) == ["String.last(s)"]
       assert render(StringCall.mutate(parse("String.last(s)"))) == ["String.first(s)"]
+
+      assert render(StringCall.mutate(parse("String.replace_leading(s, m, r)"))) ==
+               ["String.replace_trailing(s, m, r)"]
+
+      assert render(StringCall.mutate(parse("String.replace_trailing(s, m, r)"))) ==
+               ["String.replace_leading(s, m, r)"]
+
+      assert render(StringCall.mutate(parse("String.graphemes(s)"))) == ["String.codepoints(s)"]
+      assert render(StringCall.mutate(parse("String.codepoints(s)"))) == ["String.graphemes(s)"]
     end
 
     test "preserves arguments and metadata of multi-arity calls" do
@@ -537,6 +568,12 @@ defmodule Mutare.MutatorsTest do
       assert removal("Enum.reverse(xs)", false) == ["xs"]
       assert removal("Enum.uniq_by(xs, f)", false) == ["xs"]
       assert removal("Enum.intersperse(xs, 0)", false) == ["xs"]
+      # The lazy Stream twins — same transparent transforms, returning their input.
+      assert removal("Stream.uniq(xs)", false) == ["xs"]
+      assert removal("Stream.uniq_by(xs, f)", false) == ["xs"]
+      assert removal("Stream.dedup(xs)", false) == ["xs"]
+      assert removal("Stream.dedup_by(xs, f)", false) == ["xs"]
+      assert removal("Stream.intersperse(xs, 0)", false) == ["xs"]
       assert removal("List.flatten(xs)", false) == ["xs"]
       assert removal("String.trim(s)", false) == ["s"]
       assert removal("String.downcase(s)", false) == ["s"]
@@ -615,6 +652,33 @@ defmodule Mutare.MutatorsTest do
     test "qualified Kernel.abs is removed arity-blind (the prefix proves it)" do
       assert removal("Kernel.abs(x)", false) == ["x"]
       assert removal("Kernel.abs()", true) == ["Function.identity()"]
+    end
+
+    test "the Kernel binary slicers are removed, returning the whole binary" do
+      # Bare — keyed on effective arity (binary_slice/2,/3 and binary_part/3 exist).
+      assert removal("binary_slice(b, 0, 5)", false) == ["b"]
+      assert removal("binary_slice(b, 0..4)", false) == ["b"]
+      assert removal("binary_part(b, 0, 5)", false) == ["b"]
+      # Piped — the LHS-less stage becomes a no-op the pipe feeds.
+      assert removal("binary_slice(0..4)", true) == ["Function.identity()"]
+      assert removal("binary_part(0, 5)", true) == ["Function.identity()"]
+      # Qualified Kernel — arity-blind (the prefix proves the function).
+      assert removal("Kernel.binary_slice(b, r)", false) == ["b"]
+      assert removal("Kernel.binary_part(b, 0, 5)", false) == ["b"]
+    end
+
+    test "binary_part/2 (only :erlang.binary_part/2) is removed via its Erlang form" do
+      # `binary_part/2` is not a Kernel function — its sole incarnation is
+      # `:erlang.binary_part(bin, {start, len})`. Removed arity-blind like :string.
+      assert removal(":erlang.binary_part(b, {0, 5})", false) == ["b"]
+      assert removal(":erlang.binary_part(b, 0, 5)", false) == ["b"]
+      assert removal(":erlang.binary_part({0, 5})", true) == ["Function.identity()"]
+    end
+
+    test "a same-named binary slicer at the wrong bare arity is left alone" do
+      # No bare Kernel binary_slice/1 or binary_part/2 — so these must be user funcs.
+      assert CallRemoval.mutate(parse("binary_slice(b)"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse("binary_part(b, {0, 5})"), %{piped: false}) == :skip
     end
 
     test "a same-named call at the wrong arity is left alone (arity guards bare abs)" do

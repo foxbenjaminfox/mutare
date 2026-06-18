@@ -480,6 +480,22 @@ defmodule Mutare.TransformTest do
       assert_compiles(meta)
     end
 
+    test "the lazy Stream directional twins are swapped in a pipe and compile" do
+      source = """
+      defmodule StreamPipe do
+        def f(xs), do: xs |> Stream.filter(& &1) |> Stream.take(3) |> Enum.to_list()
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.Collection])
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
+      assert {"Stream.filter(& &1)", "Stream.reject(& &1)"} in pairs
+      assert {"Stream.take(3)", "Stream.drop(3)"} in pairs
+      assert_compiles(meta)
+    end
+
     test "a mutated last pipe stage that is also the function tail compiles" do
       source = """
       defmodule PipeTail do
@@ -815,6 +831,25 @@ defmodule Mutare.TransformTest do
       assert_compiles(meta)
     end
 
+    test "swaps String.graphemes/codepoints and replace_leading/trailing, and compiles" do
+      source = """
+      defmodule S do
+        def gs(s), do: String.graphemes(s)
+        def rl(s), do: String.replace_leading(s, "0", "")
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
+
+      pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
+      assert {"String.graphemes(s)", "String.codepoints(s)"} in pairs
+
+      assert {~s|String.replace_leading(s, "0", "")|, ~s|String.replace_trailing(s, "0", "")|} in pairs
+
+      assert_compiles(meta)
+    end
+
     test "an Erlang :string call node is offered, swapped, and compiles" do
       source = """
       defmodule S do
@@ -901,6 +936,64 @@ defmodule Mutare.TransformTest do
         Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
 
       assert [] == Enum.filter(sites, &(&1.mutator == :call_removal))
+    end
+
+    test "the Kernel binary slicers collapse to the whole binary and compile" do
+      source = """
+      defmodule R do
+        def a(b), do: binary_slice(b, 0, 5)
+        def c(b), do: b |> binary_slice(0..4)
+        def d(b), do: binary_part(b, 0, 5)
+        def e(b), do: :erlang.binary_part(b, {0, 5})
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+
+      pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
+      assert {"binary_slice(b, 0, 5)", "b"} in pairs
+      assert {"binary_slice(0..4)", "Function.identity()"} in pairs
+      assert {"binary_part(b, 0, 5)", "b"} in pairs
+      assert {":erlang.binary_part(b, {0, 5})", "b"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "binary_part/3 removal reaches a guard via lifting and compiles" do
+      source = """
+      defmodule R do
+        def f(b) when binary_part(b, 0, 1) == "a", do: :yes
+        def f(_b), do: :no
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+
+      assert {"binary_part(b, 0, 1)", "b"} in for(
+               s <- sites,
+               s.mutator == :call_removal,
+               do: {s.original_code, s.mutated_code}
+             )
+
+      assert_compiles(meta)
+    end
+
+    test "the lazy Stream transparent transforms are removable and compile" do
+      source = """
+      defmodule R do
+        def a(xs), do: Stream.uniq(xs)
+        def b(xs), do: xs |> Stream.dedup_by(& &1) |> Enum.to_list()
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+
+      pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
+      assert {"Stream.uniq(xs)", "xs"} in pairs
+      assert {"Stream.dedup_by(& &1)", "Function.identity()"} in pairs
+      assert_compiles(meta)
     end
   end
 

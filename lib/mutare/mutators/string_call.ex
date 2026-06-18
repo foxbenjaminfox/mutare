@@ -6,8 +6,10 @@ defmodule Mutare.Mutators.StringCall do
     * `String.upcase` ↔ `String.downcase`
     * `String.trim_leading` ↔ `String.trim_trailing`
     * `String.replace_prefix` ↔ `String.replace_suffix`
+    * `String.replace_leading` ↔ `String.replace_trailing`
     * `String.pad_leading` ↔ `String.pad_trailing`
     * `String.first` ↔ `String.last`
+    * `String.graphemes` ↔ `String.codepoints`
 
   …plus the Erlang `:string` module's directional/case pairs:
 
@@ -58,10 +60,18 @@ defmodule Mutare.Mutators.StringCall do
     {[:String], :trim_trailing} => {[:String], :trim_leading},
     {[:String], :replace_prefix} => {[:String], :replace_suffix},
     {[:String], :replace_suffix} => {[:String], :replace_prefix},
+    # `replace_leading`/`replace_trailing` replace *every* leading/trailing run of
+    # a match, a distinct pair from the single-occurrence `replace_prefix`/`suffix`.
+    {[:String], :replace_leading} => {[:String], :replace_trailing},
+    {[:String], :replace_trailing} => {[:String], :replace_leading},
     {[:String], :pad_leading} => {[:String], :pad_trailing},
     {[:String], :pad_trailing} => {[:String], :pad_leading},
     {[:String], :first} => {[:String], :last},
-    {[:String], :last} => {[:String], :first}
+    {[:String], :last} => {[:String], :first},
+    # The two ways to break a string into a list of single-character strings:
+    # `graphemes` groups combining marks into one glyph, `codepoints` does not.
+    {[:String], :graphemes} => {[:String], :codepoints},
+    {[:String], :codepoints} => {[:String], :graphemes}
   }
 
   # Erlang `:string` module — the module is a bare atom in the AST, not an

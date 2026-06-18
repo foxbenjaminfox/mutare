@@ -13,6 +13,15 @@ defmodule Mutare.Mutators.Collection do
     * `List.first` ↔ `List.last`
     * `List.foldl` ↔ `List.foldr`
 
+  …plus the lazy `Stream` twins of the `Enum` directional pairs (the functions
+  `Stream` actually provides — its eager reducers like `all?`/`min`/`sum` have no
+  lazy form, so only these four carry over):
+
+    * `Stream.filter` ↔ `Stream.reject`
+    * `Stream.take` ↔ `Stream.drop`
+    * `Stream.take_while` ↔ `Stream.drop_while`
+    * `Stream.take_every` ↔ `Stream.drop_every`
+
   Each pair shares the same arities, so swapping the function name while keeping
   the argument list always compiles. These are remote calls — never legal in a
   guard — so guard-safety is automatic.
@@ -26,9 +35,9 @@ defmodule Mutare.Mutators.Collection do
   a pipe stage's node arity is ambiguous and off-by-one. See `NOTES.md`.
 
   On by default — the Elixir-flavoured family. High signal on idiomatic
-  collection code. It recognises `Enum`/`List` calls by their resolved module
-  (`Mutare.Transform.Aliases`), so an aliased `E.filter` (`alias Enum, as: E`) is
-  matched while a shadowing `alias MyApp.Enum` is correctly left alone.
+  collection code. It recognises `Enum`/`List`/`Stream` calls by their resolved
+  module (`Mutare.Transform.Aliases`), so an aliased `E.filter` (`alias Enum, as:
+  E`) is matched while a shadowing `alias MyApp.Enum` is correctly left alone.
   """
   @behaviour Mutare.Mutator
 
@@ -55,7 +64,16 @@ defmodule Mutare.Mutators.Collection do
     {[:List], :first} => {[:List], :last},
     {[:List], :last} => {[:List], :first},
     {[:List], :foldl} => {[:List], :foldr},
-    {[:List], :foldr} => {[:List], :foldl}
+    {[:List], :foldr} => {[:List], :foldl},
+    # The lazy `Stream` twins — the directional pairs that exist in `Stream`.
+    {[:Stream], :filter} => {[:Stream], :reject},
+    {[:Stream], :reject} => {[:Stream], :filter},
+    {[:Stream], :take} => {[:Stream], :drop},
+    {[:Stream], :drop} => {[:Stream], :take},
+    {[:Stream], :take_while} => {[:Stream], :drop_while},
+    {[:Stream], :drop_while} => {[:Stream], :take_while},
+    {[:Stream], :take_every} => {[:Stream], :drop_every},
+    {[:Stream], :drop_every} => {[:Stream], :take_every}
   }
 
   @impl Mutare.Mutator
