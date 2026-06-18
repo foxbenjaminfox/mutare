@@ -61,6 +61,11 @@ defmodule Mutare.MatchPatternTest do
         val - key
       end
     end
+
+    def underscored(t) do
+      {_keep, y, z} = t
+      _keep + y - z
+    end
   end
   """
 
@@ -70,8 +75,9 @@ defmodule Mutare.MatchPatternTest do
     {metamutant, sites, _next_id} = Mutare.transform_string(@source, file: "mp.ex")
 
     # `return_match/1`'s trailing `{a, b} = t` binds a/b unused (it returns the match
-    # value); that benign unused-variable warning — and any "cannot match" broadening
-    # warning — is captured so it does not clutter test output.
+    # value); `underscored/1`'s re-exported `_keep` is read in the rewrite's inner-case
+    # returns ("underscored variable used after being set"); plus any "cannot match"
+    # broadening warning. All benign and captured so they do not clutter test output.
     ExUnit.CaptureIO.capture_io(:stderr, fn ->
       [{_module, _binary}] = Code.compile_string(metamutant)
     end)
@@ -161,6 +167,20 @@ defmodule Mutare.MatchPatternTest do
     test "a `with` `=` clause's pattern is mutated", %{sites: sites} do
       Selector.put(id(sites, :pattern_swap, "{val, key}", 45))
       assert F.with_pairs({:ok, {7, 2}}) == 5
+    end
+  end
+
+  describe "underscore-prefixed bindings" do
+    # Regression: `_keep` is a real binding read later (`_keep + y - z`). The export set
+    # must include it — omitting it (as reusing `var_name/1` did) left `_keep` undefined
+    # in the rest of the block, so the metamutant *failed to compile* (setup_all would
+    # crash). Only bare `_` is dropped. The baseline value proves it both compiles and
+    # rebinds `_keep` correctly.
+    test "an `_name` binding is re-exported so later reads still resolve", %{sites: sites} do
+      assert F.underscored({10, 5, 2}) == 10 + 5 - 2
+
+      Selector.put(id(sites, :pattern_swap, "{_keep, z, y}", 51))
+      assert F.underscored({10, 5, 2}) == 10 + 2 - 5
     end
   end
 

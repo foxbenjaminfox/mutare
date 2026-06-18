@@ -91,7 +91,10 @@ defmodule Mutare.Transform.PatternStructure do
       *value* side of each pair is descended (`%{k => v}` binds `v`, never `k`);
     * a bitstring **spec** (`size(n)`, type atoms) references/declares no new binding —
       only the *value* side of a `::` segment is descended;
-    * `_` and `_`-prefixed names are not usable bindings (`var_name/1` excludes them).
+    * bare `_` binds nothing usable and is dropped — but an underscore-*prefixed* name
+      (`_x`) **is** a real binding the rest of the scope can read, so it is kept (this is
+      why `var_name/1`, which drops `_`-prefixed names for a swap *target*, is *not*
+      reused here — omitting `_x` would leave it undefined after the rewrite).
 
   Everything else — tuples, lists (incl. cons tails), nested matches (`x = pat`) — is a
   structural descent. The result threads `Mutare.Transform`'s export tuple and outer
@@ -119,13 +122,16 @@ defmodule Mutare.Transform.PatternStructure do
     end)
   end
 
-  # A plain variable in binding position — the one place a name is introduced.
-  defp collect_bound({name, _meta, ctx} = node, acc) when is_atom(name) and is_atom(ctx) do
-    case var_name(node) do
-      nil -> acc
-      bound_name -> [bound_name | acc]
-    end
-  end
+  # A plain variable in binding position — the one place a name is introduced. Bare `_`
+  # binds nothing usable and is dropped; an underscore-*prefixed* name (`_x`) is a real
+  # binding the rest of the scope can still read, so it MUST be exported. (This is why we
+  # can't reuse `var_name/1`, which also drops `_`-prefixed names — for a *swap/wildcard
+  # target* that's right, but for the *export set* omitting `_x` leaves it undefined after
+  # the rewrite, a compile error rather than a mere unused warning.)
+  defp collect_bound({:_, _meta, ctx}, acc) when is_atom(ctx), do: acc
+
+  defp collect_bound({name, _meta, ctx}, acc) when is_atom(name) and is_atom(ctx),
+    do: [name | acc]
 
   # Any other operator/container node (tuple `{:{}, …}`, struct `%S{}`, nested `=`, …):
   # descend its args structurally.

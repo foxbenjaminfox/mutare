@@ -734,6 +734,12 @@ Three deliberate constraints keep it sound:
   empty-bound guard (`bound_var_names/1` → `[]`) skips it (the assertion-only mutation an
   empty `{} = case …` would express is left to the poison-free common case — a small,
   deliberate gap).
+* **The export set is the *exact* binding set, including `_`-prefixed names.** This is why
+  `bound_var_names/1` can't reuse `var_name/1`: that drops both bare `_` *and* `_`-prefixed
+  names, which is right for a swap/wildcard *target* (you don't reorder `_x`) but wrong for
+  the *export* — `_x` is a genuine binding the rest of the scope can read (`{_x, y, z} = t;
+  _x + y - z`), so omitting it leaves `_x` undefined after the rewrite, a hard **compile
+  error**. Only bare `_` (which binds nothing usable) is dropped.
 
 Non-match semantics are preserved exactly: each inner case carries a trailing `u -> raise
 MatchError, term: u` clause, so a value that doesn't match raises the *same* `MatchError`
@@ -742,11 +748,18 @@ clean kill on a mutant whose pattern stopped matching. (The pattern is always a 
 container — a bare `var`/pin-only LHS is never offered — so that clause is always reachable;
 the binding is clause-local, so a fixed `mutare_unmatched` name can't capture or collide.)
 
-Known edge: a `{x, x} = e` whose `x` is *unused afterward* gains an "unused variable" warning
-the original (where the repetition counts as a use) didn't — harmless under the default
-warnings-tolerant metamutant compile, and poison-recoverable under a `--warnings-as-errors`
-target (the whole-`case` fallback range in `Manifest` maps it to the rewrite's ids), exactly
-as `PatternWildcard`'s "cannot match" warnings are handled.
+Known edges, both **only** warnings (harmless under the default warnings-tolerant metamutant
+compile; poison-recoverable under `--warnings-as-errors`, where the whole-`case` fallback range
+in `Manifest` maps them to the rewrite's ids — as for `PatternWildcard`'s "cannot match"):
+
+  * a `{x, x} = e` whose `x` is *unused afterward* gains an "unused variable" warning the
+    original (where the repetition counts as a use) didn't; and
+  * when the LHS has an `_`-prefixed binding alongside a real swap/wildcard target
+    (`{_keep, y, z} = t`), the inner case's return tuple **reads** `_keep` — an "underscored
+    variable used after being set" warning the original may not have had. Suppressing it would
+    mean aliasing every `_`-binding to a non-underscore temp in the inner patterns/returns
+    (fiddly around pins), not worth it for a build-artifact warning; the `_keep` binding itself
+    must still be re-exported (omitting it is the compile error above).
 
 Several design choices worth remembering:
 
