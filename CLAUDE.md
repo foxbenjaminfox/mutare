@@ -556,10 +556,16 @@ contract between them is the whole game.
   units walk a per-function magnitude **ladder** by one adjacent step, so the swap stays in the
   function's *legal* set — `truncate` never reaches `:minute` — and is always observable;
   `String.upcase`/`downcase`/`capitalize` casing `:default`↔`:ascii` and `String.normalize` form
-  `:nfc`↔`:nfd`/`:nfkc`↔`:nfkd`. The semantic sibling of Collection/StringCall — it swaps an *option
-  value*, not a function name or arg count. A non-atom / unrecognised-atom position yields nothing,
-  swaps are never the original; **pipe-aware** via `mutate/2`, the rule keyed on *effective* arity
-  with each mode position mapped from effective to visible index),
+  `:nfc`↔`:nfd`/`:nfkc`↔`:nfkd`. The **`shift` duration** generalises `mode_atom` from a lone
+  positional atom to the *keys* of a keyword list — `{DateTime,NaiveDateTime}.shift/2,3` and
+  `Time.shift/2` (time-only ladder) walk each `unit: amount` key one ladder step independently
+  (`minute:`→`second:`/`hour:`, amount kept), `:microsecond` excluded (its `{count, precision}`
+  amount can't move to an integer unit) and the *amounts* still mutate via Literal — handled by
+  routing only the owned list's **keys** through the non-mutating context, its values staying
+  runtime (`Transform.Analyze.analyze_owned_keywords`). The semantic sibling of Collection/StringCall
+  — it swaps an *option value*, not a function name or arg count. A non-atom / unrecognised-atom
+  position yields nothing, swaps are never the original; **pipe-aware** via `mutate/2`, the rule
+  keyed on *effective* arity with each mode position mapped from effective to visible index),
   Numeric (complementary numeric-builtin swaps — `Kernel` `min`↔`max` (the `Enum` twins are
   Collection's), `round`↔`trunc`, `ceil`↔`floor`, and `Float.ceil`↔`Float.floor`; the arithmetic
   sibling of Collection/StringCall. A *qualified* call — `Float.ceil`/`floor` or an explicitly

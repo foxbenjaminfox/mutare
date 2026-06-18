@@ -188,7 +188,9 @@ defmodule Mutare.Mutator do
   it leaves untouched — an unrecognised atom, a variable — stays available to others).
   `Mutare.Transform` discovers implementers by `function_exported?(mod, :owned_args, 2)`
   and routes owned positions through a non-mutating context; a mutator without this
-  callback claims nothing.
+  callback claims nothing. When the claimed argument is a **keyword list** (ModeSwap's
+  `shift` duration), only its *keys* are routed non-mutating — the values stay runtime, so
+  other mutators still see them (a claim there owns the option names, not the values).
   """
   @callback owned_args(Macro.t(), context()) :: [non_neg_integer()]
 

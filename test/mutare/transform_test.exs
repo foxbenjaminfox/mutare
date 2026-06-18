@@ -1008,6 +1008,55 @@ defmodule Mutare.TransformTest do
       assert ":ok" in by.(:atom)
       assert ":weird" in by.(:atom)
     end
+
+    test "swaps each shift duration unit key in place, records the swaps, and compiles" do
+      sites =
+        mode_sites("""
+        defmodule M do
+          def soon(dt), do: DateTime.shift(dt, minute: 10, day: -1)
+          def t(t), do: Time.shift(t, hour: 1)
+        end
+        """)
+
+      assert {"DateTime.shift(dt, minute: 10, day: -1)",
+              "DateTime.shift(dt, second: 10, day: -1)"} in sites
+
+      assert {"DateTime.shift(dt, minute: 10, day: -1)",
+              "DateTime.shift(dt, minute: 10, week: -1)"} in sites
+
+      # Time uses the time-only ladder (no :day to escape to).
+      assert {"Time.shift(t, hour: 1)", "Time.shift(t, minute: 1)"} in sites
+    end
+
+    test "ModeSwap owns a shift duration's unit keys, but Literal still mutates the amounts" do
+      # The keyword-list owner claims the option *names*: AtomLiteral can't turn `minute:`
+      # into a raising `:mutare:`, while the amount stays runtime data Literal still mutates.
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def soon(dt), do: DateTime.shift(dt, minute: 10)
+          end
+          """,
+          mutators: [
+            Mutare.Mutators.ModeSwap,
+            Mutare.Mutators.AtomLiteral,
+            Mutare.Mutators.Literal
+          ]
+        )
+
+      mode_swaps = for s <- sites, s.mutator == :mode_swap, do: s.mutated_code
+      literals = for s <- sites, s.mutator == :literal, do: {s.original_code, s.mutated_code}
+
+      # ModeSwap swaps the unit key both ways…
+      assert "DateTime.shift(dt, second: 10)" in mode_swaps
+      assert "DateTime.shift(dt, hour: 10)" in mode_swaps
+      # …and owns it, so AtomLiteral is never offered the `minute:` key.
+      assert Enum.filter(sites, &(&1.mutator == :atom)) == []
+      # The amount stays runtime data — Literal still mutates it.
+      assert {"10", "11"} in literals
+      assert {"10", "9"} in literals
+    end
   end
 
   describe "Numeric (complementary Kernel/Float numeric swaps)" do

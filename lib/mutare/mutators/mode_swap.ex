@@ -24,6 +24,15 @@ defmodule Mutare.Mutators.ModeSwap do
     * `System.system_time/1`, `System.monotonic_time/1`, `System.os_time/1`,
       `System.convert_time_unit/3` (both unit positions) — the clock unit, with the
       `System`-only `:native` mapped to a concrete `:second`
+    * `DateTime.shift/2,3`, `NaiveDateTime.shift/2`, `Time.shift/2` — the **duration
+      units**. Unlike the others, the unit isn't a lone positional atom but the *keys*
+      of a keyword list of `unit: amount` pairs (`shift(dt, minute: 10, day: -1)`). This
+      is the generalisation of `mode_atom`: each *key* is a duration unit on a ladder
+      (`:second`…`:year`; `Time` is time-only — `:second`…`:hour`), so each swappable key
+      is moved to an adjacent neighbour independently (`minute:` → `second:`/`hour:`), its
+      amount kept. (`:microsecond` is excluded — its amount is a `{count, precision}`
+      tuple, incompatible with the integer-valued units, so swapping its key would only
+      ever raise. The amounts themselves still mutate via `Mutare.Mutators.Literal`.)
 
   Unicode modes:
 
@@ -70,6 +79,12 @@ defmodule Mutare.Mutators.ModeSwap do
   where a swap is actually produced** (it reads the same `swap_sites/4` as `mutate/2`),
   so an unrecognised atom or a variable in a mode position stays available to AtomLiteral.
 
+  For a `shift` **duration keyword list** the claimed position holds a list, not a leaf:
+  the transform routes only its *keys* through the non-mutating context (so AtomLiteral
+  doesn't turn `minute:` into a raising `:mutare:`) while each *amount* stays runtime, so
+  `Mutare.Mutators.Literal` still mutates it — "a mutator claiming a keyword-list argument
+  owns the option names, not the values" (see `Mutare.Transform.Analyze`).
+
   Recognises the stdlib modules by their resolved module (`Mutare.Transform.Calls`), so
   an aliased call (`alias DateTime, as: DT; DT.truncate(dt, :second)`) is matched too.
   """
@@ -84,6 +99,12 @@ defmodule Mutare.Mutators.ModeSwap do
   @truncate_ladder [:microsecond, :millisecond, :second]
   @calendar_ladder [:nanosecond, :microsecond, :millisecond, :second, :minute, :hour, :day]
   @system_ladder [:nanosecond, :microsecond, :millisecond, :second]
+
+  # `shift`'s `Duration` units, by magnitude. `:microsecond` is deliberately absent — its
+  # amount is a `{count, precision}` tuple, so a swap to/from an integer-valued unit would
+  # only raise. `Time.shift` accepts no date component, so its ladder is the time-only tail.
+  @duration_ladder [:second, :minute, :hour, :day, :week, :month, :year]
+  @duration_time_ladder [:second, :minute, :hour]
 
   # Unordered mode sets: one curated, behaviourally-distinct sibling per member.
   @case_modes %{default: [:ascii], ascii: [:default], greek: [:default], turkic: [:default]}
@@ -103,6 +124,11 @@ defmodule Mutare.Mutators.ModeSwap do
     {[:NaiveDateTime], :diff, 3} => {[2], :calendar},
     {[:Time], :add, 3} => {[2], :calendar},
     {[:Time], :diff, 3} => {[2], :calendar},
+    # `shift` — the duration unit is a keyword list at position 1, not a lone atom.
+    {[:DateTime], :shift, 2} => {[1], :duration},
+    {[:DateTime], :shift, 3} => {[1], :duration},
+    {[:NaiveDateTime], :shift, 2} => {[1], :duration},
+    {[:Time], :shift, 2} => {[1], :duration_time},
     {[:System], :system_time, 1} => {[0], :system},
     {[:System], :monotonic_time, 1} => {[0], :system},
     {[:System], :os_time, 1} => {[0], :system},
@@ -133,7 +159,11 @@ defmodule Mutare.Mutators.ModeSwap do
 
               sites ->
                 # `rebuild` keeps the same function and written alias, swapping only args.
-                Enum.map(sites, fn {vis, atom} -> rebuild.(fun, replace_arg(args, vis, atom)) end)
+                # Each site carries the replacement *arg node* — a fresh mode-atom literal,
+                # or (for `shift`) the duration keyword list with one unit key swapped.
+                Enum.map(sites, fn {vis, arg} ->
+                  rebuild.(fun, List.replace_at(args, vis, arg))
+                end)
             end
 
           :error ->
@@ -181,21 +211,72 @@ defmodule Mutare.Mutators.ModeSwap do
     end
   end
 
-  # The `{visible_index, replacement_atom}` pairs this rule yields — one per legal sibling
-  # of each recognised mode atom. A position whose visible arg isn't a recognised mode atom
-  # (a variable, an integer parts-per-second, or the piped value itself) contributes none.
-  # The single source of both the mutants and the owned positions.
+  # The `{visible_index, replacement_arg_node}` pairs this rule yields — one per legal
+  # swap at each owned position. A position that yields no swap (a non-mode-atom, an
+  # unrecognised atom, a non-keyword-list duration, or the piped value itself) contributes
+  # none. The single source of both the mutants and the owned positions.
   defp swap_sites(args, positions, group, piped?) do
     for pos <- positions,
         vis = Mutare.Mutator.visible_index(pos, piped?),
         vis != nil,
-        atom <- mode_atom(Enum.at(args, vis)),
-        new_atom <- swaps(group, atom) do
-      {vis, new_atom}
+        replacement <- position_swaps(group, Enum.at(args, vis)) do
+      {vis, replacement}
     end
   end
 
-  defp replace_arg(args, vis, atom), do: List.replace_at(args, vis, AST.literal(atom))
+  # The replacement *arg nodes* for the swaps at one position. An atom-position group reads
+  # a single mode atom and emits one fresh atom literal per ladder neighbour; a duration
+  # group (`shift`) reads a `unit: amount` keyword list and emits one rebuilt list per
+  # (unit key, neighbour) — `mode_atom` generalised from a lone positional atom to the keys
+  # of a duration keyword list.
+  defp position_swaps(group, arg) when group in [:duration, :duration_time],
+    do: duration_swaps(group, arg)
+
+  defp position_swaps(group, arg),
+    do: for(atom <- mode_atom(arg), new_atom <- swaps(group, atom), do: AST.literal(new_atom))
+
+  # `shift`'s duration argument is a keyword list `[unit: amount, …]` — the trailing-keyword
+  # sugar (a *bare* list) or an explicit `[…]` (a `:__block__`-wrapped list, e.g. when
+  # `shift/3`'s opts follow). For each swappable unit *key*, emit the list rebuilt with that
+  # one key swapped to a ladder neighbour, its amount kept. A non-keyword-list duration (a
+  # `%Duration{}` struct, a variable) yields nothing.
+  defp duration_swaps(group, arg) do
+    case duration_list(arg) do
+      nil ->
+        []
+
+      {pairs, rewrap} ->
+        for {{key, value}, i} <- Enum.with_index(pairs),
+            unit <- mode_atom(key),
+            new_unit <- swaps(group, unit) do
+          rewrap.(List.replace_at(pairs, i, {duration_key(new_unit), value}))
+        end
+    end
+  end
+
+  # The `{key, value}` pairs of a duration keyword list, plus a closure that restores the
+  # argument's shape (a bare list, or a `:__block__`-wrapped explicit `[…]`); `nil` if the
+  # argument is not a keyword list.
+  defp duration_list({:__block__, meta, [inner]}) when is_list(inner) do
+    with pairs when pairs != nil <- keyword_pairs(inner),
+         do: {pairs, fn new -> {:__block__, meta, [new]} end}
+  end
+
+  defp duration_list(list) when is_list(list) do
+    with pairs when pairs != nil <- keyword_pairs(list), do: {pairs, & &1}
+  end
+
+  defp duration_list(_arg), do: nil
+
+  defp keyword_pairs(list) when is_list(list) and list != [] do
+    if Enum.all?(list, &match?({_k, _v}, &1)), do: list, else: nil
+  end
+
+  defp keyword_pairs(_list), do: nil
+
+  # A fresh `unit:` keyword key — `format: :keyword` so Sourceror renders `second:` (not
+  # `:second =>`), and fresh meta so it carries no stale token (the clean-meta rule).
+  defp duration_key(unit), do: {:__block__, [format: :keyword], [unit]}
 
   # The legal sibling atoms for a swap. Ladders return the adjacent neighbour(s);
   # the System-only `:native` maps to a concrete unit; mode sets are a lookup.
@@ -203,6 +284,8 @@ defmodule Mutare.Mutators.ModeSwap do
   defp swaps(:calendar, atom), do: neighbours(@calendar_ladder, atom)
   defp swaps(:system, :native), do: [:second]
   defp swaps(:system, atom), do: neighbours(@system_ladder, atom)
+  defp swaps(:duration, unit), do: neighbours(@duration_ladder, unit)
+  defp swaps(:duration_time, unit), do: neighbours(@duration_time_ladder, unit)
   defp swaps(:case_mode, atom), do: Map.get(@case_modes, atom, [])
   defp swaps(:norm_form, atom), do: Map.get(@norm_forms, atom, [])
 

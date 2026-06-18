@@ -840,6 +840,69 @@ defmodule Mutare.MutatorsTest do
                ]
     end
 
+    test "shift duration: each unit key swaps to an adjacent ladder neighbour (non-piped)" do
+      # interior unit → both neighbours; endpoint → one.
+      assert mode("DateTime.shift(dt, minute: 10)", false) ==
+               ["DateTime.shift(dt, second: 10)", "DateTime.shift(dt, hour: 10)"]
+
+      assert mode("DateTime.shift(dt, year: 1)", false) == ["DateTime.shift(dt, month: 1)"]
+
+      assert mode("NaiveDateTime.shift(n, week: 2)", false) ==
+               ["NaiveDateTime.shift(n, day: 2)", "NaiveDateTime.shift(n, month: 2)"]
+    end
+
+    test "shift: each key in a multi-unit duration is swapped independently, amount kept" do
+      assert mode("DateTime.shift(dt, minute: 10, day: -1)", false) == [
+               "DateTime.shift(dt, second: 10, day: -1)",
+               "DateTime.shift(dt, hour: 10, day: -1)",
+               "DateTime.shift(dt, minute: 10, hour: -1)",
+               "DateTime.shift(dt, minute: 10, week: -1)"
+             ]
+    end
+
+    test "Time.shift uses the time-only ladder (no date units to escape to)" do
+      assert mode("Time.shift(t, hour: 1)", false) == ["Time.shift(t, minute: 1)"]
+
+      assert mode("Time.shift(t, minute: 1)", false) ==
+               ["Time.shift(t, second: 1)", "Time.shift(t, hour: 1)"]
+
+      # a date unit isn't on Time's ladder — no swap (Time.shift would reject it anyway).
+      assert ModeSwap.mutate(parse("Time.shift(t, day: 1)"), %{piped: false}) == :skip
+    end
+
+    test "shift: :microsecond is excluded (its {count, precision} amount can't move units)" do
+      assert ModeSwap.mutate(parse("DateTime.shift(dt, microsecond: {5, 6})"), %{piped: false}) ==
+               :skip
+    end
+
+    test "shift/3: a bracketed duration before the opts still swaps, brackets preserved" do
+      assert mode("DateTime.shift(dt, [minute: 10], time_zone_database: db)", false) == [
+               "DateTime.shift(dt, [second: 10], time_zone_database: db)",
+               "DateTime.shift(dt, [hour: 10], time_zone_database: db)"
+             ]
+    end
+
+    test "shift: piped, the duration keyword list is the lone visible arg" do
+      assert mode("DateTime.shift(minute: 10)", true) ==
+               ["DateTime.shift(second: 10)", "DateTime.shift(hour: 10)"]
+    end
+
+    test "shift: a non-keyword-list duration (a %Duration{} / variable) yields nothing" do
+      assert ModeSwap.mutate(parse("DateTime.shift(dt, dur)"), %{piped: false}) == :skip
+    end
+
+    test "shift: owns the duration position only when a unit is actually swappable" do
+      assert ModeSwap.owned_args(parse("DateTime.shift(dt, minute: 10, day: -1)"), %{piped: false}) ==
+               [1]
+
+      # only an excluded/unrecognised unit, or a non-list duration → nothing claimed,
+      # so AtomLiteral stays free to fire (claim-iff-produce).
+      assert ModeSwap.owned_args(parse("DateTime.shift(dt, microsecond: {5, 6})"), %{piped: false}) ==
+               []
+
+      assert ModeSwap.owned_args(parse("DateTime.shift(dt, dur)"), %{piped: false}) == []
+    end
+
     test "Unicode case mode and normalization form swap to a behavioural sibling" do
       assert mode("String.upcase(s, :default)", false) == ["String.upcase(s, :ascii)"]
       assert mode("String.downcase(s, :ascii)", false) == ["String.downcase(s, :default)"]

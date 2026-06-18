@@ -80,6 +80,8 @@ defmodule Mutare.Transform.Analyze do
   #     descending. Routed by `recurse_runtime/3` so a leaf the claimant already
   #     covers via the whole call (a ModeSwap unit/mode atom) isn't *also* mutated
   #     in place by another mutator (AtomLiteral → a redundant, raising `:mutare`).
+  #     When the owned argument is a keyword list (a `shift` duration), only its
+  #     keys go `:owned`; the values stay `:runtime` (`analyze_owned_keywords/2`).
   #   * `:scaffold` — a module-level non-clause statement entered from
   #     `transform_statement/2`. Like `:pattern` it never mutates in place and keeps
   #     descending — the module body runs once, at compile time, with mutant 0
@@ -656,6 +658,11 @@ defmodule Mutare.Transform.Analyze do
   # redundant, always-raising `:mutare`). With no claimant the owned set is empty and
   # this is exactly `recurse(node, :runtime, …)` — so non-owning calls are unaffected.
   # `piped?` is threaded because ownership, like arity, depends on the pipe position.
+  #
+  # An owned argument that is a **keyword list** (a `DateTime.shift(dt, minute: 10)`
+  # duration) is special-cased: the claimant owns the option *names*, so only the keys go
+  # `:owned` (AtomLiteral leaves `minute:` alone) while each value stays `:runtime` (Literal
+  # still mutates the amount) — see `analyze_owned_keywords/2`.
   defp recurse_runtime({form, meta, args} = node, mutators, piped?) when is_list(args) do
     analyzed =
       case owned_arg_indices(node, mutators, %{piped: piped?}) do
@@ -667,7 +674,11 @@ defmodule Mutare.Transform.Analyze do
             args
             |> Enum.with_index()
             |> Enum.map(fn {arg, i} ->
-              analyze(arg, if(i in owned, do: :owned, else: :runtime), mutators)
+              cond do
+                i not in owned -> analyze(arg, :runtime, mutators)
+                owned_keyword_list?(arg) -> analyze_owned_keywords(arg, mutators)
+                true -> analyze(arg, :owned, mutators)
+              end
             end)
 
           {form, meta, args}
@@ -677,6 +688,27 @@ defmodule Mutare.Transform.Analyze do
   end
 
   defp recurse_runtime(node, mutators, _piped?), do: recurse(node, :runtime, mutators)
+
+  # Whether an owned argument is a keyword list — bare (trailing-keyword sugar) or an
+  # explicit `[…]` (a `:__block__`-wrapped list), so the key/value split below applies.
+  defp owned_keyword_list?({:__block__, _meta, [inner]}), do: keyword_list_shaped?(inner)
+  defp owned_keyword_list?(arg), do: keyword_list_shaped?(arg)
+
+  # Analyze an *owned* keyword-list argument: route each key through `:owned` (so the
+  # claimant — ModeSwap, for a `shift` duration unit — keeps it from being offered to
+  # AtomLiteral) while each value stays ordinary `:runtime` data, so the other mutators
+  # (notably Literal on a shift amount) still fire on it. The general reading of "a mutator
+  # claims a keyword-list argument": it owns the option names, not the values.
+  defp analyze_owned_keywords({:__block__, meta, [inner]}, mutators) when is_list(inner) do
+    {:__block__, meta, [analyze_owned_keywords(inner, mutators)]}
+  end
+
+  defp analyze_owned_keywords(list, mutators) when is_list(list) do
+    Enum.map(list, fn
+      {key, value} -> {analyze(key, :owned, mutators), analyze(value, :runtime, mutators)}
+      other -> analyze(other, :runtime, mutators)
+    end)
+  end
 
   # === call-option keys ======================================================
 
