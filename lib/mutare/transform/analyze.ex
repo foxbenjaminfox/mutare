@@ -1174,29 +1174,26 @@ defmodule Mutare.Transform.Analyze do
     end
   end
 
-  # One rescue clause `var in [t1, ..., tn] -> body`: a `CasePattern` per type-drop, whose
-  # `replacement` is the whole `try` rebuilt with this clause's list narrowed. Other rescue
-  # shapes (`var`, `Type`, `var in Single`) yield nothing.
-  defp rescue_type_drops(
-         {{:->, cmeta, [[{:in, imeta, [var, types_node]}], body]}, index},
-         clauses,
-         rebuild_try,
-         spec
-       ) do
-    in_node = {:in, imeta, [var, types_node]}
-
-    with {wrap, types} when is_list(types) <- rescue_types(types_node),
-         %{} = range <- NodeRange.get(in_node) do
+  # One rescue clause — a `CasePattern` per type-drop, whose `replacement` is the whole `try`
+  # rebuilt with this clause's exception-type list narrowed. Both list-bearing shapes are
+  # mutated: `var in [t1, ..., tn]` (bound) and a bare `[t1, ..., tn]` head (no binding) —
+  # `narrowable_types/1` returns the type list and a head-rebuilder for each. The diff
+  # (`original`/`mutated`/`range`) is the clause **head** before/after, so the bound form shows
+  # `var in [A, B]`→`var in [A]` and the bare form `[A, B]`→`[A]`. The non-list shapes (`var`,
+  # `Type`, `var in Single`) yield nothing.
+  defp rescue_type_drops({{:->, cmeta, [[head], body]}, index}, clauses, rebuild_try, spec) do
+    with {types, rebuild_head} <- narrowable_types(head),
+         %{} = range <- NodeRange.get(head) do
       types
       |> Mutare.Mutators.RescueType.drops()
       |> Enum.map(fn kept ->
-        mutated_in = {:in, imeta, [var, wrap.(kept)]}
-        mutated_clause = {:->, cmeta, [[mutated_in], body]}
+        mutated_head = rebuild_head.(kept)
+        mutated_clause = {:->, cmeta, [[mutated_head], body]}
 
         %Candidate.CasePattern{
           mutator: spec,
-          original: in_node,
-          mutated: mutated_in,
+          original: head,
+          mutated: mutated_head,
           replacement: rebuild_try.(List.replace_at(clauses, index, mutated_clause)),
           range: range
         }
@@ -1208,10 +1205,29 @@ defmodule Mutare.Transform.Analyze do
 
   defp rescue_type_drops(_clause_indexed, _clauses, _rebuild_try, _spec), do: []
 
-  # The exception-type list of a rescue clause's `in [...]`, plus a closure to rebuild the
-  # list node from a narrowed list. Sourceror wraps the list literal in a `:__block__`
-  # (preserved so the mutant renders cleanly); a bare list is handled too. A single alias
-  # (`var in Single`) is not a list → `nil` (no drop).
+  # A rescue clause head's exception-type list plus a closure to rebuild the head from a
+  # narrowed list, or `nil` when the head holds no mutatable list. Two list-bearing shapes:
+  # `var in [t1, ..., tn]` (keep the `in` binding) and a bare `[t1, ..., tn]` head (a valid
+  # rescue form with no binding — narrow the list directly). `rescue_types/1` does the list
+  # extraction (and `:__block__`-aware rebuild) for both, returning `nil` for a single alias
+  # (`var in Single` / `Type`) or a bare variable, so those fall through to no mutation.
+  defp narrowable_types({:in, imeta, [var, types_node]}) do
+    case rescue_types(types_node) do
+      {wrap, types} -> {types, fn kept -> {:in, imeta, [var, wrap.(kept)]} end}
+      nil -> nil
+    end
+  end
+
+  defp narrowable_types(types_node) do
+    case rescue_types(types_node) do
+      {wrap, types} -> {types, wrap}
+      nil -> nil
+    end
+  end
+
+  # The exception-type list inside a rescue head's list node, plus a closure to rebuild the
+  # node from a narrowed list. Sourceror wraps the list literal in a `:__block__` (preserved so
+  # the mutant renders cleanly); a bare list is handled too. A non-list (a single alias) → `nil`.
   defp rescue_types({:__block__, bmeta, [list]}) when is_list(list),
     do: {fn new -> {:__block__, bmeta, [new]} end, list}
 

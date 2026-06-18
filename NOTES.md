@@ -1130,26 +1130,38 @@ Deferred (still routed `:pattern`, unmutated): the `<-` generator/`with`-clause 
 `else` clause pattern, and `try` patterns.
 
 ### Rescue exception-type narrowing (`Mutare.Mutators.RescueType`) `[done]`
-A `rescue` clause is **not** a standard Elixir pattern: it matches on exception *types* in one of
-three shapes (`Type`, `var`, `var in [Type, …]`), and — crucially — **cannot carry a `when`
-guard** (the compiler rejects it: "the clause should match on an alias, a variable or be in the
-`var in [alias]` format"). So none of the pattern families apply, and the per-clause gating that
-`case` uses (a `when active === id` guard) is *impossible* here.
+A `rescue` clause is **not** a standard Elixir pattern: it matches on exception *types* in one of a
+few shapes (`Type`, `var`, `var in [Type, …]`, or the **bare list** `[Type, …]` — a list with no
+`var in` binding), and — crucially — **cannot carry a `when` guard** (the compiler rejects it: "the
+clause should match on an alias, a variable or be in the `var in [alias]` format"). So none of the
+pattern families apply, and the per-clause gating that `case` uses (a `when active === id` guard) is
+*impossible* here.
 
-`RescueType` narrows `var in [A, B, …]` by **dropping one type** (`[A, B]`→`[A]`/`[B]`; only with
-≥2 types, never to `[]`, so the metamutant always compiles), asking "does any test rely on each
-rescued exception being caught?". It is structural/positional (recognised only at a rescue-clause
-head by `Transform.Analyze`'s `:try` clause; `mutate/1` is `:skip`, the list logic is
-`RescueType.drops/1`), registered, on by default.
+`RescueType` narrows a ≥2-type list by **dropping one type** (`[A, B]`→`[A]`/`[B]`; never to `[]`, so
+the metamutant always compiles), asking "does any test rely on each rescued exception being caught?".
+It is structural/positional (recognised only at a rescue-clause head by `Transform.Analyze`'s `:try`
+clause; `mutate/1` is `:skip`, the list logic is `RescueType.drops/1`), registered, on by default.
+
+**Both list-bearing head shapes are narrowed**: the bound `var in [A, B]` *and* the bare `[A, B]`
+(`rescue [RuntimeError, ArgumentError] -> …`, a valid form that catches the listed types without
+binding). They parse differently — `{:in, _, [var, list]}` vs. a bare list head (Sourceror-wrapped
+`{:__block__, _, [list]}`) — so `Analyze.narrowable_types/1` returns the type list plus a
+head-rebuilder for each (the bound form rewraps the `in`, the bare form rebuilds the list directly),
+and the single shared `rescue_type_drops/4` matches `[[head], body]` once and works off that. The
+diff is the clause **head** before/after, so the bound form shows `var in [A, B]`→`var in [A]` and
+the bare form `[A, B]`→`[A]`. `rescue_types/1` handles the `:__block__`-aware list extraction/rebuild
+for both and returns `nil` for the non-list shapes (`Type`, `var`, `var in Single`), which fall
+through to no mutation. (The bare-list form was a real gap before — only the `in` shape was matched,
+so bare lists went un-narrowed despite being the same compile-safe drop.)
 
 Because a rescue clause can't be guard-gated, the **only** delivery is the **whole-construct
 selector** — the whole `try` is wrapped in `case <active> do <id> -> <try with the narrowed rescue
 list>; _ -> record; <try> end` (`Candidate.CasePattern`, exactly like `receive`/`fn`). Sound: a
 rescue binding is local to its body. This reuses the existing selector emit, `Manifest`, and
-coverage unchanged; the diff is the `var in [...]` node before/after. Verified end to end: dropping
-`ArgumentError` makes it propagate while `RuntimeError` is still caught, and vice versa. It composes
-with body and return-value mutations on the same `try` (each gets its own selector branch — the
-whole-`try` rescue mutant uses a first-order copy, the catch-all the fully-emitted `try`).
+coverage unchanged. Verified end to end: dropping `ArgumentError` makes it propagate while
+`RuntimeError` is still caught, and vice versa — for both head shapes. It composes with body and
+return-value mutations on the same `try` (each gets its own selector branch — the whole-`try` rescue
+mutant uses a first-order copy, the catch-all the fully-emitted `try`).
 
 **Only the explicit `try` is mutated.** The `def … rescue …` shorthand (sugar for wrapping the body
 in a `try`) reaches `analyze_do_blocks/2`, not the `:try` clause, and is **deferred**: delivering it

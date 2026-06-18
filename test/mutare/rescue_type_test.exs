@@ -34,6 +34,14 @@ defmodule Mutare.RescueTypeTest do
     rescue
       e in [RuntimeError, ArgumentError] -> {:def_caught, e.__struct__}
     end
+
+    def bare(f) do
+      try do
+        f.()
+      rescue
+        [RuntimeError, ArgumentError] -> :bare_caught
+      end
+    end
   end
   """
 
@@ -60,6 +68,13 @@ defmodule Mutare.RescueTypeTest do
   # Run `F.run/1` raising `ex`, reporting whether the rescue caught it or it propagated.
   defp outcome(ex) do
     {:caught, F.run(fn -> raise ex end)}
+  rescue
+    e -> {:propagated, e.__struct__}
+  end
+
+  # Same, for `F.bare/1` (the bare-list `rescue [A, B] ->` form, no `var in` binding).
+  defp bare_outcome(ex) do
+    {:caught, F.bare(fn -> raise ex end)}
   rescue
     e -> {:propagated, e.__struct__}
   end
@@ -125,5 +140,44 @@ defmodule Mutare.RescueTypeTest do
     assert Report.diff(site, @source) ==
              "-      e in [RuntimeError, ArgumentError] -> {:caught, e.__struct__}\n" <>
                "+      e in [RuntimeError] -> {:caught, e.__struct__}"
+  end
+
+  describe "bare-list rescue form (`rescue [A, B] ->`, no `var in`)" do
+    test "baseline catches both exception types" do
+      assert {:caught, :bare_caught} = bare_outcome(RuntimeError)
+      assert {:caught, :bare_caught} = bare_outcome(ArgumentError)
+    end
+
+    test "two type-drop mutants are produced for a bare two-type list", %{sites: sites} do
+      drops = Enum.filter(sites, &(&1.mutator == :rescue_type and &1.line == 28))
+      assert length(drops) == 2
+      assert Enum.all?(drops, &(&1.kind == :in_place))
+    end
+
+    test "dropping a type makes that exception propagate while the other is still caught", %{
+      sites: sites
+    } do
+      Selector.put(rescue_site(sites, "[RuntimeError]", 28))
+      assert {:caught, :bare_caught} = bare_outcome(RuntimeError)
+      assert {:propagated, ArgumentError} = bare_outcome(ArgumentError)
+
+      Selector.put(rescue_site(sites, "[ArgumentError]", 28))
+      assert {:propagated, RuntimeError} = bare_outcome(RuntimeError)
+      assert {:caught, :bare_caught} = bare_outcome(ArgumentError)
+    end
+
+    test "renders a bare-list type-drop as a focused one-line diff", %{sites: sites} do
+      site =
+        Enum.find(
+          sites,
+          &(&1.mutator == :rescue_type and &1.line == 28 and &1.mutated_code == "[RuntimeError]")
+        )
+
+      assert Report.header(site) == "rt.ex:28  [rescue_type, in-place]  SURVIVED"
+
+      assert Report.diff(site, @source) ==
+               "-      [RuntimeError, ArgumentError] -> :bare_caught\n" <>
+                 "+      [RuntimeError] -> :bare_caught"
+    end
   end
 end
