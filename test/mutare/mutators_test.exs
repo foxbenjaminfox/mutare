@@ -835,6 +835,13 @@ defmodule Mutare.MutatorsTest do
       assert mode("String.upcase(:default)", true) == ["String.upcase(:ascii)"]
     end
 
+    test "piped: a unit at effective position 0 (the piped value itself) yields nothing" do
+      # `:millisecond |> System.system_time()` — the unit *is* the piped value, so its
+      # effective position 0 maps to no visible arg (`visible_index/2` → nil) and the
+      # call contributes no swap (rather than crashing on `Enum.at(args, nil)`).
+      assert ModeSwap.mutate(parse("System.system_time()"), %{piped: true}) == :skip
+    end
+
     test "a non-atom or unrecognised atom in the mode position yields nothing" do
       # A variable unit can't be swapped statically.
       assert ModeSwap.mutate(parse("DateTime.truncate(dt, unit)"), %{piped: false}) == :skip
@@ -842,6 +849,11 @@ defmodule Mutare.MutatorsTest do
       assert ModeSwap.mutate(parse("System.system_time(1000)"), %{piped: false}) == :skip
       # An atom outside the function's legal set has no in-set neighbour.
       assert ModeSwap.mutate(parse("DateTime.truncate(dt, :bogus)"), %{piped: false}) == :skip
+      # An unrecognised atom in the *unordered* mode sets (case / normalization form)
+      # also yields nothing — `swaps/2` falls back to `[]`, never `nil` (a `Map.get`
+      # without its default would enumerate `nil` and crash).
+      assert ModeSwap.mutate(parse("String.upcase(s, :bogus)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("String.normalize(s, :bogus)"), %{piped: false}) == :skip
     end
 
     test "skips unrelated functions, arities, and modules" do
@@ -1340,6 +1352,41 @@ defmodule Mutare.MutatorsTest do
       # a lower bound never goes below zero
       assert render(RegexLiteral.mutate(parse(~S|~r/a{0,2}/|))) ==
                [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{1,2}/|, ~S|~r/a{0,1}/|, ~S|~r/a{0,3}/|]
+
+      # Boundary cases where a ±1 neighbour lands *exactly* on the clamp edge — the
+      # only inputs that pin the inclusive `>= 0` / `>= n` / `<= m` filters (a
+      # strict `>`/`<` would drop the edge value, an unconditional filter would
+      # keep an out-of-range one).
+      #   `a{1}` (exact): the lower neighbour is exactly 0 — kept (≥ 0), so `a{0}`.
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{1}/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{0}/|, ~S|~r/a{2}/|]
+
+      #   `a{0}` (exact 0): the lower neighbour −1 is dropped (< 0), only `a{1}`.
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{0}/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{1}/|]
+
+      #   `a{1,4}` (range): lower neighbour 0 kept (≥ 0 and ≤ m), so `a{0,4}`.
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{1,4}/|))) ==
+               [
+                 ~S|~r//|,
+                 ~S|~r/mutare/|,
+                 ~S|~r/a{0,4}/|,
+                 ~S|~r/a{2,4}/|,
+                 ~S|~r/a{1,3}/|,
+                 ~S|~r/a{1,5}/|
+               ]
+
+      #   `a{2,3}` (range): the upper's lower neighbour is exactly n (2) — kept
+      #   (≥ n), so `a{2,2}`; the lower's upper neighbour 3 is ≤ m, so `a{3,3}`.
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{2,3}/|))) ==
+               [
+                 ~S|~r//|,
+                 ~S|~r/mutare/|,
+                 ~S|~r/a{1,3}/|,
+                 ~S|~r/a{3,3}/|,
+                 ~S|~r/a{2,2}/|,
+                 ~S|~r/a{2,4}/|
+               ]
     end
 
     test "leaves a non-quantifier brace alone" do

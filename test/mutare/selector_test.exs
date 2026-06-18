@@ -50,6 +50,20 @@ defmodule Mutare.SelectorTest do
     assert :persistent_term.get(Selector.key()) == 7
   end
 
+  test "put/1 rejects a negative id (guard floor is 0, not -1)" do
+    # A mutant relaxing `id >= 0` to `id >= -1`, forcing the guard to `true`, or
+    # weakening `and` to `or` would accept a negative id — a mutant id is never
+    # negative, so the guard is a real precondition.
+    assert_raise FunctionClauseError, fn -> Selector.put(-1) end
+  end
+
+  test "put/1 rejects a non-integer id (the is_integer half of the guard)" do
+    # Kills a mutant weakening `is_integer(id) and id >= 0` to an `or` (a float is
+    # >= 0 so `or` would admit it) or forcing the whole guard to `true`.
+    assert_raise FunctionClauseError, fn -> Selector.put(1.5) end
+    assert_raise FunctionClauseError, fn -> Selector.put(:not_an_id) end
+  end
+
   test "under a suite-key override, put/1 leaves the harness key untouched (self-hosting)" do
     # The Option-A invariant: when the suite-under-test runs in a sandbox (the
     # override names a private key), its own `put/1` lands there — never on the
