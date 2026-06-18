@@ -981,6 +981,36 @@ the fallback is added where unneeded — never wrongly omitted.
 **whole clause** range is recorded (not just the body, as for an in-place selector). Plus the usual
 whole-`case` fallback.
 
+**Known limitation — `fn` clause-pattern coverage is tied to *construction*, not invocation.**
+The whole-construct selector records in its catch-all (`build_case`/`catch_all_clause`):
+`<active> -> <record ids>; <original construct>`. For `case`/`receive`/`try` the record fires when
+the construct *runs* — fine. But a `fn` is a **value**: the selector evaluates (and so records) when
+the closure is *constructed*, not when it is *called*. So a `fn 0 -> … end` that is merely returned
+or stored — and whose clauses are never invoked in a distinguishing way — has its literal/guard/
+structural clause-pattern mutants scored **covered**, so they *run and survive* instead of being
+`:no_coverage`. (This is **pre-existing**, not new with literals/guards: swap/wildcard already flowed
+through this selector. And it is `fn`-specific — `receive` blocks until a message matches and `try`
+runs its body on entry, so for them construction ≈ execution.) It is **fail-loud** (a false
+*survivor*, never a false *kill*), which is why it's tolerated for now.
+
+The fix is feasible but a *trade*, deliberately deferred. Mechanism: move the clause-pattern record
+out of the catch-all and into **each clause body** of the original `fn` — the closure captures
+`mutare_active` from the enclosing `case` binding, so the gated record fires on invocation
+(prototyped: construction records nothing, `f.(x)` records the ids). Why it's not a clear win:
+  * it **reintroduces** a gap construction-tied recording handles correctly — a closure invoked
+    *only* with args matching no clause (raising `FunctionClauseError`) records nothing, so a mutant
+    that *broadens* a clause to capture that arg becomes a false `:no_coverage` (the `fn` analogue of
+    the tupled-`case` unmatched fallback above, but a faithful `FunctionClauseError` —
+    module/function/arity/args — is hard to synthesize, so the fallback is uglier here);
+  * a **return-position** `fn` (`def h, do: fn :a -> 1 end`) can carry *both* a `Candidate.Return`
+    (replace the whole `fn` with `nil` — an effect observed at construction, so correctly
+    construction-tied) and `CasePattern`s, so the records would have to **split** by kind (or the
+    inject restricted to the pure-`CasePattern` site, falling back otherwise).
+So it swaps a common, visible false survivor for a rarer, hidden false `:no_coverage`. If revisited,
+the same "record where the clause *runs*, not where the construct is *built*" principle also applies
+to `try`/`rescue` (a `try` entered without raising over-covers its `RescueType` mutants) — decide the
+principle once and apply it to both.
+
 **Shared taggers (`Transform.Tag`).** The guard-operator and pattern-literal tagging walks (the
 explicit descents that keep a remote call's *form* opaque and a bitstring spec / keyword-map *key*
 unoffered, with map-key-collision filtering) were extracted from `FunctionPlan` into
