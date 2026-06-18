@@ -27,11 +27,16 @@ defmodule Mutare.Transform.Candidate do
   #     variables that a single `meta[:mutare_tag]` can't capture, so it is applied by
   #     whole-clause replacement by index (like `Drop`). Structural (the
   #     `PatternSwap`/`PatternWildcard` families own the logic via `pattern_mutations/2`).
-  #   * `Candidate.CasePattern` — the *same* swap/wildcard families applied to a `case`
-  #     *clause* pattern, but delivered **in place**: a `case` isn't liftable, so the whole
-  #     `case` is wrapped in a selector whose mutant branch is a copy with one clause's
-  #     pattern restructured. The diff stays focused on the pattern (`original`/`mutated`),
-  #     while the selector branch carries the whole mutated `case` (`replacement`).
+  #   * `Candidate.CaseClause` — a `case` *clause* pattern/guard mutation (swap/wildcard,
+  #     a pattern literal, or a guard operator), delivered **in place** by the
+  #     *tuple-the-scrutinee* rewrite (the per-clause C+M analogue of head lifting): the
+  #     `case` becomes `case {<active>, <subject>} do …` and each mutant adds one gated
+  #     clause before its original. The diff stays focused on the pattern/guard.
+  #   * `Candidate.CasePattern` — the same kinds applied to a `receive`/`fn` clause
+  #     (neither has a scrutinee to tuple), delivered **in place** by the
+  #     *whole-construct selector*: the whole construct is wrapped in a selector whose
+  #     mutant branch is a copy with one clause's pattern/guard changed (`replacement`).
+  #     The diff stays focused on the pattern/guard (`original`/`mutated`).
   #   * `Candidate.MatchPattern` — the same swap/wildcard families on the LHS of a runtime
   #     `=` match *in statement position*. A selector can't wrap the match (its bindings
   #     would stop escaping), so the bound variables are re-exported through a tuple and
@@ -159,15 +164,20 @@ defmodule Mutare.Transform.Candidate do
   defmodule CasePattern do
     @moduledoc false
 
-    # A `case` *clause-pattern* restructuring (variable swap / duplicate→wildcard),
-    # delivered **in place**. A `case` can't be lifted (it isn't a function clause group)
-    # and a selector can't live inside a pattern, so the mutant is delivered by wrapping
-    # the *whole* `case` in an in-place selector whose mutant branch is a copy of the case
-    # with one clause's pattern restructured — sound because a `case` clause's bindings are
-    # local to its body and never escape. `replacement` is that whole mutated `case` (the
-    # selector branch); `original`/`mutated` are the clause *pattern* before/after (the
-    # focused one-line diff), and `range` locates that pattern. `mutator` is the structural
-    # family (`PatternSwap`/`PatternWildcard`). Recorded as an `:in_place` `Mutare.Site`.
+    # A `receive`/`fn` *clause-pattern/guard* mutation (variable swap, duplicate→wildcard,
+    # a pattern literal, or a guard operator), delivered **in place** by the
+    # **whole-construct selector**. `receive` matches the process mailbox and `fn` matches
+    # call arguments, so neither has a scrutinee expression to tuple (the way `case` does —
+    # see `CaseClause`); the mutant is instead delivered by wrapping the *whole* construct
+    # in an in-place selector whose mutant branch is a copy of the construct with one
+    # clause's pattern (or guard) changed — sound because these clause bindings are local
+    # to a clause body and never escape. `replacement` is that whole mutated construct (the
+    # selector branch); `original`/`mutated` are the clause *pattern*/literal/guard-operator
+    # before/after (the focused one-line diff), and `range` locates it. `mutator` is the
+    # family (`PatternSwap`/`PatternWildcard`, a literal family, or a guard family). Recorded
+    # as an `:in_place` `Mutare.Site`. (Each mutant is a *full* copy of the construct — C×M —
+    # acceptable for `receive`/`fn`, which are rare and small; `case` uses the per-clause
+    # `CaseClause` instead.)
 
     @type t :: %__MODULE__{
             mutator: module(),
@@ -178,6 +188,51 @@ defmodule Mutare.Transform.Candidate do
           }
 
     defstruct [:mutator, :original, :mutated, :replacement, :range]
+  end
+
+  defmodule CaseClause do
+    @moduledoc false
+
+    # A `case` *clause-pattern/guard* mutation (variable swap, duplicate→wildcard, a
+    # pattern literal, or a guard operator), delivered **in place** by the **tuple-the-
+    # scrutinee** rewrite — the per-clause (C+M) analogue of function-head lifting. Unlike
+    # `receive`/`fn`, a `case` *has* a scrutinee, so the whole `case` is rewritten to
+    # `case {<active>, <subject>} do …` and each mutant adds **one** clause (`{<active>,
+    # <mutant_pattern>} when <active> === <id> [and <mutant_guard>] -> <raw_body>`) placed
+    # before its original — so a mutant touching one clause never copies the other N-1
+    # (C+M, not C×M). The original it overrides is gated `when <active> !== <id>` to step
+    # aside when the mutant is active (`Mutare.Transform.emit_case_pattern_site/3`).
+    #
+    # `clause_index` is the source clause this targets (for grouping the originals'
+    # exclusion gates). `mutant_pattern`/`mutant_guard` are the mutant clause's pattern and
+    # guard: a literal/structure mutation carries the *mutated* pattern + the clause's
+    # *original* guard (or `nil`); a guard mutation carries the *original* pattern + the
+    # *mutated* guard. `raw_body` is the clause's un-emitted body (no nested in-place
+    # selectors — only one mutant is ever active). `original`/`mutated`/`range` are the
+    # pattern/literal/guard-operator before/after, for the focused one-line diff; `mutator`
+    # is the family. Recorded as an `:in_place` `Mutare.Site`.
+
+    @type t :: %__MODULE__{
+            clause_index: non_neg_integer(),
+            mutator: module(),
+            mutant_pattern: Macro.t(),
+            mutant_guard: Macro.t() | nil,
+            raw_body: Macro.t(),
+            original: Macro.t(),
+            mutated: Macro.t(),
+            range: Sourceror.Range.t()
+          }
+
+    defstruct [
+      :clause_index,
+      :mutator,
+      :mutant_pattern,
+      :mutant_guard,
+      :raw_body,
+      :original,
+      :mutated,
+      :range
+    ]
   end
 
   defmodule MatchPattern do
@@ -262,6 +317,7 @@ defmodule Mutare.Transform.Candidate do
           | Pattern.t()
           | PatternStructure.t()
           | CasePattern.t()
+          | CaseClause.t()
           | MatchPattern.t()
           | Drop.t()
           | Return.t()

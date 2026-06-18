@@ -71,6 +71,22 @@ defmodule Mutare.Metamutant do
 
   def subject?(_), do: false
 
+  @doc """
+  Whether `node` is the **tupled** subject of a `case` rewritten by the tuple-the-scrutinee
+  path (`Mutare.Transform.emit_case_pattern_site/3`): a 2-tuple `{<subject>, <scrutinee>}`
+  whose first element is the plain selector subject. `Mutare.Manifest` uses this to spot such
+  a `case` (its mutant clauses gate on the active id via a `when` guard, not the clause
+  pattern, so the dispatch is recognised by the subject, then by the gate).
+
+  A 2-tuple *is* a literal, so when `Mutare.Manifest` parses the metamutant back with a
+  `:literal_encoder`, the subject arrives wrapped as `{:__block__, _, [{first, scrutinee}]}`;
+  the bare 2-tuple form is matched too (the shape `Transform` splices).
+  """
+  @spec pattern_subject?(Macro.t()) :: boolean()
+  def pattern_subject?({:__block__, _meta, [{first, _scrutinee}]}), do: subject?(first)
+  def pattern_subject?({first, _scrutinee}), do: subject?(first)
+  def pattern_subject?(_), do: false
+
   # See through Sourceror's literal wrapping (`{:__block__, _, [:persistent_term]}`);
   # a bare atom passes through untouched.
   defp unwrap({:__block__, _meta, [literal]}), do: literal

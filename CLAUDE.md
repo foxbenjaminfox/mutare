@@ -105,7 +105,14 @@ contract between them is the whole game.
     mutator" / NOTES "lifting blowup"). `build_lifted/2` threads one tag counter through guards and
     head-pattern literals, so a `def f(0) when …` lifts both kinds together;
     `build_pattern_structures/2` is a separate (untagged, index-based) pass for the structural rewrites.
-  - **`Transform.Candidate.{InPlace,Guard,Pattern,PatternStructure,CasePattern,MatchPattern,Drop}`** —
+  - **`Transform.Tag`** — the shared *replace-by-tag* discovery primitives (`guard_targets/3`,
+    `pattern_literal_targets/3`, `replace_tag/3`): walk a guard / pattern, tag every mutatable node
+    with a unique `meta[:mutare_tag]`, return the tagged copy + a `{tag, original, [{mutator,
+    mutated}]}` per target; a caller materialises one mutant by `replace_tag`. Used by **both**
+    `FunctionPlan` (lifted def-clause guards/literals) and `Analyze` (the `case`/`receive`/`fn`
+    clause-pattern/guard discovery). The walks keep a remote call's *form* opaque and a bitstring
+    spec / keyword-or-map *key* unoffered (the subtleties live here once).
+  - **`Transform.Candidate.{InPlace,Guard,Pattern,PatternStructure,CaseClause,CasePattern,MatchPattern,Drop}`** —
     typed
     candidate variants (one struct per legal kind), replacing the old single struct that redundantly
     stored `context`/`kind`/`operation` and admitted illegal combinations. `Pattern` (a head-pattern
@@ -113,21 +120,27 @@ contract between them is the whole game.
     in the one gated mutant clause — but a distinct kind (head, not `when`; literal families only).
     `PatternStructure` (a variable swap or duplicate→wildcard in a `def`/`defp` head) spans sibling
     positions / repeated variables that a single tag can't capture, so it is applied by **whole-clause
-    replacement by index** (like `Drop`), carrying the mutated head args. `CasePattern` is the *same*
-    swap/wildcard families on a `case`/`receive`/`fn` *clause* pattern but delivered **in place**
-    (none is liftable): the whole construct is wrapped in a selector whose mutant branch is a copy
-    (`replacement`) with one clause's pattern restructured, the diff staying focused on the pattern.
-    `MatchPattern` is those families on the LHS of a runtime **`=` match in a value-discarded
-    position** (a non-final block statement, a `for` qualifier, or a `with` clause): a selector
-    can't wrap the match (its bindings, unlike a `case` clause's, *escape* to the enclosing scope),
-    so the bound variables are re-exported through a tuple and rebound outside — `{vars} = case rhs
-    do <pat> -> {vars} end`, the pattern hosted in a selector (`emit_match_site/3`); the diff still
-    shows just the LHS pattern.
+    replacement by index** (like `Drop`), carrying the mutated head args. `CaseClause` is a `case`
+    *clause* pattern/guard mutation (swap/wildcard, a pattern literal, **or** a guard operator),
+    delivered **in place** by the **tuple-the-scrutinee** rewrite — the per-clause (C+M) analogue of
+    head lifting: the `case` becomes `case {<active>, <subject>} do …` and each mutant adds one gated
+    clause before its original (carries the mutant clause's pattern/guard + the clause's raw body).
+    `CasePattern` is the same kinds on a `receive`/`fn` clause (neither has a scrutinee to tuple),
+    delivered **in place** by the **whole-construct selector** — the whole construct wrapped in a
+    selector whose mutant branch is a copy (`replacement`) with one clause's pattern/guard changed
+    (C×M, fine for these rare/small constructs). `MatchPattern` is the swap/wildcard families on the
+    LHS of a runtime **`=` match in a value-discarded position** (a non-final block statement, a `for`
+    qualifier, or a `with` clause): a selector can't wrap the match (its bindings, unlike a `case`
+    clause's, *escape* to the enclosing scope), so the bound variables are re-exported through a tuple
+    and rebound outside — `{vars} = case rhs do <pat> -> {vars} end`, the pattern hosted in a selector
+    (`emit_match_site/3`); the diff still shows just the LHS pattern.
     The matching `Site` constructor is chosen by pattern-matching the variant at emit
     (`Guard`/`Pattern`/`PatternStructure` → `Site.lifted_replace/6`;
-    `InPlace`/`Return`/`CasePattern`/`MatchPattern`
-    → `Site.in_place/6` family, the selector branch chosen by `branch_node/1`). The structural
-    discovery primitives shared by the def-head, `case`, and `=`-match paths live in
+    `InPlace`/`Return`/`CaseClause`/`CasePattern`/`MatchPattern`
+    → `Site.in_place/6` family). The `case` tuple-the-scrutinee rewrite has its own emit
+    (`emit_case_pattern_site/3`, reusing the lifting gates `exclusion_guard`/`and_into_guard`); for
+    the others the selector branch is chosen by `branch_node/1`. The structural discovery primitives
+    shared by the def-head, `case`, `receive`/`fn`, and `=`-match paths live in
     `Transform.PatternStructure` (`mutators/1`, `used_names/1`, `bound_var_names/1`, `node_mutations/3`).
   - **analyze + classify (`analyze/3`)** is a single context-threaded recursive descent: it
     *names the context* of each position as it descends (routing is positional — the spec side of
@@ -157,11 +170,17 @@ contract between them is the whole game.
     **condition** to IfCondition (`attach_if_condition/3` appends a `Candidate.InPlace` forcing it to
     `true`/`false` — only when live, i.e. `:runtime`, never `:scaffold`), so the same selector hosts
     both that and any operator swap already on the condition node.
-    A `case`/`receive`/`fn` clause's pattern stays unmutated *in place* but is **additionally**
-    offered to the structural pattern families (swap/wildcard) by dedicated analyze clauses, which
-    attach a `Candidate.CasePattern` to the whole construct node (the mutant wraps it in a selector —
-    see the families below; `attach_clause_pattern_candidates/4` is the shared core, parameterized by
-    the construct's clause list + a rebuild closure).
+    A `case`/`receive`/`fn` clause's pattern (and guard) stays unmutated *in place* in the ordinary
+    descent but is **additionally** offered — to the structural pattern families (swap/wildcard), the
+    literal families, and (for the guard) the guard families — by dedicated analyze clauses. For a
+    **`case`** the clause is mutated **per clause** via *tuple-the-scrutinee*: `case_clause_candidates`
+    attaches `Candidate.CaseClause`s under the `meta[:mutare_case]` key (literals/guards via
+    `Transform.Tag`, structure via `PatternStructure`), and `emit_case_pattern_site/3` rewrites the
+    `case` to `case {<active>, <subject>} do …`. For **`receive`/`fn`** (no scrutinee to tuple) the
+    whole construct is wrapped in a selector — `attach_clause_pattern_candidates/4` (parameterized by
+    the construct's clause list + a rebuild closure) attaches a `Candidate.CasePattern` whose mutant
+    branch is a full copy with one clause's pattern/guard changed. (The `<-` generator/clause LHS and
+    `with`/`try` `else` clause patterns are still deferred — routed to `:pattern`, unmutated.)
     A **value-discarded `=` match** is *also* offered those families on its LHS via
     `analyze_statement/2` (→ `attach_match_pattern_candidates/4`, attaching a `Candidate.MatchPattern`),
     routed from three positions: a runtime block's **non-final statements** (`analyze`'s `:__block__`
@@ -288,13 +307,15 @@ contract between them is the whole game.
   Poison only on a failed compile (rare).
 - **`Mutare.Manifest`** — the per-file, per-mutant map of *where each mutant lives in its
   rendered metamutant*: the full **generated line ranges** (selector clause bodies, lifted mutant
-  clauses gated `when mutare_active === <id>`, and a whole-`case` fallback) that **Poison** maps a
-  compile error back to a mutant id with. Built **lazily** by `Poison` from the stored metamutant,
-  via the fast `Code.string_to_quoted!` parse (not `Sourceror.parse_string!` — same token metadata
-  `get_range/1` reads, far faster on a big file). `Mutare.Metamutant` owns the selector-subject AST
-  and the `subject?/1` recognizer this walk uses. (Coverage no longer lives here — the metamutant
-  self-records it at
-  runtime, keyed by mutant id, so there is no `{module, line}` location to precompute.)
+  clauses gated `when mutare_active === <id>`, the **tupled-`case` mutant clauses** `{mutare_active,
+  <pat>} when mutare_active === <id>` — whole-clause, since the mutated pattern/guard lives in the
+  head — and a whole-`case` fallback) that **Poison** maps a compile error back to a mutant id with.
+  Built **lazily** by `Poison` from the stored metamutant, via the fast `Code.string_to_quoted!`
+  parse (not `Sourceror.parse_string!` — same token metadata `get_range/1` reads, far faster on a big
+  file). `Mutare.Metamutant` owns the selector-subject AST and the `subject?/1` / `pattern_subject?/1`
+  recognizers this walk uses (the latter spots a tuple-the-scrutinee `case`). (Coverage no longer
+  lives here — the metamutant self-records it at runtime, keyed by mutant id, so there is no
+  `{module, line}` location to precompute.)
 - **`Mutare.Sandbox`** — workspace materialization. Copies the target project to a temp dir and
   overwrites the metamutant sources. Injects a **dependency-free bootstrap** into `test_helper.exs`:
   reads `MUTANT_UNDER_TEST` into `:persistent_term`, plus a portable timeout watcher that
@@ -579,13 +600,15 @@ contract between them is the whole game.
   only reorders existing bindings) and **PatternWildcard** (`:pattern_wildcard` — where a variable
   repeats, replace an occurrence with `_`, dropping the equality constraint: `f(x, x)`→`f(_, x)`).
   They cover a `def`/`defp` *head* (delivered by lifting, like head literals —
-  `Candidate.PatternStructure`), the *clause* patterns of `case`/`receive`/`fn` (delivered **in
-  place** — `Candidate.CasePattern` — by wrapping the whole construct in a selector whose mutant
-  branch is a copy with one clause's pattern restructured, sound because those clause bindings never
-  escape their body; an fn arg-list works like a head — each arg a position, though a duplicate
-  *across* fn args is not seen, only within one), and the LHS of a runtime **`=` match in a
-  value-discarded position** — a non-final block statement, a `for` qualifier, or a `with` clause —
-  delivered **in place** as `Candidate.MatchPattern`. The `=` case looks infeasible — a selector
+  `Candidate.PatternStructure`); the *clause* patterns of `case` (delivered **in place** per-clause
+  by *tuple-the-scrutinee* — `Candidate.CaseClause` — alongside the literal/guard families, so a
+  `case` clause is mutated as fully as a function head, C+M not C×M); the *clause* patterns of
+  `receive`/`fn` (delivered **in place** — `Candidate.CasePattern` — by wrapping the whole construct
+  in a selector whose mutant branch is a copy with one clause's pattern/guard changed, sound because
+  those clause bindings never escape their body; an fn arg-list works like a head — each arg a
+  position, though a duplicate *across* fn args is not seen, only within one); and the LHS of a
+  runtime **`=` match in a value-discarded position** — a non-final block statement, a `for`
+  qualifier, or a `with` clause — delivered **in place** as `Candidate.MatchPattern`. The `=` case looks infeasible — a selector
   `case` around a match would lose the bindings, which *escape* to the enclosing scope (unlike a
   `case` clause's, local to its body) — but the bindings are recovered by re-exporting them through
   a tuple and rebinding outside the selector: `{vars} = case rhs do <pat> -> {vars} end`, the pattern

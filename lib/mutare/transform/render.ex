@@ -50,6 +50,7 @@ defmodule Mutare.Transform.Render do
   # `:mutare_kernel_displaced` are bookkeeping that must never reach the source.
   @internal_meta_keys [
     :mutare,
+    :mutare_case,
     :mutare_tag,
     :mutare_alias,
     :mutare_import,

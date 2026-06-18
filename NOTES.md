@@ -745,24 +745,27 @@ default. They cover several pattern positions, by two deliveries:
 
 - a `def`/`defp` *head* pattern — **lifted** (`Candidate.PatternStructure`), like head
   literals;
-- a `case`/`receive`/`fn` *clause* pattern — **in place** (`Candidate.CasePattern`), since
-  none is a function clause group to lift; and
+- a `case` *clause* pattern — **in place** per-clause via tuple-the-scrutinee
+  (`Candidate.CaseClause`; see "Clause-pattern mutation" below), alongside the literal/guard
+  families;
+- a `receive`/`fn` *clause* pattern — **in place** via the whole-construct selector
+  (`Candidate.CasePattern`), since neither has a scrutinee to tuple; and
 - a runtime **`=`-match LHS in a value-discarded position** (a non-final block statement, a
   `for` qualifier, or a `with` clause) — **in place** (`Candidate.MatchPattern`, see the next
   note).
 
-The three in-place constructs share one analyze path (`attach_clause_pattern_candidates/4`)
+The `receive`/`fn` in-place path shares one analyze core (`attach_clause_pattern_candidates/4`)
 parameterized by *the clause list* and *a rebuild closure* — the only things that differ
-(`case` has a subject + a single `do` block; `receive` has a `do` block plus an optional
-`after` whose timeout is **not** a pattern and is skipped; `fn` *is* its clauses, with
-multi-argument heads). Each clause's pattern *positions* are iterated, so a single-pattern
-`case`/`receive` clause and a multi-arg `fn` clause are handled uniformly; a duplicate
-*across* fn arguments (`fn x, x -> …`) is not seen (each position is mutated independently),
-only a duplicate *within* one argument (`fn {x, x} -> …`) — a small, rare gap.
+(`receive` has a `do` block plus an optional `after` whose timeout is **not** a pattern and is
+skipped; `fn` *is* its clauses, with multi-argument heads). Each clause's pattern *positions*
+are iterated, so a single-pattern `receive` clause and a multi-arg `fn` clause are handled
+uniformly; a duplicate *across* fn arguments (`fn x, x -> …`) is not seen (each position is
+mutated independently), only a duplicate *within* one argument (`fn {x, x} -> …`) — a small,
+rare gap.
 
-A `<-` generator/clause LHS and `try` patterns are deferred. The shared discovery primitives
-(`mutators/1`, `used_names/1`, `bound_var_names/1`, `node_mutations/3`) live in
-`Transform.PatternStructure`, used by every path.
+A `<-` generator/clause LHS, `with`/`try` `else` clause patterns, and `try` patterns are
+deferred. The shared discovery primitives (`mutators/1`, `used_names/1`, `bound_var_names/1`,
+`node_mutations/3`) live in `Transform.PatternStructure`, used by every path.
 
 ### `=`-match LHS in a value-discarded position `[done]`
 The old note here said `=`-LHS was *excluded* because "a selector `case` around a match
@@ -916,6 +919,58 @@ Several design choices worth remembering:
   for `case`/`receive`/`fn`: broadening one clause can shadow a *later* clause (e.g. a
   trailing `_ ->`) — WAE-poison-dropped, harmless otherwise; a construct with a single clause
   is always clean.
+
+### Clause-pattern mutation — tuple-the-scrutinee (`case`), whole-construct (`receive`/`fn`) `[done]`
+`case`/`receive`/`fn` clause patterns used to get *only* the structural families (swap/wildcard)
+via the whole-construct selector. They now also get **literals** and **guards**, so a clause
+pattern is mutated as fully as a function head. Two deliveries, picked by whether the construct
+has a scrutinee to tuple:
+
+- **`case` → tuple-the-scrutinee** (`Candidate.CaseClause`, `Transform.emit_case_pattern_site/3`).
+  The subject is tupled with the active id and each mutant adds **one** clause —
+  `{mutare_active, <mut_pat>} when mutare_active === <id> [and <guard>] -> <raw_body>` — placed
+  before its original, which is gated `when mutare_active !== <its ids>` to step aside when the
+  mutant is active. This is the per-clause **C+M** scheme (the same one head lifting uses; reuses
+  `exclusion_guard`/`and_into_guard`/`merge_guards`), *not* the whole-construct **C×M** copy — which
+  matters now that literals+guards multiply the mutant count (the lifting-blowup lesson, applied to
+  `case`). Verified behaviorally exact: clause precedence is preserved (a mutant sits immediately
+  before its own original, so a changed/broadened pattern shadows exactly what the source mutant
+  would), mutant clauses use the **raw** body (only one mutant is ever active, so a body selector
+  there could never fire) and originals keep their **emitted** body. Every clause binds
+  `mutare_active` and *uses* it (originals via the coverage record, mutants via the gate) — note an
+  *unused* `case`-clause pattern variable **warns** (unlike a function param), so the bind-and-use
+  is load-bearing.
+- **`receive`/`fn` → whole-construct selector** (`Candidate.CasePattern`). Neither has a scrutinee
+  to tuple (`receive` matches the mailbox; `fn` matches its call arguments), so each mutant wraps
+  the whole construct in `case <active> do <id> -> <full copy with one clause changed>; _ ->
+  <original> end`. That re-introduces C×M, but `receive`/`fn` are rare and small, so it is
+  acceptable — and the existing selector emit / `Manifest` / coverage all apply unchanged.
+
+**Coverage subtlety (the reason originals record the *full* id-set).** The probe runs at
+**baseline**, where only the original clauses match. A pattern mutant can be killed by a value that
+matches a *different* clause at baseline (e.g. `1 -> :one` mutated to `2 -> :one`: a test passing
+`2` matches the catch-all at baseline but clause 1 under the mutant). So per-clause-matched
+recording would *under*-attribute and break test selection. Each original clause therefore prepends
+`Recorder.record_ast(<all the case's mutant ids>, var)`; whichever original matches at baseline
+records them all (idempotent union) — consistent with the function-head dispatcher, which records
+all of a group's ids on every call.
+
+**`Manifest`/poison.** The tupled `case`'s subject is `{<subject_ast>, <scrutinee>}`, recognised by
+`Metamutant.pattern_subject?/1` (it sees through the `:literal_encoder`'s `:__block__` wrap of the
+2-tuple). A tupled mutant clause's id is in its `when mutare_active === <id>` gate (reused
+`gate_id/1`), and its generated code (the mutated pattern/guard) lives in the **head**, so the
+**whole clause** range is recorded (not just the body, as for an in-place selector). Plus the usual
+whole-`case` fallback.
+
+**Shared taggers (`Transform.Tag`).** The guard-operator and pattern-literal tagging walks (the
+explicit descents that keep a remote call's *form* opaque and a bitstring spec / keyword-map *key*
+unoffered, with map-key-collision filtering) were extracted from `FunctionPlan` into
+`Transform.Tag` so both the lift path and the new clause-pattern discovery use them — one home for
+those subtleties. `replace_tag/3` materialises one mutant from the tagged copy (leftover tags on
+sibling nodes are stripped by `Render`).
+
+Deferred (still routed `:pattern`, unmutated): the `<-` generator/`with`-clause LHS, the `with`/`try`
+`else` clause pattern, and `try` patterns.
 
 ### Transform pipeline — explicit stages `[refactor, done]`
 `Mutare.Transform` is an explicit pipeline rather than a walk-everything-then-

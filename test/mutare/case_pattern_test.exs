@@ -1,0 +1,179 @@
+defmodule Mutare.CasePatternTest do
+  @moduledoc """
+  `case` clause patterns/guards are mutated **per clause** by the tuple-the-scrutinee rewrite
+  (the C+M analogue of function-head lifting): the subject is tupled with the active mutant id
+  and each mutant adds one gated clause before its original. Unlike a function head it is
+  delivered *in place* (a `case` isn't a liftable function group, and a selector can't live in
+  a pattern), but unlike `receive`/`fn` it avoids the whole-construct C×M copy. Proven with one
+  compile and runtime switching.
+  """
+  # persistent_term is global; the fixture is compiled once for all tests.
+  use ExUnit.Case, async: false
+
+  alias Mutare.{Report, Selector}
+
+  @source """
+  defmodule Mutare.CasePatternFixture do
+    def classify(n) do
+      case n do
+        1 -> :one
+        x when x > 5 -> :big
+        _ -> :other
+      end
+    end
+
+    def swap(p) do
+      case p do
+        {x, y} -> x - y
+        _ -> :nope
+      end
+    end
+
+    def dup(t) do
+      case t do
+        {a, a} -> :same
+        _ -> :diff
+      end
+    end
+
+    def label(s) do
+      case s do
+        "go" -> :start
+        _ -> :unknown
+      end
+    end
+  end
+  """
+
+  @compile {:no_warn_undefined, Mutare.CasePatternFixture}
+
+  setup_all do
+    {metamutant, sites, _next_id} = Mutare.transform_string(@source, file: "cp.ex")
+
+    # Broadening a clause's pattern can make a later clause unreachable — a benign "cannot
+    # match" warning (the metamutant still compiles); captured so it doesn't clutter output.
+    ExUnit.CaptureIO.capture_io(:stderr, fn ->
+      [{_module, _binary}] = Code.compile_string(metamutant)
+    end)
+
+    %{sites: sites, meta: metamutant}
+  end
+
+  setup do
+    Selector.put(Selector.baseline())
+    on_exit(fn -> Selector.put(Selector.baseline()) end)
+    :ok
+  end
+
+  alias Mutare.CasePatternFixture, as: F
+
+  defp id(sites, mutator, mutated_code, line) do
+    site =
+      Enum.find(
+        sites,
+        &(&1.mutator == mutator and &1.mutated_code == mutated_code and &1.line == line)
+      )
+
+    assert site, "no #{mutator} site #{inspect(mutated_code)} on line #{line}"
+    site.id
+  end
+
+  test "case clause-pattern/guard mutants are delivered in place via tuple-the-scrutinee", %{
+    sites: sites,
+    meta: meta
+  } do
+    # Not lifted — no generated private functions for these defs.
+    refute meta =~ "__mutare_classify"
+    refute meta =~ "__mutare_swap"
+
+    # The subject is tupled with the active id (the per-clause dispatch).
+    assert meta =~ "case {:persistent_term.get(:mutare_active, 0), n}"
+
+    clause_sites =
+      Enum.filter(
+        sites,
+        &(&1.mutator in [:literal, :relational, :pattern_swap, :pattern_wildcard, :string])
+      )
+
+    assert clause_sites != []
+    assert Enum.all?(clause_sites, &(&1.kind == :in_place))
+  end
+
+  describe "behaviour under runtime switching" do
+    test "baseline behaves like the original" do
+      assert F.classify(1) == :one
+      assert F.classify(7) == :big
+      assert F.classify(3) == :other
+      assert F.swap({5, 2}) == 3
+      assert F.dup({1, 1}) == :same
+      assert F.dup({1, 2}) == :diff
+      assert F.label("go") == :start
+      assert F.label("x") == :unknown
+    end
+
+    test "a literal pattern mutant re-targets the clause", %{sites: sites} do
+      Selector.put(id(sites, :literal, "2", 4))
+      # Clause 1 now matches 2, not 1: 1 falls through, 2 hits :one.
+      assert F.classify(1) == :other
+      assert F.classify(2) == :one
+    end
+
+    test "a guard mutant changes the clause's match", %{sites: sites} do
+      Selector.put(id(sites, :relational, "x >= 5", 5))
+      assert F.classify(5) == :big
+    end
+
+    test "a string-literal pattern mutant re-targets the clause", %{sites: sites} do
+      Selector.put(id(sites, :string, ~s("mutare"), 26))
+      assert F.label("go") == :unknown
+    end
+
+    test "swapping a clause pattern binds the other value", %{sites: sites} do
+      Selector.put(id(sites, :pattern_swap, "{y, x}", 12))
+      assert F.swap({5, 2}) == 2 - 5
+    end
+
+    test "wildcarding a duplicate drops the equality match", %{sites: sites} do
+      Selector.put(id(sites, :pattern_wildcard, "{_, _}", 19))
+      assert F.dup({1, 2}) == :same
+    end
+
+    test "an unknown id falls through to every original clause" do
+      Selector.put(987_654)
+      assert F.classify(1) == :one
+      assert F.classify(7) == :big
+      assert F.classify(3) == :other
+      assert F.swap({5, 2}) == 3
+      assert F.dup({1, 2}) == :diff
+      assert F.label("go") == :start
+    end
+
+    test "an active body mutant still fires through the gated original clause", %{sites: sites} do
+      # `:big` (clause 2 body) → `:mutare`. Its in-place selector lives in the *original*
+      # clause's (emitted) body, reached when no pattern mutant is active.
+      Selector.put(id(sites, :atom, ":mutare", 5))
+      assert F.classify(7) == :mutare
+      assert F.classify(1) == :one
+    end
+  end
+
+  test "renders a case-pattern literal swap as a focused one-line diff", %{sites: sites} do
+    site = Enum.find(sites, &(&1.mutator == :literal and &1.line == 4 and &1.mutated_code == "2"))
+
+    assert Report.header(site) == "cp.ex:4  [literal, in-place]  SURVIVED"
+    assert Report.diff(site, @source) == "-      1 -> :one\n+      2 -> :one"
+  end
+
+  test "renders a case-guard swap as a focused one-line diff", %{sites: sites} do
+    site =
+      Enum.find(
+        sites,
+        &(&1.mutator == :relational and &1.line == 5 and &1.mutated_code == "x >= 5")
+      )
+
+    assert Report.header(site) == "cp.ex:5  [relational, in-place]  SURVIVED"
+
+    assert Report.diff(site, @source) ==
+             "-      x when x > 5 -> :big\n+      x when x >= 5 -> :big"
+  end
+end

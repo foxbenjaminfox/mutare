@@ -394,7 +394,7 @@ defmodule Mutare.TransformTest do
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
-  test "a case-clause guard is not mutated in place; the clause body is" do
+  test "a case-clause guard IS mutated (tuple-the-scrutinee), and so is the clause body" do
     source = """
     defmodule K do
       def f(x) do
@@ -408,10 +408,14 @@ defmodule Mutare.TransformTest do
 
     {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
-    # A case-clause guard is not a def/defp guard (lifting only applies to
-    # those), and a `case` can't live in a guard — so `n > 1` stays unmutated.
-    # The clause body `n + 1` mutates in place.
-    assert [%Site{mutator: :arithmetic, original_op: :+, kind: :in_place}] = sites
+    # A `case` clause's guard now mutates via the tuple-the-scrutinee rewrite (the
+    # per-clause analogue of head-guard lifting): the subject is tupled with the active
+    # id and each mutant adds a gated clause. The guard `n > 1` (relational) and the
+    # body `n + 1` (arithmetic) both mutate, delivered in place — no `case` ever lands
+    # in a guard.
+    assert Enum.any?(sites, &(&1.original_op == :> and &1.kind == :in_place))
+    assert Enum.any?(sites, &(&1.original_op == :+ and &1.kind == :in_place))
+    assert meta =~ "case {:persistent_term.get(:mutare_active, 0), x}"
     refute meta =~ "when (case"
     refute meta =~ "when case"
     assert {:ok, _} = Code.string_to_quoted(meta)
@@ -1559,13 +1563,14 @@ defmodule Mutare.TransformTest do
 
       {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @atom)
 
-      # case bodies :done/:error + if values :yes/:no mutate (4); the :ok pattern
-      # and the do:/else: keys do not.
-      assert length(sites) == 4
+      # case bodies :done/:error + if values :yes/:no mutate (4), plus the case-clause
+      # pattern :ok (now mutated via tuple-the-scrutinee) = 5; the do:/else: keys do not.
+      assert length(sites) == 5
+      assert Enum.any?(sites, &(&1.line == 4 and &1.mutator == :atom))
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
-    test "case/fn/with/for/receive clause patterns are not mutated; bodies are" do
+    test "case/fn/receive clause patterns ARE mutated (with/for/else patterns are deferred); bodies are" do
       source = """
       defmodule P do
         def a(x) do
@@ -1595,9 +1600,13 @@ defmodule Mutare.TransformTest do
 
       {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @atom)
 
-      # Exactly the body atoms mutate; every `:ok`/`:bad`/`:msg` pattern is skipped.
-      # a:[:done] b:[:a] c:[:hit] d:[:done,:err] e:[:got] = 6 sites, no pattern atom.
-      assert length(sites) == 6
+      # Body atoms always mutate: a:[:done] b:[:a] c:[:hit] d:[:done,:err] e:[:got] = 6.
+      # The `case`/`fn`/`receive` *clause patterns* now also mutate (`:ok`/`:ok`/`:msg`) = 3.
+      # The `<-` generator/clause LHS (`for`, `with`) and the `with`/`try` `else` clause
+      # pattern (`:bad`) are still deferred — so the total is 9, not 12. The `case` subject
+      # is tupled (proof its clause pattern mutated via the tuple-the-scrutinee path).
+      assert length(sites) == 9
+      assert meta =~ "case {:persistent_term.get(:mutare_active, 0), x}"
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
@@ -1628,9 +1637,10 @@ defmodule Mutare.TransformTest do
       assert [%Site{mutator: :map}] = sites
     end
 
-    test "a literal in a case-clause pattern no longer poisons (latent-bug fix)" do
-      # Previously the `1` pattern was mutated into an illegal `case`-in-pattern and
-      # poison-recovered; now it is routed as a pattern and never offered.
+    test "a literal in a case-clause pattern IS mutated in place (tuple-the-scrutinee)" do
+      # Once routed `:pattern` (never offered in place, since a selector `case` is illegal
+      # in a pattern), the `1` is now mutated per-clause via the tuple-the-scrutinee rewrite
+      # — like a head-pattern literal, but delivered in place rather than lifted.
       source = """
       defmodule L do
         def f(x) do
@@ -1642,10 +1652,13 @@ defmodule Mutare.TransformTest do
       end
       """
 
-      {_meta, sites, _next_id} =
+      {meta, sites, _next_id} =
         Mutare.transform_string(source, mutators: [Mutare.Mutators.Literal])
 
-      assert sites == []
+      # The `1` pattern (line 4) mutates; the diff stays focused on it (`:in_place`).
+      assert Enum.any?(sites, &(&1.mutator == :literal and &1.kind == :in_place and &1.line == 4))
+      assert meta =~ "case {:persistent_term.get(:mutare_active, 0), x}"
+      assert {:ok, _} = Code.string_to_quoted(meta)
     end
   end
 

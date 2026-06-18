@@ -758,10 +758,17 @@ defmodule Mutare.Transform do
     Site.return_value(id, file, c.range, c.original, c.mutated)
   end
 
-  # A `case` clause-pattern mutation is delivered in place (the whole case is wrapped in a
-  # selector). The diff stays focused on the pattern (`original`/`mutated`); the selector
-  # branch carries the whole mutated case (`branch_node/1`), not these nodes.
+  # A `receive`/`fn` clause-pattern/guard mutation is delivered in place (the whole construct
+  # is wrapped in a selector). The diff stays focused on the pattern/guard (`original`/
+  # `mutated`); the selector branch carries the whole mutated construct (`branch_node/1`).
   defp in_place_site(id, %Candidate.CasePattern{} = c, file) do
+    Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
+  end
+
+  # A `case` clause-pattern/guard mutation is delivered in place by the tuple-the-scrutinee
+  # rewrite (`emit_case_pattern_site/3`). The diff is the pattern/guard before/after
+  # (`original`/`mutated`); the rewrite scaffolding never reaches a Site.
+  defp in_place_site(id, %Candidate.CaseClause{} = c, file) do
     Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
@@ -807,8 +814,16 @@ defmodule Mutare.Transform do
   defp candidates_of({_form, meta, _args}) when is_list(meta), do: Keyword.get(meta, :mutare, [])
   defp candidates_of(_), do: []
 
+  # The per-clause `Candidate.CaseClause`s a `case` node carries (the tuple-the-scrutinee
+  # path), kept under a dedicated meta key separate from `:mutare` because they drive a
+  # different emit (rewriting the `case`, not wrapping the node in a selector).
+  defp case_candidates_of({_form, meta, _args}) when is_list(meta),
+    do: Keyword.get(meta, :mutare_case, [])
+
+  defp case_candidates_of(_), do: []
+
   defp strip_candidates({form, meta, args}) when is_list(meta),
-    do: {form, Keyword.delete(meta, :mutare), args}
+    do: {form, Keyword.drop(meta, [:mutare, :mutare_case]), args}
 
   defp strip_candidates(node), do: node
 
@@ -820,17 +835,31 @@ defmodule Mutare.Transform do
   # reachable when the outer mutant is inactive.
   defp emit(node, ctx) do
     Macro.postwalk(node, ctx, fn current, ctx ->
-      case gate_candidates(candidates_of(current)) do
-        # A `|>` never carries candidates itself, but its already-emitted RHS may
-        # now be a selector `case` — illegal as a pipe target — so rewrite it here.
-        # `strip_candidates` clears any meta left by candidates the gate dropped (a
-        # no-op when there were none), so the gated node renders clean.
-        [] -> {hoist_pipe(strip_candidates(current)), ctx}
-        # A `=`-match in statement position is rewritten to a tuple-export selector
-        # (its bindings must escape, so it can't be wrapped like an ordinary node). It
-        # only ever carries `MatchPattern` candidates, so the head match is exhaustive.
-        [%Candidate.MatchPattern{} | _] = candidates -> emit_match_site(current, candidates, ctx)
-        candidates -> emit_site(current, candidates, ctx)
+      # A `case` carrying per-clause `CaseClause`s is rewritten by the tuple-the-scrutinee
+      # path (its clauses can't each host a selector, and a `case` isn't a liftable function
+      # group). Checked first: a `case` node carries `:mutare_case`, never `:mutare`.
+      case case_candidates_of(current) do
+        [] ->
+          case gate_candidates(candidates_of(current)) do
+            # A `|>` never carries candidates itself, but its already-emitted RHS may
+            # now be a selector `case` — illegal as a pipe target — so rewrite it here.
+            # `strip_candidates` clears any meta left by candidates the gate dropped (a
+            # no-op when there were none), so the gated node renders clean.
+            [] ->
+              {hoist_pipe(strip_candidates(current)), ctx}
+
+            # A `=`-match in statement position is rewritten to a tuple-export selector
+            # (its bindings must escape, so it can't be wrapped like an ordinary node). It
+            # only ever carries `MatchPattern` candidates, so the head match is exhaustive.
+            [%Candidate.MatchPattern{} | _] = candidates ->
+              emit_match_site(current, candidates, ctx)
+
+            candidates ->
+              emit_site(current, candidates, ctx)
+          end
+
+        case_candidates ->
+          emit_case_pattern_site(current, case_candidates, ctx)
       end
     end)
   end
@@ -999,6 +1028,102 @@ defmodule Mutare.Transform do
     body = {:__block__, [], [Recorder.record_ast(ids, var), baseline_case]}
     {:->, [], [[Recorder.catch_all_pattern(var)], body]}
   end
+
+  # === case clause-pattern mutation: tuple-the-scrutinee =====================
+
+  # Rewrite a `case` so its clause patterns/guards can be mutated *per clause* (the C+M
+  # analogue of head lifting). The subject is tupled with the active id, and each mutant
+  # adds **one** clause — `{<active>, <mutant_pattern>} when <active> === <id> [and
+  # <mutant_guard>] -> <raw_body>` — placed before its original, which is gated `when
+  # <active> !== <its ids>` to step aside when the mutant is active:
+  #
+  #     case {:persistent_term.get(:mutare_active, 0), <subject>} do
+  #       {mutare_active, <mut_pat>} when mutare_active === <id> -> <raw_body>   # one per mutant
+  #       {mutare_active, <orig_pat>} when mutare_active !== <id> ->             # original (gated)
+  #         <record all ids>; <emitted_body>
+  #       …
+  #     end
+  #
+  # Precedence is preserved (each mutant sits immediately before its own original), so a
+  # changed/broadened pattern shadows exactly what the source mutant would. Mutant clauses
+  # use the **raw** body (only one mutant is ever active, so a body selector there could
+  # never fire); originals keep their **emitted** body (selectors intact) and prepend the
+  # coverage record of the *full* id-set — whichever original matches at baseline records
+  # them all, so a mutant killable by a value that matches a *different* clause is still
+  # attributed (the probe runs at baseline). Every clause binds `mutare_active` and uses it
+  # (originals via the record, mutants via the gate), so there is no unused-variable warning.
+  # Mirrors `emit_function_plan/2` for gating and `emit_match_site/3` for the all-poisoned
+  # fallback.
+  defp emit_case_pattern_site(node, candidates, ctx) do
+    {:case, meta, [emitted_subject, [{do_key, emitted_clauses}]]} = strip_candidates(node)
+    var = ctx.active_var
+
+    {claimed, ctx} =
+      Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
+        claim_id(ctx, candidate, &in_place_site/3, fn id, candidate ->
+          {id, candidate.clause_index, case_mutant_clause(id, candidate, var)}
+        end)
+      end)
+
+    # Every mutation here skipped (poisoned) → no rewrite; emit the case unchanged.
+    case claimed do
+      [] ->
+        {{:case, meta, [emitted_subject, [{do_key, emitted_clauses}]]}, ctx}
+
+      _ ->
+        all_ids = Enum.map(claimed, fn {id, _i, _c} -> id end)
+        excluded = Enum.group_by(claimed, fn {_id, i, _c} -> i end, fn {id, _i, _c} -> id end)
+        mutants = Enum.group_by(claimed, fn {_id, i, _c} -> i end, fn {_id, _i, c} -> c end)
+
+        new_clauses =
+          emitted_clauses
+          |> Enum.with_index()
+          |> Enum.flat_map(fn {emitted_clause, index} ->
+            original =
+              case_original_clause(emitted_clause, Map.get(excluded, index, []), all_ids, var)
+
+            Map.get(mutants, index, []) ++ [original]
+          end)
+
+        subject = {Mutare.Metamutant.subject_ast(), emitted_subject}
+        {{:case, meta, [subject, [{do_key, new_clauses}]]}, ctx}
+    end
+  end
+
+  # One mutant clause: `{<active>, <mutant_pattern>} when <active> === <id> [and
+  # <mutant_guard>] -> <raw_body>`. The first tuple element binds `mutare_active` (used in
+  # the gate); `and_into_guard/2` ANDs the `=== <id>` gate into the clause's own (possibly
+  # `nil`) guard.
+  defp case_mutant_clause(id, %Candidate.CaseClause{} = c, var) do
+    tuple = {Recorder.catch_all_pattern(var), c.mutant_pattern}
+    gate = {:===, [], [Recorder.catch_all_pattern(var), id_literal(id)]}
+    head = {:when, [], [tuple, and_into_guard(gate, c.mutant_guard)]}
+    {:->, [], [[head], c.raw_body]}
+  end
+
+  # One original clause: `{<active>, <orig_pattern>} when <active> !== <its ids> [and
+  # <orig_guard>] -> <record all ids>; <emitted_body>`. With no exclusions and no source
+  # guard the head is the bare tuple (`mutare_active` still used by the record). The record
+  # prepends the *full* id-set (see `emit_case_pattern_site/3`).
+  defp case_original_clause(emitted_clause, excluded_ids, all_ids, var) do
+    {clause_meta, pattern, orig_guard, body} = emitted_clause_parts(emitted_clause)
+    tuple = {Recorder.catch_all_pattern(var), pattern}
+    guard = merge_guards(exclusion_guard(excluded_ids, var), orig_guard)
+    head = if guard, do: {:when, [], [tuple, guard]}, else: tuple
+    record_body = {:__block__, [], [Recorder.record_ast(all_ids, var), body]}
+    {:->, clause_meta, [[head], record_body]}
+  end
+
+  # Deconstruct an (already-emitted) `case` clause into `{meta, pattern, guard | nil, body}`.
+  # A `case` clause has a single pattern; its guard (if any) is the last `when` arg (patterns
+  # aren't mutated in place and guards are pruned by the analyzer, so both are the originals).
+  defp emitted_clause_parts({:->, meta, [[{:when, _wm, when_args}], body]})
+       when length(when_args) >= 2 do
+    {patterns, [guard]} = Enum.split(when_args, -1)
+    {meta, hd(patterns), guard, body}
+  end
+
+  defp emitted_clause_parts({:->, meta, [[pattern], body]}), do: {meta, pattern, nil, body}
 
   # The selector-branch value for an in-place candidate. A `CasePattern` carries the whole
   # mutated `case` (`replacement`); for every other in-place candidate the branch *is* its

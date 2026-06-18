@@ -40,6 +40,19 @@ defmodule Mutare.PatternClauseTest do
 
     def fn_eq, do: fn {a, a} -> :same
                      _ -> :diff end
+
+    def recv_num do
+      receive do
+        1 -> :one
+        n when n > 5 -> :big
+      end
+    end
+
+    def pick do
+      fn 1 -> :one
+         n when n > 5 -> :big
+         _ -> :other end
+    end
   end
   """
 
@@ -122,6 +135,18 @@ defmodule Mutare.PatternClauseTest do
                &(&1.line == 20 and &1.mutator in [:pattern_swap, :pattern_wildcard])
              )
     end
+
+    test "a receive clause literal pattern re-targets the clause", %{sites: sites} do
+      Selector.put(id(sites, :literal, "2", 31))
+      send(self(), 2)
+      assert F.recv_num() == :one
+    end
+
+    test "a receive clause guard mutant changes the match", %{sites: sites} do
+      Selector.put(id(sites, :relational, "n >= 5", 32))
+      send(self(), 5)
+      assert F.recv_num() == :big
+    end
   end
 
   describe "fn" do
@@ -139,6 +164,23 @@ defmodule Mutare.PatternClauseTest do
     test "wildcarding a duplicate in an fn clause drops the equality match", %{sites: sites} do
       Selector.put(id(sites, :pattern_wildcard, "{_, _}", 26))
       assert F.fn_eq().({1, 2}) == :same
+    end
+
+    test "baseline literal/guard fn behaves like the original" do
+      assert F.pick().(1) == :one
+      assert F.pick().(7) == :big
+      assert F.pick().(3) == :other
+    end
+
+    test "an fn clause literal pattern re-targets the clause", %{sites: sites} do
+      Selector.put(id(sites, :literal, "2", 37))
+      assert F.pick().(2) == :one
+      assert F.pick().(1) == :other
+    end
+
+    test "an fn clause guard mutant changes the match", %{sites: sites} do
+      Selector.put(id(sites, :relational, "n >= 5", 38))
+      assert F.pick().(5) == :big
     end
   end
 

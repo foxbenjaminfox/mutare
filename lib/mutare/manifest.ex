@@ -137,23 +137,27 @@ defmodule Mutare.Manifest do
 
   # --- traversal -----------------------------------------------------------
 
-  # A selector `case` (in-place selector or lifted dispatcher). Record each mutant
-  # clause's body range, plus a whole-`case` fallback range.
+  # A `case` selector. Two shapes:
+  #
+  #   * a *selector subject* `case` (in-place selector or lifted dispatcher) — each mutant
+  #     clause is `<id> -> <mutated>`, so the id is its clause *pattern*; record each mutant
+  #     clause's body range.
+  #   * a *tupled* subject `case` (the tuple-the-scrutinee path) — each mutant clause is
+  #     `{mutare_active, <pat>} when mutare_active === <id> … -> <body>`, so the id is in its
+  #     `when` gate and the mutated code (pattern/guard) lives in the *head*; record the whole
+  #     mutant clause range.
+  #
+  # Both add a whole-`case` fallback (every id the `case` hosts) as a coarse backstop.
   defp enter({:case, _meta, [subject, kw]} = node, regions) do
-    with true <- Metamutant.subject?(subject),
-         clauses when is_list(clauses) <- do_block(kw) do
-      mutants = for {:->, _, [[patt], body]} <- clauses, id = clause_id(patt), do: {id, body}
+    cond do
+      Metamutant.subject?(subject) ->
+        {node, record_case(do_block(kw), node, regions, &selector_mutant/1)}
 
-      # Each mutant clause body (catches in-place mutants, multiline included),
-      # then the whole-`case` fallback (every id it hosts) as a coarse backstop.
-      regions =
-        Enum.reduce(mutants, regions, fn {id, body}, acc ->
-          push(range_region([id], body), acc)
-        end)
+      Metamutant.pattern_subject?(subject) ->
+        {node, record_case(do_block(kw), node, regions, &pattern_mutant/1)}
 
-      {node, push(case_fallback(node, mutants), regions)}
-    else
-      _ -> {node, regions}
+      true ->
+        {node, regions}
     end
   end
 
@@ -174,6 +178,40 @@ defmodule Mutare.Manifest do
   defp enter(node, regions), do: {node, regions}
 
   defp leave(node, regions), do: {node, regions}
+
+  # Record a `case`'s mutant clauses: `extract.(clause)` yields `{id, region_node}` (the node
+  # whose range is that mutant's generated code) or `{nil, _}` for a non-mutant clause
+  # (catch-all, gated original). Each mutant's region, then the whole-`case` fallback over all
+  # of them.
+  defp record_case(clauses, case_node, regions, extract) when is_list(clauses) do
+    mutants = for clause <- clauses, {id, region} = extract.(clause), id != nil, do: {id, region}
+
+    regions =
+      Enum.reduce(mutants, regions, fn {id, region}, acc ->
+        push(range_region([id], region), acc)
+      end)
+
+    push(case_fallback(case_node, mutants), regions)
+  end
+
+  defp record_case(_not_list, _case_node, regions, _extract), do: regions
+
+  # A selector-`case` mutant clause `<id> -> <body>`: the id is its integer pattern; its
+  # generated code is the body. A catch-all (`mutare_active -> …`) yields `{nil, nil}`.
+  defp selector_mutant({:->, _, [[patt], body]}), do: {clause_id(patt), body}
+  defp selector_mutant(_), do: {nil, nil}
+
+  # A tupled-`case` mutant clause `{mutare_active, <pat>} when mutare_active === <id> … ->
+  # <body>`: the id is in the `when` gate, and its generated code (the mutated pattern/guard)
+  # is in the head, so the whole clause is the region. A gated original (`!==`) / unguarded
+  # original yields `{nil, nil}`.
+  defp pattern_mutant({:->, _, [[{:when, _wm, when_args}], _body]} = clause)
+       when length(when_args) >= 2 do
+    {_patterns, [guard]} = Enum.split(when_args, -1)
+    {gate_id(guard), clause}
+  end
+
+  defp pattern_mutant(_), do: {nil, nil}
 
   # --- regions -------------------------------------------------------------
 
