@@ -209,12 +209,16 @@ defmodule Mutare.Schema do
     end
   end
 
-  # Only forward `:mutators` when set; `nil` lets `Mutare.Transform` use its default
-  # set (we never hard-code that default here). When set it carries the resolved
-  # `Mutare.Mutator.Spec`s — including any `{module, opts}` config (e.g. a mutator's
-  # `call_option_keys: false`), which the transform honours per spec.
-  defp transform_opts(%Options{mutators: nil}), do: []
-  defp transform_opts(%Options{mutators: specs}), do: [mutators: specs]
+  # Forward `:mutators` (when set) and `:macros` to the transform. A `nil` `:mutators`
+  # lets `Mutare.Transform` use its default set (we never hard-code that default here);
+  # when set it carries the resolved `Mutare.Mutator.Spec`s — including any `{module, opts}`
+  # config (e.g. a mutator's `call_option_keys: false`). `:macros` carries the resolved
+  # `Mutare.Macro.Spec`s (known-macro argument routing), `[]` when none; the transform
+  # merges them with the built-ins and any enabled mutator's `macros/0`.
+  defp transform_opts(%Options{mutators: mutators, macros: macros}) do
+    macro_opts = if macros == [], do: [], else: [macros: macros]
+    if(mutators == nil, do: [], else: [mutators: mutators]) ++ macro_opts
+  end
 
   defp finalize(%__MODULE__{} = schema) do
     %{schema | sites: Enum.reverse(schema.sites), skipped: Enum.reverse(schema.skipped)}

@@ -29,12 +29,32 @@ defmodule Mutare.Transform.Resolve do
   # (the tracked `Kernel` selector, default `:all`), and `piped?` (whether the current node is
   # a `|>` right-hand side — so `Imports` can recover a piped call's effective arity).
 
+  alias Mutare.Macros
   alias Mutare.Transform.{Aliases, Imports}
+
+  @macro_key :mutare_macro
 
   @doc "Stamp every remote call's module and every bare imported call with its resolved module."
   @spec annotate(Macro.t()) :: Macro.t()
-  def annotate(ast),
-    do: walk(ast, %{aliases: %{}, imports: %{}, kernel: Imports.default_selector(), piped: false})
+  def annotate(ast), do: annotate(ast, %{})
+
+  @doc """
+  As `annotate/1`, plus stamp each call that resolves to a **known macro** (in the
+  `registry` built by `Mutare.Macros.build/2`) with its per-argument routing under
+  `meta[:mutare_macro]`, so the analyzer routes a pattern/opaque argument correctly
+  instead of mutating it. The registry is carried in the env (read-only) and
+  consulted at each remote and bare call.
+  """
+  @spec annotate(Macro.t(), Macros.registry()) :: Macro.t()
+  def annotate(ast, registry),
+    do:
+      walk(ast, %{
+        aliases: %{},
+        imports: %{},
+        kernel: Imports.default_selector(),
+        piped: false,
+        macros: registry
+      })
 
   # A statement sequence: fold the env left-to-right so an `alias`/`import` extends it for the
   # *subsequent* siblings only. Each statement is walked under the env in force *before* it
@@ -55,18 +75,23 @@ defmodule Mutare.Transform.Resolve do
     {:|>, meta, [walk(lhs, %{env | piped: false}), walk(rhs, %{env | piped: true})]}
   end
 
-  # A remote call `Mod.fun(...)`: stamp its module position with the alias-resolved module,
-  # then descend the arguments un-piped (they may contain bare imported calls).
-  defp walk({{:., dot_meta, [{:__aliases__, _am, _path} = aliases, fun]}, call_meta, args}, env)
+  # A remote call `Mod.fun(...)`: stamp its module position with the alias-resolved module
+  # (and, when it resolves to a known macro, its argument routing on the call meta), then
+  # descend the arguments un-piped (they may contain bare imported calls).
+  defp walk({{:., dot_meta, [{:__aliases__, _am, path} = aliases, fun]}, call_meta, args}, env)
        when is_list(args) do
-    aliases = Aliases.stamp_module(aliases, env.aliases)
-    {{:., dot_meta, [aliases, fun]}, call_meta, descend(args, env)}
+    stamped = Aliases.stamp_module(aliases, env.aliases)
+    call_meta = stamp_macro(call_meta, Aliases.resolve_path(path, env.aliases), fun, args, env)
+    {{:., dot_meta, [stamped, fun]}, call_meta, descend(args, env)}
   end
 
   # A bare call `fun(...)`: stamp it with its resolved import (or Kernel-displacement) using
-  # the current pipe context for effective arity, then descend the arguments un-piped.
+  # the current pipe context for effective arity, then — when it resolves to a known macro —
+  # its argument routing, then descend the arguments un-piped. The macro stamp runs *after*
+  # `Imports.stamp` so it can read the just-applied import / Kernel-displacement marks.
   defp walk({fun, meta, args}, env) when is_atom(fun) and is_list(args) do
     meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, env.piped)
+    meta = stamp_macro(meta, bare_module_key(fun, length(args), meta), fun, args, env)
     {fun, meta, descend(args, env)}
   end
 
@@ -89,4 +114,39 @@ defmodule Mutare.Transform.Resolve do
     {imports, kernel} = Imports.register(stmt, aliases, env.imports, env.kernel)
     %{env | aliases: aliases, imports: imports, kernel: kernel}
   end
+
+  # Stamp a call's meta with the argument routing of the known macro it resolves to, or leave
+  # it unchanged. Skipped for a piped call: a pattern-context macro is never piped into its
+  # pattern argument, and a pipe stage's written arity differs from what is registered. The
+  # routing is sized to the visible arg count, so the analyzer can route position-by-position.
+  defp stamp_macro(meta, module_key, fun, args, env) do
+    if env.piped do
+      meta
+    else
+      case Macros.routing(env.macros, module_key, fun, length(args)) do
+        nil -> meta
+        routing -> [{@macro_key, routing} | meta]
+      end
+    end
+  end
+
+  # The module key a *bare* call resolves to, for known-macro matching: the imported module
+  # if stamped, else `[:Kernel]` only when the name is a genuine `Kernel` export *and* not
+  # displaced (`import Kernel, except:`). A local function — or a displaced name — resolves to
+  # `nil` (no match), so a bare call is recognised as `Kernel.match?` exactly when it compiles
+  # to it (a local `def match?/2` shadowing the Kernel macro is itself a compile error).
+  defp bare_module_key(fun, arity, meta) do
+    case Imports.resolved_import(meta) do
+      {module_key, _kind} ->
+        module_key
+
+      nil ->
+        if not Imports.kernel_displaced?(meta) and kernel_export?(fun, arity),
+          do: [:Kernel],
+          else: nil
+    end
+  end
+
+  defp kernel_export?(fun, arity),
+    do: function_exported?(Kernel, fun, arity) or macro_exported?(Kernel, fun, arity)
 end

@@ -50,7 +50,10 @@ contract between them is the whole game.
     extends both envs (`Aliases.register` + `Imports.register`, the latter resolving its module
     through the alias env in force) and walks each statement under its predecessors' env. Nested
     scopes inherit; a child's additions don't leak. (One walk, not two passes — a second pass
-    would rebuild the same alias env to resolve imports.)
+    would rebuild the same alias env to resolve imports.) The same pass also consults the
+    **known-macro registry** (`Mutare.Macros`): when a resolved `{module, name, arity}` matches,
+    it stamps the call's `meta[:mutare_macro]` with the per-argument routing the analyzer reads
+    (`match?`/`destructure`/a registered DSL macro — see `Mutare.Macros` below).
   - **`Transform.Aliases`** — the `alias` *vocabulary* (env-building, resolution, stamping,
     reading). `Resolve` folds a scoped alias env (`register/2`) and at each remote call stamps
     the *call-module* `__aliases__` node with the module it resolves to (`stamp_module/2` →
@@ -163,8 +166,9 @@ contract between them is the whole game.
     (no lifting ⇒ no dispatcher ⇒ no shadowing). Pattern routing covers
     not just `def` heads and `=`/`<<>>` but every match position: a `<-` generator LHS, the
     LHS of a `case`/`fn`/`receive`/`with`/`for`/`try` `->` clause (generic `->` clause), and the
-    **first argument of `match?/2`** (a macro whose pattern side is a match context — without this a
-    literal/tuple there would be mutated in place, splicing a `case` into a pattern), with
+    pattern argument of a **known macro** (`match?`/`destructure`, or a user-registered one) —
+    routed in the generic runtime clause off the `meta[:mutare_macro]` stamp, so a literal there
+    isn't mutated in place (splicing a `case` into a pattern), with
     **`cond` excepted** (its `->` LHS is a runtime condition, kept mutatable — `analyze_cond_block/3`).
     The runtime `if`/`unless` clause and `analyze_cond_clause` *additionally* offer their
     **condition** to IfCondition (`attach_if_condition/3` appends a `Candidate.InPlace` forcing it to
@@ -660,6 +664,23 @@ contract between them is the whole game.
   structural families (`ReturnValue`/`IfCondition`) check enablement by module. `Transform`
   normalizes its `:mutators` opt through `resolve/1` at the boundary, so every internal consumer
   sees specs regardless of whether the caller passed atoms, modules, or specs.
+- **`Mutare.Macros`** + **`Mutare.Macro.Spec`** — the **known-macro registry**: macros whose
+  arguments the transform routes specially instead of mutating as ordinary runtime values. A
+  `Macro.Spec` (`%{module, name, arity, args}`, module a `Calls`-style key) declares a per-argument
+  treatment — `:expression` (mutate, default), `:pattern` (a match context — `match?`/`destructure`),
+  or `:skip` (leave raw — an opaque DSL body, e.g. `Ecto.Query.from`). `args` is a uniform atom or
+  a per-position list. Specs come from three merged sources (later wins): built-ins (`Kernel.match?/2`,
+  `Kernel.destructure/2`), the declarative **`:macros`** option, and an optional **`macros/0`**
+  callback on any enabled `Mutare.Mutator` — so a library ships its custom mutator *and* its macro
+  registration in one module (the user adds one `:mutators` entry; core stays DSL-agnostic). `build/2`
+  merges them into a lookup `Resolve` stamps from; resolution of `:macros`/`macros/0` is
+  **reflection-free** (syntactic module keys via `Module.split`/`Macro.classify_atom`), so a
+  `{Ecto.Query, …}` entry validates without `Ecto` loaded. Identity at the call site uses the
+  existing alias/import/displacement resolution (a bare `match?` is `Kernel.match?` only when it
+  resolves to Kernel — a local shadow is a compile error), so bare/qualified/aliased forms all route.
+  `:skip` is also "owned only by a custom mutator": core skips the args, but the whole node is still
+  offered to every mutator, so the registering mutator fires. `Mutare.Options` validates `:macros`;
+  `Mutare.Schema` forwards it; `Transform` builds the registry and passes it to `Resolve.annotate/2`.
 - **`Mutare.Config`** / **`Mutare.Changes`** / **`Mix.Tasks.Mutare`** — `.mutare.exs` + CLI flag
   resolution, `git diff` for `--since`, and the CLI entry point. Output formats resolve here too:
   `--format`/`--output` (CLI) and `reporters:` (`.mutare.exs`) become the `Mutare.Options`
@@ -742,6 +763,17 @@ family (so the same module can run twice under distinct names) and is stripped b
 reaches the mutator. `Mutare.Mutators.resolve/1` turns each entry into a `Mutare.Mutator.Spec`;
 `test/support/configurable_mutator.ex` is a working example. Note `pattern_mutations/2` does **not**
 receive `opts` (structural head-pattern mutators aren't configurable yet — out of scope).
+
+For a *macro-aware* mutator (one that targets a macro whose arguments must be routed specially —
+a pattern, or an opaque DSL body), implement the optional callback `macros/0` returning
+`{module, name, arity, treatment}` / `{module, name, treatment}` entries (treatment
+`:expression`/`:pattern`/`:skip`). Listing the mutator in `:mutators` auto-registers them in the
+known-macro registry (`Mutare.Macros`), so a library ships its mutator and its macro routing in one
+module. The motivating case is Ecto: register `{Ecto.Query, :from, :any, :skip}` so core leaves the
+query DSL untouched, while `mutate/1` rewrites the query. The whole macro node is still offered to
+the mutator (`:skip` only stops core descending into the args). The no-mutator case (just route an
+argument as a pattern / leave a DSL opaque) is the declarative top-level `:macros` option.
+`test/support/macro_mutator.ex` is a working example.
 
 ## Result statuses
 

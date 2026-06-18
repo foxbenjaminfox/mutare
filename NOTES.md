@@ -399,12 +399,17 @@ by a blacklist. The positions:
   clause covers every *other* construct, including a `try` outside a def head.
   **`match?/2`** is the one *non-syntactic* pattern position: a macro whose first
   argument is a match context (it expands to `case expr do pattern -> true; _ ->
-  false end`). It looks like an ordinary call, so without a dedicated `analyze`
-  clause its pattern arg was routed `:runtime` and a literal/tuple/string there was
-  mutated in place — splicing a `case` into a pattern ("case not allowed in
-  matches"). Now routed like `=`: arg 1 `:pattern`, arg 2 the surrounding context.
-  Only the bare `match?/2` form (how it is always written); a qualified
-  `Kernel.match?/2` is left to poison fallback. Found dogfooding `plug` — see
+  false end`). It looks like an ordinary call, so without special handling its
+  pattern arg was routed `:runtime` and a literal/tuple/string there was mutated in
+  place — splicing a `case` into a pattern ("case not allowed in matches"). It is
+  now a **known macro** (`Mutare.Macros`): arg 1 `:pattern`, arg 2 `:expression`.
+  This generalises the old hard-coded clause (which matched the bare name only,
+  leaving a qualified `Kernel.match?/2` to poison fallback): the registry resolves
+  the call's module through the existing alias/import/displacement machinery, so
+  the bare **and** qualified/aliased forms are both routed, and only when the call
+  is genuinely `Kernel.match?` (a local `def match?/2` shadowing it is a compile
+  error, so a compiling bare `match?` is unambiguous — the same soundness `Imports`
+  rests on). See "Known-macro registry" below. Found dogfooding `plug` — see
   "Real-world poisons (plug/router)" below.
 
 ### Data keyword/map keys mutate; only block keys are labels `[changed]`
@@ -615,6 +620,58 @@ moved there.
   over-estimated after a narrowing prior, which could itself mis-resolve — fixed.)
   Reflection reads the harness's stdlib, the same Elixir the sandbox compiles against — version
   skew is the only other residual, and benign.
+
+### Known-macro registry — argument routing for macros `[done]`
+A macro whose argument is a *pattern* or an *opaque DSL body* looks like an ordinary call, so
+the positional analyzer would mutate literals inside it (a literal in `match?`'s pattern arg
+is a pattern, not a value → splicing a selector there is "case not allowed in matches", which
+poisons the single build). The fix generalises the old hard-coded `match?/2` clause into an
+extensible **registry** (`Mutare.Macros` + `Mutare.Macro.Spec`): a spec declares, per argument,
+a treatment — `:expression` (analyze `:runtime`, the default), `:pattern` (analyze `:pattern`),
+or `:skip` (leave the arg **raw** — no descent, no mutation). `args` is a uniform atom or a
+per-position list padded with `:expression`.
+
+The mechanism reuses the resolution machinery wholesale — **no new walk**. `Resolve` already
+resolves every call's module; it now also looks the call up in the registry and stamps a
+matched call's meta with its per-position routing (`meta[:mutare_macro]`), which the analyzer's
+generic runtime clause reads (one `case Keyword.get(meta, :mutare_macro)`, the `nil` arm is the
+old path byte-for-byte — sigils/ordinary calls untouched). `Render` strips the stamp via its
+allowlist (`@internal_meta_keys`), like the other `:mutare_*` stamps.
+
+Three load-bearing decisions:
+
+- **Soundness of identifying a macro is the *resolution's*, not a name match.** A bare
+  `match?(p, e)` is `Kernel.match?` only when it isn't import-redirected (`:mutare_import`),
+  isn't `kernel_displaced?`, *and* is a genuine `Kernel` export (`kernel_export?` reflection,
+  Kernel always loaded) — so a local function of the same name resolves to `nil` (no match).
+  This is exact, not heuristic: a local `def match?/2` shadowing the Kernel macro is a **compile
+  error** (verified — "imported Kernel.match?/2 conflicts with local function"), so any
+  *compiling* bare `match?` is unambiguous, the same foundation `Imports` rests on. A
+  qualified/aliased `Kernel.match?`/`Q.from` resolves through `Aliases.resolve_path` — so the
+  registry handles bare, qualified, and aliased forms uniformly (the old clause did bare only).
+- **Three sources, merged later-wins.** Built-ins (`Kernel.match?/2`, `Kernel.destructure/2`),
+  a declarative `:macros` option, and an optional **`macros/0` callback on `Mutare.Mutator`**.
+  The last is the extensibility win: a library ships *one* module carrying both its custom
+  mutator and the macro routing it relies on, and the user adds a single `:mutators` entry —
+  Mutare core never knows about the library. The motivating case is Ecto: register
+  `{Ecto.Query, :from, :any, :skip}` so core leaves the query DSL alone, while the same module's
+  `mutate/1` rewrites the query (drop a `where`, flip `:asc`/`:desc`). `:skip` is also the
+  mechanism behind "owned only by a custom mutator": core skips the args, but the **whole macro
+  node is still offered to every mutator**, so the registering mutator fires on it.
+- **Reflection-free config resolution.** `Mutare.Macros.resolve/1` (and the `:macros` validator
+  in `Options`) never reflect on the module — module keys are purely syntactic (`Module.split`
+  via `Macro.classify_atom` to tell an Elixir alias from an Erlang atom) — so a
+  `{Ecto.Query, …}` entry validates even when `Ecto` is not a dependency of the Mutare process.
+  Resolution at the *call site* still reflects (via `Imports`), where the target app's deps are
+  loadable.
+
+Limitations (documented): a whole `import SomeDsl` resolves a bare macro call only when `SomeDsl`
+is loadable at transform time (the inherited `Imports` limit — a selective `import …, only:` is
+definitive without reflection, and a real `mix mutare` run has the target's deps loaded); a
+piped macro call is never stamped (a pattern-context macro is never piped into its pattern arg);
+and a known macro in a `:scaffold`/compile-time position isn't routed (it's already non-mutating
+there, so `:skip` would be a no-op anyway). `pattern_mutations/2`-style head restructuring of
+macro args is out of scope. `test/support/macro_mutator.ex` is the worked `macros/0` example.
 
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
@@ -2324,8 +2381,9 @@ the genuinely-unknown (e.g. custom mutators), not a routine outcome on real code
   `match?({"_" <> _v, _m}, x)` — `match?/2`'s first arg is a *match context*, but it
   reads as an ordinary call, so the string/tuple literals there were mutated in
   place, splicing a selector `case` into a pattern ("case not allowed in matches").
-  Fixed by routing `match?/2`'s first arg `:pattern` (see "Non-body operator
-  positions" → Patterns). Two of the "7" were *collateral*: poison maps a compile
+  Fixed by routing `match?/2`'s first arg `:pattern` (now via the **known-macro
+  registry** — see "Known-macro registry" — which originally landed as a hard-coded
+  `analyze` clause). Two of the "7" were *collateral*: poison maps a compile
   error's line → every mutant id whose generated code spans it, so the valid
   `Enum.reject`→`Enum.filter` swaps sharing those lines were dropped too. Handling
   the root cause both removed the 5 real poisons and recovered the 2 valid mutants.

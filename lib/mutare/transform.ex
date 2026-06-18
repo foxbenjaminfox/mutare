@@ -149,6 +149,10 @@ defmodule Mutare.Transform do
     * `:file` — path recorded on each site (default `"nofile"`)
     * `:mutators` — list of mutator entries (family atoms, modules, `{module, opts}`
       pairs, or `Mutare.Mutator.Spec`s); defaults to the full built-in set
+    * `:macros` — list of known-macro entries (`{module, name, arity, treatment}` /
+      `{module, name, treatment}`, see `Mutare.Macros`) that route a macro's
+      arguments specially; merged with the built-ins and any enabled mutator's
+      `macros/0`. Defaults to `[]`.
     * `:start_id` — first mutant id to assign (default `1`)
   """
   @spec transform_string(String.t(), keyword()) :: {String.t(), [Site.t()], pos_integer()}
@@ -173,13 +177,21 @@ defmodule Mutare.Transform do
     # the super-forwarding closure variable (see `Mutare.Transform.Names`).
     {prefix, active_var, super_var} = Names.generated_names(parsed)
     ctx = %{ctx | prefix: prefix, active_var: active_var, super_var: super_var}
+    # The known-macro registry (`Mutare.Macros`): built-ins (`Kernel.match?`/`destructure`)
+    # merged with the declarative `:macros` option and any enabled mutator's `macros/0`. It
+    # tells the resolution pass how to route a recognised macro's arguments (a pattern, an
+    # opaque DSL body). Built from the resolved mutator specs in `ctx`, so a library's mutator
+    # auto-registers the macros it relies on.
+    macros = Mutare.Macros.build(Keyword.get(opts, :macros, []), ctx.mutators)
+
     # Resolve `alias`es and `import`s in one lexical pass (`Mutare.Transform.Resolve`),
     # stamping each call with the module it refers to, so the call-matching mutators recognise
     # an aliased `S.upcase` as `String.upcase` and a bare imported `reject(xs, f)` (after
     # `import Enum`) as `Enum.reject`. The two interleave in source order (an `alias` can
     # rebind a later `import`'s module), which the single fold gets right by construction.
-    # `parsed` itself stays pristine for the comment-based ignore scan below.
-    {transformed, ctx} = transform_node(Resolve.annotate(parsed), ctx)
+    # The same pass stamps each known-macro call with its argument routing. `parsed` itself
+    # stays pristine for the comment-based ignore scan below.
+    {transformed, ctx} = transform_node(Resolve.annotate(parsed, macros), ctx)
 
     metamutant = transformed |> silence_helper_xref() |> Render.to_source()
 

@@ -285,6 +285,34 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":macros" do
+    test "defaults to an empty list" do
+      assert Options.new([]).macros == []
+    end
+
+    test "resolves declarative entries to Macro.Specs (no reflection on the module)" do
+      assert Options.new(macros: [{Ecto.Query, :from, :any, :skip}]).macros ==
+               [
+                 %Mutare.Macro.Spec{
+                   module: [:Ecto, :Query],
+                   name: :from,
+                   arity: :any,
+                   args: :skip
+                 }
+               ]
+    end
+
+    test "rejects a non-list" do
+      assert_raise ArgumentError, ~r/:macros must be a list/, fn ->
+        Options.new(macros: :nope)
+      end
+    end
+
+    test "rejects a malformed entry" do
+      assert_raise ArgumentError, fn -> Options.new(macros: [{Kernel, :match?}]) end
+    end
+  end
+
   describe ":reporters" do
     test "defaults to the human reporter on stdout" do
       assert Options.new([]).reporters == [{:human, nil}]

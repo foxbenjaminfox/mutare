@@ -29,6 +29,7 @@ defmodule Mutare.Options do
           paths: [String.t()],
           exclude: [String.t()],
           mutators: [Mutare.Mutator.Spec.t()] | nil,
+          macros: [Mutare.Macro.Spec.t()],
           only_files: MapSet.t() | nil,
           test_selection: :coverage | :full,
           workers: pos_integer(),
@@ -51,6 +52,7 @@ defmodule Mutare.Options do
   defstruct paths: ["lib"],
             exclude: [],
             mutators: nil,
+            macros: [],
             only_files: nil,
             test_selection: :coverage,
             workers: nil,
@@ -69,7 +71,7 @@ defmodule Mutare.Options do
             on_scan: nil,
             project: nil
 
-  @keys ~w(paths exclude mutators only_files test_selection workers timeout
+  @keys ~w(paths exclude mutators macros only_files test_selection workers timeout
            timeout_multiplier baseline_runs harness_retries max_harness_error_rate
            sandbox keep_sandbox min_score reporters reporter on_phase on_start
            on_scan project)a
@@ -105,6 +107,7 @@ defmodule Mutare.Options do
       paths: validate_paths!(Keyword.get(opts, :paths, ["lib"])),
       exclude: validate_string_list!(:exclude, Keyword.get(opts, :exclude, [])),
       mutators: validate_mutators!(Keyword.get(opts, :mutators)),
+      macros: validate_macros!(Keyword.get(opts, :macros, [])),
       only_files: validate_only_files!(Keyword.get(opts, :only_files)),
       test_selection: validate_test_selection!(Keyword.get(opts, :test_selection, :coverage)),
       workers: validate_workers!(Keyword.get(opts, :workers) || System.schedulers_online()),
@@ -170,6 +173,18 @@ defmodule Mutare.Options do
 
   defp validate_mutators!(other) do
     raise ArgumentError, ":mutators must be a list of modules, got: #{inspect(other)}"
+  end
+
+  # Resolve and validate `:macros` through `Mutare.Macros` into `Mutare.Macro.Spec`s. The
+  # resolution is purely syntactic (no reflection), so an entry naming a module that is not a
+  # dependency of the Mutare process (e.g. `Ecto.Query`) is accepted. `nil`/absent means none;
+  # the built-ins (`Kernel.match?`/`destructure`) and mutator-provided macros are merged later,
+  # in `Mutare.Transform`. `Mutare.Macros.resolve/1` raises a descriptive error on a bad entry.
+  defp validate_macros!(nil), do: []
+  defp validate_macros!(macros) when is_list(macros), do: Mutare.Macros.resolve(macros)
+
+  defp validate_macros!(other) do
+    raise ArgumentError, ":macros must be a list of macro entries, got: #{inspect(other)}"
   end
 
   defp validate_only_files!(nil), do: nil

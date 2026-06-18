@@ -503,6 +503,95 @@ defmodule Mutare.TransformTest do
       # No string-empty/tuple-empty mutation reaches the match? pattern.
       assert sites == []
     end
+
+    test "a qualified Kernel.match?/2 is pattern-routed too (resolution, not bare name)" do
+      source = """
+      defmodule QualMatch do
+        def f(s), do: Kernel.match?("x" <> _, s)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringLiteral])
+
+      # The old hard-coded clause matched only the bare `match?`; the registry resolves
+      # `Kernel.match?` so the qualified form's pattern arg is left unmutated too.
+      assert sites == []
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+  end
+
+  describe "Kernel.destructure/2 is a built-in known macro" do
+    test "the first arg is a pattern (a literal there is not mutated)" do
+      source = """
+      defmodule Destr do
+        def f(list) do
+          destructure([a, b, 0], list)
+          a + b
+        end
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.Literal]
+        )
+
+      # The `0` in destructure's first (pattern) arg is never offered; the runtime
+      # `a + b` still mutates (arithmetic). No literal mutant from the pattern.
+      assert Enum.frequencies_by(sites, & &1.mutator) == %{arithmetic: 1}
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+  end
+
+  describe "registered macros (`:macros` / a mutator's `macros/0`)" do
+    @query_source """
+    defmodule UsesQuery do
+      import Mutare.Test.QueryDSL
+
+      def run(y) do
+        query(where: 1 == y, select: 2)
+      end
+    end
+    """
+
+    test "without registration, core mutates inside the macro's argument" do
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(@query_source,
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal]
+        )
+
+      # The DSL body is just a call argument here — `1 == y` and the literals mutate.
+      assert Enum.any?(sites, &(&1.mutator == :relational))
+      assert Enum.any?(sites, &(&1.mutator == :literal))
+    end
+
+    test "a `:skip` macro from a mutator's macros/0 keeps core out and lets the mutator fire" do
+      {meta, sites, _next_id} =
+        Mutare.transform_string(@query_source,
+          mutators: [
+            Mutare.Mutators.Relational,
+            Mutare.Mutators.Literal,
+            Mutare.Test.QueryMutator
+          ]
+        )
+
+      # Core leaves the opaque DSL body alone (no relational/literal sites), while the
+      # macro-aware mutator drops the last clause — its registration rode in via macros/0.
+      assert Enum.map(sites, & &1.mutator) == [:query_dsl]
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "a declarative `:macros` `:skip` entry suppresses core with no custom mutator" do
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(@query_source,
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
+          macros: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
+        )
+
+      # The DSL body is skipped; with no mutator registered for it, nothing mutates.
+      assert sites == []
+    end
   end
 
   describe "a selector cannot be a bare pipe target (|> hoisting)" do

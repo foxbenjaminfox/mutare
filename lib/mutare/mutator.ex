@@ -81,6 +81,24 @@ defmodule Mutare.Mutator do
 
       # mutate option values but not the option names, for atom keys
       [mutators: [..., {Mutare.Mutators.AtomLiteral, call_option_keys: false}]]
+
+  ## Registering known macros (`macros/0`)
+
+  A mutator that targets a *macro* — whose arguments the transform must route as
+  patterns or leave opaque — declares those macros with the optional `c:macros/0`
+  callback. Listing the mutator in `:mutators` then auto-registers them, so a
+  library (e.g. an Ecto integration) bundles its mutator and its macro routing in
+  one module:
+
+      defmodule Mutare.Ecto do
+        @behaviour Mutare.Mutator
+        def name, do: :ecto_query
+        def mutate(node), do: ...                       # drop a where, flip :asc/:desc
+        def macros, do: [{Ecto.Query, :from, :any, :skip}]
+      end
+
+  See `Mutare.Macros` for the declarative `:macros` option (the no-mutator case,
+  e.g. routing a custom DSL's argument as a pattern).
   """
 
   alias Mutare.Mutator.Spec
@@ -174,7 +192,29 @@ defmodule Mutare.Mutator do
   """
   @callback owned_args(Macro.t(), context()) :: [non_neg_integer()]
 
-  @optional_callbacks pattern_mutations: 2, mutate: 2, owned_args: 2
+  @doc """
+  Optional hook by which a mutator registers the **known macros** it depends on —
+  macros whose arguments the transform must route specially (a pattern argument, an
+  opaque DSL body) for this mutator to work, or simply to keep core from mutating a
+  DSL it does not understand.
+
+  Returns a list of `Mutare.Macro.Spec` entries in the declarative form
+  `{module, name, arity, treatment}` or `{module, name, treatment}` (arity `:any`),
+  where `treatment` is `:expression` / `:pattern` / `:skip` (uniform) or a
+  per-position list. When the mutator is enabled (listed in `:mutators`), the
+  transform merges these into its macro registry automatically — so a library ships
+  one module carrying *both* its mutator and the registration it relies on, and the
+  user adds a single `:mutators` entry. Core never has to know about the library.
+
+  The motivating case: an Ecto integration registers `{Ecto.Query, :from, :any,
+  :skip}` so core leaves the query DSL untouched, while the same module's
+  `mutate/1` rewrites the query (drop a `where`, flip `:asc`/`:desc`).
+  `Mutare.Macros.from_mutators/1` discovers implementers by
+  `function_exported?(mod, :macros, 0)`; a mutator without it registers nothing.
+  """
+  @callback macros() :: [tuple()]
+
+  @optional_callbacks pattern_mutations: 2, mutate: 2, owned_args: 2, macros: 0
 
   @doc """
   The **effective arity** of a call node given its pipe context.

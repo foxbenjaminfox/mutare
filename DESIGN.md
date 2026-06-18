@@ -183,12 +183,24 @@ mix mutare --mutators relational,logical,conditional
   paths: ["lib"],
   exclude: ["lib/generated/**"],
   mutators: :all,                 # or a list
+  macros: [                       # known macros: route a macro's args specially
+    {MyApp.Sql, :query, 1, :skip} # leave the DSL body untouched
+  ],
   workers: System.schedulers_online(),
   timeout_multiplier: 3.0,
   min_score: 70,                  # CI fails below this
   test_selection: :coverage       # :coverage | :full
 ]
 ```
+
+A **known-macro registry** (`Mutare.Macros`) routes a macro's arguments by a declared treatment
+(`:expression` / `:pattern` / `:skip`) instead of mutating them as ordinary runtime values — so a
+pattern argument (`match?`/`destructure`) is not mutated in place and an opaque DSL body
+(`Ecto.Query.from`) is left untouched. Specs come from built-ins, the `:macros` option above, and
+an optional `macros/0` callback on any enabled mutator — the last lets a library ship a custom
+mutator *and* the macro routing it relies on in one module (the user adds one `:mutators` entry;
+core stays DSL-agnostic). A macro's module is recognised through the same alias/import resolution as
+the call-matching mutators, so bare, qualified, and aliased forms all route.
 
 ## Output & scoring
 

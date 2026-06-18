@@ -256,17 +256,12 @@ defmodule Mutare.Transform.Analyze do
     {:<-, meta, [analyze(lhs, :pattern, mutators), analyze(rhs, context, mutators)]}
   end
 
-  # `match?(pattern, expr)`: a macro whose *first* argument is a match context, not
-  # a runtime value — it expands to `case expr do pattern -> true; _ -> false end`.
-  # So route it like `=`: the pattern side is `:pattern` (never mutated in place — a
-  # selector `case` spliced there is "case not allowed in matches", and a literal
-  # swap rewrites a pattern, not a value), the matched expression keeps the context.
-  # Without this, mutating a string/tuple/atom literal inside the pattern poisons the
-  # single build. Matches only the bare `match?/2` call (how it is always written);
-  # a qualified `Kernel.match?/2` is rare enough to leave to the poison fallback.
-  defp analyze({:match?, meta, [pattern, expr]}, context, mutators) do
-    {:match?, meta, [analyze(pattern, :pattern, mutators), analyze(expr, context, mutators)]}
-  end
+  # (`match?`/`destructure` and any other pattern-context macro are no longer a
+  # dedicated clause here: they are *known macros* (`Mutare.Macros`), recognised by
+  # the lexical pre-pass via their resolved module — so a bare `match?(p, e)` is
+  # routed only when it is genuinely `Kernel.match?`, and an aliased/qualified or
+  # user-registered macro is handled the same way. The routing is read from the
+  # `meta[:mutare_macro]` stamp in the generic runtime clause below.)
 
   # `cond`: the one `->` construct whose clause *left* is a runtime condition, not
   # a pattern — so it stays mutatable. Analyze its clauses keeping both sides
@@ -459,12 +454,26 @@ defmodule Mutare.Transform.Analyze do
   # analyzed (so an interpolated expression `~r/a#{b}c/` still mutates `b`), but the
   # content `<<>>` *wrapper* itself is never offered — collapsing a sigil's content
   # (BitstringLiteral) or splicing a selector into it is illegal.
-  defp analyze({form, _meta, _args} = node, :runtime, mutators) do
-    node = offer(node, node, mutators)
+  #
+  # A call stamped a **known macro** (`meta[:mutare_macro]`, set by
+  # `Mutare.Transform.Resolve` from `Mutare.Macros`) routes its arguments by their
+  # declared treatment instead of the default all-runtime descent — so a pattern
+  # argument (`match?`/`destructure`) isn't mutated in place and an opaque DSL body
+  # (`Ecto.Query.from`) is left raw — while the whole node is still offered to
+  # mutators (a library's custom mutator fires on it). Every other (non-macro) node
+  # falls through to the existing offer/descend below, unchanged.
+  defp analyze({form, meta, _args} = node, :runtime, mutators) do
+    case macro_routing(meta) do
+      nil ->
+        node = offer(node, node, mutators)
 
-    if sigil?(form),
-      do: descend_sigil(node, mutators),
-      else: recurse_runtime(node, mutators, false)
+        if sigil?(form),
+          do: descend_sigil(node, mutators),
+          else: recurse_runtime(node, mutators, false)
+
+      routing ->
+        analyze_known_macro(node, routing, mutators)
+    end
   end
 
   # A keyword/map/block pair (`key: value`, `%{a: …}`, a `do:`/`else:`/`rescue:`/
@@ -503,6 +512,39 @@ defmodule Mutare.Transform.Analyze do
   end
 
   defp analyze_pipe_stage(other, mutators), do: analyze(other, :runtime, mutators)
+
+  # === known macros ==========================================================
+
+  # The per-argument routing stamped on a call by `Mutare.Transform.Resolve` when it
+  # resolves to a known macro (`Mutare.Macros`), or `nil` for an ordinary call.
+  defp macro_routing(meta) when is_list(meta), do: Keyword.get(meta, :mutare_macro)
+  defp macro_routing(_meta), do: nil
+
+  # Analyze a known-macro call: offer the *whole* node to mutators (so a custom mutator
+  # registered for the macro still fires — e.g. an Ecto query mutator on `from(...)`),
+  # then route each argument by its declared treatment instead of the default all-runtime
+  # descent. `mark_call_option_keys/1` still runs (harmless for `:skip`/`:pattern` args,
+  # which carry no candidates; correct for `:expression` args, preserving option-key gating).
+  defp analyze_known_macro(node, routing, mutators) do
+    {form, meta, args} = offer(node, node, mutators)
+    mark_call_option_keys({form, meta, route_macro_args(args, routing, mutators)})
+  end
+
+  # Route each argument by its treatment: `:expression` → ordinary runtime (mutate);
+  # `:pattern` → a match context (descend for nested runtime escapes, never mutate the
+  # pattern in place); `:skip` → leave the argument raw (no descent, no mutation — an
+  # opaque DSL body). A position past the routing list defaults to `:expression`.
+  defp route_macro_args(args, routing, mutators) do
+    args
+    |> Enum.with_index()
+    |> Enum.map(fn {arg, i} ->
+      case Enum.at(routing, i, :expression) do
+        :skip -> arg
+        :pattern -> analyze(arg, :pattern, mutators)
+        _expression -> analyze(arg, :runtime, mutators)
+      end
+    end)
+  end
 
   # One argument of a `for`: a generator/filter/match is descended as a *statement*
   # (its value is discarded — a qualifier only binds/filters), while the trailing
