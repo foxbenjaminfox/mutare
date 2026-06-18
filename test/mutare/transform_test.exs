@@ -970,6 +970,27 @@ defmodule Mutare.TransformTest do
       refute Enum.any?(sites, &(&1.mutator == :collection))
     end
 
+    test "a different-arity local does not shadow a sole whole import (resolves by arity)" do
+      # `reject/1` is local; the call is `reject/2`, which is Enum's (different arity, no
+      # conflict). The swap to `filter/2` names Enum's (bare, sole import) and compiles — the
+      # incidental local `reject/1` never enters resolution.
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule ImpLocalArity do
+            import Enum
+            def reject(a), do: a
+            def f(xs, fun), do: reject(xs, fun)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
+      assert {"reject(xs, fun)", "filter(xs, fun)"} in pairs
+      assert_compiles(meta)
+    end
+
     test "a bare imported guard macro mutates via lifting and compiles" do
       {meta, sites, _} =
         Mutare.transform_string(

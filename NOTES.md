@@ -568,6 +568,26 @@ moved there.
 - **Out of scope (documented limitations).** Operator displacement (`import Kernel,
   except: [+: 2]` + a custom `+`) — Arithmetic/Relational/Logical don't read the stamp. Like
   `alias`, `use`/macro-injected imports are invisible.
+- **Why it can never invoke the *wrong* function (correct, or poison — never silently
+  wrong).** The whole scheme rests on one Elixir fact (re-verified): calling a name provided
+  by more than one source — two imports, an import + a same-arity local, or an import + Kernel
+  — is a **compile error**, never a silent pick. (A local *definition* shadowing an import is
+  allowed; only the *call* errors — so a local that exists but isn't called doesn't perturb
+  resolution, and a different-arity local resolves distinctly.) Given that, for a swap
+  `fun`→`sibling` resolved to module `M` (`M` exports `fun` at the call arity; the swap table
+  guarantees `M` exports `sibling`):
+    - **Qualified** rebuild (`Elixir.M.sibling` / `:m.sibling`) names `M` unambiguously, immune
+      to imports, aliases, and locals — correct if `M.sibling` exists, else a compile error.
+    - **Bare** rebuild (only for a sole whole import + default Kernel): `M` is always a provider
+      of `sibling` (it whole-imports it), so the bare call resolves to `M` (correct) *or* has a
+      second provider and is a compile error. It can **never** silently resolve to a *different*
+      module — that would require `M` not to provide `sibling`, but it always does.
+  So every path is correct-or-poison. The `use`/macro-injected-import hole degrades the same
+  way: to mis-resolve a hidden-import call to a visible module `M`, `M` would itself have to
+  export that name/arity — which makes the *original* call ambiguous and non-compiling, so it
+  is never transformed. The hole therefore costs **missed** resolutions (or poison), never a
+  wrong-but-compiling mutant. (Reflection reads the harness's stdlib, which is the same Elixir
+  install the sandbox compiles against — version skew is the only residual, and benign.)
 
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
