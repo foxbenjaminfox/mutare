@@ -63,7 +63,7 @@ defmodule Mutare.Transform.Candidate do
             mutator: module(),
             original: Macro.t(),
             mutated: Macro.t(),
-            range: map()
+            range: Sourceror.Range.t()
           }
 
     defstruct [:mutator, :original, :mutated, :range]
@@ -85,7 +85,7 @@ defmodule Mutare.Transform.Candidate do
             mutator: module(),
             original: Macro.t(),
             mutated: Macro.t(),
-            range: map()
+            range: Sourceror.Range.t()
           }
 
     defstruct [:tag, :clause_index, :mutator, :original, :mutated, :range]
@@ -110,7 +110,7 @@ defmodule Mutare.Transform.Candidate do
             mutator: module(),
             original: Macro.t(),
             mutated: Macro.t(),
-            range: map()
+            range: Sourceror.Range.t()
           }
 
     defstruct [:tag, :clause_index, :mutator, :original, :mutated, :range]
@@ -136,7 +136,7 @@ defmodule Mutare.Transform.Candidate do
             mutated_args: [Macro.t()],
             original: Macro.t(),
             mutated: Macro.t(),
-            range: map()
+            range: Sourceror.Range.t()
           }
 
     defstruct [:clause_index, :mutator, :mutated_args, :original, :mutated, :range]
@@ -160,7 +160,7 @@ defmodule Mutare.Transform.Candidate do
             original: Macro.t(),
             mutated: Macro.t(),
             replacement: Macro.t(),
-            range: map()
+            range: Sourceror.Range.t()
           }
 
     defstruct [:mutator, :original, :mutated, :replacement, :range]
@@ -177,7 +177,7 @@ defmodule Mutare.Transform.Candidate do
     @type t :: %__MODULE__{
             clause_index: non_neg_integer(),
             original: Macro.t(),
-            range: map()
+            range: Sourceror.Range.t()
           }
 
     defstruct [:clause_index, :original, :range]
@@ -198,7 +198,7 @@ defmodule Mutare.Transform.Candidate do
     @type t :: %__MODULE__{
             original: Macro.t(),
             mutated: Macro.t(),
-            range: map()
+            range: Sourceror.Range.t()
           }
 
     defstruct [:original, :mutated, :range]

@@ -38,7 +38,7 @@ defmodule Mutare.Transform.ModulePlan do
 
   `file` is used only to attribute the non-consecutive-clause warning.
   """
-  @spec build([Macro.t()], [module()], String.t()) :: t()
+  @spec build([Macro.t()], [Mutare.Mutator.Spec.t()], String.t()) :: t()
   def build(statements, mutators, file) do
     chunks = chunk_clause_runs(statements)
     non_consecutive = non_consecutive_signatures(chunks)

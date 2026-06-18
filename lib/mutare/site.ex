@@ -12,7 +12,7 @@ defmodule Mutare.Site do
           file: String.t(),
           line: pos_integer() | nil,
           column: pos_integer() | nil,
-          range: map() | nil,
+          range: Sourceror.Range.t() | nil,
           mutator: atom(),
           kind: :in_place | :lifted,
           operation: :replace | :delete,
@@ -58,8 +58,14 @@ defmodule Mutare.Site do
   function body. `range` locates the original node; `mutator` is the
   `Mutare.Mutator.Spec` that produced `mutated_node` (its `name` is recorded).
   """
-  @spec in_place(pos_integer(), String.t(), map(), Macro.t(), Macro.t(), Mutare.Mutator.Spec.t()) ::
-          t()
+  @spec in_place(
+          pos_integer(),
+          String.t(),
+          Sourceror.Range.t(),
+          Macro.t(),
+          Macro.t(),
+          Mutare.Mutator.Spec.t()
+        ) :: t()
   def in_place(id, file, range, original_node, mutated_node, mutator) do
     replace(id, file, range, original_node, mutated_node, mutator, :in_place)
   end
@@ -75,7 +81,7 @@ defmodule Mutare.Site do
   @spec lifted_replace(
           pos_integer(),
           String.t(),
-          map(),
+          Sourceror.Range.t(),
           Macro.t(),
           Macro.t(),
           Mutare.Mutator.Spec.t()
@@ -88,7 +94,7 @@ defmodule Mutare.Site do
   A dropped function clause — a `:lifted`, `:delete` mutation. The clause is
   removed entirely, so there is no mutated node, op, or code.
   """
-  @spec clause_drop(pos_integer(), String.t(), map(), Macro.t()) :: t()
+  @spec clause_drop(pos_integer(), String.t(), Sourceror.Range.t(), Macro.t()) :: t()
   def clause_drop(id, file, range, clause_node) do
     %__MODULE__{
       id: id,
@@ -116,7 +122,7 @@ defmodule Mutare.Site do
   *is* `:in_place` (a tail is a body position), with the original tail and the
   replacement constant kept for the diff.
   """
-  @spec return_value(pos_integer(), String.t(), map(), Macro.t(), Macro.t()) :: t()
+  @spec return_value(pos_integer(), String.t(), Sourceror.Range.t(), Macro.t(), Macro.t()) :: t()
   def return_value(id, file, range, original_node, mutated_node) do
     %__MODULE__{
       id: id,

@@ -11,7 +11,7 @@ defmodule Mutare.Transform.Ctx do
 
   @type t :: %__MODULE__{
           file: String.t(),
-          mutators: [module()],
+          mutators: [Mutare.Mutator.Spec.t()],
           skip_ids: MapSet.t(),
           prefix: String.t(),
           active_var: atom(),

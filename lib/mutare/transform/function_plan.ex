@@ -71,7 +71,7 @@ defmodule Mutare.Transform.FunctionPlan do
   dispatcher (`liftable?/2`), else `:in_place` — its clauses stay where they are
   and only their bodies mutate.
   """
-  @spec plan(signature(), [Macro.t()], [module()]) :: {:lift, t()} | :in_place
+  @spec plan(signature(), [Macro.t()], [Mutator.Spec.t()]) :: {:lift, t()} | :in_place
   def plan({_vis, name, _arity} = signature, clauses, mutators) do
     {tagged_clauses, guards, patterns} = build_lifted(clauses, mutators)
     pattern_structures = build_pattern_structures(clauses, mutators)
