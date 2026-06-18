@@ -393,6 +393,13 @@ defmodule Mutare.Transform do
     # clause, so its id excludes that clause's *original* version.
     excluded = Enum.group_by(claimed, fn {_id, i, _c} -> i end, fn {id, _i, _c} -> id end)
 
+    # Default arguments (`def f(a, b \\ 1)`) expand to multiple arities. They stay
+    # on the public dispatcher — which keeps the original arity contract — while the
+    # base function takes the full arity with `\\` stripped (`clause_parts`). The
+    # default *expressions* are taken from the already-emitted clauses, so their
+    # in-place selectors ride along and the dispatcher keeps mutating its defaults.
+    defaults = clause_defaults(orig_clauses)
+
     lifted =
       orig_clauses
       |> Enum.with_index()
@@ -402,25 +409,39 @@ defmodule Mutare.Transform do
               clause != :drop,
               do: lifted_mutant(base, id, clause, var)
 
-        mutant_clauses ++ [lifted_original(base, orig, Map.get(excluded, index, []), var)]
+        # A bodiless header (`def f(a, b \\ 1)` with no `do`) declares defaults
+        # only — it has no body to lift and no candidates target it. Its defaults
+        # ride on the dispatcher (above); it emits no base clause of its own.
+        if bodiless_header?(orig) do
+          mutant_clauses
+        else
+          mutant_clauses ++ [lifted_original(base, orig, Map.get(excluded, index, []), var)]
+        end
       end)
 
-    {[build_dispatcher(vis, name, arity, mut_ids, base, var) | lifted], ctx}
+    {[build_dispatcher(vis, name, arity, mut_ids, base, var, defaults) | lifted], ctx}
   end
 
   # The public dispatcher: read the active mutant id once, record coverage for the
   # group's lifted ids (inert off the probe — see `Mutare.Coverage.Recorder`), then
   # tail-call the lifted function with the id threaded as the extra first argument.
-  #   def f(mutare_arg1, ...) do
+  #   def f(mutare_arg1, mutare_arg2 \\ <default>, ...) do
   #     mutare_active = :persistent_term.get(:mutare_active, 0)
   #     <record ids>
-  #     <base>(mutare_active, mutare_arg1, ...)
+  #     <base>(mutare_active, mutare_arg1, mutare_arg2, ...)
   #   end
-  defp build_dispatcher(vis, name, arity, mut_ids, base, var) do
-    args = dispatcher_args(arity)
+  #
+  # `defaults` (position → expression, from the source's default args) is overlaid
+  # onto the dispatcher *head* — so the public function keeps the original
+  # multi-arity contract — while the call to the base passes the *plain* vars (the
+  # defaults are already resolved by the time the head's body runs). The base
+  # therefore always sees the full arity.
+  defp build_dispatcher(vis, name, arity, mut_ids, base, var, defaults) do
+    call_args = dispatcher_args(arity)
+    head_args = with_defaults(call_args, defaults)
     var_node = Recorder.catch_all_pattern(var)
     read = {:=, [], [var_node, Mutare.Metamutant.subject_ast()]}
-    call = {base, [], [var_node | args]}
+    call = {base, [], [var_node | call_args]}
 
     body =
       case mut_ids do
@@ -428,7 +449,23 @@ defmodule Mutare.Transform do
         ids -> {:__block__, [], [read, Recorder.record_ast(ids, var), call]}
       end
 
-    {vis, [], [{name, [], args}, [do: body]]}
+    {vis, [], [{name, [], head_args}, [do: body]]}
+  end
+
+  # Overlay each `\\ default` from `defaults` (position → expression) onto the
+  # dispatcher's catch-all arg at that position. A `\\` may only appear in a
+  # `def`/`defp` head, which the dispatcher is.
+  defp with_defaults(args, defaults) when map_size(defaults) == 0, do: args
+
+  defp with_defaults(args, defaults) do
+    args
+    |> Enum.with_index()
+    |> Enum.map(fn {arg, pos} ->
+      case Map.fetch(defaults, pos) do
+        {:ok, default} -> {:\\, [], [arg, default]}
+        :error -> arg
+      end
+    end)
   end
 
   # One lifted *mutant* clause: the candidate's single mutated source clause,
@@ -467,7 +504,9 @@ defmodule Mutare.Transform do
 
   # Deconstruct a function clause into `{clause_meta, head_call_meta, head_args,
   # guards, body_kw}`. A 0-arity head carries a `nil` arg context rather than a
-  # list, which becomes `[]`.
+  # list, which becomes `[]`. Default-argument annotations (`a \\ 1`) are stripped
+  # from the head args — the base function takes the full arity (the dispatcher
+  # already resolved the defaults), and `\\` is legal only in a public head anyway.
   defp clause_parts({_vis, clause_meta, [head | body]}) do
     {call, guards} =
       case head do
@@ -476,8 +515,58 @@ defmodule Mutare.Transform do
       end
 
     {_name, call_meta, args} = call
-    {clause_meta, call_meta, if(is_list(args), do: args, else: []), guards, body}
+    args = if is_list(args), do: strip_arg_defaults(args), else: []
+    {clause_meta, call_meta, args, guards, body}
   end
+
+  defp strip_arg_defaults(args) do
+    Enum.map(args, fn
+      {:\\, _meta, [pattern, _default]} -> pattern
+      arg -> arg
+    end)
+  end
+
+  # The default-argument expressions of a lifted group, keyed by 0-based head
+  # position. They live on exactly one source clause — a bodiless header in a
+  # multi-clause group, or the lone clause of a single-clause group — so the first
+  # clause carrying any `\\` supplies them all. The expressions come straight from
+  # the *emitted* clauses, so their in-place default-value selectors are intact and
+  # the dispatcher that hosts them keeps mutating the defaults at call time.
+  defp clause_defaults(clauses) do
+    Enum.find_value(clauses, %{}, fn clause ->
+      defaults =
+        clause
+        |> head_arg_list()
+        |> Enum.with_index()
+        |> Enum.flat_map(fn
+          {{:\\, _meta, [_pattern, default]}, pos} -> [{pos, default}]
+          _arg -> []
+        end)
+        |> Map.new()
+
+      if map_size(defaults) > 0, do: defaults, else: nil
+    end)
+  end
+
+  # The raw head pattern args of a clause (peeling any `when`), with `\\` defaults
+  # intact — unlike `clause_parts`, which strips them for the base function.
+  defp head_arg_list({_vis, _meta, [head | _rest]}) do
+    case head do
+      {:when, _meta, [call | _guards]} -> call_arg_list(call)
+      call -> call_arg_list(call)
+    end
+  end
+
+  defp head_arg_list(_), do: []
+
+  defp call_arg_list({_name, _meta, args}) when is_list(args), do: args
+  defp call_arg_list(_), do: []
+
+  # A bodiless function header (`def f(a, b \\ 1)` with no `do`): a default-args
+  # declaration, not an implementation. One element after the visibility/meta (just
+  # the head); a real clause has two (head + body keyword).
+  defp bodiless_header?({_vis, _meta, [_head]}), do: true
+  defp bodiless_header?(_), do: false
 
   # AND `gate` into a guard expression, distributing over a top-level `when`
   # (`a when b` is the guard's OR) so each alternative becomes `gate and <alt>` — a

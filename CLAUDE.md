@@ -188,7 +188,18 @@ contract between them is the whole game.
     name + the `catch_all_pattern/1`·`record_ast/2` builders that take it.
     Both sides of a `%{1 => 2}` map pattern mutate. The **structure** rewrites (`PatternSwap`,
     `PatternWildcard`) are pattern-legal by construction and applied by whole-clause replacement, not
-    tagging.
+    tagging. **Default args** (`def f(a, b \\ 1, c, d \\ 2)`) are lifted too: the `\\` defaults ride
+    on the public dispatcher (the only place a `\\` is legal — so the function's whole arity range
+    still resolves), whose body forwards the *resolved* args to the base at full arity; the base
+    clauses strip `\\` to bare patterns (`clause_parts`). A default *value* stays a runtime in-place
+    position (its selector lifted off the emitted clause by `clause_defaults/1`, firing only on the
+    defaulted call path); a default cannot reference another arg (isolated scope), so renaming the
+    dispatcher's args to `mutare_arg_i` never breaks it. A bodiless **header** (`def f(a, b \\ 1)`
+    before the real clauses) supplies the dispatcher's defaults but is not a base clause
+    (`bodiless_header?/1` skips it). Head literals under a `\\` lift (`tag_pattern_targets/3` descends
+    the `\\`'s pattern, keeps the default raw); pattern structures strip-then-reattach the `\\`. Only
+    operator-named and non-consecutive/metaprogrammed groups still fall back to in-place (see NOTES
+    "Default arguments are lifted").
 - **`Mutare.Schema`** — runs `Transform` across discovered files, threading **globally-unique,
   stable** mutant ids. Honors `:paths`/`:exclude`, `:only_files` (for `--since`), and `:skip_ids`
   (for poison recovery — the id counter advances even for skipped ids, so ids stay stable across

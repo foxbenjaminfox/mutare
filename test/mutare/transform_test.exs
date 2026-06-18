@@ -1359,16 +1359,26 @@ defmodule Mutare.TransformTest do
       assert [{H, _}] = Code.compile_string(meta)
     end
 
-    test "a non-liftable function (default arg) gets no head-literal mutant" do
-      # Default args expand to multiple arities, so the group is not lifted — and a
-      # head literal there falls back to the in-place `:pattern` routing, unmutated.
+    test "a default-arg function lifts: head literal mutates, default value rides the dispatcher" do
+      # Default args expand to multiple arities; the function is lifted with the
+      # `\\` defaults kept on the public dispatcher (preserving the arity contract)
+      # while the lifted base takes the full arity. So the head literal `1` now
+      # lifts (it never did while default-arg functions were left in place), and the
+      # default value `2` still mutates in place — on the dispatcher.
       source = "defmodule H do\n  def f(1, b \\\\ 2), do: b\nend\n"
       {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @literal)
 
-      refute meta =~ "__mutare_f"
-      # Only the default value `2` (runtime) mutates; the head `1` does not.
+      assert meta =~ "__mutare_f_2_g1"
+      # The head literal `1` lifts; the default `2` mutates in place.
       assert MapSet.new(sites, &{&1.original_code, &1.kind}) ==
-               MapSet.new([{"2", :in_place}])
+               MapSet.new([{"1", :lifted}, {"2", :in_place}])
+
+      # The dispatcher's second arg keeps the `\\` default (so `f/1` still resolves)...
+      assert meta =~ ~r/mutare_arg2 \\\\/
+      # ...and the lifted base function takes the full arity with `\\` stripped.
+      assert meta =~ ~r/defp __mutare_f_2_g1\(mutare_active, 1, b\)/
+      refute meta =~ ~r/defp __mutare_f_2_g1\([^)]*\\\\/
+      assert [{H, _}] = Code.compile_string(meta)
     end
 
     test "a mutator that would emit a pattern-illegal node is filtered out of heads" do

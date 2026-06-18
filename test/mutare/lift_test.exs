@@ -40,6 +40,24 @@ defmodule Mutare.LiftTest do
 
   @compile {:no_warn_undefined, Mutare.PatternLiftFixture}
 
+  # Default arguments, the hard case: a bodiless header with defaults *interleaved*
+  # with required args (`b \\ 10` then required `c` then `d \\ 20` — a non-default
+  # arg after a default), a head-literal clause (`f(0, …)`), a guard clause, and a
+  # catch-all. So one fixture exercises default-value mutation (on the dispatcher),
+  # head-literal lifting, guard lifting, and clause drops, while staying callable at
+  # arities 2/3/4 — Elixir fills the *optional* positions (b, d) left-to-right as
+  # args are omitted, which the lifted dispatcher must preserve exactly.
+  @default_source """
+  defmodule Mutare.DefaultArgFixture do
+    def f(a, b \\\\ 10, c, d \\\\ 20)
+    def f(0, b, c, d), do: {:zero, b, c, d}
+    def f(a, b, c, d) when a > 5, do: {:big, a, b, c, d}
+    def f(a, b, c, d), do: {:other, a, b, c, d}
+  end
+  """
+
+  @compile {:no_warn_undefined, Mutare.DefaultArgFixture}
+
   # Pin to the operator-swap families: this fixture exercises lifting mechanics
   # (guard swaps, clause drops, in-place bodies), so the default literal mutator —
   # which would also lift `0`/`1` constants in the guards and bodies — is excluded
@@ -58,7 +76,12 @@ defmodule Mutare.LiftTest do
 
     [{_module, _binary}] = Code.compile_string(pattern_meta)
 
-    %{sites: sites, pattern_sites: pattern_sites}
+    {default_meta, default_sites, _next_id} =
+      Mutare.transform_string(@default_source, file: "default.ex")
+
+    [{_module, _binary}] = Code.compile_string(default_meta)
+
+    %{sites: sites, pattern_sites: pattern_sites, default_sites: default_sites}
   end
 
   setup do
@@ -349,12 +372,26 @@ defmodule Mutare.LiftTest do
       Selector.put(Selector.baseline())
     end
 
-    test "falls back to in-place (no lift) for default args and operator names" do
-      {defaulted, _, _} =
+    test "lifts a default-arg function: defaults ride on the dispatcher, base takes full arity" do
+      {defaulted, sites, _} =
         Mutare.transform_string("defmodule M do\n  def h(a, b \\\\ 1) when a > b, do: a\nend\n")
 
-      refute defaulted =~ "__mutare_h"
+      # The guard is lifted (it now gets guard/clause mutants it never had before)...
+      assert defaulted =~ "__mutare_h_2_g1"
+      assert Enum.any?(sites, &(&1.kind == :lifted))
 
+      # ...the public dispatcher keeps the `\\` default (preserving the multi-arity
+      # contract: `h/1` and `h/2` both still resolve)...
+      assert defaulted =~ ~r/def h\(mutare_arg1, mutare_arg2 \\\\ /
+
+      # ...and the lifted base function takes the full arity with `\\` stripped.
+      assert defaulted =~ ~r/defp __mutare_h_2_g1\(mutare_active, a, b\)/
+      refute defaulted =~ ~r/defp __mutare_h_2_g1\([^)]*\\\\/
+
+      assert [{M, _}] = Code.compile_string(defaulted)
+    end
+
+    test "falls back to in-place (no lift) for operator names" do
       {operator, _, _} =
         Mutare.transform_string("defmodule M do\n  def a ~> b when b > 0, do: a\nend\n")
 
@@ -482,5 +519,69 @@ defmodule Mutare.LiftTest do
 
     assert Report.header(site) == "lift.ex:3  [clause_drop, lifted]  SURVIVED"
     assert Report.diff(site, @source) == "-  def classify(_), do: :neg"
+  end
+
+  describe "compiled metamutant with default arguments" do
+    alias Mutare.DefaultArgFixture, as: D
+
+    defp default_id(sites, fun) do
+      site = Enum.find(sites, fun)
+      assert site, "no matching default-arg site"
+      site.id
+    end
+
+    test "baseline fills the optional positions left-to-right at every arity" do
+      # arity 2: a, c given; b, d default. arity 3: a, b, c given; d default.
+      assert D.f(0, 7) == {:zero, 10, 7, 20}
+      assert D.f(0, 2, 7) == {:zero, 2, 7, 20}
+      assert D.f(0, 2, 7, 9) == {:zero, 2, 7, 9}
+      assert D.f(9, 7) == {:big, 9, 10, 7, 20}
+      assert D.f(3, 7) == {:other, 3, 10, 7, 20}
+    end
+
+    test "a default-value mutant changes only the defaulted call path", %{default_sites: sites} do
+      # `b \\ 10` → `0`: observable only when `b` is left to the (mutated) default.
+      Selector.put(
+        default_id(
+          sites,
+          &(&1.kind == :in_place and &1.original_code == "10" and &1.mutated_code == "0")
+        )
+      )
+
+      # arity 2 omits b → the mutated default fires; arity 3 supplies b → unchanged.
+      assert D.f(0, 7) == {:zero, 0, 7, 20}
+      assert D.f(0, 2, 7) == {:zero, 2, 7, 20}
+    end
+
+    test "a head-literal mutant changes which clause matches", %{default_sites: sites} do
+      # `f(0, …)`'s head literal `0` → `1`: `f(0, …)` no longer hits the :zero clause,
+      # while `f(1, …)` now does — delivered by lifting through the dispatcher.
+      Selector.put(
+        default_id(
+          sites,
+          &(&1.kind == :lifted and &1.original_code == "0" and &1.mutated_code == "1")
+        )
+      )
+
+      assert D.f(0, 7) == {:other, 0, 10, 7, 20}
+      assert D.f(1, 7) == {:zero, 10, 7, 20}
+    end
+
+    test "a lifted guard mutant changes dispatch", %{default_sites: sites} do
+      # `a > 5` → `a < 5`.
+      Selector.put(
+        default_id(sites, &(&1.kind == :lifted and &1.original_op == :> and &1.mutated_op == :<))
+      )
+
+      assert D.f(9, 7) == {:other, 9, 10, 7, 20}
+      assert D.f(3, 7) == {:big, 3, 10, 7, 20}
+    end
+
+    test "a clause drop sends inputs to a later clause", %{default_sites: sites} do
+      # drop `def f(0, b, c, d)` (line 3); `f(0, …)` now falls through to the catch-all.
+      Selector.put(default_id(sites, &(&1.mutator == :clause_drop and &1.line == 3)))
+
+      assert D.f(0, 7) == {:other, 0, 10, 7, 20}
+    end
   end
 end

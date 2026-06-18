@@ -78,7 +78,7 @@ defmodule Mutare.Transform.FunctionPlan do
     drops = build_drops(clauses)
 
     if (guards != [] or patterns != [] or pattern_structures != [] or drops != []) and
-         liftable?(name, clauses) do
+         liftable?(name) do
       plan = %__MODULE__{
         signature: signature,
         clauses: clauses,
@@ -378,6 +378,16 @@ defmodule Mutare.Transform.FunctionPlan do
     {{:"::", meta, [value, spec]}, acc}
   end
 
+  # A default argument `pattern \\ default`: descend the *pattern* (a literal there
+  # — e.g. the `0` in `def f({0, y} \\ {1, 2})` — is a head literal mutated by
+  # lifting), but keep the default value raw. The default is a *runtime* position,
+  # already mutated in place on the dispatcher (the base clause strips the `\\`), so
+  # it must never be tagged as a pattern literal — mirroring the `::` spec clause.
+  defp tag_pattern_targets({:\\, meta, [pattern, default]}, acc, mutators) do
+    {pattern, acc} = tag_pattern_targets(pattern, acc, mutators)
+    {{:\\, meta, [pattern, default]}, acc}
+  end
+
   # A map pattern. A key literal that mutated to *another key's* value would make a
   # **duplicate map key** — a compile error — so each key's mutations are filtered
   # against the map's other keys (`map_key_values/1`) before tagging, catching the
@@ -523,24 +533,36 @@ defmodule Mutare.Transform.FunctionPlan do
       [] ->
         []
 
-      args ->
+      raw_args ->
         call = clause_head_call(clause)
+
+        # A default arg `pattern \\ default` is offered as just its `pattern`: the
+        # default is not part of the match, and swapping/wildcarding *across* it
+        # (or treating `\\` as a swappable container) would be illegal. Strip
+        # before the mutators run, then re-attach each `\\ default` to its (same)
+        # position afterwards — swaps/wildcards never move top-level args, so the
+        # default lands back where it belongs and the base clause (which strips
+        # `\\` anyway) and the diff both stay correct.
+        args = strip_defaults(raw_args)
 
         # A head with no rangeable call can't be diffed; skip rather than emit a site
         # the report would crash on (mirrors the return-value `get_range` guard).
         case Sourceror.get_range(call) do
           %{} = range ->
             used = clause_used_outside(clause)
+            original = put_call_args(call, raw_args)
 
             Enum.flat_map(structural, fn mutator ->
               args
               |> mutator.pattern_mutations(used)
               |> Enum.map(fn mutated_args ->
+                mutated_args = reattach_defaults(mutated_args, raw_args)
+
                 %Candidate.PatternStructure{
                   clause_index: index,
                   mutator: mutator,
                   mutated_args: mutated_args,
-                  original: call,
+                  original: original,
                   mutated: put_call_args(call, mutated_args),
                   range: range
                 }
@@ -551,6 +573,21 @@ defmodule Mutare.Transform.FunctionPlan do
             []
         end
     end
+  end
+
+  # Drop each arg's `\\ default` down to its bare pattern (a no-op for a plain arg).
+  defp strip_defaults(args), do: Enum.map(args, &strip_default/1)
+  defp strip_default({:\\, _meta, [pattern, _default]}), do: pattern
+  defp strip_default(arg), do: arg
+
+  # Re-wrap the positions that originally carried a default. A structural mutation
+  # never changes the arg-list length or reorders top-level positions, so a
+  # positional zip restores `\\ default` exactly where the source had it.
+  defp reattach_defaults(mutated_args, raw_args) do
+    Enum.zip_with(mutated_args, raw_args, fn
+      pattern, {:\\, meta, [_pattern, default]} -> {:\\, meta, [pattern, default]}
+      pattern, _raw -> pattern
+    end)
   end
 
   # The variable names read in a clause's guard(s) and body — the `used_outside` set a
@@ -606,16 +643,12 @@ defmodule Mutare.Transform.FunctionPlan do
   # === liftability ===========================================================
 
   # We can only lift functions whose name is a plain identifier (operator names
-  # like `<>` can't be spelled as `__mutare_<>_2_g1(...)`) and which have no
-  # default arguments (those expand to multiple arities; normalize-then-lift is
-  # later work). Such groups fall back to in-place only.
-  defp liftable?(name, clauses) do
-    Regex.match?(~r/\A[a-z_][a-zA-Z0-9_]*[?!]?\z/, Atom.to_string(name)) and
-      not Enum.any?(clauses, &default_args?/1)
-  end
-
-  defp default_args?({_vis, _meta, [head | _rest]}) do
-    head |> head_args() |> Enum.any?(&match?({:\\, _, _}, &1))
+  # like `<>` can't be spelled as `__mutare_<>_2_g1(...)`). Default arguments are
+  # supported: their `\\ default` annotations ride on the public dispatcher (which
+  # keeps the original multi-arity contract), while the lifted base function takes
+  # the full arity with the defaults stripped — see `Mutare.Transform`.
+  defp liftable?(name) do
+    Regex.match?(~r/\A[a-z_][a-zA-Z0-9_]*[?!]?\z/, Atom.to_string(name))
   end
 
   defp head_args({:when, _, [call | _guards]}), do: head_args(call)

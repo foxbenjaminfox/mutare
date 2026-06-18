@@ -369,11 +369,14 @@ by a blacklist. The positions:
   into `size(expr)` args (a `case` *is* legal in `size`), so a body's
   `<<x::size(n*8)>>` still yields a real, killable size mutant; in a pattern the
   size arg is pruned. The value side (left of `::`) mutates normally.
-- **Default arg values** (`def f(a \\ b + 1)`): mutated in place; live mutant.
+- **Default arg values** (`def f(a \\ 1 + 2)`): mutated in place; live mutant.
   The head is a pattern, but `\\`'s default runs at call time, so the analyzer
-  routes it back to `:runtime`. Note such functions are *not lifted* (defaults
-  expand to multiple arities; normalize-then-lift is deferred), so they get no
-  guard/clause-drop mutants.
+  routes it back to `:runtime`. Such functions **are** lifted now (see "Default
+  arguments are lifted" below) — the `\\` defaults ride on the public dispatcher,
+  whose default-value selectors keep mutating at call time — so they also get
+  guard / head-literal / clause-drop / pattern-structure mutants. (A default value
+  cannot reference another argument — Elixir evaluates it in an isolated scope — so
+  renaming the dispatcher's args to `mutare_arg_i` never breaks a default.)
 - **Patterns** (clause heads, `=` match LHS): routed to `:pattern` and not
   mutated **in place** (a selector `case` is illegal in a pattern). Built-in
   arithmetic/relational operators can't legally appear in a pattern anyway, so this
@@ -529,9 +532,12 @@ Consequences worth knowing:
   `::` (a `unit(0)` swap would not compile) and keyword/map *keys* (labels, not
   values) — mirroring `analyze/3`'s `:pattern` routing. Both the key and value of a
   `%{1 => 2}` map pattern mutate (neither is a `format: :keyword` label).
-- Not lifted ⇒ no head mutants: default-arg functions and operator-named functions
-  fall back to in-place (so their head literals are unmutated), same as their
-  guard/clause-drop mutants.
+- Not lifted ⇒ no head mutants: operator-named functions fall back to in-place (so
+  their head literals are unmutated), same as their guard/clause-drop mutants.
+  Default-arg functions **are** lifted (see "Default arguments are lifted" below),
+  so their head literals lift too — a head literal under a `\\` (`def f(0, b \\ 1)`)
+  is reached because `tag_pattern_targets/3` descends a `{:\\, _, [pattern, default]}`
+  node's *pattern* (the default is the runtime value, kept raw).
 - **Duplicate map keys are caught directly, not via poison.** Mutating one map key
   to equal a sibling (`%{1 => a, 0 => b}` → `%{0 => a, 0 => b}`) is a compile error,
   so the map clause of `tag_pattern_targets/3` filters each key's mutations against
@@ -719,9 +725,10 @@ near-identical copies for N guard mutants. Both are fixed:
 - **`@doc`/`@spec`/`@impl`** ride on the public dispatcher because we emit it
   *first* in the lifted group (attributes attach to the next def). Private copies
   are `defp` (no docs needed). Not exhaustively tested across attribute shapes.
-- **Not lifted (fall back to in-place):** functions with default args,
-  operator-named functions (`def a ~> b` — can't be spelled `__mutare_~>_2_…`),
-  and functions with non-consecutive clauses (see the dedicated note below).
+- **Not lifted (fall back to in-place):** operator-named functions (`def a ~> b` —
+  can't be spelled `__mutare_~>_2_…`) and functions with non-consecutive clauses
+  (see the dedicated note below). Default-arg functions **are** lifted now — see
+  "Default arguments are lifted" below.
 - **Non-consecutive clauses are not lifted (for now).** When a function's
   clauses are split across more than one run — something (another definition, a
   module attribute) appears between them — Transform refuses to lift the whole
@@ -841,6 +848,53 @@ near-identical copies for N guard mutants. Both are fixed:
 - **Lifting adds one gated clause per mutant** (`C+M`, not `K+1` full copies — see
   "lifting blowup"), so code size / single-compile time grows linearly with
   mutation density rather than multiplicatively.
+
+### Default arguments are lifted `[done]`
+Default args (`def f(a, b \\ 1, c, d \\ 2)`) were left in-place for a long time —
+they "expand to multiple arities", which sounded like it needed a normalize pass
+first. It doesn't. A default-arg function lifts cleanly with one observation:
+
+  **`\\` defaults ride on the public dispatcher; the lifted base takes the full
+  arity with the defaults stripped.** The dispatcher head is the only place a `\\`
+  may legally appear, and it keeps the source's defaults verbatim — so the public
+  function's whole arity range (`f/2`, `f/3`, `f/4` for the example) still resolves.
+  Its body forwards the *resolved* args (`__mutare_f_4_g1(id, a, b, c, d)`) at the
+  full arity, so the base never needs defaults. The base clauses strip `\\` to the
+  bare pattern (`clause_parts` / `Transform.strip_arg_defaults`).
+
+What makes the arg-renaming safe: **a default value cannot reference another
+argument** — Elixir evaluates each default in an isolated scope (`def f(a, b \\ a)`
+is "undefined variable a"). So the dispatcher is free to rename every position to a
+catch-all `mutare_arg_i` (which it must, to widen the domain so a head-literal
+mutant in the base is reachable) without ever breaking a default expression — the
+defaults only reference module-level things (attributes, imports), all still in
+scope on the dispatcher. The default *expression* is still a runtime position: it
+keeps its in-place selector (lifted off the already-emitted clause in `orig_clauses`
+by `Transform.clause_defaults/1`), so a `def f(x \\ 1 + 2)` still gets its `1 + 2`
+arithmetic mutant — now living on the dispatcher head, firing only on the defaulted
+call path.
+
+Sharp edges handled:
+- **Multi-clause + header.** With multiple clauses Elixir requires the defaults on a
+  separate **bodiless header** (`def f(a, b \\ 1)` then `def f(a, b) when …`). The
+  header supplies the dispatcher's defaults but is **not** a base clause — it has no
+  body. `bodiless_header?/1` skips it in base emission (it formerly became a bodiless
+  `defp` *header* for the base, which also compiled, but emitting it was needless).
+  A header can only hold variables + defaults (Elixir rejects a literal pattern in a
+  function head), so it never carries a head-literal / guard / structure candidate —
+  discovery naturally finds nothing on it, and `build_drops` already skipped it.
+- **Head literals under a default.** `tag_pattern_targets/3` descends a
+  `{:\\, _, [pattern, default]}` node's *pattern* (so `def f(0, b \\ 1)`'s `0` lifts)
+  but keeps the default raw — it is the runtime value, mutated in place, not a
+  pattern literal.
+- **Pattern structures under a default.** `pattern_structures_for/2` strips defaults
+  before offering the args to `PatternSwap`/`PatternWildcard` (so `def f({x, y}, fmt
+  \\ :short)` can swap `{x, y}`), then re-attaches each `\\ default` to its (same)
+  position — structural mutations never move top-level args, so the zip is exact.
+
+Out of scope still: operator-named functions (can't be spelled `__mutare_~>_…`) and
+non-consecutive / metaprogramming-augmented clause groups (those are about *grouping*,
+orthogonal to defaults).
 
 ### Timeouts — portable self-halt (M4 done) `[refine]`
 A mutation can turn a terminating loop infinite. Each mutant run gets a
