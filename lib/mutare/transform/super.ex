@@ -44,8 +44,8 @@ defmodule Mutare.Transform.Super do
   Rewrite every `super(args)` in `body` to `<super_var>.(args)`.
 
   Returns `{rewritten_body, found?}`; `found?` is `false` when the body had no
-  `super`, so the caller can keep the extra closure parameter unused (named
-  `_<super_var>`) on that base clause while still matching the shared arity.
+  `super`, so the caller can keep the extra closure parameter unused (a bare `_`) on
+  that base clause while still matching the shared arity.
   """
   @spec rewrite(Macro.t(), atom()) :: {Macro.t(), boolean()}
   def rewrite(body, super_var), do: walk(body, super_var)

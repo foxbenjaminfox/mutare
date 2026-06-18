@@ -532,8 +532,7 @@ defmodule Mutare.Transform do
   # When the group uses `super` (`super_var` non-`nil`), every base clause takes the
   # forwarding closure as its second parameter; this clause's body is rewritten to call
   # `super` through it. A clause whose own body has no `super` still takes the (shared)
-  # parameter but ignores it — named `_<super_var>` so it draws no unused-variable
-  # warning (`super_param/2`).
+  # parameter but ignores it — a bare `_` (`super_param/2`).
   defp lifted_clause(base, clause_meta, call_meta, args, guard, body, var, super_var) do
     {body, super_params} = super_param(body, super_var)
     call = {base, call_meta, [Recorder.catch_all_pattern(var) | super_params] ++ args}
@@ -544,14 +543,18 @@ defmodule Mutare.Transform do
   # The super-closure parameter for one base clause, plus its rewritten body. `nil`
   # (super-free group) leaves both untouched. Otherwise the body's `super(...)` calls
   # become `<super_var>.(...)`; the clause takes the closure as a parameter, named
-  # `<super_var>` when it is used and `_<super_var>` when this clause has no `super`
-  # (the parameter exists only to match the base's shared arity).
+  # `<super_var>` when it is used and a bare `_` when this clause has no `super` (the
+  # parameter exists only to match the base's shared arity). A bare `_` — not a salted
+  # `_<super_var>` — because the latter could *duplicate* a source variable already in
+  # the head (a sibling clause head reusing `_mutare_super`): a repeated underscored
+  # name warns *and* silently turns the head into an equality match, breaking dispatch.
+  # `_` never binds, so it can neither collide nor constrain however many appear.
   defp super_param(body, nil), do: {body, []}
 
   defp super_param(body, super_var) do
     case Super.rewrite(body, super_var) do
       {body, true} -> {body, [{super_var, [], nil}]}
-      {body, false} -> {body, [{:"_#{super_var}", [], nil}]}
+      {body, false} -> {body, [{:_, [], nil}]}
     end
   end
 

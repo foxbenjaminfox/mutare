@@ -165,19 +165,43 @@ defmodule Mutare.SuperTest do
       assert {:super, _, [:keep]} = mod.tag(:keep)
     end
 
-    test "an unused closure parameter on a super-free sibling clause is underscored" do
+    test "an unused closure parameter on a super-free sibling clause is a bare `_`" do
       # One clause uses super, the other does not. Both base clauses share the
-      # closure parameter (one base arity), so the super-free one must underscore it
-      # or warn — the metamutant must compile warnings-clean.
+      # closure parameter (one base arity), so the super-free one must ignore it — a
+      # bare `_` — or warn; the metamutant must compile warnings-clean.
       {meta, _sites, mod} =
         transform("""
           def tag(:wrap), do: {:wrapped, super(:wrap)}
           def tag(other), do: {:plain, other}
         """)
 
-      assert meta =~ ~r/__mutare_tag_1_g\d+\(mutare_active, _mutare_super, other\)/
+      assert meta =~ ~r/__mutare_tag_1_g\d+\(mutare_active, _, other\)/
       assert meta =~ ~r/__mutare_tag_1_g\d+\(mutare_active, mutare_super, :wrap\)/
 
+      assert mod.tag(:wrap) == {:wrapped, {:base, :wrap}}
+      assert mod.tag(:other) == {:plain, :other}
+    end
+
+    test "a super-free sibling clause already binding `_mutare_super` is not duplicated" do
+      # The unused closure parameter must be a bare `_`, not `_<super_var>`: a salted
+      # `_mutare_super` here would *duplicate* the source's own `_mutare_super` head
+      # variable, warning *and* turning the head into an equality match (the closure
+      # would have to equal the argument), so baseline dispatch raises
+      # FunctionClauseError. `super_var` stays `mutare_super` (the source uses only the
+      # underscore form), so the canonical clash is reachable.
+      {meta, _sites, mod} =
+        transform("""
+          def tag(:wrap), do: {:wrapped, super(:wrap)}
+          def tag(_mutare_super), do: {:plain, _mutare_super}
+        """)
+
+      # The super-free clause's head carries the bare `_` and its own `_mutare_super`,
+      # not two `_mutare_super`.
+      assert meta =~ ~r/__mutare_tag_1_g\d+\(mutare_active, _, _mutare_super\)/
+      refute meta =~ ~r/mutare_active, _mutare_super, _mutare_super/
+
+      # Baseline dispatch must not raise: with the bug the duplicated `_mutare_super`
+      # makes the head an equality match (closure == arg), so this clause never matches.
       assert mod.tag(:wrap) == {:wrapped, {:base, :wrap}}
       assert mod.tag(:other) == {:plain, :other}
     end

@@ -1067,9 +1067,18 @@ and threads it to the base as the **second** argument (after `mutare_active`); e
 
 - **Per-clause unused param.** The base's arity is shared across clauses, so *every*
   base clause takes the closure param — but only the clauses whose own body calls
-  `super` use it. A clause that doesn't names the param `_mutare_super` (each base
+  `super` use it. A clause that doesn't names the param a **bare `_`** (each base
   clause is a separate `defp`, so the name can differ per clause), dodging the
   unused-variable warning that would otherwise poison a `--warnings-as-errors` target.
+  It must be a bare `_`, **not** a salted `_mutare_super`: that underscored name could
+  *duplicate* a source variable already in the same head — a super-free sibling clause
+  whose head reuses `_mutare_super` (`mutare_super` is salted away from the read form,
+  but the *underscored* form is not, and `Names.salted/2` only checks the bare
+  `mutare_super`). A repeated underscored name both **warns** ("appears more than once
+  in a match") *and* silently turns the head into an **equality match** (`_mutare_super
+  == _mutare_super`, i.e. closure == arg), so the baseline never matches that clause and
+  dispatch raises `FunctionClauseError`. `_` never binds, so it can neither collide nor
+  constrain however many appear — provably safe without a second salt.
 - **Collision-free name.** `mutare_super` is salted per-file exactly like
   `mutare_active` (`Names.salted/2`, canonical `:mutare_super`) — it is *read* in the
   base body, so it can't be underscore-prefixed (a read underscore var warns), and a
