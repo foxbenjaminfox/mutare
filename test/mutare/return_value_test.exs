@@ -194,8 +194,10 @@ defmodule Mutare.ReturnValueTest do
         )
 
       assert Enum.map(sites, & &1.mutator) == [:arithmetic, :return_value, :return_value]
-      # one selector subject only (all mutants live under it)
-      assert meta |> String.split(":persistent_term.get(:mutare_active") |> length() == 2
+      # one selector subject only (all mutants live under it); count via the runtime
+      # key so this holds under dogfooding (subject keyed on `Selector.suite_key/0`).
+      subject = ":persistent_term.get(#{inspect(Selector.key())}"
+      assert meta |> String.split(subject) |> length() == 2
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
   end

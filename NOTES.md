@@ -1402,28 +1402,65 @@ the survivors and the summary. Two deliberate design calls worth remembering:
 
 Suspected-equivalent auto-reporting is still future work.
 
-### Self-hosting: tests that touch `:mutare_active` `[dogfood artifact, partly mitigated]`
-Mutation-testing Mutare *with Mutare* has a trap: several of Mutare's own tests
-(`selector_test`, `integration_test`, `lift_test`, `transform_corpus_test`) call
-`Selector.put/1` on `:mutare_active` — the very key the runner uses to hold the
-active mutant. Since `:persistent_term` is global and the whole suite shares one
-BEAM, those tests reset the active mutant mid-run, so any mutant whose only
-killing test runs *after* them registers a **false survivor** (confirmed:
-`runner.ex` mutants survive in the full suite but die when `runner_test` runs
-alone). Normal targets never touch this key, so it's a self-hosting artifact only.
+### Self-hosting: tests that touch `:mutare_active` `[fixed — private suite key]`
+Mutation-testing Mutare *with Mutare* had a trap: many of Mutare's own tests
+(`selector_test`, `integration_test`, `lift_test`, `transform_corpus_test`,
+`pattern_*_test`, `return_value_test`, `if_condition_test`) call `Selector.put/1`
+on `:mutare_active` — the very key the runner uses to hold the active mutant.
+Since `:persistent_term` is global and the whole suite shares one BEAM, those
+tests reset the active mutant mid-run (each resets to *baseline*, not back to the
+harness id, so the clobber **persists** for the rest of the run), so any mutant
+whose killing test runs *after* the first saboteur registered a **false
+survivor** (confirmed: `runner.ex`/`baseline.ex` mutants survive in the full
+suite but die when their file runs alone — and the verdicts are seed-dependent,
+since ExUnit's order decides who clobbers whom). The same clobber also corrupts
+the **coverage probe** (its record gate is `mutare_active == 0`, so a saboteur
+setting a non-zero id mid-probe suppresses recording → spurious `:no_coverage`).
+Normal targets never touch this key, so it was a self-hosting artifact only.
 
-What's in place now (dogfood run, M-ignore work):
+**The fix (a private selection key for the suite-under-test).** The runtime key
+is now configurable: `Selector.key/0` returns `default_key/0` (`:mutare_active`,
+the harness key) unless the `MUTARE_SELECTOR_KEY` env var (`Selector.override_env/0`)
+names another. `Mutare.Sandbox.Command` sets that var (to `Selector.suite_key/0`,
+`:mutare_active__suite`) on **every** sandbox `mix` it spawns. So inside the
+sandbox the suite-under-test reads/writes its own private slot — `Selector.put/1`,
+`active/0`, and any fixture it builds via `Transform` (whose selector subject is
+`Metamutant.subject_ast/0` → `Selector.key/0` resolved *at runtime*) all land on
+`:mutare_active__suite` — while the **real** metamutant keeps reading
+`:mutare_active`. The two key-spaces are disjoint, so a test calling `put/1` can
+no longer clobber the mutant under test. Why this works without dogfood detection:
+the real metamutant's sites and the bootstrap bake `default_key/0` as **literals**
+at transform time, in the harness process where the override is unset; only the
+suite-under-test's *runtime* `Selector.key/0` calls (in the sandbox, where the env
+is set) see the override. On a normal target there is no `Mutare.Selector` compiled
+in, so the env is inert. (The `subject?/1` recognizer reads `key/0` too, so
+producer and recognizer always agree within a process — needed for the
+`Manifest`/`Poison` round-trip in either context.)
+
+Verified end-to-end: a clean (`workers: 1`, generous cap) dogfood of `baseline.ex`
+flipped its in-process `classify/1` victims (`Enum.max→Enum.min`, `== []` polarity,
+`true→false`, `take(-20)→drop(-20)`, `20→19`) from **false survivors → clean
+kills** (8 killed/12 survived → 11/9). The unit guard is `selector_test`'s "under a
+suite-key override, `put/1` leaves the harness key untouched".
+
+What else is in place (unchanged):
 - **Sandbox skips `:runner` tests.** `test/test_helper.exs` calls
-  `ExUnit.configure(exclude: [:runner])` iff `MUTANT_UNDER_TEST` is set — which is
-  true on every per-mutant run (and the baseline) but never on a normal `mix
-  test`. Those tests shell out to nested `mix test`; running them per mutant would
-  be a fork bomb. (It does *not* fix the collision — the remaining saboteurs above
-  aren't `:runner`-tagged.)
-- **`Selector.put/1` is `# mutare:ignore`d.** Its only mutants are in the
-  active-mutant guard, and the only way to exercise `put/1` is to *call* it, which
-  overwrites `:mutare_active` — so under dogfooding the mutant either deactivates
-  itself (false survivor) or crashes a setup `put` (false kill). Neither measures
-  the mutation. Excluded with a reason; on a normal target the guard is killable.
+  `ExUnit.configure(exclude: [:runner])` iff `MUTANT_UNDER_TEST` is set — true on
+  every per-mutant run (and the baseline) but never on a normal `mix test`. Those
+  tests shell out to nested `mix test`; running them per mutant would be a fork
+  bomb. This is *orthogonal* to the key collision — it bounds cost. Its cost is
+  that code reached **only** by `:runner` tests (e.g. `Baseline.collect/2`,
+  `CoverageProbe.outcome/3`) has no in-process coverage and so survives rather than
+  scoring `:no_coverage`; that's a separate, accepted tradeoff, not the collision.
+- **`selector_test` now save/restores the harness slot.** It necessarily pokes
+  `:mutare_active` directly (it tests `bootstrap_ast/0` and `default_key/0`), so
+  unlike the `put/1`-based saboteurs it can't be fixed by the key split alone — it
+  captures `:mutare_active` (and the env vars) in `setup` and restores them in
+  `on_exit`, leaving the slot exactly as found. The remaining mid-test window is
+  safe because it is `async: false` (ExUnit runs a sync module in isolation).
+- **`Selector.put/1` is no longer `# mutare:ignore`d.** It used to be excluded
+  because exercising it overwrote `:mutare_active`; now it writes the suite key, so
+  its guard is honestly killable under dogfooding.
 - **`Selector.bootstrap_ast` / `Command.watcher_ast` no longer break the
   baseline.** Both build a `quote` containing a `case … "" -> …` clause; the
   transform used to mutate the `""` *pattern* inside the quote and wrap it in a
@@ -1433,13 +1470,11 @@ What's in place now (dogfood run, M-ignore work):
   can't see (the metamutant itself compiled). Fixed by classifying `quote` as
   compile-time (pruned whole, like `defmacro`); see "Non-body operator positions".
 
-Still open for *clean* whole-suite self-dogfooding: the remaining saboteurs
-(`lift_test`/`integration_test`/`transform_corpus_test`) still collide, so
-`Transform`-and-friends mutants keyed off them show false survivors. `# mutare:ignore`
-is the wrong tool there — those are real, killable mutants, not equivalents. The
-proper fix is isolation: run the selector-touching tests in a separate pass, or
-make the harness key configurable so the suite-under-test and the harness don't
-share `:mutare_active`.
+Footnote (cost, not correctness): dogfooding Mutare's own heavy suite with the
+default `:workers` can clip slow survivor runs to `:timeout` (the per-mutant cap
+floor is 10 s; N parallel `mix test`s contend for CPU). That inflates the "kill"
+count with timeouts and is unrelated to the key collision — drop `:workers` to 1
+or raise `:timeout` for a clean self-run.
 
 ### Surface skipped files more loudly `[soon]`
 `Schema`/`safe_transform` skips a file that fails to transform (good — one bad

@@ -122,8 +122,11 @@ defmodule Mutare.TransformTest do
              [{:arithmetic, :+}, {:relational, :==}]
 
     # two independent selectors are present (count the selector *subject*; the
-    # catch-all coverage record also reads `:persistent_term.get(:mutare_track, …)`)
-    assert meta |> String.split(":persistent_term.get(:mutare_active") |> length() == 3
+    # catch-all coverage record also reads `:persistent_term.get(:mutare_track, …)`).
+    # Count via the runtime key so this holds when the suite runs under dogfooding
+    # (where the selector subject is keyed on `Selector.suite_key/0`, not `:mutare_active`).
+    subject = ":persistent_term.get(#{inspect(Mutare.Selector.key())}"
+    assert meta |> String.split(subject) |> length() == 3
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 

@@ -277,7 +277,15 @@ defmodule Mutare.Sandbox.Command do
         ) :: {String.t(), non_neg_integer()}
   def mix(sandbox, args, mutant_id, opts \\ []) do
     env =
-      [{"MIX_ENV", "test"}, {Mutare.Selector.env_var(), Integer.to_string(mutant_id)}]
+      [
+        {"MIX_ENV", "test"},
+        {Mutare.Selector.env_var(), Integer.to_string(mutant_id)},
+        # Self-hosting isolation: give the suite-under-test a private selection
+        # key so its own `Selector.put/1` calls can't clobber the harness's
+        # active-mutant slot. Inert on a normal target (no `Mutare.Selector`
+        # compiled in); see `Mutare.Selector`'s moduledoc.
+        {Mutare.Selector.override_env(), Mutare.Selector.suite_key()}
+      ]
       |> maybe_cap(opts[:cap])
       |> Kernel.++(opts[:env] || [])
 

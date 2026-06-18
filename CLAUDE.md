@@ -508,7 +508,14 @@ contract between them is the whole game.
   names, the `MutareCov` helper, the dump file) in `Mutare.Coverage.Recorder`. They are *emitted
   into generated code* — the selectors and coverage record into the metamutant by `Mutare.Transform`,
   the reader/timeout watcher/coverage bootstrap+helper into the bootstrap by `Mutare.Sandbox`. Keep
-  them in sync — change one in isolation and the metamutant stops responding.
+  them in sync — change one in isolation and the metamutant stops responding. **The selection key is
+  resolved at *runtime* by `Selector.key/0`** — `default_key/0` (`:mutare_active`) unless the
+  `MUTARE_SELECTOR_KEY` override (`Selector.override_env/0`) names another. `Sandbox.Command` sets
+  that override (to `Selector.suite_key/0`) on every sandbox `mix`, so when Mutare dogfoods *itself*
+  the suite-under-test selects on a private slot and its own `Selector.put/1` can't clobber the
+  harness's active mutant (the self-hosting false-survivor fix; see NOTES "Self-hosting"). The real
+  metamutant's sites + bootstrap bake `default_key/0` as literals in the harness process (override
+  unset), so this is invisible on a normal target.
 - **Two renderers, on purpose.** The metamutant is a build artifact (AST rewrite via
   `Sourceror.to_string`, only needs to compile); the report patches the original source. Don't
   try to make one serve both. Normally throwaway, but `--keep-sandbox` optionally caches the

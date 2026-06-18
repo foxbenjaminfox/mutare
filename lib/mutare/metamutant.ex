@@ -34,8 +34,14 @@ defmodule Mutare.Metamutant do
   the baseline id); this module owns their AST.
   """
 
-  @key Mutare.Selector.key()
   @baseline Mutare.Selector.baseline()
+
+  # The key is read from `Mutare.Selector.key/0` at *runtime*, not baked as a
+  # compile-time attribute: when Mutare dogfoods itself, the suite-under-test
+  # building fixtures in the sandbox resolves it to its private `suite_key/0`,
+  # while the harness process (where the real metamutant is built) resolves it to
+  # `default_key/0` — so producer (`subject_ast/0`) and recognizer (`subject?/1`)
+  # always agree *within a process*, and the two key-spaces stay disjoint.
 
   @doc """
   The selector subject `Transform` splices into every selector/dispatcher `case`:
@@ -50,7 +56,7 @@ defmodule Mutare.Metamutant do
     # (it expects `{_, meta, _}` nodes). Wrapping makes every spliced subject render
     # cleanly in any position; `subject?/1` sees through the wrapping.
     {{:., [], [:persistent_term, :get]}, [],
-     [{:__block__, [], [@key]}, {:__block__, [], [@baseline]}]}
+     [{:__block__, [], [Mutare.Selector.key()]}, {:__block__, [], [@baseline]}]}
   end
 
   @doc """
@@ -61,7 +67,7 @@ defmodule Mutare.Metamutant do
   """
   @spec subject?(Macro.t()) :: boolean()
   def subject?({{:., _, [mod, :get]}, _, [key | _]}),
-    do: unwrap(mod) == :persistent_term and unwrap(key) == @key
+    do: unwrap(mod) == :persistent_term and unwrap(key) == Mutare.Selector.key()
 
   def subject?(_), do: false
 
