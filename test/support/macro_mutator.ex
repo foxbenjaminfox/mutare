@@ -29,6 +29,15 @@ defmodule Mutare.Test.QueryDSL do
   defmacro unpack(pattern, value) do
     quote do: unquote(pattern) = unquote(value)
   end
+
+  @doc """
+  Like `unpack/2` but with the **value first and the pattern second** — so a registered routing
+  is `[:expression, :binding_pattern]` and, piped as `value |> unpack2([x, y])`, the binding
+  pattern is a *visible* argument rather than the piped value.
+  """
+  defmacro unpack2(value, pattern) do
+    quote do: unquote(pattern) = unquote(value)
+  end
 end
 
 defmodule Mutare.Test.SchemaDSL do

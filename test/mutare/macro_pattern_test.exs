@@ -372,4 +372,54 @@ defmodule Mutare.MacroPatternTest do
       assert mod.go([5, 2]) == 0
     end
   end
+
+  describe "piped call whose binding pattern is a visible arg (not the LHS)" do
+    # `value |> unpack2([x, y])` with routing `[:expression, :binding_pattern]` — the piped
+    # value is an expression and the binding pattern is the stage's *visible* argument. The
+    # equivalent direct call `unpack2(value, [x, y])` was always supported; the piped form was
+    # missed because the clause only inspected the piped value's treatment.
+    @source """
+    defmodule Mutare.VisibleArgPipedFixture do
+      import Mutare.Test.QueryDSL
+
+      def go(v) do
+        v |> unpack2([x, y])
+        x - y
+      end
+    end
+    """
+
+    @compile {:no_warn_undefined, Mutare.VisibleArgPipedFixture}
+
+    setup do
+      {meta, sites, _next} =
+        Mutare.transform_string(@source,
+          file: "visible.ex",
+          macros: [{Mutare.Test.QueryDSL, :unpack2, 2, [:expression, :binding_pattern]}]
+        )
+
+      {[{mod, _}], _io} =
+        ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+
+      %{mod: mod, sites: sites}
+    end
+
+    test "earns the structural swap mutant on the visible pattern arg", %{sites: sites} do
+      site = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 5))
+      assert site
+      assert site.kind == :in_place
+      assert site.mutated_code == "[y, x]"
+    end
+
+    test "the swap binds the other value and escapes", %{mod: mod, sites: sites} do
+      site = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 5))
+
+      Selector.put(Selector.baseline())
+      assert mod.go([5, 2]) == 3
+
+      # `v |> unpack2([y, x])` → `[y, x] = v` → y = 5, x = 2.
+      Selector.put(site.id)
+      assert mod.go([5, 2]) == 2 - 5
+    end
+  end
 end

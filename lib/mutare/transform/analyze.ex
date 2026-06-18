@@ -1409,34 +1409,62 @@ defmodule Mutare.Transform.Analyze do
   # bindings escape** (`:binding_pattern` — `Kernel.destructure`, or a user-registered macro),
   # returning `{raw_pattern, rebuild_mutant}` — the raw pattern node and a closure that rebuilds
   # the *raw* macro call with a (mutated) pattern in its place — or `nil` for anything else.
-  # Two written shapes resolve to a binding-pattern arg (`Mutare.Transform.Resolve` stamps both):
+  # The written shapes resolve to a binding-pattern arg (`Mutare.Transform.Resolve` stamps each):
   #
-  #   * **piped** `[x, y] |> destructure(v)` — the pattern is the `|>` LHS (effective arg 0),
-  #     stamped on the stage as `:mutare_macro_piped`. Rebuilds `<mutated> |> rhs`.
   #   * **direct** `destructure([x, y], v)` — the pattern is the first arg whose routing
   #     (`meta[:mutare_macro]`) is `:binding_pattern`. Rebuilds the call with that arg replaced.
+  #   * **piped, the LHS** `[x, y] |> destructure(v)` — the piped value is effective arg 0; when
+  #     *its* treatment is `:binding_pattern` (stamped `:mutare_macro_piped`) the pattern is the
+  #     `|>` LHS. Rebuilds `<mutated> |> rhs`.
+  #   * **piped, a visible arg** `value |> unpack([x, y])` with routing `[:expression,
+  #     :binding_pattern]` — the binding pattern is a *written* arg of the stage, not the piped
+  #     value, so it lives in the stage's own `meta[:mutare_macro]` (the visible routing). The
+  #     piped-value check misses it; fall through to the stage's visible args, rebuilding the
+  #     stage with that arg replaced and re-piping the LHS. (The equivalent direct call resolves
+  #     via the direct clause — the two stayed asymmetric until this clause looked past the LHS.)
   #
   # The other args are kept *raw* (the mutant branch runs the baseline value; the catch-all
   # runs the emitted one, so a nested mutation there still fires — see `emit_macro_pattern_site/3`).
-  defp binding_pattern_macro({:|>, meta, [lhs, {_form, rhs_meta, _args} = rhs]})
-       when is_list(rhs_meta) do
+  defp binding_pattern_macro({:|>, meta, [lhs, {form, rhs_meta, args} = rhs]})
+       when is_list(rhs_meta) and is_list(args) do
     case Keyword.get(rhs_meta, :mutare_macro_piped) do
-      :binding_pattern -> {lhs, fn mutated -> {:|>, meta, [mutated, rhs]} end}
-      _ -> nil
+      :binding_pattern ->
+        {lhs, fn mutated -> {:|>, meta, [mutated, rhs]} end}
+
+      _ ->
+        case binding_pattern_index(rhs_meta) do
+          nil ->
+            nil
+
+          index ->
+            {Enum.at(args, index),
+             fn mutated ->
+               {:|>, meta, [lhs, {form, rhs_meta, List.replace_at(args, index, mutated)}]}
+             end}
+        end
     end
   end
 
   defp binding_pattern_macro({form, meta, args}) when is_list(meta) and is_list(args) do
-    with routing when is_list(routing) <- macro_routing(meta),
-         index when is_integer(index) <- Enum.find_index(routing, &(&1 == :binding_pattern)) do
-      {Enum.at(args, index),
-       fn mutated -> {form, meta, List.replace_at(args, index, mutated)} end}
-    else
-      _ -> nil
+    case binding_pattern_index(meta) do
+      nil ->
+        nil
+
+      index ->
+        {Enum.at(args, index),
+         fn mutated -> {form, meta, List.replace_at(args, index, mutated)} end}
     end
   end
 
   defp binding_pattern_macro(_node), do: nil
+
+  # The first visible-arg position routed `:binding_pattern` (`meta[:mutare_macro]`), or `nil`.
+  defp binding_pattern_index(meta) do
+    case macro_routing(meta) do
+      routing when is_list(routing) -> Enum.find_index(routing, &(&1 == :binding_pattern))
+      _ -> nil
+    end
+  end
 
   # Offer the macro's escaping pattern to the structural families and, if any fire, attach a
   # `Candidate.MacroPattern` per mutation to the analyzed macro/pipe node — emission rewrites
