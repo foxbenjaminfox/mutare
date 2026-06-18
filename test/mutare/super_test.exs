@@ -220,12 +220,37 @@ defmodule Mutare.SuperTest do
       assert meta =~ ~r{mutare_super_0 = &super/1}
       assert [{_module, _binary}] = Code.compile_string(meta)
     end
+
+    test "a `&super/n` capture is rewritten to the bound closure variable" do
+      # `super` captured (not called) at its only legal arity. The lifted base can't
+      # host `&super/2`, but the dispatcher's closure already *is* that capture, so the
+      # capture rewrites to the bare `mutare_super`. Both clauses only capture (never a
+      # direct `super(...)`), so this also proves capture-only detection builds a closure.
+      {meta, _sites, mod} =
+        transform("""
+          def combine(a, b) when is_integer(a), do: apply(&super/2, [a, b])
+          def combine(a, b), do: apply(&super/2, [b, a])
+        """)
+
+      # A closure is bound (the group is detected as super-using despite no call)...
+      assert meta =~ ~r{mutare_super = &super/2}
+      # ...the capture became the bare variable (the `[a, b]` arg is itself wrapped in a
+      # List/literal selector, so match only up to the variable)...
+      assert meta =~ ~r{apply\(\s*mutare_super,}
+      # ...and no base clause keeps a `&super/` capture.
+      refute Regex.match?(~r{defp __mutare_combine.*?&super/}s, meta)
+
+      assert mod.combine(1, 2) == {:base, 1, 2}
+      assert mod.combine(:x, :y) == {:base, :y, :x}
+    end
   end
 
   describe "Super module" do
     test "in_clauses?/1 detects a body super but ignores a quoted one" do
       assert Super.in_clauses?(clauses("def f(x), do: super(x)"))
       assert Super.in_clauses?(clauses("def f(x) do\n  g = fn -> super(x) end\n  g.()\nend"))
+      # A capture-only body (never a direct call) still counts as super-using.
+      assert Super.in_clauses?(clauses("def f(x), do: apply(&super/1, [x])"))
       refute Super.in_clauses?(clauses("def f(x), do: quote(do: super(x))"))
       refute Super.in_clauses?(clauses("def f(x), do: x"))
     end
@@ -239,6 +264,17 @@ defmodule Mutare.SuperTest do
       [{:def, _, [_head | quoted]}] = clauses("def f(x), do: quote(do: super(x))")
       {unchanged, false} = Super.rewrite(quoted, :sup)
       assert Macro.to_string(unchanged) =~ "super(x)"
+    end
+
+    test "rewrite/2 rewrites a `&super/n` capture to the bare closure variable" do
+      [{:def, _, [_head | body]}] = clauses("def f(a, b), do: apply(&super/2, [a, b])")
+      {rewritten, true} = Super.rewrite(body, :sup)
+      rendered = Macro.to_string(rewritten)
+      # The capture collapses to the variable holding the closure — not `&sup/2`,
+      # which would (illegally) capture a local function rather than read the variable.
+      assert rendered =~ "apply(sup, [a, b])"
+      refute rendered =~ "super"
+      refute rendered =~ ~r{&sup/}
     end
   end
 

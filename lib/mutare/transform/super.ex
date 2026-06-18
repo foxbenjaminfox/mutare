@@ -14,15 +14,17 @@ defmodule Mutare.Transform.Super do
   #
   #     <super_var> = &super/arity
   #
-  # and passes that closure to the base as an extra argument; each `super(args)` in
-  # the lifted body is rewritten to `<super_var>.(args)`. `&super/arity` is exactly
-  # `fn a1, …, aN -> super(a1, …, aN) end`, and the arity is the function's full
-  # formal-parameter count — `super` must be called with *exactly* that arity ("super
-  # must be called with the same number of arguments as the current definition"), so
-  # the single capture forwards every legal `super` call, defaults included.
-  # `Mutare.Transform` owns building the closure + threading the extra arg (it shares
-  # the dispatcher/lifted-clause emission); this module owns only recognising and
-  # rewriting the `super` nodes.
+  # and passes that closure to the base as an extra argument; in the lifted body a
+  # `super` *call* is rewritten to `<super_var>.(args)` and a `super` *capture*
+  # `&super/arity` to the bare `<super_var>` (the closure already *is* that capture).
+  # `&super/arity` is exactly `fn a1, …, aN -> super(a1, …, aN) end`, and the arity is
+  # the function's full formal-parameter count — `super` must be *called* (and can only
+  # be *captured*) with exactly that arity ("super must be called with the same number
+  # of arguments as the current definition"), so the single capture forwards every
+  # legal `super`, defaults included, and a source `&super/arity` is value-identical to
+  # it. `Mutare.Transform` owns building the closure + threading the extra arg (it
+  # shares the dispatcher/lifted-clause emission); this module owns only recognising
+  # and rewriting the `super` nodes.
   #
   # **Quote is pruned.** A `super` inside `quote do … end` is quoted *data* — it
   # names whatever context the AST is later spliced into, not a live call here — so
@@ -31,7 +33,7 @@ defmodule Mutare.Transform.Super do
   # `super`, lifts without a closure, and the quoted `super` rides along as-is.
 
   @doc """
-  Whether any clause's *body* contains a rewriteable `super` call.
+  Whether any clause's *body* contains a rewriteable `super` call or capture.
 
   The decision the dispatcher uses to know whether to build the closure at all —
   off by default, so a `super`-free group emits exactly as before. Only the body is
@@ -42,7 +44,9 @@ defmodule Mutare.Transform.Super do
   def in_clauses?(clauses), do: Enum.any?(clauses, &body_has_super?/1)
 
   @doc """
-  Rewrite every `super(args)` in `body` to `<super_var>.(args)`.
+  Rewrite every live `super` in `body`: a call `super(args)` to `<super_var>.(args)`,
+  and a capture `&super/arity` to the bare `<super_var>` (the closure already holds the
+  override captured at that arity — its only legal one).
 
   Returns `{rewritten_body, found?}`; `found?` is `false` when the body had no
   `super`, so the caller can keep the extra closure parameter unused (a bare `_`) on
@@ -66,8 +70,24 @@ defmodule Mutare.Transform.Super do
   # Prune a quote: its contents are data, not a live `super` call (see moduledoc).
   defp walk({:quote, _meta, _args} = node, _var), do: {node, false}
 
+  # A `&super/arity` capture: `super` can only ever be captured at the function's full
+  # param count — its single legal arity ("super must be called with the same number
+  # of arguments as the current definition") — which is exactly the arity the closure
+  # is bound at, so the whole capture is value-identical to `<var>` and rewrites to the
+  # bare variable. (Not `&<var>/arity`: `<var>` is a *variable* holding the function,
+  # and `&name/arity` captures a *function* of that name — `&<var>/arity` would fail to
+  # compile.) The super node here carries an atom context, not an arg list, so the
+  # call clause below skips it; without this clause a capture-only body would read as
+  # super-free and lift without a closure, leaving an uncompilable `&super/arity`.
+  defp walk({:&, _meta, [{:/, _slash, [{:super, _smeta, ctx}, _arity]}]}, var)
+       when is_atom(ctx) do
+    {{var, [], nil}, true}
+  end
+
   # A `super(args)` call: rewrite to `<var>.(args)`, still descending the args (a
-  # nested `super`, or one inside an argument, is rewritten too).
+  # nested `super`, or one inside an argument, is rewritten too). Covers a `super`
+  # *called* inside a capture too (`&super(&1)` → `&<var>.(&1)`, via the n-ary descent
+  # below reaching this clause), distinct from the `&super/arity` shorthand above.
   defp walk({:super, meta, args}, var) when is_list(args) do
     {args, _found} = walk_many(args, var)
     {{{:., meta, [{var, [], nil}]}, meta, args}, true}

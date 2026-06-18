@@ -1087,13 +1087,24 @@ edges, all handled:
   source variable named `mutare_super` would otherwise be captured (a `super(x)`
   rewritten to `mutare_super.(x)` would call the user's value). Salts to
   `mutare_super_0`, … when taken.
+- **Captures are rewritten too.** A `super` *capture* `&super/arity` (not a call) is
+  rewritten to the bare `mutare_super`, because `super` can only ever be captured at the
+  function's full param count — its single legal arity, the very arity the closure is
+  bound at — so `&super/arity` is value-identical to the variable. **Not** `&mutare_super/
+  arity`: `mutare_super` is a *variable* holding the function, and `&name/arity` captures
+  a *function* of that name, so `&mutare_super/arity` would fail to compile. The capture's
+  `super` node carries an atom context (not an arg list), so the call-rewrite clause
+  skips it — and so would detection: without the dedicated clause a **capture-only** body
+  (never a direct `super(...)`) would read as super-free, lift without a closure, and
+  leave an uncompilable `&super/arity` in the base. A `super` *called* inside a capture
+  (`&super(&1)`) is the ordinary call form and rewrites to `&mutare_super.(&1)` by descent.
 - **`quote` is pruned.** A `super` inside `quote do … end` is quoted *data* (it names
   whatever context the AST is later spliced into, not a live call here), so it is left
   untouched — mirroring the in-place analyzer, which treats `quote` as `:compile_time`
   and never descends it. Such a body reads as super-free, lifts **without** a closure,
   and the quoted `super` rides along verbatim. (`super` only inside a `quote` is valid
   source — verified.) Detection and rewrite share one walk (`Super` is `{ast, found?}`)
-  so they can never disagree on what counts as a live `super`.
+  so they can never disagree on what counts as a live `super` (call or capture).
 - **Defaults / heads are not scanned.** Only the body is inspected: a `super` in a
   default value rides on the dispatcher (the override, which may call `super`
   directly), and `super` can't appear in a head/`when`. Heads (bodiless or otherwise)
