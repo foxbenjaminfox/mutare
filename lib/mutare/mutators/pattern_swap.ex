@@ -240,6 +240,20 @@ defmodule Mutare.Mutators.PatternSwap do
 
   # --- child swaps: recurse, lifting each nested variant back into place ----------
 
+  # A map/struct field map's children are its `{key, value}` pairs — but a pair is
+  # **not** a swappable 2-tuple container, so we descend only into each pair's *value*
+  # (keys stay fixed, exactly as `own_swaps`' `map_value_swaps` does). Treating the pair
+  # as a tuple (the generic clause below would, via the literal-2-tuple `own_swaps`) puts
+  # a bound variable in key position: `%{^k => v}` → `%{v => ^k}`, an illegal pattern key
+  # ("cannot use variable v as map key"). Pinned-key maps with a bound value occur in
+  # `case`/`fn`/`receive` clause patterns, where this path delivers swaps. Mirrors
+  # `Mutare.Transform.PatternStructure.collect_bound/2`'s map handling.
+  defp child_swaps({:%{}, meta, pairs}) when is_list(pairs) do
+    for {{key, value}, i} <- Enum.with_index(pairs), variant <- swaps_within(value) do
+      {:%{}, meta, List.replace_at(pairs, i, {key, variant})}
+    end
+  end
+
   defp child_swaps({form, meta, args}) when is_list(args) do
     for {child, i} <- Enum.with_index(args), variant <- swaps_within(child) do
       {form, meta, List.replace_at(args, i, variant)}

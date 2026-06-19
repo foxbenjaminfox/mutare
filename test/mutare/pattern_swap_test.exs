@@ -90,6 +90,10 @@ defmodule Mutare.Mutators.PatternSwapTest do
     test "swaps the field values of a struct pattern" do
       assert swaps("%Point{x: a, y: b}") == ["f(%Point{x: b, y: a})"]
     end
+
+    test "recurses into a map value's nested container, keeping the key fixed" do
+      assert swaps("%{a: {x, y}}") == ["f(%{a: {y, x}})"]
+    end
   end
 
   describe "bitstrings" do
@@ -141,6 +145,19 @@ defmodule Mutare.Mutators.PatternSwapTest do
 
     test "swaps pinned map values, keeping keys fixed" do
       assert swaps("%{k1: ^a, k2: ^b}") == ["f(%{k1: ^b, k2: ^a})"]
+    end
+
+    # A pinned *key* with a bound value (`%{^k => v}`, the arrow-form pair) is not a
+    # swappable tuple: transposing it yields `%{v => ^k}`, an illegal pattern key
+    # ("cannot use variable v as map key"). These occur in `case`/`fn`/`receive` clause
+    # patterns — e.g. plug's `case map do %{^level => entries} -> …` — which is where
+    # this structural path delivers swaps. Keys stay fixed; only values across pairs swap.
+    test "does not transpose a pinned key with its bound value (illegal map key)" do
+      assert swaps("%{^k => v}") == []
+    end
+
+    test "swaps the values of a pinned-key map, keeping the pinned keys fixed" do
+      assert swaps("%{^k1 => a, ^k2 => b}") == ["f(%{^k1 => b, ^k2 => a})"]
     end
 
     test "swaps a pin with a distinct-named plain binding" do
