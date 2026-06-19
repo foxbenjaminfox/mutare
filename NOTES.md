@@ -2548,6 +2548,28 @@ the genuinely-unknown (e.g. custom mutators), not a routine outcome on real code
   candidate, so the `|>` node goes through `emit_site` rather than the postwalk's
   pipe branch). The bare stage stays the Site's recorded node, so diffs are clean.
 
+  - **Follow-up — that first form was exponential (`hoist_pipe/1` → `/2`).**
+    "Each branch becomes `lhs |> <branch>`" copies the *entire* `lhs` — which, for a
+    chained pipe, is the already-emitted selector for every upstream stage — into
+    each of a stage's `(mutants + 1)` branches. So a chain of N mutated stages
+    rendered as ≈`(mutants+1)^N`: a 9-stage `Enum.reverse()` chain ballooned to
+    **6.8 MB / 137k lines** (≈3.2× per stage), and a long pipe of stdlib calls could
+    OOM the compiler/formatter. Fixed by lifting the selector into a **one-shot
+    closure on the piped value** instead of distributing `lhs`:
+    `lhs |> (fn mutare_piped -> case … (each branch pipes `mutare_piped`) … end).()`.
+    The piped value stays the pipe's LHS (computed once, the upstream chain appears
+    once) and is bound to the closure param; each branch references that cheap
+    variable. Size is now **linear** in N — the same 9-stage chain is **4.8 KB**, and
+    doubling the stage count ~doubles (not ~1000×'s) the output. `(fn … end).()` is
+    itself a valid pipe LHS, so chains still nest. The closure param is **salted**
+    per file (`Names.generated_names` → `Ctx.piped_var`, like `active_var`/`super_var`)
+    so a stage argument mentioning `mutare_piped` isn't captured by the param. The
+    selector `case` is unchanged structurally, so `Manifest`/`Poison` (a full
+    `Macro.traverse` keyed on `Metamutant.subject?/1`) still map a compile error in a
+    nested-in-closure clause back to its mutant id. The `then/2` alternative was
+    rejected for the same reason `super`'s closure uses a bare `fn` — no need to
+    depend on `Kernel.then/2` and the diff/Site stay on the bare stage.
+
 Net: `lib/plug/router` went from 7 poisons to 0; the two pipe-stage swaps now run
 as real (killed) mutants. The 5 illegal `match?`-pattern "mutants" are correctly
 never generated (site count drops), since they were never legal mutations.

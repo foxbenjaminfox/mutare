@@ -71,10 +71,14 @@ defmodule Mutare.Transform do
 
   One position the selector `case` is *not* legal in: the right side of a pipe.
   `x |> case … end` parses but fails to compile (`Kernel.|>/2` cannot pipe into a
-  `case`), so when a mutated node is a **pipe stage**, emission hoists the pipe
-  *into* the selector — each branch becomes `lhs |> <branch>` — so the `case` is a
-  standalone expression (`hoist_pipe/1`). The Site still records the bare stage, so
-  the diff is unchanged.
+  `case`), so when a mutated node is a **pipe stage**, emission lifts the selector
+  out of the pipe into a one-shot closure invoked on the piped value
+  (`hoist_pipe/2`): `lhs |> (fn v -> case … (each branch pipes `v`) … end).()`. The
+  piped value is computed once (it stays the pipe's LHS) and bound to `v`, so each
+  branch references a cheap variable — keeping a chain of mutated stages **linear**
+  in the rendered source, where distributing `lhs` into every branch would copy the
+  whole upstream chain per branch and blow up exponentially. The Site still records
+  the bare stage, so the diff is unchanged.
 
   ## Function lifting + dispatcher (guards, dispatch)
 
@@ -173,10 +177,19 @@ defmodule Mutare.Transform do
 
     parsed = Sourceror.parse_string!(source)
     # Pin the generated names this source provably never collides with before any
-    # lifting assigns them: the private-function prefix, the dispatch variable, and
-    # the super-forwarding closure variable (see `Mutare.Transform.Names`).
-    {prefix, active_var, super_var} = Names.generated_names(parsed)
-    ctx = %{ctx | prefix: prefix, active_var: active_var, super_var: super_var}
+    # lifting assigns them: the private-function prefix, the dispatch variable, the
+    # super-forwarding closure variable, and the hoisted pipe-stage closure variable
+    # (see `Mutare.Transform.Names`).
+    {prefix, active_var, super_var, piped_var} = Names.generated_names(parsed)
+
+    ctx = %{
+      ctx
+      | prefix: prefix,
+        active_var: active_var,
+        super_var: super_var,
+        piped_var: piped_var
+    }
+
     # The known-macro registry (`Mutare.Macros`): built-ins (`Kernel.match?`/`destructure`)
     # merged with the declarative `:macros` option and any enabled mutator's `macros/0`. It
     # tells the resolution pass how to route a recognised macro's arguments (a pattern, an
@@ -872,7 +885,7 @@ defmodule Mutare.Transform do
             # `strip_candidates` clears any meta left by candidates the gate dropped (a
             # no-op when there were none), so the gated node renders clean.
             [] ->
-              {hoist_pipe(strip_candidates(current)), ctx}
+              {hoist_pipe(strip_candidates(current), ctx.piped_var), ctx}
 
             # A `=`-match in statement position is rewritten to a tuple-export selector
             # (its bindings must escape, so it can't be wrapped like an ordinary node). It
@@ -919,26 +932,46 @@ defmodule Mutare.Transform do
   # `x |> case … end` does not compile — `Kernel.|>/2` cannot pipe into a `case`.
   # When emit wrapped a *pipe stage* (the call right of a `|>`) in a selector, the
   # selector lands in exactly that illegal RHS position. Run on the parent `|>`
-  # during the same postwalk (the RHS is already emitted), this hoists the pipe
-  # *into* the selector: each branch becomes `lhs |> <that branch's expr>`, so the
-  # `case` is a standalone expression — and a valid pipe LHS for any later stage,
-  # which keeps chained pipes (`a |> b |> c`) working as the rewrite nests. The
-  # bare stage stays the Site's recorded node, so the diff is unaffected.
+  # during the same postwalk (the RHS is already emitted), this lifts the selector
+  # out of the pipe into a one-shot closure invoked on the piped value:
+  #
+  #     lhs |> (fn mutare_piped ->
+  #               case <subject> do
+  #                 <id> -> mutare_piped |> <mutant stage>
+  #                 _    -> <cov>; mutare_piped |> <original stage>
+  #               end
+  #             end).()
+  #
+  # The piped value is computed **once** (it stays the pipe's LHS, so the upstream
+  # chain appears once) and bound to the closure's param; each branch pipes that
+  # cheap variable instead of a copy of `lhs`. This keeps a chain of mutated stages
+  # **linear** in the rendered source — the earlier "distribute `lhs` into every
+  # branch" form copied the whole prefix per branch and grew ≈(mutants+1)^depth (a
+  # long pipe of stdlib calls could render to megabytes). `(fn … end).()` is itself
+  # a valid pipe LHS, so chained pipes still nest; the bare stage stays the Site's
+  # recorded node, so the diff is unaffected. The param name (`piped_var`) is salted
+  # per file so a stage argument mentioning the same identifier isn't captured.
   defp hoist_pipe(
-         {:|>, _meta, [lhs, {:__block__, bmeta, [{:case, cmeta, [subject, [do: clauses]]}]}]} =
-           node
+         {:|>, meta, [lhs, {:__block__, bmeta, [{:case, cmeta, [subject, [do: clauses]]}]}]} =
+           node,
+         piped_var
        ) do
     if Mutare.Metamutant.subject?(subject) do
-      piped =
-        Enum.map(clauses, fn {:->, m, [pat, body]} -> {:->, m, [pat, pipe_tail(lhs, body)]} end)
+      var = {piped_var, [], nil}
 
-      {:__block__, bmeta, [{:case, cmeta, [subject, [do: piped]]}]}
+      piped =
+        Enum.map(clauses, fn {:->, m, [pat, body]} -> {:->, m, [pat, pipe_tail(var, body)]} end)
+
+      selector = {:__block__, bmeta, [{:case, cmeta, [subject, [do: piped]]}]}
+      closure = {:fn, [], [{:->, [], [[var], selector]}]}
+      invocation = {{:., [], [closure]}, [], []}
+      {:|>, meta, [lhs, invocation]}
     else
       node
     end
   end
 
-  defp hoist_pipe(node), do: node
+  defp hoist_pipe(node, _piped_var), do: node
 
   # Pipe `lhs` into a selector clause body. A mutant clause body is a single
   # expression (the mutated stage), piped whole; the catch-all body is a block
@@ -967,7 +1000,7 @@ defmodule Mutare.Transform do
     # ReturnValue candidate) whose RHS is an already-emitted selector, the selector
     # would sit illegally as a pipe target inside this default/catch-all — hoist the
     # pipe into it. A no-op for every other node shape.
-    default = hoist_pipe(strip_candidates(node))
+    default = hoist_pipe(strip_candidates(node), ctx.piped_var)
 
     # All mutations here skipped → no selector; emit the node unchanged.
     case clauses do

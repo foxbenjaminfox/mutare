@@ -269,10 +269,16 @@ contract between them is the whole game.
   - **in-place selector** for body expressions: wrap the operator in a tail-position
     `case :persistent_term.get(:mutare_active, 0) do <id> -> mutated; _ -> original end`. One
     illegal spot for that `case`: the RHS of a pipe (`x |> case … end` parses but won't compile —
-    `|>` can't pipe into a `case`), so when the mutated node is a **pipe stage** emission *hoists
-    the pipe into the selector* (`hoist_pipe/1`, run on the parent `|>` in the same postwalk *and*
-    on `emit_site`'s default for a tail pipe that also carries a ReturnValue): each branch becomes
-    `lhs |> <branch>`. The Site keeps the bare stage, so the diff is unchanged.
+    `|>` can't pipe into a `case`), so when the mutated node is a **pipe stage** emission lifts the
+    selector out of the pipe into a **one-shot closure on the piped value** (`hoist_pipe/2`, run on
+    the parent `|>` in the same postwalk *and* on `emit_site`'s default for a tail pipe that also
+    carries a ReturnValue): `lhs |> (fn <piped_var> -> case … (each branch pipes `<piped_var>`) …
+    end).()`. The piped value is computed **once** (it stays the pipe's LHS) and bound to the closure
+    param, so a chain of mutated stages renders **linear** in depth — distributing `lhs` into every
+    branch (the earlier form) copied the whole upstream chain per branch and blew up as
+    ≈`(mutants+1)^depth`. `<piped_var>` is salted per file (`Ctx.piped_var`, like `active_var`) so a
+    stage arg of the same name isn't captured; `(fn … end).()` is itself a valid pipe LHS, so chains
+    nest. The Site keeps the bare stage, so the diff is unchanged.
   - **function lifting + dispatcher** for `when` guards, **head-pattern literals**, **head-pattern
     structure rewrites** (variable swap / duplicate→wildcard), and clause structure (a `case` can't
     live in a guard or a pattern): the clause group becomes **one** private function `__mutare_…_g<n>`

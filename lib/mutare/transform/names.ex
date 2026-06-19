@@ -33,23 +33,36 @@ defmodule Mutare.Transform.Names do
   # collision-free variant when the source already uses the name.
   @super_var :mutare_super
 
+  # The canonical piped-value closure variable. When a mutated *pipe stage* is
+  # hoisted out of its illegal `x |> case … end` position, the piped value is bound
+  # to a one-shot closure's parameter and the branches reference *it* rather than
+  # copying the whole upstream chain (see `Mutare.Transform.hoist_pipe/2`). It is
+  # read inside the branches, so — like the dispatch/super variables — it is salted
+  # rather than underscore-prefixed, and must not collide with a source variable the
+  # stage's arguments mention (else the closure param would capture it).
+  @piped_var :mutare_piped
+
   # def-like forms whose names a generated private `defp` could duplicate — part of
   # the identifier set `generated_names/1` scans the source for.
   @def_forms ~w(def defp defmacro defmacrop defguard defguardp defdelegate)a
 
   @doc """
-  The collision-free `{prefix, active_var, super_var}` this source provably never uses.
+  The collision-free `{prefix, active_var, super_var, piped_var}` this source
+  provably never uses.
 
   `prefix` is the private-function prefix; `active_var` the dispatch variable;
-  `super_var` the super-forwarding closure variable. All three are derived from one
-  scan of every identifier the source mentions, so a generated name can never equal
-  one already in scope.
+  `super_var` the super-forwarding closure variable; `piped_var` the hoisted
+  pipe-stage closure variable. All four are derived from one scan of every
+  identifier the source mentions, so a generated name can never equal one already in
+  scope.
   """
-  @spec generated_names(Macro.t()) :: {String.t(), atom(), atom()}
+  @spec generated_names(Macro.t()) :: {String.t(), atom(), atom(), atom()}
   def generated_names(ast) do
     taken = taken_names(ast)
     prefix = Enum.find(prefix_candidates(), &free?(&1, taken))
-    {prefix, salted(Recorder.var_name(), taken), salted(@super_var, taken)}
+
+    {prefix, salted(Recorder.var_name(), taken), salted(@super_var, taken),
+     salted(@piped_var, taken)}
   end
 
   # A generated *variable* name the source provably never uses: the readable
@@ -57,8 +70,9 @@ defmodule Mutare.Transform.Names do
   # `canonical_1`, … until free. A numeric suffix (not the `__mutare_` prefix) keeps
   # it a normal, non-underscore name — a leading-underscore variable that's then
   # *read* warns ("used after being set"). The candidate family is infinite and
-  # `taken` finite, so this terminates. Used for both the dispatch variable
-  # (`mutare_active`) and the super-forwarding closure (`mutare_super`).
+  # `taken` finite, so this terminates. Used for the dispatch variable
+  # (`mutare_active`), the super-forwarding closure (`mutare_super`), and the
+  # hoisted pipe-stage closure (`mutare_piped`).
   defp salted(canonical, taken) do
     if MapSet.member?(taken, Atom.to_string(canonical)) do
       Stream.iterate(0, &(&1 + 1))

@@ -518,8 +518,9 @@ defmodule Mutare.Transform.Analyze do
   # visible args + 1), then descend its arguments as ordinary runtime. Mirrors the
   # generic runtime clause (a pipe stage is never a sigil). The resulting candidate
   # is a normal `Candidate.InPlace`, so emission wraps it in a selector and
-  # `hoist_pipe/1` lifts the pipe in — a mutated 0-arg `Enum.reverse()` stage becomes
-  # `lhs |> Enum.reverse()`. A non-call RHS (rare) is analyzed normally.
+  # `hoist_pipe/2` lifts the selector out of the illegal pipe-RHS position into a
+  # one-shot closure on the piped value — `lhs |> (fn v -> case … (each branch pipes
+  # `v`) … end).()`. A non-call RHS (rare) is analyzed normally.
   #
   # A piped **known-macro** stage (`q |> where([p], p.x == 1)`, the query-builder shape)
   # routes its arguments by treatment too — `Resolve` already stamped the *visible*-position
