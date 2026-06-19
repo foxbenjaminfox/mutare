@@ -422,4 +422,103 @@ defmodule Mutare.MacroPatternTest do
       assert mod.go([5, 2]) == 2 - 5
     end
   end
+
+  describe "a whole-call mutation with NO structural pattern mutant (direct form)" do
+    # Only the whole-call mutator is enabled — `PatternSwap`/`PatternWildcard` are off — so the
+    # binding macro earns its whole-call mutant but *no* swap/wildcard pattern mutant. The
+    # whole-call `Candidate.InPlace` must still be re-homed into the tuple-export selector
+    # (computing the export from the pattern's bound vars alone); otherwise it survives as an
+    # ordinary in-place selector that traps the escaping `x`/`y` inside its branches, leaving
+    # `x - y` undefined and **failing the metamutant compile**.
+    @source """
+    defmodule Mutare.WholeCallOnlyDirectFixture do
+      import Mutare.Test.QueryDSL
+
+      def go(v) do
+        unpack([x, y], v)
+        x - y
+      end
+    end
+    """
+
+    @compile {:no_warn_undefined, Mutare.WholeCallOnlyDirectFixture}
+
+    setup do
+      {meta, sites, _next} =
+        Mutare.transform_string(@source,
+          file: "whole_only.ex",
+          mutators: [Mutare.Test.UnpackMutator]
+        )
+
+      {[{mod, _}], _io} =
+        ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+
+      %{mod: mod, sites: sites}
+    end
+
+    test "the whole-call mutant gets a site and no pattern mutant is produced", %{sites: sites} do
+      assert Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
+      refute Enum.any?(sites, &(&1.mutator in [:pattern_swap, :pattern_wildcard]))
+    end
+
+    test "the metamutant compiled and the whole-call mutant switches", %{mod: mod, sites: sites} do
+      call = Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
+
+      Selector.put(Selector.baseline())
+      assert mod.go([5, 2]) == 3
+
+      # `unpack([x, y], [9, 9])` → x = y = 9; the bindings still escape to `x - y`.
+      Selector.put(call.id)
+      assert mod.go([5, 2]) == 0
+    end
+  end
+
+  describe "a whole-call mutation with NO structural pattern mutant (piped form)" do
+    # The piped twin: the stage `unpack(v)` carries the whole-call mutation on the `|>` RHS
+    # child. With no pattern mutant to trigger re-homing, it would otherwise emit as its own
+    # selector and this site's baseline would become the illegal `[x, y] |> case … end` — a
+    # pipe into a `case` that also traps the escaping bindings. The export must be re-homed
+    # from the pattern alone so the metamutant compiles.
+    @source """
+    defmodule Mutare.WholeCallOnlyPipedFixture do
+      import Mutare.Test.QueryDSL
+
+      def go(v) do
+        [x, y] |> unpack(v)
+        x - y
+      end
+    end
+    """
+
+    @compile {:no_warn_undefined, Mutare.WholeCallOnlyPipedFixture}
+
+    setup do
+      {meta, sites, _next} =
+        Mutare.transform_string(@source,
+          file: "whole_only_piped.ex",
+          mutators: [Mutare.Test.UnpackMutator]
+        )
+
+      {[{mod, _}], _io} =
+        ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+
+      %{mod: mod, sites: sites}
+    end
+
+    test "the whole-call mutant gets a site and no pattern mutant is produced", %{sites: sites} do
+      assert Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
+      refute Enum.any?(sites, &(&1.mutator in [:pattern_swap, :pattern_wildcard]))
+    end
+
+    test "the metamutant compiled and the whole-call mutant switches", %{mod: mod, sites: sites} do
+      call = Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
+
+      Selector.put(Selector.baseline())
+      assert mod.go([5, 2]) == 3
+
+      # `[x, y] |> unpack([9, 9])` → x = y = 9; the bindings still escape to `x - y`.
+      Selector.put(call.id)
+      assert mod.go([5, 2]) == 0
+    end
+  end
 end
