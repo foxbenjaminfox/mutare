@@ -1918,12 +1918,15 @@ The fix derives "what a mutant covers" **from the mutation itself**, in a new pr
 dropped candidate leaves no id/site and ids stay contiguous — same property as
 `gate_candidates/1`; it *can't* live in the emit postwalk because that's post-order, visiting
 the leaf before its enclosing call). A candidate's **footprint** is the source range of the
-*minimal changed subtree* between its `original` and `mutated` (`footprint/2`, a meta-
+*minimal changed subtree* between its `original` and `mutated` (`footprint/3`, a meta-
 insensitive lockstep diff that stops at the rangeable `{:__block__, _, [literal]}` wrapper, not
 the bare value, and ranges the **original** side — the mutated literal has fresh `[]` meta and
-no range). A candidate whose footprint is a *proper sub-range* of its host (`range`) is
-**covering** (a call rewrite touching one descendant); any **non-covering** candidate whose
-host range equals a covering footprint is dropped — exactly the redundant leaf mutation. It is:
+no range). A candidate is **covering** when that footprint range is a *proper sub-range* of its
+host — decided by **range comparison** (`footprint_range != host_range`), *not* a structural
+`sub === original` test. That distinction is load-bearing and was a real bug (see below): the
+diff's minimal subtree can be a *different term* from the host that Sourceror nonetheless ranges
+*identically* to it. Any **non-covering** candidate whose host range equals a covering footprint
+is dropped — exactly the redundant leaf mutation. It is:
 
 - **exact** — distinct source nodes have distinct ranges (`NodeRange.get/1`), and the leaf
   candidate and ModeSwap's footprint derive from the *same* original subtree term, so their
@@ -1955,8 +1958,15 @@ three shapes appear, and the distinction is subtler than "ModeSwap vs the rest":
   routinely non-empty (any `Map.get/3`, `Enum.sort/2`, …), so the prune pass **does run** on
   most real files — the earlier "no-op unless there's a ModeSwap call" framing was wrong; the
   *prune* is skipped only when nothing is covering, which also requires no arity-changing call.
-  A *permuting* mutator (`OperandSwap`, `a-b`→`b-a`: two children change) collapses to a
-  whole-host footprint → non-covering.
+- **Operand permutation** (`OperandSwap`, `a - b` → `b - a`) also changes the **argument list**,
+  but for an **infix** operator Sourceror ranges `[a, b]` *identically* to the whole `a - b`
+  node — so the footprint range *equals* the host range → **non-covering** (the range test, not
+  structural identity, is what catches this; the args list is a different term from the host).
+  This was a **shipped regression**: the original `sub === original` check let the args-list
+  footprint into `covered_ranges`, silently pruning the `Arithmetic` `a - b` → `a + b` (and
+  `List` `++`↔`--`) sibling on every non-commutative infix with distinct operands. The *call*
+  forms OperandSwap also targets (`div(a, b)`, `DateTime.compare(a, b)`) range their args inside
+  the parens, so they were never affected — covering-but-harmless like the arity changes above.
 
 **Latent sharp edge.** The "args-list footprint matches no single leaf" guarantee is not
 airtight: a bare single-element args list (`foo(0)` → args `[0]`) has the **same range** as its

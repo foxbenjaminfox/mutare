@@ -49,15 +49,22 @@ defmodule Mutare.Transform.Overlap do
   #     property — see the sharp edge below). A whole-node replacement (a literal family, a
   #     boolean→`true`, `String.equivalent?`→`==`) likewise differs at the host → `nil`.
   #   * **Arity changes** (DefaultDrop, CollectionArity, CallRemoval's arg-drop) — the
-  #     differing subtree is the whole **argument list**, which *is* rangeable, so these are
-  #     technically **covering** and their args-list range lands in `covered_ranges`. They
-  #     suppress nothing only because no *single* leaf candidate's host equals a whole
-  #     args-list range. So `covered_ranges` is routinely non-empty (any `Map.get/3`,
-  #     `Enum.sort/2`, …) and the prune pass does run — it just finds no match.
+  #     differing subtree is the whole **argument list**, which *is* rangeable and (inside the
+  #     parens) a *proper sub-range* of the call, so these are technically **covering** and
+  #     their args-list range lands in `covered_ranges`. They suppress nothing only because no
+  #     *single* leaf candidate's host equals a whole args-list range. So `covered_ranges` is
+  #     routinely non-empty (any `Map.get/3`, `Enum.sort/2`, …) and the prune pass does run —
+  #     it just finds no match.
+  #   * **Operand permutation** (`OperandSwap`, `a - b` → `b - a`) — also changes the argument
+  #     list, but for an **infix** operator Sourceror ranges `[a, b]` *identically* to the whole
+  #     `a - b` node. So its footprint range equals the host range → **non-covering** (the
+  #     proper-sub-range test in `footprint/3`). This is essential: otherwise it would prune the
+  #     `Arithmetic` `a - b` → `a + b` (and `List` `++`↔`--`) sibling, whose host shares that
+  #     range. The *call* forms (`div(a, b)`, `DateTime.compare(a, b)`) range their args inside
+  #     the parens, so they are covering-but-harmless like the arity changes above.
   #
   # So: several built-ins are "covering" in the mechanical sense, but ModeSwap→AtomLiteral is
-  # the only overlap that resolves to a real drop. A permuting mutator (`OperandSwap`,
-  # `a - b` → `b - a`: two children change → footprint collapses to the host) is non-covering.
+  # the only overlap that resolves to a real drop.
   #
   # ## Sharp edge (latent)
   #
@@ -102,8 +109,8 @@ defmodule Mutare.Transform.Overlap do
     meta
     |> Keyword.get(:mutare, [])
     |> Enum.reduce(acc, fn
-      %Candidate.InPlace{original: o, mutated: m}, acc ->
-        case footprint(o, m) do
+      %Candidate.InPlace{original: o, mutated: m, range: host_range}, acc ->
+        case footprint(o, m, host_range) do
           nil -> acc
           range -> MapSet.put(acc, range)
         end
@@ -137,19 +144,32 @@ defmodule Mutare.Transform.Overlap do
   # ever produced a footprint equal to another's host range).
   defp drop?(%Candidate.InPlace{range: range} = c, covered) do
     not is_nil(range) and MapSet.member?(covered, range) and
-      footprint(c.original, c.mutated) == nil
+      footprint(c.original, c.mutated, range) == nil
   end
 
   defp drop?(_other, _covered), do: false
 
   # The source range of the minimal subtree that differs between `original` and `mutated`,
-  # or `nil` when the *whole host* changed (a leaf swap — non-covering) or nothing changed.
-  # The range is always taken from the **original** side (the mutated literal carries fresh
-  # `[]` metadata, so it has no range).
-  defp footprint(original, mutated) do
+  # **only when it is a proper sub-range of the host** (`host_range`) — i.e. the rewrite
+  # touched a genuine descendant. `nil` otherwise: nothing changed, the changed subtree is
+  # unrangeable (an operator/function-name atom), or its range *equals* the host range.
+  #
+  # That last clause is load-bearing. A structural-identity test (`sub === original`) is not
+  # enough: an `OperandSwap` (`a - b` → `b - a`) changes the *argument list* `[a, b]`, which
+  # is a different term from the infix node but which Sourceror ranges **identically** to it.
+  # Without the range comparison that footprint would be marked covering and would prune the
+  # `Arithmetic` `a - b` → `a + b` sibling (same host range). Comparing ranges — a descendant's
+  # range is always within the host's, so "not equal" means "strictly inside" — keeps such a
+  # whole-host rewrite non-covering. The range is taken from the **original** side (the mutated
+  # literal carries fresh `[]` metadata, so it has no range).
+  defp footprint(original, mutated, host_range) do
     case diff(original, mutated) do
-      :equal -> nil
-      {:diff, sub} -> if sub === original, do: nil, else: NodeRange.get(sub)
+      :equal ->
+        nil
+
+      {:diff, sub} ->
+        sub_range = NodeRange.get(sub)
+        if sub_range && sub_range != host_range, do: sub_range, else: nil
     end
   end
 

@@ -1110,6 +1110,34 @@ defmodule Mutare.TransformTest do
       assert "microsecond:" in atoms
       assert Enum.filter(sites, &(&1.mutator == :mode_swap)) == []
     end
+
+    test "OperandSwap on an infix operator does not prune the Arithmetic/List sibling" do
+      # `a - b` → `b - a` (OperandSwap) changes the *argument list* `[a, b]`, which Sourceror
+      # ranges identically to the whole `a - b` node. That whole-host footprint must NOT be
+      # treated as covering, or the operator-swap sibling (same host range) would be dropped.
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def f(a, b), do: a - b
+            def g(a, b), do: a ++ b
+          end
+          """,
+          mutators: [
+            Mutare.Mutators.OperandSwap,
+            Mutare.Mutators.Arithmetic,
+            Mutare.Mutators.List
+          ]
+        )
+
+      pairs = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
+
+      # Both the operand swap AND the operator swap survive on the same infix node.
+      assert {:operand_swap, "a - b", "b - a"} in pairs
+      assert {:arithmetic, "a - b", "a + b"} in pairs
+      assert {:operand_swap, "a ++ b", "b ++ a"} in pairs
+      assert {:list, "a ++ b", "a -- b"} in pairs
+    end
   end
 
   describe "Numeric (complementary Kernel/Float numeric swaps)" do
