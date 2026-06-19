@@ -13,14 +13,12 @@ defmodule Mutare.Transform.Candidate do
   #
   #   * `Candidate.InPlace` — a body operator swap, delivered by an in-place
   #     selector `case` (was `:runtime_body` / `:in_place` / `:replace`).
-  #   * `Candidate.Guard`   — a `when`-guard operator swap, delivered by lifting
-  #     (a `case` can't live in a guard) (was `:guard` / `:lifted` / `:replace`).
-  #   * `Candidate.Pattern` — a head-pattern literal swap, delivered by lifting (a
-  #     selector `case` is illegal in a pattern). Mechanically a twin of `Guard` —
-  #     both tag a node in the shared clause group and replace it in the one gated
-  #     mutant clause — but a distinct kind: a different position (the clause *head*,
-  #     not its `when`) and a different mutator family (only literal-valued mutations
-  #     are pattern-legal).
+  #   * `Candidate.Lifted`  — a single tagged-node replacement in a lifted clause,
+  #     delivered by a dispatcher clause gated `when mutare_active === <id>` (a `case`
+  #     can't live in a guard, and a selector is illegal in a pattern). Covers both a
+  #     `when`-guard operator swap and a head-pattern literal swap — delivered
+  #     identically (tag + replace one node), so one struct, the legality difference
+  #     enforced at discovery (was `:guard`/`:lifted` and a separate head-literal kind).
   #   * `Candidate.PatternStructure` — a whole-head pattern restructuring (a variable
   #     swap, or a duplicate-variable wildcarding), delivered by lifting. Like `Pattern`
   #     it lives in a clause head, but the rewrite spans sibling positions / repeated
@@ -63,7 +61,7 @@ defmodule Mutare.Transform.Candidate do
   # `&fun/arity`) — never become candidates at all; the analyzer classifies them
   # positively and skips them (see `Mutare.Transform`'s `analyze/3`). `:pattern` is
   # excluded *in place* (a `case` is illegal in a pattern), but a `def`/`defp` head
-  # pattern's *literals* are mutated by lifting (`Candidate.Pattern`), the same way
+  # pattern's *literals* are mutated by lifting (`Candidate.Lifted`), the same way
   # guards are.
 
   defmodule InPlace do
@@ -93,40 +91,32 @@ defmodule Mutare.Transform.Candidate do
     defstruct [:mutator, :original, :mutated, :range, call_option_key?: false]
   end
 
-  defmodule Guard do
+  defmodule Lifted do
     @moduledoc false
 
-    # A `when`-guard operator swap, delivered by lifting. It carries `tag` — a
-    # unique `meta[:mutare_tag]` marking the target node inside the *shared* tagged
-    # clause group held once on the `Mutare.Transform.FunctionPlan` — plus the
-    # `clause_index` it lives in. `FunctionPlan.mutated_clause/2` reconstructs *just
-    # that one clause* by replacing the tagged node with `mutated`; emission emits it
-    # as a single dispatcher clause gated `when mutare_active === <id>`.
-
-    @type t :: %__MODULE__{
-            tag: non_neg_integer(),
-            clause_index: non_neg_integer(),
-            mutator: module(),
-            original: Macro.t(),
-            mutated: Macro.t(),
-            range: Sourceror.Range.t()
-          }
-
-    defstruct [:tag, :clause_index, :mutator, :original, :mutated, :range]
-  end
-
-  defmodule Pattern do
-    @moduledoc false
-
-    # A head-pattern literal swap, delivered by lifting. Structurally identical to
-    # `Guard` (it carries a `tag` into the shared tagged clause group held on the
-    # `Mutare.Transform.FunctionPlan`, plus its `clause_index` and the replacement
-    # node), but it lives in a clause *head* rather than a `when` guard. Because a
-    # selector `case` is illegal in a pattern, a literal in a head (`def f(1, %{0 =>
-    # k})`) can only be mutated by lifting — exactly the guard mechanism.
-    # `FunctionPlan.mutated_clause/2` materializes the mutant clause by replacing the
-    # tagged literal with `mutated`. Only mutations whose replacement is itself a
-    # literal are admitted, so the gated mutant clause is always a legal pattern.
+    # A single tagged-node replacement inside one *lifted* clause, delivered by a
+    # dispatcher clause gated `when mutare_active === <id>`. Two discovery positions
+    # share this one representation because they are delivered *identically* — tag a
+    # node in the *shared* tagged clause group held once on the
+    # `Mutare.Transform.FunctionPlan`, then in the one gated mutant clause replace that
+    # node with `mutated` (`FunctionPlan.mutated_clause/2` reconstructs *just that one
+    # clause*):
+    #
+    #   * a `when`-**guard** operator swap (a `case` can't live in a guard), and
+    #   * a **head-pattern literal** swap (a selector `case` is illegal in a pattern,
+    #     so a literal in a head — `def f(1, %{0 => k})` — can only be lifted).
+    #
+    # They differ only in *where* the tagged node sits (the `when` vs the head args)
+    # and which families reach it (head literals admit only literal-valued mutations,
+    # so the gated clause is always a legal pattern) — both enforced at *discovery*
+    # (`build_guards` vs `build_pattern_literals`, the distinct `Tag` walks), not by
+    # the candidate. Nothing downstream tells them apart: emission records both as the
+    # same `:lifted` replacement `Mutare.Site`, the mutator family (an operator family
+    # vs a literal family) being the only visible difference. This keeps to the
+    # candidate-design rule — no discriminant field; the struct *is* the shape.
+    #
+    # `tag` is the unique `meta[:mutare_tag]` marking the target inside the tagged
+    # clause group; `clause_index` is the clause it lives in.
 
     @type t :: %__MODULE__{
             tag: non_neg_integer(),
@@ -145,8 +135,8 @@ defmodule Mutare.Transform.Candidate do
 
     # A whole-head *pattern restructuring* of one clause, delivered by lifting — a
     # variable swap (`{x, y}` → `{y, x}`) or a duplicate-variable wildcarding
-    # (`f(x, x)` → `f(_, x)`). Like `Pattern` it lives in a clause head; unlike `Pattern`
-    # (a single tagged literal node) the rewrite spans/replaces sub-patterns that may have
+    # (`f(x, x)` → `f(_, x)`). Like a `Lifted` head literal it lives in a clause head;
+    # unlike one (a single tagged node) the rewrite spans/replaces sub-patterns that may have
     # no taggable metadata (a 2-tuple, a list), so it is applied by **whole-clause
     # rebuild by index** — the same mechanism as `Drop`. `clause_index` says which clause
     # to rebuild; `Mutare.Transform.FunctionPlan.mutated_clause/2` swaps in `mutated_args`
@@ -385,8 +375,7 @@ defmodule Mutare.Transform.Candidate do
 
   @type t ::
           InPlace.t()
-          | Guard.t()
-          | Pattern.t()
+          | Lifted.t()
           | PatternStructure.t()
           | CasePattern.t()
           | RescueDrop.t()

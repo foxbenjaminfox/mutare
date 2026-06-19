@@ -19,9 +19,10 @@ defmodule Mutare.Transform.FunctionPlan do
   # An earlier design stored that materialized clause group on each candidate — N
   # near-identical copies for N mutants. Instead the plan holds the group *once*,
   # with every mutatable guard operator *and* head-pattern literal tagged by a
-  # unique `meta[:mutare_tag]` (`tagged_clauses`); each `Candidate.Guard` /
-  # `Candidate.Pattern` carries only its `tag`, its `clause_index`, and the
-  # replacement node. `mutated_clause/2` reconstructs *just the one tagged clause*
+  # unique `meta[:mutare_tag]` (`tagged_clauses`); each `Candidate.Lifted` carries
+  # only its `tag`, its `clause_index`, and the replacement node (a guard operator
+  # and a head literal are the same shape here, so one struct serves both).
+  # `mutated_clause/2` reconstructs *just the one tagged clause*
   # on demand by replacing the tagged node. Tags are stripped before rendering, so a
   # leftover tag on a sibling node is harmless. Guards and pattern literals share one
   # tag counter (`build_lifted/2`) so their tags are unique group-wide.
@@ -46,8 +47,7 @@ defmodule Mutare.Transform.FunctionPlan do
           signature: signature(),
           clauses: [Macro.t()],
           tagged_clauses: [Macro.t()],
-          guards: [Candidate.Guard.t()],
-          patterns: [Candidate.Pattern.t()],
+          lifted: [Candidate.Lifted.t()],
           pattern_structures: [Candidate.PatternStructure.t()],
           drops: [Candidate.Drop.t()]
         }
@@ -56,8 +56,7 @@ defmodule Mutare.Transform.FunctionPlan do
     :signature,
     :clauses,
     :tagged_clauses,
-    :guards,
-    :patterns,
+    :lifted,
     :pattern_structures,
     :drops
   ]
@@ -72,18 +71,16 @@ defmodule Mutare.Transform.FunctionPlan do
   """
   @spec plan(signature(), [Macro.t()], [Mutator.Spec.t()]) :: {:lift, t()} | :in_place
   def plan({_vis, name, _arity} = signature, clauses, mutators) do
-    {tagged_clauses, guards, patterns} = build_lifted(clauses, mutators)
+    {tagged_clauses, lifted} = build_lifted(clauses, mutators)
     pattern_structures = build_pattern_structures(clauses, mutators)
     drops = build_drops(clauses)
 
-    if (guards != [] or patterns != [] or pattern_structures != [] or drops != []) and
-         liftable?(name) do
+    if (lifted != [] or pattern_structures != [] or drops != []) and liftable?(name) do
       plan = %__MODULE__{
         signature: signature,
         clauses: clauses,
         tagged_clauses: tagged_clauses,
-        guards: guards,
-        patterns: patterns,
+        lifted: lifted,
         pattern_structures: pattern_structures,
         drops: drops
       }
@@ -104,12 +101,11 @@ defmodule Mutare.Transform.FunctionPlan do
   """
   @spec candidates(t()) :: [Candidate.t()]
   def candidates(%__MODULE__{
-        guards: guards,
-        patterns: patterns,
+        lifted: lifted,
         pattern_structures: pattern_structures,
         drops: drops
       }),
-      do: guards ++ patterns ++ pattern_structures ++ drops
+      do: lifted ++ pattern_structures ++ drops
 
   @doc """
   Materialize the *single* clause a candidate mutates, with its position.
@@ -122,22 +118,15 @@ defmodule Mutare.Transform.FunctionPlan do
   assembles it into the shared lifted function as a guarded mutant clause, while
   the *unchanged* clauses are emitted once as the lifted function's originals.
 
-    * `Candidate.Guard` / `Candidate.Pattern` — the tagged clause at `clause_index`
-      with the tagged node (guard operator / head literal) replaced by `mutated`.
+    * `Candidate.Lifted` — the tagged clause at `clause_index` with the tagged node
+      (guard operator or head literal) replaced by `mutated`.
     * `Candidate.PatternStructure` — the clause at `clause_index` with its head args
       replaced by `mutated_args`.
     * `Candidate.Drop` — `:drop`; no clause, the original is simply gated off when
       this mutant is active.
   """
   @spec mutated_clause(t(), Candidate.t()) :: {non_neg_integer(), Macro.t() | :drop}
-  def mutated_clause(%__MODULE__{tagged_clauses: tagged}, %Candidate.Guard{
-        clause_index: index,
-        tag: tag,
-        mutated: mutated
-      }),
-      do: {index, Tag.replace_tag(Enum.at(tagged, index), tag, mutated)}
-
-  def mutated_clause(%__MODULE__{tagged_clauses: tagged}, %Candidate.Pattern{
+  def mutated_clause(%__MODULE__{tagged_clauses: tagged}, %Candidate.Lifted{
         clause_index: index,
         tag: tag,
         mutated: mutated
@@ -163,13 +152,13 @@ defmodule Mutare.Transform.FunctionPlan do
   defp build_lifted(clauses, mutators) do
     {guard_tagged, guards, next_tag} = build_guards(clauses, mutators, 0)
     {tagged, patterns, _next_tag} = build_pattern_literals(guard_tagged, mutators, next_tag)
-    {tagged, guards, patterns}
+    {tagged, guards ++ patterns}
   end
 
   # === guard candidates ======================================================
 
   # Tag every mutatable guard operator across the group with a unique
-  # `meta[:mutare_tag]`, returning the once-tagged clause group, a `Candidate.Guard`
+  # `meta[:mutare_tag]`, returning the once-tagged clause group, a `Candidate.Lifted`
   # per mutation, and the next free tag. Clauses are visited in order and, within a
   # clause, targets in post-order DFS (matching the in-place emit ordering), so ids
   # land in source order. The tag counter is threaded across clauses (from
@@ -198,22 +187,7 @@ defmodule Mutare.Transform.FunctionPlan do
           end)
 
         tagged_clause = put_guards(clause, tagged_guards)
-
-        new_candidates =
-          targets
-          |> Enum.reverse()
-          |> Enum.flat_map(fn {tag, original, muts} ->
-            Enum.map(muts, fn {mutator, mutated} ->
-              %Candidate.Guard{
-                tag: tag,
-                clause_index: index,
-                mutator: mutator,
-                original: original,
-                mutated: mutated,
-                range: NodeRange.get(original)
-              }
-            end)
-          end)
+        new_candidates = lifted_candidates(targets, index)
 
         {[tagged_clause | tagged_acc], cand_acc ++ new_candidates, next_tag}
     end
@@ -232,7 +206,7 @@ defmodule Mutare.Transform.FunctionPlan do
 
   # Tag every mutatable literal in each clause *head* with a unique
   # `meta[:mutare_tag]`, returning the (further) tagged clause group, a
-  # `Candidate.Pattern` per mutation, and the next free tag. Mirrors `build_guards/3`
+  # `Candidate.Lifted` per mutation, and the next free tag. Mirrors `build_guards/3`
   # but walks head args (the patterns) rather than guards, and only literal-valued
   # mutations survive (`tag_pattern_targets/3`). The tag counter continues from
   # `start_tag` so pattern tags never collide with guard tags.
@@ -263,27 +237,26 @@ defmodule Mutare.Transform.FunctionPlan do
         {clause, [], next_tag}
 
       _ ->
-        {put_head_args(clause, tagged_args), build_pattern_candidates(targets, index), next_tag}
+        {put_head_args(clause, tagged_args), lifted_candidates(targets, index), next_tag}
     end
   end
 
-  # `targets` arrives in reverse post-order; reverse to source order. One literal
-  # can admit several mutations (an integer → `n+1`, `n-1`, `0`), each a separate
-  # `Candidate.Pattern` sharing the tag but carrying its own replacement.
-  defp build_pattern_candidates(targets, index) do
-    targets
-    |> Enum.reverse()
-    |> Enum.flat_map(fn {tag, original, muts} ->
-      Enum.map(muts, fn {mutator, mutated} ->
-        %Candidate.Pattern{
-          tag: tag,
-          clause_index: index,
-          mutator: mutator,
-          original: original,
-          mutated: mutated,
-          range: NodeRange.get(original)
-        }
-      end)
+  # Expand a clause's tagged guard / head-literal `targets` into `Candidate.Lifted`s,
+  # one per `{mutator, mutated}` (a literal can admit several — an integer → `n+1`,
+  # `n-1`, `0`). Guard and head-literal targets build the *same* candidate (both are a
+  # tagged-node replacement in one lifted clause), so this serves `build_guards` and
+  # `build_pattern_literals` alike; `Tag.expand_targets/2` owns the source-order +
+  # range-skip contract.
+  defp lifted_candidates(targets, index) do
+    Tag.expand_targets(targets, fn tag, original, mutator, mutated, range ->
+      %Candidate.Lifted{
+        tag: tag,
+        clause_index: index,
+        mutator: mutator,
+        original: original,
+        mutated: mutated,
+        range: range
+      }
     end)
   end
 

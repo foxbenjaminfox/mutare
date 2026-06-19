@@ -13,8 +13,8 @@ defmodule Mutare.Transform do
       separated from emission.
     * `Mutare.Transform.FunctionPlan` — one liftable clause group: its signature,
       its clauses, a single shared *tagged* clause group, and the typed lifted
-      candidates (`Candidate.Guard` / `Candidate.Pattern` / `Candidate.Drop`) it admits.
-    * `Mutare.Transform.Candidate.{InPlace,Guard,Pattern,Drop}` — the typed, pre-id
+      candidates (`Candidate.Lifted` / `Candidate.Drop`) it admits.
+    * `Mutare.Transform.Candidate.{InPlace,Lifted,Drop}` — the typed, pre-id
       description of a single mutant. One struct per legal kind, so the redundant
       `context`/`kind`/`operation` triple (and its illegal combinations) is gone.
 
@@ -818,14 +818,10 @@ defmodule Mutare.Transform do
     Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
-  defp lifted_site(id, %Candidate.Guard{} = c, file) do
-    Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
-  end
-
-  # A head-pattern literal swap is lifted (a `case` is illegal in a pattern) and
-  # records the same `:lifted` replacement shape as a guard — only the mutator
-  # name (a literal family) and the position differ.
-  defp lifted_site(id, %Candidate.Pattern{} = c, file) do
+  # A lifted candidate — a `when`-guard operator swap or a head-pattern literal swap
+  # (a `case` is illegal in both positions) — records the `:lifted` replacement shape;
+  # only the mutator family and the tagged position differ, both already on the Site.
+  defp lifted_site(id, %Candidate.Lifted{} = c, file) do
     Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 

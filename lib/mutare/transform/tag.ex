@@ -25,6 +25,7 @@ defmodule Mutare.Transform.Tag do
   # (bitstring specs, map-key collisions) therefore live here once.
 
   alias Mutare.{AST, Mutator}
+  alias Mutare.Transform.NodeRange
 
   @doc """
   Tag every mutatable operator in one guard expression.
@@ -47,6 +48,37 @@ defmodule Mutare.Transform.Tag do
           {Macro.t(), {non_neg_integer(), list()}}
   def pattern_literal_targets(pattern, acc, mutators),
     do: tag_pattern_targets(pattern, acc, mutators)
+
+  @doc """
+  Expand a clause's accumulated `{tag, original, [{mutator, mutated}]}` targets into
+  candidates, one per `{mutator, mutated}` pair.
+
+  Targets arrive in reverse post-order (`guard_targets/3` / `pattern_literal_targets/3`
+  accumulate that way); they are reversed to source order so ids land in source order.
+  `build.(tag, original, mutator, mutated, range)` constructs each candidate — `tag` to
+  `replace_tag/3` the tagged copy, `original` for the diff, `range` its source range.
+
+  A target whose node Sourceror can't range is **dropped**: a candidate with no range
+  can't be diffed or lifted. This matches the structural discovery paths, which already
+  skip an unrangeable node — the tagged paths now agree.
+  """
+  @spec expand_targets([{non_neg_integer(), Macro.t(), [{module(), Macro.t()}]}], function()) ::
+          [term()]
+  def expand_targets(targets, build) do
+    targets
+    |> Enum.reverse()
+    |> Enum.flat_map(fn {tag, original, muts} ->
+      case NodeRange.get(original) do
+        %{} = range ->
+          Enum.map(muts, fn {mutator, mutated} ->
+            build.(tag, original, mutator, mutated, range)
+          end)
+
+        _ ->
+          []
+      end
+    end)
+  end
 
   @doc "Replace the node carrying `meta[:mutare_tag] == tag` anywhere in `ast` with `replacement`."
   @spec replace_tag(Macro.t(), non_neg_integer(), Macro.t()) :: Macro.t()

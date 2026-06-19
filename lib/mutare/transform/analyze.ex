@@ -971,7 +971,7 @@ defmodule Mutare.Transform.Analyze do
   defp guard_clause_candidates(index, pattern, guard, body, mutators) do
     {tagged_guard, {_next, targets}} = Tag.guard_targets(guard, {0, []}, mutators)
 
-    tagged_targets(targets, fn tag, original, mutator, mutated ->
+    Tag.expand_targets(targets, fn tag, original, mutator, mutated, range ->
       %Candidate.CaseClause{
         clause_index: index,
         mutator: mutator,
@@ -980,7 +980,7 @@ defmodule Mutare.Transform.Analyze do
         raw_body: body,
         original: original,
         mutated: mutated,
-        range: NodeRange.get(original)
+        range: range
       }
     end)
   end
@@ -988,7 +988,7 @@ defmodule Mutare.Transform.Analyze do
   defp literal_clause_candidates(index, pattern, guard, body, mutators) do
     {tagged_pattern, {_next, targets}} = Tag.pattern_literal_targets(pattern, {0, []}, mutators)
 
-    tagged_targets(targets, fn tag, original, mutator, mutated ->
+    Tag.expand_targets(targets, fn tag, original, mutator, mutated, range ->
       %Candidate.CaseClause{
         clause_index: index,
         mutator: mutator,
@@ -997,7 +997,7 @@ defmodule Mutare.Transform.Analyze do
         raw_body: body,
         original: original,
         mutated: mutated,
-        range: NodeRange.get(original)
+        range: range
       }
     end)
   end
@@ -1005,37 +1005,35 @@ defmodule Mutare.Transform.Analyze do
   defp structural_clause_candidates(_index, _pattern, _guard, _body, _used, []), do: []
 
   defp structural_clause_candidates(index, pattern, guard, body, used, structural) do
+    structural_mutations(pattern, used, structural, fn mutator, mutated, range ->
+      %Candidate.CaseClause{
+        clause_index: index,
+        mutator: mutator,
+        mutant_pattern: mutated,
+        mutant_guard: guard,
+        raw_body: body,
+        original: pattern,
+        mutated: mutated,
+        range: range
+      }
+    end)
+  end
+
+  # Run the structural (swap/wildcard) discovery on one clause pattern, skipping the
+  # pattern when Sourceror can't range it (no focused diff possible — the same guard the
+  # tagged path applies via `Tag.expand_targets/2`). Each `{mutator, mutated}` becomes a
+  # candidate via `build.(mutator, mutated, range)`. Shared by the `case` (`CaseClause`)
+  # and `receive`/`fn` (`CasePattern`) paths, which differ only in the struct they build.
+  defp structural_mutations(pattern, used, structural, build) do
     case NodeRange.get(pattern) do
       %{} = range ->
         pattern
         |> PatternStructure.node_mutations(used, structural)
-        |> Enum.map(fn {mutator, mutated} ->
-          %Candidate.CaseClause{
-            clause_index: index,
-            mutator: mutator,
-            mutant_pattern: mutated,
-            mutant_guard: guard,
-            raw_body: body,
-            original: pattern,
-            mutated: mutated,
-            range: range
-          }
-        end)
+        |> Enum.map(fn {mutator, mutated} -> build.(mutator, mutated, range) end)
 
       _ ->
         []
     end
-  end
-
-  # Walk `Tag` targets (accumulated in reverse post-order; reverse to source order), calling
-  # `build.(tag, original_node, mutator, mutated)` for each mutation — `tag` to `replace_tag`
-  # the tagged copy, `original_node` for the diff/range.
-  defp tagged_targets(targets, build) do
-    targets
-    |> Enum.reverse()
-    |> Enum.flat_map(fn {tag, original, muts} ->
-      Enum.map(muts, fn {mutator, mutated} -> build.(tag, original, mutator, mutated) end)
-    end)
   end
 
   defp put_case_candidates({form, meta, args}, candidates),
@@ -1126,29 +1124,21 @@ defmodule Mutare.Transform.Analyze do
   end
 
   defp structural_position_candidates(pattern, pos, clause, replace_clause, used, structural) do
-    case NodeRange.get(pattern) do
-      %{} = range ->
-        pattern
-        |> PatternStructure.node_mutations(used, structural)
-        |> Enum.map(fn {mutator, mutated} ->
-          %Candidate.CasePattern{
-            mutator: mutator,
-            original: pattern,
-            mutated: mutated,
-            replacement: replace_clause.(put_clause_pattern_at(clause, pos, mutated)),
-            range: range
-          }
-        end)
-
-      _ ->
-        []
-    end
+    structural_mutations(pattern, used, structural, fn mutator, mutated, range ->
+      %Candidate.CasePattern{
+        mutator: mutator,
+        original: pattern,
+        mutated: mutated,
+        replacement: replace_clause.(put_clause_pattern_at(clause, pos, mutated)),
+        range: range
+      }
+    end)
   end
 
   defp literal_position_candidates(pattern, pos, clause, replace_clause, mutators) do
     {tagged_pattern, {_next, targets}} = Tag.pattern_literal_targets(pattern, {0, []}, mutators)
 
-    tagged_targets_ranged(targets, fn tag, original, mutator, mutated, range ->
+    Tag.expand_targets(targets, fn tag, original, mutator, mutated, range ->
       mutated_pattern = Tag.replace_tag(tagged_pattern, tag, mutated)
 
       %Candidate.CasePattern{
@@ -1169,7 +1159,7 @@ defmodule Mutare.Transform.Analyze do
       guard ->
         {tagged_guard, {_next, targets}} = Tag.guard_targets(guard, {0, []}, mutators)
 
-        tagged_targets_ranged(targets, fn tag, original, mutator, mutated, range ->
+        Tag.expand_targets(targets, fn tag, original, mutator, mutated, range ->
           mutated_guard = Tag.replace_tag(tagged_guard, tag, mutated)
 
           %Candidate.CasePattern{
@@ -1181,25 +1171,6 @@ defmodule Mutare.Transform.Analyze do
           }
         end)
     end
-  end
-
-  # Walk `Tag` targets in source order, dropping any whose original node Sourceror can't
-  # range (the whole-construct path needs a focused-diff range), calling `build` with the
-  # tag, the raw original node, the swap, and the range.
-  defp tagged_targets_ranged(targets, build) do
-    targets
-    |> Enum.reverse()
-    |> Enum.flat_map(fn {tag, original, muts} ->
-      case NodeRange.get(original) do
-        %{} = range ->
-          Enum.map(muts, fn {mutator, mutated} ->
-            build.(tag, original, mutator, mutated, range)
-          end)
-
-        _ ->
-          []
-      end
-    end)
   end
 
   # A clause's pattern positions plus the names read in its guard/body (the `used_outside`
