@@ -118,7 +118,7 @@ defmodule Mutare.Runner.Baseline do
     named =
       case tests do
         [] ->
-          "Could not pin the flaky test(s); failing run output (tail):\n\n#{tail(output)}"
+          "Could not pin the flaky test(s); failing run output (tail):\n\n#{Command.output_tail(output)}"
 
         locations ->
           "Tests that disagreed with themselves:\n" <> Enum.map_join(locations, "\n", &"  #{&1}")
@@ -134,9 +134,5 @@ defmodule Mutare.Runner.Baseline do
     |> Regex.scan(output)
     |> Enum.map(fn [_match, file, line] -> "#{file}:#{line}" end)
     |> Enum.uniq()
-  end
-
-  defp tail(output) do
-    output |> String.split("\n") |> Enum.take(-20) |> Enum.join("\n")
   end
 end

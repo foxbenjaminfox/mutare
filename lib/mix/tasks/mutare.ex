@@ -64,6 +64,7 @@ defmodule Mix.Tasks.Mutare do
 
   alias Mutare.{Config, Options, Project, Report, Runner, Schema}
   alias Mutare.Report.Live
+  alias Mutare.Sandbox.Command
 
   @switches [
     only: :string,
@@ -227,20 +228,17 @@ defmodule Mix.Tasks.Mutare do
   defp format_error(:too_many_harness_errors, detail), do: detail
 
   defp format_error(:compile_failed, detail) do
-    "the metamutant failed to compile (compile-poisoning).\n\n" <> tail(detail)
+    "the metamutant failed to compile (compile-poisoning).\n\n" <> Command.output_tail(detail, 25)
   end
 
   defp format_error(:baseline_failed, detail) do
-    "baseline suite is not green; mutation testing needs a passing suite.\n\n" <> tail(detail)
+    "baseline suite is not green; mutation testing needs a passing suite.\n\n" <>
+      Command.output_tail(detail, 25)
   end
 
   defp format_error(:baseline_flaky, detail) do
     "baseline suite is flaky (passed on some runs, failed on others); mutation " <>
       "testing needs a deterministically green suite — a flaky test manufactures " <>
       "false kills. Fix or quarantine the test(s), then re-run.\n\n" <> detail
-  end
-
-  defp tail(output) do
-    output |> String.split("\n") |> Enum.take(-25) |> Enum.join("\n")
   end
 end

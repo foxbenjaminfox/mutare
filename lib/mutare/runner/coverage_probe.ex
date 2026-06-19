@@ -108,20 +108,11 @@ defmodule Mutare.Runner.CoverageProbe do
       # the whole suite) is a big, invisible slowdown. Surface it.
       Logger.warning(
         "coverage probe exited #{status}; falling back to run-all selection " <>
-          "(every covered mutant runs the whole suite). Probe output:\n#{probe_tail(output)}"
+          "(every covered mutant runs the whole suite). Probe output:\n#{Command.output_tail(output, 15)}"
       )
     end
 
     status
-  end
-
-  # The last few lines of the probe's captured output — enough to point at the
-  # failure without dumping a whole suite run into the log.
-  defp probe_tail(output) do
-    output
-    |> String.split("\n")
-    |> Enum.take(-15)
-    |> Enum.join("\n")
   end
 
   # An empty aggregate means the capture recorded nothing (it likely failed), not

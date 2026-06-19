@@ -258,6 +258,17 @@ defmodule Mutare.Sandbox.Command do
   end
 
   @doc """
+  The last `lines` lines of captured `mix` output — enough to point at a failure
+  without dumping a whole suite run into an error message. The one home for "tail
+  the output", shared by the baseline, the coverage probe, and the Mix task's
+  error formatter (each picks its own `lines`).
+  """
+  @spec output_tail(String.t(), pos_integer()) :: String.t()
+  def output_tail(output, lines \\ 20) when is_binary(output) do
+    output |> String.split("\n") |> Enum.take(-lines) |> Enum.join("\n")
+  end
+
+  @doc """
   Dependency-free watcher that enforces a mutant run's wall-clock cap.
 
   Reads `timeout_env/0`: with no cap it is inert, otherwise it spawns a process
