@@ -982,9 +982,11 @@ defmodule Mutare.TransformTest do
       assert {"String.upcase(s, :default)", "String.upcase(s, :ascii)"} in sites
     end
 
-    test "ModeSwap owns its mode atom, so AtomLiteral defers there but fires elsewhere" do
-      # Both families active. `:second` is a ModeSwap-owned precision; `:ok` is a plain
-      # value atom; `:weird` is an invalid precision ModeSwap can't swap.
+    test "overlap resolution drops the redundant AtomLiteral on a swapped mode atom, not elsewhere" do
+      # Both families active. `:second` is a swappable precision (ModeSwap's call rewrite
+      # covers it, so the diff-derived `Overlap` pass prunes the redundant AtomLiteral
+      # leaf); `:ok` is a plain value atom; `:weird` is an invalid precision ModeSwap
+      # can't swap (no covering footprint → AtomLiteral still fires).
       {_meta, sites, _} =
         Mutare.transform_string(
           """
@@ -998,13 +1000,13 @@ defmodule Mutare.TransformTest do
 
       by = fn mutator -> for s <- sites, s.mutator == mutator, do: s.original_code end
 
-      # ModeSwap swapped the owned precision (its site records the whole call);
-      # AtomLiteral was *not* offered the :second leaf.
+      # ModeSwap swapped the precision (its site records the whole call); the redundant
+      # AtomLiteral mutant on the :second leaf was pruned by `Overlap`.
       assert "DateTime.truncate(dt, :second)" in by.(:mode_swap)
       refute ":second" in by.(:atom)
 
-      # AtomLiteral still fires on the unowned atoms — a plain value and an atom
-      # ModeSwap produced no swap for (claim-iff-produce).
+      # AtomLiteral still fires where no ModeSwap swap covers — a plain value, and an
+      # atom ModeSwap produced no swap for.
       assert ":ok" in by.(:atom)
       assert ":weird" in by.(:atom)
     end
@@ -1033,9 +1035,10 @@ defmodule Mutare.TransformTest do
       assert {"Date.shift(d, week: 2)", "Date.shift(d, month: 2)"} in sites
     end
 
-    test "ModeSwap owns a shift duration's unit keys, but Literal still mutates the amounts" do
-      # The keyword-list owner claims the option *names*: AtomLiteral can't turn `minute:`
-      # into a raising `:mutare:`, while the amount stays runtime data Literal still mutates.
+    test "a swapped shift unit key drops the redundant AtomLiteral, but Literal still mutates the amount" do
+      # ModeSwap rewrites the call swapping the `minute:` key, so `Overlap` prunes the
+      # redundant AtomLiteral on that key (it'd raise as `:mutare:`). The amount is a
+      # different node ModeSwap leaves untouched, so Literal still mutates it.
       {_meta, sites, _} =
         Mutare.transform_string(
           """
@@ -1056,11 +1059,56 @@ defmodule Mutare.TransformTest do
       # ModeSwap swaps the unit key both ways…
       assert "DateTime.shift(dt, second: 10)" in mode_swaps
       assert "DateTime.shift(dt, hour: 10)" in mode_swaps
-      # …and owns it, so AtomLiteral is never offered the `minute:` key.
+      # …so the redundant AtomLiteral on the `minute:` key is pruned.
       assert Enum.filter(sites, &(&1.mutator == :atom)) == []
       # The amount stays runtime data — Literal still mutates it.
       assert {"10", "11"} in literals
       assert {"10", "9"} in literals
+    end
+
+    test "overlap is per-key: an excluded unit beside a swappable one keeps its AtomLiteral" do
+      # `:minute` is swappable; `:microsecond` is excluded from the duration ladder, so
+      # ModeSwap produces no swap for it → no covering footprint → AtomLiteral still fires
+      # on the `microsecond:` key. The fix for the old blanket "own all keys" bug, which
+      # suppressed `microsecond:` only when a swappable sibling shared the list.
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def a(dt), do: DateTime.shift(dt, minute: 10, microsecond: {5, 6})
+          end
+          """,
+          mutators: [Mutare.Mutators.ModeSwap, Mutare.Mutators.AtomLiteral]
+        )
+
+      atoms = for s <- sites, s.mutator == :atom, do: s.original_code
+      mode_swaps = for s <- sites, s.mutator == :mode_swap, do: s.mutated_code
+
+      # ModeSwap swaps only the `minute:` key.
+      assert "DateTime.shift(dt, second: 10, microsecond: {5, 6})" in mode_swaps
+      assert "DateTime.shift(dt, hour: 10, microsecond: {5, 6})" in mode_swaps
+
+      # The swapped `minute:` key's redundant AtomLiteral is pruned…
+      refute "minute:" in atoms
+      # …but the excluded `microsecond:` key keeps its AtomLiteral (consistent with the
+      # lone case below — not decided by a sibling).
+      assert "microsecond:" in atoms
+    end
+
+    test "overlap consistency: a lone excluded unit also keeps its AtomLiteral" do
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def a(dt), do: DateTime.shift(dt, microsecond: {5, 6})
+          end
+          """,
+          mutators: [Mutare.Mutators.ModeSwap, Mutare.Mutators.AtomLiteral]
+        )
+
+      atoms = for s <- sites, s.mutator == :atom, do: s.original_code
+      assert "microsecond:" in atoms
+      assert Enum.filter(sites, &(&1.mutator == :mode_swap)) == []
     end
   end
 

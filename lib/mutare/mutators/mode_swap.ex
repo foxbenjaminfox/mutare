@@ -69,22 +69,19 @@ defmodule Mutare.Mutators.ModeSwap do
   emitted with fresh metadata (`{:__block__, [], [atom]}`) so Sourceror renders the new
   value, not a stale token (the clean-meta rule). On by default.
 
-  ## Owning the mode position
+  ## Superseding the redundant leaf mutation
 
   A unit/mode atom sits in a value position, so `Mutare.Mutators.AtomLiteral` would
   *also* mutate it — `DateTime.truncate(dt, :second)` → `:mutare`, a mutant that just
-  raises `ArgumentError` (an invalid precision) and is trivially killed. This mutator
-  already covers that atom by rewriting the call, so it claims the position via the
-  optional `owned_args/2` callback: `Mutare.Transform` then routes that argument through
-  a non-mutating context, and AtomLiteral never sees it. Ownership is claimed **only
-  where a swap is actually produced** (it reads the same `swap_sites/4` as `mutate/2`),
-  so an unrecognised atom or a variable in a mode position stays available to AtomLiteral.
-
-  For a `shift` **duration keyword list** the claimed position holds a list, not a leaf:
-  the transform routes only its *keys* through the non-mutating context (so AtomLiteral
-  doesn't turn `minute:` into a raising `:mutare:`) while each *amount* stays runtime, so
-  `Mutare.Mutators.Literal` still mutates it — "a mutator claiming a keyword-list argument
-  owns the option names, not the values" (see `Mutare.Transform.Analyze`).
+  raises `ArgumentError` (an invalid precision) and is trivially killed. Because this
+  mutator already covers that atom by rewriting the *whole call*, the transform drops the
+  redundant leaf mutant: `Mutare.Transform.Overlap` diffs each mutant against its original,
+  sees the swap touched exactly that atom (or, for `shift`, that one `unit:` key), and
+  prunes any plain-leaf mutation at the same source range. This needs **no declaration**
+  here — coverage is derived from `mutate/2`'s output, so an unrecognised atom, a variable,
+  or an excluded `shift` unit (`microsecond:`) — none of which this mutator swaps — keeps
+  its AtomLiteral mutant, and a `shift` amount (which the swap leaves untouched) keeps its
+  `Mutare.Mutators.Literal` mutant.
 
   Recognises the stdlib modules by their resolved module (`Mutare.Transform.Calls`), so
   an aliased call (`alias DateTime, as: DT; DT.truncate(dt, :second)`) is matched too.
@@ -182,29 +179,6 @@ defmodule Mutare.Mutators.ModeSwap do
 
   def mutate(_node, _context), do: :skip
 
-  # Claim the unit/mode atom positions this call's rule actually swaps, so the transform
-  # keeps other mutators (notably AtomLiteral) from firing in place on a leaf this mutator
-  # already covers via the whole call. Same positions as `mutate/2` produces — both read
-  # `swap_sites/4`, so ownership and mutation never drift.
-  @impl Mutare.Mutator
-  def owned_args(node, %{piped: piped?}) do
-    case Calls.resolved_call(node) do
-      {module, fun, args, _rebuild} ->
-        case rule(module, fun, args, piped?) do
-          {:ok, positions, group} ->
-            args |> swap_sites(positions, group, piped?) |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
-
-          :error ->
-            []
-        end
-
-      nil ->
-        []
-    end
-  end
-
-  def owned_args(_node, _context), do: []
-
   # The rule for a call at its *effective* arity (visible args + the piped value), or
   # `:error` when no rule applies.
   defp rule(mod, fun, args, piped?) do
@@ -217,9 +191,9 @@ defmodule Mutare.Mutators.ModeSwap do
   end
 
   # The `{visible_index, replacement_arg_node}` pairs this rule yields — one per legal
-  # swap at each owned position. A position that yields no swap (a non-mode-atom, an
+  # swap at each mode position. A position that yields no swap (a non-mode-atom, an
   # unrecognised atom, a non-keyword-list duration, or the piped value itself) contributes
-  # none. The single source of both the mutants and the owned positions.
+  # none.
   defp swap_sites(args, positions, group, piped?) do
     for pos <- positions,
         vis = Mutare.Mutator.visible_index(pos, piped?),

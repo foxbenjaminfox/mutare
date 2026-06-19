@@ -46,9 +46,8 @@ defmodule Mutare.Mutator do
   ## Configuring one (`{module, opts}`)
 
   To parametrize a mutator, give it `{module, opts}` instead of a bare module.
-  `opts` reaches the mutator through the `context` of `mutate/2` (and
-  `owned_args/2`) as `context.opts` — so a configurable mutator implements
-  `mutate/2`:
+  `opts` reaches the mutator through the `context` of `mutate/2` as
+  `context.opts` — so a configurable mutator implements `mutate/2`:
 
       defmodule MyApp.Mutators.MagicNumber do
         @behaviour Mutare.Mutator
@@ -104,8 +103,7 @@ defmodule Mutare.Mutator do
   alias Mutare.Mutator.Spec
 
   @typedoc """
-  Context threaded to the optional `mutate/2` and `owned_args/2` at each runtime
-  call site. Carries:
+  Context threaded to the optional `mutate/2` at each runtime call site. Carries:
 
     * `:piped` — whether the node is the right-hand side of a `|>` (so its
       effective first argument is the pipe's left side, *not* present in the
@@ -170,31 +168,6 @@ defmodule Mutare.Mutator do
               [[Macro.t()]]
 
   @doc """
-  Optional hook by which a mutator claims **exclusive ownership** of one or more of a
-  call's *argument positions*, so the transform does not also offer those leaves to
-  *other* mutators in place.
-
-  Given a runtime call node and the same `context` as `mutate/2`
-  (`%{piped: boolean, opts: term}`), it returns the **visible** argument indices (into
-  the node's own arg list, the piped value excluded) that this mutator already covers
-  via the *whole call* — positions
-  where another mutator firing in place would only add a redundant, often nonsensical
-  mutant. `Mutare.Mutators.ModeSwap` is the built-in user: it swaps a unit/mode atom
-  (`DateTime.truncate(dt, :second)` → `:millisecond`) by rewriting the call, so it owns
-  that atom's position and `Mutare.Mutators.AtomLiteral` no longer turns the same
-  `:second` into the sentinel `:mutare` (a mutant that would just raise).
-
-  A mutator should claim a position **only when it actually mutates it** (so a position
-  it leaves untouched — an unrecognised atom, a variable — stays available to others).
-  `Mutare.Transform` discovers implementers by `function_exported?(mod, :owned_args, 2)`
-  and routes owned positions through a non-mutating context; a mutator without this
-  callback claims nothing. When the claimed argument is a **keyword list** (ModeSwap's
-  `shift` duration), only its *keys* are routed non-mutating — the values stay runtime, so
-  other mutators still see them (a claim there owns the option names, not the values).
-  """
-  @callback owned_args(Macro.t(), context()) :: [non_neg_integer()]
-
-  @doc """
   Optional hook by which a mutator registers the **known macros** it depends on —
   macros whose arguments the transform must route specially (a pattern argument, an
   opaque DSL body) for this mutator to work, or simply to keep core from mutating a
@@ -216,7 +189,7 @@ defmodule Mutare.Mutator do
   """
   @callback macros() :: [tuple()]
 
-  @optional_callbacks pattern_mutations: 2, mutate: 2, owned_args: 2, macros: 0
+  @optional_callbacks pattern_mutations: 2, mutate: 2, macros: 0
 
   @doc """
   The **effective arity** of a call node given its pipe context.

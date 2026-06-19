@@ -266,6 +266,20 @@ contract between them is the whole game.
     (collapsing it, or splicing a selector into sigil content, would be illegal).
   - **assign + emit (`emit/2`)** is a bottom-up `Macro.postwalk` so ids are assigned in
     post-order DFS; the id counter advances even for `:skip_ids` (poison recovery relies on it).
+  - **redundant-leaf overlap (`Transform.Overlap`)** runs once at the top of `emit/2`,
+    *before* id assignment (so a dropped candidate leaves no id/site and ids stay contiguous —
+    the cross-node sibling of the per-node `gate_candidates/1` self-opt-out, which it deliberately
+    stays separate from). It drops a leaf mutation a call-rewriting mutator already covers
+    (AtomLiteral on a ModeSwap unit/key), **derived from the mutation itself**: a candidate's
+    *footprint* is the source range of the minimal changed subtree between its `original` and
+    `mutated`; one whose footprint is a proper sub-range of its host (a call rewrite touching one
+    descendant) is *covering*, and any non-covering candidate whose host range equals a covering
+    footprint is pruned. Exact (distinct nodes → distinct ranges via `NodeRange`), node-granular
+    (so an excluded `shift` key like `microsecond:` keeps its leaf mutant, consistently), zero-API
+    (it replaced the old `owned_args/2` callback + `:owned` context, which drifted from `mutate/2`
+    and could only speak in argument *positions* — see NOTES "Overlap resolution"). Scoped to
+    `Candidate.InPlace`; ModeSwap is never lifted, so no other candidate kind is touched. A no-op
+    (and skipped) when nothing is covering — any file without a ModeSwap-style call.
   - **in-place selector** for body expressions: wrap the operator in a tail-position
     `case :persistent_term.get(:mutare_active, 0) do <id> -> mutated; _ -> original end`. One
     illegal spot for that `case`: the RHS of a pipe (`x |> case … end` parses but won't compile —
@@ -462,9 +476,9 @@ contract between them is the whole game.
   `Site.describe/1` as the message). Encoding is the stdlib `JSON` module — hence the `elixir`
   floor is `~> 1.18`. Selected via the `:reporters` option (below).
 - **`Mutare.Mutator`** + **`Mutare.Mutators.*`** — the public extension behaviour (`mutate/1`,
-  `name/0`; optional `mutate/2`, `owned_args/2`, `pattern_mutations/2`) and the built-in families,
+  `name/0`; optional `mutate/2`, `pattern_mutations/2`) and the built-in families,
   **all on by default**. A user-supplied mutator may be *configured* via a `{module, opts}` entry
-  in `:mutators` (the `opts` reach `mutate/2`/`owned_args/2` as `context.opts` — see
+  in `:mutators` (the `opts` reach `mutate/2` as `context.opts` — see
   `Mutare.Mutator.Spec`): Arithmetic (binary operator swaps `+`↔`-`/`*`↔`/` +
   unary-minus removal; `div`↔`rem` are bare-`Kernel` *calls*, so — like Numeric — they're
   gated on **effective arity 2** and pipe-aware via `mutate/2`, never swapping a same-named
@@ -564,9 +578,10 @@ contract between them is the whole game.
   swap never reaches a time unit `Date.shift` would reject) walk each `unit: amount` key one
   ladder step independently
   (`minute:`→`second:`/`hour:`, amount kept), `:microsecond` excluded (its `{count, precision}`
-  amount can't move to an integer unit) and the *amounts* still mutate via Literal — handled by
-  routing only the owned list's **keys** through the non-mutating context, its values staying
-  runtime (`Transform.Analyze.analyze_owned_keywords`). The semantic sibling of Collection/StringCall
+  amount can't move to an integer unit) and the *amounts* still mutate via Literal — the call
+  rewrite touches only the one swapped key, so the diff-derived `Transform.Overlap` pass drops
+  just AtomLiteral's redundant mutant on *that* key (an excluded key like `microsecond:` keeps it,
+  the amount value keeps Literal's — see "redundant-leaf overlap" under emit/assign). The semantic sibling of Collection/StringCall
   — it swaps an *option value*, not a function name or arg count. A non-atom / unrecognised-atom
   position yields nothing, swaps are never the original; **pipe-aware** via `mutate/2`, the rule
   keyed on *effective* arity with each mode position mapped from effective to visible index),
@@ -713,8 +728,8 @@ contract between them is the whole game.
   resolvable/validated everywhere, with no second list to drift.
 - **`Mutare.Mutator.Spec`** — the resolved unit of "a mutator to run": `%Spec{module, name, opts}`.
   Every mutator runs as a `Spec` (a bare built-in is one with empty `opts` and `module.name()`); a
-  `{module, opts}` entry carries per-instance `opts`, delivered to the **context-taking callbacks**
-  (`mutate/2`, `owned_args/2`) via the context map's `:opts` key — so a *configurable* mutator
+  `{module, opts}` entry carries per-instance `opts`, delivered to the **context-taking callback**
+  `mutate/2` via the context map's `:opts` key — so a *configurable* mutator
   reads its parameters there (and therefore implements `mutate/2`, since `mutate/1` has no context).
   The reserved `:as` key in `opts` overrides the recorded `name`, so the **same module can run
   twice under distinct names** — load-bearing because the recorded name is what reports show and
@@ -824,7 +839,7 @@ only ever *remove* args or rename to a function that exists at the lower arity (
 `CollectionArity` is the built-in example.
 
 For a *configurable* mutator, the user gives `{Module, opts}` (not a bare module) under
-`:mutators`. The `opts` arrive in the **context** of `mutate/2` (and `owned_args/2`) as
+`:mutators`. The `opts` arrive in the **context** of `mutate/2` as
 `context.opts` — so a configurable mutator implements `mutate/2` and reads its parameters there
 (`mutate/1` has no context to carry them). A reserved `:as` key in `opts` renames the recorded
 family (so the same module can run twice under distinct names) and is stripped before `opts`

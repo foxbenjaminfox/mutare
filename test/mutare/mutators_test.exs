@@ -909,18 +909,6 @@ defmodule Mutare.MutatorsTest do
       assert ModeSwap.mutate(parse("DateTime.shift(dt, dur)"), %{piped: false}) == :skip
     end
 
-    test "shift: owns the duration position only when a unit is actually swappable" do
-      assert ModeSwap.owned_args(parse("DateTime.shift(dt, minute: 10, day: -1)"), %{piped: false}) ==
-               [1]
-
-      # only an excluded/unrecognised unit, or a non-list duration → nothing claimed,
-      # so AtomLiteral stays free to fire (claim-iff-produce).
-      assert ModeSwap.owned_args(parse("DateTime.shift(dt, microsecond: {5, 6})"), %{piped: false}) ==
-               []
-
-      assert ModeSwap.owned_args(parse("DateTime.shift(dt, dur)"), %{piped: false}) == []
-    end
-
     test "Unicode case mode and normalization form swap to a behavioural sibling" do
       assert mode("String.upcase(s, :default)", false) == ["String.upcase(s, :ascii)"]
       assert mode("String.downcase(s, :ascii)", false) == ["String.downcase(s, :default)"]
@@ -967,26 +955,6 @@ defmodule Mutare.MutatorsTest do
       assert ModeSwap.mutate(parse("DateTime.add(dt, n)"), %{piped: false}) == :skip
       assert ModeSwap.mutate(parse("Other.truncate(dt, :second)"), %{piped: false}) == :skip
       assert ModeSwap.mutate(parse("String.split(s, p)"), %{piped: false}) == :skip
-    end
-
-    test "owned_args claims exactly the visible positions it swaps (so AtomLiteral defers)" do
-      assert ModeSwap.owned_args(parse("DateTime.truncate(dt, :second)"), %{piped: false}) == [1]
-      assert ModeSwap.owned_args(parse("DateTime.add(dt, n, :minute)"), %{piped: false}) == [2]
-      # both unit positions of convert_time_unit, deduplicated despite two swaps each.
-      assert ModeSwap.owned_args(parse("System.convert_time_unit(t, :second, :millisecond)"), %{
-               piped: false
-             }) == [1, 2]
-
-      # piped: the precision is the lone visible arg 0.
-      assert ModeSwap.owned_args(parse("DateTime.truncate(:second)"), %{piped: true}) == [0]
-    end
-
-    test "owned_args claims nothing where it produces no swap (atom stays AtomLiteral's)" do
-      # A variable can't be swapped; an unrecognised atom has no in-set neighbour; and
-      # an unrelated call owns nothing — in all three AtomLiteral remains free to fire.
-      assert ModeSwap.owned_args(parse("DateTime.truncate(dt, unit)"), %{piped: false}) == []
-      assert ModeSwap.owned_args(parse("DateTime.truncate(dt, :bogus)"), %{piped: false}) == []
-      assert ModeSwap.owned_args(parse("String.length(s)"), %{piped: false}) == []
     end
 
     test "name" do

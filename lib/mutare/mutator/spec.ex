@@ -7,10 +7,10 @@ defmodule Mutare.Mutator.Spec do
   `Mutare.Mutators.resolve/1` builds one per entry in a `:mutators` list. A bare
   built-in (`:arithmetic`) or a bare custom module is a `Spec` with empty `opts`
   named by its `name/0`. A `{module, opts}` entry carries `opts`, which the
-  transform delivers to the **context-taking callbacks** — the pipe-aware
-  `c:Mutare.Mutator.mutate/2` and `c:Mutare.Mutator.owned_args/2` — via the
-  context map's `:opts` key. (A node-local mutator that wants its options must
-  therefore implement `mutate/2`; `mutate/1` has no context to carry them.)
+  transform delivers to the **context-taking callback** — the pipe-aware
+  `c:Mutare.Mutator.mutate/2` — via the context map's `:opts` key. (A node-local
+  mutator that wants its options must therefore implement `mutate/2`; `mutate/1`
+  has no context to carry them.)
 
   ## Naming / identity
 

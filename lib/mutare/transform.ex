@@ -132,6 +132,7 @@ defmodule Mutare.Transform do
     Imports,
     ModulePlan,
     Names,
+    Overlap,
     Render,
     Resolve,
     Super
@@ -864,6 +865,13 @@ defmodule Mutare.Transform do
   # an outer selector holds the already-wrapped children, keeping nested sites
   # reachable when the outer mutant is inactive.
   defp emit(node, ctx) do
+    # Drop redundant leaf candidates a call-rewriting mutator already covers (ModeSwap's
+    # mode atom / `shift` key vs AtomLiteral), *before* id assignment — so they leave no id
+    # or site and ids stay contiguous (like `gate_candidates/1`). A no-op when nothing is
+    # covering. Cross-node, so it can't ride the per-node postwalk below: the postwalk is
+    # post-order (the leaf is visited before its enclosing call), too late to suppress it.
+    node = Overlap.resolve(node)
+
     Macro.postwalk(node, ctx, fn current, ctx ->
       # A `case` carrying per-clause `CaseClause`s is rewritten by the tuple-the-scrutinee
       # path (its clauses can't each host a selector, and a `case` isn't a liftable function

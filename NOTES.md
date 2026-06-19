@@ -1860,10 +1860,11 @@ spec with empty opts and `module.name()`; idempotent on an already-resolved spec
 Two design decisions, both load-bearing:
 
 - **How opts reach the mutator.** The behaviour's callbacks are pure functions over a
-  node, with no slot for config — except `mutate/2`/`owned_args/2`, which already take a
+  node, with no slot for config — except `mutate/2`, which already takes a
   `context` map (`%{piped: …}`). So opts ride **in the context**: `mutations/3` builds a
-  per-spec context with `:opts` = the spec's opts and passes it to `mutate/2`; `owned_args/2`
-  gets it too. A configurable mutator therefore implements **`mutate/2`** (which is invoked
+  per-spec context with `:opts` = the spec's opts and passes it to `mutate/2`. (At the time,
+  `owned_args/2` shared this channel too; it has since been removed — see "Overlap resolution"
+  below.) A configurable mutator therefore implements **`mutate/2`** (which is invoked
   on every node, not just pipe stages) and reads `context.opts`. `mutate/1` is left
   untouched (no context, no opts) — this avoided bumping every existing callback's arity and
   reused the one channel that was already threaded. `pattern_mutations/2` is **not** opts-aware
@@ -1881,10 +1882,72 @@ Two design decisions, both load-bearing:
 
 Plumbing: `Transform.transform_string` normalizes its `:mutators` opt through `resolve/1` at
 the boundary (so tests passing bare modules, the default set, and the Options/Config path all
-become specs); every internal consumer (`Mutator.mutations/3`, `analyze`'s `owned_arg_indices`
-+ `ReturnValue`/`IfCondition` enablement via `Spec.find/2`, `PatternStructure`, `FunctionPlan`,
+become specs); every internal consumer (`Mutator.mutations/3`, `analyze`'s
+`ReturnValue`/`IfCondition` enablement via `Spec.find/2`, `PatternStructure`, `FunctionPlan`,
 `Site.replace`) reads `spec.module`/`spec.name`/`spec.opts`. The CLI's `--mutators` CSV can't
 express opts (strings only) — configured mutators are a `.mutare.exs`/`Mutare.run/2` feature.
+
+### Overlap resolution — diff-derived, replacing `owned_args` `[done]`
+A *call-rewriting* mutator (`ModeSwap`) and a *leaf* mutator (`AtomLiteral`) can target the
+same node: `DateTime.truncate(dt, :second)` → ModeSwap rewrites the call to `:millisecond`
+(a useful mutant), while AtomLiteral would *also* turn `:second` into the sentinel `:mutare`
+— an always-raising, trivially-killed, zero-signal mutant (a wasted suite run). We want the
+call rewrite to win and the redundant leaf mutant gone.
+
+The old mechanism was an optional `owned_args(node, ctx) :: [visible_index]` callback:
+ModeSwap returned the argument positions it swaps, `analyze`'s `owned_arg_indices/3` unioned
+them, and `recurse_runtime/3` routed those args through a non-mutating `:owned` context (so the
+leaf was never offered). It was **unprincipled** in four ways, two of them real bugs:
+
+- **Two callbacks that must agree.** `owned_args/2` and `mutate/2` had to claim the *same*
+  positions; nothing enforced it (kept in sync only by both reading `swap_sites/4`).
+- **Granularity mismatch (a bug).** Ownership was *position*-granular, but for a `shift`
+  duration the mutation is *key*-granular within a keyword list — so the transform applied a
+  blanket "own all keys, leave values" policy (`analyze_owned_keywords/2`). A key ModeSwap
+  does **not** swap (`microsecond:`, excluded from its ladder) was then suppressed anyway
+  **iff** a swappable sibling (`minute:`) shared the list. Empirically: `shift(dt,
+  microsecond: {5,6})` alone → AtomLiteral fired; `shift(dt, minute: 10, microsecond: {5,6})`
+  → AtomLiteral suppressed on `microsecond:` too. Same key, opposite treatment, decided by a
+  neighbour.
+- **Duplicate shape predicates** (`keyword_list_shaped?`/`owned_keyword_list?` in analyze vs
+  `keyword_pairs`/`duration_list` in mode_swap) and **double computation** (the swap logic ran
+  for `mutate/2`, again for `owned_args/2`).
+
+The fix derives "what a mutant covers" **from the mutation itself**, in a new pre-emit pass
+`Mutare.Transform.Overlap.resolve/1` run at the top of `emit/2` (before id assignment, so a
+dropped candidate leaves no id/site and ids stay contiguous — same property as
+`gate_candidates/1`; it *can't* live in the emit postwalk because that's post-order, visiting
+the leaf before its enclosing call). A candidate's **footprint** is the source range of the
+*minimal changed subtree* between its `original` and `mutated` (`footprint/2`, a meta-
+insensitive lockstep diff that stops at the rangeable `{:__block__, _, [literal]}` wrapper, not
+the bare value, and ranges the **original** side — the mutated literal has fresh `[]` meta and
+no range). A candidate whose footprint is a *proper sub-range* of its host (`range`) is
+**covering** (a call rewrite touching one descendant); any **non-covering** candidate whose
+host range equals a covering footprint is dropped — exactly the redundant leaf mutation. It is:
+
+- **exact** — distinct source nodes have distinct ranges (`NodeRange.get/1`), and the leaf
+  candidate and ModeSwap's footprint derive from the *same* original subtree term, so their
+  ranges are equal by value;
+- **node-granular** — `microsecond:` (no swap → no covering footprint) keeps its AtomLiteral
+  mutant **consistently**, alone or beside `minute:`; the `shift` amount (untouched by the
+  swap) keeps Literal's; the duplicate predicates and the keyword special-case are gone;
+- **zero-API** — no callback, so any future minimal-rewrite call mutator gets it for free; a
+  *permuting* mutator (`OperandSwap`, `a-b`→`b-a`: two children change → footprint = whole host
+  → non-covering) or an arity/name-changing one (`CallRemoval`/`DefaultDrop`/`CollectionArity`)
+  suppresses nothing, matching prior behaviour.
+
+Guards: the pass is scoped to `Candidate.InPlace` (ModeSwap is never lifted — date/time calls
+aren't guard-legal — so no `Guard`/`Pattern`/`CaseClause`/… kind is touched), drops **only**
+non-covering candidates (a covering one is never pruned — a latent footgun if a second
+call-rewriter's footprint ever equalled another's host range), and short-circuits to a no-op
+when nothing is covering (the common case — any file without a ModeSwap call). Kept **separate**
+from `gate_candidates/1` (the `call_option_keys` self-opt-out): that one is local, opts-driven,
+needs no cross-node info, and post-order-insensitive — folding them would share a name, not
+logic. Both are members of one informal "pre-id candidate pruning" phase.
+
+The one **intended behaviour change**: a `shift` with an excluded unit beside a swappable one
+now emits one extra (harmless, guaranteed-killed) AtomLiteral mutant the old blanket policy
+suppressed — the price of consistency, score-neutral.
 
 ### Expanded default mutator set `[done]`
 The built-ins grew from arithmetic+relational to a fuller catalog, **all on by
