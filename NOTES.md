@@ -1931,19 +1931,49 @@ host range equals a covering footprint is dropped — exactly the redundant leaf
 - **node-granular** — `microsecond:` (no swap → no covering footprint) keeps its AtomLiteral
   mutant **consistently**, alone or beside `minute:`; the `shift` amount (untouched by the
   swap) keeps Literal's; the duplicate predicates and the keyword special-case are gone;
-- **zero-API** — no callback, so any future minimal-rewrite call mutator gets it for free; a
-  *permuting* mutator (`OperandSwap`, `a-b`→`b-a`: two children change → footprint = whole host
-  → non-covering) or an arity/name-changing one (`CallRemoval`/`DefaultDrop`/`CollectionArity`)
-  suppresses nothing, matching prior behaviour.
+- **zero-API** — no callback, so any future minimal-rewrite call mutator gets it for free.
 
-Guards: the pass is scoped to `Candidate.InPlace` (ModeSwap is never lifted — date/time calls
-aren't guard-legal — so no `Guard`/`Pattern`/`CaseClause`/… kind is touched), drops **only**
-non-covering candidates (a covering one is never pruned — a latent footgun if a second
-call-rewriter's footprint ever equalled another's host range), and short-circuits to a no-op
-when nothing is covering (the common case — any file without a ModeSwap call). Kept **separate**
-from `gate_candidates/1` (the `call_option_keys` self-opt-out): that one is local, opts-driven,
-needs no cross-node info, and post-order-insensitive — folding them would share a name, not
-logic. Both are members of one informal "pre-id candidate pruning" phase.
+**What's actually "covering" — and why only ModeSwap suppresses anything.** "Covering" needs
+the minimal changed subtree to be a proper, **rangeable** descendant. Tracing the built-ins,
+three shapes appear, and the distinction is subtler than "ModeSwap vs the rest":
+
+- **ModeSwap** substitutes one rangeable literal arg/key → footprint = that literal, which
+  AtomLiteral also hosts → the **only overlap that resolves to a real drop**.
+- **Operator swaps / function renames** (Arithmetic, Relational, Collection, StringCall, …)
+  change a bare **form/name atom** — the operator (`:+`, the node's *form*) or the `fun` in a
+  `{:., _, [mod, fun]}`. A bare atom in form position carries no metadata, so `NodeRange.get/1`
+  is `nil` → **non-covering**. *This is the load-bearing property* that keeps every operator
+  swap and rename from accidentally suppressing its leaf siblings — verified empirically
+  (`Enum.take(xs, 5)` keeps Literal on `5`; `5 + 3` keeps Literal on both operands). It rests
+  on Sourceror **not** ranging bare form-position atoms; if that ever changed, these would join
+  the covering set (still harmless only because the analyzer keeps a call's form position
+  opaque, so nothing hosts a candidate there).
+- **Arity changes** (DefaultDrop, CollectionArity, CallRemoval's arg-drop) differ in the whole
+  **argument list**, which *is* rangeable — so these are **technically covering** and their
+  args-list range lands in `covered_ranges`. They suppress nothing only because no *single*
+  leaf candidate's host equals a whole args-list range. Consequence: `covered_ranges` is
+  routinely non-empty (any `Map.get/3`, `Enum.sort/2`, …), so the prune pass **does run** on
+  most real files — the earlier "no-op unless there's a ModeSwap call" framing was wrong; the
+  *prune* is skipped only when nothing is covering, which also requires no arity-changing call.
+  A *permuting* mutator (`OperandSwap`, `a-b`→`b-a`: two children change) collapses to a
+  whole-host footprint → non-covering.
+
+**Latent sharp edge.** The "args-list footprint matches no single leaf" guarantee is not
+airtight: a bare single-element args list (`foo(0)` → args `[0]`) has the **same range** as its
+lone element. A hypothetical mutator dropping a call from arity 1 to 0 on a **literal** argument
+would produce an args-list footprint equal to that literal's range and wrongly suppress its leaf
+mutation. No built-in does an arity-1→0 drop on a literal, so it never triggers — flagged for
+whoever adds one.
+
+Guards: scoped to `Candidate.InPlace` (ModeSwap is never lifted — date/time calls aren't
+guard-legal — so no `Lifted`/`CaseClause`/… kind is touched), and drops **only** non-covering
+candidates (a covering one is never pruned — a shield if a second call-rewriter's footprint ever
+equalled another's host range). Kept **separate** from `gate_candidates/1` (the
+`call_option_keys` self-opt-out): that one is local, opts-driven, needs no cross-node info, and
+post-order-insensitive — folding them would share a name, not logic. Both are members of one
+informal "pre-id candidate pruning" phase. (A `shift` duration key is, incidentally, *both* a
+ModeSwap-covered position and a call-option key — the two agree on a swapped key, and the
+`call_option_keys` config governs the excluded ones; they compose without conflict.)
 
 The one **intended behaviour change**: a `shift` with an excluded unit beside a swappable one
 now emits one extra (harmless, guaranteed-killed) AtomLiteral mutant the old blanket policy

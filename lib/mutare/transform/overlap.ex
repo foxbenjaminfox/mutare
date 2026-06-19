@@ -32,9 +32,43 @@ defmodule Mutare.Transform.Overlap do
   # node granularity (so a `shift` key ModeSwap does *not* swap — `microsecond:`, excluded
   # from its ladder — keeps its AtomLiteral mutant, consistently whether alone or beside a
   # swappable sibling), and zero-API (any future minimal-rewrite call mutator gets it for
-  # free). A permuting mutator (`OperandSwap`, `a - b` → `b - a`: two children change) or an
-  # arity/name-changing one (`CallRemoval`/`DefaultDrop`/`CollectionArity`) is non-covering
-  # by construction, so it suppresses nothing — matching the prior behaviour.
+  # free).
+  #
+  # ## What is "covering", precisely — and what each mutator does
+  #
+  # Covering hinges on the *minimal changed subtree being a proper, **rangeable** descendant*
+  # of the host. Three shapes arise across the built-ins:
+  #
+  #   * **ModeSwap** — substitutes one rangeable literal arg/key (`:second`,`minute:`). The
+  #     footprint is that literal, which AtomLiteral *also* hosts → the **only suppression
+  #     that actually fires**.
+  #   * **Operator swaps / function renames** (Arithmetic, Relational, Logical, Collection,
+  #     StringCall, Numeric, …) — change a bare **form/name atom** (`:+`, the `fun` in a
+  #     `{:., _, [mod, fun]}`). Bare atoms in form position carry *no* metadata, so
+  #     `NodeRange.get/1` returns `nil` → **non-covering** (this is the load-bearing
+  #     property — see the sharp edge below). A whole-node replacement (a literal family, a
+  #     boolean→`true`, `String.equivalent?`→`==`) likewise differs at the host → `nil`.
+  #   * **Arity changes** (DefaultDrop, CollectionArity, CallRemoval's arg-drop) — the
+  #     differing subtree is the whole **argument list**, which *is* rangeable, so these are
+  #     technically **covering** and their args-list range lands in `covered_ranges`. They
+  #     suppress nothing only because no *single* leaf candidate's host equals a whole
+  #     args-list range. So `covered_ranges` is routinely non-empty (any `Map.get/3`,
+  #     `Enum.sort/2`, …) and the prune pass does run — it just finds no match.
+  #
+  # So: several built-ins are "covering" in the mechanical sense, but ModeSwap→AtomLiteral is
+  # the only overlap that resolves to a real drop. A permuting mutator (`OperandSwap`,
+  # `a - b` → `b - a`: two children change → footprint collapses to the host) is non-covering.
+  #
+  # ## Sharp edge (latent)
+  #
+  # The "args-list footprint matches no single leaf" guarantee holds for *today's* mutators
+  # but is not airtight. A bare single-element args list (`foo(0)` → args `[0]`) has the
+  # *same* range as its lone element, so a hypothetical mutator dropping a call from arity 1
+  # to 0 on a **literal** argument would produce an args-list footprint equal to that
+  # literal's range — and wrongly suppress its leaf mutation. No built-in does an arity-1→0
+  # drop on a literal, so this never triggers; flagged here for whoever adds one. (The
+  # `nil`-footprint shield for operator/name atoms is likewise contingent on Sourceror not
+  # ranging bare form-position atoms.)
   #
   # Scope: only `Candidate.InPlace` in the `:mutare` key. ModeSwap targets runtime call
   # arguments, never guards/patterns, so it is never lifted and never a structural/pattern
@@ -44,8 +78,10 @@ defmodule Mutare.Transform.Overlap do
 
   @doc """
   Drop each non-covering `Candidate.InPlace` whose host range is covered by another
-  candidate's minimal-rewrite footprint. A no-op (the tree unchanged) when no candidate is
-  covering — the overwhelmingly common case (any subtree without a ModeSwap-style call).
+  candidate's minimal-rewrite footprint. The footprint scan always runs (it is O(1) per leaf
+  candidate); the *prune* postwalk is skipped when nothing is covering, leaving the tree
+  unchanged. Covering candidates are common (any arity-changing call), but only
+  ModeSwap→AtomLiteral resolves to an actual drop — see the moduledoc.
   """
   @spec resolve(Macro.t()) :: Macro.t()
   def resolve(tree) do
