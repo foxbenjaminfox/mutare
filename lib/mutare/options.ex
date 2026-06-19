@@ -141,22 +141,32 @@ defmodule Mutare.Options do
     end
   end
 
-  defp validate_paths!(paths) do
-    if is_list(paths) and paths != [] and Enum.all?(paths, &is_binary/1) do
-      paths
-    else
-      raise ArgumentError,
-            ":paths must be a non-empty list of path strings, got: #{inspect(paths)}"
-    end
+  # The scalar validators below share one shape: return the value when a predicate holds,
+  # else raise an `ArgumentError` naming the field. `validate!/3` is that shape;
+  # `validate_nullable!/3` additionally lets `nil` through (an optional field). The
+  # `, got: <value>` suffix is appended here, so each `msg` states only the requirement.
+  defp validate!(value, pred, msg) do
+    if pred.(value), do: value, else: raise(ArgumentError, "#{msg}, got: #{inspect(value)}")
   end
 
-  defp validate_string_list!(key, value) do
-    if is_list(value) and Enum.all?(value, &is_binary/1) do
-      value
-    else
-      raise ArgumentError, "#{inspect(key)} must be a list of strings, got: #{inspect(value)}"
-    end
-  end
+  defp validate_nullable!(nil, _pred, _msg), do: nil
+  defp validate_nullable!(value, pred, msg), do: validate!(value, pred, msg)
+
+  defp validate_paths!(paths),
+    do:
+      validate!(
+        paths,
+        fn p -> is_list(p) and p != [] and Enum.all?(p, &is_binary/1) end,
+        ":paths must be a non-empty list of path strings"
+      )
+
+  defp validate_string_list!(key, value),
+    do:
+      validate!(
+        value,
+        fn v -> is_list(v) and Enum.all?(v, &is_binary/1) end,
+        "#{inspect(key)} must be a list of strings"
+      )
 
   # Resolve and validate `:mutators` through the one `Mutare.Mutators` catalog into
   # `Mutare.Mutator.Spec`s, so the direct API (`Mutare.run/2`, `Options.new/1`)
@@ -196,81 +206,74 @@ defmodule Mutare.Options do
           ":only_files must be a MapSet, a list of paths, or nil, got: #{inspect(other)}"
   end
 
-  defp validate_test_selection!(mode) when mode in [:coverage, :full], do: mode
+  defp validate_test_selection!(mode),
+    do: validate!(mode, &(&1 in [:coverage, :full]), ":test_selection must be :coverage or :full")
 
-  defp validate_test_selection!(other) do
-    raise ArgumentError, ":test_selection must be :coverage or :full, got: #{inspect(other)}"
-  end
+  defp validate_workers!(workers),
+    do: validate!(workers, &(is_integer(&1) and &1 > 0), ":workers must be a positive integer")
 
-  defp validate_workers!(workers) when is_integer(workers) and workers > 0, do: workers
+  defp validate_timeout!(ms),
+    do:
+      validate_nullable!(
+        ms,
+        &(is_integer(&1) and &1 > 0),
+        ":timeout must be a positive integer (milliseconds) or nil"
+      )
 
-  defp validate_workers!(other) do
-    raise ArgumentError, ":workers must be a positive integer, got: #{inspect(other)}"
-  end
+  defp validate_multiplier!(multiplier),
+    do:
+      validate!(
+        multiplier,
+        &(is_number(&1) and &1 > 0),
+        ":timeout_multiplier must be a positive number"
+      )
 
-  defp validate_timeout!(nil), do: nil
-  defp validate_timeout!(ms) when is_integer(ms) and ms > 0, do: ms
-
-  defp validate_timeout!(other) do
-    raise ArgumentError,
-          ":timeout must be a positive integer (milliseconds) or nil, got: #{inspect(other)}"
-  end
-
-  defp validate_multiplier!(multiplier) when is_number(multiplier) and multiplier > 0,
-    do: multiplier
-
-  defp validate_multiplier!(other) do
-    raise ArgumentError, ":timeout_multiplier must be a positive number, got: #{inspect(other)}"
-  end
-
-  defp validate_harness_retries!(n) when is_integer(n) and n >= 0, do: n
-
-  defp validate_harness_retries!(other) do
-    raise ArgumentError, ":harness_retries must be a non-negative integer, got: #{inspect(other)}"
-  end
+  defp validate_harness_retries!(n),
+    do:
+      validate!(
+        n,
+        &(is_integer(&1) and &1 >= 0),
+        ":harness_retries must be a non-negative integer"
+      )
 
   # At least one run — you always need a green check; N>1 re-runs the baseline to
   # catch a test that disagrees with itself (`Mutare.Runner.Baseline`).
-  defp validate_baseline_runs!(n) when is_integer(n) and n >= 1, do: n
-
-  defp validate_baseline_runs!(other) do
-    raise ArgumentError,
-          ":baseline_runs must be a positive integer (>= 1), got: #{inspect(other)}"
-  end
+  defp validate_baseline_runs!(n),
+    do:
+      validate!(
+        n,
+        &(is_integer(&1) and &1 >= 1),
+        ":baseline_runs must be a positive integer (>= 1)"
+      )
 
   # nil disables the abort guard; otherwise a fraction (0.0..1.0) of the mutants
   # that *ran* — above it, the run aborts rather than report a hollowed-out score.
-  defp validate_harness_error_rate!(nil), do: nil
+  defp validate_harness_error_rate!(rate),
+    do:
+      validate_nullable!(
+        rate,
+        &(is_number(&1) and &1 >= 0 and &1 <= 1),
+        ":max_harness_error_rate must be a number between 0.0 and 1.0, or nil"
+      )
 
-  defp validate_harness_error_rate!(rate) when is_number(rate) and rate >= 0 and rate <= 1,
-    do: rate
+  defp validate_sandbox!(path),
+    do:
+      validate_nullable!(
+        path,
+        &(is_binary(&1) and &1 != ""),
+        ":sandbox must be a non-empty path string or nil"
+      )
 
-  defp validate_harness_error_rate!(other) do
-    raise ArgumentError,
-          ":max_harness_error_rate must be a number between 0.0 and 1.0, or nil, " <>
-            "got: #{inspect(other)}"
-  end
+  defp validate_keep_sandbox!(value),
+    do: validate!(value, &is_boolean/1, ":keep_sandbox must be true or false")
 
-  defp validate_sandbox!(nil), do: nil
-  defp validate_sandbox!(path) when is_binary(path) and path != "", do: path
-
-  defp validate_sandbox!(other) do
-    raise ArgumentError, ":sandbox must be a non-empty path string or nil, got: #{inspect(other)}"
-  end
-
-  defp validate_keep_sandbox!(value) when is_boolean(value), do: value
-
-  defp validate_keep_sandbox!(other) do
-    raise ArgumentError, ":keep_sandbox must be true or false, got: #{inspect(other)}"
-  end
-
-  defp validate_min_score!(nil), do: nil
-  defp validate_min_score!(score) when is_number(score) and score >= 0 and score <= 100, do: score
-
-  defp validate_min_score!(other) do
-    raise ArgumentError,
-          ":min_score must be a number between 0 and 100, or nil, got: #{inspect(other)}"
-  end
+  defp validate_min_score!(score),
+    do:
+      validate_nullable!(
+        score,
+        &(is_number(&1) and &1 >= 0 and &1 <= 100),
+        ":min_score must be a number between 0 and 100, or nil"
+      )
 
   # `:reporters` is the list of *output formats* (the single source of truth for
   # format validation). Distinct from `:reporter` below, the live per-mutant
@@ -295,24 +298,16 @@ defmodule Mutare.Options do
             "#{inspect(@formats)}, got: #{inspect(other)}"
   end
 
-  defp validate_reporter!(nil), do: nil
-  defp validate_reporter!(fun) when is_function(fun, 1), do: fun
-
-  defp validate_reporter!(other) do
-    raise ArgumentError, ":reporter must be a 1-arity function, got: #{inspect(other)}"
-  end
+  defp validate_reporter!(fun),
+    do: validate_nullable!(fun, &is_function(&1, 1), ":reporter must be a 1-arity function")
 
   # `:on_phase` (a phase term), `:on_start` (a `Mutare.Site`) and `:on_scan` (a
   # `%{done, total, found}` scan-progress map) are the live progress hooks fired
   # alongside `:reporter` — `:on_scan` by `Mutare.Schema` during the pre-run scan,
   # the rest by the runner. All 1-arity, all optional (`nil` = no-op), validated
   # identically.
-  defp validate_callback!(_key, nil), do: nil
-  defp validate_callback!(_key, fun) when is_function(fun, 1), do: fun
-
-  defp validate_callback!(key, other) do
-    raise ArgumentError, "#{inspect(key)} must be a 1-arity function, got: #{inspect(other)}"
-  end
+  defp validate_callback!(key, fun),
+    do: validate_nullable!(fun, &is_function(&1, 1), "#{inspect(key)} must be a 1-arity function")
 
   # Derived state, not raw user config: the entry points (`Mutare.Runner.run/2`,
   # the Mix task) resolve a `Mutare.Project` from the target path + scope flags and
