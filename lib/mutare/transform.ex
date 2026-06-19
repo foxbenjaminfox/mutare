@@ -430,9 +430,6 @@ defmodule Mutare.Transform do
       end)
 
     mut_ids = Enum.map(claimed, fn {id, _i, _c, _w} -> id end)
-    # Every claimed candidate overrides (guard/literal/structure) or drops its
-    # clause, so its id excludes that clause's *original* version.
-    excluded = Enum.group_by(claimed, fn {_id, i, _c, _w} -> i end, fn {id, _i, _c, _w} -> id end)
 
     # Default arguments (`def f(a, b \\ 1)`) expand to multiple arities. They stay
     # on the public dispatcher — which keeps the original arity contract — while the
@@ -441,27 +438,37 @@ defmodule Mutare.Transform do
     # in-place selectors ride along and the dispatcher keeps mutating its defaults.
     defaults = clause_defaults(orig_clauses)
 
-    lifted =
-      orig_clauses
-      |> Enum.with_index()
-      |> Enum.flat_map(fn {orig, index} ->
-        mutant_clauses =
-          for {id, ^index, clause, witness} <- claimed,
-              clause != :drop,
-              do: lifted_mutant(base, id, clause, var, super_var, witness)
+    base_clauses = build_base_clauses(orig_clauses, claimed, base, var, super_var)
+    dispatcher = build_dispatcher(vis, name, arity, mut_ids, base, var, defaults, super_var)
+    {[dispatcher | base_clauses], ctx}
+  end
 
-        # A bodiless header (`def f(a, b \\ 1)` with no `do`) declares defaults
-        # only — it has no body to lift and no candidates target it. Its defaults
-        # ride on the dispatcher (above); it emits no base clause of its own.
-        if bodiless_header?(orig) do
-          mutant_clauses
-        else
-          mutant_clauses ++
-            [lifted_original(base, orig, Map.get(excluded, index, []), var, super_var)]
-        end
-      end)
+  # Emit the lifted function's base clauses by interleaving: for each source clause, its
+  # mutant clauses (one per candidate overriding it, gated `when mutare_active === <id>`)
+  # come *before* the source clause itself (gated `when mutare_active !== <those ids>`, so it
+  # steps aside when a mutant is active). A dropped clause contributes only its exclusion (no
+  # mutant clause); a bodiless header (`def f(a, b \\ 1)` with no `do`) contributes neither —
+  # its defaults ride on the dispatcher and it has no body to lift.
+  defp build_base_clauses(orig_clauses, claimed, base, var, super_var) do
+    # Every claimed candidate overrides (guard/literal/structure) or drops its clause, so its
+    # id excludes that clause's *original* version.
+    excluded = Enum.group_by(claimed, fn {_id, i, _c, _w} -> i end, fn {id, _i, _c, _w} -> id end)
 
-    {[build_dispatcher(vis, name, arity, mut_ids, base, var, defaults, super_var) | lifted], ctx}
+    orig_clauses
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {orig, index} ->
+      mutant_clauses =
+        for {id, ^index, clause, witness} <- claimed,
+            clause != :drop,
+            do: lifted_mutant(base, id, clause, var, super_var, witness)
+
+      if bodiless_header?(orig) do
+        mutant_clauses
+      else
+        mutant_clauses ++
+          [lifted_original(base, orig, Map.get(excluded, index, []), var, super_var)]
+      end
+    end)
   end
 
   # The public dispatcher: read the active mutant id once, record coverage for the
@@ -772,7 +779,22 @@ defmodule Mutare.Transform do
   # Transform owns which constructor each candidate maps to; `Mutare.Site` owns
   # the struct's fields. The candidate's *type* (not a stored `kind`/`operation`)
   # selects the shape.
-  defp in_place_site(id, %Candidate.InPlace{} = c, file) do
+  # Most in-place candidates record the *same* plain replacement Site — the diff is
+  # `original` → `mutated` at `range`, tagged with the mutator. They differ only in the
+  # emit *scaffolding* that delivers them, none of which reaches the Site:
+  #
+  #   * `InPlace`      — the body operator's own selector `case`.
+  #   * `CasePattern`  — the `receive`/`fn` whole-construct selector (the branch carries
+  #     the whole mutated construct, `branch_node/1`).
+  #   * `CaseClause`   — the `case` tuple-the-scrutinee rewrite (`emit_case_pattern_site/3`).
+  #   * `MatchPattern` — the `=`-match tuple-export selector (`emit_match_site/3`).
+  #   * `MacroPattern` — the binding-macro tuple-export selector (`emit_macro_pattern_site/3`).
+  #
+  # See each emit_* and the `Mutare.Transform.Candidate` moduledoc for the per-type detail.
+  defp in_place_site(id, c, file)
+       when is_struct(c, Candidate.InPlace) or is_struct(c, Candidate.CasePattern) or
+              is_struct(c, Candidate.CaseClause) or is_struct(c, Candidate.MatchPattern) or
+              is_struct(c, Candidate.MacroPattern) do
     Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
@@ -783,39 +805,12 @@ defmodule Mutare.Transform do
     Site.return_value(id, file, c.range, c.original, c.mutated)
   end
 
-  # A `receive`/`fn` clause-pattern/guard mutation is delivered in place (the whole construct
-  # is wrapped in a selector). The diff stays focused on the pattern/guard (`original`/
-  # `mutated`); the selector branch carries the whole mutated construct (`branch_node/1`).
-  defp in_place_site(id, %Candidate.CasePattern{} = c, file) do
-    Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
-  end
-
   # A whole `rescue` clause dropped from a `try`, delivered in place by the whole-`try`
   # selector (`branch_node/1` returns the rebuilt try). The diff is a `:delete` of the
-  # dropped clause's lines (`Site.in_place_drop/5`), like a function `clause_drop`.
+  # dropped clause's lines (`Site.in_place_drop/5`), like a function `clause_drop` — the
+  # one in-place candidate whose Site isn't the plain `original`/`mutated` replacement.
   defp in_place_site(id, %Candidate.RescueDrop{} = c, file) do
     Site.in_place_drop(id, file, c.range, c.dropped, c.mutator)
-  end
-
-  # A `case` clause-pattern/guard mutation is delivered in place by the tuple-the-scrutinee
-  # rewrite (`emit_case_pattern_site/3`). The diff is the pattern/guard before/after
-  # (`original`/`mutated`); the rewrite scaffolding never reaches a Site.
-  defp in_place_site(id, %Candidate.CaseClause{} = c, file) do
-    Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
-  end
-
-  # A `=`-match LHS pattern mutation, delivered in place (the match is rewritten to a
-  # tuple-export selector — see `emit_match_site/3`). The diff is the LHS pattern
-  # before/after (`original`/`mutated`); the rewrite scaffolding never reaches a Site.
-  defp in_place_site(id, %Candidate.MatchPattern{} = c, file) do
-    Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
-  end
-
-  # A binding-escaping macro's pattern mutation, delivered in place (the call is rewritten to
-  # a tuple-export selector — see `emit_macro_pattern_site/3`). The diff is the pattern
-  # before/after; the rewrite scaffolding never reaches a Site.
-  defp in_place_site(id, %Candidate.MacroPattern{} = c, file) do
-    Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
   # A lifted candidate — a `when`-guard operator swap or a head-pattern literal swap
@@ -1027,24 +1022,46 @@ defmodule Mutare.Transform do
   defp emit_match_site({:=, _meta, [_lhs, emitted_rhs]} = match_node, candidates, ctx) do
     %Candidate.MatchPattern{export: export, original: original_lhs} = hd(candidates)
 
+    emit_binding_site(match_node, export, candidates, ctx,
+      mutant_body: fn c -> match_inner_case(c.raw_rhs, c.mutated, export) end,
+      catch_all: fn ids ->
+        match_catch_all(ids, match_inner_case(emitted_rhs, original_lhs, export), ctx.active_var)
+      end
+    )
+  end
+
+  # The shared skeleton of the two tuple-export rewrites — `emit_match_site/3` (a `=` match)
+  # and `emit_macro_pattern_site/3` (a binding-escaping macro call). Both bind a pattern whose
+  # variables must **escape** the selector, so neither can wrap the node in an ordinary
+  # selector `case` (the bindings would be trapped in a branch); instead each mutant runs in a
+  # branch of
+  #
+  #     <export> = case <sel> do <id> -> <mutant_body>; … ; mutare_active -> <catch_all> end
+  #
+  # and the escaping variables are re-exported through the shared `export` tuple and rebound
+  # outside. The callers differ only in the per-mutant branch body (`:mutant_body`, called per
+  # candidate) and the baseline catch-all (`:catch_all`, called with the hosted ids — it
+  # records coverage then runs the emitted node). Mirrors `emit_site/3`/`build_case/3` for id
+  # claiming, and shares their all-poisoned fallback (no live mutant → emit the node unchanged).
+  defp emit_binding_site(node, export, candidates, ctx, opts) do
+    mutant_body = Keyword.fetch!(opts, :mutant_body)
+    catch_all = Keyword.fetch!(opts, :catch_all)
+
     {clauses, ctx} =
       Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
         claim_id(ctx, candidate, &in_place_site/3, fn id, candidate ->
-          {:->, [], [[id], match_inner_case(candidate.raw_rhs, candidate.mutated, export)]}
+          {:->, [], [[id], mutant_body.(candidate)]}
         end)
       end)
 
-    # Every mutation here skipped (poisoned) → no selector; emit the match unchanged.
     case clauses do
       [] ->
-        {strip_candidates(match_node), ctx}
+        {strip_candidates(node), ctx}
 
       _ ->
         ids = for {:->, _, [[id], _]} <- clauses, do: id
         selector = Mutare.Metamutant.subject_ast()
-        baseline = match_inner_case(emitted_rhs, original_lhs, export)
-        catch_all = match_catch_all(ids, baseline, ctx.active_var)
-        case_node = {:case, [], [selector, [do: clauses ++ [catch_all]]]}
+        case_node = {:case, [], [selector, [do: clauses ++ [catch_all.(ids)]]]}
         {{:=, [], [export, case_node]}, ctx}
     end
   end
@@ -1113,28 +1130,12 @@ defmodule Mutare.Transform do
   # shared export tuple, and the all-poisoned fallback.
   defp emit_macro_pattern_site(node, candidates, ctx) do
     %Candidate.MacroPattern{export: export} = hd(candidates)
-
-    {clauses, ctx} =
-      Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
-        claim_id(ctx, candidate, &in_place_site/3, fn id, candidate ->
-          {:->, [], [[id], macro_pattern_branch(candidate.mutant_expr, export)]}
-        end)
-      end)
-
     baseline = strip_candidates(node)
 
-    # Every mutation here skipped (poisoned) → no selector; emit the macro call unchanged.
-    case clauses do
-      [] ->
-        {baseline, ctx}
-
-      _ ->
-        ids = for {:->, _, [[id], _]} <- clauses, do: id
-        selector = Mutare.Metamutant.subject_ast()
-        catch_all = macro_pattern_catch_all(ids, baseline, export, ctx.active_var)
-        case_node = {:case, [], [selector, [do: clauses ++ [catch_all]]]}
-        {{:=, [], [export, case_node]}, ctx}
-    end
+    emit_binding_site(node, export, candidates, ctx,
+      mutant_body: fn c -> macro_pattern_branch(c.mutant_expr, export) end,
+      catch_all: fn ids -> macro_pattern_catch_all(ids, baseline, export, ctx.active_var) end
+    )
   end
 
   # One selector branch body: run the macro (binding the pattern's vars into the branch
