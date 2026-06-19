@@ -1138,6 +1138,32 @@ defmodule Mutare.TransformTest do
       assert {:operand_swap, "a ++ b", "b ++ a"} in pairs
       assert {:list, "a ++ b", "a -- b"} in pairs
     end
+
+    test "imported (qualify) ModeSwap stays minimal and still covers the mode atom" do
+      # `import DateTime, only: [truncate: 2]` is selective, so `Calls` would normally
+      # *qualify* a rewritten call. But a value-only swap keeps the same name/arity, so the
+      # mutant stays bare (`truncate(dt, :millisecond)`) rather than requalifying the whole
+      # call — which keeps the diff minimal AND keeps it a single-node change, so `Overlap`
+      # still recognises the swap covers the `:second` leaf and prunes the redundant
+      # AtomLiteral `:mutare` (which `owned_args/2` used to suppress).
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            import DateTime, only: [truncate: 2]
+            def f(dt), do: truncate(dt, :second)
+          end
+          """,
+          mutators: [Mutare.Mutators.ModeSwap, Mutare.Mutators.AtomLiteral]
+        )
+
+      pairs = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
+
+      # Minimal, bare swap — not the requalified `Elixir.DateTime.truncate(...)`.
+      assert {:mode_swap, "truncate(dt, :second)", "truncate(dt, :millisecond)"} in pairs
+      # The redundant leaf mutant is gone.
+      assert Enum.filter(sites, &(&1.mutator == :atom)) == []
+    end
   end
 
   describe "Numeric (complementary Kernel/Float numeric swaps)" do

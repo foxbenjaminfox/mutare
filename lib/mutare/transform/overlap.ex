@@ -66,6 +66,12 @@ defmodule Mutare.Transform.Overlap do
   # So: several built-ins are "covering" in the mechanical sense, but ModeSwap→AtomLiteral is
   # the only overlap that resolves to a real drop.
   #
+  # This recognition relies on a covering mutant being "the original with one subtree replaced".
+  # `Mutare.Transform.Calls` upholds that for **bare imported calls**: a value-only swap keeps
+  # the call bare (same name/arity) rather than requalifying it (`Elixir.Mod.fun(...)`), so the
+  # diff stays single-node. If it requalified, the form *and* the argument would change → a
+  # whole-host footprint → the leaf would wrongly resurface (see NOTES "Overlap resolution").
+  #
   # ## Sharp edge (latent)
   #
   # The "args-list footprint matches no single leaf" guarantee holds for *today's* mutators

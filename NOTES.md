@@ -1968,6 +1968,21 @@ three shapes appear, and the distinction is subtler than "ModeSwap vs the rest":
   forms OperandSwap also targets (`div(a, b)`, `DateTime.compare(a, b)`) range their args inside
   the parens, so they were never affected — covering-but-harmless like the arity changes above.
 
+**Covering mutators must yield a clean single-subtree diff — and `Calls` has to uphold that.**
+The diff can only isolate a target when the mutant is "original with one subtree replaced". A
+second shipped regression broke this for **bare imported calls** that `Calls` rebuilds as
+`:qualify` (`import DateTime, only: [truncate: 2]; truncate(dt, :second)`): ModeSwap's rebuild
+*requalified* the whole call (`truncate(...)` → `Elixir.DateTime.truncate(...)`) **and** swapped
+the mode atom, so the diff saw two changes (form + arg) → whole-host footprint → non-covering →
+the `:second`/`minute:` leaf's redundant AtomLiteral `:mutare` came back (the very thing
+`owned_args/2` used to suppress). Rather than teach the diff to ignore form changes (fragile —
+cross-shape operand diffs would mis-resolve), the fix is at the **`Calls`** layer: requalification
+only disambiguates a *renamed/re-aritied* sibling, so a **value-only** swap (same name *and*
+arity — ModeSwap, OperandSwap's date/time call forms) now stays **bare**, resolving exactly as the
+compiling original did. That keeps the mutant minimal (`truncate(dt, :millisecond)`, a cleaner
+report diff too) and single-node, so Overlap covers the atom. `Calls.resolved_call/1`'s `:qualify`
+rebuild keys on `new_fun == fun and length(new_args) == length(args)`.
+
 **Latent sharp edge.** The "args-list footprint matches no single leaf" guarantee is not
 airtight: a bare single-element args list (`foo(0)` → args `[0]`) has the **same range** as its
 lone element. A hypothetical mutator dropping a call from arity 1 to 0 on a **literal** argument

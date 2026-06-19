@@ -80,7 +80,19 @@ defmodule Mutare.Transform.Calls do
 
       {module, :qualify} ->
         rebuild = fn new_fun, new_args ->
-          {{:., [], [qualifier(module), new_fun]}, meta, new_args}
+          # Requalification disambiguates a *renamed* (or re-aritied) sibling — a new
+          # `name/arity` that a bare call might resolve to the wrong module, or not at all
+          # (see `Mutare.Transform.Imports`). A **value-only** mutation keeps the same name
+          # *and* arity, so the bare call resolves exactly as the (compiling) original did:
+          # leave it bare. That keeps such a mutant minimal (`truncate(dt, :second)` →
+          # `truncate(dt, :millisecond)`, not the requalified whole call) — which also lets
+          # `Mutare.Transform.Overlap` see a single-node diff and recognise that the swap
+          # covers just the argument (so the redundant `AtomLiteral` leaf is pruned).
+          if new_fun == fun and length(new_args) == length(args) do
+            {new_fun, meta, new_args}
+          else
+            {{:., [], [qualifier(module), new_fun]}, meta, new_args}
+          end
         end
 
         {module, fun, args, rebuild}
