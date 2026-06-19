@@ -65,6 +65,19 @@ defmodule Mutare.Sandbox.CommandTest do
       assert Regex.run(Command.test_location_regex(), output)
       assert Regex.run(Command.source_location_regex(), output)
     end
+
+    test "diagnostic_severity/1 classifies a line's marker (Poison reads it)" do
+      assert Command.diagnostic_severity("    error: cannot use variable x as map key") == :error
+      assert Command.diagnostic_severity("  warning: variable \"a\" is unused") == :warning
+
+      assert Command.diagnostic_severity("** (CompileError) lib/foo.ex: cannot compile") ==
+               :error
+
+      # A non-marker line (a diagnostic's footer/body, or chatter) has no severity of
+      # its own — it inherits the block's, which the caller threads.
+      assert Command.diagnostic_severity("    └─ lib/foo.ex:5:12: Foo.bar/1") == nil
+      assert Command.diagnostic_severity("Compiling 43 files (.ex)") == nil
+    end
   end
 
   describe "outcome/1 decodes the exit-code contract" do

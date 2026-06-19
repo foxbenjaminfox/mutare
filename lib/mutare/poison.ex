@@ -10,7 +10,11 @@ defmodule Mutare.Poison do
 
   We map each error's `file:line` to the mutant id(s) whose *generated code*
   spans that line, via a `Mutare.Manifest` built on demand from the file's
-  rendered metamutant (see `Manifest.ids_at_line/2`). The manifest records the
+  rendered metamutant (see `Manifest.ids_at_line/2`). Only *error* diagnostics are
+  scanned, never warnings: a failed compile prints every warning the mutations
+  provoke (each footered with the same `file:line` shape), and mistaking those for
+  the error's location dropped valid mutants as false poison (see `error_locations/1`).
+  The manifest records the
   full line range of every mutant's generated code — its selector clause body,
   and for a lifted mutant the gated clause (`when mutare_active === <id>`) where its
   guard/head-pattern code actually lives — so a poison is found whether the error
@@ -77,10 +81,41 @@ defmodule Mutare.Poison do
   # `file:line` pairs from compiler output, e.g. `lib/foo.ex:5:12` or `lib/foo.ex:5`.
   # The pattern is owned by `Mutare.Sandbox.Command` (the home of everything that
   # parses mix's output), so a mix output-format change is a single fix there.
+  #
+  # We scan only the lines that aren't inside a *warning* diagnostic. A failed
+  # metamutant compile prints the one real error alongside every warning the mutations
+  # provoke — and mix footers warnings with the very same `└─ file:line:col:` reference
+  # this pattern matches. Scanning the whole output mapped those benign warning lines
+  # (`unused variable` from a mutant forcing a guard to `true`, `cannot match` from a
+  # widened clause) onto unrelated mutant ids and dropped valid mutants as false poison:
+  # on plug, one real error dragged ~110 good mutants down with it. So we thread each
+  # line's severity (`Command.diagnostic_severity/1`) and skip warning blocks — keeping
+  # the real error's own footer, which lives outside any warning block.
   defp error_locations(output) do
-    Command.source_location_regex()
-    |> Regex.scan(output)
-    |> Enum.map(fn [_match, file, line] -> {file, String.to_integer(line)} end)
+    output
+    |> error_text_lines()
+    |> Enum.flat_map(fn line ->
+      Command.source_location_regex()
+      |> Regex.scan(line)
+      |> Enum.map(fn [_match, file, num] -> {file, String.to_integer(num)} end)
+    end)
     |> Enum.uniq()
+  end
+
+  # The output lines that are *not* part of a warning diagnostic. Severity defaults to
+  # `:error` (so error footers, exception lines, and chatter — none of which carry a
+  # misleading location — are kept) and flips to `:warning` only inside a `warning:`
+  # block, until the next `error:`/`** (…Error)` header flips it back. This is a strict
+  # narrowing of "scan everything": it can only *remove* warning lines, never lose the
+  # real error's location.
+  defp error_text_lines(output) do
+    output
+    |> String.split("\n")
+    |> Enum.reduce({:error, []}, fn line, {severity, kept} ->
+      severity = Command.diagnostic_severity(line) || severity
+      {severity, if(severity == :warning, do: kept, else: [line | kept])}
+    end)
+    |> elem(1)
+    |> Enum.reverse()
   end
 end

@@ -178,6 +178,14 @@ defmodule Mutare.Sandbox.Command do
   @source_location ~r{([\w/.\-]+\.exs?):(\d+)}
   @test_location ~r{([\w/.\-]+_test\.exs):(\d+)}
 
+  # Compiler-diagnostic *headers*. Elixir prints each warning/error as a block headed
+  # by one of these markers, the rest of the block (gutter, carets, `└─ file:line:col:`
+  # footer) following until the next header. A raised compile exception (`** (…Error)`)
+  # is the header of a hard failure. Read by `diagnostic_severity/1`.
+  @error_marker ~r/^\s*error:/
+  @exception_marker ~r/^\s*\*\* \(\w*Error\)/
+  @warning_marker ~r/^\s*warning:/
+
   @doc """
   Regex matching mix's `== Compilation error in file <path> ==` banner, capturing
   `<path>`. Read here by `suite_compile_error?/1`; exposed so the banner has a
@@ -202,6 +210,30 @@ defmodule Mutare.Sandbox.Command do
   """
   @spec test_location_regex() :: Regex.t()
   def test_location_regex, do: @test_location
+
+  @doc """
+  The diagnostic severity a compiler-output `line` *starts*: `:error` (an `error:`
+  header or a raised `** (…Error)`), `:warning` (a `warning:` header), or `nil` (any
+  other line — a diagnostic's body/footer, or chatter — which inherits its block's
+  severity from the preceding header).
+
+  `Mutare.Poison` threads this across the output so it scans only non-warning lines for
+  mutant locations: a failed metamutant compile prints every warning the mutations
+  provoked (an `unused variable` from a mutant forcing a guard to `true`, a
+  `cannot match` from a widened clause), each footered with the same `file:line` shape
+  `source_location_regex/0` matches — and mistaking those for the real error's location
+  dropped valid mutants as false poison. Co-located with the other mix-output patterns
+  so a diagnostic-format change is a single fix.
+  """
+  @spec diagnostic_severity(String.t()) :: :error | :warning | nil
+  def diagnostic_severity(line) when is_binary(line) do
+    cond do
+      Regex.match?(@error_marker, line) -> :error
+      Regex.match?(@exception_marker, line) -> :error
+      Regex.match?(@warning_marker, line) -> :warning
+      true -> nil
+    end
+  end
 
   @doc """
   Whether `output` reports a `mix` compilation error in a **test script** — the

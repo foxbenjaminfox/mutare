@@ -49,6 +49,36 @@ defmodule Mutare.PoisonTest do
     test "returns empty when nothing maps (caller then aborts)" do
       assert Poison.ids("some unrelated error", %{}) == MapSet.new()
     end
+
+    test "ignores a warning's file:line — only error diagnostics locate poison" do
+      {meta, [site], _next_id} = Mutare.transform_string(@src, @poison)
+      metamutants = %{"lib/p.ex" => meta}
+
+      line =
+        meta
+        |> String.split("\n")
+        |> Enum.find_index(&(&1 =~ "mutare_unbound_xyz"))
+        |> Kernel.+(1)
+
+      # mix footers a *warning* with the same `└─ file:line` shape as an error. A failed
+      # compile prints every warning the mutations provoke; pointing one at the mutant's
+      # own line must NOT flag it as poison (the bug that dropped ~110 valid plug mutants).
+      warning =
+        "    warning: variable \"x\" is unused\n" <>
+          "    └─ lib/p.ex:#{line}:5: P.f/2\n"
+
+      assert Poison.ids(warning, metamutants) == MapSet.new()
+
+      # The same location inside an `error:` diagnostic *is* the poison.
+      error =
+        "    error: undefined variable \"mutare_unbound_xyz\"\n" <>
+          "    └─ lib/p.ex:#{line}:5: P.f/2\n"
+
+      assert Poison.ids(error, metamutants) == MapSet.new([site.id])
+
+      # A warning sharing the output with the real error neither adds nor hides ids.
+      assert Poison.ids(warning <> error, metamutants) == MapSet.new([site.id])
+    end
   end
 
   describe "end to end recovery" do
