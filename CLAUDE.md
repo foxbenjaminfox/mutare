@@ -278,14 +278,14 @@ contract between them is the whole game.
     (so an excluded `shift` key like `microsecond:` keeps its leaf mutant, consistently), zero-API
     (it replaced the old `owned_args/2` callback + `:owned` context, which drifted from `mutate/2`
     and could only speak in argument *positions* — see NOTES "Overlap resolution"). Scoped to
-    `Candidate.InPlace`; ModeSwap is never lifted, so no other candidate kind is touched. Subtle:
-    "covering" needs the changed node to be **rangeable**, so operator swaps and function renames
-    (a bare `:+` / `fun` atom has no range → `nil` footprint) are non-covering for free, while
-    arity-changing calls (`Map.get/3`→`/2`) *are* covering (footprint = the args-list range) but
-    match no single-leaf host, so they suppress nothing. Net: only ModeSwap→AtomLiteral actually
-    drops anything. The footprint scan always runs; the prune walk is skipped only when no
-    candidate is covering (i.e. no arity-changing or mode-swapping call). See NOTES for the latent
-    arity-1→0-on-a-literal sharp edge.
+    `Candidate.InPlace`; ModeSwap is never lifted, so no other candidate kind is touched. A
+    footprint is covering only for a genuine **single-node substitution**: it must be rangeable
+    (so operator swaps / function renames, whose changed node is a bare `:+`/`fun` atom, are
+    non-covering for free), a *proper* sub-range of the host (so a leaf swap and an infix
+    `OperandSwap` — `[a, b]` ranged like `a - b` — are excluded), and **not a list** (so arity
+    drops and operand permutations, whose changed subtree is the argument list, are excluded —
+    including a piped one-arg `xs |> List.first(0)`, where `[0]` ranges like `0`). Net: ModeSwap
+    is the only covering mutator, so the prune runs only on subtrees with a mode/unit swap.
   - **in-place selector** for body expressions: wrap the operator in a tail-position
     `case :persistent_term.get(:mutare_active, 0) do <id> -> mutated; _ -> original end`. One
     illegal spot for that `case`: the RHS of a pipe (`x |> case … end` parses but won't compile —

@@ -48,23 +48,19 @@ defmodule Mutare.Transform.Overlap do
   #     `NodeRange.get/1` returns `nil` → **non-covering** (this is the load-bearing
   #     property — see the sharp edge below). A whole-node replacement (a literal family, a
   #     boolean→`true`, `String.equivalent?`→`==`) likewise differs at the host → `nil`.
-  #   * **Arity changes** (DefaultDrop, CollectionArity, CallRemoval's arg-drop) — the
-  #     differing subtree is the whole **argument list**, which *is* rangeable and (inside the
-  #     parens) a *proper sub-range* of the call, so these are technically **covering** and
-  #     their args-list range lands in `covered_ranges`. They suppress nothing only because no
-  #     *single* leaf candidate's host equals a whole args-list range. So `covered_ranges` is
-  #     routinely non-empty (any `Map.get/3`, `Enum.sort/2`, …) and the prune pass does run —
-  #     it just finds no match.
-  #   * **Operand permutation** (`OperandSwap`, `a - b` → `b - a`) — also changes the argument
-  #     list, but for an **infix** operator Sourceror ranges `[a, b]` *identically* to the whole
-  #     `a - b` node. So its footprint range equals the host range → **non-covering** (the
-  #     proper-sub-range test in `footprint/3`). This is essential: otherwise it would prune the
-  #     `Arithmetic` `a - b` → `a + b` (and `List` `++`↔`--`) sibling, whose host shares that
-  #     range. The *call* forms (`div(a, b)`, `DateTime.compare(a, b)`) range their args inside
-  #     the parens, so they are covering-but-harmless like the arity changes above.
+  #   * **Arity changes** (DefaultDrop, CollectionArity, CallRemoval's arg-drop) and **operand
+  #     permutation** (`OperandSwap`, `a - b` → `b - a`) — the differing subtree is the whole
+  #     **argument list** (a drop changes its length; a permutation changes ≥2 of its elements).
+  #     A list is never a value position a leaf mutator targets, so `footprint/3` treats any
+  #     list-valued footprint as **non-covering**. This is essential in two ways it would
+  #     otherwise misfire: an infix `OperandSwap` would prune the `Arithmetic`/`List`
+  #     operator-swap sibling (Sourceror ranges `[a, b]` identically to `a - b`), and a *piped*
+  #     one-arg drop (`xs |> List.first(0)` → `List.first()`, `[0]` ranged identically to `0`)
+  #     would prune the `Literal 0` mutant. Removal/permutation is orthogonal to mutating a
+  #     value, so neither should suppress anything.
   #
-  # So: several built-ins are "covering" in the mechanical sense, but ModeSwap→AtomLiteral is
-  # the only overlap that resolves to a real drop.
+  # So: several built-ins reach the diff, but ModeSwap→AtomLiteral is the only overlap that is
+  # ever covering — the only one that resolves to a real drop.
   #
   # This recognition relies on a covering mutant being "the original with one subtree replaced".
   # `Mutare.Transform.Calls` upholds that for **bare imported calls**: a value-only swap keeps
@@ -72,16 +68,14 @@ defmodule Mutare.Transform.Overlap do
   # diff stays single-node. If it requalified, the form *and* the argument would change → a
   # whole-host footprint → the leaf would wrongly resurface (see NOTES "Overlap resolution").
   #
-  # ## Sharp edge (latent)
-  #
-  # The "args-list footprint matches no single leaf" guarantee holds for *today's* mutators
-  # but is not airtight. A bare single-element args list (`foo(0)` → args `[0]`) has the
-  # *same* range as its lone element, so a hypothetical mutator dropping a call from arity 1
-  # to 0 on a **literal** argument would produce an args-list footprint equal to that
-  # literal's range — and wrongly suppress its leaf mutation. No built-in does an arity-1→0
-  # drop on a literal, so this never triggers; flagged here for whoever adds one. (The
-  # `nil`-footprint shield for operator/name atoms is likewise contingent on Sourceror not
-  # ranging bare form-position atoms.)
+  # The list rule above is what makes that robust. A bare single-element args list (`foo(0)` →
+  # args `[0]`) has the *same* range as its lone element, so before that rule a one-visible-arg
+  # arity drop — e.g. a **piped** `xs |> List.first(0)` → `List.first()`, whose only visible arg
+  # is the default — produced an args-list footprint equal to `0`'s range and wrongly pruned the
+  # `Literal 0` mutant. Treating any list footprint as non-covering closes it (and the whole
+  # class: piped or not, one arg or many). The remaining contingency is the `nil`-footprint
+  # shield for operator/name atoms, which relies on Sourceror not ranging bare form-position
+  # atoms.
   #
   # Scope: only `Candidate.InPlace` in the `:mutare` key. ModeSwap targets runtime call
   # arguments, never guards/patterns, so it is never lifted and never a structural/pattern
@@ -93,8 +87,8 @@ defmodule Mutare.Transform.Overlap do
   Drop each non-covering `Candidate.InPlace` whose host range is covered by another
   candidate's minimal-rewrite footprint. The footprint scan always runs (it is O(1) per leaf
   candidate); the *prune* postwalk is skipped when nothing is covering, leaving the tree
-  unchanged. Covering candidates are common (any arity-changing call), but only
-  ModeSwap→AtomLiteral resolves to an actual drop — see the moduledoc.
+  unchanged. In practice ModeSwap is the only covering mutator (see the moduledoc), so the
+  prune runs only on subtrees that contain a mode/unit swap.
   """
   @spec resolve(Macro.t()) :: Macro.t()
   def resolve(tree) do
@@ -156,21 +150,35 @@ defmodule Mutare.Transform.Overlap do
   defp drop?(_other, _covered), do: false
 
   # The source range of the minimal subtree that differs between `original` and `mutated`,
-  # **only when it is a proper sub-range of the host** (`host_range`) — i.e. the rewrite
-  # touched a genuine descendant. `nil` otherwise: nothing changed, the changed subtree is
-  # unrangeable (an operator/function-name atom), or its range *equals* the host range.
+  # **only when it is a genuine single-node substitution within the host**. `nil` otherwise.
+  # A footprint is *not* covering — returns `nil` — in three cases:
   #
-  # That last clause is load-bearing. A structural-identity test (`sub === original`) is not
-  # enough: an `OperandSwap` (`a - b` → `b - a`) changes the *argument list* `[a, b]`, which
-  # is a different term from the infix node but which Sourceror ranges **identically** to it.
-  # Without the range comparison that footprint would be marked covering and would prune the
-  # `Arithmetic` `a - b` → `a + b` sibling (same host range). Comparing ranges — a descendant's
-  # range is always within the host's, so "not equal" means "strictly inside" — keeps such a
-  # whole-host rewrite non-covering. The range is taken from the **original** side (the mutated
-  # literal carries fresh `[]` metadata, so it has no range).
+  #   * **Unrangeable** (`sub_range == nil`) — the change is a bare operator/function-name
+  #     atom (an operator swap or rename); nothing for a leaf mutator to be redundant with.
+  #   * **Whole-host** (`sub_range == host_range`) — a leaf swap (`sub` *is* the host scalar),
+  #     a whole-node replacement, or an `OperandSwap` on an **infix** operator, whose changed
+  #     argument list `[a, b]` is a different term from the infix node but which Sourceror
+  #     ranges *identically*. Marking these covering would prune the operator-swap sibling
+  #     (`a - b` → `a + b`) on the same host range. A descendant's range is always within the
+  #     host's, so "not equal" means "strictly inside".
+  #   * **A list** (`is_list(sub)`) — the changed subtree is an argument/element *list*, never
+  #     a value position a leaf mutator targets. This happens when an arity-changing call drops
+  #     an argument (`[x]` → `[]`, `[a, b]` → `[a]`) or when ≥2 siblings change (an operand
+  #     permutation). Removal/permutation is orthogonal to mutating a *value*, so it must not
+  #     suppress the leaf on the surviving/dropped element — critical for a **piped** one-arg
+  #     drop (`xs |> List.first(0)` → `List.first()`), where the one-element list `[0]` ranges
+  #     identically to its element `0` and would otherwise prune the `Literal 0` mutant. A real
+  #     substitution (ModeSwap) descends *into* a same-length list to the one changed scalar/key,
+  #     so its footprint is never a list.
+  #
+  # The range is taken from the **original** side (the mutated literal carries fresh `[]`
+  # metadata, so it has no range).
   defp footprint(original, mutated, host_range) do
     case diff(original, mutated) do
       :equal ->
+        nil
+
+      {:diff, sub} when is_list(sub) ->
         nil
 
       {:diff, sub} ->

@@ -1164,6 +1164,34 @@ defmodule Mutare.TransformTest do
       # The redundant leaf mutant is gone.
       assert Enum.filter(sites, &(&1.mutator == :atom)) == []
     end
+
+    test "a piped one-arg DefaultDrop does not prune the default's value mutant" do
+      # `xs |> List.first(0)` has one *visible* arg, so DefaultDrop's drop turns `[0]` into
+      # `[]`. Sourceror ranges the one-element list `[0]` identically to `0`, but dropping the
+      # arg is orthogonal to mutating its value — a list-valued footprint is never covering, so
+      # `Literal 0` (and `AtomLiteral :none` below) survives alongside the drop.
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def f(xs), do: xs |> List.first(0)
+            def g(ys), do: ys |> List.last(:none)
+          end
+          """,
+          mutators: [
+            Mutare.Mutators.DefaultDrop,
+            Mutare.Mutators.Literal,
+            Mutare.Mutators.AtomLiteral
+          ]
+        )
+
+      pairs = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
+
+      assert {:default_drop, "List.first(0)", "List.first()"} in pairs
+      assert {:literal, "0", "1"} in pairs
+      assert {:default_drop, "List.last(:none)", "List.last()"} in pairs
+      assert {:atom, ":none", ":mutare"} in pairs
+    end
   end
 
   describe "Numeric (complementary Kernel/Float numeric swaps)" do

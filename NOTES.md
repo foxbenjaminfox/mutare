@@ -1921,12 +1921,13 @@ the leaf before its enclosing call). A candidate's **footprint** is the source r
 *minimal changed subtree* between its `original` and `mutated` (`footprint/3`, a meta-
 insensitive lockstep diff that stops at the rangeable `{:__block__, _, [literal]}` wrapper, not
 the bare value, and ranges the **original** side — the mutated literal has fresh `[]` meta and
-no range). A candidate is **covering** when that footprint range is a *proper sub-range* of its
-host — decided by **range comparison** (`footprint_range != host_range`), *not* a structural
-`sub === original` test. That distinction is load-bearing and was a real bug (see below): the
-diff's minimal subtree can be a *different term* from the host that Sourceror nonetheless ranges
-*identically* to it. Any **non-covering** candidate whose host range equals a covering footprint
-is dropped — exactly the redundant leaf mutation. It is:
+no range). A candidate is **covering** when that minimal changed subtree is a genuine
+single-node substitution: rangeable, a *proper sub-range* of the host (`footprint_range !=
+host_range` — a **range** comparison, *not* a structural `sub === original` test), and **not a
+list**. Both qualifiers are load-bearing and each fixed a real bug (below): the diff's minimal
+subtree can be a *different term* from the host (or a list) that Sourceror nonetheless ranges
+*identically* to the host (or to a single element). Any **non-covering** candidate whose host
+range equals a covering footprint is dropped — exactly the redundant leaf mutation. It is:
 
 - **exact** — distinct source nodes have distinct ranges (`NodeRange.get/1`), and the leaf
   candidate and ModeSwap's footprint derive from the *same* original subtree term, so their
@@ -1937,8 +1938,9 @@ is dropped — exactly the redundant leaf mutation. It is:
 - **zero-API** — no callback, so any future minimal-rewrite call mutator gets it for free.
 
 **What's actually "covering" — and why only ModeSwap suppresses anything.** "Covering" needs
-the minimal changed subtree to be a proper, **rangeable** descendant. Tracing the built-ins,
-three shapes appear, and the distinction is subtler than "ModeSwap vs the rest":
+the minimal changed subtree to be a genuine single-node substitution: a proper, **rangeable**,
+**non-list** descendant. ModeSwap is the only built-in that produces one; the net is "ModeSwap
+vs the rest", but the *reasons* the rest fall out are distinct and each was a footgun:
 
 - **ModeSwap** substitutes one rangeable literal arg/key → footprint = that literal, which
   AtomLiteral also hosts → the **only overlap that resolves to a real drop**.
@@ -1951,22 +1953,24 @@ three shapes appear, and the distinction is subtler than "ModeSwap vs the rest":
   on Sourceror **not** ranging bare form-position atoms; if that ever changed, these would join
   the covering set (still harmless only because the analyzer keeps a call's form position
   opaque, so nothing hosts a candidate there).
-- **Arity changes** (DefaultDrop, CollectionArity, CallRemoval's arg-drop) differ in the whole
-  **argument list**, which *is* rangeable — so these are **technically covering** and their
-  args-list range lands in `covered_ranges`. They suppress nothing only because no *single*
-  leaf candidate's host equals a whole args-list range. Consequence: `covered_ranges` is
-  routinely non-empty (any `Map.get/3`, `Enum.sort/2`, …), so the prune pass **does run** on
-  most real files — the earlier "no-op unless there's a ModeSwap call" framing was wrong; the
-  *prune* is skipped only when nothing is covering, which also requires no arity-changing call.
-- **Operand permutation** (`OperandSwap`, `a - b` → `b - a`) also changes the **argument list**,
-  but for an **infix** operator Sourceror ranges `[a, b]` *identically* to the whole `a - b`
-  node — so the footprint range *equals* the host range → **non-covering** (the range test, not
-  structural identity, is what catches this; the args list is a different term from the host).
-  This was a **shipped regression**: the original `sub === original` check let the args-list
-  footprint into `covered_ranges`, silently pruning the `Arithmetic` `a - b` → `a + b` (and
-  `List` `++`↔`--`) sibling on every non-commutative infix with distinct operands. The *call*
-  forms OperandSwap also targets (`div(a, b)`, `DateTime.compare(a, b)`) range their args inside
-  the parens, so they were never affected — covering-but-harmless like the arity changes above.
+- **Arity changes and operand permutation** (DefaultDrop, CollectionArity, CallRemoval's
+  arg-drop; `OperandSwap`, `a - b` → `b - a`) — the differing subtree is the whole **argument
+  list** (a drop changes its length; a permutation changes ≥2 of its elements). A list is never
+  a value position a leaf mutator targets, so a **list-valued footprint is non-covering**
+  (`{:diff, sub} when is_list(sub) -> nil`). Two shipped regressions made this necessary, both
+  from a list ranging like something it shouldn't suppress:
+  - *Infix `OperandSwap`*: Sourceror ranges `[a, b]` *identically* to `a - b`, so the args-list
+    footprint equalled the **host** range and pruned the `Arithmetic`/`List` operator-swap
+    sibling. (First fixed narrowly by the `footprint_range != host_range` proper-sub-range test;
+    the broader `is_list` rule subsumes it — and the test stays, since it also excludes leaf
+    swaps and whole-node replacements where `sub` *is* the host scalar.)
+  - *Piped one-arg `DefaultDrop`*: `xs |> List.first(0)` has one visible arg, so the drop turns
+    `[0]` into `[]`; Sourceror ranges the one-element list `[0]` *identically* to its element
+    `0`, so the footprint equalled the **default's** range and pruned the `Literal 0` mutant
+    (`AtomLiteral :none` for `List.last/2`). The proper-sub-range test did **not** catch this
+    (`0`'s range is strictly inside the stage host), only `is_list` does.
+  A real substitution (ModeSwap) descends *into* a same-length list to the one changed
+  scalar/key, so its footprint is never a list — these rules leave it untouched.
 
 **Covering mutators must yield a clean single-subtree diff — and `Calls` has to uphold that.**
 The diff can only isolate a target when the mutant is "original with one subtree replaced". A
@@ -1983,12 +1987,13 @@ compiling original did. That keeps the mutant minimal (`truncate(dt, :millisecon
 report diff too) and single-node, so Overlap covers the atom. `Calls.resolved_call/1`'s `:qualify`
 rebuild keys on `new_fun == fun and length(new_args) == length(args)`.
 
-**Latent sharp edge.** The "args-list footprint matches no single leaf" guarantee is not
-airtight: a bare single-element args list (`foo(0)` → args `[0]`) has the **same range** as its
-lone element. A hypothetical mutator dropping a call from arity 1 to 0 on a **literal** argument
-would produce an args-list footprint equal to that literal's range and wrongly suppress its leaf
-mutation. No built-in does an arity-1→0 drop on a literal, so it never triggers — flagged for
-whoever adds one.
+**Residual contingency.** Earlier this entry flagged the single-element-args-list case
+(`foo(0)` → `[0]` ranged like `0`) as a *latent* edge "no built-in triggers". That was wrong —
+piped `DefaultDrop` triggers it (above), now closed by the `is_list` rule. The remaining
+contingency is the **`nil`-footprint shield** for operator/function-name atoms: it relies on
+Sourceror not ranging bare form-position atoms. If that changed, operator swaps and renames
+would acquire footprints — harmless only because the analyzer keeps a call's form position
+opaque (nothing hosts a candidate there), but worth knowing.
 
 Guards: scoped to `Candidate.InPlace` (ModeSwap is never lifted — date/time calls aren't
 guard-legal — so no `Lifted`/`CaseClause`/… kind is touched), and drops **only** non-covering
