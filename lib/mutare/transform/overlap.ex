@@ -36,18 +36,32 @@ defmodule Mutare.Transform.Overlap do
   #
   # ## What is "covering", precisely — and what each mutator does
   #
-  # Covering hinges on the *minimal changed subtree being a proper, **rangeable** descendant*
-  # of the host. Three shapes arise across the built-ins:
+  # Covering hinges on the *minimal changed subtree being a proper, **rangeable**, **non-list**
+  # descendant* of the host. **Two** built-in mutations produce one — but only the first ever
+  # resolves to a drop:
   #
   #   * **ModeSwap** — substitutes one rangeable literal arg/key (`:second`,`minute:`). The
-  #     footprint is that literal, which AtomLiteral *also* hosts → the **only suppression
-  #     that actually fires**.
+  #     footprint is that literal, which AtomLiteral *also* hosts → the **only covering footprint
+  #     that suppresses anything**.
+  #   * **`String.equivalent?(a, b)` → `a == b`** (StringCall, the *direct* form) — replaces the
+  #     whole `{:., _, [mod, fun]}` call form with the bare `:==` operator while *reusing both
+  #     args*, so the minimal changed subtree is the **`.` dot node** — rangeable, non-list, a
+  #     proper sub-range → **covering**. But that node spans `Mod.fun`, a position no value
+  #     mutator ever hosts a candidate at (the module sits in form position, excluded; the fun is
+  #     a bare atom), so this footprint **collides with nothing and prunes nothing** — covering
+  #     yet inert. (The *piped* form `s |> String.equivalent?(t)` → `Kernel.==(t)` changes the
+  #     module *and* the fun, so its form-diff is a *list* → non-covering by the list rule below.)
+  #
+  # Everything else is non-covering, by one of three mechanisms:
+  #
   #   * **Operator swaps / function renames** (Arithmetic, Relational, Logical, Collection,
-  #     StringCall, Numeric, …) — change a bare **form/name atom** (`:+`, the `fun` in a
+  #     StringCall's renames, Numeric, …) — change a bare **form/name atom** (`:+`, the `fun` in a
   #     `{:., _, [mod, fun]}`). Bare atoms in form position carry *no* metadata, so
   #     `NodeRange.get/1` returns `nil` → **non-covering** (this is the load-bearing
-  #     property — see the sharp edge below). A whole-node replacement (a literal family, a
-  #     boolean→`true`, `String.equivalent?`→`==`) likewise differs at the host → `nil`.
+  #     property — see the sharp edge below).
+  #   * **Whole-node replacements** (a literal family, a boolean→`true`) — the minimal subtree
+  #     *is* the host, so its range equals the host range → **non-covering** (a leaf swap is
+  #     redundant with nothing).
   #   * **Arity changes** (DefaultDrop, CollectionArity, CallRemoval's arg-drop) and **operand
   #     permutation** (`OperandSwap`, `a - b` → `b - a`) — the differing subtree is the whole
   #     **argument list** (a drop changes its length; a permutation changes ≥2 of its elements).
@@ -59,8 +73,9 @@ defmodule Mutare.Transform.Overlap do
   #     would prune the `Literal 0` mutant. Removal/permutation is orthogonal to mutating a
   #     value, so neither should suppress anything.
   #
-  # So: several built-ins reach the diff, but ModeSwap→AtomLiteral is the only overlap that is
-  # ever covering — the only one that resolves to a real drop.
+  # So: two built-ins produce a covering footprint, but **only ModeSwap→AtomLiteral resolves to a
+  # real drop** — the `equivalent?`→`==` footprint is covering yet inert (no candidate shares a
+  # `Mod.fun` range). A leaf is therefore only ever dropped beside a mode/unit swap.
   #
   # This recognition relies on a covering mutant being "the original with one subtree replaced".
   # `Mutare.Transform.Calls` upholds that for **bare imported calls**: a value-only swap keeps
@@ -85,10 +100,13 @@ defmodule Mutare.Transform.Overlap do
 
   @doc """
   Drop each non-covering `Candidate.InPlace` whose host range is covered by another
-  candidate's minimal-rewrite footprint. The footprint scan always runs (it is O(1) per leaf
-  candidate); the *prune* postwalk is skipped when nothing is covering, leaving the tree
-  unchanged. In practice ModeSwap is the only covering mutator (see the moduledoc), so the
-  prune runs only on subtrees that contain a mode/unit swap.
+  candidate's minimal-rewrite footprint. The footprint scan always runs — one prewalk plus a
+  `NodeRange.get/1` per candidate that reaches a leaf in the diff — and the *prune* postwalk is
+  skipped when nothing is covering, leaving the tree unchanged. Two built-ins produce a covering
+  footprint (see the moduledoc): a mode/unit swap (which drops the redundant AtomLiteral) and the
+  direct `String.equivalent?/2` → `==` rewrite (covering but inert — its `.`-node footprint
+  matches no candidate). So the prune postwalk runs on subtrees containing either, but only the
+  mode/unit swap actually drops anything.
   """
   @spec resolve(Macro.t()) :: Macro.t()
   def resolve(tree) do

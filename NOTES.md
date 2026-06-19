@@ -1937,22 +1937,32 @@ range equals a covering footprint is dropped — exactly the redundant leaf muta
   swap) keeps Literal's; the duplicate predicates and the keyword special-case are gone;
 - **zero-API** — no callback, so any future minimal-rewrite call mutator gets it for free.
 
-**What's actually "covering" — and why only ModeSwap suppresses anything.** "Covering" needs
-the minimal changed subtree to be a genuine single-node substitution: a proper, **rangeable**,
-**non-list** descendant. ModeSwap is the only built-in that produces one; the net is "ModeSwap
-vs the rest", but the *reasons* the rest fall out are distinct and each was a footgun:
+**What's actually "covering" — and why only ModeSwap *drops* anything.** "Covering" needs the
+minimal changed subtree to be a genuine single-node substitution: a proper, **rangeable**,
+**non-list** descendant. **Two** built-ins produce one — but only the first matches a leaf, so
+only it resolves to a drop:
 
 - **ModeSwap** substitutes one rangeable literal arg/key → footprint = that literal, which
   AtomLiteral also hosts → the **only overlap that resolves to a real drop**.
-- **Operator swaps / function renames** (Arithmetic, Relational, Collection, StringCall, …)
-  change a bare **form/name atom** — the operator (`:+`, the node's *form*) or the `fun` in a
-  `{:., _, [mod, fun]}`. A bare atom in form position carries no metadata, so `NodeRange.get/1`
-  is `nil` → **non-covering**. *This is the load-bearing property* that keeps every operator
-  swap and rename from accidentally suppressing its leaf siblings — verified empirically
-  (`Enum.take(xs, 5)` keeps Literal on `5`; `5 + 3` keeps Literal on both operands). It rests
-  on Sourceror **not** ranging bare form-position atoms; if that ever changed, these would join
-  the covering set (still harmless only because the analyzer keeps a call's form position
-  opaque, so nothing hosts a candidate there).
+- **`String.equivalent?(a, b)` → `a == b`** (StringCall, the *direct* form) replaces the whole
+  `{:., _, [String, :equivalent?]}` call form with the bare `:==` operator while reusing both
+  args, so the minimal subtree is the **`.` dot node** — rangeable, non-list, a proper
+  sub-range → **covering**. It is nonetheless **inert**: that node spans `Mod.fun`, where no
+  value mutator hosts a candidate (the module sits in form position/excluded, the fun is a bare
+  atom), so the footprint matches nothing and prunes nothing. So "ModeSwap is the only *covering*
+  mutator" is **false** — it is only the one that *drops* anything; this case is covering-but-inert.
+  (The *piped* `s |> String.equivalent?(t)` → `Kernel.==(t)` changes both the module *and* the
+  fun → its form-diff is a *list* → non-covering.) Locked in by a transform test
+  ("StringCall's equivalent? -> == is covering but inert").
+- **Operator swaps / function renames** (Arithmetic, Relational, Collection, StringCall's
+  *renames*, …) change a bare **form/name atom** — the operator (`:+`, the node's *form*) or the
+  `fun` in a `{:., _, [mod, fun]}`. A bare atom in form position carries no metadata, so
+  `NodeRange.get/1` is `nil` → **non-covering**. *This is the load-bearing property* that keeps
+  every operator swap and rename from accidentally suppressing its leaf siblings — verified
+  empirically (`Enum.take(xs, 5)` keeps Literal on `5`; `5 + 3` keeps Literal on both operands).
+  It rests on Sourceror **not** ranging bare form-position atoms; if that ever changed, these
+  would join the covering set (still harmless only because the analyzer keeps a call's form
+  position opaque, so nothing hosts a candidate there).
 - **Arity changes and operand permutation** (DefaultDrop, CollectionArity, CallRemoval's
   arg-drop; `OperandSwap`, `a - b` → `b - a`) — the differing subtree is the whole **argument
   list** (a drop changes its length; a permutation changes ≥2 of its elements). A list is never
@@ -1994,6 +2004,35 @@ contingency is the **`nil`-footprint shield** for operator/function-name atoms: 
 Sourceror not ranging bare form-position atoms. If that changed, operator swaps and renames
 would acquire footprints — harmless only because the analyzer keeps a call's form position
 opaque (nothing hosts a candidate there), but worth knowing.
+
+**The deferred structural fix: node identity, not range.** Step back and the three regressions
+above (infix `OperandSwap`, piped `DefaultDrop`, `:qualify`) are *one* bug: the mechanism uses
+**`Sourceror` range-equality as a proxy for node identity**, and `get_range/1` is **not
+injective** — distinct AST terms can share a range (`[a, b]` ≡ `a - b`; a one-element call-arg
+list `[0]` ≡ its element `0`). The `nil`/whole-host/`is_list` rules are a *denylist* of the
+non-injective shapes. A collision scan over a varied corpus is reassuring: **every** distinct-node
+range collision puts a **list** (a container borrowing its element/sibling range, → `is_list`) or
+a **form/machinery node** (operator, `.` dot, interpolation `::`, a `:do` key — none of which host
+a value candidate, → the `nil`-shield / form-opacity) on at least one side. Never two value-leaves,
+never a covering non-list footprint vs a value-leaf. Plus an 18-way `{call-family × leaf-family}`
+sweep drops **only** the intended ModeSwap→AtomLiteral. So the denylist is *empirically complete*
+for today's families and this Sourceror — but it is **empirical, not proven**: it rests on two
+external invariants (Sourceror never ranges bare form atoms; every collision is list/machinery-
+shaped) that a Sourceror upgrade, an unprobed construct (`with`/`try`/exotic sigils), or — most
+realistically — a **custom call-rewriting mutator** (which the moduledoc invites: "any future
+minimal-rewrite call mutator gets it for free") could violate. The failure mode is the worst kind
+for a mutation tool: a *false prune* = a **silently missing mutant**, inflating the score with no
+error.
+
+The once-and-for-all fix is to stop bridging the *raw* original subtree (in a candidate's
+`original`) and the *annotated* host node with a **range** — the only reason ranges are used is
+that those two aren't `===` (annotation rewrites `meta`), but they *do* share a range. Stamp a
+stable unique token `meta[:mutare_nid]` in the `Resolve` pre-pass (before `analyze` annotates),
+carry it on both the leaf candidate's host and the footprint's changed subtree, and prune on
+**nid-equality**. Lists and bare atoms carry no meta → no nid → never covering, so nid-identity
+*subsumes* all three denylist rules **and** both unproven invariants — the bug category becomes
+unrepresentable. Deferred (not wrong-today, and it threads a stamper through the pre-pass), but
+this is the structural answer; the range denylist is the pragmatic one.
 
 Guards: scoped to `Candidate.InPlace` (ModeSwap is never lifted — date/time calls aren't
 guard-legal — so no `Lifted`/`CaseClause`/… kind is touched), and drops **only** non-covering

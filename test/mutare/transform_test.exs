@@ -1192,6 +1192,30 @@ defmodule Mutare.TransformTest do
       assert {:default_drop, "List.last(:none)", "List.last()"} in pairs
       assert {:atom, ":none", ":mutare"} in pairs
     end
+
+    test "StringCall's equivalent? -> == is covering but inert: it prunes no leaf" do
+      # `String.equivalent?(a, "x")` -> `a == "x"` replaces the whole `{:., _, [String,
+      # :equivalent?]}` form with `:==` while reusing both args, so its minimal changed subtree
+      # is the `.` dot node — rangeable, non-list, a proper sub-range, hence *covering* (ModeSwap
+      # is NOT the only covering mutator). But the `.` node spans `String.equivalent?`, where no
+      # value mutator hosts a candidate, so the footprint matches nothing and prunes nothing: the
+      # `"x"` literal keeps both its StringLiteral mutants alongside the call rewrite.
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def f(a), do: String.equivalent?(a, "x")
+          end
+          """,
+          mutators: [Mutare.Mutators.StringCall, Mutare.Mutators.StringLiteral]
+        )
+
+      pairs = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
+
+      assert {:string_call, "String.equivalent?(a, \"x\")", "a == \"x\""} in pairs
+      assert {:string, "\"x\"", "\"\""} in pairs
+      assert {:string, "\"x\"", "\"mutare\""} in pairs
+    end
   end
 
   describe "Numeric (complementary Kernel/Float numeric swaps)" do
