@@ -1015,6 +1015,7 @@ defmodule Mutare.TransformTest do
         defmodule M do
           def soon(dt), do: DateTime.shift(dt, minute: 10, day: -1)
           def t(t), do: Time.shift(t, hour: 1)
+          def d(d), do: Date.shift(d, week: 2)
         end
         """)
 
@@ -1026,6 +1027,10 @@ defmodule Mutare.TransformTest do
 
       # Time uses the time-only ladder (no :day to escape to).
       assert {"Time.shift(t, hour: 1)", "Time.shift(t, minute: 1)"} in sites
+
+      # Date uses the date-only ladder — `week:` swaps to `day:`/`month:`, never a time unit.
+      assert {"Date.shift(d, week: 2)", "Date.shift(d, day: 2)"} in sites
+      assert {"Date.shift(d, week: 2)", "Date.shift(d, month: 2)"} in sites
     end
 
     test "ModeSwap owns a shift duration's unit keys, but Literal still mutates the amounts" do

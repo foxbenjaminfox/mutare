@@ -6,8 +6,8 @@ defmodule Mutare.Mutators.OperandSwap do
   `rem(a, b)` → `rem(b, a)`, and the **non-commutative date/time calls**
   `DateTime.before?(a, b)` → `DateTime.before?(b, a)` (likewise `after?`),
   `DateTime.compare(a, b)` → `DateTime.compare(b, a)`, and
-  `DateTime.diff(a, b, unit)` → `DateTime.diff(b, a, unit)` (with the `Time` /
-  `NaiveDateTime` twins).
+  `DateTime.diff(a, b, unit)` → `DateTime.diff(b, a, unit)` (with the `Date` /
+  `Time` / `NaiveDateTime` twins).
 
   The complement of `Mutare.Mutators.Arithmetic`/`List`, which swap the *operator*
   and keep the operands; this keeps the operator and swaps the operands. It catches
@@ -52,11 +52,11 @@ defmodule Mutare.Mutators.OperandSwap do
     * **`=`, `|>`** — swapping operands changes binding / data-flow semantics and is
       not compile-safe.
 
-  ## Remote non-commutative calls (`DateTime`/`Time`/`NaiveDateTime`)
+  ## Remote non-commutative calls (`DateTime`/`Date`/`Time`/`NaiveDateTime`)
 
   The operand-swap idea applied to named *calls*, exactly as `div`/`rem` are: keep the
   function, transpose the first two arguments. Three date/time families qualify, on every
-  calendar type (`DateTime`, `Time`, `NaiveDateTime`):
+  calendar type (`DateTime`, `Date`, `Time`, `NaiveDateTime`):
 
     * `before?(a, b)` → `before?(b, a)` and `after?(a, b)` → `after?(b, a)` — the
       chronological-comparison direction flip (`before?(b, a)` ≡ `after?(a, b)`). No
@@ -68,7 +68,8 @@ defmodule Mutare.Mutators.OperandSwap do
       the difference. The **trailing `unit`** is kept untouched: it is a mode atom that
       `Mutare.Mutators.ModeSwap` already mutates (`{[:DateTime], :diff, 3}` et al.), so
       the two families cover the call's two independent axes (argument order, time unit)
-      as separate mutants.
+      as separate mutants. `Date.diff/2` carries no unit (it is always in days), so only
+      the two-argument transpose applies there — `Date.diff(a, b)` → `Date.diff(b, a)`.
 
   Resolved through the shared `Mutare.Transform.Calls` reader, so direct, aliased
   (`alias DateTime, as: DT; DT.before?(a, b)`), and bare-imported forms all match, while
@@ -112,15 +113,19 @@ defmodule Mutare.Mutators.OperandSwap do
   # trailing time-unit atom is left in place — `Mutare.Mutators.ModeSwap` mutates that axis.
   @remote_swaps MapSet.new([
                   {[:DateTime], :before?},
+                  {[:Date], :before?},
                   {[:Time], :before?},
                   {[:NaiveDateTime], :before?},
                   {[:DateTime], :after?},
+                  {[:Date], :after?},
                   {[:Time], :after?},
                   {[:NaiveDateTime], :after?},
                   {[:DateTime], :compare},
+                  {[:Date], :compare},
                   {[:Time], :compare},
                   {[:NaiveDateTime], :compare},
                   {[:DateTime], :diff},
+                  {[:Date], :diff},
                   {[:Time], :diff},
                   {[:NaiveDateTime], :diff}
                 ])

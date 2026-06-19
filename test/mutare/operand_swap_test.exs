@@ -65,7 +65,8 @@ defmodule Mutare.OperandSwapTest do
 
   describe "swaps non-commutative date/time calls (operand-swap of a named call)" do
     test "before?/after?/compare transpose their two arguments, on every calendar type" do
-      for mod <- ["DateTime", "Time", "NaiveDateTime"], fun <- ["before?", "after?", "compare"] do
+      for mod <- ["DateTime", "Date", "Time", "NaiveDateTime"],
+          fun <- ["before?", "after?", "compare"] do
         assert mutated_codes("#{mod}.#{fun}(a, b)") == ["#{mod}.#{fun}(b, a)"]
       end
     end
@@ -77,6 +78,9 @@ defmodule Mutare.OperandSwapTest do
 
       assert mutated_codes("NaiveDateTime.diff(a, b, :hour)") ==
                ["NaiveDateTime.diff(b, a, :hour)"]
+
+      # `Date.diff/2` has no unit (always days), so only the two-argument transpose applies.
+      assert mutated_codes("Date.diff(a, b)") == ["Date.diff(b, a)"]
     end
 
     test "a piped stage is skipped — its first operand comes from the pipe" do

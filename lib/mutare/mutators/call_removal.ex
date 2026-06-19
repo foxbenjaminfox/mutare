@@ -24,6 +24,10 @@ defmodule Mutare.Mutators.CallRemoval do
     * `NaiveDateTime.beginning_of_day` / `NaiveDateTime.end_of_day` (each returns a
       `NaiveDateTime` for the same day, so dropping the day-boundary normalization
       leaves the original timestamp)
+    * `Date.beginning_of_month` / `Date.end_of_month` / `Date.beginning_of_week` /
+      `Date.end_of_week` (each returns a `Date` — the `Date`-level boundary normalizers,
+      the analogue of `NaiveDateTime.beginning_of_day`; dropping the snap-to-boundary step
+      leaves the original date, the "is the period boundary actually relied on?" probe)
     * `Kernel.abs` (`abs(x)` → `x`)
     * the `Kernel` binary slicers — `binary_slice/2`, `binary_slice/3`,
       `binary_part/3` (each selects a sub-binary; removing it returns the whole
@@ -132,6 +136,13 @@ defmodule Mutare.Mutators.CallRemoval do
                # `NaiveDateTime` on the same day, so removal returns the original.
                {[:NaiveDateTime], :beginning_of_day},
                {[:NaiveDateTime], :end_of_day},
+               # `Date` period-boundary normalizers — each snaps a date to a month/week
+               # boundary and returns a `Date`, so removal returns the original date (the
+               # `Date`-level analogue of the `NaiveDateTime` day-boundary normalizers).
+               {[:Date], :beginning_of_month},
+               {[:Date], :end_of_month},
+               {[:Date], :beginning_of_week},
+               {[:Date], :end_of_week},
                # Qualified `Kernel.abs(x)` — the prefix proves it; `abs` exists only at
                # /1, so arity-agnostic removal is safe (`Kernel.abs(x)` → `x`).
                {[:Kernel], :abs},

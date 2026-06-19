@@ -471,9 +471,10 @@ contract between them is the whole game.
   user `div/3`), OperandSwap (the *operand-order* sibling of Arithmetic/List — it keeps the
   operator and transposes the operands of the **non-commutative** binary operators `a - b`→`b - a`,
   `/`, `**`, `<>`, `++`, `--`, the `div`/`rem` call forms, and the **non-commutative date/time
-  calls** `{DateTime,Time,NaiveDateTime}.before?`/`.after?`/`.compare`→swap the two args and
+  calls** `{DateTime,Date,Time,NaiveDateTime}.before?`/`.after?`/`.compare`→swap the two args and
   `.diff`→swap the *first two* args (the trailing time-unit stays — ModeSwap owns that axis, so
-  the two families cover diff's argument-order and unit as separate mutants); the remote calls
+  the two families cover diff's argument-order and unit as separate mutants; `Date.diff/2` is
+  unitless — always days — so only the two-arg transpose applies there); the remote calls
   resolve through
   `Mutare.Transform.Calls` (direct/aliased/imported all match, a shadowing alias resolves
   elsewhere) and, like `div`/`rem`, are **non-piped only** (a piped stage draws its first operand
@@ -528,7 +529,8 @@ contract between them is the whole game.
   `List.flatten`, `String.trim`/`downcase`/`upcase`/`reverse`/`normalize`/`replace_invalid`/
   `pad_leading`/`pad_trailing`/`slice`/…, `URI.encode_www_form`/`decode_www_form` (both
   `binary()->binary()`), `NaiveDateTime.beginning_of_day`/`end_of_day` (each returns a same-day
-  `NaiveDateTime`), **and `Kernel.abs`** (`abs(x)` → `x`), **the `Kernel`
+  `NaiveDateTime`), `Date.beginning_of_month`/`end_of_month`/`beginning_of_week`/`end_of_week`
+  (the `Date`-level boundary normalizers, each `Date`→`Date`), **and `Kernel.abs`** (`abs(x)` → `x`), **the `Kernel`
   binary slicers** `binary_slice/2`·`/3` and `binary_part/3` (→ the whole binary; `binary_part/2`
   is not a `Kernel` function, so its sole form `:erlang.binary_part/2`·`/3` is removed instead),
   and the analogous Erlang `:string` ones (`trim`/`strip`/`chomp`,
@@ -557,8 +559,10 @@ contract between them is the whole game.
   function's *legal* set — `truncate` never reaches `:minute` — and is always observable;
   `String.upcase`/`downcase`/`capitalize` casing `:default`↔`:ascii` and `String.normalize` form
   `:nfc`↔`:nfd`/`:nfkc`↔`:nfkd`. The **`shift` duration** generalises `mode_atom` from a lone
-  positional atom to the *keys* of a keyword list — `{DateTime,NaiveDateTime}.shift/2,3` and
-  `Time.shift/2` (time-only ladder) walk each `unit: amount` key one ladder step independently
+  positional atom to the *keys* of a keyword list — `{DateTime,NaiveDateTime}.shift/2,3`,
+  `Time.shift/2` (time-only ladder), and `Date.shift/2` (date-only ladder `:day`…`:year`, so a
+  swap never reaches a time unit `Date.shift` would reject) walk each `unit: amount` key one
+  ladder step independently
   (`minute:`→`second:`/`hour:`, amount kept), `:microsecond` excluded (its `{count, precision}`
   amount can't move to an integer unit) and the *amounts* still mutate via Literal — handled by
   routing only the owned list's **keys** through the non-mutating context, its values staying

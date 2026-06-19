@@ -624,6 +624,11 @@ defmodule Mutare.MutatorsTest do
       assert removal("URI.decode_www_form(s)", false) == ["s"]
       assert removal("NaiveDateTime.beginning_of_day(n)", false) == ["n"]
       assert removal("NaiveDateTime.end_of_day(n)", false) == ["n"]
+      # Date period-boundary normalizers — Date -> Date, so removal returns the input date.
+      assert removal("Date.beginning_of_month(d)", false) == ["d"]
+      assert removal("Date.end_of_month(d)", false) == ["d"]
+      assert removal("Date.beginning_of_week(d)", false) == ["d"]
+      assert removal("Date.end_of_week(d, :sunday)", false) == ["d"]
     end
 
     test "removes the analogous Erlang :string transparent transforms" do
@@ -868,6 +873,19 @@ defmodule Mutare.MutatorsTest do
 
       # a date unit isn't on Time's ladder — no swap (Time.shift would reject it anyway).
       assert ModeSwap.mutate(parse("Time.shift(t, day: 1)"), %{piped: false}) == :skip
+    end
+
+    test "Date.shift uses the date-only ladder (no time units to escape to)" do
+      # `:day` is the fine endpoint of {day, week, month, year} — one neighbour.
+      assert mode("Date.shift(d, day: 1)", false) == ["Date.shift(d, week: 1)"]
+
+      assert mode("Date.shift(d, week: 2)", false) ==
+               ["Date.shift(d, day: 2)", "Date.shift(d, month: 2)"]
+
+      assert mode("Date.shift(d, year: 1)", false) == ["Date.shift(d, month: 1)"]
+
+      # a time unit isn't on Date's ladder — no swap (Date.shift would reject it anyway).
+      assert ModeSwap.mutate(parse("Date.shift(d, hour: 1)"), %{piped: false}) == :skip
     end
 
     test "shift: :microsecond is excluded (its {count, precision} amount can't move units)" do

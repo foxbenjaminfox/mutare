@@ -24,12 +24,13 @@ defmodule Mutare.Mutators.ModeSwap do
     * `System.system_time/1`, `System.monotonic_time/1`, `System.os_time/1`,
       `System.convert_time_unit/3` (both unit positions) — the clock unit, with the
       `System`-only `:native` mapped to a concrete `:second`
-    * `DateTime.shift/2,3`, `NaiveDateTime.shift/2`, `Time.shift/2` — the **duration
-      units**. Unlike the others, the unit isn't a lone positional atom but the *keys*
-      of a keyword list of `unit: amount` pairs (`shift(dt, minute: 10, day: -1)`). This
-      is the generalisation of `mode_atom`: each *key* is a duration unit on a ladder
-      (`:second`…`:year`; `Time` is time-only — `:second`…`:hour`), so each swappable key
-      is moved to an adjacent neighbour independently (`minute:` → `second:`/`hour:`), its
+    * `DateTime.shift/2,3`, `NaiveDateTime.shift/2`, `Time.shift/2`, `Date.shift/2` — the
+      **duration units**. Unlike the others, the unit isn't a lone positional atom but the
+      *keys* of a keyword list of `unit: amount` pairs (`shift(dt, minute: 10, day: -1)`).
+      This is the generalisation of `mode_atom`: each *key* is a duration unit on a ladder
+      (`:second`…`:year`; `Time` is time-only — `:second`…`:hour`; `Date` is date-only —
+      `:day`…`:year`, since `Date.shift` rejects any time unit), so each swappable key is
+      moved to an adjacent neighbour independently (`minute:` → `second:`/`hour:`), its
       amount kept. (`:microsecond` is excluded — its amount is a `{count, precision}`
       tuple, incompatible with the integer-valued units, so swapping its key would only
       ever raise. The amounts themselves still mutate via `Mutare.Mutators.Literal`.)
@@ -102,9 +103,12 @@ defmodule Mutare.Mutators.ModeSwap do
 
   # `shift`'s `Duration` units, by magnitude. `:microsecond` is deliberately absent — its
   # amount is a `{count, precision}` tuple, so a swap to/from an integer-valued unit would
-  # only raise. `Time.shift` accepts no date component, so its ladder is the time-only tail.
+  # only raise. `Time.shift` accepts no date component, so its ladder is the time-only tail;
+  # `Date.shift` accepts no time component, so its ladder is the complementary date-only tail
+  # (a swap can never reach `:hour`, which `Date.shift` would reject).
   @duration_ladder [:second, :minute, :hour, :day, :week, :month, :year]
   @duration_time_ladder [:second, :minute, :hour]
+  @duration_date_ladder [:day, :week, :month, :year]
 
   # Unordered mode sets: one curated, behaviourally-distinct sibling per member.
   @case_modes %{default: [:ascii], ascii: [:default], greek: [:default], turkic: [:default]}
@@ -129,6 +133,7 @@ defmodule Mutare.Mutators.ModeSwap do
     {[:DateTime], :shift, 3} => {[1], :duration},
     {[:NaiveDateTime], :shift, 2} => {[1], :duration},
     {[:Time], :shift, 2} => {[1], :duration_time},
+    {[:Date], :shift, 2} => {[1], :duration_date},
     {[:System], :system_time, 1} => {[0], :system},
     {[:System], :monotonic_time, 1} => {[0], :system},
     {[:System], :os_time, 1} => {[0], :system},
@@ -229,7 +234,7 @@ defmodule Mutare.Mutators.ModeSwap do
   # group (`shift`) reads a `unit: amount` keyword list and emits one rebuilt list per
   # (unit key, neighbour) — `mode_atom` generalised from a lone positional atom to the keys
   # of a duration keyword list.
-  defp position_swaps(group, arg) when group in [:duration, :duration_time],
+  defp position_swaps(group, arg) when group in [:duration, :duration_time, :duration_date],
     do: duration_swaps(group, arg)
 
   defp position_swaps(group, arg),
@@ -286,6 +291,7 @@ defmodule Mutare.Mutators.ModeSwap do
   defp swaps(:system, atom), do: neighbours(@system_ladder, atom)
   defp swaps(:duration, unit), do: neighbours(@duration_ladder, unit)
   defp swaps(:duration_time, unit), do: neighbours(@duration_time_ladder, unit)
+  defp swaps(:duration_date, unit), do: neighbours(@duration_date_ladder, unit)
   defp swaps(:case_mode, atom), do: Map.get(@case_modes, atom, [])
   defp swaps(:norm_form, atom), do: Map.get(@norm_forms, atom, [])
 
