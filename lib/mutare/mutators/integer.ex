@@ -24,29 +24,21 @@ defmodule Mutare.Mutators.Integer do
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.Calls
+  alias Mutare.Mutators.Helpers
 
-  # {alias_path, function} => {alias_path, function}. Each pair shares its arity, so
-  # the rename keeping the argument list always compiles.
+  # {alias_path, function} => new_function. Each pair shares its arity, so the rename
+  # keeping the argument list always compiles; `Helpers.swap_call/2` keeps the written
+  # module, so an aliased `I.is_even` mutates to `I.is_odd`, not `Integer.is_odd`.
   @swaps %{
-    {[:Integer], :mod} => {[:Integer], :floor_div},
-    {[:Integer], :floor_div} => {[:Integer], :mod},
-    {[:Integer], :is_even} => {[:Integer], :is_odd},
-    {[:Integer], :is_odd} => {[:Integer], :is_even}
+    {[:Integer], :mod} => :floor_div,
+    {[:Integer], :floor_div} => :mod,
+    {[:Integer], :is_even} => :is_odd,
+    {[:Integer], :is_odd} => :is_even
   }
 
   @impl Mutare.Mutator
   def name, do: :integer
 
   @impl Mutare.Mutator
-  def mutate(node) do
-    with {module, fun, args, rebuild} <- Calls.resolved_call(node),
-         {:ok, {_new_mod, new_fun}} <- Map.fetch(@swaps, {module, fun}) do
-      # `rebuild` reuses the written alias node (the swap stays within `Integer`), so an
-      # aliased `I.is_even` mutates to `I.is_odd`, not `Integer.is_odd`.
-      [rebuild.(new_fun, args)]
-    else
-      _ -> :skip
-    end
-  end
+  def mutate(node), do: Helpers.swap_call(node, @swaps)
 end

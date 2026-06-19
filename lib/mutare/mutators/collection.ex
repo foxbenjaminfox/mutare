@@ -42,53 +42,45 @@ defmodule Mutare.Mutators.Collection do
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.Calls
+  alias Mutare.Mutators.Helpers
 
-  # {alias_path, function} => {alias_path, function}
+  # {alias_path, function} => new_function (the swap stays within the module, so only
+  # the new name is stored; `Helpers.swap_call/2` keeps the written module).
   @swaps %{
-    {[:Enum], :filter} => {[:Enum], :reject},
-    {[:Enum], :reject} => {[:Enum], :filter},
-    {[:Enum], :all?} => {[:Enum], :any?},
-    {[:Enum], :any?} => {[:Enum], :all?},
-    {[:Enum], :min} => {[:Enum], :max},
-    {[:Enum], :max} => {[:Enum], :min},
-    {[:Enum], :min_by} => {[:Enum], :max_by},
-    {[:Enum], :max_by} => {[:Enum], :min_by},
-    {[:Enum], :take} => {[:Enum], :drop},
-    {[:Enum], :drop} => {[:Enum], :take},
-    {[:Enum], :take_while} => {[:Enum], :drop_while},
-    {[:Enum], :drop_while} => {[:Enum], :take_while},
-    {[:Enum], :take_every} => {[:Enum], :drop_every},
-    {[:Enum], :drop_every} => {[:Enum], :take_every},
-    {[:Enum], :sum} => {[:Enum], :product},
-    {[:Enum], :product} => {[:Enum], :sum},
-    {[:List], :first} => {[:List], :last},
-    {[:List], :last} => {[:List], :first},
-    {[:List], :foldl} => {[:List], :foldr},
-    {[:List], :foldr} => {[:List], :foldl},
+    {[:Enum], :filter} => :reject,
+    {[:Enum], :reject} => :filter,
+    {[:Enum], :all?} => :any?,
+    {[:Enum], :any?} => :all?,
+    {[:Enum], :min} => :max,
+    {[:Enum], :max} => :min,
+    {[:Enum], :min_by} => :max_by,
+    {[:Enum], :max_by} => :min_by,
+    {[:Enum], :take} => :drop,
+    {[:Enum], :drop} => :take,
+    {[:Enum], :take_while} => :drop_while,
+    {[:Enum], :drop_while} => :take_while,
+    {[:Enum], :take_every} => :drop_every,
+    {[:Enum], :drop_every} => :take_every,
+    {[:Enum], :sum} => :product,
+    {[:Enum], :product} => :sum,
+    {[:List], :first} => :last,
+    {[:List], :last} => :first,
+    {[:List], :foldl} => :foldr,
+    {[:List], :foldr} => :foldl,
     # The lazy `Stream` twins — the directional pairs that exist in `Stream`.
-    {[:Stream], :filter} => {[:Stream], :reject},
-    {[:Stream], :reject} => {[:Stream], :filter},
-    {[:Stream], :take} => {[:Stream], :drop},
-    {[:Stream], :drop} => {[:Stream], :take},
-    {[:Stream], :take_while} => {[:Stream], :drop_while},
-    {[:Stream], :drop_while} => {[:Stream], :take_while},
-    {[:Stream], :take_every} => {[:Stream], :drop_every},
-    {[:Stream], :drop_every} => {[:Stream], :take_every}
+    {[:Stream], :filter} => :reject,
+    {[:Stream], :reject} => :filter,
+    {[:Stream], :take} => :drop,
+    {[:Stream], :drop} => :take,
+    {[:Stream], :take_while} => :drop_while,
+    {[:Stream], :drop_while} => :take_while,
+    {[:Stream], :take_every} => :drop_every,
+    {[:Stream], :drop_every} => :take_every
   }
 
   @impl Mutare.Mutator
   def name, do: :collection
 
   @impl Mutare.Mutator
-  def mutate(node) do
-    with {module, fun, args, rebuild} <- Calls.resolved_call(node),
-         {:ok, {_new_mod, new_fun}} <- Map.fetch(@swaps, {module, fun}) do
-      # `rebuild` reuses the written alias node, so an aliased `E.filter` mutates to
-      # `E.reject` (the swap stays within the module).
-      [rebuild.(new_fun, args)]
-    else
-      _ -> :skip
-    end
-  end
+  def mutate(node), do: Helpers.swap_call(node, @swaps)
 end

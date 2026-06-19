@@ -32,32 +32,27 @@ defmodule Mutare.Mutators.MapKeyword do
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.Calls
+  alias Mutare.Mutators.Helpers
 
-  # The conditional-write lattice (function => complementary functions). Applied to
-  # both Map and Keyword, which expose the identical set — defined once so the two
-  # can't drift.
-  @swaps %{
+  # The conditional-write lattice as `{alias_path, function} => complementary functions`,
+  # built once for both `Map` and `Keyword` (identical sets, so they can't drift) and keyed
+  # by `{module, fun}` like the other swap-table families. `Helpers.swap_call/2` keeps the
+  # written module, so a swap stays within `Map`/`Keyword`.
+  @lattice %{
     put: [:put_new, :replace],
     put_new: [:put, :replace],
     replace: [:put, :put_new, :replace!],
     replace!: [:replace]
   }
 
-  @modules [[:Map], [:Keyword]]
+  @swaps for module <- [[:Map], [:Keyword]],
+             {fun, new_funs} <- @lattice,
+             into: %{},
+             do: {{module, fun}, new_funs}
 
   @impl Mutare.Mutator
   def name, do: :map_keyword
 
   @impl Mutare.Mutator
-  def mutate(node) do
-    with {module, fun, args, rebuild} <- Calls.resolved_call(node),
-         true <- module in @modules,
-         {:ok, new_funs} <- Map.fetch(@swaps, fun) do
-      # `rebuild` reuses the written alias node (the swap stays within `Map`/`Keyword`).
-      Enum.map(new_funs, &rebuild.(&1, args))
-    else
-      _ -> :skip
-    end
-  end
+  def mutate(node), do: Helpers.swap_call(node, @swaps)
 end

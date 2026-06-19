@@ -60,7 +60,8 @@ defmodule Mutare.Mutators.Numeric do
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.{Calls, Imports}
+  alias Mutare.Mutators.Helpers
+  alias Mutare.Transform.Imports
 
   # Bare `Kernel` calls keyed on {name, effective_arity} => [sibling names]. The arity
   # is what proves a bare `floor`/`max` is the Kernel one (and not a same-named user
@@ -78,16 +79,16 @@ defmodule Mutare.Mutators.Numeric do
   # **Qualified** calls: an arity-blind remote rename (the qualifier proves the function,
   # and every sibling exists at the same arity), exactly like `Collection`. Both the
   # `Float` precision pair and the explicitly-`Kernel.`-qualified forms of the bare swaps.
-  # {alias_path, function} => {alias_path, function}.
+  # {alias_path, function} => new_function.
   @remote_swaps %{
-    {[:Float], :ceil} => {[:Float], :floor},
-    {[:Float], :floor} => {[:Float], :ceil},
-    {[:Kernel], :min} => {[:Kernel], :max},
-    {[:Kernel], :max} => {[:Kernel], :min},
-    {[:Kernel], :round} => {[:Kernel], :trunc},
-    {[:Kernel], :trunc} => {[:Kernel], :round},
-    {[:Kernel], :ceil} => {[:Kernel], :floor},
-    {[:Kernel], :floor} => {[:Kernel], :ceil}
+    {[:Float], :ceil} => :floor,
+    {[:Float], :floor} => :ceil,
+    {[:Kernel], :min} => :max,
+    {[:Kernel], :max} => :min,
+    {[:Kernel], :round} => :trunc,
+    {[:Kernel], :trunc} => :round,
+    {[:Kernel], :ceil} => :floor,
+    {[:Kernel], :floor} => :ceil
   }
 
   @impl Mutare.Mutator
@@ -97,15 +98,7 @@ defmodule Mutare.Mutators.Numeric do
   # an arity-blind remote rename — the swap keeps the argument list and the sibling exists
   # at the same arity, so no pipe context is needed.
   @impl Mutare.Mutator
-  def mutate(node) do
-    with {module, fun, args, rebuild} <- Calls.resolved_call(node),
-         {:ok, {_new_mod, new_fun}} <- Map.fetch(@remote_swaps, {module, fun}) do
-      # `rebuild` reuses the written alias node (the swap stays within `Float`/`Kernel`).
-      [rebuild.(new_fun, args)]
-    else
-      _ -> :skip
-    end
-  end
+  def mutate(node), do: Helpers.swap_call(node, @remote_swaps)
 
   # Bare `Kernel` `min`/`max`/`round`/`trunc`/`ceil`/`floor`: the swap is offered only at
   # the function's true (effective) arity, so a same-named user call at another arity is
