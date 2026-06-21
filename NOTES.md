@@ -1029,6 +1029,29 @@ Consequences worth knowing:
   `::` (a `unit(0)` swap would not compile) and keyword/map *keys* (labels, not
   values) — mirroring `analyze/3`'s `:pattern` routing. Both the key and value of a
   `%{1 => 2}` map pattern mutate (neither is a `format: :keyword` label).
+- **A negative literal in a pattern is mutated by *value*, not magnitude.** Sourceror
+  parses `-0.5` as a unary minus over its positive magnitude
+  (`{:-, _, [{:__block__, _, [0.5]}]}`). The naïve descent reaches the magnitude `0.5`
+  and a literal family mutates *it* — but `0.5 - 1.0 == -0.5` is negative, so the
+  replacement lands back under the parent minus as `-(-0.5)`. That **parses but won't
+  compile in a match** — `-(...)` in a pattern needs a literal operand, and a nested
+  minus is `:erlang.-/1` *inside* a match (illegal). So `tag_pattern_targets/3` has a
+  dedicated clause for `{:-, _, [{:__block__, _, [n]}]}` that tags the **whole** node
+  and offers mutations of the literal *value* `-n` (`value_literal_mutations/2`):
+  `-0.5` → `0.5` / `-1.5` / `0.0`, each a clean self-contained literal that replaces
+  the whole `-0.5` — never a nested `-(-x)`. The value block is built directly
+  (`{:__block__, [], [-n]}`), *not* via `AST.literal/1`: that helper re-wraps a
+  negative as `{:-, …}`, which the literal families' `mutate/1` (matching a bare
+  `{:__block__, _, [v]}`) wouldn't recognise. This covers every pattern position the
+  walk serves — `def` heads (lifted) and `case`/`receive`/`fn`/container-nested clause
+  patterns — and gives the same effective mutant *values* as the (broken) magnitude
+  walk, just rendered legally. The **guard** path keeps the magnitude walk
+  (`guard_targets/3` → `tag_walk`), since `x == -(-0.5)` *is* a legal guard expression;
+  so a negative literal renders differently in a guard than in a match, but both
+  compile. (`AST.literal/1`'s `{:-, …}` shape and `Tag.literal_node?/1` recognising it
+  are the companion fixes — together they let a *positive* literal mutate to a clean
+  negative in a head, e.g. `def f(0.0)` → `def f(-1.0)`. Regression:
+  `test/mutare/negative_float_test.exs`.)
 - Not lifted ⇒ no head mutants: operator-named functions fall back to in-place (so
   their head literals are unmutated), same as their guard/clause-drop mutants.
   Default-arg functions **are** lifted (see "Default arguments are lifted" below),

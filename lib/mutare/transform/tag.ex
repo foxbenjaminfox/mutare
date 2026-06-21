@@ -238,6 +238,27 @@ defmodule Mutare.Transform.Tag do
     end
   end
 
+  # A negative numeric literal `-n` parses as a unary minus over its positive
+  # magnitude (`{:-, _, [{:__block__, _, [n]}]}`). Descending to mutate the *magnitude*
+  # in place would splice the replacement back under that minus — legal in a guard
+  # (`-(-0.5)` is a valid guard expression) but **illegal in a match**, where `-(...)`
+  # demands a literal operand (`:erlang.-/1` can't run inside a pattern). So in pattern
+  # context tag the *whole* node and offer mutations of the literal **value** `-n`,
+  # every replacement a clean self-contained literal (`-0.5` → `0.5`, `-1.5`, `0.0`) —
+  # never a nested `-(-x)`. Guards keep the in-place magnitude walk (`guard_targets/3`),
+  # where the nested minus compiles fine.
+  defp tag_pattern_targets(
+         {:-, _meta, [{:__block__, _bmeta, [n]}]} = node,
+         {next, targets},
+         mutators
+       )
+       when is_number(n) do
+    case value_literal_mutations(-n, mutators) do
+      [] -> {node, {next, targets}}
+      muts -> {put_tag(node, next), {next + 1, [{next, node, muts} | targets]}}
+    end
+  end
+
   # A bitstring segment `value :: spec`: descend the value, keep the spec raw — a
   # spec is not a runtime value and a `size`/`unit` literal swap risks an illegal
   # specifier (`unit(0)`) that would compile-poison the single build.
@@ -298,6 +319,17 @@ defmodule Mutare.Transform.Tag do
   # would emit a pattern-illegal replacement.
   defp literal_pattern_mutations(node, mutators) do
     node
+    |> Mutator.mutations(mutators)
+    |> Enum.filter(fn {_mutator, mutated} -> literal_node?(mutated) end)
+  end
+
+  # The literal-valued mutations of a scalar *value* rather than the node the walk
+  # reached — used for a negative literal, whose value `-n` lives one node deeper than
+  # the unary-minus we tag. The block is built directly (not via `AST.literal/1`, which
+  # re-wraps a negative as `{:-, …}` the literal families don't match), so `FloatLiteral`/
+  # `Literal` mutate the value; each clean result then *replaces the whole `-n` node*.
+  defp value_literal_mutations(value, mutators) do
+    {:__block__, [], [value]}
     |> Mutator.mutations(mutators)
     |> Enum.filter(fn {_mutator, mutated} -> literal_node?(mutated) end)
   end
