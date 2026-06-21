@@ -192,6 +192,13 @@ defmodule Mutare.OperandSwapTest do
       assert swap_sites("x / x") == []
       assert swap_sites("a ++ a") == []
     end
+
+    test "identical *compound* operands are skipped (meta stripped recursively)" do
+      # `-2` is `{:-, _, [{:__block__, meta, [2]}]}`; the two `-2`s differ only in that inner
+      # `meta`, so a non-recursive strip wrongly emitted `-2 - -2` as a (no-op) mutant.
+      assert swap_sites("-2 - -2") == []
+      assert swap_sites("foo(1) - foo(1)") == []
+    end
   end
 
   describe "placement is positional" do

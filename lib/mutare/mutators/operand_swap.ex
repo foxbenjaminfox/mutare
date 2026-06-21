@@ -193,10 +193,18 @@ defmodule Mutare.Mutators.OperandSwap do
   def mutate(_node, _context), do: :skip
 
   # Structural equality ignoring metadata — a transpose of identical operands is an
-  # equivalent no-op (`x - x`, `5 / 5`), so we suppress it rather than count it.
+  # equivalent no-op (`x - x`, `5 / 5`, `-2 - -2`), so we suppress it rather than count it.
   defp same?(left, right) do
     strip(left) == strip(right)
   end
 
-  defp strip(node), do: Macro.update_meta(node, fn _ -> [] end)
+  # Strip metadata **recursively** — `Macro.update_meta/2` touches only the top node, which
+  # leaves a compound operand's inner meta intact (`-2` is `{:-, _, [{:__block__, meta, [2]}]}`,
+  # so two `-2`s differ only in that inner `meta`) and wrongly reports them as distinct.
+  defp strip(node) do
+    Macro.prewalk(node, fn
+      {form, meta, args} when is_list(meta) -> {form, [], args}
+      other -> other
+    end)
+  end
 end
