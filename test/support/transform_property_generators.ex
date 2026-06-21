@@ -425,7 +425,7 @@ defmodule Mutare.TransformPropertyGenerators do
         {fun, s, p} <- {oneof([:starts_with?, :ends_with?]), str_arg(vars), ascii_string()},
         do: remote(:String, fun, [s, p])
       ),
-      # String byte-narrowing — StringByte (length→Kernel.byte_size).
+      # String byte-narrowing — StringByte (length→Elixir.Kernel.byte_size).
       let(s <- str_arg(vars), do: remote(:String, :length, [s])),
       # Map lookup with a default — DefaultDrop (drop the trailing fallback).
       let({k, d} <- {leaf_gen(vars), leaf_gen(vars)}, do: remote(:Map, :get, [map_arg(), k, d])),

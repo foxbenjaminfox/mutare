@@ -1276,18 +1276,21 @@ Three deliberate constraints keep it sound:
   (and forced-thin keeps the var bound in every branch, so the repeats always resolve).
 
 Non-match semantics are preserved exactly: each inner case carries a trailing `u ->
-Kernel.raise(Elixir.MatchError, term: u)` clause, so a value that doesn't match raises the
+Elixir.Kernel.raise(Elixir.MatchError, term: u)` clause, so a value that doesn't match raises the
 *same* `MatchError` the original `=` did (not a `CaseClauseError`) — keeping the baseline
 identical and still a clean kill on a mutant whose pattern stopped matching. (The pattern is
 always a refutable container — a bare `var`/pin-only LHS is never offered — so that clause is
 always reachable; the binding is clause-local, so a fixed `mutare_unmatched` name can't
 capture or collide.) The raise is spelled to be **immune to the target's lexical
 environment**, since a real `=` always raises `Elixir.MatchError` regardless of imports or
-aliases: `Kernel.raise` is *qualified* (an unqualified `raise` breaks under `import Kernel,
-except: [raise: 2]` — the metamutant baseline would fail to compile), and `Elixir.MatchError`
-is the *absolute* alias (`__aliases__` led by `:Elixir`, which alias resolution never
-rewrites — an unqualified `MatchError` under `alias Foo, as: MatchError` or a nested
-`MatchError` module would raise the wrong exception).
+aliases: *both* names are the **absolute** form (`__aliases__` led by `:Elixir`, which alias
+resolution never rewrites). `Elixir.Kernel.raise` survives `import Kernel, except: [raise: 2]`
+(an unqualified `raise` there breaks the metamutant baseline compile) *and* `alias Foo, as:
+Kernel` (a plain `Kernel.raise` would be redirected to `Foo.raise`); `Elixir.MatchError`
+likewise can't be redirected by `alias Foo, as: MatchError` or a nested `MatchError` module.
+(Originally `Kernel.raise` was only plainly-qualified — import-proof but not alias-proof — and
+was promoted to the absolute form for consistency with `Elixir.MatchError`; see "Absolute-qualify
+every generated cross-module name" below.)
 
 Known edge, **only** a warning (harmless under the default warnings-tolerant metamutant
 compile; poison-recoverable under `--warnings-as-errors`, where the whole-`case` fallback range
@@ -1408,10 +1411,10 @@ clause (a function tested purely for its error path), nothing records its ids an
 that *would* re-target a clause to match that value is wrongly scored `:no_coverage` and never run —
 a false negative. (When the suite also hits *some* matching value, the full-id-set record above
 already covers every mutant, so the gap is exactly the match-nothing case.) Fix: a trailing
-`{<active>, mutare_unmatched} -> <record all ids>; Kernel.raise(Elixir.CaseClauseError, term:
+`{<active>, mutare_unmatched} -> <record all ids>; Elixir.Kernel.raise(Elixir.CaseClauseError, term:
 mutare_unmatched)` clause (`case_unmatched_clause/2`) restores both — it attributes the ids and
-re-raises the original error on the bare subject (`Kernel.raise`/`Elixir.CaseClauseError` spelled
-import/alias-proof, like the `=`-match `MatchError` raise). It is **omitted** when an original clause
+re-raises the original error on the bare subject (`Elixir.Kernel.raise`/`Elixir.CaseClauseError`
+both spelled in the absolute, import/alias-proof form, like the `=`-match `MatchError` raise). It is **omitted** when an original clause
 is already an unconditional catch-all (`exhaustive_clauses?/2` — an irrefutable pattern, no source
 guard, no exclusion ids), since the subject can then never fall through and the clause would be
 unreachable (Elixir warns "this clause cannot match"). Detecting irrefutability is sound-by-narrowness:
@@ -2305,16 +2308,21 @@ only it resolves to a drop:
 
 - **ModeSwap** substitutes one rangeable literal arg/key → footprint = that literal, which
   AtomLiteral also hosts → the **only overlap that resolves to a real drop**.
-- **`String.equivalent?(a, b)` → `a == b`** (StringCall, the *direct* form) replaces the whole
-  `{:., _, [String, :equivalent?]}` call form with the bare `:==` operator while reusing both
-  args, so the minimal subtree is the **`.` dot node** — rangeable, non-list, a proper
-  sub-range → **covering**. It is nonetheless **inert**: that node spans `Mod.fun`, where no
-  value mutator hosts a candidate (the module sits in form position/excluded, the fun is a bare
-  atom), so the footprint matches nothing and prunes nothing. So "ModeSwap is the only *covering*
-  mutator" is **false** — it is only the one that *drops* anything; this case is covering-but-inert.
-  (The *piped* `s |> String.equivalent?(t)` → `Kernel.==(t)` changes both the module *and* the
-  fun → its form-diff is a *list* → non-covering.) Locked in by a transform test
-  ("StringCall's equivalent? -> == is covering but inert").
+- **`String.equivalent?(a, b)` → `Elixir.Kernel.==(a, b)`** (StringCall) changes **both** the
+  module (`String` → `Elixir.Kernel`) *and* the fun (`equivalent?` → `==`) of the
+  `{:., _, [mod, fun]}` callee while reusing both args, so the two changes climb to their common
+  parent — the callee's `[mod, fun]` **list**, which carries no nid → **non-covering**. The reused
+  args therefore keep their own leaf mutants (a literal `"x"` keeps both StringLiteral mutants).
+  Both the direct and piped forms behave identically (the swap is the same shape at either arity).
+  *Historical note:* when the direct form emitted a bare `a == b`, it replaced the whole callee
+  with one atom — a `.`-dot-node footprint that *was* covering, but **inert** (the `.` node spans
+  `Mod.fun`, a form position no value mutator hosts a candidate at). Promoting the emission to the
+  *absolute* `Elixir.Kernel.==` (for shadow-safety — neither a local/imported `==` nor a rebound
+  `Kernel` alias can redirect it; see "Absolute-qualify every generated cross-module name") changed
+  *both* module and fun, turning the footprint into a nid-less list — non-covering rather than
+  covering-but-inert. Either way it prunes nothing, so `ModeSwap→AtomLiteral` is now the **sole**
+  covering footprint *and* the sole leaf-dropping case. Locked in by a transform test
+  ("StringCall's equivalent? -> Elixir.Kernel.== is non-covering: it prunes no leaf").
 - **Operator swaps / function renames** (Arithmetic, Relational, Collection, StringCall's
   *renames*, …) change a bare **form/name atom** — the operator (`:+`, the node's *form*) or the
   `fun` in a `{:., _, [mod, fun]}`. A bare atom in form position carries no metadata, so
@@ -2418,6 +2426,47 @@ The one **intended behaviour change**: a `shift` with an excluded unit beside a 
 now emits one extra (harmless, guaranteed-killed) AtomLiteral mutant the old blanket policy
 suppressed — the price of consistency, score-neutral.
 
+### Absolute-qualify every generated cross-module name `[done]`
+Generated code (the selectors, lifted clauses, and synthetic fallbacks the transform splices
+into the metamutant) lands in the **target module's** lexical environment, which Mutare doesn't
+control — the user may `import Kernel, except: [...]`, define a same-named local function, or even
+`alias Foo, as: Kernel`. So any *cross-module* call we *emit* (not one we resolve from the source
+and rebuild in its written form) must name its module in a way no environment can redirect.
+
+The rule: **emit the absolute `Elixir.`-led alias** (`{:__aliases__, [], [:"Elixir", :Mod]}`),
+which alias resolution never rewrites. Three levels of robustness, from weakest to this:
+
+  * a **bare** name (`byte_size(s)`, `a == b`, `raise …`) resolves to a same-named local def or
+    selective import if one shadows it — *wrong, silently*;
+  * a **plainly-qualified** `Kernel.byte_size` / `Kernel.==` / `Kernel.raise` survives a shadow
+    but a later `alias Foo, as: Kernel` redirects it — *wrong, or a compile error*;
+  * the **absolute** `Elixir.Kernel.byte_size` is immune to both.
+
+This was always the policy for *resolved-then-requalified* names (`Calls.qualifier`'s
+`Elixir.Mod.fun`, the `=`-match/`case` `Elixir.MatchError`/`Elixir.CaseClauseError`, the
+`witness_module` helper). It is now applied uniformly to **every freshly-constructed cross-module
+emission**:
+
+  * `Mutare.Mutators.StringByte`: `String.length(s)` → `Elixir.Kernel.byte_size(s)`;
+  * `Mutare.Mutators.StringCall`: `String.equivalent?(a, b)` → `Elixir.Kernel.==(a, b)` (was a
+    bare `a == b`);
+  * `Mutare.Mutators.CallRemoval`: the piped no-op → `Elixir.Function.identity()` (was
+    `Function.identity()`);
+  * `Mutare.Transform`'s `=`-match and `case`-pattern fallbacks: `Elixir.Kernel.raise(...)` (was
+    `Kernel.raise(...)` — only import-proof; the error module was already absolute).
+
+`Elixir.Kernel.raise` is worth a beat: `raise` is a **macro**, and a macro *is* callable through
+an absolute alias (`Elixir.Kernel.raise(...)` expands fine), so the same rule applies. The one
+deliberate exception is `Mutare.Sandbox.Command`'s own `… |> Kernel.++(env)` — that is *first-party
+harness* code in a module whose scope Mutare controls, not generated-into-the-target code, so a
+plain qualifier (or even a bare one) is collision-free there.
+
+Side effect on overlap: emitting `Elixir.Kernel.==` (vs bare `a == b`) changes *both* the callee's
+module and fun, so the `equivalent?` footprint is now a nid-less `[mod, fun]` **list** —
+*non-covering* rather than the old *covering-but-inert* `.`-dot-node. No behavioural change (it
+pruned nothing before and prunes nothing now), but it makes `ModeSwap→AtomLiteral` the **sole**
+covering footprint. See "Overlap resolution" above.
+
 ### Expanded default mutator set `[done]`
 The built-ins grew from arithmetic+relational to a fuller catalog, **all on by
 default**: **arithmetic** (now also unary `-x`→`x`), **relational**, **logical**
@@ -2438,7 +2487,8 @@ raise-on-absent axes; all `/3`, arity-blind; `:map` is taken by `MapLiteral`),
 **call_removal** (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/
 `dedup`/`shuffle`, `List.flatten`, `String.trim`/`downcase`/…, and `Kernel.abs`
 (`abs(x)`→`x`) — leaving its first arg; in a pipe, replace the stage with
-`Function.identity()`; pipe-aware via `mutate/2`. The remote targets are arity-blind;
+`Elixir.Function.identity()` (absolute-qualified so a rebound `Function` alias can't
+redirect it); pipe-aware via `mutate/2`. The remote targets are arity-blind;
 a bare `abs` is removed only at effective arity `/1` — the safeguard that a bare
 unqualified `abs` is the `Kernel` one, mirroring Numeric's bare-`Kernel` path — and,
 being guard-safe, reaches `when` guards via lifting), **default_drop** (drop a trailing default/fallback — `Map.get`/`pop`/

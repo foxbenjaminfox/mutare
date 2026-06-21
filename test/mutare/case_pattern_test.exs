@@ -124,8 +124,8 @@ defmodule Mutare.CasePatternTest do
     # the bare subject — the rest keep an unconditional catch-all and add none. `classify/swap/dup/
     # label` use a plain `_`; `chained` uses a **match chain** `x = _ = y`, which is just as
     # irrefutable, so it is recognised as exhaustive (not given a second fallback).
-    assert meta =~ "Kernel.raise(Elixir.CaseClauseError, term: mutare_unmatched)"
-    assert length(Regex.scan(~r/Kernel\.raise\(Elixir\.CaseClauseError/, meta)) == 1
+    assert meta =~ "Elixir.Kernel.raise(Elixir.CaseClauseError, term: mutare_unmatched)"
+    assert length(Regex.scan(~r/Elixir\.Kernel\.raise\(Elixir\.CaseClauseError/, meta)) == 1
   end
 
   describe "behaviour under runtime switching" do

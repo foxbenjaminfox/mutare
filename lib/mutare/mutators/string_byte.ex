@@ -4,7 +4,7 @@ defmodule Mutare.Mutators.StringByte do
   question "does this code actually depend on Unicode/grapheme semantics, or would
   raw byte semantics pass the suite?":
 
-    * `String.length(s)` → `Kernel.byte_size(s)`   — grapheme **count** → byte **count**
+    * `String.length(s)` → `Elixir.Kernel.byte_size(s)`   — grapheme **count** → byte **count**
 
   For pure-ASCII input the two return the *same* number, so a suite that only ever
   exercises ASCII can't tell them apart — exactly the gap this surfaces. The moment a
@@ -27,15 +27,24 @@ defmodule Mutare.Mutators.StringByte do
   broadening a byte op to a string op is not. So this family has no swap table — just the
   one forward rewrite.
 
-  ## Why `Kernel.byte_size`, not bare `byte_size`
+  ## Why `Elixir.Kernel.byte_size`, not bare `byte_size`
 
-  The mutant qualifies the target as `Kernel.byte_size(s)` rather than emitting a bare
-  `byte_size(s)`. A bare call would resolve to a **same-named local definition or
-  selective import** if one shadows the name — `import Kernel, except: [byte_size: 1]`
-  plus a local `def byte_size/1` makes bare `byte_size(s)` call the *local* function,
-  silently changing what the mutant means. Naming `Kernel` explicitly pins the real
-  builtin in every scope. (`String.length` is never legal in a guard, so the qualified
-  remote target needs no guard-safety consideration.)
+  The mutant qualifies the target with the **absolute** `Elixir.Kernel` alias rather
+  than emitting a bare `byte_size(s)`. The qualification is spelled to resolve
+  *independently of the target module's lexical environment*, so the generated call
+  always means the real builtin:
+
+    * a **bare** `byte_size(s)` would resolve to a same-named local definition or
+      selective import if one shadowed the name (`import Kernel, except: [byte_size: 1]`
+      plus a local `def byte_size/1`), silently changing what the mutant means;
+    * a plainly-qualified `Kernel.byte_size` survives that, but a later
+      `alias Foo, as: Kernel` would redirect it — so the qualifier is the **absolute**
+      `Elixir.Kernel` (`__aliases__` led by `:Elixir`, which alias resolution never
+      rewrites), the same alias-proof form `Mutare.Transform` uses for its generated
+      `Elixir.Kernel.raise` / `Elixir.MatchError` nodes.
+
+  (`String.length` is never legal in a guard, so the qualified remote target needs no
+  guard-safety consideration.)
 
   ## Resolution and pipes
 
@@ -44,11 +53,11 @@ defmodule Mutare.Mutators.StringByte do
   match: `String.length(s)`, `alias String, as: S; S.length(s)`, and
   `import String; length(s)` — while a shadowing `alias MyApp.String` resolves to the
   local module and is correctly left alone. The swap is a one-to-one rename onto a fixed
-  target arity (`String.length/1` → `Kernel.byte_size/1`) that reuses the source's
+  target arity (`String.length/1` → `Elixir.Kernel.byte_size/1`) that reuses the source's
   argument list verbatim, so it stays correct in a pipe with no pipe context needed
-  (`s |> String.length()` → `s |> Kernel.byte_size()`). The `Kernel.byte_size` target is
-  built directly rather than through `Calls`' `rebuild`, since the swap deliberately
-  *changes module*.
+  (`s |> String.length()` → `s |> Elixir.Kernel.byte_size()`). The target is built
+  directly rather than through `Calls`' `rebuild`, since the swap deliberately *changes
+  module*.
 
   On by default. The byte-semantics sibling of `Mutare.Mutators.StringCall` (which swaps
   a `String` call for its same-module directional opposite); here the swap crosses out of
@@ -64,15 +73,16 @@ defmodule Mutare.Mutators.StringByte do
   @impl Mutare.Mutator
   def mutate(node) do
     case Calls.resolved_call(node) do
-      # `String.length(s)` (grapheme count) → `Kernel.byte_size(s)` (byte count). Qualified
-      # with `Kernel` so a local/selective-import `byte_size` can't shadow the swap; built
-      # directly (not via `rebuild`) since it crosses module out of `String`.
+      # `String.length(s)` (grapheme count) → `Elixir.Kernel.byte_size(s)` (byte count).
+      # Absolute-qualified so neither a local/selective-import `byte_size` nor a later
+      # `alias Foo, as: Kernel` can shadow it; built directly (not via `rebuild`) since it
+      # crosses module out of `String`.
       {[:String], :length, args, _rebuild} -> [byte_size_call(args)]
       _ -> :skip
     end
   end
 
   defp byte_size_call(args) do
-    {{:., [], [{:__aliases__, [], [:Kernel]}, :byte_size]}, [], args}
+    {{:., [], [{:__aliases__, [], [:"Elixir", :Kernel]}, :byte_size]}, [], args}
   end
 end

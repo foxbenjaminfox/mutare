@@ -1225,7 +1225,7 @@ defmodule Mutare.Transform do
     end
   end
 
-  # `case <rhs> do <pattern> -> <export>; u -> Kernel.raise(Elixir.MatchError, term: u) end`
+  # `case <rhs> do <pattern> -> <export>; u -> Elixir.Kernel.raise(Elixir.MatchError, term: u) end`
   # — re-binds the match by matching `rhs` against `pattern` and returning the shared export
   # tuple. The trailing clause makes a non-match raise the *same* `MatchError` the original
   # `=` raised (not a `CaseClauseError`): exact baseline semantics, and still a clean kill on
@@ -1235,25 +1235,26 @@ defmodule Mutare.Transform do
     {:case, [], [rhs, [do: [{:->, [], [[pattern], export]}, match_raise_clause()]]]}
   end
 
-  # `mutare_unmatched -> Kernel.raise(Elixir.MatchError, term: mutare_unmatched)`.
+  # `mutare_unmatched -> Elixir.Kernel.raise(Elixir.MatchError, term: mutare_unmatched)`.
   #
-  # Both names are spelled to resolve **independently of the target module's lexical
-  # environment**, so the generated raise behaves identically to the `=` it replaces — which
-  # always raises `Elixir.MatchError` regardless of imports/aliases:
+  # Both names are spelled in **absolute** form so they resolve **independently of the target
+  # module's lexical environment**, and the generated raise behaves identically to the `=` it
+  # replaces — which always raises `Elixir.MatchError` regardless of imports/aliases:
   #
-  #   * `Kernel.raise` is *qualified*, so it survives `import Kernel, except: [raise: 2]`
-  #     (an exclusion only removes the *unqualified* macro); an unqualified `raise` there
-  #     would make the metamutant baseline fail to compile.
-  #   * `Elixir.MatchError` is the *absolute* form (`__aliases__` led by `:Elixir`, which
-  #     alias resolution never rewrites), so `alias Foo, as: MatchError` / a nested
-  #     `MatchError` module can't redirect it to the wrong exception.
+  #   * `Elixir.Kernel.raise` is *absolute-qualified*, so it survives both
+  #     `import Kernel, except: [raise: 2]` (an exclusion only removes the *unqualified*
+  #     macro — an unqualified `raise` there would make the metamutant baseline fail to
+  #     compile) *and* `alias Foo, as: Kernel` (`__aliases__` led by `:Elixir` is never
+  #     alias-rewritten, where a plain `Kernel.raise` could be redirected).
+  #   * `Elixir.MatchError` is likewise the *absolute* form, so `alias Foo, as: MatchError` /
+  #     a nested `MatchError` module can't redirect it to the wrong exception.
   #
   # The binding is local to this one clause body (a fresh case-clause pattern variable, used
   # only here), so a fixed name can't capture or collide — unlike a lifted *head* arg, the
   # gated-equality hazard `Names` salts against doesn't apply to a body case clause.
   defp match_raise_clause do
     unmatched = {:mutare_unmatched, [], nil}
-    raise_fun = {:., [], [{:__aliases__, [], [:Kernel]}, :raise]}
+    raise_fun = {:., [], [{:__aliases__, [], [:"Elixir", :Kernel]}, :raise]}
     match_error = {:__aliases__, [], [:"Elixir", :MatchError]}
     raise_node = {raise_fun, [], [match_error, [term: unmatched]]}
     {:->, [], [[unmatched], raise_node]}
@@ -1339,7 +1340,7 @@ defmodule Mutare.Transform do
   # no clause body, so the coverage record never fires and a pattern mutant that *would* make
   # the value match is wrongly scored `:no_coverage` (at baseline the value falls through, so
   # the probe never attributes the ids). So a trailing `{<active>, mutare_unmatched} -> <record
-  # all ids>; Kernel.raise(Elixir.CaseClauseError, term: mutare_unmatched)` clause restores
+  # all ids>; Elixir.Kernel.raise(Elixir.CaseClauseError, term: mutare_unmatched)` clause restores
   # both: it records the hosted ids and re-raises the original error on the bare subject
   # (`case_unmatched_clause/2`). It is omitted when an original clause is already an
   # unconditional catch-all (`exhaustive_clauses?/2`) — the subject can never fall through, so
@@ -1413,19 +1414,19 @@ defmodule Mutare.Transform do
   end
 
   # The trailing unmatched fallback for a non-exhaustive tupled `case`: `{<active>,
-  # mutare_unmatched} -> <record all ids>; Kernel.raise(Elixir.CaseClauseError, term:
+  # mutare_unmatched} -> <record all ids>; Elixir.Kernel.raise(Elixir.CaseClauseError, term:
   # mutare_unmatched)`. The first tuple element binds `mutare_active` (used by the record) and
   # `mutare_unmatched` binds the *bare* subject (used by the raise), so neither warns unused; it
   # both attributes the hosted ids at baseline (else a value that matches no original clause
   # falls through recording nothing, scoring a re-targeting mutant `:no_coverage`) and re-raises
-  # the same `CaseClauseError` the original `case` did, on the original term. `Kernel.raise` is
-  # qualified and `Elixir.CaseClauseError` absolute so the raise is independent of the target's
+  # the same `CaseClauseError` the original `case` did, on the original term. `Elixir.Kernel.raise`
+  # and `Elixir.CaseClauseError` are both absolute so the raise is independent of the target's
   # imports/aliases (the rationale `match_raise_clause/0` spells out); `mutare_unmatched` is a
   # case-clause-local pattern var, so a fixed name can't capture or collide.
   defp case_unmatched_clause(all_ids, var) do
     unmatched = {:mutare_unmatched, [], nil}
     tuple = {Recorder.catch_all_pattern(var), unmatched}
-    raise_fun = {:., [], [{:__aliases__, [], [:Kernel]}, :raise]}
+    raise_fun = {:., [], [{:__aliases__, [], [:"Elixir", :Kernel]}, :raise]}
     case_clause_error = {:__aliases__, [], [:"Elixir", :CaseClauseError]}
     raise_node = {raise_fun, [], [case_clause_error, [term: unmatched]]}
     body = {:__block__, [], [Recorder.record_ast(all_ids, var), raise_node]}

@@ -29,13 +29,14 @@ defmodule Mutare.Mutators.StringCall do
   so renaming cannot express the swap.)
 
   It also makes one **call → operator** substitution: `String.equivalent?(a, b)`
-  (Unicode-canonical equality) → `Kernel.==(a, b)`, dropping the normalization. The
-  mutant survives unless a test feeds canonically-equivalent-but-distinct
-  encodings — pointing at exactly that gap. It is emitted as `Kernel.==(...)`, not a
-  bare `a == b`, so a same-named local/imported `==` (`import Kernel, except: [==: 2]`
-  plus a `def a == b`) can't shadow the swap. Arity tells the pipe context apart
+  (Unicode-canonical equality) → `Elixir.Kernel.==(a, b)`, dropping the normalization.
+  The mutant survives unless a test feeds canonically-equivalent-but-distinct
+  encodings — pointing at exactly that gap. It is emitted through the **absolute**
+  `Elixir.Kernel` alias, not a bare `a == b`, so neither a same-named local/imported
+  `==` (`import Kernel, except: [==: 2]` plus a `def a == b`) nor a later
+  `alias Foo, as: Kernel` can shadow the swap. Arity tells the pipe context apart
   (`equivalent?/1` doesn't exist, so a 1-arg call is always a `|>` stage):
-  `a |> String.equivalent?(b)` becomes `a |> Kernel.==(b)`.
+  `a |> String.equivalent?(b)` becomes `a |> Elixir.Kernel.==(b)`.
 
   Each pair shares its arities, so swapping the function name while keeping the
   argument list always compiles. These are remote calls — never legal in a guard
@@ -122,14 +123,17 @@ defmodule Mutare.Mutators.StringCall do
   # `String.equivalent?(a, b)` compares strings for Unicode canonical equivalence;
   # substituting raw `==` drops the normalization, so the mutant survives unless a
   # test feeds canonically-equivalent-but-distinct encodings. The swap is emitted as
-  # `Kernel.==(...)`, not a bare `a == b`: a bare `==` would resolve to a same-named
-  # local/imported operator if one shadows it (`import Kernel, except: [==: 2]` plus a
-  # `def a == b`), silently changing the mutant; naming `Kernel` pins the real operator.
-  # Both arities route here — `String.equivalent?/2` direct, and the LHS-less `/1` pipe
-  # stage (`a |> String.equivalent?(b)` → `a |> Kernel.==(b)`) — so the same call builds
-  # both, keeping the source's argument list.
+  # `Elixir.Kernel.==(...)`, not a bare `a == b`: a bare `==` would resolve to a
+  # same-named local/imported operator if one shadows it (`import Kernel, except: [==: 2]`
+  # plus a `def a == b`), silently changing the mutant. The **absolute** `Elixir.Kernel`
+  # qualifier (`__aliases__` led by `:Elixir`, which alias resolution never rewrites) pins
+  # the real operator independently of the target's imports *and* aliases — the same
+  # alias-proof form `Mutare.Transform` uses for its generated `Elixir.Kernel.raise`
+  # nodes. Both arities route here — `String.equivalent?/2` direct, and the LHS-less `/1`
+  # pipe stage (`a |> String.equivalent?(b)` → `a |> Elixir.Kernel.==(b)`) — so the same
+  # call builds both, keeping the source's argument list.
   defp equivalent_substitution(args) when length(args) in [1, 2], do: [kernel_eq(args)]
   defp equivalent_substitution(_), do: :skip
 
-  defp kernel_eq(args), do: {{:., [], [{:__aliases__, [], [:Kernel]}, :==]}, [], args}
+  defp kernel_eq(args), do: {{:., [], [{:__aliases__, [], [:"Elixir", :Kernel]}, :==]}, [], args}
 end

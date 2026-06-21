@@ -1602,13 +1602,13 @@ defmodule Mutare.TransformTest do
       assert {:atom, ":none", ":mutare"} in pairs
     end
 
-    test "StringCall's equivalent? -> Kernel.== is covering but inert: it prunes no leaf" do
-      # `String.equivalent?(a, "x")` -> `Kernel.==(a, "x")` rewrites the callee (`String` ->
-      # `Kernel`, `equivalent?` -> `==`) while reusing both args, so its minimal changed subtree
-      # is the `.` dot node — a nid-bearing node, hence *covering* (ModeSwap is NOT the only
-      # covering mutator). But the `.` node spans `String.equivalent?`, where no value mutator
-      # hosts a candidate, so the footprint matches nothing and prunes nothing: the `"x"` literal
-      # keeps both its StringLiteral mutants alongside the call rewrite.
+    test "StringCall's equivalent? -> Elixir.Kernel.== is non-covering: it prunes no leaf" do
+      # `String.equivalent?(a, "x")` -> `Elixir.Kernel.==(a, "x")` rewrites the callee's *module*
+      # (`String` -> `Elixir.Kernel`) *and* its fun (`equivalent?` -> `==`) while reusing both args,
+      # so the two changes climb to their common parent — the callee's `[mod, fun]` list, which
+      # carries no nid → *non-covering*. (A bare `a == b` would instead be covering-yet-inert; the
+      # absolute `Elixir.Kernel.==` makes it a nid-less list footprint.) Either way it prunes
+      # nothing: the reused `"x"` literal keeps both its StringLiteral mutants alongside the rewrite.
       {_meta, sites, _} =
         Mutare.transform_string(
           """
@@ -1621,7 +1621,7 @@ defmodule Mutare.TransformTest do
 
       pairs = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
 
-      assert {:string_call, "String.equivalent?(a, \"x\")", "Kernel.==(a, \"x\")"} in pairs
+      assert {:string_call, "String.equivalent?(a, \"x\")", "Elixir.Kernel.==(a, \"x\")"} in pairs
       assert {:string, "\"x\"", "\"\""} in pairs
       assert {:string, "\"x\"", "\"mutare\""} in pairs
     end
@@ -2217,9 +2217,9 @@ defmodule Mutare.TransformTest do
         Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
 
       pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
-      assert {"String.equivalent?(a, b)", "Kernel.==(a, b)"} in pairs
+      assert {"String.equivalent?(a, b)", "Elixir.Kernel.==(a, b)"} in pairs
       # piped: the LHS-less stage; the |> feeds the left operand at runtime
-      assert {"String.equivalent?(b)", "Kernel.==(b)"} in pairs
+      assert {"String.equivalent?(b)", "Elixir.Kernel.==(b)"} in pairs
       assert_compiles(meta)
     end
   end
@@ -2237,14 +2237,15 @@ defmodule Mutare.TransformTest do
         Mutare.transform_string(source, mutators: [Mutare.Mutators.StringByte])
 
       pairs = for s <- sites, s.mutator == :string_byte, do: {s.original_code, s.mutated_code}
-      # Qualified with Kernel so a local/selective-import byte_size can't shadow the swap.
-      assert {"String.length(s)", "Kernel.byte_size(s)"} in pairs
+      # Absolute-qualified so neither a local/selective-import byte_size nor a rebound Kernel
+      # alias can shadow the swap.
+      assert {"String.length(s)", "Elixir.Kernel.byte_size(s)"} in pairs
       # piped: the recorded stage is the LHS-less call; the |> feeds the left arg at runtime
-      assert {"String.length()", "Kernel.byte_size()"} in pairs
+      assert {"String.length()", "Elixir.Kernel.byte_size()"} in pairs
       assert_compiles(meta)
     end
 
-    test "the Kernel-qualified swap compiles even when byte_size is locally shadowed" do
+    test "the absolute-qualified swap compiles even when byte_size is locally shadowed" do
       source = """
       defmodule S do
         import Kernel, except: [byte_size: 1]
@@ -2256,12 +2257,29 @@ defmodule Mutare.TransformTest do
       {meta, sites, _next_id} =
         Mutare.transform_string(source, mutators: [Mutare.Mutators.StringByte])
 
-      assert {"String.length(s)", "Kernel.byte_size(s)"} in for(
+      assert {"String.length(s)", "Elixir.Kernel.byte_size(s)"} in for(
                s <- sites,
                s.mutator == :string_byte,
                do: {s.original_code, s.mutated_code}
              )
 
+      assert_compiles(meta)
+    end
+
+    test "the absolute-qualified swap compiles even when the Kernel name is rebound" do
+      # `alias String, as: Kernel` would make a plain `Kernel.byte_size` resolve to the
+      # nonexistent `String.byte_size`; the absolute `Elixir.Kernel.byte_size` still works.
+      source = """
+      defmodule S do
+        alias String, as: Kernel
+        def len(s), do: String.length(s)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringByte])
+
+      assert Enum.any?(sites, &(&1.mutator == :string_byte))
       assert_compiles(meta)
     end
 
@@ -2280,7 +2298,7 @@ defmodule Mutare.TransformTest do
 
       pairs = for s <- sites, s.mutator == :string_byte, do: {s.original_code, s.mutated_code}
       # The aliased real String resolves and is narrowed (alias preserved in the diff source).
-      assert {"Str.length(s)", "Kernel.byte_size(s)"} in pairs
+      assert {"Str.length(s)", "Elixir.Kernel.byte_size(s)"} in pairs
       # The shadowing `alias MyApp.String` resolves to the local module — not narrowed.
       refute Enum.any?(pairs, fn {orig, _} -> orig == "Local.length(s)" end)
       assert_compiles(meta)
@@ -2302,7 +2320,7 @@ defmodule Mutare.TransformTest do
   end
 
   describe "CallRemoval (transparent transform removal)" do
-    test "non-piped removal returns the first arg; piped removal uses Function.identity — both compile" do
+    test "non-piped removal returns the first arg; piped removal uses Elixir.Function.identity — both compile" do
       source = """
       defmodule R do
         def a(xs), do: Enum.sort(xs, :desc)
@@ -2317,8 +2335,8 @@ defmodule Mutare.TransformTest do
       # Non-piped: the whole transform collapses to its input.
       assert {"Enum.sort(xs, :desc)", "xs"} in pairs
       # Piped: each stage becomes a no-op the pipe feeds.
-      assert {"String.trim()", "Function.identity()"} in pairs
-      assert {"String.downcase()", "Function.identity()"} in pairs
+      assert {"String.trim()", "Elixir.Function.identity()"} in pairs
+      assert {"String.downcase()", "Elixir.Function.identity()"} in pairs
       assert_compiles(meta)
     end
 
@@ -2335,7 +2353,7 @@ defmodule Mutare.TransformTest do
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"String.slice(s, 1, 3)", "s"} in pairs
-      assert {"String.slice(1..3)", "Function.identity()"} in pairs
+      assert {"String.slice(1..3)", "Elixir.Function.identity()"} in pairs
       assert_compiles(meta)
     end
 
@@ -2352,7 +2370,7 @@ defmodule Mutare.TransformTest do
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"String.byte_slice(s, 1, 3)", "s"} in pairs
-      assert {"String.byte_slice(1, 3)", "Function.identity()"} in pairs
+      assert {"String.byte_slice(1, 3)", "Elixir.Function.identity()"} in pairs
       assert_compiles(meta)
     end
 
@@ -2384,7 +2402,7 @@ defmodule Mutare.TransformTest do
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"binary_slice(b, 0, 5)", "b"} in pairs
-      assert {"binary_slice(0..4)", "Function.identity()"} in pairs
+      assert {"binary_slice(0..4)", "Elixir.Function.identity()"} in pairs
       assert {"binary_part(b, 0, 5)", "b"} in pairs
       assert {":erlang.binary_part(b, {0, 5})", "b"} in pairs
       assert_compiles(meta)
@@ -2423,7 +2441,7 @@ defmodule Mutare.TransformTest do
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"Stream.uniq(xs)", "xs"} in pairs
-      assert {"Stream.dedup_by(& &1)", "Function.identity()"} in pairs
+      assert {"Stream.dedup_by(& &1)", "Elixir.Function.identity()"} in pairs
       assert_compiles(meta)
     end
   end

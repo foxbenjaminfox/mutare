@@ -55,20 +55,12 @@ defmodule Mutare.Transform.Overlap do
   # ## What is "covering", precisely — and what each mutator does
   #
   # Covering hinges on the minimal changed subtree being a *proper, **nid-bearing** descendant*
-  # of the host. **Two** built-in mutations produce one — but only the first ever resolves to a
-  # drop:
+  # of the host. Exactly **one** built-in mutation produces one:
   #
   #   * **ModeSwap** — substitutes one literal arg/key (`:second`,`minute:`). The footprint is
   #     that literal's `{:__block__, _, [atom]}` wrapper, which carries a nid *and* is where
-  #     AtomLiteral hosts its candidate → the **only covering footprint that suppresses anything**.
-  #   * **`String.equivalent?(a, b)` → `a == b`** (StringCall, the *direct* form) — replaces the
-  #     whole `{:., _, [mod, fun]}` call form with the bare `:==` operator while *reusing both
-  #     args*, so the minimal changed subtree is the **`.` dot node** — a nid-bearing proper
-  #     descendant → **covering**. But that node spans `Mod.fun`, a position no value mutator
-  #     ever hosts a candidate at (the module sits in form position, excluded; the fun is a bare
-  #     atom), so its nid matches no candidate's host → **covering yet inert**. (The *piped* form
-  #     `s |> String.equivalent?(t)` → `Kernel.==(t)` changes the module *and* the fun, so the
-  #     minimal subtree climbs to the whole node — host nid, non-covering.)
+  #     AtomLiteral hosts its candidate → the **only covering footprint, and it always resolves to
+  #     a drop** (the redundant AtomLiteral leaf on that arg/key is suppressed).
   #
   # Everything else is non-covering, and node identity is *why* — no extra rules needed:
   #
@@ -77,6 +69,18 @@ defmodule Mutare.Transform.Overlap do
   #     `{:., _, [mod, fun]}`). A bare atom carries no metadata, so it has **no nid** →
   #     non-covering. (Previously this rested on Sourceror returning `nil` for such atoms; now it
   #     is structural — atoms simply cannot be stamped.)
+  #   * **Cross-module call substitutions** (`String.equivalent?(a, b)` → `Elixir.Kernel.==(a, b)`,
+  #     both the direct and piped forms) — change **both** the module *and* the fun of the
+  #     `{:., _, [mod, fun]}` callee while reusing the args, so the two changes climb to their
+  #     common parent: the callee's `[mod, fun]` **list**. A list carries no metadata → **no nid**
+  #     → non-covering, so the reused args keep their own leaf mutants (a literal `"x"` in
+  #     `String.equivalent?(a, "x")` keeps both StringLiteral mutants). The *absolute* qualifier is
+  #     what lands this here: a bare `a == b` would instead replace the whole callee with one atom
+  #     — a `.`-node footprint that is **covering yet inert** (its nid spans `Mod.fun`, a form
+  #     position no value mutator hosts a candidate at, so it suppresses nothing anyway) — but the
+  #     absolute `Elixir.Kernel.==` is required for shadow-safety (see `Mutare.Mutators.StringCall`),
+  #     and changing both module and fun makes the footprint a nid-less list. Either way it prunes
+  #     nothing; the list footprint is simply the more direct route to that.
   #   * **Whole-node replacements** (a literal family, a boolean→`true`) — the minimal subtree
   #     *is* the host, so footprint nid == host nid → non-covering (a leaf swap is redundant with
   #     nothing).
@@ -89,9 +93,9 @@ defmodule Mutare.Transform.Overlap do
   #     which a range-based pass got wrong (the args list shares a range with the infix node /
   #     its lone element) and had to special-case.
   #
-  # So: two built-ins produce a covering footprint, but **only ModeSwap→AtomLiteral resolves to a
-  # real drop** — the `equivalent?`→`==` footprint is covering yet inert (its `.`-node nid matches
-  # no candidate). A leaf is therefore only ever dropped beside a mode/unit swap.
+  # So: **ModeSwap→AtomLiteral is the only covering footprint, and the only place a leaf is ever
+  # dropped** — every other built-in mutation changes a bare atom or a list (no nid), so it prunes
+  # nothing.
   #
   # Scope: only `Candidate.InPlace` in the `:mutare` key. ModeSwap targets runtime call
   # arguments, never guards/patterns, so it is never lifted and never a structural/pattern

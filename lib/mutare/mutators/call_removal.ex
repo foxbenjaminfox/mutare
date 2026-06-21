@@ -78,10 +78,13 @@ defmodule Mutare.Mutators.CallRemoval do
   `mutate/2` callback, which `Mutare.Transform` invokes with `%{pipe_mode: :piped | :unpiped}`:
 
     * **non-piped** → the first argument (`Enum.sort(x)` → `x`), the cleanest diff;
-    * **piped** → `Function.identity()`, so `x |> Enum.sort()` becomes
-      `x |> Function.identity()` ≡ `Function.identity(x)` ≡ `x`. A pipe stage can't be
+    * **piped** → `Elixir.Function.identity()`, so `x |> Enum.sort()` becomes
+      `x |> Elixir.Function.identity()` ≡ `Function.identity(x)` ≡ `x`. A pipe stage can't be
       made to *vanish* inside a selector, and `Function.identity/1` is the minimal,
-      compile-safe, honest no-op that rides the existing `hoist_pipe` path unchanged.
+      compile-safe, honest no-op that rides the existing `hoist_pipe` path unchanged. It is
+      emitted through the **absolute** `Elixir.Function` alias (led by `:Elixir`, which alias
+      resolution never rewrites) so a target-module `alias Foo, as: Function` can't redirect
+      the generated no-op — the same alias-proofing the `Elixir.Kernel` emissions use.
 
   On by default. `Function.identity/1` exists since Elixir 1.10 (well under the 1.18
   floor); these are remote calls, so guard-safety is automatic. Targets are recognised by
@@ -193,7 +196,7 @@ defmodule Mutare.Mutators.CallRemoval do
   def name, do: :call_removal
 
   # Never fires node-locally: whether to return the first arg (non-piped) or
-  # Function.identity() (piped) depends on pipe context.
+  # Elixir.Function.identity() (piped) depends on pipe context.
   @impl Mutare.Mutator
   def mutate(_node), do: :skip
 
@@ -239,6 +242,6 @@ defmodule Mutare.Mutators.CallRemoval do
   defp removal(true, :unpiped, args), do: [hd(args)]
 
   defp identity_call do
-    {{:., [], [{:__aliases__, [], [:Function]}, :identity]}, [], []}
+    {{:., [], [{:__aliases__, [], [:"Elixir", :Function]}, :identity]}, [], []}
   end
 end

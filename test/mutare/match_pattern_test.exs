@@ -208,16 +208,17 @@ defmodule Mutare.MatchPatternTest do
 
   describe "MatchError is raised independently of the target's lexical env" do
     # A real `=` always raises Elixir.MatchError on a non-match. The rewrite's fallback
-    # clause must too — so it emits the *qualified, absolute* `Kernel.raise(Elixir.MatchError,
-    # …)`, not the lexically-resolved `raise MatchError`, which a module excluding
-    # `Kernel.raise/2` or aliasing `MatchError` would break or redirect.
+    # clause must too — so it emits the *absolute, fully-qualified*
+    # `Elixir.Kernel.raise(Elixir.MatchError, …)`, not the lexically-resolved
+    # `raise MatchError`, which a module excluding `Kernel.raise/2`, aliasing `MatchError`,
+    # *or rebinding the `Kernel` name itself* would break or redirect.
     test "the generated fallback is fully qualified" do
       {meta, _sites, _next} =
         Mutare.transform_string(
           "defmodule Z do\n  def f(t) do\n    {x, y} = t\n    x - y\n  end\nend\n"
         )
 
-      assert meta =~ "Kernel.raise(Elixir.MatchError, term:"
+      assert meta =~ "Elixir.Kernel.raise(Elixir.MatchError, term:"
       refute meta =~ "-> raise MatchError"
     end
 
@@ -236,6 +237,19 @@ defmodule Mutare.MatchPatternTest do
         compile_with_directive(
           "Mutare.MatchPatternAliasFixture",
           "alias ArgumentError, as: MatchError"
+        )
+
+      assert_raise MatchError, fn -> mod.f(:not_a_tuple) end
+    end
+
+    test "raises Elixir.MatchError even when the Kernel name itself is rebound" do
+      # `alias String, as: Kernel` would make a plain `Kernel.raise` resolve to the
+      # nonexistent `String.raise` (a compile error); the *absolute* `Elixir.Kernel.raise`
+      # is led by `:Elixir`, which alias resolution never rewrites, so it still works.
+      mod =
+        compile_with_directive(
+          "Mutare.MatchPatternKernelAliasFixture",
+          "alias String, as: Kernel"
         )
 
       assert_raise MatchError, fn -> mod.f(:not_a_tuple) end

@@ -520,16 +520,18 @@ defmodule Mutare.MutatorsTest do
                ["String.pad_trailing(s, 8, \"0\")"]
     end
 
-    test "substitutes String.equivalent?(a, b) with Kernel.== (dropping normalization)" do
-      # Qualified with `Kernel` (not a bare `a == b`) so a local/imported `==` can't shadow it.
-      assert render(StringCall.mutate(parse("String.equivalent?(a, b)"))) == ["Kernel.==(a, b)"]
+    test "substitutes String.equivalent?(a, b) with Elixir.Kernel.== (dropping normalization)" do
+      # Absolute-qualified (not a bare `a == b`) so neither a local/imported `==` nor a
+      # rebound `Kernel` alias can shadow it.
+      assert render(StringCall.mutate(parse("String.equivalent?(a, b)"))) ==
+               ["Elixir.Kernel.==(a, b)"]
 
       assert render(StringCall.mutate(parse(~s|String.equivalent?(x, "foo")|))) == [
-               ~s|Kernel.==(x, "foo")|
+               ~s|Elixir.Kernel.==(x, "foo")|
              ]
 
-      # a 1-arg call is only reachable as a `|>` stage — becomes `a |> Kernel.==(b)`
-      assert render(StringCall.mutate(parse("String.equivalent?(b)"))) == ["Kernel.==(b)"]
+      # a 1-arg call is only reachable as a `|>` stage — becomes `a |> Elixir.Kernel.==(b)`
+      assert render(StringCall.mutate(parse("String.equivalent?(b)"))) == ["Elixir.Kernel.==(b)"]
     end
 
     test "swaps the Erlang :string directional/case pairs" do
@@ -570,15 +572,19 @@ defmodule Mutare.MutatorsTest do
   end
 
   describe "StringByte" do
-    test "narrows String.length to Kernel.byte_size (graphemes -> bytes)" do
-      assert render(StringByte.mutate(parse("String.length(s)"))) == ["Kernel.byte_size(s)"]
-      # piped: the LHS-less stage rewrites to the LHS-less Kernel.byte_size
-      assert render(StringByte.mutate(parse("String.length()"))) == ["Kernel.byte_size()"]
+    test "narrows String.length to Elixir.Kernel.byte_size (graphemes -> bytes)" do
+      assert render(StringByte.mutate(parse("String.length(s)"))) == [
+               "Elixir.Kernel.byte_size(s)"
+             ]
+
+      # piped: the LHS-less stage rewrites to the LHS-less Elixir.Kernel.byte_size
+      assert render(StringByte.mutate(parse("String.length()"))) == ["Elixir.Kernel.byte_size()"]
     end
 
     test "is one-way: never broadens byte_size back to String.length" do
       assert StringByte.mutate(parse("byte_size(s)")) == :skip
       assert StringByte.mutate(parse("Kernel.byte_size(s)")) == :skip
+      assert StringByte.mutate(parse("Elixir.Kernel.byte_size(s)")) == :skip
     end
 
     test "skips other String calls and other modules" do
@@ -690,7 +696,7 @@ defmodule Mutare.MutatorsTest do
       assert removal(":string.substr(s, 2)", false) == ["s"]
       assert removal(":string.sub_string(s, 2, 4)", false) == ["s"]
       # piped: a no-op stage the pipe feeds
-      assert removal(":string.slice(1, 3)", true) == ["Function.identity()"]
+      assert removal(":string.slice(1, 3)", true) == ["Elixir.Function.identity()"]
     end
 
     test "excludes content-changing / non-transform String and :string calls" do
@@ -707,21 +713,21 @@ defmodule Mutare.MutatorsTest do
       assert CallRemoval.mutate(parse(":lists.reverse(s)"), %{pipe_mode: :unpiped}) == :skip
     end
 
-    test "piped: replaces the stage with Function.identity() (a no-op the pipe feeds)" do
+    test "piped: replaces the stage with Elixir.Function.identity() (a no-op the pipe feeds)" do
       # `x |> Enum.sort(:desc)` reaches us as a 1-arg node; the piped flag means the
       # input is the |> LHS, so we must NOT return the comparator — identity instead.
-      assert removal("Enum.sort()", true) == ["Function.identity()"]
-      assert removal("Enum.sort(:desc)", true) == ["Function.identity()"]
-      assert removal("String.trim()", true) == ["Function.identity()"]
-      assert removal("Enum.uniq()", true) == ["Function.identity()"]
-      assert removal("Enum.intersperse(0)", true) == ["Function.identity()"]
+      assert removal("Enum.sort()", true) == ["Elixir.Function.identity()"]
+      assert removal("Enum.sort(:desc)", true) == ["Elixir.Function.identity()"]
+      assert removal("String.trim()", true) == ["Elixir.Function.identity()"]
+      assert removal("Enum.uniq()", true) == ["Elixir.Function.identity()"]
+      assert removal("Enum.intersperse(0)", true) == ["Elixir.Function.identity()"]
       # `s |> String.normalize(:nfc)` — the form is the LHS-less visible arg, so we
       # must return identity, never the `:nfc` atom.
-      assert removal("String.normalize(:nfc)", true) == ["Function.identity()"]
-      assert removal("String.pad_leading(5)", true) == ["Function.identity()"]
-      assert removal("String.slice(1, 3)", true) == ["Function.identity()"]
-      assert removal("URI.encode_www_form()", true) == ["Function.identity()"]
-      assert removal("NaiveDateTime.beginning_of_day()", true) == ["Function.identity()"]
+      assert removal("String.normalize(:nfc)", true) == ["Elixir.Function.identity()"]
+      assert removal("String.pad_leading(5)", true) == ["Elixir.Function.identity()"]
+      assert removal("String.slice(1, 3)", true) == ["Elixir.Function.identity()"]
+      assert removal("URI.encode_www_form()", true) == ["Elixir.Function.identity()"]
+      assert removal("NaiveDateTime.beginning_of_day()", true) == ["Elixir.Function.identity()"]
     end
 
     test "excludes map/filter/reduce and unrelated calls" do
@@ -736,12 +742,12 @@ defmodule Mutare.MutatorsTest do
       assert removal("abs(x)", false) == ["x"]
       assert removal("abs(a - b)", false) == ["a - b"]
       # Piped `value |> abs()` — 0 visible args, effective arity 1 → identity.
-      assert removal("abs()", true) == ["Function.identity()"]
+      assert removal("abs()", true) == ["Elixir.Function.identity()"]
     end
 
     test "qualified Kernel.abs is removed arity-blind (the prefix proves it)" do
       assert removal("Kernel.abs(x)", false) == ["x"]
-      assert removal("Kernel.abs()", true) == ["Function.identity()"]
+      assert removal("Kernel.abs()", true) == ["Elixir.Function.identity()"]
     end
 
     test "the Kernel binary slicers are removed, returning the whole binary" do
@@ -750,8 +756,8 @@ defmodule Mutare.MutatorsTest do
       assert removal("binary_slice(b, 0..4)", false) == ["b"]
       assert removal("binary_part(b, 0, 5)", false) == ["b"]
       # Piped — the LHS-less stage becomes a no-op the pipe feeds.
-      assert removal("binary_slice(0..4)", true) == ["Function.identity()"]
-      assert removal("binary_part(0, 5)", true) == ["Function.identity()"]
+      assert removal("binary_slice(0..4)", true) == ["Elixir.Function.identity()"]
+      assert removal("binary_part(0, 5)", true) == ["Elixir.Function.identity()"]
       # Qualified Kernel — arity-blind (the prefix proves the function).
       assert removal("Kernel.binary_slice(b, r)", false) == ["b"]
       assert removal("Kernel.binary_part(b, 0, 5)", false) == ["b"]
@@ -762,7 +768,7 @@ defmodule Mutare.MutatorsTest do
       # `:erlang.binary_part(bin, {start, len})`. Removed arity-blind like :string.
       assert removal(":erlang.binary_part(b, {0, 5})", false) == ["b"]
       assert removal(":erlang.binary_part(b, 0, 5)", false) == ["b"]
-      assert removal(":erlang.binary_part({0, 5})", true) == ["Function.identity()"]
+      assert removal(":erlang.binary_part({0, 5})", true) == ["Elixir.Function.identity()"]
     end
 
     test "a same-named binary slicer at the wrong bare arity is left alone" do
