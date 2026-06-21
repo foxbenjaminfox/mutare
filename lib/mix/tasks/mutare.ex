@@ -147,14 +147,18 @@ defmodule Mix.Tasks.Mutare do
   end
 
   # Compile the host project so its own modules are loadable for in-process `use` expansion
-  # (`Mutare.Transform.Uses`). Only for the **current project** (`copy_root == "."`) — an
-  # external-path target runs in *this* process with *its* deps absent, so compiling here
-  # wouldn't help and its `use`s degrade to no-ops. Best-effort: a compile failure never aborts
-  # the run (the metamutant still compiles later in the sandbox), and a still-unloadable `use`
-  # is simply left unexpanded. Skipped entirely when `--no-expand-uses`. `Mix.Task.run` runs
-  # `compile` at most once, so this is a no-op if mix already compiled.
-  defp ensure_host_compiled(%Options{expand_uses: true}, ".") do
-    Mix.Task.run("compile", [])
+  # (`Mutare.Transform.Uses`). `Mix.Task.run("compile")` only ever builds the **current** Mix
+  # project (cwd), so it helps only when that project overlaps the copied tree — i.e. when the
+  # target *is*/*contains*/*is contained by* the current project (`targets_current_project?/1`).
+  # The literal `copy_root` can be `"."`, `"./"`, or the **absolute umbrella root** (the
+  # documented `mix mutare apps/billing` form resolves to it), so we compare expanded paths, not
+  # the string. A genuinely external-path target runs in *this* process with *its* deps absent,
+  # so compiling here wouldn't help and its `use`s degrade to no-ops. Best-effort: a compile
+  # failure never aborts the run (the metamutant still compiles later in the sandbox), and a
+  # still-unloadable `use` is simply left unexpanded. Skipped entirely when `--no-expand-uses`.
+  # `Mix.Task.run` runs `compile` at most once, so this is a no-op if mix already compiled.
+  defp ensure_host_compiled(%Options{expand_uses: true}, root) do
+    if targets_current_project?(root), do: Mix.Task.run("compile", [])
     :ok
   rescue
     _ -> :ok
@@ -163,6 +167,18 @@ defmodule Mix.Tasks.Mutare do
   end
 
   defp ensure_host_compiled(_options, _root), do: :ok
+
+  # Does the copied tree overlap the current Mix project (cwd)? True when the two are equal or one
+  # contains the other; false only for a disjoint external path. `mix` always loads the mix.exs in
+  # cwd, so cwd is the current project root.
+  defp targets_current_project?(root) do
+    target = Path.expand(root)
+    cwd = File.cwd!()
+    target == cwd or within?(target, cwd) or within?(cwd, target)
+  end
+
+  # Is `path` at or below `ancestor`? (Both already absolute, no trailing slash from `Path.expand`.)
+  defp within?(ancestor, path), do: String.starts_with?(path, ancestor <> "/")
 
   # Resolve the target path + `--app`/`--workspace` into copy-root and
   # mutate-scope. A bad `--app` (no matching umbrella app) raises `ArgumentError`,

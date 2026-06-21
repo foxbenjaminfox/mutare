@@ -46,6 +46,11 @@ defmodule Mutare.Transform.Uses do
   @directives_key :mutare_use_directives
   @max_depth 16
 
+  # The module name of a nested `defmodule` we couldn't resolve to a concrete atom (a non-static
+  # head, or a child of an already-unresolved parent). Expansion is *skipped* under it — see
+  # `child_module/2` and `stamp/2`.
+  @unresolved :__mutare_unresolved__
+
   @doc """
   Stamp each eligible module-level `use` node's meta with `:mutare_use_directives` — the
   Sourceror-form `import`/`alias`/`require …, as:` directives it injects (flattened across
@@ -66,13 +71,19 @@ defmodule Mutare.Transform.Uses do
   #
   # `Resolve` deliberately doesn't track the enclosing module, but expansion needs it (for a
   # faithful `__CALLER__.module`), so `Uses` runs its own small walk. Only a `use` that is a
-  # **direct module-body statement** is stamped — a `use` nested in a `quote`/`def` is data /
-  # invalid, never a module-level directive, so it is descended without stamping.
+  # **direct module-body statement** is stamped — a `use` nested in a `def` is data / invalid,
+  # never a module-level directive, so it is descended without stamping.
 
   defp walk({:defmodule, meta, [mod_ast, [{do_key, body}]]}, module) do
     child = child_module(mod_ast, module)
     {:defmodule, meta, [mod_ast, [{do_key, walk_body(body, child)}]]}
   end
+
+  # A `quote` block is quoted *data*: a `defmodule … do use Foo end` inside it is only realised
+  # if/when the quote is later expanded in some caller's context — it is not a module-level
+  # directive of *this* program. Descending would invoke `Foo.__using__` during the scan in the
+  # wrong caller context (and could harvest invalid directives), so we stop at quoted contexts.
+  defp walk({:quote, _meta, _args} = node, _module), do: node
 
   defp walk({form, meta, args}, module) when is_list(args),
     do: {form, meta, Enum.map(args, &walk(&1, module))}
@@ -92,22 +103,33 @@ defmodule Mutare.Transform.Uses do
   defp walk_stmt(stmt, module), do: walk(stmt, module)
 
   # The full module name of a nested `defmodule`, best-effort: Elixir prepends the enclosing
-  # module to a nested alias. A non-static segment (`__MODULE__`-relative, unquote) can't be
-  # resolved, so we fall back to the parent (expansion either works or degrades).
+  # module to a nested alias. A non-static head (`__MODULE__.Child`, `unquote(mod)`, a
+  # `Module.concat(…)` call) can't be resolved to a concrete module, so it yields `@unresolved`
+  # and expansion is **skipped** inside that module (see `stamp/2`) rather than run with the wrong
+  # `__CALLER__.module` — a `__using__` that derives imports/aliases from `__CALLER__.module`
+  # would otherwise stamp directives for the *parent's* namespace. The sentinel propagates inward
+  # (an unresolved parent ⇒ unresolved child). A bare-atom head (`defmodule :foo`) is itself a
+  # concrete module — atoms aren't namespaced — so it resolves to that atom.
   defp child_module({:__aliases__, _, path}, parent) when is_list(path) do
     cond do
-      not Enum.all?(path, &is_atom/1) -> parent
+      not Enum.all?(path, &is_atom/1) -> @unresolved
+      parent == @unresolved -> @unresolved
       parent == nil -> Module.concat(path)
       true -> Module.concat([parent | path])
     end
   end
 
-  defp child_module(_mod_ast, parent), do: parent
+  defp child_module(mod, _parent) when is_atom(mod), do: mod
+  defp child_module(_mod_ast, _parent), do: @unresolved
 
   # --- expansion + harvest ---------------------------------------------------
 
   # Stamp the `use` node with its harvested directives, or return it unchanged. Never raises:
-  # any expansion failure degrades to `[]` (the current, unresolved behaviour).
+  # any expansion failure degrades to `[]` (the current, unresolved behaviour). A `use` inside a
+  # module whose name we couldn't resolve is left unexpanded — expanding it would run `__using__`
+  # with the wrong (parent) caller module.
+  defp stamp(node, @unresolved), do: node
+
   defp stamp({:use, meta, args} = node, module) do
     case harvest(node, module) do
       [] -> node

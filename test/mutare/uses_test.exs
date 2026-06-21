@@ -149,6 +149,55 @@ defmodule Mutare.UsesTest do
     end
   end
 
+  describe "expansion scope (quoted data and unresolvable modules)" do
+    test "a `use` inside a `quote` (quoted data, not a real directive) is not expanded" do
+      source = """
+      defmodule UsesInQuote do
+        defmacro gen do
+          quote do
+            defmodule Inner do
+              use Mutare.Test.ControllerUsing
+            end
+          end
+        end
+      end
+      """
+
+      # The `defmodule … use …` only becomes a real module when the quote is expanded in some
+      # caller's context — invoking `__using__` during the scan would run it in the wrong context.
+      assert directives_at(source) == []
+    end
+
+    test "a `use` in a statically-named nested module still expands (regression guard)" do
+      source = """
+      defmodule Outer do
+        defmodule Inner do
+          use Mutare.Test.ControllerUsing
+        end
+      end
+      """
+
+      assert "import Enum, only: [reject: 2]" in Enum.map(
+               directives_at(source),
+               &Macro.to_string/1
+             )
+    end
+
+    test "a `use` in a non-statically-named nested module (`__MODULE__.Child`) is skipped" do
+      source = """
+      defmodule UsesDynamicChild do
+        defmodule __MODULE__.Child do
+          use Mutare.Test.ControllerUsing
+        end
+      end
+      """
+
+      # The child's concrete name is unknown, so expanding would pass the *parent* as
+      # `__CALLER__.module` and stamp directives for the wrong namespace — skip instead.
+      assert directives_at(source) == []
+    end
+  end
+
   describe "resolution through the injected directives" do
     test "an injected import makes a bare stdlib call resolve" do
       source = """
