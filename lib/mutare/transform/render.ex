@@ -30,14 +30,15 @@ defmodule Mutare.Transform.Render do
   """
   def block_wrap(node), do: {:__block__, [], [node]}
 
-  # Sourceror represents a keyword-syntax key (`do:`, `else:`, but also `ms:`,
-  # `env:`, any `key: value`) as `{:__block__, [format: :keyword], [key]}`. The
-  # formatter crashes when such a pair's value becomes a `case`. We flip every
-  # keyword-format key back to a plain atom key, which renders fine everywhere.
+  # Sourceror represents keyword-syntax keys (`do:`, `else:`, but also `ms:`,
+  # `env:`, any `key: value`) as `{:__block__, [format: :keyword], [key]}`. A
+  # block-wrapped pair key left in a list renders as invalid `key => value`
+  # syntax, so unwrap every single-expression block key and let Sourceror render
+  # the surrounding pair as either `key: value` or `{key, value}`.
   defp normalize_keyword_blocks(ast) do
     Macro.prewalk(ast, fn
-      {{:__block__, meta, [key]}, value} = pair when is_atom(key) and is_list(meta) ->
-        if Keyword.get(meta, :format) == :keyword, do: {key, value}, else: pair
+      {{:__block__, _meta, [key]}, value} ->
+        {key, value}
 
       other ->
         other
