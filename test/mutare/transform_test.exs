@@ -32,6 +32,14 @@ defmodule Mutare.TransformTest do
   # Logical strips a `not`, Conditional forces a boolean to true/false.
   @membership [Mutare.Mutators.Relational, Mutare.Mutators.Conditional, Mutare.Mutators.Logical]
 
+  # For the `x in [list]` redundancy: List would collapse the list to `[]` (≡ `false`,
+  # which Conditional already produces). Relational/Conditional are the membership pair.
+  @membership_list [Mutare.Mutators.Relational, Mutare.Mutators.Conditional, Mutare.Mutators.List]
+
+  # For the double-negation redundancy: Logical strips a `not`/`!`, Conditional forces
+  # the boolean true/false.
+  @negation [Mutare.Mutators.Conditional, Mutare.Mutators.Logical]
+
   @sample """
   defmodule Sample do
     def classify(total, threshold) do
@@ -2058,6 +2066,156 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "equivalent-sibling suppression (collapsing mutants that compute the same thing)" do
+    test "a body `x in [list]`: List's `[]` collapse is suppressed (≡ Conditional's false)" do
+      {meta, triples} = redundancy_triples("def f(x), do: x in [1, 2, 3]", @membership_list)
+
+      # The membership trio survives; List does NOT fire on the RHS list (its `x in []`
+      # would be a redundant always-false, which Conditional already produces).
+      assert triples == [
+               {:relational, "x in [1, 2, 3]", "x not in [1, 2, 3]"},
+               {:conditional, "x in [1, 2, 3]", "true"},
+               {:conditional, "x in [1, 2, 3]", "false"}
+             ]
+
+      refute Enum.any?(triples, fn {m, _o, _mut} -> m == :list end)
+      assert_compiles(meta)
+    end
+
+    test "a standalone list literal still collapses to `[]` (only the `in`-RHS is special)" do
+      {_meta, triples} = redundancy_triples("def f, do: foo([1, 2, 3])", [Mutare.Mutators.List])
+      assert triples == [{:list, "[1, 2, 3]", "[]"}]
+    end
+
+    test "a guard `x in [list]`: List is suppressed there too, the membership trio remains" do
+      {meta, triples} =
+        redundancy_triples(
+          """
+          def f(x) when x in [1, 2, 3], do: :ok
+          def f(_x), do: :no
+          """,
+          @membership_list
+        )
+
+      membership = Enum.filter(triples, fn {m, _o, _mut} -> m in [:relational, :conditional] end)
+
+      assert {:relational, "x in [1, 2, 3]", "x not in [1, 2, 3]"} in membership
+      assert {:conditional, "x in [1, 2, 3]", "true"} in membership
+      assert {:conditional, "x in [1, 2, 3]", "false"} in membership
+      refute Enum.any?(triples, fn {m, _o, _mut} -> m == :list end)
+      assert_compiles(meta)
+    end
+
+    test "a body `!(a == b)` / `not (a == b)`: Relational's flip is suppressed (≡ the strip)" do
+      for src <- ["!(a == b)", "not (a == b)"] do
+        {meta, triples} = redundancy_triples("def f(a, b), do: #{src}", @membership)
+
+        # Logical strips the outer negation → `a == b`, and Conditional forces it
+        # true/false. The inner `==` is not offered, so there is NO Relational `!=`
+        # (its `!(a != b)` ≡ the strip) and NO inner-Conditional pair (`!true`/`!false`
+        # ≡ the outer's): exactly these three, nothing redundant.
+        assert triples == [
+                 {:conditional, src, "true"},
+                 {:conditional, src, "false"},
+                 {:logical, src, "a == b"}
+               ]
+
+        assert_compiles(meta)
+      end
+    end
+
+    test "an equality under negation suppresses across `===`/`!=`/`!==` too" do
+      for {op, comp} <- [{"==", "!="}, {"!=", "=="}, {"===", "!=="}, {"!==", "==="}] do
+        {_meta, triples} = redundancy_triples("def f(a, b), do: not (a #{op} b)", @membership)
+
+        # The exact polarity complement is never offered as a Relational mutant.
+        refute {:relational, "not (a #{op} b)", "not (a #{comp} b)"} in triples
+        refute Enum.any?(triples, fn {m, _o, _mut} -> m == :relational end)
+        assert {:logical, "not (a #{op} b)", "a #{op} b"} in triples
+      end
+    end
+
+    test "an ordering operator under negation is NOT suppressed (its swaps survive negation)" do
+      {meta, triples} = redundancy_triples("def f(a, b), do: !(a > b)", @membership)
+
+      # `!(a >= b)` ≡ `a < b` and `!(a < b)` ≡ `a >= b` — genuinely new mutants, not the
+      # strip `a > b`. So Relational stays offered on an ordering operator under `not`/`!`.
+      assert {:relational, "a > b", "a >= b"} in triples
+      assert {:relational, "a > b", "a < b"} in triples
+      assert {:logical, "!(a > b)", "a > b"} in triples
+      assert_compiles(meta)
+    end
+
+    test "a guard `not (a == b)`: Relational's flip suppressed there too" do
+      {meta, triples} =
+        redundancy_triples(
+          """
+          def f(a, b) when not (a == b), do: :ok
+          def f(_a, _b), do: :no
+          """,
+          @membership
+        )
+
+      membership =
+        Enum.filter(triples, fn {m, _o, _mut} -> m in [:relational, :conditional, :logical] end)
+
+      assert {:logical, "not (a == b)", "a == b"} in membership
+      assert {:conditional, "not (a == b)", "true"} in membership
+      assert {:conditional, "not (a == b)", "false"} in membership
+      refute Enum.any?(membership, fn {m, _o, _mut} -> m == :relational end)
+      assert length(membership) == 3
+      assert_compiles(meta)
+    end
+
+    test "a body `!!x` / `not not x`: the inner negation strip is suppressed" do
+      for {src, stripped} <- [{"!!x", "!x"}, {"not not x", "not x"}] do
+        {meta, triples} = redundancy_triples("def f(x), do: #{src}", @negation)
+
+        # Both strips are the identical single-negation, and Conditional on the inner
+        # duplicates the outer's true/false — so only one strip and one pair survive.
+        assert triples == [
+                 {:conditional, src, "true"},
+                 {:conditional, src, "false"},
+                 {:logical, src, stripped}
+               ]
+
+        assert_compiles(meta)
+      end
+    end
+
+    test "a mixed `not !x` is NOT collapsed (the two strips can differ on a non-boolean)" do
+      {meta, triples} = redundancy_triples("def f(x), do: not !x", [Mutare.Mutators.Logical])
+
+      # `not x` (inner strip) raises on a non-boolean where `!x` (outer strip) coerces, so
+      # the two are not equivalent — both negations stay offered.
+      assert {:logical, "!x", "x"} in triples
+      assert {:logical, "not (!x)", "!x"} in triples
+      assert length(triples) == 2
+      assert_compiles(meta)
+    end
+
+    test "a guard `not not x`: the inner strip is suppressed there too" do
+      {meta, triples} =
+        redundancy_triples(
+          """
+          def f(x) when not not x, do: :ok
+          def f(_x), do: :no
+          """,
+          @negation
+        )
+
+      negation = Enum.filter(triples, fn {m, _o, _mut} -> m in [:conditional, :logical] end)
+
+      assert negation == [
+               {:conditional, "not not x", "true"},
+               {:conditional, "not not x", "false"},
+               {:logical, "not not x", "not x"}
+             ]
+
+      assert_compiles(meta)
+    end
+  end
+
   describe "DefaultDrop (drop a trailing default/fallback argument)" do
     test "drops a non-nil default (piped and not), skips a nil default, and compiles" do
       source = """
@@ -2929,9 +3087,13 @@ defmodule Mutare.TransformTest do
   # Transform a `def` body with the membership-relevant families and return the
   # `{mutator, original_code, mutated_code}` triples (relational/conditional/logical),
   # alongside the metamutant source so the caller can assert it compiles.
-  defp membership_triples(body) do
+  defp membership_triples(body), do: redundancy_triples(body, @membership)
+
+  # The same, parameterised by the mutator set — for the equivalent-sibling suppression
+  # tests, which exercise Logical/List/Conditional combinations.
+  defp redundancy_triples(body, mutators) do
     source = "defmodule M do\n  #{String.trim_trailing(body)}\nend\n"
-    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @membership)
+    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: mutators)
     triples = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
     {meta, triples}
   end

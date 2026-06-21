@@ -536,8 +536,12 @@ contract between them is the whole game.
   (`x - x`, `DateTime.diff(t, t)`) are skipped. Guard-legal ops (`-`/`/`/`div`/`rem`) reach `when`
   guards via lifting like Arithmetic), Relational (ordering/equality swaps, plus membership `in`→`not in` —
   the polarity flip for `in`, mirroring `==`→`!=`; the reverse is Logical's `not` strip, and an
-  `in` directly under a `not` is left unmutated to avoid duplicating it — see NOTES "Membership"),
-  Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip), Literal
+  `in` *or an equality operator* (`==`/`!=`/`===`/`!==`) directly under a `not`/`!` is left unmutated to
+  avoid duplicating that strip — the **equivalent-sibling suppression**; ordering ops `<`/`>`/`<=`/`>=` are
+  *not* suppressed, their boundary/reversal swaps surviving negation as new mutants — see NOTES
+  "Equivalent-sibling suppression, generalized"),
+  Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip — a redundant **inner** strip under the *same* negation,
+  `!!x`/`not not x`, is suppressed by `Transform`, but a mixed `not !x` is kept), Literal
   (integers `n`→`{n±1, 0}`, `true`↔`false`), Conditional (a boolean-valued node → `true`/`false`),
   IfCondition (the *positional* sibling of Conditional — forces an `if`/`unless`/`cond`
   **condition** to `true`/`false`, reaching the conditions no value family proves boolean at the
@@ -548,7 +552,8 @@ contract between them is the whole game.
   comparisons are left to Conditional, no duplicate — a literal `true`/`false`/`nil`, and a binding
   `if x = … do` (the leaked binding would be unbound once the condition is forced, poisoning the
   body); compile-safe by construction),
-  List (`++`↔`--`, non-empty list literal → `[]`), Collection (`Enum`/`List` predicate swaps,
+  List (`++`↔`--`, non-empty list literal → `[]`; the `[]` collapse is suppressed on the **RHS of `in`**,
+  where `x in []` ≡ `false` ≡ Conditional — the equivalent-sibling suppression), Collection (`Enum`/`List` predicate swaps,
   **arity-blind** — a rename keeping the arg list, valid at any arity/pipe position — plus the
   lazy `Stream` twins of the directional `Enum` pairs that exist in `Stream`: `filter`↔`reject`,
   `take`↔`drop`, `take_while`↔`drop_while`, `take_every`↔`drop_every`; `Stream`'s eager reducers

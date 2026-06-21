@@ -2593,7 +2593,53 @@ parallel descents — `Transform.analyze` (the `{:not, _, [{:in, …}]}` runtime
 clause, for bodies) and `FunctionPlan.tag_walk` (the matching guard clause) —
 because guards offer nodes through a separate path and the same redundancy arises
 there. The rule is uniform (any mutator, not just the two built-ins) so a future
-membership mutator inherits it.
+membership mutator inherits it. This is the first of a family — see
+"Equivalent-sibling suppression, generalized" next.
+
+### Equivalent-sibling suppression, generalized `[done]`
+The `not(in)` redundancy above is one instance of a wider class: **two distinct
+mutations whose resulting programs are semantically equal**, so only one is worth
+running. This is *sibling equivalence* — distinct from the *containment* dedup in
+`Transform.Overlap` (a leaf swap covered by a call rewrite, derived from footprints).
+We collapse it exactly as the `not in` precedent always did: at analysis time, descend
+the operands but do **not** offer the inner/redundant node — leaving no id/site/selector,
+so ids stay contiguous (the same property as `Overlap`/`gate_candidates`). Three new
+cases, each mirrored across the two parallel descents — `Transform.Analyze` for bodies,
+`Transform.Tag` for `when` guards (`!`/`&&`/`||` are guard-illegal, so the guard side
+handles only `not`):
+
+1. **`not`/`!` over an equality operator** (`==`/`!=`/`===`/`!==`) — the `in` rule
+   generalized. Each equality op is its own *exact polarity complement*, so under the
+   negation Relational's flip (`!(a != b)`) ≡ Logical's strip (`a == b`), and Conditional
+   on the inner (`!true`/`!false`) ≡ the outer's `true`/`false`. The ordering operators
+   (`<`/`>`/`<=`/`>=`) are **excluded**: Relational mutates them to a *boundary/reversal*
+   (`> → >=`, `> → <`), never the complement (`<=`), so under negation those are
+   genuinely new mutants (`!(a >= b)` ≡ `a < b` ≠ the strip `a > b`). That is precisely
+   *why* only the four equality operators join `in` in the suppressed set.
+
+2. **`x in [list]`** — `List` collapsing the RHS literal to `[]` makes `x in []` ≡
+   `false`, which `Conditional` already produces on the `in` node. Only `List` matches a
+   bare list-literal node, so the `in` clause routes its RHS through `analyze_in_rhs`
+   (elements still descend — their literals mutate — only the *wrapper* is withheld). A
+   standalone `[…]` is untouched; the special case is the `in`-RHS position alone. It
+   holds under `not(x in […])` too (there `not(x in [])` ≡ `true` ≡ the outer Conditional).
+
+3. **Double negation `not not x` / `!!x`** — the **same** operator twice. Both Logical
+   strips yield the identical single-negation, and Conditional on the inner duplicates the
+   outer's `true`/`false`. Restricted to the same operator: a *mixed* `not !x` is left
+   fully offered, because the two strips can diverge on a non-boolean operand (`not x`
+   raises where `!x` coerces to `false`) — not equivalent, so not collapsed.
+
+Why **targeted** suppressions and not a general normalize-then-dedup pass: collapsing
+errs only toward *recall loss* (never a false kill), but a boolean/constant-folding
+normalizer is a real maintenance surface that risks over-collapsing genuinely-distinct
+mutants. These three are each provably lossless (the dropped mutant has a named,
+equivalent survivor), so they stay positive suppressions in the analyzer — consistent
+with the `not in`, `ReturnValue`-skips-boolean, and `IfCondition`-skips-boolean-op
+precedents. **Still on the table** for a future general pass: `Conditional`'s
+self-overlap on *nested* boolean ops (`a == b and c == d` forces `false` from the `and`
+node *and* from short-circuiting each operand), which a node-pattern suppression can't
+catch cheaply.
 
 ### Equivalent mutants `[partial]`
 Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the

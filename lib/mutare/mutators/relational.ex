@@ -14,6 +14,14 @@ defmodule Mutare.Mutators.Relational do
   To avoid duplicating it, `Mutare.Transform` (and the guard tagger) never offer an
   `in` node that is the direct operand of a `not` to a mutator, so the `in → not in`
   flip below is suppressed exactly there (re-negating it would yield `in` again).
+
+  The **equality** operators (`==`/`!=`/`===`/`!==`) get the same treatment for the
+  same reason: each is its own exact polarity complement, so `!(a != b)` (this family's
+  flip) ≡ `a == b` (Logical's strip), and `Transform` suppresses an equality node that
+  is the direct operand of a `not`/`!`. The **ordering** operators are *not* suppressed
+  — their boundary/reversal swaps are not the negation complement, so they survive a
+  surrounding negation as genuinely new mutants. See NOTES "Equivalent-sibling
+  suppression, generalized".
   """
   @behaviour Mutare.Mutator
 

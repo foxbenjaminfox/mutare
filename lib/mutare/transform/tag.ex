@@ -94,16 +94,49 @@ defmodule Mutare.Transform.Tag do
 
   # === guard tagging =========================================================
 
-  # `not in` in a guard: `x not in y` is `not(x in y)`. The inner `in` is descended
-  # (so a literal operand still mutates) but never *offered* to a mutator — exactly
-  # as the in-place analyzer does: Conditional forcing it `true`/`false` would
-  # duplicate the outer `not`'s, and Relational's `in` → `not in` would re-negate to
-  # `x in y`, duplicating Logical's strip of the outer `not`. The outer `not` is
-  # still offered (strip / true / false).
+  # Redundancy suppression in guards — the guard-legal subset of the in-place analyzer's
+  # equivalent-sibling clauses (`Mutare.Transform.Analyze`). The shared move is identical:
+  # descend operands (a literal still mutates) but offer only the outer node, never the
+  # inner/redundant one. `!`/`&&`/`||` are forbidden in guards, so only `not` is handled.
+  #
+  # `not in`: `x not in y` is `not(x in y)`. The inner `in`'s only Relational mutation
+  # (`in` → `not in`) re-negates to `x in y` ≡ Logical's strip of the outer; Conditional
+  # on the inner (`not true`/`not false`) ≡ the outer's `true`/`false`. So the inner `in`
+  # is not offered, and its RHS list is List-suppressed too (`x in []` ≡ `false`, the
+  # outer's Conditional — see `tag_in_rhs/3`). The outer `not` is offered (strip/true/false).
   defp tag_walk({:not, meta, [{:in, in_meta, [left, right]}]}, acc, mutators) do
     {left, acc} = tag_walk(left, acc, mutators)
-    {right, acc} = tag_walk(right, acc, mutators)
+    {right, acc} = tag_in_rhs(right, acc, mutators)
     offer_target({:not, meta, [{:in, in_meta, [left, right]}]}, acc, mutators)
+  end
+
+  # `not` over an equality operator (`==`/`!=`/`===`/`!==`) — `not in` generalised: each
+  # equality operator is its own exact polarity complement, so Relational's flip under the
+  # `not` ≡ Logical's strip and Conditional on the inner ≡ the outer's `true`/`false`.
+  # (Ordering operators are excluded — their boundary/reversal swaps survive negation as
+  # new mutants.) Offer only the outer `not`.
+  defp tag_walk({:not, meta, [{op, op_meta, [left, right]}]}, acc, mutators)
+       when op in [:==, :!=, :===, :!==] do
+    {left, acc} = tag_walk(left, acc, mutators)
+    {right, acc} = tag_walk(right, acc, mutators)
+    offer_target({:not, meta, [{op, op_meta, [left, right]}]}, acc, mutators)
+  end
+
+  # Double negation `not not x` in a guard (same operator — `!` is not guard-legal). Both
+  # strips are the identical `not x`, and Conditional on the inner ≡ the outer's
+  # `true`/`false`. Suppress the inner `not`; offer only the outer.
+  defp tag_walk({:not, meta, [{:not, inner_meta, [operand]}]}, acc, mutators) do
+    {operand, acc} = tag_walk(operand, acc, mutators)
+    offer_target({:not, meta, [{:not, inner_meta, [operand]}]}, acc, mutators)
+  end
+
+  # A bare `x in [list]` guard: offer the `in` node (Conditional `true`/`false`,
+  # Relational → `not in`), but List-suppress the RHS list literal (`x in []` ≡ `false`,
+  # already the Conditional).
+  defp tag_walk({:in, meta, [left, right]}, acc, mutators) do
+    {left, acc} = tag_walk(left, acc, mutators)
+    {right, acc} = tag_in_rhs(right, acc, mutators)
+    offer_target({:in, meta, [left, right]}, acc, mutators)
   end
 
   # A bitstring construction in a guard (`<<x::integer-size(8)>> == <<0>>` is a
@@ -135,6 +168,17 @@ defmodule Mutare.Transform.Tag do
   # A leaf — a var, a bare literal, an atom: offer it (a bare `0` in `x > 0` is
   # mutatable) but there is nothing to descend.
   defp tag_walk(leaf, acc, mutators), do: offer_target(leaf, acc, mutators)
+
+  # The RHS of a guard `in` when it is a non-empty list literal: descend its elements but
+  # do not offer the list *wrapper* — List's `[]` collapse here makes `x in []` ≡ `false`,
+  # already produced by Conditional on the `in`. Any other RHS is tag-walked normally.
+  defp tag_in_rhs({:__block__, meta, [elements]}, acc, mutators)
+       when is_list(elements) and elements != [] do
+    {elements, acc} = Enum.map_reduce(elements, acc, &tag_walk(&1, &2, mutators))
+    {{:__block__, meta, [elements]}, acc}
+  end
+
+  defp tag_in_rhs(other, acc, mutators), do: tag_walk(other, acc, mutators)
 
   # A bitstring segment `<<value::spec>>`: tag-walk the value, keep the spec raw
   # except `size(expr)` args (`tag_spec/3`).

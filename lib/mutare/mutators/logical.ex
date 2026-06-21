@@ -3,6 +3,13 @@ defmodule Mutare.Mutators.Logical do
   Logical/boolean operator mutations: `and`↔`or`, `&&`↔`||`, and negation
   stripping (`not x` → `x`, `!x` → `x`).
 
+  Note one redundancy `Mutare.Transform` resolves on this family's behalf: in a double
+  negation with the **same** operator (`not not x` / `!!x`) the inner strip is identical
+  to the outer's, so `Transform` suppresses the inner negation node (only the outer is
+  offered). A *mixed* `not !x` is kept — its two strips can diverge on a non-boolean
+  operand (`not x` raises where `!x` coerces). See NOTES "Equivalent-sibling suppression,
+  generalized".
+
   Compile-safe by construction — each swap reuses the original operands and
   yields another boolean connective, and dropping a `not`/`!` leaves a
   sub-expression that already type-checked.

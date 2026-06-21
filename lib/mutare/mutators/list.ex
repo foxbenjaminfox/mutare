@@ -9,6 +9,12 @@ defmodule Mutare.Mutators.List do
   empty list is legal wherever a list literal was. `++`/`--` are not guard-legal,
   so the compiler guarantees a source guard never contains one; the literal
   collapse to `[]` is a constant and stays guard-safe.
+
+  One redundancy `Mutare.Transform` resolves on this family's behalf: on the **RHS of
+  `in`** (`x in [a, b]`) the `[]` collapse would yield `x in []` ≡ `false`, a mutant
+  `Mutare.Mutators.Conditional` already produces on the `in` node — so `Transform` does
+  not offer the list wrapper there (its elements still mutate). See NOTES
+  "Equivalent-sibling suppression, generalized".
   """
   @behaviour Mutare.Mutator
 

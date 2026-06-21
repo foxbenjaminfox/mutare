@@ -443,23 +443,55 @@ defmodule Mutare.Transform.Analyze do
     end
   end
 
-  # `not in`: `x not in y` parses as `not(x in y)` — a `:not` wrapping an `:in`.
-  # Both nodes are boolean-valued, so the inner `in` would otherwise be offered to
-  # mutators and produce only *redundant* mutants: Conditional forcing it to
-  # `true`/`false` yields `not true`/`not false`, exactly the outer `not` forced to
-  # `false`/`true`; and Relational's `in` → `not in` yields `not(x not in y)` ≡
-  # `x in y`, exactly Logical's strip of the outer `not`. So the inner `in` node is
-  # not offered to any mutator (only its operands descend); the outer `not` is
-  # offered normally (Logical strips it → `x in y`, the strongest membership
-  # mutation, and Conditional forces it `true`/`false`). The only families matching
-  # an `in` node are Conditional and Relational — both redundant under a `not` — so
-  # this drops exactly the redundant mutants and nothing of value.
-  defp analyze({:not, meta, [{:in, in_meta, [left, right]}]} = node, :runtime, mutators) do
-    inner =
-      {:in, in_meta, [analyze(left, :runtime, mutators), analyze(right, :runtime, mutators)]}
+  # === redundancy suppression: equivalent sibling mutants ====================
+  #
+  # Four shapes where one family's mutant is *guaranteed equivalent* to another's, so
+  # the redundant one is dropped. The shared move is the same as `not in` always did:
+  # descend operands (so their literals still mutate) but do **not** *offer* the
+  # inner/redundant node — only the outer. Dropping a candidate here (rather than
+  # post-hoc) leaves no id/site/selector, exactly like the other positive suppressions.
+  #
+  # (1) **Double negation** `not not x` / `!!x` — the **same** operator twice. Logical
+  # strips the outer *and* the inner to the identical single-negation (`not x` / `!x`),
+  # and Conditional on the inner (`not true`/`not false`) duplicates the outer's
+  # `true`/`false`. Same operator only: a mixed `not !x` could differ on a non-boolean
+  # operand (`not x` raises where `!x` coerces to `false`), so it is left fully offered.
+  defp analyze({neg, meta, [{neg, inner_meta, [operand]}]} = node, :runtime, mutators)
+       when neg in [:not, :!] do
+    inner = {neg, inner_meta, [analyze(operand, :runtime, mutators)]}
+    offer({neg, meta, [inner]}, node, mutators)
+  end
 
-    rebuilt = {:not, meta, [inner]}
+  # (2) **`not`/`!` over `in`** (`x not in y` parses as `not(x in y)`). The inner `in`'s
+  # only Relational mutation (`in` → `not in`) re-negates to `x in y` ≡ Logical's strip
+  # of the outer; Conditional on the inner (`not true`/`not false`) ≡ the outer's
+  # `true`/`false`. So the inner `in` is not offered (only its operands descend), and its
+  # RHS is further List-suppressed — an empty list makes `x in []` ≡ `false`, again the
+  # outer's Conditional (see `analyze_in_rhs/2`). The outer `not`/`!` is offered normally.
+  defp analyze({neg, meta, [{:in, in_meta, [left, right]}]} = node, :runtime, mutators)
+       when neg in [:not, :!] do
+    inner = {:in, in_meta, [analyze(left, :runtime, mutators), analyze_in_rhs(right, mutators)]}
+    offer({neg, meta, [inner]}, node, mutators)
+  end
 
+  # (3) **`not`/`!` over an equality operator** (`==`/`!=`/`===`/`!==`) — case (2)
+  # generalised: each equality operator is its own exact polarity complement, so
+  # Relational's flip under the negation ≡ Logical's strip, and Conditional on the inner
+  # ≡ the outer's `true`/`false`. **Only** the equality operators qualify: the ordering
+  # operators (`<`/`>`/`<=`/`>=`) mutate to a boundary/reversal that survives negation as
+  # a genuinely new mutant (`!(a >= b)` ≡ `a < b`, ≠ the strip `a > b`), so they are
+  # left offered.
+  defp analyze({neg, meta, [{op, op_meta, [left, right]}]} = node, :runtime, mutators)
+       when neg in [:not, :!] and op in [:==, :!=, :===, :!==] do
+    inner = {op, op_meta, [analyze(left, :runtime, mutators), analyze(right, :runtime, mutators)]}
+    offer({neg, meta, [inner]}, node, mutators)
+  end
+
+  # (4) **A bare `x in [list]`** — offer the `in` node normally (Conditional `true`/`false`,
+  # Relational → `not in`), but its RHS list literal is List-suppressed: collapsing it to
+  # `[]` makes `x in []` ≡ `false`, which Conditional already produces on the `in` node.
+  defp analyze({:in, meta, [left, right]} = node, :runtime, mutators) do
+    rebuilt = {:in, meta, [analyze(left, :runtime, mutators), analyze_in_rhs(right, mutators)]}
     offer(rebuilt, node, mutators)
   end
 
@@ -514,6 +546,19 @@ defmodule Mutare.Transform.Analyze do
   # descend without mutating so boundary forms (`\\`, `<<>>`) still fire on
   # children, but attach no candidate here.
   defp analyze(node, context, mutators), do: recurse(node, context, mutators)
+
+  # The RHS of `in` when it is a non-empty list *literal* (`x in [a, b]`): descend its
+  # elements as runtime (so element literals still mutate) but do **not** offer the list
+  # *wrapper* — only `Mutare.Mutators.List` matches a bare list-literal node, and its `[]`
+  # collapse here makes `x in []` ≡ `false`, a mutant Conditional already produces on the
+  # enclosing `in`. Any other RHS (a variable, range, …) is analyzed normally — List never
+  # fires on it anyway.
+  defp analyze_in_rhs({:__block__, meta, [elements]}, mutators)
+       when is_list(elements) and elements != [] do
+    {:__block__, meta, [Enum.map(elements, &analyze(&1, :runtime, mutators))]}
+  end
+
+  defp analyze_in_rhs(right, mutators), do: analyze(right, :runtime, mutators)
 
   # The right side of a `|>` (see the `:|>` clause of `analyze/3`): offer it to
   # mutators *as piped* (so an arity-changing mutator sees the effective arity =
