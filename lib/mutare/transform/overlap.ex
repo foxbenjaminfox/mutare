@@ -19,104 +19,105 @@ defmodule Mutare.Transform.Overlap do
   # in argument positions, not keyword *keys*), ownership is **derived from the mutation
   # itself**:
   #
-  #   * A candidate's *footprint* is the source range of the **minimal changed subtree**
-  #     between its `original` and `mutated` nodes (`footprint/2`). A leaf swap changes the
-  #     whole host (footprint == host range); a call rewrite that substitutes exactly one
-  #     descendant has a footprint that is a *proper sub-range* of its host — it is
+  #   * A candidate's *footprint* is the **minimal changed subtree** between its `original`
+  #     and `mutated` nodes (a meta-insensitive lockstep diff). A leaf swap changes the
+  #     whole host (footprint *is* the host); a call rewrite that substitutes exactly one
+  #     descendant has a footprint that is a *proper descendant* of its host — it is
   #     **covering**.
-  #   * Any **non-covering** candidate whose host range equals some covering candidate's
-  #     footprint is dropped: that is precisely the redundant leaf mutation of the node the
-  #     rewrite already covers.
+  #   * Any **non-covering** candidate whose host is some covering candidate's footprint is
+  #     dropped: that is precisely the redundant leaf mutation of the node the rewrite
+  #     already covers.
   #
-  # This is exact (distinct source nodes have distinct ranges, via `NodeRange.get/1`), at
-  # node granularity (so a `shift` key ModeSwap does *not* swap — `microsecond:`, excluded
-  # from its ladder — keeps its AtomLiteral mutant, consistently whether alone or beside a
-  # swappable sibling), and zero-API (any future minimal-rewrite call mutator gets it for
-  # free).
+  # ## How "the same node" is recognised — node identity, not range
+  #
+  # The leaf candidate's *host* (the `:second` node carrying AtomLiteral) and the call
+  # rewrite's *footprint* (the `:second` subtree inside ModeSwap's `original`) are the **same
+  # source node** — but they are not `===`: `analyze` adds a `:mutare` key to the host's meta
+  # after ModeSwap captured its un-annotated copy. The two are bridged by a stable per-node
+  # token `meta[:mutare_nid]`, stamped once by `Mutare.Transform.Resolve` *before* `analyze`
+  # runs and carried unchanged through annotation. `Resolve.nid/1` reads it; nodes with equal
+  # nids are the same source node, full stop.
+  #
+  # This is **injective**, which `Sourceror.get_range/1` is not: distinct AST terms can share a
+  # range (`[a, b]` ≡ `a - b`; a one-element call-arg list `[0]` ≡ its element `0`), and a
+  # previous range-based version of this pass needed a denylist of three such collision shapes
+  # (unrangeable form atoms, whole-host equality, list-valued footprints) plus two unproven
+  # Sourceror invariants to stay correct. Node identity dissolves all of that: see "What is
+  # covering" below for how each old denylist case falls out of "no metadata → no nid".
+  #
+  # The recognition still relies on a covering mutant being "the original with one subtree
+  # replaced". `Mutare.Transform.Calls` upholds that for **bare imported calls**: a value-only
+  # swap keeps the call bare (same name/arity) rather than requalifying it
+  # (`Elixir.Mod.fun(...)`), so the diff stays single-node. If it requalified, the form *and*
+  # the argument would change → two changes → a whole-host footprint → the leaf would wrongly
+  # resurface (see NOTES "Overlap resolution").
   #
   # ## What is "covering", precisely — and what each mutator does
   #
-  # Covering hinges on the *minimal changed subtree being a proper, **rangeable**, **non-list**
-  # descendant* of the host. **Two** built-in mutations produce one — but only the first ever
-  # resolves to a drop:
+  # Covering hinges on the minimal changed subtree being a *proper, **nid-bearing** descendant*
+  # of the host. **Two** built-in mutations produce one — but only the first ever resolves to a
+  # drop:
   #
-  #   * **ModeSwap** — substitutes one rangeable literal arg/key (`:second`,`minute:`). The
-  #     footprint is that literal, which AtomLiteral *also* hosts → the **only covering footprint
-  #     that suppresses anything**.
+  #   * **ModeSwap** — substitutes one literal arg/key (`:second`,`minute:`). The footprint is
+  #     that literal's `{:__block__, _, [atom]}` wrapper, which carries a nid *and* is where
+  #     AtomLiteral hosts its candidate → the **only covering footprint that suppresses anything**.
   #   * **`String.equivalent?(a, b)` → `a == b`** (StringCall, the *direct* form) — replaces the
   #     whole `{:., _, [mod, fun]}` call form with the bare `:==` operator while *reusing both
-  #     args*, so the minimal changed subtree is the **`.` dot node** — rangeable, non-list, a
-  #     proper sub-range → **covering**. But that node spans `Mod.fun`, a position no value
-  #     mutator ever hosts a candidate at (the module sits in form position, excluded; the fun is
-  #     a bare atom), so this footprint **collides with nothing and prunes nothing** — covering
-  #     yet inert. (The *piped* form `s |> String.equivalent?(t)` → `Kernel.==(t)` changes the
-  #     module *and* the fun, so its form-diff is a *list* → non-covering by the list rule below.)
+  #     args*, so the minimal changed subtree is the **`.` dot node** — a nid-bearing proper
+  #     descendant → **covering**. But that node spans `Mod.fun`, a position no value mutator
+  #     ever hosts a candidate at (the module sits in form position, excluded; the fun is a bare
+  #     atom), so its nid matches no candidate's host → **covering yet inert**. (The *piped* form
+  #     `s |> String.equivalent?(t)` → `Kernel.==(t)` changes the module *and* the fun, so the
+  #     minimal subtree climbs to the whole node — host nid, non-covering.)
   #
-  # Everything else is non-covering, by one of three mechanisms:
+  # Everything else is non-covering, and node identity is *why* — no extra rules needed:
   #
   #   * **Operator swaps / function renames** (Arithmetic, Relational, Logical, Collection,
   #     StringCall's renames, Numeric, …) — change a bare **form/name atom** (`:+`, the `fun` in a
-  #     `{:., _, [mod, fun]}`). Bare atoms in form position carry *no* metadata, so
-  #     `NodeRange.get/1` returns `nil` → **non-covering** (this is the load-bearing
-  #     property — see the sharp edge below).
+  #     `{:., _, [mod, fun]}`). A bare atom carries no metadata, so it has **no nid** →
+  #     non-covering. (Previously this rested on Sourceror returning `nil` for such atoms; now it
+  #     is structural — atoms simply cannot be stamped.)
   #   * **Whole-node replacements** (a literal family, a boolean→`true`) — the minimal subtree
-  #     *is* the host, so its range equals the host range → **non-covering** (a leaf swap is
-  #     redundant with nothing).
+  #     *is* the host, so footprint nid == host nid → non-covering (a leaf swap is redundant with
+  #     nothing).
   #   * **Arity changes** (DefaultDrop, CollectionArity, CallRemoval's arg-drop) and **operand
   #     permutation** (`OperandSwap`, `a - b` → `b - a`) — the differing subtree is the whole
-  #     **argument list** (a drop changes its length; a permutation changes ≥2 of its elements).
-  #     A list is never a value position a leaf mutator targets, so `footprint/3` treats any
-  #     list-valued footprint as **non-covering**. This is essential in two ways it would
-  #     otherwise misfire: an infix `OperandSwap` would prune the `Arithmetic`/`List`
-  #     operator-swap sibling (Sourceror ranges `[a, b]` identically to `a - b`), and a *piped*
-  #     one-arg drop (`xs |> List.first(0)` → `List.first()`, `[0]` ranged identically to `0`)
-  #     would prune the `Literal 0` mutant. Removal/permutation is orthogonal to mutating a
-  #     value, so neither should suppress anything.
+  #     **argument list** (a drop changes its length; a permutation changes ≥2 elements). A list
+  #     carries no metadata → **no nid** → non-covering. This is what keeps an infix `OperandSwap`
+  #     from pruning its `Arithmetic`/`List` operator-swap sibling, and a *piped* one-arg drop
+  #     (`xs |> List.first(0)` → `List.first()`) from pruning the `Literal 0` mutant — both of
+  #     which a range-based pass got wrong (the args list shares a range with the infix node /
+  #     its lone element) and had to special-case.
   #
   # So: two built-ins produce a covering footprint, but **only ModeSwap→AtomLiteral resolves to a
-  # real drop** — the `equivalent?`→`==` footprint is covering yet inert (no candidate shares a
-  # `Mod.fun` range). A leaf is therefore only ever dropped beside a mode/unit swap.
-  #
-  # This recognition relies on a covering mutant being "the original with one subtree replaced".
-  # `Mutare.Transform.Calls` upholds that for **bare imported calls**: a value-only swap keeps
-  # the call bare (same name/arity) rather than requalifying it (`Elixir.Mod.fun(...)`), so the
-  # diff stays single-node. If it requalified, the form *and* the argument would change → a
-  # whole-host footprint → the leaf would wrongly resurface (see NOTES "Overlap resolution").
-  #
-  # The list rule above is what makes that robust. A bare single-element args list (`foo(0)` →
-  # args `[0]`) has the *same* range as its lone element, so before that rule a one-visible-arg
-  # arity drop — e.g. a **piped** `xs |> List.first(0)` → `List.first()`, whose only visible arg
-  # is the default — produced an args-list footprint equal to `0`'s range and wrongly pruned the
-  # `Literal 0` mutant. Treating any list footprint as non-covering closes it (and the whole
-  # class: piped or not, one arg or many). The remaining contingency is the `nil`-footprint
-  # shield for operator/name atoms, which relies on Sourceror not ranging bare form-position
-  # atoms.
+  # real drop** — the `equivalent?`→`==` footprint is covering yet inert (its `.`-node nid matches
+  # no candidate). A leaf is therefore only ever dropped beside a mode/unit swap.
   #
   # Scope: only `Candidate.InPlace` in the `:mutare` key. ModeSwap targets runtime call
   # arguments, never guards/patterns, so it is never lifted and never a structural/pattern
   # candidate kind; those (and `:mutare_case`) are left untouched.
 
-  alias Mutare.Transform.{Candidate, NodeRange}
+  alias Mutare.Transform.{Candidate, Resolve}
 
   @doc """
-  Drop each non-covering `Candidate.InPlace` whose host range is covered by another
-  candidate's minimal-rewrite footprint. The footprint scan always runs — one prewalk plus a
-  `NodeRange.get/1` per candidate that reaches a leaf in the diff — and the *prune* postwalk is
-  skipped when nothing is covering, leaving the tree unchanged. Two built-ins produce a covering
+  Drop each non-covering `Candidate.InPlace` whose host node is some other candidate's
+  minimal-rewrite footprint, matched by `meta[:mutare_nid]` identity. The footprint scan always
+  runs — one prewalk plus a structural diff per candidate — and the *prune* postwalk is skipped
+  when nothing is covering, leaving the tree unchanged. Two built-ins produce a covering
   footprint (see the moduledoc): a mode/unit swap (which drops the redundant AtomLiteral) and the
-  direct `String.equivalent?/2` → `==` rewrite (covering but inert — its `.`-node footprint
-  matches no candidate). So the prune postwalk runs on subtrees containing either, but only the
-  mode/unit swap actually drops anything.
+  direct `String.equivalent?/2` → `==` rewrite (covering but inert — its `.`-node nid matches no
+  candidate). So the prune postwalk runs on subtrees containing either, but only the mode/unit
+  swap actually drops anything.
   """
   @spec resolve(Macro.t()) :: Macro.t()
   def resolve(tree) do
-    covered = covered_ranges(tree)
+    covered = covered_nids(tree)
     if MapSet.size(covered) == 0, do: tree, else: prune(tree, covered)
   end
 
-  # The set of covering footprints: every InPlace candidate whose rewrite touches a proper
-  # descendant (footprint range present and not the host's own range).
-  defp covered_ranges(tree) do
+  # The set of covering footprints, as node ids: every InPlace candidate whose rewrite touches a
+  # proper, nid-bearing descendant of its host.
+  defp covered_nids(tree) do
     {_tree, set} =
       Macro.prewalk(tree, MapSet.new(), fn node, acc -> {node, collect(node, acc)} end)
 
@@ -127,10 +128,10 @@ defmodule Mutare.Transform.Overlap do
     meta
     |> Keyword.get(:mutare, [])
     |> Enum.reduce(acc, fn
-      %Candidate.InPlace{original: o, mutated: m, range: host_range}, acc ->
-        case footprint(o, m, host_range) do
+      %Candidate.InPlace{original: o, mutated: m}, acc ->
+        case footprint_nid(o, m) do
           nil -> acc
-          range -> MapSet.put(acc, range)
+          nid -> MapSet.put(acc, nid)
         end
 
       _other, acc ->
@@ -156,59 +157,47 @@ defmodule Mutare.Transform.Overlap do
     end)
   end
 
-  # Drop only a *non-covering* candidate (its own footprint is the whole host) whose host
-  # range is some covering candidate's footprint. The "non-covering" guard is what keeps a
-  # covering candidate from ever being dropped (a latent footgun if a second call-rewriter
-  # ever produced a footprint equal to another's host range).
-  defp drop?(%Candidate.InPlace{range: range} = c, covered) do
-    not is_nil(range) and MapSet.member?(covered, range) and
-      footprint(c.original, c.mutated, range) == nil
+  # Drop only a *non-covering* candidate (its footprint is the whole host — `footprint_nid` is
+  # `nil`) whose host node id is some covering candidate's footprint. The "non-covering" guard is
+  # what keeps a covering candidate from ever being dropped (a latent footgun if a second
+  # call-rewriter ever produced a footprint equal to another's host).
+  defp drop?(%Candidate.InPlace{original: o, mutated: m}, covered) do
+    host_nid = Resolve.nid(o)
+
+    not is_nil(host_nid) and MapSet.member?(covered, host_nid) and
+      footprint_nid(o, m) == nil
   end
 
   defp drop?(_other, _covered), do: false
 
-  # The source range of the minimal subtree that differs between `original` and `mutated`,
-  # **only when it is a genuine single-node substitution within the host**. `nil` otherwise.
-  # A footprint is *not* covering — returns `nil` — in three cases:
+  # The node id of the minimal subtree that differs between `original` and `mutated`, **only
+  # when it is a genuine single-node substitution within the host** — a proper, nid-bearing
+  # descendant. `nil` otherwise, in three cases that node identity unifies:
   #
-  #   * **Unrangeable** (`sub_range == nil`) — the change is a bare operator/function-name
-  #     atom (an operator swap or rename); nothing for a leaf mutator to be redundant with.
-  #   * **Whole-host** (`sub_range == host_range`) — a leaf swap (`sub` *is* the host scalar),
-  #     a whole-node replacement, or an `OperandSwap` on an **infix** operator, whose changed
-  #     argument list `[a, b]` is a different term from the infix node but which Sourceror
-  #     ranges *identically*. Marking these covering would prune the operator-swap sibling
-  #     (`a - b` → `a + b`) on the same host range. A descendant's range is always within the
-  #     host's, so "not equal" means "strictly inside".
-  #   * **A list** (`is_list(sub)`) — the changed subtree is an argument/element *list*, never
-  #     a value position a leaf mutator targets. This happens when an arity-changing call drops
-  #     an argument (`[x]` → `[]`, `[a, b]` → `[a]`) or when ≥2 siblings change (an operand
-  #     permutation). Removal/permutation is orthogonal to mutating a *value*, so it must not
-  #     suppress the leaf on the surviving/dropped element — critical for a **piped** one-arg
-  #     drop (`xs |> List.first(0)` → `List.first()`), where the one-element list `[0]` ranges
-  #     identically to its element `0` and would otherwise prune the `Literal 0` mutant. A real
-  #     substitution (ModeSwap) descends *into* a same-length list to the one changed scalar/key,
-  #     so its footprint is never a list.
-  #
-  # The range is taken from the **original** side (the mutated literal carries fresh `[]`
-  # metadata, so it has no range).
-  defp footprint(original, mutated, host_range) do
+  #   * **No nid** — the changed subtree is a bare operator/function-name atom (an operator swap
+  #     or rename) or an argument list (an arity change / operand permutation). Neither shape
+  #     carries metadata, so `Resolve.nid/1` is `nil`; nothing for a leaf mutator to be redundant
+  #     with.
+  #   * **Whole-host** (`sub_nid == host_nid`) — a leaf swap (the changed subtree *is* the host
+  #     scalar) or a whole-node replacement. A leaf swap is redundant with nothing.
+  #   * **Equal** — the mutator reused the original verbatim; no change at all.
+  defp footprint_nid(original, mutated) do
     case diff(original, mutated) do
       :equal ->
         nil
 
-      {:diff, sub} when is_list(sub) ->
-        nil
-
       {:diff, sub} ->
-        sub_range = NodeRange.get(sub)
-        if sub_range && sub_range != host_range, do: sub_range, else: nil
+        sub_nid = Resolve.nid(sub)
+        if sub_nid && sub_nid != Resolve.nid(original), do: sub_nid, else: nil
     end
   end
 
   # Structural diff returning `:equal` or `{:diff, minimal_original_subtree}`. Unchanged
   # subtrees are caught by `===` (the mutators reuse the original AST verbatim except the one
   # swapped node, so identity holds). Descent stops at a `{:__block__, meta, [literal]}`
-  # wrapper — the rangeable node — rather than the bare value inside it (which has none).
+  # wrapper — the nid-bearing node — rather than the bare value inside it (which carries none).
+  # Meta is ignored throughout (`_`), so the nid the wrapper *does* carry never makes two
+  # otherwise-equal nodes diff.
   defp diff(o, m) do
     cond do
       o === m ->

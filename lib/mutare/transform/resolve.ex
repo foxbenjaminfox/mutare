@@ -34,6 +34,7 @@ defmodule Mutare.Transform.Resolve do
 
   @macro_key :mutare_macro
   @piped_macro_key :mutare_macro_piped
+  @nid_key :mutare_nid
 
   @doc "Stamp every remote call's module and every bare imported call with its resolved module."
   @spec annotate(Macro.t()) :: Macro.t()
@@ -47,15 +48,50 @@ defmodule Mutare.Transform.Resolve do
   consulted at each remote and bare call.
   """
   @spec annotate(Macro.t(), Macros.registry()) :: Macro.t()
-  def annotate(ast, registry),
-    do:
-      walk(ast, %{
-        aliases: %{},
-        imports: %{},
-        kernel: Imports.default_selector(),
-        piped: false,
-        macros: registry
-      })
+  def annotate(ast, registry) do
+    ast
+    |> walk(%{
+      aliases: %{},
+      imports: %{},
+      kernel: Imports.default_selector(),
+      piped: false,
+      macros: registry
+    })
+    |> stamp_nids()
+  end
+
+  @doc """
+  The stable node id stamped by the pre-pass, or `nil` for a node carrying no metadata
+  (a bare atom — an operator/function-name — or a list — an argument list). Those two
+  shapes never receive a nid, which is exactly why `Mutare.Transform.Overlap` treats an
+  operator-swap / function-rename / arity-change footprint as non-covering for free.
+  """
+  @spec nid(Macro.t()) :: non_neg_integer() | nil
+  def nid({_form, meta, _args}) when is_list(meta), do: Keyword.get(meta, @nid_key)
+  def nid(_node), do: nil
+
+  # Stamp every metadata-bearing node with a unique, stable token `meta[:mutare_nid]`, so
+  # `Mutare.Transform.Overlap` can bridge a leaf candidate's host node and a call rewrite's
+  # changed subtree by **node identity** rather than `Sourceror` range-equality — which is *not*
+  # injective (`[a, b]` and `a - b` share a range; a one-element call-arg list `[0]` shares its
+  # element's). Runs once, on the resolved tree, *before* `analyze` attaches candidates: a
+  # candidate's `original` is the stamped node (so it carries the nid), and a call mutator's
+  # footprint subtree — drawn from that same `original` — carries the matching one. A DFS counter
+  # makes the token stable and deterministic. Bare atoms and lists carry no metadata, so they
+  # never get a nid; nid-identity therefore *subsumes* the old range denylist (lists / form atoms
+  # / whole-host) and its two unproven Sourceror invariants — a false prune becomes unrepresentable.
+  defp stamp_nids(ast) do
+    {stamped, _next} =
+      Macro.prewalk(ast, 0, fn
+        {form, meta, args}, n when is_list(meta) ->
+          {{form, [{@nid_key, n} | meta], args}, n + 1}
+
+        node, n ->
+          {node, n}
+      end)
+
+    stamped
+  end
 
   # A statement sequence: fold the env left-to-right so an `alias`/`import` extends it for the
   # *subsequent* siblings only. Each statement is walked under the env in force *before* it

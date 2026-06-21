@@ -1964,7 +1964,19 @@ The fix derives "what a mutant covers" **from the mutation itself**, in a new pr
 `Mutare.Transform.Overlap.resolve/1` run at the top of `emit/2` (before id assignment, so a
 dropped candidate leaves no id/site and ids stay contiguous — same property as
 `gate_candidates/1`; it *can't* live in the emit postwalk because that's post-order, visiting
-the leaf before its enclosing call). A candidate's **footprint** is the source range of the
+the leaf before its enclosing call).
+
+> **Superseded mechanism, kept for the "why".** The next several paragraphs (through "Residual
+> contingency") describe the *original* range-based version of this pass — the one the
+> `[done]` "node identity, not range" entry below eventually **replaced**. It is preserved
+> because it is exactly the chain of empirical patches whose fragility motivated the nid fix;
+> read it as the predecessor design, not the live code. Concretely: the live pass no longer
+> uses `Sourceror` ranges at all — it stamps a per-node `meta[:mutare_nid]` in `Resolve` and
+> prunes on nid-equality (see below). Wherever the text says "range", the code now says "nid",
+> and the three denylist rules (rangeable / proper-sub-range / non-list) collapse into "carries
+> a nid". The *behaviour* is identical; only the identity proxy changed.
+
+A candidate's **footprint** was the source range of the
 *minimal changed subtree* between its `original` and `mutated` (`footprint/3`, a meta-
 insensitive lockstep diff that stops at the rangeable `{:__block__, _, [literal]}` wrapper, not
 the bare value, and ranges the **original** side — the mutated literal has fresh `[]` meta and
@@ -2052,39 +2064,48 @@ Sourceror not ranging bare form-position atoms. If that changed, operator swaps 
 would acquire footprints — harmless only because the analyzer keeps a call's form position
 opaque (nothing hosts a candidate there), but worth knowing.
 
-**The deferred structural fix: node identity, not range.** Step back and the three regressions
-above (infix `OperandSwap`, piped `DefaultDrop`, `:qualify`) are *one* bug: the mechanism uses
-**`Sourceror` range-equality as a proxy for node identity**, and `get_range/1` is **not
-injective** — distinct AST terms can share a range (`[a, b]` ≡ `a - b`; a one-element call-arg
-list `[0]` ≡ its element `0`). The `nil`/whole-host/`is_list` rules are a *denylist* of the
-non-injective shapes. A collision scan over a varied corpus is reassuring: **every** distinct-node
-range collision puts a **list** (a container borrowing its element/sibling range, → `is_list`) or
-a **form/machinery node** (operator, `.` dot, interpolation `::`, a `:do` key — none of which host
-a value candidate, → the `nil`-shield / form-opacity) on at least one side. Never two value-leaves,
-never a covering non-list footprint vs a value-leaf. Plus an 18-way `{call-family × leaf-family}`
-sweep drops **only** the intended ModeSwap→AtomLiteral. So the denylist is *empirically complete*
-for today's families and this Sourceror — but it is **empirical, not proven**: it rests on two
-external invariants (Sourceror never ranges bare form atoms; every collision is list/machinery-
-shaped) that a Sourceror upgrade, an unprobed construct (`with`/`try`/exotic sigils), or — most
-realistically — a **custom call-rewriting mutator** (which the moduledoc invites: "any future
-minimal-rewrite call mutator gets it for free") could violate. The failure mode is the worst kind
-for a mutation tool: a *false prune* = a **silently missing mutant**, inflating the score with no
-error.
+**The structural fix, now implemented: node identity, not range `[done]`.** Step back and the
+three regressions above (infix `OperandSwap`, piped `DefaultDrop`, `:qualify`) were *one* bug: the
+original mechanism used **`Sourceror` range-equality as a proxy for node identity**, and
+`get_range/1` is **not injective** — distinct AST terms can share a range (`[a, b]` ≡ `a - b`; a
+one-element call-arg list `[0]` ≡ its element `0`). The `nil`/whole-host/`is_list` rules were a
+*denylist* of the non-injective shapes. A collision scan over a varied corpus was reassuring:
+**every** distinct-node range collision puts a **list** (a container borrowing its element/sibling
+range, → `is_list`) or a **form/machinery node** (operator, `.` dot, interpolation `::`, a `:do`
+key — none of which host a value candidate, → the `nil`-shield / form-opacity) on at least one
+side. Never two value-leaves, never a covering non-list footprint vs a value-leaf. So the denylist
+was *empirically complete* for those families and that Sourceror — but **empirical, not proven**:
+it rested on two external invariants (Sourceror never ranges bare form atoms; every collision is
+list/machinery-shaped) that a Sourceror upgrade, an unprobed construct (`with`/`try`/exotic
+sigils), or — most realistically — a **custom call-rewriting mutator** (which the moduledoc
+invites: "any future minimal-rewrite call mutator gets it for free") could violate. The failure
+mode is the worst kind for a mutation tool: a *false prune* = a **silently missing mutant**,
+inflating the score with no error.
 
-The once-and-for-all fix is to stop bridging the *raw* original subtree (in a candidate's
-`original`) and the *annotated* host node with a **range** — the only reason ranges are used is
-that those two aren't `===` (annotation rewrites `meta`), but they *do* share a range. Stamp a
-stable unique token `meta[:mutare_nid]` in the `Resolve` pre-pass (before `analyze` annotates),
-carry it on both the leaf candidate's host and the footprint's changed subtree, and prune on
-**nid-equality**. Lists and bare atoms carry no meta → no nid → never covering, so nid-identity
-*subsumes* all three denylist rules **and** both unproven invariants — the bug category becomes
-unrepresentable. Deferred (not wrong-today, and it threads a stamper through the pre-pass), but
-this is the structural answer; the range denylist is the pragmatic one.
+The once-and-for-all fix stops bridging the *raw* original subtree (in a candidate's `original`)
+and the *annotated* host node with a **range** — the only reason ranges were used is that those
+two aren't `===` (annotation rewrites `meta`), but they *do* share a range. `Mutare.Transform.Resolve`
+now stamps a stable unique token `meta[:mutare_nid]` on every metadata-bearing node, in a single
+DFS-counter prewalk (`stamp_nids/1`) run at the end of its `annotate/2` pre-pass — *before*
+`analyze` attaches candidates, so a candidate's `original` carries the nid and a call rewrite's
+footprint subtree (drawn from that same `original`) carries the matching one. `Overlap` reads it
+via `Resolve.nid/1`, collects the nids of covering footprints (a footprint is covering iff its
+minimal changed subtree is a *proper, nid-bearing descendant* — `sub_nid && sub_nid != host_nid`),
+and prunes any non-covering candidate (footprint `nil`) whose host nid is covered. Lists and bare
+atoms carry no meta → no nid → never covering, so **nid-identity subsumes all three denylist rules
+*and* both unproven invariants** — the diff (`diff/2`, `reduce/2`) is kept verbatim (still
+meta-insensitive, so the nid the wrapper carries never makes two equal nodes diff), but the
+`NodeRange.get/1` lookups, the `host_range != sub_range` proper-sub-range test, and the explicit
+`is_list(sub) -> nil` rule are all gone, replaced by the single `Resolve.nid/1` lookup. The bug
+category is now unrepresentable. (`NodeRange` itself stays — the `Site`/report still ranges the
+`original` for the diff; only `Overlap` stopped depending on range-as-identity. `:mutare_nid` joins
+the render strip-list, like the other `mutare_*` bookkeeping keys.) The 18-way
+`{call-family × leaf-family}` sweep and the per-key `shift` tests pin the behaviour unchanged.
 
 Guards: scoped to `Candidate.InPlace` (ModeSwap is never lifted — date/time calls aren't
 guard-legal — so no `Lifted`/`CaseClause`/… kind is touched), and drops **only** non-covering
 candidates (a covering one is never pruned — a shield if a second call-rewriter's footprint ever
-equalled another's host range). Kept **separate** from `gate_candidates/1` (the
+equalled another's host nid). Kept **separate** from `gate_candidates/1` (the
 `call_option_keys` self-opt-out): that one is local, opts-driven, needs no cross-node info, and
 post-order-insensitive — folding them would share a name, not logic. Both are members of one
 informal "pre-id candidate pruning" phase. (A `shift` duration key is, incidentally, *both* a

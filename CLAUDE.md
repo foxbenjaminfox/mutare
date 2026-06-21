@@ -271,21 +271,30 @@ contract between them is the whole game.
     the cross-node sibling of the per-node `gate_candidates/1` self-opt-out, which it deliberately
     stays separate from). It drops a leaf mutation a call-rewriting mutator already covers
     (AtomLiteral on a ModeSwap unit/key), **derived from the mutation itself**: a candidate's
-    *footprint* is the source range of the minimal changed subtree between its `original` and
-    `mutated`; one whose footprint is a proper sub-range of its host (a call rewrite touching one
-    descendant) is *covering*, and any non-covering candidate whose host range equals a covering
-    footprint is pruned. Exact (distinct nodes → distinct ranges via `NodeRange`), node-granular
-    (so an excluded `shift` key like `microsecond:` keeps its leaf mutant, consistently), zero-API
-    (it replaced the old `owned_args/2` callback + `:owned` context, which drifted from `mutate/2`
-    and could only speak in argument *positions* — see NOTES "Overlap resolution"). Scoped to
-    `Candidate.InPlace`; ModeSwap is never lifted, so no other candidate kind is touched. A
-    footprint is covering only for a genuine **single-node substitution**: it must be rangeable
-    (so operator swaps / function renames, whose changed node is a bare `:+`/`fun` atom, are
-    non-covering for free), a *proper* sub-range of the host (so a leaf swap and an infix
-    `OperandSwap` — `[a, b]` ranged like `a - b` — are excluded), and **not a list** (so arity
-    drops and operand permutations, whose changed subtree is the argument list, are excluded —
-    including a piped one-arg `xs |> List.first(0)`, where `[0]` ranges like `0`). Net: ModeSwap
-    is the only covering mutator, so the prune runs only on subtrees with a mode/unit swap.
+    *footprint* is the minimal changed subtree between its `original` and `mutated` (a
+    meta-insensitive lockstep diff); one whose footprint is a proper descendant of its host (a
+    call rewrite touching one descendant) is *covering*, and any non-covering candidate whose host
+    node *is* a covering footprint is pruned. "Same node" is matched by a stable per-node identity
+    token `meta[:mutare_nid]` — stamped on every metadata-bearing node by `Transform.Resolve`'s
+    pre-pass (`stamp_nids/1`, a DFS counter), *before* `analyze` annotates, so a leaf candidate's
+    host and the call rewrite's footprint subtree (drawn from the same `original`) carry the
+    matching nid; `Resolve.nid/1` reads it. Injective by construction (distinct nodes → distinct
+    nids), node-granular (so an excluded `shift` key like `microsecond:` keeps its leaf mutant,
+    consistently), zero-API (it replaced the old `owned_args/2` callback + `:owned` context, which
+    drifted from `mutate/2` and could only speak in argument *positions* — see NOTES "Overlap
+    resolution"). Scoped to `Candidate.InPlace`; ModeSwap is never lifted, so no other candidate
+    kind is touched. A footprint is covering only for a genuine **single-node substitution**: the
+    changed subtree must carry a nid (a *proper, nid-bearing descendant*) — and **bare atoms and
+    lists carry no metadata, so no nid**, which is exactly why operator swaps / function renames
+    (changed node a bare `:+`/`fun` atom), arity drops, and operand permutations (changed subtree
+    the argument *list*) are all non-covering for free, with no special cases. This nid-identity
+    *replaced* an earlier `Sourceror`-range proxy that needed a three-rule denylist
+    (rangeable / proper-sub-range / non-list) plus two unproven Sourceror invariants, because
+    `get_range/1` is **not injective** (`[a, b]` ≡ `a - b`; `[0]` ≡ `0`) — see NOTES "node
+    identity, not range" for why a range collision risked a *false prune* (a silently missing
+    mutant). Net: ModeSwap is the only covering mutator that drops anything (the direct
+    `String.equivalent?/2` → `==` rewrite is covering-but-inert — its `.`-node nid matches no
+    candidate), so the prune runs only on subtrees with a mode/unit swap or that rewrite.
   - **in-place selector** for body expressions: wrap the operator in a tail-position
     `case :persistent_term.get(:mutare_active, 0) do <id> -> mutated; _ -> original end`. One
     illegal spot for that `case`: the RHS of a pipe (`x |> case … end` parses but won't compile —
