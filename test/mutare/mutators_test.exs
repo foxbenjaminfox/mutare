@@ -49,7 +49,8 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.all() == Keyword.values(Mutators.registry())
 
       assert Mutators.all() ==
-               [Arithmetic, OperandSwap, Relational, Logical, Literal, Conditional, IfCondition] ++
+               [Arithmetic, OperandSwap, Mutare.Mutators.Bitwise] ++
+                 [Relational, Logical, Literal, Conditional, IfCondition] ++
                  [List] ++
                  [Collection, CollectionArity, StringCall, MapKeyword, Mutare.Mutators.MapSet] ++
                  [CallRemoval, DefaultDrop] ++
@@ -64,7 +65,8 @@ defmodule Mutare.MutatorsTest do
       assert Mutators.families() == Keyword.keys(Mutators.registry())
 
       assert Mutators.families() ==
-               [:arithmetic, :operand_swap, :relational, :logical, :literal, :conditional] ++
+               [:arithmetic, :operand_swap, :bitwise] ++
+                 [:relational, :logical, :literal, :conditional] ++
                  [:if_condition, :list] ++
                  [:collection, :collection_arity, :string_call, :map_keyword, :map_set] ++
                  [:call_removal] ++

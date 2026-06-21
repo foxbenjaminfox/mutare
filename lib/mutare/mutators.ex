@@ -32,6 +32,7 @@ defmodule Mutare.Mutators do
   @registry [
     arithmetic: Mutare.Mutators.Arithmetic,
     operand_swap: Mutare.Mutators.OperandSwap,
+    bitwise: Mutare.Mutators.Bitwise,
     relational: Mutare.Mutators.Relational,
     logical: Mutare.Mutators.Logical,
     literal: Mutare.Mutators.Literal,
