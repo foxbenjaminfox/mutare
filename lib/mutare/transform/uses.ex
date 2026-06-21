@@ -109,6 +109,13 @@ defmodule Mutare.Transform.Uses do
     _ -> :unavailable
   end
 
+  # The `:global.trans` id is `{ResourceId, LockRequesterId}`. The lock is keyed on the
+  # **ResourceId** (`{__MODULE__, :sandbox_env}` — a constant, *shared* across processes, so two
+  # callers contend for the same lock and serialize). `LockRequesterId` is the requester *identity*
+  # and **must stay `self()`**: `:global` grants a lock re-entrantly to the *same* requester, so a
+  # process-independent (constant) requester id would make every process the same requester and
+  # grant them all at once — defeating the mutex. (Counter-intuitive but verified; the concurrent
+  # transform test in `uses_env_test.exs` guards it.)
   defp swap(fun) do
     :global.trans({{__MODULE__, :sandbox_env}, self()}, fn ->
       previous = Mix.env()
