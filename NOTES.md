@@ -1565,14 +1565,35 @@ or merely *builds candidates* the descent hands off to.
   `receive`/`fn` (→ `receive_do_clauses/2` + `attach_clause_pattern_candidates/4`),
   and `try`/`def…rescue` (→ `rescue_type_candidates/3`) into it.
 
-The axis is **by kind of candidate built**, mirroring the sibling modules already
-outside `analyze.ex` (`Tag`, `PatternStructure`, `FunctionPlan`) — not by chopping
-the recursion. The condition analysis (`if`/`unless`/`cond`) and the `=`-match /
-binding-escaping-macro pattern-structure sections are the same shape and could
-follow, but were **left in place**: condition analysis is small and tied to the
-`if`/`unless`/`cond` dispatch clauses, and the two pattern-structure sections share
-helpers (`pattern_export`/`export_tuple`/`strip_comments`) that bind them together
-more than to anything extractable today.
+Two further candidate-builders followed, in a second pass:
+
+- **`Analyze.Conditions`** (`if`/`unless`/`cond` condition analysis, ~400 lines —
+  the binding-ancestor prune, the IfCondition decision attach, and the `if`/`unless`
+  *hoisting* path that lifts a spine binding out so a binding-free condition can still
+  carry the decision). The descent routes `cond` (→ `analyze_condition/2`) and
+  `if`/`unless` (→ `hoist_if?/2` + `hoist_if/6`, else `finish_condition/3`) into it.
+  Its `@short_circuit_ops`/`@branch_forms`/`@binding_isolating_forms` moved with it
+  (used nowhere else).
+- **`Analyze.MatchPatterns`** (the `=`-match LHS → `MatchPattern` and the
+  binding-escaping-macro pattern arg → `MacroPattern`, ~335 lines). The two share the
+  tuple-re-export discovery (`pattern_export`/`export_tuple`/`strip_comments`), so they
+  belong in one module. Routed via `analyze_statement/2` (block stmt / `with` clause)
+  and `analyze_match_statement/2` (`for` qualifier).
+
+The clean part of this pass: **neither needed new public API**. Every callback into
+the descent uses the `:runtime` context, which is exactly the existing public
+`Analyze.annotate/2` (`= analyze(node, :runtime, mutators)`), and MatchPatterns reuses
+the already-public `Analyze.put_candidates/2` — so no further `defp`→`def` promotion
+beyond the sub-walk API the `ClausePatterns` pass added. MatchPatterns keeps a private
+copy of the trivial `macro_routing/1` (`meta[:mutare_macro]` accessor) rather than
+depend on core for a one-liner.
+
+The axis throughout is **by kind of candidate built**, mirroring the sibling modules
+already outside `analyze.ex` (`Tag`, `PatternStructure`, `FunctionPlan`) — not by
+chopping the recursion. Net across both passes: `analyze.ex` 2092 → ~1090 lines (the
+recursive descent and its inseparable helpers), with the candidate-builders in four
+focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
+`MatchPatterns`).
 
 ### Function lifting (M2): sharp edges `[various]`
 - **Recursion bounces through the dispatcher.** A self-call inside a lifted copy
