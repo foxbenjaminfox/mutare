@@ -111,7 +111,8 @@ defmodule Mutare.Transform.Uses do
   defp walk_body({:__block__, meta, stmts}, module, env) do
     {walked, _env} =
       Enum.map_reduce(stmts, env, fn stmt, env ->
-        {walk_stmt(stmt, module, env), Aliases.register(stmt, env)}
+        node = walk_stmt(stmt, module, env)
+        {node, advance_env(stmt, node, env)}
       end)
 
     {:__block__, meta, walked}
@@ -121,6 +122,18 @@ defmodule Mutare.Transform.Uses do
 
   defp walk_stmt({:use, _meta, _args} = node, module, env), do: stamp(node, module, env)
   defp walk_stmt(stmt, module, env), do: walk(stmt, module, env)
+
+  # Advance the alias env past a statement: fold the source `alias`, then any aliases an earlier
+  # `use` *injected* (read back off the stamped node). Elixir expands a later `use`/call through
+  # an alias an earlier `use` brought into scope (`use InjectAlias; use T`), so without this the
+  # later `use` would resolve its target against the wrong (un-injected) env and stay unstamped.
+  defp advance_env(stmt, node, env) do
+    env = Aliases.register(stmt, env)
+    node |> injected_directives() |> Enum.reduce(env, &Aliases.register/2)
+  end
+
+  defp injected_directives({:use, meta, _args}) when is_list(meta), do: directives(meta)
+  defp injected_directives(_node), do: []
 
   # The full module name of a nested `defmodule`, best-effort: Elixir prepends the enclosing
   # module to a nested alias. A non-static head (`__MODULE__.Child`, `unquote(mod)`, a
@@ -221,12 +234,18 @@ defmodule Mutare.Transform.Uses do
   defp to_module(atom) when is_atom(atom), do: atom
 
   # Expand `mod.__using__(opts)` and collect the directives in its body, recursing through
-  # nested `use`s. Bounded by depth and a `seen` set so a `use`-cycle terminates.
+  # nested `use`s. Bounded by depth and a `seen` set so a `use`-cycle terminates. `seen` keys on
+  # the `{module, options}` pair, not the module alone: a `__using__` that re-dispatches to the
+  # *same* module with different static options (`use Foo, :a` → `use Foo, :b`) is a real
+  # option-specific clause Elixir would expand, not a cycle — only an exact `{mod, opts}` repeat
+  # is (and the depth cap backstops a non-repeating chain).
   defp expand_and_collect(mod, opts, caller, depth, seen) do
+    key = {mod, opts}
+
     cond do
       depth > @max_depth -> []
-      MapSet.member?(seen, mod) -> []
-      true -> collect(expand_using(mod, opts, caller), caller, depth + 1, MapSet.put(seen, mod))
+      MapSet.member?(seen, key) -> []
+      true -> collect(expand_using(mod, opts, caller), caller, depth + 1, MapSet.put(seen, key))
     end
   end
 

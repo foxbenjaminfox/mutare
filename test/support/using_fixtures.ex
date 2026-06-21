@@ -60,6 +60,38 @@ defmodule Mutare.Test.CallerProbe do
   end
 end
 
+defmodule Mutare.Test.RealTarget do
+  @moduledoc """
+  The real `use` target an injected alias points at. Injects a distinctive `import Map, only:
+  [get: 2]` so a test can confirm a later `use T` (where `T` was aliased to here by an *earlier*
+  `use`) was expanded through the injected alias.
+  """
+  defmacro __using__(_opts) do
+    quote do: import(Map, only: [get: 2])
+  end
+end
+
+defmodule Mutare.Test.AliasInjector do
+  @moduledoc """
+  A `__using__` that injects an `alias Mutare.Test.RealTarget, as: T` — the setup half of the
+  "an earlier `use` injects an alias a later `use` relies on" scenario (`use AliasInjector; use T`).
+  """
+  defmacro __using__(_opts) do
+    quote do: alias(Mutare.Test.RealTarget, as: T)
+  end
+end
+
+defmodule Mutare.Test.OptionDispatch do
+  @moduledoc """
+  A `__using__` that re-dispatches to the *same* module with a different static option
+  (`use …, :a` ⇒ `use …, :b`), the `:b` clause injecting a distinctive `import Map, only:
+  [pop: 2]`. Exercises the cycle guard keying on `{module, options}`, not the module alone — a
+  module-only guard would mistake the `:b` re-dispatch for a cycle and drop its directive.
+  """
+  defmacro __using__(:a), do: quote(do: use(Mutare.Test.OptionDispatch, :b))
+  defmacro __using__(:b), do: quote(do: import(Map, only: [pop: 2]))
+end
+
 defmodule Mutare.Test.RaisingUsing do
   @moduledoc "A `__using__` that raises at expansion — must degrade to no directives, never crash."
   defmacro __using__(_opts), do: raise("boom from __using__")

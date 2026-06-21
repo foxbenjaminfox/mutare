@@ -147,6 +147,18 @@ defmodule Mutare.UsesTest do
       # The seen-set breaks the A→B→A cycle: it returns (no directives) rather than looping.
       assert directives_at(source) == []
     end
+
+    test "a `use` re-dispatching to the same module with new options is not a cycle" do
+      source = """
+      defmodule UsesOptionDispatch do
+        use Mutare.Test.OptionDispatch, :a
+      end
+      """
+
+      # `use …, :a` expands to `use …, :b`; the `{module, options}` cycle key lets the distinct
+      # `:b` clause expand (a module-only key would drop it as a cycle).
+      assert Enum.map(directives_at(source), &Macro.to_string/1) == ["import Map, only: [pop: 2]"]
+    end
   end
 
   describe "expansion scope (quoted data and unresolvable modules)" do
@@ -241,6 +253,22 @@ defmodule Mutare.UsesTest do
 
       # `use Ctrl` precedes the alias, so `Ctrl` is unresolved (and unloadable) ⇒ no directives.
       assert directives_at(source) == []
+    end
+
+    test "an alias injected by an earlier `use` resolves a later `use` target" do
+      source = """
+      defmodule UsesInjectedAlias do
+        use Mutare.Test.AliasInjector
+        use T
+      end
+      """
+
+      rendered = Enum.map(directives_at(source), &Macro.to_string/1)
+
+      # `use AliasInjector` injects `alias RealTarget, as: T`; the later `use T` must expand
+      # `RealTarget` through it (Elixir does), surfacing RealTarget's `import Map, only: [get: 2]`.
+      assert "alias Mutare.Test.RealTarget, as: T" in rendered
+      assert "import Map, only: [get: 2]" in rendered
     end
   end
 
