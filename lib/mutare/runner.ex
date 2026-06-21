@@ -236,9 +236,13 @@ defmodule Mutare.Runner do
     end
   end
 
-  # The one compilation. `Command.success?/1` owns the "0 means success" reading.
+  # The one compilation. `Command.success?/1` owns the "0 means success" reading;
+  # `Command.compiler_env/0` carries the SSA-alias-pass-off speed option (a free
+  # compile win, applied only here — per-mutant runs never recompile the lib).
   defp compile(sandbox) do
-    {output, status} = Command.mix(sandbox, ["compile"], Selector.baseline())
+    {output, status} =
+      Command.mix(sandbox, ["compile"], Selector.baseline(), env: Command.compiler_env())
+
     if Command.success?(status), do: :ok, else: {:error, :compile_failed, output}
   end
 

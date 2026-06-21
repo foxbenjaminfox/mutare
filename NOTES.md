@@ -213,6 +213,50 @@ within one) — not easily splittable; the volume drivers are already tamed by
 per-clause lifting and `hoist_pipe` (see "lifting blowup"), with one further driver —
 the per-site active-id read — noted below ("Hoist the per-site active-id read").
 
+### Compiler options for the one metamutant compile `[done]`
+The metamutant compile is a single `mix compile`, dominated by `beam_ssa_opt` on
+the biggest generated module (the long-pole above). Profiling that pass on Mutare's
+own metamutant pinned the cost: `ssa_opt_alias` — the SSA alias-analysis sub-pass
+(`beam_ssa_alias`, which proves term uniqueness to enable destructive in-place
+updates) — is **~45% of `beam_ssa_opt`** on the tuple-heavy `transform.ex`
+metamutant. The generated selectors and the tuple-the-scrutinee rewrites are
+pathological for it: lots of artificial tuple data-flow to analyse, for an
+optimisation whose runtime payoff (in-place binary/record updates in tight loops)
+suite execution almost never collects.
+
+**Fix:** `Mutare.Runner.compile/1` sets `ERL_COMPILER_OPTIONS=[no_ssa_opt_alias]`
+for the one `mix compile` (`Mutare.Sandbox.Command.compiler_env/0` owns it, beside
+the rest of the run-env contract). Measured, deps pre-seeded, Mutare-on-Mutare
+(~9,100 sites):
+
+  - whole-sandbox `mix compile`: **−15% on 2 schedulers** (a small CI box: 8.5 s →
+    7.2 s), **−2% on 16 cores** (the alias-bound modules hide behind the type-bound
+    long-pole `analyze.ex` once there are cores to spare, so the win shrinks as
+    cores grow — but CI, where it matters, is core-starved).
+  - **runtime: nil.** A 152-test pure-AST-rewriting workload run against the
+    baseline metamutant compiled both ways was 2253 ms vs 2258 ms (+0.2%, noise) —
+    the alias optimisation buys nothing for suite execution, so dropping it is free.
+
+Two load-bearing properties:
+
+  - **Safe on every OTP.** An unknown compiler option is silently ignored
+    (verified), so `no_ssa_opt_alias` is a no-op before the pass existed
+    (pre-OTP-25) and never breaks the single build.
+  - **Merged, not clobbered.** `compiler_env/0` prepends our option to any inherited
+    `ERL_COMPILER_OPTIONS` (`erl_compiler_options/1`, a pure, unit-tested merge that
+    always emits a well-formed `[...]` term list — bare term, nested term, empty list
+    all handled), so a user's own compiler options survive. Scoped to the `compile`
+    call only: a per-mutant `mix test` doesn't recompile the lib (sources unchanged),
+    so it carries nothing.
+
+**Rejected for the same compile-vs-runtime reason as protocol consolidation:**
+`no_ssa_opt` (all SSA optimisation off) is bigger on compile (−24% on 16 cores,
+−40% on 2) but **+5.4% per mutant run** — paid N times, net-negative for any
+non-trivial suite. Worth exposing only behind an explicit opt-in (a `--fast-compile`
+mode) for compile-dominated runs, never as a default. `--no-debug-info` /
+`--no-docs` move the needle ~0% and aren't worth losing `debug_info` for a target
+that happens to want it.
+
 ### Hoist the per-site active-id read (`:persistent_term.get`) `[deferred]`
 The long-pole above is volume-bound, and one untamed driver is the selector
 *scrutinee*. Every in-place selector reads the active mutant id with a fresh
