@@ -26,6 +26,12 @@ defmodule Mutare.AliasesTest do
     calls
   end
 
+  defp register_alias(source, env) do
+    source
+    |> Sourceror.parse_string!()
+    |> Aliases.register(env)
+  end
+
   describe "resolved_module/2 (the reader)" do
     test "returns the stamped module when present, the literal path otherwise" do
       assert Aliases.resolved_module([mutare_alias: [:String]], [:S]) == [:String]
@@ -35,11 +41,54 @@ defmodule Mutare.AliasesTest do
     end
   end
 
+  describe "resolve_path/2" do
+    test "an atom-module alias resolves only a lone segment" do
+      env = %{B: :binary}
+
+      assert Aliases.resolve_path([:B], env) == :binary
+      assert Aliases.resolve_path([:B, :Sub], env) == [:B, :Sub]
+    end
+
+    test "non-path terms pass through unchanged" do
+      assert Aliases.resolve_path(:binary, %{B: [:String]}) == :binary
+
+      assert Aliases.resolve_path({:__MODULE__, [], nil}, %{B: [:String]}) ==
+               {:__MODULE__, [], nil}
+    end
+  end
+
+  describe "stamp_module/2" do
+    test "leaves non-alias nodes unchanged" do
+      node = {:__MODULE__, [line: 1], nil}
+
+      assert Aliases.stamp_module(node, %{S: [:String]}) == node
+    end
+
+    test "leaves clean metadata when the written path is already resolved" do
+      node = {:__aliases__, [line: 1], [:String]}
+
+      assert Aliases.stamp_module(node, %{}) == node
+    end
+  end
+
   describe "annotate/1 — alias forms" do
     test "alias with :as resolves the rebound name" do
       calls =
         resolved("""
         defmodule M do
+          alias String, as: S
+          def up(x), do: S.upcase(x)
+        end
+        """)
+
+      assert calls[:upcase] == {[:S], [:String]}
+    end
+
+    test "alias with :as overwrites an earlier binding for the same name" do
+      calls =
+        resolved("""
+        defmodule M do
+          alias Old.Strings, as: S
           alias String, as: S
           def up(x), do: S.upcase(x)
         end
@@ -58,6 +107,32 @@ defmodule Mutare.AliasesTest do
         """)
 
       assert calls[:upcase] == {[:Strings], [:My, :Strings]}
+    end
+
+    test "plain alias overwrites an earlier binding for the same introduced name" do
+      calls =
+        resolved("""
+        defmodule M do
+          alias Old.Strings
+          alias My.Strings
+          def up(x), do: Strings.upcase(x)
+        end
+        """)
+
+      assert calls[:upcase] == {[:Strings], [:My, :Strings]}
+    end
+
+    test "an alias target whose first segment is aliased keeps trailing segments" do
+      calls =
+        resolved("""
+        defmodule M do
+          alias MyApp, as: Root
+          alias Root.Strings, as: S
+          def up(x), do: S.upcase(x)
+        end
+        """)
+
+      assert calls[:upcase] == {[:S], [:MyApp, :Strings]}
     end
 
     test "multi-alias resolves each child on the shared base" do
@@ -145,6 +220,25 @@ defmodule Mutare.AliasesTest do
       assert calls[:split] == {[:B], :binary}
     end
 
+    test "an atom-module alias with :as overwrites an earlier binding" do
+      calls =
+        resolved("""
+        defmodule M do
+          alias Old.Binary, as: B
+          alias :binary, as: B
+          def f(x), do: B.split(x, ",")
+        end
+        """)
+
+      assert calls[:split] == {[:B], :binary}
+    end
+
+    test "an atom-module alias without :as binds nothing" do
+      env = %{B: [:Existing]}
+
+      assert register_alias("alias :binary", env) == env
+    end
+
     test "a __MODULE__-relative alias is left unresolved (can't name a concrete module)" do
       calls =
         resolved("""
@@ -155,6 +249,65 @@ defmodule Mutare.AliasesTest do
         """)
 
       assert calls[:run] == {[:Sub], [:Sub]}
+    end
+  end
+
+  describe "register/2 — malformed alias directives" do
+    test "ignores a multi-alias whose base or child is not an atom path" do
+      env = %{Existing: [:Existing]}
+
+      bad_children =
+        {:alias, [],
+         [
+           {{:., [], [{:__aliases__, [], [:My]}, :{}]}, [], :not_children}
+         ]}
+
+      bad_base =
+        {:alias, [],
+         [
+           {{:., [], [{:__aliases__, [], [{:__MODULE__, [], nil}]}, :{}]}, [],
+            [{:__aliases__, [], [:Sub]}]}
+         ]}
+
+      bad_child =
+        {:alias, [],
+         [
+           {{:., [], [{:__aliases__, [], [:My]}, :{}]}, [],
+            [{:__aliases__, [], [{:__MODULE__, [], nil}]}]}
+         ]}
+
+      assert Aliases.register(bad_children, env) == env
+      assert Aliases.register(bad_base, env) == env
+      assert Aliases.register(bad_child, env) == env
+    end
+
+    test "ignores a simple alias whose path is not all atoms" do
+      env = %{Existing: [:Existing]}
+
+      bad_alias =
+        {:alias, [],
+         [{:__aliases__, [], [{:__MODULE__, [], nil}, :Sub]}, [as: {:__aliases__, [], [:Sub]}]]}
+
+      assert Aliases.register(bad_alias, env) == env
+    end
+
+    test "only the :as option overrides the introduced name" do
+      env = %{Existing: [:Existing]}
+
+      assert Aliases.register(
+               {:alias, [],
+                [{:__aliases__, [], [:Foo, :Bar]}, [bee: {:__aliases__, [], [:Baz]}]]},
+               env
+             ) == Map.put(env, :Bar, [:Foo, :Bar])
+    end
+
+    test "non-keyword options are treated as no :as option" do
+      env = %{Existing: [:Existing]}
+
+      assert Aliases.register(
+               {:alias, [], [{:__aliases__, [], [:Foo, :Bar]}, :not_keyword_options]},
+               env
+             ) == Map.put(env, :Bar, [:Foo, :Bar])
     end
   end
 

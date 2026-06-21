@@ -40,6 +40,9 @@ defmodule Mutare.TransformTest do
   # the boolean true/false.
   @negation [Mutare.Mutators.Conditional, Mutare.Mutators.Logical]
 
+  defp selector_tuple(subject),
+    do: "case {:persistent_term.get(#{inspect(Mutare.Selector.key())}, 0), #{subject}}"
+
   @sample """
   defmodule Sample do
     def classify(total, threshold) do
@@ -423,7 +426,7 @@ defmodule Mutare.TransformTest do
     # in a guard.
     assert Enum.any?(sites, &(&1.original_op == :> and &1.kind == :in_place))
     assert Enum.any?(sites, &(&1.original_op == :+ and &1.kind == :in_place))
-    assert meta =~ "case {:persistent_term.get(:mutare_active, 0), x}"
+    assert meta =~ selector_tuple("x")
     refute meta =~ "when (case"
     refute meta =~ "when case"
     assert {:ok, _} = Code.string_to_quoted(meta)
@@ -2570,7 +2573,7 @@ defmodule Mutare.TransformTest do
       # pattern (`:bad`) are still deferred — so the total is 9, not 12. The `case` subject
       # is tupled (proof its clause pattern mutated via the tuple-the-scrutinee path).
       assert length(sites) == 9
-      assert meta =~ "case {:persistent_term.get(:mutare_active, 0), x}"
+      assert meta =~ selector_tuple("x")
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
@@ -2621,7 +2624,7 @@ defmodule Mutare.TransformTest do
 
       # The `1` pattern (line 4) mutates; the diff stays focused on it (`:in_place`).
       assert Enum.any?(sites, &(&1.mutator == :literal and &1.kind == :in_place and &1.line == 4))
-      assert meta =~ "case {:persistent_term.get(:mutare_active, 0), x}"
+      assert meta =~ selector_tuple("x")
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
   end

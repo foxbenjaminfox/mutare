@@ -92,6 +92,9 @@ defmodule Mutare.CasePatternTest do
     site.id
   end
 
+  defp selector_tuple(subject),
+    do: "case {:persistent_term.get(#{inspect(Selector.key())}, 0), #{subject}}"
+
   test "case clause-pattern/guard mutants are delivered in place via tuple-the-scrutinee", %{
     sites: sites,
     meta: meta
@@ -101,7 +104,7 @@ defmodule Mutare.CasePatternTest do
     refute meta =~ "__mutare_swap"
 
     # The subject is tupled with the active id (the per-clause dispatch).
-    assert meta =~ "case {:persistent_term.get(:mutare_active, 0), n}"
+    assert meta =~ selector_tuple("n")
 
     clause_sites =
       Enum.filter(
