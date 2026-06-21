@@ -21,6 +21,19 @@ defmodule Mutare.TransformPropertyGenerators do
   binding **hoisting** (`if (v = …) != nil do … v …`), and literal/collection families —
   over raw breadth, so a modest `numtests` budget spends its randomness where rendering /
   compilation is most likely to trip.
+
+  It also emits **stdlib calls the call-matching families target** (`Enum`/`String`/`Map`/
+  `Keyword`/bare-`Kernel`), in two shapes. *Direct* calls (`String.upcase(s)`,
+  `Enum.filter(l, f)`) sprinkle through the expression trees, so Collection / StringCall /
+  CallRemoval / CollectionArity / DefaultDrop / MapKeyword / Numeric all fire under the
+  stream rather than only in hand-written examples. A dedicated `resolved_call_function_gen/0`
+  then exercises the lexical name-resolution pre-pass (`Transform.Resolve` + `Aliases`/
+  `Imports`) and the families' *rebuild* paths: a function body opens with `alias`/`import`
+  directives and calls in the matching aliased / bare form — aliased (`alias String, as: S;
+  S.upcase`), selective-import (qualify-on-rebuild), whole-import (keep-bare-on-rebuild),
+  interleaved (`alias …; import …`), and even import *through* an alias (`alias Enum, as: E;
+  import E`). Every call is total for any probe-pool term (or deterministically raises
+  identically in original and baseline) and pure, so baseline-equivalence stays deterministic.
   """
   use PropCheck
 
@@ -92,7 +105,8 @@ defmodule Mutare.TransformPropertyGenerators do
       {2, one(guarded_function_gen())},
       {1, one(pattern_function_gen())},
       {2, literal_clause_function_gen()},
-      {1, one(default_args_function_gen())}
+      {1, one(default_args_function_gen())},
+      {2, one(resolved_call_function_gen())}
     ])
   end
 
@@ -147,6 +161,21 @@ defmodule Mutare.TransformPropertyGenerators do
     end
   end
 
+  # A function whose body opens with `alias`/`import` directives and then calls a stdlib
+  # function in the matching aliased / bare form — the only generator that exercises the
+  # name-resolution pre-pass (`Transform.Resolve` + `Aliases`/`Imports`) and the
+  # call-matching families' rebuild paths (alias-preserving, qualify-on-selective-import,
+  # keep-bare-on-whole-import). The directives sit at the top of the function body — a
+  # nested lexical scope — so a child scope's additions never leak; see `resolved_body_gen/1`
+  # for the forms (aliased / selective / whole / interleaved / import-through-alias).
+  defp resolved_call_function_gen do
+    let params <- non_empty_params_gen() do
+      let {fname, body} <- {fun_name(), resolved_body_gen(params)} do
+        {:def, [], [{fname, [], Enum.map(params, &var/1)}, [do: body]]}
+      end
+    end
+  end
+
   # === expressions ==========================================================
 
   # A runtime expression over the in-scope names `vars`. Depth is capped low (4): each
@@ -170,6 +199,7 @@ defmodule Mutare.TransformPropertyGenerators do
       {2, cond_gen(smaller)},
       {2, pipe_gen(smaller)},
       {1, collection_gen(smaller)},
+      {2, remote_call_gen(vars)},
       {1, with_gen(size, vars)},
       {1, fn_gen(size, vars)},
       {1, try_gen(smaller)},
@@ -362,6 +392,154 @@ defmodule Mutare.TransformPropertyGenerators do
       end
     ])
   end
+
+  # === remote calls =========================================================
+
+  # A direct call into a stdlib module the call-matching families target. The direct
+  # (written-out module) form needs no directive, so it nests anywhere an expression does;
+  # the aliased / imported forms are `resolved_call_function_gen/0`'s job. Args are leaves
+  # (so the call adds no rendering depth) shaped to keep each call total over the probe pool
+  # — a list where a list is wanted, a binary where a binary is wanted — or, where any term
+  # is legal (`Map.get`, `min`/`max`), a bare leaf. Anything that can still raise (a non-int
+  # to `Integer`, etc.) is deterministic, so the baseline matches the original on the raise.
+  defp remote_call_gen(vars) do
+    oneof([
+      # Enum over a list + predicate closure — Collection (filter↔reject, take/drop_while).
+      let {fun, l, f} <-
+            {oneof([:filter, :reject, :take_while, :drop_while]), list_arg(vars),
+             pred_fun_gen(vars)} do
+        remote(:Enum, fun, [l, f])
+      end,
+      # Enum over a list — CallRemoval / CollectionArity / Collection (sort total across types).
+      let(
+        {fun, l} <- {oneof([:reverse, :sort, :uniq, :dedup]), list_arg(vars)},
+        do: remote(:Enum, fun, [l])
+      ),
+      # String unary — StringCall (case/direction pairs) / CallRemoval.
+      let(
+        {fun, s} <- {oneof([:upcase, :downcase, :trim, :reverse, :capitalize]), str_arg(vars)},
+        do: remote(:String, fun, [s])
+      ),
+      # String predicate — StringCall (starts_with?↔ends_with?).
+      let(
+        {fun, s, p} <- {oneof([:starts_with?, :ends_with?]), str_arg(vars), ascii_string()},
+        do: remote(:String, fun, [s, p])
+      ),
+      # Map lookup with a default — DefaultDrop (drop the trailing fallback).
+      let({k, d} <- {leaf_gen(vars), leaf_gen(vars)}, do: remote(:Map, :get, [map_arg(), k, d])),
+      # Map conditional write — MapKeyword (put↔put_new↔replace).
+      let({k, v} <- {leaf_gen(vars), leaf_gen(vars)}, do: remote(:Map, :put, [map_arg(), k, v])),
+      # Keyword lookup with a default — DefaultDrop.
+      let(
+        {k, d} <- {atom_gen(), leaf_gen(vars)},
+        do: remote(:Keyword, :get, [keyword_arg(), k, d])
+      ),
+      # Bare-Kernel min/max — Numeric (the effective-arity bare-Kernel path; total ordering).
+      let(
+        {fun, l, r} <- {oneof([:min, :max]), leaf_gen(vars), leaf_gen(vars)},
+        do: bare_call(fun, [l, r])
+      )
+    ])
+  end
+
+  # The `alias`/`import` body forms used by `resolved_call_function_gen/0`. Each yields a
+  # `{:__block__, [], [<directives…>, <call>]}` whose directives sit at the function-body
+  # scope and whose call uses the matching aliased / bare form, so the call-matching family
+  # resolves and rebuilds it. Names are chosen to never clash with `Kernel` (so a whole
+  # import and its bare call always compile).
+  defp resolved_body_gen(vars) do
+    oneof([
+      alias_form_gen(vars),
+      import_selective_form_gen(vars),
+      import_whole_form_gen(vars),
+      interleaved_form_gen(vars)
+    ])
+  end
+
+  # `alias String, as: S; S.upcase(s)` — alias-preserving rebuild (the swap stays `S.`).
+  defp alias_form_gen(vars) do
+    oneof([
+      let(
+        s <- str_arg(vars),
+        do: resolved_block([alias_directive(:String, :S)], aliased_call([:S], :upcase, [s]))
+      ),
+      let {l, f} <- {list_arg(vars), pred_fun_gen(vars)} do
+        resolved_block([alias_directive(:Enum, :E)], aliased_call([:E], :reject, [l, f]))
+      end
+    ])
+  end
+
+  # `import String, only: [downcase: 1]; downcase(s)` — a selective import, so a swap
+  # qualifies on rebuild (`Elixir.String.upcase(...)`).
+  defp import_selective_form_gen(vars) do
+    oneof([
+      let(
+        s <- str_arg(vars),
+        do:
+          resolved_block([import_only_directive(:String, downcase: 1)], bare_call(:downcase, [s]))
+      ),
+      let {l, f} <- {list_arg(vars), pred_fun_gen(vars)} do
+        resolved_block([import_only_directive(:Enum, filter: 2)], bare_call(:filter, [l, f]))
+      end
+    ])
+  end
+
+  # `import String; upcase(s)` — a sole whole import (with `Kernel` unmanipulated), so a
+  # swap stays bare on rebuild. The bare names never overlap `Kernel`.
+  defp import_whole_form_gen(vars) do
+    oneof([
+      let(
+        s <- str_arg(vars),
+        do: resolved_block([import_whole_directive(:String)], bare_call(:upcase, [s]))
+      ),
+      let {l, f} <- {list_arg(vars), pred_fun_gen(vars)} do
+        resolved_block([import_whole_directive(:Enum)], bare_call(:reject, [l, f]))
+      end
+    ])
+  end
+
+  # Two interleaved directives in one body — `alias …; import …` folded together in source
+  # order, and an `import` resolved *through* an alias in force (`alias Enum, as: E; import E`).
+  defp interleaved_form_gen(vars) do
+    oneof([
+      let {s, f} <- {str_arg(vars), pred_fun_gen(vars)} do
+        directives = [alias_directive(:String, :S), import_only_directive(:Enum, reject: 2)]
+        resolved_block(directives, bare_call(:reject, [aliased_call([:S], :graphemes, [s]), f]))
+      end,
+      let {l, f} <- {list_arg(vars), pred_fun_gen(vars)} do
+        directives = [alias_directive(:Enum, :E), import_only_directive(:E, filter: 2)]
+        resolved_block(directives, bare_call(:filter, [l, f]))
+      end
+    ])
+  end
+
+  # --- call/arg/directive builders ---
+
+  defp remote(mod, fun, args), do: {{:., [], [aliases([mod]), fun]}, [], args}
+  defp aliased_call(mod_path, fun, args), do: {{:., [], [aliases(mod_path), fun]}, [], args}
+  defp bare_call(fun, args), do: {fun, [], args}
+
+  defp alias_directive(mod, as_atom), do: {:alias, [], [aliases([mod]), [as: aliases([as_atom])]]}
+  defp import_only_directive(mod, kw), do: {:import, [], [aliases([mod]), [only: kw]]}
+  defp import_whole_directive(mod), do: {:import, [], [aliases([mod])]}
+  defp aliases(path), do: {:__aliases__, [], path}
+  defp resolved_block(directives, call), do: {:__block__, [], directives ++ [call]}
+
+  # A two-element list of leaves — always an enumerable for the `Enum` calls.
+  defp list_arg(vars), do: let({a, b} <- {leaf_gen(vars), leaf_gen(vars)}, do: [a, b])
+
+  # Always a binary: a literal string, or `to_string/1` of any leaf (total for every term in
+  # the probe pool — integers/atoms/booleans/nil/strings).
+  defp str_arg(vars),
+    do: oneof([ascii_string(), let(x <- leaf_gen(vars), do: {:to_string, [], [x]})])
+
+  # A predicate closure `fn z -> <leaf over [z | vars]> end` — any returned term is a legal
+  # filter/reject predicate (truthiness selects), so it is total.
+  defp pred_fun_gen(vars),
+    do: let(body <- leaf_gen([:z | vars]), do: {:fn, [], [{:->, [], [[var(:z)], body]}]})
+
+  defp map_arg, do: oneof([{:%{}, [], []}, {:%{}, [], [{:a, 1}]}])
+  defp keyword_arg, do: oneof([[], [ok: 1], [a: 1, b: 2]])
 
   # === small AST + value helpers ============================================
 
