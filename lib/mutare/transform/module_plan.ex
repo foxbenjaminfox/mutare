@@ -43,8 +43,12 @@ defmodule Mutare.Transform.ModulePlan do
     chunks = chunk_clause_runs(statements)
     non_consecutive = non_consecutive_signatures(chunks)
     metaprogrammed = metaprogrammed_def_names(chunks)
-    warn_non_consecutive(non_consecutive, file)
-    warn_metaprogrammed(metaprogrammed_signatures(chunks, metaprogrammed, non_consecutive), file)
+    # Metaprogramming wins the diagnosis when a signature is *both* non-consecutive
+    # and metaprogrammed: grouping its clauses can't enable lifting (the generated
+    # clauses still force in-place), so the non-consecutive advice ("group the
+    # clauses") would mislead. Warn only the binding, accurate reason for each.
+    warn_non_consecutive(non_consecutive_only(non_consecutive, metaprogrammed), file)
+    warn_metaprogrammed(metaprogrammed_signatures(chunks, metaprogrammed), file)
 
     items =
       Enum.map(chunks, fn
@@ -153,6 +157,15 @@ defmodule Mutare.Transform.ModulePlan do
     |> MapSet.new()
   end
 
+  # The non-consecutive signatures whose binding reason really *is* being
+  # non-consecutive — i.e. not also metaprogrammed (which is keyed by name only,
+  # and refuses lifting at the name level regardless of consecutiveness, so its
+  # warning is the accurate one). Dropping the metaprogrammed names here avoids a
+  # misleading "group the clauses" suggestion that grouping wouldn't honour.
+  defp non_consecutive_only(non_consecutive, metaprogrammed) do
+    Enum.reject(non_consecutive, fn {_vis, name, _arity} -> name in metaprogrammed end)
+  end
+
   # Lifting is silently disabled for non-consecutive clauses, which costs that
   # function its guard and clause-drop mutants. Warn once per signature so the
   # gap is visible (and actionable — grouping the clauses restores lifting).
@@ -203,19 +216,19 @@ defmodule Mutare.Transform.ModulePlan do
     names
   end
 
-  # The top-level clause-group signatures blocked from lifting *only* by
-  # metaprogramming (already-non-consecutive ones are warned separately), for the
-  # warning. Deduplicated by signature.
-  defp metaprogrammed_signatures(chunks, metaprogrammed, non_consecutive) do
+  # The top-level clause-group signatures blocked from lifting by metaprogramming,
+  # for the warning. Deduplicated by signature. Metaprogramming is the binding
+  # reason whenever it applies (it refuses lifting at the name level), so a
+  # signature that is *also* non-consecutive is warned here, not by
+  # `warn_non_consecutive` — see `non_consecutive_only/2` and `build/3`.
+  defp metaprogrammed_signatures(chunks, metaprogrammed) do
     chunks
     |> Enum.flat_map(fn
       {:clauses, clauses} -> [clause_signature(hd(clauses))]
       {:other, _statement} -> []
     end)
     |> Enum.uniq()
-    |> Enum.filter(fn {_vis, name, _arity} = sig ->
-      name in metaprogrammed and sig not in non_consecutive
-    end)
+    |> Enum.filter(fn {_vis, name, _arity} -> name in metaprogrammed end)
   end
 
   # Mirror of warn_non_consecutive/2 for the metaprogramming case. Not user-fixable

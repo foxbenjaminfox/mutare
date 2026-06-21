@@ -274,6 +274,36 @@ defmodule Mutare.TransformCorpusTest do
         {Mutare.Corpus.Meta, :code, [3]}
       ],
       min_sites: 6
+    },
+    %{
+      name: "non-consecutive AND metaprogrammed: metaprogramming wins the diagnosis",
+      # `f/1`'s literal heads straddle the `if` (non-consecutive) *and* the `if`
+      # generates another `f/1` clause (metaprogrammed). Both independently force
+      # in-place, but grouping the literal heads can't enable lifting — the
+      # generated clause still blocks it. So the binding, accurate warning is the
+      # metaprogrammed one; the misleading "group the clauses" non-consecutive
+      # warning must be suppressed. Behaviour/baseline are unchanged either way.
+      source: """
+      defmodule Mutare.Corpus.NonConsecutiveMeta do
+        @enabled true
+
+        def f(0), do: :zero
+
+        if @enabled do
+          def f(1), do: :one
+        end
+
+        def f(2), do: :two
+      end
+      """,
+      probes: [
+        {Mutare.Corpus.NonConsecutiveMeta, :f, [0]},
+        {Mutare.Corpus.NonConsecutiveMeta, :f, [1]},
+        {Mutare.Corpus.NonConsecutiveMeta, :f, [2]}
+      ],
+      min_sites: 1,
+      expect_log: ~r{clauses of f/1 are augmented by compile-time},
+      refute_log: ~r{clauses of f/1 are non-consecutive}
     }
   ]
 
@@ -309,6 +339,10 @@ defmodule Mutare.TransformCorpusTest do
 
     if expected = entry[:expect_log] do
       assert log =~ expected, "expected a log matching #{inspect(expected)} for #{name}"
+    end
+
+    if refuted = entry[:refute_log] do
+      refute log =~ refuted, "expected no log matching #{inspect(refuted)} for #{name}"
     end
 
     # 3. The central bet: the metamutant must parse and compile.

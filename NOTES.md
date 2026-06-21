@@ -1666,7 +1666,13 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
   Cost: such functions get no guard/clause-drop mutants (body in-place mutants
   still apply). The skip is **not silent** — `warn_non_consecutive/2` logs a
   `Logger.warning` once per non-consecutive signature (file + `name/arity`),
-  pointing at the fix (group the clauses). **Deferred:** the cases we *can* lift
+  pointing at the fix (group the clauses) — **except** when the same signature is
+  *also* metaprogrammed (see the next note): there the metaprogrammed warning
+  wins, because grouping the literal heads can't enable lifting (the generated
+  clauses still force in-place), so "group the clauses" would mislead.
+  `non_consecutive_only/2` drops those names from the non-consecutive warning set
+  and `metaprogrammed_signatures/2` warns them instead — exactly one accurate
+  warning, never both. **Deferred:** the cases we *can* lift
   safely — e.g. heads separated only by another `def`, with no compile-time read
   whose value differs across the split — are worth recovering later
   (normalize/relocate the reads, or detect attribute-independence and lift). For
