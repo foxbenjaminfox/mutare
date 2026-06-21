@@ -79,17 +79,31 @@ defmodule Mutare.Transform.Uses do
   # expanding `__using__`: a macro that branches on `Mix.env()` then injects the directives that
   # will actually be in scope when the metamutant compiles, not the scan-env ones. (Compile-time
   # config baked into the already-loaded modules can't be re-mirrored in-process — only a runtime
-  # `Mix.env()` read is.) The scan is sequential, so the global set/restore can't race; Mix is
-  # always loaded here — every entry point (the Mix task, the test suite) runs under it.
+  # `Mix.env()` read is.) The scan is sequential, so the global set/restore can't race.
+  #
+  # `Mix.env/0` raises if Mix hasn't been *started* — the public `transform_string/2` API embedded
+  # in a plain process that never ran Mix — in which case there's no sandbox env to mirror, so we
+  # run unmirrored (the fallback keeps the library API working without Mix).
   defp with_sandbox_env(fun) do
+    case sandbox_swap() do
+      {:ok, previous} ->
+        try do
+          fun.()
+        after
+          Mix.env(previous)
+        end
+
+      :unavailable ->
+        fun.()
+    end
+  end
+
+  defp sandbox_swap do
     previous = Mix.env()
     Mix.env(@sandbox_env)
-
-    try do
-      fun.()
-    after
-      Mix.env(previous)
-    end
+    {:ok, previous}
+  rescue
+    _ -> :unavailable
   end
 
   @doc """
@@ -153,7 +167,7 @@ defmodule Mutare.Transform.Uses do
   defp walk({:__block__, meta, stmts}, module, env) do
     {walked, _env} =
       Enum.map_reduce(stmts, env, fn stmt, env ->
-        {walk(stmt, module, env), Aliases.register(stmt, env)}
+        {walk(stmt, module, env), register_source(stmt, env)}
       end)
 
     {:__block__, meta, walked}
@@ -184,17 +198,38 @@ defmodule Mutare.Transform.Uses do
   defp walk_stmt({:use, _meta, _args} = node, module, env), do: stamp(node, module, env)
   defp walk_stmt(stmt, module, env), do: walk(stmt, module, env)
 
-  # Advance the alias env past a statement: fold the source `alias`, then any aliases an earlier
-  # `use` *injected* (read back off the stamped node). Elixir expands a later `use`/call through
-  # an alias an earlier `use` brought into scope (`use InjectAlias; use T`), so without this the
-  # later `use` would resolve its target against the wrong (un-injected) env and stay unstamped.
+  # Advance the alias env past a statement: fold the source `alias`/`require …, as:`, then any
+  # aliases an earlier `use` *injected* (read back off the stamped node). Elixir expands a later
+  # `use`/call through an alias an earlier `use` brought into scope (`use InjectAlias; use T`), so
+  # without this the later `use` would resolve its target against the wrong (un-injected) env and
+  # stay unstamped.
   defp advance_env(stmt, node, env) do
-    env = Aliases.register(stmt, env)
+    env = register_source(stmt, env)
     node |> injected_directives() |> Enum.reduce(env, &Aliases.register/2)
   end
 
   defp injected_directives({:use, meta, _args}) when is_list(meta), do: directives(meta)
   defp injected_directives(_node), do: []
+
+  # Fold the alias a *source* statement introduces: a plain `alias`, or a `require Mod, as: Name`
+  # (which the compiler also treats as an alias). `Aliases.register` ignores `require`, so a
+  # require-with-`as:` is rewritten to the equivalent `alias` first — keeping its Sourceror opts,
+  # which `Aliases` reads via `AST.key_atom` — mirroring the `collect/5` rewrite for expanded
+  # `__using__` bodies. A bare `require Mod` (no `as:`) introduces no alias and passes through.
+  defp register_source(stmt, env), do: stmt |> require_as_alias() |> Aliases.register(env)
+
+  defp require_as_alias({:require, meta, [mod_ast, opts]} = stmt) when is_list(opts) do
+    if has_as?(opts), do: {:alias, meta, [mod_ast, opts]}, else: stmt
+  end
+
+  defp require_as_alias(stmt), do: stmt
+
+  defp has_as?(opts) do
+    Enum.any?(opts, fn
+      {key, _value} -> AST.key_atom(key) == :as
+      _ -> false
+    end)
+  end
 
   # The full module name of a nested `defmodule`, best-effort: Elixir prepends the enclosing
   # module to a nested alias. A non-static head (`__MODULE__.Child`, `unquote(mod)`, a

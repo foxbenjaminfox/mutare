@@ -255,6 +255,22 @@ defmodule Mutare.UsesTest do
       assert directives_at(source) == []
     end
 
+    test "a `require Mod, as: U` (which also aliases) resolves a later `use U`" do
+      source = """
+      defmodule UsesRequireAlias do
+        require Mutare.Test.ControllerUsing, as: U
+        use U
+      end
+      """
+
+      # `require Mod, as: U` introduces the alias `U`, just like `alias` — so `use U` must expand
+      # `ControllerUsing` through it.
+      assert "import Enum, only: [reject: 2]" in Enum.map(
+               directives_at(source),
+               &Macro.to_string/1
+             )
+    end
+
     test "an alias injected by an earlier `use` resolves a later `use` target" do
       source = """
       defmodule UsesInjectedAlias do
