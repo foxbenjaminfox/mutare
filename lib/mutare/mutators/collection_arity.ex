@@ -24,8 +24,9 @@ defmodule Mutare.Mutators.CollectionArity do
   indistinguishable from a non-piped `Enum.sort(list)`.
 
   So this family implements the optional `mutate/2` callback (never `mutate/1`), which
-  `Mutare.Transform` invokes with `%{piped: boolean}` at each runtime call site:
-  `effective_arity = length(args) + if(piped, do: 1, else: 0)`. That makes every case
+  `Mutare.Transform` invokes with `%{pipe_mode: :piped | :unpiped}` at each runtime call
+  site, recovering the effective arity with `effective_arity/2` (`length(args)`, plus one
+  when `:piped`). That makes every case
   correct — including skipping `Enum.reverse/2` (`reverse(list, tail)`, an unrelated
   operation) whether or not it's written in a pipe.
 
@@ -66,15 +67,15 @@ defmodule Mutare.Mutators.CollectionArity do
   def mutate(_node), do: :skip
 
   @impl Mutare.Mutator
-  def mutate(node, %{piped: piped?}) do
+  def mutate(node, %{pipe_mode: pipe_mode}) do
     case Calls.resolved_call(node) do
       {module, fun, args, rebuild} ->
-        eff_arity = Mutare.Mutator.effective_arity(args, Mutare.Mutator.pipe_mode(piped?))
+        eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode)
 
         case Map.fetch(@rules, {module, fun, eff_arity}) do
           {:ok, {new_fun, keep}} ->
             # `rebuild` reuses the written alias node (every rule stays within `Enum`).
-            [rebuild.(new_fun, kept_visible_args(args, keep, piped?))]
+            [rebuild.(new_fun, kept_visible_args(args, keep, pipe_mode))]
 
           :error ->
             :skip
@@ -89,9 +90,9 @@ defmodule Mutare.Mutators.CollectionArity do
 
   # Translate kept *effective* indices to the *visible* argument list, dropping any
   # that map to the (absent) piped value — see `Mutare.Mutator.visible_index/2`.
-  defp kept_visible_args(args, keep, piped?) do
+  defp kept_visible_args(args, keep, pipe_mode) do
     keep
-    |> Enum.map(&Mutare.Mutator.visible_index(&1, piped?))
+    |> Enum.map(&Mutare.Mutator.visible_index(&1, pipe_mode))
     |> Enum.reject(&is_nil/1)
     |> Enum.map(&Enum.fetch!(args, &1))
   end

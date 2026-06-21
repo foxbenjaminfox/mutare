@@ -26,8 +26,9 @@ defmodule Mutare.Mutators.DefaultDrop do
   than the source reads (the collection is the `|>` left side), so `m |> Map.get(k, d)`
   reaches a mutator as a 2-arg node, ambiguous with a non-piped `Map.get(k, d)` (a
   legitimate `/2` call with nothing to drop). The optional `mutate/2` callback receives
-  `%{piped: boolean}`; effective arity = visible args + (piped? 1 : 0) selects only the
-  with-default forms, and the trailing *visible* argument (always the default/fallback,
+  `%{pipe_mode: :piped | :unpiped}`; the effective arity (`effective_arity/2` adds one when
+  `:piped`) selects only the with-default forms, and the trailing *visible* argument
+  (always the default/fallback,
   piped or not) is the one dropped.
 
   Every result reuses the surviving argument AST and the lower-arity form always exists,
@@ -67,10 +68,10 @@ defmodule Mutare.Mutators.DefaultDrop do
   def mutate(_node), do: :skip
 
   @impl Mutare.Mutator
-  def mutate(node, %{piped: piped?}) do
+  def mutate(node, %{pipe_mode: pipe_mode}) do
     case Calls.resolved_call(node) do
       {module, fun, args, rebuild} ->
-        eff_arity = Mutare.Mutator.effective_arity(args, Mutare.Mutator.pipe_mode(piped?))
+        eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode)
 
         case Map.fetch(@rules, {module, fun, eff_arity}) do
           {:ok, new_fun} ->

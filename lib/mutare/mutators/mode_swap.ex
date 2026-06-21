@@ -63,8 +63,8 @@ defmodule Mutare.Mutators.ModeSwap do
   the calendar unit is arg 2), but a pipe stage carries one fewer argument than the
   source reads — `dt |> DateTime.truncate(:second)` reaches a mutator as a 1-arg node
   whose lone visible arg *is* the precision. So, like `Mutare.Mutators.CollectionArity`,
-  the rule is keyed on **effective arity** (`length(args) + if(piped, do: 1, else: 0)`)
-  and each mode position is translated from an effective index to the *visible* one
+  the rule is keyed on **effective arity** (`effective_arity/2` — `length(args)`, plus one
+  when `:piped`) and each mode position is translated from an effective index to the *visible* one
   (`pos - 1` when piped; an effective index 0 that is the piped value itself is skipped).
 
   Every result reuses the surrounding argument AST and only substitutes one atom for
@@ -157,12 +157,12 @@ defmodule Mutare.Mutators.ModeSwap do
   def mutate(_node), do: :skip
 
   @impl Mutare.Mutator
-  def mutate(node, %{piped: piped?}) do
+  def mutate(node, %{pipe_mode: pipe_mode}) do
     case Calls.resolved_call(node) do
       {module, fun, args, rebuild} ->
-        case rule(module, fun, args, piped?) do
+        case rule(module, fun, args, pipe_mode) do
           {:ok, positions, group} ->
-            case swap_sites(args, positions, group, piped?) do
+            case swap_sites(args, positions, group, pipe_mode) do
               [] ->
                 :skip
 
@@ -188,8 +188,8 @@ defmodule Mutare.Mutators.ModeSwap do
 
   # The rule for a call at its *effective* arity (visible args + the piped value), or
   # `:error` when no rule applies.
-  defp rule(mod, fun, args, piped?) do
-    eff_arity = Mutare.Mutator.effective_arity(args, Mutare.Mutator.pipe_mode(piped?))
+  defp rule(mod, fun, args, pipe_mode) do
+    eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode)
 
     case Map.fetch(@rules, {mod, fun, eff_arity}) do
       {:ok, {positions, group}} -> {:ok, positions, group}
@@ -201,9 +201,9 @@ defmodule Mutare.Mutators.ModeSwap do
   # swap at each mode position. A position that yields no swap (a non-mode-atom, an
   # unrecognised atom, a non-keyword-list duration, or the piped value itself) contributes
   # none.
-  defp swap_sites(args, positions, group, piped?) do
+  defp swap_sites(args, positions, group, pipe_mode) do
     for pos <- positions,
-        vis = Mutare.Mutator.visible_index(pos, piped?),
+        vis = Mutare.Mutator.visible_index(pos, pipe_mode),
         vis != nil,
         replacement <- position_swaps(group, Enum.at(args, vis)) do
       {vis, replacement}

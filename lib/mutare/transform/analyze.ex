@@ -450,7 +450,7 @@ defmodule Mutare.Transform.Analyze do
       rebuilt = {:with, meta, clauses ++ [analyze(body_kw, :runtime, mutators)]}
       offer(rebuilt, node, mutators)
     else
-      node |> offer(node, mutators) |> recurse_runtime(mutators, false)
+      node |> offer(node, mutators) |> recurse_runtime(mutators, :unpiped)
     end
   end
 
@@ -528,7 +528,7 @@ defmodule Mutare.Transform.Analyze do
 
         if sigil?(form),
           do: descend_sigil(node, mutators),
-          else: recurse_runtime(node, mutators, false)
+          else: recurse_runtime(node, mutators, :unpiped)
 
       routing ->
         analyze_known_macro(node, routing, mutators)
@@ -601,11 +601,11 @@ defmodule Mutare.Transform.Analyze do
   defp analyze_pipe_stage({_form, meta, args} = node, mutators) when is_list(args) do
     case macro_routing(meta) do
       nil ->
-        node = offer(node, node, mutators, %{piped: true})
-        recurse_runtime(node, mutators, true)
+        node = offer(node, node, mutators, %{pipe_mode: :piped})
+        recurse_runtime(node, mutators, :piped)
 
       routing ->
-        analyze_known_macro(node, routing, mutators, %{piped: true})
+        analyze_known_macro(node, routing, mutators, %{pipe_mode: :piped})
     end
   end
 
@@ -624,7 +624,7 @@ defmodule Mutare.Transform.Analyze do
   # all-runtime descent. `context` carries the pipe flag (so a pipe-aware custom mutator sees
   # the effective arity); `mark_call_option_keys/1` still runs (harmless for `:skip`/`:pattern`
   # args, which carry no candidates; correct for `:expression` args, preserving option-key gating).
-  defp analyze_known_macro(node, routing, mutators, context \\ %{piped: false}) do
+  defp analyze_known_macro(node, routing, mutators, context \\ %{pipe_mode: :unpiped}) do
     {form, meta, args} = offer(node, node, mutators, context)
     mark_call_option_keys({form, meta, route_macro_args(args, routing, mutators)})
   end
@@ -717,13 +717,13 @@ defmodule Mutare.Transform.Analyze do
   # keys. A call-rewriting mutator (ModeSwap) and a leaf mutator (AtomLiteral) may both fire
   # on the same atom/key, but the redundant leaf mutant is dropped *after* analysis by the
   # diff-derived `Mutare.Transform.Overlap` pass (it sees the call rewrite already covers that
-  # node) — so the analyzer no longer needs to know which positions are "owned". `piped?` is
+  # node) — so the analyzer no longer needs to know which positions are "owned". `pipe_mode` is
   # unused now but kept so the three call sites need not change.
-  defp recurse_runtime({_form, _meta, args} = node, mutators, _piped?) when is_list(args) do
+  defp recurse_runtime({_form, _meta, args} = node, mutators, _pipe_mode) when is_list(args) do
     node |> recurse(:runtime, mutators) |> mark_call_option_keys()
   end
 
-  defp recurse_runtime(node, mutators, _piped?), do: recurse(node, :runtime, mutators)
+  defp recurse_runtime(node, mutators, _pipe_mode), do: recurse(node, :runtime, mutators)
 
   # === call-option keys ======================================================
 
@@ -2273,7 +2273,7 @@ defmodule Mutare.Transform.Analyze do
   # node whose children carry their own selectors. `subject` *is* `raw` at most sites;
   # the `<<>>`/`if`/`not in` clauses pass an analyzed/rebuilt subject distinct from the
   # raw node the candidate records. `context` carries the pipe flag (`Mutator.mutations`).
-  defp offer(subject, raw, mutators, context \\ %{piped: false}) do
+  defp offer(subject, raw, mutators, context \\ %{pipe_mode: :unpiped}) do
     case Mutator.mutations(raw, mutators, context) do
       [] -> subject
       muts -> put_candidates(subject, build_candidates(raw, muts))

@@ -810,7 +810,9 @@ Three load-bearing decisions:
 
 **Pipe-aware** (the query-builder shape `q |> where([p], p.x == 1) |> order_by(...)`, where each
 stage is a piped macro and the piped value is effective arg 0). `Resolve.stamp_macro` matches on
-the *effective* arity (`Mutator.effective_arity` = visible + 1 when piped) and splits the routing
+the *effective* arity (`Mutator.effective_arity(args, env.pipe_mode)` = visible + 1 when piped —
+`env.pipe_mode` is the `:piped`/`:unpiped` atom directly, built by `Resolve`'s `:|>` clause, no
+boolean conversion) and splits the routing
 across **two** stamps: the **visible** positions ride on `meta[:mutare_macro]` (lining up with the
 stage node's own args, read by `analyze_pipe_stage` the same way the generic clause reads it), and
 the **piped value's** treatment (effective position 0 — the `|>` LHS, *not* in the stage node's
@@ -2006,7 +2008,7 @@ Two design decisions, both load-bearing:
 
 - **How opts reach the mutator.** The behaviour's callbacks are pure functions over a
   node, with no slot for config — except `mutate/2`, which already takes a
-  `context` map (`%{piped: …}`). So opts ride **in the context**: `mutations/3` builds a
+  `context` map (`%{pipe_mode: …}`). So opts ride **in the context**: `mutations/3` builds a
   per-spec context with `:opts` = the spec's opts and passes it to `mutate/2`. (At the time,
   `owned_args/2` shared this channel too; it has since been removed — see "Overlap resolution"
   below.) A configurable mutator therefore implements **`mutate/2`** (which is invoked
@@ -2014,7 +2016,7 @@ Two design decisions, both load-bearing:
   untouched (no context, no opts) — this avoided bumping every existing callback's arity and
   reused the one channel that was already threaded. `pattern_mutations/2` is **not** opts-aware
   (structural head-pattern mutators stay unconfigurable for now — out of scope, not a use case
-  yet). The change is backward-compatible: existing `mutate/2` clauses match `%{piped: p}`,
+  yet). The change is backward-compatible: existing `mutate/2` clauses match `%{pipe_mode: m}`,
   which still matches a map that *also* has `:opts`.
 
 - **Identity.** `name` defaults to `module.name()`, but a reserved **`:as`** key in `opts`
@@ -2265,10 +2267,11 @@ Four non-obvious things settled here:
   a piped `sort/2` rewritten to `reverse(xs, :desc)` garbage, a piped `reverse/2`
   wrongly swapped to `sort/2`). The fix is to **thread pipe-context to the mutator**:
   the `Mutare.Mutator` behaviour gained an optional `mutate/2` callback that
-  `Transform` invokes at every runtime call position with `%{piped: boolean}` (a
+  `Transform` invokes at every runtime call position with `%{pipe_mode: :piped | :unpiped}` (a
   dedicated `:|>` analyze clause routes the RHS through `analyze_pipe_stage/2` with
-  `piped: true`; everywhere else defaults to `false`). The mutator computes
-  `effective_arity = length(args) + if(piped, do: 1, else: 0)` and emits a normal
+  `pipe_mode: :piped`; everywhere else defaults to `:unpiped`). The mutator computes the
+  effective arity via `Mutator.effective_arity(args, pipe_mode)` — the context carries the
+  `:piped`/`:unpiped` atom directly (`length(args)`, plus one when `:piped`) — and emits a normal
   `Candidate.InPlace` — so the existing selector + `hoist_pipe` machinery delivers
   it unchanged, and the diff stays honest (`xs |> Enum.sort(:desc)` → `xs |>
   Enum.reverse()`, no shim). With effective arity in hand it even *correctly skips*

@@ -45,7 +45,8 @@ defmodule Mutare.Mutators.Numeric do
   the true arity needs the pipe flag — a pipe stage carries one fewer argument than the
   source reads (`x |> max(0)` reaches a mutator as a 1-arg `max(0)` whose effective arity
   is 2) — so, like `Mutare.Mutators.CollectionArity`/`ModeSwap`, the bare-`Kernel` rule is
-  keyed on **effective arity** (`length(args) + if(piped, do: 1, else: 0)`) in `mutate/2`.
+  keyed on **effective arity** (`effective_arity/2` — `length(args)`, plus one when `:piped`)
+  in `mutate/2`.
 
   ## Scope and known gaps
 
@@ -105,9 +106,9 @@ defmodule Mutare.Mutators.Numeric do
   # never mutated. Pipe-aware because a pipe stage's node carries one fewer arg than the
   # source reads.
   @impl Mutare.Mutator
-  def mutate({fun, meta, args}, %{piped: piped?})
+  def mutate({fun, meta, args}, %{pipe_mode: pipe_mode})
       when is_atom(fun) and is_list(args) do
-    eff_arity = Mutare.Mutator.effective_arity(args, Mutare.Mutator.pipe_mode(piped?))
+    eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode)
 
     # A bare `min`/`max`/`round`/… is the `Kernel` one *unless* it has been displaced by an
     # `import Kernel, except:/only:` (`Mutare.Transform.Imports`) — then it names another

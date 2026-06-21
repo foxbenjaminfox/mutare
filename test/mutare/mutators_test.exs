@@ -150,16 +150,16 @@ defmodule Mutare.MutatorsTest do
     test "swaps div/rem (call form) only at effective arity 2, pipe-aware" do
       # div/rem are bare Kernel calls handled in mutate/2 (mutate/1 skips them).
       assert Arithmetic.mutate({:div, [], [1, 2]}) == :skip
-      assert Arithmetic.mutate({:div, [], [1, 2]}, %{piped: false}) == [{:rem, [], [1, 2]}]
-      assert Arithmetic.mutate({:rem, [], [1, 2]}, %{piped: false}) == [{:div, [], [1, 2]}]
+      assert Arithmetic.mutate({:div, [], [1, 2]}, %{pipe_mode: :unpiped}) == [{:rem, [], [1, 2]}]
+      assert Arithmetic.mutate({:rem, [], [1, 2]}, %{pipe_mode: :unpiped}) == [{:div, [], [1, 2]}]
 
       # Piped: the stage carries one fewer arg (`x |> div(2)` is div/2), so a 1-arg
       # node at piped effective-arity 2 still swaps (the rename keeps the arg list).
-      assert Arithmetic.mutate({:div, [], [2]}, %{piped: true}) == [{:rem, [], [2]}]
+      assert Arithmetic.mutate({:div, [], [2]}, %{pipe_mode: :piped}) == [{:rem, [], [2]}]
 
       # A same-named user call at another arity is left alone (not Kernel's div/2).
-      assert Arithmetic.mutate({:div, [], [1, 2, 3]}, %{piped: false}) == :skip
-      assert Arithmetic.mutate({:div, [], [2]}, %{piped: false}) == :skip
+      assert Arithmetic.mutate({:div, [], [1, 2, 3]}, %{pipe_mode: :unpiped}) == :skip
+      assert Arithmetic.mutate({:div, [], [2]}, %{pipe_mode: :unpiped}) == :skip
     end
 
     test "preserves operand AST and operator metadata" do
@@ -219,8 +219,8 @@ defmodule Mutare.MutatorsTest do
 
     test "div/rem are never treated as identity (rem(a, 1) is 0, not a)" do
       a = {:a, [], nil}
-      assert Arithmetic.mutate({:div, [], [a, 1]}, %{piped: false}) == [{:rem, [], [a, 1]}]
-      assert Arithmetic.mutate({:rem, [], [a, 1]}, %{piped: false}) == [{:div, [], [a, 1]}]
+      assert Arithmetic.mutate({:div, [], [a, 1]}, %{pipe_mode: :unpiped}) == [{:rem, [], [a, 1]}]
+      assert Arithmetic.mutate({:rem, [], [a, 1]}, %{pipe_mode: :unpiped}) == [{:div, [], [a, 1]}]
     end
 
     test "a non-identity literal (e.g. * 2) still mutates" do
@@ -449,15 +449,17 @@ defmodule Mutare.MutatorsTest do
     end
 
     test "reverse/2 is reverse(list, tail) — an unrelated op — never mutated, piped or not" do
-      assert CollectionArity.mutate(parse("Enum.reverse(xs, tail)"), %{piped: false}) == :skip
+      assert CollectionArity.mutate(parse("Enum.reverse(xs, tail)"), %{pipe_mode: :unpiped}) ==
+               :skip
+
       # piped reverse/2: 1 visible arg, effective arity 2 — still recognised and skipped
-      assert CollectionArity.mutate(parse("Enum.reverse(tail)"), %{piped: true}) == :skip
+      assert CollectionArity.mutate(parse("Enum.reverse(tail)"), %{pipe_mode: :piped}) == :skip
     end
 
     test "skips functions with nothing to drop, and other modules" do
-      assert CollectionArity.mutate(parse("Enum.count(xs)"), %{piped: false}) == :skip
-      assert CollectionArity.mutate(parse("Enum.map(xs, f)"), %{piped: false}) == :skip
-      assert CollectionArity.mutate(parse("List.sort(xs, f)"), %{piped: false}) == :skip
+      assert CollectionArity.mutate(parse("Enum.count(xs)"), %{pipe_mode: :unpiped}) == :skip
+      assert CollectionArity.mutate(parse("Enum.map(xs, f)"), %{pipe_mode: :unpiped}) == :skip
+      assert CollectionArity.mutate(parse("List.sort(xs, f)"), %{pipe_mode: :unpiped}) == :skip
     end
 
     test "name" do
@@ -654,14 +656,17 @@ defmodule Mutare.MutatorsTest do
     end
 
     test "excludes content-changing / non-transform String and :string calls" do
-      assert CallRemoval.mutate(parse("String.replace(s, a, b)"), %{piped: false}) == :skip
-      assert CallRemoval.mutate(parse("String.first(s)"), %{piped: false}) == :skip
-      assert CallRemoval.mutate(parse("String.split(s, \",\")"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse("String.replace(s, a, b)"), %{pipe_mode: :unpiped}) == :skip
+      assert CallRemoval.mutate(parse("String.first(s)"), %{pipe_mode: :unpiped}) == :skip
+      assert CallRemoval.mutate(parse("String.split(s, \",\")"), %{pipe_mode: :unpiped}) == :skip
       # :string — split/replace change content; prefix can return :nomatch; other modules
-      assert CallRemoval.mutate(parse(":string.split(s, \",\")"), %{piped: false}) == :skip
-      assert CallRemoval.mutate(parse(":string.replace(s, a, b)"), %{piped: false}) == :skip
-      assert CallRemoval.mutate(parse(":string.prefix(s, p)"), %{piped: false}) == :skip
-      assert CallRemoval.mutate(parse(":lists.reverse(s)"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse(":string.split(s, \",\")"), %{pipe_mode: :unpiped}) == :skip
+
+      assert CallRemoval.mutate(parse(":string.replace(s, a, b)"), %{pipe_mode: :unpiped}) ==
+               :skip
+
+      assert CallRemoval.mutate(parse(":string.prefix(s, p)"), %{pipe_mode: :unpiped}) == :skip
+      assert CallRemoval.mutate(parse(":lists.reverse(s)"), %{pipe_mode: :unpiped}) == :skip
     end
 
     test "piped: replaces the stage with Function.identity() (a no-op the pipe feeds)" do
@@ -682,11 +687,11 @@ defmodule Mutare.MutatorsTest do
     end
 
     test "excludes map/filter/reduce and unrelated calls" do
-      assert CallRemoval.mutate(parse("Enum.map(xs, f)"), %{piped: false}) == :skip
-      assert CallRemoval.mutate(parse("Enum.filter(xs, f)"), %{piped: false}) == :skip
-      assert CallRemoval.mutate(parse("Enum.reduce(xs, 0, f)"), %{piped: false}) == :skip
-      assert CallRemoval.mutate(parse("Other.sort(xs)"), %{piped: false}) == :skip
-      assert CallRemoval.mutate(parse("local(xs)"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse("Enum.map(xs, f)"), %{pipe_mode: :unpiped}) == :skip
+      assert CallRemoval.mutate(parse("Enum.filter(xs, f)"), %{pipe_mode: :unpiped}) == :skip
+      assert CallRemoval.mutate(parse("Enum.reduce(xs, 0, f)"), %{pipe_mode: :unpiped}) == :skip
+      assert CallRemoval.mutate(parse("Other.sort(xs)"), %{pipe_mode: :unpiped}) == :skip
+      assert CallRemoval.mutate(parse("local(xs)"), %{pipe_mode: :unpiped}) == :skip
     end
 
     test "bare Kernel abs/1 is removed, leaving its argument" do
@@ -724,16 +729,16 @@ defmodule Mutare.MutatorsTest do
 
     test "a same-named binary slicer at the wrong bare arity is left alone" do
       # No bare Kernel binary_slice/1 or binary_part/2 — so these must be user funcs.
-      assert CallRemoval.mutate(parse("binary_slice(b)"), %{piped: false}) == :skip
-      assert CallRemoval.mutate(parse("binary_part(b, {0, 5})"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse("binary_slice(b)"), %{pipe_mode: :unpiped}) == :skip
+      assert CallRemoval.mutate(parse("binary_part(b, {0, 5})"), %{pipe_mode: :unpiped}) == :skip
     end
 
     test "a same-named call at the wrong arity is left alone (arity guards bare abs)" do
       # No Kernel.abs/2 or /0 — so these must be user functions, untouched.
-      assert CallRemoval.mutate(parse("abs(x, y)"), %{piped: false}) == :skip
-      assert CallRemoval.mutate(parse("abs()"), %{piped: false}) == :skip
+      assert CallRemoval.mutate(parse("abs(x, y)"), %{pipe_mode: :unpiped}) == :skip
+      assert CallRemoval.mutate(parse("abs()"), %{pipe_mode: :unpiped}) == :skip
       # Piped `abs(x)` would be effective arity 2 — not the Kernel abs/1.
-      assert CallRemoval.mutate(parse("abs(x)"), %{piped: true}) == :skip
+      assert CallRemoval.mutate(parse("abs(x)"), %{pipe_mode: :piped}) == :skip
     end
 
     test "abs never fires node-locally (mutate/1 is always :skip)" do
@@ -760,8 +765,8 @@ defmodule Mutare.MutatorsTest do
     end
 
     test "a literal nil default is skipped (equivalent — nil is the implicit default)" do
-      assert DefaultDrop.mutate(parse("Map.get(m, k, nil)"), %{piped: false}) == :skip
-      assert DefaultDrop.mutate(parse("Keyword.get(kw, k, nil)"), %{piped: false}) == :skip
+      assert DefaultDrop.mutate(parse("Map.get(m, k, nil)"), %{pipe_mode: :unpiped}) == :skip
+      assert DefaultDrop.mutate(parse("Keyword.get(kw, k, nil)"), %{pipe_mode: :unpiped}) == :skip
       # but a non-nil falsy default (false, 0) is a real difference — still dropped.
       assert dropd("Map.get(m, k, false)", false) == ["Map.get(m, k)"]
       assert dropd("Map.get(m, k, 0)", false) == ["Map.get(m, k)"]
@@ -779,19 +784,19 @@ defmodule Mutare.MutatorsTest do
       assert dropd("List.first(:empty)", true) == ["List.first()"]
       assert dropd("Map.get_lazy(k, f)", true) == ["Map.get(k)"]
       # A piped nil default is still equivalent → skipped.
-      assert DefaultDrop.mutate(parse("Map.get(k, nil)"), %{piped: true}) == :skip
+      assert DefaultDrop.mutate(parse("Map.get(k, nil)"), %{pipe_mode: :piped}) == :skip
     end
 
     test "a /2 lookup (no default) is not mutated — needs the piped flag to tell apart" do
       # non-piped Map.get/2: nothing to drop.
-      assert DefaultDrop.mutate(parse("Map.get(m, k)"), %{piped: false}) == :skip
+      assert DefaultDrop.mutate(parse("Map.get(m, k)"), %{pipe_mode: :unpiped}) == :skip
       # piped Map.get/2 (`m |> Map.get(k)`): also /2 effective, nothing to drop.
-      assert DefaultDrop.mutate(parse("Map.get(k)"), %{piped: true}) == :skip
+      assert DefaultDrop.mutate(parse("Map.get(k)"), %{pipe_mode: :piped}) == :skip
     end
 
     test "skips unrelated functions and modules" do
-      assert DefaultDrop.mutate(parse("Map.fetch(m, k)"), %{piped: false}) == :skip
-      assert DefaultDrop.mutate(parse("Other.get(m, k, :d)"), %{piped: false}) == :skip
+      assert DefaultDrop.mutate(parse("Map.fetch(m, k)"), %{pipe_mode: :unpiped}) == :skip
+      assert DefaultDrop.mutate(parse("Other.get(m, k, :d)"), %{pipe_mode: :unpiped}) == :skip
     end
 
     test "name" do
@@ -874,7 +879,7 @@ defmodule Mutare.MutatorsTest do
                ["Time.shift(t, second: 1)", "Time.shift(t, hour: 1)"]
 
       # a date unit isn't on Time's ladder — no swap (Time.shift would reject it anyway).
-      assert ModeSwap.mutate(parse("Time.shift(t, day: 1)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("Time.shift(t, day: 1)"), %{pipe_mode: :unpiped}) == :skip
     end
 
     test "Date.shift uses the date-only ladder (no time units to escape to)" do
@@ -887,11 +892,13 @@ defmodule Mutare.MutatorsTest do
       assert mode("Date.shift(d, year: 1)", false) == ["Date.shift(d, month: 1)"]
 
       # a time unit isn't on Date's ladder — no swap (Date.shift would reject it anyway).
-      assert ModeSwap.mutate(parse("Date.shift(d, hour: 1)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("Date.shift(d, hour: 1)"), %{pipe_mode: :unpiped}) == :skip
     end
 
     test "shift: :microsecond is excluded (its {count, precision} amount can't move units)" do
-      assert ModeSwap.mutate(parse("DateTime.shift(dt, microsecond: {5, 6})"), %{piped: false}) ==
+      assert ModeSwap.mutate(parse("DateTime.shift(dt, microsecond: {5, 6})"), %{
+               pipe_mode: :unpiped
+             }) ==
                :skip
     end
 
@@ -908,7 +915,7 @@ defmodule Mutare.MutatorsTest do
     end
 
     test "shift: a non-keyword-list duration (a %Duration{} / variable) yields nothing" do
-      assert ModeSwap.mutate(parse("DateTime.shift(dt, dur)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("DateTime.shift(dt, dur)"), %{pipe_mode: :unpiped}) == :skip
     end
 
     test "Unicode case mode: only the exotic locale modes fall back to :default" do
@@ -916,8 +923,8 @@ defmodule Mutare.MutatorsTest do
       assert mode("String.capitalize(s, :turkic)", false) == ["String.capitalize(s, :default)"]
 
       # `:default` ↔ `:ascii` is deliberately not swapped (a low-signal equivalent).
-      assert ModeSwap.mutate(parse("String.upcase(s, :default)"), %{piped: false}) == :skip
-      assert ModeSwap.mutate(parse("String.downcase(s, :ascii)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("String.upcase(s, :default)"), %{pipe_mode: :unpiped}) == :skip
+      assert ModeSwap.mutate(parse("String.downcase(s, :ascii)"), %{pipe_mode: :unpiped}) == :skip
     end
 
     test "normalization form swaps to a behavioural sibling" do
@@ -939,29 +946,38 @@ defmodule Mutare.MutatorsTest do
       # `:millisecond |> System.system_time()` — the unit *is* the piped value, so its
       # effective position 0 maps to no visible arg (`visible_index/2` → nil) and the
       # call contributes no swap (rather than crashing on `Enum.at(args, nil)`).
-      assert ModeSwap.mutate(parse("System.system_time()"), %{piped: true}) == :skip
+      assert ModeSwap.mutate(parse("System.system_time()"), %{pipe_mode: :piped}) == :skip
     end
 
     test "a non-atom or unrecognised atom in the mode position yields nothing" do
       # A variable unit can't be swapped statically.
-      assert ModeSwap.mutate(parse("DateTime.truncate(dt, unit)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("DateTime.truncate(dt, unit)"), %{pipe_mode: :unpiped}) ==
+               :skip
+
       # An integer parts-per-second unit is not an atom.
-      assert ModeSwap.mutate(parse("System.system_time(1000)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("System.system_time(1000)"), %{pipe_mode: :unpiped}) == :skip
       # An atom outside the function's legal set has no in-set neighbour.
-      assert ModeSwap.mutate(parse("DateTime.truncate(dt, :bogus)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("DateTime.truncate(dt, :bogus)"), %{pipe_mode: :unpiped}) ==
+               :skip
+
       # An unrecognised atom in the *unordered* mode sets (case / normalization form)
       # also yields nothing — `swaps/2` falls back to `[]`, never `nil` (a `Map.get`
       # without its default would enumerate `nil` and crash).
-      assert ModeSwap.mutate(parse("String.upcase(s, :bogus)"), %{piped: false}) == :skip
-      assert ModeSwap.mutate(parse("String.normalize(s, :bogus)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("String.upcase(s, :bogus)"), %{pipe_mode: :unpiped}) == :skip
+
+      assert ModeSwap.mutate(parse("String.normalize(s, :bogus)"), %{pipe_mode: :unpiped}) ==
+               :skip
     end
 
     test "skips unrelated functions, arities, and modules" do
       # truncate/1 has no precision arg; add/2 has no unit (defaults to :second).
-      assert ModeSwap.mutate(parse("DateTime.truncate(dt)"), %{piped: false}) == :skip
-      assert ModeSwap.mutate(parse("DateTime.add(dt, n)"), %{piped: false}) == :skip
-      assert ModeSwap.mutate(parse("Other.truncate(dt, :second)"), %{piped: false}) == :skip
-      assert ModeSwap.mutate(parse("String.split(s, p)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("DateTime.truncate(dt)"), %{pipe_mode: :unpiped}) == :skip
+      assert ModeSwap.mutate(parse("DateTime.add(dt, n)"), %{pipe_mode: :unpiped}) == :skip
+
+      assert ModeSwap.mutate(parse("Other.truncate(dt, :second)"), %{pipe_mode: :unpiped}) ==
+               :skip
+
+      assert ModeSwap.mutate(parse("String.split(s, p)"), %{pipe_mode: :unpiped}) == :skip
     end
 
     test "name" do
@@ -1012,9 +1028,9 @@ defmodule Mutare.MutatorsTest do
 
     test "a same-named call at the wrong arity is left alone (arity guards the bare call)" do
       # No Kernel.min/3 or Kernel.floor/2 — so these must be user functions, untouched.
-      assert Numeric.mutate(parse("min(a, b, c)"), %{piped: false}) == :skip
-      assert Numeric.mutate(parse("floor(x, y)"), %{piped: false}) == :skip
-      assert Numeric.mutate(parse("round(x, y)"), %{piped: false}) == :skip
+      assert Numeric.mutate(parse("min(a, b, c)"), %{pipe_mode: :unpiped}) == :skip
+      assert Numeric.mutate(parse("floor(x, y)"), %{pipe_mode: :unpiped}) == :skip
+      assert Numeric.mutate(parse("round(x, y)"), %{pipe_mode: :unpiped}) == :skip
     end
 
     test "piped: effective arity is +1, so a piped /1 reaches us as 0 visible args" do
@@ -1029,13 +1045,13 @@ defmodule Mutare.MutatorsTest do
     test "piped /1 read non-piped (1 visible arg, effective arity 2) is not a min/max" do
       # `floor(x)` non-piped is arity 1 (swaps); piped it would be effective arity 2,
       # which floor has no rule for — so a piped floor/1-shaped node yields nothing.
-      assert Numeric.mutate(parse("floor(x)"), %{piped: true}) == :skip
+      assert Numeric.mutate(parse("floor(x)"), %{pipe_mode: :piped}) == :skip
     end
 
     test "skips operators and non-numeric calls" do
-      assert Numeric.mutate(parse("a + b"), %{piped: false}) == :skip
-      assert Numeric.mutate(parse("foo(a, b)"), %{piped: false}) == :skip
-      assert Numeric.mutate(parse("abs(x)"), %{piped: false}) == :skip
+      assert Numeric.mutate(parse("a + b"), %{pipe_mode: :unpiped}) == :skip
+      assert Numeric.mutate(parse("foo(a, b)"), %{pipe_mode: :unpiped}) == :skip
+      assert Numeric.mutate(parse("abs(x)"), %{pipe_mode: :unpiped}) == :skip
     end
 
     test "name" do
@@ -1574,20 +1590,24 @@ defmodule Mutare.MutatorsTest do
   defp parse(source), do: Sourceror.parse_string!(source)
   defp render(nodes), do: Enum.map(nodes, &Sourceror.to_string/1)
 
-  # CollectionArity's mutate/2 receives %{piped: piped?}; effective arity =
-  # visible args + (piped? 1 : 0).
+  # CollectionArity's mutate/2 receives %{pipe_mode: :piped | :unpiped}; effective arity =
+  # visible args + (one when :piped). The boolean `piped?` is this test's shorthand; `context/1`
+  # adapts it to the production context shape.
   defp arity(src, piped?),
-    do: render(Mutare.Mutators.CollectionArity.mutate(parse(src), %{piped: piped?}))
+    do: render(Mutare.Mutators.CollectionArity.mutate(parse(src), context(piped?)))
 
   defp removal(src, piped?),
-    do: render(Mutare.Mutators.CallRemoval.mutate(parse(src), %{piped: piped?}))
+    do: render(Mutare.Mutators.CallRemoval.mutate(parse(src), context(piped?)))
 
   defp dropd(src, piped?),
-    do: render(Mutare.Mutators.DefaultDrop.mutate(parse(src), %{piped: piped?}))
+    do: render(Mutare.Mutators.DefaultDrop.mutate(parse(src), context(piped?)))
 
   defp mode(src, piped?),
-    do: render(Mutare.Mutators.ModeSwap.mutate(parse(src), %{piped: piped?}))
+    do: render(Mutare.Mutators.ModeSwap.mutate(parse(src), context(piped?)))
 
   defp numeric(src, piped?),
-    do: render(Mutare.Mutators.Numeric.mutate(parse(src), %{piped: piped?}))
+    do: render(Mutare.Mutators.Numeric.mutate(parse(src), context(piped?)))
+
+  defp context(true), do: %{pipe_mode: :piped}
+  defp context(false), do: %{pipe_mode: :unpiped}
 end

@@ -155,20 +155,20 @@ defmodule Mutare.Mutator do
   @typedoc """
   Context threaded to the optional `mutate/2` at each runtime call site. Carries:
 
-    * `:piped` — whether the node is the right-hand side of a `|>` (so its
-      effective first argument is the pipe's left side, *not* present in the
-      node's own args). A mutator computes effective arity with `effective_arity/2`,
-      passing `:piped`/`:unpiped` (see `pipe_mode/1`).
+    * `:pipe_mode` — `:piped` or `:unpiped` (see `t:pipe_mode/0`): whether the node is
+      the right-hand side of a `|>` (so its effective first argument is the pipe's left
+      side, *not* present in the node's own args). The transform builds this atom directly
+      and a mutator passes it straight to `effective_arity/2` / `visible_index/2`.
     * `:opts` — the configured mutator's per-instance options (the `opts` of a
       `{module, opts}` entry in `:mutators`, with any `:as` name override
       stripped), or `[]` for an unconfigured mutator. This is how a configurable
       mutator receives its parameters — see `Mutare.Mutator.Spec`.
 
   `:opts` is `optional` in the type because the *base* context threaded through
-  `mutations/3` carries only `:piped`; `mutations/3` injects each spec's `:opts`
+  `mutations/3` carries only `:pipe_mode`; `mutations/3` injects each spec's `:opts`
   before invoking a mutator, so a callback always sees it at runtime.
   """
-  @type context :: %{:piped => boolean(), optional(:opts) => term()}
+  @type context :: %{:pipe_mode => pipe_mode(), optional(:opts) => term()}
 
   @doc """
   Return `:skip` when the mutator does not apply to `node`, otherwise a list of
@@ -186,8 +186,8 @@ defmodule Mutare.Mutator do
   node carries one fewer argument than the source reads.
 
   `Mutare.Transform` invokes it at every runtime call position with a `context`
-  (`%{piped: boolean, opts: term}`); a mutator uses `context.piped` to recover the
-  effective arity. Used for arity-*changing* call mutations (dropping a refining
+  (`%{pipe_mode: pipe_mode, opts: term}`); a mutator passes `context.pipe_mode` to
+  `effective_arity/2` to recover the effective arity. Used for arity-*changing* call mutations (dropping a refining
   argument, collapsing to a coarser call) that `mutate/1` cannot express safely —
   see `Mutare.Mutators.CollectionArity`. A mutator that implements this typically
   returns `:skip` from `mutate/1` (it never fires node-locally). Discovered by
@@ -296,7 +296,9 @@ defmodule Mutare.Mutator do
   @typedoc """
   A call node's pipe context, as an atom: `:piped` (the node is a `|>` right-hand
   side, so its effective first argument is the pipe's left side) or `:unpiped`.
-  The form `effective_arity/2` takes; map a boolean to it with `pipe_mode/1`.
+  Built directly by `Mutare.Transform` — it is what `Mutare.Transform.Resolve`'s
+  `env.pipe_mode` and the `mutate/2` context's `:pipe_mode` carry — and the form
+  `effective_arity/2` and `visible_index/2` take.
   """
   @type pipe_mode :: :piped | :unpiped
 
@@ -309,8 +311,8 @@ defmodule Mutare.Mutator do
   (`mutate/2`) recovers the real arity as `length(args)`, plus one when `:piped`.
   The single home for that off-by-one — see `Mutare.Mutators.CollectionArity` et al.
 
-  The pipe context arrives as a boolean (the `:piped` key of the `mutate/2` context,
-  `Mutare.Transform.Resolve`'s `env.piped`); convert it with `pipe_mode/1`.
+  The pipe context (`:piped`/`:unpiped`) comes straight from the `mutate/2` context's
+  `:pipe_mode` key (`Mutare.Transform.Resolve`'s `env.pipe_mode`).
 
       iex> Mutare.Mutator.effective_arity([:a, :b], :unpiped)
       2
@@ -322,39 +324,29 @@ defmodule Mutare.Mutator do
   def effective_arity(args, :unpiped) when is_list(args), do: length(args)
 
   @doc """
-  Map a pipe-context boolean to the `t:pipe_mode/0` atom `effective_arity/2` takes —
-  `true` → `:piped`, `false` → `:unpiped`. The boolean is what the `mutate/2` context
-  and `Mutare.Transform.Resolve`'s env carry; this is the single conversion point.
-
-      iex> Mutare.Mutator.pipe_mode(true)
-      :piped
-      iex> Mutare.Mutator.pipe_mode(false)
-      :unpiped
-  """
-  @spec pipe_mode(boolean()) :: pipe_mode()
-  def pipe_mode(true), do: :piped
-  def pipe_mode(false), do: :unpiped
-
-  @doc """
   Map an **effective** argument index to the index into a call node's *visible*
-  `args`, given pipe context — the inverse of the `effective_arity/2` off-by-one.
+  `args`, given pipe context (`:piped`/`:unpiped`) — the inverse of the
+  `effective_arity/2` off-by-one.
 
   When piped, effective index `0` is the `|>` left side, which isn't in the
   node's own `args`, so it has no visible index (`nil`) and every later index
   shifts down by one. Unpiped, effective and visible indices coincide. The single
   home for that mapping — see `Mutare.Mutators.{ModeSwap,CollectionArity}`.
 
-      iex> Mutare.Mutator.visible_index(2, false)
+  The pipe context (`:piped`/`:unpiped`) comes straight from the `mutate/2` context's
+  `:pipe_mode` key (`Mutare.Transform.Resolve`'s `env.pipe_mode`).
+
+      iex> Mutare.Mutator.visible_index(2, :unpiped)
       2
-      iex> Mutare.Mutator.visible_index(0, true)
+      iex> Mutare.Mutator.visible_index(0, :piped)
       nil
-      iex> Mutare.Mutator.visible_index(1, true)
+      iex> Mutare.Mutator.visible_index(1, :piped)
       0
   """
-  @spec visible_index(non_neg_integer(), boolean()) :: non_neg_integer() | nil
-  def visible_index(pos, false), do: pos
-  def visible_index(0, true), do: nil
-  def visible_index(pos, true), do: pos - 1
+  @spec visible_index(non_neg_integer(), pipe_mode()) :: non_neg_integer() | nil
+  def visible_index(pos, :unpiped), do: pos
+  def visible_index(0, :piped), do: nil
+  def visible_index(pos, :piped), do: pos - 1
 
   @doc """
   The specs in `specs` whose module implements the optional callback `fun`/`arity`.
@@ -404,10 +396,10 @@ defmodule Mutare.Mutator do
 
   Each entry is a `Mutare.Mutator.Spec` (a bare module is coerced to one); its
   `mutate/1` is always run, and its optional `mutate/2` is *also* run when
-  implemented, with a per-spec `context` carrying the pipe flag **and** the spec's
+  implemented, with a per-spec `context` carrying the pipe mode **and** the spec's
   `:opts`. So pipe-aware/arity-changing *and* configurable mutators both
-  participate here. `context` defaults to a non-piped node; the transform passes
-  `%{piped: true}` for a `|>` right-hand side. Each result is tagged with its
+  participate here. `context` defaults to `%{pipe_mode: :unpiped}`; the transform passes
+  `%{pipe_mode: :piped}` for a `|>` right-hand side. Each result is tagged with its
   **spec** (not the bare module), so the family name and config travel with it.
 
       iex> [{spec, mutated}] = Mutare.Mutator.mutations({:+, [], [1, 2]}, [Mutare.Mutators.Arithmetic])
@@ -415,7 +407,7 @@ defmodule Mutare.Mutator do
       {:arithmetic, {:-, [], [1, 2]}}
   """
   @spec mutations(Macro.t(), [Spec.t() | module()], context()) :: [{Spec.t(), Macro.t()}]
-  def mutations(node, mutators, context \\ %{piped: false}) do
+  def mutations(node, mutators, context \\ %{pipe_mode: :unpiped}) do
     Enum.flat_map(mutators, fn entry ->
       spec = Spec.coerce(entry)
       ctx = Map.put(context, :opts, spec.opts)

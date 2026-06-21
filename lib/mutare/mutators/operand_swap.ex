@@ -147,7 +147,7 @@ defmodule Mutare.Mutators.OperandSwap do
   # there is nothing local to transpose; effective arity 2 there has only one visible arg,
   # which fails the `[left, right]` match and is skipped.
   @impl Mutare.Mutator
-  def mutate({op, meta, [left, right] = args}, %{piped: false})
+  def mutate({op, meta, [left, right] = args}, %{pipe_mode: :unpiped})
       when op in @call_operators do
     if Mutare.Mutator.effective_arity(args, :unpiped) == 2 and not same?(left, right),
       do: [{op, meta, [right, left]}],
@@ -160,7 +160,7 @@ defmodule Mutare.Mutators.OperandSwap do
   # aliased, and imported forms all match and a shadowing alias resolves elsewhere.
   # Non-piped only: a piped stage draws its first operand from the pipe, so it has only
   # one local operand to swap — the `[a, b | rest]` destructure fails and it is skipped.
-  def mutate(node, %{piped: false}) do
+  def mutate(node, %{pipe_mode: :unpiped}) do
     with {module, fun, [a, b | rest], rebuild} <- Calls.resolved_call(node),
          true <- MapSet.member?(@remote_swaps, {module, fun}),
          false <- same?(a, b) do

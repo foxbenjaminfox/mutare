@@ -75,7 +75,7 @@ defmodule Mutare.Mutators.CallRemoval do
   `|>` left side, not in the call), so `x |> Enum.sort(cmp)` reaches a mutator as a
   1-arg `Enum.sort(cmp)`, indistinguishable from a non-piped `Enum.sort(cmp)` — and
   returning the bare `cmp` there would be nonsense. So it implements the optional
-  `mutate/2` callback, which `Mutare.Transform` invokes with `%{piped: boolean}`:
+  `mutate/2` callback, which `Mutare.Transform` invokes with `%{pipe_mode: :piped | :unpiped}`:
 
     * **non-piped** → the first argument (`Enum.sort(x)` → `x`), the cleanest diff;
     * **piped** → `Function.identity()`, so `x |> Enum.sort()` becomes
@@ -202,39 +202,40 @@ defmodule Mutare.Mutators.CallRemoval do
   # its resolved module (`[:Enum]` or `:string`). A bare `Kernel` call (which `Calls` doesn't
   # resolve) falls to `bare_removal/2`.
   @impl Mutare.Mutator
-  def mutate(node, %{piped: piped?}) do
+  def mutate(node, %{pipe_mode: pipe_mode}) do
     case Calls.resolved_call(node) do
       {module, fun, args, _rebuild} ->
-        removal(MapSet.member?(@removable, {module, fun}), piped?, args)
+        removal(MapSet.member?(@removable, {module, fun}), pipe_mode, args)
 
       nil ->
-        bare_removal(node, piped?)
+        bare_removal(node, pipe_mode)
     end
   end
 
   def mutate(_node, _context), do: :skip
 
   # A bare `Kernel` call (`abs(x)`, the binary slicers): removed only at its effective arity,
-  # so a same-named user call at another arity is never touched. Effective arity = visible
-  # args + (piped? 1 : 0), since a pipe stage's node carries one fewer arg than the source
-  # reads. A bare call displaced from `Kernel` by `import Kernel, except:/only:`
+  # so a same-named user call at another arity is never touched. The effective arity
+  # (`effective_arity/2` — one higher when `:piped`) tells them apart, since a pipe stage's
+  # node carries one fewer arg than the source reads. A bare call displaced from `Kernel` by
+  # `import Kernel, except:/only:`
   # (`Mutare.Transform.Imports`) is another module's function, so it is left alone.
-  defp bare_removal({fun, meta, args}, piped?) when is_atom(fun) and is_list(args) do
-    eff_arity = Mutare.Mutator.effective_arity(args, Mutare.Mutator.pipe_mode(piped?))
+  defp bare_removal({fun, meta, args}, pipe_mode) when is_atom(fun) and is_list(args) do
+    eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode)
 
     removable? =
       MapSet.member?(@bare_removable, {fun, eff_arity}) and not Imports.kernel_displaced?(meta)
 
-    removal(removable?, piped?, args)
+    removal(removable?, pipe_mode, args)
   end
 
-  defp bare_removal(_node, _piped?), do: :skip
+  defp bare_removal(_node, _pipe_mode), do: :skip
 
   # Decide the removal given membership + pipe context.
-  defp removal(false, _piped?, _args), do: :skip
-  defp removal(true, true, _args), do: [identity_call()]
-  defp removal(true, false, []), do: :skip
-  defp removal(true, false, args), do: [hd(args)]
+  defp removal(false, _pipe_mode, _args), do: :skip
+  defp removal(true, :piped, _args), do: [identity_call()]
+  defp removal(true, :unpiped, []), do: :skip
+  defp removal(true, :unpiped, args), do: [hd(args)]
 
   defp identity_call do
     {{:., [], [{:__aliases__, [], [:Function]}, :identity]}, [], []}

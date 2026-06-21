@@ -244,7 +244,7 @@ contract between them is the whole game.
     would silently drop the filter. The directly-written and **piped** (`[x, y] |> destructure(v)`, the
     LHS is effective arg 0) forms both route (`binding_pattern_macro/1`).
     A dedicated **`:|>` clause** routes a pipe's RHS through `analyze_pipe_stage/2`, which offers the
-    stage to mutators with `%{piped: true}` (everywhere else defaults to `%{piped: false}`): a pipe
+    stage to mutators with `%{pipe_mode: :piped}` (everywhere else defaults to `%{pipe_mode: :unpiped}`): a pipe
     stage's node carries one fewer arg than the source reads (the piped value is the `|>` LHS, not in
     the call), so an arity-changing mutator (CollectionArity, via the optional `mutate/2` callback)
     needs the flag to recover the *effective* arity. The mutated stage is a plain `Candidate.InPlace`,
@@ -923,9 +923,11 @@ built-in families match aliased/imported calls; a custom mutator gets the same r
 `test/support/resolved_call_mutator.ex` is a working example.
 
 For an *arity-changing call* mutator (dropping a refining argument, collapsing to a coarser call),
-`mutate/1` is `:skip` and you implement the optional callback `mutate(node, %{piped: boolean})`
-instead — `Transform` invokes it at each runtime call position with whether the node is a `|>` RHS,
-so you can compute the *effective* arity (`length(args) + if(piped, do: 1, else: 0)`). You must
+`mutate/1` is `:skip` and you implement the optional callback
+`mutate(node, %{pipe_mode: :piped | :unpiped})` instead — `Transform` invokes it at each runtime
+call position with whether the node is a `|>` RHS, so you can compute the *effective* arity
+(`Mutare.Mutator.effective_arity(args, context.pipe_mode)` — `length(args)`, plus one when `:piped`).
+You must
 only ever *remove* args or rename to a function that exists at the lower arity (stay compile-safe);
 `CollectionArity` is the built-in example.
 

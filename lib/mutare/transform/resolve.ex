@@ -26,8 +26,9 @@ defmodule Mutare.Transform.Resolve do
   # rather than two passes: a second pass would rebuild the same alias env to resolve imports.
   #
   # The env: `aliases` (the alias map), `imports` (`%{module_path => selector}`), `kernel`
-  # (the tracked `Kernel` selector, default `:all`), and `piped?` (whether the current node is
-  # a `|>` right-hand side — so `Imports` can recover a piped call's effective arity).
+  # (the tracked `Kernel` selector, default `:all`), and `pipe_mode` (`:piped`/`:unpiped` —
+  # whether the current node is a `|>` right-hand side, so `Imports` can recover a piped call's
+  # effective arity).
 
   alias Mutare.{Macros, Mutator}
   alias Mutare.Transform.{Aliases, Imports}
@@ -54,7 +55,7 @@ defmodule Mutare.Transform.Resolve do
       aliases: %{},
       imports: %{},
       kernel: Imports.default_selector(),
-      piped: false,
+      pipe_mode: :unpiped,
       macros: registry
     })
     |> stamp_nids()
@@ -109,7 +110,7 @@ defmodule Mutare.Transform.Resolve do
   # fewer written arg — resolve it as *piped* (effective arity +1), the LHS normally. The
   # RHS's own arguments are ordinary expressions, so descent resets the flag.
   defp walk({:|>, meta, [lhs, rhs]}, env) do
-    {:|>, meta, [walk(lhs, %{env | piped: false}), walk(rhs, %{env | piped: true})]}
+    {:|>, meta, [walk(lhs, %{env | pipe_mode: :unpiped}), walk(rhs, %{env | pipe_mode: :piped})]}
   end
 
   # A remote call `Mod.fun(...)`: stamp its module position with the alias-resolved module
@@ -127,8 +128,8 @@ defmodule Mutare.Transform.Resolve do
   # its argument routing, then descend the arguments un-piped. The macro stamp runs *after*
   # `Imports.stamp` so it can read the just-applied import / Kernel-displacement marks.
   defp walk({fun, meta, args}, env) when is_atom(fun) and is_list(args) do
-    meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, env.piped)
-    arity = Mutator.effective_arity(args, Mutator.pipe_mode(env.piped))
+    meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, env.pipe_mode)
+    arity = Mutator.effective_arity(args, env.pipe_mode)
     meta = stamp_macro(meta, bare_module_key(fun, arity, meta), fun, args, env)
     {fun, meta, descend(args, env)}
   end
@@ -141,7 +142,7 @@ defmodule Mutare.Transform.Resolve do
   defp walk(list, env) when is_list(list), do: Enum.map(list, &walk(&1, env))
   defp walk(node, _env), do: node
 
-  defp descend(args, env), do: Enum.map(args, &walk(&1, %{env | piped: false}))
+  defp descend(args, env), do: Enum.map(args, &walk(&1, %{env | pipe_mode: :unpiped}))
 
   # Extend the env from one statement: the alias env (any statement, no-op unless an `alias`)
   # and then the import env / Kernel selector (no-op unless an `import`). Imports resolve their
@@ -159,11 +160,11 @@ defmodule Mutare.Transform.Resolve do
   # positions. This is what protects a piped DSL stage (`q |> where([p], p.x == 1)`): without
   # it core would descend into the condition.
   defp stamp_macro(meta, module_key, fun, args, env) do
-    arity = Mutator.effective_arity(args, Mutator.pipe_mode(env.piped))
+    arity = Mutator.effective_arity(args, env.pipe_mode)
 
     case Macros.routing(env.macros, module_key, fun, arity) do
       nil -> meta
-      routing -> stamp_routing(meta, routing, env.piped)
+      routing -> stamp_routing(meta, routing, env.pipe_mode)
     end
   end
 
@@ -176,9 +177,9 @@ defmodule Mutare.Transform.Resolve do
   # it isn't the `:expression` default (an ordinary runtime LHS needs no stamp — the common
   # path), so a piped pattern/`:skip` macro is the only case that carries it. A piped call always
   # has effective arity >= 1, so the routing list is non-empty and the head split is safe.
-  defp stamp_routing(meta, routing, false), do: [{@macro_key, routing} | meta]
+  defp stamp_routing(meta, routing, :unpiped), do: [{@macro_key, routing} | meta]
 
-  defp stamp_routing(meta, [piped | visible], true) do
+  defp stamp_routing(meta, [piped | visible], :piped) do
     meta = [{@macro_key, visible} | meta]
     if piped == :expression, do: meta, else: [{@piped_macro_key, piped} | meta]
   end

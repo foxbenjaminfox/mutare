@@ -106,12 +106,12 @@ defmodule Mutare.Transform.Imports do
   The metadata for a bare call, stamped with the module it resolves to (`:mutare_import` —
   the useful, positive resolution) or marked `:mutare_kernel_displaced` (a `Kernel` name no
   longer in `Kernel`, so the bare-`Kernel` families skip it), or returned unchanged for a
-  local/default-`Kernel` call. `piped?` recovers the effective arity (a pipe stage carries
-  one fewer written arg than the source reads).
+  local/default-`Kernel` call. `pipe_mode` (`:piped`/`:unpiped`) recovers the effective arity
+  (a pipe stage carries one fewer written arg than the source reads).
   """
-  @spec stamp(atom(), keyword(), [Macro.t()], map(), selector(), boolean()) :: keyword()
-  def stamp(fun, meta, args, imports, kernel, piped?) do
-    arity = Mutator.effective_arity(args, Mutator.pipe_mode(piped?))
+  @spec stamp(atom(), keyword(), [Macro.t()], map(), selector(), Mutator.pipe_mode()) :: keyword()
+  def stamp(fun, meta, args, imports, kernel, pipe_mode) do
+    arity = Mutator.effective_arity(args, pipe_mode)
 
     case resolve_import(imports, fun, arity) do
       {module_key, selector} ->
