@@ -5,6 +5,8 @@ defmodule Mutare.MacrosTest do
   alias Mutare.Macros
   alias Mutare.Mutator
 
+  doctest Mutare.Macros
+
   describe "Macro.Spec.normalize_module/1" do
     test "an Elixir-module alias becomes its path as atoms (without the Elixir. prefix)" do
       assert Spec.normalize_module(Ecto.Query) == [:Ecto, :Query]

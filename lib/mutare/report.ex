@@ -97,6 +97,14 @@ defmodule Mutare.Report do
   Mutation score as a percentage:
   `killed / (total − no_coverage − ignored − poisoned − harness_error)`.
   Returns `100.0` when the denominator is zero (nothing to test).
+
+      iex> results = [
+      ...>   %Mutare.Result{status: :killed},
+      ...>   %Mutare.Result{status: :survived},
+      ...>   %Mutare.Result{status: :no_coverage}
+      ...> ]
+      iex> Mutare.Report.score(results)
+      50.0
   """
   @spec score([Result.t()]) :: float()
   def score(results) do
@@ -108,6 +116,9 @@ defmodule Mutare.Report do
   @doc """
   Format a percentage value (already on a 0..100 scale) to one decimal place,
   without a trailing `%`. The single home for the score/percent number format.
+
+      iex> Mutare.Report.percent(2 / 3 * 100)
+      "66.7"
   """
   @spec percent(number()) :: String.t()
   def percent(value), do: :erlang.float_to_binary(value / 1, decimals: 1)
@@ -115,6 +126,12 @@ defmodule Mutare.Report do
   @doc """
   Whether `results` meet a minimum score (a percentage). A `nil` minimum always
   passes — this is the CI gate's decision, kept pure here so it is testable.
+
+      iex> results = [%Mutare.Result{status: :killed}, %Mutare.Result{status: :survived}]
+      iex> Mutare.Report.passes_gate?(results, 60)
+      false
+      iex> Mutare.Report.passes_gate?(results, nil)
+      true
   """
   @spec passes_gate?([Result.t()], number() | nil) :: boolean()
   def passes_gate?(_results, nil), do: true
@@ -130,6 +147,14 @@ defmodule Mutare.Report do
   rate measures how broken the *running* was, not how much was skipped. Returns
   `0.0` when nothing ran. The runner compares it to `:max_harness_error_rate` to
   decide whether to abort; kept pure here so it is testable (cf. `passes_gate?/2`).
+
+      iex> results = [
+      ...>   %Mutare.Result{status: :killed},
+      ...>   %Mutare.Result{status: :harness_error},
+      ...>   %Mutare.Result{status: :no_coverage}
+      ...> ]
+      iex> Mutare.Report.harness_error_rate(results)
+      0.5
   """
   @spec harness_error_rate([Result.t()]) :: float()
   def harness_error_rate(results) do
@@ -161,7 +186,15 @@ defmodule Mutare.Report do
   def harness_errors_exceed?(_results, nil), do: false
   def harness_errors_exceed?(results, max_rate), do: harness_error_rate(results) > max_rate
 
-  @doc "One-line tally, e.g. `mutation score: 66.7%  (2 killed, 1 survived, 3 total)`."
+  @doc """
+  One-line tally, e.g. `mutation score: 66.7%  (2 killed, 1 survived, 3 total)`.
+
+      iex> Mutare.Report.summary([
+      ...>   %Mutare.Result{status: :killed},
+      ...>   %Mutare.Result{status: :survived}
+      ...> ])
+      "mutation score: 50.0%  (1 killed, 1 survived, 2 total)"
+  """
   @spec summary([Result.t()]) :: String.t()
   def summary(results) do
     counts = tally(results)

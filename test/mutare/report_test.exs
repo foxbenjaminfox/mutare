@@ -3,6 +3,8 @@ defmodule Mutare.ReportTest do
 
   alias Mutare.{Report, Result, Site}
 
+  doctest Mutare.Report
+
   @source """
   defmodule Billing do
     def ok?(total, threshold) do

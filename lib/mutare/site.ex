@@ -230,7 +230,25 @@ defmodule Mutare.Site do
 
   defp render_code(node, _keyword_key?), do: Sourceror.to_string(node)
 
-  @doc "Human-readable one-liner, e.g. `relational  >= → >` or `clause_drop  (drop) <clause>`."
+  @doc """
+  Human-readable one-liner, e.g. `relational  >= → >` or
+  `clause_drop  (drop) <clause>`.
+
+      iex> Mutare.Site.describe(%Mutare.Site{
+      ...>   mutator: :relational,
+      ...>   operation: :replace,
+      ...>   original_code: "a >= b",
+      ...>   mutated_code: "a > b"
+      ...> })
+      "relational  a >= b → a > b"
+
+      iex> Mutare.Site.describe(%Mutare.Site{
+      ...>   mutator: :clause_drop,
+      ...>   operation: :delete,
+      ...>   original_code: "def f(_), do: :ok"
+      ...> })
+      "clause_drop  (drop) def f(_), do: :ok"
+  """
   @spec describe(t()) :: String.t()
   def describe(%__MODULE__{operation: :delete} = site) do
     "#{site.mutator}  (drop) #{one_line(site.original_code)}"

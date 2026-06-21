@@ -1,6 +1,8 @@
 defmodule MutareTest do
   use ExUnit.Case, async: true
 
+  doctest Mutare
+
   test "transform_string/2 delegates to Mutare.Transform" do
     # Pin to arithmetic so the delegation check sees one predictable site; the
     # default set would also add a return-value mutant on the `a + b` tail.

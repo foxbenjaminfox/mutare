@@ -3,6 +3,8 @@ defmodule Mutare.OptionsTest do
 
   alias Mutare.Options
 
+  doctest Mutare.Options
+
   describe "new/1 defaults" do
     test "an empty keyword list resolves to documented defaults" do
       options = Options.new([])

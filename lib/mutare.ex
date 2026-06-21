@@ -15,7 +15,14 @@ defmodule Mutare do
   See `Mutare.Transform` for source rewriting and `Mutare.Runner` for execution.
   """
 
-  @doc "Transform a source string into `{metamutant_source, [%Mutare.Site{}], next_id}`."
+  @doc """
+  Transform a source string into `{metamutant_source, [%Mutare.Site{}], next_id}`.
+
+      iex> source = "defmodule Calculator do\\n  def add(a, b), do: a + b\\nend\\n"
+      iex> {_metamutant, [site], next_id} = Mutare.transform_string(source, mutators: [:arithmetic])
+      iex> {site.id, site.mutator, site.original_code, site.mutated_code, next_id}
+      {1, :arithmetic, "a + b", "a - b", 2}
+  """
   defdelegate transform_string(source, opts \\ []), to: Mutare.Transform
 
   @doc "Run mutation testing against the project at `root`. See `Mutare.Runner.run/2`."

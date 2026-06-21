@@ -4,6 +4,8 @@ defmodule Mutare.ConfigTest do
   alias Mutare.Config
   alias Mutare.Mutators.{Arithmetic, Relational}
 
+  doctest Mutare.Config
+
   describe "load/1" do
     setup do
       root = Path.join(System.tmp_dir!(), "mutare_cfg_#{System.unique_integer([:positive])}")

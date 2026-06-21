@@ -84,6 +84,9 @@ defmodule Mutare.Options do
   The output formats a reporter entry may name (`:human`, `:json`, `:html`,
   `:sarif`) — the single source of truth, so `Mutare.Config` can map a CLI
   `--format` string without re-listing them or interning arbitrary input.
+
+      iex> Mutare.Options.formats()
+      [:human, :json, :html, :sarif]
   """
   @spec formats() :: [atom()]
   def formats, do: @formats
@@ -96,6 +99,19 @@ defmodule Mutare.Options do
   Raises `ArgumentError` on an unknown key or an invalid value. `:workers`
   defaults to `System.schedulers_online/0`, resolved here so the struct always
   carries a concrete positive integer.
+
+      iex> opts = Mutare.Options.new(
+      ...>   paths: ["lib/billing"],
+      ...>   workers: 2,
+      ...>   mutators: [:arithmetic],
+      ...>   reporters: [{:json, "mutare.json"}]
+      ...> )
+      iex> {opts.paths, opts.workers, Enum.map(opts.mutators, & &1.name), opts.reporters}
+      {["lib/billing"], 2, [:arithmetic], [{:json, "mutare.json"}]}
+
+      iex> opts = Mutare.Options.new(workers: 2)
+      iex> Mutare.Options.new(opts) == opts
+      true
   """
   @spec new(t() | keyword()) :: t()
   def new(%__MODULE__{} = options), do: options

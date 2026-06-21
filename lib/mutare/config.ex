@@ -31,6 +31,13 @@ defmodule Mutare.Config do
   (or none) resolves to "use the default set" by omitting the key, so
   `Mutare.Transform` picks it. Raises `ArgumentError` on an unknown mutator
   family.
+
+      iex> opts = Mutare.Config.merge([paths: ["lib"], min_score: 70], only: "lib/billing", full: true)
+      iex> {opts[:paths], opts[:min_score], opts[:test_selection]}
+      {["lib/billing"], 70, :full}
+
+      iex> Mutare.Config.merge([], format: "json", output: "mutare.json")[:reporters]
+      [{:human, nil}, {:json, "mutare.json"}]
   """
   @spec merge(keyword(), keyword()) :: keyword()
   def merge(file_config, flags) do
@@ -53,6 +60,9 @@ defmodule Mutare.Config do
   catalog. Each entry is a built-in family atom (`:arithmetic`, `:relational`), a
   module implementing `Mutare.Mutator`, or a `{module, opts}` configured pair.
   Raises `ArgumentError` on anything else.
+
+      iex> Mutare.Config.mutator_modules([:arithmetic]) |> Enum.map(& &1.module)
+      [Mutare.Mutators.Arithmetic]
   """
   @spec mutator_modules([atom() | module() | {atom() | module(), term()}]) ::
           [Mutare.Mutator.Spec.t()]

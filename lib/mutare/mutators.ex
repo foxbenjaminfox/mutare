@@ -69,11 +69,21 @@ defmodule Mutare.Mutators do
   @spec registry() :: [{atom(), module()}]
   def registry, do: @registry
 
-  @doc "The default mutator set: every built-in module, in registry order."
+  @doc """
+  The default mutator set: every built-in module, in registry order.
+
+      iex> Mutare.Mutators.all() |> List.first()
+      Mutare.Mutators.Arithmetic
+  """
   @spec all() :: [module()]
   def all, do: Keyword.values(@registry)
 
-  @doc "Every known built-in family atom, in registry order."
+  @doc """
+  Every known built-in family atom, in registry order.
+
+      iex> :arithmetic in Mutare.Mutators.families()
+      true
+  """
   @spec families() :: [atom()]
   def families, do: Keyword.keys(@registry)
 
@@ -83,6 +93,10 @@ defmodule Mutare.Mutators do
   behaviour, a `{family_atom | module, opts}` configured pair, or an
   already-resolved `%Spec{}` (idempotent). Raises `ArgumentError` on an unknown
   family or a module that does not implement `Mutare.Mutator`.
+
+      iex> specs = Mutare.Mutators.resolve([:arithmetic, {:literal, as: :literals}])
+      iex> Enum.map(specs, &{&1.name, &1.module, &1.opts})
+      [{:arithmetic, Mutare.Mutators.Arithmetic, []}, {:literals, Mutare.Mutators.Literal, []}]
   """
   @spec resolve([atom() | module() | {atom() | module(), term()} | Spec.t()]) :: [Spec.t()]
   def resolve(mutators) when is_list(mutators), do: Enum.map(mutators, &resolve!/1)

@@ -62,6 +62,10 @@ defmodule Mutare.Macros do
   Each entry is a `{module, name, arity, treatment}` 4-tuple, a
   `{module, name, treatment}` 3-tuple (arity `:any`), or an already-resolved
   `%Mutare.Macro.Spec{}` (idempotent). Raises `ArgumentError` on a malformed entry.
+
+      iex> [spec] = Mutare.Macros.resolve([{Ecto.Query, :from, :skip}])
+      iex> {spec.module, spec.name, spec.arity, spec.args}
+      {[:Ecto, :Query], :from, :any, :skip}
   """
   @spec resolve([tuple() | Spec.t()] | term()) :: [Spec.t()]
   def resolve(entries) when is_list(entries), do: Enum.map(entries, &resolve!/1)
@@ -108,6 +112,12 @@ defmodule Mutare.Macros do
   with `Map.put`, so a later entry for the same `{module_key, name, arity}`
   overrides an earlier one (config and mutator-provided override built-ins).
   `config_macros` may be raw entries or already-resolved specs (idempotent).
+
+      iex> registry = Mutare.Macros.build([{Ecto.Query, :from, :skip}], [])
+      iex> Mutare.Macros.routing(registry, [:Kernel], :match?, 2)
+      [:pattern, :expression]
+      iex> Mutare.Macros.routing(registry, [:Ecto, :Query], :from, 2)
+      [:skip, :skip]
   """
   @spec build([tuple() | Spec.t()], [Mutator.Spec.t()]) :: registry()
   def build(config_macros, mutator_specs) do

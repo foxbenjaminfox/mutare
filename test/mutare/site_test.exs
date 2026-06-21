@@ -3,6 +3,8 @@ defmodule Mutare.SiteTest do
 
   alias Mutare.Site
 
+  doctest Mutare.Site
+
   @range %{start: [line: 2, column: 3], end: [line: 2, column: 20]}
 
   defp clause, do: Sourceror.parse_string!("def f(_), do: :ok")

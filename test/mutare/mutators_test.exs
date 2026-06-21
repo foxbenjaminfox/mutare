@@ -4,6 +4,8 @@ defmodule Mutare.MutatorsTest do
   alias Mutare.Mutators
   alias Mutare.Mutator.Spec
 
+  doctest Mutare.Mutators
+
   alias Mutare.Mutators.{
     AliasLiteral,
     Arithmetic,
