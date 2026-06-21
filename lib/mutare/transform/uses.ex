@@ -98,6 +98,21 @@ defmodule Mutare.Transform.Uses do
   # wrong caller context (and could harvest invalid directives), so we stop at quoted contexts.
   defp walk({:quote, _meta, _args} = node, _module, _env), do: node
 
+  # A non-module-body block — the **file top level** (a multi-form file parses as a `:__block__`)
+  # or a function body. A `use` here is never a module-level directive (descended, not stamped),
+  # but an `alias` *does* scope to following siblings — including a sibling `defmodule`'s `use`
+  # targets (`alias RealUsing, as: U` then `defmodule M do use U end`, which the compiler expands
+  # as `RealUsing.__using__`). So the alias env is folded left-to-right here too. (A module body
+  # is reached via `walk_body`, which folds + stamps; this clause never sees one.)
+  defp walk({:__block__, meta, stmts}, module, env) do
+    {walked, _env} =
+      Enum.map_reduce(stmts, env, fn stmt, env ->
+        {walk(stmt, module, env), Aliases.register(stmt, env)}
+      end)
+
+    {:__block__, meta, walked}
+  end
+
   defp walk({form, meta, args}, module, env) when is_list(args),
     do: {form, meta, Enum.map(args, &walk(&1, module, env))}
 
@@ -243,9 +258,16 @@ defmodule Mutare.Transform.Uses do
     key = {mod, opts}
 
     cond do
-      depth > @max_depth -> []
-      MapSet.member?(seen, key) -> []
-      true -> collect(expand_using(mod, opts, caller), caller, depth + 1, MapSet.put(seen, key))
+      depth > @max_depth ->
+        []
+
+      MapSet.member?(seen, key) ->
+        []
+
+      # A fresh alias scope (`%{}`) for this `__using__` body — its directives are folded as the
+      # block is descended, so an in-body `alias … as: T` resolves a sibling `use T`.
+      true ->
+        collect(expand_using(mod, opts, caller), caller, depth + 1, MapSet.put(seen, key), %{})
     end
   end
 
@@ -253,7 +275,7 @@ defmodule Mutare.Transform.Uses do
   # `mod.__using__(opts)` directly with `mod` required. The env's `:module` is the using
   # module so `__CALLER__.module` reads faithfully. **`expand_once`, not `expand`** — `expand`
   # would keep going, and a nested `use Bar` in the body (itself a macro) would over-expand to
-  # `require Bar; Bar.__using__(...)`; one step leaves the nested `use` intact for `collect/4`
+  # `require Bar; Bar.__using__(...)`; one step leaves the nested `use` intact for `collect/5`
   # to re-expand.
   defp expand_using(mod, opts, caller) do
     env = %{__ENV__ | module: caller, requires: Enum.uniq([mod | __ENV__.requires])}
@@ -261,28 +283,36 @@ defmodule Mutare.Transform.Uses do
   end
 
   # Gather `import`/`alias`/`require …, as:` from a `__using__` body, descending only blocks
-  # and re-expanding nested `use`s — never `def`/`quote`/`if` bodies (those degrade).
-  defp collect({:__block__, _, stmts}, caller, depth, seen) when is_list(stmts),
-    do: Enum.flat_map(stmts, &collect(&1, caller, depth, seen))
+  # and re-expanding nested `use`s — never `def`/`quote`/`if` bodies (those degrade). An alias
+  # env (`env`) is folded left-to-right over a block so an in-body `alias … as: T` resolves a
+  # sibling `use T` (the way the compiler expands it).
+  defp collect({:__block__, _, stmts}, caller, depth, seen, env) when is_list(stmts) do
+    {collected, _env} =
+      Enum.flat_map_reduce(stmts, env, fn stmt, env ->
+        {collect(stmt, caller, depth, seen, env), Aliases.register(stmt, env)}
+      end)
 
-  defp collect({directive, _, _} = node, _caller, _depth, _seen)
+    collected
+  end
+
+  defp collect({directive, _, _} = node, _caller, _depth, _seen, _env)
        when directive in [:import, :alias],
        do: [node]
 
   # `require Foo, as: Bar` introduces an alias; rewrite to the equivalent `alias` so
   # `Aliases.register` (which doesn't read `require`) picks it up. A plain `require` doesn't
   # affect name resolution and is dropped.
-  defp collect({:require, _, [mod_ast, opts]}, _caller, _depth, _seen) when is_list(opts) do
+  defp collect({:require, _, [mod_ast, opts]}, _caller, _depth, _seen, _env) when is_list(opts) do
     case as_value(opts) do
       nil -> []
       as -> [{:alias, [], [mod_ast, [as: as]]}]
     end
   end
 
-  # A nested `use` harvested from an *expanded* `__using__` body: it is standard-quoted with a
-  # fully-qualified module, so there is no source-level alias scope to resolve against (`%{}`).
-  defp collect({:use, _, args}, caller, depth, seen) do
-    case use_args(args, %{}) do
+  # A nested `use` harvested from an *expanded* `__using__` body: standard-quoted, resolved through
+  # the body's own alias scope (`env`) so an earlier sibling `alias … as: T` redirects `use T`.
+  defp collect({:use, _, args}, caller, depth, seen, env) do
+    case use_args(args, env) do
       {:ok, mod, opts} ->
         if Code.ensure_loaded?(mod),
           do: expand_and_collect(mod, opts, caller, depth, seen),
@@ -293,7 +323,7 @@ defmodule Mutare.Transform.Uses do
     end
   end
 
-  defp collect(_other, _caller, _depth, _seen), do: []
+  defp collect(_other, _caller, _depth, _seen, _env), do: []
 
   defp as_value(opts), do: Keyword.get(opts, :as)
 

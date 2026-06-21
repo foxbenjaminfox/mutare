@@ -270,6 +270,38 @@ defmodule Mutare.UsesTest do
       assert "alias Mutare.Test.RealTarget, as: T" in rendered
       assert "import Map, only: [get: 2]" in rendered
     end
+
+    test "an alias declared inside a `__using__` body resolves a sibling `use`" do
+      source = """
+      defmodule UsesBodyAlias do
+        use Mutare.Test.BodyAliasUsing
+      end
+      """
+
+      rendered = Enum.map(directives_at(source), &Macro.to_string/1)
+
+      # The expanded body is `alias BodyAliasTarget, as: T; use T`; the nested `use T` must resolve
+      # through that in-body alias, surfacing BodyAliasTarget's `import Map, only: [merge: 2]`.
+      assert "alias Mutare.Test.BodyAliasTarget, as: T" in rendered
+      assert "import Map, only: [merge: 2]" in rendered
+    end
+
+    test "a top-level alias resolves a `use` in a following `defmodule`" do
+      source = """
+      alias Mutare.Test.ControllerUsing, as: U
+
+      defmodule TopAliasMod do
+        use U
+      end
+      """
+
+      # A multi-form file is a `:__block__`; the top-level alias scopes into the following module
+      # (the compiler expands `use U` as `ControllerUsing.__using__`), so its import is surfaced.
+      assert "import Enum, only: [reject: 2]" in Enum.map(
+               directives_at(source),
+               &Macro.to_string/1
+             )
+    end
   end
 
   describe "nested-module naming (caller passed to `__using__`)" do

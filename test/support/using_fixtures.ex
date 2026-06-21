@@ -81,6 +81,31 @@ defmodule Mutare.Test.AliasInjector do
   end
 end
 
+defmodule Mutare.Test.BodyAliasTarget do
+  @moduledoc """
+  The real target of an alias declared *inside* another `__using__` body. Injects a distinctive
+  `import Map, only: [merge: 2]` so a test can confirm a nested `use T` (where `T` was aliased to
+  here by an earlier sibling in the same expanded body) was expanded through that in-body alias.
+  """
+  defmacro __using__(_opts) do
+    quote do: import(Map, only: [merge: 2])
+  end
+end
+
+defmodule Mutare.Test.BodyAliasUsing do
+  @moduledoc """
+  A `__using__` whose body declares an alias and then `use`s it (`alias BodyAliasTarget, as: T;
+  use T`) — exercises folding the alias env *within* an expanded `__using__` body, the way Elixir
+  expands the nested `use` through the sibling alias.
+  """
+  defmacro __using__(_opts) do
+    quote do
+      alias Mutare.Test.BodyAliasTarget, as: T
+      use T
+    end
+  end
+end
+
 defmodule Mutare.Test.OptionDispatch do
   @moduledoc """
   A `__using__` that re-dispatches to the *same* module with a different static option
