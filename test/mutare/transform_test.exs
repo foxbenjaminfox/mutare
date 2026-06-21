@@ -449,6 +449,87 @@ defmodule Mutare.TransformTest do
     assert Enum.frequencies_by(sites, & &1.original_op) == %{:> => 2}
   end
 
+  describe "a condition that binds a variable escaping into the body" do
+    # A binding made in an `if`/`unless`/`cond` condition (`(name = f()) != nil`)
+    # *leaks* into the clause body. The in-place selector is a `case`, which would
+    # scope that binding to one branch — leaving the body's reference unbound, a hard
+    # compile error independent of the active mutant. So a node that is an *ancestor*
+    # of the binding gets no in-place mutant, while binding-free siblings and the body
+    # still mutate. (Regression: `mix mutare` on `Mutare.Transform.Aliases`.)
+    @binding [
+      Mutare.Mutators.Relational,
+      Mutare.Mutators.Conditional,
+      Mutare.Mutators.IfCondition,
+      Mutare.Mutators.MapKeyword
+    ]
+
+    test "a cond clause's binding condition is left un-wrapped; siblings and the body still mutate" do
+      source = """
+      defmodule Bind do
+        def f(opts, env) do
+          cond do
+            length(opts) > 0 -> env
+            (name = Keyword.get(opts, :n)) != nil -> Map.put(env, name, 1)
+            true -> env
+          end
+        end
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @binding)
+
+      # The binding condition yields no site (any selector would trap `name`).
+      refute Enum.any?(sites, &(&1.original_code =~ "name = Keyword"))
+      # The binding-free sibling condition still mutates (Relational + Conditional).
+      assert Enum.any?(sites, &(&1.original_code == "length(opts) > 0"))
+      # The binding clause's body still mutates (MapKeyword put → put_new/…).
+      assert Enum.any?(sites, &(&1.mutator == :map_keyword))
+      # The metamutant compiles — the whole point.
+      assert_compiles(meta)
+    end
+
+    test "an if condition with a nested binding compiles and yields no condition site" do
+      source = """
+      defmodule BindIf do
+        def f(opts, env) do
+          if (name = Keyword.get(opts, :n)) != nil do
+            Map.put(env, name, 1)
+          else
+            env
+          end
+        end
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @binding)
+
+      refute Enum.any?(sites, &(&1.original_code =~ "name = Keyword"))
+      assert Enum.any?(sites, &(&1.mutator == :map_keyword))
+      assert_compiles(meta)
+    end
+
+    test "a binding isolated inside a closure does not suppress the surrounding condition" do
+      # The `fn` scopes `y`, so it never reaches the cond body — the surrounding
+      # `Enum.any?(...)` condition is still a normal boolean decision and mutates.
+      source = """
+      defmodule BindClosure do
+        def f(xs) do
+          cond do
+            Enum.any?(xs, fn x -> (y = abs(x)) > 0 end) -> :hit
+            true -> :miss
+          end
+        end
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+
+      assert Enum.any?(sites, &(&1.mutator == :if_condition))
+      assert_compiles(meta)
+    end
+  end
+
   test "with/else blocks are walked without corrupting the metamutant" do
     source = """
     defmodule W do

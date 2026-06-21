@@ -287,18 +287,16 @@ defmodule Mutare.Transform.Analyze do
   # `true`/`false` (the "remove the decision" mutation) for the conditions a value
   # family can't reach (a bare predicate call, `is_*`, a remote boolean), the
   # boolean-operator ones being left to `Conditional`. So the condition is analyzed
-  # as runtime, then has its IfCondition candidate appended (`attach_if_condition/3`);
-  # the body keyword (`do:`/`else:` values) is analyzed exactly as the generic
-  # runtime clause would, and the whole node is still offered to mutators for parity
-  # (a custom mutator matching an `if`; the built-ins match none). Only `:runtime` —
-  # a module-level (`:scaffold`) `if` runs once at compile time, so its condition is
-  # inert and falls through to the non-mutating catch-all.
+  # as a condition (`analyze_condition/2` — runtime, plus IfCondition, minus any
+  # selector that would trap an escaping binding; see there); the body keyword
+  # (`do:`/`else:` values) is analyzed exactly as the generic runtime clause would,
+  # and the whole node is still offered to mutators for parity (a custom mutator
+  # matching an `if`; the built-ins match none). Only `:runtime` — a module-level
+  # (`:scaffold`) `if` runs once at compile time, so its condition is inert and falls
+  # through to the non-mutating catch-all.
   defp analyze({form, meta, [condition, body_kw]} = node, :runtime, mutators)
        when form in [:if, :unless] and is_list(body_kw) do
-    analyzed_condition =
-      condition
-      |> analyze(:runtime, mutators)
-      |> attach_if_condition(condition, mutators)
+    analyzed_condition = analyze_condition(condition, mutators)
 
     rebuilt = {form, meta, [analyzed_condition, analyze(body_kw, :runtime, mutators)]}
 
@@ -824,14 +822,12 @@ defmodule Mutare.Transform.Analyze do
   defp analyze_cond_clause({:->, meta, [conds, body]}, context, mutators) when is_list(conds) do
     analyzed_conds =
       Enum.map(conds, fn cond_node ->
-        analyzed = analyze(cond_node, context, mutators)
-
-        # Force the condition to true/false (IfCondition) only when it is live —
-        # a `:scaffold` cond (module-level metaprogramming) runs once at compile
-        # time with mutant 0, so a selector on its condition could never activate.
+        # Analyze as a condition (runtime, IfCondition, binding-safe) only when live —
+        # a `:scaffold` cond (module-level metaprogramming) runs once at compile time
+        # with mutant 0, so a selector on its condition could never activate.
         if context == :runtime,
-          do: attach_if_condition(analyzed, cond_node, mutators),
-          else: analyzed
+          do: analyze_condition(cond_node, mutators),
+          else: analyze(cond_node, context, mutators)
       end)
 
     {:->, meta, [analyzed_conds, analyze(body, context, mutators)]}
@@ -1735,6 +1731,80 @@ defmodule Mutare.Transform.Analyze do
   end
 
   defp append_return_candidates(node, _raw_tail, _replacements), do: node
+
+  # === condition analysis (if / unless / cond) ===============================
+
+  # Analyze an `if`/`unless`/`cond` *condition*: the generic runtime walk, plus the
+  # IfCondition `true`/`false` pair — but with one wrinkle the descent can't see. A
+  # binding made *inside* the condition (`(name = f()) != nil`, `lookup(x = key())`)
+  # **escapes** into the clause body (`if`/`cond` conditions leak their bindings),
+  # where a later expression reads it. The in-place selector that wraps a mutated node
+  # is a `case`, which would scope that binding to a branch — so the body's reference
+  # to it becomes unbound: a hard compile error, *independent of the active mutant*
+  # (every branch, including the unmutated catch-all, binds inside the `case`).
+  #
+  # So after the normal analysis, `prune_binding_ancestors/1` strips the in-place
+  # candidates from every node that is an *ancestor* of an escaping binding — exactly
+  # the nodes whose selector would trap it — while a sibling sub-expression with no
+  # binding under it still mutates. And IfCondition (which wraps the *whole* condition)
+  # is skipped whenever any binding escapes within it. (IfCondition already declines a
+  # *top-level* `=`; this covers a binding nested under an operator/call, where
+  # Conditional/Relational/IfCondition would otherwise wrap and trap it.)
+  defp analyze_condition(condition, mutators) do
+    analyzed = analyze(condition, :runtime, mutators)
+
+    case prune_binding_ancestors(analyzed) do
+      {pruned, true} -> pruned
+      {_pruned, false} -> attach_if_condition(analyzed, condition, mutators)
+    end
+  end
+
+  # Forms that isolate the bindings made within them — a `=` inside a closure, a
+  # comprehension, a `try`, or a `quote` does not reach the enclosing clause body, so
+  # it taints nothing and its (already correctly-analyzed) internals are left intact.
+  # Everything else (operators, calls, `case`/`cond`/`if`, `&&`/`||`, blocks) leaks
+  # bindings outward, so the taint propagates through it.
+  @binding_isolating_forms [:fn, :for, :with, :try, :quote]
+
+  # Bottom-up over the analyzed condition: returns `{node, subtree_has_binding?}`,
+  # stripping the in-place candidates (`meta[:mutare]`) from any node that is a
+  # *proper ancestor* of an escaping `=` binding (a child subtree holds one). A `=`
+  # node has no in-place candidate of its own, so it is never itself stripped; it only
+  # reports its subtree as binding-bearing so its ancestors are pruned.
+  defp prune_binding_ancestors({form, _meta, _args} = node)
+       when form in @binding_isolating_forms,
+       do: {node, false}
+
+  defp prune_binding_ancestors({form, meta, args}) when is_list(args) do
+    {pruned_args, child_has?} = prune_binding_ancestors_each(args)
+    node = {form, meta, pruned_args}
+    node = if child_has?, do: strip_inplace_candidates(node), else: node
+    {node, child_has? or form == :=}
+  end
+
+  defp prune_binding_ancestors({left, right}) do
+    {pruned_left, left_has?} = prune_binding_ancestors(left)
+    {pruned_right, right_has?} = prune_binding_ancestors(right)
+    {{pruned_left, pruned_right}, left_has? or right_has?}
+  end
+
+  # A bare list operand (`length([x = f(), y])`) — walk each element so a binding
+  # nested in it still taints the call that holds it. A list carries no metadata, so
+  # there is nothing of its own to strip.
+  defp prune_binding_ancestors(list) when is_list(list),
+    do: prune_binding_ancestors_each(list)
+
+  defp prune_binding_ancestors(other), do: {other, false}
+
+  defp prune_binding_ancestors_each(list) do
+    {nodes, hass} = list |> Enum.map(&prune_binding_ancestors/1) |> Enum.unzip()
+    {nodes, Enum.any?(hass)}
+  end
+
+  defp strip_inplace_candidates({form, meta, args}) when is_list(meta),
+    do: {form, Keyword.delete(meta, :mutare), args}
+
+  defp strip_inplace_candidates(node), do: node
 
   # Force an `if`/`unless`/`cond` *condition* to `true`/`false` via the in-place
   # selector. `IfCondition.replacements/1` returns the `[true, false]` pair (or `[]`

@@ -178,10 +178,23 @@ contract between them is the whole game.
     routed in the generic runtime clause off the `meta[:mutare_macro]` stamp, so a literal there
     isn't mutated in place (splicing a `case` into a pattern), with
     **`cond` excepted** (its `->` LHS is a runtime condition, kept mutatable — `analyze_cond_block/3`).
-    The runtime `if`/`unless` clause and `analyze_cond_clause` *additionally* offer their
-    **condition** to IfCondition (`attach_if_condition/3` appends a `Candidate.InPlace` forcing it to
-    `true`/`false` — only when live, i.e. `:runtime`, never `:scaffold`), so the same selector hosts
-    both that and any operator swap already on the condition node.
+    The runtime `if`/`unless` clause and `analyze_cond_clause` route their **condition** through
+    `analyze_condition/2`, which appends the IfCondition `true`/`false` pair (`attach_if_condition/3`
+    — only when live, i.e. `:runtime`, never `:scaffold`), so the same selector hosts both that and
+    any operator swap already on the condition node. But a binding made *in* the condition
+    (`(name = lookup()) != nil -> use(name)`) **escapes** into the clause body, and the in-place
+    selector is a `case` — wrapping the condition would scope `name` to a branch, leaving the body's
+    reference unbound (a hard compile error, *independent of the active mutant*: every branch,
+    including the unmutated catch-all, binds inside the `case`). So `analyze_condition/2` runs
+    `prune_binding_ancestors/1` over the analyzed condition, stripping the in-place candidate from
+    every node that is a *proper ancestor* of an escaping `=` (the nodes whose selector would trap
+    it) while a binding-free sibling sub-expression still mutates and the body mutates normally; and
+    IfCondition (which wraps the *whole* condition) is skipped when any binding escapes within it.
+    Binding-isolating forms (`fn`/`for`/`with`/`try`/`quote`) stop the taint — a `=` scoped inside a
+    closure never reaches the body, so the surrounding condition still mutates. (IfCondition's own
+    `replacements/1` already declines a *top-level* `=`; the prune is the cross-mutator generalization
+    for a binding nested under an operator/call, where Conditional/Relational would otherwise wrap it.
+    Regression: `mix mutare` on `Mutare.Transform.Aliases`.)
     A `case`/`receive`/`fn` clause's pattern (and guard) stays unmutated *in place* in the ordinary
     descent but is **additionally** offered — to the structural pattern families (swap/wildcard), the
     literal families, and (for the guard) the guard families — by dedicated analyze clauses. For a

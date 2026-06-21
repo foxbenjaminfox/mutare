@@ -2425,14 +2425,46 @@ the `true`/`false` pair. `original`/`range` come from the raw condition for a cl
     bindings *leak* into its body, so replacing the condition with a constant strands an
     unbound variable → the single build won't compile. (A parenthesised `(x = a; b)`
     sequence is skipped for the same reason, via the multi-statement `__block__` clause.)
-    `Conditional` has the same latent hazard on `if (a = 1) > 0` but leans on
-    poison-recovery; `IfCondition` excludes it up front to stay **compile-safe by
-    construction**, per the layered-compile-safety rule.
+    This `replacements/1` skip only catches a **top-level** `=`; the nested case is owned
+    by the transform — see below.
 
 Only `:runtime` conditions are offered — a module-level (`:scaffold`) `if`/`cond` runs
 once at compile time with mutant 0, so a selector on its condition could never activate
 (the `analyze_cond_clause` guard and the `:runtime`-only `if`/`unless` clause enforce
 this).
+
+**Binding-escape prune — the nested-`=` hazard, resolved at the transform `[done]`.** The
+`IfCondition` skip above only sees a *top-level* `=`. The real-world break (`mix mutare` on
+`Mutare.Transform.Aliases`) was a binding **nested under an operator** —
+`(name = as_name(opts)) != nil -> Map.put(env, name, …)` in a `cond` arm. The trap node is
+the `!=`, mutated by `Conditional` (`→ true`/`false`) and `Relational` (`!= → ==`), not
+`IfCondition` (a boolean op, which it skips). The in-place selector is a `case`, so wrapping
+the `!=` scopes `name = as_name(opts)` to a branch — and the body's `name` is unbound *in
+every branch, including the unmutated catch-all*. So this is **not** a per-mutant poison: the
+error is present even at mutant 0, identical across rebuilds, so the `Mutare.Poison`
+skip-ids-and-recompile loop can never clear it (it would skip the implicated ids forever and
+still fail) — it surfaces as a hard "metamutant failed to compile". This is exactly the
+"`Conditional` … leans on poison-recovery" hazard the previous revision of this entry flagged
+as deferred; poison-recovery turned out to be no recovery at all.
+
+The fix is positional and cross-mutator, in `Analyze.analyze_condition/2` (the shared
+`if`/`unless`/`cond`-condition router): after the normal runtime analysis,
+`prune_binding_ancestors/1` strips the in-place candidate (`meta[:mutare]`) from every node
+that is a **proper ancestor** of an escaping `=` — exactly the nodes whose selector would
+trap the binding — and skips `attach_if_condition` whenever any binding escapes within the
+condition. A binding-free sibling sub-expression (`length(opts) > 0` in the same `cond`) and
+the clause **body** still mutate fully; only the binding's ancestors go un-wrapped. The taint
+is a bottom-up walk returning `{node, subtree_has_binding?}`; the `=` node itself is never
+stripped (it has no in-place candidate, and it is not its own ancestor), it only reports its
+subtree as binding-bearing. **Binding-isolating forms** (`fn`/`for`/`with`/`try`/`quote`) stop
+the taint — a `=` scoped inside a closure never reaches the clause body, so the surrounding
+condition still mutates (`Enum.any?(xs, fn x -> (y = f(x)) > 0 end)` keeps its `IfCondition`
+pair). Everything else (operators, calls, `case`/`cond`/`if`, `&&`/`||`, blocks) leaks
+bindings outward, so the taint propagates through it. Compile-safe **by construction**, per
+the layered-compile-safety rule, rather than the poison backstop that couldn't help here. The
+analogous escape on a *value-discarded* `=` (a block statement / `for`/`with` qualifier) is a
+different problem with a different fix — the tuple re-export `MatchPattern` (it *mutates* the
+pattern); here we just *avoid wrapping* a binding we don't mutate.
 
 ### Membership: `in` ↔ `not in`, and the `not(in)` redundancy `[done]`
 `Relational` flips membership polarity, `x in y → x not in y` — the membership

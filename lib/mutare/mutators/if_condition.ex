@@ -37,7 +37,12 @@ defmodule Mutare.Mutators.IfCondition do
       so replacing the condition with `true`/`false` un-binds them — `use(user)`
       would reference an unbound variable and the single build would not compile.
       Skipped so the mutator stays compile-safe by construction (the project's
-      layered compile-safety rule), rather than leaning on poison recovery.
+      layered compile-safety rule), rather than leaning on poison recovery. This
+      only catches a *top-level* `=`; a binding nested under an operator/call
+      (`(user = fetch()) != nil`) is suppressed one level up, by the transform's
+      condition pruning (`Mutare.Transform.Analyze.analyze_condition/2`) — which also
+      governs `Conditional`/`Relational`, the families that would otherwise wrap and
+      trap such a binding.
 
   Compile-safety of the rest is free: the surviving conditions bind nothing, a bare
   `true`/`false` is legal in any condition slot, and the original condition is kept

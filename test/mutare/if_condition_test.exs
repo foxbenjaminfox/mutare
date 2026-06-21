@@ -118,6 +118,13 @@ defmodule Mutare.IfConditionTest do
       assert if_sites("def f, do: if(u = fetch(), do: u, else: nil)") == []
     end
 
+    test "a binding nested under an operator yields no if_condition site (transform-level)" do
+      # `replacements/1` only declines a *top-level* `=`; here the binding is nested
+      # under `!=`, so the transform's condition pruning is what suppresses it (a
+      # selector would scope `u` to a branch, leaving the body's `u` unbound).
+      assert if_sites("def f, do: if((u = fetch()) != nil, do: u, else: nil)") == []
+    end
+
     test "a module-level (scaffold) if condition is left alone — it runs at compile time" do
       src = """
       defmodule Mutare.IfCondScaffold do
