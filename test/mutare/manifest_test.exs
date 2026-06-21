@@ -98,6 +98,34 @@ defmodule Mutare.ManifestTest do
       assert length(sites) > 1
     end
 
+    test "a lifted-guard poison maps even when the source forces the dispatch var to be salted" do
+      # Regression: `gate_id` used to hardcode the dispatch variable as `mutare_active`.
+      # But when the *source* already uses that identifier, `Mutare.Transform.Names`
+      # salts the generated one (`mutare_active_0`, …), so the gates read
+      # `mutare_active_0 === <id>` and the hardcoded match found nothing → a lifted/
+      # tupled poison was unmappable → abort. The manifest now recovers the salted name.
+      salted_src = """
+      defmodule Demo do
+        def f(mutare_active) when mutare_active + 1 > 0, do: mutare_active
+        def f(_), do: 0
+      end
+      """
+
+      {meta, sites, _next} = Mutare.transform_string(salted_src, mutators: @lifted_mutators)
+      manifest = Manifest.from_source(meta)
+
+      poison = Enum.find(sites, &(&1.mutator == :poison))
+      line = line_of(meta, "mutare_unbound_xyz")
+
+      # the scenario is real: the source's `mutare_active` forced the dispatch var to
+      # be salted, so the gate is `mutare_active_<n> === <id>`, not bare `mutare_active`
+      gate = meta |> String.split("\n") |> Enum.at(line - 1)
+      assert gate =~ ~r/mutare_active_\d+ === \d+/
+      refute gate =~ ~r/\bmutare_active === \d+/
+
+      assert Manifest.ids_at_line(manifest, line) == [poison.id]
+    end
+
     test "a line with no generated code maps to nothing" do
       {meta, _sites, _next} = Mutare.transform_string(@lifted_src, mutators: @lifted_mutators)
       manifest = Manifest.from_source(meta)

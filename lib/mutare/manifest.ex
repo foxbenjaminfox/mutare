@@ -66,6 +66,7 @@ defmodule Mutare.Manifest do
   """
 
   alias Mutare.AST
+  alias Mutare.Coverage.Recorder
   alias Mutare.Metamutant
 
   @typedoc "A generated line range and the mutant ids whose code occupies it."
@@ -91,7 +92,13 @@ defmodule Mutare.Manifest do
   def from_source(metamutant_source) do
     ast = parse(metamutant_source)
 
-    {_ast, regions} = Macro.traverse(ast, [], &enter/2, &leave/2)
+    # The gate clauses read the dispatch variable by name (`<var> === <id>`), and
+    # `Mutare.Transform.Names` *salts* that name (`mutare_active` → `mutare_active_0`,
+    # …) when the source already uses it — so we recover the actual name from this
+    # metamutant rather than assume the canonical one (`active_var/1`).
+    var = active_var(ast)
+
+    {_ast, regions} = Macro.traverse(ast, [], &enter(&1, &2, var), &leave/2)
 
     %__MODULE__{regions: Enum.reverse(regions)}
   end
@@ -148,13 +155,13 @@ defmodule Mutare.Manifest do
   #     mutant clause range.
   #
   # Both add a whole-`case` fallback (every id the `case` hosts) as a coarse backstop.
-  defp enter({:case, _meta, [subject, kw]} = node, regions) do
+  defp enter({:case, _meta, [subject, kw]} = node, regions, var) do
     cond do
       Metamutant.subject?(subject) ->
         {node, record_case(do_block(kw), node, regions, &selector_mutant/1)}
 
       Metamutant.pattern_subject?(subject) ->
-        {node, record_case(do_block(kw), node, regions, &pattern_mutant/1)}
+        {node, record_case(do_block(kw), node, regions, &pattern_mutant(&1, var))}
 
       true ->
         {node, regions}
@@ -165,9 +172,9 @@ defmodule Mutare.Manifest do
   # <id> …`): its whole definition is that mutant's generated code — where a guard /
   # head-pattern poison lives. Original clauses (gated `mutare_active !== …`) and the
   # dispatcher carry no gate, so `mutant_id/1` returns `nil` and they're skipped.
-  defp enter({vis, _meta, [head | _]} = node, regions) when vis in [:def, :defp] do
+  defp enter({vis, _meta, [head | _]} = node, regions, var) when vis in [:def, :defp] do
     regions =
-      case mutant_id(head) do
+      case mutant_id(head, var) do
         nil -> regions
         id -> push(range_region([id], node), regions)
       end
@@ -175,7 +182,7 @@ defmodule Mutare.Manifest do
     {node, regions}
   end
 
-  defp enter(node, regions), do: {node, regions}
+  defp enter(node, regions, _var), do: {node, regions}
 
   defp leave(node, regions), do: {node, regions}
 
@@ -205,13 +212,13 @@ defmodule Mutare.Manifest do
   # <body>`: the id is in the `when` gate, and its generated code (the mutated pattern/guard)
   # is in the head, so the whole clause is the region. A gated original (`!==`) / unguarded
   # original yields `{nil, nil}`.
-  defp pattern_mutant({:->, _, [[{:when, _wm, when_args}], _body]} = clause)
+  defp pattern_mutant({:->, _, [[{:when, _wm, when_args}], _body]} = clause, var)
        when length(when_args) >= 2 do
     {_patterns, [guard]} = Enum.split(when_args, -1)
-    {gate_id(guard), clause}
+    {gate_id(guard, var), clause}
   end
 
-  defp pattern_mutant(_), do: {nil, nil}
+  defp pattern_mutant(_, _), do: {nil, nil}
 
   # --- regions -------------------------------------------------------------
 
@@ -256,26 +263,86 @@ defmodule Mutare.Manifest do
   defp clause_id(id) when is_integer(id), do: id
   defp clause_id(_), do: nil
 
-  # The mutant id a *lifted mutant clause* carries in its `when mutare_active ===
-  # <id> …` gate (the leftmost conjunct `Transform.lifted_mutant/3` emits), or `nil`
-  # for everything else: a lifted *original* clause (gated `mutare_active !== …`),
-  # the public dispatcher, and user code. This is how a poison inside a generated
-  # guard/head maps back to its mutant now that each lifted mutant is a single gated
-  # clause rather than a `_m<id>`-named full copy.
-  defp mutant_id({:when, _meta, [_call | guards]}), do: Enum.find_value(guards, &gate_id/1)
-  defp mutant_id(_), do: nil
+  # The mutant id a *lifted mutant clause* carries in its `when <var> === <id> …`
+  # gate (the leftmost conjunct `Transform.lifted_mutant/3` emits), or `nil` for
+  # everything else: a lifted *original* clause (gated `<var> !== …`), the public
+  # dispatcher, and user code. This is how a poison inside a generated guard/head
+  # maps back to its mutant now that each lifted mutant is a single gated clause
+  # rather than a `_m<id>`-named full copy. `var` is the (possibly salted) dispatch
+  # variable name — see `active_var/1`.
+  defp mutant_id({:when, _meta, [_call | guards]}, var),
+    do: Enum.find_value(guards, &gate_id(&1, var))
 
-  # Find a `mutare_active === <id>` gate anywhere in a guard, returning `<id>`. Only
-  # the gate's `===` against the `mutare_active` var matches — a source guard's own
+  defp mutant_id(_, _), do: nil
+
+  # Find a `<var> === <id>` gate anywhere in a guard, returning `<id>`. Only the
+  # gate's `===` against the dispatch variable `var` matches — a source guard's own
   # `===` (LHS some other var) is skipped, and the originals' `!==` exclusions never
-  # match — so a clause is a mutant iff this finds an id.
-  defp gate_id({:===, _meta, [{:mutare_active, _, _}, id_node]}), do: literal_int(id_node)
-  defp gate_id({_form, _meta, args}) when is_list(args), do: Enum.find_value(args, &gate_id/1)
-  defp gate_id(list) when is_list(list), do: Enum.find_value(list, &gate_id/1)
-  defp gate_id({left, right}), do: gate_id(left) || gate_id(right)
-  defp gate_id(_), do: nil
+  # match — so a clause is a mutant iff this finds an id. The first clause pins the
+  # LHS atom to `var` by repeating the binding name in the head (an equality match),
+  # so a mismatching `===` falls through to the recursive descent rather than matching.
+  defp gate_id({:===, _meta, [{var, _, _}, id_node]}, var), do: literal_int(id_node)
+
+  defp gate_id({_form, _meta, args}, var) when is_list(args),
+    do: Enum.find_value(args, &gate_id(&1, var))
+
+  defp gate_id(list, var) when is_list(list), do: Enum.find_value(list, &gate_id(&1, var))
+  defp gate_id({left, right}, var), do: gate_id(left, var) || gate_id(right, var)
+  defp gate_id(_, _), do: nil
 
   defp literal_int({:__block__, _meta, [id]}) when is_integer(id), do: id
   defp literal_int(id) when is_integer(id), do: id
   defp literal_int(_), do: nil
+
+  # --- dispatch variable ---------------------------------------------------
+
+  # The dispatch variable's name in *this* metamutant. Canonically `mutare_active`,
+  # but `Mutare.Transform.Names` salts it (`mutare_active_0`, …) when the source
+  # already uses that identifier, so the gates read e.g. `mutare_active_0 === <id>`.
+  # The name is one per file, so we recover it from the first generated construct
+  # that binds it — a lifted dispatcher's `<var> = :persistent_term.get(<key>, 0)`
+  # or a tupled-the-scrutinee `case`'s mutant-clause pattern `{<var>, <pat>}` — and
+  # fall back to the canonical name when there is none (then no gate exists, so the
+  # name is never consulted).
+  defp active_var(ast) do
+    {_ast, found} =
+      Macro.prewalk(ast, nil, fn
+        node, nil -> {node, anchor_var(node)}
+        node, found -> {node, found}
+      end)
+
+    found || Recorder.var_name()
+  end
+
+  # A generated construct that binds the dispatch variable, yielding its name:
+  #   * a lifted dispatcher's `<var> = :persistent_term.get(<key>, 0)`
+  #   * a tupled-`case` clause whose pattern is `{<var>, <pat>}`
+  defp anchor_var({:=, _meta, [lhs, rhs]}) do
+    if Metamutant.subject?(rhs), do: var_atom(lhs)
+  end
+
+  defp anchor_var({:case, _meta, [subject, kw]}) do
+    if Metamutant.pattern_subject?(subject), do: tupled_clause_var(do_block(kw))
+  end
+
+  defp anchor_var(_), do: nil
+
+  defp tupled_clause_var(clauses) when is_list(clauses),
+    do: Enum.find_value(clauses, &clause_tuple_var/1)
+
+  defp tupled_clause_var(_), do: nil
+
+  defp clause_tuple_var({:->, _, [[{:when, _, [pattern | _]}], _body]}),
+    do: tuple_first_var(pattern)
+
+  defp clause_tuple_var({:->, _, [[pattern], _body]}), do: tuple_first_var(pattern)
+  defp clause_tuple_var(_), do: nil
+
+  defp tuple_first_var({first, _second}), do: var_atom(first)
+  defp tuple_first_var(_), do: nil
+
+  # The variable name of a var node `{name, meta, context}` (context an atom/`nil`),
+  # or `nil` for anything else (a call has a list in the context slot).
+  defp var_atom({name, _meta, ctx}) when is_atom(name) and is_atom(ctx), do: name
+  defp var_atom(_), do: nil
 end
