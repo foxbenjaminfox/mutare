@@ -13,11 +13,7 @@ defmodule Mutare.Transform.PatternStructure do
 
   @doc "The enabled mutator specs that implement the structural `pattern_mutations/2` hook."
   @spec mutators([Mutare.Mutator.Spec.t()]) :: [Mutare.Mutator.Spec.t()]
-  def mutators(enabled) do
-    Enum.filter(enabled, fn %{module: module} ->
-      Code.ensure_loaded?(module) and function_exported?(module, :pattern_mutations, 2)
-    end)
-  end
+  def mutators(enabled), do: Mutare.Mutator.implementing(enabled, :pattern_mutations, 2)
 
   @doc """
   The variable names read in `ast` (a node or a list of nodes) — the `used_outside` set a

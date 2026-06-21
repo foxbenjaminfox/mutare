@@ -160,20 +160,28 @@ defmodule Mutare.Site do
   @doc """
   A return-value mutation: a function clause's tail expression replaced with a
   constant (`nil`/`0`/`""`/`[]`) behind an in-place selector `case`. Structural
-  (the transform names the tail; there is no node-level mutator), so the recorded
-  `mutator` is the fixed `:return_value` and there are no operator atoms — but it
-  *is* `:in_place` (a tail is a body position), with the original tail and the
-  replacement constant kept for the diff.
+  (the transform names the tail; there is no node-level mutator), so there are no
+  operator atoms — but it *is* `:in_place` (a tail is a body position), with the
+  original tail and the replacement constant kept for the diff. `mutator` is the
+  producing `Mutare.Mutator.Spec` (`ReturnValue` or a custom return mutator), and the
+  site records its `name`.
   """
-  @spec return_value(pos_integer(), String.t(), Sourceror.Range.t(), Macro.t(), Macro.t()) :: t()
-  def return_value(id, file, range, original_node, mutated_node) do
+  @spec return_value(
+          pos_integer(),
+          String.t(),
+          Sourceror.Range.t(),
+          Macro.t(),
+          Macro.t(),
+          Mutare.Mutator.Spec.t()
+        ) :: t()
+  def return_value(id, file, range, original_node, mutated_node, mutator) do
     %__MODULE__{
       id: id,
       file: file,
       line: range.start[:line],
       column: range.start[:column],
       range: range,
-      mutator: :return_value,
+      mutator: mutator.name,
       kind: :in_place,
       operation: :replace,
       original_op: nil,

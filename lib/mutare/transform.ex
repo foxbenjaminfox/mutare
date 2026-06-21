@@ -800,10 +800,11 @@ defmodule Mutare.Transform do
   end
 
   # A return-value mutation is delivered in place (the tail is a body position),
-  # but it is structural — no node-level `mutator`, no operator — so it gets its
-  # own `Site` constructor (`:return_value` mutator, `nil` ops).
+  # but it is structural — no operator — so it gets its own `Site` constructor
+  # (`nil` ops); the producing spec (`ReturnValue` or a custom return mutator) on the
+  # candidate supplies the recorded name.
   defp in_place_site(id, %Candidate.Return{} = c, file) do
-    Site.return_value(id, file, c.range, c.original, c.mutated)
+    Site.return_value(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
   # A whole `rescue` clause dropped from a `try`, delivered in place by the whole-`try`

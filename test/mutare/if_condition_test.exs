@@ -21,7 +21,7 @@ defmodule Mutare.IfConditionTest do
     :ok
   end
 
-  describe "replacements/1 (the true/false pair, and which conditions are skipped)" do
+  describe "condition_replacements/1 (the true/false pair, and which conditions are skipped)" do
     test "a bare predicate / call / variable condition becomes the pair true and false" do
       assert pair("foo?(x)")
       assert pair("is_nil(x)")
@@ -57,11 +57,11 @@ defmodule Mutare.IfConditionTest do
     test "every boolean op Conditional recognises is skipped (no duplicate mutants)" do
       # The skip is keyed on Conditional.boolean_op?/1, the shared definition.
       for op <- [:>, :>=, :<, :<=, :==, :!=, :===, :!==, :in, :and, :or, :&&, :||] do
-        assert IfCondition.replacements({op, [], [var(:a), var(:b)]}) == []
+        assert IfCondition.condition_replacements({op, [], [var(:a), var(:b)]}) == []
       end
 
       for op <- [:not, :!] do
-        assert IfCondition.replacements({op, [], [var(:a)]}) == []
+        assert IfCondition.condition_replacements({op, [], [var(:a)]}) == []
       end
     end
   end
@@ -193,12 +193,12 @@ defmodule Mutare.IfConditionTest do
   # --- helpers --------------------------------------------------------------
 
   defp pair(condition) do
-    IfCondition.replacements(Sourceror.parse_string!(condition))
+    IfCondition.condition_replacements(Sourceror.parse_string!(condition))
     |> Enum.map(&Sourceror.to_string/1) == ["true", "false"]
   end
 
   defp skipped(condition) do
-    IfCondition.replacements(Sourceror.parse_string!(condition)) == []
+    IfCondition.condition_replacements(Sourceror.parse_string!(condition)) == []
   end
 
   defp var(name), do: {name, [], nil}

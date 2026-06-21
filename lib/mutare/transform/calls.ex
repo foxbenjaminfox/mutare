@@ -1,5 +1,36 @@
 defmodule Mutare.Transform.Calls do
-  @moduledoc false
+  @moduledoc """
+  Resolve a call node to the module it actually targets — the helper a **call-matching
+  mutator** uses so it matches aliased, imported, and Erlang-atom forms, not just the
+  written `Mod.fun(...)`.
+
+  Every built-in call family (Collection, StringCall, ModeSwap, Numeric, …) reads
+  `resolved_call/1`; a **custom** mutator should too. Without it, a mutator matching a raw
+  `{:., _, [{:__aliases__, _, [:String]}, :upcase]}` node misses `alias String, as: S;
+  S.upcase(x)` and `import String; upcase(x)` — `resolved_call/1` resolves all three to the
+  same `{[:String], :upcase, args, rebuild}`, and `rebuild` re-emits the swap in the form the
+  source wrote (bare/qualified/aliased preserved, so the diff stays minimal).
+
+  This reads the `alias`/`import` stamps `Mutare.Transform.Resolve` places on the AST before
+  mutators run, so it is only meaningful on a node handed to a mutator by the transform (a
+  `mutate/1` argument) — exactly where a call-matching mutator needs it.
+
+  ## Example
+
+      defmodule MyApp.Mutators.Upcase do
+        @behaviour Mutare.Mutator
+        def name, do: :upcase_swap
+
+        def mutate(node) do
+          case Mutare.Transform.Calls.resolved_call(node) do
+            {[:String], :upcase, [arg], rebuild} -> [rebuild.(:downcase, [arg])]
+            _ -> :skip
+          end
+        end
+      end
+
+  """
+
   # The single reader every call-matching mutator family uses to recognise a stdlib call
   # and rebuild a swap of it — the one home for the call AST shape and the alias/import
   # resolution step they would otherwise each repeat.

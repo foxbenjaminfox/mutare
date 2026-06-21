@@ -546,8 +546,9 @@ contract between them is the whole game.
   IfCondition (the *positional* sibling of Conditional — forces an `if`/`unless`/`cond`
   **condition** to `true`/`false`, reaching the conditions no value family proves boolean at the
   node: a bare predicate call, `is_*`, a remote boolean. Structural like ReturnValue (`mutate/1` is
-  `:skip`; the real logic is `replacements/1`, called by `Transform` at each condition slot it
-  routes — see the `if`/`unless` analyze clause + `analyze_cond_clause`), delivered **in place**.
+  `:skip`; the real logic is the `condition_replacements/1` **callback**, which `Transform`
+  discovers by export and calls at each condition slot it routes — so a *custom* condition mutator
+  participates too; see the `if`/`unless` analyze clause + `analyze_cond_clause`), delivered **in place**.
   Skips a boolean-operator condition — `Conditional.boolean_op?/1`, so `&&`/`||`/`and`/`or`/`not`/`!`/
   comparisons are left to Conditional, no duplicate — a literal `true`/`false`/`nil`, and a binding
   `if x = … do` (the leaked binding would be unbound once the condition is forced, poisoning the
@@ -700,8 +701,9 @@ contract between them is the whole game.
   else→`nil`/`:mutare`; mirrors StringLiteral's pair, the sentinel catching `!= nil`-style weak
   checks). A user narrows the set by listing a subset under `:mutators`.
   **ReturnValue is *structural*** — its target (a clause's return position) isn't a node a
-  `mutate/1` could match, so its `mutate/1` is `:skip` and the real logic is `replacements/1`,
-  which `Transform` calls at each return-path tail (`annotate_returns/3`): the `:do` block tail
+  `mutate/1` could match, so its `mutate/1` is `:skip` and the real logic is the
+  `return_replacements/1` **callback**, which `Transform` discovers by export and calls at each
+  return-path tail (`annotate_returns/3`) — so a *custom* return mutator participates too: the `:do` block tail
   **and** each `rescue`/`catch`/`else` clause body tail (`:after` is excluded — `try` discards its
   value). It is registered (unlike `clause_drop`, the other structural built-in) so it is toggleable
   like any family. It is *delivered in place* (a tail is a body position), so a `Candidate.Return`
@@ -873,7 +875,23 @@ swaps, wildcards), `mutate/1` is `:skip` and you instead implement the optional 
 `pattern_mutations(head_args, used_outside)` (returning mutated arg lists);
 `Mutare.Transform.FunctionPlan` discovers it by export and delivers each by lifting. You must
 return only pattern-legal, compile-safe arg lists (`PatternSwap`/`PatternWildcard` are the
-built-in examples). `ReturnValue` is the analogous structural-but-in-place case (`replacements/1`).
+built-in examples).
+
+For a *structural in-place* mutator at a position core routes — a `def`/`defp` clause **return
+tail** or an `if`/`unless`/`cond` **condition** — `mutate/1` is `:skip` and you implement
+`return_replacements(tail)` or `condition_replacements(condition)` (each returning replacement
+nodes). `Transform` discovers implementers by export (`Mutare.Mutator.implementing/3`) and asks
+*all* of them at each routed position, recording each under its own name — so these are no longer
+hardcoded to the built-in `ReturnValue`/`IfCondition`. `test/support/structural_mutator.ex` is a
+working example. (The third structural built-in, `RescueType`, stays special — its `try`-rebuild
+logic doesn't fit a `(node) → [replacement]` callback.)
+
+For a *call-matching* mutator (one targeting a stdlib/remote call), resolve the node with
+`Mutare.Transform.Calls.resolved_call/1` rather than pattern-matching the raw `Mod.fun(...)`: it
+returns `{module, fun, args, rebuild}` resolved through `alias`/`import`/Erlang-atom forms (or
+`nil`), and `rebuild.(new_fun, new_args)` re-emits the swap in the written form. This is how the
+built-in families match aliased/imported calls; a custom mutator gets the same reach.
+`test/support/resolved_call_mutator.ex` is a working example.
 
 For an *arity-changing call* mutator (dropping a refining argument, collapsing to a coarser call),
 `mutate/1` is `:skip` and you implement the optional callback `mutate(node, %{piped: boolean})`

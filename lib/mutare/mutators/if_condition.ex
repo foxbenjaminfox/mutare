@@ -13,9 +13,10 @@ defmodule Mutare.Mutators.IfCondition do
   condition (`if user`, `if valid?(x)`, `if is_nil(v)`, `if Map.has_key?(m, k)`)
   carries no such proof at the node, yet positionally it **is** a boolean decision.
   Only the transform knows a node sits in a condition slot, so — exactly like
-  `Mutare.Mutators.ReturnValue` — `mutate/1` is `:skip` and the real work lives in
-  `replacements/1`, which `Mutare.Transform` calls at each `if`/`unless`/`cond`
-  condition it discovers. The module still implements the behaviour so it sits in
+  `Mutare.Mutators.ReturnValue` — `mutate/1` is `:skip` and the real work lives in the
+  structural `c:Mutare.Mutator.condition_replacements/1` hook, which `Mutare.Transform`
+  discovers by export and calls at each `if`/`unless`/`cond` condition it finds (a custom
+  mutator implementing the same hook participates identically). The module still implements the behaviour so it sits in
   the `Mutare.Mutators` registry: on by default, named in reports, selectable via
   `:mutators`, and filterable by `# mutare:ignore[if_condition]`, like every family.
 
@@ -68,9 +69,13 @@ defmodule Mutare.Mutators.IfCondition do
   `[]` when the condition should get no mutant (a boolean operator `Conditional`
   already covers, a literal `true`/`false`/`nil`, or a binding `x = …` whose
   un-binding would poison the body). See the moduledoc for the rules.
+
+  This is the `c:Mutare.Mutator.condition_replacements/1` hook: the transform discovers
+  it by export and calls it at each `if`/`unless`/`cond` condition.
   """
-  @spec replacements(Macro.t()) :: [Macro.t()]
-  def replacements(condition) do
+  @impl Mutare.Mutator
+  @spec condition_replacements(Macro.t()) :: [Macro.t()]
+  def condition_replacements(condition) do
     if skip?(condition), do: [], else: [AST.literal(true), AST.literal(false)]
   end
 

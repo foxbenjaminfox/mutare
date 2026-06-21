@@ -12,8 +12,10 @@ defmodule Mutare.Mutators.ReturnValue do
   node *wherever it occurs*. A return-value mutation can't be expressed that way:
   it targets the *tail expression of a clause body* — a position a bare node knows
   nothing about. So `mutate/1` here is intentionally `:skip` (it never fires as a
-  node mutator), and the real work lives in `replacements/1`, which
-  `Mutare.Transform` calls once per `def`/`defp` clause tail it discovers. This
+  node mutator), and the real work lives in the structural
+  `c:Mutare.Mutator.return_replacements/1` hook, which `Mutare.Transform` discovers by
+  export and calls once per `def`/`defp` clause tail it finds (a custom mutator
+  implementing the same hook participates identically). This
   module still implements the behaviour so it can sit in the `Mutare.Mutators`
   registry — be on by default, be named in reports, be selected/validated via
   `:mutators`, and be filtered by `# mutare:ignore[return_value]` — exactly like
@@ -103,9 +105,13 @@ defmodule Mutare.Mutators.ReturnValue do
   already mutates, or `nil`); otherwise the contrasting *pair* — the shape's
   empty/zero value and its non-empty/non-nil sentinel — minus any half that would
   equal the original tail. See the moduledoc for the rules.
+
+  This is the `c:Mutare.Mutator.return_replacements/1` hook: the transform discovers it
+  by export and calls it at each return-path tail.
   """
-  @spec replacements(Macro.t()) :: [Macro.t()]
-  def replacements(tail) do
+  @impl Mutare.Mutator
+  @spec return_replacements(Macro.t()) :: [Macro.t()]
+  def return_replacements(tail) do
     cond do
       boolean_valued?(tail) -> []
       quote_block?(tail) -> []

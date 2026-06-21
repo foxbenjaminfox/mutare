@@ -1679,7 +1679,8 @@ defmodule Mutare.Transform.Analyze do
   # Attach return-value candidates to the *tail expression(s)* of the clause's
   # return-path blocks — the positions a `def`/`defp` clause returns from. This is
   # structural (a tail is a position no node-level mutator can match), so it runs
-  # only when the `Mutare.Mutators.ReturnValue` family is enabled. The `:do` block
+  # only when some enabled mutator implements `return_replacements/1` (the built-in
+  # `Mutare.Mutators.ReturnValue`, or a custom one). The `:do` block
   # returns from its body tail; a `rescue`/`catch`/`else` block returns from
   # *every* clause body's tail (a rescued/caught error or an `else` match is a
   # return path too). `:after` is excluded — `try` discards its value.
@@ -1691,24 +1692,26 @@ defmodule Mutare.Transform.Analyze do
   # lockstep to the same tail node. `ReturnValue.replacements/1` decides the
   # constant(s) (or that the tail is ineligible).
   defp annotate_returns(analyzed_kw, raw_kw, mutators) do
-    if Spec.find(mutators, Mutare.Mutators.ReturnValue) do
-      [analyzed_kw, raw_kw]
-      |> Enum.zip()
-      |> Enum.map(fn {{key, analyzed_value}, {_key, raw_value}} ->
-        {key, annotate_block_returns(key, analyzed_value, raw_value)}
-      end)
-    else
-      analyzed_kw
+    case Mutator.implementing(mutators, :return_replacements, 1) do
+      [] ->
+        analyzed_kw
+
+      return_mutators ->
+        [analyzed_kw, raw_kw]
+        |> Enum.zip()
+        |> Enum.map(fn {{key, analyzed_value}, {_key, raw_value}} ->
+          {key, annotate_block_returns(key, analyzed_value, raw_value, return_mutators)}
+        end)
     end
   end
 
   # Route one body block to its return path(s): the `:do` body tail, each
   # `rescue`/`catch`/`else` clause body tail, or — for `:after` (value discarded)
   # and any other key — nothing.
-  defp annotate_block_returns(key, analyzed, raw) do
+  defp annotate_block_returns(key, analyzed, raw, return_mutators) do
     cond do
-      do_key?(key) -> attach_return(analyzed, raw)
-      clause_block_key?(key) -> attach_clause_returns(analyzed, raw)
+      do_key?(key) -> attach_return(analyzed, raw, return_mutators)
+      clause_block_key?(key) -> attach_clause_returns(analyzed, raw, return_mutators)
       true -> analyzed
     end
   end
@@ -1716,39 +1719,46 @@ defmodule Mutare.Transform.Analyze do
   # rescue/catch/else: a list of `->` clauses; each clause body's tail is a return
   # path. Walk the analyzed and raw clause lists in lockstep (structurally
   # identical) and append a return candidate to each clause body's tail.
-  defp attach_clause_returns(analyzed_clauses, raw_clauses)
+  defp attach_clause_returns(analyzed_clauses, raw_clauses, return_mutators)
        when is_list(analyzed_clauses) and is_list(raw_clauses) and
               length(analyzed_clauses) == length(raw_clauses) do
     [analyzed_clauses, raw_clauses]
     |> Enum.zip()
-    |> Enum.map(fn {analyzed, raw} -> attach_clause_return(analyzed, raw) end)
+    |> Enum.map(fn {analyzed, raw} -> attach_clause_return(analyzed, raw, return_mutators) end)
   end
 
-  defp attach_clause_returns(analyzed_clauses, _raw), do: analyzed_clauses
+  defp attach_clause_returns(analyzed_clauses, _raw, _return_mutators), do: analyzed_clauses
 
   defp attach_clause_return(
          {:->, meta, [patterns, analyzed_body]},
-         {:->, _rmeta, [_raw_patterns, raw_body]}
+         {:->, _rmeta, [_raw_patterns, raw_body]},
+         return_mutators
        ) do
-    {:->, meta, [patterns, attach_return(analyzed_body, raw_body)]}
+    {:->, meta, [patterns, attach_return(analyzed_body, raw_body, return_mutators)]}
   end
 
-  defp attach_clause_return(analyzed, _raw), do: analyzed
+  defp attach_clause_return(analyzed, _raw, _return_mutators), do: analyzed
 
   defp do_key?(key), do: AST.key_atom(key) == :do
   defp clause_block_key?(key), do: AST.key_atom(key) in @clause_block_keys
 
   # Find the tail expression of a `:do` block (the last statement of a multi-
   # statement block, else the whole single-expression value) and append a
-  # return-value candidate per `ReturnValue.replacement`. The candidates ride in
+  # return-value candidate per `{spec, replacement}` (each return mutator's
+  # `return_replacements/1` output, tagged with its spec). The candidates ride in
   # the tail node's own `meta[:mutare]` — *after* any operator candidates already
   # there — so emission builds one selector `case` hosting both an operator swap
   # and the return constant on the same node, ids in attachment order.
-  defp attach_return(analyzed_value, raw_value) do
+  defp attach_return(analyzed_value, raw_value, return_mutators) do
     map_tail(analyzed_value, raw_value, fn analyzed_tail, raw_tail ->
-      case Mutare.Mutators.ReturnValue.replacements(raw_tail) do
+      replacements =
+        Enum.flat_map(return_mutators, fn spec ->
+          Enum.map(spec.module.return_replacements(raw_tail), &{spec, &1})
+        end)
+
+      case replacements do
         [] -> analyzed_tail
-        replacements -> append_return_candidates(analyzed_tail, raw_tail, replacements)
+        _ -> append_return_candidates(analyzed_tail, raw_tail, replacements)
       end
     end)
   end
@@ -1778,8 +1788,13 @@ defmodule Mutare.Transform.Analyze do
     case NodeRange.get(raw_tail) do
       %{} = range ->
         candidates =
-          Enum.map(replacements, fn replacement ->
-            %Candidate.Return{original: raw_tail, mutated: replacement, range: range}
+          Enum.map(replacements, fn {spec, replacement} ->
+            %Candidate.Return{
+              mutator: spec,
+              original: raw_tail,
+              mutated: replacement,
+              range: range
+            }
           end)
 
         existing = Keyword.get(meta, :mutare, [])
@@ -1875,31 +1890,30 @@ defmodule Mutare.Transform.Analyze do
   # there, so one selector hosts both — with `original`/`range` taken from the *raw*
   # condition for a clean diff.
   defp attach_if_condition(analyzed_condition, raw_condition, mutators) do
-    case Spec.find(mutators, Mutare.Mutators.IfCondition) do
-      nil ->
-        analyzed_condition
+    candidates =
+      mutators
+      |> Mutator.implementing(:condition_replacements, 1)
+      |> Enum.flat_map(fn spec ->
+        Enum.map(spec.module.condition_replacements(raw_condition), &{spec, &1})
+      end)
 
-      spec ->
-        case Mutare.Mutators.IfCondition.replacements(raw_condition) do
-          [] ->
-            analyzed_condition
-
-          replacements ->
-            append_condition_candidates(analyzed_condition, raw_condition, replacements, spec)
-        end
+    case candidates do
+      [] -> analyzed_condition
+      _ -> append_condition_candidates(analyzed_condition, raw_condition, candidates)
     end
   end
 
-  # Append a `Candidate.InPlace` per replacement (`mutator` is the IfCondition
-  # *spec*, since `Site.in_place/6` reads its `name`) to the condition node's
-  # metadata, preserving any candidates already there. A condition we can't range
-  # (Sourceror returns nil) or that is not a `{f, m, a}` node gets no mutant.
-  defp append_condition_candidates({form, meta, args} = node, raw_condition, replacements, spec)
+  # Append a `Candidate.InPlace` per `{spec, mutated}` (`mutator` is the producing
+  # *spec* — `IfCondition` or a custom condition mutator — since `Site.in_place/6` reads
+  # its `name`) to the condition node's metadata, preserving any candidates already there.
+  # A condition we can't range (Sourceror returns nil) or that is not a `{f, m, a}` node
+  # gets no mutant.
+  defp append_condition_candidates({form, meta, args} = node, raw_condition, candidates)
        when is_list(meta) do
     case NodeRange.get(raw_condition) do
       %{} = range ->
-        candidates =
-          Enum.map(replacements, fn mutated ->
+        new =
+          Enum.map(candidates, fn {spec, mutated} ->
             %Candidate.InPlace{
               mutator: spec,
               original: raw_condition,
@@ -1909,14 +1923,14 @@ defmodule Mutare.Transform.Analyze do
           end)
 
         existing = Keyword.get(meta, :mutare, [])
-        {form, Keyword.put(meta, :mutare, existing ++ candidates), args}
+        {form, Keyword.put(meta, :mutare, existing ++ new), args}
 
       _ ->
         node
     end
   end
 
-  defp append_condition_candidates(node, _raw_condition, _replacements, _spec), do: node
+  defp append_condition_candidates(node, _raw_condition, _candidates), do: node
 
   # A bitstring segment `<<value::spec>>`: the value keeps the surrounding
   # context; the spec side is excluded except for `size(expr)` args.

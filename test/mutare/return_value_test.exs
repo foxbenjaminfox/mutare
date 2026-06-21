@@ -52,7 +52,7 @@ defmodule Mutare.ReturnValueTest do
 
   defp mutated_codes(tail), do: tail |> return_sites() |> Enum.map(& &1.mutated_code)
 
-  describe "replacements/1 (the contrasting pair, and which tails are skipped)" do
+  describe "return_replacements/1 (the contrasting pair, and which tails are skipped)" do
     test "a computed numeric tail becomes the pair 0 and 1" do
       assert mutated_codes("a + b") == ["0", "1"]
       assert mutated_codes("a * b") == ["0", "1"]

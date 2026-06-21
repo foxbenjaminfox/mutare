@@ -121,6 +121,27 @@ defmodule Mutare.Mutator do
 
   The transform asks the mutator that *produced* the mutation, so the value is its own
   output; discovered by `function_exported?(mod, :empty_collection?, 1)`.
+
+  ## Structural mutators at routed positions (`return_replacements/1` / `condition_replacements/1`)
+
+  Some mutation targets are *positions* no single node identifies: a `def`/`defp` clause's
+  **return tail**, or an `if`/`unless`/`cond` **condition**. For those, `mutate/1` is `:skip`
+  and you implement the matching structural callback — `c:return_replacements/1` or
+  `c:condition_replacements/1` — returning the replacement node(s). The transform names the
+  position and asks *every* enabled mutator implementing the callback (via
+  `Mutare.Mutator.implementing/3`), delivering each in place and recording it under its own
+  name. `Mutare.Mutators.ReturnValue` / `Mutare.Mutators.IfCondition` are the built-ins; a
+  custom mutator implementing the same callback participates identically — they are not
+  hardcoded. (The head-pattern analog is `c:pattern_mutations/2`, delivered by lifting.)
+
+  ## Matching aliased / imported calls (`Mutare.Transform.Calls`)
+
+  A mutator that targets a stdlib/remote call should resolve the node with
+  `Mutare.Transform.Calls.resolved_call/1` rather than pattern-matching the raw `Mod.fun(...)`:
+  it returns `{module, fun, args, rebuild}` resolved through `alias`/`import`/Erlang-atom forms
+  (or `nil`), so the mutator fires on `String.upcase`, `S.upcase`, and `import String; upcase`
+  alike, and `rebuild` re-emits the swap in the form the source wrote. This is how the built-in
+  call families reach aliased/imported calls; custom mutators get the same. See that module.
   """
 
   alias Mutare.AST
@@ -235,7 +256,36 @@ defmodule Mutare.Mutator do
   """
   @callback empty_collection?(mutated :: Macro.t()) :: boolean()
 
-  @optional_callbacks pattern_mutations: 2, mutate: 2, macros: 0, empty_collection?: 1
+  @doc """
+  Optional structural hook for mutating a **clause return tail** — the expression a
+  `def`/`defp` clause (or a `rescue`/`catch`/`else` clause) returns. Given the raw tail
+  node, return the replacement nodes (one per mutant), as clean-meta AST ready to splice.
+
+  Like `c:pattern_mutations/2` this is *structural* — a return position is not a node any
+  `mutate/1` could match, so the transform names the position and asks every enabled mutator
+  implementing this callback (discovered by `function_exported?(mod, :return_replacements, 1)`),
+  delivering each replacement by the in-place selector. `Mutare.Mutators.ReturnValue` is the
+  built-in; a custom mutator implementing it participates at the same positions, its name
+  recorded on the site. Return `[]` for a tail that should get no mutant.
+  """
+  @callback return_replacements(tail :: Macro.t()) :: [Macro.t()]
+
+  @doc """
+  Optional structural hook for mutating an **`if`/`unless`/`cond` condition**. Given the raw
+  condition node, return the replacement nodes (one per mutant). The condition-position twin
+  of `c:return_replacements/1`: structural, discovered by
+  `function_exported?(mod, :condition_replacements, 1)`, delivered in place.
+  `Mutare.Mutators.IfCondition` is the built-in (forcing the condition `true`/`false`); a
+  custom mutator implementing it participates at the same positions. Return `[]` to skip.
+  """
+  @callback condition_replacements(condition :: Macro.t()) :: [Macro.t()]
+
+  @optional_callbacks pattern_mutations: 2,
+                      mutate: 2,
+                      macros: 0,
+                      empty_collection?: 1,
+                      return_replacements: 1,
+                      condition_replacements: 1
 
   @doc """
   The **effective arity** of a call node given its pipe context.
@@ -263,6 +313,21 @@ defmodule Mutare.Mutator do
   def visible_index(pos, false), do: pos
   def visible_index(0, true), do: nil
   def visible_index(pos, true), do: pos - 1
+
+  @doc """
+  The specs in `specs` whose module implements the optional callback `fun`/`arity`.
+
+  The single home for "which enabled mutators opt into this structural hook", used for the
+  position-routed structural callbacks (`return_replacements/1`, `condition_replacements/1`,
+  `pattern_mutations/2`) — so the transform asks every implementer rather than hardcoding a
+  built-in module.
+  """
+  @spec implementing([Spec.t()], atom(), arity()) :: [Spec.t()]
+  def implementing(specs, fun, arity) do
+    Enum.filter(specs, fn %{module: module} ->
+      Code.ensure_loaded?(module) and function_exported?(module, fun, arity)
+    end)
+  end
 
   @doc "Whether `term` is a module that implements this behaviour."
   @spec implemented_by?(term()) :: boolean()

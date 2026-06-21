@@ -1175,9 +1175,11 @@ Several design choices worth remembering:
 - **Structural via an optional callback, discovered by export.** `mutate/1` is `:skip`;
   the real entry point is `Mutare.Mutator.pattern_mutations/2` (`@optional_callbacks`),
   taking `(head_args, used_outside)` and returning mutated arg lists. It is discovered by
-  `function_exported?(_, :pattern_mutations, 2)` — so no hard-coded list (unlike the
-  `ReturnValue in mutators` check), toggling is just list membership, and a custom mutator
-  can opt in. The head path (`FunctionPlan.build_pattern_structures/2`) calls it with the
+  `function_exported?(_, :pattern_mutations, 2)` — so no hard-coded list, toggling is just
+  list membership, and a custom mutator can opt in. (The `ReturnValue`/`IfCondition`
+  enablement was the *opposite* — a hard-coded `Spec.find(mutators, Mutare.Mutators.X)` by
+  module — until "Structural in-place mutators generalized to callbacks" below brought them
+  onto the same export-discovered footing.) The head path (`FunctionPlan.build_pattern_structures/2`) calls it with the
   full arg list; the `case` path wraps a single clause pattern as `[pattern]` via
   `PatternStructure.node_mutations/3` (the contract never changes the list length, so the
   single result is unwrapped). A function now also lifts if it admits a swap/wildcard (so a
@@ -2025,8 +2027,9 @@ Two design decisions, both load-bearing:
 
 Plumbing: `Transform.transform_string` normalizes its `:mutators` opt through `resolve/1` at
 the boundary (so tests passing bare modules, the default set, and the Options/Config path all
-become specs); every internal consumer (`Mutator.mutations/3`, `analyze`'s
-`ReturnValue`/`IfCondition` enablement via `Spec.find/2`, `PatternStructure`, `FunctionPlan`,
+become specs); every internal consumer (`Mutator.mutations/3`, `analyze`'s structural-mutator
+discovery via `Mutator.implementing/3` (`return_replacements`/`condition_replacements`) and
+`RescueType` enablement via `Spec.find/2`, `PatternStructure`, `FunctionPlan`,
 `Site.replace`) reads `spec.module`/`spec.name`/`spec.opts`. The CLI's `--mutators` CSV can't
 express opts (strings only) — configured mutators are a `.mutare.exs`/`Mutare.run/2` feature.
 
@@ -2387,9 +2390,10 @@ default (`:return_value` family).
 **Why it's structural, not a `Mutare.Mutator`.** Node-level mutators (`mutate/1`)
 rewrite a matched node *wherever it occurs*; a return-value mutation targets the
 *tail expression of a clause body*, a position only the transform knows. So the
-real work is `Mutare.Mutators.ReturnValue.replacements/1` (a pure tail→constants
-function), invoked by `Transform` once per `def`/`defp` `:do`-block tail it finds
-(`annotate_returns/3`). The module still implements the behaviour — `name/0` is
+real work is the `return_replacements/1` callback (a pure tail→constants function),
+which `Transform` discovers by export and invokes once per `def`/`defp` `:do`-block tail it
+finds (`annotate_returns/3`) — see "Structural in-place mutators generalized to callbacks"
+below for the export-discovery generalization. The module still implements the behaviour — `name/0` is
 `:return_value`, `mutate/1` is `:skip` — purely so it sits in the `Mutare.Mutators`
 registry and inherits everything that follows from membership: on-by-default,
 named in reports, selectable/validatable via `:mutators`, filterable by
@@ -2479,9 +2483,43 @@ clause left *is* runtime, is handled generically and must not be folded in.
   > `@poison_attempts` budget — and, for a `do:` key, would have render-crashed
   > before compile even ran.
 
-The `Site` each return mutant records (`Site.return_value/5`) has
-`mutator: :return_value`, `kind: :in_place`, and `nil` ops (there is no operator),
-shaped like the clause-drop site that also carries no op.
+The `Site` each return mutant records (`Site.return_value/6`) has `kind: :in_place` and
+`nil` ops (there is no operator), shaped like the clause-drop site that also carries no op;
+its `mutator` name comes from the producing spec (see the next section).
+
+### Structural in-place mutators generalized to callbacks `[done]`
+Head-pattern structural mutators (`PatternSwap`/`PatternWildcard`) were always discovered by
+export (`pattern_mutations/2`), so a third party could write one. The two structural
+*in-place* families — `ReturnValue` (clause return tails) and `IfCondition` (`if`/`unless`/`cond`
+conditions) — were the asymmetry: each was invoked by **hard-coded module name**
+(`Mutare.Mutators.ReturnValue.replacements/1`) and gated by `Spec.find(mutators, <that module>)`,
+so you could not write a custom return/condition mutator. (Foreseen in "Structural via an
+optional callback" above.)
+
+The fix mirrors `pattern_mutations/2`: two optional callbacks `return_replacements/1` and
+`condition_replacements/1`, discovered by `Mutare.Mutator.implementing/3` (the shared "enabled
+specs exporting `fun/arity`" helper, which `PatternStructure.mutators/1` now also uses). The two
+`attach_return`/`attach_if_condition` sites ask **every** implementer instead of one built-in;
+`ReturnValue`/`IfCondition` simply renamed `replacements/1` → the callback name. Each candidate
+now carries the *producing* spec, so a custom mutator's name reaches the site:
+
+- `IfCondition` already threaded its spec into `Candidate.InPlace`, so condition-position was
+  nearly free.
+- `Candidate.Return` had **no** `:mutator` field (the name was hard-coded at `Site.return_value/5`,
+  which became `/6` taking the spec) — it gained one, so multiple return mutators coexist, each
+  named (built-in `ReturnValue` 0/1 *and* a custom one on the same tail).
+
+`RescueType` stays special — its mutation isn't a `(node) → [replacement]`; it rebuilds the whole
+`try` (narrow a type list, drop a clause), so no clean callback fits and it keeps its
+`Spec.find`-by-module gate. Fixture: `test/support/structural_mutator.ex`.
+
+**Call resolution exposed too (`#2`).** `Mutare.Transform.Calls.resolved_call/1` — the helper the
+8 built-in call families use to match aliased/imported/Erlang-atom calls and rebuild a swap in the
+written form — was `@moduledoc false`. A custom call-matching mutator that pattern-matched the raw
+`Mod.fun(...)` node would silently miss `alias`/`import` forms. It is now a documented public API
+(the node a mutator receives in `mutate/1` already carries `Resolve`'s stamps, so it Just Works);
+fixture `test/support/resolved_call_mutator.ex` matches `String.reverse` through both an alias and
+an import.
 
 ### IfCondition — force an `if`/`unless`/`cond` condition `[done]`
 The "remove the decision" mutation for conditions, asked directly: *is each branch
@@ -2497,20 +2535,20 @@ gap is exactly what `IfCondition` fills.
 
 **Why it's structural (like `ReturnValue`).** A condition *slot* is invisible to a
 node mutator — a `mutate/1` that forced any node to `true`/`false` would fire
-everywhere. So `mutate/1` is `:skip` and the real logic is
-`IfCondition.replacements/1`, called by `Transform` at the positions only it knows:
-the runtime `if`/`unless` analyze clause and `analyze_cond_clause`
-(`attach_if_condition/3`). Registered for the usual membership benefits
+everywhere. So `mutate/1` is `:skip` and the real logic is the
+`condition_replacements/1` callback, which `Transform` discovers by export and calls at
+the positions only it knows: the runtime `if`/`unless` analyze clause and
+`analyze_cond_clause` (`attach_if_condition/3`). Registered for the usual membership benefits
 (on-by-default, reportable, selectable, `# mutare:ignore[if_condition]`).
 
 **Delivery reuses the in-place selector**, appending a `Candidate.InPlace`
-(mutator = the `IfCondition` *module*, since `Site.in_place/6` calls `.name()` on it)
+(mutator = the producing *spec*, since `Site.in_place/6` calls `.name()` on it)
 to the *analyzed condition node*, after any operator candidate already there — so
 `if String.starts_with?(s, x)` gets one selector hosting the StringCall swap *and*
 the `true`/`false` pair. `original`/`range` come from the raw condition for a clean
 `if foo?(x)` → `if true` diff.
 
-**What it skips, and why each matters.** `replacements/1` returns `[]` for:
+**What it skips, and why each matters.** `condition_replacements/1` returns `[]` for:
   - a **boolean operator** (`Conditional.boolean_op?/1` — the shared definition, reused
     exactly as `ReturnValue` reuses it). This is what makes "`&&`/`||` need no special
     handling" true: they're boolean ops, already `Conditional`'s, so skipping them

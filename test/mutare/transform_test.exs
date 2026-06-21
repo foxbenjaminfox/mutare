@@ -2307,6 +2307,81 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "custom structural & call-matching mutator extension points" do
+    test "a custom return-position mutator participates via return_replacements/1" do
+      {meta, triples} =
+        redundancy_triples("def f(a, b), do: a + b", [Mutare.Test.ReturnMutator])
+
+      # Discovered by exporting return_replacements/1 (not by hardcoding the module), and
+      # offered at the clause tail like the built-in ReturnValue — under its own name.
+      assert triples == [{:custom_return, "a + b", ":custom_return"}]
+      assert_compiles(meta)
+    end
+
+    test "a custom condition mutator participates via condition_replacements/1" do
+      {meta, triples} =
+        redundancy_triples("def f(x), do: if(x, do: :a, else: :b)", [Mutare.Test.ConditionMutator])
+
+      assert triples == [{:custom_condition, "x", "true"}]
+      assert_compiles(meta)
+    end
+
+    test "a custom return mutator coexists with the built-in ReturnValue" do
+      {_meta, triples} =
+        redundancy_triples(
+          "def f(a, b), do: a + b",
+          [Mutare.Mutators.ReturnValue, Mutare.Test.ReturnMutator]
+        )
+
+      # Both return mutators fire at the same tail, each recorded under its own name.
+      assert triples == [
+               {:return_value, "a + b", "0"},
+               {:return_value, "a + b", "1"},
+               {:custom_return, "a + b", ":custom_return"}
+             ]
+    end
+
+    test "a custom call mutator resolves aliased and imported forms via Transform.Calls" do
+      aliased = """
+      defmodule M do
+        alias String, as: S
+        def f(s), do: S.reverse(s)
+      end
+      """
+
+      imported = """
+      defmodule M do
+        import String
+        def f(s), do: reverse(s)
+      end
+      """
+
+      # resolved_call/1 lets a third-party mutator match through alias and import, and rebuild
+      # the swap in the written form (the `S.` alias kept; the bare import kept bare).
+      {ameta, asites, _} =
+        Mutare.transform_string(aliased, mutators: [Mutare.Test.AliasCallMutator])
+
+      assert [
+               %Site{
+                 mutator: :alias_call,
+                 original_code: "S.reverse(s)",
+                 mutated_code: "S.upcase(s)"
+               }
+             ] =
+               asites
+
+      assert_compiles(ameta)
+
+      {imeta, isites, _} =
+        Mutare.transform_string(imported, mutators: [Mutare.Test.AliasCallMutator])
+
+      assert [%Site{mutator: :alias_call, original_code: "reverse(s)", mutated_code: "upcase(s)"}] =
+               isites
+
+      assert_compiles(imeta)
+    end
+  end
+
   describe "DefaultDrop (drop a trailing default/fallback argument)" do
     test "drops a non-nil default (piped and not), skips a nil default, and compiles" do
       source = """

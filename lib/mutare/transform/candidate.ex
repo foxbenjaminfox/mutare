@@ -359,18 +359,20 @@ defmodule Mutare.Transform.Candidate do
     # the in-place selector (the tail is a body position, so a `case` is legal
     # there). Shaped exactly like `InPlace` for emission — `mutated` is the
     # replacement constant, `original` the raw tail, `range` locates it — but it
-    # is a distinct kind because there is no node-level `mutator`: the candidate
-    # is discovered *structurally* (the transform names the tail) and the
-    # constant carries no operator, so the recorded `Mutare.Site` has a
-    # `:return_value` mutator and `nil` ops (`Site.return_value/5`).
+    # is a distinct kind because it is discovered *structurally* (the transform
+    # names the tail) rather than by a node-level match, and the constant carries
+    # no operator, so the recorded `Mutare.Site` has `nil` ops
+    # (`Site.return_value/6`). `mutator` is the producing spec — `ReturnValue` or a
+    # custom mutator implementing `return_replacements/1` — so its name reaches the site.
 
     @type t :: %__MODULE__{
+            mutator: Mutare.Mutator.Spec.t(),
             original: Macro.t(),
             mutated: Macro.t(),
             range: Sourceror.Range.t()
           }
 
-    defstruct [:original, :mutated, :range]
+    defstruct [:mutator, :original, :mutated, :range]
   end
 
   @type t ::
