@@ -27,7 +27,8 @@ defmodule Mutare.Config do
   file), `:mutators` (CSV → modules),
   `:min_score`, `:sandbox`, `:keep_sandbox`, `:full` (→ `test_selection: :full`),
   `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`,
-  `:max_mutants`, `:workers`, `:timeout`. A `:mutators`
+  `:max_mutants`, `:workers`, `:timeout`,
+  `:expand_uses` (`--no-expand-uses` disables `use`-expansion). A `:mutators`
   value of `:all`
   (or none) resolves to "use the default set" by omitting the key, so
   `Mutare.Transform` picks it. Raises `ArgumentError` on an unknown mutator
@@ -54,6 +55,7 @@ defmodule Mutare.Config do
     |> put_unless_nil(:max_mutants, flags[:max_mutants])
     |> put_unless_nil(:workers, flags[:workers])
     |> put_unless_nil(:timeout, flags[:timeout])
+    |> put_unless_nil(:expand_uses, flags[:expand_uses])
     |> put_unless_nil(:mutators, flags[:mutators] && parse_families(flags[:mutators]))
     |> normalize_mutators()
     |> resolve_reporters(flags)

@@ -56,14 +56,16 @@ defmodule Mutare.Transform.Imports do
   #
   #   * Operator displacement (`import Kernel, except: [+: 2]` + a custom `+`) is out of
   #     scope: the operator families (Arithmetic/Relational/Logical) don't read the stamp.
-  #   * Like `alias`, `use`-injected and macro-generated imports are invisible — and unlike the
-  #     visible cases this can be *wrong*, not just missed: a `use` that re-imports a module we
-  #     target with `except:` (removing a function) and supplies it from elsewhere makes us
-  #     mis-resolve the bare call to the wrong module (see NOTES "Correctness boundary").
-  #     Each stamped imported call therefore also carries a resolution witness: generated
-  #     mutant branches can re-import the believed provider in an unreachable expression,
-  #     turning that hidden replacement into an ambiguity compile error instead of a wrong
-  #     surviving mutant.
+  #   * A `use`-injected import is surfaced by `Mutare.Transform.Uses` when the `use` is
+  #     expandable (static args, loadable module): its directives are folded through `register/4`
+  #     like a textual import. A *non-expandable* `use` (dynamic args, non-loadable target) or a
+  #     non-`use` macro-generated import is still invisible — and unlike the visible cases this
+  #     can be *wrong*, not just missed: a `use` that re-imports a module we target with `except:`
+  #     (removing a function) and supplies it from elsewhere makes us mis-resolve the bare call to
+  #     the wrong module (see NOTES "Correctness boundary"). Each stamped imported call therefore
+  #     also carries a resolution witness: generated mutant branches can re-import the believed
+  #     provider in an unreachable expression, turning that hidden replacement into an ambiguity
+  #     compile error instead of a wrong surviving mutant.
 
   alias Mutare.AST
   alias Mutare.Mutator

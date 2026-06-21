@@ -1035,6 +1035,50 @@ makes `=` offerable (e.g. an assignment-mutator family) — a whole-`=` mutation
 binding match will then need the same re-home; the `mutant_expr`-carrying `MatchPattern` shape
 (prototyped and reverted in this work) is the fix, mirroring `rehome_call_mutations/2` exactly.
 
+### `use` expansion — surface directives hidden behind `use` `[done]`
+Idiomatic Phoenix/Ecto hides `import`/`alias` behind `use`: `use MyAppWeb, :controller` injects a
+bundle, `use Ecto.Schema` injects `import Ecto.Schema` (the `schema`/`field` DSL macros as **bare**
+calls). Invisible to `Resolve`, this caused two pains on a real Phoenix app: (1) calls depending on
+the injected directives don't resolve → **missed mutants**; (2) a bare `schema` resolves to
+`module_key = nil`, so a registered `{Ecto.Schema, :schema, :any, :skip}` routing is **dead** (the
+routing keys on the *resolved* module) — core descends into the DSL body, splices a selector into
+`field :name, :string`, Ecto's macro rejects it → **the single build fails, nothing testable.** Both
+are one root cause; `Mutare.Transform.Uses` is the positive fix (Phase 0 — graceful degradation so an
+unroutable macro never sinks the build — is the separate floor).
+
+**Mechanism (in-process, before `Resolve`).** `Uses.annotate/1` walks the parsed tree tracking the
+enclosing module, and at each **module-level** `use` with **static-literal** args expands it and
+stamps the harvested `import`/`alias`/`require …, as:` directives onto the node's
+`meta[:mutare_use_directives]`. `Resolve.register/2` folds them through itself in source order, as if
+written inline at the `use`. Why in-process is sound: the primary deployment is `{:mutare, …}` as a
+dep run via `mix mutare`, so the app's deps are on the BEAM code path (NOTES "the target app's deps
+are loadable"); the Mix task also best-effort-compiles the **current** project first so first-party
+`use FooWeb` modules load (`ensure_host_compiled`, `copy_root == "."` only — an external-path target's
+deps aren't on this process's path, so it degrades).
+
+**Two non-obvious mechanics.** (a) `Macro.expand` is the wrong tool — it expands a `use` one level to
+`require Mod; Mod.__using__(opts)` and stops (won't expand a remote macro call), and worse, fully
+expanding the *result* turns a nested `use Bar` into `require Bar; Bar.__using__(...)`, which the
+directive collector can't read. So we **`Macro.expand_once` the inner `Mod.__using__(opts)` call** (with
+`Mod` added to `env.requires`, `env.module` = the using module for a faithful `__CALLER__`), leaving any
+nested `use` intact for manual re-expansion (depth- + `seen`-capped). (b) The harvested directives are
+**standard** quoted with bare module atoms (`{:import, _, [Ecto.Schema]}`) — a shape `Imports.register`
+rejects — so each is **normalized back to Sourceror form** (`Sourceror.parse_string!(Macro.to_string(d))`),
+making it indistinguishable from a textual directive; the existing register + live `function_exported?`
+reflection + macro-routing then work unchanged (no new register clauses, no pre-normalizing imports to
+`only:` sets). A `require …, as:` is rewritten to the equivalent `alias` (register doesn't read `require`).
+
+**Degrades, never errors** (all wrapped in `try`): a non-loadable module (external target, or an aliased
+`use Web` we can't statically resolve — `Uses` does no alias tracking), non-literal args (`use Foo, var`),
+a `__using__` that raises (e.g. reads caller-module attributes), or an import gated behind a runtime
+`if`/`unless` in the body — all become *no stamp* = the old unresolved behaviour. The stamp is stripped
+before render (`Render.@internal_meta_keys`) and `use` is already pruned from mutation in `Analyze`, so
+the directives are doubly invisible to the metamutant. `:expand_uses` (default `true`, `--no-expand-uses`)
+toggles it; the default-on **changes mutant counts** on existing projects (new mutants; Ecto files that
+failed to compile now compile). Tested via `test/support/using_fixtures.ex` (`__using__` fixtures, the
+only vehicle — `examples/*` have no deps and are external) in `test/mutare/uses_test.exs`, including the
+Ecto `:skip`-now-fires case with/without expansion.
+
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
 (`apply(Foo, …)`, `is_struct(x, Foo)`, `[A, B]`, a behaviour/strategy arg) to the

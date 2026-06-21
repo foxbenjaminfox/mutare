@@ -43,8 +43,11 @@ defmodule Mutare.Transform.Aliases do
   #     children without bringing a child's additions back up.
   #   * A `__MODULE__`-relative alias (`alias __MODULE__.Sub`) cannot be resolved to a
   #     concrete module statically, so it is skipped (it never names a stdlib module).
-  #   * `use`-injected aliases are invisible without macro expansion (out of scope). `import`
-  #     resolution is the sibling vocabulary in `Mutare.Transform.Imports`.
+  #   * `use`-injected aliases are surfaced by `Mutare.Transform.Uses` (it expands an
+  #     expandable, static-arg, module-level `use` and folds the `alias`es it injects through
+  #     `register/2`); a dynamic-arg or non-loadable `use`, or a non-`use` macro that injects an
+  #     alias, stays invisible. `import` resolution is the sibling vocabulary in
+  #     `Mutare.Transform.Imports`.
 
   alias Mutare.AST
 

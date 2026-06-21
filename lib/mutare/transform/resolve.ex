@@ -31,7 +31,7 @@ defmodule Mutare.Transform.Resolve do
   # effective arity).
 
   alias Mutare.{Macros, Mutator}
-  alias Mutare.Transform.{Aliases, Imports}
+  alias Mutare.Transform.{Aliases, Imports, Uses}
 
   @macro_key :mutare_macro
   @piped_macro_key :mutare_macro_piped
@@ -151,8 +151,20 @@ defmodule Mutare.Transform.Resolve do
   defp register(stmt, env) do
     aliases = Aliases.register(stmt, env.aliases)
     {imports, kernel} = Imports.register(stmt, aliases, env.imports, env.kernel)
-    %{env | aliases: aliases, imports: imports, kernel: kernel}
+    env = %{env | aliases: aliases, imports: imports, kernel: kernel}
+    fold_use_directives(stmt, env)
   end
+
+  # A `use` node stamped by `Mutare.Transform.Uses` carries the `import`/`alias` directives it
+  # injects. Fold each through `register/2` in source order (so an injected alias-then-import
+  # interleave resolves correctly), as if written inline at the `use` — the directives are
+  # normalized to Sourceror form, so the ordinary `Aliases`/`Imports` clauses (and the live
+  # reflection that resolves a DSL macro) handle them unchanged. A non-`use` statement, or a
+  # `use` with no harvested directives, passes through untouched.
+  defp fold_use_directives({:use, meta, _args}, env) when is_list(meta),
+    do: Enum.reduce(Uses.directives(meta), env, &register/2)
+
+  defp fold_use_directives(_stmt, env), do: env
 
   # Stamp a call's meta with the argument routing of the known macro it resolves to, or leave
   # it unchanged. Pipe-aware: a stage `lhs |> macro(a, b)` is `macro(lhs, a, b)`, so the match

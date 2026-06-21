@@ -135,7 +135,8 @@ defmodule Mutare.Transform do
     Overlap,
     Render,
     Resolve,
-    Super
+    Super,
+    Uses
   }
 
   # The default set is the built-in catalog's `all/0` — one source of truth, so a
@@ -159,6 +160,9 @@ defmodule Mutare.Transform do
       arguments specially; merged with the built-ins and any enabled mutator's
       `macros/0`. Defaults to `[]`.
     * `:start_id` — first mutant id to assign (default `1`)
+    * `:expand_uses` — when `true` (the default), expand module-level `use` statements with
+      static args and feed their injected `import`/`alias` directives into resolution (see
+      `Mutare.Transform.Uses`); `false` freezes the pre-expansion behaviour
   """
   @spec transform_string(String.t(), keyword()) :: {String.t(), [Site.t()], pos_integer()}
   def transform_string(source, opts \\ []) when is_binary(source) do
@@ -206,7 +210,16 @@ defmodule Mutare.Transform do
     # rebind a later `import`'s module), which the single fold gets right by construction.
     # The same pass stamps each known-macro call with its argument routing. `parsed` itself
     # stays pristine for the comment-based ignore scan below.
-    {transformed, ctx} = transform_node(Resolve.annotate(parsed, macros), ctx)
+    #
+    # First, surface directives hidden behind `use` (`Mutare.Transform.Uses`): a module-level
+    # `use MyAppWeb, :controller` / `use Ecto.Schema` is expanded in-process and the
+    # `import`/`alias` it injects is stamped onto the `use` node, so `Resolve` resolves the
+    # calls (and DSL macros) that depend on it. Stamps only meta, so `parsed` stays usable for
+    # the ignore scan; degrades to a no-op when a `use` can't be expanded.
+    expanded =
+      if Keyword.get(opts, :expand_uses, true), do: Uses.annotate(parsed), else: parsed
+
+    {transformed, ctx} = transform_node(Resolve.annotate(expanded, macros), ctx)
 
     metamutant = transformed |> silence_helper_xref() |> Render.to_source()
 

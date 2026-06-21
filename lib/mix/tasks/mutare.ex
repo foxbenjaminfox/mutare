@@ -17,6 +17,8 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --since master             # only files changed vs a git ref (CI)
       mix mutare --mutators relational    # only some mutator families
       mix mutare --min-score 70           # fail (CI) if the score is below 70
+      mix mutare --no-expand-uses         # don't expand `use` to surface the
+                                          #   `import`/`alias` it injects (default: on)
       mix mutare --full                   # run the whole suite per mutant
                                           #   (no per-file test selection)
       mix mutare --baseline-runs 2        # run the baseline 2×; abort if a test
@@ -93,7 +95,8 @@ defmodule Mix.Tasks.Mutare do
     format: :string,
     output: :string,
     app: :string,
-    workspace: :boolean
+    workspace: :boolean,
+    expand_uses: :boolean
   ]
 
   @impl Mix.Task
@@ -103,6 +106,11 @@ defmodule Mix.Tasks.Mutare do
     project = resolve_project(target, flags)
     options = resolve_options(project, flags)
     root = project.copy_root
+
+    # Surface first-party `use MyAppWeb, :controller` bundles: `Mutare.Transform.Uses` expands
+    # `use` in-process, which needs the host app's modules loadable. Deps are already on the
+    # code path; the host app is compiled here, best-effort, before the scan transforms it.
+    ensure_host_compiled(options, root)
 
     {:ok, live} = Live.start_link()
 
@@ -137,6 +145,24 @@ defmodule Mix.Tasks.Mutare do
       Live.finish(live)
     end
   end
+
+  # Compile the host project so its own modules are loadable for in-process `use` expansion
+  # (`Mutare.Transform.Uses`). Only for the **current project** (`copy_root == "."`) — an
+  # external-path target runs in *this* process with *its* deps absent, so compiling here
+  # wouldn't help and its `use`s degrade to no-ops. Best-effort: a compile failure never aborts
+  # the run (the metamutant still compiles later in the sandbox), and a still-unloadable `use`
+  # is simply left unexpanded. Skipped entirely when `--no-expand-uses`. `Mix.Task.run` runs
+  # `compile` at most once, so this is a no-op if mix already compiled.
+  defp ensure_host_compiled(%Options{expand_uses: true}, ".") do
+    Mix.Task.run("compile", [])
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp ensure_host_compiled(_options, _root), do: :ok
 
   # Resolve the target path + `--app`/`--workspace` into copy-root and
   # mutate-scope. A bad `--app` (no matching umbrella app) raises `ArgumentError`,

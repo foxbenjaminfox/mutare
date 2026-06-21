@@ -48,9 +48,9 @@ defmodule Mutare.Transform.Render do
   # Remove the analyzer's internal annotations before rendering. `:mutare` (in-place
   # candidates), `:mutare_tag` (guard target references), `:mutare_nid` (the per-node identity
   # token `Mutare.Transform.Overlap` prunes on), the resolution stamps
-  # `:mutare_alias`/`:mutare_import`/`:mutare_import_witness`/`:mutare_kernel_displaced`, and the
-  # known-macro routing stamps `:mutare_macro`/`:mutare_macro_piped` are bookkeeping that must
-  # never reach the source.
+  # `:mutare_alias`/`:mutare_import`/`:mutare_import_witness`/`:mutare_kernel_displaced`, the
+  # known-macro routing stamps `:mutare_macro`/`:mutare_macro_piped`, and the `use`-expansion
+  # directives `:mutare_use_directives` are bookkeeping that must never reach the source.
   @internal_meta_keys [
     :mutare,
     :mutare_case,
@@ -61,7 +61,8 @@ defmodule Mutare.Transform.Render do
     :mutare_import_witness,
     :mutare_kernel_displaced,
     :mutare_macro,
-    :mutare_macro_piped
+    :mutare_macro_piped,
+    :mutare_use_directives
   ]
 
   defp strip_annotations(ast) do

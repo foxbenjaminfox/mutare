@@ -31,6 +31,7 @@ defmodule Mutare.Options do
           exclude: [String.t()],
           mutators: [Mutare.Mutator.Spec.t()] | nil,
           macros: [Mutare.Macro.Spec.t()],
+          expand_uses: boolean(),
           only_files: MapSet.t() | nil,
           test_selection: :coverage | :full,
           workers: pos_integer(),
@@ -55,6 +56,7 @@ defmodule Mutare.Options do
             exclude: [],
             mutators: nil,
             macros: [],
+            expand_uses: true,
             only_files: nil,
             test_selection: :coverage,
             workers: nil,
@@ -74,7 +76,7 @@ defmodule Mutare.Options do
             on_scan: nil,
             project: nil
 
-  @keys ~w(paths exclude mutators macros only_files test_selection workers timeout
+  @keys ~w(paths exclude mutators macros expand_uses only_files test_selection workers timeout
            timeout_multiplier baseline_runs harness_retries max_harness_error_rate
            sandbox keep_sandbox max_mutants min_score reporters reporter on_phase
            on_start on_scan project)a
@@ -127,6 +129,7 @@ defmodule Mutare.Options do
       exclude: validate_string_list!(:exclude, Keyword.get(opts, :exclude, [])),
       mutators: validate_mutators!(Keyword.get(opts, :mutators)),
       macros: validate_macros!(Keyword.get(opts, :macros, [])),
+      expand_uses: validate_expand_uses!(Keyword.get(opts, :expand_uses, true)),
       only_files: validate_only_files!(Keyword.get(opts, :only_files)),
       test_selection: validate_test_selection!(Keyword.get(opts, :test_selection, :coverage)),
       workers: validate_workers!(Keyword.get(opts, :workers) || System.schedulers_online()),
@@ -216,6 +219,12 @@ defmodule Mutare.Options do
   defp validate_macros!(other) do
     raise ArgumentError, ":macros must be a list of macro entries, got: #{inspect(other)}"
   end
+
+  # `:expand_uses` (default `true`) toggles the `use`-expansion pre-pass
+  # (`Mutare.Transform.Uses`) that surfaces `import`/`alias` hidden behind `use`. `false`
+  # freezes the pre-expansion behaviour (e.g. to debug or pin mutant counts).
+  defp validate_expand_uses!(value),
+    do: validate!(value, &is_boolean/1, ":expand_uses must be true or false")
 
   defp validate_only_files!(nil), do: nil
   defp validate_only_files!(%MapSet{} = set), do: set

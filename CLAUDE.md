@@ -92,8 +92,24 @@ contract between them is the whole game.
     (`Numeric`/`CallRemoval`) skip a displaced call. **Erlang atom modules** resolve the same way
     (`import :binary`; `alias :binary, as: B`) — the module key is the atom (`:binary`), reflected
     on identically — so a bare/aliased atom-module call resolves like an Elixir one. Out of scope:
-    operator displacement (`import Kernel, except: [+: 2]`); like `Aliases`, `use`/macro-injected
-    imports are invisible.
+    operator displacement (`import Kernel, except: [+: 2]`); a *non-`use`* macro-injected import is
+    invisible (a `use`-injected one is surfaced by `Transform.Uses`, below).
+  - **`Transform.Uses`** — the `use`-expansion **pre-pass** (runs before `Resolve`, feeding it).
+    Idiomatic Phoenix/Ecto hides directives behind `use`: `use MyAppWeb, :controller` injects a
+    bundle, `use Ecto.Schema` injects `import Ecto.Schema` (the `schema`/`field` DSL macros as
+    *bare* calls). `annotate/1` walks tracking the enclosing module and, at each **module-level**
+    `use` with **static-literal** args, expands it **in-process** (sound because `mix mutare` runs
+    with the target's deps on the code path; the Mix task best-effort-compiles the current project
+    so first-party `use`s load) and stamps the `import`/`alias`/`require …, as:` it injects onto
+    `meta[:mutare_use_directives]` — which `Resolve.register/2` folds in, as if written inline at the
+    `use`. Two mechanics: `Macro.expand_once` the inner `Mod.__using__(opts)` call (plain `expand`
+    over-expands a nested `use`), and **normalize** each harvested (standard-quoted, bare-atom)
+    directive back to Sourceror form (`Sourceror.parse_string!(Macro.to_string(d))`) so the existing
+    `Aliases`/`Imports` clauses + live reflection handle it unchanged. Degrades to a no-op (never
+    raises) for a non-loadable/aliased/dynamic-arg `use` or a raising `__using__`; the stamp is
+    stripped before render and `use` is already non-mutating. `:expand_uses` (default on,
+    `--no-expand-uses`) toggles it. This is the *positive* fix for the Ecto-build-failure /
+    missed-controller-mutants pains; see NOTES "`use` expansion".
   - **`Transform.Calls`** — the single `resolved_call/1` reader **every** call-matching family
     (Collection/StringCall/MapKeyword/CollectionArity/ModeSwap/CallRemoval/DefaultDrop/Numeric/
     Integer/Math) uses. It recognises three shapes — an Elixir remote `Mod.fun(args)` (alias-
