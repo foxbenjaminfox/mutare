@@ -149,6 +149,7 @@ defmodule Mutare.Transform.Overlap do
             {form, meta, args}
 
           cands ->
+            # mutare:ignore[map_keyword] this branch only runs when :mutare is already present, so put ≡ replace (equivalent)
             {form, Keyword.put(meta, :mutare, Enum.reject(cands, &drop?(&1, covered))), args}
         end
 
@@ -162,10 +163,9 @@ defmodule Mutare.Transform.Overlap do
   # what keeps a covering candidate from ever being dropped (a latent footgun if a second
   # call-rewriter ever produced a footprint equal to another's host).
   defp drop?(%Candidate.InPlace{original: o, mutated: m}, covered) do
-    host_nid = Resolve.nid(o)
-
-    not is_nil(host_nid) and MapSet.member?(covered, host_nid) and
-      footprint_nid(o, m) == nil
+    # `covered` holds only non-nil nids (`collect/2` filters them), so membership already
+    # implies a real host nid — a nil `Resolve.nid(o)` is simply not a member, no guard needed.
+    MapSet.member?(covered, Resolve.nid(o)) and footprint_nid(o, m) == nil
   end
 
   defp drop?(_other, _covered), do: false
