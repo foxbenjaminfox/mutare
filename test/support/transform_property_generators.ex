@@ -25,7 +25,7 @@ defmodule Mutare.TransformPropertyGenerators do
   It also emits **stdlib calls the call-matching families target** (`Enum`/`String`/`Map`/
   `Keyword`/bare-`Kernel`), in two shapes. *Direct* calls (`String.upcase(s)`,
   `Enum.filter(l, f)`) sprinkle through the expression trees, so Collection / StringCall /
-  CallRemoval / CollectionArity / DefaultDrop / MapKeyword / Numeric all fire under the
+  StringByte / CallRemoval / CollectionArity / DefaultDrop / MapKeyword / Numeric all fire under the
   stream rather than only in hand-written examples. A dedicated `resolved_call_function_gen/0`
   then exercises the lexical name-resolution pre-pass (`Transform.Resolve` + `Aliases`/
   `Imports`) and the families' *rebuild* paths: a function body opens with `alias`/`import`
@@ -425,6 +425,8 @@ defmodule Mutare.TransformPropertyGenerators do
         {fun, s, p} <- {oneof([:starts_with?, :ends_with?]), str_arg(vars), ascii_string()},
         do: remote(:String, fun, [s, p])
       ),
+      # String byte-narrowing — StringByte (length→Kernel.byte_size).
+      let(s <- str_arg(vars), do: remote(:String, :length, [s])),
       # Map lookup with a default — DefaultDrop (drop the trailing fallback).
       let({k, d} <- {leaf_gen(vars), leaf_gen(vars)}, do: remote(:Map, :get, [map_arg(), k, d])),
       # Map conditional write — MapKeyword (put↔put_new↔replace).

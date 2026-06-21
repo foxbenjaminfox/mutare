@@ -641,12 +641,32 @@ contract between them is the whole game.
   twin, their direction being an argument atom), and the Erlang `:binary` byte pair
   `first`↔`last` (the byte-level twin of `String.first`/`last`).
   Also one **call→operator** substitution: `String.equivalent?(a, b)` (Unicode-canonical equality)
-  → raw `a == b`, dropping normalization (arity tells the pipe context apart — `equivalent?/1` doesn't
-  exist, so a 1-arg call is a `|>` stage → `a |> Kernel.==(b)`). The `String` sibling of Collection:
+  → `Kernel.==(a, b)`, dropping normalization (emitted `Kernel.==`, not a bare `a == b`, so a
+  same-named local/imported `==` can't shadow the swap; arity tells the pipe context apart —
+  `equivalent?/1` doesn't exist, so a 1-arg call is a `|>` stage → `a |> Kernel.==(b)`). The `String`
+  sibling of Collection:
   both `String` (`[:String]`) and `:string` are matched by their resolved module via
   `Mutare.Transform.Calls`, so direct, aliased, and bare imported forms all match — `String.upcase`,
   `S.upcase`, `import String; upcase`, and likewise `:string.uppercase`, `alias :string, as: S;
   S.uppercase`, `import :string; uppercase`),
+  StringByte (narrow the **grapheme-aware `String.length` to the byte-level `byte_size`**, asking
+  "does this code depend on Unicode/grapheme semantics, or would byte semantics pass the suite?" —
+  `String.length`→`Kernel.byte_size` (grapheme count → byte count, equal only for ASCII; the swap is
+  **type-preserving** — both return a non-negative integer — so it probes a real gap rather than
+  trivially crashing on a type mismatch). **One-way on purpose**: `byte_size` is strictly more
+  general, so the reverse is unsound/noisy — it is a `Kernel` guard accepting any binary/bitstring
+  (`String.length` is guard-illegal → would poison, and raises on non-UTF-8) and is ubiquitous on
+  non-string binaries where graphemes are meaningless; narrowing the specific string call to the
+  general byte op is the honest mutation, broadening is not. No swap table — just the one forward
+  rewrite. Emitted **`Kernel.byte_size`, not a bare `byte_size`**: a bare call would resolve to a
+  same-named local def / selective import if one shadowed the name (`import Kernel, except:
+  [byte_size: 1]` + a local `def byte_size/1`), silently changing the mutant — naming `Kernel` pins
+  the real builtin (the analogous fix was applied to StringCall's `equivalent?`→`==`, also now
+  `Kernel.==`). The `String.length` source is resolved through `Mutare.Transform.Calls`
+  (direct/aliased/imported match; a shadowing `alias MyApp.String` is left alone), a one-to-one rename
+  onto a fixed target arity that reuses the arg list verbatim, so it's pipe-safe with no pipe context
+  (`s |> String.length()` → `s |> Kernel.byte_size()`); the `Kernel.byte_size` target is built
+  directly since the swap deliberately *changes module*. The byte-semantics sibling of StringCall),
   MapKeyword (the conditional-write lattice for `Map`/`Keyword` — `put`↔`put_new`↔`replace`↔
   `replace!`, swapping along the insert-new / overwrite-existing / raise-on-absent axes; all `/3`,
   arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),

@@ -38,6 +38,7 @@ defmodule Mutare.MutatorsTest do
     RegexLiteral,
     RescueType,
     ReturnValue,
+    StringByte,
     StringCall,
     StringLiteral,
     TupleLiteral,
@@ -52,7 +53,8 @@ defmodule Mutare.MutatorsTest do
                [Arithmetic, OperandSwap, Mutare.Mutators.Bitwise] ++
                  [Relational, Logical, Literal, Conditional, IfCondition] ++
                  [List] ++
-                 [Collection, CollectionArity, StringCall, MapKeyword, Mutare.Mutators.MapSet] ++
+                 [Collection, CollectionArity, StringCall, StringByte, MapKeyword] ++
+                 [Mutare.Mutators.MapSet] ++
                  [CallRemoval, DefaultDrop] ++
                  [ModeSwap, Numeric, Math, Integer, ConventionAtom, StringLiteral, FloatLiteral] ++
                  [AtomLiteral] ++
@@ -68,7 +70,8 @@ defmodule Mutare.MutatorsTest do
                [:arithmetic, :operand_swap, :bitwise] ++
                  [:relational, :logical, :literal, :conditional] ++
                  [:if_condition, :list] ++
-                 [:collection, :collection_arity, :string_call, :map_keyword, :map_set] ++
+                 [:collection, :collection_arity, :string_call, :string_byte] ++
+                 [:map_keyword, :map_set] ++
                  [:call_removal] ++
                  [:default_drop, :mode_swap, :numeric, :math, :integer, :convention] ++
                  [:string, :float] ++
@@ -517,11 +520,12 @@ defmodule Mutare.MutatorsTest do
                ["String.pad_trailing(s, 8, \"0\")"]
     end
 
-    test "substitutes String.equivalent?(a, b) with raw == (dropping normalization)" do
-      assert render(StringCall.mutate(parse("String.equivalent?(a, b)"))) == ["a == b"]
+    test "substitutes String.equivalent?(a, b) with Kernel.== (dropping normalization)" do
+      # Qualified with `Kernel` (not a bare `a == b`) so a local/imported `==` can't shadow it.
+      assert render(StringCall.mutate(parse("String.equivalent?(a, b)"))) == ["Kernel.==(a, b)"]
 
       assert render(StringCall.mutate(parse(~s|String.equivalent?(x, "foo")|))) == [
-               ~s|x == "foo"|
+               ~s|Kernel.==(x, "foo")|
              ]
 
       # a 1-arg call is only reachable as a `|>` stage — becomes `a |> Kernel.==(b)`
@@ -562,6 +566,31 @@ defmodule Mutare.MutatorsTest do
 
     test "name" do
       assert StringCall.name() == :string_call
+    end
+  end
+
+  describe "StringByte" do
+    test "narrows String.length to Kernel.byte_size (graphemes -> bytes)" do
+      assert render(StringByte.mutate(parse("String.length(s)"))) == ["Kernel.byte_size(s)"]
+      # piped: the LHS-less stage rewrites to the LHS-less Kernel.byte_size
+      assert render(StringByte.mutate(parse("String.length()"))) == ["Kernel.byte_size()"]
+    end
+
+    test "is one-way: never broadens byte_size back to String.length" do
+      assert StringByte.mutate(parse("byte_size(s)")) == :skip
+      assert StringByte.mutate(parse("Kernel.byte_size(s)")) == :skip
+    end
+
+    test "skips other String calls and other modules" do
+      assert StringByte.mutate(parse("String.first(s)")) == :skip
+      assert StringByte.mutate(parse("String.at(s, i)")) == :skip
+      assert StringByte.mutate(parse("String.slice(s, 1, 3)")) == :skip
+      assert StringByte.mutate(parse("Map.get(m, k)")) == :skip
+      assert StringByte.mutate(parse("length(xs)")) == :skip
+    end
+
+    test "name" do
+      assert StringByte.name() == :string_byte
     end
   end
 

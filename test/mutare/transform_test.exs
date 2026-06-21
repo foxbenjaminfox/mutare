@@ -1602,13 +1602,13 @@ defmodule Mutare.TransformTest do
       assert {:atom, ":none", ":mutare"} in pairs
     end
 
-    test "StringCall's equivalent? -> == is covering but inert: it prunes no leaf" do
-      # `String.equivalent?(a, "x")` -> `a == "x"` replaces the whole `{:., _, [String,
-      # :equivalent?]}` form with `:==` while reusing both args, so its minimal changed subtree
-      # is the `.` dot node — rangeable, non-list, a proper sub-range, hence *covering* (ModeSwap
-      # is NOT the only covering mutator). But the `.` node spans `String.equivalent?`, where no
-      # value mutator hosts a candidate, so the footprint matches nothing and prunes nothing: the
-      # `"x"` literal keeps both its StringLiteral mutants alongside the call rewrite.
+    test "StringCall's equivalent? -> Kernel.== is covering but inert: it prunes no leaf" do
+      # `String.equivalent?(a, "x")` -> `Kernel.==(a, "x")` rewrites the callee (`String` ->
+      # `Kernel`, `equivalent?` -> `==`) while reusing both args, so its minimal changed subtree
+      # is the `.` dot node — a nid-bearing node, hence *covering* (ModeSwap is NOT the only
+      # covering mutator). But the `.` node spans `String.equivalent?`, where no value mutator
+      # hosts a candidate, so the footprint matches nothing and prunes nothing: the `"x"` literal
+      # keeps both its StringLiteral mutants alongside the call rewrite.
       {_meta, sites, _} =
         Mutare.transform_string(
           """
@@ -1621,7 +1621,7 @@ defmodule Mutare.TransformTest do
 
       pairs = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
 
-      assert {:string_call, "String.equivalent?(a, \"x\")", "a == \"x\""} in pairs
+      assert {:string_call, "String.equivalent?(a, \"x\")", "Kernel.==(a, \"x\")"} in pairs
       assert {:string, "\"x\"", "\"\""} in pairs
       assert {:string, "\"x\"", "\"mutare\""} in pairs
     end
@@ -2217,10 +2217,87 @@ defmodule Mutare.TransformTest do
         Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
 
       pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
-      assert {"String.equivalent?(a, b)", "a == b"} in pairs
+      assert {"String.equivalent?(a, b)", "Kernel.==(a, b)"} in pairs
       # piped: the LHS-less stage; the |> feeds the left operand at runtime
       assert {"String.equivalent?(b)", "Kernel.==(b)"} in pairs
       assert_compiles(meta)
+    end
+  end
+
+  describe "StringByte (grapheme-aware String.length -> byte-level byte_size)" do
+    test "narrows String.length, direct and piped, and compiles" do
+      source = """
+      defmodule S do
+        def len(s), do: String.length(s)
+        def plen(s), do: s |> String.length()
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringByte])
+
+      pairs = for s <- sites, s.mutator == :string_byte, do: {s.original_code, s.mutated_code}
+      # Qualified with Kernel so a local/selective-import byte_size can't shadow the swap.
+      assert {"String.length(s)", "Kernel.byte_size(s)"} in pairs
+      # piped: the recorded stage is the LHS-less call; the |> feeds the left arg at runtime
+      assert {"String.length()", "Kernel.byte_size()"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "the Kernel-qualified swap compiles even when byte_size is locally shadowed" do
+      source = """
+      defmodule S do
+        import Kernel, except: [byte_size: 1]
+        def byte_size(_), do: :local
+        def len(s), do: String.length(s)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringByte])
+
+      assert {"String.length(s)", "Kernel.byte_size(s)"} in for(
+               s <- sites,
+               s.mutator == :string_byte,
+               do: {s.original_code, s.mutated_code}
+             )
+
+      assert_compiles(meta)
+    end
+
+    test "matches an aliased String call and a shadowing alias is left alone" do
+      source = """
+      defmodule S do
+        alias String, as: Str
+        alias MyApp.String, as: Local
+        def real(s), do: Str.length(s)
+        def shadow(s), do: Local.length(s)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringByte])
+
+      pairs = for s <- sites, s.mutator == :string_byte, do: {s.original_code, s.mutated_code}
+      # The aliased real String resolves and is narrowed (alias preserved in the diff source).
+      assert {"Str.length(s)", "Kernel.byte_size(s)"} in pairs
+      # The shadowing `alias MyApp.String` resolves to the local module — not narrowed.
+      refute Enum.any?(pairs, fn {orig, _} -> orig == "Local.length(s)" end)
+      assert_compiles(meta)
+    end
+
+    test "is one-way: byte_size is not broadened back to String.length" do
+      source = """
+      defmodule S do
+        def a(s), do: byte_size(s)
+        def b(s), do: Kernel.byte_size(s)
+      end
+      """
+
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringByte])
+
+      assert [] == Enum.filter(sites, &(&1.mutator == :string_byte))
     end
   end
 

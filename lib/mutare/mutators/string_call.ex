@@ -29,9 +29,11 @@ defmodule Mutare.Mutators.StringCall do
   so renaming cannot express the swap.)
 
   It also makes one **call → operator** substitution: `String.equivalent?(a, b)`
-  (Unicode-canonical equality) → raw `a == b`, dropping the normalization. The
+  (Unicode-canonical equality) → `Kernel.==(a, b)`, dropping the normalization. The
   mutant survives unless a test feeds canonically-equivalent-but-distinct
-  encodings — pointing at exactly that gap. Arity tells the pipe context apart
+  encodings — pointing at exactly that gap. It is emitted as `Kernel.==(...)`, not a
+  bare `a == b`, so a same-named local/imported `==` (`import Kernel, except: [==: 2]`
+  plus a `def a == b`) can't shadow the swap. Arity tells the pipe context apart
   (`equivalent?/1` doesn't exist, so a 1-arg call is always a `|>` stage):
   `a |> String.equivalent?(b)` becomes `a |> Kernel.==(b)`.
 
@@ -119,13 +121,15 @@ defmodule Mutare.Mutators.StringCall do
 
   # `String.equivalent?(a, b)` compares strings for Unicode canonical equivalence;
   # substituting raw `==` drops the normalization, so the mutant survives unless a
-  # test feeds canonically-equivalent-but-distinct encodings. Arity disambiguates the
-  # pipe context (`String.equivalent?/1` doesn't exist, so a 1-arg call is always a
-  # `|>` stage): piped, `a |> String.equivalent?(b)` becomes `a |> Kernel.==(b)`.
-  defp equivalent_substitution([a, b]), do: [{:==, [], [a, b]}]
-
-  defp equivalent_substitution([b]),
-    do: [{{:., [], [{:__aliases__, [], [:Kernel]}, :==]}, [], [b]}]
-
+  # test feeds canonically-equivalent-but-distinct encodings. The swap is emitted as
+  # `Kernel.==(...)`, not a bare `a == b`: a bare `==` would resolve to a same-named
+  # local/imported operator if one shadows it (`import Kernel, except: [==: 2]` plus a
+  # `def a == b`), silently changing the mutant; naming `Kernel` pins the real operator.
+  # Both arities route here — `String.equivalent?/2` direct, and the LHS-less `/1` pipe
+  # stage (`a |> String.equivalent?(b)` → `a |> Kernel.==(b)`) — so the same call builds
+  # both, keeping the source's argument list.
+  defp equivalent_substitution(args) when length(args) in [1, 2], do: [kernel_eq(args)]
   defp equivalent_substitution(_), do: :skip
+
+  defp kernel_eq(args), do: {{:., [], [{:__aliases__, [], [:Kernel]}, :==]}, [], args}
 end
