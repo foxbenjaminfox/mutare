@@ -346,6 +346,66 @@ defmodule Mutare.SuperTest do
       assert length(String.split(rendered, "sup.(x)")) - 1 == 1
       assert length(String.split(rendered, "super(x)")) - 1 == 1
     end
+
+    test "in_clauses?/1 frees a super only when both unquotes escape both quotes" do
+      # Two nested quotes put the super at level 2; two stacked unquotes
+      # (`unquote(unquote(super(x)))`) step the level back down to 0, so the super runs
+      # at construction and is live. This pins that each unquote lowers the level by
+      # *exactly one* (`level - 1`): with `1 - level` the second unquote would land at
+      # -1 instead of 0 and the super would wrongly read as data.
+      assert Super.in_clauses?(
+               clauses("def f(x), do: quote(do: quote(do: unquote(unquote(super(x)))))")
+             )
+
+      # Contrast: a *single* unquote can only escape one of the two quotes, so the
+      # super stays one level deep — data, not detected.
+      refute Super.in_clauses?(clauses("def f(x), do: quote(do: quote(do: unquote(super(x))))"))
+    end
+
+    test "rewrite/2 descends a super's own arguments, rewriting a nested super" do
+      # `super(super(x))`: the inner super is an *argument* of the outer one and must
+      # also be forwarded. The outer call's args are descended at level 0 (still live),
+      # so the inner super collapses to the closure too — shifting that level to ±1
+      # would leave the inner `super(` raw.
+      [{:def, _, [_head | body]}] = clauses("def f(x), do: super(super(x))")
+      {rewritten, true} = Super.rewrite(body, :sup)
+      rendered = Macro.to_string(rewritten)
+      assert rendered =~ "sup.(sup.(x))"
+      refute rendered =~ "super("
+    end
+
+    test "in_clauses?/1 sees a super freed by unquote_splicing, not only unquote" do
+      # `unquote_splicing` escapes a quote level exactly like `unquote` (it splices an
+      # *evaluated* list into the surrounding one), so a super inside it runs at
+      # construction and is live. The escape set must hold both atoms — drop
+      # `:unquote_splicing` and this super wrongly reads as quoted data.
+      assert Super.in_clauses?(clauses("def f(x), do: quote(do: [unquote_splicing(super(x))])"))
+    end
+
+    test "in_clauses?/1 ignores a super wrapped in a quoted call (still data)" do
+      # `quote(do: foo(super(x)))`: the super is a quoted argument of `foo`, never run,
+      # so it is data. The unquote handler must match `:unquote`/`:unquote_splicing`
+      # *specifically* — not any single-argument call — or it would wrongly free this
+      # super by descending one level into it.
+      refute Super.in_clauses?(clauses("def f(x), do: quote(do: foo(super(x)))"))
+    end
+
+    test "in_clauses?/1 treats an unquote at level 0 as a plain call, reaching its super" do
+      # An `unquote` outside any quote (level 0) has nothing to escape, so it is just a
+      # call: the walk descends into it and finds the live super. The `level > 0` guard
+      # keeps the escape-one-level behaviour exclusive to *inside* a quote — without it
+      # the level-0 unquote would descend to -1 and miss the super. (Not compilable
+      # source, but the AST contract the clause's own comment promises.)
+      assert Super.in_clauses?(clauses("def f(x), do: unquote(super(x))"))
+    end
+
+    test "in_clauses?/1 handles a variable named `quote` (not a quote call)" do
+      # `quote` is a legal variable name; as a *variable* its node is `{:quote, _, ctx}`
+      # with an atom context — not the keyword-list args of a `quote` *call*. The
+      # `is_list(args)` guard keeps the quote handler off it (it would otherwise try to
+      # walk a nil arg list and crash), so the surrounding super is still detected.
+      assert Super.in_clauses?(clauses("def f(quote), do: super(quote)"))
+    end
   end
 
   defp clauses(source), do: [Code.string_to_quoted!(source)]

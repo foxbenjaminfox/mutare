@@ -78,6 +78,7 @@ defmodule Mutare.Transform.Super do
     found
   end
 
+  # mutare:ignore[literal, clause_drop] unreachable — `in_clauses?` only maps over well-formed def/defp clauses, matched by the clause above, so neither the value nor the whole fallback is ever observed
   defp body_has_super?(_), do: false
 
   # `level` is the quote-nesting depth: 0 is live code, where a `super` runs and is
@@ -113,6 +114,7 @@ defmodule Mutare.Transform.Super do
   # `&<var>/arity` would fail to compile.) The super node here carries an atom context,
   # not an arg list, so the call clause below skips it; without this clause a
   # capture-only body would lift without a closure, leaving an uncompilable `&super/`.
+  # mutare:ignore[guard_drop] equivalent — a compilable `&super/arity` capture always has an atom context; the only non-atom-ctx shape, `&(super(args)/n)`, doesn't compile
   defp walk({:&, _meta, [{:/, _slash, [{:super, _smeta, ctx}, _arity]}]}, var, 0)
        when is_atom(ctx) do
     {{var, [], nil}, true}
@@ -124,6 +126,7 @@ defmodule Mutare.Transform.Super do
   # descent below reaching this clause), distinct from the `&super/arity` shorthand
   # above. A quoted-data `super` (level > 0) falls to the n-ary clause below instead —
   # left as-is, but still descended so a nested `unquote` within it is reached.
+  # mutare:ignore[guard_drop] equivalent — a compilable `super` is always a call (list args) or the `&super/n` capture handled above; a bare `super` identifier (atom context) doesn't compile
   defp walk({:super, meta, args}, var, 0) when is_list(args) do
     {args, _found} = walk_many(args, var, 0)
     {{{:., meta, [{var, [], nil}]}, meta, args}, true}
@@ -156,6 +159,7 @@ defmodule Mutare.Transform.Super do
     map_reduce(args, fn arg -> walk_quote_arg(arg, var, level) end)
   end
 
+  # mutare:ignore[guard_drop] equivalent — a compilable `quote`'s args are always keyword lists, so a non-list arg can't reach here (a non-list arg doesn't compile)
   defp walk_quote_arg(pairs, var, level) when is_list(pairs) do
     map_reduce(pairs, fn
       {key, value} ->
@@ -169,12 +173,17 @@ defmodule Mutare.Transform.Super do
   end
 
   # A non-keyword `quote` arg (unusual): treat wholesale as quoted data.
+  # mutare:ignore[clause_drop] unreachable — a compilable `quote`'s args are always keyword lists (the is_list clause above always matches)
   defp walk_quote_arg(other, var, level), do: walk(other, var, level + 1)
 
   # A keyword key is a bare atom (`Code.string_to_quoted`) or `{:__block__, _, [atom]}`
   # (Sourceror); recognise a block key in either form.
   defp block_key?({:__block__, _meta, [key]}), do: block_key?(key)
+
+  # mutare:ignore[guard_drop] equivalent — a non-atom `key in @quote_block_keys` is already `false`, identical to the `_` fallback below
   defp block_key?(key) when is_atom(key), do: key in @quote_block_keys
+
+  # mutare:ignore[clause_drop] unreachable — keys come from compilable quote option lists, always an atom or `{:__block__, _, [atom]}`
   defp block_key?(_), do: false
 
   defp walk_many(list, var, level) do
