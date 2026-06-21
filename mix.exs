@@ -26,6 +26,7 @@ defmodule Mutare.MixProject do
   defp deps do
     [
       {:sourceror, "~> 1.12"},
+      {:propcheck, "~> 1.5", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
     ]

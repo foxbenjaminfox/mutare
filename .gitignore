@@ -16,6 +16,10 @@
 # If the VM crashes, it generates a dump, let's ignore it too.
 erl_crash.dump
 
+# PropCheck stores the latest failing counterexample here so a failing property
+# re-runs it first; it is a local artifact, not source.
+*.ctex
+
 # Also ignore archive artifacts (built via "mix archive.build").
 *.ez
 
