@@ -16,6 +16,7 @@ defmodule Mutare.MutatorsTest do
     Collection,
     CollectionArity,
     Conditional,
+    ConventionAtom,
     DateTimeLiteral,
     DefaultDrop,
     FloatLiteral,
@@ -52,7 +53,8 @@ defmodule Mutare.MutatorsTest do
                  [List] ++
                  [Collection, CollectionArity, StringCall, MapKeyword, Mutare.Mutators.MapSet] ++
                  [CallRemoval, DefaultDrop] ++
-                 [ModeSwap, Numeric, Math, Integer, StringLiteral, FloatLiteral, AtomLiteral] ++
+                 [ModeSwap, Numeric, Math, Integer, ConventionAtom, StringLiteral, FloatLiteral] ++
+                 [AtomLiteral] ++
                  [CharlistLiteral, WordListLiteral, MapLiteral, TupleLiteral, BitstringLiteral] ++
                  [RegexLiteral, DateTimeLiteral, AliasLiteral, ReturnValue, PatternSwap] ++
                  [PatternWildcard, RescueType, GuardDrop]
@@ -66,7 +68,8 @@ defmodule Mutare.MutatorsTest do
                  [:if_condition, :list] ++
                  [:collection, :collection_arity, :string_call, :map_keyword, :map_set] ++
                  [:call_removal] ++
-                 [:default_drop, :mode_swap, :numeric, :math, :integer, :string, :float] ++
+                 [:default_drop, :mode_swap, :numeric, :math, :integer, :convention] ++
+                 [:string, :float] ++
                  [:atom, :charlist, :word_list, :map, :tuple, :bitstring, :regex] ++
                  [
                    :datetime,
@@ -1181,12 +1184,21 @@ defmodule Mutare.MutatorsTest do
 
   describe "AtomLiteral" do
     test "mutates a literal atom into the sentinel atom" do
-      assert render(AtomLiteral.mutate(parse(":ok"))) == [":mutare"]
+      assert render(AtomLiteral.mutate(parse(":waiting"))) == [":mutare"]
       assert render(AtomLiteral.mutate(parse(":some_status"))) == [":mutare"]
     end
 
     test "drops the replacement that already equals the sentinel" do
       assert AtomLiteral.mutate(parse(":mutare")) == :skip
+    end
+
+    test "skips convention atoms (owned by ConventionAtom, swapped to a sibling)" do
+      assert AtomLiteral.mutate(parse(":ok")) == :skip
+      assert AtomLiteral.mutate(parse(":error")) == :skip
+      assert AtomLiteral.mutate(parse(":cont")) == :skip
+      assert AtomLiteral.mutate(parse(":halt")) == :skip
+      # `:eq` is *not* paired by ConventionAtom (the unpaired middle), so it keeps its sentinel.
+      assert render(AtomLiteral.mutate(parse(":eq"))) == [":mutare"]
     end
 
     test "skips true/false/nil (handled by Literal / Conditional, or absence)" do

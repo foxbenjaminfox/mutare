@@ -1393,13 +1393,14 @@ defmodule Mutare.TransformTest do
     test "overlap resolution drops the redundant AtomLiteral on a swapped mode atom, not elsewhere" do
       # Both families active. `:second` is a swappable precision (ModeSwap's call rewrite
       # covers it, so the diff-derived `Overlap` pass prunes the redundant AtomLiteral
-      # leaf); `:ok` is a plain value atom; `:weird` is an invalid precision ModeSwap
-      # can't swap (no covering footprint → AtomLiteral still fires).
+      # leaf); `:tag` is a plain value atom (non-convention, so AtomLiteral owns it);
+      # `:weird` is an invalid precision ModeSwap can't swap (no covering footprint →
+      # AtomLiteral still fires).
       {_meta, sites, _} =
         Mutare.transform_string(
           """
           defmodule M do
-            def at(dt), do: {DateTime.truncate(dt, :second), :ok}
+            def at(dt), do: {DateTime.truncate(dt, :second), :tag}
             def bad(dt), do: DateTime.truncate(dt, :weird)
           end
           """,
@@ -1415,7 +1416,7 @@ defmodule Mutare.TransformTest do
 
       # AtomLiteral still fires where no ModeSwap swap covers — a plain value, and an
       # atom ModeSwap produced no swap for.
-      assert ":ok" in by.(:atom)
+      assert ":tag" in by.(:atom)
       assert ":weird" in by.(:atom)
     end
 
@@ -2921,8 +2922,8 @@ defmodule Mutare.TransformTest do
       defmodule B do
         def f(x) do
           case x do
-            :ok -> :done
-            _ -> :error
+            :foo -> :done
+            _ -> :baz
           end
         end
 
@@ -2932,8 +2933,9 @@ defmodule Mutare.TransformTest do
 
       {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @atom)
 
-      # case bodies :done/:error + if values :yes/:no mutate (4), plus the case-clause
-      # pattern :ok (now mutated via tuple-the-scrutinee) = 5; the do:/else: keys do not.
+      # case bodies :done/:baz + if values :yes/:no mutate (4), plus the case-clause
+      # pattern :foo (now mutated via tuple-the-scrutinee) = 5; the do:/else: keys do not.
+      # (Non-convention sample atoms — :ok/:error are owned by ConventionAtom, not :atom.)
       assert length(sites) == 5
       assert Enum.any?(sites, &(&1.line == 4 and &1.mutator == :atom))
       assert {:ok, _} = Code.string_to_quoted(meta)
@@ -2944,15 +2946,15 @@ defmodule Mutare.TransformTest do
       defmodule P do
         def a(x) do
           case x do
-            :ok -> :done
+            :foo -> :done
           end
         end
 
-        def b, do: Enum.map([], fn :ok -> :a end)
-        def c(l), do: for(:ok <- l, do: :hit)
+        def b, do: Enum.map([], fn :foo -> :a end)
+        def c(l), do: for(:foo <- l, do: :hit)
 
         def d do
-          with :ok <- run() do
+          with :foo <- run() do
             :done
           else
             :bad -> :err
@@ -2970,10 +2972,11 @@ defmodule Mutare.TransformTest do
       {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @atom)
 
       # Body atoms always mutate: a:[:done] b:[:a] c:[:hit] d:[:done,:err] e:[:got] = 6.
-      # The `case`/`fn`/`receive` *clause patterns* now also mutate (`:ok`/`:ok`/`:msg`) = 3.
+      # The `case`/`fn`/`receive` *clause patterns* now also mutate (`:foo`/`:foo`/`:msg`) = 3.
       # The `<-` generator/clause LHS (`for`, `with`) and the `with`/`try` `else` clause
       # pattern (`:bad`) are still deferred — so the total is 9, not 12. The `case` subject
       # is tupled (proof its clause pattern mutated via the tuple-the-scrutinee path).
+      # (Non-convention sample atoms — :ok is owned by ConventionAtom, not :atom.)
       assert length(sites) == 9
       assert meta =~ selector_tuple("x")
       assert {:ok, _} = Code.string_to_quoted(meta)

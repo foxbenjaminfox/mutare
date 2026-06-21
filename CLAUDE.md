@@ -732,8 +732,25 @@ contract between them is the whole game.
   AliasLiteral (`when Mutare.Mutant.is_even(n)` is guard-illegal and would poison) — so the guard
   tagger keeps a remote call's module opaque, mirroring the in-place analyzer; see
   `Transform.FunctionPlan` and NOTES),
-  StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral, AtomLiteral (a
-  literal atom → the sentinel `:mutare`; `true`/`false`/`nil` excluded — Literal/Conditional own
+  StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral,
+  ConventionAtom (a **convention atom** → its **same-shape sibling** — `:ok` ↔ `:error`,
+  `:cont` ↔ `:halt`, `:lt` ↔ `:gt` — the high-signal swap in place of `AtomLiteral`'s generic
+  `:mutare`: a sibling is a *plausible* value the error branch *handles* (so a survivor pinpoints
+  an untested success/error distinction), where `:mutare` matches no clause and is killed
+  trivially. **Same-shape only** — a sibling must preserve the surrounding shape (both 2-tuples,
+  both bare atoms), so OTP return tags like `:reply`/`:noreply` are excluded (`:reply` implies a
+  3-tuple → a malformed return, no better than `:mutare`); 3+ member sets carry only their
+  polarity pair (`:lt`/`:gt`, not `:eq` — which keeps its `AtomLiteral` mutant), keeping the table
+  a flat pair list. A `mutate/2`-only family (logic in one table path), so **configurable** with
+  extra `:pairs` (`{ConventionAtom, pairs: [[:active, :inactive]]}`), merged with the built-ins.
+  It **owns** these atoms — `AtomLiteral` excludes them by guard via `ConventionAtom.members()`,
+  the same ownership split as `true`/`false`/`nil`; same reach as `AtomLiteral` since both run
+  through `Mutator.mutations/3` — value positions, lifted `def` head literals, and `case` clause
+  patterns. The one place the unique sentinel is safer: a value-position `%{ok: c, error: c}` key
+  swap collides with the sibling key (left to the poison backstop; pattern keys are
+  collision-filtered by `Transform.Tag`)), AtomLiteral (a
+  literal atom → the sentinel `:mutare`; `true`/`false`/`nil` *and the convention atoms above*
+  excluded — Literal/Conditional/ConventionAtom own
   them; *data* keyword/map keys mutate, but block keys / struct fields / `for`-option keys are
   excluded *positionally* by `Transform`, not the mutator — and patterns excluded
   *in place*, though a `def`/`defp` head literal is mutated by lifting), CharlistLiteral

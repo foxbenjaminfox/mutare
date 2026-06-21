@@ -2978,6 +2978,69 @@ with **no new `Site` constructor** — `original` is the `{:when, …}` head (re
 single-pattern, so only multi-pattern `fn` hits this.) The `<-`/`with`/`try`-clause
 guard positions follow whatever those clause-pattern paths grow next.
 
+### Convention atoms (`Mutare.Mutators.ConventionAtom`) `[done]`
+Swap a **status/result tag** for its convention sibling — `:ok` ↔ `:error`,
+`:cont` ↔ `:halt`, `:lt` ↔ `:gt` — instead of `AtomLiteral`'s generic `:mutare`.
+Leans on Elixir idiom the way `ModeSwap` leans on stdlib signatures: it's the
+*semantic* atom family (a result tag), where `ModeSwap` is the *mode/unit* atom
+family. Family `:convention`, on by default.
+
+**Why a sibling beats `:mutare` (the whole point).** `:mutare` is a guaranteed-
+never-real value, so wherever a `case` handles both `{:ok, _}` and `{:error, _}`,
+the mutant `{:mutare, _}` matches **no** clause → `CaseClauseError` → killed
+trivially, telling you nothing. `:error` is a *plausible* value the error branch
+**handles**, so a *surviving* `:ok` → `:error` mutant pinpoints a genuinely untested
+success/error distinction. The more-realistic mutant is the higher-signal one
+precisely because it's harder to kill by accident.
+
+**Same-shape only — the pairing rule.** A sibling is paired *only when it preserves
+the surrounding shape*, so the mutant is a plausible alternative, not a malformed
+value: `{:ok, payload}`/`{:error, reason}` (both 2-tuples), `{:cont, acc}`/`{:halt,
+acc}` (both 2-tuples), `:lt`/`:gt` (bare atoms). OTP return tags
+(`:reply`/`:noreply`/`:stop`) **fail** this test — `:reply` implies a 3-tuple, so a
+bare-atom swap yields a malformed `{:reply, state}` that just crashes (no better than
+`:mutare`) — and are excluded. 3+ member conventions carry only their **polarity
+pair** (`:lt`/`:gt`, mirroring Numeric/Relational's "pairs, not a mesh"); `:eq`, the
+middle, is unpaired and keeps its `AtomLiteral` `:mutare` mutant. So `@pairs` stays a
+flat list and `@swaps` a compile-time map.
+
+**Replace, not add (the ownership split).** The two mutants are ~100% correlated for
+*killing* — any test that pins `:ok` kills both `:error` and `:mutare`, any that
+ignores it survives both — so keeping both nearly doubles cost on those nodes for no
+extra scoring signal, and `:mutare` is the *worse* survivor (crashes vs. is handled).
+So `AtomLiteral` **excludes** the convention atoms by guard (`a in @convention`, where
+`@convention = ConventionAtom.members()` — the `@sentinel AST.sentinel_atom()` pattern,
+single source of truth), exactly as it defers `true`/`false`/`nil` to
+`Literal`/`Conditional`. As with that split, disabling `:convention` leaves these atoms
+unmutated by `:atom` too — accepted, precedented.
+
+**`mutate/2`-only — one table path, configurable for free.** Logic lives in `mutate/2`
+(`mutate/1` is `:skip`, like `ModeSwap`): `mutations/3` always runs `mutate/2` when
+exported (with `opts: []` when unconfigured), so the built-ins always fire *and* a
+`{ConventionAtom, pairs: [[:active, :inactive]]}` config merges its `:pairs` with the
+built-ins — no second code path, no double-emit. It needs no `pipe_mode` (an atom's
+identity is position-independent); it reads only `context.opts`.
+
+**Reach is identical to `AtomLiteral`** — both go through `Mutator.mutations/3`, and the
+pattern/guard tagging path (`Tag.literal_pattern_mutations/2`) keeps an atom-valued
+replacement (`literal_node?` accepts `is_atom`). So a convention swap fires in value
+positions (analyze), `def`/`defp` **head literals** (by lifting — `def handle({:ok, v})`
+→ `{:error, v}`), and `case` **clause patterns** (by tuple-the-scrutinee). Only
+`{:__block__, _, [atom]}`-**wrapped** atoms are matched, never a *bare* atom (a function
+name/operator the analyzer never offers as a value — `:upcase` in `String.upcase`),
+exactly like `AtomLiteral`. No new transform code.
+
+**The one sharp edge.** In a **value-position** keyword/map literal `%{ok: c, error: c}`,
+swapping `ok:` → `error:` collides with the existing key (a "key will be overridden"
+warning that poisons under `--warnings-as-errors`, silent otherwise) — the lone place
+the *unique* sentinel is safer than a real sibling. Rare (needs both keys in one
+literal); left to the poison backstop. In **pattern** map keys it can't arise —
+`Tag.tag_map_pair/4` already filters a key's mutations so none equals a sibling key.
+A user-configured extra pair is *not* in `AtomLiteral`'s compile-time exclusion list, so
+those atoms get both mutants (a minor double-cover on user extras only; the built-in
+common case is clean) — excluding them would need `AtomLiteral` to read runtime opts in
+a guard, which it can't.
+
 ### Equivalent mutants `[partial]`
 Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the
 arithmetic mutator skips the multiplicative-identity swap on a right operand

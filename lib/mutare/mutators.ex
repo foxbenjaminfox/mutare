@@ -49,6 +49,7 @@ defmodule Mutare.Mutators do
     numeric: Mutare.Mutators.Numeric,
     math: Mutare.Mutators.Math,
     integer: Mutare.Mutators.Integer,
+    convention: Mutare.Mutators.ConventionAtom,
     string: Mutare.Mutators.StringLiteral,
     float: Mutare.Mutators.FloatLiteral,
     atom: Mutare.Mutators.AtomLiteral,
