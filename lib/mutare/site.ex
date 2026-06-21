@@ -24,7 +24,8 @@ defmodule Mutare.Site do
           original_code: String.t(),
           mutated_code: String.t(),
           original_node: Macro.t(),
-          mutated_node: Macro.t() | nil
+          mutated_node: Macro.t() | nil,
+          block_macro: {atom(), non_neg_integer()} | nil
         }
 
   defstruct [
@@ -44,7 +45,20 @@ defmodule Mutare.Site do
     operation: :replace,
     ignored: false,
     ignore_reason: nil,
-    poisoned: false
+    poisoned: false,
+    # The `{name, nid}` identity of the *unknown* module-level block macro
+    # invocation whose `do` body this mutation lives in, or `nil`. The transform
+    # mutates such a body on the guess that the DSL unquotes it into a function, but
+    # the injected selector `case` may be illegal in the DSL and poison the single
+    # build. The tag lets poison recovery skip the *whole* block at once
+    # (`Mutare.Runner`) — the runtime-stable equivalent of marking it `:skip` —
+    # instead of dropping one mutant at a time and re-hitting the next selector. The
+    # `nid` (the block-macro statement node's stable DFS identity) makes it
+    # **per-invocation**: a poison in `guarded :guard do …` must not suppress a
+    # sibling `guarded :body do …` of the same macro that expands differently. A
+    # *registered* macro is left untagged: the user's `:macros` routing is honoured,
+    # never auto-skipped.
+    block_macro: nil
   ]
 
   # === construction ==========================================================

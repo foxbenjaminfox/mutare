@@ -248,7 +248,11 @@ defmodule Mutare.Runner do
         {:ok, schema, sandbox}
 
       {:error, :compile_failed, output} = failure ->
-        poison = Poison.ids(output, schema.metamutants)
+        # The implicated mutant ids, escalated so that a poison inside an unknown
+        # module-level block macro drops the *whole* block (a DSL may reject the
+        # injected selector wholesale, so dropping one mutant at a time would just
+        # re-hit the next; see `expand_block_macros/2`).
+        poison = output |> Poison.ids(schema.metamutants) |> expand_block_macros(schema.sites)
 
         if attempts > 0 and not MapSet.subset?(poison, skip_ids) do
           # Drop the poisoning mutants and rebuild. Ids are stable across rebuilds
@@ -283,6 +287,52 @@ defmodule Mutare.Runner do
   end
 
   defp cleanup_sandbox(_sandbox, _options), do: :ok
+
+  # An injected selector `case` inside an *unknown* module-level block macro (a DSL
+  # whose `do` body the transform mutates on the guess it is unquoted into a
+  # function) may be illegal in that DSL and fail the whole compile. Dropping the
+  # implicated mutant alone would just hit the next selector in the same block,
+  # round after round (and could exhaust the attempt budget). So when a poison
+  # lands inside such a block, skip *every* mutant in that block at once — the
+  # runtime-stable equivalent of marking the macro `:skip` (the body renders raw,
+  # its mutants are recorded `:poisoned`), while ids stay stable across rebuilds
+  # (unlike a true `:skip`, which would stop analyzing the body and shift later
+  # ids). Identity is **per-invocation** — `{file, {macro_name, nid}}`, tagged on
+  # each `Site` by the transform — so a poison in one `custom_dsl do … end` skips
+  # only that block, never a sibling invocation of the same macro that expands
+  # differently. A poison that touches no block macro is returned unchanged (the
+  # common path).
+  defp expand_block_macros(poison, sites) do
+    by_id = Map.new(sites, &{&1.id, &1})
+
+    groups =
+      poison
+      |> Enum.map(&block_macro_key(by_id[&1]))
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    if MapSet.size(groups) == 0 do
+      poison
+    else
+      siblings =
+        for site <- sites,
+            key = block_macro_key(site),
+            not is_nil(key),
+            MapSet.member?(groups, key),
+            do: site.id
+
+      MapSet.union(poison, MapSet.new(siblings))
+    end
+  end
+
+  # The `{file, {macro_name, nid}}` invocation a site belongs to when it lives in an
+  # unknown block macro, else `nil` (an untagged site, or a missing id). The `nid` in
+  # the tag scopes it to the one invocation; pairing with `file` disambiguates the
+  # per-file nid counter across files.
+  defp block_macro_key(%Site{block_macro: tag, file: file}) when not is_nil(tag),
+    do: {file, tag}
+
+  defp block_macro_key(_), do: nil
 
   # The one compilation. `Command.success?/1` owns the "0 means success" reading;
   # `Command.compiler_env/0` carries the SSA-alias-pass-off speed option (a free

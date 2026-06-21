@@ -496,10 +496,49 @@ defmodule Mutare.Transform do
     # or it would wrongly route to `analyze_module_macro_block` instead of scaffolding.
     if Analyze.module_macro_block_statement?(node) and
          not Analyze.module_scaffold_statement?(node) do
-      node |> Analyze.analyze_module_macro_block(ctx.mutators) |> emit(ctx)
+      emit_block_macro(node, ctx)
     else
       node |> Analyze.scaffold(ctx.mutators) |> emit(ctx)
     end
+  end
+
+  # An unknown module-level block macro (`custom_dsl do … end`): its `do` body is
+  # analyzed as runtime on the guess a DSL unquotes it into a function, but the
+  # injected selector `case` may be illegal in the DSL and poison the single build.
+  # Tag every site the body produces with this invocation's identity so poison
+  # recovery can skip the *whole* block at once (`Mutare.Runner.expand_block_macros/2`)
+  # — the runtime-stable equivalent of `:skip` — rather than dropping one mutant at a
+  # time and re-hitting the next selector. A *registered* macro is left untagged
+  # (`tag` is `nil`), so the user's `:macros` choice is honoured and never auto-skipped.
+  #
+  # Sites accumulate newest-first (`claim_id` prepends), so the ones this `emit`
+  # created are exactly the head of `ctx.sites` above the count we held before it.
+  defp emit_block_macro(node, ctx) do
+    before = length(ctx.sites)
+    {emitted, ctx} = node |> Analyze.analyze_module_macro_block(ctx.mutators) |> emit(ctx)
+    {emitted, tag_block_macro_sites(ctx, before, block_macro_tag(node))}
+  end
+
+  # The per-invocation tag for an unknown block macro: `{name, nid}`, or `nil` for a
+  # registered one. The bare name alone would group *every* `custom_dsl do … end` in the
+  # file together, so a poison in one block would wrongly suppress a sibling block of the
+  # *same* macro that expands differently (`guarded :guard do …` splices into a guard,
+  # `guarded :body do …` into a body). The statement node's stable `nid` (the same
+  # DFS-counter identity `Overlap` uses — injective, unlike a Sourceror range, and stable
+  # across rebuilds) makes the tag per-invocation; the name rides along for readability.
+  defp block_macro_tag(node) do
+    case Analyze.unknown_block_macro_name(node) do
+      nil -> nil
+      name -> {name, Resolve.nid(node)}
+    end
+  end
+
+  # A registered macro (or one that produced no sites) needs no tagging.
+  defp tag_block_macro_sites(ctx, _before, nil), do: ctx
+
+  defp tag_block_macro_sites(ctx, before, tag) do
+    {new, prior} = Enum.split(ctx.sites, length(ctx.sites) - before)
+    %{ctx | sites: Enum.map(new, &%{&1 | block_macro: tag}) ++ prior}
   end
 
   # A lifted clause group becomes ONE private function `<base>` plus a public

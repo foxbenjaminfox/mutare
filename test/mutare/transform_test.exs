@@ -1058,6 +1058,61 @@ defmodule Mutare.TransformTest do
       assert Enum.any?(sites, &(&1.mutator == :arithmetic))
       assert Enum.any?(sites, &(&1.mutator == :atom))
     end
+
+    test "an unknown block macro tags every body site with its {name, nid} (for poison recovery)" do
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(@schema_source, mutators: @schema_mutators)
+
+      # `schema` is unknown here, so the whole DSL body is mutated and *tagged* —
+      # so `Mutare.Runner` can skip the whole block at once if the injected selector
+      # poisons the DSL, instead of dropping mutants one at a time. The tag carries the
+      # name (for readability) and a per-invocation `nid`.
+      assert sites != []
+      assert Enum.all?(sites, &match?({:schema, nid} when is_integer(nid), &1.block_macro))
+    end
+
+    test "two invocations of the same block macro get distinct per-invocation tags" do
+      # The bare name would bucket both `schema do … end`s together, so a poison in one
+      # would suppress the other. The `nid` makes the tag per-invocation: each block's
+      # sites share a tag, but the two blocks' tags differ — so poison recovery skips one
+      # block without touching its same-named sibling.
+      source = """
+      defmodule Twice do
+        import Mutare.Test.SchemaDSL
+
+        schema do
+          field(:age, default: 1 + 1)
+        end
+
+        schema do
+          field(:size, default: 2 + 2)
+        end
+      end
+      """
+
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: @schema_mutators)
+
+      tags = sites |> Enum.map(& &1.block_macro) |> Enum.uniq()
+
+      # Both invocations are `:schema`, but the two blocks carry different nids.
+      assert Enum.all?(tags, &match?({:schema, _}, &1))
+      assert length(tags) == 2
+    end
+
+    test "a registered macro's body sites are left untagged (never auto-skipped)" do
+      # Routing the block as `:expression` (mutate) keeps the body mutatable like the
+      # unknown default — but because the user *registered* it, the auto-skip-on-poison
+      # tag is withheld: their choice to mutate it is honoured.
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(@schema_source,
+          mutators: @schema_mutators,
+          macros: [{Mutare.Test.SchemaDSL, :schema, 1, :expression}]
+        )
+
+      assert sites != []
+      assert Enum.all?(sites, &(&1.block_macro == nil))
+    end
   end
 
   describe "a piped value reaches back to the macro's effective position-0 treatment" do

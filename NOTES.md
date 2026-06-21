@@ -81,6 +81,60 @@ Implementation notes:
 - `Mutare.Metamutant` shrank to just the selector-subject AST contract
   (`subject_ast/0` + `subject?/1`); the metamutant *walk* now lives in `Mutare.Manifest`.
 
+### Unknown block macros: poison the whole block, not one mutant at a time `[done]`
+An **unknown module-level block macro** (`custom_dsl do … end`) has its `do` body
+analyzed as **runtime** — the guess that a DSL `unquote`s it into a function body, so a
+literal/operator there could be a real runtime value (`analyze_module_macro_block/2`).
+The guess is right for the common "generate a function" DSL, but wrong for a DSL that
+treats the body as *opaque compile-time AST* it pattern-matches or splices into an
+illegal position (a guard, a pattern): the injected selector `case` is then rejected and
+the **single build fails wholesale** — not for one mutation, but for *every* mutation in
+the block (the selector is the problem, and every mutant adds one).
+
+The existing per-id poison backstop would drop one implicated mutant, rebuild, hit the
+*next* selector, and repeat — O(mutants-in-block) rounds, easily exhausting the 25-attempt
+budget on a real DSL block, or stalling if a round's error doesn't map. So the runner
+**escalates**: when a poison lands inside an unknown block macro, it skips *every* mutant
+in that block at once (`Mutare.Runner.expand_block_macros/2`), the runtime equivalent of
+"mark the macro `:skip`" — the body renders raw and compiles in **one** extra round.
+
+Why escalate via `skip_ids` rather than literally re-running the transform with the macro
+registered `:skip`: **id stability**. The whole poison loop relies on ids being stable
+across rebuilds (the counter advances even for skipped ids), so an accumulated `skip_ids`
+keeps referring to the same mutations. A true `:skip` would stop *analyzing* the body, so
+its ids would never be claimed and every later id would shift — silently invalidating the
+`skip_ids` from other files. Skipping the block's ids instead keeps the body analyzed (ids
+still claimed and advanced), but emits every node raw (`emit_site/3`'s "all skipped → no
+selector" path), yielding **byte-identical raw output** while ids stay put. The block's
+mutants are recorded `:poisoned` (out of the score) — exactly right: the DSL can't compile
+them, which is what `:poisoned` *means*, and more informative than a registry `:skip`
+(which would make them vanish entirely).
+
+Identity is **per-invocation** — `{file, {macro_name, nid}}`, tagged on each
+`Site.block_macro` by the transform (`Transform.emit_block_macro/2` tags the sites its
+block-body `emit` created — they are the head of the newest-first `ctx.sites`; the `nid`
+is the block-macro statement node's). The bare name alone was wrong: a DSL that dispatches
+on an argument — `guarded :guard do …` splicing into a guard (hostile) vs `guarded :body
+do …` into a body (fine) — would bucket *both* invocations under `:guarded`, so a poison
+in one would silently suppress the other's valid mutants. That is the same lossy-identity
+trap `Overlap` rejected (see "node identity, not range"): a name collides distinct
+invocations exactly as a Sourceror range collides distinct nodes. The statement node's
+`nid` (the injective, rebuild-stable DFS counter) makes the tag per-invocation; the name
+rides along for readability. The cost is a possible extra recovery *round* — if a DSL macro
+`raise`s on the first hostile block (halting expansion), K same-name hostile blocks take K
+rounds vs the name-bucket's 1 — but the compiler-error kind (the common case, splicing into
+an illegal position) batches all errors per pass, K > 25 (the attempt budget) same-name
+*raising* blocks in one file is pathological, and soundness (never silently dropping valid
+mutants) outranks a round count. If it ever bit, the fallback is "broaden a tag to the bare
+name after it poisons in ≥2 distinct invocations" — deferred (YAGNI).
+
+Only an **unknown** macro is tagged (`Analyze.unknown_block_macro_name/1` returns `nil` for
+a registered one): a user who registered the macro — even as `:expression` — chose how to
+treat it, and is never auto-skipped. Scope/limit: this fires only when `Poison.ids/2` maps
+the error to a block-macro mutant id; a DSL whose error lands on an unmappable line (the
+macro call site, not the spliced selector) still aborts — the pre-existing poison-mapping
+ceiling, not made worse here.
+
 ### Scan is transform-bound, and the loop heap makes it worse `[deferred]`
 After the manifest went lazy (above), the scan (`Schema.from_files` → `Transform`
 per file) is dominated by `Sourceror.to_string` rendering each metamutant, and one

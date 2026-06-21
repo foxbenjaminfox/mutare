@@ -1047,6 +1047,22 @@ defmodule Mutare.Transform.Analyze do
     {form, meta, init ++ [last]}
   end
 
+  @doc """
+  The name (form atom) to tag a module-level block macro's mutation sites with, for
+  poison recovery — but only when the macro is **unknown** (no known-macro routing).
+
+  An unknown DSL block is mutated on the guess that it is unquoted into a function;
+  if the injected selector `case` is illegal in the DSL it poisons the single build,
+  and `Mutare.Runner` skips the whole macro by this name (see `Mutare.Site`). A
+  *registered* macro (`routing != nil`) returns `nil` — the user's `:macros` choice
+  (mutate or `:skip`) is honoured and never auto-skipped. Only meaningful for a node
+  that `module_macro_block_statement?/1` already accepted.
+  """
+  @spec unknown_block_macro_name(Macro.t()) :: atom() | nil
+  def unknown_block_macro_name({form, meta, _args}) do
+    if macro_routing(meta) == nil, do: form, else: nil
+  end
+
   # Whether the macro argument at position `i` is routed `:skip` (a known macro's opaque
   # arg). No stamp (`nil`) or a position past the routing list is the `:expression` default.
   defp skip_arg?(nil, _i), do: false

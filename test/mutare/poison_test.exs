@@ -155,5 +155,88 @@ defmodule Mutare.PoisonTest do
       refute Enum.empty?(Enum.filter(run.results, &(&1.status == :killed)))
       assert Mutare.Report.score(run.results) == 100.0
     end
+
+    @tag :runner
+    @tag timeout: 180_000
+    test "a poisoning block-macro invocation is skipped wholesale, sparing a same-named sibling" do
+      # `guarded …` is an *unknown* module-level block macro: Mutare mutates its body on
+      # the guess a DSL unquotes it into a function. This DSL dispatches on its first arg:
+      # `guarded :guard do …` splices the body into a `when` guard (the injected selector
+      # `case` is illegal there → poison), while `guarded :body do …` emits a normal
+      # function body (the selector is fine). The runner must skip the *whole hostile
+      # block* at once — but, crucially, only **that invocation**: the `:body` block is a
+      # different invocation of the same macro, so its valid mutants must still run. A
+      # bare-name tag would bucket both together and wrongly suppress the `:body` mutants.
+      %{project: project, sandbox: sandbox} =
+        Project.build(:gdsl, %{
+          "lib/guard_dsl.ex" => """
+          defmodule GuardDSL do
+            # `:guard` → splice into a `when` guard, where a selector `case` is illegal
+            # (a *mutated* body poisons; the raw body, a guard-legal expr, compiles).
+            defmacro guarded(:guard, do: body) do
+              quote do
+                def g(x) when unquote(unwrap(body)), do: x
+              end
+            end
+
+            # `:body` → a normal function body, where the selector is perfectly legal, so
+            # this sibling invocation of the same macro mutates and runs fine.
+            defmacro guarded(:body, do: body) do
+              quote do
+                def b, do: unquote(unwrap(body))
+              end
+            end
+
+            defp unwrap({:__block__, _meta, [single]}), do: single
+            defp unwrap(other), do: other
+          end
+          """,
+          "lib/uses.ex" => """
+          defmodule Uses do
+            import GuardDSL
+
+            guarded :guard do
+              1 < 2
+            end
+
+            guarded :body do
+              3 + 4
+            end
+          end
+          """,
+          "test/uses_test.exs" => """
+          defmodule UsesTest do
+            use ExUnit.Case
+
+            test "g" do
+              assert Uses.g(:yes) == :yes
+            end
+
+            test "b" do
+              assert Uses.b() == 7
+            end
+          end
+          """
+        })
+
+      mutators = [Mutare.Mutators.Relational, Mutare.Mutators.Literal, Mutare.Mutators.Arithmetic]
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: mutators)
+
+      # The two `guarded` invocations are tagged apart (same name, different nid).
+      by_tag =
+        run.results
+        |> Enum.filter(&match?({:guarded, _}, &1.site.block_macro))
+        |> Enum.group_by(& &1.site.block_macro, & &1.status)
+
+      assert map_size(by_tag) == 2
+      statuses = Map.values(by_tag)
+
+      # One invocation (`:guard`) poisons wholesale — every mutant in it dropped…
+      assert Enum.any?(statuses, &(Enum.uniq(&1) == [:poisoned]))
+      # …while the other (`:body`) is spared: its mutants compiled, ran, and were killed
+      # by `b() == 7`. A name-based tag would have poisoned these too (the regression).
+      assert Enum.any?(statuses, &(:killed in &1))
+      refute Enum.any?(statuses, &(:poisoned in &1 and :killed in &1))
+    end
   end
 end
