@@ -26,13 +26,25 @@ defmodule Mutare.AST do
   renders a printable binary as a charlist (`~c"…"`); this adds the double-quote
   delimiter automatically, so callers never have to remember the distinction.
 
+  A **negative number** is built as the canonical unary-minus AST the parser itself
+  produces — `-0.5` is `{:-, _, [0.5]}`, *never* a bare negative literal. A bare
+  `{:__block__, [], [-0.5]}` renders fine alone but glues into `--0.5` (the invalid
+  list-subtraction token) the moment it lands under a parent unary minus — exactly
+  what happens when a literal mutator negates the positive magnitude of an already
+  negative source literal (`-0.5` mutated via `0.5 - 1.0`). Wrapping the magnitude in
+  an explicit `{:-, …}` keeps the inner node an operator (not an atomic literal), so
+  the formatter spaces nested minuses (`-(-0.5)`) and the result always re-parses.
+
       iex> Mutare.AST.literal(0)
       {:__block__, [], [0]}
       iex> Mutare.AST.literal("mutare")
       {:__block__, [delimiter: ~s(")], ["mutare"]}
+      iex> Mutare.AST.literal(-1)
+      {:-, [], [{:__block__, [], [1]}]}
   """
   @spec literal(term()) :: Macro.t()
   def literal(value) when is_binary(value), do: {:__block__, [delimiter: ~s(")], [value]}
+  def literal(value) when is_number(value) and value < 0, do: {:-, [], [literal(-value)]}
   def literal(value), do: {:__block__, [], [value]}
 
   @doc """

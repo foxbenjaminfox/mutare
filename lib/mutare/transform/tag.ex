@@ -305,6 +305,12 @@ defmodule Mutare.Transform.Tag do
   defp literal_node?({:__block__, _meta, [value]}),
     do: is_integer(value) or is_float(value) or is_binary(value) or is_atom(value)
 
+  # A negative number is built by `Mutare.AST.literal/1` as the canonical unary-minus
+  # over its positive magnitude (`{:-, _, [{:__block__, _, [n]}]}`) — a perfectly legal
+  # pattern (`def f(-1)`, `-0.5 -> …`). Recognise it so a negative-literal replacement
+  # isn't silently dropped from a head/clause pattern mutant.
+  defp literal_node?({:-, _meta, [operand]}), do: literal_node?(operand)
+
   defp literal_node?(_), do: false
 
   # === map-key collision avoidance ===========================================
