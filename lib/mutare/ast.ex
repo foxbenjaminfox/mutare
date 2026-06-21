@@ -71,6 +71,11 @@ defmodule Mutare.AST do
   collection (tuple, bitstring) is deliberately *excluded*: it isn't enumerable, so
   `x in {…}` raises rather than testing membership (emptying it changes nothing
   observable about that).
+
+  This recognises the **standard** literal shapes, for any mutator. A custom mutator with
+  a *non-standard* empty collection (its own sigil, a `MapSet.new([])` builder) declares it
+  through the optional `c:Mutare.Mutator.empty_collection?/1` callback instead — the two are
+  OR-ed at the drop site by `Mutare.Mutator.empty_collection?/2`.
   """
   @spec empty_collection_literal?(Macro.t()) :: boolean()
   def empty_collection_literal?([]), do: true

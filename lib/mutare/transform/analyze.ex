@@ -570,8 +570,8 @@ defmodule Mutare.Transform.Analyze do
 
   defp drop_empty_collection_candidates(node), do: node
 
-  defp empty_collection?(%Candidate.InPlace{mutated: mutated}),
-    do: AST.empty_collection_literal?(mutated)
+  defp empty_collection?(%Candidate.InPlace{mutator: spec, mutated: mutated}),
+    do: Mutator.empty_collection?(spec, mutated)
 
   defp empty_collection?(_candidate), do: false
 

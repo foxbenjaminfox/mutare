@@ -191,7 +191,7 @@ defmodule Mutare.Transform.Tag do
     end
   end
 
-  defp empty_collection_mutation?({_mutator, mutated}), do: AST.empty_collection_literal?(mutated)
+  defp empty_collection_mutation?({spec, mutated}), do: Mutator.empty_collection?(spec, mutated)
 
   # A bitstring segment `<<value::spec>>`: tag-walk the value, keep the spec raw
   # except `size(expr)` args (`tag_spec/3`).

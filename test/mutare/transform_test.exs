@@ -2171,6 +2171,32 @@ defmodule Mutare.TransformTest do
       assert_compiles(meta)
     end
 
+    test "a custom mutator's `empty_collection?` callback drives the in-RHS drop for its shape" do
+      {meta, triples} =
+        redundancy_triples(
+          "def f(x), do: x in MapSet.new([1, 2])",
+          [Mutare.Test.CollectionMutator, Mutare.Mutators.Conditional]
+        )
+
+      # `x in MapSet.new([])` ≡ false (≡ Conditional) — a *non-standard* empty collection
+      # (a call, not a `[]`/`%{}`/sigil literal core recognises), but the mutator declares
+      # it via `empty_collection?/1`, so its collapse is dropped on the `in` RHS.
+      assert triples == [
+               {:conditional, "x in MapSet.new([1, 2])", "true"},
+               {:conditional, "x in MapSet.new([1, 2])", "false"}
+             ]
+
+      refute Enum.any?(triples, fn {m, _o, _mut} -> m == :collection end)
+      assert_compiles(meta)
+    end
+
+    test "a custom collection mutant is kept outside an `in` RHS" do
+      {_meta, triples} =
+        redundancy_triples("def g, do: MapSet.new([1, 2])", [Mutare.Test.CollectionMutator])
+
+      assert triples == [{:collection, "MapSet.new([1, 2])", "MapSet.new([])"}]
+    end
+
     test "a body `!(a == b)` / `not (a == b)`: Relational's flip is suppressed (≡ the strip)" do
       for src <- ["!(a == b)", "not (a == b)"] do
         {meta, triples} = redundancy_triples("def f(a, b), do: #{src}", @membership)

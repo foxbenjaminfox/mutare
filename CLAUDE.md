@@ -555,8 +555,9 @@ contract between them is the whole game.
   List (`++`↔`--`, non-empty list literal → `[]`; the `[]` collapse — and any collection-emptying mutant
   (`MapLiteral`'s `%{}`, `WordListLiteral`'s `~w()`, `CharlistLiteral`'s `~c""`) — is suppressed on the
   **RHS of `in`**, where `x in <empty>` ≡ `false` ≡ Conditional; the equivalent-sibling suppression,
-  recognised by `Mutare.AST.empty_collection_literal?/1`, per-mutation and top-node-scoped so a sigil
-  keeps its sentinel and a nested literal keeps its `[]`), Collection (`Enum`/`List` predicate swaps,
+  recognised by `Mutare.AST.empty_collection_literal?/1` — or, for a custom mutator's non-standard
+  shape, its `empty_collection?/1` callback — per-mutation and top-node-scoped so a sigil keeps its
+  sentinel and a nested literal keeps its `[]`), Collection (`Enum`/`List` predicate swaps,
   **arity-blind** — a rename keeping the arg list, valid at any arity/pipe position — plus the
   lazy `Stream` twins of the directional `Enum` pairs that exist in `Stream`: `filter`↔`reject`,
   `take`↔`drop`, `take_while`↔`drop_while`, `take_every`↔`drop_every`; `Stream`'s eager reducers
@@ -903,6 +904,17 @@ query DSL untouched, while `mutate/1` rewrites the query. The whole macro node i
 the mutator (`:skip` only stops core descending into the args). The no-mutator case (just route an
 argument as a pattern / leave a DSL opaque) is the declarative top-level `:macros` option.
 `test/support/macro_mutator.ex` is a working example.
+
+For a *collection-emptying* mutator (one whose mutation collapses a collection to an empty
+one), implement the optional callback `empty_collection?(mutated_node) :: boolean()` so its
+empty result earns the **in-RHS redundancy drop** (`x in <empty>` ≡ `false` ≡ Conditional, see
+the equivalent-sibling suppression under emit/assign). Core recognises the *standard* empties
+(`[]`/`%{}`/`~w()`/`~c""`, via `Mutare.AST.empty_collection_literal?/1`) for any mutator; the
+callback is for a *non-standard* shape — a custom sigil (`~SET[]`) or a builder (`MapSet.new([])`).
+No registration/plumbing: every mutation is tagged with its producing `Mutare.Mutator.Spec`, so
+`Mutare.Mutator.empty_collection?/2` simply asks the producing module at drop time (discovered by
+`function_exported?/2`), ORing it with the shape-based recogniser. `test/support/collection_mutator.ex`
+is a working example.
 
 ## Result statuses
 

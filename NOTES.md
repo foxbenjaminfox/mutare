@@ -2636,6 +2636,20 @@ handles only `not`):
    collections legal there — lists and word/charlist sigils; a *map* RHS is illegal in a
    guard `in`, so it can't occur — via the same recognizer in `Transform.Tag`.
 
+   **Extensible.** A *custom* mutator that empties a non-standard collection — its own
+   sigil, or a builder like `MapSet.new([])` — declares the result empty through the
+   optional `Mutator.empty_collection?/1` callback, and earns the same in-RHS drop. The
+   drop site already knows the *producing* mutator (every mutation is tagged with its
+   `Mutator.Spec`, which carries the module), so dispatch needs **no registry or
+   plumbing** — unlike the `:macros` path it isn't a pre-pass that stamps the AST, just a
+   question asked at drop time. `Mutator.empty_collection?/2` ORs the shape-based
+   `AST.empty_collection_literal?/1` (standard literals, any mutator) with the producing
+   module's callback (its own shape) — so a custom mutator emitting a *standard* `[]`/`%{}`
+   is covered for free and only needs the callback for a non-standard shape. Trusting the
+   callback can only lose recall (drop a real mutant), never manufacture a false kill, so
+   it's a "trusted contract" extension like `mutate/1`'s compile-safety. Fixture:
+   `test/support/collection_mutator.ex`.
+
 3. **Double negation `not not x` / `!!x`** — the **same** operator twice. Both Logical
    strips yield the identical single-negation, and Conditional on the inner duplicates the
    outer's `true`/`false`. Restricted to the same operator: a *mixed* `not !x` is left

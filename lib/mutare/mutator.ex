@@ -98,8 +98,32 @@ defmodule Mutare.Mutator do
 
   See `Mutare.Macros` for the declarative `:macros` option (the no-mutator case,
   e.g. routing a custom DSL's argument as a pattern).
+
+  ## Registering a collection literal (`empty_collection?/1`)
+
+  On the right of `in`, a mutant that empties a collection (`x in <empty>`) is
+  constantly `false` — exactly what `Mutare.Mutators.Conditional` already produces on
+  the `in` node — so the transform drops it as a redundant sibling. Core recognises the
+  standard empty literals (`[]`, `%{}`, `~w()`, `~c""`). A mutator that collapses a
+  *non-standard* collection — its own sigil (`~SET[]`), or a builder call
+  (`MapSet.new([])`) — declares that with the optional `c:empty_collection?/1` callback,
+  and earns the same suppression for its shape:
+
+      defmodule MyApp.Mutators.Set do
+        @behaviour Mutare.Mutator
+        def name, do: :set
+        def mutate({:sigil_SET, m, [{:<<>>, bm, [_]}, mods]}),
+          do: [{:sigil_SET, m, [{:<<>>, bm, [""]}, mods]}]   # collapse ~SET[…] → ~SET[]
+        def mutate(_), do: :skip
+        def empty_collection?({:sigil_SET, _, [{:<<>>, _, [""]}, _]}), do: true
+        def empty_collection?(_), do: false
+      end
+
+  The transform asks the mutator that *produced* the mutation, so the value is its own
+  output; discovered by `function_exported?(mod, :empty_collection?, 1)`.
   """
 
+  alias Mutare.AST
   alias Mutare.Mutator.Spec
 
   @typedoc """
@@ -189,7 +213,29 @@ defmodule Mutare.Mutator do
   """
   @callback macros() :: [tuple()]
 
-  @optional_callbacks pattern_mutations: 2, mutate: 2, macros: 0
+  @doc """
+  Optional hook by which a mutator declares that one of *its own* mutation results is
+  an **empty enumerable literal** — a value `v` for which `x in v` is constantly
+  `false`.
+
+  On the right side of `in`, such a mutant is redundant: `Mutare.Mutators.Conditional`
+  already forces the whole `x in …` to `false` on the `in` node, so `Mutare.Transform`
+  drops it (see `Mutare.AST.empty_collection_literal?/1` and NOTES "Equivalent-sibling
+  suppression"). Core recognises the *standard* empty literals itself — `[]`, `%{}`,
+  `~w()`, `~c""` — so a mutator whose collapse produces one of those needs nothing. This
+  callback is for a **non-standard** shape: a custom collection *sigil* (`~SET[]`), or a
+  call/struct that builds an empty enumerable (`MapSet.new([])`). The transform asks the
+  mutator that *produced* the mutation (its `mutated` node is the argument), so a library
+  bundles this with its mutator like `c:macros/0`; discovered by
+  `function_exported?(mod, :empty_collection?, 1)`.
+
+  Returning `true` for a value where `x in v` is *not* always false would drop a real
+  mutant (a recall loss, never a false kill) — so it must answer only for genuinely
+  empty enumerables. A mutator without this callback simply takes no part.
+  """
+  @callback empty_collection?(mutated :: Macro.t()) :: boolean()
+
+  @optional_callbacks pattern_mutations: 2, mutate: 2, macros: 0, empty_collection?: 1
 
   @doc """
   The **effective arity** of a call node given its pipe context.
@@ -263,4 +309,21 @@ defmodule Mutare.Mutator do
 
   defp tag(_spec, :skip), do: []
   defp tag(spec, nodes) when is_list(nodes), do: Enum.map(nodes, &{spec, &1})
+
+  @doc """
+  Whether the mutation `{spec, mutated}` produces an **empty enumerable literal** — a
+  value for which `x in v` is constantly `false`, so it is redundant on the right of `in`
+  (the in-RHS suppression; see `Mutare.Transform.Analyze` / `Mutare.Transform.Tag`).
+
+  Two sources, OR-ed: the shape-based `Mutare.AST.empty_collection_literal?/1` (the
+  standard `[]`/`%{}`/`~w()`/`~c""`, recognised for any mutator), and the producing
+  mutator's optional `c:empty_collection?/1` (its own non-standard shape — a custom sigil,
+  `MapSet.new([])`, …). Dispatching on the *producing* spec's module is correct because
+  only the mutator that emitted the value knows the shape of its own output.
+  """
+  @spec empty_collection?(Spec.t(), Macro.t()) :: boolean()
+  def empty_collection?(%Spec{module: module}, mutated) do
+    AST.empty_collection_literal?(mutated) or
+      (function_exported?(module, :empty_collection?, 1) and module.empty_collection?(mutated))
+  end
 end
