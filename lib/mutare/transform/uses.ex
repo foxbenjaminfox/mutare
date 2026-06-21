@@ -51,10 +51,15 @@ defmodule Mutare.Transform.Uses do
   # `import`) and resolves each `use` target through it before expanding — otherwise an unrelated
   # but loadable `Foo` would be expanded and its directives stamped as the wrong module.
 
+  alias Mutare.AST
   alias Mutare.Transform.Aliases
 
   @directives_key :mutare_use_directives
   @max_depth 16
+
+  # The env the metamutant is compiled and tested under — mirror it during `__using__` expansion.
+  # Kept in sync with `Mutare.Sandbox.Command`'s `{"MIX_ENV", "test"}`.
+  @sandbox_env :test
 
   # The module name of a nested `defmodule` we couldn't resolve to a concrete atom (a non-static
   # head, or a child of an already-unresolved parent). Expansion is *skipped* under it — see
@@ -67,7 +72,25 @@ defmodule Mutare.Transform.Uses do
   nested `use`s). A `use` that can't be expanded is left untouched.
   """
   @spec annotate(Macro.t()) :: Macro.t()
-  def annotate(ast), do: walk(ast, nil, %{})
+  def annotate(ast), do: with_sandbox_env(fn -> walk(ast, nil, %{}) end)
+
+  # The metamutant is compiled and run under `MIX_ENV=test` (`Mutare.Sandbox.Command`), but the
+  # scan/transform usually runs in the task's `:dev` env. So we mirror the sandbox env while
+  # expanding `__using__`: a macro that branches on `Mix.env()` then injects the directives that
+  # will actually be in scope when the metamutant compiles, not the scan-env ones. (Compile-time
+  # config baked into the already-loaded modules can't be re-mirrored in-process — only a runtime
+  # `Mix.env()` read is.) The scan is sequential, so the global set/restore can't race; Mix is
+  # always loaded here — every entry point (the Mix task, the test suite) runs under it.
+  defp with_sandbox_env(fun) do
+    previous = Mix.env()
+    Mix.env(@sandbox_env)
+
+    try do
+      fun.()
+    after
+      Mix.env(previous)
+    end
+  end
 
   @doc """
   The harvested directives stamped on a `use` node's meta, or `[]` for any other node. The
@@ -90,6 +113,29 @@ defmodule Mutare.Transform.Uses do
   defp walk({:defmodule, meta, [mod_ast, [{do_key, body}]]}, module, env) do
     child = child_module(mod_ast, module, env)
     {:defmodule, meta, [mod_ast, [{do_key, walk_body(body, child, env)}]]}
+  end
+
+  # `defprotocol P do … end` defines module `P` — a module scope (a direct `use` inside it, though
+  # rare, is a real directive), named exactly like a `defmodule`.
+  defp walk({:defprotocol, meta, [mod_ast, [{do_key, body}]]}, module, env) do
+    child = child_module(mod_ast, module, env)
+    {:defprotocol, meta, [mod_ast, [{do_key, walk_body(body, child, env)}]]}
+  end
+
+  # `defimpl P, for: T do … end` opens a module scope named `P.T` (**absolute** — never
+  # parent-prefixed, regardless of nesting), where a direct `use` is expanded before the
+  # implementation functions. Both `P` and `T` are resolved through the alias env; only a single,
+  # statically-resolvable impl module is entered as a stamping scope (`impl_module/3` yields
+  # `@unresolved` for a list `for:` or a non-static type, which conservatively skips the stamp).
+  defp walk({:defimpl, meta, [proto, opts, [{do_key, body}]]}, _module, env) when is_list(opts) do
+    impl = impl_module(proto, for_type(opts), env)
+    {:defimpl, meta, [proto, opts, [{do_key, walk_body(body, impl, env)}]]}
+  end
+
+  # `defimpl P do … end` — the `for:` is inferred from context we don't track, so the impl module
+  # is unknown; descend without stamping (the conservative choice — a wrong caller is worse).
+  defp walk({:defimpl, meta, [proto, [{do_key, body}]]}, _module, env) do
+    {:defimpl, meta, [proto, [{do_key, walk_body(body, @unresolved, env)}]]}
   end
 
   # A `quote` block is quoted *data*: a `defmodule … do use Foo end` inside it is only realised
@@ -178,6 +224,30 @@ defmodule Mutare.Transform.Uses do
 
   defp child_module(mod, _parent, _env) when is_atom(mod), do: mod
   defp child_module(_mod_ast, _parent, _env), do: @unresolved
+
+  # The implementation module of a `defimpl P, for: T`: `Module.concat(P, T)` (absolute), both
+  # resolved through the alias env. `@unresolved` (⇒ no stamping) unless both are statically a
+  # single concrete module — a list `for:`, a missing `for:`, or a non-static type degrades.
+  defp impl_module(proto, type, env) do
+    proto_mod = module_atom(proto, env)
+    type_mod = type && module_atom(type, env)
+
+    if module?(proto_mod) and module?(type_mod),
+      do: Module.concat(proto_mod, type_mod),
+      else: @unresolved
+  end
+
+  # The `for:` value of a `defimpl` opts list, or `nil`.
+  defp for_type(opts) do
+    Enum.find_value(opts, fn
+      {key, value} -> if AST.key_atom(key) == :for, do: value
+      _ -> nil
+    end)
+  end
+
+  # `module_atom/2` returns a concrete module atom or `nil` (non-static), so a real module is
+  # exactly a non-`nil` result.
+  defp module?(m), do: not is_nil(m)
 
   # --- expansion + harvest ---------------------------------------------------
 

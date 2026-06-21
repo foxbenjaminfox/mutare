@@ -132,6 +132,20 @@ defmodule Mutare.Test.OptionDispatch do
   defmacro __using__(:b), do: quote(do: import(Map, only: [pop: 2]))
 end
 
+defmodule Mutare.Test.EnvSensitiveUsing do
+  @moduledoc """
+  A `__using__` that injects *different* directives depending on `Mix.env()` — `import Map, only:
+  [fetch: 2]` under `:test`, `[delete: 2]` otherwise. Exercises mirroring the sandbox env (`:test`)
+  during expansion: the metamutant compiles/runs under `:test`, so the `:test` branch is what's
+  actually in scope, even when the scan runs in `:dev`.
+  """
+  defmacro __using__(_opts) do
+    if Mix.env() == :test,
+      do: quote(do: import(Map, only: [fetch: 2])),
+      else: quote(do: import(Map, only: [delete: 2]))
+  end
+end
+
 defmodule Mutare.Test.RaisingUsing do
   @moduledoc "A `__using__` that raises at expansion — must degrade to no directives, never crash."
   defmacro __using__(_opts), do: raise("boom from __using__")

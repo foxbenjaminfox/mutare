@@ -367,6 +367,50 @@ defmodule Mutare.UsesTest do
     end
   end
 
+  describe "module-defining forms (defimpl / defprotocol)" do
+    test "a `use` inside a `defimpl` is expanded (import surfaced, calls resolve)" do
+      source = """
+      defimpl Mutare.Test.SomeProto, for: Integer do
+        use Mutare.Test.ControllerUsing
+        def f(x), do: reject([x], & &1)
+      end
+      """
+
+      # `defimpl P, for: Integer` opens module `P.Integer`; the direct `use` must be stamped so the
+      # injected import is visible and the bare `reject` resolves to `Enum`.
+      assert "import Enum, only: [reject: 2]" in Enum.map(
+               directives_at(source),
+               &Macro.to_string/1
+             )
+
+      assert resolved_calls(source)[:reject] == {[:Enum], :qualify}
+    end
+
+    test "a `defimpl` with a list `for:` is skipped (impl module ambiguous)" do
+      source = """
+      defimpl Mutare.Test.SomeProto, for: [Integer, Float] do
+        use Mutare.Test.ControllerUsing
+      end
+      """
+
+      # Two impl modules — the caller is ambiguous, so we conservatively don't stamp.
+      assert directives_at(source) == []
+    end
+
+    test "a `use` inside a `defprotocol` is expanded" do
+      source = """
+      defprotocol Mutare.Test.SomeProto do
+        use Mutare.Test.ControllerUsing
+      end
+      """
+
+      assert "import Enum, only: [reject: 2]" in Enum.map(
+               directives_at(source),
+               &Macro.to_string/1
+             )
+    end
+  end
+
   describe "resolution through the injected directives" do
     test "an injected import makes a bare stdlib call resolve" do
       source = """
