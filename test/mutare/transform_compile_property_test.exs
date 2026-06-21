@@ -30,8 +30,9 @@ defmodule Mutare.TransformCompilePropertyTest do
   # Compiling a BEAM module per case is ~an order of magnitude slower than a parse, so
   # the budget is smaller than the parse property's; the rich generator keeps coverage
   # high per case. Raise locally for a longer soak.
-  @numtests 60
+  @numtests 50
   @moduletag timeout: 300_000
+  @moduletag :property
 
   property "the metamutant always compiles", numtests: @numtests do
     forall module_ast <- Gen.module_gen() do

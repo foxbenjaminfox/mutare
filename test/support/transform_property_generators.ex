@@ -16,8 +16,10 @@ defmodule Mutare.TransformPropertyGenerators do
   The construct set favours what the mutators and the transform's trickier paths target
   — operators, comparisons, conditionals (`if`/`case`/`cond`), pipes, `with`/`fn`/`try`
   binding scopes, multi-clause heads, literal head patterns (incl. negatives), default
-  args (lifting + dispatcher forwarding), guards, and literal/collection families — over
-  raw breadth, so a modest `numtests` budget spends its randomness where rendering /
+  args (lifting + dispatcher forwarding), guards, multi-statement blocks with
+  value-discarded `=` matches (the `MatchPattern` swap/wildcard routing), `if`-condition
+  binding **hoisting** (`if (v = …) != nil do … v …`), and literal/collection families —
+  over raw breadth, so a modest `numtests` budget spends its randomness where rendering /
   compilation is most likely to trip.
   """
   use PropCheck
@@ -170,7 +172,9 @@ defmodule Mutare.TransformPropertyGenerators do
       {1, collection_gen(smaller)},
       {1, with_gen(size, vars)},
       {1, fn_gen(size, vars)},
-      {1, try_gen(smaller)}
+      {1, try_gen(smaller)},
+      {1, block_gen(size, vars)},
+      {1, if_binding_gen(size, vars)}
     ])
   end
 
@@ -288,6 +292,45 @@ defmodule Mutare.TransformPropertyGenerators do
   defp try_gen(sub) do
     let {body, alt} <- {sub, sub} do
       {:try, [], [[do: body, rescue: [{:->, [], [[var(:_e)], alt]}]]]}
+    end
+  end
+
+  # A two-statement block `(<lhs> = <rhs>; <body>)` whose first statement is a
+  # **value-discarded** `=` match binding fresh name(s) the block's value (the second
+  # statement) uses. The simple form binds a bare variable; the destructuring form binds a
+  # 2-tuple, which is what earns the non-final match its `MatchPattern` swap/wildcard
+  # mutants (the tuple-re-export rewrite). Both are total: a bare match always succeeds and
+  # the destructured RHS is a literal 2-tuple, so the pattern never fails. The match's RHS
+  # is a *leaf* (the routing under test depends on the bound pattern, not on RHS depth) so
+  # only the binding-using body recurses — keeping the added construct shallow, since
+  # Sourceror's render is super-linear in nesting depth.
+  defp block_gen(size, vars) do
+    half = div(size, 2)
+
+    oneof([
+      let {rhs, body} <- {leaf_gen(vars), expr_sized(half, [:t | vars])} do
+        {:__block__, [], [{:=, [], [var(:t), rhs]}, body]}
+      end,
+      let {e1, e2, body} <- {leaf_gen(vars), leaf_gen(vars), expr_sized(half, [:p, :q | vars])} do
+        pat = {:{}, [], [var(:p), var(:q)]}
+        match = {:=, [], [pat, {:{}, [], [e1, e2]}]}
+        {:__block__, [], [match, body]}
+      end
+    ])
+  end
+
+  # `if (v = <rhs>) != nil do <body using v> else <alt> end` — the condition binds `v`,
+  # which **escapes** into the `do` branch, exercising the if-condition binding hoisting /
+  # pruning path (one of the transform's subtlest rewrites: the binding is lifted out of the
+  # forced condition so the body's reference stays bound). Total: `v` is in scope only for
+  # the `do` branch, and every branch returns a generated expression. Only the binding-using
+  # body recurses (the RHS and `else` arm are leaves), so the construct stays shallow.
+  defp if_binding_gen(size, vars) do
+    half = div(size, 2)
+
+    let {rhs, body, alt} <- {leaf_gen(vars), expr_sized(half, [:v | vars]), leaf_gen(vars)} do
+      cond_e = {:!=, [], [{:=, [], [var(:v), rhs]}, nil]}
+      {:if, [], [cond_e, [do: body, else: alt]]}
     end
   end
 

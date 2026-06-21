@@ -34,8 +34,9 @@ defmodule Mutare.TransformPropertyTest do
   # case cover far more ground — and renders a bigger module twice — so a smaller budget
   # buys comparable coverage at a fraction of the old wall-clock, keeping it fast-loop
   # friendly. Raise locally for a longer soak.
-  @numtests 150
+  @numtests 100
   @moduletag timeout: 300_000
+  @moduletag :property
 
   property "the transform renders valid Elixir with no equivalent mutant", numtests: @numtests do
     forall module_ast <- Gen.module_gen() do
