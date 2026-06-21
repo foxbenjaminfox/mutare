@@ -56,6 +56,8 @@ defmodule Mix.Tasks.Mutare do
         paths: ["lib"],
         exclude: ["lib/generated/**"],
         mutators: :all,
+        # fail the run (non-zero exit) if the score drops below this — the
+        # same CI gate as `--min-score`, which overrides it when both are given
         min_score: 70,
         reporters: [:human, {:json, "mutare.json"}, {:sarif, "mutare.sarif"}]
       ]

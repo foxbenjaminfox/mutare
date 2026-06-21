@@ -100,6 +100,8 @@ Optional `.mutare.exs`:
   exclude: ["lib/generated/**"],
   # built-in family atoms and/or your own modules implementing Mutare.Mutator
   mutators: [:arithmetic, :relational, MyApp.Mutators.Boolean],
+  # fail the run (non-zero exit) if the mutation score drops below this;
+  # the same CI gate as `--min-score`, which overrides this when given
   min_score: 70,
   workers: System.schedulers_online(),
   timeout_multiplier: 3.0,
