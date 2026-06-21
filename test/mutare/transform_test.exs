@@ -499,7 +499,11 @@ defmodule Mutare.TransformTest do
       assert_compiles(meta)
     end
 
-    test "an if condition with a nested binding compiles and yields no condition site" do
+    test "an if condition with a nested binding is hoisted, not pruned (cond can't be)" do
+      # Unlike `cond` (above), an `if`/`unless` condition is evaluated once and
+      # unconditionally, so the binding is *hoisted* out and the now-binding-free
+      # condition carries the decision (see the dedicated hoist describe below). The
+      # decision diff still names the original condition.
       source = """
       defmodule BindIf do
         def f(opts, env) do
@@ -514,7 +518,13 @@ defmodule Mutare.TransformTest do
 
       {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @binding)
 
-      refute Enum.any?(sites, &(&1.original_code =~ "name = Keyword"))
+      assert Enum.filter(sites, &(&1.mutator == :if_condition))
+             |> Enum.map(&{&1.original_code, &1.mutated_code}) ==
+               [
+                 {"(name = Keyword.get(opts, :n)) != nil", "true"},
+                 {"(name = Keyword.get(opts, :n)) != nil", "false"}
+               ]
+
       assert Enum.any?(sites, &(&1.mutator == :map_keyword))
       assert_compiles(meta)
     end
@@ -538,6 +548,287 @@ defmodule Mutare.TransformTest do
 
       assert Enum.any?(sites, &(&1.mutator == :if_condition))
       assert_compiles(meta)
+    end
+  end
+
+  describe "if/unless condition hoisting (binding lifted so the decision can be delivered)" do
+    alias Mutare.Selector
+
+    test "a bare-variable binding is hoisted; the condition reads it and carries the decision" do
+      source = """
+      defmodule HoistBare do
+        def f(opts) do
+          if x = Keyword.get(opts, :n) do
+            x
+          else
+            0
+          end
+        end
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+
+      # The binding is lifted to a preceding statement; the decision selects on the bare var.
+      assert meta =~ "x = Keyword.get(opts, :n)\n"
+
+      assert Enum.map(sites, &{&1.original_code, &1.mutated_code}) ==
+               [{"x = Keyword.get(opts, :n)", "true"}, {"x = Keyword.get(opts, :n)", "false"}]
+
+      assert_compiles(meta)
+    end
+
+    test "a refutable pattern keeps MatchError semantics via a temp, and compiles" do
+      source = """
+      defmodule HoistRefutable do
+        def f(opts) do
+          if {:ok, v} = fetch(opts) do
+            v
+          else
+            :none
+          end
+        end
+        def fetch(o), do: o
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+
+      # The match value is bound to a temp first, then the pattern re-matched against it
+      # (so a non-match still raises MatchError exactly as the original `=` did); the
+      # condition reads the temp. The decision diff still names the original condition.
+      assert meta =~ "= fetch(opts)"
+      assert meta =~ "{:ok, v} ="
+
+      assert sites |> Enum.map(& &1.original_code) |> Enum.uniq() == ["{:ok, v} = fetch(opts)"]
+      assert_compiles(meta)
+    end
+
+    test "multiple bare-variable spine bindings all hoist (distinct names, no temp)" do
+      source = """
+      defmodule HoistMulti do
+        def f(a, b) do
+          if (x = first(a)) != (y = first(b)) do
+            {x, y}
+          else
+            :equal
+          end
+        end
+        def first(z), do: hd(z)
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+
+      # Both bindings lift to their own statements (operands of `!=`, both on the spine).
+      assert meta =~ "x = first(a)"
+      assert meta =~ "y = first(b)"
+
+      assert Enum.map(sites, &{&1.original_code, &1.mutated_code}) ==
+               [
+                 {"(x = first(a)) != (y = first(b))", "true"},
+                 {"(x = first(a)) != (y = first(b))", "false"}
+               ]
+
+      assert_compiles(meta)
+    end
+
+    test "the hoisted EXPR still mutates in its lifted statement" do
+      source = """
+      defmodule HoistExpr do
+        def f(xs) do
+          if (s = Enum.sort(xs)) != [] do
+            s
+          else
+            []
+          end
+        end
+      end
+      """
+
+      {_meta, sites, _} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.IfCondition, Mutare.Mutators.CallRemoval]
+        )
+
+      # CallRemoval reaches Enum.sort in the lifted `s = Enum.sort(xs)` statement …
+      assert Enum.any?(
+               sites,
+               &(&1.mutator == :call_removal and &1.original_code == "Enum.sort(xs)")
+             )
+
+      # … and the decision is still delivered on the (binding-free) condition.
+      assert Enum.any?(sites, &(&1.mutator == :if_condition))
+    end
+
+    test "a binding under a short-circuit right operand is left in place (not hoisted)" do
+      # `ok?` short-circuits, so `x = …` runs conditionally; hoisting it would change
+      # *when* it evaluates. So the off-spine case falls back to the prune path — the
+      # binding stays inside the condition. (Bound-but-unused in the body, so the source
+      # itself is valid Elixir: a body that *read* `x` would be an unsafe-variable error.)
+      source = """
+      defmodule HoistOffspine do
+        def f(opts) do
+          if ok?(opts) and (x = Keyword.get(opts, :n)) != nil do
+            :yes
+          else
+            :no
+          end
+        end
+        def ok?(_), do: true
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+
+      # Not hoisted: the binding stays inline in the condition (no lifted `x = …` stmt).
+      assert meta =~ "(x = Keyword.get(opts, :n))"
+      assert Enum.filter(sites, &(&1.mutator == :if_condition)) == []
+      assert_compiles(meta)
+    end
+
+    test "a binding preceded by a side-effecting sibling is not hoisted (no reorder)" do
+      # The binding is on the spine, but `check(state)` is evaluated *before* it in the
+      # original. Hoisting `x = compute()` to before the `if` would move `compute()`
+      # ahead of `check(state)`, changing the order of side effects on the baseline
+      # (mutant 0 must match the original program). So this falls back to the sound prune
+      # path: the binding stays inline and no decision mutant is delivered.
+      source = """
+      defmodule HoistReorder do
+        def f(state) do
+          if check(state) == (x = compute()) do
+            x
+          else
+            :no
+          end
+        end
+        def check(s), do: s
+        def compute, do: 1
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+
+      # Not hoisted: the binding stays inline (no lifted `x = …` statement, no selector).
+      assert meta =~ "(x = compute())"
+      refute meta =~ "persistent_term.get(:mutare_active"
+      assert Enum.filter(sites, &(&1.mutator == :if_condition)) == []
+      assert_compiles(meta)
+    end
+
+    test "runtime: the baseline preserves the original side-effect order" do
+      # The regression for the reorder veto: a hoist would have evaluated the binding's
+      # RHS before the LHS sibling. The baseline (mutant 0) must observe the *original*
+      # order, so the side-effect log is `[:lhs, :binding]`, not `[:binding, :lhs]`.
+      source = """
+      defmodule Mutare.HoistOrderFixture do
+        def run do
+          if log(:lhs) == (x = log(:binding)) do
+            x
+          else
+            :no
+          end
+        end
+
+        def log(tag) do
+          Process.put(:order, [tag | Process.get(:order, [])])
+          tag
+        end
+      end
+      """
+
+      {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      assert_compiles(meta)
+
+      Selector.put(Selector.baseline())
+      Process.put(:order, [])
+      Mutare.HoistOrderFixture.run()
+      assert Enum.reverse(Process.get(:order)) == [:lhs, :binding]
+    after
+      Selector.put(Selector.baseline())
+    end
+
+    test "runtime: the hoisted binding stays bound while the decision is forced" do
+      source = """
+      defmodule Mutare.HoistRuntimeFixture do
+        def classify(opts) do
+          if v = Keyword.get(opts, :v) do
+            {:has, v}
+          else
+            :none
+          end
+        end
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      assert_compiles(meta)
+      mod = :"Elixir.Mutare.HoistRuntimeFixture"
+
+      true_id = Enum.find(sites, &(&1.mutated_code == "true")).id
+      false_id = Enum.find(sites, &(&1.mutated_code == "false")).id
+
+      Selector.put(Selector.baseline())
+      assert mod.classify(v: 7) == {:has, 7}
+      assert mod.classify([]) == :none
+
+      # Forcing the decision true always takes the then-branch — and `v` is still bound
+      # (the hoist made it a real preceding statement), so there is no unbound-variable
+      # crash; it is simply `nil` here.
+      Selector.put(true_id)
+      assert mod.classify([]) == {:has, nil}
+
+      Selector.put(false_id)
+      assert mod.classify(v: 7) == :none
+    after
+      Selector.put(Selector.baseline())
+    end
+
+    test "runtime: the binding leaks when the if is a match RHS (not a statement)" do
+      # The hoist replaces the `if` with a `__block__`. When the `if` is the RHS of a
+      # match (an expression position, not a bare statement), the block must still
+      # evaluate to the `if`'s value *and* leak the condition's binding — a `__block__`
+      # introduces no scope, so `x` is read after the match exactly as the source's was.
+      source = """
+      defmodule Mutare.HoistExprPosFixture do
+        def f(opts) do
+          y = if x = Keyword.get(opts, :n), do: x * 2, else: 0
+          {y, x}
+        end
+      end
+      """
+
+      {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      assert_compiles(meta)
+
+      Selector.put(Selector.baseline())
+      assert Mutare.HoistExprPosFixture.f(n: 5) == {10, 5}
+      assert Mutare.HoistExprPosFixture.f([]) == {0, nil}
+    after
+      Selector.put(Selector.baseline())
+    end
+
+    test "runtime: the binding leaks when the if is a call argument" do
+      # Same as above for the other non-statement position: the `if` is an argument to
+      # `wrap/1`, and `x` is read after the call. The block leaks `x` past the call.
+      source = """
+      defmodule Mutare.HoistArgPosFixture do
+        def f(opts) do
+          wrap(if x = Keyword.get(opts, :n), do: x, else: 0)
+          x
+        end
+        def wrap(v), do: v
+      end
+      """
+
+      {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      assert_compiles(meta)
+
+      Selector.put(Selector.baseline())
+      assert Mutare.HoistArgPosFixture.f(n: 5) == 5
+      assert Mutare.HoistArgPosFixture.f([]) == nil
+    after
+      Selector.put(Selector.baseline())
     end
   end
 

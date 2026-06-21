@@ -42,27 +42,68 @@ defmodule Mutare.Transform.Names do
   # stage's arguments mention (else the closure param would capture it).
   @piped_var :mutare_piped
 
+  # The canonical *condition-hoist* temp variable. When an `if`/`unless` condition
+  # binds a variable through a **refutable** pattern (`if {:ok, v} = fetch() do`), the
+  # binding is hoisted out so the (now binding-free) condition can host a selector
+  # without trapping it (see `Mutare.Transform.Analyze`'s condition hoisting): the
+  # match value is bound to this temp, the pattern re-matched against it, and the
+  # condition reads the temp. It is read (in the condition), so — like the others — it
+  # is salted, not underscore-prefixed.
+  @cond_var :mutare_cond
+
+  # The placeholder a refutable hoist carries until emit knows the salted `cond_var`.
+  # `Mutare.Transform.Analyze` builds the hoist (in the id-free analyze pass, which has
+  # no access to the per-file salted names), spelling the temp as this var-shaped node;
+  # `substitute_hoist_placeholder/2` rewrites it to the real `cond_var` at emit. The
+  # unusual *context* (`:__mutare_hoist_placeholder__` — never a source variable's
+  # hygiene context, which is `nil` or a module) makes it impossible to collide with a
+  # real variable, so the substitution can't capture user code.
+  @hoist_name :__mutare_hoist__
+  @hoist_context :__mutare_hoist_placeholder__
+
   # def-like forms whose names a generated private `defp` could duplicate — part of
   # the identifier set `generated_names/1` scans the source for.
   @def_forms ~w(def defp defmacro defmacrop defguard defguardp defdelegate)a
 
   @doc """
-  The collision-free `{prefix, active_var, super_var, piped_var}` this source
-  provably never uses.
+  The collision-free `{prefix, active_var, super_var, piped_var, cond_var}` this
+  source provably never uses.
 
   `prefix` is the private-function prefix; `active_var` the dispatch variable;
   `super_var` the super-forwarding closure variable; `piped_var` the hoisted
-  pipe-stage closure variable. All four are derived from one scan of every
-  identifier the source mentions, so a generated name can never equal one already in
-  scope.
+  pipe-stage closure variable; `cond_var` the condition-hoist temp. All are derived
+  from one scan of every identifier the source mentions, so a generated name can
+  never equal one already in scope.
   """
-  @spec generated_names(Macro.t()) :: {String.t(), atom(), atom(), atom()}
+  @spec generated_names(Macro.t()) :: {String.t(), atom(), atom(), atom(), atom()}
   def generated_names(ast) do
     taken = taken_names(ast)
     prefix = Enum.find(prefix_candidates(), &free?(&1, taken))
 
     {prefix, salted(Recorder.var_name(), taken), salted(@super_var, taken),
-     salted(@piped_var, taken)}
+     salted(@piped_var, taken), salted(@cond_var, taken)}
+  end
+
+  @doc """
+  The var-shaped placeholder `Mutare.Transform.Analyze` uses for a refutable
+  condition-hoist temp until emit substitutes the salted `cond_var`. See the
+  `@hoist_name`/`@hoist_context` note above.
+  """
+  @spec hoist_placeholder() :: Macro.t()
+  def hoist_placeholder, do: {@hoist_name, [], @hoist_context}
+
+  @doc """
+  Rewrite every hoist placeholder in `node` to the (salted, collision-free)
+  `cond_var`, preserving each placeholder's metadata (a refutable hoist's *root*
+  carries the decision candidates there). Run once at the top of emit; a no-op when
+  no `if`/`unless` condition was hoisted with a refutable pattern.
+  """
+  @spec substitute_hoist_placeholder(Macro.t(), atom()) :: Macro.t()
+  def substitute_hoist_placeholder(node, cond_var) do
+    Macro.prewalk(node, fn
+      {@hoist_name, meta, @hoist_context} -> {cond_var, meta, nil}
+      other -> other
+    end)
   end
 
   # A generated *variable* name the source provably never uses: the readable

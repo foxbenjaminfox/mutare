@@ -114,15 +114,24 @@ defmodule Mutare.IfConditionTest do
       assert if_sites("def f(a, b), do: if(a && b, do: 1, else: 2)") == []
     end
 
-    test "a binding if condition yields no if_condition site" do
-      assert if_sites("def f, do: if(u = fetch(), do: u, else: nil)") == []
+    test "a binding if condition still yields the decision — the transform hoists it" do
+      # `condition_replacements/1` declines a binding at the node level (a selector would
+      # trap it), but the transform *hoists* the binding out of an `if`/`unless` so the
+      # now-binding-free condition can carry the decision. The diff still names the
+      # original condition (see the hoist tests in transform_test.exs for the mechanics).
+      assert Enum.map(
+               if_sites("def f, do: if(u = fetch(), do: u, else: nil)"),
+               &{&1.original_code, &1.mutated_code}
+             ) ==
+               [{"u = fetch()", "true"}, {"u = fetch()", "false"}]
     end
 
-    test "a binding nested under an operator yields no if_condition site (transform-level)" do
-      # `replacements/1` only declines a *top-level* `=`; here the binding is nested
-      # under `!=`, so the transform's condition pruning is what suppresses it (a
-      # selector would scope `u` to a branch, leaving the body's `u` unbound).
-      assert if_sites("def f, do: if((u = fetch()) != nil, do: u, else: nil)") == []
+    test "a binding nested under an operator also hoists to yield the decision" do
+      assert Enum.map(
+               if_sites("def f, do: if((u = fetch()) != nil, do: u, else: nil)"),
+               &{&1.original_code, &1.mutated_code}
+             ) ==
+               [{"(u = fetch()) != nil", "true"}, {"(u = fetch()) != nil", "false"}]
     end
 
     test "a module-level (scaffold) if condition is left alone — it runs at compile time" do

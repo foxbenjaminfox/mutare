@@ -2592,8 +2592,8 @@ still fail) — it surfaces as a hard "metamutant failed to compile". This is ex
 "`Conditional` … leans on poison-recovery" hazard the previous revision of this entry flagged
 as deferred; poison-recovery turned out to be no recovery at all.
 
-The fix is positional and cross-mutator, in `Analyze.analyze_condition/2` (the shared
-`if`/`unless`/`cond`-condition router): after the normal runtime analysis,
+The fix is positional and cross-mutator, in `Analyze.finish_condition/3` (the shared
+`if`/`unless`/`cond`-condition post-analysis step): after the normal runtime analysis,
 `prune_binding_ancestors/1` strips the in-place candidate (`meta[:mutare]`) from every node
 that is a **proper ancestor** of an escaping `=` — exactly the nodes whose selector would
 trap the binding — and skips `attach_if_condition` whenever any binding escapes within the
@@ -2610,6 +2610,59 @@ the layered-compile-safety rule, rather than the poison backstop that couldn't h
 analogous escape on a *value-discarded* `=` (a block statement / `for`/`with` qualifier) is a
 different problem with a different fix — the tuple re-export `MatchPattern` (it *mutates* the
 pattern); here we just *avoid wrapping* a binding we don't mutate.
+
+**Loosening it for `if`/`unless`: hoist the binding instead of pruning `[done]`.** Pruning is
+*sound* but lossy — a binding condition gets no decision mutant ("is this branch ever taken?",
+the highest-value condition mutation). For an `if`/`unless` we can do better than `cond`: the
+condition is evaluated **once and unconditionally**, so the binding can be **hoisted** into a
+preceding statement, leaving a binding-free condition that hosts the decision selector without
+trapping anything. `if (name = f()) != nil do use(name) …` becomes `name = f(); if (case <sel>
+do <id> -> true; <id> -> false; _ -> name != nil end) do use(name) …`. The `if`/`unless` clause
+detects a hoistable condition (`hoist_if?/2`) and emits a `__block__` (`hoist_if/6`); `cond`
+stays prune-only (its clauses short-circuit in order, so a clause binding can't move out without
+changing *when* it runs).
+
+The non-obvious parts:
+  - **Report fidelity needs a report/delivery split.** The metamutant delivers the decision on
+    the *rewritten* (binding-free) condition, but the report diffs against the *original* source.
+    So the decision `Site` is synthesized from the **raw** condition (`original`/`range` =
+    `(name = f()) != nil`) while the selector's catch-all is the rewritten `name != nil`. Because
+    the decision mutant is a **constant** (`true`/`false`), the same node serves both the branch
+    and the Site — no separate delivery field needed (unlike `Relational`'s `name == nil`, which
+    *would* differ and so is **not** recovered: an operator swap on a binding-ancestor stays
+    pruned, its mutant still embedding the binding). The diff stays `(name = f()) != nil → true`.
+  - **Refutable patterns keep `MatchError`.** `if {:ok, v} = f() do` lifts as `mutare_cond = f();
+    {:ok, v} = mutare_cond; if … mutare_cond …` — the match value (always `f()`, *not* the
+    pattern's bindings) goes to a temp, and the pattern is re-matched against it (so a non-match
+    still raises the same `MatchError`). The temp can't be named in the id-/name-free analyze pass
+    (the salted `cond_var` lives in `Ctx`), so analyze leaves a `Names.hoist_placeholder/0` (a var
+    with an impossible hygiene *context*, uncapturable) that emit substitutes once at the top.
+  - **Only the spine; at most one refutable.** Hoist only when *every* escaping binding is on the
+    unconditional spine — `spine_rewrite/1` recurses the left of a short-circuit and stops at
+    branch (`case`/`cond`/`if`) and binding-isolating forms; `offspine_escaping_binding?/1` vetoes
+    a binding under a short-circuit RHS or in a nested branch (hoisting it would change *when* it
+    evaluates). A binding on an `and`'s *LHS* (`(x = f()) != nil and g(x)`) **is** hoistable —
+    the LHS is unconditional. Bare-variable bindings reuse their own name, so any number hoist;
+    a refutable one needs the lone `cond_var`, so `refutable_spine_count/1 <= 1` is required.
+  - **No reordering past a side-effecting sibling.** A binding hoists to *before the whole `if`*,
+    so an expression evaluated *before* it in the original would end up *after* it on the baseline
+    — and mutant 0 must be behaviorally identical to the original (else a sensitive suite goes red
+    as `:baseline_failed`, or — worse, silently — the file's other mutants run against reordered
+    code). `check(state) == (x = f())` evaluates `check(state)` first, so hoisting `x = f()` ahead
+    of it reorders the call. `spine_reorders?/1` vetoes this: `eval_steps/1` flattens the condition
+    into left-to-right evaluation order as `:binding` / `:pure` (literal or bare-var read, safe to
+    reorder around) / `:other` (a call, an operator application, a short-circuit/branch/isolating
+    subtree — conservatively side-effecting), and it is unsafe iff an `:other` precedes a
+    `:binding`. The off-spine veto runs first, so the spine holds every binding; the common shapes
+    evaluate their binding(s) first (`if x = e`, `(x = e) != nil`, `(x = first(a)) != (y =
+    first(b))`, `0 < (x = f())`) and stay hoistable.
+  - **The block leaks like the original.** A `__block__` where an `if` sat renders with parens and
+    **leaks its bindings** in every position (statement, assignment RHS, call argument) — verified
+    — so `name`/`v` escape past the `if` exactly as the source's would.
+  Net: the bare-variable cases (`if x = expr`, `(x = expr) != nil`, the overwhelmingly common
+  shapes) recover the full decision; refutable whole-condition matches too; everything off-spine
+  or multi-refutable falls back to the sound prune. Swept over every `lib/**/*.ex`: all 85
+  metamutants still compile.
 
 ### Membership: `in` ↔ `not in`, and the `not(in)` redundancy `[done]`
 `Relational` flips membership polarity, `x in y → x not in y` — the membership

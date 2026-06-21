@@ -192,9 +192,32 @@ contract between them is the whole game.
     IfCondition (which wraps the *whole* condition) is skipped when any binding escapes within it.
     Binding-isolating forms (`fn`/`for`/`with`/`try`/`quote`) stop the taint — a `=` scoped inside a
     closure never reaches the body, so the surrounding condition still mutates. (IfCondition's own
-    `replacements/1` already declines a *top-level* `=`; the prune is the cross-mutator generalization
-    for a binding nested under an operator/call, where Conditional/Relational would otherwise wrap it.
-    Regression: `mix mutare` on `Mutare.Transform.Aliases`.)
+    `condition_replacements/1` already declines a *top-level* `=`; the prune is the cross-mutator
+    generalization for a binding nested under an operator/call, where Conditional/Relational would
+    otherwise wrap it. Regression: `mix mutare` on `Mutare.Transform.Aliases`.)
+    Pruning is `cond`'s only option (its clauses short-circuit in order, so a clause's binding can't be
+    lifted out without changing *when* it runs), but an `if`/`unless` condition is evaluated **once and
+    unconditionally**, so the if/unless clause instead **hoists** a hoistable binding (`hoist_if?/2` +
+    `hoist_if/6`): the `if` becomes a `__block__` that lifts the binding into a preceding statement and
+    lets the now-binding-free condition carry the IfCondition decision without trapping anything —
+    `if (name = f()) != nil do use(name) …` → `name = f(); if (sel: true/false/name != nil) do
+    use(name) …` (a refutable `{:ok, v} = f()` binds the match value to a temp first, `mutare_cond =
+    f(); {:ok, v} = mutare_cond; if … mutare_cond …`, keeping `MatchError` semantics; the temp is a
+    `Names.hoist_placeholder/0` until emit substitutes the salted `cond_var`). The decision `Site`
+    references the **original** condition (range and code), so the diff stays faithful
+    (`(name = f()) != nil` → `true`). Scope (each a soundness/fidelity guard, the rest staying on the
+    prune path): only when *every* escaping binding is on the unconditional **spine** (not under a
+    short-circuit `and`/`or`/`&&`/`||` right operand, nor inside a nested `case`/`cond`/`if`), no
+    binding reordered past a side-effecting sibling (`spine_reorders?/1` — a binding hoists to before
+    the whole `if`, so an impure expression evaluated *before* it, `check(s) == (x = f())`, would be
+    reordered *after* it, diverging the baseline; the common shapes evaluate their binding first and
+    are fine), at most
+    one **refutable** spine binding (bare-variable ones reuse their own name; a refutable one needs the
+    lone temp), and IfCondition enabled (it owns the delivered decision). Only the decision is
+    recovered — an operator swap on a binding-ancestor node (`Relational` on the `!=`) stays pruned (its
+    mutant would still embed the binding); the hoisted EXPR mutates in its lifted statement, and safe
+    siblings and the body mutate as always. The `__block__` renders, compiles, and leaks the binding
+    exactly like the original `if` in every position (statement, expression RHS, call argument).
     A `case`/`receive`/`fn` clause's pattern (and guard) stays unmutated *in place* in the ordinary
     descent but is **additionally** offered — to the structural pattern families (swap/wildcard), the
     literal families, and (for the guard) the guard families — by dedicated analyze clauses. For a

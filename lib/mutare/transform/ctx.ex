@@ -17,6 +17,7 @@ defmodule Mutare.Transform.Ctx do
           active_var: atom(),
           super_var: atom(),
           piped_var: atom(),
+          cond_var: atom(),
           next_id: pos_integer(),
           group: non_neg_integer(),
           sites: [Mutare.Site.t()]
@@ -48,6 +49,11 @@ defmodule Mutare.Transform.Ctx do
     # salts it per file like `active_var` so a stage argument that mentions a same-named
     # source variable isn't captured by the closure param.
     piped_var: :mutare_piped,
+    # The temp a refutable `if`/`unless` condition-hoist binds the match value to
+    # (`Mutare.Transform.Analyze`'s condition hoisting). `:mutare_cond` canonically;
+    # `Mutare.Transform` salts it per file like `active_var`. Emit substitutes it for the
+    # placeholder the (id-free) analyze pass leaves behind.
+    cond_var: :mutare_cond,
     # accumulators — threaded and updated
     next_id: 1,
     group: 0,

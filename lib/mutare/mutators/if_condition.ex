@@ -35,15 +35,16 @@ defmodule Mutare.Mutators.IfCondition do
       a no-op and to `false` is dead-code removal; both are degenerate, low signal.
     * **A binding condition** — `if user = fetch()` (or a parenthesised
       `(x = a; cond)` sequence). The `if` condition's bindings *leak* into the body,
-      so replacing the condition with `true`/`false` un-binds them — `use(user)`
-      would reference an unbound variable and the single build would not compile.
-      Skipped so the mutator stays compile-safe by construction (the project's
-      layered compile-safety rule), rather than leaning on poison recovery. This
-      only catches a *top-level* `=`; a binding nested under an operator/call
-      (`(user = fetch()) != nil`) is suppressed one level up, by the transform's
-      condition pruning (`Mutare.Transform.Analyze.analyze_condition/2`) — which also
-      governs `Conditional`/`Relational`, the families that would otherwise wrap and
-      trap such a binding.
+      so wrapping the condition in a selector would scope them to a branch — `use(user)`
+      would reference an unbound variable and the single build would not compile. So
+      this hook declines them at the node level (and the transform's condition pruning,
+      `Mutare.Transform.Analyze`, governs the same for `Conditional`/`Relational` on a
+      binding nested under an operator). For an `if`/`unless`, though, the transform
+      then *hoists* the binding out — lifting it into a preceding statement so the
+      now-binding-free condition can carry the decision after all (the diff still names
+      the original condition). `cond` can't hoist (its clauses short-circuit in order),
+      so a `cond` binding condition stays pruned. Either way the mutator is compile-safe
+      by construction, not leaning on poison recovery.
 
   Compile-safety of the rest is free: the surviving conditions bind nothing, a bare
   `true`/`false` is legal in any condition slot, and the original condition is kept

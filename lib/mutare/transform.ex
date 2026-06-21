@@ -181,14 +181,15 @@ defmodule Mutare.Transform do
     # lifting assigns them: the private-function prefix, the dispatch variable, the
     # super-forwarding closure variable, and the hoisted pipe-stage closure variable
     # (see `Mutare.Transform.Names`).
-    {prefix, active_var, super_var, piped_var} = Names.generated_names(parsed)
+    {prefix, active_var, super_var, piped_var, cond_var} = Names.generated_names(parsed)
 
     ctx = %{
       ctx
       | prefix: prefix,
         active_var: active_var,
         super_var: super_var,
-        piped_var: piped_var
+        piped_var: piped_var,
+        cond_var: cond_var
     }
 
     # The known-macro registry (`Mutare.Macros`): built-ins (`Kernel.match?`/`destructure`)
@@ -866,6 +867,12 @@ defmodule Mutare.Transform do
   # an outer selector holds the already-wrapped children, keeping nested sites
   # reachable when the outer mutant is inactive.
   defp emit(node, ctx) do
+    # Substitute the salted `cond_var` for the placeholder a refutable `if`/`unless`
+    # condition-hoist left behind (`Mutare.Transform.Analyze` builds the hoist in the
+    # id-free analyze pass, which has no per-file names). A no-op when nothing was
+    # hoisted refutably; runs before everything else so the rest of emit sees a real var.
+    node = Names.substitute_hoist_placeholder(node, ctx.cond_var)
+
     # Drop redundant leaf candidates a call-rewriting mutator already covers (ModeSwap's
     # mode atom / `shift` key vs AtomLiteral), *before* id assignment — so they leave no id
     # or site and ids stay contiguous (like `gate_candidates/1`). A no-op when nothing is
