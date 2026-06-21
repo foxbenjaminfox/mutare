@@ -1218,6 +1218,37 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "cross-mutator overlap is mutator-agnostic (`Transform.Overlap`)" do
+    test "a custom call-rewriting mutator covers its swapped leaf for free, sparing siblings" do
+      # `Mutare.Test.CallRewriteMutator` is a third-party mutator — not ModeSwap — that
+      # rewrites `Widget.scale(x, :small)` by substituting just `:small` → `:big`, reusing
+      # every other operand. Overlap derives the covering footprint from that single-node
+      # change via `meta[:mutare_nid]`, with no callback or registration, so the redundant
+      # `AtomLiteral` on `:small` is pruned while `:keep` (a value-leaf the rewrite never
+      # touches) keeps its AtomLiteral. This pins the "any future minimal-rewrite call mutator
+      # gets it for free" promise and the precision of the nid match (only the covered leaf).
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def f(x), do: {Widget.scale(x, :small), :keep}
+          end
+          """,
+          mutators: [Mutare.Test.CallRewriteMutator, Mutare.Mutators.AtomLiteral]
+        )
+
+      pairs = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
+      atoms = for s <- sites, s.mutator == :atom, do: s.original_code
+
+      # The custom call rewrite is recorded…
+      assert {:call_rewrite, "Widget.scale(x, :small)", "Widget.scale(x, :big)"} in pairs
+      # …and Overlap pruned the redundant AtomLiteral on the covered `:small` leaf…
+      refute ":small" in atoms
+      # …but the untouched `:keep` value-leaf keeps its AtomLiteral (precise, not blanket).
+      assert ":keep" in atoms
+    end
+  end
+
   describe "Numeric (complementary Kernel/Float numeric swaps)" do
     test "swaps bare Kernel min/max and round/ceil, records the swaps, and compiles" do
       sites =
