@@ -286,6 +286,21 @@ defmodule Mutare.UsesTest do
       assert "import Map, only: [merge: 2]" in rendered
     end
 
+    test "an alias a nested `use` injects resolves a later sibling `use` in the same body" do
+      source = """
+      defmodule UsesNestedInject do
+        use Mutare.Test.NestedInjectUsing
+      end
+      """
+
+      rendered = Enum.map(directives_at(source), &Macro.to_string/1)
+
+      # The body is `use AliasInjector; use T`: the first nested `use` injects `alias RealTarget,
+      # as: T`, which the later `use T` resolves through — surfacing `import Map, only: [get: 2]`.
+      assert "alias Mutare.Test.RealTarget, as: T" in rendered
+      assert "import Map, only: [get: 2]" in rendered
+    end
+
     test "a top-level alias resolves a `use` in a following `defmodule`" do
       source = """
       alias Mutare.Test.ControllerUsing, as: U
@@ -332,6 +347,22 @@ defmodule Mutare.UsesTest do
 
       assert Enum.map(directives_at(source), &Macro.to_string/1) == [
                "alias OuterReg.Inner, as: TheCaller"
+             ]
+    end
+
+    test "a top-level aliased head is resolved through the alias for the caller" do
+      source = """
+      alias RealParent, as: RP
+
+      defmodule RP.Child do
+        use Mutare.Test.CallerProbe
+      end
+      """
+
+      # Top-level `defmodule RP.Child` (with `RP` aliased) defines `RealParent.Child`, so the
+      # caller passed to `__using__` is `RealParent.Child` — not the literal `RP.Child`.
+      assert Enum.map(directives_at(source), &Macro.to_string/1) == [
+               "alias RealParent.Child, as: TheCaller"
              ]
     end
   end

@@ -81,6 +81,21 @@ defmodule Mutare.Test.AliasInjector do
   end
 end
 
+defmodule Mutare.Test.NestedInjectUsing do
+  @moduledoc """
+  A `__using__` whose body is `use AliasInjector; use T`: the first nested `use` *injects* `alias
+  RealTarget, as: T`, which the later sibling `use T` must resolve through. Exercises folding the
+  alias env in an expanded `__using__` body with the directives a nested `use` *yields* (not just
+  its literal text).
+  """
+  defmacro __using__(_opts) do
+    quote do
+      use Mutare.Test.AliasInjector
+      use T
+    end
+  end
+end
+
 defmodule Mutare.Test.BodyAliasTarget do
   @moduledoc """
   The real target of an alias declared *inside* another `__using__` body. Injects a distinctive

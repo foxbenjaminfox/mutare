@@ -58,7 +58,7 @@ defmodule Mutare.Transform.Uses do
 
   # The module name of a nested `defmodule` we couldn't resolve to a concrete atom (a non-static
   # head, or a child of an already-unresolved parent). Expansion is *skipped* under it — see
-  # `child_module/2` and `stamp/3`.
+  # `child_module/3` and `stamp/3`.
   @unresolved :__mutare_unresolved__
 
   @doc """
@@ -88,7 +88,7 @@ defmodule Mutare.Transform.Uses do
   # invalid, never a module-level directive, so it is descended without stamping.
 
   defp walk({:defmodule, meta, [mod_ast, [{do_key, body}]]}, module, env) do
-    child = child_module(mod_ast, module)
+    child = child_module(mod_ast, module, env)
     {:defmodule, meta, [mod_ast, [{do_key, walk_body(body, child, env)}]]}
   end
 
@@ -160,18 +160,24 @@ defmodule Mutare.Transform.Uses do
   # is the **absolute** escape — it defines `Bar`, never `Parent.Elixir.Bar` — so it is not
   # prefixed. A bare-atom head (`defmodule :foo`) is itself a concrete module — atoms aren't
   # namespaced — so it resolves to that atom.
-  defp child_module({:__aliases__, _, path}, parent) when is_list(path) do
+  #
+  # A **top-level** (no-parent) head is resolved through the alias env — `alias RealParent, as: RP;
+  # defmodule RP.Child` defines `RealParent.Child`, so `__CALLER__.module` must be that. A **nested**
+  # head is *not* alias-resolved: Elixir prepends the parent to the *literal* segments (`defmodule
+  # RP.Child` inside `Outer` is `Outer.RP.Child`, the alias untouched), which the literal-path
+  # `Module.concat([parent | path])` already matches.
+  defp child_module({:__aliases__, _, path}, parent, env) when is_list(path) do
     cond do
       not Enum.all?(path, &is_atom/1) -> @unresolved
       match?([:"Elixir" | _], path) -> Module.concat(path)
       parent == @unresolved -> @unresolved
-      parent == nil -> Module.concat(path)
+      parent == nil -> path |> Aliases.resolve_path(env) |> to_module()
       true -> Module.concat([parent | path])
     end
   end
 
-  defp child_module(mod, _parent) when is_atom(mod), do: mod
-  defp child_module(_mod_ast, _parent), do: @unresolved
+  defp child_module(mod, _parent, _env) when is_atom(mod), do: mod
+  defp child_module(_mod_ast, _parent, _env), do: @unresolved
 
   # --- expansion + harvest ---------------------------------------------------
 
@@ -289,7 +295,13 @@ defmodule Mutare.Transform.Uses do
   defp collect({:__block__, _, stmts}, caller, depth, seen, env) when is_list(stmts) do
     {collected, _env} =
       Enum.flat_map_reduce(stmts, env, fn stmt, env ->
-        {collect(stmt, caller, depth, seen, env), Aliases.register(stmt, env)}
+        harvested = collect(stmt, caller, depth, seen, env)
+
+        # Advance the env with the directives this statement *yields*, not its literal text — so a
+        # nested `use` (or `require …, as:`) that injects an alias resolves a later sibling `use`
+        # (`use AliasInjector; use T`), exactly as Elixir expands it. (A direct `alias` yields
+        # itself, so its binding is captured too; an `import` yields a no-op for the alias env.)
+        {harvested, Enum.reduce(harvested, env, &Aliases.register/2)}
       end)
 
     collected
