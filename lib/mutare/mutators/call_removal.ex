@@ -220,7 +220,7 @@ defmodule Mutare.Mutators.CallRemoval do
   # reads. A bare call displaced from `Kernel` by `import Kernel, except:/only:`
   # (`Mutare.Transform.Imports`) is another module's function, so it is left alone.
   defp bare_removal({fun, meta, args}, piped?) when is_atom(fun) and is_list(args) do
-    eff_arity = Mutare.Mutator.effective_arity(args, piped?)
+    eff_arity = Mutare.Mutator.effective_arity(args, Mutare.Mutator.pipe_mode(piped?))
 
     removable? =
       MapSet.member?(@bare_removable, {fun, eff_arity}) and not Imports.kernel_displaced?(meta)

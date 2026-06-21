@@ -157,7 +157,8 @@ defmodule Mutare.Mutator do
 
     * `:piped` — whether the node is the right-hand side of a `|>` (so its
       effective first argument is the pipe's left side, *not* present in the
-      node's own args). A mutator computes effective arity with `effective_arity/2`.
+      node's own args). A mutator computes effective arity with `effective_arity/2`,
+      passing `:piped`/`:unpiped` (see `pipe_mode/1`).
     * `:opts` — the configured mutator's per-instance options (the `opts` of a
       `{module, opts}` entry in `:mutators`, with any `:as` name override
       stripped), or `[]` for an unconfigured mutator. This is how a configurable
@@ -292,23 +293,47 @@ defmodule Mutare.Mutator do
                       return_replacements: 1,
                       condition_replacements: 1
 
+  @typedoc """
+  A call node's pipe context, as an atom: `:piped` (the node is a `|>` right-hand
+  side, so its effective first argument is the pipe's left side) or `:unpiped`.
+  The form `effective_arity/2` takes; map a boolean to it with `pipe_mode/1`.
+  """
+  @type pipe_mode :: :piped | :unpiped
+
   @doc """
-  The **effective arity** of a call node given its pipe context.
+  The **effective arity** of a call node given its pipe context (`:piped`/`:unpiped`).
 
   A pipe stage (`x |> f(a)`) carries one fewer argument than the source reads: its
   effective first argument is the `|>` left side, which Elixir splices in only after
   this transform runs, so it is *not* in the node's own `args`. A pipe-aware mutator
-  (`mutate/2`) recovers the real arity as `length(args) + if(piped?, do: 1, else: 0)`.
+  (`mutate/2`) recovers the real arity as `length(args)`, plus one when `:piped`.
   The single home for that off-by-one — see `Mutare.Mutators.CollectionArity` et al.
 
-      iex> Mutare.Mutator.effective_arity([:a, :b], false)
+  The pipe context arrives as a boolean (the `:piped` key of the `mutate/2` context,
+  `Mutare.Transform.Resolve`'s `env.piped`); convert it with `pipe_mode/1`.
+
+      iex> Mutare.Mutator.effective_arity([:a, :b], :unpiped)
       2
-      iex> Mutare.Mutator.effective_arity([:b], true)
+      iex> Mutare.Mutator.effective_arity([:b], :piped)
       2
   """
-  @spec effective_arity([Macro.t()], boolean()) :: non_neg_integer()
-  def effective_arity(args, piped?) when is_list(args),
-    do: length(args) + if(piped?, do: 1, else: 0)
+  @spec effective_arity([Macro.t()], pipe_mode()) :: non_neg_integer()
+  def effective_arity(args, :piped) when is_list(args), do: length(args) + 1
+  def effective_arity(args, :unpiped) when is_list(args), do: length(args)
+
+  @doc """
+  Map a pipe-context boolean to the `t:pipe_mode/0` atom `effective_arity/2` takes —
+  `true` → `:piped`, `false` → `:unpiped`. The boolean is what the `mutate/2` context
+  and `Mutare.Transform.Resolve`'s env carry; this is the single conversion point.
+
+      iex> Mutare.Mutator.pipe_mode(true)
+      :piped
+      iex> Mutare.Mutator.pipe_mode(false)
+      :unpiped
+  """
+  @spec pipe_mode(boolean()) :: pipe_mode()
+  def pipe_mode(true), do: :piped
+  def pipe_mode(false), do: :unpiped
 
   @doc """
   Map an **effective** argument index to the index into a call node's *visible*

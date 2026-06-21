@@ -102,7 +102,7 @@ defmodule Mutare.Mutators.Arithmetic do
   # fewer arg than the source reads (`x |> div(y)` is `div/2`), so the flag recovers it.
   @impl Mutare.Mutator
   def mutate({fun, meta, args}, %{piped: piped?}) when fun in [:div, :rem] and is_list(args) do
-    if Mutare.Mutator.effective_arity(args, piped?) == 2 do
+    if Mutare.Mutator.effective_arity(args, Mutare.Mutator.pipe_mode(piped?)) == 2 do
       Enum.map(Map.fetch!(@call_swaps, fun), &{&1, meta, args})
     else
       :skip

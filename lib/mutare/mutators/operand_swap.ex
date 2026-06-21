@@ -149,7 +149,7 @@ defmodule Mutare.Mutators.OperandSwap do
   @impl Mutare.Mutator
   def mutate({op, meta, [left, right] = args}, %{piped: false})
       when op in @call_operators do
-    if Mutare.Mutator.effective_arity(args, false) == 2 and not same?(left, right),
+    if Mutare.Mutator.effective_arity(args, :unpiped) == 2 and not same?(left, right),
       do: [{op, meta, [right, left]}],
       else: :skip
   end

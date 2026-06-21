@@ -111,7 +111,7 @@ defmodule Mutare.Transform.Imports do
   """
   @spec stamp(atom(), keyword(), [Macro.t()], map(), selector(), boolean()) :: keyword()
   def stamp(fun, meta, args, imports, kernel, piped?) do
-    arity = Mutator.effective_arity(args, piped?)
+    arity = Mutator.effective_arity(args, Mutator.pipe_mode(piped?))
 
     case resolve_import(imports, fun, arity) do
       {module_key, selector} ->

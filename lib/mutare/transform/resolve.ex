@@ -128,7 +128,7 @@ defmodule Mutare.Transform.Resolve do
   # `Imports.stamp` so it can read the just-applied import / Kernel-displacement marks.
   defp walk({fun, meta, args}, env) when is_atom(fun) and is_list(args) do
     meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, env.piped)
-    arity = Mutator.effective_arity(args, env.piped)
+    arity = Mutator.effective_arity(args, Mutator.pipe_mode(env.piped))
     meta = stamp_macro(meta, bare_module_key(fun, arity, meta), fun, args, env)
     {fun, meta, descend(args, env)}
   end
@@ -159,7 +159,7 @@ defmodule Mutare.Transform.Resolve do
   # positions. This is what protects a piped DSL stage (`q |> where([p], p.x == 1)`): without
   # it core would descend into the condition.
   defp stamp_macro(meta, module_key, fun, args, env) do
-    arity = Mutator.effective_arity(args, env.piped)
+    arity = Mutator.effective_arity(args, Mutator.pipe_mode(env.piped))
 
     case Macros.routing(env.macros, module_key, fun, arity) do
       nil -> meta

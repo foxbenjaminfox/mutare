@@ -189,7 +189,7 @@ defmodule Mutare.Mutators.ModeSwap do
   # The rule for a call at its *effective* arity (visible args + the piped value), or
   # `:error` when no rule applies.
   defp rule(mod, fun, args, piped?) do
-    eff_arity = Mutare.Mutator.effective_arity(args, piped?)
+    eff_arity = Mutare.Mutator.effective_arity(args, Mutare.Mutator.pipe_mode(piped?))
 
     case Map.fetch(@rules, {mod, fun, eff_arity}) do
       {:ok, {positions, group}} -> {:ok, positions, group}

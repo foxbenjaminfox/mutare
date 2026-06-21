@@ -67,7 +67,12 @@ defmodule Mutare.Macro.Spec do
 
   @treatments [:expression, :pattern, :binding_pattern, :skip]
 
-  @doc "The valid argument treatments — the single source of truth for validation."
+  @doc """
+  The valid argument treatments — the single source of truth for validation.
+
+      iex> Mutare.Macro.Spec.treatments()
+      [:expression, :pattern, :binding_pattern, :skip]
+  """
   @spec treatments() :: [treatment()]
   def treatments, do: @treatments
 
@@ -78,6 +83,20 @@ defmodule Mutare.Macro.Spec do
   `ArgumentError` on a malformed entry. Purely syntactic — never reflects on the
   module — so a spec for a module that is not a dependency of the Mutare process
   (e.g. `Ecto.Query`) resolves without `Ecto` loaded.
+
+      iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, [:pattern])
+      %Mutare.Macro.Spec{module: [:Kernel], name: :match?, arity: 2, args: [:pattern]}
+
+      iex> # a 3-tuple-style entry uses arity :any; `:skip` leaves every arg raw
+      iex> Mutare.Macro.Spec.new(Ecto.Query, :from, :any, :skip)
+      %Mutare.Macro.Spec{module: [:Ecto, :Query], name: :from, arity: :any, args: :skip}
+
+      iex> # an Erlang-module atom is kept verbatim as the key
+      iex> Mutare.Macro.Spec.new(:binary, :match, 2, :expression).module
+      :binary
+
+      iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, :bogus)
+      ** (ArgumentError) macro arg treatment must be one of [:expression, :pattern, :binding_pattern, :skip] (or a list of them), got: :bogus
   """
   @spec new(term(), term(), term(), term()) :: t()
   def new(module, name, arity, args) do
@@ -92,6 +111,9 @@ defmodule Mutare.Macro.Spec do
   @doc """
   The lookup key `{module_key, name, arity}` — what `Mutare.Macros` keys its
   registry map on.
+
+      iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, [:pattern]) |> Mutare.Macro.Spec.key()
+      {[:Kernel], :match?, 2}
   """
   @spec key(t()) :: {module_key(), atom(), non_neg_integer() | :any}
   def key(%__MODULE__{module: module, name: name, arity: arity}), do: {module, name, arity}
@@ -100,6 +122,14 @@ defmodule Mutare.Macro.Spec do
   The per-position treatment list for a call of `count` visible arguments. A
   uniform-atom `args` repeats; a list `args` is padded with `:expression` (and
   truncated to `count`).
+
+      iex> # a uniform-atom treatment repeats for every argument
+      iex> Mutare.Macro.Spec.new(Ecto.Query, :from, :any, :skip) |> Mutare.Macro.Spec.routing(2)
+      [:skip, :skip]
+
+      iex> # a per-position list is padded with :expression for the trailing args
+      iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, [:pattern]) |> Mutare.Macro.Spec.routing(3)
+      [:pattern, :expression, :expression]
   """
   @spec routing(t(), non_neg_integer()) :: [treatment()]
   def routing(%__MODULE__{args: args}, count), do: expand_args(args, count)
@@ -116,6 +146,13 @@ defmodule Mutare.Macro.Spec do
       path as atoms (`[:Ecto, :Query]`, `[:Kernel]`);
     * an Erlang-module atom (`:binary`) → itself;
     * an already-normalized atom list (`[:Ecto, :Query]`) → itself.
+
+      iex> Mutare.Macro.Spec.normalize_module(Ecto.Query)
+      [:Ecto, :Query]
+      iex> Mutare.Macro.Spec.normalize_module(:binary)
+      :binary
+      iex> Mutare.Macro.Spec.normalize_module([:Ecto, :Query])
+      [:Ecto, :Query]
   """
   @spec normalize_module(term()) :: module_key()
   def normalize_module(module) when is_atom(module) do

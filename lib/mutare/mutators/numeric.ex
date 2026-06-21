@@ -107,7 +107,7 @@ defmodule Mutare.Mutators.Numeric do
   @impl Mutare.Mutator
   def mutate({fun, meta, args}, %{piped: piped?})
       when is_atom(fun) and is_list(args) do
-    eff_arity = Mutare.Mutator.effective_arity(args, piped?)
+    eff_arity = Mutare.Mutator.effective_arity(args, Mutare.Mutator.pipe_mode(piped?))
 
     # A bare `min`/`max`/`round`/… is the `Kernel` one *unless* it has been displaced by an
     # `import Kernel, except:/only:` (`Mutare.Transform.Imports`) — then it names another

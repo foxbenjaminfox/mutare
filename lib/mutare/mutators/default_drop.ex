@@ -70,7 +70,7 @@ defmodule Mutare.Mutators.DefaultDrop do
   def mutate(node, %{piped: piped?}) do
     case Calls.resolved_call(node) do
       {module, fun, args, rebuild} ->
-        eff_arity = Mutare.Mutator.effective_arity(args, piped?)
+        eff_arity = Mutare.Mutator.effective_arity(args, Mutare.Mutator.pipe_mode(piped?))
 
         case Map.fetch(@rules, {module, fun, eff_arity}) do
           {:ok, new_fun} ->
