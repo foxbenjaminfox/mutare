@@ -308,33 +308,92 @@ defmodule Mutare.Manifest do
   # The dispatch variable's name in *this* metamutant. Canonically `mutare_active`,
   # but `Mutare.Transform.Names` salts it (`mutare_active_0`, …) when the source
   # already uses that identifier, so the gates read e.g. `mutare_active_0 === <id>`.
-  # The name is one per file, so we recover it from the first generated construct
-  # that binds it — a lifted dispatcher's `<var> = :persistent_term.get(<key>, 0)`
-  # or a tupled-the-scrutinee `case`'s mutant-clause pattern `{<var>, <pat>}` — and
-  # fall back to the canonical name when there is none (then no gate exists, so the
+  # The name is one per file, so we recover it from generated code rather than assume
+  # the canonical one.
+  #
+  # The authoritative anchor is a **coverage record** (`Recorder.record_var/1`): every
+  # selector catch-all / lifted dispatcher carries `<var> == 0 and
+  # :persistent_term.get(:mutare_track, false) and …`, whose embedded internal
+  # `:mutare_track` read a target's own source cannot forge — so it names the real
+  # (possibly salted) dispatch variable unambiguously, present wherever a hoisted
+  # selector or gate uses it.
+  #
+  # A `<var> = :persistent_term.get(<key>, 0)` binding is a *weaker* anchor, because a
+  # target file can write that very shape itself: reading the same key into a variable
+  # of its own — even, pathologically, a reserved-family name like `mutare_active` —
+  # which then *masks* the real (now-salted) generated binding. So the binding/tupled
+  # anchors are only a family-filtered fallback for the (theoretical) shape lacking a
+  # record; the canonical name covers a file with neither (then no gate exists, so the
   # name is never consulted).
   defp active_var(ast) do
+    first_match(ast, &Recorder.record_var/1) ||
+      first_match(ast, &anchor_var/1) ||
+      Recorder.var_name()
+  end
+
+  # The first non-`nil` `recognize.(node)` over the tree, in prewalk order.
+  defp first_match(ast, recognize) do
     {_ast, found} =
       Macro.prewalk(ast, nil, fn
-        node, nil -> {node, anchor_var(node)}
+        node, nil -> {node, recognize.(node)}
         node, found -> {node, found}
       end)
 
-    found || Recorder.var_name()
+    found
   end
 
   # A generated construct that binds the dispatch variable, yielding its name:
   #   * a lifted dispatcher's `<var> = :persistent_term.get(<key>, 0)`
+  #   * a non-lifted function's `:do`-block prologue `<var> = :persistent_term.get(<key>, 0)`
   #   * a tupled-`case` clause whose pattern is `{<var>, <pat>}`
+  #
+  # The recovered name is kept only when it is in the *generated* dispatch-variable
+  # family (`dispatch_name/1`): `Metamutant.subject?/1` recognises the inline
+  # `:persistent_term` read by shape alone, but a target file may bind that same key
+  # into a variable of its own (`foo = :persistent_term.get(:mutare_active, 0)`), and
+  # that user assignment is shape-identical. Filtering by name lets the prewalk skip
+  # such a binding and keep searching for the real anchor.
   defp anchor_var({:=, _meta, [lhs, rhs]}) do
-    if Metamutant.subject?(rhs), do: var_atom(lhs)
+    if Metamutant.subject?(rhs), do: dispatch_name(var_atom(lhs))
   end
 
   defp anchor_var({:case, _meta, [subject, kw]}) do
-    if Metamutant.pattern_subject?(subject), do: tupled_clause_var(do_block(kw))
+    if Metamutant.pattern_subject?(subject), do: dispatch_name(tupled_clause_var(do_block(kw)))
   end
 
   defp anchor_var(_), do: nil
+
+  # Keep a candidate name only when it is in the generated dispatch-variable family
+  # — the canonical `Recorder.var_name()` (`mutare_active`) or a salted
+  # `mutare_active_<n>` (`Mutare.Transform.Names` appends `_0`, `_1`, … only when the
+  # source already binds the canonical name). A user variable that merely reads the
+  # same `:persistent_term` key (`foo = …`) carries a name outside this family, so
+  # returning `nil` for it makes the prewalk keep looking rather than lock onto user
+  # code — which would recover the wrong name (`:foo`) and then fail to recognise the
+  # real `case mutare_active do …` hoisted selector, leaving the in-place mutant
+  # without a region (a poison there would map to `[]` → recovery aborts).
+  defp dispatch_name(name) when is_atom(name) do
+    if generated_dispatch_name?(name), do: name
+  end
+
+  defp dispatch_name(_), do: nil
+
+  # The generated naming convention `Mutare.Transform.Names.salted/2` produces for the
+  # dispatch variable: the canonical base, or the base + `_` + a non-negative integer.
+  defp generated_dispatch_name?(name) do
+    base = Atom.to_string(Recorder.var_name())
+
+    case Atom.to_string(name) do
+      ^base ->
+        true
+
+      str ->
+        case String.split(str, base <> "_", parts: 2) do
+          ["", suffix] -> match?({_int, ""}, Integer.parse(suffix))
+          _ -> false
+        end
+    end
+  end
 
   defp tupled_clause_var(clauses) when is_list(clauses),
     do: Enum.find_value(clauses, &clause_tuple_var/1)

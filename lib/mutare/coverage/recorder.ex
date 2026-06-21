@@ -175,6 +175,48 @@ defmodule Mutare.Coverage.Recorder do
     {:and, [], [{:and, [], [active_zero, track_read]}, hit_call]}
   end
 
+  @doc """
+  The dispatch variable a coverage record reads — the inverse of `record_ast/2` — or
+  `nil` when `node` is not a coverage record.
+
+  A coverage record is `<var> == 0 and :persistent_term.get(<track_key>, false) and
+  <helper>.hit(<ids>)`, so its `<var>` is this metamutant's per-file (possibly salted)
+  dispatch name. The embedded `<track_key>` read (`:mutare_track`) is internal — a
+  target's own source can't forge it — so this is the *unambiguous* way to recover the
+  dispatch name from a rendered metamutant: it is uniform across the file (every record
+  reads the same name) and present wherever a hoisted selector or lifted gate uses the
+  variable. `Mutare.Manifest` recovers the name from it in preference to a `<var> =
+  :persistent_term.get(...)` binding, which a source file could itself write (with a
+  same-family name, masking the real salted one).
+
+  The `<helper>.hit(...)` arm is ignored — only the unforgeable `<track_key>` arm is
+  matched — so a self-hosting helper-module override does not affect recognition.
+  Tolerant of the `{:__block__, _, [literal]}` wrapping a literal-encoding re-parse
+  adds to the `0` / `<track_key>` literals.
+  """
+  @spec record_var(Macro.t()) :: atom() | nil
+  def record_var({:and, _, [{:and, _, [active_zero, track_read]}, _hit]}) do
+    if track_read?(track_read), do: active_zero_var(active_zero)
+  end
+
+  def record_var(_), do: nil
+
+  defp track_read?({{:., _, [mod, :get]}, _, [key | _]}),
+    do: unwrap(mod) == :persistent_term and unwrap(key) == @track_key
+
+  defp track_read?(_), do: false
+
+  defp active_zero_var({:==, _, [{var, _, ctx}, zero]})
+       when is_atom(var) and is_atom(ctx),
+       do: if(unwrap(zero) == 0, do: var)
+
+  defp active_zero_var(_), do: nil
+
+  # See through a literal-encoding re-parse's `{:__block__, _, [literal]}` wrapping;
+  # a bare literal passes through untouched.
+  defp unwrap({:__block__, _meta, [literal]}), do: literal
+  defp unwrap(other), do: other
+
   defp literal(value), do: {:__block__, [], [value]}
 
   # Build the ids list AST so `Sourceror.to_string` renders it as a list literal

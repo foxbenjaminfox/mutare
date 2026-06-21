@@ -129,6 +129,66 @@ defmodule Mutare.ManifestTest do
       assert Manifest.ids_at_line(manifest, line) == [poison.id]
     end
 
+    test "an in-place poison maps even when the source itself reads the selector key into a var" do
+      # Regression: `active_var/1` recovers the dispatch variable from the first
+      # `<var> = :persistent_term.get(<key>, 0)` it sees. A target file that binds the
+      # *same* key into a variable of its own (`foo = :persistent_term.get(...)`) is
+      # shape-identical to the generated prologue, so an earlier such binding made the
+      # walk recover `:foo` — and then fail to recognise the real `case mutare_active
+      # do …` hoisted selector, leaving the in-place mutant with no region. A poison
+      # there mapped to `[]` and recovery aborted. `active_var/1` now keeps only names
+      # in the generated dispatch-variable family, skipping the user binding.
+      src = """
+      defmodule Demo do
+        @uses_pt foo = :persistent_term.get(:mutare_active, 0)
+
+        def g(a, b), do: a + b
+      end
+      """
+
+      {meta, [site], _next} = Mutare.transform_string(src, mutators: [Mutare.Test.PoisonMutator])
+      manifest = Manifest.from_source(meta)
+
+      # the user binding really does precede the generated prologue / hoisted selector
+      assert line_of(meta, ~s(foo = :persistent_term.get)) <
+               line_of(meta, "case mutare_active do")
+
+      line = line_of(meta, "mutare_unbound_xyz")
+      assert Manifest.ids_at_line(manifest, line) == [site.id]
+    end
+
+    test "an in-place poison maps even when the source binds a *reserved-family* dispatch name" do
+      # The harder collision: the source binds the key into `mutare_active` itself — a
+      # reserved-family name. That *forces* the real generated binding to be salted
+      # (`mutare_active_0 = …`, the hoisted selector `case mutare_active_0 do`), yet the
+      # user's `mutare_active` binding is both family-named *and* earlier — so a name
+      # filter alone still locks onto it and misses the salted selector. The dispatch
+      # name is instead recovered from the unforgeable coverage record (`<var> == 0 and
+      # :persistent_term.get(:mutare_track, false) and …`), which names the real salted
+      # variable.
+      src = """
+      defmodule Demo do
+        @uses_pt mutare_active = :persistent_term.get(:mutare_active, 0)
+
+        def g(a, b), do: a + b
+      end
+      """
+
+      {meta, [site], _next} = Mutare.transform_string(src, mutators: [Mutare.Test.PoisonMutator])
+      manifest = Manifest.from_source(meta)
+
+      # the scenario is real: the source's `mutare_active` forced the generated binding
+      # to be salted, so the hoisted selector reads the salted name, not bare `mutare_active`
+      assert meta =~ "case mutare_active_0 do"
+      refute meta =~ ~r/\bcase mutare_active do/
+
+      assert line_of(meta, ~s(mutare_active = :persistent_term.get)) <
+               line_of(meta, "case mutare_active_0 do")
+
+      line = line_of(meta, "mutare_unbound_xyz")
+      assert Manifest.ids_at_line(manifest, line) == [site.id]
+    end
+
     test "a line with no generated code maps to nothing" do
       {meta, _sites, _next} = Mutare.transform_string(@lifted_src, mutators: @lifted_mutators)
       manifest = Manifest.from_source(meta)
