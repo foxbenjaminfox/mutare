@@ -2521,6 +2521,17 @@ written form — was `@moduledoc false`. A custom call-matching mutator that pat
 fixture `test/support/resolved_call_mutator.ex` matches `String.reverse` through both an alias and
 an import.
 
+**AST constructors exposed too.** `Mutare.AST` was `@moduledoc false`, yet it's what every
+literal-producing mutator needs — and CLAUDE.md *told authors to hand-roll* `{:__block__, [],
+[value]}`, which is wrong for strings (a bare `{:__block__, [], ["x"]}` renders as the charlist
+`~c"x"` — `literal/1` adds the `delimiter`). Now public: `literal/1`, the `sentinel_*` markers
+(so a custom survivor reads like a built-in one in reports), and the node predicates
+(`nil_literal?/1`, `key_atom/1`, `keyword_label?/1`, `empty_collection_literal?/1`). Also advertised
+`Mutare.Mutators.Conditional.boolean_op?/1` — the single "is this a boolean-valued operator"
+definition `ReturnValue`/`IfCondition` already reuse — so a custom mutator can skip a node
+`Conditional` already forces `true`/`false` rather than emit a duplicate. `test/mutare/ast_test.exs`
+doctests the public surface and locks the string→`~c"x"` trap.
+
 ### IfCondition — force an `if`/`unless`/`cond` condition `[done]`
 The "remove the decision" mutation for conditions, asked directly: *is each branch
 this condition gates actually exercised?* On by default (`:if_condition`).

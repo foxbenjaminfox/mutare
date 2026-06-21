@@ -1,9 +1,17 @@
 defmodule Mutare.AST do
-  @moduledoc false
+  @moduledoc """
+  Small constructors and predicates over the Sourceror AST — the rules about *how* a node
+  must be built live here rather than being re-derived in every mutator.
 
-  # Small shared constructors over the Sourceror AST representation, so the rules
-  # about *how* a node must be built live in one place rather than re-derived in
-  # every mutator.
+  Custom mutators (`Mutare.Mutator`) should use these instead of hand-rolling AST. In
+  particular `literal/1` encodes the **clean-meta rule**: Sourceror parses a literal as
+  `{:__block__, meta, [value]}` and renders it from a `:token`/`delimiter` cached in `meta`,
+  so a hand-built node gets this subtly wrong — reusing a parsed literal's meta re-renders the
+  *original* text even after you change the value (a silent equivalent no-op), and a bare
+  `{:__block__, [], ["x"]}` for a string renders as the *charlist* `~c"x"`. `literal/1` gets
+  both right. The `sentinel_*` helpers give the same survivor marker the built-in families use,
+  so a custom mutant reads consistently in reports.
+  """
 
   @doc """
   A scalar-literal node with clean (fresh) metadata.

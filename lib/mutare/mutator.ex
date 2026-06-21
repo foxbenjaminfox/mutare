@@ -35,6 +35,11 @@ defmodule Mutare.Mutator do
       *where the node sits*, not by the mutator. The same operator swap is used
       both ways.
 
+  Build literal replacements with `Mutare.AST.literal/1` (it gets the Sourceror clean-meta
+  rule right — a hand-built `{:__block__, [], ["x"]}` renders as the charlist `~c"x"`); see
+  `Mutare.AST` for the sentinels and node predicates. To match aliased/imported stdlib calls,
+  resolve with `Mutare.Transform.Calls.resolved_call/1`.
+
   ## Registering one
 
   List it under `:mutators` in `.mutare.exs` alongside (or instead of) the

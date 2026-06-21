@@ -865,10 +865,16 @@ the original operands; `name/0`). Register a built-in by adding a `family: Modul
 list custom modules directly under `:mutators` in `.mutare.exs`. Do **not** decide in-place vs
 lifted — placement is positional. `test/support/boolean_mutator.ex` is a working example.
 
-Remember the Sourceror **clean-meta** rule for literal-valued mutators: a literal parses as
-`{:__block__, meta, [value]}` and renders from a `:token` string in `meta`, so reusing the
-original meta would render the *original* text even after changing the value (a silent equivalent
-no-op). Emit replacements with fresh metadata (`{:__block__, [], [value]}`).
+Build literal replacements with **`Mutare.AST.literal/1`**, not by hand. It encodes the
+Sourceror **clean-meta** rule: a literal parses as `{:__block__, meta, [value]}` and renders
+from a `:token`/`delimiter` cached in `meta`, so reusing the original meta re-renders the
+*original* text even after you change the value (a silent equivalent no-op), and a bare
+`{:__block__, [], ["x"]}` for a string renders as the charlist `~c"x"`. `Mutare.AST.literal/1`
+gets both right; `Mutare.AST.sentinel_string/0`·`sentinel_atom/0`·`sentinel_alias/0` give the
+survivor marker the built-ins use; and `Mutare.AST` also carries node predicates
+(`nil_literal?/1`, `key_atom/1`, `empty_collection_literal?/1`). To skip emitting a mutant on a
+node `Conditional` already forces `true`/`false`, reuse `Mutare.Mutators.Conditional.boolean_op?/1`
+(as `ReturnValue`/`IfCondition` do).
 
 For a *structural head-pattern* mutator (restructuring a whole `def`/`defp` head — variable
 swaps, wildcards), `mutate/1` is `:skip` and you instead implement the optional callback
