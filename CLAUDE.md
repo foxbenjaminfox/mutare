@@ -379,7 +379,14 @@ contract between them is the whole game.
   (`:keep_sandbox`/`--keep-sandbox` — preserve the sandbox *and its `_build`* between runs and
   re-materialise via `sync/3`: rewrite a file only when its bytes change so unchanged files keep
   their mtime and mix's incremental compiler reuses `_build`; prune what's gone; never touch
-  `@excluded` dirs). For CI build caching; see `NOTES.md` for the cache pattern.
+  `@excluded` dirs). For CI build caching; see `NOTES.md` for the cache pattern. Either mode then
+  **seeds the dependencies' compiled `_build`** (`seed_dep_build/2`): `@excluded` keeps `_build`
+  out of the copy, so a fresh sandbox would otherwise recompile *every* test-env dep cold each run
+  (the deps are byte-identical to what the user already built — pure waste, often dominating the
+  one `mix compile`). It copies each `deps/`-named dir's `_build/test/lib/<dep>` (deps only —
+  *never* the mutated app, whose own beam must recompile from the metamutant, not silently win),
+  idempotently (skips deps already present, so a kept `_build` is untouched) and best-effort (a
+  dev-only or never-test-compiled dep is simply absent). See `NOTES.md` "Seed the deps' `_build`".
 - **`Mutare.Sandbox.Command`** — command execution against a materialized sandbox: `mix/4` and
   `timed_mix/4` spawn a fresh `mix` OS process with `MIX_ENV=test`/`MUTANT_UNDER_TEST` set. Owns the
   *run side* of the **exit-code contract** and decodes it into a typed

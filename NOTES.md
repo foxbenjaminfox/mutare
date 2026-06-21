@@ -165,6 +165,53 @@ and `record_ast/1`'s `0` were latently bare; now wrapped).
 - The design's open question stands: full source copy vs per-worker
   `MIX_BUILD_PATH` against one shared schema build — measure on a large umbrella.
 
+### Seed the deps' `_build` so "compile once" doesn't recompile deps `[done]`
+`@excluded` keeps `_build` out of the project copy, so a *fresh* sandbox's one
+`mix compile` rebuilt **every test-env dependency from scratch on every run** —
+even though their sources are copied byte-for-byte from a project the user already
+compiled (same `mix.lock`). Pure waste, and on a dep-heavy app (Phoenix/Ecto, or
+anything pulling a `only: [:dev, :test]` linter like `credo`) it *dominates* the
+compile-once step — exactly the cost the whole design exists to pay only once,
+silently re-paid per run. Measured on Mutare's own deps: a cold sandbox compile is
+~5.5 s, ~90 % of it dependencies (credo alone is 257 files); the app/metamutant
+itself is ~1.7 s. (This is the `mix compile` of the metamutant — distinct from the
+*scan*/transform-render cost tracked under "Scan is transform-bound".)
+
+**Fix (`Sandbox.seed_dep_build/2`):** after materialising the copy, copy each
+dependency's already-built dir (`_build/<env>/lib/<dep>`, i.e. `ebin` + its `.mix`
+manifest) from the original into the sandbox. mix gates dependency staleness on the
+**lock + manifest**, not per-source mtime — verified: the deps are *not* recompiled
+even though `File.cp_r!` bumps their mtimes (the asymmetry with app sources, which
+*do* recompile on an mtime bump, is why the `--keep-sandbox` notes warn about `cp`
+but this seed is safe). End-to-end through the real `prepare/3`: 5.5 s → ~1.7 s, with
+deps skipped and only the metamutant compiling.
+
+Three load-bearing choices:
+- **Deps only, never the mutated app(s).** We seed only the dirs named in the
+  original's `deps/` (umbrella in-project apps live under `apps/`, never `deps/`, so
+  this can't name a mutated app). Seeding an app's *own* original beam would risk it
+  silently winning over the freshly-written metamutant — mutation testing as a no-op,
+  the exact hazard `--keep-sandbox`'s `put_if_changed` guards. Leaving the app dir
+  **absent** forces mix to compile the metamutant. (`mix compile` re-consolidates
+  protocols after recompiling the app, so the seed needs no `consolidated` dir.)
+- **Idempotent + best-effort.** Runs in both modes but only fills in deps the sandbox
+  *lacks* (`not File.exists?(dst)`), so a `keep_sandbox` re-run's preserved `_build`
+  is untouched — it seeds only the first kept run and every fresh run. A dep with no
+  test-env artifact (`only: :dev` like `dialyxir`, or an original never compiled in
+  test) is simply absent and skipped; a project with no `_build`/`deps` at all (fresh
+  CI checkout) seeds nothing and falls back to a cold compile. Never an error.
+- **`@mix_env` ("test") must track `Mutare.Sandbox.Command`,** which sets
+  `MIX_ENV=test` on every sandbox `mix`; we seed `_build/test/lib`. We never seed
+  across envs (a `dev` artifact is not valid under a test compile).
+
+Not pursued (measured/considered, net-negative or low-value): disabling protocol
+consolidation (one compile saved vs every one of N per-mutant runs paying slower
+dispatch), and suppressing the mutant-induced compile warnings (`Mutare.Poison`
+scans that output to map errors → ids). The remaining compile long-pole is a single
+huge metamutant *module* compiling serially (Elixir parallelises across modules, not
+within one) — not easily splittable; the volume drivers are already tamed by
+per-clause lifting and `hoist_pipe` (see "lifting blowup").
+
 ### Umbrella support `[M5 / in progress]`
 Following the cargo-mutants precedent: **copy the whole umbrella, mutate a scoped
 subset of apps.** The whole tree travels to the sandbox so `in_umbrella` sibling

@@ -33,6 +33,12 @@ defmodule Mutare.Sandbox do
 
   @excluded ~w(_build .git .elixir_ls .lexical cover)
 
+  # The build environment every sandbox `mix` runs under — `Mutare.Sandbox.Command`
+  # sets `MIX_ENV=test` on every invocation, so the dependencies' compiled artifacts
+  # we seed (see `seed_dep_build/2`) live under `_build/test/lib`. Keep in sync with
+  # `Mutare.Sandbox.Command`.
+  @mix_env "test"
+
   # A sandbox is a throwaway copy we compile, mutate, and wipe. Before clearing a
   # directory we must be sure it is *ours* — not, say, a path `--sandbox` was
   # pointed at by mistake — so we never `rm_rf!` arbitrary user data. We take a
@@ -133,6 +139,12 @@ defmodule Mutare.Sandbox do
       write_coverage_helper(root, sandbox, options)
       inject_bootstrap(sandbox, options)
     end
+
+    # Avoid recompiling unchanged dependencies on the one `mix compile` by seeding
+    # their already-built artifacts from the original project. Runs for both modes
+    # but only fills in deps the sandbox doesn't already have, so a `keep_sandbox`
+    # re-run's preserved `_build` is left untouched (it seeds only the first run).
+    seed_dep_build(root, sandbox)
 
     sandbox
   end
@@ -310,6 +322,56 @@ defmodule Mutare.Sandbox do
   defp copy_project(root, sandbox) do
     for entry <- File.ls!(root), entry not in @excluded do
       File.cp_r!(Path.join(root, entry), Path.join(sandbox, entry))
+    end
+  end
+
+  # Seed the sandbox's `_build` with the dependencies' already-compiled artifacts
+  # from the original project, so the one `mix compile` doesn't rebuild every
+  # dependency from scratch.
+  #
+  # `@excluded` keeps `_build` out of the copy, so a fresh sandbox would otherwise
+  # recompile *all* test-env deps cold on every run — pure waste, since their
+  # sources are copied byte-for-byte from a project the user already compiled (same
+  # `mix.lock`). On a dependency-heavy app that cold rebuild dominates the whole
+  # "compile once" step (often seconds to minutes). We copy each dep's build dir
+  # (`ebin` + its `.mix` manifest), which is all mix needs to treat it as built: mix
+  # gates dependency staleness on the lock + manifest, *not* per-source mtime, so
+  # the copy's bumped mtimes don't provoke a rebuild (verified).
+  #
+  # Scoped deliberately to *dependencies*, never the mutated app(s): we copy only
+  # the dirs named in the original's `deps/`, so we never seed an app's own beam.
+  # An original app beam seeded over the metamutant could silently win and make
+  # mutation testing a no-op (the hazard `keep_sandbox` guards), whereas leaving the
+  # app dir absent forces mix to compile the freshly-written metamutant — what we
+  # want.
+  #
+  # Idempotent and best-effort: a dep already present in the sandbox (a
+  # `keep_sandbox` re-run's preserved `_build`) is skipped, and a dep with no
+  # compiled artifacts (`only: :dev`, or an original that was never compiled in the
+  # test env) is simply absent — falling back to a cold compile, never an error.
+  defp seed_dep_build(root, sandbox) do
+    deps_lib = Path.join([root, "_build", @mix_env, "lib"])
+
+    for dep <- dep_names(root),
+        src = Path.join(deps_lib, dep),
+        File.dir?(src),
+        dst = Path.join([sandbox, "_build", @mix_env, "lib", dep]),
+        not File.exists?(dst) do
+      File.mkdir_p!(Path.dirname(dst))
+      File.cp_r!(src, dst)
+    end
+
+    :ok
+  end
+
+  # Dependency names — the entries under the project's `deps/`, each a dep whose
+  # compiled output lives at `_build/<env>/lib/<name>`. Umbrella in-project apps
+  # live under `apps/`, never `deps/`, so this can never name a mutated app. A
+  # dependency-free project (no `deps/`) yields none.
+  defp dep_names(root) do
+    case File.ls(Path.join(root, "deps")) do
+      {:ok, entries} -> entries
+      {:error, _} -> []
     end
   end
 

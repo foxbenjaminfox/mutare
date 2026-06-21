@@ -277,6 +277,77 @@ defmodule Mutare.SandboxTest do
     end
   end
 
+  describe "dependency build seeding" do
+    test "seeds a dependency's compiled build into the sandbox", context do
+      seed_dep(context.project, "dep_a")
+      sandbox = Path.join(context.base, "sandbox")
+
+      assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+
+      assert File.read!(Path.join(sandbox, "_build/test/lib/dep_a/ebin/dep_a.app")) ==
+               "{application, dep_a, []}."
+    end
+
+    test "seeds only deps/ entries, never the app's own build", context do
+      # A real dependency (under deps/) and an app build dir that is *not* a dep
+      # (e.g. the project's own app, or an umbrella app under apps/).
+      seed_dep(context.project, "dep_a")
+      app_ebin = Path.join([context.project, "_build/test/lib/app_self/ebin"])
+      File.mkdir_p!(app_ebin)
+      File.write!(Path.join(app_ebin, "app_self.app"), "{application, app_self, []}.")
+
+      sandbox = Path.join(context.base, "sandbox")
+      assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+
+      # The dep is seeded; the app's own build is left out so mix must (re)compile
+      # the metamutant rather than risk serving a stale original beam.
+      assert File.exists?(Path.join(sandbox, "_build/test/lib/dep_a/ebin/dep_a.app"))
+      refute File.exists?(Path.join(sandbox, "_build/test/lib/app_self"))
+    end
+
+    test "skips a dependency with no compiled artifacts (dev-only / uncompiled)", context do
+      # Listed under deps/ but never built in the test env — nothing to seed, no crash.
+      File.mkdir_p!(Path.join([context.project, "deps", "dev_only"]))
+      sandbox = Path.join(context.base, "sandbox")
+
+      assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+      refute File.exists?(Path.join(sandbox, "_build/test/lib/dev_only"))
+    end
+
+    test "a dependency-free project (no deps/) seeds nothing and still prepares", context do
+      sandbox = Path.join(context.base, "sandbox")
+
+      assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+      refute File.exists?(Path.join(sandbox, "_build"))
+    end
+
+    test "keep_sandbox: does not clobber a dep build already in the sandbox", context do
+      seed_dep(context.project, "dep_a")
+      sandbox = Path.join(context.base, "sandbox")
+
+      # First kept run seeds the dep (the sandbox starts with no `_build`).
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+      seeded = Path.join(sandbox, "_build/test/lib/dep_a/ebin/dep_a.app")
+      assert File.exists?(seeded)
+
+      # Simulate the sandbox having recompiled the dep itself (newer artifact).
+      File.write!(seeded, "{application, dep_a, [recompiled]}.")
+
+      # A second kept run must leave the preserved build alone (idempotent seed).
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+      assert File.read!(seeded) == "{application, dep_a, [recompiled]}."
+    end
+  end
+
+  # Lay down a fake dependency: a `deps/<name>` source dir and its compiled
+  # artifact under the project's `_build/test/lib/<name>`, the way mix would.
+  defp seed_dep(project, name) do
+    File.mkdir_p!(Path.join([project, "deps", name]))
+    ebin = Path.join([project, "_build/test/lib", name, "ebin"])
+    File.mkdir_p!(ebin)
+    File.write!(Path.join(ebin, "#{name}.app"), "{application, #{name}, []}.")
+  end
+
   defp assert_refused(root, sandbox, schema) do
     error =
       assert_raise ArgumentError, fn ->
