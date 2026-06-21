@@ -1529,6 +1529,51 @@ near-identical copies for N guard mutants. Both are fixed:
   node}` items (run chunking, non-consecutive detection + the warning), and owns
   `clause_signature/1`. `Transform.emit_module_plan/2` walks the items in order.
 
+### Analyze split — candidate-builders out of the descent `[refactor, done]`
+`Mutare.Transform.Analyze` had grown to ~2000 lines — the clear outlier in an
+otherwise 40–450-line directory. The split was warranted **only for a specific
+subset**, decided by coupling, not by line count: the test is whether a section
+participates in the recursive `analyze/3` descent (called ~80× across the file)
+or merely *builds candidates* the descent hands off to.
+
+- **What stays (the core, ~1830 lines).** The `analyze/3` dispatch and the
+  helpers that recurse constantly — redundancy suppression, known-macro routing,
+  call-option keys, bitstring/spec/sigil — *are* the recursive walk. Pulling any
+  of them out would create a thick two-way cycle (each calls `analyze`/`offer`/
+  `recurse` a dozen+ times) for no gain. So the core can't drop below ~1000 lines,
+  and chasing that would be cosmetic. The core is now one honest unit: the descent
+  plus its inseparable helpers.
+- **`Analyze.Returns`** (return-value mutation, ~150 lines). The clean win: it
+  builds `Candidate.Return`s for each return-path tail and **never recurses back**
+  (no `analyze`/`offer`/`recurse`), so the dependency is strictly one-way
+  (Analyze → Returns), no cycle. It classifies its own return-path keys
+  (`[:rescue, :catch, :else]`, fixed Elixir semantics) rather than reaching back —
+  `Mutare.AST` documents that `Analyze` owns the *canonical* block-key set, and the
+  core keeps its own `do_key?`/`clause_block_key?` for clause-block routing
+  (`normalize_clause_blocks/1`, `analyze_do_blocks/2`), so the two classify the
+  same atoms independently with no shared source to drift.
+- **`Analyze.ClausePatterns`** (`case`/`receive`/`fn`/`try`-rescue clause-pattern
+  builders, ~450 lines — the single biggest section). Dominated by `Tag` /
+  `PatternStructure` machinery, it touches the descent only through **three**
+  callbacks, all in `attach_clause_pattern_candidates/4`: it analyzes a
+  `receive`/`fn`/`try` node normally before attaching its clause candidates. Those
+  three (`recurse/3`, `build_candidates/2`, `put_candidates/2`) were promoted from
+  `defp` to a small **public sub-walk API** on `Analyze` (documented as such); the
+  resulting Analyze ↔ ClausePatterns cycle is a thin, idiomatic child→parent call,
+  not the heavy descent entanglement that kept the core sections home. The descent
+  routes `case` (→ `case_clause_candidates/2` + `put_case_candidates/2`),
+  `receive`/`fn` (→ `receive_do_clauses/2` + `attach_clause_pattern_candidates/4`),
+  and `try`/`def…rescue` (→ `rescue_type_candidates/3`) into it.
+
+The axis is **by kind of candidate built**, mirroring the sibling modules already
+outside `analyze.ex` (`Tag`, `PatternStructure`, `FunctionPlan`) — not by chopping
+the recursion. The condition analysis (`if`/`unless`/`cond`) and the `=`-match /
+binding-escaping-macro pattern-structure sections are the same shape and could
+follow, but were **left in place**: condition analysis is small and tied to the
+`if`/`unless`/`cond` dispatch clauses, and the two pattern-structure sections share
+helpers (`pattern_export`/`export_tuple`/`strip_comments`) that bind them together
+more than to anything extractable today.
+
 ### Function lifting (M2): sharp edges `[various]`
 - **Recursion bounces through the dispatcher.** A self-call inside a lifted copy
   hits the public dispatcher and re-dispatches — correct, LCO survives, but ~2×
