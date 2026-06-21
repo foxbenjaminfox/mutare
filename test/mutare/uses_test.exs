@@ -198,6 +198,84 @@ defmodule Mutare.UsesTest do
     end
   end
 
+  describe "aliased `use` targets" do
+    test "an aliased target is resolved to the real module before expansion" do
+      source = """
+      defmodule UsesAliasedTarget do
+        alias Mutare.Test.ControllerUsing, as: Ctrl
+        use Ctrl
+      end
+      """
+
+      # `use Ctrl` expands `Mutare.Test.ControllerUsing` (the alias target), not a literal `Ctrl`
+      # (which isn't loadable — the old, unresolved behaviour degraded to no directives here).
+      assert "import Enum, only: [reject: 2]" in Enum.map(
+               directives_at(source),
+               &Macro.to_string/1
+             )
+    end
+
+    test "the real target wins over a same-named loadable decoy" do
+      source = """
+      defmodule UsesAliasedDecoy do
+        alias Mutare.Test.ControllerUsing, as: MutareUseAliasDecoy
+        use MutareUseAliasDecoy
+      end
+      """
+
+      rendered = Enum.map(directives_at(source), &Macro.to_string/1)
+
+      # The compiler would expand `ControllerUsing.__using__` (the alias target); without
+      # resolution we'd wrongly expand the loadable same-named `MutareUseAliasDecoy` instead.
+      assert "import Enum, only: [reject: 2]" in rendered
+      refute "import Enum, only: [filter: 2]" in rendered
+    end
+
+    test "an alias does not leak to a `use` written above it" do
+      source = """
+      defmodule UseBeforeAlias do
+        use Ctrl
+        alias Mutare.Test.ControllerUsing, as: Ctrl
+      end
+      """
+
+      # `use Ctrl` precedes the alias, so `Ctrl` is unresolved (and unloadable) ⇒ no directives.
+      assert directives_at(source) == []
+    end
+  end
+
+  describe "nested-module naming (caller passed to `__using__`)" do
+    test "a nested `Elixir.*` head is treated as absolute, not prefixed by the parent" do
+      source = """
+      defmodule Outer do
+        defmodule Elixir.MutareCallerBar do
+          use Mutare.Test.CallerProbe
+        end
+      end
+      """
+
+      # `defmodule Elixir.MutareCallerBar` defines the absolute `MutareCallerBar`, so the caller
+      # passed to `__using__` is `MutareCallerBar` — never `Outer.Elixir.MutareCallerBar`.
+      assert Enum.map(directives_at(source), &Macro.to_string/1) == [
+               "alias MutareCallerBar, as: TheCaller"
+             ]
+    end
+
+    test "an ordinary nested module is prefixed by its parent (regression guard)" do
+      source = """
+      defmodule OuterReg do
+        defmodule Inner do
+          use Mutare.Test.CallerProbe
+        end
+      end
+      """
+
+      assert Enum.map(directives_at(source), &Macro.to_string/1) == [
+               "alias OuterReg.Inner, as: TheCaller"
+             ]
+    end
+  end
+
   describe "resolution through the injected directives" do
     test "an injected import makes a bare stdlib call resolve" do
       source = """

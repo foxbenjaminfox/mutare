@@ -42,13 +42,23 @@ defmodule Mutare.Transform.Uses do
   # (`Sourceror.parse_string!(Macro.to_string(d))`), so it arrives indistinguishable from a
   # textual directive and `Aliases`/`Imports`/`Calls` need no new clauses. Live reflection then
   # resolves `field`/`schema` against the real module and the `:skip` routing fires.
+  #
+  # ## Why the `use` target is alias-resolved
+  #
+  # `use Foo` may name an *aliased* module (`alias RealUse, as: Foo; use Foo`), in which case the
+  # compiler expands `RealUse.__using__`, not `Foo.__using__`. So the walk folds a lexically-scoped
+  # alias env (reusing `Aliases.register/2` + `resolve_path/2`, the very rules `Resolve` uses for
+  # `import`) and resolves each `use` target through it before expanding — otherwise an unrelated
+  # but loadable `Foo` would be expanded and its directives stamped as the wrong module.
+
+  alias Mutare.Transform.Aliases
 
   @directives_key :mutare_use_directives
   @max_depth 16
 
   # The module name of a nested `defmodule` we couldn't resolve to a concrete atom (a non-static
   # head, or a child of an already-unresolved parent). Expansion is *skipped* under it — see
-  # `child_module/2` and `stamp/2`.
+  # `child_module/2` and `stamp/3`.
   @unresolved :__mutare_unresolved__
 
   @doc """
@@ -57,7 +67,7 @@ defmodule Mutare.Transform.Uses do
   nested `use`s). A `use` that can't be expanded is left untouched.
   """
   @spec annotate(Macro.t()) :: Macro.t()
-  def annotate(ast), do: walk(ast, nil)
+  def annotate(ast), do: walk(ast, nil, %{})
 
   @doc """
   The harvested directives stamped on a `use` node's meta, or `[]` for any other node. The
@@ -70,49 +80,62 @@ defmodule Mutare.Transform.Uses do
   # --- the module-tracking walk ----------------------------------------------
   #
   # `Resolve` deliberately doesn't track the enclosing module, but expansion needs it (for a
-  # faithful `__CALLER__.module`), so `Uses` runs its own small walk. Only a `use` that is a
-  # **direct module-body statement** is stamped — a `use` nested in a `def` is data / invalid,
-  # never a module-level directive, so it is descended without stamping.
+  # faithful `__CALLER__.module`), so `Uses` runs its own small walk. It also threads a
+  # lexically-scoped **alias env** (`Aliases.register/2`, folded left-to-right over a module body
+  # so a `use` sees only the aliases declared *before* it; nested scopes inherit, a child's
+  # additions don't leak) so an aliased `use` target resolves to the real module. Only a `use`
+  # that is a **direct module-body statement** is stamped — a `use` nested in a `def` is data /
+  # invalid, never a module-level directive, so it is descended without stamping.
 
-  defp walk({:defmodule, meta, [mod_ast, [{do_key, body}]]}, module) do
+  defp walk({:defmodule, meta, [mod_ast, [{do_key, body}]]}, module, env) do
     child = child_module(mod_ast, module)
-    {:defmodule, meta, [mod_ast, [{do_key, walk_body(body, child)}]]}
+    {:defmodule, meta, [mod_ast, [{do_key, walk_body(body, child, env)}]]}
   end
 
   # A `quote` block is quoted *data*: a `defmodule … do use Foo end` inside it is only realised
   # if/when the quote is later expanded in some caller's context — it is not a module-level
   # directive of *this* program. Descending would invoke `Foo.__using__` during the scan in the
   # wrong caller context (and could harvest invalid directives), so we stop at quoted contexts.
-  defp walk({:quote, _meta, _args} = node, _module), do: node
+  defp walk({:quote, _meta, _args} = node, _module, _env), do: node
 
-  defp walk({form, meta, args}, module) when is_list(args),
-    do: {form, meta, Enum.map(args, &walk(&1, module))}
+  defp walk({form, meta, args}, module, env) when is_list(args),
+    do: {form, meta, Enum.map(args, &walk(&1, module, env))}
 
-  defp walk({left, right}, module), do: {walk(left, module), walk(right, module)}
-  defp walk(list, module) when is_list(list), do: Enum.map(list, &walk(&1, module))
-  defp walk(other, _module), do: other
+  defp walk({left, right}, module, env), do: {walk(left, module, env), walk(right, module, env)}
+  defp walk(list, module, env) when is_list(list), do: Enum.map(list, &walk(&1, module, env))
+  defp walk(other, _module, _env), do: other
 
-  # A module body: its direct statements are module-level. A `use` here is stamped; everything
-  # else is descended via `walk/2` (to reach nested `defmodule`s).
-  defp walk_body({:__block__, meta, stmts}, module),
-    do: {:__block__, meta, Enum.map(stmts, &walk_stmt(&1, module))}
+  # A module body: its direct statements are module-level. The alias env is folded left-to-right
+  # (so a `use` resolves against the aliases declared above it). A `use` is stamped; everything
+  # else is descended via `walk/3` (to reach nested `defmodule`s).
+  defp walk_body({:__block__, meta, stmts}, module, env) do
+    {walked, _env} =
+      Enum.map_reduce(stmts, env, fn stmt, env ->
+        {walk_stmt(stmt, module, env), Aliases.register(stmt, env)}
+      end)
 
-  defp walk_body(stmt, module), do: walk_stmt(stmt, module)
+    {:__block__, meta, walked}
+  end
 
-  defp walk_stmt({:use, _meta, _args} = node, module), do: stamp(node, module)
-  defp walk_stmt(stmt, module), do: walk(stmt, module)
+  defp walk_body(stmt, module, env), do: walk_stmt(stmt, module, env)
+
+  defp walk_stmt({:use, _meta, _args} = node, module, env), do: stamp(node, module, env)
+  defp walk_stmt(stmt, module, env), do: walk(stmt, module, env)
 
   # The full module name of a nested `defmodule`, best-effort: Elixir prepends the enclosing
   # module to a nested alias. A non-static head (`__MODULE__.Child`, `unquote(mod)`, a
   # `Module.concat(…)` call) can't be resolved to a concrete module, so it yields `@unresolved`
-  # and expansion is **skipped** inside that module (see `stamp/2`) rather than run with the wrong
+  # and expansion is **skipped** inside that module (see `stamp/3`) rather than run with the wrong
   # `__CALLER__.module` — a `__using__` that derives imports/aliases from `__CALLER__.module`
   # would otherwise stamp directives for the *parent's* namespace. The sentinel propagates inward
-  # (an unresolved parent ⇒ unresolved child). A bare-atom head (`defmodule :foo`) is itself a
-  # concrete module — atoms aren't namespaced — so it resolves to that atom.
+  # (an unresolved parent ⇒ unresolved child). A leading `Elixir` segment (`defmodule Elixir.Bar`)
+  # is the **absolute** escape — it defines `Bar`, never `Parent.Elixir.Bar` — so it is not
+  # prefixed. A bare-atom head (`defmodule :foo`) is itself a concrete module — atoms aren't
+  # namespaced — so it resolves to that atom.
   defp child_module({:__aliases__, _, path}, parent) when is_list(path) do
     cond do
       not Enum.all?(path, &is_atom/1) -> @unresolved
+      match?([:"Elixir" | _], path) -> Module.concat(path)
       parent == @unresolved -> @unresolved
       parent == nil -> Module.concat(path)
       true -> Module.concat([parent | path])
@@ -128,17 +151,17 @@ defmodule Mutare.Transform.Uses do
   # any expansion failure degrades to `[]` (the current, unresolved behaviour). A `use` inside a
   # module whose name we couldn't resolve is left unexpanded — expanding it would run `__using__`
   # with the wrong (parent) caller module.
-  defp stamp(node, @unresolved), do: node
+  defp stamp(node, @unresolved, _env), do: node
 
-  defp stamp({:use, meta, args} = node, module) do
-    case harvest(node, module) do
+  defp stamp({:use, meta, args} = node, module, env) do
+    case harvest(node, module, env) do
       [] -> node
       directives -> {:use, [{@directives_key, directives} | meta], args}
     end
   end
 
-  defp harvest(sourceror_use_node, caller_module) do
-    with {:ok, mod, opts} <- standardize(sourceror_use_node),
+  defp harvest(sourceror_use_node, caller_module, env) do
+    with {:ok, mod, opts} <- standardize(sourceror_use_node, env),
          true <- Code.ensure_loaded?(mod) do
       mod
       |> expand_and_collect(opts, caller_module, 0, MapSet.new())
@@ -156,16 +179,18 @@ defmodule Mutare.Transform.Uses do
   # Sourceror `use` node → `{:ok, module_atom, opts_literal}` (standard quoted), or `:error`.
   # The Sourceror→standard round-trip strips block-wrapping so `__using__` receives the real
   # term (`:controller`, not `{:__block__, [], [:controller]}`); it is also where the static
-  # gate runs, since `Macro.quoted_literal?` is false on Sourceror block-wrapping.
-  defp standardize(sourceror_use_node) do
+  # gate runs, since `Macro.quoted_literal?` is false on Sourceror block-wrapping. The module is
+  # resolved through `env` so an aliased target (`alias RealUse, as: Foo; use Foo`) expands the
+  # real module.
+  defp standardize(sourceror_use_node, env) do
     {:use, _, args} = Code.string_to_quoted!(Sourceror.to_string(sourceror_use_node))
-    use_args(args)
+    use_args(args, env)
   end
 
   # `[module | rest]` (standard quoted) → `{:ok, module_atom, opts}` with the literal gate, or
   # `:error`. A `use` takes a module and at most one opts argument.
-  defp use_args([mod_ast | rest]) do
-    with mod when is_atom(mod) <- module_atom(mod_ast),
+  defp use_args([mod_ast | rest], env) do
+    with mod when is_atom(mod) <- module_atom(mod_ast, env),
          {:ok, opts} <- use_opts(rest) do
       {:ok, mod, opts}
     else
@@ -173,19 +198,27 @@ defmodule Mutare.Transform.Uses do
     end
   end
 
-  defp use_args(_args), do: :error
+  defp use_args(_args, _env), do: :error
 
   defp use_opts([]), do: {:ok, []}
   defp use_opts([opts]), do: if(Macro.quoted_literal?(opts), do: {:ok, opts}, else: :error)
   defp use_opts(_rest), do: :error
 
-  # A standard-quoted module reference → its concrete atom, or `nil`. An `__aliases__` with a
-  # non-static segment (an aliased `use Web` we can't resolve) yields `nil` → degrade.
-  defp module_atom({:__aliases__, _, path}) when is_list(path),
-    do: if(Enum.all?(path, &is_atom/1), do: Module.concat(path), else: nil)
+  # A standard-quoted module reference → its concrete atom, or `nil`. The path is resolved through
+  # the lexical alias env first (`Aliases.resolve_path/2`), so an aliased target binds to the real
+  # module (a list path → `Module.concat`; an Erlang-atom binding stays the atom). An `__aliases__`
+  # with a non-static segment (an aliased `use Web` we can't resolve) yields `nil` → degrade.
+  defp module_atom({:__aliases__, _, path}, env) when is_list(path) do
+    if Enum.all?(path, &is_atom/1),
+      do: path |> Aliases.resolve_path(env) |> to_module(),
+      else: nil
+  end
 
-  defp module_atom(atom) when is_atom(atom), do: atom
-  defp module_atom(_other), do: nil
+  defp module_atom(atom, _env) when is_atom(atom), do: atom
+  defp module_atom(_other, _env), do: nil
+
+  defp to_module(path) when is_list(path), do: Module.concat(path)
+  defp to_module(atom) when is_atom(atom), do: atom
 
   # Expand `mod.__using__(opts)` and collect the directives in its body, recursing through
   # nested `use`s. Bounded by depth and a `seen` set so a `use`-cycle terminates.
@@ -227,8 +260,10 @@ defmodule Mutare.Transform.Uses do
     end
   end
 
+  # A nested `use` harvested from an *expanded* `__using__` body: it is standard-quoted with a
+  # fully-qualified module, so there is no source-level alias scope to resolve against (`%{}`).
   defp collect({:use, _, args}, caller, depth, seen) do
-    case use_args(args) do
+    case use_args(args, %{}) do
       {:ok, mod, opts} ->
         if Code.ensure_loaded?(mod),
           do: expand_and_collect(mod, opts, caller, depth, seen),

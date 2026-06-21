@@ -35,6 +35,31 @@ defmodule Mutare.Test.NestedUsing do
   end
 end
 
+defmodule MutareUseAliasDecoy do
+  @moduledoc """
+  A **same-named decoy** for the aliased-`use`-target test: it lives at the bare top-level segment
+  `MutareUseAliasDecoy`, so an `alias Mutare.Test.ControllerUsing, as: MutareUseAliasDecoy; use
+  MutareUseAliasDecoy` would expand *this* module if the target weren't alias-resolved. It injects a
+  directive (`import Enum, only: [filter: 2]`) distinct from `ControllerUsing`'s, so the test can
+  tell which module was actually expanded.
+  """
+  defmacro __using__(_opts) do
+    quote do: import(Enum, only: [filter: 2])
+  end
+end
+
+defmodule Mutare.Test.CallerProbe do
+  @moduledoc """
+  A `__using__` that derives its injected `alias` from `__CALLER__.module`, so the harvested
+  directive *reveals* the caller module `Mutare.Transform.Uses` passed — the observation vehicle for
+  the nested-module naming tests (`Elixir.*` absolute heads, ordinary nesting).
+  """
+  defmacro __using__(_opts) do
+    caller = __CALLER__.module
+    quote do: alias(unquote(caller), as: TheCaller)
+  end
+end
+
 defmodule Mutare.Test.RaisingUsing do
   @moduledoc "A `__using__` that raises at expansion — must degrade to no directives, never crash."
   defmacro __using__(_opts), do: raise("boom from __using__")
