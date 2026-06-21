@@ -92,8 +92,11 @@ defmodule Mutare.CasePatternTest do
     site.id
   end
 
-  defp selector_tuple(subject),
-    do: "case {:persistent_term.get(#{inspect(Selector.key())}, 0), #{subject}}"
+  # The per-site active-id read is hoisted, so a tupled-case subject reads the bound
+  # `mutare_active` variable, not the inline persistent_term read. The variable name
+  # (unlike the persistent_term key) is independent of `Selector.suite_key/0`, so this
+  # holds under dogfooding.
+  defp selector_tuple(subject), do: "case {mutare_active, #{subject}}"
 
   test "case clause-pattern/guard mutants are delivered in place via tuple-the-scrutinee", %{
     sites: sites,

@@ -79,7 +79,10 @@ defmodule Mutare.ManifestTest do
       manifest = Manifest.from_source(meta)
 
       assert length(sites) > 1
-      case_line = line_of(meta, "persistent_term.get")
+      # The per-site read is hoisted, so the in-place selector's subject is the bound
+      # `mutare_active` variable (`case mutare_active do`), not the inline persistent_term
+      # read (which now sits on the prologue line above).
+      case_line = line_of(meta, "case mutare_active do")
 
       assert Enum.sort(Manifest.ids_at_line(manifest, case_line)) ==
                Enum.sort(Enum.map(sites, & &1.id))

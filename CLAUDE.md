@@ -332,7 +332,26 @@ contract between them is the whole game.
     `String.equivalent?/2` → `==` rewrite is covering-but-inert — its `.`-node nid matches no
     candidate), so the prune runs only on subtrees with a mode/unit swap or that rewrite.
   - **in-place selector** for body expressions: wrap the operator in a tail-position
-    `case :persistent_term.get(:mutare_active, 0) do <id> -> mutated; _ -> original end`. One
+    `case <subject> do <id> -> mutated; <var> -> <record>; original end`. The `<subject>` is the
+    **hoisted active-id read** (`Transform.selector_subject/1`): when `mutare_active` is already bound
+    in scope (`Ctx.active_bound`) the subject is the bare variable — read once per function activation
+    and reused — else the self-contained `:persistent_term.get(:mutare_active, 0)`. It is bound in two
+    places, set by the head/body-split clause emitter (`emit_clause/3`): a **lifted base clause** (the
+    dispatcher threads it as the first parameter, in scope in the whole body) and a **non-lifted
+    function's `:do` block** (a once-per-call prologue `mutare_active = :persistent_term.get(...)`,
+    added only when the block splices a hoisted selector — else it would warn unused). A head's
+    **default values** keep the inline read (they run in a generated head clause `f() → f(<default>)`,
+    out of any binding's scope — lifted defaults also ride onto the dispatcher head, the same
+    out-of-scope spot), as do a non-lifted clause's `rescue`/`catch`/`else`/`after` blocks (siblings of
+    `:do`, not inside its prologue's scope), module-level / `:scaffold` selectors (no function-emit
+    hook; baseline-only), and a selector inside a **runtime `defmodule`** in a function body — a new
+    module scope whose inner `def` can't see the outer binding (`emit/2` tracks `Ctx.module_depth` as
+    a `Macro.traverse` descends a `defmodule`/`defimpl`/`defprotocol`, gating the hoisted form on
+    depth 0; `references_var?/2` likewise prunes those subtrees so the outer prologue isn't added for
+    a reference that lives in the nested module). The head/body split preserves id ordering, so Sites/coverage/poison ids are
+    unchanged. The active id is process-constant (`:persistent_term`, write-once per run), so the
+    hoisted read is semantically identical and a win on compile *and* runtime — see NOTES "Hoist the
+    per-site active-id read". One
     illegal spot for that `case`: the RHS of a pipe (`x |> case … end` parses but won't compile —
     `|>` can't pipe into a `case`), so when the mutated node is a **pipe stage** emission lifts the
     selector out of the pipe into a **one-shot closure on the piped value** (`hoist_pipe/2`, run on
@@ -409,8 +428,15 @@ contract between them is the whole game.
   head — and a whole-`case` fallback) that **Poison** maps a compile error back to a mutant id with.
   Built **lazily** by `Poison` from the stored metamutant, via the fast `Code.string_to_quoted!`
   parse (not `Sourceror.parse_string!` — same token metadata `get_range/1` reads, far faster on a big
-  file). `Mutare.Metamutant` owns the selector-subject AST and the `subject?/1` / `pattern_subject?/1`
-  recognizers this walk uses (the latter spots a tuple-the-scrutinee `case`). (Coverage no longer
+  file). `Mutare.Metamutant` owns the selector-subject AST and the `subject?/2` / `pattern_subject?/2`
+  recognizers this walk uses (the latter spots a tuple-the-scrutinee `case`). Because the active-id
+  read is **hoisted** (a body selector's subject is the bare `mutare_active` variable, not the inline
+  `:persistent_term.get`), the recognizers are **var-aware**: `Manifest.active_var/1` recovers the
+  per-file (possibly salted) dispatch name once — off the first generated `<var> = :persistent_term.get`
+  binding (a dispatcher's or a non-lifted `:do`-block prologue's) or a tupled-`case` `{<var>, <pat>}`
+  pattern — and threads it into **both** the subject recognizers and the gate matcher (`gate_id/2`), so a
+  hoisted selector is recognised and a user `case` never is (the dispatch name is salted away from every
+  source identifier, so it can't equal a user scrutinee). (Coverage no longer
   lives here — the metamutant self-records it at runtime, keyed by mutant id, so there is no
   `{module, line}` location to precompute.)
 - **`Mutare.Sandbox`** — workspace materialization. Copies the target project to a temp dir and

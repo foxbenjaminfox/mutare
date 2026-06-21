@@ -51,7 +51,7 @@ defmodule Mutare.Manifest do
   Ranges are in **metamutant line space**, which only exists after rendering, so
   the manifest is built by re-parsing the rendered metamutant and ranging its
   generated nodes with `Sourceror.get_range/1`, recognising selectors via
-  `Mutare.Metamutant.subject?/1`.
+  `Mutare.Metamutant.subject?/2`.
 
   The re-parse uses Elixir's own `Code.string_to_quoted!` (with `:token_metadata`
   + `:columns`), **not** `Sourceror.parse_string!`. `get_range/1` only needs that
@@ -108,7 +108,7 @@ defmodule Mutare.Manifest do
   # everything it reads, far faster than `Sourceror.parse_string!` (whose extra
   # comment-merging pass is quadratic on a megabyte-scale lifted file). The
   # `:literal_encoder` mirrors Sourceror's `{:__block__, meta, [literal]}` wrapping
-  # so the recognisers (`Metamutant.subject?/1`, `clause_id/1`, `AST.key_atom/1`) see
+  # so the recognisers (`Metamutant.subject?/2`, `clause_id/1`, `AST.key_atom/1`) see
   # the shape they already handle — the two parses produce identical ranges.
   defp parse(source) do
     Code.string_to_quoted!(source,
@@ -155,12 +155,21 @@ defmodule Mutare.Manifest do
   #     mutant clause range.
   #
   # Both add a whole-`case` fallback (every id the `case` hosts) as a coarse backstop.
+  #
+  # A selector's subject is either the inline `:persistent_term` read or — once the read
+  # is hoisted (a selector inside a function body) — a bare reference to the dispatch
+  # variable. The (per-file, possibly salted) variable name is recovered once from the
+  # metamutant (`active_var/1`) and threaded in, so both the subject recognisers (a
+  # hoisted bare-variable subject) and the tupled-clause gate matcher (`pattern_mutant`)
+  # see it. A user `case some_var do …` is never mistaken for a selector: the dispatch
+  # name is salted away from every identifier the source uses, so it can't equal a user
+  # scrutinee's name.
   defp enter({:case, _meta, [subject, kw]} = node, regions, var) do
     cond do
-      Metamutant.subject?(subject) ->
+      Metamutant.subject?(subject, var) ->
         {node, record_case(do_block(kw), node, regions, &selector_mutant/1)}
 
-      Metamutant.pattern_subject?(subject) ->
+      Metamutant.pattern_subject?(subject, var) ->
         {node, record_case(do_block(kw), node, regions, &pattern_mutant(&1, var))}
 
       true ->

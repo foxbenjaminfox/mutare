@@ -162,7 +162,7 @@ Mutare:              1 × compile_schema  +  N × (process_boot + covering_tests
 - **External transparency holds** — the quiet payoff. Callers, function captures, and `@behaviour`/`@impl` callbacks all hit the unchanged public `f/arity`; the surgery is invisible at the module boundary. `@spec`/`@doc` ride on the dispatcher; lifted copies are private and `@doc false`.
 - **Error provenance shifts.** A `FunctionClauseError` now raises from the lifted private fn, not `f`, so the message names it. Irrelevant to kill/survive; mildly ugly if raw errors surface in reports.
 - **Default arguments** (`def f(a, b \\ 5)`) generate a header plus arities; normalize defaults away before lifting rather than special-casing the header.
-- **Per-site runtime tax.** Every in-place site does a `:persistent_term` read plus a branch on every execution, including the baseline run. Fast, but measurable in hot loops — worth profiling on a suite that's already slow.
+- **Per-site runtime tax.** Every in-place site does a branch on the active id on every execution, including the baseline run. The `:persistent_term` *read* itself is **hoisted** to once per function activation: a body selector reads a `mutare_active` variable bound once (a lifted dispatcher threads it as a parameter; a non-lifted function binds it in a `:do`-block prologue), so a hot loop pays one read per call, not one per site. (Selectors with no enclosing function binding — a head's default value, a module-level/`:scaffold` body — keep the inline read.) See NOTES "Hoist the per-site active-id read."
 
 ## Equivalent mutants
 

@@ -46,5 +46,33 @@ defmodule Mutare.MetamutantTest do
       refute Metamutant.subject?({:foo, [], [1, 2]})
       refute Metamutant.subject?(:not_a_node)
     end
+
+    test "subject?/2 recognises the hoisted bare-variable subject only when var is given" do
+      # The hoisted read is a bare reference to the dispatch variable. Recognised only
+      # when the (per-file, possibly salted) name is supplied — so a user's `case x do`
+      # is never mistaken for a selector.
+      assert Metamutant.subject?({:mutare_active, [line: 5], nil}, :mutare_active)
+      assert Metamutant.subject?({:mutare_active_0, [], nil}, :mutare_active_0)
+
+      # Without a var, only the inline `:persistent_term` read is a subject.
+      refute Metamutant.subject?({:mutare_active, [], nil})
+      # A different variable name (a user's scrutinee) is not the selector subject.
+      refute Metamutant.subject?({:some_user_var, [], nil}, :mutare_active)
+      # A call (`foo()`, list-context) is not a bare variable.
+      refute Metamutant.subject?({:mutare_active, [], []}, :mutare_active)
+    end
+
+    test "pattern_subject?/2 recognises a tupled subject with either first element" do
+      # The inline form (var-less) and the hoisted form (bare variable) both qualify a
+      # tuple-the-scrutinee `case {<active>, <subject>}`.
+      assert Metamutant.pattern_subject?({Metamutant.subject_ast(), {:x, [], nil}})
+
+      assert Metamutant.pattern_subject?(
+               {{:mutare_active, [], nil}, {:x, [], nil}},
+               :mutare_active
+             )
+
+      refute Metamutant.pattern_subject?({{:mutare_active, [], nil}, {:x, [], nil}})
+    end
   end
 end

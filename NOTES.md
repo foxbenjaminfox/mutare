@@ -210,8 +210,8 @@ dispatch), and suppressing the mutant-induced compile warnings (`Mutare.Poison`
 scans that output to map errors → ids). The remaining compile long-pole is a single
 huge metamutant *module* compiling serially (Elixir parallelises across modules, not
 within one) — not easily splittable; the volume drivers are already tamed by
-per-clause lifting and `hoist_pipe` (see "lifting blowup"), with one further driver —
-the per-site active-id read — noted below ("Hoist the per-site active-id read").
+per-clause lifting, `hoist_pipe` (see "lifting blowup"), and the hoisted per-site
+active-id read (see "Hoist the per-site active-id read", now done).
 
 ### Compiler options for the one metamutant compile `[done]`
 The metamutant compile is a single `mix compile`, dominated by `beam_ssa_opt` on
@@ -257,56 +257,89 @@ mode) for compile-dominated runs, never as a default. `--no-debug-info` /
 `--no-docs` move the needle ~0% and aren't worth losing `debug_info` for a target
 that happens to want it.
 
-### Hoist the per-site active-id read (`:persistent_term.get`) `[deferred]`
-The long-pole above is volume-bound, and one untamed driver is the selector
-*scrutinee*. Every in-place selector reads the active mutant id with a fresh
-`:persistent_term.get(:mutare_active, 0)` — `Transform.build_case/3` always uses
-`Mutare.Metamutant.subject_ast/0`, emitted **once per site**. Measured on Mutare's
-own metamutant: **~9,500 copies** across the tree (1,098 in `analyze.ex`'s metamutant
-alone, ~9,100 sites total), each a ~6-node remote call — tens of thousands of AST
-nodes that are pure scaffolding. It is emitted even **inside a lifted function**,
-whose dispatcher *already* binds `mutare_active = :persistent_term.get(...)` once and
-threads it as the clause param (`ctx.active_var`) — so the read is re-done per
-selector when the value is right there in scope.
+### Hoist the per-site active-id read (`:persistent_term.get`) `[done]`
+The long-pole above is volume-bound, and one untamed driver was the selector
+*scrutinee*. Every in-place selector used to read the active mutant id with a fresh
+`:persistent_term.get(:mutare_active, 0)` — `Transform.build_case` always spliced
+`Mutare.Metamutant.subject_ast/0`, **once per site**. Measured on Mutare's own
+metamutant: **~9,500 copies** across the tree (1,098 in `analyze.ex` alone, ~9,100
+sites total), each a ~6-node remote call — tens of thousands of AST nodes that are
+pure scaffolding. It was emitted even **inside a lifted function**, whose dispatcher
+*already* binds `mutare_active = :persistent_term.get(...)` once and threads it as the
+clause param (`ctx.active_var`) — so the read was re-done per selector when the value
+was right there in scope.
 
 The id is **process-constant** (`:persistent_term`, write-once, set once per run
-before any test executes), so reading it once per function body and having every
-selector read that variable is semantically identical — and a win on *both* axes:
+before any test executes), so reading it once per function activation and having every
+selector read that variable is semantically identical — a win on *both* axes (fewer
+nodes for the frontend/SSA passes to chew, and the per-line lookups DESIGN.md flags as
+the "per-site runtime tax" collapsed to one per function activation), with **no
+tradeoff** (unlike the `no_ssa_opt*` options that buy compile time with per-run
+runtime).
 
-  - **compile** — fewer/smaller nodes for the Elixir frontend to expand and fewer
-    identical subtrees for the optimizer to fold (CSE); the frontend and SSA passes
-    are super-linear in module size, so it helps the long-pole modules most.
-  - **runtime** — collapses the per-line `:persistent_term` lookups DESIGN.md flags
-    as the "per-site runtime tax" to one per function activation. **No tradeoff**,
-    unlike the `no_ssa_opt*` compiler options (which buy compile time with per-run
-    runtime — see "Compiler options for the one metamutant compile").
+**Fix.** `Ctx.active_bound` records whether `mutare_active` is bound in the current emit
+scope; `Transform.selector_subject/1` returns the bare variable `{var, [], nil}` when it
+is, else `subject_ast/0`. It is `true` in two places, set by a head/body-split clause
+emitter (`emit_clause/3`):
 
-Why it is a refactor, not a one-liner — and where the risk is:
+  - **lifted base clauses** — the dispatcher threads `mutare_active` as the first
+    parameter, so it is in scope in the *whole* body (every block — `do`, and any
+    `rescue`/`catch`/`else`/`after`, since a parameter is visible everywhere). The
+    whole body emits with `active_bound: true`, no prologue.
+  - **non-lifted functions** — the `:do` block is prefixed with a once-per-call prologue
+    `mutare_active = :persistent_term.get(...)` (added only when the block actually splices
+    a hoisted selector, else it would warn unused), and emits with `active_bound: true`.
+    The other body blocks (`rescue`/`catch`/`else`/`after`) are siblings of `:do`, *not*
+    inside its prologue's scope, so they keep `active_bound: false` (the self-contained
+    read).
 
-  - **Lifted clauses are the cheap half.** The threaded param `ctx.active_var` is
-    already in scope; `build_case` only needs to use it as the scrutinee there
-    instead of `subject_ast/0`. The catch-all already reads `var`
-    (`Recorder.record_ast(ids, var)`), so coverage stays consistent.
-  - **In-place (non-lifted) functions need a prologue binding** —
-    `mutare_active = :persistent_term.get(...)` at the top of the function body — so
-    the emit path must know the **enclosing function boundary**. Today in-place
-    selectors are spliced node-locally with no function-level hook, so this is the
-    structural part. A selector in a module body / `:scaffold` position has no
-    function to host the binding (rare — those run once at compile time as baseline);
-    they keep the inline read.
-  - **The load-bearing risk is the recognizers.** `Mutare.Metamutant.subject?/1` and
-    `pattern_subject?/1` identify a selector `case` by its `:persistent_term.get`
-    scrutinee; `Mutare.Manifest`'s lazy parse uses them to map a metamutant compile
-    error back to a mutant's generated line-range (poison recovery). A bare-variable
-    scrutinee defeats that match, so the walk must re-key on a different marker (the
-    catch-all's coverage-record shape, or a synthesized `meta` tag on the `case`) or
-    poison line-mapping silently breaks — and a poison the runner can't locate is one
-    the single build never compiles past.
+In **both** cases the **head's default values** keep the self-contained read
+(`active_bound: false`): a `def f(x \\ <expr>)` default is evaluated in a generated head
+clause (`f() → f(<expr>)`) where no body binding — neither the prologue nor the threaded
+param — is in scope. Lifted defaults additionally *ride onto the dispatcher head*, the
+same out-of-scope position. Module-level / `:scaffold` selectors (a metaprogrammed `def`
+body, a DSL macro block) likewise keep the inline read — they have no function-emit hook,
+and run once at compile time as baseline anyway. The split preserves id ordering (head
+before body, block order kept), so Sites/coverage/poison-recovery ids are unchanged.
 
-Net: a principled next step after dep-seeding / per-clause lifting / `hoist_pipe`,
-and the only volume lever that *also* speeds every per-mutant run — but it reaches
-into the emit core and the `Manifest` poison contract, so it is staged separately
-from the cheap compiler-option win.
+One more out-of-scope spot surfaced after the fact: a **runtime `defmodule` in a function
+body** (`def build do defmodule Inner do def f, do: 1 + 2 end end`). Its inner `def` is a
+*new* module scope — it can't see `build`'s hoisted binding — so a selector emitted there
+must use the inline read, else `Inner.f` raises `undefined variable "mutare_active"` the
+moment `build/0` runs and compiles the inner module (and `build`'s prologue, with nothing
+in its own scope reading it, would be a dead binding). The inner code is walked *in place*
+by the outer function's emit (it isn't separately planned/lifted), so `active_bound` would
+otherwise leak straight through the `defmodule` boundary. Fix: `emit/2` is a
+`Macro.traverse`, not a `postwalk` — it counts nested-module depth on the way down
+(`Ctx.module_depth`, bumped on `defmodule`/`defimpl`/`defprotocol`), and `selector_subject/1`
+gates the hoisted form on `module_depth == 0`; `references_var?/2` prunes the same subtrees
+so the outer prologue is added only for a *direct*-body reference. A mixed body
+(`a = x + 1; defmodule … ; a * 2`) hoists the direct sites and inlines the nested one, the
+depth restoring to 0 after the `defmodule` so the trailing site re-hoists.
+
+**The recognizers** were the load-bearing risk. `Mutare.Metamutant.subject?/2` and
+`pattern_subject?/2` now recognise the hoisted bare-variable subject *in addition to*
+the inline `:persistent_term.get` form — but only when the active-id variable name is
+supplied (so a user's `case some_var do …` is never mistaken for a selector). The name is
+per-file (and may be salted), and `Mutare.Manifest` already recovers it once per file:
+`active_var/1` reads it off the first generated construct that binds it — a lifted
+dispatcher's, or now a non-lifted `:do`-block prologue's, `<var> = :persistent_term.get`,
+or a tupled-`case` clause's `{<var>, <pat>}` pattern — and threads it through **both** the
+subject recognisers and the lifted/tupled gate matchers (`mutant_id/2`/`gate_id/2`/
+`pattern_mutant/2`). So a poison inside a hoisted in-place selector maps back to its mutant
+id; a user `case` is safe because the dispatch name is salted away from every identifier
+the source uses, so it can never equal a user scrutinee's name. `hoist_pipe` recognises
+both subject shapes directly (it has `ctx.active_var`), so a hoisted pipe-stage selector is
+still lifted out of its illegal `x |> case` position. (This shares one recovered name with
+the salt fix `active_var/1` was introduced for — the `<var> === <id>` gate match — rather
+than re-discovering it per `case`: whenever a hoisted bare-variable subject exists, the
+binding `active_var/1` anchors on does too, so the file-level name is always available.)
+
+Measured on `analyze.ex` (1431 sites): inline `:persistent_term.get(:mutare_active, 0)`
+reads dropped from ~1,098 to **107** (lifted dispatchers, non-lifted do-block prologues,
+head-default + non-`:do`-block + module/scaffold selectors — all legitimately
+self-contained), with 559 hoisted `case mutare_active do` body selectors + 11 hoisted
+tupled `case {mutare_active, …}` reading the bound variable instead.
 
 ### Umbrella support `[M5 / in progress]`
 Following the cargo-mutants precedent: **copy the whole umbrella, mutate a scoped

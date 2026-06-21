@@ -40,8 +40,11 @@ defmodule Mutare.TransformTest do
   # the boolean true/false.
   @negation [Mutare.Mutators.Conditional, Mutare.Mutators.Logical]
 
-  defp selector_tuple(subject),
-    do: "case {:persistent_term.get(#{inspect(Mutare.Selector.key())}, 0), #{subject}}"
+  # The per-site active-id read is hoisted, so a tupled-case subject reads the bound
+  # `mutare_active` variable, not the inline persistent_term read. The variable name
+  # (unlike the persistent_term key) is independent of `Selector.suite_key/0`, so this
+  # holds under dogfooding.
+  defp selector_tuple(subject), do: "case {mutare_active, #{subject}}"
 
   @sample """
   defmodule Sample do
@@ -132,12 +135,15 @@ defmodule Mutare.TransformTest do
     assert Enum.map(sites, &{&1.mutator, &1.original_op}) ==
              [{:arithmetic, :+}, {:relational, :==}]
 
-    # two independent selectors are present (count the selector *subject*; the
-    # catch-all coverage record also reads `:persistent_term.get(:mutare_track, …)`).
-    # Count via the runtime key so this holds when the suite runs under dogfooding
-    # (where the selector subject is keyed on `Selector.suite_key/0`, not `:mutare_active`).
-    subject = ":persistent_term.get(#{inspect(Mutare.Selector.key())}"
-    assert meta |> String.split(subject) |> length() == 3
+    # Two independent selectors are present. The per-site `:persistent_term.get` read is
+    # now hoisted to one per function (a `:do`-block prologue), and every selector reads
+    # that bound variable — so count the hoisted selector *subjects* (`case mutare_active
+    # do`), of which there is one per site. The variable name (unlike the persistent_term
+    # key) is independent of `Selector.suite_key/0`, so this holds under dogfooding.
+    assert meta |> String.split("case mutare_active do") |> length() == 3
+    # The read itself is hoisted to exactly one prologue for the whole function.
+    read = ":persistent_term.get(#{inspect(Mutare.Selector.key())}, 0)"
+    assert meta |> String.split(read) |> length() == 2
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
@@ -3611,6 +3617,60 @@ defmodule Mutare.TransformTest do
       refute Enum.any?(sites, &(&1.original_code == "true"))
       assert Enum.any?(sites, &(&1.mutator == :arithmetic))
       assert_compiles(meta)
+    end
+  end
+
+  describe "a runtime defmodule in a function body uses the inline active-id read" do
+    # A `defmodule` *evaluated at runtime* (inside a function body, not a module-level
+    # scaffold) defines a new module whose `def` bodies are a fresh scope — they cannot see
+    # the enclosing function's hoisted `active_var` binding. A selector emitted there must
+    # therefore use the self-contained `:persistent_term` read; the hoisted bare-variable
+    # form would raise `undefined variable "mutare_active"` when the outer function runs and
+    # compiles the inner module (and the outer prologue, with nothing in its own scope to
+    # read it, would be a dead binding). `Code.compile_string` of the outer module alone
+    # cannot catch this — the inner `defmodule` is only compiled when `build/0` *runs*.
+    @runtime_defmodule """
+    defmodule RuntimeDefmoduleOuter do
+      def build do
+        defmodule RuntimeDefmoduleInner do
+          def f, do: 1 + 2
+        end
+      end
+    end
+    """
+
+    test "the nested module's selector is self-contained and the outer has no prologue" do
+      {meta, sites, _next_id} =
+        Mutare.transform_string(@runtime_defmodule, mutators: [Mutare.Mutators.Arithmetic])
+
+      assert length(sites) == 1
+      # The inner selector reads `:persistent_term` directly, not the hoisted bare variable.
+      assert meta =~ "case :persistent_term.get(#{inspect(Mutare.Selector.key())}, 0) do"
+      refute meta =~ "case mutare_active do"
+      # Every mutation lives in the nested module, so `build/0` gets no (dead) prologue.
+      refute meta =~ "mutare_active = :persistent_term.get"
+    end
+
+    test "the metamutant runs: invoking build/0 compiles the inner module without error" do
+      {meta, _sites, _next_id} =
+        Mutare.transform_string(@runtime_defmodule, mutators: [Mutare.Mutators.Arithmetic])
+
+      # Resolve the generated modules as runtime atoms — they don't exist at this test's
+      # compile time (the inner one only at `build/0` runtime), so a literal alias would
+      # draw an "undefined module" warning.
+      outer = :"Elixir.RuntimeDefmoduleOuter"
+      inner = :"Elixir.RuntimeDefmoduleOuter.RuntimeDefmoduleInner"
+
+      # Invoking `build/0` compiles the nested `defmodule` — the moment the bug surfaced.
+      # On the buggy (bare-variable) form this raises a `CompileError`. Read-only on
+      # `:persistent_term` (this suite is `async: true`), so assert against the only two
+      # values the mutation can yield rather than forcing a baseline.
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        Code.compile_string(meta)
+        apply(outer, :build, [])
+      end)
+
+      assert apply(inner, :f, []) in [3, -1]
     end
   end
 

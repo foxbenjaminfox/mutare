@@ -343,12 +343,109 @@ defmodule Mutare.Transform do
     end)
   end
 
-  # Transform each clause in place (body selectors only), preserving its position.
+  # Transform each *non-lifted* clause in place (body selectors only), preserving its
+  # position. The `:do` block's active-id read is hoisted to a once-per-call prologue
+  # (`emit_clause/3` with `prologue: true`); the head's default values and the other body
+  # blocks keep the self-contained `:persistent_term` read (out of the prologue's scope).
   defp in_place_clauses(clauses, ctx) do
     Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
-      {clause, ctx} = in_place(clause, ctx)
+      {clause, ctx} = emit_clause(clause, ctx, prologue: true)
       {[clause], ctx}
     end)
+  end
+
+  # Transform each *source* clause of a lifted group (the originals the dispatcher
+  # forwards to). The dispatcher threads the active id as the base clause's first
+  # parameter, so the whole body reads it directly (no prologue, every body block
+  # covered); only the head's default values — extracted onto the dispatcher head, out of
+  # any binding's scope — keep the self-contained read.
+  defp lifted_source_clauses(clauses, ctx) do
+    Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
+      {clause, ctx} = emit_clause(clause, ctx, prologue: false)
+      {[clause], ctx}
+    end)
+  end
+
+  # Emit one def/defp clause with the active-id read hoisted out of its per-site selectors.
+  # The head (default values) is emitted with the read *unbound* (those expressions run in
+  # a generated head clause where no binding is in scope), the body with it *bound*. The
+  # one-shot `active_bound` toggles are scoped to this clause and restored on the way out,
+  # so they never leak into the next module item.
+  defp emit_clause(clause, ctx, opts) do
+    prologue? = Keyword.get(opts, :prologue, false)
+    bound0 = ctx.active_bound
+    {emitted, ctx} = emit_annotated_clause(Analyze.annotate(clause, ctx.mutators), ctx, prologue?)
+    {emitted, %{ctx | active_bound: bound0}}
+  end
+
+  # A normal body-bearing def/defp clause: emit the head with the read unbound, then the
+  # body blocks (`emit_clause_body/3`).
+  defp emit_annotated_clause({vis, meta, [head, body_kw]}, ctx, prologue?)
+       when vis in [:def, :defp] and is_list(body_kw) do
+    {head, ctx} = emit(head, %{ctx | active_bound: false})
+    {body_kw, ctx} = emit_clause_body(body_kw, ctx, prologue?)
+    {{vis, meta, [head, body_kw]}, ctx}
+  end
+
+  # A bodiless header (`def f(a, b \\ 1)` with no `do`) or any unexpected shape: no body
+  # to hoist into, so emit the whole node with the read unbound — identical to the
+  # pre-hoist behaviour. (A header's only runtime sub-positions are its default values,
+  # which keep the self-contained read regardless.)
+  defp emit_annotated_clause(node, ctx, _prologue?), do: emit(node, %{ctx | active_bound: false})
+
+  # Emit each body block's value with the active-id read bound where the binding reaches:
+  # the `:do` block always (a non-lifted clause's prologue binds it; a lifted clause's
+  # dispatcher parameter is in scope there), and the other blocks (`rescue`/`catch`/`else`/
+  # `after`) only for a lifted clause — there the parameter is in scope everywhere, whereas
+  # a non-lifted clause's `:do`-block prologue is *not* visible in its sibling blocks, so
+  # they keep the self-contained read. Block order (`:do` first) is preserved, so ids land
+  # exactly as a single whole-clause emit would assign them. The `is_list` guard asserts
+  # the caller's contract (`emit_annotated_clause/3` only reaches here for a list body_kw);
+  # there is no fallback because a body-bearing def/defp clause always has a keyword body.
+  defp emit_clause_body(body_kw, ctx, prologue?) when is_list(body_kw) do
+    other_bound = not prologue?
+
+    {body_kw, ctx} =
+      Enum.map_reduce(body_kw, ctx, fn {key, value}, ctx ->
+        bound = AST.key_atom(key) == :do or other_bound
+        {value, ctx} = emit(value, %{ctx | active_bound: bound})
+        {{key, value}, ctx}
+      end)
+
+    {if(prologue?, do: prepend_do_prologue(body_kw, ctx.active_var), else: body_kw), ctx}
+  end
+
+  # Prepend `<var> = :persistent_term.get(...)` to the `:do` block — but only when that
+  # block actually references the hoisted variable (i.e. it spliced at least one hoisted
+  # selector). With no reference the binding would draw an "unused variable" warning, so
+  # an unmutated `:do` block is left untouched.
+  defp prepend_do_prologue(body_kw, var) do
+    Enum.map(body_kw, fn {key, value} = pair ->
+      if AST.key_atom(key) == :do and references_var?(value, var),
+        do: {key, prepend_statement(value, active_read(var))},
+        else: pair
+    end)
+  end
+
+  # Whether `ast` mentions `var` as a variable/bare-name node *in this scope*. Since `var`
+  # is a generated name the source provably never uses, any occurrence is a spliced hoisted
+  # selector's scrutinee/record — so this is exactly "did the `:do` block get a hoisted
+  # selector". A runtime nested `defmodule` is pruned (replaced with `nil` on the way down):
+  # its inner selectors use the inline read, so any `var` there is a *local* catch-all
+  # binding, not a use of this body's prologue — counting it would add an unused prologue.
+  defp references_var?(ast, var) do
+    {_ast, found?} =
+      Macro.traverse(
+        ast,
+        false,
+        fn node, acc -> if(module_scope?(node), do: {nil, acc}, else: {node, acc}) end,
+        fn
+          {^var, _meta, context} = node, _acc when is_atom(context) -> {node, true}
+          node, acc -> {node, acc}
+        end
+      )
+
+    found?
   end
 
   # A non-clause-group module statement (an `{:other}` in the plan). Four routes:
@@ -416,8 +513,10 @@ defmodule Mutare.Transform do
     # is super-free, leaving the common path byte-for-byte unchanged.
     super_var = if Super.in_clauses?(plan.clauses), do: ctx.super_var, else: nil
 
-    # Source clauses with in-place body selectors — claims the body ids first.
-    {orig_clauses, ctx} = in_place_clauses(plan.clauses, ctx)
+    # Source clauses with in-place body selectors — claims the body ids first. The body
+    # reads the threaded `mutare_active` parameter directly (the dispatcher binds it);
+    # head default values keep the self-contained read (they ride onto the dispatcher).
+    {orig_clauses, ctx} = lifted_source_clauses(plan.clauses, ctx)
 
     # Then the lifted candidates, in order, each claiming its id. Non-skipped ones
     # yield `{id, clause_index, mutated_clause | :drop}`; a skipped (poisoned) id
@@ -880,40 +979,73 @@ defmodule Mutare.Transform do
     # post-order (the leaf is visited before its enclosing call), too late to suppress it.
     node = Overlap.resolve(node)
 
-    Macro.postwalk(node, ctx, fn current, ctx ->
-      # A `case` carrying per-clause `CaseClause`s is rewritten by the tuple-the-scrutinee
-      # path (its clauses can't each host a selector, and a `case` isn't a liftable function
-      # group). Checked first: a `case` node carries `:mutare_case`, never `:mutare`.
-      case case_candidates_of(current) do
-        [] ->
-          case gate_candidates(candidates_of(current)) do
-            # A `|>` never carries candidates itself, but its already-emitted RHS may
-            # now be a selector `case` — illegal as a pipe target — so rewrite it here.
-            # `strip_candidates` clears any meta left by candidates the gate dropped (a
-            # no-op when there were none), so the gated node renders clean.
-            [] ->
-              {hoist_pipe(strip_candidates(current), ctx.piped_var), ctx}
+    # A `Macro.traverse`, not a `postwalk`, so a nested **module** scope can be tracked on
+    # the way *down* (`emit_descend/2`): a runtime `defmodule`/`defimpl`/`defprotocol` in a
+    # function body hides the outer function's hoisted `active_var` binding from its inner
+    # `def` bodies, so selectors emitted there must use the self-contained read. The post
+    # step (`emit_node/2`) is the id-assigning walk — identical to the old postwalk callback.
+    Macro.traverse(node, ctx, &emit_descend/2, &emit_node/2)
+  end
 
-            # A `=`-match in statement position is rewritten to a tuple-export selector
-            # (its bindings must escape, so it can't be wrapped like an ordinary node). It
-            # only ever carries `MatchPattern` candidates, so the head match is exhaustive.
-            [%Candidate.MatchPattern{} | _] = candidates ->
-              emit_match_site(current, candidates, ctx)
+  # The pre step: entering a nested module scope increments `module_depth` (so
+  # `selector_subject/1` falls back to the inline read inside it); leaving is handled in the
+  # post step. Every other node passes through untouched.
+  defp emit_descend(node, ctx) do
+    if module_scope?(node),
+      do: {node, %{ctx | module_depth: ctx.module_depth + 1}},
+      else: {node, ctx}
+  end
 
-            # A binding-escaping known macro (`destructure([x, y], v)`) in a value-discarded
-            # position is rewritten to the same tuple-export selector, but each branch runs
-            # the *macro* (with the original/mutated pattern) instead of a `case` match.
-            [%Candidate.MacroPattern{} | _] = candidates ->
-              emit_macro_pattern_site(current, candidates, ctx)
+  # The post step: a module-scope node only restores the depth (it carries no candidates);
+  # every other node runs the id-assigning emit.
+  defp emit_node(current, ctx) when ctx.module_depth > 0 do
+    if module_scope?(current),
+      do: {current, %{ctx | module_depth: ctx.module_depth - 1}},
+      else: emit_one(current, ctx)
+  end
 
-            candidates ->
-              emit_site(current, candidates, ctx)
-          end
+  defp emit_node(current, ctx), do: emit_one(current, ctx)
 
-        case_candidates ->
-          emit_case_pattern_site(current, case_candidates, ctx)
-      end
-    end)
+  # A node that begins a fresh **module** scope, where outer function locals (the hoisted
+  # `active_var` binding) are not visible.
+  defp module_scope?({form, _meta, _args}) when form in [:defmodule, :defimpl, :defprotocol],
+    do: true
+
+  defp module_scope?(_node), do: false
+
+  defp emit_one(current, ctx) do
+    # A `case` carrying per-clause `CaseClause`s is rewritten by the tuple-the-scrutinee
+    # path (its clauses can't each host a selector, and a `case` isn't a liftable function
+    # group). Checked first: a `case` node carries `:mutare_case`, never `:mutare`.
+    case case_candidates_of(current) do
+      [] ->
+        case gate_candidates(candidates_of(current)) do
+          # A `|>` never carries candidates itself, but its already-emitted RHS may
+          # now be a selector `case` — illegal as a pipe target — so rewrite it here.
+          # `strip_candidates` clears any meta left by candidates the gate dropped (a
+          # no-op when there were none), so the gated node renders clean.
+          [] ->
+            {hoist_pipe(strip_candidates(current), ctx), ctx}
+
+          # A `=`-match in statement position is rewritten to a tuple-export selector
+          # (its bindings must escape, so it can't be wrapped like an ordinary node). It
+          # only ever carries `MatchPattern` candidates, so the head match is exhaustive.
+          [%Candidate.MatchPattern{} | _] = candidates ->
+            emit_match_site(current, candidates, ctx)
+
+          # A binding-escaping known macro (`destructure([x, y], v)`) in a value-discarded
+          # position is rewritten to the same tuple-export selector, but each branch runs
+          # the *macro* (with the original/mutated pattern) instead of a `case` match.
+          [%Candidate.MacroPattern{} | _] = candidates ->
+            emit_macro_pattern_site(current, candidates, ctx)
+
+          candidates ->
+            emit_site(current, candidates, ctx)
+        end
+
+      case_candidates ->
+        emit_case_pattern_site(current, case_candidates, ctx)
+    end
   end
 
   # Drop the candidates a mutator opts out of *before* id assignment, so they leave no
@@ -961,10 +1093,14 @@ defmodule Mutare.Transform do
   defp hoist_pipe(
          {:|>, meta, [lhs, {:__block__, bmeta, [{:case, cmeta, [subject, [do: clauses]]}]}]} =
            node,
-         piped_var
+         ctx
        ) do
-    if Mutare.Metamutant.subject?(subject) do
-      var = {piped_var, [], nil}
+    # Recognise the selector subject in *either* shape — the inline `:persistent_term`
+    # read (a head-default pipe stage) or the hoisted bare active-id variable (a body
+    # pipe stage). The closure body references that variable (the hoisted form) or the
+    # inline read, both valid inside the immediately-invoked closure.
+    if Mutare.Metamutant.subject?(subject, ctx.active_var) do
+      var = {ctx.piped_var, [], nil}
 
       piped =
         Enum.map(clauses, fn {:->, m, [pat, body]} -> {:->, m, [pat, pipe_tail(var, body)]} end)
@@ -978,7 +1114,7 @@ defmodule Mutare.Transform do
     end
   end
 
-  defp hoist_pipe(node, _piped_var), do: node
+  defp hoist_pipe(node, _ctx), do: node
 
   # Pipe `lhs` into a selector clause body. A mutant clause body is a single
   # expression (the mutated stage), piped whole; the catch-all body is a block
@@ -1007,12 +1143,12 @@ defmodule Mutare.Transform do
     # ReturnValue candidate) whose RHS is an already-emitted selector, the selector
     # would sit illegally as a pipe target inside this default/catch-all — hoist the
     # pipe into it. A no-op for every other node shape.
-    default = hoist_pipe(strip_candidates(node), ctx.piped_var)
+    default = hoist_pipe(strip_candidates(node), ctx)
 
     # All mutations here skipped → no selector; emit the node unchanged.
     case clauses do
       [] -> {default, ctx}
-      _ -> {build_case(default, clauses, ctx.active_var), ctx}
+      _ -> {build_case(default, clauses, ctx), ctx}
     end
   end
 
@@ -1076,7 +1212,7 @@ defmodule Mutare.Transform do
 
       _ ->
         ids = for {:->, _, [[id], _]} <- clauses, do: id
-        selector = Mutare.Metamutant.subject_ast()
+        selector = selector_subject(ctx)
         case_node = {:case, [], [selector, [do: clauses ++ [catch_all.(ids)]]]}
         {{:=, [], [export, case_node]}, ctx}
     end
@@ -1240,7 +1376,7 @@ defmodule Mutare.Transform do
             do: rewritten,
             else: rewritten ++ [case_unmatched_clause(all_ids, var)]
 
-        subject = {Mutare.Metamutant.subject_ast(), emitted_subject}
+        subject = {selector_subject(ctx), emitted_subject}
         {{:case, meta, [subject, [{do_key, new_clauses}]]}, ctx}
     end
   end
@@ -1360,16 +1496,39 @@ defmodule Mutare.Transform do
 
   defp poison(%Site{} = site), do: %{site | poisoned: true}
 
-  # (case :persistent_term.get(:mutare_active, 0) do <id> -> <mutated> ; _ -> <default> end)
+  # (case <subject> do <id> -> <mutated> ; <var> -> <record>; <default> end)
   #
-  # The selector is `Render.block_wrap`ped so it renders safely in any position.
-  defp build_case(default_node, mutant_clauses, var) do
-    selector = Mutare.Metamutant.subject_ast()
+  # `<subject>` is the hoisted active-id variable when it is bound in scope, else the
+  # self-contained `:persistent_term.get(...)` read (`selector_subject/1`). The selector
+  # is `Render.block_wrap`ped so it renders safely in any position.
+  defp build_case(default_node, mutant_clauses, ctx) do
+    selector = selector_subject(ctx)
     ids = for {:->, _, [[id], _]} <- mutant_clauses, do: id
-    catch_all = catch_all_clause(ids, default_node, var)
+    catch_all = catch_all_clause(ids, default_node, ctx.active_var)
     case_node = {:case, [], [selector, [do: mutant_clauses ++ [catch_all]]]}
     Render.block_wrap(case_node)
   end
+
+  # The selector `case` scrutinee for the current emit scope. When the active-id variable
+  # is already bound here (`active_bound` — inside a lifted base clause, where the
+  # dispatcher threads it as the first parameter, or inside a non-lifted function's `:do`
+  # block, where a prologue binds it once), every selector reads that variable directly —
+  # the active id is process-constant, so reading it once per function activation is
+  # identical and drops the per-site `:persistent_term.get` (see NOTES "Hoist the per-site
+  # active-id read"). Otherwise the self-contained inline read is kept: a module/scaffold
+  # body, a head's default-value position (evaluated in a generated head clause out of any
+  # binding's scope), or — `module_depth > 0` — a selector inside a runtime nested
+  # `defmodule` in this body, whose inner `def` can't see the outer function's binding.
+  defp selector_subject(%Ctx{active_bound: true, module_depth: 0, active_var: var}),
+    do: {var, [], nil}
+
+  defp selector_subject(%Ctx{}), do: Mutare.Metamutant.subject_ast()
+
+  # The active-id prologue a non-lifted function's `:do` block is prefixed with:
+  # `<var> = :persistent_term.get(...)`, bound once so the block's selectors read it
+  # (`selector_subject/1`). Shape-identical to the lifted dispatcher's read.
+  defp active_read(var),
+    do: {:=, [], [Recorder.catch_all_pattern(var), Mutare.Metamutant.subject_ast()]}
 
   # The selector catch-all (`<var> -> …`): the baseline + every-inactive-mutant
   # branch. It carries the coverage record (inert outside the probe, see
