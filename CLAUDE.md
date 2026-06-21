@@ -109,12 +109,15 @@ contract between them is the whole game.
     detection; `Transform.emit_module_plan/2` walks the items.
   - **`Transform.FunctionPlan`** — one liftable clause group: signature, clauses, a single shared
     *tagged* clause group, and its typed lifted candidates (guard swaps, head-pattern literal
-    swaps, head-pattern **structure** rewrites, clause drops). `mutated_clause/2` reconstructs the
+    swaps, head-pattern **structure** rewrites, **guard removals**, clause drops). `mutated_clause/2`
+    reconstructs the
     *single* clause a candidate mutates (plus its index), on demand — emission gates it by id, so a
     mutant touching one clause never copies the rest (the **per-clause** lifting; see "Adding a
     mutator" / NOTES "lifting blowup"). `build_lifted/2` threads one tag counter through guards and
     head-pattern literals, so a `def f(0) when …` lifts both kinds together;
-    `build_pattern_structures/2` is a separate (untagged, index-based) pass for the structural rewrites.
+    `build_pattern_structures/2` is a separate (untagged, index-based) pass for the structural
+    rewrites, and `build_guard_drops/2` another for guard removals (a clause whose guard the tagger
+    finds *inert* — no other family touches it — has its whole `when` stripped, `Candidate.GuardDrop`).
   - **`Transform.Tag`** — the shared *replace-by-tag* discovery primitives (`guard_targets/3`,
     `pattern_literal_targets/3`, `replace_tag/3`): walk a guard / pattern, tag every mutatable node
     with a unique `meta[:mutare_tag]`, return the tagged copy + a `{tag, original, [{mutator,
@@ -149,10 +152,16 @@ contract between them is the whole game.
     clause — the `MatchPattern` mechanism generalized from a `=` to running the macro itself inside
     each selector branch (`{x, y} = case <sel> do <id> -> destructure(<mut>, v); {x, y} … end`,
     `emit_macro_pattern_site/3`); both the direct and piped (`[x, y] |> destructure(v)`) forms route.
-    The matching `Site` constructor is chosen by pattern-matching the variant at emit
-    (`Guard`/`Pattern`/`PatternStructure` → `Site.lifted_replace/6`;
+    `GuardDrop` is a **lifted** `def`/`defp` guard removal (the tag-less twin of `Lifted`/`Drop`:
+    `mutated_clause/2` strips the clause's whole `when`); `case`/`receive`/`fn` guard removals need
+    no new variant — they're a `CaseClause` with a `nil` mutant guard / a `CasePattern` whose
+    `replacement` is the guard-stripped construct. The matching `Site` constructor is chosen by
+    pattern-matching the variant at emit
+    (`Guard`/`Pattern`/`PatternStructure`/`GuardDrop` → `Site.lifted_replace/6`;
     `InPlace`/`Return`/`CaseClause`/`CasePattern`/`MatchPattern`/`MacroPattern`
-    → `Site.in_place/6` family). The `case` tuple-the-scrutinee rewrite has its own emit
+    → `Site.in_place/6` family — guard removals reuse it with `original` the `{:when, …}` head and
+    `mutated` the bare head, so the diff drops just the ` when g`). The `case` tuple-the-scrutinee
+    rewrite has its own emit
     (`emit_case_pattern_site/3`, reusing the lifting gates `exclusion_guard`/`and_into_guard`); for
     the others the selector branch is chosen by `branch_node/1`. The structural discovery primitives
     shared by the def-head, `case`, `receive`/`fn`, and `=`-match paths live in
@@ -828,6 +837,31 @@ contract between them is the whole game.
   `annotate_returns/3`, so the shorthand keeps its operator and *granular* return-value mutants, and
   it works under lifting unchanged (the relocated body becomes `[do: <selector>]` like any in-place
   body).
+  And **GuardDrop** (`:guard_drop`) — removes a clause's whole `when` guard, broadening it to
+  match unconditionally (`def f(x) when is_binary(x)` → `def f(x)`), asking "is this guard
+  load-bearing at all?". Structural and positional like `ReturnValue`/clause-drop (`mutate/1` is
+  `:skip`; `Transform` discovers it at each guarded clause head). Offered **only for an inert
+  guard** — one no *other* enabled mutator already mutates — derived from the guard tagger's
+  targets (`Tag.guard_targets/3`): an empty target set means the guard is untouched by every
+  family (`is_binary(x)`, `x`, a custom `defguard`), so removal is the only signal; any target
+  (`x > 0`, `Integer.is_even(x)`, `a and b`) means it's already covered, so no removal piles on
+  (guard-swap and guard-removal are mutually exclusive per clause, and the rule tracks the
+  *enabled set*). Delivery reuses the three guarded-clause mechanisms with **no new `Site`
+  constructor** — `def`/`defp` heads by **lifting** (`Candidate.GuardDrop`, the tag-less twin of
+  `Candidate.Lifted`/`Drop` — the mutant clause is the source clause with its `when` stripped,
+  gated only `when mutare_active === <id>`; a single guarded clause now lifts solely for this),
+  `case` clauses by the **tuple-the-scrutinee** path (a `Candidate.CaseClause` with a `nil` mutant
+  guard), `receive`/`fn` clauses by the **whole-construct selector** (a `Candidate.CasePattern`
+  whose `replacement` is the construct with that clause's guard stripped). The diff shows
+  `f(x) when g` → `f(x)` (`original` the `{:when, …}` head, `mutated` the bare head). The head is
+  emitted **exactly as written** — only the `when` is stripped. A guard-only variable becomes unused
+  once the guard is gone, which warns; that warning is **accepted and left alone** (warnings don't
+  fail the single build). We deliberately do *not* rename it to `_`: a macro in the body can read a
+  bound variable *by name* (`binding/0,1`, or any custom macro that captures the caller's bindings)
+  with no syntactic mention the transform could detect, so rewriting the head could silently change
+  behaviour. Keep the name, always. (An earlier design masked the unused binding to `_`; it was
+  removed as unsound for exactly this reason — see NOTES.) Broadening a non-final `receive`/`fn`
+  clause to irrefutable is the same benign "cannot match" warning `PatternWildcard` documents.
 - **`Mutare.Mutators`** — the **single ordered registry** of built-in families and the one place
   mutator lists are resolved/validated. `all/0` is the default set (every registered module — an
   unset `:mutators`/`:all`); `families/0` is every registered atom; `resolve/1` maps any entry —

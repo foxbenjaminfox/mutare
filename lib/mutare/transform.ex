@@ -929,6 +929,13 @@ defmodule Mutare.Transform do
     Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 
+  # A guard removal is lifted (a `def`/`defp` head — a `case` is illegal in a `when`)
+  # and records the same `:lifted` replacement shape: `original` is the `f(x) when g`
+  # head and `mutated` the bare `f(x)`, so the diff drops just the ` when g`.
+  defp lifted_site(id, %Candidate.GuardDrop{} = c, file) do
+    Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
+  end
+
   defp lifted_site(id, %Candidate.Drop{} = c, file) do
     Site.clause_drop(id, file, c.range, c.original)
   end

@@ -2900,6 +2900,84 @@ self-overlap on *nested* boolean ops (`a == b and c == d` forces `false` from th
 node *and* from short-circuiting each operand), which a node-pattern suppression can't
 catch cheaply.
 
+### Guard removal (`Mutare.Mutators.GuardDrop`) `[done]`
+The "delete a clause's `when` guard" operator — `def f(x) when is_binary(x)` →
+`def f(x)` — asking *is this guard load-bearing at all?* It fills a real gap: a
+single type-guard like `when is_binary(x)` was previously mutated by **nothing**
+(it has no operators for Relational/Logical, no literal, and isn't a swap-family
+call), so it always survived. Structural and positional (like `ReturnValue`/
+clause-drop), registered as `:guard_drop` so it's on by default, toggleable, and
+`# mutare:ignore[guard_drop]`-able.
+
+**The dedup rule — "incidentally covered".** A removal is offered only for an
+**inert** guard, one *no other enabled mutator already mutates*. Every guarded path
+already computes `Tag.guard_targets/3` (the guard tagger that offers each node to
+the mutators); an **empty** result means the guard is untouched by every family, so
+removal is the only signal. Any target (`x > 0` → Relational+Literal,
+`Integer.is_even(x)` → Integer, `a and b` → Conditional/Logical) means the guard is
+already probed, so no removal piles on. This makes guard-swap and guard-removal
+**mutually exclusive per clause**, derived from the mutations themselves — no
+hard-coded "coverable guard" list, and the rule tracks the *enabled set* (disable
+Integer and `Integer.is_even(x)` becomes removable). It also subsumes the
+equivalence case for free: a sole boolean-operator guard is already turned to
+`when true` ≡ guardless by Conditional, and it has a target, so it's skipped.
+
+**Delivery reuses the three existing guarded-clause mechanisms**, one per construct,
+with **no new `Site` constructor** — `original` is the `{:when, …}` head (rendering
+`f(x) when g`) and `mutated` the bare head (`f(x)`), so the diff drops just the
+` when g`:
+- `def`/`defp` heads — **lifting** (`Candidate.GuardDrop`, the tag-less twin of
+  `Candidate.Lifted`/`Candidate.Drop`): the mutant clause is the source clause with
+  its `when` stripped, gated only `when mutare_active === <id>` so it matches
+  unconditionally when active. A single guarded clause now lifts *solely* for this
+  (like the unguarded `def f(1)` that lifts only for clause-drop). `Site.lifted_replace`.
+- `case` clauses — the **tuple-the-scrutinee** path (a `Candidate.CaseClause` with a
+  `nil` mutant guard), so the gated mutant clause carries the original pattern with no
+  guard. `Site.in_place` (the `{:when, …}` LHS → bare pattern).
+- `receive`/`fn` clauses — the **whole-construct selector** (a `Candidate.CasePattern`
+  whose `replacement` is the construct with this clause's guard stripped). `Site.in_place`.
+
+**Warnings — two kinds, handled differently.**
+1. *Unused variable — accepted, never masked.* A guard-only variable
+   (`def f(x) when is_binary(x), do: :ok` — `x` read only by the guard) becomes unused once
+   the guard is gone, which warns. We **leave the head exactly as written** and accept the
+   warning. Warnings don't fail the single metamutant build; under `--warnings-as-errors`
+   the warning becomes a poison, recovered by dropping the mutant and rebuilding — the same
+   benign path as the "cannot match" case below.
+
+   We deliberately do **not** rename the lone unused binding to `_`, and this is *not* an
+   oversight — it is forced. A macro in the body can read a bound variable **by name**, with
+   no syntactic mention the transform could detect: `Kernel.binding/0,1` reflects every bound
+   variable into a runtime keyword list, and *any* custom macro can do the same (call
+   `binding()` in its expansion, splice a `var!`/`Macro.var` reference, …). Renaming `x` to
+   `_` would silently drop it from whatever such a macro observes — a behaviour change the
+   diff never shows. And no "is the body using `x`?" analysis can rule this out: detecting an
+   arbitrary macro's reads requires *expanding* it, which the transform (working on parsed,
+   unexpanded source for diff fidelity) does not do. Looking for `binding` by name is both
+   unsound (misses custom macros) and pointless (you'd still have to keep the name). So the
+   only sound choice is to keep the original name, **always**.
+
+   (History: an earlier design masked the lone unused binding to bare `_`, gated on a
+   scope-/quote-aware free-variable analysis of the body — `runtime_used_names/1`, with
+   careful handling of quoted data, inner-scope shadows, and same-named module attributes.
+   The whole apparatus, and that analysis, were removed: the analysis can never be complete
+   against custom macros, and the warning it avoided is harmless. `mask_unused_bindings/2`
+   and `runtime_used_names/1` are gone; `drop_clause_guard`/`strip_clause_guard` now strip
+   only the `when` and emit the head verbatim.)
+2. *Cannot match.* Stripping a **non-final** clause's guard can make its pattern
+   irrefutable, shadowing later clauses — but **only** in the `receive`/`fn`
+   whole-construct copy; the `def` and `case` mutant clauses are id-gated, so they're
+   never an unconditional catch-all. This is the same benign warning `PatternWildcard`
+   documents (only poisons under `--warnings-as-errors`, where poison recovery drops
+   the mutant and rebuilds). Intrinsic to the mutation — not "fixed".
+
+**Deferred.** A **multi-pattern `fn`** clause (`fn x, y when g ->`) is skipped: its
+`{:when, …}` LHS holds the patterns spread (`[x, y, g]`, a 3-arg `when` that renders
+`x when y when g`, context-free), so there's no single node that diffs cleanly to
+`x, y`. (`def` heads are always one call node, and `case`/`receive` clauses are
+single-pattern, so only multi-pattern `fn` hits this.) The `<-`/`with`/`try`-clause
+guard positions follow whatever those clause-pattern paths grow next.
+
 ### Equivalent mutants `[partial]`
 Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the
 arithmetic mutator skips the multiplicative-identity swap on a right operand

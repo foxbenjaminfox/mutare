@@ -352,6 +352,36 @@ defmodule Mutare.Transform.Candidate do
     defstruct [:clause_index, :original, :range]
   end
 
+  defmodule GuardDrop do
+    @moduledoc false
+
+    # A `def`/`defp` clause's whole `when` guard removed, broadening it to match
+    # unconditionally (`def f(x) when is_binary(x)` → `def f(x)`), delivered by
+    # **lifting**. Like `Candidate.Lifted` it mutates one clause's head and records a
+    # `:lifted` replacement Site, but it is structurally a whole-clause rebuild (the
+    # `when` is stripped, not one tagged node swapped), so it carries the
+    # `clause_index` and is materialized by `FunctionPlan.mutated_clause/2` — which
+    # returns the clause with its guard dropped (`Mutare.Mutators.GuardDrop`).
+    #
+    # `original` is the clause's `{:when, …}` head (rendering `f(x) when g`) and
+    # `mutated` the bare head call (`f(x)`), so the lifted-replace Site diffs to a
+    # clean one-liner dropping just the ` when g`; `range` is the `when` head's range.
+    # The `case`/`receive`/`fn` clause guards reuse `Candidate.CaseClause` /
+    # `Candidate.CasePattern` (a `nil` mutant guard / a guard-stripped construct) —
+    # only a `def`/`defp` head needs this lifted shape, the same way only it needs
+    # `Candidate.Lifted` and `Candidate.Drop`.
+
+    @type t :: %__MODULE__{
+            clause_index: non_neg_integer(),
+            mutator: Mutare.Mutator.Spec.t(),
+            original: Macro.t(),
+            mutated: Macro.t(),
+            range: Sourceror.Range.t()
+          }
+
+    defstruct [:clause_index, :mutator, :original, :mutated, :range]
+  end
+
   defmodule Return do
     @moduledoc false
 
@@ -385,5 +415,6 @@ defmodule Mutare.Transform.Candidate do
           | MatchPattern.t()
           | MacroPattern.t()
           | Drop.t()
+          | GuardDrop.t()
           | Return.t()
 end

@@ -39,6 +39,7 @@ defmodule Mutare.Transform.FunctionPlan do
   # in-place `:pattern` routing in `Mutare.Transform`.
 
   alias Mutare.Mutator
+  alias Mutare.Mutator.Spec
   alias Mutare.Transform.{Candidate, NodeRange, PatternStructure, Tag}
 
   @type signature :: {:def | :defp, atom(), non_neg_integer()}
@@ -49,6 +50,7 @@ defmodule Mutare.Transform.FunctionPlan do
           tagged_clauses: [Macro.t()],
           lifted: [Candidate.Lifted.t()],
           pattern_structures: [Candidate.PatternStructure.t()],
+          guard_drops: [Candidate.GuardDrop.t()],
           drops: [Candidate.Drop.t()]
         }
 
@@ -58,6 +60,7 @@ defmodule Mutare.Transform.FunctionPlan do
     :tagged_clauses,
     :lifted,
     :pattern_structures,
+    :guard_drops,
     :drops
   ]
 
@@ -73,15 +76,18 @@ defmodule Mutare.Transform.FunctionPlan do
   def plan({_vis, name, _arity} = signature, clauses, mutators) do
     {tagged_clauses, lifted} = build_lifted(clauses, mutators)
     pattern_structures = build_pattern_structures(clauses, mutators)
+    guard_drops = build_guard_drops(clauses, mutators)
     drops = build_drops(clauses)
 
-    if (lifted != [] or pattern_structures != [] or drops != []) and liftable?(name) do
+    if (lifted != [] or pattern_structures != [] or guard_drops != [] or drops != []) and
+         liftable?(name) do
       plan = %__MODULE__{
         signature: signature,
         clauses: clauses,
         tagged_clauses: tagged_clauses,
         lifted: lifted,
         pattern_structures: pattern_structures,
+        guard_drops: guard_drops,
         drops: drops
       }
 
@@ -94,7 +100,7 @@ defmodule Mutare.Transform.FunctionPlan do
   @doc """
   The lifted candidates of this group: guard swaps, then head-pattern literal
   swaps, then head-pattern structure rewrites (variable swaps / wildcards), then
-  clause drops.
+  guard removals, then clause drops.
 
   Emission walks these in order to assign ids and build one gated `defp` clause
   per candidate, so the order fixes id assignment within a lifted function.
@@ -103,9 +109,10 @@ defmodule Mutare.Transform.FunctionPlan do
   def candidates(%__MODULE__{
         lifted: lifted,
         pattern_structures: pattern_structures,
+        guard_drops: guard_drops,
         drops: drops
       }),
-      do: lifted ++ pattern_structures ++ drops
+      do: lifted ++ pattern_structures ++ guard_drops ++ drops
 
   @doc """
   Materialize the *single* clause a candidate mutates, with its position.
@@ -138,6 +145,12 @@ defmodule Mutare.Transform.FunctionPlan do
         mutated_args: mutated_args
       }),
       do: {index, put_head_args(Enum.at(clauses, index), mutated_args)}
+
+  # A guard removal — the clause with its `when` stripped, so the lifted mutant
+  # clause is gated only by `mutare_active === <id>` (no source guard) and matches
+  # unconditionally when active. Raw body, like every lifted mutant.
+  def mutated_clause(%__MODULE__{clauses: clauses}, %Candidate.GuardDrop{clause_index: index}),
+    do: {index, drop_clause_guard(Enum.at(clauses, index))}
 
   def mutated_clause(%__MODULE__{}, %Candidate.Drop{clause_index: index}), do: {index, :drop}
 
@@ -369,6 +382,69 @@ defmodule Mutare.Transform.FunctionPlan do
 
   defp head_call({:when, _meta, [call | _guards]}), do: call
   defp head_call(call), do: call
+
+  # === guard-removal candidates ==============================================
+
+  # Offer to drop a clause's whole `when` guard, but only for an **inert** guard —
+  # one no *other* enabled mutator already mutates. The guard tagger
+  # (`Tag.guard_targets/3`) reports every mutatable guard node; an empty result
+  # means the guard is untouched by every family (`is_binary(x)`, `x`, a custom
+  # `defguard`), so removing it is the only signal there. A guard with any target
+  # (`x > 0`, `Integer.is_even(x)`, `a and b`) is already covered, so no removal is
+  # offered — keeping guard swaps and guard removals mutually exclusive per clause.
+  # Gated on `Mutare.Mutators.GuardDrop` being enabled.
+  defp build_guard_drops(clauses, mutators) do
+    case Spec.find(mutators, Mutare.Mutators.GuardDrop) do
+      nil ->
+        []
+
+      spec ->
+        clauses
+        |> Enum.with_index()
+        |> Enum.flat_map(&guard_drop_for(&1, spec, mutators))
+    end
+  end
+
+  defp guard_drop_for({clause, index}, spec, mutators) do
+    with {:when, _wm, [call | _guards]} = when_node <- clause_when(clause),
+         true <- guard_inert?(guards_of(clause), mutators),
+         %{} = range <- NodeRange.get(when_node) do
+      [
+        %Candidate.GuardDrop{
+          clause_index: index,
+          mutator: spec,
+          original: when_node,
+          mutated: call,
+          range: range
+        }
+      ]
+    else
+      _ -> []
+    end
+  end
+
+  # The clause's `when` head node, or `nil` for an unguarded clause.
+  defp clause_when({_vis, _meta, [{:when, _, _} = when_node | _rest]}), do: when_node
+  defp clause_when(_clause), do: nil
+
+  # A guard is inert when *no* enabled mutator produces a target on any of its
+  # alternatives (`Tag.guard_targets/3` over each, discarding the tagged copy).
+  defp guard_inert?(guards, mutators) do
+    Enum.all?(guards, fn guard ->
+      {_tagged, {_next, targets}} = Tag.guard_targets(guard, {0, []}, mutators)
+      targets == []
+    end)
+  end
+
+  # Strip a clause's whole `when`, leaving the head **exactly as written** (and the body)
+  # — the guard-drop mutant clause. A head variable the guard read but the body does not
+  # (`def f(x) when is_binary(x), do: :ok`) becomes an unused variable once the guard is
+  # gone, which warns; that warning is harmless and is left alone. We deliberately do *not*
+  # rename it to `_`: a macro in the body can read a bound variable by name (`binding/0,1`,
+  # or any custom macro that captures the caller's bindings), and that is undetectable from
+  # the source, so renaming could silently change behaviour. Keep the name, always.
+  defp drop_clause_guard({vis, meta, [{:when, _wm, [call | _guards]} | rest]}),
+    do: {vis, meta, [call | rest]}
 
   # === clause-drop candidates ================================================
 
