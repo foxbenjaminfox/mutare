@@ -973,13 +973,13 @@ defmodule Mutare.TransformTest do
         mode_sites("""
         defmodule M do
           def later(dt, n), do: DateTime.add(dt, n, :minute)
-          def shout(s), do: String.upcase(s, :default)
+          def shout(s), do: String.upcase(s, :turkic)
         end
         """)
 
       assert {"DateTime.add(dt, n, :minute)", "DateTime.add(dt, n, :second)"} in sites
       assert {"DateTime.add(dt, n, :minute)", "DateTime.add(dt, n, :hour)"} in sites
-      assert {"String.upcase(s, :default)", "String.upcase(s, :ascii)"} in sites
+      assert {"String.upcase(s, :turkic)", "String.upcase(s, :default)"} in sites
     end
 
     test "overlap resolution drops the redundant AtomLiteral on a swapped mode atom, not elsewhere" do

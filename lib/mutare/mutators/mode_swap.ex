@@ -37,8 +37,11 @@ defmodule Mutare.Mutators.ModeSwap do
 
   Unicode modes:
 
-    * `String.upcase/2`, `String.downcase/2`, `String.capitalize/2` — the casing mode
-      (`:default` ↔ `:ascii`; the exotic `:greek`/`:turkic` fall back to `:default`)
+    * `String.upcase/2`, `String.downcase/2`, `String.capitalize/2` — the casing mode,
+      swapping only the exotic locale modes back to the default (`:greek` → `:default`,
+      `:turkic` → `:default`). `:default` ↔ `:ascii` is *not* swapped: it only diverges
+      on non-ASCII input (which a test exercising the call must already cover), so it
+      tended to survive as a low-signal equivalent rather than expose a real gap.
     * `String.normalize/2` — the normalization form (`:nfc` ↔ `:nfd`, `:nfkc` ↔ `:nfkd`,
       toggling composition while preserving compatibility)
 
@@ -108,7 +111,11 @@ defmodule Mutare.Mutators.ModeSwap do
   @duration_date_ladder [:day, :week, :month, :year]
 
   # Unordered mode sets: one curated, behaviourally-distinct sibling per member.
-  @case_modes %{default: [:ascii], ascii: [:default], greek: [:default], turkic: [:default]}
+  # Casing: only the exotic locale modes are swapped — `:greek`/`:turkic` → `:default`.
+  # `:default` ↔ `:ascii` is deliberately absent: that swap rarely changes behaviour
+  # (it only diverges on non-ASCII input the test must already exercise), so it tended
+  # to survive as a low-signal equivalent rather than expose a real gap.
+  @case_modes %{greek: [:default], turkic: [:default]}
   @norm_forms %{nfc: [:nfd], nfd: [:nfc], nfkc: [:nfkd], nfkd: [:nfkc]}
 
   # {alias_path, function, effective_arity} => {mode_positions (effective indices), group}.

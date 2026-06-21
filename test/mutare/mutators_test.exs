@@ -909,11 +909,16 @@ defmodule Mutare.MutatorsTest do
       assert ModeSwap.mutate(parse("DateTime.shift(dt, dur)"), %{piped: false}) == :skip
     end
 
-    test "Unicode case mode and normalization form swap to a behavioural sibling" do
-      assert mode("String.upcase(s, :default)", false) == ["String.upcase(s, :ascii)"]
-      assert mode("String.downcase(s, :ascii)", false) == ["String.downcase(s, :default)"]
-      # The exotic modes fall back to the common contrast.
+    test "Unicode case mode: only the exotic locale modes fall back to :default" do
+      assert mode("String.upcase(s, :greek)", false) == ["String.upcase(s, :default)"]
       assert mode("String.capitalize(s, :turkic)", false) == ["String.capitalize(s, :default)"]
+
+      # `:default` ↔ `:ascii` is deliberately not swapped (a low-signal equivalent).
+      assert ModeSwap.mutate(parse("String.upcase(s, :default)"), %{piped: false}) == :skip
+      assert ModeSwap.mutate(parse("String.downcase(s, :ascii)"), %{piped: false}) == :skip
+    end
+
+    test "normalization form swaps to a behavioural sibling" do
       assert mode("String.normalize(s, :nfc)", false) == ["String.normalize(s, :nfd)"]
       assert mode("String.normalize(s, :nfkd)", false) == ["String.normalize(s, :nfkc)"]
     end
@@ -925,7 +930,7 @@ defmodule Mutare.MutatorsTest do
       assert mode("DateTime.add(n, :minute)", true) ==
                ["DateTime.add(n, :second)", "DateTime.add(n, :hour)"]
 
-      assert mode("String.upcase(:default)", true) == ["String.upcase(:ascii)"]
+      assert mode("String.upcase(:greek)", true) == ["String.upcase(:default)"]
     end
 
     test "piped: a unit at effective position 0 (the piped value itself) yields nothing" do
