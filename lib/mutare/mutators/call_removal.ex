@@ -17,7 +17,7 @@ defmodule Mutare.Mutators.CallRemoval do
     * `String.trim` / `String.trim_leading` / `String.trim_trailing`
     * `String.downcase` / `String.upcase` / `String.capitalize`
     * `String.reverse` / `String.normalize` / `String.replace_invalid`
-    * `String.pad_leading` / `String.pad_trailing` / `String.slice`
+    * `String.pad_leading` / `String.pad_trailing` / `String.slice` / `String.byte_slice`
     * `URI.encode_www_form` / `URI.decode_www_form` (both `binary() -> binary()`,
       so dropping the percent-en/decoding step returns the raw binary — "does any
       test actually depend on the form-encoding?")
@@ -39,9 +39,9 @@ defmodule Mutare.Mutators.CallRemoval do
       `pad`/`left`/`right`/`centre`, `slice`/`substr`/`sub_string`
 
   Kept to transforms whose removal yields a same-typed, plausibly-interchangeable value.
-  `String.slice` (and `:string.slice`/`substr`/`sub_string`, and the `binary_slice`/
-  `binary_part` binary slicers) are included even though they *select* a part — removing
-  them returns the whole input, a clean "is the slice actually exercised?" probe — but
+  `String.slice` / `String.byte_slice` (and `:string.slice`/`substr`/`sub_string`, and the
+  `binary_slice`/`binary_part` binary slicers) are included even though they *select* a part —
+  removing them returns the whole input, a clean "is the slice actually exercised?" probe — but
   `String`/`:string` `replace`/`split` (and `String.first`,
   `:string.prefix`, which can return `:nomatch`) stay excluded, since they change *which*
   characters are present or change the type. `abs` fits squarely: `abs(x)` and `x` are both
@@ -128,6 +128,7 @@ defmodule Mutare.Mutators.CallRemoval do
                {[:String], :pad_leading},
                {[:String], :pad_trailing},
                {[:String], :slice},
+               {[:String], :byte_slice},
                # `URI` form-encoding — `binary() -> binary()`, so removal returns the
                # raw binary (the en/decoding step is the "is it exercised?" probe).
                {[:URI], :encode_www_form},

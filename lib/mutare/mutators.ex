@@ -42,6 +42,7 @@ defmodule Mutare.Mutators do
     collection_arity: Mutare.Mutators.CollectionArity,
     string_call: Mutare.Mutators.StringCall,
     map_keyword: Mutare.Mutators.MapKeyword,
+    map_set: Mutare.Mutators.MapSet,
     call_removal: Mutare.Mutators.CallRemoval,
     default_drop: Mutare.Mutators.DefaultDrop,
     mode_swap: Mutare.Mutators.ModeSwap,

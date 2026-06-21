@@ -9,6 +9,10 @@ defmodule Mutare.Mutators.Numeric do
     * `round/1` ↔ `trunc/1`          — round-to-nearest vs truncate-toward-zero
     * `ceil/1` ↔ `floor/1`           — round up vs round down
     * `Float.ceil` ↔ `Float.floor`   — the float-precision pair (any arity)
+    * `Float.max_finite` ↔ `Float.min_finite` — the extreme-finite-float pair
+      (`/0` constants returning the largest/smallest representable float; an
+      arity-blind rename like the `Float.ceil`/`floor` pair, the two extremes of
+      the finite range)
 
   Every swap keeps the argument list and lands on a function of the **same arity**,
   so the single metamutant build always compiles. The `Kernel` functions
@@ -84,6 +88,8 @@ defmodule Mutare.Mutators.Numeric do
   @remote_swaps %{
     {[:Float], :ceil} => :floor,
     {[:Float], :floor} => :ceil,
+    {[:Float], :max_finite} => :min_finite,
+    {[:Float], :min_finite} => :max_finite,
     {[:Kernel], :min} => :max,
     {[:Kernel], :max} => :min,
     {[:Kernel], :round} => :trunc,

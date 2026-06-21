@@ -542,12 +542,15 @@ contract between them is the whole game.
   gated on **effective arity 2** and pipe-aware via `mutate/2`, never swapping a same-named
   user `div/3`), OperandSwap (the *operand-order* sibling of Arithmetic/List — it keeps the
   operator and transposes the operands of the **non-commutative** binary operators `a - b`→`b - a`,
-  `/`, `**`, `<>`, `++`, `--`, the `div`/`rem` call forms, and the **non-commutative date/time
+  `/`, `**`, `<>`, `++`, `--`, the `div`/`rem` call forms, the **non-commutative date/time
   calls** `{DateTime,Date,Time,NaiveDateTime}.before?`/`.after?`/`.compare`→swap the two args and
   `.diff`→swap the *first two* args (the trailing time-unit stays — ModeSwap owns that axis, so
   the two families cover diff's argument-order and unit as separate mutants; `Date.diff/2` is
-  unitless — always days — so only the two-arg transpose applies there); the remote calls
-  resolve through
+  unitless — always days — so only the two-arg transpose applies there), the **version comparison**
+  `Version.compare`→swap the two args (inverts `:lt`↔`:gt` like `DateTime.compare`), and the
+  **asymmetric `MapSet` calls** `MapSet.difference`/`subset?`→swap the two args (the commutative
+  `union`↔`intersection` *name* swap is `MapSet`'s, not an operand swap — nothing to transpose);
+  the remote calls resolve through
   `Mutare.Transform.Calls` (direct/aliased/imported all match, a shadowing alias resolves
   elsewhere) and, like `div`/`rem`, are **non-piped only** (a piped stage draws its first operand
   from the pipe, so there is nothing local to transpose); compile-safe by construction (reuses
@@ -587,7 +590,9 @@ contract between them is the whole game.
   `take`↔`drop`, `take_while`↔`drop_while`, `take_every`↔`drop_every`; `Stream`'s eager reducers
   like `all?`/`min`/`sum` have no lazy form so don't carry over),
   CollectionArity (the arity-*changing* sibling — `Enum.sort`/`sort_by`→`reverse` dropping the
-  comparator/key, `count/2`→`count/1`, `count_until/3`→`/2`, `reverse/1`↔`sort/1`; **pipe-aware**
+  comparator/key, `count/2`→`count/1`, `count_until/3`→`/2`, `reverse/1`↔`sort/1`, and
+  `Access.get_and_update/3`→`Access.get/2` dropping the update fun (the result shape changes
+  too — a test destructuring the `{get, new}` tuple kills it); **pipe-aware**
   via the optional `mutate/2` callback, since a stage's effective arity is ambiguous in a pipe),
   StringCall (complementary `String` call swaps — `starts_with?`↔`ends_with?`, `upcase`↔`downcase`,
   `trim_leading`↔`trim_trailing`, `replace_prefix`↔`replace_suffix`,
@@ -606,10 +611,14 @@ contract between them is the whole game.
   MapKeyword (the conditional-write lattice for `Map`/`Keyword` — `put`↔`put_new`↔`replace`↔
   `replace!`, swapping along the insert-new / overwrite-existing / raise-on-absent axes; all `/3`,
   arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),
+  MapSet (complementary `MapSet` set-combination swaps — `union`↔`intersection`, the two opposite
+  ways to combine two sets; `/2`, arity-blind like Collection. Only the *commutative* combinators
+  live here; the *non-commutative* `difference`/`subset?` are operand-order swaps, owned by
+  OperandSwap; family atom `:map_set`),
   CallRemoval (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/`dedup`/`shuffle`,
   the lazy `Stream` twins `uniq`/`uniq_by`/`dedup`/`dedup_by`/`intersperse`,
   `List.flatten`, `String.trim`/`downcase`/`upcase`/`reverse`/`normalize`/`replace_invalid`/
-  `pad_leading`/`pad_trailing`/`slice`/…, `URI.encode_www_form`/`decode_www_form` (both
+  `pad_leading`/`pad_trailing`/`slice`/`byte_slice`/…, `URI.encode_www_form`/`decode_www_form` (both
   `binary()->binary()`), `NaiveDateTime.beginning_of_day`/`end_of_day` (each returns a same-day
   `NaiveDateTime`), `Date.beginning_of_month`/`end_of_month`/`beginning_of_week`/`end_of_week`
   (the `Date`-level boundary normalizers, each `Date`→`Date`), **and `Kernel.abs`** (`abs(x)` → `x`), **the `Kernel`
@@ -654,8 +663,10 @@ contract between them is the whole game.
   position yields nothing, swaps are never the original; **pipe-aware** via `mutate/2`, the rule
   keyed on *effective* arity with each mode position mapped from effective to visible index),
   Numeric (complementary numeric-builtin swaps — `Kernel` `min`↔`max` (the `Enum` twins are
-  Collection's), `round`↔`trunc`, `ceil`↔`floor`, and `Float.ceil`↔`Float.floor`; the arithmetic
-  sibling of Collection/StringCall. A *qualified* call — `Float.ceil`/`floor` or an explicitly
+  Collection's), `round`↔`trunc`, `ceil`↔`floor`, `Float.ceil`↔`Float.floor`, and the `/0`
+  extreme-finite-float pair `Float.max_finite`↔`Float.min_finite`; the arithmetic
+  sibling of Collection/StringCall. A *qualified* call — `Float.ceil`/`floor`,
+  `Float.max_finite`/`min_finite`, or an explicitly
   `Kernel.`-qualified `min`/`max`/`round`/… — is an arity-blind remote rename done in `mutate/1`
   like Collection (the qualifier proves the function; every sibling exists at the same arity). A
   *bare* `Kernel` call has no module prefix to prove it is the `Kernel` one, so arity is the

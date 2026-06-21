@@ -9,7 +9,12 @@ defmodule Mutare.OperandSwapTest do
   alias Mutare.Mutators.OperandSwap
   alias Mutare.{Selector, Site}
 
-  @compile {:no_warn_undefined, [Mutare.OperandSwapFixture, Mutare.OperandSwapDateTimeFixture]}
+  @compile {:no_warn_undefined,
+            [
+              Mutare.OperandSwapFixture,
+              Mutare.OperandSwapDateTimeFixture,
+              Mutare.OperandSwapMapSetFixture
+            ]}
 
   # Isolate the family: with only OperandSwap enabled, every site is a transpose.
   @only [OperandSwap]
@@ -134,6 +139,34 @@ defmodule Mutare.OperandSwapTest do
     end
   end
 
+  describe "swaps other non-commutative remote calls (Version, MapSet)" do
+    test "Version.compare transposes its two arguments" do
+      assert mutated_codes("Version.compare(a, b)") == ["Version.compare(b, a)"]
+    end
+
+    test "MapSet.difference and subset? transpose their two arguments" do
+      assert mutated_codes("MapSet.difference(a, b)") == ["MapSet.difference(b, a)"]
+      assert mutated_codes("MapSet.subset?(a, b)") == ["MapSet.subset?(b, a)"]
+    end
+
+    test "the commutative MapSet combinators (union/intersection) are left to MapSet" do
+      # union/intersection are order-independent, so there is nothing to transpose —
+      # the name swap is `Mutare.Mutators.MapSet`'s job, not an operand swap.
+      assert swap_sites("MapSet.union(a, b)") == []
+      assert swap_sites("MapSet.intersection(a, b)") == []
+    end
+
+    test "a piped stage is skipped — its first operand comes from the pipe" do
+      assert swap_sites("a |> Version.compare(b)") == []
+      assert swap_sites("a |> MapSet.difference(b)") == []
+    end
+
+    test "structurally identical operands are not swapped" do
+      assert swap_sites("MapSet.difference(a, a)") == []
+      assert swap_sites("Version.compare(v, v)") == []
+    end
+  end
+
   describe "leaves commutative and relational operators alone" do
     test "commutative arithmetic and equality produce no swap" do
       assert swap_sites("a + b") == []
@@ -228,6 +261,32 @@ defmodule Mutare.OperandSwapTest do
       assert Mutare.OperandSwapDateTimeFixture.earlier?(earlier, later) == true
       Selector.put(site.id)
       assert Mutare.OperandSwapDateTimeFixture.earlier?(earlier, later) == false
+    end
+  end
+
+  describe "runtime semantics of a MapSet operand swap (one compile, flip the selector)" do
+    setup do
+      source = """
+      defmodule Mutare.OperandSwapMapSetFixture do
+        def only_in_a(a, b), do: MapSet.difference(a, b)
+      end
+      """
+
+      {metamutant, sites, _} = Mutare.transform_string(source, mutators: @only)
+      [site] = Enum.filter(sites, &(&1.mutator == :operand_swap))
+      Code.compile_string(metamutant)
+      Selector.put(Selector.baseline())
+      on_exit(fn -> Selector.put(Selector.baseline()) end)
+      %{site: site}
+    end
+
+    test "baseline computes a \\ b; the mutant computes b \\ a", %{site: site} do
+      a = MapSet.new([1, 2, 3])
+      b = MapSet.new([2, 3, 4])
+
+      assert Mutare.OperandSwapMapSetFixture.only_in_a(a, b) == MapSet.new([1])
+      Selector.put(site.id)
+      assert Mutare.OperandSwapMapSetFixture.only_in_a(a, b) == MapSet.new([4])
     end
   end
 end

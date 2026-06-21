@@ -1,17 +1,22 @@
 defmodule Mutare.Mutators.CollectionArity do
   @moduledoc """
-  Arity-*changing* `Enum` call mutations — drop a refining argument (or collapse to
-  a coarser operation), turning a discriminating call into a blunter one. Each asks
-  directly: does the refinement — a comparator, key function, or predicate —
-  actually matter to any test?
+  Arity-*changing* call mutations — drop a refining argument (or collapse to a
+  coarser operation), turning a discriminating call into a blunter one. Each asks
+  directly: does the refinement — a comparator, key function, predicate, or update
+  function — actually matter to any test?
 
-    * `Enum.sort/1`        → `Enum.reverse/1`     — reorder differently
-    * `Enum.sort/2`        → `Enum.reverse/1`     — drop the comparator
-    * `Enum.reverse/1`     → `Enum.sort/1`
-    * `Enum.sort_by/2`     → `Enum.reverse/1`     — drop the key function
-    * `Enum.sort_by/3`     → `Enum.reverse/1`     — drop key + sorter
-    * `Enum.count/2`       → `Enum.count/1`       — count everything, not matches
-    * `Enum.count_until/3` → `Enum.count_until/2` — drop the predicate, keep the limit
+    * `Enum.sort/1`            → `Enum.reverse/1`     — reorder differently
+    * `Enum.sort/2`            → `Enum.reverse/1`     — drop the comparator
+    * `Enum.reverse/1`         → `Enum.sort/1`
+    * `Enum.sort_by/2`         → `Enum.reverse/1`     — drop the key function
+    * `Enum.sort_by/3`         → `Enum.reverse/1`     — drop key + sorter
+    * `Enum.count/2`           → `Enum.count/1`       — count everything, not matches
+    * `Enum.count_until/3`     → `Enum.count_until/2` — drop the predicate, keep the limit
+    * `Access.get_and_update/3` → `Access.get/2`      — drop the update function,
+      collapsing a read-and-write into a plain read. The result shape changes too
+      (`{get, new_container}` → the bare value), so any test that destructures the
+      `get_and_update` tuple kills it; one that ignores the write does not — exactly
+      the "is the update path exercised?" signal.
 
   ## Why this is pipe-aware (and `Collection` isn't)
 
@@ -34,12 +39,12 @@ defmodule Mutare.Mutators.CollectionArity do
 
   Every result reuses the surviving argument AST and only *removes* arguments (or
   renames to a function that exists at the lower arity — `reverse/1`, `sort/1`,
-  `count/1`, `count_until/2` all exist), so the single metamutant build always
-  compiles. `Enum` calls are never guard-legal, so guard-safety is automatic.
+  `count/1`, `count_until/2`, `Access.get/2` all exist), so the single metamutant build
+  always compiles. `Enum`/`Access` calls are never guard-legal, so guard-safety is automatic.
 
   On by default. The arity-changing sibling of `Mutare.Mutators.Collection`. Recognises
-  `Enum` by its resolved module (`Mutare.Transform.Calls`), so an aliased or bare-imported
-  call is matched.
+  its targets by their resolved module (`Mutare.Transform.Calls`), so an aliased or
+  bare-imported call is matched.
   """
   @behaviour Mutare.Mutator
 
@@ -55,7 +60,10 @@ defmodule Mutare.Mutators.CollectionArity do
     {[:Enum], :sort_by, 2} => {:reverse, [0]},
     {[:Enum], :sort_by, 3} => {:reverse, [0]},
     {[:Enum], :count, 2} => {:count, [0]},
-    {[:Enum], :count_until, 3} => {:count_until, [0, 2]}
+    {[:Enum], :count_until, 3} => {:count_until, [0, 2]},
+    # `Access.get_and_update/3` → `Access.get/2`: keep the container + key (effective
+    # indices 0, 1), drop the update function. `Access.get/2` exists, so it compiles.
+    {[:Access], :get_and_update, 3} => {:get, [0, 1]}
   }
 
   @impl Mutare.Mutator

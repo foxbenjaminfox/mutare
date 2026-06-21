@@ -1324,6 +1324,25 @@ defmodule Mutare.TransformTest do
                end
                """)
     end
+
+    test "Access.get_and_update/3 collapses to Access.get/2, dropping the update fun, and compiles" do
+      assert {"Access.get_and_update(d, k, f)", "Access.get(d, k)"} in arity_sites("""
+             defmodule A do
+               def f(d, k, f), do: Access.get_and_update(d, k, f)
+             end
+             """)
+    end
+
+    test "piped Access.get_and_update keeps the container + key, dropping the update fun" do
+      # `d |> Access.get_and_update(k, f)` reaches the mutator as a 2-arg stage; the
+      # pipe-aware path sees effective arity 3 and keeps effective indices 0 (the piped
+      # container) and 1 (the key), so the mutant is `d |> Access.get(k)`.
+      assert {"Access.get_and_update(k, f)", "Access.get(k)"} in arity_sites("""
+             defmodule A do
+               def f(d, k, f), do: d |> Access.get_and_update(k, f)
+             end
+             """)
+    end
   end
 
   describe "ModeSwap (pipe-aware mode/unit atom swaps)" do
@@ -1678,6 +1697,23 @@ defmodule Mutare.TransformTest do
       pairs = for s <- sites, s.mutator == :numeric, do: {s.original_code, s.mutated_code}
       assert {"Float.ceil(x, 2)", "Float.floor(x, 2)"} in pairs
       assert {"Float.floor(x)", "Float.ceil(x)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "swaps Float.max_finite ↔ Float.min_finite (the /0 extreme pair), and compiles" do
+      source = """
+      defmodule F do
+        def hi, do: Float.max_finite()
+        def lo, do: Float.min_finite()
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.Numeric])
+
+      pairs = for s <- sites, s.mutator == :numeric, do: {s.original_code, s.mutated_code}
+      assert {"Float.max_finite()", "Float.min_finite()"} in pairs
+      assert {"Float.min_finite()", "Float.max_finite()"} in pairs
       assert_compiles(meta)
     end
 
@@ -2219,6 +2255,23 @@ defmodule Mutare.TransformTest do
       assert_compiles(meta)
     end
 
+    test "String.byte_slice removal returns the whole input and compiles" do
+      source = """
+      defmodule R do
+        def a(s), do: String.byte_slice(s, 1, 3)
+        def b(s), do: s |> String.byte_slice(1, 3)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+
+      pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
+      assert {"String.byte_slice(s, 1, 3)", "s"} in pairs
+      assert {"String.byte_slice(1, 3)", "Function.identity()"} in pairs
+      assert_compiles(meta)
+    end
+
     test "map/filter are not removable" do
       source = """
       defmodule R do
@@ -2717,6 +2770,58 @@ defmodule Mutare.TransformTest do
       # Arity-blind, so it is correct as a pipe stage with no special handling.
       assert "Keyword.put(k, v)" in mutated
       assert_compiles(meta)
+    end
+  end
+
+  describe "MapSet (union/intersection complementary swaps)" do
+    test "swaps union ↔ intersection in place, records the swap, and compiles — including in a pipe" do
+      source = """
+      defmodule M do
+        def a(x, y), do: MapSet.union(x, y)
+        def b(x, y), do: x |> MapSet.intersection(y)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.MapSet])
+
+      pairs = for s <- sites, s.mutator == :map_set, do: {s.original_code, s.mutated_code}
+      assert {"MapSet.union(x, y)", "MapSet.intersection(x, y)"} in pairs
+      # Arity-blind, so it is correct as a pipe stage with no special handling.
+      assert {"MapSet.intersection(y)", "MapSet.union(y)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "an aliased MapSet call mutates, keeping the alias" do
+      {meta, sites, _next_id} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            alias MapSet, as: MS
+            def a(x, y), do: MS.union(x, y)
+          end
+          """,
+          mutators: [Mutare.Mutators.MapSet]
+        )
+
+      pairs = for s <- sites, s.mutator == :map_set, do: {s.original_code, s.mutated_code}
+      assert {"MS.union(x, y)", "MS.intersection(x, y)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "a shadowing alias resolves to the local module and is left alone" do
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            alias MyApp.MapSet
+            def a(x, y), do: MapSet.union(x, y)
+          end
+          """,
+          mutators: [Mutare.Mutators.MapSet]
+        )
+
+      assert [] == Enum.filter(sites, &(&1.mutator == :map_set))
     end
   end
 

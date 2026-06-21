@@ -3,11 +3,14 @@ defmodule Mutare.Mutators.OperandSwap do
   Operand-order swaps for **non-commutative** binary operators: `a - b` → `b - a`,
   `a / b` → `b / a`, `a ** b` → `b ** a`, `a <> b` → `b <> a`, `a ++ b` → `b ++ a`,
   `a -- b` → `b -- a`, the bare-`Kernel` function-call forms `div(a, b)` → `div(b, a)`,
-  `rem(a, b)` → `rem(b, a)`, and the **non-commutative date/time calls**
+  `rem(a, b)` → `rem(b, a)`, the **non-commutative date/time calls**
   `DateTime.before?(a, b)` → `DateTime.before?(b, a)` (likewise `after?`),
   `DateTime.compare(a, b)` → `DateTime.compare(b, a)`, and
   `DateTime.diff(a, b, unit)` → `DateTime.diff(b, a, unit)` (with the `Date` /
-  `Time` / `NaiveDateTime` twins).
+  `Time` / `NaiveDateTime` twins), the **version comparison**
+  `Version.compare(a, b)` → `Version.compare(b, a)`, and the **non-commutative
+  `MapSet` calls** `MapSet.difference(a, b)` → `MapSet.difference(b, a)` and
+  `MapSet.subset?(a, b)` → `MapSet.subset?(b, a)`.
 
   The complement of `Mutare.Mutators.Arithmetic`/`List`, which swap the *operator*
   and keep the operands; this keeps the operator and swaps the operands. It catches
@@ -52,7 +55,7 @@ defmodule Mutare.Mutators.OperandSwap do
     * **`=`, `|>`** — swapping operands changes binding / data-flow semantics and is
       not compile-safe.
 
-  ## Remote non-commutative calls (`DateTime`/`Date`/`Time`/`NaiveDateTime`)
+  ## Remote non-commutative calls (`DateTime`/`Date`/`Time`/`NaiveDateTime`, `Version`, `MapSet`)
 
   The operand-swap idea applied to named *calls*, exactly as `div`/`rem` are: keep the
   function, transpose the first two arguments. Three date/time families qualify, on every
@@ -70,6 +73,17 @@ defmodule Mutare.Mutators.OperandSwap do
       the two families cover the call's two independent axes (argument order, time unit)
       as separate mutants. `Date.diff/2` carries no unit (it is always in days), so only
       the two-argument transpose applies there — `Date.diff(a, b)` → `Date.diff(b, a)`.
+
+  Two more non-commutative calls join them, the same way:
+
+    * `Version.compare(a, b)` → `Version.compare(b, a)` — the three-way version
+      comparison; like `DateTime.compare` the swap inverts `:lt` ↔ `:gt` (and leaves
+      `:eq`). No family flips its direction, so it is not a duplicate.
+    * `MapSet.difference(a, b)` → `MapSet.difference(b, a)` — set difference is
+      asymmetric (`a \\ b ≠ b \\ a`), and `MapSet.subset?(a, b)` →
+      `MapSet.subset?(b, a)` — "is `a` a subset of `b`" is not "is `b` a subset of
+      `a`". The complementary `MapSet.union` ↔ `MapSet.intersection` *name* swap is
+      `Mutare.Mutators.MapSet`'s, not here (those are commutative — nothing to transpose).
 
   Resolved through the shared `Mutare.Transform.Calls` reader, so direct, aliased
   (`alias DateTime, as: DT; DT.before?(a, b)`), and bare-imported forms all match, while
@@ -109,8 +123,11 @@ defmodule Mutare.Mutators.OperandSwap do
   # Non-commutative *remote* stdlib calls whose first two arguments we transpose (the
   # operand-swap idea applied to a named call, as `div`/`rem` are). Keyed by the
   # resolved module (`Mutare.Transform.Calls`): the chronological comparisons `before?`
-  # / `after?` / `compare` and the difference `diff` on every calendar type. `diff`'s
-  # trailing time-unit atom is left in place — `Mutare.Mutators.ModeSwap` mutates that axis.
+  # / `after?` / `compare` and the difference `diff` on every calendar type (`diff`'s
+  # trailing time-unit atom is left in place — `Mutare.Mutators.ModeSwap` mutates that
+  # axis), the three-way `Version.compare`, and the asymmetric `MapSet` operations
+  # `difference` and `subset?` (`union`/`intersection` are commutative — that name swap
+  # is `Mutare.Mutators.MapSet`'s).
   @remote_swaps MapSet.new([
                   {[:DateTime], :before?},
                   {[:Date], :before?},
@@ -127,7 +144,10 @@ defmodule Mutare.Mutators.OperandSwap do
                   {[:DateTime], :diff},
                   {[:Date], :diff},
                   {[:Time], :diff},
-                  {[:NaiveDateTime], :diff}
+                  {[:NaiveDateTime], :diff},
+                  {[:Version], :compare},
+                  {[:MapSet], :difference},
+                  {[:MapSet], :subset?}
                 ])
 
   @impl Mutare.Mutator
