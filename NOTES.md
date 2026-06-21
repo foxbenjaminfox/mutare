@@ -210,7 +210,59 @@ dispatch), and suppressing the mutant-induced compile warnings (`Mutare.Poison`
 scans that output to map errors → ids). The remaining compile long-pole is a single
 huge metamutant *module* compiling serially (Elixir parallelises across modules, not
 within one) — not easily splittable; the volume drivers are already tamed by
-per-clause lifting and `hoist_pipe` (see "lifting blowup").
+per-clause lifting and `hoist_pipe` (see "lifting blowup"), with one further driver —
+the per-site active-id read — noted below ("Hoist the per-site active-id read").
+
+### Hoist the per-site active-id read (`:persistent_term.get`) `[deferred]`
+The long-pole above is volume-bound, and one untamed driver is the selector
+*scrutinee*. Every in-place selector reads the active mutant id with a fresh
+`:persistent_term.get(:mutare_active, 0)` — `Transform.build_case/3` always uses
+`Mutare.Metamutant.subject_ast/0`, emitted **once per site**. Measured on Mutare's
+own metamutant: **~9,500 copies** across the tree (1,098 in `analyze.ex`'s metamutant
+alone, ~9,100 sites total), each a ~6-node remote call — tens of thousands of AST
+nodes that are pure scaffolding. It is emitted even **inside a lifted function**,
+whose dispatcher *already* binds `mutare_active = :persistent_term.get(...)` once and
+threads it as the clause param (`ctx.active_var`) — so the read is re-done per
+selector when the value is right there in scope.
+
+The id is **process-constant** (`:persistent_term`, write-once, set once per run
+before any test executes), so reading it once per function body and having every
+selector read that variable is semantically identical — and a win on *both* axes:
+
+  - **compile** — fewer/smaller nodes for the Elixir frontend to expand and fewer
+    identical subtrees for the optimizer to fold (CSE); the frontend and SSA passes
+    are super-linear in module size, so it helps the long-pole modules most.
+  - **runtime** — collapses the per-line `:persistent_term` lookups DESIGN.md flags
+    as the "per-site runtime tax" to one per function activation. **No tradeoff**,
+    unlike the `no_ssa_opt*` compiler options (which buy compile time with per-run
+    runtime — see "Compiler options for the one metamutant compile").
+
+Why it is a refactor, not a one-liner — and where the risk is:
+
+  - **Lifted clauses are the cheap half.** The threaded param `ctx.active_var` is
+    already in scope; `build_case` only needs to use it as the scrutinee there
+    instead of `subject_ast/0`. The catch-all already reads `var`
+    (`Recorder.record_ast(ids, var)`), so coverage stays consistent.
+  - **In-place (non-lifted) functions need a prologue binding** —
+    `mutare_active = :persistent_term.get(...)` at the top of the function body — so
+    the emit path must know the **enclosing function boundary**. Today in-place
+    selectors are spliced node-locally with no function-level hook, so this is the
+    structural part. A selector in a module body / `:scaffold` position has no
+    function to host the binding (rare — those run once at compile time as baseline);
+    they keep the inline read.
+  - **The load-bearing risk is the recognizers.** `Mutare.Metamutant.subject?/1` and
+    `pattern_subject?/1` identify a selector `case` by its `:persistent_term.get`
+    scrutinee; `Mutare.Manifest`'s lazy parse uses them to map a metamutant compile
+    error back to a mutant's generated line-range (poison recovery). A bare-variable
+    scrutinee defeats that match, so the walk must re-key on a different marker (the
+    catch-all's coverage-record shape, or a synthesized `meta` tag on the `case`) or
+    poison line-mapping silently breaks — and a poison the runner can't locate is one
+    the single build never compiles past.
+
+Net: a principled next step after dep-seeding / per-clause lifting / `hoist_pipe`,
+and the only volume lever that *also* speeds every per-mutant run — but it reaches
+into the emit core and the `Manifest` poison contract, so it is staged separately
+from the cheap compiler-option win.
 
 ### Umbrella support `[M5 / in progress]`
 Following the cargo-mutants precedent: **copy the whole umbrella, mutate a scoped
