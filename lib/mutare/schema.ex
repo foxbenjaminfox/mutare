@@ -37,8 +37,9 @@ defmodule Mutare.Schema do
   `opts` is a `Mutare.Options` (or a keyword list resolved into one). It reads
   `:paths` (directories to scan recursively, or individual `.ex` files),
   `:exclude` (wildcard patterns dropped),
-  `:only_files` (restrict to an explicit set, e.g. `--since`), and `:mutators`
-  (passed through to `Mutare.Transform`).
+  `:only_files` (restrict to an explicit set, e.g. `--since`), `:mutators`
+  (passed through to `Mutare.Transform`), and `:max_mutants` (cap the schema to
+  the first N mutants; see `from_files/4`).
   """
   @spec build(Path.t(), Options.t() | keyword()) :: t()
   def build(root, opts \\ []) do
@@ -73,6 +74,13 @@ defmodule Mutare.Schema do
 
   `skip_ids` is poison-recovery state (mutant ids to drop), threaded separately
   from the user `Options` because it is internal transform plumbing, not config.
+
+  Honors `:max_mutants` (`--max-mutants`): the finished schema is capped to its
+  first N sites (in source order). The cap is applied here — inside *every*
+  `from_files/4` — so it survives a poison rebuild (which regenerates the sites
+  from scratch); the per-file metamutant sources still embed every mutant, so
+  poison recovery is unaffected and a poisoned site within the first N is simply
+  backfilled by the next one on rebuild.
   """
   @spec from_files([Path.t()], Path.t(), Options.t() | keyword(), MapSet.t()) :: t()
   def from_files(files, root \\ ".", opts \\ [], skip_ids \\ MapSet.new()) do
@@ -96,6 +104,7 @@ defmodule Mutare.Schema do
     end)
     |> elem(0)
     |> finalize()
+    |> limit(options.max_mutants)
   end
 
   @doc """
@@ -223,6 +232,16 @@ defmodule Mutare.Schema do
   defp finalize(%__MODULE__{} = schema) do
     %{schema | sites: Enum.reverse(schema.sites), skipped: Enum.reverse(schema.skipped)}
   end
+
+  # Cap the schema to at most `max` mutants (`--max-mutants`), keeping the first
+  # `max` sites in source order. `nil` means no cap. Applied after `finalize/1`
+  # (so the sites are already in order) and inside every `from_files/4` (so a
+  # poison rebuild stays capped). Only the *run* is bounded — the metamutant
+  # sources under `:metamutants` still embed every mutant.
+  defp limit(%__MODULE__{} = schema, nil), do: schema
+
+  defp limit(%__MODULE__{sites: sites} = schema, max) when is_integer(max) and max > 0,
+    do: %{schema | sites: Enum.take(sites, max)}
 
   defp discover(root, paths, exclude) do
     excluded = Enum.flat_map(exclude, &Path.wildcard(Path.join(root, &1)))

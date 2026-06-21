@@ -26,7 +26,8 @@ defmodule Mutare.Config do
   Recognised flags: `:only` (→ `:paths`; a directory to scan or a single `.ex`
   file), `:mutators` (CSV → modules),
   `:min_score`, `:sandbox`, `:keep_sandbox`, `:full` (→ `test_selection: :full`),
-  `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`. A `:mutators`
+  `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`,
+  `:max_mutants`. A `:mutators`
   value of `:all`
   (or none) resolves to "use the default set" by omitting the key, so
   `Mutare.Transform` picks it. Raises `ArgumentError` on an unknown mutator
@@ -50,6 +51,7 @@ defmodule Mutare.Config do
     |> put_unless_nil(:baseline_runs, flags[:baseline_runs])
     |> put_unless_nil(:harness_retries, flags[:harness_retries])
     |> put_unless_nil(:max_harness_error_rate, flags[:max_harness_error_rate])
+    |> put_unless_nil(:max_mutants, flags[:max_mutants])
     |> put_unless_nil(:mutators, flags[:mutators] && parse_families(flags[:mutators]))
     |> normalize_mutators()
     |> resolve_reporters(flags)

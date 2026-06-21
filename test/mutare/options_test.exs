@@ -212,6 +212,22 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":max_mutants" do
+    test "defaults to nil (no cap) and accepts a positive integer" do
+      assert Options.new([]).max_mutants == nil
+      assert Options.new(max_mutants: nil).max_mutants == nil
+      assert Options.new(max_mutants: 50).max_mutants == 50
+    end
+
+    test "rejects zero, negatives, and non-integers" do
+      for bad <- [0, -1, 1.5, "10"] do
+        assert_raise ArgumentError, ~r/:max_mutants must be a positive integer or nil/, fn ->
+          Options.new(max_mutants: bad)
+        end
+      end
+    end
+  end
+
   describe ":min_score" do
     test "accepts nil or a number in 0..100" do
       assert Options.new(min_score: nil).min_score == nil

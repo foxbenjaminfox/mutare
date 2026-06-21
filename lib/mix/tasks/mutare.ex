@@ -26,6 +26,8 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --max-harness-error-rate 0.3
                                           # abort if >30% of the mutants that ran
                                           #   failed at the harness level (1.0 = off)
+      mix mutare --max-mutants 50         # test at most 50 mutants (the first 50
+                                          #   in source order) — a quick smoke run
       mix mutare --sandbox /tmp/mut --keep-sandbox
                                           # reuse the sandbox + its build cache
                                           #   across runs (CI); see below
@@ -79,6 +81,7 @@ defmodule Mix.Tasks.Mutare do
     baseline_runs: :integer,
     harness_retries: :integer,
     max_harness_error_rate: :float,
+    max_mutants: :integer,
     format: :string,
     output: :string,
     app: :string,
@@ -103,7 +106,7 @@ defmodule Mix.Tasks.Mutare do
       Live.phase(live, :scanning)
       schema = Schema.build(root, %{options | on_scan: &Live.scanned(live, &1)})
       Live.clear(live)
-      announce(schema, project)
+      announce(schema, project, options)
 
       options = %{
         options
@@ -170,11 +173,12 @@ defmodule Mix.Tasks.Mutare do
 
   # --- output --------------------------------------------------------------
 
-  defp announce(%Schema{} = schema, %Project{} = project) do
+  defp announce(%Schema{} = schema, %Project{} = project, %Options{} = options) do
     files = schema.metamutants |> map_size()
 
     Mix.shell().info(
-      "mutare#{scope_label(project)}: #{Schema.count(schema)} mutants across #{files} file(s)"
+      "mutare#{scope_label(project)}: #{Schema.count(schema)} mutants" <>
+        "#{cap_label(options)} across #{files} file(s)"
     )
 
     for {file, reason} <- schema.skipped,
@@ -184,6 +188,11 @@ defmodule Mix.Tasks.Mutare do
     # loop) is shown live by `Mutare.Report.Live`, so we don't pre-announce it here.
     Mix.shell().info("")
   end
+
+  # `--max-mutants` caps the run; the count above is already the (capped) number
+  # we'll test, so note the cap so a small count isn't a surprise.
+  defp cap_label(%Options{max_mutants: nil}), do: ""
+  defp cap_label(%Options{max_mutants: n}), do: " (--max-mutants #{n})"
 
   defp scope_label(%Project{umbrella?: true, mutate_scope: scope}) do
     " (umbrella: #{Enum.map_join(scope, ", ", & &1.app)})"

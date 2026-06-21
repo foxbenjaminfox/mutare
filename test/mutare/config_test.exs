@@ -82,6 +82,12 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([baseline_runs: 1], baseline_runs: 3)[:baseline_runs] == 3
     end
 
+    test "--max-mutants passes through; flag wins over file; absent leaves it to default" do
+      assert Config.merge([], max_mutants: 50)[:max_mutants] == 50
+      refute Keyword.has_key?(Config.merge([], []), :max_mutants)
+      assert Config.merge([max_mutants: 10], max_mutants: 25)[:max_mutants] == 25
+    end
+
     test "file config mutators: :all resolves to the default set (key omitted)" do
       refute Keyword.has_key?(Config.merge([mutators: :all], []), :mutators)
     end

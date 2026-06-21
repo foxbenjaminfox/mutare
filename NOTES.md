@@ -3325,6 +3325,37 @@ ETA) that animates via an internal tick timer. Design decisions worth rememberin
   one activity line), and a permanent "baseline green in Ns" timing note (would need
   threading `baseline_ms` through `:on_phase`).
 
+### `--max-mutants N` — cap the number of mutants tested `[done]`
+
+A quick-smoke / time-box knob: `mix mutare --max-mutants 50` (or `max_mutants: 50`
+in `.mutare.exs`) tests at most the first N mutants in source order, rather than
+the whole population. The dominant cost is the per-mutant suite run, so bounding
+*how many run* bounds the run — useful for a fast confidence check or a CI shard.
+
+Design choices, and why:
+
+- **Cap the run, not the generation.** The flag truncates `Mutare.Schema`'s `sites`
+  list to the first N (`Schema.limit/2`); the per-file metamutant *sources* still
+  embed every mutant. Limiting generation instead would mean stopping the staged
+  transform mid-stream and would entangle the globally-unique, stable id threading —
+  far more invasive for a knob whose whole point is the *run* (we still "compile
+  once"; only the suite-per-mutant loop shrinks). The runner, coverage probe, and
+  report all read `schema.sites`, so they bound themselves with no extra plumbing.
+- **Applied inside `from_files/4`, so it survives a poison rebuild.** Poison recovery
+  regenerates the schema from scratch (`Schema.rebuild`), so a cap applied only at
+  the `build/2` boundary would silently *un-cap* after a recovery. Threading it
+  through the one `from_files` chokepoint (it reads `options.max_mutants`) keeps every
+  schema — initial and rebuilt — bounded. Because the metamutant still embeds every
+  mutant, poison detection is unaffected; a poisoned site *within* the first N is just
+  backfilled by the next mutant on rebuild (the rebuilt prefix shifts down by one).
+- **First N, deterministic.** Not a random sample (reproducible > spread, and the
+  workflow has no seed to thread); the first N happen to cluster in the first
+  file(s), which is fine for a smoke run. A spread/sharded selection is a possible
+  later refinement.
+- **`Mutare.Options` validates it** (positive integer or `nil` = no cap), same as
+  every other knob, so a bad `--max-mutants 0` fails at the edge. The Mix task's
+  announce notes `(--max-mutants N)` so the smaller count isn't a surprise.
+
 ## Dogfooding findings (M1)
 
 Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:

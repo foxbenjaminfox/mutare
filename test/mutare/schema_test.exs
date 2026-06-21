@@ -64,6 +64,39 @@ defmodule Mutare.SchemaTest do
     refute_received {:scan, _}
   end
 
+  test ":max_mutants caps the schema to the first N sites (in source order)", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/sub/b.ex", "defmodule B do\n  def g(a, b), do: a >= b\nend\n")
+
+    # Without the cap there are 3 sites (see the id-threading test above).
+    schema = Schema.build(root, mutators: @probe, max_mutants: 2)
+
+    assert Schema.count(schema) == 2
+    assert Enum.map(schema.sites, & &1.id) == [1, 2]
+  end
+
+  test ":max_mutants is a no-op when there are fewer mutants than the cap", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+
+    schema = Schema.build(root, mutators: @probe, max_mutants: 10)
+
+    assert Schema.count(schema) == 1
+  end
+
+  test ":max_mutants survives a poison rebuild, keeping the cap and stable ids", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/sub/b.ex", "defmodule B do\n  def g(a, b), do: a >= b\nend\n")
+
+    schema = Schema.build(root, mutators: @probe, max_mutants: 2)
+
+    # Poison recovery re-runs `from_files` (via `rebuild`); the cap must be
+    # reapplied there, not silently lost, so the run stays bounded after recovery.
+    rebuilt = Schema.rebuild(schema, root, [mutators: @probe, max_mutants: 2], MapSet.new())
+
+    assert Schema.count(rebuilt) == 2
+    assert Enum.map(rebuilt.sites, & &1.id) == [1, 2]
+  end
+
   test "files with no sites are sources-only, not metamutants", %{root: root} do
     write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
     # `do: nil` is genuinely site-less: a `nil` tail is skipped by return-value
