@@ -300,6 +300,11 @@ defmodule Mutare.Mutator do
   this transform runs, so it is *not* in the node's own `args`. A pipe-aware mutator
   (`mutate/2`) recovers the real arity as `length(args) + if(piped?, do: 1, else: 0)`.
   The single home for that off-by-one — see `Mutare.Mutators.CollectionArity` et al.
+
+      iex> Mutare.Mutator.effective_arity([:a, :b], false)
+      2
+      iex> Mutare.Mutator.effective_arity([:b], true)
+      2
   """
   @spec effective_arity([Macro.t()], boolean()) :: non_neg_integer()
   def effective_arity(args, piped?) when is_list(args),
@@ -313,6 +318,13 @@ defmodule Mutare.Mutator do
   node's own `args`, so it has no visible index (`nil`) and every later index
   shifts down by one. Unpiped, effective and visible indices coincide. The single
   home for that mapping — see `Mutare.Mutators.{ModeSwap,CollectionArity}`.
+
+      iex> Mutare.Mutator.visible_index(2, false)
+      2
+      iex> Mutare.Mutator.visible_index(0, true)
+      nil
+      iex> Mutare.Mutator.visible_index(1, true)
+      0
   """
   @spec visible_index(non_neg_integer(), boolean()) :: non_neg_integer() | nil
   def visible_index(pos, false), do: pos
@@ -334,7 +346,18 @@ defmodule Mutare.Mutator do
     end)
   end
 
-  @doc "Whether `term` is a module that implements this behaviour."
+  @doc """
+  Whether `term` is a module that implements this behaviour (exports `mutate/1`
+  and `name/0`). Total over any term, so a non-module entry in a `:mutators` list
+  is *reported* by resolution rather than crashing a guard.
+
+      iex> Mutare.Mutator.implemented_by?(Mutare.Mutators.Arithmetic)
+      true
+      iex> Mutare.Mutator.implemented_by?(Enum)
+      false
+      iex> Mutare.Mutator.implemented_by?("arithmetic")
+      false
+  """
   @spec implemented_by?(term()) :: boolean()
   def implemented_by?(module) when is_atom(module) do
     Code.ensure_loaded?(module) and
@@ -361,6 +384,10 @@ defmodule Mutare.Mutator do
   participate here. `context` defaults to a non-piped node; the transform passes
   `%{piped: true}` for a `|>` right-hand side. Each result is tagged with its
   **spec** (not the bare module), so the family name and config travel with it.
+
+      iex> [{spec, mutated}] = Mutare.Mutator.mutations({:+, [], [1, 2]}, [Mutare.Mutators.Arithmetic])
+      iex> {spec.name, mutated}
+      {:arithmetic, {:-, [], [1, 2]}}
   """
   @spec mutations(Macro.t(), [Spec.t() | module()], context()) :: [{Spec.t(), Macro.t()}]
   def mutations(node, mutators, context \\ %{piped: false}) do

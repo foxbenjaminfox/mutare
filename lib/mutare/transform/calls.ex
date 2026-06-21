@@ -67,6 +67,26 @@ defmodule Mutare.Transform.Calls do
 
   @doc """
   Deconstruct a recognised stdlib call into `{module, fun, args, rebuild}`, or `nil`.
+
+  `module` is the resolved key — an Elixir path (`[:String]`) or an Erlang atom
+  (`:binary`); `rebuild.(new_fun, new_args)` re-emits a swap in the *written* form
+  (so a swap keeps the source's `Mod.`/alias and stays a minimal diff).
+
+      iex> node = Sourceror.parse_string!("String.upcase(s)")
+      iex> {module, fun, args, rebuild} = Mutare.Transform.Calls.resolved_call(node)
+      iex> {module, fun}
+      {[:String], :upcase}
+      iex> Sourceror.to_string(rebuild.(:downcase, args))
+      "String.downcase(s)"
+
+      iex> erlang = Sourceror.parse_string!(":binary.first(b)")
+      iex> {module, fun, _args, _rebuild} = Mutare.Transform.Calls.resolved_call(erlang)
+      iex> {module, fun}
+      {:binary, :first}
+
+      iex> # a bare local call resolves to nothing
+      iex> Mutare.Transform.Calls.resolved_call(Sourceror.parse_string!("foo(x)"))
+      nil
   """
   @spec resolved_call(Macro.t()) ::
           {module_key(), atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
