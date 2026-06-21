@@ -79,31 +79,47 @@ defmodule Mutare.Transform.Uses do
   # expanding `__using__`: a macro that branches on `Mix.env()` then injects the directives that
   # will actually be in scope when the metamutant compiles, not the scan-env ones. (Compile-time
   # config baked into the already-loaded modules can't be re-mirrored in-process — only a runtime
-  # `Mix.env()` read is.) The scan is sequential, so the global set/restore can't race.
+  # `Mix.env()` read is.)
+  #
+  # `Mix.env/1` mutates **global** state, so two callers running concurrently in a non-sandbox env
+  # could interleave their save/restore — one capturing the other's transient `:test` as its
+  # "previous" and leaving the VM in the wrong env. Two guards make this safe:
+  #
+  #   * **Fast path** when already at the sandbox env: no mutation at all. The test suite and the
+  #     sandbox run *in* `:test`, so every concurrent transform there (async tests, parallel
+  #     library callers) skips the swap entirely — nothing to race.
+  #   * **Serialize** the actual swap (the CLI's `:dev`) behind a node-local global lock
+  #     (`:global.trans` — no supervised process needed, and Mutare has none). Concurrent swappers
+  #     then run one at a time, each reading the true previous env and restoring it.
   #
   # `Mix.env/0` raises if Mix hasn't been *started* — the public `transform_string/2` API embedded
   # in a plain process that never ran Mix — in which case there's no sandbox env to mirror, so we
   # run unmirrored (the fallback keeps the library API working without Mix).
   defp with_sandbox_env(fun) do
-    case sandbox_swap() do
-      {:ok, previous} ->
-        try do
-          fun.()
-        after
-          Mix.env(previous)
-        end
-
-      :unavailable ->
-        fun.()
+    case current_env() do
+      {:ok, @sandbox_env} -> fun.()
+      {:ok, _previous} -> swap(fun)
+      :unavailable -> fun.()
     end
   end
 
-  defp sandbox_swap do
-    previous = Mix.env()
-    Mix.env(@sandbox_env)
-    {:ok, previous}
+  defp current_env do
+    {:ok, Mix.env()}
   rescue
     _ -> :unavailable
+  end
+
+  defp swap(fun) do
+    :global.trans({{__MODULE__, :sandbox_env}, self()}, fn ->
+      previous = Mix.env()
+      Mix.env(@sandbox_env)
+
+      try do
+        fun.()
+      after
+        Mix.env(previous)
+      end
+    end)
   end
 
   @doc """
@@ -240,7 +256,8 @@ defmodule Mutare.Transform.Uses do
   # (an unresolved parent ⇒ unresolved child). A leading `Elixir` segment (`defmodule Elixir.Bar`)
   # is the **absolute** escape — it defines `Bar`, never `Parent.Elixir.Bar` — so it is not
   # prefixed. A bare-atom head (`defmodule :foo`) is itself a concrete module — atoms aren't
-  # namespaced — so it resolves to that atom.
+  # namespaced — so it resolves to that atom (Sourceror wraps the literal as `{:__block__, _,
+  # [:foo]}`).
   #
   # A **top-level** (no-parent) head is resolved through the alias env — `alias RealParent, as: RP;
   # defmodule RP.Child` defines `RealParent.Child`, so `__CALLER__.module` must be that. A **nested**
@@ -257,7 +274,8 @@ defmodule Mutare.Transform.Uses do
     end
   end
 
-  defp child_module(mod, _parent, _env) when is_atom(mod), do: mod
+  defp child_module({:__block__, _, [atom]}, _parent, _env) when is_atom(atom), do: atom
+  defp child_module(atom, _parent, _env) when is_atom(atom), do: atom
   defp child_module(_mod_ast, _parent, _env), do: @unresolved
 
   # The implementation module of a `defimpl P, for: T`: `Module.concat(P, T)` (absolute), both

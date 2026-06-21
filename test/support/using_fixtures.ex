@@ -146,6 +146,18 @@ defmodule Mutare.Test.EnvSensitiveUsing do
   end
 end
 
+defmodule Mutare.Test.SlowUsing do
+  @moduledoc """
+  A `__using__` that sleeps during expansion, widening the window for the concurrency test: with a
+  non-serialized env mirror, overlapping swaps would interleave their save/restore and corrupt the
+  global `Mix.env()`.
+  """
+  defmacro __using__(_opts) do
+    Process.sleep(15)
+    quote do: import(Map, only: [fetch: 2])
+  end
+end
+
 defmodule Mutare.Test.RaisingUsing do
   @moduledoc "A `__using__` that raises at expansion — must degrade to no directives, never crash."
   defmacro __using__(_opts), do: raise("boom from __using__")

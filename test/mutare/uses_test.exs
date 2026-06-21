@@ -381,6 +381,21 @@ defmodule Mutare.UsesTest do
                "alias RealParent.Child, as: TheCaller"
              ]
     end
+
+    test "a `use` inside an atom-named module (`defmodule :foo`) is expanded" do
+      source = """
+      defmodule :mutare_atom_mod do
+        use Mutare.Test.ControllerUsing
+      end
+      """
+
+      # Sourceror wraps the atom head as `{:__block__, _, [:mutare_atom_mod]}` — the module is the
+      # atom itself, so the `use` inside must still be stamped (its import surfaced).
+      assert "import Enum, only: [reject: 2]" in Enum.map(
+               directives_at(source),
+               &Macro.to_string/1
+             )
+    end
   end
 
   describe "module-defining forms (defimpl / defprotocol)" do

@@ -32,6 +32,31 @@ defmodule Mutare.UsesEnvTest do
       # harvest the `:dev` branch (`delete`) and mis-resolve later calls.
       assert "import Map, only: [fetch: 2]" in rendered
       refute "import Map, only: [delete: 2]" in rendered
+
+      # The swap restored the original env.
+      assert Mix.env() == :dev
+    after
+      Mix.env(previous)
+    end
+  end
+
+  test "concurrent transforms in a non-sandbox env don't corrupt the global Mix env" do
+    source = "defmodule UsesSlow do\n  use Mutare.Test.SlowUsing\nend"
+
+    previous = Mix.env()
+    Mix.env(:dev)
+
+    try do
+      # Many overlapping expansions (each sleeps): a non-serialized mirror would interleave its
+      # save/restore — one capturing another's transient `:test` and leaving the VM at `:test`.
+      results =
+        1..8
+        |> Enum.map(fn _ -> Task.async(fn -> directives_at(source) end) end)
+        |> Enum.map(&Task.await(&1, 10_000))
+
+      assert Enum.all?(results, &("import Map, only: [fetch: 2]" in &1))
+      # Serialized swaps each restore the true previous env, so the VM is left as we set it.
+      assert Mix.env() == :dev
     after
       Mix.env(previous)
     end
