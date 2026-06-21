@@ -2617,12 +2617,24 @@ handles only `not`):
    genuinely new mutants (`!(a >= b)` ≡ `a < b` ≠ the strip `a > b`). That is precisely
    *why* only the four equality operators join `in` in the suppressed set.
 
-2. **`x in [list]`** — `List` collapsing the RHS literal to `[]` makes `x in []` ≡
-   `false`, which `Conditional` already produces on the `in` node. Only `List` matches a
-   bare list-literal node, so the `in` clause routes its RHS through `analyze_in_rhs`
-   (elements still descend — their literals mutate — only the *wrapper* is withheld). A
-   standalone `[…]` is untouched; the special case is the `in`-RHS position alone. It
-   holds under `not(x in […])` too (there `not(x in [])` ≡ `true` ≡ the outer Conditional).
+2. **`x in <collection literal>`** — a mutation that *empties* the RHS collection makes
+   `x in <empty>` constantly `false`, which `Conditional` already produces on the `in`
+   node. This covers `List` (`→ []`), `MapLiteral` (`→ %{}`), `WordListLiteral` (`→ ~w()`)
+   and `CharlistLiteral` (`→ ~c""`) uniformly, via one recognizer
+   `AST.empty_collection_literal?/1`. The `in` clause routes its RHS through
+   `analyze_in_rhs`, which analyzes it *normally* (keys/values/elements still mutate) then
+   drops — **from the top node only** — any candidate whose result is an empty enumerable.
+   Two properties earn their keep:
+   - **per mutation, not per node** — a word/charlist sigil keeps its non-empty *sentinel*
+     (`~w(mutare)`/`~c"mutare"`, a genuine membership test) and loses only its empty
+     sibling; `List`/`MapLiteral` have a single empty mutation, so they vanish from the RHS.
+   - **top-node scoped** — a *nested* empty (`x in foo([a, b])` → `foo([])`, or
+     `x in [a, [1, 2]]` → `[a, []]`) is **not** constantly false, so it is left alone.
+   Non-list/map collections (tuple, bitstring) are excluded — they aren't enumerable, so
+   `x in {…}` raises rather than testing membership. The rule holds under `not(x in …)`
+   too (`not(x in <empty>)` ≡ `true` ≡ the outer Conditional), and in **guards** for the
+   collections legal there — lists and word/charlist sigils; a *map* RHS is illegal in a
+   guard `in`, so it can't occur — via the same recognizer in `Transform.Tag`.
 
 3. **Double negation `not not x` / `!!x`** — the **same** operator twice. Both Logical
    strips yield the identical single-negation, and Conditional on the inner duplicates the

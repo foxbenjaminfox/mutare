@@ -20,6 +20,12 @@ defmodule Mutare.Mutators.WordListLiteral do
   are touched: an interpolated `~w(a \#{x} b)` parses with multiple `<<>>` parts
   (not a single binary), so the operand is always a static binary — `~W` never
   interpolates, so it always is.
+
+  On the **RHS of `in`** (`x in ~w(a b)`) the *empty* variant `~w()` is dropped — it is
+  `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already produces on the `in`
+  node — but the non-empty *sentinel* `~w(mutare)` is kept (a real membership test). The
+  drop is per-mutation, shared via `Mutare.AST.empty_collection_literal?/1`. See NOTES
+  "Equivalent-sibling suppression, generalized".
   """
   @behaviour Mutare.Mutator
 

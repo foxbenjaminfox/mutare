@@ -547,18 +547,33 @@ defmodule Mutare.Transform.Analyze do
   # children, but attach no candidate here.
   defp analyze(node, context, mutators), do: recurse(node, context, mutators)
 
-  # The RHS of `in` when it is a non-empty list *literal* (`x in [a, b]`): descend its
-  # elements as runtime (so element literals still mutate) but do **not** offer the list
-  # *wrapper* — only `Mutare.Mutators.List` matches a bare list-literal node, and its `[]`
-  # collapse here makes `x in []` ≡ `false`, a mutant Conditional already produces on the
-  # enclosing `in`. Any other RHS (a variable, range, …) is analyzed normally — List never
-  # fires on it anyway.
-  defp analyze_in_rhs({:__block__, meta, [elements]}, mutators)
-       when is_list(elements) and elements != [] do
-    {:__block__, meta, [Enum.map(elements, &analyze(&1, :runtime, mutators))]}
+  # The RHS of `in`: analyze it as ordinary runtime (so its keys/values/elements still
+  # mutate), then drop from the **top node** any mutation whose result is an *empty
+  # enumerable literal* — `[]` (List), `%{}` (MapLiteral), `~w()` (WordListLiteral),
+  # `~c""` (CharlistLiteral). On the right of `in`, `x in <empty>` is constantly `false`,
+  # exactly the mutant Conditional already produces on the `in` node, so it is redundant.
+  # The drop is **per mutation**, not per node: a word/charlist sigil keeps its non-empty
+  # sentinel (`~w(mutare)`) — only its empty sibling goes. It is scoped to the top node, so
+  # an empty mutation on a *nested* literal (`x in foo([a, b])` → `foo([])`, which is *not*
+  # constantly false) is left alone. Any non-collection RHS (a variable, range, call) yields
+  # no empty-collection mutation, so nothing is dropped.
+  defp analyze_in_rhs(right, mutators) do
+    right |> analyze(:runtime, mutators) |> drop_empty_collection_candidates()
   end
 
-  defp analyze_in_rhs(right, mutators), do: analyze(right, :runtime, mutators)
+  defp drop_empty_collection_candidates({form, meta, args} = node) when is_list(meta) do
+    case Keyword.get(meta, :mutare) do
+      nil -> node
+      cands -> {form, Keyword.put(meta, :mutare, Enum.reject(cands, &empty_collection?/1)), args}
+    end
+  end
+
+  defp drop_empty_collection_candidates(node), do: node
+
+  defp empty_collection?(%Candidate.InPlace{mutated: mutated}),
+    do: AST.empty_collection_literal?(mutated)
+
+  defp empty_collection?(_candidate), do: false
 
   # The right side of a `|>` (see the `:|>` clause of `analyze/3`): offer it to
   # mutators *as piped* (so an arity-changing mutator sees the effective arity =

@@ -14,6 +14,12 @@ defmodule Mutare.Mutators.CharlistLiteral do
   was. Only non-interpolated charlists are touched: an interpolated `~c"a\#{x}b"`
   parses with multiple `<<>>` parts (not a single binary), so the operand is
   always a static charlist.
+
+  On the **RHS of `in`** (`x in ~c"ab"`) the *empty* variant `~c""` is dropped — it is
+  `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already produces on the `in`
+  node — but the non-empty sentinel `~c"mutare"` is kept. Per-mutation, shared via
+  `Mutare.AST.empty_collection_literal?/1`. See NOTES "Equivalent-sibling suppression,
+  generalized".
   """
   @behaviour Mutare.Mutator
 

@@ -552,8 +552,11 @@ contract between them is the whole game.
   comparisons are left to Conditional, no duplicate — a literal `true`/`false`/`nil`, and a binding
   `if x = … do` (the leaked binding would be unbound once the condition is forced, poisoning the
   body); compile-safe by construction),
-  List (`++`↔`--`, non-empty list literal → `[]`; the `[]` collapse is suppressed on the **RHS of `in`**,
-  where `x in []` ≡ `false` ≡ Conditional — the equivalent-sibling suppression), Collection (`Enum`/`List` predicate swaps,
+  List (`++`↔`--`, non-empty list literal → `[]`; the `[]` collapse — and any collection-emptying mutant
+  (`MapLiteral`'s `%{}`, `WordListLiteral`'s `~w()`, `CharlistLiteral`'s `~c""`) — is suppressed on the
+  **RHS of `in`**, where `x in <empty>` ≡ `false` ≡ Conditional; the equivalent-sibling suppression,
+  recognised by `Mutare.AST.empty_collection_literal?/1`, per-mutation and top-node-scoped so a sigil
+  keeps its sentinel and a nested literal keeps its `[]`), Collection (`Enum`/`List` predicate swaps,
   **arity-blind** — a rename keeping the arg list, valid at any arity/pipe position — plus the
   lazy `Stream` twins of the directional `Enum` pairs that exist in `Stream`: `filter`↔`reject`,
   `take`↔`drop`, `take_while`↔`drop_while`, `take_every`↔`drop_every`; `Stream`'s eager reducers

@@ -16,6 +16,11 @@ defmodule Mutare.Mutators.MapLiteral do
       `%{}` *inside* a `%Struct{}` to a mutator (emptying it would drop required
       fields / change the struct), though the struct's field *values* still mutate.
       So this module only ever sees standalone map literals.
+    * **The RHS of `in`** (`x in %{…}`) — `x in %{}` ≡ `false`, which
+      `Mutare.Mutators.Conditional` already produces on the `in` node, so `Transform`
+      drops it there (shared with the other collection-emptying families via
+      `Mutare.AST.empty_collection_literal?/1`). See NOTES "Equivalent-sibling
+      suppression, generalized".
   """
   @behaviour Mutare.Mutator
 

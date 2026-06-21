@@ -61,6 +61,29 @@ defmodule Mutare.AST do
   def nil_literal?(_), do: false
 
   @doc """
+  Whether `node` is an *always-empty enumerable literal* — the result of a
+  collection-emptying mutation: `List` → `[]`, `MapLiteral` → `%{}`,
+  `WordListLiteral` → `~w()`, `CharlistLiteral` → `~c""`.
+
+  On the right side of `in`, such a value makes `x in <empty>` constantly `false`,
+  which `Mutare.Mutators.Conditional` already produces on the `in` node — so
+  `Mutare.Transform` drops these mutations there as redundant siblings. A non-list/map
+  collection (tuple, bitstring) is deliberately *excluded*: it isn't enumerable, so
+  `x in {…}` raises rather than testing membership (emptying it changes nothing
+  observable about that).
+  """
+  @spec empty_collection_literal?(Macro.t()) :: boolean()
+  def empty_collection_literal?([]), do: true
+  def empty_collection_literal?({:__block__, _meta, [[]]}), do: true
+  def empty_collection_literal?({:%{}, _meta, []}), do: true
+
+  def empty_collection_literal?({sigil, _meta, [{:<<>>, _bmeta, [""]}, _modifiers]})
+      when sigil in [:sigil_w, :sigil_W, :sigil_c, :sigil_C],
+      do: true
+
+  def empty_collection_literal?(_node), do: false
+
+  @doc """
   The survivor sentinel as a string: a value distinctive enough to flag a
   surviving mutant in a report, yet unlikely to occur in real code. The literal
   families (`StringLiteral`, `ReturnValue`, …) all substitute it, so the single

@@ -2106,6 +2106,71 @@ defmodule Mutare.TransformTest do
       assert_compiles(meta)
     end
 
+    test "a body `x in %{map}`: MapLiteral's `%{}` collapse is suppressed (≡ Conditional's false)" do
+      {meta, triples} =
+        redundancy_triples(
+          "def f(x), do: x in %{a: 1}",
+          [Mutare.Mutators.MapLiteral, Mutare.Mutators.Conditional]
+        )
+
+      # `x in %{}` is constantly false, exactly Conditional's mutant on the `in` node — the
+      # same rule as lists (a map can only appear in a *body* `in`; a guard `in` rejects it).
+      assert triples == [
+               {:conditional, "x in %{a: 1}", "true"},
+               {:conditional, "x in %{a: 1}", "false"}
+             ]
+
+      refute Enum.any?(triples, fn {m, _o, _mut} -> m == :map end)
+      assert_compiles(meta)
+    end
+
+    test "a body `x in ~w(..)` / `~c\"..\"`: the empty sigil is dropped, the sentinel kept" do
+      for {family, src, sentinel} <- [
+            {Mutare.Mutators.WordListLiteral, "~w(a b)", "~w(mutare)"},
+            {Mutare.Mutators.CharlistLiteral, ~S|~c"ab"|, ~S|~c"mutare"|}
+          ] do
+        {meta, triples} =
+          redundancy_triples("def f(x), do: x in #{src}", [family, Mutare.Mutators.Conditional])
+
+        # Only the *empty* variant (≡ `x in []` ≡ false) is redundant; the non-empty sentinel
+        # is a genuine membership test — so the drop is per-mutation, not per-node.
+        refute Enum.any?(triples, fn {_m, _o, mut} -> mut in ["~w()", ~S|~c""|] end)
+        assert Enum.any?(triples, fn {_m, _o, mut} -> mut == sentinel end)
+        assert {:conditional, "x in #{src}", "true"} in triples
+        assert_compiles(meta)
+      end
+    end
+
+    test "only the top-level `in`-RHS collection is dropped (a nested literal keeps its `[]`)" do
+      {meta, triples} =
+        redundancy_triples(
+          "def f(x, a), do: x in [a, [1, 2]]",
+          [Mutare.Mutators.List, Mutare.Mutators.Conditional]
+        )
+
+      # The outer list is the `in` RHS → its `[]` (≡ false) is dropped; the *nested* `[1, 2]`
+      # is a descendant, and `x in [a, []]` is not constantly false, so its `[]` survives.
+      assert {:list, "[1, 2]", "[]"} in triples
+      refute {:list, "[a, [1, 2]]", "[]"} in triples
+      assert_compiles(meta)
+    end
+
+    test "a guard `x in ~w(..)`: the empty sigil is dropped there too, the sentinel kept" do
+      {meta, triples} =
+        redundancy_triples(
+          """
+          def f(x) when x in ~w(a b), do: :ok
+          def f(_x), do: :no
+          """,
+          [Mutare.Mutators.WordListLiteral, Mutare.Mutators.Conditional]
+        )
+
+      refute Enum.any?(triples, fn {_m, _o, mut} -> mut == "~w()" end)
+      assert {:word_list, "~w(a b)", "~w(mutare)"} in triples
+      assert {:conditional, "x in ~w(a b)", "true"} in triples
+      assert_compiles(meta)
+    end
+
     test "a body `!(a == b)` / `not (a == b)`: Relational's flip is suppressed (≡ the strip)" do
       for src <- ["!(a == b)", "not (a == b)"] do
         {meta, triples} = redundancy_triples("def f(a, b), do: #{src}", @membership)

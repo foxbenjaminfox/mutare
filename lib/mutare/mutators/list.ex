@@ -11,10 +11,11 @@ defmodule Mutare.Mutators.List do
   collapse to `[]` is a constant and stays guard-safe.
 
   One redundancy `Mutare.Transform` resolves on this family's behalf: on the **RHS of
-  `in`** (`x in [a, b]`) the `[]` collapse would yield `x in []` ≡ `false`, a mutant
-  `Mutare.Mutators.Conditional` already produces on the `in` node — so `Transform` does
-  not offer the list wrapper there (its elements still mutate). See NOTES
-  "Equivalent-sibling suppression, generalized".
+  `in`** (`x in [a, b]`) the `[]` collapse yields `x in []` ≡ `false`, a mutant
+  `Mutare.Mutators.Conditional` already produces on the `in` node — so it is dropped there
+  (its elements still mutate). The drop is shared with the other collection-emptying
+  families via `Mutare.AST.empty_collection_literal?/1`. See NOTES "Equivalent-sibling
+  suppression, generalized".
   """
   @behaviour Mutare.Mutator
 

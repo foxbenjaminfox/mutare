@@ -169,16 +169,29 @@ defmodule Mutare.Transform.Tag do
   # mutatable) but there is nothing to descend.
   defp tag_walk(leaf, acc, mutators), do: offer_target(leaf, acc, mutators)
 
-  # The RHS of a guard `in` when it is a non-empty list literal: descend its elements but
-  # do not offer the list *wrapper* — List's `[]` collapse here makes `x in []` ≡ `false`,
-  # already produced by Conditional on the `in`. Any other RHS is tag-walked normally.
-  defp tag_in_rhs({:__block__, meta, [elements]}, acc, mutators)
-       when is_list(elements) and elements != [] do
-    {elements, acc} = Enum.map_reduce(elements, acc, &tag_walk(&1, &2, mutators))
-    {{:__block__, meta, [elements]}, acc}
+  # The RHS of a guard `in`: descend its children exactly as the generic walk would, then
+  # offer the top node with any *empty-collection* mutation dropped — `x in <empty>` ≡
+  # `false`, the mutant Conditional already produces on the `in`. The drop is per mutation,
+  # so a `~w(a b)` / `~c"ab"` keeps its non-empty sentinel and loses only its empty sibling;
+  # `List`'s sole `[]` collapse is removed outright. (A map can't appear in a guard `in`, so
+  # only lists and word/charlist sigils are reachable here.) Any non-collection RHS yields no
+  # empty-collection mutation, so it is offered unchanged.
+  defp tag_in_rhs({form, meta, args}, acc, mutators) when is_list(args) do
+    {args, acc} = Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))
+    offer_nonempty_collection({form, meta, args}, acc, mutators)
   end
 
   defp tag_in_rhs(other, acc, mutators), do: tag_walk(other, acc, mutators)
+
+  # `offer_target/3` minus the empty-collection mutations (see `tag_in_rhs/3`).
+  defp offer_nonempty_collection(node, {next, targets}, mutators) do
+    case Enum.reject(Mutator.mutations(node, mutators), &empty_collection_mutation?/1) do
+      [] -> {node, {next, targets}}
+      muts -> {put_tag(node, next), {next + 1, [{next, node, muts} | targets]}}
+    end
+  end
+
+  defp empty_collection_mutation?({_mutator, mutated}), do: AST.empty_collection_literal?(mutated)
 
   # A bitstring segment `<<value::spec>>`: tag-walk the value, keep the spec raw
   # except `size(expr)` args (`tag_spec/3`).
