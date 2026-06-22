@@ -32,7 +32,8 @@ defmodule Mutare.Report.Live do
   CI log) degrades to plain mode — phase transitions and the leave-behind lines
   print as ordinary scrollback, with no cursor tricks and no spinner. Colour is
   decided separately (`color_enabled?/0`): the `NO_COLOR` convention drops the
-  leave-behind label colour while keeping the live block.
+  leave-behind label colour while keeping the live block. To suppress the reporter
+  *entirely* (no stderr at all), the Mix task simply doesn't start it — `--quiet`.
 
   ## Testing
 

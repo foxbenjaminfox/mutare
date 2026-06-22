@@ -7,7 +7,8 @@ defmodule Mutare.Options do
   (already config-merged) keyword list — or another `Options` — into a struct,
   validating every field up front, so a bad `:workers`, `:timeout`,
   `:test_selection`, `:paths`, `:sandbox`, `:keep_sandbox`, `:strict_ignores`,
-  `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`, or `:max_mutants` fails loudly
+  `:quiet`, `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`, or
+  `:max_mutants` fails loudly
   at the edge with an `ArgumentError` instead of misbehaving silently deep in the
   pipeline.
 
@@ -44,6 +45,7 @@ defmodule Mutare.Options do
           sandbox: String.t() | nil,
           keep_sandbox: boolean(),
           strict_ignores: boolean(),
+          quiet: boolean(),
           max_mutants: pos_integer() | nil,
           min_score: number() | nil,
           reporters: [{:human | :json | :html | :sarif, String.t() | nil}],
@@ -71,6 +73,7 @@ defmodule Mutare.Options do
             sandbox: nil,
             keep_sandbox: false,
             strict_ignores: false,
+            quiet: false,
             max_mutants: nil,
             min_score: nil,
             reporters: [{:human, nil}],
@@ -82,8 +85,8 @@ defmodule Mutare.Options do
 
   @keys ~w(paths exclude mutators macros expand_uses only_files only_lines test_selection
            workers timeout timeout_multiplier baseline_runs harness_retries max_harness_error_rate
-           sandbox keep_sandbox strict_ignores max_mutants min_score reporters reporter on_phase
-           on_start on_scan project)a
+           sandbox keep_sandbox strict_ignores quiet max_mutants min_score reporters reporter
+           on_phase on_start on_scan project)a
 
   # Output formats a reporter entry may name. `:human` is the console report
   # (`Mutare.Report`); the rest are the machine renderers under `Mutare.Report.*`.
@@ -147,6 +150,7 @@ defmodule Mutare.Options do
       sandbox: validate_sandbox!(Keyword.get(opts, :sandbox)),
       keep_sandbox: validate_keep_sandbox!(Keyword.get(opts, :keep_sandbox, false)),
       strict_ignores: validate_strict_ignores!(Keyword.get(opts, :strict_ignores, false)),
+      quiet: validate_quiet!(Keyword.get(opts, :quiet, false)),
       max_mutants: validate_max_mutants!(Keyword.get(opts, :max_mutants)),
       min_score: validate_min_score!(Keyword.get(opts, :min_score)),
       reporters: validate_reporters!(Keyword.get(opts, :reporters, [{:human, nil}])),
@@ -336,6 +340,14 @@ defmodule Mutare.Options do
   # `Mutare.Ignore.ineffective/2`). Default `false` (warn only).
   defp validate_strict_ignores!(value),
     do: validate!(value, &is_boolean/1, ":strict_ignores must be true or false")
+
+  # When true (`--quiet`), the Mix task does not attach the live progress reporter
+  # (`Mutare.Report.Live`), so nothing is written to stderr as the run proceeds —
+  # for CI, or any time the live block is unwanted. The final report and any
+  # machine outputs are unaffected. Default `false`. Inert in the direct API
+  # (`Mutare.run/2` never starts `Live`); it only gates the Mix task's wiring.
+  defp validate_quiet!(value),
+    do: validate!(value, &is_boolean/1, ":quiet must be true or false")
 
   # nil means no cap (run every mutant); otherwise an upper bound on the number of
   # mutants tested. The cap is applied by `Mutare.Schema` (it truncates the site

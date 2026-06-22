@@ -31,6 +31,9 @@ defmodule Mix.Tasks.Mutare do
                                           #   suppresses no mutant (typo/stale)
       mix mutare --no-expand-uses         # don't expand `use` to surface the
                                           #   `import`/`alias` it injects (default: on)
+      mix mutare --quiet                  # suppress the live stderr progress
+                                          #   (spinner/phases/leave-behinds) — for CI;
+                                          #   the final + machine reports still print
       mix mutare --full                   # run the whole suite per mutant
                                           #   (no per-file test selection)
       mix mutare --baseline-runs 2        # run the baseline 2×; abort if a test
@@ -106,6 +109,7 @@ defmodule Mix.Tasks.Mutare do
     sandbox: :string,
     keep_sandbox: :boolean,
     strict_ignores: :boolean,
+    quiet: :boolean,
     full: :boolean,
     since: :string,
     baseline_runs: :integer,
@@ -135,31 +139,42 @@ defmodule Mix.Tasks.Mutare do
     # code path; the host app is compiled here, best-effort, before the scan transforms it.
     ensure_host_compiled(options, root)
 
-    {:ok, live} = Live.start_link()
+    # `--quiet` (`:quiet`) suppresses the live progress reporter entirely: no `Live`
+    # process, none of its four hooks wired, so nothing is written to stderr as the
+    # run proceeds (for CI / piped use). `nil` here threads through every `if live`
+    # below; the runner/scan treat the unset hooks as no-ops, and the final +
+    # machine reports are untouched.
+    live = maybe_start_live(options)
 
     try do
       # The scan (discovery + transform of every source) runs before the runner, so
       # we drive its live progress directly from here — `:on_scan` updates the block
       # per file. `clear/1` tears that block down before the count prints to stdout
       # so the two don't collide; the runner then redraws its own phases.
-      Live.phase(live, :scanning)
-      schema = Schema.build(root, %{options | on_scan: &Live.scanned(live, &1)})
-      Live.clear(live)
+      if live, do: Live.phase(live, :scanning)
+      on_scan = if live, do: &Live.scanned(live, &1)
+      schema = Schema.build(root, %{options | on_scan: on_scan})
+      if live, do: Live.clear(live)
       announce(schema, project, options)
       warn_ineffective_ignores(schema)
       enforce_strict_ignores(schema, options)
 
-      options = %{
-        options
-        | reporter: &Live.report(live, &1),
-          on_phase: &Live.phase(live, &1),
-          on_start: &Live.started(live, &1)
-      }
+      options =
+        if live do
+          %{
+            options
+            | reporter: &Live.report(live, &1),
+              on_phase: &Live.phase(live, &1),
+              on_start: &Live.started(live, &1)
+          }
+        else
+          options
+        end
 
       result = Runner.run_with_schema(schema, root, options)
       # Tear the live status block down before anything else prints, so the final
       # report / error lands on a clean terminal (the block lives on stderr).
-      Live.finish(live)
+      if live, do: Live.finish(live)
 
       case result do
         {:ok, run} -> report(run, options)
@@ -167,8 +182,18 @@ defmodule Mix.Tasks.Mutare do
       end
     after
       # Backstop for an unexpected raise mid-run; `finish/1` is idempotent.
-      Live.finish(live)
+      if live, do: Live.finish(live)
     end
+  end
+
+  # Start the live progress reporter unless `--quiet`. `nil` means "no live
+  # reporter" — the Mix task leaves every `Live` hook unset and the run is silent
+  # on stderr.
+  defp maybe_start_live(%Options{quiet: true}), do: nil
+
+  defp maybe_start_live(%Options{}) do
+    {:ok, live} = Live.start_link()
+    live
   end
 
   # Compile the host project so its own modules are loadable for in-process `use` expansion

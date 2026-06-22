@@ -617,7 +617,8 @@ contract between them is the whole game.
   *separate* gate (`color_enabled?/0`, the only colour being the leave-behind label): the
   `NO_COLOR` convention (any non-empty value) drops the label colour while keeping the live block
   — `IO.ANSI.enabled?` doesn't check `NO_COLOR`, so this does. The Mix task owns
-  it: it starts the server, wires the
+  it: unless **`--quiet`** (`:quiet`) — which suppresses the reporter *entirely* (no `Live`, no
+  stderr progress; the final + machine reports are untouched) — it starts the server, wires the
   run's four live hooks to it (`:reporter` → `report/2`,
   `:on_phase` → `phase/2`, `:on_start` → `started/2`, and — during the pre-run scan —
   `:on_scan` → `scanned/2`), and calls `finish/1` to tear the block
@@ -764,7 +765,12 @@ contract between them is the whole game.
   `:coverage_probe` → `{:running, total}`), `:on_start` (each `Site` as its run begins), and
   `:on_scan` (pre-run scan progress). All
   four are 1-arity, optional (`nil` = no-op), and validated in `Options`; `Mutare.Runner` fires the
-  first three and `Mutare.Schema` fires `:on_scan`, but neither knows anything of the display. There is **no** top-level option for call-option-key
+  first three and `Mutare.Schema` fires `:on_scan`, but neither knows anything of the display.
+  **`--quiet`** (`:quiet`, a plain boolean threaded like `keep_sandbox`/`strict_ignores`) is the
+  master off-switch for that display: when set, the task leaves all four hooks unset and never
+  starts `Live`, so the run is silent on stderr (for CI / piped use); the final and machine
+  reports are unaffected, and it's inert in the direct `Mutare.run/2` API (which never starts
+  `Live`). There is **no** top-level option for call-option-key
   gating — it is per-mutator config (`{Module, call_option_keys: false}`), carried on the mutator's
   `Mutare.Mutator.Spec` and read by `Transform.gate_candidates/1` (above), so it needs no Options
   field, CLI flag, or `Schema`/`Ctx` plumbing.

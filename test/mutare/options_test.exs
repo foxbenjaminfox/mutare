@@ -118,6 +118,23 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":quiet" do
+    test "defaults to false" do
+      assert Options.new([]).quiet == false
+    end
+
+    test "accepts true and false" do
+      assert Options.new(quiet: true).quiet == true
+      assert Options.new(quiet: false).quiet == false
+    end
+
+    test "rejects a non-boolean" do
+      assert_raise ArgumentError, ~r/:quiet must be true or false/, fn ->
+        Options.new(quiet: "yes")
+      end
+    end
+  end
+
   describe ":workers" do
     test "accepts a positive integer" do
       assert Options.new(workers: 8).workers == 8

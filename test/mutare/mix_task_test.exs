@@ -49,6 +49,32 @@ defmodule Mix.Tasks.MutareTest do
       end
     end
 
+    test "--quiet suppresses the live stderr progress" do
+      root = Project.tmp_dir(:task)
+      File.mkdir_p!(Path.join(root, "lib"))
+      File.write!(Path.join(root, "lib/empty.ex"), "defmodule Empty do\n  def f, do: nil\nend\n")
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      # Without --quiet the live reporter notes the scan phase on stderr (plain mode
+      # in the non-tty test env), before the run fails fast on no sites.
+      noisy =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/no mutation sites/, fn -> Mix.Tasks.Mutare.run([root]) end
+        end)
+
+      assert noisy =~ "scanning for mutants"
+
+      # With --quiet, `Mutare.Report.Live` is never started, so stderr stays silent.
+      quiet =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/no mutation sites/, fn ->
+            Mix.Tasks.Mutare.run([root, "--quiet"])
+          end
+        end)
+
+      assert quiet == ""
+    end
+
     test "--strict-ignores aborts (with a stderr warning) on an ineffective directive" do
       root = Project.tmp_dir(:task)
       File.mkdir_p!(Path.join(root, "lib"))
