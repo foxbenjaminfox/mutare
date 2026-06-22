@@ -380,24 +380,10 @@ defmodule Mutare.Transform.Uses do
   end
 
   # Fold the alias a *source* statement introduces: a plain `alias`, or a `require Mod, as: Name`
-  # (which the compiler also treats as an alias). `Aliases.register` ignores `require`, so a
-  # require-with-`as:` is rewritten to the equivalent `alias` first — keeping its Sourceror opts,
-  # which `Aliases` reads via `AST.key_atom` — mirroring the `collect/6` rewrite for expanded
-  # `__using__` bodies. A bare `require Mod` (no `as:`) introduces no alias and passes through.
-  defp register_source(stmt, env), do: stmt |> require_as_alias() |> Aliases.register(env)
-
-  defp require_as_alias({:require, meta, [mod_ast, opts]} = stmt) when is_list(opts) do
-    if has_as?(opts), do: {:alias, meta, [mod_ast, opts]}, else: stmt
-  end
-
-  defp require_as_alias(stmt), do: stmt
-
-  defp has_as?(opts) do
-    Enum.any?(opts, fn
-      {key, _value} -> AST.key_atom(key) == :as
-      _ -> false
-    end)
-  end
+  # (which the compiler also treats as an alias). Both are handled directly by
+  # `Aliases.register/2`, so this is a straight delegation; a bare `require Mod` (no `as:`)
+  # introduces no alias and passes through.
+  defp register_source(stmt, env), do: Aliases.register(stmt, env)
 
   # The full module name of a nested `defmodule`, best-effort: Elixir prepends the enclosing
   # module to a nested alias. A non-static head (`__MODULE__.Child`, `unquote(mod)`, a
@@ -632,9 +618,9 @@ defmodule Mutare.Transform.Uses do
        when directive in [:import, :alias],
        do: [node]
 
-  # `require Foo, as: Bar` introduces an alias; rewrite to the equivalent `alias` so
-  # `Aliases.register` (which doesn't read `require`) picks it up. A plain `require` doesn't
-  # affect name resolution and is dropped.
+  # `require Foo, as: Bar` introduces an alias; harvest it as the equivalent `alias` directive
+  # (its canonical form) so it folds into resolution like any other harvested binding. A plain
+  # `require` doesn't affect name resolution and is dropped.
   defp collect({:require, _, [mod_ast, opts]}, _caller, _caller_aliases, _depth, _seen, _env)
        when is_list(opts) do
     case as_value(opts) do

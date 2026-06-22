@@ -84,6 +84,31 @@ defmodule Mutare.AliasesTest do
       assert calls[:upcase] == {[:S], [:String]}
     end
 
+    test "require with :as introduces an alias like `alias`" do
+      calls =
+        resolved("""
+        defmodule M do
+          require String, as: S
+          def up(x), do: S.upcase(x)
+        end
+        """)
+
+      assert calls[:upcase] == {[:S], [:String]}
+    end
+
+    test "a bare require (no :as) introduces no alias" do
+      calls =
+        resolved("""
+        defmodule M do
+          require Integer
+          def up(x), do: Integer.foo(x)
+        end
+        """)
+
+      # `Integer` is the literal module, unaffected; the bare require bound no name.
+      assert calls[:foo] == {[:Integer], [:Integer]}
+    end
+
     test "alias with :as overwrites an earlier binding for the same name" do
       calls =
         resolved("""

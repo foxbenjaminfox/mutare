@@ -61,6 +61,17 @@ defmodule Mutare.BehavioursTest do
       assert behaviours_of(source, "B") == [MyApp.Custom]
     end
 
+    test "an @behaviour named through a `require X, as: B` alias resolves" do
+      source = """
+      defmodule R do
+        require MyApp.Custom, as: CB
+        @behaviour CB
+      end
+      """
+
+      assert behaviours_of(source, "R") == [MyApp.Custom]
+    end
+
     test "a top-level alias declared above the module resolves its @behaviour" do
       source = """
       alias MyApp.Thing, as: T

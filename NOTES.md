@@ -1280,11 +1280,15 @@ the dispatch (`return_replacements/2` etc. call the context arity when exported,
 discovery (`implementing_any(specs, fun, [base, base+1])`), so a mutator implements *either* arity and
 the four call sites stay one-liners.
 
+A direct `@behaviour` named through an alias resolves correctly whether the alias came from
+`alias X, as: B` *or* `require X, as: B` — `Aliases.register/2` now folds **both** (Elixir's `:as`
+on `require` "sets up an alias"; this also closed the matching latent gap in `Resolve`, so a call
+through a require-introduced alias resolves too, and let `Uses` drop its private require→alias rewrite).
+
 **Scope / degradations (documented, not bugs).** `defimpl` bodies see the empty set (a defimpl is its
-own module, rarely behaviour-bearing, and reaches mutation by a different path); a direct `@behaviour`
-aliased via `require X, as: B` (vs `alias`) isn't resolved (`Aliases` ignores `require`) — negligibly
-rare; `--no-expand-uses` keeps direct behaviours but drops use-injected (same class as `Uses`'
-directives vanishing). Tested in `test/mutare/behaviours_test.exs` (gathering: direct/aliased/Erlang-atom/
+own module, rarely behaviour-bearing, and reaches mutation by a different path);
+`--no-expand-uses` keeps direct behaviours but drops use-injected (same class as `Uses`'
+directives vanishing). Tested in `test/mutare/behaviours_test.exs` (gathering: direct/aliased/require-as/Erlang-atom/
 top-level-alias/`use GenServer`/custom+transitive `use`/union/no-inherit/`expand_uses: false`; delivery:
 `mutate/2` + `return_replacements/2` fire only under the behaviour, via `test/support/behaviour_mutator.ex`
 and the `Mutare.Test.Sample{Behaviour,Using}` fixtures).

@@ -30,7 +30,9 @@ defmodule Mutare.Transform.Aliases do
   #
   #   * Handles `alias Foo.Bar`, `alias Foo.Bar, as: Baz`, and `alias Foo.{Bar, Baz}`, plus
   #     `alias :binary, as: B` for an Erlang atom module (bound to the atom; the `as:` is
-  #     mandatory, since an atom has no last segment to default the name from).
+  #     mandatory, since an atom has no last segment to default the name from). A
+  #     **`require Mod, as: Name`** introduces the same alias (`require`'s `:as` "sets up an
+  #     alias"), so it is registered identically — a bare `require Mod` (no `as:`) is a no-op.
   #   * An alias whose target is itself aliased is resolved through the env *before*
   #     binding, so the stored value is always the fully-expanded module — never another
   #     alias. `alias MyApp, as: String; alias String, as: S` binds `S` to `MyApp` (the
@@ -89,13 +91,24 @@ defmodule Mutare.Transform.Aliases do
   def resolve_path(path, _env), do: path
 
   @doc """
-  Extend an alias env with the binding(s) a statement introduces. Only an
-  `alias` directive changes it; every other statement passes through unchanged.
-  The unified resolution walk (`Mutare.Transform.Resolve`) folds the alias env with
-  this as it descends each statement sequence.
+  Extend an alias env with the binding(s) a statement introduces. An `alias` directive
+  changes it, **and so does a `require Mod, as: Name`** — Elixir's `:as` on `require` "sets
+  up an alias" exactly like `alias/2`, so `require String, as: S; S.upcase(x)` resolves
+  `S` to `String`. A bare `require Mod` (no `as:`) brings macros into scope but introduces
+  no name, and every other statement passes through unchanged. The unified resolution walk
+  (`Mutare.Transform.Resolve`) folds the alias env with this as it descends each statement
+  sequence; `Mutare.Transform.Behaviours` and `Mutare.Transform.Uses` fold it too.
   """
   @spec register(Macro.t(), map()) :: map()
   def register({:alias, _meta, args}, env), do: register_alias(args, env)
+
+  # `require Mod, as: Name` aliases identically to `alias Mod, as: Name` (same arg shape:
+  # `[mod_ast, opts]`), so it delegates to `register_alias/2` — but only when an `as:` is
+  # present; a bare `require Mod` introduces no alias.
+  def register({:require, _meta, [mod_ast, opts]}, env) when is_list(opts) do
+    if has_as?(opts), do: register_alias([mod_ast, opts], env), else: env
+  end
+
   def register(_stmt, env), do: env
 
   @doc """
@@ -180,6 +193,15 @@ defmodule Mutare.Transform.Aliases do
   end
 
   defp as_name(_opts), do: nil
+
+  # Whether an opts list carries an `as:` key (Sourceror block-wrapped or plain) — gates
+  # `require Mod, as: Name` into the alias machinery (a bare `require Mod` has none).
+  defp has_as?(opts) do
+    Enum.any?(opts, fn
+      {key, _value} -> AST.key_atom(key) == :as
+      _ -> false
+    end)
+  end
 
   defp atoms?(list), do: Enum.all?(list, &is_atom/1)
 end
