@@ -109,7 +109,21 @@ contract between them is the whole game.
     raises) for a non-loadable/aliased/dynamic-arg `use` or a raising `__using__`; the stamp is
     stripped before render and `use` is already non-mutating. `:expand_uses` (default on,
     `--no-expand-uses`) toggles it. This is the *positive* fix for the Ecto-build-failure /
-    missed-controller-mutants pains; see NOTES "`use` expansion".
+    missed-controller-mutants pains; see NOTES "`use` expansion". It *also* harvests each
+    `@behaviour Foo` the `__using__` body injects (`use GenServer` → `@behaviour GenServer`)
+    onto `meta[:mutare_use_behaviours]` (resolved module atoms, read by `Transform.Behaviours`).
+  - **`Transform.Behaviours`** — the `@behaviour`-gathering **pre-pass** (runs after `Uses`,
+    before `Resolve`). Walks module scopes folding an alias env (reusing `Aliases`), and per
+    `defmodule` computes the **behaviour set** — direct `@behaviour Foo` (alias-resolved, so
+    `alias X, as: B; @behaviour B` records `X`; Erlang atoms like `@behaviour :gen_statem` kept
+    as-is) ∪ `use`-injected behaviours (`Uses.injected_behaviours/1`) — stamping a `MapSet` on
+    `meta[:mutare_behaviours]`. `Transform` reads it per module (save/restore, behaviours don't
+    inherit) and folds it onto each mutator `Spec` (`analysis_mutators/1`), so a behaviour-aware
+    custom mutator gets it via the context map's `:behaviours` key in `mutate/2` and the
+    structural callbacks (`return_replacements/2`/`condition_replacements/2`/`pattern_mutations/3`)
+    — a GenServer-only mutator, etc. Only canonical `@behaviour` (Elixir rejects `@behavior`);
+    `defimpl` bodies see the empty set; `--no-expand-uses` keeps direct behaviours, drops
+    use-injected. See NOTES "Behaviour detection".
   - **`Transform.Calls`** — the single `resolved_call/1` reader **every** call-matching family
     (Collection/StringCall/MapKeyword/CollectionArity/ModeSwap/CallRemoval/DefaultDrop/Numeric/
     Integer/Math) uses. It recognises three shapes — an Elixir remote `Mod.fun(args)` (alias-
@@ -676,11 +690,16 @@ contract between them is the whole game.
   `Transform` (its default), `Config` (the CLI/`.mutare.exs` path), and `Options` (the direct
   `Mutare.run/2` API) all derive from it — so a family registered here is part of `:all` and
   resolvable/validated everywhere, with no second list to drift.
-- **`Mutare.Mutator.Spec`** — the resolved unit of "a mutator to run": `%Spec{module, name, opts}`.
+- **`Mutare.Mutator.Spec`** — the resolved unit of "a mutator to run":
+  `%Spec{module, name, opts, behaviours}`.
   Every mutator runs as a `Spec` (a bare built-in is one with empty `opts` and `module.name()`); a
   `{module, opts}` entry carries per-instance `opts`, delivered to the **context-taking callback**
   `mutate/2` via the context map's `:opts` key — so a *configurable* mutator
   reads its parameters there (and therefore implements `mutate/2`, since `mutate/1` has no context).
+  `behaviours` is **not** user config — it is the enclosing module's `@behaviour` set, folded onto
+  the spec **per module** by `Transform.analysis_mutators/1` and delivered under the context's
+  `:behaviours` key (the same spec→context path `opts` rides), so a behaviour-targeted mutator gates
+  on it. The base specs carry the empty default; only the per-module re-bind populates it.
   The reserved `:as` key in `opts` overrides the recorded `name`, so the **same module can run
   twice under distinct names** — load-bearing because the recorded name is what reports show and
   what the `# mutare:ignore[...]` filter matches, so two configs must be distinguishable. The
@@ -796,6 +815,18 @@ nodes). `Transform` discovers implementers by export (`Mutare.Mutator.implementi
 hardcoded to the built-in `ReturnValue`/`IfCondition`. `test/support/structural_mutator.ex` is a
 working example. (The third structural built-in, `RescueType`, stays special — its `try`-rebuild
 logic doesn't fit a `(node) → [replacement]` callback.)
+
+For a *behaviour-targeted* mutator (firing only inside modules implementing a given
+`@behaviour` — a GenServer return-tuple mutator, etc.), read the enclosing module's behaviour
+set from the **context's `:behaviours` key** (a `MapSet` of module atoms, gathered by
+`Transform.Behaviours` from direct `@behaviour` *and* `use`-injected ones). It is present in
+`mutate/2`'s context (`%{behaviours: bs, …}`) and — via the **behaviour-aware structural
+arities** `return_replacements/2`, `condition_replacements/2`, `pattern_mutations/3` (a
+`%{behaviours: bs}` context appended; implement the `+1`-arity instead of the base, `Transform`
+prefers it when exported) — in the structural positions too. No registration/plumbing: the
+behaviours ride on each `Mutare.Mutator.Spec` (folded per module by `Transform.analysis_mutators/1`)
+exactly like `opts`. `test/support/behaviour_mutator.ex` is a working example (a GenServer
+`{:reply, …}` → `{:noreply, …}` swap via `mutate/2`, plus a `return_replacements/2` arm).
 
 For a *call-matching* mutator (one targeting a stdlib/remote call), resolve the node with
 `Mutare.Transform.Calls.resolved_call/1` rather than pattern-matching the raw `Mod.fun(...)`: it

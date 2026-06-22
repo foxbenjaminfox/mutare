@@ -11,9 +11,12 @@ defmodule Mutare.Transform.PatternStructure do
   # The two differ only in *delivery*; "which mutators participate", "which names are read
   # outside the pattern", and "run a mutator over a single pattern node" are identical.
 
-  @doc "The enabled mutator specs that implement the structural `pattern_mutations/2` hook."
+  @doc """
+  The enabled mutator specs that implement the structural `pattern_mutations` hook — at
+  either arity (`/2`, or the behaviour-aware `/3`).
+  """
   @spec mutators([Mutare.Mutator.Spec.t()]) :: [Mutare.Mutator.Spec.t()]
-  def mutators(enabled), do: Mutare.Mutator.implementing(enabled, :pattern_mutations, 2)
+  def mutators(enabled), do: Mutare.Mutator.implementing_any(enabled, :pattern_mutations, [2, 3])
 
   @doc """
   The variable names read in `ast` (a node or a list of nodes) — the `used_outside` set a
@@ -73,8 +76,8 @@ defmodule Mutare.Transform.PatternStructure do
           [{Mutare.Mutator.Spec.t(), Macro.t()}]
   def node_mutations(pattern, used_outside, structural_mutators) do
     Enum.flat_map(structural_mutators, fn mutator ->
-      [pattern]
-      |> mutator.module.pattern_mutations(used_outside)
+      mutator
+      |> Mutare.Mutator.pattern_mutations([pattern], used_outside)
       |> Enum.flat_map(fn
         [mutated] -> [{mutator, mutated}]
         _other -> []

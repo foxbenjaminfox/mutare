@@ -1238,6 +1238,57 @@ failed to compile now compile). Tested via `test/support/using_fixtures.ex` (`__
 only vehicle — `examples/*` have no deps and are external) in `test/mutare/uses_test.exs`, including the
 Ecto `:skip`-now-fires case with/without expansion.
 
+### Behaviour detection — `@behaviour` set per module, surfaced to custom mutators `[done]`
+A custom mutator often wants to fire *only* inside modules of a kind — the motivating case a
+GenServer mutator that swaps a `handle_call` `{:reply, r, s}` to `{:noreply, s}`. The signal is the
+module's `@behaviour` set, knowable two ways now that `Uses` expands `use`: **directly**
+(`@behaviour Foo`) and **via `use`** (`use GenServer` injects `@behaviour GenServer` in its
+`__using__` body). Goal: gather both, per module, and hand the set to custom mutators.
+
+**Gather (`Transform.Behaviours`, a fourth pre-pass after `Uses`, before `Resolve`).** A small
+module-scope walk folding an alias env (reusing `Aliases`), stamping each `defmodule`/`defprotocol`
+with a `MapSet` on `meta[:mutare_behaviours]`: direct `@behaviour Foo` resolved through the alias env
+in force (so `alias X, as: B; @behaviour B` records `X`, not the literal `B` — a *wrong* entry, not a
+miss, if unresolved), Erlang atoms (`@behaviour :gen_statem`) kept as-is, unioned with the
+`use`-injected set. The injected half piggybacks on the **existing** `Uses` expansion: a new `collect/6`
+clause harvests `{:@, _, [{:behaviour, _, [mod]}]}` from the expanded `__using__` body (it appears as a
+top-level statement there, reached by the same block/nested-`use` recursion that harvests
+imports/aliases), tagged `{:mutare_behaviour, mod}` so `harvest/3` can split it from the
+name-resolution directives and stamp `meta[:mutare_use_behaviours]` (read by `Behaviours.injected_behaviours/1`).
+Only canonical `@behaviour` is recognised — Elixir **rejects** `@behavior` outright, so matching the
+American spelling would be wrong, not lenient.
+
+**Thread with zero new plumbing — the spec is already the universal carrier.** Behaviours are a
+per-module fact, but the value threaded to *every* leaf where a mutator runs (`Mutator.mutations/3`,
+the structural callbacks, `Tag`, `FunctionPlan`) is the `Spec` list. So we add a `behaviours` field
+to `Spec` (empty default) and **re-bind it per module** at the few analyze/plan entry points
+(`Transform.analysis_mutators/1` = `Enum.map(ctx.mutators, &%{&1 | behaviours: ctx.behaviours})`,
+`ctx.behaviours` set save/restore per `defmodule`). The deep `analyze/3` recursion is untouched — it
+already forwards the spec list opaquely; only `analysis_mutators/1` and `Mutator.mutations/3` (which
+injects `spec.behaviours` into the `mutate/2` context, beside `:opts`) change. The alternative — a
+threaded env bundling specs+behaviours — would have changed the *type* of the value passed through
+~400 `mutators` references; the spec-field re-bind keeps the value a plain `[%Spec{}]` list, so every
+existing `Enum`/`Spec.find` over it works unchanged. (It's a per-module fact on a per-mutator struct,
+yes — but it rides the spec→context path *exactly* as `opts` does, so the framing holds.) Id stability:
+behaviours are a deterministic function of the static source, so the same module re-binds the same set
+across poison rebuilds — ids stay put.
+
+**Structural callbacks get behaviour-aware arities.** `mutate/2` reads `context.behaviours` directly;
+the structural hooks (`return_replacements`/`condition_replacements`/`pattern_mutations`) take only a
+node, so each gains a `+1`-arity variant taking a `%{behaviours: …}` context. `Mutator` centralises
+the dispatch (`return_replacements/2` etc. call the context arity when exported, else the base) and the
+discovery (`implementing_any(specs, fun, [base, base+1])`), so a mutator implements *either* arity and
+the four call sites stay one-liners.
+
+**Scope / degradations (documented, not bugs).** `defimpl` bodies see the empty set (a defimpl is its
+own module, rarely behaviour-bearing, and reaches mutation by a different path); a direct `@behaviour`
+aliased via `require X, as: B` (vs `alias`) isn't resolved (`Aliases` ignores `require`) — negligibly
+rare; `--no-expand-uses` keeps direct behaviours but drops use-injected (same class as `Uses`'
+directives vanishing). Tested in `test/mutare/behaviours_test.exs` (gathering: direct/aliased/Erlang-atom/
+top-level-alias/`use GenServer`/custom+transitive `use`/union/no-inherit/`expand_uses: false`; delivery:
+`mutate/2` + `return_replacements/2` fire only under the behaviour, via `test/support/behaviour_mutator.ex`
+and the `Mutare.Test.Sample{Behaviour,Using}` fixtures).
+
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
 (`apply(Foo, …)`, `is_struct(x, Foo)`, `[A, B]`, a behaviour/strategy arg) to the

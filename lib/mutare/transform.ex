@@ -126,6 +126,7 @@ defmodule Mutare.Transform do
 
   alias Mutare.Transform.{
     Analyze,
+    Behaviours,
     Candidate,
     Ctx,
     FunctionPlan,
@@ -219,7 +220,13 @@ defmodule Mutare.Transform do
     expanded =
       if Keyword.get(opts, :expand_uses, true), do: Uses.annotate(parsed), else: parsed
 
-    {transformed, ctx} = transform_node(Resolve.annotate(expanded, macros), ctx)
+    # Gather each module's `@behaviour` set (direct + `use`-injected) and stamp it on the
+    # `defmodule` nodes (`Mutare.Transform.Behaviours`), so a behaviour-aware custom mutator
+    # can gate on it. Runs after `Uses` (to see the injected behaviours) and before
+    # `Resolve` (which preserves the stamp); `transform_node` reads it per module.
+    with_behaviours = Behaviours.annotate(expanded)
+
+    {transformed, ctx} = transform_node(Resolve.annotate(with_behaviours, macros), ctx)
 
     metamutant = transformed |> silence_helper_xref() |> Render.to_source()
 
@@ -281,11 +288,19 @@ defmodule Mutare.Transform do
 
   # === module / statement structure =========================================
 
-  # A module: transform the body of its do-block(s).
+  # A module: transform the body of its do-block(s). The module's `@behaviour` set (stamped
+  # by `Mutare.Transform.Behaviours`) is bound on `ctx` for the body and restored on the way
+  # out, so it folds onto the specs handed to analyze/plan (`analysis_mutators/1`) while the
+  # body is walked. Behaviours don't inherit, so a nested module that re-enters here
+  # overwrites and then restores the outer set.
   defp transform_node({:defmodule, meta, [alias_node, do_keyword]}, ctx)
        when is_list(do_keyword) do
-    {do_keyword, ctx} = transform_do_keyword(do_keyword, ctx)
-    {{:defmodule, meta, [alias_node, do_keyword]}, ctx}
+    outer = ctx.behaviours
+
+    {do_keyword, ctx} =
+      transform_do_keyword(do_keyword, %{ctx | behaviours: Behaviours.behaviours(meta)})
+
+    {{:defmodule, meta, [alias_node, do_keyword]}, %{ctx | behaviours: outer}}
   end
 
   # A block: either a module body (contains clauses → plan + emit) or an
@@ -336,8 +351,21 @@ defmodule Mutare.Transform do
   # id-threading.
   defp transform_statements(statements, ctx) do
     statements
-    |> ModulePlan.build(ctx.mutators, ctx.file)
+    |> ModulePlan.build(analysis_mutators(ctx), ctx.file)
     |> emit_module_plan(ctx)
+  end
+
+  # The mutator specs handed to analyze/plan, enriched with the **current module's**
+  # `@behaviour` set (`ctx.behaviours`). Each spec then carries the behaviours to every
+  # leaf where a mutator runs (`Mutator.mutations/3`, the structural callbacks), so a
+  # behaviour-aware custom mutator sees `context.behaviours` without any new threading. The
+  # base `ctx.mutators` stays untouched (the empty-behaviours config); enrichment is the
+  # one place per-module context meets the spec list. Called at the few analyze/plan entry
+  # points (`transform_statements/2`, `emit_clause/3`, `transform_statement/2`,
+  # `in_place/2`); outside a module `ctx.behaviours` is empty, so the specs pass through
+  # carrying the empty set.
+  defp analysis_mutators(ctx) do
+    Enum.map(ctx.mutators, &%{&1 | behaviours: ctx.behaviours})
   end
 
   # === emission: walk the plan, thread ids, render ===========================
@@ -387,7 +415,10 @@ defmodule Mutare.Transform do
   defp emit_clause(clause, ctx, opts) do
     prologue? = Keyword.get(opts, :prologue, false)
     bound0 = ctx.active_bound
-    {emitted, ctx} = emit_annotated_clause(Analyze.annotate(clause, ctx.mutators), ctx, prologue?)
+
+    {emitted, ctx} =
+      emit_annotated_clause(Analyze.annotate(clause, analysis_mutators(ctx)), ctx, prologue?)
+
     {emitted, %{ctx | active_bound: bound0}}
   end
 
@@ -498,7 +529,7 @@ defmodule Mutare.Transform do
          not Analyze.module_scaffold_statement?(node) do
       emit_block_macro(node, ctx)
     else
-      node |> Analyze.scaffold(ctx.mutators) |> emit(ctx)
+      node |> Analyze.scaffold(analysis_mutators(ctx)) |> emit(ctx)
     end
   end
 
@@ -515,7 +546,10 @@ defmodule Mutare.Transform do
   # created are exactly the head of `ctx.sites` above the count we held before it.
   defp emit_block_macro(node, ctx) do
     before = length(ctx.sites)
-    {emitted, ctx} = node |> Analyze.analyze_module_macro_block(ctx.mutators) |> emit(ctx)
+
+    {emitted, ctx} =
+      node |> Analyze.analyze_module_macro_block(analysis_mutators(ctx)) |> emit(ctx)
+
     {emitted, tag_block_macro_sites(ctx, before, block_macro_tag(node))}
   end
 
@@ -998,7 +1032,7 @@ defmodule Mutare.Transform do
   # nodes with their candidates, then emit selectors as ids are assigned.
   defp in_place(node, ctx) do
     node
-    |> Analyze.annotate(ctx.mutators)
+    |> Analyze.annotate(analysis_mutators(ctx))
     |> emit(ctx)
   end
 

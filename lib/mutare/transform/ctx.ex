@@ -20,6 +20,7 @@ defmodule Mutare.Transform.Ctx do
           cond_var: atom(),
           active_bound: boolean(),
           module_depth: non_neg_integer(),
+          behaviours: MapSet.t(module()),
           next_id: pos_integer(),
           group: non_neg_integer(),
           sites: [Mutare.Site.t()]
@@ -73,6 +74,15 @@ defmodule Mutare.Transform.Ctx do
     # form on `module_depth == 0`). `Mutare.Transform.emit/2` increments it on entering such
     # a node and decrements on leaving; 0 at the top of every function body.
     module_depth: 0,
+    # The `@behaviour` set of the module the walk is currently inside — direct
+    # `@behaviour Foo` plus `use`-injected behaviours, gathered by
+    # `Mutare.Transform.Behaviours` and stamped on each `defmodule` node's meta.
+    # `Mutare.Transform` save/restores it per `defmodule` (behaviours don't inherit
+    # into nested modules) and folds it onto each spec (`analysis_mutators/1`) before
+    # handing the specs to analyze/plan, so it reaches a behaviour-aware mutator's
+    # `mutate/2`/structural callbacks via the context map's `:behaviours` key. Empty
+    # at the top level / outside any module.
+    behaviours: MapSet.new(),
     # accumulators — threaded and updated
     next_id: 1,
     group: 0,

@@ -49,8 +49,10 @@ defmodule Mutare.Transform.Render do
   # candidates), `:mutare_tag` (guard target references), `:mutare_nid` (the per-node identity
   # token `Mutare.Transform.Overlap` prunes on), the resolution stamps
   # `:mutare_alias`/`:mutare_import`/`:mutare_import_witness`/`:mutare_kernel_displaced`, the
-  # known-macro routing stamps `:mutare_macro`/`:mutare_macro_piped`, and the `use`-expansion
-  # directives `:mutare_use_directives` are bookkeeping that must never reach the source.
+  # known-macro routing stamps `:mutare_macro`/`:mutare_macro_piped`, the `use`-expansion
+  # directives `:mutare_use_directives`, and the behaviour stamps
+  # `:mutare_use_behaviours` (on a `use`) / `:mutare_behaviours` (on a `defmodule`) are
+  # bookkeeping that must never reach the source.
   @internal_meta_keys [
     :mutare,
     :mutare_case,
@@ -62,7 +64,9 @@ defmodule Mutare.Transform.Render do
     :mutare_kernel_displaced,
     :mutare_macro,
     :mutare_macro_piped,
-    :mutare_use_directives
+    :mutare_use_directives,
+    :mutare_use_behaviours,
+    :mutare_behaviours
   ]
 
   defp strip_annotations(ast) do

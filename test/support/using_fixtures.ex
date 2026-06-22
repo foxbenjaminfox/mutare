@@ -238,3 +238,34 @@ defmodule Mutare.Test.CyclicUsingB do
   @moduledoc "Half of a `use`-cycle (A uses B, B uses A) — expansion must terminate via the seen-set."
   defmacro __using__(_opts), do: quote(do: use(Mutare.Test.CyclicUsingA))
 end
+
+defmodule Mutare.Test.SampleBehaviour do
+  @moduledoc """
+  A trivial behaviour, the custom analog of `GenServer` for the `@behaviour`-detection tests
+  (`Mutare.Transform.Behaviours`): a `use Mutare.Test.SampleUsing` injects `@behaviour
+  Mutare.Test.SampleBehaviour`, so the harvest can be exercised without stdlib internals.
+  """
+  @callback handle(term()) :: term()
+end
+
+defmodule Mutare.Test.SampleUsing do
+  @moduledoc """
+  A `use GenServer`-style bundle: its `__using__` injects `@behaviour Mutare.Test.SampleBehaviour`
+  *alongside* an `import` — the unit-test vehicle for `use`-injected behaviour harvesting
+  (`Mutare.Transform.Uses` must surface the behaviour and the directive from one expansion).
+  """
+  defmacro __using__(_opts) do
+    quote do
+      @behaviour Mutare.Test.SampleBehaviour
+      import Enum, only: [reject: 2]
+    end
+  end
+end
+
+defmodule Mutare.Test.NestedSampleUsing do
+  @moduledoc """
+  A `__using__` that itself `use`s `Mutare.Test.SampleUsing` — exercises harvesting a
+  `@behaviour` injected *transitively* through a nested `use` re-expansion.
+  """
+  defmacro __using__(_opts), do: quote(do: use(Mutare.Test.SampleUsing))
+end

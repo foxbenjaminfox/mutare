@@ -64,6 +64,7 @@ defmodule Mutare.Transform.Uses do
   alias Mutare.Transform.Aliases
 
   @directives_key :mutare_use_directives
+  @behaviours_key :mutare_use_behaviours
   @max_depth 16
 
   # The env the metamutant is compiled and tested under — mirror it during `__using__` expansion.
@@ -210,6 +211,16 @@ defmodule Mutare.Transform.Uses do
   @spec directives(keyword() | term()) :: [Macro.t()]
   def directives(meta) when is_list(meta), do: Keyword.get(meta, @directives_key, [])
   def directives(_meta), do: []
+
+  @doc """
+  The behaviour modules a `use` injects (`@behaviour Foo` in its `__using__` body), harvested
+  alongside the directives and stamped under `:mutare_use_behaviours`, or `[]` for any other
+  node. Read by `Mutare.Transform.Behaviours` to fold `use`-injected behaviours into a
+  module's set.
+  """
+  @spec injected_behaviours(keyword() | term()) :: [module()]
+  def injected_behaviours(meta) when is_list(meta), do: Keyword.get(meta, @behaviours_key, [])
+  def injected_behaviours(_meta), do: []
 
   # --- the module-tracking walk ----------------------------------------------
   #
@@ -452,26 +463,42 @@ defmodule Mutare.Transform.Uses do
   defp stamp(node, @unresolved, _env), do: node
 
   defp stamp({:use, meta, args} = node, module, env) do
-    case harvest(node, module, env) do
-      [] -> node
-      directives -> {:use, [{@directives_key, directives} | meta], args}
-    end
+    {directives, behaviours} = harvest(node, module, env)
+
+    meta =
+      meta
+      |> put_harvest(@directives_key, directives)
+      |> put_harvest(@behaviours_key, behaviours)
+
+    {:use, meta, args}
   end
 
+  defp put_harvest(meta, _key, []), do: meta
+  defp put_harvest(meta, key, values), do: [{key, values} | meta]
+
+  # Expand the `use` and partition what its `__using__` body injects into two harvests:
+  # `@behaviour` modules (tagged `{:mutare_behaviour, mod}` by `collect/6`, kept as bare
+  # atoms) and `import`/`alias`/`require …, as:` directives (normalized to Sourceror form,
+  # the shape `Resolve.register/2` folds). Returns `{directives, behaviours}`; both `[]` on
+  # any failure (degrades to the unresolved behaviour, never raises).
   defp harvest(sourceror_use_node, caller_module, env) do
     with {:ok, mod, opts} <- standardize(sourceror_use_node, env),
          true <- Code.ensure_loaded?(mod) do
-      mod
-      |> expand_and_collect(opts, caller_module, env, 0, MapSet.new())
-      |> Enum.map(&normalize/1)
-      |> Enum.reject(&is_nil/1)
+      {behaviour_items, directive_items} =
+        mod
+        |> expand_and_collect(opts, caller_module, env, 0, MapSet.new())
+        |> Enum.split_with(&match?({:mutare_behaviour, _}, &1))
+
+      directives = directive_items |> Enum.map(&normalize/1) |> Enum.reject(&is_nil/1)
+      behaviours = Enum.map(behaviour_items, fn {:mutare_behaviour, beh} -> beh end)
+      {directives, behaviours}
     else
-      _ -> []
+      _ -> {[], []}
     end
   rescue
-    _ -> []
+    _ -> {[], []}
   catch
-    _, _ -> []
+    _, _ -> {[], []}
   end
 
   # Sourceror `use` node → `{:ok, module_atom, opts_literal}` (standard quoted), or `:error`.
@@ -633,6 +660,26 @@ defmodule Mutare.Transform.Uses do
     end
   end
 
+  # `@behaviour Foo` injected by the `__using__` body (e.g. `use GenServer` injects
+  # `@behaviour GenServer`): harvest the behaviour *module*, resolved through the body's
+  # alias env, tagged `{:mutare_behaviour, mod}` so `harvest/3` separates it from the
+  # name-resolution directives. Only the canonical `@behaviour` is recognised — Elixir
+  # rejects `@behavior`. A non-static / unresolvable module (`module_atom/2` → `nil`) is
+  # dropped, like an un-round-trippable directive.
+  defp collect(
+         {:@, _, [{:behaviour, _, [mod_ast]}]},
+         _caller,
+         _caller_aliases,
+         _depth,
+         _seen,
+         env
+       ) do
+    case module_atom(mod_ast, env) do
+      nil -> []
+      mod -> [{:mutare_behaviour, mod}]
+    end
+  end
+
   defp collect(_other, _caller, _caller_aliases, _depth, _seen, _env), do: []
 
   defp as_value(opts), do: Keyword.get(opts, :as)
@@ -654,6 +701,10 @@ defmodule Mutare.Transform.Uses do
   # `{:__aliases__, …}` node) makes `alias unquote(target), as: T` actually bind `T`, so a later
   # sibling `use T` in the same expanded body resolves and expands. An un-round-trippable directive
   # (nil) is a no-op.
+  # A harvested `@behaviour` tuple introduces no alias and must never reach `normalize`
+  # (`Macro.to_string` over a `{:mutare_behaviour, mod}` tuple would be garbage) — skip it.
+  defp register_harvested({:mutare_behaviour, _}, env), do: env
+
   defp register_harvested(directive, env) do
     case normalize(directive) do
       nil -> env

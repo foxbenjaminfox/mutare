@@ -379,9 +379,9 @@ defmodule Mutare.Transform.Analyze.Conditions do
   defp attach_if_condition(analyzed_condition, raw_condition, mutators) do
     candidates =
       mutators
-      |> Mutator.implementing(:condition_replacements, 1)
+      |> Mutator.implementing_any(:condition_replacements, [1, 2])
       |> Enum.flat_map(fn spec ->
-        Enum.map(spec.module.condition_replacements(raw_condition), &{spec, &1})
+        Enum.map(Mutator.condition_replacements(spec, raw_condition), &{spec, &1})
       end)
 
     case candidates do

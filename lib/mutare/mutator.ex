@@ -139,6 +139,36 @@ defmodule Mutare.Mutator do
   custom mutator implementing the same callback participates identically — they are not
   hardcoded. (The head-pattern analog is `c:pattern_mutations/2`, delivered by lifting.)
 
+  ## Behaviour-targeted mutators (`context.behaviours`)
+
+  A mutator can fire differently — or only — inside modules that implement a given
+  `@behaviour`. The enclosing module's behaviour set (a `MapSet` of module atoms, gathered
+  from direct `@behaviour Foo` *and* `use`-injected ones like `use GenServer`, see
+  `Mutare.Transform.Behaviours`) reaches a mutator under the context map's `:behaviours` key:
+
+      defmodule MyApp.Mutators.GenServerReply do
+        @behaviour Mutare.Mutator
+        def name, do: :genserver_reply
+        def mutate(_node), do: :skip
+
+        # swap a `{:reply, r, s}` to `{:noreply, s}` only inside a GenServer
+        def mutate({:{}, m, [{:__block__, am, [:reply]}, _r, state]}, %{behaviours: bs}) do
+          if MapSet.member?(bs, GenServer),
+            do: [{:{}, m, [{:__block__, am, [:noreply]}, state]}],
+            else: :skip
+        end
+
+        def mutate(_node, _context), do: :skip
+      end
+
+  The structural callbacks have **behaviour-aware variants** carrying the same set in a
+  `%{behaviours: …}` context: `c:return_replacements/2`, `c:condition_replacements/2`,
+  `c:pattern_mutations/3`. Implement the `+1`-arity instead of the base to gate a return
+  tail / condition / head pattern on the module's behaviours (e.g. a GenServer mutator that
+  rewrites a `handle_call` return tail only under `@behaviour GenServer`); the transform
+  prefers the context arity when exported. `test/support/behaviour_mutator.ex` is a working
+  example covering both `mutate/2` and `return_replacements/2`.
+
   ## Matching aliased / imported calls (`Mutare.Transform.Calls`)
 
   A mutator that targets a stdlib/remote call should resolve the node with
@@ -163,12 +193,31 @@ defmodule Mutare.Mutator do
       `{module, opts}` entry in `:mutators`, with any `:as` name override
       stripped), or `[]` for an unconfigured mutator. This is how a configurable
       mutator receives its parameters — see `Mutare.Mutator.Spec`.
+    * `:behaviours` — the enclosing module's behaviour set: a `MapSet` of the modules it
+      implements via `@behaviour Foo` (directly or injected by a `use`, see
+      `Mutare.Transform.Behaviours`). Empty outside a module. This is how a
+      **behaviour-targeted** mutator gates itself — e.g. a GenServer mutator firing only
+      when `MapSet.member?(context.behaviours, GenServer)`.
 
-  `:opts` is `optional` in the type because the *base* context threaded through
-  `mutations/3` carries only `:pipe_mode`; `mutations/3` injects each spec's `:opts`
-  before invoking a mutator, so a callback always sees it at runtime.
+  `:opts` and `:behaviours` are `optional` in the type because the *base* context threaded
+  through `mutations/3` carries only `:pipe_mode`; `mutations/3` injects each spec's `:opts`
+  and `:behaviours` before invoking a mutator, so a callback always sees both at runtime.
   """
-  @type context :: %{:pipe_mode => pipe_mode(), optional(:opts) => term()}
+  @type context :: %{
+          :pipe_mode => pipe_mode(),
+          optional(:opts) => term(),
+          optional(:behaviours) => MapSet.t(module())
+        }
+
+  @typedoc """
+  Context threaded to the optional **structural** callbacks
+  (`c:return_replacements/2`, `c:condition_replacements/2`, `c:pattern_mutations/3`).
+  Carries the enclosing module's `:behaviours` set (a `MapSet` of module atoms), so a
+  structural mutator can gate on the module's behaviours exactly as `mutate/2` does. (A
+  structural position has no pipe context and structural mutators take no `opts`, so this
+  is the lone key — the transform may add more in future.)
+  """
+  @type structural_context :: %{behaviours: MapSet.t(module())}
 
   @doc """
   Return `:skip` when the mutator does not apply to `node`, otherwise a list of
@@ -217,6 +266,18 @@ defmodule Mutare.Mutator do
   """
   @callback pattern_mutations(head_args :: [Macro.t()], used_outside :: MapSet.t()) ::
               [[Macro.t()]]
+
+  @doc """
+  Behaviour-aware variant of `c:pattern_mutations/2`, taking the structural `context`
+  (`%{behaviours: …}`). Implement *this* arity instead of `/2` to gate head-pattern
+  mutations on the enclosing module's behaviours. The transform prefers `/3` when
+  exported, falling back to `/2`; a mutator need implement only one.
+  """
+  @callback pattern_mutations(
+              head_args :: [Macro.t()],
+              used_outside :: MapSet.t(),
+              context :: structural_context()
+            ) :: [[Macro.t()]]
 
   @doc """
   Optional hook by which a mutator registers the **known macros** it depends on —
@@ -277,6 +338,16 @@ defmodule Mutare.Mutator do
   @callback return_replacements(tail :: Macro.t()) :: [Macro.t()]
 
   @doc """
+  Behaviour-aware variant of `c:return_replacements/1`, taking the structural `context`
+  (`%{behaviours: …}`). Implement *this* arity instead of `/1` to gate return-tail
+  mutations on the enclosing module's behaviours — the motivating GenServer case (swap a
+  `handle_call` `{:reply, r, s}` tail to `{:noreply, s}` only when the module implements
+  `GenServer`). The transform prefers `/2` when exported, falling back to `/1`.
+  """
+  @callback return_replacements(tail :: Macro.t(), context :: structural_context()) ::
+              [Macro.t()]
+
+  @doc """
   Optional structural hook for mutating an **`if`/`unless`/`cond` condition**. Given the raw
   condition node, return the replacement nodes (one per mutant). The condition-position twin
   of `c:return_replacements/1`: structural, discovered by
@@ -286,12 +357,24 @@ defmodule Mutare.Mutator do
   """
   @callback condition_replacements(condition :: Macro.t()) :: [Macro.t()]
 
+  @doc """
+  Behaviour-aware variant of `c:condition_replacements/1`, taking the structural `context`
+  (`%{behaviours: …}`). Implement *this* arity instead of `/1` to gate condition mutations
+  on the enclosing module's behaviours. The transform prefers `/2` when exported, falling
+  back to `/1`.
+  """
+  @callback condition_replacements(condition :: Macro.t(), context :: structural_context()) ::
+              [Macro.t()]
+
   @optional_callbacks pattern_mutations: 2,
+                      pattern_mutations: 3,
                       mutate: 2,
                       macros: 0,
                       empty_collection?: 1,
                       return_replacements: 1,
-                      condition_replacements: 1
+                      return_replacements: 2,
+                      condition_replacements: 1,
+                      condition_replacements: 2
 
   @typedoc """
   A call node's pipe context, as an atom: `:piped` (the node is a `|>` right-hand
@@ -364,6 +447,62 @@ defmodule Mutare.Mutator do
   end
 
   @doc """
+  The specs in `specs` whose module implements `fun` at **any** of `arities` — the
+  any-arity variant of `implementing/3`, used to discover the structural hooks that come
+  in a base form (`fun/n`) *and* a behaviour-aware form (`fun/(n+1)`, taking the structural
+  context): a mutator implements one or the other. `return_replacements/{1,2}`,
+  `condition_replacements/{1,2}`, `pattern_mutations/{2,3}`. The dispatch helpers
+  (`return_replacements/2`, `condition_replacements/2`, `pattern_mutations/3` below) then
+  call whichever arity each spec actually exports.
+  """
+  @spec implementing_any([Spec.t()], atom(), [arity()]) :: [Spec.t()]
+  def implementing_any(specs, fun, arities) do
+    Enum.filter(specs, fn %{module: module} ->
+      Code.ensure_loaded?(module) and Enum.any?(arities, &function_exported?(module, fun, &1))
+    end)
+  end
+
+  @doc """
+  Run `spec`'s return-tail hook over `tail`, preferring the behaviour-aware
+  `c:return_replacements/2` (passing the structural context) when the module exports it,
+  else the base `c:return_replacements/1`. The single home for that arity dispatch, so the
+  call sites stay one-liners and a mutator can implement either arity.
+  """
+  @spec return_replacements(Spec.t(), Macro.t()) :: [Macro.t()]
+  def return_replacements(%Spec{module: module} = spec, tail) do
+    if function_exported?(module, :return_replacements, 2),
+      do: module.return_replacements(tail, structural_context(spec)),
+      else: module.return_replacements(tail)
+  end
+
+  @doc """
+  Run `spec`'s condition hook over `condition`, preferring `c:condition_replacements/2`
+  (with the structural context) when exported, else `c:condition_replacements/1`. The
+  condition-position twin of `return_replacements/2`.
+  """
+  @spec condition_replacements(Spec.t(), Macro.t()) :: [Macro.t()]
+  def condition_replacements(%Spec{module: module} = spec, condition) do
+    if function_exported?(module, :condition_replacements, 2),
+      do: module.condition_replacements(condition, structural_context(spec)),
+      else: module.condition_replacements(condition)
+  end
+
+  @doc """
+  Run `spec`'s head-pattern hook over `head_args`/`used_outside`, preferring
+  `c:pattern_mutations/3` (with the structural context) when exported, else
+  `c:pattern_mutations/2`. The lifted-pattern twin of `return_replacements/2`.
+  """
+  @spec pattern_mutations(Spec.t(), [Macro.t()], MapSet.t()) :: [[Macro.t()]]
+  def pattern_mutations(%Spec{module: module} = spec, head_args, used_outside) do
+    if function_exported?(module, :pattern_mutations, 3),
+      do: module.pattern_mutations(head_args, used_outside, structural_context(spec)),
+      else: module.pattern_mutations(head_args, used_outside)
+  end
+
+  # The structural-callback context: the enclosing module's behaviour set, nothing else.
+  defp structural_context(%Spec{behaviours: behaviours}), do: %{behaviours: behaviours}
+
+  @doc """
   Whether `term` is a module that implements this behaviour (exports `mutate/1`
   and `name/0`). Total over any term, so a non-module entry in a `:mutators` list
   is *reported* by resolution rather than crashing a guard.
@@ -410,7 +549,7 @@ defmodule Mutare.Mutator do
   def mutations(node, mutators, context \\ %{pipe_mode: :unpiped}) do
     Enum.flat_map(mutators, fn entry ->
       spec = Spec.coerce(entry)
-      ctx = Map.put(context, :opts, spec.opts)
+      ctx = context |> Map.put(:opts, spec.opts) |> Map.put(:behaviours, spec.behaviours)
       tag(spec, spec.module.mutate(node)) ++ contextual(spec, node, ctx)
     end)
   end

@@ -36,7 +36,7 @@ defmodule Mutare.Transform.Analyze.Returns do
   # lockstep to the same tail node. `ReturnValue.replacements/1` decides the
   # constant(s) (or that the tail is ineligible).
   def annotate_returns(analyzed_kw, raw_kw, mutators) do
-    case Mutator.implementing(mutators, :return_replacements, 1) do
+    case Mutator.implementing_any(mutators, :return_replacements, [1, 2]) do
       [] ->
         analyzed_kw
 
@@ -97,7 +97,7 @@ defmodule Mutare.Transform.Analyze.Returns do
     map_tail(analyzed_value, raw_value, fn analyzed_tail, raw_tail ->
       replacements =
         Enum.flat_map(return_mutators, fn spec ->
-          Enum.map(spec.module.return_replacements(raw_tail), &{spec, &1})
+          Enum.map(Mutator.return_replacements(spec, raw_tail), &{spec, &1})
         end)
 
       case replacements do

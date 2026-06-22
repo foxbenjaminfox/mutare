@@ -19,12 +19,29 @@ defmodule Mutare.Mutator.Spec do
   matters because the recorded name is what mutant reports show and what the
   `# mutare:ignore[...]` filter matches on, so two configurations must be
   distinguishable. `:as` is consumed here and never reaches the mutator.
+
+  ## `behaviours` — the enclosing module's behaviour set
+
+  `behaviours` is **not** user config: it is the `MapSet` of behaviour modules the
+  enclosing module implements (`@behaviour Foo` directly, or injected by a `use`),
+  populated **per module by `Mutare.Transform`** as it enters each `defmodule` (the
+  base specs always carry the empty default; the transform re-binds it per module).
+  It rides on the spec for the same reason `opts` does — the spec is the value already
+  threaded to every leaf where a mutator runs — and is delivered to the
+  context-taking callbacks (`c:Mutare.Mutator.mutate/2` and the structural
+  `c:Mutare.Mutator.return_replacements/2` etc.) under the context map's `:behaviours`
+  key, so a behaviour-targeted custom mutator can gate on it. See `Mutare.Mutator`.
   """
 
   @enforce_keys [:module, :name]
-  defstruct [:module, :name, opts: []]
+  defstruct [:module, :name, opts: [], behaviours: MapSet.new()]
 
-  @type t :: %__MODULE__{module: module(), name: atom(), opts: term()}
+  @type t :: %__MODULE__{
+          module: module(),
+          name: atom(),
+          opts: term(),
+          behaviours: MapSet.t(module())
+        }
 
   @doc """
   A spec for a bare module (no opts), named by its `name/0`.
