@@ -1103,6 +1103,23 @@ alias), and skipped for a dynamic/`Elixir.`-absolute/atom-named head. `defimpl` 
 introduces no short alias, so only `defmodule`/`defprotocol` are definers. Tested in `uses_test.exs`
 (the `defimpl`-caller and short-name-`use` cases, plus the lexical-scope guard).
 
+That implicit alias is in scope for **following siblings** *and inside the module's own body* —
+`body_env/3` folds it into the env before `walk_body`, so in `defmodule Outer do defmodule Foo.Bar
+do use Foo.Baz end end`, `Foo => Outer.Foo` resolves `use Foo.Baz` to `Outer.Foo.Baz` (and an
+alias-sensitive `__using__` sees it via `__CALLER__.aliases`). Passing only the parent env would
+resolve the body's short-name `use`/calls through an outer/top-level `Foo` or not at all.
+
+**Normalize a harvested directive before folding it into the body env.** Within an expanded
+`__using__` body, the env for later statements is advanced from the directives each statement
+*yields* (so `alias … as: T; use T` resolves the `use`). Those harvested directives are **raw
+standard-quoted**, where an `unquote(mod)`/`bind_quoted` alias carries its target as a **bare module
+atom** (`{:alias, _, [Mutare.Foo, [as: T]]}`) — a shape `Aliases.register/2` silently no-ops on. So
+`alias unquote(target), as: T; use T` bound nothing, `use T` didn't resolve, and the directives from
+that nested `use` were dropped. Fix: `register_harvested/2` runs the same Sourceror `normalize`
+(atom → `{:__aliases__, …}`) that `harvest` applies at the end *before* `Aliases.register`, so the
+alias binds and the sibling `use` expands. (The stamped output already normalizes; only the in-body
+*env fold* missed it.) Tested via `Mutare.Test.UnquoteAliasUsing`.
+
 **Degrades, never errors** (all wrapped in `try`): a non-loadable module (external target, or an aliased
 `use Web` we can't statically resolve — `Uses` does no alias tracking), non-literal args (`use Foo, var`),
 a `__using__` that raises (e.g. reads caller-module attributes), or an import gated behind a runtime

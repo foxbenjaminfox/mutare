@@ -287,6 +287,22 @@ defmodule Mutare.UsesTest do
       assert "import Map, only: [get: 2]" in rendered
     end
 
+    test "an `unquote`d-target alias in a `__using__` body resolves a sibling `use`" do
+      source = """
+      defmodule UsesUnquoteAlias do
+        use Mutare.Test.UnquoteAliasUsing
+      end
+      """
+
+      rendered = Enum.map(directives_at(source), &Macro.to_string/1)
+
+      # The expanded body is `alias unquote(BodyAliasTarget), as: T; use T`, where `unquote` splices
+      # the target as a *bare atom*. The harvested alias must be normalized before being folded into
+      # the body env, else `T` stays unbound and `use T` is dropped — so `merge` would be missing.
+      assert "alias Mutare.Test.BodyAliasTarget, as: T" in rendered
+      assert "import Map, only: [merge: 2]" in rendered
+    end
+
     test "an alias declared inside a `__using__` body resolves a sibling `use`" do
       source = """
       defmodule UsesBodyAlias do
@@ -471,6 +487,22 @@ defmodule Mutare.UsesTest do
       rendered = Enum.map(directives_at(source), &Macro.to_string/1)
       assert "import Enum, only: [reject: 2]" in rendered
       assert "alias String, as: S" in rendered
+    end
+
+    test "a nested module head's own implicit alias is in scope inside its body" do
+      source = """
+      defmodule Mutare.Test do
+        defmodule HeadAlias.Bar do
+          use HeadAlias.Target
+        end
+      end
+      """
+
+      # Inside `HeadAlias.Bar` (full name `Mutare.Test.HeadAlias.Bar`), the head's own implicit
+      # alias `HeadAlias => Mutare.Test.HeadAlias` is in scope, so `use HeadAlias.Target` resolves
+      # to the real `Mutare.Test.HeadAlias.Target` fixture. Passing only the parent env would leave
+      # `HeadAlias` unbound and the `use` unstamped.
+      assert "import Map, only: [merge: 2]" in Enum.map(directives_at(source), &Macro.to_string/1)
     end
 
     test "the implicit alias scopes only to following siblings (not the definition itself)" do

@@ -160,16 +160,18 @@ defmodule Mutare.Transform.Uses do
   # that is a **direct module-body statement** is stamped — a `use` nested in a `def` is data /
   # invalid, never a module-level directive, so it is descended without stamping.
 
-  defp walk({:defmodule, meta, [mod_ast, [{do_key, body}]]}, module, env) do
+  defp walk({:defmodule, meta, [mod_ast, [{do_key, body}]]} = node, module, env) do
     child = child_module(mod_ast, module, env)
-    {:defmodule, meta, [mod_ast, [{do_key, walk_body(body, child, env)}]]}
+    {:defmodule, meta, [mod_ast, [{do_key, walk_body(body, child, body_env(node, module, env))}]]}
   end
 
   # `defprotocol P do … end` defines module `P` — a module scope (a direct `use` inside it, though
   # rare, is a real directive), named exactly like a `defmodule`.
-  defp walk({:defprotocol, meta, [mod_ast, [{do_key, body}]]}, module, env) do
+  defp walk({:defprotocol, meta, [mod_ast, [{do_key, body}]]} = node, module, env) do
     child = child_module(mod_ast, module, env)
-    {:defprotocol, meta, [mod_ast, [{do_key, walk_body(body, child, env)}]]}
+
+    {:defprotocol, meta,
+     [mod_ast, [{do_key, walk_body(body, child, body_env(node, module, env))}]]}
   end
 
   # `defimpl P, for: T do … end` opens a module scope named `P.T` (**absolute** — never
@@ -256,6 +258,16 @@ defmodule Mutare.Transform.Uses do
   defp register_lexical(stmt, module, env) do
     stmt |> register_source(env) |> then(&register_defined_module(stmt, module, &1))
   end
+
+  # The env a nested module's **own body** is walked under: the parent env *plus the implicit alias
+  # the module head introduces*, which the compiler makes available inside the body itself. In
+  # `defmodule Outer do defmodule Foo.Bar do use Foo.Baz end end`, `Foo => Outer.Foo` is in scope
+  # *inside* `Foo.Bar`, so `use Foo.Baz` resolves to `Outer.Foo.Baz` and an alias-sensitive
+  # `__using__` sees it via `__CALLER__.aliases`. (`register_lexical/3` folds the same alias for the
+  # module's *following siblings*; this is the in-body half — without it a body-local `use`/call by
+  # the head's own short name resolves through an outer/top-level module or not at all.)
+  defp body_env(defmodule_node, parent, env),
+    do: register_defined_module(defmodule_node, parent, env)
 
   # Mirror the alias Elixir auto-introduces when a module body **defines** a nested module:
   # `defmodule Outer do defprotocol P …; defimpl P, for: Integer … end` aliases `P => Outer.P`, so
@@ -518,7 +530,7 @@ defmodule Mutare.Transform.Uses do
         # nested `use` (or `require …, as:`) that injects an alias resolves a later sibling `use`
         # (`use AliasInjector; use T`), exactly as Elixir expands it. (A direct `alias` yields
         # itself, so its binding is captured too; an `import` yields a no-op for the alias env.)
-        {harvested, Enum.reduce(harvested, env, &Aliases.register/2)}
+        {harvested, Enum.reduce(harvested, env, &register_harvested/2)}
       end)
 
     collected
@@ -567,5 +579,20 @@ defmodule Mutare.Transform.Uses do
     directive |> Macro.to_string() |> Sourceror.parse_string!()
   rescue
     _ -> nil
+  end
+
+  # Fold one harvested directive into the body-local alias env *after normalizing it*. The harvested
+  # directives are raw standard-quoted (pre-`normalize`), where an `unquote(mod)`/`bind_quoted` alias
+  # carries its target as a **bare module atom** (`{:alias, _, [Mutare.Foo, [as: T]]}`) — a shape
+  # `Aliases.register/2` doesn't recognise, so binding it raw is a silent no-op. Normalizing first
+  # (the same Sourceror round-trip `harvest` applies at the end, turning the atom into an
+  # `{:__aliases__, …}` node) makes `alias unquote(target), as: T` actually bind `T`, so a later
+  # sibling `use T` in the same expanded body resolves and expands. An un-round-trippable directive
+  # (nil) is a no-op.
+  defp register_harvested(directive, env) do
+    case normalize(directive) do
+      nil -> env
+      normalized -> Aliases.register(normalized, env)
+    end
   end
 end

@@ -139,6 +139,37 @@ defmodule Mutare.Test.BodyAliasUsing do
   end
 end
 
+defmodule Mutare.Test.HeadAlias.Target do
+  @moduledoc """
+  A `__using__` reachable only through a nested module head's *own* implicit alias. Injects a
+  distinctive `import Map, only: [merge: 2]`. In `defmodule Mutare.Test do defmodule HeadAlias.Bar
+  do use HeadAlias.Target end end`, the head `HeadAlias.Bar` aliases `HeadAlias =>
+  Mutare.Test.HeadAlias` *inside its own body*, so `use HeadAlias.Target` resolves here — the
+  observation vehicle for registering the child alias before walking the body.
+  """
+  defmacro __using__(_opts) do
+    quote do: import(Map, only: [merge: 2])
+  end
+end
+
+defmodule Mutare.Test.UnquoteAliasUsing do
+  @moduledoc """
+  A `__using__` whose body declares an alias via **`unquote`d** target and then `use`s it. The
+  `unquote(target)` splices the module as a *bare atom* (`{:alias, _, [Mutare.Test.BodyAliasTarget,
+  [as: T]]}`), the shape `Aliases.register/2` only understands after Sourceror normalization — so
+  the sibling `use T` resolves (and surfaces `BodyAliasTarget`'s `import Map, only: [merge: 2]`)
+  only when the harvested alias is normalized *before* being folded into the body env.
+  """
+  defmacro __using__(_opts) do
+    target = Mutare.Test.BodyAliasTarget
+
+    quote do
+      alias unquote(target), as: T
+      use T
+    end
+  end
+end
+
 defmodule Mutare.Test.OptionDispatch do
   @moduledoc """
   A `__using__` that re-dispatches to the *same* module with a different static option
