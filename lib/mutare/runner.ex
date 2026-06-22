@@ -129,12 +129,13 @@ defmodule Mutare.Runner do
 
       # Prepare + compile, recovering from compile-poisoning by dropping the
       # offending mutants and rebuilding. `schema` here may differ from the input
-      # (poisoners flagged), which is what the run reports against. A terminal
-      # compile failure cleans up its own sandbox inside `prepare_compiling`; once
-      # we hold a compiled sandbox, the `after` cleans it on every exit path.
+      # (poisoners flagged), which is what the run reports against. `prepare_compiling`
+      # always hands the sandbox back, so cleanup is owned here on every exit path —
+      # the terminal-failure path and the post-run `after` alike.
       case prepare_compiling(schema, root, options) do
-        {:error, _reason, _detail} = failure ->
-          failure
+        {:error, reason, detail, sandbox} ->
+          cleanup_sandbox(sandbox, options)
+          {:error, reason, detail}
 
         {:ok, schema, sandbox} ->
           try do
@@ -224,31 +225,36 @@ defmodule Mutare.Runner do
   # Materialise the schema and compile it once, recovering from compile-poisoning.
   @poison_attempts 25
 
-  defp prepare_compiling(
-         schema,
-         root,
-         %Options{} = options,
-         skip_ids \\ MapSet.new(),
-         struck \\ MapSet.new(),
-         attempts \\ @poison_attempts,
-         sandbox \\ nil
-       ) do
-    # First attempt materialises (and claims) a sandbox; a poison retry re-renders
-    # the rebuilt schema into that *same* sandbox, so the path stays stable across
-    # the whole run — no orphaned dirs, no re-copying the project, and ownership is
-    # claimed exactly once.
-    sandbox =
-      if sandbox do
-        Sandbox.rematerialize(sandbox, schema)
-      else
-        Sandbox.prepare(root, schema, options)
-      end
+  # Materialise (and **claim**) the sandbox once, then hand off to the poison-recovery
+  # loop. The sandbox path is fixed here for the whole run — a poison retry re-renders the
+  # rebuilt schema into this *same* dir — so there are no orphaned dirs and ownership is
+  # claimed exactly once. Returns `{:ok, schema, sandbox}` or `{:error, reason, detail,
+  # sandbox}`; either way the sandbox is handed back so `run_with_schema/3` owns cleanup
+  # uniformly (this function never cleans up itself).
+  defp prepare_compiling(schema, root, %Options{} = options) do
+    sandbox = Sandbox.prepare(root, schema, options)
 
+    compile_with_recovery(
+      schema,
+      root,
+      options,
+      sandbox,
+      MapSet.new(),
+      MapSet.new(),
+      @poison_attempts
+    )
+  end
+
+  # Compile the materialised sandbox; on a poisoned compile, drop the implicated mutants,
+  # rebuild + rematerialise into the same sandbox, and retry — bounded by `attempts`. The
+  # loop state (`schema` rebuilt each round, accumulating `skip_ids`/`struck`, the remaining
+  # `attempts`) is explicit; `root`/`options`/`sandbox` are constants.
+  defp compile_with_recovery(schema, root, options, sandbox, skip_ids, struck, attempts) do
     case compile(sandbox) do
       :ok ->
         {:ok, schema, sandbox}
 
-      {:error, :compile_failed, output} = failure ->
+      {:error, :compile_failed, output} ->
         # The implicated mutant ids this round, then evidence-based escalation for an
         # unknown module-level block macro: a block is dropped *wholesale* only once a
         # *second, distinct* poison lands in it after a targeted single-id drop — the
@@ -261,20 +267,18 @@ defmodule Mutare.Runner do
         if attempts > 0 and not MapSet.subset?(poison, skip_ids) do
           # Drop the poisoning mutants and rebuild. Ids are stable across rebuilds
           # (the transform advances its counter for skipped ids), so accumulated
-          # `skip_ids` keep referring to the same mutations.
+          # `skip_ids` keep referring to the same mutations. Rebuild against the *same*
+          # files this schema covers (not a fresh discovery), so a restricted schema
+          # (`from_files/4`, `:only_files`, `:exclude`) can't silently expand. Forward
+          # the original options so `:mutators` survive.
           skip_ids = MapSet.union(skip_ids, poison)
-          # Rebuild against the *same* files this schema covers (not a fresh
-          # discovery), so a restricted schema (`from_files/4`, `:only_files`,
-          # `:exclude`) can't silently expand. Forward the original options so
-          # `:mutators` survive; ids stay stable across rebuilds.
           schema = Schema.rebuild(schema, root, options, skip_ids)
-          prepare_compiling(schema, root, options, skip_ids, struck, attempts - 1, sandbox)
+          Sandbox.rematerialize(sandbox, schema)
+          compile_with_recovery(schema, root, options, sandbox, skip_ids, struck, attempts - 1)
         else
-          # Couldn't identify (or keep making progress on) the poison → give up.
-          # We own the sandbox and are returning an error (no caller `after` will
-          # see it), so clean it up here.
-          cleanup_sandbox(sandbox, options)
-          failure
+          # Couldn't identify (or keep making progress on) the poison → give up. Hand the
+          # sandbox back for the caller to clean up.
+          {:error, :compile_failed, output, sandbox}
         end
     end
   end

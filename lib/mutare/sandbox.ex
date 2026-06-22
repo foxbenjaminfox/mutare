@@ -137,10 +137,12 @@ defmodule Mutare.Sandbox do
       # touching only what changed and pruning what's gone.
       sync(root, sandbox, schema, options)
     else
+      # Bulk-copy the project, then overlay every generated file from the **one**
+      # `override_files/3` manifest `sync/4` also uses (metamutant source, coverage
+      # helper, wrapped test helper) — so adding a generated file is a single edit, not
+      # one per mode.
       copy_project(root, sandbox)
-      write_metamutants(sandbox, schema)
-      write_coverage_helper(root, sandbox, options)
-      inject_bootstrap(sandbox, options)
+      write_overrides(sandbox, override_files(root, schema, options))
     end
 
     # Avoid recompiling unchanged dependencies on the one `mix compile` by seeding
@@ -453,28 +455,13 @@ defmodule Mutare.Sandbox do
     end
   end
 
-  # The dependency-free coverage helper is compiled with the app, so the
-  # metamutant's per-site `hit/1` call resolves. The helper module uses an
-  # Erlang-style atom name to avoid Elixir module collisions (e.g. a target's own
-  # `MutareCov`).
-  #
-  # A single app's root `lib/` is compiled, so the helper goes there under a
-  # generated path chosen not to overwrite copied source. An umbrella root has no
-  # compiled `lib/`, so the helper instead becomes a generated child app under
-  # `apps/` — which `mix compile` builds with the rest and whose ebin the umbrella
-  # puts on every app's code path (verified: no per-app dep edit needed).
-  defp write_coverage_helper(root, sandbox, %Options{project: %{umbrella?: true}}) do
-    app = support_app_name(root)
-    dir = Path.join([sandbox, "apps", app])
-    File.mkdir_p!(Path.join(dir, "lib"))
-    File.write!(Path.join(dir, "mix.exs"), support_mix_exs(app))
-    File.write!(Path.join(dir, "lib/mutare_cov.ex"), @coverage_helper <> "\n")
-  end
-
-  defp write_coverage_helper(_root, sandbox, _options) do
-    path = coverage_helper_path(sandbox)
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, @coverage_helper <> "\n")
+  # Overlay each generated file (the `override_files/3` manifest) onto the bulk-copied project
+  # — the fresh-mode counterpart to `sync/4`'s in-place overlay, sharing the one manifest.
+  # `put_if_changed` keeps the rest at their copied mtime; the metamutant always differs from
+  # the copied original on a fresh write, so every mutated file is still written.
+  defp write_overrides(sandbox, overrides) do
+    for {rel, content} <- overrides, do: put_if_changed(Path.join(sandbox, rel), content)
+    :ok
   end
 
   # The first name in a generated family — `zero`, then `suffixed.(1)`,
@@ -488,20 +475,6 @@ defmodule Mutare.Sandbox do
       n -> suffixed.(n)
     end)
     |> Enum.find(&(not taken?.(&1)))
-  end
-
-  # The sandbox path for a single app's coverage helper. The `_N` suffix is only
-  # reached if a copied source already occupies the base path — a fresh-mode-only
-  # fallback (kept mode always reuses `@coverage_helper_rel`).
-  defp coverage_helper_path(sandbox) do
-    rel =
-      first_free(
-        @coverage_helper_rel,
-        &"lib/__mutare__/coverage_helper_#{&1}.ex",
-        &File.exists?(Path.join(sandbox, &1))
-      )
-
-    Path.join(sandbox, rel)
   end
 
   # Minimal child `mix.exs`: only `build_path` matters — it shares the umbrella's
@@ -538,18 +511,12 @@ defmodule Mutare.Sandbox do
     )
   end
 
-  # Inject the bootstrap into every test helper whose suite the runner will drive.
-  # A single project has one (`test/test_helper.exs`); an umbrella runs each app's
-  # suite sequentially in one BEAM (cwd = the app dir), so each app with a `test/`
-  # tree gets its own copy — and *every* app, not just the mutated ones, because a
-  # mutant in one app can be killed by a test in another, and the selector must be
-  # live in whichever app's process runs the line.
-  defp inject_bootstrap(sandbox, %Options{} = options) do
-    for helper_rel <- helper_rels(sandbox, options.project) do
-      inject_one(Path.join(sandbox, helper_rel))
-    end
-  end
-
+  # The test helpers whose suite the runner will drive — each gets the selector/timeout/coverage
+  # bootstrap wrapped in by `helper_files/2`. A single project has one (`test/test_helper.exs`);
+  # an umbrella runs each app's suite sequentially in one BEAM (cwd = the app dir), so each app
+  # with a `test/` tree gets its own copy — and *every* app, not just the mutated ones, because a
+  # mutant in one app can be killed by a test in another, and the selector must be live in
+  # whichever app's process runs the line.
   defp helper_rels(root, %{umbrella?: true, apps: apps}) do
     for %{dir: dir} <- apps,
         app_dir = Path.join(root, dir),
@@ -560,12 +527,6 @@ defmodule Mutare.Sandbox do
   # A single app (no project, or a non-umbrella one) keeps the pre-umbrella
   # behavior: the root helper, created if absent.
   defp helper_rels(_root, _project), do: [@helper_rel]
-
-  defp inject_one(helper) do
-    File.mkdir_p!(Path.dirname(helper))
-    existing = if File.exists?(helper), do: File.read!(helper), else: @default_helper
-    File.write!(helper, helper_contents(existing))
-  end
 
   # Wrap the user's test helper with the selector/timeout bootstrap and the
   # coverage probe (split around `ExUnit.start/0`; see the constants above). Shared
@@ -604,14 +565,23 @@ defmodule Mutare.Sandbox do
     prune(sandbox, managed)
   end
 
-  # The files Mutare generates rather than copies, keyed by sandbox-relative path
-  # (the same key space as `Schema.metamutants` and `source_rel_paths/1`).
+  # The files Mutare generates rather than copies, keyed by sandbox-relative path (the same
+  # key space as `Schema.metamutants` and `source_rel_paths/1`) — the **single manifest** both
+  # materialisation modes use: `sync/4` overlays it onto an existing sandbox, the fresh path
+  # (`prepare/3`) `write_overrides/2`-es it over a fresh copy. Adding a generated file is one
+  # edit here, automatically reaching both modes.
   defp override_files(root, %Schema{metamutants: metamutants}, %Options{} = options) do
     metamutants
     |> Map.merge(coverage_helper_files(root, options.project))
     |> Map.merge(helper_files(root, options.project))
   end
 
+  # The dependency-free coverage helper, compiled with the app so the metamutant's per-site
+  # `hit/1` call resolves (the module uses an Erlang-style atom name to avoid colliding with a
+  # target's own `MutareCov`). A single app's root `lib/` is compiled, so the helper goes there;
+  # an umbrella root has no compiled `lib/`, so it becomes a generated child app under `apps/`
+  # that `mix compile` builds with the rest (its ebin is on every app's code path — no per-app
+  # dep edit needed).
   defp coverage_helper_files(root, %{umbrella?: true}) do
     app_rel = support_app_rel(root)
     app = Path.basename(app_rel)
@@ -622,8 +592,24 @@ defmodule Mutare.Sandbox do
     }
   end
 
-  defp coverage_helper_files(_root, _project) do
-    %{@coverage_helper_rel => @coverage_helper <> "\n"}
+  defp coverage_helper_files(root, _project) do
+    %{coverage_helper_rel(root) => @coverage_helper <> "\n"}
+  end
+
+  # The single-app coverage-helper rel-path, probed against the **project root** (like
+  # `support_app_name/1`), so both modes agree and the chosen path stays stable across kept
+  # runs. The `_N` suffix is reached only if the target itself ships
+  # `lib/__mutare__/coverage_helper.ex` (essentially never — the `__mutare__` namespace is
+  # reserved); when it does, that file is a mutated source in `metamutants`, so probing root
+  # steps the helper aside and the `Map.merge` keys stay distinct. (Fresh's sandbox is a copy of
+  # root, so probing root matches probing the sandbox; probing the *accumulating* sandbox in
+  # kept mode would instead drift the name run-to-run.)
+  defp coverage_helper_rel(root) do
+    first_free(
+      @coverage_helper_rel,
+      &"lib/__mutare__/coverage_helper_#{&1}.ex",
+      &File.exists?(Path.join(root, &1))
+    )
   end
 
   defp helper_files(root, project) do
