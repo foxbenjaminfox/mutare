@@ -558,8 +558,9 @@ contract between them is the whole game.
   output goes to **stderr** (so a machine report on stdout is never corrupted); animation is
   gated on `detect_ansi/0` (a real stderr tty + `IO.ANSI.enabled?`), degrading to plain
   scrollback (phase notes + leave-behind lines, no cursor codes) for pipes/CI. The Mix task owns
-  it: it starts the server, wires the run's three live hooks to it (`:reporter` → `report/2`,
-  `:on_phase` → `phase/2`, `:on_start` → `started/2`), and calls `finish/1` to tear the block
+  it: it starts the server, wires the run's four live hooks to it (`:reporter` → `report/2`,
+  `:on_phase` → `phase/2`, `:on_start` → `started/2`, and — during the pre-run scan —
+  `:on_scan` → `scanned/2`), and calls `finish/1` to tear the block
   down **before** the final `Mutare.Report` prints. Because the rendering is pure
   (`status_block/2`, `leave_behind/1`, `humanize_secs/1`, `eta_secs/3`, `truncate/2`) and the
   state a plain map, the visible output is unit-tested without a terminal or a clock.
@@ -957,11 +958,12 @@ contract between them is the whole game.
   the **collision rule** — `--format` *with* `--output` keeps the human report on the console and
   writes the machine format to the file; `--format` *alone* takes stdout and drops the human
   report. Note `:reporters` (output formats; `Options` validates the format set) is distinct from
-  the three **live-progress hooks** the task wires to `Mutare.Report.Live`: `:reporter` (per
+  the four **live-progress hooks** the task wires to `Mutare.Report.Live`: `:reporter` (per
   completed `Result`), `:on_phase` (the run's phase as it advances `:compiling` → `:baseline` →
-  `:coverage_probe` → `{:running, total}`), and `:on_start` (each `Site` as its run begins). All
-  three are 1-arity, optional (`nil` = no-op), and validated in `Options`; `Mutare.Runner` fires
-  them but knows nothing of the display. There is **no** top-level option for call-option-key
+  `:coverage_probe` → `{:running, total}`), `:on_start` (each `Site` as its run begins), and
+  `:on_scan` (pre-run scan progress). All
+  four are 1-arity, optional (`nil` = no-op), and validated in `Options`; `Mutare.Runner` fires the
+  first three and `Mutare.Schema` fires `:on_scan`, but neither knows anything of the display. There is **no** top-level option for call-option-key
   gating — it is per-mutator config (`{Module, call_option_keys: false}`), carried on the mutator's
   `Mutare.Mutator.Spec` and read by `Transform.gate_candidates/1` (above), so it needs no Options
   field, CLI flag, or `Schema`/`Ctx` plumbing.
