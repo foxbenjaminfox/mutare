@@ -119,7 +119,11 @@ defmodule Mutare.Sandbox do
 
   To avoid deleting arbitrary data, the target path is only used when it is
   absent, an empty directory, or a directory carrying Mutare's ownership marker
-  (a sandbox from an earlier run); anything else is refused untouched.
+  (a sandbox from an earlier run); anything else is refused untouched. An *owned*
+  directory is reused only when its path was chosen explicitly (`:sandbox`) or in
+  `--keep-sandbox` mode; an owned directory found at an auto-generated fresh path
+  is treated as a stale leftover and refused, since the pid-salted name rules out
+  a benign collision with a live run.
   """
   @spec prepare(Path.t(), Schema.t(), Options.t() | keyword()) :: Path.t()
   def prepare(root, %Schema{} = schema, opts \\ []) do
@@ -127,7 +131,7 @@ defmodule Mutare.Sandbox do
     sandbox = options.sandbox || default_sandbox(root, options.keep_sandbox)
 
     validate_paths!(root, sandbox)
-    claim!(sandbox, options.keep_sandbox)
+    claim!(sandbox, options.keep_sandbox, options.sandbox != nil)
 
     if options.keep_sandbox do
       # Reuse the existing sandbox (and its `_build`): re-materialise it in place,
@@ -155,11 +159,23 @@ defmodule Mutare.Sandbox do
 
   # --- internals -----------------------------------------------------------
 
-  # Fresh mode gets a unique throwaway dir. Kept mode needs a *stable* path so the
-  # next run finds the same `_build`: derive it deterministically from the project
-  # root (a per-project temp dir), unless the caller pinned `:sandbox` explicitly.
+  # Fresh mode gets a unique throwaway dir, salted with this process's OS pid *and*
+  # a per-run integer. `System.unique_integer/1` is unique only within *one* BEAM
+  # instance, so across separate `mix mutare` runs (two concurrent invocations, or a
+  # stale leftover in a shared `/tmp`) the counter restarts and repeats — two runs
+  # could land on the same path, and `claim!`'s reset-when-owned would then let one
+  # wipe the other's *live* sandbox mid-run (the "weird conflicts"). The OS pid
+  # disambiguates concurrent processes and is not reused while this one is alive, so
+  # the name is unique by construction. (Mirrors `Mutare.ChangesTest.fresh_tmp/1`.)
+  #
+  # Kept mode instead needs a *stable* path so the next run finds the same `_build`:
+  # derive it deterministically from the project root (a per-project temp dir),
+  # unless the caller pinned `:sandbox` explicitly.
   defp default_sandbox(_root, false) do
-    Path.join(System.tmp_dir!(), "mutare_sandbox_#{System.unique_integer([:positive])}")
+    Path.join(
+      System.tmp_dir!(),
+      "mutare_sandbox_#{System.pid()}_#{System.unique_integer([:positive])}"
+    )
   end
 
   defp default_sandbox(root, true) do
@@ -173,19 +189,41 @@ defmodule Mutare.Sandbox do
 
   # Take ownership of the sandbox path, then leave our marker. `lstat` (not
   # `stat`) so a symlink is seen as a symlink, never followed to a directory we
-  # would then wipe.
-  defp claim!(sandbox, keep?) do
+  # would then wipe. `pinned?` is whether the caller chose `:sandbox` explicitly
+  # (vs. an auto-generated default) — it decides how an existing *owned* dir is
+  # treated in fresh mode (see the cond).
+  defp claim!(sandbox, keep?, pinned?) do
     case File.lstat(sandbox) do
       {:error, :enoent} ->
         File.mkdir_p!(sandbox)
 
       {:ok, %File.Stat{type: :directory}} ->
+        owned = owned?(sandbox)
+
         cond do
-          # Keep mode reuses an owned dir *in place* (sync re-materialises it);
-          # fresh mode wipes it. Either way the path is ours to write.
-          owned?(sandbox) -> unless keep?, do: reset!(sandbox)
-          File.ls!(sandbox) == [] -> :ok
-          true -> refuse!(sandbox, "is a non-empty directory without Mutare's ownership marker")
+          # Keep mode reuses an owned dir *in place* — `sync` re-materialises it,
+          # preserving its `_build`. Never wiped.
+          keep? and owned ->
+            :ok
+
+          # Fresh mode at an explicitly pinned `:sandbox`: wiping a prior Mutare
+          # sandbox at a fixed path is the documented, intended reuse.
+          owned and pinned? ->
+            reset!(sandbox)
+
+          # Fresh mode at an auto-generated path: the pid-salted name cannot collide
+          # with a *live* run, so an existing owned dir here is a stale leftover (or,
+          # very rarely, an unexpected pid+counter collision). Refuse loudly rather
+          # than silently wipe — clobbering a concurrently-active sandbox is exactly
+          # the corruption the salting guards against.
+          owned ->
+            refuse_autogen!(sandbox)
+
+          File.ls!(sandbox) == [] ->
+            :ok
+
+          true ->
+            refuse!(sandbox, "is a non-empty directory without Mutare's ownership marker")
         end
 
       {:ok, %File.Stat{type: type}} ->
@@ -220,6 +258,16 @@ defmodule Mutare.Sandbox do
           "refusing to use sandbox #{inspect(sandbox)}: it #{reason}. Mutare only writes " <>
             "to a path that is absent, an empty directory, or a previous Mutare sandbox; " <>
             "point it at a fresh or empty directory."
+  end
+
+  @spec refuse_autogen!(Path.t()) :: no_return()
+  defp refuse_autogen!(sandbox) do
+    raise ArgumentError,
+          "refusing to use sandbox #{inspect(sandbox)}: it is an existing Mutare sandbox at an " <>
+            "auto-generated path. That path is salted with this process's OS pid, so it cannot " <>
+            "collide with a live run — this is a stale leftover from a halted run (or, rarely, " <>
+            "an unexpected pid+counter collision). Mutare won't wipe it automatically; delete it " <>
+            "and re-run, or pass an explicit --sandbox to reuse a fixed path."
   end
 
   defp validate_paths!(root, sandbox) do

@@ -436,8 +436,42 @@ untouched. The marker is `.mutare_sandbox`, whose first line is a fixed
 signature; ownership is decided by reading the contents, not trusting the name,
 so a coincidental dotfile can't authorise a deletion. `lstat` (not `stat`) keeps
 a symlink from being followed to a directory we'd then clear. The reuse branch
-is what keeps poison recovery cheap: the runner rebuilds the *same* sandbox path
-repeatedly, and each rebuild is condition 3.
+is what keeps poison recovery cheap **when the sandbox path is stable** (a pinned
+`:sandbox` or `--keep-sandbox`'s deterministic digest path): the runner rebuilds
+that *same* path repeatedly, and each rebuild is condition 3. (In the default
+fresh mode the path is freshly generated per `prepare/3`, so each poison retry
+lands on condition 1 — a new dir — and orphans the previous; harmless but not
+free. Left as-is: poison is rare. See the conflict note below for the naming.)
+
+### Fresh-sandbox naming: pid-salted, not just `unique_integer` `[done]`
+`default_sandbox(_, false)` named the throwaway dir
+`mutare_sandbox_#{System.unique_integer([:positive])}`. But `unique_integer/1` is
+unique only within **one BEAM instance** — across separate `mix mutare` runs the
+counter restarts and *repeats* (the first call from scheduler 1 tends to return
+the same value every VM). Two runs sharing `/tmp` (concurrent invocations, or a
+stale leftover — nothing ever cleans these dirs up) could therefore pick the same
+path, and `claim!`'s condition-3 reuse turned that collision into **corruption**:
+the second run's `reset!` wipes the first run's *live* sandbox mid-flight →
+missing files, spurious compile failures, bogus verdicts ("weird conflicts").
+This is the exact bug `Mutare.ChangesTest.fresh_tmp/1` already fixed for a test
+fixture (see "Self-hosting" below); production had the same latent hole.
+
+Fix: salt the name with the **OS pid** too —
+`mutare_sandbox_#{System.pid()}_#{System.unique_integer([:positive])}`. The pid
+disambiguates concurrent processes and isn't reused while this one is alive, so
+the path is unique by construction. Kept mode keeps its deterministic
+per-project digest (it *wants* a stable path for `_build` reuse).
+
+Hardening: with the pid salt a fresh collision is effectively impossible, so
+`claim!` now distinguishes **how the path was chosen** (`pinned?` = caller passed
+`:sandbox`). An owned dir is still wiped-and-reused for a *pinned* fresh path
+(the documented `--sandbox` reuse) and reused-in-place in keep mode, but an owned
+dir found at an **auto-generated** fresh path is a stale leftover (or an
+astronomically unlikely pid+counter collision) and is now **refused loudly**
+(`refuse_autogen!`) rather than silently clobbered — the safer failure, matching
+`fresh_tmp/1`'s "fail rather than mask a real collision" stance. Refusal can't
+fire on the normal poison-recovery loop: each retry generates a *fresh* path
+(`enoent` → condition 1), never re-claiming an owned dir from the same run.
 
 ### `--keep-sandbox`: incremental materialisation for CI caching `[done]`
 The default sandbox is throwaway: a fresh dir per run, or an owned `--sandbox`

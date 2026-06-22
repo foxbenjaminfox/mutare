@@ -77,6 +77,18 @@ defmodule Mutare.SandboxTest do
     assert File.regular?(Path.join(sandbox, @marker))
   end
 
+  test "auto-generates a fresh sandbox path salted with the OS pid", context do
+    # No explicit `:sandbox` → a throwaway temp dir. `System.unique_integer/1`
+    # repeats across BEAM instances, so the OS pid is what keeps two concurrent
+    # `mix mutare` runs from colliding on the same path (and wiping each other).
+    sandbox = Sandbox.prepare(context.project, context.schema)
+    on_exit(fn -> File.rm_rf!(sandbox) end)
+
+    assert Path.basename(sandbox) =~ ~r/^mutare_sandbox_#{System.pid()}_\d+$/
+    assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
+    assert File.regular?(Path.join(sandbox, @marker))
+  end
+
   test "adopts an existing empty directory", context do
     sandbox = Path.join(context.base, "sandbox")
     File.mkdir_p!(sandbox)
