@@ -28,13 +28,22 @@ defmodule Mutare.Sandbox.Command do
       which says nothing about the mutation and is kept out of the score.
 
   `outcome/1` is the single, total decoder of that *exit-code* contract.
-  `outcome/2` refines its one ambiguous case (exit `1`) with the run's output:
-  exit `1` is both a real harness failure *and* a mutation that broke the **test
-  suite's** compilation (it ran at the test modules' compile time). The latter is
-  a detected mutant — a kill, not infra — and is told apart by a test-script
-  compile-error banner (`suite_compile_error?/1`), the only place this module
-  reads output to form a *verdict*. `timed_test/4` applies the `--exit-status`
-  flag and returns a typed `Mutare.Sandbox.Command.Result` decoded via `outcome/2`.
+  `outcome/2` refines its ambiguous "anything else" case with the run's output —
+  the only place this module reads output to form a *verdict* — recovering two
+  *detected*-mutant cases from the otherwise-`:harness_error` bucket:
+
+    * a mutation that broke the **test suite's** own compilation (it ran at the
+      test modules' compile time) exits `1` with a test-script compile-error
+      banner (`suite_compile_error?/1`) — a kill, not infra.
+    * a mutation that minted **unbounded atoms** (an unterminated search building a
+      fresh `:"\#{x}_\#{i}"` per step) crashes the BEAM when the global atom table
+      fills (`atom_exhausted?/1`) — a resource-divergence exactly like a CPU-bound
+      timeout (the suite can never pass with it), so also a kill. The VM aborts
+      before the in-process timeout watcher can self-halt, which is why it surfaces
+      here rather than as a clean `timeout_exit/0`.
+
+  `timed_test/4` applies the `--exit-status` flag and returns a typed
+  `Mutare.Sandbox.Command.Result` decoded via `outcome/2`.
 
   ## Mix output vocabulary
 
@@ -114,8 +123,18 @@ defmodule Mutare.Sandbox.Command do
       `@attr` expression…). The mutation *was* detected — the suite can't even
       build with it — so the runner counts it as a kill, not an infra failure
       (see `outcome/2`).
+    * `:atom_exhausted` — a refinement of `:harness_error`: the mutation made the
+      program mint unbounded atoms and the BEAM aborted when the atom table filled.
+      A resource-divergence like a timeout (the suite can never pass with it), so
+      the runner counts it as a kill — see `outcome/2` and `atom_exhausted?/1`.
   """
-  @type outcome :: :passed | :failed | :timeout | :harness_error | :suite_compile_error
+  @type outcome ::
+          :passed
+          | :failed
+          | :timeout
+          | :harness_error
+          | :suite_compile_error
+          | :atom_exhausted
 
   @doc "Env var the runner sets to give a mutant run its wall-clock cap (ms)."
   @spec timeout_env() :: String.t()
@@ -172,15 +191,21 @@ defmodule Mutare.Sandbox.Command do
   during a per-mutant `mix test` can't come from the lib — it can only be a
   re-evaluated `.exs` **test** file the mutation broke at load time. So when an
   otherwise-`:harness_error` run's output reports a compilation error in a test
-  script (`suite_compile_error?/1`), it is `:suite_compile_error`. Everything
-  else (a lib-file compile error, a missing dep, no marker at all) stays
-  `:harness_error` — fail safe: an ambiguous failure is never counted as a kill.
+  script (`suite_compile_error?/1`), it is `:suite_compile_error`. A second
+  refinement recovers `:atom_exhausted` — a VM abort from the mutation minting
+  unbounded atoms (`atom_exhausted?/1`), a detected resource-divergence. Both are
+  kills. Everything else (a lib-file compile error, a missing dep, no marker at
+  all) stays `:harness_error` — fail safe: an ambiguous failure is never a kill.
   """
   @spec outcome(non_neg_integer(), String.t()) :: outcome()
   def outcome(status, output) when is_binary(output) do
     case outcome(status) do
       :harness_error ->
-        if suite_compile_error?(output), do: :suite_compile_error, else: :harness_error
+        cond do
+          atom_exhausted?(output) -> :atom_exhausted
+          suite_compile_error?(output) -> :suite_compile_error
+          true -> :harness_error
+        end
 
       decoded ->
         decoded
@@ -196,6 +221,15 @@ defmodule Mutare.Sandbox.Command do
   @compile_error_banner ~r/== Compilation error in file (\S+) ==/
   @source_location ~r{([\w/.\-]+\.exs?):(\d+)}
   @test_location ~r{([\w/.\-]+_test\.exs):(\d+)}
+
+  # A BEAM *abort* banner — not mix output, but read for the same job (refining a
+  # verdict from captured output), so co-located here. The emulator prints this to
+  # stderr and halts the whole node the instant the global atom table fills; a
+  # mutation that mints unbounded atoms (an unterminated search building a fresh
+  # `:"#{x}_#{i}"` per step) is what gets it there. `stderr` is merged into the
+  # captured output (`stderr_to_stdout: true`), so the banner reaches `outcome/2`.
+  # The wording (`no more index entries in atom_tab`) is stable across OTP releases.
+  @atom_table_exhausted ~r/no more index entries in atom_tab/
 
   # Compiler-diagnostic *headers*. Elixir prints each warning/error as a block headed
   # by one of these markers, the rest of the block (gutter, carets, `└─ file:line:col:`
@@ -274,6 +308,21 @@ defmodule Mutare.Sandbox.Command do
   # at baseline, so they never produce a per-mutant compile error here.
   defp test_script?(file) do
     String.ends_with?(file, ".exs") and "test" in Path.split(file)
+  end
+
+  @doc """
+  Whether `output` shows the BEAM aborting because the **atom table** filled — the
+  signature of a mutation that mints unbounded atoms (see `outcome/2`). Such a run
+  is a detected resource-divergence (the suite can never complete with it), so the
+  runner treats it as a kill — like a timeout — rather than an infra failure.
+
+  Matches only when the otherwise-`:harness_error` exit code is *also* paired with
+  this VM-abort banner; a normal pass/fail/timeout verdict still wins in
+  `outcome/2`. Pure, so the discriminator is unit-testable.
+  """
+  @spec atom_exhausted?(String.t()) :: boolean()
+  def atom_exhausted?(output) when is_binary(output) do
+    Regex.match?(@atom_table_exhausted, output)
   end
 
   @doc """

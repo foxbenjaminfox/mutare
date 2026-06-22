@@ -150,6 +150,35 @@ defmodule Mutare.Sandbox.CommandTest do
       refute Command.suite_compile_error?("== Compilation error in file lib/foo.ex ==")
       refute Command.suite_compile_error?("== Compilation error in file priv/seeds.exs ==")
     end
+
+    # The BEAM prints this to stderr (merged into the captured output) and aborts
+    # the node when the atom table fills — a mutation minting unbounded atoms.
+    @atom_crash """
+    no more index entries in atom_tab (max=1048576)
+
+    Crash dump is being written to: erl_crash.dump...done
+    """
+
+    test "an atom-table exhaustion is a kill (resource-divergence), not infra" do
+      # The VM crashed before the timeout watcher could self-halt, so it lands on a
+      # generic harness exit code — exit 1, or a signal code if the abort raised one.
+      assert Command.outcome(1, @atom_crash) == :atom_exhausted
+      assert Command.outcome(134, @atom_crash) == :atom_exhausted
+    end
+
+    test "the atom banner never overrides a real verdict (pass/fail/timeout win)" do
+      assert Command.outcome(0, @atom_crash) == :passed
+      assert Command.outcome(Command.failure_exit(), @atom_crash) == :failed
+      assert Command.outcome(Command.timeout_exit(), @atom_crash) == :timeout
+    end
+
+    test "atom_exhausted?/1 matches only the VM atom-table abort banner" do
+      assert Command.atom_exhausted?(@atom_crash)
+      # an ordinary test failure, a compile error, or other resource crash is not one
+      refute Command.atom_exhausted?("1) test foo (MyTest)\n   Assertion failed")
+      refute Command.atom_exhausted?(@test_compile_error)
+      refute Command.atom_exhausted?("Cannot allocate 1234 bytes of memory")
+    end
   end
 
   describe "test_argv/1 builds the kill-detection mix test argv" do

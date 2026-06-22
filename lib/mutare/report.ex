@@ -141,12 +141,13 @@ defmodule Mutare.Report do
   Fraction (0.0..1.0) of the mutants that actually *ran* which ended in a
   `:harness_error`.
 
-  "Ran" is `:killed`/`:survived`/`:timeout`/`:harness_error` — the runs that
-  reached (or tried to reach) a verdict. `:no_coverage`/`:ignored`/`:poisoned`
-  never launched a `mix test`, so they are not part of this denominator: this
-  rate measures how broken the *running* was, not how much was skipped. Returns
-  `0.0` when nothing ran. The runner compares it to `:max_harness_error_rate` to
-  decide whether to abort; kept pure here so it is testable (cf. `passes_gate?/2`).
+  "Ran" is `:killed`/`:survived`/`:timeout`/`:atom_exhausted`/`:harness_error` —
+  the runs that reached (or tried to reach) a verdict. `:no_coverage`/`:ignored`/
+  `:poisoned` never launched a `mix test`, so they are not part of this
+  denominator: this rate measures how broken the *running* was, not how much was
+  skipped. Returns `0.0` when nothing ran. The runner compares it to
+  `:max_harness_error_rate` to decide whether to abort; kept pure here so it is
+  testable (cf. `passes_gate?/2`).
 
       iex> results = [
       ...>   %Mutare.Result{status: :killed},
@@ -162,7 +163,8 @@ defmodule Mutare.Report do
     errors = count(counts, :harness_error)
 
     ran =
-      errors + count(counts, :killed) + count(counts, :survived) + count(counts, :timeout)
+      errors + count(counts, :killed) + count(counts, :survived) + count(counts, :timeout) +
+        count(counts, :atom_exhausted)
 
     if ran == 0, do: 0.0, else: errors / ran
   end
@@ -200,6 +202,7 @@ defmodule Mutare.Report do
     counts = tally(results)
     killed = count(counts, :killed)
     timeout = count(counts, :timeout)
+    atom_exhausted = count(counts, :atom_exhausted)
     survived = count(counts, :survived)
     no_coverage = count(counts, :no_coverage)
     ignored = count(counts, :ignored)
@@ -211,6 +214,7 @@ defmodule Mutare.Report do
       [
         "#{killed} killed",
         if(timeout > 0, do: "#{timeout} timeout"),
+        if(atom_exhausted > 0, do: "#{atom_exhausted} atom-table"),
         "#{survived} survived",
         if(no_coverage > 0, do: "#{no_coverage} no-coverage"),
         if(ignored > 0, do: "#{ignored} ignored"),
@@ -254,8 +258,9 @@ defmodule Mutare.Report do
   defp tally(results), do: Enum.frequencies_by(results, & &1.status)
 
   defp score_from_tally(counts) do
-    # A timeout is a kill (the mutation caused a hang).
-    killed = count(counts, :killed) + count(counts, :timeout)
+    # A timeout is a kill (the mutation caused a hang); atom-table exhaustion is
+    # the same divergence by another resource (unbounded atoms crashed the VM).
+    killed = count(counts, :killed) + count(counts, :timeout) + count(counts, :atom_exhausted)
 
     # A harness error never reached a verdict, so — like no-coverage/ignored/
     # poisoned — it is excluded from the denominator, not counted as a kill.

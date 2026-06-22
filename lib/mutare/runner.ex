@@ -392,6 +392,13 @@ defmodule Mutare.Runner do
   # separates this from a genuine harness/infra compile failure (which stays
   # `:harness_error`); only a per-mutant *test-script* compile error lands here.
   defp status_for(:suite_compile_error), do: :killed
+  # The mutation minted unbounded atoms and crashed the BEAM (atom table full) —
+  # a resource-divergence like a timeout, so a kill, recorded under its own status
+  # so the report can name the cause. `Command.outcome/2` recovers it from the
+  # otherwise-`:harness_error` exit via the VM-abort banner (`atom_exhausted?/1`).
+  # Not retried (it is a verdict, not a transient infra blip): only `:harness_error`
+  # re-runs (see `run_mutant/5`).
+  defp status_for(:atom_exhausted), do: :atom_exhausted
 
   # Persistent harness errors (after per-mutant retries) hollow out the score's
   # denominator — many mutants measured nothing. Past `:max_harness_error_rate`

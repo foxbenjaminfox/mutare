@@ -476,14 +476,16 @@ contract between them is the whole game.
   *run side* of the **exit-code contract** and decodes it into a typed
   `Mutare.Sandbox.Command.Result` (`timed_test/4`): `0`→`:passed`, `failure_exit/0`→`:failed`,
   `timeout_exit/0`→`:timeout`, anything else→`:harness_error` (the total exit-code decoder is
-  `outcome/1`). `outcome/2` refines the one ambiguous code (`1`) with the run's *output*: a mutation
-  that breaks the **test suite's** own compilation (it ran at the test modules' compile time —
-  exit `1` with a `.exs`-under-`test/` compile-error banner, `suite_compile_error?/1`) is
-  `:suite_compile_error`, which the runner counts as a **kill** (the suite couldn't build with it →
-  detected); a real infra/lib compile error / missing dep stays `:harness_error` (fail safe). This
-  is the *only* place the contract reads output to form a *verdict*, justified because the lib
-  compiles **once** so a fresh per-mutant compile error can only be a re-evaluated test script the
-  mutation broke. It is also the single home for the rest of what mix's output/exit codes *mean*, so
+  `outcome/1`). `outcome/2` refines the otherwise-`:harness_error` case with the run's *output* —
+  the *only* place the contract reads output to form a *verdict* — recovering two **detected**-mutant
+  cases: (1) a mutation that breaks the **test suite's** own compilation (it ran at the test modules'
+  compile time — exit `1` with a `.exs`-under-`test/` compile-error banner, `suite_compile_error?/1`)
+  is `:suite_compile_error` (justified because the lib compiles **once**, so a fresh per-mutant
+  compile error can only be a re-evaluated test script the mutation broke); (2) a mutation that mints
+  **unbounded atoms** crashes the BEAM when the atom table fills (the VM-abort banner
+  `atom_exhausted?/1`) — a resource-divergence like a timeout (the VM dies before the in-process
+  watcher can self-halt cleanly), so `:atom_exhausted`. The runner counts **both** as kills; a real
+  infra/lib compile error / missing dep / other crash stays `:harness_error` (fail safe). It is also the single home for the rest of what mix's output/exit codes *mean*, so
   nothing re-derives them: `success?/1` is the one reading of "exit `0` means success" (the metamutant
   compile, `Baseline`, `CoverageProbe` all call it instead of matching a literal `0`), and the three
   mix-output **patterns** live here too — `compile_error_banner/0`, `source_location_regex/0` (read by
@@ -816,7 +818,8 @@ that are excluded from the denominator: `:no_coverage` (no test runs the line), 
 (`# mutare:ignore` — see below), `:poisoned` (dropped — wouldn't compile), and `:harness_error` (the mutant
 run never reached a verdict — a compile error, missing dep, or filesystem race — so it measures
 nothing about the mutation; classified by `Mutare.Sandbox.Command`'s exit-code contract, **not**
-charged as a kill). `:timeout` counts as a kill.
+charged as a kill). `:timeout` and `:atom_exhausted` (the mutation minted unbounded atoms and
+crashed the BEAM — a resource-divergence like a timeout) both count as kills.
 
 ### The `# mutare:ignore` directive (`Mutare.Ignore`)
 

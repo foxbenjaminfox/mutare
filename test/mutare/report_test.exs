@@ -123,6 +123,28 @@ defmodule Mutare.ReportTest do
              "mutation score: 66.7%  (1 killed, 1 timeout, 1 survived, 3 total)"
   end
 
+  test "score/1 counts an atom-table exhaustion as a kill" do
+    results = [
+      %Result{status: :killed},
+      %Result{status: :atom_exhausted},
+      %Result{status: :survived}
+    ]
+
+    # 2 kills (killed + atom_exhausted) / 3 total — a divergence like a timeout.
+    assert Report.score(results) == 2 / 3 * 100
+  end
+
+  test "summary/1 surfaces atom-table exhaustions when present" do
+    results = [
+      %Result{status: :killed},
+      %Result{status: :atom_exhausted},
+      %Result{status: :survived}
+    ]
+
+    assert Report.summary(results) ==
+             "mutation score: 66.7%  (1 killed, 1 atom-table, 1 survived, 3 total)"
+  end
+
   test "score/1 excludes no_coverage from the denominator" do
     results = [
       %Result{status: :killed},
@@ -239,11 +261,12 @@ defmodule Mutare.ReportTest do
         %Result{status: :killed},
         %Result{status: :survived},
         %Result{status: :timeout},
+        %Result{status: :atom_exhausted},
         %Result{status: :harness_error}
       ]
 
-      # 1 harness error / 4 that ran.
-      assert Report.harness_error_rate(results) == 0.25
+      # 1 harness error / 5 that ran — an atom-table crash reached a verdict too.
+      assert Report.harness_error_rate(results) == 0.2
     end
 
     test "excludes skipped statuses from the denominator (measures broken running, not skips)" do

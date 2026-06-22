@@ -4,7 +4,14 @@ defmodule Mutare.Result do
   alias Mutare.Site
 
   @type status ::
-          :killed | :survived | :no_coverage | :timeout | :ignored | :poisoned | :harness_error
+          :killed
+          | :survived
+          | :no_coverage
+          | :timeout
+          | :atom_exhausted
+          | :ignored
+          | :poisoned
+          | :harness_error
 
   @type t :: %__MODULE__{
           site: Site.t(),

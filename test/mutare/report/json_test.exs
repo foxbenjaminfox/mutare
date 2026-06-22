@@ -67,6 +67,7 @@ defmodule Mutare.Report.JsonTest do
       {:survived, "Survived"},
       {:no_coverage, "NoCoverage"},
       {:timeout, "Timeout"},
+      {:atom_exhausted, "Timeout"},
       {:ignored, "Ignored"},
       {:poisoned, "CompileError"},
       {:harness_error, "RuntimeError"}

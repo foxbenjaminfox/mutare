@@ -65,11 +65,14 @@ defmodule Mutare.Report.Live do
   }
 
   # Which result statuses leave a permanent line behind, and how each is styled.
-  # Survivors are the product; timeouts and harness errors are problems worth
-  # surfacing the moment they happen. Everything else only moves the counter.
+  # Survivors are the product; timeouts, atom-table crashes, and harness errors are
+  # problems worth surfacing the moment they happen. Everything else only moves the
+  # counter. (`:atom_exhausted` is a kill, like `:timeout`, but still worth a line —
+  # an unusual divergence the author probably wants to see.)
   @leave_behind %{
     survived: {"SURVIVED", :red},
     timeout: {"TIMEOUT", :yellow},
+    atom_exhausted: {"ATOMS", :yellow},
     harness_error: {"ERROR", :magenta}
   }
 
@@ -295,6 +298,7 @@ defmodule Mutare.Report.Live do
   defp extras(state) do
     [
       {:timeout, "timeout"},
+      {:atom_exhausted, "atom-table"},
       {:no_coverage, "no-coverage"},
       {:ignored, "ignored"},
       {:poisoned, "poisoned"},

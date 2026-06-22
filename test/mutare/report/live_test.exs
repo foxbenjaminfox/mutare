@@ -58,6 +58,7 @@ defmodule Mutare.Report.LiveTest do
     test "survivors and problems earn a permanent line" do
       assert {"SURVIVED", :red} = Live.leave_behind(:survived)
       assert {"TIMEOUT", :yellow} = Live.leave_behind(:timeout)
+      assert {"ATOMS", :yellow} = Live.leave_behind(:atom_exhausted)
       assert {"ERROR", :magenta} = Live.leave_behind(:harness_error)
     end
 

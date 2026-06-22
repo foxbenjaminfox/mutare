@@ -29,11 +29,15 @@ defmodule Mutare.Report.Json do
 
   # Mutare status -> schema MutantStatus. The mapping is total over
   # `Mutare.Result.status/0` and is the single place the two vocabularies meet.
+  # `:atom_exhausted` has no dedicated schema status; it is a detected
+  # resource-divergence, so it maps to "Timeout" (the schema's other "detected by
+  # non-completion" status) — score-consistent with how Stryker counts it.
   @status %{
     killed: "Killed",
     survived: "Survived",
     no_coverage: "NoCoverage",
     timeout: "Timeout",
+    atom_exhausted: "Timeout",
     ignored: "Ignored",
     poisoned: "CompileError",
     harness_error: "RuntimeError"
