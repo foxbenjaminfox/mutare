@@ -38,6 +38,17 @@ defmodule Mutare.ConfigTest do
                ["lib/billing/invoice.ex"]
     end
 
+    test "repeated --only flags accumulate into :paths, preserving order" do
+      assert Config.merge([], only: "lib/billing", only: "lib/web")[:paths] ==
+               ["lib/billing", "lib/web"]
+    end
+
+    test "--only is unset when absent (file config / default stands)" do
+      refute Keyword.has_key?(Config.merge([], []), :paths)
+      # a single --only flag replaces (does not append to) the file's list
+      assert Config.merge([paths: ["lib"]], only: "lib/only")[:paths] == ["lib/only"]
+    end
+
     test "--line FILE:LINE becomes :only_lines; repeatable; absent leaves it unset" do
       assert Config.merge([], line: "lib/billing/invoice.ex:42")[:only_lines] ==
                [{"lib/billing/invoice.ex", 42}]
@@ -163,6 +174,28 @@ defmodule Mutare.ConfigTest do
 
     test "--format alone sends the machine format to stdout and drops the human report" do
       assert Config.merge([], format: "sarif")[:reporters] == [{:sarif, nil}]
+    end
+
+    test "repeated --format/--output pair by position and keep the human report" do
+      merged =
+        Config.merge([],
+          format: "json",
+          output: "out.json",
+          format: "sarif",
+          output: "out.sarif"
+        )
+
+      assert merged[:reporters] == [{:human, nil}, {:json, "out.json"}, {:sarif, "out.sarif"}]
+    end
+
+    test "a --format past the last --output goes to stdout (and drops the human report)" do
+      merged = Config.merge([], format: "json", output: "out.json", format: "sarif")
+      assert merged[:reporters] == [{:json, "out.json"}, {:sarif, nil}]
+    end
+
+    test "repeated --format with no --output sends every machine format to stdout" do
+      assert Config.merge([], format: "json", format: "sarif")[:reporters] ==
+               [{:json, nil}, {:sarif, nil}]
     end
 
     test "without --format, .mutare.exs reporters are used (bare atoms normalised to stdout)" do

@@ -23,9 +23,10 @@ defmodule Mutare.Config do
   @doc """
   Merge `file_config` with parsed CLI `flags` into resolved options.
 
-  Recognised flags: `:only` (→ `:paths`; a directory to scan or a single `.ex`
-  file), `:line` (repeatable → `:only_lines`; a `FILE:LINE` to scope the run to one
-  file:line's mutants), `:exclude` (repeatable → list of glob strings), `:mutators` (CSV → modules),
+  Recognised flags: `:only` (repeatable → `:paths`; each a directory to scan or a
+  single `.ex` file, accumulated in order), `:line` (repeatable → `:only_lines`; a
+  `FILE:LINE` to scope the run to one file:line's mutants), `:exclude` (repeatable →
+  list of glob strings), `:mutators` (CSV → modules),
   `:min_score`, `:sandbox`, `:keep_sandbox`, `:full` (→ `test_selection: :full`),
   `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`,
   `:max_mutants`, `:workers`, `:timeout`, `:timeout_multiplier`,
@@ -45,7 +46,7 @@ defmodule Mutare.Config do
   @spec merge(keyword(), keyword()) :: keyword()
   def merge(file_config, flags) do
     file_config
-    |> put_unless_nil(:paths, flags[:only] && [flags[:only]])
+    |> put_unless_nil(:paths, only_paths(flags))
     |> put_unless_nil(:exclude, exclude_globs(flags))
     |> put_unless_nil(:only_lines, parse_lines(flags))
     |> put_unless_nil(:min_score, flags[:min_score])
@@ -79,21 +80,23 @@ defmodule Mutare.Config do
   defdelegate mutator_modules(mutators), to: Mutare.Mutators, as: :resolve
 
   # Resolve output reporters. `--format` (CLI) wins over a `.mutare.exs`
-  # `reporters:` list. With `--format` and `--output`, the machine format writes
-  # to the file *and* the human report still prints to the console; with
-  # `--format` alone the machine format takes stdout and the human report is
-  # dropped (they would collide). The valid-format check is left to
+  # `reporters:` list. Both `--format` and `--output` are **repeatable** (`:keep`)
+  # and paired by position (the Nth `--format` with the Nth `--output`); a format
+  # with no matching `--output` writes to stdout. With at least one file output, the
+  # human report still prints to the console; if any machine format takes stdout the
+  # human report is dropped (they would collide). The valid-format check is left to
   # `Mutare.Options`, so a typo'd `--format` gets the descriptive error there.
   defp resolve_reporters(config, flags) do
-    case flags[:format] do
-      nil ->
+    case Keyword.get_values(flags, :format) do
+      [] ->
         case Keyword.fetch(config, :reporters) do
           {:ok, reporters} -> Keyword.put(config, :reporters, normalize_reporters(reporters))
           :error -> config
         end
 
-      format ->
-        Keyword.put(config, :reporters, cli_reporters(to_format(format), flags[:output]))
+      formats ->
+        outputs = Keyword.get_values(flags, :output)
+        Keyword.put(config, :reporters, cli_reporters(formats, outputs))
     end
   end
 
@@ -106,8 +109,22 @@ defmodule Mutare.Config do
     Enum.find(Mutare.Options.formats(), format, &(Atom.to_string(&1) == format))
   end
 
-  defp cli_reporters(format, nil), do: [{format, nil}]
-  defp cli_reporters(format, output), do: [{:human, nil}, {format, output}]
+  # Pair the Nth `--format` with the Nth `--output` (a format past the last
+  # `--output` goes to stdout, `nil`); extra `--output`s beyond the formats are
+  # ignored. Prepend the human console report unless some machine format already
+  # owns stdout (a `nil` path), which it would collide with.
+  defp cli_reporters(formats, outputs) do
+    reporters =
+      formats
+      |> Enum.with_index()
+      |> Enum.map(fn {format, i} -> {to_format(format), Enum.at(outputs, i)} end)
+
+    if Enum.any?(reporters, fn {_format, path} -> is_nil(path) end) do
+      reporters
+    else
+      [{:human, nil} | reporters]
+    end
+  end
 
   # Normalise a `.mutare.exs` `reporters:` list: a bare format atom means
   # "to stdout" (`{atom, nil}`); a `{format, path}` tuple is kept. Anything else
@@ -169,6 +186,18 @@ defmodule Mutare.Config do
     case Keyword.get_values(flags, :exclude) do
       [] -> nil
       globs -> globs
+    end
+  end
+
+  # `--only` is the CLI counterpart of a `.mutare.exs` `paths:` list (which is
+  # inherently multi-valued). It is a **repeatable** flag (parsed `:keep`): each
+  # `--only <path>` contributes one directory or single `.ex` file, accumulated in
+  # source order into `:paths`. Absent (`[]`) leaves the key unset so the file config
+  # / default (`["lib"]`) stands.
+  defp only_paths(flags) do
+    case Keyword.get_values(flags, :only) do
+      [] -> nil
+      paths -> paths
     end
   end
 

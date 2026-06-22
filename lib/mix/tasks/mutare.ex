@@ -10,10 +10,13 @@ defmodule Mix.Tasks.Mutare do
       mix mutare                          # mutate everything under lib/
       mix mutare path/to/project          # target another project directory
       mix mutare apps/billing             # mutate one umbrella app (copies the umbrella)
-      mix mutare --app billing,web        # mutate specific umbrella apps
+      mix mutare --app billing,web        # mutate specific umbrella apps (repeatable,
+      mix mutare --app billing --app web  #   and CSV-splitting — these two are equivalent)
       mix mutare --workspace              # mutate every app in an umbrella
       mix mutare --only lib/billing       # scope to a directory
       mix mutare --only lib/billing/invoice.ex  # …or a single file
+      mix mutare --only lib/billing --only lib/web
+                                          # scope to several paths (repeatable)
       mix mutare --line lib/billing/invoice.ex:42
                                           # only the mutants on that file:line — a
                                           #   narrow rerun, e.g. to recheck one
@@ -51,6 +54,11 @@ defmodule Mix.Tasks.Mutare do
                                           #   human report still prints to console
       mix mutare --format sarif           # emit SARIF to stdout (suppresses the
                                           #   human report to avoid a collision)
+      mix mutare --format json --output mutare.json --format sarif --output mutare.sarif
+                                          # `--format`/`--output` are repeatable and
+                                          #   paired by position (Nth format ↔ Nth
+                                          #   output); a format with no matching
+                                          #   `--output` goes to stdout
 
   By default Mutare materialises a throwaway sandbox copy and recompiles the
   metamutant cold every run, then removes the sandbox when the run finishes (so
@@ -88,7 +96,7 @@ defmodule Mix.Tasks.Mutare do
   alias Mutare.Sandbox.Command
 
   @switches [
-    only: :string,
+    only: [:string, :keep],
     line: [:string, :keep],
     exclude: [:string, :keep],
     mutators: :string,
@@ -104,9 +112,9 @@ defmodule Mix.Tasks.Mutare do
     workers: :integer,
     timeout: :integer,
     timeout_multiplier: :float,
-    format: :string,
-    output: :string,
-    app: :string,
+    format: [:string, :keep],
+    output: [:string, :keep],
+    app: [:string, :keep],
     workspace: :boolean,
     expand_uses: :boolean
   ]
@@ -196,13 +204,23 @@ defmodule Mix.Tasks.Mutare do
   # mutate-scope. A bad `--app` (no matching umbrella app) raises `ArgumentError`,
   # surfaced as a clean Mix failure like the other resolution errors.
   defp resolve_project(target, flags) do
-    Project.resolve(target, apps: parse_apps(flags[:app]), workspace: flags[:workspace] || false)
+    Project.resolve(target, apps: parse_apps(flags), workspace: flags[:workspace] || false)
   rescue
     error in ArgumentError -> Mix.raise(Exception.message(error))
   end
 
-  defp parse_apps(nil), do: nil
-  defp parse_apps(csv), do: csv |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+  # `--app` is repeatable (`:keep`) *and* CSV-splitting, so `--app billing,web` and
+  # `--app billing --app web` are equivalent — each occurrence contributes one or more
+  # app names, accumulated in order. No `--app` (`[]`) means `nil`: "all apps".
+  defp parse_apps(flags) do
+    case Keyword.get_values(flags, :app) do
+      [] ->
+        nil
+
+      csvs ->
+        csvs |> Enum.flat_map(&String.split(&1, ",", trim: true)) |> Enum.map(&String.trim/1)
+    end
+  end
 
   # Resolve `.mutare.exs` + CLI flags into a validated `Mutare.Options`. Both an
   # unknown mutator (from `Config`) and an invalid option (from `Options.new/1`)
