@@ -14,6 +14,8 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --workspace              # mutate every app in an umbrella
       mix mutare --only lib/billing       # scope to a directory
       mix mutare --only lib/billing/invoice.ex  # …or a single file
+      mix mutare --exclude "lib/generated/**" --exclude lib/legacy
+                                          # skip files matching globs (repeatable)
       mix mutare --since master             # only files changed vs a git ref (CI)
       mix mutare --mutators relational    # only some mutator families
       mix mutare --min-score 70           # fail (CI) if the score is below 70
@@ -34,6 +36,8 @@ defmodule Mix.Tasks.Mutare do
                                           #   (default: System.schedulers_online/0)
       mix mutare --timeout 30000          # per-mutant wall-clock cap, in ms
                                           #   (default: derived from the baseline run)
+      mix mutare --timeout-multiplier 5   # cap = baseline run × this factor
+                                          #   (default: 3.0; ignored if --timeout set)
       mix mutare --sandbox /tmp/mut --keep-sandbox
                                           # reuse the sandbox + its build cache
                                           #   across runs (CI); see below
@@ -80,6 +84,7 @@ defmodule Mix.Tasks.Mutare do
 
   @switches [
     only: :string,
+    exclude: [:string, :keep],
     mutators: :string,
     min_score: :float,
     sandbox: :string,
@@ -92,6 +97,7 @@ defmodule Mix.Tasks.Mutare do
     max_mutants: :integer,
     workers: :integer,
     timeout: :integer,
+    timeout_multiplier: :float,
     format: :string,
     output: :string,
     app: :string,

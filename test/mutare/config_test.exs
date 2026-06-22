@@ -38,6 +38,26 @@ defmodule Mutare.ConfigTest do
                ["lib/billing/invoice.ex"]
     end
 
+    test "repeated --exclude flags accumulate into a list of globs, preserving order" do
+      assert Config.merge([], exclude: "lib/generated/**", exclude: "lib/legacy")[:exclude] ==
+               ["lib/generated/**", "lib/legacy"]
+    end
+
+    test "--exclude passes through; any flag wins over file; absent leaves it to default" do
+      assert Config.merge([], exclude: "lib/a")[:exclude] == ["lib/a"]
+      refute Keyword.has_key?(Config.merge([], []), :exclude)
+      # a single --exclude flag replaces (does not append to) the file's list
+      assert Config.merge([exclude: ["lib/file"]], exclude: "lib/flag")[:exclude] == ["lib/flag"]
+    end
+
+    test "--timeout-multiplier passes through; flag wins over file; absent leaves it to default" do
+      assert Config.merge([], timeout_multiplier: 5.0)[:timeout_multiplier] == 5.0
+      refute Keyword.has_key?(Config.merge([], []), :timeout_multiplier)
+
+      assert Config.merge([timeout_multiplier: 2.0], timeout_multiplier: 4.0)[:timeout_multiplier] ==
+               4.0
+    end
+
     test "--mutators resolves a CSV to specs, preserving order" do
       assert Config.merge([], mutators: "relational,arithmetic")[:mutators]
              |> Enum.map(& &1.module) == [Relational, Arithmetic]

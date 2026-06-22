@@ -24,10 +24,10 @@ defmodule Mutare.Config do
   Merge `file_config` with parsed CLI `flags` into resolved options.
 
   Recognised flags: `:only` (→ `:paths`; a directory to scan or a single `.ex`
-  file), `:mutators` (CSV → modules),
+  file), `:exclude` (repeatable → list of glob strings), `:mutators` (CSV → modules),
   `:min_score`, `:sandbox`, `:keep_sandbox`, `:full` (→ `test_selection: :full`),
   `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`,
-  `:max_mutants`, `:workers`, `:timeout`,
+  `:max_mutants`, `:workers`, `:timeout`, `:timeout_multiplier`,
   `:expand_uses` (`--no-expand-uses` disables `use`-expansion). A `:mutators`
   value of `:all`
   (or none) resolves to "use the default set" by omitting the key, so
@@ -45,6 +45,7 @@ defmodule Mutare.Config do
   def merge(file_config, flags) do
     file_config
     |> put_unless_nil(:paths, flags[:only] && [flags[:only]])
+    |> put_unless_nil(:exclude, exclude_globs(flags))
     |> put_unless_nil(:min_score, flags[:min_score])
     |> put_unless_nil(:sandbox, flags[:sandbox])
     |> put_unless_nil(:keep_sandbox, flags[:keep_sandbox])
@@ -55,6 +56,7 @@ defmodule Mutare.Config do
     |> put_unless_nil(:max_mutants, flags[:max_mutants])
     |> put_unless_nil(:workers, flags[:workers])
     |> put_unless_nil(:timeout, flags[:timeout])
+    |> put_unless_nil(:timeout_multiplier, flags[:timeout_multiplier])
     |> put_unless_nil(:expand_uses, flags[:expand_uses])
     |> put_unless_nil(:mutators, flags[:mutators] && parse_families(flags[:mutators]))
     |> normalize_mutators()
@@ -127,6 +129,17 @@ defmodule Mutare.Config do
     csv
     |> String.split(",", trim: true)
     |> Enum.map(&(&1 |> String.trim() |> String.to_atom()))
+  end
+
+  # `--exclude` is the CLI counterpart of a `.mutare.exs` `exclude:` list. It is a
+  # **repeatable** flag (parsed `:keep`), so each `--exclude <glob>` contributes one
+  # path glob, accumulated in source order; absent (`[]`) leaves the key unset so the
+  # file config / default stands.
+  defp exclude_globs(flags) do
+    case Keyword.get_values(flags, :exclude) do
+      [] -> nil
+      globs -> globs
+    end
   end
 
   defp normalize_mutators(config) do
