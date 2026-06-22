@@ -167,6 +167,29 @@ defmodule Mutare.SchemaTest do
     assert Enum.map(schema.sites, & &1.mutator) == [:relational, :relational]
   end
 
+  test ":only_lines keeps the union of several file:line(s), across files, and nothing else",
+       %{root: root} do
+    write(
+      root,
+      "lib/a.ex",
+      "defmodule A do\n  def f(x), do: x + 1\n  def g(a, b), do: a >= b\nend\n"
+    )
+
+    write(root, "lib/b.ex", "defmodule B do\n  def h(x), do: x - 2\n  def k(y), do: y * 3\nend\n")
+
+    # Request three lines spanning both files (a.ex:2 `+`, a.ex:3 `>=`, b.ex:3 `*`),
+    # deliberately leaving b.ex:2 (`-`) out — it must be dropped.
+    only =
+      MapSet.new([{"lib/a.ex", 2}, {"lib/a.ex", 3}, {"lib/b.ex", 3}])
+
+    schema = Schema.build(root, mutators: @probe, only_lines: only)
+
+    kept = schema.sites |> Enum.map(&{&1.file, &1.line}) |> Enum.uniq() |> Enum.sort()
+    assert kept == [{"lib/a.ex", 2}, {"lib/a.ex", 3}, {"lib/b.ex", 3}]
+    # b.ex:2 (`-`) was not requested, so none of its sites survive.
+    refute Enum.any?(schema.sites, &(&1.file == "lib/b.ex" and &1.line == 2))
+  end
+
   test ":only_lines narrows the scanned files to those named (a fast narrow run)", %{root: root} do
     write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
     write(root, "lib/b.ex", "defmodule B do\n  def g(a, b), do: a >= b\nend\n")
