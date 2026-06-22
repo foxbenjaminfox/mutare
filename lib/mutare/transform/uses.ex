@@ -89,7 +89,7 @@ defmodule Mutare.Transform.Uses do
   nested `use`s). A `use` that can't be expanded is left untouched.
   """
   @spec annotate(Macro.t()) :: Macro.t()
-  def annotate(ast), do: with_sandbox_env(fn -> walk(ast, nil, %{}) end)
+  def annotate(ast), do: with_sandbox_env(fn -> walk_generic(ast, nil, %{}) end)
 
   # The metamutant is compiled and run under `MIX_ENV=test` (`Mutare.Sandbox.Command`), but the
   # scan/transform usually runs in the task's `:dev` env. So we mirror the sandbox env while
@@ -238,18 +238,25 @@ defmodule Mutare.Transform.Uses do
   # that is a **direct module-body statement** is stamped — a `use` nested in a `def` is data /
   # invalid, never a module-level directive, so it is descended without stamping.
 
-  defp walk({:defmodule, meta, [mod_ast, [{do_key, body}]]} = node, module, env) do
+  # `walk_generic/3` is the structural descent for any node *except* a module-body statement
+  # sequence: it routes each `defmodule`/`defprotocol`/`defimpl` body to `walk_module_body/3`
+  # (which stamps the `use`s), folds the lexical alias env over a plain block, and otherwise
+  # just recurses. It never stamps a `use` itself — one it reaches is nested data, not a
+  # module-level directive.
+  defp walk_generic({:defmodule, meta, [mod_ast, [{do_key, body}]]} = node, module, env) do
     child = child_module(mod_ast, module, env)
-    {:defmodule, meta, [mod_ast, [{do_key, walk_body(body, child, body_env(node, module, env))}]]}
+
+    {:defmodule, meta,
+     [mod_ast, [{do_key, walk_module_body(body, child, body_env(node, module, env))}]]}
   end
 
   # `defprotocol P do … end` defines module `P` — a module scope (a direct `use` inside it, though
   # rare, is a real directive), named exactly like a `defmodule`.
-  defp walk({:defprotocol, meta, [mod_ast, [{do_key, body}]]} = node, module, env) do
+  defp walk_generic({:defprotocol, meta, [mod_ast, [{do_key, body}]]} = node, module, env) do
     child = child_module(mod_ast, module, env)
 
     {:defprotocol, meta,
-     [mod_ast, [{do_key, walk_body(body, child, body_env(node, module, env))}]]}
+     [mod_ast, [{do_key, walk_module_body(body, child, body_env(node, module, env))}]]}
   end
 
   # `defimpl P, for: T do … end` opens a module scope named `P.T` (**absolute** — never
@@ -257,22 +264,23 @@ defmodule Mutare.Transform.Uses do
   # implementation functions. Both `P` and `T` are resolved through the alias env; only a single,
   # statically-resolvable impl module is entered as a stamping scope (`impl_module/3` yields
   # `@unresolved` for a list `for:` or a non-static type, which conservatively skips the stamp).
-  defp walk({:defimpl, meta, [proto, opts, [{do_key, body}]]}, _module, env) when is_list(opts) do
+  defp walk_generic({:defimpl, meta, [proto, opts, [{do_key, body}]]}, _module, env)
+       when is_list(opts) do
     impl = impl_module(proto, for_type(opts), env)
-    {:defimpl, meta, [proto, opts, [{do_key, walk_body(body, impl, env)}]]}
+    {:defimpl, meta, [proto, opts, [{do_key, walk_module_body(body, impl, env)}]]}
   end
 
   # `defimpl P do … end` — the `for:` is inferred from context we don't track, so the impl module
   # is unknown; descend without stamping (the conservative choice — a wrong caller is worse).
-  defp walk({:defimpl, meta, [proto, [{do_key, body}]]}, _module, env) do
-    {:defimpl, meta, [proto, [{do_key, walk_body(body, @unresolved, env)}]]}
+  defp walk_generic({:defimpl, meta, [proto, [{do_key, body}]]}, _module, env) do
+    {:defimpl, meta, [proto, [{do_key, walk_module_body(body, @unresolved, env)}]]}
   end
 
   # A `quote` block is quoted *data*: a `defmodule … do use Foo end` inside it is only realised
   # if/when the quote is later expanded in some caller's context — it is not a module-level
   # directive of *this* program. Descending would invoke `Foo.__using__` during the scan in the
   # wrong caller context (and could harvest invalid directives), so we stop at quoted contexts.
-  defp walk({:quote, _meta, _args} = node, _module, _env), do: node
+  defp walk_generic({:quote, _meta, _args} = node, _module, _env), do: node
 
   # A non-module-body block — the **file top level** (a multi-form file parses as a `:__block__`)
   # or a function body. A `use` here is never a module-level directive (descended, not stamped),
@@ -280,27 +288,32 @@ defmodule Mutare.Transform.Uses do
   # targets (`alias RealUsing, as: U` then `defmodule M do use U end`, which the compiler expands
   # as `RealUsing.__using__`). So the lexical alias env is folded left-to-right here too (source
   # aliases *and* the implicit alias a `defmodule`/`defprotocol` introduces). (A module body is
-  # reached via `walk_body`, which folds + stamps; this clause never sees one.)
-  defp walk({:__block__, meta, stmts}, module, env) do
+  # reached via `walk_module_body/3`, which folds + stamps; this clause never sees one.)
+  defp walk_generic({:__block__, meta, stmts}, module, env) do
     {walked, _env} =
       Enum.map_reduce(stmts, env, fn stmt, env ->
-        {walk(stmt, module, env), register_lexical(stmt, module, env)}
+        {walk_generic(stmt, module, env), register_lexical(stmt, module, env)}
       end)
 
     {:__block__, meta, walked}
   end
 
-  defp walk({form, meta, args}, module, env) when is_list(args),
-    do: {form, meta, Enum.map(args, &walk(&1, module, env))}
+  defp walk_generic({form, meta, args}, module, env) when is_list(args),
+    do: {form, meta, Enum.map(args, &walk_generic(&1, module, env))}
 
-  defp walk({left, right}, module, env), do: {walk(left, module, env), walk(right, module, env)}
-  defp walk(list, module, env) when is_list(list), do: Enum.map(list, &walk(&1, module, env))
-  defp walk(other, _module, _env), do: other
+  defp walk_generic({left, right}, module, env),
+    do: {walk_generic(left, module, env), walk_generic(right, module, env)}
 
-  # A module body: its direct statements are module-level. The alias env is folded left-to-right
-  # (so a `use` resolves against the aliases declared above it). A `use` is stamped; everything
-  # else is descended via `walk/3` (to reach nested `defmodule`s).
-  defp walk_body({:__block__, meta, stmts}, module, env) do
+  defp walk_generic(list, module, env) when is_list(list),
+    do: Enum.map(list, &walk_generic(&1, module, env))
+
+  defp walk_generic(other, _module, _env), do: other
+
+  # A **module body** statement sequence (the only place a `use` is a directive): its direct
+  # statements are module-level, so the alias env is folded left-to-right (a `use` resolves
+  # against the aliases declared above it) and each `use` is stamped (`walk_stmt/3`); everything
+  # else is descended via `walk_generic/3` (to reach nested `defmodule`s).
+  defp walk_module_body({:__block__, meta, stmts}, module, env) do
     {walked, _env} =
       Enum.map_reduce(stmts, env, fn stmt, env ->
         node = walk_stmt(stmt, module, env)
@@ -310,10 +323,10 @@ defmodule Mutare.Transform.Uses do
     {:__block__, meta, walked}
   end
 
-  defp walk_body(stmt, module, env), do: walk_stmt(stmt, module, env)
+  defp walk_module_body(stmt, module, env), do: walk_stmt(stmt, module, env)
 
   defp walk_stmt({:use, _meta, _args} = node, module, env), do: stamp(node, module, env)
-  defp walk_stmt(stmt, module, env), do: walk(stmt, module, env)
+  defp walk_stmt(stmt, module, env), do: walk_generic(stmt, module, env)
 
   # Advance the alias env past a statement: fold the lexical aliases it introduces (source
   # `alias`/`require …, as:` plus the implicit alias a nested `defmodule`/`defprotocol` defines),

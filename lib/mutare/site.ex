@@ -121,7 +121,7 @@ defmodule Mutare.Site do
       operation: :delete,
       original_op: nil,
       mutated_op: nil,
-      original_code: Sourceror.to_string(clause_node),
+      original_code: clause_code(clause_node),
       mutated_code: "",
       original_node: clause_node,
       mutated_node: nil
@@ -161,11 +161,13 @@ defmodule Mutare.Site do
     }
   end
 
-  # A `rescue` clause is a bare `->` node, which `Sourceror.to_string/1` renders in
-  # call form (`->(head, body)`); render it in arrow syntax (`head -> body`) for the
-  # one-line `describe/1`/report summary. (The `-`/`+` diff reads source lines by range,
-  # so it is unaffected.) Rescue clauses carry one pattern and no `when` guard; anything
-  # else falls back to the default rendering.
+  # The `original_code` renderer shared by both delete-site constructors
+  # (`clause_drop/4`, `in_place_drop/5`). A `rescue` clause is a bare `->` node, which
+  # `Sourceror.to_string/1` renders in call form (`->(head, body)`); render it in arrow
+  # syntax (`head -> body`) for the one-line `describe/1`/report summary. (The `-`/`+`
+  # diff reads source lines by range, so it is unaffected.) Rescue clauses carry one
+  # pattern and no `when` guard; anything else — a dropped `def`/`defp` function clause
+  # included — falls back to the default rendering.
   defp clause_code({:->, _meta, [[head], body]}),
     do: "#{Sourceror.to_string(head)} -> #{Sourceror.to_string(body)}"
 
