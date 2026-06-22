@@ -2963,7 +2963,7 @@ the shape's empty/zero value, and a non-empty/non-nil **sentinel**:
   - a string concatenation (`a <> b`) → `""` and `"mutare"`
   - a list expression (`a ++ b`, `xs -- ys`) → `[]` and `[:mutare]`
   - anything else the tests might pin (variable, call, tuple, map, `:ok`/`:error`
-    atom, a `with`/`try`/`receive` result, …) → `nil` and `:mutare`
+    atom, an opaque-macro result, …) → `nil` and `:mutare`
 
 The two halves catch *opposite* weak assertions. The empty/zero value dies to a
 test that checks the result is present/non-empty/non-nil but survives one that
@@ -2993,32 +2993,49 @@ A sentinel equal to the original tail — reachable only for a bare-atom tail li
 paths than its `:do` block: each `rescue`/`catch`/`else` clause body also returns
 (a rescued/caught error, or an `else` match on the do result). All four are now
 targeted (`Transform.annotate_returns/3` → `annotate_block_returns/3`): the `:do`
-tail via `attach_return/2`, and each clause body tail via `attach_clause_returns/2`.
+tail via `attach_return/2`, and each clause body tail via `map_clauses/3` (the same
+clause walk a `try` *expression* uses — a `def … rescue …` is an implicit `try`).
 **`:after` is deliberately excluded** — `try` discards the after block's value, so
 its tail is *not* a return path (a mutant there would be unobservable). The after
 *body* still mutates in place; only its return-value candidate is withheld.
 
 **Control-flow branch tails, not just the construct (done).** A clause tail that is
-itself a `case`/`cond`/`if`/`unless` used to be a *single* leaf: the old `map_tail`
-returned the whole construct, so `ReturnValue` mutated `case … end` as one node
-(→ `nil`/`:mutare`) and the **shape-aware GenServer mutator saw a `case`, not the
-return tuples inside it, and fired on nothing**. That was the dominant reach gap —
-idiomatic GenServer callbacks branch, and all their `{:reply, …}`/`{:noreply, …}`
-tuples live in branch bodies. `map_tail` is now `map_return_tails/3`: tail position
-is **transitive**, so a `case`/`cond`/`if`/`unless` *in tail position* propagates it
-into each branch body, and `return_replacements/{1,2}` is offered at every branch's
-*leaf* tail instead of the construct. A branchy callback now gets one return mutant
-per branch (finer signal: "is *this path's* result checked", not "is the result used
-at all"), and the GenServer mutator finally fires on the per-branch tuples (probe:
-1 → 5 sites on a two-`case`/one-`if` server).
+itself a `case`/`cond`/`if`/`unless`/`with`/`try`/`receive` used to be a *single*
+leaf: the old `map_tail` returned the whole construct, so `ReturnValue` mutated
+`case … end` as one node (→ `nil`/`:mutare`) and the **shape-aware GenServer mutator
+saw a `case`, not the return tuples inside it, and fired on nothing**. That was the
+dominant reach gap — idiomatic GenServer callbacks branch, and all their
+`{:reply, …}`/`{:noreply, …}` tuples live in branch bodies. `map_tail` is now
+`map_return_tails/3`: tail position is **transitive**, so a control-flow construct
+*in tail position* propagates it into each branch body, and `return_replacements/{1,2}`
+is offered at every branch's *leaf* tail instead of the construct. A branchy callback
+now gets one return mutant per branch (finer signal: "is *this path's* result
+checked", not "is the result used at all"), and the GenServer mutator finally fires
+on the per-branch tuples (probe: 1 → 5 sites on a two-`case`/one-`if` server).
+
+**One unified walk over `@return_blocks`.** All seven forms route through a single
+generic `map_return_tails/3` clause keyed by a per-form map of which block keys are
+return paths and of what kind (`:value` = a single tail; `:clauses` = a `->` clause
+list). The keyword-block list is the **last** argument in every one of them (the
+`case` scrutinee, the `if` condition, the `with` qualifiers all precede it), so the
+walk splits it off uniformly. The map encodes the two asymmetries that matter:
+`try`'s `:after` is omitted (its value is discarded) while `receive`'s `:after` is a
+`:clauses` path (its timeout body *is* the construct's value); and a `with`/`try`
+`:do` is a `:value` while a `case`/`receive` `:do` is `:clauses`. The def-level
+`rescue`/`catch`/`else` handling folds into the same `map_clauses/3` the `try`
+expression uses — a `def … rescue …` is an implicit `try`, so there is now one clause
+walk, not two.
 
 Three properties make it sound and self-limiting:
-  - **Whitelist, not blacklist.** Only `case`/`cond`/`if`/`unless` are descended;
-    every other node (an unknown block macro, a `quote`, a call, a literal) is a
-    *leaf* — exactly the prior behaviour — so the change can't wander into
-    compile-time / DSL territory. (`with`/`try`/`receive` are deferred — `try`
-    would fold the existing `rescue`/`catch`/`else` clause-block handling into the
-    same walk; left for a follow-up.)
+  - **Whitelist, not blacklist.** Only the seven `@return_blocks` forms are
+    descended; every other node (an unknown block macro, a `quote`, a call, a
+    literal) is a *leaf* — exactly the prior behaviour — so the change can't wander
+    into compile-time / DSL territory. The **keyword form** of a clause-bearing
+    construct (`with …, else: (c -> …)`, `case x, do: (… -> …)`) wraps its clause
+    list in an extra `:__block__`; descending a sibling value would force Sourceror
+    to re-render the whole construct in block form, where that wrapper renders as an
+    illegal `[ -> ]` list — so `descendable_blocks?/3` leaves a non-canonical
+    construct a leaf (mutated whole, which renders fine), exactly as before.
   - **Tail position is self-limiting.** A multi-statement block descends only its
     *last* statement, so a `case` that is bound (`y = case … end; baz(y)`) or a
     non-final statement is never reached — its branches are correctly *not* return

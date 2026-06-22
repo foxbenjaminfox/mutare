@@ -134,6 +134,43 @@ defmodule Mutare.GenServerTest do
       # branches are not.
       assert genserver_mutations(server(body)) == [{"{:noreply, s}", "{:stop, :normal, s}"}]
     end
+
+    test "`with`, `try`, and `receive` callback bodies descend (incl. receive's after)" do
+      body = """
+        def handle_call(:a, _f, s) do
+          with {:ok, v} <- fetch(s) do
+            {:reply, v, s}
+          else
+            _ -> {:stop, :bad, s}
+          end
+        end
+
+        def handle_cast(:b, s) do
+          try do
+            {:noreply, s}
+          rescue
+            _ -> {:stop, :err, s}
+          end
+        end
+
+        def handle_info(:c, s) do
+          receive do
+            {:got, m} -> {:noreply, m}
+          after
+            10 -> {:stop, :timeout, s}
+          end
+        end\
+      """
+
+      assert genserver_mutations(server(body)) == [
+               {"{:reply, v, s}", "{:noreply, s}"},
+               {"{:stop, :bad, s}", "{:noreply, s}"},
+               {"{:noreply, s}", "{:stop, :normal, s}"},
+               {"{:stop, :err, s}", "{:noreply, s}"},
+               {"{:noreply, m}", "{:stop, :normal, m}"},
+               {"{:stop, :timeout, s}", "{:noreply, s}"}
+             ]
+    end
   end
 
   describe "scope" do

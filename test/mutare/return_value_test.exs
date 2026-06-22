@@ -269,7 +269,7 @@ defmodule Mutare.ReturnValueTest do
 
   describe "return-analysis mechanics (Mutare.Transform.Analyze.Returns)" do
     test "operator mutants in rescue/catch/else clause bodies survive alongside returns" do
-      # `attach_clause_return/3` keeps the *analyzed* clause body (operator candidates and
+      # `map_clauses/3` keeps the *analyzed* clause body (operator candidates and
       # all) and uses the raw copy only for the clean return diff. Swapping the two — so it
       # rebuilds from the un-analyzed `raw` body — would silently drop every operator mutant
       # inside a rescue/catch/else body. Requires both ReturnValue (to enter the clause-return
@@ -296,7 +296,7 @@ defmodule Mutare.ReturnValueTest do
     end
 
     test "the return tail of a 3+ statement body is its last statement (Enum.split/-1)" do
-      # `map_tail/3` splits off the *last* statement with `Enum.split(stmts, -1)`. Miscoding
+      # `map_return_tails/3` splits off the *last* statement with `Enum.split(stmts, -1)`. Miscoding
       # the index as `1` would split off the *first* statement and the `[last]` match would
       # raise for any 3-or-more-statement block — so this fixes the index for both the
       # analyzed and the raw split.
@@ -460,6 +460,116 @@ defmodule Mutare.ReturnValueTest do
     after
       :code.purge(Mutare.ReturnValueBranchCompile)
       :code.delete(Mutare.ReturnValueBranchCompile)
+    end
+  end
+
+  describe "with / try / receive branch tails (the same walk; try-after vs receive-after)" do
+    test "`with` descends the do tail and each else clause tail" do
+      by_original =
+        branch_returns("""
+          def f(x) do
+            with {:ok, v} <- fetch(x) do
+              use(v)
+            else
+              :missing -> default(x)
+              e -> oops(e)
+            end
+          end\
+        """)
+
+      assert by_original["use(v)"] == ["nil", ":mutare"]
+      assert by_original["default(x)"] == ["nil", ":mutare"]
+      assert by_original["oops(e)"] == ["nil", ":mutare"]
+      # the `<-` qualifier is not a return path
+      refute Map.has_key?(by_original, "fetch(x)")
+    end
+
+    test "`try` descends do/rescue/catch/else tails but NOT after (its value is discarded)" do
+      by_original =
+        branch_returns("""
+          def f(x) do
+            try do
+              risky(x)
+            rescue
+              _ -> recover(x)
+            catch
+              :throw, v -> caught(v)
+            else
+              n -> elsed(n)
+            after
+              cleanup(x)
+            end
+          end\
+        """)
+
+      assert by_original["risky(x)"] == ["nil", ":mutare"]
+      assert by_original["recover(x)"] == ["nil", ":mutare"]
+      assert by_original["caught(v)"] == ["nil", ":mutare"]
+      assert by_original["elsed(n)"] == ["nil", ":mutare"]
+      # `after` is a cleanup whose value `try` discards — not a return path.
+      refute Map.has_key?(by_original, "cleanup(x)")
+    end
+
+    test "`receive` descends each do clause AND the after body (the timeout value IS returned)" do
+      by_original =
+        branch_returns("""
+          def f(x) do
+            receive do
+              {:got, m} -> handle(m)
+            after
+              x -> timed_out(x)
+            end
+          end\
+        """)
+
+      assert by_original["handle(m)"] == ["nil", ":mutare"]
+      # Unlike `try`, a `receive` `after` body is the construct's value on timeout.
+      assert by_original["timed_out(x)"] == ["nil", ":mutare"]
+    end
+
+    test "the with/try/receive metamutant compiles" do
+      source = """
+      defmodule Mutare.ReturnValueWtrCompile do
+        def a(x) do
+          with {:ok, v} <- f(x) do
+            g(v)
+          else
+            e -> h(e)
+          end
+        end
+
+        def b(x) do
+          try do
+            f(x)
+          rescue
+            _ -> :err
+          after
+            f(x)
+          end
+        end
+
+        def c(x) do
+          receive do
+            m -> m
+          after
+            x -> :timeout
+          end
+        end
+
+        defp f(x), do: {:ok, x}
+        defp g(x), do: x
+        defp h(x), do: x
+      end
+      """
+
+      {meta, _sites, _} = Mutare.transform_string(source)
+      assert {:ok, _} = Code.string_to_quoted(meta)
+
+      assert {[{Mutare.ReturnValueWtrCompile, _}], _log} =
+               with_log(fn -> Code.compile_string(meta) end)
+    after
+      :code.purge(Mutare.ReturnValueWtrCompile)
+      :code.delete(Mutare.ReturnValueWtrCompile)
     end
   end
 
