@@ -66,6 +66,7 @@ defmodule Mutare.Transform.Tag do
           [term()]
   def expand_targets(targets, build) do
     targets
+    # mutare:ignore[collection_arity] equivalent — targets accrue in strictly monotonic tag order, so sorting by the unique integer tag yields the same ascending source order as reversing the accumulation (`call_removal` dropping the reverse IS genuinely killed).
     |> Enum.reverse()
     |> Enum.flat_map(fn {tag, original, muts} ->
       case NodeRange.get(original) do
@@ -84,6 +85,7 @@ defmodule Mutare.Transform.Tag do
   @spec replace_tag(Macro.t(), non_neg_integer(), Macro.t()) :: Macro.t()
   def replace_tag(ast, tag, replacement) do
     Macro.prewalk(ast, fn
+      # mutare:ignore[guard_drop] equivalent — every node `Macro.prewalk` visits is `{form, meta, args}` with a keyword-list `meta`, so the guard never excludes a real node; it only fences out a malformed 3-tuple that can't occur here.
       {_form, meta, _args} = node when is_list(meta) ->
         if Keyword.get(meta, :mutare_tag) == tag, do: replacement, else: node
 
@@ -176,17 +178,23 @@ defmodule Mutare.Transform.Tag do
   # `List`'s sole `[]` collapse is removed outright. (A map can't appear in a guard `in`, so
   # only lists and word/charlist sigils are reachable here.) Any non-collection RHS yields no
   # empty-collection mutation, so it is offered unchanged.
+  # mutare:ignore[guard_drop] equivalent — Sourceror wraps every collection literal as a 3-tuple with list args, so this guard never fails for valid input.
   defp tag_in_rhs({form, meta, args}, acc, mutators) when is_list(args) do
     {args, acc} = Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))
     offer_nonempty_collection({form, meta, args}, acc, mutators)
   end
 
+  # mutare:ignore[clause_drop] equivalent — a variable can't be a guard `in`-RHS, so this fallback is unreachable for valid input.
   defp tag_in_rhs(other, acc, mutators), do: tag_walk(other, acc, mutators)
 
   # `offer_target/3` minus the empty-collection mutations (see `tag_in_rhs/3`).
   defp offer_nonempty_collection(node, {next, targets}, mutators) do
     case Enum.reject(Mutator.mutations(node, mutators), &empty_collection_mutation?/1) do
       [] -> {node, {next, targets}}
+      # `literal 1 → 2` is equivalent too (still a unique, monotonic tag) but left
+      # un-ignored — its sibling `1 → 0` freezes the counter (a real collision) and is
+      # genuinely killed, which a `[literal]` filter would hide. See `TagTest` moduledoc.
+      # mutare:ignore[arithmetic] equivalent — a strictly-monotonic tag counter; `-1` still hands out unique tags.
       muts -> {put_tag(node, next), {next + 1, [{next, node, muts} | targets]}}
     end
   end
@@ -223,6 +231,10 @@ defmodule Mutare.Transform.Tag do
   defp offer_target(node, {next, targets}, mutators) do
     case Mutator.mutations(node, mutators) do
       [] -> {node, {next, targets}}
+      # `literal 1 → 2` is equivalent too (still a unique, monotonic tag) but left
+      # un-ignored — its sibling `1 → 0` freezes the counter (a real collision) and is
+      # genuinely killed, which a `[literal]` filter would hide. See `TagTest` moduledoc.
+      # mutare:ignore[arithmetic] equivalent — a strictly-monotonic tag counter; `-1` still hands out unique tags.
       muts -> {put_tag(node, next), {next + 1, [{next, node, muts} | targets]}}
     end
   end
@@ -234,6 +246,10 @@ defmodule Mutare.Transform.Tag do
        when is_integer(value) or is_float(value) or is_binary(value) or is_atom(value) do
     case literal_pattern_mutations(node, mutators) do
       [] -> {node, {next, targets}}
+      # `literal 1 → 2` is equivalent too (still a unique, monotonic tag) but left
+      # un-ignored — its sibling `1 → 0` freezes the counter (a real collision) and is
+      # genuinely killed, which a `[literal]` filter would hide. See `TagTest` moduledoc.
+      # mutare:ignore[arithmetic] equivalent — a strictly-monotonic tag counter; `-1` still hands out unique tags.
       muts -> {put_tag(node, next), {next + 1, [{next, node, muts} | targets]}}
     end
   end
@@ -247,6 +263,7 @@ defmodule Mutare.Transform.Tag do
   # every replacement a clean self-contained literal (`-0.5` → `0.5`, `-1.5`, `0.0`) —
   # never a nested `-(-x)`. Guards keep the in-place magnitude walk (`guard_targets/3`),
   # where the nested minus compiles fine.
+  # mutare:ignore[guard_drop] equivalent — in a pattern, unary minus only ever wraps a numeric literal, so `is_number(n)` always holds and removing it can't change which inputs match.
   defp tag_pattern_targets(
          {:-, _meta, [{:__block__, _bmeta, [n]}]} = node,
          {next, targets},
@@ -255,6 +272,10 @@ defmodule Mutare.Transform.Tag do
        when is_number(n) do
     case value_literal_mutations(-n, mutators) do
       [] -> {node, {next, targets}}
+      # `literal 1 → 2` is equivalent too (still a unique, monotonic tag) but left
+      # un-ignored — its sibling `1 → 0` freezes the counter (a real collision) and is
+      # genuinely killed, which a `[literal]` filter would hide. See `TagTest` moduledoc.
+      # mutare:ignore[arithmetic] equivalent — a strictly-monotonic tag counter; `-1` still hands out unique tags.
       muts -> {put_tag(node, next), {next + 1, [{next, node, muts} | targets]}}
     end
   end
@@ -279,6 +300,7 @@ defmodule Mutare.Transform.Tag do
   # duplicate map key — a compile error — so each key's mutations are filtered
   # against the map's other keys (`map_key_values/1`) before tagging. Values mutate
   # normally (duplicate values are legal).
+  # mutare:ignore[guard_drop] equivalent — a `%{}` node's args are always a list, so this guard never fails for valid input.
   defp tag_pattern_targets({:%{}, meta, pairs}, acc, mutators) when is_list(pairs) do
     key_values = map_key_values(pairs)
     {pairs, acc} = Enum.map_reduce(pairs, acc, &tag_map_pair(&1, key_values, &2, mutators))
@@ -334,6 +356,12 @@ defmodule Mutare.Transform.Tag do
     |> Enum.filter(fn {_mutator, mutated} -> literal_node?(mutated) end)
   end
 
+  # NOTE (suspected-equivalent survivors, deliberately not `# mutare:ignore`d): the
+  # `conditional` mutants forcing this scalar-type chain to `true` are equivalent — no
+  # built-in yields a compound `{:__block__, _, [_]}` for a scalar node, so the chain
+  # always holds for the inputs `literal_node?/1` receives. We do NOT ignore them: the
+  # sibling `→ false` conditionals (and the `or → and` logical mutants) on this line are
+  # genuinely killed, and a line-level `# mutare:ignore[conditional]` would hide those.
   defp literal_node?({:__block__, _meta, [value]}),
     do: is_integer(value) or is_float(value) or is_binary(value) or is_atom(value)
 
@@ -341,6 +369,12 @@ defmodule Mutare.Transform.Tag do
   # over its positive magnitude (`{:-, _, [{:__block__, _, [n]}]}`) — a perfectly legal
   # pattern (`def f(-1)`, `-0.5 -> …`). Recognise it so a negative-literal replacement
   # isn't silently dropped from a head/clause pattern mutant.
+  # NOTE (suspected-equivalent survivor, deliberately not `# mutare:ignore`d): the
+  # `return_value` mutant forcing this to `:mutare` is equivalent — every caller uses
+  # `literal_node?/1` only for truthiness (an `Enum.filter`) and a built-in never yields
+  # `-(<non-literal>)`, so the result is already truthy here. We do NOT ignore it: the
+  # sibling `→ nil` return mutant is genuinely killed (it drops every negative-literal
+  # replacement), and `# mutare:ignore[return_value]` would hide that kill.
   defp literal_node?({:-, _meta, [operand]}), do: literal_node?(operand)
 
   defp literal_node?(_), do: false
@@ -360,6 +394,7 @@ defmodule Mutare.Transform.Tag do
     {{key, value}, acc}
   end
 
+  # mutare:ignore[clause_drop] equivalent — a map pattern's entries are always `{key, value}` pairs, so this fallback is unreachable for valid input.
   defp tag_map_pair(other, _key_values, acc, mutators),
     do: tag_pattern_targets(other, acc, mutators)
 
@@ -370,6 +405,10 @@ defmodule Mutare.Transform.Tag do
        when is_integer(value) or is_float(value) or is_binary(value) or is_atom(value) do
     case key_pattern_mutations(node, key_values, mutators) do
       [] -> {node, {next, targets}}
+      # `literal 1 → 2` is equivalent too (still a unique, monotonic tag) but left
+      # un-ignored — its sibling `1 → 0` freezes the counter (a real collision) and is
+      # genuinely killed, which a `[literal]` filter would hide. See `TagTest` moduledoc.
+      # mutare:ignore[arithmetic] equivalent — a strictly-monotonic tag counter; `-1` still hands out unique tags.
       muts -> {put_tag(node, next), {next + 1, [{next, node, muts} | targets]}}
     end
   end
@@ -394,6 +433,12 @@ defmodule Mutare.Transform.Tag do
   # The set of scalar-literal key *values* of a map pattern — covering both arrow
   # keys (`1 =>`, `:a =>`) and keyword keys (`a:`, themselves `:a`), since a mutated
   # arrow key colliding with a keyword key is just as illegal.
+  # NOTE (suspected-equivalent survivors, deliberately not `# mutare:ignore`d): the
+  # `conditional` mutants forcing the scalar-type filter below to `true` are equivalent —
+  # every key value reaching it is already scalar, so the filter admits the same keys.
+  # We do NOT ignore them: the sibling `→ false` conditional (which empties the
+  # collision-guard set) and the `or → and` logical mutant are genuinely killed, and a
+  # line-level `# mutare:ignore[conditional]` would hide those real kills.
   defp map_key_values(pairs) do
     for {{:__block__, _meta, [value]}, _v} <- pairs,
         is_integer(value) or is_float(value) or is_binary(value) or is_atom(value),
