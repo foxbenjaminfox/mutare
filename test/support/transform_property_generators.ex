@@ -34,6 +34,14 @@ defmodule Mutare.TransformPropertyGenerators do
   interleaved (`alias …; import …`), and even import *through* an alias (`alias Enum, as: E;
   import E`). Every call is total for any probe-pool term (or deterministically raises
   identically in original and baseline) and pure, so baseline-equivalence stays deterministic.
+
+  Finally, about a quarter of modules carry a **module-level `use`** of a real, loadable
+  Phoenix/Ecto-style bundle (`Mutare.Test.ControllerUsing` / its nested `NestedUsing`) plus one
+  function calling the `import`/`alias` it injects — the only generator that drives the
+  `use`-expansion pre-pass (`Transform.Uses`) under the stream. The directives (`import Enum,
+  only: [reject: 2]` + `alias String, as: S`) arrive from *behind* a `use` rather than written
+  inline, so the whole expand → harvest → stamp → resolve → rebuild path is exercised end to end
+  (and the metamutant still parses / compiles / matches baseline). See `use_part_gen/0`.
   """
   use PropCheck
 
@@ -46,13 +54,13 @@ defmodule Mutare.TransformPropertyGenerators do
   between runs (it is parsed, never linked against) so the fixed name doesn't clash.
   """
   def module_gen do
-    let function_lists <- non_empty(list(function_gen())) do
+    let {function_lists, use_part} <- {non_empty(list(function_gen())), use_part_gen()} do
       functions =
         function_lists
         |> Enum.with_index()
         |> Enum.flat_map(fn {clauses, i} -> rename_group(clauses, i) end)
 
-      {:defmodule, [], [{:__aliases__, [], [:Prop]}, [do: block(functions)]]}
+      {:defmodule, [], [{:__aliases__, [], [:Prop]}, [do: block(use_part ++ functions)]]}
     end
   end
 
@@ -542,6 +550,68 @@ defmodule Mutare.TransformPropertyGenerators do
 
   defp map_arg, do: oneof([{:%{}, [], []}, {:%{}, [], [{:a, 1}]}])
   defp keyword_arg, do: oneof([[], [ok: 1], [a: 1, b: 2]])
+
+  # === module-level `use` ===================================================
+
+  # Most modules carry no `use`; about a quarter prepend a **module-level** `use` of a real,
+  # loadable Phoenix/Ecto-style bundle plus one function that calls the `import`/`alias` the
+  # bundle injects — the only generator that drives the `use`-expansion pre-pass
+  # (`Transform.Uses`) through the soaks. The bundle (`Mutare.Test.ControllerUsing`, and its
+  # one-hop re-dispatch `NestedUsing`, which transitively yields the same directives) injects
+  # `import Enum, only: [reject: 2]` + `alias String, as: S` at **module** scope, so the using
+  # function calls a bare `reject(l, f)` (a selective import → *qualify-on-rebuild*) and an
+  # aliased `S.upcase(s)` (*alias-preserving* rebuild) — the very resolution + rebuild paths
+  # `resolved_call_function_gen/0` covers for *written* directives, now surfaced from behind a
+  # `use`. The fixtures live in `test/support/using_fixtures.ex` (compiled in `:test`, where the
+  # soaks run), so the `use` expands in-process; the calls stay total over the probe pool, so
+  # baseline-equivalence stays deterministic. Returns `[]` or `[use_directive, using_function]`,
+  # spliced ahead of the generated functions by `module_gen/0`.
+  defp use_part_gen do
+    frequency([
+      {3, exactly([])},
+      {1, let({use_dir, fun} <- use_with_function_gen(), do: [use_dir, fun])}
+    ])
+  end
+
+  # A module-level `use` directive paired with a `def via_use(...)` whose body exercises the
+  # directives it injects. The fixed name (`via_use`, outside the `fun<i>` space `rename_group/2`
+  # mints) can't collide with a renamed generated function, and there is only ever one, so it
+  # needs no renaming itself.
+  defp use_with_function_gen do
+    let params <- non_empty_params_gen() do
+      let {use_dir, body} <- {use_directive_gen(), use_body_gen(params)} do
+        {use_dir, {:def, [], [{:via_use, [], Enum.map(params, &var/1)}, [do: body]]}}
+      end
+    end
+  end
+
+  # One of the loadable `__using__` bundles, optionally with a static opt (`use Foo, :controller`,
+  # exercising the opts-carrying expansion path). All three inject the same module-level `import
+  # Enum, only: [reject: 2]` + `alias String, as: S`, so a single `use_body_gen/1` matches any of
+  # them. The directive AST is built in the `let` body (plain code), not as a `oneof` element —
+  # a literal tuple in a generator position would be read as a PropEr tuple-type combinator.
+  defp use_directive_gen do
+    let choice <- oneof([:controller, :controller_opt, :nested]) do
+      case choice do
+        :controller -> {:use, [], [aliases([:Mutare, :Test, :ControllerUsing])]}
+        :controller_opt -> {:use, [], [aliases([:Mutare, :Test, :ControllerUsing]), :controller]}
+        :nested -> {:use, [], [aliases([:Mutare, :Test, :NestedUsing])]}
+      end
+    end
+  end
+
+  # The using function's body: a call into the import/alias the module-level `use` injected, in
+  # the bare (`reject`) / aliased (`S.upcase`) form, or both in a value-discarded block. Reuses
+  # the same total arg builders as `remote_call_gen/1`.
+  defp use_body_gen(vars) do
+    oneof([
+      let(s <- str_arg(vars), do: aliased_call([:S], :upcase, [s])),
+      let({l, f} <- {list_arg(vars), pred_fun_gen(vars)}, do: bare_call(:reject, [l, f])),
+      let {l, f, s} <- {list_arg(vars), pred_fun_gen(vars), str_arg(vars)} do
+        {:__block__, [], [bare_call(:reject, [l, f]), aliased_call([:S], :upcase, [s])]}
+      end
+    ])
+  end
 
   # === small AST + value helpers ============================================
 
