@@ -138,14 +138,11 @@ defmodule Mutare.Transform.Behaviours do
   # bare atom is itself the module (an Erlang behaviour).
   defp resolve_module({:__aliases__, _meta, path}, aliases) when is_list(path) do
     if Enum.all?(path, &is_atom/1),
-      do: path |> Aliases.resolve_path(aliases) |> to_module(),
+      do: path |> Aliases.resolve_path(aliases) |> Aliases.to_module(),
       else: nil
   end
 
   defp resolve_module({:__block__, _meta, [atom]}, _aliases) when is_atom(atom), do: atom
   defp resolve_module(atom, _aliases) when is_atom(atom), do: atom
   defp resolve_module(_other, _aliases), do: nil
-
-  defp to_module(path) when is_list(path), do: Module.concat(path)
-  defp to_module(atom) when is_atom(atom), do: atom
 end

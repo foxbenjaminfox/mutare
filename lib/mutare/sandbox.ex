@@ -33,11 +33,10 @@ defmodule Mutare.Sandbox do
 
   @excluded ~w(_build .git .elixir_ls .lexical cover)
 
-  # The build environment every sandbox `mix` runs under — `Mutare.Sandbox.Command`
-  # sets `MIX_ENV=test` on every invocation, so the dependencies' compiled artifacts
-  # we seed (see `seed_dep_build/2`) live under `_build/test/lib`. Keep in sync with
-  # `Mutare.Sandbox.Command`.
-  @mix_env "test"
+  # The build environment every sandbox `mix` runs under is owned by
+  # `Mutare.Sandbox.Command` (`Command.mix_env/0`), which sets it on every invocation —
+  # so the dependencies' compiled artifacts we seed (see `seed_dep_build/2`) live under
+  # `_build/<env>/lib`.
 
   # A sandbox is a throwaway copy we compile, mutate, and wipe. Before clearing a
   # directory we must be sure it is *ours* — not, say, a path `--sandbox` was
@@ -417,12 +416,13 @@ defmodule Mutare.Sandbox do
   # compiled artifacts (`only: :dev`, or an original that was never compiled in the
   # test env) is simply absent — falling back to a cold compile, never an error.
   defp seed_dep_build(root, sandbox) do
-    deps_lib = Path.join([root, "_build", @mix_env, "lib"])
+    mix_env = Command.mix_env()
+    deps_lib = Path.join([root, "_build", mix_env, "lib"])
 
     for dep <- dep_names(root),
         src = Path.join(deps_lib, dep),
         File.dir?(src),
-        dst = Path.join([sandbox, "_build", @mix_env, "lib", dep]),
+        dst = Path.join([sandbox, "_build", mix_env, "lib", dep]),
         not File.exists?(dst) do
       File.mkdir_p!(Path.dirname(dst))
       File.cp_r!(src, dst)

@@ -148,6 +148,20 @@ contract between them is the whole game.
     `build_pattern_structures/2` is a separate (untagged, index-based) pass for the structural
     rewrites, and `build_guard_drops/2` another for guard removals (a clause whose guard the tagger
     finds *inert* — no other family touches it — has its whole `when` stripped, `Candidate.GuardDrop`).
+  - **`Transform.{ClauseAST,GuardBuild,LiftedEmit,CaseClauseEmit,ImportWitness}`** — the **pure**
+    helpers `Transform`'s stateful emission core calls, so `transform.ex` holds the `Ctx`-threading,
+    not the node-building. **`ClauseAST`** is the one home for the `def`/`defp` clause shape and the
+    primitives that navigate it (head/args/guards/`when`/`put_*`/`bodiless_header?`/`drop_clause_guard`),
+    shared by `Transform` and `FunctionPlan` (the fragile clause-shape invariant matched once).
+    **`GuardBuild`** builds the dispatch guards (the `<var> === <id>` gate, the `!==` exclusion,
+    `and`-into-`when` distribution, list-combine), shared by the lifted and `case` paths; ids render via
+    `AST.literal/1` (clean-meta, formatter-safe). **`LiftedEmit`** is the assembly half of
+    `emit_function_plan/2` — the dispatcher + interleaved gated base clauses (`build_dispatcher`,
+    `build_base_clauses`, `clause_defaults`, `base_name`, plus the `super`/default plumbing), all
+    `Ctx`-free. **`CaseClauseEmit`** is the assembly half of `emit_case_pattern_site/3` — the
+    tuple-the-scrutinee `case` clause builders (`mutant_clause`/`original_clause`/`unmatched_clause`/
+    `exhaustive_clauses?`). **`ImportWitness`** builds and splices the dead-code import witness
+    (`for_candidate`/`wrap`/`prepend`) read off the `Mutare.Transform.Imports` stamp.
   - **`Transform.Tag`** — the shared *replace-by-tag* discovery primitives (`guard_targets/3`,
     `pattern_literal_targets/3`, `replace_tag/3`): walk a guard / pattern, tag every mutatable node
     with a unique `meta[:mutare_tag]`, return the tagged copy + a `{tag, original, [{mutator,

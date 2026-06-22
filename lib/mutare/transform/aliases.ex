@@ -203,5 +203,24 @@ defmodule Mutare.Transform.Aliases do
     end)
   end
 
-  defp atoms?(list), do: Enum.all?(list, &is_atom/1)
+  @doc """
+  Whether every element is an atom — i.e. a segment list is a valid module-key **path**
+  (`[:Foo, :Bar]`). The guard the `alias`/`import` vocabulary uses before treating a
+  segment list as a module path. Public so `Mutare.Transform.Imports` shares the one
+  definition instead of reimplementing it.
+  """
+  @spec atoms?(term()) :: boolean()
+  def atoms?(list) when is_list(list), do: Enum.all?(list, &is_atom/1)
+  def atoms?(_other), do: false
+
+  @doc """
+  A module **key** — an Elixir path (`[:Enum]`) or an Erlang atom (`:binary`) — to its
+  concrete module atom: a path is `Module.concat`-ed, an atom is itself, any other shape
+  (never a real key) is `nil`. The follow-on to `resolve_path/2`: the import/use/behaviour
+  pre-passes all do `path |> resolve_path(env) |> to_module()` to land on the runtime module.
+  """
+  @spec to_module([atom()] | atom() | term()) :: module() | nil
+  def to_module(path) when is_list(path), do: Module.concat(path)
+  def to_module(atom) when is_atom(atom), do: atom
+  def to_module(_other), do: nil
 end

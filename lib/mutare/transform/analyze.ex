@@ -613,10 +613,15 @@ defmodule Mutare.Transform.Analyze do
 
   # === known macros ==========================================================
 
-  # The per-argument routing stamped on a call by `Mutare.Transform.Resolve` when it
-  # resolves to a known macro (`Mutare.Macros`), or `nil` for an ordinary call.
-  defp macro_routing(meta) when is_list(meta), do: Keyword.get(meta, :mutare_macro)
-  defp macro_routing(_meta), do: nil
+  @doc """
+  The per-argument routing stamped on a call by `Mutare.Transform.Resolve` when it
+  resolves to a known macro (`Mutare.Macros`), or `nil` for an ordinary call. The one
+  reader of the `:mutare_macro` contract key — `Mutare.Transform.Analyze.MatchPatterns`
+  shares it rather than reimplementing the accessor.
+  """
+  @spec macro_routing(keyword() | term()) :: term()
+  def macro_routing(meta) when is_list(meta), do: Keyword.get(meta, :mutare_macro)
+  def macro_routing(_meta), do: nil
 
   # Analyze a known-macro call: offer the *whole* node to mutators (so a custom mutator
   # registered for the macro still fires — e.g. an Ecto query mutator on `from(...)`),
@@ -996,6 +1001,30 @@ defmodule Mutare.Transform.Analyze do
   def put_candidates({form, meta, args}, candidates),
     do: {form, [{:mutare, candidates} | meta], args}
 
+  @doc """
+  Append candidates to a node's `:mutare` metadata, **preserving** any already there (so an
+  operator candidate keeps its id before a return/condition one at a shared node). The
+  candidate list is built by `build_fun.(range)` from `raw`'s source range — kept at the call
+  site because the condition and return-tail descents build different `Candidate` structs. The
+  node is returned unchanged when it carries no metadata or `raw` can't be ranged (no mutant
+  recorded). The shared half of `Analyze.Conditions`/`Analyze.Returns`' tail attachment.
+  """
+  @spec append_candidates(Macro.t(), Macro.t(), (map() -> [struct()])) :: Macro.t()
+  # mutare:ignore[guard_drop] equivalent — a `{form, meta, args}` AST node always carries keyword-list meta, so the guard never excludes a real node.
+  def append_candidates({form, meta, args} = node, raw, build_fun) when is_list(meta) do
+    case NodeRange.get(raw) do
+      %{} = range ->
+        existing = Keyword.get(meta, :mutare, [])
+        {form, Keyword.put(meta, :mutare, existing ++ build_fun.(range)), args}
+
+      _ ->
+        node
+    end
+  end
+
+  # mutare:ignore[clause_drop] equivalent — Sourceror wraps every scalar/tuple/list node in a `:__block__` 3-tuple, so the head matches every real node; this fallback is unreachable for valid input.
+  def append_candidates(node, _raw, _build_fun), do: node
+
   def module_scaffold_statement?({form, _meta, _args}) when form in @module_scaffold_forms,
     do: true
 
@@ -1082,11 +1111,17 @@ defmodule Mutare.Transform.Analyze do
   defp block_key?(key), do: AST.key_atom(key) in @block_keys
 
   # Block-key classification shared by clause-block routing (`normalize_clause_blocks/1`,
-  # `analyze_do_blocks/2`) and the trailing-keyword `do:` guard. Analyze owns the canonical
-  # return-path set; `Analyze.Returns` classifies the same keys independently for its tails
-  # (these atoms are fixed Elixir semantics, so there is no shared source to drift from).
+  # `analyze_do_blocks/2`) and the trailing-keyword `do:` guard.
   defp do_key?(key), do: AST.key_atom(key) == :do
-  defp clause_block_key?(key), do: AST.key_atom(key) in @clause_block_keys
+
+  @doc """
+  Whether `key` names a try-style clause block whose tails are *return paths*
+  (`rescue`/`catch`/`else`) — distinct from `:after`, whose value `try` discards. Analyze
+  owns this canonical return-path set; `Mutare.Transform.Analyze.Returns` shares the one
+  predicate for its tail classification rather than reclassifying the same atoms.
+  """
+  @spec clause_block_key?(Macro.t()) :: boolean()
+  def clause_block_key?(key), do: AST.key_atom(key) in @clause_block_keys
 
   # === shared helpers ========================================================
 

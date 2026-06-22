@@ -15,7 +15,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
   alias Mutare.AST
   alias Mutare.Mutator
   alias Mutare.Mutator.Spec
-  alias Mutare.Transform.{Candidate, Names, NodeRange}
+  alias Mutare.Transform.{Candidate, Names}
   alias Mutare.Transform.Analyze
 
   # Analyze a `cond` clause *condition*: the generic runtime walk, plus the IfCondition
@@ -442,31 +442,18 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # Append a `Candidate.InPlace` per `{spec, mutated}` (`mutator` is the producing
   # *spec* — `IfCondition` or a custom condition mutator — since `Site.in_place/6` reads
   # its `name`) to the condition node's metadata, preserving any candidates already there.
-  # A condition we can't range (Sourceror returns nil) or that is not a `{f, m, a}` node
-  # gets no mutant.
-  # mutare:ignore[guard_drop] equivalent — a `{form, meta, args}` AST node always carries keyword-list meta, so the guard never excludes a real condition node.
-  defp append_condition_candidates({form, meta, args} = node, raw_condition, candidates)
-       when is_list(meta) do
-    case NodeRange.get(raw_condition) do
-      %{} = range ->
-        new =
-          Enum.map(candidates, fn {spec, mutated} ->
-            %Candidate.InPlace{
-              mutator: spec,
-              original: raw_condition,
-              mutated: mutated,
-              range: range
-            }
-          end)
-
-        existing = Keyword.get(meta, :mutare, [])
-        {form, Keyword.put(meta, :mutare, existing ++ new), args}
-
-      _ ->
-        node
-    end
+  # A condition we can't range or that is not a `{f, m, a}` node gets no mutant (handled by
+  # the shared `Analyze.append_candidates/3`).
+  defp append_condition_candidates(node, raw_condition, candidates) do
+    Analyze.append_candidates(node, raw_condition, fn range ->
+      Enum.map(candidates, fn {spec, mutated} ->
+        %Candidate.InPlace{
+          mutator: spec,
+          original: raw_condition,
+          mutated: mutated,
+          range: range
+        }
+      end)
+    end)
   end
-
-  # mutare:ignore[clause_drop] equivalent — Sourceror wraps every scalar/tuple/list condition in a `:__block__` 3-tuple, so the head above matches every real condition; this fallback is unreachable for valid input.
-  defp append_condition_candidates(node, _raw_condition, _candidates), do: node
 end

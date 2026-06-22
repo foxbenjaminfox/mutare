@@ -206,7 +206,7 @@ defmodule Mutare.Transform.Imports do
   # Reflection. Conservative: a module that isn't loadable (a target/dep module, never one
   # our mutators target) exports nothing as far as we can prove, so it is left unresolved.
   defp exports?(module_key, fun, arity, kind) do
-    case to_module(module_key) do
+    case Aliases.to_module(module_key) do
       nil ->
         false
 
@@ -221,14 +221,6 @@ defmodule Mutare.Transform.Imports do
 
   defp exported?(module, fun, arity, :any),
     do: function_exported?(module, fun, arity) or macro_exported?(module, fun, arity)
-
-  defp to_module(path) when is_list(path), do: Module.concat(path)
-
-  # mutare:ignore[guard_drop] equivalent — a module key is always an atom or list, never a third shape.
-  defp to_module(atom) when is_atom(atom), do: atom
-
-  # mutare:ignore[clause_drop] equivalent — keys are always atom/list, so this fallback is unreachable.
-  defp to_module(_path), do: nil
 
   # A bare `Kernel`-named call is displaced only when the Kernel selector has been narrowed
   # (`import Kernel, only:/except:`) and no longer provides it. With the default whole import
@@ -317,7 +309,7 @@ defmodule Mutare.Transform.Imports do
   defp module_key?(key) when is_atom(key), do: true
 
   # mutare:ignore[guard_drop] equivalent — only reached with a list key (atoms taken above), so the guard can't fail.
-  defp module_key?(key) when is_list(key), do: atoms?(key)
+  defp module_key?(key) when is_list(key), do: Aliases.atoms?(key)
 
   # mutare:ignore[clause_drop] equivalent — every key is an atom or list, so this fallback is unreachable.
   defp module_key?(_key), do: false
@@ -397,10 +389,4 @@ defmodule Mutare.Transform.Imports do
   # mutare:ignore[clause_drop, guard_drop] equivalent — ints are always Sourceror-wrapped (clause above), and `pairs_set` re-filters by `is_integer`.
   defp unwrap_int(n) when is_integer(n), do: n
   defp unwrap_int(_node), do: nil
-
-  # mutare:ignore[guard_drop] equivalent — `atoms?` is only called from `module_key?`'s `is_list` clause, so its argument is always a list.
-  defp atoms?(list) when is_list(list), do: Enum.all?(list, &is_atom/1)
-
-  # mutare:ignore[clause_drop] equivalent — `atoms?` always receives a list (above), so this fallback is unreachable.
-  defp atoms?(_other), do: false
 end

@@ -124,6 +124,30 @@ defmodule Mutare.Transform.Names do
     end
   end
 
+  @doc """
+  Whether `name` belongs to the generated-name family `salted/2` produces for `canonical`:
+  `canonical` itself, or `canonical` + `_` + a non-negative integer (the salted variants
+  minted when the source already binds the canonical name). The inverse of `salted/2`, kept
+  beside it so the convention has one owner: `Mutare.Manifest` calls it (with the dispatch
+  variable `Mutare.Coverage.Recorder.var_name/0`) to recover a metamutant's per-file dispatch
+  name rather than re-deriving the suffix shape itself.
+  """
+  @spec salted_name?(atom(), atom()) :: boolean()
+  def salted_name?(canonical, name) when is_atom(canonical) and is_atom(name) do
+    base = Atom.to_string(canonical)
+
+    case Atom.to_string(name) do
+      ^base ->
+        true
+
+      str ->
+        case String.split(str, base <> "_", parts: 2) do
+          ["", suffix] -> match?({_int, ""}, Integer.parse(suffix))
+          _ -> false
+        end
+    end
+  end
+
   # `"__mutare_"`, then `"__mutare_0_"`, `"__mutare_1_"`, … — a lazily-grown
   # family, all sharing the `"__mutare_"` stem. Only finitely many can be "taken"
   # (one per colliding source name), so `Enum.find/2` always terminates.

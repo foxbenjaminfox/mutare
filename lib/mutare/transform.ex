@@ -14,9 +14,10 @@ defmodule Mutare.Transform do
     * `Mutare.Transform.FunctionPlan` — one liftable clause group: its signature,
       its clauses, a single shared *tagged* clause group, and the typed lifted
       candidates (`Candidate.Lifted` / `Candidate.Drop`) it admits.
-    * `Mutare.Transform.Candidate.{InPlace,Lifted,Drop}` — the typed, pre-id
-      description of a single mutant. One struct per legal kind, so the redundant
-      `context`/`kind`/`operation` triple (and its illegal combinations) is gone.
+    * `Mutare.Transform.Candidate` — the typed, pre-id description of a single
+      mutant. One struct per legal kind (see that module's moduledoc for the current
+      set), so the redundant `context`/`kind`/`operation` triple (and its illegal
+      combinations) is gone.
 
   The stages, run per subtree:
 
@@ -113,10 +114,25 @@ defmodule Mutare.Transform do
 
   `Mutare.Transform.{ModulePlan,FunctionPlan,Candidate}` own the *vocabulary* —
   the plan structs and pure discovery (chunking clauses, finding guard/drop
-  candidates). Emission — id assignment, site recording, building the selector
-  `case` and the dispatcher — stays here, because it shares the `Ctx`
-  id-threading discipline across the in-place and lifted paths too tightly to
-  split cleanly (`claim_id/4` is the single owner of that dance).
+  candidates). The **stateful** emission core stays here, because it shares the
+  `Ctx` id-threading discipline across the in-place and lifted paths too tightly
+  to split: `claim_id/4` (the single owner of that dance), `in_place_site/3` and
+  the selector emit, `emit_function_plan/2` and `emit_case_pattern_site/3`.
+
+  The **pure** AST-assembly each of those orchestrators calls is factored into
+  focused helper modules, so this file holds the threading, not the node-building:
+
+    * `Mutare.Transform.ClauseAST` — the shared `def`/`defp` clause shape and the
+      primitives that navigate it (head/args/guards/`when`), used by both this
+      module and `FunctionPlan`.
+    * `Mutare.Transform.GuardBuild` — the dispatch guards (`<var> === <id>` gate,
+      exclusion, `and`-into), shared by the lifted and `case` paths.
+    * `Mutare.Transform.LiftedEmit` — the dispatcher + gated base clauses for a
+      lifted group (the assembly half of `emit_function_plan/2`).
+    * `Mutare.Transform.CaseClauseEmit` — the tuple-the-scrutinee `case` clause
+      builders (the assembly half of `emit_case_pattern_site/3`).
+    * `Mutare.Transform.ImportWitness` — the dead-code import witness spliced
+      alongside a mutated bare imported call.
   """
 
   alias Mutare.AST
@@ -128,9 +144,11 @@ defmodule Mutare.Transform do
     Analyze,
     Behaviours,
     Candidate,
+    CaseClauseEmit,
     Ctx,
     FunctionPlan,
-    Imports,
+    ImportWitness,
+    LiftedEmit,
     ModulePlan,
     Names,
     Overlap,
@@ -590,7 +608,7 @@ defmodule Mutare.Transform do
   defp emit_function_plan(%FunctionPlan{signature: {vis, name, arity}} = plan, ctx) do
     group = ctx.group + 1
     ctx = %{ctx | group: group}
-    base = :"#{base_name(name, arity, group, ctx.prefix)}"
+    base = :"#{LiftedEmit.base_name(name, arity, group, ctx.prefix)}"
     var = ctx.active_var
 
     # If any lifted body calls `super`, the relocated base copies can't (super is
@@ -612,7 +630,7 @@ defmodule Mutare.Transform do
       Enum.flat_map_reduce(FunctionPlan.candidates(plan), ctx, fn candidate, ctx ->
         claim_id(ctx, candidate, &lifted_site/3, fn id, candidate ->
           {index, clause} = FunctionPlan.mutated_clause(plan, candidate)
-          {id, index, clause, candidate_import_witness(candidate)}
+          {id, index, clause, ImportWitness.for_candidate(candidate)}
         end)
       end)
 
@@ -623,342 +641,14 @@ defmodule Mutare.Transform do
     # base function takes the full arity with `\\` stripped (`clause_parts`). The
     # default *expressions* are taken from the already-emitted clauses, so their
     # in-place selectors ride along and the dispatcher keeps mutating its defaults.
-    defaults = clause_defaults(orig_clauses)
+    defaults = LiftedEmit.clause_defaults(orig_clauses)
 
-    base_clauses = build_base_clauses(orig_clauses, claimed, base, var, super_var)
-    dispatcher = build_dispatcher(vis, name, arity, mut_ids, base, var, defaults, super_var)
+    base_clauses = LiftedEmit.build_base_clauses(orig_clauses, claimed, base, var, super_var)
+
+    dispatcher =
+      LiftedEmit.build_dispatcher(vis, name, arity, mut_ids, base, var, defaults, super_var)
+
     {[dispatcher | base_clauses], ctx}
-  end
-
-  # Emit the lifted function's base clauses by interleaving: for each source clause, its
-  # mutant clauses (one per candidate overriding it, gated `when mutare_active === <id>`)
-  # come *before* the source clause itself (gated `when mutare_active !== <those ids>`, so it
-  # steps aside when a mutant is active). A dropped clause contributes only its exclusion (no
-  # mutant clause); a bodiless header (`def f(a, b \\ 1)` with no `do`) contributes neither —
-  # its defaults ride on the dispatcher and it has no body to lift.
-  defp build_base_clauses(orig_clauses, claimed, base, var, super_var) do
-    # Every claimed candidate overrides (guard/literal/structure) or drops its clause, so its
-    # id excludes that clause's *original* version.
-    excluded = Enum.group_by(claimed, fn {_id, i, _c, _w} -> i end, fn {id, _i, _c, _w} -> id end)
-
-    orig_clauses
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {orig, index} ->
-      mutant_clauses =
-        for {id, ^index, clause, witness} <- claimed,
-            clause != :drop,
-            do: lifted_mutant(base, id, clause, var, super_var, witness)
-
-      if bodiless_header?(orig) do
-        mutant_clauses
-      else
-        mutant_clauses ++
-          [lifted_original(base, orig, Map.get(excluded, index, []), var, super_var)]
-      end
-    end)
-  end
-
-  # The public dispatcher: read the active mutant id once, record coverage for the
-  # group's lifted ids (inert off the probe — see `Mutare.Coverage.Recorder`), then
-  # tail-call the lifted function with the id threaded as the extra first argument.
-  #   def f(mutare_arg1, mutare_arg2 \\ <default>, ...) do
-  #     mutare_active = :persistent_term.get(:mutare_active, 0)
-  #     <record ids>
-  #     <base>(mutare_active, mutare_arg1, mutare_arg2, ...)
-  #   end
-  #
-  # `defaults` (position → expression, from the source's default args) is overlaid
-  # onto the dispatcher *head* — so the public function keeps the original
-  # multi-arity contract — while the call to the base passes the *plain* vars (the
-  # defaults are already resolved by the time the head's body runs). The base
-  # therefore always sees the full arity.
-  #
-  # `super_var` (non-`nil` only when a lifted body calls `super`) adds a closure
-  # `<super_var> = &super/arity` bound here — `super` is legal inside the dispatcher
-  # (the overriding function), even captured — and threaded to the base as its second
-  # argument, so the relocated body can call `super` through it
-  # (`Mutare.Transform.Super`).
-  defp build_dispatcher(vis, name, arity, mut_ids, base, var, defaults, super_var) do
-    call_args = dispatcher_args(arity)
-    head_args = with_defaults(call_args, defaults)
-    var_node = Recorder.catch_all_pattern(var)
-    read = {:=, [], [var_node, Mutare.Metamutant.subject_ast()]}
-
-    {super_args, super_stmts} = super_closure_binding(super_var, arity)
-    call = {base, [], [var_node | super_args] ++ call_args}
-
-    record = if mut_ids == [], do: [], else: [Recorder.record_ast(mut_ids, var)]
-    body = {:__block__, [], [read] ++ super_stmts ++ record ++ [call]}
-
-    {vis, [], [{name, [], head_args}, [do: body]]}
-  end
-
-  # The super-forwarding closure binding for the dispatcher, plus the extra call arg
-  # that threads it to the base: `{[<super_var>], [<super_var> = &super/arity]}` when
-  # the group uses `super`, else `{[], []}` (unchanged dispatcher). `&super/arity` is
-  # exactly `fn a1, …, aN -> super(a1, …, aN) end` — `super`'s only legal arity is the
-  # full param count, so the single capture forwards every legal call — but needs no
-  # synthesised arg list of its own.
-  defp super_closure_binding(nil, _arity), do: {[], []}
-
-  defp super_closure_binding(super_var, arity) do
-    super_node = {super_var, [], nil}
-    closure = {:&, [], [{:/, [], [{:super, [], nil}, arity]}]}
-    {[super_node], [{:=, [], [super_node, closure]}]}
-  end
-
-  # Overlay each `\\ default` from `defaults` (position → expression) onto the
-  # dispatcher's catch-all arg at that position. A `\\` may only appear in a
-  # `def`/`defp` head, which the dispatcher is.
-  defp with_defaults(args, defaults) when map_size(defaults) == 0, do: args
-
-  defp with_defaults(args, defaults) do
-    args
-    |> Enum.with_index()
-    |> Enum.map(fn {arg, pos} ->
-      case Map.fetch(defaults, pos) do
-        {:ok, default} -> {:\\, [], [arg, default]}
-        :error -> arg
-      end
-    end)
-  end
-
-  # One lifted *mutant* clause: the candidate's single mutated source clause,
-  # renamed to `<base>`, given the `mutare_active` extra arg, and gated `when
-  # mutare_active === <id> [and <its own guard>]`. Raw body (no in-place selectors):
-  # only one mutant is ever active, so a body selector here could never fire.
-  defp lifted_mutant(base, id, clause, var, super_var, witness) do
-    {clause_meta, call_meta, args, guards, body} = clause_parts(clause)
-    gate = {:===, [], [Recorder.catch_all_pattern(var), id_literal(id)]}
-    guard = and_into_guard(gate, combine_guards(guards))
-    body = prepend_import_witness(body, witness)
-    lifted_clause(base, clause_meta, call_meta, args, guard, body, var, super_var)
-  end
-
-  # One lifted *original* clause: the source clause (with its in-place body
-  # selectors), renamed to `<base>`, given the `mutare_active` extra arg, and gated
-  # `when mutare_active !== <id>` for each `id` that overrides/drops it — so it
-  # yields to its mutant clauses when their id is active, and behaves normally
-  # otherwise (including for any skipped/poisoned id, which is never excluded).
-  defp lifted_original(base, clause, excluded_ids, var, super_var) do
-    {clause_meta, call_meta, args, guards, body} = clause_parts(clause)
-    guard = merge_guards(exclusion_guard(excluded_ids, var), combine_guards(guards))
-    lifted_clause(base, clause_meta, call_meta, args, guard, body, var, super_var)
-  end
-
-  # Assemble a `<base>` clause: `defp <base>(mutare_active, [<super_var>,] <args...>)
-  # [when <guard>], <body>`. The source clause's `meta` (its line) is preserved on the
-  # `defp` and the head call — *not* reset to `[]` — so `Sourceror`'s line-assigning
-  # normalizer stays anchored to the original source lines. Without it the body's
-  # `[]`-meta selector clauses (`<id> -> …`) get stale lines, and a bare integer id
-  # then renders as a `:line`-but-no-`:token` literal that crashes the Elixir formatter.
-  #
-  # When the group uses `super` (`super_var` non-`nil`), every base clause takes the
-  # forwarding closure as its second parameter; this clause's body is rewritten to call
-  # `super` through it. A clause whose own body has no `super` still takes the (shared)
-  # parameter but ignores it — a bare `_` (`super_param/2`).
-  defp lifted_clause(base, clause_meta, call_meta, args, guard, body, var, super_var) do
-    {body, super_params} = super_param(body, super_var)
-    call = {base, call_meta, [Recorder.catch_all_pattern(var) | super_params] ++ args}
-    head = if guard, do: {:when, [], [call, guard]}, else: call
-    {:defp, clause_meta, [head | body]}
-  end
-
-  # The super-closure parameter for one base clause, plus its rewritten body. `nil`
-  # (super-free group) leaves both untouched. Otherwise the body's `super(...)` calls
-  # become `<super_var>.(...)`; the clause takes the closure as a parameter, named
-  # `<super_var>` when it is used and a bare `_` when this clause has no `super` (the
-  # parameter exists only to match the base's shared arity). A bare `_` — not a salted
-  # `_<super_var>` — because the latter could *duplicate* a source variable already in
-  # the head (a sibling clause head reusing `_mutare_super`): a repeated underscored
-  # name warns *and* silently turns the head into an equality match, breaking dispatch.
-  # `_` never binds, so it can neither collide nor constrain however many appear.
-  defp super_param(body, nil), do: {body, []}
-
-  defp super_param(body, super_var) do
-    case Super.rewrite(body, super_var) do
-      {body, true} -> {body, [{super_var, [], nil}]}
-      {body, false} -> {body, [{:_, [], nil}]}
-    end
-  end
-
-  # Deconstruct a function clause into `{clause_meta, head_call_meta, head_args,
-  # guards, body_kw}`. A 0-arity head carries a `nil` arg context rather than a
-  # list, which becomes `[]`. Default-argument annotations (`a \\ 1`) are stripped
-  # from the head args — the base function takes the full arity (the dispatcher
-  # already resolved the defaults), and `\\` is legal only in a public head anyway.
-  defp clause_parts({_vis, clause_meta, [head | body]}) do
-    {call, guards} =
-      case head do
-        {:when, _meta, [call | gs]} -> {call, gs}
-        call -> {call, []}
-      end
-
-    {_name, call_meta, args} = call
-    args = if is_list(args), do: strip_arg_defaults(args), else: []
-    {clause_meta, call_meta, args, guards, body}
-  end
-
-  defp strip_arg_defaults(args) do
-    Enum.map(args, fn
-      {:\\, _meta, [pattern, _default]} -> pattern
-      arg -> arg
-    end)
-  end
-
-  # The default-argument expressions of a lifted group, keyed by 0-based head
-  # position. They live on exactly one source clause — a bodiless header in a
-  # multi-clause group, or the lone clause of a single-clause group — so the first
-  # clause carrying any `\\` supplies them all. The expressions come straight from
-  # the *emitted* clauses, so their in-place default-value selectors are intact and
-  # the dispatcher that hosts them keeps mutating the defaults at call time.
-  defp clause_defaults(clauses) do
-    Enum.find_value(clauses, %{}, fn clause ->
-      defaults =
-        clause
-        |> head_arg_list()
-        |> Enum.with_index()
-        |> Enum.flat_map(fn
-          {{:\\, _meta, [_pattern, default]}, pos} -> [{pos, default}]
-          _arg -> []
-        end)
-        |> Map.new()
-
-      if map_size(defaults) > 0, do: defaults, else: nil
-    end)
-  end
-
-  # The raw head pattern args of a clause (peeling any `when`), with `\\` defaults
-  # intact — unlike `clause_parts`, which strips them for the base function.
-  defp head_arg_list({_vis, _meta, [head | _rest]}) do
-    case head do
-      {:when, _meta, [call | _guards]} -> call_arg_list(call)
-      call -> call_arg_list(call)
-    end
-  end
-
-  defp head_arg_list(_), do: []
-
-  defp call_arg_list({_name, _meta, args}) when is_list(args), do: args
-  defp call_arg_list(_), do: []
-
-  # A bodiless function header (`def f(a, b \\ 1)` with no `do`): a default-args
-  # declaration, not an implementation. One element after the visibility/meta (just
-  # the head); a real clause has two (head + body keyword).
-  defp bodiless_header?({_vis, _meta, [_head]}), do: true
-  defp bodiless_header?(_), do: false
-
-  # AND `gate` into a guard expression, distributing over a top-level `when`
-  # (`a when b` is the guard's OR) so each alternative becomes `gate and <alt>` — a
-  # `when` may never appear *inside* `and`, so we recurse to the leaves. `nil` (no
-  # original guard) leaves just the gate.
-  defp and_into_guard(gate, nil), do: gate
-
-  defp and_into_guard(gate, {:when, meta, alts}),
-    do: {:when, meta, Enum.map(alts, &and_into_guard(gate, &1))}
-
-  defp and_into_guard(gate, expr), do: {:and, [], [gate, expr]}
-
-  # Collapse a clause's guard list (`guards_of` yields `[]` or a single expr;
-  # multiple is a defensive `and`-fold) into one expression or `nil`.
-  defp combine_guards([]), do: nil
-  defp combine_guards([guard]), do: guard
-  defp combine_guards([g | rest]), do: Enum.reduce(rest, g, &{:and, [], [&2, &1]})
-
-  # `mutare_active !== id1 and mutare_active !== id2 …` (chained `!==`, not `not in
-  # [list]` — a bare small-integer list can render as a charlist). `nil` for none.
-  defp exclusion_guard([], _var), do: nil
-
-  defp exclusion_guard(ids, var) do
-    ids
-    |> Enum.map(&{:!==, [], [Recorder.catch_all_pattern(var), id_literal(&1)]})
-    |> Enum.reduce(&{:and, [], [&2, &1]})
-  end
-
-  defp merge_guards(nil, orig), do: orig
-  defp merge_guards(excl, nil), do: excl
-  defp merge_guards(excl, orig), do: and_into_guard(excl, orig)
-
-  # A generated integer-id literal with clean (empty) metadata. A *bare* integer
-  # makes Sourceror's normalizer assign a `:line` but no `:token`, which then
-  # crashes the Elixir formatter (`Keyword.fetch!(meta, :token)`); the clean-meta
-  # `{:__block__, [], [n]}` shape renders via the inspect path instead (the same
-  # rule literal mutators follow — see CLAUDE.md).
-  defp id_literal(id), do: {:__block__, [], [id]}
-
-  defp dispatcher_args(0), do: []
-  defp dispatcher_args(arity), do: Enum.map(1..arity, &{:"mutare_arg#{&1}", [], nil})
-
-  # A stamped bare imported call can be silently wrong when a macro hidden from our
-  # lexical pre-pass re-imports the same module with `except:` and replaces the function from
-  # another module. The generated witness re-imports the provider we believe the original call
-  # used, then references the same bare name/arity inside an unreachable expression. If a hidden
-  # replacement is also in scope, Elixir raises "imported from both ... ambiguous" during the
-  # single metamutant compile, and poison recovery drops the generated mutant instead of letting
-  # it run against the wrong provider.
-  defp candidate_import_witness(%{original: original}), do: node_import_witness(original)
-  defp candidate_import_witness(_candidate), do: nil
-
-  defp node_import_witness({_form, meta, _args}) when is_list(meta),
-    do: Imports.import_witness(meta)
-
-  defp node_import_witness(_node), do: nil
-
-  defp wrap_import_witness(node, nil), do: node
-
-  defp wrap_import_witness(node, witness),
-    do: {:__block__, [], [import_witness_ast(witness), node]}
-
-  defp prepend_import_witness(body, nil), do: body
-
-  defp prepend_import_witness([kw], witness) when is_list(kw) do
-    [
-      Enum.map(kw, fn
-        {key, expr} = entry ->
-          if AST.key_atom(key) == :do, do: {key, wrap_import_witness(expr, witness)}, else: entry
-
-        entry ->
-          entry
-      end)
-    ]
-  end
-
-  defp prepend_import_witness(body, _witness), do: body
-
-  defp import_witness_ast({module, fun, arity}) do
-    args = witness_args(arity)
-    call = {fun, [], args}
-    closure = {:fn, [], [{:->, [], [args, call]}]}
-    import_directive = {:import, [], [witness_module(module), [only: [{fun, arity}]]]}
-    true_body = {:__block__, [], [import_directive, closure]}
-
-    {:case, [],
-     [
-       {:__block__, [], [false]},
-       [
-         do: [
-           {:->, [], [[{:__block__, [], [true]}], true_body]},
-           {:->, [], [[{:_, [], nil}], {:__block__, [], [nil]}]}
-         ]
-       ]
-     ]}
-  end
-
-  defp witness_args(0), do: []
-  defp witness_args(arity), do: Enum.map(1..arity, &{:"mutare_import_arg#{&1}", [], nil})
-
-  defp witness_module(module) when is_list(module), do: {:__aliases__, [], [:"Elixir" | module]}
-  defp witness_module(module) when is_atom(module), do: {:__block__, [], [module]}
-
-  # Private base name for a lifted group. `prefix` is the file's collision-free
-  # generated-name prefix (`Ctx.prefix`, normally `"__mutare_"`); the trailing
-  # `g<group>` keeps generated names unique across groups; `?`/`!` (valid only at
-  # the end of a function name) are replaced so the sanitized base is a legal
-  # identifier (e.g. `ok?` → `__mutare_ok__1_g1`). The public dispatcher keeps the
-  # real name (including any `?`/`!`).
-  defp base_name(name, arity, group, prefix) do
-    sanitized = name |> Atom.to_string() |> String.replace(["?", "!"], "_")
-    "#{prefix}#{sanitized}_#{arity}_g#{group}"
   end
 
   # === sites: pick the constructor from the candidate variant =================
@@ -1227,7 +917,7 @@ defmodule Mutare.Transform do
              [id],
              candidate
              |> branch_node()
-             |> wrap_import_witness(candidate_import_witness(candidate))
+             |> ImportWitness.wrap(ImportWitness.for_candidate(candidate))
            ]}
         end)
       end)
@@ -1441,7 +1131,7 @@ defmodule Mutare.Transform do
     {claimed, ctx} =
       Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
         claim_id(ctx, candidate, &in_place_site/3, fn id, candidate ->
-          {id, candidate.clause_index, case_mutant_clause(id, candidate, var)}
+          {id, candidate.clause_index, CaseClauseEmit.mutant_clause(id, candidate, var)}
         end)
       end)
 
@@ -1460,103 +1150,25 @@ defmodule Mutare.Transform do
           |> Enum.with_index()
           |> Enum.flat_map(fn {emitted_clause, index} ->
             original =
-              case_original_clause(emitted_clause, Map.get(excluded, index, []), all_ids, var)
+              CaseClauseEmit.original_clause(
+                emitted_clause,
+                Map.get(excluded, index, []),
+                all_ids,
+                var
+              )
 
             Map.get(mutants, index, []) ++ [original]
           end)
 
         new_clauses =
-          if exhaustive_clauses?(emitted_clauses, excluded),
+          if CaseClauseEmit.exhaustive_clauses?(emitted_clauses, excluded),
             do: rewritten,
-            else: rewritten ++ [case_unmatched_clause(all_ids, var)]
+            else: rewritten ++ [CaseClauseEmit.unmatched_clause(all_ids, var)]
 
         subject = {selector_subject(ctx), emitted_subject}
         {{:case, meta, [subject, [{do_key, new_clauses}]]}, ctx}
     end
   end
-
-  # One mutant clause: `{<active>, <mutant_pattern>} when <active> === <id> [and
-  # <mutant_guard>] -> <raw_body>`. The first tuple element binds `mutare_active` (used in
-  # the gate); `and_into_guard/2` ANDs the `=== <id>` gate into the clause's own (possibly
-  # `nil`) guard.
-  defp case_mutant_clause(id, %Candidate.CaseClause{} = c, var) do
-    tuple = {Recorder.catch_all_pattern(var), c.mutant_pattern}
-    gate = {:===, [], [Recorder.catch_all_pattern(var), id_literal(id)]}
-    head = {:when, [], [tuple, and_into_guard(gate, c.mutant_guard)]}
-    {:->, [], [[head], c.raw_body]}
-  end
-
-  # One original clause: `{<active>, <orig_pattern>} when <active> !== <its ids> [and
-  # <orig_guard>] -> <record all ids>; <emitted_body>`. With no exclusions and no source
-  # guard the head is the bare tuple (`mutare_active` still used by the record). The record
-  # prepends the *full* id-set (see `emit_case_pattern_site/3`).
-  defp case_original_clause(emitted_clause, excluded_ids, all_ids, var) do
-    {clause_meta, pattern, orig_guard, body} = emitted_clause_parts(emitted_clause)
-    tuple = {Recorder.catch_all_pattern(var), pattern}
-    guard = merge_guards(exclusion_guard(excluded_ids, var), orig_guard)
-    head = if guard, do: {:when, [], [tuple, guard]}, else: tuple
-    record_body = {:__block__, [], [Recorder.record_ast(all_ids, var), body]}
-    {:->, clause_meta, [[head], record_body]}
-  end
-
-  # The trailing unmatched fallback for a non-exhaustive tupled `case`: `{<active>,
-  # mutare_unmatched} -> <record all ids>; Elixir.Kernel.raise(Elixir.CaseClauseError, term:
-  # mutare_unmatched)`. The first tuple element binds `mutare_active` (used by the record) and
-  # `mutare_unmatched` binds the *bare* subject (used by the raise), so neither warns unused; it
-  # both attributes the hosted ids at baseline (else a value that matches no original clause
-  # falls through recording nothing, scoring a re-targeting mutant `:no_coverage`) and re-raises
-  # the same `CaseClauseError` the original `case` did, on the original term. `Elixir.Kernel.raise`
-  # and `Elixir.CaseClauseError` are both absolute so the raise is independent of the target's
-  # imports/aliases (the rationale `match_raise_clause/0` spells out); `mutare_unmatched` is a
-  # case-clause-local pattern var, so a fixed name can't capture or collide.
-  defp case_unmatched_clause(all_ids, var) do
-    unmatched = {:mutare_unmatched, [], nil}
-    tuple = {Recorder.catch_all_pattern(var), unmatched}
-    raise_fun = {:., [], [{:__aliases__, [], [:"Elixir", :Kernel]}, :raise]}
-    case_clause_error = {:__aliases__, [], [:"Elixir", :CaseClauseError]}
-    raise_node = {raise_fun, [], [case_clause_error, [term: unmatched]]}
-    body = {:__block__, [], [Recorder.record_ast(all_ids, var), raise_node]}
-    {:->, [], [[tuple], body]}
-  end
-
-  # Whether the rewritten clause list already matches every subject — an original clause is an
-  # unconditional catch-all (an irrefutable pattern, no source guard) that the rewrite leaves
-  # ungated (no mutant excludes it). When so the subject can never fall through, so the unmatched
-  # fallback would be an unreachable clause (Elixir warns "cannot match"); otherwise the subject
-  # may fall through and the fallback is needed (see `emit_case_pattern_site/3`).
-  defp exhaustive_clauses?(emitted_clauses, excluded) do
-    emitted_clauses
-    |> Enum.with_index()
-    |> Enum.any?(fn {clause, index} ->
-      {_meta, pattern, guard, _body} = emitted_clause_parts(clause)
-      irrefutable_pattern?(pattern) and is_nil(guard) and Map.get(excluded, index, []) == []
-    end)
-  end
-
-  # A pattern that matches any value: `_`, `_name`, or a plain variable — the only nodes shaped
-  # `{atom_name, _meta, atom_context}`. Anything structured (a literal `{:__block__, _, […]}`, a
-  # tuple/map/struct, a pin, a call) carries a *list* in that slot, so is refutable — *except* a
-  # **match chain** `a = b = … = z` (`{:=, _, [lhs, rhs]}`, possibly nested), which is irrefutable
-  # exactly when every operand is: `x = _ = y` binds three names and matches anything, but `x = {1,
-  # 2}` (refutable rhs) or `^x = y` (a pin) is not. The `:=` node carries a *list* in its third
-  # slot, so it falls past the variable clause to the recursive one.
-  defp irrefutable_pattern?({name, _meta, ctx}) when is_atom(name) and is_atom(ctx), do: true
-
-  defp irrefutable_pattern?({:=, _meta, [lhs, rhs]}),
-    do: irrefutable_pattern?(lhs) and irrefutable_pattern?(rhs)
-
-  defp irrefutable_pattern?(_), do: false
-
-  # Deconstruct an (already-emitted) `case` clause into `{meta, pattern, guard | nil, body}`.
-  # A `case` clause has a single pattern; its guard (if any) is the last `when` arg (patterns
-  # aren't mutated in place and guards are pruned by the analyzer, so both are the originals).
-  defp emitted_clause_parts({:->, meta, [[{:when, _wm, when_args}], body]})
-       when length(when_args) >= 2 do
-    {patterns, [guard]} = Enum.split(when_args, -1)
-    {meta, hd(patterns), guard, body}
-  end
-
-  defp emitted_clause_parts({:->, meta, [[pattern], body]}), do: {meta, pattern, nil, body}
 
   # The selector-branch value for an in-place candidate. A `CasePattern` (and a `RescueDrop`)
   # carries the whole mutated construct (`replacement`); for every other in-place candidate the

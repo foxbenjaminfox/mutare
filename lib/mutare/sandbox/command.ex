@@ -90,6 +90,7 @@ defmodule Mutare.Sandbox.Command do
   @success_exit 0
   @timeout_exit 124
   @failure_exit 101
+  @mix_env "test"
 
   @erl_compiler_options_env "ERL_COMPILER_OPTIONS"
 
@@ -135,6 +136,14 @@ defmodule Mutare.Sandbox.Command do
           | :harness_error
           | :suite_compile_error
           | :atom_exhausted
+
+  @doc """
+  The `MIX_ENV` every sandbox `mix` runs under (`"test"`). The single home for the value,
+  so `Mutare.Sandbox` (which builds `_build/<env>/lib` paths) and `Mutare.Transform.Uses`
+  share it rather than re-hardcoding the string.
+  """
+  @spec mix_env() :: String.t()
+  def mix_env, do: @mix_env
 
   @doc "Env var the runner sets to give a mutant run its wall-clock cap (ms)."
   @spec timeout_env() :: String.t()
@@ -437,7 +446,7 @@ defmodule Mutare.Sandbox.Command do
   def mix(sandbox, args, mutant_id, opts \\ []) do
     env =
       [
-        {"MIX_ENV", "test"},
+        {"MIX_ENV", @mix_env},
         {Mutare.Selector.env_var(), Integer.to_string(mutant_id)},
         # Self-hosting isolation: give the suite-under-test a private selection
         # key so its own `Selector.put/1` calls can't clobber the harness's

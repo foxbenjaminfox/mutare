@@ -67,8 +67,10 @@ defmodule Mutare.Transform.Uses do
   @behaviours_key :mutare_use_behaviours
   @max_depth 16
 
-  # The env the metamutant is compiled and tested under — mirror it during `__using__` expansion.
-  # Kept in sync with `Mutare.Sandbox.Command`'s `{"MIX_ENV", "test"}`.
+  # The env the metamutant is compiled and tested under, as an atom for `Mix.env` mirroring
+  # during `__using__` expansion. The canonical value is `Mutare.Sandbox.Command.mix_env/0`
+  # (the `"test"` string set as `MIX_ENV`); this is its atom twin, kept local rather than
+  # reaching across the transform→execution layer boundary for a compile-time dependency.
   @sandbox_env :test
 
   # The module name of a nested `defmodule` we couldn't resolve to a concrete atom (a non-static
@@ -407,7 +409,7 @@ defmodule Mutare.Transform.Uses do
       not Enum.all?(path, &is_atom/1) -> @unresolved
       match?([:"Elixir" | _], path) -> Module.concat(path)
       parent == @unresolved -> @unresolved
-      parent == nil -> path |> Aliases.resolve_path(env) |> to_module()
+      parent == nil -> path |> Aliases.resolve_path(env) |> Aliases.to_module()
       true -> Module.concat([parent | path])
     end
   end
@@ -521,15 +523,12 @@ defmodule Mutare.Transform.Uses do
   # with a non-static segment (an aliased `use Web` we can't resolve) yields `nil` → degrade.
   defp module_atom({:__aliases__, _, path}, env) when is_list(path) do
     if Enum.all?(path, &is_atom/1),
-      do: path |> Aliases.resolve_path(env) |> to_module(),
+      do: path |> Aliases.resolve_path(env) |> Aliases.to_module(),
       else: nil
   end
 
   defp module_atom(atom, _env) when is_atom(atom), do: atom
   defp module_atom(_other, _env), do: nil
-
-  defp to_module(path) when is_list(path), do: Module.concat(path)
-  defp to_module(atom) when is_atom(atom), do: atom
 
   # Expand `mod.__using__(opts)` and collect the directives in its body, recursing through
   # nested `use`s. Bounded by depth and a `seen` set so a `use`-cycle terminates. `seen` keys on
@@ -591,7 +590,7 @@ defmodule Mutare.Transform.Uses do
   # its module atom (`Module.concat([U]) == Elixir.U`); the target is an Elixir path
   # (`[:Enum]` → `Enum`) or an Erlang atom module (`:binary`, kept verbatim).
   defp env_aliases(env) do
-    Enum.map(env, fn {name, target} -> {Module.concat([name]), to_module(target)} end)
+    Enum.map(env, fn {name, target} -> {Module.concat([name]), Aliases.to_module(target)} end)
   end
 
   # Gather `import`/`alias`/`require …, as:` from a `__using__` body, descending only blocks

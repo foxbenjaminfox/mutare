@@ -68,6 +68,7 @@ defmodule Mutare.Manifest do
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
   alias Mutare.Metamutant
+  alias Mutare.Transform.Names
 
   @typedoc "A generated line range and the mutant ids whose code occupies it."
   @type region :: %{ids: [pos_integer()], lo: pos_integer(), hi: pos_integer()}
@@ -364,36 +365,20 @@ defmodule Mutare.Manifest do
   defp anchor_var(_), do: nil
 
   # Keep a candidate name only when it is in the generated dispatch-variable family
-  # — the canonical `Recorder.var_name()` (`mutare_active`) or a salted
-  # `mutare_active_<n>` (`Mutare.Transform.Names` appends `_0`, `_1`, … only when the
-  # source already binds the canonical name). A user variable that merely reads the
-  # same `:persistent_term` key (`foo = …`) carries a name outside this family, so
-  # returning `nil` for it makes the prewalk keep looking rather than lock onto user
-  # code — which would recover the wrong name (`:foo`) and then fail to recognise the
-  # real `case mutare_active do …` hoisted selector, leaving the in-place mutant
-  # without a region (a poison there would map to `[]` → recovery aborts).
+  # — the canonical `Recorder.var_name()` (`mutare_active`) or a salted `mutare_active_<n>`
+  # (`Mutare.Transform.Names.salted/2` appends `_0`, `_1`, … only when the source already
+  # binds the canonical name; `Names.salted_name?/2` is its inverse, so the convention lives
+  # in one place). A user variable that merely reads the same `:persistent_term` key
+  # (`foo = …`) carries a name outside this family, so returning `nil` for it makes the
+  # prewalk keep looking rather than lock onto user code — which would recover the wrong name
+  # (`:foo`) and then fail to recognise the real `case mutare_active do …` hoisted selector,
+  # leaving the in-place mutant without a region (a poison there would map to `[]` → recovery
+  # aborts).
   defp dispatch_name(name) when is_atom(name) do
-    if generated_dispatch_name?(name), do: name
+    if Names.salted_name?(Recorder.var_name(), name), do: name
   end
 
   defp dispatch_name(_), do: nil
-
-  # The generated naming convention `Mutare.Transform.Names.salted/2` produces for the
-  # dispatch variable: the canonical base, or the base + `_` + a non-negative integer.
-  defp generated_dispatch_name?(name) do
-    base = Atom.to_string(Recorder.var_name())
-
-    case Atom.to_string(name) do
-      ^base ->
-        true
-
-      str ->
-        case String.split(str, base <> "_", parts: 2) do
-          ["", suffix] -> match?({_int, ""}, Integer.parse(suffix))
-          _ -> false
-        end
-    end
-  end
 
   defp tupled_clause_var(clauses) when is_list(clauses),
     do: Enum.find_value(clauses, &clause_tuple_var/1)

@@ -16,15 +16,7 @@ defmodule Mutare.Transform.Analyze.Returns do
 
   alias Mutare.AST
   alias Mutare.Mutator
-  alias Mutare.Transform.{Candidate, NodeRange}
-
-  # The try-style body blocks whose clause bodies are *return paths*
-  # (`rescue`/`catch`/`else`). Their left side is always a match, and their tails
-  # return — unlike `:after`, whose value `try` discards. The canonical set is
-  # also used for clause-block routing in `Mutare.Transform.Analyze` (which owns
-  # it); these atoms are fixed Elixir semantics, so the return logic classifies
-  # keys independently here rather than reaching back into the parent.
-  @clause_block_keys [:rescue, :catch, :else]
+  alias Mutare.Transform.{Analyze, Candidate}
 
   # The control-flow forms whose branch bodies are return paths when the form is in
   # tail position, and the kind of each return-path block key: `:value` is a single
@@ -86,7 +78,7 @@ defmodule Mutare.Transform.Analyze.Returns do
       do_key?(key) ->
         attach_return(analyzed, raw, return_mutators)
 
-      clause_block_key?(key) and clause_list?(analyzed) and clause_list?(raw) and
+      Analyze.clause_block_key?(key) and clause_list?(analyzed) and clause_list?(raw) and
           length(analyzed) == length(raw) ->
         map_clauses(analyzed, raw, leaf_attacher(return_mutators))
 
@@ -96,8 +88,6 @@ defmodule Mutare.Transform.Analyze.Returns do
   end
 
   defp do_key?(key), do: AST.key_atom(key) == :do
-
-  defp clause_block_key?(key), do: AST.key_atom(key) in @clause_block_keys
 
   # The leaf step shared by every path: offer the tail to each return mutator and
   # append a `Candidate.Return` per `{spec, replacement}` (the mutator's
@@ -259,30 +249,18 @@ defmodule Mutare.Transform.Analyze.Returns do
   # preserving any operator candidates already there (so operator ids precede the
   # return id at a shared node). The candidate's `original`/`range` come from the
   # *raw* tail, so the diff is clean. A tail we can't annotate (a non-`{f,m,a}`
-  # node, or one Sourceror can't range) gets no return mutant.
-  # mutare:ignore[guard_drop] equivalent — a `{form, meta, args}` AST node always carries keyword-list meta, so the guard never excludes a real tail; it only fences out a malformed 3-tuple that can't occur here.
-  defp append_return_candidates({form, meta, args} = node, raw_tail, replacements)
-       when is_list(meta) do
-    case NodeRange.get(raw_tail) do
-      %{} = range ->
-        candidates =
-          Enum.map(replacements, fn {spec, replacement} ->
-            %Candidate.Return{
-              mutator: spec,
-              original: raw_tail,
-              mutated: replacement,
-              range: range
-            }
-          end)
-
-        existing = Keyword.get(meta, :mutare, [])
-        {form, Keyword.put(meta, :mutare, existing ++ candidates), args}
-
-      _ ->
-        node
-    end
+  # node, or one Sourceror can't range) gets no return mutant — handled by the shared
+  # `Analyze.append_candidates/3`.
+  defp append_return_candidates(node, raw_tail, replacements) do
+    Analyze.append_candidates(node, raw_tail, fn range ->
+      Enum.map(replacements, fn {spec, replacement} ->
+        %Candidate.Return{
+          mutator: spec,
+          original: raw_tail,
+          mutated: replacement,
+          range: range
+        }
+      end)
+    end)
   end
-
-  # mutare:ignore[clause_drop] equivalent — Sourceror wraps every scalar/tuple/list literal tail in a `:__block__` 3-tuple, so the head above matches every tail that has replacements; this fallback is unreachable for valid input.
-  defp append_return_candidates(node, _raw_tail, _replacements), do: node
 end

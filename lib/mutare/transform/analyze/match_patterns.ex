@@ -153,20 +153,11 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
 
   # The first visible-arg position routed `:binding_pattern` (`meta[:mutare_macro]`), or `nil`.
   defp binding_pattern_index(meta) do
-    case macro_routing(meta) do
+    case Analyze.macro_routing(meta) do
       routing when is_list(routing) -> Enum.find_index(routing, &(&1 == :binding_pattern))
       _ -> nil
     end
   end
-
-  # The per-argument macro routing stamped by `Mutare.Transform.Resolve` (`meta[:mutare_macro]`),
-  # or `nil`. The canonical reader lives in `Mutare.Transform.Analyze`; this is the trivial
-  # accessor for the same contract key, kept private so this module stays self-contained.
-  # mutare:ignore[guard_drop] equivalent — `meta` is always a keyword list here (it comes from a node's metadata slot), so the guard never excludes a real call.
-  defp macro_routing(meta) when is_list(meta), do: Keyword.get(meta, :mutare_macro)
-
-  # mutare:ignore[clause_drop] equivalent — `meta` is always a list (see above), so this non-list fallback is unreachable for valid input.
-  defp macro_routing(_meta), do: nil
 
   # Offer the macro's escaping pattern to the structural families and attach a
   # `Candidate.MacroPattern` per mutation to the analyzed macro/pipe node — emission rewrites
