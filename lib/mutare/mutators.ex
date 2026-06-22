@@ -67,7 +67,8 @@ defmodule Mutare.Mutators do
     pattern_swap: Mutare.Mutators.PatternSwap,
     pattern_wildcard: Mutare.Mutators.PatternWildcard,
     rescue_type: Mutare.Mutators.RescueType,
-    guard_drop: Mutare.Mutators.GuardDrop
+    guard_drop: Mutare.Mutators.GuardDrop,
+    genserver: Mutare.Mutators.GenServer
   ]
 
   @doc "The ordered `family => module` registry of every built-in mutator."

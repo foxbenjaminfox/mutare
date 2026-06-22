@@ -1293,6 +1293,33 @@ top-level-alias/`use GenServer`/custom+transitive `use`/union/no-inherit/`expand
 `mutate/2` + `return_replacements/2` fire only under the behaviour, via `test/support/behaviour_mutator.ex`
 and the `Mutare.Test.Sample{Behaviour,Using}` fixtures).
 
+### GenServer return mutator — the first behaviour-gated built-in `[done]`
+The payoff of behaviour detection: `Mutare.Mutators.GenServer` (`:genserver`, default-on) mutates a
+`handle_call`/`handle_cast`/`handle_info`/`handle_continue` **return tuple** into a *different but
+still valid* OTP return, gated on `context.behaviours` containing `GenServer` (so inert everywhere
+else). It complements `ReturnValue`: ReturnValue swaps a tail for a *sentinel* (the server gets a
+malformed return and crashes — an uninformative kill), whereas this swaps the *control tag*
+(`:reply`→`:noreply`, `:noreply`↔`:stop`, the 4-tuple stop-with-reply→reply) so the mutant is a
+well-formed GenServer that *behaves* differently — a survivor pinpoints an unchecked reply/liveness
+semantic.
+
+Two non-obvious mechanics. (1) **Shape, not function name.** `return_replacements/2` sees only the
+tail node + behaviours, never which callback it is in — but the return *shapes* are unambiguous by
+`{tag, arity}` (`:reply` only ever appears in `handle_call`), so it dispatches on those and never
+needs the function name (threading it would be a bigger API change for no gain). A `{:ok, _}`
+(init), `{:stop, reason}` (2-tuple init form), or any non-OTP tuple simply doesn't match. (2) **The
+2-tuple wrap.** A bare 2-tuple literal `{:noreply, state}` has no metadata slot, so I first feared it
+couldn't carry a return candidate — but Sourceror **wraps every 2-tuple literal in a single-element
+`__block__`** to anchor its line info (`{:__block__, meta, [{tag, state}]}`), which *does* have a
+slot, so the candidate attaches and even multi-statement `{:noreply, s}` tails mutate. The mutator
+unwraps a single-element block and recurses, then matches the 2-tuple (`{tag, state}`) or the
+3/4-tuple (`{:{}, _, [tag | rest]}`). Results are built as explicit `{:{}, [], …}` nodes (renders as
+a literal tuple at any arity) reusing the original `state`/`reply` operands + injected control atoms,
+so every mutant compiles as a valid GenServer return. Registered default-on because GenServer is
+dependency-free OTP core (unlike the Ecto example, which needs a dep and stays a custom mutator);
+tested in `test/mutare/gen_server_test.exs` (full swap table, behaviour gate, multi-statement tail,
+non-callback shapes untouched, metamutant compiles).
+
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
 (`apply(Foo, …)`, `is_struct(x, Foo)`, `[A, B]`, a behaviour/strategy arg) to the

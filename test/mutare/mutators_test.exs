@@ -60,7 +60,7 @@ defmodule Mutare.MutatorsTest do
                  [AtomLiteral] ++
                  [CharlistLiteral, WordListLiteral, MapLiteral, TupleLiteral, BitstringLiteral] ++
                  [RegexLiteral, DateTimeLiteral, AliasLiteral, ReturnValue, PatternSwap] ++
-                 [PatternWildcard, RescueType, GuardDrop]
+                 [PatternWildcard, RescueType, GuardDrop, Mutare.Mutators.GenServer]
     end
 
     test "families/0 are the registry's keys, in order — all on by default" do
@@ -83,7 +83,8 @@ defmodule Mutare.MutatorsTest do
                    :pattern_swap,
                    :pattern_wildcard,
                    :rescue_type,
-                   :guard_drop
+                   :guard_drop,
+                   :genserver
                  ]
     end
 

@@ -662,6 +662,11 @@ contract between them is the whole game.
     (`pattern_mutations/2`, head / `case` / `receive` / `fn` / `=`-match patterns), and RescueType +
     GuardDrop (special — `try`/guard rebuilds, no `(node) → [replacement]` callback fits). The
     unregistered `clause_drop` is the one structural built-in that *isn't* a toggleable family.
+  - **Behaviour-gated** (the first built-in to read `context.behaviours`): GenServer
+    (`return_replacements/2`, gated on `@behaviour GenServer`) swaps a `handle_call`/`cast`/`info`/
+    `continue` return tuple for another *valid* OTP return (`:reply`→`:noreply`, `:noreply`↔`:stop`,
+    …) — a higher-signal complement to ReturnValue's sentinel (a well-formed mutant, not a crash).
+    Inert in non-GenServer modules. See its `@moduledoc` for the full swap table.
   - **Configurable** (`{module, opts}` in `:mutators`; `opts` reach `mutate/2` as `context.opts`,
     the reserved `:as` key renames the recorded family): ConventionAtom (extra `:pairs`) and any
     user mutator. See `Mutare.Mutator.Spec`.
