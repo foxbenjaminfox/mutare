@@ -66,6 +66,76 @@ defmodule Mutare.GenServerTest do
     end
   end
 
+  describe "branch tails (each branch of a case/cond/if in tail position is a return path)" do
+    test "every `case` clause's return tuple is mutated independently" do
+      body = """
+        def handle_call(:get, _f, s) do
+          case s do
+            nil -> {:reply, :empty, s}
+            v -> {:reply, v, s}
+          end
+        end\
+      """
+
+      assert genserver_mutations(server(body)) == [
+               {"{:reply, :empty, s}", "{:noreply, s}"},
+               {"{:reply, v, s}", "{:noreply, s}"}
+             ]
+    end
+
+    test "both `if` branches mutate (do and else)" do
+      body = """
+        def handle_cast(_m, s) do
+          if s > 0 do
+            {:noreply, s}
+          else
+            {:stop, :normal, s}
+          end
+        end\
+      """
+
+      assert genserver_mutations(server(body)) == [
+               {"{:noreply, s}", "{:stop, :normal, s}"},
+               {"{:stop, :normal, s}", "{:noreply, s}"}
+             ]
+    end
+
+    test "`cond` clause tails mutate, including under a multi-statement block" do
+      body = """
+        def handle_info(msg, s) do
+          _ = msg
+          cond do
+            msg == :a -> {:noreply, s}
+            true -> {:stop, :normal, s}
+          end
+        end\
+      """
+
+      assert genserver_mutations(server(body)) == [
+               {"{:noreply, s}", "{:stop, :normal, s}"},
+               {"{:stop, :normal, s}", "{:noreply, s}"}
+             ]
+    end
+
+    test "a `case` not in tail position (bound, not returned) is NOT descended" do
+      body = """
+        def handle_cast(_m, s) do
+          _ =
+            case s do
+              nil -> {:reply, :empty, s}
+              v -> {:reply, v, s}
+            end
+
+          {:noreply, s}
+        end\
+      """
+
+      # Only the genuine tail (`{:noreply, s}`) is a return path; the bound `case`
+      # branches are not.
+      assert genserver_mutations(server(body)) == [{"{:noreply, s}", "{:stop, :normal, s}"}]
+    end
+  end
+
   describe "scope" do
     test "fires on a directly-declared @behaviour GenServer (not just `use`)" do
       source = """

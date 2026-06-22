@@ -14,8 +14,13 @@ defmodule Mutare.Mutators.ReturnValue do
   nothing about. So `mutate/1` here is intentionally `:skip` (it never fires as a
   node mutator), and the real work lives in the structural
   `c:Mutare.Mutator.return_replacements/1` hook, which `Mutare.Transform` discovers by
-  export and calls once per `def`/`defp` clause tail it finds (a custom mutator
-  implementing the same hook participates identically). This
+  export and calls once per `def`/`defp` **leaf return tail** it finds (a custom
+  mutator implementing the same hook participates identically). Tail position is
+  transitive: when a clause tail is a `case`/`cond`/`if`/`unless`, the transform
+  descends into *each branch body's* tail (each is a return path), so a branchy
+  callback gets one return mutant per branch rather than one coarse mutant on the
+  whole construct — see `Mutare.Transform.Analyze.Returns`. (`with`/`try`/`receive`
+  are not yet descended, so they remain whole-tail leaves.) This
   module still implements the behaviour so it can sit in the `Mutare.Mutators`
   registry — be on by default, be named in reports, be selected/validated via
   `:mutators`, and be filtered by `# mutare:ignore[return_value]` — exactly like
@@ -37,7 +42,7 @@ defmodule Mutare.Mutators.ReturnValue do
     | string concatenation (`a <> b`)              | `""`       | `"mutare"` |
     | list expression (`a ++ b`, `xs -- ys`)       | `[]`       | `[:mutare]`|
     | anything else (variable, call, tuple, map,   | `nil`      | `:mutare`  |
-    | `:ok`/`:error` atom, `if`/`case`/`with`, …)  |            |            |
+    | `:ok`/`:error` atom, `with`/`try`/`receive`) |            |            |
 
   The two halves catch *opposite* weak assertions. The **empty/zero** value is
   killed by a test that asserts the result is present/non-empty/non-nil but

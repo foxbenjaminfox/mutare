@@ -657,7 +657,8 @@ contract between them is the whole game.
     (`Elixir.Kernel.==`, `Elixir.Function.identity`) so no alias/import can redirect them.
   - **Structural** (`mutate/1` is `:skip`; the real logic is a callback core discovers *by export*
     and applies at the positions it routes — so a *custom* mutator at that position participates
-    too): ReturnValue (`return_replacements/1`, a clause's return tail), IfCondition
+    too): ReturnValue (`return_replacements/1`, a clause's return tail — **and each branch tail of a
+    `case`/`cond`/`if`/`unless` in tail position**, descended by `Transform.Analyze.Returns`), IfCondition
     (`condition_replacements/1`, an `if`/`unless`/`cond` condition), PatternSwap + PatternWildcard
     (`pattern_mutations/2`, head / `case` / `receive` / `fn` / `=`-match patterns), and RescueType +
     GuardDrop (special — `try`/guard rebuilds, no `(node) → [replacement]` callback fits). The

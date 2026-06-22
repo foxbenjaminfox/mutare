@@ -318,6 +318,151 @@ defmodule Mutare.ReturnValueTest do
     end
   end
 
+  describe "control-flow branch tails (case / cond / if / unless descended in tail position)" do
+    # `{original_code => [mutated_code]}` for the return-value sites of a full
+    # `def f(...) do ... end` body.
+    defp branch_returns(body) do
+      {_meta, sites, _} =
+        Mutare.transform_string("defmodule T do\n#{body}\nend\n", mutators: @only)
+
+      sites
+      |> Enum.filter(&(&1.mutator == :return_value))
+      |> Enum.group_by(& &1.original_code, & &1.mutated_code)
+    end
+
+    test "each `case` clause tail gets the pair; the construct itself is not a tail" do
+      by_original =
+        branch_returns("""
+          def f(x) do
+            case x do
+              :a -> foo(x)
+              :b -> {:ok, x}
+            end
+          end\
+        """)
+
+      # Each branch tail is a return path...
+      assert by_original["foo(x)"] == ["nil", ":mutare"]
+      assert by_original["{:ok, x}"] == ["nil", ":mutare"]
+      # ...and the whole `case` is no longer mutated as one unit.
+      refute Map.has_key?(by_original, "case x do\n  :a -> foo(x)\n  :b -> {:ok, x}\nend")
+    end
+
+    test "both `if` branches descend (do and else), each shape-directed" do
+      by_original =
+        branch_returns("""
+          def f(x) do
+            if x do
+              a + b
+            else
+              foo(x)
+            end
+          end\
+        """)
+
+      assert by_original["a + b"] == ["0", "1"]
+      assert by_original["foo(x)"] == ["nil", ":mutare"]
+    end
+
+    test "an `if` with no else descends only the present branch" do
+      assert branch_returns("  def f(x), do: if x, do: foo(x)") == %{
+               "foo(x)" => ["nil", ":mutare"]
+             }
+    end
+
+    test "`unless` branches descend like `if`" do
+      by_original =
+        branch_returns("""
+          def f(x) do
+            unless x do
+              foo(x)
+            else
+              bar(x)
+            end
+          end\
+        """)
+
+      assert by_original["foo(x)"] == ["nil", ":mutare"]
+      assert by_original["bar(x)"] == ["nil", ":mutare"]
+    end
+
+    test "`cond` clause tails descend" do
+      by_original =
+        branch_returns("""
+          def f(x) do
+            cond do
+              x > 0 -> foo(x)
+              true -> bar(x)
+            end
+          end\
+        """)
+
+      assert by_original["foo(x)"] == ["nil", ":mutare"]
+      assert by_original["bar(x)"] == ["nil", ":mutare"]
+    end
+
+    test "nested control flow descends to the innermost leaf tails" do
+      by_original =
+        branch_returns("""
+          def f(x) do
+            case x do
+              :a ->
+                if x, do: foo(x), else: bar(x)
+
+              :b ->
+                baz(x)
+            end
+          end\
+        """)
+
+      assert by_original["foo(x)"] == ["nil", ":mutare"]
+      assert by_original["bar(x)"] == ["nil", ":mutare"]
+      assert by_original["baz(x)"] == ["nil", ":mutare"]
+    end
+
+    test "a `case` not in tail position (bound) is not descended" do
+      by_original =
+        branch_returns("""
+          def f(x) do
+            y =
+              case x do
+                :a -> foo(x)
+                :b -> bar(x)
+              end
+
+            baz(y)
+          end\
+        """)
+
+      # Only the genuine tail (`baz(y)`) is a return path.
+      assert Map.keys(by_original) == ["baz(y)"]
+    end
+
+    test "the descended metamutant still compiles" do
+      source = """
+      defmodule Mutare.ReturnValueBranchCompile do
+        def f(x) do
+          case x do
+            :a -> foo(x)
+            :b -> if x, do: {:ok, x}, else: :error
+          end
+        end
+
+        defp foo(x), do: x
+      end
+      """
+
+      {meta, _sites, _} = Mutare.transform_string(source)
+      assert {:ok, _} = Code.string_to_quoted(meta)
+
+      assert {[{Mutare.ReturnValueBranchCompile, _}], _log} =
+               with_log(fn -> Code.compile_string(meta) end)
+    after
+      :code.purge(Mutare.ReturnValueBranchCompile)
+      :code.delete(Mutare.ReturnValueBranchCompile)
+    end
+  end
+
   describe "selection and ignore" do
     test "off when not in the :mutators list" do
       {_meta, sites, _} =

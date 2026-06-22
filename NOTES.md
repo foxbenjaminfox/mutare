@@ -2963,7 +2963,7 @@ the shape's empty/zero value, and a non-empty/non-nil **sentinel**:
   - a string concatenation (`a <> b`) → `""` and `"mutare"`
   - a list expression (`a ++ b`, `xs -- ys`) → `[]` and `[:mutare]`
   - anything else the tests might pin (variable, call, tuple, map, `:ok`/`:error`
-    atom, `if`/`case`/`with` result, …) → `nil` and `:mutare`
+    atom, a `with`/`try`/`receive` result, …) → `nil` and `:mutare`
 
 The two halves catch *opposite* weak assertions. The empty/zero value dies to a
 test that checks the result is present/non-empty/non-nil but survives one that
@@ -2997,6 +2997,45 @@ tail via `attach_return/2`, and each clause body tail via `attach_clause_returns
 **`:after` is deliberately excluded** — `try` discards the after block's value, so
 its tail is *not* a return path (a mutant there would be unobservable). The after
 *body* still mutates in place; only its return-value candidate is withheld.
+
+**Control-flow branch tails, not just the construct (done).** A clause tail that is
+itself a `case`/`cond`/`if`/`unless` used to be a *single* leaf: the old `map_tail`
+returned the whole construct, so `ReturnValue` mutated `case … end` as one node
+(→ `nil`/`:mutare`) and the **shape-aware GenServer mutator saw a `case`, not the
+return tuples inside it, and fired on nothing**. That was the dominant reach gap —
+idiomatic GenServer callbacks branch, and all their `{:reply, …}`/`{:noreply, …}`
+tuples live in branch bodies. `map_tail` is now `map_return_tails/3`: tail position
+is **transitive**, so a `case`/`cond`/`if`/`unless` *in tail position* propagates it
+into each branch body, and `return_replacements/{1,2}` is offered at every branch's
+*leaf* tail instead of the construct. A branchy callback now gets one return mutant
+per branch (finer signal: "is *this path's* result checked", not "is the result used
+at all"), and the GenServer mutator finally fires on the per-branch tuples (probe:
+1 → 5 sites on a two-`case`/one-`if` server).
+
+Three properties make it sound and self-limiting:
+  - **Whitelist, not blacklist.** Only `case`/`cond`/`if`/`unless` are descended;
+    every other node (an unknown block macro, a `quote`, a call, a literal) is a
+    *leaf* — exactly the prior behaviour — so the change can't wander into
+    compile-time / DSL territory. (`with`/`try`/`receive` are deferred — `try`
+    would fold the existing `rescue`/`catch`/`else` clause-block handling into the
+    same walk; left for a follow-up.)
+  - **Tail position is self-limiting.** A multi-statement block descends only its
+    *last* statement, so a `case` that is bound (`y = case … end; baz(y)`) or a
+    non-final statement is never reached — its branches are correctly *not* return
+    paths. The recursion preserves this transitively.
+  - **Delivery is unchanged.** A branch tail is an ordinary runtime body position,
+    so the `Candidate.Return` rides the same in-place selector — no emission/`Site`/
+    lifting change. The walker navigates the analyzed (operator candidates already
+    attached) and raw (clean, for the diff `original`) trees in lockstep, bailing to
+    the leaf clause on any structural surprise, so the diff still renders just the
+    branch tuple. The condition of an `if`/`unless` is left untouched (wrapping it is
+    the binding-escape machinery's job, not the return walk's).
+
+One deliberate consequence: when *every* branch tail is a bare literal a value
+family already mutates (`case x do :a -> 1; :b -> 2 end`), `ReturnValue` now returns
+`[]` per branch (each is a `redundant_literal?`), so the old coarse whole-`case`
+`nil`/`:mutare` mutant disappears. The per-branch `Literal` swaps cover the same
+tests at finer grain, so this is a net improvement, not a loss.
 
 This surfaced (and fixed) a **latent pattern-context bug**. `rescue`/`catch`/`else`
 are clause lists whose *left side is a match*, but the old `analyze_do_blocks/2`
