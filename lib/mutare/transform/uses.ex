@@ -152,7 +152,11 @@ defmodule Mutare.Transform.Uses do
   # faithful `__CALLER__.module`), so `Uses` runs its own small walk. It also threads a
   # lexically-scoped **alias env** (`Aliases.register/2`, folded left-to-right over a module body
   # so a `use` sees only the aliases declared *before* it; nested scopes inherit, a child's
-  # additions don't leak) so an aliased `use` target resolves to the real module. Only a `use`
+  # additions don't leak) so an aliased `use` target resolves to the real module. The env mirrors
+  # **both** explicit aliases *and the implicit alias Elixir auto-introduces for a nested module a
+  # body defines* (`register_defined_module/3`): inside `Outer`, `defprotocol P` aliases `P =>
+  # Outer.P`, so a later `defimpl P, for: Integer` computes the caller `Outer.P.Integer` (not
+  # `P.Integer`) and a `defmodule U …; use U` resolves `U => Outer.U` and stamps. Only a `use`
   # that is a **direct module-body statement** is stamped — a `use` nested in a `def` is data /
   # invalid, never a module-level directive, so it is descended without stamping.
 
@@ -194,12 +198,13 @@ defmodule Mutare.Transform.Uses do
   # or a function body. A `use` here is never a module-level directive (descended, not stamped),
   # but an `alias` *does* scope to following siblings — including a sibling `defmodule`'s `use`
   # targets (`alias RealUsing, as: U` then `defmodule M do use U end`, which the compiler expands
-  # as `RealUsing.__using__`). So the alias env is folded left-to-right here too. (A module body
-  # is reached via `walk_body`, which folds + stamps; this clause never sees one.)
+  # as `RealUsing.__using__`). So the lexical alias env is folded left-to-right here too (source
+  # aliases *and* the implicit alias a `defmodule`/`defprotocol` introduces). (A module body is
+  # reached via `walk_body`, which folds + stamps; this clause never sees one.)
   defp walk({:__block__, meta, stmts}, module, env) do
     {walked, _env} =
       Enum.map_reduce(stmts, env, fn stmt, env ->
-        {walk(stmt, module, env), register_source(stmt, env)}
+        {walk(stmt, module, env), register_lexical(stmt, module, env)}
       end)
 
     {:__block__, meta, walked}
@@ -219,7 +224,7 @@ defmodule Mutare.Transform.Uses do
     {walked, _env} =
       Enum.map_reduce(stmts, env, fn stmt, env ->
         node = walk_stmt(stmt, module, env)
-        {node, advance_env(stmt, node, env)}
+        {node, advance_env(stmt, node, module, env)}
       end)
 
     {:__block__, meta, walked}
@@ -230,23 +235,66 @@ defmodule Mutare.Transform.Uses do
   defp walk_stmt({:use, _meta, _args} = node, module, env), do: stamp(node, module, env)
   defp walk_stmt(stmt, module, env), do: walk(stmt, module, env)
 
-  # Advance the alias env past a statement: fold the source `alias`/`require …, as:`, then any
-  # aliases an earlier `use` *injected* (read back off the stamped node). Elixir expands a later
-  # `use`/call through an alias an earlier `use` brought into scope (`use InjectAlias; use T`), so
-  # without this the later `use` would resolve its target against the wrong (un-injected) env and
-  # stay unstamped.
-  defp advance_env(stmt, node, env) do
-    env = register_source(stmt, env)
+  # Advance the alias env past a statement: fold the lexical aliases it introduces (source
+  # `alias`/`require …, as:` plus the implicit alias a nested `defmodule`/`defprotocol` defines),
+  # then any aliases an earlier `use` *injected* (read back off the stamped node). Elixir expands a
+  # later `use`/call through an alias an earlier `use` brought into scope (`use InjectAlias; use
+  # T`), so without this the later `use` would resolve its target against the wrong (un-injected)
+  # env and stay unstamped.
+  defp advance_env(stmt, node, module, env) do
+    env = register_lexical(stmt, module, env)
     node |> injected_directives() |> Enum.reduce(env, &Aliases.register/2)
   end
 
   defp injected_directives({:use, meta, _args}) when is_list(meta), do: directives(meta)
   defp injected_directives(_node), do: []
 
+  # Fold the lexical alias(es) a *source* statement introduces into the env: an explicit
+  # `alias`/`require …, as:`, **plus the implicit alias Elixir auto-introduces for a nested module
+  # it defines** (`register_defined_module/3`). Both scope to following siblings, so the unified
+  # fold keeps the env faithful for a later `use`/`defimpl` that refers to a sibling by short name.
+  defp register_lexical(stmt, module, env) do
+    stmt |> register_source(env) |> then(&register_defined_module(stmt, module, &1))
+  end
+
+  # Mirror the alias Elixir auto-introduces when a module body **defines** a nested module:
+  # `defmodule Outer do defprotocol P …; defimpl P, for: Integer … end` aliases `P => Outer.P`, so
+  # the `defimpl`'s caller is `Outer.P.Integer` (not `P.Integer`); `defmodule U …; use U` aliases
+  # `U => Outer.U`, so the `use` target resolves and is stamped. The alias binds the **first**
+  # written segment to the parent-prefixed first segment (`defmodule Foo.Bar` ⇒ `Foo => Outer.Foo`,
+  # *not* `Bar => Outer.Foo.Bar` — verified against the compiler), so it is computed as the
+  # `child_module/3` of just that first segment. Stored as a path (the form `Aliases.register/2`
+  # uses) so `resolve_path/2` can extend it (`P.Sub` ⇒ `Outer.P.Sub`). Skipped for a dynamic head
+  # (`@unresolved`), an absolute `Elixir.`-led head, and an atom-named module (no segment to alias).
+  # Only `defmodule`/`defprotocol` define such an alias — `defimpl` defines `P.T` but introduces no
+  # convenient short name, so it is not a definer here.
+  defp register_defined_module({def_form, _meta, [mod_ast | _]}, module, env)
+       when def_form in [:defmodule, :defprotocol] do
+    with {:__aliases__, _, [first | _]} when is_atom(first) and first != :"Elixir" <- mod_ast,
+         full when full != @unresolved <- child_module({:__aliases__, [], [first]}, module, env),
+         path when is_list(path) <- module_path(full) do
+      Map.put(env, first, path)
+    else
+      _ -> env
+    end
+  end
+
+  defp register_defined_module(_stmt, _module, env), do: env
+
+  # A concrete Elixir module atom → its segment-atom path (`Outer.P` → `[:Outer, :P]`), the value
+  # form the alias env stores for an Elixir module. `nil` for an Erlang atom module (`:foo`, from
+  # `defmodule :foo`) — an atom has no last segment, so Elixir aliases nothing.
+  defp module_path(mod) when is_atom(mod) do
+    case Atom.to_string(mod) do
+      "Elixir." <> _ -> mod |> Module.split() |> Enum.map(&String.to_atom/1)
+      _ -> nil
+    end
+  end
+
   # Fold the alias a *source* statement introduces: a plain `alias`, or a `require Mod, as: Name`
   # (which the compiler also treats as an alias). `Aliases.register` ignores `require`, so a
   # require-with-`as:` is rewritten to the equivalent `alias` first — keeping its Sourceror opts,
-  # which `Aliases` reads via `AST.key_atom` — mirroring the `collect/5` rewrite for expanded
+  # which `Aliases` reads via `AST.key_atom` — mirroring the `collect/6` rewrite for expanded
   # `__using__` bodies. A bare `require Mod` (no `as:`) introduces no alias and passes through.
   defp register_source(stmt, env), do: stmt |> require_as_alias() |> Aliases.register(env)
 

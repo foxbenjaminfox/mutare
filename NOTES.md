@@ -1085,6 +1085,24 @@ injected aliases in scope. Only `:aliases` is mirrored — `__CALLER__.functions
 aren't, out of scope (the reported case is aliases). Tested in `uses_test.exs` via
 `Mutare.Test.AliasAwareUsing` (a `__using__` that picks its import off `__CALLER__.aliases`).
 
+**Mirror the implicit alias a nested `defmodule`/`defprotocol` introduces.** Elixir auto-aliases a
+nested module's name when a body *defines* it: inside `Outer`, `defprotocol P` introduces `alias P =>
+Outer.P`, so a later sibling resolves the short name. The walk's alias env recorded only explicit
+`alias`/`require …, as:`, so two faithfulness bugs followed when a later `use`/`defimpl` referred to a
+sibling by short name: `defmodule Outer do defprotocol P …; defimpl P, for: Integer do use X end end`
+computed the caller as `P.Integer` instead of **`Outer.P.Integer`** (so a `__using__` deriving
+imports from `__CALLER__.module` harvested for the wrong module), and `defmodule U …; use U` left the
+`use` **unstamped** (`U` resolved to the unloadable top-level `U`, not `Outer.U`). Fix:
+`register_defined_module/3` folds the implicit alias into the env for following siblings (via
+`register_lexical/3`, the unified source-alias + implicit-alias fold used by both the module-body
+walk and the top-level block). Subtlety verified against the compiler: the alias binds the **first**
+written segment to the parent-prefixed first segment — `defmodule Foo.Bar` ⇒ `Foo => Outer.Foo`, *not*
+`Bar => Outer.Foo.Bar` — so it is computed as `child_module/3` of just that first segment, stored as a
+path so `resolve_path/2` extends it. Lexical (scopes only to following siblings, like an explicit
+alias), and skipped for a dynamic/`Elixir.`-absolute/atom-named head. `defimpl` defines `P.T` but
+introduces no short alias, so only `defmodule`/`defprotocol` are definers. Tested in `uses_test.exs`
+(the `defimpl`-caller and short-name-`use` cases, plus the lexical-scope guard).
+
 **Degrades, never errors** (all wrapped in `try`): a non-loadable module (external target, or an aliased
 `use Web` we can't statically resolve — `Uses` does no alias tracking), non-literal args (`use Foo, var`),
 a `__using__` that raises (e.g. reads caller-module attributes), or an import gated behind a runtime

@@ -431,6 +431,64 @@ defmodule Mutare.UsesTest do
     end
   end
 
+  describe "implicit aliases from sibling-defined nested modules" do
+    test "a `defimpl` of a sibling-defined protocol computes the parent-qualified caller" do
+      source = """
+      defmodule MutareNestedProto do
+        defprotocol P do
+          def f(x)
+        end
+
+        defimpl P, for: Integer do
+          use Mutare.Test.CallerProbe
+        end
+      end
+      """
+
+      # Inside `MutareNestedProto`, `defprotocol P` defines `MutareNestedProto.P` and Elixir
+      # auto-aliases `P => MutareNestedProto.P`. So `defimpl P, for: Integer` opens module
+      # `MutareNestedProto.P.Integer` — the caller passed to `__using__`. Without mirroring that
+      # implicit alias the pass resolved `P` to itself and computed the wrong caller `P.Integer`.
+      assert Enum.map(directives_at(source), &Macro.to_string/1) == [
+               "alias MutareNestedProto.P.Integer, as: TheCaller"
+             ]
+    end
+
+    test "a `use` of a sibling-defined module by short name resolves and stamps" do
+      source = """
+      defmodule Mutare.Test do
+        defmodule ControllerUsing do
+        end
+
+        use ControllerUsing
+      end
+      """
+
+      # `defmodule ControllerUsing` nested in `Mutare.Test` auto-aliases `ControllerUsing =>
+      # Mutare.Test.ControllerUsing` (the real loaded fixture), so the short-name `use
+      # ControllerUsing` resolves to it and its directives surface. Without the implicit alias,
+      # `ControllerUsing` resolves to the unloadable top-level `ControllerUsing` ⇒ unstamped.
+      rendered = Enum.map(directives_at(source), &Macro.to_string/1)
+      assert "import Enum, only: [reject: 2]" in rendered
+      assert "alias String, as: S" in rendered
+    end
+
+    test "the implicit alias scopes only to following siblings (not the definition itself)" do
+      source = """
+      defmodule MutareImplicitScope do
+        use P
+        defprotocol P do
+          def f(x)
+        end
+      end
+      """
+
+      # `use P` precedes `defprotocol P`, so the implicit `P => MutareImplicitScope.P` alias isn't
+      # in scope yet; `P` is unresolved/unloadable ⇒ no directives (lexical, like an explicit alias).
+      assert directives_at(source) == []
+    end
+  end
+
   describe "module-defining forms (defimpl / defprotocol)" do
     test "a `use` inside a `defimpl` is expanded (import surfaced, calls resolve)" do
       source = """
