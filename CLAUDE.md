@@ -207,7 +207,7 @@ contract between them is the whole game.
     closure never reaches the body, so the surrounding condition still mutates. (IfCondition's own
     `condition_replacements/1` already declines a *top-level* `=`; the prune is the cross-mutator
     generalization for a binding nested under an operator/call, where Conditional/Relational would
-    otherwise wrap it. Regression: `mix mutare` on `Mutare.Transform.Aliases`.)
+    otherwise wrap it.)
     Pruning is `cond`'s only option (its clauses short-circuit in order, so a clause's binding can't be
     lifted out without changing *when* it runs), but an `if`/`unless` condition is evaluated **once and
     unconditionally**, so the if/unless clause instead **hoists** a hoistable binding (`hoist_if?/2` +
@@ -574,337 +574,62 @@ contract between them is the whole game.
   `Site.describe/1` as the message). Encoding is the stdlib `JSON` module — hence the `elixir`
   floor is `~> 1.18`. Selected via the `:reporters` option (below).
 - **`Mutare.Mutator`** + **`Mutare.Mutators.*`** — the public extension behaviour (`mutate/1`,
-  `name/0`; optional `mutate/2`, `pattern_mutations/2`) and the built-in families,
-  **all on by default**. A user-supplied mutator may be *configured* via a `{module, opts}` entry
-  in `:mutators` (the `opts` reach `mutate/2` as `context.opts` — see
-  `Mutare.Mutator.Spec`): Arithmetic (binary operator swaps `+`↔`-`/`*`↔`/` +
-  unary-minus removal; `div`↔`rem` are bare-`Kernel` *calls*, so — like Numeric — they're
-  gated on **effective arity 2** and pipe-aware via `mutate/2`, never swapping a same-named
-  user `div/3`), OperandSwap (the *operand-order* sibling of Arithmetic/List — it keeps the
-  operator and transposes the operands of the **non-commutative** binary operators `a - b`→`b - a`,
-  `/`, `**`, `<>`, `++`, `--`, the `div`/`rem` call forms, the **non-commutative date/time
-  calls** `{DateTime,Date,Time,NaiveDateTime}.before?`/`.after?`/`.compare`→swap the two args and
-  `.diff`→swap the *first two* args (the trailing time-unit stays — ModeSwap owns that axis, so
-  the two families cover diff's argument-order and unit as separate mutants; `Date.diff/2` is
-  unitless — always days — so only the two-arg transpose applies there), the **version comparison**
-  `Version.compare`→swap the two args (inverts `:lt`↔`:gt` like `DateTime.compare`), and the
-  **asymmetric `MapSet` calls** `MapSet.difference`/`subset?`→swap the two args (the commutative
-  `union`↔`intersection` *name* swap is `MapSet`'s, not an operand swap — nothing to transpose);
-  the remote calls resolve through
-  `Mutare.Transform.Calls` (direct/aliased/imported all match, a shadowing alias resolves
-  elsewhere) and, like `div`/`rem`, are **non-piped only** (a piped stage draws its first operand
-  from the pipe, so there is nothing local to transpose); compile-safe by construction (reuses
-  both operand subtrees). Commutative operators (`+`/`*`/`==`/…) are excluded as guaranteed
-  equivalent no-ops, and **comparison operators** (`>`/`>=`/`<`/`<=`) are deliberately excluded
-  because an operand swap there equals Relational's direction flip — including them would only
-  duplicate it (the `before?` *call* is included: no family flips its direction, so it is not a
-  duplicate); `in` is excluded as not-compile-safe when swapped. Structurally identical operands
-  (`x - x`, `DateTime.diff(t, t)`) are skipped. Guard-legal ops (`-`/`/`/`div`/`rem`) reach `when`
-  guards via lifting like Arithmetic), Relational (ordering/equality swaps, plus membership `in`→`not in` —
-  the polarity flip for `in`, mirroring `==`→`!=`; the reverse is Logical's `not` strip, and an
-  `in` *or an equality operator* (`==`/`!=`/`===`/`!==`) directly under a `not`/`!` is left unmutated to
-  avoid duplicating that strip — the **equivalent-sibling suppression**; ordering ops `<`/`>`/`<=`/`>=` are
-  *not* suppressed, their boundary/reversal swaps surviving negation as new mutants — see NOTES
-  "Equivalent-sibling suppression, generalized"),
-  Logical (`and`↔`or`, `&&`↔`||`, `not`/`!` strip — a redundant **inner** strip under the *same* negation,
-  `!!x`/`not not x`, is suppressed by `Transform`, but a mixed `not !x` is kept), Literal
-  (integers `n`→`{n±1, 0}`, `true`↔`false`), Conditional (a boolean-valued node → `true`/`false`),
-  IfCondition (the *positional* sibling of Conditional — forces an `if`/`unless`/`cond`
-  **condition** to `true`/`false`, reaching the conditions no value family proves boolean at the
-  node: a bare predicate call, `is_*`, a remote boolean. Structural like ReturnValue (`mutate/1` is
-  `:skip`; the real logic is the `condition_replacements/1` **callback**, which `Transform`
-  discovers by export and calls at each condition slot it routes — so a *custom* condition mutator
-  participates too; see the `if`/`unless` analyze clause + `analyze_cond_clause`), delivered **in place**.
-  Skips a boolean-operator condition — `Conditional.boolean_op?/1`, so `&&`/`||`/`and`/`or`/`not`/`!`/
-  comparisons are left to Conditional, no duplicate — a literal `true`/`false`/`nil`, and a binding
-  `if x = … do` (the leaked binding would be unbound once the condition is forced, poisoning the
-  body); compile-safe by construction),
-  List (`++`↔`--`, non-empty list literal → `[]`; the `[]` collapse — and any collection-emptying mutant
-  (`MapLiteral`'s `%{}`, `WordListLiteral`'s `~w()`, `CharlistLiteral`'s `~c""`) — is suppressed on the
-  **RHS of `in`**, where `x in <empty>` ≡ `false` ≡ Conditional; the equivalent-sibling suppression,
-  recognised by `Mutare.AST.empty_collection_literal?/1` — or, for a custom mutator's non-standard
-  shape, its `empty_collection?/1` callback — per-mutation and top-node-scoped so a sigil keeps its
-  sentinel and a nested literal keeps its `[]`), Collection (`Enum`/`List` predicate swaps,
-  **arity-blind** — a rename keeping the arg list, valid at any arity/pipe position — plus the
-  lazy `Stream` twins of the directional `Enum` pairs that exist in `Stream`: `filter`↔`reject`,
-  `take`↔`drop`, `take_while`↔`drop_while`, `take_every`↔`drop_every`; `Stream`'s eager reducers
-  like `all?`/`min`/`sum` have no lazy form so don't carry over),
-  CollectionArity (the arity-*changing* sibling — `Enum.sort`/`sort_by`→`reverse` dropping the
-  comparator/key, `count/2`→`count/1`, `count_until/3`→`/2`, `reverse/1`↔`sort/1`, and
-  `Access.get_and_update/3`→`Access.get/2` dropping the update fun (the result shape changes
-  too — a test destructuring the `{get, new}` tuple kills it); **pipe-aware**
-  via the optional `mutate/2` callback, since a stage's effective arity is ambiguous in a pipe),
-  StringCall (complementary `String` call swaps — `starts_with?`↔`ends_with?`, `upcase`↔`downcase`,
-  `trim_leading`↔`trim_trailing`, `replace_prefix`↔`replace_suffix`,
-  `replace_leading`↔`replace_trailing`, `pad_leading`↔`pad_trailing`, `first`↔`last`,
-  `graphemes`↔`codepoints`, plus the Erlang `:string` directional/case pairs `uppercase`↔`lowercase`,
-  `to_upper`↔`to_lower`, `left`↔`right` (the trim/predicate pairs have no `:string` function-name
-  twin, their direction being an argument atom), and the Erlang `:binary` byte pair
-  `first`↔`last` (the byte-level twin of `String.first`/`last`).
-  Also one **call→operator** substitution: `String.equivalent?(a, b)` (Unicode-canonical equality)
-  → `Elixir.Kernel.==(a, b)`, dropping normalization (emitted through the **absolute** `Elixir.Kernel`
-  alias, not a bare `a == b`, so neither a same-named local/imported `==` nor a rebound `Kernel` alias
-  can shadow the swap; arity tells the pipe context apart — `equivalent?/1` doesn't exist, so a 1-arg
-  call is a `|>` stage → `a |> Elixir.Kernel.==(b)`). The `String` sibling of Collection:
-  both `String` (`[:String]`) and `:string` are matched by their resolved module via
-  `Mutare.Transform.Calls`, so direct, aliased, and bare imported forms all match — `String.upcase`,
-  `S.upcase`, `import String; upcase`, and likewise `:string.uppercase`, `alias :string, as: S;
-  S.uppercase`, `import :string; uppercase`),
-  StringByte (narrow the **grapheme-aware `String.length` to the byte-level `byte_size`**, asking
-  "does this code depend on Unicode/grapheme semantics, or would byte semantics pass the suite?" —
-  `String.length`→`Elixir.Kernel.byte_size` (grapheme count → byte count, equal only for ASCII; the
-  swap is **type-preserving** — both return a non-negative integer — so it probes a real gap rather
-  than trivially crashing on a type mismatch). **One-way on purpose**: `byte_size` is strictly more
-  general, so the reverse is unsound/noisy — it is a `Kernel` guard accepting any binary/bitstring
-  (`String.length` is guard-illegal → would poison, and raises on non-UTF-8) and is ubiquitous on
-  non-string binaries where graphemes are meaningless; narrowing the specific string call to the
-  general byte op is the honest mutation, broadening is not. No swap table — just the one forward
-  rewrite. Emitted through the **absolute** `Elixir.Kernel` alias, not a bare `byte_size`: a bare call
-  would resolve to a same-named local def / selective import if one shadowed the name (`import Kernel,
-  except: [byte_size: 1]` + a local `def byte_size/1`), and a plain `Kernel.byte_size` could still be
-  redirected by `alias Foo, as: Kernel` — the `Elixir.`-led form (which alias resolution never
-  rewrites) pins the real builtin against both (the same absolute form `Transform` uses for its
-  generated `Elixir.Kernel.raise`/`Elixir.MatchError` nodes; the analogous fix was applied to
-  StringCall's `equivalent?`→`==`, also now `Elixir.Kernel.==`). The `String.length` source is
-  resolved through `Mutare.Transform.Calls` (direct/aliased/imported match; a shadowing
-  `alias MyApp.String` is left alone), a one-to-one rename onto a fixed target arity that reuses the
-  arg list verbatim, so it's pipe-safe with no pipe context (`s |> String.length()` →
-  `s |> Elixir.Kernel.byte_size()`); the target is built directly since the swap deliberately *changes
-  module*. The byte-semantics sibling of StringCall),
-  MapKeyword (the conditional-write lattice for `Map`/`Keyword` — `put`↔`put_new`↔`replace`↔
-  `replace!`, swapping along the insert-new / overwrite-existing / raise-on-absent axes; all `/3`,
-  arity-blind; family atom `:map_keyword` since `:map` is MapLiteral),
-  MapSet (complementary `MapSet` set-combination swaps — `union`↔`intersection`, the two opposite
-  ways to combine two sets; `/2`, arity-blind like Collection. Only the *commutative* combinators
-  live here; the *non-commutative* `difference`/`subset?` are operand-order swaps, owned by
-  OperandSwap; family atom `:map_set`),
-  CallRemoval (remove a transparent transform — `Enum.sort`/`reverse`/`uniq`/`dedup`/`shuffle`,
-  the lazy `Stream` twins `uniq`/`uniq_by`/`dedup`/`dedup_by`/`intersperse`,
-  `List.flatten`, `String.trim`/`downcase`/`upcase`/`reverse`/`normalize`/`replace_invalid`/
-  `pad_leading`/`pad_trailing`/`slice`/`byte_slice`/…, `URI.encode_www_form`/`decode_www_form` (both
-  `binary()->binary()`), `NaiveDateTime.beginning_of_day`/`end_of_day` (each returns a same-day
-  `NaiveDateTime`), `Date.beginning_of_month`/`end_of_month`/`beginning_of_week`/`end_of_week`
-  (the `Date`-level boundary normalizers, each `Date`→`Date`), **and `Kernel.abs`** (`abs(x)` → `x`), **the `Kernel`
-  binary slicers** `binary_slice/2`·`/3` and `binary_part/3` (→ the whole binary; `binary_part/2`
-  is not a `Kernel` function, so its sole form `:erlang.binary_part/2`·`/3` is removed instead),
-  and the analogous Erlang `:string` ones (`trim`/`strip`/`chomp`,
-  `lowercase`/`uppercase`/`titlecase`/`casefold`/`to_lower`/`to_upper`, `reverse`,
-  `pad`/`left`/`right`/`centre`, `slice`/`substr`/`sub_string`) — leaving its first arg; in a pipe the
-  stage becomes `Elixir.Function.identity()` (`x |> Enum.sort()` → `x |> Elixir.Function.identity()` ≡
-  `x`; absolute-qualified so a target-module `alias Foo, as: Function` can't redirect the generated
-  no-op, the same alias-proofing the `Elixir.Kernel` emissions use);
-  pipe-aware via the optional `mutate/2`. The module key (an Elixir path `[:String]` or a bare
-  atom `:string`/`:erlang`) comes from the shared `Mutare.Transform.Calls`, so direct, aliased,
-  and bare imported forms all match; only a bare `Kernel` call (`abs`/`binary_slice`) is keyed
-  separately on effective arity. `slice`/`substr`/`sub_string`
-  and the binary slicers are
-  included (removing them returns the whole input — "is the slice exercised?"), but content-changing
-  `map`/`filter`/`reduce` and `String`/`:string` `replace`/`split` (and `String.first`,
-  `:string.prefix`) are deliberately excluded. The remote targets are arity-blind; bare `abs` and the
-  bare binary slicers are
-  removed only at their *effective* arity (`abs/1`, `binary_slice/2`·`/3`, `binary_part/3` — the
-  safeguard that a bare unqualified call is the `Kernel` one, like Numeric's bare-`Kernel` path) and,
-  being guard-safe, `abs/1`/`binary_part/3` reach `when` guards via lifting),
-  DefaultDrop (drop a trailing default/fallback arg, reverting to the implicit `nil` —
-  `Map.get`/`pop`/`Keyword.get`/`Enum.at`/`List.first`/`last` `/n`→`/n-1`, and `get_lazy`/`pop_lazy`
-  renamed to the base lookup; skips a literal-`nil` default as equivalent; pipe-aware via `mutate/2`),
-  ModeSwap (swap a **mode/unit atom** drawn from a closed set for a sibling of the same set, in a
-  known argument position of a known stdlib function — `DateTime`/`NaiveDateTime`/`Time`
-  `add`/`diff`/`truncate` and `System.system_time`/`monotonic_time`/`os_time`/`convert_time_unit`
-  units walk a per-function magnitude **ladder** by one adjacent step, so the swap stays in the
-  function's *legal* set — `truncate` never reaches `:minute` — and is always observable;
-  `String.upcase`/`downcase`/`capitalize` casing `:default`↔`:ascii` and `String.normalize` form
-  `:nfc`↔`:nfd`/`:nfkc`↔`:nfkd`. The **`shift` duration** generalises `mode_atom` from a lone
-  positional atom to the *keys* of a keyword list — `{DateTime,NaiveDateTime}.shift/2,3`,
-  `Time.shift/2` (time-only ladder), and `Date.shift/2` (date-only ladder `:day`…`:year`, so a
-  swap never reaches a time unit `Date.shift` would reject) walk each `unit: amount` key one
-  ladder step independently
-  (`minute:`→`second:`/`hour:`, amount kept), `:microsecond` excluded (its `{count, precision}`
-  amount can't move to an integer unit) and the *amounts* still mutate via Literal — the call
-  rewrite touches only the one swapped key, so the diff-derived `Transform.Overlap` pass drops
-  just AtomLiteral's redundant mutant on *that* key (an excluded key like `microsecond:` keeps it,
-  the amount value keeps Literal's — see "redundant-leaf overlap" under emit/assign). The semantic sibling of Collection/StringCall
-  — it swaps an *option value*, not a function name or arg count. A non-atom / unrecognised-atom
-  position yields nothing, swaps are never the original; **pipe-aware** via `mutate/2`, the rule
-  keyed on *effective* arity with each mode position mapped from effective to visible index),
-  Numeric (complementary numeric-builtin swaps — `Kernel` `min`↔`max` (the `Enum` twins are
-  Collection's), `round`↔`trunc`, `ceil`↔`floor`, `Float.ceil`↔`Float.floor`, and the `/0`
-  extreme-finite-float pair `Float.max_finite`↔`Float.min_finite`; the arithmetic
-  sibling of Collection/StringCall. A *qualified* call — `Float.ceil`/`floor`,
-  `Float.max_finite`/`min_finite`, or an explicitly
-  `Kernel.`-qualified `min`/`max`/`round`/… — is an arity-blind remote rename done in `mutate/1`
-  like Collection (the qualifier proves the function; every sibling exists at the same arity). A
-  *bare* `Kernel` call has no module prefix to prove it is the `Kernel` one, so arity is the
-  safeguard — the swap is offered only at the function's *effective* arity (min/max `/2`, the
-  rounding coercions `/1`), making it **pipe-aware** via `mutate/2` so a same-named user call at
-  another arity is left alone. round/trunc/ceil/floor are offered as the two
-  complementary *pairs*, not a full mesh, to keep signal high and avoid equivalent survivors; the
-  guard-safe `Kernel` swaps also reach `when` guards via lifting. `div`↔`rem` is Arithmetic's, not
-  here),
-  Math (the Erlang `:math` module — `pi()`→`3.0`, `tau()`→`6.0`, co-function swaps
-  `sin`↔`cos`/`asin`↔`acos`/`sinh`↔`cosh`/`asinh`↔`acosh`, and the log trio `log`↔`log2`↔`log10`;
-  the floating-point cousin of Numeric. `:math` is recognised by its resolved module via
-  `Mutare.Transform.Calls`, so the direct `:math.foo`, an aliased `alias :math, as: M; M.foo`, and a
-  bare imported `import :math; foo` all match; `:math` can't be *shadowed* (the atom always names the
-  Erlang module), so the match is unambiguous and the renames are arity-blind (every sibling exists
-  at the same `:math` arity). The `pi`/`tau` constants emit a fresh float literal. All `:math` calls
-  are remote — never guard-legal — so always in place),
-  Integer (the `Integer` module — `mod`↔`floor_div` (the two halves of floored division) and
-  `is_even`↔`is_odd`; a Collection-style arity-blind remote rename, alias-resolved through
-  `Mutare.Transform.Aliases` like the rest. `is_even`/`is_odd` are
-  **guard-safe macros**, so they appear in `when` clauses too and their swap is delivered by lifting
-  — the source's existing `require Integer` covers the `is_odd` copy. A guard-safe *qualified* macro
-  exposes a subtlety: the `Integer` alias in the call's *form* position must **not** be offered to
-  AliasLiteral (`when Mutare.Mutant.is_even(n)` is guard-illegal and would poison) — so the guard
-  tagger keeps a remote call's module opaque, mirroring the in-place analyzer; see
-  `Transform.FunctionPlan` and NOTES),
-  StringLiteral (a string → `""` *and* the sentinel `"mutare"`), FloatLiteral,
-  ConventionAtom (a **convention atom** → its **same-shape sibling** — `:ok` ↔ `:error`,
-  `:cont` ↔ `:halt`, `:lt` ↔ `:gt` — the high-signal swap in place of `AtomLiteral`'s generic
-  `:mutare`: a sibling is a *plausible* value the error branch *handles* (so a survivor pinpoints
-  an untested success/error distinction), where `:mutare` matches no clause and is killed
-  trivially. **Same-shape only** — a sibling must preserve the surrounding shape (both 2-tuples,
-  both bare atoms), so OTP return tags like `:reply`/`:noreply` are excluded (`:reply` implies a
-  3-tuple → a malformed return, no better than `:mutare`); 3+ member sets carry only their
-  polarity pair (`:lt`/`:gt`, not `:eq` — which keeps its `AtomLiteral` mutant), keeping the table
-  a flat pair list. A `mutate/2`-only family (logic in one table path), so **configurable** with
-  extra `:pairs` (`{ConventionAtom, pairs: [[:active, :inactive]]}`), merged with the built-ins.
-  It **owns** these atoms — `AtomLiteral` excludes them by guard via `ConventionAtom.members()`,
-  the same ownership split as `true`/`false`/`nil`; same reach as `AtomLiteral` since both run
-  through `Mutator.mutations/3` — value positions, lifted `def` head literals, and `case` clause
-  patterns. The one place the unique sentinel is safer: a value-position `%{ok: c, error: c}` key
-  swap collides with the sibling key (left to the poison backstop; pattern keys are
-  collision-filtered by `Transform.Tag`)), AtomLiteral (a
-  literal atom → the sentinel `:mutare`; `true`/`false`/`nil` *and the convention atoms above*
-  excluded — Literal/Conditional/ConventionAtom own
-  them; *data* keyword/map keys mutate, but block keys / struct fields / `for`-option keys are
-  excluded *positionally* by `Transform`, not the mutator — and patterns excluded
-  *in place*, though a `def`/`defp` head literal is mutated by lifting), CharlistLiteral
-  (a `~c"…"` sigil → `~c""` *and* `~c"mutare"`; the legacy `'…'` form is a list literal already
-  emptied by List), WordListLiteral (a `~w(…)`/`~W(…)` word list — a list literal in disguise —
-  → the empty list `~w()` *and* the single-element sentinel `~w(mutare)`, modifier preserved so
-  the element type is unchanged (`~w(a b)a` → `~w()a`/`~w(mutare)a`); the List/Charlist analog,
-  equivalence judged on the *words produced* (`String.split/1`) so a whitespace-only `~w(   )`
-  doesn't re-emit the empty mutant; interpolated `~w` is skipped — multiple `<<>>` parts, like
-  Charlist/Regex), MapLiteral (a non-empty `%{…}` → `%{}`; map updates / a struct's field map
-  excluded), TupleLiteral (a non-empty tuple → `{}`, both the `{a, b}` and `{:{}, …}` shapes),
-  BitstringLiteral (a non-empty `<<…>>` → `<<>>`; an interpolated string `"…#{…}…"` is a `<<>>`
-  *with* a delimiter and is excluded, and a sigil's content `<<>>` is never offered — `Transform`
-  doesn't descend into sigils), RegexLiteral (a `~r/…/` mutated along several independent axes,
-  each occurrence/flag its own mutant: whole-pattern → `~r//` *and* `~r/mutare/` (flags preserved);
-  drop a leading `^`/`\A` or unescaped trailing `$`/`\z`/`\Z` anchor; complement a `\d`/`\w`/`\s`
-  shorthand (`\d`↔`\D`, anywhere) and `\b`↔`\B` (outside a character class only — inside, `\b` is a
-  backspace); toggle a class's negation (`[abc]`↔`[^abc]`); swap a `+`↔`*` quantifier, turn an
-  optional `?` mandatory (drop it / raise it to `+`), and nudge a `{n}`/`{n,}`/`{n,m}` bound by one
-  (kept in `0 ≤ n ≤ m`); drop one branch of an alternation at the top level or inside a *capturing*
-  group (`(GET|POST)`→`(GET)`/`(POST)`; `(?:…)`/lookarounds skipped); and drop a present modifier
-  flag one at a time (`~r/x/uis`→`~r/x/is`,`~r/x/us`,`~r/x/ui`). Two escape/class-aware walks keep each
-  transform pattern-legal — one prefix-string pass for the per-token swaps (escaped `\\$`/`\\d`/`\]`
-  left alone, a leading `]` in a class literal, a lazy/possessive suffix and a `(?…` group marker not
-  treated as quantifiers), one index-based pass with a group-frame stack for alternation — and the
-  metamutant's compile-time regex validation is the backstop, since only non-interpolated patterns (a
-  single static binary operand) are touched), DateTimeLiteral (a
-  `~D`/`~T`/`~N`/`~U` sigil shifted by one unit — parsed/re-serialised so it stays a valid calendar
-  value, since these sigils are compile-time-validated), AliasLiteral (a module alias used **as a
-  value** → the sentinel `Mutare.Mutant`; a *call-module* `Foo.bar()`, a struct name `%Foo{}`, and
-  `defimpl`/`defprotocol`/`defdelegate` module references are excluded *positionally* by `Transform`,
-  so only value positions like `apply(Foo, …)` mutate). These newer compound/struct literal
-  families participate in head-pattern lifting only where their node is a *scalar* literal — so a
-  literal inside a tuple/map pattern mutates, but the `%{}`/`{}`/sigil wrappers themselves are not
-  offered in a head (the lift filter keeps only literal-valued replacements). And **ReturnValue**
-  (a `def`/`defp` clause's tail expression → a shape-directed *pair*: an empty/zero value and a
-  non-empty/non-nil sentinel — numeric→`0`/`1`, `<>`→`""`/`"mutare"`, `++`/`--`→`[]`/`[:mutare]`,
-  else→`nil`/`:mutare`; mirrors StringLiteral's pair, the sentinel catching `!= nil`-style weak
-  checks). A user narrows the set by listing a subset under `:mutators`.
-  **ReturnValue is *structural*** — its target (a clause's return position) isn't a node a
-  `mutate/1` could match, so its `mutate/1` is `:skip` and the real logic is the
-  `return_replacements/1` **callback**, which `Transform` discovers by export and calls at each
-  return-path tail (`annotate_returns/3`) — so a *custom* return mutator participates too: the `:do` block tail
-  **and** each `rescue`/`catch`/`else` clause body tail (`:after` is excluded — `try` discards its
-  value). It is registered (unlike `clause_drop`, the other structural built-in) so it is toggleable
-  like any family. It is *delivered in place* (a tail is a body position), so a `Candidate.Return`
-  is appended to the tail node's `meta[:mutare]` and shares the tail's selector `case` with any
-  operator swap there. Two more **structural** families mutate *patterns* — **PatternSwap**
-  (`:pattern_swap` — swap two distinct-named variables inside a container: `{x, y}`→`{y, x}`,
-  `[a, b]`→`[b, a]`, map values; never transposes top-level args, and always compile-safe since it
-  only reorders existing bindings) and **PatternWildcard** (`:pattern_wildcard` — where a variable
-  repeats, replace an occurrence with `_`, dropping the equality constraint: `f(x, x)`→`f(_, x)`).
-  They cover a `def`/`defp` *head* (delivered by lifting, like head literals —
-  `Candidate.PatternStructure`); the *clause* patterns of `case` (delivered **in place** per-clause
-  by *tuple-the-scrutinee* — `Candidate.CaseClause` — alongside the literal/guard families, so a
-  `case` clause is mutated as fully as a function head, C+M not C×M); the *clause* patterns of
-  `receive`/`fn` (delivered **in place** — `Candidate.CasePattern` — by wrapping the whole construct
-  in a selector whose mutant branch is a copy with one clause's pattern/guard changed, sound because
-  those clause bindings never escape their body; an fn arg-list works like a head — each arg a
-  position, though a duplicate *across* fn args is not seen, only within one); and the LHS of a
-  runtime **`=` match in a value-discarded position** — a non-final block statement, a `for`
-  qualifier, or a `with` clause — delivered **in place** as `Candidate.MatchPattern`. The `=` case looks infeasible — a selector
-  `case` around a match would lose the bindings, which *escape* to the enclosing scope (unlike a
-  `case` clause's, local to its body) — but the bindings are recovered by re-exporting them through
-  a tuple and rebinding outside the selector: `{vars} = case rhs do <pat> -> {vars} end`, the pattern
-  hosted in a selector (`Transform.emit_match_site/3`). Constrained to a **value-discarded position**
-  (the match's value isn't consumed, so the export tuple is value-transparent — a trailing block `=`,
-  whose value *is* the block's, is left alone) and to **bound-set-preserving** mutations (the wildcard
-  family is forced into thin mode — one occurrence → `_`, the variable stays bound — by passing the
-  full bound set as `used_outside`, so the export is consistent across every branch). A bare `x = e`
-  yields no mutation (no container/repeat); a pin-only pattern (`{^a, ^b}` — admits a swap but binds
-  nothing to re-export) is skipped by the empty-bound guard. A `<-` generator/clause LHS and `try`
-  patterns are still deferred.
-  Both families are structural like ReturnValue (`mutate/1` is `:skip`; the real logic is
-  `pattern_mutations/2`, an **optional `Mutare.Mutator` callback** discovered via
-  `function_exported?/2` — by `FunctionPlan.build_pattern_structures/2` for heads and by
-  `Transform`'s `case`/`receive`/`fn` and `=`-match analyze clauses via
-  `Transform.PatternStructure.node_mutations/3`),
-  registered (toggleable/ignorable), and on by default. PatternWildcard takes the clause's
-  body/guard-used variable names so it never strands a binding (thin one occurrence when a binding
-  survives; otherwise wildcard both — `equal?(x, x), do: true`→`equal?(_, _)`); broadening a
-  non-final clause to irrefutable is a benign "cannot match" warning that only poisons under
-  `--warnings-as-errors` (single-clause functions / a sole clause are always clean — see NOTES).
-  And **RescueType** (`:rescue_type`) — narrows what a `rescue` catches, asking "is each rescued
-  exception actually relied on?". A `rescue` clause is **not** a standard pattern — it matches on
-  exception *types* and carries **no `when` guard** — so it can't be dispatched per-clause like
-  `case`; structural and positional (discovered only at a rescue-clause head by `Transform`,
-  `mutate/1` is `:skip`), delivered **in place** by the whole-construct selector (wrapping the whole
-  `try`). Two operations, one family: (1) **drop one type** from a `rescue var in [A, B, …]` (or
-  bare `[A, B, …]`) list — `[A, B]`→`[A]`/`[B]`, ≥2 types, never to empty (`RescueType.drops/1`,
-  `Candidate.CasePattern` whose mutant branch is the `try` with the narrowed list); and (2) for the
-  idiomatic multi-branch shape `rescue e in A -> …; e in B -> …` (each branch a single type, so no
-  list to narrow) **drop a whole `rescue` clause** — `Analyze.rescue_clause_drops/3`,
-  `Candidate.RescueDrop` whose mutant branch is the `try` with that clause removed, recorded as a
-  `:delete` `:in_place` `Site` (`Site.in_place_drop/5`). Offered only when ≥2 clauses are present (a
-  `try` can't carry an empty `rescue`), so always compile-safe; the dropped clause's head shape is
-  irrelevant (a bare-variable catch-all is droppable too). **Both** the explicit `try` and the
-  `def … rescue …` shorthand are mutated: the shorthand carries its rescue blocks at the def-body
-  level (no `try` node), so `Analyze.host_def_rescue/3` hosts the body in a **synthesized `try`** for
-  delivery (`def f do b rescue r end` ≡ `def f do try do b rescue r end end`) — run *after*
-  `annotate_returns/3`, so the shorthand keeps its operator and *granular* return-value mutants, and
-  it works under lifting unchanged (the relocated body becomes `[do: <selector>]` like any in-place
-  body).
-  And **GuardDrop** (`:guard_drop`) — removes a clause's whole `when` guard, broadening it to
-  match unconditionally (`def f(x) when is_binary(x)` → `def f(x)`), asking "is this guard
-  load-bearing at all?". Structural and positional like `ReturnValue`/clause-drop (`mutate/1` is
-  `:skip`; `Transform` discovers it at each guarded clause head). Offered **only for an inert
-  guard** — one no *other* enabled mutator already mutates — derived from the guard tagger's
-  targets (`Tag.guard_targets/3`): an empty target set means the guard is untouched by every
-  family (`is_binary(x)`, `x`, a custom `defguard`), so removal is the only signal; any target
-  (`x > 0`, `Integer.is_even(x)`, `a and b`) means it's already covered, so no removal piles on
-  (guard-swap and guard-removal are mutually exclusive per clause, and the rule tracks the
-  *enabled set*). Delivery reuses the three guarded-clause mechanisms with **no new `Site`
-  constructor** — `def`/`defp` heads by **lifting** (`Candidate.GuardDrop`, the tag-less twin of
-  `Candidate.Lifted`/`Drop` — the mutant clause is the source clause with its `when` stripped,
-  gated only `when mutare_active === <id>`; a single guarded clause now lifts solely for this),
-  `case` clauses by the **tuple-the-scrutinee** path (a `Candidate.CaseClause` with a `nil` mutant
-  guard), `receive`/`fn` clauses by the **whole-construct selector** (a `Candidate.CasePattern`
-  whose `replacement` is the construct with that clause's guard stripped). The diff shows
-  `f(x) when g` → `f(x)` (`original` the `{:when, …}` head, `mutated` the bare head). The head is
-  emitted **exactly as written** — only the `when` is stripped. A guard-only variable becomes unused
-  once the guard is gone, which warns; that warning is **accepted and left alone** (warnings don't
-  fail the single build). We deliberately do *not* rename it to `_`: a macro in the body can read a
-  bound variable *by name* (`binding/0,1`, or any custom macro that captures the caller's bindings)
-  with no syntactic mention the transform could detect, so rewriting the head could silently change
-  behaviour. Keep the name, always. (An earlier design masked the unused binding to `_`; it was
-  removed as unsound for exactly this reason — see NOTES.) Broadening a non-final `receive`/`fn`
-  clause to irrefutable is the same benign "cannot match" warning `PatternWildcard` documents.
+  `name/0`; optional `mutate/2`, `pattern_mutations/2`, `return_replacements/1`,
+  `condition_replacements/1`, `macros/0`, `empty_collection?/1`) and the built-in families, **all
+  on by default**. The `Mutare.Mutators` `@registry` is the source of truth for *which* families
+  exist; each family's exact swap table, exclusions, and rationale live in its own `@moduledoc`.
+  Don't re-enumerate those here — a hand-maintained catalogue drifts (that's how a new family goes
+  undocumented), the moduledocs don't. What a reader needs from *this* file is the handful of
+  cross-cutting facts a single moduledoc can't show: the categories core routes differently, and
+  the cross-family ownership rules.
+
+  **Categories** (how core treats a family):
+  - **In-place operator/value swaps** (`mutate/1`, reused operands, compile-safe by construction):
+    Arithmetic, OperandSwap, Bitwise, Relational, Logical, List, Conditional. Guard-legal ops
+    (`-`/`/`/`div`/`rem`/bitwise, `Integer.is_even`…) reach `when` guards via lifting.
+  - **Literal swaps** (a literal → empty/sentinel/shifted value, in place): Literal (ints/bools),
+    StringLiteral, FloatLiteral, AtomLiteral, ConventionAtom, CharlistLiteral, WordListLiteral,
+    MapLiteral, TupleLiteral, BitstringLiteral, RegexLiteral, DateTimeLiteral, AliasLiteral. Each
+    participates in `def`-head lifting only where its node is a *scalar* literal.
+  - **Call-matching** (resolve the call through `Mutare.Transform.Calls`, so direct / aliased /
+    imported, Elixir or Erlang-atom forms all match): Collection, StringCall, StringByte, MapKeyword,
+    MapSet, Numeric, Math, Integer — arity-blind renames; CollectionArity, DefaultDrop, ModeSwap,
+    CallRemoval — arity-changing / option-value / removal, **pipe-aware** via the optional `mutate/2`
+    (a `|>` stage hides one arg, so effective arity needs the flag). A *bare* `Kernel` call
+    (`abs`/`min`/`max`/`div`/`binary_slice`…) has no module to prove it's the `Kernel` one, so those
+    are gated on **effective arity** instead. Generated cross-module names are emitted absolute
+    (`Elixir.Kernel.==`, `Elixir.Function.identity`) so no alias/import can redirect them.
+  - **Structural** (`mutate/1` is `:skip`; the real logic is a callback core discovers *by export*
+    and applies at the positions it routes — so a *custom* mutator at that position participates
+    too): ReturnValue (`return_replacements/1`, a clause's return tail), IfCondition
+    (`condition_replacements/1`, an `if`/`unless`/`cond` condition), PatternSwap + PatternWildcard
+    (`pattern_mutations/2`, head / `case` / `receive` / `fn` / `=`-match patterns), and RescueType +
+    GuardDrop (special — `try`/guard rebuilds, no `(node) → [replacement]` callback fits). The
+    unregistered `clause_drop` is the one structural built-in that *isn't* a toggleable family.
+  - **Configurable** (`{module, opts}` in `:mutators`; `opts` reach `mutate/2` as `context.opts`,
+    the reserved `:as` key renames the recorded family): ConventionAtom (extra `:pairs`) and any
+    user mutator. See `Mutare.Mutator.Spec`.
+
+  **Cross-family rules that bite** (ownership splits / equivalent-sibling suppression — *not* visible
+  from one moduledoc, so they live here):
+  - `AtomLiteral` excludes `true`/`false`/`nil` (Literal/Conditional own them) and the convention
+    atoms (`ConventionAtom` owns them via `members()`); `Conditional` skips boolean-operator
+    conditions (IfCondition / the operator families own those).
+  - `OperandSwap` excludes commutative operators (guaranteed no-ops) and comparison operators (an
+    operand swap there *is* Relational's direction flip); the non-commutative date/time/version/MapSet
+    *calls* it does swap are the ones no other family flips.
+  - `Relational` leaves an `in`/equality op directly under `not`/`!` unmutated (that's Logical's
+    strip); a collection-emptying mutant on the **RHS of `in`** (`x in []` ≡ `false`) is suppressed
+    as equivalent to Conditional — recognised by `Mutare.AST.empty_collection_literal?/1` or a
+    mutator's `empty_collection?/1` callback.
+  - `MapSet` owns the *commutative* `union`↔`intersection`; the *non-commutative* `difference`/`subset?`
+    are `OperandSwap`'s. `div`↔`rem` is Arithmetic's, not Numeric's.
+  - When a call rewrite (ModeSwap) and a leaf mutant (AtomLiteral on the same swapped key) overlap,
+    the diff-derived `Transform.Overlap` pass drops the redundant leaf (see "redundant-leaf overlap").
+
+  Delivery mechanics (lifting, tuple-the-scrutinee, whole-construct selectors, the `=`-match
+  tuple-re-export) are the `Transform` bullet's concern, not the mutator's — placement is positional.
+  A user narrows the set by listing a subset under `:mutators`.
 - **`Mutare.Mutators`** — the **single ordered registry** of built-in families and the one place
   mutator lists are resolved/validated. `all/0` is the default set (every registered module — an
   unset `:mutators`/`:all`); `families/0` is every registered atom; `resolve/1` maps any entry —
