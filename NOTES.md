@@ -995,12 +995,25 @@ valid pattern, so a `… |> match?(e)` that *compiles at all* already has a patt
 it reaches us, `:pattern` is always right. This is a *positive* exclusion (the project philosophy),
 not leaning on the poison backstop, which would otherwise eat a wasted rebuild on this known shape.
 
-Limitations (documented): a whole `import SomeDsl` resolves a bare macro call only when `SomeDsl`
-is loadable at transform time (the inherited `Imports` limit — a selective `import …, only:` is
-definitive without reflection, and a real `mix mutare` run has the target's deps loaded); and a
-known macro in a `:scaffold`/compile-time position isn't routed (it's already non-mutating there,
-so `:skip` would be a no-op anyway). `test/support/macro_mutator.ex` is the worked `macros/0` example
-(with a piped `where/2` stage).
+**A registered macro resolves through a whole import even when its module can't be loaded**
+(`Resolve.registered_macro_module/3`). `Imports.stamp` resolves a whole `import Mod` by
+reflection (`Code.ensure_loaded?` + `function_exported?`), so a first-party DSL defined *only in
+the target project* — which the Mutare process can't load — leaves a bare macro call unstamped,
+and the macro is then misclassified as **unknown**. That is the worst place to lose the routing:
+a `:skip` body is mutated as an ordinary runtime body (it *was* meant to be opaque), and the
+unknown-block tag means a single resulting compile poison makes `Runner.expand_block_macros/2`
+drop *every* sibling mutant in the block — silently skipping valid mutants despite the user's
+`:macros` registration. The fix: when reflection can't resolve the call, consult the **registry**
+directly — among the *whole*-imported modules in scope, find one registering `fun/arity` as a known
+macro. Sound by the same compile-unambiguity rule `Imports` rests on: the user's `:macros` entry
+asserts the module provides the macro, and a whole import of it makes the bare call unambiguously
+its macro. Scoped to whole imports because a selective `import Mod, only: [m: 1]` resolves straight
+from the source (no reflection), so it never reaches the fallback. This does **not** lift the
+inherited `Imports` limit for *un*registered bare calls (the ordinary stdlib *function* families
+still need reflection — but those modules are always loadable, and a real `mix mutare` run has the
+target's deps loaded anyway). A known macro in a `:scaffold`/compile-time position isn't routed
+(it's already non-mutating there, so `:skip` would be a no-op anyway). `test/support/macro_mutator.ex`
+is the worked `macros/0` example (with a piped `where/2` stage).
 
 **Structural pattern mutation of a binding-escaping macro arg (`:binding_pattern`)**
 (`destructure([x, y], v)` → `[y, x]`/wildcard). A bare `:pattern`-routed macro arg is *safe* —

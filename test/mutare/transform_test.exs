@@ -1113,6 +1113,107 @@ defmodule Mutare.TransformTest do
       assert sites != []
       assert Enum.all?(sites, &(&1.block_macro == nil))
     end
+
+    # A DSL module defined *only in the target project* — one the Mutare process can't load —
+    # whole-imported. `Imports.stamp` resolves a whole `import Mod` by reflection, which fails
+    # for an unloadable module, so the registry must be consulted directly to honour the user's
+    # `:macros` registration. (`Not.Loadable.Dsl` is a deliberately undefined module.)
+    @unloadable_block """
+    defmodule UsesUnloadableSchema do
+      import Not.Loadable.Dsl
+
+      schema do
+        field(:age, default: 1 + 1)
+      end
+    end
+    """
+
+    test "a `:skip` macro via a whole import of an unloadable module is honoured" do
+      refute Code.ensure_loaded?(Not.Loadable.Dsl)
+
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(@unloadable_block,
+          mutators: @schema_mutators,
+          macros: [{Not.Loadable.Dsl, :schema, 1, :skip}]
+        )
+
+      # The block resolves to the registered macro despite the unloadable module, so its
+      # opaque body is left raw — no sites — exactly as for a loadable DSL. (The metamutant
+      # can't be compiled here because the DSL module genuinely doesn't exist; the regression
+      # is that core no longer *mutates* the opaque body.)
+      assert sites == []
+    end
+
+    test "a registered macro via an unloadable whole import is classified known (not auto-skipped)" do
+      # Routed `:expression` (mutate), the body still mutates — but because the registry
+      # resolved it through the unloadable import, it is *known*, so the auto-skip-on-poison
+      # tag is withheld. Before the registry fallback it was misclassified as an unknown block
+      # macro, and a single poison there dropped every sibling mutant in the block.
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(@unloadable_block,
+          mutators: @schema_mutators,
+          macros: [{Not.Loadable.Dsl, :schema, 1, :expression}]
+        )
+
+      assert sites != []
+      assert Enum.all?(sites, &(&1.block_macro == nil))
+    end
+
+    test "without the registration, an unloadable whole-imported block is unknown (mutated + tagged)" do
+      # The control: with no `:macros` entry the block is genuinely unknown, so its body is
+      # mutated on the runtime-body guess and tagged for whole-block poison recovery.
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(@unloadable_block, mutators: @schema_mutators)
+
+      assert sites != []
+      assert Enum.all?(sites, &match?({:schema, nid} when is_integer(nid), &1.block_macro))
+    end
+
+    test "a `:skip` runtime macro via an unloadable whole import is honoured" do
+      # The generic runtime-clause path (not the module-level block): a bare macro call in a
+      # function body, reached through an unloadable whole import. The condition is the
+      # macro's `:skip` argument, so it must be left raw.
+      source = """
+      defmodule UsesUnloadableQuery do
+        import Not.Loadable.Dsl
+
+        def run(q, y) do
+          where(q, 1 == y)
+        end
+      end
+      """
+
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
+          macros: [{Not.Loadable.Dsl, :where, 2, [:expression, :skip]}]
+        )
+
+      assert sites == []
+    end
+
+    test "a selective import of an unloadable module already resolves (no reflection needed)" do
+      # The fallback is scoped to whole imports because a selective import resolves straight
+      # from the source — this works with or without the fix, and guards that the whole-import
+      # restriction doesn't regress the selective case.
+      source = """
+      defmodule UsesSelectiveUnloadable do
+        import Not.Loadable.Dsl, only: [where: 2]
+
+        def run(q, y) do
+          where(q, 1 == y)
+        end
+      end
+      """
+
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
+          macros: [{Not.Loadable.Dsl, :where, 2, [:expression, :skip]}]
+        )
+
+      assert sites == []
+    end
   end
 
   describe "a piped value reaches back to the macro's effective position-0 treatment" do

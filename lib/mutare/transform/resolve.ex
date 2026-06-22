@@ -130,7 +130,7 @@ defmodule Mutare.Transform.Resolve do
   defp walk({fun, meta, args}, env) when is_atom(fun) and is_list(args) do
     meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, env.pipe_mode)
     arity = Mutator.effective_arity(args, env.pipe_mode)
-    meta = stamp_macro(meta, bare_module_key(fun, arity, meta), fun, args, env)
+    meta = stamp_macro(meta, bare_module_key(fun, arity, meta, env), fun, args, env)
     {fun, meta, descend(args, env)}
   end
 
@@ -200,8 +200,10 @@ defmodule Mutare.Transform.Resolve do
   # if stamped, else `[:Kernel]` only when the name is a genuine `Kernel` export *and* not
   # displaced (`import Kernel, except:`). A local function — or a displaced name — resolves to
   # `nil` (no match), so a bare call is recognised as `Kernel.match?` exactly when it compiles
-  # to it (a local `def match?/2` shadowing the Kernel macro is itself a compile error).
-  defp bare_module_key(fun, arity, meta) do
+  # to it (a local `def match?/2` shadowing the Kernel macro is itself a compile error). When
+  # none of those resolve, fall back to the **registry** for a registered macro reached through
+  # a whole import the Mutare process can't reflect on (`registered_macro_module/3`).
+  defp bare_module_key(fun, arity, meta, env) do
     case Imports.resolved_import(meta) do
       {module_key, _kind} ->
         module_key
@@ -209,8 +211,28 @@ defmodule Mutare.Transform.Resolve do
       nil ->
         if not Imports.kernel_displaced?(meta) and kernel_export?(fun, arity),
           do: [:Kernel],
-          else: nil
+          else: registered_macro_module(fun, arity, env)
     end
+  end
+
+  # `Imports.stamp` resolves a whole `import Mod` by **reflection** (`Code.ensure_loaded?` +
+  # `function_exported?`), so a DSL module defined **only in the target project** — which the
+  # Mutare process can't load — leaves a bare macro call's `meta[:mutare_import]` unstamped, and
+  # `bare_module_key/4` then returns `nil`. But the user's `:macros` entry *asserts* the module
+  # provides that macro, and the compile-unambiguity rule means a bare call under a whole import
+  # of that module is unambiguously its macro. So when reflection can't resolve the call, consult
+  # the registry directly: among the **whole**-imported modules in scope, find one that registers
+  # `fun/arity` as a known macro. This is the positive fix for a registered `:skip`/`:pattern` DSL
+  # macro whose module Mutare can't see — without it the unstamped block is classified *unknown*
+  # and mutated as an ordinary runtime body, which can poison the very DSL the registration meant
+  # to exclude (and `Runner.expand_block_macros/2` then drops every sibling mutant in the block).
+  # Limited to whole imports: a selective `import Mod, only: [m: 1]` already resolves without
+  # reflection (the `{:only, set}` is read straight from the source), so it never reaches here.
+  defp registered_macro_module(fun, arity, env) do
+    Enum.find_value(env.imports, fn {module_key, selector} ->
+      if Imports.whole?(selector) and Macros.routing(env.macros, module_key, fun, arity),
+        do: module_key
+    end)
   end
 
   defp kernel_export?(fun, arity),

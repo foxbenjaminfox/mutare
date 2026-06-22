@@ -245,10 +245,14 @@ defmodule Mutare.Transform.Imports do
       not provides?([:Kernel], kernel, fun, arity)
   end
 
-  # A selection that imports everything (an unmodified `import Mod`): base `:all`, nothing
-  # excepted.
-  defp whole?({:all, except}), do: MapSet.size(except) == 0
-  defp whole?(_selector), do: false
+  @doc """
+  Whether a selection imports a module **wholesale** — an unmodified `import Mod` (base `:all`,
+  nothing excepted). `Mutare.Transform.Resolve` reads this to fall back to the known-macro
+  registry for a macro reached through a whole import of a module it can't reflect on.
+  """
+  @spec whole?(selector() | term()) :: boolean()
+  def whole?({:all, except}), do: MapSet.size(except) == 0
+  def whole?(_selector), do: false
 
   defp kernel_function?(fun, arity),
     do: function_exported?(Kernel, fun, arity) or macro_exported?(Kernel, fun, arity)
