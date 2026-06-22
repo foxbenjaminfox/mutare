@@ -207,9 +207,19 @@ defmodule Mutare.Runner do
          root,
          %Options{} = options,
          skip_ids \\ MapSet.new(),
-         attempts \\ @poison_attempts
+         attempts \\ @poison_attempts,
+         sandbox \\ nil
        ) do
-    sandbox = Sandbox.prepare(root, schema, options)
+    # First attempt materialises (and claims) a sandbox; a poison retry re-renders
+    # the rebuilt schema into that *same* sandbox, so the path stays stable across
+    # the whole run — no orphaned dirs, no re-copying the project, and ownership is
+    # claimed exactly once.
+    sandbox =
+      if sandbox do
+        Sandbox.rematerialize(sandbox, schema)
+      else
+        Sandbox.prepare(root, schema, options)
+      end
 
     case compile(sandbox) do
       :ok ->
@@ -228,7 +238,7 @@ defmodule Mutare.Runner do
           # `:exclude`) can't silently expand. Forward the original options so
           # `:mutators` survive; ids stay stable across rebuilds.
           schema = Schema.rebuild(schema, root, options, skip_ids)
-          prepare_compiling(schema, root, options, skip_ids, attempts - 1)
+          prepare_compiling(schema, root, options, skip_ids, attempts - 1, sandbox)
         else
           # Couldn't identify (or keep making progress on) the poison → give up.
           failure

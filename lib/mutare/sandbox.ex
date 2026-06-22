@@ -153,6 +153,25 @@ defmodule Mutare.Sandbox do
     sandbox
   end
 
+  @doc """
+  Re-render `schema`'s metamutants into an already-prepared `sandbox`, in place.
+
+  This is the **poison-recovery** path: after a failed compile drops the
+  offending mutants and rebuilds the schema, only the metamutant *sources* differ
+  — the copied project, injected bootstrap, coverage helper, and seeded deps are
+  identical to the first `prepare/3`. So we rewrite just those sources (and only
+  where their bytes changed, so mix recompiles the minimum), reusing the same
+  sandbox path rather than materialising a fresh one each attempt. Keeping the
+  path stable also keeps `prepare/3`'s ownership claim a once-per-run event.
+
+  Returns `sandbox`, for symmetry with `prepare/3`.
+  """
+  @spec rematerialize(Path.t(), Schema.t()) :: Path.t()
+  def rematerialize(sandbox, %Schema{} = schema) do
+    write_metamutants(sandbox, schema)
+    sandbox
+  end
+
   @doc "The bootstrap snippet prepended to the sandbox's test helper."
   @spec bootstrap() :: String.t()
   def bootstrap, do: @bootstrap
@@ -423,11 +442,14 @@ defmodule Mutare.Sandbox do
     end
   end
 
+  # `put_if_changed` (not a blind `File.write!`) so a poison-recovery rewrite
+  # (`rematerialize/2`) touches only the metamutants whose rendered source changed,
+  # leaving the rest at their original mtime for mix's incremental compiler. On the
+  # first fresh write the copied original always differs from its metamutant, so
+  # every mutated file is still written.
   defp write_metamutants(sandbox, %Schema{metamutants: metamutants}) do
     for {rel, source} <- metamutants do
-      path = Path.join(sandbox, rel)
-      File.mkdir_p!(Path.dirname(path))
-      File.write!(path, source)
+      put_if_changed(Path.join(sandbox, rel), source)
     end
   end
 

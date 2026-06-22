@@ -436,12 +436,10 @@ untouched. The marker is `.mutare_sandbox`, whose first line is a fixed
 signature; ownership is decided by reading the contents, not trusting the name,
 so a coincidental dotfile can't authorise a deletion. `lstat` (not `stat`) keeps
 a symlink from being followed to a directory we'd then clear. The reuse branch
-is what keeps poison recovery cheap **when the sandbox path is stable** (a pinned
-`:sandbox` or `--keep-sandbox`'s deterministic digest path): the runner rebuilds
-that *same* path repeatedly, and each rebuild is condition 3. (In the default
-fresh mode the path is freshly generated per `prepare/3`, so each poison retry
-lands on condition 1 — a new dir — and orphans the previous; harmless but not
-free. Left as-is: poison is rare. See the conflict note below for the naming.)
+(condition 3) is what keeps **across-run** reuse cheap — a re-run with a pinned
+`--sandbox`, or `--keep-sandbox`'s deterministic digest path, re-claims the same
+owned dir instead of refusing it. **Within** a run, poison recovery no longer
+goes through `claim!` at all: see "Stable sandbox across poison retries" below.
 
 ### Fresh-sandbox naming: pid-salted, not just `unique_integer` `[done]`
 `default_sandbox(_, false)` named the throwaway dir
@@ -470,8 +468,31 @@ dir found at an **auto-generated** fresh path is a stale leftover (or an
 astronomically unlikely pid+counter collision) and is now **refused loudly**
 (`refuse_autogen!`) rather than silently clobbered — the safer failure, matching
 `fresh_tmp/1`'s "fail rather than mask a real collision" stance. Refusal can't
-fire on the normal poison-recovery loop: each retry generates a *fresh* path
-(`enoent` → condition 1), never re-claiming an owned dir from the same run.
+fire on the normal poison-recovery loop: `prepare/3` (and so `claim!`) runs
+exactly once per run — retries re-render into the already-claimed sandbox via
+`rematerialize/2` and never re-claim (see below).
+
+### Stable sandbox across poison retries `[done]`
+`Runner.prepare_compiling/6` recurses to recover from compile-poisoning: drop the
+implicated mutant ids, `Schema.rebuild`, recompile. It used to call
+`Sandbox.prepare/3` *every* attempt — which in the default fresh mode generated a
+**new** `default_sandbox` path each time (a new `unique_integer`), re-copied the
+whole project, re-seeded deps, and orphaned the previous dir. Pure waste, and it
+meant the run's sandbox path wasn't even stable within the run.
+
+Now `prepare_compiling` materialises (and claims) the sandbox **once**, on the
+first attempt, then threads that path through the recursion. A retry calls
+`Sandbox.rematerialize/2`, which rewrites only the metamutant *sources* — the
+sole thing that differs between attempts; the copied project, bootstrap, coverage
+helper, and seeded deps are identical — using `put_if_changed`, so unchanged
+metamutants keep their mtime and mix recompiles the minimum. (`write_metamutants`
+was switched from a blind `File.write!` to `put_if_changed` for this; on the first
+fresh write the copied original always differs from its metamutant, so every
+mutated file is still written.) Reusing the path also keeps the ownership claim a
+once-per-run event, which is what lets the `refuse_autogen!` hardening above stay
+strict without tripping on its own retries. Applies to every mode: keep mode
+already reused its digest path, but now skips the full `sync` re-mirror on a retry
+too.
 
 ### `--keep-sandbox`: incremental materialisation for CI caching `[done]`
 The default sandbox is throwaway: a fresh dir per run, or an owned `--sandbox`

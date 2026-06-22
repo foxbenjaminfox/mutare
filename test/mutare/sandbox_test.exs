@@ -89,6 +89,28 @@ defmodule Mutare.SandboxTest do
     assert File.regular?(Path.join(sandbox, @marker))
   end
 
+  test "rematerialize/2 rewrites only changed metamutants and reuses the path", context do
+    schema = %Schema{metamutants: %{"lib/a.ex" => "defmodule A do\n  def x, do: 1\nend\n"}}
+    sandbox = Path.join(context.base, "sandbox")
+    assert Sandbox.prepare(context.project, schema, sandbox: sandbox) == sandbox
+
+    path = Path.join(sandbox, "lib/a.ex")
+    # Backdate the metamutant so a no-op rewrite is detectable: `put_if_changed`
+    # leaves an unchanged file untouched, so its mtime must survive.
+    backdated = 946_684_800
+    File.touch!(path, backdated)
+
+    # Same schema → not rewritten (mtime preserved), and the path is returned.
+    assert Sandbox.rematerialize(sandbox, schema) == sandbox
+    assert File.stat!(path, time: :posix).mtime == backdated
+
+    # Changed metamutant → rewritten in place.
+    changed = %Schema{metamutants: %{"lib/a.ex" => "defmodule A do\n  def x, do: 2\nend\n"}}
+    assert Sandbox.rematerialize(sandbox, changed) == sandbox
+    assert File.read!(path) =~ "do: 2"
+    refute File.stat!(path, time: :posix).mtime == backdated
+  end
+
   test "adopts an existing empty directory", context do
     sandbox = Path.join(context.base, "sandbox")
     File.mkdir_p!(sandbox)
