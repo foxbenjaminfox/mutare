@@ -137,6 +137,55 @@ defmodule Mutare.Report.LiveTest do
     end
   end
 
+  describe "colour (decoupled from animation; NO_COLOR)" do
+    test "color_enabled?/0 follows the NO_COLOR env var" do
+      original = System.get_env("NO_COLOR")
+
+      on_exit(fn ->
+        if original, do: System.put_env("NO_COLOR", original), else: System.delete_env("NO_COLOR")
+      end)
+
+      System.delete_env("NO_COLOR")
+      assert Live.color_enabled?()
+
+      # Any non-empty value disables colour; an empty string does not (no-color.org).
+      System.put_env("NO_COLOR", "1")
+      refute Live.color_enabled?()
+
+      System.put_env("NO_COLOR", "")
+      assert Live.color_enabled?()
+    end
+
+    test "an ANSI run colours the leave-behind label" do
+      {:ok, io} = StringIO.open("")
+      {:ok, live} = Live.start_link(device: io, ansi: true, color: true, width: 200)
+
+      Live.report(live, result(:survived, file: "lib/cache.ex", line: 22))
+      Live.finish(live)
+
+      {_in, out} = StringIO.contents(io)
+      assert out =~ "SURVIVED"
+      # Red foreground SGR — the label is styled.
+      assert out =~ "\e[31m"
+    end
+
+    test "NO_COLOR (color: false) keeps the live block but drops the label colour" do
+      {:ok, io} = StringIO.open("")
+      # `ansi: true, color: false` is the tty-with-NO_COLOR case: the block may still
+      # animate, but labels are plain.
+      {:ok, live} = Live.start_link(device: io, ansi: true, color: false, width: 200)
+
+      Live.report(live, result(:survived, file: "lib/cache.ex", line: 22))
+      Live.finish(live)
+
+      {_in, out} = StringIO.contents(io)
+      assert out =~ "SURVIVED  lib/cache.ex:22"
+      # No colour SGR codes around the label.
+      refute out =~ "\e[31m"
+      refute out =~ "\e[1m"
+    end
+  end
+
   describe "end to end (plain mode)" do
     test "the scan phase notes once and per-file ticks stay silent (no scrollback spam)" do
       {:ok, io} = StringIO.open("")

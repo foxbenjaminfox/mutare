@@ -30,7 +30,9 @@ defmodule Mutare.Report.Live do
   start by `detect_ansi/0`: a real terminal on stderr with ANSI enabled gets the
   live status block (cursor moves erase and redraw it); anything else (a pipe, a
   CI log) degrades to plain mode — phase transitions and the leave-behind lines
-  print as ordinary scrollback, with no cursor tricks and no spinner.
+  print as ordinary scrollback, with no cursor tricks and no spinner. Colour is
+  decided separately (`color_enabled?/0`): the `NO_COLOR` convention drops the
+  leave-behind label colour while keeping the live block.
 
   ## Testing
 
@@ -83,6 +85,8 @@ defmodule Mutare.Report.Live do
 
     * `:device` — IO device to write to (default `:standard_error`)
     * `:ansi` — force animation on/off (default: `detect_ansi/0`)
+    * `:color` — force the leave-behind label colour on/off (default: animation on
+      *and* `NO_COLOR` unset; see `color_enabled?/0`)
     * `:width` — terminal width for truncation (default: detected, else 80)
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -131,9 +135,16 @@ defmodule Mutare.Report.Live do
 
   @impl true
   def init(opts) do
+    # Animation (`ansi`) and colour are decoupled: the status block is positioning
+    # (cursor codes), the leave-behind labels are the only colour. So `NO_COLOR`
+    # drops the colour but keeps the live block (the convention is about colour, not
+    # the whole UI); a non-tty (`ansi: false`) is already colourless.
+    ansi = Keyword.get_lazy(opts, :ansi, &detect_ansi/0)
+
     state = %{
       device: Keyword.get(opts, :device, @device),
-      ansi: Keyword.get_lazy(opts, :ansi, &detect_ansi/0),
+      ansi: ansi,
+      color: Keyword.get_lazy(opts, :color, fn -> ansi and color_enabled?() end),
       width: Keyword.get_lazy(opts, :width, &detect_width/0),
       total: 0,
       counts: %{},
@@ -185,7 +196,7 @@ defmodule Mutare.Report.Live do
 
     case leave_behind(result.status) do
       nil -> {:noreply, refresh(state)}
-      styled -> {:noreply, put_line(state, format_leave(styled, result.site, state.ansi))}
+      styled -> {:noreply, put_line(state, format_leave(styled, result.site, state.color))}
     end
   end
 
@@ -325,10 +336,12 @@ defmodule Mutare.Report.Live do
   # `file:line  <describe>`, the shared one-liner for activity + leave-behind.
   defp descriptor(%Site{} = site), do: "#{site.file}:#{site.line}  #{Site.describe(site)}"
 
-  # A permanent line: a padded, coloured status label then the mutant descriptor.
-  defp format_leave({label, colour}, %Site{} = site, ansi) do
+  # A permanent line: a padded status label (coloured when `color?`) then the mutant
+  # descriptor. `color?` is decoupled from animation, so `NO_COLOR` yields a plain
+  # label even with the live block running.
+  defp format_leave({label, colour}, %Site{} = site, color?) do
     padded = String.pad_trailing(label, @label_width)
-    tag = if ansi, do: ansi_to_binary([colour, :bright, padded, :reset]), else: padded
+    tag = if color?, do: ansi_to_binary([colour, :bright, padded, :reset]), else: padded
     "  " <> tag <> "  " <> descriptor(site)
   end
 
@@ -404,10 +417,21 @@ defmodule Mutare.Report.Live do
   # Animate only when stderr is a real terminal *and* ANSI is enabled. We key on
   # stderr (where the block is drawn), not stdout, so piping the machine report
   # to a file never tricks us into painting cursor codes into it; `IO.ANSI` honours
-  # `--no-color`, `TERM=dumb`, etc.
+  # the Elixir `--no-color` switch, `TERM=dumb`, etc.
   defp detect_ansi do
     tty_stderr?() and IO.ANSI.enabled?()
   end
+
+  @doc """
+  Whether the leave-behind labels may be coloured: the `NO_COLOR` env var is unset
+  or empty (the https://no-color.org convention — *any* non-empty value disables
+  colour). Distinct from `detect_ansi/0`: `NO_COLOR` drops the colour but keeps the
+  live block, since the convention is about colour, not the whole terminal UI.
+  `IO.ANSI.enabled?/0` (folded into `detect_ansi/0`) does not check `NO_COLOR`, so
+  this does.
+  """
+  @spec color_enabled?() :: boolean()
+  def color_enabled?, do: System.get_env("NO_COLOR") in [nil, ""]
 
   defp detect_width do
     case :io.columns(@device) do

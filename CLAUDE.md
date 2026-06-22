@@ -613,8 +613,12 @@ contract between them is the whole game.
   internal tick timer so it animates while the foreground blocks in `Task.async_stream`. All
   output goes to **stderr** (so a machine report on stdout is never corrupted); animation is
   gated on `detect_ansi/0` (a real stderr tty + `IO.ANSI.enabled?`), degrading to plain
-  scrollback (phase notes + leave-behind lines, no cursor codes) for pipes/CI. The Mix task owns
-  it: it starts the server, wires the run's four live hooks to it (`:reporter` → `report/2`,
+  scrollback (phase notes + leave-behind lines, no cursor codes) for pipes/CI. **Colour** is a
+  *separate* gate (`color_enabled?/0`, the only colour being the leave-behind label): the
+  `NO_COLOR` convention (any non-empty value) drops the label colour while keeping the live block
+  — `IO.ANSI.enabled?` doesn't check `NO_COLOR`, so this does. The Mix task owns
+  it: it starts the server, wires the
+  run's four live hooks to it (`:reporter` → `report/2`,
   `:on_phase` → `phase/2`, `:on_start` → `started/2`, and — during the pre-run scan —
   `:on_scan` → `scanned/2`), and calls `finish/1` to tear the block
   down **before** the final `Mutare.Report` prints. Because the rendering is pure
