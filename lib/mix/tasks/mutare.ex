@@ -27,6 +27,8 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --since master             # only files changed vs a git ref (CI)
       mix mutare --mutators relational    # only some mutator families
       mix mutare --min-score 70           # fail (CI) if the score is below 70
+      mix mutare --strict-ignores         # fail (CI) if any `# mutare:ignore`
+                                          #   suppresses no mutant (typo/stale)
       mix mutare --no-expand-uses         # don't expand `use` to surface the
                                           #   `import`/`alias` it injects (default: on)
       mix mutare --full                   # run the whole suite per mutant
@@ -103,6 +105,7 @@ defmodule Mix.Tasks.Mutare do
     min_score: :float,
     sandbox: :string,
     keep_sandbox: :boolean,
+    strict_ignores: :boolean,
     full: :boolean,
     since: :string,
     baseline_runs: :integer,
@@ -143,6 +146,8 @@ defmodule Mix.Tasks.Mutare do
       schema = Schema.build(root, %{options | on_scan: &Live.scanned(live, &1)})
       Live.clear(live)
       announce(schema, project, options)
+      warn_ineffective_ignores(schema)
+      enforce_strict_ignores(schema, options)
 
       options = %{
         options
@@ -273,6 +278,50 @@ defmodule Mix.Tasks.Mutare do
   # we'll test, so note the cap so a small count isn't a surprise.
   defp cap_label(%Options{max_mutants: nil}), do: ""
   defp cap_label(%Options{max_mutants: n}), do: " (--max-mutants #{n})"
+
+  # Warn about every `# mutare:ignore` that suppressed no mutant — a typo'd family
+  # (`[arithmatic]`), an empty `[]`, a misplaced standalone line, or a family that
+  # produced no mutant there (see `Mutare.Schema.detect_ineffective_ignores/1`).
+  # Onto **stderr** (like `Mutare.Report.Live`), so a machine report on stdout
+  # stays clean. `--strict-ignores` then turns these into a hard error.
+  defp warn_ineffective_ignores(%Schema{ineffective_ignores: []}), do: :ok
+
+  defp warn_ineffective_ignores(%Schema{ineffective_ignores: ineffective}) do
+    for {file, directive} <- ineffective do
+      IO.puts(
+        :stderr,
+        "warning: # mutare:ignore#{ignore_filter_label(directive)} at " <>
+          "#{file}:#{directive.line} suppressed no mutant"
+      )
+    end
+
+    :ok
+  end
+
+  # The `[families]` a filtered directive named (sorted for a stable message), or
+  # `""` for an unfiltered (`:all`) directive.
+  defp ignore_filter_label(%{mutators: :all}), do: ""
+
+  defp ignore_filter_label(%{mutators: %MapSet{} = set}),
+    do: "[#{set |> Enum.sort() |> Enum.join(", ")}]"
+
+  # `--strict-ignores`: a directive that suppressed nothing is a hard error (the
+  # CI counterpart of the warning above), surfaced as a clean Mix failure →
+  # non-zero exit, mirroring the `--min-score` `gate/2`. The per-directive detail
+  # already printed via `warn_ineffective_ignores/1`.
+  defp enforce_strict_ignores(%Schema{ineffective_ignores: []}, _options), do: :ok
+  defp enforce_strict_ignores(%Schema{}, %Options{strict_ignores: false}), do: :ok
+
+  defp enforce_strict_ignores(%Schema{ineffective_ignores: ineffective}, %Options{
+         strict_ignores: true
+       }) do
+    n = length(ineffective)
+
+    Mix.raise(
+      "--strict-ignores: #{n} `# mutare:ignore` directive#{if n == 1, do: "", else: "s"} " <>
+        "suppressed no mutant (see the warnings above)"
+    )
+  end
 
   defp scope_label(%Project{umbrella?: true, mutate_scope: scope}) do
     " (umbrella: #{Enum.map_join(scope, ", ", & &1.app)})"

@@ -27,7 +27,8 @@ defmodule Mutare.Config do
   single `.ex` file, accumulated in order), `:line` (repeatable → `:only_lines`; a
   `FILE:LINE` to scope the run to one file:line's mutants), `:exclude` (repeatable →
   list of glob strings), `:mutators` (CSV → modules),
-  `:min_score`, `:sandbox`, `:keep_sandbox`, `:full` (→ `test_selection: :full`),
+  `:min_score`, `:sandbox`, `:keep_sandbox`, `:strict_ignores` (fail on an
+  ineffective `# mutare:ignore`), `:full` (→ `test_selection: :full`),
   `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`,
   `:max_mutants`, `:workers`, `:timeout`, `:timeout_multiplier`,
   `:expand_uses` (`--no-expand-uses` disables `use`-expansion). A `:mutators`
@@ -52,6 +53,7 @@ defmodule Mutare.Config do
     |> put_unless_nil(:min_score, flags[:min_score])
     |> put_unless_nil(:sandbox, flags[:sandbox])
     |> put_unless_nil(:keep_sandbox, flags[:keep_sandbox])
+    |> put_unless_nil(:strict_ignores, flags[:strict_ignores])
     |> put_unless_nil(:test_selection, flags[:full] && :full)
     |> put_unless_nil(:baseline_runs, flags[:baseline_runs])
     |> put_unless_nil(:harness_retries, flags[:harness_retries])

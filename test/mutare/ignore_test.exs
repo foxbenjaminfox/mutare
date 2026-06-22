@@ -149,6 +149,51 @@ defmodule Mutare.IgnoreTest do
     defp directive_on(directives, line), do: directives |> Map.fetch!(line) |> hd()
   end
 
+  describe "ineffective/2 (suppressed nothing)" do
+    alias Mutare.Ignore
+
+    test "a typo'd family is flagged (it matches no mutant on the line)" do
+      directives = Ignore.directives("x = 1 # mutare:ignore[arithmatic]")
+      occupied = [{1, :arithmetic}, {1, :literal}]
+
+      assert [%{line: 1, mutators: set}] = Ignore.ineffective(directives, occupied)
+      assert MapSet.member?(set, "arithmatic")
+    end
+
+    test "an empty `[]` filter is flagged" do
+      directives = Ignore.directives("x = 1 # mutare:ignore[]")
+      assert [%{line: 1}] = Ignore.ineffective(directives, [{1, :arithmetic}])
+    end
+
+    test "a bare directive on a line with no mutant is flagged (wrong line)" do
+      directives = Ignore.directives("x = 1 # mutare:ignore")
+      assert [%{line: 1}] = Ignore.ineffective(directives, [{2, :arithmetic}])
+    end
+
+    test "a bare directive on an occupied line is not flagged" do
+      directives = Ignore.directives("x = 1 # mutare:ignore")
+      assert Ignore.ineffective(directives, [{1, :arithmetic}]) == []
+    end
+
+    test "a filter matching a present family is not flagged" do
+      directives = Ignore.directives("x = 1 # mutare:ignore[arithmetic]")
+      assert Ignore.ineffective(directives, [{1, :arithmetic}, {1, :literal}]) == []
+    end
+
+    test "a real but absent family (present on the line, but a different one) is flagged" do
+      directives = Ignore.directives("x = 1 # mutare:ignore[arithmetic]")
+      assert [%{line: 1}] = Ignore.ineffective(directives, [{1, :relational}, {1, :literal}])
+    end
+
+    test "results are sorted by line" do
+      source = "a # mutare:ignore[x]\nb # mutare:ignore[y]\nc # mutare:ignore[z]"
+      directives = Ignore.directives(source)
+      # No site admits any of the filters → all three flagged, in line order.
+      occupied = [{1, :arithmetic}, {2, :arithmetic}, {3, :arithmetic}]
+      assert [1, 2, 3] == directives |> Ignore.ineffective(occupied) |> Enum.map(& &1.line)
+    end
+  end
+
   describe "end to end" do
     @tag :runner
     @tag timeout: 180_000

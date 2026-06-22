@@ -923,3 +923,13 @@ and bracket-less trailing words are always prose, never an accidental filter. Th
 directive's reason rides onto the `Site` (`ignore_reason`) and `Mutare.Report` lists each ignored
 mutant with it. `Mutare.Ignore.directives_from_ast/1` returns `%{line => [%Ignore.Directive{}]}`;
 `Transform` applies it per `{line, mutator}`, not per line.
+
+Failing safe is **silent**, so `Mutare.Ignore.ineffective/2` surfaces the directives that
+suppressed *nothing* — every one no recorded site admits (a typo'd family, an empty `[]`, a
+standalone line whose `line + 1` has no mutant, or a family that produced no mutant there).
+`Mutare.Schema` computes them per file (`ineffective_ignores`, the substring-prefiltered re-parse
+done on the **full** site set before any `--line`/`--max-mutants` trim, so a scoped run can't
+manufacture a false positive); the Mix task **warns** on each to stderr at scan time, and
+`--strict-ignores` (`:strict_ignores`, mirroring the `--min-score` `gate/2`) escalates them to a
+non-zero abort. Detection is relative to the active run — a family disabled by `--mutators`
+produces no site, so a directive naming only it is reported.

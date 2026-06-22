@@ -116,6 +116,13 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([keep_sandbox: true], [])[:keep_sandbox] == true
     end
 
+    test "--strict-ignores passes through; otherwise it's left to default" do
+      assert Config.merge([], strict_ignores: true)[:strict_ignores] == true
+      refute Keyword.has_key?(Config.merge([], []), :strict_ignores)
+      # file config still flows through
+      assert Config.merge([strict_ignores: true], [])[:strict_ignores] == true
+    end
+
     test "--harness-retries and --max-harness-error-rate pass through; flags win over file" do
       merged = Config.merge([], harness_retries: 2, max_harness_error_rate: 0.3)
       assert merged[:harness_retries] == 2

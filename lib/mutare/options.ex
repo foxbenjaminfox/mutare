@@ -6,8 +6,8 @@ defmodule Mutare.Options do
   `Mutare.Schema`, `Mutare.Runner`, and `Mutare.Sandbox`. `new/1` resolves an
   (already config-merged) keyword list — or another `Options` — into a struct,
   validating every field up front, so a bad `:workers`, `:timeout`,
-  `:test_selection`, `:paths`, `:sandbox`, `:keep_sandbox`, `:baseline_runs`,
-  `:harness_retries`, `:max_harness_error_rate`, or `:max_mutants` fails loudly
+  `:test_selection`, `:paths`, `:sandbox`, `:keep_sandbox`, `:strict_ignores`,
+  `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`, or `:max_mutants` fails loudly
   at the edge with an `ArgumentError` instead of misbehaving silently deep in the
   pipeline.
 
@@ -43,6 +43,7 @@ defmodule Mutare.Options do
           max_harness_error_rate: number() | nil,
           sandbox: String.t() | nil,
           keep_sandbox: boolean(),
+          strict_ignores: boolean(),
           max_mutants: pos_integer() | nil,
           min_score: number() | nil,
           reporters: [{:human | :json | :html | :sarif, String.t() | nil}],
@@ -69,6 +70,7 @@ defmodule Mutare.Options do
             max_harness_error_rate: 0.5,
             sandbox: nil,
             keep_sandbox: false,
+            strict_ignores: false,
             max_mutants: nil,
             min_score: nil,
             reporters: [{:human, nil}],
@@ -80,7 +82,7 @@ defmodule Mutare.Options do
 
   @keys ~w(paths exclude mutators macros expand_uses only_files only_lines test_selection
            workers timeout timeout_multiplier baseline_runs harness_retries max_harness_error_rate
-           sandbox keep_sandbox max_mutants min_score reporters reporter on_phase
+           sandbox keep_sandbox strict_ignores max_mutants min_score reporters reporter on_phase
            on_start on_scan project)a
 
   # Output formats a reporter entry may name. `:human` is the console report
@@ -144,6 +146,7 @@ defmodule Mutare.Options do
         validate_harness_error_rate!(Keyword.get(opts, :max_harness_error_rate, 0.5)),
       sandbox: validate_sandbox!(Keyword.get(opts, :sandbox)),
       keep_sandbox: validate_keep_sandbox!(Keyword.get(opts, :keep_sandbox, false)),
+      strict_ignores: validate_strict_ignores!(Keyword.get(opts, :strict_ignores, false)),
       max_mutants: validate_max_mutants!(Keyword.get(opts, :max_mutants)),
       min_score: validate_min_score!(Keyword.get(opts, :min_score)),
       reporters: validate_reporters!(Keyword.get(opts, :reporters, [{:human, nil}])),
@@ -327,6 +330,12 @@ defmodule Mutare.Options do
 
   defp validate_keep_sandbox!(value),
     do: validate!(value, &is_boolean/1, ":keep_sandbox must be true or false")
+
+  # When true (`--strict-ignores`), a `# mutare:ignore` directive that suppresses
+  # no mutant fails the run instead of only warning (see
+  # `Mutare.Ignore.ineffective/2`). Default `false` (warn only).
+  defp validate_strict_ignores!(value),
+    do: validate!(value, &is_boolean/1, ":strict_ignores must be true or false")
 
   # nil means no cap (run every mutant); otherwise an upper bound on the number of
   # mutants tested. The cap is applied by `Mutare.Schema` (it truncates the site

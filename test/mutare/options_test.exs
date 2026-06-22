@@ -101,6 +101,23 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":strict_ignores" do
+    test "defaults to false" do
+      assert Options.new([]).strict_ignores == false
+    end
+
+    test "accepts true and false" do
+      assert Options.new(strict_ignores: true).strict_ignores == true
+      assert Options.new(strict_ignores: false).strict_ignores == false
+    end
+
+    test "rejects a non-boolean" do
+      assert_raise ArgumentError, ~r/:strict_ignores must be true or false/, fn ->
+        Options.new(strict_ignores: "yes")
+      end
+    end
+  end
+
   describe ":workers" do
     test "accepts a positive integer" do
       assert Options.new(workers: 8).workers == 8

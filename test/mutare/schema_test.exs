@@ -278,4 +278,39 @@ defmodule Mutare.SchemaTest do
       Schema.build(root, mutators: [Mutare.Test.RaisingMutator])
     end
   end
+
+  test "records `# mutare:ignore` directives that suppressed no mutant", %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule A do
+      def f(x), do: x + 1   # mutare:ignore[bogus]
+      def g(x), do: x + 1   # mutare:ignore[arithmetic]
+    end
+    """)
+
+    # A file with no directive at all is never re-parsed and contributes nothing.
+    write(root, "lib/b.ex", "defmodule B do\n  def h(x), do: x + 1\nend\n")
+
+    schema = Schema.build(root, mutators: @probe)
+
+    # The `[bogus]` typo (line 2) suppressed nothing; the `[arithmetic]` (line 3)
+    # matched the real arithmetic mutant on its line, so it is not flagged.
+    assert [{"lib/a.ex", %{line: 2, mutators: set}}] = schema.ineffective_ignores
+    assert MapSet.member?(set, "bogus")
+  end
+
+  test "ineffective detection uses the full site set, before --max-mutants trims", %{root: root} do
+    # The directive on line 3 matches a real mutant there. Capping the run to the
+    # first mutant (line 2's) must not make line 3's directive look ineffective.
+    write(root, "lib/a.ex", """
+    defmodule A do
+      def f(x), do: x + 1
+      def g(x), do: x + 1   # mutare:ignore[arithmetic]
+    end
+    """)
+
+    schema = Schema.build(root, mutators: @probe, max_mutants: 1)
+
+    assert Schema.count(schema) == 1
+    assert schema.ineffective_ignores == []
+  end
 end

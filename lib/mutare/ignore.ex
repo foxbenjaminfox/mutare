@@ -33,6 +33,12 @@ defmodule Mutare.Ignore do
   words are always prose, never a filter — so prose can never accidentally
   suppress a family.
 
+  Fail-safe is silent, though: a directive that admits no mutant (a typo, an
+  empty `[]`, a misplaced standalone line, or a family that produced no mutant
+  there) does *nothing*, and the user believes otherwise. `ineffective/2`
+  surfaces exactly those — every directive that suppressed no recorded site — so
+  the scan can warn (and `--strict-ignores` can fail) on them.
+
   Directives are read from **Sourceror's parsed comment metadata**, not by
   scanning the raw source. Each comment carries its `line`, `text`, and a
   `previous_eol_count` (`0` ⇒ code precedes it on the line ⇒ trailing; `≥ 1` ⇒
@@ -96,6 +102,40 @@ defmodule Mutare.Ignore do
     directives
     |> Map.get(line, [])
     |> Enum.find(&Directive.applies_to?(&1, mutator))
+  end
+
+  @doc """
+  The directives in `directives` that suppressed *nothing* — every directive no
+  recorded site admits, sorted by line.
+
+  A directive is *ineffective* when no mutant on its line satisfies its filter:
+  a typo'd family (`[arithmatic]`), an empty `[]`, a standalone directive on the
+  wrong line (`line + 1` has no mutant), or a family that produced no mutant
+  there. All four reduce to the one check below — `Directive.applies_to?/2` is
+  false for every occupied mutator on the directive's line.
+
+  `occupied` is the `{line, mutator}` of each recorded site (a `nil` line, which
+  no directive's `pos_integer` line can equal, is harmless). It is passed as
+  plain pairs rather than `Mutare.Site` structs so this module stays unaware of
+  the site representation.
+
+  Detection is relative to the mutants actually produced: a family disabled this
+  run (`--mutators`) yields no site, so a directive naming only it is reported —
+  the warning reflects the active configuration.
+  """
+  @spec ineffective(%{pos_integer() => [Directive.t()]}, [{pos_integer() | nil, atom()}]) ::
+          [Directive.t()]
+  def ineffective(directives, occupied) do
+    by_line = Enum.group_by(occupied, fn {line, _mutator} -> line end, fn {_line, m} -> m end)
+
+    directives
+    |> Enum.flat_map(fn {_line, ds} -> ds end)
+    |> Enum.reject(fn directive ->
+      by_line
+      |> Map.get(directive.line, [])
+      |> Enum.any?(&Directive.applies_to?(directive, &1))
+    end)
+    |> Enum.sort_by(& &1.line)
   end
 
   # Every comment Sourceror attached to a node, flattened. A comment lands in

@@ -154,6 +154,35 @@ the error to a block-macro mutant id; a DSL whose error lands on an unmappable l
 macro call site, not the spliced selector) still aborts — the pre-existing poison-mapping
 ceiling, not made worse here.
 
+### Warn for ineffective `# mutare:ignore` directives `[done]`
+`# mutare:ignore` filtering fails **safe** — a typo'd family (`[arithmatic]`), an empty
+`[]`, a standalone directive on the wrong line, or a family that produced no mutant there
+all simply match nothing, so the mutant still runs. Safe, but **silent**: the user thinks
+they suppressed a mutant and didn't. `Mutare.Ignore.ineffective/2` closes that gap — it
+returns every directive **no recorded site admits** (`Directive.applies_to?/2` false for
+every occupied mutator on the directive's line). One rule covers all four failure modes;
+there's no need to special-case typo vs. wrong-line vs. wrong-family.
+
+It takes `{line, mutator}` pairs, not `Mutare.Site` structs, so `Ignore` stays unaware of
+the site representation (same discipline as `directive_for/3` taking a bare `mutator` atom).
+`Mutare.Schema.detect_ineffective_ignores/1` computes it per file into `ineffective_ignores`,
+reusing the existing `Ignore.directives/1` re-parse — but only for files whose source
+contains the literal `mutare:ignore` (a cheap `String.contains?` prefilter keeps every other
+file off the parse path; a `sources` entry always parsed cleanly during transform, so the
+re-parse can't raise). It runs **after `finalize/1` but before `restrict_lines`/`limit`**, so
+detection sees the *full* mutation set — a `--line`/`--max-mutants` trim must not drop the
+sites a directive matches and make it look ineffective.
+
+The Mix task **warns** on each (one stderr line per directive, like `Mutare.Report.Live`'s
+stderr discipline, so a stdout machine report stays clean), and `--strict-ignores`
+(`:strict_ignores`) escalates them to a `Mix.raise` → non-zero exit — the CI gate counterpart,
+modeled on the `--min-score` `gate/2` (both live in the task, not the runner). Nuance, left
+documented rather than special-cased: detection is relative to the **active run**, so a family
+disabled by `--mutators` yields no site and a directive naming only it is flagged. The simple
+"admits no site" rule is predictable; distinguishing a *disabled* family from a *typo'd* one
+would need the full valid-family universe and isn't worth the complexity (a CI strict run uses
+the default set, where it can't arise).
+
 ### Scan is transform-bound, and the loop heap makes it worse `[deferred]`
 After the manifest went lazy (above), the scan (`Schema.from_files` → `Transform`
 per file) is dominated by `Sourceror.to_string` rendering each metamutant, and one

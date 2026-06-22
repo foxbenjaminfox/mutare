@@ -48,6 +48,29 @@ defmodule Mix.Tasks.MutareTest do
         Mix.Tasks.Mutare.run([root, "--line", "lib/a.ex:1"])
       end
     end
+
+    test "--strict-ignores aborts (with a stderr warning) on an ineffective directive" do
+      root = Project.tmp_dir(:task)
+      File.mkdir_p!(Path.join(root, "lib"))
+      # A real arithmetic mutant on line 2 (so the run has sites), but the
+      # `[bogus]` filter matches no mutant there — the directive suppresses nothing.
+      File.write!(
+        Path.join(root, "lib/a.ex"),
+        "defmodule A do\n  def f(x), do: x + 1 # mutare:ignore[bogus]\nend\n"
+      )
+
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      stderr =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/strict-ignores/, fn ->
+            Mix.Tasks.Mutare.run([root, "--strict-ignores"])
+          end
+        end)
+
+      assert stderr =~ "mutare:ignore[bogus]"
+      assert stderr =~ "suppressed no mutant"
+    end
   end
 
   @tag :runner

@@ -19,17 +19,24 @@ defmodule Mutare.Schema do
   thrown away on every healthy run.
   """
 
-  alias Mutare.{Options, Site}
+  alias Mutare.{Ignore, Options, Site}
+  alias Mutare.Ignore.Directive
 
   @type t :: %__MODULE__{
           files: [String.t()],
           sites: [Site.t()],
           metamutants: %{optional(String.t()) => String.t()},
           sources: %{optional(String.t()) => String.t()},
-          skipped: [{String.t(), term()}]
+          skipped: [{String.t(), term()}],
+          ineffective_ignores: [{String.t(), Directive.t()}]
         }
 
-  defstruct files: [], sites: [], metamutants: %{}, sources: %{}, skipped: []
+  defstruct files: [],
+            sites: [],
+            metamutants: %{},
+            sources: %{},
+            skipped: [],
+            ineffective_ignores: []
 
   @doc """
   Build a schema by discovering files under `root`.
@@ -120,6 +127,7 @@ defmodule Mutare.Schema do
     end)
     |> elem(0)
     |> finalize()
+    |> detect_ineffective_ignores()
     |> restrict_lines(options.only_lines)
     |> limit(options.max_mutants)
   end
@@ -251,6 +259,38 @@ defmodule Mutare.Schema do
 
   defp finalize(%__MODULE__{} = schema) do
     %{schema | sites: Enum.reverse(schema.sites), skipped: Enum.reverse(schema.skipped)}
+  end
+
+  # Record every `# mutare:ignore` directive that suppressed no mutant
+  # (`Mutare.Ignore.ineffective/2`), so the Mix task can warn — and
+  # `--strict-ignores` can fail — on a typo'd / misplaced / family-less directive
+  # that silently did nothing. Run after `finalize/1` (sites in order) but
+  # *before* `restrict_lines`/`limit`, so detection sees the full mutation set: a
+  # `--line`/`--max-mutants` trim must not make a real directive look ineffective.
+  #
+  # Only files whose source contains the literal `mutare:ignore` are re-parsed
+  # (`Ignore.directives/1`); the cheap substring prefilter keeps every other file
+  # off the parse path. A `sources` entry is always a file that parsed cleanly
+  # during transform (the `{:error, _}` branch of `add_file/6` records no source),
+  # so the re-parse cannot raise here.
+  defp detect_ineffective_ignores(%__MODULE__{sources: sources, sites: sites} = schema) do
+    sites_by_file = Enum.group_by(sites, & &1.file)
+
+    ineffective =
+      for {file, source} <- sources,
+          String.contains?(source, "mutare:ignore"),
+          directive <- file_ineffective(source, Map.get(sites_by_file, file, [])),
+          do: {file, directive}
+
+    %{schema | ineffective_ignores: Enum.sort_by(ineffective, fn {f, d} -> {f, d.line} end)}
+  end
+
+  defp file_ineffective(source, sites) do
+    occupied = Enum.map(sites, &{&1.line, &1.mutator})
+
+    source
+    |> Ignore.directives()
+    |> Ignore.ineffective(occupied)
   end
 
   # Cap the schema to at most `max` mutants (`--max-mutants`), keeping the first
