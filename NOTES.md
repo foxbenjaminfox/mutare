@@ -1120,6 +1120,27 @@ that nested `use` were dropped. Fix: `register_harvested/2` runs the same Source
 alias binds and the sibling `use` expands. (The stamped output already normalizes; only the in-body
 *env fold* missed it.) Tested via `Mutare.Test.UnquoteAliasUsing`.
 
+**Mirror the sandbox env without a fast-path data race.** The metamutant compiles/runs under
+`MIX_ENV=test` but the scan often runs in `:dev`, so a `__using__` that branches on `Mix.env()` must
+expand under `:test`. `with_sandbox_env/1` mirrors it: a `:test` base is the lock-free **fast path**
+(nothing to swap), a non-`:test` base **swaps** the global `Mix.env` under a node-local `:global` lock
+held for the whole expansion. The naive fast-path test `Mix.env() == :test` is a **race**: `Mix.env`
+is node-global ETS state, so a `:dev`-base swapper's *transient* `:test` (set while it holds the lock)
+can be read by a *second* concurrent transform, which then takes the unlocked fast path and keeps
+expanding after the swapper restores `:dev` — harvesting the wrong-env branch. Fix: a node-local
+**seqlock** (`@seq_key`, a one-slot `:atomics` counter) the swap bumps to *odd* on entry and *even* on
+exit, **inside** the lock and bracketing the env mutation. A reader samples `seq → Mix.env() → seq`
+and only trusts a `:test` reading when the seq was **even and unchanged** across it (no swap active
+for even an instant). A transient `:test` is only ever visible while seq is odd, so it can't be
+mistaken for the stable base. Crucially this keeps the **`:test` base lock-free** — there seq stays
+`0` (no swap ever runs), so the high-concurrency test suite and property soaks pay only two atomic
+reads, never the `:global` lock (whose retry backoff would serialize them). The atomics ref is created
+once under a one-time `:global` init lock and shared via `:persistent_term`; correctness rests on ETS
+(`Mix.State`) and `:atomics` each being internally synchronized, so the swapper's `odd` bump is
+visible to any reader that observes its `:test`. Regression-tested by `Mutare.Test.SlowEnvSensitiveUsing`
+(slow + env-sensitive) run concurrently in a `:dev` base across several rounds (the race is timing-
+dependent, so rounds make catching it reliable; the fix passes every round deterministically).
+
 **Degrades, never errors** (all wrapped in `try`): a non-loadable module (external target, or an aliased
 `use Web` we can't statically resolve — `Uses` does no alias tracking), non-literal args (`use Foo, var`),
 a `__using__` that raises (e.g. reads caller-module attributes), or an import gated behind a runtime

@@ -207,6 +207,23 @@ defmodule Mutare.Test.SlowUsing do
   end
 end
 
+defmodule Mutare.Test.SlowEnvSensitiveUsing do
+  @moduledoc """
+  Slow **and** env-sensitive: sleeps (widening the concurrency window) then injects based on
+  `Mix.env()` read *after* the sleep. The vehicle for the fast-path soundness hole — a process that
+  takes the unlocked fast path on another swapper's transient `:test` reads `:dev` again once that
+  swapper restores, harvesting the wrong (`delete`) branch. Under a correct mirror every expansion
+  sees `:test` for its whole duration, always injecting `fetch`.
+  """
+  defmacro __using__(_opts) do
+    Process.sleep(4)
+
+    if Mix.env() == :test,
+      do: quote(do: import(Map, only: [fetch: 2])),
+      else: quote(do: import(Map, only: [delete: 2]))
+  end
+end
+
 defmodule Mutare.Test.RaisingUsing do
   @moduledoc "A `__using__` that raises at expansion — must degrade to no directives, never crash."
   defmacro __using__(_opts), do: raise("boom from __using__")

@@ -61,4 +61,38 @@ defmodule Mutare.UsesEnvTest do
       Mix.env(previous)
     end
   end
+
+  test "a concurrent env-sensitive `use` never harvests the scan-env branch (fast-path hole)" do
+    source = "defmodule UsesSlowEnv do\n  use Mutare.Test.SlowEnvSensitiveUsing\nend"
+
+    previous = Mix.env()
+    Mix.env(:dev)
+
+    try do
+      # Staggered launches so a fast-pather (reading another swapper's transient `:test`) is still
+      # expanding when that swapper restores `:dev`. With the unguarded fast path it then reads
+      # `:dev` after its sleep and harvests `delete`; the seqlock forces it through the serialized
+      # swap, so it sees a stable `:test` for its whole expansion and harvests `fetch`. The failure
+      # is race-dependent, so several rounds make it reliable to catch — while the fix passes every
+      # round deterministically (every expansion always sees `:test`).
+      for _round <- 1..4 do
+        results =
+          for _ <- 1..6 do
+            task = Task.async(fn -> directives_at(source) end)
+            Process.sleep(2)
+            task
+          end
+          |> Enum.map(&Task.await(&1, 30_000))
+
+        refute Enum.any?(results, &("import Map, only: [delete: 2]" in &1)),
+               "an expansion harvested the scan-env branch: #{inspect(results)}"
+
+        assert Enum.all?(results, &("import Map, only: [fetch: 2]" in &1))
+      end
+
+      assert Mix.env() == :dev
+    after
+      Mix.env(previous)
+    end
+  end
 end

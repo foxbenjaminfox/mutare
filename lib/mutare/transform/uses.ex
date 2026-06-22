@@ -75,6 +75,11 @@ defmodule Mutare.Transform.Uses do
   # `child_module/3` and `stamp/3`.
   @unresolved :__mutare_unresolved__
 
+  # The `:persistent_term` key holding the env-mirror **seqlock** — a one-slot `:atomics` counter
+  # the swap bumps to mark itself in-flight, so a concurrent reader can tell a stable base `:test`
+  # from a swapper's transient one. See `with_sandbox_env/1`.
+  @seq_key {__MODULE__, :env_seq}
+
   @doc """
   Stamp each eligible module-level `use` node's meta with `:mutare_use_directives` — the
   Sourceror-form `import`/`alias`/`require …, as:` directives it injects (flattened across
@@ -90,32 +95,84 @@ defmodule Mutare.Transform.Uses do
   # config baked into the already-loaded modules can't be re-mirrored in-process — only a runtime
   # `Mix.env()` read is.)
   #
-  # `Mix.env/1` mutates **global** state, so two callers running concurrently in a non-sandbox env
-  # could interleave their save/restore — one capturing the other's transient `:test` as its
-  # "previous" and leaving the VM in the wrong env. Two guards make this safe:
+  # `Mix.env/1` mutates **global** (node-wide ETS) state, so concurrent callers must not corrupt
+  # each other's view. The design splits into a lock-free fast path and a serialized swap:
   #
-  #   * **Fast path** when already at the sandbox env: no mutation at all. The test suite and the
-  #     sandbox run *in* `:test`, so every concurrent transform there (async tests, parallel
-  #     library callers) skips the swap entirely — nothing to race.
-  #   * **Serialize** the actual swap (the CLI's `:dev`) behind a node-local global lock
-  #     (`:global.trans` — no supervised process needed, and Mutare has none). Concurrent swappers
-  #     then run one at a time, each reading the true previous env and restoring it.
+  #   * **Fast path** when the *stable* base env is already the sandbox env: no mutation, no lock.
+  #     The test suite and the sandbox run *in* `:test`, so every concurrent transform there (async
+  #     tests, parallel library callers, the property soaks) skips the swap — and crucially, in a
+  #     `:test` base **no swap ever runs** (nothing reads a non-`:test` env), so the global is never
+  #     mutated and the fast path is contention-free.
+  #   * **Serialize** the swap (the CLI's `:dev`) behind a node-local `:global` lock, held for the
+  #     *whole* expansion. Concurrent swappers run one at a time, each reading the true previous env
+  #     and restoring it.
+  #
+  # The subtlety the obvious version gets wrong: a swapper in a `:dev` base transiently sets the
+  # global to `:test`, so a *second* concurrent transform reading `Mix.env()` could see that
+  # transient `:test`, wrongly take the lock-free fast path, and keep expanding an env-sensitive
+  # `__using__` after the first swapper restores `:dev` — harvesting directives for the wrong env.
+  # So the fast-path test is **not** a bare `Mix.env() == :test`: it is guarded by a node-local
+  # **seqlock** (`@seq_key`, an `:atomics` counter the swap bumps to *odd* on entry and back to
+  # *even* on exit, both **inside** the lock and bracketing the env mutation). A reader samples
+  # `seq → Mix.env() → seq` and only trusts a `:test` reading when the seq was **even and unchanged**
+  # across it — i.e. no swap was active for even an instant of the read. A transient `:test` is only
+  # ever set while seq is odd, so it can never be mistaken for the stable base. (`Mix.State`'s ETS
+  # and `:atomics` are each internally synchronized, so the swapper's `odd` bump is visible to any
+  # reader that observes its `:test`.) In a `:test` base seq stays `0`, so the guard is two atomic
+  # reads — no lock, no contention.
   #
   # `Mix.env/0` raises if Mix hasn't been *started* — the public `transform_string/2` API embedded
   # in a plain process that never ran Mix — in which case there's no sandbox env to mirror, so we
   # run unmirrored (the fallback keeps the library API working without Mix).
   defp with_sandbox_env(fun) do
-    case current_env() do
-      {:ok, @sandbox_env} -> fun.()
-      {:ok, _previous} -> swap(fun)
+    case classify_env() do
+      :sandbox -> fun.()
+      :other -> swap(fun)
       :unavailable -> fun.()
     end
   end
 
-  defp current_env do
-    {:ok, Mix.env()}
+  # Classify the *stable* base env, immune to a concurrent swapper's transient `:test`: `:sandbox`
+  # (fast path) only when `Mix.env()` reads the sandbox env **and** the seqlock shows no swap
+  # touched the global across the read (even and unchanged). Anything else is `:other` (swap path) —
+  # including a `:test` reading caught mid-swap, which then blocks on the lock and mirrors correctly.
+  # `:unavailable` when Mix isn't started (`Mix.env/0` raises).
+  defp classify_env do
+    ref = seq_ref()
+    s0 = :atomics.get(ref, 1)
+    env = Mix.env()
+    s1 = :atomics.get(ref, 1)
+
+    if env == @sandbox_env and s0 == s1 and rem(s0, 2) == 0,
+      do: :sandbox,
+      else: :other
   rescue
     _ -> :unavailable
+  end
+
+  # The seqlock counter — a one-slot `:atomics`, created once and shared via `:persistent_term`.
+  # The one-time creation is serialized by a `:global` lock so concurrent first-callers converge on
+  # a single ref (a lock-free create-and-put would let one process bump a ref another never sees);
+  # every later call is a bare `:persistent_term.get`.
+  defp seq_ref do
+    case :persistent_term.get(@seq_key, :missing) do
+      :missing -> create_seq_ref()
+      ref -> ref
+    end
+  end
+
+  defp create_seq_ref do
+    :global.trans({{__MODULE__, :env_seq_init}, self()}, fn ->
+      case :persistent_term.get(@seq_key, :missing) do
+        :missing ->
+          ref = :atomics.new(1, signed: false)
+          :persistent_term.put(@seq_key, ref)
+          ref
+
+        ref ->
+          ref
+      end
+    end)
   end
 
   # The `:global.trans` id is `{ResourceId, LockRequesterId}`. The lock is keyed on the
@@ -125,8 +182,15 @@ defmodule Mutare.Transform.Uses do
   # process-independent (constant) requester id would make every process the same requester and
   # grant them all at once — defeating the mutex. (Counter-intuitive but verified; the concurrent
   # transform test in `uses_env_test.exs` guards it.)
+  #
+  # The seqlock bumps bracket the env mutation: `add → odd` *before* `Mix.env(@sandbox_env)`, and
+  # `add → even` *after* the restore (in `after`, so a raising `fun` still leaves it even). Both run
+  # inside the lock, so swaps never interleave their bumps — seq cycles `even → odd → even` cleanly.
   defp swap(fun) do
+    ref = seq_ref()
+
     :global.trans({{__MODULE__, :sandbox_env}, self()}, fn ->
+      :atomics.add(ref, 1, 1)
       previous = Mix.env()
       Mix.env(@sandbox_env)
 
@@ -134,6 +198,7 @@ defmodule Mutare.Transform.Uses do
         fun.()
       after
         Mix.env(previous)
+        :atomics.add(ref, 1, 1)
       end
     end)
   end
