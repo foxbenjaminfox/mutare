@@ -1068,6 +1068,23 @@ making it indistinguishable from a textual directive; the existing register + li
 reflection + macro-routing then work unchanged (no new register clauses, no pre-normalizing imports to
 `only:` sets). A `require …, as:` is rewritten to the equivalent `alias` (register doesn't read `require`).
 
+**Mirror the caller env, not just `:module`.** `expand_using/4` builds the `Macro.Env` it expands
+`__using__` under. Setting `:module` (for `__CALLER__.module`) and `:requires` (so the remote call is
+expandable) isn't enough: a `__using__` may branch on **`__CALLER__.aliases`**, choosing an
+import/alias from the caller's lexical bindings (`alias Enum, as: U; use AliasAware` → the macro reads
+`U => Enum` and injects accordingly). Left at the default, `env.aliases` is *this module's own*
+compile-time aliases (`AST`, `Aliases`), so the pre-pass harvested directives against the **wrong**
+module and rewrote later bare calls accordingly — a real soundness bug. The fix threads the source
+alias env (the `%{name => path | atom}` map the walk already folds for resolving the `use` *target*)
+into the expansion env: `env_aliases/1` renders it into the `[{Elixir.Name, module}]` shape Elixir
+builds (a single-segment name → its module atom via `Module.concat`; an Erlang atom module kept
+verbatim — `[{U, Enum}, {B, :binary}]`). A **nested** `use`'s caller aliases are the source aliases
+*merged with* the directives the enclosing body injected before it (`Map.merge(caller_aliases, env)`,
+injected shadowing source), matching how the compiler expands a later nested `use` with earlier
+injected aliases in scope. Only `:aliases` is mirrored — `__CALLER__.functions/macros/context_modules`
+aren't, out of scope (the reported case is aliases). Tested in `uses_test.exs` via
+`Mutare.Test.AliasAwareUsing` (a `__using__` that picks its import off `__CALLER__.aliases`).
+
 **Degrades, never errors** (all wrapped in `try`): a non-loadable module (external target, or an aliased
 `use Web` we can't statically resolve — `Uses` does no alias tracking), non-literal args (`use Foo, var`),
 a `__using__` that raises (e.g. reads caller-module attributes), or an import gated behind a runtime

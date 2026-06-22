@@ -60,6 +60,24 @@ defmodule Mutare.Test.CallerProbe do
   end
 end
 
+defmodule Mutare.Test.AliasAwareUsing do
+  @moduledoc """
+  A `__using__` that branches on the caller's lexical aliases: it injects `import Map, only:
+  [fetch: 2]` when the caller has aliased *something to* `Enum` (`alias Enum, as: U`, whose entry
+  is `{U, Enum}`), else `import Map, only: [get: 2]`. The observation vehicle for
+  `__CALLER__.aliases` faithfulness — `Mutare.Transform.Uses` must mirror the source alias env into
+  the expansion env, not leave its own (which never aliases `Enum`). The real compiler sees the
+  caller's `alias`; the pre-pass must too.
+  """
+  defmacro __using__(_opts) do
+    aliases_enum? = Enum.member?(Keyword.values(__CALLER__.aliases), Enum)
+
+    if aliases_enum?,
+      do: quote(do: import(Map, only: [fetch: 2])),
+      else: quote(do: import(Map, only: [get: 2]))
+  end
+end
+
 defmodule Mutare.Test.RealTarget do
   @moduledoc """
   The real `use` target an injected alias points at. Injects a distinctive `import Map, only:

@@ -317,6 +317,39 @@ defmodule Mutare.UsesTest do
       assert "import Map, only: [get: 2]" in rendered
     end
 
+    test "a caller alias is visible to `__using__` via `__CALLER__.aliases`" do
+      source = """
+      defmodule UsesCallerAliases do
+        alias Enum, as: U
+        use Mutare.Test.AliasAwareUsing
+      end
+      """
+
+      rendered = Enum.map(directives_at(source), &Macro.to_string/1)
+
+      # `AliasAwareUsing.__using__` branches on whether the caller aliased anything to `Enum`. The
+      # real compiler sees `alias Enum, as: U`, so it injects the `fetch` import; the pre-pass must
+      # mirror the source alias env into the expansion `Macro.Env`, not leave its own (which never
+      # aliases `Enum`) — otherwise it would harvest the wrong fallback (`get`).
+      assert "import Map, only: [fetch: 2]" in rendered
+      refute "import Map, only: [get: 2]" in rendered
+    end
+
+    test "without a caller alias `__using__` takes its `__CALLER__.aliases` fallback" do
+      source = """
+      defmodule UsesNoCallerAlias do
+        use Mutare.Test.AliasAwareUsing
+      end
+      """
+
+      rendered = Enum.map(directives_at(source), &Macro.to_string/1)
+
+      # No `alias Enum`, so `__CALLER__.aliases` doesn't mention `Enum` and the fallback (`get`)
+      # branch fires — confirming the env isn't accidentally carrying Mutare's own aliases.
+      assert "import Map, only: [get: 2]" in rendered
+      refute "import Map, only: [fetch: 2]" in rendered
+    end
+
     test "a top-level alias resolves a `use` in a following `defmodule`" do
       source = """
       alias Mutare.Test.ControllerUsing, as: U
