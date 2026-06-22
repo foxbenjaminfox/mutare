@@ -94,9 +94,28 @@ the block (the selector is the problem, and every mutant adds one).
 The existing per-id poison backstop would drop one implicated mutant, rebuild, hit the
 *next* selector, and repeat — O(mutants-in-block) rounds, easily exhausting the 25-attempt
 budget on a real DSL block, or stalling if a round's error doesn't map. So the runner
-**escalates**: when a poison lands inside an unknown block macro, it skips *every* mutant
-in that block at once (`Mutare.Runner.expand_block_macros/2`), the runtime equivalent of
-"mark the macro `:skip`" — the body renders raw and compiles in **one** extra round.
+**escalates**: when a poison recurs inside an unknown block macro, it skips *every* mutant
+in that block at once (`Mutare.Runner.escalate_block_poison/3`), the runtime equivalent of
+"mark the macro `:skip`" — the body renders raw and compiles.
+
+**Evidence-based, not eager** (the precision fix). A poison inside an unknown block has *two*
+distinct causes that demand opposite responses: the DSL rejecting the injected selector
+**wholesale** (every mutant in the block will fail — escalate), vs. *one* mutant's broken
+*replacement* — classically a **custom mutator** emitting uncompilable code inside the block
+(only that mutant should drop; its compile-safe-by-construction siblings should still run).
+Eagerly escalating on the *first* poison conflates them: a single buggy custom mutant would
+drag the innocent built-in arithmetic/literal siblings in its block to `:poisoned`, silently
+shrinking the score's denominator. The build can't tell the modes apart — whether an unknown
+DSL rejects a given selector is information that only exists at compile time — but they differ
+in **recurrence under a single drop**: wholesale recurs (drop one selector → the next fails),
+id-specific does not (drop the bad mutant → the rest compile). So escalation waits for the
+**second strike**: the *first* poison in a block drops just the implicated id(s) and marks the
+block *struck* (threaded through `prepare_compiling`'s `struck` set); only a *later, distinct*
+poison in an already-struck block drops the whole block. A genuinely-wholesale block therefore
+costs **one extra rebuild** (drop one, see it recur, escalate); an id-specific failure stops
+over-skipping. The residual imprecision — two *independent* id-specific failures in one block
+escalate it on the second — is accepted: distinguishing that from wholesale recurrence means
+trying each id individually, the exact budget blow-up escalation exists to prevent.
 
 Why escalate via `skip_ids` rather than literally re-running the transform with the macro
 registered `:skip`: **id stability**. The whole poison loop relies on ids being stable
@@ -1001,7 +1020,7 @@ reflection (`Code.ensure_loaded?` + `function_exported?`), so a first-party DSL 
 the target project* — which the Mutare process can't load — leaves a bare macro call unstamped,
 and the macro is then misclassified as **unknown**. That is the worst place to lose the routing:
 a `:skip` body is mutated as an ordinary runtime body (it *was* meant to be opaque), and the
-unknown-block tag means a single resulting compile poison makes `Runner.expand_block_macros/2`
+unknown-block tag means a recurring compile poison makes `Runner.escalate_block_poison/3`
 drop *every* sibling mutant in the block — silently skipping valid mutants despite the user's
 `:macros` registration. The fix: when reflection can't resolve the call, consult the **registry**
 directly — among the *whole*-imported modules in scope, find one registering `fun/arity` as a known

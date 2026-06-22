@@ -229,6 +229,7 @@ defmodule Mutare.Runner do
          root,
          %Options{} = options,
          skip_ids \\ MapSet.new(),
+         struck \\ MapSet.new(),
          attempts \\ @poison_attempts,
          sandbox \\ nil
        ) do
@@ -248,11 +249,14 @@ defmodule Mutare.Runner do
         {:ok, schema, sandbox}
 
       {:error, :compile_failed, output} = failure ->
-        # The implicated mutant ids, escalated so that a poison inside an unknown
-        # module-level block macro drops the *whole* block (a DSL may reject the
-        # injected selector wholesale, so dropping one mutant at a time would just
-        # re-hit the next; see `expand_block_macros/2`).
-        poison = output |> Poison.ids(schema.metamutants) |> expand_block_macros(schema.sites)
+        # The implicated mutant ids this round, then evidence-based escalation for an
+        # unknown module-level block macro: a block is dropped *wholesale* only once a
+        # *second, distinct* poison lands in it after a targeted single-id drop — the
+        # only signal that distinguishes a DSL rejecting the injected selector wholesale
+        # (recurs under a single drop) from one mutant's broken replacement (does not).
+        # See `escalate_block_poison/3`.
+        raw = Poison.ids(output, schema.metamutants)
+        {poison, struck} = escalate_block_poison(raw, schema.sites, struck)
 
         if attempts > 0 and not MapSet.subset?(poison, skip_ids) do
           # Drop the poisoning mutants and rebuild. Ids are stable across rebuilds
@@ -264,7 +268,7 @@ defmodule Mutare.Runner do
           # `:exclude`) can't silently expand. Forward the original options so
           # `:mutators` survive; ids stay stable across rebuilds.
           schema = Schema.rebuild(schema, root, options, skip_ids)
-          prepare_compiling(schema, root, options, skip_ids, attempts - 1, sandbox)
+          prepare_compiling(schema, root, options, skip_ids, struck, attempts - 1, sandbox)
         else
           # Couldn't identify (or keep making progress on) the poison → give up.
           # We own the sandbox and are returning an error (no caller `after` will
@@ -288,41 +292,59 @@ defmodule Mutare.Runner do
 
   defp cleanup_sandbox(_sandbox, _options), do: :ok
 
-  # An injected selector `case` inside an *unknown* module-level block macro (a DSL
-  # whose `do` body the transform mutates on the guess it is unquoted into a
-  # function) may be illegal in that DSL and fail the whole compile. Dropping the
-  # implicated mutant alone would just hit the next selector in the same block,
-  # round after round (and could exhaust the attempt budget). So when a poison
-  # lands inside such a block, skip *every* mutant in that block at once — the
-  # runtime-stable equivalent of marking the macro `:skip` (the body renders raw,
-  # its mutants are recorded `:poisoned`), while ids stay stable across rebuilds
-  # (unlike a true `:skip`, which would stop analyzing the body and shift later
-  # ids). Identity is **per-invocation** — `{file, {macro_name, nid}}`, tagged on
-  # each `Site` by the transform — so a poison in one `custom_dsl do … end` skips
-  # only that block, never a sibling invocation of the same macro that expands
-  # differently. A poison that touches no block macro is returned unchanged (the
-  # common path).
-  defp expand_block_macros(poison, sites) do
+  # Evidence-based escalation for a poison inside an *unknown* module-level block macro
+  # (a DSL whose `do` body the transform mutates on the guess it is unquoted into a
+  # function). Two distinct failure modes both surface here, and they need opposite
+  # responses:
+  #
+  #   * **Wholesale** — the DSL rejects the injected selector `case` itself (it splices the
+  #     body into a guard/pattern/compile-time position). *Every* selector in the block will
+  #     fail, so the whole block must be dropped at once — otherwise we'd hit the next
+  #     selector round after round and could exhaust the attempt budget.
+  #   * **Id-specific** — one mutant's *replacement* is illegal (classically a custom mutator
+  #     emitting uncompilable code). Only that mutant must be dropped; its innocent
+  #     (compile-safe-by-construction) siblings in the same block should still run.
+  #
+  # The build can't tell them apart — whether an unknown DSL rejects a given selector is
+  # information that only exists at compile time. But the two modes differ in **recurrence
+  # under a single drop**: wholesale recurs (drop one selector, the next fails), id-specific
+  # does not (drop the bad mutant, the rest compile). So we escalate a block only on its
+  # **second** strike: the first poison in a block drops just the implicated id(s) and *marks
+  # the block struck* (`struck`); a later poison in an already-struck block drops *every*
+  # mutant in it — the runtime-stable equivalent of marking the macro `:skip` (the body
+  # renders raw, its mutants recorded `:poisoned`), while ids stay stable across rebuilds
+  # (unlike a true `:skip`, which would stop analyzing the body and shift later ids).
+  #
+  # Cost of the precision: a genuinely-wholesale block pays **one extra rebuild** (drop one,
+  # see it recur, escalate). Limit: two *independent* id-specific failures in one block also
+  # escalate it on the second — indistinguishable from wholesale recurrence without trying
+  # each id individually, which is exactly the budget blow-up escalation exists to prevent.
+  #
+  # Identity is **per-invocation** — `{file, {macro_name, nid}}`, tagged on each `Site` by the
+  # transform — so a poison in one `custom_dsl do … end` only ever escalates that block, never
+  # a sibling invocation of the same macro that expands differently. A poison touching no block
+  # macro returns `{poison, struck}` with both unchanged (the common path).
+  defp escalate_block_poison(poison, sites, struck) do
     by_id = Map.new(sites, &{&1.id, &1})
 
-    groups =
+    hit =
       poison
       |> Enum.map(&block_macro_key(by_id[&1]))
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
 
-    if MapSet.size(groups) == 0 do
-      poison
-    else
-      siblings =
-        for site <- sites,
-            key = block_macro_key(site),
-            not is_nil(key),
-            MapSet.member?(groups, key),
-            do: site.id
+    # Escalate only blocks hit this round that were *already* struck on a prior round;
+    # newly-hit blocks are merely recorded (struck for next time) and dropped per-id.
+    escalate = MapSet.intersection(hit, struck)
 
-      MapSet.union(poison, MapSet.new(siblings))
-    end
+    siblings =
+      for site <- sites,
+          key = block_macro_key(site),
+          not is_nil(key),
+          MapSet.member?(escalate, key),
+          do: site.id
+
+    {MapSet.union(poison, MapSet.new(siblings)), MapSet.union(struck, hit)}
   end
 
   # The `{file, {macro_name, nid}}` invocation a site belongs to when it lives in an

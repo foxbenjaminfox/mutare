@@ -506,9 +506,9 @@ defmodule Mutare.Transform do
   # analyzed as runtime on the guess a DSL unquotes it into a function, but the
   # injected selector `case` may be illegal in the DSL and poison the single build.
   # Tag every site the body produces with this invocation's identity so poison
-  # recovery can skip the *whole* block at once (`Mutare.Runner.expand_block_macros/2`)
-  # — the runtime-stable equivalent of `:skip` — rather than dropping one mutant at a
-  # time and re-hitting the next selector. A *registered* macro is left untagged
+  # recovery can skip the *whole* block at once (`Mutare.Runner.escalate_block_poison/3`,
+  # on the block's second strike) — the runtime-stable equivalent of `:skip` — rather than
+  # dropping one mutant at a time and re-hitting the next selector. A *registered* macro is left untagged
   # (`tag` is `nil`), so the user's `:macros` choice is honoured and never auto-skipped.
   #
   # Sites accumulate newest-first (`claim_id` prepends), so the ones this `emit`

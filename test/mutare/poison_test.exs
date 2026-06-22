@@ -238,5 +238,71 @@ defmodule Mutare.PoisonTest do
       assert Enum.any?(statuses, &(:killed in &1))
       refute Enum.any?(statuses, &(:poisoned in &1 and :killed in &1))
     end
+
+    @tag :runner
+    @tag timeout: 180_000
+    test "an id-specific poison in an unknown block spares the block's compile-safe siblings" do
+      # `wrap do … end` is an *unknown* module-level block macro, but a **non-hostile** one:
+      # it unquotes its body into a normal function body, where the injected selector `case`
+      # is perfectly legal. So the block as a whole is fine — only *one* mutant in it is
+      # broken: the custom `PoisonMutator` rewrites `+` to an unbound variable. Eager
+      # escalation would, on that single poison, drop the *whole* block — wrongly marking the
+      # compile-safe built-in arithmetic/literal siblings `:poisoned` and shrinking the score.
+      # Evidence-based escalation drops only the poison mutant (the block never takes a second
+      # strike), so the siblings compile, run, and are killed.
+      %{project: project, sandbox: sandbox} =
+        Project.build(:wdsl, %{
+          "lib/wrap_dsl.ex" => """
+          defmodule WrapDSL do
+            # Unquote the body into a *normal* function body — selectors are legal here, so
+            # the block is not wholesale-hostile; any poison is one mutant's own doing.
+            defmacro wrap(do: body) do
+              quote do
+                def w, do: unquote(unwrap(body))
+              end
+            end
+
+            defp unwrap({:__block__, _meta, [single]}), do: single
+            defp unwrap(other), do: other
+          end
+          """,
+          "lib/uses_wrap.ex" => """
+          defmodule UsesWrap do
+            import WrapDSL
+
+            wrap do
+              1 + 2
+            end
+          end
+          """,
+          "test/uses_wrap_test.exs" => """
+          defmodule UsesWrapTest do
+            use ExUnit.Case
+
+            test "w" do
+              assert UsesWrap.w() == 3
+            end
+          end
+          """
+        })
+
+      mutators = [Mutare.Test.PoisonMutator, Mutare.Mutators.Arithmetic, Mutare.Mutators.Literal]
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: mutators)
+
+      block = Enum.filter(run.results, &match?({:wrap, _}, &1.site.block_macro))
+
+      # Only the custom `:poison` mutant is dropped; the built-in siblings are NOT poisoned.
+      poisoned = for r <- block, r.status == :poisoned, do: r.site.mutator
+      assert poisoned == [:poison]
+
+      # The compile-safe arithmetic/literal siblings compiled, ran, and were killed by
+      # `w() == 3` (eager escalation would have left them `:poisoned`, never run).
+      assert Enum.any?(
+               block,
+               &(&1.status == :killed and &1.site.mutator in [:arithmetic, :literal])
+             )
+
+      refute Enum.any?(block, &(&1.status == :poisoned and &1.site.mutator != :poison))
+    end
   end
 end

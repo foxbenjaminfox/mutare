@@ -563,18 +563,26 @@ contract between them is the whole game.
   lifted private `defp`, or (as a coarse fallback) the surrounding `case` — not just a selector
   clause's start line. The runner drops the implicated ids via `:skip_ids` and rebuilds, bounded.
   Zero cost when nothing poisons. One **escalation** lives in the runner
-  (`Runner.expand_block_macros/2`): when an implicated id sits inside an *unknown module-level
+  (`Runner.escalate_block_poison/3`): when an implicated id sits inside an *unknown module-level
   block macro* (`custom_dsl do … end`, whose body is mutated on the "unquoted into a function"
-  guess), the *whole* block's ids are skipped at once — a DSL that rejects the injected selector
+  guess), the *whole* block's ids may be skipped at once — a DSL that rejects the injected selector
   `case` does so for every mutation in the block, so dropping one at a time would just re-hit the
-  next. This is the runtime-stable equivalent of marking the macro `:skip` (the body renders raw,
-  its mutants are `:poisoned`) without breaking id stability (the body is still *analyzed*, so ids
-  stay put across rebuilds — a true `:skip` would stop analyzing and shift every later id). The
-  block macro is identified **per-invocation** by `Site.block_macro` (`{name, nid}`, the statement
-  node's injective `nid` — so `guarded :guard do …` poisoning doesn't suppress a sibling `guarded
-  :body do …`), tagged by `Transform.emit_block_macro/2` only on *unknown* macros
-  (`Analyze.unknown_block_macro_name/1`) — a *registered* macro the user chose to mutate is never
-  auto-skipped. See NOTES "Unknown block macros".
+  next (and could exhaust the attempt budget). But that's only one of two failure modes: a DSL
+  rejecting the selector **wholesale** (drop one → the next fails) vs. *one* mutant's broken
+  replacement (a custom mutator emitting uncompilable code — drop it → the rest compile). The two
+  are distinguished by **recurrence**, the only signal that exists (whether an unknown DSL rejects a
+  given selector is known only at compile time): escalation is **evidence-based** — the *first*
+  poison in a block drops just the implicated id(s) and marks the block *struck*; only a *second,
+  distinct* poison in an already-struck block drops every mutant in it. So a wholesale block pays
+  one extra rebuild but an id-specific failure no longer drags its innocent
+  (compile-safe-by-construction) siblings to `:poisoned`. Whole-block drop is the runtime-stable
+  equivalent of marking the macro `:skip` (the body renders raw, its mutants are `:poisoned`)
+  without breaking id stability (the body is still *analyzed*, so ids stay put across rebuilds — a
+  true `:skip` would stop analyzing and shift every later id). The block macro is identified
+  **per-invocation** by `Site.block_macro` (`{name, nid}`, the statement node's injective `nid` — so
+  `guarded :guard do …` poisoning doesn't suppress a sibling `guarded :body do …`), tagged by
+  `Transform.emit_block_macro/2` only on *unknown* macros (`Analyze.unknown_block_macro_name/1`) — a
+  *registered* macro the user chose to mutate is never auto-skipped. See NOTES "Unknown block macros".
 - **`Mutare.Report`** — diffs each *surviving* mutant against the **original** source via
   `Sourceror.patch_string` (clean one-line diffs), and computes the score:
   `killed / (total − no_coverage − ignored − poisoned − harness_error)`. This is the default
