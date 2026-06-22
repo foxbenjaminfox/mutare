@@ -55,6 +55,11 @@ defmodule Mutare.Transform.Analyze.Returns do
   defp annotate_block_returns(key, analyzed, raw, return_mutators) do
     cond do
       do_key?(key) -> attach_return(analyzed, raw, return_mutators)
+      # NOTE (equivalent survivor, deliberately not `# mutare:ignore`d so the killed
+      # `-> false` sibling stays counted): forcing this `cond` clause to `true` is
+      # equivalent — the only non-`:do`, non-clause-block key reaching here is `:after`,
+      # whose value is an expression (not a clause list), so `attach_clause_returns/3`
+      # no-ops on it exactly like the `true -> analyzed` arm would.
       clause_block_key?(key) -> attach_clause_returns(analyzed, raw, return_mutators)
       true -> analyzed
     end
@@ -63,6 +68,12 @@ defmodule Mutare.Transform.Analyze.Returns do
   # rescue/catch/else: a list of `->` clauses; each clause body's tail is a return
   # path. Walk the analyzed and raw clause lists in lockstep (structurally
   # identical) and append a return candidate to each clause body's tail.
+  # NOTE (equivalent survivors, deliberately not `# mutare:ignore`d so the killed
+  # `-> false` siblings stay counted): the `is_list/1` and `length/1` checks in this guard
+  # are a defensive assertion that always holds — `analyzed_clauses` is `raw_clauses` with
+  # only metadata added, so the two are always equal-length lists. Loosening the guard
+  # (forcing it `true`, weakening `and` to `or`) is therefore equivalent; forcing it `false`
+  # is killed (rescue/catch/else returns vanish).
   defp attach_clause_returns(analyzed_clauses, raw_clauses, return_mutators)
        when is_list(analyzed_clauses) and is_list(raw_clauses) and
               length(analyzed_clauses) == length(raw_clauses) do
@@ -71,6 +82,7 @@ defmodule Mutare.Transform.Analyze.Returns do
     |> Enum.map(fn {analyzed, raw} -> attach_clause_return(analyzed, raw, return_mutators) end)
   end
 
+  # mutare:ignore[clause_drop] equivalent — the guard above always holds for a real block (analyzed is raw + metadata, equal-length lists), so this fallback is unreachable for valid input.
   defp attach_clause_returns(analyzed_clauses, _raw, _return_mutators), do: analyzed_clauses
 
   defp attach_clause_return(
@@ -81,9 +93,15 @@ defmodule Mutare.Transform.Analyze.Returns do
     {:->, meta, [patterns, attach_return(analyzed_body, raw_body, return_mutators)]}
   end
 
+  # mutare:ignore[clause_drop] equivalent — every rescue/catch/else clause is a `{:->, _, [patterns, body]}` node, so the head above always matches and this fallback is unreachable for valid input.
   defp attach_clause_return(analyzed, _raw, _return_mutators), do: analyzed
 
   defp do_key?(key), do: AST.key_atom(key) == :do
+
+  # NOTE (equivalent survivor, deliberately not `# mutare:ignore`d so the killed
+  # `-> false` sibling stays counted): forcing this to `true` is equivalent — only `:after`
+  # reaches the second `cond` arm with this `true`, and its expression value makes
+  # `attach_clause_returns/3` no-op anyway (see `annotate_block_returns/4`).
   defp clause_block_key?(key), do: AST.key_atom(key) in @clause_block_keys
 
   # Find the tail expression of a `:do` block (the last statement of a multi-
@@ -113,6 +131,10 @@ defmodule Mutare.Transform.Analyze.Returns do
   # single-statement `:__block__` (a Sourceror-wrapped literal like `{:__block__,
   # _, [:ok]}`) is intentionally *not* unwrapped — the wrapping block is the node
   # we attach to.
+  # NOTE (equivalent survivor, deliberately not `# mutare:ignore`d so the killed
+  # `-> false` sibling stays counted): `length(a_stmts) == length(r_stmts)` is a defensive
+  # assertion that always holds (analyzed and raw are the same block with only metadata
+  # added), so forcing it `true` is equivalent; forcing it `false` is killed.
   defp map_tail({:__block__, meta, a_stmts}, {:__block__, _rmeta, r_stmts}, fun)
        when length(a_stmts) >= 2 and length(a_stmts) == length(r_stmts) do
     {a_init, [a_last]} = Enum.split(a_stmts, -1)
@@ -127,6 +149,7 @@ defmodule Mutare.Transform.Analyze.Returns do
   # return id at a shared node). The candidate's `original`/`range` come from the
   # *raw* tail, so the diff is clean. A tail we can't annotate (a non-`{f,m,a}`
   # node, or one Sourceror can't range) gets no return mutant.
+  # mutare:ignore[guard_drop] equivalent — a `{form, meta, args}` AST node always carries keyword-list meta, so the guard never excludes a real tail; it only fences out a malformed 3-tuple that can't occur here.
   defp append_return_candidates({form, meta, args} = node, raw_tail, replacements)
        when is_list(meta) do
     case NodeRange.get(raw_tail) do
@@ -149,5 +172,6 @@ defmodule Mutare.Transform.Analyze.Returns do
     end
   end
 
+  # mutare:ignore[clause_drop] equivalent — Sourceror wraps every scalar/tuple/list literal tail in a `:__block__` 3-tuple, so the head above matches every tail that has replacements; this fallback is unreachable for valid input.
   defp append_return_candidates(node, _raw_tail, _replacements), do: node
 end

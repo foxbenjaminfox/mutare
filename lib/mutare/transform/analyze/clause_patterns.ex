@@ -32,6 +32,12 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # the clause's *raw body* — everything `Mutare.Transform.emit_case_pattern_site/3` needs
   # to build the gated mutant clause. The originals come from the (already-analyzed) case
   # node at emit; only the mutants come from here.
+  # NOTE (equivalent survivors): the `++` operand_swap mutants on the candidate-group
+  # concatenations in this module (here and in `clause_pattern_candidates/3`,
+  # `attach_clause_pattern_candidates/4`, `clause_guard_candidates/3`, `rescue_clause_candidates/3`)
+  # only reorder the produced candidates — the *set* of mutants is unchanged, just their id
+  # order — so no behaviour or test distinguishes them. Left as documented survivors rather than
+  # `# mutare:ignore`d to keep them visible.
   def case_clause_candidates(clauses, mutators) do
     structural = PatternStructure.mutators(mutators)
 
@@ -54,8 +60,15 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # guard+body (the wildcard family's `used_outside`). Handles the guarded form (the guard
   # is the last `when` arg; a `when a when b` OR-guard is a single nested `when` node) and
   # the unguarded form. Anything with more than one pattern (not a `case` clause) → `nil`.
+  # NOTE (equivalent survivors): every `length(when_args) >= 2` guard in this module is a
+  # defensive lower bound — a `:when` node always has at least one pattern and a guard (≥2
+  # args). So *loosening* it (`>= 2` → `true`/`>= 0`/`>= 1`) is equivalent, while *tightening*
+  # it (`> 2`/`>= 3`/`<= 2` for a single-pattern clause) is killed by the case/receive/fn
+  # clause tests. A `case` clause specifically always has exactly two `when` args (one pattern
+  # + one guard), so its `Enum.split(when_args, -1)` index is equivalent to `1` as well.
   defp case_clause_parts({:->, _meta, [[{:when, _wm, when_args}], body]})
        when length(when_args) >= 2 do
+    # mutare:ignore[arithmetic] equivalent — a `case` clause's `when_args` is always exactly 2, so `Enum.split(_, -1)` and `Enum.split(_, 1)` partition it identically.
     case Enum.split(when_args, -1) do
       {[pattern], [guard]} -> {pattern, guard, body, PatternStructure.used_names([guard, body])}
       _ -> nil
@@ -65,11 +78,14 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   defp case_clause_parts({:->, _meta, [[pattern], body]}),
     do: {pattern, nil, body, PatternStructure.used_names([body])}
 
+  # mutare:ignore[clause_drop] equivalent — `case_clause_candidates/2` only calls this on real `case` clauses, which always match one of the two heads above; this guard against malformed input is unreachable.
   defp case_clause_parts(_clause), do: nil
 
+  # mutare:ignore[clause_drop] equivalent — dropping the `nil`-guard short-circuit leaves the general clause to run `Tag.guard_targets(nil, …)` (no targets) and `guard_drop_clause_candidate` on a synthetic `{:when, [], [pattern, nil]}` that Sourceror can't range, so it yields no candidate either way.
   defp guard_clause_candidates(_index, _pattern, nil, _body, _mutators), do: []
 
   defp guard_clause_candidates(index, pattern, guard, body, mutators) do
+    # mutare:ignore[literal] equivalent — the `0` seeds a strictly-monotonic tag counter; any start value hands out the same unique tags.
     {tagged_guard, {_next, targets}} = Tag.guard_targets(guard, {0, []}, mutators)
 
     swaps =
@@ -123,6 +139,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   end
 
   defp literal_clause_candidates(index, pattern, guard, body, mutators) do
+    # mutare:ignore[literal] equivalent — the `0` seeds a strictly-monotonic tag counter; any start value hands out the same unique tags.
     {tagged_pattern, {_next, targets}} = Tag.pattern_literal_targets(pattern, {0, []}, mutators)
 
     Tag.expand_targets(targets, fn tag, original, mutator, mutated, range ->
@@ -139,6 +156,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     end)
   end
 
+  # mutare:ignore[clause_drop] equivalent — dropping this empty-structural short-circuit leaves the general clause to run `PatternStructure.node_mutations(_, _, [])`, which returns `[]`; same result.
   defp structural_clause_candidates(_index, _pattern, _guard, _body, _used, []), do: []
 
   defp structural_clause_candidates(index, pattern, guard, body, used, structural) do
@@ -185,6 +203,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # node-level mutator offer is preserved for parity with the generic runtime clause (a
   # custom mutator matching the whole node; built-ins match none).
   def attach_clause_pattern_candidates(node, clauses, rebuild_fn, mutators) do
+    # mutare:ignore[atom] equivalent — `Analyze.body_context/1` maps every non-`:scaffold` context (including a mutated `:mutare`) to `:runtime`, so the clause bodies mutate identically.
     analyzed = Analyze.recurse(node, :runtime, mutators)
 
     candidates =
@@ -201,7 +220,11 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # (preserving an `after` block). An absent `do` (shouldn't happen) → no clauses and an
   # identity rebuild, so the construct is still analyzed but offers no pattern mutants.
   def receive_do_clauses(blocks, meta) do
+    # NOTE (equivalent survivor): forcing this finder's `== :do` to `true` is equivalent — the
+    # `:do` block is always the first entry of a `receive`, so `Enum.find` returns it either
+    # way; `== :do → false` (returns the `after` block / nil) is killed.
     case Enum.find(blocks, fn {key, _value} -> AST.key_atom(key) == :do end) do
+      # mutare:ignore[guard_drop] equivalent — a `receive`'s `:do` value is always the clause list, so the `is_list/1` guard never excludes it.
       {_do_key, clauses} when is_list(clauses) ->
         rebuild = fn new ->
           new_blocks =
@@ -273,6 +296,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   end
 
   defp literal_position_candidates(pattern, pos, clause, replace_clause, mutators) do
+    # mutare:ignore[literal] equivalent — the `0` seeds a strictly-monotonic tag counter; any start value hands out the same unique tags.
     {tagged_pattern, {_next, targets}} = Tag.pattern_literal_targets(pattern, {0, []}, mutators)
 
     Tag.expand_targets(targets, fn tag, original, mutator, mutated, range ->
@@ -361,12 +385,19 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     {patterns, PatternStructure.used_names([guard, body])}
   end
 
+  # NOTE (equivalent survivors): the `Enum.any?(...) → Enum.all?(...)` and the `if … → false`
+  # mutants here are equivalent — a guarded clause is always the single-element `[{:when, …}]`
+  # handled by the head above, so an `lhs_list` reaching *this* clause never contains a `:when`;
+  # both the `any?`/`all?` predicate and the `if` are therefore always false. (`if … → true`,
+  # which would drop every clause's patterns, is killed.)
+  # mutare:ignore[guard_drop] equivalent — a `->` clause's LHS is always a list, so the `is_list/1` guard never excludes a real clause.
   defp clause_patterns({:->, _meta, [lhs_list, body]}) when is_list(lhs_list) do
     if Enum.any?(lhs_list, &match?({:when, _, _}, &1)),
       do: nil,
       else: {lhs_list, PatternStructure.used_names([body])}
   end
 
+  # mutare:ignore[clause_drop] equivalent — `clause_pattern_candidates/3` only calls this on real `->` clauses, which match one of the two heads above; this fallback is unreachable.
   defp clause_patterns(_clause), do: nil
 
   # The guard of a `->` clause (its last `when` arg), or `nil` when unguarded.
@@ -410,6 +441,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
 
   defp rescue_clause_candidates(blocks, meta, spec) do
     case Enum.find(blocks, fn {key, _v} -> AST.key_atom(key) == :rescue end) do
+      # mutare:ignore[guard_drop] equivalent — a `rescue` block's value is always the clause list, so the `is_list/1` guard never excludes it.
       {_rescue_key, clauses} when is_list(clauses) ->
         rebuild_try = fn new_clauses ->
           new_blocks =
@@ -492,6 +524,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     end
   end
 
+  # mutare:ignore[clause_drop] equivalent — a `rescue` clause is always `{:->, _, [[head], body]}`, so the head above always matches; this fallback is unreachable for valid input.
   defp rescue_type_drops(_clause_indexed, _clauses, _rebuild_try, _spec), do: []
 
   # A rescue clause head's exception-type list plus a closure to rebuild the head from a
@@ -517,9 +550,11 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # The exception-type list inside a rescue head's list node, plus a closure to rebuild the
   # node from a narrowed list. Sourceror wraps the list literal in a `:__block__` (preserved so
   # the mutant renders cleanly); a bare list is handled too. A non-list (a single alias) → `nil`.
+  # mutare:ignore[guard_drop] equivalent — the `:__block__` always wraps a list literal here, so the `is_list/1` guard never excludes a real type list.
   defp rescue_types({:__block__, bmeta, [list]}) when is_list(list),
     do: {fn new -> {:__block__, bmeta, [new]} end, list}
 
+  # mutare:ignore[guard_drop, clause_drop] equivalent — Sourceror always `:__block__`-wraps a list literal (matched above), so this bare-list clause (and its guard) is never reached for real input; it is defensive only.
   defp rescue_types(list) when is_list(list), do: {fn new -> new end, list}
   defp rescue_types(_node), do: nil
 end

@@ -267,6 +267,57 @@ defmodule Mutare.ReturnValueTest do
     end
   end
 
+  describe "return-analysis mechanics (Mutare.Transform.Analyze.Returns)" do
+    test "operator mutants in rescue/catch/else clause bodies survive alongside returns" do
+      # `attach_clause_return/3` keeps the *analyzed* clause body (operator candidates and
+      # all) and uses the raw copy only for the clean return diff. Swapping the two — so it
+      # rebuilds from the un-analyzed `raw` body — would silently drop every operator mutant
+      # inside a rescue/catch/else body. Requires both ReturnValue (to enter the clause-return
+      # path at all) and an operator family (to have something to lose).
+      source = """
+      defmodule T do
+        def f(x) do
+          risky(x)
+        rescue
+          _ -> x + 1
+        catch
+          :throw, v -> v * 2
+        else
+          n -> n - 3
+        end
+      end
+      """
+
+      {_meta, sites, _} =
+        Mutare.transform_string(source, mutators: [ReturnValue, Mutare.Mutators.Arithmetic])
+
+      arith = sites |> Enum.filter(&(&1.mutator == :arithmetic)) |> Enum.map(& &1.original_code)
+      assert Enum.sort(arith) == ["n - 3", "v * 2", "x + 1"]
+    end
+
+    test "the return tail of a 3+ statement body is its last statement (Enum.split/-1)" do
+      # `map_tail/3` splits off the *last* statement with `Enum.split(stmts, -1)`. Miscoding
+      # the index as `1` would split off the *first* statement and the `[last]` match would
+      # raise for any 3-or-more-statement block — so this fixes the index for both the
+      # analyzed and the raw split.
+      source = """
+      defmodule T do
+        def f(x) do
+          a = x + 1
+          b = a + 1
+          b * 3
+        end
+      end
+      """
+
+      {_meta, sites, _} = Mutare.transform_string(source, mutators: [ReturnValue])
+      returns = Enum.filter(sites, &(&1.mutator == :return_value))
+
+      assert returns != []
+      assert Enum.all?(returns, &(&1.original_code == "b * 3"))
+    end
+  end
+
   describe "selection and ignore" do
     test "off when not in the :mutators list" do
       {_meta, sites, _} =

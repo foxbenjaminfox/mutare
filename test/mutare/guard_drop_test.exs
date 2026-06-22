@@ -130,7 +130,12 @@ defmodule Mutare.GuardDropTest do
         end
         """)
 
-      assert [%Site{mutator: :guard_drop, kind: :in_place}] = gd
+      assert [%Site{mutator: :guard_drop, kind: :in_place} = s] = gd
+      # The diff renders the `pattern when guard` head, so the recorded `original` node must
+      # keep its `:when` form (a `guard_drop_clause_pattern/5` regression — `:when → :mutare`
+      # would otherwise corrupt the rendered `original_code`).
+      assert s.original_code == "x when is_atom(x)"
+      assert s.mutated_code == "x"
     end
 
     test "a single-pattern fn clause guard is removed in place" do
@@ -141,7 +146,9 @@ defmodule Mutare.GuardDropTest do
         end
         """)
 
-      assert [%Site{mutator: :guard_drop, kind: :in_place}] = gd
+      assert [%Site{mutator: :guard_drop, kind: :in_place} = s] = gd
+      assert s.original_code == "x when is_integer(x)"
+      assert s.mutated_code == "x"
     end
 
     test "a multi-pattern fn clause is skipped (no single rangeable when head)" do

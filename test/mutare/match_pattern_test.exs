@@ -390,4 +390,66 @@ defmodule Mutare.MatchPatternTest do
       refute Enum.any?(sites, &(&1.mutator == :assign_probe and &1.line == 3))
     end
   end
+
+  describe "Mutare.Transform.Analyze.MatchPatterns mechanics" do
+    test "a non-final statement that is not a binding macro is analyzed normally" do
+      # `binding_pattern_macro/1`'s fallback returns nil for any statement that isn't a
+      # binding-escaping macro call. A bare-variable statement (`{:x, meta, nil}`, whose
+      # args slot is not a list) reaches that fallback; dropping it raises FunctionClauseError.
+      source = """
+      defmodule Mutare.MPFallbackFixture do
+        def f(x) do
+          x
+          :ok
+        end
+      end
+      """
+
+      {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "a leading comment on a destructuring `=` is stripped from the recorded diff" do
+      # Sourceror parks the statement's leading comment on the pattern's leftmost leaf;
+      # `strip_comments/1` must remove it (deleting `:leading_comments` on every pattern node)
+      # so the recorded original/mutated render the bare pattern, not the comment text.
+      source = """
+      defmodule Mutare.MPCommentFixture do
+        def f(t) do
+          # the destructure
+          {x, y} = t
+          x - y
+        end
+      end
+      """
+
+      {_meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+      swap = Enum.find(sites, &(&1.mutator == :pattern_swap))
+      assert swap.original_code == "{x, y}"
+      assert swap.mutated_code == "{y, x}"
+    end
+
+    test "a known macro's binding-pattern arg is found by its routing position, not the first arg" do
+      # `binding_pattern_index/1` finds the arg whose routing is `:binding_pattern`. When a
+      # registered macro carries it at a *non-first* position, the structural mutant must target
+      # that arg — not arg 0. (Forcing the search predicate `true` would always pick arg 0.)
+      source = """
+      defmodule Mutare.MPRoutingFixture do
+        def f(v) do
+          Foo.unpack(v, [x, y])
+          x - y
+        end
+      end
+      """
+
+      {_meta, sites, _} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.PatternSwap],
+          macros: [{Foo, :unpack, [:expression, :binding_pattern]}]
+        )
+
+      assert Enum.filter(sites, &(&1.mutator == :pattern_swap))
+             |> Enum.map(&{&1.original_code, &1.mutated_code}) == [{"[x, y]", "[y, x]"}]
+    end
+  end
 end

@@ -838,6 +838,212 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "if/unless hoisting — decision gate and spine-walk edge cases" do
+    alias Mutare.Selector
+
+    test "a binding condition is hoisted only when IfCondition is enabled" do
+      # `hoist_if?/2` gates the whole hoist on IfCondition being on (it owns the delivered
+      # decision). With IfCondition disabled the condition is left on the prune path —
+      # inline, no lifted statement, no decision selector.
+      source = """
+      defmodule HoistGate do
+        def f(o) do
+          if x = get(o) do
+            x
+          else
+            0
+          end
+        end
+        def get(o), do: o
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+
+      assert meta =~ "if x = get(o)"
+      refute meta =~ ":persistent_term.get(#{inspect(Selector.key())}"
+      assert Enum.filter(sites, &(&1.mutator == :if_condition)) == []
+    end
+
+    test "two refutable spine bindings are not hoisted (kept on the prune path)" do
+      # `refutable_spine_count/1 <= 1` caps the hoist at a single refutable binding (each
+      # needs its own temp). Two refutable spine bindings fall back to the prune path, so no
+      # decision is delivered.
+      source = """
+      defmodule HoistTwoRef do
+        def f(a, b) do
+          if ({:ok, x} = pa(a)) != ({:ok, y} = pb(b)) do
+            x - y
+          else
+            0
+          end
+        end
+        def pa(a), do: a
+        def pb(b), do: b
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+
+      assert Enum.filter(sites, &(&1.mutator == :if_condition)) == []
+      # the bindings stay inline in the condition (no lifted `{:ok, x} = pa(a)` statement)
+      assert meta =~ "({:ok, x} = pa(a))"
+      assert_compiles(meta)
+    end
+
+    test "a bare binding nested in a call argument on the spine is hoisted" do
+      # The spine walk recurses into call arguments, so a binding buried in one is still
+      # lifted out (and the now-binding-free condition carries the decision).
+      source = """
+      defmodule HoistInCall do
+        def f(o) do
+          if wrap(x = compute(o)) do
+            x
+          else
+            0
+          end
+        end
+        def wrap(v), do: v
+        def compute(o), do: o
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+
+      assert meta =~ "x = compute(o)"
+      assert Enum.any?(sites, &(&1.mutator == :if_condition))
+      assert_compiles(meta)
+    end
+
+    test "a bare binding nested in a tuple on the spine is hoisted" do
+      # The spine walk recurses into 2-tuples too.
+      source = """
+      defmodule HoistInTuple do
+        def f(o) do
+          if {x = first(o), :tag} == {1, :tag} do
+            x
+          else
+            0
+          end
+        end
+        def first(o), do: o
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+
+      assert meta =~ "x = first(o)"
+      assert Enum.any?(sites, &(&1.mutator == :if_condition))
+      assert_compiles(meta)
+    end
+
+    test "runtime: a binding hoisted out of a call argument stays bound and the decision flips" do
+      source = """
+      defmodule Mutare.HoistInCallRuntime do
+        def classify(o) do
+          if wrap(v = lookup(o)) do
+            {:has, v}
+          else
+            :none
+          end
+        end
+        def wrap(x), do: x
+        def lookup(o), do: o
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      assert_compiles(meta)
+      mod = Mutare.HoistInCallRuntime
+
+      true_id = Enum.find(sites, &(&1.mutated_code == "true")).id
+      false_id = Enum.find(sites, &(&1.mutated_code == "false")).id
+
+      Selector.put(Selector.baseline())
+      assert mod.classify(7) == {:has, 7}
+      assert mod.classify(nil) == :none
+
+      Selector.put(true_id)
+      assert mod.classify(nil) == {:has, nil}
+
+      Selector.put(false_id)
+      assert mod.classify(7) == :none
+    after
+      Selector.put(Selector.baseline())
+    end
+
+    test "a bare binding under a short-circuit LEFT operand (on the spine) is hoisted" do
+      # `x = compute(o)` is the left operand of `&&`, so it is unconditionally evaluated and on
+      # the spine; the spine walk recurses through the short-circuit's left side.
+      source = """
+      defmodule HoistShortCircuit do
+        def f(o) do
+          if (x = compute(o)) && positive?(x) do
+            x
+          else
+            0
+          end
+        end
+        def compute(o), do: o
+        def positive?(n), do: n > 0
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+
+      assert meta =~ "x = compute(o)"
+      assert Enum.any?(sites, &(&1.mutator == :if_condition))
+      assert_compiles(meta)
+    end
+
+    test "a bare binding inside a list literal on the spine is hoisted" do
+      # The spine walk recurses into list literals too.
+      source = """
+      defmodule HoistInList do
+        def f(o) do
+          if [x = first(o), 1] == [2, 1] do
+            x
+          else
+            0
+          end
+        end
+        def first(o), do: o
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+
+      assert meta =~ "x = first(o)"
+      assert Enum.any?(sites, &(&1.mutator == :if_condition))
+      assert_compiles(meta)
+    end
+
+    test "a pure literal preceding a spine binding does not veto the hoist" do
+      # `spine_reorders?/1` only vetoes when an *impure* (`:other`) expression is evaluated
+      # before the binding. A literal is `:pure`, so `:ok == (x = compute(o))` still hoists —
+      # this pins `eval_steps/1`'s `:pure` classification (misreading the literal as `:other`
+      # would spuriously veto, dropping the decision via the prune path).
+      source = """
+      defmodule HoistPureBefore do
+        def f(o) do
+          if :ok == (x = compute(o)) do
+            x
+          else
+            :no
+          end
+        end
+        def compute(o), do: o
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+
+      assert meta =~ "x = compute(o)\n"
+      assert Enum.any?(sites, &(&1.mutator == :if_condition))
+      assert_compiles(meta)
+    end
+  end
+
   test "with/else blocks are walked without corrupting the metamutant" do
     source = """
     defmodule W do

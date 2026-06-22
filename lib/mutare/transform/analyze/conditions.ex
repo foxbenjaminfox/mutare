@@ -144,6 +144,39 @@ defmodule Mutare.Transform.Analyze.Conditions do
     end
   end
 
+  # ── NOTE on the spine-walk helper cluster (spine_rewrite, spine_bindings, eval_steps,
+  # offspine_escaping_binding?, escaping_binding?, prune_binding_ancestors) ──
+  #
+  # A dogfood run leaves a cluster of equivalent / niche survivors across these mirror walks,
+  # deliberately left as *reported* survivors (the project's stance: surface a suspected-
+  # equivalent rather than hide it). The observable hoist behaviours — recursing into call
+  # args / tuples / lists / short-circuit spines, the IfCondition gate, and the ≤1-refutable
+  # cap — are pinned by the `if/unless hoisting` tests in `transform_test.exs`. What remains:
+  #
+  #   * Membership-guard directions (`form in @branch_forms → false`, `op in @short_circuit_ops
+  #     → false`, …): the SURVIVING direction is the no-op one — a node mis-routed that way
+  #     falls through to the general recursion, which (since `hoist_if?/2` has already proven no
+  #     escaping binding hides off-spine or inside a branch/isolating form) finds nothing to
+  #     change. `escaping_binding?(node)` and "recurse into `node`'s args" detect the same inner
+  #     bindings, so the two paths agree. The opposite direction (`… → true`), which would
+  #     mis-hoist or trap a binding, is killed.
+  #   * Symmetric `{left, right}` pattern swaps: the operands are combined commutatively
+  #     (`or` / `++` / independent recursion), so swapping them is a true no-op.
+  #   * `return_value`/`list` mutants on the predicate/collector clauses: `nil` for a boolean
+  #     predicate (≡ false) or `[]` for a binding collector only changes the *refutable count*,
+  #     which alters a decision only for ≥2 refutable bindings nested in a container — a shape no
+  #     realistic condition uses.
+  #   * Recursion clause drops: equivalent where the general clause/fallback covers them, else
+  #     killable only by an (unusual) binding buried in a container the dropped clause handled.
+  #   * `atom`/`collection` mutants on the walk structure (`offspine`'s `:= → :mutare`, its
+  #     `Enum.any? → Enum.all?`): equivalent or killable only by a pathological shape — a binding
+  #     nested in a spine binding's RHS *under a short-circuit*, or a multi-arg call with exactly
+  #     one off-spine-binding arg — that no real condition uses. (The one that *was* naturally
+  #     killable, `eval_steps`'s `:__block__ → :mutare` flipping a literal's reorder class, is
+  #     killed by the `pure literal preceding a spine binding` test.)
+  #
+  # The defensive `is_list/1` guards and unreachable fallbacks are `# mutare:ignore`d inline.
+  #
   # Rewrite the condition's *spine* (the unconditionally-evaluated nodes), replacing
   # each spine binding `PAT = EXPR` with a read of the lifted value and returning the
   # hoist statements, in evaluation (left-to-right) order. A bare-variable binding
@@ -163,6 +196,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
 
   defp spine_rewrite({:=, _meta, [lhs, rhs]}), do: hoist_one(lhs, rhs)
 
+  # mutare:ignore[guard_drop] equivalent — a non-leaf AST node always carries a list of args, so the `is_list/1` guard never excludes a real node.
   defp spine_rewrite({form, meta, args}) when is_list(args) do
     {args2, hoists} = spine_rewrite_each(args)
     {{form, meta, args2}, hoists}
@@ -205,6 +239,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
 
   defp spine_bindings({:=, _meta, _args} = node), do: [node]
 
+  # mutare:ignore[guard_drop] equivalent — a non-leaf AST node always carries a list of args, so the `is_list/1` guard never excludes a real node.
   defp spine_bindings({_form, _meta, args}) when is_list(args),
     do: Enum.flat_map(args, &spine_bindings/1)
 
@@ -270,10 +305,13 @@ defmodule Mutare.Transform.Analyze.Conditions do
 
   # Any other call/operator (including a remote `{:., …}` call): its arguments evaluate
   # left to right, then the application itself runs — one `:other` step after the args.
+  # mutare:ignore[guard_drop] equivalent — a non-leaf AST node always carries a list of args, so the `is_list/1` guard never excludes a real node.
   defp eval_steps({_form, _meta, args}) when is_list(args),
     do: Enum.flat_map(args, &eval_steps/1) ++ [:other]
 
   defp eval_steps({left, right}), do: eval_steps(left) ++ eval_steps(right)
+
+  # mutare:ignore[guard_drop] equivalent — only an actual list reaches this clause (leaves match the clauses above/below), so the `is_list/1` guard is always satisfied.
   defp eval_steps(list) when is_list(list), do: Enum.flat_map(list, &eval_steps/1)
   defp eval_steps(leaf) when is_atom(leaf) or is_number(leaf) or is_binary(leaf), do: [:pure]
   defp eval_steps(_other), do: [:other]
@@ -320,6 +358,15 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # A bare variable (the irrefutable, temp-free hoist case): a `{name, _, context}`
   # node with an atom name (not `_`) and an atom hygiene context. A call (`context` is
   # the arg list), an `__aliases__`, a pin, or a container is *not* a bare variable.
+  #
+  # NOTE (equivalent survivors): the surviving guard/pattern mutants here only matter for a
+  # bound `_` (`name != :_`, the name/context swap) or distinguish the irrefutable from the
+  # refutable hoist path (`hoist_one`'s `if bare_var?(lhs)`). A bound-and-read `_` is impossible
+  # in a real condition, and for a *captured* refutable pattern the irrefutable path merely
+  # reconstructs the (truthy) matched tuple — same observable result as the temp path; only a
+  # `_`-bearing refutable pattern (e.g. `{:ok, _} = …`) would differ, a shape no test exercises.
+  # The directions that *do* flip a real decision (`bare_var?(_) → true`, `not bare_var?(lhs) →
+  # false`) are killed via the refutable-count cap test.
   defp bare_var?({name, _meta, context})
        when is_atom(name) and is_atom(context) and name != :_,
        do: true
@@ -363,9 +410,11 @@ defmodule Mutare.Transform.Analyze.Conditions do
     {nodes, Enum.any?(hass)}
   end
 
+  # mutare:ignore[guard_drop] equivalent — `strip_inplace_candidates/1` only runs on `{form, meta, args}` nodes whose meta is always a keyword list, so the guard never excludes a real node.
   defp strip_inplace_candidates({form, meta, args}) when is_list(meta),
     do: {form, Keyword.delete(meta, :mutare), args}
 
+  # mutare:ignore[clause_drop] equivalent — the head above matches every node `prune_binding_ancestors/1` passes here (always a list-meta 3-tuple), so this fallback is unreachable for valid input.
   defp strip_inplace_candidates(node), do: node
 
   # Force an `if`/`unless`/`cond` *condition* to `true`/`false` via the in-place
@@ -395,6 +444,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # its `name`) to the condition node's metadata, preserving any candidates already there.
   # A condition we can't range (Sourceror returns nil) or that is not a `{f, m, a}` node
   # gets no mutant.
+  # mutare:ignore[guard_drop] equivalent — a `{form, meta, args}` AST node always carries keyword-list meta, so the guard never excludes a real condition node.
   defp append_condition_candidates({form, meta, args} = node, raw_condition, candidates)
        when is_list(meta) do
     case NodeRange.get(raw_condition) do
@@ -417,5 +467,6 @@ defmodule Mutare.Transform.Analyze.Conditions do
     end
   end
 
+  # mutare:ignore[clause_drop] equivalent — Sourceror wraps every scalar/tuple/list condition in a `:__block__` 3-tuple, so the head above matches every real condition; this fallback is unreachable for valid input.
   defp append_condition_candidates(node, _raw_condition, _candidates), do: node
 end

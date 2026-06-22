@@ -200,4 +200,154 @@ defmodule Mutare.PatternClauseTest do
     assert Report.diff(site, @source) ==
              "-      {x, y} -> x - y\n+      {y, x} -> x - y"
   end
+
+  describe "Mutare.Transform.Analyze.ClausePatterns mechanics" do
+    test "a receive/fn clause body is analyzed as runtime (operators in it mutate)" do
+      # `attach_clause_pattern_candidates/4` recurses the construct with the `:runtime`
+      # context so body expressions still get in-place mutants (not just patterns/guards).
+      fn_src = "defmodule T do\n  def h, do: fn x -> x + 1 end\nend\n"
+
+      recv_src =
+        "defmodule T do\n  def r do\n    receive do\n      x -> x + 1\n    end\n  end\nend\n"
+
+      for src <- [fn_src, recv_src] do
+        {_meta, sites, _} = Mutare.transform_string(src, mutators: [Mutare.Mutators.Arithmetic])
+        assert Enum.any?(sites, &(&1.mutator == :arithmetic and &1.original_code == "x + 1"))
+      end
+    end
+
+    test "a duplicate case-clause pattern thins (keeps the body-read binding), never `{_, _}`" do
+      # `case_clause_parts/1` passes the names read in guard+body as `used_outside`, forcing the
+      # wildcard family into *thin* mode; dropping that read-set would let it wildcard both
+      # occurrences and strand the body's `a`.
+      # Both an unguarded clause (`used_names([body])`) and a guarded one
+      # (`used_names([guard, body])`) must keep the body/guard read-set so the wildcard stays thin.
+      source = """
+      defmodule T do
+        def f(t) do
+          case t do
+            {a, a} -> a * 2
+            _ -> 0
+          end
+        end
+
+        def g(t) do
+          case t do
+            {b, b} when is_integer(b) -> b * 3
+            _ -> 0
+          end
+        end
+      end
+      """
+
+      {_meta, sites, _} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternWildcard])
+
+      codes =
+        sites |> Enum.filter(&(&1.mutator == :pattern_wildcard)) |> Enum.map(& &1.mutated_code)
+
+      assert Enum.sort(codes) == ["{_, a}", "{_, b}", "{a, _}", "{b, _}"]
+    end
+
+    test "a duplicate fn clause pattern thins too (clause_patterns/1 read-set)" do
+      # The `case` twin above goes through `case_clause_parts/1`; `fn`/`receive` clauses go
+      # through `clause_patterns/1`, which has its own `used_names([body])` (unguarded) and
+      # `used_names([guard, body])` (guarded) read-sets. Both must keep the wildcard thin.
+      source = """
+      defmodule T do
+        def h do
+          fn {a, a} -> a * 2
+             _ -> 0 end
+        end
+
+        def g do
+          fn {b, b} when is_integer(b) -> b * 3
+             _ -> 0 end
+        end
+      end
+      """
+
+      {_meta, sites, _} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternWildcard])
+
+      codes =
+        sites |> Enum.filter(&(&1.mutator == :pattern_wildcard)) |> Enum.map(& &1.mutated_code)
+
+      assert Enum.sort(codes) == ["{_, a}", "{_, b}", "{a, _}", "{b, _}"]
+    end
+
+    test "a guarded multi-pattern fn clause delivers pattern-swap and guard mutants at runtime" do
+      # Exercises the full multi-pattern (`when_args == 3`) clause path: `clause_patterns/1`,
+      # `clause_guard/1`, `put_clause_pattern_at/3`, and `put_clause_guard/2` — each gated on
+      # `length(when_args) >= 2` and using `Enum.split(when_args, -1)`.
+      source = """
+      defmodule Mutare.FnGuardFixture do
+        def run do
+          fn {a, b}, c when c > a -> {a, b, c}
+             _, _ -> :other end
+        end
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.PatternSwap, Mutare.Mutators.Relational]
+        )
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn -> [{_m, _b}] = Code.compile_string(meta) end)
+
+      swap = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.mutated_code == "{b, a}"))
+      lt = Enum.find(sites, &(&1.mutator == :relational and &1.mutated_code == "c < a"))
+      assert swap && lt
+
+      # `run/0` builds the fn under the active mutant, so call it fresh after each switch.
+      Selector.put(Selector.baseline())
+      assert Mutare.FnGuardFixture.run().({1, 2}, 5) == {1, 2, 5}
+      assert Mutare.FnGuardFixture.run().({5, 2}, 1) == :other
+
+      # swap `{a, b}` -> `{b, a}`: a binds the 2nd element; {1,2} -> b=1, a=2; c=5 > 2 -> {2,1,5}
+      Selector.put(swap.id)
+      assert Mutare.FnGuardFixture.run().({1, 2}, 5) == {2, 1, 5}
+
+      # guard `c > a` -> `c < a`: {5,2}, c=1 < a=5 -> {5,2,1}
+      Selector.put(lt.id)
+      assert Mutare.FnGuardFixture.run().({5, 2}, 1) == {5, 2, 1}
+    after
+      Selector.put(Selector.baseline())
+    end
+
+    test "a single-pattern guarded fn clause swap keeps the guard (when_args == 2 path)" do
+      # The multi-pattern test above exercises `when_args == 3`; this pins `when_args == 2` for
+      # `put_clause_pattern_at/3` — a *structural swap on a single-pattern guarded clause*. A
+      # mis-built replacement (e.g. the guard silently dropped) only shows at runtime: with the
+      # guard kept, the swapped `{5, 2}` fails `a > b` and falls through to `:other`.
+      source = """
+      defmodule Mutare.FnGuard2Fixture do
+        def run do
+          fn {a, b} when a > b -> {a, b}
+             _ -> :other end
+        end
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn -> [{_m, _b}] = Code.compile_string(meta) end)
+      swap = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.mutated_code == "{b, a}"))
+      assert swap
+
+      Selector.put(Selector.baseline())
+      assert Mutare.FnGuard2Fixture.run().({5, 2}) == {5, 2}
+      assert Mutare.FnGuard2Fixture.run().({2, 5}) == :other
+
+      # swap `{a, b}` -> `{b, a}` with the guard intact: {5,2} -> b=5, a=2, `a > b` (2 > 5) is
+      # false -> :other; {2,5} -> b=2, a=5, 5 > 2 -> {a, b} = {5, 2}.
+      Selector.put(swap.id)
+      assert Mutare.FnGuard2Fixture.run().({5, 2}) == :other
+      assert Mutare.FnGuard2Fixture.run().({2, 5}) == {5, 2}
+    after
+      Selector.put(Selector.baseline())
+    end
+  end
 end
