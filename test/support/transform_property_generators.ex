@@ -14,13 +14,14 @@ defmodule Mutare.TransformPropertyGenerators do
   failure to the transform, not the generator.
 
   The construct set favours what the mutators and the transform's trickier paths target
-  — operators, comparisons, conditionals (`if`/`case`/`cond`), pipes, `with`/`fn`/`try`
-  binding scopes, multi-clause heads, literal head patterns (incl. negatives), default
-  args (lifting + dispatcher forwarding), guards, multi-statement blocks with
-  value-discarded `=` matches (the `MatchPattern` swap/wildcard routing), `if`-condition
-  binding **hoisting** (`if (v = …) != nil do … v …`), and literal/collection families —
-  over raw breadth, so a modest `numtests` budget spends its randomness where rendering /
-  compilation is most likely to trip.
+  — operators, comparisons, conditionals (`if`/`case`/`cond`), single- and **multi-stage
+  pipes** (the latter driving `hoist_pipe`'s closure nesting down a chain of mutated stages),
+  `with`/`fn`/`try` binding scopes, multi-clause heads, literal head patterns (incl.
+  negatives), default args (lifting + dispatcher forwarding), guards, multi-statement blocks
+  with value-discarded `=` matches (the `MatchPattern` swap/wildcard routing), `if`-condition
+  binding **hoisting** (`if (v = …) != nil do … v …`), sigils (`~r`/`~w`/`~c`/`~D`…) and
+  bitstrings, and literal/collection families — over raw breadth, so a modest `numtests`
+  budget spends its randomness where rendering / compilation is most likely to trip.
 
   It also emits **stdlib calls the call-matching families target** (`Enum`/`String`/`Map`/
   `Keyword`/bare-`Kernel`), in two shapes. *Direct* calls (`String.upcase(s)`,
@@ -208,6 +209,8 @@ defmodule Mutare.TransformPropertyGenerators do
       {2, pipe_gen(smaller)},
       {1, collection_gen(smaller)},
       {2, remote_call_gen(vars)},
+      {1, sigil_gen()},
+      {1, bitstring_gen()},
       {1, with_gen(size, vars)},
       {1, fn_gen(size, vars)},
       {1, try_gen(smaller)},
@@ -276,7 +279,7 @@ defmodule Mutare.TransformPropertyGenerators do
 
   # A pipe into a stdlib call the call-matching mutators target. Each stage is total for
   # any term (`to_string`, `inspect`), or the value is wrapped in a list first so the
-  # `Enum` call is valid.
+  # `Enum` call is valid. The last branch is a **multi-stage** chain (see `pipe_chain_gen/1`).
   defp pipe_gen(sub) do
     oneof([
       let(e <- sub, do: {:|>, [], [e, {:to_string, [], []}]}),
@@ -287,8 +290,34 @@ defmodule Mutare.TransformPropertyGenerators do
       let(
         e <- sub,
         do: {:|>, [], [[e], {{:., [], [{:__aliases__, [], [:Enum]}, :reverse]}, [], []}]}
-      )
+      ),
+      pipe_chain_gen(sub)
     ])
+  end
+
+  # A **multi-stage** `Enum` pipe chain `[<e>] |> Enum.reverse() |> Enum.sort() |> Enum.uniq()`
+  # — 2–4 unary, list→list stages, each a call the call-matching families mutate (Collection /
+  # CallRemoval / CollectionArity). Because several stages mutate at once, the metamutant nests
+  # `hoist_pipe`'s one-shot closures *down* the chain (`lhs |> (fn p -> case … end).() |> (fn p
+  # -> case … end).()`) — the only generator that drives that nesting at depth, the rewrite that
+  # keeps a chain of mutated stages **linear** in depth instead of the ≈`(mutants+1)^depth` blowup
+  # of distributing `lhs` into every selector branch. Total: the leaf is wrapped in a one-element
+  # list so the first stage always gets an enumerable, and every stage is list→list for any
+  # element terms (Elixir's total term ordering makes `sort` total across mixed types).
+  defp pipe_chain_gen(sub) do
+    let {e, count} <- {sub, integer(2, 4)} do
+      let stages <- vector(count, pipe_stage_gen()) do
+        Enum.reduce(stages, [e], fn stage, acc -> {:|>, [], [acc, stage]} end)
+      end
+    end
+  end
+
+  # One unary, list→list `Enum` stage, written piped (no args — the piped value is the `|>` LHS).
+  defp pipe_stage_gen do
+    let(
+      fun <- oneof([:reverse, :sort, :uniq, :dedup]),
+      do: {{:., [], [aliases([:Enum]), fun]}, [], []}
+    )
   end
 
   # A small list, tuple, or keyword-syntax map literal of sub-expressions — exercises
@@ -550,6 +579,42 @@ defmodule Mutare.TransformPropertyGenerators do
 
   defp map_arg, do: oneof([{:%{}, [], []}, {:%{}, [], [{:a, 1}]}])
   defp keyword_arg, do: oneof([[], [ok: 1], [a: 1, b: 2]])
+
+  # === sigils + bitstrings ==================================================
+
+  # A sigil literal as a runtime **value** — `~r//` (RegexLiteral), `~w[]` (WordListLiteral),
+  # `~c""` (CharlistLiteral), and the `~D`/`~T`/`~N`/`~U` date-time sigils (DateTimeLiteral) —
+  # the only generator that exercises those five literal families. Built with `quote` (the
+  # cleanest route to a faithful sigil AST that `Macro.to_string` re-renders) and chosen via an
+  # **atom** `oneof`, since a literal sigil tuple in a generator position would be read as a
+  # PropEr tuple-type combinator. Placed only in runtime positions, never a pattern: a `~r//`
+  # expands to a `Regex.compile!` call and is not pattern-legal, and `literal_gen/0` (which *does*
+  # feed head/clause patterns) is left untouched. Contents are fixed and valid (a real date, a
+  # parseable regex), so the compile-time sigil evaluation — and each family's mutant, which
+  # stays a valid sigil by construction — compile cleanly.
+  defp sigil_gen do
+    let choice <- oneof([:regex, :words, :charlist, :date, :time, :naive, :utc]) do
+      case choice do
+        :regex -> quote(do: ~r/ab/)
+        :words -> quote(do: ~w[a b c])
+        :charlist -> quote(do: ~c"abc")
+        :date -> quote(do: ~D[2020-01-15])
+        :time -> quote(do: ~T[12:30:00])
+        :naive -> quote(do: ~N[2020-01-15 12:30:00])
+        :utc -> quote(do: ~U[2020-01-15 12:30:00Z])
+      end
+    end
+  end
+
+  # A `<<b0, b1, …>>` bitstring of 1–3 literal byte segments — BitstringLiteral (collapse to
+  # `<<>>`) and Literal (the byte ints themselves). A runtime value, total for any input. The
+  # segments are valid bytes (0–255), and the `<<>>` carries no `:delimiter` meta, so it reads as
+  # a bitstring literal rather than an interpolated string (which BitstringLiteral skips).
+  defp bitstring_gen do
+    let count <- integer(1, 3) do
+      let(bytes <- vector(count, integer(0, 255)), do: {:<<>>, [], bytes})
+    end
+  end
 
   # === module-level `use` ===================================================
 
