@@ -178,6 +178,22 @@ defmodule Mutare.ImportsTest do
       assert calls[:gcd] == {[:Integer], :qualify}
       refute Map.has_key?(calls, :is_even)
     end
+
+    test "only: :sigils resolves nothing (sigils are never attributed) without crashing" do
+      # `only: :sigils` becomes a `{:kind, :sigils}` selector; reflection on it is
+      # hard-wired to `false` (we never resolve a bare sigil call), so a bare call
+      # after it stays unresolved — and crucially the `:sigils` reflection arm must
+      # exist (else a FunctionClauseError on the very first lookup).
+      calls =
+        resolved("""
+        defmodule M do
+          import String, only: :sigils
+          def f(x), do: foo(x)
+        end
+        """)
+
+      refute Map.has_key?(calls, :foo)
+    end
   end
 
   describe "import on an alias and re-import" do
@@ -263,6 +279,23 @@ defmodule Mutare.ImportsTest do
 
       assert calls[:reject] == {[:Enum], :qualify}
       refute Map.has_key?(calls, :filter)
+    end
+
+    test "a later plain import (only a warn: flag) re-broadens to a whole import" do
+      # `import Enum, only: [reject: 2]` then a *plain* `import Enum` (a bare
+      # `warn: false` carries no only/except, so it is a whole import) replaces the
+      # narrow selection with `:all` — so `map`, absent from the first `only`, is now
+      # in scope. This is the `op_from_opts` "neither only nor except ⇒ :all" path.
+      calls =
+        resolved("""
+        defmodule M do
+          import Enum, only: [reject: 2]
+          import Enum, warn: false
+          def b(xs), do: map(xs, & &1)
+        end
+        """)
+
+      assert calls[:map] == {[:Enum], :bare}
     end
   end
 
@@ -411,6 +444,109 @@ defmodule Mutare.ImportsTest do
 
       refute Map.has_key?(calls, :min)
       refute Map.has_key?(calls, :abs)
+    end
+
+    test "displacement is precise: only the excepted Kernel names, and macros count too" do
+      # `import Kernel, except: [abs: 1, is_nil: 1]` displaces exactly those two —
+      # including `is_nil`, which is a Kernel *macro* (so the displacement check must
+      # consult `macro_exported?`, not just `function_exported?`). A Kernel function
+      # still in scope (`min`) and a plain non-Kernel local (`foo`) are NOT displaced.
+      calls =
+        resolved("""
+        defmodule M do
+          import Kernel, except: [abs: 1, is_nil: 1]
+          def a(x), do: abs(x)
+          def b(x), do: is_nil(x)
+          def c(p, q), do: min(p, q)
+          def d(x), do: foo(x)
+        end
+        """)
+
+      assert calls[:abs] == :kernel_displaced
+      assert calls[:is_nil] == :kernel_displaced
+      refute Map.has_key?(calls, :min)
+      refute Map.has_key?(calls, :foo)
+    end
+  end
+
+  describe "malformed or non-literal import directives (fail safe)" do
+    test "options given as a module attribute (not a literal list) are ignored, not crashed" do
+      calls =
+        resolved("""
+        defmodule M do
+          @opts [only: [reject: 2]]
+          import Enum, @opts
+          def f(xs), do: reject(xs, & &1)
+        end
+        """)
+
+      refute Map.has_key?(calls, :reject)
+    end
+
+    test "an atom-module import with attribute options is ignored, not crashed" do
+      calls =
+        resolved("""
+        defmodule M do
+          @opts [only: [split: 2]]
+          import :binary, @opts
+          def f(x), do: split(x, ",")
+        end
+        """)
+
+      refute Map.has_key?(calls, :split)
+    end
+
+    test "a multi-alias import (Foo.{Bar, Baz}) is ignored, not crashed" do
+      calls =
+        resolved("""
+        defmodule M do
+          import Foo.{Bar, Baz}
+          def f(x), do: bar(x)
+        end
+        """)
+
+      refute Map.has_key?(calls, :bar)
+    end
+
+    test "an import of a non-static module path (__MODULE__.Sub) is ignored, not crashed" do
+      # The resolved path is a list containing a non-atom segment, so it is not a
+      # valid module key — `module_key?`/`atoms?` must reject it (else `Module.concat`
+      # would later crash on the tuple segment).
+      calls =
+        resolved("""
+        defmodule M do
+          import __MODULE__.Sub
+          def f(x), do: foo(x)
+        end
+        """)
+
+      refute Map.has_key?(calls, :foo)
+    end
+
+    test "a malformed except: value (a bare atom, not a list) is dropped to empty, not crashed" do
+      # `except: :foo` can't be parsed into name/arity pairs, so it contributes the
+      # empty set — leaving a plain whole import (bare rebuild), never a crash.
+      calls =
+        resolved("""
+        defmodule M do
+          import Enum, except: :foo
+          def f(xs), do: reject(xs, & &1)
+        end
+        """)
+
+      assert calls[:reject] == {[:Enum], :bare}
+    end
+
+    test "a non-integer arity in only: is dropped (fail safe), not crashed" do
+      calls =
+        resolved("""
+        defmodule M do
+          import Enum, only: [reject: bogus]
+          def f(xs), do: reject(xs, & &1)
+        end
+        """)
+
+      refute Map.has_key?(calls, :reject)
     end
   end
 end

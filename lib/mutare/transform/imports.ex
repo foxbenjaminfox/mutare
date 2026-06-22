@@ -221,13 +221,24 @@ defmodule Mutare.Transform.Imports do
     do: function_exported?(module, fun, arity) or macro_exported?(module, fun, arity)
 
   defp to_module(path) when is_list(path), do: Module.concat(path)
+
+  # mutare:ignore[guard_drop] equivalent — a module key is always an atom or list, never a third shape.
   defp to_module(atom) when is_atom(atom), do: atom
+
+  # mutare:ignore[clause_drop] equivalent — keys are always atom/list, so this fallback is unreachable.
   defp to_module(_path), do: nil
 
   # A bare `Kernel`-named call is displaced only when the Kernel selector has been narrowed
   # (`import Kernel, only:/except:`) and no longer provides it. With the default whole import
   # (`{:all, ∅}`), nothing is displaced — the common path, and free of reflection.
   defp displaced_from_kernel?(kernel, fun, arity) do
+    # NOTE (suspected-equivalent survivor, deliberately not `# mutare:ignore`d): the
+    # `conditional` mutant that forces `not whole?(kernel)` to `true` is equivalent — when the
+    # kernel is whole, `kernel_function?(f,a)` and `provides?([:Kernel], whole, f,a)` are equal,
+    # so the tail collapses to `X and not X` = false (same as a false first conjunct). We do
+    # NOT ignore it, because the *other* conditional mutants on this expression (the larger
+    # conjunctions, and the `false` variant) are genuinely killed, and a line-level
+    # `# mutare:ignore[conditional]` would hide those real kills too.
     not whole?(kernel) and kernel_function?(fun, arity) and
       not provides?([:Kernel], kernel, fun, arity)
   end
@@ -245,6 +256,7 @@ defmodule Mutare.Transform.Imports do
   # `import Mod` / `import E` (an Elixir module, possibly an alias) — resolve the written
   # path through the alias env, so `import E` (and `import B` where `B` aliases an Erlang
   # atom module) lands on the real module key.
+  # mutare:ignore[guard_drop] equivalent — an `__aliases__` segment list is always a list, so the guard can't fail.
   defp register_import([{:__aliases__, _meta, path}], aliases, imports, kernel)
        when is_list(path),
        do: put_import(Aliases.resolve_path(path, aliases), :all, imports, kernel)
@@ -260,6 +272,9 @@ defmodule Mutare.Transform.Imports do
          )
 
   # `import :erlang_module` (a Sourceror-wrapped atom) — the module key is the atom itself.
+  # Dropping `when is_atom(atom)` lets a non-atom single-literal import (`import "x"`) reach
+  # `put_import`, but `module_key?` rejects it there exactly as the fallback clause would.
+  # mutare:ignore[guard_drop] equivalent — `module_key?` masks the difference downstream.
   defp register_import([{:__block__, _meta, [atom]}], _aliases, imports, kernel)
        when is_atom(atom),
        do: put_import(atom, :all, imports, kernel)
@@ -294,7 +309,11 @@ defmodule Mutare.Transform.Imports do
   defp combine({base, except}, {:except, e}), do: {base, MapSet.union(except, e)}
 
   defp module_key?(key) when is_atom(key), do: true
+
+  # mutare:ignore[guard_drop] equivalent — only reached with a list key (atoms taken above), so the guard can't fail.
   defp module_key?(key) when is_list(key), do: atoms?(key)
+
+  # mutare:ignore[clause_drop] equivalent — every key is an atom or list, so this fallback is unreachable.
   defp module_key?(_key), do: false
 
   # The directive's own op: `only:` wins over `except:` (a directive can't carry both); a
@@ -316,11 +335,20 @@ defmodule Mutare.Transform.Imports do
   # explicit name/arity set.
   defp only_op(value) do
     case kind_atom(value) do
+      # NOTE (suspected-equivalent survivor, deliberately not `# mutare:ignore`d): the `atom`
+      # mutant that rewrites `:sigils` here is equivalent — it routes `only: :sigils` to the
+      # `{:only, ∅}` arm, but a `{:kind, :sigils}` selector resolves nothing anyway (sigil
+      # reflection is hard-wired false), so both attribute nothing for every call. We do NOT
+      # ignore it: the sibling `:functions`/`:macros`/`:only_kind` atom mutants on this line are
+      # genuinely killed, and a line-level `# mutare:ignore[atom]` would hide those real kills.
       kind when kind in [:functions, :macros, :sigils] -> {:only_kind, kind}
       _other -> {:only, pairs_set(value)}
     end
   end
 
+  # Only an atom result can match `[:functions, :macros, :sigils]` in `only_op`; a non-atom
+  # result behaves like the `nil` the guard would otherwise yield.
+  # mutare:ignore[guard_drop] equivalent — a non-atom result is indistinguishable from `nil` downstream.
   defp kind_atom({:__block__, _meta, [atom]}) when is_atom(atom), do: atom
   defp kind_atom(_value), do: nil
 
@@ -352,13 +380,21 @@ defmodule Mutare.Transform.Imports do
   end
 
   defp unwrap_list({:__block__, _meta, [list]}) when is_list(list), do: list
+
+  # mutare:ignore[clause_drop] equivalent — Sourceror always wraps a list literal (clause above), so a bare list never reaches here.
   defp unwrap_list(list) when is_list(list), do: list
   defp unwrap_list(_value), do: []
 
+  # mutare:ignore[guard_drop] equivalent — `pairs_set` re-checks `is_integer` on the result, so a non-integer here is dropped just like `nil`.
   defp unwrap_int({:__block__, _meta, [n]}) when is_integer(n), do: n
+
+  # mutare:ignore[clause_drop, guard_drop] equivalent — ints are always Sourceror-wrapped (clause above), and `pairs_set` re-filters by `is_integer`.
   defp unwrap_int(n) when is_integer(n), do: n
   defp unwrap_int(_node), do: nil
 
+  # mutare:ignore[guard_drop] equivalent — `atoms?` is only called from `module_key?`'s `is_list` clause, so its argument is always a list.
   defp atoms?(list) when is_list(list), do: Enum.all?(list, &is_atom/1)
+
+  # mutare:ignore[clause_drop] equivalent — `atoms?` always receives a list (above), so this fallback is unreachable.
   defp atoms?(_other), do: false
 end
