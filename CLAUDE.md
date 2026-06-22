@@ -459,7 +459,11 @@ contract between them is the whole game.
     mirroring the analyzer's `:compile_time` quote handling. In-place (non-lifted) functions keep their
     name, so their `super` needs nothing (see NOTES "`super` in a lifted body").
 - **`Mutare.Schema`** — runs `Transform` across discovered files, threading **globally-unique,
-  stable** mutant ids. Honors `:paths`/`:exclude`, `:only_files` (for `--since`), and `:skip_ids`
+  stable** mutant ids. Honors `:paths`/`:exclude`, `:only_files` (for `--since`), `:only_lines`
+  (for `--line`: keep only the sites on the named `file:line`s, *and* prune discovery to those
+  files so the one compile stays small — a narrow rerun; applied inside `from_files/4` like
+  `:max_mutants`, so a poison rebuild reapplies it), `:max_mutants` (cap to the first N sites), and
+  `:skip_ids`
   (for poison recovery — the id counter advances even for skipped ids, so ids stay stable across
   rebuilds; this stability is relied upon). Per mutated file it stores the **rendered metamutant
   source** (`:metamutants`); the `Mutare.Manifest` is *not* precomputed — it is built lazily by
@@ -734,7 +738,10 @@ contract between them is the whole game.
   validates `:macros`; `Mutare.Schema` forwards it; `Transform` builds the registry and passes it to
   `Resolve.annotate/2`.
 - **`Mutare.Config`** / **`Mutare.Changes`** / **`Mix.Tasks.Mutare`** — `.mutare.exs` + CLI flag
-  resolution, `git diff` for `--since`, and the CLI entry point. Output formats resolve here too:
+  resolution, `git diff` for `--since`, and the CLI entry point. `Config.parse_line_spec/1` parses a
+  repeatable `--line FILE:LINE` (split on the last colon, integer line) into `:only_lines` — a narrow
+  rerun scoped to one `file:line`'s mutants, the `FILE:LINE` mirroring `Report.header/1`'s prefix.
+  Output formats resolve here too:
   `--format`/`--output` (CLI) and `reporters:` (`.mutare.exs`) become the `Mutare.Options`
   `:reporters` list (`[{format, path | nil}]`, `nil` = stdout). `Config.resolve_reporters/2` owns
   the **collision rule** — `--format` *with* `--output` keeps the human report on the console and

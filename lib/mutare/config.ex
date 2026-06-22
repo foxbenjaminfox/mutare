@@ -24,7 +24,8 @@ defmodule Mutare.Config do
   Merge `file_config` with parsed CLI `flags` into resolved options.
 
   Recognised flags: `:only` (→ `:paths`; a directory to scan or a single `.ex`
-  file), `:exclude` (repeatable → list of glob strings), `:mutators` (CSV → modules),
+  file), `:line` (repeatable → `:only_lines`; a `FILE:LINE` to scope the run to one
+  file:line's mutants), `:exclude` (repeatable → list of glob strings), `:mutators` (CSV → modules),
   `:min_score`, `:sandbox`, `:keep_sandbox`, `:full` (→ `test_selection: :full`),
   `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`,
   `:max_mutants`, `:workers`, `:timeout`, `:timeout_multiplier`,
@@ -46,6 +47,7 @@ defmodule Mutare.Config do
     file_config
     |> put_unless_nil(:paths, flags[:only] && [flags[:only]])
     |> put_unless_nil(:exclude, exclude_globs(flags))
+    |> put_unless_nil(:only_lines, parse_lines(flags))
     |> put_unless_nil(:min_score, flags[:min_score])
     |> put_unless_nil(:sandbox, flags[:sandbox])
     |> put_unless_nil(:keep_sandbox, flags[:keep_sandbox])
@@ -129,6 +131,34 @@ defmodule Mutare.Config do
     csv
     |> String.split(",", trim: true)
     |> Enum.map(&(&1 |> String.trim() |> String.to_atom()))
+  end
+
+  # `--line FILE:LINE` scopes the run to the mutants on specific `file:line` locations —
+  # a narrow rerun (e.g. to recheck one survivor, whose `file:line` the report prints
+  # verbatim). It is a **repeatable** flag (parsed `:keep`): each `--line` contributes one
+  # `{file, line}` pair, accumulated into `:only_lines`. Absent leaves the key unset (no
+  # line filter). `Mutare.Options` then validates the pairs; `Mutare.Schema` applies them.
+  defp parse_lines(flags) do
+    case Keyword.get_values(flags, :line) do
+      [] -> nil
+      specs -> Enum.map(specs, &parse_line_spec/1)
+    end
+  end
+
+  # `"lib/foo.ex:42"` → `{"lib/foo.ex", 42}`. Split on the *last* colon so a path may
+  # itself contain one; the trailing segment must be a positive integer line number.
+  # Anything else is a usage error, raised as an `ArgumentError` the Mix task surfaces
+  # as a clean failure (it rescues `Config.merge/2`).
+  defp parse_line_spec(spec) do
+    with {file_parts, [line_str]} <- spec |> String.split(":") |> Enum.split(-1),
+         file when file != "" <- Enum.join(file_parts, ":"),
+         {line, ""} when line > 0 <- Integer.parse(line_str) do
+      {file, line}
+    else
+      _ ->
+        raise ArgumentError,
+              "--line expects FILE:LINE (e.g. lib/foo.ex:42), got: #{inspect(spec)}"
+    end
   end
 
   # `--exclude` is the CLI counterpart of a `.mutare.exs` `exclude:` list. It is a

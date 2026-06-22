@@ -38,6 +38,28 @@ defmodule Mutare.ConfigTest do
                ["lib/billing/invoice.ex"]
     end
 
+    test "--line FILE:LINE becomes :only_lines; repeatable; absent leaves it unset" do
+      assert Config.merge([], line: "lib/billing/invoice.ex:42")[:only_lines] ==
+               [{"lib/billing/invoice.ex", 42}]
+
+      assert Config.merge([], line: "lib/a.ex:1", line: "lib/b.ex:9")[:only_lines] ==
+               [{"lib/a.ex", 1}, {"lib/b.ex", 9}]
+
+      refute Keyword.has_key?(Config.merge([], []), :only_lines)
+    end
+
+    test "--line splits on the last colon, so a path may contain one" do
+      assert Config.merge([], line: "weird:name.ex:9")[:only_lines] == [{"weird:name.ex", 9}]
+    end
+
+    test "--line rejects a missing or non-integer line number" do
+      for bad <- ["lib/a.ex", "lib/a.ex:", "lib/a.ex:abc", "lib/a.ex:1.5", ":42", "lib/a.ex:0"] do
+        assert_raise ArgumentError, ~r/--line expects FILE:LINE/, fn ->
+          Config.merge([], line: bad)
+        end
+      end
+    end
+
     test "repeated --exclude flags accumulate into a list of globs, preserving order" do
       assert Config.merge([], exclude: "lib/generated/**", exclude: "lib/legacy")[:exclude] ==
                ["lib/generated/**", "lib/legacy"]

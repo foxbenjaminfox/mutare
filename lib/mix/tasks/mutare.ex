@@ -14,6 +14,11 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --workspace              # mutate every app in an umbrella
       mix mutare --only lib/billing       # scope to a directory
       mix mutare --only lib/billing/invoice.ex  # …or a single file
+      mix mutare --line lib/billing/invoice.ex:42
+                                          # only the mutants on that file:line — a
+                                          #   narrow rerun, e.g. to recheck one
+                                          #   survivor (repeatable; FILE:LINE is the
+                                          #   exact prefix the report prints)
       mix mutare --exclude "lib/generated/**" --exclude lib/legacy
                                           # skip files matching globs (repeatable)
       mix mutare --since master             # only files changed vs a git ref (CI)
@@ -84,6 +89,7 @@ defmodule Mix.Tasks.Mutare do
 
   @switches [
     only: :string,
+    line: [:string, :keep],
     exclude: [:string, :keep],
     mutators: :string,
     min_score: :float,

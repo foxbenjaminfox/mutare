@@ -259,6 +259,30 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":only_lines" do
+    test "accepts nil, a MapSet, or a list of {file, line} (normalised to a MapSet)" do
+      assert Options.new(only_lines: nil).only_lines == nil
+
+      set = MapSet.new([{"lib/a.ex", 42}])
+      assert Options.new(only_lines: set).only_lines == set
+      assert Options.new(only_lines: [{"lib/a.ex", 42}]).only_lines == set
+    end
+
+    test "rejects a non-list/non-MapSet shape" do
+      assert_raise ArgumentError, ~r/:only_lines must be a MapSet/, fn ->
+        Options.new(only_lines: "lib/a.ex:42")
+      end
+    end
+
+    test "rejects entries that are not {path, positive integer}" do
+      for bad <- [{"lib/a.ex", 0}, {"lib/a.ex", -1}, {"lib/a.ex", "42"}, {42, 1}, {"", 1}, :nope] do
+        assert_raise ArgumentError, ~r/:only_lines entries must be/, fn ->
+          Options.new(only_lines: [bad])
+        end
+      end
+    end
+  end
+
   describe ":mutators" do
     test "accepts nil (default set) or a list of modules, resolved to specs" do
       assert Options.new(mutators: nil).mutators == nil

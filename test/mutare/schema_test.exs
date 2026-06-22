@@ -153,6 +153,57 @@ defmodule Mutare.SchemaTest do
     assert Enum.all?(schema.sites, &(&1.file == "lib/b.ex"))
   end
 
+  test ":only_lines keeps only the sites on the named file:line(s) (--line)", %{root: root} do
+    write(
+      root,
+      "lib/a.ex",
+      "defmodule A do\n  def f(x), do: x + 1\n  def g(a, b), do: a >= b\nend\n"
+    )
+
+    # Without the filter: + on line 2 (1 site), >= on line 3 (2 sites) = 3 sites.
+    schema = Schema.build(root, mutators: @probe, only_lines: MapSet.new([{"lib/a.ex", 3}]))
+
+    assert Enum.all?(schema.sites, &(&1.line == 3))
+    assert Enum.map(schema.sites, & &1.mutator) == [:relational, :relational]
+  end
+
+  test ":only_lines narrows the scanned files to those named (a fast narrow run)", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/b.ex", "defmodule B do\n  def g(a, b), do: a >= b\nend\n")
+
+    # Only b.ex:2 is requested, so a.ex never needs transforming — the metamutant
+    # (and the one compile) stays small.
+    schema = Schema.build(root, mutators: @probe, only_lines: MapSet.new([{"lib/b.ex", 2}]))
+
+    assert Map.keys(schema.metamutants) == ["lib/b.ex"]
+    assert Enum.all?(schema.sites, &(&1.file == "lib/b.ex" and &1.line == 2))
+  end
+
+  test ":only_lines yields no sites for a line with no mutants", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+
+    # Line 1 is `defmodule A do` — nothing to mutate there.
+    schema = Schema.build(root, mutators: @probe, only_lines: MapSet.new([{"lib/a.ex", 1}]))
+
+    assert Schema.count(schema) == 0
+  end
+
+  test ":only_lines survives a poison rebuild (reapplied inside from_files)", %{root: root} do
+    write(
+      root,
+      "lib/a.ex",
+      "defmodule A do\n  def f(x), do: x + 1\n  def g(a, b), do: a >= b\nend\n"
+    )
+
+    opts = [mutators: @probe, only_lines: MapSet.new([{"lib/a.ex", 3}])]
+    schema = Schema.build(root, opts)
+
+    rebuilt = Schema.rebuild(schema, root, opts, MapSet.new())
+
+    assert Enum.map(rebuilt.sites, & &1.id) == Enum.map(schema.sites, & &1.id)
+    assert Enum.all?(rebuilt.sites, &(&1.line == 3))
+  end
+
   test ":paths may name a single .ex file, not just a directory", %{root: root} do
     write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
     write(root, "lib/sub/b.ex", "defmodule B do\n  def g(a, b), do: a >= b\nend\n")

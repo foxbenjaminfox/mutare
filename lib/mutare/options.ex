@@ -33,6 +33,7 @@ defmodule Mutare.Options do
           macros: [Mutare.Macro.Spec.t()],
           expand_uses: boolean(),
           only_files: MapSet.t() | nil,
+          only_lines: MapSet.t() | nil,
           test_selection: :coverage | :full,
           workers: pos_integer(),
           timeout: pos_integer() | nil,
@@ -58,6 +59,7 @@ defmodule Mutare.Options do
             macros: [],
             expand_uses: true,
             only_files: nil,
+            only_lines: nil,
             test_selection: :coverage,
             workers: nil,
             timeout: nil,
@@ -76,8 +78,8 @@ defmodule Mutare.Options do
             on_scan: nil,
             project: nil
 
-  @keys ~w(paths exclude mutators macros expand_uses only_files test_selection workers timeout
-           timeout_multiplier baseline_runs harness_retries max_harness_error_rate
+  @keys ~w(paths exclude mutators macros expand_uses only_files only_lines test_selection
+           workers timeout timeout_multiplier baseline_runs harness_retries max_harness_error_rate
            sandbox keep_sandbox max_mutants min_score reporters reporter on_phase
            on_start on_scan project)a
 
@@ -131,6 +133,7 @@ defmodule Mutare.Options do
       macros: validate_macros!(Keyword.get(opts, :macros, [])),
       expand_uses: validate_expand_uses!(Keyword.get(opts, :expand_uses, true)),
       only_files: validate_only_files!(Keyword.get(opts, :only_files)),
+      only_lines: validate_only_lines!(Keyword.get(opts, :only_lines)),
       test_selection: validate_test_selection!(Keyword.get(opts, :test_selection, :coverage)),
       workers: validate_workers!(Keyword.get(opts, :workers) || System.schedulers_online()),
       timeout: validate_timeout!(Keyword.get(opts, :timeout)),
@@ -233,6 +236,35 @@ defmodule Mutare.Options do
   defp validate_only_files!(other) do
     raise ArgumentError,
           ":only_files must be a MapSet, a list of paths, or nil, got: #{inspect(other)}"
+  end
+
+  # `:only_lines` (the `--line FILE:LINE` filter) scopes the *run* to the mutants on
+  # specific `file:line` locations — a narrow rerun, e.g. to recheck one survivor the
+  # report named. A `MapSet`/list of `{file, line}` pairs, normalised to a `MapSet`;
+  # `nil` means no line filter. The `file` is a root-relative path (as shown in the
+  # report) and `line` a positive integer, validated per entry so a bad pair fails at
+  # the edge rather than silently matching nothing deep in `Mutare.Schema`.
+  defp validate_only_lines!(nil), do: nil
+  defp validate_only_lines!(%MapSet{} = set), do: validate_line_entries!(set)
+  defp validate_only_lines!(list) when is_list(list), do: validate_line_entries!(MapSet.new(list))
+
+  defp validate_only_lines!(other) do
+    raise ArgumentError,
+          ":only_lines must be a MapSet, a list of {file, line} tuples, or nil, got: #{inspect(other)}"
+  end
+
+  defp validate_line_entries!(set) do
+    Enum.each(set, fn
+      {file, line} when is_binary(file) and file != "" and is_integer(line) and line > 0 ->
+        :ok
+
+      bad ->
+        raise ArgumentError,
+              ":only_lines entries must be {file, line} with a non-empty path string and a " <>
+                "positive integer line, got: #{inspect(bad)}"
+    end)
+
+    set
   end
 
   defp validate_test_selection!(mode),

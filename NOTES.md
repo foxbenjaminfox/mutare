@@ -3737,6 +3737,51 @@ Design choices, and why:
   every other knob, so a bad `--max-mutants 0` fails at the edge. The Mix task's
   announce notes `(--max-mutants N)` so the smaller count isn't a surprise.
 
+### `--line FILE:LINE` — scope the run to one file:line's mutants `[done]`
+
+A *narrow rerun* knob: `mix mutare --line lib/billing/invoice.ex:42` (repeatable;
+or `only_lines:` in `.mutare.exs`) tests only the mutants whose original location is
+that `file:line`, instead of the whole population. The motivating workflow is
+re-checking a single result the report named — you killed (or want to recheck) one
+survivor and don't want to pay for a full run to confirm it. `FILE:LINE` is *exactly*
+the prefix `Mutare.Report.header/1` prints (`lib/x.ex:42  [relational, …]  SURVIVED`),
+so you copy-paste the location straight from the report.
+
+Design choices, and why:
+
+- **Two effects, both pointing at "narrow".** (1) `Mutare.Schema.restrict_lines/2`
+  filters `sites` to the matching `{file, line}` — the part that actually scopes the
+  *run* (the per-mutant suite loop is the dominant cost, and this is what shrinks it).
+  (2) `Mutare.Schema.restrict_to_line_files/3` also prunes discovery to just the named
+  files, so the metamutant and the one compile stay small — the same "compile only
+  what we run" the `--only <file>` form already gives. The site filter is the
+  load-bearing one; the file narrowing is a cheap bonus (a mutant in file A lives only
+  in A's metamutant, so compiling A alone is sound — exactly what `--only` relies on).
+- **Line granularity, not a single mutant.** A source line can host several mutants
+  (`a + b - c`); `--line` keeps *all* of them. The user asked for a *line*, and the
+  report identifies a survivor by `file:line` + diff, not by the internal
+  `MUTANT_UNDER_TEST` id (which isn't user-visible and *shifts* when discovery is
+  narrowed — see below). Column-level scoping would buy little and break the
+  copy-from-report ergonomics.
+- **Filter applied inside `from_files/4`, file-prune inside `build/2`.** Same split as
+  `:max_mutants` vs `:only_files`: the site filter lives in the one `from_files`
+  chokepoint so a **poison rebuild** (`Schema.rebuild`, which regenerates the sites)
+  reapplies it; the file prune is a discovery-time concern (`build/2`), and `rebuild`
+  replays the already-pruned recorded file list. Order is filter-then-`limit`, so
+  `--line` composes with `--max-mutants`.
+- **Ids shift when discovery narrows — and that's fine.** Restricting to file B means
+  B's mutants get the ids they'd have if B were scanned alone (no offset from earlier
+  files). The ids are an internal runtime switch, never the user's handle on a mutant,
+  so the shift is invisible. (Within a *full* run the ids are globally-unique/stable;
+  `--line` is explicitly a different, narrower run.)
+- **`Mutare.Config` parses `FILE:LINE`, `Mutare.Options` validates the pairs.** The
+  split is on the *last* colon (a path may contain one), the trailing segment must be a
+  positive integer, and a malformed value raises an `ArgumentError` the Mix task
+  surfaces as a clean failure (it rescues `Config.merge/2`) — `--line lib/foo.ex` with
+  no line errors at the edge rather than silently matching nothing. A line with no
+  mutants scopes to zero sites and hits the existing `:nothing_to_mutate` fast path
+  (before any compile/subprocess).
+
 ## Dogfooding findings (M1)
 
 Running `mix mutare` on Mutare's own `lib` (24 mutants, 14 killed) surfaced:

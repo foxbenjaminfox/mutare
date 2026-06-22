@@ -29,6 +29,25 @@ defmodule Mix.Tasks.MutareTest do
         Mix.Tasks.Mutare.run([".", "--mutators", "definitely-not-a-family"])
       end
     end
+
+    test "raises a clean Mix error on a malformed --line value" do
+      assert_raise Mix.Error, ~r/--line expects FILE:LINE/, fn ->
+        Mix.Tasks.Mutare.run([".", "--line", "lib/foo.ex"])
+      end
+    end
+
+    test "--line scoping to a line with no mutants yields no sites" do
+      root = Project.tmp_dir(:task)
+      File.mkdir_p!(Path.join(root, "lib"))
+      File.write!(Path.join(root, "lib/a.ex"), "defmodule A do\n  def f(x), do: x + 1\nend\n")
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      # Line 1 (`defmodule A do`) has nothing to mutate, so the run scopes to zero
+      # sites and fails fast (before compiling) rather than testing the whole file.
+      assert_raise Mix.Error, ~r/no mutation sites/, fn ->
+        Mix.Tasks.Mutare.run([root, "--line", "lib/a.ex:1"])
+      end
+    end
   end
 
   @tag :runner

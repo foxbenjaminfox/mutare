@@ -37,9 +37,11 @@ defmodule Mutare.Schema do
   `opts` is a `Mutare.Options` (or a keyword list resolved into one). It reads
   `:paths` (directories to scan recursively, or individual `.ex` files),
   `:exclude` (wildcard patterns dropped),
-  `:only_files` (restrict to an explicit set, e.g. `--since`), `:mutators`
-  (passed through to `Mutare.Transform`), and `:max_mutants` (cap the schema to
-  the first N mutants; see `from_files/4`).
+  `:only_files` (restrict to an explicit set, e.g. `--since`), `:only_lines`
+  (restrict the run to specific `file:line` sites — `--line` — also narrowing the
+  scanned files to those named; see `from_files/4`), `:mutators` (passed through
+  to `Mutare.Transform`), and `:max_mutants` (cap the schema to the first N
+  mutants; see `from_files/4`).
   """
   @spec build(Path.t(), Options.t() | keyword()) :: t()
   def build(root, opts \\ []) do
@@ -48,6 +50,7 @@ defmodule Mutare.Schema do
     root
     |> discover(scoped_paths(options), options.exclude)
     |> restrict(root, options.only_files)
+    |> restrict_to_line_files(root, options.only_lines)
     |> from_files(root, options)
   end
 
@@ -69,15 +72,28 @@ defmodule Mutare.Schema do
   defp restrict(files, _root, nil), do: files
   defp restrict(files, root, only), do: Enum.filter(files, &(relative(&1, root) in only))
 
+  # When `--line FILE:LINE` scopes the run to specific `file:line` sites, only those
+  # files need transforming — narrowing discovery to them keeps the metamutant small
+  # and the one compile fast (the same "compile only what we run" the `--only <file>`
+  # form gives). `nil` (no `--line`) leaves the file set untouched. The per-line site
+  # filter still happens later, in `from_files/4`; this only prunes whole files.
+  defp restrict_to_line_files(files, _root, nil), do: files
+
+  defp restrict_to_line_files(files, root, only_lines) do
+    line_files = MapSet.new(only_lines, fn {file, _line} -> file end)
+    Enum.filter(files, &(relative(&1, root) in line_files))
+  end
+
   @doc """
   Build a schema from an explicit list of files (paths recorded relative to `root`).
 
   `skip_ids` is poison-recovery state (mutant ids to drop), threaded separately
   from the user `Options` because it is internal transform plumbing, not config.
 
-  Honors `:max_mutants` (`--max-mutants`): the finished schema is capped to its
-  first N sites (in source order). The cap is applied here — inside *every*
-  `from_files/4` — so it survives a poison rebuild (which regenerates the sites
+  Honors `:only_lines` (`--line`) and `:max_mutants` (`--max-mutants`): the
+  finished schema's sites are filtered to the named `file:line`s, then capped to
+  the first N (in source order). Both are applied here — inside *every*
+  `from_files/4` — so they survive a poison rebuild (which regenerates the sites
   from scratch); the per-file metamutant sources still embed every mutant, so
   poison recovery is unaffected and a poisoned site within the first N is simply
   backfilled by the next one on rebuild.
@@ -104,6 +120,7 @@ defmodule Mutare.Schema do
     end)
     |> elem(0)
     |> finalize()
+    |> restrict_lines(options.only_lines)
     |> limit(options.max_mutants)
   end
 
@@ -245,6 +262,18 @@ defmodule Mutare.Schema do
 
   defp limit(%__MODULE__{sites: sites} = schema, max) when is_integer(max) and max > 0,
     do: %{schema | sites: Enum.take(sites, max)}
+
+  # Keep only the sites on an explicitly named `file:line` (`--line`). `nil` keeps
+  # every site. Applied here — inside *every* `from_files/4` — so a poison rebuild
+  # reapplies it, exactly like `limit/2` (`--max-mutants`): the per-file metamutant
+  # still embeds every mutant, so the one compile and poison recovery are unchanged;
+  # only the suite-per-mutant run is scoped to these sites. A site's `{file, line}`
+  # is its recorded original location (`file:line` as the report prints it), so a
+  # filter copied from a survivor header matches.
+  defp restrict_lines(%__MODULE__{} = schema, nil), do: schema
+
+  defp restrict_lines(%__MODULE__{sites: sites} = schema, only_lines),
+    do: %{schema | sites: Enum.filter(sites, &MapSet.member?(only_lines, {&1.file, &1.line}))}
 
   defp discover(root, paths, exclude) do
     excluded = Enum.flat_map(exclude, &Path.wildcard(Path.join(root, &1)))
