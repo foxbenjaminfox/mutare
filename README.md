@@ -89,6 +89,8 @@ mix mutare --since master           # only files changed vs a git ref (CI)
 mix mutare --mutators relational    # choose mutator families
 mix mutare --min-score 70           # fail (CI) below a score
 mix mutare --full                   # whole suite per mutant (no test selection)
+mix mutare --workers 4              # run N mutants concurrently
+mix mutare --timeout 30000          # per-mutant wall-clock cap, in ms
 mix mutare --format json --output mutare.json   # machine-readable report to a file
 ```
 
@@ -104,6 +106,8 @@ Optional `.mutare.exs`:
   # the same CI gate as `--min-score`, which overrides this when given
   min_score: 70,
   workers: System.schedulers_online(),
+  # per-mutant cap = baseline × timeout_multiplier, unless an absolute
+  # `timeout:` (ms) is set — both also available as --workers / --timeout
   timeout_multiplier: 3.0,
   test_selection: :coverage,
   # emit several reports at once (a bare atom goes to stdout)

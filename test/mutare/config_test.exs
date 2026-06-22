@@ -88,6 +88,18 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([max_mutants: 10], max_mutants: 25)[:max_mutants] == 25
     end
 
+    test "--workers passes through; flag wins over file; absent leaves it to default" do
+      assert Config.merge([], workers: 4)[:workers] == 4
+      refute Keyword.has_key?(Config.merge([], []), :workers)
+      assert Config.merge([workers: 2], workers: 8)[:workers] == 8
+    end
+
+    test "--timeout passes through; flag wins over file; absent leaves it to default" do
+      assert Config.merge([], timeout: 30_000)[:timeout] == 30_000
+      refute Keyword.has_key?(Config.merge([], []), :timeout)
+      assert Config.merge([timeout: 5_000], timeout: 60_000)[:timeout] == 60_000
+    end
+
     test "file config mutators: :all resolves to the default set (key omitted)" do
       refute Keyword.has_key?(Config.merge([mutators: :all], []), :mutators)
     end

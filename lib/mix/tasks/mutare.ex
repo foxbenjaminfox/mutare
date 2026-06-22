@@ -28,6 +28,10 @@ defmodule Mix.Tasks.Mutare do
                                           #   failed at the harness level (1.0 = off)
       mix mutare --max-mutants 50         # test at most 50 mutants (the first 50
                                           #   in source order) — a quick smoke run
+      mix mutare --workers 4              # run 4 mutants concurrently
+                                          #   (default: System.schedulers_online/0)
+      mix mutare --timeout 30000          # per-mutant wall-clock cap, in ms
+                                          #   (default: derived from the baseline run)
       mix mutare --sandbox /tmp/mut --keep-sandbox
                                           # reuse the sandbox + its build cache
                                           #   across runs (CI); see below
@@ -84,6 +88,8 @@ defmodule Mix.Tasks.Mutare do
     harness_retries: :integer,
     max_harness_error_rate: :float,
     max_mutants: :integer,
+    workers: :integer,
+    timeout: :integer,
     format: :string,
     output: :string,
     app: :string,
