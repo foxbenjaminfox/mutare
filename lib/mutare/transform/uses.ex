@@ -508,6 +508,14 @@ defmodule Mutare.Transform.Uses do
   # gate runs, since `Macro.quoted_literal?` is false on Sourceror block-wrapping. The module is
   # resolved through `env` so an aliased target (`alias RealUse, as: Foo; use Foo`) expands the
   # real module.
+  #
+  # The round-trip is **deliberate**, not a smell: it is the parser-based *inverse* of
+  # `normalize/1`'s `Macro.to_string |> Sourceror.parse_string!` (which goes standard→Sourceror),
+  # using the real tokenizer to convert between quoting formats rather than reimplementing
+  # Sourceror's block-wrapping inverse by hand — which would have to track every wrapped shape
+  # (nested keyword lists, maps, tuples) and would be *more* fragile. Module resolution alone
+  # wouldn't need it (`module_atom/2` reads the aliased segments directly), but the
+  # `Macro.quoted_literal?` opts gate and the real term `__using__` receives both do.
   defp standardize(sourceror_use_node, env) do
     {:use, _, args} = Code.string_to_quoted!(Sourceror.to_string(sourceror_use_node))
     use_args(args, env)

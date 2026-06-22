@@ -238,14 +238,21 @@ defmodule Mutare.Mutator do
   (`%{pipe_mode: pipe_mode, opts: term}`); a mutator passes `context.pipe_mode` to
   `effective_arity/2` to recover the effective arity. Used for arity-*changing* call mutations (dropping a refining
   argument, collapsing to a coarser call) that `mutate/1` cannot express safely —
-  see `Mutare.Mutators.CollectionArity`. A mutator that implements this typically
-  returns `:skip` from `mutate/1` (it never fires node-locally). Discovered by
+  see `Mutare.Mutators.CollectionArity`. Discovered by
   `function_exported?(mod, :mutate, 2)`; a mutator without it takes no part.
+
+  **`mutate/1` and `mutate/2` both run** (when both are exported) and their results are
+  **combined** — `mutate/2` *augments*, never replaces, `mutate/1` (see `mutations/3`). So a
+  mutator that *only* needs context returns `:skip` from `mutate/1` (`CollectionArity`,
+  `ModeSwap`), while one that needs both keeps a real `mutate/1` and adds a `mutate/2` for the
+  context-dependent part — `Mutare.Mutators.Arithmetic` swaps operators in `mutate/1` and
+  `div`↔`rem` (pipe-aware) in `mutate/2`, the two firing on disjoint nodes. A custom mutator
+  must therefore not duplicate a node-local mutation across both arities, or it is offered
+  twice.
 
   This is also the callback a **configurable** mutator implements to read its
   options: `context.opts` carries the `opts` of its `{module, opts}` entry in
-  `:mutators` (see `Mutare.Mutator.Spec`). Unlike pipe-aware mutators it need not
-  return `:skip` from `mutate/1`, but since `mutate/1` has no context, a mutator
+  `:mutators` (see `Mutare.Mutator.Spec`) — `mutate/1` has no context, so a mutator
   whose behaviour depends on its options matches its nodes here instead.
   """
   @callback mutate(Macro.t(), context()) :: :skip | [Macro.t()]
