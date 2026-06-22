@@ -494,6 +494,24 @@ strict without tripping on its own retries. Applies to every mode: keep mode
 already reused its digest path, but now skips the full `sync` re-mirror on a retry
 too.
 
+### Default sandboxes are cleaned up at end of run `[done]`
+Nothing ever removed a fresh sandbox, so the default temp dirs accumulated in
+`System.tmp_dir!()` across runs (and, before the pid-salt, fed the collision
+above). `Runner` now removes the sandbox once the run is done with it —
+`cleanup_sandbox/2`, gated on `%Options{sandbox: nil, keep_sandbox: false}` so it
+fires *only* for an auto-generated throwaway. A pinned `--sandbox` (the user's
+chosen path) and `--keep-sandbox` (deliberately persisted for `_build` caching)
+are both left untouched; that's the escape hatch for anyone who wants to inspect
+the generated metamutant after a run. Cleanup runs on **every** exit path: the
+post-compile work (baseline → probe → per-mutant) is wrapped in a `try/after`
+around the bound sandbox (covering success *and* a red/flaky baseline or a
+too-many-harness-errors abort), and a *terminal* compile failure cleans up inside
+`prepare_compiling` (it owns the sandbox there and returns a bare error tuple no
+`after` would see). It's best-effort (`File.rm_rf`, not `rm_rf!`) so a cleanup
+hiccup never masks the run's real result. Safe because the report reads
+`schema`/`results`, never the sandbox (the two-renderers split) — so `run.sandbox`
+is informational only and may already be gone by the time the caller sees it.
+
 ### `--keep-sandbox`: incremental materialisation for CI caching `[done]`
 The default sandbox is throwaway: a fresh dir per run, or an owned `--sandbox`
 that `reset!/1` wipes (`rm_rf` + `mkdir`) and re-copies. So "compile once" was

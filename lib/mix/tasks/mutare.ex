@@ -38,12 +38,14 @@ defmodule Mix.Tasks.Mutare do
                                           #   human report to avoid a collision)
 
   By default Mutare materialises a throwaway sandbox copy and recompiles the
-  metamutant cold every run. `--keep-sandbox` instead **preserves** the sandbox
-  between runs and re-materialises it incrementally (only changed files are
-  rewritten, so mix's compiler reuses the cached `_build`). On CI, pair it with
-  `--sandbox <path>` pointed at a cached directory (cache `<path>/_build` and
-  `<path>/deps`, keyed on `mix.lock`); locally, `--keep-sandbox` alone reuses a
-  stable per-project temp dir.
+  metamutant cold every run, then removes the sandbox when the run finishes (so
+  the temp dir doesn't accumulate). Pass `--sandbox <path>` to keep a default run's
+  sandbox around (e.g. to inspect the generated metamutant). `--keep-sandbox`
+  instead **preserves** the sandbox between runs and re-materialises it
+  incrementally (only changed files are rewritten, so mix's compiler reuses the
+  cached `_build`). On CI, pair it with `--sandbox <path>` pointed at a cached
+  directory (cache `<path>/_build` and `<path>/deps`, keyed on `mix.lock`);
+  locally, `--keep-sandbox` alone reuses a stable per-project temp dir.
 
   `--format` is one of `human` (the default console report), `json` (the
   mutation-testing-elements / Stryker report schema), `html` (that JSON in the

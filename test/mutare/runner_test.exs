@@ -81,6 +81,16 @@ defmodule Mutare.RunnerTest do
     end
   end
 
+  test "removes the default throwaway sandbox when the run completes", %{project: project} do
+    # No `--sandbox` and no `--keep-sandbox`: the runner materialises a throwaway
+    # sandbox under the temp dir and removes it on completion, so default runs
+    # don't accumulate stale dirs there.
+    assert {:ok, run} = Mutare.run(project, mutators: @probe)
+    on_exit(fn -> File.rm_rf(run.sandbox) end)
+
+    refute File.exists?(run.sandbox)
+  end
+
   test "keep_sandbox reuses the sandbox and its build across runs", %{
     project: project,
     sandbox: sandbox

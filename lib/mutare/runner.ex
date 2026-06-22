@@ -64,6 +64,10 @@ defmodule Mutare.Runner do
 
   require Logger
 
+  # `sandbox` is where the run *was* materialised. For a default (throwaway) run it
+  # is removed once the run completes — the path is informational, not a live dir;
+  # only `--sandbox`/`--keep-sandbox` runs leave it in place. The report reads
+  # `schema`/`results`, never the sandbox, so this is safe.
   @type run :: %{
           schema: Schema.t(),
           results: [Result.t()],
@@ -125,44 +129,62 @@ defmodule Mutare.Runner do
 
       # Prepare + compile, recovering from compile-poisoning by dropping the
       # offending mutants and rebuilding. `schema` here may differ from the input
-      # (poisoners flagged), which is what the run reports against.
-      with {:ok, schema, sandbox} <- prepare_compiling(schema, root, options),
-           {:ok, baseline_ms} <- run_baseline(on_phase, sandbox, options.baseline_runs) do
-        on_phase.(:coverage_probe)
-        selection = CoverageProbe.run(sandbox, schema, mode)
-        # Per owning app, the test dirs a whole-suite run may be narrowed to (the
-        # app + its dependents). Empty for a single project — see `broaden/3`.
-        scopes =
-          Project.app_test_scopes(options.project, sandbox, Path.join(sandbox, "_build/test/lib"))
+      # (poisoners flagged), which is what the run reports against. A terminal
+      # compile failure cleans up its own sandbox inside `prepare_compiling`; once
+      # we hold a compiled sandbox, the `after` cleans it on every exit path.
+      case prepare_compiling(schema, root, options) do
+        {:error, _reason, _detail} = failure ->
+          failure
 
-        cap = timeout_cap(baseline_ms, options)
-        workers = options.workers
+        {:ok, schema, sandbox} ->
+          try do
+            run_mutants(schema, sandbox, options, on_phase, on_start, reporter, mode)
+          after
+            cleanup_sandbox(sandbox, options)
+          end
+      end
+    end
+  end
 
-        retries = options.harness_retries
+  # Baseline → coverage probe → per-mutant run, against an already-compiled
+  # sandbox. Returns `{:ok, run}` or a `{:error, reason, detail}` (a red/flaky
+  # baseline, or too many harness errors).
+  defp run_mutants(schema, sandbox, %Options{} = options, on_phase, on_start, reporter, mode) do
+    with {:ok, baseline_ms} <- run_baseline(on_phase, sandbox, options.baseline_runs) do
+      on_phase.(:coverage_probe)
+      selection = CoverageProbe.run(sandbox, schema, mode)
+      # Per owning app, the test dirs a whole-suite run may be narrowed to (the
+      # app + its dependents). Empty for a single project — see `broaden/3`.
+      scopes =
+        Project.app_test_scopes(options.project, sandbox, Path.join(sandbox, "_build/test/lib"))
 
-        on_phase.({:running, length(schema.sites)})
+      cap = timeout_cap(baseline_ms, options)
+      workers = options.workers
 
-        results =
-          schema.sites
-          |> Task.async_stream(
-            fn site ->
-              on_start.(site)
-              result = classify(sandbox, site, selection, cap, retries, scopes)
-              reporter.(result)
-              result
-            end,
-            max_concurrency: workers,
-            ordered: true,
-            timeout: :infinity
-          )
-          |> Enum.map(fn {:ok, result} -> result end)
+      retries = options.harness_retries
 
-        run = %{schema: schema, results: results, sandbox: sandbox, baseline_ms: baseline_ms}
+      on_phase.({:running, length(schema.sites)})
 
-        case harness_error_guard(results, options) do
-          :ok -> {:ok, run}
-          {:error, _reason, _detail} = error -> error
-        end
+      results =
+        schema.sites
+        |> Task.async_stream(
+          fn site ->
+            on_start.(site)
+            result = classify(sandbox, site, selection, cap, retries, scopes)
+            reporter.(result)
+            result
+          end,
+          max_concurrency: workers,
+          ordered: true,
+          timeout: :infinity
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
+      run = %{schema: schema, results: results, sandbox: sandbox, baseline_ms: baseline_ms}
+
+      case harness_error_guard(results, options) do
+        :ok -> {:ok, run}
+        {:error, _reason, _detail} = error -> error
       end
     end
   end
@@ -241,10 +263,26 @@ defmodule Mutare.Runner do
           prepare_compiling(schema, root, options, skip_ids, attempts - 1, sandbox)
         else
           # Couldn't identify (or keep making progress on) the poison → give up.
+          # We own the sandbox and are returning an error (no caller `after` will
+          # see it), so clean it up here.
+          cleanup_sandbox(sandbox, options)
           failure
         end
     end
   end
+
+  # Remove an auto-generated fresh sandbox once the run is done with it, so the
+  # default throwaway dirs don't accumulate in the temp dir across runs. A pinned
+  # `--sandbox` is the user's chosen path (left for inspection and their own reuse)
+  # and `--keep-sandbox` deliberately persists for `_build` caching, so neither is
+  # touched. Best-effort (`rm_rf`, not `rm_rf!`): a cleanup failure must never mask
+  # the run's actual result.
+  defp cleanup_sandbox(sandbox, %Options{sandbox: nil, keep_sandbox: false}) do
+    File.rm_rf(sandbox)
+    :ok
+  end
+
+  defp cleanup_sandbox(_sandbox, _options), do: :ok
 
   # The one compilation. `Command.success?/1` owns the "0 means success" reading;
   # `Command.compiler_env/0` carries the SSA-alias-pass-off speed option (a free
