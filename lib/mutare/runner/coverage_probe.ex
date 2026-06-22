@@ -19,9 +19,11 @@ defmodule Mutare.Runner.CoverageProbe do
   Two modes, set by `:test_selection`:
 
     * `:coverage` (default) — per mutant, run only the test files that covered its
-      line; a mutant no file covered (but whose code *did* run, in some unlabeled
-      process) runs the whole suite; a mutant that never ran at all is
-      `:no_coverage` (skipped, and kept out of the score's denominator).
+      line; a mutant whose code ran in *any* unlabeled process (`setup_all`,
+      `on_exit`, an unattributable spawned task) runs the whole suite — even if some
+      file *also* attributes it, since that partial attribution would otherwise mask
+      the unlabeled coverage and produce a false survivor; a mutant that never ran
+      at all is `:no_coverage` (skipped, and kept out of the score's denominator).
     * `:full` — no per-file selection: every covered mutant runs the whole suite,
       the rest are `:no_coverage`. Safer for suites with cross-file dependencies.
 
@@ -132,15 +134,19 @@ defmodule Mutare.Runner.CoverageProbe do
     if MapSet.member?(aggregate, id), do: {:run, []}, else: :no_coverage
   end
 
-  # `:coverage` — covered with attributed files → those files; covered but
-  # unattributed (its code ran only in an unlabeled process: `setup_all`,
-  # `on_exit`, a spawned task) → whole suite, *not* `:no_coverage`; never ran →
-  # `:no_coverage`.
-  defp outcome(:coverage, id, %{aggregate: aggregate, by_file: by_file}) do
-    if MapSet.member?(aggregate, id) do
-      by_file |> covering_files(id) |> run_args()
-    else
-      :no_coverage
+  # `:coverage`, per id:
+  #   * never ran (not in the aggregate) → `:no_coverage`;
+  #   * ran in *any* unlabeled process (`setup_all`/`on_exit`/an unattributable
+  #     spawned task) → whole suite. This dominates attribution on purpose: an id
+  #     can be attributed to file A (a test there touches the line) *and* be
+  #     covered via file B's `setup_all` (unlabeled). Trusting the partial
+  #     attribution would run only A and miss B's killing test — a false survivor.
+  #   * otherwise → only the files that attributed it.
+  defp outcome(:coverage, id, %{aggregate: aggregate, unlabeled: unlabeled, by_file: by_file}) do
+    cond do
+      not MapSet.member?(aggregate, id) -> :no_coverage
+      MapSet.member?(unlabeled, id) -> {:run, []}
+      true -> by_file |> covering_files(id) |> run_args()
     end
   end
 

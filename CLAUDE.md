@@ -566,9 +566,13 @@ contract between them is the whole game.
   `Baseline.classify/1`.
 - **`Mutare.Runner.CoverageProbe`** — coverage-driven test selection, run after the baseline. A
   **single** instrumented `mix test` at baseline (`MUTARE_COVERAGE=1`), then it reads the dump.
-  Per mutant: never ran → `:no_coverage`; covered with attributed test files → those files;
-  covered but **unattributed** (its code ran only in an unlabeled process — `setup_all`,
-  `on_exit`, a spawned task) → whole suite, *not* `:no_coverage`. Returns a bare `selection`
+  Per mutant: never ran → `:no_coverage`; ran in **any unlabeled process** (`setup_all`/`on_exit`/
+  an unattributable spawned task) → whole suite, *not* `:no_coverage` — this **dominates**
+  attribution, since an id covered via one file's `setup_all` *and* directly touched by another's
+  test would otherwise trust the partial attribution, run too narrow a set, and miss the killing
+  file (a false survivor; `Task` coverage is exempted — `Recorder` recovers the spawning test's
+  label from the caller chain, so it attributes normally); else covered with attributed files →
+  those files. Returns a bare `selection`
   (`:run_all | {:selective, %{id => outcome}}`) and **can't fail**: an unreadable/empty dump
   degrades to `:run_all`. Split from the baseline on purpose — folding the two conflated a green
   check that never ran the suite together with a `baseline_ms` summed over N per-file process
@@ -578,13 +582,19 @@ contract between them is the whole game.
   `helper_source/0` (the `MutareCov` module `Sandbox` writes in), and `bootstrap_ast/0`. The
   catch-all records the site's mutant ids into shared ETS *synchronously, in the test process*,
   gated `mutare_active == 0 and :persistent_term.get(:mutare_track, false) and MutareCov.hit(ids)`
-  — inert on per-mutant runs (short-circuits on the id compare) and outside the probe. The `ids`
+  — inert on per-mutant runs (short-circuits on the id compare) and outside the probe. `hit/1`
+  routes each id by the recording process's label: a `{module, name}` test label (its own, or a
+  spawning test's, recovered from the `$callers`/`$ancestors` chain for a `Task`) → per-file
+  attribution; no recoverable label (`setup_all`/`on_exit`/a bare spawn) → the `unlabeled` table
+  (whole-suite, read by `CoverageProbe`). The `ids`
   list is spliced as `__block__`-wrapped integers (`ids_literal/1`), never a bare list: a bare
   integer list is indistinguishable from a charlist in quoted form, so the renderer would emit
   `~c"…"` for printable ids — and ids like `\`/newline then produce un-re-parseable source.
-- **`Mutare.Coverage`** — reads back the probe's dump: `%{aggregate, by_file}`, both keyed by
-  **mutant id**. `aggregate` (process-agnostic: any process that ran the line) is the no-coverage
-  signal; `by_file` (labeled test processes only) drives per-file selection. No `:cover`, no
+- **`Mutare.Coverage`** — reads back the probe's dump: `%{aggregate, by_file, unlabeled}`, all keyed
+  by **mutant id**. `aggregate` (process-agnostic: any process that ran the line) is the no-coverage
+  signal; `by_file` (labeled test processes, plus `Task`s attributed via their caller chain) drives
+  per-file selection; `unlabeled` (ids hit in a process with no recoverable test label —
+  `setup_all`/`on_exit`/a bare spawn) forces a whole-suite run, dominating `by_file`. No `:cover`, no
   coverdata, no metamutant↔original line mapping. Why self-record, not `:cover`: cover's table is
   global (`{module, line}`, no per-process partition), so per-test attribution in one run needs an
   async-formatter snapshot that **races** test execution and loses fast `async: false` modules'

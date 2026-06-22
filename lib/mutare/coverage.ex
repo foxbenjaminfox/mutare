@@ -6,7 +6,7 @@ defmodule Mutare.Coverage do
   the suite runs (`Mutare.Coverage.Recorder` owns the generated side); at suite end
   an `ExUnit.after_suite/1` hook dumps it to a file. This module reads that dump.
 
-  The dump is two things, both keyed by **mutant id** (no metamutant↔original line
+  The dump is three things, all keyed by **mutant id** (no metamutant↔original line
   mapping — the original line is only for the report):
 
     * `:aggregate` — the set of mutant ids whose selector ran *at all*, in any
@@ -14,11 +14,16 @@ defmodule Mutare.Coverage do
       **no-coverage** signal: an id not in it can never be killed, so skip it and
       keep it out of the score's denominator.
     * `:by_file` — `%{test_file => MapSet(mutant ids)}`: which mutant ids each test
-      *file* covered. Only labeled test processes attribute here, so this drives
-      per-file **test selection**. A mutant in `:aggregate` but absent from every
-      file's set was covered only by an unlabeled process (a `setup_all`/`on_exit`/
-      spawned process); the caller runs the whole suite for it rather than risk a
-      false `:no_coverage` (`Mutare.Runner.CoverageProbe` reconciles the two).
+      *file* covered. A line running in the test process is labeled directly; one
+      running in a `Task` it spawned is attributed via the caller chain. This drives
+      per-file **test selection**.
+    * `:unlabeled` — the set of mutant ids whose selector ran in a process with no
+      recoverable test label (`setup_all`/`on_exit`/an unattributable spawned
+      process). An id here was covered, but *which* test owns it is unknown, so the
+      caller runs the **whole suite** for it — even if `:by_file` *also* attributes
+      it to some file, since that partial attribution would otherwise mask the
+      unlabeled coverage and manufacture a false survivor.
+      `Mutare.Runner.CoverageProbe` reconciles the three.
 
   Why not `:cover`: its counters live in a single global table keyed
   `{module, line}` with no per-process partition, so attributing coverage to a
@@ -32,12 +37,13 @@ defmodule Mutare.Coverage do
   require Logger
 
   @typedoc """
-  The decoded dump: the process-agnostic aggregate hit set, and per-test-file
-  attribution. Both are keyed by mutant id.
+  The decoded dump: the process-agnostic aggregate hit set, per-test-file
+  attribution, and the unlabeled (whole-suite) hit set. All keyed by mutant id.
   """
   @type t :: %{
           aggregate: MapSet.t(pos_integer()),
-          by_file: %{String.t() => MapSet.t(pos_integer())}
+          by_file: %{String.t() => MapSet.t(pos_integer())},
+          unlabeled: MapSet.t(pos_integer())
         }
 
   @doc """
@@ -50,12 +56,14 @@ defmodule Mutare.Coverage do
   @spec read_dump(Path.t()) :: {:ok, t()} | {:error, term()}
   def read_dump(path) do
     with {:ok, binary} <- File.read(path),
-         {:ok, %{aggregate: aggregate, by_file: by_file}} <- decode(binary),
-         true <- is_list(aggregate) and is_map(by_file) do
+         {:ok, %{aggregate: aggregate, by_file: by_file} = decoded} <- decode(binary),
+         unlabeled = Map.get(decoded, :unlabeled, []),
+         true <- is_list(aggregate) and is_map(by_file) and is_list(unlabeled) do
       {:ok,
        %{
          aggregate: MapSet.new(aggregate),
-         by_file: Map.new(by_file, fn {file, ids} -> {file, MapSet.new(ids)} end)
+         by_file: Map.new(by_file, fn {file, ids} -> {file, MapSet.new(ids)} end),
+         unlabeled: MapSet.new(unlabeled)
        }}
     else
       {:error, reason} ->

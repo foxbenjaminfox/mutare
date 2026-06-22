@@ -16,20 +16,33 @@ defmodule Mutare.CoverageTest do
 
   describe "read_dump/1" do
     @tag :tmp_dir
-    test "decodes the aggregate and per-file id lists into MapSets", %{tmp_dir: dir} do
+    test "decodes the aggregate, per-file, and unlabeled id lists into MapSets", %{tmp_dir: dir} do
       path = Path.join(dir, "dump.terms")
 
       payload = %{
         aggregate: [1, 2, 3],
-        by_file: %{"test/a_test.exs" => [1, 2], "test/b_test.exs" => [3]}
+        by_file: %{"test/a_test.exs" => [1, 2], "test/b_test.exs" => [3]},
+        unlabeled: [2]
       }
 
       File.write!(path, :erlang.term_to_binary(payload))
 
-      assert {:ok, %{aggregate: aggregate, by_file: by_file}} = Coverage.read_dump(path)
+      assert {:ok, %{aggregate: aggregate, by_file: by_file, unlabeled: unlabeled}} =
+               Coverage.read_dump(path)
+
       assert aggregate == MapSet.new([1, 2, 3])
       assert by_file["test/a_test.exs"] == MapSet.new([1, 2])
       assert by_file["test/b_test.exs"] == MapSet.new([3])
+      assert unlabeled == MapSet.new([2])
+    end
+
+    @tag :tmp_dir
+    test "tolerates a dump without an :unlabeled key (defaults to empty)", %{tmp_dir: dir} do
+      path = Path.join(dir, "legacy.terms")
+      File.write!(path, :erlang.term_to_binary(%{aggregate: [1], by_file: %{}}))
+
+      assert {:ok, %{unlabeled: unlabeled}} = Coverage.read_dump(path)
+      assert unlabeled == MapSet.new([])
     end
 
     @tag :tmp_dir
@@ -95,6 +108,7 @@ defmodule Mutare.CoverageTest do
       saved_track = :persistent_term.get(Recorder.track_key(), :unset)
       agg_existed? = :ets.whereis(:mutare_cov_agg) != :undefined
       attr_existed? = :ets.whereis(:mutare_cov_attr) != :undefined
+      unlabeled_existed? = :ets.whereis(:mutare_cov_unlabeled) != :undefined
 
       System.put_env(Recorder.env_var(), "1")
 
@@ -103,6 +117,7 @@ defmodule Mutare.CoverageTest do
         restore_track(saved_track)
         drop_table_unless(:mutare_cov_agg, agg_existed?)
         drop_table_unless(:mutare_cov_attr, attr_existed?)
+        drop_table_unless(:mutare_cov_unlabeled, unlabeled_existed?)
       end)
 
       ast = Recorder.setup_ast()
@@ -112,6 +127,7 @@ defmodule Mutare.CoverageTest do
       assert {_, _} = Code.eval_quoted(ast)
       assert {_, _} = Code.eval_quoted(ast)
       assert :ets.whereis(:mutare_cov_agg) != :undefined
+      assert :ets.whereis(:mutare_cov_unlabeled) != :undefined
     end
   end
 
@@ -308,6 +324,84 @@ defmodule Mutare.CoverageTest do
       greeter = by_op[:*]
       assert greeter.status == :killed
       assert greeter.output =~ "1 test"
+    end
+
+    @tag :runner
+    test "a mutant covered via another file's setup_all runs the whole suite (no false survivor)" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:setup_all_cov, %{
+          "lib/shared.ex" => "defmodule Shared do\n  def calc(x), do: x + 1\nend\n",
+          # This file *touches the line* (so the id is attributed here) but its test
+          # can never kill the mutant — it asserts nothing about the value. Under the
+          # old "attributed file wins" rule this masked the killing file below.
+          "test/touch_test.exs" => """
+          defmodule TouchTest do
+            use ExUnit.Case
+            test "touches Shared.calc without asserting its value" do
+              _ = Shared.calc(5)
+              assert true
+            end
+          end
+          """,
+          # The killing test reaches Shared.calc only through `setup_all` (an
+          # unlabeled process), so it never attributes the id — yet it is the only
+          # test that distinguishes the mutation.
+          "test/setup_all_test.exs" => """
+          defmodule SetupAllTest do
+            use ExUnit.Case
+            setup_all do
+              %{value: Shared.calc(5)}
+            end
+            test "asserts the exact value", %{value: value} do
+              assert value == 6
+            end
+          end
+          """
+        })
+
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
+
+      # Every `+` mutant is killed (not a false survivor), and each ran the whole
+      # suite — the unlabeled `setup_all` coverage forces it past the partial
+      # attribution to touch_test.exs.
+      assert run.results != []
+      assert Enum.all?(run.results, &(&1.status == :killed))
+      assert Enum.all?(run.results, &(&1.output =~ "2 tests"))
+    end
+
+    @tag :runner
+    test "a mutant covered only via a spawned Task is attributed to the spawning test's file" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:task_cov, %{
+          "lib/worker.ex" => "defmodule Worker do\n  def work(x), do: x + 1\nend\n",
+          # The line runs only inside a Task spawned by this test. Option 2 recovers
+          # the test label via the Task's `$callers` chain, so the id is attributed
+          # to worker_test.exs and selection stays tight (1 test, not whole suite).
+          "test/worker_test.exs" => """
+          defmodule WorkerTest do
+            use ExUnit.Case
+            test "work via a spawned task" do
+              task = Task.async(fn -> Worker.work(5) end)
+              assert Task.await(task) == 6
+            end
+          end
+          """,
+          "test/idle_test.exs" => """
+          defmodule IdleTest do
+            use ExUnit.Case
+            test "unrelated", do: assert(true)
+          end
+          """
+        })
+
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
+
+      assert run.results != []
+      assert Enum.all?(run.results, &(&1.status == :killed))
+      # Attributed to worker_test.exs (via the Task caller chain), so only that file
+      # runs — not the whole suite.
+      assert Enum.all?(run.results, &(&1.output =~ "1 test"))
+      refute Enum.any?(run.results, &(&1.output =~ "2 tests"))
     end
 
     @tag :runner

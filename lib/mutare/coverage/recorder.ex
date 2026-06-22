@@ -50,6 +50,7 @@ defmodule Mutare.Coverage.Recorder do
   @track_key :mutare_track
   @agg_table :mutare_cov_agg
   @attr_table :mutare_cov_attr
+  @unlabeled_table :mutare_cov_unlabeled
   @dump_file "mutare_cov.terms"
   @helper_module :mutare_cov
 
@@ -262,6 +263,7 @@ defmodule Mutare.Coverage.Recorder do
   def helper_source do
     agg = @agg_table
     attr = @attr_table
+    unlabeled_table = @unlabeled_table
     dump_file = @dump_file
     helper = @helper_module
     dump_path_env = @dump_path_env
@@ -278,8 +280,16 @@ defmodule Mutare.Coverage.Recorder do
             :ets.insert(unquote(agg), {id})
 
             case label do
-              {mod, _name} when is_atom(mod) -> :ets.insert(unquote(attr), {{mod, id}})
-              _ -> :ok
+              {mod, _name} when is_atom(mod) ->
+                :ets.insert(unquote(attr), {{mod, id}})
+
+              # No usable test label — the line ran in `setup_all`/`on_exit`/an
+              # unattributable spawned process. Record it so the caller runs the
+              # whole suite for this id rather than trusting partial per-file
+              # attribution (a test that also touches the line directly would
+              # otherwise mask this run and manufacture a false survivor).
+              _ ->
+                :ets.insert(unquote(unlabeled_table), {id})
             end
           end)
 
@@ -290,6 +300,7 @@ defmodule Mutare.Coverage.Recorder do
           # Serialise plain data (lists, not `MapSet`s) so the reader makes no
           # assumption about a struct's wire representation.
           aggregate = for {id} <- :ets.tab2list(unquote(agg)), do: id
+          unlabeled = for {id} <- :ets.tab2list(unquote(unlabeled_table)), do: id
 
           by_file =
             Enum.reduce(:ets.tab2list(unquote(attr)), %{}, fn {{mod, id}}, acc ->
@@ -299,7 +310,7 @@ defmodule Mutare.Coverage.Recorder do
               end
             end)
 
-          payload = %{aggregate: aggregate, by_file: by_file}
+          payload = %{aggregate: aggregate, by_file: by_file, unlabeled: unlabeled}
           # Every umbrella app's `after_suite` calls this; the ETS tables are
           # shared and accumulate-only, so each write is the full union and the
           # last app to finish wins. The path is absolute (set by the probe) so a
@@ -309,7 +320,21 @@ defmodule Mutare.Coverage.Recorder do
           File.write!(dump_path, :erlang.term_to_binary(payload))
         end
 
+        # The owning test's `{module, name}` label, used to attribute coverage to a
+        # test *file*. The line may run in the test process (labeled directly) or in
+        # one it spawned: a `Task` records its caller chain in `$callers`/
+        # `$ancestors`, so when our own label is missing we attribute to the nearest
+        # labeled ancestor (a task started from a test belongs to that test). A
+        # `setup_all`/`on_exit` process has no labeled ancestor → `nil`, and the
+        # caller routes that id to the unlabeled bucket (whole suite).
         defp label do
+          case own_label() do
+            {mod, _name} = labeled when is_atom(mod) -> labeled
+            _ -> recovered_label()
+          end
+        end
+
+        defp own_label do
           # `apply/3`, not a direct call: `:proc_lib.get_label/1` exists only on
           # OTP 27+, and a static reference warns "undefined" on OTP 26 (where the
           # `function_exported?` guard already routes us to the proc-dict key the
@@ -318,6 +343,43 @@ defmodule Mutare.Coverage.Recorder do
             apply(:proc_lib, :get_label, [self()])
           else
             Process.get(:"$process_label")
+          end
+        end
+
+        defp recovered_label do
+          # `$callers` (set by `Task`) then `$ancestors`: walk to the first ancestor
+          # carrying a `{module, name}` test label. The test pid sits at the tail of
+          # the chain even for nested tasks, so a labeled owner is found if one exists.
+          callers = Process.get(:"$callers", []) ++ Process.get(:"$ancestors", [])
+
+          Enum.find_value(callers, fn
+            pid when is_pid(pid) ->
+              case label_of(pid) do
+                {mod, _name} = labeled when is_atom(mod) -> labeled
+                _ -> nil
+              end
+
+            _ ->
+              nil
+          end)
+        end
+
+        # Read another process's `$process_label`, OTP-tolerant: `:proc_lib.get_label/1`
+        # (OTP 27+) reads it cross-process directly; on OTP 26 the label lives in the
+        # target's dictionary, which `Process.info/2` exposes (`Process.get/1` only
+        # reads our own). Best-effort — a dead pid yields `nil`, never a crash.
+        defp label_of(pid) do
+          if function_exported?(:proc_lib, :get_label, 1) do
+            try do
+              apply(:proc_lib, :get_label, [pid])
+            catch
+              _, _ -> nil
+            end
+          else
+            case Process.info(pid, :dictionary) do
+              {:dictionary, dict} -> Keyword.get(dict, :"$process_label")
+              _ -> nil
+            end
           end
         end
 
@@ -353,16 +415,24 @@ defmodule Mutare.Coverage.Recorder do
     track_key = @track_key
     agg = @agg_table
     attr = @attr_table
+    unlabeled_table = @unlabeled_table
 
     quote do
       if System.get_env(unquote(env_var)) not in [nil, ""] do
         # An umbrella runs every app's `test_helper.exs` in one BEAM, so the tables
         # must be created once and shared. Guard on the aggregate table's existence
-        # (both are created together) so the second app's setup is a no-op rather
+        # (all are created together) so the second app's setup is a no-op rather
         # than an `:ets.new` `:badarg`.
         if :ets.whereis(unquote(agg)) == :undefined do
           :ets.new(unquote(agg), [:named_table, :public, :set, write_concurrency: true])
           :ets.new(unquote(attr), [:named_table, :public, :set, write_concurrency: true])
+
+          :ets.new(unquote(unlabeled_table), [
+            :named_table,
+            :public,
+            :set,
+            write_concurrency: true
+          ])
         end
 
         :persistent_term.put(unquote(track_key), true)

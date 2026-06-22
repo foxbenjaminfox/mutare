@@ -2433,13 +2433,20 @@ test process, synchronously. So under a tracking flag the catch-all writes the
 site's mutant ids into shared ETS:
 `mutare_active == 0 and :persistent_term.get(:mutare_track, false) and MutareCov.hit(ids)`
 (`Mutare.Coverage.Recorder` owns this; `MutareCov` is a dependency-free helper
-`Sandbox` writes into the sandbox). Two keys, accumulate-only, **never reset** →
+`Sandbox` writes into the sandbox). Three keys, accumulate-only, **never reset** →
 no race:
 - **aggregate** `{id}` — written by any process → process-agnostic no-coverage
   detection.
 - **attribution** `{{label, id}}` — `label` is the test process's
   `Process.set_label({case, name})` (proc-dict `:"$process_label"` on OTP 26,
   `:proc_lib.get_label/1` on 27+) → maps to the test *file* → per-file selection.
+  When the recording process has no label of its own (a `Task`), we recover the
+  owning test's label from the `$callers`/`$ancestors` chain — read cross-process
+  (`:proc_lib.get_label/1` on 27+, the target's `:dictionary` via `Process.info/2`
+  on 26) — so a task spawned from a test still attributes to that test's file.
+- **unlabeled** `{id}` — written when the recording process has *no recoverable*
+  label (`setup_all`/`on_exit`/a bare-spawned process): the line ran, but no test
+  owns it. The reconciler runs the **whole suite** for such an id (below).
 
 The bootstrap is split around the target's `test_helper.exs`: the setup half is
 prepended before user helper code creates the ETS tables and flips
@@ -2471,14 +2478,23 @@ The probe's decision is **typed** (`Mutare.Runner.CoverageProbe`): `selection` i
 `:run_all | {:selective, %{id => outcome}}`, `outcome` is `{:run, test_args} |
 :no_coverage`. The `{:selective, _}` map is **total** — every mutant id has an
 explicit outcome, so `:no_coverage` is *named*, never implied by a missing key.
-Reconciliation, per id: never ran → `:no_coverage`; ran with attributed files →
-`{:run, files}`; ran but **unattributed** (covered only by an unlabeled process —
-`setup_all`/`on_exit`/a spawned task) → `{:run, []}` (whole suite), *not*
-`:no_coverage`. `:run_all` is the single conservative fallback: a non-zero probe
-exit (the dump may be partial — e.g. `max_failures` aborts before later files),
-an unreadable dump, or an empty dump (the capture recorded nothing → it likely
-failed). The rule throughout: never skip on doubt — run everything rather than
-silently drop a mutant from the score's denominator.
+Reconciliation, per id: never ran → `:no_coverage`; ran in **any unlabeled
+process** → `{:run, []}` (whole suite); else ran with attributed files →
+`{:run, files}`. The unlabeled check **dominates attribution** on purpose — this
+is the fix for a real false survivor. An id can be attributed to file A (a test
+there touches the line) *and* be covered via file B's `setup_all` (unlabeled). The
+old rule "ran with attributed files → those files" trusted the partial attribution,
+ran only A, and missed B's killing test → the mutant survived. So a single id hit
+even once outside a labeled test process now runs the whole suite, regardless of
+what attributed it. Cost: an id used in many `setup_all`s goes whole-suite for all
+its mutants — correct (those are exactly the ids per-file selection can't bound),
+at a speed cost on `setup_all`-heavy suites. `Task` coverage is *exempted* by the
+caller-chain recovery above, so the common "spawn a task in a test" stays tight.
+`:run_all` is the single conservative fallback: a non-zero probe exit (the dump may
+be partial — e.g. `max_failures` aborts before later files), an unreadable dump, or
+an empty dump (the capture recorded nothing → it likely failed). The rule
+throughout: never skip on doubt — run everything rather than silently drop a mutant
+from the score's denominator.
 
 **The `hit([ids])` argument must render as a list, never a charlist.** The catch-all
 splices `MutareCov.hit([<ids>])` into the metamutant, where `<ids>` is a list of
