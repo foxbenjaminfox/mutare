@@ -48,6 +48,15 @@ defmodule Mutare.Mutators.ModeSwap do
     * `String.normalize/2` — the normalization form (`:nfc` ↔ `:nfd`, `:nfkc` ↔ `:nfkd`,
       toggling composition while preserving compatibility)
 
+  Sort order:
+
+    * `Enum.sort/2` (sorter at arg 1), `Enum.sort_by/3` and `List.keysort/3` (sorter at
+      arg 2) — the `:asc` ↔ `:desc` shorthand, a reversal that any test asserting on the
+      result's *order* must catch. Only the lone-atom shorthand is swapped; the `{:asc,
+      module}` / `{:desc, module}` tuple forms (and a custom sorter fun) are non-atoms, so
+      they contribute nothing for free. `Enum.min_by/max_by` look similar but reject the
+      shorthand (they read the atom as a comparison module), so they are deliberately absent.
+
   ## Swap strategy — small, legal, behavioural
 
   Each swap stays **within the legal set of *that* function**: the ordered ladders are
@@ -120,6 +129,8 @@ defmodule Mutare.Mutators.ModeSwap do
   # to survive as a low-signal equivalent rather than expose a real gap.
   @case_modes %{greek: [:default], turkic: [:default]}
   @norm_forms %{nfc: [:nfd], nfd: [:nfc], nfkc: [:nfkd], nfkd: [:nfkc]}
+  # Sort direction: the `:asc`/`:desc` shorthand accepted by `sort`/`sort_by`/`keysort`.
+  @order_modes %{asc: [:desc], desc: [:asc]}
 
   # {alias_path, function, effective_arity} => {mode_positions (effective indices), group}.
   # Positions are *effective* (pipe-independent); `visible_index/2` maps them to the
@@ -155,7 +166,11 @@ defmodule Mutare.Mutators.ModeSwap do
     {[:String], :upcase, 2} => {[1], :case_mode},
     {[:String], :downcase, 2} => {[1], :case_mode},
     {[:String], :capitalize, 2} => {[1], :case_mode},
-    {[:String], :normalize, 2} => {[1], :norm_form}
+    {[:String], :normalize, 2} => {[1], :norm_form},
+    # Sort direction shorthand — the sorter is the trailing positional argument.
+    {[:Enum], :sort, 2} => {[1], :order},
+    {[:Enum], :sort_by, 3} => {[2], :order},
+    {[:List], :keysort, 3} => {[2], :order}
   }
 
   @impl Mutare.Mutator
@@ -285,6 +300,7 @@ defmodule Mutare.Mutators.ModeSwap do
   defp swaps(:duration_date, unit), do: neighbours(@duration_date_ladder, unit)
   defp swaps(:case_mode, atom), do: Map.get(@case_modes, atom, [])
   defp swaps(:norm_form, atom), do: Map.get(@norm_forms, atom, [])
+  defp swaps(:order, atom), do: Map.get(@order_modes, atom, [])
 
   # The members of `ladder` immediately finer and coarser than `atom` (each, if it
   # exists). `Enum.at` with a guarded non-negative index — a bare `i - 1` would wrap

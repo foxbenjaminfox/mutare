@@ -1027,6 +1027,26 @@ defmodule Mutare.MutatorsTest do
       assert mode("String.normalize(s, :nfkd)", false) == ["String.normalize(s, :nfkc)"]
     end
 
+    test "sort order shorthand swaps :asc <-> :desc" do
+      assert mode("Enum.sort(xs, :desc)", false) == ["Enum.sort(xs, :asc)"]
+      assert mode("Enum.sort_by(xs, f, :asc)", false) == ["Enum.sort_by(xs, f, :desc)"]
+      assert mode("List.keysort(xs, 0, :desc)", false) == ["List.keysort(xs, 0, :asc)"]
+
+      # piped: `xs |> Enum.sort(:desc)` — the order atom is the lone visible arg.
+      assert mode("Enum.sort(:desc)", true) == ["Enum.sort(:asc)"]
+    end
+
+    test "sort order: the {:asc|:desc, module} tuple form and a sorter fun yield nothing" do
+      assert ModeSwap.mutate(parse("Enum.sort(xs, {:desc, Date})"), %{pipe_mode: :unpiped}) ==
+               :skip
+
+      assert ModeSwap.mutate(parse("Enum.sort_by(xs, f, &>=/2)"), %{pipe_mode: :unpiped}) == :skip
+
+      # Enum.sort/1 has no sorter; min_by/max_by reject the shorthand, so are not matched.
+      assert ModeSwap.mutate(parse("Enum.sort(xs)"), %{pipe_mode: :unpiped}) == :skip
+      assert ModeSwap.mutate(parse("Enum.min_by(xs, f, :desc)"), %{pipe_mode: :unpiped}) == :skip
+    end
+
     test "piped: effective arity is +1, so the mode atom is the lone visible arg" do
       # `dt |> DateTime.truncate(:second)` — effective arity 2, the precision at visible 0.
       assert mode("DateTime.truncate(:second)", true) == ["DateTime.truncate(:millisecond)"]
