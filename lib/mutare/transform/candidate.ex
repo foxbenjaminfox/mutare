@@ -79,16 +79,25 @@ defmodule Mutare.Transform.Candidate do
     # from its `Mutare.Mutator.Spec.opts` in `Transform.gate_candidates/1`), so the key
     # stays raw while its value still mutates. Default `false` — every other candidate is
     # a normal mutation, never gated.
+    #
+    # `pin?` flags an in-place candidate whose selector `case` must be **`^`-pinned** —
+    # the value sits in a compile-time DSL position that accepts an interpolated value but
+    # not a bare `case` (an Ecto keyword-shorthand value, `where(q, category: "Foo")`,
+    # where Ecto rejects a raw `case` but accepts `^(case …)`). Set by the `:pinned`
+    # argument treatment (`Mutare.Transform.Analyze.route_macro_arg/3`, classifier-only);
+    # emission wraps the built selector in `^`. Default `false` — pinning is illegal outside
+    # such a context (a bare `^` is a compile error), so only a deliberate route sets it.
 
     @type t :: %__MODULE__{
             mutator: module(),
             original: Macro.t(),
             mutated: Macro.t(),
             range: Sourceror.Range.t(),
-            call_option_key?: boolean()
+            call_option_key?: boolean(),
+            pin?: boolean()
           }
 
-    defstruct [:mutator, :original, :mutated, :range, call_option_key?: false]
+    defstruct [:mutator, :original, :mutated, :range, call_option_key?: false, pin?: false]
   end
 
   defmodule Lifted do

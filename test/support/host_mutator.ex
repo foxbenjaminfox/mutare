@@ -36,6 +36,28 @@ defmodule Mutare.Test.HostDSL do
       unquote(pattern) = if unquote(condition), do: [1, 2], else: [0, 0]
     end
   end
+
+  @doc """
+  A **keyword-shorthand** DSL macro — the analog of Ecto's `where(q, col: val)` form, whose
+  second argument is a keyword list of `field: value` pairs (the keys are field *names*, not
+  values to mutate). Exercises the per-keyword-pair `{:keyword, value_treatments}` routing and
+  the `:pinned` value treatment: a value is routed `:pinned`, so core mutates it (a literal
+  family) but delivers the selector `^`-pinned (`category: ^(case … end)`). Like Ecto, this DSL
+  accepts an interpolated `^value` but not a bare `case` — so the macro **strips the pin** from
+  each value (the test analog of Ecto interpolating it), proving the pinned metamutant compiles.
+  """
+  defmacro set(query, assigns) do
+    assigns = Enum.map(assigns, fn {key, value} -> {key, unpin(value)} end)
+
+    quote do
+      {unquote(query), unquote(assigns)}
+    end
+  end
+
+  # Consume a `^value` interpolation (the analog of Ecto reading a pinned value), so a metamutant
+  # that `^`-pins a value's selector compiles. A non-pinned value passes through.
+  defp unpin({:^, _meta, [inner]}), do: inner
+  defp unpin(other), do: other
 end
 
 defmodule Mutare.Test.HostMutator do
@@ -72,16 +94,43 @@ defmodule Mutare.Test.HostMutator do
   def macros,
     do: [
       {Mutare.Test.HostDSL, :filter, :any, :routing},
+      {Mutare.Test.HostDSL, :set, :any, :routing},
       {Mutare.Test.HostDSL, :pick, 2, [:binding_pattern, :hosted]}
     ]
 
-  # Shape-aware routing over the node's *visible* args: a comparison condition is `:hosted`,
-  # everything else (the query, a keyword/data condition) is an ordinary `:expression`.
+  # Shape-aware routing over the node's *visible* args.
+  #
+  #   * `set` (the keyword-shorthand macro) routes its keyword-list argument as
+  #     `{:keyword, value_treatments}` — per-pair *value* routing, keys left raw. The fixture
+  #     policy: a string value is mutable data delivered `:pinned` (core mutates it, the selector
+  #     is `^`-pinned for the DSL), anything else is left raw (`:skip`) — so a test can observe
+  #     the value-`:pinned`/value-`:skip` split and that the keys are never mutated.
+  #   * any other macro (`filter`) routes a comparison condition `:hosted` and everything else
+  #     (the query, keyword data) as an ordinary `:expression`.
   @impl Mutare.Mutator
+  def macro_routing({:set, _meta, args}) when is_list(args) do
+    Enum.map(args, fn arg ->
+      if keyword_list?(arg), do: {:keyword, value_treatments(arg)}, else: :expression
+    end)
+  end
+
   def macro_routing({_form, _meta, args}) when is_list(args),
     do: Enum.map(args, fn arg -> if comparison?(arg), do: :hosted, else: :expression end)
 
   def macro_routing(_node), do: []
+
+  defp keyword_list?(list) when is_list(list) and list != [],
+    do: Enum.all?(list, &match?({_k, _v}, &1))
+
+  defp keyword_list?(_node), do: false
+
+  # Per-pair value treatments for `set`'s keyword arg: a string value is mutated and delivered
+  # `:pinned` (the DSL needs `^`); anything else (an integer, here) is left raw (`:skip`).
+  defp value_treatments(pairs),
+    do: Enum.map(pairs, fn {_k, v} -> if string_literal?(v), do: :pinned, else: :skip end)
+
+  defp string_literal?({:__block__, _meta, [s]}) when is_binary(s), do: true
+  defp string_literal?(_node), do: false
 
   # The selector host: produce one target for the condition fragment. Both two-visible-arg
   # macros host their condition at index 1 — `filter(query, condition)` (query at 0) and

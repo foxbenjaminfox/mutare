@@ -950,8 +950,19 @@ defmodule Mutare.Transform do
     # All mutations here skipped → no selector; emit the node unchanged.
     case clauses do
       [] -> {default, ctx}
-      _ -> {build_case(default, clauses, ctx), ctx}
+      _ -> {pin_if_needed(build_case(default, clauses, ctx), candidates), ctx}
     end
+  end
+
+  # A `:pinned` in-place candidate's selector must be **`^`-pinned**: the value sits in a
+  # compile-time DSL position (an Ecto keyword-shorthand value) that accepts `^(case …)` but
+  # rejects a bare `case`. The `:pinned` route flags *every* in-place candidate on the node, so
+  # a pinned value carries only pinned candidates and wrapping the whole built selector is sound.
+  # No pinned candidate ⇒ the selector is returned untouched (every existing site is unaffected).
+  defp pin_if_needed(case_node, candidates) do
+    if Enum.any?(candidates, &match?(%Candidate.InPlace{pin?: true}, &1)),
+      do: {:^, [], [case_node]},
+      else: case_node
   end
 
   # Rewrite a `=`-match in statement position so its LHS pattern can be mutated. A

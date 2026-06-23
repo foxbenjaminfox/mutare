@@ -868,10 +868,81 @@ defmodule Mutare.Transform.Analyze do
   # the DSL); the hosting mutator weaves its own selector via `attach_hosted_candidates/5`.
   defp route_macro_arg(arg, {:hosted, _host}, _mutators), do: arg
 
+  # **Per-keyword-pair** routing for a keyword-list argument (classifier-only — produced by a
+  # `c:Mutare.Mutator.macro_routing/1` that inspected the node; a static `args` can't express it).
+  # For each `key: value` pair the **key is left raw** (a keyword key in a DSL is a field/option
+  # *name*, not a value to mutate) and the **value is routed by its own treatment** from
+  # `value_treatments`, positionally. The motivating case is Ecto's keyword-shorthand `where`
+  # (`where(q, category: "Foo", deleted_at: nil)`): mutate `"Foo"` (its value `:expression`) but
+  # not the column name `category`, and skip the `deleted_at: nil` pair (`IS NULL`, not `= nil`)
+  # by routing its value `:skip`. A value treatment may itself be `{:keyword, …}`, so a *nested*
+  # shorthand — a keyword list whose values are keyword lists, e.g. `from(S, where: [x: v])` —
+  # routes too. A value position past the list defaults to `:skip` (raw), so only what the
+  # classifier explicitly marked is ever mutated; a non-keyword argument falls back to raw, so a
+  # mis-shaped classification can never splice into a non-pair.
+  defp route_macro_arg(arg, {:keyword, value_treatments}, mutators)
+       when is_list(value_treatments),
+       do: route_keyword(arg, value_treatments, mutators)
+
+  # A value that must be mutated **`^`-pinned** (classifier-only): it sits in a compile-time DSL
+  # position that accepts an interpolated value but not a bare selector `case` — an Ecto
+  # keyword-shorthand value (`where(q, category: "Foo")`), where Ecto rejects a raw `case` but
+  # accepts `^(case …)`. Analyze it as ordinary runtime so the configured literal families attach
+  # their in-place candidates (their *own* names ride to the Site, the value's mutation stays
+  # core's), then flag those candidates `pin?` so `emit_site/3` wraps the selector in `^`. Only a
+  # **scalar** value belongs here — a compound value (`[1, 2]`) would attach candidates to nested
+  # nodes, where an inner `^`-wrap still poisons; the classifier routes only scalars `:pinned`.
+  defp route_macro_arg(arg, :pinned, mutators),
+    do: arg |> analyze(:runtime, mutators) |> pin_inplace_candidates()
+
   defp route_macro_arg(arg, treatment, mutators) when treatment in [:pattern, :binding_pattern],
     do: analyze(arg, :pattern, mutators)
 
   defp route_macro_arg(arg, _expression, mutators), do: analyze(arg, :runtime, mutators)
+
+  # Flag the in-place candidates on a node's own metadata `pin?: true` (the `:pinned` treatment),
+  # so emission `^`-pins their selector. Only the node's *own* candidates — a scalar value's
+  # mutations sit here; the route is documented scalar-only.
+  defp pin_inplace_candidates({form, meta, args}) when is_list(meta) do
+    case Keyword.get(meta, :mutare) do
+      nil ->
+        {form, meta, args}
+
+      candidates ->
+        {form, Keyword.put(meta, :mutare, Enum.map(candidates, &pin_candidate/1)), args}
+    end
+  end
+
+  defp pin_inplace_candidates(node), do: node
+
+  defp pin_candidate(%Candidate.InPlace{} = candidate), do: %{candidate | pin?: true}
+  defp pin_candidate(other), do: other
+
+  # Route a keyword list's pair *values* by `value_treatments` (keys raw). Handles the bare list
+  # (a trailing keyword argument, `where(q, x: v)`) and the Sourceror `{:__block__, _, [list]}`
+  # wrap a list takes in a keyword *value* position (`where: [x: v]` inside a `from`) — unwrapped,
+  # routed, re-wrapped so the rendering metadata is preserved. A non-keyword-shaped value is left
+  # raw (nothing to route).
+  defp route_keyword({:__block__, meta, [list]}, value_treatments, mutators) when is_list(list),
+    do: {:__block__, meta, [route_keyword(list, value_treatments, mutators)]}
+
+  defp route_keyword(list, value_treatments, mutators) when is_list(list) do
+    if keyword_list_shaped?(list) do
+      list
+      |> Enum.with_index()
+      |> Enum.map(fn
+        {{key, value}, i} ->
+          {key, route_macro_arg(value, Enum.at(value_treatments, i, :skip), mutators)}
+
+        {other, _i} ->
+          other
+      end)
+    else
+      list
+    end
+  end
+
+  defp route_keyword(arg, _value_treatments, _mutators), do: arg
 
   # The left side of a `|>` whose right side is a known macro: the piped value is the macro's
   # *effective argument 0*, so it inherits position 0's treatment, which `Resolve` recorded on

@@ -334,4 +334,61 @@ defmodule Mutare.HostedTest do
       assert F2.run(1) == 12
     end
   end
+
+  describe "per-keyword-pair routing ({:keyword, value_treatments}) + :pinned values" do
+    @kw_source """
+    defmodule Mutare.KwFixture do
+      import Mutare.Test.HostDSL
+
+      def assign(q) do
+        set(q, name: "keep", count: 5)
+      end
+    end
+    """
+
+    setup do
+      {meta, sites, _next} =
+        Mutare.transform_string(@kw_source,
+          file: "kw.ex",
+          mutators: [:string, :literal, :atom, Mutare.Test.HostMutator]
+        )
+
+      %{meta: meta, sites: sites}
+    end
+
+    test "routes each pair's value by its own treatment, leaving the keys raw", %{sites: sites} do
+      # `name: "keep"` — the string value is routed :pinned, so a core literal family mutates it
+      # (its *own* name on the Site — the value mutation stays core's, not the host's).
+      assert Enum.any?(sites, &(&1.mutator == :string and &1.mutated_code == "\"\""))
+      assert Enum.any?(sites, &(&1.mutator == :string and &1.mutated_code == "\"mutare\""))
+
+      # `count: 5` — the integer value is routed :skip, so it is left raw despite :literal
+      # being enabled (it would otherwise offer 6/4/0).
+      refute Enum.any?(sites, &(&1.mutator == :literal))
+
+      # The keys `name`/`count` are field names, never mutated — even though :atom is enabled
+      # and would otherwise rewrite a bare atom. This is the per-pair routing's defining
+      # behaviour (a plain :expression on the whole list would mutate the keys too).
+      refute Enum.any?(sites, &(&1.mutator == :atom))
+    end
+
+    test "a :pinned value's selector is ^-pinned (not a bare case)", %{meta: meta} do
+      # The string value's selector is delivered `^case … end` — the pin a DSL value position
+      # requires (Ecto rejects a bare `case` there). The recorded Site stays the clean
+      # `"keep"` → `""` diff (no `^`), asserted above; the `^` is emit-only scaffolding.
+      assert meta =~ ~r/name:\s*\^\(?case mutare_active do/
+      # …and the integer value, routed :skip, carries no selector at all.
+      assert meta =~ ~r/count: 5\b/
+    end
+
+    test "the (pinned) metamutant still compiles", %{meta: meta} do
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        send(self(), {:compiled, Code.compile_string(meta)})
+      end)
+
+      assert_received {:compiled, [{module, _binary}]}
+      :code.purge(module)
+      :code.delete(module)
+    end
+  end
 end

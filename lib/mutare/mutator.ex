@@ -355,8 +355,38 @@ defmodule Mutare.Mutator do
   node's **visible** arguments) instead of a fixed one. Each element is a
   `t:Mutare.Macro.Spec.treatment/0` (`:expression`/`:pattern`/`:binding_pattern`/`:skip`/
   `:hosted`); a `:hosted` here is delivered through this same mutator's `c:host/2`.
+
+  ## Per-keyword-pair routing — `{:keyword, value_treatments}`
+
+  Besides the static treatments, the classifier may return two **classifier-only** routing
+  values (a static `args` can't carry them):
+
+    * `{:keyword, value_treatments}` for a **keyword-list argument**, a routing the per-argument
+      granularity can't otherwise reach. Core routes each `key: value` pair's **value** by the
+      corresponding treatment in `value_treatments` (positional; a value past the list defaults
+      to `:skip`) and leaves every **key** raw — a keyword key in a DSL is a field/option *name*,
+      not a value to mutate. A value treatment may itself be `{:keyword, …}`, so a *nested*
+      keyword list (a list whose values are keyword lists) routes too. A non-keyword argument
+      under it falls back to raw, so a mis-shaped classification can never splice into a non-pair.
+
+    * `:pinned` for a **value that must be `^`-pinned** — it sits in a compile-time DSL position
+      (an Ecto keyword-shorthand value) that accepts an interpolated value but not a bare
+      selector `case`. Core mutates it with the configured literal families (their *own* names on
+      the Site — the value mutation stays core's), but wraps the selector in `^`. Use it as a
+      value treatment inside `{:keyword, …}`, for a **scalar** value only (a compound value would
+      mutate nested nodes, where an inner `^` still poisons). A bare `^` is a compile error
+      outside such a context, so only route a position `:pinned` when the macro genuinely
+      interpolates it.
+
+  The motivating case is Ecto's keyword-shorthand `where(q, category: "Foo", deleted_at: nil)`:
+  `{:keyword, [:pinned, :skip]}` — mutate `"Foo"` `^`-pinned (core's literal families), the
+  column-name keys raw, and the `deleted_at: nil` pair skipped (it compiles to `IS NULL`).
   """
-  @callback macro_routing(call_node :: Macro.t()) :: [Mutare.Macro.Spec.treatment()]
+  @callback macro_routing(call_node :: Macro.t()) :: [
+              Mutare.Macro.Spec.treatment()
+              | :pinned
+              | {:keyword, [Mutare.Macro.Spec.treatment() | :pinned]}
+            ]
 
   @doc """
   Optional hook by which a mutator declares that one of *its own* mutation results is

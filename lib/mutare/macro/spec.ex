@@ -50,6 +50,12 @@ defmodule Mutare.Macro.Spec do
   defers the per-position routing to the hosting mutator's `c:Mutare.Mutator.macro_routing/1`.
   Like `:hosted`, `:routing` is only valid with a `host`.
 
+  The classifier may also return, for a **keyword-list argument**, the tuple
+  `{:keyword, value_treatments}` — finer than the per-argument treatments here: core routes each
+  pair's *value* by its own treatment and leaves the *keys* raw (a DSL keyword key is a field
+  name, not a value), nesting for a keyword list of keyword lists. This is classifier-only — a
+  static `args` entry cannot carry it. See `c:Mutare.Mutator.macro_routing/1`.
+
   ## Host
 
   `host` is the mutator module that delivers a `:hosted` argument's mutations and answers

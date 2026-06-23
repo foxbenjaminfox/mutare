@@ -1531,6 +1531,40 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     known — naming the missing `host/2`. (A *static* `:hosted` without a `host/2` is caught earlier
     still, at build, by `Macros.validate_host!/3`.)
 
+  * *Per-keyword-pair routing — `{:keyword, value_treatments}`.* Routing is per *visible argument*, so a
+    keyword-list argument is one routing decision: `:expression` mutates its keys **and** values (and
+    every pair), `:skip` mutates nothing. Ecto's keyword-shorthand `where(q, category: "Foo", deleted_at:
+    nil)` needs neither — mutate `"Foo"` (core's literal families) but **not** the column-name key
+    `category`, and skip the `deleted_at: nil` pair (it is `IS NULL`, not `= nil`). `call_option_keys:
+    false` is all-or-nothing per mutator, not per pair. So the `:routing` classifier may return, for a
+    keyword-list position, `{:keyword, value_treatments}`: `route_macro_arg/3` routes each pair's *value*
+    by its own treatment (positional, missing → `:skip`) and leaves every *key* raw. A value treatment may
+    itself be `{:keyword, …}`, so a nested shorthand (`from(S, where: [x: v])` — a keyword list whose
+    values are keyword lists) routes too, and `route_keyword/3` unwraps the Sourceror `{:__block__, _,
+    [list]}` a list takes in a keyword *value* position (vs. the bare list of a trailing keyword argument).
+    Classifier-only (a static `args` can't produce it — `Spec.routing/2` only emits validated atoms), and
+    a non-keyword argument under it falls back to raw, so a mis-classification never splices into a
+    non-pair. This is the third foreign-DSL extension after the host (#1) and `:routing`/`:hosted` (#2):
+    it unblocks `mutare_ecto`'s shorthand-split + `nil`-pair exclusion without the plugin re-implementing
+    core's literal families. Tested via the `set/2` fixture macro (`Mutare.Test.HostDSL`/`HostMutator`).
+
+  * *`:pinned` — `^`-pinned in-place mutation.* Per-pair routing alone isn't enough for the shorthand
+    split: a shorthand value sits **inside** Ecto's query macro, which rejects a bare selector `case`
+    (`where(q, category: case … end)` → "unbound/`case` not supported") but accepts the interpolated
+    `where(q, category: ^(case … end))`. So core can't mutate a shorthand value with its ordinary
+    in-place selector — the same wall the host (#1) climbs for *conditions*, but here the mutants are
+    core's literal families, not the plugin's catalog. New value treatment `:pinned`
+    (`route_macro_arg/3`): analyze the value as ordinary runtime so the configured families attach
+    their `Candidate.InPlace`s (their **own** family name reaches the Site — `:string`/`:literal`, not
+    the host), flag those candidates `pin?`, and `emit_site/3`'s `pin_if_needed/2` wraps the built
+    selector in `{:^, [], [case]}`. Contained: `pin?` defaults false and is set only by `:pinned`, so
+    every existing site is byte-identical; a bare `^` is a compile error elsewhere, so `:pinned` is
+    routed only where the macro interpolates. Scalar-only — a compound value (`[1, 2]`) attaches
+    candidates to *nested* nodes, where an inner `^` still poisons, so the classifier routes only
+    scalars `:pinned` (a list/compound shorthand value stays `:skip` for now). This is why the
+    DESIGN's "shorthand values are plain interpolated Elixir, *not* hosted" was half-right: the value
+    *mutation* is core's (not the SQL catalog), but the *delivery* must be pinned, not a bare selector.
+
 **Explicitly not needed.** `context.uses` — every Ecto target self-identifies *node-locally* (a resolved
 call or a known macro), unlike a GenServer return tuple (shape-ambiguous, *does* need module context); the
 node never has to ask the module who it is. `opts` for `macros/0` — Ecto's macro set is fixed. Caveat
