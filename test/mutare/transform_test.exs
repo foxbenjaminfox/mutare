@@ -1351,6 +1351,20 @@ defmodule Mutare.TransformTest do
       assert sites == []
     end
 
+    test "a known macro drops the bare-import witness (it can't reconstruct the call)" do
+      # The import witness reconstructs a bare-imported call as a dead-code `fn a -> query(a) end`
+      # to prove it still resolves to the believed provider. For a known macro that constrains its
+      # arguments — `Ecto.Query.from/2` needs a compile-time keyword list — that reconstruction would
+      # not compile, poisoning the build for *every* mutation of an expression containing the call. So
+      # a registered macro keeps its resolution stamp (for `Calls`) but drops the witness. (`query/1`
+      # is the importable stand-in here; the real failure mode it guards against is `Ecto.Query.from`.)
+      {meta, sites, _next_id} =
+        Mutare.transform_string(@query_source, mutators: [Mutare.Test.QueryMutator])
+
+      assert Enum.map(sites, & &1.mutator) == [:query_dsl]
+      refute meta =~ "import Elixir.Mutare.Test.QueryDSL"
+    end
+
     @piped_source """
     defmodule PipedQuery do
       import Mutare.Test.QueryDSL

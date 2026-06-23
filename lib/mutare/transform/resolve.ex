@@ -179,8 +179,16 @@ defmodule Mutare.Transform.Resolve do
     arity = Mutator.effective_arity(args, env.pipe_mode)
 
     case Macros.lookup(env.macros, module_key, fun, arity) do
-      nil -> meta
-      %Spec{} = spec -> stamp_macro_spec(meta, spec, call_node, arity, env.pipe_mode)
+      nil ->
+        meta
+
+      %Spec{} = spec ->
+        # A known macro routes its arguments specially (a pattern, an opaque `:skip`/`:hosted`
+        # DSL body), so the bare-import witness — which reconstructs the call as
+        # `fn a1, …, aN -> fun(a1, …, aN) end` — can't compile against it (`Ecto.Query.from/2`
+        # needs a compile-time keyword list). Drop the witness here, where we *know* it's a known
+        # macro; the resolution stamp stays.
+        meta |> Imports.drop_witness() |> stamp_macro_spec(spec, call_node, arity, env.pipe_mode)
     end
   end
 

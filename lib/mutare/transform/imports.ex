@@ -146,6 +146,24 @@ defmodule Mutare.Transform.Imports do
   end
 
   @doc """
+  Strip the import **witness** stamp from `meta`, keeping the `:mutare_import` resolution stamp.
+
+  The witness (`Mutare.Transform.ImportWitness`) reconstructs the call as a dead-code
+  `fn a1, …, aN -> fun(a1, …, aN) end` to prove the bare name still resolves to the believed
+  provider. That is sound for a function and for an ordinary macro whose arguments are plain
+  expressions (`Integer.is_even(n)`), but **not** for a macro that constrains an argument away
+  from a runtime expression — `Ecto.Query.from/2`'s compile-time keyword list, `match?`'s pattern —
+  where the reconstruction would not compile, poisoning the build for *every* mutation of an
+  expression containing the call. `Mutare.Transform.Resolve` calls this for a call it recognises as
+  a **known macro** (one in the macro registry, whose arguments it routes specially): such a call
+  keeps its resolution stamp (for `Calls`) but loses the witness it could never satisfy. (The
+  displacement guard the witness gives isn't expressible for such a macro anyway — there is no
+  universally-valid call shape to reference it by.)
+  """
+  @spec drop_witness(keyword()) :: keyword()
+  def drop_witness(meta) when is_list(meta), do: Keyword.delete(meta, @import_witness_key)
+
+  @doc """
   The import a bare call resolves to: `{module, :bare | :qualify}` (module an Elixir path
   `[:Enum]` or an Erlang atom `:binary`) stamped by `stamp/6`, or `nil` when the call resolves
   to nothing imported (a local, or the default `Kernel`). The reader half of the
