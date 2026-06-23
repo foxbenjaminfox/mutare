@@ -88,6 +88,9 @@ defmodule Mix.Tasks.Mutare do
         paths: ["lib"],
         exclude: ["lib/generated/**"],
         mutators: :all,
+        # leave a macro's arguments raw (a DSL body, a pattern) so they aren't
+        # mutated — `:skip` covers every argument, a list marks each position
+        macros: [{Ecto.Query, :from, :skip}],
         # fail the run (non-zero exit) if the score drops below this — the
         # same CI gate as `--min-score`, which overrides it when both are given
         min_score: 70,

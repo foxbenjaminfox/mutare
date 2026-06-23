@@ -102,6 +102,13 @@ Optional `.mutare.exs`:
   exclude: ["lib/generated/**"],
   # built-in family atoms and/or your own modules implementing Mutare.Mutator
   mutators: [:arithmetic, :relational, MyApp.Mutators.Boolean],
+  # mark a macro's arguments as off-limits for mutation, by module/name/arity
+  # (see "Skipping macro arguments" below). `:skip` = every argument; a list
+  # skips only the marked positions (`:expression` = mutate as normal).
+  macros: [
+    {Ecto.Query, :from, :skip},
+    {MyApp.Schema, :field, 2, [:expression, :skip]}
+  ],
   # fail the run (non-zero exit) if the mutation score drops below this;
   # the same CI gate as `--min-score`, which overrides this when given
   min_score: 70,
@@ -145,6 +152,39 @@ in `.mutare.exs` (above).
 When a machine format is written to a file, the human report still prints to the
 console; when it takes stdout (no `--output`), the human report is suppressed to
 avoid a collision.
+
+### Skipping macro arguments
+
+Some macros take arguments that aren't ordinary runtime code — a query DSL body,
+a pattern, a schema definition. Mutating inside them is pointless at best and can
+break the single compile at worst (a selector spliced into `Ecto.Query.from`'s
+body, say). When Mutare can't tell a macro call from a normal function call, list
+the macro under `macros:` in `.mutare.exs` and its arguments are left **raw** — no
+custom mutator required:
+
+```elixir
+macros: [
+  # every argument of `from/_` (any arity) is left untouched
+  {Ecto.Query, :from, :skip},
+  # only the 2nd argument of `field/2` is skipped; the 1st mutates as normal
+  {MyApp.Schema, :field, 2, [:expression, :skip]}
+]
+```
+
+An entry is `{Module, :name, arity, treatment}`, or `{Module, :name, treatment}`
+to match **any arity**. The `treatment` is either a single atom applied to every
+argument or a per-position list:
+
+- `:skip` — leave the argument raw (no descent, no mutation).
+- `:expression` — mutate it as normal runtime code (the default).
+- `:pattern` — treat it as a match pattern (descend, but don't mutate the pattern
+  itself); for the rare macro that takes one (like `match?/2`).
+
+A per-position list is padded with `:expression`, so `[:expression, :skip]` reads
+as "mutate the first argument, skip the second, mutate the rest". The macro is
+matched however it's written — directly, aliased, or imported (bare). `Module` may
+be an Elixir module (`Ecto.Query`), an Erlang atom module (`:binary`), and is
+resolved purely syntactically, so it needn't be a dependency of the Mutare process.
 
 ### Custom mutators
 
