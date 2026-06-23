@@ -58,13 +58,23 @@ defmodule Mutare.Mutators.ModeSwap do
       so it contributes nothing for free. `Enum.min_by/max_by` look similar but reject the
       shorthand (they read the atom as a comparison module), so they are deliberately absent.
 
+  ISO 8601 rendering:
+
+    * `DateTime.to_iso8601/2,3` and the `NaiveDateTime`/`Time`/`Date` `to_iso8601/2` twins —
+      the positional `format` atom, `:extended` ↔ `:basic` (the separator-laden
+      `2020-01-01T00:00:00Z` vs the compact `20200101T000000Z`), a string-shape change any
+      `to_iso8601` assertion catches. `/1` defaults the format (no atom to swap); on
+      `DateTime`'s `/3` the trailing `offset` keeps the format at position 1.
+
   Keyword-option modes (the atom is the *value* of a named option key — the value-side
   mirror of `shift`'s keyword *keys*):
 
-    * `Base.encode16/2`, `Base.decode16/2`, `Base.decode16!/2` — the `case:` option,
-      `:upper` ↔ `:lower` (a different hex rendering, or accepted input on decode).
-      `decode16`'s `:mixed` is left alone: it accepts both cases, so a swap from it only
-      narrows acceptance on input the test already exercises — the `:default` ↔ `:ascii` trap.
+    * `Base.encode16/2`, `decode16/2`, `decode16!/2` and the Base32 family
+      (`encode32/2`, `decode32/2`, `decode32!/2`, `hex_encode32/2`, `hex_decode32/2`,
+      `hex_decode32!/2`) — the `case:` option, `:upper` ↔ `:lower` (a different rendering,
+      or accepted input on decode). The decoders' `:mixed` is left alone: it accepts both
+      cases, so a swap from it only narrows acceptance on input the test already exercises —
+      the `:default` ↔ `:ascii` trap.
     * `Regex.scan/3`, `Regex.run/3` — the `return:` option, `:index` ↔ `:binary` (offset
       tuples vs the matched substrings, a result-shape change any assertion catches).
 
@@ -142,11 +152,14 @@ defmodule Mutare.Mutators.ModeSwap do
   @norm_forms %{nfc: [:nfd], nfd: [:nfc], nfkc: [:nfkd], nfkd: [:nfkc]}
   # Sort direction: the `:asc`/`:desc` shorthand accepted by `sort`/`sort_by`/`keysort`.
   @order_modes %{asc: [:desc], desc: [:asc]}
-  # Keyword-option value sets (the atom is the *value* of a named option key). Base16's
-  # `case:` toggles hex casing / accepted input; `decode16`'s `:mixed` is deliberately
-  # absent (it accepts both cases — a swap from it only narrows on already-tested input,
-  # the `:default` ↔ `:ascii` trap). Regex's `return:` flips index tuples vs substrings.
-  @base16_case %{upper: [:lower], lower: [:upper]}
+  # ISO 8601 rendering format (a lone positional atom): the separator-laden `:extended`
+  # vs the compact `:basic` — a string-shape change any `to_iso8601` assertion catches.
+  @iso_format %{extended: [:basic], basic: [:extended]}
+  # Keyword-option value sets (the atom is the *value* of a named option key). Base16/Base32
+  # `case:` toggles the rendering casing / accepted input; the decoders' `:mixed` is
+  # deliberately absent (it accepts both cases — a swap from it only narrows on already-tested
+  # input, the `:default` ↔ `:ascii` trap). Regex's `return:` flips index tuples vs substrings.
+  @base_case %{upper: [:lower], lower: [:upper]}
   @regex_return %{index: [:binary], binary: [:index]}
 
   # {alias_path, function, effective_arity} => {mode_positions (effective indices), group}.
@@ -180,6 +193,14 @@ defmodule Mutare.Mutators.ModeSwap do
     {[:DateTime], :from_unix!, 2} => {[1], :system},
     {[:DateTime], :from_unix!, 3} => {[1], :system},
     {[:DateTime], :to_unix, 2} => {[1], :system},
+    # ISO 8601 rendering format — a lone positional atom (`:extended` ↔ `:basic`). `/1` has
+    # no format arg; the optional trailing `offset` on `DateTime`'s `/3` keeps the format at
+    # position 1 (the `NaiveDateTime`/`Time`/`Date` twins have no `/3`).
+    {[:DateTime], :to_iso8601, 2} => {[1], :iso_format},
+    {[:DateTime], :to_iso8601, 3} => {[1], :iso_format},
+    {[:NaiveDateTime], :to_iso8601, 2} => {[1], :iso_format},
+    {[:Time], :to_iso8601, 2} => {[1], :iso_format},
+    {[:Date], :to_iso8601, 2} => {[1], :iso_format},
     {[:String], :upcase, 2} => {[1], :case_mode},
     {[:String], :downcase, 2} => {[1], :case_mode},
     {[:String], :capitalize, 2} => {[1], :case_mode},
@@ -190,9 +211,15 @@ defmodule Mutare.Mutators.ModeSwap do
     {[:List], :keysort, 3} => {[2], :order},
     # Keyword-option modes — the atom is the *value* of a named key in the trailing options
     # list. `{:kw, [key: set]}` declares which key(s) to read and which value set to swap.
-    {[:Base], :encode16, 2} => {[1], {:kw, [case: :base16_case]}},
-    {[:Base], :decode16, 2} => {[1], {:kw, [case: :base16_case]}},
-    {[:Base], :decode16!, 2} => {[1], {:kw, [case: :base16_case]}},
+    {[:Base], :encode16, 2} => {[1], {:kw, [case: :base_case]}},
+    {[:Base], :decode16, 2} => {[1], {:kw, [case: :base_case]}},
+    {[:Base], :decode16!, 2} => {[1], {:kw, [case: :base_case]}},
+    {[:Base], :encode32, 2} => {[1], {:kw, [case: :base_case]}},
+    {[:Base], :decode32, 2} => {[1], {:kw, [case: :base_case]}},
+    {[:Base], :decode32!, 2} => {[1], {:kw, [case: :base_case]}},
+    {[:Base], :hex_encode32, 2} => {[1], {:kw, [case: :base_case]}},
+    {[:Base], :hex_decode32, 2} => {[1], {:kw, [case: :base_case]}},
+    {[:Base], :hex_decode32!, 2} => {[1], {:kw, [case: :base_case]}},
     {[:Regex], :scan, 3} => {[2], {:kw, [return: :regex_return]}},
     {[:Regex], :run, 3} => {[2], {:kw, [return: :regex_return]}}
   }
@@ -379,7 +406,8 @@ defmodule Mutare.Mutators.ModeSwap do
   defp swaps(:case_mode, atom), do: Map.get(@case_modes, atom, [])
   defp swaps(:norm_form, atom), do: Map.get(@norm_forms, atom, [])
   defp swaps(:order, atom), do: Map.get(@order_modes, atom, [])
-  defp swaps(:base16_case, atom), do: Map.get(@base16_case, atom, [])
+  defp swaps(:iso_format, atom), do: Map.get(@iso_format, atom, [])
+  defp swaps(:base_case, atom), do: Map.get(@base_case, atom, [])
   defp swaps(:regex_return, atom), do: Map.get(@regex_return, atom, [])
 
   # The members of `ladder` immediately finer and coarser than `atom` (each, if it

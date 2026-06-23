@@ -1054,18 +1054,65 @@ defmodule Mutare.MutatorsTest do
       assert ModeSwap.mutate(parse("Enum.min_by(xs, f, :desc)"), %{pipe_mode: :unpiped}) == :skip
     end
 
-    test "Base16 case: option value swaps :upper <-> :lower" do
+    test "Base16/Base32 case: option value swaps :upper <-> :lower" do
       assert mode("Base.encode16(data, case: :lower)", false) ==
                ["Base.encode16(data, case: :upper)"]
 
       assert mode("Base.decode16(s, case: :upper)", false) == ["Base.decode16(s, case: :lower)"]
       assert mode("Base.decode16!(s, case: :lower)", false) == ["Base.decode16!(s, case: :upper)"]
 
+      # The Base32 family reuses the same `case:` set.
+      assert mode("Base.encode32(data, case: :lower)", false) ==
+               ["Base.encode32(data, case: :upper)"]
+
+      assert mode("Base.decode32(s, case: :upper)", false) == ["Base.decode32(s, case: :lower)"]
+      assert mode("Base.decode32!(s, case: :lower)", false) == ["Base.decode32!(s, case: :upper)"]
+
+      assert mode("Base.hex_encode32(data, case: :upper)", false) ==
+               ["Base.hex_encode32(data, case: :lower)"]
+
+      assert mode("Base.hex_decode32(s, case: :lower)", false) ==
+               ["Base.hex_decode32(s, case: :upper)"]
+
+      assert mode("Base.hex_decode32!(s, case: :upper)", false) ==
+               ["Base.hex_decode32!(s, case: :lower)"]
+
       # piped: the options list is the lone visible arg.
       assert mode("Base.encode16(case: :upper)", true) == ["Base.encode16(case: :lower)"]
 
-      # :mixed is deliberately left alone (accepts both cases — low-signal).
+      # :mixed is deliberately left alone (accepts both cases — low-signal), on 16 and 32.
       assert ModeSwap.mutate(parse("Base.decode16(s, case: :mixed)"), %{pipe_mode: :unpiped}) ==
+               :skip
+
+      assert ModeSwap.mutate(parse("Base.decode32(s, case: :mixed)"), %{pipe_mode: :unpiped}) ==
+               :skip
+    end
+
+    test "ISO 8601 format swaps :extended <-> :basic" do
+      assert mode("DateTime.to_iso8601(dt, :extended)", false) ==
+               ["DateTime.to_iso8601(dt, :basic)"]
+
+      assert mode("DateTime.to_iso8601(dt, :basic)", false) ==
+               ["DateTime.to_iso8601(dt, :extended)"]
+
+      # /3 keeps the format at position 1; the trailing offset is untouched.
+      assert mode("DateTime.to_iso8601(dt, :extended, 3600)", false) ==
+               ["DateTime.to_iso8601(dt, :basic, 3600)"]
+
+      # The NaiveDateTime/Time/Date twins (only /2 — no offset arity).
+      assert mode("NaiveDateTime.to_iso8601(ndt, :basic)", false) ==
+               ["NaiveDateTime.to_iso8601(ndt, :extended)"]
+
+      assert mode("Time.to_iso8601(t, :extended)", false) == ["Time.to_iso8601(t, :basic)"]
+      assert mode("Date.to_iso8601(d, :basic)", false) == ["Date.to_iso8601(d, :extended)"]
+
+      # piped: `dt |> DateTime.to_iso8601(:basic)` — the format is the lone visible arg.
+      assert mode("DateTime.to_iso8601(:basic)", true) == ["DateTime.to_iso8601(:extended)"]
+
+      # /1 has no format arg; an unrecognised format has no sibling.
+      assert ModeSwap.mutate(parse("DateTime.to_iso8601(dt)"), %{pipe_mode: :unpiped}) == :skip
+
+      assert ModeSwap.mutate(parse("DateTime.to_iso8601(dt, :bogus)"), %{pipe_mode: :unpiped}) ==
                :skip
     end
 
