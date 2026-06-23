@@ -2464,6 +2464,31 @@ no race:
   it spawned (a fresh stack with no `__ex_unit__/2` frame). The line ran, but no test
   owns it. The reconciler runs the **whole suite** for such an id (below).
 
+**Why the record sits at value *production*, not behavioural execution — essential
+for captures.** The catch-all records when the *selector expression evaluates* (i.e.
+when the mutated node's value is produced), then yields the verbatim original
+(`record(ids); <original>` — the record is a discarded statement, so the branch value
+is byte-identical to the source). For an ordinary call this placement is invisible:
+producing the value *is* running the behaviour, so "record at the expression" and
+"record when the mutation's effect runs" coincide and no test can tell them apart.
+**Captures are the one construct where the two pull apart** — the value is created in
+one place and *invoked* in another, or never invoked at all. A mutated function
+capture (`&String.first/1` → `&String.last/1`, the planned capture-mutation family) is
+killable by **identity comparison alone** — `&String.first/1 == &String.last/1` is
+`false`, external funs comparing by MFA — with the captured function *never called*.
+Recording at production keeps that test visible (the comparison sees the produced
+value); recording *inside* the captured function, on invocation, would miss it,
+mis-score the mutant `:no_coverage`, and silently drop a killable mutant from the
+denominator. So anchoring coverage **outside** the captured function (at the
+value-production site), not **within** it, is what preserves the identity-kill path.
+This isn't a special case for captures — the general design records at the mutated
+*node's* evaluation, and the can't-splice-inside-`&…/arity` rule forces the mutated
+node to be the *whole* capture expression (whose evaluation is value-production); the
+capture analysis just exposes *why* that anchor is the correct one. (Same root reason
+the baseline branch must stay the **literal** capture, never an eta-expanded `fn`:
+`fn x -> String.first(x) end != &String.first/1`, so a rewritten baseline would break
+identity at mutant 0 — the record-as-statement form keeps the branch value verbatim.)
+
 The bootstrap is split around the target's `test_helper.exs`: the setup half is
 prepended before user helper code creates the ETS tables and flips
 `:mutare_track`, so app startup or helper setup that touches mutated code is
