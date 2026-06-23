@@ -96,7 +96,8 @@ defmodule Mutare.Mutators.CallRemoval do
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.{Calls, Imports}
+  alias Mutare.Mutators.Helpers
+  alias Mutare.Transform.Imports
 
   # {module_key, function} — arity-agnostic: every arity of these has its input as the
   # first argument and returns a same-typed value, so removal is always legal. The module
@@ -207,12 +208,9 @@ defmodule Mutare.Mutators.CallRemoval do
   # resolve) falls to `bare_removal/2`.
   @impl Mutare.Mutator
   def mutate(node, %{pipe_mode: pipe_mode}) do
-    case Calls.resolved_call(node) do
-      {module, fun, args, _rebuild} ->
-        removal(MapSet.member?(@removable, {module, fun}), pipe_mode, args)
-
-      nil ->
-        bare_removal(node, pipe_mode)
+    case Helpers.remove_call(node, pipe_mode, @removable) do
+      :skip -> bare_removal(node, pipe_mode)
+      mutants -> mutants
     end
   end
 
@@ -223,25 +221,18 @@ defmodule Mutare.Mutators.CallRemoval do
   # (`effective_arity/2` — one higher when `:piped`) tells them apart, since a pipe stage's
   # node carries one fewer arg than the source reads. A bare call displaced from `Kernel` by
   # `import Kernel, except:/only:`
-  # (`Mutare.Transform.Imports`) is another module's function, so it is left alone.
+  # (`Mutare.Transform.Imports`) is another module's function, so it is left alone. Reuses the
+  # shared identity-vs-first-arg mechanic (`Helpers.removed_call/2`); `Calls.resolved_call`
+  # doesn't resolve bare `Kernel`, so this path matches it itself.
   defp bare_removal({fun, meta, args}, pipe_mode) when is_atom(fun) and is_list(args) do
     eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode)
 
-    removable? =
-      MapSet.member?(@bare_removable, {fun, eff_arity}) and not Imports.kernel_displaced?(meta)
-
-    removal(removable?, pipe_mode, args)
+    if MapSet.member?(@bare_removable, {fun, eff_arity}) and not Imports.kernel_displaced?(meta) do
+      Helpers.removed_call(pipe_mode, args)
+    else
+      :skip
+    end
   end
 
   defp bare_removal(_node, _pipe_mode), do: :skip
-
-  # Decide the removal given membership + pipe context.
-  defp removal(false, _pipe_mode, _args), do: :skip
-  defp removal(true, :piped, _args), do: [identity_call()]
-  defp removal(true, :unpiped, []), do: :skip
-  defp removal(true, :unpiped, args), do: [hd(args)]
-
-  defp identity_call do
-    {{:., [], [{:__aliases__, [], [:"Elixir", :Function]}, :identity]}, [], []}
-  end
 end
