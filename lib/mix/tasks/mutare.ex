@@ -80,20 +80,53 @@ defmodule Mix.Tasks.Mutare do
   interactive report viewer), or `sarif` (survivors as findings for GitHub code
   scanning).
 
-  Configuration may also live in `.mutare.exs` (a keyword list); CLI flags win.
-  Use `reporters:` to emit several formats at once (a bare atom goes to stdout):
+  Configuration may also live in `.mutare.exs` (a keyword list); a CLI flag
+  overrides the matching key. Every option is optional — the block below lists
+  all the file-settable keys with their defaults (`min_score` is illustrative):
 
       # .mutare.exs
       [
+        # --- what to mutate ---
         paths: ["lib"],
         exclude: ["lib/generated/**"],
+        # built-in family atoms (or :all) and/or your own Mutare.Mutator modules
         mutators: :all,
         # leave a macro's arguments raw (a DSL body, a pattern) so they aren't
         # mutated — `:skip` covers every argument, a list marks each position
         macros: [{Ecto.Query, :from, :skip}],
-        # fail the run (non-zero exit) if the score drops below this — the
-        # same CI gate as `--min-score`, which overrides it when both are given
+        # expand `use` to surface the import/alias it injects (--no-expand-uses)
+        expand_uses: true,
+
+        # --- how the suite runs ---
+        # :coverage runs only the test files covering each mutant; :full runs all
+        test_selection: :coverage,
+        workers: System.schedulers_online(),
+        # per-mutant wall-clock cap = baseline run × multiplier, unless an
+        # absolute `timeout:` in ms is given instead (then the multiplier is moot)
+        timeout_multiplier: 3.0,
+        timeout: nil,
+        # run the baseline N×, aborting if a test flakes (passes one run, fails another)
+        baseline_runs: 1,
+        # retry a mutant whose run fails at the harness (infra) level before recording it
+        harness_retries: 1,
+        # abort if more than this fraction of the mutants that ran erred at the
+        # harness level (1.0 = never abort on harness errors)
+        max_harness_error_rate: 0.5,
+        # test at most the first N mutants in source order (a quick smoke run)
+        max_mutants: nil,
+
+        # --- sandbox reuse / build cache (see the prose above) ---
+        sandbox: nil,
+        keep_sandbox: false,
+
+        # --- output & CI gates ---
+        # fail the run (non-zero exit) if the mutation score drops below this
         min_score: 70,
+        # fail if any `# mutare:ignore` suppresses no mutant (a typo or stale line)
+        strict_ignores: false,
+        # suppress the live stderr progress (for CI / piped use)
+        quiet: false,
+        # emit several reports at once (a bare atom goes to stdout)
         reporters: [:human, {:json, "mutare.json"}, {:sarif, "mutare.sarif"}]
       ]
   """

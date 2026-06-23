@@ -122,6 +122,11 @@ Optional `.mutare.exs`:
 ]
 ```
 
+These are the common keys; `mix help mutare` documents the full set — sandbox /
+build-cache reuse (`sandbox`, `keep_sandbox`), baseline re-runs (`baseline_runs`),
+the harness-error guards (`harness_retries`, `max_harness_error_rate`),
+`max_mutants`, `strict_ignores`, `quiet`, and `expand_uses` — each also a CLI flag.
+
 ### Live progress
 
 While a run is in flight, Mutare shows live progress on **stderr**: the current
