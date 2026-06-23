@@ -26,6 +26,7 @@ defmodule Mix.Tasks.Mutare do
                                           # skip files matching globs (repeatable)
       mix mutare --since master             # only files changed vs a git ref (CI)
       mix mutare --mutators relational    # only some mutator families
+      mix mutare --mutators builtins,relational   # `builtins` = the whole default set
       mix mutare --min-score 70           # fail (CI) if the score is below 70
       mix mutare --strict-ignores         # fail (CI) if any `# mutare:ignore`
                                           #   suppresses no mutant (typo/stale)
@@ -89,7 +90,11 @@ defmodule Mix.Tasks.Mutare do
         # --- what to mutate ---
         paths: ["lib"],
         exclude: ["lib/generated/**"],
-        # built-in family atoms (or :all) and/or your own Mutare.Mutator modules
+        # built-in family atoms and/or your own Mutare.Mutator modules. The
+        # `:builtins` token (synonym `:all`) means "all built-ins", so
+        # `[:builtins, MyMutator]` extends the defaults and `[MyMutator]` replaces
+        # them; `{:builtins, except: [:arithmetic]}` drops a family. Omit the key
+        # (or `:all`/`:builtins` bare) for the full default set.
         mutators: :all,
         # leave a macro's arguments raw (a DSL body, a pattern) so they aren't
         # mutated — `:skip` covers every argument, a list marks each position

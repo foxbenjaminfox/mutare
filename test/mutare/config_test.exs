@@ -171,9 +171,23 @@ defmodule Mutare.ConfigTest do
       refute Keyword.has_key?(Config.merge([mutators: :all], []), :mutators)
     end
 
+    test "file config mutators: :builtins (bare) also resolves to the default set" do
+      refute Keyword.has_key?(Config.merge([mutators: :builtins], []), :mutators)
+    end
+
     test "file config mutators list resolves to specs" do
       assert Config.merge([mutators: [:relational]], [])[:mutators] ==
                [Mutare.Mutator.Spec.for_module(Relational)]
+    end
+
+    test "the :builtins token in a list expands to the full default set" do
+      assert Config.merge([mutators: [:builtins]], [])[:mutators] ==
+               Mutare.Mutators.resolve(Mutare.Mutators.all())
+    end
+
+    test "--mutators builtins (CLI) expands the group token" do
+      assert Config.merge([], mutators: "builtins")[:mutators] ==
+               Mutare.Mutators.resolve(Mutare.Mutators.all())
     end
 
     test "CLI flags win over file config" do

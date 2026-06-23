@@ -32,11 +32,12 @@ defmodule Mutare.Config do
   `:full` (→ `test_selection: :full`),
   `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`,
   `:max_mutants`, `:workers`, `:timeout`, `:timeout_multiplier`,
-  `:expand_uses` (`--no-expand-uses` disables `use`-expansion). A `:mutators`
-  value of `:all`
-  (or none) resolves to "use the default set" by omitting the key, so
-  `Mutare.Transform` picks it. Raises `ArgumentError` on an unknown mutator
-  family.
+  `:expand_uses` (`--no-expand-uses` disables `use`-expansion). A bare `:mutators`
+  value of `:all` or `:builtins` (or none) resolves to "use the default set" by
+  omitting the key, so `Mutare.Transform` picks it; a `:mutators` *list* is resolved
+  through `Mutare.Mutators.resolve/1`, where the `:builtins` token expands to every
+  built-in family in place (so `--mutators builtins,relational` works). Raises
+  `ArgumentError` on an unknown mutator family.
 
       iex> opts = Mutare.Config.merge([paths: ["lib"], min_score: 70], only: "lib/billing", full: true)
       iex> {opts[:paths], opts[:min_score], opts[:test_selection]}
@@ -207,7 +208,10 @@ defmodule Mutare.Config do
 
   defp normalize_mutators(config) do
     case Keyword.get(config, :mutators, :all) do
-      :all -> Keyword.delete(config, :mutators)
+      # A bare `:all`/`:builtins` (not in a list) means "the default set" — drop the
+      # key and let `Mutare.Transform` supply it. Inside a list, `:builtins` is instead
+      # a group token `Mutare.Mutators.resolve/1` expands (see that module).
+      token when token in [:all, :builtins] -> Keyword.delete(config, :mutators)
       mutators -> Keyword.put(config, :mutators, mutator_modules(mutators))
     end
   end

@@ -769,8 +769,12 @@ contract between them is the whole game.
 - **`Mutare.Mutators`** — the **single ordered registry** of built-in families and the one place
   mutator lists are resolved/validated. `all/0` is the default set (every registered module — an
   unset `:mutators`/`:all`); `families/0` is every registered atom; `resolve/1` maps any entry —
-  a family atom, a custom module, a `{family|module, opts}` **configured pair**, or an
-  already-resolved `%Spec{}` (idempotent) — to validated **`Mutare.Mutator.Spec`** structs.
+  a family atom, a custom module, a `{family|module, opts}` **configured pair**, the **`:builtins`
+  group token** (synonym `:all`; bare or `{:builtins, except: [families]}`, expanded in place to
+  the registry's families before per-entry resolution — so including it *extends* the defaults and
+  omitting it *replaces* them, and `except:` drops named built-ins, the reconfigure-a-built-in path
+  being exclude-then-re-add-configured), or an already-resolved `%Spec{}` (idempotent) — to
+  validated **`Mutare.Mutator.Spec`** structs.
   `Transform` (its default), `Config` (the CLI/`.mutare.exs` path), and `Options` (the direct
   `Mutare.run/2` API) all derive from it — so a family registered here is part of `:all` and
   resolvable/validated everywhere, with no second list to drift.

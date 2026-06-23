@@ -12,12 +12,19 @@ defmodule Mutare.Mutators do
     * `families/0` is every registered family atom; `resolve/1` accepts any of
       them by name.
     * `resolve/1` turns a user-supplied list (built-in family atoms, custom
-      modules implementing `Mutare.Mutator`, and/or `{module, opts}` configured
-      entries) into `Mutare.Mutator.Spec` structs, validating each. Both the
-      CLI/`.mutare.exs` path (`Mutare.Config`) and the direct API
-      (`Mutare.Options`, hence `Mutare.run/2`) route through it, so a family atom
-      resolves, a configured entry carries its options, and a non-mutator module
-      is rejected the same way wherever mutators are supplied.
+      modules implementing `Mutare.Mutator`, `{module, opts}` configured entries,
+      and/or the `:builtins` group token) into `Mutare.Mutator.Spec` structs,
+      validating each. Both the CLI/`.mutare.exs` path (`Mutare.Config`) and the
+      direct API (`Mutare.Options`, hence `Mutare.run/2`) route through it, so a
+      family atom resolves, a configured entry carries its options, and a
+      non-mutator module is rejected the same way wherever mutators are supplied.
+
+  The list is read as sugar over one canonical shape — a list of mutators, each
+  with its config. A bare module/family means "default config"; the `:builtins`
+  token (synonym `:all`) expands to every built-in family at its position, so
+  including it *extends* the defaults (`[:builtins, MyMutator]`) and omitting it
+  *replaces* them (`[A, B]`). `{:builtins, except: [families]}` drops named
+  built-ins; reconfigure one by excluding then re-adding it configured.
 
   The registry is an ordered keyword list (not a map) so `all/0` is deterministic
   and a new family slots into a defined position.
@@ -94,19 +101,91 @@ defmodule Mutare.Mutators do
   @spec families() :: [atom()]
   def families, do: Keyword.keys(@registry)
 
+  # The reserved list tokens that stand for "the whole built-in set" — expanded
+  # in place (and `except:`-filtered) before any per-entry resolution, since one
+  # token yields many entries. `:all` is an accepted synonym of `:builtins`.
+  @group_tokens [:builtins, :all]
+
   @doc """
   Resolve a list of mutator entries into `Mutare.Mutator.Spec` structs, preserving
-  order. Each entry is a registered family atom, a module implementing the
-  behaviour, a `{family_atom | module, opts}` configured pair, or an
-  already-resolved `%Spec{}` (idempotent). Raises `ArgumentError` on an unknown
-  family or a module that does not implement `Mutare.Mutator`.
+  order. Each entry is one of:
+
+    * a registered **family atom** (`:arithmetic`) — that built-in, default config;
+    * a **module** implementing the behaviour (a custom mutator);
+    * a `{family_atom | module, opts}` **configured pair**;
+    * the **group token** `:builtins` (or its synonym `:all`) — every built-in
+      family, in registry order — optionally as `{:builtins, except: [families]}`
+      to take every built-in *but* the named ones;
+    * an already-resolved `%Spec{}` (idempotent).
+
+  The group token desugars to the built-in families at its position, so a list is
+  read as "these entries, in order": `[:builtins, MyMutator]` is every built-in
+  **plus** a custom one, while `[A, B]` (no token) is **only** A and B. To
+  reconfigure a built-in, exclude it then re-add it configured —
+  `[{:builtins, except: [:convention]}, {:convention, pairs: [...]}]`.
+
+  Raises `ArgumentError` on an unknown family (in the list or in an `:except`),
+  an unknown `:builtins` option, or a module that does not implement
+  `Mutare.Mutator`.
 
       iex> specs = Mutare.Mutators.resolve([:arithmetic, {:literal, as: :literals}])
       iex> Enum.map(specs, &{&1.name, &1.module, &1.opts})
       [{:arithmetic, Mutare.Mutators.Arithmetic, []}, {:literals, Mutare.Mutators.Literal, []}]
+
+      iex> Mutare.Mutators.resolve([:builtins]) == Mutare.Mutators.resolve(Mutare.Mutators.all())
+      true
+
+      iex> Mutare.Mutators.resolve([{:builtins, except: [:arithmetic]}]) |> Enum.map(& &1.name) |> Enum.member?(:arithmetic)
+      false
   """
   @spec resolve([atom() | module() | {atom() | module(), term()} | Spec.t()]) :: [Spec.t()]
-  def resolve(mutators) when is_list(mutators), do: Enum.map(mutators, &resolve!/1)
+  def resolve(mutators) when is_list(mutators) do
+    mutators
+    |> Enum.flat_map(&expand_group/1)
+    |> Enum.map(&resolve!/1)
+  end
+
+  # Expand the `:builtins`/`:all` group token (bare or `{token, except: ...}`) into
+  # its family atoms before per-entry resolution; everything else passes through as
+  # a single entry. Placed first so a `{:builtins, ...}` tuple never reaches the
+  # generic `{entry, opts}` configured-pair clause below.
+  defp expand_group(token) when token in @group_tokens, do: families()
+  defp expand_group({token, opts}) when token in @group_tokens, do: builtins_except(opts)
+  defp expand_group(entry), do: [entry]
+
+  # Every built-in family minus an `:except` list of family atoms. Validates that
+  # the only option is `:except` and that each excluded name is a real family, so a
+  # typo (`{:builtins, exclude: ...}` / `except: [:arithmitic]`) fails loudly rather
+  # than silently keeping the family it meant to drop.
+  defp builtins_except(opts) do
+    unless Keyword.keyword?(opts) do
+      raise ArgumentError,
+            ":builtins options must be a keyword list with an :except family list, got: " <>
+              inspect(opts)
+    end
+
+    case Keyword.keys(opts) -- [:except] do
+      [] -> :ok
+      bad -> raise ArgumentError, unknown_builtins_option_message(bad)
+    end
+
+    except = opts |> Keyword.get(:except, []) |> List.wrap()
+    Enum.each(except, &validate_family!/1)
+    families() -- except
+  end
+
+  defp validate_family!(name) do
+    unless is_atom(name) and Keyword.has_key?(registry(), name) do
+      raise ArgumentError,
+            "unknown mutator family #{inspect(name)} in :builtins :except — " <>
+              "expected one of: #{known_families()}"
+    end
+  end
+
+  defp unknown_builtins_option_message(keys) do
+    "unknown :builtins option#{if length(keys) > 1, do: "s"} " <>
+      "#{Enum.map_join(keys, ", ", &inspect/1)}: the only supported option is :except"
+  end
 
   defp resolve!(%Spec{} = spec), do: spec
   defp resolve!({entry, opts}), do: Spec.configured(to_module!(entry), opts)

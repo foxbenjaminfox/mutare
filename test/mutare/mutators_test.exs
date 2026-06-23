@@ -151,6 +151,83 @@ defmodule Mutare.MutatorsTest do
         Mutators.resolve(["Arithmetic"])
       end
     end
+
+    test "resolve/1 expands the :builtins token to the full default set, in order" do
+      builtins = Mutators.resolve([:builtins])
+      assert builtins == Mutators.resolve(Mutators.all())
+      assert Enum.map(builtins, & &1.module) == Mutators.all()
+    end
+
+    test "resolve/1 accepts :all as a synonym for :builtins" do
+      assert Mutators.resolve([:all]) == Mutators.resolve([:builtins])
+    end
+
+    test "resolve/1 extends the defaults when :builtins is included with custom mutators" do
+      specs = Mutators.resolve([:builtins, Mutare.Test.BooleanMutator])
+      assert Enum.map(specs, & &1.module) == Mutators.all() ++ [Mutare.Test.BooleanMutator]
+    end
+
+    test "resolve/1 replaces (does not extend) when :builtins is absent" do
+      specs = Mutators.resolve([:arithmetic, Mutare.Test.BooleanMutator])
+      assert Enum.map(specs, & &1.module) == [Arithmetic, Mutare.Test.BooleanMutator]
+    end
+
+    test "resolve/1 honours {:builtins, except: [...]}, dropping the named families" do
+      specs = Mutators.resolve([{:builtins, except: [:arithmetic, :relational]}])
+      names = Enum.map(specs, & &1.name)
+
+      refute :arithmetic in names
+      refute :relational in names
+      # everything else survives, in order
+      assert names == Mutators.families() -- [:arithmetic, :relational]
+    end
+
+    test "resolve/1 accepts a single atom (not a list) for :except" do
+      names = Mutators.resolve([{:builtins, except: :arithmetic}]) |> Enum.map(& &1.name)
+      assert names == Mutators.families() -- [:arithmetic]
+    end
+
+    test "resolve/1 reconfigures a built-in: exclude it, then re-add it configured" do
+      specs =
+        Mutators.resolve([
+          {:builtins, except: [:convention]},
+          {ConventionAtom, pairs: [[:active, :inactive]]}
+        ])
+
+      convention = Enum.filter(specs, &(&1.module == ConventionAtom))
+      # exactly one convention instance, and it carries the custom config
+      assert [%Spec{name: :convention, opts: [pairs: [[:active, :inactive]]]}] = convention
+    end
+
+    test "resolve/1 raises on an unknown family in :except, listing the known ones" do
+      message =
+        assert_raise(ArgumentError, fn ->
+          Mutators.resolve([{:builtins, except: [:arithmitic]}])
+        end)
+        |> Exception.message()
+
+      assert message =~ "unknown mutator family :arithmitic"
+      assert message =~ ":except"
+      assert message =~ "arithmetic"
+    end
+
+    test "resolve/1 raises on an unknown :builtins option (e.g. a misspelled :except)" do
+      message =
+        assert_raise(ArgumentError, fn ->
+          Mutators.resolve([{:builtins, exclude: [:arithmetic]}])
+        end)
+        |> Exception.message()
+
+      assert message =~ "unknown :builtins option"
+      assert message =~ ":exclude"
+      assert message =~ ":except"
+    end
+
+    test "resolve/1 raises on a non-keyword :builtins config" do
+      assert_raise ArgumentError, ~r/:builtins options must be a keyword list/, fn ->
+        Mutators.resolve([{:builtins, [:arithmetic]}])
+      end
+    end
   end
 
   describe "Arithmetic" do

@@ -100,7 +100,9 @@ Optional `.mutare.exs`:
 [
   paths: ["lib"],
   exclude: ["lib/generated/**"],
-  # built-in family atoms and/or your own modules implementing Mutare.Mutator
+  # which mutators run (see "Choosing which mutators run" below). Built-in family
+  # atoms and/or your own modules; the `:builtins` token means "all built-ins", so
+  # `[:builtins, MyApp.Mutators.Boolean]` extends the defaults rather than replacing.
   mutators: [:arithmetic, :relational, MyApp.Mutators.Boolean],
   # mark a macro's arguments as off-limits for mutation, by module/name/arity
   # (see "Skipping macro arguments" below). `:skip` = every argument; a list
@@ -190,6 +192,52 @@ as "mutate the first argument, skip the second, mutate the rest". The macro is
 matched however it's written — directly, aliased, or imported (bare). `Module` may
 be an Elixir module (`Ecto.Query`), an Erlang atom module (`:binary`), and is
 resolved purely syntactically, so it needn't be a dependency of the Mutare process.
+
+### Choosing which mutators run
+
+The `:mutators` list (in `.mutare.exs`, or `--mutators` on the CLI) is sugar over
+one canonical idea: **a list of mutators, each with its configuration.** Every
+shorthand below desugars to that, so whenever a config confuses you, expand it in
+your head and you have exactly the set that runs, in order.
+
+The conveniences, simplest first:
+
+```elixir
+# 1. The canonical form — a mutator and its config:
+mutators: [{Mutare.Mutators.Arithmetic, []}, {MyApp.Mutators.Boolean, []}]
+
+# 2. Drop the config when it's empty — bare module or family atom:
+mutators: [:arithmetic, MyApp.Mutators.Boolean]
+#          ^ a built-in family atom expands to its module with default config.
+#            (Atoms name built-ins; external mutators are named by their module.)
+
+# 3. Omit :mutators entirely → every built-in family, default config, no externals.
+```
+
+To work *from* the defaults rather than listing everything, use the **`:builtins`**
+group token (its synonym is `:all`). Whether it appears decides extend vs. replace:
+
+```elixir
+mutators: [:builtins, MyApp.Mutators.Boolean]   # EXTEND  — all built-ins + your own
+mutators: [MyApp.Mutators.Boolean]              # REPLACE — only your own
+
+mutators: [{:builtins, except: [:arithmetic, :relational]}]   # all built-ins but these
+```
+
+To **reconfigure** a built-in, don't reach for magic — exclude it, then re-add it
+configured yourself:
+
+```elixir
+mutators: [
+  {:builtins, except: [:convention]},                 # all built-ins but the stock one…
+  {Mutare.Mutators.ConventionAtom, pairs: [[:active, :inactive]]}   # …re-added, configured
+]
+```
+
+So: **family atoms name a built-in, `:builtins` names the whole built-in group,
+including the token extends, leaving it out replaces, and `except:` removes.** On
+the CLI, `--mutators` takes a CSV of those atoms (`--mutators builtins,relational`);
+`except:` and custom modules are `.mutare.exs`-only.
 
 ### Custom mutators
 
