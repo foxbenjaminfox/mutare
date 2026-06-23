@@ -25,14 +25,25 @@ defmodule Mutare.Mutators.AtomLiteral do
       `Mutare.Mutators.ConventionAtom`, which swaps each for its high-signal same-shape
       *sibling* (`:ok` → `:error`) rather than the sentinel. Excluded by guard, the same
       ownership split as `true`/`false`/`nil`; the list lives with that family.
-    * **Keyword/block keys** (`%{a: :b}`, `foo(timeout: 5)`, `case … do`,
-      `if x, do: …, else: …`) and **clause patterns** (`case x do :ok -> …`) — these
-      are *labels* / *match positions*, not runtime values. They are excluded by
-      `Mutare.Transform`'s positive context classifier (a key/pattern is never
-      offered to a mutator), exactly as placement is decided positionally — so this
-      module never sees them and stays a pure value-atom mutator. (This is what the
-      transform's keyword-pair and `->`/`<-` clause routing exist for; without it a
-      selector spliced into a `do:` key would not even render.)
+    * **Block keys** (`do:`/`else:`/`rescue:`/`catch:`/`after:`, so `case … do` and
+      `if x, do: …, else: …`) and the two **compile-constrained** key positions — a
+      `%Struct{field: v}` field name and a `for` special-form option (`into:`/`uniq:`/
+      `reduce:`) — *are* excluded by `Mutare.Transform`'s positive context classifier:
+      a selector spliced into a `do:` key would not even render, and a wrong field name /
+      unsupported `for` option is a compile error. So this module never sees those.
+
+      But ordinary keys and clause patterns **are** offered to it — a key/pattern is
+      *not* universally skipped. A *data* keyword/map key (`%{a: :b}`, `[a: :b]`)
+      descends exactly like its `%{:a => :b}` / `[{:a, :b}]` twin and *is* mutated; the
+      key of a keyword passed as a call's trailing argument (`foo(timeout: 5)`) is
+      mutated too, opt-out-able per mutator with
+      `{Mutare.Mutators.AtomLiteral, call_option_keys: false}`
+      (read by `Transform.gate_candidates/1`); and a `case`/`receive`/`fn` clause
+      pattern atom (`case x do :waiting -> …`) is mutated via the tuple-the-scrutinee /
+      whole-construct rewrites. Nothing here is special-cased for those positions —
+      placement is decided positionally by the transform, and the boolean/convention
+      guards above still apply everywhere, so `:ok`/`true`/`nil` stay this family's
+      no-ops regardless of where they sit.
   """
   @behaviour Mutare.Mutator
 
