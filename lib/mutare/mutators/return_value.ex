@@ -21,6 +21,10 @@ defmodule Mutare.Mutators.ReturnValue do
   branchy callback gets one return mutant per branch rather than one coarse mutant on
   the whole construct — see `Mutare.Transform.Analyze.Returns`. (`try`'s `:after` is
   excluded — its value is discarded — but `receive`'s `:after` *is* a return path.)
+  The same applies one level down to an **anonymous function**: each `fn` clause
+  returns its body's tail when the closure is called, so every `fn` clause body leaf
+  tail gets the contrasting pair too (a `fn` enclosed in a `def` tail thus yields both
+  the closure-value mutant on the whole `fn` and a return mutant inside each clause).
   This
   module still implements the behaviour so it can sit in the `Mutare.Mutators`
   registry — be on by default, be named in reports, be selected/validated via

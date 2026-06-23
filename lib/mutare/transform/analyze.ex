@@ -351,9 +351,18 @@ defmodule Mutare.Transform.Analyze do
     ClausePatterns.attach_clause_pattern_candidates(node, clauses, rebuild, mutators)
   end
 
+  # A `fn` additionally has its clause bodies' return tails mutated: each clause
+  # returns the value of its body when the closure is called, so every clause-body
+  # leaf tail is a return path (`Returns.annotate_fn_returns/3`, run on the analyzed
+  # node with the raw `node` supplying the clean diff). The return candidates ride on
+  # the tail nodes inside the clause bodies; the clause-pattern candidates ride on the
+  # `fn` node's own meta — different nodes, so they nest cleanly at emit.
   defp analyze({:fn, meta, clauses} = node, :runtime, mutators) when is_list(clauses) do
     rebuild = fn new -> {:fn, meta, new} end
-    ClausePatterns.attach_clause_pattern_candidates(node, clauses, rebuild, mutators)
+
+    node
+    |> ClausePatterns.attach_clause_pattern_candidates(clauses, rebuild, mutators)
+    |> Returns.annotate_fn_returns(node, mutators)
   end
 
   # `try`: a runtime expression whose `rescue` clauses are special — they match on

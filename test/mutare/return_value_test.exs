@@ -573,6 +573,147 @@ defmodule Mutare.ReturnValueTest do
     end
   end
 
+  describe "anonymous function (fn) clause return tails" do
+    # `{original_code => [mutated_code]}` for the return-value sites of an
+    # expression `def f(xs), do: <expr>` — `<expr>` carries the `fn`(s) under test.
+    defp fn_returns(expr) do
+      {_meta, sites, _} =
+        Mutare.transform_string("defmodule T do\n  def f(xs), do: #{expr}\nend\n",
+          mutators: @only
+        )
+
+      sites
+      |> Enum.filter(&(&1.mutator == :return_value))
+      |> Enum.group_by(& &1.original_code, & &1.mutated_code)
+    end
+
+    test "a single-clause fn body tail gets the contrasting pair" do
+      by_original = fn_returns("Enum.map(xs, fn x -> foo(x) end)")
+
+      # The fn body `foo(x)` is now a return path of the closure...
+      assert by_original["foo(x)"] == ["nil", ":mutare"]
+      # ...alongside the enclosing def tail (the whole `Enum.map(...)` call).
+      assert by_original["Enum.map(xs, fn x -> foo(x) end)"] == ["nil", ":mutare"]
+    end
+
+    test "each clause of a multi-clause fn gets return mutants, shape-directed" do
+      by_original =
+        fn_returns("""
+        Enum.map(xs, fn
+              x when x > 0 -> x + 1
+              0 -> :zero
+              _ -> bar(x)
+            end)\
+        """)
+
+      assert by_original["x + 1"] == ["0", "1"]
+      assert by_original[":zero"] == ["nil", ":mutare"]
+      assert by_original["bar(x)"] == ["nil", ":mutare"]
+    end
+
+    test "a fn guard is not a return tail (only the body is)" do
+      by_original = fn_returns("Enum.filter(xs, fn x when x > 0 -> keep(x) end)")
+
+      assert by_original["keep(x)"] == ["nil", ":mutare"]
+      refute Map.has_key?(by_original, "x > 0")
+    end
+
+    test "control flow in a fn body descends to each branch leaf tail" do
+      by_original =
+        fn_returns("""
+        Enum.map(xs, fn x ->
+              if x > 10, do: big(x), else: small(x)
+            end)\
+        """)
+
+      assert by_original["big(x)"] == ["nil", ":mutare"]
+      assert by_original["small(x)"] == ["nil", ":mutare"]
+    end
+
+    test "only the tail of a multi-statement fn body, not intermediate statements" do
+      by_original =
+        fn_returns("""
+        Enum.map(xs, fn x ->
+              y = x + 1
+              tag(y)
+            end)\
+        """)
+
+      # `y = x + 1` is a non-final statement, not the closure's return; `tag(y)` is.
+      # (The enclosing def tail — the whole `Enum.map(...)` — is its own return path.)
+      refute Map.has_key?(by_original, "y = x + 1")
+      assert by_original["tag(y)"] == ["nil", ":mutare"]
+    end
+
+    test "ineligible fn tails are skipped, like a def tail" do
+      # The boolean / literal / nil fn bodies get no return mutant (the enclosing
+      # def's own tail still does — we assert only about the fn body here).
+      refute Map.has_key?(fn_returns("Enum.each(xs, fn x -> x > 0 end)"), "x > 0")
+      refute Map.has_key?(fn_returns("Enum.map(xs, fn x -> 5 end)"), "5")
+      refute Map.has_key?(fn_returns("Enum.map(xs, fn _ -> nil end)"), "nil")
+    end
+
+    test "a fn return mutant flips the closure's result at runtime", _ctx do
+      source = """
+      defmodule Mutare.FnReturnRuntime do
+        def tags(xs) do
+          Enum.map(xs, fn
+            x when rem(x, 2) == 0 -> {:even, x}
+            _ -> :odd
+          end)
+        end
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: @only)
+      [{mod, _bin}] = Code.compile_string(meta)
+
+      Selector.put(Selector.baseline())
+      assert mod.tags([2, 3]) == [{:even, 2}, :odd]
+
+      even_nil =
+        Enum.find(sites, &(&1.original_code == "{:even, x}" and &1.mutated_code == "nil"))
+
+      Selector.put(even_nil.id)
+      assert mod.tags([2, 3]) == [nil, :odd]
+
+      odd_sentinel =
+        Enum.find(sites, &(&1.original_code == ":odd" and &1.mutated_code == ":mutare"))
+
+      Selector.put(odd_sentinel.id)
+      assert mod.tags([2, 3]) == [{:even, 2}, :mutare]
+    after
+      Selector.put(Selector.baseline())
+      :code.purge(Mutare.FnReturnRuntime)
+      :code.delete(Mutare.FnReturnRuntime)
+    end
+
+    test "the full-mutator-set metamutant nests fn-return + clause-pattern selectors and compiles" do
+      source = """
+      defmodule Mutare.FnReturnNest do
+        def run(xs) do
+          Enum.map(xs, fn
+            x when x > 0 -> compute(x)
+            _ -> :skip
+          end)
+        end
+
+        defp compute(x), do: x
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source)
+      assert Enum.any?(sites, &(&1.mutator == :return_value and &1.original_code == "compute(x)"))
+      assert {:ok, _} = Code.string_to_quoted(meta)
+
+      assert {[{Mutare.FnReturnNest, _}], _log} =
+               with_log(fn -> Code.compile_string(meta) end)
+    after
+      :code.purge(Mutare.FnReturnNest)
+      :code.delete(Mutare.FnReturnNest)
+    end
+  end
+
   describe "selection and ignore" do
     test "off when not in the :mutators list" do
       {_meta, sites, _} =

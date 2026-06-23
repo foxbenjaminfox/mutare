@@ -701,7 +701,8 @@ contract between them is the whole game.
     too): ReturnValue (`return_replacements/1`, a clause's return tail — **and each branch tail of a
     `case`/`cond`/`if`/`unless`/`with`/`try`/`receive` in tail position**, descended by
     `Transform.Analyze.Returns`; the def-level `rescue`/`catch`/`else` and a `try` expression share one
-    clause walk), IfCondition
+    clause walk; an **anonymous function**'s every `fn` clause body tail is a return path too, via the
+    same per-clause walk — `annotate_fn_returns/3`), IfCondition
     (`condition_replacements/1`, an `if`/`unless`/`cond` condition), PatternSwap + PatternWildcard
     (`pattern_mutations/2`, head / `case` / `receive` / `fn` / `=`-match patterns), and RescueType +
     GuardDrop (special — `try`/guard rebuilds, no `(node) → [replacement]` callback fits). The

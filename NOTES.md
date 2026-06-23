@@ -3146,6 +3146,32 @@ family already mutates (`case x do :a -> 1; :b -> 2 end`), `ReturnValue` now ret
 `nil`/`:mutare` mutant disappears. The per-branch `Literal` swaps cover the same
 tests at finer grain, so this is a net improvement, not a loss.
 
+**Anonymous-function clause tails (done).** A `fn`'s every clause returns its body's
+tail when the closure is called — the same "function return" notion as a `def`
+clause, one level down. Previously only the *enclosing* `def`'s tail was a return
+path, so `def f(xs), do: Enum.map(xs, fn x -> foo(x) end)` mutated the whole
+`Enum.map(…)` call but left the closure's `foo(x)` result unconstrained — a real
+gap, since `fn` bodies are where map/reduce/filter logic lives. `analyze`'s `:runtime`
+`fn` clause now pipes the analyzed node (the one `ClausePatterns` already built the
+clause-pattern candidates onto) through `Returns.annotate_fn_returns/3`, which runs
+the *same* per-clause `map_clauses/3` → `map_return_tails/3` walk the def-level
+`rescue`/`catch`/`else` blocks use — so control-flow in a `fn` body (`fn x -> case …
+end`) descends to each branch leaf tail too, and a guard (`fn x when … -> body`)
+stays untouched (it rides in the clause's pattern list, not the body). Nothing new
+in emission: the return candidates ride the tail nodes *inside* the clause bodies
+while the clause-pattern candidates ride the `fn` node's own meta — different nodes,
+so the body's in-place return selector and the whole-`fn` clause-pattern selector
+nest cleanly in emit's post-order walk (the original branch of the outer selector
+holds the already-emitted bodies; the mutant branches are raw copies). The hoisted
+active-id read just works: a `fn` is a closure, so an enclosing `def`'s
+`mutare_active` binding (dispatcher param or `:do`-prologue) is in scope inside the
+body, and `references_var?/2` already descends `fn` to add the prologue when a body
+selector needs it; persistent_term is process-constant, so a captured value is always
+the live active id even if the closure runs in another process. Scoped to `fn`
+**only** — `receive` (which shares `attach_clause_pattern_candidates/4`) is *not* a
+function, so its clause tails are return paths only when the whole `receive` sits in
+a `def` tail (already covered by `@return_blocks`), not standalone.
+
 This surfaced (and fixed) a **latent pattern-context bug**. `rescue`/`catch`/`else`
 are clause lists whose *left side is a match*, but the old `analyze_do_blocks/2`
 analyzed every block value in `:runtime` — so a mutator could splice a selector

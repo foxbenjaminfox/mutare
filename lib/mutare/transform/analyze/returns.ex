@@ -8,11 +8,14 @@ defmodule Mutare.Transform.Analyze.Returns do
   # position propagates into each branch body, so every branch's leaf tail is a
   # return path too (`map_return_tails/3` + `@return_blocks`). The def-level
   # `rescue`/`catch`/`else` blocks and a `try` *expression*'s clause blocks share
-  # one clause walk (`map_clauses/3`). Split out of `Mutare.Transform.Analyze` — it is a
+  # one clause walk (`map_clauses/3`). An **anonymous function** is the same notion
+  # one level down: each `fn` clause returns its body's tail when the closure is
+  # called, so `annotate_fn_returns/3` runs the very same per-clause leaf-tail walk
+  # over a `fn`'s clauses. Split out of `Mutare.Transform.Analyze` — it is a
   # self-contained candidate-builder the main walk calls once per clause
-  # (`annotate_returns/3`), and it never recurses back into the descent (no
-  # `analyze/3`/`offer`/`recurse`), so the dependency is strictly one-way
-  # (Analyze → Returns).
+  # (`annotate_returns/3`) or `fn` (`annotate_fn_returns/3`), and it never recurses
+  # back into the descent (no `analyze/3`/`offer`/`recurse`), so the dependency is
+  # strictly one-way (Analyze → Returns).
 
   alias Mutare.AST
   alias Mutare.Mutator
@@ -66,6 +69,39 @@ defmodule Mutare.Transform.Analyze.Returns do
         end)
     end
   end
+
+  # Attach return-value candidates to each clause body's *leaf return tail(s)* of an
+  # anonymous function. A `fn`'s every clause returns the value of its body's tail
+  # expression when the closure is called — the same return notion a `def`/`defp`
+  # clause has, applied per `fn` clause — so the same leaf-tail walk runs:
+  # `map_clauses/3` recurses each clause body via `map_return_tails/3` (descending
+  # control-flow branches that are themselves in tail position), and the
+  # `leaf_attacher` offers each leaf to every return mutator. Gated on a
+  # `return_replacements/_` mutator being enabled, like `annotate_returns/3`.
+  #
+  # The whole `fn` node is taken (its `meta` may already carry the clause-pattern
+  # candidates `ClausePatterns.attach_clause_pattern_candidates/4` attached) and
+  # rebuilt with the annotated clauses; `raw_node` is the pre-analysis copy supplying
+  # each candidate's clean `original`/`range`, navigated in lockstep with `analyzed`
+  # (analysis only adds metadata). A structural surprise (mismatched shape/length —
+  # shouldn't happen) passes the analyzed node through untouched.
+  def annotate_fn_returns(
+        {:fn, meta, analyzed_clauses} = analyzed,
+        {:fn, _rmeta, raw_clauses},
+        mutators
+      )
+      when is_list(analyzed_clauses) and is_list(raw_clauses) and
+             length(analyzed_clauses) == length(raw_clauses) do
+    case Mutator.implementing_any(mutators, :return_replacements, [1, 2]) do
+      [] ->
+        analyzed
+
+      return_mutators ->
+        {:fn, meta, map_clauses(analyzed_clauses, raw_clauses, leaf_attacher(return_mutators))}
+    end
+  end
+
+  def annotate_fn_returns(analyzed, _raw_node, _mutators), do: analyzed
 
   # Route one `def`/`defp` body block to its return path(s): the `:do` body tail,
   # or each `rescue`/`catch`/`else` clause body tail. A `def … rescue/catch/else …`
