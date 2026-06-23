@@ -66,6 +66,21 @@ defmodule Mutare.Mutators.ModeSwap do
       `to_iso8601` assertion catches. `/1` defaults the format (no atom to swap); on
       `DateTime`'s `/3` the trailing `offset` keeps the format at position 1.
 
+  Calendar week start:
+
+    * `Date.day_of_week/2`, `Date.beginning_of_week/2`, `Date.end_of_week/2` — the
+      `starting_on` weekday (`:monday` … `:sunday`), an ordered ladder swapped to an
+      adjacent day, so a US-style `:sunday` week start moves to `:saturday`/`:monday` (a
+      different computed boundary or index any assertion catches). `:default` ≡ `:monday`,
+      so — like `System`'s `:native` — it maps to a concrete neighbour (`:tuesday`), never
+      its own meaning. The `/1` arities default the day (no atom to swap).
+
+  URL query encoding:
+
+    * `URI.encode_query/2`, `URI.decode_query/3` — the trailing `encoding`,
+      `:www_form` ↔ `:rfc3986` (space-as-`+` vs percent-encoded `%20`), a query-string
+      shape change. `encode_query/1` / `decode_query/2` default the encoding.
+
   Keyword-option modes (the atom is the *value* of a named option key — the value-side
   mirror of `shift`'s keyword *keys*):
 
@@ -162,6 +177,17 @@ defmodule Mutare.Mutators.ModeSwap do
   @base_case %{upper: [:lower], lower: [:upper]}
   @regex_return %{index: [:binary], binary: [:index]}
 
+  # Week-start day (`Date.day_of_week`/`beginning_of_week`/`end_of_week`'s `starting_on`): an
+  # ordered ladder of weekdays, so a swap moves the week's start to an adjacent day — a result
+  # any assertion on the computed boundary/index catches. `:default` is an alias for `:monday`,
+  # so — like `System`'s `:native` — it maps to a concrete neighbour (`:tuesday`) rather than
+  # to its own meaning (which would be an equivalent no-op).
+  @weekday_ladder [:monday, :tuesday, :wednesday, :thursday, :friday, :saturday, :sunday]
+  # URL query encoding (`URI.encode_query`/`decode_query`'s trailing `encoding`): the
+  # space-as-`+` `:www_form` vs the percent-encoded `:rfc3986`, a query-string shape change
+  # (`"a+b"` vs `"a%20b"`) any assertion on the encoded/decoded string catches.
+  @uri_encoding %{www_form: [:rfc3986], rfc3986: [:www_form]}
+
   # {alias_path, function, effective_arity} => {mode_positions (effective indices), group}.
   # Positions are *effective* (pipe-independent); `visible_index/2` maps them to the
   # node's own arg list. Most rules carry one position; `convert_time_unit` has two.
@@ -221,7 +247,16 @@ defmodule Mutare.Mutators.ModeSwap do
     {[:Base], :hex_decode32, 2} => {[1], {:kw, [case: :base_case]}},
     {[:Base], :hex_decode32!, 2} => {[1], {:kw, [case: :base_case]}},
     {[:Regex], :scan, 3} => {[2], {:kw, [return: :regex_return]}},
-    {[:Regex], :run, 3} => {[2], {:kw, [return: :regex_return]}}
+    {[:Regex], :run, 3} => {[2], {:kw, [return: :regex_return]}},
+    # Week-start day — the `starting_on` weekday atom (`:monday`…`:sunday`, `:default`). The
+    # `/1` arities default it (no atom to swap), like `to_iso8601/1`.
+    {[:Date], :day_of_week, 2} => {[1], :weekday},
+    {[:Date], :beginning_of_week, 2} => {[1], :weekday},
+    {[:Date], :end_of_week, 2} => {[1], :weekday},
+    # URL query encoding — the trailing `encoding` atom (`:www_form` ↔ `:rfc3986`). On
+    # `decode_query/3` it is the third argument; `encode_query/1`/`decode_query/2` default it.
+    {[:URI], :encode_query, 2} => {[1], :uri_encoding},
+    {[:URI], :decode_query, 3} => {[2], :uri_encoding}
   }
 
   @impl Mutare.Mutator
@@ -409,6 +444,10 @@ defmodule Mutare.Mutators.ModeSwap do
   defp swaps(:iso_format, atom), do: Map.get(@iso_format, atom, [])
   defp swaps(:base_case, atom), do: Map.get(@base_case, atom, [])
   defp swaps(:regex_return, atom), do: Map.get(@regex_return, atom, [])
+  # `:default` (≡ `:monday`) maps to a concrete neighbour, mirroring `System`'s `:native`.
+  defp swaps(:weekday, :default), do: [:tuesday]
+  defp swaps(:weekday, atom), do: neighbours(@weekday_ladder, atom)
+  defp swaps(:uri_encoding, atom), do: Map.get(@uri_encoding, atom, [])
 
   # The members of `ladder` immediately finer and coarser than `atom` (each, if it
   # exists). `Enum.at` with a guarded non-negative index — a bare `i - 1` would wrap

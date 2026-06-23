@@ -1124,6 +1124,44 @@ defmodule Mutare.MutatorsTest do
                ["Regex.run(re, str, return: :index)"]
     end
 
+    test "week-start day swaps to an adjacent weekday" do
+      assert mode("Date.beginning_of_week(d, :monday)", false) ==
+               ["Date.beginning_of_week(d, :tuesday)"]
+
+      assert mode("Date.end_of_week(d, :wednesday)", false) ==
+               ["Date.end_of_week(d, :tuesday)", "Date.end_of_week(d, :thursday)"]
+
+      assert mode("Date.day_of_week(d, :sunday)", false) == ["Date.day_of_week(d, :saturday)"]
+
+      # `:default` ≡ `:monday`, so it maps to a concrete neighbour (`:tuesday`), not itself.
+      assert mode("Date.day_of_week(d, :default)", false) == ["Date.day_of_week(d, :tuesday)"]
+
+      # piped: `d |> Date.beginning_of_week(:monday)` — the weekday is the lone visible arg.
+      assert mode("Date.beginning_of_week(:monday)", true) ==
+               ["Date.beginning_of_week(:tuesday)"]
+
+      # /1 defaults the day (no atom to swap); an unrecognised atom has no neighbour.
+      assert ModeSwap.mutate(parse("Date.day_of_week(d)"), %{pipe_mode: :unpiped}) == :skip
+
+      assert ModeSwap.mutate(parse("Date.day_of_week(d, :bogus)"), %{pipe_mode: :unpiped}) ==
+               :skip
+    end
+
+    test "URL query encoding swaps :www_form <-> :rfc3986" do
+      assert mode("URI.encode_query(q, :www_form)", false) == ["URI.encode_query(q, :rfc3986)"]
+      assert mode("URI.encode_query(q, :rfc3986)", false) == ["URI.encode_query(q, :www_form)"]
+
+      # decode_query's encoding is the 3rd argument.
+      assert mode("URI.decode_query(s, %{}, :www_form)", false) ==
+               ["URI.decode_query(s, %{}, :rfc3986)"]
+
+      # piped: `q |> URI.encode_query(:rfc3986)`
+      assert mode("URI.encode_query(:rfc3986)", true) == ["URI.encode_query(:www_form)"]
+
+      # /1 defaults the encoding (no atom to swap).
+      assert ModeSwap.mutate(parse("URI.encode_query(q)"), %{pipe_mode: :unpiped}) == :skip
+    end
+
     test "keyword-option modes: a missing/variable/unrecognised value yields nothing" do
       # an option list without the named key
       assert ModeSwap.mutate(parse("Regex.scan(re, str, capture: :all)"), %{pipe_mode: :unpiped}) ==
