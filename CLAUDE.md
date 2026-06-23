@@ -224,6 +224,14 @@ contract between them is the whole game.
     the others the selector branch is chosen by `branch_node/1`. The structural discovery primitives
     shared by the def-head, `case`, `receive`/`fn`, and `=`-match paths live in
     `Transform.PatternStructure` (`mutators/1`, `used_names/1`, `bound_var_names/1`, `node_mutations/3`).
+    `Candidate.Hosted` is the **selector-host** delivery for a `:hosted` macro argument (a fragment
+    inside a compile-time DSL — `Ecto.from`/`where`): the registering mutator's `host/2` supplies
+    `{logical original, [logical mutants]}` + `wrap`/`splice`, and core builds the id-gated selector,
+    records one `Site.in_place/6` per mutant (the diff is the fragment swap, the `wrap`/`splice`
+    scaffolding invisible), and weaves it in via the target's `splice` — a third emit
+    (`emit_hosted_site/3`, under the `:mutare_hosted` meta key) alongside `:mutare`/`:mutare_case`. It
+    owns *none* of the mutation logic (the fragment has foreign — SQL — semantics core can't vouch
+    for); see NOTES "the selector host".
   - **analyze + classify (`analyze/3`)** is a single context-threaded recursive descent: it
     *names the context* of each position as it descends (routing is positional — the spec side of
     a `::` goes one way, the value side another, which a flat `Macro.traverse` accumulator can't
@@ -786,13 +794,20 @@ contract between them is the whole game.
   sees specs regardless of whether the caller passed atoms, modules, or specs.
 - **`Mutare.Macros`** + **`Mutare.Macro.Spec`** — the **known-macro registry**: macros whose
   arguments the transform routes specially instead of mutating as ordinary runtime values. A
-  `Macro.Spec` (`%{module, name, arity, args}`, module a `Calls`-style key) declares a per-argument
+  `Macro.Spec` (`%{module, name, arity, args, host}`, module a `Calls`-style key) declares a per-argument
   treatment — `:expression` (mutate, default), `:pattern` (a match context with **local** bindings —
   `match?`), `:binding_pattern` (a match context whose bindings **escape** into the enclosing scope —
   `destructure`; routed like `:pattern`, but *additionally* earns structural swap/wildcard mutants in
-  a value-discarded position, delivered by `Candidate.MacroPattern`), or `:skip` (leave raw — an
-  opaque DSL body, e.g. `Ecto.Query.from`). `args` is a uniform atom or
-  a per-position list. Specs come from three merged sources (later wins): built-ins (`Kernel.match?/2`
+  a value-discarded position, delivered by `Candidate.MacroPattern`), `:skip` (leave raw — an
+  opaque DSL body, e.g. `Ecto.Query.from`), or **`:hosted`** (leave raw for *core*, but deliver
+  mutations through the registering mutator's **selector host** — the deep `Ecto.from`/`where` case;
+  see "Adding a mutator" and NOTES "the selector host"). `args` is a uniform atom, a per-position
+  list, or the **`:routing`** sentinel — a *shape-aware classifier* deferring per-position routing to
+  the mutator's `macro_routing(call_node)` (a treatment that depends on the call shape:
+  `where(q, category: "x")` is data, `where(q, [u], u.x == u.y)` is `:hosted`). `host` (the mutator
+  delivering `:hosted`/answering `:routing`) is **not** user-written: `from_mutators/1` stamps it to
+  the registering mutator, so a declarative `:macros` entry can't ask for `:hosted`/`:routing`
+  (`build/2` raises — `Spec.host_required?/1`). Specs come from three merged sources (later wins): built-ins (`Kernel.match?/2`
   arg 0 `:pattern`, `Kernel.destructure/2` arg 0 `:binding_pattern`), the declarative **`:macros`**
   option, and an optional **`macros/0`**
   callback on any enabled `Mutare.Mutator` — so a library ships its custom mutator *and* its macro
@@ -953,6 +968,21 @@ query DSL untouched, while `mutate/1` rewrites the query. The whole macro node i
 the mutator (`:skip` only stops core descending into the args). The no-mutator case (just route an
 argument as a pattern / leave a DSL opaque) is the declarative top-level `:macros` option.
 `test/support/macro_mutator.ex` is a working example.
+
+For a *selector-hosting* mutator (one that mutates *inside* a compile-time DSL fragment — the deep
+`Ecto.from`/`where` case, where a bare selector `case` would poison the build and the fragment has
+*foreign* semantics core can't vouch for), register the macro with a **`:hosted`** treatment (or a
+shape-dependent **`:routing`** classifier, implementing `macro_routing(call_node)`) and implement
+`host(macro_node, context)`. Per call core hands the **whole macro node** to `host/2`, which returns
+a list of *targets*, each a map: `:original` (the logical fragment) + `:mutants` (the library's *own*
+semantics catalog — **never** core's mutators, which would mis-suppress under three-valued logic) +
+`:splice` (a `(macro_node, case_node) -> macro_node` weaving the woven selector in, `^`-pinned for
+Ecto) + optional `:wrap` (each branch → `dynamic([u], _)`; default identity) + `:range`. Core keeps
+the four cross-cutting contracts — it builds the id-gated selector `case`, assigns ids, records one
+`:in_place` `Site` per mutant (the diff is the fragment swap, the scaffolding invisible), emits the
+coverage catch-all, and splices. You only ever hand core `wrap`/`splice` + the logical pair, never
+ids/selectors. `test/support/host_mutator.ex` (`Mutare.Test.{HostDSL,HostMutator}`) is a working
+example; see NOTES "the selector host" and `Transform.emit_hosted_site/3`.
 
 For a *collection-emptying* mutator (one whose mutation collapses a collection to an empty
 one), implement the optional callback `empty_collection?(mutated_node) :: boolean()` so its

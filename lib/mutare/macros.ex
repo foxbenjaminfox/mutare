@@ -6,8 +6,12 @@ defmodule Mutare.Macros do
   The counterpart to `Mutare.Mutators`, but for *argument routing* rather than node
   mutation. A `Mutare.Macro.Spec` says, per argument, whether it is an
   `:expression` (mutate), a `:pattern` (a match context — descend but don't mutate
-  the pattern), or `:skip` (leave raw — an opaque DSL body). Specs come from three
-  sources, merged (later overrides earlier):
+  the pattern), `:skip` (leave raw — an opaque DSL body), or `:hosted` (leave raw for
+  core, but deliver mutations through the registering mutator's selector host — the deep
+  `Ecto.from`/`where` case; see `Mutare.Macro.Spec`). The per-argument treatment may also
+  be a `:routing` classifier deferred to the mutator's `c:Mutare.Mutator.macro_routing/1`,
+  for a treatment that depends on the call *shape*. Specs come from three sources, merged
+  (later overrides earlier):
 
     * **built-ins** (`builtin/0`) — `Kernel.match?/2` and `Kernel.destructure/2`,
       both routing argument 0 as a pattern. Always on.
@@ -97,8 +101,13 @@ defmodule Mutare.Macros do
     |> Enum.map(& &1.module)
     |> Enum.uniq()
     |> Enum.filter(&exports_macros?/1)
-    |> Enum.flat_map(& &1.macros())
-    |> resolve()
+    |> Enum.flat_map(fn module ->
+      # Stamp the **hosting mutator** onto every spec the module contributes, so a
+      # `:hosted`/`:routing` registration points back at that module's
+      # `c:Mutare.Mutator.host/2` / `c:Mutare.Mutator.macro_routing/1` callbacks. Harmless
+      # on an ordinary `:skip`/`:pattern` registration (host is only read for hosting).
+      module.macros() |> resolve() |> Enum.map(&Spec.put_host(&1, module))
+    end)
   end
 
   defp exports_macros?(module),
@@ -114,29 +123,68 @@ defmodule Mutare.Macros do
   `config_macros` may be raw entries or already-resolved specs (idempotent).
 
       iex> registry = Mutare.Macros.build([{Ecto.Query, :from, :skip}], [])
-      iex> Mutare.Macros.routing(registry, [:Kernel], :match?, 2)
+      iex> Mutare.Macros.lookup(registry, [:Kernel], :match?, 2).args
       [:pattern, :expression]
-      iex> Mutare.Macros.routing(registry, [:Ecto, :Query], :from, 2)
-      [:skip, :skip]
+      iex> Mutare.Macros.lookup(registry, [:Ecto, :Query], :from, 2).args
+      :skip
   """
   @spec build([tuple() | Spec.t()], [Mutator.Spec.t()]) :: registry()
   def build(config_macros, mutator_specs) do
     (builtin() ++ resolve(config_macros) ++ from_mutators(mutator_specs))
+    |> Enum.map(&validate_host/1)
     |> Enum.reduce(%{}, fn spec, acc -> Map.put(acc, Spec.key(spec), spec) end)
   end
 
-  @doc """
-  The per-position argument routing for a call resolving to `module_key`/`name` at
-  `arity`, or `nil` when no known macro matches. An exact `arity` match wins over an
-  `:any`-arity entry.
-  """
-  @spec routing(registry(), Spec.module_key(), atom(), non_neg_integer()) ::
-          [Spec.treatment()] | nil
-  def routing(registry, module_key, name, arity) when is_map(registry) do
-    case Map.get(registry, {module_key, name, arity}) ||
-           Map.get(registry, {module_key, name, :any}) do
-      nil -> nil
-      %Spec{} = spec -> Spec.routing(spec, arity)
+  # A `:hosted` argument or the `:routing` classifier needs a hosting mutator to deliver /
+  # answer it. `from_mutators/1` stamps the host for a mutator-contributed spec; a declarative
+  # `:macros` entry (or a built-in) has none, so asking for hosting there is a configuration
+  # error caught here rather than silently producing an un-deliverable mutant — or a cryptic
+  # `UndefinedFunctionError` at resolve time — later. Checked at build (the host is an enabled,
+  # loaded mutator), so a missing callback is named with a clear message.
+  #
+  # A `:routing` classifier needs `macro_routing/1` (called every resolve); a static `:hosted`
+  # needs `host/2` (called to deliver). `host/2` is *not* demanded of a `:routing` spec at build —
+  # a classifier may legitimately route only to `:expression`/`:pattern` and never host. But if it
+  # *does* route a position `:hosted` without a `host/2` to deliver it, `Mutare.Transform.Resolve`
+  # (`reject_undeliverable_hosted!/2`) raises loudly at resolve — the first point the undeliverable
+  # `:hosted` is known — rather than silently leaving the fragment raw and dropping the mutation.
+  defp validate_host(%Spec{} = spec) do
+    cond do
+      Spec.classifier?(spec) -> validate_host!(spec, :macro_routing, 1)
+      Spec.host_required?(spec) -> validate_host!(spec, :host, 2)
+      true -> :ok
     end
+
+    spec
+  end
+
+  defp validate_host!(%Spec{host: host} = spec, fun, arity) do
+    cond do
+      is_nil(host) ->
+        raise ArgumentError,
+              "the macro entry #{inspect(Spec.key(spec))} uses a :hosted/:routing treatment, " <>
+                "which needs a hosting mutator (implementing #{fun}/#{arity}) — register it via " <>
+                "a mutator's macros/0, not the declarative :macros option"
+
+      not (Code.ensure_loaded?(host) and function_exported?(host, fun, arity)) ->
+        raise ArgumentError,
+              "the hosting mutator #{inspect(host)} for macro #{inspect(Spec.key(spec))} must " <>
+                "implement #{fun}/#{arity} for its :hosted/:routing treatment"
+
+      true ->
+        :ok
+    end
+  end
+
+  @doc """
+  The `Mutare.Macro.Spec` a call resolving to `module_key`/`name` at `arity` matches, or `nil`.
+  An exact `arity` entry wins over an `:any`-arity one. Returns the whole spec, so
+  `Mutare.Transform.Resolve` can read its `host`/`args` to resolve a `:routing` classifier or
+  stamp a `:hosted` treatment with its hosting mutator. The per-position treatment list for a
+  static spec is `Mutare.Macro.Spec.routing/2` of the result.
+  """
+  @spec lookup(registry(), Spec.module_key(), atom(), non_neg_integer()) :: Spec.t() | nil
+  def lookup(registry, module_key, name, arity) when is_map(registry) do
+    Map.get(registry, {module_key, name, arity}) || Map.get(registry, {module_key, name, :any})
   end
 end

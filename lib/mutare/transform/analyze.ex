@@ -779,8 +779,68 @@ defmodule Mutare.Transform.Analyze do
   # args, which carry no candidates; correct for `:expression` args, preserving option-key gating).
   defp analyze_known_macro(node, routing, mutators, context \\ %{pipe_mode: :unpiped}) do
     {form, meta, args} = offer(node, node, mutators, context)
-    mark_call_option_keys({form, meta, route_macro_args(args, routing, mutators)})
+    routed = mark_call_option_keys({form, meta, route_macro_args(args, routing, mutators)})
+    attach_hosted_candidates(routed, node, routing, mutators, context)
   end
+
+  # When the routing marks any argument `{:hosted, host}` (see `Mutare.Transform.Resolve`),
+  # the fragment in that position is mutated by the **hosting mutator's selector host**
+  # (`c:Mutare.Mutator.host/2`), not by core. Hand the host the *raw* macro node (so it can
+  # pull the DSL's bindings for its `wrap`) and attach one `Candidate.Hosted` per target it
+  # returns, under a dedicated `:mutare_hosted` key (separate from `:mutare`, since emission
+  # weaves the selector into the node rather than wrapping the node in one —
+  # `Mutare.Transform.emit_hosted_site/3`). No hosted position, no host spec, or no targets ⇒
+  # the node is left as the ordinary (offered + arg-routed) macro node.
+  #
+  # The host is a **module**, but it may be enabled under *several* `Mutare.Mutator.Spec`s — a
+  # configurable host mutator listed twice with distinct `:as` names / `opts` (e.g. `{Host, as:
+  # :a}` and `{Host, as: :b}`). Each such spec is its own family (own name on its Sites, own
+  # `opts` reaching `host/2`), exactly as the ordinary path runs every spec in `Mutator.mutations/3`,
+  # so we host *each* matching spec — not just the first — or a duplicate-configured host mutator
+  # would silently lose every config past the first.
+  defp attach_hosted_candidates(routed, raw_node, routing, mutators, context) do
+    with host when not is_nil(host) <- hosted_host(routing),
+         specs = Enum.filter(mutators, &(&1.module == host)),
+         [_ | _] = candidates <- Enum.flat_map(specs, &host_candidates(&1, raw_node, context)) do
+      put_hosted_candidates(routed, candidates)
+    else
+      _ -> routed
+    end
+  end
+
+  # The hosting mutator module named by the first `{:hosted, host}` entry in a routing list,
+  # or `nil` when no position is hosted. All hosted positions of one macro share a host (the
+  # registering mutator), so the first is enough.
+  defp hosted_host(routing) when is_list(routing) do
+    Enum.find_value(routing, fn
+      {:hosted, host} -> host
+      _ -> nil
+    end)
+  end
+
+  defp hosted_host(_), do: nil
+
+  # Build the `Candidate.Hosted`s for a macro node from the host's targets, dropping any whose
+  # fragment isn't rangeable (no `Mutare.Site` could be recorded). `range` defaults to the
+  # logical fragment's own range.
+  defp host_candidates(spec, raw_node, context) do
+    spec
+    |> Mutator.host_targets(raw_node, Map.take(context, [:pipe_mode]))
+    |> Enum.map(fn target ->
+      %Candidate.Hosted{
+        mutator: spec,
+        original: target.original,
+        mutants: target.mutants,
+        wrap: target.wrap,
+        splice: target.splice,
+        range: target.range || NodeRange.get(target.original)
+      }
+    end)
+    |> Enum.filter(& &1.range)
+  end
+
+  defp put_hosted_candidates({form, meta, args}, candidates),
+    do: {form, [{:mutare_hosted, candidates} | meta], args}
 
   # Route each argument by its treatment. A position past the routing list defaults to
   # `:expression`.
@@ -802,6 +862,11 @@ defmodule Mutare.Transform.Analyze do
   # here; its *extra* structural-mutant offering is delivered separately (the macro call sits in
   # a value-discarded position — see `binding_pattern_macro/1` / `attach_macro_pattern_candidates/4`).
   defp route_macro_arg(arg, :skip, _mutators), do: arg
+
+  # A `:hosted` position (stamped `{:hosted, host}` by `Mutare.Transform.Resolve`) is left
+  # **raw** like `:skip` — core mutates nothing in place here (a bare selector would poison
+  # the DSL); the hosting mutator weaves its own selector via `attach_hosted_candidates/5`.
+  defp route_macro_arg(arg, {:hosted, _host}, _mutators), do: arg
 
   defp route_macro_arg(arg, treatment, mutators) when treatment in [:pattern, :binding_pattern],
     do: analyze(arg, :pattern, mutators)

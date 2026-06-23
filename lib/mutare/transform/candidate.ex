@@ -335,6 +335,43 @@ defmodule Mutare.Transform.Candidate do
     defstruct [:mutator, :original, :mutated, :export, :mutant_expr, :range]
   end
 
+  defmodule Hosted do
+    @moduledoc false
+
+    # A mutation of a **`:hosted` macro argument** — a fragment *inside* a compile-time DSL
+    # (`Ecto`'s `from`/`where`) where core can neither reach `:persistent_term` with a bare
+    # selector (the `case` would poison the single build) nor vouch for the fragment's
+    # semantics (SQL's three-valued logic ≠ Elixir's). Core therefore owns none of the
+    # mutation logic: the **hosting mutator** (`c:Mutare.Mutator.host/2`) supplies, per macro
+    # node, a list of *targets*, each carrying `{logical original, logical mutants}` and two
+    # pure transforms — `wrap` (each branch → the woven runtime form, e.g. `dynamic([u], _)`;
+    # default identity) and `splice` (where the woven `case` goes in a copy of the macro node,
+    # `^`-pinned for Ecto). One `Hosted` candidate *is* one such target.
+    #
+    # Core keeps the four cross-cutting contracts: it builds the id-gated selector `case` from
+    # its own `subject_ast` + `<id> ->` clauses (so poison/manifest still recognise it), assigns
+    # the ids, records one `:in_place` `Mutare.Site` per logical mutant (the diff is the logical
+    # fragment swap — the `dynamic`/`^` scaffolding invisible, exactly as the tuple-export Sites
+    # hide theirs), and emits the coverage catch-all (`Mutare.Transform.emit_hosted_site/3`).
+    #
+    # `original` is the logical fragment before mutation (rendered in each Site's diff and run by
+    # the wrapped catch-all baseline); `mutants` are the logical mutated fragments (one id + Site
+    # each); `wrap` maps a logical fragment to its woven branch value; `splice` weaves the
+    # assembled `case` into a copy of the (emitted) macro node; `range` locates the fragment for
+    # the Site; `mutator` is the hosting `Mutare.Mutator.Spec` (its name on every Site).
+
+    @type t :: %__MODULE__{
+            mutator: Mutare.Mutator.Spec.t(),
+            original: Macro.t(),
+            mutants: [Macro.t()],
+            wrap: (Macro.t() -> Macro.t()),
+            splice: (Macro.t(), Macro.t() -> Macro.t()),
+            range: Sourceror.Range.t()
+          }
+
+    defstruct [:mutator, :original, :mutants, :wrap, :splice, :range]
+  end
+
   defmodule Drop do
     @moduledoc false
 
@@ -414,6 +451,7 @@ defmodule Mutare.Transform.Candidate do
           | CaseClause.t()
           | MatchPattern.t()
           | MacroPattern.t()
+          | Hosted.t()
           | Drop.t()
           | GuardDrop.t()
           | Return.t()

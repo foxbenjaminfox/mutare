@@ -72,48 +72,132 @@ defmodule Mutare.MacrosTest do
     end
   end
 
-  describe "Macros.builtin/0 and routing/4" do
+  describe "Macros.builtin/0" do
     test "match? and destructure are built in, routing arg 0 as a pattern" do
       registry = Macros.build([], [])
-      assert Macros.routing(registry, [:Kernel], :match?, 2) == [:pattern, :expression]
+      # `match?` routes arg 0 as `:pattern`, arg 1 as `:expression`.
+      assert %Spec{args: [:pattern, :expression]} = Macros.lookup(registry, [:Kernel], :match?, 2)
       # `destructure`'s bindings escape, so arg 0 is the richer `:binding_pattern`
       # (structural mutants in a value-discarded position); `match?`'s stay `:pattern`.
-      assert Macros.routing(registry, [:Kernel], :destructure, 2) == [
-               :binding_pattern,
-               :expression
-             ]
+      assert %Spec{args: [:binding_pattern, :expression]} =
+               Macros.lookup(registry, [:Kernel], :destructure, 2)
     end
 
     test "an unmatched module/name/arity returns nil" do
       registry = Macros.build([], [])
-      assert Macros.routing(registry, [:SomeMod], :match?, 2) == nil
-      assert Macros.routing(registry, [:Kernel], :other, 2) == nil
-      assert Macros.routing(registry, [:Kernel], :match?, 3) == nil
+      assert Macros.lookup(registry, [:SomeMod], :match?, 2) == nil
+      assert Macros.lookup(registry, [:Kernel], :other, 2) == nil
+      assert Macros.lookup(registry, [:Kernel], :match?, 3) == nil
     end
   end
 
   describe "Macros.build/2 — merge, precedence, :any fallback" do
     test "declarative entries override a built-in of the same key" do
       registry = Macros.build([{Kernel, :match?, 2, :skip}], [])
-      assert Macros.routing(registry, [:Kernel], :match?, 2) == [:skip, :skip]
+      assert %Spec{args: :skip} = Macros.lookup(registry, [:Kernel], :match?, 2)
     end
 
     test "an exact-arity entry wins over an :any entry" do
       registry = Macros.build([{Foo, :bar, :skip}, {Foo, :bar, 1, [:pattern]}], [])
-      assert Macros.routing(registry, [:Foo], :bar, 1) == [:pattern]
-      assert Macros.routing(registry, [:Foo], :bar, 2) == [:skip, :skip]
+      assert %Spec{arity: 1, args: [:pattern]} = Macros.lookup(registry, [:Foo], :bar, 1)
+      assert %Spec{arity: :any, args: :skip} = Macros.lookup(registry, [:Foo], :bar, 2)
     end
 
     test "a mutator's macros/0 contributes entries" do
       specs = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
       registry = Macros.build([], [specs])
 
-      assert Macros.routing(registry, [:Mutare, :Test, :QueryDSL], :query, 1) == [:skip]
+      assert %Spec{args: :skip} = Macros.lookup(registry, [:Mutare, :Test, :QueryDSL], :query, 1)
     end
 
     test "a mutator without macros/0 contributes nothing" do
       specs = Mutator.Spec.for_module(Mutare.Test.BooleanMutator)
       assert Macros.from_mutators([specs]) == []
+    end
+  end
+
+  describe "the :hosted treatment and :routing classifier" do
+    test "treatments/0 includes :hosted" do
+      assert :hosted in Spec.treatments()
+    end
+
+    test "Spec.new accepts :hosted in a list and the :routing classifier sentinel" do
+      assert %Spec{args: [:expression, :hosted]} =
+               Spec.new(Ecto.Query, :where, 2, [:expression, :hosted])
+
+      assert %Spec{args: :routing} = Spec.new(Ecto.Query, :where, :any, :routing)
+    end
+
+    test "classifier?/1 and host_required?/1 recognise the host-needing modes" do
+      assert Spec.classifier?(Spec.new(Foo, :bar, :any, :routing))
+      refute Spec.classifier?(Spec.new(Foo, :bar, 2, [:expression, :hosted]))
+
+      assert Spec.host_required?(Spec.new(Foo, :bar, :any, :routing))
+      assert Spec.host_required?(Spec.new(Foo, :bar, 2, [:expression, :hosted]))
+      assert Spec.host_required?(Spec.new(Foo, :bar, 1, :hosted))
+      refute Spec.host_required?(Spec.new(Foo, :bar, 2, [:pattern, :expression]))
+    end
+
+    test "routing/2 refuses to expand a :routing spec without the call node" do
+      assert_raise ArgumentError, ~r/resolved per call node/, fn ->
+        Spec.routing(Spec.new(Foo, :bar, :any, :routing), 2)
+      end
+    end
+  end
+
+  describe "host stamping (from_mutators/1) and validation (build/2)" do
+    test "from_mutators stamps the hosting mutator onto every spec it contributes" do
+      specs = Mutator.Spec.for_module(Mutare.Test.HostMutator)
+      contributed = Macros.from_mutators([specs])
+
+      # Both of HostMutator's macro registrations (`filter` via `:routing`, `pick` via a static
+      # `[:binding_pattern, :hosted]`) are stamped with the contributing mutator as their host.
+      assert Enum.all?(contributed, &(&1.host == Mutare.Test.HostMutator))
+      assert Enum.all?(contributed, &(&1.module == [:Mutare, :Test, :HostDSL]))
+
+      filter = Enum.find(contributed, &(&1.name == :filter))
+      assert filter.args == :routing
+
+      pick = Enum.find(contributed, &(&1.name == :pick))
+      assert pick.args == [:binding_pattern, :hosted]
+    end
+
+    test "build/2 resolves a host-needing macro through a mutator" do
+      specs = Mutator.Spec.for_module(Mutare.Test.HostMutator)
+      registry = Macros.build([], [specs])
+
+      assert %Spec{args: :routing, host: Mutare.Test.HostMutator} =
+               Macros.lookup(registry, [:Mutare, :Test, :HostDSL], :filter, 2)
+    end
+
+    test "build/2 raises when a declarative entry asks for :hosted/:routing (no host)" do
+      assert_raise ArgumentError, ~r/needs a hosting mutator/, fn ->
+        Macros.build([{Ecto.Query, :where, :any, :routing}], [])
+      end
+
+      assert_raise ArgumentError, ~r/needs a hosting mutator/, fn ->
+        Macros.build([{Ecto.Query, :where, 2, [:expression, :hosted]}], [])
+      end
+    end
+
+    test "build/2 raises when a mutator registers :hosted but omits host/2" do
+      # The host *is* stamped (the contributing mutator), but it doesn't implement `host/2` —
+      # the `validate_host!` host-present-but-missing-callback branch, named clearly at build
+      # rather than failing cryptically at delivery.
+      specs = Mutator.Spec.for_module(Mutare.Test.IncompleteHostMutator)
+
+      assert_raise ArgumentError, ~r/must implement host\/2/, fn ->
+        Macros.build([], [specs])
+      end
+    end
+  end
+
+  describe "Macros.lookup/4" do
+    test "returns the whole spec, exact arity over :any" do
+      registry = Macros.build([{Foo, :bar, :skip}, {Foo, :bar, 1, [:pattern]}], [])
+      assert %Spec{arity: 1, args: [:pattern]} = Macros.lookup(registry, [:Foo], :bar, 1)
+      assert %Spec{arity: :any, args: :skip} = Macros.lookup(registry, [:Foo], :bar, 2)
+      assert Macros.lookup(registry, [:Foo], :baz, 1) == nil
     end
   end
 end

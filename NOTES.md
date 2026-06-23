@@ -1411,6 +1411,133 @@ restores `:runtime`. Originally `offer/4` ran context-blind and wrapped the scaf
 the guard is in the `analyze` capture clause, not in `Captures` (placement is positional, the
 caller's job).
 
+### Mutating inside a foreign-semantics DSL — the selector host (Ecto `from`/`where`)
+The hard case a *deep* custom mutator hits: mutating **inside** a compile-time DSL (Ecto's
+`from`/`where`) where you can't reach `:persistent_term` with a bare selector (the `case` would
+poison the single build, since the DSL doesn't compile arbitrary Elixir), and whose body has **SQL
+semantics, not Elixir's**. Worked against a hypothetical external Ecto library — a dep-bearing custom
+mutator, never a built-in (unlike GenServer, dependency-free OTP). Most of what it needs already
+existed (identity/skip of the DSL via the known-macro registry + `use`-expansion; plain call/behaviour
+mutations via `Calls`/`context.behaviours`; a **basic** library works *today* by `:skip`ping the whole
+`from` and returning the whole mutated query through the ordinary in-place selector). The two
+extensions here are strictly about **localization + scale** — wrapping the *whole* query per mutant
+duplicates it and blows up (`(mutants+1)^depth`, the pipe-hoist pathology). Both now exist:
+
+**#1 — mutator-supplied selector host (the delivery seam, `c:Mutare.Mutator.host/2`).** You can't
+splice `case :persistent_term.get(...)` into a query, but Ecto's `^` + `dynamic/2` injects a
+runtime-chosen fragment the query *actually runs* (exactly one branch bakes in, the active id being
+constant per run):
+
+```
+where: ^case mutare_active do
+         123 -> dynamic([u], u.age >= ^min)
+         mutare_active -> mutare_active == 0 and … and MutareCov.hit([123]); dynamic([u], u.age > ^min)
+       end
+```
+
+The delivery is private to the emit layer (mutant **ids**, the selector **subject**, **coverage**,
+the **Site**), so a library can't reach it. The fix opens the already-parameterized binding-export
+seam (`emit_binding_site`, shared by the `=`-match/binding-macro tuple-export rewrites) to a mutator:
+per **target** the host hands core `{logical original, logical mutants}` + two pure transforms — `wrap`
+(each branch → `dynamic([bindings], _)`; default **identity**) and `splice` (a `(macro_node, case_node)
+-> macro_node` weaving the woven `case` into a copy of the node, `^`-pinned). **Core builds the `case`**
+from its own `subject_ast` + `<id> ->` clauses, assigns ids, records **one `:in_place` `Site` per
+logical mutant** (the diff is `u.age > ^min` → `u.age >= ^min`, the `dynamic`/`^`/selector scaffolding
+invisible — exactly as the tuple-export Sites hide theirs), emits the coverage catch-all, and hands the
+assembled `case` to `splice`. The single rule that makes this safe to expose: *don't hand the mutator
+ids and let it build its own `case`; hand it `wrap`/`splice` and let core build the selector.* That
+keeps the four cross-cutting contracts in core — compile-once, contiguous poison-stable ids, coverage,
+poison line-mapping — and makes poison/manifest work **for free**, because the emitted selector is still
+`Metamutant.subject?/2`-recognizable (the `^` is just an outer node a `Macro.traverse` walks past). The
+host is handed the **whole macro node** (not the leaf) so the library can pull the `from` bindings for
+`wrap`. Binding-reorder rides the same seam (`where([a,b], …)`→`[b,a]` ≡ an alternative *body*, no
+separate path). Lands as `Transform.Candidate.Hosted` + `Transform.emit_hosted_site/3` (the `:mutare_hosted`
+meta key — a third emit alongside `:mutare`/`:mutare_case`) + `Mutator.host_targets/3` (the validate/
+default-`wrap` normalizer). Multiple targets fold over the node (each `splice` replaces its own
+position); a whole-node `:mutare` mutation on the *same* node still rides an ordinary selector wrapping
+the spliced result (`emit_site/3`) — a no-op when there is none, the common case.
+
+**#2 — a `:hosted` macro-arg treatment + shape-aware routing (`c:Mutare.Mutator.macro_routing/1`).**
+Treatments were a closed set only core's analyzer reads. `:hosted` (now in `Macro.Spec.@treatments`)
+means "don't splice a *bare* selector here (it'd poison the DSL) — route this position's mutations
+through the mutator's host (#1)." It must also be chosen per **call shape**, which a static per-position
+list can't express: `where(q, category: "Foo")` is plain data (`:expression`, mutate the value in place)
+while `where(q, [u], u.x == u.y)` is `:hosted`. So `args` may be the **`:routing` sentinel**, deferring
+the per-position routing to the mutator's `macro_routing(call_node)` — consulted by `Resolve` with the
+concrete node, returning routing for the node's **visible** args (so it rides whole on `@macro_key` with
+no piped split; a builder's piped value `q` is an ordinary `:expression` analyzed by the `:|>` LHS
+clause). `Resolve` rewrites each `:hosted` → `{:hosted, host}` (the hosting mutator, stamped on the spec
+by `Macros.from_mutators/1`, so the analyzer can reach the right `host/2`); `route_macro_arg/3` leaves a
+`{:hosted, _}` position **raw** (like `:skip`), and `analyze_known_macro` attaches the host's targets.
+A declarative `:macros` entry can't use `:hosted`/`:routing` (no host to deliver/answer) — `Macros.build/2`
+raises (`Macro.Spec.host_required?/1`). Both shapes (direct + piped builder) route; the fixture
+(`test/support/host_mutator.ex`, `Mutare.Test.{HostDSL,HostMutator}`) and `test/mutare/hosted_test.exs`
+prove the full machinery — classifier, host seam, core-built selector + ids + Site + coverage + poison —
+without an Ecto dependency (a fake `filter/2` macro whose woven `case` is spliced straight into the
+condition, no real `^`).
+
+**The trap — do NOT reuse core mutators inside the fragment (rejected, on purpose).** Tempting ("run
+Relational's `>`→`>=` table inside the query via `wrap`"), but the core mutators encode **Elixir**
+semantics and cannot vouch for SQL's. Concretely `a < b or a > b` — under *equivalent-sibling
+suppression* — is judged constant and a redundant sibling dropped: sound under two-valued logic, **wrong**
+under SQL's three-valued logic, where it is `NULL` whenever either operand is. A reused mutator thus
+silently drops a *real* mutant — a false negative manufactured at a semantic boundary core never
+targeted. So the host owns the whole catalog: core exposes the delivery seam (#1) and the routing (#2),
+and **none** of its mutation logic. (This is *why* the host returns logical `mutants`, not why core
+mutates the raw fragment — `:hosted` leaves it raw.)
+
+**Four sharp edges — one made correct, the other three made loud rather than silent.**
+
+  * *A hosted macro that **also** binds escaping variables.* A `:hosted` argument and a
+    `:binding_pattern` argument can land on the *same* known-macro call in a value-discarded position
+    (`pick([a, b], x > 1)` — arg 0 the escaping pattern, arg 1 the hosted comparison). That node then
+    carries **both** a `Candidate.Hosted` (under `:mutare_hosted`) and a `Candidate.MacroPattern`
+    (under `:mutare`, attached by `MatchPatterns.attach_macro_pattern_candidates/4`). The bindings
+    *escape*, so the MacroPattern can't ride an ordinary node-wrapping selector (which would trap them
+    in a branch and emit a bare mutated-pattern AST — `[b, a]` — as the branch body, referencing
+    unbound vars: the metamutant won't compile). So after weaving the hosted selector into the
+    fragment, `emit_hosted_site/3` dispatches the leftover `:mutare` candidates exactly as the
+    un-hosted path does (`emit_hosted_inplace/3`): a `MacroPattern` head routes to the tuple-export
+    rewrite (`emit_macro_pattern_site/3`), whose **baseline branch is the spliced macro** — so the
+    hosted comparison mutants still fire there while the pattern mutants re-export the bindings through
+    `{a, b} = case … end`. Everything else (an ordinary whole-call `InPlace`, or none) rides the
+    ordinary `emit_site/3` selector wrapping the spliced result. (A macro node is never a `=`, so
+    `MatchPattern` can't occur on this path.) Without the dispatch the hosted path sent the
+    MacroPattern straight through `emit_site/3` and broke any binding-escaping hosted macro.
+
+  * *Duplicate-configured host mutator.* A host is a **module**, but a configurable host mutator may
+    be enabled under several `Mutare.Mutator.Spec`s with distinct `:as` names / `opts`
+    (`{Host, as: :a}`, `{Host, as: :b}`). Each is its own family (own name on its Sites, own `opts`
+    into `host/2`), exactly as the ordinary path runs every spec in `Mutator.mutations/3`. So
+    `attach_hosted_candidates/5` hosts **every** spec whose `module` matches the stamped host
+    (`Enum.filter` + `Enum.flat_map`), not just the first (`Enum.find`) — else a duplicate config
+    silently drops every instance past the first, and all hosted Sites mis-carry the first's name.
+
+  * *A static `:hosted` at the piped-value position is undeliverable.* `host/2` is handed the **macro
+    node**, whose args are the *visible* ones — never the `|>` LHS. So a static `args` routing
+    effective-position-0 as `:hosted` can't be hosted the moment that macro is piped (`frag |>
+    rotate()`), and silently leaving the LHS raw would drop the mutation without a trace.
+    `Resolve.reject_piped_hosted!/3` raises instead, pointing at the supported escape hatch — the
+    `:routing` classifier rides on the **visible** args (never the piped value), so a
+    shape/position-dependent host belongs there. (Direct calls host argument 0 fine — it is visible.)
+
+  * *A `:routing` classifier routes `:hosted` but the mutator omits `host/2`.* A `:routing` spec is
+    **not** required to implement `host/2` at *build* (`Macros.build/2` only demands `macro_routing/1`
+    of it) — a classifier may legitimately route every position to `:expression`/`:pattern` and never
+    host. But the moment `macro_routing/1` *does* route a position `:hosted` with no `host/2` to
+    deliver it, `route_macro_arg/3` would leave the fragment raw and the intended mutation would
+    vanish without a trace. `Resolve.reject_undeliverable_hosted!/2` (the classifier-path analogue of
+    `reject_piped_hosted!/3`) raises at resolve — the first point the undeliverable `:hosted` is
+    known — naming the missing `host/2`. (A *static* `:hosted` without a `host/2` is caught earlier
+    still, at build, by `Macros.validate_host!/3`.)
+
+**Explicitly not needed.** `context.uses` — every Ecto target self-identifies *node-locally* (a resolved
+call or a known macro), unlike a GenServer return tuple (shape-ambiguous, *does* need module context); the
+node never has to ask the module who it is. `opts` for `macros/0` — Ecto's macro set is fixed. Caveat
+inherited from `Uses`: an external-path target whose deps aren't on the task's code path won't expand
+`use Ecto.Schema`, so schema-skip silently degrades and the body poisons — run mutare **as a dep of the
+app under test**, the supported deployment.
+
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
 (`apply(Foo, …)`, `is_struct(x, Foo)`, `[A, B]`, a behaviour/strategy arg) to the

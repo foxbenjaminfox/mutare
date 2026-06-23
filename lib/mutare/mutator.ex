@@ -294,8 +294,11 @@ defmodule Mutare.Mutator do
 
   Returns a list of `Mutare.Macro.Spec` entries in the declarative form
   `{module, name, arity, treatment}` or `{module, name, treatment}` (arity `:any`),
-  where `treatment` is `:expression` / `:pattern` / `:skip` (uniform) or a
-  per-position list. When the mutator is enabled (listed in `:mutators`), the
+  where `treatment` is one of `:expression` / `:pattern` / `:binding_pattern` / `:skip` /
+  `:hosted` (uniform), a per-position list, or the `:routing` classifier sentinel (deferring
+  to `c:macro_routing/1`). A `:hosted` argument is delivered through this module's `c:host/2`
+  (the deep `Ecto.from`/`where` case); a `:routing` spec lets the treatment depend on the call
+  shape. When the mutator is enabled (listed in `:mutators`), the
   transform merges these into its macro registry automatically — so a library ships
   one module carrying *both* its mutator and the registration it relies on, and the
   user adds a single `:mutators` entry. Core never has to know about the library.
@@ -307,6 +310,53 @@ defmodule Mutare.Mutator do
   `function_exported?(mod, :macros, 0)`; a mutator without it registers nothing.
   """
   @callback macros() :: [tuple()]
+
+  @doc """
+  Optional **selector host** for mutating a fragment *inside* a compile-time DSL — a
+  `:hosted` macro argument (see `Mutare.Macro.Spec`). The deep external-DSL case
+  (`Ecto`'s `from`/`where`), where core can neither splice a bare selector `case` (it
+  would poison the single build) nor vouch for the fragment's semantics. So core owns
+  none of the mutation logic: it hands the **whole macro node** to this callback, which
+  returns a list of *targets* — one per fragment to mutate — and core builds the id-gated
+  selector, records the Sites, and weaves it in.
+
+  Each target is a map:
+
+    * `:original` — the logical fragment before mutation (the Site diff's left side, and
+      what the wrapped catch-all baseline runs);
+    * `:mutants` — the list of logical mutated fragments (one mutant id + `Mutare.Site` each),
+      from the library's *own* semantics catalog (e.g. SQL's, **not** core's Elixir mutators);
+    * `:splice` — a 2-arity `(macro_node, case_node -> macro_node)` weaving the assembled
+      selector `case` into a copy of the (emitted) macro node (for Ecto, `^`-pinning it into
+      the `where:` position);
+    * `:wrap` — optional 1-arity `(fragment -> woven_node)` mapping each logical fragment to
+      its branch value (`&dynamic([u], &1)`); defaults to identity;
+    * `:range` — optional `Sourceror.Range.t()` for the Site; defaults to the `:original`'s.
+
+  Core builds, per target, `case <id-selector> do <id> -> wrap(mutant); … ; <var> -> <cov>;
+  wrap(original) end`, splices it with `:splice`, assigns the ids, and records each mutant as
+  an `:in_place` `Mutare.Site` showing the logical fragment swap (the `wrap`/`splice`
+  scaffolding invisible). The single rule that keeps this sound: *the mutator hands core
+  `wrap`/`splice` and lets core build the selector* — so the four cross-cutting contracts
+  (compile-once, contiguous poison-stable ids, coverage, poison line-mapping) stay in core.
+
+  Registered by a `:hosted` (or `:routing`-classified) treatment in `c:macros/0`; the
+  transform discovers it by `function_exported?(mod, :host, 2)`. `context` is the same map
+  as `c:mutate/2`'s (`:pipe_mode`/`:opts`/`:behaviours`).
+  """
+  @callback host(macro_node :: Macro.t(), context :: context()) :: [map()]
+
+  @doc """
+  Optional **shape-aware routing** classifier for a macro registered `:routing` in
+  `c:macros/0`. A static per-position treatment list can't express a routing that depends
+  on the call *shape* — `where(q, category: "Foo")` is plain data (`:expression`) while
+  `where(q, [u], u.x == u.y)` is a `:hosted` DSL fragment. `Mutare.Transform.Resolve` calls
+  this with the concrete call node and uses the returned per-position treatment list (for the
+  node's **visible** arguments) instead of a fixed one. Each element is a
+  `t:Mutare.Macro.Spec.treatment/0` (`:expression`/`:pattern`/`:binding_pattern`/`:skip`/
+  `:hosted`); a `:hosted` here is delivered through this same mutator's `c:host/2`.
+  """
+  @callback macro_routing(call_node :: Macro.t()) :: [Mutare.Macro.Spec.treatment()]
 
   @doc """
   Optional hook by which a mutator declares that one of *its own* mutation results is
@@ -377,6 +427,8 @@ defmodule Mutare.Mutator do
                       pattern_mutations: 3,
                       mutate: 2,
                       macros: 0,
+                      host: 2,
+                      macro_routing: 1,
                       empty_collection?: 1,
                       return_replacements: 1,
                       return_replacements: 2,
@@ -505,6 +557,50 @@ defmodule Mutare.Mutator do
       do: module.pattern_mutations(head_args, used_outside, structural_context(spec)),
       else: module.pattern_mutations(head_args, used_outside)
   end
+
+  @doc """
+  The **selector-host targets** `spec`'s mutator declares for the known-macro node `node`
+  (`c:host/2`), normalized — each a map with `:original`, a list `:mutants`, a 2-arity
+  `:splice`, a 1-arity `:wrap` (defaulted to identity), and an optional `:range`. `[]` when
+  the module doesn't implement `host/2`. `context0` (`%{pipe_mode: …}`) is enriched with the
+  spec's `:opts`/`:behaviours` before the callback runs, mirroring `mutations/3`.
+
+  The single home for invoking a hosting mutator and validating its target shape, so
+  `Mutare.Transform.Analyze` builds `Mutare.Transform.Candidate.Hosted`s without re-deriving
+  the contract.
+  """
+  @spec host_targets(Spec.t(), Macro.t(), context()) :: [map()]
+  def host_targets(%Spec{module: module, opts: opts, behaviours: behaviours}, node, context0) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :host, 2) do
+      context = context0 |> Map.put(:opts, opts) |> Map.put(:behaviours, behaviours)
+      module.host(node, context) |> Enum.map(&normalize_target/1)
+    else
+      []
+    end
+  end
+
+  # Default `:wrap` to identity and `:range` to absent; require `:original`, a list `:mutants`,
+  # and a 2-arity `:splice`. A malformed target raises (a library bug, not a target to silently
+  # drop) — caught at transform time with the offending value.
+  defp normalize_target(%{original: original, mutants: mutants, splice: splice} = target)
+       when is_list(mutants) and is_function(splice, 2) do
+    %{
+      original: original,
+      mutants: mutants,
+      splice: splice,
+      wrap: target_wrap(Map.get(target, :wrap)),
+      range: Map.get(target, :range)
+    }
+  end
+
+  defp normalize_target(other) do
+    raise ArgumentError,
+          "a host target must be a map with :original, a list :mutants and a 2-arity :splice " <>
+            "(optional :wrap/:range), got: #{inspect(other)}"
+  end
+
+  defp target_wrap(nil), do: &Function.identity/1
+  defp target_wrap(wrap) when is_function(wrap, 1), do: wrap
 
   # The structural-callback context: the enclosing module's behaviour set, nothing else.
   defp structural_context(%Spec{behaviours: behaviours}), do: %{behaviours: behaviours}

@@ -23,9 +23,10 @@ defmodule Mutare.Macro.Spec do
 
   ## Argument treatments
 
-  `args` is either a single treatment atom (applied uniformly to every argument)
-  or a per-position list (padded with `:expression`). The treatments and how the
-  analyzer routes each:
+  `args` is either a single treatment atom (applied uniformly to every argument),
+  a per-position list (padded with `:expression`), or the **classifier sentinel**
+  `:routing` (see "Shape-aware routing" below). The treatments and how the analyzer
+  routes each:
 
     * `:expression` (default) — analyze as `:runtime` (mutate normally).
     * `:pattern` — analyze as `:pattern` (descend so nested runtime escapes are
@@ -45,36 +46,104 @@ defmodule Mutare.Macro.Spec do
       DSL case (`Ecto.Query.from`'s body), and the mechanism behind "handled only
       by a custom mutator" — core skips the args, while the whole macro node is
       still offered to every mutator, so a registering library's mutator fires.
+    * `:hosted` — like `:skip`, the argument is left **raw** for core (no descent, no
+      in-place selector — a `case` spliced into a compile-time DSL fragment would poison
+      the single build), but its mutations are instead delivered through the **hosting
+      mutator's selector host** (`c:Mutare.Mutator.host/2`): core hands the whole macro
+      node to the host, which returns `{logical original, logical mutants}` plus `wrap`/
+      `splice` transforms, and core builds the id-gated selector, records the Site from
+      the logical pair, and weaves it in. The deep-DSL case (mutating *inside* `Ecto`'s
+      `from`/`where`, where the fragment has SQL semantics, not Elixir's). A `:hosted`
+      treatment is only valid when the spec carries a `host` — a mutator implementing
+      `c:Mutare.Mutator.host/2` — which `Mutare.Macros.from_mutators/1` stamps for the
+      registering mutator. See `Mutare.Transform.emit_hosted_site/3`.
 
-  `routing/2` expands `args` to a per-position list for a concrete arity.
+  ## Shape-aware routing (the `:routing` classifier)
+
+  A static per-position list can't express a treatment that depends on the *call shape*:
+  `where(q, category: "Foo")` is plain data (mutate the value, `:expression`) while
+  `where(q, [u], u.x == u.y)` is a `:hosted` DSL fragment. The sentinel `args: :routing`
+  defers the per-position routing to the hosting mutator's `c:Mutare.Mutator.macro_routing/1`,
+  which `Mutare.Transform.Resolve` consults with the concrete call node. Like `:hosted`,
+  `:routing` is only valid with a `host`.
+
+  `routing/2` expands a *static* `args` to a per-position list for a concrete arity; a
+  `:routing` spec is resolved by `Mutare.Transform.Resolve` (which has the call node), not
+  here.
+
+  ## Host
+
+  `host` is the mutator module that delivers a `:hosted` argument's mutations and answers
+  the `:routing` classifier — `nil` for an ordinary spec. It is **not** user-written on the
+  entry: `Mutare.Macros.from_mutators/1` stamps it to the mutator whose `c:Mutare.Mutator.macros/0`
+  contributed the spec, so a library's `:hosted`/`:routing` registration automatically points
+  back at the library's own host/classifier callbacks. A declarative `:macros` entry (no
+  mutator) therefore can't use `:hosted`/`:routing` — `Mutare.Macros.build/2` raises if it does.
   """
 
   @typedoc "A resolved module key: an Elixir-module atom path or an Erlang-module atom."
   @type module_key :: [atom()] | atom()
 
   @typedoc "How one argument is routed."
-  @type treatment :: :expression | :pattern | :binding_pattern | :skip
+  @type treatment :: :expression | :pattern | :binding_pattern | :skip | :hosted
+
+  @typedoc "An `args` value: a uniform treatment, a per-position list, or the `:routing` classifier sentinel."
+  @type args :: treatment() | [treatment()] | :routing
 
   @type t :: %__MODULE__{
           module: module_key(),
           name: atom(),
           arity: non_neg_integer() | :any,
-          args: treatment() | [treatment()]
+          args: args(),
+          host: module() | nil
         }
 
   @enforce_keys [:module, :name, :arity, :args]
-  defstruct [:module, :name, :arity, :args]
+  defstruct [:module, :name, :arity, :args, host: nil]
 
-  @treatments [:expression, :pattern, :binding_pattern, :skip]
+  @treatments [:expression, :pattern, :binding_pattern, :skip, :hosted]
+
+  # The arg modes that require a `host` (a mutator implementing the delivery/classifier
+  # callbacks): the `:hosted` treatment (delivered through `c:Mutare.Mutator.host/2`) and
+  # the `:routing` classifier sentinel (resolved through `c:Mutare.Mutator.macro_routing/1`).
+  @host_required [:hosted, :routing]
 
   @doc """
   The valid argument treatments — the single source of truth for validation.
 
       iex> Mutare.Macro.Spec.treatments()
-      [:expression, :pattern, :binding_pattern, :skip]
+      [:expression, :pattern, :binding_pattern, :skip, :hosted]
   """
   @spec treatments() :: [treatment()]
   def treatments, do: @treatments
+
+  @doc """
+  Whether `spec`'s `args` is the `:routing` classifier sentinel (resolved per call node by
+  the hosting mutator's `c:Mutare.Mutator.macro_routing/1`), rather than a static treatment.
+
+      iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, :pattern) |> Mutare.Macro.Spec.classifier?()
+      false
+  """
+  @spec classifier?(t()) :: boolean()
+  def classifier?(%__MODULE__{args: :routing}), do: true
+  def classifier?(%__MODULE__{}), do: false
+
+  @doc """
+  Whether `spec`'s static `args` mention a treatment that needs a `host` — a `:hosted`
+  position, or the `:routing` classifier sentinel. Used by `Mutare.Macros.build/2` to
+  reject a declarative `:macros` entry that asks for hosting it cannot deliver.
+  """
+  @spec host_required?(t()) :: boolean()
+  def host_required?(%__MODULE__{args: args}) when args in @host_required, do: true
+
+  def host_required?(%__MODULE__{args: args}) when is_list(args),
+    do: Enum.any?(args, &(&1 in @host_required))
+
+  def host_required?(%__MODULE__{}), do: false
+
+  @doc "Stamp the hosting mutator module onto `spec` (`Mutare.Macros.from_mutators/1`)."
+  @spec put_host(t(), module()) :: t()
+  def put_host(%__MODULE__{} = spec, host) when is_atom(host), do: %{spec | host: host}
 
   @doc """
   Build a validated spec from a user-written `{module, name, arity, args}`.
@@ -96,7 +165,7 @@ defmodule Mutare.Macro.Spec do
       :binary
 
       iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, :bogus)
-      ** (ArgumentError) macro arg treatment must be one of [:expression, :pattern, :binding_pattern, :skip] (or a list of them), got: :bogus
+      ** (ArgumentError) macro arg treatment must be one of [:expression, :pattern, :binding_pattern, :skip, :hosted] (a list of them, or :routing), got: :bogus
   """
   @spec new(term(), term(), term(), term()) :: t()
   def new(module, name, arity, args) do
@@ -132,6 +201,12 @@ defmodule Mutare.Macro.Spec do
       [:pattern, :expression, :expression]
   """
   @spec routing(t(), non_neg_integer()) :: [treatment()]
+  def routing(%__MODULE__{args: :routing}, _count) do
+    raise ArgumentError,
+          "a :routing macro spec is resolved per call node by its host's macro_routing/1 " <>
+            "(Mutare.Transform.Resolve), not by Mutare.Macro.Spec.routing/2"
+  end
+
   def routing(%__MODULE__{args: args}, count), do: expand_args(args, count)
 
   defp expand_args(treatment, count) when is_atom(treatment), do: List.duplicate(treatment, count)
@@ -189,6 +264,7 @@ defmodule Mutare.Macro.Spec do
           "macro arity must be a non-negative integer or :any, got: #{inspect(other)}"
   end
 
+  defp validate_args(:routing), do: :routing
   defp validate_args(treatment) when treatment in @treatments, do: treatment
 
   defp validate_args(list) when is_list(list) do
@@ -204,6 +280,6 @@ defmodule Mutare.Macro.Spec do
 
   defp bad_treatment_message(other) do
     "macro arg treatment must be one of #{inspect(@treatments)} " <>
-      "(or a list of them), got: #{inspect(other)}"
+      "(a list of them, or :routing), got: #{inspect(other)}"
   end
 end
