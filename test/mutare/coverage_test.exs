@@ -327,13 +327,14 @@ defmodule Mutare.CoverageTest do
     end
 
     @tag :runner
-    test "a mutant covered via another file's setup_all runs the whole suite (no false survivor)" do
+    test "a mutant covered via another file's setup_all is attributed to both files (no false survivor)" do
       %{project: project, sandbox: sandbox} =
         Project.build(:setup_all_cov, %{
           "lib/shared.ex" => "defmodule Shared do\n  def calc(x), do: x + 1\nend\n",
-          # This file *touches the line* (so the id is attributed here) but its test
-          # can never kill the mutant — it asserts nothing about the value. Under the
-          # old "attributed file wins" rule this masked the killing file below.
+          # This file *touches the line* in its test body, so the id is attributed
+          # here — but the test asserts nothing about the value, so it can never kill
+          # the mutant. Under the old "attributed file wins" rule this masked the
+          # killing file below and produced a false survivor.
           "test/touch_test.exs" => """
           defmodule TouchTest do
             use ExUnit.Case
@@ -343,9 +344,10 @@ defmodule Mutare.CoverageTest do
             end
           end
           """,
-          # The killing test reaches Shared.calc only through `setup_all` (an
-          # unlabeled process), so it never attributes the id — yet it is the only
-          # test that distinguishes the mutation.
+          # The killing test reaches Shared.calc only through `setup_all`. That runs
+          # in an unlabeled process, but inside this module's `__ex_unit__/2`
+          # dispatch, so the id is attributed to setup_all_test.exs via the
+          # stacktrace recovery — the only test that distinguishes the mutation.
           "test/setup_all_test.exs" => """
           defmodule SetupAllTest do
             use ExUnit.Case
@@ -361,12 +363,52 @@ defmodule Mutare.CoverageTest do
 
       assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
 
-      # Every `+` mutant is killed (not a false survivor), and each ran the whole
-      # suite — the unlabeled `setup_all` coverage forces it past the partial
-      # attribution to touch_test.exs.
+      # Every `+` mutant is killed (not a false survivor). Both files attribute the
+      # id — touch_test.exs via its body, setup_all_test.exs via the `__ex_unit__/2`
+      # stacktrace recovery — so the run includes the killing file. Here the two
+      # covering files happen to be the whole 2-file suite.
       assert run.results != []
       assert Enum.all?(run.results, &(&1.status == :killed))
       assert Enum.all?(run.results, &(&1.output =~ "2 tests"))
+    end
+
+    @tag :runner
+    test "a mutant covered only via setup_all is attributed to its own file (not the whole suite)" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:setup_all_only_cov, %{
+          "lib/shared.ex" => "defmodule Shared do\n  def calc(x), do: x + 1\nend\n",
+          # The mutated line runs only through this module's `setup_all`. The
+          # `__ex_unit__/2` stacktrace recovery attributes it to setup_all_test.exs,
+          # so selection runs *only* this file — not the whole suite — and its own
+          # test (which asserts the setup_all value) still kills the mutant.
+          "test/setup_all_test.exs" => """
+          defmodule SetupAllOnlyTest do
+            use ExUnit.Case
+            setup_all do
+              %{value: Shared.calc(5)}
+            end
+            test "asserts the exact value", %{value: value} do
+              assert value == 6
+            end
+          end
+          """,
+          # An unrelated file that never touches the line. Before the recovery the id
+          # was unlabeled → whole suite, so this file would have run too (2 tests).
+          "test/idle_test.exs" => """
+          defmodule IdleTest do
+            use ExUnit.Case
+            test "unrelated", do: assert(true)
+          end
+          """
+        })
+
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
+
+      assert run.results != []
+      assert Enum.all?(run.results, &(&1.status == :killed))
+      # Tight selection: only setup_all_test.exs runs (1 test), not the idle file.
+      assert Enum.all?(run.results, &(&1.output =~ "1 test"))
+      refute Enum.any?(run.results, &(&1.output =~ "2 tests"))
     end
 
     @tag :runner

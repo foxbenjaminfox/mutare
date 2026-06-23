@@ -283,11 +283,13 @@ defmodule Mutare.Coverage.Recorder do
               {mod, _name} when is_atom(mod) ->
                 :ets.insert(unquote(attr), {{mod, id}})
 
-              # No usable test label — the line ran in `setup_all`/`on_exit`/an
-              # unattributable spawned process. Record it so the caller runs the
-              # whole suite for this id rather than trusting partial per-file
-              # attribution (a test that also touches the line directly would
-              # otherwise mask this run and manufacture a false survivor).
+              # No recoverable test label — the line ran in `on_exit`/a bare
+              # spawn/a `setup_all` whose work ran off-stack in a `Task` (an
+              # ordinary `setup_all` is recovered by tier 3, `stacktrace_label/0`,
+              # and takes the attribution branch above). Record it so the caller
+              # runs the whole suite for this id rather than trusting partial
+              # per-file attribution (a test that also touches the line directly
+              # would otherwise mask this run and manufacture a false survivor).
               _ ->
                 :ets.insert(unquote(unlabeled_table), {id})
             end
@@ -321,16 +323,25 @@ defmodule Mutare.Coverage.Recorder do
         end
 
         # The owning test's `{module, name}` label, used to attribute coverage to a
-        # test *file*. The line may run in the test process (labeled directly) or in
-        # one it spawned: a `Task` records its caller chain in `$callers`/
-        # `$ancestors`, so when our own label is missing we attribute to the nearest
-        # labeled ancestor (a task started from a test belongs to that test). A
-        # `setup_all`/`on_exit` process has no labeled ancestor → `nil`, and the
-        # caller routes that id to the unlabeled bucket (whole suite).
+        # test *file*. Resolution has three tiers, tried in order:
+        #
+        #   1. our own `$process_label` — the test process is labeled directly;
+        #   2. a labeled ancestor via the `$callers`/`$ancestors` chain — a `Task`
+        #      records its caller chain, so a task started from a test belongs to
+        #      that test;
+        #   3. the `setup_all` recovery (`stacktrace_label/0`) — a `setup_all` block
+        #      runs in an unlabeled, caller-less process, but *within* the test
+        #      module's generated `__ex_unit__/2` dispatch, so the owning module is
+        #      on our own stack.
+        #
+        # `on_exit`/a bare spawn matches none (no label, no caller chain, no
+        # `__ex_unit__/2` frame) → `nil`, and the caller routes that id to the
+        # unlabeled bucket (whole suite). Only the module is recovered in tier 3,
+        # which is all file-granular selection needs.
         defp label do
           case own_label() do
             {mod, _name} = labeled when is_atom(mod) -> labeled
-            _ -> recovered_label()
+            _ -> recovered_label() || stacktrace_label()
           end
         end
 
@@ -380,6 +391,40 @@ defmodule Mutare.Coverage.Recorder do
               {:dictionary, dict} -> Keyword.get(dict, :"$process_label")
               _ -> nil
             end
+          end
+        end
+
+        # Tier 3 of `label/0`: a `setup_all` runs in an unlabeled, caller-less
+        # process, but it executes synchronously inside the test module's generated
+        # `__ex_unit__(:setup_all, _)` dispatch — so that frame is on *our own*
+        # current stack and names the owning module. Module granularity is exactly
+        # what file-granular selection wants; the `:setup_all` name half is ignored
+        # by the attribution (only the module maps to a file). Absent — e.g. a line
+        # reached through a `Task` spawned inside `setup_all`, whose fresh stack has
+        # no such frame — we return `nil` and the id falls to the unlabeled bucket
+        # (whole suite). `:setup` needs nothing here: it runs in the labeled test
+        # process, so tier 1 already catches it.
+        #
+        # Soundness note: this attributes a `setup_all`-covered id to its *own*
+        # module's file. That captures every test that can observe the mutation
+        # through the `setup_all` *context* (module-scoped — the common case). It does
+        # NOT capture a test in *another* module that fails only because the
+        # `setup_all` had a cross-module global side effect (a seeded DB, a
+        # `:persistent_term`); such an id, run only against its own file, could
+        # survive. This is the same cross-file-dependency limitation `:coverage` mode
+        # already has for ordinary per-file attribution (`:full` is the escape hatch)
+        # — the only change is that `setup_all` no longer gets the extra whole-suite
+        # conservatism the unlabeled bucket used to give it.
+        defp stacktrace_label do
+          case Process.info(self(), :current_stacktrace) do
+            {:current_stacktrace, stack} ->
+              Enum.find_value(stack, fn
+                {mod, :__ex_unit__, 2, _} -> {mod, :setup_all}
+                _ -> nil
+              end)
+
+            _ ->
+              nil
           end
         end
 

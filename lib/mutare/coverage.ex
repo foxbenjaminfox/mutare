@@ -15,15 +15,18 @@ defmodule Mutare.Coverage do
       keep it out of the score's denominator.
     * `:by_file` — `%{test_file => MapSet(mutant ids)}`: which mutant ids each test
       *file* covered. A line running in the test process is labeled directly; one
-      running in a `Task` it spawned is attributed via the caller chain. This drives
-      per-file **test selection**.
+      running in a `Task` it spawned is attributed via the caller chain; one running
+      in a module's `setup_all` is attributed via the `__ex_unit__/2` stacktrace
+      frame (module-granular, the file selection needs). This drives per-file **test
+      selection**.
     * `:unlabeled` — the set of mutant ids whose selector ran in a process with no
-      recoverable test label (`setup_all`/`on_exit`/an unattributable spawned
-      process). An id here was covered, but *which* test owns it is unknown, so the
-      caller runs the **whole suite** for it — even if `:by_file` *also* attributes
-      it to some file, since that partial attribution would otherwise mask the
-      unlabeled coverage and manufacture a false survivor.
-      `Mutare.Runner.CoverageProbe` reconciles the three.
+      recoverable test label *at all* — `on_exit`/a bare spawn, or the rare
+      `setup_all` whose work happened off-stack in a `Task` it spawned. An id here
+      was covered, but *which* test owns it is unknown, so the caller runs the
+      **whole suite** for it — even if `:by_file` *also* attributes it to some file,
+      since that partial attribution would otherwise mask the unlabeled coverage and
+      manufacture a false survivor. `Mutare.Runner.CoverageProbe` reconciles the
+      three.
 
   Why not `:cover`: its counters live in a single global table keyed
   `{module, line}` with no per-process partition, so attributing coverage to a

@@ -11,6 +11,13 @@
       },
       strict: false,
       checks: %{
+        # `extra:` merges onto the default check set (`enabled:` would *replace* it).
+        extra: [
+          # The metamutant/coverage helpers are whole modules generated via `quote`,
+          # so they're long by nature — and this codebase deliberately carries dense,
+          # load-bearing comments inside them. Count code, not commentary.
+          {Credo.Check.Refactor.LongQuoteBlocks, [ignore_comments: true]}
+        ],
         disabled: [
           {Credo.Check.Refactor.CyclomaticComplexity, []},
           {Credo.Check.Refactor.Nesting, []}

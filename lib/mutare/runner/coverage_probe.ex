@@ -19,13 +19,17 @@ defmodule Mutare.Runner.CoverageProbe do
   Two modes, set by `:test_selection`:
 
     * `:coverage` (default) — per mutant, run only the test files that covered its
-      line; a mutant whose code ran in *any* unlabeled process (`setup_all`,
-      `on_exit`, an unattributable spawned task) runs the whole suite — even if some
-      file *also* attributes it, since that partial attribution would otherwise mask
-      the unlabeled coverage and produce a false survivor; a mutant that never ran
-      at all is `:no_coverage` (skipped, and kept out of the score's denominator).
+      line (a `setup_all` attributes to its own module's file via the `__ex_unit__/2`
+      stacktrace frame; a `Task` via its caller chain); a mutant whose code ran in an
+      *unlabeled* process (`on_exit`, a bare spawn, or a `setup_all` whose work
+      happened in a spawned `Task`) runs the whole suite — even if some file *also*
+      attributes it, since that partial attribution would otherwise mask the
+      unlabeled coverage and produce a false survivor; a mutant that never ran at all
+      is `:no_coverage` (skipped, and kept out of the score's denominator).
     * `:full` — no per-file selection: every covered mutant runs the whole suite,
-      the rest are `:no_coverage`. Safer for suites with cross-file dependencies.
+      the rest are `:no_coverage`. Safer for suites with cross-file dependencies —
+      including a `setup_all` with cross-module global side effects, which `:coverage`
+      attributes to its own file only (see `Mutare.Coverage.Recorder`).
 
   Selection is file-granular, not per-individual-test: if any test in a file covers
   the line, the whole file runs — so a test that kills a mutant indirectly (without
@@ -136,12 +140,14 @@ defmodule Mutare.Runner.CoverageProbe do
 
   # `:coverage`, per id:
   #   * never ran (not in the aggregate) → `:no_coverage`;
-  #   * ran in *any* unlabeled process (`setup_all`/`on_exit`/an unattributable
-  #     spawned task) → whole suite. This dominates attribution on purpose: an id
-  #     can be attributed to file A (a test there touches the line) *and* be
-  #     covered via file B's `setup_all` (unlabeled). Trusting the partial
-  #     attribution would run only A and miss B's killing test — a false survivor.
-  #   * otherwise → only the files that attributed it.
+  #   * ran in an unlabeled process (`on_exit`/a bare spawn/a `setup_all` whose work
+  #     ran off-stack in a `Task`) → whole suite. This dominates attribution on
+  #     purpose: an id can be attributed to file A (a test there touches the line)
+  #     *and* be covered via an unlabeled process. Trusting the partial attribution
+  #     would run only A and miss the unlabeled killer — a false survivor.
+  #   * otherwise → only the files that attributed it (a `setup_all` attributes to
+  #     its own module's file via the `__ex_unit__/2` stacktrace recovery, so it is
+  #     no longer forced to whole-suite — see `Mutare.Coverage.Recorder`).
   defp outcome(:coverage, id, %{aggregate: aggregate, unlabeled: unlabeled, by_file: by_file}) do
     cond do
       not MapSet.member?(aggregate, id) -> :no_coverage

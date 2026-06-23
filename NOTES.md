@@ -2437,15 +2437,31 @@ site's mutant ids into shared ETS:
 no race:
 - **aggregate** `{id}` — written by any process → process-agnostic no-coverage
   detection.
-- **attribution** `{{label, id}}` — `label` is the test process's
-  `Process.set_label({case, name})` (proc-dict `:"$process_label"` on OTP 26,
-  `:proc_lib.get_label/1` on 27+) → maps to the test *file* → per-file selection.
-  When the recording process has no label of its own (a `Task`), we recover the
-  owning test's label from the `$callers`/`$ancestors` chain — read cross-process
-  (`:proc_lib.get_label/1` on 27+, the target's `:dictionary` via `Process.info/2`
-  on 26) — so a task spawned from a test still attributes to that test's file.
-- **unlabeled** `{id}` — written when the recording process has *no recoverable*
-  label (`setup_all`/`on_exit`/a bare-spawned process): the line ran, but no test
+- **attribution** `{{label, id}}` — `label` is resolved in three tiers (`label/0`)
+  → maps to the test *file* → per-file selection:
+  1. the test process's own `Process.set_label({case, name})` (proc-dict
+     `:"$process_label"` on OTP 26, `:proc_lib.get_label/1` on 27+);
+  2. for a `Task` (no own label), the owning test's label recovered from the
+     `$callers`/`$ancestors` chain — read cross-process (`:proc_lib.get_label/1` on
+     27+, the target's `:dictionary` via `Process.info/2` on 26) — so a task spawned
+     from a test still attributes to that test's file;
+  3. for a `setup_all` (no label, no caller chain), the owning *module* recovered
+     from the `{module, __ex_unit__, 2}` frame on its own `current_stacktrace`
+     (`stacktrace_label/0`): a `setup_all` runs in an unlabeled, caller-less process
+     but synchronously inside the test module's generated `__ex_unit__/2` dispatch,
+     so the module is right there on our stack. Module granularity == file
+     granularity, all selection needs. *Soundness*: this captures every test that
+     observes the mutation through the `setup_all` **context** (module-scoped — the
+     common case), but NOT a different module's test that fails only because the
+     `setup_all` had a cross-module global side effect (a seeded DB, a
+     `:persistent_term`) — that id, run only against its own file, could survive.
+     That is the same cross-file-dependency limitation `:coverage` already has for
+     ordinary attribution (`:full` is the escape hatch); the change is that
+     `setup_all` no longer gets the *extra* whole-suite conservatism the unlabeled
+     bucket used to give it. See "setup_all stacktrace recovery" below.
+- **unlabeled** `{id}` — written when *no* tier recovers a label: `on_exit`/a
+  bare-spawned process, or the rare `setup_all` whose work ran off-stack in a `Task`
+  it spawned (a fresh stack with no `__ex_unit__/2` frame). The line ran, but no test
   owns it. The reconciler runs the **whole suite** for such an id (below).
 
 The bootstrap is split around the target's `test_helper.exs`: the setup half is
@@ -2478,23 +2494,54 @@ The probe's decision is **typed** (`Mutare.Runner.CoverageProbe`): `selection` i
 `:run_all | {:selective, %{id => outcome}}`, `outcome` is `{:run, test_args} |
 :no_coverage`. The `{:selective, _}` map is **total** — every mutant id has an
 explicit outcome, so `:no_coverage` is *named*, never implied by a missing key.
-Reconciliation, per id: never ran → `:no_coverage`; ran in **any unlabeled
+Reconciliation, per id: never ran → `:no_coverage`; ran in **an unlabeled
 process** → `{:run, []}` (whole suite); else ran with attributed files →
 `{:run, files}`. The unlabeled check **dominates attribution** on purpose — this
 is the fix for a real false survivor. An id can be attributed to file A (a test
-there touches the line) *and* be covered via file B's `setup_all` (unlabeled). The
-old rule "ran with attributed files → those files" trusted the partial attribution,
-ran only A, and missed B's killing test → the mutant survived. So a single id hit
-even once outside a labeled test process now runs the whole suite, regardless of
-what attributed it. Cost: an id used in many `setup_all`s goes whole-suite for all
-its mutants — correct (those are exactly the ids per-file selection can't bound),
-at a speed cost on `setup_all`-heavy suites. `Task` coverage is *exempted* by the
-caller-chain recovery above, so the common "spawn a task in a test" stays tight.
-`:run_all` is the single conservative fallback: a non-zero probe exit (the dump may
+there touches the line) *and* be covered via an unlabeled process. The old rule
+"ran with attributed files → those files" trusted the partial attribution, ran only
+A, and missed the unlabeled killer → the mutant survived. So a single id hit even
+once in an unlabeled process now runs the whole suite, regardless of what attributed
+it. `Task` and `setup_all` coverage are *exempted* by the caller-chain and
+stacktrace recoveries above (tiers 2 and 3), so the common "spawn a task in a test"
+and the common module-scoped `setup_all` both attribute and stay tight; only
+genuinely owner-less coverage (`on_exit`/a bare spawn/a `setup_all`-spawned `Task`)
+goes whole-suite. `:run_all` is the single conservative fallback: a non-zero probe exit (the dump may
 be partial — e.g. `max_failures` aborts before later files), an unreadable dump, or
 an empty dump (the capture recorded nothing → it likely failed). The rule
 throughout: never skip on doubt — run everything rather than silently drop a mutant
 from the score's denominator.
+
+**setup_all stacktrace recovery (done).** Originally `setup_all` coverage went
+straight to the unlabeled bucket → whole suite, on the premise that an unlabeled,
+caller-less process carries *no* recoverable owner. That premise is too strong:
+`setup_all` is dispatched **synchronously inside the test module's generated
+`__ex_unit__(:setup_all, _)`**, so a `{module, __ex_unit__, 2}` frame is on the
+recording process's own `current_stacktrace`. Tier 3 of `label/0`
+(`stacktrace_label/0`) reads it and attributes the id to that module's file — and
+since `setup_all` is per-module, module granularity is exactly the file granularity
+selection wants. This is strictly tighter than whole-suite *and* still fixes the
+original false survivor (the motivating case: file B's `setup_all` builds a value
+B's own test asserts → attributing to B and running B kills it). Why this is sound
+where the general worry isn't: the `setup_all` **context** is module-scoped, so only
+the owning module's tests can observe the mutation *through it* — except for a
+`setup_all` with **cross-module global side effects** (a seeded DB, a
+`:persistent_term` another module's tests read without touching the line). That id
+now runs only its own file and could survive — but that is the *same*
+cross-file-dependency hole `:coverage` already has for ordinary per-file attribution
+(`:full` runs every covered mutant whole-suite and is the documented escape hatch).
+Net: we dropped the *extra* conservatism `setup_all` alone got, making it consistent
+with every other attribution in `:coverage` mode. Boundaries: `:setup` needs nothing
+(it runs in the labeled test process — tier 1); a `setup_all` whose work runs in a
+spawned `Task` has a fresh stack with no `__ex_unit__/2` frame and *no* labeled
+ancestor (its caller is the unlabeled `setup_all` process), so it correctly falls
+to unlabeled → whole suite. Cost is only paid when tiers 1–2 miss (i.e. exactly the
+`setup_all`/`on_exit`/spawn cases), never on the labeled-test hot path. Found while
+investigating why `setup_all`-heavy suites ran the whole suite for so many ids;
+considered (and rejected) rewriting test files to label these processes — too much
+blast radius for the trust anchor, and stacktrace recovery gets `setup_all` for free
+without touching tests. `on_exit` stays unrecoverable (detached runner-loop process,
+TCO erases the callback frame).
 
 **The `hit([ids])` argument must render as a list, never a charlist.** The catch-all
 splices `MutareCov.hit([<ids>])` into the metamutant, where `<ids>` is a list of
