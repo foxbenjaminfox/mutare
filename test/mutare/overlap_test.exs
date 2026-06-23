@@ -41,6 +41,25 @@ defmodule Mutare.OverlapTest do
       assert "nil" in returns
       assert ":mutare" in returns
     end
+
+    test "the bare-module sort wrap supersedes the redundant AliasLiteral leaf" do
+      # `Enum.sort(xs, Date)` → `{:desc, Date}` is a ModeSwap rewrite whose footprint is the
+      # `Date` (`__aliases__`) arg — a *new* covering shape (an alias node, not a `:__block__`
+      # literal wrapper). AliasLiteral would also mutate that same `Date` to the sentinel module
+      # (an always-raising `UndefinedFunctionError`), so the call rewrite must suppress it.
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def f(xs), do: Enum.sort(xs, Date)
+          end
+          """,
+          mutators: [Mutare.Mutators.ModeSwap, Mutare.Mutators.AliasLiteral]
+        )
+
+      assert [%{mutator: :mode_swap, mutated_code: "Enum.sort(xs, {:desc, Date})"}] = sites
+      refute Enum.any?(sites, &(&1.mutator == :alias))
+    end
   end
 
   describe "the `diff`/`footprint_nid` contract (synthetic `resolve/1` inputs)" do

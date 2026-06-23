@@ -52,11 +52,18 @@ defmodule Mutare.Mutators.ModeSwap do
 
     * `Enum.sort/2` (sorter at arg 1), `Enum.sort_by/3` and `List.keysort/3` (sorter at
       arg 2) — the `:asc` ↔ `:desc` direction, a reversal that any test asserting on the
-      result's *order* must catch. Both the lone shorthand atom and the `{:asc | :desc,
-      module}` tuple (the per-sort comparison-module form) are swapped — in the tuple only
-      the direction flips, the module is kept. A custom sorter fun is not a direction atom,
-      so it contributes nothing for free. `Enum.min_by/max_by` look similar but reject the
-      shorthand (they read the atom as a comparison module), so they are deliberately absent.
+      result's *order* must catch. Three sorter shapes are handled:
+        * the lone `:asc`/`:desc` shorthand — swapped;
+        * the `{:asc | :desc, module}` tuple (the per-sort comparison-module form) — only
+          the direction flips, the module is kept;
+        * a **bare module** alias (`Enum.sort(xs, Date)`, the ascending default, exactly
+          `{:asc, Date}`) — *wrapped* descending, `{:desc, Date}`. This is the lone
+          non-equivalent order swap on a module-keyed sort, so order-dependence is tested
+          even with no direction atom present. Only a literal module **alias** is wrapped: a
+          variable / fun sorter might be `:asc` or a comparator, which a `{:desc, _}` wrap
+          would reject at runtime.
+      `Enum.min_by/max_by` look similar but reject the shorthand (they read the atom as a
+      comparison module), so they are deliberately absent.
 
   ISO 8601 rendering:
 
@@ -133,6 +140,11 @@ defmodule Mutare.Mutators.ModeSwap do
   or an excluded `shift` unit (`microsecond:`) — none of which this mutator swaps — keeps
   its AtomLiteral mutant, and a `shift` amount (which the swap leaves untouched) keeps its
   `Mutare.Mutators.Literal` mutant.
+
+  The same supersede applies to the **bare-module sort wrap**: `Enum.sort(xs, Date)` →
+  `{:desc, Date}` touches exactly the `Date` arg, so it covers the redundant
+  `Mutare.Mutators.AliasLiteral` leaf (`Date` → the sentinel module, an always-raising
+  `UndefinedFunctionError`) — the AliasLiteral analogue of the AtomLiteral case.
 
   Recognises the stdlib modules by their resolved module (`Mutare.Transform.Calls`), so
   an aliased call (`alias DateTime, as: DT; DT.truncate(dt, :second)`) is matched too.
@@ -357,16 +369,28 @@ defmodule Mutare.Mutators.ModeSwap do
     end
   end
 
-  # `:order` (the sort direction) accepts either the lone `:asc`/`:desc` shorthand or a
-  # `{:asc | :desc, module}` tuple (the per-sort comparison-module form). Either way only
-  # the direction is swapped; the tuple keeps its module. A non-direction value (a sorter
-  # fun, a variable) yields nothing.
+  # `:order` (the sort direction) accepts the lone `:asc`/`:desc` shorthand, a
+  # `{:asc | :desc, module}` tuple (the per-sort comparison-module form), or a bare module.
+  # A shorthand/tuple has its direction swapped (the tuple keeps its module); a bare module
+  # is wrapped descending (see `bare_module_swaps/1`). A sorter fun / variable yields nothing.
   defp order_swaps(arg) do
     case order_target(arg) do
-      nil -> []
+      nil -> bare_module_swaps(arg)
       {dir, rebuild} -> for new <- swaps(:order, dir), do: rebuild.(AST.literal(new))
     end
   end
+
+  # A **bare module** in the sorter position is the ascending default — `Enum.sort(xs, Date)`
+  # is exactly `{:asc, Date}` — so the one non-equivalent order mutation is to wrap it
+  # descending, `{:desc, Date}`, letting order-dependence be tested even on a module-keyed
+  # sort with no direction atom present. Restricted to a literal module **alias**: a variable
+  # or fun sorter might hold `:asc` or a comparator fun, which a `{:desc, _}` wrap would reject
+  # at runtime. The module node is reused verbatim, re-homed under a fresh `:desc` in a 2-tuple
+  # (`{:__block__, [], [{dir, mod}]}`, matching Sourceror's parsed shape), so the build compiles.
+  defp bare_module_swaps({:__aliases__, _meta, _parts} = mod),
+    do: [{:__block__, [], [{AST.literal(:desc), mod}]}]
+
+  defp bare_module_swaps(_arg), do: []
 
   # The direction atom of an `:order` argument plus a closure that rebuilds the argument
   # around a replacement direction node — identity for the lone shorthand, or the 2-tuple

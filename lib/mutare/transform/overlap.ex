@@ -55,12 +55,15 @@ defmodule Mutare.Transform.Overlap do
   # ## What is "covering", precisely — and what each mutator does
   #
   # Covering hinges on the minimal changed subtree being a *proper, **nid-bearing** descendant*
-  # of the host. Exactly **one** built-in mutation produces one:
+  # of the host. Exactly **one** built-in mutator produces one:
   #
-  #   * **ModeSwap** — substitutes one literal arg/key (`:second`,`minute:`). The footprint is
-  #     that literal's `{:__block__, _, [atom]}` wrapper, which carries a nid *and* is where
-  #     AtomLiteral hosts its candidate → the **only covering footprint, and it always resolves to
-  #     a drop** (the redundant AtomLiteral leaf on that arg/key is suppressed).
+  #   * **ModeSwap** — substitutes one arg/key in place. The footprint is that node, which
+  #     carries a nid *and* is where a leaf mutator hosts its candidate → the **only covering
+  #     footprint, and it always resolves to a drop**. Two shapes: a swapped mode/unit *literal*
+  #     (`:second`, `minute:` — a `{:__block__, _, [atom]}` wrapper, suppressing the redundant
+  #     AtomLiteral leaf), and the bare-module sort wrap (`Enum.sort(xs, Date)` → `{:desc, Date}`
+  #     — the footprint is the `{:__aliases__, _, _}` module node, suppressing the redundant
+  #     AliasLiteral leaf). Both footprints are nid-bearing proper descendants of the call host.
   #
   # Everything else is non-covering, and node identity is *why* — no extra rules needed:
   #
@@ -93,9 +96,10 @@ defmodule Mutare.Transform.Overlap do
   #     which a range-based pass got wrong (the args list shares a range with the infix node /
   #     its lone element) and had to special-case.
   #
-  # So: **ModeSwap→AtomLiteral is the only covering footprint, and the only place a leaf is ever
-  # dropped** — every other built-in mutation changes a bare atom or a list (no nid), so it prunes
-  # nothing.
+  # So: **ModeSwap is the only covering footprint, and the only place a leaf is ever dropped**
+  # (the redundant AtomLiteral on a swapped mode atom, or the redundant AliasLiteral on a wrapped
+  # sort module) — every other built-in mutation changes a bare atom or a list (no nid), so it
+  # prunes nothing.
   #
   # Scope: only `Candidate.InPlace` in the `:mutare` key. ModeSwap targets runtime call
   # arguments, never guards/patterns, so it is never lifted and never a structural/pattern
@@ -108,10 +112,11 @@ defmodule Mutare.Transform.Overlap do
   minimal-rewrite footprint, matched by `meta[:mutare_nid]` identity. The footprint scan always
   runs — one prewalk plus a structural diff per candidate — and the *prune* postwalk is skipped
   when nothing is covering, leaving the tree unchanged. Two built-ins produce a covering
-  footprint (see the moduledoc): a mode/unit swap (which drops the redundant AtomLiteral) and the
-  direct `String.equivalent?/2` → `==` rewrite (covering but inert — its `.`-node nid matches no
-  candidate). So the prune postwalk runs on subtrees containing either, but only the mode/unit
-  swap actually drops anything.
+  footprint (see the moduledoc): a ModeSwap rewrite (which drops the redundant AtomLiteral on a
+  swapped mode atom, or the redundant AliasLiteral on a wrapped sort module) and the direct
+  `String.equivalent?/2` → `==` rewrite (covering but inert — its `.`-node nid matches no
+  candidate). So the prune postwalk runs on subtrees containing either, but only the ModeSwap
+  rewrite actually drops anything.
   """
   @spec resolve(Macro.t()) :: Macro.t()
   def resolve(tree) do

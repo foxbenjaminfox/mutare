@@ -1046,8 +1046,27 @@ defmodule Mutare.MutatorsTest do
       assert mode("Enum.sort({:desc, Date})", true) == ["Enum.sort({:asc, Date})"]
     end
 
-    test "sort order: a sorter fun and the no-sorter arity yield nothing" do
+    test "sort order: a bare module sorter is wrapped descending (Date -> {:desc, Date})" do
+      # `Enum.sort(xs, Date)` is the ascending default (≡ `{:asc, Date}`); the one
+      # non-equivalent order swap is to wrap it descending.
+      assert mode("Enum.sort(xs, Date)", false) == ["Enum.sort(xs, {:desc, Date})"]
+
+      assert mode("Enum.sort_by(xs, f, Date)", false) ==
+               ["Enum.sort_by(xs, f, {:desc, Date})"]
+
+      # a nested alias and List.keysort are handled identically.
+      assert mode("List.keysort(xs, 0, MyApp.Cmp)", false) ==
+               ["List.keysort(xs, 0, {:desc, MyApp.Cmp})"]
+
+      # piped form keeps the module at the lone visible arg.
+      assert mode("Enum.sort(Date)", true) == ["Enum.sort({:desc, Date})"]
+    end
+
+    test "sort order: a sorter fun, variable, or no-sorter arity yields nothing" do
       assert ModeSwap.mutate(parse("Enum.sort_by(xs, f, &>=/2)"), %{pipe_mode: :unpiped}) == :skip
+
+      # a variable sorter might hold `:asc` or a comparator fun — not wrapped.
+      assert ModeSwap.mutate(parse("Enum.sort(xs, cmp)"), %{pipe_mode: :unpiped}) == :skip
 
       # Enum.sort/1 has no sorter; min_by/max_by reject the shorthand, so are not matched.
       assert ModeSwap.mutate(parse("Enum.sort(xs)"), %{pipe_mode: :unpiped}) == :skip
