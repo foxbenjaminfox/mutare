@@ -18,7 +18,7 @@ defmodule Mutare.Transform.Analyze do
   alias Mutare.Mutator
   alias Mutare.Mutators.Conditional
   alias Mutare.Transform.{Candidate, NodeRange}
-  alias Mutare.Transform.Analyze.{ClausePatterns, Conditions, MatchPatterns, Returns}
+  alias Mutare.Transform.Analyze.{Captures, ClausePatterns, Conditions, MatchPatterns, Returns}
 
   # The try-style body blocks whose clause bodies are *return paths*
   # (`rescue`/`catch`/`else`). Their left side is always a match, and their tails
@@ -175,11 +175,14 @@ defmodule Mutare.Transform.Analyze do
        when is_list(args),
        do: node
 
-  # `&fun/arity` capture: the `/` is arity, not division — pruned. Anything else
-  # under `&` (e.g. `& &1 / 2`) keeps mutating.
+  # `&Mod.fun/arity` capture: the `/` is arity, not division. The capture is a call *value*
+  # (`&Mod.fun/N ≡ fn a… -> Mod.fun(a…) end`), so it is offered to the call-matching families
+  # (renames + CallRemoval) by `Captures.offer/4` — which probes them with a synthesized N-ary
+  # call and re-captures each mutant — instead of being pruned. A *bare/local* ref is deferred
+  # (left unmutated by `offer`); anything else under `&` (e.g. `& &1 / 2`) keeps mutating.
   defp analyze({:&, _meta, [{:/, _smeta, [left, right]}]} = node, context, mutators) do
     if function_ref?(left) and integer_literal?(right),
-      do: node,
+      do: Captures.offer(node, left, right, mutators),
       else: recurse(node, context, mutators)
   end
 

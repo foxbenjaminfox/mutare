@@ -134,6 +134,20 @@ contract between them is the whole game.
     without caring whether the call was direct, aliased, or imported, Elixir or Erlang. The lone
     shape it doesn't resolve is a bare `Kernel` call (`abs`/`min`), keyed on effective arity in the
     bare-`Kernel` families' own clauses.
+  - **`Transform.Analyze.Captures`** — mutates a `&Mod.fun/N` **reference** capture (a call
+    *value*: `&Mod.fun/N ≡ fn a… -> Mod.fun(a…) end`), so the same call families that match a
+    written call match the capture. It does **not** re-list their swap tables: it *probes* them —
+    synthesize the equivalent N-ary call `Mod.fun(v1…vN)`, offer it through the ordinary
+    `Mutator.mutations/3` path, and **re-capture** each mutant (a rename's `Mod'.fun'(v1…vN)` →
+    `&Mod'.fun'/N`; a removal's first-arg return → `&Function.identity/1` (N=1) or the arity-N
+    projection `fn a, _… -> a end` (N>1); arity-changing / non-recapturable output dropped). So a
+    custom CallRemoval-style mutator gets captures for free, and the recapture filter self-selects
+    the renames+removals cohort with no allow/deny list. The synth call is a transient probe — the
+    emitted selector keeps the **verbatim** capture as its baseline branch (a real external fun, so
+    `==`/map-key identity is preserved at mutant 0), each mutant a re-built capture (never an
+    eta-expanded `fn`). Remote (`&Mod.fun/N`, alias-resolved) and Erlang (`&:mod.fun/N`) only; a
+    bare/local capture (`&reject/2`, `&local/1`) is deferred (no import stamp on a capture ref).
+    See NOTES "Capture mutation".
   - **`Transform.ModulePlan`** — a statement sequence classified into items: `{:lift, FunctionPlan}`,
     `{:in_place, clauses}`, `{:statement, node}`. `build/3` does the run-chunking + non-consecutive
     detection; `Transform.emit_module_plan/2` walks the items.
@@ -350,8 +364,9 @@ contract between them is the whole game.
     selector there is inert, or in a directive arg like `import …, only: [f: 1]` / a quoted
     pattern outright illegal), `:spec` (a bitstring type
     specifier — separators/`unit()`/type atoms excluded, but
-    `size(expr)` args recursed; `analyze_spec/3`), and `:capture_arity` (the `/` in `&fun/arity`,
-    an arity separator not division). A `<<…>>` node is itself offered in a runtime body (so
+    `size(expr)` args recursed; `analyze_spec/3`), and `:capture_arity` (the `/` in `&fun/arity`
+    is an arity separator, not division — never mutated; the *reference* `&Mod.fun/N` it sits in
+    is offered to the call families by `Transform.Analyze.Captures`, below). A `<<…>>` node is itself offered in a runtime body (so
     BitstringLiteral can collapse it to `<<>>`) while its segments still descend; a **sigil**
     (`~r`/`~D`/`~w`/custom, `sigil?/1`) is offered as a whole, then descended *surgically*
     (`descend_sigil/2`): its content `<<>>` **segments** are analyzed — so an interpolated
@@ -902,7 +917,10 @@ For a *call-matching* mutator (one targeting a stdlib/remote call), resolve the 
 returns `{module, fun, args, rebuild}` resolved through `alias`/`import`/Erlang-atom forms (or
 `nil`), and `rebuild.(new_fun, new_args)` re-emits the swap in the written form. This is how the
 built-in families match aliased/imported calls; a custom mutator gets the same reach.
-`test/support/resolved_call_mutator.ex` is a working example.
+`test/support/resolved_call_mutator.ex` is a working example. Such a mutator also fires on a
+`&Mod.fun/N` **capture** of the same function for free — `Transform.Analyze.Captures` probes the
+call families with a synthesized call and re-captures a rename (`Mod'.fun'` → `&Mod'.fun'/N`) or a
+first-arg removal (→ `&Function.identity/1`); you write nothing capture-specific.
 
 For an *arity-changing call* mutator (dropping a refining argument, collapsing to a coarser call),
 `mutate/1` is `:skip` and you implement the optional callback

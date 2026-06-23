@@ -1349,6 +1349,57 @@ dependency-free OTP core (unlike the Ecto example, which needs a dep and stays a
 tested in `test/mutare/gen_server_test.exs` (full swap table, behaviour gate, multi-statement tail,
 non-callback shapes untouched, metamutant compiles).
 
+### Capture mutation — `&Mod.fun/N` is a call value `[done]`
+A `&Mod.fun/N` **reference** capture is `fn a… -> Mod.fun(a…) end`, so the call-matching
+families carry the same signal on it as on a written call: a rename (`&String.first/1` →
+`&String.last/1`) or a removal (`&String.upcase/1` → `&Function.identity/1`, the capture
+analogue of CallRemoval's "does this transparent transform matter?"). Previously the whole
+capture was pruned (the `:capture_arity` clause returned the node raw); now
+`Transform.Analyze.Captures.offer/4` mutates it.
+
+**Reuse, don't re-list (the design constraint).** It does *not* re-encode CallRemoval's
+`@removable` or any swap table. The capture is **probed**: synthesize the equivalent N-ary
+call `Mod.fun(v1…vN)` (N from the `/arity`, args fresh placeholders), offer it through the
+ordinary `Mutator.mutations/3` path every call position uses, and re-capture each mutant. So
+every call-matching mutator — built-in *or* a custom CallRemoval-style one — participates with
+its **existing** `mutate`/`mutate/2`, no capture-specific callback and no second list.
+
+**Why it isn't "just eta-expanding them."** The synth call is a *transient probe* — never
+emitted. The emitted selector keeps the **verbatim** `&Mod.fun/N` as its baseline branch, and
+each mutant is a **re-built** capture, read off the probe's output shape:
+- a rename's output is `Mod'.fun'(v1…vN)` reusing the placeholders in order (`swap_call`
+  rebuilds with the arg list verbatim) → strip args, re-wrap `&Mod'.fun'/N`;
+- a removal's output is the bare first placeholder `v1` (CallRemoval non-piped returns the
+  first arg) → the arity-N first-arg projection: `&Elixir.Function.identity/1` for N = 1, or
+  `fn a, _… -> a end` for N > 1 (no named "project first of N" exists);
+- anything else (an arity change — CollectionArity/DefaultDrop reuse *fewer* args; a
+  non-recapturable custom output) → dropped.
+
+That recapture filter is the cohort selector — **no allow/deny list**. It admits exactly the
+renames + removals and excludes the arg-manipulating families for free: an arity change can't
+re-wrap at N, and ModeSwap never fires on a var placeholder.
+
+**The identity invariant (why baseline must stay verbatim).** `&M.f/a` is an *external* fun,
+compared by MFA, so the emitted baseline (the literal capture) is `==`/`===`/map-key/MapSet-
+equal to a hand-written `&M.f/a` — identity is preserved at mutant 0. A rename mutant
+(`&M'.f'/N`) is likewise a real external fun, so an identity-pinning test kills it for the
+right reason; the N > 1 removal projection is an anonymous `fn` (unequal to *any* external
+fun), but it lives **only** in a mutant branch — where a divergent identity is a legitimate
+kill, never a baseline divergence. The one fatal move — eta-expanding the *baseline* into a
+`fn` (`fn x -> M.f(x) end != &M.f/a`) — is exactly what the probe-then-recapture structure
+avoids. This is also why coverage records at value-production (see "production-site coverage
+recording"): a capture mutant is killable by identity comparison with the function *never
+invoked*.
+
+**Scope: remote only.** `&Mod.fun/N` (Elixir, alias-resolved through the synth call's own node
+— `&E.first/1` for `alias String, as: E` keeps the `E.` in the diff) and `&:mod.fun/N` (Erlang
+atom module) both route. A **bare/local** capture (`&reject/2` after `import Enum`, `&local/1`)
+is deferred: its ref carries no import stamp (`Resolve` stamps bare *calls*, and a capture ref
+is not one), so the synth bare call wouldn't resolve — `synth_call/2` returns `:error` and the
+node is left pruned. Nested captures (a capture inside another `&`) are illegal source, so they
+never reach the clause; `& &1 / 2` (the shorthand, not a reference) still recurses and mutates
+its body unchanged.
+
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
 (`apply(Foo, …)`, `is_struct(x, Foo)`, `[A, B]`, a behaviour/strategy arg) to the
