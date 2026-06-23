@@ -185,9 +185,16 @@ defmodule Mutare.MutatorsTest do
       assert Arithmetic.mutate({:-, [], [{:x, [], nil}]}) == [{:x, [], nil}]
     end
 
-    test "skips unary minus on a literal zero (-0 == 0 is equivalent)" do
+    test "skips unary minus on an integer literal zero (-0 === 0 is equivalent)" do
       assert Arithmetic.mutate({:-, [], [0]}) == :skip
       assert Arithmetic.mutate({:-, [], [{:__block__, [token: "0"], [0]}]}) == :skip
+    end
+
+    test "DOES strip unary minus on a float zero (-0.0 → 0.0 normalizes negative zero)" do
+      assert Arithmetic.mutate({:-, [], [0.0]}) == [0.0]
+
+      assert Arithmetic.mutate({:-, [], [{:__block__, [token: "0.0"], [0.0]}]}) ==
+               [{:__block__, [token: "0.0"], [0.0]}]
     end
 
     test "skips non-arithmetic nodes" do

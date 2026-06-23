@@ -73,9 +73,15 @@ defmodule Mutare.Mutators.Arithmetic do
   def name, do: :arithmetic
 
   @impl Mutare.Mutator
-  # Unary minus (arity 1) — drop the negation, except on a literal zero.
+  # Unary minus (arity 1) — drop the negation, except on an *integer* literal zero.
+  # `-0 === 0` (there is no negative integer zero), so that mutant is equivalent and
+  # skipped. But `-0.0` is NOT `0.0`: dropping the unary minus normalizes negative
+  # zero, an observable change (distinct `Float.to_string`, distinct sign in `1 / x`,
+  # and `-0.0 !== 0.0` on OTP 27+) — the same negative-zero behavior the binary
+  # additive-identity path deliberately keeps. So the skip uses `===`, not `==`
+  # (`0.0 == 0` is `true`, `0.0 === 0` is `false`).
   def mutate({:-, _meta, [operand]}) do
-    if literal_value(operand) == 0, do: :skip, else: [operand]
+    if literal_value(operand) === 0, do: :skip, else: [operand]
   end
 
   def mutate({op, meta, [left, right]}) do
