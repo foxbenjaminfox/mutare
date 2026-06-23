@@ -9,9 +9,7 @@ defmodule Mutare.Report.Sarif do
   actionable and are omitted. The mutation description (`Mutare.Site.describe/1`)
   is reused verbatim as the finding message.
 
-  Pure: `(results, sources, opts) -> String.t()`. `sources` is unused (SARIF
-  carries locations, not source text); the arg is kept so every reporter shares
-  one signature.
+  Emitted by `mix mutare --format sarif`.
   """
 
   alias Mutare.{Result, Site}

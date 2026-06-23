@@ -49,31 +49,12 @@ defmodule Mutare.Mutators.ConventionAtom do
 
       [mutators: [..., {Mutare.Mutators.ConventionAtom, pairs: [[:active, :inactive]]}]]
 
-  Per the options-threading contract the parameters arrive in `mutate/2`'s context
-  (`context.opts`), so the swap logic lives there (`mutate/1` is `:skip`, never firing
-  node-locally). An unconfigured instance still gets the built-ins — `mutate/2` is run
-  on every offered node with `opts: []`.
+  The parameters arrive in `mutate/2`'s context (`context.opts`). An unconfigured
+  instance still gets the built-ins.
 
-  ## Coverage / placement — identical to AtomLiteral
-
-  Only **`{:__block__, _, [atom]}`-wrapped** atom literals are touched (a *bare* atom
-  is a function name / operator the analyzer never offers as a value — `:upcase` in
-  `String.upcase` — so mutating it would be unsafe), exactly as `AtomLiteral` does.
-  Because both run through `Mutare.Mutator.mutations/3`, this family's reach is the same
-  as `AtomLiteral`'s — value positions, `def`/`defp` head-pattern literals (by lifting),
-  and `case` clause patterns (by the tuple-the-scrutinee rewrite) — "wherever AtomLiteral
-  mutates an atom, ConventionAtom mutates a convention atom instead". Compile-safe by
-  construction (atom for atom); emitted with fresh metadata so Sourceror renders the new
-  value, not a stale token (the clean-meta rule). On by default.
-
-  ## Sharp edge
-
-  In a **value-position keyword/map literal** (`%{ok: count, error: count}`), swapping
-  `ok:` → `error:` collides with an existing `error:` key (a "key will be overridden"
-  warning that poisons under `--warnings-as-errors`, silent otherwise) — the one place
-  the unique `:mutare` sentinel is safer. Rare (needs both keys in one literal); left to
-  the poison backstop. In *pattern* map keys it cannot arise — `Mutare.Transform.Tag`
-  already filters a key's mutations so none equals a sibling key.
+  Like `AtomLiteral`, it mutates a convention atom wherever an atom literal appears —
+  value positions, `def`/`defp` head patterns, and `case` clause patterns — but never a
+  bare atom that is a function name (`:upcase` in `String.upcase`). On by default.
   """
   @behaviour Mutare.Mutator
 

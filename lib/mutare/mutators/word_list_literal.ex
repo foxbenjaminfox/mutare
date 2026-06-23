@@ -15,17 +15,12 @@ defmodule Mutare.Mutators.WordListLiteral do
   raw content — so a whitespace-only `~w(   )` (already `[]`) doesn't re-emit the
   empty mutant.
 
-  In-place and compile-safe — a word sigil is legal wherever the original was, and
-  every replacement is a static, valid word list. Only non-interpolated word lists
-  are touched: an interpolated `~w(a \#{x} b)` parses with multiple `<<>>` parts
-  (not a single binary), so the operand is always a static binary — `~W` never
-  interpolates, so it always is.
+  Only non-interpolated word lists are touched: an interpolated `~w(a \#{x} b)` parses
+  with multiple `<<>>` parts, not a single binary (`~W` never interpolates).
 
-  On the **RHS of `in`** (`x in ~w(a b)`) the *empty* variant `~w()` is dropped — it is
-  `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already produces on the `in`
-  node — but the non-empty *sentinel* `~w(mutare)` is kept (a real membership test). The
-  drop is per-mutation, shared via `Mutare.AST.empty_collection_literal?/1`. See NOTES
-  "Equivalent-sibling suppression, generalized".
+  Not mutated: on the **RHS of `in`** (`x in ~w(a b)`) the *empty* variant `~w()` is
+  dropped — it is `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already
+  produces — but the non-empty *sentinel* `~w(mutare)` is kept.
   """
   @behaviour Mutare.Mutator
 

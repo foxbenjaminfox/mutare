@@ -6,32 +6,13 @@ defmodule Mutare.Mutators.ReturnValue do
   constrains a function's result, every constant survives, and the survivor is a
   precisely located gap.
 
-  ## Why this is structural, not a node-level `mutate/1`
-
-  Every other built-in family is a `Mutare.Mutator` whose `mutate/1` rewrites a
-  node *wherever it occurs*. A return-value mutation can't be expressed that way:
-  it targets the *tail expression of a clause body* — a position a bare node knows
-  nothing about. So `mutate/1` here is intentionally `:skip` (it never fires as a
-  node mutator), and the real work lives in the structural
-  `c:Mutare.Mutator.return_replacements/1` hook, which `Mutare.Transform` discovers by
-  export and calls once per `def`/`defp` **leaf return tail** it finds (a custom
-  mutator implementing the same hook participates identically). Tail position is
-  transitive: when a clause tail is a `case`/`cond`/`if`/`unless`/`with`/`try`/`receive`,
-  the transform descends into *each branch body's* tail (each is a return path), so a
-  branchy callback gets one return mutant per branch rather than one coarse mutant on
-  the whole construct — see `Mutare.Transform.Analyze.Returns`. (`try`'s `:after` is
-  excluded — its value is discarded — but `receive`'s `:after` *is* a return path.)
-  The same applies one level down to an **anonymous function**: each `fn` clause
-  returns its body's tail when the closure is called, so every `fn` clause body leaf
-  tail gets the contrasting pair too (a `fn` enclosed in a `def` tail thus yields both
-  the closure-value mutant on the whole `fn` and a return mutant inside each clause).
-  This
-  module still implements the behaviour so it can sit in the `Mutare.Mutators`
-  registry — be on by default, be named in reports, be selected/validated via
-  `:mutators`, and be filtered by `# mutare:ignore[return_value]` — exactly like
-  every other family. (Its delivery is the *in-place selector*, not lifting: the
-  tail is a body position, so a `case` is legal there. `clause_drop` is the other
-  structural built-in, but it is lifted.)
+  It fires at each `def`/`defp` **return tail**. Tail position is transitive: when a
+  clause tail is a `case`/`cond`/`if`/`unless`/`with`/`try`/`receive`, each branch's tail
+  is its own return path, so a branchy function gets one return mutant per branch rather
+  than one coarse mutant on the whole construct (`try`'s `:after` is excluded — its value
+  is discarded). The same applies inside an **anonymous function** — each `fn` clause
+  body tail is a return path. On by default, named in reports, selectable via
+  `:mutators`, filterable by `# mutare:ignore[return_value]`.
 
   ## Which constants (a contrasting *pair*)
 
@@ -78,10 +59,6 @@ defmodule Mutare.Mutators.ReturnValue do
       (PHILOSOPHY: "macro-generated code is a different tool"). Replacing its return
       would be safe, but keeping `quote` uniformly hands-off is the simpler, more
       consistent boundary.
-
-  Compile-safety is free: a bare constant is legal in any tail position, and the
-  original tail is retained in the selector's catch-all, so variables bound by the
-  clause stay used (no unused-variable warning).
   """
   @behaviour Mutare.Mutator
 

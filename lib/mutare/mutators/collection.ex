@@ -22,23 +22,14 @@ defmodule Mutare.Mutators.Collection do
     * `Stream.take_while` ↔ `Stream.drop_while`
     * `Stream.take_every` ↔ `Stream.drop_every`
 
-  Each pair shares the same arities, so swapping the function name while keeping
-  the argument list always compiles. These are remote calls — never legal in a
-  guard — so guard-safety is automatic.
+  The family is deliberately **arity-blind**: it only renames, never adds or drops
+  an argument. An arity-*discriminating* swap (e.g. `Enum.sort`↔`Enum.reverse`,
+  whose 2-arg forms diverge — `reverse/2` is `reverse(list, tail)`) is therefore
+  not offered here.
 
-  Note the family is deliberately **arity-blind**: it only renames, never adds or
-  drops an argument. That is what keeps it correct in a pipe, where the stage's
-  node has one fewer argument than the source reads (the piped value is the `|>`
-  LHS, not in the call) — a rename valid at every arity stays valid there. An
-  arity-*discriminating* swap (e.g. `Enum.sort`↔`Enum.reverse`, whose 2-arg forms
-  diverge — `reverse/2` is `reverse(list, tail)`) can't be expressed here, because
-  a pipe stage's node arity is ambiguous and off-by-one. See `NOTES.md`.
-
-  On by default — the Elixir-flavoured family. High signal on idiomatic
-  collection code. It recognises `Enum`/`List`/`Stream` calls by their resolved
-  module (`Mutare.Transform.Calls`), so an aliased `E.filter` (`alias Enum, as: E`)
-  and a bare imported `filter` (`import Enum`) are both matched, while a shadowing
-  `alias MyApp.Enum` is correctly left alone.
+  On by default — the Elixir-flavoured family, high signal on idiomatic collection
+  code. Matches aliased and bare-imported calls too (`alias Enum, as: E; E.filter`,
+  `import Enum; filter`), while a shadowing `alias MyApp.Enum` is left alone.
   """
   @behaviour Mutare.Mutator
 

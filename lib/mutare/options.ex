@@ -1,29 +1,23 @@
 defmodule Mutare.Options do
   @moduledoc """
-  Validated, resolved options for a mutation run.
+  Validated options for a mutation run — the struct `Mutare.run/2` accepts.
 
-  This replaces the bare keyword list that used to thread through `Mutare.Config`,
-  `Mutare.Schema`, `Mutare.Runner`, and `Mutare.Sandbox`. `new/1` resolves an
-  (already config-merged) keyword list — or another `Options` — into a struct,
-  validating every field up front, so a bad `:workers`, `:timeout`,
-  `:test_selection`, `:paths`, `:sandbox`, `:keep_sandbox`, `:strict_ignores`,
-  `:quiet`, `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`, or
-  `:max_mutants` fails loudly
-  at the edge with an `ArgumentError` instead of misbehaving silently deep in the
-  pipeline.
+  `new/1` resolves a keyword list (or another `Options`) into a struct,
+  validating every field up front so a bad `:workers`, `:timeout`,
+  `:test_selection`, `:paths`, and so on fails loudly with an `ArgumentError`
+  rather than misbehaving deep in the run. Passing the same options on the
+  command line or in `.mutare.exs` goes through the same validation — see
+  `mix help mutare` for the full list of settable keys and their defaults.
 
-  `new/1` is idempotent on a struct, so the pipeline can normalise once at each
-  public entry point (`Mutare.run/2`, `Mutare.Schema.build/2`,
-  `Mutare.Sandbox.prepare/3`) and pass the struct down without re-validating.
-
-  Two things are deliberately *not* options:
-
-    * Transform plumbing — `:file`, `:start_id`, `:skip_ids` — is per-file
-      machinery threaded separately by `Mutare.Schema`, never user config.
-    * The sandbox **disjointness** check (a sandbox must not overlap the project
-      tree) lives in `Mutare.Sandbox`, since it is relational to `root`; here we
-      only validate the shape of `:sandbox`.
+  The fields and their types are listed in `t:t/0` below.
   """
+
+  # `new/1` is idempotent on a struct, so the pipeline normalises once at each
+  # public entry point and passes the struct down without re-validating. Two
+  # things are deliberately *not* options: transform plumbing (`:file`,
+  # `:start_id`, `:skip_ids`) is per-file machinery threaded by `Mutare.Schema`,
+  # and the sandbox/project disjointness check lives in `Mutare.Sandbox` (it is
+  # relational to `root`); here we only validate the shape of `:sandbox`.
 
   alias Mutare.{Project, Result, Site}
 

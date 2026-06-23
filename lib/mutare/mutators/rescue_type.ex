@@ -6,26 +6,6 @@ defmodule Mutare.Mutators.RescueType do
   caught here?* If a type can be dropped and the suite stays green, nothing
   exercises that rescue path — a precisely located gap.
 
-  ## Why this is its own family, not a node-level `mutate/1`
-
-  A `rescue` clause is **not** a standard Elixir pattern. Its head matches on
-  *exception types*, in one of a few special shapes — `Type`, `var`, `var in
-  [Type, ...]`, or the **bare list** `[Type, ...]` (a list with no `var in`
-  binding) — and (unlike `case`/function-head clauses) it **cannot carry a `when`
-  guard**. The list in `var in [A, B]` (or bare `[A, B]`) is a static list of
-  exception modules, not a value or a destructuring pattern: the literal/structural
-  pattern families would mis-handle it, and the bare `in` operator a node-level
-  `mutate/1` would match is *membership* (`Mutare.Mutators.Relational`'s), a
-  completely different thing. So this mutation is discovered **positionally** — only
-  at a rescue-clause head — by `Mutare.Transform.Analyze`, and `mutate/1` is `:skip`.
-
-  Because a rescue clause has no guard, it cannot be dispatched per-clause the way
-  `case` is (the tuple-the-scrutinee gate is a `when`): the mutant is delivered by
-  the **whole-construct selector** — the whole `try` is wrapped in a selector whose
-  mutant branch is a copy with one rescue clause's type list shrunk
-  (`Candidate.CasePattern`, like `receive`/`fn`). Sound because a rescue clause's
-  binding is local to its body.
-
   ## What it drops (and what it leaves alone)
 
   A type list of **two or more** types is mutated — in either the bound
@@ -51,16 +31,10 @@ defmodule Mutare.Mutators.RescueType do
   the structural twin of list-narrowing, reusing the same "≥2, never to empty" invariant —
   a clause is dropped **only when the `rescue` has two or more clauses** (a `try` cannot
   carry an empty `rescue`), so every result compiles. The branch's head shape is irrelevant:
-  a bare-variable catch-all clause among others is droppable too. Discovered positionally by
-  `Mutare.Transform.Analyze` (like the narrowing) and delivered by the same whole-`try`
-  selector; both operations are recorded under this one `:rescue_type` family.
+  a bare-variable catch-all clause among others is droppable too. Both operations are
+  recorded under this one `:rescue_type` family.
 
-  Both the **explicit `try`** and the **`def … rescue …` shorthand** are mutated. The
-  shorthand carries its rescue clauses as def-body blocks (no `try` node), so the transform
-  hosts the body in a synthesized `try` only for delivery (`def f do b rescue r end` ≡
-  `def f do try do b rescue r end end`); the shorthand's existing operator and *granular*
-  return-value mutants are preserved, and it works under lifting unchanged. See
-  `Mutare.Transform.Analyze.host_def_rescue/3`.
+  Both the **explicit `try`** and the **`def … rescue …` shorthand** are mutated.
   """
   @behaviour Mutare.Mutator
 

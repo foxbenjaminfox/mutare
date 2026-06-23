@@ -12,9 +12,7 @@ defmodule Mutare.Mutators.TupleLiteral do
   non-empty shapes collapse to `{:{}, [], []}` (`{}`); the empty tuple is left
   alone.
 
-  In-place and compile-safe — `{}` is a legal value wherever a tuple literal was.
-  (A tuple in a *pattern* is routed to `:pattern` by `Mutare.Transform` and never
-  offered here, so a match like `{:ok, v} = …` is not corrupted.)
+  A tuple in a *pattern* is left alone, so a match like `{:ok, v} = …` is not corrupted.
   """
   @behaviour Mutare.Mutator
 

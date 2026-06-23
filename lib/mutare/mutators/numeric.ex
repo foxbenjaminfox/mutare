@@ -14,54 +14,27 @@ defmodule Mutare.Mutators.Numeric do
       arity-blind rename like the `Float.ceil`/`floor` pair, the two extremes of
       the finite range)
 
-  Every swap keeps the argument list and lands on a function of the **same arity**,
-  so the single metamutant build always compiles. The `Kernel` functions
-  (`min`/`max`/`round`/`trunc`/`ceil`/`floor`) are all guard-safe, so a swap is legal
-  even inside a `when` (delivered by lifting), and `Float` calls are remote — never
-  guard-legal — so guard-safety is automatic there too.
+  The `Kernel` functions (`min`/`max`/`round`/`trunc`/`ceil`/`floor`) are all guard-safe,
+  so a swap is mutated even inside a `when`.
 
   ## Complementary pairs, not a full mesh
 
   `round`/`trunc`/`ceil`/`floor` all coerce a number to an integer and differ only in
-  rounding *direction*, so they could in principle each map to the other three. We
-  deliberately offer only the two **complementary pairs** (`round`↔`trunc`,
-  `ceil`↔`floor`) rather than the full mesh — matching the curated-pair aesthetic of
-  `Collection`/`StringCall` and `ModeSwap`'s "one adjacent step". A mesh would triple
-  the mutant count at every rounding call and surface more *equivalent* survivors (for
-  a positive non-integer `x`, `floor(x) == trunc(x)`, so that swap is a no-op the suite
-  can never kill), trading signal for noise. The two pairs capture the two questions
-  worth asking: nearest-vs-truncate, and up-vs-down.
-
-  ## Qualified vs bare calls (why one path is pipe-aware)
-
-  A **qualified** call — `Float.ceil(x)`, `Kernel.min(a, b)`, or any pipe stage of one —
-  carries the module prefix that proves which function it is, so the swap is a pure
-  **arity-blind rename** (each sibling exists at the same arity: `Kernel.min/max` only at
-  `/2`, the coercions only at `/1`, `Float.ceil/floor` at `/1` and `/2`). That is handled
-  in `mutate/1` exactly like `Collection`/`StringCall`, ignoring arity and pipe position
-  entirely.
-
-  A **bare** `Kernel` call (`max(a, b)`, `floor(x)`) has no prefix, so there is nothing to
-  prove the call is the `Kernel` one rather than a same-named local/imported function. The
-  safeguard is **arity**: a swap is offered only at the matching arity (min/max `/2`, the
-  coercions `/1`), so a user's `floor/2` or `max/3` is left alone, never swapped to a
-  sibling that might not exist at that arity (which would poison the build). Recovering
-  the true arity needs the pipe flag — a pipe stage carries one fewer argument than the
-  source reads (`x |> max(0)` reaches a mutator as a 1-arg `max(0)` whose effective arity
-  is 2) — so, like `Mutare.Mutators.CollectionArity`/`ModeSwap`, the bare-`Kernel` rule is
-  keyed on **effective arity** (`effective_arity/2` — `length(args)`, plus one when `:piped`)
-  in `mutate/2`.
+  rounding *direction*, so they could in principle each map to the other three. Only the
+  two **complementary pairs** (`round`↔`trunc`, `ceil`↔`floor`) are offered, not the full
+  mesh: a mesh would triple the mutant count at every rounding call and surface more
+  *equivalent* survivors (for a positive non-integer `x`, `floor(x) == trunc(x)`, so that
+  swap is a no-op the suite can never kill). The two pairs capture the two questions worth
+  asking: nearest-vs-truncate, and up-vs-down.
 
   ## Scope and known gaps
 
-  The qualified `Float`/`Kernel` forms are recognised by their **resolved** module
-  (`Mutare.Transform.Calls`), so an aliased `F.ceil` (`alias Float, as: F`) is matched.
-  Bare `Kernel` calls can't be aliased, and the only way to rebind one is
-  `import Kernel, except:/only:` — when that displaces it, `Mutare.Transform.Imports` flags
-  the call (`kernel_displaced?/1`) and the bare path skips it, so it is never swapped as a
-  `Kernel` call it no longer is. `Float.round` is intentionally absent — round-to-nearest
-  has no complementary `Float` sibling. `div`↔`rem` lives in `Mutare.Mutators.Arithmetic`
-  (it is an operator swap, not a call). On by default.
+  Matches aliased and bare-imported calls too. A bare `Kernel` call is swapped only at
+  its true arity (min/max `/2`, the coercions `/1`), so a same-named user `floor/2` or
+  `max/3` is left alone, and a `Kernel` function displaced by `import Kernel, except:`
+  is skipped. `Float.round` is intentionally absent — round-to-nearest has no
+  complementary `Float` sibling. `div`↔`rem` lives in `Mutare.Mutators.Arithmetic` (it is
+  an operator swap, not a call). On by default.
   """
   @behaviour Mutare.Mutator
 

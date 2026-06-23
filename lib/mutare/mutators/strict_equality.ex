@@ -13,10 +13,7 @@ defmodule Mutare.Mutators.StrictEquality do
   loose comparison rarely changes behaviour the suite exercises, so it would mostly mint
   equivalent survivors. (`==`/`!=` polarity is `Mutare.Mutators.Relational`'s job.)
 
-  In-place and compile-safe — `==`/`!=` are boolean-valued operators accepting the same
-  operands as `===`/`!==`, so the reused-operand swap always type-checks. They are also
-  **guard-legal**, so a swap inside a `when` is delivered by lifting (placement is
-  positional, not this mutator's concern).
+  Guard-legal, so a swap inside a `when` guard is mutated too.
 
   ## Relation to `Mutare.Mutators.Relational`
 
@@ -25,14 +22,10 @@ defmodule Mutare.Mutators.StrictEquality do
   relaxation is never a polarity complement — so they never produce the same mutant, and
   both fire on a bare `a === b`.
 
-  Under a negation (`not (a === b)` / `!(a === b)`) the two diverge in how `Mutare.Transform`
-  treats them. Relational's flip there is redundant — `not (a !== b)` ≡ `a === b`, which
-  `Mutare.Mutators.Logical` already produces by stripping the `not` — so it is suppressed
-  (see `Mutare.Transform.Analyze`). This family's relaxation is **not** its polarity
-  complement, so `not (a == b)` ≢ `a === b` is a genuinely new mutant and is kept. The
-  transform's negation-redundancy filter therefore drops only the complement flip and
-  Conditional's `true`/`false`, leaving this swap offered. See NOTES "Equivalent-sibling
-  suppression, generalized".
+  Under a negation (`not (a === b)` / `!(a === b)`) Relational's flip is redundant
+  (`not (a !== b)` ≡ `a === b`, which Logical already produces) and is suppressed, but
+  this family's relaxation is **not** its polarity complement (`not (a == b)` ≢ `a === b`),
+  so it is kept.
   """
   @behaviour Mutare.Mutator
 

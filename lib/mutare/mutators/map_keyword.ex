@@ -19,14 +19,10 @@ defmodule Mutare.Mutators.MapKeyword do
     * `put_new` ↔ `replace`  — the present/absent condition, fully inverted
     * `replace` ↔ `replace!` — silently ignore a missing key, or raise?
 
-  All share arity (`/3`), so swapping the function name keeps the argument list and
-  always compiles — an arity-blind rename like `Mutare.Mutators.Collection`, correct
-  in a pipe for free. These are remote calls, never legal in a guard, so guard-safety
-  is automatic. High signal: the conditional-write distinctions are classic untested
-  edges (the already-present and still-absent paths a happy-path test never hits).
+  High signal: the conditional-write distinctions are classic untested edges (the
+  already-present and still-absent paths a happy-path test never hits).
 
-  On by default. Recognises `Map`/`Keyword` by their resolved module
-  (`Mutare.Transform.Calls`), so an aliased or bare-imported call is matched while a shadowing
+  On by default. Matches aliased and bare-imported calls too, while a shadowing
   `alias MyApp.Map` is left alone. The family atom is `:map_keyword` (`:map` is
   `MapLiteral`).
   """

@@ -19,15 +19,12 @@ defmodule Mutare.Mutators do
       family atom resolves, a configured entry carries its options, and a
       non-mutator module is rejected the same way wherever mutators are supplied.
 
-  The list is read as sugar over one canonical shape — a list of mutators, each
-  with its config. A bare module/family means "default config"; the `:builtins`
-  token (synonym `:all`) expands to every built-in family at its position, so
-  including it *extends* the defaults (`[:builtins, MyMutator]`) and omitting it
-  *replaces* them (`[A, B]`). `{:builtins, except: [families]}` drops named
-  built-ins; reconfigure one by excluding then re-adding it configured.
-
-  The registry is an ordered keyword list (not a map) so `all/0` is deterministic
-  and a new family slots into a defined position.
+  A `:mutators` list is read as sugar over one canonical shape — a list of
+  mutators, each with its config. A bare module/family means "default config"; the
+  `:builtins` token (synonym `:all`) expands to every built-in family at its
+  position, so including it *extends* the defaults (`[:builtins, MyMutator]`) and
+  omitting it *replaces* them (`[A, B]`). `{:builtins, except: [families]}` drops
+  named built-ins; reconfigure one by excluding then re-adding it configured.
   """
 
   alias Mutare.Mutator.Spec

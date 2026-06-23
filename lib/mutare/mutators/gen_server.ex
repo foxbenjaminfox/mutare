@@ -4,9 +4,8 @@ defmodule Mutare.Mutators.GenServer do
   `handle_cast/2`, `handle_info/2` (and `handle_continue/2`, which shares their
   shapes) — into a *different but still valid* OTP return tuple. The first
   behaviour-gated built-in: it fires **only inside a module that implements
-  `GenServer`** (`use GenServer`, or a direct `@behaviour GenServer` — both
-  surfaced by `Mutare.Transform.Behaviours` and read from `context.behaviours`),
-  so it is inert everywhere else.
+  `GenServer`** (`use GenServer`, or a direct `@behaviour GenServer`), so it is inert
+  everywhere else.
 
   Unlike `Mutare.Mutators.ReturnValue` — which replaces a clause tail with a
   *sentinel* (so the server gets a malformed return and merely crashes, an
@@ -69,9 +68,6 @@ defmodule Mutare.Mutators.GenServer do
       swapped — a reason swap is rarely observable.
     * `init/1`, `terminate/2`, `code_change/3`, `format_status/*` returns aren't
       these tagged tuples, so they are out of scope by construction.
-
-  Delivered as the behaviour-aware structural hook `c:Mutare.Mutator.return_replacements/2`;
-  the transform attaches it to each clause's return tail like any return mutation.
   """
 
   @behaviour Mutare.Mutator

@@ -8,37 +8,18 @@ defmodule Mutare.Mutators.PatternWildcard do
   the case where the values differ actually tested?* If only equal inputs are exercised,
   the mutant survives — a precisely located gap.
 
-  ## Why this is structural, not a node-level `mutate/1`
+  On by default, named in reports, toggleable via `:mutators`, filterable by
+  `# mutare:ignore[pattern_wildcard]`.
 
-  Detecting a repeated variable needs the whole pattern (the duplicate often spans
-  separate arguments, as in `f(x, x)`), so it is not a rewrite of one node a `mutate/1`
-  could match. Like `Mutare.Mutators.ReturnValue` and `Mutare.Mutators.PatternSwap`, the
-  real entry point is `pattern_mutations/2`, called by `Mutare.Transform.FunctionPlan`
-  per `def`/`defp` clause head; `mutate/1` is `:skip`. Registry membership gives it the
-  usual: on by default, named in reports, toggleable via `:mutators`, filterable by
-  `# mutare:ignore[pattern_wildcard]`. Delivery is **lifting** (a selector `case` is
-  illegal in a pattern), exactly like guards and head literals.
+  ## How many occurrences are replaced
 
-  ## Compile-safety: thin vs orphan-fix
+  Wildcarding never strands the variable:
 
-  Wildcarding must never strand the variable. Two cases, decided from `used_outside`
-  (the names read in the clause body/guard — see `Mutare.Transform.FunctionPlan`):
-
-    * The variable is read in the body/guard, **or** it appears ≥ 3 times in the head:
-      replacing *one* occurrence with `_` always leaves a binding behind. Emit one
-      mutant per occurrence (e.g. `def f(x, x), do: x` → `f(_, x)` and `f(x, _)`).
-    * The variable appears exactly twice in the head and is **not** read elsewhere:
-      thinning to one occurrence would leave a lone, unread binding (an unused-variable
-      warning → poison under `--warnings-as-errors`). Instead replace *both* occurrences
-      with `_` (`def equal?(x, x), do: true` → `def equal?(_, _), do: true`) — the honest
-      form of "the equality no longer matters", and always clean.
-
-  Over-collecting `used_outside` is the safe direction here: treating a name as used can
-  only make us keep a binding we didn't need, never strand one. The only residual
-  compile concern is *shadowing* — broadening a non-final clause to an irrefutable
-  pattern makes later same-arity clauses unreachable, a warning that fails only under
-  `--warnings-as-errors` and is then dropped by poison-recovery (single-clause functions
-  are always clean). No mutation ever emits a hard compile error.
+    * If the variable is read in the body/guard, **or** it appears ≥ 3 times in the head,
+      one mutant is emitted per occurrence (`def f(x, x), do: x` → `f(_, x)` and `f(x, _)`).
+    * If it appears exactly twice in the head and is **not** read elsewhere, *both*
+      occurrences are replaced at once (`def equal?(x, x), do: true` →
+      `def equal?(_, _), do: true`) — thinning to one would leave a lone unused binding.
 
   `_`, `_`-prefixed names, and pinned variables (`^x`) are never counted or replaced.
   Nor is the **specifier side of a bitstring segment** (`<<v::binary>>`, `<<v::size(k)>>`):

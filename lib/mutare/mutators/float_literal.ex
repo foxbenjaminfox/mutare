@@ -3,11 +3,7 @@ defmodule Mutare.Mutators.FloatLiteral do
   Float-literal mutations: `x` → `x + 1.0`, `x - 1.0`, and `0.0`, deduplicated
   and never equal to `x`.
 
-  The float counterpart of `Mutare.Mutators.Literal`'s integer arm. In-place and
-  compile-safe — a float literal is legal wherever the original was, emitted with
-  fresh metadata so Sourceror renders the new value rather than a stale `:token`.
-
-  On by default, like its integer counterpart.
+  The float counterpart of `Mutare.Mutators.Literal`'s integer arm. On by default.
   """
   @behaviour Mutare.Mutator
 

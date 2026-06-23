@@ -109,52 +109,19 @@ defmodule Mutare.Mutators.ModeSwap do
 
   ## Swap strategy — small, legal, behavioural
 
-  Each swap stays **within the legal set of *that* function**: the ordered ladders are
-  per-family (a `truncate` only accepts `:microsecond | :millisecond | :second`, so its
-  swaps never reach `:minute`, which would raise), and a swap is always to an **adjacent**
-  ladder member — a single factor-of-1000/60 step that is subtle enough to slip past a
-  loose assertion yet always observable. So a site yields at most two mutants (one finer,
-  one coarser), mirroring the literal mutators' `{n-1, n+1}` pair. The unordered mode sets
-  (case, form) emit one curated, behaviourally-distinct sibling. A position holding a
-  non-atom (a variable, an integer parts-per-second) or an unrecognised atom contributes
-  nothing, and a swap is never the original atom — no equivalent no-ops.
+  Each swap stays **within the legal set of *that* function** (a `truncate` only accepts
+  `:microsecond | :millisecond | :second`, so its swaps never reach `:minute`, which would
+  raise), and an ordered ladder always swaps to an **adjacent** member — a single
+  factor-of-1000/60 step, subtle enough to slip past a loose assertion yet always
+  observable. So a site yields at most two mutants (one finer, one coarser); the unordered
+  mode sets (case, form) emit one curated, behaviourally-distinct sibling. A position
+  holding a non-atom or an unrecognised atom contributes nothing, and a swap is never the
+  original atom — no equivalent no-ops.
 
-  ## Why pipe-aware (`mutate/2`, never `mutate/1`)
-
-  The mode atom sits at a fixed *effective* position (`truncate`'s precision is arg 1,
-  the calendar unit is arg 2), but a pipe stage carries one fewer argument than the
-  source reads — `dt |> DateTime.truncate(:second)` reaches a mutator as a 1-arg node
-  whose lone visible arg *is* the precision. So, like `Mutare.Mutators.CollectionArity`,
-  the rule is keyed on **effective arity** (`effective_arity/2` — `length(args)`, plus one
-  when `:piped`) and each mode position is translated from an effective index to the *visible* one
-  (`pos - 1` when piped; an effective index 0 that is the piped value itself is skipped).
-
-  Every result reuses the surrounding argument AST and only substitutes one atom for
-  another legal one, so the single metamutant build always compiles; the swapped atom is
-  emitted with fresh metadata (`{:__block__, [], [atom]}`) so Sourceror renders the new
-  value, not a stale token (the clean-meta rule). On by default.
-
-  ## Superseding the redundant leaf mutation
-
-  A unit/mode atom sits in a value position, so `Mutare.Mutators.AtomLiteral` would
-  *also* mutate it — `DateTime.truncate(dt, :second)` → `:mutare`, a mutant that just
-  raises `ArgumentError` (an invalid precision) and is trivially killed. Because this
-  mutator already covers that atom by rewriting the *whole call*, the transform drops the
-  redundant leaf mutant: `Mutare.Transform.Overlap` diffs each mutant against its original,
-  sees the swap touched exactly that atom (or, for `shift`, that one `unit:` key), and
-  prunes any plain-leaf mutation at the same source range. This needs **no declaration**
-  here — coverage is derived from `mutate/2`'s output, so an unrecognised atom, a variable,
-  or an excluded `shift` unit (`microsecond:`) — none of which this mutator swaps — keeps
-  its AtomLiteral mutant, and a `shift` amount (which the swap leaves untouched) keeps its
-  `Mutare.Mutators.Literal` mutant.
-
-  The same supersede applies to the **bare-module sort wrap**: `Enum.sort(xs, Date)` →
-  `{:desc, Date}` touches exactly the `Date` arg, so it covers the redundant
-  `Mutare.Mutators.AliasLiteral` leaf (`Date` → the sentinel module, an always-raising
-  `UndefinedFunctionError`) — the AliasLiteral analogue of the AtomLiteral case.
-
-  Recognises the stdlib modules by their resolved module (`Mutare.Transform.Calls`), so
-  an aliased call (`alias DateTime, as: DT; DT.truncate(dt, :second)`) is matched too.
+  On by default. Matches aliased calls too (`alias DateTime, as: DT; DT.truncate(dt,
+  :second)`), and the mode atom is found at its true position whether the call is piped
+  or not. Because the swap rewrites the whole call, the redundant `AtomLiteral` leaf
+  mutant on the same atom (and the `AliasLiteral` leaf on a bare-module sort) is dropped.
   """
   @behaviour Mutare.Mutator
 

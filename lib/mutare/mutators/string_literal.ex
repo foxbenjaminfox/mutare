@@ -5,10 +5,8 @@ defmodule Mutare.Mutators.StringLiteral do
   original. So a typical non-empty string yields *two* mutants (empties it and
   swaps its content); `""` yields just the sentinel; `"mutare"` yields just `""`.
 
-  In-place and compile-safe — a binary literal is legal wherever the original
-  was. Only plain string literals are touched: interpolated strings parse as a
-  `<<>>` construction (not a literal) and are left alone, so the operand is
-  always a static binary.
+  Only plain string literals are touched: interpolated strings (`"a\#{x}b"`) parse
+  as a `<<>>` construction, not a literal, and are left alone.
   """
   @behaviour Mutare.Mutator
 

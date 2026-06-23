@@ -7,12 +7,14 @@ defmodule Mutare do
   every mutant behind a `:persistent_term` runtime switch — compiles it once,
   then runs the suite once per mutant by flipping `MUTANT_UNDER_TEST`.
 
-  Body mutations use in-place selectors, while guard and clause mutations use
-  function lifting and dispatchers. The runner adds coverage-guided test
-  selection, compile-poison recovery, parallel execution, timeouts, ignore
-  annotations, and changed-file scoping via `--since`.
+  On top of that, the runner adds coverage-guided test selection, compile-poison
+  recovery, parallel execution, timeouts, ignore annotations, and changed-file
+  scoping via `--since`.
 
-  See `Mutare.Transform` for source rewriting and `Mutare.Runner` for execution.
+  Most users drive Mutare through the `mix mutare` task; `run/2` is the
+  programmatic entry point and `transform_string/2` exposes the source rewrite on
+  its own. See `Mutare.Runner` for the run flow and `Mutare.Mutator` for writing
+  your own mutators.
   """
 
   @doc """

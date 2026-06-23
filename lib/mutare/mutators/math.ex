@@ -13,20 +13,12 @@ defmodule Mutare.Mutators.Math do
     * `:math.log` ↔ `:math.log2` ↔ `:math.log10` — the logarithm-base trio (each
       maps to the other two)
 
-  Every function in a swap group exists at the **same arity** in `:math` (the
-  trig/hyperbolic/log functions are all `/1`), so renaming while keeping the
-  argument list always compiles. The constant swaps (`pi`/`tau`, both `/0`) replace
-  the whole call with a plain float literal that is the right shape but the wrong
-  value — a magnitude any test pinning down the geometry will catch.
+  The constant swaps (`pi`/`tau`, both `/0`) replace the whole call with a plain float
+  literal that is the right shape but the wrong value — a magnitude any test pinning down
+  the geometry will catch.
 
-  `:math` is recognised by its **resolved** module through the shared
-  `Mutare.Transform.Calls` reader, so the direct `:math.sin`, an aliased `alias :math, as: M;
-  M.sin`, and a bare imported `import :math; sin` all match — and the swap's `rebuild` keeps
-  whichever form was written. `:math` can't be *shadowed* (the atom always names the Erlang
-  module), so the match is unambiguous — no arity/`import` safeguard like the one `Numeric`
-  carries for bare `Kernel` calls is needed here. Every `:math` function is a remote call
-  (never guard-legal), so guard-safety is automatic and these are always delivered in place.
-  On by default.
+  On by default. Matches the direct `:math.sin`, an aliased `alias :math, as: M; M.sin`,
+  and a bare imported `import :math; sin` alike.
   """
   @behaviour Mutare.Mutator
 

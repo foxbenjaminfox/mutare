@@ -18,33 +18,11 @@ defmodule Mutare.Mutators.CollectionArity do
       `get_and_update` tuple kills it; one that ignores the write does not — exactly
       the "is the update path exercised?" signal.
 
-  ## Why this is pipe-aware (and `Collection` isn't)
+  `Enum.reverse/2` (`reverse(list, tail)`, an unrelated operation) is deliberately
+  left alone.
 
-  `Collection` is a pure, arity-*blind* rename: it keeps the argument list verbatim,
-  so it's correct at any arity, piped or not. These mutations change a call's arity,
-  so they need its **effective** arity — and that is ambiguous from the node alone in
-  a pipe, because Elixir expands `|>` only after this transform runs, so a stage's
-  node carries one fewer argument than the source reads (the piped value is the `|>`
-  left side). `xs |> Enum.sort(:desc)` reaches a mutator as a 1-arg `Enum.sort(:desc)`,
-  indistinguishable from a non-piped `Enum.sort(list)`.
-
-  So this family implements the optional `mutate/2` callback (never `mutate/1`), which
-  `Mutare.Transform` invokes with `%{pipe_mode: :piped | :unpiped}` at each runtime call
-  site, recovering the effective arity with `effective_arity/2` (`length(args)`, plus one
-  when `:piped`). That makes every case
-  correct — including skipping `Enum.reverse/2` (`reverse(list, tail)`, an unrelated
-  operation) whether or not it's written in a pipe.
-
-  ## Compile- and guard-safety
-
-  Every result reuses the surviving argument AST and only *removes* arguments (or
-  renames to a function that exists at the lower arity — `reverse/1`, `sort/1`,
-  `count/1`, `count_until/2`, `Access.get/2` all exist), so the single metamutant build
-  always compiles. `Enum`/`Access` calls are never guard-legal, so guard-safety is automatic.
-
-  On by default. The arity-changing sibling of `Mutare.Mutators.Collection`. Recognises
-  its targets by their resolved module (`Mutare.Transform.Calls`), so an aliased or
-  bare-imported call is matched.
+  On by default. The arity-changing sibling of `Mutare.Mutators.Collection`. Matches
+  aliased and bare-imported calls too.
   """
   @behaviour Mutare.Mutator
 

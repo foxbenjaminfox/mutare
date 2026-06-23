@@ -10,9 +10,7 @@ defmodule Mutare.Report.Json do
   ecosystem — `Mutare.Report.Html` embeds this same document into the report
   web component, and it can be uploaded to the Stryker dashboard unchanged.
 
-  Pure: `(results, sources, opts) -> String.t()`; all IO lives in
-  `Mix.Tasks.Mutare`. `sources` is the `%{file => original_source}` map carried
-  on the schema (root-relative keys), reused as each file's `source`.
+  Emitted by `mix mutare --format json`.
   """
 
   alias Mutare.Result

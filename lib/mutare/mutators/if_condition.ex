@@ -5,50 +5,24 @@ defmodule Mutare.Mutators.IfCondition do
   each side of this condition actually exercised?* A condition pinned to one
   constant that no test notices is a precisely located gap.
 
-  ## Why this is structural, not a node-level `mutate/1`
+  This is the positional sibling of `Mutare.Mutators.Conditional`: where that family
+  fires only where a node *proves* it is boolean-valued (a comparison/membership/
+  logical operator), this fires on a **bare** condition (`if user`, `if valid?(x)`,
+  `if is_nil(v)`, `if Map.has_key?(m, k)`) that is positionally a boolean decision.
+  On by default, named in reports, selectable via `:mutators`, and filterable by
+  `# mutare:ignore[if_condition]`, like every family.
 
-  This is the positional sibling of `Mutare.Mutators.Conditional`. Conditional
-  rewrites a node *wherever it occurs*, so it can only fire where the node itself
-  proves it is boolean-valued — a comparison/membership/logical operator. A *bare*
-  condition (`if user`, `if valid?(x)`, `if is_nil(v)`, `if Map.has_key?(m, k)`)
-  carries no such proof at the node, yet positionally it **is** a boolean decision.
-  Only the transform knows a node sits in a condition slot, so — exactly like
-  `Mutare.Mutators.ReturnValue` — `mutate/1` is `:skip` and the real work lives in the
-  structural `c:Mutare.Mutator.condition_replacements/1` hook, which `Mutare.Transform`
-  discovers by export and calls at each `if`/`unless`/`cond` condition it finds (a custom
-  mutator implementing the same hook participates identically). The module still implements the behaviour so it sits in
-  the `Mutare.Mutators` registry: on by default, named in reports, selectable via
-  `:mutators`, and filterable by `# mutare:ignore[if_condition]`, like every family.
-
-  Delivery is the in-place selector (a condition is a body position, so a `case` is
-  legal there), wrapping just the condition — the diff stays `if foo?(x)` → `if true`.
-
-  ## What it deliberately leaves alone (no redundant or unsafe mutant)
+  ## Deliberately left alone
 
     * **Boolean-operator conditions** — a comparison / membership / `and`/`or` /
-      `&&`/`||` / `not`/`!`. `Conditional` already forces these to `true`/`false`
-      *at the operator node*, so a condition mutant here would just duplicate it.
-      (Detected via `Conditional.boolean_op?/1`, the shared definition of
-      "boolean-valued op" — the same reuse `ReturnValue` makes.) This is why
-      `&&`/`||` need no special handling: they are boolean ops, already covered.
+      `&&`/`||` / `not`/`!`. `Conditional` already forces these to `true`/`false`,
+      so a condition mutant here would just duplicate it.
     * **A literal `true`/`false`/`nil` condition** — forcing `if true` to `true` is
       a no-op and to `false` is dead-code removal; both are degenerate, low signal.
-    * **A binding condition** — `if user = fetch()` (or a parenthesised
-      `(x = a; cond)` sequence). The `if` condition's bindings *leak* into the body,
-      so wrapping the condition in a selector would scope them to a branch — `use(user)`
-      would reference an unbound variable and the single build would not compile. So
-      this hook declines them at the node level (and the transform's condition pruning,
-      `Mutare.Transform.Analyze`, governs the same for `Conditional`/`Relational` on a
-      binding nested under an operator). For an `if`/`unless`, though, the transform
-      then *hoists* the binding out — lifting it into a preceding statement so the
-      now-binding-free condition can carry the decision after all (the diff still names
-      the original condition). `cond` can't hoist (its clauses short-circuit in order),
-      so a `cond` binding condition stays pruned. Either way the mutator is compile-safe
-      by construction, not leaning on poison recovery.
-
-  Compile-safety of the rest is free: the surviving conditions bind nothing, a bare
-  `true`/`false` is legal in any condition slot, and the original condition is kept
-  in the selector's catch-all, so any variable it *reads* stays referenced.
+    * **A binding condition** — `if user = fetch()`. The condition's bindings leak
+      into the body, so the decision can't simply be replaced in place. (For an
+      `if`/`unless` the transform hoists the binding out and mutates the condition
+      anyway; a `cond` binding condition is left unmutated.)
   """
   @behaviour Mutare.Mutator
 

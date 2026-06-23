@@ -1,27 +1,27 @@
 defmodule Mutare.Mutators.Relational do
   @moduledoc """
-  Relational/equality operator swaps. Ordering operators mutate to both their
-  boundary neighbour and their direction flip (the classic boundary + reversal
-  pair); equality operators flip polarity, and membership (`in`) flips to `not in`
-  (the polarity flip for membership, mirroring `==` → `!=`).
+  Relational/equality operator swaps:
 
-  In-place and compile-safe — every substitution is another boolean-valued
-  expression: an operator swap, or (for `in`) a `not`-negated membership test,
-  which is legal anywhere `in` is (bodies *and* `when` guards).
+      :>   → :>=, :<       :==  → :!=
+      :>=  → :>,  :<=      :!=  → :==
+      :<   → :<=, :>       :=== → :!==
+      :<=  → :<,  :>=      :!== → :===
 
-  The reverse direction — `not in` → `in` — is not produced here: `x not in y`
-  parses as `not(x in y)`, and `Mutare.Mutators.Logical` already strips that `not`.
-  To avoid duplicating it, `Mutare.Transform` (and the guard tagger) never offer an
-  `in` node that is the direct operand of a `not` to a mutator, so the `in → not in`
-  flip below is suppressed exactly there (re-negating it would yield `in` again).
+  Ordering operators mutate to both their boundary neighbour and their direction flip
+  (the classic boundary + reversal pair); equality operators flip polarity, and
+  membership (`in`) flips to `not in` (the polarity flip for membership, mirroring
+  `==` → `!=`). Legal in bodies *and* `when` guards.
 
-  The **equality** operators (`==`/`!=`/`===`/`!==`) get the same treatment for the
-  same reason: each is its own exact polarity complement, so `!(a != b)` (this family's
-  flip) ≡ `a == b` (Logical's strip), and `Transform` suppresses an equality node that
-  is the direct operand of a `not`/`!`. The **ordering** operators are *not* suppressed
-  — their boundary/reversal swaps are not the negation complement, so they survive a
-  surrounding negation as genuinely new mutants. See NOTES "Equivalent-sibling
-  suppression, generalized".
+  Not mutated:
+
+    * `not in` → `in` is not produced — `x not in y` parses as `not(x in y)`, which
+      `Mutare.Mutators.Logical` already strips. For the same reason, an `in` node that
+      is the direct operand of `not`/`!` is left to Logical.
+    * An **equality** operator (`==`/`!=`/`===`/`!==`) directly under `not`/`!` is left
+      to Logical — each is its own exact polarity complement, so `!(a != b)` ≡ `a == b`
+      (Logical's strip). The **ordering** operators are *not* suppressed there: their
+      boundary/reversal swaps are not the negation complement, so they survive a
+      surrounding negation as genuinely new mutants.
   """
   @behaviour Mutare.Mutator
 

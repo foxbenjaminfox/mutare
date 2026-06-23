@@ -20,21 +20,7 @@ defmodule Mutare.Mutators.DefaultDrop do
   pin. The `_lazy` forms drop their fallback function and rename to the base lookup;
   the fun is never `nil`, so they always apply.
 
-  ## Why it's pipe-aware (`mutate/2`, never `mutate/1`)
-
-  This changes a call's arity (`/3`→`/2`), and a pipe stage carries one fewer argument
-  than the source reads (the collection is the `|>` left side), so `m |> Map.get(k, d)`
-  reaches a mutator as a 2-arg node, ambiguous with a non-piped `Map.get(k, d)` (a
-  legitimate `/2` call with nothing to drop). The optional `mutate/2` callback receives
-  `%{pipe_mode: :piped | :unpiped}`; the effective arity (`effective_arity/2` adds one when
-  `:piped`) selects only the with-default forms, and the trailing *visible* argument
-  (always the default/fallback,
-  piped or not) is the one dropped.
-
-  Every result reuses the surviving argument AST and the lower-arity form always exists,
-  so the single build stays compile-safe; remote calls are guard-safe for free. On by
-  default. Recognises the lookups by their resolved module (`Mutare.Transform.Calls`),
-  so an aliased call is matched too.
+  On by default. Matches aliased and bare-imported calls too.
   """
   @behaviour Mutare.Mutator
 

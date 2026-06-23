@@ -23,14 +23,14 @@ defmodule Mutare.Macros do
       registration it relies on in one module, and the user adds a single
       `:mutators` entry. Mutare core never needs to know about the library.
 
-  `build/2` merges the three into a lookup keyed `{module_key, name, arity}` (with
-  an `:any`-arity fallback); `routing/4` reads it during the lexical resolution
-  pre-pass (`Mutare.Transform.Resolve`), which stamps a matched call so the analyzer
-  routes its arguments.
-
   Resolution of declarative entries is **purely syntactic** (no reflection on the
   module), so a `{Ecto.Query, :from, :any, :skip}` entry resolves even when `Ecto`
   is not a dependency of the Mutare process.
+
+  For the no-mutator case (just route a custom DSL's argument as a pattern, or
+  leave a macro body opaque) the declarative `:macros` option is enough; a mutator
+  that needs the routing usually ships it via `c:Mutare.Mutator.macros/0` instead.
+  See `Mutare.Macro.Spec` for the per-argument treatments.
   """
 
   alias Mutare.Macro.Spec

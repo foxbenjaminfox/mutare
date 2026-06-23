@@ -10,6 +10,7 @@ defmodule Mutare.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       dialyzer: dialyzer(),
+      docs: docs(),
       aliases: aliases()
     ]
   end
@@ -28,7 +29,47 @@ defmodule Mutare.MixProject do
       {:sourceror, "~> 1.12"},
       {:propcheck, "~> 1.5", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
+      {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      source_url: "https://github.com/foxbenjaminfox/mutare",
+      extras: ["README.md"],
+      # Modules fall into the first group whose entry matches, so the explicit
+      # lists win over the trailing catch-alls. "Internal" (`~r//`) sweeps up
+      # everything else — the transform pipeline, sandbox, coverage plumbing, etc.
+      # `@moduledoc false` modules never appear at all.
+      groups_for_modules: [
+        "Core API": [
+          Mutare,
+          Mix.Tasks.Mutare,
+          Mutare.Runner,
+          Mutare.Options,
+          Mutare.Result,
+          Mutare.Site
+        ],
+        "Writing mutators": [
+          Mutare.Mutator,
+          Mutare.Mutator.Spec,
+          Mutare.AST,
+          Mutare.Transform.Calls,
+          Mutare.Macros,
+          Mutare.Macro.Spec
+        ],
+        "Built-in mutators": ~r/^Mutare\.Mutators/,
+        Reporters: [
+          Mutare.Report,
+          Mutare.Report.Json,
+          Mutare.Report.Html,
+          Mutare.Report.Sarif,
+          Mutare.Report.Live
+        ],
+        Internal: ~r//
+      ]
     ]
   end
 

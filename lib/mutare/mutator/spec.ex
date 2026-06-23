@@ -3,14 +3,12 @@ defmodule Mutare.Mutator.Spec do
   A resolved mutator slot: the module to run, the family name to record, and the
   per-instance `opts` threaded to its callbacks.
 
-  Every mutator runs as a `Spec`, whether or not it was configured —
-  `Mutare.Mutators.resolve/1` builds one per entry in a `:mutators` list. A bare
-  built-in (`:arithmetic`) or a bare custom module is a `Spec` with empty `opts`
-  named by its `name/0`. A `{module, opts}` entry carries `opts`, which the
-  transform delivers to the **context-taking callback** — the pipe-aware
-  `c:Mutare.Mutator.mutate/2` — via the context map's `:opts` key. (A node-local
-  mutator that wants its options must therefore implement `mutate/2`; `mutate/1`
-  has no context to carry them.)
+  Every mutator runs as a `Spec`, configured or not — `Mutare.Mutators.resolve/1`
+  builds one per entry in a `:mutators` list. A bare built-in (`:arithmetic`) or a
+  bare custom module is a `Spec` with empty `opts` named by its `name/0`. A
+  `{module, opts}` entry carries `opts`, delivered to `c:Mutare.Mutator.mutate/2`
+  via the context map's `:opts` key. (A mutator that wants its options must
+  therefore implement `mutate/2`; `mutate/1` has no context to carry them.)
 
   ## Naming / identity
 
@@ -24,13 +22,10 @@ defmodule Mutare.Mutator.Spec do
 
   `behaviours` is **not** user config: it is the `MapSet` of behaviour modules the
   enclosing module implements (`@behaviour Foo` directly, or injected by a `use`),
-  populated **per module by `Mutare.Transform`** as it enters each `defmodule` (the
-  base specs always carry the empty default; the transform re-binds it per module).
-  It rides on the spec for the same reason `opts` does — the spec is the value already
-  threaded to every leaf where a mutator runs — and is delivered to the
-  context-taking callbacks (`c:Mutare.Mutator.mutate/2` and the structural
-  `c:Mutare.Mutator.return_replacements/2` etc.) under the context map's `:behaviours`
-  key, so a behaviour-targeted custom mutator can gate on it. See `Mutare.Mutator`.
+  populated per module by the transform. It is delivered to the context-taking
+  callbacks (`c:Mutare.Mutator.mutate/2`, `c:Mutare.Mutator.return_replacements/2`,
+  …) under the context map's `:behaviours` key, so a behaviour-targeted custom
+  mutator can gate on it. See `Mutare.Mutator`.
   """
 
   @enforce_keys [:module, :name]

@@ -10,16 +10,12 @@ defmodule Mutare.Mutators.CharlistLiteral do
   already collapsed to `[]` by `Mutare.Mutators.List` — matching it here too would
   emit a duplicate empty-mutant, so this module leaves it alone.
 
-  In-place and compile-safe — a charlist sigil is legal wherever the original
-  was. Only non-interpolated charlists are touched: an interpolated `~c"a\#{x}b"`
-  parses with multiple `<<>>` parts (not a single binary), so the operand is
-  always a static charlist.
+  Only non-interpolated charlists are touched: an interpolated `~c"a\#{x}b"` parses
+  with multiple `<<>>` parts, not a single binary.
 
-  On the **RHS of `in`** (`x in ~c"ab"`) the *empty* variant `~c""` is dropped — it is
-  `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already produces on the `in`
-  node — but the non-empty sentinel `~c"mutare"` is kept. Per-mutation, shared via
-  `Mutare.AST.empty_collection_literal?/1`. See NOTES "Equivalent-sibling suppression,
-  generalized".
+  Not mutated: on the **RHS of `in`** (`x in ~c"ab"`) the *empty* variant `~c""` is
+  dropped — it is `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already
+  produces — but the non-empty sentinel `~c"mutare"` is kept.
   """
   @behaviour Mutare.Mutator
 

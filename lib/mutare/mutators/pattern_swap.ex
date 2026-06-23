@@ -9,48 +9,23 @@ defmodule Mutare.Mutators.PatternSwap do
   position?* If a function destructures `{lat, lng}` and nothing distinguishes the two,
   swapping them survives — a located gap.
 
-  ## Why this is structural, not a node-level `mutate/1`
+  On by default, named in reports, toggleable via `:mutators`, filterable by
+  `# mutare:ignore[pattern_swap]`.
 
-  Like `Mutare.Mutators.ReturnValue`, a swap is not a rewrite of a single node a
-  `mutate/1` could match — it exchanges two *sibling* sub-patterns, so it needs the
-  whole container. The real entry point is `pattern_mutations/2`, which
-  `Mutare.Transform.FunctionPlan` calls for each `def`/`defp` clause head; `mutate/1`
-  is `:skip`. The module still implements `Mutare.Mutator` so it sits in the
-  `Mutare.Mutators` registry — on by default, named in reports, toggleable via
-  `:mutators`, filterable by `# mutare:ignore[pattern_swap]`.
+  ## Scope
 
-  Delivery is **lifting**: a selector `case` is illegal in a pattern, so the clause
-  group becomes one private function behind a dispatcher, with this swap a single
-  clause gated by its id, exactly as head-pattern literals and guards are (see
-  `Mutare.Transform.FunctionPlan`).
+  Only `def`/`defp` *heads* are mutated, and only **within containers** — tuples, lists,
+  the *values* of a map or keyword-list pattern (labels stay fixed), and the segment
+  *values* of a bitstring (the bindable left of each `::`, the spec staying put). The
+  top-level argument list is deliberately not a swap site (transposing whole arguments is
+  a separate, noisier mutation the project chose not to emit).
 
-  ## Scope and compile-safety
-
-  Only `def`/`defp` *heads* are mutated (the only pattern position Mutare lifts), and
-  only **within containers** — tuples, lists, the *values* of a map or keyword-list
-  pattern (labels stay fixed), and the segment *values* of a bitstring (the bindable left
-  of each `::`, the spec staying put).
-  The top-level argument list is deliberately not a swap site (transposing whole
-  arguments is a separate, noisier mutation the project chose not to emit).
-
-  A swap is **compile-safe**: it only reorders existing variables/pins, so the set of
-  bound names and their usage is unchanged (no unbound or unused variable can appear).
-  **Pins participate** (`{^a, ^b}` → `{^b, ^a}`, and a pin can trade places with a
-  distinct-named binding, `{^a, b}` → `{b, ^a}`): a pin only *references* a binding from an
-  enclosing scope, so if the original compiled the reference still resolves after the swap
-  — pins therefore show up wherever an outer variable is in scope (`case`/`fn`/`receive`
-  clauses), essentially never in a `def` head. The only nuance pins add over plain
-  bindings is that they change *which* value a position must equal, so in a rare
-  multi-clause arrangement a swap can broaden one clause to shadow a later same-arity one
-  — a benign "cannot match" warning that fails only under `--warnings-as-errors` and is
-  then dropped by poison-recovery (a plain-binding swap, which preserves refutability
-  exactly, can never even do that). Only two **distinct-named** variables/pins are swapped
-  — a same-name swap (`{x, x}`, `{^a, a}`) is a no-op (repetition is the
-  `Mutare.Mutators.PatternWildcard` family's domain), and `_`/`_`-prefixed names are never
-  swapped. For a bitstring the type/size specs stay pinned
-  to their positions, and a value read as a *size* elsewhere in the same binary
-  (`<<n, rest::binary-size(n)>>`) is never moved — Elixir requires a size variable to be
-  bound earlier in the binary, so relocating its binding would not compile.
+  Only two **distinct-named** variables/pins are swapped — a same-name swap (`{x, x}`,
+  `{^a, a}`) is a no-op (repetition is `Mutare.Mutators.PatternWildcard`'s domain), and
+  `_`/`_`-prefixed names are never swapped. **Pins participate** (`{^a, ^b}` → `{^b, ^a}`,
+  and a pin can trade places with a distinct-named binding, `{^a, b}` → `{b, ^a}`). For a
+  bitstring the type/size specs stay pinned, and a value read as a *size* elsewhere in the
+  same binary (`<<n, rest::binary-size(n)>>`) is never moved.
   """
   @behaviour Mutare.Mutator
 

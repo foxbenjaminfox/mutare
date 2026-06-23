@@ -5,17 +5,9 @@ defmodule Mutare.Mutators.List do
     * `++` ↔ `--` (list concatenation ↔ difference)
     * a non-empty list literal → `[]`
 
-  In-place and compile-safe — the operator swap reuses both operands, and an
-  empty list is legal wherever a list literal was. `++`/`--` are not guard-legal,
-  so the compiler guarantees a source guard never contains one; the literal
-  collapse to `[]` is a constant and stays guard-safe.
-
-  One redundancy `Mutare.Transform` resolves on this family's behalf: on the **RHS of
-  `in`** (`x in [a, b]`) the `[]` collapse yields `x in []` ≡ `false`, a mutant
-  `Mutare.Mutators.Conditional` already produces on the `in` node — so it is dropped there
-  (its elements still mutate). The drop is shared with the other collection-emptying
-  families via `Mutare.AST.empty_collection_literal?/1`. See NOTES "Equivalent-sibling
-  suppression, generalized".
+  Not mutated: on the **RHS of `in`** (`x in [a, b]`) the `[]` collapse yields
+  `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already produces — so it
+  is dropped there (the list's elements still mutate).
   """
   @behaviour Mutare.Mutator
 

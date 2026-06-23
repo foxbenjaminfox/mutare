@@ -14,71 +14,49 @@ defmodule Mutare.Macro.Spec do
 
   ## Identity
 
-  `module` is the resolved module **key** the way the rest of the transform keys
-  modules (`Mutare.Transform.Calls.module_key`): an Elixir-module path as an atom
-  list *without* the `Elixir.` prefix (`[:Kernel]`, `[:Ecto, :Query]`), or an
-  Erlang-module atom (`:binary`). A user writes the module the natural way
-  (`Kernel`, `Ecto.Query`, `:binary`); `normalize_module/1` converts it to the key.
-  `arity` is a non-negative integer or `:any` (matches a call of any arity).
+  You write `module` the natural way — `Kernel`, `Ecto.Query`, `:binary` — and it
+  is normalised to the key the transform uses internally. `arity` is a
+  non-negative integer or `:any` (matches a call of any arity).
 
   ## Argument treatments
 
   `args` is either a single treatment atom (applied uniformly to every argument),
   a per-position list (padded with `:expression`), or the **classifier sentinel**
-  `:routing` (see "Shape-aware routing" below). The treatments and how the analyzer
-  routes each:
+  `:routing` (see "Shape-aware routing" below). The treatments:
 
-    * `:expression` (default) — analyze as `:runtime` (mutate normally).
-    * `:pattern` — analyze as `:pattern` (descend so nested runtime escapes are
-      still reached, but never mutate the pattern itself). `match?`. The bindings the
-      pattern makes are **local** to the macro's expansion (a `case`/`fn`), so they do
-      not escape and the structural families have no observable swap to offer here.
+    * `:expression` (default) — an ordinary value: mutate it normally.
+    * `:pattern` — a match context (`match?`'s first argument): descend so nested
+      runtime expressions are still reached, but never mutate the pattern itself.
+      Its bindings are local to the macro's expansion.
     * `:binding_pattern` — a `:pattern` whose bindings **escape into the enclosing
-      scope** (`destructure([x, y], v)` binds `x`/`y` for the rest of the block). Routed
-      exactly like `:pattern` for the in-place descent, but **additionally** offered to the
-      structural pattern families (swap/wildcard) when the macro call sits in a
-      *value-discarded* position — a non-final block statement or a `with` clause — where
-      the mutant is delivered by re-exporting the escaping bindings through a tuple
-      (`Mutare.Transform.emit_macro_pattern_site/3`), the `=`-match analogue. The
-      registrant vouches that the macro binds every variable named in the pattern and
-      accepts pattern-legal swap/wildcard rewrites (`destructure` does).
-    * `:skip` — leave the argument **raw**: no descent, no mutation. The opaque
-      DSL case (`Ecto.Query.from`'s body), and the mechanism behind "handled only
-      by a custom mutator" — core skips the args, while the whole macro node is
-      still offered to every mutator, so a registering library's mutator fires.
-    * `:hosted` — like `:skip`, the argument is left **raw** for core (no descent, no
-      in-place selector — a `case` spliced into a compile-time DSL fragment would poison
-      the single build), but its mutations are instead delivered through the **hosting
-      mutator's selector host** (`c:Mutare.Mutator.host/2`): core hands the whole macro
-      node to the host, which returns `{logical original, logical mutants}` plus `wrap`/
-      `splice` transforms, and core builds the id-gated selector, records the Site from
-      the logical pair, and weaves it in. The deep-DSL case (mutating *inside* `Ecto`'s
-      `from`/`where`, where the fragment has SQL semantics, not Elixir's). A `:hosted`
-      treatment is only valid when the spec carries a `host` — a mutator implementing
-      `c:Mutare.Mutator.host/2` — which `Mutare.Macros.from_mutators/1` stamps for the
-      registering mutator. See `Mutare.Transform.emit_hosted_site/3`.
+      scope** (`destructure([x, y], v)` binds `x`/`y` for the rest of the block).
+      Routed like `:pattern`, but **additionally** earns structural swap/wildcard
+      mutants when the call sits in a value-discarded position. The registrant
+      vouches that the macro binds every variable named in the pattern and accepts
+      pattern-legal swap/wildcard rewrites (`destructure` does).
+    * `:skip` — leave the argument **raw**: no descent, no mutation. The opaque DSL
+      case (`Ecto.Query.from`'s body). The whole macro node is still offered to
+      every mutator, so a registering library's own mutator can still fire on it.
+    * `:hosted` — like `:skip`, raw for core, but its mutations are delivered
+      through the hosting mutator's `c:Mutare.Mutator.host/2` callback. The deep-DSL
+      case (mutating *inside* `Ecto`'s `from`/`where`, where the fragment has SQL
+      semantics, not Elixir's). Only valid when the spec carries a `host`.
 
   ## Shape-aware routing (the `:routing` classifier)
 
   A static per-position list can't express a treatment that depends on the *call shape*:
   `where(q, category: "Foo")` is plain data (mutate the value, `:expression`) while
   `where(q, [u], u.x == u.y)` is a `:hosted` DSL fragment. The sentinel `args: :routing`
-  defers the per-position routing to the hosting mutator's `c:Mutare.Mutator.macro_routing/1`,
-  which `Mutare.Transform.Resolve` consults with the concrete call node. Like `:hosted`,
-  `:routing` is only valid with a `host`.
-
-  `routing/2` expands a *static* `args` to a per-position list for a concrete arity; a
-  `:routing` spec is resolved by `Mutare.Transform.Resolve` (which has the call node), not
-  here.
+  defers the per-position routing to the hosting mutator's `c:Mutare.Mutator.macro_routing/1`.
+  Like `:hosted`, `:routing` is only valid with a `host`.
 
   ## Host
 
   `host` is the mutator module that delivers a `:hosted` argument's mutations and answers
-  the `:routing` classifier — `nil` for an ordinary spec. It is **not** user-written on the
-  entry: `Mutare.Macros.from_mutators/1` stamps it to the mutator whose `c:Mutare.Mutator.macros/0`
-  contributed the spec, so a library's `:hosted`/`:routing` registration automatically points
-  back at the library's own host/classifier callbacks. A declarative `:macros` entry (no
-  mutator) therefore can't use `:hosted`/`:routing` — `Mutare.Macros.build/2` raises if it does.
+  the `:routing` classifier — `nil` for an ordinary spec. It is **not** written on the
+  entry: a mutator that registers a `:hosted`/`:routing` macro via
+  `c:Mutare.Mutator.macros/0` is stamped as its own host automatically. A *declarative*
+  `:macros` entry (no mutator) therefore can't use `:hosted`/`:routing`.
   """
 
   @typedoc "A resolved module key: an Elixir-module atom path or an Erlang-module atom."

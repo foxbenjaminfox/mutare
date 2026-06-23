@@ -5,22 +5,17 @@ defmodule Mutare.Mutators.BitstringLiteral do
   `TupleLiteral` — it asks "does anything depend on this binary's contents?". A
   binary that is built but whose bytes no test pins down lets `<<>>` survive.
 
-  Only a genuine `<<…>>` literal is touched — not the other constructs that share
-  the `{:<<>>, …}` AST shape:
+  Not mutated — constructs that merely share the `<<…>>` AST shape:
 
-    * an **interpolated string** (`"a\#{x}b"`) parses as a `<<>>` carrying a
-      `delimiter` in its metadata. It is conceptually a string (in
-      `StringLiteral`'s domain, which deliberately skips interpolations), so it is
-      excluded here by that delimiter marker;
-    * a **sigil's content** (`~r/…/`, `~D[…]`) is a `<<>>` *inside* the sigil node.
-      `Mutare.Transform` does not descend into sigil internals (the sigil mutators
-      own the whole node), so this never reaches here.
+    * an **interpolated string** (`"a\#{x}b"`) — conceptually a string, left to
+      `StringLiteral`'s domain (which itself skips interpolations);
+    * a **sigil's content** (`~r/…/`, `~D[…]`) — the sigil mutators own the whole
+      node.
 
-  In-place and compile-safe — `<<>>` is a legal value wherever a bitstring literal
-  was. A bitstring in a *pattern* is routed to `:pattern` and not offered, so a
-  match like `<<a, b>> = bin` is not corrupted. The segment *values* still mutate
-  independently (a byte via `Literal`, a string segment via `StringLiteral`, an
-  expression via `Arithmetic`, a `size(expr)` arg via `Literal`).
+  A bitstring in a *pattern* is left alone, so a match like `<<a, b>> = bin` is not
+  corrupted. The segment *values* still mutate independently (a byte via `Literal`,
+  a string segment via `StringLiteral`, an expression via `Arithmetic`, a
+  `size(expr)` arg via `Literal`).
   """
   @behaviour Mutare.Mutator
 

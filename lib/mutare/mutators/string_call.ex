@@ -29,26 +29,15 @@ defmodule Mutare.Mutators.StringCall do
   so renaming cannot express the swap.)
 
   It also makes one **call → operator** substitution: `String.equivalent?(a, b)`
-  (Unicode-canonical equality) → `Elixir.Kernel.==(a, b)`, dropping the normalization.
-  The mutant survives unless a test feeds canonically-equivalent-but-distinct
-  encodings — pointing at exactly that gap. It is emitted through the **absolute**
-  `Elixir.Kernel` alias, not a bare `a == b`, so neither a same-named local/imported
-  `==` (`import Kernel, except: [==: 2]` plus a `def a == b`) nor a later
-  `alias Foo, as: Kernel` can shadow the swap. Arity tells the pipe context apart
-  (`equivalent?/1` doesn't exist, so a 1-arg call is always a `|>` stage):
-  `a |> String.equivalent?(b)` becomes `a |> Elixir.Kernel.==(b)`.
+  (Unicode-canonical equality) → `Kernel.==(a, b)`, dropping the normalization. The
+  mutant survives unless a test feeds canonically-equivalent-but-distinct encodings —
+  pointing at exactly that gap.
 
-  Each pair shares its arities, so swapping the function name while keeping the
-  argument list always compiles. These are remote calls — never legal in a guard
-  — so guard-safety is automatic. The sibling of `Mutare.Mutators.Collection`
-  (the `Enum`/`List` swaps).
-
-  `String`, the Erlang `:string` module, and the Erlang `:binary` module are all matched by
-  their **resolved** module through the shared `Mutare.Transform.Calls` reader, so the direct,
-  aliased, and bare imported forms all match: `String.upcase`, `alias String, as: S; S.upcase`,
-  and `import String; upcase` — and likewise `:string.uppercase`, `alias :string, as: S;
-  S.uppercase`, `import :string; uppercase`, and `:binary.first`. A *shadowing*
-  `alias MyApp.String` resolves to the local module and is correctly left alone.
+  The sibling of `Mutare.Mutators.Collection` (the `Enum`/`List` swaps). `String`, the
+  Erlang `:string` module, and the Erlang `:binary` module are all matched in their
+  direct, aliased, and bare-imported forms (`String.upcase`, `alias String, as: S;
+  S.upcase`, `import String; upcase`, and likewise `:string.uppercase`, `:binary.first`),
+  while a shadowing `alias MyApp.String` is left alone.
 
   On by default — high signal on the affix/case/predicate functions that anchor
   string-handling logic, exactly where an off-by-direction bug hides. Distinct

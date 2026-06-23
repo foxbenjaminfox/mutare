@@ -7,43 +7,24 @@ defmodule Mutare.Mutators.AtomLiteral do
   is the atom counterpart of `Mutare.Mutators.StringLiteral`'s non-empty `"mutare"`
   arm — a guaranteed-distinct value that a real assertion (`status == :waiting`, a
   message atom) pins down but a too-weak suite does not. Unlike a string there is no
-  "empty" atom, so a single sentinel is the whole family — there is no second,
-  contrasting value to emit.
-
-  In-place and compile-safe — an atom literal is legal wherever the original was,
-  emitted with fresh metadata so Sourceror renders `:mutare` rather than a stale
-  `:token`/`:delimiter` from the original (the clean-meta rule that bites every
-  literal-valued mutator).
+  "empty" atom, so a single sentinel is the whole family.
 
   ## What is *not* mutated
 
-    * **`true` / `false` / `nil`** — these parse as atom literals too, but they are
-      not value-atoms in spirit: booleans belong to `Mutare.Mutators.Literal` (and
-      `Conditional`), and `nil` is the absence sentinel. Mutating them here would
-      double-cover or add noise. Excluded by guard.
+    * **`true` / `false` / `nil`** — these parse as atom literals too, but booleans
+      belong to `Mutare.Mutators.Literal` (and `Conditional`), and `nil` is the absence
+      sentinel.
     * **Convention atoms** (`:ok`/`:error`, `:cont`/`:halt`, `:lt`/`:gt`) — owned by
       `Mutare.Mutators.ConventionAtom`, which swaps each for its high-signal same-shape
-      *sibling* (`:ok` → `:error`) rather than the sentinel. Excluded by guard, the same
-      ownership split as `true`/`false`/`nil`; the list lives with that family.
-    * **Block keys** (`do:`/`else:`/`rescue:`/`catch:`/`after:`, so `case … do` and
-      `if x, do: …, else: …`) and the two **compile-constrained** key positions — a
-      `%Struct{field: v}` field name and a `for` special-form option (`into:`/`uniq:`/
-      `reduce:`) — *are* excluded by `Mutare.Transform`'s positive context classifier:
-      a selector spliced into a `do:` key would not even render, and a wrong field name /
-      unsupported `for` option is a compile error. So this module never sees those.
+      *sibling* (`:ok` → `:error`) rather than the sentinel.
+    * **Block keys** (`do:`/`else:`/`rescue:`/`catch:`/`after:`), a `%Struct{field: v}`
+      field name, and a `for` option (`into:`/`uniq:`/`reduce:`) — mutating these would
+      be illegal or a compile error.
 
-      But ordinary keys and clause patterns **are** offered to it — a key/pattern is
-      *not* universally skipped. A *data* keyword/map key (`%{a: :b}`, `[a: :b]`)
-      descends exactly like its `%{:a => :b}` / `[{:a, :b}]` twin and *is* mutated; the
-      key of a keyword passed as a call's trailing argument (`foo(timeout: 5)`) is
-      mutated too, opt-out-able per mutator with
-      `{Mutare.Mutators.AtomLiteral, call_option_keys: false}`
-      (read by `Transform.gate_candidates/1`); and a `case`/`receive`/`fn` clause
-      pattern atom (`case x do :waiting -> …`) is mutated via the tuple-the-scrutinee /
-      whole-construct rewrites. Nothing here is special-cased for those positions —
-      placement is decided positionally by the transform, and the boolean/convention
-      guards above still apply everywhere, so `:ok`/`true`/`nil` stay this family's
-      no-ops regardless of where they sit.
+  Ordinary atoms in data keyword/map keys (`%{a: :b}`, `[a: :b]`) and in
+  `case`/`receive`/`fn` clause patterns **are** mutated. The key of a keyword passed as
+  a call's trailing argument (`foo(timeout: 5)`) is mutated too — opt out per mutator
+  with `{Mutare.Mutators.AtomLiteral, call_option_keys: false}`.
   """
   @behaviour Mutare.Mutator
 

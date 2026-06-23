@@ -34,13 +34,10 @@ defmodule Mutare.Mutators.RegexLiteral do
       `~r/x/is`, `~r/x/us`, `~r/x/ui`. Removing `i` (caseless), `s` (dotall), `u`
       (unicode), `m` (multiline), … each changes what the pattern accepts.
 
-  In-place and compile-safe: every replacement is written to stay a legal regex
-  wherever the original was (an escaped `\\$`/`\\d`/`\]` is left alone, a leading
-  `]` in a class is literal, bound counts are kept ordered). The metamutant
-  validates each static regex at *compile* time, so the rare pathological mutant
-  is caught by the poison pre-filter rather than shipped. Only non-interpolated
-  patterns are touched: an interpolated `~r/\#{x}/` parses with multiple `<<>>`
-  parts (not a single binary), so the pattern operand is always static.
+  Every replacement is written to stay a legal regex (an escaped `\\$`/`\\d`/`\]` is
+  left alone, a leading `]` in a class is literal, bound counts are kept ordered). Only
+  non-interpolated patterns are touched: an interpolated `~r/\#{x}/` parses with multiple
+  `<<>>` parts, not a single binary.
   """
   @behaviour Mutare.Mutator
 

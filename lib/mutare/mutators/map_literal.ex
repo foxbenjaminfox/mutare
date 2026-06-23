@@ -5,22 +5,15 @@ defmodule Mutare.Mutators.MapLiteral do
   it asks "does anything depend on this map's contents?". A weak suite that builds
   a map but never reads a key it carries lets the empty map survive.
 
-  In-place and compile-safe — `%{}` is legal wherever a map literal was.
-
   ## What is *not* mutated
 
     * **The empty map `%{}`** — collapsing it to itself is a no-op.
-    * **A map update `%{m | …}`** — that is not a literal; `%{}` would drop the
-      base map `m` (a different operation, not a smaller version of the same one).
-    * **A struct's field map** (`%User{…}`) — `Mutare.Transform` does not offer the
-      `%{}` *inside* a `%Struct{}` to a mutator (emptying it would drop required
-      fields / change the struct), though the struct's field *values* still mutate.
-      So this module only ever sees standalone map literals.
+    * **A map update `%{m | …}`** — not a literal; `%{}` would drop the base map `m`
+      (a different operation, not a smaller version of the same one).
+    * **A struct's field map** (`%User{…}`) — emptying it would drop required fields,
+      so the inner `%{}` is left alone (the struct's field *values* still mutate).
     * **The RHS of `in`** (`x in %{…}`) — `x in %{}` ≡ `false`, which
-      `Mutare.Mutators.Conditional` already produces on the `in` node, so `Transform`
-      drops it there (shared with the other collection-emptying families via
-      `Mutare.AST.empty_collection_literal?/1`). See NOTES "Equivalent-sibling
-      suppression, generalized".
+      `Mutare.Mutators.Conditional` already produces.
   """
   @behaviour Mutare.Mutator
 

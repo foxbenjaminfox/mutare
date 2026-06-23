@@ -10,25 +10,17 @@ defmodule Mutare.Mutators.AliasLiteral do
   there lets the sentinel survive; anywhere the module is actually invoked, the
   mutant (a nonexistent module) raises and is killed.
 
-  It is **not** mutated where it is a *name/type*, not a value — those are excluded
-  positionally by `Mutare.Transform`, not here:
+  It is **not** mutated where it is a *name/type* rather than a value:
 
-    * the module side of a remote call (`MyModule.foo()`) — it lives in the call's
-      `{:., …}` *form* position, which the analyzer descent treats as opaque (the
-      same reason `:erlang.foo()`'s `:erlang` is untouched);
-    * a struct name (`%MyStruct{…}`) — the `%Struct{}` alias is not offered (it is
-      a type, and the sentinel is not a struct);
+    * the module side of a remote call (`MyModule.foo()`);
+    * a struct name (`%MyStruct{…}`) — it is a type, and the sentinel is not a struct;
     * `alias`/`import`/`require`/`use` directives, `@behaviour`/`@type`/specs, and a
-      `defmodule` name — all compile-time, pruned;
-    * the module references a `defimpl` protocol / `for:` type, a `defprotocol`, or a
-      `defdelegate` `to:` carry — compile-time, excluded by `Mutare.Transform` (a
+      `defmodule` name — all compile-time;
+    * the module of a `defimpl`/`for:`, a `defprotocol`, or a `defdelegate` `to:` (a
       `defimpl`'s implementation *body* still mutates).
 
-  In-place and compile-safe: an alias used as a value is just an atom at runtime
-  (`MyModule == :"Elixir.MyModule"`), so a reference to a nonexistent sentinel
-  module compiles fine and only fails when actually called — which is the kill.
-  Only fully-literal aliases (every segment an atom) are touched; a dynamic alias
-  like `__MODULE__.Sub` or `unquote(m).Foo` is left alone.
+  Only fully-literal aliases (every segment an atom) are touched; a dynamic alias like
+  `__MODULE__.Sub` or `unquote(m).Foo` is left alone.
   """
   @behaviour Mutare.Mutator
 

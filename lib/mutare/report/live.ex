@@ -11,37 +11,16 @@ defmodule Mutare.Report.Live do
   a live-updating status block at the bottom (a spinner, the activity line, and a
   counter with an ETA).
 
-  The scan runs *before* the runner (in the Mix task), so its progress is driven
-  directly rather than through `:on_phase`; `clear/1` tears the scan block down
-  before the mutant count prints to stdout so the two don't collide on one line.
-
-  ## Why a process
-
-  The runner calls the `:reporter`/`:on_start` callbacks from many concurrent
-  worker processes (one per in-flight mutant), so every terminal write must be
-  serialized through a single owner — this `GenServer`. It also owns a tick timer
-  so the spinner/elapsed/ETA animate even while the foreground process is blocked
-  inside `Task.async_stream`.
-
-  ## Two output modes, one path
+  ## Output modes
 
   All output goes to **stderr** so it never corrupts a machine report written to
-  stdout (`--format json` piped to a file). Whether to animate is decided once at
-  start by `detect_ansi/0`: a real terminal on stderr with ANSI enabled gets the
-  live status block (cursor moves erase and redraw it); anything else (a pipe, a
-  CI log) degrades to plain mode — phase transitions and the leave-behind lines
-  print as ordinary scrollback, with no cursor tricks and no spinner. Colour is
-  decided separately (`color_enabled?/0`): the `NO_COLOR` convention drops the
-  leave-behind label colour while keeping the live block. To suppress the reporter
-  *entirely* (no stderr at all), the Mix task simply doesn't start it — `--quiet`.
-
-  ## Testing
-
-  The stateful IO shell is deliberately thin; the rendering is pure. `status_block/2`,
-  `leave_behind/1`, `humanize_secs/1`, `truncate/2`, and `eta_secs/3` take a plain
-  state map (or scalars) and return strings, so the visible output is unit-tested
-  without a terminal or a clock — the server only wraps them in cursor codes and a
-  `System.monotonic_time/1` reading.
+  stdout (`--format json` piped to a file). A real terminal on stderr with ANSI
+  enabled gets the live status block (a spinner and a redrawn counter); anything
+  else (a pipe, a CI log) degrades to plain scrollback — phase transitions and the
+  leave-behind lines, no cursor tricks, no spinner. Colour is decided separately:
+  the `NO_COLOR` convention drops the leave-behind label colour while keeping the
+  live block. `--quiet` suppresses the reporter entirely (the Mix task simply
+  doesn't start it).
   """
 
   use GenServer

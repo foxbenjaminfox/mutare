@@ -6,8 +6,12 @@ defmodule Mutare.Runner do
   time, run the baseline green, then launch one `mix test` process per mutant
   with `MUTANT_UNDER_TEST` set. Sources never change between runs, so mix's
   incremental compiler finds nothing to rebuild — the per-mutant cost is process
-  boot plus the suite (only up to the first failure for a kill, via
-  `--max-failures 1`; see `Mutare.Sandbox.Command`), never recompilation.
+  boot plus the suite (only up to the first failure for a kill), never
+  recompilation.
+
+  `run/2` returns `%{schema, results, sandbox, baseline_ms}`: the `Mutare.Schema`
+  that was run, the list of per-mutant `Mutare.Result`s, the sandbox path, and the
+  baseline run's wall-clock in milliseconds.
 
   ## Baseline + coverage probe
 
@@ -27,24 +31,15 @@ defmodule Mutare.Runner do
   `System.schedulers_online/0`), each its own `mix test` OS process in the shared
   sandbox. Each run has a wall-clock cap (`baseline × :timeout_multiplier`,
   default 3.0, with a floor; or an explicit `:timeout` in ms): a mutation can
-  turn a terminating loop infinite, so the run is capped.
+  turn a terminating loop infinite, so the run is capped. A capped run counts as
+  `:timeout` — a kill, since the hang is observable misbehavior.
 
-  The cap is enforced *portably* by the mutant run **halting itself** — the
-  injected watcher (see `Mutare.Sandbox`) calls `System.halt/1` after the
-  deadline — rather than the runner killing an OS process tree (which needs
-  platform-specific signals). A capped run exits with
-  `Mutare.Sandbox.Command.timeout_exit/0`, which we count as `:timeout` (a kill —
-  the hang is observable misbehavior).
+  ## Harness errors are kept out of the score
 
-  ## Outcomes vs. exit codes
-
-  `Mutare.Sandbox.Command` owns the exit-code contract and decodes each mutant
-  run into a typed outcome; the runner only maps that onto a `Mutare.Result`
-  status. The point of the typing is the `:harness_error` case — a run that never
-  reached a verdict (a compile error, a missing dependency, a filesystem race).
-  Such a run says *nothing* about the mutation, so it is recorded as
-  `:harness_error` and kept out of the score's denominator, never silently
-  miscounted as a kill the way a raw "non-zero ⇒ killed" rule would.
+  A mutant run that never reaches a verdict — a compile error, a missing
+  dependency, a filesystem race — says *nothing* about the mutation, so it is
+  recorded as `:harness_error` and kept out of the score's denominator, never
+  silently miscounted as a kill the way a raw "non-zero ⇒ killed" rule would.
 
   Two knobs harden this against flakiness and systemic breakage:
 

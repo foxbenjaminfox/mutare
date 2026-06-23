@@ -6,22 +6,14 @@ defmodule Mutare.Mutators.Conditional do
 
   Applies to the nodes that are guaranteed boolean-typed: the comparison and
   membership operators (`>`, `>=`, `<`, `<=`, `==`, `!=`, `===`, `!==`, `in`) and
-  the logical connectives (`and`, `or`, `&&`, `||`, `not`, `!`). Substituting a
-  literal `true`/`false` for one of these is always compile-safe (it stays a
-  boolean) and guard-safe (a bare boolean is legal in a `when`).
+  the logical connectives (`and`, `or`, `&&`, `||`, `not`, `!`). Guard-safe — a
+  bare boolean is legal in a `when`.
 
   On by default. It overlaps the relational/logical swaps and roughly doubles the
   mutants at every condition, but the extra signal — proving each branch is
-  actually exercised — is worth the volume.
-
-  One self-overlap `Mutare.Transform` resolves on this family's behalf: on a
-  short-circuit connective whose **left** operand is itself a boolean op, forcing the
-  whole node to one constant duplicates forcing the left operand to it — `(L and R) →
-  false` ≡ `L → false` and `(L or R) → true` ≡ `L → true` (the left short-circuits the
-  node, evaluating neither operand in either mutant). So the connective-node constant is
-  dropped (the operand keeps its precise diff); the *other* constant and Logical's
-  `and`↔`or` stay. A non-boolean-op left (`is_binary(a) and R`) has no subsuming sibling,
-  so both constants are kept there. See NOTES "Equivalent-sibling suppression, generalized".
+  actually exercised — is worth the volume. (On a short-circuit `and`/`or` whose
+  left operand is itself a boolean op, the redundant whole-node constant is
+  dropped, since forcing the left operand already covers it.)
   """
   @behaviour Mutare.Mutator
 

@@ -7,20 +7,10 @@ defmodule Mutare.Mutators.Integer do
       other is a classic off-by-operation bug
     * `Integer.is_even` ↔ `Integer.is_odd` — the parity predicates
 
-  Each pair shares its arity (`mod`/`floor_div` are `/2`, `is_even`/`is_odd` are
-  `/1`), so renaming while keeping the argument list always compiles. Like the other
-  call-matching families, it matches `Integer` by its **resolved** module
-  (`Mutare.Transform.Calls`): a renamed `alias Integer, as: I`, and a bare imported
-  `is_even` (`import Integer`), are matched (and
-  mutates `I.is_even` → `I.is_odd`), while a shadowing `alias MyApp.Integer` resolves
-  to the local module and is correctly left alone.
-
-  `Integer.is_even`/`is_odd` are **guard-safe macros**, so they appear in `when`
-  clauses as well as bodies. A guard swap is delivered by lifting (a selector
-  `case` can't live in a guard) — the same `Integer.` source already carries the
-  `require Integer` those macros need, so the `is_odd` copy compiles. `mod`/
-  `floor_div` are ordinary functions (never guard-legal), so those swaps are always
-  in place. On by default.
+  `Integer.is_even`/`is_odd` are **guard-safe macros**, so a swap in a `when` clause is
+  mutated too. On by default. Matches aliased and bare-imported calls
+  (`alias Integer, as: I; I.is_even` → `I.is_odd`), while a shadowing `alias MyApp.Integer`
+  is left alone.
   """
   @behaviour Mutare.Mutator
 

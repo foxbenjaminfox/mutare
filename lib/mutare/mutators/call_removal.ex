@@ -54,45 +54,15 @@ defmodule Mutare.Mutators.CallRemoval do
   mutation. This family keeps to transforms whose removal yields a same-typed,
   plausibly-interchangeable value.
 
-  ## Bare vs qualified `Kernel` (`abs`, `binary_slice`, `binary_part`)
+  A non-piped call drops to its first argument (`Enum.sort(x)` → `x`); a pipe stage
+  becomes `Function.identity()` (`x |> Enum.sort()` ≡ `x`), since a stage can't be made
+  to vanish. A guard-legal removal (`abs(x) > 0` → `x > 0`) is mutated inside a `when`
+  too.
 
-  A *qualified* `Kernel.abs(x)` / `Kernel.binary_slice(b, r)` carries the prefix that
-  proves the function, so it is removed arity-blind alongside the remote targets. A
-  *bare* `abs(x)` / `binary_slice(b, r)` has no prefix to prove it is the `Kernel` one
-  (not a same-named user function), so — like the bare `Kernel` calls in
-  `Mutare.Mutators.Numeric` — it is removed only at the function's true *effective*
-  arity (`abs/1`, `binary_slice/2`, `binary_slice/3`, `binary_part/3`), recovered with
-  the pipe flag (a pipe stage carries one fewer argument than the source reads). And when
-  `import Kernel, except:/only:` has displaced it
-  (`Mutare.Transform.Imports.kernel_displaced?/1`), the bare call names another module's
-  function, so it is left alone. The guard-safe ones (`abs/1`, `binary_part/3`) are also
-  removed inside a `when`, delivered by lifting (`abs(x) > 0` → `x > 0`, guard-legal).
-
-  ## Why it's pipe-aware (`mutate/2`, never `mutate/1`)
-
-  Non-piped, removal is node-local: `Enum.sort(x)` → `x` (return the first argument).
-  But a pipe stage carries one fewer argument than the source reads (the input is the
-  `|>` left side, not in the call), so `x |> Enum.sort(cmp)` reaches a mutator as a
-  1-arg `Enum.sort(cmp)`, indistinguishable from a non-piped `Enum.sort(cmp)` — and
-  returning the bare `cmp` there would be nonsense. So it implements the optional
-  `mutate/2` callback, which `Mutare.Transform` invokes with `%{pipe_mode: :piped | :unpiped}`:
-
-    * **non-piped** → the first argument (`Enum.sort(x)` → `x`), the cleanest diff;
-    * **piped** → `Elixir.Function.identity()`, so `x |> Enum.sort()` becomes
-      `x |> Elixir.Function.identity()` ≡ `Function.identity(x)` ≡ `x`. A pipe stage can't be
-      made to *vanish* inside a selector, and `Function.identity/1` is the minimal,
-      compile-safe, honest no-op that rides the existing `hoist_pipe` path unchanged. It is
-      emitted through the **absolute** `Elixir.Function` alias (led by `:Elixir`, which alias
-      resolution never rewrites) so a target-module `alias Foo, as: Function` can't redirect
-      the generated no-op — the same alias-proofing the `Elixir.Kernel` emissions use.
-
-  On by default. `Function.identity/1` exists since Elixir 1.10 (well under the 1.18
-  floor); these are remote calls, so guard-safety is automatic. Targets are recognised by
-  their **resolved** module through the shared `Mutare.Transform.Calls` reader — Elixir
-  (`[:Enum]`) *and* Erlang (`:string`/`:erlang`) modules alike — so a direct call, an
-  aliased one (`alias Enum, as: E; E.sort(x)`; `alias :string, as: S; S.trim(x)`), and a
-  bare imported one (`import Enum; sort(x)`; `import :string; trim(x)`) are all matched. Only
-  a bare `Kernel` call (`abs`, the binary slicers) is handled outside the reader.
+  On by default. Matches aliased and bare-imported calls (Elixir and Erlang modules
+  alike) — `alias Enum, as: E; E.sort(x)`, `import :string; trim(x)`. A bare `Kernel`
+  call (`abs`, the binary slicers) is removed only at its true arity, so a same-named
+  user function is left alone.
   """
   @behaviour Mutare.Mutator
 

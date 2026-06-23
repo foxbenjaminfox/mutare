@@ -3,47 +3,32 @@ defmodule Mutare.Mutators.Arithmetic do
   Arithmetic operator swaps: `+`↔`-`, `*`↔`/`, `div`↔`rem`, plus unary-minus
   removal (`-x` → `x`).
 
-  In-place and compile-safe by construction — swapping one binary arithmetic
-  operator for another always type-checks at compile time, and dropping a unary
-  minus leaves a sub-expression that already type-checked.
-
-  ## `div`/`rem` are calls, not operators (arity-gated, pipe-aware)
-
-  Unlike `+`/`-`/`*`/`/` — genuine operators, always written infix at arity 2 — `div`
-  and `rem` are bare `Kernel` *function calls*, so a same-named user `div/3` would
-  otherwise be matched and swapped to a `rem/3` that may not exist, poisoning the
-  single build. The swap is therefore handled in `mutate/2` and offered only at
-  **effective arity 2** (the same bare-`Kernel` safeguard as `Mutare.Mutators.Numeric`).
-  Because the swap keeps the argument list, it is also valid as a pipe stage
-  (`x |> div(y)` → `x |> rem(y)`); the pipe flag recovers the effective arity, since a
-  stage carries one fewer argument than the source reads. Guard-legal, so a `div`/`rem`
-  in a `when` is delivered by lifting.
+  On by default. `div`/`rem` are guard-legal, so a `div`/`rem` in a `when` guard is
+  mutated too. `div`/`rem` are also pipe-aware (`x |> div(y)` → `x |> rem(y)`).
 
   ## Unary-minus removal (`-x` → `x`)
 
   The classic "invert negatives" mutation: a sign flip the suite should notice.
-  It is distinguished from binary subtraction purely by arity (one operand vs
-  two). `-0` (a literal zero) is skipped — `-0 == 0`, so the mutant is
-  equivalent.
+  `-0` (a literal zero) is skipped — `-0 == 0`, so the mutant is equivalent. (`-0.0`
+  is *not* skipped: dropping the unary minus normalizes negative zero, an observable
+  change.)
 
   ## Multiplicative identity is skipped
 
   `a * 1` and `a / 1` are skipped — swapping `*`↔`/` there leaves the value
-  unchanged, so the mutant would be equivalent and only inflate the score's
-  denominator. Only the **right** operand qualifies: `1 * a` → `1 / a` is a
-  reciprocal, a real change.
+  unchanged, an equivalent mutant. Only the **right** operand qualifies: `1 * a` →
+  `1 / a` is a reciprocal, a real change.
 
   Caveat (rare, `==`-invisible): `/` always yields a float, so for integer `a`,
-  `a * 1` and `a / 1` differ in *type* — equal under `==`, not under `===`. We
-  treat that as equivalent for scoring.
+  `a * 1` and `a / 1` differ in *type* — equal under `==`, not under `===`. Treated
+  as equivalent for scoring.
 
   ## Additive identity is NOT skipped
 
-  We deliberately keep `a + 0` and `a - 0` as mutants. Adding/subtracting a
-  literal zero has one genuine, test-observable use: normalizing floating-point
-  negative zero (`x + 0.0` turns `-0.0` into `0.0`, but `x - 0.0` keeps it). If
-  an author writes that on purpose, the `+`↔`-` mutant is precisely the check
-  that they actually test the result — so we surface it rather than hide it.
+  `a + 0` and `a - 0` are deliberately kept as mutants. Adding/subtracting a literal
+  zero has one genuine, test-observable use: normalizing floating-point negative zero
+  (`x + 0.0` turns `-0.0` into `0.0`, but `x - 0.0` keeps it) — so the `+`↔`-` mutant
+  is surfaced as the check that an author actually tests the result.
 
   `div`/`rem` are never identities either: `div(a, 1)` is `a`, but `rem(a, 1)`
   is always `0`.
