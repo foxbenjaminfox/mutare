@@ -3329,10 +3329,12 @@ running. This is *sibling equivalence* — distinct from the *containment* dedup
 `Transform.Overlap` (a leaf swap covered by a call rewrite, derived from footprints).
 We collapse it exactly as the `not in` precedent always did: at analysis time, descend
 the operands but do **not** offer the inner/redundant node — leaving no id/site/selector,
-so ids stay contiguous (the same property as `Overlap`/`gate_candidates`). Three new
+so ids stay contiguous (the same property as `Overlap`/`gate_candidates`). (Case 4 below
+is the one variant that *offers* the node but drops a single one of its mutations — a
+per-mutation filter, the same shape as the `in`-RHS empty-collection drop.) Four new
 cases, each mirrored across the two parallel descents — `Transform.Analyze` for bodies,
 `Transform.Tag` for `when` guards (`!`/`&&`/`||` are guard-illegal, so the guard side
-handles only `not`):
+handles only `not` and `and`/`or`):
 
 1. **`not`/`!` over an equality operator** (`==`/`!=`/`===`/`!==`) — the `in` rule
    generalized. Each equality op is its own *exact polarity complement*, so under the
@@ -3382,16 +3384,40 @@ handles only `not`):
    fully offered, because the two strips can diverge on a non-boolean operand (`not x`
    raises where `!x` coerces to `false`) — not equivalent, so not collapsed.
 
+4. **A short-circuit connective whose left operand is itself a boolean op** —
+   `Conditional`'s self-overlap on nested boolean ops. On `and`/`&&`, forcing the whole
+   node to `false` (Conditional) is the **identical program** to forcing the *left*
+   operand to `false`: both evaluate *neither* operand (`false and R` short-circuits R, and
+   the false left is itself never evaluated), so they are equivalent **unconditionally** —
+   no purity assumption. So the connective-node `false` is dropped; the operand's own
+   `L → false` (the survivor it duplicated) stays, as does the node's `true` (`(L and R) →
+   true` evaluates R — distinct) and Logical's `and`↔`or`. `or`/`||` is the mirror: the
+   node's `true` is dropped (`(L or R) → true` ≡ `L → true`). The drop is gated on the
+   **left** being a Conditional-eligible boolean op (`boolean_op_node?/1`), since that is
+   exactly when the subsuming `L → false`/`L → true` sibling is generated — `is_binary(a)
+   and R` has no `is_binary(a) → false`, so its node `→ false` is genuine and kept (and is
+   *not* equivalent there: forcing the left false would still run `is_binary(a)`). Unlike
+   cases 1–3 this *offers* the node and drops a single mutation (`drop_constant_candidate/2`
+   in `Analyze`, `offer_without_constant/4` in `Tag`) — the per-mutation shape of the
+   `in`-RHS empty-collection drop, because we keep the sibling constant and the swap. `&&`/
+   `||` are body-only; the guard twin handles `and`/`or`. It composes down a chain:
+   `a > 0 and b > 0 and c > 0` parses `(… and …) and …` and each `and` (whose left is a
+   boolean op — the inner `and` is one) drops its own `false`.
+
+   The **purity-dependent residual is deliberately left alone**: for *pure* operands,
+   forcing the *right* operand false (`L and false`) also makes the node false, so `L →
+   false` and `R → false` are themselves mutually equivalent — but only because comparisons
+   are pure, which the analyzer can't cheaply prove (forcing `R` evaluates `L`'s effects).
+   Only the unconditional node≡left equivalence is collapsed; the rest stays, erring toward
+   recall as the philosophy requires.
+
 Why **targeted** suppressions and not a general normalize-then-dedup pass: collapsing
 errs only toward *recall loss* (never a false kill), but a boolean/constant-folding
 normalizer is a real maintenance surface that risks over-collapsing genuinely-distinct
-mutants. These three are each provably lossless (the dropped mutant has a named,
+mutants. These four are each provably lossless (the dropped mutant has a named,
 equivalent survivor), so they stay positive suppressions in the analyzer — consistent
 with the `not in`, `ReturnValue`-skips-boolean, and `IfCondition`-skips-boolean-op
-precedents. **Still on the table** for a future general pass: `Conditional`'s
-self-overlap on *nested* boolean ops (`a == b and c == d` forces `false` from the `and`
-node *and* from short-circuiting each operand), which a node-pattern suppression can't
-catch cheaply.
+precedents.
 
 ### Guard removal (`Mutare.Mutators.GuardDrop`) `[done]`
 The "delete a clause's `when` guard" operator — `def f(x) when is_binary(x)` →

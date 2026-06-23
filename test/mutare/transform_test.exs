@@ -40,6 +40,10 @@ defmodule Mutare.TransformTest do
   # the boolean true/false.
   @negation [Mutare.Mutators.Conditional, Mutare.Mutators.Logical]
 
+  # For the short-circuit-connective redundancy: Conditional forces a boolean to true/false,
+  # Logical swaps `and`↔`or` / `&&`↔`||`.
+  @connective [Mutare.Mutators.Conditional, Mutare.Mutators.Logical]
+
   # The per-site active-id read is hoisted, so a tupled-case subject reads the bound
   # `mutare_active` variable, not the inline persistent_term read. The variable name
   # (unlike the persistent_term key) is independent of `Selector.suite_key/0`, so this
@@ -3114,6 +3118,124 @@ defmodule Mutare.TransformTest do
                {:logical, "not not x", "not x"}
              ]
 
+      assert_compiles(meta)
+    end
+
+    test "a body `(bool) and (..)`: the connective's `false` is suppressed (≡ forcing left false)" do
+      {meta, triples} = redundancy_triples("def f(a, b), do: a > 0 and b > 0", @connective)
+
+      # Conditional forcing the whole `and` to false ≡ forcing the left `a > 0` to false (the
+      # false left short-circuits the node), so the connective-node `false` is dropped. Its
+      # `true`, Logical's `or`, and the operands' own true/false all stay — including
+      # `a > 0 → false`, the survivor the dropped mutant was identical to.
+      assert {:conditional, "a > 0 and b > 0", "true"} in triples
+      refute {:conditional, "a > 0 and b > 0", "false"} in triples
+      assert {:logical, "a > 0 and b > 0", "a > 0 or b > 0"} in triples
+      assert {:conditional, "a > 0", "false"} in triples
+      assert_compiles(meta)
+    end
+
+    test "a body `(bool) or (..)`: the connective's `true` is suppressed (≡ forcing left true)" do
+      {meta, triples} = redundancy_triples("def f(a, b), do: a > 0 or b > 0", @connective)
+
+      # The `or` mirror: `(L or R) → true` ≡ `L → true`, so the node's `true` goes and its
+      # `false` stays.
+      assert {:conditional, "a > 0 or b > 0", "false"} in triples
+      refute {:conditional, "a > 0 or b > 0", "true"} in triples
+      assert {:logical, "a > 0 or b > 0", "a > 0 and b > 0"} in triples
+      assert_compiles(meta)
+    end
+
+    test "a body `(bool) && (..)`: the connective's `false` is suppressed too (short-circuit)" do
+      {meta, triples} = redundancy_triples("def f(a, b), do: a == 0 && b == 0", @connective)
+
+      # `&&` short-circuits like `and` for a boolean left, so the same drop applies — and `&&`
+      # is body-only (guard-illegal), exercised only here.
+      assert {:conditional, "a == 0 && b == 0", "true"} in triples
+      refute {:conditional, "a == 0 && b == 0", "false"} in triples
+      assert {:logical, "a == 0 && b == 0", "a == 0 || b == 0"} in triples
+      assert_compiles(meta)
+    end
+
+    test "a body `(bool) || (..)`: the connective's `true` is suppressed too (short-circuit)" do
+      {meta, triples} = redundancy_triples("def f(a, b), do: a == 0 || b == 0", @connective)
+
+      # The `||` mirror of `&&`: `(L || R) → true` ≡ `L → true`, so the node's `true` is
+      # dropped and its `false` stays. `||`, like `&&`, is body-only (guard-illegal).
+      assert {:conditional, "a == 0 || b == 0", "false"} in triples
+      refute {:conditional, "a == 0 || b == 0", "true"} in triples
+      assert {:logical, "a == 0 || b == 0", "a == 0 && b == 0"} in triples
+      assert_compiles(meta)
+    end
+
+    test "a connective with a NON-boolean-op left keeps both constants (no subsuming sibling)" do
+      {meta, triples} = redundancy_triples("def f(a, b), do: is_binary(a) and b > 0", @connective)
+
+      # `is_binary(a)` is a call, not a boolean op, so there is no `is_binary(a) → false`
+      # Conditional mutant; the connective's `→ false` is the only way to force it false (and
+      # is distinct — forcing the left false would still evaluate `is_binary(a)`). Both stay.
+      assert {:conditional, "is_binary(a) and b > 0", "true"} in triples
+      assert {:conditional, "is_binary(a) and b > 0", "false"} in triples
+      assert_compiles(meta)
+    end
+
+    test "a connective of bare variables keeps both constants (a var is not a boolean op)" do
+      {_meta, triples} = redundancy_triples("def f(a, b), do: a and b", @connective)
+
+      assert {:conditional, "a and b", "true"} in triples
+      assert {:conditional, "a and b", "false"} in triples
+    end
+
+    test "chained connectives each drop their own redundant constant (scales with depth)" do
+      {meta, triples} =
+        redundancy_triples("def f(a, b, c), do: a > 0 and b > 0 and c > 0", @connective)
+
+      # Parses as `(a > 0 and b > 0) and c > 0`: the inner `and` (left `a > 0`) and the outer
+      # `and` (left the inner `and`, itself a boolean op) each drop their `false`.
+      refute {:conditional, "a > 0 and b > 0", "false"} in triples
+      refute {:conditional, "a > 0 and b > 0 and c > 0", "false"} in triples
+      assert {:conditional, "a > 0 and b > 0", "true"} in triples
+      assert {:conditional, "a > 0 and b > 0 and c > 0", "true"} in triples
+      assert_compiles(meta)
+    end
+
+    test "a guard `(bool) and (..)`: the connective's `false` is suppressed there too" do
+      {meta, triples} =
+        redundancy_triples(
+          """
+          def f(a, b) when a > 0 and b > 0, do: :ok
+          def f(_a, _b), do: :no
+          """,
+          @connective
+        )
+
+      conn = Enum.filter(triples, fn {m, _o, _mut} -> m in [:conditional, :logical] end)
+
+      assert {:conditional, "a > 0 and b > 0", "true"} in conn
+      refute {:conditional, "a > 0 and b > 0", "false"} in conn
+      assert {:logical, "a > 0 and b > 0", "a > 0 or b > 0"} in conn
+      assert {:conditional, "a > 0", "false"} in conn
+      assert_compiles(meta)
+    end
+
+    test "a guard `(bool) or (..)`: the connective's `true` is suppressed there too" do
+      {meta, triples} =
+        redundancy_triples(
+          """
+          def f(a, b) when a > 0 or b > 0, do: :ok
+          def f(_a, _b), do: :no
+          """,
+          @connective
+        )
+
+      conn = Enum.filter(triples, fn {m, _o, _mut} -> m in [:conditional, :logical] end)
+
+      # The guard `or` mirror of guard `and`: the node's `true` goes, its `false` stays, and
+      # `a > 0 → true` (the survivor it duplicated) remains.
+      assert {:conditional, "a > 0 or b > 0", "false"} in conn
+      refute {:conditional, "a > 0 or b > 0", "true"} in conn
+      assert {:logical, "a > 0 or b > 0", "a > 0 and b > 0"} in conn
+      assert {:conditional, "a > 0", "true"} in conn
       assert_compiles(meta)
     end
   end

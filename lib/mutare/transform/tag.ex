@@ -25,6 +25,7 @@ defmodule Mutare.Transform.Tag do
   # (bitstring specs, map-key collisions) therefore live here once.
 
   alias Mutare.{AST, Mutator}
+  alias Mutare.Mutators.Conditional
   alias Mutare.Transform.NodeRange
 
   @doc """
@@ -151,6 +152,24 @@ defmodule Mutare.Transform.Tag do
     offer_target({:<<>>, meta, segments}, acc, mutators)
   end
 
+  # A short-circuit connective in a guard whose left operand is itself a boolean op
+  # (`and`/`or` only — `&&`/`||` are guard-illegal, so they never reach here). Conditional
+  # forces the connective to `true`/`false`, but `(L and R) → false` ≡ `L → false` and
+  # `(L or R) → true` ≡ `L → true` (the left short-circuits the whole node), so the
+  # connective-node constant duplicates the operand's and is dropped — the operand keeps its
+  # precise diff, the other constant and Logical's `and`↔`or` stay. A non-boolean-op left has
+  # no subsuming sibling, so it is offered in full. Mirrors `Mutare.Transform.Analyze`'s
+  # body-side clause.
+  defp tag_walk({op, meta, [left, right]}, acc, mutators) when op in [:and, :or] do
+    {left_t, acc} = tag_walk(left, acc, mutators)
+    {right_t, acc} = tag_walk(right, acc, mutators)
+    rebuilt = {op, meta, [left_t, right_t]}
+
+    if boolean_op_node?(left),
+      do: offer_without_constant(rebuilt, redundant_constant(op), acc, mutators),
+      else: offer_target(rebuilt, acc, mutators)
+  end
+
   # An n-ary node: descend its args (not its form), then offer the node itself.
   defp tag_walk({form, meta, args}, acc, mutators) when is_list(args) do
     {args, acc} = Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))
@@ -194,6 +213,33 @@ defmodule Mutare.Transform.Tag do
   end
 
   defp empty_collection_mutation?({spec, mutated}), do: Mutator.empty_collection?(spec, mutated)
+
+  # `offer_target/3` minus the Conditional mutant forcing the node to `bool` — the redundant
+  # short-circuit constant (see the `and`/`or` clause and `Mutare.Transform.Analyze`).
+  defp offer_without_constant(node, bool, acc, mutators) do
+    muts = Enum.reject(Mutator.mutations(node, mutators), &constant_mutation?(&1, bool))
+    tag_node(node, muts, acc)
+  end
+
+  defp constant_mutation?({_spec, mutated}, bool), do: boolean_literal?(mutated, bool)
+
+  # The constant a short-circuit connective's Conditional mutant duplicates on its left
+  # operand: `false` for `and`, `true` for `or` (`&&`/`||` are guard-illegal here).
+  defp redundant_constant(:and), do: false
+  defp redundant_constant(:or), do: true
+
+  # Whether `node`'s head is a Conditional-eligible boolean operator — i.e. Conditional fires
+  # on it, so the connective's redundant constant has a subsuming sibling.
+  defp boolean_op_node?({op, _meta, args}) when is_atom(op) and is_list(args),
+    do: Conditional.boolean_op?(op)
+
+  defp boolean_op_node?(_node), do: false
+
+  # Whether `node` is the literal boolean `bool` — identifying Conditional's `true`/`false`
+  # mutant (the only built-in yielding a bare boolean on a connective node).
+  defp boolean_literal?({:__block__, _meta, [b]}, b) when is_boolean(b), do: true
+  defp boolean_literal?(b, b) when is_boolean(b), do: true
+  defp boolean_literal?(_node, _bool), do: false
 
   # A bitstring segment `<<value::spec>>`: tag-walk the value, keep the spec raw
   # except `size(expr)` args (`tag_spec/3`).

@@ -16,6 +16,7 @@ defmodule Mutare.Transform.Analyze do
 
   alias Mutare.AST
   alias Mutare.Mutator
+  alias Mutare.Mutators.Conditional
   alias Mutare.Transform.{Candidate, NodeRange}
   alias Mutare.Transform.Analyze.{ClausePatterns, Conditions, MatchPatterns, Returns}
 
@@ -456,11 +457,13 @@ defmodule Mutare.Transform.Analyze do
 
   # === redundancy suppression: equivalent sibling mutants ====================
   #
-  # Four shapes where one family's mutant is *guaranteed equivalent* to another's, so
-  # the redundant one is dropped. The shared move is the same as `not in` always did:
-  # descend operands (so their literals still mutate) but do **not** *offer* the
-  # inner/redundant node — only the outer. Dropping a candidate here (rather than
-  # post-hoc) leaves no id/site/selector, exactly like the other positive suppressions.
+  # Five shapes where one family's mutant is *guaranteed equivalent* to another's, so
+  # the redundant one is dropped. The shared move (clauses 1–4) is the same as `not in`
+  # always did: descend operands (so their literals still mutate) but do **not** *offer*
+  # the inner/redundant node — only the outer. (Clause 5, the short-circuit connective,
+  # instead *offers* the node and drops a single one of its mutations — the per-mutation
+  # shape of the `in`-RHS empty-collection drop below.) Dropping a candidate here (rather
+  # than post-hoc) leaves no id/site/selector, exactly like the other positive suppressions.
   #
   # (1) **Double negation** `not not x` / `!!x` — the **same** operator twice. Logical
   # strips the outer *and* the inner to the identical single-negation (`not x` / `!x`),
@@ -504,6 +507,28 @@ defmodule Mutare.Transform.Analyze do
   defp analyze({:in, meta, [left, right]} = node, :runtime, mutators) do
     rebuilt = {:in, meta, [analyze(left, :runtime, mutators), analyze_in_rhs(right, mutators)]}
     offer(rebuilt, node, mutators)
+  end
+
+  # (5) **A short-circuit connective whose left operand is itself a boolean op**
+  # (`and`/`&&`/`or`/`||`). Conditional forces this connective node to `true`/`false`, but one
+  # of those constants is identical to Conditional forcing the *left* operand: on `and`/`&&`,
+  # `(L and R) → false` ≡ `L → false` (the false left short-circuits the whole node to false,
+  # R unreached); on `or`/`||`, `(L or R) → true` ≡ `L → true`. Both produce the same program,
+  # so the connective-node constant is the redundant one — dropped, leaving the operand's more
+  # precise `L → false`/`L → true` diff. The drop is conditioned on the left being a
+  # Conditional-eligible boolean op, since that is exactly when the subsuming sibling is
+  # generated (`valid?(x) and y` has no `valid?(x) → false`, so its `→ false` is genuine and
+  # kept — R's effects there would survive a left-operand force but not the node force). The
+  # *other* constant survives (`(L and R) → true` still evaluates R — distinct), as do Logical's
+  # `and`↔`or` and both operands. `&&`/`||` are body-only (guard-illegal), so the guard twin in
+  # `Mutare.Transform.Tag` handles only `and`/`or`. See NOTES "Equivalent-sibling suppression".
+  defp analyze({op, _meta, [left, _right]} = node, :runtime, mutators)
+       when op in [:and, :&&, :or, :||] do
+    analyzed = node |> offer(node, mutators) |> recurse_runtime(mutators, :unpiped)
+
+    if boolean_op_node?(left),
+      do: drop_constant_candidate(analyzed, redundant_constant(op)),
+      else: analyzed
   end
 
   # a generic runtime node: build the candidate from the raw node (so `original`
@@ -585,6 +610,49 @@ defmodule Mutare.Transform.Analyze do
     do: Mutator.empty_collection?(spec, mutated)
 
   defp empty_collection?(_candidate), do: false
+
+  # The constant a short-circuit connective's Conditional mutant duplicates on its left
+  # operand: `false` for `and`/`&&` (a false left short-circuits the whole node to false),
+  # `true` for `or`/`||` (a true left short-circuits to true). See the connective clause above.
+  defp redundant_constant(op) when op in [:and, :&&], do: false
+  defp redundant_constant(op) when op in [:or, :||], do: true
+
+  # Drop from the **top node** the Conditional candidate forcing it to `bool` — the redundant
+  # short-circuit constant. Per mutation (the sibling constant and Logical's swap stay) and
+  # top-node scoped, a no-op when the node carries no candidates. Mirrors
+  # `drop_empty_collection_candidates/1`.
+  defp drop_constant_candidate({form, meta, args} = node, bool) when is_list(meta) do
+    case Keyword.get(meta, :mutare) do
+      nil ->
+        node
+
+      cands ->
+        {form, Keyword.put(meta, :mutare, Enum.reject(cands, &constant_candidate?(&1, bool))),
+         args}
+    end
+  end
+
+  defp drop_constant_candidate(node, _bool), do: node
+
+  defp constant_candidate?(%Candidate.InPlace{mutated: mutated}, bool),
+    do: boolean_literal?(mutated, bool)
+
+  defp constant_candidate?(_candidate, _bool), do: false
+
+  # Whether `node` is an n-ary node whose head is a Conditional-eligible boolean operator —
+  # i.e. Conditional fires on it, so the connective's redundant constant has a subsuming sibling.
+  defp boolean_op_node?({op, _meta, args}) when is_atom(op) and is_list(args),
+    do: Conditional.boolean_op?(op)
+
+  defp boolean_op_node?(_node), do: false
+
+  # Whether `node` is the literal boolean `bool` (`AST.literal/1`'s `{:__block__, _, [bool]}`
+  # or a bare `bool`) — identifying Conditional's `true`/`false` mutant. On a connective node
+  # only Conditional yields a bare boolean (Logical yields the swapped operator), so this
+  # uniquely selects the redundant constant without keying on the producing module.
+  defp boolean_literal?({:__block__, _meta, [b]}, b) when is_boolean(b), do: true
+  defp boolean_literal?(b, b) when is_boolean(b), do: true
+  defp boolean_literal?(_node, _bool), do: false
 
   # The right side of a `|>` (see the `:|>` clause of `analyze/3`): offer it to
   # mutators *as piped* (so an arity-changing mutator sees the effective arity =
