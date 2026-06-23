@@ -1143,6 +1143,35 @@ defmodule Mutare.MutatorsTest do
                ["Regex.run(re, str, return: :index)"]
     end
 
+    test "Regex split on: toggles whole-match splitting" do
+      # The whole-match modes move to :none (split on nothing).
+      assert mode("Regex.split(re, str, on: :first)", false) ==
+               ["Regex.split(re, str, on: :none)"]
+
+      assert mode("Regex.split(re, str, on: :all)", false) ==
+               ["Regex.split(re, str, on: :none)"]
+
+      # The rest move to :first (the default — split on the whole match).
+      assert mode("Regex.split(re, str, on: :none)", false) ==
+               ["Regex.split(re, str, on: :first)"]
+
+      assert mode("Regex.split(re, str, on: :all_but_first)", false) ==
+               ["Regex.split(re, str, on: :first)"]
+
+      assert mode("Regex.split(re, str, on: :all_names)", false) ==
+               ["Regex.split(re, str, on: :first)"]
+
+      # piped: `re |> Regex.split(str, on: :first)` — the regex is the piped value, so
+      # the options list is still at effective position 2 (visible index 1).
+      assert mode("Regex.split(str, on: :first)", true) == ["Regex.split(str, on: :none)"]
+
+      # A list of capture references is not a mode atom, so it is left alone; so is /2.
+      assert ModeSwap.mutate(parse(~s|Regex.split(re, str, on: ["x"])|), %{pipe_mode: :unpiped}) ==
+               :skip
+
+      assert ModeSwap.mutate(parse("Regex.split(re, str)"), %{pipe_mode: :unpiped}) == :skip
+    end
+
     test "week-start day swaps to an adjacent weekday" do
       assert mode("Date.beginning_of_week(d, :monday)", false) ==
                ["Date.beginning_of_week(d, :tuesday)"]

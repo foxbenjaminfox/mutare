@@ -99,6 +99,13 @@ defmodule Mutare.Mutators.ModeSwap do
       the `:default` ↔ `:ascii` trap.
     * `Regex.scan/3`, `Regex.run/3` — the `return:` option, `:index` ↔ `:binary` (offset
       tuples vs the matched substrings, a result-shape change any assertion catches).
+    * `Regex.split/3` — the `on:` option, *which* captures define the split points (the
+      value-side sibling of `scan`/`run`'s `return:`). Its swaps cross the one axis that
+      is observable on any matching input — whether the whole match acts as a split point:
+      the whole-match modes `:first` (the default) and `:all` move to `:none` (split on
+      nothing), and the rest — `:none`, `:all_but_first`, `:all_names` — move to `:first`.
+      (An `on:` given a *list* of capture references rather than an atom is not a mode, so
+      it is left alone.)
 
   ## Swap strategy — small, legal, behavioural
 
@@ -188,6 +195,16 @@ defmodule Mutare.Mutators.ModeSwap do
   # input, the `:default` ↔ `:ascii` trap). Regex's `return:` flips index tuples vs substrings.
   @base_case %{upper: [:lower], lower: [:upper]}
   @regex_return %{index: [:binary], binary: [:index]}
+  # `Regex.split`'s `on:` selects which captures are split points. Swap across the only
+  # axis observable on any matching input — whether the whole match splits: the
+  # whole-match modes `:first`/`:all` → `:none`, and the rest → `:first` (the default).
+  @regex_on %{
+    first: [:none],
+    all: [:none],
+    none: [:first],
+    all_but_first: [:first],
+    all_names: [:first]
+  }
 
   # Week-start day (`Date.day_of_week`/`beginning_of_week`/`end_of_week`'s `starting_on`): an
   # ordered ladder of weekdays, so a swap moves the week's start to an adjacent day — a result
@@ -260,6 +277,8 @@ defmodule Mutare.Mutators.ModeSwap do
     {[:Base], :hex_decode32!, 2} => {[1], {:kw, [case: :base_case]}},
     {[:Regex], :scan, 3} => {[2], {:kw, [return: :regex_return]}},
     {[:Regex], :run, 3} => {[2], {:kw, [return: :regex_return]}},
+    # `Regex.split/3`'s `on:` selects which captures are split points.
+    {[:Regex], :split, 3} => {[2], {:kw, [on: :regex_on]}},
     # Week-start day — the `starting_on` weekday atom (`:monday`…`:sunday`, `:default`). The
     # `/1` arities default it (no atom to swap), like `to_iso8601/1`.
     {[:Date], :day_of_week, 2} => {[1], :weekday},
@@ -468,6 +487,7 @@ defmodule Mutare.Mutators.ModeSwap do
   defp swaps(:iso_format, atom), do: Map.get(@iso_format, atom, [])
   defp swaps(:base_case, atom), do: Map.get(@base_case, atom, [])
   defp swaps(:regex_return, atom), do: Map.get(@regex_return, atom, [])
+  defp swaps(:regex_on, atom), do: Map.get(@regex_on, atom, [])
   # `:default` (≡ `:monday`) maps to a concrete neighbour, mirroring `System`'s `:native`.
   defp swaps(:weekday, :default), do: [:tuesday]
   defp swaps(:weekday, atom), do: neighbours(@weekday_ladder, atom)
