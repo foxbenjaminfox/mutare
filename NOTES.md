@@ -1400,6 +1400,17 @@ node is left pruned. Nested captures (a capture inside another `&`) are illegal 
 never reach the clause; `& &1 / 2` (the shorthand, not a reference) still recurses and mutates
 its body unchanged.
 
+**Runtime-context only.** `offer/4` is called *only* when the capture clause sees `:runtime`. A
+genuine capture reached in a non-runtime context — a module-level **`:scaffold`** statement
+(`for fun <- [&String.first/1] do def … end`) whose expressions run once at compile time with
+mutant 0 — is left raw, exactly like every other scaffold position: a selector there could never
+activate or record coverage at test time, so it would only mint an inert no-coverage mutant (the
+very thing the scaffold context exists to avoid). A capture in a `def` *body* (or a `\\` default
+value, which flips back to `:runtime`) reached *from* a scaffold still mutates — the def clause
+restores `:runtime`. Originally `offer/4` ran context-blind and wrapped the scaffold capture too;
+the guard is in the `analyze` capture clause, not in `Captures` (placement is positional, the
+caller's job).
+
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**
 (`apply(Foo, …)`, `is_struct(x, Foo)`, `[A, B]`, a behaviour/strategy arg) to the

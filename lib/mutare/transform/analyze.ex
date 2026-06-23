@@ -176,14 +176,30 @@ defmodule Mutare.Transform.Analyze do
        do: node
 
   # `&Mod.fun/arity` capture: the `/` is arity, not division. The capture is a call *value*
-  # (`&Mod.fun/N ≡ fn a… -> Mod.fun(a…) end`), so it is offered to the call-matching families
-  # (renames + CallRemoval) by `Captures.offer/4` — which probes them with a synthesized N-ary
-  # call and re-captures each mutant — instead of being pruned. A *bare/local* ref is deferred
-  # (left unmutated by `offer`); anything else under `&` (e.g. `& &1 / 2`) keeps mutating.
+  # (`&Mod.fun/N ≡ fn a… -> Mod.fun(a…) end`), so in a **`:runtime`** position it is offered to
+  # the call-matching families (renames + CallRemoval) by `Captures.offer/4` — which probes them
+  # with a synthesized N-ary call and re-captures each mutant — instead of being pruned. A
+  # *bare/local* ref is deferred (left unmutated by `offer`); anything else under `&`
+  # (e.g. `& &1 / 2`) keeps mutating in the surrounding context.
+  #
+  # A genuine capture reached in a **non-runtime** context — module-level `:scaffold`
+  # metaprogramming (`for f <- [&String.first/1] do def … end`), where the surrounding statement
+  # runs *once* at compile time with mutant 0 active — must NOT be offered: like every other
+  # scaffold position, a selector there could never activate or record coverage at test time, so
+  # it would only mint inert no-coverage mutants. Leave the capture raw (the `/` is an arity
+  # separator, `:capture_arity`, so there is nothing to descend into); a real `def` body reached
+  # from the scaffold flips back to `:runtime` and its captures mutate normally.
   defp analyze({:&, _meta, [{:/, _smeta, [left, right]}]} = node, context, mutators) do
-    if function_ref?(left) and integer_literal?(right),
-      do: Captures.offer(node, left, right, mutators),
-      else: recurse(node, context, mutators)
+    cond do
+      not (function_ref?(left) and integer_literal?(right)) ->
+        recurse(node, context, mutators)
+
+      context == :runtime ->
+        Captures.offer(node, left, right, mutators)
+
+      true ->
+        node
+    end
   end
 
   # A `def`/`defp` clause reaching the in-place path (one that did not lift, or the

@@ -301,6 +301,31 @@ defmodule Mutare.TransformTest do
       refute Enum.any?(sites, &(&1.original_code == "&local/1"))
     end
 
+    test "a capture in a module-level scaffold is inert (compile-time, mutant 0), runtime captures still mutate" do
+      # The `for` generator runs once at compile time with mutant 0 active, so a selector
+      # wrapping the scaffold's own `&String.first/1` could never activate or record coverage
+      # at test time — it would only mint an inert no-coverage mutant. The capture must stay
+      # raw there, while a capture in an ordinary `def` body (`:runtime`) still mutates.
+      source = """
+      defmodule ScaffoldCap do
+        for _fun <- [&String.first/1] do
+          def generated, do: :ok
+        end
+
+        def runtime_cap, do: &String.first/1
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
+
+      # The scaffold's capture renders verbatim — not wrapped in a selector. Only the runtime
+      # `def runtime_cap` capture is a site (without the context guard both would be).
+      assert meta =~ "for _fun <- [&String.first/1] do"
+      assert [%Site{mutator: :string_call, original_code: "&String.first/1"}] = sites
+      assert_compiles(meta)
+    end
+
     test "an arity-changing family can't re-capture, so it leaves the capture alone" do
       # CollectionArity *drops* an argument — the output reuses fewer args, so it is not
       # re-capturable at the original arity and is dropped. A same-arity swap it can express
