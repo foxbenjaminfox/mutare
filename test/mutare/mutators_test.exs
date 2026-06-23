@@ -38,6 +38,7 @@ defmodule Mutare.MutatorsTest do
     RegexLiteral,
     RescueType,
     ReturnValue,
+    StrictEquality,
     StringByte,
     StringCall,
     StringLiteral,
@@ -51,7 +52,7 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.all() ==
                [Arithmetic, OperandSwap, Mutare.Mutators.Bitwise] ++
-                 [Relational, Logical, Literal, Conditional, IfCondition] ++
+                 [Relational, StrictEquality, Logical, Literal, Conditional, IfCondition] ++
                  [List] ++
                  [Collection, CollectionArity, StringCall, StringByte, MapKeyword] ++
                  [Mutare.Mutators.MapSet] ++
@@ -68,7 +69,7 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.families() ==
                [:arithmetic, :operand_swap, :bitwise] ++
-                 [:relational, :logical, :literal, :conditional] ++
+                 [:relational, :strict_equality, :logical, :literal, :conditional] ++
                  [:if_condition, :list] ++
                  [:collection, :collection_arity, :string_call, :string_byte] ++
                  [:map_keyword, :map_set] ++
@@ -272,6 +273,29 @@ defmodule Mutare.MutatorsTest do
 
     test "name" do
       assert Relational.name() == :relational
+    end
+  end
+
+  describe "StrictEquality" do
+    test "relaxes strict equality to value equality, one direction only" do
+      assert StrictEquality.mutate({:===, [], [1, 2]}) == [{:==, [], [1, 2]}]
+      assert StrictEquality.mutate({:!==, [], [1, 2]}) == [{:!=, [], [1, 2]}]
+    end
+
+    test "never tightens the relaxed operators (no == → ===, != → !==)" do
+      assert StrictEquality.mutate({:==, [], [1, 2]}) == :skip
+      assert StrictEquality.mutate({:!=, [], [1, 2]}) == :skip
+    end
+
+    test "skips ordering and non-equality nodes" do
+      assert StrictEquality.mutate({:>, [], [1, 2]}) == :skip
+      assert StrictEquality.mutate({:+, [], [1, 2]}) == :skip
+      assert StrictEquality.mutate({:x, [], nil}) == :skip
+      assert StrictEquality.mutate(:atom) == :skip
+    end
+
+    test "name" do
+      assert StrictEquality.name() == :strict_equality
     end
   end
 

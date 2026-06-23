@@ -44,6 +44,16 @@ defmodule Mutare.TransformTest do
   # Logical swaps `and`↔`or` / `&&`↔`||`.
   @connective [Mutare.Mutators.Conditional, Mutare.Mutators.Logical]
 
+  # For the equality-under-negation survivor: StrictEquality relaxes `===`→`==` (kept under
+  # `not`, since it is not the polarity complement), while Relational's flip and Conditional's
+  # constants stay suppressed (the membership trio plus the relaxation).
+  @strict_negation [
+    Mutare.Mutators.StrictEquality,
+    Mutare.Mutators.Relational,
+    Mutare.Mutators.Conditional,
+    Mutare.Mutators.Logical
+  ]
+
   # The per-site active-id read is hoisted, so a tupled-case subject reads the bound
   # `mutare_active` variable, not the inline persistent_term read. The variable name
   # (unlike the persistent_term key) is independent of `Selector.suite_key/0`, so this
@@ -3070,6 +3080,69 @@ defmodule Mutare.TransformTest do
       assert {:conditional, "not (a == b)", "false"} in membership
       refute Enum.any?(membership, fn {m, _o, _mut} -> m == :relational end)
       assert length(membership) == 3
+      assert_compiles(meta)
+    end
+
+    test "a body `not (a === b)`: StrictEquality's relaxation survives, the complement does not" do
+      for {src, inner, relaxed} <- [
+            {"not (a === b)", "a === b", "a == b"},
+            {"!(a === b)", "a === b", "a == b"},
+            {"not (a !== b)", "a !== b", "a != b"},
+            {"!(a !== b)", "a !== b", "a != b"}
+          ] do
+        {meta, triples} = redundancy_triples("def f(a, b), do: #{src}", @strict_negation)
+
+        # `===` → `==` is a *strictness* relaxation, not a polarity flip, so `not (a == b)`
+        # ≢ `a === b` (Logical's strip): a genuinely new mutant, KEPT under the negation. The
+        # inner equality is now offered (it wasn't before StrictEquality) but only its
+        # negation-redundant mutations are dropped — Relational's complement flip (≡ the strip)
+        # and Conditional on the inner (≡ the outer's). So exactly the relaxation plus the trio.
+        assert triples == [
+                 {:strict_equality, inner, relaxed},
+                 {:conditional, src, "true"},
+                 {:conditional, src, "false"},
+                 {:logical, src, inner}
+               ]
+
+        assert_compiles(meta)
+      end
+    end
+
+    test "a guard `not (a === b)`: StrictEquality's relaxation survives there too" do
+      {meta, triples} =
+        redundancy_triples(
+          """
+          def f(a, b) when not (a === b), do: :ok
+          def f(_a, _b), do: :no
+          """,
+          @strict_negation
+        )
+
+      negation =
+        Enum.filter(triples, fn {m, _o, _mut} ->
+          m in [:strict_equality, :relational, :conditional, :logical]
+        end)
+
+      # The guard twin of the body rule (lifted, since ===/== are guard-legal): the relaxation
+      # is kept, the complement flip dropped — the strip/true/false trio plus the relaxation.
+      assert {:strict_equality, "a === b", "a == b"} in negation
+      assert {:logical, "not (a === b)", "a === b"} in negation
+      assert {:conditional, "not (a === b)", "true"} in negation
+      assert {:conditional, "not (a === b)", "false"} in negation
+      refute Enum.any?(negation, fn {m, _o, _mut} -> m == :relational end)
+      assert length(negation) == 4
+      assert_compiles(meta)
+    end
+
+    test "a bare `a === b` (no negation): the relaxation and the polarity flip both fire" do
+      # Orthogonality off the negation path: StrictEquality (strictness) and Relational
+      # (polarity) are distinct mutations, so both are offered on a plain equality.
+      {meta, triples} = redundancy_triples("def f(a, b), do: a === b", @strict_negation)
+
+      assert {:strict_equality, "a === b", "a == b"} in triples
+      assert {:relational, "a === b", "a !== b"} in triples
+      assert {:conditional, "a === b", "true"} in triples
+      assert {:conditional, "a === b", "false"} in triples
       assert_compiles(meta)
     end
 

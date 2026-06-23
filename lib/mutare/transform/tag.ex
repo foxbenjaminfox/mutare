@@ -117,12 +117,17 @@ defmodule Mutare.Transform.Tag do
   # equality operator is its own exact polarity complement, so Relational's flip under the
   # `not` ≡ Logical's strip and Conditional on the inner ≡ the outer's `true`/`false`.
   # (Ordering operators are excluded — their boundary/reversal swaps survive negation as
-  # new mutants.) Offer only the outer `not`.
+  # new mutants.) The inner node *is* offered, but with those two negation-redundant
+  # mutations dropped (`offer_negation_survivors/4`): a strictness relaxation
+  # (`===` → `==`, `Mutare.Mutators.StrictEquality`, guard-legal) is neither the complement
+  # nor a constant, so `not (a == b)` ≢ `a === b` survives. Mirrors the body-side clause in
+  # `Mutare.Transform.Analyze`.
   defp tag_walk({:not, meta, [{op, op_meta, [left, right]}]}, acc, mutators)
        when op in [:==, :!=, :===, :!==] do
     {left, acc} = tag_walk(left, acc, mutators)
     {right, acc} = tag_walk(right, acc, mutators)
-    offer_target({:not, meta, [{op, op_meta, [left, right]}]}, acc, mutators)
+    {inner, acc} = offer_negation_survivors({op, op_meta, [left, right]}, op, acc, mutators)
+    offer_target({:not, meta, [inner]}, acc, mutators)
   end
 
   # Double negation `not not x` in a guard (same operator — `!` is not guard-legal). Both
@@ -222,6 +227,29 @@ defmodule Mutare.Transform.Tag do
   end
 
   defp constant_mutation?({_spec, mutated}, bool), do: boolean_literal?(mutated, bool)
+
+  # `offer_target/3` for an equality op *under a `not`* minus its negation-redundant
+  # mutations: the polarity complement (Relational, ≡ Logical's strip) and the `true`/`false`
+  # constants (Conditional, ≡ the outer's). A strictness relaxation (`===` → `==`) is neither,
+  # so it stays. Mirrors `Mutare.Transform.Analyze.drop_negation_redundant_candidates/2`.
+  defp offer_negation_survivors(node, op, acc, mutators) do
+    muts = Enum.reject(Mutator.mutations(node, mutators), &negation_redundant_mutation?(&1, op))
+    tag_node(node, muts, acc)
+  end
+
+  defp negation_redundant_mutation?({_spec, mutated}, op),
+    do:
+      boolean_literal?(mutated, true) or boolean_literal?(mutated, false) or
+        polarity_complement?(mutated, op)
+
+  # The polarity complement of each equality operator (Relational's flip), recognised by
+  # shape so the relaxation `===` → `==` (≠ `:!==`) is kept. See the body-side twin.
+  @equality_complements %{:== => :!=, :!= => :==, :=== => :!==, :!== => :===}
+
+  defp polarity_complement?({mop, _meta, _args}, op),
+    do: mop == Map.get(@equality_complements, op)
+
+  defp polarity_complement?(_node, _op), do: false
 
   # The constant a short-circuit connective's Conditional mutant duplicates on its left
   # operand: `false` for `and`, `true` for `or` (`&&`/`||` are guard-illegal here).

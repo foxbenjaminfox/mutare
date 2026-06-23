@@ -681,8 +681,9 @@ contract between them is the whole game.
 
   **Categories** (how core treats a family):
   - **In-place operator/value swaps** (`mutate/1`, reused operands, compile-safe by construction):
-    Arithmetic, OperandSwap, Bitwise, Relational, Logical, List, Conditional. Guard-legal ops
-    (`-`/`/`/`div`/`rem`/bitwise, `Integer.is_even`…) reach `when` guards via lifting.
+    Arithmetic, OperandSwap, Bitwise, Relational, StrictEquality, Logical, List, Conditional.
+    Guard-legal ops (`-`/`/`/`div`/`rem`/bitwise, `Integer.is_even`, the equality ops…) reach
+    `when` guards via lifting.
   - **Literal swaps** (a literal → empty/sentinel/shifted value, in place): Literal (ints/bools),
     StringLiteral, FloatLiteral, AtomLiteral, ConventionAtom, CharlistLiteral, WordListLiteral,
     MapLiteral, TupleLiteral, BitstringLiteral, RegexLiteral, DateTimeLiteral, AliasLiteral. Each
@@ -726,6 +727,13 @@ contract between them is the whole game.
     strip); a collection-emptying mutant on the **RHS of `in`** (`x in []` ≡ `false`) is suppressed
     as equivalent to Conditional — recognised by `Mutare.AST.empty_collection_literal?/1` or a
     mutator's `empty_collection?/1` callback.
+  - `StrictEquality` relaxes `===`→`==` / `!==`→`!=` (one direction; `Relational` owns the
+    *polarity* flip `===`→`!==`). The two are orthogonal, so both fire on a bare `a === b`. Under a
+    negation they diverge: Relational's flip is suppressed (`not (a !== b)` ≡ `a === b` ≡ Logical's
+    strip), but the relaxation is **kept** (`not (a == b)` ≢ `a === b` — a strictness change isn't a
+    polarity complement). So the equality-under-`not` suppression is a **per-mutation** filter
+    (`drop_negation_redundant_candidates/2` in `Analyze`, `offer_negation_survivors/4` in `Tag`)
+    that drops only the complement + Conditional's `true`/`false`, not the whole inner node.
   - `MapSet` owns the *commutative* `union`↔`intersection`; the *non-commutative* `difference`/`subset?`
     are `OperandSwap`'s. `div`↔`rem` is Arithmetic's, not Numeric's.
   - When a call rewrite (ModeSwap) and a leaf mutant (AtomLiteral on the same swapped key) overlap,

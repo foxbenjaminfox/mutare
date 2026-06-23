@@ -34,6 +34,7 @@ defmodule Mutare.Mutators do
     operand_swap: Mutare.Mutators.OperandSwap,
     bitwise: Mutare.Mutators.Bitwise,
     relational: Mutare.Mutators.Relational,
+    strict_equality: Mutare.Mutators.StrictEquality,
     logical: Mutare.Mutators.Logical,
     literal: Mutare.Mutators.Literal,
     conditional: Mutare.Mutators.Conditional,

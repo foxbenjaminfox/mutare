@@ -491,13 +491,27 @@ defmodule Mutare.Transform.Analyze do
   # (3) **`not`/`!` over an equality operator** (`==`/`!=`/`===`/`!==`) — case (2)
   # generalised: each equality operator is its own exact polarity complement, so
   # Relational's flip under the negation ≡ Logical's strip, and Conditional on the inner
-  # ≡ the outer's `true`/`false`. **Only** the equality operators qualify: the ordering
-  # operators (`<`/`>`/`<=`/`>=`) mutate to a boundary/reversal that survives negation as
-  # a genuinely new mutant (`!(a >= b)` ≡ `a < b`, ≠ the strip `a > b`), so they are
-  # left offered.
+  # ≡ the outer's `true`/`false`. **Only** the ordering operators (`<`/`>`/`<=`/`>=`) are
+  # left untouched by *this* clause — they mutate to a boundary/reversal that survives
+  # negation as a genuinely new mutant (`!(a >= b)` ≡ `a < b`, ≠ the strip `a > b`), so
+  # they fall through to the generic clause and are offered.
+  #
+  # Unlike case (2), the inner equality node *is* offered — but with only its
+  # negation-redundant mutations dropped (`drop_negation_redundant_candidates/2`): the
+  # polarity complement (Relational, ≡ Logical's strip) and the `true`/`false` constants
+  # (Conditional, ≡ the outer's). A *strictness relaxation* (`===` → `==`,
+  # `Mutare.Mutators.StrictEquality`) is **not** the polarity complement, so `not (a == b)`
+  # ≢ `a === b` survives negation as a genuinely new mutant and is kept. The operands still
+  # descend either way.
   defp analyze({neg, meta, [{op, op_meta, [left, right]}]} = node, :runtime, mutators)
        when neg in [:not, :!] and op in [:==, :!=, :===, :!==] do
-    inner = {op, op_meta, [analyze(left, :runtime, mutators), analyze(right, :runtime, mutators)]}
+    inner_raw = {op, op_meta, [left, right]}
+
+    inner =
+      {op, op_meta, [analyze(left, :runtime, mutators), analyze(right, :runtime, mutators)]}
+      |> offer(inner_raw, mutators)
+      |> drop_negation_redundant_candidates(op)
+
     offer({neg, meta, [inner]}, node, mutators)
   end
 
@@ -638,6 +652,44 @@ defmodule Mutare.Transform.Analyze do
     do: boolean_literal?(mutated, bool)
 
   defp constant_candidate?(_candidate, _bool), do: false
+
+  # The polarity complement of each equality operator — the swap that, *under a negation*,
+  # re-negates to the operator itself (`not (a !== b)` ≡ `a === b`). Exactly Relational's
+  # equality flip; named here so the negation clause can recognise that flip by shape.
+  @equality_complements %{:== => :!=, :!= => :==, :=== => :!==, :!== => :===}
+
+  # Drop from an equality node *under a negation* its negation-redundant candidates: the
+  # polarity complement (Relational's flip, ≡ Logical's strip of the outer `not`) and the
+  # `true`/`false` constants (Conditional, ≡ the outer's). A strictness relaxation
+  # (`===` → `==`) is neither, so it survives — `not (a == b)` ≢ `a === b`. Per mutation and
+  # top-node scoped, a no-op when the node carries no candidates. Mirrors
+  # `drop_constant_candidate/2`.
+  defp drop_negation_redundant_candidates({form, meta, args} = node, op) when is_list(meta) do
+    case Keyword.get(meta, :mutare) do
+      nil ->
+        node
+
+      cands ->
+        {form, Keyword.put(meta, :mutare, Enum.reject(cands, &negation_redundant?(&1, op))), args}
+    end
+  end
+
+  defp drop_negation_redundant_candidates(node, _op), do: node
+
+  defp negation_redundant?(%Candidate.InPlace{mutated: mutated}, op),
+    do:
+      boolean_literal?(mutated, true) or boolean_literal?(mutated, false) or
+        polarity_complement?(mutated, op)
+
+  defp negation_redundant?(_candidate, _op), do: false
+
+  # Whether `mutated` is the polarity complement of `op` — `{complement, _, _}`, the flip
+  # that re-negates to `op` under a `not`. A relaxation (`===` → `==`) is `{:==, _, _}`,
+  # never the complement of `===` (`:!==`), so it is correctly *not* redundant.
+  defp polarity_complement?({mop, _meta, _args}, op),
+    do: mop == Map.get(@equality_complements, op)
+
+  defp polarity_complement?(_node, _op), do: false
 
   # Whether `node` is an n-ary node whose head is a Conditional-eligible boolean operator —
   # i.e. Conditional fires on it, so the connective's redundant constant has a subsuming sibling.

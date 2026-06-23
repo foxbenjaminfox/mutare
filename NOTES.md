@@ -3392,9 +3392,10 @@ running. This is *sibling equivalence* — distinct from the *containment* dedup
 `Transform.Overlap` (a leaf swap covered by a call rewrite, derived from footprints).
 We collapse it exactly as the `not in` precedent always did: at analysis time, descend
 the operands but do **not** offer the inner/redundant node — leaving no id/site/selector,
-so ids stay contiguous (the same property as `Overlap`/`gate_candidates`). (Case 4 below
-is the one variant that *offers* the node but drops a single one of its mutations — a
-per-mutation filter, the same shape as the `in`-RHS empty-collection drop.) Four new
+so ids stay contiguous (the same property as `Overlap`/`gate_candidates`). (Cases 1 and 4
+below instead *offer* the node and drop *specific* mutations — a per-mutation filter, the
+same shape as the `in`-RHS empty-collection drop; cases 2–3 and the `not in` precedent don't
+offer the inner node at all.) Four new
 cases, each mirrored across the two parallel descents — `Transform.Analyze` for bodies,
 `Transform.Tag` for `when` guards (`!`/`&&`/`||` are guard-illegal, so the guard side
 handles only `not` and `and`/`or`):
@@ -3407,6 +3408,18 @@ handles only `not` and `and`/`or`):
    (`> → >=`, `> → <`), never the complement (`<=`), so under negation those are
    genuinely new mutants (`!(a >= b)` ≡ `a < b` ≠ the strip `a > b`). That is precisely
    *why* only the four equality operators join `in` in the suppressed set.
+
+   This one is a **per-mutation** filter (like case 4), *not* a whole-node suppression —
+   a distinction that earns its keep once `StrictEquality` exists. That family relaxes a
+   strict equality (`===` → `==`, `!==` → `!=`), and under a negation `not (a == b)` ≢
+   `a === b` (≢ the strip), because a strictness relaxation is **not** a polarity
+   complement. So the inner node *is* offered, and only its negation-redundant mutations
+   are dropped: the polarity complement (Relational, recognized by shape against a small
+   complement map) and the `true`/`false` constants (Conditional). The relaxation then
+   survives as a genuinely new mutant — whereas the original whole-node suppression (sound
+   when only Relational/Conditional could fire there) would have silently dropped it. The
+   filter is `drop_negation_redundant_candidates/2` in `Analyze`, `offer_negation_survivors/4`
+   in `Tag`.
 
 2. **`x in <collection literal>`** — a mutation that *empties* the RHS collection makes
    `x in <empty>` constantly `false`, which `Conditional` already produces on the `in`
