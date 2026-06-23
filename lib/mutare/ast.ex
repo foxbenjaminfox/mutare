@@ -11,7 +11,37 @@ defmodule Mutare.AST do
   `{:__block__, [], ["x"]}` for a string renders as the *charlist* `~c"x"`. `literal/1` gets
   both right. The `sentinel_*` helpers give the same survivor marker the built-in families use,
   so a custom mutant reads consistently in reports.
+
+  `parse!/1` and `to_string/1` are the AST front door: a custom mutator and its tests
+  go through these rather than naming `Sourceror` directly, so the dependency on a
+  particular AST library (and its version) stays inside Mutare.
   """
+
+  # The two ends of the round-trip route through Mutare, so callers never need a
+  # direct `:sourceror` dep just to build a node or read one back.
+  import Kernel, except: [to_string: 1]
+
+  @doc """
+  Parse a source string into a Sourceror AST node, raising on a syntax error.
+
+  The inverse of `to_string/1`. This is the node shape every `Mutare.Mutator`
+  receives, so a mutator's tests can parse a snippet the same way the engine does.
+
+      iex> {op, _meta, _args} = Mutare.AST.parse!("a + b")
+      iex> op
+      :+
+  """
+  @spec parse!(String.t()) :: Macro.t()
+  def parse!(source) when is_binary(source), do: Sourceror.parse_string!(source)
+
+  @doc """
+  Render an AST node back to formatted source, the inverse of `parse!/1`.
+
+      iex> Mutare.AST.to_string(Mutare.AST.literal("mutare"))
+      ~s("mutare")
+  """
+  @spec to_string(Macro.t()) :: String.t()
+  def to_string(ast), do: Sourceror.to_string(ast)
 
   @doc """
   A scalar-literal node with clean (fresh) metadata.

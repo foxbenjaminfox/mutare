@@ -56,6 +56,7 @@ defmodule Mutare.MixProject do
           Mutare.Mutator,
           Mutare.Mutator.Spec,
           Mutare.AST,
+          Mutare.Test,
           Mutare.Transform.Calls,
           Mutare.Macros,
           Mutare.Macro.Spec
