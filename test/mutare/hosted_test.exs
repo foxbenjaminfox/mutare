@@ -115,6 +115,31 @@ defmodule Mutare.HostedTest do
     end
   end
 
+  describe "a host target's per-mutant note rides onto the Site and the report" do
+    defp site(sites, mutated_code, line) do
+      Enum.find(
+        sites,
+        &(&1.mutator == :host_filter and &1.mutated_code == mutated_code and &1.line == line)
+      )
+    end
+
+    test "a noted mutant carries the note; a bare mutant does not", %{sites: sites} do
+      # `x > 1`'s boundary flip (`x >= 1`) is the `%{node:, note:}` form → Site.note set;
+      # its reversal (`x < 1`) is a bare node → Site.note nil.
+      assert site(sites, "x >= 1", 5).note == "kill may require boundary data"
+      assert site(sites, "x < 1", 5).note == nil
+    end
+
+    test "the survivor header appends the note", %{sites: sites} do
+      noted = site(sites, "x >= 1", 5)
+      header = Mutare.Report.header(noted)
+
+      assert header =~ "SURVIVED  — kill may require boundary data"
+      # A bare mutant's header has no trailing note.
+      assert Mutare.Report.header(site(sites, "x < 1", 5)) =~ ~r/SURVIVED$/
+    end
+  end
+
   describe "baseline behaves like the original" do
     test "every clause runs its DSL untouched at the baseline mutant" do
       assert F.direct(2) == [:ok]

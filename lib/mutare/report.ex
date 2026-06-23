@@ -16,11 +16,20 @@ defmodule Mutare.Report do
     Sourceror.patch_string(source, [Sourceror.Patch.new(site.range, site.mutated_code)])
   end
 
-  @doc "Header line for a surviving mutant, e.g. `lib/x.ex:42  [relational, in-place]  SURVIVED`."
+  @doc """
+  Header line for a surviving mutant, e.g. `lib/x.ex:42  [relational, in-place]  SURVIVED`.
+
+  A mutation that carries a `note` (a hosting mutator's advisory, e.g. "kill may require
+  NULL/boundary data") appends it as a trailing `— note`, like an ignored mutant's reason — so a
+  survivor that may be legitimately hard to kill reads as honest signal, not just a test gap.
+  """
   @spec header(Site.t()) :: String.t()
   def header(%Site{} = site) do
-    "#{site.file}:#{site.line}  [#{site.mutator}, #{kind(site.kind)}]  SURVIVED"
+    "#{site.file}:#{site.line}  [#{site.mutator}, #{kind(site.kind)}]  SURVIVED#{note_suffix(site)}"
   end
+
+  defp note_suffix(%Site{note: nil}), do: ""
+  defp note_suffix(%Site{note: note}), do: "  — #{note}"
 
   defp kind(:in_place), do: "in-place"
   defp kind(:lifted), do: "lifted"

@@ -364,15 +364,17 @@ defmodule Mutare.Transform.Candidate do
     # hide theirs), and emits the coverage catch-all (`Mutare.Transform.emit_hosted_site/3`).
     #
     # `original` is the logical fragment before mutation (rendered in each Site's diff and run by
-    # the wrapped catch-all baseline); `mutants` are the logical mutated fragments (one id + Site
-    # each); `wrap` maps a logical fragment to its woven branch value; `splice` weaves the
-    # assembled `case` into a copy of the (emitted) macro node; `range` locates the fragment for
-    # the Site; `mutator` is the hosting `Mutare.Mutator.Spec` (its name on every Site).
+    # the wrapped catch-all baseline); `mutants` are the logical mutated fragments as
+    # `{node, note}` pairs (one id + Site each, the optional `note` recorded on the Site for the
+    # report — `Mutare.Mutator.normalize_target/1` pairs a bare-node mutant with `nil`); `wrap`
+    # maps a logical fragment to its woven branch value; `splice` weaves the assembled `case` into
+    # a copy of the (emitted) macro node; `range` locates the fragment for the Site; `mutator` is
+    # the hosting `Mutare.Mutator.Spec` (its name on every Site).
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
             original: Macro.t(),
-            mutants: [Macro.t()],
+            mutants: [{Macro.t(), String.t() | nil}],
             wrap: (Macro.t() -> Macro.t()),
             splice: (Macro.t(), Macro.t() -> Macro.t()),
             range: Sourceror.Range.t()

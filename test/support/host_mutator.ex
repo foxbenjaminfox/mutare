@@ -162,15 +162,22 @@ defmodule Mutare.Test.HostMutator do
     end
   end
 
-  # The host's own (foreign-semantics) catalog: flip a comparison both ways, reusing the
-  # operands so each mutant is compile-safe.
+  # The host's own (foreign-semantics) catalog: flip a comparison both ways, reusing the operands
+  # so each mutant is compile-safe. The **boundary** neighbour carries a per-mutant note (the
+  # `%{node:, note:}` form — a hosting mutator's advisory the report surfaces on the Site), while
+  # the **reversal** is a bare node (no note) — so one target exercises both forms.
   defp flips({op, meta, [left, right]}) when op in @comparisons do
-    for mop <- @comparisons, mop != op, mop in flip_targets(op), do: {mop, meta, [left, right]}
+    [boundary, reversal] = flip_targets(op)
+
+    [
+      %{node: {boundary, meta, [left, right]}, note: "kill may require boundary data"},
+      {reversal, meta, [left, right]}
+    ]
   end
 
   defp flips(_node), do: []
 
-  # Each comparison flips to its boundary neighbour and its reversal — two genuinely distinct
+  # Each comparison's boundary neighbour (noted) and its reversal (bare) — two genuinely distinct
   # mutants per operator (`>` → `>=` and `>` → `<`).
   defp flip_targets(:>), do: [:>=, :<]
   defp flip_targets(:<), do: [:<=, :>]

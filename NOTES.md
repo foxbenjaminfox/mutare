@@ -1565,6 +1565,21 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     DESIGN's "shorthand values are plain interpolated Elixir, *not* hosted" was half-right: the value
     *mutation* is core's (not the SQL catalog), but the *delivery* must be pinned, not a bare selector.
 
+  * *Per-mutant report note — `Site.note`.* A hosting mutator may want to flag a *live, scored* mutant
+    with advisory text the report shows on a survivor — `mutare_ecto` tags its equivalence-sensitive
+    families (`:comparison`/`:connective`/`:null_predicate`) "kill may require NULL/boundary data", so a
+    survivor reads as honest SQL-three-valued-logic signal, not a plain test gap. Distinct from
+    `ignore_reason` (which *suppresses* a mutant). New optional `Site.note` (default `nil`), set via
+    `Site.in_place/7`. The channel is per-mutant on the **host target**: a target's `mutants` entry is
+    now a bare node *or* a `%{node:, note:}` map (`Mutator.normalize_target/1` → `{node, note}` pairs on
+    `Candidate.Hosted.mutants`; `weave_hosted_target`/`hosted_site` thread the note to the Site). The map
+    form is used (not `{node, note}`) because a quoted 2-tuple AST (`{a, "str"}`) would be ambiguous with
+    a `{node, note}` pair; a map never collides. `Mutare.Report.header/1` appends `  — <note>` to the
+    `SURVIVED` line (mirroring `ignored/1`'s reason suffix) and the JSON report emits it as `description`.
+    Fourth foreign-DSL extension; contained — `note` defaults `nil`, the non-host `in_place/6` callers are
+    unchanged, and a bare-node host mutant still works. Tested via the `filter` fixture noting its
+    boundary flip but not its reversal (`hosted_test`).
+
 **Explicitly not needed.** `context.uses` — every Ecto target self-identifies *node-locally* (a resolved
 call or a known macro), unlike a GenServer return tuple (shape-ambiguous, *does* need module context); the
 node never has to ask the module who it is. `opts` for `macros/0` — Ecto's macro set is fixed. Caveat

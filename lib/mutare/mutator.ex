@@ -325,7 +325,9 @@ defmodule Mutare.Mutator do
     * `:original` — the logical fragment before mutation (the Site diff's left side, and
       what the wrapped catch-all baseline runs);
     * `:mutants` — the list of logical mutated fragments (one mutant id + `Mutare.Site` each),
-      from the library's *own* semantics catalog (e.g. SQL's, **not** core's Elixir mutators);
+      from the library's *own* semantics catalog (e.g. SQL's, **not** core's Elixir mutators).
+      Each entry is a bare fragment node, or a `%{node: fragment, note: string}` map to record an
+      advisory on that mutant's Site for the report (e.g. "kill may require NULL/boundary data");
     * `:splice` — a 2-arity `(macro_node, case_node -> macro_node)` weaving the assembled
       selector `case` into a copy of the (emitted) macro node (for Ecto, `^`-pinning it into
       the `where:` position);
@@ -611,12 +613,14 @@ defmodule Mutare.Mutator do
 
   # Default `:wrap` to identity and `:range` to absent; require `:original`, a list `:mutants`,
   # and a 2-arity `:splice`. A malformed target raises (a library bug, not a target to silently
-  # drop) — caught at transform time with the offending value.
+  # drop) — caught at transform time with the offending value. Each mutant is normalized to a
+  # `{node, note}` pair: a bare node gets `note: nil`, a `%{node:, note:}` map carries an advisory
+  # the report surfaces on the mutant's Site (e.g. "kill may require NULL/boundary data").
   defp normalize_target(%{original: original, mutants: mutants, splice: splice} = target)
        when is_list(mutants) and is_function(splice, 2) do
     %{
       original: original,
-      mutants: mutants,
+      mutants: Enum.map(mutants, &normalize_mutant/1),
       splice: splice,
       wrap: target_wrap(Map.get(target, :wrap)),
       range: Map.get(target, :range)
@@ -628,6 +632,14 @@ defmodule Mutare.Mutator do
           "a host target must be a map with :original, a list :mutants and a 2-arity :splice " <>
             "(optional :wrap/:range), got: #{inspect(other)}"
   end
+
+  # A host mutant is a bare node (no note) or a `%{node:, note:}` map (an advisory recorded on the
+  # Site). The map form is unambiguous — a quoted AST node is never a bare map with these keys.
+  defp normalize_mutant(%{node: node, note: note}) when is_binary(note) or is_nil(note),
+    do: {node, note}
+
+  defp normalize_mutant(%{node: node}), do: {node, nil}
+  defp normalize_mutant(node), do: {node, nil}
 
   defp target_wrap(nil), do: &Function.identity/1
   defp target_wrap(wrap) when is_function(wrap, 1), do: wrap

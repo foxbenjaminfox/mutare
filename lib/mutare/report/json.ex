@@ -85,6 +85,7 @@ defmodule Mutare.Report.Json do
       status: Map.fetch!(@status, result.status)
     }
     |> put_present(:statusReason, site.ignore_reason)
+    |> put_present(:description, site.note)
     |> put_present(:duration, result.duration_ms)
   end
 

@@ -25,6 +25,7 @@ defmodule Mutare.Site do
           mutated_code: String.t(),
           original_node: Macro.t(),
           mutated_node: Macro.t() | nil,
+          note: String.t() | nil,
           block_macro: {atom(), non_neg_integer()} | nil
         }
 
@@ -46,6 +47,11 @@ defmodule Mutare.Site do
     ignored: false,
     ignore_reason: nil,
     poisoned: false,
+    # An optional advisory note recorded with the mutation and surfaced in the report
+    # (e.g. a hosting mutator flagging "kill may require NULL/boundary data"). Distinct from
+    # `ignore_reason` (which suppresses the mutant): a noted mutant is live and scored, the note
+    # is just extra signal for a survivor. Set via `in_place/7`; `nil` for an ordinary mutation.
+    note: nil,
     # The `{name, nid}` identity of the *unknown* module-level block macro
     # invocation whose `do` body this mutation lives in, or `nil`. The transform
     # mutates such a body on the guess that the DSL unquotes it into a function, but
@@ -71,6 +77,8 @@ defmodule Mutare.Site do
   An in-place mutation: an operator swapped behind a selector `case` in a
   function body. `range` locates the original node; `mutator` is the
   `Mutare.Mutator.Spec` that produced `mutated_node` (its `name` is recorded).
+  An optional `note` is recorded on the site for the report (a hosting mutator's
+  advisory, e.g. "kill may require NULL/boundary data") — `nil` for an ordinary mutation.
   """
   @spec in_place(
           pos_integer(),
@@ -78,10 +86,11 @@ defmodule Mutare.Site do
           Sourceror.Range.t(),
           Macro.t(),
           Macro.t(),
-          Mutare.Mutator.Spec.t()
+          Mutare.Mutator.Spec.t(),
+          String.t() | nil
         ) :: t()
-  def in_place(id, file, range, original_node, mutated_node, mutator) do
-    replace(id, file, range, original_node, mutated_node, mutator, :in_place)
+  def in_place(id, file, range, original_node, mutated_node, mutator, note \\ nil) do
+    %{replace(id, file, range, original_node, mutated_node, mutator, :in_place) | note: note}
   end
 
   @doc """

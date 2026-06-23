@@ -1168,8 +1168,10 @@ defmodule Mutare.Transform do
   # unwoven (mirrors `emit_binding_site/5`'s all-poisoned fallback).
   defp weave_hosted_target(node, %Candidate.Hosted{} = cand, ctx) do
     {clauses, ctx} =
-      Enum.flat_map_reduce(cand.mutants, ctx, fn mutant, ctx ->
-        claim_id(ctx, %{candidate: cand, mutated: mutant}, &hosted_site/3, fn id, carrier ->
+      Enum.flat_map_reduce(cand.mutants, ctx, fn {mutated, note}, ctx ->
+        carrier = %{candidate: cand, mutated: mutated, note: note}
+
+        claim_id(ctx, carrier, &hosted_site/3, fn id, carrier ->
           {:->, [], [[id], cand.wrap.(carrier.mutated)]}
         end)
       end)
@@ -1192,9 +1194,10 @@ defmodule Mutare.Transform do
 
   # The `Mutare.Site` for one hosted mutant: an `:in_place` replacement showing the *logical*
   # fragment swap (`original` → this mutant), so the report diff is the DSL change, not the
-  # `wrap`/`splice`/selector scaffolding — exactly as the tuple-export Sites hide theirs.
-  defp hosted_site(id, %{candidate: cand, mutated: mutated}, file),
-    do: Site.in_place(id, file, cand.range, cand.original, mutated, cand.mutator)
+  # `wrap`/`splice`/selector scaffolding — exactly as the tuple-export Sites hide theirs. The
+  # optional `note` (a hosting mutator's advisory) rides onto the Site for the report.
+  defp hosted_site(id, %{candidate: cand, mutated: mutated, note: note}, file),
+    do: Site.in_place(id, file, cand.range, cand.original, mutated, cand.mutator, note)
 
   # === case clause-pattern mutation: tuple-the-scrutinee =====================
 
