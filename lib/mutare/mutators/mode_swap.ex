@@ -51,10 +51,11 @@ defmodule Mutare.Mutators.ModeSwap do
   Sort order:
 
     * `Enum.sort/2` (sorter at arg 1), `Enum.sort_by/3` and `List.keysort/3` (sorter at
-      arg 2) — the `:asc` ↔ `:desc` shorthand, a reversal that any test asserting on the
-      result's *order* must catch. Only the lone-atom shorthand is swapped; the `{:asc,
-      module}` / `{:desc, module}` tuple forms (and a custom sorter fun) are non-atoms, so
-      they contribute nothing for free. `Enum.min_by/max_by` look similar but reject the
+      arg 2) — the `:asc` ↔ `:desc` direction, a reversal that any test asserting on the
+      result's *order* must catch. Both the lone shorthand atom and the `{:asc | :desc,
+      module}` tuple (the per-sort comparison-module form) are swapped — in the tuple only
+      the direction flips, the module is kept. A custom sorter fun is not a direction atom,
+      so it contributes nothing for free. `Enum.min_by/max_by` look similar but reject the
       shorthand (they read the atom as a comparison module), so they are deliberately absent.
 
   ## Swap strategy — small, legal, behavioural
@@ -243,8 +244,38 @@ defmodule Mutare.Mutators.ModeSwap do
   defp position_swaps(group, arg) when group in [:duration, :duration_time, :duration_date],
     do: duration_swaps(group, arg)
 
+  defp position_swaps(:order, arg), do: order_swaps(arg)
+
   defp position_swaps(group, arg),
     do: for(atom <- mode_atom(arg), new_atom <- swaps(group, atom), do: AST.literal(new_atom))
+
+  # `:order` (the sort direction) accepts either the lone `:asc`/`:desc` shorthand or a
+  # `{:asc | :desc, module}` tuple (the per-sort comparison-module form). Either way only
+  # the direction is swapped; the tuple keeps its module. A non-direction value (a sorter
+  # fun, a variable) yields nothing.
+  defp order_swaps(arg) do
+    case order_target(arg) do
+      nil -> []
+      {dir, rebuild} -> for new <- swaps(:order, dir), do: rebuild.(AST.literal(new))
+    end
+  end
+
+  # The direction atom of an `:order` argument plus a closure that rebuilds the argument
+  # around a replacement direction node — identity for the lone shorthand, or the 2-tuple
+  # (preserving its `:__block__` wrapper and module) for the `{dir, module}` form.
+  defp order_target({:__block__, meta, [{dir_node, mod}]}) do
+    case mode_atom(dir_node) do
+      [dir] -> {dir, fn new -> {:__block__, meta, [{new, mod}]} end}
+      [] -> nil
+    end
+  end
+
+  defp order_target(arg) do
+    case mode_atom(arg) do
+      [dir] -> {dir, & &1}
+      [] -> nil
+    end
+  end
 
   # `shift`'s duration argument is a keyword list `[unit: amount, …]` — the trailing-keyword
   # sugar (a *bare* list) or an explicit `[…]` (a `:__block__`-wrapped list, e.g. when

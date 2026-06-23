@@ -1036,10 +1036,17 @@ defmodule Mutare.MutatorsTest do
       assert mode("Enum.sort(:desc)", true) == ["Enum.sort(:asc)"]
     end
 
-    test "sort order: the {:asc|:desc, module} tuple form and a sorter fun yield nothing" do
-      assert ModeSwap.mutate(parse("Enum.sort(xs, {:desc, Date})"), %{pipe_mode: :unpiped}) ==
-               :skip
+    test "sort order: the {direction, module} tuple swaps the direction, keeping the module" do
+      assert mode("Enum.sort(xs, {:desc, Date})", false) == ["Enum.sort(xs, {:asc, Date})"]
 
+      assert mode("Enum.sort_by(xs, f, {:asc, Date})", false) ==
+               ["Enum.sort_by(xs, f, {:desc, Date})"]
+
+      # piped form keeps the tuple at the lone visible arg.
+      assert mode("Enum.sort({:desc, Date})", true) == ["Enum.sort({:asc, Date})"]
+    end
+
+    test "sort order: a sorter fun and the no-sorter arity yield nothing" do
       assert ModeSwap.mutate(parse("Enum.sort_by(xs, f, &>=/2)"), %{pipe_mode: :unpiped}) == :skip
 
       # Enum.sort/1 has no sorter; min_by/max_by reject the shorthand, so are not matched.
