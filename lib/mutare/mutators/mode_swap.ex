@@ -24,6 +24,9 @@ defmodule Mutare.Mutators.ModeSwap do
     * `System.system_time/1`, `System.monotonic_time/1`, `System.os_time/1`,
       `System.convert_time_unit/3` (both unit positions) — the clock unit, with the
       `System`-only `:native` mapped to a concrete `:second`
+    * `DateTime.from_unix/2,3`, `DateTime.from_unix!/2,3`, `DateTime.to_unix/2` — the
+      Unix-timestamp unit, the same `System.time_unit` set (so `:native` → `:second`);
+      the optional trailing `Calendar` on the `/3` arities leaves the unit at position 1
     * `DateTime.shift/2,3`, `NaiveDateTime.shift/2`, `Time.shift/2`, `Date.shift/2` — the
       **duration units**. Unlike the others, the unit isn't a lone positional atom but the
       *keys* of a keyword list of `unit: amount` pairs (`shift(dt, minute: 10, day: -1)`).
@@ -142,6 +145,13 @@ defmodule Mutare.Mutators.ModeSwap do
     {[:System], :monotonic_time, 1} => {[0], :system},
     {[:System], :os_time, 1} => {[0], :system},
     {[:System], :convert_time_unit, 3} => {[1, 2], :system},
+    # Unix-timestamp conversions take the same `System.time_unit` at position 1; the
+    # `/3` arities add a trailing `Calendar`, so the unit stays at 1.
+    {[:DateTime], :from_unix, 2} => {[1], :system},
+    {[:DateTime], :from_unix, 3} => {[1], :system},
+    {[:DateTime], :from_unix!, 2} => {[1], :system},
+    {[:DateTime], :from_unix!, 3} => {[1], :system},
+    {[:DateTime], :to_unix, 2} => {[1], :system},
     {[:String], :upcase, 2} => {[1], :case_mode},
     {[:String], :downcase, 2} => {[1], :case_mode},
     {[:String], :capitalize, 2} => {[1], :case_mode},

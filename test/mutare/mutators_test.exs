@@ -928,6 +928,25 @@ defmodule Mutare.MutatorsTest do
                ]
     end
 
+    test "Unix-timestamp units (from_unix/to_unix) walk the System ladder" do
+      assert mode("DateTime.from_unix(ts, :millisecond)", false) ==
+               ["DateTime.from_unix(ts, :microsecond)", "DateTime.from_unix(ts, :second)"]
+
+      # `:second` is the coarse endpoint of {nanosecond..second} — one neighbour.
+      assert mode("DateTime.from_unix!(ts, :second)", false) ==
+               ["DateTime.from_unix!(ts, :millisecond)"]
+
+      assert mode("DateTime.to_unix(dt, :nanosecond)", false) ==
+               ["DateTime.to_unix(dt, :microsecond)"]
+
+      # :native maps to a concrete unit, like the System clock functions.
+      assert mode("DateTime.to_unix(dt, :native)", false) == ["DateTime.to_unix(dt, :second)"]
+
+      # The optional trailing Calendar on from_unix/3 leaves the unit at position 1.
+      assert mode("DateTime.from_unix(ts, :second, Calendar.ISO)", false) ==
+               ["DateTime.from_unix(ts, :millisecond, Calendar.ISO)"]
+    end
+
     test "shift duration: each unit key swaps to an adjacent ladder neighbour (non-piped)" do
       # interior unit → both neighbours; endpoint → one.
       assert mode("DateTime.shift(dt, minute: 10)", false) ==
