@@ -1054,6 +1054,42 @@ defmodule Mutare.MutatorsTest do
       assert ModeSwap.mutate(parse("Enum.min_by(xs, f, :desc)"), %{pipe_mode: :unpiped}) == :skip
     end
 
+    test "Base16 case: option value swaps :upper <-> :lower" do
+      assert mode("Base.encode16(data, case: :lower)", false) ==
+               ["Base.encode16(data, case: :upper)"]
+
+      assert mode("Base.decode16(s, case: :upper)", false) == ["Base.decode16(s, case: :lower)"]
+      assert mode("Base.decode16!(s, case: :lower)", false) == ["Base.decode16!(s, case: :upper)"]
+
+      # piped: the options list is the lone visible arg.
+      assert mode("Base.encode16(case: :upper)", true) == ["Base.encode16(case: :lower)"]
+
+      # :mixed is deliberately left alone (accepts both cases — low-signal).
+      assert ModeSwap.mutate(parse("Base.decode16(s, case: :mixed)"), %{pipe_mode: :unpiped}) ==
+               :skip
+    end
+
+    test "Regex return: option value swaps :index <-> :binary" do
+      assert mode("Regex.scan(re, str, return: :index)", false) ==
+               ["Regex.scan(re, str, return: :binary)"]
+
+      assert mode("Regex.run(re, str, return: :binary)", false) ==
+               ["Regex.run(re, str, return: :index)"]
+    end
+
+    test "keyword-option modes: a missing/variable/unrecognised value yields nothing" do
+      # an option list without the named key
+      assert ModeSwap.mutate(parse("Regex.scan(re, str, capture: :all)"), %{pipe_mode: :unpiped}) ==
+               :skip
+
+      # a variable value, not a literal atom
+      assert ModeSwap.mutate(parse("Base.encode16(data, case: c)"), %{pipe_mode: :unpiped}) ==
+               :skip
+
+      # a non-keyword-list options argument
+      assert ModeSwap.mutate(parse("Base.encode16(data, opts)"), %{pipe_mode: :unpiped}) == :skip
+    end
+
     test "piped: effective arity is +1, so the mode atom is the lone visible arg" do
       # `dt |> DateTime.truncate(:second)` — effective arity 2, the precision at visible 0.
       assert mode("DateTime.truncate(:second)", true) == ["DateTime.truncate(:millisecond)"]

@@ -58,6 +58,16 @@ defmodule Mutare.Mutators.ModeSwap do
       so it contributes nothing for free. `Enum.min_by/max_by` look similar but reject the
       shorthand (they read the atom as a comparison module), so they are deliberately absent.
 
+  Keyword-option modes (the atom is the *value* of a named option key — the value-side
+  mirror of `shift`'s keyword *keys*):
+
+    * `Base.encode16/2`, `Base.decode16/2`, `Base.decode16!/2` — the `case:` option,
+      `:upper` ↔ `:lower` (a different hex rendering, or accepted input on decode).
+      `decode16`'s `:mixed` is left alone: it accepts both cases, so a swap from it only
+      narrows acceptance on input the test already exercises — the `:default` ↔ `:ascii` trap.
+    * `Regex.scan/3`, `Regex.run/3` — the `return:` option, `:index` ↔ `:binary` (offset
+      tuples vs the matched substrings, a result-shape change any assertion catches).
+
   ## Swap strategy — small, legal, behavioural
 
   Each swap stays **within the legal set of *that* function**: the ordered ladders are
@@ -132,6 +142,12 @@ defmodule Mutare.Mutators.ModeSwap do
   @norm_forms %{nfc: [:nfd], nfd: [:nfc], nfkc: [:nfkd], nfkd: [:nfkc]}
   # Sort direction: the `:asc`/`:desc` shorthand accepted by `sort`/`sort_by`/`keysort`.
   @order_modes %{asc: [:desc], desc: [:asc]}
+  # Keyword-option value sets (the atom is the *value* of a named option key). Base16's
+  # `case:` toggles hex casing / accepted input; `decode16`'s `:mixed` is deliberately
+  # absent (it accepts both cases — a swap from it only narrows on already-tested input,
+  # the `:default` ↔ `:ascii` trap). Regex's `return:` flips index tuples vs substrings.
+  @base16_case %{upper: [:lower], lower: [:upper]}
+  @regex_return %{index: [:binary], binary: [:index]}
 
   # {alias_path, function, effective_arity} => {mode_positions (effective indices), group}.
   # Positions are *effective* (pipe-independent); `visible_index/2` maps them to the
@@ -171,7 +187,14 @@ defmodule Mutare.Mutators.ModeSwap do
     # Sort direction shorthand — the sorter is the trailing positional argument.
     {[:Enum], :sort, 2} => {[1], :order},
     {[:Enum], :sort_by, 3} => {[2], :order},
-    {[:List], :keysort, 3} => {[2], :order}
+    {[:List], :keysort, 3} => {[2], :order},
+    # Keyword-option modes — the atom is the *value* of a named key in the trailing options
+    # list. `{:kw, [key: set]}` declares which key(s) to read and which value set to swap.
+    {[:Base], :encode16, 2} => {[1], {:kw, [case: :base16_case]}},
+    {[:Base], :decode16, 2} => {[1], {:kw, [case: :base16_case]}},
+    {[:Base], :decode16!, 2} => {[1], {:kw, [case: :base16_case]}},
+    {[:Regex], :scan, 3} => {[2], {:kw, [return: :regex_return]}},
+    {[:Regex], :run, 3} => {[2], {:kw, [return: :regex_return]}}
   }
 
   @impl Mutare.Mutator
@@ -246,8 +269,31 @@ defmodule Mutare.Mutators.ModeSwap do
 
   defp position_swaps(:order, arg), do: order_swaps(arg)
 
+  defp position_swaps({:kw, specs}, arg), do: keyword_value_swaps(specs, arg)
+
   defp position_swaps(group, arg),
     do: for(atom <- mode_atom(arg), new_atom <- swaps(group, atom), do: AST.literal(new_atom))
+
+  # A keyword-option mode: the atom sits as the *value* of a named option key in the
+  # trailing options list (the value-side mirror of `shift`'s keyword *keys*). `specs` is a
+  # list of `{key, set}` — for each pair whose key matches, read its value atom and emit one
+  # rebuilt list per legal sibling, the key kept and the value replaced. A missing key, a
+  # non-atom value, or an unrecognised value contributes nothing.
+  defp keyword_value_swaps(specs, arg) do
+    case keyword_list(arg) do
+      nil ->
+        []
+
+      {pairs, rewrap} ->
+        for {key, set} <- specs,
+            {{k, v}, i} <- Enum.with_index(pairs),
+            mode_atom(k) == [key],
+            value <- mode_atom(v),
+            new_value <- swaps(set, value) do
+          rewrap.(List.replace_at(pairs, i, {k, AST.literal(new_value)}))
+        end
+    end
+  end
 
   # `:order` (the sort direction) accepts either the lone `:asc`/`:desc` shorthand or a
   # `{:asc | :desc, module}` tuple (the per-sort comparison-module form). Either way only
@@ -283,7 +329,7 @@ defmodule Mutare.Mutators.ModeSwap do
   # one key swapped to a ladder neighbour, its amount kept. A non-keyword-list duration (a
   # `%Duration{}` struct, a variable) yields nothing.
   defp duration_swaps(group, arg) do
-    case duration_list(arg) do
+    case keyword_list(arg) do
       nil ->
         []
 
@@ -296,19 +342,20 @@ defmodule Mutare.Mutators.ModeSwap do
     end
   end
 
-  # The `{key, value}` pairs of a duration keyword list, plus a closure that restores the
-  # argument's shape (a bare list, or a `:__block__`-wrapped explicit `[…]`); `nil` if the
-  # argument is not a keyword list.
-  defp duration_list({:__block__, meta, [inner]}) when is_list(inner) do
+  # The `{key, value}` pairs of a keyword-list argument (a `shift` duration or an options
+  # list), plus a closure that restores the argument's shape (a bare list — the trailing-
+  # keyword sugar — or a `:__block__`-wrapped explicit `[…]`); `nil` if the argument is not
+  # a keyword list. Shared by the duration-key swaps and the keyword-option value swaps.
+  defp keyword_list({:__block__, meta, [inner]}) when is_list(inner) do
     with pairs when pairs != nil <- keyword_pairs(inner),
          do: {pairs, fn new -> {:__block__, meta, [new]} end}
   end
 
-  defp duration_list(list) when is_list(list) do
+  defp keyword_list(list) when is_list(list) do
     with pairs when pairs != nil <- keyword_pairs(list), do: {pairs, & &1}
   end
 
-  defp duration_list(_arg), do: nil
+  defp keyword_list(_arg), do: nil
 
   defp keyword_pairs(list) when is_list(list) and list != [] do
     if Enum.all?(list, &match?({_k, _v}, &1)), do: list, else: nil
@@ -332,6 +379,8 @@ defmodule Mutare.Mutators.ModeSwap do
   defp swaps(:case_mode, atom), do: Map.get(@case_modes, atom, [])
   defp swaps(:norm_form, atom), do: Map.get(@norm_forms, atom, [])
   defp swaps(:order, atom), do: Map.get(@order_modes, atom, [])
+  defp swaps(:base16_case, atom), do: Map.get(@base16_case, atom, [])
+  defp swaps(:regex_return, atom), do: Map.get(@regex_return, atom, [])
 
   # The members of `ladder` immediately finer and coarser than `atom` (each, if it
   # exists). `Enum.at` with a guarded non-negative index — a bare `i - 1` would wrap
