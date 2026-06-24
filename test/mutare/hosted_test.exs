@@ -469,4 +469,54 @@ defmodule Mutare.HostedTest do
       :code.delete(module)
     end
   end
+
+  describe "a :hosted nested in a {:keyword, …} routing is rejected (not poison/silent-miss)" do
+    test "raises with an actionable message pointing at hosting the whole argument" do
+      # `Mutare.Test.KeywordHostedMutator` routes `set`'s keyword-list argument
+      # `{:keyword, [:hosted, …]}` — but a keyword *value* can't be hosted (hosting weaves into the
+      # whole macro node, not an individual value). Resolve raises at stamp time rather than leaving
+      # the value raw and dropping the mutation (silent miss) or splicing a bare selector into the
+      # DSL value (poison). The narrowed `keyword_value_treatment` type excludes `:hosted`; this is
+      # its runtime enforcement.
+      source = """
+      defmodule Mutare.KeywordHostedFixture do
+        import Mutare.Test.HostDSL
+
+        def assign(q) do
+          set(q, name: "keep", count: 5)
+        end
+      end
+      """
+
+      assert_raise ArgumentError,
+                   ~r/:hosted treatment inside.*\{:keyword.*whole.*argument/s,
+                   fn ->
+                     Mutare.transform_string(source,
+                       file: "kwh.ex",
+                       mutators: [Mutare.Test.KeywordHostedMutator]
+                     )
+                   end
+    end
+
+    test "a :hosted nested one level deeper (a keyword value that is itself a keyword) also raises" do
+      # The detector recurses, so `{:keyword, [{:keyword, [:hosted]}]}` (the `from(S, where: [x: v])`
+      # nested shorthand) is caught at any depth, not just the top keyword level.
+      source = """
+      defmodule Mutare.NestedKeywordHostedFixture do
+        import Mutare.Test.HostDSL
+
+        def assign(q) do
+          set(q, filters: [name: "keep"])
+        end
+      end
+      """
+
+      assert_raise ArgumentError, ~r/:hosted treatment inside.*\{:keyword/s, fn ->
+        Mutare.transform_string(source,
+          file: "nkwh.ex",
+          mutators: [Mutare.Test.KeywordHostedMutator]
+        )
+      end
+    end
+  end
 end

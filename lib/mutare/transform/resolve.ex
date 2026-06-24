@@ -206,7 +206,9 @@ defmodule Mutare.Transform.Resolve do
   # Either way each `:hosted` treatment is rewritten to `{:hosted, host}` (`inject_host/2`) so
   # the analyzer knows which mutator delivers it.
   defp stamp_macro_spec(meta, %Spec{args: :routing, host: host} = spec, call_node, _arity, _pm) do
-    routing = host.macro_routing(call_node) |> inject_host(spec)
+    raw = host.macro_routing(call_node)
+    reject_keyword_hosted!(spec, raw)
+    routing = inject_host(raw, spec)
     reject_undeliverable_hosted!(spec, routing)
     [{@macro_key, routing} | meta]
   end
@@ -256,6 +258,42 @@ defmodule Mutare.Transform.Resolve do
   # false, so a nil host (impossible for a built spec, which validates one) is handled for free.
   defp host_exports?(host, fun, arity),
     do: Code.ensure_loaded?(host) and function_exported?(host, fun, arity)
+
+  # A `:hosted` treatment delivers through the mutator's `host/2`, which weaves a selector into the
+  # **whole macro node** — there is no per-keyword-*value* hosting delivery in core. A classifier
+  # that routes a `:hosted` *inside* a `{:keyword, …}` value (the recursive routing arm) is therefore
+  # undeliverable: core leaves the value raw and the host never sees it (a silently missed mutant),
+  # or — without this guard — `route_macro_arg/3` analyzes it as runtime and splices a bare selector
+  # into the DSL value (poison). The `t:Mutare.Mutator.keyword_value_treatment/0` type narrows
+  # keyword values to exclude `:hosted` for exactly this reason; this is the runtime enforcement
+  # (the keyword analogue of `reject_undeliverable_hosted!/2`). Checked on the **raw** classifier
+  # output (before `inject_host/2`), so a hosted value is still the bare `:hosted` atom at any depth.
+  # Fail loud, pointing at the supported shape: host the whole argument.
+  defp reject_keyword_hosted!(spec, routing) when is_list(routing) do
+    if Enum.any?(routing, &keyword_routes_hosted?/1) do
+      raise ArgumentError,
+            "macro #{inspect(Spec.key(spec))}'s macro_routing/1 routed a :hosted treatment inside " <>
+              "a {:keyword, …} value, but a keyword value cannot be hosted — hosting weaves into " <>
+              "the whole macro node (host/2), not an individual keyword value. Route the whole " <>
+              "argument :hosted, or route the value with a core treatment (:expression/:pinned/:skip)."
+    end
+  end
+
+  defp reject_keyword_hosted!(_spec, _routing), do: :ok
+
+  # Whether a top-level routing entry is a `{:keyword, …}` carrying a (possibly nested) `:hosted`.
+  defp keyword_routes_hosted?({:keyword, value_treatments}) when is_list(value_treatments),
+    do: Enum.any?(value_treatments, &treatment_routes_hosted?/1)
+
+  defp keyword_routes_hosted?(_), do: false
+
+  # Whether a keyword *value* treatment is — or nests — a `:hosted`.
+  defp treatment_routes_hosted?(:hosted), do: true
+
+  defp treatment_routes_hosted?({:keyword, value_treatments}) when is_list(value_treatments),
+    do: Enum.any?(value_treatments, &treatment_routes_hosted?/1)
+
+  defp treatment_routes_hosted?(_), do: false
 
   # Tag each `:hosted` treatment with its hosting mutator module — `:hosted` → `{:hosted, host}`
   # — so the analyzer can reach the right `host/2` callback for a hosted argument. The host is

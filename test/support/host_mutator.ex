@@ -294,3 +294,59 @@ defmodule Mutare.Test.IncompleteHostMutator do
   @impl Mutare.Mutator
   def macros, do: [{Mutare.Test.HostDSL, :filter, 2, [:expression, :hosted]}]
 end
+
+defmodule Mutare.Test.KeywordHostedMutator do
+  @moduledoc """
+  A `:routing` classifier that (incorrectly) routes a **keyword value** `:hosted`. Hosting is a
+  *whole-argument* concern — `c:Mutare.Mutator.host/2` weaves a selector into the macro node, and
+  core has no per-keyword-value hosting delivery — so a `:hosted` nested inside a `{:keyword, …}`
+  routing is undeliverable. `Mutare.Transform.Resolve.reject_keyword_hosted!/2` raises at stamp
+  time (loud) rather than silently missing the mutant or splicing a bare selector into the DSL
+  value (poison). It registers `Mutare.Test.HostDSL.set/2` (the keyword-shorthand macro) and routes
+  its keyword-list argument with every value `:hosted` — exactly the over-wide shape the narrowed
+  `t:Mutare.Mutator.keyword_value_treatment/0` type excludes.
+  """
+  @behaviour Mutare.Mutator
+
+  @impl Mutare.Mutator
+  def name, do: :keyword_hosted
+
+  @impl Mutare.Mutator
+  def mutate(_node), do: :skip
+
+  @impl Mutare.Mutator
+  def macros, do: [{Mutare.Test.HostDSL, :set, :any, :routing}]
+
+  # `set(query, assigns)` — leave the query an ordinary expression, route the keyword-list
+  # argument `{:keyword, …}` with each pair's value `:hosted` (the unsupported shape). A value that
+  # is itself a keyword list recurses as `{:keyword, …}`, so a nested-shorthand value yields a
+  # *nested* `:hosted` (`{:keyword, [{:keyword, [:hosted]}]}`) — the deeper case the detector must
+  # still catch.
+  @impl Mutare.Mutator
+  def macro_routing({:set, _meta, [_query, assigns]}) when is_list(assigns),
+    do: [:expression, {:keyword, value_treatments(assigns)}]
+
+  def macro_routing({_form, _meta, args}) when is_list(args),
+    do: Enum.map(args, fn _arg -> :expression end)
+
+  def macro_routing(_node), do: []
+
+  defp value_treatments(pairs), do: Enum.map(pairs, fn {_k, v} -> value_treatment(v) end)
+
+  # A list value is Sourceror-wrapped `{:__block__, _, [list]}` in a keyword *value* position; a
+  # keyword-list value recurses, anything else is the (unsupported) bare `:hosted`.
+  defp value_treatment({:__block__, _meta, [list]}) when is_list(list),
+    do: if(keyword_list?(list), do: {:keyword, value_treatments(list)}, else: :hosted)
+
+  defp value_treatment(_v), do: :hosted
+
+  defp keyword_list?(list) when is_list(list) and list != [],
+    do: Enum.all?(list, &match?({_k, _v}, &1))
+
+  defp keyword_list?(_node), do: false
+
+  # Present so build-time validation passes (a `:routing` spec must be able to host); the raise
+  # happens at stamp time, before this would be reached.
+  @impl Mutare.Mutator
+  def host(_node, _context), do: []
+end

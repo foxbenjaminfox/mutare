@@ -1547,6 +1547,19 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     non-pair. This is the third foreign-DSL extension after the host (#1) and `:routing`/`:hosted` (#2):
     it unblocks `mutare_ecto`'s shorthand-split + `nil`-pair exclusion without the plugin re-implementing
     core's literal families. Tested via the `set/2` fixture macro (`Mutare.Test.HostDSL`/`HostMutator`).
+    A keyword *value* is narrowed to `t:Mutare.Mutator.keyword_value_treatment/0` — every treatment
+    **except `:hosted`**. The recursive arm originally reused the full `routing_treatment` (which
+    *includes* `:hosted`), but a keyword value can't be hosted: hosting delivers through `host/2`,
+    which weaves into the **whole macro node** (#1), and core has no per-keyword-value host delivery, so
+    `inject_host/2`/`hosted_host/1` only recognise a *top-level* `{:hosted, host}`. A `:hosted` nested in
+    a `{:keyword, …}` would slip past both — left raw and never hosted (a silent miss), or, but for the
+    `route_macro_arg/3` raw-`:hosted` backstop, spliced as a bare selector into the DSL value (poison).
+    Rather than make injection/detection recurse for an untested, marginal capability (host the *whole*
+    keyword argument `:hosted` if you must reach a value inside it), the type is narrowed and
+    `Resolve.reject_keyword_hosted!/2` raises at stamp time — the keyword analogue of
+    `reject_undeliverable_hosted!/2`, fail-loud over silent-drop. Checked on the **raw** classifier
+    output (before `inject_host/2`), recursively, so a deeper `{:keyword, [{:keyword, [:hosted]}]}` is
+    caught too. Tested via `Mutare.Test.KeywordHostedMutator` (`hosted_test`).
 
   * *`:pinned` — `^`-pinned in-place mutation.* Per-pair routing alone isn't enough for the shorthand
     split: a shorthand value sits **inside** Ecto's query macro, which rejects a bare selector `case`
