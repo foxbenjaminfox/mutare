@@ -384,11 +384,20 @@ defmodule Mutare.Mutator do
   `{:keyword, [:pinned, :skip]}` — mutate `"Foo"` `^`-pinned (core's literal families), the
   column-name keys raw, and the `deleted_at: nil` pair skipped (it compiles to `IS NULL`).
   """
-  @callback macro_routing(call_node :: Macro.t()) :: [
-              Mutare.Macro.Spec.treatment()
-              | :pinned
-              | {:keyword, [Mutare.Macro.Spec.treatment() | :pinned]}
-            ]
+  @callback macro_routing(call_node :: Macro.t()) :: [routing_treatment()]
+
+  @typedoc """
+  A treatment a `c:macro_routing/1` classifier may return for one **visible argument**: a static
+  `t:Mutare.Macro.Spec.treatment/0` (`:expression`/`:pattern`/`:binding_pattern`/`:skip`/`:hosted`)
+  plus the two **classifier-only** routings a fixed `args` can't carry — `:pinned` (mutate the
+  value but deliver the selector `^`-pinned) and `{:keyword, [routing_treatment]}` (route each
+  keyword pair's value, keys raw). The `{:keyword, …}` arm is **recursive**: a value treatment may
+  itself be `{:keyword, …}`, so a nested keyword shorthand (`from(S, where: [x: v])`) routes too.
+  """
+  @type routing_treatment ::
+          Mutare.Macro.Spec.treatment()
+          | :pinned
+          | {:keyword, [routing_treatment()]}
 
   @doc """
   Optional hook by which a mutator declares that one of *its own* mutation results is

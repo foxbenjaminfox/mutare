@@ -416,4 +416,57 @@ defmodule Mutare.HostedTest do
       :code.delete(module)
     end
   end
+
+  describe "nested per-keyword-pair routing ({:keyword, [{:keyword, …}]})" do
+    # A value that is itself a keyword list — the `from(S, where: [x: v])` shape. The `filters:`
+    # value routes `{:keyword, [:pinned]}` (its `name: "keep"` pair's value pinned), `count: 5`
+    # stays `:skip`.
+    @nested_source """
+    defmodule Mutare.NestedKwFixture do
+      import Mutare.Test.HostDSL
+
+      def assign(q) do
+        set(q, filters: [name: "keep"], count: 5)
+      end
+    end
+    """
+
+    setup do
+      {meta, sites, _next} =
+        Mutare.transform_string(@nested_source,
+          file: "nested_kw.ex",
+          mutators: [:string, :literal, :atom, Mutare.Test.HostMutator]
+        )
+
+      %{meta: meta, sites: sites}
+    end
+
+    test "recurses into a value that is itself a keyword list", %{sites: sites, meta: meta} do
+      # The nested string value `name: "keep"` still mutates — its own :string family on the Site,
+      # the value mutation staying core's — so a keyword list *whose values are keyword lists*
+      # routes too (the recursive `{:keyword, …}` arm).
+      assert Enum.any?(sites, &(&1.mutator == :string and &1.mutated_code == "\"\""))
+      assert Enum.any?(sites, &(&1.mutator == :string and &1.mutated_code == "\"mutare\""))
+
+      # Delivered `^`-pinned *inside* the nested list (`filters: [name: ^(case … end)]`).
+      assert meta =~ ~r/name:\s*\^\(?case mutare_active do/
+
+      # Every key — the nested `name`, the outer `filters`/`count` — is a field name, never
+      # mutated, even though :atom is enabled (the recursion leaves keys raw at every depth).
+      refute Enum.any?(sites, &(&1.mutator == :atom))
+
+      # `count: 5` (the outer integer value) is still routed :skip — no :literal site.
+      refute Enum.any?(sites, &(&1.mutator == :literal))
+    end
+
+    test "the nested-keyword metamutant compiles", %{meta: meta} do
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        send(self(), {:compiled, Code.compile_string(meta)})
+      end)
+
+      assert_received {:compiled, [{module, _binary}]}
+      :code.purge(module)
+      :code.delete(module)
+    end
+  end
 end

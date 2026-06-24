@@ -45,18 +45,29 @@ defmodule Mutare.Test.HostDSL do
   family) but delivers the selector `^`-pinned (`category: ^(case … end)`). Like Ecto, this DSL
   accepts an interpolated `^value` but not a bare `case` — so the macro **strips the pin** from
   each value (the test analog of Ecto interpolating it), proving the pinned metamutant compiles.
+  A nested keyword list value (`filters: [name: "x"]`, the `from(S, where: [x: v])` shape) is
+  unpinned recursively, so a nested `:pinned` value compiles too.
   """
   defmacro set(query, assigns) do
-    assigns = Enum.map(assigns, fn {key, value} -> {key, unpin(value)} end)
+    assigns = unpin(assigns)
 
     quote do
       {unquote(query), unquote(assigns)}
     end
   end
 
-  # Consume a `^value` interpolation (the analog of Ecto reading a pinned value), so a metamutant
-  # that `^`-pins a value's selector compiles. A non-pinned value passes through.
+  # Recursively consume `^value` interpolations (the analog of Ecto reading a pinned value), so a
+  # metamutant that `^`-pins a value's selector compiles — including a value that is itself a
+  # keyword list, whose inner values are pinned too. A non-pinned value passes through.
   defp unpin({:^, _meta, [inner]}), do: inner
+
+  defp unpin(list) when is_list(list) do
+    Enum.map(list, fn
+      {key, value} -> {key, unpin(value)}
+      other -> unpin(other)
+    end)
+  end
+
   defp unpin(other), do: other
 end
 
@@ -125,9 +136,16 @@ defmodule Mutare.Test.HostMutator do
   defp keyword_list?(_node), do: false
 
   # Per-pair value treatments for `set`'s keyword arg: a string value is mutated and delivered
-  # `:pinned` (the DSL needs `^`); anything else (an integer, here) is left raw (`:skip`).
-  defp value_treatments(pairs),
-    do: Enum.map(pairs, fn {_k, v} -> if string_literal?(v), do: :pinned, else: :skip end)
+  # `:pinned` (the DSL needs `^`); a nested keyword list recurses as `{:keyword, …}` (so a value
+  # that is itself `field: value` pairs routes per-pair too — the `from(S, where: [x: v])` shape);
+  # anything else (an integer, here) is left raw (`:skip`).
+  defp value_treatments(pairs), do: Enum.map(pairs, fn {_k, v} -> value_treatment(v) end)
+
+  # A list value is Sourceror-wrapped in `{:__block__, _, [list]}` in a keyword *value* position.
+  defp value_treatment({:__block__, _meta, [list]}) when is_list(list),
+    do: if(keyword_list?(list), do: {:keyword, value_treatments(list)}, else: :skip)
+
+  defp value_treatment(v), do: if(string_literal?(v), do: :pinned, else: :skip)
 
   defp string_literal?({:__block__, _meta, [s]}) when is_binary(s), do: true
   defp string_literal?(_node), do: false
