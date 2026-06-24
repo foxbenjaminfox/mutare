@@ -300,7 +300,7 @@ defmodule Mutare.Test.KeywordHostedMutator do
   A `:routing` classifier that (incorrectly) routes a **keyword value** `:hosted`. Hosting is a
   *whole-argument* concern — `c:Mutare.Mutator.host/2` weaves a selector into the macro node, and
   core has no per-keyword-value hosting delivery — so a `:hosted` nested inside a `{:keyword, …}`
-  routing is undeliverable. `Mutare.Transform.Resolve.reject_keyword_hosted!/2` raises at stamp
+  routing is undeliverable. `Mutare.Transform.Resolve.validate_routing!/2` raises at stamp
   time (loud) rather than silently missing the mutant or splicing a bare selector into the DSL
   value (poison). It registers `Mutare.Test.HostDSL.set/2` (the keyword-shorthand macro) and routes
   its keyword-list argument with every value `:hosted` — exactly the over-wide shape the narrowed
@@ -349,4 +349,131 @@ defmodule Mutare.Test.KeywordHostedMutator do
   # happens at stamp time, before this would be reached.
   @impl Mutare.Mutator
   def host(_node, _context), do: []
+end
+
+defmodule Mutare.Test.UnknownTreatmentMutator do
+  @moduledoc """
+  A `:routing` classifier that returns an **unrecognised** treatment atom (`:bogus`) for a visible
+  argument. Without validation it would fall through `Mutare.Transform.Analyze`'s `:expression`
+  catch-all and silently mutate a position the author meant to route specially;
+  `Mutare.Transform.Resolve.validate_routing!/2` rejects it loudly instead (the classifier analogue
+  of build-time static-`args` validation, `Mutare.Macro.Spec.validate_args/1`).
+  """
+  @behaviour Mutare.Mutator
+
+  @impl Mutare.Mutator
+  def name, do: :unknown_treatment
+
+  @impl Mutare.Mutator
+  def mutate(_node), do: :skip
+
+  @impl Mutare.Mutator
+  def macros, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
+
+  # Route the condition (visible arg 1) with a bogus treatment; the query stays an expression.
+  @impl Mutare.Mutator
+  def macro_routing({_form, _meta, [_query, _condition]}), do: [:expression, :bogus]
+
+  def macro_routing({_form, _meta, args}) when is_list(args),
+    do: Enum.map(args, fn _arg -> :expression end)
+
+  def macro_routing(_node), do: []
+end
+
+defmodule Mutare.Test.CompoundPinnedMutator do
+  @moduledoc """
+  A `:routing` classifier that routes every keyword *value* `:pinned` regardless of shape, so a
+  **compound** value (a list/map) lands on `:pinned`. `:pinned` is scalar-only — pinning `^`-wraps
+  only the value node's own selector, so a compound value's *inner* mutations would emit as bare
+  selector `case`s and poison the DSL. `Mutare.Transform.Analyze.reject_non_scalar_pinned!/2` raises
+  at analyze time (loud) rather than silently degrading those inner mutants to `:poisoned`. A scalar
+  value (a string) still pins normally.
+  """
+  @behaviour Mutare.Mutator
+
+  @impl Mutare.Mutator
+  def name, do: :compound_pinned
+
+  @impl Mutare.Mutator
+  def mutate(_node), do: :skip
+
+  @impl Mutare.Mutator
+  def macros, do: [{Mutare.Test.HostDSL, :set, :any, :routing}]
+
+  @impl Mutare.Mutator
+  def macro_routing({:set, _meta, [_query, assigns]}) when is_list(assigns),
+    do: [:expression, {:keyword, Enum.map(assigns, fn _pair -> :pinned end)}]
+
+  def macro_routing({_form, _meta, args}) when is_list(args),
+    do: Enum.map(args, fn _arg -> :expression end)
+
+  def macro_routing(_node), do: []
+end
+
+defmodule Mutare.Test.BadShapeMutator do
+  @moduledoc """
+  A `:routing` classifier whose `c:Mutare.Mutator.macro_routing/1` returns a **non-list** (a
+  contract violation — the callback must return one treatment per visible argument).
+  `Mutare.Transform.Resolve.validate_routing!/2` catches it with a clear message rather than letting
+  it crash inside `inject_host/2`'s `Enum.map`.
+  """
+  @behaviour Mutare.Mutator
+
+  @impl Mutare.Mutator
+  def name, do: :bad_shape
+
+  @impl Mutare.Mutator
+  def mutate(_node), do: :skip
+
+  @impl Mutare.Mutator
+  def macros, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
+
+  @impl Mutare.Mutator
+  def macro_routing(_node), do: :not_a_list
+end
+
+defmodule Mutare.Test.ArgPinnedMutator do
+  @moduledoc """
+  A `:routing` classifier that routes a whole **list argument** `:pinned` (the top-level, not
+  keyword-value, `:pinned` shape — a bare list rather than the Sourceror `{:__block__, _, [list]}`
+  wrap). It exercises `reject_non_scalar_pinned!/2`'s bare-list descent: the list carries no own
+  candidate, so every mutation is on an element (a descendant), and pinning would miss them — caught
+  loud rather than poisoned. Routes `filter`'s first argument (the `[:foo]` list) `:pinned`.
+  """
+  @behaviour Mutare.Mutator
+
+  @impl Mutare.Mutator
+  def name, do: :arg_pinned
+
+  @impl Mutare.Mutator
+  def mutate(_node), do: :skip
+
+  @impl Mutare.Mutator
+  def macros, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
+
+  @impl Mutare.Mutator
+  def macro_routing({_form, _meta, [_list, _condition]}), do: [:pinned, :expression]
+
+  def macro_routing({_form, _meta, args}) when is_list(args),
+    do: Enum.map(args, fn _arg -> :expression end)
+
+  def macro_routing(_node), do: []
+end
+
+defmodule Mutare.Test.MalformedHost do
+  @moduledoc """
+  A plain module with a `host/2` returning **malformed** targets, used to prove
+  `Mutare.Mutator.host_targets/3` normalization fails loud: a non-1-arity `:wrap` and a non-string
+  mutant `:note` each raise an `ArgumentError` (rather than a raw `FunctionClauseError` / a silently
+  dropped note). Dispatched by the probe node's head so one module covers both cases.
+  """
+  def host({:bad_wrap, _meta, _args}, _context),
+    do: [%{original: 1, mutants: [2], splice: &splice/2, wrap: :not_a_function}]
+
+  def host({:bad_note, _meta, _args}, _context),
+    do: [%{original: 1, mutants: [%{node: 2, note: 42}], splice: &splice/2}]
+
+  def host(_node, _context), do: []
+
+  defp splice(macro_node, _case_node), do: macro_node
 end

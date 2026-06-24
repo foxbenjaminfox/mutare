@@ -207,7 +207,7 @@ defmodule Mutare.Transform.Resolve do
   # the analyzer knows which mutator delivers it.
   defp stamp_macro_spec(meta, %Spec{args: :routing, host: host} = spec, call_node, _arity, _pm) do
     raw = host.macro_routing(call_node)
-    reject_keyword_hosted!(spec, raw)
+    validate_routing!(spec, raw)
     routing = inject_host(raw, spec)
     reject_undeliverable_hosted!(spec, routing)
     [{@macro_key, routing} | meta]
@@ -259,41 +259,60 @@ defmodule Mutare.Transform.Resolve do
   defp host_exports?(host, fun, arity),
     do: Code.ensure_loaded?(host) and function_exported?(host, fun, arity)
 
-  # A `:hosted` treatment delivers through the mutator's `host/2`, which weaves a selector into the
-  # **whole macro node** — there is no per-keyword-*value* hosting delivery in core. A classifier
-  # that routes a `:hosted` *inside* a `{:keyword, …}` value (the recursive routing arm) is therefore
-  # undeliverable: core leaves the value raw and the host never sees it (a silently missed mutant),
-  # or — without this guard — `route_macro_arg/3` analyzes it as runtime and splices a bare selector
-  # into the DSL value (poison). The `t:Mutare.Mutator.keyword_value_treatment/0` type narrows
-  # keyword values to exclude `:hosted` for exactly this reason; this is the runtime enforcement
-  # (the keyword analogue of `reject_undeliverable_hosted!/2`). Checked on the **raw** classifier
-  # output (before `inject_host/2`), so a hosted value is still the bare `:hosted` atom at any depth.
-  # Fail loud, pointing at the supported shape: host the whole argument.
-  defp reject_keyword_hosted!(spec, routing) when is_list(routing) do
-    if Enum.any?(routing, &keyword_routes_hosted?/1) do
+  # Validate the **raw** `macro_routing/1` output (before `inject_host/2`) — the classifier analogue
+  # of `Macro.Spec.validate_args/1`'s build-time check for static `args`. A classifier's output is
+  # untrusted: an unrecognised/mis-shaped treatment would otherwise fall through `route_macro_arg/3`'s
+  # `:expression` catch-all and *silently mutate* a DSL position core was asked to skip/host/pin (a
+  # wrong-position mutation or a poison), so reject it loudly here — the first point it is known.
+  # Recurses through `{:keyword, …}`; the one positional rule is that `:hosted` is valid for a whole
+  # visible argument but **not** for a keyword *value* (a keyword value can't be hosted — hosting
+  # weaves into the whole macro node via `host/2`, and core has no per-keyword-value delivery; see
+  # `t:Mutare.Mutator.keyword_value_treatment/0`). Checked pre-injection, so a hosted treatment is
+  # still the bare `:hosted` atom at any depth.
+  defp validate_routing!(spec, routing) when is_list(routing) do
+    Enum.each(routing, &validate_treatment!(spec, &1, :argument))
+  end
+
+  defp validate_routing!(spec, routing) do
+    raise ArgumentError,
+          "macro #{inspect(Spec.key(spec))}'s macro_routing/1 must return a list of treatments " <>
+            "(one per visible argument), got: #{inspect(routing)}"
+  end
+
+  # `:hosted` — fine for a whole argument, rejected inside a `{:keyword, …}` value.
+  defp validate_treatment!(_spec, :hosted, :argument), do: :ok
+
+  defp validate_treatment!(spec, :hosted, :keyword_value) do
+    raise ArgumentError,
+          "macro #{inspect(Spec.key(spec))}'s macro_routing/1 routed a :hosted treatment inside " <>
+            "a {:keyword, …} value, but a keyword value cannot be hosted — hosting weaves into " <>
+            "the whole macro node (host/2), not an individual keyword value. Route the whole " <>
+            "argument :hosted, or route the value with a core treatment (:expression/:pinned/:skip)."
+  end
+
+  # `{:keyword, …}` recurses, routing each value at the `:keyword_value` position.
+  defp validate_treatment!(spec, {:keyword, value_treatments}, _position)
+       when is_list(value_treatments) do
+    Enum.each(value_treatments, &validate_treatment!(spec, &1, :keyword_value))
+  end
+
+  # Any other atom must be one core recognises; anything else (an unknown atom like an `:expresion`
+  # typo, a `{:keyword, non_list}`, a stray tuple) is rejected with the offending value.
+  defp validate_treatment!(spec, treatment, _position) do
+    if treatment in recognised_atom_treatments() do
+      :ok
+    else
       raise ArgumentError,
-            "macro #{inspect(Spec.key(spec))}'s macro_routing/1 routed a :hosted treatment inside " <>
-              "a {:keyword, …} value, but a keyword value cannot be hosted — hosting weaves into " <>
-              "the whole macro node (host/2), not an individual keyword value. Route the whole " <>
-              "argument :hosted, or route the value with a core treatment (:expression/:pinned/:skip)."
+            "macro #{inspect(Spec.key(spec))}'s macro_routing/1 returned an unrecognised treatment " <>
+              "#{inspect(treatment)} — expected one of :expression/:pattern/:binding_pattern/:skip/" <>
+              ":hosted/:pinned or {:keyword, [value_treatments]}."
     end
   end
 
-  defp reject_keyword_hosted!(_spec, _routing), do: :ok
-
-  # Whether a top-level routing entry is a `{:keyword, …}` carrying a (possibly nested) `:hosted`.
-  defp keyword_routes_hosted?({:keyword, value_treatments}) when is_list(value_treatments),
-    do: Enum.any?(value_treatments, &treatment_routes_hosted?/1)
-
-  defp keyword_routes_hosted?(_), do: false
-
-  # Whether a keyword *value* treatment is — or nests — a `:hosted`.
-  defp treatment_routes_hosted?(:hosted), do: true
-
-  defp treatment_routes_hosted?({:keyword, value_treatments}) when is_list(value_treatments),
-    do: Enum.any?(value_treatments, &treatment_routes_hosted?/1)
-
-  defp treatment_routes_hosted?(_), do: false
+  # The recognised atom treatments — the static `Macro.Spec` set plus the classifier-only `:pinned`.
+  # Derived from `Spec.treatments/0` so the validator can't drift from the canonical list (`:hosted`
+  # is in it but already intercepted by the positional clauses above, so listing it here is inert).
+  defp recognised_atom_treatments, do: [:pinned | Spec.treatments()]
 
   # Tag each `:hosted` treatment with its hosting mutator module — `:hosted` → `{:hosted, host}`
   # — so the analyzer can reach the right `host/2` callback for a hosted argument. The host is

@@ -897,10 +897,16 @@ defmodule Mutare.Transform.Analyze do
   # accepts `^(case …)`. Analyze it as ordinary runtime so the configured literal families attach
   # their in-place candidates (their *own* names ride to the Site, the value's mutation stays
   # core's), then flag those candidates `pin?` so `emit_site/3` wraps the selector in `^`. Only a
-  # **scalar** value belongs here — a compound value (`[1, 2]`) would attach candidates to nested
-  # nodes, where an inner `^`-wrap still poisons; the classifier routes only scalars `:pinned`.
-  defp route_macro_arg(arg, :pinned, mutators),
-    do: arg |> analyze(:runtime, mutators) |> pin_inplace_candidates()
+  # **scalar** value belongs here: `pin_inplace_candidates/1` pins only the value node's *own*
+  # candidates, so a compound value (`[1, 2]`, `%{…}`) — whose mutations land on *descendant* nodes
+  # — would leave those inner selectors un-pinned and poison the DSL. `reject_non_scalar_pinned!/2`
+  # fails loud on that (the classifier analogue of the documented scalar-only contract) rather than
+  # silently degrading the inner mutants to `:poisoned`.
+  defp route_macro_arg(arg, :pinned, mutators) do
+    analyzed = analyze(arg, :runtime, mutators)
+    reject_non_scalar_pinned!(arg, analyzed)
+    pin_inplace_candidates(analyzed)
+  end
 
   defp route_macro_arg(arg, treatment, mutators) when treatment in [:pattern, :binding_pattern],
     do: analyze(arg, :pattern, mutators)
@@ -924,6 +930,45 @@ defmodule Mutare.Transform.Analyze do
 
   defp pin_candidate(%Candidate.InPlace{} = candidate), do: %{candidate | pin?: true}
   defp pin_candidate(other), do: other
+
+  # A `:pinned` value is sound only when every in-place mutation lands on the value node itself —
+  # `pin_inplace_candidates/1` `^`-pins only the top node's own candidates. A compound value attaches
+  # candidates to *descendant* nodes that pinning would miss; those would emit as bare selector
+  # `case`s spliced into the DSL value and poison the build. Raise loudly (the offending value in the
+  # message) rather than silently degrade them to `:poisoned`. A value with no descendant candidate —
+  # a scalar literal, or a non-literal like a variable (no candidate at all) — is fine.
+  defp reject_non_scalar_pinned!(original, analyzed) do
+    if descendant_inplace_candidate?(analyzed) do
+      raise ArgumentError,
+            "a :pinned macro-routing treatment requires a scalar value (its mutation must pin in " <>
+              "place), but `#{Macro.to_string(original)}` is compound — its inner mutations cannot " <>
+              "be ^-pinned and would poison the DSL. Route a compound value :skip, or split it into " <>
+              "scalar pairs."
+    end
+  end
+
+  # Whether any node *strictly below* `node`'s top carries an in-place candidate.
+  defp descendant_inplace_candidate?(node) do
+    node |> child_nodes() |> Enum.any?(&subtree_has_inplace_candidate?/1)
+  end
+
+  defp child_nodes({_form, _meta, args}) when is_list(args), do: args
+  defp child_nodes({left, right}), do: [left, right]
+  # A bare list/2-tuple top node (a list argument routed `:pinned` directly, not the Sourceror
+  # `{:__block__, _, [list]}`-wrapped keyword value) carries no own meta, so pinning it pins nothing
+  # — every candidate is on an element, i.e. a descendant. Descend the elements so it's caught.
+  defp child_nodes(list) when is_list(list), do: list
+  defp child_nodes(_), do: []
+
+  defp subtree_has_inplace_candidate?(node) do
+    {_, found?} = Macro.prewalk(node, false, fn n, acc -> {n, acc or inplace_candidate?(n)} end)
+    found?
+  end
+
+  defp inplace_candidate?({_form, meta, _args}) when is_list(meta),
+    do: Enum.any?(Keyword.get(meta, :mutare, []), &match?(%Candidate.InPlace{}, &1))
+
+  defp inplace_candidate?(_), do: false
 
   # Route a keyword list's pair *values* by `value_treatments` (keys raw). Handles the bare list
   # (a trailing keyword argument, `where(q, x: v)`) and the Sourceror `{:__block__, _, [list]}`

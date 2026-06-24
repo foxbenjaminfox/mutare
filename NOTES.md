@@ -1555,11 +1555,22 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     a `{:keyword, …}` would slip past both — left raw and never hosted (a silent miss), or, but for the
     `route_macro_arg/3` raw-`:hosted` backstop, spliced as a bare selector into the DSL value (poison).
     Rather than make injection/detection recurse for an untested, marginal capability (host the *whole*
-    keyword argument `:hosted` if you must reach a value inside it), the type is narrowed and
-    `Resolve.reject_keyword_hosted!/2` raises at stamp time — the keyword analogue of
-    `reject_undeliverable_hosted!/2`, fail-loud over silent-drop. Checked on the **raw** classifier
-    output (before `inject_host/2`), recursively, so a deeper `{:keyword, [{:keyword, [:hosted]}]}` is
-    caught too. Tested via `Mutare.Test.KeywordHostedMutator` (`hosted_test`).
+    keyword argument `:hosted` if you must reach a value inside it), the type is narrowed and the
+    classifier output is validated at stamp time (see *classifier output is validated* below), fail-loud
+    over silent-drop. A deeper `{:keyword, [{:keyword, [:hosted]}]}` is caught too (the validator
+    recurses). Tested via `Mutare.Test.KeywordHostedMutator` (`hosted_test`).
+
+  * *Classifier output is validated — `Resolve.validate_routing!/2`.* A `:routing` classifier's return
+    is **untrusted input**, but only its hosted corners were originally checked. An unrecognised or
+    mis-shaped treatment (`:expresion` typo, `{:keyword, non_list}`, a non-list return, or a keyword-value
+    `:hosted`) would otherwise fall through `route_macro_arg/3`'s `:expression` catch-all and *silently
+    mutate* a position core was asked to skip/host/pin — a wrong-position mutation or a poison.
+    `validate_routing!/2` (the classifier analogue of `Macro.Spec.validate_args/1`'s build-time check for
+    static `args`) recurses the **raw** output (pre-`inject_host`) and raises with the offending value;
+    its one positional rule is that `:hosted` is valid for a whole argument but not a keyword value (the
+    keyword-hosted case above folds into it). The recognised atom set is derived from `Spec.treatments/0`
+    (+ `:pinned`) so it can't drift. It subsumes the old `reject_keyword_hosted!/2`. Tested via
+    `Mutare.Test.UnknownTreatmentMutator` and a non-list-returning classifier (`hosted_test`).
 
   * *`:pinned` — `^`-pinned in-place mutation.* Per-pair routing alone isn't enough for the shorthand
     split: a shorthand value sits **inside** Ecto's query macro, which rejects a bare selector `case`
@@ -1572,11 +1583,16 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     the host), flag those candidates `pin?`, and `emit_site/3`'s `pin_if_needed/2` wraps the built
     selector in `{:^, [], [case]}`. Contained: `pin?` defaults false and is set only by `:pinned`, so
     every existing site is byte-identical; a bare `^` is a compile error elsewhere, so `:pinned` is
-    routed only where the macro interpolates. Scalar-only — a compound value (`[1, 2]`) attaches
-    candidates to *nested* nodes, where an inner `^` still poisons, so the classifier routes only
-    scalars `:pinned` (a list/compound shorthand value stays `:skip` for now). This is why the
-    DESIGN's "shorthand values are plain interpolated Elixir, *not* hosted" was half-right: the value
-    *mutation* is core's (not the SQL catalog), but the *delivery* must be pinned, not a bare selector.
+    routed only where the macro interpolates. Scalar-only — `pin_inplace_candidates/1` pins only the
+    value node's **own** candidates, so a compound value (`[1, 2]`, `%{…}`) attaches candidates to
+    *descendant* nodes that pinning misses, where an inner bare `^`-less selector still poisons. This
+    scalar-only contract is **enforced**, not just documented: `reject_non_scalar_pinned!/2` walks the
+    analyzed value and raises if any in-place candidate sits below the top node (the offending value in
+    the message), rather than silently degrading those inner mutants to `:poisoned` (the recall-loss the
+    classifier-trust audit surfaced). A non-literal value with no candidate at all (a bare variable) is
+    fine — nothing to pin. This is why the DESIGN's "shorthand values are plain interpolated Elixir,
+    *not* hosted" was half-right: the value *mutation* is core's (not the SQL catalog), but the
+    *delivery* must be pinned, not a bare selector. Tested via `Mutare.Test.CompoundPinnedMutator`.
 
   * *Per-mutant report note — `Site.note`.* A hosting mutator may want to flag a *live, scored* mutant
     with advisory text the report shows on a survivor — `mutare_ecto` tags its equivalence-sensitive

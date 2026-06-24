@@ -358,6 +358,14 @@ defmodule Mutare.Mutator do
   `t:Mutare.Macro.Spec.treatment/0` (`:expression`/`:pattern`/`:binding_pattern`/`:skip`/
   `:hosted`); a `:hosted` here is delivered through this same mutator's `c:host/2`.
 
+  The list covers only the call's **visible** arguments. For a **piped** call (`q |> where(c)`)
+  the piped value is the `|>` LHS — *not* a visible argument and never routed here (it stays an
+  ordinary `:expression`), so a piped call passes one fewer argument than the written form. A
+  classifier that matches on arity must handle that reduced shape (match the visible args, not a
+  fixed count). The returned treatments are validated by `Mutare.Transform.Resolve`: an
+  unrecognised/mis-shaped treatment, or a `:hosted` inside a `{:keyword, …}` value, raises rather
+  than silently mutating a position you meant to skip/host.
+
   ## Per-keyword-pair routing — `{:keyword, value_treatments}`
 
   Besides the static treatments, the classifier may return two **classifier-only** routing
@@ -667,15 +675,25 @@ defmodule Mutare.Mutator do
   end
 
   # A host mutant is a bare node (no note) or a `%{node:, note:}` map (an advisory recorded on the
-  # Site). The map form is unambiguous — a quoted AST node is never a bare map with these keys.
+  # Site). The map form is unambiguous — a quoted AST node is never a bare map with these keys. A
+  # `:note` that is neither a string nor nil is a library bug (the report renders it verbatim), so
+  # raise rather than silently drop it — the same fail-loud stance as `normalize_target/1` above.
   defp normalize_mutant(%{node: node, note: note}) when is_binary(note) or is_nil(note),
     do: {node, note}
+
+  defp normalize_mutant(%{node: _node, note: note}) do
+    raise ArgumentError, "a host mutant :note must be a string or nil, got: #{inspect(note)}"
+  end
 
   defp normalize_mutant(%{node: node}), do: {node, nil}
   defp normalize_mutant(node), do: {node, nil}
 
   defp target_wrap(nil), do: &Function.identity/1
   defp target_wrap(wrap) when is_function(wrap, 1), do: wrap
+
+  defp target_wrap(other) do
+    raise ArgumentError, "a host target :wrap must be a 1-arity function, got: #{inspect(other)}"
+  end
 
   # The structural-callback context: the enclosing module's behaviour set, nothing else.
   defp structural_context(%Spec{behaviours: behaviours}), do: %{behaviours: behaviours}

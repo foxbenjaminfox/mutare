@@ -519,4 +519,141 @@ defmodule Mutare.HostedTest do
       end
     end
   end
+
+  describe "classifier output is validated (an unrecognised treatment is rejected)" do
+    test "an unknown treatment atom raises with the offending value" do
+      # `Mutare.Test.UnknownTreatmentMutator` routes the `filter` condition `:bogus`. Without
+      # validation it would fall through `route_macro_arg/3`'s `:expression` catch-all and silently
+      # mutate the fragment in place; `Resolve.validate_routing!/2` rejects it loudly instead.
+      source = """
+      defmodule Mutare.UnknownTreatmentFixture do
+        import Mutare.Test.HostDSL
+
+        def f(x) do
+          filter([:ok], x > 1)
+        end
+      end
+      """
+
+      assert_raise ArgumentError, ~r/unrecognised treatment :bogus/, fn ->
+        Mutare.transform_string(source,
+          file: "ut.ex",
+          mutators: [Mutare.Test.UnknownTreatmentMutator]
+        )
+      end
+    end
+
+    test "a non-list macro_routing/1 return raises" do
+      # Defensive: a classifier that returns a non-list (a contract violation) is caught with a
+      # clear message rather than crashing inside `inject_host/2`'s `Enum.map`.
+      source = """
+      defmodule Mutare.BadShapeFixture do
+        import Mutare.Test.HostDSL
+
+        def f(x) do
+          filter([:ok], x > 1)
+        end
+      end
+      """
+
+      assert_raise ArgumentError, ~r/must return a list of treatments/, fn ->
+        Mutare.transform_string(source, file: "bs.ex", mutators: [Mutare.Test.BadShapeMutator])
+      end
+    end
+  end
+
+  describe "a :pinned compound value is rejected (not silently poisoned)" do
+    test "a compound (list) value routed :pinned raises pointing at the scalar-only contract" do
+      # `Mutare.Test.CompoundPinnedMutator` routes the `ids: [1, 2]` value :pinned, but pinning
+      # `^`-wraps only the value node's own selector — the inner `1`/`2` mutations would emit as
+      # bare selectors and poison the DSL. `Analyze.reject_non_scalar_pinned!/2` raises rather than
+      # silently degrading them to :poisoned.
+      source = """
+      defmodule Mutare.CompoundPinnedFixture do
+        import Mutare.Test.HostDSL
+
+        def assign(q) do
+          set(q, ids: [1, 2])
+        end
+      end
+      """
+
+      assert_raise ArgumentError, ~r/:pinned.*scalar.*compound/s, fn ->
+        Mutare.transform_string(source,
+          file: "cp.ex",
+          mutators: [:literal, Mutare.Test.CompoundPinnedMutator]
+        )
+      end
+    end
+
+    test "a scalar value routed :pinned still pins normally (no false rejection)" do
+      # Regression: the scalar pinned path is unaffected — the value's mutation sits on its own
+      # node, so there is no descendant candidate and pinning proceeds.
+      source = """
+      defmodule Mutare.ScalarPinnedFixture do
+        import Mutare.Test.HostDSL
+
+        def assign(q) do
+          set(q, name: "keep")
+        end
+      end
+      """
+
+      {_meta, sites, _next} =
+        Mutare.transform_string(source,
+          file: "sp.ex",
+          mutators: [:string, Mutare.Test.CompoundPinnedMutator]
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :string and &1.mutated_code == "\"\""))
+    end
+
+    test "a bare list argument routed :pinned (not a wrapped keyword value) is also rejected" do
+      # `Mutare.Test.ArgPinnedMutator` routes `filter`'s first argument — the bare list `[:foo]` —
+      # :pinned. The list has no own candidate, so the `:foo` mutation sits on a descendant that
+      # pinning would miss; the bare-list descent in `reject_non_scalar_pinned!/2` catches it.
+      source = """
+      defmodule Mutare.ArgPinnedFixture do
+        import Mutare.Test.HostDSL
+
+        def f(x) do
+          filter([:foo], x > 1)
+        end
+      end
+      """
+
+      assert_raise ArgumentError, ~r/:pinned.*scalar.*compound/s, fn ->
+        Mutare.transform_string(source,
+          file: "ap.ex",
+          mutators: [:atom, Mutare.Test.ArgPinnedMutator]
+        )
+      end
+    end
+  end
+
+  describe "host-target normalization fails loud on malformed targets" do
+    alias Mutare.Mutator
+    alias Mutare.Mutator.Spec
+
+    defp malformed_spec do
+      %Spec{
+        module: Mutare.Test.MalformedHost,
+        name: :malformed,
+        opts: [],
+        behaviours: MapSet.new()
+      }
+    end
+
+    test "a non-1-arity :wrap raises (not a raw FunctionClauseError)" do
+      assert_raise ArgumentError, ~r/:wrap must be a 1-arity function/, fn ->
+        Mutator.host_targets(malformed_spec(), {:bad_wrap, [], []}, %{pipe_mode: :unpiped})
+      end
+    end
+
+    test "a non-string mutant :note raises (not a silently dropped note)" do
+      assert_raise ArgumentError, ~r/:note must be a string or nil/, fn ->
+        Mutator.host_targets(malformed_spec(), {:bad_note, [], []}, %{pipe_mode: :unpiped})
+      end
+    end
+  end
 end
