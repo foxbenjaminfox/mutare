@@ -269,3 +269,33 @@ defmodule Mutare.Test.NestedSampleUsing do
   """
   defmacro __using__(_opts), do: quote(do: use(Mutare.Test.SampleUsing))
 end
+
+defmodule Mutare.Test.CallerMutatingUsing do
+  @moduledoc """
+  A `use Gettext, backend: …`-style raiser: its `__using__` runs a **caller-mutating side effect**
+  in the macro body itself (`Module.put_attribute` on `__CALLER__.module`), which raises
+  `ArgumentError` against the already-compiled caller our pre-pass expands under. Stands in for
+  Gettext, whose `__using__` registers its backend the same way. Used *nested* inside a bundle to
+  prove one raising `use` doesn't drop its siblings.
+  """
+  defmacro __using__(_opts) do
+    Module.put_attribute(__CALLER__.module, :mutare_caller_mutating_probe, true)
+    quote do: import(Map, only: [take: 2])
+  end
+end
+
+defmodule Mutare.Test.BundleWithRaisingUsing do
+  @moduledoc """
+  A `:live_view`-style bundle whose `__using__` body is a block mixing good directives with a
+  *nested* raiser: `import Enum, only: [reject: 2]`, then `use CallerMutatingUsing` (raises like
+  `use Gettext, backend: …`), then `@behaviour Mutare.Test.SampleBehaviour`. The regression vehicle
+  for "a single raising nested `use` must drop only its own contribution, never its siblings."
+  """
+  defmacro __using__(_opts) do
+    quote do
+      import Enum, only: [reject: 2]
+      use Mutare.Test.CallerMutatingUsing
+      @behaviour Mutare.Test.SampleBehaviour
+    end
+  end
+end

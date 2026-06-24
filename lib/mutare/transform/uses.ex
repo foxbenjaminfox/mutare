@@ -573,9 +573,24 @@ defmodule Mutare.Transform.Uses do
 
       # A fresh alias scope (`%{}`) for this `__using__` body — its directives are folded as the
       # block is descended, so an in-body `alias … as: T` resolves a sibling `use T`.
+      #
+      # The `try` makes **each `use` expansion** the failure-isolation unit — both this top-level
+      # call (from `harvest/3`) and every *nested* `use` reached recursively via `collect/6`. A
+      # raising `__using__` (e.g. `use Gettext, backend: …`, whose body runs `Module.put_attribute`
+      # on the already-compiled caller → `ArgumentError`) then drops only *its own* contribution,
+      # while its siblings — harvested in the enclosing block's `flat_map_reduce` — survive. Without
+      # it, one bad nested `use` propagated out to `harvest/3`'s outer rescue and collapsed the whole
+      # bundle to `{[], []}`, silently dropping the good `import`/`@behaviour` directives beside it.
+      # See NOTES "isolate failure per `use`, not per bundle".
       true ->
-        expand_using(mod, opts, caller, caller_aliases)
-        |> collect(caller, caller_aliases, depth + 1, MapSet.put(seen, key), %{})
+        try do
+          expand_using(mod, opts, caller, caller_aliases)
+          |> collect(caller, caller_aliases, depth + 1, MapSet.put(seen, key), %{})
+        rescue
+          _ -> []
+        catch
+          _, _ -> []
+        end
     end
   end
 

@@ -17,6 +17,23 @@ defmodule Mutare.UsesTest do
     acc
   end
 
+  # The behaviour modules `Mutare.Transform.Uses` harvested onto every `use` node, flattened.
+  defp behaviours_at(source) do
+    {_ast, acc} =
+      source
+      |> Sourceror.parse_string!()
+      |> Uses.annotate()
+      |> Macro.prewalk([], fn
+        {:use, meta, _} = node, acc when is_list(meta) ->
+          {node, acc ++ Uses.injected_behaviours(meta)}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    acc
+  end
+
   # `%{fun => {module, :bare | :qualify}}` for every bare call resolved through the full
   # pre-pass (Uses → Resolve), the contract the call-matching mutators read.
   defp resolved_calls(source) do
@@ -135,6 +152,26 @@ defmodule Mutare.UsesTest do
       """
 
       assert directives_at(source) == []
+    end
+
+    test "a raising *nested* `use` drops only its own contribution, not its siblings" do
+      # The bundle's `__using__` body mixes good directives with a nested raiser, mirroring an
+      # idiomatic Phoenix `:live_view` that contains `use Gettext, backend: …` (whose `__using__`
+      # mutates the caller and raises). The raise must be isolated to that one `use`.
+      source = """
+      defmodule UsesBundleWithRaiser do
+        use Mutare.Test.BundleWithRaisingUsing
+      end
+      """
+
+      rendered = Enum.map(directives_at(source), &Macro.to_string/1)
+
+      # The good siblings, on either side of the raiser in the bundle block, survive.
+      assert "import Enum, only: [reject: 2]" in rendered
+      assert behaviours_at(source) == [Mutare.Test.SampleBehaviour]
+
+      # The raiser's own injected directive never expanded, so it (alone) is dropped.
+      refute "import Map, only: [take: 2]" in rendered
     end
 
     test "a `use`-cycle terminates" do

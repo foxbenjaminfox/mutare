@@ -1267,6 +1267,27 @@ failed to compile now compile). Tested via `test/support/using_fixtures.ex` (`__
 only vehicle — `examples/*` have no deps and are external) in `test/mutare/uses_test.exs`, including the
 Ecto `:skip`-now-fires case with/without expansion.
 
+**Isolate failure per `use`, not per bundle.** The "degrades, never errors" `try` was originally only
+on `harvest/3` — the *per-top-level-`use`* boundary. But a bundle is recursive: idiomatic Phoenix's
+`use MyAppWeb, :live_view` expands to a **block** that itself contains `use Gettext, backend: …`, whose
+`__using__` runs `Module.put_attribute` on the (already-compiled) caller and **raises `ArgumentError`**.
+That raise originates one level down, inside the *nested* `expand_and_collect(Gettext, …)`, and with the
+catch only at the top it propagated through the enclosing block's `flat_map_reduce` and collapsed the
+whole bundle to `{[], []}` — silently dropping the good `import Phoenix.LiveView` / `@behaviour
+Phoenix.LiveView` sitting right beside the bad `use`. Fix: move the isolation onto **`expand_and_collect/6`**
+itself — the recursion unit *and* the only site that runs a `__using__` (the only thing that can raise).
+Now each `use` (top-level *and* every nested one) self-isolates: a raising `__using__` drops only its own
+contribution while its siblings, harvested in the enclosing block, survive. Partial harvest is strictly
+better than empty: every directive we keep expanded cleanly, and we never emit a half-baked one from the
+failed `use` (the only loss is env-advancement for *its* injected aliases — already unavoidable, since it
+couldn't expand at all). `harvest/3`'s outer `try` stays as a backstop for `standardize`/`normalize`. The
+rescue is left **broad** (`rescue _` + `catch _, _`) on purpose: other `__using__`s raise other things
+(`KeyError`, `RuntimeError`, …) for the same compiled-caller reason, so narrowing to `ArgumentError` would
+be fragile. The bug was invisible precisely because the degradation is silent, so it's regression-guarded:
+`Mutare.Test.BundleWithRaisingUsing` (a bundle mixing good directives with a nested `CallerMutatingUsing`
+raiser that mirrors Gettext) in `uses_test.exs` asserts the siblings survive and only the raiser's own
+directive is dropped.
+
 ### Behaviour detection — `@behaviour` set per module, surfaced to custom mutators `[done]`
 A custom mutator often wants to fire *only* inside modules of a kind — the motivating case a
 GenServer mutator that swaps a `handle_call` `{:reply, r, s}` to `{:noreply, s}`. The signal is the
