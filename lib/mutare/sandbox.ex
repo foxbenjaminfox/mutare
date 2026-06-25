@@ -218,33 +218,7 @@ defmodule Mutare.Sandbox do
         File.mkdir_p!(sandbox)
 
       {:ok, %File.Stat{type: :directory}} ->
-        owned = owned?(sandbox)
-
-        cond do
-          # Keep mode reuses an owned dir *in place* — `sync` re-materialises it,
-          # preserving its `_build`. Never wiped.
-          keep? and owned ->
-            :ok
-
-          # Fresh mode at an explicitly pinned `:sandbox`: wiping a prior Mutare
-          # sandbox at a fixed path is the documented, intended reuse.
-          owned and pinned? ->
-            reset!(sandbox)
-
-          # Fresh mode at an auto-generated path: the pid-salted name cannot collide
-          # with a *live* run, so an existing owned dir here is a stale leftover (or,
-          # very rarely, an unexpected pid+counter collision). Refuse loudly rather
-          # than silently wipe — clobbering a concurrently-active sandbox is exactly
-          # the corruption the salting guards against.
-          owned ->
-            refuse_autogen!(sandbox)
-
-          File.ls!(sandbox) == [] ->
-            :ok
-
-          true ->
-            refuse!(sandbox, "is a non-empty directory without Mutare's ownership marker")
-        end
+        handle_existing_dir!(sandbox, keep?, pinned?)
 
       {:ok, %File.Stat{type: type}} ->
         refuse!(sandbox, "is a #{type}, not a directory")
@@ -254,6 +228,37 @@ defmodule Mutare.Sandbox do
     end
 
     put_if_changed(marker_path(sandbox), @marker_body)
+  end
+
+  # What to do with an existing *directory* at the sandbox path, by ownership and mode.
+  defp handle_existing_dir!(sandbox, keep?, pinned?) do
+    owned = owned?(sandbox)
+
+    cond do
+      # Keep mode reuses an owned dir *in place* — `sync` re-materialises it,
+      # preserving its `_build`. Never wiped.
+      keep? and owned ->
+        :ok
+
+      # Fresh mode at an explicitly pinned `:sandbox`: wiping a prior Mutare
+      # sandbox at a fixed path is the documented, intended reuse.
+      owned and pinned? ->
+        reset!(sandbox)
+
+      # Fresh mode at an auto-generated path: the pid-salted name cannot collide
+      # with a *live* run, so an existing owned dir here is a stale leftover (or,
+      # very rarely, an unexpected pid+counter collision). Refuse loudly rather
+      # than silently wipe — clobbering a concurrently-active sandbox is exactly
+      # the corruption the salting guards against.
+      owned ->
+        refuse_autogen!(sandbox)
+
+      File.ls!(sandbox) == [] ->
+        :ok
+
+      true ->
+        refuse!(sandbox, "is a non-empty directory without Mutare's ownership marker")
+    end
   end
 
   # Ours iff the marker is a regular file whose contents start with our

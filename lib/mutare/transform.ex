@@ -385,11 +385,11 @@ defmodule Mutare.Transform do
 
   # Transform each *non-lifted* clause in place (body selectors only), preserving its
   # position. The `:do` block's active-id read is hoisted to a once-per-call prologue
-  # (`emit_clause/3`'s `prologue?` arg); the head's default values and the other body
+  # (`emit_clause/3`'s `lifted?: false`); the head's default values and the other body
   # blocks keep the self-contained `:persistent_term` read (out of the prologue's scope).
   defp in_place_clauses(clauses, ctx) do
     Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
-      {clause, ctx} = emit_clause(clause, ctx, true)
+      {clause, ctx} = emit_clause(clause, ctx, false)
       {[clause], ctx}
     end)
   end
@@ -401,31 +401,34 @@ defmodule Mutare.Transform do
   # any binding's scope — keep the self-contained read.
   defp lifted_source_clauses(clauses, ctx) do
     Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
-      {clause, ctx} = emit_clause(clause, ctx, false)
+      {clause, ctx} = emit_clause(clause, ctx, true)
       {[clause], ctx}
     end)
   end
 
   # Emit one def/defp clause with the active-id read hoisted out of its per-site selectors.
-  # The head (default values) is emitted with the read *unbound* (those expressions run in
-  # a generated head clause where no binding is in scope), the body with it *bound*. The
-  # one-shot `active_bound` toggles are scoped to this clause and restored on the way out,
-  # so they never leak into the next module item.
-  defp emit_clause(clause, ctx, prologue?) do
+  # `lifted?` is the clause kind: a lifted base clause reads the id from the dispatcher's
+  # threaded parameter (in scope across every body block), a non-lifted clause binds it in a
+  # `:do`-block prologue (in scope in `:do` only). The head (default values) is emitted with
+  # the read *unbound* either way (those expressions run in a generated head clause where no
+  # binding is in scope), the body with it bound where the binding reaches. The one-shot
+  # `active_bound` toggles are scoped to this clause and restored on the way out, so they
+  # never leak into the next module item.
+  defp emit_clause(clause, ctx, lifted?) do
     bound0 = ctx.active_bound
 
     {emitted, ctx} =
-      emit_annotated_clause(Analyze.annotate(clause, analysis_mutators(ctx)), ctx, prologue?)
+      emit_annotated_clause(Analyze.annotate(clause, analysis_mutators(ctx)), ctx, lifted?)
 
     {emitted, %{ctx | active_bound: bound0}}
   end
 
   # A normal body-bearing def/defp clause: emit the head with the read unbound, then the
   # body blocks (`emit_clause_body/3`).
-  defp emit_annotated_clause({vis, meta, [head, body_kw]}, ctx, prologue?)
+  defp emit_annotated_clause({vis, meta, [head, body_kw]}, ctx, lifted?)
        when vis in [:def, :defp] and is_list(body_kw) do
     {head, ctx} = emit(head, %{ctx | active_bound: false})
-    {body_kw, ctx} = emit_clause_body(body_kw, ctx, prologue?)
+    {body_kw, ctx} = emit_clause_body(body_kw, ctx, lifted?)
     {{vis, meta, [head, body_kw]}, ctx}
   end
 
@@ -433,7 +436,7 @@ defmodule Mutare.Transform do
   # to hoist into, so emit the whole node with the read unbound — identical to the
   # pre-hoist behaviour. (A header's only runtime sub-positions are its default values,
   # which keep the self-contained read regardless.)
-  defp emit_annotated_clause(node, ctx, _prologue?), do: emit(node, %{ctx | active_bound: false})
+  defp emit_annotated_clause(node, ctx, _lifted?), do: emit(node, %{ctx | active_bound: false})
 
   # Emit each body block's value with the active-id read bound where the binding reaches:
   # the `:do` block always (a non-lifted clause's prologue binds it; a lifted clause's
@@ -444,17 +447,20 @@ defmodule Mutare.Transform do
   # exactly as a single whole-clause emit would assign them. The `is_list` guard asserts
   # the caller's contract (`emit_annotated_clause/3` only reaches here for a list body_kw);
   # there is no fallback because a body-bearing def/defp clause always has a keyword body.
-  defp emit_clause_body(body_kw, ctx, prologue?) when is_list(body_kw) do
-    other_bound = not prologue?
+  defp emit_clause_body(body_kw, ctx, lifted?) when is_list(body_kw) do
+    # A lifted clause's threaded parameter is in scope in every block; a non-lifted clause's
+    # prologue binds the id in `:do` only, so its sibling blocks keep the inline read.
+    all_blocks_bound = lifted?
+    needs_prologue = not lifted?
 
     {body_kw, ctx} =
       Enum.map_reduce(body_kw, ctx, fn {key, value}, ctx ->
-        bound = AST.key_atom(key) == :do or other_bound
+        bound = AST.key_atom(key) == :do or all_blocks_bound
         {value, ctx} = emit(value, %{ctx | active_bound: bound})
         {{key, value}, ctx}
       end)
 
-    {if(prologue?, do: prepend_do_prologue(body_kw, ctx.active_var), else: body_kw), ctx}
+    {if(needs_prologue, do: prepend_do_prologue(body_kw, ctx.active_var), else: body_kw), ctx}
   end
 
   # Prepend `<var> = :persistent_term.get(...)` to the `:do` block — but only when that
@@ -803,43 +809,56 @@ defmodule Mutare.Transform do
     end
   end
 
-  # The emit-path axis of the delivery table (see `site_for/3`): which selector-emitting path
-  # delivers a node's candidates. A node's `:mutare` candidates are homogeneous in delivery (the
-  # analyzer attaches one family per node), so matching the list head identifies the path; the
-  # tuple-export kinds (`MatchPattern`/`MacroPattern`) get their own paths, every other in-place
-  # kind shares `emit_site/3`.
+  # The emit-path axis of the delivery table (see `site_for/3`): dispatch a node's candidates
+  # to the selector-emitting path `delivery_route/1` classified them into. A flat table, one arm
+  # per kind.
   defp emit_one_unhosted(current, ctx) do
-    # A `case` carrying per-clause `CaseClause`s is rewritten by the tuple-the-scrutinee
-    # path (its clauses can't each host a selector, and a `case` isn't a liftable function
-    # group). Checked first: a `case` node carries `:mutare_case`, never `:mutare`.
-    case case_candidates_of(current) do
+    case delivery_route(current) do
+      # A `case` carrying per-clause `CaseClause`s is rewritten by the tuple-the-scrutinee path
+      # (its clauses can't each host a selector, and a `case` isn't a liftable function group).
+      {:case_clause, candidates} ->
+        emit_case_pattern_site(current, candidates, ctx)
+
+      # A `=`-match in statement position → a tuple-export selector (its bindings must escape,
+      # so it can't be wrapped like an ordinary node).
+      {:match_pattern, candidates} ->
+        emit_match_site(current, candidates, ctx)
+
+      # A binding-escaping known macro (`destructure([x, y], v)`) in a value-discarded position
+      # → the same tuple-export selector, but each branch runs the *macro* (with the
+      # original/mutated pattern) instead of a `case` match.
+      {:macro_pattern, candidates} ->
+        emit_macro_pattern_site(current, candidates, ctx)
+
+      # Every other in-place kind shares the ordinary wrap-in-a-selector path.
+      {:in_place, candidates} ->
+        emit_site(current, candidates, ctx)
+
+      # No deliverable candidates. A `|>` never carries candidates itself, but its
+      # already-emitted RHS may now be a selector `case` — illegal as a pipe target — so
+      # rewrite it here. `strip_candidates` clears any meta left by candidates the gate dropped
+      # (a no-op when there were none), so the node renders clean.
+      :none ->
+        {hoist_pipe(strip_candidates(current), ctx), ctx}
+    end
+  end
+
+  # Classify how a node's candidates are delivered. A `case`'s per-clause `:mutare_case`
+  # candidates dominate and are never gated; otherwise the `:mutare` candidates are gated (a
+  # mutator may opt out, leaving none) and the list head identifies the path — the analyzer
+  # attaches one homogeneous family per node, so the head is representative.
+  defp delivery_route(node) do
+    case case_candidates_of(node) do
       [] ->
-        case gate_candidates(candidates_of(current)) do
-          # A `|>` never carries candidates itself, but its already-emitted RHS may
-          # now be a selector `case` — illegal as a pipe target — so rewrite it here.
-          # `strip_candidates` clears any meta left by candidates the gate dropped (a
-          # no-op when there were none), so the gated node renders clean.
-          [] ->
-            {hoist_pipe(strip_candidates(current), ctx), ctx}
-
-          # A `=`-match in statement position is rewritten to a tuple-export selector
-          # (its bindings must escape, so it can't be wrapped like an ordinary node). It
-          # only ever carries `MatchPattern` candidates, so the head match is exhaustive.
-          [%Candidate.MatchPattern{} | _] = candidates ->
-            emit_match_site(current, candidates, ctx)
-
-          # A binding-escaping known macro (`destructure([x, y], v)`) in a value-discarded
-          # position is rewritten to the same tuple-export selector, but each branch runs
-          # the *macro* (with the original/mutated pattern) instead of a `case` match.
-          [%Candidate.MacroPattern{} | _] = candidates ->
-            emit_macro_pattern_site(current, candidates, ctx)
-
-          candidates ->
-            emit_site(current, candidates, ctx)
+        case gate_candidates(candidates_of(node)) do
+          [] -> :none
+          [%Candidate.MatchPattern{} | _] = candidates -> {:match_pattern, candidates}
+          [%Candidate.MacroPattern{} | _] = candidates -> {:macro_pattern, candidates}
+          candidates -> {:in_place, candidates}
         end
 
       case_candidates ->
-        emit_case_pattern_site(current, case_candidates, ctx)
+        {:case_clause, case_candidates}
     end
   end
 

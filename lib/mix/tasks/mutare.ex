@@ -237,17 +237,9 @@ defmodule Mix.Tasks.Mutare do
       warn_ineffective_ignores(schema)
       enforce_strict_ignores(schema, options)
 
-      options =
-        if live do
-          %{
-            options
-            | reporter: &Live.report(live, &1),
-              on_phase: &Live.phase(live, &1),
-              on_start: &Live.started(live, &1)
-          }
-        else
-          options
-        end
+      # Wire the runner's live hooks (reporter/phase/start) now that the scan is done — the
+      # scan drove `:on_scan` directly above; these drive the per-mutant phase.
+      options = wire_live_hooks(options, live)
 
       result = Runner.run_with_schema(schema, root, options)
       # Tear the live status block down before anything else prints, so the final
@@ -272,6 +264,19 @@ defmodule Mix.Tasks.Mutare do
   defp maybe_start_live(%Options{}) do
     {:ok, live} = Live.start_link()
     live
+  end
+
+  # Point the runner's three live hooks at the `Live` server, or leave `options` untouched
+  # when there is no live reporter (`--quiet`, or the direct `Mutare.run/2` API).
+  defp wire_live_hooks(options, nil), do: options
+
+  defp wire_live_hooks(options, live) do
+    %{
+      options
+      | reporter: &Live.report(live, &1),
+        on_phase: &Live.phase(live, &1),
+        on_start: &Live.started(live, &1)
+    }
   end
 
   # Compile the host project so its own modules are loadable for in-process `use` expansion

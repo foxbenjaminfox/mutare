@@ -88,6 +88,17 @@ defmodule Mutare.Runner do
 
   require Logger
 
+  # The per-run invariants threaded to every mutant's `classify/3` and `run_mutant/*`: the one
+  # `sandbox`, the coverage `selection`, the timeout `cap`, the umbrella `scopes`, and the
+  # initial `retries` budget. Bundled so those functions take this plus the per-task `site`/`env`
+  # rather than a long positional list — and so `retries` can't be swapped by position with the
+  # separate boot-failure budget.
+  defmodule RunCtx do
+    @moduledoc false
+    @enforce_keys [:sandbox, :selection, :cap, :scopes, :retries]
+    defstruct @enforce_keys
+  end
+
   # `sandbox` is where the run *was* materialised. For a default (throwaway) run it
   # is removed once the run completes — the path is informational, not a live dir;
   # only `--sandbox`/`--keep-sandbox` runs leave it in place. The report reads
@@ -197,7 +208,13 @@ defmodule Mutare.Runner do
         cap = timeout_cap(baseline_ms, options)
         workers = options.workers
 
-        retries = options.harness_retries
+        ctx = %RunCtx{
+          sandbox: sandbox,
+          selection: selection,
+          cap: cap,
+          scopes: scopes,
+          retries: options.harness_retries
+        }
 
         on_phase.({:running, length(schema.sites)})
 
@@ -210,7 +227,7 @@ defmodule Mutare.Runner do
               # retries), check it back in when done — see `Mutare.Runner.Partitions`.
               result =
                 Partitions.with_slot(partitions, fn env ->
-                  classify(sandbox, site, selection, cap, retries, scopes, env)
+                  classify(ctx, site, env)
                 end)
 
               reporter.(result)
@@ -421,21 +438,21 @@ defmodule Mutare.Runner do
 
   # === per-mutant runs =======================================================
 
-  defp classify(_sandbox, %Site{poisoned: true} = site, _selection, _cap, _retries, _scopes, _env) do
+  defp classify(_ctx, %Site{poisoned: true} = site, _env) do
     %Result{site: site, status: :poisoned, duration_ms: 0, output: nil}
   end
 
-  defp classify(_sandbox, %Site{ignored: true} = site, _selection, _cap, _retries, _scopes, _env) do
+  defp classify(_ctx, %Site{ignored: true} = site, _env) do
     %Result{site: site, status: :ignored, duration_ms: 0, output: nil}
   end
 
-  defp classify(sandbox, site, :run_all, cap, retries, scopes, env),
-    do: run_mutant(sandbox, site, broaden([], site, scopes), cap, retries, env)
+  defp classify(%RunCtx{selection: :run_all} = ctx, site, env),
+    do: run_mutant(ctx, site, broaden([], site, ctx.scopes), env)
 
-  defp classify(sandbox, site, {:selective, outcomes}, cap, retries, scopes, env) do
+  defp classify(%RunCtx{selection: {:selective, outcomes}} = ctx, site, env) do
     case Map.fetch(outcomes, site.id) do
       {:ok, {:run, test_args}} ->
-        run_mutant(sandbox, site, broaden(test_args, site, scopes), cap, retries, env)
+        run_mutant(ctx, site, broaden(test_args, site, ctx.scopes), env)
 
       {:ok, :no_coverage} ->
         %Result{site: site, status: :no_coverage, duration_ms: 0, output: nil}
@@ -444,7 +461,7 @@ defmodule Mutare.Runner do
       # practice; a missing id is a bug, not a no-coverage signal — run it rather
       # than silently drop a mutant from the score.
       :error ->
-        run_mutant(sandbox, site, broaden([], site, scopes), cap, retries, env)
+        run_mutant(ctx, site, broaden([], site, ctx.scopes), env)
     end
   end
 
@@ -489,24 +506,24 @@ defmodule Mutare.Runner do
   # third refinement, `:boot_failure`, *is* retried — harder than a generic
   # harness error, from its own dedicated budget — since it is a known-transient
   # startup-contention crash; see `@boot_failure_retries`.
-  defp run_mutant(sandbox, site, test_args, cap, retries, env),
-    do: run_mutant(sandbox, site, test_args, cap, retries, @boot_failure_retries, env)
+  defp run_mutant(%RunCtx{retries: retries} = ctx, site, test_args, env),
+    do: run_mutant(ctx, site, test_args, env, retries, @boot_failure_retries)
 
   # `retries` is the general `:harness_retries` budget; `boot_retries` the dedicated
   # boot-failure budget. The two are decremented independently by the *current* run's
   # outcome, so a boot failure that later degrades to a plain harness error still draws
   # its general retries, and vice versa. Only the two retryable outcomes recurse; every
   # real verdict (and the recovered kills) falls through to `record/2` unretried.
-  defp run_mutant(sandbox, site, test_args, cap, retries, boot_retries, env) do
-    result = Command.timed_test(sandbox, test_args, site.id, cap, env)
+  defp run_mutant(%RunCtx{} = ctx, site, test_args, env, retries, boot_retries) do
+    result = Command.timed_test(ctx.sandbox, test_args, site.id, ctx.cap, env)
 
     case result.outcome do
       :boot_failure when boot_retries > 0 ->
         Process.sleep(boot_backoff_ms())
-        run_mutant(sandbox, site, test_args, cap, retries, boot_retries - 1, env)
+        run_mutant(ctx, site, test_args, env, retries, boot_retries - 1)
 
       :harness_error when retries > 0 ->
-        run_mutant(sandbox, site, test_args, cap, retries - 1, boot_retries, env)
+        run_mutant(ctx, site, test_args, env, retries - 1, boot_retries)
 
       outcome when outcome in [:harness_error, :boot_failure] ->
         warn_harness_error(site, result)
