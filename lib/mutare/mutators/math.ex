@@ -23,22 +23,24 @@ defmodule Mutare.Mutators.Math do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutators.Helpers
   alias Mutare.Transform.Calls
 
-  # fun => sibling fun(s) to swap to. Every sibling exists at the same arity in
-  # `:math`, so an arity-blind rename keeping the argument list always compiles.
+  # {module, fun} => sibling fun(s), the shared swap-table shape (`Helpers.swap_call/2`, the
+  # same `{module_key, fun}` keying `Collection`/`Numeric` use). Every sibling exists at the
+  # same arity in `:math`, so an arity-blind rename keeping the argument list always compiles.
   @swaps %{
-    sin: [:cos],
-    cos: [:sin],
-    asin: [:acos],
-    acos: [:asin],
-    sinh: [:cosh],
-    cosh: [:sinh],
-    asinh: [:acosh],
-    acosh: [:asinh],
-    log: [:log2, :log10],
-    log2: [:log, :log10],
-    log10: [:log, :log2]
+    {:math, :sin} => [:cos],
+    {:math, :cos} => [:sin],
+    {:math, :asin} => [:acos],
+    {:math, :acos} => [:asin],
+    {:math, :sinh} => [:cosh],
+    {:math, :cosh} => [:sinh],
+    {:math, :asinh} => [:acosh],
+    {:math, :acosh} => [:asinh],
+    {:math, :log} => [:log2, :log10],
+    {:math, :log2} => [:log, :log10],
+    {:math, :log10} => [:log, :log2]
   }
 
   # 0-arity constant functions → a nearby-but-wrong float literal.
@@ -47,27 +49,18 @@ defmodule Mutare.Mutators.Math do
   @impl Mutare.Mutator
   def name, do: :math
 
+  # A `/0` constant (`:math.pi()`/`tau()`) collapses to a nearby-but-wrong float literal
+  # (gated on the empty arg list, so a hypothetical same-named call *with* arguments is never
+  # collapsed); every other `:math` call is an arity-blind sibling rename through the shared
+  # swap table (`Helpers.swap_call/2`, which resolves direct/aliased/bare-imported forms and
+  # rebuilds in the written module).
   @impl Mutare.Mutator
   def mutate(node) do
-    case Calls.resolved_call(node) do
-      {:math, fun, args, rebuild} -> mutate_math(fun, args, rebuild)
-      _other -> :skip
-    end
-  end
-
-  defp mutate_math(fun, args, rebuild) do
-    cond do
-      # `:math.pi()`/`tau()` are `/0`; gate on the empty arg list so a hypothetical
-      # same-named call with arguments is never collapsed to a constant.
-      Map.has_key?(@constants, fun) and args == [] ->
-        [AST.literal(Map.fetch!(@constants, fun))]
-
-      # `rebuild` keeps the written module (`:math`, an alias, or bare import).
-      Map.has_key?(@swaps, fun) ->
-        for new_fun <- Map.fetch!(@swaps, fun), do: rebuild.(new_fun, args)
-
-      true ->
-        :skip
+    with {:math, fun, [], _rebuild} <- Calls.resolved_call(node),
+         {:ok, value} <- Map.fetch(@constants, fun) do
+      [AST.literal(value)]
+    else
+      _ -> Helpers.swap_call(node, @swaps)
     end
   end
 end

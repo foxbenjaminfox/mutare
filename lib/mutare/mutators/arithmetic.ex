@@ -36,6 +36,7 @@ defmodule Mutare.Mutators.Arithmetic do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutators.Helpers
 
   # Genuine binary *operators* — always written infix (arity 2, never piped), so an
   # arity-blind `mutate/1` is safe. (`div`/`rem` are *calls*, handled in `mutate/2`.)
@@ -46,11 +47,13 @@ defmodule Mutare.Mutators.Arithmetic do
     :/ => [:*]
   }
 
-  # Bare `Kernel` call-form swaps, offered only at effective arity 2 — the same
-  # bare-`Kernel` safeguard `Mutare.Mutators.Numeric` uses (see `mutate/2`).
+  # Bare `Kernel` `div`/`rem` calls keyed on {name, effective_arity} => [sibling] — the same
+  # shared bare-`Kernel` safeguard `Mutare.Mutators.Numeric` uses (`Helpers.swap_bare_kernel/3`):
+  # the arity proves a bare `div` is the Kernel `div/2` (not a user `div/3`), and a call
+  # displaced by `import Kernel, except: [div: 2]` is skipped.
   @call_swaps %{
-    div: [:rem],
-    rem: [:div]
+    {:div, 2} => [:rem],
+    {:rem, 2} => [:div]
   }
 
   # operator => right-operand value that makes the swap an equivalent no-op
@@ -88,22 +91,13 @@ defmodule Mutare.Mutators.Arithmetic do
   def mutate(_node), do: :skip
 
   # `div`/`rem` are bare `Kernel` calls, not operators. Swapping `div`↔`rem` keeps the
-  # argument list, so it is a valid rename at any position (a pipe stage included). The
-  # swap is gated on **effective arity 2** (pipe-aware, like the bare-`Kernel` rule in
-  # `Mutare.Mutators.Numeric`): a same-named user `div/3` is never rewritten to a `rem/3`
-  # that may not exist — which would poison the single build. A pipe stage carries one
-  # fewer arg than the source reads (`x |> div(y)` is `div/2`), so the flag recovers it.
+  # argument list, so it is a valid rename at any position (a pipe stage included), gated on
+  # **effective arity 2** so a same-named user `div/3` is never rewritten to a `rem/3` that may
+  # not exist (which would poison the single build) — the shared bare-`Kernel` safeguard
+  # (`Helpers.swap_bare_kernel/3`, also used by `Numeric`).
   @impl Mutare.Mutator
-  def mutate({fun, meta, args}, %{pipe_mode: pipe_mode})
-      when fun in [:div, :rem] and is_list(args) do
-    if Mutare.Mutator.effective_arity(args, pipe_mode) == 2 do
-      Enum.map(Map.fetch!(@call_swaps, fun), &{&1, meta, args})
-    else
-      :skip
-    end
-  end
-
-  def mutate(_node, _context), do: :skip
+  def mutate(node, %{pipe_mode: pipe_mode}),
+    do: Helpers.swap_bare_kernel(node, pipe_mode, @call_swaps)
 
   defp identity_swap?(op, right) do
     case Map.fetch(@identity, op) do

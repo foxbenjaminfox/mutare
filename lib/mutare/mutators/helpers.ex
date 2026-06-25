@@ -5,7 +5,7 @@ defmodule Mutare.Mutators.Helpers do
   # (no `@behaviour`, not in the `Mutare.Mutators` registry) — just the logic several
   # families would otherwise copy.
 
-  alias Mutare.Transform.Calls
+  alias Mutare.Transform.{Calls, Imports}
 
   @doc """
   Rename a resolved call by looking its `{module, fun}` up in a swap `table`.
@@ -32,6 +32,45 @@ defmodule Mutare.Mutators.Helpers do
       _ -> :skip
     end
   end
+
+  @doc """
+  Swap a **bare `Kernel`** call for a sibling, gated on effective arity — pipe-aware.
+
+  The bare-`Kernel` counterpart of `swap_call/2`: a bare `min`/`abs`/`div`/… has no module
+  to prove it is the `Kernel` one (`Mutare.Transform.Calls` only resolves *qualified*/
+  aliased/imported calls), so the sole evidence is its **effective** arity
+  (`Mutare.Mutator.effective_arity/2` — one higher when piped, since a pipe stage's node
+  carries one fewer arg than the source reads). Look `{fun, effective_arity}` up in `table`
+  (so a same-named user function at another arity is never touched) and rebuild the call with
+  each sibling name, keeping the argument list. A call displaced from `Kernel` by `import
+  Kernel, except:/only:` (`Mutare.Transform.Imports`) names *another* module's function, so
+  it is skipped — the swap would otherwise rewrite a user function to a sibling that may not
+  exist (poisoning the single build) or mean something else.
+
+  `table` maps `{function, effective_arity}` to a sibling name, or a **list** of names
+  (several siblings → several mutants). The single home for the bare-`Kernel` swap that
+  `Mutare.Mutators.Numeric` (`min`/`max`/rounding) and `Mutare.Mutators.Arithmetic`
+  (`div`/`rem`) share. Returns `:skip` when the node isn't a bare call, is displaced, or its
+  `{fun, arity}` isn't in the table.
+  """
+  @spec swap_bare_kernel(
+          Macro.t(),
+          Mutare.Mutator.pipe_mode(),
+          %{optional({atom(), arity()}) => atom() | [atom()]}
+        ) :: [Macro.t()] | :skip
+  def swap_bare_kernel({fun, meta, args}, pipe_mode, table)
+      when is_atom(fun) and is_list(args) do
+    eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode)
+
+    with false <- Imports.kernel_displaced?(meta),
+         {:ok, siblings} <- Map.fetch(table, {fun, eff_arity}) do
+      siblings |> List.wrap() |> Enum.map(&{&1, meta, args})
+    else
+      _ -> :skip
+    end
+  end
+
+  def swap_bare_kernel(_node, _pipe_mode, _table), do: :skip
 
   @doc """
   Remove a *transparent transform* call — pipe-aware.

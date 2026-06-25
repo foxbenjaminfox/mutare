@@ -39,7 +39,6 @@ defmodule Mutare.Mutators.Numeric do
   @behaviour Mutare.Mutator
 
   alias Mutare.Mutators.Helpers
-  alias Mutare.Transform.Imports
 
   # Bare `Kernel` calls keyed on {name, effective_arity} => [sibling names]. The arity
   # is what proves a bare `floor`/`max` is the Kernel one (and not a same-named user
@@ -80,27 +79,10 @@ defmodule Mutare.Mutators.Numeric do
   @impl Mutare.Mutator
   def mutate(node), do: Helpers.swap_call(node, @remote_swaps)
 
-  # Bare `Kernel` `min`/`max`/`round`/`trunc`/`ceil`/`floor`: the swap is offered only at
-  # the function's true (effective) arity, so a same-named user call at another arity is
-  # never mutated. Pipe-aware because a pipe stage's node carries one fewer arg than the
-  # source reads.
+  # Bare `Kernel` `min`/`max`/`round`/`trunc`/`ceil`/`floor`: the swap is offered only at the
+  # function's true (effective) arity, and a `Kernel`-displaced call is skipped — the shared
+  # bare-`Kernel` safeguard (`Helpers.swap_bare_kernel/3`, also used by `Arithmetic`'s div/rem).
   @impl Mutare.Mutator
-  def mutate({fun, meta, args}, %{pipe_mode: pipe_mode})
-      when is_atom(fun) and is_list(args) do
-    eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode)
-
-    # A bare `min`/`max`/`round`/… is the `Kernel` one *unless* it has been displaced by an
-    # `import Kernel, except:/only:` (`Mutare.Transform.Imports`) — then it names another
-    # module's function, so the swap would be wrong; skip it.
-    if Imports.kernel_displaced?(meta) do
-      :skip
-    else
-      case Map.fetch(@kernel_swaps, {fun, eff_arity}) do
-        {:ok, siblings} -> Enum.map(siblings, &{&1, meta, args})
-        :error -> :skip
-      end
-    end
-  end
-
-  def mutate(_node, _context), do: :skip
+  def mutate(node, %{pipe_mode: pipe_mode}),
+    do: Helpers.swap_bare_kernel(node, pipe_mode, @kernel_swaps)
 end
