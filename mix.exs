@@ -27,6 +27,13 @@ defmodule Mutare.MixProject do
   defp deps do
     [
       {:sourceror, "~> 1.12"},
+      # Powers the `mix mutare.install` / `mix igniter.install mutare` generator
+      # (see `Mix.Tasks.Mutare.Install`). Optional so it isn't forced on projects
+      # that add Mutare by hand — the installer module is compiled away when absent
+      # (`Code.ensure_loaded?(Igniter)` guard) — while still being fetched here so
+      # the task compiles and is tested. A consumer who runs `mix igniter.install`
+      # already has it.
+      {:igniter, "~> 0.8", optional: true},
       {:propcheck, "~> 1.5", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},

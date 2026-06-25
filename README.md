@@ -80,6 +80,35 @@ the score), and rebuilds.
 
 This completes the design's milestones (M1–M4).
 
+## Installation
+
+The quickest path is the [igniter](https://hexdocs.pm/igniter) installer, which adds
+Mutare to your `:dev`/`:test` deps and auto-configures the framework plugins:
+
+```
+mix igniter.install mutare
+```
+
+It inspects your dependencies and, for each framework it finds, adds the matching
+companion mutator package and enables its families in a generated `.mutare.exs`:
+
+| Detected dependency      | Plugin added                | Families                          |
+| ------------------------ | --------------------------- | --------------------------------- |
+| `:phoenix`               | `mutare_phoenix`            | `Mutare.Phoenix.all/0`            |
+| `:phoenix_live_view`     | `mutare_phoenix_live_view`  | `Mutare.Phoenix.LiveView.all/0`   |
+| `:ecto` / `:ecto_sql`    | `mutare_ecto`               | `{Mutare.Ecto, repo: YourRepo}`   |
+
+The Ecto repo is detected automatically (pass `--repo MyApp.Repo` to override). If you
+already have a `.mutare.exs`, it is left untouched and the recommended `:mutators` line
+is printed for you to merge in. (No igniter yet? `mix archive.install hex igniter_new`.)
+
+Or add it by hand — Mutare is a test-time tool, so keep it out of production:
+
+```elixir
+# mix.exs
+{:mutare, "~> 0.1", only: [:dev, :test], runtime: false}
+```
+
 ## Usage
 
 ```
