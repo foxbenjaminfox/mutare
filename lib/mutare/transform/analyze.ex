@@ -224,8 +224,19 @@ defmodule Mutare.Transform.Analyze do
   # it to `<<>>`) — built from the raw node so the diff renders the author's
   # literal, with the analyzed segments kept underneath so their own selectors stay
   # reachable. In a pattern (or any non-runtime context) it is only descended.
+  #
+  # A **real bitstring** (no `delimiter`) is a *construction*: its segments are
+  # type-pinned via `analyze_construction_segment/2` so a binary-valued literal
+  # segment that gets a selector keeps its `binary` type (see there). An
+  # **interpolated string** / heredoc (`delimiter`-marked `<<>>`) is *not* a
+  # construction — its parts are string content, descended as ordinary segments.
   defp analyze({:<<>>, meta, segments} = node, :runtime, mutators) do
-    analyzed = {:<<>>, meta, Enum.map(segments, &analyze_segment(&1, :runtime, mutators))}
+    seg_fun =
+      if Keyword.has_key?(meta, :delimiter),
+        do: &analyze_segment(&1, :runtime, mutators),
+        else: &analyze_construction_segment(&1, mutators)
+
+    analyzed = {:<<>>, meta, Enum.map(segments, seg_fun)}
     offer(analyzed, node, mutators)
   end
 
@@ -1233,6 +1244,39 @@ defmodule Mutare.Transform.Analyze do
   end
 
   defp analyze_segment(segment, context, mutators), do: analyze(segment, context, mutators)
+
+  # A segment of a runtime bitstring *construction*. A binary-valued literal — a string,
+  # an interpolated string, or a `~s`/`~S` sigil — written *untyped* defaults to a `binary`
+  # segment only because the value is a literal; the moment a mutation wraps it in a selector
+  # `case` the segment reverts to the integer default and construction raises at runtime (the
+  # baseline included — `<<"x">>` becomes `<<(case … end)>>`, "expected an integer"). Pin
+  # `::binary` explicitly so the selector — and the mutated binaries it yields — construct
+  # correctly. Semantically a no-op (`<<"x">>` ≡ `<<"x"::binary>>`); the report still diffs the
+  # bare value (it patches the original source, not the metamutant). An already-typed
+  # (`::utf8`/`::binary`/…) segment, or a non-binary one (an integer/char/`size(expr)`), is
+  # analyzed unchanged.
+  defp analyze_construction_segment({:"::", _meta, _args} = typed, mutators),
+    do: analyze_segment(typed, :runtime, mutators)
+
+  defp analyze_construction_segment(segment, mutators) do
+    analyzed = analyze_segment(segment, :runtime, mutators)
+
+    if binary_valued_literal?(segment),
+      do: {:"::", [], [analyzed, {:binary, [], nil}]},
+      else: analyzed
+  end
+
+  # A bitstring segment value whose runtime type is a binary, recognised syntactically: a
+  # string literal (`{:__block__, _, [binary]}`), an interpolated string / heredoc (a
+  # `delimiter`-marked `<<>>`), or a `~s`/`~S` sigil. These are exactly the untyped segments a
+  # selector would mis-type as an integer (see `analyze_construction_segment/2`).
+  defp binary_valued_literal?({:__block__, _meta, [value]}), do: is_binary(value)
+  defp binary_valued_literal?({:<<>>, meta, _segs}), do: Keyword.has_key?(meta, :delimiter)
+
+  defp binary_valued_literal?({sigil, _meta, _args}) when is_atom(sigil),
+    do: sigil in [:sigil_s, :sigil_S]
+
+  defp binary_valued_literal?(_), do: false
 
   # The type-specifier side of a bitstring segment. Separators (`-`), type atoms
   # and `unit(...)` stay raw — a swapped `-` is an illegal specifier and a `case`

@@ -626,13 +626,19 @@ defmodule Mutare.TransformPropertyGenerators do
     end
   end
 
-  # A `<<b0, b1, …>>` bitstring of 1–3 literal byte segments — BitstringLiteral (collapse to
-  # `<<>>`) and Literal (the byte ints themselves). A runtime value, total for any input. The
-  # segments are valid bytes (0–255), and the `<<>>` carries no `:delimiter` meta, so it reads as
+  # A `<<seg0, seg1, …>>` bitstring of 1–3 segments — a byte int (Literal) or a **string
+  # literal** segment (StringLiteral). The string segment is the key case: untyped, it
+  # defaults to a `binary` segment only as a literal, so a mutation's selector must be
+  # type-pinned `::binary` or construction reverts to the integer default and raises (the
+  # transform handles this — this generator exercises that path). BitstringLiteral also
+  # collapses the whole `<<…>>` to `<<>>`. A runtime value, total for any input. Segments are
+  # valid bytes (0–255) / binaries, and the `<<>>` carries no `:delimiter` meta, so it reads as
   # a bitstring literal rather than an interpolated string (which BitstringLiteral skips).
   defp bitstring_gen do
     let count <- integer(1, 3) do
-      let(bytes <- vector(count, integer(0, 255)), do: {:<<>>, [], bytes})
+      let segments <- vector(count, oneof([integer(0, 255), let(s <- ascii_string(), do: s)])) do
+        {:<<>>, [], segments}
+      end
     end
   end
 

@@ -85,6 +85,29 @@ defmodule Mutare.TransformCorpusTest do
       min_sites: 2
     },
     %{
+      name: "bitstrings: string / interpolated / ~s segments stay binary-typed under a selector",
+      # An untyped binary-valued segment — a string literal, an interpolated string, or a
+      # `~s` sigil — defaults to a `binary` segment only *as a literal*; the moment a
+      # mutation (StringLiteral / StringSigilLiteral) wraps it in a selector `case` the
+      # segment would revert to the integer default and binary construction would raise —
+      # at the baseline too. The transform pins `::binary`, so each stays baseline-equivalent.
+      source: """
+      defmodule Mutare.Corpus.BitstringStrings do
+        def lit, do: <<"hello">>
+        def interp(x), do: <<"a\#{x}b">>
+        def sigil(x), do: <<(~s(p\#{x}q))>>
+        def mixed(x), do: <<0x01, "tag", x::8>>
+      end
+      """,
+      probes: [
+        {Mutare.Corpus.BitstringStrings, :lit, []},
+        {Mutare.Corpus.BitstringStrings, :interp, [10]},
+        {Mutare.Corpus.BitstringStrings, :sigil, [10]},
+        {Mutare.Corpus.BitstringStrings, :mixed, [7]}
+      ],
+      min_sites: 6
+    },
+    %{
       name: "patterns: heads/pins are not mutated; bodies and default-arg values are",
       # Destructuring heads, a map pattern, and a `^pin` are all patterns (no
       # mutation), but each *body* mutates and the call-time default `2 + 3` is a
