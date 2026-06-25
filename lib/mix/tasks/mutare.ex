@@ -465,14 +465,22 @@ defmodule Mix.Tasks.Mutare do
 
   # A poisoned compile that recovery couldn't isolate. Lead with a remediation
   # hint when we recognise the cause (a macro requiring a literal argument — see
-  # `Mutare.Poison.Hint`), then the raw compiler error for the full detail.
+  # `Mutare.Poison.Hint`), then the raw compiler error for the full detail. The
+  # raw error can be long, so a footer points back up to the hint (the fix is at
+  # the top, but the user reads the error dump last).
   defp format_error(:compile_failed, detail) do
     intro = "the metamutant failed to compile (compile-poisoning).\n\n"
     tail = Command.output_tail(detail, 25)
 
     case Mutare.Poison.Hint.for_compile_failure(detail) do
-      nil -> intro <> tail
-      hint -> intro <> hint <> "\n\nOriginal compile error:\n\n" <> tail
+      nil ->
+        intro <> tail
+
+      hint ->
+        footer =
+          "\n\n↑ Scroll up for how to fix this — the remediation hint is above the original error."
+
+        intro <> hint <> "\n\nOriginal compile error:\n\n" <> tail <> footer
     end
   end
 

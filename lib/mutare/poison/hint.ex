@@ -1,28 +1,23 @@
 defmodule Mutare.Poison.Hint do
   @moduledoc """
-  Explain a metamutant compile failure that poison recovery couldn't fix.
+  Turns one unrecoverable compile failure into advice the user can act on.
 
-  `Mutare.Poison` recovers from a compile-poisoning mutation by mapping the
-  compiler's `file:line` to the offending mutant id and dropping it. That works
-  whenever the error points *at* the spliced code. One class of failure defeats
-  it: a **macro that requires a compile-time literal argument**
-  (`Size.megabytes(5)`, `Bitwise`-style constant folders, custom DSL helpers).
-  Mutare wraps the literal in a runtime selector `case`, the macro receives that
-  `case` AST instead of a literal, and it raises while the compiler is *expanding*
-  it. The compiler reports the **macro call site**, not the line of the spliced
-  selector inside it — and those are different lines, so `Poison.ids/2` maps the
-  error to nothing and the run aborts (the limitation documented in NOTES).
+  Almost every compile-poisoning mutation is recovered automatically — Mutare
+  finds the offending mutant, drops it, and rebuilds. One case can't be: a macro
+  that requires a **compile-time literal argument** (`Size.megabytes(5)` and the
+  like). Mutating the literal turns it into runtime code, the macro rejects it and
+  raises while the compiler is expanding it, and because the compiler blames the
+  macro *call* rather than the mutation inside it, Mutare can't tell which single
+  mutant to drop. The whole run aborts.
 
-  The right fix is to tell Mutare to leave that macro's arguments alone by marking
-  it `:skip` in `.mutare.exs` (the `:macros` option). This module turns the raw
-  compile output into that advice: it pulls every macro named in an
-  `expanding macro: Mod.fun/arity` stacktrace frame and renders a copy-pasteable
-  `:skip` snippet, so the `Mix.Tasks.Mutare` error message says *how to fix it*
-  rather than only dumping the compiler error.
+  The way out is to leave that macro's arguments unmutated by marking it `:skip`
+  in `.mutare.exs` (the `:macros` option). This module recognises the situation
+  from the failed compile's output, identifies the macro(s) at fault, and produces
+  that advice — including a copy-pasteable snippet — so the error the user sees
+  explains how to get unblocked instead of just echoing the raw compiler error.
 
-  Pure (output string in, hint string out), so the diagnosis is unit-testable
-  without a compile. Returns `nil` when no specific cause is recognised, leaving
-  the generic compile-failure message to stand on its own.
+  Returns `nil` for any other compile failure, where the raw error stands on its
+  own.
   """
 
   # An `expanding macro: Mod.fun/arity` stacktrace frame, the signature of an
@@ -40,11 +35,11 @@ defmodule Mutare.Poison.Hint do
   @exception_header ~r/^\s*\*\* \(/
 
   @doc """
-  A remediation hint for the failed-compile `output`, or `nil` when none applies.
+  A copy-pasteable remediation hint for the failed-compile `output`, or `nil`.
 
-  Currently recognises the macro-expansion-needs-a-literal case (see the
-  moduledoc); other failures return `nil`, so the caller falls back to showing the
-  raw compiler error alone.
+  Recognises the one poison case Mutare can't recover on its own — a macro that
+  needs a compile-time literal argument — and returns advice on how to skip it.
+  Any other failure returns `nil`, leaving the raw compiler error to stand alone.
   """
   @spec for_compile_failure(String.t()) :: String.t() | nil
   def for_compile_failure(output) when is_binary(output) do
@@ -55,20 +50,14 @@ defmodule Mutare.Poison.Hint do
   end
 
   @doc """
-  The distinct `{module_string, function_atom}` macros to advise skipping, drawn
-  from the **innermost** `expanding macro:` frame of each stacktrace in `output`,
-  in first-seen order. `[]` when none are present.
+  The macro(s) to advise skipping, as distinct `{module_string, function_atom}`
+  pairs read from the `expanding macro:` frames in `output`, in first-seen order.
+  `[]` when there are none.
 
-  Only the innermost frame is taken. A literal-only macro nested inside another
-  (`if Size.megabytes(5)`) raises a *stack* of frames, printed innermost-first
-  (`Size.megabytes/1`, then the enclosing `Kernel.if/2`). The outer frames are
-  expansion *context*, not the culprit: only `Size.megabytes`'s argument was
-  mutated. Advising `:skip` on an outer wrapper (`{Kernel, :if, :skip}` would stop
-  Mutare descending into *every* `if`, hiding valid mutants) is wrong, so they are
-  dropped. A new stacktrace (a fresh `** (Error)` header) re-arms the capture, so a
-  multi-file failure still yields one culprit per error.
-
-  Exposed (and pure) so the detection is testable apart from the message wording.
+  Each compile error reports only its **innermost** macro — the one whose literal
+  argument was actually mutated. A literal-only macro nested inside another
+  (`if Size.megabytes(5)`) also lists the enclosing macros, but skipping those
+  would needlessly hide valid mutants, so only the culprit is kept.
 
       iex> Mutare.Poison.Hint.expanding_macros("expanding macro: Size.megabytes/1\\n")
       [{"Size", :megabytes}]
@@ -134,21 +123,21 @@ defmodule Mutare.Poison.Hint do
 
   defp macro_skip_hint(macros) do
     """
-    A macro raised while the compiler was expanding it, so the metamutant could not
-    be built — and Mutare could not isolate a single mutation to drop and retry
-    (the compiler points at the macro call site, not the mutation spliced inside it).
+    A mutation broke the build by changing an argument that a macro needs as a
+    compile-time literal — the macro raised while the compiler was expanding it.
+    Mutare can't recover from this on its own, so the run is blocked until you tell
+    it to skip the macro.
 
-    This usually means a mutation was inserted into an argument the macro requires to
-    be a compile-time literal. The macro(s) that failed to expand:
+    Macro(s) that can't have their arguments mutated:
 
     #{bullets(macros)}
 
-    Tell Mutare to leave those macros' arguments unmutated by marking them `:skip`
-    in .mutare.exs:
+    Add this to .mutare.exs to skip them and unblock the run. Only these macros'
+    arguments are left unmutated; the rest of your code is still mutated as usual:
 
     #{snippet(macros)}
 
-    (See `mix help mutare` for the `:macros` option.)\
+    See `mix help mutare` for the `:macros` option.\
     """
   end
 
