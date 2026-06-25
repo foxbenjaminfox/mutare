@@ -16,8 +16,7 @@ defmodule Mutare.Transform.Analyze do
 
   alias Mutare.AST
   alias Mutare.Mutator
-  alias Mutare.Mutators.Conditional
-  alias Mutare.Transform.{Candidate, NodeRange}
+  alias Mutare.Transform.{Candidate, NodeRange, Suppression}
   alias Mutare.Transform.Analyze.{Captures, ClausePatterns, Conditions, MatchPatterns, Returns}
 
   # The try-style body blocks whose clause bodies are *return paths*
@@ -568,8 +567,8 @@ defmodule Mutare.Transform.Analyze do
        when op in [:and, :&&, :or, :||] do
     analyzed = node |> offer(node, mutators) |> recurse_runtime(mutators, :unpiped)
 
-    if boolean_op_node?(left),
-      do: drop_constant_candidate(analyzed, redundant_constant(op)),
+    if Suppression.boolean_op_node?(left),
+      do: drop_constant_candidate(analyzed, Suppression.redundant_constant(op)),
       else: analyzed
   end
 
@@ -653,12 +652,6 @@ defmodule Mutare.Transform.Analyze do
 
   defp empty_collection?(_candidate), do: false
 
-  # The constant a short-circuit connective's Conditional mutant duplicates on its left
-  # operand: `false` for `and`/`&&` (a false left short-circuits the whole node to false),
-  # `true` for `or`/`||` (a true left short-circuits to true). See the connective clause above.
-  defp redundant_constant(op) when op in [:and, :&&], do: false
-  defp redundant_constant(op) when op in [:or, :||], do: true
-
   # Drop from the **top node** the Conditional candidate forcing it to `bool` — the redundant
   # short-circuit constant. Per mutation (the sibling constant and Logical's swap stay) and
   # top-node scoped, a no-op when the node carries no candidates. Mirrors
@@ -677,14 +670,9 @@ defmodule Mutare.Transform.Analyze do
   defp drop_constant_candidate(node, _bool), do: node
 
   defp constant_candidate?(%Candidate.InPlace{mutated: mutated}, bool),
-    do: boolean_literal?(mutated, bool)
+    do: Suppression.boolean_literal?(mutated, bool)
 
   defp constant_candidate?(_candidate, _bool), do: false
-
-  # The polarity complement of each equality operator — the swap that, *under a negation*,
-  # re-negates to the operator itself (`not (a !== b)` ≡ `a === b`). Exactly Relational's
-  # equality flip; named here so the negation clause can recognise that flip by shape.
-  @equality_complements %{:== => :!=, :!= => :==, :=== => :!==, :!== => :===}
 
   # Drop from an equality node *under a negation* its negation-redundant candidates: the
   # polarity complement (Relational's flip, ≡ Logical's strip of the outer `not`) and the
@@ -705,34 +693,9 @@ defmodule Mutare.Transform.Analyze do
   defp drop_negation_redundant_candidates(node, _op), do: node
 
   defp negation_redundant?(%Candidate.InPlace{mutated: mutated}, op),
-    do:
-      boolean_literal?(mutated, true) or boolean_literal?(mutated, false) or
-        polarity_complement?(mutated, op)
+    do: Suppression.negation_redundant?(mutated, op)
 
   defp negation_redundant?(_candidate, _op), do: false
-
-  # Whether `mutated` is the polarity complement of `op` — `{complement, _, _}`, the flip
-  # that re-negates to `op` under a `not`. A relaxation (`===` → `==`) is `{:==, _, _}`,
-  # never the complement of `===` (`:!==`), so it is correctly *not* redundant.
-  defp polarity_complement?({mop, _meta, _args}, op),
-    do: mop == Map.get(@equality_complements, op)
-
-  defp polarity_complement?(_node, _op), do: false
-
-  # Whether `node` is an n-ary node whose head is a Conditional-eligible boolean operator —
-  # i.e. Conditional fires on it, so the connective's redundant constant has a subsuming sibling.
-  defp boolean_op_node?({op, _meta, args}) when is_atom(op) and is_list(args),
-    do: Conditional.boolean_op?(op)
-
-  defp boolean_op_node?(_node), do: false
-
-  # Whether `node` is the literal boolean `bool` (`AST.literal/1`'s `{:__block__, _, [bool]}`
-  # or a bare `bool`) — identifying Conditional's `true`/`false` mutant. On a connective node
-  # only Conditional yields a bare boolean (Logical yields the swapped operator), so this
-  # uniquely selects the redundant constant without keying on the producing module.
-  defp boolean_literal?({:__block__, _meta, [b]}, b) when is_boolean(b), do: true
-  defp boolean_literal?(b, b) when is_boolean(b), do: true
-  defp boolean_literal?(_node, _bool), do: false
 
   # The right side of a `|>` (see the `:|>` clause of `analyze/3`): offer it to
   # mutators *as piped* (so an arity-changing mutator sees the effective arity =

@@ -25,8 +25,7 @@ defmodule Mutare.Transform.Tag do
   # (bitstring specs, map-key collisions) therefore live here once.
 
   alias Mutare.{AST, Mutator}
-  alias Mutare.Mutators.Conditional
-  alias Mutare.Transform.NodeRange
+  alias Mutare.Transform.{NodeRange, Suppression}
 
   @doc """
   Tag every mutatable operator in one guard expression.
@@ -170,8 +169,8 @@ defmodule Mutare.Transform.Tag do
     {right_t, acc} = tag_walk(right, acc, mutators)
     rebuilt = {op, meta, [left_t, right_t]}
 
-    if boolean_op_node?(left),
-      do: offer_without_constant(rebuilt, redundant_constant(op), acc, mutators),
+    if Suppression.boolean_op_node?(left),
+      do: offer_without_constant(rebuilt, Suppression.redundant_constant(op), acc, mutators),
       else: offer_target(rebuilt, acc, mutators)
   end
 
@@ -226,7 +225,7 @@ defmodule Mutare.Transform.Tag do
     tag_node(node, muts, acc)
   end
 
-  defp constant_mutation?({_spec, mutated}, bool), do: boolean_literal?(mutated, bool)
+  defp constant_mutation?({_spec, mutated}, bool), do: Suppression.boolean_literal?(mutated, bool)
 
   # `offer_target/3` for an equality op *under a `not`* minus its negation-redundant
   # mutations: the polarity complement (Relational, ≡ Logical's strip) and the `true`/`false`
@@ -238,36 +237,7 @@ defmodule Mutare.Transform.Tag do
   end
 
   defp negation_redundant_mutation?({_spec, mutated}, op),
-    do:
-      boolean_literal?(mutated, true) or boolean_literal?(mutated, false) or
-        polarity_complement?(mutated, op)
-
-  # The polarity complement of each equality operator (Relational's flip), recognised by
-  # shape so the relaxation `===` → `==` (≠ `:!==`) is kept. See the body-side twin.
-  @equality_complements %{:== => :!=, :!= => :==, :=== => :!==, :!== => :===}
-
-  defp polarity_complement?({mop, _meta, _args}, op),
-    do: mop == Map.get(@equality_complements, op)
-
-  defp polarity_complement?(_node, _op), do: false
-
-  # The constant a short-circuit connective's Conditional mutant duplicates on its left
-  # operand: `false` for `and`, `true` for `or` (`&&`/`||` are guard-illegal here).
-  defp redundant_constant(:and), do: false
-  defp redundant_constant(:or), do: true
-
-  # Whether `node`'s head is a Conditional-eligible boolean operator — i.e. Conditional fires
-  # on it, so the connective's redundant constant has a subsuming sibling.
-  defp boolean_op_node?({op, _meta, args}) when is_atom(op) and is_list(args),
-    do: Conditional.boolean_op?(op)
-
-  defp boolean_op_node?(_node), do: false
-
-  # Whether `node` is the literal boolean `bool` — identifying Conditional's `true`/`false`
-  # mutant (the only built-in yielding a bare boolean on a connective node).
-  defp boolean_literal?({:__block__, _meta, [b]}, b) when is_boolean(b), do: true
-  defp boolean_literal?(b, b) when is_boolean(b), do: true
-  defp boolean_literal?(_node, _bool), do: false
+    do: Suppression.negation_redundant?(mutated, op)
 
   # A bitstring segment `<<value::spec>>`: tag-walk the value, keep the spec raw
   # except `size(expr)` args (`tag_spec/3`).
