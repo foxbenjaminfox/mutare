@@ -5,8 +5,14 @@ defmodule Mutare.Mutators.StringLiteral do
   original. So a typical non-empty string yields *two* mutants (empties it and
   swaps its content); `""` yields just the sentinel; `"mutare"` yields just `""`.
 
-  Only plain string literals are touched: interpolated strings (`"a\#{x}b"`) parse
-  as a `<<>>` construction, not a literal, and are left alone.
+  Both plain and **interpolated** strings are mutated. A plain literal parses as
+  `{:__block__, _, [binary]}` and gets the value-based no-op drop above. An
+  interpolated string (`"a\#{x}b"`) — and an interpolated heredoc — parses instead
+  as a `<<>>` carrying a `delimiter` meta key; the whole thing is replaced by
+  `""`/`"mutare"` (its runtime value can never be statically either, so both variants
+  apply), while the interpolation's own sub-expressions still mutate independently
+  underneath. A real `<<…>>` bitstring (no `delimiter`) is *not* a string — it is left
+  to `Mutare.Mutators.BitstringLiteral`.
   """
   @behaviour Mutare.Mutator
 
@@ -22,6 +28,17 @@ defmodule Mutare.Mutators.StringLiteral do
     ["", @sentinel]
     |> Enum.reject(&(&1 == s))
     |> Enum.map(&AST.literal/1)
+  end
+
+  # An interpolated string (`"a#{x}b"`, or a heredoc) parses as a `<<>>` carrying a
+  # `delimiter` meta key — the discriminator from a real `<<…>>` bitstring (no
+  # delimiter, BitstringLiteral's domain). Its runtime binary is never statically
+  # `""`/`"mutare"`, so both variants always apply.
+  def mutate({:<<>>, meta, segments})
+      when is_list(meta) and is_list(segments) and segments != [] do
+    if Keyword.has_key?(meta, :delimiter),
+      do: [AST.literal(""), AST.literal(@sentinel)],
+      else: :skip
   end
 
   def mutate(_node), do: :skip

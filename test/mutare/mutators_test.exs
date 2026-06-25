@@ -1541,6 +1541,16 @@ defmodule Mutare.MutatorsTest do
       assert render(StringLiteral.mutate(parse(~s("mutare")))) == [~s("")]
     end
 
+    test "mutates an interpolated string (a delimiter-marked <<>>) as a whole" do
+      assert render(StringLiteral.mutate(parse(~S|"a#{x}b"|))) == [~s(""), ~s("mutare")]
+      assert render(StringLiteral.mutate(parse(~S|"#{x}"|))) == [~s(""), ~s("mutare")]
+    end
+
+    test "skips a real bitstring (no delimiter) — BitstringLiteral's domain" do
+      assert StringLiteral.mutate(parse("<<104, 105>>")) == :skip
+      assert StringLiteral.mutate(parse(~S|<<"x"::utf8>>|)) == :skip
+    end
+
     test "skips non-string literals" do
       assert StringLiteral.mutate(parse("1")) == :skip
       assert StringLiteral.mutate(parse(":atom")) == :skip
@@ -1565,8 +1575,9 @@ defmodule Mutare.MutatorsTest do
       assert render(StringSigilLiteral.mutate(parse("~S(mutare)"))) == [~s("")]
     end
 
-    test "skips an interpolated ~s (multiple <<>> parts, not a lone binary)" do
-      assert StringSigilLiteral.mutate(parse("~s(a\#{x}b)")) == :skip
+    test "mutates an interpolated ~s as a whole (both variants always apply)" do
+      assert render(StringSigilLiteral.mutate(parse("~s(a\#{x}b)"))) == [~s(""), ~s("mutare")]
+      assert render(StringSigilLiteral.mutate(parse("~s(\#{x})"))) == [~s(""), ~s("mutare")]
     end
 
     test "skips plain strings (StringLiteral's domain) and other sigils" do

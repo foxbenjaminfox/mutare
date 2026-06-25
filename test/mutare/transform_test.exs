@@ -4072,21 +4072,25 @@ defmodule Mutare.TransformTest do
       assert_compiles(meta)
     end
 
-    test "an interpolated ~s and a sigil in a pattern position are never mutated" do
-      source = """
-      defmodule S do
-        def f(s), do: ~s(a\#{s}b)
-        def g(~S(hello)), do: :ok
-        def g(_), do: :no
-      end
-      """
+    test "an interpolated ~s is mutated as a whole; a sigil in a pattern position is not" do
+      {meta, triples} =
+        redundancy_triples(
+          """
+          def f(s), do: ~s(a\#{s}b)
+          def g(~S(hello)), do: :ok
+          def g(_), do: :no
+          """,
+          @sigil
+        )
 
-      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @sigil)
-
-      # Interpolation parses as multiple <<>> parts (declined); a pattern `~S(...)` is
-      # never offered (a selector `case` is illegal in a match). So no string_sigil sites.
-      assert Enum.filter(sites, &(&1.mutator == :string_sigil)) == []
-      assert {:ok, _} = Code.string_to_quoted(meta)
+      # The interpolated `~s` mutates as a whole — its runtime value is never statically
+      # "" or "mutare", so both variants apply (the inner `\#{s}` keeps interpolating in
+      # the baseline branch). A `~S(...)` in a pattern is never offered (a selector `case`
+      # is illegal in a match).
+      assert {:string_sigil, "~s(a\#{s}b)", ~s("")} in triples
+      assert {:string_sigil, "~s(a\#{s}b)", ~s("mutare")} in triples
+      refute Enum.any?(triples, fn {_m, o, _mut} -> o == "~S(hello)" end)
+      assert_compiles(meta)
     end
   end
 

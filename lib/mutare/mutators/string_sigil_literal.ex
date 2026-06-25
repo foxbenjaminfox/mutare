@@ -17,14 +17,15 @@ defmodule Mutare.Mutators.StringSigilLiteral do
   sigil parses as `{:sigil_s, _, [<<…>>, modifiers]}` whose content is a *bare*
   binary segment — neither shape the other touches.
 
-  Only **non-interpolated** sigils are mutated: an interpolated `~s(a\#{x}b)` parses
-  with multiple `<<>>` parts, not a single binary, so the match (a lone binary
-  segment) declines it — left, like an interpolated `"a\#{x}b"`, to its own runtime
-  sub-expressions (`~S` never interpolates, so it always matches). `Mutare.Transform`
-  offers the **whole** sigil node here (it never offers a sigil's content `<<>>`
-  wrapper or bare-binary segment separately), so this is the *only* string mutation a
-  `~s`/`~S` receives — and, like every sigil offer, only in a runtime position, never
-  in a pattern.
+  **Interpolated** sigils are mutated too. A non-interpolated `~s(hello)`/`~S(…)` has
+  a single static binary segment, so the empty/sentinel no-op is dropped as above. An
+  interpolated `~s(a\#{x}b)` parses with multiple `<<>>` parts (`~S` never
+  interpolates); its runtime binary can never be statically `""`/`"mutare"`, so both
+  variants always apply, while the interpolation's own sub-expressions still mutate
+  independently underneath. `Mutare.Transform` offers the **whole** sigil node here
+  (it never offers a sigil's content `<<>>` wrapper or bare-binary segment
+  separately), so this is the *only* whole-string mutation a `~s`/`~S` receives — and,
+  like every sigil offer, only in a runtime position, never in a pattern.
   """
   @behaviour Mutare.Mutator
 
@@ -36,11 +37,20 @@ defmodule Mutare.Mutators.StringSigilLiteral do
   def name, do: :string_sigil
 
   @impl Mutare.Mutator
-  def mutate({sigil, _meta, [{:<<>>, _bmeta, [content]}, _modifiers]})
-      when sigil in [:sigil_s, :sigil_S] and is_binary(content) do
-    ["", @sentinel]
-    |> Enum.reject(&(&1 == content))
-    |> Enum.map(&AST.literal/1)
+  def mutate({sigil, _meta, [{:<<>>, _bmeta, segments}, _modifiers]})
+      when sigil in [:sigil_s, :sigil_S] do
+    case segments do
+      [content] when is_binary(content) ->
+        # Non-interpolated: a single static binary — drop the no-op variant.
+        ["", @sentinel]
+        |> Enum.reject(&(&1 == content))
+        |> Enum.map(&AST.literal/1)
+
+      _ ->
+        # Interpolated (`~s` only): multiple `<<>>` parts / a lone interpolation. The
+        # runtime binary is never statically `""`/`"mutare"`, so both variants apply.
+        [AST.literal(""), AST.literal(@sentinel)]
+    end
   end
 
   def mutate(_node), do: :skip

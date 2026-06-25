@@ -210,6 +210,7 @@ defmodule Mutare.TransformPropertyGenerators do
       {1, collection_gen(smaller)},
       {2, remote_call_gen(vars)},
       {1, sigil_gen()},
+      {1, interp_string_gen(vars)},
       {1, bitstring_gen()},
       {1, with_gen(size, vars)},
       {1, fn_gen(size, vars)},
@@ -605,6 +606,22 @@ defmodule Mutare.TransformPropertyGenerators do
         :time -> quote(do: ~T[12:30:00])
         :naive -> quote(do: ~N[2020-01-15 12:30:00])
         :utc -> quote(do: ~U[2020-01-15 12:30:00Z])
+      end
+    end
+  end
+
+  # An **interpolated** string / `~s` sigil as a runtime value — the only generator that
+  # exercises the interpolation path of StringLiteral / StringSigilLiteral, where the whole
+  # string mutates to `""`/`"mutare"` *and* the interpolated sub-expression mutates
+  # independently underneath (nested selectors). The inner expression is a leaf (a bound var
+  # or literal), kept shallow. Runtime-only: an interpolation is illegal in a pattern, and
+  # `leaf_gen` (which feeds patterns) never produces one. `~S`/charlists never interpolate,
+  # so only the `~s` and double-quoted forms are generated.
+  defp interp_string_gen(vars) do
+    let {shape, inner} <- {oneof([:string, :sigil]), leaf_gen(vars)} do
+      case shape do
+        :string -> quote(do: "a#{unquote(inner)}b")
+        :sigil -> quote(do: ~s(a#{unquote(inner)}b))
       end
     end
   end
