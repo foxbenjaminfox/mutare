@@ -538,18 +538,11 @@ defmodule Mutare.Transform.Uses do
   defp use_opts([opts]), do: if(Macro.quoted_literal?(opts), do: {:ok, opts}, else: :error)
   defp use_opts(_rest), do: :error
 
-  # A standard-quoted module reference → its concrete atom, or `nil`. The path is resolved through
-  # the lexical alias env first (`Aliases.resolve_path/2`), so an aliased target binds to the real
-  # module (a list path → `Module.concat`; an Erlang-atom binding stays the atom). An `__aliases__`
-  # with a non-static segment (an aliased `use Web` we can't resolve) yields `nil` → degrade.
-  defp module_atom({:__aliases__, _, path}, env) when is_list(path) do
-    if Enum.all?(path, &is_atom/1),
-      do: path |> Aliases.resolve_path(env) |> Aliases.to_module(),
-      else: nil
-  end
-
-  defp module_atom(atom, _env) when is_atom(atom), do: atom
-  defp module_atom(_other, _env), do: nil
+  # A module reference node → its concrete atom, or `nil` (non-static). The shared resolver in
+  # `Aliases.resolve_node/2` resolves the path through the lexical alias env first, so an aliased
+  # target binds to the real module; a non-static segment (an aliased `use Web` we can't resolve)
+  # yields `nil` → degrade.
+  defp module_atom(node, env), do: Aliases.resolve_node(node, env)
 
   # Expand `mod.__using__(opts)` and collect the directives in its body, recursing through
   # nested `use`s. Bounded by depth and a `seen` set so a `use`-cycle terminates. `seen` keys on

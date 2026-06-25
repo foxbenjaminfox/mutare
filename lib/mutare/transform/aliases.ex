@@ -279,4 +279,23 @@ defmodule Mutare.Transform.Aliases do
   def to_module(path) when is_list(path), do: Module.concat(path)
   def to_module(atom) when is_atom(atom), do: atom
   def to_module(_other), do: nil
+
+  @doc """
+  A module **reference node** → its concrete module atom, or `nil`. Resolves the three shapes a
+  module reference takes in the AST: an Elixir alias path (`{:__aliases__, _, segments}`,
+  resolved through the alias `env` then `Module.concat`-ed — a non-static segment yields `nil`),
+  a Sourceror-wrapped atom (`{:__block__, _, [:gen_server]}`), and a bare atom — the latter two
+  being Erlang-style modules taken as-is.
+
+  The single home for the "AST node + env → module" step the `use`/`@behaviour`/`import`
+  pre-passes need, composing `resolve_path/2` with `to_module/1`.
+  """
+  @spec resolve_node(Macro.t(), map()) :: module() | nil
+  def resolve_node({:__aliases__, _meta, path}, env) when is_list(path) do
+    if atoms?(path), do: path |> resolve_path(env) |> to_module(), else: nil
+  end
+
+  def resolve_node({:__block__, _meta, [atom]}, _env) when is_atom(atom), do: atom
+  def resolve_node(atom, _env) when is_atom(atom), do: atom
+  def resolve_node(_other, _env), do: nil
 end

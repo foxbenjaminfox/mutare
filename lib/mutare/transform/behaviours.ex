@@ -117,7 +117,7 @@ defmodule Mutare.Transform.Behaviours do
   # A direct `@behaviour Foo` statement: resolve the module through the alias env in force
   # and add it. Anything else leaves the set untouched.
   defp add_direct(set, {:@, _meta, [{:behaviour, _bmeta, [mod_ast]}]}, aliases) do
-    case resolve_module(mod_ast, aliases) do
+    case Aliases.resolve_node(mod_ast, aliases) do
       nil -> set
       mod -> MapSet.put(set, mod)
     end
@@ -131,18 +131,4 @@ defmodule Mutare.Transform.Behaviours do
     do: Enum.into(Uses.injected_behaviours(meta), set)
 
   defp add_injected(set, _stmt), do: set
-
-  # A direct `@behaviour`'s module reference → its concrete atom, or `nil` (non-static).
-  # An Elixir path (`{:__aliases__, _, segments}`) is resolved through the alias env then
-  # `Module.concat`-ed; a Sourceror-wrapped atom (`{:__block__, _, [:gen_server]}`) or a
-  # bare atom is itself the module (an Erlang behaviour).
-  defp resolve_module({:__aliases__, _meta, path}, aliases) when is_list(path) do
-    if Enum.all?(path, &is_atom/1),
-      do: path |> Aliases.resolve_path(aliases) |> Aliases.to_module(),
-      else: nil
-  end
-
-  defp resolve_module({:__block__, _meta, [atom]}, _aliases) when is_atom(atom), do: atom
-  defp resolve_module(atom, _aliases) when is_atom(atom), do: atom
-  defp resolve_module(_other, _aliases), do: nil
 end
