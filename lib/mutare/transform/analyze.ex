@@ -17,7 +17,16 @@ defmodule Mutare.Transform.Analyze do
   alias Mutare.AST
   alias Mutare.Mutator
   alias Mutare.Transform.{Candidate, NodeRange, Suppression}
-  alias Mutare.Transform.Analyze.{Captures, ClausePatterns, Conditions, MatchPatterns, Returns}
+
+  alias Mutare.Transform.Analyze.{
+    CallOptions,
+    Captures,
+    ClausePatterns,
+    Conditions,
+    Macros,
+    MatchPatterns,
+    Returns
+  }
 
   # The try-style body blocks whose clause bodies are *return paths*
   # (`rescue`/`catch`/`else`). Their left side is always a match, and their tails
@@ -30,11 +39,6 @@ defmodule Mutare.Transform.Analyze do
   # `format: :keyword` marker, so `label_key?/1` recognises them by atom — protecting
   # a key like `do:` from being mutated (which would not even render).
   @block_keys [:do, :else, :rescue, :catch, :after]
-
-  # Data/structural forms that reach the generic runtime clause but are *not* calls,
-  # so a keyword-list-shaped trailing element (a `%{a: 1}` pair list, a `{a, [b: 1]}`
-  # tuple's last element) is never mistaken for a call's trailing options (`call_form?/1`).
-  @non_call_forms [:{}, :%{}, :<<>>, :__block__, :__aliases__]
 
   # Module-level forms whose block/children are known compile-time structure.
   # Unknown module-level macro calls with a block are handled separately so a DSL
@@ -116,6 +120,12 @@ defmodule Mutare.Transform.Analyze do
   # The `:scaffold` entry: a module-level non-clause statement, descended but
   # never mutated in place (see the doc above and `Mutare.Transform`).
   def scaffold(node, mutators), do: analyze(node, :scaffold, mutators)
+
+  # The `:pattern` entry: a match position — descended (so default-arg values and `size()`
+  # args are still reached) but never mutated *in place*. Part of the sub-walk API
+  # `Mutare.Transform.Analyze.Macros` drives the `:pattern`/`:binding_pattern` argument routing
+  # through (the in-module counterpart to `annotate/2`).
+  def pattern(node, mutators), do: analyze(node, :pattern, mutators)
 
   # `when` guard (position-independent: also covers case/fn clause guards): the
   # lift path owns guard mutation, so the in-place walk never touches one.
@@ -455,7 +465,8 @@ defmodule Mutare.Transform.Analyze do
   # is neither a valid expression nor a valid pattern. Treating it as runtime would splice
   # a selector `case` into pattern/opaque position and poison the build.
   defp analyze({:|>, meta, [lhs, rhs]}, :runtime, mutators) do
-    {:|>, meta, [analyze_piped_value(lhs, rhs, mutators), analyze_pipe_stage(rhs, mutators)]}
+    {:|>, meta,
+     [Macros.analyze_piped_value(lhs, rhs, mutators), analyze_pipe_stage(rhs, mutators)]}
   end
 
   # `for` comprehension: its generators (`<-`), filters, `:into`/`:reduce` options
@@ -608,7 +619,7 @@ defmodule Mutare.Transform.Analyze do
           else: recurse_runtime(node, mutators)
 
       routing ->
-        analyze_known_macro(node, routing, mutators)
+        Macros.analyze_known_macro(node, routing, mutators)
     end
   end
 
@@ -709,7 +720,7 @@ defmodule Mutare.Transform.Analyze do
         recurse_runtime(node, mutators)
 
       routing ->
-        analyze_known_macro(node, routing, mutators, %{pipe_mode: :piped})
+        Macros.analyze_known_macro(node, routing, mutators, %{pipe_mode: :piped})
     end
   end
 
@@ -727,237 +738,12 @@ defmodule Mutare.Transform.Analyze do
   def macro_routing(meta) when is_list(meta), do: Keyword.get(meta, :mutare_macro)
   def macro_routing(_meta), do: nil
 
-  # Analyze a known-macro call: offer the *whole* node to mutators (so a custom mutator
-  # registered for the macro still fires — e.g. an Ecto query mutator on `from(...)`),
-  # then route each *visible* argument by its declared treatment instead of the default
-  # all-runtime descent. `context` carries the pipe flag (so a pipe-aware custom mutator sees
-  # the effective arity); `mark_call_option_keys/1` still runs (harmless for `:skip`/`:pattern`
-  # args, which carry no candidates; correct for `:expression` args, preserving option-key gating).
-  defp analyze_known_macro(node, routing, mutators, context \\ %{pipe_mode: :unpiped}) do
-    {form, meta, args} = offer(node, node, mutators, context)
-    routed = mark_call_option_keys({form, meta, route_macro_args(args, routing, mutators)})
-    attach_hosted_candidates(routed, node, routing, mutators, context)
-  end
-
-  # When the routing marks any argument `{:hosted, host}` (see `Mutare.Transform.Resolve`),
-  # the fragment in that position is mutated by the **hosting mutator's selector host**
-  # (`c:Mutare.Mutator.host/2`), not by core. Hand the host the *raw* macro node (so it can
-  # pull the DSL's bindings for its `wrap`) and attach one `Candidate.Hosted` per target it
-  # returns, under a dedicated `:mutare_hosted` key (separate from `:mutare`, since emission
-  # weaves the selector into the node rather than wrapping the node in one —
-  # `Mutare.Transform.emit_hosted_site/3`). No hosted position, no host spec, or no targets ⇒
-  # the node is left as the ordinary (offered + arg-routed) macro node.
-  #
-  # The host is a **module**, but it may be enabled under *several* `Mutare.Mutator.Spec`s — a
-  # configurable host mutator listed twice with distinct `:as` names / `opts` (e.g. `{Host, as:
-  # :a}` and `{Host, as: :b}`). Each such spec is its own family (own name on its Sites, own
-  # `opts` reaching `host/2`), exactly as the ordinary path runs every spec in `Mutator.mutations/3`,
-  # so we host *each* matching spec — not just the first — or a duplicate-configured host mutator
-  # would silently lose every config past the first.
-  defp attach_hosted_candidates(routed, raw_node, routing, mutators, context) do
-    with host when not is_nil(host) <- hosted_host(routing),
-         specs = Enum.filter(mutators, &(&1.module == host)),
-         [_ | _] = candidates <- Enum.flat_map(specs, &host_candidates(&1, raw_node, context)) do
-      put_hosted_candidates(routed, candidates)
-    else
-      _ -> routed
-    end
-  end
-
-  # The hosting mutator module named by the first `{:hosted, host}` entry in a routing list,
-  # or `nil` when no position is hosted. All hosted positions of one macro share a host (the
-  # registering mutator), so the first is enough.
-  defp hosted_host(routing) when is_list(routing) do
-    Enum.find_value(routing, fn
-      {:hosted, host} -> host
-      _ -> nil
-    end)
-  end
-
-  defp hosted_host(_), do: nil
-
-  # Build the `Candidate.Hosted`s for a macro node from the host's targets, dropping any whose
-  # fragment isn't rangeable (no `Mutare.Site` could be recorded). `range` defaults to the
-  # logical fragment's own range.
-  defp host_candidates(spec, raw_node, context) do
-    spec
-    |> Mutator.host_targets(raw_node, Map.take(context, [:pipe_mode]))
-    |> Enum.map(fn target ->
-      %Candidate.Hosted{
-        mutator: spec,
-        original: target.original,
-        mutants: target.mutants,
-        wrap: target.wrap,
-        splice: target.splice,
-        range: target.range || NodeRange.get(target.original)
-      }
-    end)
-    |> Enum.filter(& &1.range)
-  end
-
-  defp put_hosted_candidates({form, meta, args}, candidates),
-    do: {form, [{:mutare_hosted, candidates} | meta], args}
-
-  # Route each argument by its treatment. A position past the routing list defaults to
-  # `:expression`.
-  defp route_macro_args(args, routing, mutators) do
-    args
-    |> Enum.with_index()
-    |> Enum.map(fn {arg, i} ->
-      route_macro_arg(arg, Enum.at(routing, i, :expression), mutators)
-    end)
-  end
-
-  # Route one macro argument by its declared treatment — shared by the visible-arg routing
-  # (`route_macro_args/3`) and the piped-value reach-back (`analyze_piped_value/3`), so the
-  # piped LHS is treated identically to a written first argument: `:expression` → ordinary
-  # runtime (mutate); `:pattern`/`:binding_pattern` → a match context (descend for nested
-  # runtime escapes, never mutate the pattern *in place*); `:skip` → leave the argument **raw**
-  # (no descent, no mutation — an opaque value the macro may accept even though it is neither a
-  # valid expression nor a valid pattern). `:binding_pattern` routes identically to `:pattern`
-  # here; its *extra* structural-mutant offering is delivered separately (the macro call sits in
-  # a value-discarded position — see `binding_pattern_macro/1` / `attach_macro_pattern_candidates/4`).
-  defp route_macro_arg(arg, :skip, _mutators), do: arg
-
-  # A `:hosted` position (stamped `{:hosted, host}` by `Mutare.Transform.Resolve`) is left
-  # **raw** like `:skip` — core mutates nothing in place here (a bare selector would poison
-  # the DSL); the hosting mutator weaves its own selector via `attach_hosted_candidates/5`.
-  defp route_macro_arg(arg, {:hosted, _host}, _mutators), do: arg
-
-  # A *bare* `:hosted` should never reach routing — `Resolve.inject_host/2` rewrites a top-level one
-  # to `{:hosted, host}`, and `Resolve.reject_keyword_hosted!/2` raises on a `{:keyword, …}`-nested
-  # one (a keyword value can't be hosted). Leave it raw anyway, never the runtime catch-all below:
-  # splicing a bare selector into an unknown macro position is the one outcome the "never poison"
-  # stance forbids, so a future path that slipped a bare `:hosted` through degrades safely.
-  defp route_macro_arg(arg, :hosted, _mutators), do: arg
-
-  # **Per-keyword-pair** routing for a keyword-list argument (classifier-only — produced by a
-  # `c:Mutare.Mutator.macro_routing/1` that inspected the node; a static `args` can't express it).
-  # For each `key: value` pair the **key is left raw** (a keyword key in a DSL is a field/option
-  # *name*, not a value to mutate) and the **value is routed by its own treatment** from
-  # `value_treatments`, positionally. The motivating case is Ecto's keyword-shorthand `where`
-  # (`where(q, category: "Foo", deleted_at: nil)`): mutate `"Foo"` (its value `:expression`) but
-  # not the column name `category`, and skip the `deleted_at: nil` pair (`IS NULL`, not `= nil`)
-  # by routing its value `:skip`. A value treatment may itself be `{:keyword, …}`, so a *nested*
-  # shorthand — a keyword list whose values are keyword lists, e.g. `from(S, where: [x: v])` —
-  # routes too. A value position past the list defaults to `:skip` (raw), so only what the
-  # classifier explicitly marked is ever mutated; a non-keyword argument falls back to raw, so a
-  # mis-shaped classification can never splice into a non-pair.
-  defp route_macro_arg(arg, {:keyword, value_treatments}, mutators)
-       when is_list(value_treatments),
-       do: route_keyword(arg, value_treatments, mutators)
-
-  # A value that must be mutated **`^`-pinned** (classifier-only): it sits in a compile-time DSL
-  # position that accepts an interpolated value but not a bare selector `case` — an Ecto
-  # keyword-shorthand value (`where(q, category: "Foo")`), where Ecto rejects a raw `case` but
-  # accepts `^(case …)`. Analyze it as ordinary runtime so the configured literal families attach
-  # their in-place candidates (their *own* names ride to the Site, the value's mutation stays
-  # core's), then flag those candidates `pin?` so `emit_site/3` wraps the selector in `^`. Only a
-  # **scalar** value belongs here: `pin_inplace_candidates/1` pins only the value node's *own*
-  # candidates, so a compound value (`[1, 2]`, `%{…}`) — whose mutations land on *descendant* nodes
-  # — would leave those inner selectors un-pinned and poison the DSL. `reject_non_scalar_pinned!/2`
-  # fails loud on that (the classifier analogue of the documented scalar-only contract) rather than
-  # silently degrading the inner mutants to `:poisoned`.
-  defp route_macro_arg(arg, :pinned, mutators) do
-    analyzed = analyze(arg, :runtime, mutators)
-    reject_non_scalar_pinned!(arg, analyzed)
-    pin_inplace_candidates(analyzed)
-  end
-
-  defp route_macro_arg(arg, treatment, mutators) when treatment in [:pattern, :binding_pattern],
-    do: analyze(arg, :pattern, mutators)
-
-  defp route_macro_arg(arg, _expression, mutators), do: analyze(arg, :runtime, mutators)
-
-  # Flag the in-place candidates on a node's own metadata `pin?: true` (the `:pinned` treatment),
-  # so emission `^`-pins their selector. Only the node's *own* candidates — a scalar value's
-  # mutations sit here; the route is documented scalar-only.
-  defp pin_inplace_candidates(node),
-    do: Candidate.update_candidates(node, fn cands -> Enum.map(cands, &pin_candidate/1) end)
-
-  defp pin_candidate(%Candidate.InPlace{} = candidate), do: %{candidate | pin?: true}
-  defp pin_candidate(other), do: other
-
-  # A `:pinned` value is sound only when every in-place mutation lands on the value node itself —
-  # `pin_inplace_candidates/1` `^`-pins only the top node's own candidates. A compound value attaches
-  # candidates to *descendant* nodes that pinning would miss; those would emit as bare selector
-  # `case`s spliced into the DSL value and poison the build. Raise loudly (the offending value in the
-  # message) rather than silently degrade them to `:poisoned`. A value with no descendant candidate —
-  # a scalar literal, or a non-literal like a variable (no candidate at all) — is fine.
-  defp reject_non_scalar_pinned!(original, analyzed) do
-    if descendant_inplace_candidate?(analyzed) do
-      raise ArgumentError,
-            "a :pinned macro-routing treatment requires a scalar value (its mutation must pin in " <>
-              "place), but `#{Macro.to_string(original)}` is compound — its inner mutations cannot " <>
-              "be ^-pinned and would poison the DSL. Route a compound value :skip, or split it into " <>
-              "scalar pairs."
-    end
-  end
-
-  # Whether any node *strictly below* `node`'s top carries an in-place candidate.
-  defp descendant_inplace_candidate?(node) do
-    node |> child_nodes() |> Enum.any?(&subtree_has_inplace_candidate?/1)
-  end
-
-  defp child_nodes({_form, _meta, args}) when is_list(args), do: args
-  defp child_nodes({left, right}), do: [left, right]
-  # A bare list/2-tuple top node (a list argument routed `:pinned` directly, not the Sourceror
-  # `{:__block__, _, [list]}`-wrapped keyword value) carries no own meta, so pinning it pins nothing
-  # — every candidate is on an element, i.e. a descendant. Descend the elements so it's caught.
-  defp child_nodes(list) when is_list(list), do: list
-  defp child_nodes(_), do: []
-
-  defp subtree_has_inplace_candidate?(node) do
-    {_, found?} = Macro.prewalk(node, false, fn n, acc -> {n, acc or inplace_candidate?(n)} end)
-    found?
-  end
-
-  defp inplace_candidate?({_form, meta, _args}) when is_list(meta),
-    do: Enum.any?(Keyword.get(meta, :mutare, []), &match?(%Candidate.InPlace{}, &1))
-
-  defp inplace_candidate?(_), do: false
-
-  # Route a keyword list's pair *values* by `value_treatments` (keys raw). Handles the bare list
-  # (a trailing keyword argument, `where(q, x: v)`) and the Sourceror `{:__block__, _, [list]}`
-  # wrap a list takes in a keyword *value* position (`where: [x: v]` inside a `from`) — unwrapped,
-  # routed, re-wrapped so the rendering metadata is preserved. A non-keyword-shaped value is left
-  # raw (nothing to route).
-  defp route_keyword({:__block__, meta, [list]}, value_treatments, mutators) when is_list(list),
-    do: {:__block__, meta, [route_keyword(list, value_treatments, mutators)]}
-
-  defp route_keyword(list, value_treatments, mutators) when is_list(list) do
-    if keyword_list_shaped?(list) do
-      list
-      |> Enum.with_index()
-      |> Enum.map(fn
-        {{key, value}, i} ->
-          {key, route_macro_arg(value, Enum.at(value_treatments, i, :skip), mutators)}
-
-        {other, _i} ->
-          other
-      end)
-    else
-      list
-    end
-  end
-
-  defp route_keyword(arg, _value_treatments, _mutators), do: arg
-
-  # The left side of a `|>` whose right side is a known macro: the piped value is the macro's
-  # *effective argument 0*, so it inherits position 0's treatment, which `Resolve` recorded on
-  # the stage as `:mutare_macro_piped` (stamped only when it isn't the `:expression` default —
-  # so the common runtime LHS carries no stamp and falls through unchanged). Routing it through
-  # the same `route_macro_arg/3` as the visible args keeps the piped position in lockstep with
-  # a written first argument: a `1 |> match?(1)` LHS routes as `:pattern`, a `:skip` macro's LHS
-  # is left raw, and any other LHS stays ordinary runtime.
-  defp analyze_piped_value(lhs, {_form, rhs_meta, _args}, mutators) when is_list(rhs_meta) do
-    case Keyword.get(rhs_meta, :mutare_macro_piped) do
-      nil -> analyze(lhs, :runtime, mutators)
-      treatment -> route_macro_arg(lhs, treatment, mutators)
-    end
-  end
-
-  defp analyze_piped_value(lhs, _rhs, mutators), do: analyze(lhs, :runtime, mutators)
+  # The known-macro argument *routing* lives in `Mutare.Transform.Analyze.Macros`:
+  # `Macros.analyze_known_macro/4` (a written/piped stage) and `Macros.analyze_piped_value/3`
+  # (the `|>` LHS reaching back into a macro's argument-0 treatment) route each argument by its
+  # declared treatment — a pattern, an opaque `:skip` DSL body, a `:hosted` fragment — driving the
+  # descent back through `annotate/2`/`pattern/2`/`offer/4`. The core walk reads the stamp here
+  # (`macro_routing/1`) and dispatches there.
 
   # One argument of a `for`: a generator/filter/match is descended as a *statement*
   # (its value is discarded — a qualifier only binds/filters), while the trailing
@@ -1007,61 +793,10 @@ defmodule Mutare.Transform.Analyze do
   # diff-derived `Mutare.Transform.Overlap` pass (it sees the call rewrite already covers that
   # node) — so the analyzer no longer needs to know which positions are "owned".
   defp recurse_runtime({_form, _meta, args} = node, mutators) when is_list(args) do
-    node |> recurse(:runtime, mutators) |> mark_call_option_keys()
+    node |> recurse(:runtime, mutators) |> CallOptions.mark()
   end
 
   defp recurse_runtime(node, mutators), do: recurse(node, :runtime, mutators)
-
-  # === call-option keys ======================================================
-
-  # When this runtime node is a *call* whose final argument is a keyword list
-  # (`foo(x, timeout: 5, retries: 3)` — the trailing-keyword sugar, the same AST as
-  # an explicit `[timeout: 5, …]` last arg), tag each of that list's *key* candidates
-  # `call_option_key?`. Emission (`Transform.gate_candidates/1`) then drops a tagged
-  # candidate whose mutator was configured `{Module, call_option_keys: false}` — leaving
-  # that option name unmutated while its value still mutates. A data/structural form
-  # (`%{}`, a 3+-tuple) is not a call, so its trailing element is left alone; only the
-  # call context (known here) can make this distinction. The marking is shallow: nested
-  # maps/lists inside an option *value* keep their own keys.
-  defp mark_call_option_keys({form, meta, args} = node) when is_list(args) and args != [] do
-    last = List.last(args)
-
-    if call_form?(form) and keyword_list_shaped?(last) do
-      {init, [_last]} = Enum.split(args, -1)
-      {form, meta, init ++ [tag_option_keys(last)]}
-    else
-      node
-    end
-  end
-
-  defp mark_call_option_keys(node), do: node
-
-  # A genuine call: a remote `Foo.bar(…)` (`{:., …}` form) or a local/operator call (an
-  # atom form), minus the data/structural forms that also reach the generic runtime
-  # clause and could carry a keyword-list-shaped trailing element without being a call.
-  defp call_form?({:., _meta, _args}), do: true
-  defp call_form?(form) when is_atom(form), do: form not in @non_call_forms
-  defp call_form?(_form), do: false
-
-  defp keyword_list_shaped?(list) when is_list(list) and list != [],
-    do: Enum.all?(list, &match?({_k, _v}, &1))
-
-  defp keyword_list_shaped?(_other), do: false
-
-  defp tag_option_keys(kw) do
-    Enum.map(kw, fn
-      {key, value} -> {tag_option_key(key), value}
-      other -> other
-    end)
-  end
-
-  # Stamp `call_option_key?` onto each candidate already attached to a key node. A key
-  # with no candidates (a block key, or a key no mutator matched) is left untouched.
-  defp tag_option_key(key),
-    do: Candidate.update_candidates(key, fn cands -> Enum.map(cands, &as_call_option/1) end)
-
-  defp as_call_option(%Candidate.InPlace{} = c), do: %{c | call_option_key?: true}
-  defp as_call_option(other), do: other
 
   # Generic structural descent over every Sourceror node shape, re-analyzing the
   # children in the same context. Public as part of the small sub-walk API the
@@ -1293,7 +1028,9 @@ defmodule Mutare.Transform.Analyze do
   # node whose children carry their own selectors. `subject` *is* `raw` at most sites;
   # the `<<>>`/`if`/`not in` clauses pass an analyzed/rebuilt subject distinct from the
   # raw node the candidate records. `context` carries the pipe flag (`Mutator.mutations`).
-  defp offer(subject, raw, mutators, context \\ %{pipe_mode: :unpiped}) do
+  # Public as part of the sub-walk API: `Mutare.Transform.Analyze.Macros` offers a
+  # known-macro node through here (`offer(node, node, mutators, context)`).
+  def offer(subject, raw, mutators, context \\ %{pipe_mode: :unpiped}) do
     case Mutator.mutations(raw, mutators, context) do
       [] -> subject
       muts -> put_candidates(subject, build_candidates(raw, muts))
