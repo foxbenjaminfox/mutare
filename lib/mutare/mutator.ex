@@ -605,15 +605,11 @@ defmodule Mutare.Mutator do
   @doc """
   Run `spec`'s return-tail hook over `tail`, preferring the behaviour-aware
   `c:return_replacements/2` (passing the structural context) when the module exports it,
-  else the base `c:return_replacements/1`. The single home for that arity dispatch, so the
-  call sites stay one-liners and a mutator can implement either arity.
+  else the base `c:return_replacements/1`, so a mutator can implement either arity.
   """
   @spec return_replacements(Spec.t(), Macro.t()) :: [Macro.t()]
-  def return_replacements(%Spec{module: module} = spec, tail) do
-    if function_exported?(module, :return_replacements, 2),
-      do: module.return_replacements(tail, structural_context(spec)),
-      else: module.return_replacements(tail)
-  end
+  def return_replacements(%Spec{} = spec, tail),
+    do: dispatch_structural(spec, :return_replacements, [tail])
 
   @doc """
   Run `spec`'s condition hook over `condition`, preferring `c:condition_replacements/2`
@@ -621,11 +617,8 @@ defmodule Mutare.Mutator do
   condition-position twin of `return_replacements/2`.
   """
   @spec condition_replacements(Spec.t(), Macro.t()) :: [Macro.t()]
-  def condition_replacements(%Spec{module: module} = spec, condition) do
-    if function_exported?(module, :condition_replacements, 2),
-      do: module.condition_replacements(condition, structural_context(spec)),
-      else: module.condition_replacements(condition)
-  end
+  def condition_replacements(%Spec{} = spec, condition),
+    do: dispatch_structural(spec, :condition_replacements, [condition])
 
   @doc """
   Run `spec`'s head-pattern hook over `head_args`/`used_outside`, preferring
@@ -633,10 +626,19 @@ defmodule Mutare.Mutator do
   `c:pattern_mutations/2`. The lifted-pattern twin of `return_replacements/2`.
   """
   @spec pattern_mutations(Spec.t(), [Macro.t()], MapSet.t()) :: [[Macro.t()]]
-  def pattern_mutations(%Spec{module: module} = spec, head_args, used_outside) do
-    if function_exported?(module, :pattern_mutations, 3),
-      do: module.pattern_mutations(head_args, used_outside, structural_context(spec)),
-      else: module.pattern_mutations(head_args, used_outside)
+  def pattern_mutations(%Spec{} = spec, head_args, used_outside),
+    do: dispatch_structural(spec, :pattern_mutations, [head_args, used_outside])
+
+  # The shared arity dispatch behind the three structural hooks above: prefer the
+  # behaviour-aware `fun/(n+1)` (the base args plus the structural context) when the module
+  # exports it, else the base `fun/n`. So the three are one-line faces and adding a fourth
+  # structural hook is one more delegating clause, not another copy of this exported-or-base
+  # dance.
+  @spec dispatch_structural(Spec.t(), atom(), [term()]) :: term()
+  defp dispatch_structural(%Spec{module: module} = spec, fun, base_args) do
+    if function_exported?(module, fun, length(base_args) + 1),
+      do: apply(module, fun, base_args ++ [structural_context(spec)]),
+      else: apply(module, fun, base_args)
   end
 
   @doc """
