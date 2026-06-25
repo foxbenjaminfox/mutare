@@ -151,19 +151,8 @@ defmodule Mutare.Transform.Overlap do
   defp collect(_node, acc), do: acc
 
   defp prune(tree, covered) do
-    Macro.postwalk(tree, fn
-      {form, meta, args} when is_list(meta) ->
-        case Keyword.get(meta, :mutare) do
-          nil ->
-            {form, meta, args}
-
-          cands ->
-            # mutare:ignore[map_keyword] this branch only runs when :mutare is already present, so put ≡ replace (equivalent)
-            {form, Keyword.put(meta, :mutare, Enum.reject(cands, &drop?(&1, covered))), args}
-        end
-
-      other ->
-        other
+    Macro.postwalk(tree, fn node ->
+      Candidate.update_candidates(node, fn cands -> Enum.reject(cands, &drop?(&1, covered)) end)
     end)
   end
 

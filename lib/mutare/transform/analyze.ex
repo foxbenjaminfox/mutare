@@ -649,14 +649,9 @@ defmodule Mutare.Transform.Analyze do
     right |> analyze(:runtime, mutators) |> drop_empty_collection_candidates()
   end
 
-  defp drop_empty_collection_candidates({form, meta, args} = node) when is_list(meta) do
-    case Keyword.get(meta, :mutare) do
-      nil -> node
-      cands -> {form, Keyword.put(meta, :mutare, Enum.reject(cands, &empty_collection?/1)), args}
-    end
+  defp drop_empty_collection_candidates(node) do
+    Candidate.update_candidates(node, fn cands -> Enum.reject(cands, &empty_collection?/1) end)
   end
-
-  defp drop_empty_collection_candidates(node), do: node
 
   defp empty_collection?(%Candidate.InPlace{mutator: spec, mutated: mutated}),
     do: Mutator.empty_collection?(spec, mutated)
@@ -665,20 +660,13 @@ defmodule Mutare.Transform.Analyze do
 
   # Drop from the **top node** the Conditional candidate forcing it to `bool` — the redundant
   # short-circuit constant. Per mutation (the sibling constant and Logical's swap stay) and
-  # top-node scoped, a no-op when the node carries no candidates. Mirrors
-  # `drop_empty_collection_candidates/1`.
-  defp drop_constant_candidate({form, meta, args} = node, bool) when is_list(meta) do
-    case Keyword.get(meta, :mutare) do
-      nil ->
-        node
-
-      cands ->
-        {form, Keyword.put(meta, :mutare, Enum.reject(cands, &constant_candidate?(&1, bool))),
-         args}
-    end
+  # top-node scoped (via `Candidate.update_candidates/2`, a no-op when the node carries no
+  # candidates).
+  defp drop_constant_candidate(node, bool) do
+    Candidate.update_candidates(node, fn cands ->
+      Enum.reject(cands, &constant_candidate?(&1, bool))
+    end)
   end
-
-  defp drop_constant_candidate(node, _bool), do: node
 
   defp constant_candidate?(%Candidate.InPlace{mutated: mutated}, bool),
     do: Suppression.boolean_literal?(mutated, bool)
@@ -689,19 +677,13 @@ defmodule Mutare.Transform.Analyze do
   # polarity complement (Relational's flip, ≡ Logical's strip of the outer `not`) and the
   # `true`/`false` constants (Conditional, ≡ the outer's). A strictness relaxation
   # (`===` → `==`) is neither, so it survives — `not (a == b)` ≢ `a === b`. Per mutation and
-  # top-node scoped, a no-op when the node carries no candidates. Mirrors
-  # `drop_constant_candidate/2`.
-  defp drop_negation_redundant_candidates({form, meta, args} = node, op) when is_list(meta) do
-    case Keyword.get(meta, :mutare) do
-      nil ->
-        node
-
-      cands ->
-        {form, Keyword.put(meta, :mutare, Enum.reject(cands, &negation_redundant?(&1, op))), args}
-    end
+  # top-node scoped (via `Candidate.update_candidates/2`, a no-op when the node carries no
+  # candidates).
+  defp drop_negation_redundant_candidates(node, op) do
+    Candidate.update_candidates(node, fn cands ->
+      Enum.reject(cands, &negation_redundant?(&1, op))
+    end)
   end
-
-  defp drop_negation_redundant_candidates(node, _op), do: node
 
   defp negation_redundant?(%Candidate.InPlace{mutated: mutated}, op),
     do: Suppression.negation_redundant?(mutated, op)
@@ -890,17 +872,8 @@ defmodule Mutare.Transform.Analyze do
   # Flag the in-place candidates on a node's own metadata `pin?: true` (the `:pinned` treatment),
   # so emission `^`-pins their selector. Only the node's *own* candidates — a scalar value's
   # mutations sit here; the route is documented scalar-only.
-  defp pin_inplace_candidates({form, meta, args}) when is_list(meta) do
-    case Keyword.get(meta, :mutare) do
-      nil ->
-        {form, meta, args}
-
-      candidates ->
-        {form, Keyword.put(meta, :mutare, Enum.map(candidates, &pin_candidate/1)), args}
-    end
-  end
-
-  defp pin_inplace_candidates(node), do: node
+  defp pin_inplace_candidates(node),
+    do: Candidate.update_candidates(node, fn cands -> Enum.map(cands, &pin_candidate/1) end)
 
   defp pin_candidate(%Candidate.InPlace{} = candidate), do: %{candidate | pin?: true}
   defp pin_candidate(other), do: other
@@ -1084,17 +1057,8 @@ defmodule Mutare.Transform.Analyze do
 
   # Stamp `call_option_key?` onto each candidate already attached to a key node. A key
   # with no candidates (a block key, or a key no mutator matched) is left untouched.
-  defp tag_option_key({form, meta, kargs} = key) when is_list(meta) do
-    case Keyword.get(meta, :mutare) do
-      nil ->
-        key
-
-      candidates ->
-        {form, Keyword.put(meta, :mutare, Enum.map(candidates, &as_call_option/1)), kargs}
-    end
-  end
-
-  defp tag_option_key(key), do: key
+  defp tag_option_key(key),
+    do: Candidate.update_candidates(key, fn cands -> Enum.map(cands, &as_call_option/1) end)
 
   defp as_call_option(%Candidate.InPlace{} = c), do: %{c | call_option_key?: true}
   defp as_call_option(other), do: other
