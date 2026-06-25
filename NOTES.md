@@ -154,6 +154,39 @@ the error to a block-macro mutant id; a DSL whose error lands on an unmappable l
 macro call site, not the spliced selector) still aborts — the pre-existing poison-mapping
 ceiling, not made worse here.
 
+### Remediation hint for an unrecoverable macro-literal poison `[done]`
+The one poison class recovery structurally *can't* isolate: a macro that requires a
+**compile-time literal** argument (`Size.megabytes(5)`, a constant-folding DSL helper). Mutare
+wraps the literal in a runtime selector `case`; the macro receives that `case` AST instead of a
+literal and **raises while the compiler is expanding it**. The compiler reports the macro
+**call site**, not the spliced selector inside it — and those are different lines (the call on
+line N, the `case` opening on N+1) — so `Poison.ids/2` maps the error to `[]` and the whole run
+aborts (the ceiling above). Dropping individual mutants can't help either: the macro gets the
+`case` AST regardless of the *runtime* mutant, so it fails even at baseline; only removing the
+selector entirely (i.e. not descending into the macro's args) fixes it, which is exactly what
+registering the macro `:skip` does.
+
+So rather than only re-derive the ideal (auto-recovery here is hard — you'd have to re-resolve
+the macro call in metamutant line space to find the enclosing call's range), the abort now
+**explains itself**. `Mutare.Poison.Hint` (pure, output-string → hint-string) scans the captured
+compiler output for `expanding macro: Mod.fun/arity` stacktrace frames — the stable signature of
+*any* exception raised during macro expansion (a `FunctionClauseError` from a literal-only
+clause, a macro's own `raise`) — and renders a copy-pasteable `.mutare.exs` `:skip` snippet
+naming each macro (`{Mod, :fun, :skip}`, the arity-agnostic 3-tuple). It takes only the
+**innermost** frame of each stacktrace: a literal-only macro nested inside another
+(`if Size.megabytes(5)`) raises a *stack* of frames, printed innermost-first
+(`Size.megabytes/1`, then the enclosing `Kernel.if/2`) — only the inner macro's argument was
+mutated, so the outer frames are expansion *context*, not the culprit. Skipping them keeps a broad
+wrapper out of the advice (`{Kernel, :if, :skip}` would stop Mutare descending into *every* `if`,
+hiding valid mutants). A fresh `** (Error)` header re-arms the per-stacktrace capture, so a
+multi-file failure still yields one culprit per error. `Mix.Tasks.Mutare`'s
+`:compile_failed` formatter leads with that hint, then the raw compiler error. The pattern lives
+in `Hint`, not with `Sandbox.Command`'s exit-code patterns: it's read only for human remediation,
+never to form a verdict. The `HintTest` unit-tests the parsing; a `:runner` poison test bridges
+to the *real* compiler output (so a `expanding macro:` format drift is caught). Note `:skip` is
+the only fix — `# mutare:ignore` is applied *after* rendering, so the selector is still spliced
+and the compile still fails.
+
 ### Warn for ineffective `# mutare:ignore` directives `[done]`
 `# mutare:ignore` filtering fails **safe** — a typo'd family (`[arithmatic]`), an empty
 `[]`, a standalone directive on the wrong line, or a family that produced no mutant there

@@ -666,6 +666,18 @@ contract between them is the whole game.
   `guarded :guard do …` poisoning doesn't suppress a sibling `guarded :body do …`), tagged by
   `Transform.emit_block_macro/2` only on *unknown* macros (`Analyze.unknown_block_macro_name/1`) — a
   *registered* macro the user chose to mutate is never auto-skipped. See NOTES "Unknown block macros".
+  The one poison class recovery structurally **can't** isolate — a macro that requires a
+  compile-time **literal** argument (`Size.megabytes(5)`): the spliced selector `case` makes the
+  macro raise while *expanding*, and the compiler reports the macro **call** line, not the selector
+  inside it (different lines), so `Poison.ids/2` maps `[]` and the run aborts. Instead of only
+  re-emitting the raw error, **`Mutare.Poison.Hint`** (pure) scans the captured output for
+  `expanding macro: Mod.fun/arity` frames and renders a copy-pasteable `.mutare.exs` `:skip` snippet
+  (`{Mod, :fun, :skip}`) naming the **innermost** culprit of each stacktrace (a nested
+  `if Size.megabytes(5)` prints `Size.megabytes` *then* the enclosing `Kernel.if` — only the inner
+  macro's arg was mutated, so advising `{Kernel, :if, :skip}` would wrongly hide every `if`);
+  `Mix.Tasks.Mutare`'s `:compile_failed` formatter leads with it, then the raw error. `:skip` (stop descending into the macro's args) is the only fix —
+  `# mutare:ignore` is applied *after* rendering, so it can't prevent the splice. See NOTES
+  "Remediation hint for an unrecoverable macro-literal poison".
 - **`Mutare.Report`** — diffs each *surviving* mutant against the **original** source via
   `Sourceror.patch_string` (clean one-line diffs), and computes the score:
   `killed / (total − no_coverage − ignored − poisoned − harness_error)`. This is the default

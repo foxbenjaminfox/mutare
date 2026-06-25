@@ -458,8 +458,17 @@ defmodule Mix.Tasks.Mutare do
 
   defp format_error(:too_many_harness_errors, detail), do: detail
 
+  # A poisoned compile that recovery couldn't isolate. Lead with a remediation
+  # hint when we recognise the cause (a macro requiring a literal argument — see
+  # `Mutare.Poison.Hint`), then the raw compiler error for the full detail.
   defp format_error(:compile_failed, detail) do
-    "the metamutant failed to compile (compile-poisoning).\n\n" <> Command.output_tail(detail, 25)
+    intro = "the metamutant failed to compile (compile-poisoning).\n\n"
+    tail = Command.output_tail(detail, 25)
+
+    case Mutare.Poison.Hint.for_compile_failure(detail) do
+      nil -> intro <> tail
+      hint -> intro <> hint <> "\n\nOriginal compile error:\n\n" <> tail
+    end
   end
 
   defp format_error(:baseline_failed, detail) do

@@ -81,6 +81,56 @@ defmodule Mutare.PoisonTest do
     end
   end
 
+  describe "unrecoverable compile failure → remediation hint" do
+    @tag :runner
+    @tag timeout: 180_000
+    test "a macro requiring a literal arg aborts, and the captured output drives a :skip hint" do
+      # The one poison class recovery *can't* isolate: a macro that only accepts a
+      # compile-time literal (`Size.megabytes(5)`). Mutare wraps the literal in a
+      # runtime selector `case`, the macro receives that `case` AST and raises while
+      # the compiler is expanding it — and the compiler reports the macro *call* line,
+      # not the spliced selector inside it, so `Poison.ids/2` maps nothing and the run
+      # aborts. The end-to-end value of this test is the *bridge*: the real compiler
+      # output must still carry an `expanding macro:` frame, so `Mutare.Poison.Hint`
+      # can name the macro and print a `:skip` snippet. Guards against compiler-output
+      # drift the pure `HintTest` can't see.
+      %{project: project, sandbox: sandbox} =
+        Project.build(:litmacro, %{
+          "lib/size.ex" => """
+          defmodule Size do
+            defmacro megabytes(n) when is_integer(n) do
+              quote do: unquote(n) * 1024 * 1024
+            end
+          end
+          """,
+          "lib/usage.ex" => """
+          defmodule Usage do
+            require Size
+            def limit, do: Size.megabytes(5)
+          end
+          """,
+          "test/usage_test.exs" => """
+          defmodule UsageTest do
+            use ExUnit.Case
+            test "limit", do: assert(Usage.limit() == 5 * 1024 * 1024)
+          end
+          """
+        })
+
+      # Only Literal, so the *only* mutation is the `5` at the call site — the macro
+      # definition (its body inside `quote`) has no sites, so the abort is the macro
+      # poison alone, isolated and immediate (an empty poison set ⊆ skip_ids, no retries).
+      assert {:error, :compile_failed, detail} =
+               Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Literal])
+
+      assert detail =~ "expanding macro: Size.megabytes"
+
+      hint = Poison.Hint.for_compile_failure(detail)
+      assert hint =~ "compile-time literal"
+      assert hint =~ "{Size, :megabytes, :skip}"
+    end
+  end
+
   describe "end to end recovery" do
     @tag :runner
     @tag timeout: 180_000
