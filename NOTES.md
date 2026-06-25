@@ -1709,9 +1709,20 @@ literal** segment (`binary_valued_literal?/1`: a string `{:__block__, _, [bin]}`
 parser's `:delimiter` meta, **not the head atom** — a call to a *function* named
 `sigil_s`/`sigil_S` (a local sigil shadowing `Kernel`'s) parses to the same `{:sigil_s, …}`
 head but carries no `:delimiter` and may return an integer, so `<<sigil_s("ab", [])>>`
-(≡ `<<2>>`) must stay an integer segment; pinning it would itself break the baseline. (The
-analyzer's `sigil?/1`/`descend_sigil/2` are still head-atom-loose, but they only ever *fail
-to descend* such a call's args — a coverage gap, not a soundness break.) Semantically a no-op
+(≡ `<<2>>`) must stay an integer segment; pinning it would itself break the baseline.
+
+The **same `:delimiter` gate** is needed one level up, on sigil *routing*: `analyze`'s sigil
+arm (`sigil?/1` → `descend_sigil/2`) was head-atom-loose, so a call like `sigil_r(<<"x">>, [])`
+(a function literally named `sigil_r`, bitstring arg) was descended as if the `<<"x">>` were
+*sigil content* — its inner string segment getting a StringLiteral selector with **no**
+`::binary` pin (sigil content is descended via `analyze_segment`, not the construction arm),
+breaking the baseline exactly as above. The routing now also requires `:delimiter`, so a
+sigil-named *call* falls through to `recurse_runtime`, which analyses its `<<…>>` arg as the
+real construction it is (pinned). `StringSigilLiteral` carries the same `:delimiter` guard for
+the same reason (the other sigil families are already shielded by their `is_binary(content)`
+shape guard — a hand-written `<<"x">>` segment is a *wrapped* `{:__block__, …}`, not the bare
+binary a real sigil's content is). All three checks — the pin, the routing, the `~s` mutator —
+key on the one parser-authoritative "this is sigil syntax" signal. Semantically a no-op
 (`<<"x">>` ≡ `<<"x"::binary>>`), so the baseline and every mutant construct correctly; the
 report still diffs the bare value (it patches the original source, not the metamutant). An
 already-typed segment (`::utf8`/`::binary`/`size(expr)`) is passed through untouched, and an

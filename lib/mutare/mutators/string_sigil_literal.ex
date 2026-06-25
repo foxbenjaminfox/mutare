@@ -37,8 +37,19 @@ defmodule Mutare.Mutators.StringSigilLiteral do
   def name, do: :string_sigil
 
   @impl Mutare.Mutator
-  def mutate({sigil, _meta, [{:<<>>, _bmeta, segments}, _modifiers]})
+  def mutate({sigil, meta, [{:<<>>, _bmeta, segments}, _modifiers]})
       when sigil in [:sigil_s, :sigil_S] do
+    # Only a real `~s`/`~S` sigil carries the parser's `:delimiter` meta. A call to a
+    # *function* named `sigil_s`/`sigil_S` (a local sigil shadowing `Kernel`'s) parses to the
+    # same head with a `<<…>>` first arg, but it is not a string sigil — decline it, mirroring
+    # the `is_binary(content)` shape guard the other sigil families lean on. (The transform's
+    # `Mutare.Transform.Analyze` already gates sigil *routing* on `:delimiter` too.)
+    if Keyword.has_key?(meta, :delimiter), do: sigil_mutations(segments), else: :skip
+  end
+
+  def mutate(_node), do: :skip
+
+  defp sigil_mutations(segments) do
     case segments do
       [content] when is_binary(content) ->
         # Non-interpolated: a single static binary — drop the no-op variant.
@@ -52,6 +63,4 @@ defmodule Mutare.Mutators.StringSigilLiteral do
         [AST.literal(""), AST.literal(@sentinel)]
     end
   end
-
-  def mutate(_node), do: :skip
 end

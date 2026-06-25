@@ -130,6 +130,29 @@ defmodule Mutare.TransformCorpusTest do
       min_sites: 2
     },
     %{
+      name: "bitstrings: a sigil-named function call with a <<>> argument is not mis-descended",
+      # The sigil *routing* (`sigil?/1` → `descend_sigil/2`) must also key on real sigil syntax
+      # (`:delimiter`), not the head atom. A call to a function named `sigil_s`/`sigil_r`/… whose
+      # first arg is a real `<<…>>` bitstring would otherwise be descended as sigil *content* —
+      # its inner string segment getting a selector with no `::binary` pin — and the baseline
+      # construction would revert to the integer default and raise. Routing it as an ordinary
+      # call analyses the `<<…>>` arg correctly (pinned), keeping baseline equivalence.
+      source: """
+      defmodule Mutare.Corpus.SigilCallBitstring do
+        import Kernel, except: [sigil_s: 2, sigil_r: 2]
+        def sigil_s(b, _mods), do: byte_size(b)
+        def sigil_r(b, _mods), do: byte_size(b)
+        def s, do: sigil_s(<<"foo">>, [])
+        def r, do: sigil_r(<<"bar", "baz">>, [])
+      end
+      """,
+      probes: [
+        {Mutare.Corpus.SigilCallBitstring, :s, []},
+        {Mutare.Corpus.SigilCallBitstring, :r, []}
+      ],
+      min_sites: 2
+    },
+    %{
       name: "patterns: heads/pins are not mutated; bodies and default-arg values are",
       # Destructuring heads, a map pattern, and a `^pin` are all patterns (no
       # mutation), but each *body* mutates and the call-time default `2 + 3` is a

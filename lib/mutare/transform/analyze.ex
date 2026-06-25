@@ -614,7 +614,15 @@ defmodule Mutare.Transform.Analyze do
       nil ->
         node = offer(node, node, mutators)
 
-        if sigil?(form),
+        # `sigil?(form)` (the `sigil_<x>` head) is necessary but **not sufficient**: a call to
+        # a *function* named `sigil_s`/`sigil_r`/… (a local sigil shadowing `Kernel`'s) parses
+        # to the same head. Routing such a call through `descend_sigil/2` would treat a real
+        # `<<…>>` *argument* of it (`sigil_r(<<"x">>, [])`) as sigil **content** and descend it
+        # without the `::binary` construction pin, breaking the baseline (the same hazard
+        # `binary_valued_literal?/1` guards). Only genuine sigil syntax carries the parser's
+        # `:delimiter` meta, so gate on it; a non-sigil call falls through to `recurse_runtime`,
+        # which analyses its args — including a real bitstring arg — correctly.
+        if sigil?(form) and Keyword.has_key?(meta, :delimiter),
           do: descend_sigil(node, mutators),
           else: recurse_runtime(node, mutators)
 
