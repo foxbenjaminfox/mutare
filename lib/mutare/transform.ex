@@ -149,6 +149,7 @@ defmodule Mutare.Transform do
     FunctionPlan,
     ImportWitness,
     LiftedEmit,
+    MetaKeys,
     ModulePlan,
     Names,
     Overlap,
@@ -161,6 +162,10 @@ defmodule Mutare.Transform do
   # The default set is the built-in catalog's `all/0` — one source of truth, so a
   # family registered in `Mutare.Mutators` is part of the default automatically.
   @default_mutators Mutare.Mutators.all()
+
+  # The candidate-bearing meta keys `strip_candidates/1` clears once a node's candidates
+  # are consumed. Canonical list (and the full registry) in `Mutare.Transform.MetaKeys`.
+  @delivery_keys MetaKeys.delivery()
 
   @doc """
   Transform a source string into `{metamutant_source, [%Site{}], next_id}`.
@@ -749,7 +754,7 @@ defmodule Mutare.Transform do
   defp hosted_candidates_of(_), do: []
 
   defp strip_candidates({form, meta, args}) when is_list(meta),
-    do: {form, Keyword.drop(meta, [:mutare, :mutare_case, :mutare_hosted]), args}
+    do: {form, Keyword.drop(meta, @delivery_keys), args}
 
   defp strip_candidates(node), do: node
 

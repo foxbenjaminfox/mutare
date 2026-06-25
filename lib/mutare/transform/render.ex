@@ -45,29 +45,10 @@ defmodule Mutare.Transform.Render do
     end)
   end
 
-  # Remove the analyzer's internal annotations before rendering. `:mutare` (in-place
-  # candidates), `:mutare_tag` (guard target references), `:mutare_nid` (the per-node identity
-  # token `Mutare.Transform.Overlap` prunes on), the resolution stamps
-  # `:mutare_alias`/`:mutare_import`/`:mutare_import_witness`/`:mutare_kernel_displaced`, the
-  # known-macro routing stamps `:mutare_macro`/`:mutare_macro_piped`, the `use`-expansion
-  # directives `:mutare_use_directives`, and the behaviour stamps
-  # `:mutare_use_behaviours` (on a `use`) / `:mutare_behaviours` (on a `defmodule`) are
-  # bookkeeping that must never reach the source.
-  @internal_meta_keys [
-    :mutare,
-    :mutare_case,
-    :mutare_tag,
-    :mutare_nid,
-    :mutare_alias,
-    :mutare_import,
-    :mutare_import_witness,
-    :mutare_kernel_displaced,
-    :mutare_macro,
-    :mutare_macro_piped,
-    :mutare_use_directives,
-    :mutare_use_behaviours,
-    :mutare_behaviours
-  ]
+  # Remove the analyzer's internal annotations before rendering — every `:mutare_*` node-meta
+  # key is bookkeeping that must never reach the source. The canonical list (and what each key
+  # means) lives in `Mutare.Transform.MetaKeys`, so this scrub can't drift from the stamp sites.
+  @internal_meta_keys Mutare.Transform.MetaKeys.all()
 
   defp strip_annotations(ast) do
     Macro.prewalk(ast, fn
