@@ -404,11 +404,11 @@ defmodule Mutare.Transform do
 
   # Transform each *non-lifted* clause in place (body selectors only), preserving its
   # position. The `:do` block's active-id read is hoisted to a once-per-call prologue
-  # (`emit_clause/3` with `prologue: true`); the head's default values and the other body
+  # (`emit_clause/3`'s `prologue?` arg); the head's default values and the other body
   # blocks keep the self-contained `:persistent_term` read (out of the prologue's scope).
   defp in_place_clauses(clauses, ctx) do
     Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
-      {clause, ctx} = emit_clause(clause, ctx, prologue: true)
+      {clause, ctx} = emit_clause(clause, ctx, true)
       {[clause], ctx}
     end)
   end
@@ -420,7 +420,7 @@ defmodule Mutare.Transform do
   # any binding's scope — keep the self-contained read.
   defp lifted_source_clauses(clauses, ctx) do
     Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
-      {clause, ctx} = emit_clause(clause, ctx, prologue: false)
+      {clause, ctx} = emit_clause(clause, ctx, false)
       {[clause], ctx}
     end)
   end
@@ -430,8 +430,7 @@ defmodule Mutare.Transform do
   # a generated head clause where no binding is in scope), the body with it *bound*. The
   # one-shot `active_bound` toggles are scoped to this clause and restored on the way out,
   # so they never leak into the next module item.
-  defp emit_clause(clause, ctx, opts) do
-    prologue? = Keyword.get(opts, :prologue, false)
+  defp emit_clause(clause, ctx, prologue?) do
     bound0 = ctx.active_bound
 
     {emitted, ctx} =
@@ -667,11 +666,15 @@ defmodule Mutare.Transform do
   #   * `MatchPattern` — the `=`-match tuple-export selector (`emit_match_site/3`).
   #   * `MacroPattern` — the binding-macro tuple-export selector (`emit_macro_pattern_site/3`).
   #
-  # See each emit_* and the `Mutare.Transform.Candidate` moduledoc for the per-type detail.
-  defp in_place_site(id, c, file)
-       when is_struct(c, Candidate.InPlace) or is_struct(c, Candidate.CasePattern) or
-              is_struct(c, Candidate.CaseClause) or is_struct(c, Candidate.MatchPattern) or
-              is_struct(c, Candidate.MacroPattern) do
+  # See each emit_* and the `Mutare.Transform.Candidate` moduledoc for the per-type detail. The
+  # set is named (`in_place_candidate?/1`) so the guard reads as intent and a new
+  # in-place-replacement variant is added in one place.
+  defguardp in_place_candidate?(c)
+            when is_struct(c, Candidate.InPlace) or is_struct(c, Candidate.CasePattern) or
+                   is_struct(c, Candidate.CaseClause) or is_struct(c, Candidate.MatchPattern) or
+                   is_struct(c, Candidate.MacroPattern)
+
+  defp in_place_site(id, c, file) when in_place_candidate?(c) do
     Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
   end
 

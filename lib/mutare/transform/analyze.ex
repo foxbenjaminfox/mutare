@@ -478,7 +478,7 @@ defmodule Mutare.Transform.Analyze do
       rebuilt = {:with, meta, clauses ++ [analyze(body_kw, :runtime, mutators)]}
       offer(rebuilt, node, mutators)
     else
-      node |> offer(node, mutators) |> recurse_runtime(mutators, :unpiped)
+      node |> offer(node, mutators) |> recurse_runtime(mutators)
     end
   end
 
@@ -565,7 +565,7 @@ defmodule Mutare.Transform.Analyze do
   # `Mutare.Transform.Tag` handles only `and`/`or`. See NOTES "Equivalent-sibling suppression".
   defp analyze({op, _meta, [left, _right]} = node, :runtime, mutators)
        when op in [:and, :&&, :or, :||] do
-    analyzed = node |> offer(node, mutators) |> recurse_runtime(mutators, :unpiped)
+    analyzed = node |> offer(node, mutators) |> recurse_runtime(mutators)
 
     if Suppression.boolean_op_node?(left),
       do: drop_constant_candidate(analyzed, Suppression.redundant_constant(op)),
@@ -594,7 +594,7 @@ defmodule Mutare.Transform.Analyze do
 
         if sigil?(form),
           do: descend_sigil(node, mutators),
-          else: recurse_runtime(node, mutators, :unpiped)
+          else: recurse_runtime(node, mutators)
 
       routing ->
         analyze_known_macro(node, routing, mutators)
@@ -713,7 +713,7 @@ defmodule Mutare.Transform.Analyze do
     case macro_routing(meta) do
       nil ->
         node = offer(node, node, mutators, %{pipe_mode: :piped})
-        recurse_runtime(node, mutators, :piped)
+        recurse_runtime(node, mutators)
 
       routing ->
         analyze_known_macro(node, routing, mutators, %{pipe_mode: :piped})
@@ -1021,13 +1021,12 @@ defmodule Mutare.Transform.Analyze do
   # keys. A call-rewriting mutator (ModeSwap) and a leaf mutator (AtomLiteral) may both fire
   # on the same atom/key, but the redundant leaf mutant is dropped *after* analysis by the
   # diff-derived `Mutare.Transform.Overlap` pass (it sees the call rewrite already covers that
-  # node) — so the analyzer no longer needs to know which positions are "owned". `pipe_mode` is
-  # unused now but kept so the three call sites need not change.
-  defp recurse_runtime({_form, _meta, args} = node, mutators, _pipe_mode) when is_list(args) do
+  # node) — so the analyzer no longer needs to know which positions are "owned".
+  defp recurse_runtime({_form, _meta, args} = node, mutators) when is_list(args) do
     node |> recurse(:runtime, mutators) |> mark_call_option_keys()
   end
 
-  defp recurse_runtime(node, mutators, _pipe_mode), do: recurse(node, :runtime, mutators)
+  defp recurse_runtime(node, mutators), do: recurse(node, :runtime, mutators)
 
   # === call-option keys ======================================================
 
