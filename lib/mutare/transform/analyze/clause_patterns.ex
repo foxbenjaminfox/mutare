@@ -56,30 +56,61 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     end)
   end
 
-  # A `case` clause's single pattern, its guard (or `nil`), its body, and the names read in
-  # guard+body (the wildcard family's `used_outside`). Handles the guarded form (the guard
-  # is the last `when` arg; a `when a when b` OR-guard is a single nested `when` node) and
-  # the unguarded form. Anything with more than one pattern (not a `case` clause) → `nil`.
-  # NOTE (equivalent survivors): every `length(when_args) >= 2` guard in this module is a
-  # defensive lower bound — a `:when` node always has at least one pattern and a guard (≥2
-  # args). So *loosening* it (`>= 2` → `true`/`>= 0`/`>= 1`) is equivalent, while *tightening*
-  # it (`> 2`/`>= 3`/`<= 2` for a single-pattern clause) is killed by the case/receive/fn
-  # clause tests. A `case` clause specifically always has exactly two `when` args (one pattern
-  # + one guard), so its `Enum.split(when_args, -1)` index is equivalent to `1` as well.
-  defp case_clause_parts({:->, _meta, [[{:when, _wm, when_args}], body]})
+  # --- the guarded-`->`-clause shape, decomposed/recomposed in one place ------
+
+  # A `->` clause head split into `{patterns, guard | nil, body}` (or `nil` for a
+  # malformed/guard-only LHS) — the one home for the fragile guarded-clause shape, so the
+  # readers (`case_clause_parts`/`clause_patterns`/`clause_guard`) and the recomposer
+  # (`put_clause_head`) below don't each re-derive the `Enum.split(when_args, -1)`. The guarded
+  # form nests as `[{:when, _, [p1, …, pN, guard]}]` — the guard is the last `when` arg, the
+  # rest are patterns (a `when a when b` OR-guard is a single nested `when` node, so there is
+  # always exactly one trailing guard); the unguarded form's LHS list *is* the patterns.
+  # NOTE (equivalent survivors): the `length(when_args) >= 2` guard is a defensive lower bound —
+  # a `:when` node always has at least one pattern and a guard (≥2 args). So *loosening* it
+  # (`>= 2` → `true`/`>= 0`/`>= 1`) is equivalent, while *tightening* it (`> 2`/`>= 3`/`<= 2`
+  # for a single-pattern clause) is killed by the case/receive/fn clause tests.
+  defp clause_head_parts({:->, _meta, [[{:when, _wm, when_args}], body]})
        when length(when_args) >= 2 do
-    # mutare:ignore[arithmetic] equivalent — a `case` clause's `when_args` is always exactly 2, so `Enum.split(_, -1)` and `Enum.split(_, 1)` partition it identically.
-    case Enum.split(when_args, -1) do
-      {[pattern], [guard]} -> {pattern, guard, body, PatternStructure.used_names([guard, body])}
-      _ -> nil
-    end
+    # `-1` peels the lone trailing guard; load-bearing now this is shared with multi-pattern
+    # `fn` heads (where `Enum.split(_, -1) ≢ Enum.split(_, 1)`), so the swap is killed, not ignored.
+    {patterns, [guard]} = Enum.split(when_args, -1)
+    {patterns, guard, body}
   end
 
-  defp case_clause_parts({:->, _meta, [[pattern], body]}),
-    do: {pattern, nil, body, PatternStructure.used_names([body])}
+  # mutare:ignore[guard_drop] equivalent — a `->` clause's LHS is always a list, so the `is_list/1` guard never excludes a real clause.
+  defp clause_head_parts({:->, _meta, [lhs_list, body]}) when is_list(lhs_list),
+    do: {lhs_list, nil, body}
 
-  # mutare:ignore[clause_drop] equivalent — `case_clause_candidates/2` only calls this on real `case` clauses, which always match one of the two heads above; this guard against malformed input is unreachable.
-  defp case_clause_parts(_clause), do: nil
+  # mutare:ignore[clause_drop] equivalent — every caller passes a real `->` clause, which matches one of the two heads above; this guard against malformed input is unreachable.
+  defp clause_head_parts(_clause), do: nil
+
+  # Recompose a `->` clause with new `patterns` and an optional `guard` (nil → strip the
+  # `when`), preserving the clause meta, the body, and — when guarded — the `when` node's meta.
+  defp put_clause_head({:->, meta, [head, body]}, patterns, guard) do
+    lhs =
+      case {guard, head} do
+        {nil, _head} -> patterns
+        {_guard, [{:when, wm, _args}]} -> [{:when, wm, patterns ++ [guard]}]
+        # mutare:ignore[clause_drop] equivalent — a non-nil guard only ever arrives from a clause that was already guarded (head `[{:when, …}]`), so the branch above always matches first.
+        {_guard, _head} -> [{:when, [], patterns ++ [guard]}]
+      end
+
+    {:->, meta, [lhs, body]}
+  end
+
+  # A `case` clause's single pattern, its guard (or `nil`), its body, and the names read in
+  # guard+body (the wildcard family's `used_outside`). More than one pattern (not a `case`
+  # clause) → `nil`.
+  defp case_clause_parts(clause) do
+    case clause_head_parts(clause) do
+      {[pattern], guard, body} ->
+        nodes = if guard, do: [guard, body], else: [body]
+        {pattern, guard, body, PatternStructure.used_names(nodes)}
+
+      _ ->
+        nil
+    end
+  end
 
   # mutare:ignore[clause_drop] equivalent — dropping the `nil`-guard short-circuit leaves the general clause to run `Tag.guard_targets(nil, …)` (no targets) and `guard_drop_clause_candidate` on a synthetic `{:when, [], [pattern, nil]}` that Sourceror can't range, so it yields no candidate either way.
   defp guard_clause_candidates(_index, _pattern, nil, _body, _mutators), do: []
@@ -367,63 +398,54 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # the lone pattern). The bare patterns become the clause head, left exactly as written: a
   # binding the guard alone read becomes unused (a harmless warning), but we never rename it
   # to `_` — a macro in the body can read a bound variable by name, undetectably.
-  defp strip_clause_guard({:->, meta, [[{:when, _wm, when_args}], body]})
-       when length(when_args) >= 2 do
-    {patterns, [_guard]} = Enum.split(when_args, -1)
-    {:->, meta, [patterns, body]}
+  defp strip_clause_guard(clause) do
+    {patterns, _guard, _body} = clause_head_parts(clause)
+    put_clause_head(clause, patterns, nil)
   end
 
   # A clause's pattern positions plus the names read in its guard/body (the `used_outside`
-  # set the wildcard family needs). A guard wraps *all* patterns: `[{:when, _, [p1, …, pN,
-  # guard]}]`. Unguarded, the LHS list *is* the patterns (one for case/receive, N for fn).
-  # Anything else (a malformed/guard-only LHS) → `nil` (skip). Each pattern is mutated
-  # independently, so a duplicate variable *across* fn arguments (`fn x, x -> …`) isn't seen
-  # — rare, and within-argument duplicates (`fn {x, x} -> …`) still are.
-  defp clause_patterns({:->, _meta, [[{:when, _wm, when_args}], body]})
-       when length(when_args) >= 2 do
-    {patterns, [guard]} = Enum.split(when_args, -1)
-    {patterns, PatternStructure.used_names([guard, body])}
-  end
+  # set the wildcard family needs). Each pattern is mutated independently, so a duplicate
+  # variable *across* fn arguments (`fn x, x -> …`) isn't seen — rare, and within-argument
+  # duplicates (`fn {x, x} -> …`) still are. A malformed/guard-only LHS → `nil` (skip).
+  defp clause_patterns(clause) do
+    case clause_head_parts(clause) do
+      {patterns, nil, body} ->
+        # NOTE (equivalent survivors): the `Enum.any?(...) → Enum.all?(...)` and the `if … →
+        # false` mutants here are equivalent — a guarded clause is decomposed by the guarded
+        # head of `clause_head_parts`, so an unguarded `patterns` list never contains a
+        # `:when`; both the `any?`/`all?` predicate and the `if` are therefore always false.
+        # (`if … → true`, which would drop every clause's patterns, is killed.)
+        if Enum.any?(patterns, &match?({:when, _, _}, &1)),
+          do: nil,
+          else: {patterns, PatternStructure.used_names([body])}
 
-  # NOTE (equivalent survivors): the `Enum.any?(...) → Enum.all?(...)` and the `if … → false`
-  # mutants here are equivalent — a guarded clause is always the single-element `[{:when, …}]`
-  # handled by the head above, so an `lhs_list` reaching *this* clause never contains a `:when`;
-  # both the `any?`/`all?` predicate and the `if` are therefore always false. (`if … → true`,
-  # which would drop every clause's patterns, is killed.)
-  # mutare:ignore[guard_drop] equivalent — a `->` clause's LHS is always a list, so the `is_list/1` guard never excludes a real clause.
-  defp clause_patterns({:->, _meta, [lhs_list, body]}) when is_list(lhs_list) do
-    if Enum.any?(lhs_list, &match?({:when, _, _}, &1)),
-      do: nil,
-      else: {lhs_list, PatternStructure.used_names([body])}
-  end
+      {patterns, guard, body} ->
+        {patterns, PatternStructure.used_names([guard, body])}
 
-  # mutare:ignore[clause_drop] equivalent — `clause_pattern_candidates/3` only calls this on real `->` clauses, which match one of the two heads above; this fallback is unreachable.
-  defp clause_patterns(_clause), do: nil
+      nil ->
+        nil
+    end
+  end
 
   # The guard of a `->` clause (its last `when` arg), or `nil` when unguarded.
-  defp clause_guard({:->, _meta, [[{:when, _wm, when_args}], _body]})
-       when length(when_args) >= 2,
-       do: List.last(when_args)
-
-  defp clause_guard(_clause), do: nil
-
-  # Replace pattern position `pos` of a clause's head with `mutated`, re-wrapping a `when`
-  # guard if present (the guard is always the last `when` arg).
-  defp put_clause_pattern_at({:->, meta, [[{:when, wm, when_args}], body]}, pos, mutated)
-       when length(when_args) >= 2 do
-    {patterns, [guard]} = Enum.split(when_args, -1)
-    {:->, meta, [[{:when, wm, List.replace_at(patterns, pos, mutated) ++ [guard]}], body]}
+  defp clause_guard(clause) do
+    case clause_head_parts(clause) do
+      {_patterns, guard, _body} -> guard
+      nil -> nil
+    end
   end
 
-  defp put_clause_pattern_at({:->, meta, [lhs_list, body]}, pos, mutated) do
-    {:->, meta, [List.replace_at(lhs_list, pos, mutated), body]}
+  # Replace pattern position `pos` of a clause's head with `mutated`, preserving a `when`
+  # guard if present (the guard is always the last `when` arg).
+  defp put_clause_pattern_at(clause, pos, mutated) do
+    {patterns, guard, _body} = clause_head_parts(clause)
+    put_clause_head(clause, List.replace_at(patterns, pos, mutated), guard)
   end
 
   # Replace a guarded `->` clause's guard (the last `when` arg) with `new_guard`.
-  defp put_clause_guard({:->, meta, [[{:when, wm, when_args}], body]}, new_guard)
-       when length(when_args) >= 2 do
-    {patterns, [_guard]} = Enum.split(when_args, -1)
-    {:->, meta, [[{:when, wm, patterns ++ [new_guard]}], body]}
+  defp put_clause_guard(clause, new_guard) do
+    {patterns, _guard, _body} = clause_head_parts(clause)
+    put_clause_head(clause, patterns, new_guard)
   end
 
   # --- try: rescue narrowing + clause drop (CasePattern / RescueDrop) ---------

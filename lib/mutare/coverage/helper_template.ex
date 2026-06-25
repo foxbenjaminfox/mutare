@@ -5,14 +5,14 @@ defmodule Mutare.Coverage.HelperTemplate do
   # module — rather than a `quote |> Macro.to_string` string inside `Mutare.Coverage.Recorder` —
   # so a typo or broken reference in `hit/1`/`dump/1` is caught at *Mutare's* compile time instead
   # of only when a sandbox compiles. `Recorder.helper_source/0` reads this file's source (via
-  # `@external_resource`) and swaps the module name for `:mutare_cov` at write time; `Recorder`
-  # also sources the contract constants below from here, so they have a single home.
+  # `@external_resource`) and rewrites the `defmodule` *line* to `:mutare_cov` at write time
+  # (anchored on that line, so the name is free to appear in comments/docs/strings here);
+  # `Recorder` also sources the contract constants below from here, so they have a single home.
   #
   # **This module must stay DEPENDENCY-FREE** — its source is copied verbatim into the *target*
   # project's `lib/`, which has no Mutare modules on its path. Reference only stdlib/OTP
   # (`:ets`, `:proc_lib`, `Process`, `File`, `Code`, `System`, `Enum`, `Map`, `Keyword`, `Path`),
-  # never a `Mutare.*` module, and keep this module's own name to the `defmodule` line only (that
-  # is the one string `Recorder` rewrites to `:mutare_cov`).
+  # never a `Mutare.*` module.
   #
   # `hit/1` records into the shared ETS tables; `dump/1` (run by `after_suite`) serialises them to
   # the dump file, mapping each test module to its source file. The label read is OTP-version

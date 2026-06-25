@@ -146,6 +146,50 @@ defmodule Mutare.AST do
   def key_atom(_), do: nil
 
   @doc """
+  Map over a keyword list, replacing the value of the `:do` entry with `fun.(value)`.
+
+  The single home for "find the `:do` block in a keyword list and transform its
+  value". Recognises both Sourceror's keyword-block key (`{:__block__, _, [:do]}`)
+  and a plain `:do` (via `key_atom/1`), preserves the original key node (so its
+  `format: :keyword` marker survives for the renderer), and leaves every other entry
+  — and a non-list argument — untouched.
+  """
+  @spec update_do_block(Macro.t(), (Macro.t() -> Macro.t())) :: Macro.t()
+  def update_do_block(keyword, fun) when is_list(keyword) do
+    Enum.map(keyword, fn
+      {key, value} = entry -> if key_atom(key) == :do, do: {key, fun.(value)}, else: entry
+      entry -> entry
+    end)
+  end
+
+  def update_do_block(other, _fun), do: other
+
+  @doc """
+  `update_do_block/2` threading an accumulator: `fun.(value, acc)` returns
+  `{new_value, acc}`, like `Enum.map_reduce/3`. Non-`:do` entries (and a non-list
+  argument) pass the accumulator through unchanged.
+  """
+  @spec update_do_block_reduce(Macro.t(), acc, (Macro.t(), acc -> {Macro.t(), acc})) ::
+          {Macro.t(), acc}
+        when acc: var
+  def update_do_block_reduce(keyword, acc, fun) when is_list(keyword) do
+    Enum.map_reduce(keyword, acc, fn
+      {key, value} = entry, acc ->
+        if key_atom(key) == :do do
+          {value, acc} = fun.(value, acc)
+          {{key, value}, acc}
+        else
+          {entry, acc}
+        end
+
+      entry, acc ->
+        {entry, acc}
+    end)
+  end
+
+  def update_do_block_reduce(other, acc, _fun), do: {other, acc}
+
+  @doc """
   Whether `node` is an *inline keyword label* — the key side of an `a: x` pair,
   which Sourceror wraps as `{:__block__, meta, [atom]}` carrying a
   `format: :keyword` marker. Such a key is a structural label, never a runtime

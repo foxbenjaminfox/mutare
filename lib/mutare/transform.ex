@@ -286,26 +286,13 @@ defmodule Mutare.Transform do
     Macro.prewalk(ast, fn
       {form, meta, args} when form in [:defmodule, :defimpl] and is_list(args) and args != [] ->
         {init, [do_keyword]} = Enum.split(args, -1)
-        {form, meta, init ++ [prepend_module_attr(do_keyword, attr)]}
+        do_keyword = AST.update_do_block(do_keyword, &prepend_statement(&1, attr))
+        {form, meta, init ++ [do_keyword]}
 
       other ->
         other
     end)
   end
-
-  # Prepend `attr` as the first statement of a module's `do` body. Handles both
-  # Sourceror's keyword-block key (`{:__block__, _, [:do]}`) and a plain `:do`, and
-  # both a block body and a single-expression body. A last arg that is not a `do`
-  # keyword list passes through untouched.
-  defp prepend_module_attr(do_keyword, attr) when is_list(do_keyword) do
-    Enum.map(do_keyword, fn
-      {{:__block__, _, [:do]} = key, body} -> {key, prepend_statement(body, attr)}
-      {:do, body} -> {:do, prepend_statement(body, attr)}
-      other -> other
-    end)
-  end
-
-  defp prepend_module_attr(do_keyword, _attr), do: do_keyword
 
   defp prepend_statement({:__block__, meta, stmts}, attr), do: {:__block__, meta, [attr | stmts]}
   defp prepend_statement(single, attr), do: {:__block__, [], [attr, single]}
@@ -342,20 +329,8 @@ defmodule Mutare.Transform do
   # Anything else is an expression: mutate operators in place.
   defp transform_node(node, ctx), do: in_place(node, ctx)
 
-  defp transform_do_keyword(keyword, ctx) do
-    Enum.map_reduce(keyword, ctx, fn
-      {{:__block__, _, [:do]} = key, body}, ctx ->
-        {body, ctx} = transform_body(body, ctx)
-        {{key, body}, ctx}
-
-      {:do, body}, ctx ->
-        {body, ctx} = transform_body(body, ctx)
-        {{:do, body}, ctx}
-
-      entry, ctx ->
-        {entry, ctx}
-    end)
-  end
+  defp transform_do_keyword(keyword, ctx),
+    do: AST.update_do_block_reduce(keyword, ctx, &transform_body/2)
 
   defp transform_body({:__block__, meta, statements}, ctx) do
     {statements, ctx} = transform_statements(statements, ctx)
@@ -910,27 +885,25 @@ defmodule Mutare.Transform do
   # a valid pipe LHS, so chained pipes still nest; the bare stage stays the Site's
   # recorded node, so the diff is unaffected. The param name (`piped_var`) is salted
   # per file so a stage argument mentioning the same identifier isn't captured.
-  defp hoist_pipe(
-         {:|>, meta, [lhs, {:__block__, bmeta, [{:case, cmeta, [subject, [do: clauses]]}]}]} =
-           node,
-         ctx
-       ) do
-    # Recognise the selector subject in *either* shape — the inline `:persistent_term`
-    # read (a head-default pipe stage) or the hoisted bare active-id variable (a body
-    # pipe stage). The closure body references that variable (the hoisted form) or the
-    # inline read, both valid inside the immediately-invoked closure.
-    if Mutare.Metamutant.subject?(subject, ctx.active_var) do
+  defp hoist_pipe({:|>, meta, [lhs, rhs]} = node, ctx) do
+    # Recognise a block-wrapped selector `case` as the pipe's RHS (the shape
+    # `build_case/3` produces, owned by `Render.selector_case/2`), then confirm its
+    # subject in *either* shape — the inline `:persistent_term` read (a head-default
+    # pipe stage) or the hoisted bare active-id variable (a body pipe stage). The
+    # closure body references that variable (the hoisted form) or the inline read,
+    # both valid inside the immediately-invoked closure.
+    with {:ok, subject, clauses} <- Render.selector_case_parts(rhs),
+         true <- Mutare.Metamutant.subject?(subject, ctx.active_var) do
       var = {ctx.piped_var, [], nil}
 
       piped =
         Enum.map(clauses, fn {:->, m, [pat, body]} -> {:->, m, [pat, pipe_tail(var, body)]} end)
 
-      selector = {:__block__, bmeta, [{:case, cmeta, [subject, [do: piped]]}]}
-      closure = {:fn, [], [{:->, [], [[var], selector]}]}
+      closure = {:fn, [], [{:->, [], [[var], Render.selector_case(subject, piped)]}]}
       invocation = {{:., [], [closure]}, [], []}
       {:|>, meta, [lhs, invocation]}
     else
-      node
+      _ -> node
     end
   end
 
@@ -1354,13 +1327,13 @@ defmodule Mutare.Transform do
   #
   # `<subject>` is the hoisted active-id variable when it is bound in scope, else the
   # self-contained `:persistent_term.get(...)` read (`selector_subject/1`). The selector
-  # is `Render.block_wrap`ped so it renders safely in any position.
+  # is built by `Render.selector_case/2` (block-wrapped, so it renders safely in any
+  # position, and the shape `hoist_pipe/2` recognises through `Render.selector_case_parts/1`).
   defp build_case(default_node, mutant_clauses, ctx) do
     selector = selector_subject(ctx)
     ids = ids_from_clauses(mutant_clauses)
     catch_all = catch_all_clause(ids, default_node, ctx.active_var)
-    case_node = {:case, [], [selector, [do: mutant_clauses ++ [catch_all]]]}
-    Render.block_wrap(case_node)
+    Render.selector_case(selector, mutant_clauses ++ [catch_all])
   end
 
   # The selector `case` scrutinee for the current emit scope. When the active-id variable

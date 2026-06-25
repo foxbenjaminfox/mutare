@@ -30,6 +30,28 @@ defmodule Mutare.Transform.Render do
   """
   def block_wrap(node), do: {:__block__, [], [node]}
 
+  @doc """
+  Build a selector `case` — `case <subject> do <clauses> end` — `block_wrap/1`ped so
+  it renders safely in any position.
+
+  This and `selector_case_parts/1` are the single home for the selector shape, so the
+  one builder (`Mutare.Transform.build_case/3`) and the one reader that must reach back
+  into a just-built selector (`Mutare.Transform.hoist_pipe/2`, which lifts the `case`
+  out of an illegal pipe-RHS position) cannot encode the shape independently and
+  silently drift — a mismatch there would yield an uncompilable metamutant with no
+  error pointing back here.
+  """
+  def selector_case(subject, clauses), do: block_wrap({:case, [], [subject, [do: clauses]]})
+
+  @doc """
+  Destructure a node built by `selector_case/2` into `{:ok, subject, clauses}`, or
+  `:error` for any other shape. The inverse of `selector_case/2`.
+  """
+  def selector_case_parts({:__block__, _bmeta, [{:case, _cmeta, [subject, [do: clauses]]}]}),
+    do: {:ok, subject, clauses}
+
+  def selector_case_parts(_node), do: :error
+
   # Sourceror represents keyword-syntax keys (`do:`, `else:`, but also `ms:`,
   # `env:`, any `key: value`) as `{:__block__, [format: :keyword], [key]}`. A
   # block-wrapped pair key left in a list renders as invalid `key => value`

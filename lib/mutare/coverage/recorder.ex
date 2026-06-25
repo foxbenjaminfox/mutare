@@ -262,23 +262,33 @@ defmodule Mutare.Coverage.Recorder do
   @external_resource @template_path
   @helper_template_source File.read!(@template_path)
 
+  # Rename the template module to `helper_module/0` by replacing its `defmodule` *declaration
+  # line* — not the bare module name — so the name may also appear in the template's
+  # comments/docs/strings without being silently rewritten too. Splitting on the anchor and
+  # matching exactly two parts asserts a single occurrence at *Mutare's* compile time: if the
+  # template's first line ever changes, this fails here rather than emitting a helper that
+  # won't compile in the sandbox.
+  @helper_defmodule_anchor "defmodule Mutare.Coverage.HelperTemplate do"
+  @helper_source (case String.split(@helper_template_source, @helper_defmodule_anchor) do
+                    [before, rest] ->
+                      before <> "defmodule #{inspect(@helper_module)} do" <> rest
+
+                    _ ->
+                      raise "Mutare.Coverage.HelperTemplate: expected exactly one " <>
+                              "#{inspect(@helper_defmodule_anchor)} line in the template source"
+                  end)
+
   @doc """
   Source of the dependency-free coverage helper `Mutare.Sandbox` writes into the sandbox
   (compiled once, with the app). It is `Mutare.Coverage.HelperTemplate`'s own source — a real,
-  compile-checked module, not a stringified `quote` — with its module name rewritten to
+  compile-checked module, not a stringified `quote` — with its `defmodule` line rewritten to
   `helper_module/0` (`:mutare_cov`).
 
   `hit/1` records into the shared ETS tables; `dump/1` (run by `after_suite`) serialises them to
   `dump_file/0`, mapping each test module to its source file.
   """
   @spec helper_source() :: String.t()
-  def helper_source do
-    String.replace(
-      @helper_template_source,
-      "Mutare.Coverage.HelperTemplate",
-      inspect(@helper_module)
-    )
-  end
+  def helper_source, do: @helper_source
 
   @doc """
   The setup snippet `Mutare.Sandbox` prepends before the target's test helper.

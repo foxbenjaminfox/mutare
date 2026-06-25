@@ -41,17 +41,8 @@ defmodule Mutare.Transform.ImportWitness do
   @spec prepend(Macro.t(), {[atom()] | atom(), atom(), arity()} | nil) :: Macro.t()
   def prepend(body, nil), do: body
 
-  def prepend([kw], witness) when is_list(kw) do
-    [
-      Enum.map(kw, fn
-        {key, expr} = entry ->
-          if AST.key_atom(key) == :do, do: {key, wrap(expr, witness)}, else: entry
-
-        entry ->
-          entry
-      end)
-    ]
-  end
+  def prepend([kw], witness) when is_list(kw),
+    do: [AST.update_do_block(kw, &wrap(&1, witness))]
 
   def prepend(body, _witness), do: body
 
