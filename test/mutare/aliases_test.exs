@@ -55,6 +55,26 @@ defmodule Mutare.AliasesTest do
       assert Aliases.resolve_path({:__MODULE__, [], nil}, %{B: [:String]}) ==
                {:__MODULE__, [], nil}
     end
+
+    test "a leading Elixir segment (fully-qualified prefix) is stripped" do
+      # `Elixir.String` *is* `String` — the alias-proof escape `Calls.qualifier/1` emits.
+      assert Aliases.resolve_path([Elixir, :String], %{}) == [:String]
+      assert Aliases.resolve_path([Elixir, :My, :Mod], %{}) == [:My, :Mod]
+    end
+
+    test "the Elixir prefix is alias-proof: the rest is NOT re-resolved against the env" do
+      # The crucial distinction: `Elixir.String` ignores any alias, so even with `String`
+      # rebound to a local module the fully-qualified path stays the real `String` — whereas a
+      # *bare* `String` would resolve to the alias target.
+      env = %{String: [:Wrong]}
+
+      assert Aliases.resolve_path([Elixir, :String], env) == [:String]
+      assert Aliases.resolve_path([:String], env) == [:Wrong]
+    end
+
+    test "a lone Elixir (root namespace, never a call target) is left untouched" do
+      assert Aliases.resolve_path([Elixir], %{}) == [Elixir]
+    end
   end
 
   describe "stamp_module/2" do
@@ -274,6 +294,39 @@ defmodule Mutare.AliasesTest do
         """)
 
       assert calls[:run] == {[:Sub], [:Sub]}
+    end
+
+    test "a fully-qualified `Elixir.`-prefixed call resolves to the bare module key" do
+      # The easy case the machinery used to skip: `Elixir.String.upcase` carries the written
+      # path `[Elixir, :String]`, but resolves (and is stamped) to `[:String]` — the key the
+      # call families match — so the call is no longer silently missed. The literal path keeps
+      # the `Elixir.` so the rebuilt swap (and the diff) stays faithful.
+      calls =
+        resolved("""
+        defmodule M do
+          def up(x), do: Elixir.String.upcase(x)
+        end
+        """)
+
+      assert calls[:upcase] == {[Elixir, :String], [:String]}
+    end
+
+    test "the Elixir prefix is alias-proof even under a shadowing alias" do
+      # `alias Wrong, as: String` rebinds the bare name `String`, but `Elixir.String` is the
+      # absolute, fully-qualified module and ignores the alias — so the prefixed call still
+      # resolves to the real `[:String]`, while the bare `String.downcase` resolves to the
+      # shadowed `[:Wrong]`. The two MUST differ.
+      calls =
+        resolved("""
+        defmodule M do
+          alias Wrong, as: String
+          def up(x), do: Elixir.String.upcase(x)
+          def down(x), do: String.downcase(x)
+        end
+        """)
+
+      assert calls[:upcase] == {[Elixir, :String], [:String]}
+      assert calls[:downcase] == {[:String], [:Wrong]}
     end
   end
 

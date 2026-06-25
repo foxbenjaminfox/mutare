@@ -2458,6 +2458,61 @@ defmodule Mutare.TransformTest do
 
       refute Enum.any?(shadow_sites, &(&1.mutator == :integer))
     end
+
+    test "a fully-qualified `Elixir.`-prefixed call mutates, keeping the prefix in the diff" do
+      # The easy case the alias machinery used to skip entirely. The mutant keeps the written
+      # `Elixir.String.` (minimal diff), and the metamutant compiles.
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def first(s), do: Elixir.String.first(s)
+          end
+          """,
+          mutators: [Mutare.Mutators.StringCall]
+        )
+
+      pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
+      assert {"Elixir.String.first(s)", "Elixir.String.last(s)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "a `&Elixir.Mod.fun/N` capture of a fully-qualified call mutates too" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def ref, do: &Elixir.String.first/1
+          end
+          """,
+          mutators: [Mutare.Mutators.StringCall]
+        )
+
+      pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
+      assert {"&Elixir.String.first/1", "&Elixir.String.last/1"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "the Elixir prefix is alias-proof: it mutates while a shadowed bare call does not" do
+      # `alias Wrong, as: String` shadows the bare name, so `String.upcase` is NOT the stdlib
+      # `String` and must not mutate — but `Elixir.String.first` is absolute and still must.
+      # (No compile — `Wrong` is fictional; the point is the asymmetry of the two sites.)
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            alias Wrong, as: String
+            def first(s), do: Elixir.String.first(s)
+            def up(s), do: String.upcase(s)
+          end
+          """,
+          mutators: [Mutare.Mutators.StringCall]
+        )
+
+      pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
+      assert {"Elixir.String.first(s)", "Elixir.String.last(s)"} in pairs
+      refute Enum.any?(pairs, fn {orig, _} -> orig == "String.upcase(s)" end)
+    end
   end
 
   describe "import resolution (bare imported calls mutate)" do
@@ -2492,6 +2547,28 @@ defmodule Mutare.TransformTest do
 
       pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
       # Whole import ⇒ the sibling `filter` is imported too, so the mutant stays bare.
+      assert {"reject(xs, & &1)", "filter(xs, & &1)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "a fully-qualified `import Elixir.Enum` resolves its bare calls" do
+      # `resolve_path/2` is shared with the import pre-pass, so the `Elixir.`-prefix strip must
+      # land `import Elixir.Enum` on the same `[:Enum]` key as a plain `import Enum` — else the
+      # bare `reject` would carry `[:Elixir, :Enum]`, match no swap table, and be missed. This
+      # guards the import path against a future `resolve_path` refactor (the call path has its
+      # own tests above).
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule ImpQualified do
+            import Elixir.Enum
+            def f(xs), do: reject(xs, & &1)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
       assert {"reject(xs, & &1)", "filter(xs, & &1)"} in pairs
       assert_compiles(meta)
     end

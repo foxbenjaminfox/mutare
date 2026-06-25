@@ -33,6 +33,13 @@ defmodule Mutare.Transform.Aliases do
   #     mandatory, since an atom has no last segment to default the name from). A
   #     **`require Mod, as: Name`** introduces the same alias (`require`'s `:as` "sets up an
   #     alias"), so it is registered identically — a bare `require Mod` (no `as:`) is a no-op.
+  #   * A **fully-qualified** `Elixir.`-prefixed path (`Elixir.String.first`) resolves to the
+  #     bare module key (`[:String]`) — the leading `Elixir` segment is the alias-proof escape
+  #     `Mutare.Transform.Calls.qualifier/1` itself emits, so without stripping it the call
+  #     carries the key `[:Elixir, :String]`, matches no family swap table, and is silently
+  #     never mutated. The strip is **env-free**: `Elixir.` ignores aliases, so under
+  #     `alias Wrong, as: String` the prefixed call is still the real `String` while a *bare*
+  #     `String.first` resolves to `Wrong` — the two deliberately differ.
   #   * An alias whose target is itself aliased is resolved through the env *before*
   #     binding, so the stored value is always the fully-expanded module — never another
   #     alias. `alias MyApp, as: String; alias String, as: S` binds `S` to `MyApp` (the
@@ -79,6 +86,18 @@ defmodule Mutare.Transform.Aliases do
   left unresolved.
   """
   @spec resolve_path([atom()] | term(), map()) :: [atom()] | atom() | term()
+  # A leading `Elixir` segment is the **fully-qualified, alias-proof** prefix: `Elixir.String`
+  # *is* `String` no matter what aliases are in scope (it's exactly what
+  # `Mutare.Transform.Calls.qualifier/1` emits to dodge a rebinding alias). Strip it so the
+  # written path lands on the same module key the call families match (`[:String]`) — without
+  # this, `Elixir.String.first(s)` carries the key `[:Elixir, :String]`, matches no swap table,
+  # and is silently never mutated. Crucially the remaining segments ride **verbatim, not
+  # re-resolved against the env**: `Elixir.` ignores aliases, so `alias Wrong, as: String;
+  # Elixir.String.first(s)` still resolves to the real `String` (whereas a *bare* `String.first`
+  # there resolves to `Wrong`, below). A lone `Elixir` (no rest) is the root namespace, never a
+  # call target — left untouched.
+  def resolve_path([:"Elixir" | rest], _env) when rest != [], do: rest
+
   def resolve_path([first | rest], env) when is_atom(first) do
     case Map.fetch(env, first) do
       {:ok, base} when is_list(base) -> base ++ rest
