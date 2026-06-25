@@ -718,6 +718,18 @@ contract between them is the whole game.
     StringLiteral, FloatLiteral, AtomLiteral, ConventionAtom, CharlistLiteral, WordListLiteral,
     MapLiteral, TupleLiteral, BitstringLiteral, RegexLiteral, DateTimeLiteral, AliasLiteral. Each
     participates in `def`-head lifting only where its node is a *scalar* literal.
+  - **Bitstring-spec swap** (BitstringSpec): the lone *spec-position* family — swaps a `<<…>>`
+    segment's Unicode encoding (`utf8 ↔ utf16 ↔ utf32`) and byte order (`big ↔ little`, utf16/32
+    only; `native` excluded as host-dependent). Routed exactly like BitstringLiteral — an ordinary
+    `mutate/1` handed the whole `<<…>>` node by the runtime-body `offer/3`, returning *complete*
+    bitstring copies — so the in-place selector (constructor) and lifted clause-guard replacement
+    both deliver it with no new plumbing. Never-equivalent + compile-safe by construction (the three
+    encodings share one validity domain; a byte-order swap on a literal byte-palindromic codepoint —
+    `<<0::utf16>>` is `<<0, 0>>` either way — is skipped, and the deprecated `utf16-big()` paren form
+    is read as an explicit order, not appended-to into a conflicting `utf16-big()-little`).
+    **Constructor-only**: a `<<>>` in a *pattern* isn't offered
+    (the non-scalar node fails the head-lift filter, and no selector wraps a pattern), so it catches
+    encoders, not decoders. See NOTES "Unicode encoding/byte-order specifiers".
   - **Call-matching** (resolve the call through `Mutare.Transform.Calls`, so direct / aliased /
     imported, Elixir or Erlang-atom forms all match): Collection, StringCall, StringByte, MapKeyword,
     MapSet, Numeric, Math, Integer — arity-blind renames; CollectionArity, DefaultDrop, ModeSwap,

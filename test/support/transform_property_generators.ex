@@ -212,6 +212,7 @@ defmodule Mutare.TransformPropertyGenerators do
       {1, sigil_gen()},
       {1, interp_string_gen(vars)},
       {1, bitstring_gen()},
+      {1, utf_bitstring_gen()},
       {1, with_gen(size, vars)},
       {1, fn_gen(size, vars)},
       {1, try_gen(smaller)},
@@ -638,6 +639,38 @@ defmodule Mutare.TransformPropertyGenerators do
     let count <- integer(1, 3) do
       let segments <- vector(count, oneof([integer(0, 255), let(s <- ascii_string(), do: s)])) do
         {:<<>>, [], segments}
+      end
+    end
+  end
+
+  # A `<<cp::utfN>>` constructor (utf16/utf32 optionally `-big`/`-little`/`-native`) — the one
+  # generator driving `Mutare.Mutators.BitstringSpec`'s Unicode encoding (`utf8 ↔ utf16 ↔ utf32`)
+  # and byte-order (`big ↔ little`) swaps through the soaks, alongside Literal on the codepoint.
+  # `cp ∈ 0..255` is a valid Unicode scalar under *every* encoding, so the constructor and all of
+  # BitstringSpec's mutants (which share that validity domain) are total — baseline-equivalence
+  # stays deterministic. A runtime constructor, so the whole `<<>>` is offered in a body and the
+  # mutants ride the in-place selector (the same path BitstringLiteral takes).
+  defp utf_bitstring_gen do
+    let [cp <- integer(0, 255), spec <- utf_spec_gen()] do
+      {:<<>>, [], [{:"::", [], [cp, spec]}]}
+    end
+  end
+
+  # A utf type-specifier: a bare encoding, or (utf16/utf32 only) the encoding with a byte-order
+  # modifier. utf8 is byte-oriented, so it carries none.
+  defp utf_spec_gen do
+    let enc <- oneof([:utf8, :utf16, :utf32]) do
+      case enc do
+        :utf8 ->
+          exactly({:utf8, [], nil})
+
+        _ ->
+          oneof([
+            {enc, [], nil},
+            {:-, [], [{enc, [], nil}, {:big, [], nil}]},
+            {:-, [], [{enc, [], nil}, {:little, [], nil}]},
+            {:-, [], [{enc, [], nil}, {:native, [], nil}]}
+          ])
       end
     end
   end

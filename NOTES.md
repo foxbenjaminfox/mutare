@@ -712,14 +712,42 @@ by a blacklist. The positions:
   with the body; mutating them precisely (route `unquote` back to `:runtime`, like
   the `\\` default) is future work — losing them is acceptable per the philosophy
   above, and `bootstrap_ast`'s unquotes are inert (vars/atoms) anyway.
-- **Bitstring type specifiers** (the right of `::` in `<<>>`): **excluded**
-  (context `:spec`), *except* `size(expr)` args. A `case` is illegal as a bare
-  spec / in `unit(...)`, and swapping the `-` separator yields an illegal
-  specifier (`integer-big` → `integer+big`) — both compile-poison the single
-  build. The analyzer keeps separators / type atoms / `unit()` raw but recurses
-  into `size(expr)` args (a `case` *is* legal in `size`), so a body's
+- **Bitstring type specifiers** (the right of `::` in `<<>>`): **excluded** from
+  *in-place* mutation (context `:spec`), *except* `size(expr)` args. A `case` is
+  illegal as a bare spec / in `unit(...)`, and swapping the `-` separator yields
+  an illegal specifier (`integer-big` → `integer+big`) — both compile-poison the
+  single build. The analyzer keeps separators / type atoms / `unit()` raw but
+  recurses into `size(expr)` args (a `case` *is* legal in `size`), so a body's
   `<<x::size(n*8)>>` still yields a real, killable size mutant; in a pattern the
   size arg is pruned. The value side (left of `::`) mutates normally.
+- **Unicode encoding/byte-order specifiers** (`Mutare.Mutators.BitstringSpec`):
+  the *one* spec-position swap worth running, so it is **on by default** despite
+  the blanket exclusion above. It mutates a segment's text encoding
+  (`utf8 ↔ utf16 ↔ utf32`) and byte order (`big ↔ little`, utf16/utf32 only) —
+  the cleanest swap family in the tool: **never-equivalent** (an encoding swap
+  changes the byte *width*, so it differs even for `0`; a byte-order swap differs
+  for every value but a byte-palindromic one — `<<0::utf16>>` is `<<0, 0>>` in
+  either order, as is any `cp = b * 257` — and those are **skipped** when the value
+  is a literal codepoint, so the axis stays equivalent-free) and **compile-safe
+  with a symmetric validity domain** (a surrogate / over-max value raises
+  identically for all three encodings, so a swap only ever changes the bytes
+  emitted, never crashes a previously-working segment). `native` is excluded as
+  source and target (host-dependent → an equivalent-on-this-host mutant); and the
+  deprecated-but-compiling parenthesized modifier (`utf16-big()`, whose atom leaf
+  parses with context `[]` not `nil`) is recognised as an explicit order, so a
+  swap *flips* it rather than appending a conflicting second one
+  (`utf16-big()-little` → "conflicting endianness", a build-poisoning mutant).
+  **Zero transform plumbing**: it is an ordinary
+  `mutate/1` family that the *existing* whole-`<<>>` `offer/3` (the one
+  `BitstringLiteral` rides in a runtime body) hands the node to, and each mutant
+  is a *complete* `<<…>>` with one segment's spec rewritten — so the in-place
+  selector (a constructor body) or the lifted clause-guard replacement (a
+  `when <<x::utf16>> == …` guard, delivered without a `case`) both work unchanged.
+  The spec side is *not* offered in a **pattern** (a head/`case`/`=`-match `<<>>`):
+  the head-lift's scalar-literal-only filter declines the non-scalar `<<>>` node,
+  and no selector can wrap a pattern — so v1 catches **encoders, not decoders**
+  (`<<cp::utf16, rest::binary>> = decode(x)`, the matching-bug side, is the
+  documented gap). The value side still mutates via its own families.
 - **Default arg values** (`def f(a \\ 1 + 2)`): mutated in place; live mutant.
   The head is a pattern, but `\\`'s default runs at call time, so the analyzer
   routes it back to `:runtime`. Such functions **are** lifted now (see "Default

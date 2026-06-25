@@ -61,7 +61,7 @@ defmodule Mutare.MutatorsTest do
                  [ModeSwap, Numeric, Math, Integer, ConventionAtom, StringLiteral, FloatLiteral] ++
                  [AtomLiteral] ++
                  [CharlistLiteral, WordListLiteral, StringSigilLiteral] ++
-                 [MapLiteral, TupleLiteral, BitstringLiteral] ++
+                 [MapLiteral, TupleLiteral, BitstringLiteral, Mutare.Mutators.BitstringSpec] ++
                  [RegexLiteral, DateTimeLiteral, AliasLiteral, ReturnValue, PatternSwap] ++
                  [PatternWildcard, RescueType, GuardDrop, Mutare.Mutators.GenServer]
     end
@@ -78,7 +78,8 @@ defmodule Mutare.MutatorsTest do
                  [:call_removal] ++
                  [:default_drop, :mode_swap, :numeric, :math, :integer, :convention] ++
                  [:string, :float] ++
-                 [:atom, :charlist, :word_list, :string_sigil, :map, :tuple, :bitstring, :regex] ++
+                 [:atom, :charlist, :word_list, :string_sigil, :map, :tuple, :bitstring] ++
+                 [:bitstring_spec, :regex] ++
                  [
                    :datetime,
                    :alias,

@@ -66,6 +66,7 @@ defmodule Mutare.Mutators do
     map: Mutare.Mutators.MapLiteral,
     tuple: Mutare.Mutators.TupleLiteral,
     bitstring: Mutare.Mutators.BitstringLiteral,
+    bitstring_spec: Mutare.Mutators.BitstringSpec,
     regex: Mutare.Mutators.RegexLiteral,
     datetime: Mutare.Mutators.DateTimeLiteral,
     alias: Mutare.Mutators.AliasLiteral,
