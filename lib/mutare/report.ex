@@ -36,7 +36,20 @@ defmodule Mutare.Report do
   defp kind(:in_place), do: "in-place"
   defp kind(:lifted), do: "lifted"
 
-  @doc "A `-`/`+` diff of the line(s) the mutation touches."
+  @doc """
+  A `-`/`+` diff of the line(s) the mutation touches.
+
+  Computed by a **line-based** diff (`List.myers_difference/2`) between the
+  original and patched text *within* the site's line span, so only the lines that
+  actually change are shown as `-`/`+`; unchanged lines inside a multi-line
+  fragment appear as ` ` context. This matters for a mutation that removes (or
+  adds) a line in the middle of a multi-line fragment — e.g. an Ecto `:hosted`
+  swap dropping one `where:` from a big `from` block: a naive line-by-line
+  pairing would re-emit every following line as a spurious delete+insert (they
+  "shift" past the removal), whereas the diff aligns the unchanged lines and
+  shows just the dropped one. A single-line swap still renders as a clean
+  `-old`/`+new` pair.
+  """
   @spec diff(Site.t(), String.t()) :: String.t()
   def diff(%Site{operation: :delete} = site, source) do
     # Clause-drop: the whole clause is removed, so show its lines as deletions.
@@ -47,16 +60,30 @@ defmodule Mutare.Report do
   end
 
   def diff(%Site{} = site, source) do
-    patched = patch(site, source)
     original_lines = String.split(source, "\n")
-    patched_lines = String.split(patched, "\n")
+    patched_lines = String.split(patch(site, source), "\n")
 
-    site.range.start[:line]..site.range.end[:line]
-    |> Enum.flat_map(fn n ->
-      ["-" <> line_at(original_lines, n), "+" <> line_at(patched_lines, n)]
-    end)
+    first = site.range.start[:line]
+    last = site.range.end[:line]
+    # The patch replaces only the bytes within the site range, so every line after
+    # `last` shifts by the change in total line count: the patched fragment occupies
+    # the same first line through `last + delta`. Diffing the two windows against each
+    # other (rather than pairing line `n` with line `n`) keeps the unchanged tail aligned.
+    patched_last = last + (length(patched_lines) - length(original_lines))
+
+    window(original_lines, first, last)
+    |> List.myers_difference(window(patched_lines, first, patched_last))
+    |> Enum.flat_map(&diff_lines/1)
     |> Enum.join("\n")
   end
+
+  # The lines `first..last` (1-based, inclusive) of an already-split source.
+  defp window(lines, first, last), do: Enum.slice(lines, (first - 1)..(last - 1)//1)
+
+  # Render one Myers edit chunk: kept lines as ` ` context, removed as `-`, added as `+`.
+  defp diff_lines({:eq, lines}), do: Enum.map(lines, &(" " <> &1))
+  defp diff_lines({:del, lines}), do: Enum.map(lines, &("-" <> &1))
+  defp diff_lines({:ins, lines}), do: Enum.map(lines, &("+" <> &1))
 
   @doc "Full diff block (header + diff) for one survivor."
   @spec survivor(Site.t(), String.t()) :: String.t()

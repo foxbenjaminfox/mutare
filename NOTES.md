@@ -4291,6 +4291,37 @@ A pure report-rendering fix; regression tests assert the per-sigil corrected wid
 each regex mutant's patch is a *visible*, re-parseable change (`transform/node_range_test.exs`,
 `report_test.exs`).
 
+### Report diff fidelity for multi-line fragments — line-based, not positional `[fixed]`
+A `mutare_ecto` survivor that drops one `where:` from a big `from` block (a `:hosted` mutation,
+so a multi-line `:replace`) rendered a hideous diff: every line *after* the removed one came back
+as a spurious `-old`/`+new` pair (and the last one corrupted), even though only one line actually
+changed. Same family as the two fixes above — the *report*, not the metamutant (which is built from
+the AST and runs fine) — but the bug was in the **diff algorithm**, not a `Sourceror` range.
+
+`Mutare.Report.diff/2` paired original line `n` with patched line `n` positionally:
+
+    site.range.start[:line]..site.range.end[:line]
+    |> Enum.flat_map(fn n -> ["-" <> orig[n], "+" <> patched[n]] end)
+
+That is correct only when the patch preserves the line count. Removing a `where:` deletes a line, so
+every line after the gap **shifts up by one**, and the positional pairing then reports each shifted
+line as a bogus change (and `+patched[last]` reads past the fragment, hence the corrupted tail). It
+was a latent bug for *any* multi-line `:replace` whose patch changes the line count — e.g. a
+`ReturnValue` collapsing a multi-line expression to `nil` — not just Ecto; the `:hosted` case is
+simply the one that produces big multi-line fragments routinely.
+
+Fixed by making the diff **line-based**: `List.myers_difference/2` between the original and patched
+text *within the fragment's line span*, with the patched span derived from the line-count delta
+(only bytes inside `site.range` change, so the tail shifts by exactly
+`length(patched) - length(original)` — `patched_last = last + delta`). Myers aligns the unchanged
+lines (rendered as ` ` context) and shows only the genuinely removed/added ones as `-`/`+`. A
+single-line swap is unchanged: Myers returns `[del, ins]` for a fully-different line, so the old
+clean `-old`/`+new` pair (and every existing single-line diff assertion) still holds. The
+`:delete` (clause-drop) path is separate and untouched.
+
+A pure report-rendering fix; the regression test asserts the where-drop shape shows just the dropped
+line with context and that the patched source re-parses (`report_test.exs`).
+
 ### Surface skipped files more loudly `[soon]`
 `Schema`/`safe_transform` skips a file that fails to transform (good — one bad
 file shouldn't sink the run) and the task prints `skipped <file>: <reason>` in

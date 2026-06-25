@@ -136,6 +136,75 @@ defmodule Mutare.ReportTest do
     end
   end
 
+  # Regression: a multi-line `:replace` that removes (or adds) a line in the middle
+  # of the fragment — the shape an Ecto `:hosted` mutation produces when it drops one
+  # `where:` from a big `from` block. A naive line-by-line pairing re-emits every line
+  # after the removal as a spurious delete+insert (they "shift" up past the gap); the
+  # line-based (Myers) diff aligns the unchanged tail and shows only the dropped line.
+  describe "diff/2 of a multi-line fragment with a removed line (the Ecto where-drop shape)" do
+    @ml_source """
+    defmodule M do
+      def opts do
+        from(u in User,
+          where: u.active == true,
+          where: u.age > 18,
+          select: u
+        )
+      end
+    end
+    """
+
+    # A site over the multi-line `from(...)` call (with its real Sourceror range and
+    # rendering), whose mutation drops the middle `where:` line.
+    defp where_drop_site do
+      node =
+        @ml_source
+        |> Sourceror.parse_string!()
+        |> Macro.prewalk([], fn
+          {:from, _, _} = n, acc -> {n, [n | acc]}
+          other, acc -> {other, acc}
+        end)
+        |> elem(1)
+        |> List.first()
+
+      range = Sourceror.get_range(node)
+      {:from, meta, [first, kw]} = node
+
+      kw2 =
+        Enum.reject(kw, fn
+          {{:__block__, _, [:where]}, v} -> Macro.to_string(v) =~ "18"
+          _ -> false
+        end)
+
+      mutated = {:from, meta, [first, kw2]}
+
+      %Site{
+        range: range,
+        operation: :replace,
+        mutator: :ecto,
+        kind: :in_place,
+        file: "lib/m.ex",
+        line: range.start[:line],
+        column: range.start[:column],
+        original_code: Sourceror.to_string(node),
+        mutated_code: Sourceror.to_string(mutated)
+      }
+    end
+
+    test "shows only the removed line as a deletion, the rest as ` ` context" do
+      assert Report.diff(where_drop_site(), @ml_source) ==
+               "     from(u in User,\n" <>
+                 "       where: u.active == true,\n" <>
+                 "-      where: u.age > 18,\n" <>
+                 "       select: u\n" <>
+                 "     )"
+    end
+
+    test "the patched diff re-parses as valid Elixir" do
+      assert {:ok, _} = Code.string_to_quoted(Report.patch(where_drop_site(), @ml_source))
+    end
+  end
+
   test "score/1 = killed / (total - no_coverage)" do
     results = [
       %Result{status: :killed},
