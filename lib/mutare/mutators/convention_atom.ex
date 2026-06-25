@@ -104,8 +104,6 @@ defmodule Mutare.Mutators.ConventionAtom do
     end
   end
 
-  def mutate(_node, _context), do: :skip
-
   # The sibling atoms for a swap: the built-in pairs plus any configured `:pairs`.
   defp swaps(atom, opts) do
     (Map.get(@swaps, atom, []) ++ user_swaps(atom, opts)) |> Enum.uniq()

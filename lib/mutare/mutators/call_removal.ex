@@ -184,8 +184,6 @@ defmodule Mutare.Mutators.CallRemoval do
     end
   end
 
-  def mutate(_node, _context), do: :skip
-
   # A bare `Kernel` call (`abs(x)`, the binary slicers): removed only at its effective arity,
   # so a same-named user call at another arity is never touched. The effective arity
   # (`effective_arity/2` — one higher when `:piped`) tells them apart, since a pipe stage's

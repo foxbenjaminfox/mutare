@@ -72,8 +72,6 @@ defmodule Mutare.Mutators.CollectionArity do
     end
   end
 
-  def mutate(_node, _context), do: :skip
-
   # Translate kept *effective* indices to the *visible* argument list, dropping any
   # that map to the (absent) piped value — see `Mutare.Mutator.visible_index/2`.
   defp kept_visible_args(args, keep, pipe_mode) do

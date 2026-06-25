@@ -293,8 +293,6 @@ defmodule Mutare.Mutators.ModeSwap do
     end
   end
 
-  def mutate(_node, _context), do: :skip
-
   # The rule for a call at its *effective* arity (visible args + the piped value), or
   # `:error` when no rule applies.
   defp rule(mod, fun, args, pipe_mode) do

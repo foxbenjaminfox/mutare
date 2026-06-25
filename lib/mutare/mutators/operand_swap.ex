@@ -171,7 +171,11 @@ defmodule Mutare.Mutators.OperandSwap do
     end
   end
 
-  def mutate(_node, _context), do: :skip
+  # A piped stage holds only one local operand (its first comes from the pipe), so there is
+  # nothing to transpose — skip it. Matched explicitly as `:piped` (not a `_context`
+  # wildcard) so an unrecognised pipe mode raises a FunctionClauseError rather than
+  # silently skipping.
+  def mutate(_node, %{pipe_mode: :piped}), do: :skip
 
   # Structural equality ignoring metadata — a transpose of identical operands is an
   # equivalent no-op (`x - x`, `5 / 5`, `-2 - -2`), so we suppress it rather than count it.

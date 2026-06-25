@@ -79,6 +79,4 @@ defmodule Mutare.Mutators.DefaultDrop do
         :skip
     end
   end
-
-  def mutate(_node, _context), do: :skip
 end
