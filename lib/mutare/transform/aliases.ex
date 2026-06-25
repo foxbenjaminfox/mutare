@@ -150,7 +150,7 @@ defmodule Mutare.Transform.Aliases do
   # `[mod_ast, opts]`), so it delegates to `register_alias/2` — but only when an `as:` is
   # present; a bare `require Mod` introduces no alias.
   def register({:require, _meta, [mod_ast, opts]}, env) when is_list(opts) do
-    if has_as?(opts), do: register_alias([mod_ast, opts], env), else: env
+    if as_name(opts), do: register_alias([mod_ast, opts], env), else: env
   end
 
   def register(_stmt, env), do: env
@@ -240,15 +240,6 @@ defmodule Mutare.Transform.Aliases do
   end
 
   defp as_name(_opts), do: nil
-
-  # Whether an opts list carries an `as:` key (Sourceror block-wrapped or plain) — gates
-  # `require Mod, as: Name` into the alias machinery (a bare `require Mod` has none).
-  defp has_as?(opts) do
-    Enum.any?(opts, fn
-      {key, _value} -> AST.key_atom(key) == :as
-      _ -> false
-    end)
-  end
 
   @doc """
   Whether every element is an atom — i.e. a segment list is a valid module-key **path**

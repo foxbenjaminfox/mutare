@@ -25,11 +25,13 @@ defmodule Mutare.Report do
   """
   @spec header(Site.t()) :: String.t()
   def header(%Site{} = site) do
-    "#{site.file}:#{site.line}  [#{site.mutator}, #{kind(site.kind)}]  SURVIVED#{note_suffix(site)}"
+    "#{site.file}:#{site.line}  [#{site.mutator}, #{kind(site.kind)}]  SURVIVED#{optional_suffix(site.note)}"
   end
 
-  defp note_suffix(%Site{note: nil}), do: ""
-  defp note_suffix(%Site{note: note}), do: "  — #{note}"
+  # The trailing "  — <text>" appended to a SURVIVED/IGNORED line for a Site's note or ignore
+  # reason; empty when the field is absent.
+  defp optional_suffix(nil), do: ""
+  defp optional_suffix(text), do: "  — #{text}"
 
   defp kind(:in_place), do: "in-place"
   defp kind(:lifted), do: "lifted"
@@ -71,11 +73,8 @@ defmodule Mutare.Report do
   """
   @spec ignored(Site.t()) :: String.t()
   def ignored(%Site{} = site) do
-    "#{site.file}:#{site.line}  [#{site.mutator}]  IGNORED#{reason_suffix(site)}"
+    "#{site.file}:#{site.line}  [#{site.mutator}]  IGNORED#{optional_suffix(site.ignore_reason)}"
   end
-
-  defp reason_suffix(%Site{ignore_reason: nil}), do: ""
-  defp reason_suffix(%Site{ignore_reason: reason}), do: "  — #{reason}"
 
   @doc """
   Render the whole report from results and a `%{file => original_source}` map.

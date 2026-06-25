@@ -113,27 +113,37 @@ defmodule Mutare.Site do
     replace(id, file, range, original_node, mutated_node, mutator, :lifted)
   end
 
+  # The id/file/location fields every constructor sets identically from the mutant id, source file,
+  # and Sourceror range. Extracted so a change to how a location is read (the `range` shape, a new
+  # location field) touches one place, not every constructor; each constructor fills the rest with
+  # the struct-update syntax.
+  defp base_site(id, file, range) do
+    %__MODULE__{
+      id: id,
+      file: file,
+      line: range.start[:line],
+      column: range.start[:column],
+      range: range
+    }
+  end
+
   @doc """
   A dropped function clause — a `:lifted`, `:delete` mutation. The clause is
   removed entirely, so there is no mutated node, op, or code.
   """
   @spec clause_drop(pos_integer(), String.t(), Sourceror.Range.t(), Macro.t()) :: t()
   def clause_drop(id, file, range, clause_node) do
-    %__MODULE__{
-      id: id,
-      file: file,
-      line: range.start[:line],
-      column: range.start[:column],
-      range: range,
-      mutator: :clause_drop,
-      kind: :lifted,
-      operation: :delete,
-      original_op: nil,
-      mutated_op: nil,
-      original_code: clause_code(clause_node),
-      mutated_code: "",
-      original_node: clause_node,
-      mutated_node: nil
+    %{
+      base_site(id, file, range)
+      | mutator: :clause_drop,
+        kind: :lifted,
+        operation: :delete,
+        original_op: nil,
+        mutated_op: nil,
+        original_code: clause_code(clause_node),
+        mutated_code: "",
+        original_node: clause_node,
+        mutated_node: nil
     }
   end
 
@@ -152,21 +162,17 @@ defmodule Mutare.Site do
           Mutare.Mutator.Spec.t()
         ) :: t()
   def in_place_drop(id, file, range, clause_node, mutator) do
-    %__MODULE__{
-      id: id,
-      file: file,
-      line: range.start[:line],
-      column: range.start[:column],
-      range: range,
-      mutator: mutator.name,
-      kind: :in_place,
-      operation: :delete,
-      original_op: nil,
-      mutated_op: nil,
-      original_code: clause_code(clause_node),
-      mutated_code: "",
-      original_node: clause_node,
-      mutated_node: nil
+    %{
+      base_site(id, file, range)
+      | mutator: mutator.name,
+        kind: :in_place,
+        operation: :delete,
+        original_op: nil,
+        mutated_op: nil,
+        original_code: clause_code(clause_node),
+        mutated_code: "",
+        original_node: clause_node,
+        mutated_node: nil
     }
   end
 
@@ -200,21 +206,17 @@ defmodule Mutare.Site do
           Mutare.Mutator.Spec.t()
         ) :: t()
   def return_value(id, file, range, original_node, mutated_node, mutator) do
-    %__MODULE__{
-      id: id,
-      file: file,
-      line: range.start[:line],
-      column: range.start[:column],
-      range: range,
-      mutator: mutator.name,
-      kind: :in_place,
-      operation: :replace,
-      original_op: nil,
-      mutated_op: nil,
-      original_code: Sourceror.to_string(original_node),
-      mutated_code: Sourceror.to_string(mutated_node),
-      original_node: original_node,
-      mutated_node: mutated_node
+    %{
+      base_site(id, file, range)
+      | mutator: mutator.name,
+        kind: :in_place,
+        operation: :replace,
+        original_op: nil,
+        mutated_op: nil,
+        original_code: Sourceror.to_string(original_node),
+        mutated_code: Sourceror.to_string(mutated_node),
+        original_node: original_node,
+        mutated_node: mutated_node
     }
   end
 
@@ -230,20 +232,16 @@ defmodule Mutare.Site do
     # format-less meta. (`true`/`false`/`nil` keys included — they are atoms too.)
     keyword_key? = keyword_key?(original_node)
 
-    %__MODULE__{
-      id: id,
-      file: file,
-      line: range.start[:line],
-      column: range.start[:column],
-      range: range,
-      mutator: mutator.name,
-      kind: kind,
-      original_op: elem(original_node, 0),
-      mutated_op: elem(mutated_node, 0),
-      original_code: render_code(original_node, keyword_key?),
-      mutated_code: render_code(mutated_node, keyword_key?),
-      original_node: original_node,
-      mutated_node: mutated_node
+    %{
+      base_site(id, file, range)
+      | mutator: mutator.name,
+        kind: kind,
+        original_op: elem(original_node, 0),
+        mutated_op: elem(mutated_node, 0),
+        original_code: render_code(original_node, keyword_key?),
+        mutated_code: render_code(mutated_node, keyword_key?),
+        original_node: original_node,
+        mutated_node: mutated_node
     }
   end
 
