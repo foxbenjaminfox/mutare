@@ -1705,7 +1705,13 @@ Fix lives in the analyzer, not the mutators (placement is positional — a mutat
 know it sits in a bitstring): the runtime `<<>>` *construction* arm routes each segment
 through `analyze_construction_segment/2`, which pins `::binary` on a **binary-valued
 literal** segment (`binary_valued_literal?/1`: a string `{:__block__, _, [bin]}`, a
-`delimiter`-marked interpolated `<<>>`, or a `~s`/`~S` sigil). Semantically a no-op
+`delimiter`-marked interpolated `<<>>`, or a `~s`/`~S` sigil). The sigil arm keys on the
+parser's `:delimiter` meta, **not the head atom** — a call to a *function* named
+`sigil_s`/`sigil_S` (a local sigil shadowing `Kernel`'s) parses to the same `{:sigil_s, …}`
+head but carries no `:delimiter` and may return an integer, so `<<sigil_s("ab", [])>>`
+(≡ `<<2>>`) must stay an integer segment; pinning it would itself break the baseline. (The
+analyzer's `sigil?/1`/`descend_sigil/2` are still head-atom-loose, but they only ever *fail
+to descend* such a call's args — a coverage gap, not a soundness break.) Semantically a no-op
 (`<<"x">>` ≡ `<<"x"::binary>>`), so the baseline and every mutant construct correctly; the
 report still diffs the bare value (it patches the original source, not the metamutant). An
 already-typed segment (`::utf8`/`::binary`/`size(expr)`) is passed through untouched, and an

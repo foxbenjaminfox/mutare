@@ -108,6 +108,28 @@ defmodule Mutare.TransformCorpusTest do
       min_sites: 6
     },
     %{
+      name: "bitstrings: a call to a function named sigil_s/sigil_S is NOT type-pinned",
+      # The `::binary` pin must key on real sigil syntax (the parser's `:delimiter` meta), not
+      # the head atom alone. A call to a *function* named `sigil_s`/`sigil_S` — a local sigil
+      # shadowing Kernel's — parses to the same `{:sigil_s, …}` head but may return an integer,
+      # so `<<sigil_s("ab", [])>>` (≡ `<<2>>`) must stay an integer segment. Pinning `::binary`
+      # would make the baseline raise ("expected a binary"), diverging from the original.
+      source: """
+      defmodule Mutare.Corpus.SigilFunctionCall do
+        import Kernel, except: [sigil_s: 2, sigil_S: 2]
+        def sigil_s(s, _mods), do: byte_size(s)
+        def sigil_S(s, _mods), do: byte_size(s) * 10
+        def lower, do: <<sigil_s("ab", [])>>
+        def upper, do: <<sigil_S("abc", [])>>
+      end
+      """,
+      probes: [
+        {Mutare.Corpus.SigilFunctionCall, :lower, []},
+        {Mutare.Corpus.SigilFunctionCall, :upper, []}
+      ],
+      min_sites: 2
+    },
+    %{
       name: "patterns: heads/pins are not mutated; bodies and default-arg values are",
       # Destructuring heads, a map pattern, and a `^pin` are all patterns (no
       # mutation), but each *body* mutates and the call-time default `2 + 3` is a

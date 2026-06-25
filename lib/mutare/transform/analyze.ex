@@ -1268,13 +1268,20 @@ defmodule Mutare.Transform.Analyze do
 
   # A bitstring segment value whose runtime type is a binary, recognised syntactically: a
   # string literal (`{:__block__, _, [binary]}`), an interpolated string / heredoc (a
-  # `delimiter`-marked `<<>>`), or a `~s`/`~S` sigil. These are exactly the untyped segments a
-  # selector would mis-type as an integer (see `analyze_construction_segment/2`).
+  # `delimiter`-marked `<<>>`), or a `~s`/`~S` sigil *literal*. These are exactly the untyped
+  # segments a selector would mis-type as an integer (see `analyze_construction_segment/2`).
+  #
+  # The sigil clause keys on the parser's `:delimiter` meta, **not the head atom alone**: a call
+  # to a *function* named `sigil_s`/`sigil_S` (e.g. `<<sigil_s("a", [])>>` — a local sigil that
+  # shadowed `Kernel`'s) parses to the same `{:sigil_s, …}` head but carries no `:delimiter` and
+  # may return an integer, so pinning `::binary` there would break the baseline (the call would
+  # have to yield a binary). Only genuine sigil syntax — like the interpolated-string `<<>>`
+  # above — gets the parser's `:delimiter` stamp.
   defp binary_valued_literal?({:__block__, _meta, [value]}), do: is_binary(value)
   defp binary_valued_literal?({:<<>>, meta, _segs}), do: Keyword.has_key?(meta, :delimiter)
 
-  defp binary_valued_literal?({sigil, _meta, _args}) when is_atom(sigil),
-    do: sigil in [:sigil_s, :sigil_S]
+  defp binary_valued_literal?({sigil, meta, _args}) when sigil in [:sigil_s, :sigil_S],
+    do: Keyword.has_key?(meta, :delimiter)
 
   defp binary_valued_literal?(_), do: false
 
