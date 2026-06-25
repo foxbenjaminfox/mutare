@@ -1674,6 +1674,83 @@ defmodule Mutare.TransformTest do
       assert Enum.any?(sites, &(&1.mutator == :relational))
       assert Enum.any?(sites, &(&1.mutator == :literal))
     end
+
+    # === a piped argument is NOT exempt from :skip/:hosted ===================
+    #
+    # The piped value (`x` in `x |> macro(...)`) is the macro's effective argument 0, so it
+    # inherits position 0's treatment — a piped `:skip` argument is left **raw**, exactly as a
+    # directly-written one is. This is deliberate and load-bearing: a `:skip` macro accepts a LHS
+    # that is neither a valid expression nor a valid pattern, so treating it as ordinary runtime
+    # would splice a selector `case` into opaque DSL and poison the single shared build.
+    #
+    # The reason this is *pinned down* is that the reason is easy to forget. The piped LHS looks
+    # like an ordinary runtime expression the user wrote, which makes it tempting to "simplify" by
+    # routing it straight to runtime and exempting it from `:skip`/`:hosted` — a change that reads
+    # as a harmless cleanup but quietly reintroduces the poison. These tests are the guardrail:
+    # they fail the moment a piped argument stops honouring its declared treatment, so that lapse
+    # can't merge. (`:hosted` at the piped position is *undeliverable* — hosting needs the call's
+    # own args — and is rejected outright rather than left raw; locked down in `hosted_test.exs`.)
+    #
+    # A nested-pipe LHS (`x |> a() |> macro(...)`, parsing as `(x |> a()) |> macro(...)`) is used
+    # deliberately: a runtime exemption wouldn't just mutate the LHS, it would *descend* into the
+    # inner stage too, so this is the strongest witness that `:skip` short-circuits the subtree.
+    @piped_skip """
+    defmodule PipedSkipArg do
+      import Mutare.Test.QueryDSL
+
+      def run(xs), do: xs |> Enum.sum() |> where(10)
+    end
+    """
+
+    test "a piped `:skip` argument is left raw, never mutated as runtime (no exemption)" do
+      {meta, sites, _next_id} =
+        Mutare.transform_string(@piped_skip,
+          mutators: [Mutare.Mutators.Collection, Mutare.Mutators.Literal],
+          macros: [{Mutare.Test.QueryDSL, :where, 2, :skip}]
+        )
+
+      # `where` registered `:skip`, so its effective arg 0 — the piped `xs |> Enum.sum()` — is
+      # opaque. Nothing inside it is offered (not even the inner `Enum.sum/1` rename), and no
+      # selector machinery is woven in: the pipe renders verbatim, with neither the mutated call
+      # nor the `hoist_pipe` closure (`mutare_piped`) a runtime exemption would have spliced.
+      assert sites == []
+      assert meta =~ "xs |> Enum.sum() |> where(10)"
+      refute meta =~ "Enum.product"
+      refute meta =~ "mutare_piped"
+      assert_compiles(meta)
+    end
+
+    test "the same piped value mutates when its position is `:expression` (the `:skip` is what spares it)" do
+      {meta, sites, _next_id} =
+        Mutare.transform_string(@piped_skip,
+          mutators: [Mutare.Mutators.Collection, Mutare.Mutators.Literal],
+          macros: [{Mutare.Test.QueryDSL, :where, 2, [:expression, :skip]}]
+        )
+
+      # Same source, only effective arg 0 flipped to `:expression`: now the piped stage is reached
+      # and `Enum.sum/1 -> Enum.product/1` fires, while the visible arg `10` (`:skip`) is still
+      # spared. So the value *is* mutable — the previous test's silence is the `:skip` doing its
+      # job, not some unrelated reason the piped value couldn't be mutated.
+      triples = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
+      assert triples == [{:collection, "Enum.sum()", "Enum.product()"}]
+      assert_compiles(meta)
+    end
+
+    test "a piped `:skip` argument spares only itself — the function tail still mutates" do
+      {meta, sites, _next_id} =
+        Mutare.transform_string(@piped_skip,
+          mutators: [Mutare.Mutators.Collection, Mutare.Mutators.ReturnValue],
+          macros: [{Mutare.Test.QueryDSL, :where, 2, :skip}]
+        )
+
+      # ReturnValue fires on the body tail (outside the opaque arg); Collection does not fire
+      # inside it. `:skip` spares the piped argument, not the whole function — it is not a blunt
+      # "stop mutating here" switch.
+      assert sites != []
+      assert Enum.all?(sites, &(&1.mutator == :return_value))
+      refute meta =~ "Enum.product"
+      assert_compiles(meta)
+    end
   end
 
   describe "a selector cannot be a bare pipe target (|> hoisting)" do
