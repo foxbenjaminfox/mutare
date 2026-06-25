@@ -473,11 +473,12 @@ defmodule Mutare.Mutators.ModeSwap do
     end
   end
 
-  # The atom carried by an argument node, if it is an atom literal — Sourceror's
-  # block-wrapped form or a bare atom. `true`/`false`/`nil` are never mode atoms.
-  defp mode_atom({:__block__, _meta, [a]}) when is_atom(a) and a not in [true, false, nil],
-    do: [a]
-
-  defp mode_atom(a) when is_atom(a) and a not in [true, false, nil], do: [a]
-  defp mode_atom(_node), do: []
+  # The atom carried by an argument node, if it is an atom literal (in a one-element list,
+  # for the comprehensions above). `true`/`false`/`nil` are never mode atoms.
+  defp mode_atom(node) do
+    case AST.literal_value(node) do
+      {:ok, a} when is_atom(a) and a not in [true, false, nil] -> [a]
+      _ -> []
+    end
+  end
 end

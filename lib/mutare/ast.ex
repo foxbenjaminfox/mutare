@@ -9,8 +9,10 @@ defmodule Mutare.AST do
   so a hand-built node gets this subtly wrong — reusing a parsed literal's meta re-renders the
   *original* text even after you change the value (a silent equivalent no-op), and a bare
   `{:__block__, [], ["x"]}` for a string renders as the *charlist* `~c"x"`. `literal/1` gets
-  both right. The `sentinel_*` helpers give the same survivor marker the built-in families use,
-  so a custom mutant reads consistently in reports.
+  both right. `literal_value/1` is the inverse — it reads a literal node back to its value.
+  The `sentinel_*` helpers give the same survivor marker the built-in families use, so a custom
+  mutant reads consistently in reports, and `absolute_call/3`/`absolute_alias/1` build calls and
+  module references that survive any `alias`/`import` in the target being mutated.
 
   `parse!/1` and `to_string/1` are the AST front door: a custom mutator and its tests
   go through these rather than naming `Sourceror` directly, so the dependency on a
@@ -76,6 +78,63 @@ defmodule Mutare.AST do
   def literal(value) when is_binary(value), do: {:__block__, [delimiter: ~s(")], [value]}
   def literal(value) when is_number(value) and value < 0, do: {:-, [], [literal(-value)]}
   def literal(value), do: {:__block__, [], [value]}
+
+  @doc """
+  The scalar value a literal node carries — `{:ok, value}` for a number, binary, or atom in
+  either bare or Sourceror block-wrapped (`{:__block__, _, [value]}`) form, and `:error` for
+  anything else (a variable, call, collection, …).
+
+  The reading counterpart to `literal/1`: use it in a mutator to recover the underlying value
+  of a node before deciding how — or whether — to mutate it, for example to skip a mutation
+  that would be an equivalent no-op. Booleans and `nil` are atoms, so they round-trip too;
+  exclude them by filtering the returned value.
+
+      iex> Mutare.AST.literal_value({:__block__, [], [0]})
+      {:ok, 0}
+      iex> Mutare.AST.literal_value(:foo)
+      {:ok, :foo}
+      iex> Mutare.AST.literal_value({:x, [], nil})
+      :error
+  """
+  @spec literal_value(Macro.t()) :: {:ok, term()} | :error
+  def literal_value({:__block__, _meta, [value]})
+      when is_number(value) or is_binary(value) or is_atom(value),
+      do: {:ok, value}
+
+  def literal_value(value) when is_number(value) or is_binary(value) or is_atom(value),
+    do: {:ok, value}
+
+  def literal_value(_node), do: :error
+
+  @doc """
+  An **absolute-qualified** module alias — `{:__aliases__, [], [:"Elixir" | path]}`, the
+  `Elixir.`-prefixed form that `alias`/`import` resolution never rewrites.
+
+  Use it in a mutator when a mutation must reference a specific module no matter what the
+  target code aliases or imports: an `alias Foo, as: Kernel` in the target cannot redirect
+  `absolute_alias([:Kernel])`. Pair it with `absolute_call/3` to build a whole call.
+
+      iex> Mutare.AST.absolute_alias([:Kernel])
+      {:__aliases__, [], [:"Elixir", :Kernel]}
+  """
+  @spec absolute_alias([atom()]) :: Macro.t()
+  def absolute_alias(path) when is_list(path), do: {:__aliases__, [], [:"Elixir" | path]}
+
+  @doc """
+  An **alias-proof remote call** `Elixir.Mod.fun(args)`, built on `absolute_alias/1` so a
+  target's `alias`/`import` can never redirect the callee.
+
+  Use it in a mutator whose mutation renames a call to a function in a *different* module —
+  for example swapping `String.length(s)` for a byte count with
+  `absolute_call([:Kernel], :byte_size, args)`. Because the module is absolute-qualified, no
+  `alias`/`import` in the target can point the swapped call elsewhere.
+
+      iex> Mutare.AST.absolute_call([:Kernel], :==, [1, 2])
+      {{:., [], [{:__aliases__, [], [:"Elixir", :Kernel]}, :==]}, [], [1, 2]}
+  """
+  @spec absolute_call([atom()], atom(), [Macro.t()]) :: Macro.t()
+  def absolute_call(path, fun, args) when is_list(path) and is_atom(fun) and is_list(args),
+    do: {{:., [], [absolute_alias(path), fun]}, [], args}
 
   @doc """
   The bare keyword atom of a key node, whether plain (`:do`) or Sourceror-wrapped

@@ -1060,9 +1060,10 @@ defmodule Mutare.Transform do
   # gated-equality hazard `Names` salts against doesn't apply to a body case clause.
   defp match_raise_clause do
     unmatched = {:mutare_unmatched, [], nil}
-    raise_fun = {:., [], [{:__aliases__, [], [:"Elixir", :Kernel]}, :raise]}
-    match_error = {:__aliases__, [], [:"Elixir", :MatchError]}
-    raise_node = {raise_fun, [], [match_error, [term: unmatched]]}
+
+    raise_node =
+      AST.absolute_call([:Kernel], :raise, [AST.absolute_alias([:MatchError]), [term: unmatched]])
+
     {:->, [], [[unmatched], raise_node]}
   end
 

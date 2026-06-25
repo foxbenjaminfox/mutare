@@ -12,6 +12,7 @@ defmodule Mutare.Transform.CaseClauseEmit do
   # its original `{<active>, <orig_pattern>} when <active> !== <its ids> -> <record>; <body>`, so
   # exactly one wins per `(id, value)` — the per-clause (C+M) analogue of head lifting.
 
+  alias Mutare.AST
   alias Mutare.Coverage.Recorder
   alias Mutare.Transform.{Candidate, GuardBuild}
 
@@ -59,9 +60,13 @@ defmodule Mutare.Transform.CaseClauseEmit do
   def unmatched_clause(all_ids, var) do
     unmatched = {:mutare_unmatched, [], nil}
     tuple = {Recorder.catch_all_pattern(var), unmatched}
-    raise_fun = {:., [], [{:__aliases__, [], [:"Elixir", :Kernel]}, :raise]}
-    case_clause_error = {:__aliases__, [], [:"Elixir", :CaseClauseError]}
-    raise_node = {raise_fun, [], [case_clause_error, [term: unmatched]]}
+
+    raise_node =
+      AST.absolute_call([:Kernel], :raise, [
+        AST.absolute_alias([:CaseClauseError]),
+        [term: unmatched]
+      ])
+
     body = {:__block__, [], [Recorder.record_ast(all_ids, var), raise_node]}
     {:->, [], [[tuple], body]}
   end

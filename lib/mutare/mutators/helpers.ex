@@ -83,7 +83,5 @@ defmodule Mutare.Mutators.Helpers do
   def removed_call(:unpiped, []), do: :skip
   def removed_call(:unpiped, [first | _]), do: [first]
 
-  defp identity_call do
-    {{:., [], [{:__aliases__, [], [:"Elixir", :Function]}, :identity]}, [], []}
-  end
+  defp identity_call, do: Mutare.AST.absolute_call([:Function], :identity, [])
 end

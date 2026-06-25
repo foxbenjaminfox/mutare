@@ -35,6 +35,8 @@ defmodule Mutare.Mutators.Arithmetic do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
+
   # Genuine binary *operators* — always written infix (arity 2, never piped), so an
   # arity-blind `mutate/1` is safe. (`div`/`rem` are *calls*, handled in `mutate/2`.)
   @swaps %{
@@ -66,7 +68,7 @@ defmodule Mutare.Mutators.Arithmetic do
   # additive-identity path deliberately keeps. So the skip uses `===`, not `==`
   # (`0.0 == 0` is `true`, `0.0 === 0` is `false`).
   def mutate({:-, _meta, [operand]}) do
-    if literal_value(operand) === 0, do: :skip, else: [operand]
+    if AST.literal_value(operand) === {:ok, 0}, do: :skip, else: [operand]
   end
 
   def mutate({op, meta, [left, right]}) do
@@ -105,12 +107,8 @@ defmodule Mutare.Mutators.Arithmetic do
 
   defp identity_swap?(op, right) do
     case Map.fetch(@identity, op) do
-      {:ok, identity} -> literal_value(right) == identity
+      {:ok, identity} -> AST.literal_value(right) == {:ok, identity}
       :error -> false
     end
   end
-
-  defp literal_value(value) when is_number(value), do: value
-  defp literal_value({:__block__, _meta, [value]}) when is_number(value), do: value
-  defp literal_value(_node), do: :not_a_literal
 end

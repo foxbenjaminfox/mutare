@@ -171,7 +171,10 @@ defmodule Mutare.Mutators.ReturnValue do
     end
   end
 
-  defp atom_value({:__block__, _meta, [v]}) when is_atom(v), do: {:atom, v}
-  defp atom_value(v) when is_atom(v), do: {:atom, v}
-  defp atom_value(_), do: nil
+  defp atom_value(node) do
+    case AST.literal_value(node) do
+      {:ok, v} when is_atom(v) -> {:atom, v}
+      _ -> nil
+    end
+  end
 end

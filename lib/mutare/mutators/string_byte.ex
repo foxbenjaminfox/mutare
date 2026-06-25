@@ -24,6 +24,7 @@ defmodule Mutare.Mutators.StringByte do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
   alias Mutare.Transform.Calls
 
   @impl Mutare.Mutator
@@ -35,13 +36,9 @@ defmodule Mutare.Mutators.StringByte do
       # `String.length(s)` (grapheme count) → `Elixir.Kernel.byte_size(s)` (byte count).
       # Absolute-qualified so neither a local/selective-import `byte_size` nor a later
       # `alias Foo, as: Kernel` can shadow it; built directly (not via `rebuild`) since it
-      # crosses module out of `String`.
-      {[:String], :length, args, _rebuild} -> [byte_size_call(args)]
+      # crosses module out of `String` (see `Mutare.AST.absolute_call/3`).
+      {[:String], :length, args, _rebuild} -> [AST.absolute_call([:Kernel], :byte_size, args)]
       _ -> :skip
     end
-  end
-
-  defp byte_size_call(args) do
-    {{:., [], [{:__aliases__, [], [:"Elixir", :Kernel]}, :byte_size]}, [], args}
   end
 end

@@ -46,6 +46,7 @@ defmodule Mutare.Mutators.StringCall do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
   alias Mutare.Transform.Calls
 
   # {module, function} => new_function. The module is an Elixir path (`[:String]`) or an
@@ -118,11 +119,12 @@ defmodule Mutare.Mutators.StringCall do
   # qualifier (`__aliases__` led by `:Elixir`, which alias resolution never rewrites) pins
   # the real operator independently of the target's imports *and* aliases — the same
   # alias-proof form `Mutare.Transform` uses for its generated `Elixir.Kernel.raise`
-  # nodes. Both arities route here — `String.equivalent?/2` direct, and the LHS-less `/1`
-  # pipe stage (`a |> String.equivalent?(b)` → `a |> Elixir.Kernel.==(b)`) — so the same
-  # call builds both, keeping the source's argument list.
-  defp equivalent_substitution(args) when length(args) in [1, 2], do: [kernel_eq(args)]
-  defp equivalent_substitution(_), do: :skip
+  # nodes (see `Mutare.AST.absolute_call/3`). Both arities route here —
+  # `String.equivalent?/2` direct, and the LHS-less `/1` pipe stage
+  # (`a |> String.equivalent?(b)` → `a |> Elixir.Kernel.==(b)`) — so the same call builds
+  # both, keeping the source's argument list.
+  defp equivalent_substitution(args) when length(args) in [1, 2],
+    do: [AST.absolute_call([:Kernel], :==, args)]
 
-  defp kernel_eq(args), do: {{:., [], [{:__aliases__, [], [:"Elixir", :Kernel]}, :==]}, [], args}
+  defp equivalent_substitution(_), do: :skip
 end

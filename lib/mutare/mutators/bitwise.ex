@@ -36,6 +36,7 @@ defmodule Mutare.Mutators.Bitwise do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
   alias Mutare.Transform.Calls
 
   # Binary *operator* swaps. Keys are the operator atoms the parser emits, regardless of
@@ -102,7 +103,5 @@ defmodule Mutare.Mutators.Bitwise do
   end
 
   # A literal integer `0`, in raw or Sourceror-wrapped (`{:__block__, _, [0]}`) form.
-  defp literal_zero?(0), do: true
-  defp literal_zero?({:__block__, _meta, [0]}), do: true
-  defp literal_zero?(_node), do: false
+  defp literal_zero?(node), do: AST.literal_value(node) === {:ok, 0}
 end
