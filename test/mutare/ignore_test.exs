@@ -141,6 +141,33 @@ defmodule Mutare.IgnoreTest do
       refute Ignore.directive_for(directives, 1, :arithmetic)
     end
 
+    test "whitespace between the keyword and the `[` filter is tolerated" do
+      # `# mutare:ignore [arithmetic]` (space before the bracket) is still a
+      # filter, not a `:all` directive whose reason happens to start with `[`.
+      directives = Ignore.directives("x = 1 # mutare:ignore [arithmetic] spaced out")
+
+      assert %Directive{mutators: set, reason: "spaced out"} = directive_on(directives, 1)
+      assert set == MapSet.new(["arithmetic"])
+      assert Ignore.directive_for(directives, 1, :arithmetic)
+      # The `:all` fallback would admit *every* family; the filter must not.
+      refute Ignore.directive_for(directives, 1, :relational)
+    end
+
+    test "stray separators in the filter normalize away (no empty members)" do
+      # A trailing comma/space must not leave a spurious `""` in the set.
+      directives = Ignore.directives("x = 1 # mutare:ignore[arithmetic, ]")
+
+      assert %Directive{mutators: set} = directive_on(directives, 1)
+      assert set == MapSet.new(["arithmetic"])
+    end
+
+    test "family names in the filter are matched case-insensitively" do
+      directives = Ignore.directives("x = 1 # mutare:ignore[ARITHMETIC]")
+      assert %Directive{mutators: set} = directive_on(directives, 1)
+      assert set == MapSet.new(["arithmetic"])
+      assert Ignore.directive_for(directives, 1, :arithmetic)
+    end
+
     test "a standalone directive targets the next line" do
       directives = Ignore.directives("# mutare:ignore[relational] why\nx = 1")
       assert %Directive{line: 2, reason: "why"} = directive_on(directives, 2)
