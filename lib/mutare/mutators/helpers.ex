@@ -34,6 +34,33 @@ defmodule Mutare.Mutators.Helpers do
   end
 
   @doc """
+  Resolve a call, compute its **effective** arity (pipe-aware), and look
+  `{module, fun, effective_arity}` up in an arity-keyed `rules` map.
+
+  The arity-sensitive counterpart of `swap_call/2`'s `{module, fun}` lookup — the shared
+  skeleton behind the arity-keyed call families (`CollectionArity`, `DefaultDrop`,
+  `ModeSwap`). Returns `{:ok, rule, {module, fun, args, rebuild}}` — the matched table value
+  plus the resolved call (the same shape `Mutare.Transform.Calls.resolved_call/1` returns), so
+  a family can read whichever parts it needs (the rule, the args, the rebuilder, or the kept
+  `fun` for a same-name swap) — or `:skip` when the node isn't a resolved call or its
+  `{module, fun, arity}` isn't in `rules`.
+  """
+  @spec lookup_resolved_arity(
+          Macro.t(),
+          Mutare.Mutator.pipe_mode(),
+          %{optional({Calls.module_key(), atom(), arity()}) => term()}
+        ) :: {:ok, term(), {Calls.module_key(), atom(), [Macro.t()], function()}} | :skip
+  def lookup_resolved_arity(node, pipe_mode, rules) do
+    with {module, fun, args, rebuild} <- Calls.resolved_call(node),
+         eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode),
+         {:ok, rule} <- Map.fetch(rules, {module, fun, eff_arity}) do
+      {:ok, rule, {module, fun, args, rebuild}}
+    else
+      _ -> :skip
+    end
+  end
+
+  @doc """
   Swap a **bare `Kernel`** call for a sibling, gated on effective arity — pipe-aware.
 
   The bare-`Kernel` counterpart of `swap_call/2`: a bare `min`/`abs`/`div`/… has no module

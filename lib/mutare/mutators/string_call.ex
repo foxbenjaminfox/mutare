@@ -47,6 +47,7 @@ defmodule Mutare.Mutators.StringCall do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutators.Helpers
   alias Mutare.Transform.Calls
 
   # {module, function} => new_function. The module is an Elixir path (`[:String]`) or an
@@ -97,16 +98,10 @@ defmodule Mutare.Mutators.StringCall do
       {[:String], :equivalent?, args, _rebuild} ->
         equivalent_substitution(args)
 
-      {module, fun, args, rebuild} ->
-        case Map.fetch(@swaps, {module, fun}) do
-          # `rebuild` reuses the written module node, so the swap stays within the module
-          # (and an aliased `S.upcase`/imported `upcase` keeps its written form).
-          {:ok, new_fun} -> [rebuild.(new_fun, args)]
-          :error -> :skip
-        end
-
-      nil ->
-        :skip
+      # Every other call → the shared `{module, fun}` swap-table path, so an aliased
+      # `S.upcase`/imported `upcase` keeps its written module node (`Helpers.swap_call/2`).
+      _ ->
+        Helpers.swap_call(node, @swaps)
     end
   end
 

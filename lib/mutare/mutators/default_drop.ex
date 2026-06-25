@@ -25,7 +25,7 @@ defmodule Mutare.Mutators.DefaultDrop do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
-  alias Mutare.Transform.Calls
+  alias Mutare.Mutators.Helpers
 
   # {alias_path, function, effective_arity} => base function the call collapses to.
   # The operation is uniform: drop the trailing (default/fallback) argument, rename to
@@ -50,28 +50,15 @@ defmodule Mutare.Mutators.DefaultDrop do
 
   @impl Mutare.Mutator
   def mutate(node, %{pipe_mode: pipe_mode}) do
-    case Calls.resolved_call(node) do
-      {module, fun, args, rebuild} ->
-        eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode)
-
-        case Map.fetch(@rules, {module, fun, eff_arity}) do
-          {:ok, new_fun} ->
-            {dropped, kept} = List.pop_at(args, -1)
-
-            if AST.nil_literal?(dropped) do
-              # Equivalent: the explicit default already equals the implicit one.
-              :skip
-            else
-              # `rebuild` reuses the written alias node.
-              [rebuild.(new_fun, kept)]
-            end
-
-          :error ->
-            :skip
-        end
-
-      nil ->
-        :skip
+    with {:ok, new_fun, {_module, _fun, args, rebuild}} <-
+           Helpers.lookup_resolved_arity(node, pipe_mode, @rules),
+         {dropped, kept} = List.pop_at(args, -1),
+         # Skipped as equivalent when the explicit default already equals the implicit one.
+         false <- AST.nil_literal?(dropped) do
+      # `rebuild` reuses the written alias node.
+      [rebuild.(new_fun, kept)]
+    else
+      _ -> :skip
     end
   end
 end

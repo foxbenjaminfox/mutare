@@ -126,7 +126,7 @@ defmodule Mutare.Mutators.ModeSwap do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
-  alias Mutare.Transform.Calls
+  alias Mutare.Mutators.Helpers
 
   # Ordered magnitude ladders. A swap is to the adjacent finer/coarser member *within
   # the same ladder*, so the replacement is always legal for that function (truncate
@@ -262,40 +262,15 @@ defmodule Mutare.Mutators.ModeSwap do
 
   @impl Mutare.Mutator
   def mutate(node, %{pipe_mode: pipe_mode}) do
-    case Calls.resolved_call(node) do
-      {module, fun, args, rebuild} ->
-        case rule(module, fun, args, pipe_mode) do
-          {:ok, positions, group} ->
-            case swap_sites(args, positions, group, pipe_mode) do
-              [] ->
-                :skip
-
-              sites ->
-                # `rebuild` keeps the same function and written alias, swapping only args.
-                # Each site carries the replacement *arg node* — a fresh mode-atom literal,
-                # or (for `shift`) the duration keyword list with one unit key swapped.
-                Enum.map(sites, fn {vis, arg} ->
-                  rebuild.(fun, List.replace_at(args, vis, arg))
-                end)
-            end
-
-          :error ->
-            :skip
-        end
-
-      nil ->
-        :skip
-    end
-  end
-
-  # The rule for a call at its *effective* arity (visible args + the piped value), or
-  # `:error` when no rule applies.
-  defp rule(mod, fun, args, pipe_mode) do
-    eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode)
-
-    case Map.fetch(@rules, {mod, fun, eff_arity}) do
-      {:ok, {positions, group}} -> {:ok, positions, group}
-      :error -> :error
+    with {:ok, {positions, group}, {_module, fun, args, rebuild}} <-
+           Helpers.lookup_resolved_arity(node, pipe_mode, @rules),
+         [_ | _] = sites <- swap_sites(args, positions, group, pipe_mode) do
+      # `rebuild` keeps the same function and written alias, swapping only args. Each site
+      # carries the replacement *arg node* — a fresh mode-atom literal, or (for `shift`) the
+      # duration keyword list with one unit key swapped.
+      Enum.map(sites, fn {vis, arg} -> rebuild.(fun, List.replace_at(args, vis, arg)) end)
+    else
+      _ -> :skip
     end
   end
 

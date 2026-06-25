@@ -600,42 +600,13 @@ defmodule Mutare.Transform.Analyze do
       else: analyzed
   end
 
-  # a generic runtime node: build the candidate from the raw node (so `original`
-  # keeps un-annotated children), then descend into the children. A sigil is offered
-  # as a whole (so the sigil mutators — Regex/Charlist/DateTime — match it), then
-  # descended *surgically* via `descend_sigil/2`: its content `<<>>` segments are
-  # analyzed (so an interpolated expression `~r/a#{b}c/` still mutates `b`), but the
-  # content `<<>>` *wrapper* itself is never offered — collapsing a sigil's content
-  # (BitstringLiteral) or splicing a selector into it is illegal.
-  #
-  # A call stamped a **known macro** (`meta[:mutare_macro]`, set by
-  # `Mutare.Transform.Resolve` from `Mutare.Macros`) routes its arguments by their
-  # declared treatment instead of the default all-runtime descent — so a pattern
-  # argument (`match?`/`destructure`) isn't mutated in place and an opaque DSL body
-  # (`Ecto.Query.from`) is left raw — while the whole node is still offered to
-  # mutators (a library's custom mutator fires on it). Every other (non-macro) node
-  # falls through to the existing offer/descend below, unchanged.
-  defp analyze({form, meta, _args} = node, :runtime, mutators) do
-    case macro_routing(meta) do
-      nil ->
-        node = offer(node, node, mutators)
-
-        # `sigil?(form)` (the `sigil_<x>` head) is necessary but **not sufficient**: a call to
-        # a *function* named `sigil_s`/`sigil_r`/… (a local sigil shadowing `Kernel`'s) parses
-        # to the same head. Routing such a call through `descend_sigil/2` would treat a real
-        # `<<…>>` *argument* of it (`sigil_r(<<"x">>, [])`) as sigil **content** and descend it
-        # without the `::binary` construction pin, breaking the baseline (the same hazard
-        # `binary_valued_literal?/1` guards). Only genuine sigil syntax carries the parser's
-        # `:delimiter` meta, so gate on it; a non-sigil call falls through to `recurse_runtime`,
-        # which analyses its args — including a real bitstring arg — correctly.
-        if sigil?(form) and Keyword.has_key?(meta, :delimiter),
-          do: descend_sigil(node, mutators),
-          else: recurse_runtime(node, mutators)
-
-      routing ->
-        Macros.analyze_known_macro(node, routing, mutators)
-    end
-  end
+  # A generic runtime node: offer it and descend, or route a known-macro call's arguments
+  # by treatment — see `do_analyze_call_node/4`. (A sigil is offered whole then descended
+  # *surgically* via `descend_sigil/2`, so an interpolated `~r/a#{b}c/` still mutates `b`
+  # while its content `<<>>` wrapper is never offered; that gate lives in the helper.)
+  defp analyze({_form, _meta, _args} = node, :runtime, mutators),
+    # `descend_sigils?: true` — a generic runtime node may be sigil syntax (a piped stage never is).
+    do: do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped}, true)
 
   # A keyword/map/block pair (`key: value`, `%{a: …}`, a `do:`/`else:`/`rescue:`/
   # `catch:`/`after:` block). Only a **block key** is a pure structural label that
@@ -727,18 +698,41 @@ defmodule Mutare.Transform.Analyze do
   # A piped **known-macro** stage (`q |> where([p], p.x == 1)`, the query-builder shape)
   # routes its arguments by treatment too — `Resolve` already stamped the *visible*-position
   # routing (the piped value dropped), so a `:skip` DSL body is left raw instead of mutated.
-  defp analyze_pipe_stage({_form, meta, args} = node, mutators) when is_list(args) do
-    case macro_routing(meta) do
-      nil ->
-        node = offer(node, node, mutators, %{pipe_mode: :piped})
-        recurse_runtime(node, mutators)
-
-      routing ->
-        Macros.analyze_known_macro(node, routing, mutators, %{pipe_mode: :piped})
-    end
-  end
+  defp analyze_pipe_stage({_form, _meta, args} = node, mutators) when is_list(args),
+    # `descend_sigils?: false` — a `|>` RHS is never sigil syntax.
+    do: do_analyze_call_node(node, mutators, %{pipe_mode: :piped}, false)
 
   defp analyze_pipe_stage(other, mutators), do: analyze(other, :runtime, mutators)
+
+  # The shared call-node dispatch behind the generic runtime `analyze/3` clause and
+  # `analyze_pipe_stage/2`: a call stamped a **known macro** (`meta[:mutare_macro]`, set by
+  # `Mutare.Transform.Resolve` from `Mutare.Macros`) routes its arguments by their declared
+  # treatment (`Macros.analyze_known_macro` — so a pattern arg isn't mutated in place and an
+  # opaque DSL body is left raw) while the whole node is still offered to mutators; every other
+  # node is offered and its children descended. `context` carries `:pipe_mode` (`:piped` for a
+  # `|>` RHS, so an arity-changing mutator sees the effective arity). `descend_sigils?` gates the
+  # sigil-content path, true only for the generic clause.
+  defp do_analyze_call_node({form, meta, _args} = node, mutators, context, descend_sigils?) do
+    case macro_routing(meta) do
+      nil ->
+        node = offer(node, node, mutators, context)
+
+        # `sigil?(form)` (the `sigil_<x>` head) is necessary but **not sufficient**: a call to a
+        # *function* named `sigil_s`/`sigil_r`/… (a local sigil shadowing `Kernel`'s) parses to the
+        # same head. Routing such a call through `descend_sigil/2` would treat a real `<<…>>`
+        # *argument* of it (`sigil_r(<<"x">>, [])`) as sigil **content** and descend it without the
+        # `::binary` construction pin, breaking the baseline (the same hazard
+        # `binary_valued_literal?/1` guards). Only genuine sigil syntax carries the parser's
+        # `:delimiter` meta, so gate on it; a non-sigil call falls through to `recurse_runtime`,
+        # which analyses its args — including a real bitstring arg — correctly.
+        if descend_sigils? and sigil?(form) and Keyword.has_key?(meta, :delimiter),
+          do: descend_sigil(node, mutators),
+          else: recurse_runtime(node, mutators)
+
+      routing ->
+        Macros.analyze_known_macro(node, routing, mutators, context)
+    end
+  end
 
   # === known macros ==========================================================
 

@@ -44,6 +44,8 @@ defmodule Mutare.Mutators.Numeric do
   # is what proves a bare `floor`/`max` is the Kernel one (and not a same-named user
   # function at a different arity), so each entry pins it: min/max are /2, the rounding
   # coercions /1.
+  # Keep in sync with the `{[:Kernel], …}` entries of `@remote_swaps` (the qualified forms of
+  # these same bare swaps) — a new bare-Kernel numeric swap belongs in both tables.
   @kernel_swaps %{
     {:min, 2} => [:max],
     {:max, 2} => [:min],
@@ -56,7 +58,8 @@ defmodule Mutare.Mutators.Numeric do
   # **Qualified** calls: an arity-blind remote rename (the qualifier proves the function,
   # and every sibling exists at the same arity), exactly like `Collection`. Both the
   # `Float` precision pair and the explicitly-`Kernel.`-qualified forms of the bare swaps.
-  # {alias_path, function} => new_function.
+  # {alias_path, function} => new_function. Keep the `{[:Kernel], …}` entries in sync with
+  # `@kernel_swaps`.
   @remote_swaps %{
     {[:Float], :ceil} => :floor,
     {[:Float], :floor} => :ceil,

@@ -26,7 +26,7 @@ defmodule Mutare.Mutators.CollectionArity do
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.Calls
+  alias Mutare.Mutators.Helpers
 
   # {alias_path, function, effective_arity} => {new_function, kept_effective_indices}.
   # Every rule keeps effective index 0 (the enumerable); in a pipe that index is the
@@ -49,21 +49,10 @@ defmodule Mutare.Mutators.CollectionArity do
 
   @impl Mutare.Mutator
   def mutate(node, %{pipe_mode: pipe_mode}) do
-    case Calls.resolved_call(node) do
-      {module, fun, args, rebuild} ->
-        eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode)
-
-        case Map.fetch(@rules, {module, fun, eff_arity}) do
-          {:ok, {new_fun, keep}} ->
-            # `rebuild` reuses the written alias node (every rule stays within `Enum`).
-            [rebuild.(new_fun, kept_visible_args(args, keep, pipe_mode))]
-
-          :error ->
-            :skip
-        end
-
-      nil ->
-        :skip
+    with {:ok, {new_fun, keep}, {_module, _fun, args, rebuild}} <-
+           Helpers.lookup_resolved_arity(node, pipe_mode, @rules) do
+      # `rebuild` reuses the written alias node (every rule stays within `Enum`).
+      [rebuild.(new_fun, kept_visible_args(args, keep, pipe_mode))]
     end
   end
 
