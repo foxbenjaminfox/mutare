@@ -89,7 +89,7 @@ defmodule Mutare.Transform.Candidate do
     # such a context (a bare `^` is a compile error), so only a deliberate route sets it.
 
     @type t :: %__MODULE__{
-            mutator: module(),
+            mutator: Mutare.Mutator.Spec.t(),
             original: Macro.t(),
             mutated: Macro.t(),
             range: Sourceror.Range.t(),
@@ -130,7 +130,7 @@ defmodule Mutare.Transform.Candidate do
     @type t :: %__MODULE__{
             tag: non_neg_integer(),
             clause_index: non_neg_integer(),
-            mutator: module(),
+            mutator: Mutare.Mutator.Spec.t(),
             original: Macro.t(),
             mutated: Macro.t(),
             range: Sourceror.Range.t()
@@ -155,7 +155,7 @@ defmodule Mutare.Transform.Candidate do
 
     @type t :: %__MODULE__{
             clause_index: non_neg_integer(),
-            mutator: module(),
+            mutator: Mutare.Mutator.Spec.t(),
             mutated_args: [Macro.t()],
             original: Macro.t(),
             mutated: Macro.t(),
@@ -184,7 +184,7 @@ defmodule Mutare.Transform.Candidate do
     # `CaseClause` instead.)
 
     @type t :: %__MODULE__{
-            mutator: module(),
+            mutator: Mutare.Mutator.Spec.t(),
             original: Macro.t(),
             mutated: Macro.t(),
             replacement: Macro.t(),
@@ -245,7 +245,7 @@ defmodule Mutare.Transform.Candidate do
 
     @type t :: %__MODULE__{
             clause_index: non_neg_integer(),
-            mutator: module(),
+            mutator: Mutare.Mutator.Spec.t(),
             mutant_pattern: Macro.t(),
             mutant_guard: Macro.t() | nil,
             raw_body: Macro.t(),
@@ -293,7 +293,7 @@ defmodule Mutare.Transform.Candidate do
     # the export stays consistent across branches. Recorded as an `:in_place` `Mutare.Site`.
 
     @type t :: %__MODULE__{
-            mutator: module(),
+            mutator: Mutare.Mutator.Spec.t(),
             original: Macro.t(),
             mutated: Macro.t(),
             export: Macro.t(),
@@ -333,7 +333,7 @@ defmodule Mutare.Transform.Candidate do
     # `:in_place` `Mutare.Site`, like `MatchPattern`.
 
     @type t :: %__MODULE__{
-            mutator: module(),
+            mutator: Mutare.Mutator.Spec.t(),
             original: Macro.t(),
             mutated: Macro.t(),
             export: Macro.t(),

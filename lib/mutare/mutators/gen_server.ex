@@ -74,7 +74,7 @@ defmodule Mutare.Mutators.GenServer do
 
   alias Mutare.AST
 
-  @impl true
+  @impl Mutare.Mutator
   def name, do: :genserver
 
   @doc """
@@ -82,7 +82,7 @@ defmodule Mutare.Mutators.GenServer do
   implements `GenServer` (read from `context.behaviours`). The behaviour-aware
   variant of `c:Mutare.Mutator.return_replacements/1`.
   """
-  @impl true
+  @impl Mutare.Mutator
   def return_replacements(tail, %{behaviours: behaviours}) do
     if MapSet.member?(behaviours, GenServer), do: mutate_return(tail), else: []
   end

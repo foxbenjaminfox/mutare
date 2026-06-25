@@ -98,8 +98,8 @@ defmodule Mutare.Runner do
   `{:ok, run}` or `{:error, reason, detail}`.
   """
   @spec run(Path.t(), Options.t() | keyword()) :: {:ok, run()} | error()
-  def run(root \\ ".", opts \\ []) do
-    options = ensure_project(Options.new(opts), root)
+  def run(input_root \\ ".", opts \\ []) do
+    options = ensure_project(Options.new(opts), input_root)
     root = options.project.copy_root
     schema = Schema.build(root, options)
     run_with_schema(schema, root, options)
@@ -121,8 +121,8 @@ defmodule Mutare.Runner do
   """
   @spec run_with_schema(Schema.t(), Path.t(), Options.t() | keyword()) ::
           {:ok, run()} | error()
-  def run_with_schema(%Schema{} = schema, root \\ ".", opts \\ []) do
-    options = ensure_project(Options.new(opts), root)
+  def run_with_schema(%Schema{} = schema, input_root \\ ".", opts \\ []) do
+    options = ensure_project(Options.new(opts), input_root)
     root = options.project.copy_root
 
     if Schema.count(schema) == 0 do
@@ -393,7 +393,7 @@ defmodule Mutare.Runner do
   # `Command.compiler_env/0` carries the SSA-alias-pass-off speed option (a free
   # compile win, applied only here — per-mutant runs never recompile the lib).
   # `partition_env` is the fixed partition entry (or `[]`), so a config read at
-  # compile time finds a valid partition — see `compile_with_recovery/7`.
+  # compile time finds a valid partition — see `compile_with_recovery/5`.
   defp compile(sandbox, partition_env) do
     {output, status} =
       Command.mix(sandbox, ["compile"], Selector.baseline(),
