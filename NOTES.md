@@ -4139,6 +4139,33 @@ tested. (`a * 1` vs `a / 1` is also not strictly equivalent — `/` yields a flo
 — but that int→float difference is `==`-invisible and rarely intentional, so we
 treat it as noise.) See `Mutare.Mutators.Arithmetic`.
 
+The regex `u`-modifier drop (`~r/…/u` → `~r/…/`) *looks* like an `a * 1`-style
+equivalent on an all-ASCII pattern — `~r/[a-z]/u` and `~r/[a-z]/` match the same
+bytes at the same offsets on valid input — but it is **not** an equivalent mutant,
+because it is *killable*: a `/u` regex **raises** on invalid UTF-8 where the no-`u`
+form byte-matches (`Regex.match?(~r/[a-z]/u, <<0xFF>>)` raises `ArgumentError`; the
+no-`u` form returns `false`). So we **emit it unconditionally**. A surviving
+`u`-drop is a genuine finding, not noise: either the `/u` is dead cruft (delete it)
+or its one real effect — rejecting invalid UTF-8 — is untested. This is exactly
+where it parts from `a * 1`: `a / 1`'s result is `==`-invisible *by construction*,
+so no input can ever kill it (a true equivalent, fair to treat as noise), whereas
+the `u`-drop raises an exception on some input, so suppressing it would hide a real,
+reachable mutant and wrongly shrink the denominator. `# mutare:ignore[regex]` stays
+the per-case opt-out for a `/u` the author deems intentional-but-untestable.
+
+The neighbouring `~r/\s+/` → `~r/\s*/` case is the same lesson from the other side:
+it's equivalent only under `String.replace(s, _, "")` / `Regex.replace` with an
+empty replacement (deleting the empty `\s*` matches changes nothing), and *not*
+under `replace(_, "_")` / `match?` / `split`. That equivalence lives in the
+**enclosing call**, not the regex literal — so a node-local mutator can't see it
+without inspecting its consuming expression, which crosses the mutator/transform
+boundary. It stays emitted, a `# mutare:ignore[regex]` / suspected-equivalent case.
+The general rule both cases share: **suppress only a mutation no input can ever
+kill** (a true equivalent like `a * 1`, `==`-invisible by construction); **surface
+everything else** — even when the kill needs an unusual input (invalid UTF-8) or
+only manifests through the enclosing call. "Looks redundant" is a finding to
+report, not a mutant to hide.
+
 `# mutare:ignore` (done) is the manual escape hatch: a trailing comment ignores
 its line, a standalone comment the next line; matching mutants are recorded
 `:ignored` — not run, kept out of the score's denominator (`killed / (total −

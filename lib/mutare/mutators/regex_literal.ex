@@ -18,7 +18,12 @@ defmodule Mutare.Mutators.RegexLiteral do
     * **class negation** — toggle a bracketed character class between matching and
       not matching its members: `[abc]` ↔ `[^abc]`.
     * **quantifiers** — swap `+`↔`*` (the cleanest complement: `+` is 1-or-more,
-      `*` is 0-or-more, non-equivalent even under `Regex.match?/2`); turn an
+      `*` is 0-or-more, distinct under most uses — though *not* under
+      `String.replace(s, _, "")` / `Regex.replace(s, _, "")`, where deleting the
+      `\\s*` vs `\\s+` matches yields the same string: a context-dependent
+      equivalent left to surface as a suspected survivor / `# mutare:ignore[regex]`,
+      since recognising it would mean a node-local mutator inspecting its enclosing
+      call); turn an
       optional `?` mandatory by dropping it (`colou?r` → `colour`) *and* by
       raising it to `+` (`-?\\d` → `-+\\d`); and nudge a bounded quantifier's
       counts by one (`{3}`→`{2}`/`{4}`, `{8,}`→`{7,}`/`{9,}`, `{2,4}`→
@@ -32,7 +37,13 @@ defmodule Mutare.Mutators.RegexLiteral do
       just narrowing what matches.
     * **modifiers** — drop a present flag one at a time: `~r/x/uis` yields mutants
       `~r/x/is`, `~r/x/us`, `~r/x/ui`. Removing `i` (caseless), `s` (dotall), `u`
-      (unicode), `m` (multiline), … each changes what the pattern accepts.
+      (unicode), `m` (multiline), … each changes what the pattern accepts. The
+      `u`-drop is emitted even on an all-ASCII pattern where it *looks* redundant:
+      it is still **killable** — a `/u` regex raises on invalid UTF-8 where the
+      no-`u` form byte-matches — so a surviving `u`-drop is a real finding (the `/u`
+      is dead cruft, or its only effect — rejecting invalid UTF-8 — is untested),
+      not an equivalent no-op to suppress. `# mutare:ignore[regex]` is the per-case
+      opt-out.
 
   Every replacement is written to stay a legal regex (an escaped `\\$`/`\\d`/`\]` is
   left alone, a leading `]` in a class is literal, bound counts are kept ordered). Only
