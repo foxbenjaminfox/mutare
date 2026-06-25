@@ -334,6 +334,29 @@ defmodule Mutare.SchemaTest do
     assert Enum.map(schema.ineffective_ignores, fn {_f, d} -> d.line end) == [2, 3]
   end
 
+  test "ineffective directives are sorted across files (the `sources` map iterates unordered)",
+       %{root: root} do
+    # Past 32 keys a map is a hashmap that iterates in an *unordered* sequence, so the
+    # final `Enum.sort_by/2` is what actually orders the cross-file result. Use enough
+    # files (each with one ineffective directive) that the comprehension's input order is
+    # neither sorted nor its reverse — so a dropped/constant/reversed sort all reorder.
+    rels = for i <- 0..40, do: "lib/f#{String.pad_leading(to_string(i), 2, "0")}.ex"
+
+    for rel <- rels do
+      # `def f(x), do: x` has no @probe site, so `[bogus]` suppresses nothing → ineffective.
+      write(
+        root,
+        rel,
+        "defmodule #{Path.basename(rel, ".ex")} do\n  def f(x), do: x   # mutare:ignore[bogus]\nend\n"
+      )
+    end
+
+    schema = Schema.build(root, mutators: @probe)
+
+    got = Enum.map(schema.ineffective_ignores, fn {f, _d} -> f end)
+    assert got == Enum.sort(rels)
+  end
+
   describe "forwards options through to the transform" do
     test ":skip_ids reaches the transform (poison recovery renders the mutant raw)", %{root: root} do
       write(

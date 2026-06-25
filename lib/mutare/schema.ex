@@ -71,6 +71,7 @@ defmodule Mutare.Schema do
     for %{dir: dir} <- scope, base <- paths, uniq: true, do: join_scope(dir, base)
   end
 
+  # mutare:ignore[string, clause_drop] equivalent — join_scope only feeds discover's Path.wildcard/relative_to, which normalize the "./" that Path.join(".", base) adds, so "./" <> base and base discover identical files under identical relative paths
   defp join_scope(".", base), do: base
   defp join_scope(dir, base), do: Path.join(dir, base)
 
@@ -108,6 +109,8 @@ defmodule Mutare.Schema do
   @spec from_files([Path.t()], Path.t(), Options.t() | keyword(), MapSet.t()) :: t()
   def from_files(files, root \\ ".", opts \\ [], skip_ids \\ MapSet.new()) do
     options = Options.new(opts)
+
+    # mutare:ignore[convention, return_value] equivalent — the fallback hook's return value is discarded (it runs only for its side effect)
     on_scan = options.on_scan || fn _progress -> :ok end
     total = length(files)
 
@@ -169,6 +172,7 @@ defmodule Mutare.Schema do
     case safe_transform(source, rel, next_id, options, skip_ids) do
       {:ok, _meta, [], next_id} ->
         # Parsed fine but nothing to mutate: keep the original, record source.
+        # mutare:ignore[map_keyword] equivalent — the value is the id-independent raw source, identical on any re-put, so put and put_new agree
         {%{schema | sources: Map.put(schema.sources, rel, source)}, next_id}
 
       {:ok, meta, sites, next_id} ->
@@ -182,7 +186,11 @@ defmodule Mutare.Schema do
         schema = %{
           schema
           | sites: Enum.reverse(sites, schema.sites),
+            # NOTE: unlike the `sources` put below, `metamutants`'s value embeds the mutant ids, so
+            # a duplicate file (a re-put under a higher `start_id`) makes put ≠ put_new — a real kill,
+            # so this `map_keyword` is *not* ignored.
             metamutants: Map.put(schema.metamutants, rel, meta),
+            # mutare:ignore[map_keyword] equivalent — the value is the id-independent raw source, identical on any re-put, so put and put_new agree
             sources: Map.put(schema.sources, rel, source)
         }
 
@@ -219,6 +227,7 @@ defmodule Mutare.Schema do
   # `Task` exit. Catching in the worker (not letting it crash) is what keeps the
   # surfaced error faithful across the process hop.
   defp safe_transform(source, rel, next_id, %Options{} = options, skip_ids) do
+    # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
     opts = transform_opts(options) ++ [file: rel, start_id: next_id, skip_ids: skip_ids]
 
     outcome =
@@ -251,13 +260,21 @@ defmodule Mutare.Schema do
   # merges them with the built-ins and any enabled mutator's `macros/0`. `:expand_uses`
   # carries the `use`-expansion toggle (default `true`).
   defp transform_opts(%Options{mutators: mutators, macros: macros, expand_uses: expand_uses}) do
+    mutator_opts = if mutators == nil, do: [], else: [mutators: mutators]
+
+    # `macro_opts`'s `if false` mutant is equivalent (`[macros: []]` behaves as no `:macros`), but
+    # `if true` is a real kill (macros then never reach the transform) on the same [conditional]
+    # family/line — so it is deliberately *not* ignored (a line filter would hide the kill).
     macro_opts = if macros == [], do: [], else: [macros: macros]
 
-    if(mutators == nil, do: [], else: [mutators: mutators]) ++
-      macro_opts ++ [expand_uses: expand_uses]
+    # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
+    mutator_opts ++ macro_opts ++ [expand_uses: expand_uses]
   end
 
   defp finalize(%__MODULE__{} = schema) do
+    # `skipped: Enum.sort` is equivalent here (a unique path key sorts to the same order as the
+    # reverse), but `sites: Enum.sort` is a real (block-macro-only) kill on the same
+    # [collection_arity] family/line — so neither is ignored (a line filter would hide the kill).
     %{schema | sites: Enum.reverse(schema.sites), skipped: Enum.reverse(schema.skipped)}
   end
 
@@ -278,6 +295,7 @@ defmodule Mutare.Schema do
 
     ineffective =
       for {file, source} <- sources,
+          # mutare:ignore[string] equivalent — a substring prefilter; widening it only re-parses more directive-free files, and directives come from comment metadata so a string match never false-positives
           String.contains?(source, "mutare:ignore"),
           directive <- file_ineffective(source, Map.get(sites_by_file, file, [])),
           do: {file, directive}
@@ -300,6 +318,7 @@ defmodule Mutare.Schema do
   # sources under `:metamutants` still embed every mutant.
   defp limit(%__MODULE__{} = schema, nil), do: schema
 
+  # mutare:ignore[relational, conditional, logical] equivalent — Options validates :max_mutants as a positive integer or nil, so this defensive guard (limit/2 is private) never sees the values that would distinguish these
   defp limit(%__MODULE__{sites: sites} = schema, max) when is_integer(max) and max > 0,
     do: %{schema | sites: Enum.take(sites, max)}
 
