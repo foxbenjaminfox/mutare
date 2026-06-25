@@ -44,13 +44,17 @@ defmodule Mutare.Mutators.ConventionAtom do
 
   ## Configurable
 
-  A codebase's own tag conventions are added via `{module, opts}` with a `:pairs`
-  option (each a same-shape sibling pair), merged with the built-ins:
+  Teach it your codebase's own tag conventions with a `:pairs` option — each entry a
+  same-shape sibling pair:
 
       [mutators: [..., {Mutare.Mutators.ConventionAtom, pairs: [[:active, :inactive]]}]]
 
-  The parameters arrive in `mutate/2`'s context (`context.opts`). An unconfigured
-  instance still gets the built-ins.
+  Your pairs are **added to** the built-ins (`:ok`/`:error`, `:cont`/`:halt`,
+  `:lt`/`:gt`), never replacing them — so the built-in conventions keep firing
+  alongside yours, and an unconfigured instance still gets them all. Listing a pair
+  for an atom that already has a built-in sibling *adds* a sibling rather than
+  swapping one out: `pairs: [[:ok, :okay]]` makes `:ok` mutate to **both** `:error`
+  and `:okay`. (The built-in pairs can't be turned off — only extended.)
 
   Like `AtomLiteral`, it mutates a convention atom wherever an atom literal appears —
   value positions, `def`/`defp` head patterns, and `case` clause patterns — but never a
@@ -100,6 +104,8 @@ defmodule Mutare.Mutators.ConventionAtom do
   end
 
   # The sibling atoms for a swap: the built-in pairs plus any configured `:pairs`.
+  # Additive by construction — `++` *extends* the built-ins, never replaces them, so a
+  # configured pair only ever adds siblings (including to a built-in atom's own set).
   defp swaps(atom, opts) do
     (Map.get(@swaps, atom, []) ++ user_swaps(atom, opts)) |> Enum.uniq()
   end
