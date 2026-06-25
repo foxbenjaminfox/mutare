@@ -85,9 +85,17 @@ defmodule Mutare.Options do
            max_harness_error_rate sandbox keep_sandbox strict_ignores quiet max_mutants min_score
            reporters reporter on_phase on_start on_scan project)a
 
-  # Output formats a reporter entry may name. `:human` is the console report
-  # (`Mutare.Report`); the rest are the machine renderers under `Mutare.Report.*`.
-  @formats ~w(human json html sarif)a
+  # Single source for the output formats and their renderer modules: `:human` is the console
+  # report (`Mutare.Report`); the rest are the machine renderers under `Mutare.Report.*`. Both
+  # `formats/0` (the valid set) and `renderer/1` (the format → renderer module) derive from this,
+  # so the validated set and the dispatch can't drift. A keyword list keeps `formats/0` ordered.
+  @format_renderers [
+    human: Mutare.Report,
+    json: Mutare.Report.Json,
+    html: Mutare.Report.Html,
+    sarif: Mutare.Report.Sarif
+  ]
+  @formats Keyword.keys(@format_renderers)
 
   @doc """
   The output formats a reporter entry may name (`:human`, `:json`, `:html`,
@@ -99,6 +107,14 @@ defmodule Mutare.Options do
   """
   @spec formats() :: [atom()]
   def formats, do: @formats
+
+  @doc """
+  The renderer module for an output `format` — `:human` → `Mutare.Report`, the rest the machine
+  renderers under `Mutare.Report.*`. The format→module half of the `@format_renderers` single
+  source `formats/0` shares, so the Mix task dispatches without re-listing the mapping.
+  """
+  @spec renderer(atom()) :: module()
+  def renderer(format), do: Keyword.fetch!(@format_renderers, format)
 
   @doc """
   Resolve and validate options.

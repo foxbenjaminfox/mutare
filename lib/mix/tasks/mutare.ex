@@ -443,13 +443,8 @@ defmodule Mix.Tasks.Mutare do
   end
 
   defp render_for(format, run, options) do
-    renderer(format).render(run.results, run.schema.sources, min_score: options.min_score)
+    Options.renderer(format).render(run.results, run.schema.sources, min_score: options.min_score)
   end
-
-  defp renderer(:human), do: Report
-  defp renderer(:json), do: Report.Json
-  defp renderer(:html), do: Report.Html
-  defp renderer(:sarif), do: Report.Sarif
 
   defp gate(results, min_score) do
     unless Report.passes_gate?(results, min_score) do

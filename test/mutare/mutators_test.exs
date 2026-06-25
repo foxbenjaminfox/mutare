@@ -167,6 +167,17 @@ defmodule Mutare.MutatorsTest do
       end
     end
 
+    test "every registered family's name/0 matches its registry atom" do
+      # The registry atom is what `:mutators` config, reports, and `# mutare:ignore[...]` match;
+      # the recorded family name is `module.name/0`. A drift between them would silently break a
+      # `:mutators`/ignore reference, so pin them equal for every built-in.
+      for {family, module} <- Mutators.registry() do
+        assert module.name() == family,
+               "#{inspect(module)}.name/0 returns #{inspect(module.name())}, " <>
+                 "but it is registered as #{inspect(family)}"
+      end
+    end
+
     test "resolve/1 expands the :builtins token to the full default set, in order" do
       builtins = Mutators.resolve([:builtins])
       assert builtins == Mutators.resolve(Mutators.all())
