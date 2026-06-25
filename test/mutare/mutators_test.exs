@@ -280,6 +280,21 @@ defmodule Mutare.MutatorsTest do
       assert Arithmetic.mutate({:div, [], [2]}, %{pipe_mode: :unpiped}) == :skip
     end
 
+    test "skips a div/rem call displaced from Kernel by `import Kernel, except:`" do
+      # Regression: a bare `div`/`rem` displaced (`import Kernel, except: [div: 2]`) names another
+      # module's function, so the Kernel `div`↔`rem` swap must NOT fire — it would rewrite to a
+      # sibling that may not exist (poisoning the single build) or mean something else. The
+      # displacement is stamped on the call meta by `Mutare.Transform.Imports`; Arithmetic honors
+      # it via `Helpers.swap_bare_kernel/3`. (Before that guard a displaced `div` was wrongly
+      # swapped to `rem` — the bug this pins.)
+      displaced = [mutare_kernel_displaced: true]
+      assert Arithmetic.mutate({:div, displaced, [1, 2]}, %{pipe_mode: :unpiped}) == :skip
+      assert Arithmetic.mutate({:rem, displaced, [1, 2]}, %{pipe_mode: :unpiped}) == :skip
+
+      # Without the stamp the same call still swaps — the displacement guard is the only difference.
+      assert Arithmetic.mutate({:div, [], [1, 2]}, %{pipe_mode: :unpiped}) == [{:rem, [], [1, 2]}]
+    end
+
     test "preserves operand AST and operator metadata" do
       meta = [line: 7, column: 3]
       operands = [{:a, [], nil}, {:b, [], nil}]

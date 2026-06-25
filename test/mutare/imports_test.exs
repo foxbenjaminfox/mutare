@@ -434,6 +434,23 @@ defmodule Mutare.ImportsTest do
       assert calls[:abs] == :kernel_displaced
     end
 
+    test "div/rem (operator-named Kernel functions) excepted from Kernel are marked displaced" do
+      # `div`/`rem` are *functions* called as `div(a, b)` — not operators like `+` — so excepting
+      # them from `Kernel` displaces them like any other bare Kernel call, and the bare-Kernel
+      # families (Arithmetic's `div`↔`rem`) then skip the swap. Genuine operator displacement
+      # (`import Kernel, except: [+: 2]`) is out of scope, but `div`/`rem` are not operators.
+      calls =
+        resolved("""
+        defmodule M do
+          import Kernel, except: [div: 2, rem: 2]
+          def f(a, b), do: {div(a, b), rem(a, b)}
+        end
+        """)
+
+      assert calls[:div] == :kernel_displaced
+      assert calls[:rem] == :kernel_displaced
+    end
+
     test "a plain Kernel call is neither resolved nor displaced" do
       calls =
         resolved("""
