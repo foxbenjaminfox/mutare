@@ -48,6 +48,14 @@ defmodule Mix.Tasks.Mutare do
                                           #   in source order) — a quick smoke run
       mix mutare --workers 4              # run 4 mutants concurrently
                                           #   (default: System.schedulers_online/0)
+      mix mutare --workers 4 --partition-db
+                                          # give each concurrent worker a distinct
+                                          #   MIX_TEST_PARTITION (1..workers) so a
+                                          #   stateful suite reads it to pick a
+                                          #   per-worker database — needs that many
+                                          #   DBs pre-created; see below
+      mix mutare --partition-env MY_DB_SLOT
+                                          # …same, under a custom env var name
       mix mutare --timeout 30000          # per-mutant wall-clock cap, in ms
                                           #   (default: derived from the baseline run)
       mix mutare --timeout-multiplier 5   # cap = baseline run × this factor
@@ -81,6 +89,22 @@ defmodule Mix.Tasks.Mutare do
   interactive report viewer), or `sarif` (survivors as findings for GitHub code
   scanning).
 
+  `--partition-db` (or `--partition-env <NAME>` for a custom var) gives each of
+  the `--workers` concurrent runs a **distinct** partition id (`1..workers`) under
+  an env var — `MIX_TEST_PARTITION` by default — so a suite with shared state can
+  point each worker at its own database and avoid cross-worker collisions. It is
+  the `mix test --partitions` convention, so a project already set up for that
+  needs no code change:
+
+      # config/test.exs
+      config :my_app, MyApp.Repo,
+        database: "my_app_test\#{System.get_env("MIX_TEST_PARTITION")}"
+
+  You must pre-create/migrate the `--workers` partitioned databases (the same
+  prerequisite `mix test --partitions` has). The pool recycles ids across the run,
+  so `--workers 4` needs four databases, not one per mutant; the baseline and
+  coverage probe use partition `1`.
+
   Configuration may also live in `.mutare.exs` (a keyword list); a CLI flag
   overrides the matching key. Every option is optional — the block below lists
   all the file-settable keys with their defaults (`min_score` is illustrative):
@@ -106,6 +130,10 @@ defmodule Mix.Tasks.Mutare do
         # :coverage runs only the test files covering each mutant; :full runs all
         test_selection: :coverage,
         workers: System.schedulers_online(),
+        # give each concurrent worker a distinct partition id under this env var
+        # (1..workers), for per-worker DB isolation — read it in config/test.exs
+        # like `mix test --partitions`; nil (default) is off. Needs `workers` DBs.
+        partition_env: nil,
         # per-mutant wall-clock cap = baseline run × multiplier, unless an
         # absolute `timeout:` in ms is given instead (then the multiplier is moot)
         timeout_multiplier: 3.0,
@@ -158,6 +186,8 @@ defmodule Mix.Tasks.Mutare do
     max_harness_error_rate: :float,
     max_mutants: :integer,
     workers: :integer,
+    partition_db: :boolean,
+    partition_env: :string,
     timeout: :integer,
     timeout_multiplier: :float,
     format: [:string, :keep],

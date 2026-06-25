@@ -58,10 +58,15 @@ defmodule Mutare.Runner.Baseline do
   Returns `{:ok, baseline_ms}` when consistently green, `{:error, :baseline_failed,
   output}` when consistently red, or `{:error, :baseline_flaky, detail}` when the
   runs disagree.
+
+  `env` is extra environment for each run — a fixed partition entry (e.g.
+  `MIX_TEST_PARTITION=1`) when `:partition_env` is on, so a partitioned suite finds
+  a valid database; `[]` (the default) adds none. The baseline is sequential, so
+  one fixed partition suffices (`Mutare.Runner.Partitions`).
   """
-  @spec run(Path.t(), pos_integer()) :: result()
-  def run(sandbox, runs \\ 1) when is_integer(runs) and runs >= 1 do
-    sandbox |> collect(runs) |> classify()
+  @spec run(Path.t(), pos_integer(), [{String.t(), String.t()}]) :: result()
+  def run(sandbox, runs \\ 1, env \\ []) when is_integer(runs) and runs >= 1 do
+    sandbox |> collect(runs, env) |> classify()
   end
 
   @doc """
@@ -87,10 +92,10 @@ defmodule Mutare.Runner.Baseline do
 
   # Run the suite up to `runs` times, stopping as soon as the outcomes disagree
   # (a pass and a fail both seen → flakiness proven, the rest would be wasted).
-  @spec collect(Path.t(), pos_integer()) :: [outcome()]
-  defp collect(sandbox, runs) do
+  @spec collect(Path.t(), pos_integer(), [{String.t(), String.t()}]) :: [outcome()]
+  defp collect(sandbox, runs, env) do
     Enum.reduce_while(1..runs, [], fn _i, acc ->
-      {ms, output, status} = Command.timed_mix(sandbox, ["test"], Selector.baseline())
+      {ms, output, status} = Command.timed_mix(sandbox, ["test"], Selector.baseline(), nil, env)
       acc = [run_outcome(status, ms, output) | acc]
       if disagree?(acc), do: {:halt, acc}, else: {:cont, acc}
     end)

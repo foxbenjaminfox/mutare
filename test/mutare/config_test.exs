@@ -167,6 +167,23 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([timeout: 5_000], timeout: 60_000)[:timeout] == 60_000
     end
 
+    test "--partition-db enables the MIX_TEST_PARTITION default" do
+      assert Config.merge([], partition_db: true)[:partition_env] == "MIX_TEST_PARTITION"
+    end
+
+    test "--partition-env sets a custom var name and wins over --partition-db" do
+      assert Config.merge([], partition_env: "MY_DB_SLOT")[:partition_env] == "MY_DB_SLOT"
+
+      assert Config.merge([], partition_db: true, partition_env: "MY_DB_SLOT")[:partition_env] ==
+               "MY_DB_SLOT"
+    end
+
+    test "no partition flag (or --no-partition-db) leaves it to the file config / default" do
+      refute Keyword.has_key?(Config.merge([], []), :partition_env)
+      refute Keyword.has_key?(Config.merge([], partition_db: false), :partition_env)
+      assert Config.merge([partition_env: "FromFile"], [])[:partition_env] == "FromFile"
+    end
+
     test "file config mutators: :all resolves to the default set (key omitted)" do
       refute Keyword.has_key?(Config.merge([mutators: :all], []), :mutators)
     end

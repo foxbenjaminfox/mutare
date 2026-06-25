@@ -578,7 +578,14 @@ contract between them is the whole game.
   flaky/broken infra: `:harness_retries` (re-run a harness-erroring mutant before recording it)
   and `:max_harness_error_rate` (abort `{:error, :too_many_harness_errors, …}` when persistent
   harness errors exceed that fraction of the mutants that *ran*). Returns
-  `%{schema, results, sandbox, baseline_ms}`.
+  `%{schema, results, sandbox, baseline_ms}`. Optional **per-worker partitioning**
+  (`:partition_env`, off by default; `--partition-db`/`--partition-env`) hands each concurrent run
+  a distinct partition id under a named env var (default `MIX_TEST_PARTITION`) for DB isolation —
+  the ids come from a bounded, recycled checkout/checkin pool (`Mutare.Runner.Partitions`) sized to
+  `:workers` (so two live runs never share one, `rem(index, workers)` being unsafe — tasks don't
+  finish in index order), the compile/baseline/probe taking a fixed partition (the compile too,
+  since it evaluates the target's config — a partitioned default-less `System.fetch_env!` would
+  otherwise raise); delivered through the existing `Command` `:env` plumbing, inert when unset.
 - **`Mutare.Runner.Baseline`** — a whole-suite `mix test` (no `--cover`) at the baseline mutant:
   the authoritative green check (a red suite aborts with `:baseline_failed`) and the source of
   `baseline_ms` (a *single* run's wall-clock — the per-mutant timeout cap is scaled from it). With

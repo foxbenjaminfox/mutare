@@ -2634,6 +2634,66 @@ per-worker `MIX_BUILD_PATH` vs full source copy — would remove the contention;
 deferred. Default workers may be worth lowering from schedulers_online to cut
 oversubscription.
 
+### Per-worker DB partitioning (`:partition_env`) `[done]`
+A suite with shared mutable state — the common case: an Ecto repo — can't have N
+mutant `mix test` processes hammering one database concurrently; they corrupt each
+other and manufacture false kills/survivors. `:partition_env` (off by default,
+`--partition-db` for the `MIX_TEST_PARTITION` default, `--partition-env NAME` for a
+custom var) hands each concurrent run a **distinct** partition id under a named env
+var, which the target's `config/test.exs` reads to pick a per-worker database —
+deliberately the `mix test --partitions` convention, so a project already set up for
+partitioned tests needs **zero** code change (`database: "app_test#{System.get_env
+("MIX_TEST_PARTITION")}"`). The user pre-creates `--workers` databases, the same
+prerequisite `--partitions` has.
+
+**Why a checkout/checkin pool, not `rem(index, workers)`.** `Task.async_stream`
+hands each item no stable lane index, and modulo-index is *unsafe*: tasks don't
+finish in index order, so task `0` (→ partition 1) can still be running when task
+`workers` (→ partition 1) starts — two live runs on one DB, the exact collision the
+feature exists to prevent. So `Mutare.Runner.Partitions` is a pool of `workers`
+tokens (partitions `1..workers`): a task checks out a free partition before
+spawning `mix`, runs it (harness retries included — they recurse in the same task,
+so one checkout covers them), and checks it back in (`try/after`, so a raise can't
+leak a slot). Checkout never blocks by a counting argument: a checking-out task is
+itself alive, so the *other* ≤ `workers-1` alive tasks hold ≤ `workers-1` tokens,
+leaving ≥ 1 free. The pool is a tiny `Agent`; the runner owns its lifecycle. The
+**one compile**, the baseline, and the coverage probe all run sequentially *before*
+the pool, so they take a **fixed** partition (`1`) via the pure `entry/2` — there's
+no concurrency to isolate there, but a partitioned suite still needs *some* valid DB
+to green-check against. The compile is in that set deliberately: `mix compile`
+evaluates the target's config under `MIX_ENV=test`, so a partitioned config that
+reads the var without a default (`System.fetch_env!("MIX_TEST_PARTITION")`, no
+`||`-fallback) would raise at config-eval and fail the *one* build with
+`:compile_failed` — before the baseline/probe ever set the var. Threading the fixed
+entry into the compile `Command.mix` (concatenated with `compiler_env/0`) closes
+that gap; it also overrides any *stale ambient* `MIX_TEST_PARTITION` the harness
+happened to inherit.
+
+**Delivery is just the existing `:env` plumbing.** `Mutare.Sandbox.Command.mix/4`
+already appends an `:env` list onto every sandbox `mix`; the partition entry rides
+that, threaded through `timed_mix`/`timed_test` (new trailing `env` params,
+defaulted `[]` for back-compat) and through `Baseline.run/3`/`CoverageProbe.run/4`.
+`Command` stays partition-agnostic — the env is opaque extra to it; the runner owns
+all "partition" semantics. Inert by default: `partition_env` `nil` → `Partitions`
+`:disabled` → `[]` everywhere → byte-identical to the old behaviour.
+
+Because the partition entry is *appended* to that base env, a `:partition_env`
+naming a key Mutare itself sets (`MIX_ENV`, `MUTANT_UNDER_TEST`, the coverage
+vars…) would land a duplicate key in the `System.cmd` env list, where Erlang's
+resolution is unspecified — silently clobbering, say, `MIX_ENV`. So `Options`
+rejects such a name up front, validated against the authoritative
+`Command.reserved_env_names/0` (sourced from the very accessors that build the env,
+so it can't drift). The pool-size↔`max_concurrency` coupling the non-blocking
+checkout depends on is the other thing a future refactor could break silently —
+flagged with an `INVARIANT:` comment at the `Task.async_stream` call.
+
+**Distinct from the parked "shard mutants across machines" idea** (the early-exit
+note below): that wanted to *split mutants* across runners and rejected
+`--partitions` as the wrong axis (it filters *test files*). This is the opposite —
+we run the *whole* selected suite per mutant and only want each concurrent worker
+on its own DB. Reusing `MIX_TEST_PARTITION` here is purely to name a slot the user's
+config already understands, not to filter tests.
+
 ### Kill detection stops at the first failure (`--max-failures 1`) `[done]`
 A mutant is killed the moment *any* test fails — the verdict is killed-vs-survived,
 not *which* test — so `Mutare.Sandbox.Command.timed_test/4` forces `--max-failures 1`

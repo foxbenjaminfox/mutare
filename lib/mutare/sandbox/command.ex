@@ -468,12 +468,42 @@ defmodule Mutare.Sandbox.Command do
   end
 
   @doc """
-  Like `mix/4`, but wall-clock-timed: returns `{elapsed_ms, output, exit_status}`.
+  The environment variable names Mutare itself sets on a sandbox `mix` — the base
+  env in `mix/4` plus the cap (`timeout_env/0`) and the coverage-probe vars folded
+  in via `:env`. The authoritative reserved set: `Mutare.Options` rejects a
+  `:partition_env` that collides with one of these, since the partition entry is
+  *appended* to this list and a duplicate key's resolution is unspecified (it would
+  silently clobber e.g. `MIX_ENV`). Sourced from the same accessors the env is
+  built from, so it can't drift.
   """
-  @spec timed_mix(Path.t(), [String.t()], non_neg_integer(), pos_integer() | nil) ::
+  @spec reserved_env_names() :: [String.t()]
+  def reserved_env_names do
+    [
+      "MIX_ENV",
+      @timeout_env,
+      Mutare.Selector.env_var(),
+      Mutare.Selector.override_env(),
+      Mutare.Coverage.Recorder.env_var(),
+      Mutare.Coverage.Recorder.dump_path_env(),
+      Mutare.Coverage.Recorder.root_env(),
+      Mutare.Coverage.Recorder.fixture_override_env()
+    ]
+  end
+
+  @doc """
+  Like `mix/4`, but wall-clock-timed: returns `{elapsed_ms, output, exit_status}`.
+
+  `env` is extra environment passed straight through to `mix/4` (the runner uses
+  it to set a per-worker partition var, e.g. `MIX_TEST_PARTITION`); `[]` adds none.
+  """
+  @spec timed_mix(Path.t(), [String.t()], non_neg_integer(), pos_integer() | nil, [
+          {String.t(), String.t()}
+        ]) ::
           {non_neg_integer(), String.t(), non_neg_integer()}
-  def timed_mix(sandbox, args, mutant_id, cap \\ nil) do
-    {micros, {output, status}} = :timer.tc(fn -> mix(sandbox, args, mutant_id, cap: cap) end)
+  def timed_mix(sandbox, args, mutant_id, cap \\ nil, env \\ []) do
+    {micros, {output, status}} =
+      :timer.tc(fn -> mix(sandbox, args, mutant_id, cap: cap, env: env) end)
+
     {div(micros, 1000), output, status}
   end
 
@@ -502,11 +532,14 @@ defmodule Mutare.Sandbox.Command do
   `test_args` are extra `mix test` arguments (`[]` = whole suite, file-granular
   args otherwise); they are folded into the kill-detection argv by `test_argv/1`
   (forcing `--exit-status #{@failure_exit}` and `--max-failures 1`). `cap` (ms, or
-  `nil`) bounds an overrun via the watcher.
+  `nil`) bounds an overrun via the watcher. `env` is extra environment (the runner
+  sets a per-worker partition var here, e.g. `MIX_TEST_PARTITION`); `[]` adds none.
   """
-  @spec timed_test(Path.t(), [String.t()], non_neg_integer(), pos_integer() | nil) :: Result.t()
-  def timed_test(sandbox, test_args, mutant_id, cap \\ nil) do
-    {ms, output, status} = timed_mix(sandbox, test_argv(test_args), mutant_id, cap)
+  @spec timed_test(Path.t(), [String.t()], non_neg_integer(), pos_integer() | nil, [
+          {String.t(), String.t()}
+        ]) :: Result.t()
+  def timed_test(sandbox, test_args, mutant_id, cap \\ nil, env \\ []) do
+    {ms, output, status} = timed_mix(sandbox, test_argv(test_args), mutant_id, cap, env)
 
     %Result{
       outcome: outcome(status, output),

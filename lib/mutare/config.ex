@@ -32,6 +32,9 @@ defmodule Mutare.Config do
   `:full` (→ `test_selection: :full`),
   `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`,
   `:max_mutants`, `:workers`, `:timeout`, `:timeout_multiplier`,
+  `:partition_db`/`:partition_env` (per-worker DB partition var — the boolean
+  `--partition-db` enables the `MIX_TEST_PARTITION` default, `--partition-env NAME`
+  sets a custom name and wins),
   `:expand_uses` (`--no-expand-uses` disables `use`-expansion). A bare `:mutators`
   value of `:all` or `:builtins` (or none) resolves to "use the default set" by
   omitting the key, so `Mutare.Transform` picks it; a `:mutators` *list* is resolved
@@ -63,6 +66,7 @@ defmodule Mutare.Config do
     |> put_unless_nil(:max_harness_error_rate, flags[:max_harness_error_rate])
     |> put_unless_nil(:max_mutants, flags[:max_mutants])
     |> put_unless_nil(:workers, flags[:workers])
+    |> put_unless_nil(:partition_env, partition_env(flags))
     |> put_unless_nil(:timeout, flags[:timeout])
     |> put_unless_nil(:timeout_multiplier, flags[:timeout_multiplier])
     |> put_unless_nil(:expand_uses, flags[:expand_uses])
@@ -213,6 +217,19 @@ defmodule Mutare.Config do
       # a group token `Mutare.Mutators.resolve/1` expands (see that module).
       token when token in [:all, :builtins] -> Keyword.delete(config, :mutators)
       mutators -> Keyword.put(config, :mutators, mutator_modules(mutators))
+    end
+  end
+
+  # Per-worker partition env var. `--partition-env NAME` sets a custom name and
+  # wins; the boolean convenience `--partition-db` enables it under the
+  # `mix test --partitions` default `MIX_TEST_PARTITION`. Absent (or an explicit
+  # `--no-partition-db`) leaves the key unset so the file config / default (off)
+  # stands. See `Mutare.Runner.Partitions`.
+  defp partition_env(flags) do
+    cond do
+      is_binary(flags[:partition_env]) -> flags[:partition_env]
+      flags[:partition_db] == true -> "MIX_TEST_PARTITION"
+      true -> nil
     end
   end
 

@@ -153,6 +153,35 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":partition_env" do
+    test "defaults to nil (off)" do
+      assert Options.new([]).partition_env == nil
+    end
+
+    test "accepts a non-empty string (the env var name)" do
+      assert Options.new(partition_env: "MIX_TEST_PARTITION").partition_env ==
+               "MIX_TEST_PARTITION"
+    end
+
+    test "rejects an empty string and non-strings" do
+      for bad <- ["", 1, :mix_test_partition, true] do
+        assert_raise ArgumentError, ~r/:partition_env must be a non-empty string/, fn ->
+          Options.new(partition_env: bad)
+        end
+      end
+    end
+
+    test "rejects a name Mutare itself reserves (would clobber the sandbox env)" do
+      for reserved <- Mutare.Sandbox.Command.reserved_env_names() do
+        assert_raise ArgumentError,
+                     ~r/:partition_env must not name a variable Mutare reserves/,
+                     fn ->
+                       Options.new(partition_env: reserved)
+                     end
+      end
+    end
+  end
+
   describe ":timeout" do
     test "accepts nil or a positive integer (ms)" do
       assert Options.new(timeout: nil).timeout == nil

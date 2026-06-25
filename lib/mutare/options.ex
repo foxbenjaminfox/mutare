@@ -20,6 +20,7 @@ defmodule Mutare.Options do
   # relational to `root`); here we only validate the shape of `:sandbox`.
 
   alias Mutare.{Project, Result, Site}
+  alias Mutare.Sandbox.Command
 
   @type t :: %__MODULE__{
           paths: [String.t()],
@@ -31,6 +32,7 @@ defmodule Mutare.Options do
           only_lines: MapSet.t() | nil,
           test_selection: :coverage | :full,
           workers: pos_integer(),
+          partition_env: String.t() | nil,
           timeout: pos_integer() | nil,
           timeout_multiplier: number(),
           baseline_runs: pos_integer(),
@@ -59,6 +61,7 @@ defmodule Mutare.Options do
             only_lines: nil,
             test_selection: :coverage,
             workers: nil,
+            partition_env: nil,
             timeout: nil,
             timeout_multiplier: 3.0,
             baseline_runs: 1,
@@ -78,9 +81,9 @@ defmodule Mutare.Options do
             project: nil
 
   @keys ~w(paths exclude mutators macros expand_uses only_files only_lines test_selection
-           workers timeout timeout_multiplier baseline_runs harness_retries max_harness_error_rate
-           sandbox keep_sandbox strict_ignores quiet max_mutants min_score reporters reporter
-           on_phase on_start on_scan project)a
+           workers partition_env timeout timeout_multiplier baseline_runs harness_retries
+           max_harness_error_rate sandbox keep_sandbox strict_ignores quiet max_mutants min_score
+           reporters reporter on_phase on_start on_scan project)a
 
   # Output formats a reporter entry may name. `:human` is the console report
   # (`Mutare.Report`); the rest are the machine renderers under `Mutare.Report.*`.
@@ -135,6 +138,7 @@ defmodule Mutare.Options do
       only_lines: validate_only_lines!(Keyword.get(opts, :only_lines)),
       test_selection: validate_test_selection!(Keyword.get(opts, :test_selection, :coverage)),
       workers: validate_workers!(Keyword.get(opts, :workers) || System.schedulers_online()),
+      partition_env: validate_partition_env!(Keyword.get(opts, :partition_env)),
       timeout: validate_timeout!(Keyword.get(opts, :timeout)),
       timeout_multiplier: validate_multiplier!(Keyword.get(opts, :timeout_multiplier, 3.0)),
       baseline_runs: validate_baseline_runs!(Keyword.get(opts, :baseline_runs, 1)),
@@ -273,6 +277,28 @@ defmodule Mutare.Options do
 
   defp validate_workers!(workers),
     do: validate!(workers, &(is_integer(&1) and &1 > 0), ":workers must be a positive integer")
+
+  # `:partition_env` (default `nil` = off) names an env var each concurrent worker
+  # is given a distinct partition id under (e.g. `MIX_TEST_PARTITION`), so a
+  # stateful suite can pick a per-worker database. A non-empty string enables it;
+  # `nil` disables. It must also not collide with a name Mutare itself sets on the
+  # sandbox `mix` (the partition entry is *appended* to that env, so a duplicate key
+  # would silently clobber e.g. `MIX_ENV`). See `Mutare.Runner.Partitions`.
+  defp validate_partition_env!(value) do
+    name =
+      validate_nullable!(
+        value,
+        &(is_binary(&1) and &1 != ""),
+        ":partition_env must be a non-empty string (an env var name) or nil"
+      )
+
+    validate_nullable!(
+      name,
+      &(&1 not in Command.reserved_env_names()),
+      ":partition_env must not name a variable Mutare reserves " <>
+        "(#{Enum.join(Command.reserved_env_names(), ", ")})"
+    )
+  end
 
   defp validate_timeout!(ms),
     do:

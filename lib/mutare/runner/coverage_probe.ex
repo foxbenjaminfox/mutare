@@ -75,9 +75,14 @@ defmodule Mutare.Runner.CoverageProbe do
 
   Never fails: every uncertainty degrades to the conservative `:run_all`. The
   green check and timing live in `Mutare.Runner.Baseline`, which runs first.
+
+  `env` is extra environment for the probe run — a fixed partition entry (e.g.
+  `MIX_TEST_PARTITION=1`) when `:partition_env` is on, so the partitioned suite
+  finds a valid database; `[]` (the default) adds none. The probe is a single
+  sequential run, so one fixed partition suffices (`Mutare.Runner.Partitions`).
   """
-  @spec run(Path.t(), Schema.t(), :coverage | :full) :: selection()
-  def run(sandbox, %Schema{} = schema, mode) when mode in [:coverage, :full] do
+  @spec run(Path.t(), Schema.t(), :coverage | :full, [{String.t(), String.t()}]) :: selection()
+  def run(sandbox, %Schema{} = schema, mode, env \\ []) when mode in [:coverage, :full] do
     # Absolute paths: an umbrella runs each app's suite with cwd = the app dir, so
     # the dump must land at one fixed place and the test-file paths must be
     # normalised against the sandbox root, not whichever app is running.
@@ -85,7 +90,7 @@ defmodule Mutare.Runner.CoverageProbe do
     dump = Path.join(root, Recorder.dump_file())
     File.rm(dump)
 
-    with true <- Command.success?(probe!(sandbox, root, dump)),
+    with true <- Command.success?(probe!(sandbox, root, dump, env)),
          {:ok, coverage} <- Coverage.read_dump(dump) do
       select(mode, schema, coverage)
     else
@@ -99,12 +104,13 @@ defmodule Mutare.Runner.CoverageProbe do
   # so the caller treats it as uncertainty → `:run_all`. The dump path and the
   # path-normalisation root travel in env vars so the helper, running with a
   # per-app cwd in an umbrella, writes one union dump with root-relative keys.
-  defp probe!(sandbox, root, dump) do
-    env = [
-      {Recorder.env_var(), "1"},
-      {Recorder.dump_path_env(), dump},
-      {Recorder.root_env(), root}
-    ]
+  defp probe!(sandbox, root, dump, partition_env) do
+    env =
+      [
+        {Recorder.env_var(), "1"},
+        {Recorder.dump_path_env(), dump},
+        {Recorder.root_env(), root}
+      ] ++ partition_env
 
     {output, status} = Command.mix(sandbox, ["test"], Selector.baseline(), env: env)
 

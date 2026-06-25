@@ -34,6 +34,19 @@ defmodule Mutare.Runner do
   turn a terminating loop infinite, so the run is capped. A capped run counts as
   `:timeout` — a kill, since the hang is observable misbehavior.
 
+  ## Per-worker partitioning (DB isolation)
+
+  Optionally (`:partition_env`, off by default), each concurrent run is handed a
+  **distinct** partition id under a named env var (default `MIX_TEST_PARTITION`),
+  so a stateful suite can point each worker at its own database — the `mix test
+  --partitions` convention. The ids come from a bounded, recycled pool
+  (`Mutare.Runner.Partitions`) sized to `:workers`, so two live runs never share a
+  partition and only `:workers` databases are needed. The one compile, the
+  baseline, and the coverage probe (all sequential, pre-pool) take a fixed
+  partition — the compile too, since it evaluates the target's config, where a
+  partitioned default-less `System.fetch_env!` would otherwise raise. Inert when
+  unset.
+
   ## Harness errors are kept out of the score
 
   A mutant run that never reaches a verdict — a compile error, a missing
@@ -54,7 +67,7 @@ defmodule Mutare.Runner do
   """
 
   alias Mutare.{Options, Poison, Project, Report, Result, Sandbox, Schema, Selector, Site}
-  alias Mutare.Runner.{Baseline, CoverageProbe}
+  alias Mutare.Runner.{Baseline, CoverageProbe, Partitions}
   alias Mutare.Sandbox.Command
 
   require Logger
@@ -146,51 +159,75 @@ defmodule Mutare.Runner do
   # sandbox. Returns `{:ok, run}` or a `{:error, reason, detail}` (a red/flaky
   # baseline, or too many harness errors).
   defp run_mutants(schema, sandbox, %Options{} = options, on_phase, on_start, reporter, mode) do
-    with {:ok, baseline_ms} <- run_baseline(on_phase, sandbox, options.baseline_runs) do
-      on_phase.(:coverage_probe)
-      selection = CoverageProbe.run(sandbox, schema, mode)
-      # Per owning app, the test dirs a whole-suite run may be narrowed to (the
-      # app + its dependents). Empty for a single project — see `broaden/3`.
-      scopes =
-        Project.app_test_scopes(options.project, sandbox, Path.join(sandbox, "_build/test/lib"))
+    # Per-worker partition pool (e.g. `MIX_TEST_PARTITION`) for DB isolation across
+    # the concurrent runs; `:disabled` (the default) when `:partition_env` is unset.
+    # Sized to `workers` so each concurrency lane has one token. Lifecycle owned
+    # here: started before the run, stopped on every exit path.
+    partitions = Partitions.new(options.partition_env, options.workers)
 
-      cap = timeout_cap(baseline_ms, options)
-      workers = options.workers
+    try do
+      # The baseline + coverage probe are sequential (pre-pool), so they share one
+      # fixed partition (`1`) — a partitioned suite still needs a valid database.
+      fixed_env = Partitions.entry(options.partition_env, 1)
 
-      retries = options.harness_retries
+      with {:ok, baseline_ms} <- run_baseline(on_phase, sandbox, options.baseline_runs, fixed_env) do
+        on_phase.(:coverage_probe)
+        selection = CoverageProbe.run(sandbox, schema, mode, fixed_env)
+        # Per owning app, the test dirs a whole-suite run may be narrowed to (the
+        # app + its dependents). Empty for a single project — see `broaden/3`.
+        scopes =
+          Project.app_test_scopes(options.project, sandbox, Path.join(sandbox, "_build/test/lib"))
 
-      on_phase.({:running, length(schema.sites)})
+        cap = timeout_cap(baseline_ms, options)
+        workers = options.workers
 
-      results =
-        schema.sites
-        |> Task.async_stream(
-          fn site ->
-            on_start.(site)
-            result = classify(sandbox, site, selection, cap, retries, scopes)
-            reporter.(result)
-            result
-          end,
-          max_concurrency: workers,
-          ordered: true,
-          timeout: :infinity
-        )
-        |> Enum.map(fn {:ok, result} -> result end)
+        retries = options.harness_retries
 
-      run = %{schema: schema, results: results, sandbox: sandbox, baseline_ms: baseline_ms}
+        on_phase.({:running, length(schema.sites)})
 
-      case harness_error_guard(results, options) do
-        :ok -> {:ok, run}
-        {:error, _reason, _detail} = error -> error
+        results =
+          schema.sites
+          |> Task.async_stream(
+            fn site ->
+              on_start.(site)
+              # Check out a distinct partition for this run (and its harness
+              # retries), check it back in when done — see `Mutare.Runner.Partitions`.
+              result =
+                Partitions.with_slot(partitions, fn env ->
+                  classify(sandbox, site, selection, cap, retries, scopes, env)
+                end)
+
+              reporter.(result)
+              result
+            end,
+            # INVARIANT: `max_concurrency` must equal the pool size (`workers`, the
+            # arg to `Partitions.new/2` above) — the pool's non-blocking checkout
+            # relies on one token per concurrency lane. See `Mutare.Runner.Partitions`.
+            max_concurrency: workers,
+            ordered: true,
+            timeout: :infinity
+          )
+          |> Enum.map(fn {:ok, result} -> result end)
+
+        run = %{schema: schema, results: results, sandbox: sandbox, baseline_ms: baseline_ms}
+
+        case harness_error_guard(results, options) do
+          :ok -> {:ok, run}
+          {:error, _reason, _detail} = error -> error
+        end
       end
+    after
+      Partitions.stop(partitions)
     end
   end
 
   # Announce the baseline phase, then run it. A thin wrapper so the `:baseline`
-  # notification fires immediately before `Baseline.run/2` inside the `with`
-  # chain (where a bare side effect between `<-` clauses can't live).
-  defp run_baseline(on_phase, sandbox, baseline_runs) do
+  # notification fires immediately before `Baseline.run/3` inside the `with`
+  # chain (where a bare side effect between `<-` clauses can't live). `env` carries
+  # the fixed partition entry (or `[]`).
+  defp run_baseline(on_phase, sandbox, baseline_runs, env) do
     on_phase.(:baseline)
-    Baseline.run(sandbox, baseline_runs)
+    Baseline.run(sandbox, baseline_runs, env)
   end
 
   # Resolve a `Mutare.Project` from the target if the caller didn't supply one (the
@@ -245,7 +282,12 @@ defmodule Mutare.Runner do
   # loop state (`schema` rebuilt each round, accumulating `skip_ids`/`struck`, the remaining
   # `attempts`) is explicit; `root`/`options`/`sandbox` are constants.
   defp compile_with_recovery(schema, root, options, sandbox, skip_ids, struck, attempts) do
-    case compile(sandbox) do
+    # The compile evaluates the target's config under `MIX_ENV=test`, so a
+    # partitioned config that reads the var without a default (e.g.
+    # `System.fetch_env!("MIX_TEST_PARTITION")`) must see it *here* too — before
+    # the baseline/probe that also set it — or the compile fails. Sequential like
+    # those, so the fixed partition (`1`) suffices.
+    case compile(sandbox, Partitions.entry(options.partition_env, 1)) do
       :ok ->
         {:ok, schema, sandbox}
 
@@ -358,30 +400,34 @@ defmodule Mutare.Runner do
   # The one compilation. `Command.success?/1` owns the "0 means success" reading;
   # `Command.compiler_env/0` carries the SSA-alias-pass-off speed option (a free
   # compile win, applied only here — per-mutant runs never recompile the lib).
-  defp compile(sandbox) do
+  # `partition_env` is the fixed partition entry (or `[]`), so a config read at
+  # compile time finds a valid partition — see `compile_with_recovery/7`.
+  defp compile(sandbox, partition_env) do
     {output, status} =
-      Command.mix(sandbox, ["compile"], Selector.baseline(), env: Command.compiler_env())
+      Command.mix(sandbox, ["compile"], Selector.baseline(),
+        env: Command.compiler_env() ++ partition_env
+      )
 
     if Command.success?(status), do: :ok, else: {:error, :compile_failed, output}
   end
 
   # === per-mutant runs =======================================================
 
-  defp classify(_sandbox, %Site{poisoned: true} = site, _selection, _cap, _retries, _scopes) do
+  defp classify(_sandbox, %Site{poisoned: true} = site, _selection, _cap, _retries, _scopes, _env) do
     %Result{site: site, status: :poisoned, duration_ms: 0, output: nil}
   end
 
-  defp classify(_sandbox, %Site{ignored: true} = site, _selection, _cap, _retries, _scopes) do
+  defp classify(_sandbox, %Site{ignored: true} = site, _selection, _cap, _retries, _scopes, _env) do
     %Result{site: site, status: :ignored, duration_ms: 0, output: nil}
   end
 
-  defp classify(sandbox, site, :run_all, cap, retries, scopes),
-    do: run_mutant(sandbox, site, broaden([], site, scopes), cap, retries)
+  defp classify(sandbox, site, :run_all, cap, retries, scopes, env),
+    do: run_mutant(sandbox, site, broaden([], site, scopes), cap, retries, env)
 
-  defp classify(sandbox, site, {:selective, outcomes}, cap, retries, scopes) do
+  defp classify(sandbox, site, {:selective, outcomes}, cap, retries, scopes, env) do
     case Map.fetch(outcomes, site.id) do
       {:ok, {:run, test_args}} ->
-        run_mutant(sandbox, site, broaden(test_args, site, scopes), cap, retries)
+        run_mutant(sandbox, site, broaden(test_args, site, scopes), cap, retries, env)
 
       {:ok, :no_coverage} ->
         %Result{site: site, status: :no_coverage, duration_ms: 0, output: nil}
@@ -390,7 +436,7 @@ defmodule Mutare.Runner do
       # practice; a missing id is a bug, not a no-coverage signal — run it rather
       # than silently drop a mutant from the score.
       :error ->
-        run_mutant(sandbox, site, broaden([], site, scopes), cap, retries)
+        run_mutant(sandbox, site, broaden([], site, scopes), cap, retries, env)
     end
   end
 
@@ -419,11 +465,11 @@ defmodule Mutare.Runner do
   # real verdict (passed/failed/timeout) is never retried. `retries` exhausting
   # records the harness error as-is; the run-level guard decides if too many
   # persisted.
-  defp run_mutant(sandbox, site, test_args, cap, retries) do
-    result = Command.timed_test(sandbox, test_args, site.id, cap)
+  defp run_mutant(sandbox, site, test_args, cap, retries, env) do
+    result = Command.timed_test(sandbox, test_args, site.id, cap, env)
 
     if result.outcome == :harness_error and retries > 0 do
-      run_mutant(sandbox, site, test_args, cap, retries - 1)
+      run_mutant(sandbox, site, test_args, cap, retries - 1, env)
     else
       if result.outcome == :harness_error, do: warn_harness_error(site, result)
 
