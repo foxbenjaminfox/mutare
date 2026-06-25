@@ -116,8 +116,9 @@ defmodule Mutare.Transform do
   the plan structs and pure discovery (chunking clauses, finding guard/drop
   candidates). The **stateful** emission core stays here, because it shares the
   `Ctx` id-threading discipline across the in-place and lifted paths too tightly
-  to split: `claim_id/4` (the single owner of that dance), `in_place_site/3` and
-  the selector emit, `emit_function_plan/2` and `emit_case_pattern_site/3`.
+  to split: `claim_id/4` (the single owner of that dance), `site_for/3` (the single
+  candidate→`Site` map) and the selector emit, `emit_function_plan/2` and
+  `emit_case_pattern_site/3`.
 
   The **pure** AST-assembly each of those orchestrators calls is factored into
   focused helper modules, so this file holds the threading, not the node-building:
@@ -632,7 +633,7 @@ defmodule Mutare.Transform do
     # a mutant clause nor excluded from its original — i.e. it behaves as baseline.
     {claimed, ctx} =
       Enum.flat_map_reduce(FunctionPlan.candidates(plan), ctx, fn candidate, ctx ->
-        claim_id(ctx, candidate, &lifted_site/3, fn id, candidate ->
+        claim_id(ctx, candidate, &site_for/3, fn id, candidate ->
           {index, clause} = FunctionPlan.mutated_clause(plan, candidate)
           {id, index, clause, ImportWitness.for_candidate(candidate)}
         end)
@@ -655,74 +656,78 @@ defmodule Mutare.Transform do
     {[dispatcher | base_clauses], ctx}
   end
 
-  # === sites: pick the constructor from the candidate variant =================
+  # === sites: pick the `Mutare.Site` constructor from the candidate variant ====
+  #
+  # `Mutare.Transform` owns which constructor each candidate variant maps to; `Mutare.Site`
+  # owns the struct's fields. The candidate's **type** selects the shape — there is no stored
+  # `kind`/`operation` discriminant (the `Mutare.Transform.Candidate` "the struct *is* the
+  # shape" rule). `site_for/3` is the single home for that mapping: every selector-emitting
+  # path routes its candidates through it via `claim_id/4`, so a new variant is recorded by
+  # adding **one** head here. (The `:hosted` path is the lone exception — its `hosted_site/3`
+  # takes a per-mutant carrier map, not a candidate struct.)
+  #
+  # Delivery is **three independent axes**, so no single stored tag could capture it (InPlace
+  # and Return share the emit path and branch but differ in Site; InPlace and CasePattern share
+  # the emit path and Site but differ in branch). Each variant is matched per axis, at the one
+  # place that axis is dispatched — this table is the map:
+  #
+  #   variant           Site (here)     emit path (emit_one_unhosted)   selector branch (branch_node)
+  #   ----------------  --------------  ------------------------------  -----------------------------
+  #   InPlace           in_place        emit_site                       .mutated
+  #   Return            return_value    emit_site                       .mutated
+  #   CasePattern       in_place        emit_site                       .replacement
+  #   RescueDrop        in_place_drop   emit_site                       .replacement
+  #   CaseClause        in_place        emit_case_pattern_site          (own builder)
+  #   MatchPattern      in_place        emit_match_site                 (own builder)
+  #   MacroPattern      in_place        emit_macro_pattern_site         (own builder)
+  #   Lifted            lifted_replace  emit_function_plan              (lifted clause)
+  #   PatternStructure  lifted_replace  emit_function_plan              (lifted clause)
+  #   GuardDrop         lifted_replace  emit_function_plan              (lifted clause)
+  #   Drop              clause_drop     emit_function_plan              (lifted clause)
+  #
+  # (`Hosted` records via `hosted_site/3` and emits via `emit_hosted_site/3`.) The two guards
+  # below name the two Site-shape *sets* whose head is identical; the three unique shapes get a
+  # head each.
 
-  # Transform owns which constructor each candidate maps to; `Mutare.Site` owns
-  # the struct's fields. The candidate's *type* (not a stored `kind`/`operation`)
-  # selects the shape.
-  # Most in-place candidates record the *same* plain replacement Site — the diff is
-  # `original` → `mutated` at `range`, tagged with the mutator. They differ only in the
-  # emit *scaffolding* that delivers them, none of which reaches the Site:
-  #
-  #   * `InPlace`      — the body operator's own selector `case`.
-  #   * `CasePattern`  — the `receive`/`fn` whole-construct selector (the branch carries
-  #     the whole mutated construct, `branch_node/1`).
-  #   * `CaseClause`   — the `case` tuple-the-scrutinee rewrite (`emit_case_pattern_site/3`).
-  #   * `MatchPattern` — the `=`-match tuple-export selector (`emit_match_site/3`).
-  #   * `MacroPattern` — the binding-macro tuple-export selector (`emit_macro_pattern_site/3`).
-  #
-  # See each emit_* and the `Mutare.Transform.Candidate` moduledoc for the per-type detail. The
-  # set is named (`in_place_candidate?/1`) so the guard reads as intent and a new
-  # in-place-replacement variant is added in one place.
-  defguardp in_place_candidate?(c)
+  # The variants recording the plain `Site.in_place/6` replacement — diff is `original` →
+  # `mutated` at `range`, tagged with the mutator. They differ only in the emit scaffolding that
+  # delivers them (the table above), none of which reaches the Site, so one head serves all five.
+  # The guard names that *Site-shape* set; it is **not** "every in-place-delivered candidate"
+  # (`Return`/`RescueDrop` are also delivered in place, but record a different Site).
+  defguardp plain_replacement_site?(c)
             when is_struct(c, Candidate.InPlace) or is_struct(c, Candidate.CasePattern) or
                    is_struct(c, Candidate.CaseClause) or is_struct(c, Candidate.MatchPattern) or
                    is_struct(c, Candidate.MacroPattern)
 
-  defp in_place_site(id, c, file) when in_place_candidate?(c) do
-    Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
-  end
+  # The lifted variants — a `when`-guard / head-pattern literal swap (`Lifted`), a head
+  # structure rewrite (`PatternStructure`), or a guard removal (`GuardDrop`) — all record the
+  # same `:lifted` replacement (`original`/`mutated` already carry the right before/after, so the
+  # diff is a clean one-liner); only the mutator family and the tagged position differ.
+  defguardp lifted_replacement_site?(c)
+            when is_struct(c, Candidate.Lifted) or is_struct(c, Candidate.PatternStructure) or
+                   is_struct(c, Candidate.GuardDrop)
 
-  # A return-value mutation is delivered in place (the tail is a body position),
-  # but it is structural — no operator — so it gets its own `Site` constructor
-  # (`nil` ops); the producing spec (`ReturnValue` or a custom return mutator) on the
-  # candidate supplies the recorded name.
-  defp in_place_site(id, %Candidate.Return{} = c, file) do
-    Site.return_value(id, file, c.range, c.original, c.mutated, c.mutator)
-  end
+  defp site_for(id, c, file) when plain_replacement_site?(c),
+    do: Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
 
-  # A whole `rescue` clause dropped from a `try`, delivered in place by the whole-`try`
-  # selector (`branch_node/1` returns the rebuilt try). The diff is a `:delete` of the
-  # dropped clause's lines (`Site.in_place_drop/5`), like a function `clause_drop` — the
-  # one in-place candidate whose Site isn't the plain `original`/`mutated` replacement.
-  defp in_place_site(id, %Candidate.RescueDrop{} = c, file) do
-    Site.in_place_drop(id, file, c.range, c.dropped, c.mutator)
-  end
+  defp site_for(id, c, file) when lifted_replacement_site?(c),
+    do: Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
 
-  # A lifted candidate — a `when`-guard operator swap or a head-pattern literal swap
-  # (a `case` is illegal in both positions) — records the `:lifted` replacement shape;
-  # only the mutator family and the tagged position differ, both already on the Site.
-  defp lifted_site(id, %Candidate.Lifted{} = c, file) do
-    Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
-  end
+  # A return-value mutation is delivered in place (the tail is a body position), but it is
+  # structural — no operator — so it records its own constructor (`nil` ops); the producing
+  # spec (`ReturnValue` or a custom return mutator) supplies the recorded name.
+  defp site_for(id, %Candidate.Return{} = c, file),
+    do: Site.return_value(id, file, c.range, c.original, c.mutated, c.mutator)
 
-  # A head-pattern structure rewrite (variable swap / wildcard) is lifted too, and
-  # records the same `:lifted` replacement shape — `original`/`mutated` are the clause's
-  # head call node before/after (`f(x, x)` → `f(_, x)`), so the diff is a clean one-liner.
-  defp lifted_site(id, %Candidate.PatternStructure{} = c, file) do
-    Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
-  end
+  # A whole `rescue` clause dropped from a `try`, delivered in place by the whole-`try` selector
+  # (`branch_node/1` returns the rebuilt try). The diff is a `:delete` of the dropped clause's
+  # lines (`Site.in_place_drop/5`).
+  defp site_for(id, %Candidate.RescueDrop{} = c, file),
+    do: Site.in_place_drop(id, file, c.range, c.dropped, c.mutator)
 
-  # A guard removal is lifted (a `def`/`defp` head — a `case` is illegal in a `when`)
-  # and records the same `:lifted` replacement shape: `original` is the `f(x) when g`
-  # head and `mutated` the bare `f(x)`, so the diff drops just the ` when g`.
-  defp lifted_site(id, %Candidate.GuardDrop{} = c, file) do
-    Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
-  end
-
-  defp lifted_site(id, %Candidate.Drop{} = c, file) do
-    Site.clause_drop(id, file, c.range, c.original)
-  end
+  # A whole lifted clause drop — no `original`/`mutated` replacement, just the removed clause.
+  defp site_for(id, %Candidate.Drop{} = c, file),
+    do: Site.clause_drop(id, file, c.range, c.original)
 
   # === in-place transform: analyze (annotate) then assign/emit ===============
 
@@ -823,6 +828,11 @@ defmodule Mutare.Transform do
     end
   end
 
+  # The emit-path axis of the delivery table (see `site_for/3`): which selector-emitting path
+  # delivers a node's candidates. A node's `:mutare` candidates are homogeneous in delivery (the
+  # analyzer attaches one family per node), so matching the list head identifies the path; the
+  # tuple-export kinds (`MatchPattern`/`MacroPattern`) get their own paths, every other in-place
+  # kind shares `emit_site/3`.
   defp emit_one_unhosted(current, ctx) do
     # A `case` carrying per-clause `CaseClause`s is rewritten by the tuple-the-scrutinee
     # path (its clauses can't each host a selector, and a `case` isn't a liftable function
@@ -937,7 +947,7 @@ defmodule Mutare.Transform do
 
   defp emit_site(node, candidates, ctx) do
     {clauses, ctx} =
-      claim_clauses(candidates, ctx, &in_place_site/3, fn id, candidate ->
+      claim_clauses(candidates, ctx, &site_for/3, fn id, candidate ->
         {:->, [],
          [
            [id],
@@ -1019,7 +1029,7 @@ defmodule Mutare.Transform do
     catch_all = Keyword.fetch!(opts, :catch_all)
 
     {clauses, ctx} =
-      claim_clauses(candidates, ctx, &in_place_site/3, fn id, candidate ->
+      claim_clauses(candidates, ctx, &site_for/3, fn id, candidate ->
         {:->, [], [[id], mutant_body.(candidate)]}
       end)
 
@@ -1248,7 +1258,7 @@ defmodule Mutare.Transform do
     var = ctx.active_var
 
     {claimed, ctx} =
-      claim_clauses(candidates, ctx, &in_place_site/3, fn id, candidate ->
+      claim_clauses(candidates, ctx, &site_for/3, fn id, candidate ->
         {id, candidate.clause_index, CaseClauseEmit.mutant_clause(id, candidate, var)}
       end)
 
@@ -1287,9 +1297,10 @@ defmodule Mutare.Transform do
     end
   end
 
-  # The selector-branch value for an in-place candidate. A `CasePattern` (and a `RescueDrop`)
-  # carries the whole mutated construct (`replacement`); for every other in-place candidate the
-  # branch *is* its `mutated` node (an operator swap, a return constant).
+  # The selector-branch axis of the delivery table (see `site_for/3`): the value the mutant
+  # branch of an in-place selector holds. A `CasePattern` (and a `RescueDrop`) carries the whole
+  # mutated construct (`replacement`); for every other in-place candidate the branch *is* its
+  # `mutated` node (an operator swap, a return constant).
   defp branch_node(%Candidate.CasePattern{replacement: replacement}), do: replacement
   defp branch_node(%Candidate.RescueDrop{replacement: replacement}), do: replacement
   defp branch_node(candidate), do: candidate.mutated

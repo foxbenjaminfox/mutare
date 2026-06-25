@@ -2350,7 +2350,8 @@ near-identical copies for N guard mutants. Both are fixed:
 - **One struct per legal kind.** `Candidate.{InPlace,Guard,Drop}` — the
   `context`/`kind`/`operation` triple is gone; the variant *is* the kind, and the
   matching `Site` constructor is chosen by pattern-matching the struct at emit
-  (`in_place_site/3` / `lifted_site/3`). Illegal states can't be built.
+  (`site_for/3`, the single candidate→`Site` map, which a per-axis delivery table
+  documents). Illegal states can't be built.
 - **The clause group is stored once.** `FunctionPlan` holds a single *tagged*
   clause group (every mutatable guard operator marked with a unique
   `meta[:mutare_tag]`, the tag counter threaded across clauses so tags are
