@@ -268,6 +268,135 @@ defmodule Mutare.SchemaTest do
     assert [{"lib/bad.ex", _reason}] = schema.skipped
   end
 
+  test "every parser-error type is skipped (not re-raised), and in source order", %{root: root} do
+    write(root, "lib/ok.ex", "defmodule Ok do\n  def f(x), do: x + 1\nend\n")
+    # One file per exception `safe_transform/5` rescues, named so they sort
+    # ahead of ok.ex: a MismatchedDelimiterError, a SyntaxError, a TokenMissingError.
+    write(root, "lib/e1_mismatch.ex", "defmodule M do\n  def ( oops\nend\n")
+    write(root, "lib/e2_syntax.ex", "x = %{a: }\n")
+    write(root, "lib/e3_token.ex", "[1, 2")
+
+    schema = Schema.build(root, mutators: @probe)
+
+    # The good file still mutates; all three malformed files are skipped rather than
+    # crashing the build, and `finalize/1` puts `skipped` back into source (path) order.
+    assert Schema.count(schema) == 1
+
+    assert Enum.map(schema.skipped, &elem(&1, 0)) ==
+             ["lib/e1_mismatch.ex", "lib/e2_syntax.ex", "lib/e3_token.ex"]
+  end
+
+  test "discover dedups overlapping paths and orders them (threading order, not map order)",
+       %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/sub/b.ex", "defmodule B do\n  def g(a, b), do: a >= b\nend\n")
+    write(root, "other/c.ex", "defmodule C do\n  def h(x), do: x + 2\nend\n")
+
+    # Paths listed out of order and overlapping (`lib` recursively ⊇ `lib/a.ex`).
+    schema = Schema.build(root, paths: ["other/c.ex", "lib", "lib/a.ex"], mutators: @probe)
+
+    # `schema.files` is a *list* recording the discovery/threading order, so it exposes
+    # both the sort and the dedup that `schema.sources` (a map) silently normalizes away.
+    assert schema.files == ["lib/a.ex", "lib/sub/b.ex", "other/c.ex"]
+    assert schema.files == Enum.uniq(schema.files)
+  end
+
+  test "a directive in a site-less file is detected (per-file site lookup defaults to [])",
+       %{root: root} do
+    # The file parses (so it's in `sources`) and contains `mutare:ignore`, but produces
+    # zero sites — so it is not a key in the per-file site map. The lookup must default
+    # to `[]`, not `nil` (an `Enum.map(nil, …)` would crash the ineffective scan).
+    write(root, "lib/c.ex", """
+    defmodule C do
+      # mutare:ignore
+      @moduledoc "x"
+    end
+    """)
+
+    schema = Schema.build(root, mutators: @probe)
+
+    assert Schema.count(schema) == 0
+    assert [{"lib/c.ex", %{line: 3}}] = schema.ineffective_ignores
+  end
+
+  test "ineffective directives are ordered by line", %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule A do
+      def f(x), do: x   # mutare:ignore[bogus1]
+      def g(x), do: x   # mutare:ignore[bogus2]
+    end
+    """)
+
+    schema = Schema.build(root, mutators: @probe)
+
+    # Both typo'd filters suppress nothing; the recorded list is line-ordered, not
+    # reversed (the `for`-comprehension input order).
+    assert Enum.map(schema.ineffective_ignores, fn {_f, d} -> d.line end) == [2, 3]
+  end
+
+  describe "forwards options through to the transform" do
+    test ":skip_ids reaches the transform (poison recovery renders the mutant raw)", %{root: root} do
+      write(
+        root,
+        "lib/a.ex",
+        "defmodule A do\n  def f(x), do: x + 1\n  def g(a, b), do: a >= b\nend\n"
+      )
+
+      files = [Path.join(root, "lib/a.ex")]
+      opts = [mutators: @probe]
+
+      full = Schema.from_files(files, root, opts, MapSet.new())
+      skipped = Schema.from_files(files, root, opts, MapSet.new([1]))
+
+      # The id counter advances even for skipped ids, so the site list is unchanged —
+      # but mutant 1's selector is rendered raw, so the metamutant source must differ.
+      assert Enum.map(full.sites, & &1.id) == Enum.map(skipped.sites, & &1.id)
+      assert full.metamutants["lib/a.ex"] != skipped.metamutants["lib/a.ex"]
+    end
+
+    test ":expand_uses reaches the transform (a use-injected import is seen only when on)",
+         %{root: root} do
+      # `use Mutare.Test.ControllerUsing` injects `import Enum, only: [reject: 2]`, so the
+      # bare `reject/2` is a mutable `Enum.reject` only once use-expansion runs.
+      write(root, "lib/u.ex", """
+      defmodule U do
+        use Mutare.Test.ControllerUsing
+        def f(xs), do: reject(xs, fn x -> x end)
+      end
+      """)
+
+      coll = [Mutare.Mutators.Collection]
+      on = Schema.build(root, paths: ["lib/u.ex"], mutators: coll, expand_uses: true)
+      off = Schema.build(root, paths: ["lib/u.ex"], mutators: coll, expand_uses: false)
+
+      assert Schema.count(on) > 0
+      assert Schema.count(off) == 0
+    end
+
+    test ":macros reaches the transform (a :skip routing keeps core out of the DSL body)",
+         %{root: root} do
+      write(root, "lib/q.ex", """
+      defmodule UsesQuery do
+        import Mutare.Test.QueryDSL
+        def run(y), do: query(where: 1 == y, select: 2)
+      end
+      """)
+
+      build = fn macros ->
+        Schema.build(root,
+          paths: ["lib/q.ex"],
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
+          macros: macros
+        )
+      end
+
+      # Without the routing the DSL body's `1 == y` / literals mutate; with the `:skip`
+      # routing forwarded, core leaves the opaque body untouched.
+      assert Schema.count(build.([])) > 0
+      assert Schema.count(build.([{Mutare.Test.QueryDSL, :query, 1, :skip}])) == 0
+    end
+  end
+
   test "an internal error during transform crashes; it is not swallowed as a skip",
        %{root: root} do
     # Source parses fine, so the failure is in the transform itself — a tool bug,
