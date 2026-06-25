@@ -285,7 +285,7 @@ defmodule Mutare.ConfigTest do
     test "raises on a module that does not implement the behaviour" do
       error = assert_raise ArgumentError, fn -> Config.mutator_modules([Enum]) end
       assert Exception.message(error) =~ "implementing Mutare.Mutator"
-      assert Exception.message(error) =~ "missing mutate/1"
+      assert Exception.message(error) =~ "missing name/0"
     end
   end
 end

@@ -112,9 +112,8 @@ defmodule Mutare.ReturnValueTest do
       assert return_sites(~s("")) == []
     end
 
-    test "mutate/1 never fires as a node mutator — the family is structural" do
-      assert ReturnValue.mutate({:+, [], [1, 2]}) == :skip
-      assert ReturnValue.mutate({:__block__, [], [:ok]}) == :skip
+    test "does not implement mutate/1 — the family is structural" do
+      refute function_exported?(ReturnValue, :mutate, 1)
       assert ReturnValue.name() == :return_value
     end
   end

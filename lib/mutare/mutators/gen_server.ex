@@ -77,11 +77,6 @@ defmodule Mutare.Mutators.GenServer do
   @impl true
   def name, do: :genserver
 
-  # Every decision needs the enclosing module's behaviours, so this mutator works
-  # purely through the structural return hook — never node-locally.
-  @impl true
-  def mutate(_node), do: :skip
-
   @doc """
   Offer the alternative GenServer return for `tail`, but only inside a module that
   implements `GenServer` (read from `context.behaviours`). The behaviour-aware

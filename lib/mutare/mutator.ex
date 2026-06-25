@@ -57,8 +57,9 @@ defmodule Mutare.Mutator do
       defmodule MyApp.Mutators.MagicNumber do
         @behaviour Mutare.Mutator
         def name, do: :magic_number
-        def mutate(_node), do: :skip
 
+        # A configurable mutator needs the `opts`, so it works through `mutate/2` and omits the
+        # (optional) `mutate/1`.
         def mutate({:__block__, _m, [n]}, %{opts: opts}) when is_integer(n) do
           case Keyword.get(opts, :swaps, %{})[n] do
             nil -> :skip
@@ -222,6 +223,12 @@ defmodule Mutare.Mutator do
   @doc """
   Return `:skip` when the mutator does not apply to `node`, otherwise a list of
   mutated nodes (one per mutant).
+
+  **Optional** — the entry point for a *node-level* mutator. A purely **structural** mutator
+  (one driven by `pattern_mutations/2`, `return_replacements/1`, or `condition_replacements/1`)
+  or a **pipe-aware/configurable** one (driven by `mutate/2`) produces no node-local mutation and
+  simply omits this callback; `mutations/3` skips a mutator that doesn't export it. A module must
+  still implement `name/0` plus at least one mutation-producing callback to count as a mutator.
   """
   @callback mutate(Macro.t()) :: :skip | [Macro.t()]
 
@@ -496,7 +503,8 @@ defmodule Mutare.Mutator do
   @callback condition_replacements(condition :: Macro.t(), context :: structural_context()) ::
               [Macro.t()]
 
-  @optional_callbacks pattern_mutations: 2,
+  @optional_callbacks mutate: 1,
+                      pattern_mutations: 2,
                       pattern_mutations: 3,
                       mutate: 2,
                       macros: 0,
@@ -698,10 +706,27 @@ defmodule Mutare.Mutator do
   # The structural-callback context: the enclosing module's behaviour set, nothing else.
   defp structural_context(%Spec{behaviours: behaviours}), do: %{behaviours: behaviours}
 
+  # The mutation-producing callbacks: a module is a mutator if it exports `name/0` *and* at least
+  # one of these. `mutate/1` is no longer required — a structural/pipe-only family produces its
+  # mutations through `mutate/2` or a structural hook instead. (`macros/0`/`empty_collection?/1`
+  # are routing/classification, not producers, so they don't qualify a module on their own.)
+  @producing_callbacks [
+    mutate: 1,
+    mutate: 2,
+    pattern_mutations: 2,
+    pattern_mutations: 3,
+    return_replacements: 1,
+    return_replacements: 2,
+    condition_replacements: 1,
+    condition_replacements: 2,
+    host: 2
+  ]
+
   @doc """
-  Whether `term` is a module that implements this behaviour (exports `mutate/1`
-  and `name/0`). Total over any term, so a non-module entry in a `:mutators` list
-  is *reported* by resolution rather than crashing a guard.
+  Whether `term` is a module that implements this behaviour — it exports `name/0` and at least one
+  mutation-producing callback (`mutate/1`, the pipe-aware `mutate/2`, or a structural hook such as
+  `return_replacements/1`). Total over any term, so a non-module entry in a `:mutators` list is
+  *reported* by resolution rather than crashing a guard.
 
       iex> Mutare.Mutator.implemented_by?(Mutare.Mutators.Arithmetic)
       true
@@ -713,8 +738,10 @@ defmodule Mutare.Mutator do
   @spec implemented_by?(term()) :: boolean()
   def implemented_by?(module) when is_atom(module) do
     Code.ensure_loaded?(module) and
-      function_exported?(module, :mutate, 1) and
-      function_exported?(module, :name, 0)
+      function_exported?(module, :name, 0) and
+      Enum.any?(@producing_callbacks, fn {fun, arity} ->
+        function_exported?(module, fun, arity)
+      end)
   end
 
   # Total over any term: a non-atom (e.g. a string in `.mutare.exs`) is simply
@@ -746,8 +773,16 @@ defmodule Mutare.Mutator do
     Enum.flat_map(mutators, fn entry ->
       spec = Spec.coerce(entry)
       ctx = context |> Map.put(:opts, spec.opts) |> Map.put(:behaviours, spec.behaviours)
-      tag(spec, spec.module.mutate(node)) ++ contextual(spec, node, ctx)
+      node_local(spec, node) ++ contextual(spec, node, ctx)
     end)
+  end
+
+  # `mutate/1` is optional (a structural/pipe-only family omits it), so call it only when exported —
+  # mirroring `contextual/1`'s guard on `mutate/2`.
+  defp node_local(spec, node) do
+    if function_exported?(spec.module, :mutate, 1),
+      do: tag(spec, spec.module.mutate(node)),
+      else: []
   end
 
   defp contextual(spec, node, context) do

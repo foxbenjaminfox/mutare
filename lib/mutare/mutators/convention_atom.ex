@@ -85,11 +85,6 @@ defmodule Mutare.Mutators.ConventionAtom do
   @spec members() :: [atom()]
   def members, do: @members
 
-  # Never fires node-locally: the built-in *and* configured pairs both resolve in `mutate/2`,
-  # which the transform always runs (with `opts: []` when unconfigured) — a single table path.
-  @impl Mutare.Mutator
-  def mutate(_node), do: :skip
-
   @impl Mutare.Mutator
   def mutate(node, %{opts: opts}) do
     case atom_value(node) do

@@ -67,9 +67,8 @@ defmodule Mutare.IfConditionTest do
   end
 
   describe "the behaviour surface" do
-    test "mutate/1 is :skip — it is structural, never a node mutator" do
-      assert IfCondition.mutate(Sourceror.parse_string!("foo?(x)")) == :skip
-      assert IfCondition.mutate(Sourceror.parse_string!("a > b")) == :skip
+    test "does not implement mutate/1 — it is structural, never a node mutator" do
+      refute function_exported?(IfCondition, :mutate, 1)
     end
 
     test "name/0" do

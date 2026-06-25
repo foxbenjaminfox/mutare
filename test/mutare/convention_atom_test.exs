@@ -60,8 +60,8 @@ defmodule Mutare.ConventionAtomTest do
       assert ConventionAtom.mutate(:ok, @ctx) == :skip
     end
 
-    test "mutate/1 never fires node-locally (logic lives in mutate/2)" do
-      assert ConventionAtom.mutate(parse(":ok")) == :skip
+    test "does not implement mutate/1 (logic lives in mutate/2)" do
+      refute function_exported?(ConventionAtom, :mutate, 1)
     end
   end
 

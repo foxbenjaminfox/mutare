@@ -14,8 +14,8 @@ defmodule Mutare.Mutators.PatternWildcardTest do
     |> Enum.map(&Sourceror.to_string({name, meta, &1}))
   end
 
-  test "mutate/1 is :skip — it is a structural mutator, not node-level" do
-    assert PatternWildcard.mutate({:+, [], [1, 2]}) == :skip
+  test "does not implement mutate/1 — it is a structural mutator, not node-level" do
+    refute function_exported?(PatternWildcard, :mutate, 1)
     assert PatternWildcard.name() == :pattern_wildcard
   end
 

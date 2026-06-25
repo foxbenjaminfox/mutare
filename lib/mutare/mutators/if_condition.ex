@@ -32,12 +32,6 @@ defmodule Mutare.Mutators.IfCondition do
   @impl Mutare.Mutator
   def name, do: :if_condition
 
-  # Structural, not node-level: a condition slot is invisible to a node mutator, so
-  # this never fires here. `replacements/1` is the real entry point, driven by the
-  # transform at each `if`/`unless`/`cond` condition. See the moduledoc.
-  @impl Mutare.Mutator
-  def mutate(_node), do: :skip
-
   @doc """
   The constant replacements for one `if`/`unless`/`cond` condition, as clean-meta
   AST nodes ready to splice into a selector clause: the pair `[true, false]`, or

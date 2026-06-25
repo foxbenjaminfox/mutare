@@ -35,12 +35,6 @@ defmodule Mutare.Mutators.PatternSwap do
   @impl Mutare.Mutator
   def name, do: :pattern_swap
 
-  # Structural, not node-level: a swap targets two sibling positions in a head
-  # pattern, which a node mutator can't see. `pattern_mutations/2` is the real entry
-  # point, driven by the transform. See the moduledoc.
-  @impl Mutare.Mutator
-  def mutate(_node), do: :skip
-
   @doc """
   Every single-swap variant of a `def`/`defp` clause's head argument list.
 

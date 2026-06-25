@@ -260,11 +260,6 @@ defmodule Mutare.Mutators.ModeSwap do
   @impl Mutare.Mutator
   def name, do: :mode_swap
 
-  # Never fires node-locally: the mode atom's position depends on the call's effective
-  # arity, which isn't knowable without pipe context.
-  @impl Mutare.Mutator
-  def mutate(_node), do: :skip
-
   @impl Mutare.Mutator
   def mutate(node, %{pipe_mode: pipe_mode}) do
     case Calls.resolved_call(node) do

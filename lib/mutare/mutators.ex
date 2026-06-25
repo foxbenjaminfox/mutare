@@ -189,12 +189,17 @@ defmodule Mutare.Mutators do
   defp resolve!({entry, opts}), do: Spec.configured(to_module!(entry), opts)
   defp resolve!(entry), do: Spec.for_module(to_module!(entry))
 
-  # An entry's module: a registered family atom maps via the registry, any other
-  # term must be a module implementing the behaviour.
+  # An entry's module: a registered family atom maps via the registry; a registered built-in
+  # module passes through as itself (so a structural built-in whose logic lives in the transform,
+  # like `GuardDrop`/`RescueType`, resolves by module too — it has no producing callback for
+  # `implemented_by?` to find); any other term must be a custom module implementing the behaviour.
   defp to_module!(name) do
     cond do
       is_atom(name) and Keyword.has_key?(registry(), name) ->
         Keyword.fetch!(registry(), name)
+
+      is_atom(name) and name in all() ->
+        name
 
       Mutare.Mutator.implemented_by?(name) ->
         name
@@ -211,7 +216,7 @@ defmodule Mutare.Mutators do
 
     # A loaded module that just isn't a mutator gets a more specific nudge.
     if is_atom(name) and Code.ensure_loaded?(name) do
-      base <> " (#{inspect(name)} is missing mutate/1 or name/0)"
+      base <> " (#{inspect(name)} is missing name/0 or a mutation callback like mutate/1)"
     else
       base
     end

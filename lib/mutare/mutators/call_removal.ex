@@ -166,11 +166,6 @@ defmodule Mutare.Mutators.CallRemoval do
   @impl Mutare.Mutator
   def name, do: :call_removal
 
-  # Never fires node-locally: whether to return the first arg (non-piped) or
-  # Elixir.Function.identity() (piped) depends on pipe context.
-  @impl Mutare.Mutator
-  def mutate(_node), do: :skip
-
   # Any stdlib call `Calls.resolved_call` recognises — an Elixir remote (aliased `Enum.sort`
   # or bare imported `import Enum; sort`) *or* an Erlang remote (direct `:string.trim`,
   # aliased `alias :string, as: S; S.trim`, bare imported `import :string; trim`) — keyed by

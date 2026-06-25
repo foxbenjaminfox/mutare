@@ -145,7 +145,20 @@ defmodule Mutare.MutatorsTest do
         |> Exception.message()
 
       assert message =~ "implementing Mutare.Mutator"
-      assert message =~ "missing mutate/1"
+      assert message =~ "missing name/0"
+    end
+
+    test "implemented_by?/1 accepts a structural mutator that has no mutate/1" do
+      # IfCondition is structural (condition_replacements/1) and no longer exports mutate/1.
+      refute function_exported?(IfCondition, :mutate, 1)
+      assert Mutare.Mutator.implemented_by?(IfCondition)
+    end
+
+    test "resolve/1 accepts a registered built-in by module even with no producing callback" do
+      # GuardDrop's logic lives in the transform — it exports only name/0, so implemented_by?/1
+      # can't recognise it, but as a registered built-in it still resolves by module (not just atom).
+      refute Mutare.Mutator.implemented_by?(GuardDrop)
+      assert [%Spec{module: GuardDrop, name: :guard_drop}] = Mutators.resolve([GuardDrop])
     end
 
     test "resolve/1 reports a non-atom entry rather than crashing on a guard" do
@@ -543,9 +556,8 @@ defmodule Mutare.MutatorsTest do
   end
 
   describe "CollectionArity" do
-    test "never fires node-locally (mutate/1 is always :skip)" do
-      assert CollectionArity.mutate(parse("Enum.sort(xs, f)")) == :skip
-      assert CollectionArity.mutate(parse("Enum.reverse(xs)")) == :skip
+    test "does not implement mutate/1 (pipe-aware logic lives in mutate/2)" do
+      refute function_exported?(CollectionArity, :mutate, 1)
     end
 
     test "sort/sort_by collapse to reverse, dropping refining args (non-piped)" do
@@ -748,9 +760,8 @@ defmodule Mutare.MutatorsTest do
   end
 
   describe "CallRemoval" do
-    test "never fires node-locally (mutate/1 is always :skip)" do
-      assert CallRemoval.mutate(parse("Enum.sort(xs)")) == :skip
-      assert CallRemoval.mutate(parse("String.trim(s)")) == :skip
+    test "does not implement mutate/1 (pipe-aware logic lives in mutate/2)" do
+      refute function_exported?(CallRemoval, :mutate, 1)
     end
 
     test "non-piped: drops the transform, returning its first argument" do
@@ -896,8 +907,8 @@ defmodule Mutare.MutatorsTest do
       assert CallRemoval.mutate(parse("abs(x)"), %{pipe_mode: :piped}) == :skip
     end
 
-    test "abs never fires node-locally (mutate/1 is always :skip)" do
-      assert CallRemoval.mutate(parse("abs(x)")) == :skip
+    test "abs: does not implement mutate/1 (bare Kernel, pipe-aware logic in mutate/2)" do
+      refute function_exported?(CallRemoval, :mutate, 1)
     end
 
     test "name" do
@@ -906,8 +917,8 @@ defmodule Mutare.MutatorsTest do
   end
 
   describe "DefaultDrop" do
-    test "never fires node-locally (mutate/1 is always :skip)" do
-      assert DefaultDrop.mutate(parse("Map.get(m, k, :d)")) == :skip
+    test "does not implement mutate/1 (pipe-aware logic lives in mutate/2)" do
+      refute function_exported?(DefaultDrop, :mutate, 1)
     end
 
     test "non-piped: drops a non-nil trailing default, reverting to the /2 lookup" do
@@ -960,9 +971,8 @@ defmodule Mutare.MutatorsTest do
   end
 
   describe "ModeSwap" do
-    test "never fires node-locally (mutate/1 is always :skip)" do
-      assert ModeSwap.mutate(parse("DateTime.truncate(dt, :second)")) == :skip
-      assert ModeSwap.mutate(parse("String.upcase(s, :ascii)")) == :skip
+    test "does not implement mutate/1 (pipe-aware logic lives in mutate/2)" do
+      refute function_exported?(ModeSwap, :mutate, 1)
     end
 
     test "truncate precision: swaps to adjacent ladder neighbours only (non-piped)" do

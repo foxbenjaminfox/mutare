@@ -79,12 +79,6 @@ defmodule Mutare.Mutators.ReturnValue do
   @impl Mutare.Mutator
   def name, do: :return_value
 
-  # Structural, not node-level: placement (a clause tail) is invisible to a node
-  # mutator, so this never fires here. `replacements/1` is the real entry point,
-  # driven by the transform. See the moduledoc.
-  @impl Mutare.Mutator
-  def mutate(_node), do: :skip
-
   @doc """
   The constant replacements for one clause-tail expression, as clean-meta AST
   nodes ready to splice into a selector clause. Returns `[]` when the tail should

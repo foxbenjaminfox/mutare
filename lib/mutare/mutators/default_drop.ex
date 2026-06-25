@@ -48,11 +48,6 @@ defmodule Mutare.Mutators.DefaultDrop do
   @impl Mutare.Mutator
   def name, do: :default_drop
 
-  # Never fires node-locally: distinguishing a `/3` (drop the default) from a piped
-  # `/2` (nothing to drop) needs pipe context.
-  @impl Mutare.Mutator
-  def mutate(_node), do: :skip
-
   @impl Mutare.Mutator
   def mutate(node, %{pipe_mode: pipe_mode}) do
     case Calls.resolved_call(node) do

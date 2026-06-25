@@ -699,10 +699,10 @@ contract between them is the whole game.
   **Sarif** emits survivors-only as SARIF 2.1.0 findings for GitHub code scanning (reuses
   `Site.describe/1` as the message). Encoding is the stdlib `JSON` module — hence the `elixir`
   floor is `~> 1.18`. Selected via the `:reporters` option (below).
-- **`Mutare.Mutator`** + **`Mutare.Mutators.*`** — the public extension behaviour (`mutate/1`,
-  `name/0`; optional `mutate/2`, `pattern_mutations/2`, `return_replacements/1`,
-  `condition_replacements/1`, `macros/0`, `empty_collection?/1`) and the built-in families, **all
-  on by default**. The `Mutare.Mutators` `@registry` is the source of truth for *which* families
+- **`Mutare.Mutator`** + **`Mutare.Mutators.*`** — the public extension behaviour (`name/0`
+  required; optional `mutate/1`, `mutate/2`, `pattern_mutations/2`, `return_replacements/1`,
+  `condition_replacements/1`, `macros/0`, `empty_collection?/1` — a mutator implements `name/0`
+  plus at least one mutation producer) and the built-in families, **all on by default**. The `Mutare.Mutators` `@registry` is the source of truth for *which* families
   exist; each family's exact swap table, exclusions, and rationale live in its own `@moduledoc`.
   Don't re-enumerate those here — a hand-maintained catalogue drifts (that's how a new family goes
   undocumented), the moduledocs don't. What a reader needs from *this* file is the handful of
@@ -726,7 +726,7 @@ contract between them is the whole game.
     (`abs`/`min`/`max`/`div`/`binary_slice`…) has no module to prove it's the `Kernel` one, so those
     are gated on **effective arity** instead. Generated cross-module names are emitted absolute
     (`Elixir.Kernel.==`, `Elixir.Function.identity`) so no alias/import can redirect them.
-  - **Structural** (`mutate/1` is `:skip`; the real logic is a callback core discovers *by export*
+  - **Structural** (no `mutate/1`; the real logic is a callback core discovers *by export*
     and applies at the positions it routes — so a *custom* mutator at that position participates
     too): ReturnValue (`return_replacements/1`, a clause's return tail — **and each branch tail of a
     `case`/`cond`/`if`/`unless`/`with`/`try`/`receive` in tail position**, descended by
@@ -892,8 +892,11 @@ contract between them is the whole game.
 
 ## Adding a mutator
 
-Implement `Mutare.Mutator` (`mutate/1` returning `:skip` or a list of mutated nodes that reuse
-the original operands; `name/0`). Register a built-in by adding a `family: Module` entry to
+Implement `Mutare.Mutator`: `name/0` (required) plus a way to produce mutations — a *node-level*
+`mutate/1` (returning `:skip` or a list of mutated nodes that reuse the original operands), **or**
+one of the structural/pipe-aware/macro callbacks below. `mutate/1` is **optional**: a structural or
+pipe-only mutator omits it entirely (a module needs `name/0` and at least one producing callback to
+count as a mutator). Register a built-in by adding a `family: Module` entry to
 `Mutare.Mutators`'s ordered `@registry` — the only edit, since the default set (`:all`),
 `families/0` and resolution all follow from it (everything registered is on by default). Users
 list custom modules directly under `:mutators` in `.mutare.exs`. Do **not** decide in-place vs
@@ -911,14 +914,14 @@ node `Conditional` already forces `true`/`false`, reuse `Mutare.Mutators.Conditi
 (as `ReturnValue`/`IfCondition` do).
 
 For a *structural head-pattern* mutator (restructuring a whole `def`/`defp` head — variable
-swaps, wildcards), `mutate/1` is `:skip` and you instead implement the optional callback
+swaps, wildcards), you omit `mutate/1` and implement the optional callback
 `pattern_mutations(head_args, used_outside)` (returning mutated arg lists);
 `Mutare.Transform.FunctionPlan` discovers it by export and delivers each by lifting. You must
 return only pattern-legal, compile-safe arg lists (`PatternSwap`/`PatternWildcard` are the
 built-in examples).
 
 For a *structural in-place* mutator at a position core routes — a `def`/`defp` clause **return
-tail** or an `if`/`unless`/`cond` **condition** — `mutate/1` is `:skip` and you implement
+tail** or an `if`/`unless`/`cond` **condition** — you omit `mutate/1` and implement
 `return_replacements(tail)` or `condition_replacements(condition)` (each returning replacement
 nodes). `Transform` discovers implementers by export (`Mutare.Mutator.implementing/3`) and asks
 *all* of them at each routed position, recording each under its own name — so these are no longer
@@ -949,8 +952,8 @@ call families with a synthesized call and re-captures a rename (`Mod'.fun'` → 
 first-arg removal (→ `&Function.identity/1`); you write nothing capture-specific.
 
 For an *arity-changing call* mutator (dropping a refining argument, collapsing to a coarser call),
-`mutate/1` is `:skip` and you implement the optional callback
-`mutate(node, %{pipe_mode: :piped | :unpiped})` instead — `Transform` invokes it at each runtime
+you omit `mutate/1` and implement the optional callback
+`mutate(node, %{pipe_mode: :piped | :unpiped})` — `Transform` invokes it at each runtime
 call position with whether the node is a `|>` RHS, so you can compute the *effective* arity
 (`Mutare.Mutator.effective_arity(args, context.pipe_mode)` — `length(args)`, plus one when `:piped`).
 You must

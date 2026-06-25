@@ -37,11 +37,6 @@ defmodule Mutare.Mutators.PatternWildcard do
   @impl Mutare.Mutator
   def name, do: :pattern_wildcard
 
-  # Structural, not node-level: a duplicate spans the whole head, invisible to a node
-  # mutator. `pattern_mutations/2` is the real entry point. See the moduledoc.
-  @impl Mutare.Mutator
-  def mutate(_node), do: :skip
-
   @doc """
   For each variable that appears more than once in `head_args`, the mutant argument
   list(s) that replace an occurrence with `_`.

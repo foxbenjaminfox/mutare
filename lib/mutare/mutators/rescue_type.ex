@@ -41,13 +41,6 @@ defmodule Mutare.Mutators.RescueType do
   @impl Mutare.Mutator
   def name, do: :rescue_type
 
-  # Structural/positional, not node-level: a rescue clause's exception-type list is
-  # special syntax the analyzer recognises by position (see the moduledoc), so this
-  # never fires as a node mutator. `drops/1` is the real entry point, called by
-  # `Mutare.Transform.Analyze` at each rescue clause.
-  @impl Mutare.Mutator
-  def mutate(_node), do: :skip
-
   @doc """
   The narrowed exception-type lists for a rescue clause's `in [t1, ..., tn]` list:
   each list with one type removed, **only** when ≥2 types are present (so the result

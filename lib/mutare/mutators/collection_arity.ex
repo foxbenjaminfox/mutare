@@ -47,11 +47,6 @@ defmodule Mutare.Mutators.CollectionArity do
   @impl Mutare.Mutator
   def name, do: :collection_arity
 
-  # Never fires node-locally: the effective arity isn't knowable without pipe
-  # context, so all the work is in the pipe-aware `mutate/2`.
-  @impl Mutare.Mutator
-  def mutate(_node), do: :skip
-
   @impl Mutare.Mutator
   def mutate(node, %{pipe_mode: pipe_mode}) do
     case Calls.resolved_call(node) do

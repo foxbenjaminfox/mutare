@@ -43,11 +43,4 @@ defmodule Mutare.Mutators.GuardDrop do
 
   @impl Mutare.Mutator
   def name, do: :guard_drop
-
-  # Structural, not node-level: a clause's `when` is invisible to a node mutator,
-  # so this never fires here. `Mutare.Transform` is the real driver (see the
-  # moduledoc); it discovers a removable guard positionally and gates it on this
-  # family being enabled.
-  @impl Mutare.Mutator
-  def mutate(_node), do: :skip
 end
