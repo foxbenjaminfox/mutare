@@ -94,6 +94,35 @@ defmodule Mutare.BehavioursTest do
       assert behaviours_of(source, "E") == [:gen_statem]
     end
 
+    test "a fully-qualified @behaviour whose real first segment is Elixir is preserved" do
+      # `Elixir.Elixir.Server` names the module `:"Elixir.Elixir.Server"` (a real leading
+      # `Elixir` segment under the canonical prefix). `resolve_path/2` keeps the doubled prefix
+      # whole so `Module.concat` folds just the one canonical prefix — without that, the path
+      # would silently degrade to the wrong module `Server`.
+      source = """
+      defmodule Q do
+        @behaviour Elixir.Elixir.Server
+      end
+      """
+
+      assert behaviours_of(source, "Q") == [:"Elixir.Elixir.Server"]
+      refute behaviours_of(source, "Q") == [Server]
+    end
+
+    test "an @behaviour through an alias of the root namespace folds to the bare module" do
+      # The collision the doubled-prefix preservation avoids: `alias Elixir, as: E` makes
+      # `E.GenServer` the real `GenServer`, even though it resolves to the same `[:Elixir, …]`
+      # path shape as a literal `Elixir.Elixir.GenServer`. It must *not* gain a doubled prefix.
+      source = """
+      defmodule Q2 do
+        alias Elixir, as: E
+        @behaviour E.GenServer
+      end
+      """
+
+      assert behaviours_of(source, "Q2") == [GenServer]
+    end
+
     test "a module with no @behaviour gets the empty set" do
       assert behaviours_of("defmodule N do\n  def f, do: 1\nend\n", "N") == []
     end

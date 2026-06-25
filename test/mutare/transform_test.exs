@@ -2513,6 +2513,45 @@ defmodule Mutare.TransformTest do
       assert {"Elixir.String.first(s)", "Elixir.String.last(s)"} in pairs
       refute Enum.any?(pairs, fn {orig, _} -> orig == "String.upcase(s)" end)
     end
+
+    test "a call through an alias of the root namespace mutates like a direct one" do
+      # `alias Elixir, as: E` aliases the root namespace, so `E.String.first` is the stdlib
+      # `String` reached through the alias. The combined key `[Elixir, :String]` must normalize
+      # to `[:String]` — else the call would match no swap table and never mutate.
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            alias Elixir, as: E
+            def first(s), do: E.String.first(s)
+          end
+          """,
+          mutators: [Mutare.Mutators.StringCall]
+        )
+
+      pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
+      assert {"E.String.first(s)", "E.String.last(s)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "a call through a grouped alias of the root namespace mutates" do
+      # `alias Elixir.{String}` assembles the child key `[Elixir, :String]`, which must normalize
+      # to `[:String]` so the bare `String.first` resolves to the stdlib module.
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            alias Elixir.{String}
+            def first(s), do: String.first(s)
+          end
+          """,
+          mutators: [Mutare.Mutators.StringCall]
+        )
+
+      pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
+      assert {"String.first(s)", "String.last(s)"} in pairs
+      assert_compiles(meta)
+    end
   end
 
   describe "import resolution (bare imported calls mutate)" do

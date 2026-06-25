@@ -39,7 +39,17 @@ defmodule Mutare.Transform.Aliases do
   #     carries the key `[:Elixir, :String]`, matches no family swap table, and is silently
   #     never mutated. The strip is **env-free**: `Elixir.` ignores aliases, so under
   #     `alias Wrong, as: String` the prefixed call is still the real `String` while a *bare*
-  #     `String.first` resolves to `Wrong` — the two deliberately differ.
+  #     `String.first` resolves to `Wrong` — the two deliberately differ. The **same**
+  #     normalization is applied to a path *assembled* by alias expansion or a grouped alias,
+  #     not only a literal prefix: `alias Elixir, as: E; E.String` and `alias Elixir.{String};
+  #     String` both produce the combined key `[:Elixir, :String]`, which collapses to
+  #     `[:String]` too — so a fully-qualified stdlib call reached through a root-namespace
+  #     alias mutates like a direct one. A **doubled** prefix (`Elixir.Elixir.MyUse`, a module
+  #     whose real first segment *is* `Elixir`) is the one exception: it is kept **whole**, not
+  #     stripped, so `to_module/1`'s `Module.concat` folds the single canonical prefix and lands
+  #     on `Elixir.MyUse` — stripping would collide with an aliased root namespace
+  #     (`alias Elixir, as: E; E.MyUse`), which resolves to the same `[:Elixir, :MyUse]` but
+  #     must fold to the bare `MyUse`.
   #   * An alias whose target is itself aliased is resolved through the env *before*
   #     binding, so the stored value is always the fully-expanded module — never another
   #     alias. `alias MyApp, as: String; alias String, as: S` binds `S` to `MyApp` (the
@@ -86,21 +96,24 @@ defmodule Mutare.Transform.Aliases do
   left unresolved.
   """
   @spec resolve_path([atom()] | term(), map()) :: [atom()] | atom() | term()
-  # A leading `Elixir` segment is the **fully-qualified, alias-proof** prefix: `Elixir.String`
-  # *is* `String` no matter what aliases are in scope (it's exactly what
-  # `Mutare.Transform.Calls.qualifier/1` emits to dodge a rebinding alias). Strip it so the
-  # written path lands on the same module key the call families match (`[:String]`) — without
-  # this, `Elixir.String.first(s)` carries the key `[:Elixir, :String]`, matches no swap table,
-  # and is silently never mutated. Crucially the remaining segments ride **verbatim, not
-  # re-resolved against the env**: `Elixir.` ignores aliases, so `alias Wrong, as: String;
-  # Elixir.String.first(s)` still resolves to the real `String` (whereas a *bare* `String.first`
-  # there resolves to `Wrong`, below). A lone `Elixir` (no rest) is the root namespace, never a
-  # call target — left untouched.
-  def resolve_path([:"Elixir" | rest], _env) when rest != [], do: rest
+  # A literal `Elixir.`-prefixed written path (`Elixir.String`, `Elixir.Elixir.MyUse`) is the
+  # **fully-qualified, alias-proof** form — `Elixir.` ignores every alias in scope (it's exactly
+  # what `Mutare.Transform.Calls.qualifier/1` emits to dodge a rebinding alias). Normalize it
+  # **env-free**: `alias Wrong, as: String; Elixir.String.first(s)` still resolves to the real
+  # `String`, whereas a *bare* `String.first` resolves to `Wrong` (below) — the two deliberately
+  # differ. The `[:"Elixir", _ | _]` shape (two+ segments) is required so a *lone* `Elixir` (the
+  # root namespace, never a call target) falls through to the env-consulting clause unchanged.
+  def resolve_path([:"Elixir", _ | _] = path, _env), do: normalize(path)
 
   def resolve_path([first | rest], env) when is_atom(first) do
     case Map.fetch(env, first) do
-      {:ok, base} when is_list(base) -> base ++ rest
+      # An alias expands to its bound base; **normalize the combined path** because the base may
+      # itself be — or end on — the root namespace. `alias Elixir, as: E; E.String` and
+      # `alias Elixir.{String}; String` both assemble `[Elixir, :String]`, which must collapse to
+      # the bare `[:String]` the call families key on, exactly as a literal `Elixir.String` does.
+      # (Without this, a fully-qualified stdlib call reached through such an alias matched no swap
+      # table and silently produced no mutants.)
+      {:ok, base} when is_list(base) -> normalize(base ++ rest)
       {:ok, base} when is_atom(base) and rest == [] -> base
       {:ok, _base} -> [first | rest]
       :error -> [first | rest]
@@ -108,6 +121,18 @@ defmodule Mutare.Transform.Aliases do
   end
 
   def resolve_path(path, _env), do: path
+
+  # Strip the single leading `Elixir` **canonical prefix** off an assembled module key so it
+  # matches the bare key the call families and `to_module/1` expect (`[Elixir, :String]` →
+  # `[:String]`). A **doubled** prefix is kept whole: `Elixir.Elixir.MyUse` names a module whose
+  # real first segment *is* `Elixir` (the module `Elixir.MyUse`), and `to_module/1`'s
+  # `Module.concat` folds exactly one leading `Elixir`, so the kept path lands on it — stripping
+  # would leave `[:Elixir, :MyUse]`, colliding with an aliased root namespace (which must fold to
+  # the bare `MyUse`), an ambiguity `to_module/1` can't undo. A **lone** `Elixir` (the root
+  # namespace) and any non-`Elixir`-led path are left untouched.
+  defp normalize([:"Elixir", :"Elixir" | _] = path), do: path
+  defp normalize([:"Elixir" | rest]) when rest != [], do: rest
+  defp normalize(other), do: other
 
   @doc """
   Extend an alias env with the binding(s) a statement introduces. An `alias` directive
@@ -161,8 +186,11 @@ defmodule Mutare.Transform.Aliases do
       resolved_base = resolve_path(base, env)
 
       Enum.reduce(children, env, fn
+        # `normalize/1`: the assembled child target may lead with the root namespace
+        # (`alias Elixir.{String}` assembles `[Elixir, :String]`), which must collapse to the
+        # bare key — exactly the combined-path normalization the resolution clause applies.
         {:__aliases__, _, seg}, env when is_list(seg) ->
-          if atoms?(seg), do: bind(env, base ++ seg, resolved_base ++ seg), else: env
+          if atoms?(seg), do: bind(env, base ++ seg, normalize(resolved_base ++ seg)), else: env
 
         _other, env ->
           env
@@ -237,6 +265,15 @@ defmodule Mutare.Transform.Aliases do
   concrete module atom: a path is `Module.concat`-ed, an atom is itself, any other shape
   (never a real key) is `nil`. The follow-on to `resolve_path/2`: the import/use/behaviour
   pre-passes all do `path |> resolve_path(env) |> to_module()` to land on the runtime module.
+
+  A plain `Module.concat` is exactly right and needs **no** leading-`Elixir` compensation:
+  `resolve_path/2` already normalizes the key it hands back — a single canonical `Elixir`
+  prefix is stripped (`[:String]`), a *doubled* one (a real `Elixir` segment) is kept whole
+  (`[:Elixir, :Elixir, :MyUse]`) — so `Module.concat` lands correctly either way (folding the
+  one canonical prefix off a doubled key → `Elixir.MyUse`). A path reaching here therefore
+  never carries a *single* leading `Elixir`; compensating for one would wrongly double-fold a
+  genuine doubled prefix. The canonical-prefix disambiguation lives in `resolve_path/2`, not
+  here.
   """
   @spec to_module([atom()] | atom() | term()) :: module() | nil
   def to_module(path) when is_list(path), do: Module.concat(path)

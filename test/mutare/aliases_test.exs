@@ -75,6 +75,96 @@ defmodule Mutare.AliasesTest do
     test "a lone Elixir (root namespace, never a call target) is left untouched" do
       assert Aliases.resolve_path([Elixir], %{}) == [Elixir]
     end
+
+    test "a doubled Elixir prefix (a real Elixir segment) is kept whole, not stripped" do
+      # `Elixir.Elixir.MyUse` names the module `Elixir.MyUse` (atom `:"Elixir.Elixir.MyUse"`).
+      # Stripping one `Elixir` would leave `[:Elixir, :MyUse]`, which `to_module/1` would fold
+      # back to the bare `MyUse` — so the whole path is preserved (env-free) instead.
+      assert Aliases.resolve_path([Elixir, Elixir, :MyUse], %{}) == [Elixir, Elixir, :MyUse]
+
+      assert Aliases.resolve_path([Elixir, Elixir, :My, :Mod], %{}) ==
+               [Elixir, Elixir, :My, :Mod]
+
+      # The preservation is env-free, like the single strip: no alias redirects it.
+      assert Aliases.resolve_path([Elixir, Elixir, :MyUse], %{"Elixir": [:Wrong]}) ==
+               [Elixir, Elixir, :MyUse]
+    end
+
+    test "an aliased root namespace and a real Elixir segment stay distinguishable" do
+      # The collision the doubled-prefix preservation exists to avoid: both `E.GenServer` (with
+      # `alias Elixir, as: E`) and the literal `Elixir.Elixir.GenServer` could land on the same
+      # path, but they name *different* modules. The aliased root must fold to bare `GenServer`;
+      # the real `Elixir` segment must not.
+      aliased = Aliases.resolve_path([:E, :GenServer], %{E: [Elixir]})
+      doubled = Aliases.resolve_path([Elixir, Elixir, :GenServer], %{})
+
+      assert Aliases.to_module(aliased) == GenServer
+      assert Aliases.to_module(doubled) == :"Elixir.Elixir.GenServer"
+      refute Aliases.to_module(aliased) == Aliases.to_module(doubled)
+    end
+
+    test "a root namespace introduced by an alias normalizes the combined key" do
+      # `alias Elixir, as: E` binds `E` to the root namespace `[Elixir]`; `E.String` assembles
+      # `[Elixir, :String]` during expansion, which must collapse to the bare `[:String]` the
+      # call families key on — exactly like a literal `Elixir.String`. (The combined path is
+      # normalized, not just an entry prefix.)
+      env = register_alias("alias Elixir, as: E", %{})
+      assert env == %{E: [Elixir]}
+
+      assert Aliases.resolve_path([:E, :String], env) == [:String]
+      assert Aliases.resolve_path([:E, :My, :Mod], env) == [:My, :Mod]
+    end
+
+    test "a grouped alias of the root namespace normalizes each child key" do
+      # `alias Elixir.{String}` assembles the child `[Elixir, :String]`; it is normalized at
+      # bind time, so the stored binding and a later `String.first` both land on `[:String]`.
+      env = register_alias("alias Elixir.{String, Enum}", %{})
+      assert env == %{String: [:String], Enum: [:Enum]}
+
+      assert Aliases.resolve_path([:String], env) == [:String]
+      assert Aliases.resolve_path([:Enum], env) == [:Enum]
+    end
+  end
+
+  describe "to_module/1" do
+    test "a plain path concatenates to its module" do
+      assert Aliases.to_module([:String]) == String
+      assert Aliases.to_module([:MyApp, :Server]) == MyApp.Server
+    end
+
+    test "an Erlang atom module is itself" do
+      assert Aliases.to_module(:binary) == :binary
+    end
+
+    test "any other shape is nil" do
+      assert Aliases.to_module({:__MODULE__, [], nil}) == nil
+    end
+
+    test "folds a single leading Elixir (a canonical prefix), but keeps a doubled one" do
+      # `to_module/1` adds no compensation: a single leading `Elixir` is a canonical prefix
+      # `Module.concat` folds (`[:Elixir, :MyUse]` → `MyUse`), while a doubled one — what
+      # `resolve_path/2` hands back for a real `Elixir` segment — folds just the one prefix.
+      assert Aliases.to_module([Elixir, :MyUse]) == MyUse
+      assert Aliases.to_module([Elixir, Elixir, :MyUse]) == :"Elixir.Elixir.MyUse"
+    end
+
+    test "end-to-end: resolve_path then to_module round-trips a doubled Elixir prefix" do
+      # The whole pipeline the use/behaviour pre-passes run: the source literal
+      # `Elixir.Elixir.MyUse` parses to `[:Elixir, :Elixir, :MyUse]`, is kept whole by
+      # `resolve_path/2`, and lands back on the module it named, `:"Elixir.Elixir.MyUse"`.
+      assert [Elixir, Elixir, :MyUse] |> Aliases.resolve_path(%{}) |> Aliases.to_module() ==
+               :"Elixir.Elixir.MyUse"
+
+      # An ordinary fully-qualified `Elixir.String` still lands on the bare module.
+      assert [Elixir, :String] |> Aliases.resolve_path(%{}) |> Aliases.to_module() == String
+
+      # An aliased root namespace folds to the bare module, *not* a doubled one.
+      assert [:E, :Enum] |> Aliases.resolve_path(%{E: [Elixir]}) |> Aliases.to_module() == Enum
+    end
+
+    test "a lone Elixir folds to the root namespace, not Elixir.Elixir" do
+      assert Aliases.to_module([Elixir]) == Elixir
+    end
   end
 
   describe "stamp_module/2" do
