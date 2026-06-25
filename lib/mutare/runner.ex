@@ -265,29 +265,21 @@ defmodule Mutare.Runner do
   # uniformly (this function never cleans up itself).
   defp prepare_compiling(schema, root, %Options{} = options) do
     sandbox = Sandbox.prepare(root, schema, options)
-
-    compile_with_recovery(
-      schema,
-      root,
-      options,
-      sandbox,
-      MapSet.new(),
-      MapSet.new(),
-      @poison_attempts
-    )
+    deps = %{root: root, options: options, sandbox: sandbox}
+    compile_with_recovery(deps, schema, MapSet.new(), MapSet.new(), @poison_attempts)
   end
 
   # Compile the materialised sandbox; on a poisoned compile, drop the implicated mutants,
-  # rebuild + rematerialise into the same sandbox, and retry — bounded by `attempts`. The
-  # loop state (`schema` rebuilt each round, accumulating `skip_ids`/`struck`, the remaining
-  # `attempts`) is explicit; `root`/`options`/`sandbox` are constants.
-  defp compile_with_recovery(schema, root, options, sandbox, skip_ids, struck, attempts) do
+  # rebuild + rematerialise into the same sandbox, and retry — bounded by `attempts`. `deps`
+  # (`root`/`options`/`sandbox`) is fixed for the whole loop; the rest is per-round state — the
+  # `schema` rebuilt each round, accumulating `skip_ids`/`struck`, and the remaining `attempts`.
+  defp compile_with_recovery(%{sandbox: sandbox} = deps, schema, skip_ids, struck, attempts) do
     # The compile evaluates the target's config under `MIX_ENV=test`, so a
     # partitioned config that reads the var without a default (e.g.
     # `System.fetch_env!("MIX_TEST_PARTITION")`) must see it *here* too — before
     # the baseline/probe that also set it — or the compile fails. Sequential like
     # those, so the fixed partition (`1`) suffices.
-    case compile(sandbox, Partitions.entry(options.partition_env, 1)) do
+    case compile(sandbox, Partitions.entry(deps.options.partition_env, 1)) do
       :ok ->
         {:ok, schema, sandbox}
 
@@ -309,9 +301,9 @@ defmodule Mutare.Runner do
           # (`from_files/4`, `:only_files`, `:exclude`) can't silently expand. Forward
           # the original options so `:mutators` survive.
           skip_ids = MapSet.union(skip_ids, poison)
-          schema = Schema.rebuild(schema, root, options, skip_ids)
+          schema = Schema.rebuild(schema, deps.root, deps.options, skip_ids)
           Sandbox.rematerialize(sandbox, schema)
-          compile_with_recovery(schema, root, options, sandbox, skip_ids, struck, attempts - 1)
+          compile_with_recovery(deps, schema, skip_ids, struck, attempts - 1)
         else
           # Couldn't identify (or keep making progress on) the poison → give up. Hand the
           # sandbox back for the caller to clean up.
