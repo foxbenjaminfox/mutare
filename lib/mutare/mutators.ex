@@ -62,6 +62,7 @@ defmodule Mutare.Mutators do
     atom: Mutare.Mutators.AtomLiteral,
     charlist: Mutare.Mutators.CharlistLiteral,
     word_list: Mutare.Mutators.WordListLiteral,
+    string_sigil: Mutare.Mutators.StringSigilLiteral,
     map: Mutare.Mutators.MapLiteral,
     tuple: Mutare.Mutators.TupleLiteral,
     bitstring: Mutare.Mutators.BitstringLiteral,

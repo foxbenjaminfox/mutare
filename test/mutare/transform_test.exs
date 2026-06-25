@@ -4042,6 +4042,54 @@ defmodule Mutare.TransformTest do
     end
   end
 
+  describe "StringSigilLiteral (~s/~S routing)" do
+    @sigil [Mutare.Mutators.StringSigilLiteral]
+
+    test "a runtime ~s/~S sigil is mutated to \"\" and \"mutare\" (no-op variant dropped)" do
+      {meta, triples} =
+        redundancy_triples(
+          """
+          def f do
+            a = ~s(hello)
+            b = ~S(world)
+            c = ~s()
+            d = ~s(mutare)
+            {a, b, c, d}
+          end
+          """,
+          @sigil
+        )
+
+      assert {:string_sigil, "~s(hello)", ~s("")} in triples
+      assert {:string_sigil, "~s(hello)", ~s("mutare")} in triples
+      assert {:string_sigil, "~S(world)", ~s("")} in triples
+      assert {:string_sigil, "~S(world)", ~s("mutare")} in triples
+      # ~s() ≡ "" so only the sentinel; ~s(mutare) so only the empty string.
+      assert {:string_sigil, "~s()", ~s("mutare")} in triples
+      refute Enum.any?(triples, &match?({:string_sigil, "~s()", ~s("")}, &1))
+      assert {:string_sigil, "~s(mutare)", ~s("")} in triples
+      refute Enum.any?(triples, &match?({:string_sigil, "~s(mutare)", ~s("mutare")}, &1))
+      assert_compiles(meta)
+    end
+
+    test "an interpolated ~s and a sigil in a pattern position are never mutated" do
+      source = """
+      defmodule S do
+        def f(s), do: ~s(a\#{s}b)
+        def g(~S(hello)), do: :ok
+        def g(_), do: :no
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @sigil)
+
+      # Interpolation parses as multiple <<>> parts (declined); a pattern `~S(...)` is
+      # never offered (a selector `case` is illegal in a match). So no string_sigil sites.
+      assert Enum.filter(sites, &(&1.mutator == :string_sigil)) == []
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+  end
+
   describe "call-option keys: a mutator's `call_option_keys: false` opt (keyword list as a call's final arg)" do
     # Bare AtomLiteral mutates call-option keys; configured with `call_option_keys: false`
     # it skips them. `Literal` rides along so an option *value* still mutates either way.

@@ -42,6 +42,7 @@ defmodule Mutare.MutatorsTest do
     StringByte,
     StringCall,
     StringLiteral,
+    StringSigilLiteral,
     TupleLiteral,
     WordListLiteral
   }
@@ -59,7 +60,8 @@ defmodule Mutare.MutatorsTest do
                  [CallRemoval, DefaultDrop] ++
                  [ModeSwap, Numeric, Math, Integer, ConventionAtom, StringLiteral, FloatLiteral] ++
                  [AtomLiteral] ++
-                 [CharlistLiteral, WordListLiteral, MapLiteral, TupleLiteral, BitstringLiteral] ++
+                 [CharlistLiteral, WordListLiteral, StringSigilLiteral] ++
+                 [MapLiteral, TupleLiteral, BitstringLiteral] ++
                  [RegexLiteral, DateTimeLiteral, AliasLiteral, ReturnValue, PatternSwap] ++
                  [PatternWildcard, RescueType, GuardDrop, Mutare.Mutators.GenServer]
     end
@@ -76,7 +78,7 @@ defmodule Mutare.MutatorsTest do
                  [:call_removal] ++
                  [:default_drop, :mode_swap, :numeric, :math, :integer, :convention] ++
                  [:string, :float] ++
-                 [:atom, :charlist, :word_list, :map, :tuple, :bitstring, :regex] ++
+                 [:atom, :charlist, :word_list, :string_sigil, :map, :tuple, :bitstring, :regex] ++
                  [
                    :datetime,
                    :alias,
@@ -1525,6 +1527,36 @@ defmodule Mutare.MutatorsTest do
 
     test "name" do
       assert StringLiteral.name() == :string
+    end
+  end
+
+  describe "StringSigilLiteral" do
+    test "mutates a non-empty ~s/~S sigil into both the empty string and the sentinel" do
+      assert render(StringSigilLiteral.mutate(parse("~s(hello)"))) == [~s(""), ~s("mutare")]
+      assert render(StringSigilLiteral.mutate(parse("~S(hello)"))) == [~s(""), ~s("mutare")]
+    end
+
+    test "drops the replacement that already equals the sigil's content" do
+      # ~s() is already "" so only the sentinel is offered; ~s(mutare) only the empty string.
+      assert render(StringSigilLiteral.mutate(parse("~s()"))) == [~s("mutare")]
+      assert render(StringSigilLiteral.mutate(parse("~S()"))) == [~s("mutare")]
+      assert render(StringSigilLiteral.mutate(parse("~s(mutare)"))) == [~s("")]
+      assert render(StringSigilLiteral.mutate(parse("~S(mutare)"))) == [~s("")]
+    end
+
+    test "skips an interpolated ~s (multiple <<>> parts, not a lone binary)" do
+      assert StringSigilLiteral.mutate(parse("~s(a\#{x}b)")) == :skip
+    end
+
+    test "skips plain strings (StringLiteral's domain) and other sigils" do
+      assert StringSigilLiteral.mutate(parse(~s("hello"))) == :skip
+      assert StringSigilLiteral.mutate(parse("~w(a b)")) == :skip
+      assert StringSigilLiteral.mutate(parse(~S|~c"ab"|)) == :skip
+      assert StringSigilLiteral.mutate(parse("~r/ab/")) == :skip
+    end
+
+    test "name" do
+      assert StringSigilLiteral.name() == :string_sigil
     end
   end
 

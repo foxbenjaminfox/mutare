@@ -583,21 +583,24 @@ defmodule Mutare.TransformPropertyGenerators do
   # === sigils + bitstrings ==================================================
 
   # A sigil literal as a runtime **value** — `~r//` (RegexLiteral), `~w[]` (WordListLiteral),
-  # `~c""` (CharlistLiteral), and the `~D`/`~T`/`~N`/`~U` date-time sigils (DateTimeLiteral) —
-  # the only generator that exercises those five literal families. Built with `quote` (the
-  # cleanest route to a faithful sigil AST that `Macro.to_string` re-renders) and chosen via an
-  # **atom** `oneof`, since a literal sigil tuple in a generator position would be read as a
-  # PropEr tuple-type combinator. Placed only in runtime positions, never a pattern: a `~r//`
-  # expands to a `Regex.compile!` call and is not pattern-legal, and `literal_gen/0` (which *does*
-  # feed head/clause patterns) is left untouched. Contents are fixed and valid (a real date, a
-  # parseable regex), so the compile-time sigil evaluation — and each family's mutant, which
-  # stays a valid sigil by construction — compile cleanly.
+  # `~c""` (CharlistLiteral), `~s()`/`~S()` (StringSigilLiteral), and the `~D`/`~T`/`~N`/`~U`
+  # date-time sigils (DateTimeLiteral) — the only generator that exercises those six literal
+  # families. Built with `quote` (the cleanest route to a faithful sigil AST that
+  # `Macro.to_string` re-renders) and chosen via an **atom** `oneof`, since a literal sigil
+  # tuple in a generator position would be read as a PropEr tuple-type combinator. Placed only
+  # in runtime positions, never a pattern: a `~r//` expands to a `Regex.compile!` call and is
+  # not pattern-legal, and `literal_gen/0` (which *does* feed head/clause patterns) is left
+  # untouched. Contents are fixed and valid (a real date, a parseable regex), so the compile-time
+  # sigil evaluation — and each family's mutant, which stays compile-safe by construction — compile
+  # cleanly.
   defp sigil_gen do
-    let choice <- oneof([:regex, :words, :charlist, :date, :time, :naive, :utc]) do
+    let choice <- oneof([:regex, :words, :charlist, :str, :str_raw, :date, :time, :naive, :utc]) do
       case choice do
         :regex -> quote(do: ~r/ab/)
         :words -> quote(do: ~w[a b c])
         :charlist -> quote(do: ~c"abc")
+        :str -> quote(do: ~s(abc))
+        :str_raw -> quote(do: ~S(abc))
         :date -> quote(do: ~D[2020-01-15])
         :time -> quote(do: ~T[12:30:00])
         :naive -> quote(do: ~N[2020-01-15 12:30:00])
