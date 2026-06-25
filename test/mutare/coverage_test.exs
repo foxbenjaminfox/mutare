@@ -369,7 +369,15 @@ defmodule Mutare.CoverageTest do
       # covering files happen to be the whole 2-file suite.
       assert run.results != []
       assert Enum.all?(run.results, &(&1.status == :killed))
-      assert Enum.all?(run.results, &(&1.output =~ "2 tests"))
+
+      # The kill is driven by setup_all_test's `assert value == 6` (touch_test asserts
+      # nothing it could fail on), so a killed mutant proves the recovery-attributed
+      # killing file was selected and run — touch_test's body attribution did not mask
+      # it. We do *not* assert the subprocess test *count* ("2 tests"): the runner forces
+      # `--max-failures 1` (`Mutare.Sandbox.Command`), so when ExUnit happens to run the
+      # failing setup_all_test before touch_test the suite aborts after one test, making
+      # the count order-dependent. The kill (and its source below) is not.
+      assert Enum.all?(run.results, &(&1.output =~ "value == 6"))
     end
 
     @tag :runner
