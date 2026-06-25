@@ -123,6 +123,9 @@ defmodule Mutare.Transform.Uses.EnvMirror do
     ref = seq_ref()
 
     :global.trans({{__MODULE__, :sandbox_env}, self()}, fn ->
+      # Invariant: seq is *odd* exactly while a swap holds the global at `:test`. `classify_env/0`
+      # trusts a `:test` reading only when seq was even and unchanged across it, so this transient
+      # `:test` (set under an odd seq) is never mistaken for the stable base.
       :atomics.add(ref, 1, 1)
       previous = Mix.env()
       Mix.env(@sandbox_env)
@@ -131,6 +134,7 @@ defmodule Mutare.Transform.Uses.EnvMirror do
         fun.()
       after
         Mix.env(previous)
+        # seq → even: swap complete (in `after`, so a raising `fun` still leaves it even).
         :atomics.add(ref, 1, 1)
       end
     end)

@@ -4765,3 +4765,33 @@ a metamutant with **zero** poisons.
     rule is also the cheap one; it's a near-copy of the `:harness_retries` machinery
     in `run_mutant/5`. Orthogonal to harness retries (that's infra flakiness, this
     is test flakiness). Not built here.
+
+## Consolidations weighed and left as-is
+
+A refactoring pass folded most of the cross-module duplication — shared AST/resolution/suppression
+helpers (`Mutare.AST.literal_value`/`absolute_call`, `Aliases.resolve_node/2`,
+`Transform.Suppression`), the `Uses` split (`EnvMirror` + `Harvest`), the `emit_*` id-claim fold
+(`claim_clauses`/`ids_from_clauses`), and making `mutate/1` an optional callback. Three near-
+duplications were measured against the cost of unifying them and **deliberately kept** — the merge
+buys less than the duplication costs:
+
+  - **`Mutare.Mutators.RegexLiteral`'s two byte-walks** (`scan/6` and `alt_walk/6`). Both consume the
+    Elixir regex string and share the escape-pair / character-class handling, but their *accumulators*
+    differ fundamentally — `scan` threads a `prev_quant` for quantifier detection, `alt_walk` a frame
+    stack for alternation spans. A shared driver would have to thread both states through pluggable
+    callbacks; the combined state is *more* tangled than the two focused walks, and the module is
+    already well-tested. Revisit only if a *third* walk appears or the escape grammar grows (`\Q…\E`).
+  - **`Mutare.Transform.Analyze.Conditions`' parallel spine-walks** (`spine_rewrite`, `spine_bindings`,
+    `eval_steps`, `offspine_escaping_binding?`, `prune_binding_ancestors`). All share one structural
+    skeleton (stop at `@binding_isolating_forms`, recurse-left at `@short_circuit_ops`, flag at
+    `@branch_forms`, special-case `:=`) and differ only in what each accumulates. A generic
+    `spine_walk(node, acc, handlers)` would collapse the skeleton — but these walks are subtle (the
+    binding-escape analysis is correctness-critical and the tests lean on surviving-equivalent
+    reasoning, so a generalisation mistake wouldn't obviously fail). Pin each with property tests
+    *before* attempting it; until then, the explicit walks are safer than one clever one.
+
+The other two items from that pass are documented where they live: the `Uses` env-mirror **seqlock
+invariant** in `Mutare.Transform.Uses.EnvMirror`'s module comment (the home the extraction gave it),
+and the **harness-retry contract** — only `:harness_error` is retried, because the kill outcomes
+`Command.outcome/2` recovers (`:suite_compile_error`, `:atom_exhausted`) are already distinct by the
+time `Runner.run_mutant/5` reads `result.outcome` — at that guard.

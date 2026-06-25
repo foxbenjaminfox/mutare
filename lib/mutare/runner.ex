@@ -457,6 +457,11 @@ defmodule Mutare.Runner do
   # real verdict (passed/failed/timeout) is never retried. `retries` exhausting
   # records the harness error as-is; the run-level guard decides if too many
   # persisted.
+  #
+  # The bare `:harness_error` test is exhaustive on purpose: the two **kill** outcomes
+  # `Command.outcome/2` recovers from an otherwise-`:harness_error` exit
+  # (`:suite_compile_error`, `:atom_exhausted`) are already distinct outcomes by the time
+  # `result.outcome` is read here, so they record as kills and are never retried.
   defp run_mutant(sandbox, site, test_args, cap, retries, env) do
     result = Command.timed_test(sandbox, test_args, site.id, cap, env)
 
