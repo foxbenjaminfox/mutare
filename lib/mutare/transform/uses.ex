@@ -226,7 +226,10 @@ defmodule Mutare.Transform.Uses do
   # it defines** (`register_defined_module/3`). Both scope to following siblings, so the unified
   # fold keeps the env faithful for a later `use`/`defimpl` that refers to a sibling by short name.
   defp register_lexical(stmt, module, env) do
-    stmt |> register_source(env) |> then(&register_defined_module(stmt, module, &1))
+    # `Aliases.register/2` folds the alias a source statement introduces — a plain `alias`, or a
+    # `require Mod, as: Name` (the compiler treats it as an alias); a bare `require Mod` passes
+    # through. Then add the implicit alias a nested-module definition introduces.
+    stmt |> Aliases.register(env) |> then(&register_defined_module(stmt, module, &1))
   end
 
   # The env a nested module's **own body** is walked under: the parent env *plus the implicit alias
@@ -273,12 +276,6 @@ defmodule Mutare.Transform.Uses do
     end
   end
 
-  # Fold the alias a *source* statement introduces: a plain `alias`, or a `require Mod, as: Name`
-  # (which the compiler also treats as an alias). Both are handled directly by
-  # `Aliases.register/2`, so this is a straight delegation; a bare `require Mod` (no `as:`)
-  # introduces no alias and passes through.
-  defp register_source(stmt, env), do: Aliases.register(stmt, env)
-
   # The full module name of a nested `defmodule`, best-effort: Elixir prepends the enclosing
   # module to a nested alias. A non-static head (`__MODULE__.Child`, `unquote(mod)`, a
   # `Module.concat(…)` call) can't be resolved to a concrete module, so it yields `@unresolved`
@@ -298,7 +295,7 @@ defmodule Mutare.Transform.Uses do
   # `Module.concat([parent | path])` already matches.
   defp child_module({:__aliases__, _, path}, parent, env) when is_list(path) do
     cond do
-      not Enum.all?(path, &is_atom/1) -> @unresolved
+      not Aliases.atoms?(path) -> @unresolved
       match?([:"Elixir" | _], path) -> Module.concat(path)
       parent == @unresolved -> @unresolved
       parent == nil -> path |> Aliases.resolve_path(env) |> Aliases.to_module()

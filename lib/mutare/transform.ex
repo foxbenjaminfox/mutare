@@ -1003,9 +1003,13 @@ defmodule Mutare.Transform do
   defp emit_match_site({:=, _meta, [_lhs, emitted_rhs]} = match_node, candidates, ctx) do
     %Candidate.MatchPattern{export: export, original: original_lhs} = hd(candidates)
 
-    emit_binding_site(match_node, export, candidates, ctx,
-      mutant_body: fn c -> match_inner_case(c.raw_rhs, c.mutated, export) end,
-      catch_all: fn ids ->
+    emit_binding_site(
+      match_node,
+      export,
+      candidates,
+      ctx,
+      fn c -> match_inner_case(c.raw_rhs, c.mutated, export) end,
+      fn ids ->
         match_catch_all(ids, match_inner_case(emitted_rhs, original_lhs, export), ctx.active_var)
       end
     )
@@ -1020,14 +1024,13 @@ defmodule Mutare.Transform do
   #     <export> = case <sel> do <id> -> <mutant_body>; … ; mutare_active -> <catch_all> end
   #
   # and the escaping variables are re-exported through the shared `export` tuple and rebound
-  # outside. The callers differ only in the per-mutant branch body (`:mutant_body`, called per
-  # candidate) and the baseline catch-all (`:catch_all`, called with the hosted ids — it
-  # records coverage then runs the emitted node). Mirrors `emit_site/3`/`build_case/3` for id
-  # claiming, and shares their all-poisoned fallback (no live mutant → emit the node unchanged).
-  defp emit_binding_site(node, export, candidates, ctx, opts) do
-    mutant_body = Keyword.fetch!(opts, :mutant_body)
-    catch_all = Keyword.fetch!(opts, :catch_all)
-
+  # outside. The callers differ only in the per-mutant branch body (`mutant_body`, a 1-arity fun
+  # called per candidate) and the baseline catch-all (`catch_all`, a 1-arity fun called with the
+  # hosted ids — it records coverage then runs the emitted node). Mirrors `emit_site/3`/
+  # `build_case/3` for id claiming, and shares their all-poisoned fallback (no live mutant → emit
+  # the node unchanged).
+  defp emit_binding_site(node, export, candidates, ctx, mutant_body, catch_all)
+       when is_function(mutant_body, 1) and is_function(catch_all, 1) do
     {clauses, ctx} =
       claim_clauses(candidates, ctx, &site_for/3, fn id, candidate ->
         {:->, [], [[id], mutant_body.(candidate)]}
@@ -1113,9 +1116,13 @@ defmodule Mutare.Transform do
     %Candidate.MacroPattern{export: export} = hd(candidates)
     baseline = strip_candidates(node)
 
-    emit_binding_site(node, export, candidates, ctx,
-      mutant_body: fn c -> macro_pattern_branch(c.mutant_expr, export) end,
-      catch_all: fn ids -> macro_pattern_catch_all(ids, baseline, export, ctx.active_var) end
+    emit_binding_site(
+      node,
+      export,
+      candidates,
+      ctx,
+      fn c -> macro_pattern_branch(c.mutant_expr, export) end,
+      fn ids -> macro_pattern_catch_all(ids, baseline, export, ctx.active_var) end
     )
   end
 

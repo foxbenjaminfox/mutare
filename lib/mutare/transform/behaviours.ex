@@ -66,7 +66,8 @@ defmodule Mutare.Transform.Behaviours do
   defp walk({form, meta, [mod_ast, [{do_key, body}]]}, aliases)
        when form in [:defmodule, :defprotocol] do
     set = module_behaviours(body, aliases)
-    body = walk_body(body, aliases)
+    # Descend the body (for nested modules), folding aliases where it is a block.
+    body = walk(body, aliases)
     meta = if MapSet.size(set) == 0, do: meta, else: [{@behaviours_key, set} | meta]
     {form, meta, [mod_ast, [{do_key, body}]]}
   end
@@ -89,9 +90,6 @@ defmodule Mutare.Transform.Behaviours do
   defp walk({left, right}, aliases), do: {walk(left, aliases), walk(right, aliases)}
   defp walk(list, aliases) when is_list(list), do: Enum.map(list, &walk(&1, aliases))
   defp walk(other, _aliases), do: other
-
-  # A module body: descend it (for nested modules), folding aliases where it is a block.
-  defp walk_body(body, aliases), do: walk(body, aliases)
 
   # --- per-module behaviour set ----------------------------------------------
 
