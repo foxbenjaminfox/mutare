@@ -7,30 +7,35 @@ defmodule Mutare.Mutators.BitstringSpec do
   bug that codec / protocol / file-format code should pin down and that nothing
   else here reaches (the whole spec side of a `::` segment is otherwise excluded).
 
-  Two axes, both **never-equivalent and compile-safe by construction** — the
-  reason this is the only spec-position family worth running:
+  Two axes, both **compile-safe by construction** and (after the equivalence
+  filter below) **never-equivalent** — the reason this is the only spec-position
+  family worth running:
 
     * **encoding** — `utf8 ↔ utf16 ↔ utf32` (a 3-way swap, so each utf segment
       yields two encoding mutants). The three share one validity domain (a valid
       Unicode scalar; a surrogate / over-max value raises identically for all
       three), so a swap *never* turns a working segment into a crashing one — it
       only changes the bytes emitted, which is precisely the observable a test
-      should catch. And every codepoint encodes to different bytes under each
-      width (`?h` → `<<104>>` / `<<0, 104>>` / `<<0, 0, 0, 104>>`), so no swap is
-      an equivalent no-op.
+      should catch. Every codepoint encodes to a different byte *width* under each
+      encoding (`?h` → `<<104>>` / `<<0, 104>>` / `<<0, 0, 0, 104>>`), so the swap
+      differs for any non-empty value.
     * **byte order** — `big ↔ little`, only for `utf16`/`utf32` (a `utf8` segment
       is byte-oriented; endianness is meaningless on it). A bare `<<x::utf16>>`
       defaults to big-endian, so it earns one mutant that *adds* `-little`; an
-      explicit `utf16-big`/`utf16-little` flips to the other. Two exclusions keep
-      this axis *exactly* never-equivalent. `native` is left untouched as **source
-      and target** — it resolves to the host's endianness, so a `native` swap
-      would be equivalent on one architecture and not another (an
-      unkillable-or-flaky mutant). And a swap on a **literal** codepoint whose
-      encoding is byte-palindromic (`<<0::utf16>>` is `<<0, 0>>` in either order —
-      so `0`/NUL, and any `cp = b * 257` in utf16; `<<0::utf32>>` likewise) is
-      **skipped**, since it would emit identical bytes. A swap on a *variable*
-      value stays — it is killable by some input, so it is a real mutant, not an
-      equivalent one.
+      explicit `utf16-big`/`utf16-little` flips to the other. `native` is left
+      untouched as **source and target** — it resolves to the host's endianness,
+      so a `native` swap would be equivalent on one architecture and not another
+      (an unkillable-or-flaky mutant).
+
+  **The equivalence filter** (`reject_equivalent/3`) is what makes both axes
+  exactly never-equivalent for a **literal** value — an integer codepoint *or* a
+  binary string (whose utf encoding is each codepoint in turn). It encodes the
+  original segment and each variant and drops any whose bytes match, catching both
+  axes' coincidences: a byte-palindromic value reads the same in either order
+  (`<<0::utf16>>` and `<<"\\0"::utf16>>` are `<<0, 0>>`; `<<0x0101::utf16>>` is
+  `<<1, 1>>`), and an **empty** value is `<<>>` under every width
+  (`<<""::utf16>>`), so even its encoding swaps coincide. A swap on a *variable*
+  value is kept — it is killable by some input, so a real mutant, not equivalent.
 
   Delivery is positional and needs nothing special: the whole `<<…>>` node is
   offered to `mutate/1` only in a **runtime body** (a constructor — where the
@@ -92,17 +97,19 @@ defmodule Mutare.Mutators.BitstringSpec do
 
   # The mutated *segments* for one `<<…>>` segment: the encoding and byte-order
   # variants of its spec, rewrapped as `value::new_spec`. A non-`::` segment (a
-  # bare value) or one whose spec has no utf encoding yields none.
+  # bare value) or one whose spec has no utf encoding yields none. When the value
+  # is a **literal** (an integer codepoint or a binary string) we drop any variant
+  # whose encoded bytes equal the original's — an unkillable equivalent (see
+  # `reject_equivalent/3`).
   defp spec_variants({:"::", smeta, [value, spec]}) do
     case find_atom(spec, @encodings) do
       nil ->
         []
 
       enc ->
-        Enum.map(
-          encoding_variants(spec, enc) ++ order_variants(spec, enc, value),
-          &{:"::", smeta, [value, &1]}
-        )
+        (encoding_variants(spec, enc) ++ order_variants(spec, enc))
+        |> Enum.map(&{:"::", smeta, [value, &1]})
+        |> reject_equivalent(value, spec)
     end
   end
 
@@ -123,23 +130,16 @@ defmodule Mutare.Mutators.BitstringSpec do
   # The byte-order mutant(s) of a utf16/utf32 spec. An explicit `big`/`little`
   # flips to the other; a `native` is left alone; an implicit order (no atom —
   # the language default of `big`) earns an added `-little`. utf8 has no byte
-  # order, so it gets none. A swap is **skipped** when the segment's value is a
-  # literal codepoint whose encoding is byte-palindromic (`<<0::utf16>>` is
-  # `<<0, 0>>` either way; `<<0x0101::utf16>>` is `<<1, 1>>`): the mutant emits
-  # identical bytes — an unkillable equivalent — and dropping it is what keeps the
-  # byte-order axis exactly never-equivalent (see the moduledoc).
-  defp order_variants(_spec, :utf8, _value), do: []
+  # order, so it gets none. (A swap that proves equivalent for a literal value —
+  # a byte-palindromic codepoint — is dropped later by `reject_equivalent/3`.)
+  defp order_variants(_spec, :utf8), do: []
 
-  defp order_variants(spec, enc, value) do
-    if symmetric_order?(value, enc) do
-      []
-    else
-      case find_atom(spec, [:native | @byte_orders]) do
-        :big -> [replace_atom(spec, :big, :little)]
-        :little -> [replace_atom(spec, :little, :big)]
-        :native -> []
-        nil -> [append_atom(spec, :little)]
-      end
+  defp order_variants(spec, _enc) do
+    case find_atom(spec, [:native | @byte_orders]) do
+      :big -> [replace_atom(spec, :big, :little)]
+      :little -> [replace_atom(spec, :little, :big)]
+      :native -> []
+      nil -> [append_atom(spec, :little)]
     end
   end
 
@@ -190,33 +190,92 @@ defmodule Mutare.Mutators.BitstringSpec do
   # specifier separator tight.
   defp append_atom(spec, atom), do: {:-, [], [spec, {atom, [], nil}]}
 
-  # --- literal byte-order symmetry -------------------------------------------
+  # --- literal-value equivalence ---------------------------------------------
   #
-  # A `big`/`little` swap is observable only when the value's two-/four-byte
-  # encoding actually differs between the orders. For a **literal integer**
-  # codepoint we decide that statically — encode it both ways and compare — and
-  # skip the swap on a byte-palindromic value (`0` → `<<0, 0>>`, `0x0101` →
-  # `<<1, 1>>`), an equivalent no-op. A non-literal value (a variable) is *not*
-  # skipped: its swap is killable by some input, so it is a real mutant.
-
-  defp symmetric_order?(value, enc) do
-    with {:ok, cp} when is_integer(cp) <- Mutare.AST.literal_value(value),
-         {:ok, {big, little}} <- order_bytes(cp, enc) do
-      big == little
+  # A spec swap is observable only when it changes the bytes the segment emits.
+  # For a **literal** value — an integer codepoint or a binary string, whose utf
+  # encoding is each codepoint encoded in turn — we decide that statically: encode
+  # the original and each variant, and drop any variant whose bytes match. This
+  # covers both axes' equivalent cases:
+  #
+  #   * **byte order** — a byte-palindromic value reads the same in either order
+  #     (`<<0::utf16>>` and `<<"\0"::utf16>>` are `<<0, 0>>`; `<<0x0101::utf16>>`
+  #     is `<<1, 1>>`), so its `big`/`little` swap is a no-op;
+  #   * **encoding** — an **empty** value is `<<>>` under every width
+  #     (`<<""::utf16>>`), so its encoding swaps coincide too.
+  #
+  # A non-literal value (a variable) can't be decided, so all variants are kept —
+  # each is killable by some input, so it is a real mutant, not an equivalent one.
+  defp reject_equivalent(variants, value, original_spec) do
+    with {:ok, decoded} <- decoded_value(value),
+         points when is_list(points) <- codepoints(decoded),
+         {:ok, original_bytes} <- spec_bytes(points, original_spec) do
+      Enum.reject(variants, fn {:"::", _, [_, spec]} ->
+        spec_bytes(points, spec) == {:ok, original_bytes}
+      end)
     else
-      _ -> false
+      _ -> variants
     end
   end
 
-  # The big- and little-endian encodings of `cp` under `enc`, or `:error` if `cp`
-  # is not an encodable Unicode scalar (a surrogate / over-max raises identically
-  # for both orders) — in which case we keep the mutant rather than guess.
-  defp order_bytes(cp, enc) do
-    {:ok, {encode(cp, enc, :big), encode(cp, enc, :little)}}
+  # The bytes `<<value::spec>>` emits, given the value's already-decoded codepoints,
+  # or `:error` when the spec carries no encoding or a codepoint can't be encoded
+  # (a surrogate / over-max raises) — in which case the variant is kept, not
+  # guessed at. `little` is the only order that changes the bytes; everything else
+  # (explicit/implicit `big`, host-dependent `native`) is encoded big-endian, since
+  # native's sole equivalence is the order-independent empty case (kept deterministic).
+  defp spec_bytes(points, spec) do
+    case find_atom(spec, @encodings) do
+      nil ->
+        :error
+
+      enc ->
+        order = if find_atom(spec, [:little]) == :little, do: :little, else: :big
+        encode_all(points, enc, order)
+    end
+  end
+
+  # The **semantic** literal value (integer or binary), or `:error` if not a
+  # literal. Sourceror preserves a string's source *escapes* un-decoded — `"\0"`
+  # stays the two-byte `"\\0"`, not the NUL the compiler emits — so reading the
+  # node directly would compare the wrong bytes and let an **equivalent** mutant
+  # survive as a phantom: the un-decoded `"\\0"` looks non-palindromic, so its
+  # byte-order swap wouldn't be dropped, even though `<<"\0"::utf16>>` is `<<0, 0>>`
+  # in either order. (The reverse — a real mutant *false-dropped* — can't happen:
+  # an escaped value carries a backslash, which is never byte-palindromic, so an
+  # un-decoded comparison only ever *under*-drops.) We render the literal back to
+  # source and re-parse with the standard (escape-decoding) parser to recover what
+  # the compiler will actually encode.
+  defp decoded_value(value) do
+    with {:ok, _literal} <- Mutare.AST.literal_value(value),
+         {:ok, decoded} <- Code.string_to_quoted(Sourceror.to_string(value)),
+         true <- is_integer(decoded) or is_binary(decoded) do
+      {:ok, decoded}
+    else
+      _ -> :error
+    end
+  end
+
+  # The Unicode codepoints of a literal value: a bare integer is one codepoint; a
+  # binary string is its codepoints in order. Anything else (an invalid-UTF-8
+  # binary, a float) is not a utf value we can encode.
+  defp codepoints(value) when is_integer(value), do: [value]
+
+  defp codepoints(value) when is_binary(value) do
+    String.to_charlist(value)
+  rescue
+    _ -> :error
+  end
+
+  defp codepoints(_value), do: :error
+
+  defp encode_all(points, enc, order) do
+    {:ok, points |> Enum.map(&encode(&1, enc, order)) |> IO.iodata_to_binary()}
   rescue
     ArgumentError -> :error
   end
 
+  defp encode(cp, :utf8, _order), do: <<cp::utf8>>
   defp encode(cp, :utf16, :big), do: <<cp::utf16-big>>
   defp encode(cp, :utf16, :little), do: <<cp::utf16-little>>
   defp encode(cp, :utf32, :big), do: <<cp::utf32-big>>

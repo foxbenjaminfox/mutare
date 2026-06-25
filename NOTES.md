@@ -724,19 +724,35 @@ by a blacklist. The positions:
   the *one* spec-position swap worth running, so it is **on by default** despite
   the blanket exclusion above. It mutates a segment's text encoding
   (`utf8 ↔ utf16 ↔ utf32`) and byte order (`big ↔ little`, utf16/utf32 only) —
-  the cleanest swap family in the tool: **never-equivalent** (an encoding swap
-  changes the byte *width*, so it differs even for `0`; a byte-order swap differs
-  for every value but a byte-palindromic one — `<<0::utf16>>` is `<<0, 0>>` in
-  either order, as is any `cp = b * 257` — and those are **skipped** when the value
-  is a literal codepoint, so the axis stays equivalent-free) and **compile-safe
+  the cleanest swap family in the tool: **never-equivalent** and **compile-safe
   with a symmetric validity domain** (a surrogate / over-max value raises
   identically for all three encodings, so a swap only ever changes the bytes
-  emitted, never crashes a previously-working segment). `native` is excluded as
-  source and target (host-dependent → an equivalent-on-this-host mutant); and the
-  deprecated-but-compiling parenthesized modifier (`utf16-big()`, whose atom leaf
-  parses with context `[]` not `nil`) is recognised as an explicit order, so a
-  swap *flips* it rather than appending a conflicting second one
-  (`utf16-big()-little` → "conflicting endianness", a build-poisoning mutant).
+  emitted, never crashes a previously-working segment). Never-equivalence is *not*
+  free — it rests on a **literal-value equivalence filter** (`reject_equivalent/3`):
+  for a literal value (an integer codepoint *or* a binary string, whose utf
+  encoding is each codepoint in turn) it encodes the original and every variant and
+  drops any whose bytes match. That catches both axes' coincidences — a
+  byte-palindromic value reads the same in either order (`<<0::utf16>>`,
+  `<<"\0"::utf16>>` are `<<0, 0>>`; `<<0x0101::utf16>>` is `<<1, 1>>`), and an
+  **empty** value is `<<>>` under every width (`<<""::utf16>>`), so even its
+  *encoding* swaps coincide. A *variable* value can't be decided, so its variants
+  are kept (each killable by some input). One trap the filter must dodge: Sourceror
+  preserves a string's source **escapes un-decoded** (`"\0"` stays the two-byte
+  `"\\0"`, not the NUL the compiler emits), so the filter re-parses the rendered
+  literal with the *standard* (escape-decoding) parser before encoding — reading
+  the node directly would compare the wrong bytes and let an **equivalent** mutant
+  survive as a phantom (the un-decoded `"\\0"` looks non-palindromic, so its
+  byte-order swap wouldn't be dropped, though `<<"\0"::utf16>>` is `<<0, 0>>` in
+  either order; the reverse — *false-dropping* a real mutant — can't happen, since
+  an escaped value carries a backslash, never byte-palindromic). `native` is
+  excluded as source and target (host-dependent → an
+  equivalent-on-this-host mutant; and the filter resolves it to big-endian, the
+  only equivalence it joins being the order-independent empty case, so the emitted
+  set stays deterministic across hosts). The deprecated-but-compiling parenthesized
+  modifier (`utf16-big()`, whose atom leaf parses with context `[]` not `nil`) is
+  recognised as an explicit order, so a swap *flips* it rather than appending a
+  conflicting second one (`utf16-big()-little` → "conflicting endianness", a
+  build-poisoning mutant).
   **Zero transform plumbing**: it is an ordinary
   `mutate/1` family that the *existing* whole-`<<>>` `offer/3` (the one
   `BitstringLiteral` rides in a runtime body) hands the node to, and each mutant

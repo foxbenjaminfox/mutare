@@ -102,6 +102,36 @@ defmodule Mutare.BitstringSpecTest do
     end
   end
 
+  describe "literal-value equivalence (binary strings)" do
+    # `<<bin::utf16>>` encodes each codepoint of the string in turn, so a literal
+    # string is decidable just like an integer codepoint.
+    test "a byte-palindromic string drops the byte-order swap, keeps the encoding swaps" do
+      # "\0" → <<0, 0>> in either order: an equivalent byte-order mutant, dropped.
+      assert mutated_codes(~S|<<"\0"::utf16>>|) == [~S|<<"\0"::utf8>>|, ~S|<<"\0"::utf32>>|]
+    end
+
+    test "an empty string drops every mutant (all widths and orders emit <<>>)" do
+      # `<<""::_>>` is `<<>>` under every encoding *and* order, so even the encoding
+      # swaps coincide — there is no observable mutant.
+      assert mutated_codes(~S|<<""::utf16>>|) == []
+      assert mutated_codes(~S|<<""::utf8>>|) == []
+    end
+
+    test "a non-palindromic string keeps the byte-order swap" do
+      assert ~S|<<"hi"::utf16-little>>| in mutated_codes(~S|<<"hi"::utf16>>|)
+    end
+
+    test "an escaped string is decoded before comparing (no phantom survivor)" do
+      # `"\0\0"` decodes to <<0, 0>> — utf16 <<0, 0, 0, 0>> in *either* order, an
+      # equivalent byte-order swap that must be dropped. Sourceror keeps the source
+      # escape un-decoded as `"\\0\\0"` (bytes 92, 48, 92, 48 — *not* palindromic),
+      # so reading the node directly would compare the wrong bytes and let the
+      # equivalent `-little` mutant survive as a phantom. The filter re-decodes, so
+      # it drops; only the never-equivalent (width-changing) encoding swaps remain.
+      assert mutated_codes(~S|<<"\0\0"::utf16>>|) == [~S|<<"\0\0"::utf8>>|, ~S|<<"\0\0"::utf32>>|]
+    end
+  end
+
   describe "what is not mutated" do
     test "a non-utf segment yields no sites" do
       assert sites("<<cp::integer-big-size(16)>>") == []

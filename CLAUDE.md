@@ -724,10 +724,16 @@ contract between them is the whole game.
     `mutate/1` handed the whole `<<…>>` node by the runtime-body `offer/3`, returning *complete*
     bitstring copies — so the in-place selector (constructor) and lifted clause-guard replacement
     both deliver it with no new plumbing. Never-equivalent + compile-safe by construction (the three
-    encodings share one validity domain; a byte-order swap on a literal byte-palindromic codepoint —
-    `<<0::utf16>>` is `<<0, 0>>` either way — is skipped, and the deprecated `utf16-big()` paren form
-    is read as an explicit order, not appended-to into a conflicting `utf16-big()-little`).
-    **Constructor-only**: a `<<>>` in a *pattern* isn't offered
+    encodings share one validity domain). Never-equivalence rests on a **literal-value equivalence
+    filter**: for a literal value (an integer codepoint *or* a binary string) it encodes the original
+    and each variant and drops any whose bytes match — catching a byte-palindromic value (`<<0::utf16>>`,
+    `<<"\0"::utf16>>` are `<<0, 0>>` either way) on the byte-order axis *and* an empty value
+    (`<<""::utf16>>` is `<<>>` under every width) on the encoding axis; a *variable* value is kept
+    (killable by some input). It re-parses the rendered literal with the standard parser first, since
+    Sourceror keeps a string's escapes un-decoded (`"\0"` → `"\\0"`) — else the compared bytes would be
+    wrong and an equivalent mutant would survive as a phantom (a false *keep*, not a false drop: the
+    un-decoded `"\\0"` carries a backslash, never byte-palindromic, so it only ever *under*-drops). The deprecated `utf16-big()` paren form is read as an explicit order, not
+    appended-to into a conflicting `utf16-big()-little`. **Constructor-only**: a `<<>>` in a *pattern* isn't offered
     (the non-scalar node fails the head-lift filter, and no selector wraps a pattern), so it catches
     encoders, not decoders. See NOTES "Unicode encoding/byte-order specifiers".
   - **Call-matching** (resolve the call through `Mutare.Transform.Calls`, so direct / aliased /
