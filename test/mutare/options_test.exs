@@ -16,7 +16,7 @@ defmodule Mutare.OptionsTest do
       assert options.test_selection == :coverage
       assert options.timeout == nil
       assert options.timeout_multiplier == 3.0
-      assert options.harness_retries == 1
+      assert options.harness_retries == 2
       assert options.max_harness_error_rate == 0.5
       assert options.sandbox == nil
       assert options.min_score == nil

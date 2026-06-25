@@ -177,5 +177,61 @@ defmodule Mutare.HarnessTest do
       # Retried once, but recorded — and warned — exactly once.
       assert log |> String.split("failed at the harness level") |> length() == 2
     end
+
+    # A node that dies during boot with its diagnostic self-erased (the
+    # `:standard_error` recursion) is a *named* harness error: still out of the
+    # score, but recognised so the runner gives a specific, actionable warning
+    # instead of pointing at output that can't help. Simulated by emitting the
+    # boot-crash banner to stderr (merged into the captured output) and halting
+    # off-contract for the one mutant, leaving the baseline (id 0) green.
+    defp boot_crashing_project(tag) do
+      Project.build(tag, %{
+        "lib/h.ex" => "defmodule H do\n  def f(a, b), do: a + b\nend\n",
+        "test/h_test.exs" => """
+        defmodule HTest do
+          use ExUnit.Case
+
+          test "f" do
+            if :persistent_term.get(:mutare_active, 0) == 1 do
+              IO.puts(:stderr, "Runtime terminating during boot " <>
+                "({badarg,[{io,put_chars,[standard_error,...]}]})")
+              System.halt(158)
+            end
+
+            assert H.f(1, 2) == 3
+          end
+        end
+        """
+      })
+    end
+
+    test "a self-erasing boot crash is named, retried harder, and warned specifically" do
+      %{project: project, sandbox: sandbox} = boot_crashing_project(:harness_runner_boot)
+
+      {result, log} =
+        with_log(fn ->
+          # `harness_retries: 0` proves the boot-failure budget is *independent* — the
+          # mutant still retries (and so survives a single transient) off its own pool.
+          Mutare.run(
+            project,
+            [sandbox: sandbox, harness_retries: 0, max_harness_error_rate: nil] ++
+              @arithmetic_only
+          )
+        end)
+
+      assert {:ok, run} = result
+      # The verdict is unchanged — a harness error kept out of the score.
+      assert [%{status: :harness_error}] = run.results
+      assert Report.score(run.results) == 100.0
+
+      # ...but the warning is the *specific* one: it names the cause and the levers,
+      # and does not send the user to output that can't help.
+      assert log =~ "died during boot"
+      assert log =~ "--partition-db"
+      refute log =~ "see the mutant's output to diagnose the sandbox"
+
+      # Warned exactly once (at recording), not per retry attempt.
+      assert log |> String.split("died during boot") |> length() == 2
+    end
   end
 end

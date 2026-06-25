@@ -556,7 +556,13 @@ contract between them is the whole game.
   **unbounded atoms** crashes the BEAM when the atom table fills (the VM-abort banner
   `atom_exhausted?/1`) — a resource-divergence like a timeout (the VM dies before the in-process
   watcher can self-halt cleanly), so `:atom_exhausted`. The runner counts **both** as kills; a real
-  infra/lib compile error / missing dep / other crash stays `:harness_error` (fail safe). It is also the single home for the rest of what mix's output/exit codes *mean*, so
+  infra/lib compile error / missing dep / other crash stays `:harness_error` (fail safe). A **third**
+  refinement, `:boot_failure` (`boot_failure?/1` — the sandbox node died **during boot** with its own
+  diagnostic erased by a secondary `:standard_error` failure, requiring *both* the `terminating during
+  boot` and `standard_error` markers), does **not** change the verdict — it stays a harness error out
+  of the score — but *names a known-transient contention cause* (kills take precedence in the `cond`),
+  so `Mutare.Runner` messages it actionably (the real cause is unrecoverable from output) and retries
+  it harder from a dedicated budget. It never reaches `Result.status`/the reporters. It is also the single home for the rest of what mix's output/exit codes *mean*, so
   nothing re-derives them: `success?/1` is the one reading of "exit `0` means success" (the metamutant
   compile, `Baseline`, `CoverageProbe` all call it instead of matching a literal `0`), and the three
   mix-output **patterns** live here too — `compile_error_banner/0`, `source_location_regex/0` (read by
@@ -575,9 +581,15 @@ contract between them is the whole game.
   Per-mutant wall-clock cap; a timeout is a kill (`:timeout`). Maps each run's typed
   `Command.outcome` onto a result status — notably `:harness_error` (an infra failure that never
   reached a verdict) stays out of the score, never charged as a kill. Two knobs guard against
-  flaky/broken infra: `:harness_retries` (re-run a harness-erroring mutant before recording it)
-  and `:max_harness_error_rate` (abort `{:error, :too_many_harness_errors, …}` when persistent
-  harness errors exceed that fraction of the mutants that *ran*). Returns
+  flaky/broken infra: `:harness_retries` (default 2; re-run a harness-erroring mutant before
+  recording it) and `:max_harness_error_rate` (abort `{:error, :too_many_harness_errors, …}` when
+  persistent harness errors exceed that fraction of the mutants that *ran*). The one *named*
+  harness-error cause, `:boot_failure` (a sandbox node dying during boot under startup contention),
+  gets its **own** retry budget (`@boot_failure_retries`, independent of `:harness_retries`, with a
+  jittered backoff so retries don't re-collide) plus a *specific* actionable warning naming the
+  contention levers (`--workers`/`--partition-db`; not `--harness-retries`, which the dedicated
+  budget bypasses) instead of pointing at output that can't
+  help; `status_for(:boot_failure)` still maps to `:harness_error`, so the score is unchanged. Returns
   `%{schema, results, sandbox, baseline_ms}`. Optional **per-worker partitioning**
   (`:partition_env`, off by default; `--partition-db`/`--partition-env`) hands each concurrent run
   a distinct partition id under a named env var (default `MIX_TEST_PARTITION`) for DB isolation —

@@ -179,6 +179,54 @@ defmodule Mutare.Sandbox.CommandTest do
       refute Command.atom_exhausted?(@test_compile_error)
       refute Command.atom_exhausted?("Cannot allocate 1234 bytes of memory")
     end
+
+    # The emulator's self-erasing boot crash: a supervised child fails to start under
+    # contention, the node tears down mid-boot, and the CLI exit-reporter's attempt to
+    # print the cause recurses on a torn-down `:standard_error`, replacing the original
+    # reason. The truncated slogan that reaches us still carries both markers.
+    @boot_crash """
+    Slogan: Runtime terminating during boot ({badarg,[{io,put_chars,[standard_error,
+      [<<"** (EXIT from #PID<0.99.0>) an exception was raised:
+            ** (ArgumentError) errors were found at the given arguments:
+          * 1st argument: the device does not exist
+                (stdlib) io.erl:98: :io.put_chars(:standard_error, [...])">>]]}]})
+    """
+
+    test "a self-erasing boot crash is a (named) harness error, not a kill" do
+      # The node died before any verdict, so it lands on a generic harness exit code
+      # (exit 1, or a signal code if the abort raised one). The refinement *names* the
+      # cause (`:boot_failure`) so the runner can retry/message it — but it stays out
+      # of the score, never charged as a kill.
+      assert Command.outcome(1, @boot_crash) == :boot_failure
+      assert Command.outcome(158, @boot_crash) == :boot_failure
+    end
+
+    test "the boot banner never overrides a real verdict (pass/fail/timeout win)" do
+      assert Command.outcome(0, @boot_crash) == :passed
+      assert Command.outcome(Command.failure_exit(), @boot_crash) == :failed
+      assert Command.outcome(Command.timeout_exit(), @boot_crash) == :timeout
+    end
+
+    test "a detected kill is never masked by a co-occurring boot banner" do
+      # Contrived (a node dead at boot never filled the atom table), but precedence
+      # is fail-safe toward the kill — the verdict wins over the cause label.
+      assert Command.outcome(1, @atom_crash <> @boot_crash) == :atom_exhausted
+    end
+
+    test "boot_failure?/1 needs both markers (the boot abort and the torn-down device)" do
+      assert Command.boot_failure?(@boot_crash)
+
+      # Either marker alone is not the self-erasing signature: a boot crash that left a
+      # recoverable error wouldn't have recursed on `standard_error`, and a stray
+      # `standard_error` mention outside a boot abort isn't this at all.
+      refute Command.boot_failure?("Runtime terminating during boot (some other reason)")
+      refute Command.boot_failure?("** (RuntimeError) wrote to :standard_error somewhere")
+
+      # An ordinary test failure / compile error / atom crash is not one.
+      refute Command.boot_failure?("1) test foo (MyTest)\n   Assertion failed")
+      refute Command.boot_failure?(@test_compile_error)
+      refute Command.boot_failure?(@atom_crash)
+    end
   end
 
   describe "test_argv/1 builds the kill-detection mix test argv" do

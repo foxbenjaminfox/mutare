@@ -65,7 +65,7 @@ defmodule Mutare.Options do
             timeout: nil,
             timeout_multiplier: 3.0,
             baseline_runs: 1,
-            harness_retries: 1,
+            harness_retries: 2,
             max_harness_error_rate: 0.5,
             sandbox: nil,
             keep_sandbox: false,
@@ -158,7 +158,7 @@ defmodule Mutare.Options do
       timeout: validate_timeout!(Keyword.get(opts, :timeout)),
       timeout_multiplier: validate_multiplier!(Keyword.get(opts, :timeout_multiplier, 3.0)),
       baseline_runs: validate_baseline_runs!(Keyword.get(opts, :baseline_runs, 1)),
-      harness_retries: validate_harness_retries!(Keyword.get(opts, :harness_retries, 1)),
+      harness_retries: validate_harness_retries!(Keyword.get(opts, :harness_retries, 2)),
       max_harness_error_rate:
         validate_harness_error_rate!(Keyword.get(opts, :max_harness_error_rate, 0.5)),
       sandbox: validate_sandbox!(Keyword.get(opts, :sandbox)),

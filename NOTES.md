@@ -2892,6 +2892,66 @@ compiled lib modules *lazily* per-run (it doesn't today; the metamutant is built
 once), a lib compile error here could be a real kill we conservatively keep as a
 harness error. Acceptable while "lib compiles once" holds.
 
+### A self-erasing boot crash is a *named*, harder-retried harness error `[done]`
+Surfaced on a full-stack Phoenix/LiveView/Ecto target at `--workers 16`: 6–13 of 39
+covered mutants landed as `:harness_error` *non-deterministically* (the score wobbled
+run-to-run), every one with an identical, unactionable cause. `--workers 1` → **0**;
+`--workers 16 --harness-retries 4` → **0** (three consecutive runs). So it is pure
+worker contention, not the mutations — but the engine surfaced it badly, and *that*
+was the bug.
+
+Root cause: under contention a supervised child (a `Repo`/Postgrex or `Redix`
+connection — `econnrefused`) fails to start and takes down the node *during boot*.
+Elixir's CLI exit-reporter then tries to print the dying task's error to
+`:standard_error`, but the node is already tearing down so that IO device is gone →
+`(ArgumentError) the device does not exist`; the reporter tries to print *that* to
+`:standard_error` → same failure → the emulator terminates with
+`{badarg,[{io,put_chars,[standard_error,…]}]}`, **replacing** the original reason. The
+exit code is off-contract (`:harness_error`, correct), but the *cause is erased*: the
+slogan binary is truncated and the captured output carries only the secondary
+"terminating during boot … standard_error … device does not exist" banner. So the old
+warning's "see the mutant's output to diagnose the sandbox" led nowhere.
+
+Two engine-side fixes, both confined to the modules that already own these contracts:
+
+- **Recognise + name it** (`Command.boot_failure?/1` → the `:boot_failure` outcome). A
+  third `outcome/2` output-refinement of the otherwise-`:harness_error` bucket, but —
+  unlike `:suite_compile_error`/`:atom_exhausted`, which flip to *kills* — this one
+  keeps the **harness-error verdict** (`Runner.status_for(:boot_failure)` →
+  `:harness_error`, out of the score). It is purely an internal label that never
+  reaches `Result.status`/the reporters; its only jobs are messaging and retries. The
+  signature requires *both* markers (`terminating during boot` **and** `standard_error`),
+  because the `standard_error` recursion is exactly what makes the cause unrecoverable —
+  a boot crash that left a real error wouldn't have recursed on a torn-down device.
+  Kills take precedence in the `cond` (fail-safe: a detected mutation is never masked),
+  though the cases don't co-occur (a node dead at boot never compiled a test script nor
+  filled the atom table).
+- **Retry it harder, independently** (`Runner.@boot_failure_retries`, 4 extra attempts,
+  on top of and *separate from* `:harness_retries`, with a short jittered backoff so the
+  retry doesn't re-collide with the same boot stampede). The two budgets are threaded as
+  separate counters decremented by the *current* run's outcome, so a boot failure that
+  later degrades to a plain harness error still draws its general retries, and vice
+  versa. Sized to the field-proven figure (1 initial + 4 = 5 attempts cleared it). The
+  warning is replaced with a *specific, actionable* one: it names the cause, says the
+  output can't help, and names the real *contention* levers (`--workers`,
+  `--partition-db`). It deliberately does **not** name `--harness-retries`: a
+  `:boot_failure` is retried only from `@boot_failure_retries`, so raising that knob
+  would not retry it more — naming it would send the user to a lever that does nothing
+  for this outcome.
+
+Also bumped the default `:harness_retries` 1 → 2 — a gentle, broadly-justified hedge for
+*other* transient harness errors (the boot case has its own larger budget). Inert on a
+healthy run: only an actual `:harness_error`/`:boot_failure` outcome ever retries, so
+normal-run timing is unchanged.
+
+Not done (the issue's optional fourth direction): persisting the sandbox
+`erl_crash.dump` next to the result. The dump's slogan is itself the same truncated,
+self-erased binary (5/5 inspected dumps were identical), so it adds nothing over the
+specific warning; skipped to keep the change focused. The launch-stagger idea (offset
+worker starts so N nodes don't boot in lockstep) is also deferred — the boot-retry
+jitter addresses re-collision on retry, and `--workers`/`--partition-db` remain the
+documented fixes for the initial stampede.
+
 ### Test selection — self-recorded coverage (M3b done, race-free redesign) `[done]`
 Coverage-driven *test selection* is done at **test-file** granularity from a
 **single instrumented `mix test` run** at baseline (`MUTARE_COVERAGE=1`). A mutant

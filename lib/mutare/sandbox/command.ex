@@ -29,8 +29,8 @@ defmodule Mutare.Sandbox.Command do
 
   `outcome/1` is the single, total decoder of that *exit-code* contract.
   `outcome/2` refines its ambiguous "anything else" case with the run's output —
-  the only place this module reads output to form a *verdict* — recovering two
-  *detected*-mutant cases from the otherwise-`:harness_error` bucket:
+  the only place this module reads output to form a *verdict*. Two refinements
+  recover *detected*-mutant cases from the otherwise-`:harness_error` bucket:
 
     * a mutation that broke the **test suite's** own compilation (it ran at the
       test modules' compile time) exits `1` with a test-script compile-error
@@ -41,6 +41,16 @@ defmodule Mutare.Sandbox.Command do
       timeout (the suite can never pass with it), so also a kill. The VM aborts
       before the in-process timeout watcher can self-halt, which is why it surfaces
       here rather than as a clean `timeout_exit/0`.
+
+  A third refinement does **not** change the verdict — it stays a harness error —
+  but *names a known-transient cause* so the runner can message and retry it
+  better (`boot_failure?/1` → `:boot_failure`): the sandbox node died **during
+  boot** and its own diagnostic was erased by a secondary `:standard_error`
+  failure (a torn-down IO device). The mutation says nothing — it is concurrent
+  workers contending on shared singletons at startup — so it is kept out of the
+  score like any harness error, but it is recognised here so the engine stops
+  pointing at output that can't help (the real cause is unrecoverable) and retries
+  it harder (see `Mutare.Runner`).
 
   `timed_test/4` applies the `--exit-status` flag and returns a typed
   `Mutare.Sandbox.Command.Result` decoded via `outcome/2`.
@@ -128,6 +138,12 @@ defmodule Mutare.Sandbox.Command do
       program mint unbounded atoms and the BEAM aborted when the atom table filled.
       A resource-divergence like a timeout (the suite can never pass with it), so
       the runner counts it as a kill — see `outcome/2` and `atom_exhausted?/1`.
+    * `:boot_failure` — a refinement of `:harness_error` that is **still not a
+      kill**: the sandbox node died during boot and its own diagnostic was erased
+      by a secondary `:standard_error` failure (`boot_failure?/1`). A known-
+      transient contention signature (concurrent workers stampeding shared
+      services at startup), kept out of the score like any harness error but named
+      so the runner messages it actionably and retries it harder.
   """
   @type outcome ::
           :passed
@@ -136,6 +152,7 @@ defmodule Mutare.Sandbox.Command do
           | :harness_error
           | :suite_compile_error
           | :atom_exhausted
+          | :boot_failure
 
   @doc """
   The `MIX_ENV` every sandbox `mix` runs under (`"test"`). The single home for the value,
@@ -203,16 +220,23 @@ defmodule Mutare.Sandbox.Command do
   script (`suite_compile_error?/1`), it is `:suite_compile_error`. A second
   refinement recovers `:atom_exhausted` — a VM abort from the mutation minting
   unbounded atoms (`atom_exhausted?/1`), a detected resource-divergence. Both are
-  kills. Everything else (a lib-file compile error, a missing dep, no marker at
-  all) stays `:harness_error` — fail safe: an ambiguous failure is never a kill.
+  kills. A third — `:boot_failure` (`boot_failure?/1`) — stays a harness error but
+  names a known-transient boot-time contention crash, so the runner can message
+  and retry it better. Everything else (a lib-file compile error, a missing dep,
+  no marker at all) stays `:harness_error` — fail safe: an ambiguous failure is
+  never a kill.
   """
   @spec outcome(non_neg_integer(), String.t()) :: outcome()
   def outcome(status, output) when is_binary(output) do
     case outcome(status) do
       :harness_error ->
         cond do
+          # Kills first: a detected mutation must never be masked by a boot banner
+          # (they don't co-occur — a node dead at boot never compiled a test
+          # script nor filled the atom table — but precedence is fail-safe).
           atom_exhausted?(output) -> :atom_exhausted
           suite_compile_error?(output) -> :suite_compile_error
+          boot_failure?(output) -> :boot_failure
           true -> :harness_error
         end
 
@@ -239,6 +263,29 @@ defmodule Mutare.Sandbox.Command do
   # captured output (`stderr_to_stdout: true`), so the banner reaches `outcome/2`.
   # The wording (`no more index entries in atom_tab`) is stable across OTP releases.
   @atom_table_exhausted ~r/no more index entries in atom_tab/
+
+  # A BEAM *boot crash* whose diagnostic was self-erased. When a supervised child
+  # (a Repo/Postgrex/Redix connection under worker contention) fails to start, the
+  # node tears down mid-boot; the CLI exit-reporter then tries to print the dying
+  # task's error to `:standard_error`, but that IO device is already gone, so the
+  # emulator terminates with `{badarg,[{io,put_chars,[standard_error,…]}]}` —
+  # *replacing* the original reason. Both halves are read, since the secondary
+  # failure — the reporter *recursing on* the torn-down device — is what makes the
+  # signature precise (a boot crash that left a real, recoverable error would not
+  # have recursed on `standard_error`):
+  #   * `terminating during boot` — the emulator's boot-time abort slogan.
+  #   * `put_chars … standard_error` — the CLI reporter recursing on the torn-down
+  #     `:standard_error` device (`{io,put_chars,[standard_error,…]}`, or the Elixir
+  #     form `:io.put_chars(:standard_error, …)`). Requiring the `put_chars`
+  #     neighbour, not a bare `standard_error` mention, keeps the marker to the
+  #     self-erasing recursion: a deterministic boot break that printed a real error
+  #     elsewhere, or any output that merely names the device, no longer matches
+  #     (it degrades to a plain `:harness_error` — the safe direction).
+  # Both appear in the truncated slogan binary and the captured banner alike. The
+  # cause is unrecoverable from output (that's the whole point), so the runner says
+  # so plainly and treats it as known-transient. Wording stable across OTP.
+  @boot_during_startup ~r/terminating during boot/i
+  @torn_down_standard_error ~r/put_chars.{0,8}standard_error/
 
   # Compiler-diagnostic *headers*. Elixir prints each warning/error as a block headed
   # by one of these markers, the rest of the block (gutter, carets, `└─ file:line:col:`
@@ -332,6 +379,26 @@ defmodule Mutare.Sandbox.Command do
   @spec atom_exhausted?(String.t()) :: boolean()
   def atom_exhausted?(output) when is_binary(output) do
     Regex.match?(@atom_table_exhausted, output)
+  end
+
+  @doc """
+  Whether `output` shows the sandbox node **dying during boot** with its own
+  diagnostic erased by a secondary `:standard_error` failure (see `outcome/2`).
+  The signature is the emulator's `terminating during boot` abort slogan paired
+  with the torn-down `standard_error` device the CLI reporter recursed on.
+
+  Such a run is a harness error (the mutation says nothing — it is almost always
+  resource/connection contention across concurrent workers at startup), but a
+  *known-transient* one whose real cause is unrecoverable from output, so the
+  runner messages it specifically and retries it harder. Matches only when the
+  otherwise-`:harness_error` exit code is *also* paired with this banner; a normal
+  pass/fail/timeout verdict still wins in `outcome/2`. Pure, so the discriminator
+  is unit-testable.
+  """
+  @spec boot_failure?(String.t()) :: boolean()
+  def boot_failure?(output) when is_binary(output) do
+    Regex.match?(@boot_during_startup, output) and
+      Regex.match?(@torn_down_standard_error, output)
   end
 
   @doc """

@@ -56,7 +56,7 @@ defmodule Mutare.Runner do
 
   Two knobs harden this against flakiness and systemic breakage:
 
-    * `:harness_retries` (default 1) re-runs a harness-errored mutant before
+    * `:harness_retries` (default 2) re-runs a harness-errored mutant before
       recording it, so a *transient* failure (a filesystem/lock race) gets
       another chance; a real verdict is never retried.
     * `:max_harness_error_rate` (default 0.5, `nil` to disable) aborts the whole
@@ -64,6 +64,22 @@ defmodule Mutare.Runner do
       harness errors exceed that fraction of the mutants that *ran*. Past that,
       the sandbox is broken, not the mutations tested, and a score over the
       surviving denominator would mislead; better to fail loudly.
+
+  ## Boot-failure: a known-transient harness error retried harder
+
+  One harness-error *cause* is recognised by name (`Command.boot_failure?/1` →
+  the `:boot_failure` outcome): the sandbox node dies **during boot** with its own
+  diagnostic erased by a secondary `:standard_error` failure. It is almost always
+  concurrent workers contending on shared singletons at startup (a test DB, a
+  connection pool), so it clears on a retry that doesn't re-collide with the boot
+  stampede. It gets its **own** retry budget (`@boot_failure_retries`), independent
+  of `:harness_retries` and with a short jittered backoff, plus a *specific*
+  warning that stops pointing at output that can't help (the real cause is
+  unrecoverable) and names the actual contention levers — `--workers` and
+  `--partition-db`/`--partition-env`. (Not `--harness-retries`: a `:boot_failure`
+  draws only from its own dedicated budget, so raising that knob would not retry it
+  more.) The verdict is unchanged (a harness error, out of the score); only the
+  messaging and retry effort differ.
   """
 
   alias Mutare.{Options, Poison, Project, Report, Result, Sandbox, Schema, Selector, Site}
@@ -451,38 +467,90 @@ defmodule Mutare.Runner do
     end
   end
 
+  # A boot-time node crash (`:boot_failure`) is a known-transient contention
+  # signature, so it gets its **own** retry budget on top of `:harness_retries`,
+  # with a short jittered backoff so the retry doesn't re-collide with the same
+  # boot stampede. Sized to the field-proven figure: 4 extra attempts (total 5)
+  # cleared it across repeated runs of a contended target.
+  @boot_failure_retries 4
+  @boot_retry_base_ms 150
+  @boot_retry_jitter_ms 350
+
   # A `:harness_error` means the suite never reached a verdict (a compile error,
   # a missing dep, a filesystem/lock race). Some of those are *transient*, so we
   # re-run before recording — a fresh `mix` boot is its own natural backoff. A
-  # real verdict (passed/failed/timeout) is never retried. `retries` exhausting
+  # real verdict (passed/failed/timeout) is never retried. Exhausting the budget
   # records the harness error as-is; the run-level guard decides if too many
   # persisted.
   #
-  # The bare `:harness_error` test is exhaustive on purpose: the two **kill** outcomes
-  # `Command.outcome/2` recovers from an otherwise-`:harness_error` exit
-  # (`:suite_compile_error`, `:atom_exhausted`) are already distinct outcomes by the time
-  # `result.outcome` is read here, so they record as kills and are never retried.
-  defp run_mutant(sandbox, site, test_args, cap, retries, env) do
+  # The two **kill** outcomes `Command.outcome/2` recovers from an otherwise-
+  # `:harness_error` exit (`:suite_compile_error`, `:atom_exhausted`) are already
+  # distinct outcomes here, so they record as kills and are never retried. The
+  # third refinement, `:boot_failure`, *is* retried — harder than a generic
+  # harness error, from its own dedicated budget — since it is a known-transient
+  # startup-contention crash; see `@boot_failure_retries`.
+  defp run_mutant(sandbox, site, test_args, cap, retries, env),
+    do: run_mutant(sandbox, site, test_args, cap, retries, @boot_failure_retries, env)
+
+  # `retries` is the general `:harness_retries` budget; `boot_retries` the dedicated
+  # boot-failure budget. The two are decremented independently by the *current* run's
+  # outcome, so a boot failure that later degrades to a plain harness error still draws
+  # its general retries, and vice versa. Only the two retryable outcomes recurse; every
+  # real verdict (and the recovered kills) falls through to `record/2` unretried.
+  defp run_mutant(sandbox, site, test_args, cap, retries, boot_retries, env) do
     result = Command.timed_test(sandbox, test_args, site.id, cap, env)
 
-    if result.outcome == :harness_error and retries > 0 do
-      run_mutant(sandbox, site, test_args, cap, retries - 1, env)
-    else
-      if result.outcome == :harness_error, do: warn_harness_error(site, result)
+    case result.outcome do
+      :boot_failure when boot_retries > 0 ->
+        Process.sleep(boot_backoff_ms())
+        run_mutant(sandbox, site, test_args, cap, retries, boot_retries - 1, env)
 
-      %Result{
-        site: site,
-        status: status_for(result.outcome),
-        duration_ms: result.duration_ms,
-        output: result.output
-      }
+      :harness_error when retries > 0 ->
+        run_mutant(sandbox, site, test_args, cap, retries - 1, boot_retries, env)
+
+      outcome when outcome in [:harness_error, :boot_failure] ->
+        warn_harness_error(site, result)
+        record(site, result)
+
+      _ ->
+        record(site, result)
     end
   end
+
+  defp record(%Site{} = site, result) do
+    %Result{
+      site: site,
+      status: status_for(result.outcome),
+      duration_ms: result.duration_ms,
+      output: result.output
+    }
+  end
+
+  # Short jittered backoff before a boot-failure retry, so the concurrent workers
+  # don't re-stampede shared services in lockstep on the same instant.
+  defp boot_backoff_ms, do: @boot_retry_base_ms + :rand.uniform(@boot_retry_jitter_ms)
 
   # A persistent harness error (retries exhausted) is recorded out of the score —
   # but silence would hide infrastructure breakage behind a count buried in the
   # summary. Warn once, naming the mutant and its exit code, so it's actionable;
   # the full `mix` output stays on the `Mutare.Result` for inspection.
+  #
+  # A `:boot_failure` gets a *specific* message: its real cause is unrecoverable
+  # from output (the boot crash erased its own diagnostic), so rather than send the
+  # user to output that can't help, we name the actual fix — it is almost always
+  # startup contention across concurrent workers.
+  defp warn_harness_error(%Site{} = site, %{outcome: :boot_failure} = result) do
+    Logger.warning(
+      "#{site.file}:#{site.line}: mutant #{site.id} — the sandbox node died during boot " <>
+        "(exit #{result.exit_status}). Its underlying error couldn't reach a torn-down " <>
+        ":standard_error, so the cause is unrecoverable from the mutant's output. This is " <>
+        "almost always resource/connection contention across concurrent workers at startup, " <>
+        "which the engine already retries harder on its own — if it persists, lower --workers " <>
+        "or partition shared services (--partition-db / --partition-env). Not counted as " <>
+        "killed or survived."
+    )
+  end
+
   defp warn_harness_error(%Site{} = site, result) do
     Logger.warning(
       "#{site.file}:#{site.line}: mutant #{site.id} failed at the harness level " <>
@@ -501,6 +569,12 @@ defmodule Mutare.Runner do
   defp status_for(:failed), do: :killed
   defp status_for(:timeout), do: :timeout
   defp status_for(:harness_error), do: :harness_error
+  # A boot-time node crash is a harness error by *verdict* (it says nothing about
+  # the mutation — it's startup contention), so it records under the same status
+  # and stays out of the score. The `:boot_failure` outcome is purely an internal
+  # refinement (`Command.outcome/2`) driving the harder retry and the specific
+  # warning; it never reaches the reporters' `Result.status` vocabulary.
+  defp status_for(:boot_failure), do: :harness_error
   # The mutation broke the test suite's own compilation — it can't even build
   # with the mutant active, so it was detected: a kill. `Command.outcome/2`
   # separates this from a genuine harness/infra compile failure (which stays
@@ -511,7 +585,7 @@ defmodule Mutare.Runner do
   # so the report can name the cause. `Command.outcome/2` recovers it from the
   # otherwise-`:harness_error` exit via the VM-abort banner (`atom_exhausted?/1`).
   # Not retried (it is a verdict, not a transient infra blip): only `:harness_error`
-  # re-runs (see `run_mutant/5`).
+  # and `:boot_failure` re-run (see `run_mutant/7`).
   defp status_for(:atom_exhausted), do: :atom_exhausted
 
   # Persistent harness errors (after per-mutant retries) hollow out the score's

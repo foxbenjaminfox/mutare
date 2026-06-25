@@ -39,8 +39,11 @@ defmodule Mix.Tasks.Mutare do
                                           #   (no per-file test selection)
       mix mutare --baseline-runs 2        # run the baseline 2×; abort if a test
                                           #   flakes (passes one run, fails another)
-      mix mutare --harness-retries 2      # re-run a mutant up to 2× if its run
-                                          #   fails at the harness level (infra)
+      mix mutare --harness-retries 4      # re-run a mutant up to 4× if its run
+                                          #   fails at the harness level (infra;
+                                          #   default 2). Raise it for transient
+                                          #   infra flakiness (a boot-time node
+                                          #   crash is already retried on its own)
       mix mutare --max-harness-error-rate 0.3
                                           # abort if >30% of the mutants that ran
                                           #   failed at the harness level (1.0 = off)
@@ -141,7 +144,9 @@ defmodule Mix.Tasks.Mutare do
         # run the baseline N×, aborting if a test flakes (passes one run, fails another)
         baseline_runs: 1,
         # retry a mutant whose run fails at the harness (infra) level before recording it
-        harness_retries: 1,
+        # (a boot-time node crash, a known-transient contention signature, is retried
+        # harder still from its own dedicated budget — see `mix help mutare`)
+        harness_retries: 2,
         # abort if more than this fraction of the mutants that ran erred at the
         # harness level (1.0 = never abort on harness errors)
         max_harness_error_rate: 0.5,
