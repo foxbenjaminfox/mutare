@@ -18,6 +18,12 @@ defmodule Mutare.Transform.Analyze do
   alias Mutare.Mutator
   alias Mutare.Transform.{Candidate, NodeRange, Suppression}
 
+  # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
+  # the body path's five equivalent-sibling clauses below match on these shared `defguard`s
+  # rather than literal operator lists, so they can't drift from the guard path's twins in
+  # `Mutare.Transform.Tag`.
+  import Suppression, only: [is_negation_op: 1, is_equality_op: 1, is_body_connective: 1]
+
   alias Mutare.Transform.Analyze.{
     CallOptions,
     Captures,
@@ -520,7 +526,7 @@ defmodule Mutare.Transform.Analyze do
   # `true`/`false`. Same operator only: a mixed `not !x` could differ on a non-boolean
   # operand (`not x` raises where `!x` coerces to `false`), so it is left fully offered.
   defp analyze({neg, meta, [{neg, inner_meta, [operand]}]} = node, :runtime, mutators)
-       when neg in [:not, :!] do
+       when is_negation_op(neg) do
     inner = {neg, inner_meta, [analyze(operand, :runtime, mutators)]}
     offer({neg, meta, [inner]}, node, mutators)
   end
@@ -532,7 +538,7 @@ defmodule Mutare.Transform.Analyze do
   # RHS is further List-suppressed — an empty list makes `x in []` ≡ `false`, again the
   # outer's Conditional (see `analyze_in_rhs/2`). The outer `not`/`!` is offered normally.
   defp analyze({neg, meta, [{:in, in_meta, [left, right]}]} = node, :runtime, mutators)
-       when neg in [:not, :!] do
+       when is_negation_op(neg) do
     inner = {:in, in_meta, [analyze(left, :runtime, mutators), analyze_in_rhs(right, mutators)]}
     offer({neg, meta, [inner]}, node, mutators)
   end
@@ -553,7 +559,7 @@ defmodule Mutare.Transform.Analyze do
   # ≢ `a === b` survives negation as a genuinely new mutant and is kept. The operands still
   # descend either way.
   defp analyze({neg, meta, [{op, op_meta, [left, right]}]} = node, :runtime, mutators)
-       when neg in [:not, :!] and op in [:==, :!=, :===, :!==] do
+       when is_negation_op(neg) and is_equality_op(op) do
     inner_raw = {op, op_meta, [left, right]}
 
     inner =
@@ -586,7 +592,7 @@ defmodule Mutare.Transform.Analyze do
   # `and`↔`or` and both operands. `&&`/`||` are body-only (guard-illegal), so the guard twin in
   # `Mutare.Transform.Tag` handles only `and`/`or`. See NOTES "Equivalent-sibling suppression".
   defp analyze({op, _meta, [left, _right]} = node, :runtime, mutators)
-       when op in [:and, :&&, :or, :||] do
+       when is_body_connective(op) do
     analyzed = node |> offer(node, mutators) |> recurse_runtime(mutators)
 
     if Suppression.boolean_op_node?(left),

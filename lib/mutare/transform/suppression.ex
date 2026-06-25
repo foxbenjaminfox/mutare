@@ -10,15 +10,52 @@ defmodule Mutare.Transform.Suppression do
   # carried character-for-character copies of these predicates, including two `@equality_complements`
   # maps that had to be kept in lockstep by hand — see NOTES "equivalent-sibling suppression".)
   #
-  # The rules (the call sites carry the surrounding why):
-  #   * a short-circuit connective (`and`/`&&`/`or`/`||`): Conditional's constant on the *left*
-  #     operand duplicates the whole-node short-circuit value (`boolean_op_node?/1` gates it,
-  #     `redundant_constant/1` is the value);
-  #   * an equality op *directly under a negation*: its polarity complement (Relational's flip ≡
-  #     the outer `not`'s strip) and `true`/`false` (Conditional) re-negate to the source
-  #     (`negation_redundant?/2`), while a strictness relaxation (`===`→`==`) is kept.
+  # The rules, and where each path implements its descent (the call sites carry the
+  # surrounding why). Both paths walk the same five shapes; the *structural* clauses
+  # stay in each module because the two deliver differently — the body path attaches
+  # `%Candidate.InPlace{}` to node meta while threading only `mutators`, the guard path
+  # accumulates `{tag, original, [{spec, mutated}]}` targets while threading a tag
+  # counter — so a single walk would need a four-callback strategy that obscures the
+  # node-level reasoning. What *is* centralized here is the **vocabulary** (which
+  # operators trigger each rule, as `defguard`s usable in both paths' `when` clauses)
+  # and the **predicates** (which mutant is the redundant sibling). A literal operator
+  # list in one path can no longer silently drift from its twin in the other.
+  #
+  #   | rule                       | body (Analyze)              | guard (Tag)              |
+  #   |----------------------------|-----------------------------|--------------------------|
+  #   | double negation `not not`  | `is_negation_op/1` clause   | literal `:not` clause    |
+  #   | negation over `in`         | `is_negation_op/1` clause   | literal `:not` clause    |
+  #   | negation over equality op  | `is_negation_op` + `is_equality_op` | `is_equality_op/1` clause |
+  #   | bare `x in [list]`         | `analyze_in_rhs/2`          | `tag_in_rhs/3`           |
+  #   | short-circuit connective   | `is_body_connective/1`      | `is_guard_connective/1`  |
+  #
+  # The body path admits `!`/`&&`/`||` (`is_negation_op`/`is_body_connective` carry the
+  # extra operators); the guard path can't (they are guard-illegal), so it matches the
+  # subset (`is_guard_connective`, and a bare `:not` head with no `!`). That body ⊇ guard
+  # relationship is the reason the two sets are *named here together* rather than written
+  # as independent literals — a reader sees both at once.
 
   alias Mutare.Mutators.Conditional
+
+  # === operator vocabulary (shared by both suppression paths' `when` clauses) =========
+  #
+  # `defguard`s, not plain functions or module attributes, because the structural callers
+  # use these in *guard* position (`when is_equality_op(op)`) — and a guard can neither
+  # call a remote function nor read a remote attribute, but it *can* use an imported guard
+  # macro. So this is the single source of truth for "which operators trigger suppression"
+  # that a `when` clause can actually reference.
+
+  @doc "The equality operators whose polarity complement re-negates to the source (both paths)."
+  defguard is_equality_op(op) when op in [:==, :!=, :===, :!==]
+
+  @doc "The boolean negations the body path suppresses under (`!` is guard-illegal, so guard-only `:not`)."
+  defguard is_negation_op(op) when op in [:not, :!]
+
+  @doc "Short-circuit connectives in a runtime **body** (`&&`/`||` included)."
+  defguard is_body_connective(op) when op in [:and, :&&, :or, :||]
+
+  @doc "Short-circuit connectives legal in a **guard** (`&&`/`||` excluded) — the subset of `is_body_connective/1`."
+  defguard is_guard_connective(op) when op in [:and, :or]
 
   # The polarity complement of each equality operator — the swap that, *under a negation*,
   # re-negates to the operator itself (`not (a !== b)` ≡ `a === b`). Exactly Relational's

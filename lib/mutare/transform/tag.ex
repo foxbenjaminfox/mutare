@@ -27,6 +27,13 @@ defmodule Mutare.Transform.Tag do
   alias Mutare.{AST, Mutator}
   alias Mutare.Transform.{NodeRange, Suppression}
 
+  # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
+  # the guard path matches the guard-legal subset of the body path's sets, so its clauses
+  # use the same shared `defguard`s as `Mutare.Transform.Analyze` rather than independent
+  # literal lists. (`!`/`&&`/`||` are guard-illegal, so the negation/double-negation clauses
+  # below match a bare `:not` head and there is no `is_negation_op` use here.)
+  import Suppression, only: [is_equality_op: 1, is_guard_connective: 1]
+
   @doc """
   Tag every mutatable operator in one guard expression.
 
@@ -122,7 +129,7 @@ defmodule Mutare.Transform.Tag do
   # nor a constant, so `not (a == b)` ≢ `a === b` survives. Mirrors the body-side clause in
   # `Mutare.Transform.Analyze`.
   defp tag_walk({:not, meta, [{op, op_meta, [left, right]}]}, acc, mutators)
-       when op in [:==, :!=, :===, :!==] do
+       when is_equality_op(op) do
     {left, acc} = tag_walk(left, acc, mutators)
     {right, acc} = tag_walk(right, acc, mutators)
     {inner, acc} = offer_negation_survivors({op, op_meta, [left, right]}, op, acc, mutators)
@@ -164,7 +171,7 @@ defmodule Mutare.Transform.Tag do
   # precise diff, the other constant and Logical's `and`↔`or` stay. A non-boolean-op left has
   # no subsuming sibling, so it is offered in full. Mirrors `Mutare.Transform.Analyze`'s
   # body-side clause.
-  defp tag_walk({op, meta, [left, right]}, acc, mutators) when op in [:and, :or] do
+  defp tag_walk({op, meta, [left, right]}, acc, mutators) when is_guard_connective(op) do
     {left_t, acc} = tag_walk(left, acc, mutators)
     {right_t, acc} = tag_walk(right, acc, mutators)
     rebuilt = {op, meta, [left_t, right_t]}
