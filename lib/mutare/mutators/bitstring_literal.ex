@@ -8,7 +8,8 @@ defmodule Mutare.Mutators.BitstringLiteral do
   Not mutated — constructs that merely share the `<<…>>` AST shape:
 
     * an **interpolated string** (`"a\#{x}b"`) — conceptually a string, left to
-      `StringLiteral`'s domain (which itself skips interpolations);
+      `StringLiteral`'s domain (which mutates the whole interpolated string to
+      `""`/`"mutare"`, the empty-bitstring collapse being the wrong shape for it);
     * a **sigil's content** (`~r/…/`, `~D[…]`) — the sigil mutators own the whole
       node.
 

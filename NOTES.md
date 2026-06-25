@@ -1675,8 +1675,10 @@ Three constructs share the `{:<<>>, …}` shape, and only the first should colla
 
   * a real `<<…>>` literal — *no* `delimiter` in its meta → collapse;
   * an **interpolated string** `"a#{x}b"` — a `<<>>` *with* `delimiter: "\""` →
-    skipped by the mutator (it is StringLiteral's domain, which itself skips
-    interpolations); its inner expressions still mutate (the node is descended);
+    skipped by *this* mutator (the empty-bitstring collapse is the wrong shape); it
+    is StringLiteral's domain, which mutates the whole interpolated string to
+    `""`/`"mutare"`. Its inner expressions still mutate either way (the node is
+    descended);
   * a **sigil's content** `<<>>` (inside `~r/…/`, `~D[…]`) — *also* has no delimiter,
     so it is indistinguishable from a real literal at the node. The fix is in the
     analyzer, not the mutator: the generic runtime clause recognises a sigil
@@ -1688,6 +1690,34 @@ Three constructs share the `{:<<>>, …}` shape, and only the first should colla
     itself. A selector spliced into sigil content (or BitstringLiteral collapsing it)
     is illegal; routing through the segments instead of the wrapper keeps interpolated
     sub-expressions mutating while the wrapper stays safe.
+
+### Type-pin binary-valued bitstring segments as `::binary` `[done]`
+A bitstring segment's *default type* is decided syntactically, and only an **untyped
+literal** binary defaults to `binary` — `<<"x">>` ≡ `<<"x"::binary>>`. The moment a
+mutation wraps that segment in a selector `case` (StringLiteral on the string,
+StringSigilLiteral on a `~s`, or the segment being an interpolated string) it stops being
+a literal, so Elixir reverts it to the **integer** default and construction raises
+*"expected an integer"* — at the **baseline too** (`<<"x">>` → `<<(case … end)>>`, whose
+catch-all is still `"x"`). This is a baseline-equivalence break, the worst kind: it sinks
+the whole "compile once" run, not just one mutant.
+
+Fix lives in the analyzer, not the mutators (placement is positional — a mutator must not
+know it sits in a bitstring): the runtime `<<>>` *construction* arm routes each segment
+through `analyze_construction_segment/2`, which pins `::binary` on a **binary-valued
+literal** segment (`binary_valued_literal?/1`: a string `{:__block__, _, [bin]}`, a
+`delimiter`-marked interpolated `<<>>`, or a `~s`/`~S` sigil). Semantically a no-op
+(`<<"x">>` ≡ `<<"x"::binary>>`), so the baseline and every mutant construct correctly; the
+report still diffs the bare value (it patches the original source, not the metamutant). An
+already-typed segment (`::utf8`/`::binary`/`size(expr)`) is passed through untouched, and an
+integer/float/expression segment is left alone — its integer default is correct (and an
+*untyped* non-literal binary/float, e.g. `<<some_str>>`/`<<1.0>>`, is already invalid source
+that raises without any mutation, so there is nothing to protect). The pin is scoped to the
+**runtime construction** arm only: a pattern `<<a, b>>` never gets a selector, so pinning
+there would be wrong and is not done. The `delimiter` discriminator splits the two `<<>>`
+arms — a real bitstring (construction, pin) vs an interpolated string (string content,
+descended as ordinary segments). See `transform_corpus_test.exs`
+("bitstrings: … stay binary-typed under a selector") and the `bitstring_gen` /
+`interp_string_gen` property generators.
 
 ### Guard tagger is now bitstring-spec-aware `[done]`
 `tag_targets/3` (the lifted-guard path) used to be a blind descent that ran
