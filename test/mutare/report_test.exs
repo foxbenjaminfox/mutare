@@ -95,6 +95,47 @@ defmodule Mutare.ReportTest do
     end
   end
 
+  # Regression: a `~r/…/` sigil whose body escapes the closing delimiter (`\/`)
+  # used to render a survivor with **no visible diff** — Sourceror's range ended
+  # one column short (the `\/` is stored as `/`), and when the mutation only drops
+  # a trailing flag (`~r/…/u` → `~r/…/`) the patch landed exactly on the dropped
+  # `u`, leaving the line byte-identical. See `Mutare.Transform.NodeRange`.
+  describe "diff/2 of a regex sigil with an escaped delimiter" do
+    @rx_source ~S"""
+    defmodule M do
+      def f(name), do: String.replace(name, ~r/[\/:]/u, "-")
+    end
+    """
+
+    defp rx_site(mutated_code) do
+      {_meta, sites, _next} =
+        Mutare.transform_string(@rx_source, mutators: [Mutare.Mutators.RegexLiteral])
+
+      Enum.find(sites, &(&1.mutated_code == mutated_code))
+    end
+
+    test "dropping the /u flag changes the rendered line (not an empty diff)" do
+      assert Report.diff(rx_site(~S{~r/[\/:]/}), @rx_source) ==
+               ~S|-  def f(name), do: String.replace(name, ~r/[\/:]/u, "-")| <>
+                 "\n" <> ~S|+  def f(name), do: String.replace(name, ~r/[\/:]/, "-")|
+    end
+
+    test "a whole-pattern swap replaces the sigil, keeping the trailing args intact" do
+      assert Report.diff(rx_site(~S{~r/mutare/u}), @rx_source) ==
+               ~S|-  def f(name), do: String.replace(name, ~r/[\/:]/u, "-")| <>
+                 "\n" <> ~S|+  def f(name), do: String.replace(name, ~r/mutare/u, "-")|
+    end
+
+    test "every regex mutant's patch re-parses as valid Elixir" do
+      {_meta, sites, _next} =
+        Mutare.transform_string(@rx_source, mutators: [Mutare.Mutators.RegexLiteral])
+
+      for site <- sites do
+        assert {:ok, _} = Code.string_to_quoted(Report.patch(site, @rx_source))
+      end
+    end
+  end
+
   test "score/1 = killed / (total - no_coverage)" do
     results = [
       %Result{status: :killed},

@@ -4195,6 +4195,42 @@ was wrong):
 Both are pure report-rendering fixes; the regression tests assert the diff text *and*
 that the patched source re-parses (`report_test.exs`, `transform/node_range_test.exs`).
 
+### Report diff fidelity for sigils that escape their delimiter `[fixed]`
+A `mix mutare` survivor on `|> String.replace(~r/[\/\\:\*\?\"<>\|]/u, "-")` rendered a
+diff with **no change at all** — the `-` and `+` lines byte-identical — even though the
+compact progress line correctly read `…]/u → …]/` (drop the `/u` flag). Same class as the
+keyword-arg fix above (a wrong *range*, the metamutant fine), but the opposite sign: an
+**under-count**, and the symptom is an empty diff rather than an eaten character.
+
+Root cause is again upstream in `Sourceror.get_range/1`: it sizes a sigil from the
+**stored** content length (`range.ex` `get_end_pos_for_interpolation_segments/3`,
+`String.length` of the `<<>>` segments). The tokenizer keeps a sigil's body raw —
+`\n`/`\\`/`\t` stay two-char sequences — *except* it collapses an escaped **closing**
+delimiter: `\/` → `/` in `~r/…/`, `\}` → `}` in `~r{…}`. So the stored content is one byte
+shorter per such escape and the range ends that many columns early. `Sourceror.patch_string`
+over the short range then leaves the sigil's tail in place; when the mutation only drops a
+*trailing* flag (`~r/…/u` → `~r/…/`), the patch lands **exactly** on the dropped `u` and the
+line comes back unchanged. (For `~r/[\/\\…\|]/u` only the *first* `\/` collapses — `\\`,
+`\*`, `\?`, `\"`, `\|` keep their backslashes — so it is off by one, and the `/u`-drop is
+the mutant that happens to expose it.)
+
+Fixed in `Mutare.Transform.NodeRange.get/1` (the same wrapper as the bare-atom fix): for a
+single-line sigil it adds back one column per collapsed closing delimiter, counted as the
+number of closing-delimiter chars in the **binary segments after the last interpolation**.
+Three subtleties make that count exact: (a) only the *closing* char collapses — an opening
+escape `\{` keeps its backslash, so `~r{a\{b\}c}` is off by one (the `\}`), not two; (b) in
+a *parseable* sigil every bare closing-delimiter char in the content must have come from a
+`\<close>` (an unescaped one would have ended the sigil, and Sourceror rejects unescaped
+balanced pairs like `~r{a{b}c}` outright), so counting them needs no source; (c) an escaped
+delimiter *before* the last interpolation is already correct — its absolute `closing`
+position is baked into the segment metadata — so only the trailing binary segments are
+counted (`~r/a\/b#{x}c/u` is already right; `~r/a#{x}b\/c/u` is off by one). Non-interpolated
+patterns (all the literal mutators ever touch) reduce to "count the whole single segment".
+
+A pure report-rendering fix; regression tests assert the per-sigil corrected width and that
+each regex mutant's patch is a *visible*, re-parseable change (`transform/node_range_test.exs`,
+`report_test.exs`).
+
 ### Surface skipped files more loudly `[soon]`
 `Schema`/`safe_transform` skips a file that fails to transform (good — one bad
 file shouldn't sink the run) and the task prints `skipped <file>: <reason>` in
