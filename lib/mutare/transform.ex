@@ -929,16 +929,14 @@ defmodule Mutare.Transform do
 
   defp emit_site(node, candidates, ctx) do
     {clauses, ctx} =
-      Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
-        claim_id(ctx, candidate, &in_place_site/3, fn id, candidate ->
-          {:->, [],
-           [
-             [id],
-             candidate
-             |> branch_node()
-             |> ImportWitness.wrap(ImportWitness.for_candidate(candidate))
-           ]}
-        end)
+      claim_clauses(candidates, ctx, &in_place_site/3, fn id, candidate ->
+        {:->, [],
+         [
+           [id],
+           candidate
+           |> branch_node()
+           |> ImportWitness.wrap(ImportWitness.for_candidate(candidate))
+         ]}
       end)
 
     # `hoist_pipe`: when this node is itself a `|>` (e.g. its tail carries a
@@ -1013,10 +1011,8 @@ defmodule Mutare.Transform do
     catch_all = Keyword.fetch!(opts, :catch_all)
 
     {clauses, ctx} =
-      Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
-        claim_id(ctx, candidate, &in_place_site/3, fn id, candidate ->
-          {:->, [], [[id], mutant_body.(candidate)]}
-        end)
+      claim_clauses(candidates, ctx, &in_place_site/3, fn id, candidate ->
+        {:->, [], [[id], mutant_body.(candidate)]}
       end)
 
     case clauses do
@@ -1024,7 +1020,7 @@ defmodule Mutare.Transform do
         {strip_candidates(node), ctx}
 
       _ ->
-        ids = for {:->, _, [[id], _]} <- clauses, do: id
+        ids = ids_from_clauses(clauses)
         selector = selector_subject(ctx)
         case_node = {:case, [], [selector, [do: clauses ++ [catch_all.(ids)]]]}
         {{:=, [], [export, case_node]}, ctx}
@@ -1168,13 +1164,14 @@ defmodule Mutare.Transform do
   # place in a copy of the macro node. With every mutant poisoned (no clauses) the node is left
   # unwoven (mirrors `emit_binding_site/5`'s all-poisoned fallback).
   defp weave_hosted_target(node, %Candidate.Hosted{} = cand, ctx) do
-    {clauses, ctx} =
-      Enum.flat_map_reduce(cand.mutants, ctx, fn {mutated, note}, ctx ->
-        carrier = %{candidate: cand, mutated: mutated, note: note}
+    carriers =
+      Enum.map(cand.mutants, fn {mutated, note} ->
+        %{candidate: cand, mutated: mutated, note: note}
+      end)
 
-        claim_id(ctx, carrier, &hosted_site/3, fn id, carrier ->
-          {:->, [], [[id], cand.wrap.(carrier.mutated)]}
-        end)
+    {clauses, ctx} =
+      claim_clauses(carriers, ctx, &hosted_site/3, fn id, carrier ->
+        {:->, [], [[id], cand.wrap.(carrier.mutated)]}
       end)
 
     case clauses do
@@ -1182,7 +1179,7 @@ defmodule Mutare.Transform do
         {node, ctx}
 
       _ ->
-        ids = for {:->, _, [[id], _]} <- clauses, do: id
+        ids = ids_from_clauses(clauses)
         # The catch-all is an ordinary selector catch-all (`catch_all_clause/3`) whose default
         # branch is the *wrapped baseline* fragment: record the hosted ids (inert outside the
         # probe), then run `wrap(original)`. Reached only with non-empty `ids` (the `_ ->`
@@ -1243,10 +1240,8 @@ defmodule Mutare.Transform do
     var = ctx.active_var
 
     {claimed, ctx} =
-      Enum.flat_map_reduce(candidates, ctx, fn candidate, ctx ->
-        claim_id(ctx, candidate, &in_place_site/3, fn id, candidate ->
-          {id, candidate.clause_index, CaseClauseEmit.mutant_clause(id, candidate, var)}
-        end)
+      claim_clauses(candidates, ctx, &in_place_site/3, fn id, candidate ->
+        {id, candidate.clause_index, CaseClauseEmit.mutant_clause(id, candidate, var)}
       end)
 
     # Every mutation here skipped (poisoned) → no rewrite; emit the case unchanged.
@@ -1316,6 +1311,19 @@ defmodule Mutare.Transform do
 
   defp poison(%Site{} = site), do: %{site | poisoned: true}
 
+  # The fold every selector-emitting path shares: claim an id per item through `claim_id` (so ids
+  # advance — and the site is recorded — even for a skipped/poisoned id), collecting one artifact
+  # per *live* mutant (a `<id> -> …` selector clause, or a tuple the caller assembles). Keeping the
+  # id walk in one place is what keeps the paths in lockstep across poison rebuilds.
+  defp claim_clauses(items, ctx, site_fn, clause_fn) do
+    Enum.flat_map_reduce(items, ctx, fn item, ctx ->
+      claim_id(ctx, item, site_fn, clause_fn)
+    end)
+  end
+
+  # The mutant ids of a list of `<id> -> body` selector clauses, in order.
+  defp ids_from_clauses(clauses), do: for({:->, _, [[id], _]} <- clauses, do: id)
+
   # (case <subject> do <id> -> <mutated> ; <var> -> <record>; <default> end)
   #
   # `<subject>` is the hoisted active-id variable when it is bound in scope, else the
@@ -1323,7 +1331,7 @@ defmodule Mutare.Transform do
   # is `Render.block_wrap`ped so it renders safely in any position.
   defp build_case(default_node, mutant_clauses, ctx) do
     selector = selector_subject(ctx)
-    ids = for {:->, _, [[id], _]} <- mutant_clauses, do: id
+    ids = ids_from_clauses(mutant_clauses)
     catch_all = catch_all_clause(ids, default_node, ctx.active_var)
     case_node = {:case, [], [selector, [do: mutant_clauses ++ [catch_all]]]}
     Render.block_wrap(case_node)
