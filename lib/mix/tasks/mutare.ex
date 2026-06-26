@@ -3,115 +3,223 @@ defmodule Mix.Tasks.Mutare do
   @moduledoc """
   Mutation-test the current project.
 
-  Builds a single metamutant embedding every mutant behind a runtime switch,
-  compiles it once, runs the suite green as a baseline, then runs the suite once
-  per mutant and reports the survivors as diffs.
+  Mutare builds a single *metamutant* — your code with every possible mutation
+  embedded behind a runtime switch — compiles it **once**, runs your test suite
+  green as a baseline, then runs the suite once per mutant and reports the ones
+  your tests failed to catch.
 
-      mix mutare                          # mutate everything under lib/
-      mix mutare path/to/project          # target another project directory
-      mix mutare apps/billing             # mutate one umbrella app (copies the umbrella)
-      mix mutare --app billing,web        # mutate specific umbrella apps (repeatable,
-      mix mutare --app billing --app web  #   and CSV-splitting — these two are equivalent)
-      mix mutare --workspace              # mutate every app in an umbrella
+  ## Getting started
+
+  Run it with no arguments to mutate everything under `lib/`. On a large project,
+  start narrow — a single file or a capped run finishes in seconds and shows you
+  the shape of the output:
+
+      mix mutare                                 # mutate everything under lib/
+      mix mutare --only lib/billing/invoice.ex   # ...or just one file (a good first run)
+      mix mutare --max-mutants 50                # ...or just the first 50 mutants (a smoke run)
+
+  The workflow is a loop: run it, look at each **survivor** (a mutation your tests
+  did not catch), then either add a test that would catch it or mark it with a
+  `# mutare:ignore` comment if it is not worth testing — and run again.
+
+  ## Reading the results
+
+  Every mutant finishes in one of these states. The headline **mutation score** is
+  the percentage of *testable* mutants your suite killed:
+
+      score = killed / (total − no_coverage − ignored − poisoned − harness_error)
+
+    * `killed`      — a test failed on the mutant. Your suite caught the change.
+    * `survived`    — every test still passed: no test tells the mutated code apart
+                      from the original. Survivors are the point of the tool, and
+                      print as a one-line diff so you can see exactly what slipped
+                      through.
+    * `timeout`     — the mutant ran past the per-mutant time cap (e.g. it created
+                      an infinite loop). Counts as killed. (So does a mutant that
+                      exhausts the atom table and crashes the VM.)
+    * `no_coverage` — no test runs that line at all, so nothing could catch it.
+                      Excluded from the score; fix it by covering the line.
+    * `ignored`     — suppressed by a `# mutare:ignore` comment (below). Excluded.
+    * `poisoned`    — the mutated code would not compile, so it was dropped.
+                      Excluded. (Rare — the built-in mutators are compile-safe.)
+    * `harness_error` — the mutant's test run never reached a pass/fail verdict (an
+                      infrastructure hiccup, not a real result). Excluded.
+
+  A run **exits 0 even when mutants survive** — survivors are findings to act on,
+  not a build failure. See "Continuous integration" below to make a low score or a
+  stale ignore exit non-zero.
+
+  ## Suppressing a mutant
+
+  Some survivors are *equivalent* mutants — the mutation cannot change observable
+  behaviour, so no test could ever kill it — or are simply not worth a test.
+  Silence one with a `# mutare:ignore` comment at the end of the line (or on the
+  line just above it):
+
+      def to_float(n), do: n * 1.0   # mutare:ignore  multiplying by 1.0 is identity
+
+  After the keyword come two optional, ordered parts — a `[family]` filter and a
+  free-text reason:
+
+      # mutare:ignore                            suppress every mutant on the line
+      # mutare:ignore the reason text            suppress all; record the reason
+      # mutare:ignore[arithmetic, relational]    suppress only those families
+      # mutare:ignore[literal] off-by-one is ok  a filter and a reason together
+
+  The names inside `[...]` are mutator families (see below). Filtering fails safe:
+  an unknown name or an empty `[]` matches nothing, so the mutant runs rather than
+  hides. An ignore that suppresses no mutant (a typo'd family, a line that has no
+  mutant) is reported as a warning — and with `--strict-ignores`, exits the run 1.
+
+  ## Mutator families
+
+  All families run by default. Run `mix mutare --list-mutators` to print the live
+  catalog (every family atom with a one-line summary, straight from the registry).
+  Select a subset with `--mutators a,b,c` (or the `:mutators` key in `.mutare.exs`);
+  list `builtins` to keep the whole default set and add to it —
+  `--mutators builtins,relational` is every built-in, while `--mutators relational`
+  is *only* the relational family. The family atoms, by kind:
+
+    * **Operators** — `arithmetic`, `operand_swap`, `bitwise`, `relational`,
+      `strict_equality`, `logical`, `list`, `conditional`
+    * **Literals** — `literal`, `string`, `float`, `atom`, `convention`,
+      `charlist`, `word_list`, `string_sigil`, `map`, `tuple`, `bitstring`,
+      `bitstring_spec`, `regex`, `datetime`, `alias`
+    * **Calls** (rewrite or drop a stdlib/remote call) — `collection`,
+      `collection_arity`, `string_call`, `string_byte`, `map_keyword`, `map_set`,
+      `call_removal`, `default_drop`, `mode_swap`, `numeric`, `math`, `integer`
+    * **Structural** — `return_value`, `if_condition`, `pattern_swap`,
+      `pattern_wildcard`, `rescue_type`, `guard_drop`
+    * **Behaviour-aware** — `genserver` (swaps an OTP callback's return tuple;
+      fires only inside a `@behaviour GenServer` module)
+
+  Each family's exact swap table lives in its own module's docs (e.g.
+  `Mutare.Mutators.Relational`). You can also list your own module implementing
+  `Mutare.Mutator` under `:mutators` to add a custom mutator.
+
+  ## Choosing what to mutate
+
+      mix mutare path/to/project          # target a different project directory
       mix mutare --only lib/billing       # scope to a directory
-      mix mutare --only lib/billing/invoice.ex  # …or a single file
-      mix mutare --only lib/billing --only lib/web
-                                          # scope to several paths (repeatable)
+      mix mutare --only lib/a --only lib/b   # ...or several paths (repeatable)
+      mix mutare --exclude "lib/generated/**" --exclude lib/legacy
+                                          # skip files matching globs (repeatable)
+      mix mutare --since master           # only files changed vs a git ref
       mix mutare --line lib/billing/invoice.ex:42
                                           # only the mutants on that file:line — a
                                           #   narrow rerun, e.g. to recheck one
                                           #   survivor (repeatable; FILE:LINE is the
                                           #   exact prefix the report prints)
-      mix mutare --exclude "lib/generated/**" --exclude lib/legacy
-                                          # skip files matching globs (repeatable)
-      mix mutare --since master             # only files changed vs a git ref (CI)
-      mix mutare --mutators relational    # only some mutator families
-      mix mutare --mutators builtins,relational   # `builtins` = the whole default set
-      mix mutare --min-score 70           # fail (CI) if the score is below 70
-      mix mutare --strict-ignores         # fail (CI) if any `# mutare:ignore`
-                                          #   suppresses no mutant (typo/stale)
-      mix mutare --no-expand-uses         # don't expand `use` to surface the
-                                          #   `import`/`alias` it injects (default: on)
-      mix mutare --quiet                  # suppress the live stderr progress
-                                          #   (spinner/phases/leave-behinds) — for CI;
-                                          #   the final + machine reports still print
-      mix mutare --full                   # run the whole suite per mutant
-                                          #   (no per-file test selection)
-      mix mutare --baseline-runs 2        # run the baseline 2×; abort if a test
-                                          #   flakes (passes one run, fails another)
-      mix mutare --harness-retries 4      # re-run a mutant up to 4× if its run
-                                          #   fails at the harness level (infra;
-                                          #   default 2). Raise it for transient
-                                          #   infra flakiness (a boot-time node
-                                          #   crash is already retried on its own)
-      mix mutare --max-harness-error-rate 0.3
-                                          # abort if >30% of the mutants that ran
-                                          #   failed at the harness level (1.0 = off)
-      mix mutare --max-mutants 50         # test at most 50 mutants (the first 50
-                                          #   in source order) — a quick smoke run
-      mix mutare --max-survivors 5        # stop once 5 surviving mutants are found
-                                          #   (the first 5 in source order) — find a
-                                          #   few test gaps to fix without a full
-                                          #   run; the score is partial, so the
-                                          #   --min-score gate is skipped
+      mix mutare --mutators relational,arithmetic   # only some families (see above)
+      mix mutare --no-expand-uses         # don't expand `use` to discover the
+                                          #   import/alias/@behaviour it injects
+                                          #   (on by default; matters for Phoenix/Ecto)
+
+  ## Continuous integration
+
+  By default a run exits 0 no matter how many mutants survive. Two flags add a
+  non-zero exit so a CI job can fail the build:
+
+      mix mutare --min-score 70           # exit 1 if the mutation score is below 70%
+      mix mutare --strict-ignores         # exit 1 if any `# mutare:ignore` matched
+                                          #   no mutant (a typo'd family or stale line)
+
+  Combine `--since` with `--min-score` to gate only the code a pull request
+  changed, and `--quiet` to drop the live progress animation (spinner, phases,
+  per-survivor lines) on a non-interactive terminal — the final report and any
+  machine reports still print:
+
+      mix mutare --since origin/main --min-score 80 --quiet
+
+  ## Tuning the run
+
       mix mutare --workers 4              # run 4 mutants concurrently
                                           #   (default: System.schedulers_online/0)
-      mix mutare --workers 4 --partition-db
-                                          # give each concurrent worker a distinct
-                                          #   MIX_TEST_PARTITION (1..workers) so a
-                                          #   stateful suite reads it to pick a
-                                          #   per-worker database — needs that many
-                                          #   DBs pre-created; see below
-      mix mutare --partition-env MY_DB_SLOT
-                                          # …same, under a custom env var name
+      mix mutare --full                   # run the whole suite for every mutant
+                                          #   (default: only the tests that cover it)
       mix mutare --timeout 30000          # per-mutant wall-clock cap, in ms
                                           #   (default: derived from the baseline run)
-      mix mutare --timeout-multiplier 5   # cap = baseline run × this factor
-                                          #   (default: 3.0; ignored if --timeout set)
-      mix mutare --sandbox /tmp/mut --keep-sandbox
-                                          # reuse the sandbox + its build cache
-                                          #   across runs (CI); see below
+      mix mutare --timeout-multiplier 5   # ...or set the cap to baseline × this
+                                          #   (default: 3.0; ignored if --timeout is set)
+      mix mutare --baseline-runs 2        # run the green baseline 2× and abort if a
+                                          #   test flakes (passes once, fails once) —
+                                          #   a flaky test manufactures false kills
+      mix mutare --harness-retries 4      # re-run a mutant up to 4× if its run fails
+                                          #   at the infrastructure level (default 2)
+      mix mutare --max-harness-error-rate 0.3
+                                          # abort if more than 30% of the mutants
+                                          #   that ran failed at the infrastructure
+                                          #   level (1.0 = never abort on these)
+      mix mutare --max-survivors 5        # stop the run once 5 mutants have survived
+                                          #   (in source order) — surface a few test
+                                          #   gaps to fix without a full run. The score
+                                          #   is then partial, so the --min-score gate
+                                          #   is skipped
+
+  ## Umbrella projects
+
+      mix mutare apps/billing             # mutate one app (copies the whole umbrella)
+      mix mutare --app billing,web        # specific apps (repeatable, and comma-separated)
+      mix mutare --app billing --app web  #   (equivalent to the line above)
+      mix mutare --workspace              # mutate every app in the umbrella
+
+  ## Database isolation across workers
+
+  A suite with shared state (a database, say) can collide when several mutants run
+  at once. `--partition-db` (or `--partition-env <NAME>` for a custom variable)
+  gives each of the `--workers` concurrent runs a **distinct** partition id
+  (`1..workers`) under an environment variable — `MIX_TEST_PARTITION` by default —
+  so each worker can point at its own database:
+
+      mix mutare --workers 4 --partition-db           # distinct MIX_TEST_PARTITION per worker
+      mix mutare --workers 4 --partition-env MY_SLOT  # ...under a custom variable name
+
+  This is the `mix test --partitions` convention, so a project already set up for
+  that needs no code change:
+
+      # config/test.exs
+      config :my_app, MyApp.Repo,
+        database: "my_app_test\#{System.get_env("MIX_TEST_PARTITION")}"
+
+  You must pre-create and migrate the `--workers` partitioned databases (the same
+  prerequisite `mix test --partitions` has). The pool recycles ids across the run,
+  so `--workers 4` needs four databases, not one per mutant; the baseline and
+  coverage probe use partition `1`.
+
+  ## Sandbox and build cache
+
+      mix mutare --sandbox /tmp/mut                 # keep the generated sandbox to inspect it
+      mix mutare --sandbox /tmp/mut --keep-sandbox  # reuse the sandbox + its build cache (CI)
+
+  By default Mutare materialises a throwaway sandbox copy, recompiles the
+  metamutant cold every run, and removes the sandbox when it finishes (so the temp
+  dir does not accumulate). `--sandbox <path>` keeps that sandbox around — handy
+  for inspecting the generated metamutant. `--keep-sandbox` instead **preserves**
+  the sandbox between runs and re-materialises it incrementally (only changed files
+  are rewritten, so mix's compiler reuses the cached `_build`). On CI, pair it with
+  `--sandbox <path>` pointed at a cached directory (cache `<path>/_build` and
+  `<path>/deps`, keyed on `mix.lock`); locally, `--keep-sandbox` alone reuses a
+  stable per-project temp dir.
+
+  ## Output formats
+
       mix mutare --format json --output mutare.json
                                           # write a machine report to a file; the
-                                          #   human report still prints to console
-      mix mutare --format sarif           # emit SARIF to stdout (suppresses the
-                                          #   human report to avoid a collision)
+                                          #   human report still prints to the console
+      mix mutare --format sarif           # emit SARIF to stdout (this suppresses the
+                                          #   human report, so the two don't collide)
       mix mutare --format json --output mutare.json --format sarif --output mutare.sarif
                                           # `--format`/`--output` are repeatable and
                                           #   paired by position (Nth format ↔ Nth
                                           #   output); a format with no matching
                                           #   `--output` goes to stdout
 
-  By default Mutare materialises a throwaway sandbox copy and recompiles the
-  metamutant cold every run, then removes the sandbox when the run finishes (so
-  the temp dir doesn't accumulate). Pass `--sandbox <path>` to keep a default run's
-  sandbox around (e.g. to inspect the generated metamutant). `--keep-sandbox`
-  instead **preserves** the sandbox between runs and re-materialises it
-  incrementally (only changed files are rewritten, so mix's compiler reuses the
-  cached `_build`). On CI, pair it with `--sandbox <path>` pointed at a cached
-  directory (cache `<path>/_build` and `<path>/deps`, keyed on `mix.lock`);
-  locally, `--keep-sandbox` alone reuses a stable per-project temp dir.
-
   `--format` is one of `human` (the default console report), `json` (the
-  mutation-testing-elements / Stryker report schema), `html` (that JSON in the
-  interactive report viewer), or `sarif` (survivors as findings for GitHub code
+  mutation-testing-elements / Stryker report schema), `html` (that JSON embedded in
+  the interactive report viewer), or `sarif` (survivors as findings for GitHub code
   scanning).
 
-  `--partition-db` (or `--partition-env <NAME>` for a custom var) gives each of
-  the `--workers` concurrent runs a **distinct** partition id (`1..workers`) under
-  an env var — `MIX_TEST_PARTITION` by default — so a suite with shared state can
-  point each worker at its own database and avoid cross-worker collisions. It is
-  the `mix test --partitions` convention, so a project already set up for that
-  needs no code change:
-
-      # config/test.exs
-      config :my_app, MyApp.Repo,
-        database: "my_app_test\#{System.get_env("MIX_TEST_PARTITION")}"
-
-  You must pre-create/migrate the `--workers` partitioned databases (the same
-  prerequisite `mix test --partitions` has). The pool recycles ids across the run,
-  so `--workers 4` needs four databases, not one per mutant; the baseline and
-  coverage probe use partition `1`.
+  ## Configuration file (`.mutare.exs`)
 
   Configuration may also live in `.mutare.exs` (a keyword list); a CLI flag
   overrides the matching key. Every option is optional — the block below lists
@@ -163,14 +271,14 @@ defmodule Mix.Tasks.Mutare do
         # iterate-and-fix workflow); the partial score skips the --min-score gate
         max_survivors: nil,
 
-        # --- sandbox reuse / build cache (see the prose above) ---
+        # --- sandbox reuse / build cache (see "Sandbox and build cache" above) ---
         sandbox: nil,
         keep_sandbox: false,
 
         # --- output & CI gates ---
-        # fail the run (non-zero exit) if the mutation score drops below this
+        # exit the run with code 1 if the mutation score drops below this percentage
         min_score: 70,
-        # fail if any `# mutare:ignore` suppresses no mutant (a typo or stale line)
+        # exit 1 if any `# mutare:ignore` suppresses no mutant (a typo or stale line)
         strict_ignores: false,
         # suppress the live stderr progress (for CI / piped use)
         quiet: false,
@@ -210,12 +318,24 @@ defmodule Mix.Tasks.Mutare do
     output: [:string, :keep],
     app: [:string, :keep],
     workspace: :boolean,
-    expand_uses: :boolean
+    expand_uses: :boolean,
+    list_mutators: :boolean
   ]
 
   @impl Mix.Task
   def run(argv) do
     {flags, rest} = OptionParser.parse!(argv, strict: @switches)
+
+    # `--list-mutators` is an inspect-and-exit flag: print the built-in catalog and
+    # do nothing else (no project resolution, no sandbox, no run).
+    if flags[:list_mutators] do
+      print_mutator_catalog()
+    else
+      run_mutation_testing(flags, rest)
+    end
+  end
+
+  defp run_mutation_testing(flags, rest) do
     target = List.first(rest) || "."
     project = resolve_project(target, flags)
     options = resolve_options(project, flags)
@@ -263,6 +383,62 @@ defmodule Mix.Tasks.Mutare do
       # Backstop for an unexpected raise mid-run; `finish/1` is idempotent.
       if live, do: Live.finish(live)
     end
+  end
+
+  # `--list-mutators`: print the built-in catalog and exit. Derived from the one
+  # `Mutare.Mutators` registry (and each family's own `@moduledoc`), so the list
+  # can never drift from the families that actually run.
+  defp print_mutator_catalog do
+    registry = Mutare.Mutators.registry()
+
+    pad =
+      registry
+      |> Enum.map(fn {family, _module} -> family |> to_string() |> String.length() end)
+      |> Enum.max()
+
+    Mix.shell().info("Built-in mutator families (all run by default):\n")
+
+    Enum.each(registry, fn {family, module} ->
+      name = family |> to_string() |> String.pad_trailing(pad)
+      Mix.shell().info("  #{name}  #{mutator_summary(module)}")
+    end)
+
+    Mix.shell().info("""
+
+    Select a subset with --mutators (comma-separated), e.g.
+
+        mix mutare --mutators relational,arithmetic
+
+    Prefix the list with `builtins` to keep the whole set and add your own:
+
+        mix mutare --mutators builtins,MyApp.MyMutator\
+    """)
+  end
+
+  # A one-line summary for the catalog: the family module's `@moduledoc` flattened
+  # to a single line, stripped of Markdown noise (but keeping a lone `*` operator)
+  # and truncated. Empty when a module ships without docs (a docs-stripped build).
+  @summary_width 78
+  defp mutator_summary(module) do
+    case Code.fetch_docs(module) do
+      {:docs_v1, _, _, _, %{"en" => doc}, _, _} when is_binary(doc) ->
+        doc
+        |> String.replace(~r/^[ \t]*\*[ \t]+/m, "")
+        |> String.replace(~r/\*\*/, "")
+        |> String.replace("`", "")
+        |> String.replace(~r/\s+/, " ")
+        |> String.trim()
+        |> truncate_summary()
+
+      _ ->
+        ""
+    end
+  end
+
+  defp truncate_summary(text) do
+    if String.length(text) <= @summary_width,
+      do: text,
+      else: String.slice(text, 0, @summary_width - 1) <> "…"
   end
 
   # Start the live progress reporter unless `--quiet`. `nil` means "no live
@@ -331,7 +507,7 @@ defmodule Mix.Tasks.Mutare do
     error in ArgumentError -> Mix.raise(Exception.message(error))
   end
 
-  # `--app` is repeatable (`:keep`) *and* CSV-splitting, so `--app billing,web` and
+  # `--app` is repeatable (`:keep`) *and* comma-separated, so `--app billing,web` and
   # `--app billing --app web` are equivalent — each occurrence contributes one or more
   # app names, accumulated in order. No `--app` (`[]`) means `nil`: "all apps".
   defp parse_apps(flags) do

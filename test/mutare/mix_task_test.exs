@@ -99,6 +99,38 @@ defmodule Mix.Tasks.MutareTest do
     end
   end
 
+  describe "--list-mutators" do
+    test "prints every registered family, derived from the registry, and exits without running" do
+      # No project resolution, no sandbox, no `no mutation sites` raise: the flag
+      # short-circuits before any of that.
+      Mix.Tasks.Mutare.run(["--list-mutators"])
+
+      output = drain_shell_info()
+
+      assert output =~ "Built-in mutator families"
+
+      # Every family in the single source-of-truth registry is listed — so the
+      # catalog can never drift from what actually runs.
+      for family <- Mutare.Mutators.families() do
+        assert output =~ to_string(family), "expected #{family} in the catalog"
+      end
+
+      # A summary line is rendered from a family's @moduledoc, and the usage hint
+      # names the comma-separated form.
+      assert output =~ "Arithmetic operator swaps"
+      assert output =~ "--mutators relational,arithmetic"
+    end
+  end
+
+  # Drain every `Mix.shell().info/1` message captured by `Mix.Shell.Process`.
+  defp drain_shell_info(acc \\ []) do
+    receive do
+      {:mix_shell, :info, [msg]} -> drain_shell_info([msg | acc])
+    after
+      0 -> acc |> Enum.reverse() |> Enum.join("\n")
+    end
+  end
+
   @tag :runner
   @tag timeout: 180_000
   test "end to end against an example: prints survivors, writes a JSON report, and gates on --min-score" do
