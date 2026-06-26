@@ -24,14 +24,28 @@ defmodule Mutare.Mutators.Helpers do
   """
   @spec swap_call(Macro.t(), %{optional({Calls.module_key(), atom()}) => atom() | [atom()]}) ::
           [Macro.t()] | :skip
-  def swap_call(node, table) do
-    with {module, fun, args, rebuild} <- Calls.resolved_call(node),
-         {:ok, new_funs} <- Map.fetch(table, {module, fun}) do
-      new_funs |> List.wrap() |> Enum.map(&rebuild.(&1, args))
-    else
-      _ -> :skip
+  def swap_call(node, table), do: swap_resolved(Calls.resolved_call(node), table)
+
+  @doc """
+  The swap-table lookup over an **already-resolved** call (the
+  `{module, fun, args, rebuild}` tuple `Mutare.Transform.Calls.resolved_call/1` returns,
+  or `nil`). The body of `swap_call/2`, exposed so a family that resolves the call once for
+  its own special-casing (`StringCall`'s `String.equivalent?`, `Math`'s `:math.pi`) can run
+  the fall-through swap without resolving a second time. Returns `:skip` for an unresolved
+  call or a `{module, fun}` absent from `table`.
+  """
+  @spec swap_resolved(
+          {Calls.module_key(), atom(), [Macro.t()], function()} | nil,
+          %{optional({Calls.module_key(), atom()}) => atom() | [atom()]}
+        ) :: [Macro.t()] | :skip
+  def swap_resolved({module, fun, args, rebuild}, table) do
+    case Map.fetch(table, {module, fun}) do
+      {:ok, new_funs} -> new_funs |> List.wrap() |> Enum.map(&rebuild.(&1, args))
+      :error -> :skip
     end
   end
+
+  def swap_resolved(_unresolved, _table), do: :skip
 
   @doc """
   Resolve a call, compute its **effective** arity (pipe-aware), and look
@@ -150,4 +164,20 @@ defmodule Mutare.Mutators.Helpers do
   def removed_call(:unpiped, [first | _]), do: [first]
 
   defp identity_call, do: Mutare.AST.absolute_call([:Function], :identity, [])
+
+  @doc """
+  The "off-by-one + zero sentinel" mutations for a numeric literal `value`: `value + step`,
+  `value - step`, and `zero`, deduplicated, with any value equal to `value` dropped, each
+  rendered through `Mutare.AST.literal/1`.
+
+  Shared by `Mutare.Mutators.Literal` (the integer arm — `step` 1, `zero` 0) and
+  `Mutare.Mutators.FloatLiteral` (`step` 1.0, `zero` 0.0).
+  """
+  @spec numeric_mutations(number(), number(), number()) :: [Macro.t()]
+  def numeric_mutations(value, step, zero) do
+    [value + step, value - step, zero]
+    |> Enum.uniq()
+    |> Enum.reject(&(&1 == value))
+    |> Enum.map(&Mutare.AST.literal/1)
+  end
 end

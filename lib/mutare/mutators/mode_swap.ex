@@ -428,6 +428,12 @@ defmodule Mutare.Mutators.ModeSwap do
   defp swaps(:weekday, atom), do: neighbours(@weekday_ladder, atom)
   defp swaps(:uri_encoding, atom), do: Map.get(@uri_encoding, atom, [])
 
+  # A `@rules` group with no swap-set clause above is a programming error — a new rule
+  # added without its `swaps/2` entry. Fail loudly at analysis time rather than with an
+  # opaque FunctionClauseError, since the two-edit pairing has no compile-time guard.
+  defp swaps(group, _atom),
+    do: raise(ArgumentError, "ModeSwap: no swap-set defined for group #{inspect(group)}")
+
   # The members of `ladder` immediately finer and coarser than `atom` (each, if it
   # exists). `Enum.at` with a guarded non-negative index — a bare `i - 1` would wrap
   # to the list's tail at index 0.

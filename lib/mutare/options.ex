@@ -52,38 +52,43 @@ defmodule Mutare.Options do
           project: Project.t() | nil
         }
 
-  defstruct paths: ["lib"],
-            exclude: [],
-            mutators: nil,
-            macros: [],
-            expand_uses: true,
-            only_files: nil,
-            only_lines: nil,
-            test_selection: :coverage,
-            workers: nil,
-            partition_env: nil,
-            timeout: nil,
-            timeout_multiplier: 3.0,
-            baseline_runs: 1,
-            harness_retries: 2,
-            max_harness_error_rate: 0.5,
-            sandbox: nil,
-            keep_sandbox: false,
-            strict_ignores: false,
-            quiet: false,
-            max_mutants: nil,
-            min_score: nil,
-            reporters: [{:human, nil}],
-            reporter: nil,
-            on_phase: nil,
-            on_start: nil,
-            on_scan: nil,
-            project: nil
+  # Single source for the struct's fields + their defaults: `defstruct` and the
+  # `@keys` allow-list (`reject_unknown!/1`) both derive from this, so adding a field
+  # is one edit and the two can't drift (a field in `defstruct` but missing from `@keys`
+  # would otherwise make `new/1` reject a valid option).
+  @field_defaults [
+    paths: ["lib"],
+    exclude: [],
+    mutators: nil,
+    macros: [],
+    expand_uses: true,
+    only_files: nil,
+    only_lines: nil,
+    test_selection: :coverage,
+    workers: nil,
+    partition_env: nil,
+    timeout: nil,
+    timeout_multiplier: 3.0,
+    baseline_runs: 1,
+    harness_retries: 2,
+    max_harness_error_rate: 0.5,
+    sandbox: nil,
+    keep_sandbox: false,
+    strict_ignores: false,
+    quiet: false,
+    max_mutants: nil,
+    min_score: nil,
+    reporters: [{:human, nil}],
+    reporter: nil,
+    on_phase: nil,
+    on_start: nil,
+    on_scan: nil,
+    project: nil
+  ]
 
-  @keys ~w(paths exclude mutators macros expand_uses only_files only_lines test_selection
-           workers partition_env timeout timeout_multiplier baseline_runs harness_retries
-           max_harness_error_rate sandbox keep_sandbox strict_ignores quiet max_mutants min_score
-           reporters reporter on_phase on_start on_scan project)a
+  defstruct @field_defaults
+
+  @keys Keyword.keys(@field_defaults)
 
   # Single source for the output formats and their renderer modules: `:human` is the console
   # report (`Mutare.Report`); the rest are the machine renderers under `Mutare.Report.*`. Both

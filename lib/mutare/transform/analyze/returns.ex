@@ -111,7 +111,7 @@ defmodule Mutare.Transform.Analyze.Returns do
   # value, and its expression payload isn't a clause list so it falls through here.
   defp annotate_block_returns(key, analyzed, raw, return_mutators) do
     cond do
-      do_key?(key) ->
+      Analyze.do_key?(key) ->
         attach_return(analyzed, raw, return_mutators)
 
       Analyze.clause_block_key?(key) and clause_list?(analyzed) and clause_list?(raw) and
@@ -122,8 +122,6 @@ defmodule Mutare.Transform.Analyze.Returns do
         analyzed
     end
   end
-
-  defp do_key?(key), do: AST.key_atom(key) == :do
 
   # The leaf step shared by every path: offer the tail to each return mutator and
   # append a `Candidate.Return` per `{spec, replacement}` (the mutator's

@@ -44,8 +44,6 @@ defmodule Mutare.Mutators.Numeric do
   # is what proves a bare `floor`/`max` is the Kernel one (and not a same-named user
   # function at a different arity), so each entry pins it: min/max are /2, the rounding
   # coercions /1.
-  # Keep in sync with the `{[:Kernel], …}` entries of `@remote_swaps` (the qualified forms of
-  # these same bare swaps) — a new bare-Kernel numeric swap belongs in both tables.
   @kernel_swaps %{
     {:min, 2} => [:max],
     {:max, 2} => [:min],
@@ -55,23 +53,26 @@ defmodule Mutare.Mutators.Numeric do
     {:floor, 1} => [:ceil]
   }
 
-  # **Qualified** calls: an arity-blind remote rename (the qualifier proves the function,
-  # and every sibling exists at the same arity), exactly like `Collection`. Both the
-  # `Float` precision pair and the explicitly-`Kernel.`-qualified forms of the bare swaps.
-  # {alias_path, function} => new_function. Keep the `{[:Kernel], …}` entries in sync with
-  # `@kernel_swaps`.
-  @remote_swaps %{
+  # The `Float` precision pairs: an arity-blind remote rename (the qualifier proves the
+  # function, and every sibling exists at the same arity), exactly like `Collection`.
+  @float_swaps %{
     {[:Float], :ceil} => :floor,
     {[:Float], :floor} => :ceil,
     {[:Float], :max_finite} => :min_finite,
-    {[:Float], :min_finite} => :max_finite,
-    {[:Kernel], :min} => :max,
-    {[:Kernel], :max} => :min,
-    {[:Kernel], :round} => :trunc,
-    {[:Kernel], :trunc} => :round,
-    {[:Kernel], :ceil} => :floor,
-    {[:Kernel], :floor} => :ceil
+    {[:Float], :min_finite} => :max_finite
   }
+
+  # The explicitly-`Kernel.`-qualified forms of the bare swaps, **derived** from
+  # `@kernel_swaps` so the two tables can't drift: each `{fun, arity} => [sibling]` bare
+  # entry becomes a `{[:Kernel], fun} => sibling` qualified entry. A new bare-Kernel
+  # numeric swap added to `@kernel_swaps` therefore gets its qualified form for free.
+  @kernel_remote_swaps for {{fun, _arity}, [sibling]} <- @kernel_swaps,
+                           into: %{},
+                           do: {{[:Kernel], fun}, sibling}
+
+  # **Qualified** calls: the `Float` precision pairs plus the qualified Kernel forms.
+  # {alias_path, function} => new_function.
+  @remote_swaps Map.merge(@float_swaps, @kernel_remote_swaps)
 
   @impl Mutare.Mutator
   def name, do: :numeric

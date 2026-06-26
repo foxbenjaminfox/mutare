@@ -90,7 +90,7 @@ defmodule Mutare.Runner.CoverageProbe do
     dump = Path.join(root, Recorder.dump_file())
     File.rm(dump)
 
-    with true <- Command.success?(probe!(sandbox, root, dump, env)),
+    with true <- Command.success?(run_probe(sandbox, root, dump, env)),
          {:ok, coverage} <- Coverage.read_dump(dump) do
       select(mode, schema, coverage)
     else
@@ -104,7 +104,7 @@ defmodule Mutare.Runner.CoverageProbe do
   # so the caller treats it as uncertainty → `:run_all`. The dump path and the
   # path-normalisation root travel in env vars so the helper, running with a
   # per-app cwd in an umbrella, writes one union dump with root-relative keys.
-  defp probe!(sandbox, root, dump, partition_env) do
+  defp run_probe(sandbox, root, dump, partition_env) do
     env =
       [
         {Recorder.env_var(), "1"},

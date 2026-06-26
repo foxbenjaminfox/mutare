@@ -346,16 +346,4 @@ defmodule Mutare.Coverage.Recorder do
       end
     end
   end
-
-  @doc """
-  Combined coverage bootstrap kept for callers that do not need to split setup
-  from after-suite registration.
-  """
-  @spec bootstrap_ast() :: Macro.t()
-  def bootstrap_ast do
-    quote do
-      unquote(setup_ast())
-      unquote(after_suite_ast())
-    end
-  end
 end

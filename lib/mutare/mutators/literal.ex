@@ -17,17 +17,13 @@ defmodule Mutare.Mutators.Literal do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutators.Helpers
 
   @impl Mutare.Mutator
   def name, do: :literal
 
   @impl Mutare.Mutator
-  def mutate({:__block__, _meta, [n]}) when is_integer(n) do
-    [n + 1, n - 1, 0]
-    |> Enum.uniq()
-    |> Enum.reject(&(&1 == n))
-    |> Enum.map(&AST.literal/1)
-  end
+  def mutate({:__block__, _meta, [n]}) when is_integer(n), do: Helpers.numeric_mutations(n, 1, 0)
 
   def mutate({:__block__, _meta, [b]}) when is_boolean(b), do: [AST.literal(not b)]
 

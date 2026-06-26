@@ -387,21 +387,21 @@ defmodule Mutare.Transform do
   # position. The `:do` block's active-id read is hoisted to a once-per-call prologue
   # (`emit_clause/3`'s `lifted?: false`); the head's default values and the other body
   # blocks keep the self-contained `:persistent_term` read (out of the prologue's scope).
-  defp in_place_clauses(clauses, ctx) do
-    Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
-      {clause, ctx} = emit_clause(clause, ctx, false)
-      {[clause], ctx}
-    end)
-  end
+  defp in_place_clauses(clauses, ctx), do: emit_clauses(clauses, ctx, false)
 
   # Transform each *source* clause of a lifted group (the originals the dispatcher
   # forwards to). The dispatcher threads the active id as the base clause's first
   # parameter, so the whole body reads it directly (no prologue, every body block
   # covered); only the head's default values — extracted onto the dispatcher head, out of
   # any binding's scope — keep the self-contained read.
-  defp lifted_source_clauses(clauses, ctx) do
+  defp lifted_source_clauses(clauses, ctx), do: emit_clauses(clauses, ctx, true)
+
+  # Emit each clause in turn, threading `ctx`. `lifted?` selects the active-id read
+  # strategy (`emit_clause/3`): hoisted-to-a-prologue for an in-place `:do` block, or
+  # dispatcher-threaded for a lifted base clause.
+  defp emit_clauses(clauses, ctx, lifted?) do
     Enum.flat_map_reduce(clauses, ctx, fn clause, ctx ->
-      {clause, ctx} = emit_clause(clause, ctx, true)
+      {clause, ctx} = emit_clause(clause, ctx, lifted?)
       {[clause], ctx}
     end)
   end
@@ -1002,7 +1002,7 @@ defmodule Mutare.Transform do
       ctx,
       fn c -> match_inner_case(c.raw_rhs, c.mutated, export) end,
       fn ids ->
-        match_catch_all(ids, match_inner_case(emitted_rhs, original_lhs, export), ctx.active_var)
+        catch_all_clause(ids, match_inner_case(emitted_rhs, original_lhs, export), ctx.active_var)
       end
     )
   end
@@ -1074,13 +1074,6 @@ defmodule Mutare.Transform do
       AST.absolute_call([:Kernel], :raise, [AST.absolute_alias([:MatchError]), [term: unmatched]])
 
     {:->, [], [[unmatched], raise_node]}
-  end
-
-  # The selector catch-all for a rewritten match: record the hosted ids (inert outside the
-  # probe), then run the baseline inner case. Mirrors `catch_all_clause/3`.
-  defp match_catch_all(ids, baseline_case, var) do
-    body = {:__block__, [], [Recorder.record_ast(ids, var), baseline_case]}
-    {:->, [], [[Recorder.catch_all_pattern(var)], body]}
   end
 
   # === binding-escaping macro pattern mutation: tuple re-export ==============

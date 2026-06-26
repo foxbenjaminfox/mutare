@@ -645,9 +645,7 @@ defmodule Mutare.Transform.Analyze do
     right |> analyze(:runtime, mutators) |> drop_empty_collection_candidates()
   end
 
-  defp drop_empty_collection_candidates(node) do
-    Candidate.update_candidates(node, fn cands -> Enum.reject(cands, &empty_collection?/1) end)
-  end
+  defp drop_empty_collection_candidates(node), do: reject_candidates(node, &empty_collection?/1)
 
   defp empty_collection?(%Candidate.InPlace{mutator: spec, mutated: mutated}),
     do: Mutator.empty_collection?(spec, mutated)
@@ -658,11 +656,8 @@ defmodule Mutare.Transform.Analyze do
   # short-circuit constant. Per mutation (the sibling constant and Logical's swap stay) and
   # top-node scoped (via `Candidate.update_candidates/2`, a no-op when the node carries no
   # candidates).
-  defp drop_constant_candidate(node, bool) do
-    Candidate.update_candidates(node, fn cands ->
-      Enum.reject(cands, &constant_candidate?(&1, bool))
-    end)
-  end
+  defp drop_constant_candidate(node, bool),
+    do: reject_candidates(node, &constant_candidate?(&1, bool))
 
   defp constant_candidate?(%Candidate.InPlace{mutated: mutated}, bool),
     do: Suppression.boolean_literal?(mutated, bool)
@@ -675,16 +670,20 @@ defmodule Mutare.Transform.Analyze do
   # (`===` → `==`) is neither, so it survives — `not (a == b)` ≢ `a === b`. Per mutation and
   # top-node scoped (via `Candidate.update_candidates/2`, a no-op when the node carries no
   # candidates).
-  defp drop_negation_redundant_candidates(node, op) do
-    Candidate.update_candidates(node, fn cands ->
-      Enum.reject(cands, &negation_redundant?(&1, op))
-    end)
-  end
+  defp drop_negation_redundant_candidates(node, op),
+    do: reject_candidates(node, &negation_redundant?(&1, op))
 
   defp negation_redundant?(%Candidate.InPlace{mutated: mutated}, op),
     do: Suppression.negation_redundant?(mutated, op)
 
   defp negation_redundant?(_candidate, _op), do: false
+
+  # Reject from a node's candidate list every candidate matching `predicate` (a no-op
+  # when the node carries no candidates). The shared body of the three top-node
+  # equivalent-sibling drops above.
+  defp reject_candidates(node, predicate) do
+    Candidate.update_candidates(node, fn cands -> Enum.reject(cands, predicate) end)
+  end
 
   # The right side of a `|>` (see the `:|>` clause of `analyze/3`): offer it to
   # mutators *as piped* (so an arity-changing mutator sees the effective arity =
@@ -1168,9 +1167,14 @@ defmodule Mutare.Transform.Analyze do
 
   defp block_key?(key), do: AST.key_atom(key) in @block_keys
 
-  # Block-key classification shared by clause-block routing (`normalize_clause_blocks/1`,
-  # `analyze_do_blocks/2`) and the trailing-keyword `do:` guard.
-  defp do_key?(key), do: AST.key_atom(key) == :do
+  @doc """
+  Whether `key` names a `:do` block. Shared by clause-block routing
+  (`normalize_clause_blocks/1`, `analyze_do_blocks/2`), the trailing-keyword `do:`
+  guard, and `Mutare.Transform.Analyze.Returns` (which classifies the `:do` tail as a
+  return path) — the one home for the predicate rather than reclassifying the atom.
+  """
+  @spec do_key?(Macro.t()) :: boolean()
+  def do_key?(key), do: AST.key_atom(key) == :do
 
   @doc """
   Whether `key` names a try-style clause block whose tails are *return paths*

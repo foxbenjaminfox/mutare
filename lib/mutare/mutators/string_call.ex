@@ -98,10 +98,11 @@ defmodule Mutare.Mutators.StringCall do
       {[:String], :equivalent?, args, _rebuild} ->
         equivalent_substitution(args)
 
-      # Every other call → the shared `{module, fun}` swap-table path, so an aliased
-      # `S.upcase`/imported `upcase` keeps its written module node (`Helpers.swap_call/2`).
-      _ ->
-        Helpers.swap_call(node, @swaps)
+      # Every other call → the shared `{module, fun}` swap-table path over the already-
+      # resolved call (no second resolution), so an aliased `S.upcase`/imported `upcase`
+      # keeps its written module node (`Helpers.swap_resolved/2`).
+      resolved ->
+        Helpers.swap_resolved(resolved, @swaps)
     end
   end
 

@@ -56,11 +56,14 @@ defmodule Mutare.Mutators.Math do
   # rebuilds in the written module).
   @impl Mutare.Mutator
   def mutate(node) do
-    with {:math, fun, [], _rebuild} <- Calls.resolved_call(node),
-         {:ok, value} <- Map.fetch(@constants, fun) do
-      [AST.literal(value)]
-    else
-      _ -> Helpers.swap_call(node, @swaps)
+    case Calls.resolved_call(node) do
+      {:math, fun, [], _rebuild} when is_map_key(@constants, fun) ->
+        [AST.literal(Map.fetch!(@constants, fun))]
+
+      # Every other (resolved or unresolved) call → the arity-blind swap table, run over
+      # the already-resolved call so resolution happens once (`Helpers.swap_resolved/2`).
+      resolved ->
+        Helpers.swap_resolved(resolved, @swaps)
     end
   end
 end
