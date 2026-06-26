@@ -57,14 +57,21 @@ defmodule Mutare.Transform.Analyze.Returns do
   # them in lockstep to the same tail node(s). `ReturnValue.replacements/1` decides
   # the constant(s) (or that the tail is ineligible).
   def annotate_returns(analyzed_kw, raw_kw, mutators) do
-    case Mutator.implementing_any(mutators, :return_replacements, [1, 2]) do
-      [] ->
-        analyzed_kw
+    with_return_mutators(mutators, analyzed_kw, fn return_mutators ->
+      Enum.zip_with(analyzed_kw, raw_kw, fn {key, analyzed_value}, {_key, raw_value} ->
+        {key, annotate_block_returns(key, analyzed_value, raw_value, return_mutators)}
+      end)
+    end)
+  end
 
-      return_mutators ->
-        Enum.zip_with(analyzed_kw, raw_kw, fn {key, analyzed_value}, {_key, raw_value} ->
-          {key, annotate_block_returns(key, analyzed_value, raw_value, return_mutators)}
-        end)
+  # The shared enablement gate for the `:return_replacements/{1,2}` hook, used by both return-tail
+  # paths (`def`/`defp` blocks and `fn` clauses): run `fun` with the enabled return mutators, or
+  # return `default` unchanged when none is enabled — so the `[1, 2]` arity pair (the base +
+  # behaviour-aware forms) lives in one place.
+  defp with_return_mutators(mutators, default, fun) do
+    case Mutator.implementing_any(mutators, :return_replacements, [1, 2]) do
+      [] -> default
+      return_mutators -> fun.(return_mutators)
     end
   end
 
@@ -90,14 +97,10 @@ defmodule Mutare.Transform.Analyze.Returns do
       )
       when is_list(analyzed_clauses) and is_list(raw_clauses) and
              length(analyzed_clauses) == length(raw_clauses) do
-    case Mutator.implementing_any(mutators, :return_replacements, [1, 2]) do
-      [] ->
-        analyzed
-
-      return_mutators ->
-        {:fn, meta,
-         map_clauses(analyzed_clauses, raw_clauses, build_leaf_attacher(return_mutators))}
-    end
+    with_return_mutators(mutators, analyzed, fn return_mutators ->
+      {:fn, meta,
+       map_clauses(analyzed_clauses, raw_clauses, build_leaf_attacher(return_mutators))}
+    end)
   end
 
   def annotate_fn_returns(analyzed, _raw_node, _mutators), do: analyzed
