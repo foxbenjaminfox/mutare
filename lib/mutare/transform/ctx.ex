@@ -21,6 +21,7 @@ defmodule Mutare.Transform.Ctx do
           active_bound: boolean(),
           module_depth: non_neg_integer(),
           behaviours: MapSet.t(module()),
+          analysis_mutators: [Mutare.Mutator.Spec.t()],
           next_id: pos_integer(),
           group: non_neg_integer(),
           sites: [Mutare.Site.t()]
@@ -78,11 +79,18 @@ defmodule Mutare.Transform.Ctx do
     # `@behaviour Foo` plus `use`-injected behaviours, gathered by
     # `Mutare.Transform.Behaviours` and stamped on each `defmodule` node's meta.
     # `Mutare.Transform` save/restores it per `defmodule` (behaviours don't inherit
-    # into nested modules) and folds it onto each spec (`analysis_mutators/1`) before
-    # handing the specs to analyze/plan, so it reaches a behaviour-aware mutator's
+    # into nested modules) and folds it onto each spec (cached in `analysis_mutators`
+    # below) before handing the specs to analyze/plan, so it reaches a behaviour-aware mutator's
     # `mutate/2`/structural callbacks via the context map's `:behaviours` key. Empty
     # at the top level / outside any module.
     behaviours: MapSet.new(),
+    # `ctx.mutators` folded with the current module's `behaviours` — the value the
+    # analyze/plan call sites used to recompute on every clause/statement. Since
+    # `behaviours` only changes at a `defmodule` boundary, `Mutare.Transform` caches
+    # the enriched list here once per module scope (recomputed on entry, restored on
+    # exit) and reads it at each call site. `[]` is a safe default; the sole `Ctx`
+    # constructor populates it before any call site is reached.
+    analysis_mutators: [],
     # accumulators — threaded and updated
     next_id: 1,
     group: 0,

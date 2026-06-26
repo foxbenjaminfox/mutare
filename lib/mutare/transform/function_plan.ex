@@ -78,9 +78,9 @@ defmodule Mutare.Transform.FunctionPlan do
   """
   @spec plan(signature(), [Macro.t()], [Mutator.Spec.t()]) :: {:lift, t()} | :in_place
   def plan({_vis, name, _arity} = signature, clauses, mutators) do
-    {tagged_clauses, lifted} = build_lifted(clauses, mutators)
+    {tagged_clauses, lifted, inert_guards} = build_lifted(clauses, mutators)
     pattern_structures = build_pattern_structures(clauses, mutators)
-    guard_drops = build_guard_drops(clauses, mutators)
+    guard_drops = build_guard_drops(clauses, inert_guards, mutators)
     drops = build_drops(clauses)
 
     if (lifted != [] or pattern_structures != [] or guard_drops != [] or drops != []) and
@@ -166,36 +166,50 @@ defmodule Mutare.Transform.FunctionPlan do
   # by adding pattern literals), then head-pattern literals on the already-tagged
   # clauses. The two passes touch disjoint parts of a clause — its `when` vs its
   # head args — so neither disturbs the other's tags.
+  #
+  # The guard pass also reports the **inert-guard set** (clause indices whose guard
+  # produced no target), so `build_guard_drops/3` learns which guards are removable
+  # without re-walking them (the guard tagger ran here already).
   defp build_lifted(clauses, mutators) do
-    {guard_tagged, guards, next_tag} = build_guards(clauses, mutators, 0)
+    {guard_tagged, guards, next_tag, inert_guards} = build_guards(clauses, mutators, 0)
     {tagged, patterns, _next_tag} = build_pattern_literals(guard_tagged, mutators, next_tag)
-    {tagged, guards ++ patterns}
+    {tagged, guards ++ patterns, inert_guards}
   end
 
   # === guard candidates ======================================================
 
   # Tag every mutatable guard operator across the group with a unique
   # `meta[:mutare_tag]`, returning the once-tagged clause group, a `Candidate.Lifted`
-  # per mutation, and the next free tag. Clauses are visited in order and, within a
-  # clause, targets in post-order DFS (matching the in-place emit ordering), so ids
-  # land in source order. The tag counter is threaded across clauses (from
-  # `start_tag`) so tags are unique group-wide — that uniqueness is what lets the
+  # per mutation, the next free tag, and the inert-guard set (clause indices whose
+  # guard produced no target — fed to `build_guard_drops/3`). Clauses are visited in
+  # order and, within a clause, targets in post-order DFS (matching the in-place emit
+  # ordering), so ids land in source order. The tag counter is threaded across clauses
+  # (from `start_tag`) so tags are unique group-wide — that uniqueness is what lets the
   # group be stored once.
   defp build_guards(clauses, mutators, start_tag) do
-    {tagged_rev, candidates, next_tag} =
+    {tagged_rev, cand_groups_rev, next_tag, inert_guards} =
       clauses
       |> Enum.with_index()
-      |> Enum.reduce({[], [], start_tag}, fn {clause, index}, {tagged_acc, cand_acc, next_tag} ->
-        guard_candidates_for(clause, index, next_tag, tagged_acc, cand_acc, mutators)
+      |> Enum.reduce({[], [], start_tag, MapSet.new()}, fn {clause, index},
+                                                           {tagged_acc, cand_acc, next_tag, inert} ->
+        {tagged_clause, new_cands, next_tag, inert?} =
+          guard_candidates_for(clause, index, next_tag, mutators)
+
+        inert = if inert?, do: MapSet.put(inert, index), else: inert
+        {[tagged_clause | tagged_acc], [new_cands | cand_acc], next_tag, inert}
       end)
 
-    {Enum.reverse(tagged_rev), candidates, next_tag}
+    {Enum.reverse(tagged_rev), concat_groups(cand_groups_rev), next_tag, inert_guards}
   end
 
-  defp guard_candidates_for(clause, index, next_tag, tagged_acc, cand_acc, mutators) do
+  # Transform one clause: returns its tagged copy, its guard candidates, the advanced
+  # tag, and whether its guard is **inert** (it has a `when` but no mutator targeted
+  # any alternative). A guardless clause is `inert?: false` — only a present-but-inert
+  # guard is removable, which `build_guard_drops/3` re-confirms via `clause_when/1`.
+  defp guard_candidates_for(clause, index, next_tag, mutators) do
     case ClauseAST.guards(clause) do
       [] ->
-        {[clause | tagged_acc], cand_acc, next_tag}
+        {clause, [], next_tag, false}
 
       guards ->
         {tagged_guards, {next_tag, targets}} =
@@ -204,9 +218,7 @@ defmodule Mutare.Transform.FunctionPlan do
           end)
 
         tagged_clause = ClauseAST.put_guards(clause, tagged_guards)
-        new_candidates = lifted_candidates(targets, index)
-
-        {[tagged_clause | tagged_acc], cand_acc ++ new_candidates, next_tag}
+        {tagged_clause, lifted_candidates(targets, index), next_tag, targets == []}
     end
   end
 
@@ -225,17 +237,17 @@ defmodule Mutare.Transform.FunctionPlan do
   # mutations survive (`tag_pattern_targets/3`). The tag counter continues from
   # `start_tag` so pattern tags never collide with guard tags.
   defp build_pattern_literals(clauses, mutators, start_tag) do
-    {tagged_rev, candidates, next_tag} =
+    {tagged_rev, cand_groups_rev, next_tag} =
       clauses
       |> Enum.with_index()
       |> Enum.reduce({[], [], start_tag}, fn {clause, index}, {tagged_acc, cand_acc, next_tag} ->
         {tagged_clause, new_cands, next_tag} =
           pattern_candidates_for(clause, index, next_tag, mutators)
 
-        {[tagged_clause | tagged_acc], cand_acc ++ new_cands, next_tag}
+        {[tagged_clause | tagged_acc], [new_cands | cand_acc], next_tag}
       end)
 
-    {Enum.reverse(tagged_rev), candidates, next_tag}
+    {Enum.reverse(tagged_rev), concat_groups(cand_groups_rev), next_tag}
   end
 
   defp pattern_candidates_for(clause, index, next_tag, mutators) do
@@ -280,6 +292,11 @@ defmodule Mutare.Transform.FunctionPlan do
   # and bitstring specs, with map-key-collision filtering) lives in
   # `Mutare.Transform.Tag` — shared with the `case`/`receive`/`fn` clause-pattern
   # discovery in `Mutare.Transform.Analyze`.
+
+  # Flatten per-clause candidate groups accumulated newest-first (prepended in the
+  # fold to keep accumulation O(n) rather than O(n²) with `++`) back into one
+  # source-order list: reverse to clause order, then concat one level.
+  defp concat_groups(groups_rev), do: groups_rev |> Enum.reverse() |> Enum.concat()
 
   # === head-pattern structure candidates =====================================
 
@@ -388,8 +405,11 @@ defmodule Mutare.Transform.FunctionPlan do
   # `defguard`), so removing it is the only signal there. A guard with any target
   # (`x > 0`, `Integer.is_even(x)`, `a and b`) is already covered, so no removal is
   # offered — keeping guard swaps and guard removals mutually exclusive per clause.
+  #
+  # The inert set is computed by `build_guards/3` (which already walked every guard
+  # to find swap targets), so this pass just consults it — no second guard walk.
   # Gated on `Mutare.Mutators.GuardDrop` being enabled.
-  defp build_guard_drops(clauses, mutators) do
+  defp build_guard_drops(clauses, inert_guards, mutators) do
     case Spec.find(mutators, Mutare.Mutators.GuardDrop) do
       nil ->
         []
@@ -397,13 +417,13 @@ defmodule Mutare.Transform.FunctionPlan do
       spec ->
         clauses
         |> Enum.with_index()
-        |> Enum.flat_map(&guard_drop_for(&1, spec, mutators))
+        |> Enum.flat_map(&guard_drop_for(&1, spec, inert_guards))
     end
   end
 
-  defp guard_drop_for({clause, index}, spec, mutators) do
-    with {:when, _wm, [call | _guards]} = when_node <- ClauseAST.clause_when(clause),
-         true <- guard_inert?(ClauseAST.guards(clause), mutators),
+  defp guard_drop_for({clause, index}, spec, inert_guards) do
+    with true <- MapSet.member?(inert_guards, index),
+         {:when, _wm, [call | _guards]} = when_node <- ClauseAST.clause_when(clause),
          %{} = range <- NodeRange.get(when_node) do
       [
         %Candidate.GuardDrop{
@@ -417,15 +437,6 @@ defmodule Mutare.Transform.FunctionPlan do
     else
       _ -> []
     end
-  end
-
-  # A guard is inert when *no* enabled mutator produces a target on any of its
-  # alternatives (`Tag.guard_targets/3` over each, discarding the tagged copy).
-  defp guard_inert?(guards, mutators) do
-    Enum.all?(guards, fn guard ->
-      {_tagged, {_next, targets}} = Tag.guard_targets(guard, {0, []}, mutators)
-      targets == []
-    end)
   end
 
   # === clause-drop candidates ================================================
