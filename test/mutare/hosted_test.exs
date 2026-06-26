@@ -307,7 +307,7 @@ defmodule Mutare.HostedTest do
     # `pick([a, b], x > 1)` in a value-discarded position carries *both* a `Candidate.Hosted`
     # (the comparison fragment, arg 1) and a `Candidate.MacroPattern` (the escaping pattern,
     # arg 0). The hosted emit path must deliver the MacroPattern through the tuple-export
-    # rewrite (`emit_macro_pattern_site/3`), not an ordinary node-wrapping selector — else the
+    # rewrite (`BindingEscapeEmit.macro_pattern_site/3`), not an ordinary node-wrapping selector — else the
     # mutant branch is a bare mutated-pattern AST with unbound vars and the metamutant won't
     # compile, and the bindings would never escape.
     @bind_source """

@@ -56,7 +56,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
 
   # Offer the `=`'s LHS to the structural pattern families and, if any fire, attach a
   # `Candidate.MatchPattern` per mutation to the analyzed match node — emission rewrites
-  # it to the tuple-export selector (`Mutare.Transform.emit_match_site/3`). Each candidate
+  # it to the tuple-export selector (`BindingEscapeEmit.match_site/3`). Each candidate
   # carries the LHS before/after (the diff), the shared export tuple, and the *raw* rhs.
   #
   # `put_candidates` (a plain prepend) is safe here — unlike the *macro* path, which had to
@@ -108,7 +108,8 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   #     via the direct clause — the two stayed asymmetric until this clause looked past the LHS.)
   #
   # The other args are kept *raw* (the mutant branch runs the baseline value; the catch-all
-  # runs the emitted one, so a nested mutation there still fires — see `emit_macro_pattern_site/3`).
+  # runs the emitted one, so a nested mutation there still fires — see
+  # `BindingEscapeEmit.macro_pattern_site/3`).
   # NOTE (equivalent survivors, deliberately not `# mutare:ignore`d so the killed
   # `-> false` siblings stay counted): the `is_list/1` checks are defensive — a `|>` RHS
   # call node always has keyword-list meta and a list of args — so loosening the guard
@@ -159,7 +160,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
 
   # Offer the macro's escaping pattern to the structural families and attach a
   # `Candidate.MacroPattern` per mutation to the analyzed macro/pipe node — emission rewrites
-  # it to the tuple-export selector (`Mutare.Transform.emit_macro_pattern_site/3`). Each
+  # it to the tuple-export selector (`BindingEscapeEmit.macro_pattern_site/3`). Each
   # candidate carries the pattern before/after (the diff), the shared export tuple, and the
   # *raw* mutant call (`rebuild_mutant.(mutated)`).
   #
@@ -205,7 +206,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   #
   # A **piped** stage carries its mutations on the `|>` RHS *child* (`[x, y] |> destructure(v)`).
   # Left in place, the child's postwalk would emit it as a selector `case`, and this node's
-  # baseline (`strip_candidates/1` in `emit_macro_pattern_site/3`) would become the illegal
+  # baseline (`strip_candidates/1` in `BindingEscapeEmit.macro_pattern_site/3`) would become the illegal
   # `pattern |> case …` — which also traps the macro's escaping bindings inside the branch. So
   # the stage's mutations are pulled off the child (the baseline is then the bare emitted pipe)
   # and each re-homed with `mutant_expr` the mutated stage piped back from the LHS pattern, so

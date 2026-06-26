@@ -1814,7 +1814,8 @@ where: ^case mutare_active do
 
 The delivery is private to the emit layer (mutant **ids**, the selector **subject**, **coverage**,
 the **Site**), so a library can't reach it. The fix opens the already-parameterized binding-export
-seam (`emit_binding_site`, shared by the `=`-match/binding-macro tuple-export rewrites) to a mutator:
+seam (now owned by `BindingEscapeEmit`, shared by the `=`-match/binding-macro tuple-export rewrites)
+to a mutator:
 per **target** the host hands core `{logical original, logical mutants}` + two pure transforms — `wrap`
 (each branch → `dynamic([bindings], _)`; default **identity**) and `splice` (a `(macro_node, case_node)
 -> macro_node` weaving the woven `case` into a copy of the node, `^`-pinned). **Core builds the `case`**
@@ -1875,7 +1876,7 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     unbound vars: the metamutant won't compile). So after weaving the hosted selector into the
     fragment, `emit_hosted_site/3` dispatches the leftover `:mutare` candidates exactly as the
     un-hosted path does (`emit_hosted_inplace/3`): a `MacroPattern` head routes to the tuple-export
-    rewrite (`emit_macro_pattern_site/3`), whose **baseline branch is the spliced macro** — so the
+    rewrite (`BindingEscapeEmit.macro_pattern_site/3`), whose **baseline branch is the spliced macro** — so the
     hosted comparison mutants still fire there while the pattern mutants re-export the bindings through
     `{a, b} = case … end`. Everything else (an ordinary whole-call `InPlace`, or none) rides the
     ordinary `emit_site/3` selector wrapping the spliced result. (A macro node is never a `=`, so
@@ -2293,7 +2294,7 @@ The outer `{x, y} =` (and the `{x, y}` each inner case returns) is one shared **
 tuple** built from `PatternStructure.bound_var_names/1`, so every branch binds the same
 variables — that consistency is the whole trick. Discovery reuses `node_mutations/3` (the
 `case`-path primitive) and the diff reuses `Site.in_place/6` (`original`/`mutated` are the
-LHS pattern before/after), so only **emission** is new (`Transform.emit_match_site/3`): the
+LHS pattern before/after), so only **emission** is new (`BindingEscapeEmit.match_site/3`): the
 existing in-place selector can't host it, because wrapping the *node* would put the binding
 `=` inside the selector branches where its bindings no longer escape. Mutant branches match
 the **raw** rhs (no nested selectors — only one mutant is ever active); the catch-all

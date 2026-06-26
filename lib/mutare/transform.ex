@@ -114,10 +114,10 @@ defmodule Mutare.Transform do
 
   `Mutare.Transform.{ModulePlan,FunctionPlan,Candidate}` own the *vocabulary* —
   the plan structs and pure discovery (chunking clauses, finding guard/drop
-  candidates). The **stateful** emission core stays here, with the shared selector
-  mechanics (`SelectorEmit.claim_items/4`, catch-all branches, active-id subject)
-  factored out but the mutation-specific orchestration still local:
-  `emit_function_plan/2` and `emit_case_pattern_site/3`.
+  candidates). This module owns the top-level emission walk and the larger
+  stateful orchestrators (`emit_function_plan/2`, `emit_case_pattern_site/3`);
+  focused delivery modules own the smaller specialized paths, with shared selector
+  mechanics factored through `SelectorEmit`.
 
   The **pure** AST-assembly each of those orchestrators calls is factored into
   focused helper modules, so this file holds the threading, not the node-building:
@@ -131,6 +131,8 @@ defmodule Mutare.Transform do
       lifted group (the assembly half of `emit_function_plan/2`).
     * `Mutare.Transform.CaseClauseEmit` — the tuple-the-scrutinee `case` clause
       builders (the assembly half of `emit_case_pattern_site/3`).
+    * `Mutare.Transform.BindingEscapeEmit` — the tuple-export delivery for binding
+      escaping `=` matches and known macros.
     * `Mutare.Transform.ImportWitness` — the dead-code import witness spliced
       alongside a mutated bare imported call.
     * `Mutare.Transform.SelectorEmit` — the shared id/site claim, selector
@@ -783,13 +785,13 @@ defmodule Mutare.Transform do
       # A `=`-match in statement position → a tuple-export selector (its bindings must escape,
       # so it can't be wrapped like an ordinary node).
       {:match_pattern, candidates} ->
-        emit_match_site(current, candidates, ctx)
+        BindingEscapeEmit.match_site(current, candidates, ctx)
 
       # A binding-escaping known macro (`destructure([x, y], v)`) in a value-discarded position
       # → the same tuple-export selector, but each branch runs the *macro* (with the
       # original/mutated pattern) instead of a `case` match.
       {:macro_pattern, candidates} ->
-        emit_macro_pattern_site(current, candidates, ctx)
+        BindingEscapeEmit.macro_pattern_site(current, candidates, ctx)
 
       # Every other in-place kind shares the ordinary wrap-in-a-selector path.
       {:in_place, candidates} ->
@@ -927,110 +929,6 @@ defmodule Mutare.Transform do
       else: case_node
   end
 
-  # Rewrite a `=`-match in statement position so its LHS pattern can be mutated. A
-  # selector `case` can't wrap the match directly (the bindings made inside its branches
-  # would no longer escape to the enclosing scope), so the bound variables are re-exported
-  # through a tuple and rebound *outside* the selector:
-  #
-  #     {x, y} =
-  #       case <sel> do
-  #         <id> -> case <raw_rhs> do <mutated_pat> -> {x, y} end   # one per mutant
-  #         mutare_active ->
-  #           <record ids>
-  #           case <emitted_rhs> do <orig_pat> -> {x, y} end        # baseline + inactive
-  #       end
-  #
-  # The outer match (and the `{x, y}` each inner case returns) is the shared `export`
-  # tuple, so every branch binds the same variables. Mutant branches match the *raw* rhs
-  # (no nested selectors — only one mutant is ever active, so a body selector there could
-  # never fire), while the catch-all matches the *emitted* rhs so a nested mutation in the
-  # matched expression still fires when its (non-match) id is active. Mirrors `emit_site/3`
-  # / `SelectorEmit.selector_case/3` for id claiming, coverage, and the all-poisoned fallback.
-  defp emit_match_site({:=, _meta, [_lhs, emitted_rhs]} = match_node, candidates, ctx) do
-    %Candidate.MatchPattern{export: export, original: original_lhs} = hd(candidates)
-
-    emit_binding_site(
-      match_node,
-      export,
-      candidates,
-      ctx,
-      fn c -> BindingEscapeEmit.match_inner_case(c.raw_rhs, c.mutated, export) end,
-      fn ids ->
-        inner = BindingEscapeEmit.match_inner_case(emitted_rhs, original_lhs, export)
-        SelectorEmit.catch_all_clause(ids, inner, ctx.active_var)
-      end
-    )
-  end
-
-  # The shared skeleton of the two tuple-export rewrites — `emit_match_site/3` (a `=` match)
-  # and `emit_macro_pattern_site/3` (a binding-escaping macro call). Both bind a pattern whose
-  # variables must **escape** the selector, so neither can wrap the node in an ordinary
-  # selector `case` (the bindings would be trapped in a branch); instead each mutant runs in a
-  # branch of
-  #
-  #     <export> = case <sel> do <id> -> <mutant_body>; … ; mutare_active -> <catch_all> end
-  #
-  # and the escaping variables are re-exported through the shared `export` tuple and rebound
-  # outside. The callers differ only in the per-mutant branch body (`mutant_body`, a 1-arity fun
-  # called per candidate) and the baseline catch-all (`catch_all`, a 1-arity fun called with the
-  # hosted ids — it records coverage then runs the emitted node). Mirrors `emit_site/3`/
-  # `SelectorEmit.selector_case/3` for id claiming, and shares their all-poisoned fallback
-  # (no live mutant → emit the node unchanged).
-  defp emit_binding_site(node, export, candidates, ctx, mutant_body, catch_all)
-       when is_function(mutant_body, 1) and is_function(catch_all, 1) do
-    {clauses, ctx} =
-      SelectorEmit.claim_items(candidates, ctx, &Delivery.site/3, fn id, candidate ->
-        {:->, [], [[id], mutant_body.(candidate)]}
-      end)
-
-    case clauses do
-      [] ->
-        {strip_candidates(node), ctx}
-
-      _ ->
-        ids = SelectorEmit.ids_from_clauses(clauses)
-        case_node = SelectorEmit.raw_case(clauses, catch_all.(ids), ctx)
-        {{:=, [], [export, case_node]}, ctx}
-    end
-  end
-
-  # === binding-escaping macro pattern mutation: tuple re-export ==============
-
-  # Rewrite a binding-escaping known-macro call (`destructure([x, y], v)`, declared
-  # `:binding_pattern`) in a value-discarded position so its pattern arg can be mutated. The
-  # `emit_match_site/3` mechanism with the inner `case rhs do <pat> -> {x, y} end` generalized
-  # to running the macro itself: the macro does the binding, those bindings escape, so — like a
-  # `=` — the call can't be wrapped in a selector (the bindings would be trapped in the branch).
-  # The bound variables are re-exported through a tuple and rebound outside:
-  #
-  #     {x, y} =
-  #       case <sel> do
-  #         <id> -> destructure(<mutated_pat>, v); {x, y}            # one per mutant (raw value)
-  #         mutare_active ->
-  #           <record ids>
-  #           destructure(<pat>, v); {x, y}                          # baseline (emitted value)
-  #       end
-  #
-  # `node` is the already-emitted macro/pipe call (nested mutations in the value arg in place),
-  # used for the baseline branch; each mutant branch runs `candidate.mutant_expr` (the *raw*
-  # call with the mutated pattern). Mirrors `emit_match_site/3` for id claiming, coverage, the
-  # shared export tuple, and the all-poisoned fallback.
-  defp emit_macro_pattern_site(node, candidates, ctx) do
-    %Candidate.MacroPattern{export: export} = hd(candidates)
-    baseline = strip_candidates(node)
-
-    emit_binding_site(
-      node,
-      export,
-      candidates,
-      ctx,
-      fn c -> BindingEscapeEmit.macro_pattern_branch(c.mutant_expr, export) end,
-      fn ids ->
-        BindingEscapeEmit.macro_pattern_catch_all(ids, baseline, export, ctx.active_var)
-      end
-    )
-  end
-
   # === hosted DSL-fragment mutation: mutator-supplied selector host ==========
 
   # Deliver the `Candidate.Hosted`s a known-macro node carries (a `:hosted` argument — a
@@ -1064,13 +962,13 @@ defmodule Mutare.Transform do
   # in a value-discarded position carries `Candidate.MacroPattern`s whose bindings must escape
   # through a tuple — they *can't* ride an ordinary node-wrapping selector (it would trap the
   # bindings in a branch, and emit a bare mutated-pattern AST as the branch body), so they take
-  # the tuple-export path (`emit_macro_pattern_site/3`), whose baseline branch is the spliced
-  # macro — the hosted mutations still fire there. Everything else (an ordinary whole-call
+  # the tuple-export path (`BindingEscapeEmit.macro_pattern_site/3`), whose baseline branch is the
+  # spliced macro — the hosted mutations still fire there. Everything else (an ordinary whole-call
   # `InPlace`, or none — the common case) rides an ordinary selector wrapping the spliced result
   # (`emit_site/3`, a no-op for `[]`). A macro node is never a `=`, so `MatchPattern` (the
-  # `emit_match_site/3` kind) can't occur here.
+  # `BindingEscapeEmit.match_site/3` kind) can't occur here.
   defp emit_hosted_inplace(spliced, [%Candidate.MacroPattern{} | _] = candidates, ctx),
-    do: emit_macro_pattern_site(spliced, candidates, ctx)
+    do: BindingEscapeEmit.macro_pattern_site(spliced, candidates, ctx)
 
   defp emit_hosted_inplace(spliced, candidates, ctx),
     do: emit_site(spliced, candidates, ctx)
@@ -1080,8 +978,8 @@ defmodule Mutare.Transform do
   # build a mutant clause `<id> -> wrap(mutant)` for each, then the coverage catch-all
   # `<var> -> <record>; wrap(original)`, assemble the `case` on the hoisted active-id subject,
   # and hand it to the target's `splice` to place in a copy of the macro node. With every
-  # mutant poisoned (no clauses) the node is left
-  # unwoven (mirrors `emit_binding_site/5`'s all-poisoned fallback).
+  # mutant poisoned (no clauses) the node is left unwoven, mirroring the other selector
+  # paths' all-poisoned fallback.
   defp weave_hosted_target(node, %Candidate.Hosted{} = cand, ctx) do
     carriers =
       Enum.map(cand.mutants, fn {mutated, note} ->
@@ -1152,7 +1050,7 @@ defmodule Mutare.Transform do
   # unconditional catch-all (`exhaustive_clauses?/2`) — the subject can never fall through, so
   # the clause would be unreachable and Elixir would warn "cannot match".
   #
-  # Mirrors `emit_function_plan/2` for gating and `emit_match_site/3` for the all-poisoned
+  # Mirrors `emit_function_plan/2` for gating and `BindingEscapeEmit.match_site/3` for the all-poisoned
   # fallback.
   defp emit_case_pattern_site(node, candidates, ctx) do
     {:case, meta, [emitted_subject, [{do_key, emitted_clauses}]]} = strip_candidates(node)

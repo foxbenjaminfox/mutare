@@ -1,7 +1,7 @@
 defmodule Mutare.Transform.BindingEscapeEmit do
   @moduledoc false
 
-  # The pure AST builders for the two **tuple-export** rewrites — the binding-escape delivery of
+  # The tuple-export delivery for the two binding-escape candidates:
   # `Mutare.Transform.Candidate.MatchPattern` (a value-discarded `=` match) and
   # `Mutare.Transform.Candidate.MacroPattern` (a binding-escaping known macro like
   # `destructure/2`). Both bind a pattern whose variables must **escape** the selector, so the
@@ -11,14 +11,39 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   #     <export> = case <sel> do <id> -> <mutant_body>; … ; mutare_active -> <catch_all> end
   #
   # and the escaping variables are re-exported through the shared `export` tuple and rebound
-  # outside. `Mutare.Transform.emit_binding_site/6` owns the stateful orchestration (claiming
-  # ids via `Ctx`, choosing the subject, the all-poisoned fallback) and calls these to build the
-  # per-branch bodies — the same split as `CaseClauseEmit` / `emit_case_pattern_site/3`.
+  # outside. This module owns the small stateful orchestration for that delivery: claiming ids
+  # via `Ctx`, choosing the selector subject, preserving the all-poisoned fallback, and building
+  # the per-branch bodies.
 
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
+  alias Mutare.Transform.Candidate
+  alias Mutare.Transform.Candidate.Delivery
+  alias Mutare.Transform.{Ctx, MetaKeys, SelectorEmit}
+
+  @delivery_keys MetaKeys.delivery()
 
   # === binding-escaping `=` match: tuple re-export =====================================
+
+  @doc """
+  Emit a `Candidate.MatchPattern` site by re-exporting its bindings through a selector.
+  """
+  @spec match_site(Macro.t(), [Candidate.MatchPattern.t()], Ctx.t()) :: {Macro.t(), Ctx.t()}
+  def match_site({:=, _meta, [_lhs, emitted_rhs]} = match_node, candidates, ctx) do
+    %Candidate.MatchPattern{export: export, original: original_lhs} = hd(candidates)
+
+    binding_site(
+      match_node,
+      export,
+      candidates,
+      ctx,
+      fn c -> match_inner_case(c.raw_rhs, c.mutated, export) end,
+      fn ids ->
+        inner = match_inner_case(emitted_rhs, original_lhs, export)
+        SelectorEmit.catch_all_clause(ids, inner, ctx.active_var)
+      end
+    )
+  end
 
   @doc """
   `case <rhs> do <pattern> -> <export>; u -> Elixir.Kernel.raise(Elixir.MatchError, term: u) end`
@@ -65,6 +90,25 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   # === binding-escaping macro pattern mutation: tuple re-export ========================
 
   @doc """
+  Emit a `Candidate.MacroPattern` site by running the binding macro inside selector branches.
+  """
+  @spec macro_pattern_site(Macro.t(), [Candidate.MacroPattern.t()], Ctx.t()) ::
+          {Macro.t(), Ctx.t()}
+  def macro_pattern_site(node, candidates, ctx) do
+    %Candidate.MacroPattern{export: export} = hd(candidates)
+    baseline = strip_candidates(node)
+
+    binding_site(
+      node,
+      export,
+      candidates,
+      ctx,
+      fn c -> macro_pattern_branch(c.mutant_expr, export) end,
+      fn ids -> macro_pattern_catch_all(ids, baseline, export, ctx.active_var) end
+    )
+  end
+
+  @doc """
   One selector branch body for a binding-pattern macro: run the macro (binding the pattern's vars
   into the branch scope), then yield the shared export tuple for the outer rebind —
   `{macro; export}`.
@@ -82,4 +126,30 @@ defmodule Mutare.Transform.BindingEscapeEmit do
     body = {:__block__, [], [Recorder.record_ast(ids, var), baseline, export]}
     {:->, [], [[Recorder.catch_all_pattern(var)], body]}
   end
+
+  # Shared skeleton for the tuple-export rewrites. The callers supply only the mutant branch body
+  # and the baseline catch-all; id claiming, site recording, selector assembly, and the all-poisoned
+  # fallback are common.
+  defp binding_site(node, export, candidates, ctx, mutant_body, catch_all)
+       when is_function(mutant_body, 1) and is_function(catch_all, 1) do
+    {clauses, ctx} =
+      SelectorEmit.claim_items(candidates, ctx, &Delivery.site/3, fn id, candidate ->
+        {:->, [], [[id], mutant_body.(candidate)]}
+      end)
+
+    case clauses do
+      [] ->
+        {strip_candidates(node), ctx}
+
+      _ ->
+        ids = SelectorEmit.ids_from_clauses(clauses)
+        case_node = SelectorEmit.raw_case(clauses, catch_all.(ids), ctx)
+        {{:=, [], [export, case_node]}, ctx}
+    end
+  end
+
+  defp strip_candidates({form, meta, args}) when is_list(meta),
+    do: {form, Keyword.drop(meta, @delivery_keys), args}
+
+  defp strip_candidates(node), do: node
 end
