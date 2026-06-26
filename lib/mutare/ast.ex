@@ -146,6 +146,21 @@ defmodule Mutare.AST do
   def key_atom(_), do: nil
 
   @doc """
+  The value node bound to option `key` in a Sourceror-form keyword list `opts`, or `default`
+  (`nil` unless given) when absent. Reads Sourceror's block-wrapped keys via `key_atom/1`, so a
+  written `[as: B]` and an explicitly-quoted `[{:as, B}]` both match. The shared reader behind the
+  `alias`/`import`/`use` vocabularies' option lookups (`Aliases.as_name`, `Imports.opt_value`,
+  `Uses.for_type`).
+  """
+  @spec opts_get([Macro.t()], atom(), term()) :: Macro.t() | term()
+  def opts_get(opts, key, default \\ nil) when is_list(opts) do
+    Enum.find_value(opts, default, fn
+      {k, value} -> if key_atom(k) == key, do: value
+      _ -> nil
+    end)
+  end
+
+  @doc """
   Map over a keyword list, replacing the value of the `:do` entry with `fun.(value)`.
 
   The single home for "find the `:do` block in a keyword list and transform its

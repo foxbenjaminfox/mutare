@@ -370,13 +370,9 @@ defmodule Mutare.Transform.Imports do
   defp kind_atom({:__block__, _meta, [atom]}) when is_atom(atom), do: atom
   defp kind_atom(_value), do: nil
 
-  # The value node for an option key, or `:none`. Reads Sourceror's wrapped key.
-  defp opt_value(opts, name) do
-    Enum.find_value(opts, :none, fn
-      {key, value} -> if AST.key_atom(key) == name, do: value
-      _pair -> nil
-    end)
-  end
+  # The value node for an option key, or `:none` (the sentinel `op_from_opts/1` distinguishes
+  # from a present-but-`nil` value). Reads Sourceror's wrapped key via the shared `AST.opts_get/3`.
+  defp opt_value(opts, name), do: AST.opts_get(opts, name, :none)
 
   # The `{fun, arity}` set from an `only:`/`except:` value — a (Sourceror-wrapped) keyword
   # list of `name: arity`. Unparseable entries are dropped (fail safe — nothing resolved).

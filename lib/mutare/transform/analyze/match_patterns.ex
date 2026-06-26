@@ -64,10 +64,8 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # mutators (see the `analyze({:=, …})` clause), so the analyzed node carries no prior
   # `:mutare` to shadow. If that ever changes, this needs the macro path's re-home.
   defp attach_match_pattern_candidates(analyzed, raw_lhs, raw_rhs, mutators) do
-    case match_pattern_candidates(raw_lhs, raw_rhs, PatternStructure.mutators(mutators)) do
-      [] -> analyzed
-      candidates -> Analyze.put_candidates(analyzed, candidates)
-    end
+    candidates = match_pattern_candidates(raw_lhs, raw_rhs, PatternStructure.mutators(mutators))
+    Analyze.put_candidates_if_any(analyzed, candidates)
   end
 
   defp match_pattern_candidates(raw_lhs, raw_rhs, structural) do
@@ -196,10 +194,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
         {analyzed, call_candidates} = rehome_call_mutations(analyzed, export)
 
         # mutare:ignore[operand_swap] equivalent — `call_candidates` is non-empty only when a *custom* binding-macro mutator produced a whole-call mutation; the built-in set never does, so swapping the order of an empty list with `pattern_candidates` is a no-op for them.
-        case call_candidates ++ pattern_candidates do
-          [] -> analyzed
-          candidates -> Analyze.put_candidates(analyzed, candidates)
-        end
+        Analyze.put_candidates_if_any(analyzed, call_candidates ++ pattern_candidates)
     end
   end
 
@@ -218,8 +213,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # mutare:ignore[guard_drop] equivalent — a `|>` RHS call node always has keyword-list meta, so the guard never excludes a real stage.
   defp rehome_call_mutations({:|>, meta, [lhs, {form, rhs_meta, args}]}, export)
        when is_list(rhs_meta) do
-    {inplace, others} =
-      rhs_meta |> Keyword.get(:mutare, []) |> Enum.split_with(&match?(%Candidate.InPlace{}, &1))
+    {inplace, others} = split_inplace_candidates(rhs_meta)
 
     rhs = set_mutare({form, rhs_meta, args}, others)
 
@@ -235,8 +229,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # `mutant_expr` the mutated call itself.
   # mutare:ignore[guard_drop] equivalent — a call node always has keyword-list meta, so the guard never excludes a real call.
   defp rehome_call_mutations({form, meta, args}, export) when is_list(meta) do
-    {inplace, others} =
-      meta |> Keyword.get(:mutare, []) |> Enum.split_with(&match?(%Candidate.InPlace{}, &1))
+    {inplace, others} = split_inplace_candidates(meta)
 
     call_candidates = Enum.map(inplace, &call_mutation_candidate(&1, export, &1.mutated))
     {set_mutare({form, meta, args}, others), call_candidates}
@@ -244,6 +237,14 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
 
   # mutare:ignore[clause_drop] equivalent — `rehome_call_mutations/2` is only ever called on the analyzed macro/pipe node, which always matches one of the two heads above; this fallback is unreachable for valid input.
   defp rehome_call_mutations(node, _export), do: {node, []}
+
+  # Split a node's `:mutare` candidates into `{in-place mutations, the rest}`. Only the in-place
+  # ones (a whole-call mutation from a custom binding-macro mutator) are re-homed as MacroPattern
+  # branches; `others` stay on the node. (The built-in mutators never produce an in-place
+  # candidate on a binding-macro call, so `inplace` is usually `[]`.)
+  defp split_inplace_candidates(meta) do
+    meta |> Keyword.get(:mutare, []) |> Enum.split_with(&match?(%Candidate.InPlace{}, &1))
+  end
 
   # Convert one whole-call in-place mutation into a `MacroPattern` branch: the diff
   # (`original`/`mutated`/`range`) stays the call/stage the mutator changed, while `mutant_expr`

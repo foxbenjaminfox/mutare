@@ -231,12 +231,13 @@ defmodule Mutare.Transform.Aliases do
   # `Foo`, not `X`).
   defp bind(env, written, resolved), do: Map.put(env, List.last(written), resolved)
 
-  # The `as:` target's single segment, or nil. Handles Sourceror's block-wrapped key.
+  # The `as:` target's single segment, or nil. Handles Sourceror's block-wrapped key, and keeps
+  # only a single-segment alias value (`as: Foo`) — a multi-segment or non-alias `as:` yields nil.
   defp as_name(opts) when is_list(opts) do
-    Enum.find_value(opts, fn
-      {key, {:__aliases__, _, [name]}} when is_atom(name) -> if AST.key_atom(key) == :as, do: name
+    case AST.opts_get(opts, :as) do
+      {:__aliases__, _, [name]} when is_atom(name) -> name
       _ -> nil
-    end)
+    end
   end
 
   defp as_name(_opts), do: nil

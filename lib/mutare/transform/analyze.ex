@@ -429,10 +429,7 @@ defmodule Mutare.Transform.Analyze do
       build_candidates(node, Mutator.mutations(node, mutators)) ++
         ClausePatterns.rescue_type_candidates(blocks, meta, mutators)
 
-    case candidates do
-      [] -> analyzed
-      _ -> put_candidates(analyzed, candidates)
-    end
+    put_candidates_if_any(analyzed, candidates)
   end
 
   # A `->` clause in a pattern-matching construct (`case`/`fn`/`receive`/`with` else/
@@ -1063,6 +1060,16 @@ defmodule Mutare.Transform.Analyze do
 
   def put_candidates({form, meta, args}, candidates),
     do: {form, [{:mutare, candidates} | meta], args}
+
+  @doc """
+  `put_candidates/2` guarded on a non-empty list: attach the candidates under `:mutare` when
+  some fired, else return the node untouched (no empty `:mutare` key). The shared shape of the
+  "offer a position to the structural families, attach only if any produced a candidate" attach
+  helpers (`MatchPattern`/`MacroPattern`/clause-pattern/`try`-rescue).
+  """
+  @spec put_candidates_if_any(Macro.t(), [struct()]) :: Macro.t()
+  def put_candidates_if_any(node, []), do: node
+  def put_candidates_if_any(node, candidates), do: put_candidates(node, candidates)
 
   @doc """
   Append candidates to a node's `:mutare` metadata, **preserving** any already there (so an

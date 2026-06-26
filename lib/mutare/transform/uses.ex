@@ -314,13 +314,9 @@ defmodule Mutare.Transform.Uses do
       else: @unresolved
   end
 
-  # The `for:` value of a `defimpl` opts list, or `nil`.
-  defp for_type(opts) do
-    Enum.find_value(opts, fn
-      {key, value} -> if AST.key_atom(key) == :for, do: value
-      _ -> nil
-    end)
-  end
+  # The `for:` value of a `defimpl` opts list, or `nil`. Reads Sourceror's wrapped key via the
+  # shared `AST.opts_get/3`.
+  defp for_type(opts), do: AST.opts_get(opts, :for)
 
   # `Aliases.resolve_node/2` returns a concrete module atom or `nil` (non-static), so a real
   # module is exactly a non-`nil` result.

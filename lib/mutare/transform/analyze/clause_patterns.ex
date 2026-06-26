@@ -259,10 +259,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
       Analyze.build_candidates(node, Mutator.mutations(node, mutators)) ++
         clause_list_candidates(clauses, rebuild_fn, mutators)
 
-    case candidates do
-      [] -> analyzed
-      _ -> Analyze.put_candidates(analyzed, candidates)
-    end
+    Analyze.put_candidates_if_any(analyzed, candidates)
   end
 
   # The receive's `do` clauses plus a rebuilder that swaps them back into `blocks`

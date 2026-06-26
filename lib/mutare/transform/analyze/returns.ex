@@ -62,9 +62,7 @@ defmodule Mutare.Transform.Analyze.Returns do
         analyzed_kw
 
       return_mutators ->
-        [analyzed_kw, raw_kw]
-        |> Enum.zip()
-        |> Enum.map(fn {{key, analyzed_value}, {_key, raw_value}} ->
+        Enum.zip_with(analyzed_kw, raw_kw, fn {key, analyzed_value}, {_key, raw_value} ->
           {key, annotate_block_returns(key, analyzed_value, raw_value, return_mutators)}
         end)
     end
@@ -230,9 +228,7 @@ defmodule Mutare.Transform.Analyze.Returns do
   # each `->` clause body recursed; a key absent from the spec (a discarded `try`
   # `:after`) passes through untouched.
   defp map_kw_blocks(a_blocks, r_blocks, kinds, fun) do
-    [a_blocks, r_blocks]
-    |> Enum.zip()
-    |> Enum.map(fn {{a_key, a_payload}, {_r_key, r_payload}} ->
+    Enum.zip_with(a_blocks, r_blocks, fn {a_key, a_payload}, {_r_key, r_payload} ->
       case Map.get(kinds, AST.key_atom(a_key)) do
         :value ->
           {a_key, map_return_tails(a_payload, r_payload, fun)}
@@ -253,13 +249,11 @@ defmodule Mutare.Transform.Analyze.Returns do
   # `rescue`/`catch`/`else` blocks and every `:clauses` block of a control-flow
   # construct (`case`/`cond`/`receive` `:do`, `with`/`try` clause blocks).
   defp map_clauses(a_clauses, r_clauses, fun) do
-    [a_clauses, r_clauses]
-    |> Enum.zip()
-    |> Enum.map(fn
-      {{:->, meta, [pats, a_body]}, {:->, _rmeta, [_rpats, r_body]}} ->
+    Enum.zip_with(a_clauses, r_clauses, fn
+      {:->, meta, [pats, a_body]}, {:->, _rmeta, [_rpats, r_body]} ->
         {:->, meta, [pats, map_return_tails(a_body, r_body, fun)]}
 
-      {a_clause, _r_clause} ->
+      a_clause, _r_clause ->
         a_clause
     end)
   end
