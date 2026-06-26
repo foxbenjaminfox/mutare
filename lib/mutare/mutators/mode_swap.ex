@@ -184,78 +184,98 @@ defmodule Mutare.Mutators.ModeSwap do
   # (`"a+b"` vs `"a%20b"`) any assertion on the encoded/decoded string catches.
   @uri_encoding %{www_form: [:rfc3986], rfc3986: [:www_form]}
 
-  # {alias_path, function, effective_arity} => {mode_positions (effective indices), group}.
-  # Positions are *effective* (pipe-independent); `visible_index/2` maps them to the
-  # node's own arg list. Most rules carry one position; `convert_time_unit` has two.
-  @rules %{
-    {[:DateTime], :truncate, 2} => {[1], :truncate},
-    {[:NaiveDateTime], :truncate, 2} => {[1], :truncate},
-    {[:Time], :truncate, 2} => {[1], :truncate},
-    {[:DateTime], :add, 3} => {[2], :calendar},
-    {[:DateTime], :add, 4} => {[2], :calendar},
-    {[:DateTime], :diff, 3} => {[2], :calendar},
-    {[:NaiveDateTime], :add, 3} => {[2], :calendar},
-    {[:NaiveDateTime], :diff, 3} => {[2], :calendar},
-    {[:Time], :add, 3} => {[2], :calendar},
-    {[:Time], :diff, 3} => {[2], :calendar},
-    # `shift` — the duration unit is a keyword list at position 1, not a lone atom.
-    {[:DateTime], :shift, 2} => {[1], :duration},
-    {[:DateTime], :shift, 3} => {[1], :duration},
-    {[:NaiveDateTime], :shift, 2} => {[1], :duration},
-    {[:Time], :shift, 2} => {[1], :duration_time},
-    {[:Date], :shift, 2} => {[1], :duration_date},
-    {[:System], :system_time, 1} => {[0], :system},
-    {[:System], :monotonic_time, 1} => {[0], :system},
-    {[:System], :os_time, 1} => {[0], :system},
-    {[:System], :convert_time_unit, 3} => {[1, 2], :system},
-    # Unix-timestamp conversions take the same `System.time_unit` at position 1; the
-    # `/3` arities add a trailing `Calendar`, so the unit stays at 1.
-    {[:DateTime], :from_unix, 2} => {[1], :system},
-    {[:DateTime], :from_unix, 3} => {[1], :system},
-    {[:DateTime], :from_unix!, 2} => {[1], :system},
-    {[:DateTime], :from_unix!, 3} => {[1], :system},
-    {[:DateTime], :to_unix, 2} => {[1], :system},
-    # ISO 8601 rendering format — a lone positional atom (`:extended` ↔ `:basic`). `/1` has
-    # no format arg; the optional trailing `offset` on `DateTime`'s `/3` keeps the format at
-    # position 1 (the `NaiveDateTime`/`Time`/`Date` twins have no `/3`).
-    {[:DateTime], :to_iso8601, 2} => {[1], :iso_format},
-    {[:DateTime], :to_iso8601, 3} => {[1], :iso_format},
-    {[:NaiveDateTime], :to_iso8601, 2} => {[1], :iso_format},
-    {[:Time], :to_iso8601, 2} => {[1], :iso_format},
-    {[:Date], :to_iso8601, 2} => {[1], :iso_format},
-    {[:String], :upcase, 2} => {[1], :case_mode},
-    {[:String], :downcase, 2} => {[1], :case_mode},
-    {[:String], :capitalize, 2} => {[1], :case_mode},
-    {[:String], :normalize, 2} => {[1], :norm_form},
+  # The Base16/Base32 family — all carry the `case:` option in their trailing options list.
+  @base_funs [
+    :encode16,
+    :decode16,
+    :decode16!,
+    :encode32,
+    :decode32,
+    :decode32!,
+    :hex_encode32,
+    :hex_decode32,
+    :hex_decode32!
+  ]
+
+  # The stdlib calls whose mode/unit argument we swap, grouped by their shared
+  # `{mode_positions, group}` value — so the value is written once and a signature can't
+  # drift from its siblings (and adding a calendar type, arity, or Base variant is one line
+  # in the right group). `@rules` (the `{alias_path, function, effective_arity}` =>
+  # `{positions, group}` lookup the matcher reads) is *derived* from this below. Positions
+  # are *effective* (pipe-independent); `visible_index/2` maps them to the node's own arg
+  # list. Most rules carry one position; `convert_time_unit` has two.
+  @rule_groups [
+    # Time-unit precision — `truncate`'s 3-member slice of the calendar ladder.
+    {{[1], :truncate},
+     [{[:DateTime], :truncate, 2}, {[:NaiveDateTime], :truncate, 2}, {[:Time], :truncate, 2}]},
+    # Calendar add/diff — the trailing unit atom (only `DateTime` has the `/4` arity).
+    {{[2], :calendar},
+     [
+       {[:DateTime], :add, 3},
+       {[:DateTime], :add, 4},
+       {[:DateTime], :diff, 3},
+       {[:NaiveDateTime], :add, 3},
+       {[:NaiveDateTime], :diff, 3},
+       {[:Time], :add, 3},
+       {[:Time], :diff, 3}
+     ]},
+    # `shift` — the duration unit is a keyword list at position 1, not a lone atom. `Time`
+    # and `Date` get the time-only / date-only ladders (each rejects the other's units).
+    {{[1], :duration},
+     [{[:DateTime], :shift, 2}, {[:DateTime], :shift, 3}, {[:NaiveDateTime], :shift, 2}]},
+    {{[1], :duration_time}, [{[:Time], :shift, 2}]},
+    {{[1], :duration_date}, [{[:Date], :shift, 2}]},
+    # System clock unit at position 0; `convert_time_unit` reads both unit positions.
+    {{[0], :system},
+     [{[:System], :system_time, 1}, {[:System], :monotonic_time, 1}, {[:System], :os_time, 1}]},
+    {{[1, 2], :system}, [{[:System], :convert_time_unit, 3}]},
+    # Unix-timestamp conversions take the same `System.time_unit` at position 1; the `/3`
+    # arities add a trailing `Calendar`, so the unit stays at 1.
+    {{[1], :system},
+     [
+       {[:DateTime], :from_unix, 2},
+       {[:DateTime], :from_unix, 3},
+       {[:DateTime], :from_unix!, 2},
+       {[:DateTime], :from_unix!, 3},
+       {[:DateTime], :to_unix, 2}
+     ]},
+    # ISO 8601 rendering format — a lone positional atom (`:extended` ↔ `:basic`). `/1` has no
+    # format arg; the optional trailing `offset` on `DateTime`'s `/3` keeps the format at 1.
+    {{[1], :iso_format},
+     [
+       {[:DateTime], :to_iso8601, 2},
+       {[:DateTime], :to_iso8601, 3},
+       {[:NaiveDateTime], :to_iso8601, 2},
+       {[:Time], :to_iso8601, 2},
+       {[:Date], :to_iso8601, 2}
+     ]},
+    # Unicode casing / normalization form.
+    {{[1], :case_mode},
+     [{[:String], :upcase, 2}, {[:String], :downcase, 2}, {[:String], :capitalize, 2}]},
+    {{[1], :norm_form}, [{[:String], :normalize, 2}]},
     # Sort direction shorthand — the sorter is the trailing positional argument.
-    {[:Enum], :sort, 2} => {[1], :order},
-    {[:Enum], :sort_by, 3} => {[2], :order},
-    {[:List], :keysort, 3} => {[2], :order},
+    {{[1], :order}, [{[:Enum], :sort, 2}]},
+    {{[2], :order}, [{[:Enum], :sort_by, 3}, {[:List], :keysort, 3}]},
     # Keyword-option modes — the atom is the *value* of a named key in the trailing options
     # list. `{:kw, [key: set]}` declares which key(s) to read and which value set to swap.
-    {[:Base], :encode16, 2} => {[1], {:kw, [case: :base_case]}},
-    {[:Base], :decode16, 2} => {[1], {:kw, [case: :base_case]}},
-    {[:Base], :decode16!, 2} => {[1], {:kw, [case: :base_case]}},
-    {[:Base], :encode32, 2} => {[1], {:kw, [case: :base_case]}},
-    {[:Base], :decode32, 2} => {[1], {:kw, [case: :base_case]}},
-    {[:Base], :decode32!, 2} => {[1], {:kw, [case: :base_case]}},
-    {[:Base], :hex_encode32, 2} => {[1], {:kw, [case: :base_case]}},
-    {[:Base], :hex_decode32, 2} => {[1], {:kw, [case: :base_case]}},
-    {[:Base], :hex_decode32!, 2} => {[1], {:kw, [case: :base_case]}},
-    {[:Regex], :scan, 3} => {[2], {:kw, [return: :regex_return]}},
-    {[:Regex], :run, 3} => {[2], {:kw, [return: :regex_return]}},
+    {{[1], {:kw, [case: :base_case]}}, for(f <- @base_funs, do: {[:Base], f, 2})},
+    {{[2], {:kw, [return: :regex_return]}}, [{[:Regex], :scan, 3}, {[:Regex], :run, 3}]},
     # `Regex.split/3`'s `on:` selects which captures are split points.
-    {[:Regex], :split, 3} => {[2], {:kw, [on: :regex_on]}},
+    {{[2], {:kw, [on: :regex_on]}}, [{[:Regex], :split, 3}]},
     # Week-start day — the `starting_on` weekday atom (`:monday`…`:sunday`, `:default`). The
     # `/1` arities default it (no atom to swap), like `to_iso8601/1`.
-    {[:Date], :day_of_week, 2} => {[1], :weekday},
-    {[:Date], :beginning_of_week, 2} => {[1], :weekday},
-    {[:Date], :end_of_week, 2} => {[1], :weekday},
-    # URL query encoding — the trailing `encoding` atom (`:www_form` ↔ `:rfc3986`). On
-    # `decode_query/3` it is the third argument; `encode_query/1`/`decode_query/2` default it.
-    {[:URI], :encode_query, 2} => {[1], :uri_encoding},
-    {[:URI], :decode_query, 3} => {[2], :uri_encoding}
-  }
+    {{[1], :weekday},
+     [{[:Date], :day_of_week, 2}, {[:Date], :beginning_of_week, 2}, {[:Date], :end_of_week, 2}]},
+    # URL query encoding — the trailing `encoding` atom (`:www_form` ↔ `:rfc3986`).
+    # `encode_query/2` carries it at position 1; on `decode_query/3` it is the third argument
+    # (`encode_query/1`/`decode_query/2` default it).
+    {{[1], :uri_encoding}, [{[:URI], :encode_query, 2}]},
+    {{[2], :uri_encoding}, [{[:URI], :decode_query, 3}]}
+  ]
+
+  # The flat lookup the matcher reads: `{alias_path, function, effective_arity}` =>
+  # `{mode_positions, group}`, derived by flattening each group's signature list.
+  @rules for {spec, sigs} <- @rule_groups, sig <- sigs, into: %{}, do: {sig, spec}
 
   @impl Mutare.Mutator
   def name, do: :mode_swap

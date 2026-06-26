@@ -39,32 +39,42 @@ defmodule Mutare.Mutators.Bitwise do
   alias Mutare.AST
   alias Mutare.Transform.Calls
 
-  # Binary *operator* swaps. Keys are the operator atoms the parser emits, regardless of
-  # whether `Bitwise` is imported, so an arity-blind `mutate/1` swap is sound.
-  @op_swaps %{
-    :&&& => :|||,
-    :||| => :&&&,
-    :<<< => :>>>,
-    :>>> => :<<<
-  }
+  # The bitwise pairs we swap, one row per **unordered** pair: its two operator spellings,
+  # its two function-call spellings, and whether it is a shift (whose swap is an equivalent
+  # no-op on a literal `0`). The operator atom (`:&&&`) and the function name (`:band`) have
+  # no programmatic relationship, so both spellings are listed — but only once, here: every
+  # table below is derived from this, so adding a pair is a single row, not four edits kept
+  # in lockstep. (`bxor`/`^^^` is deliberately absent — XOR has no natural complementary
+  # sibling — and `~~~`/`bnot` is a unary strip, handled by its own clause.)
+  #
+  #                op_a   op_b   fun_a  fun_b  shift?
+  @bitwise_pairs [
+    {:&&&, :|||, :band, :bor, false},
+    {:<<<, :>>>, :bsl, :bsr, true}
+  ]
+
+  # Binary *operator* swaps (both directions), keyed on the operator atom the parser emits
+  # regardless of whether `Bitwise` is imported — so an arity-blind `mutate/1` swap is sound.
+  @op_swaps for {a, b, _, _, _} <- @bitwise_pairs,
+                {from, to} <- [{a, b}, {b, a}],
+                into: %{},
+                do: {from, to}
+
+  # Binary *function* swaps (both directions), keyed on the resolved function name (the
+  # module is always `[:Bitwise]`, pinned at the match site).
+  @call_swaps for {_, _, fa, fb, _} <- @bitwise_pairs,
+                  {from, to} <- [{fa, fb}, {fb, fa}],
+                  into: %{},
+                  do: {from, to}
 
   # The shift operators/functions, whose swap is an equivalent no-op when the shift amount
   # is a literal `0` (both directions are identity).
-  @shift_ops [:<<<, :>>>]
+  @shift_ops for {a, b, _, _, true} <- @bitwise_pairs, op <- [a, b], do: op
+  @shift_calls for {_, _, fa, fb, true} <- @bitwise_pairs, fun <- [fa, fb], do: fun
 
-  # Binary *function* swaps, keyed on the resolved function name (the module is always
-  # `[:Bitwise]`, pinned at the match site). These are the **same conceptual pairs** as
-  # `@op_swaps` in function form — the two can't be derived from each other (the operator
-  # atom `:&&&` and the function name `:band` have no programmatic relationship), so a new
-  # bitwise pair belongs in *both* tables (and `@shift_ops`/`@shift_calls` below).
-  @call_swaps %{
-    band: :bor,
-    bor: :band,
-    bsl: :bsr,
-    bsr: :bsl
-  }
-
-  @shift_calls [:bsl, :bsr]
+  # The operator / function names with a defined swap — the dispatch guards read these.
+  @swap_ops Map.keys(@op_swaps)
+  @swap_calls Map.keys(@call_swaps)
 
   @impl Mutare.Mutator
   def name, do: :bitwise
@@ -75,7 +85,7 @@ defmodule Mutare.Mutators.Bitwise do
 
   # `&&&`/`|||`/`<<<`/`>>>` (operators) — swap for the complementary operator, skipping a
   # shift by a literal `0` (an equivalent no-op).
-  def mutate({op, meta, [left, right]}) when op in [:&&&, :|||, :<<<, :>>>] do
+  def mutate({op, meta, [left, right]}) when op in @swap_ops do
     if op in @shift_ops and literal_zero?(right) do
       :skip
     else
@@ -96,7 +106,7 @@ defmodule Mutare.Mutators.Bitwise do
       {[:Bitwise], :bnot, [operand], _rebuild} ->
         [operand]
 
-      {[:Bitwise], fun, args, rebuild} when fun in [:band, :bor, :bsl, :bsr] ->
+      {[:Bitwise], fun, args, rebuild} when fun in @swap_calls ->
         if fun in @shift_calls and literal_zero?(List.last(args)) do
           :skip
         else
