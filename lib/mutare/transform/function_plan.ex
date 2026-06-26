@@ -253,20 +253,21 @@ defmodule Mutare.Transform.FunctionPlan do
   end
 
   # Expand a clause's tagged guard / head-literal `targets` into `Candidate.Lifted`s,
-  # one per `{mutator, mutated}` (a literal can admit several — an integer → `n+1`,
+  # one per `{mutator, mutated, note}` (a literal can admit several — an integer → `n+1`,
   # `n-1`, `0`). Guard and head-literal targets build the *same* candidate (both are a
   # tagged-node replacement in one lifted clause), so this serves `build_guards` and
   # `build_pattern_literals` alike; `Tag.expand_targets/2` owns the source-order +
   # range-skip contract.
   defp lifted_candidates(targets, index) do
-    Tag.expand_targets(targets, fn tag, original, mutator, mutated, range ->
+    Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, range ->
       %Candidate.Lifted{
         tag: tag,
         clause_index: index,
         mutator: mutator,
         original: original,
         mutated: mutated,
-        range: range
+        range: range,
+        note: note
       }
     end)
   end

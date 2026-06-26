@@ -124,7 +124,7 @@ defmodule Mutare.HostedTest do
     end
 
     test "a noted mutant carries the note; a bare mutant does not", %{sites: sites} do
-      # `x > 1`'s boundary flip (`x >= 1`) is the `%{node:, note:}` form → Site.note set;
+      # `x > 1`'s boundary flip (`x >= 1`) is the `%Mutare.Mutator.Mutation{}` form → Site.note set;
       # its reversal (`x < 1`) is a bare node → Site.note nil.
       assert site(sites, "x >= 1", 5).note == "kill may require boundary data"
       assert site(sites, "x < 1", 5).note == nil
@@ -654,6 +654,16 @@ defmodule Mutare.HostedTest do
       assert_raise ArgumentError, ~r/:note must be a string or nil/, fn ->
         Mutator.host_targets(malformed_spec(), {:bad_note, [], []}, %{pipe_mode: :unpiped})
       end
+    end
+
+    test "a bare %{node:, note:} map mutant raises (the struct is required)" do
+      assert_raise ArgumentError,
+                   ~r/must be a %Mutare.Mutator.Mutation\{\}, not a bare map/,
+                   fn ->
+                     Mutator.host_targets(malformed_spec(), {:bare_map, [], []}, %{
+                       pipe_mode: :unpiped
+                     })
+                   end
     end
   end
 end

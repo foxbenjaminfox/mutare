@@ -3,7 +3,7 @@ defmodule Mutare.Transform.Suppression do
   # Equivalent-mutant suppression predicates, shared by the two paths that drop a redundant
   # mutation: the in-place **body** path (`Mutare.Transform.Analyze`, which drops
   # `%Candidate.InPlace{}` candidates) and the lifted **guard** path (`Mutare.Transform.Tag`,
-  # which rejects `{spec, mutated}` mutation tuples). Both reduce to the same question asked of a
+  # which rejects `{spec, mutated, note}` mutation tuples). Both reduce to the same question asked of a
   # *mutated node* — "is this the redundant sibling of a mutation another family already
   # produces?" — so the recognition rules live here once; each caller unwraps its own
   # candidate/mutation shape down to the bare node before asking. (Before this module the two
@@ -14,7 +14,7 @@ defmodule Mutare.Transform.Suppression do
   # surrounding why). Both paths walk the same five shapes; the *structural* clauses
   # stay in each module because the two deliver differently — the body path attaches
   # `%Candidate.InPlace{}` to node meta while threading only `mutators`, the guard path
-  # accumulates `{tag, original, [{spec, mutated}]}` targets while threading a tag
+  # accumulates `{tag, original, [{spec, mutated, note}]}` targets while threading a tag
   # counter — so a single walk would need a four-callback strategy that obscures the
   # node-level reasoning. What *is* centralized here is the **vocabulary** (which
   # operators trigger each rule, as `defguard`s usable in both paths' `when` clauses)

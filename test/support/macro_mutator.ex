@@ -101,8 +101,17 @@ defmodule Mutare.Test.UnpackMutator do
   binding-escaping call, so the transform must deliver them through the one tuple-export
   selector: the whole-call mutant must not be silently shadowed (the direct form) nor spliced
   as `pattern |> case …` (the piped form).
+
+  The whole-call mutant carries a **note** (a `%Mutare.Mutator.Mutation{}`), so the tests also
+  pin that a `mutate/1`-supplied advisory rides through the whole-call **re-home** — the path
+  that turns the call's `Candidate.InPlace` into a `Candidate.MacroPattern` — onto the
+  `Mutare.Site` (it was silently dropped when `MacroPattern` had no `note` field).
   """
   @behaviour Mutare.Mutator
+
+  alias Mutare.Mutator.Mutation
+
+  @note "whole-call mutant — bindings still escape"
 
   @impl Mutare.Mutator
   def name, do: :unpack_call
@@ -112,10 +121,12 @@ defmodule Mutare.Test.UnpackMutator do
 
   @impl Mutare.Mutator
   # `unpack(pattern, value)` (directly written) — replace the value, keeping the pattern.
-  def mutate({:unpack, meta, [pattern, _value]}), do: [{:unpack, meta, [pattern, [9, 9]]}]
+  def mutate({:unpack, meta, [pattern, _value]}),
+    do: [Mutation.new({:unpack, meta, [pattern, [9, 9]]}, @note)]
 
   # `unpack(value)` (a `|>` stage — the pattern is the piped LHS) — replace the visible value.
-  def mutate({:unpack, meta, [_value]}), do: [{:unpack, meta, [[9, 9]]}]
+  def mutate({:unpack, meta, [_value]}),
+    do: [Mutation.new({:unpack, meta, [[9, 9]]}, @note)]
 
   def mutate(_node), do: :skip
 end

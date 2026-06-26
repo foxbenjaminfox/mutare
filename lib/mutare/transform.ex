@@ -689,10 +689,10 @@ defmodule Mutare.Transform do
                    is_struct(c, Candidate.GuardDrop)
 
   defp site_for(id, c, file) when plain_replacement_site?(c),
-    do: Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator)
+    do: Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator, site_note(c))
 
   defp site_for(id, c, file) when lifted_replacement_site?(c),
-    do: Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator)
+    do: Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator, site_note(c))
 
   # A return-value mutation is delivered in place (the tail is a body position), but it is
   # structural — no operator — so it records its own constructor (`nil` ops); the producing
@@ -709,6 +709,17 @@ defmodule Mutare.Transform do
   # A whole lifted clause drop — no `original`/`mutated` replacement, just the removed clause.
   defp site_for(id, %Candidate.Drop{} = c, file),
     do: Site.clause_drop(id, file, c.range, c.original)
+
+  # The optional per-mutant advisory a producing mutator attached (a `%Mutare.Mutator.Mutation{}`
+  # return). Read **by field, not by struct**: any candidate kind that carries a `note` field (the
+  # kinds a `mutate/1`/`mutate/2` result can reach — `InPlace`/`Lifted`/`CaseClause`/`CasePattern`,
+  # plus a re-homed `MacroPattern`) yields it; a kind without one (the purely structural
+  # `PatternStructure`/`MatchPattern`/`GuardDrop`/`Return`/`Drop`/…) never matches `%{note: …}` and
+  # reads `nil`. Matching the field means a new note-bearing kind is covered the moment it gains
+  # the field — no clause here to forget (the gap that silently dropped a re-homed `MacroPattern`
+  # note when this enumerated each struct).
+  defp site_note(%{note: note}), do: note
+  defp site_note(_c), do: nil
 
   # === in-place transform: analyze (annotate) then assign/emit ===============
 

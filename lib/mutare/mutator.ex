@@ -181,7 +181,7 @@ defmodule Mutare.Mutator do
   """
 
   alias Mutare.AST
-  alias Mutare.Mutator.Spec
+  alias Mutare.Mutator.{Mutation, Spec}
 
   @typedoc """
   Context threaded to the optional `mutate/2` at each runtime call site. Carries:
@@ -220,9 +220,29 @@ defmodule Mutare.Mutator do
   """
   @type structural_context :: %{behaviours: MapSet.t(module())}
 
+  @typedoc """
+  One element of a `c:mutate/1`/`c:mutate/2` return list — **one of**:
+
+    * `nil` — an empty slot, dropped (so a mutator may `Enum.map` over candidates and emit
+      `nil` for the ones that don't apply, without filtering itself) — so to mutate a node
+      *into* the literal `nil`, return the **wrapped** literal (`Mutare.AST.literal(nil)`),
+      never a bare `nil` (which is the drop sentinel and would silently vanish);
+    * a bare replacement **node** — an ordinary mutant, no note; or
+    * a `t:Mutare.Mutator.Mutation.t/0` **struct** (`%Mutare.Mutator.Mutation{node:, note:}`) —
+      a mutant carrying an advisory the report surfaces on its `Mutare.Site` (e.g. "kill may
+      require NULL/boundary data").
+
+  A bare `%{node:, note:}` *map* is **not** accepted — the struct is required (a quoted map
+  literal is itself a valid mutation node, so only the struct unambiguously means "noted
+  mutant"). The same three forms a selector host's `:mutants` accept (see `c:host/2`).
+  """
+  @type mutation :: nil | Macro.t() | Mutation.t()
+
   @doc """
   Return `:skip` when the mutator does not apply to `node`, otherwise a list of
-  mutated nodes (one per mutant).
+  mutations (one per mutant) — each `nil` (dropped), a bare replacement node, or a
+  `%Mutare.Mutator.Mutation{}` to attach an advisory the report shows on a survivor
+  (see `t:mutation/0`).
 
   **Optional** — the entry point for a *node-level* mutator. A purely **structural** mutator
   (one driven by `pattern_mutations/2`, `return_replacements/1`, or `condition_replacements/1`)
@@ -230,7 +250,7 @@ defmodule Mutare.Mutator do
   simply omits this callback; `mutations/3` skips a mutator that doesn't export it. A module must
   still implement `name/0` plus at least one mutation-producing callback to count as a mutator.
   """
-  @callback mutate(Macro.t()) :: :skip | [Macro.t()]
+  @callback mutate(Macro.t()) :: :skip | [mutation()]
 
   @doc "Short family name, shown in reports (e.g. `:arithmetic`)."
   @callback name() :: atom()
@@ -261,8 +281,11 @@ defmodule Mutare.Mutator do
   options: `context.opts` carries the `opts` of its `{module, opts}` entry in
   `:mutators` (see `Mutare.Mutator.Spec`) — `mutate/1` has no context, so a mutator
   whose behaviour depends on its options matches its nodes here instead.
+
+  Returns the same `:skip | [t:mutation/0]` shape as `mutate/1` — so a `mutate/2` mutant
+  may carry a note via `%Mutare.Mutator.Mutation{}` exactly as `mutate/1`'s can.
   """
-  @callback mutate(Macro.t(), context()) :: :skip | [Macro.t()]
+  @callback mutate(Macro.t(), context()) :: :skip | [mutation()]
 
   @doc """
   Optional structural hook for mutating a `def`/`defp` clause **head pattern** as a
@@ -335,8 +358,9 @@ defmodule Mutare.Mutator do
       what the wrapped catch-all baseline runs);
     * `:mutants` — the list of logical mutated fragments (one mutant id + `Mutare.Site` each),
       from the library's *own* semantics catalog (e.g. SQL's, **not** core's Elixir mutators).
-      Each entry is a bare fragment node, or a `%{node: fragment, note: string}` map to record an
-      advisory on that mutant's Site for the report (e.g. "kill may require NULL/boundary data");
+      Each entry is a bare fragment node, a `%Mutare.Mutator.Mutation{}` (a `node` + a `note`
+      recorded on that mutant's Site for the report, e.g. "kill may require NULL/boundary data"),
+      or `nil` (dropped) — the same `t:mutation/0` forms `mutate/1`/`mutate/2` accept;
     * `:splice` — a 2-arity `(macro_node, case_node -> macro_node)` weaving the assembled
       selector `case` into a copy of the (emitted) macro node (for Ecto, `^`-pinning it into
       the `where:` position);
@@ -667,13 +691,12 @@ defmodule Mutare.Mutator do
   # Default `:wrap` to identity and `:range` to absent; require `:original`, a list `:mutants`,
   # and a 2-arity `:splice`. A malformed target raises (a library bug, not a target to silently
   # drop) — caught at transform time with the offending value. Each mutant is normalized to a
-  # `{node, note}` pair: a bare node gets `note: nil`, a `%{node:, note:}` map carries an advisory
-  # the report surfaces on the mutant's Site (e.g. "kill may require NULL/boundary data").
+  # `{node, note}` pair by the shared `normalize_mutants/1` (dropping any `nil` slot).
   defp normalize_target(%{original: original, mutants: mutants, splice: splice} = target)
        when is_list(mutants) and is_function(splice, 2) do
     %{
       original: original,
-      mutants: Enum.map(mutants, &normalize_mutant/1),
+      mutants: normalize_mutants(mutants),
       splice: splice,
       wrap: target_wrap(Map.get(target, :wrap)),
       range: Map.get(target, :range)
@@ -686,19 +709,52 @@ defmodule Mutare.Mutator do
             "(optional :wrap/:range), got: #{inspect(other)}"
   end
 
-  # A host mutant is a bare node (no note) or a `%{node:, note:}` map (an advisory recorded on the
-  # Site). The map form is unambiguous — a quoted AST node is never a bare map with these keys. A
-  # `:note` that is neither a string nor nil is a library bug (the report renders it verbatim), so
-  # raise rather than silently drop it — the same fail-loud stance as `normalize_target/1` above.
-  defp normalize_mutant(%{node: node, note: note}) when is_binary(note) or is_nil(note),
-    do: {node, note}
+  @doc false
+  # Normalize one mutant — a bare node, or a `%Mutare.Mutator.Mutation{}` carrying an advisory —
+  # to a `{node, note}` pair (a bare node gets `note: nil`). The single home for the noted-mutant
+  # contract, shared by the `mutate/1`,`mutate/2` return path (`tag/2`) and the selector-host
+  # `:mutants` path (`normalize_target/1`).
+  #
+  # Anything other than a bare node or a well-formed `%Mutation{}` is a library bug — a bare
+  # `%{node:, note:}` *map* (the struct is required: a quoted map literal is itself a valid
+  # mutation node, so a bare map can't unambiguously mean "noted mutant"), some *other* struct
+  # (no AST node is a struct, and the note would otherwise silently vanish), or a `%Mutation{}`
+  # whose `:note` is neither a string nor nil (the report renders it verbatim). All raise rather
+  # than silently drop — fail loud over a vanishing/garbled mutant. (`nil` is filtered by the
+  # callers — see `normalize_mutants/1` — never reaching here.) An empty-string note is coerced
+  # to `nil`: a blank note carries no signal, and `nil` keeps the report from rendering a dangling
+  # `— ` suffix (and the JSON reporter from emitting an empty `description`).
+  @spec normalize_mutant(Macro.t() | Mutation.t() | map()) :: {Macro.t(), String.t() | nil}
+  def normalize_mutant(%Mutation{node: node, note: note}) when is_binary(note) or is_nil(note),
+    do: {node, presence(note)}
 
-  defp normalize_mutant(%{node: _node, note: note}) do
-    raise ArgumentError, "a host mutant :note must be a string or nil, got: #{inspect(note)}"
+  def normalize_mutant(%Mutation{note: note}) do
+    raise ArgumentError,
+          "a Mutare.Mutator.Mutation :note must be a string or nil, got: #{inspect(note)}"
   end
 
-  defp normalize_mutant(%{node: node}), do: {node, nil}
-  defp normalize_mutant(node), do: {node, nil}
+  def normalize_mutant(%{node: _} = map) when not is_struct(map) do
+    raise ArgumentError,
+          "a noted mutant must be a %Mutare.Mutator.Mutation{}, not a bare map, got: #{inspect(map)}"
+  end
+
+  def normalize_mutant(%_{} = other) do
+    raise ArgumentError,
+          "a noted mutant must be a %Mutare.Mutator.Mutation{}, got a " <>
+            "#{inspect(other.__struct__)}: #{inspect(other)}"
+  end
+
+  def normalize_mutant(node), do: {node, nil}
+
+  # A blank note is no note — collapse `""` to `nil` so downstream rendering treats it as absent.
+  defp presence(""), do: nil
+  defp presence(note), do: note
+
+  # Reject the `nil` slots, then normalize each surviving mutant to a `{node, note}` pair. The
+  # shared front of both noted-mutant paths — the `mutate/1`/`mutate/2` return (`tag/2`) and the
+  # selector-host `:mutants` (`normalize_target/1`) — so the nil-drop rule lives in one place.
+  defp normalize_mutants(mutants),
+    do: mutants |> Enum.reject(&is_nil/1) |> Enum.map(&normalize_mutant/1)
 
   defp target_wrap(nil), do: &Function.identity/1
   defp target_wrap(wrap) when is_function(wrap, 1), do: wrap
@@ -753,7 +809,7 @@ defmodule Mutare.Mutator do
   def implemented_by?(_term), do: false
 
   @doc """
-  Run every mutator over `node`, flattening to `{mutator, mutated_node}` pairs.
+  Run every mutator over `node`, flattening to `{mutator, mutated_node, note}` triples.
 
   The single place a node meets the mutator set. Both the in-place analyzer
   (`Mutare.Transform`) and the lifted-guard planner (`Mutare.Transform.FunctionPlan`)
@@ -766,13 +822,16 @@ defmodule Mutare.Mutator do
   `:opts`. So pipe-aware/arity-changing *and* configurable mutators both
   participate here. `context` defaults to `%{pipe_mode: :unpiped}`; the transform passes
   `%{pipe_mode: :piped}` for a `|>` right-hand side. Each result is tagged with its
-  **spec** (not the bare module), so the family name and config travel with it.
+  **spec** (not the bare module), so the family name and config travel with it, and with
+  its `note` (the third element — `nil` unless the mutator returned a
+  `%Mutare.Mutator.Mutation{}`), so a per-mutant advisory rides through to the `Mutare.Site`.
 
-      iex> [{spec, mutated}] = Mutare.Mutator.mutations({:+, [], [1, 2]}, [Mutare.Mutators.Arithmetic])
-      iex> {spec.name, mutated}
-      {:arithmetic, {:-, [], [1, 2]}}
+      iex> [{spec, mutated, note}] = Mutare.Mutator.mutations({:+, [], [1, 2]}, [Mutare.Mutators.Arithmetic])
+      iex> {spec.name, mutated, note}
+      {:arithmetic, {:-, [], [1, 2]}, nil}
   """
-  @spec mutations(Macro.t(), [Spec.t() | module()], context()) :: [{Spec.t(), Macro.t()}]
+  @spec mutations(Macro.t(), [Spec.t() | module()], context()) ::
+          [{Spec.t(), Macro.t(), String.t() | nil}]
   def mutations(node, mutators, context \\ %{pipe_mode: :unpiped}) do
     Enum.flat_map(mutators, fn entry ->
       spec = Spec.coerce(entry)
@@ -796,10 +855,15 @@ defmodule Mutare.Mutator do
   end
 
   defp tag(_spec, :skip), do: []
-  defp tag(spec, nodes) when is_list(nodes), do: Enum.map(nodes, &{spec, &1})
+
+  # Pair each returned mutation with its producing spec, carrying its note: `normalize_mutants/1`
+  # drops the `nil` slots and turns a bare node / a `%Mutation{}` into `{node, note}` (enforcing
+  # the noted-mutant contract — struct required, string note), then each pair gains its spec.
+  defp tag(spec, mutations) when is_list(mutations),
+    do: mutations |> normalize_mutants() |> Enum.map(fn {node, note} -> {spec, node, note} end)
 
   @doc """
-  Whether the mutation `{spec, mutated}` produces an **empty enumerable literal** — a
+  Whether the mutation `{spec, mutated, _note}` produces an **empty enumerable literal** — a
   value for which `x in v` is constantly `false`, so it is redundant on the right of `in`
   (the in-RHS suppression; see `Mutare.Transform.Analyze` / `Mutare.Transform.Tag`).
 

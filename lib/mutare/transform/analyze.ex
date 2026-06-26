@@ -1050,8 +1050,14 @@ defmodule Mutare.Transform.Analyze do
   def build_candidates(node, muts) do
     range = NodeRange.get(node)
 
-    Enum.map(muts, fn {mutator, mutated} ->
-      %Candidate.InPlace{mutator: mutator, original: node, mutated: mutated, range: range}
+    Enum.map(muts, fn {mutator, mutated, note} ->
+      %Candidate.InPlace{
+        mutator: mutator,
+        original: node,
+        mutated: mutated,
+        range: range,
+        note: note
+      }
     end)
   end
 

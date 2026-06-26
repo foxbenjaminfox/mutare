@@ -88,6 +88,8 @@ defmodule Mutare.Test.HostMutator do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.Mutator.Mutation
+
   @comparisons [:>, :<, :>=, :<=]
 
   @impl Mutare.Mutator
@@ -182,13 +184,13 @@ defmodule Mutare.Test.HostMutator do
 
   # The host's own (foreign-semantics) catalog: flip a comparison both ways, reusing the operands
   # so each mutant is compile-safe. The **boundary** neighbour carries a per-mutant note (the
-  # `%{node:, note:}` form — a hosting mutator's advisory the report surfaces on the Site), while
-  # the **reversal** is a bare node (no note) — so one target exercises both forms.
+  # `%Mutare.Mutator.Mutation{}` form — a hosting mutator's advisory the report surfaces on the
+  # Site), while the **reversal** is a bare node (no note) — so one target exercises both forms.
   defp flips({op, meta, [left, right]}) when op in @comparisons do
     [boundary, reversal] = flip_targets(op)
 
     [
-      %{node: {boundary, meta, [left, right]}, note: "kill may require boundary data"},
+      %Mutation{node: {boundary, meta, [left, right]}, note: "kill may require boundary data"},
       {reversal, meta, [left, right]}
     ]
   end
@@ -463,15 +465,22 @@ end
 defmodule Mutare.Test.MalformedHost do
   @moduledoc """
   A plain module with a `host/2` returning **malformed** targets, used to prove
-  `Mutare.Mutator.host_targets/3` normalization fails loud: a non-1-arity `:wrap` and a non-string
-  mutant `:note` each raise an `ArgumentError` (rather than a raw `FunctionClauseError` / a silently
-  dropped note). Dispatched by the probe node's head so one module covers both cases.
+  `Mutare.Mutator.host_targets/3` normalization fails loud: a non-1-arity `:wrap`, a non-string
+  `%Mutare.Mutator.Mutation{}` `:note`, and a **bare `%{node:, note:}` map** mutant (the rejected
+  pre-struct form) each raise an `ArgumentError` (rather than a raw `FunctionClauseError`, a
+  silently dropped note, or a bare selector spliced into the DSL). Dispatched by the probe node's
+  head so one module covers every case.
   """
+  alias Mutare.Mutator.Mutation
+
   def host({:bad_wrap, _meta, _args}, _context),
     do: [%{original: 1, mutants: [2], splice: &splice/2, wrap: :not_a_function}]
 
   def host({:bad_note, _meta, _args}, _context),
-    do: [%{original: 1, mutants: [%{node: 2, note: 42}], splice: &splice/2}]
+    do: [%{original: 1, mutants: [%Mutation{node: 2, note: 42}], splice: &splice/2}]
+
+  def host({:bare_map, _meta, _args}, _context),
+    do: [%{original: 1, mutants: [%{node: 2, note: "x"}], splice: &splice/2}]
 
   def host(_node, _context), do: []
 

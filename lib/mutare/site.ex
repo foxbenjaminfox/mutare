@@ -100,6 +100,8 @@ defmodule Mutare.Site do
   clause *head* pattern (a literal swap). Same replacement shape as `in_place/6`,
   recorded as `:lifted`; `mutator` (a `Mutare.Mutator.Spec`) distinguishes a guard
   operator swap (`:relational`, …) from a head-pattern literal swap (`:literal`, …).
+  An optional `note` is recorded for the report (a producing mutator's per-mutant
+  advisory) — `nil` for an ordinary mutation, exactly like `in_place/7`.
   """
   @spec lifted_replace(
           pos_integer(),
@@ -107,10 +109,11 @@ defmodule Mutare.Site do
           Sourceror.Range.t(),
           Macro.t(),
           Macro.t(),
-          Mutare.Mutator.Spec.t()
+          Mutare.Mutator.Spec.t(),
+          String.t() | nil
         ) :: t()
-  def lifted_replace(id, file, range, original_node, mutated_node, mutator) do
-    replace(id, file, range, original_node, mutated_node, mutator, :lifted)
+  def lifted_replace(id, file, range, original_node, mutated_node, mutator, note \\ nil) do
+    %{replace(id, file, range, original_node, mutated_node, mutator, :lifted) | note: note}
   end
 
   # The id/file/location fields every constructor sets identically from the mutant id, source file,

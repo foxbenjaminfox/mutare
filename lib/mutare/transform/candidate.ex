@@ -87,6 +87,10 @@ defmodule Mutare.Transform.Candidate do
     # argument treatment (`Mutare.Transform.Analyze.route_macro_arg/3`, classifier-only);
     # emission wraps the built selector in `^`. Default `false` — pinning is illegal outside
     # such a context (a bare `^` is a compile error), so only a deliberate route sets it.
+    #
+    # `note` carries the optional per-mutant advisory the producing mutator attached (a
+    # `%Mutare.Mutator.Mutation{}` return from `mutate/1`/`mutate/2`); it rides through to the
+    # `Mutare.Site` for the report. Default `nil` — an ordinary mutation has no note.
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
@@ -94,10 +98,19 @@ defmodule Mutare.Transform.Candidate do
             mutated: Macro.t(),
             range: Sourceror.Range.t(),
             call_option_key?: boolean(),
-            pin?: boolean()
+            pin?: boolean(),
+            note: String.t() | nil
           }
 
-    defstruct [:mutator, :original, :mutated, :range, call_option_key?: false, pin?: false]
+    defstruct [
+      :mutator,
+      :original,
+      :mutated,
+      :range,
+      call_option_key?: false,
+      pin?: false,
+      note: nil
+    ]
   end
 
   defmodule Lifted do
@@ -125,7 +138,9 @@ defmodule Mutare.Transform.Candidate do
     # candidate-design rule — no discriminant field; the struct *is* the shape.
     #
     # `tag` is the unique `meta[:mutare_tag]` marking the target inside the tagged
-    # clause group; `clause_index` is the clause it lives in.
+    # clause group; `clause_index` is the clause it lives in. `note` carries the producing
+    # mutator's optional per-mutant advisory (a `%Mutare.Mutator.Mutation{}` return) through
+    # to the `Mutare.Site`; `nil` for an ordinary mutation.
 
     @type t :: %__MODULE__{
             tag: non_neg_integer(),
@@ -133,10 +148,11 @@ defmodule Mutare.Transform.Candidate do
             mutator: Mutare.Mutator.Spec.t(),
             original: Macro.t(),
             mutated: Macro.t(),
-            range: Sourceror.Range.t()
+            range: Sourceror.Range.t(),
+            note: String.t() | nil
           }
 
-    defstruct [:tag, :clause_index, :mutator, :original, :mutated, :range]
+    defstruct [:tag, :clause_index, :mutator, :original, :mutated, :range, note: nil]
   end
 
   defmodule PatternStructure do
@@ -188,10 +204,11 @@ defmodule Mutare.Transform.Candidate do
             original: Macro.t(),
             mutated: Macro.t(),
             replacement: Macro.t(),
-            range: Sourceror.Range.t()
+            range: Sourceror.Range.t(),
+            note: String.t() | nil
           }
 
-    defstruct [:mutator, :original, :mutated, :replacement, :range]
+    defstruct [:mutator, :original, :mutated, :replacement, :range, note: nil]
   end
 
   defmodule RescueDrop do
@@ -251,7 +268,8 @@ defmodule Mutare.Transform.Candidate do
             raw_body: Macro.t(),
             original: Macro.t(),
             mutated: Macro.t(),
-            range: Sourceror.Range.t()
+            range: Sourceror.Range.t(),
+            note: String.t() | nil
           }
 
     defstruct [
@@ -262,7 +280,8 @@ defmodule Mutare.Transform.Candidate do
       :raw_body,
       :original,
       :mutated,
-      :range
+      :range,
+      note: nil
     ]
   end
 
@@ -331,6 +350,12 @@ defmodule Mutare.Transform.Candidate do
     # value arg still fire). Only bound-set-preserving mutations are admitted (swaps always;
     # wildcards forced *thin*), so the export is consistent across branches. Recorded as an
     # `:in_place` `Mutare.Site`, like `MatchPattern`.
+    #
+    # `note` carries the producing mutator's optional per-mutant advisory (a
+    # `%Mutare.Mutator.Mutation{}` return). The structural swap/wildcard source never sets it
+    # (default `nil`), but the **whole-call re-home** (`Analyze.MatchPatterns.call_mutation_candidate/3`,
+    # turning a `mutate`-built `Candidate.InPlace` on a binding-escaping macro call into this kind)
+    # carries the InPlace's note through to the `Mutare.Site`.
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
@@ -338,10 +363,11 @@ defmodule Mutare.Transform.Candidate do
             mutated: Macro.t(),
             export: Macro.t(),
             mutant_expr: Macro.t(),
-            range: Sourceror.Range.t()
+            range: Sourceror.Range.t(),
+            note: String.t() | nil
           }
 
-    defstruct [:mutator, :original, :mutated, :export, :mutant_expr, :range]
+    defstruct [:mutator, :original, :mutated, :export, :mutant_expr, :range, note: nil]
   end
 
   defmodule Hosted do

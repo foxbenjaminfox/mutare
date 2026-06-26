@@ -948,14 +948,21 @@ contract between them is the whole game.
 ## Adding a mutator
 
 Implement `Mutare.Mutator`: `name/0` (required) plus a way to produce mutations — a *node-level*
-`mutate/1` (returning `:skip` or a list of mutated nodes that reuse the original operands), **or**
+`mutate/1` (returning `:skip` or a list of mutations that reuse the original operands), **or**
 one of the structural/pipe-aware/macro callbacks below. `mutate/1` is **optional**: a structural or
 pipe-only mutator omits it entirely (a module needs `name/0` and at least one producing callback to
-count as a mutator). Register a built-in by adding a `family: Module` entry to
+count as a mutator). Each list element is a `t:Mutare.Mutator.mutation/0` — a bare node, `nil` (a
+dropped slot), or a `%Mutare.Mutator.Mutation{node:, note:}` to attach a **per-mutant advisory** the
+report surfaces on a survivor (e.g. "off-by-one suspected"); `Mutation.new(node, note)` builds it.
+The note (the same channel a selector host's `:mutants` use) rides through to the `Mutare.Site` from
+every position a `mutate` result lands — in-place, lifted, or in a clause. A bare `%{node:, note:}`
+*map* is **rejected** — the struct is required (a quoted map literal is itself a valid mutation
+node). Register a built-in by adding a `family: Module` entry to
 `Mutare.Mutators`'s ordered `@registry` — the only edit, since the default set (`:all`),
 `families/0` and resolution all follow from it (everything registered is on by default). Users
 list custom modules directly under `:mutators` in `.mutare.exs`. Do **not** decide in-place vs
-lifted — placement is positional. `test/support/boolean_mutator.ex` is a working example.
+lifted — placement is positional. `test/support/boolean_mutator.ex` is a working example;
+`test/support/noted_mutator.ex` shows the note channel.
 
 Build literal replacements with **`Mutare.AST.literal/1`**, not by hand. It encodes the
 Sourceror **clean-meta** rule: a literal parses as `{:__block__, meta, [value]}` and renders

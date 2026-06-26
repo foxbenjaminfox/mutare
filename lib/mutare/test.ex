@@ -125,7 +125,7 @@ defmodule Mutare.Test do
     node = Mutare.AST.parse!(snippet)
     context = %{pipe_mode: pipe_mode}
 
-    for {_spec, mutated} <- Mutare.Mutator.mutations(node, List.wrap(mutators), context),
+    for {_spec, mutated, _note} <- Mutare.Mutator.mutations(node, List.wrap(mutators), context),
         do: Mutare.AST.to_string(mutated)
   end
 

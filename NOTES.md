@@ -1738,14 +1738,16 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     survivor reads as honest SQL-three-valued-logic signal, not a plain test gap. Distinct from
     `ignore_reason` (which *suppresses* a mutant). New optional `Site.note` (default `nil`), set via
     `Site.in_place/7`. The channel is per-mutant on the **host target**: a target's `mutants` entry is
-    now a bare node *or* a `%{node:, note:}` map (`Mutator.normalize_target/1` → `{node, note}` pairs on
-    `Candidate.Hosted.mutants`; `weave_hosted_target`/`hosted_site` thread the note to the Site). The map
-    form is used (not `{node, note}`) because a quoted 2-tuple AST (`{a, "str"}`) would be ambiguous with
-    a `{node, note}` pair; a map never collides. `Mutare.Report.header/1` appends `  — <note>` to the
-    `SURVIVED` line (mirroring `ignored/1`'s reason suffix) and the JSON report emits it as `description`.
-    Fourth foreign-DSL extension; contained — `note` defaults `nil`, the non-host `in_place/6` callers are
-    unchanged, and a bare-node host mutant still works. Tested via the `filter` fixture noting its
-    boundary flip but not its reversal (`hosted_test`).
+    now a bare node *or* a `%Mutare.Mutator.Mutation{}` (`Mutator.normalize_target/1` → `{node, note}`
+    pairs on `Candidate.Hosted.mutants`; `weave_hosted_target`/`hosted_site` thread the note to the Site).
+    The **struct** form is used (not a bare `%{node:, note:}` map, nor a `{node, note}` tuple) because a
+    quoted 2-tuple AST (`{a, "str"}`) collides with a `{node, note}` pair, and a quoted *map* literal
+    (`%{a: 1}`) is itself a valid mutation node — only the struct is unambiguous (see "the note channel,
+    generalized" below). `Mutare.Report.header/1` appends `  — <note>` to the `SURVIVED` line (mirroring
+    `ignored/1`'s reason suffix) and the JSON report emits it as `description`. Fourth foreign-DSL
+    extension; contained — `note` defaults `nil`, the non-host `in_place/6` callers are unchanged, and a
+    bare-node host mutant still works. Tested via the `filter` fixture noting its boundary flip but not
+    its reversal (`hosted_test`).
 
 **Explicitly not needed.** `context.uses` — every Ecto target self-identifies *node-locally* (a resolved
 call or a known macro), unlike a GenServer return tuple (shape-ambiguous, *does* need module context); the
@@ -1753,6 +1755,64 @@ node never has to ask the module who it is. `opts` for `macros/0` — Ecto's mac
 inherited from `Uses`: an external-path target whose deps aren't on the task's code path won't expand
 `use Ecto.Schema`, so schema-skip silently degrades and the body poisons — run mutare **as a dep of the
 app under test**, the supported deployment.
+
+### The note channel, generalized to the standard `mutate` API
+The per-mutant advisory `Site.note` (above) was born private to the selector host: only a `host/2` target's
+`:mutants` could carry one. But the note is not a *hosting* concern — it is "this mutant deserves a word on
+the survivor line", which any mutator may want (an off-by-one literal swap, an equivalence-sensitive
+operator). So the channel is now open to the **ordinary `mutate/1`/`mutate/2`** path, with **no new
+delivery mechanics** — the note is a pure carry-along that never touches the AST used for suppression,
+`Overlap` footprinting, or lifting.
+
+  * **One shape, a struct — `Mutare.Mutator.Mutation`.** A `mutate` return-list element (and a host
+    target's `:mutants` entry) is now `t:Mutare.Mutator.mutation/0`: `nil` (a dropped slot — so a mutator
+    may `Enum.map` and emit `nil` for the inapplicable ones), a **bare node** (no note), or a
+    `%Mutare.Mutator.Mutation{node:, note:}`. The struct is **required for the noted form** — *not* a bare
+    `%{node:, note:}` map — because a quoted **map literal** (`%{a: 1}`) is itself a perfectly valid
+    mutation node, so a bare map can't unambiguously mean "noted mutant"; a struct never collides with
+    quoted AST. (This supersedes the host path's earlier bare-map form; `mutare_ecto` moves to the struct.)
+    `normalize_mutant/1` is the **one** home for the contract — struct → `{node, note}`, bare node →
+    `{node, nil}`; a bare map, **any non-`Mutation` struct** (no AST node is a struct, so it would otherwise
+    pass through as `mutated` and crash Sourceror), or a non-string note **raises** (fail loud over a
+    vanishing/garbled mutant); an **empty-string note collapses to `nil`** (a blank note carries no signal,
+    and `nil` keeps the report from rendering a dangling `— ` suffix / an empty JSON `description`). The
+    `nil`-drop + per-mutant normalize is itself single-homed in `normalize_mutants/1`, shared by both `tag/2`
+    (the `mutate` path) and `normalize_target/1` (the host path).
+
+  * **Threaded as the third tuple element.** `Mutator.mutations/3` now returns `{spec, mutated, note}`
+    triples (was a pair). Everything that consumes the pair widened to `{spec, mutated, _note}` — the
+    `Tag` suppression/literal filters, `Tag.expand_targets/2`'s build closure (`… mutator, mutated, note,
+    range`), `Analyze.build_candidates/2`, `Captures.capture_mutations/3`, `Mutare.Test.node_mutations/3`.
+    A note-bearing candidate gains a `note` field: `Candidate.{InPlace,Lifted,CaseClause,CasePattern}` —
+    the four kinds a `mutate` result lands in *directly* (in-place body, lifted `def`-head guard/literal,
+    `case` clause, `receive`/`fn` clause) — **plus `MacroPattern`**, the one kind a `mutate` result reaches
+    *indirectly*: a whole-call mutation on a binding-escaping macro is **re-homed** from its `InPlace` into a
+    `MacroPattern` (`Analyze.MatchPatterns.call_mutation_candidate/3`), which now copies the `InPlace`'s note
+    through (it was silently dropped while `MacroPattern` had no `note` field). The **structural** tuples stay
+    pairs and never carry a note: `PatternStructure.node_mutations/3` (swap/wildcard) and the
+    `condition_replacements`/`return_replacements` locals — see the scope note below.
+
+  * **All positions, no silent drop.** A `mutate` result doesn't know *where* it will land (the same node
+    is offered in-place, lifted, in clauses, and re-homed), so threading the note only into `InPlace` would
+    silently drop it whenever the node lifted/re-homed. Hence the note rides into every note-bearing candidate;
+    emission reads it through `Transform.site_note/1` and passes it to `Site.in_place/7` / the new
+    `Site.lifted_replace/7` (default `nil`, so every existing call is byte-identical). `site_note/1` matches on
+    the **field** (`%{note: note}`), not on each struct: any kind carrying a `note` field yields it, and a kind
+    without one (`PatternStructure`/`MatchPattern`/`GuardDrop`/`Return`/`RescueDrop`/`Drop`) never matches and
+    reads `nil` — keeping the typed-struct discipline (no perpetually-nil field on a kind that can't carry one)
+    *and* covering a new note-bearing kind the moment it gains the field (no clause to forget — the gap that
+    dropped the re-homed `MacroPattern` note when `site_note` enumerated structs).
+
+  * **Scope — `mutate` only, not the structural callbacks (yet).** `return_replacements`/`condition_replacements`/
+    `pattern_mutations` build their own `{spec, mutated}` pairs and don't accept the struct, so a *structural*
+    mutator can't note a mutant. Deliberate: the ask was the standard node-level API, and the structural
+    callbacks return bare nodes by contract. The hook is there if needed (give those callbacks the
+    `t:mutation/0` shape and route through `normalize_mutant/1`) — named here so the limitation is a
+    decision, not a hidden gap. Tested via `Mutare.Test.NotedMutator` (`note_test`), which returns a noted
+    `0`, a `nil` slot, and a bare `1` for `42`, proving the note across in-place/lifted/case positions and
+    the `nil`-drop; the **re-homed `MacroPattern`** note is proven via `Mutare.Test.UnpackMutator` on both the
+    direct and piped binding-escaping-macro forms (`macro_pattern_test`); the bare-map rejection, the
+    foreign-struct rejection, and the empty-note coercion on both paths (`note_test`, `hosted_test`).
 
 ### Module aliases mutate only as a value (AliasLiteral)
 `AliasLiteral` (`:alias`, default-on) rewrites a module alias used **as a value**

@@ -12,7 +12,7 @@ defmodule Mutare.Transform.Tag do
   #
   # Both work the same way: walk the guard / pattern, tag every mutatable node with
   # a unique `meta[:mutare_tag]`, and return the tagged copy plus a `{tag, original,
-  # [{mutator, mutated}]}` per target. A caller then materialises one mutant by
+  # [{mutator, mutated, note}]}` per target. A caller then materialises one mutant by
   # `replace_tag/3`-ing the tagged copy. Tags are stripped before rendering
   # (`Mutare.Transform.Render`), so a leftover tag on a sibling node is harmless.
   #
@@ -57,20 +57,23 @@ defmodule Mutare.Transform.Tag do
     do: tag_pattern_targets(pattern, acc, mutators)
 
   @doc """
-  Expand a clause's accumulated `{tag, original, [{mutator, mutated}]}` targets into
-  candidates, one per `{mutator, mutated}` pair.
+  Expand a clause's accumulated `{tag, original, [{mutator, mutated, note}]}` targets into
+  candidates, one per `{mutator, mutated, note}` triple.
 
   Targets arrive in reverse post-order (`guard_targets/3` / `pattern_literal_targets/3`
   accumulate that way); they are reversed to source order so ids land in source order.
-  `build.(tag, original, mutator, mutated, range)` constructs each candidate — `tag` to
-  `replace_tag/3` the tagged copy, `original` for the diff, `range` its source range.
+  `build.(tag, original, mutator, mutated, note, range)` constructs each candidate — `tag` to
+  `replace_tag/3` the tagged copy, `original` for the diff, `note` the producing mutator's
+  optional advisory (`nil` for an ordinary mutation), `range` its source range.
 
   A target whose node Sourceror can't range is **dropped**: a candidate with no range
   can't be diffed or lifted. This matches the structural discovery paths, which already
   skip an unrangeable node — the tagged paths now agree.
   """
-  @spec expand_targets([{non_neg_integer(), Macro.t(), [{module(), Macro.t()}]}], function()) ::
-          [term()]
+  @spec expand_targets(
+          [{non_neg_integer(), Macro.t(), [{module(), Macro.t(), String.t() | nil}]}],
+          function()
+        ) :: [term()]
   def expand_targets(targets, build) do
     targets
     # mutare:ignore[collection_arity] equivalent — targets accrue in strictly monotonic tag order, so sorting by the unique integer tag yields the same ascending source order as reversing the accumulation (`call_removal` dropping the reverse IS genuinely killed).
@@ -78,8 +81,8 @@ defmodule Mutare.Transform.Tag do
     |> Enum.flat_map(fn {tag, original, muts} ->
       case NodeRange.get(original) do
         %{} = range ->
-          Enum.map(muts, fn {mutator, mutated} ->
-            build.(tag, original, mutator, mutated, range)
+          Enum.map(muts, fn {mutator, mutated, note} ->
+            build.(tag, original, mutator, mutated, note, range)
           end)
 
         _ ->
@@ -223,7 +226,8 @@ defmodule Mutare.Transform.Tag do
     tag_node(node, muts, acc)
   end
 
-  defp empty_collection_mutation?({spec, mutated}), do: Mutator.empty_collection?(spec, mutated)
+  defp empty_collection_mutation?({spec, mutated, _note}),
+    do: Mutator.empty_collection?(spec, mutated)
 
   # `offer_target/3` minus the Conditional mutant forcing the node to `bool` — the redundant
   # short-circuit constant (see the `and`/`or` clause and `Mutare.Transform.Analyze`).
@@ -232,7 +236,8 @@ defmodule Mutare.Transform.Tag do
     tag_node(node, muts, acc)
   end
 
-  defp constant_mutation?({_spec, mutated}, bool), do: Suppression.boolean_literal?(mutated, bool)
+  defp constant_mutation?({_spec, mutated, _note}, bool),
+    do: Suppression.boolean_literal?(mutated, bool)
 
   # `offer_target/3` for an equality op *under a `not`* minus its negation-redundant
   # mutations: the polarity complement (Relational, ≡ Logical's strip) and the `true`/`false`
@@ -243,7 +248,7 @@ defmodule Mutare.Transform.Tag do
     tag_node(node, muts, acc)
   end
 
-  defp negation_redundant_mutation?({_spec, mutated}, op),
+  defp negation_redundant_mutation?({_spec, mutated, _note}, op),
     do: Suppression.negation_redundant?(mutated, op)
 
   # A bitstring segment `<<value::spec>>`: tag-walk the value, keep the spec raw
@@ -359,7 +364,7 @@ defmodule Mutare.Transform.Tag do
   defp literal_pattern_mutations(node, mutators) do
     node
     |> Mutator.mutations(mutators)
-    |> Enum.filter(fn {_mutator, mutated} -> literal_node?(mutated) end)
+    |> Enum.filter(fn {_mutator, mutated, _note} -> literal_node?(mutated) end)
   end
 
   # The literal-valued mutations of a scalar *value* rather than the node the walk
@@ -370,7 +375,7 @@ defmodule Mutare.Transform.Tag do
   defp value_literal_mutations(value, mutators) do
     {:__block__, [], [value]}
     |> Mutator.mutations(mutators)
-    |> Enum.filter(fn {_mutator, mutated} -> literal_node?(mutated) end)
+    |> Enum.filter(fn {_mutator, mutated, _note} -> literal_node?(mutated) end)
   end
 
   # NOTE (suspected-equivalent survivors, deliberately not `# mutare:ignore`d): the
@@ -431,7 +436,7 @@ defmodule Mutare.Transform.Tag do
   defp key_pattern_mutations(node, key_values, mutators) do
     node
     |> literal_pattern_mutations(mutators)
-    |> Enum.reject(fn {_mutator, mutated} -> literal_value_in?(mutated, key_values) end)
+    |> Enum.reject(fn {_mutator, mutated, _note} -> literal_value_in?(mutated, key_values) end)
   end
 
   defp literal_value_in?({:__block__, _meta, [value]}, key_values),

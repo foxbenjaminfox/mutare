@@ -303,6 +303,16 @@ defmodule Mutare.MacroPatternTest do
       assert Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
     end
 
+    test "the whole-call mutant's note rides through the re-home onto the Site", %{sites: sites} do
+      # The `:unpack_call` mutant is built by re-homing the call's `Candidate.InPlace` into a
+      # `Candidate.MacroPattern`; its `%Mutation{}` note must survive that hop (it was dropped
+      # when `MacroPattern` carried no `note` field). The pattern-swap mutant is noteless.
+      call = Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
+      swap = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 5))
+      assert call.note == "whole-call mutant — bindings still escape"
+      assert swap.note == nil
+    end
+
     test "each mutant switches independently and the bindings escape", %{mod: mod, sites: sites} do
       swap = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 5))
       call = Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
@@ -508,6 +518,12 @@ defmodule Mutare.MacroPatternTest do
     test "the whole-call mutant gets a site and no pattern mutant is produced", %{sites: sites} do
       assert Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
       refute Enum.any?(sites, &(&1.mutator in [:pattern_swap, :pattern_wildcard]))
+    end
+
+    test "the piped whole-call mutant's note rides through the re-home", %{sites: sites} do
+      # The piped re-home (`|>` RHS → `Candidate.MacroPattern`) must also carry the note.
+      call = Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
+      assert call.note == "whole-call mutant — bindings still escape"
     end
 
     test "the metamutant compiled and the whole-call mutant switches", %{mod: mod, sites: sites} do
