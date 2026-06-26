@@ -106,7 +106,7 @@ defmodule Mutare.Metamutant do
 
   @doc """
   Whether `node` is the **tupled** subject of a `case` rewritten by the tuple-the-scrutinee
-  path (`Mutare.Transform.emit_case_pattern_site/3`): a 2-tuple `{<subject>, <scrutinee>}`
+  path (`Mutare.Transform.CaseClauseEmit.emit/3`): a 2-tuple `{<subject>, <scrutinee>}`
   whose first element is the plain selector subject. `Mutare.Manifest` uses this to spot such
   a `case` (its mutant clauses gate on the active id via a `when` guard, not the clause
   pattern, so the dispatch is recognised by the subject, then by the gate).

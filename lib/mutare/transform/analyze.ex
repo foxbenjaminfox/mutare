@@ -370,7 +370,7 @@ defmodule Mutare.Transform.Analyze do
   # structural families (`PatternSwap`/`PatternWildcard`), the literal families, and the
   # guard families. A `case` *has* a scrutinee, so the mutants are delivered per-clause by
   # the **tuple-the-scrutinee** rewrite (the C+M analogue of head lifting — see
-  # `Mutare.Transform.emit_case_pattern_site/3`): the whole `case` becomes `case {<active>,
+  # `Mutare.Transform.CaseClauseEmit.emit/3`): the whole `case` becomes `case {<active>,
   # <subject>} do …` and each mutant adds one gated clause. The construct is still analyzed
   # normally (subject/bodies mutate; `->` keeps patterns `:pattern`; guards stay pruned),
   # and the per-clause `Candidate.CaseClause`s are attached under the `:mutare_case` meta key

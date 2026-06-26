@@ -1,11 +1,10 @@
 defmodule Mutare.Transform.CaseClauseEmit do
   @moduledoc false
 
-  # The clause builders for the **`case` tuple-the-scrutinee** rewrite — the per-clause delivery
-  # of `Candidate.CaseClause` pattern/guard mutations. Pure: each builds one `->` clause from
-  # plain data (an id, the candidate, the dispatch variable). `Mutare.Transform.emit_case_pattern_site/3`
-  # owns the stateful orchestration (claiming ids via `Ctx`, choosing the subject) and calls
-  # into here.
+  # The **`case` tuple-the-scrutinee** rewrite — the per-clause delivery of
+  # `Candidate.CaseClause` pattern/guard mutations. This module owns the orchestration
+  # (claiming ids via `Ctx`, choosing the subject, preserving the all-poisoned fallback) and
+  # the pure builders for each emitted `->` clause.
   #
   # The rewrite turns `case <subject> do …` into `case {<active>, <subject>} do …`, where each
   # mutant adds a clause `{<active>, <mut_pattern>} when <active> === <id> -> <raw_body>` before
@@ -14,7 +13,58 @@ defmodule Mutare.Transform.CaseClauseEmit do
 
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
-  alias Mutare.Transform.{Candidate, GuardBuild}
+  alias Mutare.Transform.Candidate.Delivery
+  alias Mutare.Transform.{Candidate, Ctx, GuardBuild, MetaKeys, SelectorEmit}
+
+  @delivery_keys MetaKeys.delivery()
+
+  @doc """
+  Rewrite a `case` with per-clause `Candidate.CaseClause`s by tupleing the scrutinee with
+  the active mutant id.
+  """
+  @spec emit(Macro.t(), [Candidate.CaseClause.t()], Ctx.t()) :: {Macro.t(), Ctx.t()}
+  def emit(node, candidates, ctx) do
+    {:case, meta, [emitted_subject, [{do_key, emitted_clauses}]]} = strip_candidates(node)
+    var = ctx.active_var
+
+    {claimed, ctx} =
+      SelectorEmit.claim_items(candidates, ctx, &Delivery.site/3, fn id, candidate ->
+        {id, candidate.clause_index, mutant_clause(id, candidate, var)}
+      end)
+
+    case claimed do
+      [] ->
+        {{:case, meta, [emitted_subject, [{do_key, emitted_clauses}]]}, ctx}
+
+      _ ->
+        all_ids = Enum.map(claimed, fn {id, _i, _c} -> id end)
+        excluded = Enum.group_by(claimed, fn {_id, i, _c} -> i end, fn {id, _i, _c} -> id end)
+        mutants = Enum.group_by(claimed, fn {_id, i, _c} -> i end, fn {_id, _i, c} -> c end)
+
+        rewritten =
+          emitted_clauses
+          |> Enum.with_index()
+          |> Enum.flat_map(fn {emitted_clause, index} ->
+            original =
+              original_clause(
+                emitted_clause,
+                Map.get(excluded, index, []),
+                all_ids,
+                var
+              )
+
+            Map.get(mutants, index, []) ++ [original]
+          end)
+
+        new_clauses =
+          if exhaustive_clauses?(emitted_clauses, excluded),
+            do: rewritten,
+            else: rewritten ++ [unmatched_clause(all_ids, var)]
+
+        subject = {SelectorEmit.subject(ctx), emitted_subject}
+        {{:case, meta, [subject, [{do_key, new_clauses}]]}, ctx}
+    end
+  end
 
   @doc """
   One mutant clause: `{<active>, <mutant_pattern>} when <active> === <id> [and <mutant_guard>]
@@ -32,7 +82,7 @@ defmodule Mutare.Transform.CaseClauseEmit do
   One original clause: `{<active>, <orig_pattern>} when <active> !== <its ids> [and <orig_guard>]
   -> <record all ids>; <emitted_body>`. With no exclusions and no source guard the head is the
   bare tuple (the dispatch variable still used by the record). The record prepends the *full*
-  id-set (see `Mutare.Transform.emit_case_pattern_site/3`).
+  id-set (see `emit/3`).
   """
   @spec original_clause(Macro.t(), [non_neg_integer()], [non_neg_integer()], atom()) :: Macro.t()
   def original_clause(emitted_clause, excluded_ids, all_ids, var) do
@@ -113,4 +163,9 @@ defmodule Mutare.Transform.CaseClauseEmit do
   end
 
   defp emitted_clause_parts({:->, meta, [[pattern], body]}), do: {meta, pattern, nil, body}
+
+  defp strip_candidates({form, meta, args}) when is_list(meta),
+    do: {form, Keyword.drop(meta, @delivery_keys), args}
+
+  defp strip_candidates(node), do: node
 end

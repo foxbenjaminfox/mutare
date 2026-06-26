@@ -249,7 +249,7 @@ defmodule Mutare.Transform.Candidate do
     # <mutant_pattern>} when <active> === <id> [and <mutant_guard>] -> <raw_body>`) placed
     # before its original — so a mutant touching one clause never copies the other N-1
     # (C+M, not C×M). The original it overrides is gated `when <active> !== <id>` to step
-    # aside when the mutant is active (`Mutare.Transform.emit_case_pattern_site/3`).
+    # aside when the mutant is active (`Mutare.Transform.CaseClauseEmit.emit/3`).
     #
     # `clause_index` is the source clause this targets (for grouping the originals'
     # exclusion gates). `mutant_pattern`/`mutant_guard` are the mutant clause's pattern and

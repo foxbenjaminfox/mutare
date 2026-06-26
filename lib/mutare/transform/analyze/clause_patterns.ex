@@ -37,7 +37,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # swaps, and structural pattern rewrites. The candidate carries the mutant clause's
   # *pattern* and *guard* (a literal/structure mutation mutates the pattern and keeps the
   # original guard; a guard mutation mutates the guard and keeps the original pattern) plus
-  # the clause's *raw body* — everything `Mutare.Transform.emit_case_pattern_site/3` needs
+  # the clause's *raw body* — everything `Mutare.Transform.CaseClauseEmit.emit/3` needs
   # to build the gated mutant clause. The originals come from the (already-analyzed) case
   # node at emit; only the mutants come from here.
   # NOTE (equivalent survivors): the `++` operand_swap mutants on the candidate-group
@@ -145,7 +145,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   end
 
   # A `case` clause's guard removed — a `CaseClause` carrying the original pattern with a
-  # `nil` mutant guard (`emit_case_pattern_site/3` gates it only by `=== <id>`, so it
+  # `nil` mutant guard (`CaseClauseEmit.emit/3` gates it only by `=== <id>`, so it
   # matches whenever the pattern does, the broadening the removal models). Offered only for
   # an **inert** guard (no other family touches it — `targets == []`) and when
   # `GuardDrop` is enabled. The Site diffs the clause's `pattern when guard` head to the

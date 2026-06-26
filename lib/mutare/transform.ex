@@ -114,10 +114,9 @@ defmodule Mutare.Transform do
 
   `Mutare.Transform.{ModulePlan,FunctionPlan,Candidate}` own the *vocabulary* —
   the plan structs and pure discovery (chunking clauses, finding guard/drop
-  candidates). This module owns the top-level emission walk and the larger
-  stateful orchestrators (`emit_function_plan/2`, `emit_case_pattern_site/3`);
-  focused delivery modules own the smaller specialized paths, with shared selector
-  mechanics factored through `SelectorEmit`.
+  candidates). This module owns the top-level emission walk and the lifted-function
+  orchestrator; focused delivery modules own the smaller specialized paths, with shared
+  selector mechanics factored through `SelectorEmit`.
 
   Focused helper modules keep the pure node-building and the smaller specialized
   delivery paths out of this file:
@@ -129,8 +128,8 @@ defmodule Mutare.Transform do
       exclusion, `and`-into), shared by the lifted and `case` paths.
     * `Mutare.Transform.LiftedEmit` — the dispatcher + gated base clauses for a
       lifted group (the assembly half of `emit_function_plan/2`).
-    * `Mutare.Transform.CaseClauseEmit` — the tuple-the-scrutinee `case` clause
-      builders (the assembly half of `emit_case_pattern_site/3`).
+    * `Mutare.Transform.CaseClauseEmit` — the tuple-the-scrutinee delivery for
+      per-clause `case` pattern/guard mutants.
     * `Mutare.Transform.BindingEscapeEmit` — the tuple-export delivery for binding
       escaping `=` matches and known macros.
     * `Mutare.Transform.HostedEmit` — the selector-host delivery for hosted DSL
@@ -785,14 +784,14 @@ defmodule Mutare.Transform do
   end
 
   # Dispatch a node's candidates to the selector-emitting path classified by the candidate
-  # delivery table. `Transform` owns the AST assembly; `Candidate.Delivery` owns which variant
-  # goes to which path.
+  # delivery table. `Candidate.Delivery` owns which variant goes to which path; the selected
+  # delivery module owns any specialized assembly.
   defp emit_one_unhosted(current, ctx) do
     case delivery_route(current) do
       # A `case` carrying per-clause `CaseClause`s is rewritten by the tuple-the-scrutinee path
       # (its clauses can't each host a selector, and a `case` isn't a liftable function group).
       {:case_clause, candidates} ->
-        emit_case_pattern_site(current, candidates, ctx)
+        CaseClauseEmit.emit(current, candidates, ctx)
 
       # A `=`-match in statement position → a tuple-export selector (its bindings must escape,
       # so it can't be wrapped like an ordinary node).
@@ -957,86 +956,4 @@ defmodule Mutare.Transform do
 
   defp emit_hosted_inplace(spliced, candidates, ctx),
     do: emit_site(spliced, candidates, ctx)
-
-  # === case clause-pattern mutation: tuple-the-scrutinee =====================
-
-  # Rewrite a `case` so its clause patterns/guards can be mutated *per clause* (the C+M
-  # analogue of head lifting). The subject is tupled with the active id, and each mutant
-  # adds **one** clause — `{<active>, <mutant_pattern>} when <active> === <id> [and
-  # <mutant_guard>] -> <raw_body>` — placed before its original, which is gated `when
-  # <active> !== <its ids>` to step aside when the mutant is active:
-  #
-  #     case {:persistent_term.get(:mutare_active, 0), <subject>} do
-  #       {mutare_active, <mut_pat>} when mutare_active === <id> -> <raw_body>   # one per mutant
-  #       {mutare_active, <orig_pat>} when mutare_active !== <id> ->             # original (gated)
-  #         <record all ids>; <emitted_body>
-  #       …
-  #     end
-  #
-  # Precedence is preserved (each mutant sits immediately before its own original), so a
-  # changed/broadened pattern shadows exactly what the source mutant would. Mutant clauses
-  # use the **raw** body (only one mutant is ever active, so a body selector there could
-  # never fire); originals keep their **emitted** body (selectors intact) and prepend the
-  # coverage record of the *full* id-set — whichever original matches at baseline records
-  # them all, so a mutant killable by a value that matches a *different* clause is still
-  # attributed (the probe runs at baseline). Every clause binds `mutare_active` and uses it
-  # (originals via the record, mutants via the gate), so there is no unused-variable warning.
-  #
-  # A **non-exhaustive** source `case` needs one more clause. Without the rewrite an unmatched
-  # subject raised `CaseClauseError` on the *bare* subject; the tupled subject would instead
-  # fall through as `{active, subject}` — raising on the *wrong* term **and**, fatally, running
-  # no clause body, so the coverage record never fires and a pattern mutant that *would* make
-  # the value match is wrongly scored `:no_coverage` (at baseline the value falls through, so
-  # the probe never attributes the ids). So a trailing `{<active>, mutare_unmatched} -> <record
-  # all ids>; Elixir.Kernel.raise(Elixir.CaseClauseError, term: mutare_unmatched)` clause restores
-  # both: it records the hosted ids and re-raises the original error on the bare subject
-  # (`case_unmatched_clause/2`). It is omitted when an original clause is already an
-  # unconditional catch-all (`exhaustive_clauses?/2`) — the subject can never fall through, so
-  # the clause would be unreachable and Elixir would warn "cannot match".
-  #
-  # Mirrors `emit_function_plan/2` for gating and `BindingEscapeEmit.match_site/3` for the all-poisoned
-  # fallback.
-  defp emit_case_pattern_site(node, candidates, ctx) do
-    {:case, meta, [emitted_subject, [{do_key, emitted_clauses}]]} = strip_candidates(node)
-    var = ctx.active_var
-
-    {claimed, ctx} =
-      SelectorEmit.claim_items(candidates, ctx, &Delivery.site/3, fn id, candidate ->
-        {id, candidate.clause_index, CaseClauseEmit.mutant_clause(id, candidate, var)}
-      end)
-
-    # Every mutation here skipped (poisoned) → no rewrite; emit the case unchanged.
-    case claimed do
-      [] ->
-        {{:case, meta, [emitted_subject, [{do_key, emitted_clauses}]]}, ctx}
-
-      _ ->
-        all_ids = Enum.map(claimed, fn {id, _i, _c} -> id end)
-        excluded = Enum.group_by(claimed, fn {_id, i, _c} -> i end, fn {id, _i, _c} -> id end)
-        mutants = Enum.group_by(claimed, fn {_id, i, _c} -> i end, fn {_id, _i, c} -> c end)
-
-        rewritten =
-          emitted_clauses
-          |> Enum.with_index()
-          |> Enum.flat_map(fn {emitted_clause, index} ->
-            original =
-              CaseClauseEmit.original_clause(
-                emitted_clause,
-                Map.get(excluded, index, []),
-                all_ids,
-                var
-              )
-
-            Map.get(mutants, index, []) ++ [original]
-          end)
-
-        new_clauses =
-          if CaseClauseEmit.exhaustive_clauses?(emitted_clauses, excluded),
-            do: rewritten,
-            else: rewritten ++ [CaseClauseEmit.unmatched_clause(all_ids, var)]
-
-        subject = {SelectorEmit.subject(ctx), emitted_subject}
-        {{:case, meta, [subject, [{do_key, new_clauses}]]}, ctx}
-    end
-  end
 end

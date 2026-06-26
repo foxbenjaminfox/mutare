@@ -2439,7 +2439,7 @@ via the whole-construct selector. They now also get **literals** and **guards**,
 pattern is mutated as fully as a function head. Two deliveries, picked by whether the construct
 has a scrutinee to tuple:
 
-- **`case` → tuple-the-scrutinee** (`Candidate.CaseClause`, `Transform.emit_case_pattern_site/3`).
+- **`case` → tuple-the-scrutinee** (`Candidate.CaseClause`, `Transform.CaseClauseEmit.emit/3`).
   The subject is tupled with the active id and each mutant adds **one** clause —
   `{mutare_active, <mut_pat>} when mutare_active === <id> [and <guard>] -> <raw_body>` — placed
   before its original, which is gated `when mutare_active !== <its ids>` to step aside when the
