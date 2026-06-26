@@ -116,9 +116,8 @@ defmodule Mutare.Transform do
   the plan structs and pure discovery (chunking clauses, finding guard/drop
   candidates). The **stateful** emission core stays here, because it shares the
   `Ctx` id-threading discipline across the in-place and lifted paths too tightly
-  to split: `claim_id/4` (the single owner of that dance), `site_for/3` (the single
-  candidate→`Site` map) and the selector emit, `emit_function_plan/2` and
-  `emit_case_pattern_site/3`.
+  to split: `claim_id/4` (the single owner of that dance), the selector emit,
+  `emit_function_plan/2` and `emit_case_pattern_site/3`.
 
   The **pure** AST-assembly each of those orchestrators calls is factored into
   focused helper modules, so this file holds the threading, not the node-building:
@@ -146,6 +145,7 @@ defmodule Mutare.Transform do
     Behaviours,
     BindingEscapeEmit,
     Candidate,
+    Candidate.Delivery,
     CaseClauseEmit,
     Ctx,
     FunctionPlan,
@@ -641,7 +641,7 @@ defmodule Mutare.Transform do
     # a mutant clause nor excluded from its original — i.e. it behaves as baseline.
     {claimed, ctx} =
       Enum.flat_map_reduce(FunctionPlan.candidates(plan), ctx, fn candidate, ctx ->
-        claim_id(ctx, candidate, &site_for/3, fn id, candidate ->
+        claim_id(ctx, candidate, &Delivery.site/3, fn id, candidate ->
           {index, clause} = FunctionPlan.mutated_clause(plan, candidate)
           {id, index, clause, ImportWitness.for_candidate(candidate)}
         end)
@@ -663,90 +663,6 @@ defmodule Mutare.Transform do
 
     {[dispatcher | base_clauses], ctx}
   end
-
-  # === sites: pick the `Mutare.Site` constructor from the candidate variant ====
-  #
-  # `Mutare.Transform` owns which constructor each candidate variant maps to; `Mutare.Site`
-  # owns the struct's fields. The candidate's **type** selects the shape — there is no stored
-  # `kind`/`operation` discriminant (the `Mutare.Transform.Candidate` "the struct *is* the
-  # shape" rule). `site_for/3` is the single home for that mapping: every selector-emitting
-  # path routes its candidates through it via `claim_id/4`, so a new variant is recorded by
-  # adding **one** head here. (The `:hosted` path is the lone exception — its `hosted_site/3`
-  # takes a per-mutant carrier map, not a candidate struct.)
-  #
-  # Delivery is **three independent axes**, so no single stored tag could capture it (InPlace
-  # and Return share the emit path and branch but differ in Site; InPlace and CasePattern share
-  # the emit path and Site but differ in branch). Each variant is matched per axis, at the one
-  # place that axis is dispatched — this table is the map:
-  #
-  #   variant           Site (here)     emit path (emit_one_unhosted)   selector branch (branch_node)
-  #   ----------------  --------------  ------------------------------  -----------------------------
-  #   InPlace           in_place        emit_site                       .mutated
-  #   Return            return_value    emit_site                       .mutated
-  #   CasePattern       in_place        emit_site                       .replacement
-  #   RescueDrop        in_place_drop   emit_site                       .replacement
-  #   CaseClause        in_place        emit_case_pattern_site          (own builder)
-  #   MatchPattern      in_place        emit_match_site                 (own builder)
-  #   MacroPattern      in_place        emit_macro_pattern_site         (own builder)
-  #   Lifted            lifted_replace  emit_function_plan              (lifted clause)
-  #   PatternStructure  lifted_replace  emit_function_plan              (lifted clause)
-  #   GuardDrop         lifted_replace  emit_function_plan              (lifted clause)
-  #   Drop              clause_drop     emit_function_plan              (lifted clause)
-  #
-  # (`Hosted` records via `hosted_site/3` and emits via `emit_hosted_site/3`.) The two guards
-  # below name the two Site-shape *sets* whose head is identical; the three unique shapes get a
-  # head each.
-
-  # The variants recording the plain `Site.in_place/6` replacement — diff is `original` →
-  # `mutated` at `range`, tagged with the mutator. They differ only in the emit scaffolding that
-  # delivers them (the table above), none of which reaches the Site, so one head serves all five.
-  # The guard names that *Site-shape* set; it is **not** "every in-place-delivered candidate"
-  # (`Return`/`RescueDrop` are also delivered in place, but record a different Site).
-  defguardp plain_replacement_site?(c)
-            when is_struct(c, Candidate.InPlace) or is_struct(c, Candidate.CasePattern) or
-                   is_struct(c, Candidate.CaseClause) or is_struct(c, Candidate.MatchPattern) or
-                   is_struct(c, Candidate.MacroPattern)
-
-  # The lifted variants — a `when`-guard / head-pattern literal swap (`Lifted`), a head
-  # structure rewrite (`PatternStructure`), or a guard removal (`GuardDrop`) — all record the
-  # same `:lifted` replacement (`original`/`mutated` already carry the right before/after, so the
-  # diff is a clean one-liner); only the mutator family and the tagged position differ.
-  defguardp lifted_replacement_site?(c)
-            when is_struct(c, Candidate.Lifted) or is_struct(c, Candidate.PatternStructure) or
-                   is_struct(c, Candidate.GuardDrop)
-
-  defp site_for(id, c, file) when plain_replacement_site?(c),
-    do: Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator, site_note(c))
-
-  defp site_for(id, c, file) when lifted_replacement_site?(c),
-    do: Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator, site_note(c))
-
-  # A return-value mutation is delivered in place (the tail is a body position), but it is
-  # structural — no operator — so it records its own constructor (`nil` ops); the producing
-  # spec (`ReturnValue` or a custom return mutator) supplies the recorded name.
-  defp site_for(id, %Candidate.Return{} = c, file),
-    do: Site.return_value(id, file, c.range, c.original, c.mutated, c.mutator)
-
-  # A whole `rescue` clause dropped from a `try`, delivered in place by the whole-`try` selector
-  # (`branch_node/1` returns the rebuilt try). The diff is a `:delete` of the dropped clause's
-  # lines (`Site.in_place_drop/5`).
-  defp site_for(id, %Candidate.RescueDrop{} = c, file),
-    do: Site.in_place_drop(id, file, c.range, c.dropped, c.mutator)
-
-  # A whole lifted clause drop — no `original`/`mutated` replacement, just the removed clause.
-  defp site_for(id, %Candidate.Drop{} = c, file),
-    do: Site.clause_drop(id, file, c.range, c.original)
-
-  # The optional per-mutant advisory a producing mutator attached (a `%Mutare.Mutator.Mutation{}`
-  # return). Read **by field, not by struct**: any candidate kind that carries a `note` field (the
-  # kinds a `mutate/1`/`mutate/2` result can reach — `InPlace`/`Lifted`/`CaseClause`/`CasePattern`,
-  # plus a re-homed `MacroPattern`) yields it; a kind without one (the purely structural
-  # `PatternStructure`/`MatchPattern`/`GuardDrop`/`Return`/`Drop`/…) never matches `%{note: …}` and
-  # reads `nil`. Matching the field means a new note-bearing kind is covered the moment it gains
-  # the field — no clause here to forget (the gap that silently dropped a re-homed `MacroPattern`
-  # note when this enumerated each struct).
-  defp site_note(%{note: note}), do: note
-  defp site_note(_c), do: nil
 
   # === in-place transform: analyze (annotate) then assign/emit ===============
 
@@ -848,9 +764,9 @@ defmodule Mutare.Transform do
     end
   end
 
-  # The emit-path axis of the delivery table (see `site_for/3`): dispatch a node's candidates
-  # to the selector-emitting path `delivery_route/1` classified them into. A flat table, one arm
-  # per kind.
+  # Dispatch a node's candidates to the selector-emitting path classified by the candidate
+  # delivery table. `Transform` owns the AST assembly; `Candidate.Delivery` owns which variant
+  # goes to which path.
   defp emit_one_unhosted(current, ctx) do
     case delivery_route(current) do
       # A `case` carrying per-clause `CaseClause`s is rewritten by the tuple-the-scrutinee path
@@ -882,40 +798,16 @@ defmodule Mutare.Transform do
     end
   end
 
-  # Classify how a node's candidates are delivered. A `case`'s per-clause `:mutare_case`
-  # candidates dominate and are never gated; otherwise the `:mutare` candidates are gated (a
-  # mutator may opt out, leaving none) and the list head identifies the path — the analyzer
-  # attaches one homogeneous family per node, so the head is representative.
+  # A `case`'s per-clause `:mutare_case` candidates dominate and are never gated; otherwise
+  # `:mutare` candidates are gated before the candidate delivery table classifies them.
   defp delivery_route(node) do
     case case_candidates_of(node) do
       [] ->
-        case gate_candidates(candidates_of(node)) do
-          [] -> :none
-          [%Candidate.MatchPattern{} | _] = candidates -> {:match_pattern, candidates}
-          [%Candidate.MacroPattern{} | _] = candidates -> {:macro_pattern, candidates}
-          candidates -> {:in_place, assert_homogeneous_in_place!(candidates)}
-        end
+        node |> candidates_of() |> gate_candidates() |> Delivery.classify()
 
       case_candidates ->
-        {:case_clause, case_candidates}
+        Delivery.classify(case_candidates)
     end
-  end
-
-  # The clauses above trust the analyzer's invariant — a node's gated candidates are
-  # homogeneous in *delivery route*, so the list head picks the path for all of them. A
-  # binding-escape candidate (`MatchPattern`/`MacroPattern`) hiding past the head would be
-  # delivered through the ordinary wrap-in-a-selector path, whose `case` can't host an
-  # escaping binding: a metamutant that compiles but mis-binds, with nothing pointing back
-  # here. Make the precondition loud instead of trusting it silently.
-  defp assert_homogeneous_in_place!(candidates) do
-    if Enum.any?(candidates, fn c ->
-         match?(%Candidate.MatchPattern{}, c) or match?(%Candidate.MacroPattern{}, c)
-       end) do
-      raise "delivery_route: a binding-escape candidate is mixed into in-place delivery — " <>
-              "the analyzer must keep a node's candidates homogeneous in delivery route"
-    end
-
-    candidates
   end
 
   # Drop the candidates a mutator opts out of *before* id assignment, so they leave no
@@ -995,12 +887,12 @@ defmodule Mutare.Transform do
 
   defp emit_site(node, candidates, ctx) do
     {clauses, ctx} =
-      claim_clauses(candidates, ctx, &site_for/3, fn id, candidate ->
+      claim_clauses(candidates, ctx, &Delivery.site/3, fn id, candidate ->
         {:->, [],
          [
            [id],
            candidate
-           |> branch_node()
+           |> Delivery.selector_branch()
            |> ImportWitness.wrap(ImportWitness.for_candidate(candidate))
          ]}
       end)
@@ -1081,7 +973,7 @@ defmodule Mutare.Transform do
   defp emit_binding_site(node, export, candidates, ctx, mutant_body, catch_all)
        when is_function(mutant_body, 1) and is_function(catch_all, 1) do
     {clauses, ctx} =
-      claim_clauses(candidates, ctx, &site_for/3, fn id, candidate ->
+      claim_clauses(candidates, ctx, &Delivery.site/3, fn id, candidate ->
         {:->, [], [[id], mutant_body.(candidate)]}
       end)
 
@@ -1261,7 +1153,7 @@ defmodule Mutare.Transform do
     var = ctx.active_var
 
     {claimed, ctx} =
-      claim_clauses(candidates, ctx, &site_for/3, fn id, candidate ->
+      claim_clauses(candidates, ctx, &Delivery.site/3, fn id, candidate ->
         {id, candidate.clause_index, CaseClauseEmit.mutant_clause(id, candidate, var)}
       end)
 
@@ -1299,14 +1191,6 @@ defmodule Mutare.Transform do
         {{:case, meta, [subject, [{do_key, new_clauses}]]}, ctx}
     end
   end
-
-  # The selector-branch axis of the delivery table (see `site_for/3`): the value the mutant
-  # branch of an in-place selector holds. A `CasePattern` (and a `RescueDrop`) carries the whole
-  # mutated construct (`replacement`); for every other in-place candidate the branch *is* its
-  # `mutated` node (an operator swap, a return constant).
-  defp branch_node(%Candidate.CasePattern{replacement: replacement}), do: replacement
-  defp branch_node(%Candidate.RescueDrop{replacement: replacement}), do: replacement
-  defp branch_node(candidate), do: candidate.mutated
 
   # The single owner of the id-claim + site-record dance that poison recovery
   # leans on. Both the in-place path (emit_site/3) and the lifted path

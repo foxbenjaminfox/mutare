@@ -2400,8 +2400,8 @@ Several design choices worth remembering:
   block-wraps a clause pattern with meta, unlike a bare head arg). The mutant branch is the
   raw mutated construct (no nested selectors — first-order, like a lifted `__mut` copy); the
   selector's catch-all holds the fully-transformed construct, so nested body mutants stay
-  reachable. `branch_node/1` picks `replacement` for a `CasePattern`, `mutated` for every
-  other in-place candidate.
+  reachable. `Candidate.Delivery.selector_branch/1` picks `replacement` for a `CasePattern`,
+  `mutated` for every other ordinary in-place candidate.
 
 - **Compile-safety — swap is total, wildcard is `used_outside`-guided.** A swap only
   reorders existing variables: the bound-name set and its usage are invariant (no
@@ -2687,9 +2687,9 @@ copy of the clause group with its one guard pre-swapped (`mutated_clauses`), N
 near-identical copies for N guard mutants. Both are fixed:
 - **One struct per legal kind.** `Candidate.{InPlace,Guard,Drop}` — the
   `context`/`kind`/`operation` triple is gone; the variant *is* the kind, and the
-  matching `Site` constructor is chosen by pattern-matching the struct at emit
-  (`site_for/3`, the single candidate→`Site` map, which a per-axis delivery table
-  documents). Illegal states can't be built.
+  matching `Site` constructor is chosen by pattern-matching the struct in
+  `Candidate.Delivery.site/3`, alongside the emit-route and selector-branch axes.
+  Illegal states can't be built.
 - **The clause group is stored once.** `FunctionPlan` holds a single *tagged*
   clause group (every mutatable guard operator marked with a unique
   `meta[:mutare_tag]`, the tag counter threaded across clauses so tags are
