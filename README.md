@@ -90,17 +90,21 @@ mix igniter.install mutare
 ```
 
 It inspects your dependencies and, for each framework it finds, adds the matching
-companion mutator package and enables its families in a generated `.mutare.exs`:
+companion package and wires it into a generated `.mutare.exs`:
 
-| Detected dependency      | Plugin added                | Families                          |
-| ------------------------ | --------------------------- | --------------------------------- |
-| `:phoenix`               | `mutare_phoenix`            | `Mutare.Phoenix.all/0`            |
-| `:phoenix_live_view`     | `mutare_phoenix_live_view`  | `Mutare.Phoenix.LiveView.all/0`   |
-| `:ecto` / `:ecto_sql`    | `mutare_ecto`               | `{Mutare.Ecto, repo: YourRepo}`   |
+| Detected dependency  | Package added              | Wired into                                    |
+| -------------------- | -------------------------- | --------------------------------------------- |
+| `:phoenix`           | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`          |
+| `:phoenix_live_view` | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
+| `:ecto` / `:ecto_sql`| `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
+| `:gettext`           | `mutare_gettext`           | `:plugins` — `Mutare.Gettext`                 |
 
-The Ecto repo is detected automatically (pass `--repo MyApp.Repo` to override). If you
-already have a `.mutare.exs`, it is left untouched and the recommended `:mutators` line
-is printed for you to merge in. (No igniter yet? `mix archive.install hex igniter_new`.)
+A mutator package extends the `:mutators` list; a non-mutating **plugin** like
+`mutare_gettext` (which teaches Mutare a library's compile-time vocabulary so the
+built-in mutators land on it) joins the `:plugins` list. The Ecto repo is detected
+automatically (pass `--repo MyApp.Repo` to override). If you already have a
+`.mutare.exs`, it is left untouched and the recommended keys are printed for you to
+merge in. (No igniter yet? `mix archive.install hex igniter_new`.)
 
 Or add it by hand — Mutare is a test-time tool, so keep it out of production:
 

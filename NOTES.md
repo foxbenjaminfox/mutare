@@ -1559,9 +1559,11 @@ mutator"). Plugin behaviours are kept **atoms-only** (`normalize_behaviours/1` f
 atoms, dropping a stray quoted node / junk / the degenerate `nil`/`true`/`false`) per the
 `Expansion` `behaviours: [module()]` contract — *not* alias-resolved against an empty env, which would
 silently mis-resolve a single-segment or aliased node to the wrong module.
-It's `.mutare.exs`-only (no CLI flag) — plugins are modules, and the intended UX is an **Igniter installer**
-that writes the one `:plugins` entry on detecting the library (the "without editing config" goal), so a
-console string flag earns nothing.
+It's `.mutare.exs`-only (no CLI flag) — plugins are modules, and the UX is the **Igniter installer**
+(`Mix.Tasks.Mutare.Install`), which on detecting `:gettext` adds the `mutare_gettext` dependency and
+writes the one `:plugins` entry (`plugins: [Mutare.Gettext]`) into the generated `.mutare.exs` — the
+plugin counterpart of how a detected `:phoenix`/`:ecto` extends the `:mutators` list (the "without
+editing config" goal). So a console string flag earns nothing.
 
 **Scope decision — tied to `:expand_uses`.** When `--no-expand-uses` freezes the pre-pass, plugin overrides
 are frozen with it (the whole `Uses.annotate` is skipped). Defensible: `--no-expand-uses` means "no `use`

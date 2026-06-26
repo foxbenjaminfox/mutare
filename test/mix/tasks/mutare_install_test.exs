@@ -57,10 +57,12 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     refute Deps.has_dep?(igniter, :mutare_phoenix)
     refute Deps.has_dep?(igniter, :mutare_phoenix_live_view)
     refute Deps.has_dep?(igniter, :mutare_ecto)
+    refute Deps.has_dep?(igniter, :mutare_gettext)
 
     content = config(igniter)
     refute content =~ "Mutare.Phoenix"
     refute content =~ "Mutare.Ecto"
+    refute content =~ "Mutare.Gettext"
     # The active config is the empty list (defaults); guidance lives in comments.
     assert content =~ "[]"
   end
@@ -109,6 +111,50 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     assert Deps.has_dep?(igniter, :mutare_ecto)
     assert config(igniter) =~ "{Mutare.Ecto, repo: YourApp.Repo}"
     assert_has_warning(igniter, &(&1 =~ "Could not find an Ecto repo"))
+  end
+
+  # --- gettext (a plugin, not a mutator) -----------------------------------
+
+  test "gettext: adds mutare_gettext and lists it under :plugins" do
+    igniter = project([{:gettext, "~> 0.26"}]) |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_gettext)
+    refute Deps.has_dep?(igniter, :mutare_phoenix)
+    refute Deps.has_dep?(igniter, :mutare_ecto)
+
+    content = config(igniter)
+    assert content =~ "plugins: [Mutare.Gettext]"
+    # Gettext contributes no mutator families, so no :mutators key is written.
+    refute content =~ "mutators:"
+  end
+
+  test "gettext + phoenix: composes both a :mutators and a :plugins key" do
+    igniter = project([{:phoenix, "~> 1.7"}, {:gettext, "~> 0.26"}]) |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_phoenix)
+    assert Deps.has_dep?(igniter, :mutare_gettext)
+
+    content = config(igniter)
+    assert content =~ "Mutare.Phoenix.all()"
+    assert content =~ "plugins: [Mutare.Gettext]"
+  end
+
+  test "gettext dep is dev/test-only and runtime: false" do
+    igniter = project([{:gettext, "~> 0.26"}]) |> install()
+
+    assert {:ok, declaration} = Deps.get_dep(igniter, :mutare_gettext)
+    assert declaration =~ ~s({:mutare_gettext, "~> 0.1")
+    assert declaration =~ "only: [:dev, :test]"
+    assert declaration =~ "runtime: false"
+  end
+
+  test "existing .mutare.exs with gettext: dep added, file untouched, :plugins surfaced" do
+    existing = %{".mutare.exs" => ~s([paths: ["lib"]]\n)}
+    igniter = project([{:gettext, "~> 0.26"}], existing) |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_gettext)
+    assert_unchanged(igniter, ".mutare.exs")
+    assert Enum.any?(igniter.notices, &(&1 =~ "plugins: [Mutare.Gettext]"))
   end
 
   # --- full stack ----------------------------------------------------------

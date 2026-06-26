@@ -8,19 +8,23 @@ if Code.ensure_loaded?(Igniter) do
 
     Adds `:mutare` to your `:dev`/`:test` dependencies (`runtime: false`), then looks
     at what your project already depends on and wires up the matching companion
-    mutator packages — so a Phoenix/Ecto app gets framework-aware mutants without any
+    packages — so a Phoenix/Ecto/Gettext app gets framework-aware mutants without any
     manual configuration:
 
-    | Detected dependency               | Plugin added                | Families enabled                  |
-    | --------------------------------- | --------------------------- | --------------------------------- |
-    | `:phoenix`                        | `mutare_phoenix`            | `Mutare.Phoenix.all/0`            |
-    | `:phoenix_live_view`              | `mutare_phoenix_live_view`  | `Mutare.Phoenix.LiveView.all/0`   |
-    | `:ecto` / `:ecto_sql`             | `mutare_ecto`               | `{Mutare.Ecto, repo: YourRepo}`   |
+    | Detected dependency  | Package added              | Wired into                                    |
+    | -------------------- | -------------------------- | --------------------------------------------- |
+    | `:phoenix`           | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`          |
+    | `:phoenix_live_view` | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
+    | `:ecto` / `:ecto_sql`| `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
+    | `:gettext`           | `mutare_gettext`           | `:plugins` — `Mutare.Gettext`                 |
 
-    Each detected plugin is added as a `:dev`/`:test` dependency and spliced into the
-    `:mutators` list of a generated `.mutare.exs`, alongside the `:builtins` group
-    token (which keeps Mutare's own families on). Nothing detected? You still get a
-    starter `.mutare.exs` and a ready-to-run `mix mutare`.
+    Each detected package is added as a `:dev`/`:test` dependency and wired into a
+    generated `.mutare.exs`: a **mutator** package extends the `:mutators` list
+    (alongside the `:builtins` group token, which keeps Mutare's own families on),
+    while a non-mutating **plugin** like `mutare_gettext` — which only teaches Mutare a
+    library's compile-time vocabulary so the built-in mutators land on it correctly —
+    joins the `:plugins` list. Nothing detected? You still get a starter `.mutare.exs`
+    and a ready-to-run `mix mutare`.
 
     If you already have a `.mutare.exs`, it is left untouched and the recommended
     `:mutators` line is printed as a notice for you to merge in by hand.
@@ -64,7 +68,12 @@ if Code.ensure_loaded?(Igniter) do
           Enum.any?(
             [:ecto_sql, :phoenix_ecto, :ecto],
             &Igniter.Project.Deps.has_dep?(igniter, &1)
-          )
+          ),
+        # Gettext is wired up as a *plugin*, not a mutator family: it joins `:plugins`
+        # (below), not `:mutators`. A Gettext-using app (every default Phoenix app, plus
+        # any library that calls it) declares `:gettext` directly, so a declared-dep
+        # check is enough.
+        gettext: Igniter.Project.Deps.has_dep?(igniter, :gettext)
       }
 
       {igniter, repo} = resolve_repo(igniter, detected.ecto)
@@ -81,6 +90,7 @@ if Code.ensure_loaded?(Igniter) do
       |> maybe_add_dep(detected.phoenix, :mutare_phoenix)
       |> maybe_add_dep(detected.live_view, :mutare_phoenix_live_view)
       |> maybe_add_dep(detected.ecto, :mutare_ecto)
+      |> maybe_add_dep(detected.gettext, :mutare_gettext)
     end
 
     defp maybe_add_dep(igniter, false, _name), do: igniter
@@ -115,31 +125,48 @@ if Code.ensure_loaded?(Igniter) do
     # --- .mutare.exs ---------------------------------------------------------
 
     defp configure(igniter, detected, repo) do
-      if any_plugin?(detected) do
-        expr = mutators_expr(detected, repo)
+      case config_entries(detected, repo) do
+        [] ->
+          Igniter.create_new_file(igniter, ".mutare.exs", no_plugin_config(), on_exists: :skip)
 
-        igniter
-        |> write_or_notice_config(expr)
-        |> warn_missing_repo(detected, repo)
-      else
-        Igniter.create_new_file(igniter, ".mutare.exs", no_plugin_config(), on_exists: :skip)
+        entries ->
+          igniter
+          |> write_or_notice_config(entries)
+          |> warn_missing_repo(detected, repo)
       end
     end
 
+    # The `.mutare.exs` keyword entries to write, in canonical order: mutator families
+    # (`:mutators`) first, then non-mutating plugins (`:plugins`). Each is a
+    # `{key, source_string}` pair, so the generated file body and the
+    # leave-it-untouched notice render from the one description.
+    defp config_entries(detected, repo) do
+      mutators =
+        if mutator_package?(detected), do: [mutators: mutators_expr(detected, repo)], else: []
+
+      plugins = if detected.gettext, do: [plugins: plugins_expr(detected)], else: []
+
+      mutators ++ plugins
+    end
+
     # Create `.mutare.exs` when absent; otherwise leave the user's file alone and tell
-    # them the exact `:mutators` value to merge in (surgically rewriting a free-form,
-    # `Code.eval`-d config script is more likely to mangle than to help).
-    defp write_or_notice_config(igniter, expr) do
+    # them the exact keys to merge in (surgically rewriting a free-form, `Code.eval`-d
+    # config script is more likely to mangle than to help).
+    defp write_or_notice_config(igniter, entries) do
       if Igniter.exists?(igniter, ".mutare.exs") do
         Igniter.add_notice(igniter, """
-        You already have a .mutare.exs, so it was left untouched. Add the plugin
-        families to its `:mutators` key (keep `:builtins` to run Mutare's own too):
+        You already have a .mutare.exs, so it was left untouched. Merge these keys
+        into it (keep `:builtins` in `:mutators` to run Mutare's own families too):
 
-            mutators: #{expr}
+        #{entries_notice(entries)}
         """)
       else
-        Igniter.create_new_file(igniter, ".mutare.exs", plugin_config(expr))
+        Igniter.create_new_file(igniter, ".mutare.exs", plugin_config(entries))
       end
+    end
+
+    defp entries_notice(entries) do
+      Enum.map_join(entries, "\n", fn {key, expr} -> "    #{key}: #{expr}" end)
     end
 
     defp warn_missing_repo(igniter, %{ecto: true}, nil) do
@@ -184,21 +211,38 @@ if Code.ensure_loaded?(Igniter) do
     defp repo_literal(nil), do: "YourApp.Repo"
     defp repo_literal(repo), do: inspect(repo)
 
-    defp any_plugin?(detected), do: detected.phoenix or detected.live_view or detected.ecto
+    # The `:plugins` source — non-mutating plugins, in registry order. Mirrors the
+    # `calls` shape in `mutators_expr/2` so a future plugin is a one-line addition.
+    defp plugins_expr(detected) do
+      modules =
+        [{detected.gettext, "Mutare.Gettext"}]
+        |> Enum.filter(&elem(&1, 0))
+        |> Enum.map(&elem(&1, 1))
+
+      "[" <> Enum.join(modules, ", ") <> "]"
+    end
+
+    # Whether any detected dependency contributes a *mutator* family (and so a
+    # `:mutators` key). Gettext is a plugin, not a mutator, so it is excluded here.
+    defp mutator_package?(detected), do: detected.phoenix or detected.live_view or detected.ecto
 
     # --- generated file bodies -----------------------------------------------
 
-    defp plugin_config(expr) do
+    defp plugin_config(entries) do
       # Run the keyword list through the formatter so a long `++` chain wraps cleanly;
       # the explanatory comment sits above it (comments aren't part of this AST).
-      list = "[mutators: #{expr}]" |> Code.format_string!() |> IO.iodata_to_binary()
+      kw = Enum.map_join(entries, ", ", fn {key, expr} -> "#{key}: #{expr}" end)
+      list = "[#{kw}]" |> Code.format_string!() |> IO.iodata_to_binary()
 
       """
       # Mutare configuration — `mix help mutare` documents every option (all optional).
       #
-      # Setting `:mutators` replaces Mutare's default set, so the `:builtins` token keeps
-      # the built-in families on alongside the plugin families wired up below. Drop a
+      # `:mutators` chooses the mutator families to run (defaults to every built-in). The
+      # `:builtins` token keeps Mutare's own families on alongside any you add; drop a
       # family you don't want, or silence individual sites with `# mutare:ignore[family]`.
+      #
+      # `:plugins` lists non-mutating extensions that teach Mutare a library's
+      # compile-time vocabulary (e.g. Gettext) so the built-in mutators land on it.
       #{list}
       """
     end
@@ -213,8 +257,8 @@ if Code.ensure_loaded?(Igniter) do
       #
       #   mutators: [:builtins, MyApp.Mutators.Custom]
       #
-      # No Phoenix, LiveView, or Ecto was detected; add one and re-run
-      # `mix igniter.install mutare` to wire up the matching mutare_* plugin.
+      # No Phoenix, LiveView, Ecto, or Gettext was detected; add one and re-run
+      # `mix igniter.install mutare` to wire up the matching mutare_* package.
       []
       """
     end
