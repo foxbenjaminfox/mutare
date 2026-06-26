@@ -348,7 +348,7 @@ defmodule Mutare.Transform.FunctionPlan do
 
             Enum.flat_map(structural, fn mutator ->
               mutator
-              |> Mutare.Mutator.pattern_mutations(args, used)
+              |> Mutare.Mutator.Dispatch.pattern_mutations(args, used)
               |> Enum.map(fn mutated_args ->
                 mutated_args = reattach_defaults(mutated_args, raw_args)
 

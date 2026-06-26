@@ -152,13 +152,13 @@ defmodule Mutare.MutatorsTest do
     test "implemented_by?/1 accepts a structural mutator that has no mutate/1" do
       # IfCondition is structural (condition_replacements/1) and no longer exports mutate/1.
       refute function_exported?(IfCondition, :mutate, 1)
-      assert Mutare.Mutator.implemented_by?(IfCondition)
+      assert Mutare.Mutator.Dispatch.implemented_by?(IfCondition)
     end
 
     test "resolve/1 accepts a transform-managed family by module (no producing callback)" do
       # GuardDrop's logic lives in the transform — it exports only name/0, so implemented_by?/1
       # can't recognise it, but as a transform-managed family it still resolves by module.
-      refute Mutare.Mutator.implemented_by?(GuardDrop)
+      refute Mutare.Mutator.Dispatch.implemented_by?(GuardDrop)
       assert GuardDrop in Mutators.transform_managed()
       assert [%Spec{module: GuardDrop, name: :guard_drop}] = Mutators.resolve([GuardDrop])
     end
@@ -168,7 +168,8 @@ defmodule Mutare.MutatorsTest do
       # (a "mutator") or is transform-managed (logic in `Mutare.Transform`, name/0 only). Nothing
       # else is legal — a registered module that is neither would fail to resolve by module.
       for module <- Mutators.all() do
-        assert Mutare.Mutator.implemented_by?(module) or module in Mutators.transform_managed(),
+        assert Mutare.Mutator.Dispatch.implemented_by?(module) or
+                 module in Mutators.transform_managed(),
                "#{inspect(module)} is registered but neither implements Mutare.Mutator nor is " <>
                  "transform-managed"
       end
@@ -179,7 +180,7 @@ defmodule Mutare.MutatorsTest do
         assert module in Mutators.all(),
                "#{inspect(module)} is transform-managed but not registered"
 
-        refute Mutare.Mutator.implemented_by?(module),
+        refute Mutare.Mutator.Dispatch.implemented_by?(module),
                "#{inspect(module)} is listed transform-managed but implements Mutare.Mutator — " <>
                  "it should resolve via the producing-callback check instead"
       end

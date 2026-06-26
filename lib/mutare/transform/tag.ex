@@ -25,6 +25,7 @@ defmodule Mutare.Transform.Tag do
   # (bitstring specs, map-key collisions) therefore live here once.
 
   alias Mutare.{AST, Mutator}
+  alias Mutare.Mutator.Dispatch
   alias Mutare.Transform.{NodeRange, Suppression}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
@@ -222,17 +223,17 @@ defmodule Mutare.Transform.Tag do
 
   # `offer_target/3` minus the empty-collection mutations (see `tag_in_rhs/3`).
   defp offer_nonempty_collection(node, acc, mutators) do
-    muts = Enum.reject(Mutator.mutations(node, mutators), &empty_collection_mutation?/1)
+    muts = Enum.reject(Dispatch.mutations(node, mutators), &empty_collection_mutation?/1)
     tag_node(node, muts, acc)
   end
 
   defp empty_collection_mutation?({spec, mutated, _note}),
-    do: Mutator.empty_collection?(spec, mutated)
+    do: Dispatch.empty_collection?(spec, mutated)
 
   # `offer_target/3` minus the Conditional mutant forcing the node to `bool` — the redundant
   # short-circuit constant (see the `and`/`or` clause and `Mutare.Transform.Analyze`).
   defp offer_without_constant(node, bool, acc, mutators) do
-    muts = Enum.reject(Mutator.mutations(node, mutators), &constant_mutation?(&1, bool))
+    muts = Enum.reject(Dispatch.mutations(node, mutators), &constant_mutation?(&1, bool))
     tag_node(node, muts, acc)
   end
 
@@ -244,7 +245,7 @@ defmodule Mutare.Transform.Tag do
   # constants (Conditional, ≡ the outer's). A strictness relaxation (`===` → `==`) is neither,
   # so it stays. Mirrors `Mutare.Transform.Analyze.drop_negation_redundant_candidates/2`.
   defp offer_negation_survivors(node, op, acc, mutators) do
-    muts = Enum.reject(Mutator.mutations(node, mutators), &negation_redundant_mutation?(&1, op))
+    muts = Enum.reject(Dispatch.mutations(node, mutators), &negation_redundant_mutation?(&1, op))
     tag_node(node, muts, acc)
   end
 
@@ -279,7 +280,7 @@ defmodule Mutare.Transform.Tag do
   defp tag_spec(other, acc, _mutators), do: {other, acc}
 
   defp offer_target(node, acc, mutators),
-    do: tag_node(node, Mutator.mutations(node, mutators), acc)
+    do: tag_node(node, Dispatch.mutations(node, mutators), acc)
 
   # === pattern-literal tagging ===============================================
 
@@ -356,14 +357,14 @@ defmodule Mutare.Transform.Tag do
   # A var (`{:x, _, nil}`), a bare leaf, or anything else: no literal to tag.
   defp tag_pattern_targets(other, acc, _mutators), do: {other, acc}
 
-  # The literal-valued mutations a node admits — `Mutator.mutations/2` filtered to
+  # The literal-valued mutations a node admits — `Dispatch.mutations/2` filtered to
   # those whose replacement is itself a scalar literal. A literal is legal in any
   # pattern sub-position, so this both selects the literal families (no other
   # built-in matches a scalar-literal node) and fences out a custom mutator that
   # would emit a pattern-illegal replacement.
   defp literal_pattern_mutations(node, mutators) do
     node
-    |> Mutator.mutations(mutators)
+    |> Dispatch.mutations(mutators)
     |> Enum.filter(fn {_mutator, mutated, _note} -> literal_node?(mutated) end)
   end
 
@@ -374,7 +375,7 @@ defmodule Mutare.Transform.Tag do
   # `Literal` mutate the value; each clean result then *replaces the whole `-n` node*.
   defp value_literal_mutations(value, mutators) do
     {:__block__, [], [value]}
-    |> Mutator.mutations(mutators)
+    |> Dispatch.mutations(mutators)
     |> Enum.filter(fn {_mutator, mutated, _note} -> literal_node?(mutated) end)
   end
 

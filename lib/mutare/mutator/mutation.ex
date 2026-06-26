@@ -14,7 +14,7 @@ defmodule Mutare.Mutator.Mutation do
   hosting mutator flagging "kill may require NULL/boundary data" on an equivalence-sensitive
   SQL comparison.
 
-  Used in two places, normalized by the one `Mutare.Mutator.normalize_mutant/1`:
+  Used in two places, normalized by the one `Mutare.Mutator.Dispatch.normalize_mutant/1`:
 
     * a `c:Mutare.Mutator.mutate/1`/`c:Mutare.Mutator.mutate/2` return-list element
       (alongside a bare node, or `nil` to drop that slot — see `t:Mutare.Mutator.mutation/0`),

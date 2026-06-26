@@ -18,7 +18,7 @@ defmodule Mutare.Transform.Analyze.Returns do
   # strictly one-way (Analyze → Returns).
 
   alias Mutare.AST
-  alias Mutare.Mutator
+  alias Mutare.Mutator.Dispatch
   alias Mutare.Transform.{Analyze, Candidate}
 
   # The control-flow forms whose branch bodies are return paths when the form is in
@@ -69,7 +69,7 @@ defmodule Mutare.Transform.Analyze.Returns do
   # return `default` unchanged when none is enabled — so the `[1, 2]` arity pair (the base +
   # behaviour-aware forms) lives in one place.
   defp with_return_mutators(mutators, default, fun) do
-    case Mutator.implementing_any(mutators, :return_replacements, [1, 2]) do
+    case Dispatch.implementing_any(mutators, :return_replacements, [1, 2]) do
       [] -> default
       return_mutators -> fun.(return_mutators)
     end
@@ -136,7 +136,7 @@ defmodule Mutare.Transform.Analyze.Returns do
     fn analyzed_tail, raw_tail ->
       replacements =
         Enum.flat_map(return_mutators, fn spec ->
-          Enum.map(Mutator.return_replacements(spec, raw_tail), &{spec, &1})
+          Enum.map(Dispatch.return_replacements(spec, raw_tail), &{spec, &1})
         end)
 
       case replacements do

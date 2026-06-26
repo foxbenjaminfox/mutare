@@ -3,7 +3,7 @@ defmodule Mutare.Test do
   Test helpers for projects that implement their own `Mutare.Mutator`.
 
   A custom-mutator project wants to assert three things: what a single mutator offers for a
-  parsed node (the pure-AST path, `Mutare.Mutator.mutations/3`), what the *whole* transform
+  parsed node (the pure-AST path, `Mutare.Mutator.Dispatch.mutations/3`), what the *whole* transform
   records for a source string (`Mutare.transform_string/2`, which adds alias/import
   resolution, pipe handling, and equivalent-sibling suppression), and — the *semantic* check —
   that a recorded mutant is **live**: that flipping its id actually changes what the compiled
@@ -95,7 +95,7 @@ defmodule Mutare.Test do
 
   @doc """
   The rendered mutations a single mutator (or list) offers for a parsed top-level node —
-  the pure-AST path (`Mutare.Mutator.mutations/3`), with no transform pre-pass, so only
+  the pure-AST path (`Mutare.Mutator.Dispatch.mutations/3`), with no transform pre-pass, so only
   *qualified* calls resolve and no structural siblings are added.
 
   `mutators` is a module or `Mutare.Mutator.Spec` (or a list of them) — *not* a family
@@ -125,7 +125,8 @@ defmodule Mutare.Test do
     node = Mutare.AST.parse!(snippet)
     context = %{pipe_mode: pipe_mode}
 
-    for {_spec, mutated, _note} <- Mutare.Mutator.mutations(node, List.wrap(mutators), context),
+    for {_spec, mutated, _note} <-
+          Mutare.Mutator.Dispatch.mutations(node, List.wrap(mutators), context),
         do: Mutare.AST.to_string(mutated)
   end
 

@@ -284,7 +284,7 @@ defmodule Mutare.AST do
   This recognises the **standard** literal shapes, for any mutator. A custom mutator with
   a *non-standard* empty collection (its own sigil, a `MapSet.new([])` builder) declares it
   through the optional `c:Mutare.Mutator.empty_collection?/1` callback instead — the two are
-  OR-ed at the drop site by `Mutare.Mutator.empty_collection?/2`.
+  OR-ed at the drop site by `Mutare.Mutator.Dispatch.empty_collection?/2`.
   """
   @spec empty_collection_literal?(Macro.t()) :: boolean()
   def empty_collection_literal?([]), do: true

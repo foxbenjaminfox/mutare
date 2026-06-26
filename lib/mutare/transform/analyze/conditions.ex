@@ -13,7 +13,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
   #   * if/unless     → `hoist_if?/2` + `hoist_if/6` (hoistable) or `finish_condition/3` (plain)
 
   alias Mutare.AST
-  alias Mutare.Mutator
+  alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
   alias Mutare.Transform.{Candidate, Names}
   alias Mutare.Transform.Analyze
@@ -457,9 +457,9 @@ defmodule Mutare.Transform.Analyze.Conditions do
   defp attach_if_condition(analyzed_condition, raw_condition, mutators) do
     candidates =
       mutators
-      |> Mutator.implementing_any(:condition_replacements, [1, 2])
+      |> Dispatch.implementing_any(:condition_replacements, [1, 2])
       |> Enum.flat_map(fn spec ->
-        Enum.map(Mutator.condition_replacements(spec, raw_condition), &{spec, &1})
+        Enum.map(Dispatch.condition_replacements(spec, raw_condition), &{spec, &1})
       end)
 
     case candidates do

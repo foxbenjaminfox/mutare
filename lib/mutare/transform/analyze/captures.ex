@@ -6,7 +6,7 @@ defmodule Mutare.Transform.Analyze.Captures do
   # renames (Collection/StringCall/Numeric/Math/Integer/MapKeyword/MapSet) and removals
   # (CallRemoval) — carry the same signal on it as on a written call. Rather than re-encode any
   # of their swap tables, the capture is **probed**: synthesize the equivalent N-ary call
-  # `Mod.fun(v1, …, vN)`, offer it through the ordinary `Mutator.mutations/3` path (the one
+  # `Mod.fun(v1, …, vN)`, offer it through the ordinary `Dispatch.mutations/3` path (the one
   # every call position uses), and re-capture each mutant back into capture form. So every
   # call-matching mutator — built-in *or* custom — participates with its existing
   # `mutate`/`mutate/2`, with no second list and no capture-specific callback.
@@ -42,7 +42,7 @@ defmodule Mutare.Transform.Analyze.Captures do
   # (`Resolve` stamps bare *calls*, and a capture ref is not one), so the synth bare call would
   # not resolve. Deferred — see NOTES "Capture mutation".
 
-  alias Mutare.{AST, Mutator}
+  alias Mutare.{AST, Mutator.Dispatch}
   alias Mutare.Transform.Analyze
 
   @proj_arg :mutare_capture_arg
@@ -105,7 +105,7 @@ defmodule Mutare.Transform.Analyze.Captures do
 
   defp capture_mutations(synth, args, arity, mutators) do
     synth
-    |> Mutator.mutations(mutators, %{pipe_mode: :unpiped})
+    |> Dispatch.mutations(mutators, %{pipe_mode: :unpiped})
     |> Enum.flat_map(fn {spec, mutated, note} ->
       case recapture(mutated, args, arity) do
         nil -> []

@@ -15,7 +15,7 @@ defmodule Mutare.Transform.Analyze do
   # `analyze_module_macro_block/2` that `Mutare.Transform.transform_statement/2` routes on.
 
   alias Mutare.AST
-  alias Mutare.Mutator
+  alias Mutare.Mutator.Dispatch
   alias Mutare.Transform.{Candidate, NodeRange, Suppression}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
@@ -432,7 +432,7 @@ defmodule Mutare.Transform.Analyze do
     analyzed = recurse(node, :runtime, mutators)
 
     candidates =
-      build_candidates(node, Mutator.mutations(node, mutators)) ++
+      build_candidates(node, Dispatch.mutations(node, mutators)) ++
         ClausePatterns.rescue_type_candidates(blocks, meta, mutators)
 
     put_candidates_if_any(analyzed, candidates)
@@ -650,7 +650,7 @@ defmodule Mutare.Transform.Analyze do
   defp drop_empty_collection_candidates(node), do: reject_candidates(node, &empty_collection?/1)
 
   defp empty_collection?(%Candidate.InPlace{mutator: spec, mutated: mutated}),
-    do: Mutator.empty_collection?(spec, mutated)
+    do: Dispatch.empty_collection?(spec, mutated)
 
   defp empty_collection?(_candidate), do: false
 
@@ -930,11 +930,11 @@ defmodule Mutare.Transform.Analyze do
   # `raw`, so the diff renders the author's node — to `subject`, the already-analyzed
   # node whose children carry their own selectors. `subject` *is* `raw` at most sites;
   # the `<<>>`/`if`/`not in` clauses pass an analyzed/rebuilt subject distinct from the
-  # raw node the candidate records. `context` carries the pipe flag (`Mutator.mutations`).
+  # raw node the candidate records. `context` carries the pipe flag (`Dispatch.mutations`).
   # Public as part of the sub-walk API: `Mutare.Transform.Analyze.Macros` offers a
   # known-macro node through here (`offer(node, node, mutators, context)`).
   def offer(subject, raw, mutators, context \\ %{pipe_mode: :unpiped}) do
-    case Mutator.mutations(raw, mutators, context) do
+    case Dispatch.mutations(raw, mutators, context) do
       [] -> subject
       muts -> put_candidates(subject, build_candidates(raw, muts))
     end

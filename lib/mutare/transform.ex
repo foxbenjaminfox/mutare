@@ -387,7 +387,7 @@ defmodule Mutare.Transform do
   end
 
   # Fold a `@behaviour` set onto each spec, so it carries the behaviours to every leaf
-  # where a mutator runs (`Mutator.mutations/3`, the structural callbacks) and a
+  # where a mutator runs (`Mutator.Dispatch.mutations/3`, the structural callbacks) and a
   # behaviour-aware mutator sees `context.behaviours` without any new threading. The base
   # `ctx.mutators` stays untouched (the empty-behaviours config); this enrichment is the
   # one place per-module context meets the spec list. Outside any module `behaviours` is

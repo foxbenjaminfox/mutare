@@ -16,7 +16,8 @@ defmodule Mutare.Transform.PatternStructure do
   either arity (`/2`, or the behaviour-aware `/3`).
   """
   @spec mutators([Mutare.Mutator.Spec.t()]) :: [Mutare.Mutator.Spec.t()]
-  def mutators(enabled), do: Mutare.Mutator.implementing_any(enabled, :pattern_mutations, [2, 3])
+  def mutators(enabled),
+    do: Mutare.Mutator.Dispatch.implementing_any(enabled, :pattern_mutations, [2, 3])
 
   @doc """
   The variable names read in `ast` (a node or a list of nodes) — the `used_outside` set a
@@ -77,7 +78,7 @@ defmodule Mutare.Transform.PatternStructure do
   def node_mutations(pattern, used_outside, structural_mutators) do
     Enum.flat_map(structural_mutators, fn mutator ->
       mutator
-      |> Mutare.Mutator.pattern_mutations([pattern], used_outside)
+      |> Mutare.Mutator.Dispatch.pattern_mutations([pattern], used_outside)
       |> Enum.flat_map(fn
         [mutated] -> [{mutator, mutated}]
         _other -> []

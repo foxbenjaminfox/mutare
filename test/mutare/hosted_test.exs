@@ -632,7 +632,7 @@ defmodule Mutare.HostedTest do
   end
 
   describe "host-target normalization fails loud on malformed targets" do
-    alias Mutare.Mutator
+    alias Mutare.Mutator.Dispatch
     alias Mutare.Mutator.Spec
 
     defp malformed_spec do
@@ -646,13 +646,13 @@ defmodule Mutare.HostedTest do
 
     test "a non-1-arity :wrap raises (not a raw FunctionClauseError)" do
       assert_raise ArgumentError, ~r/:wrap must be a 1-arity function/, fn ->
-        Mutator.host_targets(malformed_spec(), {:bad_wrap, [], []}, %{pipe_mode: :unpiped})
+        Dispatch.host_targets(malformed_spec(), {:bad_wrap, [], []}, %{pipe_mode: :unpiped})
       end
     end
 
     test "a non-string mutant :note raises (not a silently dropped note)" do
       assert_raise ArgumentError, ~r/:note must be a string or nil/, fn ->
-        Mutator.host_targets(malformed_spec(), {:bad_note, [], []}, %{pipe_mode: :unpiped})
+        Dispatch.host_targets(malformed_spec(), {:bad_note, [], []}, %{pipe_mode: :unpiped})
       end
     end
 
@@ -660,7 +660,7 @@ defmodule Mutare.HostedTest do
       assert_raise ArgumentError,
                    ~r/must be a %Mutare.Mutator.Mutation\{\}, not a bare map/,
                    fn ->
-                     Mutator.host_targets(malformed_spec(), {:bare_map, [], []}, %{
+                     Dispatch.host_targets(malformed_spec(), {:bare_map, [], []}, %{
                        pipe_mode: :unpiped
                      })
                    end

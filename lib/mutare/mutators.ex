@@ -85,7 +85,7 @@ defmodule Mutare.Mutators do
   ]
 
   # Registered families whose mutation logic lives in `Mutare.Transform`, not in a
-  # `Mutare.Mutator` *producing* callback — so `Mutare.Mutator.implemented_by?/1` is false for
+  # `Mutare.Mutator` *producing* callback — so `Mutare.Mutator.Dispatch.implemented_by?/1` is false for
   # them and resolution accepts them via this list rather than the producing-callback check.
   # `GuardDrop` because its "inert guard" rule is relative to the whole enabled set (only the
   # transform sees that); `RescueType` because its clause-restructuring doesn't fit a
@@ -122,7 +122,7 @@ defmodule Mutare.Mutators do
 
   They are registered for naming / toggling / `# mutare:ignore`, and are discovered by the
   transform by module identity — but they do **not** implement `Mutare.Mutator` (so
-  `Mutare.Mutator.implemented_by?/1` is false for them). Resolution accepts them on this basis.
+  `Mutare.Mutator.Dispatch.implemented_by?/1` is false for them). Resolution accepts them on this basis.
   """
   @spec transform_managed() :: [module()]
   def transform_managed, do: @transform_managed
@@ -230,7 +230,7 @@ defmodule Mutare.Mutators do
       name in @transform_managed ->
         name
 
-      Mutare.Mutator.implemented_by?(name) ->
+      Mutare.Mutator.Dispatch.implemented_by?(name) ->
         name
 
       true ->

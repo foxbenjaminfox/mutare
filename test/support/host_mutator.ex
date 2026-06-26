@@ -465,7 +465,7 @@ end
 defmodule Mutare.Test.MalformedHost do
   @moduledoc """
   A plain module with a `host/2` returning **malformed** targets, used to prove
-  `Mutare.Mutator.host_targets/3` normalization fails loud: a non-1-arity `:wrap`, a non-string
+  `Mutare.Mutator.Dispatch.host_targets/3` normalization fails loud: a non-1-arity `:wrap`, a non-string
   `%Mutare.Mutator.Mutation{}` `:note`, and a **bare `%{node:, note:}` map** mutant (the rejected
   pre-struct form) each raise an `ArgumentError` (rather than a raw `FunctionClauseError`, a
   silently dropped note, or a bare selector spliced into the DSL). Dispatched by the probe node's

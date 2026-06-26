@@ -1,7 +1,7 @@
 defmodule Mutare.BehavioursTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.Mutator
+  alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
   alias Mutare.Transform
   alias Mutare.Transform.{Behaviours, Uses}
@@ -283,14 +283,14 @@ defmodule Mutare.BehavioursTest do
       node = {:{}, [], [{:__block__, [], [:reply]}, {:r, [], nil}, {:s, [], nil}]}
 
       assert [{^spec, {:{}, _, [{:__block__, _, [:noreply]}, {:s, _, nil}]}, nil}] =
-               Mutator.mutations(node, [spec])
+               Dispatch.mutations(node, [spec])
     end
 
     test "with empty behaviours the same mutator does not fire" do
       spec = Spec.for_module(Mutare.Test.BehaviourMutator)
       node = {:{}, [], [{:__block__, [], [:reply]}, {:r, [], nil}, {:s, [], nil}]}
 
-      assert Mutator.mutations(node, [spec]) == []
+      assert Dispatch.mutations(node, [spec]) == []
     end
   end
 end

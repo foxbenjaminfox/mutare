@@ -14,7 +14,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   # a known macro's argument-0 treatment. It drives the descent back through the public sub-walk
   # API (`Analyze.annotate/2`, `Analyze.pattern/2`, `Analyze.offer/4`).
 
-  alias Mutare.Mutator
+  alias Mutare.Mutator.Dispatch
   alias Mutare.Transform.{Analyze, Candidate, NodeRange}
   alias Mutare.Transform.Analyze.CallOptions
 
@@ -42,7 +42,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   # The host is a **module**, but it may be enabled under *several* `Mutare.Mutator.Spec`s — a
   # configurable host mutator listed twice with distinct `:as` names / `opts` (e.g. `{Host, as:
   # :a}` and `{Host, as: :b}`). Each such spec is its own family (own name on its Sites, own
-  # `opts` reaching `host/2`), exactly as the ordinary path runs every spec in `Mutator.mutations/3`,
+  # `opts` reaching `host/2`), exactly as the ordinary path runs every spec in `Dispatch.mutations/3`,
   # so we host *each* matching spec — not just the first — or a duplicate-configured host mutator
   # would silently lose every config past the first.
   defp attach_hosted_candidates(routed, raw_node, routing, mutators, context) do
@@ -72,7 +72,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   # logical fragment's own range.
   defp host_candidates(spec, raw_node, context) do
     spec
-    |> Mutator.host_targets(raw_node, Map.take(context, [:pipe_mode]))
+    |> Dispatch.host_targets(raw_node, Map.take(context, [:pipe_mode]))
     |> Enum.map(fn target ->
       %Candidate.Hosted{
         mutator: spec,

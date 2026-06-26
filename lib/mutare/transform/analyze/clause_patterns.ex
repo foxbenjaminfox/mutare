@@ -17,7 +17,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   #   * try      → `rescue_type_candidates/3`
 
   alias Mutare.AST
-  alias Mutare.Mutator
+  alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
   alias Mutare.Transform.{Candidate, NodeRange, PatternStructure, Tag}
   alias Mutare.Transform.Analyze
@@ -263,7 +263,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     analyzed = Analyze.recurse(node, :runtime, mutators)
 
     candidates =
-      Analyze.build_candidates(node, Mutator.mutations(node, mutators)) ++
+      Analyze.build_candidates(node, Dispatch.mutations(node, mutators)) ++
         clause_list_candidates(clauses, rebuild_fn, mutators)
 
     Analyze.put_candidates_if_any(analyzed, candidates)

@@ -11,7 +11,7 @@ defmodule Mutare.NoteTest do
   """
   use ExUnit.Case, async: true
 
-  alias Mutare.Mutator
+  alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Mutation
 
   @source """
@@ -91,23 +91,23 @@ defmodule Mutare.NoteTest do
     end
 
     test "normalize_mutant pairs a struct / bare node with its note" do
-      assert Mutator.normalize_mutant(%Mutation{node: {:x, [], nil}, note: "n"}) ==
+      assert Dispatch.normalize_mutant(%Mutation{node: {:x, [], nil}, note: "n"}) ==
                {{:x, [], nil}, "n"}
 
-      assert Mutator.normalize_mutant({:x, [], nil}) == {{:x, [], nil}, nil}
+      assert Dispatch.normalize_mutant({:x, [], nil}) == {{:x, [], nil}, nil}
     end
 
     test "a bare %{node:, note:} map is rejected (the struct is required)" do
       assert_raise ArgumentError,
                    ~r/must be a %Mutare.Mutator.Mutation\{\}, not a bare map/,
                    fn ->
-                     Mutator.normalize_mutant(%{node: 1, note: "n"})
+                     Dispatch.normalize_mutant(%{node: 1, note: "n"})
                    end
     end
 
     test "a non-string struct note is rejected" do
       assert_raise ArgumentError, ~r/:note must be a string or nil/, fn ->
-        Mutator.normalize_mutant(%Mutation{node: 1, note: 42})
+        Dispatch.normalize_mutant(%Mutation{node: 1, note: 42})
       end
     end
 
@@ -115,14 +115,14 @@ defmodule Mutare.NoteTest do
       # No quoted AST node is a struct, so any struct other than %Mutation{} is a library bug —
       # fail loud rather than letting it through as `mutated` (which would crash Sourceror later).
       assert_raise ArgumentError, ~r/must be a %Mutare.Mutator.Mutation\{\}, got a/, fn ->
-        Mutator.normalize_mutant(1..2)
+        Dispatch.normalize_mutant(1..2)
       end
     end
 
     test "an empty-string note is coerced to nil (a blank note carries no signal)" do
       # So the report never renders a dangling "  — " suffix; the same coercion the header
       # already proves it produces no em-dash for a noteless mutant (see above).
-      assert Mutator.normalize_mutant(%Mutation{node: 1, note: ""}) == {1, nil}
+      assert Dispatch.normalize_mutant(%Mutation{node: 1, note: ""}) == {1, nil}
     end
   end
 end

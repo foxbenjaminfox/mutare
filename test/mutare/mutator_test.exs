@@ -32,6 +32,7 @@ defmodule Mutare.MutatorTest do
   alias Mutare.MutatorTest.{BadHost, WrapHost}
 
   doctest Mutare.Mutator
+  doctest Mutare.Mutator.Dispatch
   doctest Mutare.Mutator.Spec
 
   describe "implementing/3" do
