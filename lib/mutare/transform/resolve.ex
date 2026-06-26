@@ -32,11 +32,11 @@ defmodule Mutare.Transform.Resolve do
 
   alias Mutare.{Macros, Mutator}
   alias Mutare.Macro.Spec
-  alias Mutare.Transform.{Aliases, Imports, Uses}
+  alias Mutare.Transform.{Aliases, Imports, MetaKeys, Uses}
 
-  @macro_key :mutare_macro
-  @piped_macro_key :mutare_macro_piped
-  @nid_key :mutare_nid
+  @macro_key MetaKeys.macro_key()
+  @piped_macro_key MetaKeys.piped_macro_key()
+  @nid_key MetaKeys.nid_key()
 
   @doc "Stamp every remote call's module and every bare imported call with its resolved module."
   @spec annotate(Macro.t()) :: Macro.t()

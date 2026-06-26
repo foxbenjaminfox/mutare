@@ -63,11 +63,12 @@ defmodule Mutare.Transform.Uses do
   alias Mutare.AST
   alias Mutare.Plugin
   alias Mutare.Transform.Aliases
+  alias Mutare.Transform.MetaKeys
   alias Mutare.Transform.Uses.EnvMirror
   alias Mutare.Transform.Uses.Harvest
 
-  @directives_key :mutare_use_directives
-  @behaviours_key :mutare_use_behaviours
+  @directives_key MetaKeys.use_directives_key()
+  @behaviours_key MetaKeys.use_behaviours_key()
 
   # The module name of a nested `defmodule` we couldn't resolve to a concrete atom (a non-static
   # head, or a child of an already-unresolved parent). Expansion is *skipped* under it — see

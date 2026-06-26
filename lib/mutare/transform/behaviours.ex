@@ -36,9 +36,9 @@ defmodule Mutare.Transform.Behaviours do
   # *inherit* into nested modules (each module declares its own), which falls out of
   # stamping each `defmodule` from its own body only.
 
-  alias Mutare.Transform.{Aliases, Uses}
+  alias Mutare.Transform.{Aliases, MetaKeys, Uses}
 
-  @behaviours_key :mutare_behaviours
+  @behaviours_key MetaKeys.behaviours_key()
 
   @doc """
   Stamp each `defmodule`/`defprotocol` node's meta with `:mutare_behaviours` — the `MapSet`

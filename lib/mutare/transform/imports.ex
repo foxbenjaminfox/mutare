@@ -69,11 +69,11 @@ defmodule Mutare.Transform.Imports do
 
   alias Mutare.AST
   alias Mutare.Mutator
-  alias Mutare.Transform.Aliases
+  alias Mutare.Transform.{Aliases, MetaKeys}
 
-  @import_key :mutare_import
-  @import_witness_key :mutare_import_witness
-  @kernel_displaced_key :mutare_kernel_displaced
+  @import_key MetaKeys.import_key()
+  @import_witness_key MetaKeys.import_witness_key()
+  @kernel_displaced_key MetaKeys.kernel_displaced_key()
 
   @typedoc """
   A module's in-scope import selection: a `{base, except}` pair (the `kernel` slot uses the

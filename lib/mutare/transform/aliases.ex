@@ -69,8 +69,9 @@ defmodule Mutare.Transform.Aliases do
   #     `Mutare.Transform.Imports`.
 
   alias Mutare.AST
+  alias Mutare.Transform.MetaKeys
 
-  @meta_key :mutare_alias
+  @meta_key MetaKeys.alias_key()
 
   @typedoc """
   A resolved module reference: an Elixir-module **path** (`[:Enum]`, `[:String]`) or an

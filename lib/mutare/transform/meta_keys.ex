@@ -22,14 +22,21 @@ defmodule Mutare.Transform.MetaKeys do
   # `Mutare.Transform.Uses.Harvest`.
 
   # Candidate-delivery keys — each holds a list of `Mutare.Transform.Candidate` structs that an
-  # emit path consumes, then strips from the node before building it:
+  # emit path consumes, then strips from the node before building it. These are read by literal
+  # atom at their (few, central) emit sites, so they stay a plain list:
   #   * `:mutare`        — in-place / lifted candidates, the node-wrapping selector  (Analyze)
   #   * `:mutare_case`   — `case` tuple-the-scrutinee per-clause candidates           (Analyze.ClausePatterns)
   #   * `:mutare_hosted` — selector-host candidates for a DSL fragment (Ecto-style)   (Analyze, via Mutator host/2)
   @delivery [:mutare, :mutare_case, :mutare_hosted]
 
-  # Pre-pass / resolution bookkeeping stamps (owning module in parentheses):
-  #   * `:mutare_tag`              — replace-by-tag discovery marker                 (Tag)
+  # Pre-pass / resolution bookkeeping stamps, as `accessor_name: :meta_key` pairs. This list is
+  # the single source of truth: `all/0`'s strip set is derived from it, and the per-key accessor
+  # functions below are generated from it. Each stamping module references its key through the
+  # accessor (`@meta_key MetaKeys.alias_key()`), *not* a hand-written `:mutare_*` literal — so a
+  # renamed/removed/typo'd key is a **compile error at the stamp site** rather than a silent leak
+  # into the rendered metamutant (the drift this module exists to prevent). Owning module in
+  # parentheses:
+  #   * `:mutare_tag`              — replace-by-tag discovery marker                 (Tag, literal)
   #   * `:mutare_nid`              — stable per-node identity for overlap pruning    (Resolve, read by Overlap)
   #   * `:mutare_alias`            — module a remote call's aliased path resolves to (Aliases)
   #   * `:mutare_import`           — `{module, :bare | :qualify}` for a bare call    (Imports)
@@ -40,21 +47,29 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_use_directives`   — import/alias/require a `use` injects            (Uses)
   #   * `:mutare_use_behaviours`   — `@behaviour`s a `use` injects (on the `use`)    (Uses)
   #   * `:mutare_behaviours`       — a `defmodule`'s behaviour MapSet               (Behaviours)
-  @bookkeeping [
-    :mutare_tag,
-    :mutare_nid,
-    :mutare_alias,
-    :mutare_import,
-    :mutare_import_witness,
-    :mutare_kernel_displaced,
-    :mutare_macro,
-    :mutare_macro_piped,
-    :mutare_use_directives,
-    :mutare_use_behaviours,
-    :mutare_behaviours
+  @bookkeeping_keys [
+    tag_key: :mutare_tag,
+    nid_key: :mutare_nid,
+    alias_key: :mutare_alias,
+    import_key: :mutare_import,
+    import_witness_key: :mutare_import_witness,
+    kernel_displaced_key: :mutare_kernel_displaced,
+    macro_key: :mutare_macro,
+    piped_macro_key: :mutare_macro_piped,
+    use_directives_key: :mutare_use_directives,
+    use_behaviours_key: :mutare_use_behaviours,
+    behaviours_key: :mutare_behaviours
   ]
 
-  @all @delivery ++ @bookkeeping
+  @all @delivery ++ Keyword.values(@bookkeeping_keys)
+
+  # One zero-arity accessor per bookkeeping key, generated from the registry above. A stamp site
+  # binds its private constant to one of these at compile time, so the link can't drift.
+  for {name, key} <- @bookkeeping_keys do
+    @doc false
+    @spec unquote(name)() :: atom()
+    def unquote(name)(), do: unquote(key)
+  end
 
   @doc "The candidate-delivery meta keys — `Mutare.Transform` strips these during emit."
   @spec delivery() :: [atom()]
