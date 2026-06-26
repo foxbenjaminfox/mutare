@@ -15,7 +15,7 @@ defmodule Mutare.TransformPropertyGenerators do
 
   The construct set favours what the mutators and the transform's trickier paths target
   — operators, comparisons, conditionals (`if`/`case`/`cond`), single- and **multi-stage
-  pipes** (the latter driving `hoist_pipe`'s closure nesting down a chain of mutated stages),
+  pipes** (the latter driving `PipeEmit.hoist`'s closure nesting down a chain of mutated stages),
   `with`/`fn`/`try` binding scopes, multi-clause heads, literal head patterns (incl.
   negatives), default args (lifting + dispatcher forwarding), guards, multi-statement blocks
   with value-discarded `=` matches (the `MatchPattern` swap/wildcard routing), `if`-condition
@@ -300,7 +300,7 @@ defmodule Mutare.TransformPropertyGenerators do
   # A **multi-stage** `Enum` pipe chain `[<e>] |> Enum.reverse() |> Enum.sort() |> Enum.uniq()`
   # — 2–4 unary, list→list stages, each a call the call-matching families mutate (Collection /
   # CallRemoval / CollectionArity). Because several stages mutate at once, the metamutant nests
-  # `hoist_pipe`'s one-shot closures *down* the chain (`lhs |> (fn p -> case … end).() |> (fn p
+  # `PipeEmit.hoist`'s one-shot closures *down* the chain (`lhs |> (fn p -> case … end).() |> (fn p
   # -> case … end).()`) — the only generator that drives that nesting at depth, the rewrite that
   # keeps a chain of mutated stages **linear** in depth instead of the ≈`(mutants+1)^depth` blowup
   # of distributing `lhs` into every selector branch. Total: the leaf is wrapped in a one-element

@@ -74,7 +74,7 @@ defmodule Mutare.Transform do
   `x |> case … end` parses but fails to compile (`Kernel.|>/2` cannot pipe into a
   `case`), so when a mutated node is a **pipe stage**, emission lifts the selector
   out of the pipe into a one-shot closure invoked on the piped value
-  (`hoist_pipe/2`): `lhs |> (fn v -> case … (each branch pipes `v`) … end).()`. The
+  (`PipeEmit.hoist/2`): `lhs |> (fn v -> case … (each branch pipes `v`) … end).()`. The
   piped value is computed once (it stays the pipe's LHS) and bound to `v`, so each
   branch references a cheap variable — keeping a chain of mutated stages **linear**
   in the rendered source, where distributing `lhs` into every branch would copy the
@@ -161,6 +161,7 @@ defmodule Mutare.Transform do
     ModulePlan,
     Names,
     Overlap,
+    PipeEmit,
     Render,
     Resolve,
     SelectorEmit,
@@ -813,7 +814,7 @@ defmodule Mutare.Transform do
       # rewrite it here. `strip_candidates` clears any meta left by candidates the gate dropped
       # (a no-op when there were none), so the node renders clean.
       :none ->
-        {hoist_pipe(strip_candidates(current), ctx), ctx}
+        {PipeEmit.hoist(strip_candidates(current), ctx), ctx}
     end
   end
 
@@ -849,61 +850,6 @@ defmodule Mutare.Transform do
 
   defp call_option_keys_off?(_spec), do: false
 
-  # `x |> case … end` does not compile — `Kernel.|>/2` cannot pipe into a `case`.
-  # When emit wrapped a *pipe stage* (the call right of a `|>`) in a selector, the
-  # selector lands in exactly that illegal RHS position. Run on the parent `|>`
-  # during the same postwalk (the RHS is already emitted), this lifts the selector
-  # out of the pipe into a one-shot closure invoked on the piped value:
-  #
-  #     lhs |> (fn mutare_piped ->
-  #               case <subject> do
-  #                 <id> -> mutare_piped |> <mutant stage>
-  #                 _    -> <cov>; mutare_piped |> <original stage>
-  #               end
-  #             end).()
-  #
-  # The piped value is computed **once** (it stays the pipe's LHS, so the upstream
-  # chain appears once) and bound to the closure's param; each branch pipes that
-  # cheap variable instead of a copy of `lhs`. This keeps a chain of mutated stages
-  # **linear** in the rendered source — the earlier "distribute `lhs` into every
-  # branch" form copied the whole prefix per branch and grew ≈(mutants+1)^depth (a
-  # long pipe of stdlib calls could render to megabytes). `(fn … end).()` is itself
-  # a valid pipe LHS, so chained pipes still nest; the bare stage stays the Site's
-  # recorded node, so the diff is unaffected. The param name (`piped_var`) is salted
-  # per file so a stage argument mentioning the same identifier isn't captured.
-  defp hoist_pipe({:|>, meta, [lhs, rhs]} = node, ctx) do
-    # Recognise a block-wrapped selector `case` as the pipe's RHS (the shape
-    # `SelectorEmit.selector_case/3` produces, owned by `Render.selector_case/2`), then confirm its
-    # subject in *either* shape — the inline `:persistent_term` read (a head-default
-    # pipe stage) or the hoisted bare active-id variable (a body pipe stage). The
-    # closure body references that variable (the hoisted form) or the inline read,
-    # both valid inside the immediately-invoked closure.
-    with {:ok, subject, clauses} <- Render.selector_case_parts(rhs),
-         true <- Mutare.Metamutant.subject?(subject, ctx.active_var) do
-      var = {ctx.piped_var, [], nil}
-
-      piped =
-        Enum.map(clauses, fn {:->, m, [pat, body]} -> {:->, m, [pat, pipe_tail(var, body)]} end)
-
-      closure = {:fn, [], [{:->, [], [[var], Render.selector_case(subject, piped)]}]}
-      invocation = {{:., [], [closure]}, [], []}
-      {:|>, meta, [lhs, invocation]}
-    else
-      _ -> node
-    end
-  end
-
-  defp hoist_pipe(node, _ctx), do: node
-
-  # Pipe `lhs` into a selector clause body. A mutant clause body is a single
-  # expression (the mutated stage), piped whole; the catch-all body is a block
-  # whose head is the coverage record and whose tail is the original stage, so only
-  # the tail is piped (the record must stay a bare statement before it).
-  defp pipe_tail(lhs, {:__block__, bmeta, stmts}) when stmts != [],
-    do: {:__block__, bmeta, List.update_at(stmts, -1, &{:|>, [], [lhs, &1]})}
-
-  defp pipe_tail(lhs, body), do: {:|>, [], [lhs, body]}
-
   defp emit_site(node, candidates, ctx) do
     {clauses, ctx} =
       SelectorEmit.claim_items(candidates, ctx, &Delivery.site/3, fn id, candidate ->
@@ -916,11 +862,11 @@ defmodule Mutare.Transform do
          ]}
       end)
 
-    # `hoist_pipe`: when this node is itself a `|>` (e.g. its tail carries a
+    # `PipeEmit.hoist/2`: when this node is itself a `|>` (e.g. its tail carries a
     # ReturnValue candidate) whose RHS is an already-emitted selector, the selector
     # would sit illegally as a pipe target inside this default/catch-all — hoist the
     # pipe into it. A no-op for every other node shape.
-    default = hoist_pipe(strip_candidates(node), ctx)
+    default = PipeEmit.hoist(strip_candidates(node), ctx)
 
     # All mutations here skipped → no selector; emit the node unchanged.
     case clauses do

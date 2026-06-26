@@ -177,7 +177,7 @@ defmodule Mutare.Mutators.Helpers do
     * **piped** → `Elixir.Function.identity()`, so `x |> Enum.sort()` becomes
       `x |> Elixir.Function.identity()` ≡ `x`. A pipe stage can't be made to disappear
       inside a selector, and `Function.identity/1` is the minimal, compile-safe no-op
-      that rides the existing `hoist_pipe` path unchanged. It is emitted through the
+      that rides the existing `PipeEmit.hoist` path unchanged. It is emitted through the
       **absolute** `Elixir.Function` alias (led by `:Elixir`, which alias resolution
       never rewrites) so a target-module `alias Foo, as: Function` can't redirect the
       generated no-op.

@@ -49,7 +49,7 @@ defmodule Mutare.Transform.Ctx do
     # rewritten to `<super_var>.(...)` can't capture a user's variable of that name.
     super_var: :mutare_super,
     # The closure parameter a hoisted pipe stage binds the piped value to
-    # (`Mutare.Transform.hoist_pipe/2`). `:mutare_piped` canonically; `Mutare.Transform`
+    # (`Mutare.Transform.PipeEmit.hoist/2`). `:mutare_piped` canonically; `Mutare.Transform`
     # salts it per file like `active_var` so a stage argument that mentions a same-named
     # source variable isn't captured by the closure param.
     piped_var: :mutare_piped,

@@ -36,7 +36,7 @@ defmodule Mutare.Transform.Names do
   # The canonical piped-value closure variable. When a mutated *pipe stage* is
   # hoisted out of its illegal `x |> case … end` position, the piped value is bound
   # to a one-shot closure's parameter and the branches reference *it* rather than
-  # copying the whole upstream chain (see `Mutare.Transform.hoist_pipe/2`). It is
+  # copying the whole upstream chain (see `Mutare.Transform.PipeEmit.hoist/2`). It is
   # read inside the branches, so — like the dispatch/super variables — it is salted
   # rather than underscore-prefixed, and must not collide with a source variable the
   # stage's arguments mention (else the closure param would capture it).

@@ -138,7 +138,7 @@ defmodule Mutare.IntegrationTest do
   end
 
   # A mutated pipe stage is delivered by lifting the selector into a one-shot
-  # closure on the piped value (`hoist_pipe/2`), so behavior must still switch by
+  # closure on the piped value (`PipeEmit.hoist/2`), so behavior must still switch by
   # flipping the selector — the whole point of the rewrite — with the chain compiled
   # exactly once like everything else here.
   test "a mutated pipe stage switches by selector, the sibling stage staying baseline",

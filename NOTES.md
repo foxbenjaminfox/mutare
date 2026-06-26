@@ -345,7 +345,7 @@ dispatch), and suppressing the mutant-induced compile warnings (`Mutare.Poison`
 scans that output to map errors → ids). The remaining compile long-pole is a single
 huge metamutant *module* compiling serially (Elixir parallelises across modules, not
 within one) — not easily splittable; the volume drivers are already tamed by
-per-clause lifting, `hoist_pipe` (see "lifting blowup"), and the hoisted per-site
+per-clause lifting, `PipeEmit.hoist` (see "lifting blowup"), and the hoisted per-site
 active-id read (see "Hoist the per-site active-id read", now done).
 
 ### Seed the mutated app's `_build` too, so a narrowed run compiles incrementally `[done]`
@@ -531,7 +531,7 @@ or a tupled-`case` clause's `{<var>, <pat>}` pattern — and threads it through 
 subject recognisers and the lifted/tupled gate matchers (`mutant_id/2`/`gate_id/2`/
 `pattern_mutant/2`). So a poison inside a hoisted in-place selector maps back to its mutant
 id; a user `case` is safe because the dispatch name is salted away from every identifier
-the source uses, so it can never equal a user scrutinee's name. `hoist_pipe` recognises
+the source uses, so it can never equal a user scrutinee's name. `PipeEmit.hoist` recognises
 both subject shapes directly (it has `ctx.active_var`), so a hoisted pipe-stage selector is
 still lifted out of its illegal `x |> case` position. (This shares one recovered name with
 the salt fix `active_var/1` was introduced for — the `<var> === <id>` gate match — rather
@@ -3842,7 +3842,7 @@ Four non-obvious things settled here:
   `pipe_mode: :piped`; everywhere else defaults to `:unpiped`). The mutator computes the
   effective arity via `Mutator.effective_arity(args, pipe_mode)` — the context carries the
   `:piped`/`:unpiped` atom directly (`length(args)`, plus one when `:piped`) — and emits a normal
-  `Candidate.InPlace` — so the existing selector + `hoist_pipe` machinery delivers
+  `Candidate.InPlace` — so the existing selector + `PipeEmit.hoist` machinery delivers
   it unchanged, and the diff stays honest (`xs |> Enum.sort(:desc)` → `xs |>
   Enum.reverse()`, no shim). With effective arity in hand it even *correctly skips*
   `Enum.reverse/2` in a pipe (the case the naive version botched). The earlier
@@ -5116,14 +5116,14 @@ the genuinely-unknown (e.g. custom mutators), not a routine outcome on real code
   yields `x |> case … end`, which *parses* but fails `Kernel.|>/2` expansion
   ("misplaced operator `->`") — so `Code.string_to_quoted` was not enough to catch
   it (the regression tests `Code.compile_string`). Fixed by hoisting the pipe into
-  the selector (`hoist_pipe/1`): each branch becomes `lhs |> <branch>`, leaving a
+  the selector (`PipeEmit.hoist/2`): each branch becomes `lhs |> <branch>`, leaving a
   standalone `case` that is itself a valid pipe LHS, so chained pipes nest. Two
   spots needed it: the parent `|>` in the emit postwalk (a plain pipe stage), and
   `emit_site`'s catch-all default (a tail pipe that *also* carries a ReturnValue
   candidate, so the `|>` node goes through `emit_site` rather than the postwalk's
   pipe branch). The bare stage stays the Site's recorded node, so diffs are clean.
 
-  - **Follow-up — that first form was exponential (`hoist_pipe/1` → `/2`).**
+  - **Follow-up — that first form was exponential (`PipeEmit.hoist/1` → `/2`).**
     "Each branch becomes `lhs |> <branch>`" copies the *entire* `lhs` — which, for a
     chained pipe, is the already-emitted selector for every upstream stage — into
     each of a stage's `(mutants + 1)` branches. So a chain of N mutated stages

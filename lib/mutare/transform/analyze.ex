@@ -692,7 +692,7 @@ defmodule Mutare.Transform.Analyze do
   # visible args + 1), then descend its arguments as ordinary runtime. Mirrors the
   # generic runtime clause (a pipe stage is never a sigil). The resulting candidate
   # is a normal `Candidate.InPlace`, so emission wraps it in a selector and
-  # `hoist_pipe/2` lifts the selector out of the illegal pipe-RHS position into a
+  # `PipeEmit.hoist/2` lifts the selector out of the illegal pipe-RHS position into a
   # one-shot closure on the piped value — `lhs |> (fn v -> case … (each branch pipes
   # `v`) … end).()`. A non-call RHS (rare) is analyzed normally.
   #
