@@ -69,6 +69,7 @@ defmodule Mutare.Config do
     :min_score,
     :sandbox,
     :keep_sandbox,
+    :seed_app_build,
     :strict_ignores,
     :quiet,
     :baseline_runs,

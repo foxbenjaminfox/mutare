@@ -348,6 +348,74 @@ within one) — not easily splittable; the volume drivers are already tamed by
 per-clause lifting, `hoist_pipe` (see "lifting blowup"), and the hoisted per-site
 active-id read (see "Hoist the per-site active-id read", now done).
 
+### Seed the mutated app's `_build` too, so a narrowed run compiles incrementally `[done]`
+The dep seed above leaves the cold-compile-the-whole-app cost in place. That's the
+**first-run experience** when someone aims Mutare at a single module (`--only`/`--line`/`--since`,
+or a `.mutare.exs` `paths:` narrowing) on a large legacy app: only that file becomes a
+metamutant — every other source is copied **byte-for-byte** from a project they already
+compiled — yet the one `mix compile` rebuilds the *entire* app from scratch. The thing they
+did to be cautious is the thing that's slow.
+
+Why the dep seed deliberately never extended to the app, and why it can now: mix decides
+**app-source** staleness from its compile manifest (`_build/<env>/lib/<app>/.mix/compile.elixir`),
+which records per-source paths *relative* to the project (already portable) **plus an
+absolute project-root reference**. Transplanted to the sandbox (a different dir) that bare
+root no longer matches, so mix decides the build isn't its own and recompiles the lot — the
+asymmetry with deps, which mix gates as a *unit* on the lock and never re-runs per-source.
+The bigger reason to be wary is the inverse: seed an app's *original* beam and it can
+**silently win** over the freshly-written metamutant, turning mutation testing into a no-op
+that reports everything killed. (Verified both: a `cp -rp`'d build recompiled cold until the
+manifest's root was rewritten; and a relocated-manifest seed *without* deleting the
+metamutant's beam served the stale original beam — the injected code never compiled in.)
+
+**Fix (`Sandbox.seed_app_build/4`, scoped runs only):** after the copy, seed the mutated
+app's own `_build/<env>/lib/<app>`, then make both contracts hold:
+
+  - **Relocate the manifest** (`relocate_manifests/3` → `rewrite_paths/3`): rewrite the
+    recorded project root to the sandbox — the bare root *and* any root-prefixed absolute
+    path, but only as a whole token or `/`-delimited prefix (so a sibling `path:` dep sharing
+    a name prefix, `/p/app` vs `/p/app2`, is untouched). The walk depends only on the
+    **public** term format (`binary_to_term`) and "paths are binaries", never on the
+    manifest's private field layout (version tag 29 today), so a manifest-version bump can at
+    worst cause a spurious recompile, never a wrong result. `File.write!` also restamps the
+    manifest to "now" (≥ the just-copied sources), which is what makes the unchanged files
+    non-stale and thus reused.
+  - **Delete the metamutant's beam** (`delete_metamutant_beams/2`): the *structural* no-op
+    guard. The relocate restamps the manifest to "now", so by mtime alone mix would think the
+    metamutant fresh and serve the stale beam — but a module with **no beam** *must* recompile,
+    from the only source available (the metamutant). The beam is identified by its recorded
+    `compile_info[:source]` read via **`:beam_lib`** (public, stable) — authoritative about
+    what mix actually compiled, unlike guessing module names (nested modules / `defimpl`s /
+    dynamic names would miss one and reopen the no-op).
+
+**Fail-safe by construction** (the property that made this worth doing): the seed is kept
+**only if every** metamutant's beam was positively found and deleted (`MapSet.subset?`); any
+shortfall — a beam whose source we couldn't match, or *any* exception — tears the seed back
+down (`teardown/1`) and the run proceeds exactly as before, a cold compile. So a bug here can
+only ever lose the speed-up, never produce a wrong score.
+
+**Gated on the outcome, not the flag** (`worth_seeding?/2`): seed when the metamutant files
+are a small enough fraction of the app's compiled modules (default ≤ ½, `@seed_app_build_max_fraction`),
+read from `metamutants` vs a cheap **beam-name listing** (a directory read, not a `:beam_lib`
+parse). This deliberately replaced an earlier per-flag `scoped?` (`--line`/`--since` only):
+that proxy *missed* `--only` and a `.mutare.exs` `paths:` narrowing — both scope the run via
+`:paths` (no `:only_*` field to check) — and couldn't see a full run that's *effectively*
+scoped because most files have no mutation sites. `metamutants` already reflects **every**
+narrowing, so reading it can't forget a mechanism; and the ratio also *declines* a nominally
+"scoped" run that still touches most of the app, where the copy + scan would outweigh the
+saving. Idempotent like the dep seed (only fills an app the sandbox lacks), so a
+`keep_sandbox` re-run's preserved `_build` is untouched. Beams are **not** rewritten (their
+embedded source paths don't gate staleness; leaving them means a failing test's stacktrace
+points at the user's real source, a freebie). End-to-end on a 3-module scratch app, `--only`
+(or `--line`) at one module: the sandbox `mix compile` recompiles only the metamutant file +
+the generated coverage helper, reusing the rest — 1 file instead of N. Mutations that change a
+module's *compile-time* surface (macros, module attributes other modules read) still cascade
+to compile-time dependents; correct, and usually tiny since metamutants preserve the public
+function signatures. `--no-seed-app-build` (`:seed_app_build` false) opts out wholesale —
+forcing a cold compile — as a diagnostic A/B for the no-op surface or for a paranoid CI.
+Possible follow-ups: per-app (not global) teardown on a partial miss; and surfacing
+"reused N / recompiled M" so the speed-up — and a silent fallback — are visible.
+
 ### Compiler options for the one metamutant compile `[done]`
 The metamutant compile is a single `mix compile`, dominated by `beam_ssa_opt` on
 the biggest generated module (the long-pole above). Profiling that pass on Mutare's

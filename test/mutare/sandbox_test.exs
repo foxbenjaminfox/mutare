@@ -373,6 +373,168 @@ defmodule Mutare.SandboxTest do
     end
   end
 
+  describe "app build seeding" do
+    test "seeds the build and deletes only the metamutant's beam", context do
+      project = context.project
+      # The mutated app: a real beam for the metamutant file and one for an untouched file.
+      put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")
+      put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
+      # The manifest carries a *bare* absolute project root (the real staleness gate) plus
+      # an absolute sub-path, mirroring how mix records them.
+      put_app_manifest(project, "myapp", [Path.expand(project), abs(project, "lib/bar.ex")])
+
+      schema = %Schema{metamutants: %{"lib/foo.ex" => "defmodule Foo do\n  def x, do: 2\nend\n"}}
+      sandbox = Path.join(context.base, "sandbox")
+
+      # No scoping flag: the gate is outcome-based (1 of 2 modules mutated → worth it).
+      Sandbox.prepare(project, schema, sandbox: sandbox)
+
+      app_build = Path.join(sandbox, "_build/test/lib/myapp")
+      # The app build is seeded, the metamutant's beam removed (so mix must recompile it
+      # from the metamutant), the untouched file's beam kept (reused, not recompiled).
+      assert File.dir?(app_build)
+      assert beams(app_build) |> Enum.any?(&(&1 =~ "Bar"))
+      refute beams(app_build) |> Enum.any?(&(&1 =~ "Foo"))
+
+      # The manifest is relocated: both the bare root and root-prefixed paths now name the
+      # sandbox, not the original project — without which mix would recompile everything.
+      term =
+        Path.join(app_build, ".mix/compile.elixir") |> File.read!() |> :erlang.binary_to_term()
+
+      assert inspect(term) =~ Path.expand(sandbox)
+      refute inspect(term) =~ Path.expand(project)
+    end
+
+    test "seeds a `--only`/`paths:`-narrowed run (not just `--line`/`--since`)", context do
+      project = context.project
+      # `--only` narrows discovery via `:paths` (no `:only_files`/`:only_lines` set), so a
+      # flag-based gate would miss it — the outcome-based gate sees 1 of 3 modules mutated.
+      put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")
+      put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
+      put_app_beam(project, "myapp", "lib/baz.ex", "Baz#{uniq()}")
+      put_app_manifest(project, "myapp", [Path.expand(project)])
+
+      schema = %Schema{metamutants: %{"lib/foo.ex" => "defmodule Foo do\n  def x, do: 2\nend\n"}}
+      sandbox = Path.join(context.base, "sandbox")
+
+      Sandbox.prepare(project, schema, sandbox: sandbox, paths: ["lib/foo.ex"])
+
+      app_build = Path.join(sandbox, "_build/test/lib/myapp")
+      assert File.dir?(app_build)
+      refute beams(app_build) |> Enum.any?(&(&1 =~ "Foo"))
+      assert beams(app_build) |> Enum.any?(&(&1 =~ "Bar"))
+      assert beams(app_build) |> Enum.any?(&(&1 =~ "Baz"))
+    end
+
+    test "does not seed when --no-seed-app-build (seed_app_build: false)", context do
+      project = context.project
+      # Same setup as the happy path (the gate would otherwise seed), but opted out.
+      put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")
+      put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
+      put_app_manifest(project, "myapp", [Path.expand(project)])
+
+      schema = %Schema{metamutants: %{"lib/foo.ex" => "defmodule Foo do\n  def x, do: 2\nend\n"}}
+      sandbox = Path.join(context.base, "sandbox")
+
+      Sandbox.prepare(project, schema, sandbox: sandbox, seed_app_build: false)
+
+      refute File.exists?(Path.join(sandbox, "_build/test/lib/myapp"))
+    end
+
+    test "skips seeding when most of the app would be recompiled anyway", context do
+      project = context.project
+      # Both modules mutated (2 of 2): seeding then deleting both beams is a cold compile
+      # plus the copy + scan overhead, so the gate declines and leaves the build unseeded.
+      put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")
+      put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
+      put_app_manifest(project, "myapp", [Path.expand(project)])
+
+      schema = %Schema{
+        metamutants: %{
+          "lib/foo.ex" => "defmodule Foo do\n  def x, do: 2\nend\n",
+          "lib/bar.ex" => "defmodule Bar do\n  def x, do: 2\nend\n"
+        }
+      }
+
+      sandbox = Path.join(context.base, "sandbox")
+      Sandbox.prepare(project, schema, sandbox: sandbox)
+
+      refute File.exists?(Path.join(sandbox, "_build/test/lib/myapp"))
+    end
+
+    test "tears the seed down when a metamutant's beam can't be found (fail-safe)", context do
+      project = context.project
+      # Enough untouched modules to clear the worth-it gate, but *no* beam for the
+      # metamutant file: we cannot guarantee it would recompile, so the whole seed must be
+      # abandoned (a cold compile) rather than risk serving a stale original beam.
+      put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
+      put_app_beam(project, "myapp", "lib/baz.ex", "Baz#{uniq()}")
+      put_app_beam(project, "myapp", "lib/qux.ex", "Qux#{uniq()}")
+      put_app_manifest(project, "myapp", [Path.expand(project)])
+
+      schema = %Schema{metamutants: %{"lib/foo.ex" => "defmodule Foo do\n  def x, do: 2\nend\n"}}
+      sandbox = Path.join(context.base, "sandbox")
+
+      Sandbox.prepare(project, schema, sandbox: sandbox)
+
+      refute File.exists?(Path.join(sandbox, "_build/test/lib/myapp"))
+    end
+
+    test "keep_sandbox: does not clobber an app build already in the sandbox", context do
+      project = context.project
+      put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")
+      put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
+      put_app_manifest(project, "myapp", [Path.expand(project)])
+
+      schema = %Schema{metamutants: %{"lib/foo.ex" => "defmodule Foo do\n  def x, do: 2\nend\n"}}
+      sandbox = Path.join(context.base, "sandbox")
+      opts = [sandbox: sandbox, keep_sandbox: true]
+
+      # First kept run seeds the app build (deleting the metamutant beam).
+      Sandbox.prepare(project, schema, opts)
+      app_build = Path.join(sandbox, "_build/test/lib/myapp")
+      assert File.dir?(app_build)
+
+      # Mark the preserved build (as the in-sandbox compile would have) and re-run: an
+      # already-present app build is left untouched, like the dep seed.
+      witness = Path.join(app_build, "ebin/recompiled.txt")
+      File.write!(witness, "kept")
+      Sandbox.prepare(project, schema, opts)
+      assert File.read!(witness) == "kept"
+    end
+  end
+
+  defp uniq, do: System.unique_integer([:positive])
+
+  defp abs(project, rel), do: Path.join(Path.expand(project), rel)
+
+  defp beams(app_build),
+    do: Path.wildcard(Path.join(app_build, "ebin/*.beam")) |> Enum.map(&Path.basename/1)
+
+  # Lay down a *real* compiled beam for `module` (so `:beam_lib` can read its embedded
+  # source path) under the app's `_build/test/lib/<app>/ebin`, sourced from `rel`.
+  defp put_app_beam(project, app, rel, module) do
+    source = Path.join(project, rel)
+    File.mkdir_p!(Path.dirname(source))
+    File.write!(source, "defmodule #{module} do\n  def x, do: 1\nend\n")
+
+    [{mod, bin}] = Code.compile_file(source)
+    :code.purge(mod)
+    :code.delete(mod)
+
+    ebin = Path.join([project, "_build/test/lib", app, "ebin"])
+    File.mkdir_p!(ebin)
+    File.write!(Path.join(ebin, "Elixir.#{module}.beam"), bin)
+  end
+
+  # A stand-in compile manifest carrying absolute source `paths` (the only thing the
+  # relocation rewrites); a plain term, since the rewrite is structure-agnostic.
+  defp put_app_manifest(project, app, paths) do
+    mix_dir = Path.join([project, "_build/test/lib", app, ".mix"])
+    File.mkdir_p!(mix_dir)
+    File.write!(Path.join(mix_dir, "compile.elixir"), :erlang.term_to_binary({:manifest, paths}))
+  end
+
   # Lay down a fake dependency: a `deps/<name>` source dir and its compiled
   # artifact under the project's `_build/test/lib/<name>`, the way mix would.
   defp seed_dep(project, name) do

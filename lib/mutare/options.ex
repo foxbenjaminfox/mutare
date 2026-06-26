@@ -40,6 +40,7 @@ defmodule Mutare.Options do
           max_harness_error_rate: number() | nil,
           sandbox: String.t() | nil,
           keep_sandbox: boolean(),
+          seed_app_build: boolean(),
           strict_ignores: boolean(),
           quiet: boolean(),
           max_mutants: pos_integer() | nil,
@@ -76,6 +77,7 @@ defmodule Mutare.Options do
     max_harness_error_rate: 0.5,
     sandbox: nil,
     keep_sandbox: false,
+    seed_app_build: true,
     strict_ignores: false,
     quiet: false,
     max_mutants: nil,
@@ -170,6 +172,7 @@ defmodule Mutare.Options do
       max_harness_error_rate: validate_harness_error_rate!(opt(opts, :max_harness_error_rate)),
       sandbox: validate_sandbox!(opt(opts, :sandbox)),
       keep_sandbox: validate_keep_sandbox!(opt(opts, :keep_sandbox)),
+      seed_app_build: validate_seed_app_build!(opt(opts, :seed_app_build)),
       strict_ignores: validate_strict_ignores!(opt(opts, :strict_ignores)),
       quiet: validate_quiet!(opt(opts, :quiet)),
       max_mutants: validate_max_mutants!(opt(opts, :max_mutants)),
@@ -387,6 +390,12 @@ defmodule Mutare.Options do
       )
 
   defp validate_keep_sandbox!(value), do: validate_boolean!(:keep_sandbox, value)
+
+  # When true (the default; `--no-seed-app-build` turns it off), a narrowed run seeds the
+  # mutated app's own compiled `_build` so the one `mix compile` recompiles just the
+  # metamutant file(s) — see `Mutare.Sandbox.seed_app_build/3`. The escape hatch exists to
+  # rule the optimisation out when diagnosing a surprising score, or to force a cold compile.
+  defp validate_seed_app_build!(value), do: validate_boolean!(:seed_app_build, value)
 
   # When true (`--strict-ignores`), a `# mutare:ignore` directive that suppresses
   # no mutant fails the run instead of only warning (see

@@ -101,6 +101,23 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":seed_app_build" do
+    test "defaults to true" do
+      assert Options.new([]).seed_app_build == true
+    end
+
+    test "accepts true and false" do
+      assert Options.new(seed_app_build: true).seed_app_build == true
+      assert Options.new(seed_app_build: false).seed_app_build == false
+    end
+
+    test "rejects a non-boolean" do
+      assert_raise ArgumentError, ~r/:seed_app_build must be true or false/, fn ->
+        Options.new(seed_app_build: "no")
+      end
+    end
+  end
+
   describe ":strict_ignores" do
     test "defaults to false" do
       assert Options.new([]).strict_ignores == false

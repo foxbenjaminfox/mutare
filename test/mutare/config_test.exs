@@ -116,6 +116,14 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([keep_sandbox: true], [])[:keep_sandbox] == true
     end
 
+    test "--no-seed-app-build passes through as false; otherwise left to default" do
+      # OptionParser turns `--no-seed-app-build` into `seed_app_build: false`.
+      assert Config.merge([], seed_app_build: false)[:seed_app_build] == false
+      refute Keyword.has_key?(Config.merge([], []), :seed_app_build)
+      # `.mutare.exs` config still flows through
+      assert Config.merge([seed_app_build: false], [])[:seed_app_build] == false
+    end
+
     test "--strict-ignores passes through; otherwise it's left to default" do
       assert Config.merge([], strict_ignores: true)[:strict_ignores] == true
       refute Keyword.has_key?(Config.merge([], []), :strict_ignores)

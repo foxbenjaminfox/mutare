@@ -542,6 +542,29 @@ contract between them is the whole game.
   *never* the mutated app, whose own beam must recompile from the metamutant, not silently win),
   idempotently (skips deps already present, so a kept `_build` is untouched) and best-effort (a
   dev-only or never-test-compiled dep is simply absent). See `NOTES.md` "Seed the deps' `_build`".
+  When a run rewrites only some files it *also* seeds the **mutated app's own** `_build`
+  (`seed_app_build/3`), so the one compile rebuilds only the metamutant file(s) — not the whole
+  (possibly huge) app — the first-run experience when someone aims Mutare at a single module. The
+  app build can't be seeded as-is for two reasons: mix gates app-source staleness on a manifest
+  that embeds the **absolute project root** (transplanted, every source looks stale → cold compile),
+  and seeding an app's *original* beam could silently win over the metamutant (a no-op that scores
+  everything killed). So it (1) **relocates the manifest** — rewrites the recorded root (the bare
+  root *and* root-prefixed paths) to the sandbox via a structure-agnostic walk over the public
+  `binary_to_term` form (never the manifest's private layout), `File.write!` restamping it "now" so
+  unchanged copies aren't stale — and (2) **deletes each metamutant's beam** (identified by
+  `:beam_lib`'s recorded `compile_info[:source]`), the structural no-op guard: a beamless module
+  *must* recompile from the only source present, the metamutant. **Fail-safe by construction:** the
+  seed is kept only if *every* metamutant's beam was found and deleted (else `teardown/1` reverts to
+  today's cold compile), so a bug here loses the speed-up, never the score. **Gated on the outcome,
+  not the flag** (`worth_seeding?/2`): seed when the metamutant files are a small fraction
+  (≤ `@seed_app_build_max_fraction`) of the app's compiled modules, read from `metamutants` vs a
+  cheap beam-name listing — so `--only`/`--line`/`--since`/a `paths:` narrowing (and a sparse-site
+  full run) are all covered with no scoping mechanism to forget, and a run touching most of the app
+  is declined (copy + scan would outweigh the saving). Idempotent like the dep seed, beams left
+  un-rewritten (real stacktraces, no staleness impact). **`--no-seed-app-build`**
+  (`:seed_app_build` false, default true) opts out wholesale — forcing a cold compile — as a
+  diagnostic A/B for the no-op surface or for a paranoid CI. See `NOTES.md` "Seed the
+  mutated app's `_build`".
 - **`Mutare.Sandbox.Command`** — command execution against a materialized sandbox: `mix/4` and
   `timed_mix/4` spawn a fresh `mix` OS process with `MIX_ENV=test`/`MUTANT_UNDER_TEST` set. Owns the
   *run side* of the **exit-code contract** and decodes it into a typed

@@ -132,6 +132,9 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --no-expand-uses         # don't expand `use` to discover the
                                           #   import/alias/@behaviour it injects
                                           #   (on by default; matters for Phoenix/Ecto)
+      mix mutare --no-seed-app-build      # force a cold compile instead of reusing the
+                                          #   app's built beams on a narrowed run
+                                          #   (on by default)
 
   ## Continuous integration
 
@@ -292,6 +295,10 @@ defmodule Mix.Tasks.Mutare do
         # --- sandbox reuse / build cache (see "Sandbox and build cache" above) ---
         sandbox: nil,
         keep_sandbox: false,
+        # on a narrowed run (--only/--line/--since), reuse the app's already-built
+        # beams so the one compile rebuilds just the mutated file(s) — not the whole
+        # app. On by default; --no-seed-app-build forces a cold compile
+        seed_app_build: true,
 
         # --- output & CI gates ---
         # exit the run with code 1 if the mutation score drops below this percentage
@@ -319,6 +326,7 @@ defmodule Mix.Tasks.Mutare do
     min_score: :float,
     sandbox: :string,
     keep_sandbox: :boolean,
+    seed_app_build: :boolean,
     strict_ignores: :boolean,
     quiet: :boolean,
     full: :boolean,
