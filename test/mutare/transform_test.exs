@@ -719,6 +719,36 @@ defmodule Mutare.TransformTest do
       assert Enum.any?(sites, &(&1.mutator == :if_condition))
       assert_compiles(meta)
     end
+
+    test "an if condition with a closure is a plain decision (the fn's binding is isolated)" do
+      # A closure in an `if`/`unless` condition is common real code. Unlike the `cond`
+      # above, an `if` condition runs the hoist analysis (`escaping_binding?`), which
+      # must treat the `fn`'s internals as isolated — its `y` never escapes to the body
+      # — so the condition stays a plain boolean decision (neither hoisted nor pruned)
+      # and the metamutant compiles. (The `cond` path never reaches this clause; without
+      # this case the if-hoist path's binding-isolating-form handling is untested.)
+      source = """
+      defmodule IfClosure do
+        def f(xs) do
+          if Enum.any?(xs, fn x -> (y = abs(x)) > 0 end) do
+            :hit
+          else
+            :miss
+          end
+        end
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+
+      # The whole condition gets the IfCondition true/false pair — not hoisted, not pruned.
+      assert Enum.map(sites, &{&1.mutator, &1.mutated_code}) ==
+               [{:if_condition, "true"}, {:if_condition, "false"}]
+
+      assert hd(sites).original_code == "Enum.any?(xs, fn x -> (y = abs(x)) > 0 end)"
+      assert_compiles(meta)
+    end
   end
 
   describe "if/unless condition hoisting (binding lifted so the decision can be delivered)" do
