@@ -246,6 +246,46 @@ defmodule Mutare.TestTest do
       assert site_id(sites, {"11 + 1", "11 - 1"}) == 7
     end
 
+    test "site_id resolves a Regex slot by pattern, for whole-statement diffs" do
+      sites = [
+        %Site{
+          id: 4,
+          mutator: :custom,
+          original_code: "from(u in User, limit: 2)",
+          mutated_code: "from(u in User, limit: 3)"
+        }
+      ]
+
+      # A fragment can't name the whole enclosing expression verbatim; a regex slot can.
+      assert site_id(sites, {~r/limit: 2/, ~r/limit: 3/}) == 4
+      # Slots opt in independently: pin one exactly, loosen the other.
+      assert site_id(sites, {"from(u in User, limit: 2)", ~r/limit: 3/}) == 4
+    end
+
+    test "an anchored Regex recovers exactness within the loose mode" do
+      sites = [
+        %Site{id: 7, mutator: :arithmetic, original_code: "11 + 1", mutated_code: "11 - 1"}
+      ]
+
+      # A loose `1 + 1` regex would resolve against the `11 + 1` site — anchor it to refuse.
+      assert_raise ExUnit.AssertionError, ~r/no site matching/, fn ->
+        site_id(sites, {~r/\b1 \+ 1\b/, ~r/\b1 - 1\b/})
+      end
+
+      assert site_id(sites, {~r/11 \+ 1/, ~r/11 - 1/}) == 7
+    end
+
+    test "site_id flunks when a Regex pair matches more than one site" do
+      sites = [
+        %Site{id: 1, mutator: :arithmetic, original_code: "a + b", mutated_code: "a - b"},
+        %Site{id: 2, mutator: :arithmetic, original_code: "a + c", mutated_code: "a - c"}
+      ]
+
+      assert_raise ExUnit.AssertionError, ~r/ambiguous: 2 sites/, fn ->
+        site_id(sites, {~r/a \+/, ~r/a -/})
+      end
+    end
+
     test "site_by returns the whole matching site" do
       assert %Site{id: 2} = site_by(@sites, "the relational one", &(&1.mutator == :relational))
     end

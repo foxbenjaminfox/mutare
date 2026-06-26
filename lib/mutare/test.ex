@@ -354,30 +354,41 @@ defmodule Mutare.Test do
   end
 
   @doc """
-  The id of the single site whose recorded diff is exactly `{original_code, mutated_code}`.
+  The id of the single site whose recorded diff matches `{original_code, mutated_code}`.
 
   Sites carry the *logical* before/after a report would show (`a + b` → `a - b`), never any
   selector/scaffolding, so a semantic test names a mutant the way the report does and resolves it
-  to the id the switch selects on. Matching is **exact**, not substring — `{"1 + 1", "1 - 1"}`
-  can't accidentally resolve to a `"11 + 1"` site — so reach for `site_by/3` when you need a
-  looser predicate. Flunks (listing the candidates) on zero *or* multiple matches, so a fixture
-  whose mutation silently stopped being emitted — or grew an unexpected sibling — fails loudly
-  instead of resolving to the wrong mutant.
+  to the id the switch selects on. Each slot matches by its **type**: a string matches **exactly**
+  — `{"1 + 1", "1 - 1"}` can't accidentally resolve to a `"11 + 1"` site — while a `Regex` matches
+  by pattern, for the whole-statement diffs a fragment can't name verbatim (an in-place mutator
+  that replaces a large node records the whole enclosing expression): `{~r/limit: 2/, ~r/limit:
+  3/}`. The two slots opt in independently, so you can pin `original` exactly and loosen only
+  `mutated`; anchor a regex (`~r/\\b1 \\+ 1\\b/`) to recover exactness within the loose mode.
+  Either way it flunks (listing the candidates) on zero *or* multiple matches, so a fixture whose
+  mutation silently stopped being emitted — or whose pattern grew an unexpected sibling — fails
+  loudly instead of resolving to the wrong mutant. Reach for `site_by/3` when even a regex pair
+  can't express the match.
   """
-  @spec site_id([Site.t()], {String.t(), String.t()}) :: pos_integer()
+  @spec site_id([Site.t()], {pattern, pattern}) :: pos_integer()
+        when pattern: String.t() | Regex.t()
   def site_id(sites, {original_code, mutated_code}) do
     sites
     |> site_by(inspect({original_code, mutated_code}), fn site ->
-      site.original_code == original_code and site.mutated_code == mutated_code
+      match_code?(site.original_code, original_code) and
+        match_code?(site.mutated_code, mutated_code)
     end)
     |> Map.fetch!(:id)
   end
 
+  defp match_code?(code, %Regex{} = pattern), do: code =~ pattern
+  defp match_code?(code, pattern) when is_binary(pattern), do: code == pattern
+
   @doc """
   The single site satisfying `pred`, returned whole (read `.id` for the selector id).
 
-  The same exactly-one guarantee as `site_id/2`, for the cases an `{original, mutated}` substring
-  pair can't express — e.g. a mutant recognized by the *absence* of a token in its output.
+  The same exactly-one guarantee as `site_id/2`, for the cases an `{original, mutated}` pair can't
+  express even as regexes — e.g. matching on `.mutator` (or another field), or a mutant recognized
+  by the *absence* of a token in its output.
   `label` names the lookup in the failure message. Flunks (listing the candidates) on zero *or*
   multiple matches, so an ad-hoc `Enum.find/2` can't silently resolve to the first of several.
   """
