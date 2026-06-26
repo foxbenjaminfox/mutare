@@ -114,6 +114,35 @@ defmodule Mutare.Mutators.Helpers do
   def swap_bare_kernel(_node, _pipe_mode, _table), do: :skip
 
   @doc """
+  Remove a **bare `Kernel`** call, gated on effective arity — pipe-aware.
+
+  The removal twin of `swap_bare_kernel/3` (and the bare-`Kernel` counterpart of
+  `remove_call/3`): a bare `abs`/`binary_slice`/… has no module to prove it is the `Kernel`
+  one, so its **effective** arity (`Mutare.Mutator.effective_arity/2` — one higher when piped,
+  since a pipe stage's node carries one fewer arg than the source reads) is the sole evidence.
+  When `{fun, effective_arity}` is in the `removable` set and the call isn't displaced from
+  `Kernel` by `import Kernel, except:/only:` (`Mutare.Transform.Imports`), drop it via
+  `removed_call/2` (the shared first-arg / `Function.identity` mechanic). `removable` is a
+  `MapSet` of `{function, effective_arity}` pairs. Returns `:skip` when the node isn't a bare
+  call, is displaced, or its `{fun, arity}` isn't removable.
+  """
+  @spec remove_bare_kernel(Macro.t(), Mutare.Mutator.pipe_mode(), MapSet.t({atom(), arity()})) ::
+          [Macro.t()] | :skip
+  def remove_bare_kernel({fun, meta, args}, pipe_mode, removable)
+      when is_atom(fun) and is_list(args) do
+    eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode)
+
+    with false <- Imports.kernel_displaced?(meta),
+         true <- MapSet.member?(removable, {fun, eff_arity}) do
+      removed_call(pipe_mode, args)
+    else
+      _ -> :skip
+    end
+  end
+
+  def remove_bare_kernel(_node, _pipe_mode, _removable), do: :skip
+
+  @doc """
   Remove a *transparent transform* call — pipe-aware.
 
   The "call removal" counterpart of `swap_call/2`: resolve `node` through

@@ -67,7 +67,6 @@ defmodule Mutare.Mutators.CallRemoval do
   @behaviour Mutare.Mutator
 
   alias Mutare.Mutators.Helpers
-  alias Mutare.Transform.Imports
 
   # {module_key, function} — arity-agnostic: every arity of these has its input as the
   # first argument and returns a same-typed value, so removal is always legal. The module
@@ -179,23 +178,10 @@ defmodule Mutare.Mutators.CallRemoval do
     end
   end
 
-  # A bare `Kernel` call (`abs(x)`, the binary slicers): removed only at its effective arity,
-  # so a same-named user call at another arity is never touched. The effective arity
-  # (`effective_arity/2` — one higher when `:piped`) tells them apart, since a pipe stage's
-  # node carries one fewer arg than the source reads. A bare call displaced from `Kernel` by
-  # `import Kernel, except:/only:`
-  # (`Mutare.Transform.Imports`) is another module's function, so it is left alone. Reuses the
-  # shared identity-vs-first-arg mechanic (`Helpers.removed_call/2`); `Calls.resolved_call`
-  # doesn't resolve bare `Kernel`, so this path matches it itself.
-  defp bare_removal({fun, meta, args}, pipe_mode) when is_atom(fun) and is_list(args) do
-    eff_arity = Mutare.Mutator.effective_arity(args, pipe_mode)
-
-    if MapSet.member?(@bare_removable, {fun, eff_arity}) and not Imports.kernel_displaced?(meta) do
-      Helpers.removed_call(pipe_mode, args)
-    else
-      :skip
-    end
-  end
-
-  defp bare_removal(_node, _pipe_mode), do: :skip
+  # A bare `Kernel` call (`abs(x)`, the binary slicers) — removed only at its effective arity
+  # (so a same-named user call at another arity is never touched, and a call displaced from
+  # `Kernel` by `import Kernel, except:/only:` is left alone). `Calls.resolved_call` doesn't
+  # resolve bare `Kernel`, so the shared bare-`Kernel` removal helper matches it on arity.
+  defp bare_removal(node, pipe_mode),
+    do: Helpers.remove_bare_kernel(node, pipe_mode, @bare_removable)
 end

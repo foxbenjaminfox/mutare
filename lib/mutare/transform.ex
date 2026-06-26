@@ -731,24 +731,25 @@ defmodule Mutare.Transform do
     |> emit(ctx)
   end
 
-  defp candidates_of({_form, meta, _args}) when is_list(meta), do: Keyword.get(meta, :mutare, [])
-  defp candidates_of(_), do: []
+  defp candidates_of(node), do: meta_candidates(node, :mutare)
 
   # The per-clause `Candidate.CaseClause`s a `case` node carries (the tuple-the-scrutinee
   # path), kept under a dedicated meta key separate from `:mutare` because they drive a
   # different emit (rewriting the `case`, not wrapping the node in a selector).
-  defp case_candidates_of({_form, meta, _args}) when is_list(meta),
-    do: Keyword.get(meta, :mutare_case, [])
-
-  defp case_candidates_of(_), do: []
+  defp case_candidates_of(node), do: meta_candidates(node, :mutare_case)
 
   # The `Candidate.Hosted`s a known-macro node carries (the selector-host path), under a
   # dedicated meta key — like `:mutare_case`, a different emit (weaving a host-supplied selector
   # into the node) than the node-wrapping `:mutare` selectors.
-  defp hosted_candidates_of({_form, meta, _args}) when is_list(meta),
-    do: Keyword.get(meta, :mutare_hosted, [])
+  defp hosted_candidates_of(node), do: meta_candidates(node, :mutare_hosted)
 
-  defp hosted_candidates_of(_), do: []
+  # Read a node's candidate list stored under `key` in its metadata; `[]` for a node with no
+  # metadata (a bare atom/literal) or no candidates of that kind. The three delivery keys
+  # (`:mutare`, `:mutare_case`, `:mutare_hosted`) each drive a different emit but share this read.
+  defp meta_candidates({_form, meta, _args}, key) when is_list(meta),
+    do: Keyword.get(meta, key, [])
+
+  defp meta_candidates(_, _), do: []
 
   defp strip_candidates({form, meta, args}) when is_list(meta),
     do: {form, Keyword.drop(meta, @delivery_keys), args}

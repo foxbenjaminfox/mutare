@@ -122,19 +122,14 @@ defmodule Mutare.Transform.Uses do
   # (which stamps the `use`s), folds the lexical alias env over a plain block, and otherwise
   # just recurses. It never stamps a `use` itself — one it reaches is nested data, not a
   # module-level directive.
-  defp walk_generic({:defmodule, meta, [mod_ast, [{do_key, body}]]} = node, module, env) do
+  # `defmodule M`/`defprotocol P` both define a named module scope (`defprotocol P do … end`
+  # defines module `P`, and a direct `use` inside it — though rare — is a real directive), so
+  # they share one clause, named exactly alike.
+  defp walk_generic({form, meta, [mod_ast, [{do_key, body}]]} = node, module, env)
+       when form in [:defmodule, :defprotocol] do
     child = child_module(mod_ast, module, env)
 
-    {:defmodule, meta,
-     [mod_ast, [{do_key, walk_module_body(body, child, body_env(node, module, env))}]]}
-  end
-
-  # `defprotocol P do … end` defines module `P` — a module scope (a direct `use` inside it, though
-  # rare, is a real directive), named exactly like a `defmodule`.
-  defp walk_generic({:defprotocol, meta, [mod_ast, [{do_key, body}]]} = node, module, env) do
-    child = child_module(mod_ast, module, env)
-
-    {:defprotocol, meta,
+    {form, meta,
      [mod_ast, [{do_key, walk_module_body(body, child, body_env(node, module, env))}]]}
   end
 

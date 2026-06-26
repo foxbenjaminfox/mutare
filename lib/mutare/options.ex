@@ -204,6 +204,12 @@ defmodule Mutare.Options do
   defp validate_nullable!(nil, _pred, _msg), do: nil
   defp validate_nullable!(value, pred, msg), do: validate!(value, pred, msg)
 
+  # Shared validation for the plain boolean fields: the `&is_boolean/1` predicate and the
+  # "`:field` must be true or false" message live here once, so each boolean field's validator
+  # is a one-line delegate carrying only its own option-semantics comment.
+  defp validate_boolean!(field, value),
+    do: validate!(value, &is_boolean/1, "#{inspect(field)} must be true or false")
+
   defp validate_paths!(paths),
     do:
       validate!(
@@ -252,8 +258,7 @@ defmodule Mutare.Options do
   # `:expand_uses` (default `true`) toggles the `use`-expansion pre-pass
   # (`Mutare.Transform.Uses`) that surfaces `import`/`alias` hidden behind `use`. `false`
   # freezes the pre-expansion behaviour (e.g. to debug or pin mutant counts).
-  defp validate_expand_uses!(value),
-    do: validate!(value, &is_boolean/1, ":expand_uses must be true or false")
+  defp validate_expand_uses!(value), do: validate_boolean!(:expand_uses, value)
 
   defp validate_only_files!(nil), do: nil
   defp validate_only_files!(%MapSet{} = set), do: set
@@ -373,22 +378,19 @@ defmodule Mutare.Options do
         ":sandbox must be a non-empty path string or nil"
       )
 
-  defp validate_keep_sandbox!(value),
-    do: validate!(value, &is_boolean/1, ":keep_sandbox must be true or false")
+  defp validate_keep_sandbox!(value), do: validate_boolean!(:keep_sandbox, value)
 
   # When true (`--strict-ignores`), a `# mutare:ignore` directive that suppresses
   # no mutant fails the run instead of only warning (see
   # `Mutare.Ignore.ineffective/2`). Default `false` (warn only).
-  defp validate_strict_ignores!(value),
-    do: validate!(value, &is_boolean/1, ":strict_ignores must be true or false")
+  defp validate_strict_ignores!(value), do: validate_boolean!(:strict_ignores, value)
 
   # When true (`--quiet`), the Mix task does not attach the live progress reporter
   # (`Mutare.Report.Live`), so nothing is written to stderr as the run proceeds —
   # for CI, or any time the live block is unwanted. The final report and any
   # machine outputs are unaffected. Default `false`. Inert in the direct API
   # (`Mutare.run/2` never starts `Live`); it only gates the Mix task's wiring.
-  defp validate_quiet!(value),
-    do: validate!(value, &is_boolean/1, ":quiet must be true or false")
+  defp validate_quiet!(value), do: validate_boolean!(:quiet, value)
 
   # nil means no cap (run every mutant); otherwise an upper bound on the number of
   # mutants tested. The cap is applied by `Mutare.Schema` (it truncates the site

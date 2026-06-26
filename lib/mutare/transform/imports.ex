@@ -269,37 +269,39 @@ defmodule Mutare.Transform.Imports do
 
   # --- import directives -----------------------------------------------------
 
+  # Parse the directive args to a resolved `{module_key, op}` (or `nil` for an unrecognised
+  # form) and bind it. `put_import` is reached from one place, so the bind logic — the `Kernel`
+  # special-case, the `module_key?` guard, the op-combining — lives in exactly one path.
+  defp register_import(args, aliases, imports, kernel) do
+    case parse_import_args(args, aliases) do
+      {module_key, op} -> put_import(module_key, op, imports, kernel)
+      nil -> {imports, kernel}
+    end
+  end
+
   # `import Mod` / `import E` (an Elixir module, possibly an alias) — resolve the written
   # path through the alias env, so `import E` (and `import B` where `B` aliases an Erlang
   # atom module) lands on the real module key.
   # mutare:ignore[guard_drop] equivalent — an `__aliases__` segment list is always a list, so the guard can't fail.
-  defp register_import([{:__aliases__, _meta, path}], aliases, imports, kernel)
-       when is_list(path),
-       do: put_import(Aliases.resolve_path(path, aliases), :all, imports, kernel)
+  defp parse_import_args([{:__aliases__, _meta, path}], aliases) when is_list(path),
+    do: {Aliases.resolve_path(path, aliases), :all}
 
-  defp register_import([{:__aliases__, _meta, path}, opts], aliases, imports, kernel)
+  defp parse_import_args([{:__aliases__, _meta, path}, opts], aliases)
        when is_list(path) and is_list(opts),
-       do:
-         put_import(
-           Aliases.resolve_path(path, aliases),
-           op_from_opts(opts),
-           imports,
-           kernel
-         )
+       do: {Aliases.resolve_path(path, aliases), op_from_opts(opts)}
 
   # `import :erlang_module` (a Sourceror-wrapped atom) — the module key is the atom itself.
   # Dropping `when is_atom(atom)` lets a non-atom single-literal import (`import "x"`) reach
   # `put_import`, but `module_key?` rejects it there exactly as the fallback clause would.
   # mutare:ignore[guard_drop] equivalent — `module_key?` masks the difference downstream.
-  defp register_import([{:__block__, _meta, [atom]}], _aliases, imports, kernel)
-       when is_atom(atom),
-       do: put_import(atom, :all, imports, kernel)
+  defp parse_import_args([{:__block__, _meta, [atom]}], _aliases) when is_atom(atom),
+    do: {atom, :all}
 
-  defp register_import([{:__block__, _meta, [atom]}, opts], _aliases, imports, kernel)
+  defp parse_import_args([{:__block__, _meta, [atom]}, opts], _aliases)
        when is_atom(atom) and is_list(opts),
-       do: put_import(atom, op_from_opts(opts), imports, kernel)
+       do: {atom, op_from_opts(opts)}
 
-  defp register_import(_args, _aliases, imports, kernel), do: {imports, kernel}
+  defp parse_import_args(_args, _aliases), do: nil
 
   # Bind a resolved module key (an Elixir path `[:Enum]` or an Erlang atom `:binary`) to its
   # selection, **combining** the directive's op with any prior import of that module. `Kernel`

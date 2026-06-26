@@ -558,7 +558,7 @@ defmodule Mutare.Runner do
   # startup contention across concurrent workers.
   defp warn_harness_error(%Site{} = site, %{outcome: :boot_failure} = result) do
     Logger.warning(
-      "#{site.file}:#{site.line}: mutant #{site.id} — the sandbox node died during boot " <>
+      "#{site_ref(site)} — the sandbox node died during boot " <>
         "(exit #{result.exit_status}). Its underlying error couldn't reach a torn-down " <>
         ":standard_error, so the cause is unrecoverable from the mutant's output. This is " <>
         "almost always resource/connection contention across concurrent workers at startup, " <>
@@ -570,12 +570,15 @@ defmodule Mutare.Runner do
 
   defp warn_harness_error(%Site{} = site, result) do
     Logger.warning(
-      "#{site.file}:#{site.line}: mutant #{site.id} failed at the harness level " <>
+      "#{site_ref(site)} failed at the harness level " <>
         "(exit #{result.exit_status}) — the suite never reached a verdict (a compile error, " <>
         "a missing dependency, or a filesystem/lock race). Not counted as killed or survived; " <>
         "see the mutant's output to diagnose the sandbox."
     )
   end
+
+  # The `file:line: mutant id` prefix shared by both harness-error warnings.
+  defp site_ref(%Site{} = site), do: "#{site.file}:#{site.line}: mutant #{site.id}"
 
   # Map a run's typed outcome (decoded by `Mutare.Sandbox.Command`, which owns the
   # exit-code contract) onto a result status. A `:harness_error` — the suite never

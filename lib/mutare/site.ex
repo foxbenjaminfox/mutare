@@ -136,18 +136,7 @@ defmodule Mutare.Site do
   """
   @spec clause_drop(pos_integer(), String.t(), Sourceror.Range.t(), Macro.t()) :: t()
   def clause_drop(id, file, range, clause_node) do
-    %{
-      base_site(id, file, range)
-      | mutator: :clause_drop,
-        kind: :lifted,
-        operation: :delete,
-        original_form: nil,
-        mutated_form: nil,
-        original_code: clause_code(clause_node),
-        mutated_code: "",
-        original_node: clause_node,
-        mutated_node: nil
-    }
+    delete_site(id, file, range, clause_node, :clause_drop, :lifted)
   end
 
   @doc """
@@ -165,10 +154,18 @@ defmodule Mutare.Site do
           Mutare.Mutator.Spec.t()
         ) :: t()
   def in_place_drop(id, file, range, clause_node, mutator) do
+    delete_site(id, file, range, clause_node, mutator.name, :in_place)
+  end
+
+  # The shared body of the two delete-site constructors (`clause_drop/4`, `in_place_drop/5`):
+  # a `:delete` mutation removes the whole clause, so there is no mutated node, op, or code — the
+  # constructors differ only in `mutator` and `kind`. One home so a change to how a delete site is
+  # built (a new field, the `clause_code/1` rendering) lands once.
+  defp delete_site(id, file, range, clause_node, mutator_name, kind) do
     %{
       base_site(id, file, range)
-      | mutator: mutator.name,
-        kind: :in_place,
+      | mutator: mutator_name,
+        kind: kind,
         operation: :delete,
         original_form: nil,
         mutated_form: nil,

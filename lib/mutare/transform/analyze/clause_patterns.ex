@@ -144,29 +144,45 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # `GuardDrop` is enabled. The Site diffs the clause's `pattern when guard` head to the
   # bare `pattern` (the `{:when, …}` LHS reconstructed for range/render), so just the
   # ` when guard` is dropped.
-  defp guard_drop_clause_candidate(index, pattern, guard, body, targets, mutators) do
+  # The shared precondition of the two guard-drop offers (`case` via `CaseClause`,
+  # `receive`/`fn` via `CasePattern`): a guard is droppable only when it is **inert** (no other
+  # family tagged it — `targets == []`) and `GuardDrop` is enabled. Returns the spec plus the
+  # `{:when, pattern, guard}` node (reconstructed for the Site diff/range) and its range, or
+  # `:error` when any precondition fails. Each caller supplies its own `pattern` and builds its
+  # own struct.
+  defp guard_drop_when_node(pattern, guard, targets, mutators) do
     with [] <- targets,
          %Spec{} = spec <- Spec.find(mutators, Mutare.Mutators.GuardDrop),
          when_node = {:when, [], [pattern, guard]},
          %{} = range <- NodeRange.get(when_node) do
-      [
-        %Candidate.CaseClause{
-          clause_index: index,
-          mutator: spec,
-          # The pattern is left exactly as written — only the guard is dropped. A binding
-          # the guard alone read becomes unused (a harmless warning); we never rename it to
-          # `_`, since a macro in the body can read a bound variable by name (`binding/0,1`
-          # or any custom macro), undetectably from the source.
-          mutant_pattern: pattern,
-          mutant_guard: nil,
-          raw_body: body,
-          original: when_node,
-          mutated: pattern,
-          range: range
-        }
-      ]
+      {:ok, spec, when_node, range}
     else
-      _ -> []
+      _ -> :error
+    end
+  end
+
+  defp guard_drop_clause_candidate(index, pattern, guard, body, targets, mutators) do
+    case guard_drop_when_node(pattern, guard, targets, mutators) do
+      {:ok, spec, when_node, range} ->
+        [
+          %Candidate.CaseClause{
+            clause_index: index,
+            mutator: spec,
+            # The pattern is left exactly as written — only the guard is dropped. A binding
+            # the guard alone read becomes unused (a harmless warning); we never rename it to
+            # `_`, since a macro in the body can read a bound variable by name (`binding/0,1`
+            # or any custom macro), undetectably from the source.
+            mutant_pattern: pattern,
+            mutant_guard: nil,
+            raw_body: body,
+            original: when_node,
+            mutated: pattern,
+            range: range
+          }
+        ]
+
+      :error ->
+        []
     end
   end
 
@@ -379,11 +395,10 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # (`fn x, y when … ->`) has no single `{:when, …}` node that renders cleanly in the diff,
   # so it is skipped (documented in NOTES). The Site diffs `pattern when guard` → `pattern`.
   defp guard_drop_clause_pattern(clause, guard, replace_clause, targets, mutators) do
-    with [] <- targets,
-         %Spec{} = spec <- Spec.find(mutators, Mutare.Mutators.GuardDrop),
-         {[pattern], _used} <- clause_patterns(clause),
-         when_node = {:when, [], [pattern, guard]},
-         %{} = range <- NodeRange.get(when_node) do
+    # The single-pattern gate is `CasePattern`-only: a multi-pattern `fn x, y when … ->` head has
+    # no single `{:when, …}` node that renders cleanly in the diff, so it is skipped.
+    with {[pattern], _used} <- clause_patterns(clause),
+         {:ok, spec, when_node, range} <- guard_drop_when_node(pattern, guard, targets, mutators) do
       [
         %Candidate.CasePattern{
           mutator: spec,
