@@ -61,7 +61,7 @@ defmodule Mutare.Coverage do
     with {:ok, binary} <- File.read(path),
          {:ok, %{aggregate: aggregate, by_file: by_file} = decoded} <- decode(binary),
          unlabeled = Map.get(decoded, :unlabeled, []),
-         true <- is_list(aggregate) and is_map(by_file) and is_list(unlabeled) do
+         :ok <- valid_shape(aggregate, by_file, unlabeled) do
       {:ok,
        %{
          aggregate: MapSet.new(aggregate),
@@ -76,10 +76,17 @@ defmodule Mutare.Coverage do
 
         {:error, reason}
 
-      other ->
+      :bad_shape ->
         Logger.warning("coverage dump has unexpected shape (#{path}), falling back to run-all")
-        {:error, {:bad_shape, other}}
+        {:error, :bad_shape}
     end
+  end
+
+  # The decoded payload's fields carry the types the rest of the module assumes (the id lists
+  # and the per-file map). A mismatch routes to `:bad_shape` → the caller's run-all fallback,
+  # never a false `:no_coverage`.
+  defp valid_shape(aggregate, by_file, unlabeled) do
+    if is_list(aggregate) and is_map(by_file) and is_list(unlabeled), do: :ok, else: :bad_shape
   end
 
   # `:erlang.binary_to_term` raises on a truncated/garbage payload — turn that

@@ -69,7 +69,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   end
 
   defp match_pattern_candidates(raw_lhs, raw_rhs, structural) do
-    case pattern_export(raw_lhs, structural) do
+    case pattern_export_with_mutations(raw_lhs, structural) do
       nil ->
         []
 
@@ -175,7 +175,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # single `:mutare`; without this the prepended entry would silently shadow the whole-call
   # mutants (`Transform.candidates_of/1` reads only the first `:mutare`).
   #
-  # The export tuple is computed up front (`pattern_export_base/1`) from the pattern's bound
+  # The export tuple is computed up front (`pattern_export_context/1`) from the pattern's bound
   # vars alone — **independent of whether any structural swap/wildcard mutant fires** — so a
   # whole-call mutation is re-homed even when no pattern mutant is produced (the user enabled
   # only their `macros/0` mutator, or the pattern admits no swap/wildcard). Without that the
@@ -183,7 +183,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # poison the build. When the pattern binds nothing (or isn't rangeable) there is no escape to
   # re-export, so an in-place selector is already safe and `analyzed` is left untouched.
   defp attach_macro_pattern_candidates(analyzed, raw_pattern, rebuild_mutant, mutators) do
-    case pattern_export_base(raw_pattern) do
+    case pattern_export_context(raw_pattern) do
       nil ->
         analyzed
 
@@ -274,7 +274,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
     do: {form, Keyword.put(meta, :mutare, others), args}
 
   # The structural pattern mutants (swap/wildcard) for an already-discovered escaping pattern,
-  # given its shared `export`/`range`/`used` (from `pattern_export_base/1`). Empty when no
+  # given its shared `export`/`range`/`used` (from `pattern_export_context/1`). Empty when no
   # structural family is enabled or the pattern admits none — the whole-call re-homing
   # (`rehome_call_mutations/2`) is then the only source of `MacroPattern` candidates.
   defp macro_pattern_candidates(pattern, range, export, used, rebuild_mutant, mutators) do
@@ -299,10 +299,10 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # the shared export tuple, and the structural mutations), or `nil` when no structural family
   # is enabled, the pattern binds nothing, or it isn't rangeable.
   # mutare:ignore[clause_drop] equivalent — dropping this fast-path leaves the general clause to run `node_mutations(_, _, [])`, which returns `[]` for an empty structural set; the caller maps that to no candidates exactly as `nil` does.
-  defp pattern_export(_raw_pattern, []), do: nil
+  defp pattern_export_with_mutations(_raw_pattern, []), do: nil
 
-  defp pattern_export(raw_pattern, structural) do
-    case pattern_export_base(raw_pattern) do
+  defp pattern_export_with_mutations(raw_pattern, structural) do
+    case pattern_export_context(raw_pattern) do
       nil ->
         nil
 
@@ -318,7 +318,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # rangeable. Split out so the binding-macro path can obtain the export tuple to re-home a
   # *whole-call* mutation onto even when no swap/wildcard pattern mutant is produced (see
   # `attach_macro_pattern_candidates/4`).
-  defp pattern_export_base(raw_pattern) do
+  defp pattern_export_context(raw_pattern) do
     # Sourceror attaches the *statement's* leading comment to its leftmost leaf — which, for a
     # `<pat> = e` or a piped `<pat> |> macro(…)`, is inside the pattern. Strip it so the
     # recorded `original`/`mutated` (rendered by `Site` via `Sourceror.to_string`) and the

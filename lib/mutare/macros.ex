@@ -136,8 +136,8 @@ defmodule Mutare.Macros do
   Build the merged lookup registry from declarative `:macros` entries and the
   enabled mutator specs.
 
-  Order is built-ins, then declarative `:macros`, then mutator-provided — folded
-  with `Map.put`, so a later entry for the same `{module_key, name, arity}`
+  Order is built-ins, then declarative `:macros`, then mutator-provided — collected
+  with `Map.new`, so a later entry for the same `{module_key, name, arity}`
   overrides an earlier one (config and mutator-provided override built-ins).
   `config_macros` may be raw entries or already-resolved specs (idempotent).
 
@@ -151,7 +151,7 @@ defmodule Mutare.Macros do
   def build(config_macros, mutator_specs) do
     (builtin() ++ resolve(config_macros) ++ from_mutators(mutator_specs))
     |> Enum.map(&validate_host/1)
-    |> Enum.reduce(%{}, fn spec, acc -> Map.put(acc, Spec.key(spec), spec) end)
+    |> Map.new(&{Spec.key(&1), &1})
   end
 
   # A `:hosted` argument or the `:routing` classifier needs a hosting mutator to deliver /

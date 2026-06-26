@@ -63,12 +63,15 @@ defmodule Mutare.Mutators.Numeric do
   }
 
   # The explicitly-`Kernel.`-qualified forms of the bare swaps, **derived** from
-  # `@kernel_swaps` so the two tables can't drift: each `{fun, arity} => [sibling]` bare
-  # entry becomes a `{[:Kernel], fun} => sibling` qualified entry. A new bare-Kernel
-  # numeric swap added to `@kernel_swaps` therefore gets its qualified form for free.
-  @kernel_remote_swaps for {{fun, _arity}, [sibling]} <- @kernel_swaps,
+  # `@kernel_swaps` so the two tables can't drift: each `{fun, arity} => siblings` bare entry
+  # becomes a `{[:Kernel], fun} => siblings` qualified entry. A new bare-Kernel numeric swap
+  # added to `@kernel_swaps` therefore gets its qualified form for free — including a future
+  # multi-sibling entry (`Helpers.swap_call`/`swap_resolved` `List.wrap`s the value, so a list
+  # is as valid as a bare atom here). Keeping the whole `siblings` value also avoids the
+  # silent-skip a `[sibling]` destructure would hide if an entry ever had more than one.
+  @kernel_remote_swaps for {{fun, _arity}, siblings} <- @kernel_swaps,
                            into: %{},
-                           do: {{[:Kernel], fun}, sibling}
+                           do: {{[:Kernel], fun}, siblings}
 
   # **Qualified** calls: the `Float` precision pairs plus the qualified Kernel forms.
   # {alias_path, function} => new_function.

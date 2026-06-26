@@ -74,7 +74,7 @@ defmodule Mutare.Transform.Analyze.Returns do
   # clause has, applied per `fn` clause — so the same leaf-tail walk runs:
   # `map_clauses/3` recurses each clause body via `map_return_tails/3` (descending
   # control-flow branches that are themselves in tail position), and the
-  # `leaf_attacher` offers each leaf to every return mutator. Gated on a
+  # `build_leaf_attacher` closure offers each leaf to every return mutator. Gated on a
   # `return_replacements/_` mutator being enabled, like `annotate_returns/3`.
   #
   # The whole `fn` node is taken (its `meta` may already carry the clause-pattern
@@ -95,7 +95,8 @@ defmodule Mutare.Transform.Analyze.Returns do
         analyzed
 
       return_mutators ->
-        {:fn, meta, map_clauses(analyzed_clauses, raw_clauses, leaf_attacher(return_mutators))}
+        {:fn, meta,
+         map_clauses(analyzed_clauses, raw_clauses, build_leaf_attacher(return_mutators))}
     end
   end
 
@@ -114,20 +115,21 @@ defmodule Mutare.Transform.Analyze.Returns do
 
       Analyze.clause_block_key?(key) and clause_list?(analyzed) and clause_list?(raw) and
           length(analyzed) == length(raw) ->
-        map_clauses(analyzed, raw, leaf_attacher(return_mutators))
+        map_clauses(analyzed, raw, build_leaf_attacher(return_mutators))
 
       true ->
         analyzed
     end
   end
 
-  # The leaf step shared by every path: offer the tail to each return mutator and
+  # Build the leaf-attaching closure (`fn analyzed_tail, raw_tail -> … end`) shared by every
+  # path: offer the tail to each return mutator and
   # append a `Candidate.Return` per `{spec, replacement}` (the mutator's
   # `return_replacements/1` output, tagged with its spec). The candidates ride in
   # the tail node's own `meta[:mutare]` — *after* any operator candidates already
   # there — so emission builds one selector `case` hosting both an operator swap
   # and the return constant on the same node, ids in attachment order.
-  defp leaf_attacher(return_mutators) do
+  defp build_leaf_attacher(return_mutators) do
     fn analyzed_tail, raw_tail ->
       replacements =
         Enum.flat_map(return_mutators, fn spec ->
@@ -146,7 +148,7 @@ defmodule Mutare.Transform.Analyze.Returns do
   # `case`/`cond`/`if`/`unless`/`with`/`try`/`receive` in tail position — and attach
   # the return candidates there.
   defp attach_return(analyzed_value, raw_value, return_mutators) do
-    map_return_tails(analyzed_value, raw_value, leaf_attacher(return_mutators))
+    map_return_tails(analyzed_value, raw_value, build_leaf_attacher(return_mutators))
   end
 
   # Apply `fun` at every *leaf return tail* of a (possibly control-flow) value, in

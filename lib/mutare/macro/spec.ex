@@ -269,8 +269,12 @@ defmodule Mutare.Macro.Spec do
 
   defp expand_args(treatment, count) when is_atom(treatment), do: List.duplicate(treatment, count)
 
-  defp expand_args(list, count) when is_list(list),
-    do: Enum.map(0..(count - 1)//1, &Enum.at(list, &1, :expression))
+  # Take the first `count` per-position treatments, padding any shortfall with the `:expression`
+  # default (a position the list doesn't name is an ordinary mutatable argument).
+  defp expand_args(list, count) when is_list(list) do
+    taken = Enum.take(list, count)
+    taken ++ List.duplicate(:expression, count - length(taken))
+  end
 
   @doc """
   Normalize a user-written module reference to a key.

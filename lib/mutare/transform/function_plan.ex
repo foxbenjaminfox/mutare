@@ -42,6 +42,10 @@ defmodule Mutare.Transform.FunctionPlan do
   alias Mutare.Mutator.Spec
   alias Mutare.Transform.{Candidate, ClauseAST, NodeRange, PatternStructure, Tag}
 
+  # A plain-identifier function name (the only kind that can be spelled as a lifted base name
+  # `__mutare_<name>_…`). Compiled once at module load, not per `liftable?/1` call.
+  @liftable_name_regex ~r/\A[a-z_][a-zA-Z0-9_]*[?!]?\z/
+
   @type signature :: {:def | :defp, atom(), non_neg_integer()}
 
   @type t :: %__MODULE__{
@@ -459,6 +463,6 @@ defmodule Mutare.Transform.FunctionPlan do
   # keeps the original multi-arity contract), while the lifted base function takes
   # the full arity with the defaults stripped — see `Mutare.Transform`.
   defp liftable?(name) do
-    Regex.match?(~r/\A[a-z_][a-zA-Z0-9_]*[?!]?\z/, Atom.to_string(name))
+    Regex.match?(@liftable_name_regex, Atom.to_string(name))
   end
 end

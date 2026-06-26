@@ -306,10 +306,12 @@ defmodule Mutare.Transform.Uses do
   # resolved through the alias env. `@unresolved` (⇒ no stamping) unless both are statically a
   # single concrete module — a list `for:`, a missing `for:`, or a non-static type degrades.
   defp impl_module(proto, type, env) do
+    # `Aliases.resolve_node/2` returns a concrete module atom or `nil` (non-static), so both
+    # parts resolving to a non-`nil` module is exactly the stampable case.
     proto_mod = Aliases.resolve_node(proto, env)
     type_mod = type && Aliases.resolve_node(type, env)
 
-    if module?(proto_mod) and module?(type_mod),
+    if not is_nil(proto_mod) and not is_nil(type_mod),
       do: Module.concat(proto_mod, type_mod),
       else: @unresolved
   end
@@ -317,10 +319,6 @@ defmodule Mutare.Transform.Uses do
   # The `for:` value of a `defimpl` opts list, or `nil`. Reads Sourceror's wrapped key via the
   # shared `AST.opts_get/3`.
   defp for_type(opts), do: AST.opts_get(opts, :for)
-
-  # `Aliases.resolve_node/2` returns a concrete module atom or `nil` (non-static), so a real
-  # module is exactly a non-`nil` result.
-  defp module?(m), do: not is_nil(m)
 
   # --- stamping the harvest onto the `use` node's meta -----------------------
   #

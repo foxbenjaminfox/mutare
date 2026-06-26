@@ -598,12 +598,11 @@ defmodule Mutare.Transform.Analyze do
   end
 
   # A generic runtime node: offer it and descend, or route a known-macro call's arguments
-  # by treatment — see `do_analyze_call_node/4`. (A sigil is offered whole then descended
+  # by treatment — see `do_analyze_call_node/3`. (A sigil is offered whole then descended
   # *surgically* via `descend_sigil/2`, so an interpolated `~r/a#{b}c/` still mutates `b`
   # while its content `<<>>` wrapper is never offered; that gate lives in the helper.)
   defp analyze({_form, _meta, _args} = node, :runtime, mutators),
-    # `descend_sigils?: true` — a generic runtime node may be sigil syntax (a piped stage never is).
-    do: do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped}, true)
+    do: do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped})
 
   # A keyword/map/block pair (`key: value`, `%{a: …}`, a `do:`/`else:`/`rescue:`/
   # `catch:`/`after:` block). Only a **block key** is a pure structural label that
@@ -695,8 +694,7 @@ defmodule Mutare.Transform.Analyze do
   # routes its arguments by treatment too — `Resolve` already stamped the *visible*-position
   # routing (the piped value dropped), so a `:skip` DSL body is left raw instead of mutated.
   defp analyze_pipe_stage({_form, _meta, args} = node, mutators) when is_list(args),
-    # `descend_sigils?: false` — a `|>` RHS is never sigil syntax.
-    do: do_analyze_call_node(node, mutators, %{pipe_mode: :piped}, false)
+    do: do_analyze_call_node(node, mutators, %{pipe_mode: :piped})
 
   defp analyze_pipe_stage(other, mutators), do: analyze(other, :runtime, mutators)
 
@@ -706,9 +704,10 @@ defmodule Mutare.Transform.Analyze do
   # treatment (`Macros.analyze_known_macro` — so a pattern arg isn't mutated in place and an
   # opaque DSL body is left raw) while the whole node is still offered to mutators; every other
   # node is offered and its children descended. `context` carries `:pipe_mode` (`:piped` for a
-  # `|>` RHS, so an arity-changing mutator sees the effective arity). `descend_sigils?` gates the
-  # sigil-content path, true only for the generic clause.
-  defp do_analyze_call_node({form, meta, _args} = node, mutators, context, descend_sigils?) do
+  # `|>` RHS, so an arity-changing mutator sees the effective arity) — which also gates the
+  # sigil-content path: a `|>` RHS (`:piped`) is never sigil syntax, so only the generic-runtime
+  # (`:unpiped`) path descends sigil content.
+  defp do_analyze_call_node({form, meta, _args} = node, mutators, context) do
     case macro_routing(meta) do
       nil ->
         node = offer(node, node, mutators, context)
@@ -721,7 +720,7 @@ defmodule Mutare.Transform.Analyze do
         # `binary_valued_literal?/1` guards). Only genuine sigil syntax carries the parser's
         # `:delimiter` meta, so gate on it; a non-sigil call falls through to `recurse_runtime`,
         # which analyses its args — including a real bitstring arg — correctly.
-        if descend_sigils? and sigil?(form) and Keyword.has_key?(meta, :delimiter),
+        if context.pipe_mode == :unpiped and sigil?(form) and Keyword.has_key?(meta, :delimiter),
           do: descend_sigil(node, mutators),
           else: recurse_runtime(node, mutators)
 
