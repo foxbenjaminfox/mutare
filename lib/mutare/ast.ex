@@ -239,6 +239,29 @@ defmodule Mutare.AST do
   def keyword_label?(_), do: false
 
   @doc """
+  Whether a `{:<<>>, meta, _}` node is really a **string**, not a `<<…>>` bitstring.
+
+  Sourceror parses an interpolated string (`"a\#{x}b"`, or an interpolated heredoc) into a
+  `<<>>` node, distinguished from a true `<<…>>` bitstring literal by a `:delimiter` key cached
+  in its metadata. This is the single home for that invariant: the string- and
+  bitstring-literal families route on it with opposite intent — `StringLiteral` mutates these
+  (an interpolated string), `BitstringLiteral`/`BitstringSpec` skip them (they own real
+  bitstrings). A non-`<<>>` node is never a string binary.
+
+      iex> Mutare.AST.string_binary?({:<<>>, [delimiter: ~s(")], ["hi"]})
+      true
+      iex> Mutare.AST.string_binary?({:<<>>, [], [1, 2]})
+      false
+      iex> Mutare.AST.string_binary?({:__block__, [], [:atom]})
+      false
+  """
+  @spec string_binary?(Macro.t()) :: boolean()
+  def string_binary?({:<<>>, meta, _segments}) when is_list(meta),
+    do: Keyword.has_key?(meta, :delimiter)
+
+  def string_binary?(_node), do: false
+
+  @doc """
   Whether `node` is a `nil` literal in either bare or Sourceror-wrapped form.
   """
   @spec nil_literal?(Macro.t()) :: boolean()

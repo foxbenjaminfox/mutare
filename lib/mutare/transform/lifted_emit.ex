@@ -90,7 +90,7 @@ defmodule Mutare.Transform.LiftedEmit do
     call_args = dispatcher_args(arity)
     head_args = with_defaults(call_args, defaults)
     var_node = Recorder.catch_all_pattern(var)
-    read = {:=, [], [var_node, Metamutant.subject_ast()]}
+    read = active_read(var)
 
     {super_args, super_stmts} = super_closure_binding(super_var, arity)
     call = {base, [], [var_node | super_args] ++ call_args}
@@ -100,6 +100,15 @@ defmodule Mutare.Transform.LiftedEmit do
 
     {vis, [], [{name, [], head_args}, [do: body]]}
   end
+
+  @doc """
+  The active-id read `<var> = :persistent_term.get(...)`: the dispatch variable bound once so the
+  body's hoisted selectors read it (`Mutare.Transform.selector_subject/1`). The single home for
+  the read's shape, shared by the lifted dispatcher (here) and a non-lifted function's `:do`-block
+  prologue (`Mutare.Transform`).
+  """
+  @spec active_read(atom()) :: Macro.t()
+  def active_read(var), do: {:=, [], [Recorder.catch_all_pattern(var), Metamutant.subject_ast()]}
 
   @doc """
   The default-argument expressions of a lifted group, keyed by 0-based head position. They live

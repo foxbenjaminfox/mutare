@@ -119,8 +119,12 @@ defmodule Mutare.Mutators.GenServer do
   # `{a, b}`), so it serves the 2-, 3-, and 4-tuple results uniformly.
   defp retuple(tag, values), do: {:{}, [], [AST.literal(tag) | values]}
 
-  # The atom of a control tag — Sourceror wraps an atom literal in a block.
-  defp tag_name({:__block__, _meta, [atom]}) when is_atom(atom), do: atom
-  defp tag_name(atom) when is_atom(atom), do: atom
-  defp tag_name(_other), do: nil
+  # The atom of a control tag, read through `AST.literal_value/1` (Sourceror wraps an atom literal
+  # in a block; a bare atom passes too), or `nil` for a non-atom node.
+  defp tag_name(node) do
+    case AST.literal_value(node) do
+      {:ok, atom} when is_atom(atom) -> atom
+      _ -> nil
+    end
+  end
 end

@@ -99,20 +99,9 @@ defmodule Mutare.Coverage.HelperTemplate do
   # `nil`, and the caller routes that id to the unlabeled bucket (whole suite). Only the module is
   # recovered in tier 3, which is all file-granular selection needs.
   defp label do
-    case own_label() do
+    case proc_label(self()) do
       {mod, _name} = labeled when is_atom(mod) -> labeled
       _ -> recovered_label() || stacktrace_label()
-    end
-  end
-
-  defp own_label do
-    # `apply/3`, not a direct call: `:proc_lib.get_label/1` exists only on OTP 27+, and a static
-    # reference warns "undefined" on OTP 26 (where the `function_exported?` guard already routes us
-    # to the proc-dict key the OTP 26 `Process.set_label/1` writes).
-    if function_exported?(:proc_lib, :get_label, 1) do
-      apply(:proc_lib, :get_label, [self()])
-    else
-      Process.get(:"$process_label")
     end
   end
 
@@ -124,7 +113,7 @@ defmodule Mutare.Coverage.HelperTemplate do
 
     Enum.find_value(callers, fn
       pid when is_pid(pid) ->
-        case label_of(pid) do
+        case proc_label(pid) do
           {mod, _name} = labeled when is_atom(mod) -> labeled
           _ -> nil
         end
@@ -134,11 +123,13 @@ defmodule Mutare.Coverage.HelperTemplate do
     end)
   end
 
-  # Read another process's `$process_label`, OTP-tolerant: `:proc_lib.get_label/1` (OTP 27+) reads
-  # it cross-process directly; on OTP 26 the label lives in the target's dictionary, which
-  # `Process.info/2` exposes (`Process.get/1` only reads our own). Best-effort — a dead pid yields
-  # `nil`, never a crash.
-  defp label_of(pid) do
+  # The `$process_label` of `pid` (our own — `self()` — or an ancestor's), OTP-tolerant and the
+  # single home for the version check. On OTP 27+ `:proc_lib.get_label/1` reads it directly
+  # (cross-process too); on OTP 26 the label lives in the process dictionary, which
+  # `Process.info(pid, :dictionary)` exposes (`Process.get/1` would only read our own). `apply/3`,
+  # not a direct call, so a static reference to the OTP 27-only function doesn't warn "undefined"
+  # on OTP 26. Best-effort — a dead pid yields `nil`, never a crash (harmless for `self()`).
+  defp proc_label(pid) do
     if function_exported?(:proc_lib, :get_label, 1) do
       try do
         apply(:proc_lib, :get_label, [pid])

@@ -610,11 +610,7 @@ defmodule Mutare.Mutator do
   built-in module.
   """
   @spec implementing([Spec.t()], atom(), arity()) :: [Spec.t()]
-  def implementing(specs, fun, arity) do
-    Enum.filter(specs, fn %{module: module} ->
-      Code.ensure_loaded?(module) and function_exported?(module, fun, arity)
-    end)
-  end
+  def implementing(specs, fun, arity), do: implementing_any(specs, fun, [arity])
 
   @doc """
   The specs in `specs` whose module implements `fun` at **any** of `arities` — the
@@ -628,8 +624,17 @@ defmodule Mutare.Mutator do
   @spec implementing_any([Spec.t()], atom(), [arity()]) :: [Spec.t()]
   def implementing_any(specs, fun, arities) do
     Enum.filter(specs, fn %{module: module} ->
-      Code.ensure_loaded?(module) and Enum.any?(arities, &function_exported?(module, fun, &1))
+      Enum.any?(arities, &exports?(module, fun, &1))
     end)
+  end
+
+  # Whether `module` (loaded on demand) exports `fun`/`arity` — the single home for the
+  # "ensure the module is loaded, then check the export" probe the structural-hook discovery
+  # (`implementing*/3`, `host_targets/3`) and the mutator-resolution check (`implemented_by?/1`)
+  # share. `Code.ensure_loaded?` is idempotent and cheap once loaded, so calling it per arity is
+  # fine.
+  defp exports?(module, fun, arity) do
+    Code.ensure_loaded?(module) and function_exported?(module, fun, arity)
   end
 
   @doc """
@@ -684,7 +689,7 @@ defmodule Mutare.Mutator do
   """
   @spec host_targets(Spec.t(), Macro.t(), context()) :: [map()]
   def host_targets(%Spec{module: module, opts: opts, behaviours: behaviours}, node, context0) do
-    if Code.ensure_loaded?(module) and function_exported?(module, :host, 2) do
+    if exports?(module, :host, 2) do
       context = context0 |> Map.put(:opts, opts) |> Map.put(:behaviours, behaviours)
       module.host(node, context) |> Enum.map(&normalize_target/1)
     else
@@ -801,11 +806,8 @@ defmodule Mutare.Mutator do
   """
   @spec implemented_by?(term()) :: boolean()
   def implemented_by?(module) when is_atom(module) do
-    Code.ensure_loaded?(module) and
-      function_exported?(module, :name, 0) and
-      Enum.any?(@producing_callbacks, fn {fun, arity} ->
-        function_exported?(module, fun, arity)
-      end)
+    exports?(module, :name, 0) and
+      Enum.any?(@producing_callbacks, fn {fun, arity} -> exports?(module, fun, arity) end)
   end
 
   # Total over any term: a non-atom (e.g. a string in `.mutare.exs`) is simply

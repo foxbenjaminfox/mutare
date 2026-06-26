@@ -110,8 +110,7 @@ defmodule Mutare.Schema do
   def from_files(files, root \\ ".", opts \\ [], skip_ids \\ MapSet.new()) do
     options = Options.new(opts)
 
-    # mutare:ignore[convention, return_value] equivalent — the fallback hook's return value is discarded (it runs only for its side effect)
-    on_scan = options.on_scan || fn _progress -> :ok end
+    on_scan = Options.hook(options, :on_scan)
     total = length(files)
 
     # Record the ordered, root-relative input list so the schema can be rebuilt

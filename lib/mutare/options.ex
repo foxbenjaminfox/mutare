@@ -129,6 +129,17 @@ defmodule Mutare.Options do
   def renderer(format), do: Keyword.fetch!(@format_renderers, format)
 
   @doc """
+  The 1-arity progress hook bound to `field` (`:reporter`/`:on_phase`/`:on_start`/`:on_scan`),
+  or a no-op when unset — so `Mutare.Runner` and `Mutare.Schema` invoke it unconditionally
+  without each re-stating the `|| fn _ -> :ok end` default. The single home for that default.
+  """
+  @spec hook(t(), atom()) :: (term() -> any())
+  def hook(%__MODULE__{} = options, field) do
+    # mutare:ignore[convention, return_value] the no-op's return is discarded (side-effect-only hook)
+    Map.get(options, field) || fn _ -> :ok end
+  end
+
+  @doc """
   Resolve and validate options.
 
   Accepts a keyword list (typically `Mutare.Config.merge/2`'s output, plus

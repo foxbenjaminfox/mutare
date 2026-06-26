@@ -468,25 +468,29 @@ defmodule Mix.Tasks.Mutare do
   # and truncated. Empty when a module ships without docs (a docs-stripped build).
   @summary_width 78
   defp mutator_summary(module) do
-    case Code.fetch_docs(module) do
-      {:docs_v1, _, _, _, %{"en" => doc}, _, _} when is_binary(doc) ->
+    case fetch_moduledoc(module) do
+      {:ok, doc} ->
         doc
         |> String.replace(~r/^[ \t]*\*[ \t]+/m, "")
         |> String.replace(~r/\*\*/, "")
         |> String.replace("`", "")
         |> String.replace(~r/\s+/, " ")
         |> String.trim()
-        |> truncate_summary()
+        |> Live.truncate(@summary_width)
 
-      _ ->
+      :error ->
         ""
     end
   end
 
-  defp truncate_summary(text) do
-    if String.length(text) <= @summary_width,
-      do: text,
-      else: String.slice(text, 0, @summary_width - 1) <> "…"
+  # The module's English `@moduledoc`, or `:error` when it ships without docs (a docs-stripped
+  # build) — the single match on the `Code.fetch_docs/1` tuple shape, shared by the catalog
+  # summary and `--explain`.
+  defp fetch_moduledoc(module) do
+    case Code.fetch_docs(module) do
+      {:docs_v1, _, _, _, %{"en" => doc}, _, _} when is_binary(doc) -> {:ok, doc}
+      _ -> :error
+    end
   end
 
   # `--version`: the installed mutare version.
@@ -527,12 +531,9 @@ defmodule Mix.Tasks.Mutare do
   end
 
   defp full_moduledoc(module) do
-    case Code.fetch_docs(module) do
-      {:docs_v1, _, _, _, %{"en" => doc}, _, _} when is_binary(doc) ->
-        String.trim_trailing(doc)
-
-      _ ->
-        "(no documentation available for #{inspect(module)})"
+    case fetch_moduledoc(module) do
+      {:ok, doc} -> String.trim_trailing(doc)
+      :error -> "(no documentation available for #{inspect(module)})"
     end
   end
 
@@ -909,7 +910,7 @@ defmodule Mix.Tasks.Mutare do
     n = length(ineffective)
 
     Mix.raise(
-      "--strict-ignores: #{n} `# mutare:ignore` directive#{if n == 1, do: "", else: "s"} " <>
+      "--strict-ignores: #{n} `# mutare:ignore` directive#{plural(n)} " <>
         "suppressed no mutant (see the warnings above)"
     )
   end

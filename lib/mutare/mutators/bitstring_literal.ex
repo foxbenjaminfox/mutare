@@ -20,15 +20,17 @@ defmodule Mutare.Mutators.BitstringLiteral do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
+
   @impl Mutare.Mutator
   def name, do: :bitstring
 
   @impl Mutare.Mutator
-  def mutate({:<<>>, meta, segments})
+  def mutate({:<<>>, meta, segments} = node)
       when is_list(meta) and is_list(segments) and segments != [] do
     # A `delimiter` marks an interpolated string (a `<<>>` written as `"…"`), not a
     # `<<…>>` literal — leave it to StringLiteral's domain.
-    if Keyword.has_key?(meta, :delimiter), do: :skip, else: [{:<<>>, [], []}]
+    if AST.string_binary?(node), do: :skip, else: [{:<<>>, [], []}]
   end
 
   def mutate(_node), do: :skip

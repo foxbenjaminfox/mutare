@@ -54,6 +54,8 @@ defmodule Mutare.Mutators.BitstringSpec do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.AST
+
   # The three Unicode codepoint encodings, mutually swappable.
   @encodings [:utf8, :utf16, :utf32]
 
@@ -66,11 +68,11 @@ defmodule Mutare.Mutators.BitstringSpec do
   def name, do: :bitstring_spec
 
   @impl Mutare.Mutator
-  def mutate({:<<>>, meta, segments})
+  def mutate({:<<>>, meta, segments} = node)
       when is_list(meta) and is_list(segments) and segments != [] do
     # A `:delimiter` marks an interpolated string (a `<<>>` written as `"…"`); its
     # segments are `::binary`, never utf — leave it to StringLiteral's domain.
-    if Keyword.has_key?(meta, :delimiter) do
+    if AST.string_binary?(node) do
       :skip
     else
       case whole_node_mutants(meta, segments) do
@@ -247,8 +249,8 @@ defmodule Mutare.Mutators.BitstringSpec do
   # source and re-parse with the standard (escape-decoding) parser to recover what
   # the compiler will actually encode.
   defp decoded_value(value) do
-    with {:ok, _literal} <- Mutare.AST.literal_value(value),
-         {:ok, decoded} <- Code.string_to_quoted(Sourceror.to_string(value)),
+    with {:ok, _literal} <- AST.literal_value(value),
+         {:ok, decoded} <- Code.string_to_quoted(AST.to_string(value)),
          true <- is_integer(decoded) or is_binary(decoded) do
       {:ok, decoded}
     else

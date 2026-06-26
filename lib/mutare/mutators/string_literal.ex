@@ -34,9 +34,9 @@ defmodule Mutare.Mutators.StringLiteral do
   # `delimiter` meta key — the discriminator from a real `<<…>>` bitstring (no
   # delimiter, BitstringLiteral's domain). Its runtime binary is never statically
   # `""`/`"mutare"`, so both variants always apply.
-  def mutate({:<<>>, meta, segments})
+  def mutate({:<<>>, meta, segments} = node)
       when is_list(meta) and is_list(segments) and segments != [] do
-    if Keyword.has_key?(meta, :delimiter),
+    if AST.string_binary?(node),
       do: [AST.literal(""), AST.literal(@sentinel)],
       else: :skip
   end

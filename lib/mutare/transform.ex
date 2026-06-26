@@ -498,7 +498,7 @@ defmodule Mutare.Transform do
   defp prepend_do_prologue(body_kw, var) do
     Enum.map(body_kw, fn {key, value} = pair ->
       if AST.key_atom(key) == :do and references_var?(value, var),
-        do: {key, prepend_statement(value, active_read(var))},
+        do: {key, prepend_statement(value, LiftedEmit.active_read(var))},
         else: pair
     end)
   end
@@ -1419,12 +1419,6 @@ defmodule Mutare.Transform do
     do: {var, [], nil}
 
   defp selector_subject(%Ctx{}), do: Mutare.Metamutant.subject_ast()
-
-  # The active-id prologue a non-lifted function's `:do` block is prefixed with:
-  # `<var> = :persistent_term.get(...)`, bound once so the block's selectors read it
-  # (`selector_subject/1`). Shape-identical to the lifted dispatcher's read.
-  defp active_read(var),
-    do: {:=, [], [Recorder.catch_all_pattern(var), Mutare.Metamutant.subject_ast()]}
 
   # The selector catch-all (`<var> -> …`): the baseline + every-inactive-mutant
   # branch. It carries the coverage record (inert outside the probe, see

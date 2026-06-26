@@ -173,9 +173,9 @@ defmodule Mutare.Runner do
     if Schema.count(schema) == 0 do
       {:error, :nothing_to_mutate, "no mutation sites found under #{inspect(options.paths)}"}
     else
-      reporter = options.reporter || fn _result -> :ok end
-      on_phase = options.on_phase || fn _phase -> :ok end
-      on_start = options.on_start || fn _site -> :ok end
+      reporter = Options.hook(options, :reporter)
+      on_phase = Options.hook(options, :on_phase)
+      on_start = Options.hook(options, :on_start)
       mode = options.test_selection
 
       on_phase.(:compiling)
