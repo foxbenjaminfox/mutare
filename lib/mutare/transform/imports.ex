@@ -169,7 +169,7 @@ defmodule Mutare.Transform.Imports do
   to nothing imported (a local, or the default `Kernel`). The reader half of the
   `:mutare_import` contract.
   """
-  @spec resolved_import(keyword() | term()) :: {[atom()] | atom(), :bare | :qualify} | nil
+  @spec resolved_import(keyword() | term()) :: {Aliases.module_key(), :bare | :qualify} | nil
   def resolved_import(meta) when is_list(meta), do: Keyword.get(meta, @import_key)
   def resolved_import(_meta), do: nil
 
@@ -181,7 +181,8 @@ defmodule Mutare.Transform.Imports do
   import, the witness makes the conflict ambiguous at compile time instead of letting the mutant
   silently call the wrong provider.
   """
-  @spec import_witness(keyword() | term()) :: {[atom()] | atom(), atom(), non_neg_integer()} | nil
+  @spec import_witness(keyword() | term()) ::
+          {Aliases.module_key(), atom(), non_neg_integer()} | nil
   def import_witness(meta) when is_list(meta), do: Keyword.get(meta, @import_witness_key)
   def import_witness(_meta), do: nil
 

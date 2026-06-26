@@ -62,8 +62,9 @@ defmodule Mutare.Transform.Calls do
   @typedoc """
   A resolved module: an Elixir-module path (`[:Enum]`, `[:String]`) or an Erlang-module atom
   (`:binary`, `:string`). A mutator keys its table on whichever shape the function lives in.
+  Defined once in `Mutare.Transform.Aliases` (the module-key operations' owner).
   """
-  @type module_key :: [atom()] | atom()
+  @type module_key :: Aliases.module_key()
 
   @doc """
   Deconstruct a recognised stdlib call into `{module, fun, args, rebuild}`, or `nil`.
@@ -106,10 +107,13 @@ defmodule Mutare.Transform.Calls do
   end
 
   # A direct Erlang remote call `:binary.fun(args)` — the module is a bare atom (Sourceror-
-  # wrapped or plain), which `Aliases` never stamps; the atom *is* the module key.
+  # wrapped or plain), which `Aliases` never stamps; the atom *is* the module key. The
+  # `__aliases__` (Elixir) shape was handled by the clause above, so `Aliases.resolve_node/2`
+  # (env-free — a direct remote carries no alias) only ever sees the bare/wrapped-atom shapes
+  # here, returning the atom (or `nil` for a non-module receiver).
   def resolved_call({{:., dot_meta, [mod, fun]}, call_meta, args})
       when is_atom(fun) and is_list(args) do
-    case erlang_module(mod) do
+    case Aliases.resolve_node(mod, %{}) do
       nil ->
         nil
 
@@ -154,12 +158,6 @@ defmodule Mutare.Transform.Calls do
   end
 
   def resolved_call(_node), do: nil
-
-  # The module node of a *direct* Erlang remote: a Sourceror-wrapped atom or a bare atom. An
-  # `{:__aliases__, …}` (Elixir, handled above) or any non-atom receiver is not one.
-  defp erlang_module({:__block__, _meta, [atom]}) when is_atom(atom), do: atom
-  defp erlang_module(atom) when is_atom(atom), do: atom
-  defp erlang_module(_mod), do: nil
 
   # Build the qualifier node for a `:qualify` rebuild — naming the resolved module in a form
   # that **bypasses lexical aliases**, since the import captured a specific module but a later

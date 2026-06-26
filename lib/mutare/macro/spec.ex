@@ -95,6 +95,10 @@ defmodule Mutare.Macro.Spec do
   A resolved module key: an Elixir-module atom path, an Erlang-module atom, or the
   wildcard `:*` (a name-only entry, matching any module).
   """
+  # Structurally the same shape as `Mutare.Transform.Aliases.module_key/0` (the resolution
+  # layer's canonical type), but kept local on purpose: `Mutare.Macro.Spec` is consumed *by* the
+  # transform and stays free of any dependency on it, so it can't reference that type without
+  # inverting the layering. The `:*` wildcard is this registry's own addition (an `atom()`).
   @type module_key :: [atom()] | atom()
 
   @typedoc "How one argument is routed."

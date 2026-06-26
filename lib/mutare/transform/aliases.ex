@@ -72,12 +72,22 @@ defmodule Mutare.Transform.Aliases do
 
   @meta_key :mutare_alias
 
+  @typedoc """
+  A resolved module reference: an Elixir-module **path** (`[:Enum]`, `[:String]`) or an
+  Erlang-module **atom** (`:binary`, `:string`). The shape the module-key operations here
+  (`resolve_path/2`, `to_module/1`, `resolve_node/2`, `resolved_module/2`) produce or consume,
+  and the key the call-matching families table on. The single home for the type, referenced by
+  `Mutare.Transform.{Calls, Imports, ImportWitness}` rather than each re-spelling `[atom()] |
+  atom()`.
+  """
+  @type module_key :: [atom()] | atom()
+
   @doc """
   The module a call's `__aliases__` refers to: the resolved path stamped by
   `stamp_module/2`, or the literal path when no alias applied. The reader half of the
   `:mutare_alias` contract.
   """
-  @spec resolved_module(keyword(), [atom()]) :: [atom()] | atom()
+  @spec resolved_module(keyword(), [atom()]) :: module_key()
   def resolved_module(alias_meta, literal_path) when is_list(alias_meta),
     do: Keyword.get(alias_meta, @meta_key, literal_path)
 
@@ -95,7 +105,7 @@ defmodule Mutare.Transform.Aliases do
   (`B` → `:binary`); a trailing segment after it (`B.Sub`) is not a real module, so it is
   left unresolved.
   """
-  @spec resolve_path([atom()] | term(), map()) :: [atom()] | atom() | term()
+  @spec resolve_path([atom()] | term(), map()) :: module_key() | term()
   # A literal `Elixir.`-prefixed written path (`Elixir.String`, `Elixir.Elixir.MyUse`) is the
   # **fully-qualified, alias-proof** form — `Elixir.` ignores every alias in scope (it's exactly
   # what `Mutare.Transform.Calls.qualifier/1` emits to dodge a rebinding alias). Normalize it
@@ -267,7 +277,7 @@ defmodule Mutare.Transform.Aliases do
   genuine doubled prefix. The canonical-prefix disambiguation lives in `resolve_path/2`, not
   here.
   """
-  @spec to_module([atom()] | atom() | term()) :: module() | nil
+  @spec to_module(module_key() | term()) :: module() | nil
   def to_module(path) when is_list(path), do: Module.concat(path)
   def to_module(atom) when is_atom(atom), do: atom
   def to_module(_other), do: nil

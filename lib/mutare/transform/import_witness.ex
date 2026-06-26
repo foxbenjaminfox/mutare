@@ -19,10 +19,10 @@ defmodule Mutare.Transform.ImportWitness do
   # case (a call that isn't a bare import).
 
   alias Mutare.AST
-  alias Mutare.Transform.Imports
+  alias Mutare.Transform.{Aliases, Imports}
 
   @doc "The `{module, fun, arity}` to witness for a candidate's original node, or `nil`."
-  @spec for_candidate(map()) :: {[atom()] | atom(), atom(), arity()} | nil
+  @spec for_candidate(map()) :: {Aliases.module_key(), atom(), arity()} | nil
   def for_candidate(%{original: original}), do: from_node(original)
   def for_candidate(_candidate), do: nil
 
@@ -30,7 +30,7 @@ defmodule Mutare.Transform.ImportWitness do
   defp from_node(_node), do: nil
 
   @doc "Prefix `witness` (as a dead-code block) to a single expression; a no-op for `nil`."
-  @spec wrap(Macro.t(), {[atom()] | atom(), atom(), arity()} | nil) :: Macro.t()
+  @spec wrap(Macro.t(), {Aliases.module_key(), atom(), arity()} | nil) :: Macro.t()
   def wrap(node, nil), do: node
   def wrap(node, witness), do: {:__block__, [], [ast(witness), node]}
 
@@ -38,7 +38,7 @@ defmodule Mutare.Transform.ImportWitness do
   Splice `witness` into a clause body's `:do` block (the lifted path's `[body_kw]` shape); a
   no-op for a `nil` witness or a body that isn't a single keyword list.
   """
-  @spec prepend(Macro.t(), {[atom()] | atom(), atom(), arity()} | nil) :: Macro.t()
+  @spec prepend(Macro.t(), {Aliases.module_key(), atom(), arity()} | nil) :: Macro.t()
   def prepend(body, nil), do: body
 
   def prepend([kw], witness) when is_list(kw),
