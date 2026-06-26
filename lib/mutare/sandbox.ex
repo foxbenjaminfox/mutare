@@ -27,6 +27,8 @@ defmodule Mutare.Sandbox do
   per-mutant timeout cap the bootstrap honours) lives in `Mutare.Sandbox.Command`.
   """
 
+  require Logger
+
   alias Mutare.{Options, Schema}
   alias Mutare.Coverage.Recorder
   alias Mutare.Sandbox.Command
@@ -549,9 +551,20 @@ defmodule Mutare.Sandbox do
         # Only keep the seed if we *guaranteed* every metamutant will recompile.
         unless MapSet.subset?(meta_sources, forced), do: teardown(to_seed)
       rescue
-        _ -> teardown(to_seed)
+        e ->
+          Logger.debug(
+            "Mutare: app-build seed failed, falling back to cold compile: " <>
+              Exception.message(e)
+          )
+
+          teardown(to_seed)
       catch
-        _, _ -> teardown(to_seed)
+        kind, reason ->
+          Logger.debug(
+            "Mutare: app-build seed aborted (#{kind} #{inspect(reason)}), falling back to cold compile"
+          )
+
+          teardown(to_seed)
       end
     end
 
