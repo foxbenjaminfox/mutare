@@ -134,6 +134,12 @@ defmodule Mutare.Transform.Analyze do
   # through (the in-module counterpart to `annotate/2`).
   def pattern(node, mutators), do: analyze(node, :pattern, mutators)
 
+  # The general context-carrying descent — `annotate`/`scaffold`/`pattern` are this specialized
+  # to a fixed context. Public so a split-out analyze helper (e.g. `Analyze.Conditions`, which
+  # owns `cond`/`if` routing) can fall back to the full descent in whatever liveness context it
+  # was handed, instead of re-deriving the dispatch.
+  def descend(node, context, mutators), do: analyze(node, context, mutators)
+
   # `when` guard (position-independent: also covers case/fn clause guards): the
   # lift path owns guard mutation, so the in-place walk never touches one.
   defp analyze({:when, _meta, [_call | guards]} = node, _context, _mutators)
@@ -325,8 +331,7 @@ defmodule Mutare.Transform.Analyze do
   # pattern-route the conditions. The `:do` block key is protected by the
   # keyword-pair clause.
   defp analyze({:cond, meta, [blocks]}, context, mutators) when is_list(blocks) do
-    body_ctx = body_context(context)
-    {:cond, meta, [Enum.map(blocks, &analyze_cond_block(&1, body_ctx, mutators))]}
+    {:cond, meta, [Conditions.cond_blocks(blocks, body_context(context), mutators)]}
   end
 
   # `if`/`unless`: the condition is an ordinary runtime expression *and* the one
@@ -818,33 +823,6 @@ defmodule Mutare.Transform.Analyze do
     do: Enum.map(list, &analyze(&1, context, mutators))
 
   def recurse(other, _context, _mutators), do: other
-
-  # One `cond` do-block: a `{key, clauses}` pair whose key is the `:do` label (kept
-  # raw, never mutated) and whose clauses each keep *both* sides in `context` — a cond
-  # clause's left is a condition, not a pattern. `context` is the construct's liveness
-  # (`:runtime` for an ordinary cond; `:scaffold` for a module-level cond that wraps a
-  # metaprogrammed `def`, keeping its conditions compile-time-inert). Anything
-  # unexpected falls back to a plain descent in that context.
-  defp analyze_cond_block({key, clauses}, context, mutators) when is_list(clauses),
-    do: {key, Enum.map(clauses, &analyze_cond_clause(&1, context, mutators))}
-
-  defp analyze_cond_block(other, context, mutators), do: analyze(other, context, mutators)
-
-  defp analyze_cond_clause({:->, meta, [conds, body]}, context, mutators) when is_list(conds) do
-    analyzed_conds =
-      Enum.map(conds, fn cond_node ->
-        # Analyze as a condition (runtime, IfCondition, binding-safe) only when live —
-        # a `:scaffold` cond (module-level metaprogramming) runs once at compile time
-        # with mutant 0, so a selector on its condition could never activate.
-        if context == :runtime,
-          do: Conditions.analyze_condition(cond_node, mutators),
-          else: analyze(cond_node, context, mutators)
-      end)
-
-    {:->, meta, [analyzed_conds, analyze(body, context, mutators)]}
-  end
-
-  defp analyze_cond_clause(other, context, mutators), do: analyze(other, context, mutators)
 
   # One argument of a `defimpl`: a keyword list holding the `do:` block (its body is
   # runtime — analyze it) alongside compile-time entries like `for:` (pass raw). The

@@ -9,7 +9,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
   # touches the descent only through the public `Analyze.annotate/2` (the `:runtime` walk).
   #
   # Entry points the descent calls (`Mutare.Transform.Analyze`):
-  #   * cond clause   → `analyze_condition/2`
+  #   * cond          → `cond_blocks/3` (routes each clause condition → `analyze_condition/2`)
   #   * if/unless     → `hoist_if?/2` + `hoist_if/6` (hoistable) or `finish_condition/3` (plain)
 
   alias Mutare.AST
@@ -67,6 +67,39 @@ defmodule Mutare.Transform.Analyze.Conditions do
       {_pruned, false} -> attach_if_condition(analyzed, raw_condition, mutators)
     end
   end
+
+  # === cond ==================================================================
+  #
+  # The descent hands the whole `cond`'s block list here (the `:cond` clause in
+  # `Mutare.Transform.Analyze`). A `cond` clause's *left* is a runtime condition, not a
+  # pattern, so each is routed through `analyze_condition/2` (runtime + IfCondition +
+  # binding-safe) — unlike every other `->` construct, whose LHS is a pattern. `context` is
+  # the construct's liveness: `:runtime` for an ordinary `cond`; `:scaffold` for a module-level
+  # `cond` wrapping a metaprogrammed `def`, whose conditions run once at compile time with
+  # mutant 0 (so a selector there could never activate) and stay inert.
+  def cond_blocks(blocks, context, mutators) do
+    Enum.map(blocks, &cond_block(&1, context, mutators))
+  end
+
+  # One `cond` do-block: a `{key, clauses}` pair whose key is the `:do` label (kept raw, never
+  # mutated). Anything unexpected falls back to a plain descent in `context`.
+  defp cond_block({key, clauses}, context, mutators) when is_list(clauses),
+    do: {key, Enum.map(clauses, &cond_clause(&1, context, mutators))}
+
+  defp cond_block(other, context, mutators), do: Analyze.descend(other, context, mutators)
+
+  defp cond_clause({:->, meta, [conds, body]}, context, mutators) when is_list(conds) do
+    analyzed_conds =
+      Enum.map(conds, fn cond_node ->
+        if context == :runtime,
+          do: analyze_condition(cond_node, mutators),
+          else: Analyze.descend(cond_node, context, mutators)
+      end)
+
+    {:->, meta, [analyzed_conds, Analyze.descend(body, context, mutators)]}
+  end
+
+  defp cond_clause(other, context, mutators), do: Analyze.descend(other, context, mutators)
 
   # === if/unless condition hoisting ==========================================
   #
