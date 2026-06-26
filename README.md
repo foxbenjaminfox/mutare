@@ -222,6 +222,29 @@ matched however it's written — directly, aliased, or imported (bare). `Module`
 be an Elixir module (`Ecto.Query`), an Erlang atom module (`:binary`), and is
 resolved purely syntactically, so it needn't be a dependency of the Mutare process.
 
+#### Wildcards: a whole module, or a name in any module
+
+The glob atom `:*` matches anything in the module, name, or arity slot:
+
+```elixir
+macros: [
+  # whole module — leave every macro in this DSL untouched
+  {MyApp.Sql, :*, :skip},
+  # …but override one of them (a more specific line always wins)
+  {MyApp.Sql, :select, 2, [:expression, :skip]},
+
+  # name-only escape hatch — a macro of this name in ANY module
+  {:*, :sigil_X, :skip}
+]
+```
+
+A **whole-module** entry (`:*` in the name slot) routes every macro in the module;
+a more specific entry on another line overrides it per macro. The **name-only**
+escape hatch (`:*` in the module slot) matches a macro by name regardless of which
+module exports it — use it only when Mutare can't resolve the macro's module (a
+`use`-injected import, an alias it can't follow); it's consulted last and never
+shadows a module-matched (or built-in) treatment.
+
 ### Choosing which mutators run
 
 The `:mutators` list (in `.mutare.exs`, or `--mutators` on the CLI) is sugar over

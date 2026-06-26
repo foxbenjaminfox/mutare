@@ -184,7 +184,8 @@ mix mutare --mutators relational,logical,conditional
   exclude: ["lib/generated/**"],
   mutators: :all,                 # or a list
   macros: [                       # known macros: route a macro's args specially
-    {MyApp.Sql, :query, 1, :skip} # leave the DSL body untouched
+    {MyApp.Sql, :query, 1, :skip},# leave the DSL body untouched
+    {MyApp.Sql, :*, :skip}        # …or :* — every macro in the module (also {:*, name, …})
   ],
   workers: System.schedulers_online(),
   timeout_multiplier: 3.0,

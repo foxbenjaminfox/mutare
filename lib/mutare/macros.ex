@@ -27,6 +27,23 @@ defmodule Mutare.Macros do
   module), so a `{Ecto.Query, :from, :any, :skip}` entry resolves even when `Ecto`
   is not a dependency of the Mutare process.
 
+  ## Wildcards (`:*`)
+
+  Beyond a specific `{module, name, arity}`/`{module, name}` entry, the glob atom
+  `:*` (`Mutare.Macro.Spec.wildcard/0`) wildcards a slot:
+
+    * `{module, :*, treatment}` — a **whole module**: route *every* macro in `module`
+      (e.g. `{Ecto.Query, :*, :skip}` to leave a whole query DSL raw). Override a
+      single macro with a more specific entry on a separate line — `{Ecto.Query, :from,
+      2, :hosted}` wins for `from/2` while the rest stay `:skip`.
+    * `{:*, name, treatment}` — a **name-only escape hatch**: route a macro of that name
+      no matter which module exports it. This is the fallback for when module resolution
+      can't see the macro's module (a `use`-injected import, an alias Mutare can't follow);
+      it is deliberately *not* the standard way to register a macro, and is consulted last
+      (see `lookup/4`).
+
+  See `Mutare.Macro.Spec` for the precedence and the wildcard validation rules.
+
   For the no-mutator case (just route a custom DSL's argument as a pattern, or
   leave a macro body opaque) the declarative `:macros` option is enough; a mutator
   that needs the routing usually ships it via `c:Mutare.Mutator.macros/0` instead.
@@ -65,7 +82,9 @@ defmodule Mutare.Macros do
 
   Each entry is a `{module, name, arity, treatment}` 4-tuple, a
   `{module, name, treatment}` 3-tuple (arity `:any`), or an already-resolved
-  `%Mutare.Macro.Spec{}` (idempotent). Raises `ArgumentError` on a malformed entry.
+  `%Mutare.Macro.Spec{}` (idempotent). The `module` and `name` may be the wildcard
+  `:*` (a name-only escape hatch / a whole-module entry — see the moduledoc).
+  Raises `ArgumentError` on a malformed entry.
 
       iex> [spec] = Mutare.Macros.resolve([{Ecto.Query, :from, :skip}])
       iex> {spec.module, spec.name, spec.arity, spec.args}
@@ -178,13 +197,47 @@ defmodule Mutare.Macros do
 
   @doc """
   The `Mutare.Macro.Spec` a call resolving to `module_key`/`name` at `arity` matches, or `nil`.
-  An exact `arity` entry wins over an `:any`-arity one. Returns the whole spec, so
-  `Mutare.Transform.Resolve` can read its `host`/`args` to resolve a `:routing` classifier or
-  stamp a `:hosted` treatment with its hosting mutator. The per-position treatment list for a
-  static spec is `Mutare.Macro.Spec.routing/2` of the result.
+  Returns the whole spec, so `Mutare.Transform.Resolve` can read its `host`/`args` to resolve a
+  `:routing` classifier or stamp a `:hosted` treatment with its hosting mutator. The per-position
+  treatment list for a static spec is `Mutare.Macro.Spec.routing/2` of the result.
+
+  Resolution is **most-specific-wins**, cascading from the exact entry down to the wildcards
+  (`#{inspect(Spec.wildcard())}`, see `Mutare.Macro.Spec`):
+
+    1. `{module, name, arity}` — the exact macro at the exact arity;
+    2. `{module, name, :any}` — that macro at any arity;
+    3. `{module, :*, :any}` — a **whole-module** entry (every macro in the module);
+    4. `{:*, name, arity}` — a **name-only** entry at the exact arity;
+    5. `{:*, name, :any}` — a name-only entry at any arity.
+
+  So a module-specific entry always beats a whole-module one, which beats the name-only escape
+  hatch — and the hatch is consulted last, never shadowing a module-matched (or built-in)
+  treatment. A name-only entry fires even when `module_key` is `nil` (an unresolvable bare call),
+  which is exactly the case it exists for.
+
+      iex> registry = Mutare.Macros.build([{Foo, :*, :skip}, {Foo, :bar, 1, [:pattern]}], [])
+      iex> # the whole-module entry catches any other macro in Foo…
+      iex> Mutare.Macros.lookup(registry, [:Foo], :baz, 2).args
+      :skip
+      iex> # …but a specific {Foo, :bar, 1} entry wins for bar/1
+      iex> Mutare.Macros.lookup(registry, [:Foo], :bar, 1).args
+      [:pattern]
+
+      iex> registry = Mutare.Macros.build([{:*, :sigil_X, :skip}], [])
+      iex> # a name-only entry matches the name in any module (here even an unresolved one)
+      iex> Mutare.Macros.lookup(registry, [:Whatever], :sigil_X, 1).args
+      :skip
+      iex> Mutare.Macros.lookup(registry, nil, :sigil_X, 2).args
+      :skip
   """
-  @spec lookup(registry(), Spec.module_key(), atom(), non_neg_integer()) :: Spec.t() | nil
+  @spec lookup(registry(), Spec.module_key() | nil, atom(), non_neg_integer()) :: Spec.t() | nil
   def lookup(registry, module_key, name, arity) when is_map(registry) do
-    Map.get(registry, {module_key, name, arity}) || Map.get(registry, {module_key, name, :any})
+    wild = Spec.wildcard()
+
+    Map.get(registry, {module_key, name, arity}) ||
+      Map.get(registry, {module_key, name, :any}) ||
+      Map.get(registry, {module_key, wild, :any}) ||
+      Map.get(registry, {wild, name, arity}) ||
+      Map.get(registry, {wild, name, :any})
   end
 end

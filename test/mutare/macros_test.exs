@@ -200,4 +200,80 @@ defmodule Mutare.MacrosTest do
       assert Macros.lookup(registry, [:Foo], :baz, 1) == nil
     end
   end
+
+  describe "wildcard entries (`:*`)" do
+    test "Spec.wildcard/0 is the glob atom" do
+      assert Spec.wildcard() == :*
+    end
+
+    test "a whole-module entry routes every macro in the module" do
+      registry = Macros.build([{Foo, :*, :skip}], [])
+
+      assert %Spec{module: [:Foo], name: :*, args: :skip} =
+               Macros.lookup(registry, [:Foo], :bar, 1)
+
+      assert %Spec{args: :skip} = Macros.lookup(registry, [:Foo], :anything_else, 3)
+      # …but only in that module.
+      assert Macros.lookup(registry, [:Other], :bar, 1) == nil
+    end
+
+    test "a more specific entry overrides a whole-module one (per-macro override)" do
+      registry = Macros.build([{Foo, :*, :skip}, {Foo, :bar, 2, [:pattern, :expression]}], [])
+      assert %Spec{args: [:pattern, :expression]} = Macros.lookup(registry, [:Foo], :bar, 2)
+      # The override is arity-specific; bar/1 still falls through to the whole-module :skip.
+      assert %Spec{name: :*, args: :skip} = Macros.lookup(registry, [:Foo], :bar, 1)
+      assert %Spec{name: :*, args: :skip} = Macros.lookup(registry, [:Foo], :baz, 9)
+    end
+
+    test "a name-only entry matches the name in any module — including an unresolved (nil) one" do
+      registry = Macros.build([{:*, :sigil_X, :skip}], [])
+
+      assert %Spec{module: :*, name: :sigil_X, args: :skip} =
+               Macros.lookup(registry, [:AnyMod], :sigil_X, 1)
+
+      assert %Spec{args: :skip} = Macros.lookup(registry, [:Totally, :Different], :sigil_X, 2)
+      # The escape hatch's whole point: it fires even when the module couldn't be resolved.
+      assert %Spec{args: :skip} = Macros.lookup(registry, nil, :sigil_X, 0)
+      # but not for a different name
+      assert Macros.lookup(registry, [:AnyMod], :other, 1) == nil
+    end
+
+    test "name-only is the last resort — a module-specific or built-in entry wins" do
+      registry =
+        Macros.build([{:*, :match?, :skip}, {Foo, :match?, 2, [:pattern, :expression]}], [])
+
+      # The built-in Kernel.match?/2 (a pattern) is not shadowed by the name-only :skip.
+      assert %Spec{module: [:Kernel], args: [:pattern, :expression]} =
+               Macros.lookup(registry, [:Kernel], :match?, 2)
+
+      # A module-specific entry beats the name-only one too.
+      assert %Spec{module: [:Foo], args: [:pattern, :expression]} =
+               Macros.lookup(registry, [:Foo], :match?, 2)
+
+      # An unrelated module falls through to the name-only escape hatch.
+      assert %Spec{module: :*, args: :skip} = Macros.lookup(registry, [:Bar], :match?, 2)
+    end
+
+    test ":* is a synonym for :any in the arity slot" do
+      assert %Spec{arity: :any} = Spec.new(Foo, :bar, :*, :skip)
+    end
+
+    test "rejects wildcarding both module and name" do
+      assert_raise ArgumentError, ~r/cannot wildcard both/, fn ->
+        Spec.new(:*, :*, :any, :skip)
+      end
+
+      assert_raise ArgumentError, ~r/cannot wildcard both/, fn ->
+        Macros.resolve([{:*, :*, :skip}])
+      end
+    end
+
+    test "rejects a whole-module entry pinned to a specific arity" do
+      assert_raise ArgumentError, ~r/cannot also pin arity/, fn -> Spec.new(Foo, :*, 2, :skip) end
+
+      assert_raise ArgumentError, ~r/cannot also pin arity/, fn ->
+        Macros.resolve([{Foo, :*, 2, :skip}])
+      end
+    end
+  end
 end

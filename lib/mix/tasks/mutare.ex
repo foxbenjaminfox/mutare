@@ -124,7 +124,9 @@ defmodule Mix.Tasks.Mutare do
         # (or `:all`/`:builtins` bare) for the full default set.
         mutators: :all,
         # leave a macro's arguments raw (a DSL body, a pattern) so they aren't
-        # mutated — `:skip` covers every argument, a list marks each position
+        # mutated — `:skip` covers every argument, a list marks each position;
+        # `:*` wildcards a slot: {M, :*, :skip} = whole module, {:*, name, :skip}
+        # = that name in any module (a more specific line overrides)
         macros: [{Ecto.Query, :from, :skip}],
         # expand `use` to surface the import/alias it injects (--no-expand-uses)
         expand_uses: true,

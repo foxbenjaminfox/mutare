@@ -1509,6 +1509,43 @@ restores `:runtime`. Originally `offer/4` ran context-blind and wrapped the scaf
 the guard is in the `analyze` capture clause, not in `Captures` (placement is positional, the
 caller's job).
 
+### Macro registry wildcards — whole-module and name-only escape hatch `[done]`
+Two flexibility asks on `:macros`: (1) mark a **whole module**'s macros with one treatment (a
+whole DSL `:skip`), overridable per-macro on a separate line; (2) configure a treatment **by name
+only**, applying to any module exporting that name — the escape hatch for when the module-resolution
+machinery can't see the macro (a `use`-injected import Mutare can't expand, an alias it can't follow).
+
+The whole thing is **two wildcards in the existing positional grammar** — no new tuple shapes, almost
+no new code. The glob atom **`:*`** (`Spec.wildcard/0`) means "match anything" in any slot:
+`{Mod, :*, t}` is whole-module (name wildcard), `{:*, name, t}` is name-only (module wildcard), and in
+the *arity* slot `:*` is a synonym for the canonical `:any`. Why `:*` and not `:any`: a real macro can
+be named `any` (a collision — is `{Mod, :any, …}` the macro `any` or the wildcard?), but **nothing can
+be named `*`** — `:*` is a valid atom yet an impossible macro/module name, so it's an unambiguous,
+escaping-free sentinel. (We asked; `:*` was chosen over `:_` for glob-obviousness.)
+
+Where the code actually changed:
+
+- **`Spec`** — `normalize_module(:*) → :*`, `validate_arity(:*) → :any`, and `validate_wildcards!/3`
+  rejecting the two nonsensical combos: *both* module and name `:*` (route everything everywhere), and
+  a name-`:*` entry pinned to a real arity (the lookup cascade only ever consults `{module, :*, :any}`
+  for a whole module, so an arity there would be dead config — fail loud, don't silently drop). The
+  existing `resolve!/1` 3-/4-tuple clauses already build these — `:*` just flows through the slots.
+- **`Macros.lookup/4`** — the one behavioural change: a **most-specific-wins cascade**
+  `{m,n,a}` → `{m,n,:any}` → `{m,:*,:any}` → `{:*,n,a}` → `{:*,n,:any}`. So a specific entry overrides a
+  whole-module one (the per-macro override falls out for free), the name-only hatch is **last** (never
+  shadows a module-matched or built-in treatment like `Kernel.match?`), and a name-only entry fires even
+  when the resolved `module_key` is `nil` (the unresolvable bare call — exactly its purpose).
+
+**No `Resolve` change.** `stamp_macro` already calls `lookup` with the resolved (or `nil`) module and
+acts on whatever spec comes back; the cascade does the rest. `registered_macro_module/3` (which recovers
+a module for a bare call under a whole import of an unloadable DSL) now matches more eagerly when a
+name-only entry exists, but harmlessly: its returned `module_key` is used *only* to re-feed `stamp_macro`,
+which produces the same name-only routing whether the module is the recovered one or `nil`.
+
+The name-only hatch is documented as deliberately non-standard and broad (it skips/routes *every* call of
+that name, function or macro, in any module) — that's the user's explicit opt-in for the case where
+proper module resolution isn't available.
+
 ### Mutating inside a foreign-semantics DSL — the selector host (Ecto `from`/`where`)
 The hard case a *deep* custom mutator hits: mutating **inside** a compile-time DSL (Ecto's
 `from`/`where`) where you can't reach `:persistent_term` with a bare selector (the `case` would

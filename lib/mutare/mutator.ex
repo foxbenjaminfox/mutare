@@ -303,7 +303,9 @@ defmodule Mutare.Mutator do
   `{module, name, arity, treatment}` or `{module, name, treatment}` (arity `:any`),
   where `treatment` is one of `:expression` / `:pattern` / `:binding_pattern` / `:skip` /
   `:hosted` (uniform), a per-position list, or the `:routing` classifier sentinel (deferring
-  to `c:macro_routing/1`). A `:hosted` argument is delivered through this module's `c:host/2`
+  to `c:macro_routing/1`). `module`/`name` may be the wildcard `:*` — `{module, :*, treatment}`
+  registers a whole module, `{:*, name, treatment}` a name in any module (see `Mutare.Macro.Spec`).
+  A `:hosted` argument is delivered through this module's `c:host/2`
   (the deep `Ecto.from`/`where` case); a `:routing` spec lets the treatment depend on the call
   shape. When the mutator is enabled (listed in `:mutators`), the
   transform merges these into its macro registry automatically — so a library ships

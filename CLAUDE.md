@@ -870,6 +870,17 @@ contract between them is the whole game.
   `{Ecto.Query, …}` entry validates without `Ecto` loaded. Identity at the call site uses the
   existing alias/import/displacement resolution (a bare `match?` is `Kernel.match?` only when it
   resolves to Kernel — a local shadow is a compile error), so bare/qualified/aliased forms all route.
+  The glob atom **`:*`** (`Spec.wildcard/0`) wildcards a slot: `{module, :*, t}` registers a **whole
+  module** (every macro in it), `{:*, name, t}` a **name-only escape hatch** (that name in *any*
+  module — the fallback for when module resolution can't see the macro, e.g. a `use`-injected import;
+  in the arity slot `:*` is a synonym for `:any`). `lookup/4` is **most-specific-wins** —
+  `{module, name, arity}` > `{module, name, :any}` > `{module, :*, :any}` > `{:*, name, arity}` >
+  `{:*, name, :any}` — so a specific entry overrides a whole-module one (per-macro override), the
+  name-only hatch is consulted last (never shadowing a module-matched or built-in treatment), and a
+  name-only entry fires even when the resolved `module_key` is `nil` (an unresolvable bare call —
+  exactly its purpose; no `Resolve` change, the cascade does it). `Spec.new/4` rejects the two
+  nonsensical combos (both module *and* name `:*`; a name-`:*` entry pinned to a real arity, which the
+  cascade would never reach). `:*` can't collide with a real macro/module name, so it needs no escaping.
   `:skip` is also "owned only by a custom mutator": core skips the args, but the whole node is still
   offered to every mutator, so the registering mutator fires. The stamp is honoured on **both**
   routing paths: the generic runtime clause *and* the **module-level macro-block** path

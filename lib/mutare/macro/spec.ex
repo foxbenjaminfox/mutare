@@ -18,6 +18,29 @@ defmodule Mutare.Macro.Spec do
   is normalised to the key the transform uses internally. `arity` is a
   non-negative integer or `:any` (matches a call of any arity).
 
+  ## Wildcards
+
+  The glob atom `:*` (`wildcard/0`) means "match anything" in the **module**, **name**, or
+  **arity** slot (in the arity slot `:*` is a synonym for `:any`, the canonical arity
+  wildcard). Two compound forms fall out of it:
+
+    * a **whole-module** entry — `:*` in the *name* slot (`{Ecto.Query, :*, :skip}`) — routes
+      *every* macro in the module, at every arity. (It is therefore all-arities; pinning an
+      arity alongside a name wildcard is rejected.)
+    * a **name-only** escape hatch — `:*` in the *module* slot (`{:*, :sigil_X, :skip}`) — routes
+      a macro of that name *regardless of which module exports it*. This is the fallback for when
+      the module-resolution machinery can't see the macro's module (a `use`-injected import Mutare
+      can't expand, an alias it can't follow); it is **not** the standard way to register a macro.
+
+  `:*` can never collide with a real macro or module name (none can be named `*`), so it is an
+  unambiguous sentinel. Wildcarding *both* module and name (`{:*, :*, …}`) is rejected — that
+  would route every macro everywhere.
+
+  Lookup is **most-specific-wins** (see `Mutare.Macros.lookup/4`), so a specific
+  `{Module, name, arity}` entry overrides a whole-module one, which overrides a name-only one;
+  the name-only hatch is the last resort and never shadows a module-matched treatment (including
+  the built-in `Kernel.match?`/`destructure`).
+
   ## Argument treatments
 
   `args` is either a single treatment atom (applied uniformly to every argument),
@@ -65,7 +88,10 @@ defmodule Mutare.Macro.Spec do
   `:macros` entry (no mutator) therefore can't use `:hosted`/`:routing`.
   """
 
-  @typedoc "A resolved module key: an Elixir-module atom path or an Erlang-module atom."
+  @typedoc """
+  A resolved module key: an Elixir-module atom path, an Erlang-module atom, or the
+  wildcard `:*` (a name-only entry, matching any module).
+  """
   @type module_key :: [atom()] | atom()
 
   @typedoc "How one argument is routed."
@@ -86,6 +112,19 @@ defmodule Mutare.Macro.Spec do
   defstruct [:module, :name, :arity, :args, host: nil]
 
   @treatments [:expression, :pattern, :binding_pattern, :skip, :hosted]
+
+  # The glob wildcard atom. Means "match anything" in the module, name, or arity slot —
+  # `*` is not a legal macro or module name, so it can never collide with a real one.
+  @wildcard :*
+
+  @doc """
+  The wildcard atom `:*` — "match anything" in a macro entry's module, name, or arity slot.
+
+      iex> Mutare.Macro.Spec.wildcard()
+      :*
+  """
+  @spec wildcard() :: :*
+  def wildcard, do: @wildcard
 
   # The arg modes that require a `host` (a mutator implementing the delivery/classifier
   # callbacks): the `:hosted` treatment (delivered through `c:Mutare.Mutator.host/2`) and
@@ -150,16 +189,45 @@ defmodule Mutare.Macro.Spec do
 
       iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, :bogus)
       ** (ArgumentError) macro arg treatment must be one of [:expression, :pattern, :binding_pattern, :skip, :hosted] (a list of them, or :routing), got: :bogus
+
+      iex> # a whole-module entry — `:*` in the name slot, any arity
+      iex> Mutare.Macro.Spec.new(Ecto.Query, :*, :any, :skip)
+      %Mutare.Macro.Spec{module: [:Ecto, :Query], name: :*, arity: :any, args: :skip}
+
+      iex> # a name-only escape hatch — `:*` in the module slot
+      iex> Mutare.Macro.Spec.new(:*, :sigil_X, :any, :skip)
+      %Mutare.Macro.Spec{module: :*, name: :sigil_X, arity: :any, args: :skip}
   """
   @spec new(term(), term(), term(), term()) :: t()
   def new(module, name, arity, args) do
-    %__MODULE__{
-      module: normalize_module(module),
-      name: validate_name(name),
-      arity: validate_arity(arity),
-      args: validate_args(args)
-    }
+    module = normalize_module(module)
+    name = validate_name(name)
+    arity = validate_arity(arity)
+    validate_wildcards!(module, name, arity)
+
+    %__MODULE__{module: module, name: name, arity: arity, args: validate_args(args)}
   end
+
+  # Reject the two nonsensical wildcard combinations, leaving the meaningful ones (whole module
+  # `{Mod, :*, :any}` and name-only `{:*, name, arity|:any}`):
+  #   * both module *and* name wildcarded — that would route every macro everywhere;
+  #   * a name wildcard pinned to a specific arity — a whole-module entry matches at every arity
+  #     (the lookup cascade only consults `{module, :*, :any}`), so an arity there is dead config.
+  defp validate_wildcards!(@wildcard, @wildcard, _arity) do
+    raise ArgumentError,
+          "a macro entry cannot wildcard both the module and the name (#{inspect(@wildcard)} for " <>
+            "both) — that would route every macro everywhere. Wildcard the module (a name-only " <>
+            "escape hatch) or the name (a whole module), not both."
+  end
+
+  defp validate_wildcards!(_module, @wildcard, arity) when arity != :any do
+    raise ArgumentError,
+          "a whole-module macro entry ({module, #{inspect(@wildcard)}, …}) matches every macro at " <>
+            "every arity, so it cannot also pin arity #{inspect(arity)}. Drop the arity (use the " <>
+            "3-tuple form), or name a specific macro to pin its arity."
+  end
+
+  defp validate_wildcards!(_module, _name, _arity), do: :ok
 
   @doc """
   The lookup key `{module_key, name, arity}` — what `Mutare.Macros` keys its
@@ -212,8 +280,14 @@ defmodule Mutare.Macro.Spec do
       :binary
       iex> Mutare.Macro.Spec.normalize_module([:Ecto, :Query])
       [:Ecto, :Query]
+
+      iex> # the module wildcard is kept as-is (a name-only escape hatch)
+      iex> Mutare.Macro.Spec.normalize_module(:*)
+      :*
   """
   @spec normalize_module(term()) :: module_key()
+  def normalize_module(@wildcard), do: @wildcard
+
   def normalize_module(module) when is_atom(module) do
     case Macro.classify_atom(module) do
       :alias -> module |> Module.split() |> Enum.map(&String.to_atom/1)
@@ -241,6 +315,8 @@ defmodule Mutare.Macro.Spec do
     do: raise(ArgumentError, "macro name must be an atom, got: #{inspect(other)}")
 
   defp validate_arity(:any), do: :any
+  # `:*` is the universal wildcard; in the arity slot it is a synonym for the canonical `:any`.
+  defp validate_arity(@wildcard), do: :any
   defp validate_arity(arity) when is_integer(arity) and arity >= 0, do: arity
 
   defp validate_arity(other) do

@@ -1351,6 +1351,63 @@ defmodule Mutare.TransformTest do
       assert sites == []
     end
 
+    @wide_query_source """
+    defmodule UsesQueryWide do
+      import Mutare.Test.QueryDSL
+
+      def run(y) do
+        query(where: 1 == y, select: 2)
+      end
+
+      def filter(q, y) do
+        q |> where(1 == y)
+      end
+    end
+    """
+
+    test "a whole-module `:*` entry skips every macro in the module" do
+      {meta, sites, _next_id} =
+        Mutare.transform_string(@wide_query_source,
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
+          macros: [{Mutare.Test.QueryDSL, :*, :skip}]
+        )
+
+      # Both `query(...)` and the piped `where(...)` are macros in QueryDSL, so the
+      # whole-module entry leaves all their arguments raw — nothing in either mutates.
+      assert sites == []
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "a more specific entry overrides the whole-module `:*` (per-macro override)" do
+      {meta, sites, _next_id} =
+        Mutare.transform_string(@wide_query_source,
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
+          macros: [
+            {Mutare.Test.QueryDSL, :*, :skip},
+            {Mutare.Test.QueryDSL, :where, 2, [:expression, :expression]}
+          ]
+        )
+
+      # `query(...)` stays skipped (whole-module), but `where/2` is overridden to mutate its
+      # args — so only the piped `1 == y` produces relational + literal sites (the identical
+      # `1 == y` *inside* the skipped `query(...)` keyword stays raw).
+      assert Enum.any?(sites, &(&1.mutator == :relational))
+      assert Enum.any?(sites, &(&1.mutator == :literal))
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "a name-only `{:*, name, ...}` entry skips the macro regardless of module" do
+      {_meta, sites, _next_id} =
+        Mutare.transform_string(@query_source,
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
+          macros: [{:*, :query, :skip}]
+        )
+
+      # No module is named in the entry, yet `query(...)` (which resolves to QueryDSL) is
+      # skipped — the name-only escape hatch matches the macro in any module.
+      assert sites == []
+    end
+
     test "a known macro drops the bare-import witness (it can't reconstruct the call)" do
       # The import witness reconstructs a bare-imported call as a dead-code `fn a -> query(a) end`
       # to prove it still resolves to the believed provider. For a known macro that constrains its
