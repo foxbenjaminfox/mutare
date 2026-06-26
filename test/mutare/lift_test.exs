@@ -94,7 +94,7 @@ defmodule Mutare.LiftTest do
 
   defp id(sites, from, to, line) do
     site =
-      Enum.find(sites, &(&1.original_op == from and &1.mutated_op == to and &1.line == line))
+      Enum.find(sites, &(&1.original_form == from and &1.mutated_form == to and &1.line == line))
 
     assert site, "no #{from} -> #{to} site on line #{line}"
     site.id
@@ -113,7 +113,7 @@ defmodule Mutare.LiftTest do
       assert Enum.count(sites, &(&1.operation == :replace and &1.kind == :lifted)) == 4
       assert Enum.count(sites, &(&1.mutator == :clause_drop)) == 4
 
-      assert [%Site{kind: :in_place, original_op: :+}] =
+      assert [%Site{kind: :in_place, original_form: :+}] =
                Enum.filter(sites, &(&1.kind == :in_place))
     end
 
@@ -220,7 +220,7 @@ defmodule Mutare.LiftTest do
 
       # …and a guard mutant (`>` → `<`) really flips dispatch: f(3) now falls through
       # to `f(_) -> 0`, proving the salted gate and the user variable coexist correctly.
-      flip = Enum.find(sites, &(&1.original_op == :> and &1.mutated_op == :<))
+      flip = Enum.find(sites, &(&1.original_form == :> and &1.mutated_form == :<))
       assert flip, "expected a `>` → `<` guard mutant"
       Selector.put(flip.id)
       assert apply(Mutare.ActiveVarCollisionFixture, :f, [3]) == 0
@@ -507,7 +507,10 @@ defmodule Mutare.LiftTest do
 
   test "report renders a lifted guard mutant as a one-line diff", %{sites: sites} do
     site =
-      Enum.find(sites, &(&1.kind == :lifted and &1.original_op == :>= and &1.mutated_op == :>))
+      Enum.find(
+        sites,
+        &(&1.kind == :lifted and &1.original_form == :>= and &1.mutated_form == :>)
+      )
 
     assert Report.diff(site, @source) ==
              "-  def classify(n) when n >= 0, do: :nonneg\n" <>
@@ -570,7 +573,10 @@ defmodule Mutare.LiftTest do
     test "a lifted guard mutant changes dispatch", %{default_sites: sites} do
       # `a > 5` → `a < 5`.
       Selector.put(
-        default_id(sites, &(&1.kind == :lifted and &1.original_op == :> and &1.mutated_op == :<))
+        default_id(
+          sites,
+          &(&1.kind == :lifted and &1.original_form == :> and &1.mutated_form == :<)
+        )
       )
 
       assert D.f(9, 7) == {:other, 9, 10, 7, 20}

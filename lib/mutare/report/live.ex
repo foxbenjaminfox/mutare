@@ -58,6 +58,26 @@ defmodule Mutare.Report.Live do
     harness_error: {"ERROR", :magenta}
   }
 
+  # The server's internal state. A struct (not a bare map) so a mistyped field access in
+  # any handler is a compile error, not a silent runtime `nil`. `init/1` overrides the four
+  # capability fields (`device`/`ansi`/`color`/`width`); the rest start at these defaults.
+  # The pure rendering functions stay `map()`-typed — a `%__MODULE__{}` matches their
+  # `%{phase: …}` patterns, and so do the plain maps the unit tests pass.
+  defstruct device: @device,
+            ansi: false,
+            color: false,
+            width: @default_width,
+            total: 0,
+            counts: %{},
+            started_at: nil,
+            phase: nil,
+            scan: nil,
+            current: nil,
+            spinner: 0,
+            drawn: 0,
+            ticking: false,
+            finished: false
+
   # === client API ============================================================
 
   @doc """
@@ -121,21 +141,11 @@ defmodule Mutare.Report.Live do
     # the whole UI); a non-tty (`ansi: false`) is already colourless.
     ansi = Keyword.get_lazy(opts, :ansi, &detect_ansi/0)
 
-    state = %{
+    state = %__MODULE__{
       device: Keyword.get(opts, :device, @device),
       ansi: ansi,
       color: Keyword.get_lazy(opts, :color, fn -> ansi and color_enabled?() end),
-      width: Keyword.get_lazy(opts, :width, &detect_width/0),
-      total: 0,
-      counts: %{},
-      started_at: nil,
-      phase: nil,
-      scan: nil,
-      current: nil,
-      spinner: 0,
-      drawn: 0,
-      ticking: false,
-      finished: false
+      width: Keyword.get_lazy(opts, :width, &detect_width/0)
     }
 
     {:ok, state}

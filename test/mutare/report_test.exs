@@ -32,7 +32,7 @@ defmodule Mutare.ReportTest do
 
   defp site(op_to) do
     {_meta, sites, _next_id} = Mutare.transform_string(@source, file: "lib/billing.ex")
-    Enum.find(sites, &(&1.original_op == :>= and &1.mutated_op == op_to))
+    Enum.find(sites, &(&1.original_form == :>= and &1.mutated_form == op_to))
   end
 
   test "diff/2 patches the original at the site range, leaving the line otherwise intact" do

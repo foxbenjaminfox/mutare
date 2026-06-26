@@ -52,7 +52,7 @@ defmodule Mutare.IntegrationTest do
     site =
       Enum.find(
         sites,
-        &(&1.mutator == mutator and &1.original_op == from and &1.mutated_op == to)
+        &(&1.mutator == mutator and &1.original_form == from and &1.mutated_form == to)
       )
 
     assert site, "no #{mutator} site #{from} -> #{to}"
@@ -63,8 +63,8 @@ defmodule Mutare.IntegrationTest do
     site =
       Enum.find(
         sites,
-        &(&1.line == line and &1.mutator == mutator and &1.original_op == from and
-            &1.mutated_op == to)
+        &(&1.line == line and &1.mutator == mutator and &1.original_form == from and
+            &1.mutated_form == to)
       )
 
     assert site, "no #{mutator} site #{from} -> #{to} on line #{line}"
@@ -113,7 +113,7 @@ defmodule Mutare.IntegrationTest do
   test "nested selectors switch independently within one compiled function", %{sites: sites} do
     # `+ → -` occurs in both add/2 and zero?/2, so disambiguate by line: the
     # inner arithmetic site shares zero?/2's line with the outer `==` site.
-    outer_site = Enum.find(sites, &(&1.mutator == :relational and &1.original_op == :==))
+    outer_site = Enum.find(sites, &(&1.mutator == :relational and &1.original_form == :==))
     inner = id_on_line(sites, outer_site.line, :arithmetic, :+, :-)
     outer = outer_site.id
 

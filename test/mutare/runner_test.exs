@@ -54,7 +54,7 @@ defmodule Mutare.RunnerTest do
     assert [survivor] = Enum.filter(run.results, &(&1.status == :survived))
 
     # The boundary test is missing for gte?/2, so `>= -> >` slips through.
-    assert %Result{site: %{mutator: :relational, original_op: :>=, mutated_op: :>, line: 3}} =
+    assert %Result{site: %{mutator: :relational, original_form: :>=, mutated_form: :>, line: 3}} =
              survivor
   end
 

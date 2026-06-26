@@ -158,7 +158,7 @@ defmodule Mutare.PoisonTest do
       assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: mutators)
 
       # add/2's `+` mutates to an unbound var → poison → dropped, not aborted.
-      assert [%Result{site: %{original_op: :+}, status: :poisoned}] =
+      assert [%Result{site: %{original_form: :+}, status: :poisoned}] =
                Enum.filter(run.results, &(&1.status == :poisoned))
 
       # gte?/2's relational mutants still ran and were killed.
@@ -197,7 +197,7 @@ defmodule Mutare.PoisonTest do
       assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: mutators)
 
       # the guard's `+` poisons (→ unbound var in the lifted copy) → dropped.
-      assert [%Result{site: %{original_op: :+}, status: :poisoned}] =
+      assert [%Result{site: %{original_form: :+}, status: :poisoned}] =
                Enum.filter(run.results, &(&1.status == :poisoned))
 
       # the surviving lifted mutants (guard relational swaps + clause drops) ran;

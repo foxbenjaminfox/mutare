@@ -3519,10 +3519,10 @@ Four non-obvious things settled here:
   (`&&`/`||`/`!`, `++`/`--`, `Enum`/`List` calls) are *forbidden in guards by
   the parser*, so a source guard can never contain one and the mutator is only
   ever asked to swap them in a body. Either way: no guard poison.
-- **`Site.original_op`/`mutated_op` are `:__block__` for literal sites** (they
-  come from `elem(node, 0)`), which is fine — reports use the rendered
-  `original_code`/`mutated_code` (`1 → 2`), not the op atom; the op fields are
-  only used by tests/lookups that key on real operators.
+- **`Site.original_form`/`mutated_form` are `:__block__` for literal sites** (they
+  come from `elem(node, 0)`, the AST node's head tag), which is fine — reports use
+  the rendered `original_code`/`mutated_code` (`1 → 2`), not the form tag; the form
+  fields are only used by tests/lookups that key on a real operator.
 
 Knock-on test work: the routing-focused `transform_test`/`schema_test`/
 `lift_test`/runner fixtures that asserted exact site counts now **pin

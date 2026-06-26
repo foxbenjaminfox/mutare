@@ -196,10 +196,7 @@ defmodule Mutare.Report do
   def harness_error_rate(results) do
     counts = tally(results)
     errors = count(counts, :harness_error)
-
-    ran =
-      errors + count(counts, :killed) + count(counts, :survived) + count(counts, :timeout) +
-        count(counts, :atom_exhausted)
+    ran = count_where(counts, &Result.ran?/1)
 
     if ran == 0, do: 0.0, else: errors / ran
   end
@@ -293,22 +290,21 @@ defmodule Mutare.Report do
   defp tally(results), do: Enum.frequencies_by(results, & &1.status)
 
   defp score_from_tally(counts) do
-    # A timeout is a kill (the mutation caused a hang); atom-table exhaustion is
-    # the same divergence by another resource (unbounded atoms crashed the VM).
-    killed = count(counts, :killed) + count(counts, :timeout) + count(counts, :atom_exhausted)
-
-    # A harness error never reached a verdict, so — like no-coverage/ignored/
-    # poisoned — it is excluded from the denominator, not counted as a kill.
-    excluded =
-      count(counts, :no_coverage) + count(counts, :ignored) + count(counts, :poisoned) +
-        count(counts, :harness_error)
-
-    denominator = total(counts) - excluded
+    # Kills (numerator) and the scored set (denominator) are classified by `Mutare.Result`:
+    # a timeout/atom-exhaustion is a kill, while no-coverage/ignored/poisoned/harness-error
+    # reach no verdict and are excluded from the denominator.
+    killed = count_where(counts, &Result.kill?/1)
+    denominator = count_where(counts, &Result.scored?/1)
 
     if denominator <= 0, do: 100.0, else: killed / denominator * 100
   end
 
   defp count(counts, status), do: Map.get(counts, status, 0)
+
+  # Sum a frequency map's values over the statuses a predicate admits.
+  defp count_where(counts, pred) do
+    for {status, n} <- counts, pred.(status), reduce: 0, do: (acc -> acc + n)
+  end
 
   defp total(counts), do: counts |> Map.values() |> Enum.sum()
 end

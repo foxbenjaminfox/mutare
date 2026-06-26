@@ -66,22 +66,36 @@ defmodule Mutare.Transform.Names do
   @def_forms ~w(def defp defmacro defmacrop defguard defguardp defdelegate)a
 
   @doc """
-  The collision-free `{prefix, active_var, super_var, piped_var, cond_var}` this
-  source provably never uses.
+  The collision-free generated names this source provably never uses, as a map:
 
-  `prefix` is the private-function prefix; `active_var` the dispatch variable;
-  `super_var` the super-forwarding closure variable; `piped_var` the hoisted
-  pipe-stage closure variable; `cond_var` the condition-hoist temp. All are derived
-  from one scan of every identifier the source mentions, so a generated name can
-  never equal one already in scope.
+    * `:prefix` — the private-function prefix (`__mutare_…`);
+    * `:active_var` — the dispatch variable;
+    * `:super_var` — the super-forwarding closure variable;
+    * `:piped_var` — the hoisted pipe-stage closure variable;
+    * `:cond_var` — the condition-hoist temp.
+
+  All are derived from one scan of every identifier the source mentions, so a
+  generated name can never equal one already in scope. A map (not a positional
+  tuple) so the consumer reads each by name and a new generated name is one added
+  key, not a re-threaded tuple position.
   """
-  @spec generated_names(Macro.t()) :: {String.t(), atom(), atom(), atom(), atom()}
+  @spec generated_names(Macro.t()) :: %{
+          prefix: String.t(),
+          active_var: atom(),
+          super_var: atom(),
+          piped_var: atom(),
+          cond_var: atom()
+        }
   def generated_names(ast) do
     taken = taken_names(ast)
-    prefix = Enum.find(prefix_candidates(), &free?(&1, taken))
 
-    {prefix, salted(Recorder.var_name(), taken), salted(@super_var, taken),
-     salted(@piped_var, taken), salted(@cond_var, taken)}
+    %{
+      prefix: Enum.find(prefix_candidates(), &free?(&1, taken)),
+      active_var: salted(Recorder.var_name(), taken),
+      super_var: salted(@super_var, taken),
+      piped_var: salted(@piped_var, taken),
+      cond_var: salted(@cond_var, taken)
+    }
   end
 
   @doc """

@@ -20,8 +20,8 @@ defmodule Mutare.SiteTest do
       assert site.mutator == :clause_drop
       assert site.kind == :lifted
       assert site.operation == :delete
-      assert site.original_op == nil
-      assert site.mutated_op == nil
+      assert site.original_form == nil
+      assert site.mutated_form == nil
       assert site.mutated_node == nil
       # The clause is removed entirely — there is no replacement text.
       assert site.mutated_code == ""

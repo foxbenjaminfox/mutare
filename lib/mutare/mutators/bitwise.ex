@@ -53,7 +53,10 @@ defmodule Mutare.Mutators.Bitwise do
   @shift_ops [:<<<, :>>>]
 
   # Binary *function* swaps, keyed on the resolved function name (the module is always
-  # `[:Bitwise]`, pinned at the match site). Same pairs as `@op_swaps`, as calls.
+  # `[:Bitwise]`, pinned at the match site). These are the **same conceptual pairs** as
+  # `@op_swaps` in function form — the two can't be derived from each other (the operator
+  # atom `:&&&` and the function name `:band` have no programmatic relationship), so a new
+  # bitwise pair belongs in *both* tables (and `@shift_ops`/`@shift_calls` below).
   @call_swaps %{
     band: :bor,
     bor: :band,
@@ -85,6 +88,9 @@ defmodule Mutare.Mutators.Bitwise do
 
   # Resolve the node through `Mutare.Transform.Calls` and, if it is a `Bitwise` call we
   # handle, rename it to the complementary function (or, for `bnot`, strip the complement).
+  # This resolves the call inline rather than via `Helpers.swap_call/2` because the two
+  # special cases — `bnot` strips (no sibling) and a shift-by-literal-`0` is an equivalent
+  # no-op skipped — don't fit the plain swap-table shape.
   defp swap_or_strip_call(node) do
     case Calls.resolved_call(node) do
       {[:Bitwise], :bnot, [operand], _rebuild} ->

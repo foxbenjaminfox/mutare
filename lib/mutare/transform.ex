@@ -210,15 +210,15 @@ defmodule Mutare.Transform do
     # lifting assigns them: the private-function prefix, the dispatch variable, the
     # super-forwarding closure variable, and the hoisted pipe-stage closure variable
     # (see `Mutare.Transform.Names`).
-    {prefix, active_var, super_var, piped_var, cond_var} = Names.generated_names(parsed)
+    names = Names.generated_names(parsed)
 
     ctx = %{
       ctx
-      | prefix: prefix,
-        active_var: active_var,
-        super_var: super_var,
-        piped_var: piped_var,
-        cond_var: cond_var
+      | prefix: names.prefix,
+        active_var: names.active_var,
+        super_var: names.super_var,
+        piped_var: names.piped_var,
+        cond_var: names.cond_var
     }
 
     # The known-macro registry (`Mutare.Macros`): built-ins (`Kernel.match?`/`destructure`)

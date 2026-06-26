@@ -78,7 +78,7 @@ defmodule Mutare.PartitionIntegrationTest do
     assert length(run.results) == 3
     assert Enum.count(run.results, &(&1.status == :killed)) == 2
 
-    assert [%Result{site: %{mutator: :relational, original_op: :>=, mutated_op: :>}}] =
+    assert [%Result{site: %{mutator: :relational, original_form: :>=, mutated_form: :>}}] =
              Enum.filter(run.results, &(&1.status == :survived))
   end
 

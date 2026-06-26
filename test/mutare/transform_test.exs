@@ -87,9 +87,9 @@ defmodule Mutare.TransformTest do
   test "records operators, lines and a readable description" do
     {_meta, [s1, s2, s3], _next_id} = Mutare.transform_string(@sample, mutators: @probe)
 
-    assert %Site{mutator: :relational, original_op: :>=, mutated_op: :>, line: 3} = s1
-    assert %Site{mutator: :relational, original_op: :>=, mutated_op: :<=, line: 3} = s2
-    assert %Site{mutator: :arithmetic, original_op: :+, mutated_op: :-, line: 10} = s3
+    assert %Site{mutator: :relational, original_form: :>=, mutated_form: :>, line: 3} = s1
+    assert %Site{mutator: :relational, original_form: :>=, mutated_form: :<=, line: 3} = s2
+    assert %Site{mutator: :arithmetic, original_form: :+, mutated_form: :-, line: 10} = s3
 
     assert Site.describe(s1) == "relational  total >= threshold → total > threshold"
     assert Site.describe(s3) == "arithmetic  a + b → a - b"
@@ -114,7 +114,7 @@ defmodule Mutare.TransformTest do
     {_meta, sites, _next_id} =
       Mutare.transform_string(@sample, mutators: [Mutare.Mutators.Arithmetic])
 
-    assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
+    assert [%Site{mutator: :arithmetic, original_form: :+}] = sites
   end
 
   test "a custom mutator plugs in for both in-place and lifted delivery" do
@@ -130,10 +130,10 @@ defmodule Mutare.TransformTest do
 
     # body `a and b` → in-place; guard `a and b` → lifted. The author wrote one
     # `mutate/1`; placement is decided by position.
-    assert %Site{mutator: :boolean, original_op: :and, mutated_op: :or, kind: :in_place} =
+    assert %Site{mutator: :boolean, original_form: :and, mutated_form: :or, kind: :in_place} =
              Enum.find(sites, &(&1.kind == :in_place))
 
-    assert %Site{mutator: :boolean, original_op: :and, mutated_op: :or, kind: :lifted} =
+    assert %Site{mutator: :boolean, original_form: :and, mutated_form: :or, kind: :lifted} =
              Enum.find(sites, &(&1.kind == :lifted))
 
     assert {:ok, _} = Code.string_to_quoted(meta)
@@ -146,7 +146,7 @@ defmodule Mutare.TransformTest do
       )
 
     # + -> - (1) and == -> != (1)
-    assert Enum.map(sites, &{&1.mutator, &1.original_op}) ==
+    assert Enum.map(sites, &{&1.mutator, &1.original_form}) ==
              [{:arithmetic, :+}, {:relational, :==}]
 
     # Two independent selectors are present. The per-site `:persistent_term.get` read is
@@ -173,10 +173,10 @@ defmodule Mutare.TransformTest do
 
     # Guards are lifted: >= -> {>, <=} and < -> {<=, >} (operation :replace).
     guards = Enum.filter(sites, &(&1.kind == :lifted and &1.operation == :replace))
-    assert Enum.frequencies_by(guards, & &1.original_op) == %{:>= => 2, :< => 2}
+    assert Enum.frequencies_by(guards, & &1.original_form) == %{:>= => 2, :< => 2}
 
     # The body `+` stays in-place.
-    assert [%Site{kind: :in_place, mutator: :arithmetic, original_op: :+}] =
+    assert [%Site{kind: :in_place, mutator: :arithmetic, original_form: :+}] =
              Enum.filter(sites, &(&1.kind == :in_place))
 
     # A `case` must never appear inside a guard (that would compile-poison).
@@ -202,7 +202,7 @@ defmodule Mutare.TransformTest do
     {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     # Only the body `x * 2` is a site; the capture's `/1` is left alone.
-    assert [%Site{mutator: :arithmetic, original_op: :*}] = sites
+    assert [%Site{mutator: :arithmetic, original_form: :*}] = sites
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
@@ -212,7 +212,7 @@ defmodule Mutare.TransformTest do
         mutators: @probe
       )
 
-    assert [%Site{mutator: :arithmetic, original_op: :/, mutated_op: :*}] = sites
+    assert [%Site{mutator: :arithmetic, original_form: :/, mutated_form: :*}] = sites
   end
 
   describe "capture mutation (a `&Mod.fun/N` reference is a call value)" do
@@ -377,7 +377,7 @@ defmodule Mutare.TransformTest do
 
     # The `1 + 2` in the attribute definition is compile-time and inert, so it
     # produces no mutant. Only the runtime body `n + @threshold` is mutated.
-    assert [%Site{mutator: :arithmetic, original_op: :+, line: 4}] = sites
+    assert [%Site{mutator: :arithmetic, original_form: :+, line: 4}] = sites
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
@@ -387,7 +387,7 @@ defmodule Mutare.TransformTest do
 
     # The value `n + 1` and the runtime `size(n * 8)` argument both mutate; a
     # `case` is legal in both positions.
-    assert Enum.frequencies_by(sites, &{&1.mutator, &1.original_op}) ==
+    assert Enum.frequencies_by(sites, &{&1.mutator, &1.original_form}) ==
              %{{:arithmetic, :+} => 1, {:arithmetic, :*} => 1}
 
     assert {:ok, _} = Code.string_to_quoted(meta)
@@ -413,7 +413,7 @@ defmodule Mutare.TransformTest do
     source = "defmodule B do\n  def f(<<x::size(8)>>), do: x + 1\nend\n"
     {_meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
-    assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
+    assert [%Site{mutator: :arithmetic, original_form: :+}] = sites
   end
 
   test "a bitstring spec separator in a guard is not mutated (the lifted path is spec-aware)" do
@@ -485,7 +485,7 @@ defmodule Mutare.TransformTest do
 
     # `b + 1` inside the interpolation mutates; the sigil's content `<<>>` is never
     # offered to BitstringLiteral (no :bitstring site).
-    assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
+    assert [%Site{mutator: :arithmetic, original_form: :+}] = sites
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
@@ -502,7 +502,7 @@ defmodule Mutare.TransformTest do
 
     # The `+`/`-` inside the macro bodies run at expansion time and never see the
     # runtime selector; only the real body `x * 2` mutates.
-    assert [%Site{mutator: :arithmetic, original_op: :*}] = sites
+    assert [%Site{mutator: :arithmetic, original_form: :*}] = sites
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
@@ -517,7 +517,7 @@ defmodule Mutare.TransformTest do
     source = "defmodule D do\n  def f(x \\\\ 1 + 2), do: x\nend\n"
     {_meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
-    assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
+    assert [%Site{mutator: :arithmetic, original_form: :+}] = sites
   end
 
   test "a quote block is compile-time; runtime code around it still mutates" do
@@ -593,8 +593,8 @@ defmodule Mutare.TransformTest do
     # id and each mutant adds a gated clause. The guard `n > 1` (relational) and the
     # body `n + 1` (arithmetic) both mutate, delivered in place — no `case` ever lands
     # in a guard.
-    assert Enum.any?(sites, &(&1.original_op == :> and &1.kind == :in_place))
-    assert Enum.any?(sites, &(&1.original_op == :+ and &1.kind == :in_place))
+    assert Enum.any?(sites, &(&1.original_form == :> and &1.kind == :in_place))
+    assert Enum.any?(sites, &(&1.original_form == :+ and &1.kind == :in_place))
     assert meta =~ selector_tuple("x")
     refute meta =~ "when (case"
     refute meta =~ "when case"
@@ -607,7 +607,7 @@ defmodule Mutare.TransformTest do
 
     # Filter `x > 0` (2 relational swaps) and body `x + 1` (1 swap) both mutate;
     # the generator pattern `x` does not.
-    assert Enum.frequencies_by(sites, & &1.original_op) == %{:> => 2, :+ => 1}
+    assert Enum.frequencies_by(sites, & &1.original_form) == %{:> => 2, :+ => 1}
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
@@ -626,7 +626,7 @@ defmodule Mutare.TransformTest do
     {_meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
     # The `->` left side in a `cond` is a runtime condition, not a pattern.
-    assert Enum.frequencies_by(sites, & &1.original_op) == %{:> => 2}
+    assert Enum.frequencies_by(sites, & &1.original_form) == %{:> => 2}
   end
 
   describe "a condition that binds a variable escaping into the body" do
@@ -1222,7 +1222,7 @@ defmodule Mutare.TransformTest do
 
     {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
 
-    assert [%Site{mutator: :arithmetic, original_op: :+}] = sites
+    assert [%Site{mutator: :arithmetic, original_form: :+}] = sites
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
@@ -4377,7 +4377,7 @@ defmodule Mutare.TransformTest do
 
       lifted = Enum.filter(sites, &(&1.kind == :lifted and &1.operation == :replace))
       # guard `>` → {>=, <} (relational); head `0` → {1, -1} (literal). Both lifted.
-      assert Enum.any?(lifted, &(&1.mutator == :relational and &1.original_op == :>))
+      assert Enum.any?(lifted, &(&1.mutator == :relational and &1.original_form == :>))
       assert Enum.any?(lifted, &(&1.mutator == :literal and &1.original_code == "0"))
 
       assert meta =~ ~r/def f\(mutare_arg1, mutare_arg2\) do/

@@ -42,7 +42,7 @@ defmodule Mutare.TimeoutTest do
     # `count_down(n - 1)` mutated to `n + 1` never reaches 0 → infinite recursion.
     hang =
       Enum.find(run.results, fn %Result{site: s} ->
-        s.mutator == :arithmetic and s.original_op == :- and s.mutated_op == :+
+        s.mutator == :arithmetic and s.original_form == :- and s.mutated_form == :+
       end)
 
     assert hang.status == :timeout
@@ -50,6 +50,6 @@ defmodule Mutare.TimeoutTest do
     assert hang.duration_ms >= 1_500
 
     # A timeout is a kill: it isn't a survivor.
-    refute Enum.any?(run.results, &(&1.status == :survived and &1.site.original_op == :-))
+    refute Enum.any?(run.results, &(&1.status == :survived and &1.site.original_form == :-))
   end
 end

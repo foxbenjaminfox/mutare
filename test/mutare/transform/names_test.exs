@@ -14,8 +14,7 @@ defmodule Mutare.Transform.NamesTest do
 
   describe "generated_names/1 dispatch-variable salting" do
     test "is the canonical name when the source never mentions it" do
-      {_prefix, active, _super, _piped, _cond} =
-        Names.generated_names(source_using([:x, :y]))
+      %{active_var: active} = Names.generated_names(source_using([:x, :y]))
 
       assert active == Recorder.var_name()
     end
@@ -26,33 +25,33 @@ defmodule Mutare.Transform.NamesTest do
       one = :"#{canonical}_1"
 
       # Only the canonical name is taken → the first numbered fallback (`_0`).
-      {_p, active1, _s, _pi, _c} = Names.generated_names(source_using([canonical]))
+      %{active_var: active1} = Names.generated_names(source_using([canonical]))
       assert active1 == zero
 
       # The canonical name AND its `_0` fallback are both taken → the *next* in the
       # documented sequence, `_1`. This pins the +1 increment of the fallback stream:
       # the second candidate must be `_1` (not `_0` again — which would loop forever —
       # nor `_2`, which would skip the documented sequence).
-      {_p, active2, _s, _pi, _c} = Names.generated_names(source_using([canonical, zero]))
+      %{active_var: active2} = Names.generated_names(source_using([canonical, zero]))
       assert active2 == one
     end
   end
 
   describe "generated_names/1 private-prefix salting" do
     test "is the canonical `__mutare_` prefix when no source name begins with it" do
-      {prefix, _a, _s, _p, _c} = Names.generated_names(source_using([:x, :y]))
+      %{prefix: prefix} = Names.generated_names(source_using([:x, :y]))
       assert prefix == "__mutare_"
     end
 
     test "falls back through __mutare_0_, __mutare_1_, … on successive prefix collisions" do
       # One identifier under the canonical prefix → the first numbered prefix.
-      {prefix1, _a, _s, _p, _c} = Names.generated_names(source_using([:__mutare_foo]))
+      %{prefix: prefix1} = Names.generated_names(source_using([:__mutare_foo]))
       assert prefix1 == "__mutare_0_"
 
       # An identifier under `__mutare_` *and* one under `__mutare_0_` → the *next*
       # prefix, `__mutare_1_`. Pins the +1 increment of the prefix-candidate stream
       # exactly as the dispatch-variable sequence above.
-      {prefix2, _a, _s, _p, _c} =
+      %{prefix: prefix2} =
         Names.generated_names(source_using([:__mutare_foo, :__mutare_0_bar]))
 
       assert prefix2 == "__mutare_1_"
@@ -67,7 +66,7 @@ defmodule Mutare.Transform.NamesTest do
     # name leaves it `__mutare_`.
 
     test "from a plain def head" do
-      {prefix, _a, _s, _p, _c} =
+      %{prefix: prefix} =
         Names.generated_names(Code.string_to_quoted!("def __mutare_foo(x), do: x"))
 
       assert prefix == "__mutare_0_"
@@ -77,14 +76,14 @@ defmodule Mutare.Transform.NamesTest do
       # The head is `{:when, _, [call | guards]}`; the name lives in `call`, so
       # `def_name/1` must recurse through the `when`. Dropping that clause would
       # mis-collect the atom `:when` and leave `__mutare_guarded` unseen.
-      {prefix, _a, _s, _p, _c} =
+      %{prefix: prefix} =
         Names.generated_names(Code.string_to_quoted!("def __mutare_guarded(x) when x > 0, do: x"))
 
       assert prefix == "__mutare_0_"
     end
 
     test "from a defmacro head" do
-      {prefix, _a, _s, _p, _c} =
+      %{prefix: prefix} =
         Names.generated_names(Code.string_to_quoted!("defmacro __mutare_mac(x), do: x"))
 
       assert prefix == "__mutare_0_"

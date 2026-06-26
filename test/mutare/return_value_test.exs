@@ -126,8 +126,8 @@ defmodule Mutare.ReturnValueTest do
                mutator: :return_value,
                kind: :in_place,
                operation: :replace,
-               original_op: nil,
-               mutated_op: nil,
+               original_form: nil,
+               mutated_form: nil,
                original_code: "a + b",
                mutated_code: "0",
                line: 2

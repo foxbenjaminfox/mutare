@@ -19,8 +19,8 @@ defmodule Mutare.Site do
           ignored: boolean(),
           ignore_reason: String.t() | nil,
           poisoned: boolean(),
-          original_op: atom() | nil,
-          mutated_op: atom() | nil,
+          original_form: atom() | nil,
+          mutated_form: atom() | nil,
           original_code: String.t(),
           mutated_code: String.t(),
           original_node: Macro.t(),
@@ -37,8 +37,8 @@ defmodule Mutare.Site do
     :range,
     :mutator,
     :kind,
-    :original_op,
-    :mutated_op,
+    :original_form,
+    :mutated_form,
     :original_code,
     :mutated_code,
     :original_node,
@@ -138,8 +138,8 @@ defmodule Mutare.Site do
       | mutator: :clause_drop,
         kind: :lifted,
         operation: :delete,
-        original_op: nil,
-        mutated_op: nil,
+        original_form: nil,
+        mutated_form: nil,
         original_code: clause_code(clause_node),
         mutated_code: "",
         original_node: clause_node,
@@ -167,8 +167,8 @@ defmodule Mutare.Site do
       | mutator: mutator.name,
         kind: :in_place,
         operation: :delete,
-        original_op: nil,
-        mutated_op: nil,
+        original_form: nil,
+        mutated_form: nil,
         original_code: clause_code(clause_node),
         mutated_code: "",
         original_node: clause_node,
@@ -211,8 +211,8 @@ defmodule Mutare.Site do
       | mutator: mutator.name,
         kind: :in_place,
         operation: :replace,
-        original_op: nil,
-        mutated_op: nil,
+        original_form: nil,
+        mutated_form: nil,
         original_code: Sourceror.to_string(original_node),
         mutated_code: Sourceror.to_string(mutated_node),
         original_node: original_node,
@@ -221,8 +221,8 @@ defmodule Mutare.Site do
   end
 
   # In-place and lifted sites differ only in `kind`: both are a node replacement
-  # recorded with the original/mutated nodes, their ops, and rendered code. (For a
-  # literal swap the "op" is `:__block__` — the same as an in-place literal site.)
+  # recorded with the original/mutated nodes, their AST *forms* (the node's head tag —
+  # `:+`/`:==` for an operator swap, `:__block__` for a literal), and rendered code.
   defp replace(id, file, range, original_node, mutated_node, mutator, kind) do
     # When the mutated node is a *keyword-list key* (`trim:`), its recorded `range`
     # spans the `name:` source — colon included — so the report's textual patch must
@@ -236,8 +236,8 @@ defmodule Mutare.Site do
       base_site(id, file, range)
       | mutator: mutator.name,
         kind: kind,
-        original_op: elem(original_node, 0),
-        mutated_op: elem(mutated_node, 0),
+        original_form: elem(original_node, 0),
+        mutated_form: elem(mutated_node, 0),
         original_code: render_code(original_node, keyword_key?),
         mutated_code: render_code(mutated_node, keyword_key?),
         original_node: original_node,

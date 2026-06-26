@@ -195,7 +195,7 @@ defmodule Mutare.CoverageTest do
 
       assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
 
-      by_op = Map.new(run.results, &{&1.site.original_op, &1})
+      by_op = Map.new(run.results, &{&1.site.original_form, &1})
 
       # `x - 1` lives in the else branch, which no test executes → skipped.
       assert %Result{status: :no_coverage, duration_ms: 0, output: nil} = by_op[:-]
@@ -311,7 +311,7 @@ defmodule Mutare.CoverageTest do
 
       assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
 
-      by_op = Map.new(run.results, &{&1.site.original_op, &1})
+      by_op = Map.new(run.results, &{&1.site.original_form, &1})
 
       # Calc.add's `+` mutant is covered only by calc_test.exs → that file alone
       # runs (1 test), not the whole 2-test suite — and it's killed.
