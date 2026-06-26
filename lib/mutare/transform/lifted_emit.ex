@@ -4,8 +4,8 @@ defmodule Mutare.Transform.LiftedEmit do
   # The **AST-assembly half of lifting**: builds the public dispatcher and the gated base
   # clauses for a lifted function group, given the already-claimed candidate ids. Pure — no
   # `Ctx`, no id-claiming. `Mutare.Transform.emit_function_plan/2` owns the stateful half
-  # (threading `Ctx`, claiming ids via `claim_id/4`, emitting in-place body selectors) and
-  # calls into here with plain data: the source clauses, the `{id, index, clause, witness}`
+  # (threading `Ctx`, claiming ids via `SelectorEmit.claim_items/4`, emitting in-place body
+  # selectors) and calls into here with plain data: the source clauses, the `{id, index, clause, witness}`
   # claims, the base name, the dispatch variable, and the super-forwarding closure variable.
   #
   # The interleaving scheme: each source clause's mutant clauses (one per candidate overriding
@@ -103,7 +103,7 @@ defmodule Mutare.Transform.LiftedEmit do
 
   @doc """
   The active-id read `<var> = :persistent_term.get(...)`: the dispatch variable bound once so the
-  body's hoisted selectors read it (`Mutare.Transform.selector_subject/1`). The single home for
+  body's hoisted selectors read it (`Mutare.Transform.SelectorEmit.subject/1`). The single home for
   the read's shape, shared by the lifted dispatcher (here) and a non-lifted function's `:do`-block
   prologue (`Mutare.Transform`).
   """

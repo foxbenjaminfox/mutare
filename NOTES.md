@@ -463,7 +463,7 @@ that happens to want it.
 ### Hoist the per-site active-id read (`:persistent_term.get`) `[done]`
 The long-pole above is volume-bound, and one untamed driver was the selector
 *scrutinee*. Every in-place selector used to read the active mutant id with a fresh
-`:persistent_term.get(:mutare_active, 0)` — `Transform.build_case` always spliced
+`:persistent_term.get(:mutare_active, 0)` — `SelectorEmit.selector_case/3` always spliced
 `Mutare.Metamutant.subject_ast/0`, **once per site**. Measured on Mutare's own
 metamutant: **~9,500 copies** across the tree (1,098 in `analyze.ex` alone, ~9,100
 sites total), each a ~6-node remote call — tens of thousands of AST nodes that are
@@ -481,7 +481,7 @@ tradeoff** (unlike the `no_ssa_opt*` options that buy compile time with per-run
 runtime).
 
 **Fix.** `Ctx.active_bound` records whether `mutare_active` is bound in the current emit
-scope; `Transform.selector_subject/1` returns the bare variable `{var, [], nil}` when it
+scope; `SelectorEmit.subject/1` returns the bare variable `{var, [], nil}` when it
 is, else `subject_ast/0`. It is `true` in two places, set by a head/body-split clause
 emitter (`emit_clause/3`):
 
@@ -514,7 +514,7 @@ in its own scope reading it, would be a dead binding). The inner code is walked 
 by the outer function's emit (it isn't separately planned/lifted), so `active_bound` would
 otherwise leak straight through the `defmodule` boundary. Fix: `emit/2` is a
 `Macro.traverse`, not a `postwalk` — it counts nested-module depth on the way down
-(`Ctx.module_depth`, bumped on `defmodule`/`defimpl`/`defprotocol`), and `selector_subject/1`
+(`Ctx.module_depth`, bumped on `defmodule`/`defimpl`/`defprotocol`), and `SelectorEmit.subject/1`
 gates the hoisted form on `module_depth == 0`; `references_var?/2` prunes the same subtrees
 so the outer prologue is added only for a *direct*-body reference. A mixed body
 (`a = x + 1; defmodule … ; a * 2`) hoists the direct sites and inlines the nested one, the
@@ -974,9 +974,10 @@ integer key — `Literal`'s — is untouched).
     its own keys. Piped calls (`x |> foo(opt: 1)`) go through `recurse_runtime` too.
   * **Gate in `Transform`**: `emit`'s `gate_candidates/1` drops a `call_option_key?: true`
     candidate when its own `spec.opts` say `call_option_keys: false` (`call_option_keys_off?/1`)
-    — *before* `claim_id`, so it consumes no id and records no site (unlike a poisoned id,
-    which is recorded). Ids stay **contiguous** and stable: the mutator list (hence each
-    spec's opts) is constant within a run, so poison rebuilds reproduce the same id sequence.
+    — *before* `SelectorEmit.claim_items/4`, so it consumes no id and records no site
+    (unlike a poisoned id, which is recorded). Ids stay **contiguous** and stable: the mutator
+    list (hence each spec's opts) is constant within a run, so poison rebuilds reproduce the
+    same id sequence.
     The unconfigured path drops nothing (zero overhead).
 
 ### import resolution — bare imported calls mutate `[done]`
@@ -2497,7 +2498,8 @@ a second — unreachable — fallback.)
 whole-`case` fallback.
 
 **Known limitation — `fn` clause-pattern coverage is tied to *construction*, not invocation.**
-The whole-construct selector records in its catch-all (`build_case`/`catch_all_clause`):
+The whole-construct selector records in its catch-all (`SelectorEmit.selector_case/3` /
+`SelectorEmit.catch_all_clause/3`):
 `<active> -> <record ids>; <original construct>`. For `case`/`receive`/`try` the record fires when
 the construct *runs* — fine. But a `fn` is a **value**: the selector evaluates (and so records) when
 the closure is *constructed*, not when it is *called*. So a `fn 0 -> … end` that is merely returned
@@ -2674,9 +2676,8 @@ Three things this bought, vs. the prior implicit version:
   `transform.ex` so the semantic pipeline isn't interleaved with vocabulary and
   rendering friction. The plan modules own *discovery* (chunking clauses, finding
   guard/drop candidates); the *emission* machinery (id assignment, site recording,
-  building the selector `case` and dispatcher) stays in `Transform` — it shares
-  the `Ctx` id-threading discipline across in-place and lifted paths too tightly
-  to separate cleanly (`claim_id/4` is the single owner of that dance).
+  building the selector `case` and dispatcher) mostly stays in `Transform`, with the shared
+  selector mechanics factored into `SelectorEmit` (`claim_items/4` owns the id/site claim).
 
 ### Transform IR — typed candidate variants + plan structs `[refactor, done]`
 The earlier `%Candidate{}` was one struct that stored `context` *and* its two
@@ -5395,8 +5396,9 @@ a metamutant with **zero** poisons.
 
 A refactoring pass folded most of the cross-module duplication — shared AST/resolution/suppression
 helpers (`Mutare.AST.literal_value`/`absolute_call`, `Aliases.resolve_node/2`,
-`Transform.Suppression`), the `Uses` split (`EnvMirror` + `Harvest`), the `emit_*` id-claim fold
-(`claim_clauses`/`ids_from_clauses`), and making `mutate/1` an optional callback. Three near-
+`Transform.Suppression`), the `Uses` split (`EnvMirror` + `Harvest`), the selector emit split
+(`SelectorEmit.claim_items`/`ids_from_clauses`), and making `mutate/1` an optional callback.
+Three near-
 duplications were measured against the cost of unifying them and **deliberately kept** — the merge
 buys less than the duplication costs:
 

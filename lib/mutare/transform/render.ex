@@ -35,7 +35,7 @@ defmodule Mutare.Transform.Render do
   it renders safely in any position.
 
   This and `selector_case_parts/1` are the single home for the selector shape, so the
-  one builder (`Mutare.Transform.build_case/3`) and the one reader that must reach back
+  one builder (`Mutare.Transform.SelectorEmit.selector_case/3`) and the one reader that must reach back
   into a just-built selector (`Mutare.Transform.hoist_pipe/2`, which lifts the `case`
   out of an illegal pipe-RHS position) cannot encode the shape independently and
   silently drift — a mismatch there would yield an uncompilable metamutant with no

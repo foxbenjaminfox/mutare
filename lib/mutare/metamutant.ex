@@ -83,7 +83,7 @@ defmodule Mutare.Metamutant do
       independently of `var`; and
     * the **hoisted read** — a bare reference to the active-id variable `var`, what a
       selector inside a function body splices once the read is hoisted to a prologue /
-      threaded parameter (see `Mutare.Transform`'s `selector_subject/1`). Recognised
+      threaded parameter (see `Mutare.Transform.SelectorEmit.subject/1`). Recognised
       only when `var` is supplied (the canonical/salted dispatch name the caller
       discovers), so a user's `case some_var do …` is never mistaken for a selector.
 

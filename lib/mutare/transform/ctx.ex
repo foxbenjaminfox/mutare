@@ -65,13 +65,13 @@ defmodule Mutare.Transform.Ctx do
     # inside a non-lifted function's `:do` block (a prologue binds it once); false at the
     # module/scaffold level and in a head's default-value position (evaluated in a
     # generated head clause where no binding is in scope), where the self-contained
-    # `:persistent_term` read is kept. `Mutare.Transform.selector_subject/1` reads this.
+    # `:persistent_term` read is kept. `Mutare.Transform.SelectorEmit.subject/1` reads this.
     active_bound: false,
     # How many nested **module** scopes (`defmodule`/`defimpl`/`defprotocol`) the emit
     # walk is currently inside. A runtime `defmodule` in a function body is walked in
     # place, but its inner `def` bodies are a *new* scope that can't see the outer
     # function's hoisted `active_var` binding — so a selector emitted there must fall back
-    # to the self-contained `:persistent_term` read (`selector_subject/1` gates the hoisted
+    # to the self-contained `:persistent_term` read (`SelectorEmit.subject/1` gates the hoisted
     # form on `module_depth == 0`). `Mutare.Transform.emit/2` increments it on entering such
     # a node and decrements on leaving; 0 at the top of every function body.
     module_depth: 0,

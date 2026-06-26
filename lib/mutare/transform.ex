@@ -114,9 +114,9 @@ defmodule Mutare.Transform do
 
   `Mutare.Transform.{ModulePlan,FunctionPlan,Candidate}` own the *vocabulary* —
   the plan structs and pure discovery (chunking clauses, finding guard/drop
-  candidates). The **stateful** emission core stays here, because it shares the
-  `Ctx` id-threading discipline across the in-place and lifted paths too tightly
-  to split: `claim_id/4` (the single owner of that dance), the selector emit,
+  candidates). The **stateful** emission core stays here, with the shared selector
+  mechanics (`SelectorEmit.claim_items/4`, catch-all branches, active-id subject)
+  factored out but the mutation-specific orchestration still local:
   `emit_function_plan/2` and `emit_case_pattern_site/3`.
 
   The **pure** AST-assembly each of those orchestrators calls is factored into
@@ -133,11 +133,13 @@ defmodule Mutare.Transform do
       builders (the assembly half of `emit_case_pattern_site/3`).
     * `Mutare.Transform.ImportWitness` — the dead-code import witness spliced
       alongside a mutated bare imported call.
+    * `Mutare.Transform.SelectorEmit` — the shared id/site claim, selector
+      subject, catch-all coverage branch, and ordinary selector-case assembly.
   """
 
   alias Mutare.AST
-  alias Mutare.Site
   alias Mutare.Coverage.Recorder
+  alias Mutare.Site
   alias Mutare.Mutator.Spec
 
   alias Mutare.Transform.{
@@ -157,6 +159,7 @@ defmodule Mutare.Transform do
     Overlap,
     Render,
     Resolve,
+    SelectorEmit,
     Super,
     Uses
   }
@@ -570,11 +573,11 @@ defmodule Mutare.Transform do
   # Tag every site the body produces with this invocation's identity so poison
   # recovery can skip the *whole* block at once (`Mutare.Runner.escalate_block_poison/3`,
   # on the block's second strike) — the runtime-stable equivalent of `:skip` — rather than
-  # dropping one mutant at a time and re-hitting the next selector. A *registered* macro is left untagged
-  # (`tag` is `nil`), so the user's `:macros` choice is honoured and never auto-skipped.
+  # dropping one mutant at a time and re-hitting the next selector. A *registered* macro is left
+  # untagged (`tag` is `nil`), so the user's `:macros` choice is honoured and never auto-skipped.
   #
-  # Sites accumulate newest-first (`claim_id` prepends), so the ones this `emit`
-  # created are exactly the head of `ctx.sites` above the count we held before it.
+  # Sites accumulate newest-first (`SelectorEmit.claim_items/4` prepends), so the ones
+  # this `emit` created are exactly the head of `ctx.sites` above the count we held before it.
   defp emit_block_macro(node, ctx) do
     before = length(ctx.sites)
 
@@ -640,12 +643,15 @@ defmodule Mutare.Transform do
     # yields nothing here (its site is still recorded), so it is neither emitted as
     # a mutant clause nor excluded from its original — i.e. it behaves as baseline.
     {claimed, ctx} =
-      Enum.flat_map_reduce(FunctionPlan.candidates(plan), ctx, fn candidate, ctx ->
-        claim_id(ctx, candidate, &Delivery.site/3, fn id, candidate ->
+      SelectorEmit.claim_items(
+        FunctionPlan.candidates(plan),
+        ctx,
+        &Delivery.site/3,
+        fn id, candidate ->
           {index, clause} = FunctionPlan.mutated_clause(plan, candidate)
           {id, index, clause, ImportWitness.for_candidate(candidate)}
-        end)
-      end)
+        end
+      )
 
     mut_ids = Enum.map(claimed, fn {id, _i, _c, _w} -> id end)
 
@@ -728,7 +734,7 @@ defmodule Mutare.Transform do
   end
 
   # The pre step: entering a nested module scope increments `module_depth` (so
-  # `selector_subject/1` falls back to the inline read inside it); leaving is handled in the
+  # `SelectorEmit.subject/1` falls back to the inline read inside it); leaving is handled in the
   # post step. Every other node passes through untouched.
   defp emit_descend(node, ctx) do
     if module_scope?(node),
@@ -854,7 +860,7 @@ defmodule Mutare.Transform do
   # per file so a stage argument mentioning the same identifier isn't captured.
   defp hoist_pipe({:|>, meta, [lhs, rhs]} = node, ctx) do
     # Recognise a block-wrapped selector `case` as the pipe's RHS (the shape
-    # `build_case/3` produces, owned by `Render.selector_case/2`), then confirm its
+    # `SelectorEmit.selector_case/3` produces, owned by `Render.selector_case/2`), then confirm its
     # subject in *either* shape — the inline `:persistent_term` read (a head-default
     # pipe stage) or the hoisted bare active-id variable (a body pipe stage). The
     # closure body references that variable (the hoisted form) or the inline read,
@@ -887,7 +893,7 @@ defmodule Mutare.Transform do
 
   defp emit_site(node, candidates, ctx) do
     {clauses, ctx} =
-      claim_clauses(candidates, ctx, &Delivery.site/3, fn id, candidate ->
+      SelectorEmit.claim_items(candidates, ctx, &Delivery.site/3, fn id, candidate ->
         {:->, [],
          [
            [id],
@@ -906,7 +912,7 @@ defmodule Mutare.Transform do
     # All mutations here skipped → no selector; emit the node unchanged.
     case clauses do
       [] -> {default, ctx}
-      _ -> {pin_if_needed(build_case(default, clauses, ctx), candidates), ctx}
+      _ -> {pin_if_needed(SelectorEmit.selector_case(default, clauses, ctx), candidates), ctx}
     end
   end
 
@@ -939,7 +945,7 @@ defmodule Mutare.Transform do
   # (no nested selectors — only one mutant is ever active, so a body selector there could
   # never fire), while the catch-all matches the *emitted* rhs so a nested mutation in the
   # matched expression still fires when its (non-match) id is active. Mirrors `emit_site/3`
-  # / `build_case/3` for id claiming, coverage, and the all-poisoned fallback.
+  # / `SelectorEmit.selector_case/3` for id claiming, coverage, and the all-poisoned fallback.
   defp emit_match_site({:=, _meta, [_lhs, emitted_rhs]} = match_node, candidates, ctx) do
     %Candidate.MatchPattern{export: export, original: original_lhs} = hd(candidates)
 
@@ -951,7 +957,7 @@ defmodule Mutare.Transform do
       fn c -> BindingEscapeEmit.match_inner_case(c.raw_rhs, c.mutated, export) end,
       fn ids ->
         inner = BindingEscapeEmit.match_inner_case(emitted_rhs, original_lhs, export)
-        catch_all_clause(ids, inner, ctx.active_var)
+        SelectorEmit.catch_all_clause(ids, inner, ctx.active_var)
       end
     )
   end
@@ -968,12 +974,12 @@ defmodule Mutare.Transform do
   # outside. The callers differ only in the per-mutant branch body (`mutant_body`, a 1-arity fun
   # called per candidate) and the baseline catch-all (`catch_all`, a 1-arity fun called with the
   # hosted ids — it records coverage then runs the emitted node). Mirrors `emit_site/3`/
-  # `build_case/3` for id claiming, and shares their all-poisoned fallback (no live mutant → emit
-  # the node unchanged).
+  # `SelectorEmit.selector_case/3` for id claiming, and shares their all-poisoned fallback
+  # (no live mutant → emit the node unchanged).
   defp emit_binding_site(node, export, candidates, ctx, mutant_body, catch_all)
        when is_function(mutant_body, 1) and is_function(catch_all, 1) do
     {clauses, ctx} =
-      claim_clauses(candidates, ctx, &Delivery.site/3, fn id, candidate ->
+      SelectorEmit.claim_items(candidates, ctx, &Delivery.site/3, fn id, candidate ->
         {:->, [], [[id], mutant_body.(candidate)]}
       end)
 
@@ -982,9 +988,8 @@ defmodule Mutare.Transform do
         {strip_candidates(node), ctx}
 
       _ ->
-        ids = ids_from_clauses(clauses)
-        selector = selector_subject(ctx)
-        case_node = {:case, [], [selector, [do: clauses ++ [catch_all.(ids)]]]}
+        ids = SelectorEmit.ids_from_clauses(clauses)
+        case_node = SelectorEmit.raw_case(clauses, catch_all.(ids), ctx)
         {{:=, [], [export, case_node]}, ctx}
     end
   end
@@ -1071,10 +1076,11 @@ defmodule Mutare.Transform do
     do: emit_site(spliced, candidates, ctx)
 
   # Weave one host target's selector into `node`. Claim an id per logical mutant (so poison
-  # recovery keeps ids stable — `claim_id` advances even for a skipped id), build a mutant clause
-  # `<id> -> wrap(mutant)` for each, then the coverage catch-all `<var> -> <record>; wrap(original)`,
-  # assemble the `case` on the hoisted active-id subject, and hand it to the target's `splice` to
-  # place in a copy of the macro node. With every mutant poisoned (no clauses) the node is left
+  # recovery keeps ids stable — `SelectorEmit.claim_items/4` advances even for a skipped id),
+  # build a mutant clause `<id> -> wrap(mutant)` for each, then the coverage catch-all
+  # `<var> -> <record>; wrap(original)`, assemble the `case` on the hoisted active-id subject,
+  # and hand it to the target's `splice` to place in a copy of the macro node. With every
+  # mutant poisoned (no clauses) the node is left
   # unwoven (mirrors `emit_binding_site/5`'s all-poisoned fallback).
   defp weave_hosted_target(node, %Candidate.Hosted{} = cand, ctx) do
     carriers =
@@ -1083,7 +1089,7 @@ defmodule Mutare.Transform do
       end)
 
     {clauses, ctx} =
-      claim_clauses(carriers, ctx, &hosted_site/3, fn id, carrier ->
+      SelectorEmit.claim_items(carriers, ctx, &hosted_site/3, fn id, carrier ->
         {:->, [], [[id], cand.wrap.(carrier.mutated)]}
       end)
 
@@ -1092,13 +1098,13 @@ defmodule Mutare.Transform do
         {node, ctx}
 
       _ ->
-        ids = ids_from_clauses(clauses)
+        ids = SelectorEmit.ids_from_clauses(clauses)
         # The catch-all is an ordinary selector catch-all (`catch_all_clause/3`) whose default
         # branch is the *wrapped baseline* fragment: record the hosted ids (inert outside the
         # probe), then run `wrap(original)`. Reached only with non-empty `ids` (the `_ ->`
         # branch), so the empty-ids clause is irrelevant.
-        catch_all = catch_all_clause(ids, cand.wrap.(cand.original), ctx.active_var)
-        case_node = {:case, [], [selector_subject(ctx), [do: clauses ++ [catch_all]]]}
+        catch_all = SelectorEmit.catch_all_clause(ids, cand.wrap.(cand.original), ctx.active_var)
+        case_node = SelectorEmit.raw_case(clauses, catch_all, ctx)
         {cand.splice.(node, case_node), ctx}
     end
   end
@@ -1153,7 +1159,7 @@ defmodule Mutare.Transform do
     var = ctx.active_var
 
     {claimed, ctx} =
-      claim_clauses(candidates, ctx, &Delivery.site/3, fn id, candidate ->
+      SelectorEmit.claim_items(candidates, ctx, &Delivery.site/3, fn id, candidate ->
         {id, candidate.clause_index, CaseClauseEmit.mutant_clause(id, candidate, var)}
       end)
 
@@ -1187,87 +1193,8 @@ defmodule Mutare.Transform do
             do: rewritten,
             else: rewritten ++ [CaseClauseEmit.unmatched_clause(all_ids, var)]
 
-        subject = {selector_subject(ctx), emitted_subject}
+        subject = {SelectorEmit.subject(ctx), emitted_subject}
         {{:case, meta, [subject, [{do_key, new_clauses}]]}, ctx}
     end
-  end
-
-  # The single owner of the id-claim + site-record dance that poison recovery
-  # leans on. Both the in-place path (emit_site/3) and the lifted path
-  # (emit_function_plan/2) route every candidate through here, so ids advance
-  # identically — even for a skipped (poisoned) id — and stay stable across
-  # rebuilds. Keeping this in one place is what stops the two paths from drifting
-  # out of lockstep.
-  #
-  # `site_fn.(id, candidate, file)` builds the %Site{}; `emit_fn.(id, candidate)`
-  # builds the artifact (an in-place `->` clause, or a lifted `{id, defs}` pair).
-  # Returns `{[], ctx}` for a poisoned id (site recorded, nothing emitted) or
-  # `{[artifact], ctx}` otherwise — list-shaped to drop into a `flat_map_reduce`.
-  defp claim_id(ctx, candidate, site_fn, emit_fn) do
-    id = ctx.next_id
-    site = site_fn.(id, candidate, ctx.file)
-    ctx = %{ctx | next_id: id + 1}
-
-    if id in ctx.skip_ids do
-      {[], %{ctx | sites: [poison(site) | ctx.sites]}}
-    else
-      {[emit_fn.(id, candidate)], %{ctx | sites: [site | ctx.sites]}}
-    end
-  end
-
-  defp poison(%Site{} = site), do: %{site | poisoned: true}
-
-  # The fold every selector-emitting path shares: claim an id per item through `claim_id` (so ids
-  # advance — and the site is recorded — even for a skipped/poisoned id), collecting one artifact
-  # per *live* mutant (a `<id> -> …` selector clause, or a tuple the caller assembles). Keeping the
-  # id walk in one place is what keeps the paths in lockstep across poison rebuilds.
-  defp claim_clauses(items, ctx, site_fn, clause_fn) do
-    Enum.flat_map_reduce(items, ctx, fn item, ctx ->
-      claim_id(ctx, item, site_fn, clause_fn)
-    end)
-  end
-
-  # The mutant ids of a list of `<id> -> body` selector clauses, in order.
-  defp ids_from_clauses(clauses), do: for({:->, _, [[id], _]} <- clauses, do: id)
-
-  # (case <subject> do <id> -> <mutated> ; <var> -> <record>; <default> end)
-  #
-  # `<subject>` is the hoisted active-id variable when it is bound in scope, else the
-  # self-contained `:persistent_term.get(...)` read (`selector_subject/1`). The selector
-  # is built by `Render.selector_case/2` (block-wrapped, so it renders safely in any
-  # position, and the shape `hoist_pipe/2` recognises through `Render.selector_case_parts/1`).
-  defp build_case(default_node, mutant_clauses, ctx) do
-    selector = selector_subject(ctx)
-    ids = ids_from_clauses(mutant_clauses)
-    catch_all = catch_all_clause(ids, default_node, ctx.active_var)
-    Render.selector_case(selector, mutant_clauses ++ [catch_all])
-  end
-
-  # The selector `case` scrutinee for the current emit scope. When the active-id variable
-  # is already bound here (`active_bound` — inside a lifted base clause, where the
-  # dispatcher threads it as the first parameter, or inside a non-lifted function's `:do`
-  # block, where a prologue binds it once), every selector reads that variable directly —
-  # the active id is process-constant, so reading it once per function activation is
-  # identical and drops the per-site `:persistent_term.get` (see NOTES "Hoist the per-site
-  # active-id read"). Otherwise the self-contained inline read is kept: a module/scaffold
-  # body, a head's default-value position (evaluated in a generated head clause out of any
-  # binding's scope), or — `module_depth > 0` — a selector inside a runtime nested
-  # `defmodule` in this body, whose inner `def` can't see the outer function's binding.
-  defp selector_subject(%Ctx{active_bound: true, module_depth: 0, active_var: var}),
-    do: {var, [], nil}
-
-  defp selector_subject(%Ctx{}), do: Mutare.Metamutant.subject_ast()
-
-  # The selector catch-all (`<var> -> …`): the baseline + every-inactive-mutant
-  # branch. It carries the coverage record (inert outside the probe, see
-  # `Mutare.Coverage.Recorder`) *before* the original, so the original stays the
-  # clause's last expression — preserving tail position / LCO in the dispatcher.
-  # With no ids to attribute (an all-poisoned lifted group) there is nothing to
-  # record, so the plain `_ ->` is emitted unchanged.
-  defp catch_all_clause([], default_node, _var), do: {:->, [], [[{:_, [], nil}], default_node]}
-
-  defp catch_all_clause(ids, default_node, var) do
-    body = {:__block__, [], [Recorder.record_ast(ids, var), default_node]}
-    {:->, [], [[Recorder.catch_all_pattern(var)], body]}
   end
 end
