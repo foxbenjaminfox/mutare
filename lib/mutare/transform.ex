@@ -144,6 +144,7 @@ defmodule Mutare.Transform do
   alias Mutare.Transform.{
     Analyze,
     Behaviours,
+    BindingEscapeEmit,
     Candidate,
     CaseClauseEmit,
     Ctx,
@@ -1057,9 +1058,10 @@ defmodule Mutare.Transform do
       export,
       candidates,
       ctx,
-      fn c -> match_inner_case(c.raw_rhs, c.mutated, export) end,
+      fn c -> BindingEscapeEmit.match_inner_case(c.raw_rhs, c.mutated, export) end,
       fn ids ->
-        catch_all_clause(ids, match_inner_case(emitted_rhs, original_lhs, export), ctx.active_var)
+        inner = BindingEscapeEmit.match_inner_case(emitted_rhs, original_lhs, export)
+        catch_all_clause(ids, inner, ctx.active_var)
       end
     )
   end
@@ -1097,42 +1099,6 @@ defmodule Mutare.Transform do
     end
   end
 
-  # `case <rhs> do <pattern> -> <export>; u -> Elixir.Kernel.raise(Elixir.MatchError, term: u) end`
-  # — re-binds the match by matching `rhs` against `pattern` and returning the shared export
-  # tuple. The trailing clause makes a non-match raise the *same* `MatchError` the original
-  # `=` raised (not a `CaseClauseError`): exact baseline semantics, and still a clean kill on
-  # a mutant whose pattern stopped matching. The pattern is a refutable container (a bare
-  # var / pin-only LHS is never offered), so that clause is always reachable.
-  defp match_inner_case(rhs, pattern, export) do
-    {:case, [], [rhs, [do: [{:->, [], [[pattern], export]}, match_raise_clause()]]]}
-  end
-
-  # `mutare_unmatched -> Elixir.Kernel.raise(Elixir.MatchError, term: mutare_unmatched)`.
-  #
-  # Both names are spelled in **absolute** form so they resolve **independently of the target
-  # module's lexical environment**, and the generated raise behaves identically to the `=` it
-  # replaces — which always raises `Elixir.MatchError` regardless of imports/aliases:
-  #
-  #   * `Elixir.Kernel.raise` is *absolute-qualified*, so it survives both
-  #     `import Kernel, except: [raise: 2]` (an exclusion only removes the *unqualified*
-  #     macro — an unqualified `raise` there would make the metamutant baseline fail to
-  #     compile) *and* `alias Foo, as: Kernel` (`__aliases__` led by `:Elixir` is never
-  #     alias-rewritten, where a plain `Kernel.raise` could be redirected).
-  #   * `Elixir.MatchError` is likewise the *absolute* form, so `alias Foo, as: MatchError` /
-  #     a nested `MatchError` module can't redirect it to the wrong exception.
-  #
-  # The binding is local to this one clause body (a fresh case-clause pattern variable, used
-  # only here), so a fixed name can't capture or collide — unlike a lifted *head* arg, the
-  # gated-equality hazard `Names` salts against doesn't apply to a body case clause.
-  defp match_raise_clause do
-    unmatched = {:mutare_unmatched, [], nil}
-
-    raise_node =
-      AST.absolute_call([:Kernel], :raise, [AST.absolute_alias([:MatchError]), [term: unmatched]])
-
-    {:->, [], [[unmatched], raise_node]}
-  end
-
   # === binding-escaping macro pattern mutation: tuple re-export ==============
 
   # Rewrite a binding-escaping known-macro call (`destructure([x, y], v)`, declared
@@ -1163,21 +1129,11 @@ defmodule Mutare.Transform do
       export,
       candidates,
       ctx,
-      fn c -> macro_pattern_branch(c.mutant_expr, export) end,
-      fn ids -> macro_pattern_catch_all(ids, baseline, export, ctx.active_var) end
+      fn c -> BindingEscapeEmit.macro_pattern_branch(c.mutant_expr, export) end,
+      fn ids ->
+        BindingEscapeEmit.macro_pattern_catch_all(ids, baseline, export, ctx.active_var)
+      end
     )
-  end
-
-  # One selector branch body: run the macro (binding the pattern's vars into the branch
-  # scope), then yield the shared export tuple for the outer rebind. `{macro; export}`.
-  defp macro_pattern_branch(macro_call, export),
-    do: {:__block__, [], [macro_call, export]}
-
-  # The selector catch-all for a rewritten binding-pattern macro: record the hosted ids
-  # (inert outside the probe), run the baseline (emitted) macro, then yield the export.
-  defp macro_pattern_catch_all(ids, baseline, export, var) do
-    body = {:__block__, [], [Recorder.record_ast(ids, var), baseline, export]}
-    {:->, [], [[Recorder.catch_all_pattern(var)], body]}
   end
 
   # === hosted DSL-fragment mutation: mutator-supplied selector host ==========
