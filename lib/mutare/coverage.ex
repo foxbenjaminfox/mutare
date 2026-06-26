@@ -59,9 +59,11 @@ defmodule Mutare.Coverage do
   @spec read_dump(Path.t()) :: {:ok, t()} | {:error, term()}
   def read_dump(path) do
     with {:ok, binary} <- File.read(path),
-         {:ok, %{aggregate: aggregate, by_file: by_file} = decoded} <- decode(binary),
-         unlabeled = Map.get(decoded, :unlabeled, []),
-         :ok <- valid_shape(aggregate, by_file, unlabeled) do
+         {:ok, decoded} <- decode(binary),
+         :ok <- valid_shape(decoded) do
+      %{aggregate: aggregate, by_file: by_file} = decoded
+      unlabeled = Map.get(decoded, :unlabeled, [])
+
       {:ok,
        %{
          aggregate: MapSet.new(aggregate),
@@ -82,12 +84,16 @@ defmodule Mutare.Coverage do
     end
   end
 
-  # The decoded payload's fields carry the types the rest of the module assumes (the id lists
-  # and the per-file map). A mismatch routes to `:bad_shape` → the caller's run-all fallback,
-  # never a false `:no_coverage`.
-  defp valid_shape(aggregate, by_file, unlabeled) do
+  # The decoded payload must be a map carrying the keys and field types the rest of the module
+  # assumes (the id lists and the per-file map). A valid-but-wrong-shaped term (e.g. an atom, or
+  # a map missing `:aggregate`/`:by_file`) routes to `:bad_shape` → the caller's run-all fallback,
+  # never a false `:no_coverage` and never an unhandled `{:ok, term}` crashing the `with`.
+  defp valid_shape(%{aggregate: aggregate, by_file: by_file} = decoded) do
+    unlabeled = Map.get(decoded, :unlabeled, [])
     if is_list(aggregate) and is_map(by_file) and is_list(unlabeled), do: :ok, else: :bad_shape
   end
+
+  defp valid_shape(_other), do: :bad_shape
 
   # `:erlang.binary_to_term` raises on a truncated/garbage payload — turn that
   # into an `{:error, _}` like every other unusable-dump case.

@@ -60,6 +60,25 @@ defmodule Mutare.CoverageTest do
       assert capture_log(fn -> assert {:error, _} = Coverage.read_dump(path) end) =~
                "falling back to run-all"
     end
+
+    @tag :tmp_dir
+    test "errors (for run-all fallback) on a valid term of the wrong shape", %{tmp_dir: dir} do
+      # A payload that deserializes cleanly but isn't the expected map must degrade, not crash
+      # the `with` (a non-map term, or a map missing `:aggregate`/`:by_file`, used to fall
+      # through every `else` clause and raise `CaseClauseError`).
+      for {label, term} <- [
+            {"atom", :nonsense},
+            {"list", [1, 2, 3]},
+            {"map-missing-keys", %{aggregate: [1]}}
+          ] do
+        path = Path.join(dir, "wrong_shape_#{label}.terms")
+        File.write!(path, :erlang.term_to_binary(term))
+
+        assert capture_log(fn ->
+                 assert {:error, :bad_shape} = Coverage.read_dump(path)
+               end) =~ "unexpected shape"
+      end
+    end
   end
 
   describe "fixture_module/0 (self-hosting: the stand-in cedes :mutare_cov)" do
