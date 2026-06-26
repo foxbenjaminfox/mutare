@@ -57,11 +57,13 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     refute Deps.has_dep?(igniter, :mutare_phoenix)
     refute Deps.has_dep?(igniter, :mutare_phoenix_live_view)
     refute Deps.has_dep?(igniter, :mutare_ecto)
+    refute Deps.has_dep?(igniter, :mutare_oban)
     refute Deps.has_dep?(igniter, :mutare_gettext)
 
     content = config(igniter)
     refute content =~ "Mutare.Phoenix"
     refute content =~ "Mutare.Ecto"
+    refute content =~ "Mutare.Oban"
     refute content =~ "Mutare.Gettext"
     # The active config is the empty list (defaults); guidance lives in comments.
     assert content =~ "[]"
@@ -111,6 +113,46 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     assert Deps.has_dep?(igniter, :mutare_ecto)
     assert config(igniter) =~ "{Mutare.Ecto, repo: YourApp.Repo}"
     assert_has_warning(igniter, &(&1 =~ "Could not find an Ecto repo"))
+  end
+
+  # --- oban (a mutator package) --------------------------------------------
+
+  test "oban: adds mutare_oban and splices its preset into :mutators" do
+    igniter = project([{:oban, "~> 2.17"}]) |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_oban)
+    refute Deps.has_dep?(igniter, :mutare_phoenix)
+
+    assert config(igniter) =~ "[:builtins] ++ Mutare.Oban.all()"
+  end
+
+  test "oban_pro alone is enough to wire up mutare_oban" do
+    igniter = project([{:oban_pro, "~> 1.4"}]) |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_oban)
+    assert config(igniter) =~ "Mutare.Oban.all()"
+  end
+
+  test "oban + ecto: composes the Ecto config and the Oban preset" do
+    igniter =
+      project([{:ecto_sql, "~> 3.10"}, {:oban, "~> 2.17"}], %{"lib/repo.ex" => @repo})
+      |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_ecto)
+    assert Deps.has_dep?(igniter, :mutare_oban)
+
+    content = config(igniter)
+    assert content =~ "{Mutare.Ecto, repo: MyApp.Repo}"
+    assert content =~ "Mutare.Oban.all()"
+  end
+
+  test "oban dep is dev/test-only and runtime: false" do
+    igniter = project([{:oban, "~> 2.17"}]) |> install()
+
+    assert {:ok, declaration} = Deps.get_dep(igniter, :mutare_oban)
+    assert declaration =~ ~s({:mutare_oban, "~> 0.1")
+    assert declaration =~ "only: [:dev, :test]"
+    assert declaration =~ "runtime: false"
   end
 
   # --- gettext (a plugin, not a mutator) -----------------------------------

@@ -97,6 +97,7 @@ companion package and wires it into a generated `.mutare.exs`:
 | `:phoenix`           | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`          |
 | `:phoenix_live_view` | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
 | `:ecto` / `:ecto_sql`| `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
+| `:oban` / `:oban_pro`| `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`             |
 | `:gettext`           | `mutare_gettext`           | `:plugins` — `Mutare.Gettext`                 |
 
 A mutator package extends the `:mutators` list; a non-mutating **plugin** like

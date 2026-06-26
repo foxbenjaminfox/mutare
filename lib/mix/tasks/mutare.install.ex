@@ -16,6 +16,7 @@ if Code.ensure_loaded?(Igniter) do
     | `:phoenix`           | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`          |
     | `:phoenix_live_view` | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
     | `:ecto` / `:ecto_sql`| `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
+    | `:oban` / `:oban_pro`| `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`             |
     | `:gettext`           | `mutare_gettext`           | `:plugins` — `Mutare.Gettext`                 |
 
     Each detected package is added as a `:dev`/`:test` dependency and wired into a
@@ -27,7 +28,7 @@ if Code.ensure_loaded?(Igniter) do
     and a ready-to-run `mix mutare`.
 
     If you already have a `.mutare.exs`, it is left untouched and the recommended
-    `:mutators` line is printed as a notice for you to merge in by hand.
+    `:mutators` / `:plugins` keys are printed as a notice for you to merge in by hand.
 
     ## Options
 
@@ -73,7 +74,11 @@ if Code.ensure_loaded?(Igniter) do
         # (below), not `:mutators`. A Gettext-using app (every default Phoenix app, plus
         # any library that calls it) declares `:gettext` directly, so a declared-dep
         # check is enough.
-        gettext: Igniter.Project.Deps.has_dep?(igniter, :gettext)
+        gettext: Igniter.Project.Deps.has_dep?(igniter, :gettext),
+        # Oban contributes mutator families (`Mutare.Oban.all/0`). `mutare_oban` gates on
+        # both the OSS `Oban.Worker` and the Pro `Oban.Pro.Worker` behaviour; a Pro-only
+        # app may declare just `:oban_pro`, so check either signal.
+        oban: Enum.any?([:oban, :oban_pro], &Igniter.Project.Deps.has_dep?(igniter, &1))
       }
 
       {igniter, repo} = resolve_repo(igniter, detected.ecto)
@@ -90,6 +95,7 @@ if Code.ensure_loaded?(Igniter) do
       |> maybe_add_dep(detected.phoenix, :mutare_phoenix)
       |> maybe_add_dep(detected.live_view, :mutare_phoenix_live_view)
       |> maybe_add_dep(detected.ecto, :mutare_ecto)
+      |> maybe_add_dep(detected.oban, :mutare_oban)
       |> maybe_add_dep(detected.gettext, :mutare_gettext)
     end
 
@@ -188,8 +194,8 @@ if Code.ensure_loaded?(Igniter) do
     #   phoenix             → [:builtins] ++ Mutare.Phoenix.all()
     #   phoenix + liveview  → [:builtins] ++ Mutare.Phoenix.all() ++ Mutare.Phoenix.LiveView.all()
     #   ecto                → [:builtins, {Mutare.Ecto, repo: MyApp.Repo}]
-    #   all three           → [:builtins, {Mutare.Ecto, repo: MyApp.Repo}] ++
-    #                            Mutare.Phoenix.all() ++ Mutare.Phoenix.LiveView.all()
+    #   oban                → [:builtins] ++ Mutare.Oban.all()
+    #   ecto + oban         → [:builtins, {Mutare.Ecto, repo: MyApp.Repo}] ++ Mutare.Oban.all()
     defp mutators_expr(detected, repo) do
       literals =
         [":builtins"] ++
@@ -200,7 +206,8 @@ if Code.ensure_loaded?(Igniter) do
       calls =
         [
           {detected.phoenix, "Mutare.Phoenix.all()"},
-          {detected.live_view, "Mutare.Phoenix.LiveView.all()"}
+          {detected.live_view, "Mutare.Phoenix.LiveView.all()"},
+          {detected.oban, "Mutare.Oban.all()"}
         ]
         |> Enum.filter(&elem(&1, 0))
         |> Enum.map(&elem(&1, 1))
@@ -224,7 +231,8 @@ if Code.ensure_loaded?(Igniter) do
 
     # Whether any detected dependency contributes a *mutator* family (and so a
     # `:mutators` key). Gettext is a plugin, not a mutator, so it is excluded here.
-    defp mutator_package?(detected), do: detected.phoenix or detected.live_view or detected.ecto
+    defp mutator_package?(detected),
+      do: detected.phoenix or detected.live_view or detected.ecto or detected.oban
 
     # --- generated file bodies -----------------------------------------------
 
@@ -257,7 +265,7 @@ if Code.ensure_loaded?(Igniter) do
       #
       #   mutators: [:builtins, MyApp.Mutators.Custom]
       #
-      # No Phoenix, LiveView, Ecto, or Gettext was detected; add one and re-run
+      # No Phoenix, LiveView, Ecto, Oban, or Gettext was detected; add one and re-run
       # `mix igniter.install mutare` to wire up the matching mutare_* package.
       []
       """
