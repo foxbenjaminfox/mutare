@@ -146,7 +146,7 @@ defmodule Mutare.CLI.Info do
   end
 
   defp target_label(%Project{umbrella?: true, mutate_scope: scope, copy_root: root}),
-    do: "#{root} (umbrella apps: #{Enum.map_join(scope, ", ", & &1.app)})"
+    do: "#{root} (umbrella apps: #{CLI.umbrella_apps(scope)})"
 
   defp target_label(%Project{copy_root: root}), do: root
 
@@ -203,8 +203,7 @@ defmodule Mutare.CLI.Info do
   defp format_macro_name(:*), do: "*"
   defp format_macro_name(name), do: to_string(name)
 
-  defp format_arity(:any), do: "any"
-  defp format_arity(:*), do: "any"
+  defp format_arity(a) when a in [:any, :*], do: "any"
   defp format_arity(n), do: to_string(n)
 
   # `--list-ignores`: every `# mutare:ignore` in scope, flagged active or ineffective
@@ -274,9 +273,12 @@ defmodule Mutare.CLI.Info do
         Mix.shell().info("No mutants would be generated#{CLI.scope_label(project)}.")
 
       sites ->
+        n_sites = length(sites)
+        n_files = map_size(by_file)
+
         Mix.shell().info(
-          "#{length(sites)} mutant#{CLI.plural(length(sites))} across " <>
-            "#{map_size(by_file)} file#{CLI.plural(map_size(by_file))} " <>
+          "#{n_sites} mutant#{CLI.plural(n_sites)} across " <>
+            "#{n_files} file#{CLI.plural(n_files)} " <>
             "— dry run, nothing compiled or executed:\n"
         )
 

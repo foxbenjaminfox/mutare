@@ -416,16 +416,18 @@ defmodule Mix.Tasks.Mutare do
       enforce_strict_ignores(schema, options)
 
       # Wire the runner's live hooks (reporter/phase/start) now that the scan is done — the
-      # scan drove `:on_scan` directly above; these drive the per-mutant phase.
-      options = wire_live_hooks(options, live)
+      # scan drove `:on_scan` directly above; these drive the per-mutant phase. A distinct
+      # binding (not a rebind of `options`) so it stays clear that the scan/announce above ran
+      # on the unhooked options and only the runner + report see the hooked ones.
+      run_options = wire_live_hooks(options, live)
 
-      result = Runner.run_with_schema(schema, root, options)
+      result = Runner.run_with_schema(schema, root, run_options)
       # Tear the live status block down before anything else prints, so the final
       # report / error lands on a clean terminal (the block lives on stderr).
       if live, do: Live.finish(live)
 
       case result do
-        {:ok, run} -> report(run, options)
+        {:ok, run} -> report(run, run_options)
         {:error, reason, detail} -> Mix.raise(format_error(reason, detail))
       end
     after

@@ -477,19 +477,17 @@ defmodule Mutare.Transform do
   # the caller's contract (`emit_annotated_clause/3` only reaches here for a list body_kw);
   # there is no fallback because a body-bearing def/defp clause always has a keyword body.
   defp emit_clause_body(body_kw, ctx, lifted?) when is_list(body_kw) do
-    # A lifted clause's threaded parameter is in scope in every block; a non-lifted clause's
-    # prologue binds the id in `:do` only, so its sibling blocks keep the inline read.
-    all_blocks_bound = lifted?
-    needs_prologue = not lifted?
-
+    # A lifted clause's threaded parameter is in scope in every block (so every block reads the
+    # bound var); a non-lifted clause's prologue binds the id in `:do` only, so its sibling blocks
+    # keep the inline read and `:do` alone gets the prepended prologue.
     {body_kw, ctx} =
       Enum.map_reduce(body_kw, ctx, fn {key, value}, ctx ->
-        bound = AST.key_atom(key) == :do or all_blocks_bound
+        bound = AST.key_atom(key) == :do or lifted?
         {value, ctx} = emit(value, %{ctx | active_bound: bound})
         {{key, value}, ctx}
       end)
 
-    {if(needs_prologue, do: prepend_do_prologue(body_kw, ctx.active_var), else: body_kw), ctx}
+    {if(lifted?, do: body_kw, else: prepend_do_prologue(body_kw, ctx.active_var)), ctx}
   end
 
   # Prepend `<var> = :persistent_term.get(...)` to the `:do` block — but only when that

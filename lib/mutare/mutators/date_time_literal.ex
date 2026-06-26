@@ -22,6 +22,10 @@ defmodule Mutare.Mutators.DateTimeLiteral do
 
   @sigils [:sigil_D, :sigil_T, :sigil_N, :sigil_U]
 
+  # One day in seconds — the `:sigil_N`/`:sigil_U` shift, whose `add/2` defaults to seconds
+  # (Date/Time shift by their own `+1` unit, a day / a second, below).
+  @day_seconds 86_400
+
   @impl Mutare.Mutator
   def name, do: :datetime
 
@@ -50,11 +54,11 @@ defmodule Mutare.Mutators.DateTimeLiteral do
 
   defp shift(:sigil_N, s) do
     with {:ok, n} <- NaiveDateTime.from_iso8601(s),
-         do: {:ok, NaiveDateTime.to_iso8601(NaiveDateTime.add(n, 86_400))}
+         do: {:ok, NaiveDateTime.to_iso8601(NaiveDateTime.add(n, @day_seconds))}
   end
 
   defp shift(:sigil_U, s) do
     with {:ok, dt, _offset} <- DateTime.from_iso8601(s),
-         do: {:ok, DateTime.to_iso8601(DateTime.add(dt, 86_400))}
+         do: {:ok, DateTime.to_iso8601(DateTime.add(dt, @day_seconds))}
   end
 end

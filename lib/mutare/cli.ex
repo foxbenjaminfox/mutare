@@ -13,9 +13,13 @@ defmodule Mutare.CLI do
   @doc "A short ` in <root>` / ` (umbrella: …)` suffix naming the mutation scope."
   @spec scope_label(Project.t()) :: String.t()
   def scope_label(%Project{umbrella?: true, mutate_scope: scope}) do
-    " (umbrella: #{Enum.map_join(scope, ", ", & &1.app)})"
+    " (umbrella: #{umbrella_apps(scope)})"
   end
 
   def scope_label(%Project{copy_root: "."}), do: ""
   def scope_label(%Project{copy_root: root}), do: " in #{root}"
+
+  @doc "The comma-joined app names of an umbrella mutation scope."
+  @spec umbrella_apps([%{app: atom()}]) :: String.t()
+  def umbrella_apps(scope), do: Enum.map_join(scope, ", ", & &1.app)
 end
