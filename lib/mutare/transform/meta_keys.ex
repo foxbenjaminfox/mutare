@@ -37,13 +37,13 @@ defmodule Mutare.Transform.MetaKeys do
   # into the rendered metamutant (the drift this module exists to prevent). Owning module in
   # parentheses:
   #   * `:mutare_tag`              — replace-by-tag discovery marker                 (Tag, literal)
-  #   * `:mutare_nid`              — stable per-node identity for overlap pruning    (Resolve, read by Overlap)
+  #   * `:mutare_nid`              — stable per-node identity for overlap pruning    (Resolve.NodeIds, read by Overlap)
   #   * `:mutare_alias`            — module a remote call's aliased path resolves to (Aliases)
   #   * `:mutare_import`           — `{module, :bare | :qualify}` for a bare call    (Imports)
   #   * `:mutare_import_witness`   — dead-code import-witness payload                (Imports, spliced by ImportWitness)
   #   * `:mutare_kernel_displaced` — a Kernel fn displaced by `import …, except:`    (Imports)
-  #   * `:mutare_macro`            — known-macro per-argument routing                (Resolve, from Macros)
-  #   * `:mutare_macro_piped`      — piped-value routing for a known-macro RHS       (Resolve, from Macros)
+  #   * `:mutare_macro`            — known-macro per-argument routing                (Resolve.MacroStamp, from Macros)
+  #   * `:mutare_macro_piped`      — piped-value routing for a known-macro RHS       (Resolve.MacroStamp, from Macros)
   #   * `:mutare_use_directives`   — import/alias/require a `use` injects            (Uses)
   #   * `:mutare_use_behaviours`   — `@behaviour`s a `use` injects (on the `use`)    (Uses)
   #   * `:mutare_behaviours`       — a `defmodule`'s behaviour MapSet               (Behaviours)

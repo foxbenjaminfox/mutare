@@ -524,7 +524,7 @@ defmodule Mutare.HostedTest do
     test "an unknown treatment atom raises with the offending value" do
       # `Mutare.Test.UnknownTreatmentMutator` routes the `filter` condition `:bogus`. Without
       # validation it would fall through `route_macro_arg/3`'s `:expression` catch-all and silently
-      # mutate the fragment in place; `Resolve.validate_routing!/2` rejects it loudly instead.
+      # mutate the fragment in place; `Resolve.MacroStamp` rejects it loudly instead.
       source = """
       defmodule Mutare.UnknownTreatmentFixture do
         import Mutare.Test.HostDSL
@@ -545,7 +545,7 @@ defmodule Mutare.HostedTest do
 
     test "a non-list macro_routing/1 return raises" do
       # Defensive: a classifier that returns a non-list (a contract violation) is caught with a
-      # clear message rather than crashing inside `inject_host/2`'s `Enum.map`.
+      # clear message rather than crashing inside the host-injection `Enum.map`.
       source = """
       defmodule Mutare.BadShapeFixture do
         import Mutare.Test.HostDSL

@@ -1163,7 +1163,7 @@ Three load-bearing decisions:
   loadable.
 
 **Pipe-aware** (the query-builder shape `q |> where([p], p.x == 1) |> order_by(...)`, where each
-stage is a piped macro and the piped value is effective arg 0). `Resolve.stamp_macro` matches on
+stage is a piped macro and the piped value is effective arg 0). `Resolve.MacroStamp.stamp/7` matches on
 the *effective* arity (`Mutator.effective_arity(args, env.pipe_mode)` = visible + 1 when piped —
 `env.pipe_mode` is the `:piped`/`:unpiped` atom directly, built by `Resolve`'s `:|>` clause, no
 boolean conversion) and splits the routing
@@ -1778,10 +1778,10 @@ Where the code actually changed:
   shadows a module-matched or built-in treatment like `Kernel.match?`), and a name-only entry fires even
   when the resolved `module_key` is `nil` (the unresolvable bare call — exactly its purpose).
 
-**No `Resolve` change.** `stamp_macro` already calls `lookup` with the resolved (or `nil`) module and
+**No `Resolve` change.** `MacroStamp.stamp/7` already calls `lookup` with the resolved (or `nil`) module and
 acts on whatever spec comes back; the cascade does the rest. `registered_macro_module/3` (which recovers
 a module for a bare call under a whole import of an unloadable DSL) now matches more eagerly when a
-name-only entry exists, but harmlessly: its returned `module_key` is used *only* to re-feed `stamp_macro`,
+name-only entry exists, but harmlessly: its returned `module_key` is used *only* to re-feed `MacroStamp.stamp/7`,
 which produces the same name-only routing whether the module is the recovered one or `nil`.
 
 The name-only hatch is documented as deliberately non-standard and broad (it skips/routes *every* call of
@@ -1903,7 +1903,7 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     of it) — a classifier may legitimately route every position to `:expression`/`:pattern` and never
     host. But the moment `macro_routing/1` *does* route a position `:hosted` with no `host/2` to
     deliver it, `route_macro_arg/3` would leave the fragment raw and the intended mutation would
-    vanish without a trace. `Resolve.reject_undeliverable_hosted!/2` (the classifier-path analogue of
+    vanish without a trace. `Resolve.MacroStamp`'s undeliverable-host check (the classifier-path analogue of
     `reject_piped_hosted!/3`) raises at resolve — the first point the undeliverable `:hosted` is
     known — naming the missing `host/2`. (A *static* `:hosted` without a `host/2` is caught earlier
     still, at build, by `Macros.validate_host!/3`.)
@@ -1928,7 +1928,7 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     **except `:hosted`**. The recursive arm originally reused the full `routing_treatment` (which
     *includes* `:hosted`), but a keyword value can't be hosted: hosting delivers through `host/2`,
     which weaves into the **whole macro node** (#1), and core has no per-keyword-value host delivery, so
-    `inject_host/2`/`hosted_host/1` only recognise a *top-level* `{:hosted, host}`. A `:hosted` nested in
+    MacroStamp's host injection / hosted detector only recognise a *top-level* `{:hosted, host}`. A `:hosted` nested in
     a `{:keyword, …}` would slip past both — left raw and never hosted (a silent miss), or, but for the
     `route_macro_arg/3` raw-`:hosted` backstop, spliced as a bare selector into the DSL value (poison).
     Rather than make injection/detection recurse for an untested, marginal capability (host the *whole*
@@ -1937,12 +1937,12 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     over silent-drop. A deeper `{:keyword, [{:keyword, [:hosted]}]}` is caught too (the validator
     recurses). Tested via `Mutare.Test.KeywordHostedMutator` (`hosted_test`).
 
-  * *Classifier output is validated — `Resolve.validate_routing!/2`.* A `:routing` classifier's return
+  * *Classifier output is validated in `Resolve.MacroStamp`.* A `:routing` classifier's return
     is **untrusted input**, but only its hosted corners were originally checked. An unrecognised or
     mis-shaped treatment (`:expresion` typo, `{:keyword, non_list}`, a non-list return, or a keyword-value
     `:hosted`) would otherwise fall through `route_macro_arg/3`'s `:expression` catch-all and *silently
     mutate* a position core was asked to skip/host/pin — a wrong-position mutation or a poison.
-    `validate_routing!/2` (the classifier analogue of `Macro.Spec.validate_args/1`'s build-time check for
+    MacroStamp's validator (the classifier analogue of `Macro.Spec.validate_args/1`'s build-time check for
     static `args`) recurses the **raw** output (pre-`inject_host`) and raises with the offending value;
     its one positional rule is that `:hosted` is valid for a whole argument but not a keyword value (the
     keyword-hosted case above folds into it). The recognised atom set is derived from `Spec.treatments/0`
@@ -3714,7 +3714,7 @@ The once-and-for-all fix stops bridging the *raw* original subtree (in a candida
 and the *annotated* host node with a **range** — the only reason ranges were used is that those
 two aren't `===` (annotation rewrites `meta`), but they *do* share a range. `Mutare.Transform.Resolve`
 now stamps a stable unique token `meta[:mutare_nid]` on every metadata-bearing node, in a single
-DFS-counter prewalk (`stamp_nids/1`) run at the end of its `annotate/2` pre-pass — *before*
+DFS-counter prewalk (`Resolve.NodeIds.stamp/1`) run at the end of its `annotate/2` pre-pass — *before*
 `analyze` attaches candidates, so a candidate's `original` carries the nid and a call rewrite's
 footprint subtree (drawn from that same `original`) carries the matching one. `Overlap` reads it
 via `Resolve.nid/1`, collects the nids of covering footprints (a footprint is covering iff its

@@ -31,12 +31,8 @@ defmodule Mutare.Transform.Resolve do
   # effective arity).
 
   alias Mutare.{Macros, Mutator}
-  alias Mutare.Macro.Spec
-  alias Mutare.Transform.{Aliases, Imports, MetaKeys, Uses}
-
-  @macro_key MetaKeys.macro_key()
-  @piped_macro_key MetaKeys.piped_macro_key()
-  @nid_key MetaKeys.nid_key()
+  alias Mutare.Transform.{Aliases, Imports, Uses}
+  alias Mutare.Transform.Resolve.{MacroStamp, NodeIds}
 
   @doc "Stamp every remote call's module and every bare imported call with its resolved module."
   @spec annotate(Macro.t()) :: Macro.t()
@@ -59,7 +55,7 @@ defmodule Mutare.Transform.Resolve do
       pipe_mode: :unpiped,
       macros: registry
     })
-    |> stamp_nids()
+    |> NodeIds.stamp()
   end
 
   @doc """
@@ -69,31 +65,7 @@ defmodule Mutare.Transform.Resolve do
   operator-swap / function-rename / arity-change footprint as non-covering for free.
   """
   @spec nid(Macro.t()) :: non_neg_integer() | nil
-  def nid({_form, meta, _args}) when is_list(meta), do: Keyword.get(meta, @nid_key)
-  def nid(_node), do: nil
-
-  # Stamp every metadata-bearing node with a unique, stable token `meta[:mutare_nid]`, so
-  # `Mutare.Transform.Overlap` can bridge a leaf candidate's host node and a call rewrite's
-  # changed subtree by **node identity** rather than `Sourceror` range-equality — which is *not*
-  # injective (`[a, b]` and `a - b` share a range; a one-element call-arg list `[0]` shares its
-  # element's). Runs once, on the resolved tree, *before* `analyze` attaches candidates: a
-  # candidate's `original` is the stamped node (so it carries the nid), and a call mutator's
-  # footprint subtree — drawn from that same `original` — carries the matching one. A DFS counter
-  # makes the token stable and deterministic. Bare atoms and lists carry no metadata, so they
-  # never get a nid; nid-identity therefore *subsumes* the old range denylist (lists / form atoms
-  # / whole-host) and its two unproven Sourceror invariants — a false prune becomes unrepresentable.
-  defp stamp_nids(ast) do
-    {stamped, _next} =
-      Macro.prewalk(ast, 0, fn
-        {form, meta, args}, n when is_list(meta) ->
-          {{form, [{@nid_key, n} | meta], args}, n + 1}
-
-        node, n ->
-          {node, n}
-      end)
-
-    stamped
-  end
+  def nid(node), do: NodeIds.get(node)
 
   # A statement sequence: fold the env left-to-right so an `alias`/`import` extends it for the
   # *subsequent* siblings only. Each statement is walked under the env in force *before* it
@@ -122,7 +94,10 @@ defmodule Mutare.Transform.Resolve do
     stamped = Aliases.stamp_module(aliases, env.aliases)
     module_key = Aliases.resolve_path(path, env.aliases)
     call_node = {{:., dot_meta, [aliases, fun]}, call_meta, args}
-    call_meta = stamp_macro(call_meta, module_key, fun, args, call_node, env)
+
+    call_meta =
+      MacroStamp.stamp(call_meta, module_key, fun, args, call_node, env.macros, env.pipe_mode)
+
     {{:., dot_meta, [stamped, fun]}, call_meta, descend(args, env)}
   end
 
@@ -134,7 +109,10 @@ defmodule Mutare.Transform.Resolve do
     meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, env.pipe_mode)
     arity = Mutator.effective_arity(args, env.pipe_mode)
     module_key = bare_module_key(fun, arity, meta, env)
-    meta = stamp_macro(meta, module_key, fun, args, {fun, meta, args}, env)
+
+    meta =
+      MacroStamp.stamp(meta, module_key, fun, args, {fun, meta, args}, env.macros, env.pipe_mode)
+
     {fun, meta, descend(args, env)}
   end
 
@@ -169,177 +147,6 @@ defmodule Mutare.Transform.Resolve do
     do: Enum.reduce(Uses.directives(meta), env, &register/2)
 
   defp fold_use_directives(_stmt, env), do: env
-
-  # Stamp a call's meta with the argument routing of the known macro it resolves to, or leave
-  # it unchanged. Pipe-aware: a stage `lhs |> macro(a, b)` is `macro(lhs, a, b)`, so the match
-  # uses the *effective* arity (visible + 1) and the looked-up routing is for the effective
-  # positions. This is what protects a piped DSL stage (`q |> where([p], p.x == 1)`): without
-  # it core would descend into the condition.
-  defp stamp_macro(meta, module_key, fun, args, call_node, env) do
-    arity = Mutator.effective_arity(args, env.pipe_mode)
-
-    case Macros.lookup(env.macros, module_key, fun, arity) do
-      nil ->
-        meta
-
-      %Spec{} = spec ->
-        # A known macro routes its arguments specially (a pattern, an opaque `:skip`/`:hosted`
-        # DSL body), so the bare-import witness — which reconstructs the call as
-        # `fn a1, …, aN -> fun(a1, …, aN) end` — can't compile against it (`Ecto.Query.from/2`
-        # needs a compile-time keyword list). Drop the witness here, where we *know* it's a known
-        # macro; the resolution stamp stays.
-        meta |> Imports.drop_witness() |> stamp_macro_spec(spec, call_node, arity, env.pipe_mode)
-    end
-  end
-
-  # Compute and stamp a matched macro spec's per-position routing.
-  #
-  #   * A **`:routing` classifier** spec defers to the hosting mutator's `macro_routing/1`,
-  #     handed the concrete call node. That callback returns routing for the node's **visible**
-  #     arguments (already in lockstep with this node's own args), so it rides whole on
-  #     `@macro_key` with no piped split — a builder's piped value (`q` in `q |> where(c)`) is
-  #     an ordinary expression, analyzed by the `:|>` LHS clause, never a hosted position.
-  #   * A **static** spec expands `args` to the **effective** arity and goes through the usual
-  #     `stamp_routing/3` piped split (effective position 0 is the piped value) — guarded by
-  #     `reject_piped_hosted!/3`, since a static `:hosted` at position 0 can't be hosted once piped.
-  #
-  # Either way each `:hosted` treatment is rewritten to `{:hosted, host}` (`inject_host/2`) so
-  # the analyzer knows which mutator delivers it.
-  defp stamp_macro_spec(meta, %Spec{args: :routing, host: host} = spec, call_node, _arity, _pm) do
-    raw = host.macro_routing(call_node)
-    validate_routing!(spec, raw)
-    routing = inject_host(raw, spec)
-    reject_undeliverable_hosted!(spec, routing)
-    [{@macro_key, routing} | meta]
-  end
-
-  defp stamp_macro_spec(meta, spec, _call_node, arity, pipe_mode) do
-    routing = Spec.routing(spec, arity) |> inject_host(spec)
-    reject_piped_hosted!(spec, routing, pipe_mode)
-    stamp_routing(meta, routing, pipe_mode)
-  end
-
-  # A `:hosted` argument is delivered by handing the **macro node** to the mutator's `host/2` —
-  # but a piped call's **effective position 0 is the piped value** (the `|>` LHS), which is *not*
-  # in the node's args, so the host can never see it. A static `args` that routes position 0 as
-  # `:hosted` is therefore undeliverable the moment that macro is piped, and silently leaving the
-  # LHS raw would drop the mutation without a trace. Fail loudly instead, pointing at the
-  # supported escape hatch: the `:routing` classifier rides on the **visible** args (never the
-  # piped value), so a shape-dependent host belongs there. (Reached only for a static spec —
-  # `:routing` doesn't go through `stamp_routing`. The head is the effective-position-0 treatment.)
-  defp reject_piped_hosted!(spec, [{:hosted, _host} | _], :piped) do
-    raise ArgumentError,
-          "macro #{inspect(Spec.key(spec))} routes argument 0 as :hosted, but it is called " <>
-            "piped (`x |> #{spec.name}(...)`) where argument 0 is the piped value — not part of " <>
-            "the macro node handed to host/2, so it cannot be hosted. A :hosted position must be " <>
-            "a visible argument; use the :routing classifier for shape/position-dependent hosting."
-  end
-
-  defp reject_piped_hosted!(_spec, _routing, _pipe_mode), do: :ok
-
-  # A `:routing` classifier is *not* required to implement `host/2` at build time
-  # (`Mutare.Macros.build/3` only demands `macro_routing/1` of it), because a classifier may
-  # legitimately route every position to `:expression`/`:pattern` and never host. But the moment
-  # `macro_routing/1` *does* route a position `:hosted`, the host must be able to deliver it
-  # (`host/2`) — otherwise `route_macro_arg/3` leaves the fragment raw and the intended mutation
-  # is dropped without a trace. Fail loudly here instead (the classifier-path analogue of
-  # `reject_piped_hosted!/3`), since this is the first point the undeliverable `:hosted` is known.
-  # (`inject_host/2` has already rewritten each `:hosted` to `{:hosted, host}`.)
-  defp reject_undeliverable_hosted!(%Spec{host: host} = spec, routing) do
-    if Enum.any?(routing, &match?({:hosted, _}, &1)) and not host_exports?(host, :host, 2) do
-      raise ArgumentError,
-            "macro #{inspect(Spec.key(spec))}'s macro_routing/1 routed an argument as :hosted, " <>
-              "but its hosting mutator #{inspect(host)} does not implement host/2 to deliver it " <>
-              "— implement host/2, or do not route that position as :hosted."
-    end
-  end
-
-  # `host` is `module() | nil`; `Code.ensure_loaded?(nil)`/`function_exported?(nil, …)` are both
-  # false, so a nil host (impossible for a built spec, which validates one) is handled for free.
-  defp host_exports?(host, fun, arity),
-    do: Code.ensure_loaded?(host) and function_exported?(host, fun, arity)
-
-  # Validate the **raw** `macro_routing/1` output (before `inject_host/2`) — the classifier analogue
-  # of `Macro.Spec.validate_args/1`'s build-time check for static `args`. A classifier's output is
-  # untrusted: an unrecognised/mis-shaped treatment would otherwise fall through `route_macro_arg/3`'s
-  # `:expression` catch-all and *silently mutate* a DSL position core was asked to skip/host/pin (a
-  # wrong-position mutation or a poison), so reject it loudly here — the first point it is known.
-  # Recurses through `{:keyword, …}`; the one positional rule is that `:hosted` is valid for a whole
-  # visible argument but **not** for a keyword *value* (a keyword value can't be hosted — hosting
-  # weaves into the whole macro node via `host/2`, and core has no per-keyword-value delivery; see
-  # `t:Mutare.Mutator.keyword_value_treatment/0`). Checked pre-injection, so a hosted treatment is
-  # still the bare `:hosted` atom at any depth.
-  defp validate_routing!(spec, routing) when is_list(routing) do
-    Enum.each(routing, &validate_treatment!(spec, &1, :argument))
-  end
-
-  defp validate_routing!(spec, routing) do
-    raise ArgumentError,
-          "macro #{inspect(Spec.key(spec))}'s macro_routing/1 must return a list of treatments " <>
-            "(one per visible argument), got: #{inspect(routing)}"
-  end
-
-  # `:hosted` — fine for a whole argument, rejected inside a `{:keyword, …}` value.
-  defp validate_treatment!(_spec, :hosted, :argument), do: :ok
-
-  defp validate_treatment!(spec, :hosted, :keyword_value) do
-    raise ArgumentError,
-          "macro #{inspect(Spec.key(spec))}'s macro_routing/1 routed a :hosted treatment inside " <>
-            "a {:keyword, …} value, but a keyword value cannot be hosted — hosting weaves into " <>
-            "the whole macro node (host/2), not an individual keyword value. Route the whole " <>
-            "argument :hosted, or route the value with a core treatment (:expression/:pinned/:skip)."
-  end
-
-  # `{:keyword, …}` recurses, routing each value at the `:keyword_value` position.
-  defp validate_treatment!(spec, {:keyword, value_treatments}, _position)
-       when is_list(value_treatments) do
-    Enum.each(value_treatments, &validate_treatment!(spec, &1, :keyword_value))
-  end
-
-  # Any other atom must be one core recognises; anything else (an unknown atom like an `:expresion`
-  # typo, a `{:keyword, non_list}`, a stray tuple) is rejected with the offending value.
-  defp validate_treatment!(spec, treatment, _position) do
-    if treatment in recognised_atom_treatments() do
-      :ok
-    else
-      raise ArgumentError,
-            "macro #{inspect(Spec.key(spec))}'s macro_routing/1 returned an unrecognised treatment " <>
-              "#{inspect(treatment)} — expected one of :expression/:pattern/:binding_pattern/:skip/" <>
-              ":hosted/:pinned or {:keyword, [value_treatments]}."
-    end
-  end
-
-  # The recognised atom treatments — the static `Macro.Spec` set plus the classifier-only `:pinned`.
-  # Derived from `Spec.treatments/0` so the validator can't drift from the canonical list (`:hosted`
-  # is in it but already intercepted by the positional clauses above, so listing it here is inert).
-  defp recognised_atom_treatments, do: [:pinned | Spec.treatments()]
-
-  # Tag each `:hosted` treatment with its hosting mutator module — `:hosted` → `{:hosted, host}`
-  # — so the analyzer can reach the right `host/2` callback for a hosted argument. The host is
-  # non-nil for a `:hosted`-bearing spec (`Mutare.Macros.build/3` validates it), so a `:hosted`
-  # always carries one. Other treatments pass through untouched.
-  defp inject_host(routing, %Spec{host: host}) do
-    Enum.map(routing, fn
-      :hosted -> {:hosted, host}
-      other -> other
-    end)
-  end
-
-  # Split the effective routing across the two stamps. Un-piped, every position is visible, so
-  # the whole routing rides on `@macro_key`. Piped, effective position 0 is the **piped value**
-  # (the `|>` LHS, analyzed by the `:|>` clause, *not* in this node's args): its treatment is
-  # recorded separately on `@piped_macro_key` so the analyzer can route the LHS by it — exactly
-  # as if it were written as the macro's first argument — while `@macro_key` carries the routing
-  # for the **visible** args, lining up with the node's own args. The head is stamped only when
-  # it isn't the `:expression` default (an ordinary runtime LHS needs no stamp — the common
-  # path), so a piped pattern/`:skip` macro is the only case that carries it. A piped call always
-  # has effective arity >= 1, so the routing list is non-empty and the head split is safe.
-  defp stamp_routing(meta, routing, :unpiped), do: [{@macro_key, routing} | meta]
-
-  defp stamp_routing(meta, [piped | visible], :piped) do
-    meta = [{@macro_key, visible} | meta]
-    if piped == :expression, do: meta, else: [{@piped_macro_key, piped} | meta]
-  end
 
   # The module key a *bare* call resolves to, for known-macro matching: the imported module
   # if stamped, else `[:Kernel]` only when the name is a genuine `Kernel` export *and* not

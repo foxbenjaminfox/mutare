@@ -115,8 +115,8 @@ defmodule Mutare.Transform.Analyze.Macros do
   # the DSL); the hosting mutator weaves its own selector via `attach_hosted_candidates/5`.
   defp route_macro_arg(arg, {:hosted, _host}, _mutators), do: arg
 
-  # A *bare* `:hosted` should never reach routing — `Resolve.inject_host/2` rewrites a top-level one
-  # to `{:hosted, host}`, and `Resolve.reject_keyword_hosted!/2` raises on a `{:keyword, …}`-nested
+  # A *bare* `:hosted` should never reach routing — `Resolve.MacroStamp` rewrites a top-level one
+  # to `{:hosted, host}`, and rejects a `{:keyword, …}`-nested
   # one (a keyword value can't be hosted). Leave it raw anyway, never the runtime catch-all below:
   # splicing a bare selector into an unknown macro position is the one outcome the "never poison"
   # stance forbids, so a future path that slipped a bare `:hosted` through degrades safely.

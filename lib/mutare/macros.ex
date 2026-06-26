@@ -223,8 +223,8 @@ defmodule Mutare.Macros do
   # A `:routing` classifier needs `macro_routing/1` (called every resolve); a static `:hosted`
   # needs `host/2` (called to deliver). `host/2` is *not* demanded of a `:routing` spec at build —
   # a classifier may legitimately route only to `:expression`/`:pattern` and never host. But if it
-  # *does* route a position `:hosted` without a `host/2` to deliver it, `Mutare.Transform.Resolve`
-  # (`reject_undeliverable_hosted!/2`) raises loudly at resolve — the first point the undeliverable
+  # *does* route a position `:hosted` without a `host/2` to deliver it,
+  # `Mutare.Transform.Resolve.MacroStamp` raises loudly at resolve — the first point the undeliverable
   # `:hosted` is known — rather than silently leaving the fragment raw and dropping the mutation.
   defp validate_host(%Spec{} = spec) do
     cond do
