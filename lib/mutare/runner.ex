@@ -216,49 +216,12 @@ defmodule Mutare.Runner do
       fixed_env = Partitions.entry(options.partition_env, 1)
 
       with {:ok, baseline_ms} <- run_baseline(on_phase, sandbox, options.baseline_runs, fixed_env) do
-        on_phase.(:coverage_probe)
-        selection = CoverageProbe.run(sandbox, schema, mode, fixed_env)
-        # Per owning app, the test dirs a whole-suite run may be narrowed to (the
-        # app + its dependents). Empty for a single project — see `broaden/3`.
-        scopes =
-          Project.app_test_scopes(options.project, sandbox, Path.join(sandbox, "_build/test/lib"))
-
-        cap = timeout_cap(baseline_ms, options)
-        workers = options.workers
-
-        ctx = %RunCtx{
-          sandbox: sandbox,
-          selection: selection,
-          cap: cap,
-          scopes: scopes,
-          retries: options.harness_retries
-        }
+        ctx = build_run_ctx(schema, sandbox, options, mode, baseline_ms, fixed_env, on_phase)
 
         on_phase.({:running, length(schema.sites)})
 
         {results, stopped_early} =
-          schema.sites
-          |> Task.async_stream(
-            fn site ->
-              on_start.(site)
-              # Check out a distinct partition for this run (and its harness
-              # retries), check it back in when done — see `Mutare.Runner.Partitions`.
-              result =
-                Partitions.with_slot(partitions, fn env ->
-                  classify(ctx, site, env)
-                end)
-
-              reporter.(result)
-              result
-            end,
-            # INVARIANT: `max_concurrency` must equal the pool size (`workers`, the
-            # arg to `Partitions.new/2` above) — the pool's non-blocking checkout
-            # relies on one token per concurrency lane. See `Mutare.Runner.Partitions`.
-            max_concurrency: workers,
-            ordered: true,
-            timeout: :infinity
-          )
-          |> collect_until_survivors(options.max_survivors)
+          stream_and_collect(schema, ctx, partitions, options, on_start, reporter)
 
         run = %{
           schema: schema,
@@ -268,23 +231,67 @@ defmodule Mutare.Runner do
           stopped_early: stopped_early
         }
 
-        # An early stop (`--max-survivors`) tested only a prefix of the mutants, so
-        # the score is over a partial denominator and the run is already flagged
-        # `stopped_early` (the Mix task notes it and skips the `--min-score` gate).
-        # Applying the harness-error abort guard there would be counter-productive —
-        # it would discard the very survivors the user asked us to find — so it runs
-        # only on a complete run.
-        if stopped_early do
-          {:ok, run}
-        else
-          case harness_error_guard(results, options) do
-            :ok -> {:ok, run}
-            {:error, _reason, _detail} = error -> error
-          end
-        end
+        finalize_run(run, options)
       end
     after
       Partitions.stop(partitions)
+    end
+  end
+
+  # The coverage probe + per-app test scopes + timeout cap, assembled into the `RunCtx` threaded
+  # to every per-mutant `classify`. Runs after a green baseline, on the fixed (pre-pool) partition.
+  defp build_run_ctx(schema, sandbox, options, mode, baseline_ms, fixed_env, on_phase) do
+    on_phase.(:coverage_probe)
+    selection = CoverageProbe.run(sandbox, schema, mode, fixed_env)
+
+    # Per owning app, the test dirs a whole-suite run may be narrowed to (the app +
+    # its dependents). Empty for a single project — see `broaden/3`.
+    scopes =
+      Project.app_test_scopes(options.project, sandbox, Path.join(sandbox, "_build/test/lib"))
+
+    %RunCtx{
+      sandbox: sandbox,
+      selection: selection,
+      cap: timeout_cap(baseline_ms, options),
+      scopes: scopes,
+      retries: options.harness_retries
+    }
+  end
+
+  # Run every site through `classify` concurrently (one partition slot per lane), reporting each
+  # result as it lands, and collect in source order — stopping early at the Nth survivor when
+  # `--max-survivors` is set. Returns `{results, stopped_early?}`.
+  defp stream_and_collect(schema, ctx, partitions, %Options{} = options, on_start, reporter) do
+    schema.sites
+    |> Task.async_stream(
+      fn site ->
+        on_start.(site)
+        # Check out a distinct partition for this run (and its harness retries),
+        # check it back in when done — see `Mutare.Runner.Partitions`.
+        result = Partitions.with_slot(partitions, fn env -> classify(ctx, site, env) end)
+        reporter.(result)
+        result
+      end,
+      # INVARIANT: `max_concurrency` must equal the pool size (`workers`, the arg to
+      # `Partitions.new/2` in `run_mutants/7`) — the pool's non-blocking checkout
+      # relies on one token per concurrency lane. See `Mutare.Runner.Partitions`.
+      max_concurrency: options.workers,
+      ordered: true,
+      timeout: :infinity
+    )
+    |> collect_until_survivors(options.max_survivors)
+  end
+
+  # A complete run applies the harness-error abort guard; an early stop
+  # (`--max-survivors`) skips it. Aborting on an early stop would discard the very
+  # survivors the user asked us to find — and the run is already flagged
+  # `stopped_early` (the Mix task notes it and skips the `--min-score` gate).
+  defp finalize_run(%{stopped_early: true} = run, _options), do: {:ok, run}
+
+  defp finalize_run(%{stopped_early: false} = run, %Options{} = options) do
+    case harness_error_guard(run.results, options) do
+      :ok -> {:ok, run}
+      {:error, _reason, _detail} = error -> error
     end
   end
 
@@ -314,18 +321,19 @@ defmodule Mutare.Runner do
   end
 
   defp collect_until_survivors(stream, limit) do
-    stream
-    |> Enum.reduce_while({[], 0}, fn {:ok, result}, {acc, survivors} ->
-      survivors = survivors + survivor_count(result)
-      acc = [result | acc]
+    reduction =
+      Enum.reduce_while(stream, {[], 0}, fn {:ok, result}, {acc, survivors} ->
+        survivors = survivors + survivor_count(result)
+        acc = [result | acc]
 
-      if survivors >= limit do
-        {:halt, {:stopped, Enum.reverse(acc)}}
-      else
-        {:cont, {acc, survivors}}
-      end
-    end)
-    |> case do
+        if survivors >= limit do
+          {:halt, {:stopped, Enum.reverse(acc)}}
+        else
+          {:cont, {acc, survivors}}
+        end
+      end)
+
+    case reduction do
       {:stopped, results} -> {results, true}
       {acc, _survivors} -> {Enum.reverse(acc), false}
     end
