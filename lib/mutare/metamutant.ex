@@ -46,6 +46,8 @@ defmodule Mutare.Metamutant do
   the baseline id); this module owns their AST.
   """
 
+  alias Mutare.AST
+
   @baseline Mutare.Selector.baseline()
 
   # The key is read from `Mutare.Selector.key/0` at *runtime*, not baked as a
@@ -92,7 +94,9 @@ defmodule Mutare.Metamutant do
   def subject?(node, var \\ nil)
 
   def subject?({{:., _, [mod, :get]}, _, [key | _]}, _var),
-    do: unwrap(mod) == :persistent_term and unwrap(key) == Mutare.Selector.key()
+    do:
+      AST.unwrap_literal(mod) == :persistent_term and
+        AST.unwrap_literal(key) == Mutare.Selector.key()
 
   def subject?({name, _meta, context}, var)
       when is_atom(name) and is_atom(context) and not is_nil(var),
@@ -119,9 +123,4 @@ defmodule Mutare.Metamutant do
   def pattern_subject?({:__block__, _meta, [{first, _scrutinee}]}, var), do: subject?(first, var)
   def pattern_subject?({first, _scrutinee}, var), do: subject?(first, var)
   def pattern_subject?(_node, _var), do: false
-
-  # See through Sourceror's literal wrapping (`{:__block__, _, [:persistent_term]}`);
-  # a bare atom passes through untouched.
-  defp unwrap({:__block__, _meta, [literal]}), do: literal
-  defp unwrap(other), do: other
 end

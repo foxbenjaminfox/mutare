@@ -49,13 +49,7 @@ defmodule Mutare.Selector do
   harness's active-mutant slot (see the moduledoc).
   """
   @spec key() :: atom()
-  def key do
-    case System.get_env(@override_env) do
-      nil -> @key
-      "" -> @key
-      name -> String.to_atom(name)
-    end
-  end
+  def key, do: Mutare.Env.atom(@override_env, @key)
 
   @doc "The harness selection key (`:mutare_active`) — the default `key/0`, env-independent."
   @spec default_key() :: atom()

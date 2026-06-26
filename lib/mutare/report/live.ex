@@ -84,7 +84,7 @@ defmodule Mutare.Report.Live do
   Start the live reporter. Options (all optional, for testing):
 
     * `:device` — IO device to write to (default `:standard_error`)
-    * `:ansi` — force animation on/off (default: `detect_ansi/0`)
+    * `:ansi` — force animation on/off (default: stderr is a tty *and* `IO.ANSI.enabled?/0`)
     * `:color` — force the leave-behind label colour on/off (default: animation on
       *and* `NO_COLOR` unset; see `color_enabled?/0`)
     * `:width` — terminal width for truncation (default: detected, else 80)
@@ -139,13 +139,17 @@ defmodule Mutare.Report.Live do
     # (cursor codes), the leave-behind labels are the only colour. So `NO_COLOR`
     # drops the colour but keeps the live block (the convention is about colour, not
     # the whole UI); a non-tty (`ansi: false`) is already colourless.
-    ansi = Keyword.get_lazy(opts, :ansi, &detect_ansi/0)
+    #
+    # One stderr probe gives both the tty? flag (ANDed with `IO.ANSI.enabled?/0` for `ansi`)
+    # and the column width — what `detect_ansi`/`detect_width` used to query twice.
+    {tty?, width} = detect_terminal()
+    ansi = Keyword.get_lazy(opts, :ansi, fn -> tty? and IO.ANSI.enabled?() end)
 
     state = %__MODULE__{
       device: Keyword.get(opts, :device, @device),
       ansi: ansi,
       color: Keyword.get_lazy(opts, :color, fn -> ansi and color_enabled?() end),
-      width: Keyword.get_lazy(opts, :width, &detect_width/0)
+      width: Keyword.get(opts, :width, width)
     }
 
     {:ok, state}
@@ -404,32 +408,28 @@ defmodule Mutare.Report.Live do
 
   # === capability detection ==================================================
 
-  # Animate only when stderr is a real terminal *and* ANSI is enabled. We key on
-  # stderr (where the block is drawn), not stdout, so piping the machine report
-  # to a file never tricks us into painting cursor codes into it; `IO.ANSI` honours
-  # the Elixir `--no-color` switch, `TERM=dumb`, etc.
-  defp detect_ansi do
-    tty_stderr?() and IO.ANSI.enabled?()
+  # One stderr probe for both animation and width: `:io.columns/1` succeeds only for a real
+  # terminal, so a success doubles as the tty test (→ animate) *and* yields the column width;
+  # a non-terminal falls back to `@default_width`. We key on stderr (where the block is drawn),
+  # not stdout, so piping the machine report to a file never tricks us into painting cursor
+  # codes into it. The caller ANDs the tty? flag with `IO.ANSI.enabled?/0` (which honours the
+  # Elixir `--no-color` switch, `TERM=dumb`, etc.) for the final `ansi` decision.
+  @spec detect_terminal() :: {boolean(), pos_integer()}
+  defp detect_terminal do
+    case :io.columns(@device) do
+      {:ok, columns} -> {true, columns}
+      _ -> {false, @default_width}
+    end
   end
 
   @doc """
   Whether the leave-behind labels may be coloured: the `NO_COLOR` env var is unset
   or empty (the https://no-color.org convention — *any* non-empty value disables
-  colour). Distinct from `detect_ansi/0`: `NO_COLOR` drops the colour but keeps the
-  live block, since the convention is about colour, not the whole terminal UI.
-  `IO.ANSI.enabled?/0` (folded into `detect_ansi/0`) does not check `NO_COLOR`, so
-  this does.
+  colour). Distinct from the `ansi` decision (`detect_terminal/0` + `IO.ANSI.enabled?/0`):
+  `NO_COLOR` drops the colour but keeps the live block, since the convention is about
+  colour, not the whole terminal UI. `IO.ANSI.enabled?/0` (folded into `ansi`) does not
+  check `NO_COLOR`, so this does.
   """
   @spec color_enabled?() :: boolean()
   def color_enabled?, do: System.get_env("NO_COLOR") in [nil, ""]
-
-  defp detect_width do
-    case :io.columns(@device) do
-      {:ok, columns} -> columns
-      _ -> @default_width
-    end
-  end
-
-  # `:io.columns/1` only succeeds for a terminal, so it doubles as a tty probe.
-  defp tty_stderr?, do: match?({:ok, _}, :io.columns(@device))
 end

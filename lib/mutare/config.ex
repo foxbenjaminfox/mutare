@@ -47,29 +47,45 @@ defmodule Mutare.Config do
   """
   @spec merge(keyword(), keyword()) :: keyword()
   def merge(file_config, flags) do
+    # Only the flags that need *translating* are spelled out here; the 1:1 pass-throughs are
+    # folded in by `put_passthrough_flags/2` (the order is immaterial — distinct keys, each
+    # `Keyword.put`). Keeping them apart makes the translations the only thing to read.
     file_config
     |> put_unless_nil(:paths, only_paths(flags))
     |> put_unless_nil(:exclude, exclude_globs(flags))
     |> put_unless_nil(:only_lines, parse_lines(flags))
-    |> put_unless_nil(:min_score, flags[:min_score])
-    |> put_unless_nil(:sandbox, flags[:sandbox])
-    |> put_unless_nil(:keep_sandbox, flags[:keep_sandbox])
-    |> put_unless_nil(:strict_ignores, flags[:strict_ignores])
-    |> put_unless_nil(:quiet, flags[:quiet])
     |> put_unless_nil(:test_selection, flags[:full] && :full)
-    |> put_unless_nil(:baseline_runs, flags[:baseline_runs])
-    |> put_unless_nil(:harness_retries, flags[:harness_retries])
-    |> put_unless_nil(:max_harness_error_rate, flags[:max_harness_error_rate])
-    |> put_unless_nil(:max_mutants, flags[:max_mutants])
-    |> put_unless_nil(:max_survivors, flags[:max_survivors])
-    |> put_unless_nil(:workers, flags[:workers])
     |> put_unless_nil(:partition_env, partition_env(flags))
-    |> put_unless_nil(:timeout, flags[:timeout])
-    |> put_unless_nil(:timeout_multiplier, flags[:timeout_multiplier])
-    |> put_unless_nil(:expand_uses, flags[:expand_uses])
     |> put_unless_nil(:mutators, flags[:mutators] && parse_families(flags[:mutators]))
+    |> put_passthrough_flags(flags)
     |> normalize_mutators()
     |> resolve_reporters(flags)
+  end
+
+  # Flags forwarded straight through: same config key, value taken verbatim from `flags`
+  # (and dropped when absent, like every other flag). Listed once so a new 1:1 flag is a
+  # single addition and the translated flags in `merge/2` stay the focus.
+  @passthrough_flags [
+    :min_score,
+    :sandbox,
+    :keep_sandbox,
+    :strict_ignores,
+    :quiet,
+    :baseline_runs,
+    :harness_retries,
+    :max_harness_error_rate,
+    :max_mutants,
+    :max_survivors,
+    :workers,
+    :timeout,
+    :timeout_multiplier,
+    :expand_uses
+  ]
+
+  defp put_passthrough_flags(config, flags) do
+    Enum.reduce(@passthrough_flags, config, fn key, config ->
+      put_unless_nil(config, key, flags[key])
+    end)
   end
 
   @doc """

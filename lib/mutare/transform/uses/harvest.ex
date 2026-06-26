@@ -53,14 +53,14 @@ defmodule Mutare.Transform.Uses.Harvest do
   """
   @spec run(Macro.t(), module(), map()) :: {[Macro.t()], [module()]}
   def run(sourceror_use_node, caller_module, env) do
-    with {:ok, mod, opts} <- standardize(sourceror_use_node, env),
+    with {:ok, mod, opts} <- to_standard_quoted(sourceror_use_node, env),
          true <- Code.ensure_loaded?(mod) do
       {behaviour_items, directive_items} =
         mod
         |> expand_and_collect(opts, caller_module, env, 0, MapSet.new())
         |> Enum.split_with(&match?({:mutare_behaviour, _}, &1))
 
-      directives = directive_items |> Enum.map(&normalize/1) |> Enum.reject(&is_nil/1)
+      directives = directive_items |> Enum.map(&to_sourceror/1) |> Enum.reject(&is_nil/1)
       behaviours = Enum.map(behaviour_items, fn {:mutare_behaviour, beh} -> beh end)
       {directives, behaviours}
     else
@@ -80,13 +80,13 @@ defmodule Mutare.Transform.Uses.Harvest do
   # real module.
   #
   # The round-trip is **deliberate**, not a smell: it is the parser-based *inverse* of
-  # `normalize/1`'s `Macro.to_string |> Sourceror.parse_string!` (which goes standard→Sourceror),
+  # `to_sourceror/1`'s `Macro.to_string |> Sourceror.parse_string!` (which goes standard→Sourceror),
   # using the real tokenizer to convert between quoting formats rather than reimplementing
   # Sourceror's block-wrapping inverse by hand — which would have to track every wrapped shape
   # (nested keyword lists, maps, tuples) and would be *more* fragile. Module resolution alone
   # wouldn't need it (`Aliases.resolve_node/2` reads the aliased segments directly), but the
   # `Macro.quoted_literal?` opts gate and the real term `__using__` receives both do.
-  defp standardize(sourceror_use_node, env) do
+  defp to_standard_quoted(sourceror_use_node, env) do
     {:use, _, args} = Code.string_to_quoted!(Sourceror.to_string(sourceror_use_node))
     use_args(args, env)
   end
@@ -265,26 +265,26 @@ defmodule Mutare.Transform.Uses.Harvest do
   # Re-render one harvested (standard-quoted) directive into Sourceror form, so it is
   # indistinguishable from a textual directive when folded through `Resolve.register/2`. A
   # directive that can't round-trip is dropped (nil), not fatal.
-  defp normalize(directive) do
+  defp to_sourceror(directive) do
     directive |> Macro.to_string() |> Sourceror.parse_string!()
   rescue
     _ -> nil
   end
 
-  # Fold one harvested directive into the body-local alias env *after normalizing it*. The harvested
-  # directives are raw standard-quoted (pre-`normalize`), where an `unquote(mod)`/`bind_quoted` alias
-  # carries its target as a **bare module atom** (`{:alias, _, [Mutare.Foo, [as: T]]}`) — a shape
-  # `Aliases.register/2` doesn't recognise, so binding it raw is a silent no-op. Normalizing first
-  # (the same Sourceror round-trip `run` applies at the end, turning the atom into an
-  # `{:__aliases__, …}` node) makes `alias unquote(target), as: T` actually bind `T`, so a later
-  # sibling `use T` in the same expanded body resolves and expands. An un-round-trippable directive
-  # (nil) is a no-op.
-  # A harvested `@behaviour` tuple introduces no alias and must never reach `normalize`
+  # Fold one harvested directive into the body-local alias env *after converting it to Sourceror
+  # form*. The harvested directives are raw standard-quoted (pre-`to_sourceror`), where an
+  # `unquote(mod)`/`bind_quoted` alias carries its target as a **bare module atom**
+  # (`{:alias, _, [Mutare.Foo, [as: T]]}`) — a shape `Aliases.register/2` doesn't recognise, so
+  # binding it raw is a silent no-op. Converting first (the same Sourceror round-trip `run` applies
+  # at the end, turning the atom into an `{:__aliases__, …}` node) makes `alias unquote(target),
+  # as: T` actually bind `T`, so a later sibling `use T` in the same expanded body resolves and
+  # expands. An un-round-trippable directive (nil) is a no-op.
+  # A harvested `@behaviour` tuple introduces no alias and must never reach `to_sourceror`
   # (`Macro.to_string` over a `{:mutare_behaviour, mod}` tuple would be garbage) — skip it.
   defp register_harvested({:mutare_behaviour, _}, env), do: env
 
   defp register_harvested(directive, env) do
-    case normalize(directive) do
+    case to_sourceror(directive) do
       nil -> env
       normalized -> Aliases.register(normalized, env)
     end

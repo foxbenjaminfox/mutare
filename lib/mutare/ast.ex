@@ -107,6 +107,24 @@ defmodule Mutare.AST do
   def literal_value(_node), do: :error
 
   @doc """
+  See through a single-element `{:__block__, _, [inner]}` wrapper, returning `inner`;
+  any other node passes through untouched.
+
+  This is the wrapper Sourceror (and a `Code.string_to_quoted` literal-encoding re-parse)
+  put around a literal, so a recognizer comparing a node's *value* (`unwrap_literal(node)
+  == :persistent_term`) sees through it. Unlike `literal_value/1` it makes no claim the
+  inner term is a scalar literal and returns the value bare (not `{:ok, _}`).
+
+      iex> Mutare.AST.unwrap_literal({:__block__, [], [:persistent_term]})
+      :persistent_term
+      iex> Mutare.AST.unwrap_literal(:persistent_term)
+      :persistent_term
+  """
+  @spec unwrap_literal(Macro.t()) :: Macro.t()
+  def unwrap_literal({:__block__, _meta, [inner]}), do: inner
+  def unwrap_literal(node), do: node
+
+  @doc """
   An **absolute-qualified** module alias — `{:__aliases__, [], [:"Elixir" | path]}`, the
   `Elixir.`-prefixed form that `alias`/`import` resolution never rewrites.
 

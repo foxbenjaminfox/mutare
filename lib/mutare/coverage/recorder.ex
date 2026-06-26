@@ -46,6 +46,7 @@ defmodule Mutare.Coverage.Recorder do
   call returns an int/`true` and would raise `BadBooleanError` mid-`and`).
   """
 
+  alias Mutare.AST
   alias Mutare.Coverage.HelperTemplate
 
   @env_var "MUTARE_COVERAGE"
@@ -129,13 +130,7 @@ defmodule Mutare.Coverage.Recorder do
   helper the sandbox writes (see the constant's comment above).
   """
   @spec fixture_module() :: module()
-  def fixture_module do
-    case System.get_env(@fixture_override_env) do
-      nil -> @helper_module
-      "" -> @helper_module
-      name -> String.to_atom(name)
-    end
-  end
+  def fixture_module, do: Mutare.Env.atom(@fixture_override_env, @helper_module)
 
   @doc "Env var a sandbox run sets to give the suite-under-test's stand-in a private module name."
   @spec fixture_override_env() :: String.t()
@@ -211,20 +206,15 @@ defmodule Mutare.Coverage.Recorder do
   def record_var(_), do: nil
 
   defp track_read?({{:., _, [mod, :get]}, _, [key | _]}),
-    do: unwrap(mod) == :persistent_term and unwrap(key) == @track_key
+    do: AST.unwrap_literal(mod) == :persistent_term and AST.unwrap_literal(key) == @track_key
 
   defp track_read?(_), do: false
 
   defp active_zero_var({:==, _, [{var, _, ctx}, zero]})
        when is_atom(var) and is_atom(ctx),
-       do: if(unwrap(zero) == 0, do: var)
+       do: if(AST.unwrap_literal(zero) == 0, do: var)
 
   defp active_zero_var(_), do: nil
-
-  # See through a literal-encoding re-parse's `{:__block__, _, [literal]}` wrapping;
-  # a bare literal passes through untouched.
-  defp unwrap({:__block__, _meta, [literal]}), do: literal
-  defp unwrap(other), do: other
 
   defp literal(value), do: {:__block__, [], [value]}
 

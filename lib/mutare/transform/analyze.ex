@@ -206,7 +206,7 @@ defmodule Mutare.Transform.Analyze do
   # from the scaffold flips back to `:runtime` and its captures mutate normally.
   defp analyze({:&, _meta, [{:/, _smeta, [left, right]}]} = node, context, mutators) do
     cond do
-      not (function_ref?(left) and integer_literal?(right)) ->
+      not Captures.capture_ref?(left, right) ->
         recurse(node, context, mutators)
 
       context == :runtime ->
@@ -1207,12 +1207,4 @@ defmodule Mutare.Transform.Analyze do
   # body, done explicitly in its own clause (a generated function's body *is* runtime).
   defp body_context(:scaffold), do: :scaffold
   defp body_context(_), do: :runtime
-
-  defp function_ref?({name, _meta, context}) when is_atom(name) and is_atom(context), do: true
-  defp function_ref?({{:., _, _}, _meta, args}) when is_list(args), do: true
-  defp function_ref?(_), do: false
-
-  defp integer_literal?(n) when is_integer(n), do: true
-  defp integer_literal?({:__block__, _meta, [n]}) when is_integer(n), do: true
-  defp integer_literal?(_), do: false
 end

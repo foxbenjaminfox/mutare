@@ -877,12 +877,29 @@ defmodule Mutare.Transform do
           [] -> :none
           [%Candidate.MatchPattern{} | _] = candidates -> {:match_pattern, candidates}
           [%Candidate.MacroPattern{} | _] = candidates -> {:macro_pattern, candidates}
-          candidates -> {:in_place, candidates}
+          candidates -> {:in_place, assert_homogeneous_in_place!(candidates)}
         end
 
       case_candidates ->
         {:case_clause, case_candidates}
     end
+  end
+
+  # The clauses above trust the analyzer's invariant — a node's gated candidates are
+  # homogeneous in *delivery route*, so the list head picks the path for all of them. A
+  # binding-escape candidate (`MatchPattern`/`MacroPattern`) hiding past the head would be
+  # delivered through the ordinary wrap-in-a-selector path, whose `case` can't host an
+  # escaping binding: a metamutant that compiles but mis-binds, with nothing pointing back
+  # here. Make the precondition loud instead of trusting it silently.
+  defp assert_homogeneous_in_place!(candidates) do
+    if Enum.any?(candidates, fn c ->
+         match?(%Candidate.MatchPattern{}, c) or match?(%Candidate.MacroPattern{}, c)
+       end) do
+      raise "delivery_route: a binding-escape candidate is mixed into in-place delivery — " <>
+              "the analyzer must keep a node's candidates homogeneous in delivery route"
+    end
+
+    candidates
   end
 
   # Drop the candidates a mutator opts out of *before* id assignment, so they leave no

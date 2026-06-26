@@ -64,6 +64,25 @@ defmodule Mutare.Transform.Analyze.Captures do
     end
   end
 
+  @doc """
+  Whether `&left/right` is a genuine function-reference capture (`&Mod.fun/N`, `&fun/N`)
+  rather than an arithmetic `& &1 / 2`: a function reference (remote *or* local) over an
+  integer arity. `Mutare.Transform.Analyze` reads this to decide whether to offer the node
+  here or recurse into the `/` as division. A local ref counts — so its `/` isn't mistaken
+  for division — even though `offer/4` only mutates remote refs (a local capture is left raw,
+  not recursed).
+  """
+  @spec capture_ref?(Macro.t(), Macro.t()) :: boolean()
+  def capture_ref?(left, right), do: function_ref?(left) and integer_arity?(right)
+
+  defp function_ref?({name, _meta, context}) when is_atom(name) and is_atom(context), do: true
+  defp function_ref?({{:., _, _}, _meta, args}) when is_list(args), do: true
+  defp function_ref?(_), do: false
+
+  defp integer_arity?(n) when is_integer(n), do: true
+  defp integer_arity?({:__block__, _meta, [n]}) when is_integer(n), do: true
+  defp integer_arity?(_), do: false
+
   # The arity literal `N` from the `/N` separator (a bare int or a Sourceror `:__block__`).
   defp arity(n) when is_integer(n) and n >= 0, do: {:ok, n}
   defp arity({:__block__, _meta, [n]}) when is_integer(n) and n >= 0, do: {:ok, n}

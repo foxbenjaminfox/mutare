@@ -22,6 +22,14 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   alias Mutare.Transform.{Candidate, NodeRange, PatternStructure, Tag}
   alias Mutare.Transform.Analyze
 
+  # A fresh `{tag_counter, targets}` accumulator for a single-node tag walk. The candidates
+  # here are discovered one node at a time, each re-tagged from scratch, so the starting
+  # counter is arbitrary (the returned next-counter is discarded) — any value hands out the
+  # same unique tags. (Contrast `Mutare.Transform.FunctionPlan`, which threads one counter
+  # group-wide.) Living in a module attribute also keeps the seed out of `:runtime` position,
+  # so it isn't a (would-be-equivalent) Literal mutation site needing a `# mutare:ignore`.
+  @fresh_tag_acc {0, []}
+
   # --- case: per-clause tuple-the-scrutinee (Candidate.CaseClause) -----------
 
   # One `Candidate.CaseClause` per {clause, mutation} for a `case`. A `case` clause has a
@@ -116,8 +124,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   defp guard_clause_candidates(_index, _pattern, nil, _body, _mutators), do: []
 
   defp guard_clause_candidates(index, pattern, guard, body, mutators) do
-    # mutare:ignore[literal] equivalent — the `0` seeds a strictly-monotonic tag counter; any start value hands out the same unique tags.
-    {tagged_guard, {_next, targets}} = Tag.guard_targets(guard, {0, []}, mutators)
+    {tagged_guard, {_next, targets}} = Tag.guard_targets(guard, @fresh_tag_acc, mutators)
 
     swaps =
       Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, range ->
@@ -187,8 +194,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   end
 
   defp literal_clause_candidates(index, pattern, guard, body, mutators) do
-    # mutare:ignore[literal] equivalent — the `0` seeds a strictly-monotonic tag counter; any start value hands out the same unique tags.
-    {tagged_pattern, {_next, targets}} = Tag.pattern_literal_targets(pattern, {0, []}, mutators)
+    {tagged_pattern, {_next, targets}} =
+      Tag.pattern_literal_targets(pattern, @fresh_tag_acc, mutators)
 
     Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, range ->
       %Candidate.CaseClause{
@@ -342,8 +349,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   end
 
   defp literal_position_candidates(pattern, pos, clause, replace_clause, mutators) do
-    # mutare:ignore[literal] equivalent — the `0` seeds a strictly-monotonic tag counter; any start value hands out the same unique tags.
-    {tagged_pattern, {_next, targets}} = Tag.pattern_literal_targets(pattern, {0, []}, mutators)
+    {tagged_pattern, {_next, targets}} =
+      Tag.pattern_literal_targets(pattern, @fresh_tag_acc, mutators)
 
     Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, range ->
       mutated_pattern = Tag.replace_tag(tagged_pattern, tag, mutated)
@@ -365,7 +372,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
         []
 
       guard ->
-        {tagged_guard, {_next, targets}} = Tag.guard_targets(guard, {0, []}, mutators)
+        {tagged_guard, {_next, targets}} = Tag.guard_targets(guard, @fresh_tag_acc, mutators)
 
         swaps =
           Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, range ->
