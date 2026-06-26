@@ -387,7 +387,7 @@ defmodule Mutare.Transform.Candidate do
     # its own `subject_ast` + `<id> ->` clauses (so poison/manifest still recognise it), assigns
     # the ids, records one `:in_place` `Mutare.Site` per logical mutant (the diff is the logical
     # fragment swap — the `dynamic`/`^` scaffolding invisible, exactly as the tuple-export Sites
-    # hide theirs), and emits the coverage catch-all (`Mutare.Transform.emit_hosted_site/3`).
+    # hide theirs), and emits the coverage catch-all (`Mutare.Transform.HostedEmit.emit/5`).
     #
     # `original` is the logical fragment before mutation (rendered in each Site's diff and run by
     # the wrapped catch-all baseline); `mutants` are the logical mutated fragments as

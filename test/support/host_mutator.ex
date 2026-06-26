@@ -29,7 +29,7 @@ defmodule Mutare.Test.HostDSL do
   arg 0 routes as `:binding_pattern` (so it earns structural swap/wildcard mutants via the
   tuple-re-export delivery) and arg 1 as `:hosted` (the comparison fragment) — so the *same*
   call node carries both a `Candidate.MacroPattern` and a `Candidate.Hosted`, the case the
-  hosted emit path must dispatch correctly (`Mutare.Transform.emit_hosted_inplace/3`).
+  hosted emit path must dispatch correctly after the hosted selectors are woven.
   """
   defmacro pick(pattern, condition) do
     quote do
@@ -250,7 +250,7 @@ defmodule Mutare.Test.NoDeliveryHostMutator do
   `:hosted` but which **omits** `c:Mutare.Mutator.host/2` to deliver it. Build-time validation
   passes (a `:routing` spec is only required to implement `macro_routing/1` — a classifier may
   legitimately never route `:hosted`), but the moment a concrete call *is* routed `:hosted` with
-  no host to deliver it, `Mutare.Transform.Resolve.reject_undeliverable_hosted!/2` raises rather
+  no host to deliver it, `Mutare.Transform.Resolve.MacroStamp` raises rather
   than silently leaving the fragment raw and dropping the intended mutation.
   """
   @behaviour Mutare.Mutator

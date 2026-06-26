@@ -1,0 +1,69 @@
+defmodule Mutare.Transform.HostedEmit do
+  @moduledoc false
+
+  # Hosted DSL-fragment delivery for `Candidate.Hosted`: the hosting mutator supplies logical
+  # fragment mutants plus `wrap`/`splice`; core claims ids, builds the selector, records Sites,
+  # and asks the target to weave the selector into the macro node. Any ordinary whole-node
+  # candidates on that same node are delivered afterwards through the callback supplied by
+  # `Mutare.Transform`, because ordinary selector delivery owns pipe hoisting and pinned cases.
+
+  alias Mutare.Site
+  alias Mutare.Transform.{Candidate, Ctx, MetaKeys, SelectorEmit}
+
+  @delivery_keys MetaKeys.delivery()
+
+  @type emit_inplace :: (Macro.t(), [Candidate.t()], Ctx.t() -> {Macro.t(), Ctx.t()})
+
+  @doc """
+  Weave hosted selectors into `node`, then deliver any leftover whole-node candidates.
+  """
+  @spec emit(Macro.t(), [Candidate.Hosted.t()], [Candidate.t()], Ctx.t(), emit_inplace()) ::
+          {Macro.t(), Ctx.t()}
+  def emit(node, hosted, inplace, ctx, emit_inplace) when is_function(emit_inplace, 3) do
+    base = strip_candidates(node)
+
+    {spliced, ctx} =
+      Enum.reduce(hosted, {base, ctx}, fn candidate, {node, ctx} ->
+        weave_target(node, candidate, ctx)
+      end)
+
+    emit_inplace.(spliced, inplace, ctx)
+  end
+
+  # Weave one host target's selector into `node`. Claim an id per logical mutant, build a
+  # mutant clause `<id> -> wrap(mutant)` for each, then a coverage catch-all running
+  # `wrap(original)`, and hand the assembled case to the target's `splice`.
+  defp weave_target(node, %Candidate.Hosted{} = cand, ctx) do
+    carriers =
+      Enum.map(cand.mutants, fn {mutated, note} ->
+        %{candidate: cand, mutated: mutated, note: note}
+      end)
+
+    {clauses, ctx} =
+      SelectorEmit.claim_items(carriers, ctx, &hosted_site/3, fn id, carrier ->
+        {:->, [], [[id], cand.wrap.(carrier.mutated)]}
+      end)
+
+    case clauses do
+      [] ->
+        {node, ctx}
+
+      _ ->
+        ids = SelectorEmit.ids_from_clauses(clauses)
+        catch_all = SelectorEmit.catch_all_clause(ids, cand.wrap.(cand.original), ctx.active_var)
+        case_node = SelectorEmit.raw_case(clauses, catch_all, ctx)
+        {cand.splice.(node, case_node), ctx}
+    end
+  end
+
+  # The `Mutare.Site` for one hosted mutant: an `:in_place` replacement showing the logical
+  # fragment swap, not the `wrap`/`splice`/selector scaffolding. The optional note rides onto
+  # the Site for the report.
+  defp hosted_site(id, %{candidate: cand, mutated: mutated, note: note}, file),
+    do: Site.in_place(id, file, cand.range, cand.original, mutated, cand.mutator, note)
+
+  defp strip_candidates({form, meta, args}) when is_list(meta),
+    do: {form, Keyword.drop(meta, @delivery_keys), args}
+
+  defp strip_candidates(node), do: node
+end

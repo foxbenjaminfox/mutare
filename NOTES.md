@@ -1829,7 +1829,7 @@ poison line-mapping — and makes poison/manifest work **for free**, because the
 `Metamutant.subject?/2`-recognizable (the `^` is just an outer node a `Macro.traverse` walks past). The
 host is handed the **whole macro node** (not the leaf) so the library can pull the `from` bindings for
 `wrap`. Binding-reorder rides the same seam (`where([a,b], …)`→`[b,a]` ≡ an alternative *body*, no
-separate path). Lands as `Transform.Candidate.Hosted` + `Transform.emit_hosted_site/3` (the `:mutare_hosted`
+separate path). Lands as `Transform.Candidate.Hosted` + `Transform.HostedEmit.emit/5` (the `:mutare_hosted`
 meta key — a third emit alongside `:mutare`/`:mutare_case`) + `Mutator.host_targets/3` (the validate/
 default-`wrap` normalizer). Multiple targets fold over the node (each `splice` replaces its own
 position); a whole-node `:mutare` mutation on the *same* node still rides an ordinary selector wrapping
@@ -1874,8 +1874,8 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     *escape*, so the MacroPattern can't ride an ordinary node-wrapping selector (which would trap them
     in a branch and emit a bare mutated-pattern AST — `[b, a]` — as the branch body, referencing
     unbound vars: the metamutant won't compile). So after weaving the hosted selector into the
-    fragment, `emit_hosted_site/3` dispatches the leftover `:mutare` candidates exactly as the
-    un-hosted path does (`emit_hosted_inplace/3`): a `MacroPattern` head routes to the tuple-export
+    fragment, `HostedEmit.emit/5` dispatches the leftover `:mutare` candidates exactly as the
+    un-hosted path does: a `MacroPattern` head routes to the tuple-export
     rewrite (`BindingEscapeEmit.macro_pattern_site/3`), whose **baseline branch is the spliced macro** — so the
     hosted comparison mutants still fire there while the pattern mutants re-export the bindings through
     `{a, b} = case … end`. Everything else (an ordinary whole-call `InPlace`, or none) rides the
@@ -1979,7 +1979,7 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     `ignore_reason` (which *suppresses* a mutant). New optional `Site.note` (default `nil`), set via
     `Site.in_place/7`. The channel is per-mutant on the **host target**: a target's `mutants` entry is
     now a bare node *or* a `%Mutare.Mutator.Mutation{}` (`Mutator.normalize_target/1` → `{node, note}`
-    pairs on `Candidate.Hosted.mutants`; `weave_hosted_target`/`hosted_site` thread the note to the Site).
+    pairs on `Candidate.Hosted.mutants`; `HostedEmit` threads the note to the Site).
     The **struct** form is used (not a bare `%{node:, note:}` map, nor a `{node, note}` tuple) because a
     quoted 2-tuple AST (`{a, "str"}`) collides with a `{node, note}` pair, and a quoted *map* literal
     (`%{a: 1}`) is itself a valid mutation node — only the struct is unambiguous (see "the note channel,

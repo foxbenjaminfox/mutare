@@ -119,8 +119,8 @@ defmodule Mutare.Transform do
   focused delivery modules own the smaller specialized paths, with shared selector
   mechanics factored through `SelectorEmit`.
 
-  The **pure** AST-assembly each of those orchestrators calls is factored into
-  focused helper modules, so this file holds the threading, not the node-building:
+  Focused helper modules keep the pure node-building and the smaller specialized
+  delivery paths out of this file:
 
     * `Mutare.Transform.ClauseAST` — the shared `def`/`defp` clause shape and the
       primitives that navigate it (head/args/guards/`when`), used by both this
@@ -133,6 +133,8 @@ defmodule Mutare.Transform do
       builders (the assembly half of `emit_case_pattern_site/3`).
     * `Mutare.Transform.BindingEscapeEmit` — the tuple-export delivery for binding
       escaping `=` matches and known macros.
+    * `Mutare.Transform.HostedEmit` — the selector-host delivery for hosted DSL
+      fragments.
     * `Mutare.Transform.ImportWitness` — the dead-code import witness spliced
       alongside a mutated bare imported call.
     * `Mutare.Transform.SelectorEmit` — the shared id/site claim, selector
@@ -153,6 +155,7 @@ defmodule Mutare.Transform do
     CaseClauseEmit,
     Ctx,
     FunctionPlan,
+    HostedEmit,
     ImportWitness,
     LiftedEmit,
     MetaKeys,
@@ -763,12 +766,21 @@ defmodule Mutare.Transform do
 
   defp emit_one(current, ctx) do
     # A known-macro node carrying `Candidate.Hosted`s weaves a host-supplied selector into the
-    # DSL fragment(s) (`emit_hosted_site/3`), so it is checked first: it is the only path that
+    # DSL fragment(s) (`HostedEmit.emit/5`), so it is checked first: it is the only path that
     # delivers a `:hosted` argument's mutations, and it also picks up any whole-node `:mutare`
     # mutations the same node carries.
     case hosted_candidates_of(current) do
-      [] -> emit_one_unhosted(current, ctx)
-      hosted -> emit_hosted_site(current, hosted, ctx)
+      [] ->
+        emit_one_unhosted(current, ctx)
+
+      hosted ->
+        HostedEmit.emit(
+          current,
+          hosted,
+          gate_candidates(candidates_of(current)),
+          ctx,
+          &emit_hosted_inplace/3
+        )
     end
   end
 
@@ -929,33 +941,6 @@ defmodule Mutare.Transform do
       else: case_node
   end
 
-  # === hosted DSL-fragment mutation: mutator-supplied selector host ==========
-
-  # Deliver the `Candidate.Hosted`s a known-macro node carries (a `:hosted` argument — a
-  # fragment *inside* a compile-time DSL where a bare selector would poison the build and whose
-  # semantics core can't vouch for). Per target the **hosting mutator** supplied `{logical
-  # original, logical mutants}` + `wrap`/`splice`; core keeps the four cross-cutting contracts —
-  # it builds the id-gated selector `case` from its own `subject_ast`/`<id> ->` clauses (so
-  # poison/manifest still recognise it), assigns ids, records one `:in_place` `Mutare.Site` per
-  # logical mutant (the diff is the fragment swap, the `wrap`/`splice` scaffolding invisible),
-  # and emits the coverage catch-all — then hands the assembled `case` to the target's `splice`
-  # to weave into a copy of the macro node. Multiple targets fold over the node (each `splice`
-  # replaces its own position). Any whole-node `:mutare` mutations the same node *also* carries
-  # are then delivered over the spliced result by `emit_hosted_inplace/3` (an ordinary selector,
-  # or — for a binding-escaping macro — the tuple-export path) — a no-op when there are none,
-  # the common case.
-  defp emit_hosted_site(node, hosted, ctx) do
-    inplace = gate_candidates(candidates_of(node))
-    base = strip_candidates(node)
-
-    {spliced, ctx} =
-      Enum.reduce(hosted, {base, ctx}, fn candidate, {node, ctx} ->
-        weave_hosted_target(node, candidate, ctx)
-      end)
-
-    emit_hosted_inplace(spliced, inplace, ctx)
-  end
-
   # Deliver any whole-node `:mutare` mutations the hosted macro *also* carries, now that the
   # hosted selectors are woven into `spliced`. The dispatch mirrors `emit_one_unhosted/2`'s
   # inner one: a **binding-escaping** known macro (`destructure`-like, routed `:binding_pattern`)
@@ -972,47 +957,6 @@ defmodule Mutare.Transform do
 
   defp emit_hosted_inplace(spliced, candidates, ctx),
     do: emit_site(spliced, candidates, ctx)
-
-  # Weave one host target's selector into `node`. Claim an id per logical mutant (so poison
-  # recovery keeps ids stable — `SelectorEmit.claim_items/4` advances even for a skipped id),
-  # build a mutant clause `<id> -> wrap(mutant)` for each, then the coverage catch-all
-  # `<var> -> <record>; wrap(original)`, assemble the `case` on the hoisted active-id subject,
-  # and hand it to the target's `splice` to place in a copy of the macro node. With every
-  # mutant poisoned (no clauses) the node is left unwoven, mirroring the other selector
-  # paths' all-poisoned fallback.
-  defp weave_hosted_target(node, %Candidate.Hosted{} = cand, ctx) do
-    carriers =
-      Enum.map(cand.mutants, fn {mutated, note} ->
-        %{candidate: cand, mutated: mutated, note: note}
-      end)
-
-    {clauses, ctx} =
-      SelectorEmit.claim_items(carriers, ctx, &hosted_site/3, fn id, carrier ->
-        {:->, [], [[id], cand.wrap.(carrier.mutated)]}
-      end)
-
-    case clauses do
-      [] ->
-        {node, ctx}
-
-      _ ->
-        ids = SelectorEmit.ids_from_clauses(clauses)
-        # The catch-all is an ordinary selector catch-all (`catch_all_clause/3`) whose default
-        # branch is the *wrapped baseline* fragment: record the hosted ids (inert outside the
-        # probe), then run `wrap(original)`. Reached only with non-empty `ids` (the `_ ->`
-        # branch), so the empty-ids clause is irrelevant.
-        catch_all = SelectorEmit.catch_all_clause(ids, cand.wrap.(cand.original), ctx.active_var)
-        case_node = SelectorEmit.raw_case(clauses, catch_all, ctx)
-        {cand.splice.(node, case_node), ctx}
-    end
-  end
-
-  # The `Mutare.Site` for one hosted mutant: an `:in_place` replacement showing the *logical*
-  # fragment swap (`original` → this mutant), so the report diff is the DSL change, not the
-  # `wrap`/`splice`/selector scaffolding — exactly as the tuple-export Sites hide theirs. The
-  # optional `note` (a hosting mutator's advisory) rides onto the Site for the report.
-  defp hosted_site(id, %{candidate: cand, mutated: mutated, note: note}, file),
-    do: Site.in_place(id, file, cand.range, cand.original, mutated, cand.mutator, note)
 
   # === case clause-pattern mutation: tuple-the-scrutinee =====================
 

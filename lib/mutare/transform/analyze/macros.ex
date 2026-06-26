@@ -36,7 +36,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   # pull the DSL's bindings for its `wrap`) and attach one `Candidate.Hosted` per target it
   # returns, under a dedicated `:mutare_hosted` key (separate from `:mutare`, since emission
   # weaves the selector into the node rather than wrapping the node in one —
-  # `Mutare.Transform.emit_hosted_site/3`). No hosted position, no host spec, or no targets ⇒
+  # `Mutare.Transform.HostedEmit.emit/5`). No hosted position, no host spec, or no targets ⇒
   # the node is left as the ordinary (offered + arg-routed) macro node.
   #
   # The host is a **module**, but it may be enabled under *several* `Mutare.Mutator.Spec`s — a
