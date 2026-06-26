@@ -406,6 +406,11 @@ defmodule Mutare.SuperTest do
       # walk a nil arg list and crash), so the surrounding super is still detected.
       assert Super.in_clauses?(clauses("def f(quote), do: super(quote)"))
     end
+
+    test "a non-def-shaped clause is not a super body (the body_has_super? fallback)" do
+      refute Super.in_clauses?([:not_a_clause])
+      refute Super.in_clauses?([])
+    end
   end
 
   defp clauses(source), do: [Code.string_to_quoted!(source)]

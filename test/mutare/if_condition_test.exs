@@ -219,4 +219,12 @@ defmodule Mutare.IfConditionTest do
   end
 
   defp mutated_codes(body), do: body |> if_sites() |> Enum.map(& &1.mutated_code)
+
+  describe "condition_replacements/1 — bare (un-wrapped) literal fallback" do
+    test "a bare true/false/nil (not Sourceror-wrapped) is skipped defensively" do
+      assert IfCondition.condition_replacements(true) == []
+      assert IfCondition.condition_replacements(false) == []
+      assert IfCondition.condition_replacements(nil) == []
+    end
+  end
 end

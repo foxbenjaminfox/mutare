@@ -191,3 +191,27 @@ defmodule Mutare.Test.RaisingPlugin do
   @impl Mutare.Plugin
   def expand_use(_used, _args, _context), do: raise("boom from plugin")
 end
+
+defmodule Mutare.Test.ThrowingPlugin do
+  @moduledoc """
+  A plugin whose `expand_use/3` **throws** (a non-local return, not an exception). It is caught by
+  `safe_expand/4`'s `catch :throw, value` clause and wrapped in `Mutare.Plugin.ContractError` —
+  exercising the `:throw` arm of `thrown_message/3`, distinct from a raise (which `rescue` handles).
+  """
+  @behaviour Mutare.Plugin
+
+  @impl Mutare.Plugin
+  def expand_use(_used, _args, _context), do: throw(:thrown_from_plugin)
+end
+
+defmodule Mutare.Test.ExitingPlugin do
+  @moduledoc """
+  A plugin whose `expand_use/3` **exits**. Caught by `safe_expand/4`'s `catch kind, value` clause
+  with `kind == :exit`, wrapped in `Mutare.Plugin.ContractError` — exercising the non-`:throw`
+  (`signalled <kind>`) arm of `thrown_message/3`.
+  """
+  @behaviour Mutare.Plugin
+
+  @impl Mutare.Plugin
+  def expand_use(_used, _args, _context), do: exit(:exited_from_plugin)
+end

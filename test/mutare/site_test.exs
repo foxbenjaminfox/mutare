@@ -86,4 +86,22 @@ defmodule Mutare.SiteTest do
       assert Site.describe(site) == "return_value  foo bar → :mutare"
     end
   end
+
+  describe "lifted_replace/6 (no note)" do
+    test "records a :lifted replacement with note nil" do
+      original = {:>=, [], [{:a, [], nil}, {:b, [], nil}]}
+      mutated = {:>, [], [{:a, [], nil}, {:b, [], nil}]}
+      spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.Relational)
+
+      site = Site.lifted_replace(8, "lib/x.ex", @range, original, mutated, spec)
+
+      assert site.id == 8
+      assert site.file == "lib/x.ex"
+      assert site.kind == :lifted
+      assert site.mutator == :relational
+      assert site.note == nil
+      assert site.original_code == "a >= b"
+      assert site.mutated_code == "a > b"
+    end
+  end
 end

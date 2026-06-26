@@ -50,6 +50,26 @@ defmodule Mutare.PoisonTest do
       assert Poison.ids("some unrelated error", %{}) == MapSet.new()
     end
 
+    test "memoizes the per-file manifest and ignores an error in an untracked file" do
+      # Two distinct error lines in the *same* tracked file (the second resolved from the
+      # memoized manifest, not a re-parse) plus an error in a file absent from `metamutants`
+      # (no manifest → contributes nothing). Exercises the cache-hit and missing-file paths.
+      {meta, [site], _next_id} = Mutare.transform_string(@src, @poison)
+
+      poison_line =
+        meta
+        |> String.split("\n")
+        |> Enum.find_index(&(&1 =~ "mutare_unbound_xyz"))
+        |> Kernel.+(1)
+
+      error =
+        "lib/p.ex:#{poison_line}:5: undefined variable \"mutare_unbound_xyz\"\n" <>
+          "lib/p.ex:9999:1: some other error\n" <>
+          "lib/untracked.ex:3:1: undefined variable \"q\"\n"
+
+      assert Poison.ids(error, %{"lib/p.ex" => meta}) == MapSet.new([site.id])
+    end
+
     test "ignores a warning's file:line — only error diagnostics locate poison" do
       {meta, [site], _next_id} = Mutare.transform_string(@src, @poison)
       metamutants = %{"lib/p.ex" => meta}

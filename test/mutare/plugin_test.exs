@@ -9,11 +9,13 @@ defmodule Mutare.PluginTest do
     ContextPlugin,
     DecliningPlugin,
     EmptyExpansionPlugin,
+    ExitingPlugin,
     GettextLike,
     GettextLikePlugin,
     HostingPlugin,
     MalformedPlugin,
-    RaisingPlugin
+    RaisingPlugin,
+    ThrowingPlugin
   }
 
   alias Mutare.Transform.{Imports, Resolve, Uses}
@@ -89,6 +91,22 @@ defmodule Mutare.PluginTest do
       end
     end
 
+    test "a throwing handler surfaces as ContractError (the :throw catch arm)" do
+      # A non-local `throw` is not an exception, so it bypasses `rescue` and is caught by the
+      # `catch :throw, value` clause — still a loud ContractError, never a silent decline.
+      assert_raise Mutare.Plugin.ContractError,
+                   ~r/threw :thrown_from_plugin in expand_use\/3/,
+                   fn ->
+                     Plugin.expand_use([ThrowingPlugin], GettextLike, [], %{})
+                   end
+    end
+
+    test "an exiting handler surfaces as ContractError (the non-:throw catch arm)" do
+      assert_raise Mutare.Plugin.ContractError, ~r/signalled exit :exited_from_plugin/, fn ->
+        Plugin.expand_use([ExitingPlugin], GettextLike, [], %{})
+      end
+    end
+
     test "an empty Expansion still wins (handle-and-inject-nothing, not fall-through)" do
       # `Plugin.expand([])` is a deliberate "I handle this, inject nothing": first-non-:decline
       # wins, so it suppresses the later GettextLikePlugin (and, in Harvest, in-process expansion).
@@ -132,6 +150,15 @@ defmodule Mutare.PluginTest do
       assert_raise Mutare.Plugin.ContractError, ~r/expects a list of directives/, fn ->
         Plugin.expand(quote(do: import(Enum)))
       end
+    end
+  end
+
+  describe "Mutare.Plugin.ContractError" do
+    test "exception/1 accepts a bare string message (the is_binary clause)" do
+      # The plugin code raises it with a `message:` keyword; this pins the binary shortcut so a
+      # `raise ContractError, "..."` also carries its text.
+      err = Mutare.Plugin.ContractError.exception("plain message")
+      assert Exception.message(err) == "plain message"
     end
   end
 

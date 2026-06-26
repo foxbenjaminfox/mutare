@@ -93,5 +93,21 @@ defmodule Mutare.Transform.NodeRangeTest do
       trailing = ~S|~r/a#{x}b\/c/u|
       assert sigil_end_col(trailing) == String.length(trailing) + 1
     end
+
+    test "an angle-bracket delimiter is corrected like the other paired ones" do
+      # Exercises the `<`→`>` close_delimiter clause; the escaped `>` collapses, so the range
+      # widens by one just like the `{`/`(`/`[` cases.
+      assert sigil_end_col(~S|~r<a\>b>u|) == String.length(~S|~r<a\>b>u|) + 1
+      # with no escape, close_delimiter(<) still runs but the range is unchanged
+      node = Sourceror.parse_string!(~S|~r<abc>|)
+      assert NodeRange.get(node) == Sourceror.get_range(node)
+    end
+
+    test "a heredoc sigil (delimiter \"\"\") has no single-char close → left unchanged" do
+      # `close_delimiter/1` returns nil for the heredoc fence, so the correction is skipped
+      # entirely (the else branch), leaving Sourceror's range untouched.
+      node = Sourceror.parse_string!(~s|~s"""\nhi\n"""|)
+      assert NodeRange.get(node) == Sourceror.get_range(node)
+    end
   end
 end

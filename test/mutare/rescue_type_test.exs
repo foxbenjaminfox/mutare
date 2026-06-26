@@ -420,4 +420,17 @@ defmodule Mutare.RescueTypeTest do
       assert Enum.any?(returns, &(&1.line == 50)), "rescue-clause tail return mutant missing"
     end
   end
+
+  describe "drops/1 (direct)" do
+    alias Mutare.Mutators.RescueType
+
+    test "narrows each ≥2-type list by removing one type, keeping every result non-empty" do
+      assert RescueType.drops([:A, :B, :C]) == [[:B, :C], [:A, :C], [:A, :B]]
+    end
+
+    test "returns [] for a single type or a non-list (dropping would leave `in []`)" do
+      assert RescueType.drops([:Only]) == []
+      assert RescueType.drops({:var, [], nil}) == []
+    end
+  end
 end

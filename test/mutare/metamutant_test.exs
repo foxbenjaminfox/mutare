@@ -74,5 +74,16 @@ defmodule Mutare.MetamutantTest do
 
       refute Metamutant.pattern_subject?({{:mutare_active, [], nil}, {:x, [], nil}})
     end
+
+    test "pattern_subject?/2 sees through Sourceror's :__block__ wrapping of the 2-tuple" do
+      # `Mutare.Manifest` re-parses with a `:literal_encoder`, so a tuple literal arrives wrapped
+      # as `{:__block__, _, [{first, scrutinee}]}` — the wrapped clause must still recognise it.
+      wrapped = {:__block__, [], [{Metamutant.subject_ast(), {:x, [], nil}}]}
+      assert Metamutant.pattern_subject?(wrapped)
+
+      hoisted_wrapped = {:__block__, [], [{{:mutare_active, [], nil}, {:x, [], nil}}]}
+      assert Metamutant.pattern_subject?(hoisted_wrapped, :mutare_active)
+      refute Metamutant.pattern_subject?(hoisted_wrapped)
+    end
   end
 end

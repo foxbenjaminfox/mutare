@@ -44,5 +44,38 @@ defmodule Mutare.Coverage.RecorderTest do
       assert Recorder.record_var({:x, [], nil}) == nil
       assert Recorder.record_var(:not_even_a_tuple) == nil
     end
+
+    test "returns nil when the track read is present but the active-zero conjunct is malformed" do
+      # The outer shape and the `:mutare_track` read match, but the left conjunct is not the
+      # `<var> == 0` gate — so `active_zero_var/1` falls to its `nil` clause.
+      track_read = {{:., [], [:persistent_term, :get]}, [], [Recorder.track_key(), false]}
+      hit = {{:., [], [:mutare_cov, :hit]}, [], [[1]]}
+      malformed = {:and, [], [{:and, [], [{:not_a_gate, [], []}, track_read]}, hit]}
+
+      assert Recorder.record_var(malformed) == nil
+    end
+  end
+
+  describe "generated contract surface" do
+    test "catch_all_pattern/0 builds a bare-variable pattern with the canonical dispatch name" do
+      assert Recorder.catch_all_pattern() == {Recorder.var_name(), [], nil}
+    end
+
+    test "helper_source/0 is the dependency-free helper module source" do
+      source = Recorder.helper_source()
+
+      assert is_binary(source)
+      assert source =~ "defmodule"
+      assert source =~ "def hit"
+      assert source =~ "def dump"
+    end
+
+    test "after_suite_ast/0 builds the env-gated after_suite registration" do
+      ast = Recorder.after_suite_ast()
+      rendered = Macro.to_string(ast)
+
+      assert rendered =~ Recorder.env_var()
+      assert rendered =~ "after_suite"
+    end
   end
 end

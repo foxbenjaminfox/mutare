@@ -196,4 +196,104 @@ defmodule Mutare.ManifestTest do
       assert Manifest.ids_at_line(manifest, 9_999) == []
     end
   end
+
+  describe "ids_at_line/2 — the tuple-the-scrutinee (case-clause) path" do
+    @case_src """
+    defmodule D do
+      def classify(n) do
+        case n do
+          1 -> :one
+          x when x > 5 -> :big
+          _ -> :other
+        end
+      end
+    end
+    """
+
+    test "a case-clause guard mutant's whole gated clause maps to exactly that id" do
+      # A `case` clause pattern/guard mutation is delivered by tuple-the-scrutinee: the mutated
+      # code lives in the clause *head* (`{mutare_active, x} when mutare_active === <id> and …`),
+      # so the manifest records the whole clause range against that single id (the `pattern_mutant`
+      # path), not a selector clause body.
+      {meta, sites, _next} =
+        Mutare.transform_string(@case_src,
+          mutators: [Mutare.Mutators.Literal, Mutare.Mutators.Relational]
+        )
+
+      manifest = Manifest.from_source(meta)
+
+      relaxed = Enum.find(sites, &(&1.mutator == :relational and &1.mutated_code == "x >= 5"))
+      assert relaxed, "expected a relational guard mutant"
+
+      # the mutated guard lives in a tupled, id-gated mutant clause head
+      line = line_of(meta, "x >= 5")
+      assert meta |> String.split("\n") |> Enum.at(line - 1) =~ ~r/mutare_active === \d+/
+      assert Manifest.ids_at_line(manifest, line) == [relaxed.id]
+    end
+
+    test "the whole tupled `case` is the coarse fallback for every clause-mutant id it hosts" do
+      {meta, sites, _next} =
+        Mutare.transform_string(@case_src, mutators: [Mutare.Mutators.Literal])
+
+      manifest = Manifest.from_source(meta)
+
+      clause_ids = sites |> Enum.map(& &1.id) |> Enum.sort()
+      case_line = line_of(meta, "case {mutare_active, n}")
+
+      assert Enum.sort(Manifest.ids_at_line(manifest, case_line)) == clause_ids
+    end
+  end
+
+  describe "active_var/1 fallbacks — recovering the dispatch name without a coverage record" do
+    # A real metamutant always carries a coverage record, so `active_var/1` recovers the dispatch
+    # name from it. These hand-crafted (record-less) metamutant strings exercise the *fallback*
+    # anchors `from_source` keeps for the theoretical shape that lacks one.
+
+    test "recovers the name from a `<var> = :persistent_term.get` binding (the `=` anchor)" do
+      src = """
+      defmodule D do
+        def f(_x) do
+          mutare_active = :persistent_term.get(:mutare_active, 0)
+
+          case mutare_active do
+            1 -> :mutated
+            mutare_active -> :original
+          end
+        end
+      end
+      """
+
+      manifest = Manifest.from_source(src)
+
+      line = line_of(src, "1 -> :mutated")
+      assert Manifest.ids_at_line(manifest, line) == [1]
+    end
+
+    test "recovers the name from a tupled-`case` clause pattern (the `:case` anchor)" do
+      # Inline-read first element so the var-less `pattern_subject?` recognises the subject, and
+      # no `=` binding precedes it — forcing recovery through the `:case` anchor / `clause_tuple_var`.
+      src = """
+      defmodule D do
+        def f(_x) do
+          case {:persistent_term.get(:mutare_active, 0), _x} do
+            {mutare_active, 1} when mutare_active === 1 -> :a
+            {mutare_active, _} -> :b
+          end
+        end
+      end
+      """
+
+      manifest = Manifest.from_source(src)
+
+      line = line_of(src, "mutare_active === 1")
+      assert Manifest.ids_at_line(manifest, line) == [1]
+    end
+
+    test "falls back to the canonical name when there is neither a record nor an anchor" do
+      # A module with no mutations has no selectors at all: no record, no anchor — so `active_var/1`
+      # returns the canonical `Recorder.var_name()` and the walk yields no regions.
+      manifest = Manifest.from_source("defmodule D do\n  def f, do: 1\nend\n")
+      assert manifest.regions == []
+    end
+  end
 end

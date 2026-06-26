@@ -124,4 +124,19 @@ defmodule Mutare.Report.JsonTest do
     assert length(doc["files"]["lib/a.ex"]["mutants"]) == 1
     assert length(doc["files"]["lib/b.ex"]["mutants"]) == 1
   end
+
+  test "render/2 (opts defaulted) and a range-less site fall back to a 1,1 location" do
+    # `render/2` exercises the defaulted-opts head, and a `range: nil` site (a malformed-site
+    # guard the typespec allows) drives the `location(nil)` default rather than crashing.
+    rangeless = %{site(7, []) | range: nil}
+    result = %Result{site: rangeless, status: :survived, duration_ms: nil}
+
+    doc = Json.render([result], %{"lib/a.ex" => "a >= b"}) |> JSON.decode!()
+    mutant = hd(doc["files"]["lib/a.ex"]["mutants"])
+
+    assert mutant["location"] == %{
+             "start" => %{"line" => 1, "column" => 1},
+             "end" => %{"line" => 1, "column" => 1}
+           }
+  end
 end

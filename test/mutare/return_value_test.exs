@@ -116,6 +116,15 @@ defmodule Mutare.ReturnValueTest do
       refute function_exported?(ReturnValue, :mutate, 1)
       assert ReturnValue.name() == :return_value
     end
+
+    test "a bare (un-wrapped) literal tail is skipped too (the defensive clause)" do
+      # Sites always arrive Sourceror-wrapped; calling the hook directly with bare literals
+      # exercises the un-wrapped `redundant_literal?` clause.
+      assert ReturnValue.return_replacements(5) == []
+      assert ReturnValue.return_replacements(1.5) == []
+      assert ReturnValue.return_replacements("hi") == []
+      assert ReturnValue.return_replacements([1, 2]) == []
+    end
   end
 
   describe "the recorded Site" do

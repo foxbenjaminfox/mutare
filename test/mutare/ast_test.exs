@@ -45,5 +45,50 @@ defmodule Mutare.ASTTest do
       assert AST.key_atom(:do) == :do
       assert AST.key_atom(AST.literal(1)) == nil
     end
+
+    test "empty_collection_literal?/1 also recognises a bare empty list" do
+      # The bare `[]` clause (an integration site always arrives `{:__block__, _, [[]]}`-wrapped).
+      assert AST.empty_collection_literal?([])
+    end
+  end
+
+  describe "opts_get/3" do
+    test "returns the value for a present key, the default otherwise" do
+      opts = [{:a, 1}, {:b, 2}]
+      assert AST.opts_get(opts, :a) == 1
+      assert AST.opts_get(opts, :missing, :fallback) == :fallback
+    end
+
+    test "ignores a non-pair entry in the list (the fallback clause)" do
+      assert AST.opts_get([:junk, {:a, 1}], :a) == 1
+      assert AST.opts_get([:junk], :a, :default) == :default
+    end
+  end
+
+  describe "update_do_block/2" do
+    test "maps over the :do entry, passing non-:do entries and non-pairs through" do
+      assert AST.update_do_block([:junk, {:do, 1}, {:other, 2}], &(&1 + 10)) ==
+               [:junk, {:do, 11}, {:other, 2}]
+    end
+
+    test "a non-keyword node is returned unchanged (the fallback)" do
+      assert AST.update_do_block(:not_a_list, & &1) == :not_a_list
+    end
+  end
+
+  describe "update_do_block_reduce/3" do
+    test "threads an accumulator through the :do entry, passing the rest through" do
+      assert {result, acc} =
+               AST.update_do_block_reduce([:junk, {:do, 1}, {:other, 2}], 0, fn v, a ->
+                 {v + 10, a + 1}
+               end)
+
+      assert result == [:junk, {:do, 11}, {:other, 2}]
+      assert acc == 1
+    end
+
+    test "a non-keyword node returns {node, acc} unchanged (the fallback)" do
+      assert AST.update_do_block_reduce(:not_a_list, 5, fn v, a -> {v, a} end) == {:not_a_list, 5}
+    end
   end
 end

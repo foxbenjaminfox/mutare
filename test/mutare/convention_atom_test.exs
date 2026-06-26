@@ -143,4 +143,17 @@ defmodule Mutare.ConventionAtomTest do
       assert ConventionAtom.name() == :convention
     end
   end
+
+  describe "members/0" do
+    test "is the flat, de-duplicated list of built-in convention atoms" do
+      # `AtomLiteral` reads this at compile time to exclude these atoms; the direct call pins
+      # the contract (and that the accessor itself runs).
+      members = ConventionAtom.members()
+
+      assert is_list(members)
+      assert :ok in members and :error in members
+      assert :cont in members and :halt in members
+      assert members == Enum.uniq(members)
+    end
+  end
 end

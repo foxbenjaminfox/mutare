@@ -89,4 +89,21 @@ defmodule Mutare.Transform.NamesTest do
       assert prefix == "__mutare_0_"
     end
   end
+
+  describe "salted_name?/2 (the inverse of the salting convention)" do
+    test "true for the canonical name itself" do
+      assert Names.salted_name?(:mutare_active, :mutare_active)
+    end
+
+    test "true for a `<canonical>_<int>` salted name" do
+      assert Names.salted_name?(:mutare_active, :mutare_active_0)
+      assert Names.salted_name?(:mutare_active, :mutare_active_42)
+    end
+
+    test "false for an unrelated name, or a non-integer / empty suffix" do
+      refute Names.salted_name?(:mutare_active, :some_user_var)
+      refute Names.salted_name?(:mutare_active, :mutare_active_x)
+      refute Names.salted_name?(:mutare_active, :mutare_active_)
+    end
+  end
 end
