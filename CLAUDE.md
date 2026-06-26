@@ -784,8 +784,12 @@ contract between them is the whole game.
     same per-clause walk — `annotate_fn_returns/3`), IfCondition
     (`condition_replacements/1`, an `if`/`unless`/`cond` condition), PatternSwap + PatternWildcard
     (`pattern_mutations/2`, head / `case` / `receive` / `fn` / `=`-match patterns), and RescueType +
-    GuardDrop (special — `try`/guard rebuilds, no `(node) → [replacement]` callback fits). The
-    unregistered `clause_drop` is the one structural built-in that *isn't* a toggleable family.
+    GuardDrop — the two **transform-managed** families (`Mutare.Mutators.transform_managed/0`):
+    `try`/guard rebuilds that don't fit a `(node) → [replacement]` callback, so their logic lives in
+    `Transform` (discovered by module identity via `Spec.find/2`) and the modules carry only `name/0`,
+    deliberately *not* implementing `Mutare.Mutator` (RescueType's `drops/1` is a plain helper, not a
+    producing callback). The unregistered `clause_drop` is the one structural built-in that *isn't*
+    a toggleable family.
   - **Behaviour-gated** (the first built-in to read `context.behaviours`): GenServer
     (`return_replacements/2`, gated on `@behaviour GenServer`) swaps a `handle_call`/`cast`/`info`/
     `continue` return tuple for another *valid* OTP return (`:reply`→`:noreply`, `:noreply`↔`:stop`,
@@ -830,7 +834,11 @@ contract between them is the whole game.
   the registry's families before per-entry resolution — so including it *extends* the defaults and
   omitting it *replaces* them, and `except:` drops named built-ins, the reconfigure-a-built-in path
   being exclude-then-re-add-configured), or an already-resolved `%Spec{}` (idempotent) — to
-  validated **`Mutare.Mutator.Spec`** structs.
+  validated **`Mutare.Mutator.Spec`** structs. A registered entry resolves either because it
+  implements `Mutare.Mutator` (a producing callback — most families) *or* because it is
+  **transform-managed** (`transform_managed/0` — `GuardDrop`/`RescueType`, `name/0`-only, logic in
+  `Transform`); `to_module!/1` accepts both, and a test pins that every registered module is one or
+  the other.
   `Transform` (its default), `Config` (the CLI/`.mutare.exs` path), and `Options` (the direct
   `Mutare.run/2` API) all derive from it — so a family registered here is part of `:all` and
   resolvable/validated everywhere, with no second list to drift.

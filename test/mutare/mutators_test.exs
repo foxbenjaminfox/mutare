@@ -155,11 +155,34 @@ defmodule Mutare.MutatorsTest do
       assert Mutare.Mutator.implemented_by?(IfCondition)
     end
 
-    test "resolve/1 accepts a registered built-in by module even with no producing callback" do
+    test "resolve/1 accepts a transform-managed family by module (no producing callback)" do
       # GuardDrop's logic lives in the transform — it exports only name/0, so implemented_by?/1
-      # can't recognise it, but as a registered built-in it still resolves by module (not just atom).
+      # can't recognise it, but as a transform-managed family it still resolves by module.
       refute Mutare.Mutator.implemented_by?(GuardDrop)
+      assert GuardDrop in Mutators.transform_managed()
       assert [%Spec{module: GuardDrop, name: :guard_drop}] = Mutators.resolve([GuardDrop])
+    end
+
+    test "every registered family is a Mutare.Mutator implementer or transform-managed" do
+      # The category split: a registered family either implements the producing behaviour
+      # (a "mutator") or is transform-managed (logic in `Mutare.Transform`, name/0 only). Nothing
+      # else is legal — a registered module that is neither would fail to resolve by module.
+      for module <- Mutators.all() do
+        assert Mutare.Mutator.implemented_by?(module) or module in Mutators.transform_managed(),
+               "#{inspect(module)} is registered but neither implements Mutare.Mutator nor is " <>
+                 "transform-managed"
+      end
+    end
+
+    test "transform_managed/0 lists only registered families that don't implement the behaviour" do
+      for module <- Mutators.transform_managed() do
+        assert module in Mutators.all(),
+               "#{inspect(module)} is transform-managed but not registered"
+
+        refute Mutare.Mutator.implemented_by?(module),
+               "#{inspect(module)} is listed transform-managed but implements Mutare.Mutator — " <>
+                 "it should resolve via the producing-callback check instead"
+      end
     end
 
     test "resolve/1 reports a non-atom entry rather than crashing on a guard" do

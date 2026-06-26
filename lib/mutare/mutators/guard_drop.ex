@@ -39,8 +39,14 @@ defmodule Mutare.Mutators.GuardDrop do
   offered there. No hard-coded list of "coverable" guards — the dedup is derived
   from what the mutators actually produce.
   """
-  @behaviour Mutare.Mutator
 
-  @impl Mutare.Mutator
+  # A **transform-managed** family (`Mutare.Mutators.transform_managed/0`): its mutation logic
+  # lives in `Mutare.Transform` (`FunctionPlan.build_guard_drops/2` for `def`/`defp` heads,
+  # `Analyze`/`ClausePatterns` for `case`/`receive`/`fn`), not in a `Mutare.Mutator` producing
+  # callback — the "inert guard" rule above is decided relative to the *whole enabled mutator
+  # set*, which only the transform can see. So this module deliberately does **not** implement
+  # `Mutare.Mutator` (`implemented_by?/1` is false for it); it is just the family's name +
+  # enablement token: registered in `Mutare.Mutators`, discovered by module identity
+  # (`Spec.find/2`), and named for reports and `# mutare:ignore[guard_drop]`.
   def name, do: :guard_drop
 end

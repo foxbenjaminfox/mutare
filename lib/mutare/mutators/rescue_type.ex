@@ -36,9 +36,13 @@ defmodule Mutare.Mutators.RescueType do
 
   Both the **explicit `try`** and the **`def … rescue …` shorthand** are mutated.
   """
-  @behaviour Mutare.Mutator
 
-  @impl Mutare.Mutator
+  # A **transform-managed** family (`Mutare.Mutators.transform_managed/0`): discovery and
+  # delivery live in `Mutare.Transform` (`Analyze`/`ClausePatterns.rescue_type_candidates/3`),
+  # which calls `drops/1` for the list-narrowing and owns the whole-clause drop directly.
+  # `drops/1` is a plain helper, *not* a `Mutare.Mutator` producing callback (the clause-drop
+  # half doesn't fit a `node -> [mutation]` shape), so — like `GuardDrop` — this module is
+  # registered for naming/toggling but does **not** implement `Mutare.Mutator`.
   def name, do: :rescue_type
 
   @doc """

@@ -25,6 +25,12 @@ defmodule Mutare.Mutators do
   position, so including it *extends* the defaults (`[:builtins, MyMutator]`) and
   omitting it *replaces* them (`[A, B]`). `{:builtins, except: [families]}` drops
   named built-ins; reconfigure one by excluding then re-adding it configured.
+
+  Most families are **mutators** (they implement `Mutare.Mutator` — `name/0` plus a
+  producing callback). A few are **transform-managed** (`transform_managed/0`): their
+  mutation logic lives in `Mutare.Transform`, so they carry only `name/0` and do not
+  implement the producing behaviour, yet are toggled and `# mutare:ignore`-filtered like
+  any family. `resolve/1` accepts both.
   """
 
   alias Mutare.Mutator.Spec
@@ -78,6 +84,16 @@ defmodule Mutare.Mutators do
     genserver: Mutare.Mutators.GenServer
   ]
 
+  # Registered families whose mutation logic lives in `Mutare.Transform`, not in a
+  # `Mutare.Mutator` *producing* callback — so `Mutare.Mutator.implemented_by?/1` is false for
+  # them and resolution accepts them via this list rather than the producing-callback check.
+  # `GuardDrop` because its "inert guard" rule is relative to the whole enabled set (only the
+  # transform sees that); `RescueType` because its clause-restructuring doesn't fit a
+  # `node -> [mutation]` callback. The transform discovers each by module identity
+  # (`Spec.find/2`). Must be a subset of the registry's modules, and disjoint from the
+  # `implemented_by?` mutators — both pinned by `mutators_test`.
+  @transform_managed [Mutare.Mutators.GuardDrop, Mutare.Mutators.RescueType]
+
   @doc "The ordered `family => module` registry of every built-in mutator."
   @spec registry() :: [{atom(), module()}]
   def registry, do: @registry
@@ -99,6 +115,17 @@ defmodule Mutare.Mutators do
   """
   @spec families() :: [atom()]
   def families, do: Keyword.keys(@registry)
+
+  @doc """
+  The built-in families whose mutation logic lives in `Mutare.Transform` rather than in a
+  `Mutare.Mutator` producing callback (`Mutare.Mutators.GuardDrop`, `Mutare.Mutators.RescueType`).
+
+  They are registered for naming / toggling / `# mutare:ignore`, and are discovered by the
+  transform by module identity — but they do **not** implement `Mutare.Mutator` (so
+  `Mutare.Mutator.implemented_by?/1` is false for them). Resolution accepts them on this basis.
+  """
+  @spec transform_managed() :: [module()]
+  def transform_managed, do: @transform_managed
 
   # The reserved list tokens that stand for "the whole built-in set" — expanded
   # in place (and `except:`-filtered) before any per-entry resolution, since one
@@ -190,16 +217,17 @@ defmodule Mutare.Mutators do
   defp resolve!({entry, opts}), do: Spec.configured(to_module!(entry), opts)
   defp resolve!(entry), do: Spec.for_module(to_module!(entry))
 
-  # An entry's module: a registered family atom maps via the registry; a registered built-in
-  # module passes through as itself (so a structural built-in whose logic lives in the transform,
-  # like `GuardDrop`/`RescueType`, resolves by module too — it has no producing callback for
-  # `implemented_by?` to find); any other term must be a custom module implementing the behaviour.
+  # An entry's module: a registered family atom maps via the registry; a **transform-managed**
+  # family module (`transform_managed/0` — logic in the transform, no producing callback, so
+  # `implemented_by?` can't recognise it) passes through as itself; any other term must be a
+  # custom module implementing the behaviour. A non-transform-managed built-in module resolves
+  # via the `implemented_by?` branch like any mutator.
   defp to_module!(name) do
     cond do
       is_atom(name) and Keyword.has_key?(registry(), name) ->
         Keyword.fetch!(registry(), name)
 
-      is_atom(name) and name in all() ->
+      name in @transform_managed ->
         name
 
       Mutare.Mutator.implemented_by?(name) ->

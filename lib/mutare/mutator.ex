@@ -249,6 +249,10 @@ defmodule Mutare.Mutator do
   or a **pipe-aware/configurable** one (driven by `mutate/2`) produces no node-local mutation and
   simply omits this callback; `mutations/3` skips a mutator that doesn't export it. A module must
   still implement `name/0` plus at least one mutation-producing callback to count as a mutator.
+
+  (The built-in `:guard_drop`/`:rescue_type` families are *not* mutators in this sense — they are
+  **transform-managed**: their logic lives in `Mutare.Transform`, so they carry only `name/0`. See
+  `Mutare.Mutators.transform_managed/0`.)
   """
   @callback mutate(Macro.t()) :: :skip | [mutation()]
 
