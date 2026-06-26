@@ -405,6 +405,46 @@ defmodule Mutare.SandboxTest do
       refute inspect(term) =~ Path.expand(project)
     end
 
+    test "seeds despite a struct in the manifest (a captured compile_env value)", context do
+      project = context.project
+      # A module's `Application.compile_env/2` value is recorded in the Elixir manifest, so
+      # a config regex (or Range/MapSet) lands in the term. The relocation walk must skip
+      # such structs, not crash on `Map.new/2` and fall back to a cold compile.
+      put_app_beam(project, "myapp", "lib/foo.ex", "Foo#{uniq()}")
+      put_app_beam(project, "myapp", "lib/bar.ex", "Bar#{uniq()}")
+
+      regex = ~r/^[\w:, '"_\-.\p{Hebrew}]+$/u
+
+      put_app_manifest(project, "myapp", [
+        Path.expand(project),
+        abs(project, "lib/bar.ex"),
+        regex,
+        1..10,
+        MapSet.new([1, 2])
+      ])
+
+      schema = %Schema{metamutants: %{"lib/foo.ex" => "defmodule Foo do\n  def x, do: 2\nend\n"}}
+      sandbox = Path.join(context.base, "sandbox")
+
+      Sandbox.prepare(project, schema, sandbox: sandbox)
+
+      app_build = Path.join(sandbox, "_build/test/lib/myapp")
+      # The seed survived (not torn down to a cold compile): build present, metamutant beam
+      # deleted, untouched beam kept.
+      assert File.dir?(app_build)
+      assert beams(app_build) |> Enum.any?(&(&1 =~ "Bar"))
+      refute beams(app_build) |> Enum.any?(&(&1 =~ "Foo"))
+
+      term =
+        Path.join(app_build, ".mix/compile.elixir") |> File.read!() |> :erlang.binary_to_term()
+
+      # The path is relocated; the structs round-trip untouched.
+      assert inspect(term) =~ Path.expand(sandbox)
+      refute inspect(term) =~ Path.expand(project)
+      assert {:manifest, [_, _, ^regex, 1..10//1, mapset]} = term
+      assert mapset == MapSet.new([1, 2])
+    end
+
     test "seeds a `--only`/`paths:`-narrowed run (not just `--line`/`--since`)", context do
       project = context.project
       # `--only` narrows discovery via `:paths` (no `:only_files`/`:only_lines` set), so a

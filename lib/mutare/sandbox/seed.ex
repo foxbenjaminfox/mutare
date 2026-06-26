@@ -251,6 +251,10 @@ defmodule Mutare.Sandbox.Seed do
   # binaries, so it never has to understand the manifest's field layout. A binary is
   # rewritten only when it *is* the root or has it as a `/`-delimited prefix — so a sibling
   # project sharing a name prefix (`/p/app` vs `/p/app2`, a `path:` dep) is never touched.
+  # Structs are left *whole* (the `%_{}` clause): the manifest's own path fields are plain
+  # maps/lists/tuples/binaries, and any struct here is a captured `compile_env` value (a
+  # `Regex`, `Range`, `MapSet`, …) — data we must not rewrite, and which would crash the
+  # generic map clause besides.
   defp rewrite_paths(term, root, sandbox) when is_binary(term) do
     cond do
       term == root -> sandbox
@@ -259,8 +263,12 @@ defmodule Mutare.Sandbox.Seed do
     end
   end
 
-  defp rewrite_paths(term, from, to) when is_list(term),
-    do: Enum.map(term, &rewrite_paths(&1, from, to))
+  # Cons-recurse rather than `Enum.map/2` so an improper list (a non-list tail) is walked
+  # too, not crashed.
+  defp rewrite_paths([head | tail], from, to),
+    do: [rewrite_paths(head, from, to) | rewrite_paths(tail, from, to)]
+
+  defp rewrite_paths([], _from, _to), do: []
 
   defp rewrite_paths(term, from, to) when is_tuple(term) do
     term
@@ -268,6 +276,13 @@ defmodule Mutare.Sandbox.Seed do
     |> Enum.map(&rewrite_paths(&1, from, to))
     |> List.to_tuple()
   end
+
+  # A struct is captured `compile_env` data, not a manifest path field, so leave it whole.
+  # Rewriting its internals risks corrupting a non-path binary, and a genuine path missed
+  # inside one is fail-safe (it just provokes a recompile). This also sidesteps the
+  # `Map.new/2` blowups the map clause hits on a struct, whose `Enumerable` is either
+  # unimplemented (`Regex`, `Version`) or yields non-`{k, v}` elements (`Range`, `MapSet`).
+  defp rewrite_paths(%_{} = term, _from, _to), do: term
 
   defp rewrite_paths(term, from, to) when is_map(term),
     do: Map.new(term, fn {k, v} -> {rewrite_paths(k, from, to), rewrite_paths(v, from, to)} end)
