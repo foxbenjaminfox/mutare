@@ -175,7 +175,10 @@ defmodule Mutare.Transform.Analyze.Conditions do
   #     killable, `eval_steps`'s `:__block__ → :mutare` flipping a literal's reorder class, is
   #     killed by the `pure literal preceding a spine binding` test.)
   #
-  # The defensive `is_list/1` guards and unreachable fallbacks are `# mutare:ignore`d inline.
+  # The three boolean/list folds (`escaping_binding?`, `spine_bindings`,
+  # `offspine_escaping_binding?`) end in one `children/1`-based catch-all (below) rather than
+  # re-listing the args/pair/list/leaf cases; `spine_rewrite`'s and `eval_steps`'s defensive
+  # `is_list/1` guards and the cluster's unreachable fallbacks stay `# mutare:ignore`d inline.
   #
   # Rewrite the condition's *spine* (the unconditionally-evaluated nodes), replacing
   # each spine binding `PAT = EXPR` with a read of the lifted value and returning the
@@ -239,13 +242,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
 
   defp spine_bindings({:=, _meta, _args} = node), do: [node]
 
-  # mutare:ignore[guard_drop] equivalent — a non-leaf AST node always carries a list of args, so the `is_list/1` guard never excludes a real node.
-  defp spine_bindings({_form, _meta, args}) when is_list(args),
-    do: Enum.flat_map(args, &spine_bindings/1)
-
-  defp spine_bindings({left, right}), do: spine_bindings(left) ++ spine_bindings(right)
-  defp spine_bindings(list) when is_list(list), do: Enum.flat_map(list, &spine_bindings/1)
-  defp spine_bindings(_), do: []
+  defp spine_bindings(node), do: Enum.flat_map(children(node), &spine_bindings/1)
 
   defp refutable_spine_count(node) do
     node
@@ -331,29 +328,28 @@ defmodule Mutare.Transform.Analyze.Conditions do
 
   defp offspine_escaping_binding?({:=, _meta, _args}), do: false
 
-  defp offspine_escaping_binding?({_form, _meta, args}) when is_list(args),
-    do: Enum.any?(args, &offspine_escaping_binding?/1)
-
-  defp offspine_escaping_binding?({left, right}),
-    do: offspine_escaping_binding?(left) or offspine_escaping_binding?(right)
-
-  defp offspine_escaping_binding?(list) when is_list(list),
-    do: Enum.any?(list, &offspine_escaping_binding?/1)
-
-  defp offspine_escaping_binding?(_), do: false
+  defp offspine_escaping_binding?(node),
+    do: Enum.any?(children(node), &offspine_escaping_binding?/1)
 
   # Does the subtree contain an escaping `=` binding (one not isolated inside a
   # closure/comprehension/`try`/`quote`)? The presence counterpart of
   # `prune_binding_ancestors/1`'s taint.
   defp escaping_binding?({form, _meta, _args}) when form in @binding_isolating_forms, do: false
   defp escaping_binding?({:=, _meta, _args}), do: true
+  defp escaping_binding?(node), do: Enum.any?(children(node), &escaping_binding?/1)
 
-  defp escaping_binding?({_form, _meta, args}) when is_list(args),
-    do: Enum.any?(args, &escaping_binding?/1)
-
-  defp escaping_binding?({left, right}), do: escaping_binding?(left) or escaping_binding?(right)
-  defp escaping_binding?(list) when is_list(list), do: Enum.any?(list, &escaping_binding?/1)
-  defp escaping_binding?(_), do: false
+  # The structural children of an AST node — the generic-recursion tail the three
+  # boolean/list spine folds (`escaping_binding?`, `spine_bindings`,
+  # `offspine_escaping_binding?`) share: a 3-tuple's argument list, a 2-tuple pair's two
+  # elements, or a bare list's elements; a leaf (literal, bare variable, atom) has none.
+  # Each fold keeps its own *specific* clauses (the short-circuit/branch/isolating/`=`
+  # routing that defines it) and ends in one `children`-based catch-all rather than
+  # re-listing these four structural cases. (`eval_steps`/`spine_rewrite`/`prune_binding_
+  # ancestors` don't use it — their tails treat a call/leaf differently, see their clauses.)
+  defp children({_form, _meta, args}) when is_list(args), do: args
+  defp children({left, right}), do: [left, right]
+  defp children(list) when is_list(list), do: list
+  defp children(_leaf), do: []
 
   # A bare variable (the irrefutable, temp-free hoist case): a `{name, _, context}`
   # node with an atom name (not `_`) and an atom hygiene context. A call (`context` is
