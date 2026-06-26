@@ -299,6 +299,17 @@ defmodule Mutare.Sandbox do
     root = resolve_path(root)
     expanded_sandbox = Path.expand(sandbox)
 
+    # Two interpretations of where the sandbox *actually* lands, both checked against the project
+    # root because materialisation `rm_rf!`s and rewrites that directory — if either resolves
+    # inside the tree it could destroy source. They differ only when the final path component is
+    # itself a symlink:
+    #   1. `resolve_path(sandbox)` follows every symlink, the final component included — catches a
+    #      sandbox that *is* a symlink into the tree (`/tmp/sb -> project/lib`).
+    #   2. resolve only the *parent* chain, then re-join the literal basename — the spot where a
+    #      not-yet-existing sandbox dir would be created (and wiped), catching a parent symlink
+    #      that puts it inside the tree even when the leaf doesn't exist to resolve.
+    # `Enum.uniq` collapses the common case where they agree. Don't fold this to a single path:
+    # each interpretation guards a distinct symlink case the other misses.
     sandbox_paths =
       [
         resolve_path(expanded_sandbox),

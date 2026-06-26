@@ -52,10 +52,11 @@ defmodule Mutare.Options do
           project: Project.t() | nil
         }
 
-  # Single source for the struct's fields + their defaults: `defstruct` and the
-  # `@keys` allow-list (`reject_unknown!/1`) both derive from this, so adding a field
-  # is one edit and the two can't drift (a field in `defstruct` but missing from `@keys`
-  # would otherwise make `new/1` reject a valid option).
+  # Single source for the struct's fields + their defaults: `defstruct`, the `@keys` allow-list
+  # (`reject_unknown!/1`), *and* `new/1`'s per-field defaults (via `opt/2`) all derive from this,
+  # so a field's default lives in one place and they can't drift (a field in `defstruct` but
+  # missing from `@keys` would otherwise make `new/1` reject a valid option; a `new/1` default out
+  # of step with `defstruct` would make the two construction paths disagree).
   @field_defaults [
     paths: ["lib"],
     exclude: [],
@@ -150,36 +151,40 @@ defmodule Mutare.Options do
     reject_unknown!(opts)
 
     %__MODULE__{
-      paths: validate_paths!(Keyword.get(opts, :paths, ["lib"])),
-      exclude: validate_string_list!(:exclude, Keyword.get(opts, :exclude, [])),
-      mutators: validate_mutators!(Keyword.get(opts, :mutators)),
-      macros: validate_macros!(Keyword.get(opts, :macros, [])),
-      expand_uses: validate_expand_uses!(Keyword.get(opts, :expand_uses, true)),
-      only_files: validate_only_files!(Keyword.get(opts, :only_files)),
-      only_lines: validate_only_lines!(Keyword.get(opts, :only_lines)),
-      test_selection: validate_test_selection!(Keyword.get(opts, :test_selection, :coverage)),
-      workers: validate_workers!(Keyword.get(opts, :workers) || System.schedulers_online()),
-      partition_env: validate_partition_env!(Keyword.get(opts, :partition_env)),
-      timeout: validate_timeout!(Keyword.get(opts, :timeout)),
-      timeout_multiplier: validate_multiplier!(Keyword.get(opts, :timeout_multiplier, 3.0)),
-      baseline_runs: validate_baseline_runs!(Keyword.get(opts, :baseline_runs, 1)),
-      harness_retries: validate_harness_retries!(Keyword.get(opts, :harness_retries, 2)),
-      max_harness_error_rate:
-        validate_harness_error_rate!(Keyword.get(opts, :max_harness_error_rate, 0.5)),
-      sandbox: validate_sandbox!(Keyword.get(opts, :sandbox)),
-      keep_sandbox: validate_keep_sandbox!(Keyword.get(opts, :keep_sandbox, false)),
-      strict_ignores: validate_strict_ignores!(Keyword.get(opts, :strict_ignores, false)),
-      quiet: validate_quiet!(Keyword.get(opts, :quiet, false)),
-      max_mutants: validate_max_mutants!(Keyword.get(opts, :max_mutants)),
-      min_score: validate_min_score!(Keyword.get(opts, :min_score)),
-      reporters: validate_reporters!(Keyword.get(opts, :reporters, [{:human, nil}])),
-      reporter: validate_reporter!(Keyword.get(opts, :reporter)),
-      on_phase: validate_callback!(:on_phase, Keyword.get(opts, :on_phase)),
-      on_start: validate_callback!(:on_start, Keyword.get(opts, :on_start)),
-      on_scan: validate_callback!(:on_scan, Keyword.get(opts, :on_scan)),
-      project: validate_project!(Keyword.get(opts, :project))
+      paths: validate_paths!(opt(opts, :paths)),
+      exclude: validate_string_list!(:exclude, opt(opts, :exclude)),
+      mutators: validate_mutators!(opt(opts, :mutators)),
+      macros: validate_macros!(opt(opts, :macros)),
+      expand_uses: validate_expand_uses!(opt(opts, :expand_uses)),
+      only_files: validate_only_files!(opt(opts, :only_files)),
+      only_lines: validate_only_lines!(opt(opts, :only_lines)),
+      test_selection: validate_test_selection!(opt(opts, :test_selection)),
+      workers: validate_workers!(opt(opts, :workers) || System.schedulers_online()),
+      partition_env: validate_partition_env!(opt(opts, :partition_env)),
+      timeout: validate_timeout!(opt(opts, :timeout)),
+      timeout_multiplier: validate_multiplier!(opt(opts, :timeout_multiplier)),
+      baseline_runs: validate_baseline_runs!(opt(opts, :baseline_runs)),
+      harness_retries: validate_harness_retries!(opt(opts, :harness_retries)),
+      max_harness_error_rate: validate_harness_error_rate!(opt(opts, :max_harness_error_rate)),
+      sandbox: validate_sandbox!(opt(opts, :sandbox)),
+      keep_sandbox: validate_keep_sandbox!(opt(opts, :keep_sandbox)),
+      strict_ignores: validate_strict_ignores!(opt(opts, :strict_ignores)),
+      quiet: validate_quiet!(opt(opts, :quiet)),
+      max_mutants: validate_max_mutants!(opt(opts, :max_mutants)),
+      min_score: validate_min_score!(opt(opts, :min_score)),
+      reporters: validate_reporters!(opt(opts, :reporters)),
+      reporter: validate_reporter!(opt(opts, :reporter)),
+      on_phase: validate_callback!(:on_phase, opt(opts, :on_phase)),
+      on_start: validate_callback!(:on_start, opt(opts, :on_start)),
+      on_scan: validate_callback!(:on_scan, opt(opts, :on_scan)),
+      project: validate_project!(opt(opts, :project))
     }
   end
+
+  # Read option `key` from `opts`, falling back to its `@field_defaults` default — the one place
+  # `new/1`'s defaults come from, so they can't drift from `defstruct`'s. (`:workers` resolves its
+  # `nil` default to `System.schedulers_online/0` at its call site, the lone computed default.)
+  defp opt(opts, key), do: Keyword.get(opts, key, Keyword.fetch!(@field_defaults, key))
 
   # --- validators ----------------------------------------------------------
 

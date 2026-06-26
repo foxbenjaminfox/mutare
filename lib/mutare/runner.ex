@@ -91,8 +91,10 @@ defmodule Mutare.Runner do
   # The per-run invariants threaded to every mutant's `classify/3` and `run_mutant/*`: the one
   # `sandbox`, the coverage `selection`, the timeout `cap`, the umbrella `scopes`, and the
   # initial `retries` budget. Bundled so those functions take this plus the per-task `site`/`env`
-  # rather than a long positional list — and so `retries` can't be swapped by position with the
-  # separate boot-failure budget.
+  # rather than a long positional list — and so the general `retries` budget rides a *named*
+  # field where the public `run_mutant/4` first supplies the two budgets (`ctx.retries` and
+  # `@boot_failure_retries`), which can't then be confused. (The private `run_mutant/6` recursion
+  # does still thread both positionally, but its two recursive calls are local and obvious.)
   defmodule RunCtx do
     @moduledoc false
     @enforce_keys [:sandbox, :selection, :cap, :scopes, :retries]

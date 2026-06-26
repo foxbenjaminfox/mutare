@@ -21,21 +21,17 @@ defmodule Mutare.Config do
   end
 
   @doc """
-  Merge `file_config` with parsed CLI `flags` into resolved options.
+  Merge `file_config` with parsed CLI `flags` into a resolved options keyword list
+  (what `Mutare.Options.new/1` validates). CLI flags win over file config: each set
+  flag is translated to its option key and put over the file value; an unset flag
+  leaves the file's value (or the option default) in place.
 
-  Recognised flags: `:only` (repeatable → `:paths`; each a directory to scan or a
-  single `.ex` file, accumulated in order), `:line` (repeatable → `:only_lines`; a
-  `FILE:LINE` to scope the run to one file:line's mutants), `:exclude` (repeatable →
-  list of glob strings), `:mutators` (CSV → modules),
-  `:min_score`, `:sandbox`, `:keep_sandbox`, `:strict_ignores` (fail on an
-  ineffective `# mutare:ignore`), `:quiet` (suppress the live stderr progress),
-  `:full` (→ `test_selection: :full`),
-  `:baseline_runs`, `:harness_retries`, `:max_harness_error_rate`,
-  `:max_mutants`, `:workers`, `:timeout`, `:timeout_multiplier`,
-  `:partition_db`/`:partition_env` (per-worker DB partition var — the boolean
-  `--partition-db` enables the `MIX_TEST_PARTITION` default, `--partition-env NAME`
-  sets a custom name and wins),
-  `:expand_uses` (`--no-expand-uses` disables `use`-expansion). A bare `:mutators`
+  The recognised flags and what they mean are documented for users in the
+  `Mix.Tasks.Mutare` moduledoc — this is the translation layer, so it records only the
+  mappings that aren't a 1:1 rename: a repeatable `--only` accumulates into `:paths`
+  (each a directory or single `.ex` file, in order), `--line FILE:LINE` into
+  `:only_lines`, `--full` sets `test_selection: :full`, and
+  `--partition-db`/`--partition-env` resolve to `:partition_env`. A bare `:mutators`
   value of `:all` or `:builtins` (or none) resolves to "use the default set" by
   omitting the key, so `Mutare.Transform` picks it; a `:mutators` *list* is resolved
   through `Mutare.Mutators.resolve/1`, where the `:builtins` token expands to every
