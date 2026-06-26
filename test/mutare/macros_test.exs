@@ -91,7 +91,7 @@ defmodule Mutare.MacrosTest do
     end
   end
 
-  describe "Macros.build/2 — merge, precedence, :any fallback" do
+  describe "Macros.build/3 — merge, precedence, :any fallback" do
     test "declarative entries override a built-in of the same key" do
       registry = Macros.build([{Kernel, :match?, 2, :skip}], [])
       assert %Spec{args: :skip} = Macros.lookup(registry, [:Kernel], :match?, 2)
@@ -113,6 +113,16 @@ defmodule Mutare.MacrosTest do
     test "a mutator without macros/0 contributes nothing" do
       specs = Mutator.Spec.for_module(Mutare.Test.BooleanMutator)
       assert Macros.from_mutators([specs]) == []
+    end
+
+    test "an explicit :macros config entry wins over a mutator's macros/0 for the same key" do
+      # QueryMutator registers {Mutare.Test.QueryDSL, :query, 1, :skip}; an explicit config entry
+      # for the same key overrides it (config is the final authority — folded last).
+      specs = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
+      registry = Macros.build([{Mutare.Test.QueryDSL, :query, 1, [:expression]}], [specs])
+
+      assert %Spec{args: [:expression]} =
+               Macros.lookup(registry, [:Mutare, :Test, :QueryDSL], :query, 1)
     end
   end
 
@@ -145,7 +155,7 @@ defmodule Mutare.MacrosTest do
     end
   end
 
-  describe "host stamping (from_mutators/1) and validation (build/2)" do
+  describe "host stamping (from_mutators/1) and validation (build/3)" do
     test "from_mutators stamps the hosting mutator onto every spec it contributes" do
       specs = Mutator.Spec.for_module(Mutare.Test.HostMutator)
       contributed = Macros.from_mutators([specs])
@@ -162,7 +172,7 @@ defmodule Mutare.MacrosTest do
       assert pick.args == [:binding_pattern, :hosted]
     end
 
-    test "build/2 resolves a host-needing macro through a mutator" do
+    test "build/3 resolves a host-needing macro through a mutator" do
       specs = Mutator.Spec.for_module(Mutare.Test.HostMutator)
       registry = Macros.build([], [specs])
 
@@ -170,7 +180,7 @@ defmodule Mutare.MacrosTest do
                Macros.lookup(registry, [:Mutare, :Test, :HostDSL], :filter, 2)
     end
 
-    test "build/2 raises when a declarative entry asks for :hosted/:routing (no host)" do
+    test "build/3 raises when a declarative entry asks for :hosted/:routing (no host)" do
       assert_raise ArgumentError, ~r/needs a hosting mutator/, fn ->
         Macros.build([{Ecto.Query, :where, :any, :routing}], [])
       end
@@ -180,7 +190,7 @@ defmodule Mutare.MacrosTest do
       end
     end
 
-    test "build/2 raises when a mutator registers :hosted but omits host/2" do
+    test "build/3 raises when a mutator registers :hosted but omits host/2" do
       # The host *is* stamped (the contributing mutator), but it doesn't implement `host/2` —
       # the `validate_host!` host-present-but-missing-callback branch, named clearly at build
       # rather than failing cryptically at delivery.

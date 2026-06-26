@@ -159,7 +159,7 @@ defmodule Mutare.Macro.Spec do
 
   @doc """
   Whether `spec`'s static `args` mention a treatment that needs a `host` — a `:hosted`
-  position, or the `:routing` classifier sentinel. Used by `Mutare.Macros.build/2` to
+  position, or the `:routing` classifier sentinel. Used by `Mutare.Macros.build/3` to
   reject a declarative `:macros` entry that asks for hosting it cannot deliver.
   """
   @spec host_required?(t()) :: boolean()

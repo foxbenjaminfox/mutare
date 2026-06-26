@@ -44,7 +44,7 @@ defmodule Mutare.Transform.Resolve do
 
   @doc """
   As `annotate/1`, plus stamp each call that resolves to a **known macro** (in the
-  `registry` built by `Mutare.Macros.build/2`) with its per-argument routing under
+  `registry` built by `Mutare.Macros.build/3`) with its per-argument routing under
   `meta[:mutare_macro]`, so the analyzer routes a pattern/opaque argument correctly
   instead of mutating it. The registry is carried in the env (read-only) and
   consulted at each remote and bare call.
@@ -238,7 +238,7 @@ defmodule Mutare.Transform.Resolve do
   defp reject_piped_hosted!(_spec, _routing, _pipe_mode), do: :ok
 
   # A `:routing` classifier is *not* required to implement `host/2` at build time
-  # (`Mutare.Macros.build/2` only demands `macro_routing/1` of it), because a classifier may
+  # (`Mutare.Macros.build/3` only demands `macro_routing/1` of it), because a classifier may
   # legitimately route every position to `:expression`/`:pattern` and never host. But the moment
   # `macro_routing/1` *does* route a position `:hosted`, the host must be able to deliver it
   # (`host/2`) — otherwise `route_macro_arg/3` leaves the fragment raw and the intended mutation
@@ -316,7 +316,7 @@ defmodule Mutare.Transform.Resolve do
 
   # Tag each `:hosted` treatment with its hosting mutator module — `:hosted` → `{:hosted, host}`
   # — so the analyzer can reach the right `host/2` callback for a hosted argument. The host is
-  # non-nil for a `:hosted`-bearing spec (`Mutare.Macros.build/2` validates it), so a `:hosted`
+  # non-nil for a `:hosted`-bearing spec (`Mutare.Macros.build/3` validates it), so a `:hosted`
   # always carries one. Other treatments pass through untouched.
   defp inject_host(routing, %Spec{host: host}) do
     Enum.map(routing, fn

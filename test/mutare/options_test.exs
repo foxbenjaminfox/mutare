@@ -12,6 +12,7 @@ defmodule Mutare.OptionsTest do
       assert options.paths == ["lib"]
       assert options.exclude == []
       assert options.mutators == nil
+      assert options.plugins == []
       assert options.only_files == nil
       assert options.test_selection == :coverage
       assert options.timeout == nil
@@ -518,6 +519,73 @@ defmodule Mutare.OptionsTest do
 
       assert_raise ArgumentError, ~r/:on_start must be a 1-arity function/, fn ->
         Options.new(on_start: :nope)
+      end
+    end
+  end
+
+  describe ":plugins" do
+    test "defaults to an empty list and resolves plugin modules to specs" do
+      assert Options.new([]).plugins == []
+
+      assert Options.new(plugins: [Mutare.Test.GettextLikePlugin]).plugins ==
+               [%Mutare.Plugin.Spec{module: Mutare.Test.GettextLikePlugin, opts: []}]
+    end
+
+    test "accepts a {module, opts} entry, carrying the opts onto the spec" do
+      assert Options.new(plugins: [{Mutare.Test.GettextLikePlugin, [domain: "errors"]}]).plugins ==
+               [
+                 %Mutare.Plugin.Spec{
+                   module: Mutare.Test.GettextLikePlugin,
+                   opts: [domain: "errors"]
+                 }
+               ]
+    end
+
+    test "rejects a module that does not implement Mutare.Plugin" do
+      assert_raise ArgumentError, ~r/:plugins entries must be loaded modules/, fn ->
+        Options.new(plugins: [Enum])
+      end
+    end
+
+    test "rejects a malformed entry (bad opts shape)" do
+      # The entry-shape dispatch is single-homed in `Mutare.Plugin.Spec.new/1`, so a non-keyword
+      # opts surfaces its message.
+      assert_raise ArgumentError,
+                   ~r/invalid plugin entry: expected a module or a \{module, opts\} pair/,
+                   fn -> Options.new(plugins: [{Mutare.Test.GettextLikePlugin, :not_kw}]) end
+    end
+
+    test "rejects a hand-built spec with non-keyword opts (opts re-checked at the boundary)" do
+      assert_raise ArgumentError, ~r/:plugins entry opts must be a keyword list/, fn ->
+        Options.new(
+          plugins: [%Mutare.Plugin.Spec{module: Mutare.Test.GettextLikePlugin, opts: :garbage}]
+        )
+      end
+    end
+
+    test "rejects a {module, opts} entry whose opts is a non-keyword list" do
+      # `is_list/1` would accept `[:a, :b]` and silently treat it as empty opts; `Keyword.keyword?`
+      # rejects it loudly with the keyword-list message.
+      assert_raise ArgumentError, ~r/:plugins entry opts must be a keyword list/, fn ->
+        Options.new(plugins: [{Mutare.Test.GettextLikePlugin, [:a, :b]}])
+      end
+    end
+
+    test "rejects a mutator listed under :plugins, even one exporting macros/0" do
+      # A macro-aware mutator exports `macros/0`, but it is a `Mutare.Mutator`, not a plugin —
+      # listing it here would merge its routing yet never run its mutations, so it fails loudly.
+      assert_raise ArgumentError, ~r/:plugins entries must be loaded modules/, fn ->
+        Options.new(plugins: [Mutare.Test.QueryMutator])
+      end
+    end
+
+    test "coerces an explicit nil to an empty list (like :macros)" do
+      assert Options.new(plugins: nil).plugins == []
+    end
+
+    test "rejects a non-list" do
+      assert_raise ArgumentError, ~r/:plugins must be a list/, fn ->
+        Options.new(plugins: Mutare.Test.GettextLikePlugin)
       end
     end
   end

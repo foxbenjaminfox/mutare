@@ -61,6 +61,7 @@ defmodule Mutare.Transform.Uses do
   # module and rewrote later bare calls accordingly.)
 
   alias Mutare.AST
+  alias Mutare.Plugin
   alias Mutare.Transform.Aliases
   alias Mutare.Transform.Uses.EnvMirror
   alias Mutare.Transform.Uses.Harvest
@@ -70,7 +71,7 @@ defmodule Mutare.Transform.Uses do
 
   # The module name of a nested `defmodule` we couldn't resolve to a concrete atom (a non-static
   # head, or a child of an already-unresolved parent). Expansion is *skipped* under it — see
-  # `child_module/3` and `stamp/3`.
+  # `child_module/3` and `stamp/4`.
   @unresolved :__mutare_unresolved__
 
   @doc """
@@ -78,12 +79,20 @@ defmodule Mutare.Transform.Uses do
   Sourceror-form `import`/`alias`/`require …, as:` directives it injects (flattened across
   nested `use`s). A `use` that can't be expanded is left untouched.
 
+  `plugins` (the resolved `:plugins` specs, default none) may **override** a `use`'s
+  expansion: a plugin's `c:Mutare.Plugin.expand_use/3` is consulted before in-process
+  expansion, so a `use` whose `__using__` cannot run in the scan process (Gettext registers
+  its backend by mutating the caller and raises) still surfaces its directives. See `Harvest`.
+
   The whole walk runs with `Mix.env()` mirrored to the sandbox env (`:test`) by
   `Mutare.Transform.Uses.EnvMirror`, so an env-sensitive `__using__` is expanded under the env
   the metamutant will compile in, not the scan env.
   """
-  @spec annotate(Macro.t()) :: Macro.t()
-  def annotate(ast), do: EnvMirror.with_sandbox_env(fn -> walk_generic(ast, nil, %{}) end)
+  @spec annotate(Macro.t(), [Plugin.Spec.t() | module() | {module(), keyword()}]) :: Macro.t()
+  def annotate(ast, plugins \\ []) do
+    handlers = Plugin.use_handlers(plugins)
+    EnvMirror.with_sandbox_env(fn -> walk_generic(ast, nil, %{}, handlers) end)
+  end
 
   @doc """
   The harvested directives stamped on a `use` node's meta, or `[]` for any other node. The
@@ -117,20 +126,20 @@ defmodule Mutare.Transform.Uses do
   # that is a **direct module-body statement** is stamped — a `use` nested in a `def` is data /
   # invalid, never a module-level directive, so it is descended without stamping.
 
-  # `walk_generic/3` is the structural descent for any node *except* a module-body statement
-  # sequence: it routes each `defmodule`/`defprotocol`/`defimpl` body to `walk_module_body/3`
+  # `walk_generic/4` is the structural descent for any node *except* a module-body statement
+  # sequence: it routes each `defmodule`/`defprotocol`/`defimpl` body to `walk_module_body/4`
   # (which stamps the `use`s), folds the lexical alias env over a plain block, and otherwise
   # just recurses. It never stamps a `use` itself — one it reaches is nested data, not a
   # module-level directive.
   # `defmodule M`/`defprotocol P` both define a named module scope (`defprotocol P do … end`
   # defines module `P`, and a direct `use` inside it — though rare — is a real directive), so
   # they share one clause, named exactly alike.
-  defp walk_generic({form, meta, [mod_ast, [{do_key, body}]]} = node, module, env)
+  defp walk_generic({form, meta, [mod_ast, [{do_key, body}]]} = node, module, env, handlers)
        when form in [:defmodule, :defprotocol] do
     child = child_module(mod_ast, module, env)
 
     {form, meta,
-     [mod_ast, [{do_key, walk_module_body(body, child, body_env(node, module, env))}]]}
+     [mod_ast, [{do_key, walk_module_body(body, child, body_env(node, module, env), handlers)}]]}
   end
 
   # `defimpl P, for: T do … end` opens a module scope named `P.T` (**absolute** — never
@@ -138,23 +147,23 @@ defmodule Mutare.Transform.Uses do
   # implementation functions. Both `P` and `T` are resolved through the alias env; only a single,
   # statically-resolvable impl module is entered as a stamping scope (`impl_module/3` yields
   # `@unresolved` for a list `for:` or a non-static type, which conservatively skips the stamp).
-  defp walk_generic({:defimpl, meta, [proto, opts, [{do_key, body}]]}, _module, env)
+  defp walk_generic({:defimpl, meta, [proto, opts, [{do_key, body}]]}, _module, env, handlers)
        when is_list(opts) do
     impl = impl_module(proto, for_type(opts), env)
-    {:defimpl, meta, [proto, opts, [{do_key, walk_module_body(body, impl, env)}]]}
+    {:defimpl, meta, [proto, opts, [{do_key, walk_module_body(body, impl, env, handlers)}]]}
   end
 
   # `defimpl P do … end` — the `for:` is inferred from context we don't track, so the impl module
   # is unknown; descend without stamping (the conservative choice — a wrong caller is worse).
-  defp walk_generic({:defimpl, meta, [proto, [{do_key, body}]]}, _module, env) do
-    {:defimpl, meta, [proto, [{do_key, walk_module_body(body, @unresolved, env)}]]}
+  defp walk_generic({:defimpl, meta, [proto, [{do_key, body}]]}, _module, env, handlers) do
+    {:defimpl, meta, [proto, [{do_key, walk_module_body(body, @unresolved, env, handlers)}]]}
   end
 
   # A `quote` block is quoted *data*: a `defmodule … do use Foo end` inside it is only realised
   # if/when the quote is later expanded in some caller's context — it is not a module-level
   # directive of *this* program. Descending would invoke `Foo.__using__` during the scan in the
   # wrong caller context (and could harvest invalid directives), so we stop at quoted contexts.
-  defp walk_generic({:quote, _meta, _args} = node, _module, _env), do: node
+  defp walk_generic({:quote, _meta, _args} = node, _module, _env, _handlers), do: node
 
   # A non-module-body block — the **file top level** (a multi-form file parses as a `:__block__`)
   # or a function body. A `use` here is never a module-level directive (descended, not stamped),
@@ -162,45 +171,47 @@ defmodule Mutare.Transform.Uses do
   # targets (`alias RealUsing, as: U` then `defmodule M do use U end`, which the compiler expands
   # as `RealUsing.__using__`). So the lexical alias env is folded left-to-right here too (source
   # aliases *and* the implicit alias a `defmodule`/`defprotocol` introduces). (A module body is
-  # reached via `walk_module_body/3`, which folds + stamps; this clause never sees one.)
-  defp walk_generic({:__block__, meta, stmts}, module, env) do
+  # reached via `walk_module_body/4`, which folds + stamps; this clause never sees one.)
+  defp walk_generic({:__block__, meta, stmts}, module, env, handlers) do
     {walked, _env} =
       Enum.map_reduce(stmts, env, fn stmt, env ->
-        {walk_generic(stmt, module, env), register_lexical(stmt, module, env)}
+        {walk_generic(stmt, module, env, handlers), register_lexical(stmt, module, env)}
       end)
 
     {:__block__, meta, walked}
   end
 
-  defp walk_generic({form, meta, args}, module, env) when is_list(args),
-    do: {form, meta, Enum.map(args, &walk_generic(&1, module, env))}
+  defp walk_generic({form, meta, args}, module, env, handlers) when is_list(args),
+    do: {form, meta, Enum.map(args, &walk_generic(&1, module, env, handlers))}
 
-  defp walk_generic({left, right}, module, env),
-    do: {walk_generic(left, module, env), walk_generic(right, module, env)}
+  defp walk_generic({left, right}, module, env, handlers),
+    do: {walk_generic(left, module, env, handlers), walk_generic(right, module, env, handlers)}
 
-  defp walk_generic(list, module, env) when is_list(list),
-    do: Enum.map(list, &walk_generic(&1, module, env))
+  defp walk_generic(list, module, env, handlers) when is_list(list),
+    do: Enum.map(list, &walk_generic(&1, module, env, handlers))
 
-  defp walk_generic(other, _module, _env), do: other
+  defp walk_generic(other, _module, _env, _handlers), do: other
 
   # A **module body** statement sequence (the only place a `use` is a directive): its direct
   # statements are module-level, so the alias env is folded left-to-right (a `use` resolves
-  # against the aliases declared above it) and each `use` is stamped (`walk_stmt/3`); everything
-  # else is descended via `walk_generic/3` (to reach nested `defmodule`s).
-  defp walk_module_body({:__block__, meta, stmts}, module, env) do
+  # against the aliases declared above it) and each `use` is stamped (`walk_stmt/4`); everything
+  # else is descended via `walk_generic/4` (to reach nested `defmodule`s).
+  defp walk_module_body({:__block__, meta, stmts}, module, env, handlers) do
     {walked, _env} =
       Enum.map_reduce(stmts, env, fn stmt, env ->
-        node = walk_stmt(stmt, module, env)
+        node = walk_stmt(stmt, module, env, handlers)
         {node, advance_env(stmt, node, module, env)}
       end)
 
     {:__block__, meta, walked}
   end
 
-  defp walk_module_body(stmt, module, env), do: walk_stmt(stmt, module, env)
+  defp walk_module_body(stmt, module, env, handlers), do: walk_stmt(stmt, module, env, handlers)
 
-  defp walk_stmt({:use, _meta, _args} = node, module, env), do: stamp(node, module, env)
-  defp walk_stmt(stmt, module, env), do: walk_generic(stmt, module, env)
+  defp walk_stmt({:use, _meta, _args} = node, module, env, handlers),
+    do: stamp(node, module, env, handlers)
+
+  defp walk_stmt(stmt, module, env, handlers), do: walk_generic(stmt, module, env, handlers)
 
   # Advance the alias env past a statement: fold the lexical aliases it introduces (source
   # `alias`/`require …, as:` plus the implicit alias a nested `defmodule`/`defprotocol` defines),
@@ -274,7 +285,7 @@ defmodule Mutare.Transform.Uses do
   # The full module name of a nested `defmodule`, best-effort: Elixir prepends the enclosing
   # module to a nested alias. A non-static head (`__MODULE__.Child`, `unquote(mod)`, a
   # `Module.concat(…)` call) can't be resolved to a concrete module, so it yields `@unresolved`
-  # and expansion is **skipped** inside that module (see `stamp/3`) rather than run with the wrong
+  # and expansion is **skipped** inside that module (see `stamp/4`) rather than run with the wrong
   # `__CALLER__.module` — a `__using__` that derives imports/aliases from `__CALLER__.module`
   # would otherwise stamp directives for the *parent's* namespace. The sentinel propagates inward
   # (an unresolved parent ⇒ unresolved child). A leading `Elixir` segment (`defmodule Elixir.Bar`)
@@ -323,17 +334,18 @@ defmodule Mutare.Transform.Uses do
   # --- stamping the harvest onto the `use` node's meta -----------------------
   #
   # The in-process expansion that *produces* the harvest lives in `Mutare.Transform.Uses.Harvest`;
-  # here we only run it (`Harvest.run/3`) and write its `{directives, behaviours}` result onto the
+  # here we only run it (`Harvest.run/4`) and write its `{directives, behaviours}` result onto the
   # node's meta under the keys the public readers (`directives/1`, `injected_behaviours/1`) read.
 
   # Stamp the `use` node with its harvested directives, or return it unchanged. Never raises:
   # any expansion failure degrades to `[]` (the current, unresolved behaviour). A `use` inside a
   # module whose name we couldn't resolve is left unexpanded — expanding it would run `__using__`
-  # with the wrong (parent) caller module.
-  defp stamp(node, @unresolved, _env), do: node
+  # with the wrong (parent) caller module. `handlers` are the plugin `use`-expansion overrides
+  # (`Mutare.Plugin.use_handlers/1`), consulted by `Harvest.run/4` before in-process expansion.
+  defp stamp(node, @unresolved, _env, _handlers), do: node
 
-  defp stamp({:use, meta, args} = node, module, env) do
-    {directives, behaviours} = Harvest.run(node, module, env)
+  defp stamp({:use, meta, args} = node, module, env, handlers) do
+    {directives, behaviours} = Harvest.run(node, module, env, handlers)
 
     meta =
       meta

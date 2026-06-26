@@ -27,6 +27,7 @@ defmodule Mutare.Options do
           exclude: [String.t()],
           mutators: [Mutare.Mutator.Spec.t()] | nil,
           macros: [Mutare.Macro.Spec.t()],
+          plugins: [Mutare.Plugin.Spec.t()],
           expand_uses: boolean(),
           only_files: MapSet.t() | nil,
           only_lines: MapSet.t() | nil,
@@ -64,6 +65,7 @@ defmodule Mutare.Options do
     exclude: [],
     mutators: nil,
     macros: [],
+    plugins: [],
     expand_uses: true,
     only_files: nil,
     only_lines: nil,
@@ -159,6 +161,7 @@ defmodule Mutare.Options do
       exclude: validate_string_list!(:exclude, opt(opts, :exclude)),
       mutators: validate_mutators!(opt(opts, :mutators)),
       macros: validate_macros!(opt(opts, :macros)),
+      plugins: validate_plugins!(opt(opts, :plugins)),
       expand_uses: validate_expand_uses!(opt(opts, :expand_uses)),
       only_files: validate_only_files!(opt(opts, :only_files)),
       only_lines: validate_only_lines!(opt(opts, :only_lines)),
@@ -265,6 +268,19 @@ defmodule Mutare.Options do
   defp validate_macros!(other) do
     raise ArgumentError, ":macros must be a list of macro entries, got: #{inspect(other)}"
   end
+
+  # `:plugins` (default `[]`) lists `Mutare.Plugin` entries — third-party extensions that
+  # contribute known-macro routing (`macros/0`) and/or `use`-expansion overrides
+  # (`expand_use/3`), e.g. a Gettext integration. Each entry is a bare module or a
+  # `{module, opts}` pair (opts delivered to `expand_use/3`'s context), resolved to a
+  # `Mutare.Plugin.Spec`; the module must be a loaded plugin. Resolution is by reflection (a
+  # plugin module *is* on the Mutare process path, unlike a `:macros` module which is only
+  # named). `Mutare.Plugin.validate!/1` is the single home for the check — shared with
+  # `Mutare.Transform`, so a non-plugin fails loudly on either entry path. Plugins are not
+  # mutators — they make the built-in mutators' work land, never produce mutations themselves.
+  # An explicit `nil` (like `:macros`) means "none", coerced to `[]` rather than raising.
+  defp validate_plugins!(nil), do: []
+  defp validate_plugins!(plugins), do: Mutare.Plugin.validate!(plugins)
 
   # `:expand_uses` (default `true`) toggles the `use`-expansion pre-pass
   # (`Mutare.Transform.Uses`) that surfaces `import`/`alias` hidden behind `use`. `false`

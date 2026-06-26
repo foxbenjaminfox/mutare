@@ -280,7 +280,7 @@ end
 defmodule Mutare.Test.IncompleteHostMutator do
   @moduledoc """
   A host mutator that registers a **static** `:hosted` macro argument but **forgets** to
-  implement `c:Mutare.Mutator.host/2`. Used to prove `Mutare.Macros.build/2` rejects an
+  implement `c:Mutare.Mutator.host/2`. Used to prove `Mutare.Macros.build/3` rejects an
   un-deliverable hosting registration at *build* time (the `validate_host!/3` host-present-but-
   missing-callback branch), rather than failing cryptically at delivery later.
   """

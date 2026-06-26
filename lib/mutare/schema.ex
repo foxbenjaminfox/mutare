@@ -252,23 +252,30 @@ defmodule Mutare.Schema do
     end
   end
 
-  # Forward `:mutators` (when set) and `:macros` to the transform. A `nil` `:mutators`
-  # lets `Mutare.Transform` use its default set (we never hard-code that default here);
-  # when set it carries the resolved `Mutare.Mutator.Spec`s — including any `{module, opts}`
-  # config (e.g. a mutator's `call_option_keys: false`). `:macros` carries the resolved
-  # `Mutare.Macro.Spec`s (known-macro argument routing), `[]` when none; the transform
-  # merges them with the built-ins and any enabled mutator's `macros/0`. `:expand_uses`
-  # carries the `use`-expansion toggle (default `true`).
-  defp transform_opts(%Options{mutators: mutators, macros: macros, expand_uses: expand_uses}) do
+  # Forward `:mutators` (when set), `:macros`, and `:plugins` to the transform. A `nil`
+  # `:mutators` lets `Mutare.Transform` use its default set (we never hard-code that default
+  # here); when set it carries the resolved `Mutare.Mutator.Spec`s — including any
+  # `{module, opts}` config (e.g. a mutator's `call_option_keys: false`). `:macros` carries the
+  # resolved `Mutare.Macro.Spec`s (known-macro argument routing), `[]` when none; `:plugins`
+  # carries the `Mutare.Plugin` modules (their `macros/0` + `use`-expansion overrides); the
+  # transform merges all of these with the built-ins and any enabled mutator's `macros/0`.
+  # `:expand_uses` carries the `use`-expansion toggle (default `true`).
+  defp transform_opts(%Options{
+         mutators: mutators,
+         macros: macros,
+         plugins: plugins,
+         expand_uses: expand_uses
+       }) do
     mutator_opts = if mutators == nil, do: [], else: [mutators: mutators]
 
     # `macro_opts`'s `if false` mutant is equivalent (`[macros: []]` behaves as no `:macros`), but
     # `if true` is a real kill (macros then never reach the transform) on the same [conditional]
     # family/line — so it is deliberately *not* ignored (a line filter would hide the kill).
     macro_opts = if macros == [], do: [], else: [macros: macros]
+    plugin_opts = if plugins == [], do: [], else: [plugins: plugins]
 
     # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
-    mutator_opts ++ macro_opts ++ [expand_uses: expand_uses]
+    mutator_opts ++ macro_opts ++ plugin_opts ++ [expand_uses: expand_uses]
   end
 
   defp finalize(%__MODULE__{} = schema) do

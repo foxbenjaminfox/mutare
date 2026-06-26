@@ -1433,6 +1433,174 @@ be fragile. The bug was invisible precisely because the degradation is silent, s
 raiser that mirrors Gettext) in `uses_test.exs` asserts the siblings survive and only the raiser's own
 directive is dropped.
 
+### Plugin `use`-expansion override (`Mutare.Plugin`) `[done]`
+
+**Charter (the in/out rule, pinned).** A plugin teaches Mutare a library's **compile-time vocabulary**
+— how to *resolve and route* the constructs the built-in mutators encounter — and **never participates
+in the run, verdict, or score**. The defining axis is **vocabulary vs. judgment**, *not* compile-vs-
+runtime: in = macro routing, `use`-expansion, block-macro treatment, opaque-literal declarations (act
+*at* mutant generation); out = coverage/test-selection, exonerating an equivalent survivor, scoring,
+reporting (read a run or *weigh* a generated mutant). The subtlety that makes the axis load-bearing:
+both sides change the mutant *set* (a `:skip` removes mutants), so "affects the score" is not the test;
+and "compile-time" alone is too weak, since statically proving a mutant equivalent is compile-time yet
+*judges* a generated mutant — so it's **out**. The doc leads with the capability, not "third-party"
+(which is *incidental* — the built-in `Kernel.match?`/`destructure` routings are the same vocabulary,
+first-party). **Naming:** kept top-level `Mutare.Plugin` rather than `Mutare.Plugin.Compile`. A
+`.Compile`/`.Runtime` split would (a) encode the *wrong* axis (compile-vs-runtime, not vocabulary-vs-
+judgment) and invite the exact misread the charter forbids, (b) name for an unknown sibling that may
+never exist and may not even be cleanly "runtime" (a coverage strategy spans transform-time
+instrumentation + runtime readout), and (c) break the established convention of capability-named *peers*
+(`Mutare.Mutator` is top-level, not `Plugin.Mutator`). If a judgment-side extension point ever lands, it
+gets its own capability name as a peer (`Mutare.Reporter`/`Mutare.CoverageSource`/…), not a `Plugin.*`
+child. The charter — not the name — is what pins the boundary.
+
+The "degrades, never errors" stance keeps the build alive when a `use` can't be expanded, but it leaves
+a real hole that **Gettext** falls straight into, and the hole is structural — not a bug to patch but a
+limit of in-process expansion. `use Gettext, backend: MyApp.Gettext` injects `import Gettext.Macros`
+(the `gettext`/`ngettext`/… macros, as **bare** calls whose msgid arguments must be compile-time
+literals). Two failures **compound**: (1) Gettext's `__using__` registers its backend by
+`Module.put_attribute` on `__CALLER__.module`, which **raises** against the already-compiled caller the
+pre-pass expands under (the `CallerMutatingUsing` story above), so in-process expansion harvests *nothing*
+— `import Gettext.Macros` never becomes visible, the bare `gettext` calls never resolve; and (2) even with
+the import visible, a registered `{Gettext.Macros, :gettext, :skip}` only fires once the call **resolves**
+to that module, and `# mutare:ignore` can't save us either (it's applied *after* render, so it can't stop
+the selector splice that poisons). So the user *wants* to mark the macros `:skip` but **can't make the
+registration take effect** — the resolution it keys on depends on the very expansion that failed. Deadlock.
+
+**Why this is a plugin, not a core special-case.** The fix has to (a) supply the `import` the failing
+`__using__` would have, and (b) route each macro's literal positions `:skip` while *mutating* the runtime
+ones (`ngettext`'s count, a bindings map — great signal we'd otherwise lose to a blanket skip). Both are
+**library knowledge** (Gettext's macro table, its backend wiring), so they belong in a `mutare_gettext`
+package, not in Mutare core. `Mutare.Plugin` is the extension point: a module listed under `:plugins`
+that contributes *registrations* without being a mutator (no `name/0`, no mutation producer, never in a
+report — it only makes the built-in mutators land). Two optional callbacks, a module is a plugin if it
+exports either:
+- **`macros/0`** (a *registration*) — identical to a mutator's; collected by `Macros.from_plugins/1`
+  (a shared `collect_macros/1` with `from_mutators/1`, host-stamped the same way) and **merged** by
+  `build/3`. Opts-independent (a static library fact).
+- **`expand_use(used_module, args, context) -> Mutare.Plugin.Expansion.t() | :decline`** (a
+  *decision*) — the `use`-expansion override, **first-non-`:decline`-wins**. `context` is a map
+  carrying the caller `:module` + the plugin's `:opts`; the return is a struct (`%Expansion{directives,
+  behaviours}`, built by `Plugin.expand/2`).
+
+**API-surface decisions (locking the third-party boundary before there are external plugins).** The
+callbacks divide by **kind**, and the kind fixes both combination and configuration: a *registration*
+(`macros/0`) **merges** across plugins and ignores opts (it declares library facts); a *decision*
+(`expand_use`) is **first-win** and reads opts — exactly mirroring mutators (`opts` reach `mutate/2`,
+never `macros/0`). Three deliberate future-proofing choices fell out: (1) `expand_use` takes a
+**`context` map** (`:module` + `:opts`) rather than more positional args — the map gains keys without
+an arity bump, and `:module` is real parity (in-process expansion already threads the caller module/
+aliases for a `__CALLER__`-dependent `__using__`; a plugin replacing it deserves the same). (2) It
+returns a **struct** (`Mutare.Plugin.Expansion`), not a `{:ok, …}` tuple — a new field is a default,
+not a breaking widen. (3) `:plugins` entries accept **`{module, opts}`** (resolved to
+`Mutare.Plugin.Spec`, the plugin twin of `Mutator.Spec`), so a plugin is configurable like a mutator.
+`macros/0` deliberately **stayed arity-0**: the registry is built once, globally, before any file is
+walked — there is no per-file "module it's registering for", and per-*call* routing variation is
+already served by the `:routing` classifier (`macro_routing/1` sees the call node). A `context` there
+would be a global-vs-per-call category error; YAGNI.
+
+**Where the override hooks in (and why there).** `Harvest.run/4` is the one site that both resolves the
+`use` *target* and decides expansion, so the dispatch lives there, not in the recursive `Uses` walk. The
+old `standardize/2` coupled module-resolution with the **static-literal opts gate** — fatal here, since
+Gettext's `backend:` is a module alias, *not* a literal, so the gate would `:error` before any plugin
+could be asked. Split it: `target/2` alias-resolves the module and returns the **raw** args (no gate);
+plugins are consulted first via `Plugin.expand_use/4`; only on `:decline` does `in_process/4` apply the
+opts gate + `Code.ensure_loaded?` + expand. The plugin path needs *neither* gate (it never invokes
+`__using__`, so it asserts the directives rather than deriving them). Its returned directives are
+standard-quoted (from `quote`), so they ride the **same** `normalize/1`
+(`Macro.to_string |> Sourceror.parse_string!`) as a harvested directive and arrive as the Sourceror form
+`Resolve.register/2` folds — zero new register clauses. The nested-`use` recursion (`collect/7`, formerly
+`/6`) is now **also** plugin-aware: `handlers` thread through `in_process → expand_and_collect → collect`,
+and `collect`'s `use` clause consults the plugins *first* (via `use_target/2` — the raw-args, no-gate
+nested twin of `target/2`) before falling back to in-process (`nested_in_process/7`, which keeps the
+gate + loadability check). This is the **positive fix for the Phoenix integration point**: `use MyAppWeb,
+:html` expands to a body that itself does `use Gettext, …`, so the override has to reach a *nested* `use`,
+not just a directly-written top-level one — the original "internal `use`s stay in-process" boundary
+silently defeated the motivating case (the bare `gettext` calls never resolved, the msgids poisoned the
+build). A plugin override of a nested `use` returns `collect/7`-shape items (`plugin_items/2`): directives
+left standard-quoted for `in_process/5`'s final `normalize`, behaviours as `{:mutare_behaviour, atom}`
+tuples. (Cycle/depth caps still backstop a genuinely recursive in-process chain; a plugin override is
+terminal for its `use`, so it adds no recursion.)
+
+**Dispatch + safety.** `Plugin.expand_use/4` is **first-non-`:decline`-wins** over the ordered `:plugins`,
+each handler call wrapped (`safe_expand/4`). The boundary is **`:decline` is the only opt-out; every other
+outcome is loud.** A plugin *bug* — whether a return that is neither `%Expansion{}` nor `:decline` (a
+non-list `Mutare.Plugin.expand/2` call lands here too), or a **raise/throw/exit** from `expand_use/3` — is a
+*misconfiguration* (a broken installed plugin, not a property of the target), so it surfaces as
+`Mutare.Plugin.ContractError` **loudly** (like `validate!/1` on a non-plugin module): a malformed return
+raises it directly, a raise/throw is *wrapped* in it (original cause in the message, stacktrace preserved).
+That single type rides *through* `Harvest`'s otherwise-catch-all rescue (via a dedicated
+`e in ContractError -> reraise` clause at every layer) up to `Schema`, which re-raises it — while the
+*target*'s own un-expandable `use` (a raising `__using__`, a non-static head) still degrades silently, the
+behaviour that boundary exists to provide. **Why loud, not isolated** (the deliberate choice): an earlier
+design swallowed a raising handler to `:decline`, but that is indistinguishable from a deliberate decline —
+a plugin silently doing nothing for every run, the worst failure mode for a tool whose job is to *not* miss
+mutants. A plugin author's only fall-through is an explicit `:decline`; `nil` (an `if` with no `else`), a
+crash, or junk all fail the run with a message naming the culprit. (`Harvest`'s rescue still absorbs target
+failures, so a missing/raising plugin can't sink a scan — only a plugin that is *present and broken* does.)
+An **empty** `%Expansion{}` is *not* a failure — it is a deliberate "handle and inject nothing" that still
+wins first-non-`:decline` (a plugin wanting to fall through must return `:decline`). The dispatcher merges **each handler's own `:opts`** into the shared `context` before the call,
+so a `{module, opts}` plugin reads its config in `expand_use/3`. `use_handlers/1` `Code.ensure_loaded?`s
+each module before `function_exported?` (false on a not-yet-loaded module — an order-dependent footgun
+the standalone tests caught) and resolves each entry to a `Plugin.Spec`.
+
+**Threading + validation.** `:plugins` is an `Options` field (default `[]`) that resolves to
+`Mutare.Plugin.Spec`s (bare module → empty opts; `{module, opts}` → carried opts), validated by
+`Plugin.plugin?/1` — **reflection-based** (loaded + exports a plugin callback), unlike `:macros`'s
+syntactic validation, because a plugin module genuinely *is* on the Mutare process path (it's a dep of the
+target, like a custom mutator), whereas a `:macros` entry only names a possibly-absent module. `Schema`
+forwards the specs; `Transform` threads the plugin **specs** into both `Macros.build/3` (which reads each
+spec's `.module` — registration is opts-independent, so `Macros` ignores the opts) and `Uses.annotate/2`
+(so `opts` reach `expand_use/3` via context). `Macros.from_plugins/1` accepts specs *or* bare modules
+(extracting the module from each, mirroring `from_mutators/1`), and **rejects** a plugin `macros/0` that
+declares a `:hosted`/`:routing` treatment — a plugin produces no mutations, so it can't host one (a
+plugin-specific error, rather than `build/3`'s generic `validate_host!` mislabeling the plugin a "hosting
+mutator"). Plugin behaviours are kept **atoms-only** (`normalize_behaviours/1` filters to concrete module
+atoms, dropping a stray quoted node / junk / the degenerate `nil`/`true`/`false`) per the
+`Expansion` `behaviours: [module()]` contract — *not* alias-resolved against an empty env, which would
+silently mis-resolve a single-segment or aliased node to the wrong module.
+It's `.mutare.exs`-only (no CLI flag) — plugins are modules, and the intended UX is an **Igniter installer**
+that writes the one `:plugins` entry on detecting the library (the "without editing config" goal), so a
+console string flag earns nothing.
+
+**Scope decision — tied to `:expand_uses`.** When `--no-expand-uses` freezes the pre-pass, plugin overrides
+are frozen with it (the whole `Uses.annotate` is skipped). Defensible: `--no-expand-uses` means "no `use`
+magic at all," and it's a debug/count-pinning flag. Making explicit plugin overrides independent of the
+heuristic in-process expansion is a possible refinement, deferred.
+
+**Merge precedence — explicit config is the final authority.** `build/3` folds **built-ins → mutator
+`macros/0` → plugin `macros/0` → declarative `:macros`** (`Map.put`, later wins), so a `.mutare.exs`
+`:macros` entry overrides *both* a mutator's and a plugin's registration for the same
+`{module, name, arity}`; among the code extensions a plugin wins a tie over a mutator. The earlier order
+folded config *first* (weakest), which let an installed plugin silently override a user's explicit
+routing — a footgun. Folding config last fixes it under the rule "the user's explicit config is always
+the final say." The accepted cost: config now also outranks a *mutator's* macro registration, so a user
+who explicitly writes `{Ecto.Query, :from, :expression}` can un-skip a DSL its mutator needs left raw —
+but that's a deliberate, explicit opt-in, and the poison backstop still catches a bad override at compile
+time. (The alternative — let code extensions outrank config — was rejected: explicit user intent losing
+to an *installed dependency* is the more surprising failure.)
+
+**Three robustness guards on the override path** (small, each closing a gap a review surfaced):
+`target/2` guards `not is_nil(mod)` — `Aliases.resolve_node/2` returns `nil` (itself an atom) for an
+unresolvable target, so a bare `is_atom` would hand a `nil` module to every plugin's `expand_use/3`
+(harmless on the in-process path, but a plugin with an unguarded catch-all clause would fire on a `use`
+it can't see). `from_plugin/2` runs plugin-injected behaviours through `normalize_behaviours/1`
+(`Aliases.resolve_node` each, drop the un-resolvable) so only concrete module atoms reach the behaviour
+set — matching the in-process harvest, where a non-atom would silently match no `@behaviour`.
+`flatten_directive/1` **recurses** through nested `__block__`s, so a block-in-a-block (a legal if unusual
+`Macro.t()` a plugin might `quote`) flattens to its leaf directives rather than surfacing an inner
+`__block__` that `register/2` would drop.
+
+**Superseded alternative.** An earlier idea was to match a registered `:skip` macro by **bare name** on an
+*unresolved* call (sound because `:skip` only ever *removes* mutation, never poisons). The override is
+strictly better: it produces *real* resolution, which enables **per-position** routing (mutate the count,
+skip only the msgid) that a name-only skip can't do safely — so we built the override and dropped the
+bare-name path. Tested in `plugin_test.exs` (dispatch, macro merge, the config-over-mutator precedence,
+the `Uses` override surfacing the directive a raising `__using__` can't, a 3-tuple `@behaviour` injection
+normalized to module atoms, and end-to-end per-position routing through `transform_string`) with
+`test/support/plugin_fixtures.ex` (`GettextLike` + its raising caller-mutating `__using__`,
+`GettextLikeMacros`, `GettextLikePlugin`, `BlockDirectivePlugin`, `BehaviourPlugin`).
+
 ### Behaviour detection — `@behaviour` set per module, surfaced to custom mutators `[done]`
 A custom mutator often wants to fire *only* inside modules of a kind — the motivating case a
 GenServer mutator that swaps a `handle_call` `{:reply, r, s}` to `{:noreply, s}`. The signal is the

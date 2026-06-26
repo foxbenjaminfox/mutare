@@ -184,10 +184,15 @@ defmodule Mutare.Transform do
       `{module, name, treatment}`, see `Mutare.Macros`) that route a macro's
       arguments specially; merged with the built-ins and any enabled mutator's
       `macros/0`. Defaults to `[]`.
+    * `:plugins` — list of `Mutare.Plugin` entries (third-party extensions), each a
+      bare module or a `{module, opts}` pair. Their `macros/0` registrations merge into
+      the macro registry and their `expand_use/3` overrides feed `use`-expansion (the
+      plugin's `opts` ride along to `expand_use/3`'s context). Defaults to `[]`.
     * `:start_id` — first mutant id to assign (default `1`)
     * `:expand_uses` — when `true` (the default), expand module-level `use` statements with
       static args and feed their injected `import`/`alias` directives into resolution (see
-      `Mutare.Transform.Uses`); `false` freezes the pre-expansion behaviour
+      `Mutare.Transform.Uses`); `false` freezes the pre-expansion behaviour (and, with it, any
+      plugin `use`-expansion overrides)
   """
   @spec transform_string(String.t(), keyword()) :: {String.t(), [Site.t()], pos_integer()}
   def transform_string(source, opts \\ []) when is_binary(source) do
@@ -224,12 +229,24 @@ defmodule Mutare.Transform do
         analysis_mutators: enrich_mutators(ctx.mutators, ctx.behaviours)
     }
 
+    # Third-party plugins (`Mutare.Plugin`): their `macros/0` extends the registry below and
+    # their `expand_use/3` overrides `use`-expansion. Not mutators — they make the built-in
+    # mutators' work land on a library's DSL (the Gettext case). Validated + resolved here at the
+    # boundary (like `:mutators` above) to `Mutare.Plugin.Spec`s — carrying each plugin's `opts`,
+    # delivered to `expand_use/3`'s context — so a non-plugin entry fails loudly rather than being
+    # silently dropped by the downstream per-callback filters. `Mutare.Options` validates the same
+    # way, so the `Mutare.run/2` path is covered too.
+    plugins = opts |> Keyword.get(:plugins, []) |> Mutare.Plugin.validate!()
+
     # The known-macro registry (`Mutare.Macros`): built-ins (`Kernel.match?`/`destructure`)
-    # merged with the declarative `:macros` option and any enabled mutator's `macros/0`. It
-    # tells the resolution pass how to route a recognised macro's arguments (a pattern, an
-    # opaque DSL body). Built from the resolved mutator specs in `ctx`, so a library's mutator
-    # auto-registers the macros it relies on.
-    macros = Mutare.Macros.build(Keyword.get(opts, :macros, []), ctx.mutators)
+    # merged with the declarative `:macros` option, any enabled mutator's `macros/0`, and any
+    # enabled plugin's `macros/0`. It tells the resolution pass how to route a recognised
+    # macro's arguments (a pattern, an opaque DSL body). Built from the resolved mutator specs
+    # in `ctx`, so a library's mutator/plugin auto-registers the macros it relies on. The plugin
+    # *specs* are passed straight through (`build/3` reads each's `macros/0`); a `macros/0`
+    # registration is opts-independent (a library fact), so the `opts` they carry are ignored there
+    # and ride along separately to `expand_use/3`'s context.
+    macros = Mutare.Macros.build(Keyword.get(opts, :macros, []), ctx.mutators, plugins)
 
     # Resolve `alias`es and `import`s in one lexical pass (`Mutare.Transform.Resolve`),
     # stamping each call with the module it refers to, so the call-matching mutators recognise
@@ -245,7 +262,7 @@ defmodule Mutare.Transform do
     # calls (and DSL macros) that depend on it. Stamps only meta, so `parsed` stays usable for
     # the ignore scan; degrades to a no-op when a `use` can't be expanded.
     expanded =
-      if Keyword.get(opts, :expand_uses, true), do: Uses.annotate(parsed), else: parsed
+      if Keyword.get(opts, :expand_uses, true), do: Uses.annotate(parsed, plugins), else: parsed
 
     # Gather each module's `@behaviour` set (direct + `use`-injected) and stamp it on the
     # `defmodule` nodes (`Mutare.Transform.Behaviours`), so a behaviour-aware custom mutator
