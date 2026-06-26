@@ -1518,10 +1518,13 @@ machinery can't see the macro (a `use`-injected import Mutare can't expand, an a
 The whole thing is **two wildcards in the existing positional grammar** — no new tuple shapes, almost
 no new code. The glob atom **`:*`** (`Spec.wildcard/0`) means "match anything" in any slot:
 `{Mod, :*, t}` is whole-module (name wildcard), `{:*, name, t}` is name-only (module wildcard), and in
-the *arity* slot `:*` is a synonym for the canonical `:any`. Why `:*` and not `:any`: a real macro can
-be named `any` (a collision — is `{Mod, :any, …}` the macro `any` or the wildcard?), but **nothing can
-be named `*`** — `:*` is a valid atom yet an impossible macro/module name, so it's an unambiguous,
-escaping-free sentinel. (We asked; `:*` was chosen over `:_` for glob-obviousness.)
+the *arity* slot `:*` is a synonym for the canonical `:any`. Why `:*` and not `:any`: `any` is a
+perfectly ordinary macro name (a real collision — is `{Mod, :any, …}` the macro `any` or the wildcard?),
+whereas `*` is a *vanishingly unlikely* one. Note `*` is **not** an impossible name — it's the
+multiplication operator `Kernel.*/2`, `defmodule :*` compiles, and a metaprogrammed `def unquote(:*)`
+works — but nothing registers the `*` operator as a known macro (operator handling is out of scope), so
+in practice `:*` never collides: a near-impossible, escaping-free sentinel rather than a strictly
+impossible one. (We asked; `:*` was chosen over `:_` for glob-obviousness.)
 
 Where the code actually changed:
 

@@ -32,9 +32,12 @@ defmodule Mutare.Macro.Spec do
       the module-resolution machinery can't see the macro's module (a `use`-injected import Mutare
       can't expand, an alias it can't follow); it is **not** the standard way to register a macro.
 
-  `:*` can never collide with a real macro or module name (none can be named `*`), so it is an
-  unambiguous sentinel. Wildcarding *both* module and name (`{:*, :*, …}`) is rejected — that
-  would route every macro everywhere.
+  `:*` is a *practically* collision-free sentinel — not a strictly impossible name. `*` *can*
+  name a macro, function, or module: it is the multiplication operator `Kernel.*/2`, `defmodule :*`
+  compiles, and a metaprogrammed `def unquote(:*)` works. But nobody registers the `*` operator as
+  a known macro (operator handling is out of scope here), so in practice `:*` never collides —
+  unlike `:any`, which is an ordinary, idiomatic identifier. Wildcarding *both* module and name
+  (`{:*, :*, …}`) is rejected — that would route every macro everywhere.
 
   Lookup is **most-specific-wins** (see `Mutare.Macros.lookup/4`), so a specific
   `{Module, name, arity}` entry overrides a whole-module one, which overrides a name-only one;
@@ -113,8 +116,11 @@ defmodule Mutare.Macro.Spec do
 
   @treatments [:expression, :pattern, :binding_pattern, :skip, :hosted]
 
-  # The glob wildcard atom. Means "match anything" in the module, name, or arity slot —
-  # `*` is not a legal macro or module name, so it can never collide with a real one.
+  # The glob wildcard atom. Means "match anything" in the module, name, or arity slot.
+  # Chosen as a sentinel because `*` is a vanishingly unlikely identifier to register — it *can*
+  # name a macro/function/module (`Kernel.*/2`, `defmodule :*`, a metaprogrammed `def unquote(:*)`
+  # all compile), but nothing registers the `*` operator as a known macro, so it never collides
+  # in practice (unlike `:any`, an ordinary name).
   @wildcard :*
 
   @doc """

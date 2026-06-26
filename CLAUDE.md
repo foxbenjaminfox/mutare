@@ -880,7 +880,9 @@ contract between them is the whole game.
   name-only entry fires even when the resolved `module_key` is `nil` (an unresolvable bare call —
   exactly its purpose; no `Resolve` change, the cascade does it). `Spec.new/4` rejects the two
   nonsensical combos (both module *and* name `:*`; a name-`:*` entry pinned to a real arity, which the
-  cascade would never reach). `:*` can't collide with a real macro/module name, so it needs no escaping.
+  cascade would never reach). `:*` is a *practically* collision-free sentinel (`*` *can* name a
+  macro/module — it's `Kernel.*/2`, and `defmodule :*` / a metaprogrammed `def unquote(:*)` compile —
+  but nothing registers the operator as a known macro), so it needs no escaping.
   `:skip` is also "owned only by a custom mutator": core skips the args, but the whole node is still
   offered to every mutator, so the registering mutator fires. The stamp is honoured on **both**
   routing paths: the generic runtime clause *and* the **module-level macro-block** path
