@@ -341,8 +341,9 @@ defmodule Mutare.TransformTest do
     test "runtime: baseline keeps the verbatim capture's identity; the mutant is a real external fun" do
       source = "defmodule Mutare.CaptureRuntimeFixture do\n  def fun, do: &String.first/1\nend\n"
       {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
-      assert_compiles(meta)
-      mod = Mutare.CaptureRuntimeFixture
+      # Bind the module from the compile result (not a literal) so the compiler can't
+      # constant-fold a reference to a not-yet-defined module into an "undefined" warning.
+      [{mod, _}] = assert_compiles(meta)
       site = Enum.find(sites, &(&1.mutator == :string_call))
 
       Selector.put(Selector.baseline())
@@ -907,11 +908,11 @@ defmodule Mutare.TransformTest do
       """
 
       {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
-      assert_compiles(meta)
+      [{mod, _}] = assert_compiles(meta)
 
       Selector.put(Selector.baseline())
       Process.put(:order, [])
-      Mutare.HoistOrderFixture.run()
+      mod.run()
       assert Enum.reverse(Process.get(:order)) == [:lhs, :binding]
     after
       Selector.put(Selector.baseline())
@@ -931,8 +932,7 @@ defmodule Mutare.TransformTest do
       """
 
       {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
-      assert_compiles(meta)
-      mod = :"Elixir.Mutare.HoistRuntimeFixture"
+      [{mod, _}] = assert_compiles(meta)
 
       true_id = Enum.find(sites, &(&1.mutated_code == "true")).id
       false_id = Enum.find(sites, &(&1.mutated_code == "false")).id
@@ -968,11 +968,11 @@ defmodule Mutare.TransformTest do
       """
 
       {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
-      assert_compiles(meta)
+      [{mod, _}] = assert_compiles(meta)
 
       Selector.put(Selector.baseline())
-      assert Mutare.HoistExprPosFixture.f(n: 5) == {10, 5}
-      assert Mutare.HoistExprPosFixture.f([]) == {0, nil}
+      assert mod.f(n: 5) == {10, 5}
+      assert mod.f([]) == {0, nil}
     after
       Selector.put(Selector.baseline())
     end
@@ -991,11 +991,11 @@ defmodule Mutare.TransformTest do
       """
 
       {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
-      assert_compiles(meta)
+      [{mod, _}] = assert_compiles(meta)
 
       Selector.put(Selector.baseline())
-      assert Mutare.HoistArgPosFixture.f(n: 5) == 5
-      assert Mutare.HoistArgPosFixture.f([]) == nil
+      assert mod.f(n: 5) == 5
+      assert mod.f([]) == nil
     after
       Selector.put(Selector.baseline())
     end
@@ -1116,8 +1116,7 @@ defmodule Mutare.TransformTest do
       """
 
       {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
-      assert_compiles(meta)
-      mod = Mutare.HoistInCallRuntime
+      [{mod, _}] = assert_compiles(meta)
 
       true_id = Enum.find(sites, &(&1.mutated_code == "true")).id
       false_id = Enum.find(sites, &(&1.mutated_code == "false")).id
@@ -4304,7 +4303,7 @@ defmodule Mutare.TransformTest do
                Enum.sort_by(sites, & &1.id)
 
       assert meta =~ "def f(mutare_arg1) do"
-      assert [{H, _}] = Code.compile_string(meta)
+      assert [{H, _}] = Mutare.Test.Compile.string(meta)
     end
 
     test "both the key and the value of a map pattern mutate (%{1 => 2})" do
@@ -4317,7 +4316,7 @@ defmodule Mutare.TransformTest do
       assert MapSet.new(sites, &{&1.original_code, &1.mutated_code}) ==
                MapSet.new([{"1", "2"}, {"1", "0"}, {"2", "3"}, {"2", "1"}, {"2", "0"}])
 
-      assert [{H, _}] = Code.compile_string(meta)
+      assert [{H, _}] = Mutare.Test.Compile.string(meta)
     end
 
     test "a key mutation that would duplicate a sibling key is dropped (not poisoned)" do
@@ -4336,7 +4335,7 @@ defmodule Mutare.TransformTest do
       refute MapSet.member?(pairs, {"0", "1"})
 
       # The proof it mattered: the metamutant compiles (a duplicate key would not).
-      assert [{H, _}] = Code.compile_string(meta)
+      assert [{H, _}] = Mutare.Test.Compile.string(meta)
     end
 
     test "a bitstring type specifier in a head is not mutated (it could be illegal)" do
@@ -4381,7 +4380,7 @@ defmodule Mutare.TransformTest do
       assert Enum.any?(lifted, &(&1.mutator == :literal and &1.original_code == "0"))
 
       assert meta =~ ~r/def f\(mutare_arg1, mutare_arg2\) do/
-      assert [{H, _}] = Code.compile_string(meta)
+      assert [{H, _}] = Mutare.Test.Compile.string(meta)
     end
 
     test "a default-arg function lifts: head literal mutates, default value rides the dispatcher" do
@@ -4403,7 +4402,7 @@ defmodule Mutare.TransformTest do
       # ...and the lifted base function takes the full arity with `\\` stripped.
       assert meta =~ ~r/defp __mutare_f_2_g1\(mutare_active, 1, b\)/
       refute meta =~ ~r/defp __mutare_f_2_g1\([^)]*\\\\/
-      assert [{H, _}] = Code.compile_string(meta)
+      assert [{H, _}] = Mutare.Test.Compile.string(meta)
     end
 
     test "a mutator that would emit a pattern-illegal node is filtered out of heads" do
@@ -4420,7 +4419,7 @@ defmodule Mutare.TransformTest do
       refute Enum.any?(sites, &(&1.kind == :lifted))
       # The body `9` still mutates in place.
       assert [%Site{kind: :in_place, original_code: "9"}] = sites
-      assert [{H, _}] = Code.compile_string(meta)
+      assert [{H, _}] = Mutare.Test.Compile.string(meta)
     end
   end
 
@@ -4785,7 +4784,9 @@ defmodule Mutare.TransformTest do
       # On the buggy (bare-variable) form this raises a `CompileError`. Read-only on
       # `:persistent_term` (this suite is `async: true`), so assert against the only two
       # values the mutation can yield rather than forcing a baseline.
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+      # `with_diagnostics` swallows the compile's warnings per-process (async-safe,
+      # unlike capturing the shared :stderr device).
+      Code.with_diagnostics(fn ->
         Code.compile_string(meta)
         apply(outer, :build, [])
       end)
@@ -4844,9 +4845,7 @@ defmodule Mutare.TransformTest do
   end
 
   defp assert_compiles(meta) do
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      assert [_ | _] = Code.compile_string(meta)
-    end)
+    assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
 
   defp assert_compile_error(meta, message, file) do

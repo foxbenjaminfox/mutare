@@ -22,7 +22,7 @@ defmodule Mutare.PoisonTest do
       assert site2.poisoned
       refute meta2 =~ "mutare_unbound_xyz"
       # And it actually compiles now.
-      assert [{P, _}] = Code.compile_string(meta2)
+      assert [{P, _}] = Mutare.Test.Compile.string(meta2)
     after
       :code.purge(P)
       :code.delete(P)

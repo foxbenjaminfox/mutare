@@ -30,7 +30,7 @@ defmodule Mutare.ReturnValueTest do
 
   setup_all do
     {metamutant, sites, _} = Mutare.transform_string(@runtime_source, mutators: @only)
-    [{_module, _binary}] = Code.compile_string(metamutant)
+    [{_module, _binary}] = Mutare.Test.Compile.string(metamutant)
     %{sites: sites}
   end
 
@@ -262,7 +262,7 @@ defmodule Mutare.ReturnValueTest do
       assert {:ok, _} = Code.string_to_quoted(meta)
 
       assert {[{Mutare.ReturnValueRescuePattern, _}], _log} =
-               with_log(fn -> Code.compile_string(meta) end)
+               with_log(fn -> Mutare.Test.Compile.string(meta) end)
     end
   end
 
@@ -455,7 +455,7 @@ defmodule Mutare.ReturnValueTest do
       assert {:ok, _} = Code.string_to_quoted(meta)
 
       assert {[{Mutare.ReturnValueBranchCompile, _}], _log} =
-               with_log(fn -> Code.compile_string(meta) end)
+               with_log(fn -> Mutare.Test.Compile.string(meta) end)
     after
       :code.purge(Mutare.ReturnValueBranchCompile)
       :code.delete(Mutare.ReturnValueBranchCompile)
@@ -565,7 +565,7 @@ defmodule Mutare.ReturnValueTest do
       assert {:ok, _} = Code.string_to_quoted(meta)
 
       assert {[{Mutare.ReturnValueWtrCompile, _}], _log} =
-               with_log(fn -> Code.compile_string(meta) end)
+               with_log(fn -> Mutare.Test.Compile.string(meta) end)
     after
       :code.purge(Mutare.ReturnValueWtrCompile)
       :code.delete(Mutare.ReturnValueWtrCompile)
@@ -665,7 +665,7 @@ defmodule Mutare.ReturnValueTest do
       """
 
       {meta, sites, _} = Mutare.transform_string(source, mutators: @only)
-      [{mod, _bin}] = Code.compile_string(meta)
+      [{mod, _bin}] = Mutare.Test.Compile.string(meta)
 
       Selector.put(Selector.baseline())
       assert mod.tags([2, 3]) == [{:even, 2}, :odd]
@@ -706,7 +706,7 @@ defmodule Mutare.ReturnValueTest do
       assert {:ok, _} = Code.string_to_quoted(meta)
 
       assert {[{Mutare.FnReturnNest, _}], _log} =
-               with_log(fn -> Code.compile_string(meta) end)
+               with_log(fn -> Mutare.Test.Compile.string(meta) end)
     after
       :code.purge(Mutare.FnReturnNest)
       :code.delete(Mutare.FnReturnNest)

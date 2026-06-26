@@ -19,9 +19,13 @@ defmodule Mix.Tasks.MutareTest do
       File.write!(Path.join(root, "lib/empty.ex"), "defmodule Empty do\n  def f, do: nil\nend\n")
       on_exit(fn -> File.rm_rf!(root) end)
 
-      assert_raise Mix.Error, ~r/no mutation sites/, fn ->
-        Mix.Tasks.Mutare.run([root])
-      end
+      # Capture stderr so the live reporter's scan note doesn't leak into test
+      # output; the assertion is about the error, not the progress.
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert_raise Mix.Error, ~r/no mutation sites/, fn ->
+          Mix.Tasks.Mutare.run([root])
+        end
+      end)
     end
 
     test "raises a clean Mix error on a bad --mutators value" do
@@ -44,9 +48,12 @@ defmodule Mix.Tasks.MutareTest do
 
       # Line 1 (`defmodule A do`) has nothing to mutate, so the run scopes to zero
       # sites and fails fast (before compiling) rather than testing the whole file.
-      assert_raise Mix.Error, ~r/no mutation sites/, fn ->
-        Mix.Tasks.Mutare.run([root, "--line", "lib/a.ex:1"])
-      end
+      # Capture stderr so the live reporter's scan note doesn't leak into test output.
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert_raise Mix.Error, ~r/no mutation sites/, fn ->
+          Mix.Tasks.Mutare.run([root, "--line", "lib/a.ex:1"])
+        end
+      end)
     end
 
     test "--quiet suppresses the live stderr progress" do

@@ -217,7 +217,7 @@ defmodule Mutare.GenServerTest do
 
       {metamutant, sites, _} = Mutare.transform_string(source, mutators: [GS])
       assert Enum.count(sites, &(&1.mutator == :genserver)) == 5
-      assert [{S, _binary}] = Code.compile_string(metamutant)
+      assert [{S, _binary}] = Mutare.Test.Compile.string(metamutant)
     after
       :code.purge(S)
       :code.delete(S)

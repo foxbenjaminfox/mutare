@@ -179,8 +179,6 @@ defmodule Mutare.BitstringSpecTest do
     end
 
     test "every mutant of a parenthesized-spec source still compiles" do
-      import ExUnit.CaptureIO
-
       source = """
       defmodule Mutare.BitstringSpecParenFixture do
         def f(cp), do: <<cp::utf16-big()>>
@@ -192,9 +190,7 @@ defmodule Mutare.BitstringSpecTest do
 
       # The paren form warns (deprecation); the point is it *compiles*. Before the
       # fix, a `utf16-big()-little` mutant raised CompileError here.
-      capture_io(:stderr, fn ->
-        assert [_ | _] = Code.compile_string(metamutant)
-      end)
+      assert [_ | _] = Mutare.Test.Compile.string(metamutant)
     end
   end
 
@@ -236,7 +232,7 @@ defmodule Mutare.BitstringSpecTest do
       """
 
       {metamutant, sites, _} = Mutare.transform_string(source, mutators: @only)
-      Code.compile_string(metamutant)
+      Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())
       on_exit(fn -> Selector.put(Selector.baseline()) end)
 

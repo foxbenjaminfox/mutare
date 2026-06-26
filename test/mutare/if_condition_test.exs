@@ -178,7 +178,7 @@ defmodule Mutare.IfConditionTest do
       """
 
       {metamutant, sites, _} = Mutare.transform_string(src, mutators: @only)
-      [{_module, _binary}] = Code.compile_string(metamutant)
+      [{_module, _binary}] = Mutare.Test.Compile.string(metamutant)
       [sites: Enum.filter(sites, &(&1.mutator == :if_condition))]
     end
 

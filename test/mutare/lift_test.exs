@@ -68,18 +68,18 @@ defmodule Mutare.LiftTest do
     {metamutant, sites, _next_id} =
       Mutare.transform_string(@source, file: "lift.ex", mutators: @probe)
 
-    [{_module, _binary}] = Code.compile_string(metamutant)
+    [{_module, _binary}] = Mutare.Test.Compile.string(metamutant)
 
     # Compiled once and switched at runtime by the head-pattern describe block.
     {pattern_meta, pattern_sites, _next_id} =
       Mutare.transform_string(@pattern_source, file: "pat.ex")
 
-    [{_module, _binary}] = Code.compile_string(pattern_meta)
+    [{_module, _binary}] = Mutare.Test.Compile.string(pattern_meta)
 
     {default_meta, default_sites, _next_id} =
       Mutare.transform_string(@default_source, file: "default.ex")
 
-    [{_module, _binary}] = Code.compile_string(default_meta)
+    [{_module, _binary}] = Mutare.Test.Compile.string(default_meta)
 
     %{sites: sites, pattern_sites: pattern_sites, default_sites: default_sites}
   end
@@ -144,7 +144,7 @@ defmodule Mutare.LiftTest do
       {meta, sites, _next_id} = Mutare.transform_string(source)
 
       refute Enum.any?(sites, &(&1.mutator == :clause_drop))
-      assert [{Mutare.BodilessHeadFixture, _}] = Code.compile_string(meta)
+      assert [{Mutare.BodilessHeadFixture, _}] = Mutare.Test.Compile.string(meta)
     end
 
     test "a bodiless head with two impls drops only the impls, never the header" do
@@ -160,7 +160,7 @@ defmodule Mutare.LiftTest do
 
       # Two body-bearing clauses → two drops; the header (index 0) is never dropped.
       assert Enum.count(sites, &(&1.mutator == :clause_drop)) == 2
-      assert [{Mutare.BodilessHeadTwoFixture, _}] = Code.compile_string(meta)
+      assert [{Mutare.BodilessHeadTwoFixture, _}] = Mutare.Test.Compile.string(meta)
     end
 
     test "salts generated names when the target already defines a __mutare_ name" do
@@ -190,7 +190,7 @@ defmodule Mutare.LiftTest do
       refute meta =~ ~r/defp __mutare_classify_1_g1\(/
 
       # The real proof: it compiles. A fixed prefix risks an "already defined" clash.
-      assert [{Mutare.PrefixCollisionFixture, _}] = Code.compile_string(meta)
+      assert [{Mutare.PrefixCollisionFixture, _}] = Mutare.Test.Compile.string(meta)
     end
 
     test "salts the dispatch variable when the source uses `mutare_active` itself" do
@@ -211,7 +211,7 @@ defmodule Mutare.LiftTest do
       # stays its own variable, so the gate reads the id and the body reads the user value
       assert meta =~ "mutare_active_0 = :persistent_term.get"
       assert meta =~ ~r/when mutare_active_0 === \d+/
-      assert [{Mutare.ActiveVarCollisionFixture, _}] = Code.compile_string(meta)
+      assert [{Mutare.ActiveVarCollisionFixture, _}] = Mutare.Test.Compile.string(meta)
 
       # baseline behaves like the original…
       Selector.put(Selector.baseline())
@@ -246,7 +246,7 @@ defmodule Mutare.LiftTest do
       refute meta =~ "__mutare_f"
       refute Enum.any?(sites, &(&1.kind == :lifted))
       assert log =~ "nc.ex: clauses of f/1 are non-consecutive — not lifting"
-      assert [{Mutare.NonConsecutiveLiftFixture, _}] = Code.compile_string(meta)
+      assert [{Mutare.NonConsecutiveLiftFixture, _}] = Mutare.Test.Compile.string(meta)
 
       Selector.put(Selector.baseline())
       assert apply(Mutare.NonConsecutiveLiftFixture, :f, [1]) == :positive
@@ -272,7 +272,7 @@ defmodule Mutare.LiftTest do
         with_log(fn -> Mutare.transform_string(source) end)
 
       refute meta =~ "__mutare_f"
-      assert [{Mutare.NonConsecutiveAttrFixture, _}] = Code.compile_string(meta)
+      assert [{Mutare.NonConsecutiveAttrFixture, _}] = Mutare.Test.Compile.string(meta)
 
       Selector.put(Selector.baseline())
       assert apply(Mutare.NonConsecutiveAttrFixture, :f, [0]) == 1
@@ -303,7 +303,7 @@ defmodule Mutare.LiftTest do
       refute meta =~ "__mutare_code"
       refute Enum.any?(sites, &(&1.kind == :lifted))
       assert log =~ "meta.ex: clauses of code/1 are augmented by compile-time metaprogramming"
-      assert [{Mutare.MetaprogrammedLiftFixture, _}] = Code.compile_string(meta)
+      assert [{Mutare.MetaprogrammedLiftFixture, _}] = Mutare.Test.Compile.string(meta)
 
       Selector.put(Selector.baseline())
       assert apply(Mutare.MetaprogrammedLiftFixture, :code, [200]) == 200
@@ -329,7 +329,7 @@ defmodule Mutare.LiftTest do
       assert meta =~ "def ok?(mutare_arg1) do"
       refute meta =~ ~r/defp __mutare_ok\?/
       assert {:ok, _} = Code.string_to_quoted(meta)
-      assert [{_mod, _}] = Code.compile_string(meta)
+      assert [{_mod, _}] = Mutare.Test.Compile.string(meta)
     end
 
     test "lifts a guard-safe qualified macro (Integer.is_even) without mutating its module alias" do
@@ -361,7 +361,7 @@ defmodule Mutare.LiftTest do
       assert Enum.filter(sites, &(&1.mutator == :alias)) == []
 
       # The real proof: it compiles. AliasLiteral firing in the guard would poison it.
-      assert [{Mutare.IntegerGuardFixture, _}] = Code.compile_string(meta)
+      assert [{Mutare.IntegerGuardFixture, _}] = Mutare.Test.Compile.string(meta)
 
       # Runtime: flipping the lifted is_odd mutant flips the parity verdict.
       swap = Enum.find(sites, &(&1.mutator == :integer))
@@ -388,7 +388,7 @@ defmodule Mutare.LiftTest do
       assert defaulted =~ ~r/defp __mutare_h_2_g1\(mutare_active, a, b\)/
       refute defaulted =~ ~r/defp __mutare_h_2_g1\([^)]*\\\\/
 
-      assert [{M, _}] = Code.compile_string(defaulted)
+      assert [{M, _}] = Mutare.Test.Compile.string(defaulted)
     end
 
     test "falls back to in-place (no lift) for operator names" do

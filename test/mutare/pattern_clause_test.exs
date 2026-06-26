@@ -294,7 +294,9 @@ defmodule Mutare.PatternClauseTest do
           mutators: [Mutare.Mutators.PatternSwap, Mutare.Mutators.Relational]
         )
 
-      ExUnit.CaptureIO.capture_io(:stderr, fn -> [{_m, _b}] = Code.compile_string(meta) end)
+      # Bind the module from the compile result (not a literal) so the compiler can't
+      # constant-fold a reference to a not-yet-defined module into an "undefined" warning.
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
 
       swap = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.mutated_code == "{b, a}"))
       lt = Enum.find(sites, &(&1.mutator == :relational and &1.mutated_code == "c < a"))
@@ -302,16 +304,16 @@ defmodule Mutare.PatternClauseTest do
 
       # `run/0` builds the fn under the active mutant, so call it fresh after each switch.
       Selector.put(Selector.baseline())
-      assert Mutare.FnGuardFixture.run().({1, 2}, 5) == {1, 2, 5}
-      assert Mutare.FnGuardFixture.run().({5, 2}, 1) == :other
+      assert mod.run().({1, 2}, 5) == {1, 2, 5}
+      assert mod.run().({5, 2}, 1) == :other
 
       # swap `{a, b}` -> `{b, a}`: a binds the 2nd element; {1,2} -> b=1, a=2; c=5 > 2 -> {2,1,5}
       Selector.put(swap.id)
-      assert Mutare.FnGuardFixture.run().({1, 2}, 5) == {2, 1, 5}
+      assert mod.run().({1, 2}, 5) == {2, 1, 5}
 
       # guard `c > a` -> `c < a`: {5,2}, c=1 < a=5 -> {5,2,1}
       Selector.put(lt.id)
-      assert Mutare.FnGuardFixture.run().({5, 2}, 1) == {5, 2, 1}
+      assert mod.run().({5, 2}, 1) == {5, 2, 1}
     after
       Selector.put(Selector.baseline())
     end
@@ -333,19 +335,21 @@ defmodule Mutare.PatternClauseTest do
       {meta, sites, _} =
         Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
 
-      ExUnit.CaptureIO.capture_io(:stderr, fn -> [{_m, _b}] = Code.compile_string(meta) end)
+      # Bind the module from the compile result (not a literal) so the compiler can't
+      # constant-fold a reference to a not-yet-defined module into an "undefined" warning.
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
       swap = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.mutated_code == "{b, a}"))
       assert swap
 
       Selector.put(Selector.baseline())
-      assert Mutare.FnGuard2Fixture.run().({5, 2}) == {5, 2}
-      assert Mutare.FnGuard2Fixture.run().({2, 5}) == :other
+      assert mod.run().({5, 2}) == {5, 2}
+      assert mod.run().({2, 5}) == :other
 
       # swap `{a, b}` -> `{b, a}` with the guard intact: {5,2} -> b=5, a=2, `a > b` (2 > 5) is
       # false -> :other; {2,5} -> b=2, a=5, 5 > 2 -> {a, b} = {5, 2}.
       Selector.put(swap.id)
-      assert Mutare.FnGuard2Fixture.run().({5, 2}) == :other
-      assert Mutare.FnGuard2Fixture.run().({2, 5}) == {5, 2}
+      assert mod.run().({5, 2}) == :other
+      assert mod.run().({2, 5}) == {5, 2}
     after
       Selector.put(Selector.baseline())
     end

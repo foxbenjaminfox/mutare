@@ -82,7 +82,7 @@ defmodule Mutare.StrictEqualityTest do
       """
 
       {metamutant, [site], _} = Mutare.transform_string(source, mutators: @only)
-      Code.compile_string(metamutant)
+      Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())
       on_exit(fn -> Selector.put(Selector.baseline()) end)
       %{site: site}
@@ -109,7 +109,7 @@ defmodule Mutare.StrictEqualityTest do
 
       {metamutant, sites, _} = Mutare.transform_string(source, mutators: @only)
       [site] = Enum.filter(sites, &(&1.mutator == :strict_equality))
-      Code.compile_string(metamutant)
+      Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())
       on_exit(fn -> Selector.put(Selector.baseline()) end)
       %{site: site}

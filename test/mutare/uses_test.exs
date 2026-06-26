@@ -76,9 +76,7 @@ defmodule Mutare.UsesTest do
   end
 
   defp assert_compiles(meta) do
-    ExUnit.CaptureIO.capture_io(:stderr, fn ->
-      assert [_ | _] = Code.compile_string(meta)
-    end)
+    assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
 
   describe "harvesting directives (Uses.annotate)" do

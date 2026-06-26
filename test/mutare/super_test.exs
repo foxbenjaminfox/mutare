@@ -15,7 +15,7 @@ defmodule Mutare.SuperTest do
   alias Mutare.{Selector, Transform.Super}
 
   # A real base providing overridable callbacks the transformed children `use`. It
-  # must be a compiled module so `Code.compile_string/1` can expand `use` against it.
+  # must be a compiled module so `Mutare.Test.Compile.string/1` can expand `use` against it.
   defmodule Base do
     @moduledoc false
     defmacro __using__(_) do
@@ -49,7 +49,7 @@ defmodule Mutare.SuperTest do
     opts = if mutators, do: Keyword.put(opts, :mutators, mutators), else: opts
 
     {meta, sites, _next} = Mutare.transform_string(source, opts)
-    [{module, _binary}] = Code.compile_string(meta)
+    [{module, _binary}] = Mutare.Test.Compile.string(meta)
     {meta, sites, module}
   end
 
@@ -218,7 +218,7 @@ defmodule Mutare.SuperTest do
 
       # The generated closure variable must dodge the source's own `mutare_super`.
       assert meta =~ ~r{mutare_super_0 = &super/1}
-      assert [{_module, _binary}] = Code.compile_string(meta)
+      assert [{_module, _binary}] = Mutare.Test.Compile.string(meta)
     end
 
     test "a `&super/n` capture is rewritten to the bound closure variable" do

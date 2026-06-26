@@ -174,7 +174,7 @@ defmodule Mutare.GuardDropTest do
             "defmodule GDc3 do\n  def r do\n    receive do\n      x when is_atom(x) -> :a\n    end\n  end\nend\n"
           ] do
         {meta, _} = sites(src)
-        {mods, _io} = ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+        mods = Mutare.Test.Compile.string(meta)
         assert is_list(mods) and mods != [], "metamutant failed to compile:\n#{meta}"
       end
     end
@@ -214,7 +214,7 @@ defmodule Mutare.GuardDropTest do
       """
 
       {meta, all} = sites(src)
-      [{mod, _}] = Code.compile_string(meta)
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
       [gd] = Enum.filter(all, &(&1.mutator == :guard_drop))
 
       # Baseline: a non-binary falls through to the catch-all.
@@ -240,7 +240,7 @@ defmodule Mutare.GuardDropTest do
       """
 
       {meta, all} = sites(src)
-      [{mod, _}] = Code.compile_string(meta)
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
       [gd] = Enum.filter(all, &(&1.mutator == :guard_drop))
 
       # Baseline: a non-atom first argument falls through to the catch-all.
@@ -264,7 +264,7 @@ defmodule Mutare.GuardDropTest do
       """
 
       {meta, all} = sites(src)
-      [{mod, _}] = Code.compile_string(meta)
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
       [gd] = Enum.filter(all, &(&1.mutator == :guard_drop))
 
       # Baseline: binding() reflects the named parameter back.
@@ -289,7 +289,7 @@ defmodule Mutare.GuardDropTest do
       """
 
       {meta, all} = sites(src)
-      [{mod, _}] = Code.compile_string(meta)
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
       [gd] = Enum.filter(all, &(&1.mutator == :guard_drop))
 
       assert mod.g(1) == :o

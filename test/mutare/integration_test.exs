@@ -38,7 +38,7 @@ defmodule Mutare.IntegrationTest do
   setup_all do
     {metamutant, sites, _next_id} = Mutare.transform_string(@source, file: "fixture.ex")
     # THE compile. Once. Everything below only flips persistent_term.
-    [{_module, _binary}] = Code.compile_string(metamutant)
+    [{_module, _binary}] = Mutare.Test.Compile.string(metamutant)
     %{sites: sites}
   end
 

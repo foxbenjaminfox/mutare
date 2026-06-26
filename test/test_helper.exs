@@ -10,4 +10,10 @@
 if System.get_env("MUTANT_UNDER_TEST"),
   do: ExUnit.configure(exclude: [:runner, :property])
 
-ExUnit.start()
+# Capture Logger output globally: the lib emits `Logger.warning` on a few
+# analysis decisions (non-consecutive clauses, augmented-by-metaprogramming defs,
+# coverage-dump fallbacks), most of which are *expected* during tests. With
+# `capture_log: true` these are swallowed and only surfaced for a *failing* test.
+# Tests that assert on a specific log still use `with_log/1` / `capture_log/1`,
+# which nest fine under the global capture.
+ExUnit.start(capture_log: true)

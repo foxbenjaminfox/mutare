@@ -133,7 +133,7 @@ defmodule Mutare.BitwiseTest do
 
       {metamutant, sites, _} = Mutare.transform_string(source, mutators: @only)
       [site] = Enum.filter(sites, &(&1.mutator == :bitwise))
-      Code.compile_string(metamutant)
+      Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())
       on_exit(fn -> Selector.put(Selector.baseline()) end)
       %{site: site}
