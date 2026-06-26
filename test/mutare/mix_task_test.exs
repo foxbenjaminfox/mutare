@@ -122,6 +122,94 @@ defmodule Mix.Tasks.MutareTest do
     end
   end
 
+  describe "inspect-and-exit flags (no run)" do
+    test "--version prints the version" do
+      Mix.Tasks.Mutare.run(["--version"])
+      assert drain_shell_info() =~ ~r/^mutare \d+\.\d+/
+    end
+
+    test "--explain prints a family's full moduledoc" do
+      Mix.Tasks.Mutare.run(["--explain", "relational"])
+      output = drain_shell_info()
+      assert output =~ "Mutare.Mutators.Relational"
+      assert output =~ "Relational/equality operator swaps"
+    end
+
+    test "--explain raises a clean Mix error on an unknown mutator" do
+      assert_raise Mix.Error, ~r/unknown mutator/, fn ->
+        Mix.Tasks.Mutare.run(["--explain", "definitely-not-a-family"])
+      end
+    end
+
+    test "--show-config prints the merged effective options" do
+      root = bare_project("defmodule A do\n  def f(x), do: x + 1\nend\n")
+
+      Mix.Tasks.Mutare.run([
+        root,
+        "--show-config",
+        "--mutators",
+        "relational,arithmetic",
+        "--workers",
+        "3"
+      ])
+
+      output = drain_shell_info()
+      assert output =~ "Effective configuration"
+      assert output =~ "relational, arithmetic"
+      assert output =~ ~r/workers\s+3/
+    end
+
+    test "--list-macros prints the known-macro registry, including the built-ins" do
+      root = bare_project("defmodule A do\n  def f(x), do: x + 1\nend\n")
+
+      Mix.Tasks.Mutare.run([root, "--list-macros"])
+      output = drain_shell_info()
+
+      assert output =~ "Known macros"
+      assert output =~ "Kernel.match?/2"
+      assert output =~ "Kernel.destructure/2"
+    end
+
+    test "--dry-run lists the mutants per file without running them" do
+      root = bare_project("defmodule A do\n  def f(x), do: x >= 1\nend\n")
+
+      Mix.Tasks.Mutare.run([root, "--dry-run", "--mutators", "relational"])
+      output = drain_shell_info()
+
+      assert output =~ ~r/\d+ mutants? across .* files?/
+      assert output =~ "lib/a.ex"
+      assert output =~ "→"
+      assert output =~ "nothing compiled or executed"
+    end
+
+    test "--list-ignores flags active and ineffective directives" do
+      root =
+        bare_project("""
+        defmodule A do
+          def f(x), do: x + 1 # mutare:ignore[arithmetic]
+          def g(x), do: x - 1 # mutare:ignore[bogus]
+        end
+        """)
+
+      Mix.Tasks.Mutare.run([root, "--list-ignores"])
+      output = drain_shell_info()
+
+      assert output =~ "active"
+      assert output =~ "ineffective"
+      assert output =~ "[arithmetic]"
+      assert output =~ "[bogus]"
+    end
+  end
+
+  # A throwaway project with a single `lib/a.ex`, cleaned up after the test.
+  defp bare_project(source) do
+    root = Project.tmp_dir(:task)
+    File.mkdir_p!(Path.join(root, "lib"))
+    File.write!(Path.join(root, "lib/a.ex"), source)
+    on_exit(fn -> File.rm_rf!(root) end)
+    root
+  end
+
   # Drain every `Mix.shell().info/1` message captured by `Mix.Shell.Process`.
   defp drain_shell_info(acc \\ []) do
     receive do
