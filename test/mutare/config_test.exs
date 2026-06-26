@@ -155,6 +155,12 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([max_mutants: 10], max_mutants: 25)[:max_mutants] == 25
     end
 
+    test "--max-survivors passes through; flag wins over file; absent leaves it to default" do
+      assert Config.merge([], max_survivors: 5)[:max_survivors] == 5
+      refute Keyword.has_key?(Config.merge([], []), :max_survivors)
+      assert Config.merge([max_survivors: 3], max_survivors: 8)[:max_survivors] == 8
+    end
+
     test "--workers passes through; flag wins over file; absent leaves it to default" do
       assert Config.merge([], workers: 4)[:workers] == 4
       refute Keyword.has_key?(Config.merge([], []), :workers)

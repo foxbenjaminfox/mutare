@@ -61,6 +61,7 @@ defmodule Mutare.Config do
     |> put_unless_nil(:harness_retries, flags[:harness_retries])
     |> put_unless_nil(:max_harness_error_rate, flags[:max_harness_error_rate])
     |> put_unless_nil(:max_mutants, flags[:max_mutants])
+    |> put_unless_nil(:max_survivors, flags[:max_survivors])
     |> put_unless_nil(:workers, flags[:workers])
     |> put_unless_nil(:partition_env, partition_env(flags))
     |> put_unless_nil(:timeout, flags[:timeout])

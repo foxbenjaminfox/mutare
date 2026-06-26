@@ -115,4 +115,63 @@ defmodule Mutare.RunnerTest do
     assert [_] = Enum.filter(second.results, &(&1.status == :survived))
     assert File.exists?(marker)
   end
+
+  describe "--max-survivors (early stop)" do
+    setup do
+      # Two weakly-tested comparisons (each tested only well clear of its
+      # boundary), so `>=`→`>` and `<=`→`<` both slip through: two survivors, in
+      # source order, with a fully-tested `add` last so killed sites remain after
+      # the first survivor.
+      Project.build(:calc_survivors, %{
+        "lib/calc.ex" => """
+        defmodule Calc do
+          def gte?(a, b), do: a >= b
+          def lte?(a, b), do: a <= b
+          def add(a, b), do: a + b
+        end
+        """,
+        "test/calc_test.exs" => """
+        defmodule CalcTest do
+          use ExUnit.Case
+
+          test "gte? is true well above the threshold" do
+            assert Calc.gte?(10, 5) == true
+          end
+
+          test "lte? is true well below the threshold" do
+            assert Calc.lte?(5, 10) == true
+          end
+
+          test "add sums its arguments" do
+            assert Calc.add(2, 3) == 5
+          end
+        end
+        """
+      })
+    end
+
+    test "without a cap, the fixture yields more than one survivor", %{
+      project: project,
+      sandbox: sandbox
+    } do
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
+
+      assert run.stopped_early == false
+      assert Enum.count(run.results, &(&1.status == :survived)) >= 2
+    end
+
+    test "stops once the survivor cap is reached, over a partial set", %{
+      project: project,
+      sandbox: sandbox
+    } do
+      assert {:ok, run} =
+               Mutare.run(project, sandbox: sandbox, mutators: @probe, max_survivors: 1)
+
+      assert run.stopped_early == true
+      # Exactly the cap: the first survivor in source order triggers the stop.
+      assert Enum.count(run.results, &(&1.status == :survived)) == 1
+      # The run halted before testing every mutant, so the score is over a prefix.
+      assert length(run.results) < Mutare.Schema.count(run.schema)
+    end
+  end
 end

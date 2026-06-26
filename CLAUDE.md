@@ -589,8 +589,15 @@ contract between them is the whole game.
   jittered backoff so retries don't re-collide) plus a *specific* actionable warning naming the
   contention levers (`--workers`/`--partition-db`; not `--harness-retries`, which the dedicated
   budget bypasses) instead of pointing at output that can't
-  help; `status_for(:boot_failure)` still maps to `:harness_error`, so the score is unchanged. Returns
-  `%{schema, results, sandbox, baseline_ms}`. Optional **per-worker partitioning**
+  help; `status_for(:boot_failure)` still maps to `:harness_error`, so the score is unchanged.
+  `:max_survivors` (`--max-survivors`) is the lone **runner-loop** cap — distinct from `:max_mutants`
+  (a `Schema` cap on candidate *sites*): every mutant is still compiled in, but the per-mutant loop
+  **halts once N `:survived` results are found** (`collect_until_survivors/2` over the already-ordered
+  `Task.async_stream`, so the stop is the Nth survivor *in source order*, deterministic; survivors
+  only — no-coverage/kills/excluded don't count). An early stop flags the run `stopped_early`, which
+  **skips the harness-error abort guard** (aborting would discard the survivors the user asked for;
+  the Mix task likewise skips `--min-score`). Returns
+  `%{schema, results, sandbox, baseline_ms, stopped_early}`. Optional **per-worker partitioning**
   (`:partition_env`, off by default; `--partition-db`/`--partition-env`) hands each concurrent run
   a distinct partition id under a named env var (default `MIX_TEST_PARTITION`) for DB isolation —
   the ids come from a bounded, recycled checkout/checkin pool (`Mutare.Runner.Partitions`) sized to
@@ -910,7 +917,11 @@ contract between them is the whole game.
   master off-switch for that display: when set, the task leaves all four hooks unset and never
   starts `Live`, so the run is silent on stderr (for CI / piped use); the final and machine
   reports are unaffected, and it's inert in the direct `Mutare.run/2` API (which never starts
-  `Live`). There is **no** top-level option for call-option-key
+  `Live`). **`--max-survivors N`** (`:max_survivors`, threaded like `:max_mutants`) is enforced in
+  `Mutare.Runner` (a runner-loop cap, *not* a `Schema` site cap); when it fires (`run.stopped_early`)
+  the task **skips the `--min-score` gate** and prints a partial-run note to **stderr** (so a machine
+  report on stdout stays clean), since the score is over a tested prefix. There is **no** top-level
+  option for call-option-key
   gating — it is per-mutator config (`{Module, call_option_keys: false}`), carried on the mutator's
   `Mutare.Mutator.Spec` and read by `Transform.gate_candidates/1` (above), so it needs no Options
   field, CLI flag, or `Schema`/`Ctx` plumbing.

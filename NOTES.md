@@ -2951,6 +2951,50 @@ axis); `mix test --partitions` is the wrong tool — it only filters test files 
 build-path effect, verified), multiplies per-mutant process boots by the machine
 count, and forfeits this first-failure early-exit. Out of scope for now.
 
+### Early stop after N survivors (`--max-survivors`) `[done]`
+`--max-mutants` caps the *candidate sites* the schema keeps (the first N in source
+order) — a "test the first N mutants" smoke run, but rarely what you want, since the
+product is **survivors** and you can't predict how many sites you must grind through to
+surface a few. `--max-survivors N` (`:max_survivors`, `Mutare.Options`) instead stops
+the per-mutant run once N **survivors** (`:survived`) have been found — the
+iterate-and-fix workflow: get a handful of concrete test gaps, go fix them, re-run.
+
+It is a **runner-loop** cap, deliberately *not* a `Mutare.Schema` one like
+`--max-mutants`: every mutant is still discovered and compiled into the one metamutant
+(ids stay stable; a poison rebuild is unaffected); only the *run* halts early. So the
+two compose — `--max-mutants` narrows what's built, `--max-survivors` shortens what's
+run — and a future re-run with `--line`/`--since` still sees the same id space.
+
+**Survivors only**, by design: `:no_coverage` is "not killed" but it's a coverage gap
+found *without running anything* (it would flood the count and stop the run almost
+immediately, defeating the point); `:timeout`/`:atom_exhausted` are kills;
+`:ignored`/`:poisoned`/`:harness_error` reached no verdict. The lone "unkilled,
+actionable, cost-a-run-to-find" status is `:survived` (`Runner.survivor_count/1`).
+
+**Deterministic stop.** The per-mutant stream is already consumed `ordered: true`
+(`Task.async_stream`), so `Runner.collect_until_survivors/2` threads a survivor counter
+through an `Enum.reduce_while` and halts at the **Nth survivor in source order** —
+independent of which worker finished first. The reported survivors are therefore exactly
+the first N, reproducibly, not "whatever N happened to land first". A `nil` cap drains
+the whole stream as before (the function's first clause), so the common path is
+unchanged.
+
+**The cost of halting a `Task.async_stream`:** it shuts down its in-flight tasks. A
+handful of mutants *past* the trigger (the concurrent lanes ahead of the ordered
+consumer) may have already run — their results are discarded (so the count stays exactly
+N), and their `mix test` OS processes are orphaned. Accepted as cheap: the orphans are
+bounded by the per-mutant timeout watcher, and the default sandbox is a throwaway dir
+(cleanup is best-effort `rm_rf` anyway). The live reporter's running "survived" tally may
+likewise flash a couple above N before the halt — cosmetic; the final report is exactly N.
+
+**Early stop is exploratory, not CI.** A stopped run tested only a *prefix* of the
+mutants, so its score is over a partial denominator (and artificially low — we stopped
+*because* survivors piled up). The run is flagged `stopped_early`; on that flag the runner
+**skips the harness-error abort guard** (aborting would throw away the very survivors the
+user asked for), and `Mix.Tasks.Mutare` **skips the `--min-score` gate**, printing a note
+to **stderr** (so a machine report on stdout stays clean, like the ineffective-ignore
+warnings) naming the survivor count, `M of T` evaluated, and that the gate was skipped.
+
 ### Mutations that break the *test suite's* compilation are kills `[done]`
 Surfaced mutation testing on the plug library's `lib/plug/router`: 17 of 187
 mutants landed as `:harness_error` (≈9%), all on `Plug.Router.Utils` functions

@@ -49,6 +49,11 @@ defmodule Mix.Tasks.Mutare do
                                           #   failed at the harness level (1.0 = off)
       mix mutare --max-mutants 50         # test at most 50 mutants (the first 50
                                           #   in source order) — a quick smoke run
+      mix mutare --max-survivors 5        # stop once 5 surviving mutants are found
+                                          #   (the first 5 in source order) — find a
+                                          #   few test gaps to fix without a full
+                                          #   run; the score is partial, so the
+                                          #   --min-score gate is skipped
       mix mutare --workers 4              # run 4 mutants concurrently
                                           #   (default: System.schedulers_online/0)
       mix mutare --workers 4 --partition-db
@@ -154,6 +159,9 @@ defmodule Mix.Tasks.Mutare do
         max_harness_error_rate: 0.5,
         # test at most the first N mutants in source order (a quick smoke run)
         max_mutants: nil,
+        # stop the run once the first N surviving mutants are found (an
+        # iterate-and-fix workflow); the partial score skips the --min-score gate
+        max_survivors: nil,
 
         # --- sandbox reuse / build cache (see the prose above) ---
         sandbox: nil,
@@ -192,6 +200,7 @@ defmodule Mix.Tasks.Mutare do
     harness_retries: :integer,
     max_harness_error_rate: :float,
     max_mutants: :integer,
+    max_survivors: :integer,
     workers: :integer,
     partition_db: :boolean,
     partition_env: :string,
@@ -371,7 +380,7 @@ defmodule Mix.Tasks.Mutare do
 
     Mix.shell().info(
       "mutare#{scope_label(project)}: #{Schema.count(schema)} mutants" <>
-        "#{cap_label(options)} across #{files} file(s)"
+        "#{cap_label(options)}#{stop_label(options)} across #{files} file(s)"
     )
 
     for {file, reason} <- schema.skipped,
@@ -386,6 +395,14 @@ defmodule Mix.Tasks.Mutare do
   # we'll test, so note the cap so a small count isn't a surprise.
   defp cap_label(%Options{max_mutants: nil}), do: ""
   defp cap_label(%Options{max_mutants: n}), do: " (--max-mutants #{n})"
+
+  # `--max-survivors` doesn't reduce the candidate count (every mutant is still
+  # compiled in), but the run may end early once N survivors surface, so flag it
+  # up front rather than have the run stop unexpectedly.
+  defp stop_label(%Options{max_survivors: nil}), do: ""
+
+  defp stop_label(%Options{max_survivors: n}),
+    do: " (stop after #{n} survivor#{plural(n)})"
 
   # Warn about every `# mutare:ignore` that suppressed no mutant — a typo'd family
   # (`[arithmatic]`), an empty `[]`, a misplaced standalone line, or a family that
@@ -440,8 +457,39 @@ defmodule Mix.Tasks.Mutare do
 
   defp report(run, %Options{} = options) do
     Enum.each(options.reporters, fn {format, path} -> emit(format, path, run, options) end)
-    gate(run.results, options.min_score)
+    finish_run(run, options)
   end
+
+  # On a complete run, apply the `--min-score` CI gate. On an early stop
+  # (`--max-survivors`), the score is over a partial prefix of the mutants, so a
+  # gate would be misleading — instead note what happened (on stderr, so a machine
+  # report on stdout stays clean, like `warn_ineffective_ignores/1`) and skip it.
+  defp finish_run(%{stopped_early: false} = run, %Options{} = options),
+    do: gate(run.results, options.min_score)
+
+  defp finish_run(%{stopped_early: true} = run, %Options{} = options) do
+    IO.puts(:stderr, early_stop_note(run, options))
+  end
+
+  # The partial-run note for an early stop: how many survivors were found, how much
+  # of the candidate set was evaluated, and — only when a `--min-score` was set —
+  # that its gate was skipped because the score is partial.
+  defp early_stop_note(run, %Options{} = options) do
+    survivors = Enum.count(run.results, &(&1.status == :survived))
+    evaluated = length(run.results)
+    total = Schema.count(run.schema)
+
+    "stopped after finding #{survivors} survivor#{plural(survivors)} (--max-survivors " <>
+      "#{options.max_survivors}); evaluated #{evaluated} of #{total} mutant#{plural(total)}. " <>
+      "The mutation score above is over this partial set" <> gate_skipped_note(options.min_score)
+  end
+
+  defp gate_skipped_note(nil), do: "."
+  defp gate_skipped_note(_min_score), do: ", so the --min-score gate was not applied."
+
+  # "s" unless the count is exactly 1 — for the human-readable labels/notes above.
+  defp plural(1), do: ""
+  defp plural(_n), do: "s"
 
   # A `nil` path means stdout (the console); a path means write the rendered
   # report to that file and note where it went.

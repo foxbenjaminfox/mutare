@@ -43,6 +43,7 @@ defmodule Mutare.Options do
           strict_ignores: boolean(),
           quiet: boolean(),
           max_mutants: pos_integer() | nil,
+          max_survivors: pos_integer() | nil,
           min_score: number() | nil,
           reporters: [{:human | :json | :html | :sarif, String.t() | nil}],
           reporter: (Result.t() -> any()) | nil,
@@ -78,6 +79,7 @@ defmodule Mutare.Options do
     strict_ignores: false,
     quiet: false,
     max_mutants: nil,
+    max_survivors: nil,
     min_score: nil,
     reporters: [{:human, nil}],
     reporter: nil,
@@ -171,6 +173,7 @@ defmodule Mutare.Options do
       strict_ignores: validate_strict_ignores!(opt(opts, :strict_ignores)),
       quiet: validate_quiet!(opt(opts, :quiet)),
       max_mutants: validate_max_mutants!(opt(opts, :max_mutants)),
+      max_survivors: validate_max_survivors!(opt(opts, :max_survivors)),
       min_score: validate_min_score!(opt(opts, :min_score)),
       reporters: validate_reporters!(opt(opts, :reporters)),
       reporter: validate_reporter!(opt(opts, :reporter)),
@@ -407,6 +410,19 @@ defmodule Mutare.Options do
         n,
         &(is_integer(&1) and &1 > 0),
         ":max_mutants must be a positive integer or nil"
+      )
+
+  # nil means no cap (run every mutant); otherwise stop the per-mutant run once
+  # this many *survivors* (`:survived` results) have been found. Unlike
+  # `:max_mutants` (a schema cap on candidate *sites*), this is enforced in the
+  # runner's per-mutant loop — every mutant is still compiled in, the run just
+  # halts early once enough survivors surface. See `Mutare.Runner`.
+  defp validate_max_survivors!(n),
+    do:
+      validate_nullable!(
+        n,
+        &(is_integer(&1) and &1 > 0),
+        ":max_survivors must be a positive integer or nil"
       )
 
   defp validate_min_score!(score),

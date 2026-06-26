@@ -34,6 +34,20 @@ defmodule Mutare.Runner do
   turn a terminating loop infinite, so the run is capped. A capped run counts as
   `:timeout` — a kill, since the hang is observable misbehavior.
 
+  ## Early stop after N survivors (`:max_survivors`)
+
+  `:max_survivors` (`--max-survivors`) stops the per-mutant loop once that many
+  **survivors** (`:survived` results) have surfaced, for an iterate-and-fix
+  workflow that wants a handful of concrete test gaps rather than a full run.
+  Unlike `:max_mutants` (a `Mutare.Schema` cap on candidate *sites*), every mutant
+  is still compiled in — only the *run* halts early. The per-mutant stream is
+  consumed `ordered: true`, so the stop is deterministic: the Nth survivor in
+  source order, regardless of which worker finished first, and the reported
+  survivors are exactly the first N. The returned run carries `stopped_early`; on
+  an early stop the harness-error abort guard is skipped (the score is already a
+  partial prefix — the Mix task notes it and skips the `--min-score` gate too),
+  since aborting would discard the very survivors the user asked to find.
+
   ## Per-worker partitioning (DB isolation)
 
   Optionally (`:partition_env`, off by default), each concurrent run is handed a
@@ -109,7 +123,8 @@ defmodule Mutare.Runner do
           schema: Schema.t(),
           results: [Result.t()],
           sandbox: Path.t(),
-          baseline_ms: non_neg_integer()
+          baseline_ms: non_neg_integer(),
+          stopped_early: boolean()
         }
 
   @type error ::
@@ -145,8 +160,9 @@ defmodule Mutare.Runner do
   `Mutare.Site` just before its run begins) — and `:test_selection`,
   `:workers`, `:timeout`, `:timeout_multiplier`, `:baseline_runs` (re-run the
   baseline to catch a flaky suite), `:harness_retries` (re-run a harness-errored
-  mutant before recording it), and `:max_harness_error_rate` (abort if too many
-  runs fail at the harness level).
+  mutant before recording it), `:max_harness_error_rate` (abort if too many runs
+  fail at the harness level), and `:max_survivors` (stop the run once that many
+  survivors are found, flagging the returned run `stopped_early`).
   """
   @spec run_with_schema(Schema.t(), Path.t(), Options.t() | keyword()) ::
           {:ok, run()} | error()
@@ -220,7 +236,7 @@ defmodule Mutare.Runner do
 
         on_phase.({:running, length(schema.sites)})
 
-        results =
+        {results, stopped_early} =
           schema.sites
           |> Task.async_stream(
             fn site ->
@@ -242,13 +258,29 @@ defmodule Mutare.Runner do
             ordered: true,
             timeout: :infinity
           )
-          |> Enum.map(fn {:ok, result} -> result end)
+          |> collect_until_survivors(options.max_survivors)
 
-        run = %{schema: schema, results: results, sandbox: sandbox, baseline_ms: baseline_ms}
+        run = %{
+          schema: schema,
+          results: results,
+          sandbox: sandbox,
+          baseline_ms: baseline_ms,
+          stopped_early: stopped_early
+        }
 
-        case harness_error_guard(results, options) do
-          :ok -> {:ok, run}
-          {:error, _reason, _detail} = error -> error
+        # An early stop (`--max-survivors`) tested only a prefix of the mutants, so
+        # the score is over a partial denominator and the run is already flagged
+        # `stopped_early` (the Mix task notes it and skips the `--min-score` gate).
+        # Applying the harness-error abort guard there would be counter-productive —
+        # it would discard the very survivors the user asked us to find — so it runs
+        # only on a complete run.
+        if stopped_early do
+          {:ok, run}
+        else
+          case harness_error_guard(results, options) do
+            :ok -> {:ok, run}
+            {:error, _reason, _detail} = error -> error
+          end
         end
       end
     after
@@ -264,6 +296,46 @@ defmodule Mutare.Runner do
     on_phase.(:baseline)
     Baseline.run(sandbox, baseline_runs, env)
   end
+
+  # Consume the ordered per-mutant result stream. With no `:max_survivors` cap we
+  # drain the whole stream (today's behaviour); with a cap we stop once that many
+  # `:survived` results have been seen. Returns `{results_in_source_order,
+  # stopped_early?}`.
+  #
+  # Because the stream is consumed `ordered: true`, the stop point is the Nth
+  # survivor *in source order* — deterministic regardless of which worker finished
+  # first — so the reported survivors are exactly the first N. Halting a
+  # `Task.async_stream` shuts down its in-flight tasks; a handful of mutants past
+  # the trigger may have already run concurrently, but their results are discarded
+  # (and any orphaned `mix` process is bounded by the timeout watcher and the
+  # throwaway sandbox). See NOTES "Early stop after N survivors".
+  defp collect_until_survivors(stream, nil) do
+    {Enum.map(stream, fn {:ok, result} -> result end), false}
+  end
+
+  defp collect_until_survivors(stream, limit) do
+    stream
+    |> Enum.reduce_while({[], 0}, fn {:ok, result}, {acc, survivors} ->
+      survivors = survivors + survivor_count(result)
+      acc = [result | acc]
+
+      if survivors >= limit do
+        {:halt, {:stopped, Enum.reverse(acc)}}
+      else
+        {:cont, {acc, survivors}}
+      end
+    end)
+    |> case do
+      {:stopped, results} -> {results, true}
+      {acc, _survivors} -> {Enum.reverse(acc), false}
+    end
+  end
+
+  # 1 for a survivor (`:survived`), 0 otherwise — the only status `--max-survivors`
+  # counts. A timeout/atom-exhaustion is a kill, and no-coverage/ignored/poisoned/
+  # harness-error reached no verdict, so none of those is an "unkilled" survivor.
+  defp survivor_count(%Result{status: :survived}), do: 1
+  defp survivor_count(_result), do: 0
 
   # Resolve a `Mutare.Project` from the target if the caller didn't supply one (the
   # Mix task does; `Mutare.run/2` and direct callers may not). Its `copy_root` is
