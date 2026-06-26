@@ -313,8 +313,9 @@ defmodule Mix.Tasks.Mutare do
   """
   use Mix.Task
 
-  alias Mutare.{Config, Ignore, Macros, Mutators, Options, Project, Report, Runner, Schema, Site}
-  alias Mutare.Ignore.Directive
+  alias Mutare.{Config, Options, Project, Report, Runner, Schema}
+  alias Mutare.CLI
+  alias Mutare.CLI.Info
   alias Mutare.Report.Live
   alias Mutare.Sandbox.Command
 
@@ -363,9 +364,9 @@ defmodule Mix.Tasks.Mutare do
     # Inspect-and-exit flags print information and do nothing else. These three need
     # no project or config, so they short-circuit before any resolution.
     cond do
-      flags[:version] -> Mix.shell().info(version_string())
-      flags[:list_mutators] -> print_mutator_catalog()
-      flags[:explain] -> explain_mutator(flags[:explain])
+      flags[:version] -> Mix.shell().info(Info.version_string())
+      flags[:list_mutators] -> Info.print_mutator_catalog()
+      flags[:explain] -> Info.explain_mutator(flags[:explain])
       true -> dispatch_with_options(flags, rest)
     end
   end
@@ -380,10 +381,10 @@ defmodule Mix.Tasks.Mutare do
     root = project.copy_root
 
     cond do
-      flags[:show_config] -> print_effective_config(project, options)
-      flags[:list_macros] -> print_macro_registry(options)
-      flags[:list_ignores] -> print_ignores(project, options, root)
-      flags[:dry_run] -> print_dry_run(project, options, root)
+      flags[:show_config] -> Info.print_effective_config(project, options)
+      flags[:list_macros] -> Info.print_macro_registry(options)
+      flags[:list_ignores] -> Info.print_ignores(project, scan(options, root))
+      flags[:dry_run] -> Info.print_dry_run(project, scan(options, root))
       true -> run_mutation_testing(project, options, root)
     end
   end
@@ -431,298 +432,6 @@ defmodule Mix.Tasks.Mutare do
       # Backstop for an unexpected raise mid-run; `finish/1` is idempotent.
       if live, do: Live.finish(live)
     end
-  end
-
-  # `--list-mutators`: print the built-in catalog and exit. Derived from the one
-  # `Mutare.Mutators` registry (and each family's own `@moduledoc`), so the list
-  # can never drift from the families that actually run.
-  defp print_mutator_catalog do
-    registry = Mutators.registry()
-
-    pad =
-      registry
-      |> Enum.map(fn {family, _module} -> family |> to_string() |> String.length() end)
-      |> Enum.max()
-
-    Mix.shell().info("Built-in mutator families (all run by default):\n")
-
-    Enum.each(registry, fn {family, module} ->
-      name = family |> to_string() |> String.pad_trailing(pad)
-      Mix.shell().info("  #{name}  #{mutator_summary(module)}")
-    end)
-
-    Mix.shell().info("""
-
-    Select a subset with --mutators (comma-separated), e.g.
-
-        mix mutare --mutators relational,arithmetic
-
-    Prefix the list with `builtins` to keep the whole set and add your own:
-
-        mix mutare --mutators builtins,MyApp.MyMutator\
-    """)
-  end
-
-  # A one-line summary for the catalog: the family module's `@moduledoc` flattened
-  # to a single line, stripped of Markdown noise (but keeping a lone `*` operator)
-  # and truncated. Empty when a module ships without docs (a docs-stripped build).
-  @summary_width 78
-  defp mutator_summary(module) do
-    case fetch_moduledoc(module) do
-      {:ok, doc} ->
-        doc
-        |> String.replace(~r/^[ \t]*\*[ \t]+/m, "")
-        |> String.replace(~r/\*\*/, "")
-        |> String.replace("`", "")
-        |> String.replace(~r/\s+/, " ")
-        |> String.trim()
-        |> Live.truncate(@summary_width)
-
-      :error ->
-        ""
-    end
-  end
-
-  # The module's English `@moduledoc`, or `:error` when it ships without docs (a docs-stripped
-  # build) — the single match on the `Code.fetch_docs/1` tuple shape, shared by the catalog
-  # summary and `--explain`.
-  defp fetch_moduledoc(module) do
-    case Code.fetch_docs(module) do
-      {:docs_v1, _, _, _, %{"en" => doc}, _, _} when is_binary(doc) -> {:ok, doc}
-      _ -> :error
-    end
-  end
-
-  # `--version`: the installed mutare version.
-  defp version_string do
-    case Application.spec(:mutare, :vsn) do
-      nil -> "mutare (version unknown)"
-      vsn -> "mutare #{vsn}"
-    end
-  end
-
-  # `--explain <family-or-module>`: print one mutator's full `@moduledoc`. Resolves a
-  # built-in family name through the registry, or a custom module name directly.
-  defp explain_mutator(name) do
-    case explainable(name) do
-      {family, module} ->
-        Mix.shell().info("#{family}  (#{inspect(module)})\n")
-        Mix.shell().info(full_moduledoc(module))
-
-      nil ->
-        Mix.raise(
-          "unknown mutator #{inspect(name)} — run `mix mutare --list-mutators` to see the families"
-        )
-    end
-  end
-
-  defp explainable(name) do
-    case Enum.find(Mutators.registry(), fn {family, _} -> to_string(family) == name end) do
-      {family, module} ->
-        {family, module}
-
-      nil ->
-        module = Module.concat([name])
-
-        if Code.ensure_loaded?(module) and function_exported?(module, :name, 0),
-          do: {module.name(), module},
-          else: nil
-    end
-  end
-
-  defp full_moduledoc(module) do
-    case fetch_moduledoc(module) do
-      {:ok, doc} -> String.trim_trailing(doc)
-      :error -> "(no documentation available for #{inspect(module)})"
-    end
-  end
-
-  # `--show-config`: the effective options after merging `.mutare.exs`, CLI flags, and
-  # defaults — so config precedence is no longer invisible.
-  defp print_effective_config(%Project{} = project, %Options{} = options) do
-    rows = [
-      {"target", target_label(project)},
-      {"paths", inspect(options.paths)},
-      {"exclude", inspect(options.exclude)},
-      {"mutators", format_mutators(options.mutators)},
-      {"macros", inspect(options.macros)},
-      {"expand_uses", options.expand_uses},
-      {"test_selection", options.test_selection},
-      {"workers", options.workers},
-      {"timeout", options.timeout || "derived from baseline run"},
-      {"timeout_multiplier", options.timeout_multiplier},
-      {"baseline_runs", options.baseline_runs},
-      {"harness_retries", options.harness_retries},
-      {"max_harness_error_rate", options.max_harness_error_rate},
-      {"max_mutants", options.max_mutants || "(no cap)"},
-      {"max_survivors", options.max_survivors || "(no cap)"},
-      {"min_score", options.min_score || "(no gate)"},
-      {"strict_ignores", options.strict_ignores},
-      {"sandbox", options.sandbox || "(throwaway temp dir)"},
-      {"keep_sandbox", options.keep_sandbox},
-      {"reporters", format_reporters(options.reporters)}
-    ]
-
-    Mix.shell().info("Effective configuration (.mutare.exs + CLI flags + defaults):\n")
-    print_aligned(rows)
-  end
-
-  defp target_label(%Project{umbrella?: true, mutate_scope: scope, copy_root: root}),
-    do: "#{root} (umbrella apps: #{Enum.map_join(scope, ", ", & &1.app)})"
-
-  defp target_label(%Project{copy_root: root}), do: root
-
-  defp format_mutators(nil), do: "(all built-ins — see --list-mutators)"
-
-  defp format_mutators(mutators) do
-    mutators |> Mutators.resolve() |> Enum.map_join(", ", &to_string(&1.name))
-  rescue
-    _ -> inspect(mutators)
-  end
-
-  defp format_reporters(reporters) do
-    Enum.map_join(reporters, ", ", fn
-      {format, nil} -> "#{format} (stdout)"
-      {format, path} -> "#{format} (#{path})"
-    end)
-  end
-
-  defp print_aligned(rows) do
-    pad = rows |> Enum.map(fn {k, _} -> String.length(k) end) |> Enum.max()
-    Enum.each(rows, fn {k, v} -> Mix.shell().info("  #{String.pad_trailing(k, pad)}  #{v}") end)
-  end
-
-  # `--list-macros`: the known-macro registry (built-ins + the `:macros` option + any
-  # enabled mutator's `macros/0`) whose arguments the transform routes specially.
-  defp print_macro_registry(%Options{} = options) do
-    specs = Mutators.resolve(options.mutators || Mutators.all())
-    registry = Macros.build(options.macros, specs)
-
-    Mix.shell().info(
-      "Known macros (arguments routed specially, not mutated as plain expressions):\n"
-    )
-
-    registry
-    |> Map.values()
-    |> Enum.sort_by(fn s ->
-      {format_module_key(s.module), to_string(s.name), to_string(s.arity)}
-    end)
-    |> Enum.each(fn s -> Mix.shell().info("  #{format_macro_spec(s)}") end)
-  end
-
-  defp format_macro_spec(spec) do
-    sig =
-      "#{format_module_key(spec.module)}.#{format_macro_name(spec.name)}/#{format_arity(spec.arity)}"
-
-    via = if spec.host, do: "  (via #{inspect(spec.host)})", else: ""
-    "#{String.pad_trailing(sig, 28)}  #{inspect(spec.args)}#{via}"
-  end
-
-  defp format_module_key(:*), do: "*"
-  defp format_module_key(mod) when is_list(mod), do: Enum.map_join(mod, ".", &Atom.to_string/1)
-  defp format_module_key(mod) when is_atom(mod), do: inspect(mod)
-
-  defp format_macro_name(:*), do: "*"
-  defp format_macro_name(name), do: to_string(name)
-
-  defp format_arity(:any), do: "any"
-  defp format_arity(:*), do: "any"
-  defp format_arity(n), do: to_string(n)
-
-  # `--list-ignores`: every `# mutare:ignore` in scope, flagged active or ineffective
-  # (the audit view — a normal run only ever *warns* about the ineffective ones).
-  defp print_ignores(%Project{} = project, %Options{} = options, root) do
-    schema = scan(options, root)
-    ineffective = MapSet.new(schema.ineffective_ignores)
-
-    entries =
-      for {file, source} <- schema.sources,
-          String.contains?(source, "mutare:ignore"),
-          {_line, directives} <- Ignore.directives(source),
-          directive <- directives,
-          do: {file, directive}
-
-    if entries == [] do
-      Mix.shell().info("No `# mutare:ignore` directives found#{scope_label(project)}.")
-    else
-      print_ignore_entries(entries, ineffective)
-    end
-  end
-
-  defp print_ignore_entries(entries, ineffective) do
-    entries
-    |> Enum.sort_by(fn {file, d} -> {file, d.line} end)
-    |> Enum.group_by(fn {file, _} -> file end)
-    |> Enum.sort_by(fn {file, _} -> file end)
-    |> Enum.each(fn {file, file_entries} ->
-      Mix.shell().info(file)
-
-      Enum.each(file_entries, fn {_file, directive} = entry ->
-        status = if MapSet.member?(ineffective, entry), do: "ineffective", else: "active"
-
-        Mix.shell().info(
-          "  #{directive.line}  #{String.pad_trailing(status, 11)}  #{format_directive(directive)}"
-        )
-      end)
-    end)
-
-    n = Enum.count(entries, &MapSet.member?(ineffective, &1))
-
-    if n > 0 do
-      Mix.shell().info(
-        "\n#{n} ineffective directive#{plural(n)} (suppress nothing — a typo'd family or " <>
-          "a stale line); `--strict-ignores` would exit 1."
-      )
-    end
-  end
-
-  defp format_directive(%Directive{mutators: :all, reason: nil}), do: "all families"
-
-  defp format_directive(%Directive{mutators: :all, reason: reason}),
-    do: "all families — #{reason}"
-
-  defp format_directive(%Directive{mutators: set, reason: reason}) do
-    families = "[#{set |> Enum.sort() |> Enum.join(", ")}]"
-    if reason, do: "#{families} — #{reason}", else: families
-  end
-
-  # `--dry-run`: list the mutants that would run, by file — no compile, no tests.
-  # Honours every scope flag (`--only`/`--since`/`--mutators`/`--line`/…) via the
-  # schema, so it answers "what would this exact invocation test?".
-  defp print_dry_run(%Project{} = project, %Options{} = options, root) do
-    schema = scan(options, root)
-    by_file = Enum.group_by(schema.sites, & &1.file)
-
-    case schema.sites do
-      [] ->
-        Mix.shell().info("No mutants would be generated#{scope_label(project)}.")
-
-      sites ->
-        Mix.shell().info(
-          "#{length(sites)} mutant#{plural(length(sites))} across " <>
-            "#{map_size(by_file)} file#{plural(map_size(by_file))} " <>
-            "— dry run, nothing compiled or executed:\n"
-        )
-
-        by_file
-        |> Enum.sort_by(fn {file, _} -> file end)
-        |> Enum.each(&print_dry_run_file/1)
-
-        Mix.shell().info(
-          "\n(Coverage and survival need a real run; this lists only what would be tested.)"
-        )
-    end
-  end
-
-  defp print_dry_run_file({file, sites}) do
-    Mix.shell().info("#{file}  (#{length(sites)})")
-
-    sites
-    |> Enum.sort_by(& &1.line)
-    |> Enum.each(fn site ->
-      ignored = if site.ignored, do: "  [ignored]", else: ""
-      Mix.shell().info("  #{site.line}  #{Site.describe(site)}#{ignored}")
-    end)
   end
 
   # The shared scan for the scan-backed info commands (`--dry-run`, `--list-ignores`):
@@ -846,7 +555,7 @@ defmodule Mix.Tasks.Mutare do
     files = schema.metamutants |> map_size()
 
     Mix.shell().info(
-      "mutare#{scope_label(project)}: #{Schema.count(schema)} mutants" <>
+      "mutare#{CLI.scope_label(project)}: #{Schema.count(schema)} mutants" <>
         "#{cap_label(options)}#{stop_label(options)} across #{files} file(s)"
     )
 
@@ -869,7 +578,7 @@ defmodule Mix.Tasks.Mutare do
   defp stop_label(%Options{max_survivors: nil}), do: ""
 
   defp stop_label(%Options{max_survivors: n}),
-    do: " (stop after #{n} survivor#{plural(n)})"
+    do: " (stop after #{n} survivor#{CLI.plural(n)})"
 
   # Warn about every `# mutare:ignore` that suppressed no mutant — a typo'd family
   # (`[arithmatic]`), an empty `[]`, a misplaced standalone line, or a family that
@@ -910,17 +619,10 @@ defmodule Mix.Tasks.Mutare do
     n = length(ineffective)
 
     Mix.raise(
-      "--strict-ignores: #{n} `# mutare:ignore` directive#{plural(n)} " <>
+      "--strict-ignores: #{n} `# mutare:ignore` directive#{CLI.plural(n)} " <>
         "suppressed no mutant (see the warnings above)"
     )
   end
-
-  defp scope_label(%Project{umbrella?: true, mutate_scope: scope}) do
-    " (umbrella: #{Enum.map_join(scope, ", ", & &1.app)})"
-  end
-
-  defp scope_label(%Project{copy_root: "."}), do: ""
-  defp scope_label(%Project{copy_root: root}), do: " in #{root}"
 
   defp report(run, %Options{} = options) do
     Enum.each(options.reporters, fn {format, path} -> emit(format, path, run, options) end)
@@ -946,17 +648,13 @@ defmodule Mix.Tasks.Mutare do
     evaluated = length(run.results)
     total = Schema.count(run.schema)
 
-    "stopped after finding #{survivors} survivor#{plural(survivors)} (--max-survivors " <>
-      "#{options.max_survivors}); evaluated #{evaluated} of #{total} mutant#{plural(total)}. " <>
+    "stopped after finding #{survivors} survivor#{CLI.plural(survivors)} (--max-survivors " <>
+      "#{options.max_survivors}); evaluated #{evaluated} of #{total} mutant#{CLI.plural(total)}. " <>
       "The mutation score above is over this partial set" <> gate_skipped_note(options.min_score)
   end
 
   defp gate_skipped_note(nil), do: "."
   defp gate_skipped_note(_min_score), do: ", so the --min-score gate was not applied."
-
-  # "s" unless the count is exactly 1 — for the human-readable labels/notes above.
-  defp plural(1), do: ""
-  defp plural(_n), do: "s"
 
   # A `nil` path means stdout (the console); a path means write the rendered
   # report to that file and note where it went.
