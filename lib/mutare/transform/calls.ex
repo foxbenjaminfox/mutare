@@ -16,7 +16,7 @@ defmodule Mutare.Transform.Calls do
   `mutate/1` argument) — exactly where a call-matching mutator needs it.
 
   `resolved_macro_call/1` is the **known-macro** twin: the same normalization for the node core
-  hands a `:routing`/`:hosted` mutator's `c:Mutare.Mutator.macro_routing/1` / `c:Mutare.Mutator.host/2`
+  hands a `:routing`/`:hosted` mutator's `c:Mutare.Mutator.MacroAware.macro_routing/1` / `c:Mutare.Mutator.MacroAware.host/2`
   callback, so those recognise their macro across the bare/qualified/aliased forms `Resolve`
   accepts instead of pattern-matching the raw head.
 
@@ -168,8 +168,8 @@ defmodule Mutare.Transform.Calls do
   Deconstruct a recognised **known-macro** call into `{module, name, visible_args, rebuild}`,
   or `nil` — the macro-node twin of `resolved_call/1`.
 
-  This is the helper a `:routing`/`:hosted` mutator (`c:Mutare.Mutator.macro_routing/1`,
-  `c:Mutare.Mutator.host/2`) should use instead of pattern-matching the node head. Core hands
+  This is the helper a `:routing`/`:hosted` mutator (`c:Mutare.Mutator.MacroAware.macro_routing/1`,
+  `c:Mutare.Mutator.MacroAware.host/2`) should use instead of pattern-matching the node head. Core hands
   those callbacks the *visible call node*, which — depending on how the source wrote it — is a
   **bare** `where(q, …)`, a **qualified** `Ecto.Query.where(q, …)`, or an **aliased**
   `Q.where(q, …)`. A callback that guards on a bare atom head silently fails to recognise the

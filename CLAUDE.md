@@ -811,10 +811,19 @@ contract between them is the whole game.
   **Sarif** emits survivors-only as SARIF 2.1.0 findings for GitHub code scanning (reuses
   `Site.describe/1` as the message). Encoding is the stdlib `JSON` module — hence the `elixir`
   floor is `~> 1.18`. Selected via the `:reporters` option (below).
-- **`Mutare.Mutator`** + **`Mutare.Mutators.*`** — the public extension behaviour (`name/0`
-  required; optional `mutate/1`, `mutate/2`, `pattern_mutations/2`, `return_replacements/1`,
-  `condition_replacements/1`, `macros/0`, `empty_collection?/1` — a mutator implements `name/0`
-  plus at least one mutation producer) and the built-in families, **all on by default**. The `Mutare.Mutators` `@registry` is the source of truth for *which* families
+- **`Mutare.Mutator`** (+ the `Mutare.Mutator.Structural` / `Mutare.Mutator.MacroAware` capability
+  behaviours) + **`Mutare.Mutators.*`** — the public extension surface, **split by capability** so
+  the core behaviour is the 90% case rather than a bag of twelve optional callbacks. **`Mutare.Mutator`**
+  is `name/0` + a node-level producer (`mutate/1`, the pipe-aware/configurable `mutate/2`, and the
+  `empty_collection?/1` in-RHS classifier — a mutator implements `name/0` plus at least one producer);
+  **`Mutare.Mutator.Structural`** carries the position-routed hooks
+  (`return_replacements`/`condition_replacements`/`pattern_mutations`, each with a behaviour-aware
+  `+1` arity); **`Mutare.Mutator.MacroAware`** carries DSL targeting (`macros/0`, `macro_routing/1`,
+  `host/2`). A mutator declares `Mutare.Mutator` plus whichever capability behaviours it needs.
+  Dispatch is **unchanged** — `Mutare.Mutator.Dispatch` still discovers every hook by
+  `function_exported?`, so the split is documentation/ergonomics, not new plumbing (the same
+  capability-named-peer move as `Mutare.Plugin`'s vocabulary/judgment carve-out; see NOTES "Mutator
+  capability behaviours"). The built-in families are **all on by default**. The `Mutare.Mutators` `@registry` is the source of truth for *which* families
   exist; each family's exact swap table, exclusions, and rationale live in its own `@moduledoc`.
   Don't re-enumerate those here — a hand-maintained catalogue drifts (that's how a new family goes
   undocumented), the moduledocs don't. What a reader needs from *this* file is the handful of
@@ -1134,9 +1143,12 @@ contract between them is the whole game.
 
 Implement `Mutare.Mutator`: `name/0` (required) plus a way to produce mutations — a *node-level*
 `mutate/1` (returning `:skip` or a list of mutations that reuse the original operands), **or**
-one of the structural/pipe-aware/macro callbacks below. `mutate/1` is **optional**: a structural or
-pipe-only mutator omits it entirely (a module needs `name/0` and at least one producing callback to
-count as a mutator). Each list element is a `t:Mutare.Mutator.mutation/0` — a bare node, `nil` (a
+one of the structural/pipe-aware/macro callbacks below. The structural and macro callbacks live on
+the **companion behaviours** `Mutare.Mutator.Structural` / `Mutare.Mutator.MacroAware`, declared
+*alongside* `Mutare.Mutator` (`@behaviour Mutare.Mutator` plus `@behaviour Mutare.Mutator.Structural`,
+etc.) — the split keeps the core contract small; dispatch still finds every hook by export. `mutate/1`
+is **optional**: a structural or pipe-only mutator omits it entirely (a module needs `name/0` and at
+least one producing callback to count as a mutator). Each list element is a `t:Mutare.Mutator.mutation/0` — a bare node, `nil` (a
 dropped slot), or a `%Mutare.Mutator.Mutation{node:, note:}` to attach a **per-mutant advisory** the
 report surfaces on a survivor (e.g. "off-by-one suspected"); `Mutation.new(node, note)` builds it.
 The note (the same channel a selector host's `:mutants` use) rides through to the `Mutare.Site` from
@@ -1161,15 +1173,16 @@ node `Conditional` already forces `true`/`false`, reuse `Mutare.Mutators.Conditi
 (as `ReturnValue`/`IfCondition` do).
 
 For a *structural head-pattern* mutator (restructuring a whole `def`/`defp` head — variable
-swaps, wildcards), you omit `mutate/1` and implement the optional callback
-`pattern_mutations(head_args, used_outside)` (returning mutated arg lists);
+swaps, wildcards), you declare `Mutare.Mutator.Structural`, omit `mutate/1`, and implement its
+`pattern_mutations(head_args, used_outside)` callback (returning mutated arg lists);
 `Mutare.Transform.FunctionPlan` discovers it by export and delivers each by lifting. You must
 return only pattern-legal, compile-safe arg lists (`PatternSwap`/`PatternWildcard` are the
 built-in examples).
 
 For a *structural in-place* mutator at a position core routes — a `def`/`defp` clause **return
-tail** or an `if`/`unless`/`cond` **condition** — you omit `mutate/1` and implement
-`return_replacements(tail)` or `condition_replacements(condition)` (each returning replacement
+tail** or an `if`/`unless`/`cond` **condition** — you declare `Mutare.Mutator.Structural`, omit
+`mutate/1`, and implement its `return_replacements(tail)` or `condition_replacements(condition)`
+callback (each returning replacement
 nodes). `Transform` discovers implementers by export (`Mutare.Mutator.Dispatch.implementing/3`) and asks
 *all* of them at each routed position, recording each under its own name — so these are no longer
 hardcoded to the built-in `ReturnValue`/`IfCondition`. `test/support/structural_mutator.ex` is a
@@ -1217,7 +1230,8 @@ reaches the mutator. `Mutare.Mutators.resolve/1` turns each entry into a `Mutare
 receive `opts` (structural head-pattern mutators aren't configurable yet — out of scope).
 
 For a *macro-aware* mutator (one that targets a macro whose arguments must be routed specially —
-a pattern, or an opaque DSL body), implement the optional callback `macros/0` returning
+a pattern, or an opaque DSL body), you declare `Mutare.Mutator.MacroAware` and implement its
+`macros/0` callback returning
 `{module, name, arity, treatment}` / `{module, name, treatment}` entries (treatment
 `:expression`/`:pattern`/`:binding_pattern`/`:skip`; `:binding_pattern` is a pattern arg whose
 bindings *escape* the macro — a `destructure`-like macro — earning structural swap/wildcard mutants
@@ -1232,8 +1246,9 @@ argument as a pattern / leave a DSL opaque) is the declarative top-level `:macro
 
 For a *selector-hosting* mutator (one that mutates *inside* a compile-time DSL fragment — the deep
 `Ecto.from`/`where` case, where a bare selector `case` would poison the build and the fragment has
-*foreign* semantics core can't vouch for), register the macro with a **`:hosted`** treatment (or a
-shape-dependent **`:routing`** classifier, implementing `macro_routing(call_node)`) and implement
+*foreign* semantics core can't vouch for), you declare `Mutare.Mutator.MacroAware`, register the
+macro with a **`:hosted`** treatment (or a shape-dependent **`:routing`** classifier, implementing
+`macro_routing(call_node)`) and implement
 `host(macro_node, context)`. Per call core hands the **whole macro node** to `host/2`, which returns
 a list of *targets*, each a map: `:original` (the logical fragment) + `:mutants` (the library's *own*
 semantics catalog — **never** core's mutators, which would mis-suppress under three-valued logic) +
@@ -1267,7 +1282,7 @@ bare module or a `{module, opts}` pair. The two callbacks split by kind — a **
 across plugins, opts-independent) vs a **decision** (first-non-`:decline`-wins, opts-aware,
 context-carrying):
 
-- **`macros/0`** (registration) — same entries as a mutator's `c:Mutare.Mutator.macros/0`
+- **`macros/0`** (registration) — same entries as a mutator's `c:Mutare.Mutator.MacroAware.macros/0`
   (`{module, name, arity, treatment}`); they **merge** into the known-macro registry. Use a *per-position*
   list to mutate the runtime arguments while skipping the compile-time-literal ones
   (`{Gettext.Macros, :ngettext, 4, [:skip, :skip, :expression, :expression]}` — mutate the count and

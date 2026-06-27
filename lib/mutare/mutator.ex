@@ -7,6 +7,16 @@ defmodule Mutare.Mutator do
   site. Mutators **never touch source text**; the transform locates the node,
   records its range, and splices the mutation in (a clean one-line diff).
 
+  This is the **core, node-level** contract — `name/0` plus a mutation producer (`mutate/1`,
+  the pipe-aware/configurable `mutate/2`, or one of the structural hooks). Two *capability*
+  behaviours sit alongside it for the mutators that need more than a node rewrite, each declared
+  in addition to `Mutare.Mutator`:
+
+    * `Mutare.Mutator.Structural` — mutating a *position* no node identifies (a return tail, an
+      `if`/`cond` condition, a `def` head pattern).
+    * `Mutare.Mutator.MacroAware` — targeting a *macro* whose arguments must be routed specially
+      (a pattern, an opaque DSL body, a hosted fragment).
+
   ## Writing one
 
   Match the node shapes you care about and rebuild them with the change,
@@ -37,7 +47,7 @@ defmodule Mutare.Mutator do
 
   Build literal replacements with `Mutare.AST.literal/1` (it gets the Sourceror clean-meta
   rule right — a hand-built `{:__block__, [], ["x"]}` renders as the charlist `~c"x"`); see
-  `Mutare.AST` for the sentinels and node predicates. To match aliased/imported stdlib calls,
+  `Mutare.AST` for the sentinels and node predicates. To match aliased/imported calls,
   resolve with `Mutare.Transform.Calls.resolved_call/1`.
 
   ## Registering one
@@ -87,23 +97,15 @@ defmodule Mutare.Mutator do
       # mutate option values but not the option names, for atom keys
       [mutators: [..., {Mutare.Mutators.AtomLiteral, call_option_keys: false}]]
 
-  ## Registering known macros (`macros/0`)
+  ## Targeting a macro / DSL (`Mutare.Mutator.MacroAware`)
 
-  A mutator that targets a *macro* — whose arguments the transform must route as
-  patterns or leave opaque — declares those macros with the optional `c:macros/0`
-  callback. Listing the mutator in `:mutators` then auto-registers them, so a
-  library (e.g. an Ecto integration) bundles its mutator and its macro routing in
-  one module:
-
-      defmodule Mutare.Ecto do
-        @behaviour Mutare.Mutator
-        def name, do: :ecto_query
-        def mutate(node), do: ...                       # drop a where, flip :asc/:desc
-        def macros, do: [{Ecto.Query, :from, :any, :skip}]
-      end
-
-  See `Mutare.Macros` for the declarative `:macros` option (the no-mutator case,
-  e.g. routing a custom DSL's argument as a pattern).
+  A mutator that targets a *macro* — whose arguments the transform must route as patterns,
+  leave opaque, or host a fragment of — declares those macros through the separate
+  `Mutare.Mutator.MacroAware` behaviour (`c:Mutare.Mutator.MacroAware.macros/0` and friends).
+  Listing the mutator in `:mutators` auto-registers them, so a library (e.g. an Ecto
+  integration) bundles its mutator and its macro routing in one module that declares both
+  `Mutare.Mutator` and `Mutare.Mutator.MacroAware`. See `Mutare.Macros` for the declarative
+  `:macros` option (the no-mutator case, e.g. routing a custom DSL's argument as a pattern).
 
   ## Registering a collection literal (`empty_collection?/1`)
 
@@ -128,17 +130,18 @@ defmodule Mutare.Mutator do
   The transform asks the mutator that *produced* the mutation, so the value is its own
   output; discovered by `function_exported?(mod, :empty_collection?, 1)`.
 
-  ## Structural mutators at routed positions (`return_replacements/1` / `condition_replacements/1`)
+  ## Structural mutators at routed positions (`Mutare.Mutator.Structural`)
 
   Some mutation targets are *positions* no single node identifies: a `def`/`defp` clause's
-  **return tail**, or an `if`/`unless`/`cond` **condition**. For those, `mutate/1` is `:skip`
-  and you implement the matching structural callback — `c:return_replacements/1` or
-  `c:condition_replacements/1` — returning the replacement node(s). The transform names the
-  position and asks *every* enabled mutator implementing the callback (via
-  `Mutare.Mutator.Dispatch.implementing/3`), delivering each in place and recording it under its own
-  name. `Mutare.Mutators.ReturnValue` / `Mutare.Mutators.IfCondition` are the built-ins; a
-  custom mutator implementing the same callback participates identically — they are not
-  hardcoded. (The head-pattern analog is `c:pattern_mutations/2`, delivered by lifting.)
+  **return tail**, an `if`/`unless`/`cond` **condition**, or a `def`/`defp` **head pattern**.
+  Those live on the separate `Mutare.Mutator.Structural` behaviour — `mutate/1` is `:skip` and
+  you implement `c:Mutare.Mutator.Structural.return_replacements/1`,
+  `c:Mutare.Mutator.Structural.condition_replacements/1`, or
+  `c:Mutare.Mutator.Structural.pattern_mutations/2` (declaring both `Mutare.Mutator` and
+  `Mutare.Mutator.Structural`). The transform names the position and asks *every* enabled mutator
+  implementing the callback (via `Mutare.Mutator.Dispatch.implementing/3`), delivering each and
+  recording it under its own name. `Mutare.Mutators.ReturnValue` / `Mutare.Mutators.IfCondition` /
+  `Mutare.Mutators.PatternSwap` are the built-ins; a custom mutator participates identically.
 
   ## Behaviour-targeted mutators (`context.behaviours`)
 
@@ -163,12 +166,13 @@ defmodule Mutare.Mutator do
       end
 
   The structural callbacks have **behaviour-aware variants** carrying the same set in a
-  `%{behaviours: …}` context: `c:return_replacements/2`, `c:condition_replacements/2`,
-  `c:pattern_mutations/3`. Implement the `+1`-arity instead of the base to gate a return
-  tail / condition / head pattern on the module's behaviours (e.g. a GenServer mutator that
-  rewrites a `handle_call` return tail only under `@behaviour GenServer`); the transform
-  prefers the context arity when exported. `test/support/behaviour_mutator.ex` is a working
-  example covering both `mutate/2` and `return_replacements/2`.
+  `%{behaviours: …}` context: `c:Mutare.Mutator.Structural.return_replacements/2`,
+  `c:Mutare.Mutator.Structural.condition_replacements/2`,
+  `c:Mutare.Mutator.Structural.pattern_mutations/3`. Implement the `+1`-arity instead of the base
+  to gate a return tail / condition / head pattern on the module's behaviours (e.g. a GenServer
+  mutator that rewrites a `handle_call` return tail only under `@behaviour GenServer`); the
+  transform prefers the context arity when exported. `test/support/behaviour_mutator.ex` is a
+  working example covering both `mutate/2` and `return_replacements/2`.
 
   ## Matching aliased / imported calls (`Mutare.Transform.Calls`)
 
@@ -210,16 +214,6 @@ defmodule Mutare.Mutator do
         }
 
   @typedoc """
-  Context threaded to the optional **structural** callbacks
-  (`c:return_replacements/2`, `c:condition_replacements/2`, `c:pattern_mutations/3`).
-  Carries the enclosing module's `:behaviours` set (a `MapSet` of module atoms), so a
-  structural mutator can gate on the module's behaviours exactly as `mutate/2` does. (A
-  structural position has no pipe context and structural mutators take no `opts`, so this
-  is the lone key — the transform may add more in future.)
-  """
-  @type structural_context :: %{behaviours: MapSet.t(module())}
-
-  @typedoc """
   One element of a `c:mutate/1`/`c:mutate/2` return list — **one of**:
 
     * `nil` — an empty slot, dropped (so a mutator may `Enum.map` over candidates and emit
@@ -233,7 +227,8 @@ defmodule Mutare.Mutator do
 
   A bare `%{node:, note:}` *map* is **not** accepted — the struct is required (a quoted map
   literal is itself a valid mutation node, so only the struct unambiguously means "noted
-  mutant"). The same three forms a selector host's `:mutants` accept (see `c:host/2`).
+  mutant"). The same three forms a selector host's `:mutants` accept (see
+  `c:Mutare.Mutator.MacroAware.host/2`).
   """
   @type mutation :: nil | Macro.t() | Mutation.t()
 
@@ -244,10 +239,10 @@ defmodule Mutare.Mutator do
   (see `t:mutation/0`).
 
   **Optional** — the entry point for a *node-level* mutator. A purely **structural** mutator
-  (one driven by `pattern_mutations/2`, `return_replacements/1`, or `condition_replacements/1`)
-  or a **pipe-aware/configurable** one (driven by `mutate/2`) produces no node-local mutation and
-  simply omits this callback; `mutations/3` skips a mutator that doesn't export it. A module must
-  still implement `name/0` plus at least one mutation-producing callback to count as a mutator.
+  (one driven by `Mutare.Mutator.Structural`) or a **pipe-aware/configurable** one (driven by
+  `mutate/2`) produces no node-local mutation and simply omits this callback; `mutations/3` skips
+  a mutator that doesn't export it. A module must still implement `name/0` plus at least one
+  mutation-producing callback to count as a mutator.
 
   (The built-in `:guard_drop`/`:rescue_type` families are *not* mutators in this sense — they are
   **transform-managed**: their logic lives in `Mutare.Transform`, so they carry only `name/0`. See
@@ -291,179 +286,6 @@ defmodule Mutare.Mutator do
   @callback mutate(Macro.t(), context()) :: :skip | [mutation()]
 
   @doc """
-  Optional structural hook for mutating a `def`/`defp` clause **head pattern** as a
-  whole — restructurings that `mutate/1` can't express because they span sibling
-  positions or repeated variables (variable swaps, duplicate-variable wildcarding).
-
-  Given a clause's head argument patterns and `used_outside` (the set of variable names
-  read in the clause body/guard), it returns a list of mutated argument lists, one per
-  mutant. `Mutare.Transform.FunctionPlan` discovers implementers by
-  `function_exported?(mod, :pattern_mutations, 2)` and delivers each by lifting (a
-  selector `case` is illegal in a pattern), so an implementer must return only
-  *pattern-legal*, compile-safe argument lists. See `Mutare.Mutators.PatternSwap` and
-  `Mutare.Mutators.PatternWildcard`. A mutator without this callback simply takes no
-  part in head-pattern restructuring.
-  """
-  @callback pattern_mutations(head_args :: [Macro.t()], used_outside :: MapSet.t()) ::
-              [[Macro.t()]]
-
-  @doc """
-  Behaviour-aware variant of `c:pattern_mutations/2`, taking the structural `context`
-  (`%{behaviours: …}`). Implement *this* arity instead of `/2` to gate head-pattern
-  mutations on the enclosing module's behaviours. The transform prefers `/3` when
-  exported, falling back to `/2`; a mutator need implement only one.
-  """
-  @callback pattern_mutations(
-              head_args :: [Macro.t()],
-              used_outside :: MapSet.t(),
-              context :: structural_context()
-            ) :: [[Macro.t()]]
-
-  @doc """
-  Optional hook by which a mutator registers the **known macros** it depends on —
-  macros whose arguments the transform must route specially (a pattern argument, an
-  opaque DSL body) for this mutator to work, or simply to keep core from mutating a
-  DSL it does not understand.
-
-  Returns a list of `Mutare.Macro.Spec` entries in the declarative form
-  `{module, name, arity, treatment}` or `{module, name, treatment}` (arity `:any`),
-  where `treatment` is one of `:expression` / `:pattern` / `:binding_pattern` / `:skip` /
-  `:hosted` (uniform), a per-position list, or the `:routing` classifier sentinel (deferring
-  to `c:macro_routing/1`). `module`/`name` may be the wildcard `:*` — `{module, :*, treatment}`
-  registers a whole module, `{:*, name, treatment}` a name in any module (see `Mutare.Macro.Spec`).
-  A `:hosted` argument is delivered through this module's `c:host/2`
-  (the deep `Ecto.from`/`where` case); a `:routing` spec lets the treatment depend on the call
-  shape. When the mutator is enabled (listed in `:mutators`), the
-  transform merges these into its macro registry automatically — so a library ships
-  one module carrying *both* its mutator and the registration it relies on, and the
-  user adds a single `:mutators` entry. Core never has to know about the library.
-
-  The motivating case: an Ecto integration registers `{Ecto.Query, :from, :any,
-  :skip}` so core leaves the query DSL untouched, while the same module's
-  `mutate/1` rewrites the query (drop a `where`, flip `:asc`/`:desc`).
-  `Mutare.Macros.from_mutators/1` discovers implementers by
-  `function_exported?(mod, :macros, 0)`; a mutator without it registers nothing.
-  """
-  @callback macros() :: [tuple()]
-
-  @doc """
-  Optional **selector host** for mutating a fragment *inside* a compile-time DSL — a
-  `:hosted` macro argument (see `Mutare.Macro.Spec`). The deep external-DSL case
-  (`Ecto`'s `from`/`where`), where core can neither splice a bare selector `case` (it
-  would poison the single build) nor vouch for the fragment's semantics. So core owns
-  none of the mutation logic: it hands the **whole macro node** to this callback, which
-  returns a list of *targets* — one per fragment to mutate — and core builds the id-gated
-  selector, records the Sites, and weaves it in.
-
-  Each target is a map:
-
-    * `:original` — the logical fragment before mutation (the Site diff's left side, and
-      what the wrapped catch-all baseline runs);
-    * `:mutants` — the list of logical mutated fragments (one mutant id + `Mutare.Site` each),
-      from the library's *own* semantics catalog (e.g. SQL's, **not** core's Elixir mutators).
-      Each entry is a bare fragment node, a `%Mutare.Mutator.Mutation{}` (a `node` + a `note`
-      recorded on that mutant's Site for the report, e.g. "kill may require NULL/boundary data"),
-      or `nil` (dropped) — the same `t:mutation/0` forms `mutate/1`/`mutate/2` accept;
-    * `:splice` — a 2-arity `(macro_node, case_node -> macro_node)` weaving the assembled
-      selector `case` into a copy of the (emitted) macro node (for Ecto, `^`-pinning it into
-      the `where:` position);
-    * `:wrap` — optional 1-arity `(fragment -> woven_node)` mapping each logical fragment to
-      its branch value (`&dynamic([u], &1)`); defaults to identity;
-    * `:range` — optional `Sourceror.Range.t()` for the Site; defaults to the `:original`'s.
-
-  Core builds, per target, `case <id-selector> do <id> -> wrap(mutant); … ; <var> -> <cov>;
-  wrap(original) end`, splices it with `:splice`, assigns the ids, and records each mutant as
-  an `:in_place` `Mutare.Site` showing the logical fragment swap (the `wrap`/`splice`
-  scaffolding invisible). The single rule that keeps this sound: *the mutator hands core
-  `wrap`/`splice` and lets core build the selector* — so the four cross-cutting contracts
-  (compile-once, contiguous poison-stable ids, coverage, poison line-mapping) stay in core.
-
-  Registered by a `:hosted` (or `:routing`-classified) treatment in `c:macros/0`; the
-  transform discovers it by `function_exported?(mod, :host, 2)`. `context` is the same map
-  as `c:mutate/2`'s (`:pipe_mode`/`:opts`/`:behaviours`).
-  """
-  @callback host(macro_node :: Macro.t(), context :: context()) :: [map()]
-
-  @doc """
-  Optional **shape-aware routing** classifier for a macro registered `:routing` in
-  `c:macros/0`. A static per-position treatment list can't express a routing that depends
-  on the call *shape* — `where(q, category: "Foo")` is plain data (`:expression`) while
-  `where(q, [u], u.x == u.y)` is a `:hosted` DSL fragment. `Mutare.Transform.Resolve` calls
-  this with the concrete call node and uses the returned per-position treatment list (for the
-  node's **visible** arguments) instead of a fixed one. Each element is a
-  `t:Mutare.Macro.Spec.treatment/0` (`:expression`/`:pattern`/`:binding_pattern`/`:skip`/
-  `:hosted`); a `:hosted` here is delivered through this same mutator's `c:host/2`.
-
-  The list covers only the call's **visible** arguments. For a **piped** call (`q |> where(c)`)
-  the piped value is the `|>` LHS — *not* a visible argument and never routed here (it stays an
-  ordinary `:expression`), so a piped call passes one fewer argument than the written form. A
-  classifier that matches on arity must handle that reduced shape (match the visible args, not a
-  fixed count). The returned treatments are validated by `Mutare.Transform.Resolve`: an
-  unrecognised or mis-shaped treatment raises rather than silently mutating a position you meant
-  to skip or host.
-
-  ## Per-keyword-pair routing — `{:keyword, value_treatments}`
-
-  Besides the static treatments, the classifier may return two **classifier-only** routing
-  values (a static `args` can't carry them):
-
-    * `{:keyword, value_treatments}` for a **keyword-list argument**, a routing the per-argument
-      granularity can't otherwise reach. Core routes each `key: value` pair's **value** by the
-      corresponding treatment in `value_treatments` (positional; a value past the list defaults
-      to `:skip`) and leaves every **key** raw — a keyword key in a DSL is a field/option *name*,
-      not a value to mutate. A value treatment may itself be `{:keyword, …}`, so a *nested*
-      keyword list (a list whose values are keyword lists) routes too. A non-keyword argument
-      under it falls back to raw, so a mis-shaped classification can never splice into a non-pair.
-      A keyword value is a `t:keyword_value_treatment/0`. A nested `:hosted` value is left raw by
-      core and delivered through this module's `c:host/2`, which still receives and weaves into the
-      whole macro node.
-
-    * `:pinned` for a **value that must be `^`-pinned** — it sits in a compile-time DSL position
-      (an Ecto keyword-shorthand value) that accepts an interpolated value but not a bare
-      selector `case`. Core mutates it with the configured literal families (their *own* names on
-      the Site — the value mutation stays core's), but wraps the selector in `^`. Use it as a
-      value treatment inside `{:keyword, …}`, for a **scalar** value only (a compound value would
-      mutate nested nodes, where an inner `^` still poisons). A bare `^` is a compile error
-      outside such a context, so only route a position `:pinned` when the macro genuinely
-      interpolates it.
-
-  The motivating case is Ecto's keyword-shorthand `where(q, category: "Foo", deleted_at: nil)`:
-  `{:keyword, [:pinned, :skip]}` — mutate `"Foo"` `^`-pinned (core's literal families), the
-  column-name keys raw, and the `deleted_at: nil` pair skipped (it compiles to `IS NULL`).
-  """
-  @callback macro_routing(call_node :: Macro.t()) :: [routing_treatment()]
-
-  @typedoc """
-  A treatment a `c:macro_routing/1` classifier may return for one **visible argument**: a static
-  `t:Mutare.Macro.Spec.treatment/0` (`:expression`/`:pattern`/`:binding_pattern`/`:skip`/`:hosted`)
-  plus the two **classifier-only** routings a fixed `args` can't carry — `:pinned` (mutate the
-  value but deliver the selector `^`-pinned) and `{:keyword, [keyword_value_treatment]}` (route each
-  keyword pair's value, keys raw). The `{:keyword, …}` arm is **recursive**: a value treatment may
-  itself be `{:keyword, …}`, so a nested keyword shorthand (`from(S, where: [x: v])`) routes too.
-
-  A keyword *value* is a `t:keyword_value_treatment/0`. A nested `:hosted` treatment leaves that
-  value raw during core descent and asks the registering mutator's `c:host/2` to weave selectors
-  into the whole macro node.
-  """
-  @type routing_treatment ::
-          Mutare.Macro.Spec.treatment()
-          | :pinned
-          | {:keyword, [keyword_value_treatment()]}
-
-  @typedoc """
-  A treatment for a **value inside a `{:keyword, …}` routing**. A value may itself be
-  `{:keyword, …}`, so a nested keyword shorthand routes too.
-  """
-  @type keyword_value_treatment ::
-          :expression
-          | :pattern
-          | :binding_pattern
-          | :skip
-          | :hosted
-          | :pinned
-          | {:keyword, [keyword_value_treatment()]}
-
-  @doc """
   Optional hook by which a mutator declares that one of *its own* mutation results is
   an **empty enumerable literal** — a value `v` for which `x in v` is constantly
   `false`.
@@ -476,7 +298,7 @@ defmodule Mutare.Mutator do
   callback is for a **non-standard** shape: a custom collection *sigil* (`~SET[]`), or a
   call/struct that builds an empty enumerable (`MapSet.new([])`). The transform asks the
   mutator that *produced* the mutation (its `mutated` node is the argument), so a library
-  bundles this with its mutator like `c:macros/0`; discovered by
+  bundles this with its mutator like `c:Mutare.Mutator.MacroAware.macros/0`; discovered by
   `function_exported?(mod, :empty_collection?, 1)`.
 
   Returning `true` for a value where `x in v` is *not* always false would drop a real
@@ -485,61 +307,7 @@ defmodule Mutare.Mutator do
   """
   @callback empty_collection?(mutated :: Macro.t()) :: boolean()
 
-  @doc """
-  Optional structural hook for mutating a **clause return tail** — the expression a
-  `def`/`defp` clause (or a `rescue`/`catch`/`else` clause) returns. Given the raw tail
-  node, return the replacement nodes (one per mutant), as clean-meta AST ready to splice.
-
-  Like `c:pattern_mutations/2` this is *structural* — a return position is not a node any
-  `mutate/1` could match, so the transform names the position and asks every enabled mutator
-  implementing this callback (discovered by `function_exported?(mod, :return_replacements, 1)`),
-  delivering each replacement by the in-place selector. `Mutare.Mutators.ReturnValue` is the
-  built-in; a custom mutator implementing it participates at the same positions, its name
-  recorded on the site. Return `[]` for a tail that should get no mutant.
-  """
-  @callback return_replacements(tail :: Macro.t()) :: [Macro.t()]
-
-  @doc """
-  Behaviour-aware variant of `c:return_replacements/1`, taking the structural `context`
-  (`%{behaviours: …}`). Implement *this* arity instead of `/1` to gate return-tail
-  mutations on the enclosing module's behaviours — the motivating GenServer case (swap a
-  `handle_call` `{:reply, r, s}` tail to `{:noreply, s}` only when the module implements
-  `GenServer`). The transform prefers `/2` when exported, falling back to `/1`.
-  """
-  @callback return_replacements(tail :: Macro.t(), context :: structural_context()) ::
-              [Macro.t()]
-
-  @doc """
-  Optional structural hook for mutating an **`if`/`unless`/`cond` condition**. Given the raw
-  condition node, return the replacement nodes (one per mutant). The condition-position twin
-  of `c:return_replacements/1`: structural, discovered by
-  `function_exported?(mod, :condition_replacements, 1)`, delivered in place.
-  `Mutare.Mutators.IfCondition` is the built-in (forcing the condition `true`/`false`); a
-  custom mutator implementing it participates at the same positions. Return `[]` to skip.
-  """
-  @callback condition_replacements(condition :: Macro.t()) :: [Macro.t()]
-
-  @doc """
-  Behaviour-aware variant of `c:condition_replacements/1`, taking the structural `context`
-  (`%{behaviours: …}`). Implement *this* arity instead of `/1` to gate condition mutations
-  on the enclosing module's behaviours. The transform prefers `/2` when exported, falling
-  back to `/1`.
-  """
-  @callback condition_replacements(condition :: Macro.t(), context :: structural_context()) ::
-              [Macro.t()]
-
-  @optional_callbacks mutate: 1,
-                      pattern_mutations: 2,
-                      pattern_mutations: 3,
-                      mutate: 2,
-                      macros: 0,
-                      host: 2,
-                      macro_routing: 1,
-                      empty_collection?: 1,
-                      return_replacements: 1,
-                      return_replacements: 2,
-                      condition_replacements: 1,
-                      condition_replacements: 2
+  @optional_callbacks mutate: 1, mutate: 2, empty_collection?: 1
 
   @typedoc """
   A call node's pipe context, as an atom: `:piped` (the node is a `|>` right-hand

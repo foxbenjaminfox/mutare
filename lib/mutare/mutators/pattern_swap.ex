@@ -28,6 +28,7 @@ defmodule Mutare.Mutators.PatternSwap do
   same binary (`<<n, rest::binary-size(n)>>`) is never moved.
   """
   @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.Structural
 
   alias Mutare.AST
   alias Mutare.Transform.PatternStructure
@@ -44,7 +45,7 @@ defmodule Mutare.Mutators.PatternSwap do
   a swap never changes variable usage, so it has no bearing here. `[]` when no container
   holds two swappable variables.
   """
-  @impl Mutare.Mutator
+  @impl Mutare.Mutator.Structural
   @spec pattern_mutations([Macro.t()], MapSet.t()) :: [[Macro.t()]]
   def pattern_mutations(head_args, _used_outside) when is_list(head_args) do
     # Swap *within* each argument (containers only); never transpose the top-level

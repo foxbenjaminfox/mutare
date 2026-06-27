@@ -31,6 +31,7 @@ defmodule Mutare.Mutators.PatternWildcard do
   must be bound earlier in the same bitstring, so wildcarding that binding strands the read.
   """
   @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.Structural
 
   alias Mutare.Transform.PatternStructure
 
@@ -45,7 +46,7 @@ defmodule Mutare.Mutators.PatternWildcard do
   whether thinning a duplicate to a single occurrence is safe (see the moduledoc).
   Returns `[]` when no variable is duplicated.
   """
-  @impl Mutare.Mutator
+  @impl Mutare.Mutator.Structural
   @spec pattern_mutations([Macro.t()], MapSet.t()) :: [[Macro.t()]]
   def pattern_mutations(head_args, used_outside) when is_list(head_args) do
     # A name *read* inside a bitstring spec (the `n` in `<<n, rest::binary-size(n)>>`)

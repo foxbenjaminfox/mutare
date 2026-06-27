@@ -71,6 +71,7 @@ defmodule Mutare.Mutators.GenServer do
   """
 
   @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.Structural
 
   alias Mutare.AST
 
@@ -80,9 +81,9 @@ defmodule Mutare.Mutators.GenServer do
   @doc """
   Offer the alternative GenServer return for `tail`, but only inside a module that
   implements `GenServer` (read from `context.behaviours`). The behaviour-aware
-  variant of `c:Mutare.Mutator.return_replacements/1`.
+  variant of `c:Mutare.Mutator.Structural.return_replacements/1`.
   """
-  @impl Mutare.Mutator
+  @impl Mutare.Mutator.Structural
   def return_replacements(tail, %{behaviours: behaviours}) do
     if MapSet.member?(behaviours, GenServer), do: mutate_return(tail), else: []
   end

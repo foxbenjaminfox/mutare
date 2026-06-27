@@ -1868,7 +1868,7 @@ mutations via `Calls`/`context.behaviours`; a **basic** library works *today* by
 extensions here are strictly about **localization + scale** — wrapping the *whole* query per mutant
 duplicates it and blows up (`(mutants+1)^depth`, the pipe-hoist pathology). Both now exist:
 
-**#1 — mutator-supplied selector host (the delivery seam, `c:Mutare.Mutator.host/2`).** You can't
+**#1 — mutator-supplied selector host (the delivery seam, `c:Mutare.Mutator.MacroAware.host/2`).** You can't
 splice `case :persistent_term.get(...)` into a query, but Ecto's `^` + `dynamic/2` injects a
 runtime-chosen fragment the query *actually runs* (exactly one branch bakes in, the active id being
 constant per run):
@@ -1903,7 +1903,7 @@ default-`wrap` normalizer). Multiple targets fold over the node (each `splice` r
 position); a whole-node `:mutare` mutation on the *same* node still rides an ordinary selector wrapping
 the spliced result (`emit_site/3`) — a no-op when there is none, the common case.
 
-**#2 — a `:hosted` macro-arg treatment + shape-aware routing (`c:Mutare.Mutator.macro_routing/1`).**
+**#2 — a `:hosted` macro-arg treatment + shape-aware routing (`c:Mutare.Mutator.MacroAware.macro_routing/1`).**
 Treatments were a closed set only core's analyzer reads. `:hosted` (now in `Macro.Spec.@treatments`)
 means "don't splice a *bare* selector here (it'd poison the DSL) — route this position's mutations
 through the mutator's host (#1)." It must also be chosen per **call shape**, which a static per-position
@@ -1993,7 +1993,7 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     non-pair. This is the third foreign-DSL extension after the host (#1) and `:routing`/`:hosted` (#2):
     it unblocks `mutare_ecto`'s shorthand-split + `nil`-pair exclusion without the plugin re-implementing
     core's literal families. Tested via the `set/2` fixture macro (`Mutare.Test.HostDSL`/`HostMutator`).
-    A keyword *value* is `t:Mutare.Mutator.keyword_value_treatment/0`, which **includes `:hosted`**:
+    A keyword *value* is `t:Mutare.Mutator.MacroAware.keyword_value_treatment/0`, which **includes `:hosted`**:
     a value inside a keyword shorthand can be a foreign-DSL fragment too (e.g. an `mutare_ecto`
     `where(q, x: u.a == u.b)`-shaped value), so it routes to the registering mutator's `host/2` like a
     top-level `:hosted` argument. Hosting still delivers through `host/2`, which weaves into the **whole
@@ -5557,3 +5557,50 @@ invariant** in `Mutare.Transform.Uses.EnvMirror`'s module comment (the home the 
 and the **harness-retry contract** — only `:harness_error` is retried, because the kill outcomes
 `Command.outcome/2` recovers (`:suite_compile_error`, `:atom_exhausted`) are already distinct by the
 time `Runner.run_mutant/6` reads `result.outcome` — at that guard.
+
+### Mutator capability behaviours — split the `Mutare.Mutator` bag `[done]`
+
+`Mutare.Mutator` had grown to **twelve** `@optional_callbacks` spanning five unrelated jobs — node
+mutation (`mutate/1`, `mutate/2`), structural positions
+(`return_replacements`/`condition_replacements`/`pattern_mutations`, each with a behaviour-aware `+1`
+arity), macro/DSL targeting (`macros/0`, `macro_routing/1`, `host/2`), and the in-RHS suppression
+classifier (`empty_collection?/1`). A reader opening the behaviour to write a one-line operator swap
+met all of it. At 0.1.0, before there are external mutators to break, was the moment to fix the shape.
+
+**Two ways to fix it, and why one was wrong.** The choice was *split the behaviour* vs *add an
+explicit `capabilities/0` declaration*. The declaration is the wrong tool for Elixir:
+`function_exported?` is already an implicit, zero-drift capability check, and the whole codebase is
+built on "discovered by export / classified positively" — a `capabilities/0` would be a second source
+of truth that can disagree with what's actually exported (declare `:host`, forget `host/2`). The split
+is the house style: it's exactly the capability-named-peer move `Mutare.Plugin` made for
+vocabulary-vs-judgment, and the principle is recorded above ("a new capability gets a capability-named
+peer, not a declaration mechanism").
+
+**The split.** `Mutare.Mutator` keeps `name/0` + the node-level producers (`mutate/1`, `mutate/2`,
+`empty_collection?/1` — the last classifies the mutator's *own* node output, so it pairs with node
+mutation). Two companion behaviours, declared *alongside* `Mutare.Mutator`:
+`Mutare.Mutator.Structural` (the position-routed hooks + their structural `context` type) and
+`Mutare.Mutator.MacroAware` (the three DSL-targeting callbacks + the `routing_treatment` /
+`keyword_value_treatment` types). The fault line was visible in the data: of the eight non-`mutate`
+callbacks, **four** (`macros/0`/`macro_routing/1`/`host/2`/`empty_collection?/1`) have *zero* built-in
+implementers — they exist purely for external library mutators — and `macros/0` is already duplicated
+on `Mutare.Plugin`. So "teach Mutare a macro's shape" is genuinely a different capability from "produce
+a mutation."
+
+**What it is and isn't.** It is **documentation/ergonomics**, not a structural change: dispatch is
+byte-for-byte unchanged. `Mutare.Mutator.Dispatch` discovers every hook by `function_exported?`, never
+by which behaviour declared it, so moving a `@callback` to another module changes nothing at runtime —
+the producing-callback set in `implemented_by?/1`, the `implementing/3` discovery, and the
+prefer-the-`+1`-arity dance all still work. The win is bounded but real: the core `Mutare.Mutator` doc
+shrinks to the ~4 callbacks 95% of authors touch, and each extension capability gets a focused home.
+The irreducible load — Mutare routes five kinds of positions — is unchanged; a split reorganizes, it
+doesn't reduce.
+
+**The one mechanical hazard.** Every affected module used an **explicit** `@impl Mutare.Mutator` (not
+`@impl true`), which turns into a hard `--warnings-as-errors` failure the instant its callback leaves
+`Mutare.Mutator`. So each of the five built-ins (`ReturnValue`/`GenServer`/`IfCondition`/`PatternSwap`/
+`PatternWildcard`) and the macro/structural test fixtures gained the new `@behaviour` line and had the
+*moved* callback's annotation flipped to `@impl Mutare.Mutator.Structural` / `.MacroAware`, while
+`name/0`'s stayed `@impl Mutare.Mutator`. The `host_mutator.ex` fixtures share so many identical
+`@impl`/`def macros` blocks that a rule-based pass (flip only the `@impl` immediately above a
+`macros`/`macro_routing`/`host` def) was the safe edit, not hand-anchored replaces.

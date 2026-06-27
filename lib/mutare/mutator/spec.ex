@@ -23,7 +23,7 @@ defmodule Mutare.Mutator.Spec do
   `behaviours` is **not** user config: it is the `MapSet` of behaviour modules the
   enclosing module implements (`@behaviour Foo` directly, or injected by a `use`),
   populated per module by the transform. It is delivered to the context-taking
-  callbacks (`c:Mutare.Mutator.mutate/2`, `c:Mutare.Mutator.return_replacements/2`,
+  callbacks (`c:Mutare.Mutator.mutate/2`, `c:Mutare.Mutator.Structural.return_replacements/2`,
   …) under the context map's `:behaviours` key, so a behaviour-targeted custom
   mutator can gate on it. See `Mutare.Mutator`.
   """

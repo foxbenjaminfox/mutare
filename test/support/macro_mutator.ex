@@ -63,7 +63,7 @@ end
 defmodule Mutare.Test.QueryMutator do
   @moduledoc """
   A reference **macro-aware** custom mutator, used in tests to exercise the
-  `c:Mutare.Mutator.macros/0` extension point and the `:skip` argument treatment.
+  `c:Mutare.Mutator.MacroAware.macros/0` extension point and the `:skip` argument treatment.
 
   It registers `Mutare.Test.QueryDSL.query/1` as a known macro whose argument is
   `:skip`ped — so Mutare core never mutates the DSL body — and mutates the query
@@ -72,11 +72,12 @@ defmodule Mutare.Test.QueryMutator do
   enables it with a single `:mutators` entry and core stays DSL-agnostic.
   """
   @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.MacroAware
 
   @impl Mutare.Mutator
   def name, do: :query_dsl
 
-  @impl Mutare.Mutator
+  @impl Mutare.Mutator.MacroAware
   def macros, do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
 
   @impl Mutare.Mutator
@@ -108,6 +109,7 @@ defmodule Mutare.Test.UnpackMutator do
   `Mutare.Site` (it was silently dropped when `MacroPattern` had no `note` field).
   """
   @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.MacroAware
 
   alias Mutare.Mutator.Mutation
 
@@ -116,7 +118,7 @@ defmodule Mutare.Test.UnpackMutator do
   @impl Mutare.Mutator
   def name, do: :unpack_call
 
-  @impl Mutare.Mutator
+  @impl Mutare.Mutator.MacroAware
   def macros, do: [{Mutare.Test.QueryDSL, :unpack, 2, [:binding_pattern, :expression]}]
 
   @impl Mutare.Mutator

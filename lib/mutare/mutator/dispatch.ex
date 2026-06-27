@@ -103,8 +103,8 @@ defmodule Mutare.Mutator.Dispatch do
 
   @doc """
   Run `spec`'s return-tail hook over `tail`, preferring the behaviour-aware
-  `c:Mutare.Mutator.return_replacements/2` (passing the structural context) when the module
-  exports it, else the base `c:Mutare.Mutator.return_replacements/1`, so a mutator can
+  `c:Mutare.Mutator.Structural.return_replacements/2` (passing the structural context) when the module
+  exports it, else the base `c:Mutare.Mutator.Structural.return_replacements/1`, so a mutator can
   implement either arity.
   """
   @spec return_replacements(Spec.t(), Macro.t()) :: [Macro.t()]
@@ -113,8 +113,8 @@ defmodule Mutare.Mutator.Dispatch do
 
   @doc """
   Run `spec`'s condition hook over `condition`, preferring
-  `c:Mutare.Mutator.condition_replacements/2` (with the structural context) when exported, else
-  `c:Mutare.Mutator.condition_replacements/1`. The condition-position twin of
+  `c:Mutare.Mutator.Structural.condition_replacements/2` (with the structural context) when exported, else
+  `c:Mutare.Mutator.Structural.condition_replacements/1`. The condition-position twin of
   `return_replacements/2`.
   """
   @spec condition_replacements(Spec.t(), Macro.t()) :: [Macro.t()]
@@ -123,8 +123,8 @@ defmodule Mutare.Mutator.Dispatch do
 
   @doc """
   Run `spec`'s head-pattern hook over `head_args`/`used_outside`, preferring
-  `c:Mutare.Mutator.pattern_mutations/3` (with the structural context) when exported, else
-  `c:Mutare.Mutator.pattern_mutations/2`. The lifted-pattern twin of `return_replacements/2`.
+  `c:Mutare.Mutator.Structural.pattern_mutations/3` (with the structural context) when exported, else
+  `c:Mutare.Mutator.Structural.pattern_mutations/2`. The lifted-pattern twin of `return_replacements/2`.
   """
   @spec pattern_mutations(Spec.t(), [Macro.t()], MapSet.t()) :: [[Macro.t()]]
   def pattern_mutations(%Spec{} = spec, head_args, used_outside),
@@ -144,7 +144,7 @@ defmodule Mutare.Mutator.Dispatch do
 
   @doc """
   The **selector-host targets** `spec`'s mutator declares for the known-macro node `node`
-  (`c:Mutare.Mutator.host/2`), normalized — each a map with `:original`, a list `:mutants`, a
+  (`c:Mutare.Mutator.MacroAware.host/2`), normalized — each a map with `:original`, a list `:mutants`, a
   2-arity `:splice`, a 1-arity `:wrap` (defaulted to identity), and an optional `:range`. `[]`
   when the module doesn't implement `host/2`. `context0` (`%{pipe_mode: …}`) is enriched with the
   spec's `:opts`/`:behaviours` before the callback runs, mirroring `mutations/3`.

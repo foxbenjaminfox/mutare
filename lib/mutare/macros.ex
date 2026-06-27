@@ -9,13 +9,13 @@ defmodule Mutare.Macros do
   the pattern), `:skip` (leave raw — an opaque DSL body), or `:hosted` (leave raw for
   core, but deliver mutations through the registering mutator's selector host — the deep
   `Ecto.from`/`where` case; see `Mutare.Macro.Spec`). The per-argument treatment may also
-  be a `:routing` classifier deferred to the mutator's `c:Mutare.Mutator.macro_routing/1`,
+  be a `:routing` classifier deferred to the mutator's `c:Mutare.Mutator.MacroAware.macro_routing/1`,
   for a treatment that depends on the call *shape*. Specs come from **four** sources, merged
   in this order so a **later** entry wins a key:
 
     * **built-ins** (`builtin/0`) — `Kernel.match?/2` and `Kernel.destructure/2`,
       both routing argument 0 as a pattern. Always on.
-    * an optional **`c:Mutare.Mutator.macros/0`** callback on any enabled mutator
+    * an optional **`c:Mutare.Mutator.MacroAware.macros/0`** callback on any enabled mutator
       (`from_mutators/1`) — so a library ships its custom mutator *and* the macro
       registration it relies on in one module, and the user adds a single
       `:mutators` entry. Mutare core never needs to know about the library.
@@ -51,7 +51,7 @@ defmodule Mutare.Macros do
 
   For the no-mutator case (just route a custom DSL's argument as a pattern, or
   leave a macro body opaque) the declarative `:macros` option is enough; a mutator
-  that needs the routing usually ships it via `c:Mutare.Mutator.macros/0` instead.
+  that needs the routing usually ships it via `c:Mutare.Mutator.MacroAware.macros/0` instead.
   See `Mutare.Macro.Spec` for the per-argument treatments.
   """
 
@@ -113,7 +113,7 @@ defmodule Mutare.Macros do
 
   @doc """
   Collect macro specs contributed by enabled mutators via the optional
-  `c:Mutare.Mutator.macros/0` callback.
+  `c:Mutare.Mutator.MacroAware.macros/0` callback.
 
   `mutator_specs` are resolved `Mutare.Mutator.Spec`s; each distinct module that is
   loaded and exports `macros/0` contributes its entries (resolved like declarative
@@ -164,8 +164,8 @@ defmodule Mutare.Macros do
   # Harvest `macros/0` from a list of modules (mutators or plugins): dedupe, keep the exporters,
   # resolve each module's entries, and apply `stamp` to each `{spec, contributing module}` pair. A
   # **mutator** passes `&Spec.put_host/2`, stamping the contributing module as the host so a
-  # `:hosted`/`:routing` registration points back at its `c:Mutare.Mutator.host/2` /
-  # `c:Mutare.Mutator.macro_routing/1`. A **plugin** keeps the default (no stamp): a plugin can never
+  # `:hosted`/`:routing` registration points back at its `c:Mutare.Mutator.MacroAware.host/2` /
+  # `c:Mutare.Mutator.MacroAware.macro_routing/1`. A **plugin** keeps the default (no stamp): a plugin can never
   # host (`reject_plugin_hosting!` rejects a `:hosted`/`:routing` plugin entry off its `args`, not its
   # `host`), so its specs carry no host — keeping `Spec.host` a true invariant (a non-nil host always
   # names a real hosting mutator) instead of stamping a plugin as its own impossible host.

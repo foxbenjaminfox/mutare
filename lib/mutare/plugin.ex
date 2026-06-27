@@ -40,7 +40,7 @@ defmodule Mutare.Plugin do
       one registry (a later entry wins a key; see `Mutare.Macros`). A registration is a
       static declaration of *library facts* (which macros exist, how their arguments route),
       so it is **opts-independent** — it takes no context. Mirrors a mutator's
-      `c:Mutare.Mutator.macros/0`.
+      `c:Mutare.Mutator.MacroAware.macros/0`.
     * **Decision / override** — `c:expand_use/3`. The enabled plugins are consulted in
       `:plugins` order and the **first** that does not `:decline` wins (`expand_use/4`). A
       decision *is* behavior, so it is **opts-aware** and **context-carrying** — it receives
@@ -131,7 +131,7 @@ defmodule Mutare.Plugin do
 
   @doc """
   Known-macro registrations contributed by this plugin — the same declarative
-  entries a mutator's `c:Mutare.Mutator.macros/0` returns
+  entries a mutator's `c:Mutare.Mutator.MacroAware.macros/0` returns
   (`{module, name, arity, treatment}` / `{module, name, treatment}`; see
   `Mutare.Macros` and `Mutare.Macro.Spec`). Merged into the transform's macro
   registry when the plugin is enabled. A registration is a static library fact, so it

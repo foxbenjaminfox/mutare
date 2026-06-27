@@ -16,6 +16,7 @@ defmodule Mutare.Test.BehaviourMutator do
   """
 
   @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.Structural
 
   alias Mutare.AST
 
@@ -46,7 +47,7 @@ defmodule Mutare.Test.BehaviourMutator do
 
   @doc """
   Offer a sentinel `:behaviour_marker` return tail, only inside a targeted module — the
-  behaviour-aware variant of `c:Mutare.Mutator.return_replacements/1`.
+  behaviour-aware variant of `c:Mutare.Mutator.Structural.return_replacements/1`.
   """
   @impl true
   def return_replacements(_tail, %{behaviours: behaviours}) do

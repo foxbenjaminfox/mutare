@@ -61,6 +61,7 @@ defmodule Mutare.Mutators.ReturnValue do
       consistent boundary.
   """
   @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.Structural
 
   alias Mutare.AST
   alias Mutare.Mutators.Conditional
@@ -87,10 +88,10 @@ defmodule Mutare.Mutators.ReturnValue do
   empty/zero value and its non-empty/non-nil sentinel — minus any half that would
   equal the original tail. See the moduledoc for the rules.
 
-  This is the `c:Mutare.Mutator.return_replacements/1` hook: the transform discovers it
+  This is the `c:Mutare.Mutator.Structural.return_replacements/1` hook: the transform discovers it
   by export and calls it at each return-path tail.
   """
-  @impl Mutare.Mutator
+  @impl Mutare.Mutator.Structural
   @spec return_replacements(Macro.t()) :: [Macro.t()]
   def return_replacements(tail) do
     cond do

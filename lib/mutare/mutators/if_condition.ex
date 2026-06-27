@@ -25,6 +25,7 @@ defmodule Mutare.Mutators.IfCondition do
       anyway; a `cond` binding condition is left unmutated.)
   """
   @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.Structural
 
   alias Mutare.AST
   alias Mutare.Mutators.Conditional
@@ -39,10 +40,10 @@ defmodule Mutare.Mutators.IfCondition do
   already covers, a literal `true`/`false`/`nil`, or a binding `x = …` whose
   un-binding would poison the body). See the moduledoc for the rules.
 
-  This is the `c:Mutare.Mutator.condition_replacements/1` hook: the transform discovers
+  This is the `c:Mutare.Mutator.Structural.condition_replacements/1` hook: the transform discovers
   it by export and calls it at each `if`/`unless`/`cond` condition.
   """
-  @impl Mutare.Mutator
+  @impl Mutare.Mutator.Structural
   @spec condition_replacements(Macro.t()) :: [Macro.t()]
   def condition_replacements(condition) do
     if skip?(condition), do: [], else: [AST.literal(true), AST.literal(false)]

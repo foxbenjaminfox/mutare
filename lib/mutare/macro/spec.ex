@@ -64,7 +64,7 @@ defmodule Mutare.Macro.Spec do
       case (`Ecto.Query.from`'s body). The whole macro node is still offered to
       every mutator, so a registering library's own mutator can still fire on it.
     * `:hosted` — like `:skip`, raw for core, but its mutations are delivered
-      through the hosting mutator's `c:Mutare.Mutator.host/2` callback. The deep-DSL
+      through the hosting mutator's `c:Mutare.Mutator.MacroAware.host/2` callback. The deep-DSL
       case (mutating *inside* `Ecto`'s `from`/`where`, where the fragment has SQL
       semantics, not Elixir's). Only valid when the spec carries a `host`.
 
@@ -73,21 +73,21 @@ defmodule Mutare.Macro.Spec do
   A static per-position list can't express a treatment that depends on the *call shape*:
   `where(q, category: "Foo")` is plain data (mutate the value, `:expression`) while
   `where(q, [u], u.x == u.y)` is a `:hosted` DSL fragment. The sentinel `args: :routing`
-  defers the per-position routing to the hosting mutator's `c:Mutare.Mutator.macro_routing/1`.
+  defers the per-position routing to the hosting mutator's `c:Mutare.Mutator.MacroAware.macro_routing/1`.
   Like `:hosted`, `:routing` is only valid with a `host`.
 
   The classifier may also return, for a **keyword-list argument**, the tuple
   `{:keyword, value_treatments}` — finer than the per-argument treatments here: core routes each
   pair's *value* by its own treatment and leaves the *keys* raw (a DSL keyword key is a field
   name, not a value), nesting for a keyword list of keyword lists. This is classifier-only — a
-  static `args` entry cannot carry it. See `c:Mutare.Mutator.macro_routing/1`.
+  static `args` entry cannot carry it. See `c:Mutare.Mutator.MacroAware.macro_routing/1`.
 
   ## Host
 
   `host` is the mutator module that delivers a `:hosted` argument's mutations and answers
   the `:routing` classifier — `nil` for an ordinary spec. It is **not** written on the
   entry: a mutator that registers a `:hosted`/`:routing` macro via
-  `c:Mutare.Mutator.macros/0` is stamped as its own host automatically. A *declarative*
+  `c:Mutare.Mutator.MacroAware.macros/0` is stamped as its own host automatically. A *declarative*
   `:macros` entry (no mutator) therefore can't use `:hosted`/`:routing`.
   """
 
@@ -137,8 +137,8 @@ defmodule Mutare.Macro.Spec do
   def wildcard, do: @wildcard
 
   # The arg modes that require a `host` (a mutator implementing the delivery/classifier
-  # callbacks): the `:hosted` treatment (delivered through `c:Mutare.Mutator.host/2`) and
-  # the `:routing` classifier sentinel (resolved through `c:Mutare.Mutator.macro_routing/1`).
+  # callbacks): the `:hosted` treatment (delivered through `c:Mutare.Mutator.MacroAware.host/2`) and
+  # the `:routing` classifier sentinel (resolved through `c:Mutare.Mutator.MacroAware.macro_routing/1`).
   @host_required [:hosted, :routing]
 
   @doc """
@@ -152,7 +152,7 @@ defmodule Mutare.Macro.Spec do
 
   @doc """
   Whether `spec`'s `args` is the `:routing` classifier sentinel (resolved per call node by
-  the hosting mutator's `c:Mutare.Mutator.macro_routing/1`), rather than a static treatment.
+  the hosting mutator's `c:Mutare.Mutator.MacroAware.macro_routing/1`), rather than a static treatment.
 
       iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, :pattern) |> Mutare.Macro.Spec.classifier?()
       false

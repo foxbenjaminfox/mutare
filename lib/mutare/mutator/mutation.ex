@@ -19,7 +19,7 @@ defmodule Mutare.Mutator.Mutation do
     * a `c:Mutare.Mutator.mutate/1`/`c:Mutare.Mutator.mutate/2` return-list element
       (alongside a bare node, or `nil` to drop that slot — see `t:Mutare.Mutator.mutation/0`),
       and
-    * a selector host target's `:mutants` entry (`c:Mutare.Mutator.host/2`).
+    * a selector host target's `:mutants` entry (`c:Mutare.Mutator.MacroAware.host/2`).
   """
 
   @enforce_keys [:node]
