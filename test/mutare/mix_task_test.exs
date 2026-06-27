@@ -148,6 +148,30 @@ defmodule Mix.Tasks.MutareTest do
       end
     end
 
+    test "--explain resolves a dynamically-compiled mutator that has no beam on disk" do
+      # A module compiled at runtime (`Code.compile_string/1` here; `:code.load_binary/3`
+      # behaves the same) is loaded but leaves no `.beam` on the code path, so the resolver
+      # must accept it via its already-interned atom rather than requiring a beam file.
+      [{mod, _bin}] =
+        Code.compile_string("""
+        defmodule MutareDynamicExplainFixture do
+          @moduledoc "Dynamically compiled mutator fixture."
+          def name, do: :dynamic_explain_fixture
+        end
+        """)
+
+      on_exit(fn ->
+        :code.purge(mod)
+        :code.delete(mod)
+      end)
+
+      # Must not raise "unknown mutator"; the resolved family + module are printed.
+      Mix.Tasks.Mutare.run(["--explain", "MutareDynamicExplainFixture"])
+      output = drain_shell_info()
+      assert output =~ "dynamic_explain_fixture"
+      assert output =~ "MutareDynamicExplainFixture"
+    end
+
     test "--show-config prints the merged effective options" do
       root = bare_project("defmodule A do\n  def f(x), do: x + 1\nend\n")
 

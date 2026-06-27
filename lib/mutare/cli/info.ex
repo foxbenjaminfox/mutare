@@ -111,14 +111,27 @@ defmodule Mutare.CLI.Info do
   end
 
   # Resolve a custom-module `--explain` argument to a module atom **without minting
-  # one for arbitrary input**: only after the candidate's beam is found on the code
-  # path (`:code.where_is_file/1` searches by filename and interns nothing) do we
-  # build the atom, so the table grows only by genuinely-present modules and junk
-  # input falls through to the "unknown mutator" error. Built-in families never
-  # reach here — they match the registry above.
+  # one for arbitrary input**. Prefer the *existing* atom: any already-loaded module —
+  # including one compiled at runtime via `Code.compile_string/1` or `:code.load_binary/3`,
+  # which leaves no `.beam` on the code path — interns its name atom at load time, so
+  # `String.to_existing_atom/1` resolves it without growing the table (and the caller's
+  # `Code.ensure_loaded?` then confirms it). The beam-file gate alone misses such a module
+  # and wrongly returns `nil`, the regression this restores. Only when no such atom exists
+  # do we fall back to that gate: `:code.where_is_file/1` searches by filename and interns
+  # nothing, so the table grows (via `String.to_atom/1`) only for a module genuinely present
+  # on disk, and junk input still falls through to the "unknown mutator" error. Built-in
+  # families never reach here — they match the registry above.
   defp resolve_module(name) do
     candidate = "Elixir." <> name
 
+    try do
+      String.to_existing_atom(candidate)
+    rescue
+      ArgumentError -> resolve_module_from_beam(candidate)
+    end
+  end
+
+  defp resolve_module_from_beam(candidate) do
     case :code.where_is_file(String.to_charlist(candidate <> ".beam")) do
       :non_existing -> nil
       _path -> String.to_atom(candidate)
