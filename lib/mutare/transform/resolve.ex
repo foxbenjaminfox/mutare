@@ -107,16 +107,24 @@ defmodule Mutare.Transform.Resolve do
   # `Aliases.resolve_node/2` is consulted **env-free** (`%{}`), exactly as
   # `Mutare.Transform.Calls.resolved_call/1`'s twin clause: the `__aliases__` (Elixir) shape was
   # handled above, so only bare/wrapped-atom (and non-module) receivers reach here, none of which
-  # consult the alias env — passing it would be misleading dead input. It returns the atom for an
-  # atom receiver and `nil` for any other expression (a variable/result dispatch `obj.fun(...)`), so
-  # only a genuine atom-module call is stamped with its known-macro routing — bringing the macro path
-  # level with `resolved_call/1`, which already resolves this shape. A non-atom receiver falls through
-  # to a plain descent (the generic clause's behaviour), so dynamic dispatch is untouched.
+  # consult the alias env — passing it would be misleading dead input.
+  #
+  # The receiver splits the two cases cleanly: a non-nil result is a genuine **atom module**, so the
+  # call is stamped with its known-macro routing (the module side stays opaque, never walked — same
+  # as `Mod.fun`'s `__aliases__` above) — bringing the macro path level with `resolved_call/1`. A
+  # `nil` result means the receiver is *not* a module reference but a **runtime sub-expression** — a
+  # chained call (`get_config().fetch(k)`, `Repo.get(...).name`), a variable/result dispatch
+  # (`obj.fun(...)`), and so on — so it is **walked** (un-piped, in the same lexical scope), letting
+  # an aliased/imported/known-macro call sitting in the receiver get its stamp instead of being
+  # silently skipped (the old generic-clause behaviour). The function-name atom `fun` is never
+  # touched. (Analyze mirrors this split — `descend_receiver/2` — so such a receiver is also offered
+  # to mutators.)
   defp walk({{:., dot_meta, [mod, fun]}, call_meta, args}, env)
        when is_atom(fun) and is_list(args) do
     case Aliases.resolve_node(mod, %{}) do
       nil ->
-        {{:., dot_meta, [mod, fun]}, call_meta, descend(args, env)}
+        walked = walk(mod, %{env | pipe_mode: :unpiped})
+        {{:., dot_meta, [walked, fun]}, call_meta, descend(args, env)}
 
       module_key ->
         call_node = {{:., dot_meta, [mod, fun]}, call_meta, args}

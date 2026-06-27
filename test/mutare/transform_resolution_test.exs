@@ -978,6 +978,121 @@ defmodule Mutare.TransformResolutionTest do
     end
   end
 
+  describe "receiver-position calls (a chained dot-call's receiver is resolved & mutated)" do
+    # The receiver of `recv.field` / `recv.fun(args)` is a runtime sub-expression when it is not a
+    # module reference (`get_config().fetch(k)`, `Repo.get(...).name`), so a stdlib/aliased/imported
+    # call sitting there must resolve and mutate like one written anywhere else. The *module side* of
+    # an ordinary remote call (`Enum.filter(...)`'s `Enum`) stays opaque — the two split on whether
+    # the receiver is a module reference (`Mutare.Transform.Resolve` clause #4 / `Analyze`'s
+    # `descend_receiver/2`).
+
+    test "a direct stdlib call in receiver position mutates, keeping the written receiver" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def f(x), do: Enum.filter(x, & &1).first
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
+      assert {"Enum.filter(x, & &1)", "Enum.reject(x, & &1)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "an aliased call in receiver position resolves and mutates, keeping the alias" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            alias Enum, as: E
+            def f(x), do: E.filter(x, & &1).first
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
+      # Resolved through the alias even though it sits in the receiver, and the mutant keeps `E.`.
+      assert {"E.filter(x, & &1)", "E.reject(x, & &1)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "a bare imported call in receiver position resolves and mutates" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            import Enum
+            def f(x), do: filter(x, & &1).first
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
+      assert {"filter(x, & &1)", "reject(x, & &1)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "a method-style receiver call mutates, and the spliced selector compiles in that position" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def f(xs, x), do: Enum.filter(xs, & &1).put(x)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
+      # The receiver mutates and the emitted `(case … end).put(x)` is legal Elixir.
+      assert {"Enum.filter(xs, & &1)", "Enum.reject(xs, & &1)"} in pairs
+      assert_compiles(meta)
+    end
+
+    test "the module side of a remote call stays opaque (the receiver split, not a blanket descent)" do
+      # `descend_receiver/2` must NOT offer the module reference of an ordinary remote call to a
+      # mutator: `Enum` in `Enum.filter(x).first` is the module side, never a value. AliasLiteral
+      # (which mutates a module *value* like `apply(Foo, …)`) therefore produces no site here.
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule M do
+            def f(x), do: Enum.filter(x, & &1).first
+          end
+          """,
+          mutators: [Mutare.Mutators.AliasLiteral]
+        )
+
+      assert sites == []
+    end
+
+    test "a known macro in receiver position is routed too (its :skip arg stays raw)" do
+      source = """
+      defmodule M do
+        def f(q), do: :my_dsl.filter(q, 99).bar
+      end
+      """
+
+      {_, skipped, _} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.Literal],
+          macros: [{:my_dsl, :filter, :any, :skip}]
+        )
+
+      {_, control, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.Literal])
+
+      # Walking the receiver carries the macro routing in too: the `99` in the `:skip` macro is
+      # left raw even though the macro call is a receiver — while unregistered it mutates.
+      assert Enum.map(skipped, & &1.mutator) == []
+      assert Enum.any?(control, &(&1.mutator == :literal))
+    end
+  end
+
   describe "StringCall (complementary String call swaps)" do
     test "swaps a String call in place, records the bare swap, and compiles" do
       source = """

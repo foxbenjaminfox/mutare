@@ -728,12 +728,37 @@ defmodule Mutare.Transform.Analyze do
         # which analyses its args — including a real bitstring arg — correctly.
         if context.pipe_mode == :unpiped and sigil?(form) and Keyword.has_key?(meta, :delimiter),
           do: descend_sigil(node, mutators),
-          else: recurse_runtime(node, mutators)
+          else: node |> recurse_runtime(mutators) |> descend_receiver(mutators)
 
       routing ->
         Macros.analyze_known_macro(node, routing, mutators, context)
     end
   end
+
+  # A dot-call's **receiver**. `recurse_runtime/2` descends only the call's *arguments*, leaving the
+  # whole `{:., _, [recv, fun]}` head raw — which is correct for the **module side** of a remote call
+  # (`Enum.filter(...)`, `:lists.sort(...)`): a module reference is opaque, never mutated. But when the
+  # receiver is *not* a module reference it is an ordinary **runtime sub-expression** — a chained call
+  # (`get_config().fetch(k)`, `Repo.get(...).name`) or a result dispatch — and must be analyzed like
+  # any other value, or the call families silently never fire on it. Split on exactly that: analyze a
+  # non-module receiver as `:runtime`, leave a module reference (and the `fun` name atom) raw. Mirrors
+  # the `Mutare.Transform.Resolve` clause-#4 split that stamps the same receiver.
+  defp descend_receiver({{:., dm, [recv, fun]}, meta, args}, mutators) do
+    if module_reference?(recv),
+      do: {{:., dm, [recv, fun]}, meta, args},
+      else: {{:., dm, [analyze(recv, :runtime, mutators), fun]}, meta, args}
+  end
+
+  defp descend_receiver(node, _mutators), do: node
+
+  # Whether a dot-call receiver is a **module reference** (opaque — the module side of a remote call)
+  # rather than a runtime expression: an Elixir alias path (`Enum`, kept opaque even when dynamic so a
+  # `Foo.unquote(x).bar` receiver is never split), a Sourceror-wrapped atom module (`:lists`), or a
+  # bare atom (the only way a bare atom appears in receiver position is as a module).
+  defp module_reference?({:__aliases__, _meta, _path}), do: true
+  defp module_reference?({:__block__, _meta, [atom]}) when is_atom(atom), do: true
+  defp module_reference?(atom) when is_atom(atom), do: true
+  defp module_reference?(_other), do: false
 
   # === known macros ==========================================================
 
