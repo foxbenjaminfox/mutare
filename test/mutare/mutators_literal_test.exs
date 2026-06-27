@@ -434,8 +434,8 @@ defmodule Mutare.MutatorsLiteralTest do
       assert render(RegexLiteral.mutate(parse(~S"~r/(?#^c)b/"))) == [~S"~r//", ~S"~r/mutare/"]
     end
 
-    test "treats a \\Q…\\E span as an inert literal (no mutation, no flag-scope effect)" do
-      # quoted metacharacters are literals — `a+`/`.`/`(` inside must not be mutated
+    test "treats a \\Q…\\E span as an inert literal across every pass" do
+      # quoted metacharacters are literals — `a+`/`.`/`(` inside must not be mutated (scan)
       assert render(RegexLiteral.mutate(parse(~S|~r/\Qa+.(\E/|))) == [~S|~r//|, ~S|~r/mutare/|]
 
       # the quoted `(` must NOT push a flag frame: `m` from `(?m:…)` must not leak past
@@ -443,24 +443,37 @@ defmodule Mutare.MutatorsLiteralTest do
       quoted = render(RegexLiteral.mutate(parse(~S"~r/(?m:\Q(\E^a)^b/")))
       assert ~S"~r/(?m:\Q(\E\Aa)^b/" in quoted
       refute ~S"~r/(?m:\Q(\E^a)\Ab/" in quoted
+
+      # a quoted `|` is not alternation — only the *real* `|` (between `x` and `\Qa|b\Ey`)
+      # yields a branch drop; nothing splits the quoted span
+      alt = render(RegexLiteral.mutate(parse(~S"~r/x|\Qa|b\Ey/")))
+      assert ~S"~r/\Qa|b\Ey/" in alt
+      assert ~S"~r/x/" in alt
+      refute Enum.any?(alt, &(&1 =~ ~r/\\Qa\\E|\\Qb\\E/))
     end
 
-    test "ignores anchors, dots and flags hidden in an extended-mode comment" do
-      # under /x an unescaped `#` starts a comment: the `$` there is inert, not an anchor
-      refute Enum.any?(
-               render(RegexLiteral.mutate(parse(~S|~r/foo # $/x|))),
-               &String.contains?(&1, "\\z")
-             )
+    test "ignores anchors, dots, quantifiers and flags hidden in an extended-mode comment" do
+      # under /x an unescaped `#` starts a comment: the `$` there is inert (mode_walk swap)
+      # *and* not a droppable trailing anchor (anchor_patterns) — so no `\z` and no `foo # `
+      foo = render(RegexLiteral.mutate(parse(~S|~r/foo # $/x|)))
+      refute Enum.any?(foo, &String.contains?(&1, "\\z"))
+      refute ~S"~r/foo # /x" in foo
+
+      # a quantifier inside an x-comment is not mutated (scan); the real dot on line 2 is
+      node = {:sigil_r, [], [{:<<>>, [], ["a # b+\nc."]}, ~c"x"]}
+      pats = Enum.map(RegexLiteral.mutate(node), fn {:sigil_r, _, [{:<<>>, _, [p]}, _]} -> p end)
+      refute "a # b*\nc." in pats
+      assert "a # b+\nc(?s:.)" in pats
 
       # a `(?s)` inside an x-comment must not activate dotall for the real dot after the
       # newline — that dot is non-dotall, so its swap is `(?s:.)`, never `(?-s:.)`
-      node = {:sigil_r, [], [{:<<>>, [], ["# (?s) c\n."]}, ~c"x"]}
+      node2 = {:sigil_r, [], [{:<<>>, [], ["# (?s) c\n."]}, ~c"x"]}
 
-      patterns =
-        Enum.map(RegexLiteral.mutate(node), fn {:sigil_r, _, [{:<<>>, _, [p]}, _]} -> p end)
+      pats2 =
+        Enum.map(RegexLiteral.mutate(node2), fn {:sigil_r, _, [{:<<>>, _, [p]}, _]} -> p end)
 
-      assert "# (?s) c\n(?s:.)" in patterns
-      refute "# (?s) c\n(?-s:.)" in patterns
+      assert "# (?s) c\n(?s:.)" in pats2
+      refute "# (?s) c\n(?-s:.)" in pats2
     end
 
     test "swaps a + quantifier to * and back" do

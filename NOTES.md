@@ -4910,22 +4910,27 @@ sharper bug — a `(`/`(?…)` would push a phantom frame onto the flag stack, l
 mode past the real `)` and mis-gating a *real* later anchor (e.g. `(?m:\Q(\E^a)^b`
 emitting a bogus `\A` on the non-multiline `^b`). So the earlier "x-mode can only *miss*
 a flag context, never invent one — fails safe" claim was **wrong**: a quoted/commented
-`(` actively invents one. The flag-aware `mode_walk/6` now skips both spans — `\Q…\E`
-unconditionally (`take_quoted/1`), an `x`-comment when `x` is positionally active
-(`take_comment_line/1`, so an inline `(?x)` is honoured and a `#` before it stays
-literal). `scan/6` skips `\Q…\E` too (no flags needed there).
+`(` actively invents one.
 
-The **residual** (documented, not fixed): the two flag-*un*aware passes still mishandle
-`x`-mode comments — the leading/trailing anchor *drop* (`trailing_anchors` sees a comment
-`$` as a droppable anchor) and `scan/6` (a *commented* `a+`/`.` is still mutated). Both
-only ever produce a **guaranteed-equivalent** mutant inside an `x`-comment
-(a denominator nick, never a wrong score or a poison — the `Regex.compile/2` backstop
-still holds, and there is no flag stack in those passes to corrupt). Fully closing it
-needs `x`-positional awareness in those passes, i.e. the shared `x`-aware token reader —
-the same deferred consolidation as the three byte-walks. Verified by a 200k-pattern fuzz
-seeded with `\Q`/`\E`/`#`/`\n`/`(?m)`/`(?s:`/`(?-m)`/`(?:`/`(?#…)` and `/x`/`/s` mods:
-every mutant of every compiling original compiles (a flag-stack desync corrupts parens
-and surfaces as a non-compiling mutant).
+**The shared `x`-aware reader closes this for *every* pass.** `inert_spans/2` is a single
+positional walk (escape/class tracking + the `Flags` scope stack, so `x` is read
+positionally) that records every inert byte range — each `\Q…\E` span and each `x`-mode
+`#` comment — as `[{start, len}]`. The flag-unaware passes then consult it by byte offset
+and never touch inert content: `scan/6` and `alt_walk/6` dispatch through it (an inert
+span at the current offset — `byte_size(prefix)` or the tracked `i` — is swallowed whole
+as an opaque atom, even inside a class so a quoted `]` can't close it), and
+`trailing_anchors` declines a trailing anchor whose last byte is `in_inert?/2` (the
+commented-`$` drop). `mode_walk/6` is itself flag-aware and keeps skipping these spans
+inline. So the *correctness* residual — a guaranteed-equivalent mutant from a
+commented/quoted construct in *any* pass — is gone. (`inert_spans` re-derives the
+escape/class/flag skeleton a fourth time; the *deeper* consolidation — one token reader
+all walks fold over, eliminating that skeleton duplication — is still the separate
+deferred refactor noted below, but the `x`-correctness it was wanted for is now done.)
+Verified two ways: a **differential fuzz** of 85k inert-free patterns (no `\Q`, no `#`)
+confirms the new passes are **byte-identical** to the pre-reader output (the refactor
+changed nothing where there is nothing inert), and a 200k-pattern fuzz seeded with
+`\Q`/`\E`/`#`/`\n`/inline modifiers under `/x`/`/s` confirms every mutant of every
+compiling original still compiles.
 
 **The other equivalence the flag-positions expose — a *force-flag-off* swap vs. that
 flag's modifier-drop.** Forcing one construct to behave as if a flag were off — the dot's
@@ -5800,20 +5805,22 @@ Three near-
 duplications were measured against the cost of unifying them and **deliberately kept** — the merge
 buys less than the duplication costs:
 
-  - **`Mutare.Mutators.RegexLiteral`'s now-three byte-walks** (`scan/6`, `alt_walk/6`, `mode_walk/6`).
-    All consume the Elixir regex string and share the escape-pair / character-class handling, but their
-    *accumulators* differ fundamentally — `scan` threads a `prev_quant` for quantifier detection,
-    `alt_walk` a frame stack for alternation spans, `mode_walk` a `Flags` scope stack for the positional
-    flag-aware swaps (anchors via `m`, the dot via `s` — kept one walk because their state is identical).
-    The earlier note here said to "revisit only if a *third* walk appears"; it now has (the flag-aware
-    walk), so the escape/class handling is genuinely triplicated and a shared *regex token
-    reader* (yield `{token, in_class?, escaped?}`, let each walk keep its own accumulator) is now the
-    leading consolidation candidate. It's still **deferred, not forgotten**: the three accumulators stay
-    distinct under any shared reader, the merge is a real refactor with its own poison risk, and the
-    module is heavily fuzzed — so it wants doing as a *focused* pass with the property/fuzz suite green
-    before and after, not bolted onto a feature commit. The escape grammar growing (`\Q…\E`) would be
-    the forcing function. (The `Flags` scope logic itself is already extracted + unit-tested, so it is
-    *not* part of the duplication — only the escape/class skeleton is.)
+  - **`Mutare.Mutators.RegexLiteral`'s byte-walks** (`scan/7`, `alt_walk/7`, `mode_walk/6`, plus the
+    `inert_spans/2` pre-pass). All consume the Elixir regex string and share the escape-pair /
+    character-class handling, but their *accumulators* differ fundamentally — `scan` threads a
+    `prev_quant` for quantifier detection, `alt_walk` a frame stack for alternation spans, `mode_walk`
+    a `Flags` scope stack for the positional flag-aware swaps (anchors via `m`, the dot via `s` — kept
+    one walk because their state is identical), and `inert_walk` records the inert (`\Q`/`x`-comment)
+    spans the other three consult. So the escape/class skeleton is now in *four* places — the
+    consolidation pressure is real and a shared *regex token reader* (yield `{token, in_class?,
+    escaped?, flags}`, let each walk keep its own accumulator) is the leading candidate. It is still
+    **deferred, not forgotten**: the accumulators stay distinct under any shared reader, the merge is a
+    real refactor with its own poison risk, and the module is heavily fuzzed — so it wants doing as a
+    *focused* pass with the property/fuzz suite green before and after, not bolted onto a feature commit.
+    What's already settled and *not* part of the remaining duplication: the `Flags` scope logic (its own
+    unit-tested module) and the **inert-span correctness** (centralised in `inert_spans/2`, consumed
+    uniformly) — so the token reader is now purely a *de-duplication* refactor, no longer also owed a
+    correctness fix. The escape grammar growing (a new `\…\…` span like `\Q…\E`) is the forcing function.
   - **`Mutare.Transform.Analyze.Conditions`' parallel spine-walks** (`spine_rewrite`, `spine_bindings`,
     `eval_steps`, `offspine_escaping_binding?`, `prune_binding_ancestors`). All share one structural
     skeleton (stop at `@binding_isolating_forms`, recurse-left at `@short_circuit_ops`, flag at
