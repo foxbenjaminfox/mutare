@@ -156,6 +156,79 @@ defmodule Mutare.TransformCaptureTest do
     end
   end
 
+  describe "expression captures (`&(… &1 … &2 …)`): the body is ordinary runtime code" do
+    alias Mutare.Selector
+
+    test "an operator in the capture body is mutated (`&(&1 && &2)` → `&(&1 || &2)`)" do
+      # Distinct from a `&Mod.fun/N` *reference* capture (above): an expression capture's
+      # body is not a call value, so it does not route through `Captures.offer`. It falls
+      # through to ordinary `:runtime` analysis, and the `&&` is offered to Logical like any
+      # other body operator.
+      source = "defmodule Cap do\n  def both, do: &(&1 && &2)\nend\n"
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.Logical])
+
+      assert [
+               %Site{
+                 mutator: :logical,
+                 kind: :in_place,
+                 original_form: :&&,
+                 mutated_form: :||,
+                 original_code: "&1 && &2",
+                 mutated_code: "&1 || &2"
+               }
+             ] = sites
+
+      assert_compiles(meta)
+    end
+
+    test "the woven selector lands *inside* the capture and compiles + activates at runtime" do
+      # The in-place selector `case` is hoisted into the `&(…)` body — an unusual construct
+      # that `Code.string_to_quoted` (parse-only) would wave through but a real compile must
+      # validate. Prove the capture still produces a working 2-arity fun: the baseline keeps
+      # `&&` semantics (short-circuit on a falsy LHS) and flipping the mutant swaps to `||`.
+      source = "defmodule Mutare.CaptureBodyFixture do\n  def both, do: &(&1 && &2)\nend\n"
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.Logical])
+      # Bind the module from the compile result (not a literal) so the compiler can't fold a
+      # reference to a not-yet-defined module into an "undefined" warning.
+      [{mod, _}] = assert_compiles(meta)
+      site = Enum.find(sites, &(&1.mutator == :logical))
+
+      Selector.put(Selector.baseline())
+      base = mod.both()
+      assert base.(true, :x) == :x
+      # `&&` short-circuits on a falsy LHS, returning it unevaluated.
+      assert base.(nil, :x) == nil
+
+      Selector.put(site.id)
+      mutant = mod.both()
+      # `||` returns the truthy RHS where `&&` returned the falsy LHS — a real behaviour change.
+      assert mutant.(nil, :x) == :x
+      assert mutant.(false, nil) == nil
+    after
+      Selector.put(Selector.baseline())
+    end
+
+    test "numbered placeholders (`&1`/`&2`) are never mutated as integer literals" do
+      # `&1`/`&2` carry a *bare* integer index, not a `{:__block__, _, [n]}` literal node, so
+      # the literal families never see them. A body of only placeholders yields no literal
+      # site; a real adjacent literal still mutates. This disambiguation is what keeps a
+      # capture from being corrupted into an invalid `&0` or a wrong-position `&2`.
+      lit = [Mutare.Mutators.Literal]
+
+      {_m, placeholder_only, _} =
+        Mutare.transform_string("defmodule C do\n  def f, do: &(&1 + &2)\nend\n", mutators: lit)
+
+      assert placeholder_only == []
+
+      {_m, with_literal, _} =
+        Mutare.transform_string("defmodule C do\n  def f, do: &(&1 + 1)\nend\n", mutators: lit)
+
+      # Only the standalone `1` mutates (succ `2`, and zero/pred deduped to `0`); the
+      # placeholder's `1` contributes nothing. Were it mutated too we would see four sites.
+      assert with_literal |> Enum.map(& &1.mutated_code) |> Enum.sort() == ["0", "2"]
+    end
+  end
+
   defp assert_compiles(meta) do
     assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
