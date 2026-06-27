@@ -34,12 +34,16 @@ it drifts, and the lower-value copy is the one that rots.
 - **Verify every pointer.** Before writing "see X's moduledoc" or `NOTES "title"`,
   confirm the target actually carries it. The 17k-word version had pointers to content
   that wasn't where it claimed.
-- **Moduledocs are published.** They render on hexdocs for end users — keep them
-  user-facing, not internal-narrative. Don't autolink deliberately-hidden internal
-  modules (use `` `Mutare.Foo` `` plain text, not a link, for internal-only modules).
+- **Moduledocs are published** (hexdocs) — keep them user-facing, not internal-narrative.
+  Internal modules are kept `@moduledoc false`; a visible doc may still *reference* one in
+  prose, but its prefix must be listed in the ExDoc autolink skip-list in `mix.exs` (see the
+  comment at the top) or `mix docs` warns "references X but it is hidden".
 - **Editing CLAUDE.md edits AGENTS.md too** (symlink) — never touch them separately.
-- **Before committing**, the pre-commit hook runs `mix credo` + `dialyzer`; `mix compile`
-  must be warnings-clean. A broken `@moduledoc` autolink or doc-attr can fail it.
+- **Know the enforcement gap.** The pre-commit hook and CI run
+  `mix compile --warnings-as-errors` + `mix check` (= format-check + credo + dialyzer). None of
+  those — nor the compiler — validate `@moduledoc` autolinks; the compiler stores docstrings
+  opaquely. Broken or hidden-module autolinks surface **only** under `mix docs` (ExDoc), which
+  nothing automated runs. So after touching moduledoc cross-references, run `mix docs` yourself.
 
 ## Smell tests
 
