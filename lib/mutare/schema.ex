@@ -57,6 +57,7 @@ defmodule Mutare.Schema do
 
   alias Mutare.{Ignore, Options, Site}
   alias Mutare.Ignore.Directive
+  alias Mutare.Run.Context
 
   @type t :: %__MODULE__{
           files: [String.t()],
@@ -86,24 +87,25 @@ defmodule Mutare.Schema do
   to `Mutare.Transform`), and `:max_mutants` (cap the schema to the first N
   mutants; see `from_files/4`).
   """
-  @spec build(Path.t(), Options.t() | keyword()) :: t()
+  @spec build(Path.t(), Context.t() | Options.t() | keyword()) :: t()
   def build(root, opts \\ []) do
-    options = Options.new(opts)
+    context = Context.new(opts)
+    options = context.options
 
     root
-    |> discover(scoped_paths(options), options.exclude)
+    |> discover(scoped_paths(context.project, options.paths), options.exclude)
     |> restrict(root, options.only_files)
     |> restrict_to_line_files(root, options.only_lines)
-    |> from_files(root, options)
+    |> from_files(root, context)
   end
 
   # In an umbrella the source roots live under each mutated app
   # (`apps/foo/lib`), so prefix every `:paths` entry with each scope app's dir.
   # No project, or a single-app project (`dir: "."`), leaves `:paths` untouched —
   # so the non-umbrella pipeline is byte-for-byte unchanged.
-  defp scoped_paths(%Options{project: nil, paths: paths}), do: paths
+  defp scoped_paths(nil, paths), do: paths
 
-  defp scoped_paths(%Options{project: %{mutate_scope: scope}, paths: paths}) do
+  defp scoped_paths(%{mutate_scope: scope}, paths) do
     for %{dir: dir} <- scope, base <- paths, uniq: true, do: join_scope(dir, base)
   end
 
@@ -142,9 +144,10 @@ defmodule Mutare.Schema do
   poison recovery is unaffected and a poisoned site within the first N is simply
   backfilled by the next one on rebuild.
   """
-  @spec from_files([Path.t()], Path.t(), Options.t() | keyword(), MapSet.t()) :: t()
+  @spec from_files([Path.t()], Path.t(), Context.t() | Options.t() | keyword(), MapSet.t()) :: t()
   def from_files(files, root \\ ".", opts \\ [], skip_ids \\ MapSet.new()) do
-    options = Options.new(opts)
+    context = Context.new(opts)
+    options = context.options
 
     # Dedup the input by relative path. A file passed more than once would otherwise be
     # rendered twice under different `:start_id`s but collapse to a single relative-path
@@ -165,7 +168,7 @@ defmodule Mutare.Schema do
     # `Mutare.Report.Live` reads — mutants are discovered here, where they're counted; the
     # render-bound phase 2 shows the spinner). A tool bug raised here (e.g. a custom
     # mutator) is re-raised faithfully.
-    counted = count_files(files, root, options)
+    counted = count_files(files, root, options, Context.hook(context, :on_scan))
 
     # Phase 2 — render (parallel, heap-isolated per worker): prefix-sum the counts so
     # each sited file knows its `:start_id` up front, then emit + render it. A failure
@@ -193,15 +196,15 @@ defmodule Mutare.Schema do
   Pass through the original `Options` (so `:mutators` survive) and the new
   accumulated `skip_ids`.
   """
-  @spec rebuild(t(), Path.t(), Options.t() | keyword(), MapSet.t()) :: t()
+  @spec rebuild(t(), Path.t(), Context.t() | Options.t() | keyword(), MapSet.t()) :: t()
   def rebuild(%__MODULE__{files: files}, root, opts, skip_ids) do
     # Poison recovery re-scans silently: drop any `:on_scan` hook so the live
     # reporter isn't yanked back to a scan display in the middle of a run.
-    opts = %{Options.new(opts) | on_scan: nil}
+    context = %{Context.new(opts) | on_scan: nil}
 
     files
     |> Enum.map(&Path.join(root, &1))
-    |> from_files(root, opts, skip_ids)
+    |> from_files(root, context, skip_ids)
   end
 
   @doc "Total number of mutants in the schema."
@@ -219,8 +222,7 @@ defmodule Mutare.Schema do
   # after it. The heavy short-lived ASTs each `count_string/2` builds die with their
   # worker, off the scan's long-lived heap. A tool bug captured by a worker is re-raised
   # here, faithfully.
-  defp count_files(files, root, options) do
-    on_scan = Options.hook(options, :on_scan)
+  defp count_files(files, root, options, on_scan) do
     total = length(files)
 
     {counted, _progress} =

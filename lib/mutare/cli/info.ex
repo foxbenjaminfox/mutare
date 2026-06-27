@@ -9,6 +9,7 @@ defmodule Mutare.CLI.Info do
 
   alias Mutare.{CLI, Ignore, Macros, Mutators, Options, Project, Site}
   alias Mutare.Ignore.Directive
+  alias Mutare.Options.Registry
   alias Mutare.Report.Live
 
   # `--list-mutators`: print the built-in catalog and exit. Derived from the one
@@ -116,31 +117,13 @@ defmodule Mutare.CLI.Info do
   end
 
   # `--show-config`: the effective options after merging `.mutare.exs`, CLI flags, and
-  # defaults — so config precedence is no longer invisible.
+  # defaults — so config precedence is no longer invisible. The option rows + their
+  # formatting come from `Mutare.Options.Registry.display_rows/1` (the single source for
+  # visibility and per-field formatting), so every visible option appears and none can be
+  # silently forgotten the way `partition_env`/`seed_app_build`/… once were. We only prepend
+  # the `target` row, which is run context (the project), not an option.
   def print_effective_config(%Project{} = project, %Options{} = options) do
-    rows = [
-      {"target", target_label(project)},
-      {"paths", inspect(options.paths)},
-      {"exclude", inspect(options.exclude)},
-      {"mutators", format_mutators(options.mutators)},
-      {"macros", inspect(options.macros)},
-      {"plugins", format_plugins(options.plugins)},
-      {"expand_uses", options.expand_uses},
-      {"test_selection", options.test_selection},
-      {"workers", options.workers},
-      {"timeout", options.timeout || "derived from baseline run"},
-      {"timeout_multiplier", options.timeout_multiplier},
-      {"baseline_runs", options.baseline_runs},
-      {"harness_retries", options.harness_retries},
-      {"max_harness_error_rate", options.max_harness_error_rate},
-      {"max_mutants", options.max_mutants || "(no cap)"},
-      {"max_survivors", options.max_survivors || "(no cap)"},
-      {"min_score", options.min_score || "(no gate)"},
-      {"strict_ignores", options.strict_ignores},
-      {"sandbox", options.sandbox || "(throwaway temp dir)"},
-      {"keep_sandbox", options.keep_sandbox},
-      {"reporters", format_reporters(options.reporters)}
-    ]
+    rows = [{"target", target_label(project)} | Registry.display_rows(options)]
 
     Mix.shell().info("Effective configuration (.mutare.exs + CLI flags + defaults):\n")
     print_aligned(rows)
@@ -150,30 +133,6 @@ defmodule Mutare.CLI.Info do
     do: "#{root} (umbrella apps: #{CLI.umbrella_apps(scope)})"
 
   defp target_label(%Project{copy_root: root}), do: root
-
-  defp format_mutators(nil), do: "(all built-ins — see --list-mutators)"
-
-  defp format_mutators(mutators) do
-    mutators |> Mutators.resolve() |> Enum.map_join(", ", &to_string(&1.name))
-  rescue
-    _ -> inspect(mutators)
-  end
-
-  defp format_plugins([]), do: "(none)"
-
-  defp format_plugins(plugins) do
-    Enum.map_join(plugins, ", ", fn
-      %Mutare.Plugin.Spec{module: module, opts: []} -> inspect(module)
-      %Mutare.Plugin.Spec{module: module, opts: opts} -> "#{inspect(module)} #{inspect(opts)}"
-    end)
-  end
-
-  defp format_reporters(reporters) do
-    Enum.map_join(reporters, ", ", fn
-      {format, nil} -> "#{format} (stdout)"
-      {format, path} -> "#{format} (#{path})"
-    end)
-  end
 
   defp print_aligned(rows) do
     pad = rows |> Enum.map(fn {k, _} -> String.length(k) end) |> Enum.max()

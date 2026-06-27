@@ -97,6 +97,7 @@ defmodule Mutare.Runner do
   """
 
   alias Mutare.{Options, Poison, Project, Report, Result, Sandbox, Schema, Selector, Site}
+  alias Mutare.Run.Context
   alias Mutare.Runner.{Baseline, CoverageProbe, Partitions}
   alias Mutare.Sandbox.{Command, CompilerOptions}
   alias Mutare.Sandbox.Command.Invocation
@@ -139,22 +140,23 @@ defmodule Mutare.Runner do
   @doc """
   Run mutation testing against the project at `root`.
 
-  `opts` is a `Mutare.Options` (or a keyword list resolved into one). Returns
-  `{:ok, run}` or `{:error, reason, detail}`.
+  `opts` is a `Mutare.Run.Context` (or a `Mutare.Options` / keyword list resolved
+  into one). Returns `{:ok, run}` or `{:error, reason, detail}`.
   """
-  @spec run(Path.t(), Options.t() | keyword()) :: {:ok, run()} | error()
+  @spec run(Path.t(), Context.t() | Options.t() | keyword()) :: {:ok, run()} | error()
   def run(input_root \\ ".", opts \\ []) do
-    options = ensure_project(Options.new(opts), input_root)
-    root = options.project.copy_root
-    schema = Schema.build(root, options)
-    run_with_schema(schema, root, options)
+    context = Context.ensure_project(Context.new(opts), input_root)
+    root = context.project.copy_root
+    schema = Schema.build(root, context)
+    run_with_schema(schema, root, context)
   end
 
   @doc """
   Run a pre-built schema (lets a caller report the mutant count before launching).
 
-  `opts` is a `Mutare.Options` (or a keyword list resolved into one). Beyond the
-  schema/sandbox fields, it uses three live-progress hooks — `:reporter` (a
+  `opts` is a `Mutare.Run.Context` (or a `Mutare.Options` / keyword list resolved
+  into one). Beyond the schema/sandbox fields, it uses three live-progress hooks —
+  carried on the context — `:reporter` (a
   1-arity function called with each `Mutare.Result` as it completes), `:on_phase`
   (called with the phase as the run moves through `:compiling` → `:baseline` →
   `:coverage_probe` → `{:running, total}`), and `:on_start` (called with each
@@ -165,18 +167,19 @@ defmodule Mutare.Runner do
   fail at the harness level), and `:max_survivors` (stop the run once that many
   survivors are found, flagging the returned run `stopped_early`).
   """
-  @spec run_with_schema(Schema.t(), Path.t(), Options.t() | keyword()) ::
+  @spec run_with_schema(Schema.t(), Path.t(), Context.t() | Options.t() | keyword()) ::
           {:ok, run()} | error()
   def run_with_schema(%Schema{} = schema, input_root \\ ".", opts \\ []) do
-    options = ensure_project(Options.new(opts), input_root)
-    root = options.project.copy_root
+    context = Context.ensure_project(Context.new(opts), input_root)
+    options = context.options
+    root = context.project.copy_root
 
     if Schema.count(schema) == 0 do
       {:error, :nothing_to_mutate, "no mutation sites found under #{inspect(options.paths)}"}
     else
-      reporter = Options.hook(options, :reporter)
-      on_phase = Options.hook(options, :on_phase)
-      on_start = Options.hook(options, :on_start)
+      reporter = Context.hook(context, :reporter)
+      on_phase = Context.hook(context, :on_phase)
+      on_start = Context.hook(context, :on_start)
       mode = options.test_selection
 
       on_phase.(:compiling)
@@ -186,14 +189,14 @@ defmodule Mutare.Runner do
       # (poisoners flagged), which is what the run reports against. `prepare_compiling`
       # always hands the sandbox back, so cleanup is owned here on every exit path —
       # the terminal-failure path and the post-run `after` alike.
-      case prepare_compiling(schema, root, options) do
+      case prepare_compiling(schema, root, context) do
         {:error, reason, detail, sandbox} ->
           cleanup_sandbox(sandbox, options)
           {:error, reason, detail}
 
         {:ok, schema, sandbox} ->
           try do
-            run_mutants(schema, sandbox, options, on_phase, on_start, reporter, mode)
+            run_mutants(schema, sandbox, context, on_phase, on_start, reporter, mode)
           after
             cleanup_sandbox(sandbox, options)
           end
@@ -204,7 +207,9 @@ defmodule Mutare.Runner do
   # Baseline → coverage probe → per-mutant run, against an already-compiled
   # sandbox. Returns `{:ok, run}` or a `{:error, reason, detail}` (a red/flaky
   # baseline, or too many harness errors).
-  defp run_mutants(schema, sandbox, %Options{} = options, on_phase, on_start, reporter, mode) do
+  defp run_mutants(schema, sandbox, %Context{} = context, on_phase, on_start, reporter, mode) do
+    options = context.options
+
     # Per-worker partition pool (e.g. `MIX_TEST_PARTITION`) for DB isolation across
     # the concurrent runs; `:disabled` (the default) when `:partition_env` is unset.
     # Sized to `workers` so each concurrency lane has one token. Lifecycle owned
@@ -217,7 +222,7 @@ defmodule Mutare.Runner do
       fixed_env = Partitions.entry(options.partition_env, 1)
 
       with {:ok, baseline_ms} <- run_baseline(on_phase, sandbox, options.baseline_runs, fixed_env) do
-        ctx = build_run_ctx(schema, sandbox, options, mode, baseline_ms, fixed_env, on_phase)
+        ctx = build_run_ctx(schema, sandbox, context, mode, baseline_ms, fixed_env, on_phase)
 
         on_phase.({:running, length(schema.sites)})
 
@@ -241,14 +246,23 @@ defmodule Mutare.Runner do
 
   # The coverage probe + per-app test scopes + timeout cap, assembled into the `RunCtx` threaded
   # to every per-mutant `classify`. Runs after a green baseline, on the fixed (pre-pool) partition.
-  defp build_run_ctx(schema, sandbox, options, mode, baseline_ms, fixed_env, on_phase) do
+  defp build_run_ctx(
+         schema,
+         sandbox,
+         %Context{} = context,
+         mode,
+         baseline_ms,
+         fixed_env,
+         on_phase
+       ) do
+    options = context.options
     on_phase.(:coverage_probe)
     selection = CoverageProbe.run(sandbox, schema, mode, fixed_env)
 
     # Per owning app, the test dirs a whole-suite run may be narrowed to (the app +
     # its dependents). Empty for a single project — see `broaden/3`.
     scopes =
-      Project.app_test_scopes(options.project, sandbox, Path.join(sandbox, "_build/test/lib"))
+      Project.app_test_scopes(context.project, sandbox, Path.join(sandbox, "_build/test/lib"))
 
     %RunCtx{
       sandbox: sandbox,
@@ -346,16 +360,6 @@ defmodule Mutare.Runner do
   defp survivor_count(%Result{status: :survived}), do: 1
   defp survivor_count(_result), do: 0
 
-  # Resolve a `Mutare.Project` from the target if the caller didn't supply one (the
-  # Mix task does; `Mutare.run/2` and direct callers may not). Its `copy_root` is
-  # then the authoritative root for every path operation below — the umbrella root
-  # for an umbrella, the project root otherwise.
-  defp ensure_project(%Options{project: nil} = options, root) do
-    %{options | project: Project.resolve(root)}
-  end
-
-  defp ensure_project(%Options{} = options, _root), do: options
-
   # Per-mutant wall-clock cap. An explicit `:timeout` (ms) wins; otherwise
   # baseline × `:timeout_multiplier` (default 3.0), with a floor so tiny suites
   # don't get an absurdly small cap. A mutation can turn a terminating loop
@@ -379,9 +383,9 @@ defmodule Mutare.Runner do
   # claimed exactly once. Returns `{:ok, schema, sandbox}` or `{:error, reason, detail,
   # sandbox}`; either way the sandbox is handed back so `run_with_schema/3` owns cleanup
   # uniformly (this function never cleans up itself).
-  defp prepare_compiling(schema, root, %Options{} = options) do
-    sandbox = Sandbox.prepare(root, schema, options)
-    deps = %{root: root, options: options, sandbox: sandbox}
+  defp prepare_compiling(schema, root, %Context{} = context) do
+    sandbox = Sandbox.prepare(root, schema, context)
+    deps = %{root: root, options: context.options, sandbox: sandbox}
     compile_with_recovery(deps, schema, MapSet.new(), MapSet.new(), @poison_attempts)
   end
 

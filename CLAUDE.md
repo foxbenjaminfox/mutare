@@ -1042,8 +1042,35 @@ contract between them is the whole game.
   `macros/0` (routing each macro's msgid positions `:skip`, the bindings/count `:expression`), and an
   Igniter installer writes the one `:plugins` entry. See "Adding a plugin" and NOTES "Plugin
   `use`-expansion override".
+- **`Mutare.Options`** / **`Mutare.Options.Registry`** / **`Mutare.Run.Context`** — the split
+  between *configuration* and *runtime wiring*. **`Mutare.Options`** is the validated user-config
+  struct, but it owns no option *knowledge*: every option's default, CLI passthrough switch shape,
+  `--show-config` visibility + formatter, and validator live in one place — **`Mutare.Options.Registry`**
+  (an ordered `specs/0` list) — so adding a typical option is a *single* registry entry instead of
+  the four synchronized edits (`options.ex` default+validator, the Mix task `@switches`, `Config`'s
+  passthrough fold, `info.ex`'s `--show-config` row) that drifted before (that drift is how
+  `--show-config` silently omitted `partition_env`/`seed_app_build`/`quiet`/`only_files`/`only_lines`;
+  `display_rows/1` now lists *every* visible option). `Options` derives its `defstruct`/`@keys`/`new/1`
+  from `Registry.defaults/0`/`specs/0`; `Config` and the Mix task derive their switch lists from
+  `Registry.cli_switches/0`/`passthrough_keys/0`; the registry is `Options`'s **compile-time**
+  dependency, so it must not reference the `%Options{}` struct (the reporters validator reads
+  `Options.formats/0` at *runtime*, and `display_rows/1` takes a plain map — both deliberately avoid a
+  compile cycle). **`Mutare.Run.Context`** carries the things that are *not* config — the resolved
+  `Mutare.Project` and the four live-progress hooks (`reporter`/`on_phase`/`on_start`/`on_scan`) —
+  bundled with the validated `options`. `new/1` is a **wrap-at-boundary** normalizer mirroring
+  `Options.new/1`: a keyword list has its wiring keys split off (validated here) from its config keys
+  (routed to `Options.new/1`), so an existing `Schema.build(root, project: p, mutators: m)` call keeps
+  working unchanged. `Mutare.Schema`/`Mutare.Sandbox`/`Mutare.Runner` thread the context, reading
+  config from `ctx.options` and wiring from the context's own fields (`Context.hook/2` is the no-op
+  default; `Context.ensure_project/2` resolves a project from `root` when the direct API leaves it
+  unset). Note `Mutare.Runner.RunCtx` (per-mutant invariants) is a *different* struct.
 - **`Mutare.Config`** / **`Mutare.Changes`** / **`Mix.Tasks.Mutare`** — `.mutare.exs` + CLI flag
-  resolution, `git diff` for `--since`, and the CLI entry point. `Config.parse_line_spec/1` parses a
+  resolution, `git diff` for `--since`, and the CLI entry point. The Mix task's `@switches` is
+  composed `Registry.cli_switches() ++ Config.cli_switches() ++ <project/scope + inspect flags>`, so
+  each flag's parse shape sits with its meaning — the passthroughs in the registry, the
+  *exceptional/translated* flags (`--only`/`--line`/`--exclude`/`--mutators`/`--full`/`--partition-*`/
+  `--format`/`--output`) in `Config.cli_switches/0` (whose translations stay in `Config.merge/2`).
+  `Config.parse_line_spec/1` parses a
   repeatable `--line FILE:LINE` (split on the last colon, integer line) into `:only_lines` — a narrow
   rerun scoped to one `file:line`'s mutants, the `FILE:LINE` mirroring `Report.header/1`'s prefix.
   Output formats resolve here too:
@@ -1056,8 +1083,9 @@ contract between them is the whole game.
   completed `Result`), `:on_phase` (the run's phase as it advances `:compiling` → `:baseline` →
   `:coverage_probe` → `{:running, total}`), `:on_start` (each `Site` as its run begins), and
   `:on_scan` (pre-run scan progress). All
-  four are 1-arity, optional (`nil` = no-op), and validated in `Options`; `Mutare.Runner` fires the
-  first three and `Mutare.Schema` fires `:on_scan`, but neither knows anything of the display.
+  four are 1-arity, optional (`nil` = no-op), and live on `Mutare.Run.Context` (not `Options` —
+  they're wiring, not config); `Mutare.Runner` fires the first three and `Mutare.Schema` fires
+  `:on_scan`, but neither knows anything of the display.
   **`--quiet`** (`:quiet`, a plain boolean threaded like `keep_sandbox`/`strict_ignores`) is the
   master off-switch for that display: when set, the task leaves all four hooks unset and never
   starts `Live`, so the run is silent on stderr (for CI / piped use); the final and machine

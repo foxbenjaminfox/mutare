@@ -6,7 +6,14 @@ defmodule Mutare.Config do
   `Mutare.Options.new/1` normalizes and validates into the `Mutare.Options`
   struct threaded through the rest of the pipeline. This module owns CLI syntax
   and precedence only; it does not resolve runtime option values.
+
+  The **1:1 passthrough** flags (whose CLI name is a plain rename of an option
+  key) are derived from `Mutare.Options.Registry`, so this module only spells out
+  the *exceptional* flags it actually translates (see `cli_switches/0` and the
+  translations in `merge/2`).
   """
+
+  alias Mutare.Options.Registry
 
   @doc "Load `.mutare.exs` from `root`, or `[]` when it is absent."
   @spec load(Path.t()) :: keyword()
@@ -59,29 +66,33 @@ defmodule Mutare.Config do
     |> resolve_reporters(flags)
   end
 
-  # Flags forwarded straight through: same config key, value taken verbatim from `flags`
-  # (and dropped when absent, like every other flag). Listed once so a new 1:1 flag is a
-  # single addition and the translated flags in `merge/2` stay the focus.
-  @passthrough_flags [
-    :min_score,
-    :sandbox,
-    :keep_sandbox,
-    :seed_app_build,
-    :strict_ignores,
-    :quiet,
-    :baseline_runs,
-    :harness_retries,
-    :max_harness_error_rate,
-    :max_mutants,
-    :max_survivors,
-    :workers,
-    :timeout,
-    :timeout_multiplier,
-    :expand_uses
+  @doc """
+  The CLI switches this module owns: the **exceptional**/translated flags whose mapping is *not* a
+  1:1 passthrough (a repeatable accumulator, a renamed/derived key, or a `--no-` toggle handled in
+  `merge/2`). The Mix task composes these with `Mutare.Options.Registry.cli_switches/0` (the
+  passthrough options) and its own project/inspect flags into `OptionParser`'s strict switch list,
+  so a flag's parse shape lives next to its translation.
+  """
+  @cli_switches [
+    only: [:string, :keep],
+    line: [:string, :keep],
+    exclude: [:string, :keep],
+    mutators: :string,
+    full: :boolean,
+    partition_db: :boolean,
+    partition_env: :string,
+    format: [:string, :keep],
+    output: [:string, :keep]
   ]
+  @spec cli_switches() :: keyword()
+  def cli_switches, do: @cli_switches
 
+  # Flags forwarded straight through: same config key, value taken verbatim from `flags`
+  # (and dropped when absent). The set is `Mutare.Options.Registry.passthrough_keys/0` — the
+  # options whose CLI flag is a plain `--key`/`--no-key` rename — so a new passthrough option is a
+  # single registry entry, with nothing to add here.
   defp put_passthrough_flags(config, flags) do
-    Enum.reduce(@passthrough_flags, config, fn key, config ->
+    Enum.reduce(Registry.passthrough_keys(), config, fn key, config ->
       put_unless_nil(config, key, flags[key])
     end)
   end

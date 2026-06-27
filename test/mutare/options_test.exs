@@ -21,7 +21,6 @@ defmodule Mutare.OptionsTest do
       assert options.max_harness_error_rate == 0.5
       assert options.sandbox == nil
       assert options.min_score == nil
-      assert options.reporter == nil
     end
 
     test ":workers defaults to the scheduler count (a concrete positive integer)" do
@@ -500,45 +499,12 @@ defmodule Mutare.OptionsTest do
     end
   end
 
-  describe ":reporter" do
-    test "accepts nil or a 1-arity function" do
-      assert Options.new(reporter: nil).reporter == nil
-      fun = fn _result -> :ok end
-      assert Options.new(reporter: fun).reporter == fun
-    end
-
-    test "rejects a non-function or a wrong arity" do
-      assert_raise ArgumentError, ~r/:reporter must be a 1-arity function/, fn ->
-        Options.new(reporter: fn -> :ok end)
-      end
-
-      assert_raise ArgumentError, fn -> Options.new(reporter: :nope) end
-    end
-  end
-
-  describe ":on_phase / :on_start" do
-    test "default to nil" do
-      options = Options.new([])
-      assert options.on_phase == nil
-      assert options.on_start == nil
-    end
-
-    test "accept nil or a 1-arity function" do
-      phase = fn _phase -> :ok end
-      start = fn _site -> :ok end
-      options = Options.new(on_phase: phase, on_start: start)
-      assert options.on_phase == phase
-      assert options.on_start == start
-      assert Options.new(on_phase: nil, on_start: nil).on_phase == nil
-    end
-
-    test "reject a non-function or a wrong arity" do
-      assert_raise ArgumentError, ~r/:on_phase must be a 1-arity function/, fn ->
-        Options.new(on_phase: fn -> :ok end)
-      end
-
-      assert_raise ArgumentError, ~r/:on_start must be a 1-arity function/, fn ->
-        Options.new(on_start: :nope)
+  describe "context keys are not options" do
+    test "the runtime-wiring keys are rejected as unknown options (they live on Run.Context)" do
+      for key <- [:project, :reporter, :on_phase, :on_start, :on_scan] do
+        assert_raise ArgumentError, ~r/unknown option/, fn ->
+          Options.new([{key, fn _ -> :ok end}])
+        end
       end
     end
   end

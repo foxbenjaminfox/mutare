@@ -5471,6 +5471,56 @@ a metamutant with **zero** poisons.
     in `run_mutant/6`. Orthogonal to harness retries (that's infra flakiness, this
     is test flakiness). Not built here.
 
+### Option-spec registry + config/wiring split `[done]`
+
+Two problems with how options were defined and carried.
+
+**(1) Option knowledge was spread across four files**, so adding one option meant four synchronized
+edits that silently drifted: the default + validator (`Mutare.Options`'s `@field_defaults` +
+`validate_*!`), the CLI switch shape (`Mix.Tasks.Mutare`'s `@switches`), the 1:1 passthrough fold
+(`Mutare.Config`'s `@passthrough_flags`), and the `--show-config` row (`Mutare.CLI.Info`). The drift
+was already visible — `--show-config` silently omitted `partition_env`/`seed_app_build`/`quiet`/
+`only_files`/`only_lines`.
+
+**Fix:** one declarative source, **`Mutare.Options.Registry`** — an ordered `specs/0` list, one entry
+per user option carrying `{default, cli, visible, show, validate}`. Everything else derives from it:
+`Options` builds its `defstruct`/`@keys`/`new/1` from `defaults/0`+`specs/0`; `Config.put_passthrough_flags`
+folds `passthrough_keys/0`; the Mix task's `@switches` is `Registry.cli_switches() ++
+Config.cli_switches() ++ <project/inspect flags>`; `info.ex`'s `--show-config` is `Registry.display_rows/1`
+(so every visible option appears — the omissions are now structurally impossible). Adding a typical
+passthrough option is a single registry entry. The *exceptional* CLI translations (`--full`/`--only`/
+`--format`/…) deliberately stay in `Config` (`cli_switches/0` + `merge/2`); the registry only owns the
+1:1 passthroughs.
+
+Two sharp edges:
+  - **`specs/0` is a function, not a `@specs` attribute.** Its `:validate`/`:show` values are captures
+    of this module's *private* functions (`&validate_paths!/1`), which a module attribute **cannot**
+    hold — only a function body can capture a local. It rebuilds the list per call (cheap; called a
+    handful of times per run).
+  - **The registry must not compile-depend on `%Options{}`.** `Options` derives its struct from
+    `Registry.defaults/0` (a compile-time dep `Options → Registry`), so a `%Mutare.Options{}` pattern
+    in the registry would close a compile **deadlock**. Hence `display_rows/1` takes a plain map (no
+    struct pattern) and the reporters validator reads `Options.formats/0` at *runtime* (an export dep,
+    not compile). Hit this exact deadlock during the change; the fix is to keep the registry → options
+    reference runtime-only.
+
+**(2) `Mutare.Options` mixed configuration with runtime wiring.** `project` (a resolved
+`Mutare.Project`) and the four live-progress hooks (`reporter`/`on_phase`/`on_start`/`on_scan`) are
+not user config — they're execution context — yet lived on the same struct.
+
+**Fix:** **`Mutare.Run.Context`** = `%{options, project, reporter, on_phase, on_start, on_scan}`.
+`Options` is pure config again. The pipeline (`Schema`/`Sandbox`/`Runner`) threads a context, reading
+config from `ctx.options` and wiring from its own fields. The key to low churn is **wrap-at-boundary**:
+`Context.new/1` mirrors `Options.new/1` and, for a keyword list, **splits** the wiring keys off (via
+`Keyword.split`) and routes the rest to `Options.new/1` — so every existing keyword call site
+(`Schema.build(root, project: p, mutators: m)`, `Sandbox.prepare(root, schema, project: p)`,
+`Mutare.run(root, sandbox: s)`) keeps working untouched, the wiring riding into the context and the
+config into options. `Context.hook/2` is the no-op default (moved from `Options.hook/2`);
+`Context.ensure_project/2` (moved from `Runner`) resolves a project from `root` when the direct API
+leaves it unset. Naming: this is `Mutare.Run.Context`; the **unrelated** `Mutare.Runner.RunCtx` (the
+per-mutant invariants: sandbox/selection/cap/scopes/retries) stays — different struct, similar name,
+aliased `Context` vs `RunCtx` to keep them apart in `Runner`.
+
 ## Consolidations weighed and left as-is
 
 A refactoring pass folded most of the cross-module duplication — shared AST/resolution/suppression

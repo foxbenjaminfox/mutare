@@ -316,46 +316,32 @@ defmodule Mix.Tasks.Mutare do
   alias Mutare.{Config, Options, Project, Report, Runner, Schema}
   alias Mutare.CLI
   alias Mutare.CLI.Info
+  alias Mutare.Options.Registry
   alias Mutare.Report.Live
+  alias Mutare.Run.Context
   alias Mutare.Sandbox.Command.Output
 
-  @switches [
-    only: [:string, :keep],
-    line: [:string, :keep],
-    exclude: [:string, :keep],
-    mutators: :string,
-    min_score: :float,
-    sandbox: :string,
-    keep_sandbox: :boolean,
-    seed_app_build: :boolean,
-    strict_ignores: :boolean,
-    quiet: :boolean,
-    full: :boolean,
-    since: :string,
-    baseline_runs: :integer,
-    harness_retries: :integer,
-    max_harness_error_rate: :float,
-    max_mutants: :integer,
-    max_survivors: :integer,
-    workers: :integer,
-    partition_db: :boolean,
-    partition_env: :string,
-    timeout: :integer,
-    timeout_multiplier: :float,
-    format: [:string, :keep],
-    output: [:string, :keep],
-    app: [:string, :keep],
-    workspace: :boolean,
-    expand_uses: :boolean,
-    # inspect-and-exit flags (print information, run nothing)
-    version: :boolean,
-    list_mutators: :boolean,
-    explain: :string,
-    list_macros: :boolean,
-    list_ignores: :boolean,
-    show_config: :boolean,
-    dry_run: :boolean
-  ]
+  # The strict `OptionParser` switch list, composed from three sources so each flag's parse shape
+  # lives next to its meaning: the **passthrough** option flags from `Mutare.Options.Registry`
+  # (a 1:1 `--key`/`--no-key` rename), the **exceptional/translated** flags from `Mutare.Config`
+  # (`--only`/`--full`/`--format`/…), and the task's own **project/scope + inspect-and-exit** flags
+  # below (which are neither options nor config-translated). Adding a passthrough option is then a
+  # single registry entry — no edit here.
+  @switches Registry.cli_switches() ++
+              Config.cli_switches() ++
+              [
+                since: :string,
+                app: [:string, :keep],
+                workspace: :boolean,
+                # inspect-and-exit flags (print information, run nothing)
+                version: :boolean,
+                list_mutators: :boolean,
+                explain: :string,
+                list_macros: :boolean,
+                list_ignores: :boolean,
+                show_config: :boolean,
+                dry_run: :boolean
+              ]
 
   @impl Mix.Task
   def run(argv) do
@@ -378,18 +364,24 @@ defmodule Mix.Tasks.Mutare do
     target = List.first(rest) || "."
     project = resolve_project(target, flags)
     options = resolve_options(project, flags)
+
+    # `project` is run *context*, not configuration — it rides on the `Run.Context` alongside the
+    # validated options (and, later, the live-progress hooks), not inside the `Options` struct.
+    context = Context.new(options, project: project)
     root = project.copy_root
 
     cond do
       flags[:show_config] -> Info.print_effective_config(project, options)
       flags[:list_macros] -> Info.print_macro_registry(options)
-      flags[:list_ignores] -> Info.print_ignores(project, scan(options, root))
-      flags[:dry_run] -> Info.print_dry_run(project, scan(options, root))
-      true -> run_mutation_testing(project, options, root)
+      flags[:list_ignores] -> Info.print_ignores(project, scan(context, root))
+      flags[:dry_run] -> Info.print_dry_run(project, scan(context, root))
+      true -> run_mutation_testing(project, context, root)
     end
   end
 
-  defp run_mutation_testing(%Project{} = project, %Options{} = options, root) do
+  defp run_mutation_testing(%Project{} = project, %Context{} = context, root) do
+    options = context.options
+
     # Surface first-party `use MyAppWeb, :controller` bundles: `Mutare.Transform.Uses` expands
     # `use` in-process, which needs the host app's modules loadable. Deps are already on the
     # code path; the host app is compiled here, best-effort, before the scan transforms it.
@@ -409,7 +401,7 @@ defmodule Mix.Tasks.Mutare do
       # so the two don't collide; the runner then redraws its own phases.
       if live, do: Live.phase(live, :scanning)
       on_scan = if live, do: &Live.scanned(live, &1)
-      schema = Schema.build(root, %{options | on_scan: on_scan})
+      schema = Schema.build(root, %{context | on_scan: on_scan})
       if live, do: Live.clear(live)
       announce(schema, project, options)
       warn_ineffective_ignores(schema)
@@ -417,17 +409,17 @@ defmodule Mix.Tasks.Mutare do
 
       # Wire the runner's live hooks (reporter/phase/start) now that the scan is done — the
       # scan drove `:on_scan` directly above; these drive the per-mutant phase. A distinct
-      # binding (not a rebind of `options`) so it stays clear that the scan/announce above ran
-      # on the unhooked options and only the runner + report see the hooked ones.
-      run_options = wire_live_hooks(options, live)
+      # binding (not a rebind of `context`) so it stays clear that the scan/announce above ran
+      # on the unhooked context and only the runner + report see the hooked one.
+      run_context = wire_live_hooks(context, live)
 
-      result = Runner.run_with_schema(schema, root, run_options)
+      result = Runner.run_with_schema(schema, root, run_context)
       # Tear the live status block down before anything else prints, so the final
       # report / error lands on a clean terminal (the block lives on stderr).
       if live, do: Live.finish(live)
 
       case result do
-        {:ok, run} -> report(run, run_options)
+        {:ok, run} -> report(run, options)
         {:error, reason, detail} -> Mix.raise(format_error(reason, detail))
       end
     after
@@ -437,10 +429,11 @@ defmodule Mix.Tasks.Mutare do
   end
 
   # The shared scan for the scan-backed info commands (`--dry-run`, `--list-ignores`):
-  # discover + transform every in-scope source, compiling and running nothing.
-  defp scan(%Options{} = options, root) do
-    ensure_host_compiled(options, root)
-    Schema.build(root, options)
+  # discover + transform every in-scope source, compiling and running nothing. Takes the
+  # `Run.Context` so the umbrella scope (`context.project`) reaches `Schema.build/2`.
+  defp scan(%Context{} = context, root) do
+    ensure_host_compiled(context.options, root)
+    Schema.build(root, context)
   end
 
   # Start the live progress reporter unless `--quiet`. `nil` means "no live
@@ -453,13 +446,13 @@ defmodule Mix.Tasks.Mutare do
     live
   end
 
-  # Point the runner's three live hooks at the `Live` server, or leave `options` untouched
-  # when there is no live reporter (`--quiet`, or the direct `Mutare.run/2` API).
-  defp wire_live_hooks(options, nil), do: options
+  # Point the runner's three live hooks at the `Live` server, or leave the `Run.Context`
+  # untouched when there is no live reporter (`--quiet`, or the direct `Mutare.run/2` API).
+  defp wire_live_hooks(context, nil), do: context
 
-  defp wire_live_hooks(options, live) do
+  defp wire_live_hooks(context, live) do
     %{
-      options
+      context
       | reporter: &Live.report(live, &1),
         on_phase: &Live.phase(live, &1),
         on_start: &Live.started(live, &1)
@@ -531,7 +524,6 @@ defmodule Mix.Tasks.Mutare do
     |> Config.load()
     |> Config.merge(flags)
     |> scope_to_changes(project.copy_root, flags)
-    |> Keyword.put(:project, project)
     |> Options.new()
   rescue
     error in ArgumentError -> Mix.raise(Exception.message(error))

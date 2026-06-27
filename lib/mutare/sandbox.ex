@@ -30,6 +30,7 @@ defmodule Mutare.Sandbox do
 
   alias Mutare.{Options, Schema}
   alias Mutare.Coverage.Recorder
+  alias Mutare.Run.Context
   alias Mutare.Sandbox.{Paths, Seed}
   alias Mutare.Sandbox.Command.Invocation
 
@@ -111,8 +112,9 @@ defmodule Mutare.Sandbox do
   @doc """
   Prepare a sandbox for `schema` taken from `root`. Returns the sandbox path.
 
-  `opts` is a `Mutare.Options` (or a keyword list resolved into one); its
-  `:sandbox` field is the target directory (default: a fresh temp dir).
+  `opts` is a `Mutare.Run.Context` (or a `Mutare.Options` / keyword list resolved
+  into one); the options' `:sandbox` field is the target directory (default: a
+  fresh temp dir) and the context's `:project` selects the umbrella scope.
 
   The sandbox must be disjoint from the project tree: it cannot be the project
   root, contain it, or be contained by it. `Options` validates the *shape* of the
@@ -126,9 +128,11 @@ defmodule Mutare.Sandbox do
   is treated as a stale leftover and refused, since the pid-salted name rules out
   a benign collision with a live run.
   """
-  @spec prepare(Path.t(), Schema.t(), Options.t() | keyword()) :: Path.t()
+  @spec prepare(Path.t(), Schema.t(), Context.t() | Options.t() | keyword()) :: Path.t()
   def prepare(root, %Schema{} = schema, opts \\ []) do
-    options = Options.new(opts)
+    context = Context.new(opts)
+    options = context.options
+    project = context.project
     sandbox = options.sandbox || default_sandbox(root, options.keep_sandbox)
 
     Paths.validate!(root, sandbox)
@@ -137,14 +141,14 @@ defmodule Mutare.Sandbox do
     if options.keep_sandbox do
       # Reuse the existing sandbox (and its `_build`): re-materialise it in place,
       # touching only what changed and pruning what's gone.
-      sync(root, sandbox, schema, options)
+      sync(root, sandbox, schema, project)
     else
       # Bulk-copy the project, then overlay every generated file from the **one**
       # `override_files/3` manifest `sync/4` also uses (metamutant source, coverage
       # helper, wrapped test helper) — so adding a generated file is a single edit, not
       # one per mode.
       copy_project(root, sandbox)
-      write_overrides(sandbox, override_files(root, schema, options))
+      write_overrides(sandbox, override_files(root, schema, project))
     end
 
     # Avoid recompiling unchanged dependencies on the one `mix compile` by seeding
@@ -411,8 +415,8 @@ defmodule Mutare.Sandbox do
   # incremental compiler reuses `_build`); files Mutare no longer owns are pruned.
   # `@excluded` dirs (notably `_build`/`cover`) are never read, written, or pruned,
   # so the compiled artifacts survive between runs.
-  defp sync(root, sandbox, %Schema{} = schema, %Options{} = options) do
-    overrides = override_files(root, schema, options)
+  defp sync(root, sandbox, %Schema{} = schema, project) do
+    overrides = override_files(root, schema, project)
     sources = source_rel_paths(root)
     source_set = MapSet.new(sources)
     managed = MapSet.union(source_set, MapSet.new([@marker_name | Map.keys(overrides)]))
@@ -439,10 +443,10 @@ defmodule Mutare.Sandbox do
   # materialisation modes use: `sync/4` overlays it onto an existing sandbox, the fresh path
   # (`prepare/3`) `write_overrides/2`-es it over a fresh copy. Adding a generated file is one
   # edit here, automatically reaching both modes.
-  defp override_files(root, %Schema{metamutants: metamutants}, %Options{} = options) do
+  defp override_files(root, %Schema{metamutants: metamutants}, project) do
     metamutants
-    |> Map.merge(coverage_helper_files(root, options.project))
-    |> Map.merge(helper_files(root, options.project))
+    |> Map.merge(coverage_helper_files(root, project))
+    |> Map.merge(helper_files(root, project))
   end
 
   # The dependency-free coverage helper, compiled with the app so the metamutant's per-site
