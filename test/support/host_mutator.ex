@@ -299,14 +299,10 @@ end
 
 defmodule Mutare.Test.KeywordHostedMutator do
   @moduledoc """
-  A `:routing` classifier that (incorrectly) routes a **keyword value** `:hosted`. Hosting is a
-  *whole-argument* concern — `c:Mutare.Mutator.host/2` weaves a selector into the macro node, and
-  core has no per-keyword-value hosting delivery — so a `:hosted` nested inside a `{:keyword, …}`
-  routing is undeliverable. `Mutare.Transform.Resolve.validate_routing!/2` raises at stamp
-  time (loud) rather than silently missing the mutant or splicing a bare selector into the DSL
-  value (poison). It registers `Mutare.Test.HostDSL.set/2` (the keyword-shorthand macro) and routes
-  its keyword-list argument with every value `:hosted` — exactly the over-wide shape the narrowed
-  `t:Mutare.Mutator.keyword_value_treatment/0` type excludes.
+  A `:routing` classifier that hosts values nested inside keyword routing. The host still receives
+  and weaves into the whole macro node; the nested treatment only identifies which values core must
+  leave raw while the host builds its targets. It covers both a direct keyword value and a value in
+  a nested keyword list.
   """
   @behaviour Mutare.Mutator
 
@@ -320,10 +316,9 @@ defmodule Mutare.Test.KeywordHostedMutator do
   def macros, do: [{Mutare.Test.HostDSL, :set, :any, :routing}]
 
   # `set(query, assigns)` — leave the query an ordinary expression, route the keyword-list
-  # argument `{:keyword, …}` with each pair's value `:hosted` (the unsupported shape). A value that
+  # argument `{:keyword, …}` with each pair's value `:hosted`. A value that
   # is itself a keyword list recurses as `{:keyword, …}`, so a nested-shorthand value yields a
-  # *nested* `:hosted` (`{:keyword, [{:keyword, [:hosted]}]}`) — the deeper case the detector must
-  # still catch.
+  # *nested* `:hosted` (`{:keyword, [{:keyword, [:hosted]}]}`).
   @impl Mutare.Mutator
   def macro_routing({:set, _meta, [_query, assigns]}) when is_list(assigns),
     do: [:expression, {:keyword, value_treatments(assigns)}]
@@ -336,7 +331,7 @@ defmodule Mutare.Test.KeywordHostedMutator do
   defp value_treatments(pairs), do: Enum.map(pairs, fn {_k, v} -> value_treatment(v) end)
 
   # A list value is Sourceror-wrapped `{:__block__, _, [list]}` in a keyword *value* position; a
-  # keyword-list value recurses, anything else is the (unsupported) bare `:hosted`.
+  # keyword-list value recurses, anything else is hosted.
   defp value_treatment({:__block__, _meta, [list]}) when is_list(list),
     do: if(keyword_list?(list), do: {:keyword, value_treatments(list)}, else: :hosted)
 
@@ -347,10 +342,53 @@ defmodule Mutare.Test.KeywordHostedMutator do
 
   defp keyword_list?(_node), do: false
 
-  # Present so build-time validation passes (a `:routing` spec must be able to host); the raise
-  # happens at stamp time, before this would be reached.
   @impl Mutare.Mutator
+  def host({form, _meta, [_query, assigns]}, _context) when form == :set and is_list(assigns) do
+    for {original, path} <- keyword_leaves(assigns, []) do
+      splice = fn {name, meta, [query, current]}, case_node ->
+        {name, meta, [query, replace_keyword_value(current, path, case_node)]}
+      end
+
+      %{original: original, mutants: [replacement(original)], splice: splice}
+    end
+  end
+
   def host(_node, _context), do: []
+
+  defp keyword_leaves(pairs, path) do
+    pairs
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {{_key, value}, index} ->
+      next_path = path ++ [index]
+
+      case nested_keyword(value) do
+        nil -> [{value, next_path}]
+        nested -> keyword_leaves(nested, next_path)
+      end
+    end)
+  end
+
+  defp nested_keyword({:__block__, _meta, [list]}) when is_list(list) do
+    if keyword_list?(list), do: list, else: nil
+  end
+
+  defp nested_keyword(_value), do: nil
+
+  defp replace_keyword_value(pairs, [index], replacement) do
+    {key, _value} = Enum.at(pairs, index)
+    List.replace_at(pairs, index, {key, replacement})
+  end
+
+  defp replace_keyword_value(pairs, [index | rest], replacement) do
+    {key, {:__block__, meta, [nested]}} = Enum.at(pairs, index)
+    nested = replace_keyword_value(nested, rest, replacement)
+    List.replace_at(pairs, index, {key, {:__block__, meta, [nested]}})
+  end
+
+  defp replacement({:__block__, meta, [value]}) when is_binary(value),
+    do: {:__block__, meta, [value <> "!"]}
+
+  defp replacement({:__block__, meta, [_value]}), do: {:__block__, meta, [:hosted]}
 end
 
 defmodule Mutare.Test.UnknownTreatmentMutator do

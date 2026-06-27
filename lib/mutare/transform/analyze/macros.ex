@@ -55,15 +55,15 @@ defmodule Mutare.Transform.Analyze.Macros do
     end
   end
 
-  # The hosting mutator module named by the first `{:hosted, host}` entry in a routing list,
+  # The hosting mutator module named by the first `{:hosted, host}` treatment in a routing tree,
   # or `nil` when no position is hosted. All hosted positions of one macro share a host (the
   # registering mutator), so the first is enough.
   defp hosted_host(routing) when is_list(routing) do
-    Enum.find_value(routing, fn
-      {:hosted, host} -> host
-      _ -> nil
-    end)
+    Enum.find_value(routing, &hosted_host/1)
   end
+
+  defp hosted_host({:hosted, host}), do: host
+  defp hosted_host({:keyword, treatments}), do: hosted_host(treatments)
 
   defp hosted_host(_), do: nil
 
@@ -115,9 +115,8 @@ defmodule Mutare.Transform.Analyze.Macros do
   # the DSL); the hosting mutator weaves its own selector via `attach_hosted_candidates/5`.
   defp route_macro_arg(arg, {:hosted, _host}, _mutators), do: arg
 
-  # A *bare* `:hosted` should never reach routing — `Resolve.MacroStamp` rewrites a top-level one
-  # to `{:hosted, host}`, and rejects a `{:keyword, …}`-nested
-  # one (a keyword value can't be hosted). Leave it raw anyway, never the runtime catch-all below:
+  # A *bare* `:hosted` should never reach routing — `Resolve.MacroStamp` rewrites hosted treatments
+  # to `{:hosted, host}` recursively. Leave it raw anyway, never the runtime catch-all below:
   # splicing a bare selector into an unknown macro position is the one outcome the "never poison"
   # stance forbids, so a future path that slipped a bare `:hosted` through degrades safely.
   defp route_macro_arg(arg, :hosted, _mutators), do: arg

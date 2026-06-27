@@ -90,13 +90,18 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
   # A `:routing` classifier is only required to implement host/2 once it actually routes a
   # position as hosted. Fail at the stamp point, where that concrete routing is first known.
   defp reject_undeliverable_hosted!(%Spec{host: host} = spec, routing) do
-    if Enum.any?(routing, &match?({:hosted, _}, &1)) and not host_exports?(host, :host, 2) do
+    if hosted?(routing) and not host_exports?(host, :host, 2) do
       raise ArgumentError,
             "macro #{inspect(Spec.key(spec))}'s macro_routing/1 routed an argument as :hosted, " <>
               "but its hosting mutator #{inspect(host)} does not implement host/2 to deliver it " <>
               "— implement host/2, or do not route that position as :hosted."
     end
   end
+
+  defp hosted?(routing) when is_list(routing), do: Enum.any?(routing, &hosted?/1)
+  defp hosted?({:hosted, _host}), do: true
+  defp hosted?({:keyword, treatments}), do: hosted?(treatments)
+  defp hosted?(_treatment), do: false
 
   # `host` is `module() | nil`; `Code.ensure_loaded?(nil)` and `function_exported?(nil, …)` are
   # both false, so a nil host is handled for free.
@@ -115,15 +120,7 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
             "(one per visible argument), got: #{inspect(routing)}"
   end
 
-  defp validate_treatment!(_spec, :hosted, :argument), do: :ok
-
-  defp validate_treatment!(spec, :hosted, :keyword_value) do
-    raise ArgumentError,
-          "macro #{inspect(Spec.key(spec))}'s macro_routing/1 routed a :hosted treatment inside " <>
-            "a {:keyword, …} value, but a keyword value cannot be hosted — hosting weaves into " <>
-            "the whole macro node (host/2), not an individual keyword value. Route the whole " <>
-            "argument :hosted, or route the value with a core treatment (:expression/:pinned/:skip)."
-  end
+  defp validate_treatment!(_spec, :hosted, _position), do: :ok
 
   defp validate_treatment!(spec, {:keyword, value_treatments}, _position)
        when is_list(value_treatments) do
@@ -144,12 +141,17 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
   defp recognised_atom_treatments, do: [:pinned | Spec.treatments()]
 
   # Tag each `:hosted` treatment with its hosting mutator module so the analyzer can reach host/2.
+  # Keyword routing can nest arbitrarily, so preserve its shape while injecting recursively.
   defp inject_host(routing, %Spec{host: host}) do
-    Enum.map(routing, fn
-      :hosted -> {:hosted, host}
-      other -> other
-    end)
+    Enum.map(routing, &inject_host_treatment(&1, host))
   end
+
+  defp inject_host_treatment(:hosted, host), do: {:hosted, host}
+
+  defp inject_host_treatment({:keyword, treatments}, host),
+    do: {:keyword, Enum.map(treatments, &inject_host_treatment(&1, host))}
+
+  defp inject_host_treatment(other, _host), do: other
 
   # Split effective routing across the visible-call stamp and the piped-LHS stamp.
   defp stamp_routing(meta, routing, :unpiped), do: [{@macro_key, routing} | meta]

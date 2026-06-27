@@ -399,8 +399,8 @@ defmodule Mutare.Mutator do
   ordinary `:expression`), so a piped call passes one fewer argument than the written form. A
   classifier that matches on arity must handle that reduced shape (match the visible args, not a
   fixed count). The returned treatments are validated by `Mutare.Transform.Resolve`: an
-  unrecognised/mis-shaped treatment, or a `:hosted` inside a `{:keyword, …}` value, raises rather
-  than silently mutating a position you meant to skip/host.
+  unrecognised or mis-shaped treatment raises rather than silently mutating a position you meant
+  to skip or host.
 
   ## Per-keyword-pair routing — `{:keyword, value_treatments}`
 
@@ -414,11 +414,9 @@ defmodule Mutare.Mutator do
       not a value to mutate. A value treatment may itself be `{:keyword, …}`, so a *nested*
       keyword list (a list whose values are keyword lists) routes too. A non-keyword argument
       under it falls back to raw, so a mis-shaped classification can never splice into a non-pair.
-      A keyword value is a `t:keyword_value_treatment/0` — every treatment **except `:hosted`**:
-      hosting weaves a selector into the *whole macro node* (`c:host/2`), and core has no
-      per-keyword-value hosting delivery, so an individual value can't be hosted (route the whole
-      argument `:hosted` instead). A `:hosted` nested in a `{:keyword, …}` is rejected at stamp
-      time (`Mutare.Transform.Resolve`) rather than silently dropped or poisoned into the value.
+      A keyword value is a `t:keyword_value_treatment/0`. A nested `:hosted` value is left raw by
+      core and delivered through this module's `c:host/2`, which still receives and weaves into the
+      whole macro node.
 
     * `:pinned` for a **value that must be `^`-pinned** — it sits in a compile-time DSL position
       (an Ecto keyword-shorthand value) that accepts an interpolated value but not a bare
@@ -443,11 +441,9 @@ defmodule Mutare.Mutator do
   keyword pair's value, keys raw). The `{:keyword, …}` arm is **recursive**: a value treatment may
   itself be `{:keyword, …}`, so a nested keyword shorthand (`from(S, where: [x: v])`) routes too.
 
-  A keyword *value* is the narrower `t:keyword_value_treatment/0` — every treatment here **except
-  `:hosted`**. Hosting weaves a selector into the *whole macro node* (`c:host/2`); core has no
-  per-keyword-value hosting delivery, so an individual keyword value can't be hosted — route the
-  whole argument `:hosted` instead. `Mutare.Transform.Resolve` rejects a `:hosted` nested in a
-  `{:keyword, …}` at stamp time rather than silently dropping it or poisoning the DSL value.
+  A keyword *value* is a `t:keyword_value_treatment/0`. A nested `:hosted` treatment leaves that
+  value raw during core descent and asks the registering mutator's `c:host/2` to weave selectors
+  into the whole macro node.
   """
   @type routing_treatment ::
           Mutare.Macro.Spec.treatment()
@@ -455,15 +451,15 @@ defmodule Mutare.Mutator do
           | {:keyword, [keyword_value_treatment()]}
 
   @typedoc """
-  A treatment for a **value inside a `{:keyword, …}` routing** — `t:routing_treatment/0` minus
-  `:hosted` (a keyword value can't be hosted; see that type). A value may itself be `{:keyword, …}`,
-  so a nested keyword shorthand routes too.
+  A treatment for a **value inside a `{:keyword, …}` routing**. A value may itself be
+  `{:keyword, …}`, so a nested keyword shorthand routes too.
   """
   @type keyword_value_treatment ::
           :expression
           | :pattern
           | :binding_pattern
           | :skip
+          | :hosted
           | :pinned
           | {:keyword, [keyword_value_treatment()]}
 

@@ -470,14 +470,8 @@ defmodule Mutare.HostedTest do
     end
   end
 
-  describe "a :hosted nested in a {:keyword, …} routing is rejected (not poison/silent-miss)" do
-    test "raises with an actionable message pointing at hosting the whole argument" do
-      # `Mutare.Test.KeywordHostedMutator` routes `set`'s keyword-list argument
-      # `{:keyword, [:hosted, …]}` — but a keyword *value* can't be hosted (hosting weaves into the
-      # whole macro node, not an individual value). Resolve raises at stamp time rather than leaving
-      # the value raw and dropping the mutation (silent miss) or splicing a bare selector into the
-      # DSL value (poison). The narrowed `keyword_value_treatment` type excludes `:hosted`; this is
-      # its runtime enforcement.
+  describe "a :hosted nested in a {:keyword, …} routing" do
+    test "is delivered through the whole-node host" do
       source = """
       defmodule Mutare.KeywordHostedFixture do
         import Mutare.Test.HostDSL
@@ -488,19 +482,21 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      assert_raise ArgumentError,
-                   ~r/:hosted treatment inside.*\{:keyword.*whole.*argument/s,
-                   fn ->
-                     Mutare.transform_string(source,
-                       file: "kwh.ex",
-                       mutators: [Mutare.Test.KeywordHostedMutator]
-                     )
-                   end
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source,
+          file: "kwh.ex",
+          mutators: [Mutare.Test.KeywordHostedMutator]
+        )
+
+      assert Enum.any?(
+               sites,
+               &(&1.original_code == ~s|"keep"| and &1.mutated_code == ~s|"keep!"|)
+             )
+
+      assert meta =~ "case mutare_active do"
     end
 
-    test "a :hosted nested one level deeper (a keyword value that is itself a keyword) also raises" do
-      # The detector recurses, so `{:keyword, [{:keyword, [:hosted]}]}` (the `from(S, where: [x: v])`
-      # nested shorthand) is caught at any depth, not just the top keyword level.
+    test "is found recursively inside a nested keyword value" do
       source = """
       defmodule Mutare.NestedKeywordHostedFixture do
         import Mutare.Test.HostDSL
@@ -511,12 +507,24 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      assert_raise ArgumentError, ~r/:hosted treatment inside.*\{:keyword/s, fn ->
+      {meta, sites, _next_id} =
         Mutare.transform_string(source,
           file: "nkwh.ex",
           mutators: [Mutare.Test.KeywordHostedMutator]
         )
-      end
+
+      assert Enum.any?(
+               sites,
+               &(&1.original_code == ~s|"keep"| and &1.mutated_code == ~s|"keep!"|)
+             )
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        send(self(), {:nested_keyword_hosted_compiled, Code.compile_string(meta)})
+      end)
+
+      assert_received {:nested_keyword_hosted_compiled, [{module, _binary}]}
+      :code.purge(module)
+      :code.delete(module)
     end
   end
 
