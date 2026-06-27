@@ -34,7 +34,7 @@ defmodule Mutare.Poison do
   """
 
   alias Mutare.Manifest
-  alias Mutare.Sandbox.Command
+  alias Mutare.Sandbox.Command.Output
 
   @doc """
   Mutant ids implicated by `compile_output`, given `%{file => metamutant_source}`.
@@ -89,13 +89,13 @@ defmodule Mutare.Poison do
   # (`unused variable` from a mutant forcing a guard to `true`, `cannot match` from a
   # widened clause) onto unrelated mutant ids and dropped valid mutants as false poison:
   # on plug, one real error dragged ~110 good mutants down with it. So we thread each
-  # line's severity (`Command.diagnostic_severity/1`) and skip warning blocks — keeping
+  # line's severity (`Output.diagnostic_severity/1`) and skip warning blocks — keeping
   # the real error's own footer, which lives outside any warning block.
   defp error_locations(output) do
     output
     |> error_text_lines()
     |> Enum.flat_map(fn line ->
-      Command.source_location_regex()
+      Output.source_location_regex()
       |> Regex.scan(line)
       |> Enum.map(fn [_match, file, num] -> {file, String.to_integer(num)} end)
     end)
@@ -112,7 +112,7 @@ defmodule Mutare.Poison do
     output
     |> String.split("\n")
     |> Enum.reduce({:error, []}, fn line, {severity, kept} ->
-      severity = Command.diagnostic_severity(line) || severity
+      severity = Output.diagnostic_severity(line) || severity
       {severity, if(severity == :warning, do: kept, else: [line | kept])}
     end)
     |> elem(1)

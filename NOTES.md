@@ -181,7 +181,7 @@ wrapper out of the advice (`{Kernel, :if, :skip}` would stop Mutare descending i
 hiding valid mutants). A fresh `** (Error)` header re-arms the per-stacktrace capture, so a
 multi-file failure still yields one culprit per error. `Mix.Tasks.Mutare`'s
 `:compile_failed` formatter leads with that hint, then the raw compiler error. The pattern lives
-in `Hint`, not with `Sandbox.Command`'s exit-code patterns: it's read only for human remediation,
+in `Hint`, not with `Sandbox.Command.Output`'s verdict-forming patterns: it's read only for human remediation,
 never to form a verdict. The `HintTest` unit-tests the parsing; a `:runner` poison test bridges
 to the *real* compiler output (so a `expanding macro:` format drift is caught). Note `:skip` is
 the only fix — `# mutare:ignore` is applied *after* rendering, so the selector is still spliced
@@ -335,7 +335,7 @@ Three load-bearing choices:
   test-env artifact (`only: :dev` like `dialyxir`, or an original never compiled in
   test) is simply absent and skipped; a project with no `_build`/`deps` at all (fresh
   CI checkout) seeds nothing and falls back to a cold compile. Never an error.
-- **`@mix_env` ("test") must track `Mutare.Sandbox.Command`,** which sets
+- **`@mix_env` ("test") must track `Mutare.Sandbox.Command.Invocation`,** which sets
   `MIX_ENV=test` on every sandbox `mix`; we seed `_build/test/lib`. We never seed
   across envs (a `dev` artifact is not valid under a test compile).
 
@@ -428,8 +428,8 @@ optimisation whose runtime payoff (in-place binary/record updates in tight loops
 suite execution almost never collects.
 
 **Fix:** `Mutare.Runner.compile/1` sets `ERL_COMPILER_OPTIONS=[no_ssa_opt_alias]`
-for the one `mix compile` (`Mutare.Sandbox.Command.compiler_env/0` owns it, beside
-the rest of the run-env contract). Measured, deps pre-seeded, Mutare-on-Mutare
+for the one `mix compile` (`Mutare.Sandbox.CompilerOptions.compiler_env/0` owns it,
+scoped to that single compile). Measured, deps pre-seeded, Mutare-on-Mutare
 (~9,100 sites):
 
   - whole-sandbox `mix compile`: **−15% on 2 schedulers** (a small CI box: 8.5 s →
@@ -3076,7 +3076,7 @@ wall-clock cap (`baseline × :timeout_multiplier`, default 3.0, floored; or an
 explicit `:timeout` ms), and a timeout counts as a kill (`:timeout`).
 
 The cap is enforced **portably, with no process-killing**: the injected sandbox
-watcher (a quoted AST owned by `Mutare.Sandbox.Command.watcher_ast/0`, rendered
+watcher (a quoted AST owned by `Mutare.Sandbox.Command.Invocation.watcher_ast/0`, rendered
 into the bootstrap by `Mutare.Sandbox`) spawns a process that `System.halt(124)`s
 after the deadline. The BEAM preempts a looping process, so the watcher always runs (even
 on a tight infinite loop — confirmed); if the suite finishes first the watcher
@@ -3134,11 +3134,11 @@ evaluates the target's config under `MIX_ENV=test`, so a partitioned config that
 reads the var without a default (`System.fetch_env!("MIX_TEST_PARTITION")`, no
 `||`-fallback) would raise at config-eval and fail the *one* build with
 `:compile_failed` — before the baseline/probe ever set the var. Threading the fixed
-entry into the compile `Command.mix` (concatenated with `compiler_env/0`) closes
+entry into the compile `Invocation.mix` (concatenated with `CompilerOptions.compiler_env/0`) closes
 that gap; it also overrides any *stale ambient* `MIX_TEST_PARTITION` the harness
 happened to inherit.
 
-**Delivery is just the existing `:env` plumbing.** `Mutare.Sandbox.Command.mix/4`
+**Delivery is just the existing `:env` plumbing.** `Mutare.Sandbox.Command.Invocation.mix/4`
 already appends an `:env` list onto every sandbox `mix`; the partition entry rides
 that, threaded through `timed_mix`/`timed_test` (new trailing `env` params,
 defaulted `[]` for back-compat) and through `Baseline.run/3`/`CoverageProbe.run/4`.
@@ -3151,7 +3151,7 @@ naming a key Mutare itself sets (`MIX_ENV`, `MUTANT_UNDER_TEST`, the coverage
 vars…) would land a duplicate key in the `System.cmd` env list, where Erlang's
 resolution is unspecified — silently clobbering, say, `MIX_ENV`. So `Options`
 rejects such a name up front, validated against the authoritative
-`Command.reserved_env_names/0` (sourced from the very accessors that build the env,
+`Invocation.reserved_env_names/0` (sourced from the very accessors that build the env,
 so it can't drift). The pool-size↔`max_concurrency` coupling the non-blocking
 checkout depends on is the other thing a future refactor could break silently —
 flagged with an `INVARIANT:` comment at the `Task.async_stream` call.
@@ -3303,7 +3303,7 @@ warning's "see the mutant's output to diagnose the sandbox" led nowhere.
 
 Two engine-side fixes, both confined to the modules that already own these contracts:
 
-- **Recognise + name it** (`Command.boot_failure?/1` → the `:boot_failure` outcome). A
+- **Recognise + name it** (`Output.boot_failure?/1` → the `:boot_failure` outcome). A
   third `outcome/2` output-refinement of the otherwise-`:harness_error` bucket, but —
   unlike `:suite_compile_error`/`:atom_exhausted`, which flip to *kills* — this one
   keeps the **harness-error verdict** (`Runner.status_for(:boot_failure)` →
@@ -3780,7 +3780,7 @@ emission**:
 
 `Elixir.Kernel.raise` is worth a beat: `raise` is a **macro**, and a macro *is* callable through
 an absolute alias (`Elixir.Kernel.raise(...)` expands fine), so the same rule applies. The one
-deliberate exception is `Mutare.Sandbox.Command`'s own `… |> Kernel.++(env)` — that is *first-party
+deliberate exception is `Mutare.Sandbox.Command.Invocation`'s own `… |> Kernel.++(env)` — that is *first-party
 harness* code in a module whose scope Mutare controls, not generated-into-the-target code, so a
 plain qualifier (or even a bare one) is collision-free there.
 
@@ -4701,7 +4701,7 @@ Normal targets never touch this key, so it was a self-hosting artifact only.
 **The fix (a private selection key for the suite-under-test).** The runtime key
 is now configurable: `Selector.key/0` returns `default_key/0` (`:mutare_active`,
 the harness key) unless the `MUTARE_SELECTOR_KEY` env var (`Selector.override_env/0`)
-names another. `Mutare.Sandbox.Command` sets that var (to `Selector.suite_key/0`,
+names another. `Mutare.Sandbox.Command.Invocation` sets that var (to `Selector.suite_key/0`,
 `:mutare_active__suite`) on **every** sandbox `mix` it spawns. So inside the
 sandbox the suite-under-test reads/writes its own private slot — `Selector.put/1`,
 `active/0`, and any fixture it builds via `Transform` (whose selector subject is
@@ -4741,7 +4741,7 @@ What else is in place (unchanged):
 - **`Selector.put/1` is no longer `# mutare:ignore`d.** It used to be excluded
   because exercising it overwrote `:mutare_active`; now it writes the suite key, so
   its guard is honestly killable under dogfooding.
-- **`Selector.bootstrap_ast` / `Command.watcher_ast` no longer break the
+- **`Selector.bootstrap_ast` / `Invocation.watcher_ast` no longer break the
   baseline.** Both build a `quote` containing a `case … "" -> …` clause; the
   transform used to mutate the `""` *pattern* inside the quote and wrap it in a
   selector `case`. That compiles fine *as a quote* but is an illegal pattern where
@@ -4783,7 +4783,7 @@ selection-key split exactly. The stand-in's module name is now configurable:
 `Recorder.fixture_module/0` returns `helper_module/0` (`:mutare_cov`) unless
 `Recorder.fixture_override_env/0` (`MUTARE_COV_FIXTURE_MODULE`) names another, in
 which case the stand-in compiles under `Recorder.suite_fixture_module/0`
-(`:mutare_cov__suite_fixture`). `Mutare.Sandbox.Command` sets that env var on every
+(`:mutare_cov__suite_fixture`). `Mutare.Sandbox.Command.Invocation` sets that env var on every
 sandbox `mix` (beside the `MUTARE_SELECTOR_KEY` override), so inside a sandbox the
 stand-in cedes `:mutare_cov` to the real written helper and the probe's `dump/1`
 resolves. The real helper, the metamutant's baked `hit/1` calls, and the bootstrap
@@ -5198,8 +5198,8 @@ a metamutant with **zero** poisons.
   canonical env→`:persistent_term` activation code. The sandbox renders that AST
   into `test_helper.exs`, so targets need nothing added to their deps and there
   is no second env-parsing implementation to drift. The timeout watcher is the
-  symmetric second half: `Mutare.Sandbox.Command.watcher_ast/0` is its canonical
-  quoted AST, owned next to the timeout env var and exit code, and the sandbox
+  symmetric second half: `Mutare.Sandbox.Command.Invocation.watcher_ast/0` is its canonical
+  quoted AST, owned next to the timeout env var it reads, and the sandbox
   renders it the *same* way (`Macro.to_string`). Both halves are therefore parsed
   at build time and owned next to their constants — neither is assembled here as
   an interpolated string (the watcher used to be a raw heredoc concatenated to the

@@ -81,7 +81,7 @@ defmodule Mutare.Runner do
 
   ## Boot-failure: a known-transient harness error retried harder
 
-  One harness-error *cause* is recognised by name (`Command.boot_failure?/1` →
+  One harness-error *cause* is recognised by name (`Output.boot_failure?/1` →
   the `:boot_failure` outcome): the sandbox node dies **during boot** with its own
   diagnostic erased by a secondary `:standard_error` failure. It is almost always
   concurrent workers contending on shared singletons at startup (a test DB, a
@@ -98,7 +98,8 @@ defmodule Mutare.Runner do
 
   alias Mutare.{Options, Poison, Project, Report, Result, Sandbox, Schema, Selector, Site}
   alias Mutare.Runner.{Baseline, CoverageProbe, Partitions}
-  alias Mutare.Sandbox.Command
+  alias Mutare.Sandbox.{Command, CompilerOptions}
+  alias Mutare.Sandbox.Command.Invocation
 
   require Logger
 
@@ -505,14 +506,14 @@ defmodule Mutare.Runner do
   defp block_macro_key(_), do: nil
 
   # The one compilation. `Command.success?/1` owns the "0 means success" reading;
-  # `Command.compiler_env/0` carries the SSA-alias-pass-off speed option (a free
-  # compile win, applied only here — per-mutant runs never recompile the lib).
+  # `CompilerOptions.compiler_env/0` carries the SSA-alias-pass-off speed option (a
+  # free compile win, applied only here — per-mutant runs never recompile the lib).
   # `partition_env` is the fixed partition entry (or `[]`), so a config read at
   # compile time finds a valid partition — see `compile_with_recovery/5`.
   defp compile(sandbox, partition_env) do
     {output, status} =
-      Command.mix(sandbox, ["compile"], Selector.baseline(),
-        env: Command.compiler_env() ++ partition_env
+      Invocation.mix(sandbox, ["compile"], Selector.baseline(),
+        env: CompilerOptions.compiler_env() ++ partition_env
       )
 
     if Command.success?(status), do: :ok, else: {:error, :compile_failed, output}
@@ -685,7 +686,7 @@ defmodule Mutare.Runner do
   # The mutation minted unbounded atoms and crashed the BEAM (atom table full) —
   # a resource-divergence like a timeout, so a kill, recorded under its own status
   # so the report can name the cause. `Command.outcome/2` recovers it from the
-  # otherwise-`:harness_error` exit via the VM-abort banner (`atom_exhausted?/1`).
+  # otherwise-`:harness_error` exit via the VM-abort banner (`Output.atom_exhausted?/1`).
   # Not retried (it is a verdict, not a transient infra blip): only `:harness_error`
   # and `:boot_failure` re-run (see `run_mutant/7`).
   defp status_for(:atom_exhausted), do: :atom_exhausted

@@ -40,7 +40,7 @@ defmodule Mutare.Transform.Uses.EnvMirror do
   # run unmirrored (the fallback keeps the library API working without Mix).
 
   # The env the metamutant is compiled and tested under, as an atom for `Mix.env` mirroring during
-  # `__using__` expansion. The canonical value is `Mutare.Sandbox.Command.mix_env/0` (the `"test"`
+  # `__using__` expansion. The canonical value is `Mutare.Sandbox.Command.Invocation.mix_env/0` (the `"test"`
   # string set as `MIX_ENV`); this is its atom twin, kept local rather than reaching across the
   # transform→execution layer boundary for a compile-time dependency.
   @sandbox_env :test

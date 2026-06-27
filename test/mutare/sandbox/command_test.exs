@@ -1,16 +1,9 @@
 defmodule Mutare.Sandbox.CommandTest do
-  # Not async: the inert-watcher check touches the process-global timeout env var.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
-  alias Mutare.Sandbox
   alias Mutare.Sandbox.Command
 
-  setup do
-    on_exit(fn -> System.delete_env(Command.timeout_env()) end)
-  end
-
-  test "timeout contract constants" do
-    assert Command.timeout_env() == "MUTARE_TIMEOUT"
+  test "timeout exit code constant" do
     assert Command.timeout_exit() == 124
   end
 
@@ -34,49 +27,6 @@ defmodule Mutare.Sandbox.CommandTest do
     test "agrees with outcome/1 on the pass code" do
       # The two readings of exit 0 must never drift apart.
       assert Command.success?(0) == (Command.outcome(0) == :passed)
-    end
-  end
-
-  describe "mix output vocabulary (the shared patterns live here)" do
-    test "compile_error_banner/0 captures the offending file path" do
-      banner = "== Compilation error in file test/foo_test.exs ==\n** (ArgumentError)"
-      assert [_, "test/foo_test.exs"] = Regex.run(Command.compile_error_banner(), banner)
-    end
-
-    test "source_location_regex/0 matches any .ex/.exs file:line (Poison reads it)" do
-      assert [_, "lib/foo.ex", "5"] =
-               Regex.run(Command.source_location_regex(), "lib/foo.ex:5:12: error")
-
-      assert [_, "test/foo_test.exs", "42"] =
-               Regex.run(Command.source_location_regex(), "test/foo_test.exs:42")
-    end
-
-    test "test_location_regex/0 narrows to _test.exs files (Baseline reads it)" do
-      assert [_, "test/foo_test.exs", "9"] =
-               Regex.run(Command.test_location_regex(), "test/foo_test.exs:9")
-
-      # A lib source or a non-test script is not a test location.
-      refute Regex.run(Command.test_location_regex(), "lib/foo.ex:5")
-      refute Regex.run(Command.test_location_regex(), "test/support/helper.exs:5")
-    end
-
-    test "a test location is also a source location (the narrowing is consistent)" do
-      output = "test/foo_test.exs:42"
-      assert Regex.run(Command.test_location_regex(), output)
-      assert Regex.run(Command.source_location_regex(), output)
-    end
-
-    test "diagnostic_severity/1 classifies a line's marker (Poison reads it)" do
-      assert Command.diagnostic_severity("    error: cannot use variable x as map key") == :error
-      assert Command.diagnostic_severity("  warning: variable \"a\" is unused") == :warning
-
-      assert Command.diagnostic_severity("** (CompileError) lib/foo.ex: cannot compile") ==
-               :error
-
-      # A non-marker line (a diagnostic's footer/body, or chatter) has no severity of
-      # its own — it inherits the block's, which the caller threads.
-      assert Command.diagnostic_severity("    └─ lib/foo.ex:5:12: Foo.bar/1") == nil
-      assert Command.diagnostic_severity("Compiling 43 files (.ex)") == nil
     end
   end
 
@@ -104,6 +54,9 @@ defmodule Mutare.Sandbox.CommandTest do
   end
 
   describe "outcome/2 refines a harness error with the run's output" do
+    # The discriminators these decode against are unit-tested in
+    # `Mutare.Sandbox.Command.Output`; here we pin the *decoder* — that each
+    # refinement maps to the right outcome and never overrides a real verdict.
     @test_compile_error """
     == Compilation error in file test/plug/router_test.exs ==
     ** (ArgumentError) errors were found at the given arguments:
@@ -128,7 +81,6 @@ defmodule Mutare.Sandbox.CommandTest do
       # baseline) — treat it as infra, never silently as a kill.
       lib_error = "== Compilation error in file lib/plug/router/utils.ex ==\n** (CompileError)"
       assert Command.outcome(1, lib_error) == :harness_error
-      refute Command.suite_compile_error?(lib_error)
     end
 
     test "output never overrides a real verdict (pass/fail/timeout win)" do
@@ -136,19 +88,6 @@ defmodule Mutare.Sandbox.CommandTest do
       assert Command.outcome(0, @test_compile_error) == :passed
       assert Command.outcome(Command.failure_exit(), @test_compile_error) == :failed
       assert Command.outcome(Command.timeout_exit(), @test_compile_error) == :timeout
-    end
-
-    test "suite_compile_error?/1 matches only a .exs under a test/ dir" do
-      assert Command.suite_compile_error?(@test_compile_error)
-      # umbrella app test path
-      assert Command.suite_compile_error?(
-               "== Compilation error in file apps/x/test/x_test.exs =="
-             )
-
-      # no banner, a lib .ex, or a non-test .exs script: not a suite compile error
-      refute Command.suite_compile_error?("1) test foo (MyTest)\n   Assertion failed")
-      refute Command.suite_compile_error?("== Compilation error in file lib/foo.ex ==")
-      refute Command.suite_compile_error?("== Compilation error in file priv/seeds.exs ==")
     end
 
     # The BEAM prints this to stderr (merged into the captured output) and aborts
@@ -170,14 +109,6 @@ defmodule Mutare.Sandbox.CommandTest do
       assert Command.outcome(0, @atom_crash) == :passed
       assert Command.outcome(Command.failure_exit(), @atom_crash) == :failed
       assert Command.outcome(Command.timeout_exit(), @atom_crash) == :timeout
-    end
-
-    test "atom_exhausted?/1 matches only the VM atom-table abort banner" do
-      assert Command.atom_exhausted?(@atom_crash)
-      # an ordinary test failure, a compile error, or other resource crash is not one
-      refute Command.atom_exhausted?("1) test foo (MyTest)\n   Assertion failed")
-      refute Command.atom_exhausted?(@test_compile_error)
-      refute Command.atom_exhausted?("Cannot allocate 1234 bytes of memory")
     end
 
     # The emulator's self-erasing boot crash: a supervised child fails to start under
@@ -212,21 +143,6 @@ defmodule Mutare.Sandbox.CommandTest do
       # is fail-safe toward the kill — the verdict wins over the cause label.
       assert Command.outcome(1, @atom_crash <> @boot_crash) == :atom_exhausted
     end
-
-    test "boot_failure?/1 needs both markers (the boot abort and the torn-down device)" do
-      assert Command.boot_failure?(@boot_crash)
-
-      # Either marker alone is not the self-erasing signature: a boot crash that left a
-      # recoverable error wouldn't have recursed on `standard_error`, and a stray
-      # `standard_error` mention outside a boot abort isn't this at all.
-      refute Command.boot_failure?("Runtime terminating during boot (some other reason)")
-      refute Command.boot_failure?("** (RuntimeError) wrote to :standard_error somewhere")
-
-      # An ordinary test failure / compile error / atom crash is not one.
-      refute Command.boot_failure?("1) test foo (MyTest)\n   Assertion failed")
-      refute Command.boot_failure?(@test_compile_error)
-      refute Command.boot_failure?(@atom_crash)
-    end
   end
 
   describe "test_argv/1 builds the kill-detection mix test argv" do
@@ -257,73 +173,5 @@ defmodule Mutare.Sandbox.CommandTest do
     test "a whole-suite run ([] args) carries only the forced flags" do
       assert Command.test_argv([]) == ["test", "--exit-status", "101", "--max-failures", "1"]
     end
-  end
-
-  test "watcher AST carries the timeout env var and exit code" do
-    rendered = Macro.to_string(Command.watcher_ast())
-
-    assert rendered =~ ~s|System.get_env("#{Command.timeout_env()}")|
-    assert rendered =~ "System.halt(#{Command.timeout_exit()})"
-  end
-
-  test "watcher AST is inert when no cap is set" do
-    System.delete_env(Command.timeout_env())
-    # nil branch returns :ok and spawns nothing — safe to evaluate in-process.
-    assert {:ok, _binding} = Code.eval_quoted(Command.watcher_ast())
-  end
-
-  test "sandbox renders the canonical watcher AST" do
-    assert Sandbox.bootstrap() =~ Macro.to_string(Command.watcher_ast())
-  end
-
-  describe "erl_compiler_options/1 (metamutant compile speed)" do
-    # Parse the produced string as Erlang terms, so every case proves we emit a
-    # well-formed list the compiler can read (never a malformed value that could
-    # break the single build).
-    defp parse_terms(str) do
-      {:ok, tokens, _} = :erl_scan.string(String.to_charlist(str <> ". "))
-      {:ok, term} = :erl_parse.parse_term(tokens)
-      term
-    end
-
-    test "with no inherited options, yields just the alias-pass-off option" do
-      for none <- [nil, "", "   "] do
-        assert Command.erl_compiler_options(none) == "[no_ssa_opt_alias]"
-        assert parse_terms(Command.erl_compiler_options(none)) == [:no_ssa_opt_alias]
-      end
-    end
-
-    test "an empty inherited list collapses to just our option" do
-      assert Command.erl_compiler_options("[]") == "[no_ssa_opt_alias]"
-    end
-
-    test "prepends our option to an inherited list, preserving the rest" do
-      result = Command.erl_compiler_options("[bin_opt_info, warn_missing_spec]")
-      assert result == "[no_ssa_opt_alias, bin_opt_info, warn_missing_spec]"
-      assert parse_terms(result) == [:no_ssa_opt_alias, :bin_opt_info, :warn_missing_spec]
-    end
-
-    test "wraps a bare (non-list) inherited term into a list with our option" do
-      assert Command.erl_compiler_options("bin_opt_info") == "[no_ssa_opt_alias, bin_opt_info]"
-    end
-
-    test "preserves a nested term in the inherited list (strips outer brackets only)" do
-      result = Command.erl_compiler_options("[{d, [debug]}]")
-      assert result == "[no_ssa_opt_alias, {d, [debug]}]"
-      assert parse_terms(result) == [:no_ssa_opt_alias, {:d, [:debug]}]
-    end
-
-    test "always parses as an Erlang term list containing our option" do
-      for inherited <- [nil, "", "[]", "[a, b]", "bare", "[{d, [x]}]"] do
-        terms = parse_terms(Command.erl_compiler_options(inherited))
-        assert is_list(terms)
-        assert :no_ssa_opt_alias in terms
-      end
-    end
-  end
-
-  test "compiler_env/0 sets ERL_COMPILER_OPTIONS with the alias-pass-off option" do
-    assert [{"ERL_COMPILER_OPTIONS", value}] = Command.compiler_env()
-    assert value =~ "no_ssa_opt_alias"
   end
 end

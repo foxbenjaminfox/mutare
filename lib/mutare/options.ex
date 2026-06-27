@@ -20,7 +20,7 @@ defmodule Mutare.Options do
   # relational to `root`); here we only validate the shape of `:sandbox`.
 
   alias Mutare.{Project, Result, Site}
-  alias Mutare.Sandbox.Command
+  alias Mutare.Sandbox.Command.Invocation
 
   @type t :: %__MODULE__{
           paths: [String.t()],
@@ -367,9 +367,9 @@ defmodule Mutare.Options do
 
     validate_nullable!(
       name,
-      &(&1 not in Command.reserved_env_names()),
+      &(&1 not in Invocation.reserved_env_names()),
       ":partition_env must not name a variable Mutare reserves " <>
-        "(#{Enum.join(Command.reserved_env_names(), ", ")})"
+        "(#{Enum.join(Invocation.reserved_env_names(), ", ")})"
     )
   end
 

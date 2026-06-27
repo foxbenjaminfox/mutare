@@ -198,7 +198,7 @@ defmodule Mutare.OptionsTest do
     end
 
     test "rejects a name Mutare itself reserves (would clobber the sandbox env)" do
-      for reserved <- Mutare.Sandbox.Command.reserved_env_names() do
+      for reserved <- Mutare.Sandbox.Command.Invocation.reserved_env_names() do
         assert_raise ArgumentError,
                      ~r/:partition_env must not name a variable Mutare reserves/,
                      fn ->

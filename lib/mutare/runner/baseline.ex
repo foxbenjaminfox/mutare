@@ -46,6 +46,7 @@ defmodule Mutare.Runner.Baseline do
 
   alias Mutare.Selector
   alias Mutare.Sandbox.Command
+  alias Mutare.Sandbox.Command.{Invocation, Output}
 
   @type outcome :: {:pass, non_neg_integer()} | {:fail, String.t()}
   @type result ::
@@ -95,7 +96,9 @@ defmodule Mutare.Runner.Baseline do
   @spec collect(Path.t(), pos_integer(), [{String.t(), String.t()}]) :: [outcome()]
   defp collect(sandbox, runs, env) do
     Enum.reduce_while(1..runs, [], fn _i, acc ->
-      {ms, output, status} = Command.timed_mix(sandbox, ["test"], Selector.baseline(), nil, env)
+      {ms, output, status} =
+        Invocation.timed_mix(sandbox, ["test"], Selector.baseline(), nil, env)
+
       acc = [run_outcome(status, ms, output) | acc]
       if disagree?(acc), do: {:halt, acc}, else: {:cont, acc}
     end)
@@ -123,7 +126,7 @@ defmodule Mutare.Runner.Baseline do
     named =
       case tests do
         [] ->
-          "Could not pin the flaky test(s); failing run output (tail):\n\n#{Command.output_tail(output)}"
+          "Could not pin the flaky test(s); failing run output (tail):\n\n#{Output.output_tail(output)}"
 
         locations ->
           "Tests that disagreed with themselves:\n" <> Enum.map_join(locations, "\n", &"  #{&1}")
@@ -132,10 +135,11 @@ defmodule Mutare.Runner.Baseline do
     "the suite passed on some baseline runs and failed on others.\n\n" <> named
   end
 
-  # The `test_file:line` pattern is owned by `Mutare.Sandbox.Command` (the home of
-  # everything that parses mix's output), so a mix output-format change is one fix.
+  # The `test_file:line` pattern is owned by `Mutare.Sandbox.Command.Output` (the
+  # home of everything that parses mix's output), so a mix output-format change is
+  # one fix.
   defp failing_tests(output) do
-    Command.test_location_regex()
+    Output.test_location_regex()
     |> Regex.scan(output)
     |> Enum.map(fn [_match, file, line] -> "#{file}:#{line}" end)
     |> Enum.uniq()

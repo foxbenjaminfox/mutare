@@ -15,7 +15,7 @@ defmodule Mutare.Sandbox.Seed do
   require Logger
 
   alias Mutare.{Options, Schema}
-  alias Mutare.Sandbox.Command
+  alias Mutare.Sandbox.Command.Invocation
 
   # Seed the sandbox's `_build` with the dependencies' already-compiled artifacts
   # from the original project, so the one `mix compile` doesn't rebuild every
@@ -43,7 +43,7 @@ defmodule Mutare.Sandbox.Seed do
   # test env) is simply absent — falling back to a cold compile, never an error.
   @spec dep_build(Path.t(), Path.t()) :: :ok
   def dep_build(root, sandbox) do
-    mix_env = Command.mix_env()
+    mix_env = Invocation.mix_env()
     deps_lib = Path.join([root, "_build", mix_env, "lib"])
 
     for dep <- dep_names(root),
@@ -119,7 +119,7 @@ defmodule Mutare.Sandbox.Seed do
   # (only fills an app the sandbox lacks), so a `keep_sandbox` re-run's preserved `_build`
   # is untouched and only the first run seeds.
   def app_build(root, sandbox, %Schema{metamutants: metamutants}, %Options{}) do
-    mix_env = Command.mix_env()
+    mix_env = Invocation.mix_env()
     src_lib = Path.join([root, "_build", mix_env, "lib"])
     dst_lib = Path.join([sandbox, "_build", mix_env, "lib"])
 

@@ -586,39 +586,58 @@ contract between them is the whole game.
   (`:seed_app_build` false, default true) opts out wholesale — forcing a cold compile — as a
   diagnostic A/B for the no-op surface or for a paranoid CI. See `NOTES.md` "Seed the
   mutated app's `_build`".
-- **`Mutare.Sandbox.Command`** — command execution against a materialized sandbox: `mix/4` and
-  `timed_mix/4` spawn a fresh `mix` OS process with `MIX_ENV=test`/`MUTANT_UNDER_TEST` set. Owns the
-  *run side* of the **exit-code contract** and decodes it into a typed
-  `Mutare.Sandbox.Command.Result` (`timed_test/4`): `0`→`:passed`, `failure_exit/0`→`:failed`,
-  `timeout_exit/0`→`:timeout`, anything else→`:harness_error` (the total exit-code decoder is
-  `outcome/1`). `outcome/2` refines the otherwise-`:harness_error` case with the run's *output* —
-  the *only* place the contract reads output to form a *verdict* — recovering two **detected**-mutant
-  cases: (1) a mutation that breaks the **test suite's** own compilation (it ran at the test modules'
-  compile time — exit `1` with a `.exs`-under-`test/` compile-error banner, `suite_compile_error?/1`)
-  is `:suite_compile_error` (justified because the lib compiles **once**, so a fresh per-mutant
-  compile error can only be a re-evaluated test script the mutation broke); (2) a mutation that mints
-  **unbounded atoms** crashes the BEAM when the atom table fills (the VM-abort banner
-  `atom_exhausted?/1`) — a resource-divergence like a timeout (the VM dies before the in-process
-  watcher can self-halt cleanly), so `:atom_exhausted`. The runner counts **both** as kills; a real
-  infra/lib compile error / missing dep / other crash stays `:harness_error` (fail safe). A **third**
-  refinement, `:boot_failure` (`boot_failure?/1` — the sandbox node died **during boot** with its own
+- **`Mutare.Sandbox.Command`** — the *run side* of the **exit-code contract** and the one entry
+  point that runs a mutant and hands back a typed `Mutare.Sandbox.Command.Result`. (What was once
+  one god-module is now four by responsibility: this decodes, `Command.Invocation` runs,
+  `Command.Output` parses output, `Mutare.Sandbox.CompilerOptions` carries the compile-speed env —
+  the three below.) `timed_test/4` builds the kill-detection argv (`test_argv/1`), runs it via
+  `Command.Invocation.timed_mix/5`, and decodes the result via `outcome/2`: `0`→`:passed`,
+  `failure_exit/0`→`:failed`, `timeout_exit/0`→`:timeout`, anything else→`:harness_error` (the total
+  *exit-code* decoder is `outcome/1`). `outcome/2` refines the otherwise-`:harness_error` case with
+  the run's *output* (via the `Command.Output` discriminators) — the *only* place the contract reads
+  output to form a *verdict* — recovering two **detected**-mutant cases: (1) a mutation that breaks
+  the **test suite's** own compilation (it ran at the test modules' compile time — exit `1` with a
+  `.exs`-under-`test/` compile-error banner, `Output.suite_compile_error?/1`) is `:suite_compile_error`
+  (justified because the lib compiles **once**, so a fresh per-mutant compile error can only be a
+  re-evaluated test script the mutation broke); (2) a mutation that mints **unbounded atoms** crashes
+  the BEAM when the atom table fills (the VM-abort banner `Output.atom_exhausted?/1`) — a
+  resource-divergence like a timeout (the VM dies before the in-process watcher can self-halt
+  cleanly), so `:atom_exhausted`. The runner counts **both** as kills; a real infra/lib compile error
+  / missing dep / other crash stays `:harness_error` (fail safe). A **third** refinement,
+  `:boot_failure` (`Output.boot_failure?/1` — the sandbox node died **during boot** with its own
   diagnostic erased by a secondary `:standard_error` failure, requiring *both* the `terminating during
   boot` and `standard_error` markers), does **not** change the verdict — it stays a harness error out
   of the score — but *names a known-transient contention cause* (kills take precedence in the `cond`),
   so `Mutare.Runner` messages it actionably (the real cause is unrecoverable from output) and retries
-  it harder from a dedicated budget. It never reaches `Result.status`/the reporters. It is also the single home for the rest of what mix's output/exit codes *mean*, so
-  nothing re-derives them: `success?/1` is the one reading of "exit `0` means success" (the metamutant
-  compile, `Baseline`, `CoverageProbe` all call it instead of matching a literal `0`), and the three
-  mix-output **patterns** live here too — `compile_error_banner/0`, `source_location_regex/0` (read by
-  `Mutare.Poison` for `file:line`s), and `test_location_regex/0` (read by `Mutare.Runner.Baseline` to
-  name flaky tests). Those three parse for *different* jobs (deliberately **not** merged) but share
-  one home, so a mix output-format change is a single fix.
-  The pivot is `--exit-status failure_exit/0`, forced onto every mutant `mix test`: a clean ExUnit
-  failure (a kill) exits with that distinctive code, while a compile error / missing dep / broken
-  helper exits `1` — so a harness error is no longer indistinguishable from a kill. Also owns the
-  timeout sub-contract — the env var the cap travels in (`timeout_env/0`) and the exit code a
-  timeout signals (`timeout_exit/0`); the `Mutare.Sandbox` bootstrap renders the watcher that
-  honours them.
+  it harder from a dedicated budget. It never reaches `Result.status`/the reporters. This module is
+  also the single home for what mix's *exit codes* mean: `success?/1` is the one reading of "exit `0`
+  means success" (the metamutant compile, `Baseline`, `CoverageProbe` all call it instead of matching
+  a literal `0`), and `timeout_exit/0` is the code a timeout signals (read by both `outcome/1` and the
+  watcher `Command.Invocation` renders). The pivot is `--exit-status failure_exit/0`, forced onto
+  every mutant `mix test`: a clean ExUnit failure (a kill) exits with that distinctive code, while a
+  compile error / missing dep / broken helper exits `1` — so a harness error is no longer
+  indistinguishable from a kill.
+- **`Mutare.Sandbox.Command.Invocation`** — *how a run is invoked*: `mix/4` and `timed_mix/5` spawn a
+  fresh `mix` OS process with `MIX_ENV=test`/`MUTANT_UNDER_TEST` set (`mix_env/0` is the single home
+  for the `"test"` env, shared by `Mutare.Sandbox` and `Mutare.Transform.Uses`). Owns the *environment*
+  a run gets — including the self-hosting isolation vars and `reserved_env_names/0` (the authoritative
+  reserved set `Mutare.Options` rejects a colliding `:partition_env` against) — and the **run side of
+  the timeout sub-contract**: the env var the cap travels in (`timeout_env/0`) and the dependency-free
+  `watcher_ast/0` the `Mutare.Sandbox` bootstrap renders (it `System.halt/1`s the run itself with
+  `Command.timeout_exit/0`, so there is no process tree to kill). The *decode* side of the timeout
+  (the exit code → `:timeout`) stays in `Command`.
+- **`Mutare.Sandbox.Command.Output`** — every pattern that reads `mix`'s human-readable output, in one
+  home because they all break together if mix changes its format (though each is read for a *different*
+  job, deliberately **not** merged): the verdict-refinement discriminators `outcome/2` consults
+  (`suite_compile_error?/1`, `atom_exhausted?/1`, `boot_failure?/1`), the mix-output **patterns**
+  `compile_error_banner/0`, `source_location_regex/0` (read by `Mutare.Poison` for `file:line`s) +
+  `diagnostic_severity/1` (so `Poison` scans only non-warning blocks), and `test_location_regex/0`
+  (read by `Mutare.Runner.Baseline` to name flaky tests), plus `output_tail/2` (the shared "tail the
+  output"). All pure, so each discriminator is unit-testable without spawning `mix`.
+- **`Mutare.Sandbox.CompilerOptions`** — the env that tunes the **one** metamutant compile for speed:
+  `compiler_env/0` (an `ERL_COMPILER_OPTIONS` disabling the SSA alias-analysis pass via
+  `erl_compiler_options/1`, merging with any inherited value), applied by `Mutare.Runner` to that
+  single `mix compile` only — a per-mutant `mix test` never recompiles the lib, so it carries nothing.
 - **`Mutare.Runner`** — the orchestrator. Compiles the sandbox **once** (recovering from
   compile-poisoning, see below), runs the baseline green then a coverage probe, then runs
   `:workers` mutants concurrently via `Task.async_stream`, each a fresh `mix test` OS process.
@@ -1038,15 +1057,16 @@ contract between them is the whole game.
 
 - **The selection contract is split across modules and baked into generated code.** The
   `:persistent_term` key (`:mutare_active`) and the selector env var (`MUTANT_UNDER_TEST`) are
-  defined in `Mutare.Selector`; the timeout env var and exit code in `Mutare.Sandbox.Command`; the
+  defined in `Mutare.Selector`; the timeout env var in `Mutare.Sandbox.Command.Invocation` and its
+  exit code in `Mutare.Sandbox.Command`; the
   coverage-capture contract (the `MUTARE_COVERAGE` env var, the `:mutare_track` flag, the ETS table
   names, the `MutareCov` helper, the dump file) in `Mutare.Coverage.Recorder`. They are *emitted
   into generated code* — the selectors and coverage record into the metamutant by `Mutare.Transform`,
   the reader/timeout watcher/coverage bootstrap+helper into the bootstrap by `Mutare.Sandbox`. Keep
   them in sync — change one in isolation and the metamutant stops responding. **The selection key is
   resolved at *runtime* by `Selector.key/0`** — `default_key/0` (`:mutare_active`) unless the
-  `MUTARE_SELECTOR_KEY` override (`Selector.override_env/0`) names another. `Sandbox.Command` sets
-  that override (to `Selector.suite_key/0`) on every sandbox `mix`, so when Mutare dogfoods *itself*
+  `MUTARE_SELECTOR_KEY` override (`Selector.override_env/0`) names another. `Sandbox.Command.Invocation`
+  sets that override (to `Selector.suite_key/0`) on every sandbox `mix`, so when Mutare dogfoods *itself*
   the suite-under-test selects on a private slot and its own `Selector.put/1` can't clobber the
   harness's active mutant (the self-hosting false-survivor fix; see NOTES "Self-hosting"). The real
   metamutant's sites + bootstrap bake `default_key/0` as literals in the harness process (override

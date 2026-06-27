@@ -45,6 +45,7 @@ defmodule Mutare.Runner.CoverageProbe do
   alias Mutare.{Coverage, Schema, Selector}
   alias Mutare.Coverage.Recorder
   alias Mutare.Sandbox.Command
+  alias Mutare.Sandbox.Command.{Invocation, Output}
 
   require Logger
 
@@ -112,7 +113,7 @@ defmodule Mutare.Runner.CoverageProbe do
         {Recorder.root_env(), root}
       ] ++ partition_env
 
-    {output, status} = Command.mix(sandbox, ["test"], Selector.baseline(), env: env)
+    {output, status} = Invocation.mix(sandbox, ["test"], Selector.baseline(), env: env)
 
     unless Command.success?(status) do
       # The baseline already confirmed the suite green, so a non-zero probe is
@@ -120,7 +121,7 @@ defmodule Mutare.Runner.CoverageProbe do
       # the whole suite) is a big, invisible slowdown. Surface it.
       Logger.warning(
         "coverage probe exited #{status}; falling back to run-all selection " <>
-          "(every covered mutant runs the whole suite). Probe output:\n#{Command.output_tail(output, 15)}"
+          "(every covered mutant runs the whole suite). Probe output:\n#{Output.output_tail(output, 15)}"
       )
     end
 

@@ -24,19 +24,21 @@ defmodule Mutare.Sandbox do
       `:sandbox` path. See `NOTES.md` for the cache pattern.
 
   Materialising the workspace lives here; running `mix` against it (and the
-  per-mutant timeout cap the bootstrap honours) lives in `Mutare.Sandbox.Command`.
+  per-mutant timeout cap the bootstrap honours) lives in
+  `Mutare.Sandbox.Command.Invocation`.
   """
 
   alias Mutare.{Options, Schema}
   alias Mutare.Coverage.Recorder
-  alias Mutare.Sandbox.{Command, Paths, Seed}
+  alias Mutare.Sandbox.{Paths, Seed}
+  alias Mutare.Sandbox.Command.Invocation
 
   @excluded ~w(_build .git .elixir_ls .lexical cover)
 
   # The build environment every sandbox `mix` runs under is owned by
-  # `Mutare.Sandbox.Command` (`Command.mix_env/0`), which sets it on every invocation —
-  # so the dependencies' compiled artifacts we seed (see `Mutare.Sandbox.Seed.dep_build/2`)
-  # live under `_build/<env>/lib`.
+  # `Mutare.Sandbox.Command.Invocation` (`Invocation.mix_env/0`), which sets it on
+  # every invocation — so the dependencies' compiled artifacts we seed (see
+  # `Mutare.Sandbox.Seed.dep_build/2`) live under `_build/<env>/lib`.
 
   # A sandbox is a throwaway copy we compile, mutate, and wipe. Before clearing a
   # directory we must be sure it is *ours* — not, say, a path `--sandbox` was
@@ -64,7 +66,7 @@ defmodule Mutare.Sandbox do
   # The bootstrap is two dependency-free snippets, each rendered the same way from
   # a quoted AST its owner defines: the mutant selector
   # (`Mutare.Selector.bootstrap_ast/0`) and the per-mutant timeout watcher
-  # (`Mutare.Sandbox.Command.watcher_ast/0`). The watcher enforces the wall-clock
+  # (`Mutare.Sandbox.Command.Invocation.watcher_ast/0`). The watcher enforces the wall-clock
   # cap *portably* — instead of the runner killing a hung OS process tree (which
   # needs platform-specific signals), the mutant process halts *itself* after the
   # deadline. `System.halt/1` stops the VM immediately and uncatchably, and the
@@ -72,7 +74,7 @@ defmodule Mutare.Sandbox do
   # suite finishes first it dies with the VM. Each snippet stays owned next to its
   # own constants and is parsed at build time, not assembled here as a string.
   @selector_bootstrap Macro.to_string(Mutare.Selector.bootstrap_ast())
-  @timeout_watcher Macro.to_string(Command.watcher_ast())
+  @timeout_watcher Macro.to_string(Invocation.watcher_ast())
 
   @bootstrap """
   # ---- injected by Mutare: select the active mutant from the environment ----

@@ -317,7 +317,7 @@ defmodule Mix.Tasks.Mutare do
   alias Mutare.CLI
   alias Mutare.CLI.Info
   alias Mutare.Report.Live
-  alias Mutare.Sandbox.Command
+  alias Mutare.Sandbox.Command.Output
 
   @switches [
     only: [:string, :keep],
@@ -692,7 +692,7 @@ defmodule Mix.Tasks.Mutare do
   # the top, but the user reads the error dump last).
   defp format_error(:compile_failed, detail) do
     intro = "the metamutant failed to compile (compile-poisoning).\n\n"
-    tail = Command.output_tail(detail, 25)
+    tail = Output.output_tail(detail, 25)
 
     case Mutare.Poison.Hint.for_compile_failure(detail) do
       nil ->
@@ -708,7 +708,7 @@ defmodule Mix.Tasks.Mutare do
 
   defp format_error(:baseline_failed, detail) do
     "baseline suite is not green; mutation testing needs a passing suite.\n\n" <>
-      Command.output_tail(detail, 25)
+      Output.output_tail(detail, 25)
   end
 
   defp format_error(:baseline_flaky, detail) do
