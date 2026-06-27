@@ -799,8 +799,19 @@ contract between them is the whole game.
   run's four live hooks to it (`:reporter` → `report/2`,
   `:on_phase` → `phase/2`, `:on_start` → `started/2`, and — during the pre-run scan —
   `:on_scan` → `scanned/2`), and calls `finish/1` to tear the block
-  down **before** the final `Mutare.Report` prints. Because the rendering is pure
-  (`status_block/2`, `leave_behind/1`, `humanize_secs/1`, `eta_secs/3`, `truncate/2`) and the
+  down **before** the final `Mutare.Report` prints. **`--verbose`** (`:verbose`, the inverse UI
+  knob; `--quiet` wins when both are set) starts the reporter in verbose mode (`Live.start_link(verbose:
+  …)`): a permanent scrollback line for *every* mutant (kills included, with its duration via
+  `verbose_leave/1` + `humanize_ms/1` — the per-status `verbose_label` lives in the
+  `Mutare.Result.Status` registry, total over the vocabulary) **and** a `✓` detail note after each
+  phase. Those phase numbers — compile time, baseline timing, coverage breakdown, derived timeout cap,
+  worker count — ride **structured `:on_phase` detail events** the runner fires *unconditionally*
+  (`{:compiled, ms}`/`{:baseline_done, ms}`/`{:coverage_done, summary}`/`{:run_config, cfg}`); `Live`
+  renders them only when `verbose` (`detail_line/1`, pure) and a catch-all `handle_cast({:phase, _})`
+  keeps an unknown event from ever crashing the reporter (it owns every terminal write) — so the runner
+  stays display-agnostic (see NOTES "`--verbose`"). Because the rendering is pure
+  (`status_block/2`, `leave_behind/1`, `verbose_leave/1`, `detail_line/1`, `humanize_secs/1`,
+  `humanize_ms/1`, `eta_secs/3`, `truncate/2`) and the
   state a plain map, the visible output is unit-tested without a terminal or a clock.
 - **`Mutare.Report.{Json,Html,Sarif}`** — the **machine** reporters, pure renderers paralleling
   `Mutare.Report` (`(results, sources, opts) → String.t()`; all IO stays in the Mix task). **Json**
@@ -1090,7 +1101,9 @@ contract between them is the whole game.
   report. Note `:reporters` (output formats; `Options` validates the format set) is distinct from
   the four **live-progress hooks** the task wires to `Mutare.Report.Live`: `:reporter` (per
   completed `Result`), `:on_phase` (the run's phase as it advances `:compiling` → `:baseline` →
-  `:coverage_probe` → `{:running, total}`), `:on_start` (each `Site` as its run begins), and
+  `:coverage_probe` → `{:running, total}`, plus the verbose **detail events**
+  `{:compiled, ms}`/`{:baseline_done, ms}`/`{:coverage_done, summary}`/`{:run_config, cfg}` the
+  runner fires alongside), `:on_start` (each `Site` as its run begins), and
   `:on_scan` (pre-run scan progress). All
   four are 1-arity, optional (`nil` = no-op), and live on `Mutare.Run.Context` (not `Options` —
   they're wiring, not config); `Mutare.Runner` fires the first three and `Mutare.Schema` fires
@@ -1099,7 +1112,10 @@ contract between them is the whole game.
   master off-switch for that display: when set, the task leaves all four hooks unset and never
   starts `Live`, so the run is silent on stderr (for CI / piped use); the final and machine
   reports are unaffected, and it's inert in the direct `Mutare.run/2` API (which never starts
-  `Live`). **`--max-survivors N`** (`:max_survivors`, threaded like `:max_mutants`) is enforced in
+  `Live`). **`--verbose`** (`:verbose`, threaded the same way) is the inverse: it starts `Live` in
+  verbose mode for a step-by-step narrative (a line per mutant + per-phase numbers — see the
+  `Mutare.Report.Live` bullet); `--quiet` wins when both are set, and it too is inert in the direct
+  API. **`--max-survivors N`** (`:max_survivors`, threaded like `:max_mutants`) is enforced in
   `Mutare.Runner` (a runner-loop cap, *not* a `Schema` site cap); when it fires (`run.stopped_early`)
   the task **skips the `--min-score` gate** and prints a partial-run note to **stderr** (so a machine
   report on stdout stays clean), since the score is over a tested prefix. There is **no** top-level

@@ -160,6 +160,23 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":verbose" do
+    test "defaults to false" do
+      assert Options.new([]).verbose == false
+    end
+
+    test "accepts true and false" do
+      assert Options.new(verbose: true).verbose == true
+      assert Options.new(verbose: false).verbose == false
+    end
+
+    test "rejects a non-boolean" do
+      assert_raise ArgumentError, ~r/:verbose must be true or false/, fn ->
+        Options.new(verbose: "loud")
+      end
+    end
+  end
+
   describe ":workers" do
     test "accepts a positive integer" do
       assert Options.new(workers: 8).workers == 8

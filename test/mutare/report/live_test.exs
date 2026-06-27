@@ -186,6 +186,114 @@ defmodule Mutare.Report.LiveTest do
     end
   end
 
+  describe "humanize_ms/1" do
+    test "renders milliseconds as one-decimal seconds" do
+      assert Live.humanize_ms(0) == "0.0s"
+      assert Live.humanize_ms(400) == "0.4s"
+      assert Live.humanize_ms(3100) == "3.1s"
+      assert Live.humanize_ms(12_340) == "12.3s"
+    end
+  end
+
+  describe "verbose_leave/1" do
+    test "returns a {label, colour} for every status (kills included)" do
+      assert {"KILLED", :green} = Live.verbose_leave(:killed)
+      assert {"SURVIVED", :red} = Live.verbose_leave(:survived)
+      assert {"NOCOV", _} = Live.verbose_leave(:no_coverage)
+      assert {"POISON", _} = Live.verbose_leave(:poisoned)
+    end
+  end
+
+  describe "detail_line/1" do
+    test "renders the per-phase ✓ notes" do
+      assert Live.detail_line({:compiled, 4200}) == "  ✓ compiled in 4.2s"
+      assert Live.detail_line({:baseline_done, 3100}) == "  ✓ baseline green in 3.1s"
+
+      assert Live.detail_line(
+               {:coverage_done, %{covered: 134, no_coverage: 8, run_all?: false, cap_ms: 9300}}
+             ) == "  ✓ coverage: 134 covered · 8 no-coverage · cap 9.3s"
+    end
+
+    test "a run-all coverage outcome names the fallback instead of counts" do
+      assert Live.detail_line({:coverage_done, %{run_all?: true, cap_ms: 9300}}) ==
+               "  ✓ coverage: run-all (no per-mutant selection) · cap 9.3s"
+    end
+  end
+
+  describe "verbose mode (plain)" do
+    test "narrates each phase with detail and leaves a line per mutant, with durations" do
+      {:ok, io} = StringIO.open("")
+      {:ok, live} = Live.start_link(device: io, ansi: false, verbose: true, width: 200)
+
+      Live.phase(live, :compiling)
+      Live.phase(live, {:compiled, 4200})
+      Live.phase(live, :baseline)
+      Live.phase(live, {:baseline_done, 3100})
+      Live.phase(live, :coverage_probe)
+
+      Live.phase(
+        live,
+        {:coverage_done, %{covered: 134, no_coverage: 8, run_all?: false, cap_ms: 9300}}
+      )
+
+      Live.phase(live, {:run_config, %{workers: 8, partition_env: nil}})
+      Live.phase(live, {:running, 142})
+      Live.started(live, site())
+
+      Live.report(live, %Result{
+        site: site(file: "lib/a.ex", line: 3, original_code: ">=", mutated_code: ">"),
+        status: :killed,
+        duration_ms: 400,
+        output: nil
+      })
+
+      Live.report(live, %Result{
+        site:
+          site(
+            file: "lib/a.ex",
+            line: 7,
+            mutator: :arithmetic,
+            original_code: "+",
+            mutated_code: "-"
+          ),
+        status: :survived,
+        duration_ms: 600,
+        output: nil
+      })
+
+      # A no-coverage mutant launched no suite, so it shows no duration suffix.
+      Live.report(live, %Result{
+        site: site(file: "lib/b.ex", line: 2),
+        status: :no_coverage,
+        duration_ms: 0,
+        output: nil
+      })
+
+      Live.finish(live)
+      {_in, out} = StringIO.contents(io)
+
+      # Per-phase detail notes.
+      assert out =~ "compiling metamutant (once)…"
+      assert out =~ "✓ compiled in 4.2s"
+      assert out =~ "running baseline suite…"
+      assert out =~ "✓ baseline green in 3.1s"
+      assert out =~ "✓ coverage: 134 covered · 8 no-coverage · cap 9.3s"
+      # The worker count rides onto the running line.
+      assert out =~ "testing 142 mutant(s) · 8 workers…"
+
+      # A line per mutant — kills included (unlike non-verbose) — with durations.
+      # The label is padded to 8 then a 2-space gap, so "KILLED" → 4 trailing spaces,
+      # "NOCOV" → 5; a no-coverage mutant (duration 0) gets no time suffix.
+      assert out =~ "KILLED    lib/a.ex:3  relational  >= → >  0.4s"
+      assert out =~ "SURVIVED  lib/a.ex:7  arithmetic  + → -  0.6s"
+      assert out =~ "NOCOV     lib/b.ex:2  relational"
+      refute out =~ "NOCOV     lib/b.ex:2  relational  >= → >  0.0s"
+
+      # Plain mode emits no cursor-control codes.
+      refute out =~ "\e["
+    end
+  end
+
   describe "end to end (plain mode)" do
     test "the scan phase notes once and per-file ticks stay silent (no scrollback spam)" do
       {:ok, io} = StringIO.open("")

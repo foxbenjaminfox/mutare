@@ -176,6 +176,11 @@ defmodule Mix.Tasks.Mutare do
                                           #   gaps to fix without a full run. The score
                                           #   is then partial, so the --min-score gate
                                           #   is skipped
+      mix mutare --verbose                # narrate what's happening at each step: a
+                                          #   line per mutant (with its duration) plus
+                                          #   per-phase detail — compile time, baseline
+                                          #   timing, coverage breakdown, timeout cap,
+                                          #   worker count. (--quiet wins over it)
 
   ## Umbrella projects
 
@@ -307,6 +312,9 @@ defmodule Mix.Tasks.Mutare do
         strict_ignores: false,
         # suppress the live stderr progress (for CI / piped use)
         quiet: false,
+        # narrate each step in detail: a line per mutant + per-phase numbers
+        # (compile/baseline timing, coverage breakdown, cap, workers). `quiet` wins
+        verbose: false,
         # emit several reports at once (a bare atom goes to stdout)
         reporters: [:human, {:json, "mutare.json"}, {:sarif, "mutare.sarif"}]
       ]
@@ -441,8 +449,8 @@ defmodule Mix.Tasks.Mutare do
   # on stderr.
   defp maybe_start_live(%Options{quiet: true}), do: nil
 
-  defp maybe_start_live(%Options{}) do
-    {:ok, live} = Live.start_link()
+  defp maybe_start_live(%Options{verbose: verbose}) do
+    {:ok, live} = Live.start_link(verbose: verbose)
     live
   end
 

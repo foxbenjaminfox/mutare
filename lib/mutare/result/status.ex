@@ -6,7 +6,8 @@ defmodule Mutare.Result.Status do
   it: is it a kill (score *numerator*), is it scored (in the *denominator*), did it
   *run* (launched a `mix test`), what is its mutation-testing-elements / Stryker
   name, how is it labelled in the one-line `Mutare.Report.summary/1` and the live
-  counter, and does it leave a permanent line behind in `Mutare.Report.Live`. Those
+  counter, does it leave a permanent line behind in `Mutare.Report.Live` (and how
+  `--verbose` labels its always-emitted line). Those
   facts used to be re-listed inline in *five* places — `Mutare.Result`
   (classification lists), `Mutare.Report` (the summary tally), `Mutare.Report.Json`
   (the schema map), and `Mutare.Report.Live` (`@leave_behind` + the counter extras)
@@ -41,12 +42,16 @@ defmodule Mutare.Result.Status do
           summary_label: String.t(),
           always_in_summary?: boolean(),
           extra_label: String.t() | nil,
-          leave_behind: {String.t(), colour()} | nil
+          leave_behind: {String.t(), colour()} | nil,
+          verbose_label: {String.t(), colour()}
         }
 
   # The descriptor schema. `@required` have no default (every row must state them);
   # `@defaults` are the common-case values a row overrides only when unusual.
-  @required [:name, :json, :summary_label]
+  # `:verbose_label` is required (not defaulted) because `--verbose` leaves a line
+  # behind for *every* status, so each must carry one — unlike `:leave_behind`,
+  # which only the survivors/problems opt into.
+  @required [:name, :json, :summary_label, :verbose_label]
   @defaults %{
     # Score numerator: a detected mutant.
     kill?: false,
@@ -76,7 +81,8 @@ defmodule Mutare.Result.Status do
       kill?: true,
       json: "Killed",
       summary_label: "killed",
-      always_in_summary?: true
+      always_in_summary?: true,
+      verbose_label: {"KILLED", :green}
     },
     %{
       name: :timeout,
@@ -84,7 +90,8 @@ defmodule Mutare.Result.Status do
       json: "Timeout",
       summary_label: "timeout",
       extra_label: "timeout",
-      leave_behind: {"TIMEOUT", :yellow}
+      leave_behind: {"TIMEOUT", :yellow},
+      verbose_label: {"TIMEOUT", :yellow}
     },
     # No dedicated schema status for an atom-table crash: it is a detected
     # resource-divergence, so it maps to "Timeout" (the schema's other
@@ -95,14 +102,16 @@ defmodule Mutare.Result.Status do
       json: "Timeout",
       summary_label: "atom-table",
       extra_label: "atom-table",
-      leave_behind: {"ATOMS", :yellow}
+      leave_behind: {"ATOMS", :yellow},
+      verbose_label: {"ATOMS", :yellow}
     },
     %{
       name: :survived,
       json: "Survived",
       summary_label: "survived",
       always_in_summary?: true,
-      leave_behind: {"SURVIVED", :red}
+      leave_behind: {"SURVIVED", :red},
+      verbose_label: {"SURVIVED", :red}
     },
     %{
       name: :no_coverage,
@@ -110,7 +119,8 @@ defmodule Mutare.Result.Status do
       ran?: false,
       json: "NoCoverage",
       summary_label: "no-coverage",
-      extra_label: "no-coverage"
+      extra_label: "no-coverage",
+      verbose_label: {"NOCOV", :cyan}
     },
     %{
       name: :ignored,
@@ -118,7 +128,8 @@ defmodule Mutare.Result.Status do
       ran?: false,
       json: "Ignored",
       summary_label: "ignored",
-      extra_label: "ignored"
+      extra_label: "ignored",
+      verbose_label: {"IGNORED", :light_black}
     },
     %{
       name: :poisoned,
@@ -126,7 +137,8 @@ defmodule Mutare.Result.Status do
       ran?: false,
       json: "CompileError",
       summary_label: "poisoned",
-      extra_label: "poisoned"
+      extra_label: "poisoned",
+      verbose_label: {"POISON", :blue}
     },
     # Reached no verdict but *did* run (the harness-error-rate denominator includes
     # it), so `ran?` keeps its default `true` while `scored?` is false.
@@ -136,7 +148,8 @@ defmodule Mutare.Result.Status do
       json: "RuntimeError",
       summary_label: "harness-error",
       extra_label: "errors",
-      leave_behind: {"ERROR", :magenta}
+      leave_behind: {"ERROR", :magenta},
+      verbose_label: {"ERROR", :magenta}
     }
   ]
 

@@ -159,7 +159,11 @@ defmodule Mutare.Runner do
   carried on the context — `:reporter` (a
   1-arity function called with each `Mutare.Result` as it completes), `:on_phase`
   (called with the phase as the run moves through `:compiling` → `:baseline` →
-  `:coverage_probe` → `{:running, total}`), and `:on_start` (called with each
+  `:coverage_probe` → `{:running, total}`, interleaved with structured **detail**
+  events carrying the behind-the-scenes numbers — `{:compiled, ms}`,
+  `{:baseline_done, ms}`, `{:coverage_done, summary}`, `{:run_config, cfg}` — which a
+  reporter may render or ignore; a custom hook should tolerate unknown events), and
+  `:on_start` (called with each
   `Mutare.Site` just before its run begins) — and `:test_selection`,
   `:workers`, `:timeout`, `:timeout_multiplier`, `:baseline_runs` (re-run the
   baseline to catch a flaky suite), `:harness_retries` (re-run a harness-errored
@@ -183,6 +187,7 @@ defmodule Mutare.Runner do
       mode = options.test_selection
 
       on_phase.(:compiling)
+      compile_started = System.monotonic_time(:millisecond)
 
       # Prepare + compile, recovering from compile-poisoning by dropping the
       # offending mutants and rebuilding. `schema` here may differ from the input
@@ -195,6 +200,10 @@ defmodule Mutare.Runner do
           {:error, reason, detail}
 
         {:ok, schema, sandbox} ->
+          # The one compile is done (the `{:compiled, ms}` covers any poison-recovery
+          # rebuilds it took). A verbose reporter renders the timing; non-verbose ignores it.
+          on_phase.({:compiled, System.monotonic_time(:millisecond) - compile_started})
+
           try do
             run_mutants(schema, sandbox, context, on_phase, on_start, reporter, mode)
           after
@@ -222,7 +231,15 @@ defmodule Mutare.Runner do
       fixed_env = Partitions.entry(options.partition_env, 1)
 
       with {:ok, baseline_ms} <- run_baseline(on_phase, sandbox, options.baseline_runs, fixed_env) do
+        # Verbose-only detail: the baseline timing the cap is scaled from.
+        on_phase.({:baseline_done, baseline_ms})
         ctx = build_run_ctx(schema, sandbox, context, mode, baseline_ms, fixed_env, on_phase)
+
+        # The run configuration the verbose running line reports (worker count); fired
+        # just before `{:running, total}` so the reporter has it when it renders the label.
+        on_phase.(
+          {:run_config, %{workers: options.workers, partition_env: options.partition_env}}
+        )
 
         on_phase.({:running, length(schema.sites)})
 
@@ -258,6 +275,11 @@ defmodule Mutare.Runner do
     options = context.options
     on_phase.(:coverage_probe)
     selection = CoverageProbe.run(sandbox, schema, mode, fixed_env)
+    cap = timeout_cap(baseline_ms, options)
+
+    # Verbose-only detail: the per-mutant coverage breakdown plus the derived timeout
+    # cap (the probe summary is pure; this assembles the display payload).
+    on_phase.({:coverage_done, Map.put(CoverageProbe.summarize(selection), :cap_ms, cap)})
 
     # Per owning app, the test dirs a whole-suite run may be narrowed to (the app +
     # its dependents). Empty for a single project — see `broaden/3`.
@@ -267,7 +289,7 @@ defmodule Mutare.Runner do
     %RunCtx{
       sandbox: sandbox,
       selection: selection,
-      cap: timeout_cap(baseline_ms, options),
+      cap: cap,
       scopes: scopes,
       retries: options.harness_retries
     }

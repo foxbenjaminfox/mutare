@@ -47,5 +47,12 @@ defmodule Mutare.Options.RegistryTest do
     for once_omitted <- ~w(partition_env seed_app_build quiet only_files only_lines) do
       assert once_omitted in labels
     end
+
+    # The verbose UI knob is a visible option too (added as a registry passthrough).
+    assert "verbose" in labels
+  end
+
+  test "verbose is a 1:1 passthrough boolean flag" do
+    assert {:verbose, :boolean} in Registry.cli_switches()
   end
 end

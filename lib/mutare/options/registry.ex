@@ -259,6 +259,14 @@ defmodule Mutare.Options.Registry do
   # (`Mutare.run/2` never starts `Live`); it only gates the Mix task's wiring.
   defp validate_quiet!(value), do: validate_boolean!(:quiet, value)
 
+  # When true (`--verbose`), the Mix task starts the live reporter in verbose mode:
+  # a permanent scrollback line for every mutant (with its duration) and a `✓` detail
+  # note after each phase (compile time, baseline timing, coverage breakdown + cap,
+  # worker count). The inverse UI knob to `:quiet`; `--quiet` wins when both are set
+  # (a quiet run starts no reporter at all). Default `false`. Inert in the direct API
+  # (`Mutare.run/2` never starts `Live`).
+  defp validate_verbose!(value), do: validate_boolean!(:verbose, value)
+
   # nil means no cap (run every mutant); otherwise an upper bound on the number of
   # mutants tested. The cap is applied by `Mutare.Schema` (it truncates the site
   # list to the first N), so the metamutant still embeds every mutant — only the
@@ -506,6 +514,7 @@ defmodule Mutare.Options.Registry do
         validate: &validate_seed_app_build!/1
       ),
       spec(key: :quiet, default: false, cli: :boolean, validate: &validate_quiet!/1),
+      spec(key: :verbose, default: false, cli: :boolean, validate: &validate_verbose!/1),
       spec(
         key: :reporters,
         default: [{:human, nil}],

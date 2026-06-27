@@ -21,6 +21,20 @@ defmodule Mutare.Report.Live do
   the `NO_COLOR` convention drops the leave-behind label colour while keeping the
   live block. `--quiet` suppresses the reporter entirely (the Mix task simply
   doesn't start it).
+
+  ## Verbose mode
+
+  `--verbose` (the `:verbose` start option) turns the compact display into a full
+  behind-the-scenes narrative: a permanent scrollback line for **every** mutant as
+  it finishes (not just survivors/problems), each with its outcome label and
+  duration, plus a `✓` detail line after each phase — the one compile's time, the
+  baseline timing, the coverage breakdown + derived timeout cap, and the worker
+  count on the testing line. The extra phase numbers ride on the same `:on_phase`
+  hook as structured detail events (`{:compiled, ms}`, `{:baseline_done, ms}`,
+  `{:coverage_done, summary}`, `{:run_config, cfg}`) that the runner fires
+  unconditionally; this reporter renders them only when `verbose` is set, so the
+  runner stays ignorant of the display. `--quiet` wins over `--verbose` (a quiet
+  run starts no reporter at all).
   """
 
   use GenServer
@@ -55,25 +69,33 @@ defmodule Mutare.Report.Live do
   # other facts (CLAUDE.md "Result statuses").
   @leave_behind for d <- Status.all(), d.leave_behind, into: %{}, do: {d.name, d.leave_behind}
 
+  # Every status's `{label, colour}` for `--verbose`, which leaves a line behind for
+  # *all* outcomes (kills included), not just the survivors/problems `@leave_behind`
+  # covers. Required on every descriptor, so this map is total — `verbose_leave/1`
+  # uses `Map.fetch!` and an unregistered status is a loud bug.
+  @verbose_labels for d <- Status.all(), into: %{}, do: {d.name, d.verbose_label}
+
   # The only-when-nonzero tail of the live counter: each status carrying an
   # `:extra_label` (i.e. everything but `:killed`/`:survived`, which own the counter
   # headline), in render order.
   @extras for d <- Status.all(), d.extra_label, do: {d.name, d.extra_label}
 
   # The server's internal state. A struct (not a bare map) so a mistyped field access in
-  # any handler is a compile error, not a silent runtime `nil`. `init/1` overrides the four
-  # capability fields (`device`/`ansi`/`color`/`width`); the rest start at these defaults.
-  # The pure rendering functions stay `map()`-typed — a `%__MODULE__{}` matches their
-  # `%{phase: …}` patterns, and so do the plain maps the unit tests pass.
+  # any handler is a compile error, not a silent runtime `nil`. `init/1` overrides the five
+  # capability fields (`device`/`ansi`/`color`/`width`/`verbose`); the rest start at these
+  # defaults. The pure rendering functions stay `map()`-typed — a `%__MODULE__{}` matches
+  # their `%{phase: …}` patterns, and so do the plain maps the unit tests pass.
   defstruct device: @device,
             ansi: false,
             color: false,
             width: @default_width,
+            verbose: false,
             total: 0,
             counts: %{},
             started_at: nil,
             phase: nil,
             scan: nil,
+            run_config: nil,
             current: nil,
             spinner: 0,
             drawn: 0,
@@ -90,6 +112,8 @@ defmodule Mutare.Report.Live do
     * `:color` — force the leave-behind label colour on/off (default: animation on
       *and* `NO_COLOR` unset; see `color_enabled?/0`)
     * `:width` — terminal width for truncation (default: detected, else 80)
+    * `:verbose` — leave a line behind for every mutant and render the per-phase
+      detail notes (default `false`); see the "Verbose mode" section above
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -151,7 +175,8 @@ defmodule Mutare.Report.Live do
       device: Keyword.get(opts, :device, @device),
       ansi: ansi,
       color: Keyword.get_lazy(opts, :color, fn -> ansi and color_enabled?() end),
-      width: Keyword.get(opts, :width, width)
+      width: Keyword.get(opts, :width, width),
+      verbose: Keyword.get(opts, :verbose, false)
     }
 
     {:ok, state}
@@ -161,22 +186,59 @@ defmodule Mutare.Report.Live do
   def handle_cast({:phase, {:running, total}}, state) do
     state = %{state | phase: :running, total: total, started_at: now_ms(), current: nil}
 
-    if state.ansi do
-      {:noreply, state |> maybe_start_tick() |> redraw()}
-    else
-      {:noreply, plain_line(state, "testing #{total} mutant(s)…")}
+    cond do
+      # Verbose keeps the live counter block (the per-mutant lines scroll above it),
+      # and leads with a permanent label line carrying the worker count.
+      state.verbose ->
+        {:noreply, state |> tick_if_ansi() |> put_line(running_label(state, total))}
+
+      state.ansi ->
+        {:noreply, state |> maybe_start_tick() |> redraw()}
+
+      true ->
+        {:noreply, plain_line(state, running_label(state, total))}
     end
   end
+
+  # The verbose-only structured detail events the runner fires alongside the phase
+  # starts (`{:compiled, ms}`, `{:baseline_done, ms}`, `{:coverage_done, summary}`).
+  # Each renders a `✓` scrollback note via the pure `detail_line/1` when verbose, and
+  # is a no-op otherwise — so the runner emits them unconditionally without knowing
+  # whether anyone is listening.
+  def handle_cast({:phase, {:compiled, _ms} = event}, state),
+    do: {:noreply, maybe_detail(state, event)}
+
+  def handle_cast({:phase, {:baseline_done, _ms} = event}, state),
+    do: {:noreply, maybe_detail(state, event)}
+
+  def handle_cast({:phase, {:coverage_done, _summary} = event}, state),
+    do: {:noreply, maybe_detail(state, event)}
+
+  # The run configuration (worker count, partition) is stashed, not printed: the
+  # worker count rides onto the next `{:running, total}` label (verbose only).
+  def handle_cast({:phase, {:run_config, cfg}}, state),
+    do: {:noreply, %{state | run_config: cfg}}
 
   def handle_cast({:phase, phase}, state) when is_map_key(@phase_labels, phase) do
     state = %{state | phase: phase}
 
-    if state.ansi do
-      {:noreply, state |> maybe_start_tick() |> redraw()}
-    else
-      {:noreply, plain_line(state, @phase_labels[phase])}
+    cond do
+      # Verbose: a permanent scrollback note (no animated block for the pre-mutant
+      # phases — the `✓` detail line follows right behind it).
+      state.verbose ->
+        {:noreply, verbose_note(state, @phase_labels[phase])}
+
+      state.ansi ->
+        {:noreply, state |> maybe_start_tick() |> redraw()}
+
+      true ->
+        {:noreply, plain_line(state, @phase_labels[phase])}
     end
   end
+
+  # Catch-all for any future `:on_phase` event we don't render — an unknown event
+  # must never crash the reporter (it owns every terminal write).
+  def handle_cast({:phase, _other}, state), do: {:noreply, state}
 
   def handle_cast({:scan, progress}, state) do
     {:noreply, refresh(%{state | scan: progress})}
@@ -190,9 +252,17 @@ defmodule Mutare.Report.Live do
   def handle_cast({:report, %Result{} = result}, state) do
     state = %{state | counts: bump(state.counts, result.status)}
 
-    case leave_behind(result.status) do
-      nil -> {:noreply, refresh(state)}
-      styled -> {:noreply, put_line(state, format_leave(styled, result.site, state.color))}
+    cond do
+      # Verbose: every mutant leaves a line (kills included), with its duration.
+      state.verbose ->
+        {:noreply, put_line(state, format_verbose(result, state.color))}
+
+      # Non-verbose: only survivors/problems leave a line; the rest move the counter.
+      styled = leave_behind(result.status) ->
+        {:noreply, put_line(state, format_leave(styled, result.site, state.color))}
+
+      true ->
+        {:noreply, refresh(state)}
     end
   end
 
@@ -249,10 +319,32 @@ defmodule Mutare.Report.Live do
   @spec leave_behind(Result.status()) :: {String.t(), atom()} | nil
   def leave_behind(status), do: Map.get(@leave_behind, status)
 
+  @doc """
+  The `{label, colour}` for a status in `--verbose` mode, where every outcome (kills
+  included) earns a permanent line. Total over the status vocabulary — raises on an
+  unregistered name, since every descriptor carries a `verbose_label`.
+  """
+  @spec verbose_leave(Result.status()) :: {String.t(), atom()}
+  def verbose_leave(status), do: Map.fetch!(@verbose_labels, status)
+
+  @doc """
+  The `✓` scrollback note for a verbose phase-detail event — the pure render of a
+  `{:compiled, ms}` / `{:baseline_done, ms}` / `{:coverage_done, summary}` event the
+  runner fires on `:on_phase`.
+  """
+  @spec detail_line(tuple()) :: String.t()
+  def detail_line({:compiled, ms}), do: "  ✓ compiled in #{humanize_ms(ms)}"
+  def detail_line({:baseline_done, ms}), do: "  ✓ baseline green in #{humanize_ms(ms)}"
+  def detail_line({:coverage_done, summary}), do: "  ✓ " <> coverage_note(summary)
+
   @doc "Seconds as `Ns` (under a minute) or `Nm Ss`."
   @spec humanize_secs(non_neg_integer()) :: String.t()
   def humanize_secs(s) when s < 60, do: "#{s}s"
   def humanize_secs(s), do: "#{div(s, 60)}m #{rem(s, 60)}s"
+
+  @doc "Milliseconds as one-decimal seconds (e.g. `450 → \"0.5s\"`, `3100 → \"3.1s\"`)."
+  @spec humanize_ms(non_neg_integer()) :: String.t()
+  def humanize_ms(ms), do: "#{:erlang.float_to_binary(ms / 1000, decimals: 1)}s"
 
   @doc """
   Estimated seconds remaining: `remaining / rate`, where `rate = done /
@@ -288,6 +380,29 @@ defmodule Mutare.Report.Live do
   end
 
   defp scan_activity(_state), do: @phase_labels.scanning
+
+  # The `:running` phase label. In verbose mode it appends the worker count from the
+  # stashed `:run_config` (`{:run_config, cfg}` always fires just before
+  # `{:running, total}`); the non-verbose label is unchanged.
+  defp running_label(%{verbose: true, run_config: %{workers: w}}, total) when is_integer(w) do
+    "testing #{total} mutant(s) · #{w} worker#{plural(w)}…"
+  end
+
+  defp running_label(_state, total), do: "testing #{total} mutant(s)…"
+
+  # The coverage-probe detail (verbose): the per-mutant selection breakdown and the
+  # derived per-mutant timeout cap. `run_all?` means coverage was unusable/uncertain,
+  # so every covered mutant runs the whole suite (no per-mutant selection).
+  defp coverage_note(%{run_all?: true, cap_ms: cap}) do
+    "coverage: run-all (no per-mutant selection) · cap #{humanize_ms(cap)}"
+  end
+
+  defp coverage_note(%{covered: covered, no_coverage: no_coverage, cap_ms: cap}) do
+    "coverage: #{covered} covered · #{no_coverage} no-coverage · cap #{humanize_ms(cap)}"
+  end
+
+  defp plural(1), do: ""
+  defp plural(_n), do: "s"
 
   # `done/total · X survived · Y killed[ · …extras] · elapsed[ · ~eta left]`.
   defp counter(state, now) do
@@ -333,6 +448,17 @@ defmodule Mutare.Report.Live do
     "  " <> tag <> "  " <> descriptor(site)
   end
 
+  # The verbose per-mutant line: every status's `verbose_label` (coloured when
+  # `color?`), the shared descriptor, and a duration suffix for a mutant that
+  # actually ran (`duration_ms > 0` — so a no-coverage/ignored/poisoned mutant, which
+  # launched no suite, shows no time).
+  defp format_verbose(%Result{site: site, status: status, duration_ms: ms}, color?) do
+    format_leave(verbose_leave(status), site, color?) <> duration_suffix(ms)
+  end
+
+  defp duration_suffix(ms) when is_integer(ms) and ms > 0, do: "  " <> humanize_ms(ms)
+  defp duration_suffix(_ms), do: ""
+
   defp count(state, status), do: Map.get(state.counts, status, 0)
 
   defp bump(counts, status), do: Map.update(counts, status, 1, &(&1 + 1))
@@ -361,6 +487,26 @@ defmodule Mutare.Report.Live do
     IO.write(state.device, [text, "\n"])
     state
   end
+
+  # A permanent scrollback line that leaves *no* block behind it (drawn: 0): the
+  # verbose phase notes and `✓` detail lines, which precede the per-mutant loop, so
+  # there is no live counter to re-anchor (unlike `put_line/2`). Erases any block
+  # first (a no-op when none is drawn), then writes — works in both ANSI and plain.
+  defp verbose_note(state, text) do
+    state = erase(state)
+    IO.write(state.device, [text, "\n"])
+    %{state | drawn: 0}
+  end
+
+  # Render a verbose phase-detail event as a scrollback note, or do nothing when not
+  # verbose (the runner fires these unconditionally).
+  defp maybe_detail(%{verbose: true} = state, event), do: verbose_note(state, detail_line(event))
+  defp maybe_detail(state, _event), do: state
+
+  # Start the animation tick only on a tty; in a verbose plain run there is no block
+  # to animate, so the per-mutant lines are just scrollback.
+  defp tick_if_ansi(%{ansi: true} = state), do: maybe_start_tick(state)
+  defp tick_if_ansi(state), do: state
 
   defp refresh(%{ansi: true} = state), do: redraw(state)
   defp refresh(state), do: state

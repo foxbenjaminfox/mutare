@@ -5178,8 +5178,51 @@ ETA) that animates via an internal tick timer. Design decisions worth rememberin
   first phase (`:compiling`) then redraws fresh. In plain mode the scan note prints
   once and per-file ticks stay silent (no CI-log flooding).
 - **Deferred touches:** a per-worker multi-line in-flight view (chose aggregate +
-  one activity line), and a permanent "baseline green in Ns" timing note (would need
-  threading `baseline_ms` through `:on_phase`).
+  one activity line). The once-deferred "baseline green in Ns" timing note is now
+  delivered by `--verbose` (below) — `baseline_ms` (and the compile time, coverage
+  breakdown, cap, worker count) ride structured detail events on `:on_phase`.
+
+### `--verbose` — narrate each step behind the scenes `[done]`
+
+`mix mutare --verbose` (`verbose: true` in `.mutare.exs`) turns the compact live
+display into a full narrative: a permanent scrollback line for **every** mutant as
+it finishes (kills included, each with its duration), plus a `✓` detail note after
+each phase — the one compile's time, the baseline timing, the coverage breakdown +
+derived per-mutant timeout cap, and the worker count on the testing line. The
+inverse UI knob to `--quiet`; `--quiet` wins when both are set (a quiet run starts
+no reporter at all). Design choices, and why:
+
+- **Purely a `Mutare.Report.Live` concern — the runner stays display-agnostic.**
+  `--verbose` is Mix-task wiring (like `--quiet`): it threads `verbose:` only into
+  `Live.start_link/1`. It does **not** plumb into `Mutare.Runner`/`Schema`/`Sandbox`.
+  Instead the runner *always* fires richer structured `:on_phase` **detail events** —
+  `{:compiled, ms}`, `{:baseline_done, ms}`, `{:coverage_done, summary}`,
+  `{:run_config, cfg}` — carrying plain numbers; `Live` renders them only when
+  `verbose` is set, ignores them otherwise. So the runner never learns whether anyone
+  is listening (it composes no display text — `Live` owns the wording via the pure
+  `detail_line/1`), and the events cost nothing on a normal run.
+- **`:on_phase` was the right channel — overloaded, not a 5th hook.** `{:running,
+  total}` already proved phases carry data, so the four completion events join the
+  same hook rather than adding a `Run.Context` field. `Live` gets a catch-all
+  `handle_cast({:phase, _})` so an unknown future event can never crash the reporter
+  (it owns every terminal write); the `Run.Context`/`Runner` docs note a custom hook
+  should tolerate unknown events.
+- **Per-status verbose labels live in the one registry.** `Live` only had
+  leave-behind labels for the 4 survivors/problems; verbose needs one for all 8
+  statuses. Rather than a second list in `Live`, a required `verbose_label` field
+  joined the `Mutare.Result.Status` descriptor (the "every per-status fact lives once"
+  home) — `Live` derives `@verbose_labels` from it, and `Mutare.Result.StatusTest`
+  pins that every status carries one.
+- **Pre-mutant phases are clean scrollback; the counter block stays for `:running`.**
+  In verbose mode the compile/baseline/coverage phase notes + `✓` details print as
+  plain scrollback (no animated block — the detail line follows right behind), while
+  the `:running` phase keeps the live counter block at the bottom with per-mutant
+  lines scrolling above it (`put_line/2` re-anchors it; `verbose_note/2` leaves none).
+  In a plain (non-tty/CI) run it's all scrollback, no cursor codes.
+- **Rendering stays pure + unit-tested.** `humanize_ms/1`, `detail_line/1`,
+  `verbose_leave/1`, `format_verbose/3`, and `CoverageProbe.summarize/1` (the pure
+  selection-breakdown helper) are tested without a terminal, a clock, or a subprocess;
+  a real `mix mutare --verbose` run proves the runner fires the events end to end.
 
 ### `--max-mutants N` — cap the number of mutants tested `[done]`
 

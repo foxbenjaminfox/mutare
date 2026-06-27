@@ -99,6 +99,30 @@ defmodule Mutare.Runner.CoverageProbe do
     end
   end
 
+  @doc """
+  Summarise a `t:selection/0` for display (e.g. the `--verbose` coverage note): how
+  many mutants got per-file / whole-suite selection (`covered`) versus were skipped as
+  `:no_coverage`. `:run_all` (coverage unusable or uncertain) carries no per-mutant
+  counts — every covered mutant runs the whole suite — so its counts are zero and
+  `run_all?` is true. Pure (no IO), so it is unit-testable without a probe run.
+  """
+  @spec summarize(selection()) :: %{
+          covered: non_neg_integer(),
+          no_coverage: non_neg_integer(),
+          run_all?: boolean()
+        }
+  def summarize(:run_all), do: %{covered: 0, no_coverage: 0, run_all?: true}
+
+  def summarize({:selective, outcomes}) do
+    {covered, no_coverage} =
+      Enum.reduce(outcomes, {0, 0}, fn
+        {_id, :no_coverage}, {covered, none} -> {covered, none + 1}
+        {_id, {:run, _args}}, {covered, none} -> {covered + 1, none}
+      end)
+
+    %{covered: covered, no_coverage: no_coverage, run_all?: false}
+  end
+
   # One instrumented baseline run: the metamutant self-records coverage. We don't
   # cap it (it is a baseline-equivalent run), but a non-zero exit means the dump
   # may be partial (for example `max_failures` can abort before later files run),
