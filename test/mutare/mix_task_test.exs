@@ -177,6 +177,38 @@ defmodule Mix.Tasks.MutareTest do
       assert output =~ "Kernel.destructure/2"
     end
 
+    test "--list-macros includes plugin-contributed macros (build/3, not build/2)" do
+      root = bare_project("defmodule A do\n  def f(x), do: x + 1\nend\n")
+      write_config(root, "[plugins: [Mutare.Test.GettextLikePlugin]]")
+
+      Mix.Tasks.Mutare.run([root, "--list-macros"])
+      output = drain_shell_info()
+
+      # The plugin's `macros/0` registrations must appear in the effective registry —
+      # omitting `options.plugins` (the old `build/2` call) would hide them.
+      assert output =~ "Mutare.Test.GettextLikeMacros.translate/1"
+      assert output =~ "Mutare.Test.GettextLikeMacros.ntranslate/3"
+    end
+
+    test "--show-config prints the configured plugins" do
+      root = bare_project("defmodule A do\n  def f(x), do: x + 1\nend\n")
+      write_config(root, "[plugins: [Mutare.Test.GettextLikePlugin]]")
+
+      Mix.Tasks.Mutare.run([root, "--show-config"])
+      output = drain_shell_info()
+
+      assert output =~ ~r/plugins\s+Mutare.Test.GettextLikePlugin/
+    end
+
+    test "--show-config reports no plugins when none are configured" do
+      root = bare_project("defmodule A do\n  def f(x), do: x + 1\nend\n")
+
+      Mix.Tasks.Mutare.run([root, "--show-config"])
+      output = drain_shell_info()
+
+      assert output =~ ~r/plugins\s+\(none\)/
+    end
+
     test "--dry-run lists the mutants per file without running them" do
       root = bare_project("defmodule A do\n  def f(x), do: x >= 1\nend\n")
 
@@ -215,6 +247,11 @@ defmodule Mix.Tasks.MutareTest do
     File.write!(Path.join(root, "lib/a.ex"), source)
     on_exit(fn -> File.rm_rf!(root) end)
     root
+  end
+
+  # Write a `.mutare.exs` (a keyword-list literal) into a bare project's root.
+  defp write_config(root, contents) do
+    File.write!(Path.join(root, ".mutare.exs"), contents)
   end
 
   # Drain every `Mix.shell().info/1` message captured by `Mix.Shell.Process`.

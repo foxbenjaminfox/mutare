@@ -124,6 +124,7 @@ defmodule Mutare.CLI.Info do
       {"exclude", inspect(options.exclude)},
       {"mutators", format_mutators(options.mutators)},
       {"macros", inspect(options.macros)},
+      {"plugins", format_plugins(options.plugins)},
       {"expand_uses", options.expand_uses},
       {"test_selection", options.test_selection},
       {"workers", options.workers},
@@ -158,6 +159,15 @@ defmodule Mutare.CLI.Info do
     _ -> inspect(mutators)
   end
 
+  defp format_plugins([]), do: "(none)"
+
+  defp format_plugins(plugins) do
+    Enum.map_join(plugins, ", ", fn
+      %Mutare.Plugin.Spec{module: module, opts: []} -> inspect(module)
+      %Mutare.Plugin.Spec{module: module, opts: opts} -> "#{inspect(module)} #{inspect(opts)}"
+    end)
+  end
+
   defp format_reporters(reporters) do
     Enum.map_join(reporters, ", ", fn
       {format, nil} -> "#{format} (stdout)"
@@ -171,10 +181,13 @@ defmodule Mutare.CLI.Info do
   end
 
   # `--list-macros`: the known-macro registry (built-ins + the `:macros` option + any
-  # enabled mutator's `macros/0`) whose arguments the transform routes specially.
+  # enabled mutator's `macros/0` + any enabled plugin's `macros/0`) whose arguments the
+  # transform routes specially. Threads `options.plugins` into `Macros.build/3` exactly as
+  # the real transform does (`Transform`), so the inspected registry is the *effective* one
+  # — omitting them would hide every plugin-contributed routing.
   def print_macro_registry(%Options{} = options) do
     specs = Mutators.resolve(options.mutators || Mutators.all())
-    registry = Macros.build(options.macros, specs)
+    registry = Macros.build(options.macros, specs, options.plugins)
 
     Mix.shell().info(
       "Known macros (arguments routed specially, not mutated as plain expressions):\n"
