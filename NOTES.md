@@ -2690,8 +2690,12 @@ near-identical copies for N guard mutants. Both are fixed:
 - **One struct per legal kind.** `Candidate.{InPlace,Guard,Drop}` — the
   `context`/`kind`/`operation` triple is gone; the variant *is* the kind, and the
   matching `Site` constructor is chosen by pattern-matching the struct in
-  `Candidate.Delivery.site/3`, alongside the emit-route and selector-branch axes.
-  Illegal states can't be built.
+  `Candidate.Delivery.site/3`, alongside the selector-branch axis. The delivery
+  classifier is deliberately narrower: `classify_node_candidates/1` covers only
+  candidates attached to AST-node metadata and the four routes the main node
+  dispatcher handles. Lifted candidates come from `FunctionPlan`; hosted candidates
+  come from their separate metadata key and `HostedEmit`. Neither is advertised as a
+  node-local route, and crossing that boundary raises. Illegal states can't be built.
 - **The clause group is stored once.** `FunctionPlan` holds a single *tagged*
   clause group (every mutatable guard operator marked with a unique
   `meta[:mutare_tag]`, the tag counter threaded across clauses so tags are

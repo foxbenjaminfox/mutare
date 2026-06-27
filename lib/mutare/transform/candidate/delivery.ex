@@ -1,23 +1,32 @@
 defmodule Mutare.Transform.Candidate.Delivery do
   @moduledoc false
 
-  # The delivery table for candidate variants: which emit path consumes them, which
-  # `Mutare.Site` constructor records them, and what value an ordinary selector branch
-  # should run. `Mutare.Transform` still owns id threading and AST assembly; this module
-  # owns the candidate-variant mapping so those axes cannot drift independently.
+  # Shared delivery vocabulary for candidate variants: which `Mutare.Site` constructor
+  # records them, what value an ordinary selector branch should run, and which node-local
+  # emit path consumes candidates attached to AST metadata. Lifted candidates are consumed
+  # from `FunctionPlan`; hosted candidates are consumed from their own metadata by
+  # `HostedEmit`, so neither belongs to the node-local classifier.
 
   alias Mutare.Site
   alias Mutare.Transform.Candidate
 
-  @type route :: :in_place | :case_clause | :match_pattern | :macro_pattern | :lifted | :hosted
-  @type routed :: :none | {route(), [Candidate.t()]}
+  @type node_candidate ::
+          Candidate.InPlace.t()
+          | Candidate.Return.t()
+          | Candidate.CasePattern.t()
+          | Candidate.RescueDrop.t()
+          | Candidate.CaseClause.t()
+          | Candidate.MatchPattern.t()
+          | Candidate.MacroPattern.t()
+  @type node_route :: :in_place | :case_clause | :match_pattern | :macro_pattern
+  @type routed_node_candidates :: :none | {node_route(), [node_candidate()]}
 
-  @doc "Classify a homogeneous candidate list by the emit route that should consume it."
-  @spec classify([Candidate.t()]) :: routed()
-  def classify([]), do: :none
+  @doc "Classify homogeneous AST-node candidates by their node-local emit route."
+  @spec classify_node_candidates([node_candidate()]) :: routed_node_candidates()
+  def classify_node_candidates([]), do: :none
 
-  def classify([candidate | _] = candidates) do
-    route = route_for(candidate)
+  def classify_node_candidates([candidate | _] = candidates) do
+    route = node_route_for(candidate)
     assert_homogeneous!(route, candidates)
     {route, candidates}
   end
@@ -90,27 +99,28 @@ defmodule Mutare.Transform.Candidate.Delivery do
   defp note(%{note: note}), do: note
   defp note(_candidate), do: nil
 
-  defp route_for(%Candidate.InPlace{}), do: :in_place
-  defp route_for(%Candidate.Return{}), do: :in_place
-  defp route_for(%Candidate.CasePattern{}), do: :in_place
-  defp route_for(%Candidate.RescueDrop{}), do: :in_place
-  defp route_for(%Candidate.CaseClause{}), do: :case_clause
-  defp route_for(%Candidate.MatchPattern{}), do: :match_pattern
-  defp route_for(%Candidate.MacroPattern{}), do: :macro_pattern
-  defp route_for(%Candidate.Lifted{}), do: :lifted
-  defp route_for(%Candidate.PatternStructure{}), do: :lifted
-  defp route_for(%Candidate.GuardDrop{}), do: :lifted
-  defp route_for(%Candidate.Drop{}), do: :lifted
-  defp route_for(%Candidate.Hosted{}), do: :hosted
+  defp node_route_for(%Candidate.InPlace{}), do: :in_place
+  defp node_route_for(%Candidate.Return{}), do: :in_place
+  defp node_route_for(%Candidate.CasePattern{}), do: :in_place
+  defp node_route_for(%Candidate.RescueDrop{}), do: :in_place
+  defp node_route_for(%Candidate.CaseClause{}), do: :case_clause
+  defp node_route_for(%Candidate.MatchPattern{}), do: :match_pattern
+  defp node_route_for(%Candidate.MacroPattern{}), do: :macro_pattern
+
+  defp node_route_for(candidate) do
+    raise ArgumentError,
+          "#{inspect(candidate.__struct__)} is not a node-local candidate; " <>
+            "lifted and hosted candidates use their dedicated emit paths"
+  end
 
   defp assert_homogeneous!(route, candidates) do
-    case Enum.find(candidates, &(route_for(&1) != route)) do
+    case Enum.find(candidates, &(node_route_for(&1) != route)) do
       nil ->
         :ok
 
       candidate ->
         raise "candidate delivery route mismatch: expected #{inspect(route)}, " <>
-                "got #{inspect(route_for(candidate))} for #{inspect(candidate.__struct__)}"
+                "got #{inspect(node_route_for(candidate))} for #{inspect(candidate.__struct__)}"
     end
   end
 end

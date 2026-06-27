@@ -784,11 +784,11 @@ defmodule Mutare.Transform do
     end
   end
 
-  # Dispatch a node's candidates to the selector-emitting path classified by the candidate
-  # delivery table. `Candidate.Delivery` owns which variant goes to which path; the selected
-  # delivery module owns any specialized assembly.
+  # Dispatch a node's metadata-attached candidates to the node-local path classified by
+  # `Candidate.Delivery`. Lifted candidates come from `FunctionPlan`, and hosted candidates
+  # are handled above from their separate metadata key; neither enters this dispatcher.
   defp emit_one_unhosted(current, ctx) do
-    case delivery_route(current) do
+    case node_delivery_route(current) do
       # A `case` carrying per-clause `CaseClause`s is rewritten by the tuple-the-scrutinee path
       # (its clauses can't each host a selector, and a `case` isn't a liftable function group).
       {:case_clause, candidates} ->
@@ -819,14 +819,14 @@ defmodule Mutare.Transform do
   end
 
   # A `case`'s per-clause `:mutare_case` candidates dominate and are never gated; otherwise
-  # `:mutare` candidates are gated before the candidate delivery table classifies them.
-  defp delivery_route(node) do
+  # `:mutare` candidates are gated before the node-local classifier sees them.
+  defp node_delivery_route(node) do
     case case_candidates_of(node) do
       [] ->
-        node |> candidates_of() |> gate_candidates() |> Delivery.classify()
+        node |> candidates_of() |> gate_candidates() |> Delivery.classify_node_candidates()
 
       case_candidates ->
-        Delivery.classify(case_candidates)
+        Delivery.classify_node_candidates(case_candidates)
     end
   end
 
