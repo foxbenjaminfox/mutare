@@ -122,7 +122,7 @@ defmodule Mutare.CLI.Info do
   # on disk, and junk input still falls through to the "unknown mutator" error. Built-in
   # families never reach here — they match the registry above.
   defp resolve_module(name) do
-    candidate = "Elixir." <> name
+    candidate = qualified_module_name(name)
 
     try do
       String.to_existing_atom(candidate)
@@ -130,6 +130,13 @@ defmodule Mutare.CLI.Info do
       ArgumentError -> resolve_module_from_beam(candidate)
     end
   end
+
+  # The fully `Elixir.`-qualified module-name string, folding an explicit leading `Elixir.`
+  # so `--explain Elixir.MyApp.M` and `--explain MyApp.M` name the same module — matching
+  # `Module.concat/1` and the qualified form `--mutators` already accepts. Blindly prepending
+  # would search for `Elixir.Elixir.MyApp.M` and report a valid mutator as unknown.
+  defp qualified_module_name("Elixir." <> _ = name), do: name
+  defp qualified_module_name(name), do: "Elixir." <> name
 
   defp resolve_module_from_beam(candidate) do
     case :code.where_is_file(String.to_charlist(candidate <> ".beam")) do

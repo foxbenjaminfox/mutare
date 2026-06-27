@@ -170,6 +170,11 @@ defmodule Mix.Tasks.MutareTest do
       output = drain_shell_info()
       assert output =~ "dynamic_explain_fixture"
       assert output =~ "MutareDynamicExplainFixture"
+
+      # The explicitly `Elixir.`-qualified form (the same one `--mutators` accepts) must
+      # fold the prefix, not search for `Elixir.Elixir.MutareDynamicExplainFixture`.
+      Mix.Tasks.Mutare.run(["--explain", "Elixir.MutareDynamicExplainFixture"])
+      assert drain_shell_info() =~ "MutareDynamicExplainFixture"
     end
 
     test "--show-config prints the merged effective options" do
