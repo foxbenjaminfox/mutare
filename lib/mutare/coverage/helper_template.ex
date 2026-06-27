@@ -17,7 +17,7 @@ defmodule Mutare.Coverage.HelperTemplate do
   # `hit/1` records into the shared ETS tables; `dump/1` (run by `after_suite`) serialises them to
   # the dump file, mapping each test module to its source file. The label read is OTP-version
   # tolerant: `:proc_lib.get_label/1` on OTP 27+, the `:"$process_label"` process-dictionary key
-  # on OTP 26. `hit/1` returns `true` so the spliced `and` chain stays boolean.
+  # on OTP 26 and earlier. `hit/1` returns `true` so the spliced `and` chain stays boolean.
 
   @agg_table :mutare_cov_agg
   @attr_table :mutare_cov_attr
@@ -125,10 +125,10 @@ defmodule Mutare.Coverage.HelperTemplate do
 
   # The `$process_label` of `pid` (our own — `self()` — or an ancestor's), OTP-tolerant and the
   # single home for the version check. On OTP 27+ `:proc_lib.get_label/1` reads it directly
-  # (cross-process too); on OTP 26 the label lives in the process dictionary, which
+  # (cross-process too); on OTP 26 and earlier the label lives in the process dictionary, which
   # `Process.info(pid, :dictionary)` exposes (`Process.get/1` would only read our own). `apply/3`,
   # not a direct call, so a static reference to the OTP 27-only function doesn't warn "undefined"
-  # on OTP 26. Best-effort — a dead pid yields `nil`, never a crash (harmless for `self()`).
+  # on OTP 26 and earlier. Best-effort — a dead pid yields `nil`, never a crash (harmless for `self()`).
   defp proc_label(pid) do
     if function_exported?(:proc_lib, :get_label, 1) do
       try do

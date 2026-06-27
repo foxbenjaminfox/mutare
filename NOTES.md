@@ -3437,10 +3437,10 @@ no race:
 - **attribution** `{{label, id}}` — `label` is resolved in three tiers (`label/0`)
   → maps to the test *file* → per-file selection:
   1. the test process's own `Process.set_label({case, name})` (proc-dict
-     `:"$process_label"` on OTP 26, `:proc_lib.get_label/1` on 27+);
+     `:"$process_label"` on OTP 26 and earlier, `:proc_lib.get_label/1` on 27+);
   2. for a `Task` (no own label), the owning test's label recovered from the
      `$callers`/`$ancestors` chain — read cross-process (`:proc_lib.get_label/1` on
-     27+, the target's `:dictionary` via `Process.info/2` on 26) — so a task spawned
+     27+, the target's `:dictionary` via `Process.info/2` on 26 and earlier) — so a task spawned
      from a test still attributes to that test's file;
   3. for a `setup_all` (no label, no caller chain), the owning *module* recovered
      from the `{module, __ex_unit__, 2}` frame on its own `current_stacktrace`
