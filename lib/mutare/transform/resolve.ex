@@ -104,14 +104,17 @@ defmodule Mutare.Transform.Resolve do
   # A direct Erlang/atom-module remote call `:mod.fun(...)`: the receiver is a bare (or Sourceror-
   # wrapped) atom — never alias-stamped, so the atom *is* the module key. (An *aliased* atom module
   # `alias :binary, as: B; B.fun(...)` is the `__aliases__` shape above, resolved via the alias env.)
-  # `Aliases.resolve_node/2` returns the atom for an atom receiver and `nil` for any other expression
-  # (a variable/result dispatch `obj.fun(...)`), so only a genuine atom-module call is stamped with
-  # its known-macro routing — bringing the macro path level with `Mutare.Transform.Calls.resolved_call/1`,
-  # which already resolves this shape. A non-atom receiver falls through to a plain descent (the
-  # generic clause's behaviour), so dynamic dispatch is untouched.
+  # `Aliases.resolve_node/2` is consulted **env-free** (`%{}`), exactly as
+  # `Mutare.Transform.Calls.resolved_call/1`'s twin clause: the `__aliases__` (Elixir) shape was
+  # handled above, so only bare/wrapped-atom (and non-module) receivers reach here, none of which
+  # consult the alias env — passing it would be misleading dead input. It returns the atom for an
+  # atom receiver and `nil` for any other expression (a variable/result dispatch `obj.fun(...)`), so
+  # only a genuine atom-module call is stamped with its known-macro routing — bringing the macro path
+  # level with `resolved_call/1`, which already resolves this shape. A non-atom receiver falls through
+  # to a plain descent (the generic clause's behaviour), so dynamic dispatch is untouched.
   defp walk({{:., dot_meta, [mod, fun]}, call_meta, args}, env)
        when is_atom(fun) and is_list(args) do
-    case Aliases.resolve_node(mod, env.aliases) do
+    case Aliases.resolve_node(mod, %{}) do
       nil ->
         {{:., dot_meta, [mod, fun]}, call_meta, descend(args, env)}
 
