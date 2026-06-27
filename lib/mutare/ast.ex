@@ -113,7 +113,9 @@ defmodule Mutare.AST do
   This is the wrapper Sourceror (and a `Code.string_to_quoted` literal-encoding re-parse)
   put around a literal, so a recognizer comparing a node's *value* (`unwrap_literal(node)
   == :persistent_term`) sees through it. Unlike `literal_value/1` it makes no claim the
-  inner term is a scalar literal and returns the value bare (not `{:ok, _}`).
+  inner term is a scalar literal and returns the value bare (not `{:ok, _}`) — so it is also
+  the tool for comparing a clean-meta constant against a recomputed one regardless of
+  metadata, where the value may be a collection (`[]`, `[:mutare]`).
 
       iex> Mutare.AST.unwrap_literal({:__block__, [], [:persistent_term]})
       :persistent_term

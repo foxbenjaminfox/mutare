@@ -210,9 +210,12 @@ defmodule Mutare.Transform do
 
     # Reuse the AST we just parsed — its comment metadata is intact (transform
     # works on copies), so `Ignore` need not re-parse the source. A directive may
-    # be scoped to a mutator family, so the decision is per `{line, mutator}`, not
-    # per line; a matching directive's reason rides along onto the site.
+    # be scoped to a mutator family *and variant label*, so the decision is per
+    # `{line, mutator, variant}`, not per line; a matching directive's reason rides
+    # along onto the site.
     directives = Mutare.Ignore.directives_from_ast(parsed)
+    validate_ignore_qualifiers!(directives, ctx)
+
     sites = Enum.map(Enum.reverse(ctx.claim.sites), &apply_ignore(&1, directives))
 
     {metamutant, sites, ctx.claim.next_id}
@@ -245,8 +248,30 @@ defmodule Mutare.Transform do
     # `Mutare.Site` per claim — only advancing the id and tallying — so the per-mutant `Sourceror`
     # render in `Mutare.Site` is skipped. The tally is the mutant count (drift-proof: same claim
     # path as a render; see `Mutare.Transform.ClaimState`).
-    {_transformed, ctx, _parsed} = plan_and_emit(source, Keyword.put(opts, :sink, :count))
+    {_transformed, ctx, parsed} = plan_and_emit(source, Keyword.put(opts, :sink, :count))
+
+    # Validate qualified `[family:label]` filters here too: a **zero-site** file is counted but
+    # never rendered (`transform_string/2` runs only for sited files in the two-phase build), so the
+    # count path is the only place its directives are seen — without this, a known family's bad label
+    # in such a file would silently downgrade to a soft `ineffective` warning. The substring
+    # prefilter keeps the directive prewalk off every directive-free file.
+    if String.contains?(source, "mutare:ignore"),
+      do: validate_ignore_qualifiers!(Mutare.Ignore.directives_from_ast(parsed), ctx)
+
     ClaimState.total(ctx.claim)
+  end
+
+  # Hard-fail a qualified `[family:label]` filter whose family *is* in the active vocabulary but
+  # whose label can't be resolved (`Mutare.Ignore.validate!/3`) — a *known* family's bad label. An
+  # unknown family or a bare `[family]` stays a soft `ineffective` warning. Gated on a **qualified**
+  # entry actually being present, so the vocabulary (a pure function of the run-constant mutator set)
+  # is built lazily only then. Shared by the render path (`transform_string/2`) and the count path
+  # (`count_string/2`), so a bad qualifier is caught regardless of whether the file is rendered.
+  defp validate_ignore_qualifiers!(directives, ctx) do
+    if Mutare.Ignore.any_qualified?(directives) do
+      vocabulary = Mutare.Mutators.vocabulary(ctx.config.mutators)
+      Mutare.Ignore.validate!(directives, vocabulary, ctx.config.file)
+    end
   end
 
   # The shared analyze → plan → emit pipeline, stopping *before* `Render.to_source/1`.
@@ -343,9 +368,11 @@ defmodule Mutare.Transform do
   end
 
   # Mark a site ignored (and record the reason) when a `# mutare:ignore` directive
-  # on its line admits its mutator. Untouched sites pass through unchanged.
+  # on its line admits its mutator *and* variant. A bare `[family]`/`:all` directive
+  # admits any variant; a qualified `[family:label]` admits only the matching mutant
+  # (the site's mutator-declared `variant` label). Untouched sites pass through.
   defp apply_ignore(site, directives) do
-    case Mutare.Ignore.directive_for(directives, site.line, site.mutator) do
+    case Mutare.Ignore.directive_for(directives, site.line, site.mutator, site.variant) do
       nil -> site
       %{reason: reason} -> %{site | ignored: true, ignore_reason: reason}
     end

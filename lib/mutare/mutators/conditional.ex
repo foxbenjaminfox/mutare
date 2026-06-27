@@ -47,6 +47,15 @@ defmodule Mutare.Mutators.Conditional do
 
   def mutate(_node), do: :skip
 
+  # Variant labels for `# mutare:ignore[conditional:<label>]`: which constant the condition
+  # was forced to — `true` or `false`.
+  @impl Mutare.Mutator
+  def variants, do: ~w(true false)
+
+  @impl Mutare.Mutator
+  def variant(_original, {:__block__, _meta, [bool]}) when is_boolean(bool), do: to_string(bool)
+  def variant(_original, _mutated), do: nil
+
   @doc """
   Whether `op` is one of the boolean-valued operators this mutator forces to
   `true`/`false` — the comparison/membership/logical connectives.

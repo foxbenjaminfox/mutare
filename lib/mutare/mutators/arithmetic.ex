@@ -99,6 +99,28 @@ defmodule Mutare.Mutators.Arithmetic do
   def mutate(node, %{pipe_mode: pipe_mode}),
     do: Helpers.swap_bare_kernel(node, pipe_mode, @call_swaps)
 
+  # Variant labels for `# mutare:ignore[arithmetic:<op>]`: the resulting operator of a binary
+  # swap (`a - b` → `a + b` is the `+` variant, classified by the shared `op_swap_variant/3` over
+  # `@swap_ops`) or a `div`/`rem` rename (its own clause — a bare-`Kernel` call, not an operator
+  # node). The unary-minus strip (`-x` → `x`) stays unlabeled: its unary original can't be a swap,
+  # so the strip's `{:+, …}` output (e.g. from `-(a + b)`) is never mis-read as a `+` swap. Both
+  # sets are derived from the mutate tables (`@swaps`/`@call_swaps`), so the vocabulary, the
+  # classifier, and the actual swaps single-source one set and can't drift.
+  @swap_ops Map.keys(@swaps)
+  # `@call_swaps` is keyed on `{name, arity}` (the shared bare-`Kernel` safeguard), so take just
+  # the function names — the label is the resulting call's name (`div`/`rem`), arity-blind.
+  @call_funs @call_swaps |> Map.keys() |> Enum.map(&elem(&1, 0))
+
+  @impl Mutare.Mutator
+  def variants, do: Enum.map(@swap_ops ++ @call_funs, &to_string/1)
+
+  @impl Mutare.Mutator
+  def variant({fun, _m, args}, {new, _m2, _args2})
+      when fun in @call_funs and new in @call_funs and is_list(args),
+      do: to_string(new)
+
+  def variant(original, mutated), do: Mutare.Mutator.op_swap_variant(original, mutated, @swap_ops)
+
   defp identity_swap?(op, right) do
     case Map.fetch(@identity, op) do
       {:ok, identity} -> AST.literal_value(right) == {:ok, identity}

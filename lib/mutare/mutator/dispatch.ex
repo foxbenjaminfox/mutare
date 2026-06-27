@@ -295,4 +295,41 @@ defmodule Mutare.Mutator.Dispatch do
     AST.empty_collection_literal?(mutated) or
       (function_exported?(module, :empty_collection?, 1) and module.empty_collection?(mutated))
   end
+
+  @doc """
+  The **variant label** `spec`'s module declares for the mutation `{original, mutated}`, downcased
+  — or `nil` when the mutator hasn't opted in (it must export *both* `c:Mutare.Mutator.variants/0`
+  and `c:Mutare.Mutator.variant/2`) or returns `nil` for this pair (an unlabeled mutant). The single
+  home for invoking the optional `c:Mutare.Mutator.variant/2` callback (mirroring `empty_collection?/2`),
+  so `Mutare.Site` records the label without reaching into a mutator module itself. Dispatching on the
+  *producing* spec's module is correct: only the mutator that emitted the mutation knows which kind it is.
+  """
+  @spec variant(Spec.t(), Macro.t(), Macro.t()) :: String.t() | nil
+  def variant(%Spec{module: module}, original, mutated) do
+    # `variants/0` and `variant/2` are a **pair** (see `opted_in?/1`): a mutator must export *both*
+    # to record a label. Gating on the shared predicate keeps the *recording* side here consistent
+    # with the *validation* side (`Mutare.Mutators.vocabulary/1`): a half-implementation records no
+    # label *and* exposes no vocabulary, so a `[family:label]` qualifier against it can't both
+    # validate-as-known and silently match nothing.
+    if opted_in?(module) do
+      case module.variant(original, mutated) do
+        nil -> nil
+        label -> Mutare.Mutator.normalize_label(label)
+      end
+    end
+  end
+
+  @doc """
+  Whether `module` opts into the variant-label system — it must export **both**
+  `c:Mutare.Mutator.variants/0` (the vocabulary) and `c:Mutare.Mutator.variant/2` (the per-mutation
+  tagging). The *single* definition of "opted in", shared by `variant/3` (which records a site's
+  label) and `Mutare.Mutators.vocabulary/1` (which validates a `[family:label]` qualifier against the
+  declared labels). Routing both through it means the two sides can't disagree: a mutator declaring
+  only one half is treated uniformly as *not opted in* — it records no label **and** exposes no
+  vocabulary — so a qualifier against it is a hard `Mutare.Ignore.SpecError` (the `:no_variants` case)
+  rather than silently matching nothing. (`exports?/3` loads the module on demand, so an un-loadable
+  module degrades to `false`.)
+  """
+  @spec opted_in?(module()) :: boolean()
+  def opted_in?(module), do: exports?(module, :variants, 0) and exports?(module, :variant, 2)
 end

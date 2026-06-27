@@ -38,4 +38,16 @@ defmodule Mutare.Mutators.Logical do
   def mutate({op, _meta, [operand]}) when op in [:not, :!], do: [operand]
 
   def mutate(_node), do: :skip
+
+  # Variant labels for `# mutare:ignore[logical:<op>]`: the resulting connective of a binary
+  # swap. The `not`/`!` strip stays unlabeled (bare-family only) — its unary original can't be a
+  # swap. Derived from `@swaps` (the mutate table), so the vocabulary, the classifier, and the
+  # swaps single-source one set and can't drift.
+  @swap_ops Map.keys(@swaps)
+
+  @impl Mutare.Mutator
+  def variants, do: Enum.map(@swap_ops, &to_string/1)
+
+  @impl Mutare.Mutator
+  def variant(original, mutated), do: Mutare.Mutator.op_swap_variant(original, mutated, @swap_ops)
 end

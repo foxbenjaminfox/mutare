@@ -266,7 +266,7 @@ defmodule Mutare.CLI.Info do
     do: "all families — #{reason}"
 
   defp format_directive(%Directive{mutators: set, reason: reason}) do
-    families = "[#{set |> Enum.sort() |> Enum.join(", ")}]"
+    families = "[#{set |> Enum.map(&Directive.entry_label/1) |> Enum.sort() |> Enum.join(", ")}]"
     if reason, do: "#{families} — #{reason}", else: families
   end
 

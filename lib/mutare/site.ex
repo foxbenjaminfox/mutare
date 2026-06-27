@@ -34,6 +34,7 @@ defmodule Mutare.Site do
           mutated_form: atom() | nil,
           original_code: String.t(),
           mutated_code: String.t(),
+          variant: String.t() | nil,
           note: String.t() | nil,
           block_macro: {atom(), non_neg_integer()} | nil
         }
@@ -50,6 +51,13 @@ defmodule Mutare.Site do
     :mutated_form,
     :original_code,
     :mutated_code,
+    # The mutator-declared **variant label** of this mutation (downcased), or `nil` when the
+    # producing mutator did not opt in (no `c:Mutare.Mutator.variant/2`) or returned `nil` for
+    # this mutation (a delete site, or an unlabeled mutant). It is the token a qualified
+    # `# mutare:ignore[family:label]` filter matches — declared by the mutator, *not* derived
+    # from the rendered AST (so `relational:>` names the `>` swap, `return_value:empty` the empty
+    # constant). Set by `Mutare.Mutator.Dispatch.variant/3` from the producing `Mutare.Mutator.Spec`'s module.
+    variant: nil,
     operation: :replace,
     ignored: false,
     ignore_reason: nil,
@@ -219,7 +227,8 @@ defmodule Mutare.Site do
         original_form: nil,
         mutated_form: nil,
         original_code: Sourceror.to_string(original_node),
-        mutated_code: Sourceror.to_string(mutated_node)
+        mutated_code: Sourceror.to_string(mutated_node),
+        variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node)
     }
   end
 
@@ -242,7 +251,8 @@ defmodule Mutare.Site do
         original_form: elem(original_node, 0),
         mutated_form: elem(mutated_node, 0),
         original_code: render_code(original_node, keyword_key?),
-        mutated_code: render_code(mutated_node, keyword_key?)
+        mutated_code: render_code(mutated_node, keyword_key?),
+        variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node)
     }
   end
 

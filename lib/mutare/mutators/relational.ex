@@ -56,4 +56,17 @@ defmodule Mutare.Mutators.Relational do
   end
 
   def mutate(_node), do: :skip
+
+  # Variant labels for `# mutare:ignore[relational:<op>]`: the resulting operator, so a
+  # symmetric `i < j` can suppress just the `i > j` reflection (`[relational:>]`) while
+  # `i <= j` keeps running. The `in` → `not in` polarity flip stays unlabeled (bare-family
+  # only) — there is no operator result to name. Derived from `@swaps` (the mutate table), so the
+  # vocabulary, the classifier, *and* the actual swaps all single-source one set and can't drift.
+  @swap_ops Map.keys(@swaps)
+
+  @impl Mutare.Mutator
+  def variants, do: Enum.map(@swap_ops, &to_string/1)
+
+  @impl Mutare.Mutator
+  def variant(original, mutated), do: Mutare.Mutator.op_swap_variant(original, mutated, @swap_ops)
 end

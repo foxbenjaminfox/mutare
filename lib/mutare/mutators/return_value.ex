@@ -80,6 +80,28 @@ defmodule Mutare.Mutators.ReturnValue do
   @impl Mutare.Mutator
   def name, do: :return_value
 
+  # Variant labels for `# mutare:ignore[return_value:<label>]`: which half of the contrasting
+  # pair — `empty` (the shape's `0`/`""`/`[]`/`nil`) or `sentinel` (its `1`/`"mutare"`/
+  # `[:mutare]`/`:mutare`). Named, not derived, so `empty` works where the raw result `[]`
+  # could not be written. Classified by recomputing the pair for the tail and value-matching
+  # the mutated half against it.
+  @impl Mutare.Mutator
+  def variants, do: ~w(empty sentinel)
+
+  # Value-match the stored mutated half against a freshly recomputed contrasting pair,
+  # meta-insensitively (`AST.unwrap_literal/1`) — the pair carries collection values like `[]`, so a
+  # one-layer block unwrap, not `AST.literal_value/1`, is the right comparator.
+  @impl Mutare.Mutator
+  def variant(tail, mutated) do
+    value = AST.unwrap_literal(mutated)
+
+    cond do
+      value === AST.unwrap_literal(empty_constant(tail)) -> "empty"
+      value === AST.unwrap_literal(sentinel_constant(tail)) -> "sentinel"
+      true -> nil
+    end
+  end
+
   @doc """
   The constant replacements for one clause-tail expression, as clean-meta AST
   nodes ready to splice into a selector clause. Returns `[]` when the tail should

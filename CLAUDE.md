@@ -826,7 +826,7 @@ contract between them is the whole game.
   behaviours) + **`Mutare.Mutators.*`** — the public extension surface, **split by capability** so
   the core behaviour is the 90% case rather than a bag of twelve optional callbacks. **`Mutare.Mutator`**
   is `name/0` + a node-level producer (`mutate/1`, the pipe-aware/configurable `mutate/2`, and the
-  `empty_collection?/1` in-RHS classifier — a mutator implements `name/0` plus at least one producer);
+  `empty_collection?/1` in-RHS classifier — a mutator implements `name/0` plus at least one producer), plus the opt-in `variants/0` + `variant/2` pair declaring its `# mutare:ignore[family:label]` variant-label vocabulary (see the ignore section);
   **`Mutare.Mutator.Structural`** carries the position-routed hooks
   (`return_replacements`/`condition_replacements`/`pattern_mutations`, each with a behaviour-aware
   `+1` arity); **`Mutare.Mutator.MacroAware`** carries DSL targeting (`macros/0`, `macro_routing/1`,
@@ -1287,6 +1287,29 @@ No registration/plumbing: every mutation is tagged with its producing `Mutare.Mu
 `function_exported?/2`), ORing it with the shape-based recogniser. `test/support/collection_mutator.ex`
 is a working example.
 
+For a mutator whose users may want to suppress *one kind* of its mutations (a `# mutare:ignore`
+qualifier — `[relational:>]` keeps `<=`), declare a **variant vocabulary**: `variants/0` returns
+the label set (its own public contract — operator names like `> <= ==`, or semantic kinds like
+`empty sentinel` / `zero succ pred`), and `variant(original, mutated)` tags each produced mutation
+with one of them (or `nil` for an unlabeled mutant — bare-family only). The two callbacks are a
+**pair**: implement *both* or neither (`Mutare.Mutator.Dispatch.variant/3` requires both, so a half-declared
+mutator records no labels). Classify from the
+`{original, mutated}` *pair*, not the mutated node alone (a strip's `{:+, …}` output must not be
+read as a `+` swap — the operator families route through `Mutare.Mutator.op_swap_variant/3`, which
+ignores a unary original for free). The label is recorded on `Site.variant` and is what a
+`[family:label]` filter matches; it is *not* derived from the rendered AST, so it stays stable and
+can name a result no filter token could spell (`empty`, not `[]`). Opt-in (no vocabulary ⇒ only the
+bare `[family]` works, and a qualifier against the family is a hard error) and validated: each label
+must be **wire-safe** (no whitespace/`,`/`()`/`]`/`"`, checked at `Mutare.Mutators.vocabulary/1`
+build — a violation is a `Mutare.Ignore.SpecError`), and `variant/2` must return a member of
+`variants/0` (a `Mutare.Ignore.SpecError` rejects an unknown qualifier statically). The mutator's
+**family name** itself (its `name/0` or `:as`) must likewise be a usable filter token — wire-safe
+**and colon-free** (a `:` is the qualifier separator, so a `[ecto:query]` could never name a whole
+`ecto:query` family); a colon/wire-unsafe custom name is rejected at `vocabulary/1` build
+(`:unfilterable_family`). The built-ins that opt in are the operator/value families (Relational,
+Arithmetic, Bitwise, StrictEquality, Logical, List, Literal, Conditional, ReturnValue); call /
+structural families stay bare-only.
+
 ## Adding a plugin
 
 A **`Mutare.Plugin`** is the vehicle for a *non-mutating* extension — one that makes Mutare
@@ -1360,20 +1383,43 @@ like the directive is never mistaken for one. Trailing ⇒ own line, standalone 
 # mutare:ignore                              suppress every mutant on the line
 # mutare:ignore <free text>                  suppress all; the text is recorded as the reason
 # mutare:ignore[arithmetic, relational]      suppress only those mutator families
+# mutare:ignore[relational:>]                suppress only the `i < j → i > j` reflection; `<=` runs
+# mutare:ignore[return_value:empty]          suppress one mutation kind by its declared label
 # mutare:ignore[literal] off-by-one is fine  filter + reason together
 ```
 
-The `[...]` **filter** matches a site's `mutator` name (the families in `Mutare.Mutators`, plus
-`clause_drop` and any custom `name/0`); without brackets, *all* mutators match. Filtering fails
-**safe** — an unknown name or empty `[]` matches nothing, so the mutant runs rather than hides,
-and bracket-less trailing words are always prose, never an accidental filter. The matched
-directive's reason rides onto the `Site` (`ignore_reason`) and `Mutare.Report` lists each ignored
-mutant with it. `Mutare.Ignore.directives_from_ast/1` returns `%{line => [%Ignore.Directive{}]}`;
-`Transform` applies it per `{line, mutator}`, not per line.
+The `[...]` **filter** is a list of entries; each matches a site's `mutator` name (the families in
+`Mutare.Mutators`, plus `clause_drop` and any custom `name/0`), optionally **qualified** with
+`:<label>` to name *one* of that family's mutants by its **variant label**. The label is **not**
+derived from the rendered AST — it is a name the *mutator declares* (`c:Mutare.Mutator.variants/0`)
+and tags each mutation with (`c:Mutare.Mutator.variant/2`), recorded on `Site.variant`. So
+`relational` declares its results `> >= < <= == != === !==` (a symmetric `i < j` suppresses the
+`i > j` reflection via `[relational:>]`, keeping `i <= j`), `return_value` declares the *semantic*
+pair `empty`/`sentinel`, `literal` declares `zero succ pred negate` — labels free of how the value
+renders (so `[]`, which can't be a filter token, is named `empty`). A bare `[relational]` is the
+all-or-nothing form; without brackets, *all* mutators match.
 
-Failing safe is **silent**, so `Mutare.Ignore.ineffective/2` surfaces the directives that
-suppressed *nothing* — every one no recorded site admits (a typo'd family, an empty `[]`, a
-standalone line whose `line + 1` has no mutant, or a family that produced no mutant there).
+Qualifiers are **opt-in and strict where the mistake is certain**: a `[family:label]` on a family
+that **is** in the active vocabulary (every built-in always; an active custom) that declares no
+`variants/0`, or declares some but not this label, raises `Mutare.Ignore.SpecError`
+(`validate!/3`, called from `Transform`) with a "did you mean" — a hard, *static* error (checked
+against `Mutare.Mutators.vocabulary/1`, not the sites), surfaced by the Mix task as a clean abort.
+An **unknown family** (qualified or bare) is *not* an error: it is indistinguishable from a
+`--mutators`-excluded or removed custom family, so — like a bare typo — it stays lenient (matches
+nothing, the mutant runs, an `ineffective` warning). Declared labels are validated **wire-safe** at
+harvest (no whitespace/`,`/`()`/`]`/`"`), so a label is always expressible as a filter token. A
+**bare** `[family]` (and a `[]` empty list) stays lenient end to end, and bracket-less trailing
+words are always prose, never a filter. The matched directive's reason rides onto the `Site`
+(`ignore_reason`) and `Mutare.Report` lists each ignored mutant with it.
+`Mutare.Ignore.directives_from_ast/1` returns `%{line => [%Ignore.Directive{}]}`; `Transform`
+applies it per `{line, mutator, variant}` — `Directive.mutators` is a `MapSet` of
+`{family, :any | label}` entries — and labels match case-insensitively.
+
+A *bare* filter failing to match is silent, so `Mutare.Ignore.ineffective/2` surfaces the directives
+that suppressed *nothing* — every one no recorded site admits (a typo'd bare family, a valid label
+absent on this line, an empty `[]`, a standalone line whose `line + 1` has no mutant, or a family
+that produced no mutant there). A *qualified* unknown label never reaches here — it is the harder
+`validate!/3` error.
 `Mutare.Schema` computes them per file (`ineffective_ignores`, the substring-prefiltered re-parse
 done on the **full** site set before any `--line`/`--max-mutants` trim, so a scoped run can't
 manufacture a false positive); the Mix task **warns** on each to stderr at scan time, and

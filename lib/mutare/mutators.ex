@@ -33,6 +33,8 @@ defmodule Mutare.Mutators do
   any family. `resolve/1` accepts both.
   """
 
+  alias Mutare.Ignore.SpecError
+  alias Mutare.Mutator
   alias Mutare.Mutator.Spec
 
   # Ordered on purpose: this is the order mutants are offered in, and the order
@@ -128,6 +130,119 @@ defmodule Mutare.Mutators do
   """
   @spec transform_managed() :: [module()]
   def transform_managed, do: @transform_managed
+
+  # Characters a `# mutare:ignore` filter token can't carry, so a declared variant label
+  # must avoid them: whitespace, the entry separator `,`, the result-set group `()`, the
+  # filter terminator `]`, and the quote `"`. The empty string is rejected separately
+  # (`wire_safe?/1`): it carries none of these, yet `# mutare:ignore[family:]` parses to the
+  # malformed empty-label entry, which `Mutare.Ignore.Directive.match_specificity/3` never matches
+  # — so an empty *declared* label would be permanently unsuppressable rather than a filter token.
+  @wire_unsafe ~r/[\s,()\]"]/
+
+  @doc """
+  The **variant vocabulary** for `active_specs`: a map `family_name => :none | MapSet(labels)`,
+  the names a `# mutare:ignore[family:label]` qualifier may use (see `c:Mutare.Mutator.variants/0`).
+
+  Covers **every built-in family** (from the registry, regardless of whether it is in
+  `active_specs` — a directive may name a family disabled this run, which is legitimate, not a
+  typo), the unregistered `clause_drop`, and each active custom/renamed spec (keyed by its
+  recorded `name`, downcased — so an uppercase custom name still matches the downcased filter
+  token). Family keys are case-folded; an active spec whose recorded name collides with a built-in
+  (an `:as`-renamed custom) **overrides** the registry entry, so its qualifier is validated against
+  *its own* vocabulary, not the shadowed built-in's. A family whose module declares no `variants/0`
+  maps to `:none` (qualifiers against it are rejected; it supports only the bare `[family]` filter).
+  Labels are downcased.
+
+  Raises a `Mutare.Ignore.SpecError` if a mutator declares a **wire-unsafe** label
+  (`:wire_unsafe_label`) or has a **family name** a filter token can't express — one containing a
+  `:` or a wire-unsafe character (`:unfilterable_family`) — surfacing the config bug loudly rather
+  than silently producing an unmatchable label/family.
+  """
+  @spec vocabulary([Spec.t()]) :: %{String.t() => :none | MapSet.t(String.t())}
+  def vocabulary(active_specs) when is_list(active_specs) do
+    # Case-fold a family name to its lookup key via the *same* contract a filter's family token is
+    # folded with at parse time (`Mutare.Mutator.normalize_label/1`), so the declaring and matching
+    # sides can't drift.
+    builtins =
+      Map.new(@registry, fn {family, module} ->
+        {Mutator.normalize_label(family), variants_of(module)}
+      end)
+
+    # Only specs *not* already faithfully represented by the builtins map: a bare built-in
+    # (`name`→registry module) is skipped (no redundant reflection), while a renamed custom or a
+    # foreign custom is added — and, keyed by the same family name, overrides any shadowed builtin.
+    # Each custom family name is checked **filterable** (a built-in name is a known-safe constant):
+    # a `:`/wire-unsafe name can't be written as a `# mutare:ignore[...]` token, so it would be
+    # silently unsuppressable — reject it loudly instead.
+    customs =
+      for %Spec{module: module, name: name} <- active_specs,
+          Keyword.get(@registry, name) != module,
+          into: %{},
+          do: {check_family!(module, Mutator.normalize_label(name)), variants_of(module)}
+
+    builtins |> Map.put("clause_drop", :none) |> Map.merge(customs)
+  end
+
+  @doc false
+  # Whether `label` can be written as a `# mutare:ignore` filter token that actually selects a
+  # variant — i.e. it is non-empty and carries none of the characters that would break parsing. The
+  # single source of truth for the wire-safe rule, shared by `check_wire_safe!/2` and the suite's
+  # "every built-in label is wire-safe" test. The empty string is excluded because, while it breaks
+  # no parsing, `[family:]` resolves to the malformed empty-label entry that matches nothing — an
+  # empty declared label could never be selected.
+  @spec wire_safe?(String.t()) :: boolean()
+  def wire_safe?(label) when is_binary(label),
+    do: label != "" and not Regex.match?(@wire_unsafe, label)
+
+  # A module's declared variant labels as a downcased `MapSet`, or `:none` when it does not
+  # opt in. "Opted in" is `Mutare.Mutator.Dispatch.opted_in?/1` — *both* `variants/0` and `variant/2` exported —
+  # the same predicate `Mutare.Mutator.Dispatch.variant/3` gates recording on, so the validation side here
+  # and the recording side can't disagree (a mutator declaring only `variants/0` is `:none`, and a
+  # qualifier against it is a clean hard error rather than a silently-unmatched label). Each label
+  # is checked wire-safe at harvest time.
+  defp variants_of(module) do
+    if Mutare.Mutator.Dispatch.opted_in?(module) do
+      module.variants()
+      |> Enum.map(&Mutator.normalize_label/1)
+      |> Enum.map(&check_wire_safe!(module, &1))
+      |> MapSet.new()
+    else
+      :none
+    end
+  end
+
+  defp check_wire_safe!(module, label) do
+    unless wire_safe?(label) do
+      raise SpecError,
+        reason: :wire_unsafe_label,
+        label: label,
+        message:
+          "mutator #{inspect(module)} declared an unusable # mutare:ignore variant label " <>
+            "#{inspect(label)}: a label may not be empty or contain whitespace, ',', '(', ')', " <>
+            "']', or '\"'"
+    end
+
+    label
+  end
+
+  # A family name is usable as a `# mutare:ignore[...]` token iff it is wire-safe *and* colon-free:
+  # a `:` is read as the variant-qualifier separator (so `[ecto:query]` would parse as family `ecto`
+  # + label `query`, never naming a whole `ecto:query` family). Reject such a name loudly at
+  # vocabulary build rather than letting its filter silently match nothing.
+  defp check_family!(module, family) do
+    if wire_safe?(family) and not String.contains?(family, ":") do
+      family
+    else
+      raise SpecError,
+        reason: :unfilterable_family,
+        family: family,
+        message:
+          "mutator #{inspect(module)} has a # mutare:ignore family name #{inspect(family)} that " <>
+            "can't be written as a filter token: a family may not contain ':' (the variant " <>
+            "qualifier separator) or whitespace, ',', '(', ')', ']', or '\"'. Rename the mutator " <>
+            "(name/0) or its `:as` to a colon-free token."
+    end
+  end
 
   # The reserved list tokens that stand for "the whole built-in set" — expanded
   # in place (and `except:`-filtered) before any per-entry resolution, since one

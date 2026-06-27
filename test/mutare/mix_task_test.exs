@@ -267,6 +267,20 @@ defmodule Mix.Tasks.MutareTest do
       assert output =~ "[arithmetic]"
       assert output =~ "[bogus]"
     end
+
+    test "--list-ignores renders a bad qualifier as a clean Mix abort, not a raw stacktrace" do
+      # `--list-ignores`/`--dry-run` build a schema *outside* the mutation-run try/rescue, so the
+      # qualifier `SpecError` must be caught at the dispatch level and surfaced as a clean Mix abort.
+      root =
+        bare_project("""
+        defmodule A do
+          def f(x), do: x + 1 # mutare:ignore[arithmetic:bogus]
+        end
+        """)
+
+      err = assert_raise Mix.Error, fn -> Mix.Tasks.Mutare.run([root, "--list-ignores"]) end
+      assert err.message =~ ~s("bogus" is not a arithmetic variant)
+    end
   end
 
   # A throwaway project with a single `lib/a.ex`, cleaned up after the test.

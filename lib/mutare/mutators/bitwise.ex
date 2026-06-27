@@ -120,4 +120,50 @@ defmodule Mutare.Mutators.Bitwise do
 
   # A literal integer `0`, in raw or Sourceror-wrapped (`{:__block__, _, [0]}`) form.
   defp literal_zero?(node), do: AST.literal_value(node) === {:ok, 0}
+
+  # Variant labels for `# mutare:ignore[bitwise:<op>]`: the resulting *operator* of a binary swap.
+  # Both spellings share one vocabulary: the operator swap (`a &&& b` → `a ||| b`) is classified by
+  # `op_swap_variant/3` over `@swap_ops`, and the function-call swap (`Bitwise.band(a, b)` →
+  # `Bitwise.bor(a, b)`) is mapped to the *same* operator label via the resolved original — so
+  # `[bitwise:|||]` suppresses the OR result in either form (matching Arithmetic, which labels its
+  # `div`/`rem` call form). The `~~~`/`bnot` complement strip stays unlabeled (no operator result).
+  # Derived from `@op_swaps` so the operator set is single-sourced (order is irrelevant — used only
+  # for `in`/`MapSet` membership).
+  @swap_ops Map.keys(@op_swaps)
+
+  # The operator label each *resulting* bitwise function corresponds to, so a call-form swap names
+  # the same variant as the operator-form swap.
+  @fun_to_op %{band: "&&&", bor: "|||", bsl: "<<<", bsr: ">>>"}
+
+  @impl Mutare.Mutator
+  def variants, do: Enum.map(@swap_ops, &to_string/1)
+
+  @impl Mutare.Mutator
+  def variant(original, mutated) do
+    case Mutare.Mutator.op_swap_variant(original, mutated, @swap_ops) do
+      nil -> call_swap_variant(original)
+      label -> label
+    end
+  end
+
+  # A function-form swap names the operator its *result* corresponds to. The swap is deterministic
+  # from the original function (`@call_swaps`), so only the stamped original need resolve — the
+  # rebuilt mutant's (possibly `Elixir.`-qualified) form needn't. A `bnot` strip (not in
+  # `@call_swaps`) and a non-`Bitwise` call yield `nil`.
+  defp call_swap_variant(original) do
+    with {[:Bitwise], fun, _args, _rebuild} <- Calls.resolved_call(call_ref(original)),
+         result when not is_nil(result) <- Map.get(@call_swaps, fun) do
+      Map.fetch!(@fun_to_op, result)
+    else
+      _ -> nil
+    end
+  end
+
+  # A bitwise function swap reaches `variant/2` as a written call (`Bitwise.band(a, b)`) *or* as a
+  # captured reference (`&Bitwise.band/2` → `&Bitwise.bor/2`, mutated by `Transform.Analyze.Captures`).
+  # A capture records its `&` form, so unwrap it to the inner `Bitwise.band()` ref before resolving —
+  # it carries the same alias stamp that let the synthesized call resolve, so it resolves
+  # identically. A written call (any other node) passes through unchanged.
+  defp call_ref({:&, _meta, [{:/, _meta2, [ref, _arity]}]}), do: ref
+  defp call_ref(node), do: node
 end

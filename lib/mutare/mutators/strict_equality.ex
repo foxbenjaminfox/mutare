@@ -45,4 +45,19 @@ defmodule Mutare.Mutators.StrictEquality do
   end
 
   def mutate(_node), do: :skip
+
+  # Variant labels for `# mutare:ignore[strict_equality:<op>]`: the relaxed operator
+  # (`===` → `==`, `!==` → `!=`). Both sets derive from `@swaps` (the mutate table): the *result*
+  # operators are the labels, and the classifier's operator set is sources + results together, so
+  # the shared `op_swap_variant/3` (the one home for the operator-family `variant/2` shape) can map
+  # a `===` → `==` pair to `"=="` just like the other operator families. Single-sourced from
+  # `@swaps`, so vocabulary, classifier, and swaps can't drift.
+  @result_ops Map.values(@swaps)
+  @swap_ops Map.keys(@swaps) ++ @result_ops
+
+  @impl Mutare.Mutator
+  def variants, do: Enum.map(@result_ops, &to_string/1)
+
+  @impl Mutare.Mutator
+  def variant(original, mutated), do: Mutare.Mutator.op_swap_variant(original, mutated, @swap_ops)
 end

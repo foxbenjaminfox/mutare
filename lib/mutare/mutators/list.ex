@@ -28,4 +28,17 @@ defmodule Mutare.Mutators.List do
   end
 
   def mutate(_node), do: :skip
+
+  # Variant labels for `# mutare:ignore[list:<label>]`: the resulting operator of a
+  # concat/diff swap (`++`/`--`, single-sourced with the classifier via `@swap_ops`), or `empty`
+  # for the list-literal collapse to `[]` (named `empty`, not `[]`, since `]` can't appear in a
+  # wire-safe label).
+  @swap_ops [:++, :--]
+
+  @impl Mutare.Mutator
+  def variants, do: Enum.map(@swap_ops, &to_string/1) ++ ~w(empty)
+
+  @impl Mutare.Mutator
+  def variant({:__block__, _m, [orig]}, {:__block__, _m2, [[]]}) when is_list(orig), do: "empty"
+  def variant(original, mutated), do: Mutare.Mutator.op_swap_variant(original, mutated, @swap_ops)
 end

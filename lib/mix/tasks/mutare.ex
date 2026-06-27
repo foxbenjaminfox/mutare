@@ -378,12 +378,20 @@ defmodule Mix.Tasks.Mutare do
     context = Context.new(options, project: project)
     root = project.copy_root
 
-    cond do
-      flags[:show_config] -> Info.print_effective_config(project, options)
-      flags[:list_macros] -> Info.print_macro_registry(options)
-      flags[:list_ignores] -> Info.print_ignores(project, scan(context, root))
-      flags[:dry_run] -> Info.print_dry_run(project, scan(context, root))
-      true -> run_mutation_testing(project, context, root)
+    try do
+      cond do
+        flags[:show_config] -> Info.print_effective_config(project, options)
+        flags[:list_macros] -> Info.print_macro_registry(options)
+        flags[:list_ignores] -> Info.print_ignores(project, scan(context, root))
+        flags[:dry_run] -> Info.print_dry_run(project, scan(context, root))
+        true -> run_mutation_testing(project, context, root)
+      end
+    rescue
+      # A variant-label spec error from *any* scan — a normal run *or* a `--dry-run`/`--list-ignores`
+      # info mode (both build a `Mutare.Schema`, so both can raise) — e.g. a `# mutare:ignore[family:label]`
+      # naming a known family's bad variant, or a mutator declaring a wire-unsafe label/name. Render it
+      # as a clean Mix abort, not a raw stacktrace.
+      error in Mutare.Ignore.SpecError -> Mix.raise(Exception.message(error))
     end
   end
 
@@ -431,7 +439,9 @@ defmodule Mix.Tasks.Mutare do
         {:error, reason, detail} -> Mix.raise(format_error(reason, detail))
       end
     after
-      # Backstop for an unexpected raise mid-run; `finish/1` is idempotent.
+      # Backstop for an unexpected raise mid-run; `finish/1` is idempotent. A variant-label
+      # `Mutare.Ignore.SpecError` from the scan propagates through here (the live block is torn
+      # down) to `dispatch_with_options/2`, which renders it as a clean Mix abort.
       if live, do: Live.finish(live)
     end
   end
@@ -602,11 +612,14 @@ defmodule Mix.Tasks.Mutare do
   end
 
   # The `[families]` a filtered directive named (sorted for a stable message), or
-  # `""` for an unfiltered (`:all`) directive.
+  # `""` for an unfiltered (`:all`) directive. A `{family, target}` entry renders
+  # back to its source form — `relational:>` when qualified, bare `arithmetic`
+  # otherwise — so the warning echoes what the user wrote.
   defp ignore_filter_label(%{mutators: :all}), do: ""
 
   defp ignore_filter_label(%{mutators: %MapSet{} = set}),
-    do: "[#{set |> Enum.sort() |> Enum.join(", ")}]"
+    do:
+      "[#{set |> Enum.map(&Mutare.Ignore.Directive.entry_label/1) |> Enum.sort() |> Enum.join(", ")}]"
 
   # `--strict-ignores`: a directive that suppressed nothing is a hard error (the
   # CI counterpart of the warning above), surfaced as a clean Mix failure →

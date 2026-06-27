@@ -470,7 +470,7 @@ defmodule Mutare.SchemaTest do
     # The `[bogus]` typo (line 2) suppressed nothing; the `[arithmetic]` (line 3)
     # matched the real arithmetic mutant on its line, so it is not flagged.
     assert [{"lib/a.ex", %{line: 2, mutators: set}}] = schema.ineffective_ignores
-    assert MapSet.member?(set, "bogus")
+    assert MapSet.member?(set, {"bogus", :any})
   end
 
   test "ineffective detection uses the full site set, before --max-mutants trims", %{root: root} do

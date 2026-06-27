@@ -448,9 +448,9 @@ defmodule Mutare.Schema do
   #
   # Only files whose source contains the literal `mutare:ignore` are re-parsed
   # (`Ignore.directives/1`); the cheap substring prefilter keeps every other file
-  # off the parse path. A `sources` entry is always a file that parsed cleanly
-  # during transform (the `{:error, _}` branch of `add_file/6` records no source),
-  # so the re-parse cannot raise here.
+  # off the parse path. A `sources` entry is always a file that parsed cleanly in
+  # phase 1 (an unparseable file is recorded under `:skipped`, not `:sources` — see
+  # `assemble/3`), so the re-parse cannot raise here.
   defp detect_ineffective_ignores(%__MODULE__{sources: sources, sites: sites} = schema) do
     sites_by_file = Enum.group_by(sites, & &1.file)
 
@@ -465,7 +465,7 @@ defmodule Mutare.Schema do
   end
 
   defp file_ineffective(source, sites) do
-    occupied = Enum.map(sites, &{&1.line, &1.mutator})
+    occupied = Enum.map(sites, &{&1.line, &1.mutator, &1.variant})
 
     source
     |> Ignore.directives()

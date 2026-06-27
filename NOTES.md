@@ -192,12 +192,13 @@ and the compile still fails.
 `[]`, a standalone directive on the wrong line, or a family that produced no mutant there
 all simply match nothing, so the mutant still runs. Safe, but **silent**: the user thinks
 they suppressed a mutant and didn't. `Mutare.Ignore.ineffective/2` closes that gap — it
-returns every directive **no recorded site admits** (`Directive.applies_to?/2` false for
-every occupied mutator on the directive's line). One rule covers all four failure modes;
-there's no need to special-case typo vs. wrong-line vs. wrong-family.
+returns every directive **no recorded site admits** (`Directive.applies_to?/3` false for
+every occupied `{mutator, result}` on the directive's line). One rule covers every failure
+mode; there's no need to special-case typo vs. wrong-line vs. wrong-family vs. wrong-result.
 
-It takes `{line, mutator}` pairs, not `Mutare.Site` structs, so `Ignore` stays unaware of
-the site representation (same discipline as `directive_for/3` taking a bare `mutator` atom).
+It takes `{line, mutator, variant}` triples, not `Mutare.Site` structs, so `Ignore` stays
+unaware of the site representation (same discipline as `directive_for/4` taking the bare
+`mutator` atom + the site's mutator-declared `variant` label).
 `Mutare.Schema.detect_ineffective_ignores/1` computes it per file into `ineffective_ignores`,
 reusing the existing `Ignore.directives/1` re-parse — but only for files whose source
 contains the literal `mutare:ignore` (a cheap `String.contains?` prefilter keeps every other
@@ -215,6 +216,71 @@ disabled by `--mutators` yields no site and a directive naming only it is flagge
 "admits no site" rule is predictable; distinguishing a *disabled* family from a *typo'd* one
 would need the full valid-family universe and isn't worth the complexity (a CI strict run uses
 the default set, where it can't arise).
+
+### Per-variant `# mutare:ignore[family:label]` qualifier — mutator-declared labels `[done]`
+The `[family]` filter was all-or-nothing per family — too blunt for the common "one of these
+mutants is equivalent, the rest aren't" case. Motivating shape: `i < j` where `i`/`j` are symmetric
+(rows/cols cutting the diagonal), so `i > j` is an *equivalent* reflection but `i <= j` (the
+boundary) is a real, non-equivalent mutant. `[relational]` would lose both; `Relational`'s table is
+`:< => [:<=, :>]`, and the only thing distinguishing the two mutants is *which* mutation it is.
+
+The first cut derived the discriminator from the rendered AST (`Site.ignore_target/1`: the mutated
+operator atom, else the one-lined `mutated_code`). That was rejected as the wrong factoring: it leaks
+an implementation artifact (`>` works, but a call rewrite is the whole `Enum.filter(x, f)` string, a
+list result is `[]` which the filter's `]` terminator can't even spell, a negative int collapses to
+`-`), it can't be validated statically, and it makes every family half-support qualifiers whether or
+not that's meaningful. The replacement: the **mutator declares its own vocabulary** and tags each
+mutation. Two optional callbacks (discovered by export, the `macros/0` pattern): `variants/0` → the
+label set (a family's *public contract* — operator names `> <= ==`, or semantic kinds `empty
+sentinel` / `zero succ pred negate`), and `variant(original, mutated)` → the label for one produced
+mutation (a member of `variants/0`, or `nil` = unlabeled/bare-only). Classify from the
+`{original, mutated}` **pair**, never the mutated node alone — a strip (`-(a+b)` → `a+b`) emits a
+`{:+, …}` that would otherwise be mis-read as a `+` swap.
+
+`Site` stores the (downcased) label in a `variant` field, set by `variant_of/3` from the producing
+`Spec`'s module (`function_exported?` guard, so a non-opting mutator yields `nil`). The matching is
+unchanged from the first cut — `Directive.applies_to?/3` against the site's token, `:any` a wildcard
+on either side — only the token's *source* flipped from derived to declared. Opt-in falls straight
+out of "did the module export `variants/0`?": a family that didn't (Collection, the call families,
+most structural) is bare-only, and the call/structural half-broken tokens simply don't exist.
+
+The big win is **static, strict validation where the mistake is certain** (composing with the
+fail-loud grammar decision): because the vocabulary is finite and declared,
+`Mutare.Mutators.vocabulary/1` harvests `family → :none | MapSet(labels)` (full registry +
+`clause_drop` + active custom/renamed specs, keyed case-folded; an `:as`-renamed custom overrides
+the shadowed built-in — validate names a known family's labels against *all* built-ins, not the
+`--mutators`-active subset, so a directive on a *disabled built-in* isn't a false typo), and
+`Ignore.validate!/3` rejects a **qualified** `[family:label]` whose family **is in the vocabulary**
+but whose label is absent — a no-variants family, or an unknown label: a hard `Ignore.SpecError`
+with file:line and a Jaro "did you mean", raised from `Transform`, rendered by the Mix task as a
+clean abort. So a label typo on a known family is caught *up front without a site*. The boundary is
+**certainty**: an *unknown* family (qualified *or* bare) is *not* a hard error — it is
+indistinguishable from a `--mutators`-excluded or removed *custom* family (which the active
+vocabulary can't enumerate), so it stays lenient, exactly like a bare typo → a soft `ineffective`
+warning. (The earlier design hard-erred an unknown *qualified* family, which inconsistently aborted
+a legitimate focused run that excluded a custom mutator while tolerating the same for a built-in;
+the certainty rule removes that asymmetry.) The vocabulary is only built when a file actually
+carries a **qualified** entry (`Ignore.any_qualified?/1`), so a no-directive or bare-only file skips
+the registry-reflection pass. Labels are checked **wire-safe** at harvest (no whitespace/`,`/`()`/
+`]`/`"`) so a declared label is always expressible as a filter token, and matched case-insensitively
+(declared + filter both folded via `Mutare.Mutator.normalize_label/1`). The drift invariant
+(`variant/2` ⊆ `variants/0`) is covered by a test exercising the opted-in families end-to-end, plus
+a completeness test that every binary operator-swap mutant of an opted-in family carries a label
+(catching a `mutate/1` result operator missing from the family's `@swap_ops`, which the shared
+`Mutare.Mutator.op_swap_variant/3` single-sources with `variants/0`).
+
+Three edges the two-phase build + info-mode dispatch surfaced (all now closed): (1) validation is
+shared by the **count *and* render** paths (`Transform.validate_ignore_qualifiers!/2`), not render
+alone — a **zero-site** file (e.g. a relational-only file scanned with only `--mutators arithmetic`)
+is counted but never rendered, so render-only validation would silently downgrade its bad qualifier
+to an `ineffective` warning; the count path prefilters on the `mutare:ignore` substring to keep the
+directive prewalk off directive-free files. (2) The Mix task's `SpecError`→clean-`Mix.raise` rescue
+sits at `dispatch_with_options/2`, around **both** a mutation run and the scan-backed info modes
+(`--dry-run`/`--list-ignores`), which build a schema *before* `run_mutation_testing/3`'s own
+try/after — without it those modes leaked a raw stacktrace. (3) A custom **family name** with a `:`
+(or other wire-unsafe char) is rejected at `vocabulary/1` build (`:unfilterable_family`): the `:` is
+the qualifier separator, so `[ecto:query]` parses as family `ecto` + label `query` and could never
+name a whole `ecto:query` family — better to fail loud than let the filter silently match nothing.
 
 ### Scan is transform-bound, and the loop heap makes it worse `[deferred]`
 After the manifest went lazy (above), the scan (`Schema.from_files` → `Transform`
