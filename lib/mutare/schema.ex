@@ -33,6 +33,13 @@ defmodule Mutare.Schema do
        against the rendered `next_id` and fails loudly on any drift, since id
        stability across files depends on the two passes agreeing.
 
+  The two passes agree only because the pipeline they share — parse, `use`-expansion,
+  resolution, and every mutator — is a *deterministic* function of the source and opts;
+  it runs once per pass, so a nondeterministic custom mutator or plugin `expand_use/3`
+  surfaces as that `render_one/5` drift crash rather than a silent id overlap.
+  `from_files/4` also dedups its input by relative path, so a file passed twice is
+  rendered once, under one id range — never two overlapping ones.
+
   Both passes preserve exact `:start_id` threading (the prefix sum reproduces the
   old sequential thread) and the *let-it-crash* contract: a worker classifies an
   unparseable source as a skipped file but re-raises any other exception, with its
@@ -139,21 +146,26 @@ defmodule Mutare.Schema do
   def from_files(files, root \\ ".", opts \\ [], skip_ids \\ MapSet.new()) do
     options = Options.new(opts)
 
+    # Dedup the input by relative path. A file passed more than once would otherwise be
+    # rendered twice under different `:start_id`s but collapse to a single relative-path
+    # key in `render_files/3` (only the last render kept, then reused for *every*
+    # occurrence) — minting duplicate, overlapping site ids and violating the
+    # globally-unique-id invariant. `build/2` already dedups via `discover`; the
+    # public/`rebuild` entry must too, so each source is rendered once under one id range.
+    # By *relative* path, so `lib/a.ex` and `./lib/a.ex` count as one.
+    files = Enum.uniq_by(files, &relative(&1, root))
+
     # Record the ordered, root-relative input list so the schema can be rebuilt
     # against exactly these files (see `rebuild/4`) without re-discovering.
     rel_files = Enum.map(files, &relative(&1, root))
 
-    # Phase 1 — count (parallel, heap-isolated per worker): read each file and count
-    # its mutants without rendering. Yields per-file outcomes in input order. A tool
-    # bug raised here (e.g. a custom mutator) is re-raised faithfully.
+    # Phase 1 — count (parallel, heap-isolated per worker): read each file and count its
+    # mutants without rendering, firing `:on_scan` per file with the running mutant tally
+    # as results stream back in input order (the live-progress contract
+    # `Mutare.Report.Live` reads — mutants are discovered here, where they're counted; the
+    # render-bound phase 2 shows the spinner). A tool bug raised here (e.g. a custom
+    # mutator) is re-raised faithfully.
     counted = count_files(files, root, options)
-
-    # Live scan progress fires once per file, in input order, with the running mutant
-    # tally — the contract `Mutare.Report.Live` reads. Phase 1 is where mutants are
-    # discovered, so the tally is known here; the render-bound phase 2 shows the
-    # spinner. A no-op unless a hook is set (cleared by `rebuild/4`, so poison-recovery
-    # re-scans stay silent).
-    report_scan(counted, Options.hook(options, :on_scan))
 
     # Phase 2 — render (parallel, heap-isolated per worker): prefix-sum the counts so
     # each sited file knows its `:start_id` up front, then emit + render it. A failure
@@ -201,13 +213,31 @@ defmodule Mutare.Schema do
   # === phase 1: count ========================================================
 
   # Read and count every file's mutants in parallel throwaway workers (`count_one/3`),
-  # yielding `[{:counted, rel, source | nil, outcome}]` in **input order**. The heavy
-  # short-lived ASTs each `count_string/2` builds die with their worker, off the scan's
-  # long-lived heap. A tool bug captured by a worker is re-raised here, faithfully.
+  # yielding `[{:counted, rel, source | nil, outcome}]` in **input order**. As each file's
+  # result streams back it fires `:on_scan` with the running mutant tally — so live
+  # progress flows *during* the (potentially long) count phase rather than in a burst
+  # after it. The heavy short-lived ASTs each `count_string/2` builds die with their
+  # worker, off the scan's long-lived heap. A tool bug captured by a worker is re-raised
+  # here, faithfully.
   defp count_files(files, root, options) do
-    files
-    |> async_stream(&count_one(&1, root, options))
-    |> Enum.map(&reraise_if_raised/1)
+    on_scan = Options.hook(options, :on_scan)
+    total = length(files)
+
+    {counted, _progress} =
+      files
+      |> async_stream(&count_one(&1, root, options))
+      |> Enum.map_reduce({0, 0}, fn result, {done, found} ->
+        counted = reraise_if_raised(result)
+        done = done + 1
+        found = found + mutants_found(counted)
+
+        # A no-op unless an `:on_scan` hook is set (cleared by `rebuild/4`, so
+        # poison-recovery re-scans stay silent).
+        on_scan.(%{done: done, total: total, found: found})
+        {counted, {done, found}}
+      end)
+
+    counted
   end
 
   # Count one file. An *unparseable source* is the only outcome degraded to a skipped
@@ -244,21 +274,10 @@ defmodule Mutare.Schema do
   # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
   defp count_opts(%Options{} = options, rel), do: transform_opts(options) ++ [file: rel]
 
-  # Fire `on_scan` once per file, in input order, with the running mutant tally.
-  # `Enum.scan` turns the per-file counts into their cumulative prefix sums (the
-  # `found` tally); `Enum.each` then fires the side-effecting hook per file.
-  defp report_scan(counted, on_scan) do
-    total = length(counted)
-
-    counted
-    |> Enum.map(fn {:counted, _rel, _src, outcome} -> count_of(outcome) end)
-    |> Enum.scan(fn count, running -> count + running end)
-    |> Enum.with_index(1)
-    |> Enum.each(fn {found, done} -> on_scan.(%{done: done, total: total, found: found}) end)
-  end
-
-  defp count_of({:sites, n}), do: n
-  defp count_of(_), do: 0
+  # The mutant count an outcome contributes to the running `:on_scan` tally (0 for a
+  # no-site or skipped file), summed per file as `count_files/3` consumes the stream.
+  defp mutants_found({:counted, _rel, _src, {:sites, n}}), do: n
+  defp mutants_found({:counted, _rel, _src, _outcome}), do: 0
 
   # === phase 2: render =======================================================
 
@@ -314,8 +333,10 @@ defmodule Mutare.Schema do
 
   defp verify_count!(rel, rendered, counted) do
     raise "Mutare.Schema: mutant-count drift for #{rel} — counted #{counted}, rendered #{rendered}. " <>
-            "The two-phase build's count and render passes must agree (cross-file id stability " <>
-            "depends on it)."
+            "The two-phase build runs the same analyze→plan→emit pipeline twice (count, then " <>
+            "render), so the counts agree only if that pipeline is deterministic for one source — " <>
+            "a nondeterministic custom mutator or `Mutare.Plugin.expand_use/3` (both run in each " <>
+            "pass) is the usual cause. Cross-file id stability depends on the counts matching."
   end
 
   # === assembly ==============================================================
@@ -334,16 +355,15 @@ defmodule Mutare.Schema do
         %{
           schema
           | sites: Enum.reverse(sites, schema.sites),
-            # NOTE: unlike the `sources` put below, `metamutants`'s value embeds the mutant ids, so
-            # a duplicate file (a re-put under a higher `start_id`) makes put ≠ put_new — a real kill,
-            # so this `map_keyword` is *not* ignored.
+            # mutare:ignore[map_keyword] equivalent — `from_files/4` dedups its input by relative
+            # path, so each `rel` is assembled exactly once and neither key ever pre-exists; put
+            # and put_new agree (here, and for `sources` in every branch).
             metamutants: Map.put(schema.metamutants, rel, meta),
-            # mutare:ignore[map_keyword] equivalent — the value is the id-independent raw source, identical on any re-put, so put and put_new agree
             sources: Map.put(schema.sources, rel, source)
         }
 
       {:counted, rel, source, :no_sites}, schema ->
-        # mutare:ignore[map_keyword] equivalent — the value is the id-independent raw source, identical on any re-put, so put and put_new agree
+        # mutare:ignore[map_keyword] equivalent — dedup'd input → each rel put once (see above)
         %{schema | sources: Map.put(schema.sources, rel, source)}
 
       {:counted, rel, _source, {:error, reason}}, schema ->
@@ -355,11 +375,14 @@ defmodule Mutare.Schema do
 
   # Run `fun` over `enum` in parallel throwaway workers, **ordered** (so callers see input
   # order for id threading, scan progress, and site assembly) and untimed (a big file can
-  # take seconds). Each worker classifies its own outcome — a result tuple or a captured
-  # `{:raise, error, stacktrace}` — so it never crashes the stream; `reraise_if_raised/1`
-  # surfaces a captured tool bug in the parent, with its original type and trace, rather
-  # than as an opaque `Task` exit. A worker that *exits* (a `throw`/`exit`, not an
-  # exception) re-exits the parent with the same reason, matching `Task.await`'s behaviour.
+  # take seconds). Returns a **lazy** stream the caller forces — `count_files/3` via
+  # `Enum.map_reduce` (so it can fire `:on_scan` per file *as results arrive*, not in one
+  # end-of-phase burst), `render_files/3` via `Enum.map`. Each worker classifies its own
+  # outcome — a result tuple or a captured `{:raise, error, stacktrace}` — so it never
+  # crashes the stream; `reraise_if_raised/1` surfaces a captured tool bug in the parent,
+  # with its original type and trace, rather than as an opaque `Task` exit. A worker that
+  # *exits* (a `throw`/`exit`, not an exception) re-exits the parent with the same reason,
+  # matching `Task.await`'s behaviour.
   defp async_stream(enum, fun) do
     enum
     |> Task.async_stream(fun,
@@ -367,7 +390,7 @@ defmodule Mutare.Schema do
       max_concurrency: scan_concurrency(),
       timeout: :infinity
     )
-    |> Enum.map(fn
+    |> Stream.map(fn
       {:ok, result} -> result
       {:exit, reason} -> exit(reason)
     end)

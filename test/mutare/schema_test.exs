@@ -357,6 +357,29 @@ defmodule Mutare.SchemaTest do
     assert got == Enum.sort(rels)
   end
 
+  test "from_files dedups a file passed more than once (no overlapping ids)", %{root: root} do
+    write(
+      root,
+      "lib/a.ex",
+      "defmodule A do\n  def f(x), do: x + 1\n  def g(a, b), do: a >= b\nend\n"
+    )
+
+    path = Path.join(root, "lib/a.ex")
+    opts = [mutators: @probe]
+
+    once = Schema.from_files([path], root, opts, MapSet.new())
+    twice = Schema.from_files([path, path], root, opts, MapSet.new())
+
+    # Passing the same file twice must not double its mutants or collide ids: without
+    # the dedup the second occurrence renders under a higher `:start_id` but clobbers the
+    # first on its relative-path key, so both sites would carry the *last* render's ids
+    # (e.g. [4, 5, 6, 4, 5, 6]) — duplicate ids, a broken schema.
+    assert Enum.map(twice.sites, & &1.id) == Enum.map(once.sites, & &1.id)
+    assert twice.files == ["lib/a.ex"]
+    assert map_size(twice.metamutants) == 1
+    assert twice.metamutants == once.metamutants
+  end
+
   describe "forwards options through to the transform" do
     test ":skip_ids reaches the transform (poison recovery renders the mutant raw)", %{root: root} do
       write(

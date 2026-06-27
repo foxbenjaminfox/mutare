@@ -265,13 +265,22 @@ Measured ladder (same machine):
   let-it-crash contract (an unparseable source is a skipped file; any other exception is
   captured + re-raised faithfully in the parent — the surfaced-error contract the old
   single-worker had). The cost is that analyze+plan+emit runs twice for a sited file
-  (count, then render), but render is ~60–85 % of per-file cost (measured), happens once,
-  and both passes parallelize. **Measured ~11 s vs the old sequential-throwaway's ~54 s**
-  on this repo's now-larger `lib/` (136 files, ~16k mutants, 16 cores) — ~4.8×. `on_scan`
-  fires once per file, in input order, with the running mutant tally (the count pass is
-  where mutants are discovered, so the tally is known there); the render pass shows the
-  spinner. Scan concurrency is `System.schedulers_online/0`, independent of the runner's
-  `:workers` (which bounds the per-mutant `mix test` OS processes, a different resource).
+  (count, then render) — so the count/render agreement *rests on that pipeline being
+  deterministic for one source*: a nondeterministic custom mutator or plugin
+  `expand_use/3` surfaces as a `render_one/5` drift crash, never a silent id overlap (this
+  is why caching only `use`-expansion across the two passes wouldn't help — a mutator can
+  drift too, and the full pipeline output *is* the render the design splits off). But
+  render is ~60–85 % of per-file cost (measured), happens once, and both passes
+  parallelize. **Measured ~11 s vs the old sequential-throwaway's ~54 s** on this repo's
+  now-larger `lib/` (136 files, ~16k mutants, 16 cores) — ~4.8×. `on_scan` fires once per
+  file, in input order, with the running mutant tally, **streamed as each count finishes**
+  (folded into `count_files/3`'s `Enum.map_reduce` over the lazy worker stream — not
+  batched after the phase, which would freeze live progress for the whole count). The
+  count pass is where mutants are discovered, so the tally is known there; the render pass
+  shows the spinner. Scan concurrency is `System.schedulers_online/0`, independent of the
+  runner's `:workers` (which bounds the per-mutant `mix test` OS processes, a different
+  resource). `from_files/4` dedups its input by relative path first, so a file passed
+  twice is rendered once under one id range rather than minting overlapping ids.
 
 #### Why the metamutant was so big — lifting blowup on huge clause groups `[done]`
 The loop heap above scans the *volume* of generated code, and one mechanism used to
