@@ -282,7 +282,7 @@ defmodule Mutare.BehavioursTest do
 
       node = {:{}, [], [{:__block__, [], [:reply]}, {:r, [], nil}, {:s, [], nil}]}
 
-      assert [{^spec, {:{}, _, [{:__block__, _, [:noreply]}, {:s, _, nil}]}, nil}] =
+      assert [{^spec, {:{}, _, [{:__block__, _, [:noreply]}, {:s, _, nil}]}, nil, nil}] =
                Dispatch.mutations(node, [spec])
     end
 

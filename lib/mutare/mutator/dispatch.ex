@@ -12,7 +12,7 @@ defmodule Mutare.Mutator.Dispatch do
   alias Mutare.Mutator.{Mutation, Spec}
 
   @doc """
-  Run every mutator over `node`, flattening to `{mutator, mutated_node, note}` triples.
+  Run every mutator over `node`, flattening to `{mutator, mutated_node, note, variant}` quads.
 
   The single place a node meets the mutator set. Both the in-place analyzer
   (`Mutare.Transform`) and the lifted-guard planner (`Mutare.Transform.FunctionPlan`)
@@ -24,17 +24,19 @@ defmodule Mutare.Mutator.Dispatch do
   implemented, with a per-spec `context` carrying the pipe mode **and** the spec's
   `:opts`. So pipe-aware/arity-changing *and* configurable mutators both
   participate here. `context` defaults to `%{pipe_mode: :unpiped}`; the transform passes
-  `%{pipe_mode: :piped}` for a `|>` right-hand side. Each result is tagged with its
-  **spec** (not the bare module), so the family name and config travel with it, and with
-  its `note` (the third element — `nil` unless the mutator returned a
-  `%Mutare.Mutator.Mutation{}`), so a per-mutant advisory rides through to the `Mutare.Site`.
+  `%{pipe_mode: :piped}` for a `|>` right-hand side. Each result is a `{spec, node, note, variant}`
+  quad: the **spec** (not the bare module), so the family name and config travel with it; the
+  `note` (`nil` unless the mutator returned a `%Mutare.Mutator.Mutation{}` with one), so a
+  per-mutant advisory rides through to the `Mutare.Site`; and the `variant` (the
+  `%Mutare.Mutator.Mutation{}`'s production-time variant tag, `nil` for a bare node), the
+  carried `# mutare:ignore` label(s) that override the derived `variant/2` at `Site` build.
 
-      iex> [{spec, mutated, note}] = Mutare.Mutator.Dispatch.mutations({:+, [], [1, 2]}, [Mutare.Mutators.Arithmetic])
-      iex> {spec.name, mutated, note}
-      {:arithmetic, {:-, [], [1, 2]}, nil}
+      iex> [{spec, mutated, note, variant}] = Mutare.Mutator.Dispatch.mutations({:+, [], [1, 2]}, [Mutare.Mutators.Arithmetic])
+      iex> {spec.name, mutated, note, variant}
+      {:arithmetic, {:-, [], [1, 2]}, nil, nil}
   """
   @spec mutations(Macro.t(), [Spec.t() | module()], Mutare.Mutator.context()) ::
-          [{Spec.t(), Macro.t(), String.t() | nil}]
+          [{Spec.t(), Macro.t(), String.t() | nil, Mutation.variant()}]
   def mutations(node, mutators, context \\ %{pipe_mode: :unpiped}) do
     Enum.flat_map(mutators, fn entry ->
       spec = Spec.coerce(entry)
@@ -59,11 +61,15 @@ defmodule Mutare.Mutator.Dispatch do
 
   defp tag(_spec, :skip), do: []
 
-  # Pair each returned mutation with its producing spec, carrying its note: `normalize_mutants/1`
-  # drops the `nil` slots and turns a bare node / a `%Mutation{}` into `{node, note}` (enforcing
-  # the noted-mutant contract — struct required, string note), then each pair gains its spec.
+  # Pair each returned mutation with its producing spec, carrying its note and variant tag:
+  # `normalize_mutants/1` drops the `nil` slots and turns a bare node / a `%Mutation{}` into
+  # `{node, note, variant}` (enforcing the enriched-mutant contract — struct required, string
+  # note), then each triple gains its spec.
   defp tag(spec, mutations) when is_list(mutations),
-    do: mutations |> normalize_mutants() |> Enum.map(fn {node, note} -> {spec, node, note} end)
+    do:
+      mutations
+      |> normalize_mutants()
+      |> Enum.map(fn {node, note, variant} -> {spec, node, note, variant} end)
 
   @doc """
   The specs in `specs` whose module implements the optional callback `fun`/`arity`.
@@ -166,7 +172,8 @@ defmodule Mutare.Mutator.Dispatch do
   # Default `:wrap` to identity and `:range` to absent; require `:original`, a list `:mutants`,
   # and a 2-arity `:splice`. A malformed target raises (a library bug, not a target to silently
   # drop) — caught at transform time with the offending value. Each mutant is normalized to a
-  # `{node, note}` pair by the shared `normalize_mutants/1` (dropping any `nil` slot).
+  # `{node, note, variant}` triple by the shared `normalize_mutants/1` (dropping any `nil` slot);
+  # a host fragment carries no variant tag (foreign semantics, no vocabulary), so `variant` is nil.
   defp normalize_target(%{original: original, mutants: mutants, splice: splice} = target)
        when is_list(mutants) and is_function(splice, 2) do
     %{
@@ -184,10 +191,10 @@ defmodule Mutare.Mutator.Dispatch do
             "(optional :wrap/:range), got: #{inspect(other)}"
   end
 
-  # Normalize one mutant — a bare node, or a `%Mutare.Mutator.Mutation{}` carrying an advisory —
-  # to a `{node, note}` pair (a bare node gets `note: nil`). The single home for the noted-mutant
-  # contract, shared by the `mutate/1`,`mutate/2` return path (`tag/2`) and the selector-host
-  # `:mutants` path (`normalize_target/1`).
+  # Normalize one mutant — a bare node, or a `%Mutare.Mutator.Mutation{}` carrying a note and/or a
+  # variant tag — to a `{node, note, variant}` triple (a bare node gets `note: nil, variant: nil`).
+  # The single home for the enriched-mutant contract, shared by the `mutate/1`,`mutate/2` return
+  # path (`tag/2`) and the selector-host `:mutants` path (`normalize_target/1`).
   #
   # Anything other than a bare node or a well-formed `%Mutation{}` is a library bug — a bare
   # `%{node:, note:}` *map* (the struct is required: a quoted map literal is itself a valid
@@ -198,9 +205,11 @@ defmodule Mutare.Mutator.Dispatch do
   # callers — see `normalize_mutants/1` — never reaching here.) An empty-string note is coerced
   # to `nil`: a blank note carries no signal, and `nil` keeps the report from rendering a dangling
   # `— ` suffix (and the JSON reporter from emitting an empty `description`).
-  @spec normalize_mutant(Macro.t() | Mutation.t() | map()) :: {Macro.t(), String.t() | nil}
-  def normalize_mutant(%Mutation{node: node, note: note}) when is_binary(note) or is_nil(note),
-    do: {node, presence(note)}
+  @spec normalize_mutant(Macro.t() | Mutation.t() | map()) ::
+          {Macro.t(), String.t() | nil, Mutation.variant()}
+  def normalize_mutant(%Mutation{node: node, note: note, variant: variant})
+      when is_binary(note) or is_nil(note),
+      do: {node, presence(note), variant}
 
   def normalize_mutant(%Mutation{note: note}) do
     raise ArgumentError,
@@ -218,15 +227,15 @@ defmodule Mutare.Mutator.Dispatch do
             "#{inspect(other.__struct__)}: #{inspect(other)}"
   end
 
-  def normalize_mutant(node), do: {node, nil}
+  def normalize_mutant(node), do: {node, nil, nil}
 
   # A blank note is no note — collapse `""` to `nil` so downstream rendering treats it as absent.
   defp presence(""), do: nil
   defp presence(note), do: note
 
-  # Reject the `nil` slots, then normalize each surviving mutant to a `{node, note}` pair. The
-  # shared front of both noted-mutant paths — the `mutate/1`/`mutate/2` return (`tag/2`) and the
-  # selector-host `:mutants` (`normalize_target/1`) — so the nil-drop rule lives in one place.
+  # Reject the `nil` slots, then normalize each surviving mutant to a `{node, note, variant}` triple.
+  # The shared front of both enriched-mutant paths — the `mutate/1`/`mutate/2` return (`tag/2`) and
+  # the selector-host `:mutants` (`normalize_target/1`) — so the nil-drop rule lives in one place.
   defp normalize_mutants(mutants),
     do: mutants |> Enum.reject(&is_nil/1) |> Enum.map(&normalize_mutant/1)
 
@@ -297,47 +306,60 @@ defmodule Mutare.Mutator.Dispatch do
   end
 
   @doc """
-  The **variant label(s)** `spec`'s module declares for the mutation `{original, mutated}` — a
-  deduplicated, downcased label list, or `[]` when the mutator hasn't opted in (it must export
-  *both* `c:Mutare.Mutator.variants/0` and `c:Mutare.Mutator.variant/2`) or returned `nil` for this
-  pair (an unlabeled mutant). The single home for invoking the optional `c:Mutare.Mutator.variant/2`
-  callback (mirroring `empty_collection?/2`), so `Mutare.Site` records the labels without reaching
-  into a mutator module itself. Dispatching on the *producing* spec's module is correct: only the
-  mutator that emitted the mutation knows which kind(s) it is.
+  The **variant label(s)** recorded for one mutation of `spec`'s module — a deduplicated, downcased
+  label list, or `[]` when the family hasn't opted in or this mutation has no label. The single home
+  for resolving a site's variant, so `Mutare.Site` records the labels without reaching into a mutator
+  module itself. Dispatching on the *producing* spec's module is correct: only the mutator that
+  emitted the mutation knows which kind(s) it is.
+
+  Two label sources, in precedence order — a mutator uses whichever is cleaner:
+
+    1. **`carried`** — a label (list) the mutator attached at production time via
+       `Mutare.Mutator.Mutation.tagged/2` (the `%Mutation{}`'s `variant` field), threaded here from
+       `mutations/3`. A value family tags here, where the semantic kind is known at construction.
+    2. else **`c:Mutare.Mutator.variant/2`** — derived from the `{original, mutated}` pair, when the
+       module exports it. An operator family reads the swapped operator off the node this way.
+
+  Both are gated on `opted_in?/1` (the family declared a `c:Mutare.Mutator.variants/0` vocabulary): a
+  label is recorded only for a family with a vocabulary to validate it against, keeping this
+  *recording* side consistent with the *validation* side (`Mutare.Mutators.vocabulary/1`).
 
   A mutation is usually **one** kind (a single label), but may be several: a value-family mutant
   that collapses two relationships onto one value (`Mutare.Mutators.Literal`'s deduped `1 - 1`/`0`)
-  returns `["pred", "zero"]`, and a qualifier naming *either* suppresses it. `c:Mutare.Mutator.variant/2`
-  may therefore return `nil`, a single label, or a list — all normalized here through `List.wrap/1`.
+  yields `["pred", "zero"]`, and a qualifier naming *either* suppresses it. `carried`/`variant/2`
+  may each be `nil`, a single label, or a list — all normalized here through `List.wrap/1`.
   """
-  @spec variant(Spec.t(), Macro.t(), Macro.t()) :: [String.t()]
-  def variant(%Spec{module: module}, original, mutated) do
-    # `variants/0` and `variant/2` are a **pair** (see `opted_in?/1`): a mutator must export *both*
-    # to record a label. Gating on the shared predicate keeps the *recording* side here consistent
-    # with the *validation* side (`Mutare.Mutators.vocabulary/1`): a half-implementation records no
-    # label *and* exposes no vocabulary, so a `[family:label]` qualifier against it can't both
-    # validate-as-known and silently match nothing.
-    if opted_in?(module) do
-      module.variant(original, mutated)
-      |> List.wrap()
-      |> Enum.map(&Mutare.Mutator.normalize_label/1)
-      |> Enum.uniq()
-    else
-      []
+  @spec variant(Spec.t(), Macro.t(), Macro.t(), Mutation.variant()) :: [String.t()]
+  def variant(%Spec{module: module}, original, mutated, carried \\ nil) do
+    cond do
+      not opted_in?(module) ->
+        []
+
+      not is_nil(carried) ->
+        normalize_labels(carried)
+
+      function_exported?(module, :variant, 2) ->
+        normalize_labels(module.variant(original, mutated))
+
+      true ->
+        []
     end
   end
 
+  defp normalize_labels(labels),
+    do: labels |> List.wrap() |> Enum.map(&Mutare.Mutator.normalize_label/1) |> Enum.uniq()
+
   @doc """
-  Whether `module` opts into the variant-label system — it must export **both**
-  `c:Mutare.Mutator.variants/0` (the vocabulary) and `c:Mutare.Mutator.variant/2` (the per-mutation
-  tagging). The *single* definition of "opted in", shared by `variant/3` (which records a site's
-  label) and `Mutare.Mutators.vocabulary/1` (which validates a `[family:label]` qualifier against the
-  declared labels). Routing both through it means the two sides can't disagree: a mutator declaring
-  only one half is treated uniformly as *not opted in* — it records no label **and** exposes no
-  vocabulary — so a qualifier against it is a hard `Mutare.Ignore.SpecError` (the `:no_variants` case)
-  rather than silently matching nothing. (`exports?/3` loads the module on demand, so an un-loadable
-  module degrades to `false`.)
+  Whether `module` opts into the variant-label system — it exports `c:Mutare.Mutator.variants/0`,
+  declaring the label vocabulary. The *single* definition of "opted in", shared by `variant/4`
+  (which records a site's label) and `Mutare.Mutators.vocabulary/1` (which validates a
+  `[family:label]` qualifier against the declared labels) — so a family exposes a vocabulary
+  exactly when its mutations can carry labels. *How* a family assigns those labels (a production-time
+  `Mutare.Mutator.Mutation.tagged/2` tag, or the `c:Mutare.Mutator.variant/2` callback) is an
+  implementation detail, not part of opting in. A module exporting `variant/2` but **no** `variants/0`
+  declares no vocabulary, so it is *not* opted in (its labels would validate against nothing).
+  (`exports?/3` loads the module on demand, so an un-loadable module degrades to `false`.)
   """
   @spec opted_in?(module()) :: boolean()
-  def opted_in?(module), do: exports?(module, :variants, 0) and exports?(module, :variant, 2)
+  def opted_in?(module), do: exports?(module, :variants, 0)
 end

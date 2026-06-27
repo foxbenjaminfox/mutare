@@ -129,7 +129,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     {tagged_guard, {_next, targets}} = Tag.guard_targets(guard, @fresh_tag_acc, mutators)
 
     swaps =
-      Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, range ->
+      Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
         %Candidate.CaseClause{
           clause_index: index,
           mutator: mutator,
@@ -139,7 +139,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
           original: original,
           mutated: mutated,
           range: range,
-          note: note
+          note: note,
+          variant: variant
         }
       end)
 
@@ -199,7 +200,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     {tagged_pattern, {_next, targets}} =
       Tag.pattern_literal_targets(pattern, @fresh_tag_acc, mutators)
 
-    Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, range ->
+    Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
       %Candidate.CaseClause{
         clause_index: index,
         mutator: mutator,
@@ -209,7 +210,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
         original: original,
         mutated: mutated,
         range: range,
-        note: note
+        note: note,
+        variant: variant
       }
     end)
   end
@@ -353,7 +355,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     {tagged_pattern, {_next, targets}} =
       Tag.pattern_literal_targets(pattern, @fresh_tag_acc, mutators)
 
-    Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, range ->
+    Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
       mutated_pattern = Tag.replace_tag(tagged_pattern, tag, mutated)
 
       %Candidate.CasePattern{
@@ -362,7 +364,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
         mutated: mutated,
         replacement: replace_clause.(put_clause_pattern_at(clause, pos, mutated_pattern)),
         range: range,
-        note: note
+        note: note,
+        variant: variant
       }
     end)
   end
@@ -376,7 +379,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
         {tagged_guard, {_next, targets}} = Tag.guard_targets(guard, @fresh_tag_acc, mutators)
 
         swaps =
-          Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, range ->
+          Tag.expand_targets(targets, fn tag, original, mutator, mutated, note, variant, range ->
             mutated_guard = Tag.replace_tag(tagged_guard, tag, mutated)
 
             %Candidate.CasePattern{
@@ -385,7 +388,8 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
               mutated: mutated,
               replacement: replace_clause.(put_clause_guard(clause, mutated_guard)),
               range: range,
-              note: note
+              note: note,
+              variant: variant
             }
           end)
 

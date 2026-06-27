@@ -171,7 +171,7 @@ contract docs on the behaviour. The capability callbacks live on `Mutator.Struct
 | Macro-aware (route an arg / skip a DSL) | `macros/0` | `macro_mutator.ex` |
 | Selector-hosting (mutate inside a DSL fragment) | `macros/0` (`:hosted`/`:routing`) + `host/2` | `host_mutator.ex` |
 | Collection-emptying | `empty_collection?/1` | `collection_mutator.ex` |
-| Per-kind `# mutare:ignore` qualifier | `variants/0` + `variant/2` (a pair) | (the operator families) |
+| Per-kind `# mutare:ignore` qualifier | `variants/0` (opt-in) + tag via `Mutation.tagged/2` *or* `variant/2` | (value & operator families) |
 
 A **plugin** (`Mutare.Plugin`) is the *non-mutating* extension: it teaches Mutare a library's
 compile-time vocabulary (`macros/0` for argument routing, `expand_use/3` to override a `use` Mutare
@@ -204,7 +204,8 @@ The `# mutare:ignore` directive (`Mutare.Ignore`) is parsed from Sourceror comme
 ```
 
 The `[...]` filter matches a site's `mutator` name, optionally `:`-qualified with a **variant label**
-the mutator *declares* (`variants/0`/`variant/2`) — not a token derived from the rendered AST.
+the mutator *declares* (`variants/0`, then tags each mutation via `Mutation.tagged/2` or derives it
+with `variant/2`) — not a token derived from the rendered AST.
 Qualifiers are strict where the mistake is certain (a `[family:label]` on an active family that
 doesn't declare that label is a hard `Mutare.Ignore.SpecError`); an unknown *family* stays lenient
 (indistinguishable from a `--mutators`-excluded one). A directive that suppresses nothing is surfaced

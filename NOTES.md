@@ -268,10 +268,30 @@ carries a **qualified** entry (`Ignore.any_qualified?/1`), so a no-directive or 
 the registry-reflection pass. Labels are checked **wire-safe** at harvest (no whitespace/`,`/`()`/
 `]`/`"`) so a declared label is always expressible as a filter token, and matched case-insensitively
 (declared + filter both folded via `Mutare.Mutator.normalize_label/1`). The drift invariant
-(`variant/2` ⊆ `variants/0`) is covered by a test exercising the opted-in families end-to-end, plus
+(recorded label ⊆ `variants/0`) is covered by a test exercising the opted-in families end-to-end, plus
 a completeness test that every binary operator-swap mutant of an opted-in family carries a label
 (catching a `mutate/1` result operator missing from the family's `@swap_ops`, which the shared
 `Mutare.Mutator.op_swap_variant/3` single-sources with `variants/0`).
+
+**Later: labels ride on `%Mutation{}`, opt-in is `variants/0` alone.** The first cut had `variant/2`
+re-derive each label from the rendered `{original, mutated}` pair — fine for an *operator* family
+(the swapped operator IS the label, one-lined via `op_swap_variant/3`), but the *value* families
+(`Literal`/`Float`/`String*`/`Charlist`/`WordList`) then re-ran their own production logic just to
+re-classify it (`numeric_variant_labels`, `empty_sentinel_variant`-as-classifier) — a produce-then-
+re-derive duplication that could drift. So `Mutare.Mutator.Mutation` grew a `variant` field and a
+`tagged/2` constructor: a value family attaches the label **where it builds the mutant**
+(`Helpers.numeric_mutations` tags `succ`/`pred`/`zero`, merging both onto the dedup-collapsed `0`;
+the empty/sentinel families tag each half), and the tag rides the same `note` channel
+(`mutations/3`'s `{spec, node, note, variant}` quad → `Candidate.{InPlace,Lifted,CaseClause,CasePattern}`
+→ `Site`). `Dispatch.variant/4` resolves a site's label as **carried-tag-wins, else `variant/2`,
+else none**, so the two mechanisms coexist (each family uses the cleaner one) and `variant/2` is now
+*optional*. This forced **decoupling opt-in from label-assignment**: `opted_in?/1` is now just
+`variants/0` exported (declaring the vocabulary), not the old "*both* `variants/0` and `variant/2`" —
+a value family that tags has no `variant/2` yet must still expose its vocabulary for validation. So
+the gate is "has a vocabulary?", and *how* labels are assigned (tag vs derive) is orthogonal; a
+`variant/2` without `variants/0` is inert (no vocabulary to validate against). Net: the value
+families dropped their `variant/2` and the duplicated classifiers, and "the label lives where the
+value is born" replaced "re-derive it later". See the `Mutare.Mutator` moduledoc.
 
 Three edges the two-phase build + info-mode dispatch surfaced (all now closed): (1) validation is
 shared by the **count *and* render** paths (`Transform.validate_ignore_qualifiers!/2`), not render

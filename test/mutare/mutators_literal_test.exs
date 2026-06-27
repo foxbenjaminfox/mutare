@@ -35,7 +35,10 @@ defmodule Mutare.MutatorsLiteralTest do
     test "emits clean metadata so the new value renders (not the original token)" do
       # The original carries `token: \"1\"`; reusing it would render \"1\".
       assert render(Literal.mutate(parse("1"))) == ["2", "0"]
-      assert Enum.all?(Literal.mutate(parse("1")), fn {:__block__, meta, _} -> meta == [] end)
+
+      assert Enum.all?(Literal.mutate(parse("1")), fn m ->
+               match?({:__block__, [], _}, node_of(m))
+             end)
     end
 
     test "skips non-integer, non-boolean literals and operators" do
@@ -983,6 +986,44 @@ defmodule Mutare.MutatorsLiteralTest do
     end
   end
 
+  describe "variant tagging (production-time labels)" do
+    test "Literal tags succ/pred/zero, merging both onto the collapsed mutant" do
+      assert tags(Literal.mutate(parse("3"))) == [{"4", "succ"}, {"2", "pred"}, {"0", "zero"}]
+      # n = 1: `n - 1` collapses onto the `0` sentinel, so that one mutant is BOTH pred and zero.
+      assert tags(Literal.mutate(parse("1"))) == [{"2", "succ"}, {"0", ["pred", "zero"]}]
+      assert tags(Literal.mutate(parse("true"))) == [{"false", "negate"}]
+    end
+
+    test "FloatLiteral tags succ/pred/zero" do
+      assert tags(FloatLiteral.mutate(parse("1.5"))) ==
+               [{"2.5", "succ"}, {"0.5", "pred"}, {"0.0", "zero"}]
+    end
+
+    test "the empty/sentinel families tag each half" do
+      assert tags(StringLiteral.mutate(parse(~s("hi")))) ==
+               [{~s(""), "empty"}, {~s("mutare"), "sentinel"}]
+
+      assert tags(CharlistLiteral.mutate(parse(~S(~c"hi")))) ==
+               [{~S(~c""), "empty"}, {~S(~c"mutare"), "sentinel"}]
+
+      assert tags(WordListLiteral.mutate(parse("~w(a b)"))) ==
+               [{"~w()", "empty"}, {"~w(mutare)", "sentinel"}]
+    end
+  end
+
   defp parse(source), do: Sourceror.parse_string!(source)
-  defp render(nodes), do: Enum.map(nodes, &Sourceror.to_string/1)
+
+  # The value/literal families tag each mutant with its `# mutare:ignore` variant at production,
+  # so `mutate/1` may return `%Mutation{}` structs; render the underlying node either way.
+  defp render(nodes), do: Enum.map(nodes, &Sourceror.to_string(node_of(&1)))
+
+  defp node_of(%Mutare.Mutator.Mutation{node: node}), do: node
+  defp node_of(node), do: node
+
+  # `{rendered_node, variant_tag}` for each produced mutation, for asserting the production-time tag.
+  defp tags(nodes) do
+    Enum.map(nodes, fn %Mutare.Mutator.Mutation{node: node, variant: variant} ->
+      {Sourceror.to_string(node), variant}
+    end)
+  end
 end

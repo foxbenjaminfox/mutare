@@ -42,13 +42,14 @@ defmodule Mutare.Transform.Analyze.Attach do
   def build_candidates(node, muts) do
     range = NodeRange.get(node)
 
-    Enum.map(muts, fn {mutator, mutated, note} ->
+    Enum.map(muts, fn {mutator, mutated, note, variant} ->
       %Candidate.InPlace{
         mutator: mutator,
         original: node,
         mutated: mutated,
         range: range,
-        note: note
+        note: note,
+        variant: variant
       }
     end)
   end

@@ -106,10 +106,10 @@ defmodule Mutare.Transform.Analyze.Captures do
   defp capture_mutations(synth, args, arity, mutators) do
     synth
     |> Dispatch.mutations(mutators, %{pipe_mode: :unpiped})
-    |> Enum.flat_map(fn {spec, mutated, note} ->
+    |> Enum.flat_map(fn {spec, mutated, note, variant} ->
       case recapture(mutated, args, arity) do
         nil -> []
-        capture -> [{spec, capture, note}]
+        capture -> [{spec, capture, note, variant}]
       end
     end)
   end

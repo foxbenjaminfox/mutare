@@ -90,11 +90,21 @@ defmodule Mutare.NoteTest do
       assert_raise FunctionClauseError, fn -> Mutation.new(1, 42) end
     end
 
-    test "normalize_mutant pairs a struct / bare node with its note" do
+    test "normalize_mutant triples a struct / bare node with its note and variant" do
       assert Dispatch.normalize_mutant(%Mutation{node: {:x, [], nil}, note: "n"}) ==
-               {{:x, [], nil}, "n"}
+               {{:x, [], nil}, "n", nil}
 
-      assert Dispatch.normalize_mutant({:x, [], nil}) == {{:x, [], nil}, nil}
+      assert Dispatch.normalize_mutant({:x, [], nil}) == {{:x, [], nil}, nil, nil}
+    end
+
+    test "tagged/2 carries the variant label(s) through normalize_mutant" do
+      assert Mutation.tagged(1, "zero") == %Mutation{node: 1, note: nil, variant: "zero"}
+
+      assert Dispatch.normalize_mutant(%Mutation{node: {:x, [], nil}, variant: "zero"}) ==
+               {{:x, [], nil}, nil, "zero"}
+
+      assert Dispatch.normalize_mutant(%Mutation{node: 1, note: "n", variant: ["pred", "zero"]}) ==
+               {1, "n", ["pred", "zero"]}
     end
 
     test "a bare %{node:, note:} map is rejected (the struct is required)" do
@@ -122,7 +132,7 @@ defmodule Mutare.NoteTest do
     test "an empty-string note is coerced to nil (a blank note carries no signal)" do
       # So the report never renders a dangling "  — " suffix; the same coercion the header
       # already proves it produces no em-dash for a noteless mutant (see above).
-      assert Dispatch.normalize_mutant(%Mutation{node: 1, note: ""}) == {1, nil}
+      assert Dispatch.normalize_mutant(%Mutation{node: 1, note: ""}) == {1, nil, nil}
     end
   end
 end

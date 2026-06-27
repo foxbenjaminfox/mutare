@@ -52,13 +52,14 @@ defmodule Mutare.Site do
     :original_code,
     :mutated_code,
     # The mutator-declared **variant label(s)** of this mutation (downcased), or `[]` when the
-    # producing mutator did not opt in (no `c:Mutare.Mutator.variant/2`) or returned `nil` for
-    # this mutation (a delete site, or an unlabeled mutant). A list because one mutant may belong
-    # to several kinds (`Mutare.Mutators.Literal`'s deduped `1 - 1`/`0` is both `pred` and `zero`),
-    # and a qualified `# mutare:ignore[family:label]` filter matches if *any* of these labels equals
-    # its token — declared by the mutator, *not* derived from the rendered AST (so `relational:>`
-    # names the `>` swap, `return_value:empty` the empty constant). Set by
-    # `Mutare.Mutator.Dispatch.variant/3` from the producing `Mutare.Mutator.Spec`'s module.
+    # producing mutator did not opt in (no `c:Mutare.Mutator.variants/0` vocabulary) or this
+    # mutation has no label (a delete site, or an unlabeled mutant). A list because one mutant may
+    # belong to several kinds (`Mutare.Mutators.Literal`'s deduped `1 - 1`/`0` is both `pred` and
+    # `zero`), and a qualified `# mutare:ignore[family:label]` filter matches if *any* of these
+    # labels equals its token — declared by the mutator, *not* derived from the rendered AST (so
+    # `relational:>` names the `>` swap, `return_value:empty` the empty constant). Set by
+    # `Mutare.Mutator.Dispatch.variant/4` — the label the producing mutator tagged on its
+    # `%Mutare.Mutator.Mutation{}`, else derived via `c:Mutare.Mutator.variant/2`.
     variant: [],
     operation: :replace,
     ignored: false,
@@ -96,6 +97,9 @@ defmodule Mutare.Site do
   `Mutare.Mutator.Spec` that produced `mutated_node` (its `name` is recorded).
   An optional `note` is recorded on the site for the report (a hosting mutator's
   advisory, e.g. "kill may require NULL/boundary data") — `nil` for an ordinary mutation.
+  An optional `variant` is the `# mutare:ignore` label(s) the producing mutator attached at
+  production time (`Mutare.Mutator.Mutation.tagged/2`); `nil` lets `replace/8` derive it via
+  `c:Mutare.Mutator.variant/2`.
   """
   @spec in_place(
           pos_integer(),
@@ -104,10 +108,14 @@ defmodule Mutare.Site do
           Macro.t(),
           Macro.t(),
           Mutare.Mutator.Spec.t(),
-          String.t() | nil
+          String.t() | nil,
+          Mutare.Mutator.Mutation.variant()
         ) :: t()
-  def in_place(id, file, range, original_node, mutated_node, mutator, note \\ nil) do
-    %{replace(id, file, range, original_node, mutated_node, mutator, :in_place) | note: note}
+  def in_place(id, file, range, original_node, mutated_node, mutator, note \\ nil, variant \\ nil) do
+    %{
+      replace(id, file, range, original_node, mutated_node, mutator, :in_place, variant)
+      | note: note
+    }
   end
 
   @doc """
@@ -118,7 +126,8 @@ defmodule Mutare.Site do
   recorded as `:lifted`; `mutator` (a `Mutare.Mutator.Spec`) distinguishes a guard
   operator swap (`:relational`, …) from a head-pattern literal swap (`:literal`, …).
   An optional `note` is recorded for the report (a producing mutator's per-mutant
-  advisory) — `nil` for an ordinary mutation, exactly like `in_place/7`.
+  advisory) — `nil` for an ordinary mutation, exactly like `in_place/8`. An optional `variant`
+  carries the production-time `# mutare:ignore` label(s), exactly like `in_place/8`.
   """
   @spec lifted_replace(
           pos_integer(),
@@ -127,10 +136,23 @@ defmodule Mutare.Site do
           Macro.t(),
           Macro.t(),
           Mutare.Mutator.Spec.t(),
-          String.t() | nil
+          String.t() | nil,
+          Mutare.Mutator.Mutation.variant()
         ) :: t()
-  def lifted_replace(id, file, range, original_node, mutated_node, mutator, note \\ nil) do
-    %{replace(id, file, range, original_node, mutated_node, mutator, :lifted) | note: note}
+  def lifted_replace(
+        id,
+        file,
+        range,
+        original_node,
+        mutated_node,
+        mutator,
+        note \\ nil,
+        variant \\ nil
+      ) do
+    %{
+      replace(id, file, range, original_node, mutated_node, mutator, :lifted, variant)
+      | note: note
+    }
   end
 
   # The id/file/location fields every constructor sets identically from the mutant id, source file,
@@ -237,7 +259,7 @@ defmodule Mutare.Site do
   # In-place and lifted sites differ only in `kind`: both are a node replacement
   # recorded with the original/mutated nodes, their AST *forms* (the node's head tag —
   # `:+`/`:==` for an operator swap, `:__block__` for a literal), and rendered code.
-  defp replace(id, file, range, original_node, mutated_node, mutator, kind) do
+  defp replace(id, file, range, original_node, mutated_node, mutator, kind, variant) do
     # When the mutated node is a *keyword-list key* (`trim:`), its recorded `range`
     # spans the `name:` source — colon included — so the report's textual patch must
     # render it in keyword form too. `Sourceror.to_string/1` of the bare atom node
@@ -254,7 +276,7 @@ defmodule Mutare.Site do
         mutated_form: elem(mutated_node, 0),
         original_code: render_code(original_node, keyword_key?),
         mutated_code: render_code(mutated_node, keyword_key?),
-        variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node)
+        variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node, variant)
     }
   end
 

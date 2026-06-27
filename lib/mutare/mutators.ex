@@ -185,11 +185,12 @@ defmodule Mutare.Mutators do
     do: label != "" and not Regex.match?(@wire_unsafe, label)
 
   # A module's declared variant labels as a downcased `MapSet`, or `:none` when it does not
-  # opt in. "Opted in" is `Mutare.Mutator.Dispatch.opted_in?/1` — *both* `variants/0` and `variant/2` exported —
-  # the same predicate `Mutare.Mutator.Dispatch.variant/3` gates recording on, so the validation side here
-  # and the recording side can't disagree (a mutator declaring only `variants/0` is `:none`, and a
-  # qualifier against it is a clean hard error rather than a silently-unmatched label). Each label
-  # is checked wire-safe at harvest time.
+  # opt in. "Opted in" is `Mutare.Mutator.Dispatch.opted_in?/1` — it exports `variants/0` (the
+  # vocabulary) — the same predicate `Mutare.Mutator.Dispatch.variant/4` gates recording on, so the
+  # validation side here and the recording side can't disagree (a module with no `variants/0` is
+  # `:none`, and a qualifier against it is a clean hard error rather than a silently-unmatched
+  # label). How a family *assigns* its labels — a production-time `%Mutare.Mutator.Mutation{}` tag or
+  # the `variant/2` callback — is orthogonal. Each label is checked wire-safe at harvest time.
   defp variants_of(module) do
     if Mutare.Mutator.Dispatch.opted_in?(module) do
       module.variants()

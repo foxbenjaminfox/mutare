@@ -21,17 +21,10 @@ defmodule Mutare.Mutators.FloatLiteral do
 
   def mutate(_node), do: :skip
 
-  # Variant labels for `# mutare:ignore[float:<label>]`: the *semantic kind* of the change —
-  # `succ` = `x + 1.0`, `pred` = `x - 1.0`, `zero` = the `0.0` sentinel — mirroring
-  # `Mutare.Mutators.Literal`'s integer arm (no `negate`: a float has no boolean flip). When the
-  # off-by-one collapses *onto* `0.0` (`x = -1.0` ⇒ `x + 1.0 = 0.0`) the deduped mutant carries
-  # *both* labels, so either qualifier suppresses it.
+  # Variant vocabulary for `# mutare:ignore[float:<label>]`: `succ` = `x + 1.0`, `pred` = `x - 1.0`,
+  # `zero` = the `0.0` sentinel — mirroring `Mutare.Mutators.Literal`'s integer arm (no `negate`: a
+  # float has no boolean flip). The labels are tagged at production by `Helpers.numeric_mutations/3`
+  # (so there is no `variant/2` to re-derive them); a collapse onto `0.0` (`x = -1.0`) carries both.
   @impl Mutare.Mutator
   def variants, do: ~w(zero succ pred)
-
-  @impl Mutare.Mutator
-  def variant({:__block__, _meta, [f]}, mutated) when is_float(f),
-    do: Helpers.numeric_variant_labels(f, mutated, 1.0, 0.0)
-
-  def variant(_original, _mutated), do: nil
 end

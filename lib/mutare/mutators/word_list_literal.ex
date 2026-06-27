@@ -29,6 +29,7 @@ defmodule Mutare.Mutators.WordListLiteral do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutator.Mutation
   alias Mutare.Mutators.Helpers
 
   @sentinel AST.sentinel_string()
@@ -43,19 +44,19 @@ defmodule Mutare.Mutators.WordListLiteral do
 
     ["", @sentinel]
     |> Enum.reject(&(String.split(&1) == words))
-    |> Enum.map(&{sigil, meta, [{:<<>>, bmeta, [&1]}, modifiers]})
+    |> Enum.map(fn new ->
+      Mutation.tagged(
+        {sigil, meta, [{:<<>>, bmeta, [new]}, modifiers]},
+        Helpers.empty_sentinel_variant(new, @sentinel)
+      )
+    end)
   end
 
   def mutate(_node), do: :skip
 
-  # Each mutant is a re-wrapped `~w`/`~W` sigil whose content `<<>>` segment is `""`/`"mutare"`.
+  # Variant vocabulary for `# mutare:ignore[word_list:<label>]` — `empty` (the `~w()`) / `sentinel`
+  # (the `~w(mutare)`). Each mutant is a re-wrapped `~w`/`~W` sigil tagged at production with its
+  # label, so it rides on the `Mutare.Mutator.Mutation` rather than being re-derived via `variant/2`.
   @impl Mutare.Mutator
   def variants, do: Helpers.empty_sentinel_variants()
-
-  @impl Mutare.Mutator
-  def variant(_original, {sigil, _meta, [{:<<>>, _bmeta, [content]}, _modifiers]})
-      when sigil in [:sigil_w, :sigil_W] and is_binary(content),
-      do: Helpers.empty_sentinel_variant(content, @sentinel)
-
-  def variant(_original, _mutated), do: nil
 end

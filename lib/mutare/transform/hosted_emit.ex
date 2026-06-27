@@ -32,8 +32,10 @@ defmodule Mutare.Transform.HostedEmit do
   # mutant clause `<id> -> wrap(mutant)` for each, then a coverage catch-all running
   # `wrap(original)`, and hand the assembled case to the target's `splice`.
   defp weave_target(node, %Candidate.Hosted{} = cand, ctx) do
+    # Host fragments carry no variant tag (foreign semantics, no vocabulary), so the third tuple
+    # element is ignored here.
     carriers =
-      Enum.map(cand.mutants, fn {mutated, note} ->
+      Enum.map(cand.mutants, fn {mutated, note, _variant} ->
         %{candidate: cand, mutated: mutated, note: note}
       end)
 

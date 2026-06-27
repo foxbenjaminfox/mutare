@@ -20,6 +20,7 @@ defmodule Mutare.Mutators.Literal do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutator.Mutation
   alias Mutare.Mutators.Helpers
 
   @impl Mutare.Mutator
@@ -28,24 +29,17 @@ defmodule Mutare.Mutators.Literal do
   @impl Mutare.Mutator
   def mutate({:__block__, _meta, [n]}) when is_integer(n), do: Helpers.numeric_mutations(n, 1, 0)
 
-  def mutate({:__block__, _meta, [b]}) when is_boolean(b), do: [AST.literal(not b)]
+  def mutate({:__block__, _meta, [b]}) when is_boolean(b),
+    do: [Mutation.tagged(AST.literal(not b), "negate")]
 
   def mutate(_node), do: :skip
 
-  # Variant labels for `# mutare:ignore[literal:<label>]`: the *semantic kind* of the change,
-  # not the resulting value (which is unbounded). `succ` = `n + 1`, `pred` = `n - 1`,
-  # `zero` = the `0` sentinel, `negate` = the boolean flip. Classified by value relationship.
-  # When the off-by-one collapses *onto* `0` (the merged mutant: `n = 1` ⇒ `n - 1 = 0`,
-  # `n = -1` ⇒ `n + 1 = 0`), the single deduped mutant is **both** kinds — so it carries *both*
-  # labels and `[literal:pred]` *and* `[literal:zero]` each suppress the `1 → 0` mutant of `x - 1`,
-  # whichever way the user reasons about it. A non-collapsing mutant carries exactly one label.
+  # Variant vocabulary for `# mutare:ignore[literal:<label>]`: the *semantic kind* of the change,
+  # not the resulting value (which is unbounded). `succ` = `n + 1`, `pred` = `n - 1`, `zero` = the
+  # `0` sentinel (the three tagged by `Helpers.numeric_mutations/3` at production), `negate` = the
+  # boolean flip (tagged above). The label(s) ride on each `Mutare.Mutator.Mutation` rather than
+  # being re-derived — when the off-by-one collapses *onto* `0` (`n = 1` ⇒ `n - 1 = 0`), that one
+  # deduped mutant carries *both* `pred` and `zero`, so either qualifier suppresses it.
   @impl Mutare.Mutator
   def variants, do: ~w(zero succ pred negate)
-
-  @impl Mutare.Mutator
-  def variant({:__block__, _m, [n]}, mutated) when is_integer(n),
-    do: Helpers.numeric_variant_labels(n, mutated, 1, 0)
-
-  def variant({:__block__, _m, [b]}, _mutated) when is_boolean(b), do: "negate"
-  def variant(_original, _mutated), do: nil
 end

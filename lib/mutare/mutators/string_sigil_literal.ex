@@ -34,6 +34,7 @@ defmodule Mutare.Mutators.StringSigilLiteral do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutator.Mutation
   alias Mutare.Mutators.Helpers
 
   @sentinel AST.sentinel_string()
@@ -54,18 +55,11 @@ defmodule Mutare.Mutators.StringSigilLiteral do
 
   def mutate(_node), do: :skip
 
-  # Every mutant is a plain string literal (`""`/`"mutare"`, see the moduledoc), so classify by
-  # its binary value exactly like `Mutare.Mutators.StringLiteral`.
+  # Variant vocabulary for `# mutare:ignore[string_sigil:<label>]` — `empty` / `sentinel`, exactly
+  # like `Mutare.Mutators.StringLiteral`. Each mutant is a plain string literal tagged at production
+  # by `empty_sentinel/1`, so the label rides on the `Mutare.Mutator.Mutation` (no `variant/2`).
   @impl Mutare.Mutator
   def variants, do: Helpers.empty_sentinel_variants()
-
-  @impl Mutare.Mutator
-  def variant(_original, mutated) do
-    case AST.literal_value(mutated) do
-      {:ok, content} when is_binary(content) -> Helpers.empty_sentinel_variant(content, @sentinel)
-      _ -> nil
-    end
-  end
 
   defp sigil_mutations(segments) do
     case segments do
@@ -73,12 +67,16 @@ defmodule Mutare.Mutators.StringSigilLiteral do
         # Non-interpolated: a single static binary — drop the no-op variant.
         ["", @sentinel]
         |> Enum.reject(&(&1 == content))
-        |> Enum.map(&AST.literal/1)
+        |> Enum.map(&empty_sentinel/1)
 
       _ ->
         # Interpolated (`~s` only): multiple `<<>>` parts / a lone interpolation. The
         # runtime binary is never statically `""`/`"mutare"`, so both variants apply.
-        [AST.literal(""), AST.literal(@sentinel)]
+        [empty_sentinel(""), empty_sentinel(@sentinel)]
     end
   end
+
+  # A plain string-literal mutant tagged with its `empty`/`sentinel` variant label.
+  defp empty_sentinel(content),
+    do: Mutation.tagged(AST.literal(content), Helpers.empty_sentinel_variant(content, @sentinel))
 end

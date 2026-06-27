@@ -21,6 +21,7 @@ defmodule Mutare.Mutators.StringLiteral do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutator.Mutation
   alias Mutare.Mutators.Helpers
 
   @sentinel AST.sentinel_string()
@@ -32,7 +33,7 @@ defmodule Mutare.Mutators.StringLiteral do
   def mutate({:__block__, _meta, [s]}) when is_binary(s) do
     ["", @sentinel]
     |> Enum.reject(&(&1 == s))
-    |> Enum.map(&AST.literal/1)
+    |> Enum.map(&empty_sentinel/1)
   end
 
   # An interpolated string (`"a#{x}b"`, or a heredoc) parses as a `<<>>` carrying a
@@ -42,21 +43,19 @@ defmodule Mutare.Mutators.StringLiteral do
   def mutate({:<<>>, meta, segments} = node)
       when is_list(meta) and is_list(segments) and segments != [] do
     if AST.string_binary?(node),
-      do: [AST.literal(""), AST.literal(@sentinel)],
+      do: [empty_sentinel(""), empty_sentinel(@sentinel)],
       else: :skip
   end
 
   def mutate(_node), do: :skip
 
-  # Every mutant is a plain string literal (`""`/`"mutare"`), so classify by its binary value.
+  # Variant vocabulary for `# mutare:ignore[string:<label>]` — `empty` (the `""`) / `sentinel`
+  # (the `"mutare"`). Each mutant is a plain string literal tagged at production by
+  # `empty_sentinel/1`, so the label rides on the `Mutare.Mutator.Mutation` (no `variant/2`).
   @impl Mutare.Mutator
   def variants, do: Helpers.empty_sentinel_variants()
 
-  @impl Mutare.Mutator
-  def variant(_original, mutated) do
-    case AST.literal_value(mutated) do
-      {:ok, content} when is_binary(content) -> Helpers.empty_sentinel_variant(content, @sentinel)
-      _ -> nil
-    end
-  end
+  # A plain string-literal mutant tagged with its `empty`/`sentinel` variant label.
+  defp empty_sentinel(content),
+    do: Mutation.tagged(AST.literal(content), Helpers.empty_sentinel_variant(content, @sentinel))
 end

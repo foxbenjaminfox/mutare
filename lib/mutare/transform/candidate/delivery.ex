@@ -102,10 +102,20 @@ defmodule Mutare.Transform.Candidate.Delivery do
   # Each `site_kind` knows which `Mutare.Site` constructor to call and which candidate fields it
   # reads (the constructors differ in arity and in which fields they record).
   defp build_site(:in_place, id, c, file),
-    do: Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator, note(c))
+    do: Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator, note(c), variant(c))
 
   defp build_site(:lifted_replace, id, c, file),
-    do: Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator, note(c))
+    do:
+      Site.lifted_replace(
+        id,
+        file,
+        c.range,
+        c.original,
+        c.mutated,
+        c.mutator,
+        note(c),
+        variant(c)
+      )
 
   defp build_site(:return_value, id, c, file),
     do: Site.return_value(id, file, c.range, c.original, c.mutated, c.mutator)
@@ -126,6 +136,12 @@ defmodule Mutare.Transform.Candidate.Delivery do
   # struct: any future note-bearing candidate is covered as soon as it carries the field.
   defp note(%{note: note}), do: note
   defp note(_candidate), do: nil
+
+  # The production-time `# mutare:ignore` variant tag a value family attached. Read by field
+  # (like `note/1`), so a candidate without the field (a pattern/case kind) resolves to `nil` —
+  # `Site` then derives the label via `c:Mutare.Mutator.variant/2`.
+  defp variant(%{variant: variant}), do: variant
+  defp variant(_candidate), do: nil
 
   # A candidate's node-local route, raising for the lifted / hosted kinds that have no place in
   # the node-local classifier (matching `classify_node_candidates/1`'s contract).

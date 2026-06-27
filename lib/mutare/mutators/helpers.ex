@@ -5,6 +5,7 @@ defmodule Mutare.Mutators.Helpers do
   # (no `@behaviour`, not in the `Mutare.Mutators` registry) — just the logic several
   # families would otherwise copy.
 
+  alias Mutare.Mutator.Mutation
   alias Mutare.Transform.{Calls, Imports}
 
   @doc """
@@ -195,61 +196,43 @@ defmodule Mutare.Mutators.Helpers do
   defp identity_call, do: Mutare.AST.absolute_call([:Function], :identity, [])
 
   @doc """
-  The "off-by-one + zero sentinel" mutations for a numeric literal `value`: `value + step`,
-  `value - step`, and `zero`, deduplicated, with any value equal to `value` dropped, each
-  rendered through `Mutare.AST.literal/1`.
+  The "off-by-one + zero sentinel" mutations for a numeric literal `value`: `value + step`
+  (`succ`), `value - step` (`pred`), and `zero` (`zero`), deduplicated, with any value equal to
+  `value` dropped — each a `Mutare.Mutator.Mutation` carrying its `# mutare:ignore` variant label,
+  attached **at production time** (so there is no separate `variant/2` to re-derive it). When the
+  off-by-one collapses onto the zero sentinel (`n = 1` ⇒ `n - 1 = 0`) the deduped mutant carries
+  *both* labels (`["pred", "zero"]`), so either qualifier suppresses it.
 
   Shared by `Mutare.Mutators.Literal` (the integer arm — `step` 1, `zero` 0) and
   `Mutare.Mutators.FloatLiteral` (`step` 1.0, `zero` 0.0).
   """
-  @spec numeric_mutations(number(), number(), number()) :: [Macro.t()]
+  @spec numeric_mutations(number(), number(), number()) :: [Mutation.t()]
   def numeric_mutations(value, step, zero) do
-    [value + step, value - step, zero]
-    |> Enum.uniq()
-    |> Enum.reject(&(&1 == value))
-    |> Enum.map(&Mutare.AST.literal/1)
+    [{value + step, "succ"}, {value - step, "pred"}, {zero, "zero"}]
+    |> Enum.reject(fn {v, _label} -> v == value end)
+    |> merge_labels_by_value()
+    |> Enum.map(fn {v, labels} -> Mutation.tagged(Mutare.AST.literal(v), one_or_many(labels)) end)
   end
 
-  @doc """
-  The variant label(s) for a numeric-literal mutation (`c:Mutare.Mutator.variant/2`), shared by
-  `Mutare.Mutators.Literal`'s integer arm and `Mutare.Mutators.FloatLiteral`.
+  # Group `{value, label}` pairs by value, preserving first-seen order and collecting *all* labels
+  # for a value — so a dedup collapse (`value + step == zero`, or `value - step == zero`) yields a
+  # single mutant carrying both kinds, while position is the first occurrence (matching the old
+  # `Enum.uniq` order the ids depend on).
+  defp merge_labels_by_value(pairs) do
+    {order, labels} =
+      Enum.reduce(pairs, {[], %{}}, fn {value, label}, {order, labels} ->
+        if Map.has_key?(labels, value),
+          do: {order, Map.update!(labels, value, &(&1 ++ [label]))},
+          else: {[value | order], Map.put(labels, value, [label])}
+      end)
 
-  Classifies the produced `mutated` node against the original `value` and the same `step`/`zero`
-  the family mutated with (those passed to `numeric_mutations/3`): `"succ"` for `value + step`,
-  `"pred"` for `value - step`, `"zero"` for `zero`. Recomputing with the *same* expression makes
-  the comparison exact even for floats (the round-trip through `Mutare.AST.literal/1` preserves the
-  bit pattern). A mutation may satisfy more than one when the off-by-one collapses onto the zero
-  sentinel (`n = 1` ⇒ `n - 1 = 0`), so *every* matching label is returned; an unreadable node
-  yields `[]`.
-  """
-  @spec numeric_variant_labels(number(), Macro.t(), number(), number()) :: [String.t()]
-  def numeric_variant_labels(value, mutated, step, zero) do
-    m = number_value(mutated)
-
-    for {applies?, label} <- [
-          {m == value + step, "succ"},
-          {m == value - step, "pred"},
-          {m == zero, "zero"}
-        ],
-        applies?,
-        do: label
+    order |> Enum.reverse() |> Enum.map(&{&1, labels[&1]})
   end
 
-  # The number a (possibly negative) literal node carries. `Mutare.AST.literal/1` renders a
-  # negative number as the unary-minus form `{:-, _, [literal(magnitude)]}` (outside
-  # `Mutare.AST.literal_value/1`'s scalar contract), so unwrap that here; the base case defers to
-  # `literal_value/1`. `:error` (equal to no target) for a non-numeric node.
-  defp number_value({:-, _meta, [inner]}), do: number_negate(number_value(inner))
-
-  defp number_value(node) do
-    case Mutare.AST.literal_value(node) do
-      {:ok, v} when is_number(v) -> v
-      _ -> :error
-    end
-  end
-
-  defp number_negate(:error), do: :error
-  defp number_negate(v), do: -v
+  # A lone label rides as a bare string (the common case — `succ`); only a collapse carries the
+  # list (`["pred", "zero"]`). Both are valid `Mutare.Mutator.Mutation` variant tags.
+  defp one_or_many([label]), do: label
+  defp one_or_many(labels), do: labels
 
   @doc """
   The variant vocabulary shared by the empty/sentinel literal families

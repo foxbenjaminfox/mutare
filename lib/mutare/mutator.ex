@@ -292,14 +292,22 @@ defmodule Mutare.Mutator do
 
   A single source node often yields several sibling mutants (`Mutare.Mutators.Relational`'s
   `i < j` becomes both `i <= j` and `i > j`); without a vocabulary, `# mutare:ignore[relational]`
-  can only suppress *all* of them. By declaring labels — and tagging each mutation with one via
-  `c:variant/2` — a mutator lets `# mutare:ignore[relational:>]` name just the `i > j` reflection
-  while `i <= j` keeps running.
+  can only suppress *all* of them. By declaring labels — and assigning each mutation one — a mutator
+  lets `# mutare:ignore[relational:>]` name just the `i > j` reflection while `i <= j` keeps running.
 
-  Opt-in, and the two callbacks are a **pair**: implement *both* `variants/0` and `c:variant/2`,
-  or neither (one alone records no labels). A mutator with no vocabulary supports only the bare
-  `[family]` filter, and a qualifier against it is a hard error — so a user's typo is reported with
-  a clear message rather than silently failing to match.
+  **Declaring `variants/0` is how a mutator opts in.** It then assigns labels to its mutations one
+  of two ways (pick whichever is cleaner for the family):
+
+    * **Tag at production** — return a `Mutare.Mutator.Mutation.tagged(node, label)` from
+      `c:mutate/1`/`c:mutate/2`, attaching the label where the mutant is built. Best when the
+      *kind* is known at construction (a value family: `tagged(AST.literal(0), "zero")`).
+    * **Derive afterwards** — implement `c:variant/2`, which classifies the `{original, mutated}`
+      pair. Best when the label reads cleanly off the node (an operator family:
+      `op_swap_variant/3` over the swapped operator).
+
+  So `c:variant/2` is **optional** — a tagging mutator omits it. A mutator with no `variants/0`
+  vocabulary supports only the bare `[family]` filter, and a qualifier against it is a hard error —
+  so a user's typo is reported with a clear message rather than silently failing to match.
 
   Each label must be a **wire-safe** token — no whitespace, `,`, `(`, `)`, `]`, or `"`, and not
   empty — so it can be written as a `[family:label]` qualifier. The vocabulary you choose is your
@@ -310,13 +318,15 @@ defmodule Mutare.Mutator do
   @callback variants() :: [String.t() | atom()]
 
   @doc """
-  Optional hook tagging one produced mutation with its **variant label(s)** (see `c:variants/0`).
+  Optional hook deriving one produced mutation's **variant label(s)** from its `{original, mutated}`
+  nodes (see `c:variants/0`) — the *derive-afterwards* alternative to tagging the mutation at
+  production with `Mutare.Mutator.Mutation.tagged/2`. A mutator that tags at production omits this.
 
   Given the `original` node and the `mutated` node it produced, return the label naming *which
   kind* of mutation it is — a member of `c:variants/0` — or `nil` for a mutation with no label
   (matchable only by the bare `[family]` filter). The label is recorded on the mutant and is what a
-  `[family:label]` qualifier matches; matching is case-insensitive. Implement this *and*
-  `c:variants/0` together (the pair rule under `c:variants/0`).
+  `[family:label]` qualifier matches; matching is case-insensitive. Requires `c:variants/0` (it
+  declares the vocabulary this validates against); a `variant/2` without `variants/0` is inert.
 
   A single mutant may belong to **more than one kind** — return a *list* of labels and a qualifier
   naming any of them suppresses it. For instance, when a value family's mutation collapses two

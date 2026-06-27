@@ -58,6 +58,11 @@ defmodule Mutare.Transform.Candidate do
     # `note` carries the optional per-mutant advisory the producing mutator attached (a
     # `%Mutare.Mutator.Mutation{}` return from `mutate/1`/`mutate/2`); it rides through to the
     # `Mutare.Site` for the report. Default `nil` — an ordinary mutation has no note.
+    #
+    # `variant` carries the `# mutare:ignore` label(s) a value family tagged at production time
+    # (the `%Mutare.Mutator.Mutation{}`'s `variant`); it rides through to `Mutare.Site`, where it
+    # takes precedence over the `c:Mutare.Mutator.variant/2` derivation. Default `nil` — an operator
+    # family (or an untagged mutation) leaves the label to be derived from the node.
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
@@ -66,7 +71,8 @@ defmodule Mutare.Transform.Candidate do
             range: Sourceror.Range.t(),
             call_option_key?: boolean(),
             pin?: boolean(),
-            note: String.t() | nil
+            note: String.t() | nil,
+            variant: Mutare.Mutator.Mutation.variant()
           }
 
     defstruct [
@@ -76,7 +82,8 @@ defmodule Mutare.Transform.Candidate do
       :range,
       call_option_key?: false,
       pin?: false,
-      note: nil
+      note: nil,
+      variant: nil
     ]
   end
 
@@ -107,7 +114,8 @@ defmodule Mutare.Transform.Candidate do
     # `tag` is the unique `meta[:mutare_tag]` marking the target inside the tagged
     # clause group; `clause_index` is the clause it lives in. `note` carries the producing
     # mutator's optional per-mutant advisory (a `%Mutare.Mutator.Mutation{}` return) through
-    # to the `Mutare.Site`; `nil` for an ordinary mutation.
+    # to the `Mutare.Site`; `nil` for an ordinary mutation. `variant` carries the production-time
+    # `# mutare:ignore` label(s) (a value family's tagged head literal), `nil` when derived.
 
     @type t :: %__MODULE__{
             tag: non_neg_integer(),
@@ -116,10 +124,20 @@ defmodule Mutare.Transform.Candidate do
             original: Macro.t(),
             mutated: Macro.t(),
             range: Sourceror.Range.t(),
-            note: String.t() | nil
+            note: String.t() | nil,
+            variant: Mutare.Mutator.Mutation.variant()
           }
 
-    defstruct [:tag, :clause_index, :mutator, :original, :mutated, :range, note: nil]
+    defstruct [
+      :tag,
+      :clause_index,
+      :mutator,
+      :original,
+      :mutated,
+      :range,
+      note: nil,
+      variant: nil
+    ]
   end
 
   defmodule PatternStructure do
@@ -172,10 +190,11 @@ defmodule Mutare.Transform.Candidate do
             mutated: Macro.t(),
             replacement: Macro.t(),
             range: Sourceror.Range.t(),
-            note: String.t() | nil
+            note: String.t() | nil,
+            variant: Mutare.Mutator.Mutation.variant()
           }
 
-    defstruct [:mutator, :original, :mutated, :replacement, :range, note: nil]
+    defstruct [:mutator, :original, :mutated, :replacement, :range, note: nil, variant: nil]
   end
 
   defmodule RescueDrop do
@@ -236,7 +255,8 @@ defmodule Mutare.Transform.Candidate do
             original: Macro.t(),
             mutated: Macro.t(),
             range: Sourceror.Range.t(),
-            note: String.t() | nil
+            note: String.t() | nil,
+            variant: Mutare.Mutator.Mutation.variant()
           }
 
     defstruct [
@@ -248,7 +268,8 @@ defmodule Mutare.Transform.Candidate do
       :original,
       :mutated,
       :range,
-      note: nil
+      note: nil,
+      variant: nil
     ]
   end
 
@@ -358,16 +379,17 @@ defmodule Mutare.Transform.Candidate do
     #
     # `original` is the logical fragment before mutation (rendered in each Site's diff and run by
     # the wrapped catch-all baseline); `mutants` are the logical mutated fragments as
-    # `{node, note}` pairs (one id + Site each, the optional `note` recorded on the Site for the
-    # report — `Mutare.Mutator.normalize_target/1` pairs a bare-node mutant with `nil`); `wrap`
-    # maps a logical fragment to its woven branch value; `splice` weaves the assembled `case` into
-    # a copy of the (emitted) macro node; `range` locates the fragment for the Site; `mutator` is
-    # the hosting `Mutare.Mutator.Spec` (its name on every Site).
+    # `{node, note, variant}` triples (one id + Site each, the optional `note` recorded on the Site
+    # for the report; `variant` is always `nil` — a host fragment has foreign semantics and no
+    # variant vocabulary — `Mutare.Mutator.Dispatch.normalize_mutant/1` triples a bare-node mutant
+    # with `nil, nil`); `wrap` maps a logical fragment to its woven branch value; `splice` weaves
+    # the assembled `case` into a copy of the (emitted) macro node; `range` locates the fragment for
+    # the Site; `mutator` is the hosting `Mutare.Mutator.Spec` (its name on every Site).
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
             original: Macro.t(),
-            mutants: [{Macro.t(), String.t() | nil}],
+            mutants: [{Macro.t(), String.t() | nil, Mutare.Mutator.Mutation.variant()}],
             wrap: (Macro.t() -> Macro.t()),
             splice: (Macro.t(), Macro.t() -> Macro.t()),
             range: Sourceror.Range.t()

@@ -24,6 +24,7 @@ defmodule Mutare.Mutators.CharlistLiteral do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutator.Mutation
   alias Mutare.Mutators.Helpers
 
   @sentinel AST.sentinel_string()
@@ -35,19 +36,19 @@ defmodule Mutare.Mutators.CharlistLiteral do
   def mutate({:sigil_c, meta, [{:<<>>, bmeta, [content]}, modifiers]}) when is_binary(content) do
     ["", @sentinel]
     |> Enum.reject(&(&1 == content))
-    |> Enum.map(&{:sigil_c, meta, [{:<<>>, bmeta, [&1]}, modifiers]})
+    |> Enum.map(fn new ->
+      Mutation.tagged(
+        {:sigil_c, meta, [{:<<>>, bmeta, [new]}, modifiers]},
+        Helpers.empty_sentinel_variant(new, @sentinel)
+      )
+    end)
   end
 
   def mutate(_node), do: :skip
 
-  # Each mutant is a re-wrapped `~c` sigil whose content `<<>>` segment is `""`/`"mutare"`.
+  # Variant vocabulary for `# mutare:ignore[charlist:<label>]` — `empty` (the `~c""`) / `sentinel`
+  # (the `~c"mutare"`). Each mutant is a re-wrapped `~c` sigil tagged at production with its label,
+  # so it rides on the `Mutare.Mutator.Mutation` rather than being re-derived via `variant/2`.
   @impl Mutare.Mutator
   def variants, do: Helpers.empty_sentinel_variants()
-
-  @impl Mutare.Mutator
-  def variant(_original, {:sigil_c, _meta, [{:<<>>, _bmeta, [content]}, _modifiers]})
-      when is_binary(content),
-      do: Helpers.empty_sentinel_variant(content, @sentinel)
-
-  def variant(_original, _mutated), do: nil
 end

@@ -1,6 +1,8 @@
-# Stub mutators exercising the variant opt-in contract (`Mutare.Mutator.Dispatch.opted_in?/1`): a mutator
-# must export *both* `variants/0` and `variant/2` to participate in the variant-label system.
+# Stub mutators exercising the variant opt-in contract (`Mutare.Mutator.Dispatch.opted_in?/1`): a
+# mutator opts in by exporting `variants/0` (the vocabulary); it then assigns labels either via the
+# `variant/2` callback or by tagging each `%Mutare.Mutator.Mutation{}` at production time.
 defmodule Mutare.IgnoreTest.BothVariantMutator do
+  # Vocabulary + the `variant/2` derivation path — opted in.
   @behaviour Mutare.Mutator
   def name, do: :both_variant
   def mutate(_node), do: :skip
@@ -8,13 +10,23 @@ defmodule Mutare.IgnoreTest.BothVariantMutator do
   def variant(_original, _mutated), do: "a"
 end
 
-defmodule Mutare.IgnoreTest.HalfVariantMutator do
-  # Declares the vocabulary but NOT the per-mutation tagging — a half-implementation that must be
-  # treated as *not* opted in: it records no label, so it must also expose no vocabulary.
+defmodule Mutare.IgnoreTest.VocabOnlyMutator do
+  # Declares the vocabulary but no `variant/2` — opted in (its mutations would tag at production via
+  # `Mutare.Mutator.Mutation.tagged/2`). The vocabulary is exposed; how labels are assigned is an
+  # implementation detail.
   @behaviour Mutare.Mutator
-  def name, do: :half_variant
+  def name, do: :vocab_only
   def mutate(_node), do: :skip
   def variants, do: ~w(a b)
+end
+
+defmodule Mutare.IgnoreTest.NoVocabMutator do
+  # Exports `variant/2` but NO `variants/0` — *not* opted in: it declares no vocabulary, so any
+  # label it produced would validate against nothing. Treated uniformly as bare-only (`:none`).
+  @behaviour Mutare.Mutator
+  def name, do: :no_vocab
+  def mutate(_node), do: :skip
+  def variant(_original, _mutated), do: "a"
 end
 
 defmodule Mutare.IgnoreTest.EmptyLabelVariantMutator do
@@ -546,21 +558,28 @@ defmodule Mutare.IgnoreTest do
       assert err.message =~ "can't be written as a filter token"
     end
 
-    test "the opt-in contract requires BOTH variants/0 and variant/2 (a half-impl is :none)" do
-      alias Mutare.IgnoreTest.{BothVariantMutator, HalfVariantMutator}
+    test "opting in is declaring variants/0; label assignment (variant/2 or a tag) is separate" do
+      alias Mutare.IgnoreTest.{BothVariantMutator, NoVocabMutator, VocabOnlyMutator}
 
+      # variants/0 present → opted in, whether labels come from variant/2 or a production tag.
       assert Mutare.Mutator.Dispatch.opted_in?(BothVariantMutator)
-      refute Mutare.Mutator.Dispatch.opted_in?(HalfVariantMutator)
+      assert Mutare.Mutator.Dispatch.opted_in?(VocabOnlyMutator)
+      # variant/2 without variants/0 declares no vocabulary → not opted in.
+      refute Mutare.Mutator.Dispatch.opted_in?(NoVocabMutator)
 
-      # A mutator declaring only `variants/0` (no `variant/2`) exposes NO vocabulary, so the
-      # validation side agrees with the recording side (which tags no label): a `[family:label]`
-      # qualifier against it is the clean `:no_variants` hard error, never a silently-unmatched
-      # label that validates-as-known but suppresses nothing.
-      half = Mutare.Mutators.vocabulary(Mutare.Mutators.resolve([HalfVariantMutator]))
-      assert half["half_variant"] == :none
+      # The vocabulary is exposed exactly when variants/0 is declared — a label-less family
+      # (NoVocabMutator) is `:none`, so a `[no_vocab:a]` qualifier is the clean `:no_variants` hard
+      # error rather than a silently-unmatched label.
+      assert Mutare.Mutators.vocabulary(Mutare.Mutators.resolve([BothVariantMutator]))[
+               "both_variant"
+             ] ==
+               MapSet.new(~w(a b))
 
-      both = Mutare.Mutators.vocabulary(Mutare.Mutators.resolve([BothVariantMutator]))
-      assert both["both_variant"] == MapSet.new(~w(a b))
+      assert Mutare.Mutators.vocabulary(Mutare.Mutators.resolve([VocabOnlyMutator]))["vocab_only"] ==
+               MapSet.new(~w(a b))
+
+      assert Mutare.Mutators.vocabulary(Mutare.Mutators.resolve([NoVocabMutator]))["no_vocab"] ==
+               :none
     end
 
     test "every site's recorded variant is one its mutator declares (no drift)" do
