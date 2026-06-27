@@ -4,6 +4,45 @@ defmodule Mutare.MixProject do
   @version "0.1.0"
   @source_url "https://github.com/foxbenjaminfox/mutare"
 
+  # Internal modules deliberately kept `@moduledoc false`: the transform pipeline's
+  # stages (documented as one unit on `Mutare.Transform`) and a few plumbing modules.
+  # Public moduledocs still name them in prose — the references are worth keeping in
+  # source — so rather than delete the links we tell ExDoc not to autolink to them
+  # (they have no doc page), which also silences the "references X but it is hidden"
+  # warnings. Matched as a prefix, so a member/type/submodule reference
+  # (`Mutare.Mutator.Dispatch.mutations/3`, `Mutare.Transform.Uses.Harvest`) is covered
+  # by its parent's entry. Add a module here when a new `@moduledoc false` module gets
+  # referenced from a visible moduledoc (the warning tells you which).
+  @hidden_internal_modules ~w(
+    Mutare.Transform.Resolve
+    Mutare.Transform.Uses
+    Mutare.Transform.Behaviours
+    Mutare.Transform.Analyze
+    Mutare.Transform.FunctionPlan
+    Mutare.Transform.ModulePlan
+    Mutare.Transform.Aliases
+    Mutare.Transform.Candidate
+    Mutare.Transform.SelectorEmit
+    Mutare.Transform.LiftedEmit
+    Mutare.Transform.CaseClauseEmit
+    Mutare.Transform.ImportWitness
+    Mutare.Transform.HostedEmit
+    Mutare.Transform.GuardBuild
+    Mutare.Transform.ClauseAST
+    Mutare.Transform.BindingEscapeEmit
+    Mutare.Options.Registry
+    Mutare.Mutator.Dispatch
+    Mutare.Coverage.HelperTemplate
+    Mutare.Ignore.Directive
+  )
+
+  # A couple of *typespecs* in visible modules reference a hidden internal type
+  # (`Mutare.Schema.t`'s `ineffective_ignores` field uses `Mutare.Ignore.Directive.t`;
+  # `Mutare.Transform.Calls`'s `module_key` re-exports `Mutare.Transform.Aliases.module_key`).
+  # Typespec autolinking bypasses `:skip_code_autolink_to`, so those are silenced by the
+  # *referencing* module instead — keep this list tight.
+  @typespec_refs_to_hidden ~w(Mutare.Transform.Calls Mutare.Schema)
+
   def project do
     [
       app: :mutare,
@@ -68,6 +107,8 @@ defmodule Mutare.MixProject do
       source_url: @source_url,
       source_ref: "v#{@version}",
       extras: ["README.md", "LICENSE"],
+      skip_code_autolink_to: &skip_autolink_to?/1,
+      skip_undefined_reference_warnings_on: &(&1 in @typespec_refs_to_hidden),
       # Modules fall into the first group whose entry matches, so the explicit
       # lists win over the trailing catch-alls. "Internal" (`~r//`) sweeps up
       # everything else — the transform pipeline, sandbox, coverage plumbing, etc.
@@ -102,6 +143,16 @@ defmodule Mutare.MixProject do
         Internal: ~r//
       ]
     ]
+  end
+
+  # True when `ref` (a prose autolink target) names one of the deliberately-hidden
+  # internal modules — the module itself, or any member/type/submodule under it.
+  defp skip_autolink_to?(ref) do
+    bare = ref |> String.replace_prefix("t:", "") |> String.replace_prefix("c:", "")
+
+    Enum.any?(@hidden_internal_modules, fn mod ->
+      bare == mod or String.starts_with?(bare, mod <> ".")
+    end)
   end
 
   defp dialyzer do

@@ -64,7 +64,7 @@ defmodule Mutare.Mutator.MacroAware do
   bare selector `case` (it would poison the single build) nor vouch for the fragment's semantics —
   the mutator owns the mutation logic and hands core the per-fragment `:original` / `:mutants` /
   `:wrap` / `:splice` targets; core builds the id-gated selector, records the `Mutare.Site`s, and
-  weaves it in. See `c:host/2` and `Mutare.Transform.emit_hosted_site/3`.
+  weaves it in. See `c:host/2` and `Mutare.Transform.HostedEmit.emit/5`.
   """
 
   @doc """
