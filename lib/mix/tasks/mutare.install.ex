@@ -11,13 +11,13 @@ if Code.ensure_loaded?(Igniter) do
     packages — so a Phoenix/Ecto/Gettext app gets framework-aware mutants without any
     manual configuration:
 
-    | Detected dependency  | Package added              | Wired into                                    |
-    | -------------------- | -------------------------- | --------------------------------------------- |
-    | `:phoenix`           | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`          |
-    | `:phoenix_live_view` | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
-    | `:ecto` / `:ecto_sql`| `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
-    | `:oban` / `:oban_pro`| `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`             |
-    | `:gettext`           | `mutare_gettext`           | `:plugins` — `Mutare.Gettext`                 |
+    | Detected dependency                     | Package added              | Wired into                                    |
+    | --------------------------------------- | -------------------------- | --------------------------------------------- |
+    | `:phoenix`                              | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`          |
+    | `:phoenix_live_view`                    | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
+    | `:ecto_sql` / `:phoenix_ecto` / `:ecto` | `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
+    | `:oban` / `:oban_pro`                   | `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`             |
+    | `:gettext`                              | `mutare_gettext`           | `:plugins` — `Mutare.Gettext`                 |
 
     Each detected package is added as a `:dev`/`:test` dependency and wired into a
     generated `.mutare.exs`: a **mutator** package extends the `:mutators` list
