@@ -236,28 +236,42 @@ Measured ladder (same machine):
 - eager manifest (old):            ~500 s+
 - lazy manifest (done):            ~280 s
 - sequential, transform each file in a **throwaway process** (accumulator stays in
-  the parent, off the render's heap) — **`[done]`**: `safe_transform/5` runs the
-  per-file `Transform.transform_string` inside a `Task.async`/`await`, so its
-  transient ASTs die with the worker instead of inflating the loop heap. Exact
-  `start_id` threading is preserved (each file is awaited before the next), and the
-  `try/rescue` for unparseable sources moved *inside* the worker so a bad file still
-  skips rather than crashing the scan. **Measured ~24 s** on this repo's `lib/`
-  (down from ~180 s — the loop-heap penalty is gone; the scan now ≈ the isolated
-  per-file sum).
+  the parent, off the render's heap) — **`[superseded by the parallel pass below]`**:
+  the old `safe_transform/5` ran the per-file `Transform.transform_string` inside a
+  `Task.async`/`await`, so its transient ASTs die with the worker instead of inflating
+  the loop heap. Exact `start_id` threading was preserved (each file awaited before the
+  next), and the `try/rescue` for unparseable sources moved *inside* the worker so a bad
+  file still skips rather than crashing the scan. **Measured ~24 s** on this repo's
+  `lib/` at the time (down from ~180 s — the loop-heap penalty gone; the scan ≈ the
+  isolated per-file sum). But the `Task.async`/`await` was *purely* for heap isolation
+  — one worker at a time, awaited immediately — which is why it read as awkward and was
+  the natural place to grow into the parallel pass.
 - per-clause lifting — **`[done]`**: with the lifting blowup fixed (below) the big
   file's metamutant shrank ~4.6× (1.8 MB → ~0.4 MB), so its transform/render dropped
   from ~20 s to ~2.7 s and the **whole sequential scan to ~7.6 s** (~5.7k mutants).
-- **parallel** across files (`Task.async_stream`, schedulers_online): **`[deferred,
-  next]`**. With the loop heap gone *and* the metamutant shrunk, the sequential run
-  is already ~7.6 s here (CPU-bound on one big file), so the win is mostly on
-  many-core hosts / projects without one dominant file. The blocker is unchanged:
-  mutant ids are baked into each metamutant's selector clauses, so concurrent files
-  can't thread `next_id` sequentially. Needs the id assignment decoupled from the
-  per-file render: either two-phase (id-free count/plan → prefix-sum id ranges →
-  emit+render in parallel), or a count pre-pass then a parallel render pass with each
-  file's `start_id` known up front. The plan/emit split already exists in the IR
-  (`ModulePlan`/`FunctionPlan` are id-free; emission threads ids), so the decoupling
-  is aligned with the design.
+- **parallel** across files, two-phase (`Task.async_stream`, schedulers_online) —
+  **`[done]`**. The blocker — mutant ids are baked into each metamutant's selector
+  clauses, so concurrent files can't thread `next_id` sequentially — is dissolved by
+  decoupling id assignment from rendering, exactly the IR's existing plan/emit split.
+  `Mutare.Schema.from_files/4` now runs two parallel passes (`Mutare.Schema`'s "Two-phase
+  build"): **(1) count** — `Transform.count_string/2` per file (the same analyze → plan
+  → emit pipeline, skipping the dominant final render), so each file's mutant count is
+  known *without* an id range; **(2) render** — prefix-sum the counts to hand each sited
+  file its `:start_id`, then `transform_string/2` each file concurrently. The count is
+  drift-proof: it comes from the *same* id-claiming path (`SelectorEmit.claim_item/4`)
+  emission uses, so `count_string` ≡ a render's `next_id - start_id`; `render_one/5`
+  re-checks this and crashes loudly on any drift (cross-file id stability depends on it).
+  Both passes keep heap isolation (a worker's transient ASTs die with it) and the
+  let-it-crash contract (an unparseable source is a skipped file; any other exception is
+  captured + re-raised faithfully in the parent — the surfaced-error contract the old
+  single-worker had). The cost is that analyze+plan+emit runs twice for a sited file
+  (count, then render), but render is ~60–85 % of per-file cost (measured), happens once,
+  and both passes parallelize. **Measured ~11 s vs the old sequential-throwaway's ~54 s**
+  on this repo's now-larger `lib/` (136 files, ~16k mutants, 16 cores) — ~4.8×. `on_scan`
+  fires once per file, in input order, with the running mutant tally (the count pass is
+  where mutants are discovered, so the tally is known there); the render pass shows the
+  spinner. Scan concurrency is `System.schedulers_online/0`, independent of the runner's
+  `:workers` (which bounds the per-mutant `mix test` OS processes, a different resource).
 
 #### Why the metamutant was so big — lifting blowup on huge clause groups `[done]`
 The loop heap above scans the *volume* of generated code, and one mechanism used to

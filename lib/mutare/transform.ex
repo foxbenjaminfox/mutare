@@ -205,6 +205,54 @@ defmodule Mutare.Transform do
   """
   @spec transform_string(String.t(), keyword()) :: {String.t(), [Site.t()], pos_integer()}
   def transform_string(source, opts \\ []) when is_binary(source) do
+    {transformed, ctx, parsed} = plan_and_emit(source, opts)
+
+    metamutant = transformed |> silence_helper_xref() |> Render.to_source()
+
+    # Reuse the AST we just parsed — its comment metadata is intact (transform
+    # works on copies), so `Ignore` need not re-parse the source. A directive may
+    # be scoped to a mutator family, so the decision is per `{line, mutator}`, not
+    # per line; a matching directive's reason rides along onto the site.
+    directives = Mutare.Ignore.directives_from_ast(parsed)
+    sites = Enum.map(Enum.reverse(ctx.sites), &apply_ignore(&1, directives))
+
+    {metamutant, sites, ctx.next_id}
+  end
+
+  @doc """
+  Count the mutants a source would produce, **without rendering** the metamutant.
+
+  Returns the number of mutant ids the source claims — exactly the length of the
+  `[%Site{}]` a full `transform_string/2` returns (`next_id - start_id`) — by running
+  the same analyze → plan → emit pipeline but skipping the dominant final
+  `Render.to_source/1`. The count is **drift-proof**: every id claim records exactly
+  one site through the *same* path emission uses
+  (`Mutare.Transform.SelectorEmit.claim_item/4`), so the site count equals the id span
+  by construction — no separate candidate walk that could fall out of sync.
+
+  This is the **count** half of the schema's two-phase build: counts let the prefix
+  sum hand each file its `:start_id` up front, so the (render-bound) `transform_string/2`
+  pass can run files concurrently (`Mutare.Schema.from_files/4`). The count is
+  independent of `:start_id` and `:skip_ids` (skipped ids still advance the counter),
+  so a count pass need not thread either; whatever ids it would assign, the matching
+  `transform_string/2` call assigns the same number.
+
+  Accepts the same `opts` as `transform_string/2`; raises the same parser exceptions
+  on an unparseable source.
+  """
+  @spec count_string(String.t(), keyword()) :: non_neg_integer()
+  def count_string(source, opts \\ []) when is_binary(source) do
+    {_transformed, ctx, _parsed} = plan_and_emit(source, opts)
+    length(ctx.sites)
+  end
+
+  # The shared analyze → plan → emit pipeline, stopping *before* `Render.to_source/1`.
+  # Returns the id-assigned (but unrendered) metamutant tree, the final `ctx` (carrying
+  # `next_id` and the accumulated, still-reversed sites), and the pristine parsed AST (for
+  # the comment-based ignore scan). `transform_string/2` renders it and applies ignores;
+  # `count_string/2` reads only `ctx.next_id`. Rendering is the dominant per-file cost (see
+  # NOTES "Scan is transform-bound"), so splitting it out is what makes the count phase cheap.
+  defp plan_and_emit(source, opts) do
     ctx = %Ctx{
       file: Keyword.get(opts, :file, "nofile"),
       # Normalize to `Mutare.Mutator.Spec`s — `:mutators` may arrive as family
@@ -281,16 +329,7 @@ defmodule Mutare.Transform do
 
     {transformed, ctx} = transform_node(Resolve.annotate(with_behaviours, macros), ctx)
 
-    metamutant = transformed |> silence_helper_xref() |> Render.to_source()
-
-    # Reuse the AST we just parsed — its comment metadata is intact (transform
-    # works on copies), so `Ignore` need not re-parse the source. A directive may
-    # be scoped to a mutator family, so the decision is per `{line, mutator}`, not
-    # per line; a matching directive's reason rides along onto the site.
-    directives = Mutare.Ignore.directives_from_ast(parsed)
-    sites = Enum.map(Enum.reverse(ctx.sites), &apply_ignore(&1, directives))
-
-    {metamutant, sites, ctx.next_id}
+    {transformed, ctx, parsed}
   end
 
   # Mark a site ignored (and record the reason) when a `# mutare:ignore` directive

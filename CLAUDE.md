@@ -518,13 +518,30 @@ contract between them is the whole game.
     mirroring the analyzer's `:compile_time` quote handling. In-place (non-lifted) functions keep their
     name, so their `super` needs nothing (see NOTES "`super` in a lifted body").
 - **`Mutare.Schema`** — runs `Transform` across discovered files, threading **globally-unique,
-  stable** mutant ids. Honors `:paths`/`:exclude`, `:only_files` (for `--since`), `:only_lines`
+  stable** mutant ids. `from_files/4` is a **two-phase parallel build**, because the ids baked into
+  each metamutant's selectors mean concurrent files can't thread `next_id` sequentially: **(1)
+  count** — `Transform.count_string/2` per file in parallel (the same analyze → plan → emit pipeline
+  but skipping the dominant final render), so each file's mutant count is known *id-free*; **(2)
+  render** — prefix-sum the counts to hand each sited file its `:start_id` up front, then
+  `Transform.transform_string/2` each file in parallel. The count is **drift-proof** — it comes from
+  the *same* id-claiming path (`SelectorEmit.claim_item/4`) emission uses, so it equals a render's
+  `next_id - start_id`; `render_one/5` re-checks and crashes loudly on any drift (cross-file id
+  stability depends on it). Both passes run in **throwaway workers** (`Task.async_stream`, concurrency
+  `System.schedulers_online/0` — independent of the runner's `:workers`), so each file's heavy
+  short-lived ASTs die with its worker instead of inflating the scan's loop heap (the heap-isolation
+  the old single-`Task.async`/`await` gave, now *plus* parallelism — see NOTES "Scan is
+  transform-bound"). The let-it-crash contract is preserved per worker: an unparseable source is a
+  skipped file (`:skipped`), any other exception is captured + **re-raised faithfully** in the parent
+  (original type + trace, not an opaque `Task` exit). `:on_scan` fires once per file, in input order,
+  with the running mutant tally (discovered in the count pass). Honors `:paths`/`:exclude`,
+  `:only_files` (for `--since`), `:only_lines`
   (for `--line`: keep only the sites on the named `file:line`s, *and* prune discovery to those
   files so the one compile stays small — a narrow rerun; applied inside `from_files/4` like
   `:max_mutants`, so a poison rebuild reapplies it), `:max_mutants` (cap to the first N sites), and
   `:skip_ids`
   (for poison recovery — the id counter advances even for skipped ids, so ids stay stable across
-  rebuilds; this stability is relied upon). Per mutated file it stores the **rendered metamutant
+  rebuilds; this stability is relied upon; the count pass is `:skip_ids`-independent, since a skipped
+  id still advances the counter). Per mutated file it stores the **rendered metamutant
   source** (`:metamutants`); the `Mutare.Manifest` is *not* precomputed — it is built lazily by
   Poison only on a failed compile (rare).
 - **`Mutare.Manifest`** — the per-file, per-mutant map of *where each mutant lives in its

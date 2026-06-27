@@ -72,6 +72,38 @@ defmodule Mutare.TransformTest do
     assert [%Site{mutator: :arithmetic, original_form: :+}] = sites
   end
 
+  describe "count_string/2 (the schema's render-free count pass)" do
+    test "equals the full transform's mutant count, drift-proof by construction" do
+      # Cross-file id stability rests on this: the count pass and the render pass run the
+      # same deterministic pipeline, so the count equals `next_id - start_id` exactly.
+      # Cover both a pinned subset and the full default set (key omitted → default).
+      for opts <- [[file: "sample.ex", mutators: @probe], [file: "sample.ex"]] do
+        {_meta, sites, next_id} = Mutare.Transform.transform_string(@sample, opts)
+
+        assert Mutare.Transform.count_string(@sample, opts) == length(sites)
+        assert Mutare.Transform.count_string(@sample, opts) == next_id - 1
+      end
+    end
+
+    test "is independent of :start_id and :skip_ids (a skipped id still advances the counter)" do
+      base = Mutare.Transform.count_string(@sample, mutators: @probe)
+
+      assert Mutare.Transform.count_string(@sample, mutators: @probe, start_id: 500) == base
+
+      assert Mutare.Transform.count_string(@sample,
+               mutators: @probe,
+               skip_ids: MapSet.new([1, 2])
+             ) ==
+               base
+    end
+
+    test "raises the parser exception on an unparseable source" do
+      assert_raise SyntaxError, fn ->
+        Mutare.Transform.count_string("x = %{a: }\n")
+      end
+    end
+  end
+
   test "a custom mutator plugs in for both in-place and lifted delivery" do
     source = """
     defmodule X do

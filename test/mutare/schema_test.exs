@@ -270,7 +270,7 @@ defmodule Mutare.SchemaTest do
 
   test "every parser-error type is skipped (not re-raised), and in source order", %{root: root} do
     write(root, "lib/ok.ex", "defmodule Ok do\n  def f(x), do: x + 1\nend\n")
-    # One file per exception `safe_transform/5` rescues, named so they sort
+    # One file per exception the count pass (`count_one/3`) rescues, named so they sort
     # ahead of ok.ex: a MismatchedDelimiterError, a SyntaxError, a TokenMissingError.
     write(root, "lib/e1_mismatch.ex", "defmodule M do\n  def ( oops\nend\n")
     write(root, "lib/e2_syntax.ex", "x = %{a: }\n")

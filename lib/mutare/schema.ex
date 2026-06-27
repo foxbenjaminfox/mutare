@@ -8,7 +8,36 @@ defmodule Mutare.Schema do
   `:metamutants` (their originals are used as-is) but never crash the build — a
   single unparseable file should not sink the run. A failure *after* a clean
   parse (transform or render) is a bug in this tool, not bad input, and is left
-  to crash: see `safe_transform/5`.
+  to crash: see `render_one/5`.
+
+  ## Two-phase build (`from_files/4`)
+
+  Mutant ids are baked into each metamutant's selector clauses, so a naive
+  per-file render can't run concurrently — file *i*'s `:start_id` is file
+  *i-1*'s `next_id`. The build decouples id assignment from rendering in two
+  passes, both run in **throwaway worker processes** so each file's heavy,
+  short-lived ASTs (the emitted tree, Sourceror's render buffers) die with their
+  worker instead of accumulating in the scan's long-lived heap, where they made
+  every GC scan the growing live set and inflated a big file's transform
+  several-fold (see NOTES "Scan is transform-bound"):
+
+    1. **Count** (`count_files/3`) — `Mutare.Transform.count_string/2` per file,
+       in parallel. It runs the same analyze → plan → emit pipeline but skips the
+       dominant final render, returning just each file's mutant count. The count
+       is drift-proof: it comes from the *same* id-claiming path emission uses, so
+       it equals the matching render's `next_id - start_id` by construction.
+    2. **Render** (`render_files/3`) — prefix-sum the counts so each sited file
+       knows its globally-unique `:start_id` up front, then
+       `Mutare.Transform.transform_string/2` each file (with that `:start_id` and
+       the run's `:skip_ids`) in parallel. `render_one/5` re-checks the count
+       against the rendered `next_id` and fails loudly on any drift, since id
+       stability across files depends on the two passes agreeing.
+
+  Both passes preserve exact `:start_id` threading (the prefix sum reproduces the
+  old sequential thread) and the *let-it-crash* contract: a worker classifies an
+  unparseable source as a skipped file but re-raises any other exception, with its
+  original type and stacktrace, in the parent — so a tool bug still surfaces
+  faithfully across the process hop, not as an opaque `Task` exit.
 
   We store each file's rendered metamutant source (under `:metamutants`) but not
   a precomputed `Mutare.Manifest`: the manifest (generated line ranges, for
@@ -110,24 +139,29 @@ defmodule Mutare.Schema do
   def from_files(files, root \\ ".", opts \\ [], skip_ids \\ MapSet.new()) do
     options = Options.new(opts)
 
-    on_scan = Options.hook(options, :on_scan)
-    total = length(files)
-
     # Record the ordered, root-relative input list so the schema can be rebuilt
     # against exactly these files (see `rebuild/4`) without re-discovering.
-    initial = %__MODULE__{files: Enum.map(files, &relative(&1, root))}
+    rel_files = Enum.map(files, &relative(&1, root))
 
-    files
-    |> Enum.with_index(1)
-    |> Enum.reduce({initial, 1}, fn {file, done}, {schema, next_id} ->
-      {schema, next_id} = add_file(schema, file, root, next_id, options, skip_ids)
-      # Live scan progress (no-op unless a hook is set; cleared by `rebuild/4`, so
-      # poison-recovery re-scans stay silent). `next_id - 1` is the running mutant
-      # tally, since the id counter starts at 1.
-      on_scan.(%{done: done, total: total, found: next_id - 1})
-      {schema, next_id}
-    end)
-    |> elem(0)
+    # Phase 1 — count (parallel, heap-isolated per worker): read each file and count
+    # its mutants without rendering. Yields per-file outcomes in input order. A tool
+    # bug raised here (e.g. a custom mutator) is re-raised faithfully.
+    counted = count_files(files, root, options)
+
+    # Live scan progress fires once per file, in input order, with the running mutant
+    # tally — the contract `Mutare.Report.Live` reads. Phase 1 is where mutants are
+    # discovered, so the tally is known here; the render-bound phase 2 shows the
+    # spinner. A no-op unless a hook is set (cleared by `rebuild/4`, so poison-recovery
+    # re-scans stay silent).
+    report_scan(counted, Options.hook(options, :on_scan))
+
+    # Phase 2 — render (parallel, heap-isolated per worker): prefix-sum the counts so
+    # each sited file knows its `:start_id` up front, then emit + render it. A failure
+    # here is a tool bug (the file already parsed in phase 1) — re-raised faithfully.
+    rendered = counted |> render_jobs() |> render_files(options, skip_ids)
+
+    rel_files
+    |> assemble(counted, rendered)
     |> finalize()
     |> detect_ineffective_ignores()
     |> restrict_lines(options.only_lines)
@@ -164,25 +198,140 @@ defmodule Mutare.Schema do
 
   # --- internals -----------------------------------------------------------
 
-  defp add_file(schema, file, root, next_id, options, skip_ids) do
+  # === phase 1: count ========================================================
+
+  # Read and count every file's mutants in parallel throwaway workers (`count_one/3`),
+  # yielding `[{:counted, rel, source | nil, outcome}]` in **input order**. The heavy
+  # short-lived ASTs each `count_string/2` builds die with their worker, off the scan's
+  # long-lived heap. A tool bug captured by a worker is re-raised here, faithfully.
+  defp count_files(files, root, options) do
+    files
+    |> async_stream(&count_one(&1, root, options))
+    |> Enum.map(&reraise_if_raised/1)
+  end
+
+  # Count one file. An *unparseable source* is the only outcome degraded to a skipped
+  # file (`{:error, _}`): the three exceptions below are the ones Elixir's parser raises
+  # on malformed input, and there is nothing the tool can do about a file it cannot read
+  # as Elixir. Every *other* exception means the source parsed and we then failed while
+  # analyzing — a bug in this tool (a bad clause, a misbehaving custom mutator) — so it is
+  # captured with its stacktrace and re-raised in the parent (`reraise_if_raised/1`); the
+  # mutators run during the count, so a `RaisingMutator` surfaces here, not at render.
+  # Swallowing such failures as "skipped files" is exactly how the two compile-poisoning
+  # bugs hid (see NOTES.md); let them crash so they surface.
+  defp count_one(file, root, %Options{} = options) do
     rel = relative(file, root)
-    source = File.read!(file)
 
-    case safe_transform(source, rel, next_id, options, skip_ids) do
-      {:ok, _meta, [], next_id} ->
-        # Parsed fine but nothing to mutate: keep the original, record source.
-        # mutare:ignore[map_keyword] equivalent — the value is the id-independent raw source, identical on any re-put, so put and put_new agree
-        {%{schema | sources: Map.put(schema.sources, rel, source)}, next_id}
+    try do
+      source = File.read!(file)
 
-      {:ok, meta, sites, next_id} ->
-        # Transform hands back the next free id directly, so we never recover it
-        # from the last site. Sites accumulate reversed (prepend in O(1) per
-        # file, not a growing `++`); finalize/1 flips the list back to order once.
-        #
-        # We store the rendered metamutant but no precomputed manifest: that's
-        # read only on a failed compile, so `Mutare.Poison` re-derives it lazily
-        # from this source for the offending file(s) (see `Mutare.Poison.ids/2`).
-        schema = %{
+      case Mutare.Transform.count_string(source, count_opts(options, rel)) do
+        0 -> {:counted, rel, source, :no_sites}
+        n -> {:counted, rel, source, {:sites, n}}
+      end
+    rescue
+      error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
+        {:counted, rel, nil, {:error, error}}
+
+      other ->
+        {:raise, other, __STACKTRACE__}
+    end
+  end
+
+  # Count opts forward the same transform config as a render (`transform_opts/1`) so the
+  # two passes count identically; `:start_id`/`:skip_ids` are omitted because the count is
+  # independent of both (a skipped id still advances the counter).
+  # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
+  defp count_opts(%Options{} = options, rel), do: transform_opts(options) ++ [file: rel]
+
+  # Fire `on_scan` once per file, in input order, with the running mutant tally.
+  # `Enum.scan` turns the per-file counts into their cumulative prefix sums (the
+  # `found` tally); `Enum.each` then fires the side-effecting hook per file.
+  defp report_scan(counted, on_scan) do
+    total = length(counted)
+
+    counted
+    |> Enum.map(fn {:counted, _rel, _src, outcome} -> count_of(outcome) end)
+    |> Enum.scan(fn count, running -> count + running end)
+    |> Enum.with_index(1)
+    |> Enum.each(fn {found, done} -> on_scan.(%{done: done, total: total, found: found}) end)
+  end
+
+  defp count_of({:sites, n}), do: n
+  defp count_of(_), do: 0
+
+  # === phase 2: render =======================================================
+
+  # Prefix-sum the phase-1 counts into one render job per **sited** file —
+  # `{rel, source, start_id, count}` — handing each file the globally-unique
+  # `:start_id` it would have received under sequential threading (`next_id` starts at
+  # 1 and advances by each file's count, in input order). No-site / skipped files
+  # contribute no job (and no ids).
+  defp render_jobs(counted) do
+    {jobs, _next_id} =
+      Enum.flat_map_reduce(counted, 1, fn
+        {:counted, rel, source, {:sites, count}}, next_id ->
+          {[{rel, source, next_id, count}], next_id + count}
+
+        {:counted, _rel, _source, _outcome}, next_id ->
+          {[], next_id}
+      end)
+
+    jobs
+  end
+
+  # Emit + render every sited file in parallel throwaway workers (`render_one/5`),
+  # returning `%{rel => {metamutant, sites}}`. The dominant `Sourceror.to_string` heap
+  # dies with each worker. A tool bug captured by a worker is re-raised here.
+  defp render_files(jobs, options, skip_ids) do
+    jobs
+    |> async_stream(fn {rel, source, start_id, count} ->
+      render_one(rel, source, start_id, count, options, skip_ids)
+    end)
+    |> Enum.map(&reraise_if_raised/1)
+    |> Map.new(fn {:rendered, rel, meta, sites} -> {rel, {meta, sites}} end)
+  end
+
+  # Render one file at its assigned `:start_id`. The file already parsed in phase 1, so any
+  # exception here is a tool bug (a bad clause, a Sourceror formatter crash) — captured and
+  # re-raised faithfully, never swallowed. `verify_count!/3` guards the load-bearing id
+  # invariant: the rendered `next_id - start_id` must equal phase 1's count, or files would
+  # silently overlap ids (the two passes are the same deterministic pipeline, so they agree).
+  defp render_one(rel, source, start_id, count, %Options{} = options, skip_ids) do
+    # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
+    opts = transform_opts(options) ++ [file: rel, start_id: start_id, skip_ids: skip_ids]
+
+    try do
+      {meta, sites, next_id} = Mutare.Transform.transform_string(source, opts)
+      verify_count!(rel, next_id - start_id, count)
+      {:rendered, rel, meta, sites}
+    rescue
+      other -> {:raise, other, __STACKTRACE__}
+    end
+  end
+
+  defp verify_count!(_rel, count, count), do: :ok
+
+  defp verify_count!(rel, rendered, counted) do
+    raise "Mutare.Schema: mutant-count drift for #{rel} — counted #{counted}, rendered #{rendered}. " <>
+            "The two-phase build's count and render passes must agree (cross-file id stability " <>
+            "depends on it)."
+  end
+
+  # === assembly ==============================================================
+
+  # Fold the phase-1 outcomes (in input order) into the schema, slotting each sited file's
+  # rendered metamutant + sites (from `rendered`), keeping a site-less but parsed file as
+  # sources-only, and recording an unparseable file under `:skipped`. Sites accumulate
+  # reversed (O(1) prepend per file); `finalize/1` flips them back to order once. We store
+  # the rendered metamutant but no precomputed manifest — that's read only on a failed
+  # compile, so `Mutare.Poison` re-derives it lazily (see `Mutare.Poison.ids/2`).
+  defp assemble(rel_files, counted, rendered) do
+    Enum.reduce(counted, %__MODULE__{files: rel_files}, fn
+      {:counted, rel, source, {:sites, _count}}, schema ->
+        {meta, sites} = Map.fetch!(rendered, rel)
+
+        %{
           schema
           | sites: Enum.reverse(sites, schema.sites),
             # NOTE: unlike the `sources` put below, `metamutants`'s value embeds the mutant ids, so
@@ -193,63 +342,44 @@ defmodule Mutare.Schema do
             sources: Map.put(schema.sources, rel, source)
         }
 
-        {schema, next_id}
+      {:counted, rel, source, :no_sites}, schema ->
+        # mutare:ignore[map_keyword] equivalent — the value is the id-independent raw source, identical on any re-put, so put and put_new agree
+        %{schema | sources: Map.put(schema.sources, rel, source)}
 
-      {:error, reason} ->
-        {%{schema | skipped: [{rel, reason} | schema.skipped]}, next_id}
-    end
+      {:counted, rel, _source, {:error, reason}}, schema ->
+        %{schema | skipped: [{rel, reason} | schema.skipped]}
+    end)
   end
 
-  # Only an *unparseable source* is skipped: the three exceptions below are the
-  # ones Elixir's parser (via `Sourceror.parse_string!`) raises on malformed
-  # input, and there is nothing the tool can do about a file it cannot read as
-  # Elixir. Every other exception means the parse succeeded and we then failed
-  # while transforming or rendering — i.e. a bug in this tool (a bad clause, a
-  # construct the transform mishandles, a Sourceror formatter crash). Swallowing
-  # those as "skipped files" is exactly how the two compile-poisoning bugs hid
-  # (see NOTES.md); let them crash so they surface.
-  #
-  # The transform runs in a **throwaway process** (`Task.async`/`await`): its
-  # heavy, short-lived ASTs — the rendered metamutant tree, Sourceror's render
-  # buffers — die with that process instead of accumulating in the scan's
-  # long-lived heap, where they otherwise made every GC scan the growing set of
-  # held metamutants and inflated a big file's transform several-fold (see NOTES
-  # "Scan is transform-bound, and the loop heap makes it worse"). The result is
-  # plain data (strings, sites, id), cheap to copy back, and `from_files` awaits
-  # each file before the next, so sequential `start_id` threading is unchanged.
-  #
-  # The worker classifies its own outcome rather than crashing: an unparseable
-  # source degrades to `{:error, _}` (a skipped file); any *other* exception is a
-  # tool bug, captured with its stacktrace and **re-raised in this process** — so
-  # it still surfaces with its original type and trace (the `assert_raise`
-  # contract, and the "let it crash so it surfaces" rule above), not as an opaque
-  # `Task` exit. Catching in the worker (not letting it crash) is what keeps the
-  # surfaced error faithful across the process hop.
-  defp safe_transform(source, rel, next_id, %Options{} = options, skip_ids) do
-    # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
-    opts = transform_opts(options) ++ [file: rel, start_id: next_id, skip_ids: skip_ids]
+  # === shared worker plumbing ================================================
 
-    outcome =
-      fn ->
-        try do
-          {meta, sites, next_id} = Mutare.Transform.transform_string(source, opts)
-          {:ok, meta, sites, next_id}
-        rescue
-          error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
-            {:error, error}
-
-          other ->
-            {:raise, other, __STACKTRACE__}
-        end
-      end
-      |> Task.async()
-      |> Task.await(:infinity)
-
-    case outcome do
-      {:raise, error, stacktrace} -> reraise(error, stacktrace)
-      result -> result
-    end
+  # Run `fun` over `enum` in parallel throwaway workers, **ordered** (so callers see input
+  # order for id threading, scan progress, and site assembly) and untimed (a big file can
+  # take seconds). Each worker classifies its own outcome — a result tuple or a captured
+  # `{:raise, error, stacktrace}` — so it never crashes the stream; `reraise_if_raised/1`
+  # surfaces a captured tool bug in the parent, with its original type and trace, rather
+  # than as an opaque `Task` exit. A worker that *exits* (a `throw`/`exit`, not an
+  # exception) re-exits the parent with the same reason, matching `Task.await`'s behaviour.
+  defp async_stream(enum, fun) do
+    enum
+    |> Task.async_stream(fun,
+      ordered: true,
+      max_concurrency: scan_concurrency(),
+      timeout: :infinity
+    )
+    |> Enum.map(fn
+      {:ok, result} -> result
+      {:exit, reason} -> exit(reason)
+    end)
   end
+
+  defp reraise_if_raised({:raise, error, stacktrace}), do: reraise(error, stacktrace)
+  defp reraise_if_raised(result), do: result
+
+  # The scan is CPU-bound (parse + analyze + render), so size both passes to the
+  # schedulers — independent of the runner's `:workers`, which bounds the per-mutant
+  # `mix test` OS processes (a different resource).
+  defp scan_concurrency, do: System.schedulers_online()
 
   # Forward `:mutators` (when set), `:macros`, and `:plugins` to the transform. A `nil`
   # `:mutators` lets `Mutare.Transform` use its default set (we never hard-code that default
