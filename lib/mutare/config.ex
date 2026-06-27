@@ -164,13 +164,45 @@ defmodule Mutare.Config do
   # --- internals -----------------------------------------------------------
 
   defp parse_families(csv) do
-    # `to_atom`, not `to_existing_atom`: a typo'd family must reach the
-    # `Mutare.Mutators` resolver so it gets the descriptive "unknown mutator"
-    # message, not a bare `ArgumentError` from atom-table lookup before we can
-    # explain it.
     csv
     |> String.split(",", trim: true)
-    |> Enum.map(&(&1 |> String.trim() |> String.to_atom()))
+    |> Enum.map(&parse_mutator(String.trim(&1)))
+  end
+
+  # A single `--mutators` entry, resolved *without* `String.to_atom/1` — which both
+  # interns arbitrary user input into the never-collected atom table *and*, for a
+  # module, yields the wrong atom: `String.to_atom("MyApp.M")` is `:"MyApp.M"`, not the
+  # module `MyApp.M` (≡ `:"Elixir.MyApp.M"`), so the documented `--mutators MyApp.M`
+  # custom-mutator example never resolved. Three cases, in order:
+  #
+  #   * a built-in **family** name or the `:builtins`/`:all` group token resolves to
+  #     its *existing* atom by string lookup (no interning);
+  #   * a **module**-shaped name (`MyApp.MyMutator`) is built with `Module.concat/1`,
+  #     producing the real module atom (and, helpfully, folding a leading `Elixir.`);
+  #   * anything else passes through verbatim as a string, so the `Mutare.Mutators`
+  #     resolver reports it with the descriptive "unknown mutator" message (its
+  #     `Mutare.Mutator.Dispatch.implemented_by?/1` check is total over strings) — a
+  #     typo'd family still reaches that explanation, and still without interning.
+  defp parse_mutator(name) do
+    cond do
+      existing = known_mutator_name(name) -> existing
+      module_alias?(name) -> Module.concat(String.split(name, "."))
+      true -> name
+    end
+  end
+
+  # The existing atom matching a built-in family name or a group token, or `nil`.
+  # String-compared against the live name set, so nothing is interned.
+  defp known_mutator_name(name) do
+    Enum.find([:builtins, :all | Mutare.Mutators.families()], &(Atom.to_string(&1) == name))
+  end
+
+  # Whether `name` is a well-formed Elixir module alias (`Foo`, `Foo.Bar.Baz`) — every
+  # dot-separated segment an uppercase-led alias atom. Gates `Module.concat/1` so only
+  # module-shaped input is interned, not arbitrary garbage.
+  @alias_segment ~r/\A[A-Z][A-Za-z0-9_]*\z/
+  defp module_alias?(name) do
+    Enum.all?(String.split(name, "."), &Regex.match?(@alias_segment, &1))
   end
 
   # `--line FILE:LINE` scopes the run to the mutants on specific `file:line` locations —

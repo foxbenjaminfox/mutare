@@ -96,6 +96,30 @@ defmodule Mutare.ConfigTest do
              |> Enum.map(& &1.module) == [Relational, Arithmetic]
     end
 
+    test "--mutators resolves a custom module name to the real module atom" do
+      # Regression: `String.to_atom/1` produced `:\"Mutare.Test.BooleanMutator\"`,
+      # which is *not* the module `Mutare.Test.BooleanMutator` (≡ the `:\"Elixir.…\"`
+      # atom), so the documented `--mutators MyApp.MyMutator` example failed to resolve.
+      assert Config.merge([], mutators: "Mutare.Test.BooleanMutator")[:mutators]
+             |> Enum.map(& &1.module) == [Mutare.Test.BooleanMutator]
+    end
+
+    test "--mutators mixes built-in families and custom modules" do
+      assert Config.merge([], mutators: "relational,Mutare.Test.BooleanMutator")[:mutators]
+             |> Enum.map(& &1.module) == [Relational, Mutare.Test.BooleanMutator]
+    end
+
+    test "--mutators folds a leading Elixir. on a module name" do
+      assert Config.merge([], mutators: "Elixir.Mutare.Test.BooleanMutator")[:mutators]
+             |> Enum.map(& &1.module) == [Mutare.Test.BooleanMutator]
+    end
+
+    test "--mutators reports an unknown family with the descriptive resolver error" do
+      assert_raise ArgumentError, ~r/unknown mutator "relationul"/, fn ->
+        Config.merge([], mutators: "relationul")
+      end
+    end
+
     test "--min-score and --sandbox pass through" do
       merged = Config.merge([], min_score: 70.0, sandbox: "/tmp/sb")
       assert merged[:min_score] == 70.0
