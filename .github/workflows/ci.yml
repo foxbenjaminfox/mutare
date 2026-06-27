@@ -21,22 +21,19 @@ jobs:
   # `only: :dev`, so this job stays in the default (dev) MIX_ENV.
   check:
     name: mix check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Set up Elixir / OTP
         id: beam
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           elixir-version: "1.19"
           otp-version: "27"
 
-      - run: mix local.hex --force
-      - run: mix local.rebar --force
-
       - name: Cache deps and _build
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             deps
@@ -49,7 +46,7 @@ jobs:
       # Dialyzer, so cache it separately (it survives mix.lock-only churn poorly,
       # hence the restore-keys fallback to warm-start from a near-match).
       - name: Cache Dialyzer PLTs
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: priv/plts
           key: ${{ runner.os }}-plt-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-${{ hashFiles('mix.lock') }}
@@ -61,17 +58,14 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix check
 
-  # Test matrix. We support Elixir 1.18 (`mix.exs` floor `~> 1.18`) and 1.19, so
-  # the supported Erlang/OTP set is the union of their windows — OTP 25, 26, 27,
-  # 28. This is a diagonal: each OTP is exercised exactly once, with each Elixir
-  # line pinned to both ends of its own OTP window (1.18 at 25 & 27, 1.19 at 26 &
-  # 28 — OTP 25 only pairs with 1.18, OTP 28 only with 1.19). `ubuntu-latest`
-  # (24.04) ships prebuilt binaries for all of them. Released combos are blocking;
-  # the development tip is informational only (continue-on-error) so churn
-  # upstream never reds the run.
+  # Test matrix. The `~> 1.18` requirement admits every stable Elixir 1.x release
+  # from 1.18 onward, so each current release line gets a blocking entry. The
+  # matrix also spans OTP 25-28 across compatible pairings. The development tip
+  # is informational only (continue-on-error) so upstream churn never reds the
+  # run.
   test:
     name: test (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: ${{ matrix.allow-failure || false }}
     strategy:
       fail-fast: false
@@ -83,26 +77,25 @@ jobs:
           # Elixir 1.19 — supported Erlang/OTP 26-28 (tested at both ends).
           - { elixir: "1.19", otp: "26" }
           - { elixir: "1.19", otp: "28" }
+          # Elixir 1.20 — current stable release, tested on OTP 28.
+          - { elixir: "1.20", otp: "28" }
           # Elixir's development tip (main). Non-blocking: an early-warning signal
           # for upcoming breakage, not a gate.
           - { elixir: "main", otp: "28", allow-failure: true }
     env:
       MIX_ENV: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Set up Elixir / OTP
         id: beam
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
 
-      - run: mix local.hex --force
-      - run: mix local.rebar --force
-
       - name: Cache deps and _build
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             deps
