@@ -1,11 +1,27 @@
 defmodule Mutare.Transform.Candidate.Delivery do
   @moduledoc false
 
-  # Shared delivery vocabulary for candidate variants: which `Mutare.Site` constructor
-  # records them, what value an ordinary selector branch should run, and which node-local
-  # emit path consumes candidates attached to AST metadata. Lifted candidates are consumed
-  # from `FunctionPlan`; hosted candidates are consumed from their own metadata by
-  # `HostedEmit`, so neither belongs to the node-local classifier.
+  # Single source of truth for how each `Mutare.Transform.Candidate` variant is *delivered*:
+  # its node-local emit route, the `Mutare.Site` constructor that records it, and — for the
+  # selector-delivered kinds — the struct field holding an ordinary in-place selector's mutant
+  # branch body. `site/3`, `route/1`, and `selector_branch/1` all read the one per-variant
+  # `profile/1` table below, so the three facets can't drift apart: this collapses the manual
+  # mirror (one struct re-listed in three separate dispatch functions, where adding a variant
+  # meant remembering to touch each). Adding a candidate is one new `profile/1` clause — the
+  # matching `build_site/4` arm and the routed emit in `Mutare.Transform` then follow.
+  #
+  # Three groups of variant, by *who consumes them*:
+  #
+  #   * node-local — carried on a node's `meta[:mutare]` / `:mutare_case` and dispatched by
+  #     `Mutare.Transform` off `route/1` (`:in_place` / `:case_clause` / `:match_pattern` /
+  #     `:macro_pattern`). `classify_node_candidates/1` admits exactly these.
+  #   * lifted (`Lifted` / `PatternStructure` / `GuardDrop` / `Drop`) — consumed from
+  #     `Mutare.Transform.FunctionPlan`, never node-local; `route/1` reports `:lifted` and
+  #     `classify_node_candidates/1` rejects them.
+  #   * hosted (`Hosted`) — consumed from its own metadata by `Mutare.Transform.HostedEmit`,
+  #     which records its Sites *per logical mutant* there, not through `site/3`. `route/1`
+  #     reports `:hosted` (so `classify_node_candidates/1` rejects it); `site/3` is never called
+  #     on it.
 
   alias Mutare.Site
   alias Mutare.Transform.Candidate
@@ -21,106 +37,118 @@ defmodule Mutare.Transform.Candidate.Delivery do
   @type node_route :: :in_place | :case_clause | :match_pattern | :macro_pattern
   @type routed_node_candidates :: :none | {node_route(), [node_candidate()]}
 
+  # The routes `classify_node_candidates/1` admits — the node-local ones. The lifted / hosted
+  # candidates report `:lifted` / `:hosted` and are routed by their dedicated emit paths.
+  @node_routes [:in_place, :case_clause, :match_pattern, :macro_pattern]
+
   @doc "Classify homogeneous AST-node candidates by their node-local emit route."
   @spec classify_node_candidates([node_candidate()]) :: routed_node_candidates()
   def classify_node_candidates([]), do: :none
 
   def classify_node_candidates([candidate | _] = candidates) do
-    route = node_route_for(candidate)
+    route = node_route!(candidate)
     assert_homogeneous!(route, candidates)
     {route, candidates}
   end
 
   @doc "Build the recorded `Mutare.Site` for a claimed candidate id."
   @spec site(pos_integer(), Candidate.t(), String.t()) :: Site.t()
-  def site(id, %Candidate.InPlace{} = candidate, file), do: plain_site(id, candidate, file)
-  def site(id, %Candidate.CasePattern{} = candidate, file), do: plain_site(id, candidate, file)
-  def site(id, %Candidate.CaseClause{} = candidate, file), do: plain_site(id, candidate, file)
-  def site(id, %Candidate.MatchPattern{} = candidate, file), do: plain_site(id, candidate, file)
-  def site(id, %Candidate.MacroPattern{} = candidate, file), do: plain_site(id, candidate, file)
+  def site(id, candidate, file) do
+    {_route, site_kind, _branch_field} = profile(candidate)
+    build_site(site_kind, id, candidate, file)
+  end
 
-  def site(id, %Candidate.Lifted{} = candidate, file), do: lifted_site(id, candidate, file)
+  @doc """
+  A candidate's delivery route: a node-local `t:node_route/0`, or `:lifted` / `:hosted` for the
+  candidates delivered by their dedicated (non-node-local) emit paths.
+  """
+  @spec route(Candidate.t()) :: node_route() | :lifted | :hosted
+  def route(candidate), do: elem(profile(candidate), 0)
 
-  def site(id, %Candidate.PatternStructure{} = candidate, file),
-    do: lifted_site(id, candidate, file)
-
-  def site(id, %Candidate.GuardDrop{} = candidate, file), do: lifted_site(id, candidate, file)
-
-  def site(id, %Candidate.Return{} = candidate, file),
-    do:
-      Site.return_value(
-        id,
-        file,
-        candidate.range,
-        candidate.original,
-        candidate.mutated,
-        candidate.mutator
-      )
-
-  def site(id, %Candidate.RescueDrop{} = candidate, file),
-    do: Site.in_place_drop(id, file, candidate.range, candidate.dropped, candidate.mutator)
-
-  def site(id, %Candidate.Drop{} = candidate, file),
-    do: Site.clause_drop(id, file, candidate.range, candidate.original)
-
-  @doc "The body expression for an ordinary in-place selector's mutant branch."
+  @doc """
+  The body expression for an ordinary in-place selector's mutant branch. Only meaningful for an
+  `:in_place`-routed candidate (the only context that builds such a selector); on any other kind
+  it raises (`branch_field` is `nil`).
+  """
   @spec selector_branch(Candidate.t()) :: Macro.t()
-  def selector_branch(%Candidate.InPlace{mutated: mutated}), do: mutated
-  def selector_branch(%Candidate.Return{mutated: mutated}), do: mutated
-  def selector_branch(%Candidate.CasePattern{replacement: replacement}), do: replacement
-  def selector_branch(%Candidate.RescueDrop{replacement: replacement}), do: replacement
-
-  defp plain_site(id, candidate, file) do
-    Site.in_place(
-      id,
-      file,
-      candidate.range,
-      candidate.original,
-      candidate.mutated,
-      candidate.mutator,
-      note(candidate)
-    )
+  def selector_branch(candidate) do
+    {_route, _site_kind, branch_field} = profile(candidate)
+    Map.fetch!(candidate, branch_field)
   end
 
-  defp lifted_site(id, candidate, file) do
-    Site.lifted_replace(
-      id,
-      file,
-      candidate.range,
-      candidate.original,
-      candidate.mutated,
-      candidate.mutator,
-      note(candidate)
-    )
-  end
+  # The single per-variant delivery table: `{route, site_kind, branch_field}`.
+  #
+  #   * `route`        — `t:node_route/0`, or `:lifted` / `:hosted` for the candidates routed by
+  #                      `FunctionPlan` / `HostedEmit`.
+  #   * `site_kind`    — selects the `build_site/4` arm (which `Mutare.Site` constructor, and
+  #                      which of the candidate's fields it reads).
+  #   * `branch_field` — the struct field `selector_branch/1` reads for an in-place selector's
+  #                      mutant body; `nil` for kinds never delivered that way (a lifted / hosted
+  #                      candidate, or a node-local one whose route is not `:in_place`).
+  @spec profile(Candidate.t()) :: {node_route() | :lifted | :hosted, atom(), atom() | nil}
+  defp profile(%Candidate.InPlace{}), do: {:in_place, :in_place, :mutated}
+  defp profile(%Candidate.Return{}), do: {:in_place, :return_value, :mutated}
+  defp profile(%Candidate.CasePattern{}), do: {:in_place, :in_place, :replacement}
+  defp profile(%Candidate.RescueDrop{}), do: {:in_place, :in_place_drop, :replacement}
+  defp profile(%Candidate.CaseClause{}), do: {:case_clause, :in_place, nil}
+  defp profile(%Candidate.MatchPattern{}), do: {:match_pattern, :in_place, nil}
+  defp profile(%Candidate.MacroPattern{}), do: {:macro_pattern, :in_place, nil}
+  defp profile(%Candidate.Lifted{}), do: {:lifted, :lifted_replace, nil}
+  defp profile(%Candidate.PatternStructure{}), do: {:lifted, :lifted_replace, nil}
+  defp profile(%Candidate.GuardDrop{}), do: {:lifted, :lifted_replace, nil}
+  defp profile(%Candidate.Drop{}), do: {:lifted, :clause_drop, nil}
+  defp profile(%Candidate.Hosted{}), do: {:hosted, :hosted, nil}
+
+  # Each `site_kind` knows which `Mutare.Site` constructor to call and which candidate fields it
+  # reads (the constructors differ in arity and in which fields they record).
+  defp build_site(:in_place, id, c, file),
+    do: Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator, note(c))
+
+  defp build_site(:lifted_replace, id, c, file),
+    do: Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator, note(c))
+
+  defp build_site(:return_value, id, c, file),
+    do: Site.return_value(id, file, c.range, c.original, c.mutated, c.mutator)
+
+  defp build_site(:in_place_drop, id, c, file),
+    do: Site.in_place_drop(id, file, c.range, c.dropped, c.mutator)
+
+  defp build_site(:clause_drop, id, c, file),
+    do: Site.clause_drop(id, file, c.range, c.original)
+
+  # `Hosted` records its Sites per logical mutant in `HostedEmit`, never through `site/3`; the
+  # clause exists so a stray call fails loudly rather than as a `FunctionClauseError`.
+  defp build_site(:hosted, _id, c, _file),
+    do:
+      raise(ArgumentError, "#{inspect(c.__struct__)} records its Sites per mutant in HostedEmit")
 
   # The optional per-mutant advisory a producing mutator attached. Read by field, not by
   # struct: any future note-bearing candidate is covered as soon as it carries the field.
   defp note(%{note: note}), do: note
   defp note(_candidate), do: nil
 
-  defp node_route_for(%Candidate.InPlace{}), do: :in_place
-  defp node_route_for(%Candidate.Return{}), do: :in_place
-  defp node_route_for(%Candidate.CasePattern{}), do: :in_place
-  defp node_route_for(%Candidate.RescueDrop{}), do: :in_place
-  defp node_route_for(%Candidate.CaseClause{}), do: :case_clause
-  defp node_route_for(%Candidate.MatchPattern{}), do: :match_pattern
-  defp node_route_for(%Candidate.MacroPattern{}), do: :macro_pattern
+  # A candidate's node-local route, raising for the lifted / hosted kinds that have no place in
+  # the node-local classifier (matching `classify_node_candidates/1`'s contract).
+  defp node_route!(candidate) do
+    route = route(candidate)
 
-  defp node_route_for(candidate) do
-    raise ArgumentError,
-          "#{inspect(candidate.__struct__)} is not a node-local candidate; " <>
-            "lifted and hosted candidates use their dedicated emit paths"
+    if route in @node_routes do
+      route
+    else
+      raise ArgumentError,
+            "#{inspect(candidate.__struct__)} is not a node-local candidate; " <>
+              "lifted and hosted candidates use their dedicated emit paths"
+    end
   end
 
   defp assert_homogeneous!(route, candidates) do
-    case Enum.find(candidates, &(node_route_for(&1) != route)) do
+    case Enum.find(candidates, &(node_route!(&1) != route)) do
       nil ->
         :ok
 
       candidate ->
         raise "candidate delivery route mismatch: expected #{inspect(route)}, " <>
-                "got #{inspect(node_route_for(candidate))} for #{inspect(candidate.__struct__)}"
+                "got #{inspect(node_route!(candidate))} for #{inspect(candidate.__struct__)}"
     end
   end
 end

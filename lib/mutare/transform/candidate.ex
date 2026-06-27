@@ -4,57 +4,24 @@ defmodule Mutare.Transform.Candidate do
   # The typed, pre-id description of a single mutant: what to mutate and where.
   # Produced by the analyzer / planner and consumed by emission.
   #
-  # There is no single `%Candidate{}` struct any more. The old one carried
-  # `context` *and* its two consequences (`kind`, `operation`) as separate
-  # fields, so the type admitted nonsense states — a `:clause_drop` that claimed
-  # to be `:in_place` and `:replace`, say — that only discipline kept out. The
-  # three legal shapes are now three structs, one per valid combination, so the
-  # illegal ones can't be built:
+  # There is no single `%Candidate{}` struct: each legal *shape* of a mutant is its own struct.
+  # The old single struct carried `context` *and* its two consequences (`kind`, `operation`) as
+  # separate fields, so the type admitted nonsense states — a `:clause_drop` that claimed to be
+  # `:in_place` and `:replace`, say — that only discipline kept out. One struct per valid
+  # combination makes the illegal ones unbuildable. `kind`/`operation` aren't fields: they're
+  # implied by *which* struct it is, and recovered at emission when the matching `Mutare.Site` is
+  # built. Placement (in-place vs lifted) stays positional — the analyzer picks the variant from
+  # where the node sits; the mutator never declares it. The candidate-design rule: **no
+  # discriminant field — the struct *is* the shape** (a `kind` enum would just let the impossible
+  # states back in).
   #
-  #   * `Candidate.InPlace` — a body operator swap, delivered by an in-place
-  #     selector `case` (was `:runtime_body` / `:in_place` / `:replace`).
-  #   * `Candidate.Lifted`  — a single tagged-node replacement in a lifted clause,
-  #     delivered by a dispatcher clause gated `when mutare_active === <id>` (a `case`
-  #     can't live in a guard, and a selector is illegal in a pattern). Covers both a
-  #     `when`-guard operator swap and a head-pattern literal swap — delivered
-  #     identically (tag + replace one node), so one struct, the legality difference
-  #     enforced at discovery (was `:guard`/`:lifted` and a separate head-literal kind).
-  #   * `Candidate.PatternStructure` — a whole-head pattern restructuring (a variable
-  #     swap, or a duplicate-variable wildcarding), delivered by lifting. Like `Pattern`
-  #     it lives in a clause head, but the rewrite spans sibling positions / repeated
-  #     variables that a single `meta[:mutare_tag]` can't capture, so it is applied by
-  #     whole-clause replacement by index (like `Drop`). Structural (the
-  #     `PatternSwap`/`PatternWildcard` families own the logic via `pattern_mutations/2`).
-  #   * `Candidate.CaseClause` — a `case` *clause* pattern/guard mutation (swap/wildcard,
-  #     a pattern literal, or a guard operator), delivered **in place** by the
-  #     *tuple-the-scrutinee* rewrite (the per-clause C+M analogue of head lifting): the
-  #     `case` becomes `case {<active>, <subject>} do …` and each mutant adds one gated
-  #     clause before its original. The diff stays focused on the pattern/guard.
-  #   * `Candidate.CasePattern` — the same kinds applied to a `receive`/`fn` clause
-  #     (neither has a scrutinee to tuple), delivered **in place** by the
-  #     *whole-construct selector*: the whole construct is wrapped in a selector whose
-  #     mutant branch is a copy with one clause's pattern/guard changed (`replacement`).
-  #     The diff stays focused on the pattern/guard (`original`/`mutated`).
-  #   * `Candidate.MatchPattern` — the same swap/wildcard families on the LHS of a runtime
-  #     `=` match *in statement position*. A selector can't wrap the match (its bindings
-  #     would stop escaping), so the bound variables are re-exported through a tuple and
-  #     rebound outside: `{vars} = case rhs do <pat> -> {vars} end`, the pattern hosted in
-  #     a selector. Delivered in place; recorded as an `:in_place` `Mutare.Site`.
-  #   * `Candidate.MacroPattern` — the same families on the **pattern arg of a binding-
-  #     escaping known macro** (`destructure([x, y], v)`, declared `:binding_pattern`) in a
-  #     value-discarded position. The `MatchPattern` mechanism with the inner `case rhs do
-  #     pat -> {vars} end` generalized to `macro(<pat>, …); {vars}` — the macro does the
-  #     binding, the tuple re-export carries the escaping vars out. Delivered in place.
-  #   * `Candidate.Return`  — a function clause's *tail expression* replaced with a
-  #     constant (`nil`/`0`/`""`/`[]`), delivered by an in-place selector `case`
-  #     (the tail is a body position). Structural, like `Drop`: it targets a
-  #     position only the transform knows (the clause's return), not a node a
-  #     `mutate/1` mutator could match — but it is *delivered* in place, not lifted.
-  #
-  # `kind`/`operation` no longer live on the candidate — they're implied by the
-  # struct, and recovered at emission when the matching `Mutare.Site` is built.
-  # Placement (in-place vs lifted) stays positional: the analyzer picks the
-  # variant from where the node sits, the mutator never declares it.
+  # Each variant's own `@moduledoc` (below) documents what it represents and how it is delivered.
+  # The variant → {`Mutare.Site` constructor, node-local emit route, selector branch} mapping is
+  # *not* spread across the structs: it lives in one table, `Mutare.Transform.Candidate.Delivery`,
+  # so the three facets can't drift apart and adding a variant is one row there. There is
+  # deliberately no enumerated catalogue in this comment — that list is exactly what drifted (it
+  # said "three legal shapes" while the structs had grown past a dozen); the structs below and the
+  # `Delivery` table are the catalogue.
   #
   # The excluded positions — `:compile_time` (module-attribute values and macro
   # bodies), `:spec` (a bitstring type specifier), `:capture_arity` (the `/` in

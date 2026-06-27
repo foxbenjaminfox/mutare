@@ -1,8 +1,15 @@
 defmodule Mutare.Transform.Candidate.DeliveryTest do
   use ExUnit.Case, async: true
 
+  alias Mutare.Site
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
+
+  @range %{start: [line: 1, column: 1], end: [line: 1, column: 5]}
+
+  defp spec, do: Mutare.Mutator.Spec.for_module(Mutare.Mutators.Relational)
+  defp op(o), do: {o, [], [{:a, [], nil}, {:b, [], nil}]}
+  defp clause, do: Sourceror.parse_string!("def f(_), do: :ok")
 
   describe "classify_node_candidates/1" do
     test "classifies every node-local delivery route" do
@@ -46,6 +53,146 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
           %Candidate.InPlace{},
           %Candidate.CaseClause{}
         ])
+      end
+    end
+  end
+
+  describe "route/1" do
+    # Every variant has a `profile/1` row (so `route/1` never falls through), and each reports
+    # the route its emit path expects — node-local for the seven node candidates, `:lifted` /
+    # `:hosted` for the candidates routed by FunctionPlan / HostedEmit.
+    test "reports the delivery route of every candidate variant" do
+      routes = [
+        {%Candidate.InPlace{}, :in_place},
+        {%Candidate.Return{}, :in_place},
+        {%Candidate.CasePattern{}, :in_place},
+        {%Candidate.RescueDrop{}, :in_place},
+        {%Candidate.CaseClause{}, :case_clause},
+        {%Candidate.MatchPattern{}, :match_pattern},
+        {%Candidate.MacroPattern{}, :macro_pattern},
+        {%Candidate.Lifted{}, :lifted},
+        {%Candidate.PatternStructure{}, :lifted},
+        {%Candidate.GuardDrop{}, :lifted},
+        {%Candidate.Drop{}, :lifted},
+        {%Candidate.Hosted{}, :hosted}
+      ]
+
+      for {candidate, expected} <- routes do
+        assert Delivery.route(candidate) == expected,
+               "expected #{inspect(candidate.__struct__)} to route #{inspect(expected)}"
+      end
+    end
+  end
+
+  describe "selector_branch/1" do
+    test "reads the mutant-branch field of each in-place-routed candidate" do
+      mutated = op(:>)
+      replacement = op(:<)
+
+      assert Delivery.selector_branch(%Candidate.InPlace{mutated: mutated}) == mutated
+      assert Delivery.selector_branch(%Candidate.Return{mutated: mutated}) == mutated
+
+      assert Delivery.selector_branch(%Candidate.CasePattern{replacement: replacement}) ==
+               replacement
+
+      assert Delivery.selector_branch(%Candidate.RescueDrop{replacement: replacement}) ==
+               replacement
+    end
+  end
+
+  describe "site/3" do
+    test "in-place / case-clause / match-pattern / macro-pattern record an :in_place :replace site" do
+      for candidate <- [
+            %Candidate.InPlace{
+              mutator: spec(),
+              original: op(:>=),
+              mutated: op(:>),
+              range: @range
+            },
+            %Candidate.CaseClause{
+              mutator: spec(),
+              original: op(:>=),
+              mutated: op(:>),
+              range: @range
+            },
+            %Candidate.MatchPattern{
+              mutator: spec(),
+              original: op(:>=),
+              mutated: op(:>),
+              range: @range
+            },
+            %Candidate.MacroPattern{
+              mutator: spec(),
+              original: op(:>=),
+              mutated: op(:>),
+              range: @range
+            },
+            %Candidate.CasePattern{
+              mutator: spec(),
+              original: op(:>=),
+              mutated: op(:>),
+              range: @range
+            }
+          ] do
+        site = Delivery.site(7, candidate, "lib/x.ex")
+        assert %Site{id: 7, kind: :in_place, operation: :replace, mutator: :relational} = site
+        assert site.original_form == :>=
+      end
+    end
+
+    test "a return candidate records an :in_place :replace site with no original form" do
+      candidate = %Candidate.Return{
+        mutator: spec(),
+        original: op(:>=),
+        mutated: nil,
+        range: @range
+      }
+
+      site = Delivery.site(7, candidate, "lib/x.ex")
+
+      assert %Site{kind: :in_place, operation: :replace, mutator: :relational} = site
+      # return_value/6 keeps no AST form (the replacement is a bare constant).
+      assert site.original_form == nil
+    end
+
+    test "lifted candidates record a :lifted :replace site" do
+      for candidate <- [
+            %Candidate.Lifted{mutator: spec(), original: op(:>=), mutated: op(:>), range: @range},
+            %Candidate.PatternStructure{
+              mutator: spec(),
+              original: op(:>=),
+              mutated: op(:>),
+              range: @range
+            },
+            %Candidate.GuardDrop{
+              mutator: spec(),
+              original: op(:>=),
+              mutated: op(:>),
+              range: @range
+            }
+          ] do
+        site = Delivery.site(7, candidate, "lib/x.ex")
+        assert %Site{kind: :lifted, operation: :replace, mutator: :relational} = site
+      end
+    end
+
+    test "a rescue-drop records an in-place :delete site" do
+      candidate = %Candidate.RescueDrop{mutator: spec(), dropped: clause(), range: @range}
+      site = Delivery.site(7, candidate, "lib/x.ex")
+
+      assert %Site{kind: :in_place, operation: :delete, mutator: :relational} = site
+    end
+
+    test "a clause-drop records a lifted :delete site under the clause_drop mutator" do
+      candidate = %Candidate.Drop{original: clause(), range: @range}
+      site = Delivery.site(7, candidate, "lib/x.ex")
+
+      assert %Site{kind: :lifted, operation: :delete, mutator: :clause_drop} = site
+    end
+
+    test "a hosted candidate has no site/3 path (HostedEmit records its Sites per mutant)" do
+      assert_raise ArgumentError, ~r/records its Sites per mutant in HostedEmit/, fn ->
+        Delivery.site(7, %Candidate.Hosted{}, "lib/x.ex")
       end
     end
   end
