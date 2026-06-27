@@ -67,7 +67,7 @@ defmodule Mutare.MixProject do
       main: "readme",
       source_url: @source_url,
       source_ref: "v#{@version}",
-      extras: ["README.md"],
+      extras: ["README.md", "LICENSE"],
       # Modules fall into the first group whose entry matches, so the explicit
       # lists win over the trailing catch-alls. "Internal" (`~r//`) sweeps up
       # everything else — the transform pipeline, sandbox, coverage plumbing, etc.

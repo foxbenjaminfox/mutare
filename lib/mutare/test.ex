@@ -154,7 +154,7 @@ defmodule Mutare.Test do
   family from any structural sibling (`return_value`, `clause_drop`, …) the transform also
   records.
 
-  `name` is the recorded family name — a built-in's `Mutare.Mutator.name/0`, or the `:as`
+  `name` is the recorded family name — a built-in's `c:Mutare.Mutator.name/0`, or the `:as`
   override when the mutator was configured under one.
 
       iex> import Mutare.Test
