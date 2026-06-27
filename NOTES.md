@@ -4922,10 +4922,11 @@ as an opaque atom, even inside a class so a quoted `]` can't close it), and
 `trailing_anchors` declines a trailing anchor whose last byte is `in_inert?/2` (the
 commented-`$` drop). `mode_walk/6` is itself flag-aware and keeps skipping these spans
 inline. So the *correctness* residual — a guaranteed-equivalent mutant from a
-commented/quoted construct in *any* pass — is gone. (`inert_spans` re-derives the
-escape/class/flag skeleton a fourth time; the *deeper* consolidation — one token reader
-all walks fold over, eliminating that skeleton duplication — is still the separate
-deferred refactor noted below, but the `x`-correctness it was wanted for is now done.)
+commented/quoted construct in *any* pass — is gone. (This `inert_spans` pre-pass was the
+intermediate step: it closed the correctness residual but re-derived the escape/class/flag
+skeleton a fourth time. It has since been **subsumed** by the one-token-reader
+consolidation — `inert_spans` is gone, the inert spans are now `:inert` tokens in the
+shared `tokens/2` stream — see "collapsed onto one token reader" below.)
 Verified two ways: a **differential fuzz** of 85k inert-free patterns (no `\Q`, no `#`)
 confirms the new passes are **byte-identical** to the pre-reader output (the refactor
 changed nothing where there is nothing inert), and a 200k-pattern fuzz seeded with
@@ -5805,22 +5806,25 @@ Three near-
 duplications were measured against the cost of unifying them and **deliberately kept** — the merge
 buys less than the duplication costs:
 
-  - **`Mutare.Mutators.RegexLiteral`'s byte-walks** (`scan/7`, `alt_walk/7`, `mode_walk/6`, plus the
-    `inert_spans/2` pre-pass). All consume the Elixir regex string and share the escape-pair /
-    character-class handling, but their *accumulators* differ fundamentally — `scan` threads a
-    `prev_quant` for quantifier detection, `alt_walk` a frame stack for alternation spans, `mode_walk`
-    a `Flags` scope stack for the positional flag-aware swaps (anchors via `m`, the dot via `s` — kept
-    one walk because their state is identical), and `inert_walk` records the inert (`\Q`/`x`-comment)
-    spans the other three consult. So the escape/class skeleton is now in *four* places — the
-    consolidation pressure is real and a shared *regex token reader* (yield `{token, in_class?,
-    escaped?, flags}`, let each walk keep its own accumulator) is the leading candidate. It is still
-    **deferred, not forgotten**: the accumulators stay distinct under any shared reader, the merge is a
-    real refactor with its own poison risk, and the module is heavily fuzzed — so it wants doing as a
-    *focused* pass with the property/fuzz suite green before and after, not bolted onto a feature commit.
-    What's already settled and *not* part of the remaining duplication: the `Flags` scope logic (its own
-    unit-tested module) and the **inert-span correctness** (centralised in `inert_spans/2`, consumed
-    uniformly) — so the token reader is now purely a *de-duplication* refactor, no longer also owed a
-    correctness fix. The escape grammar growing (a new `\…\…` span like `\Q…\E`) is the forcing function.
+  - **`Mutare.Mutators.RegexLiteral`'s byte-walks — `[done]`, collapsed onto one token reader.** The
+    four walks (`scan`, `alt_walk`, `mode_walk`, `inert_walk`) each re-derived the same escape /
+    character-class / group / flag / inert skeleton; they are now folds over a **single** `tokens/2`
+    reader that owns all of it once. A token is `%{kind, text, offset, in_class, flags}` (a `:bound`
+    carries its parsed bound, a `:group_open` its `removable?`); `text`/`offset` let a consumer splice a
+    replacement by `binary_part`, and inert (`\Q…\E` / `x`-comment / `(?#…)`) spans are a single
+    `:inert` token whose content is *not* lexed, so every pass skips them by simply not matching that
+    kind. Each consumer keeps only its own accumulator — `scan_patterns` a `prev_quant` reduce,
+    `alternation_patterns` a frame stack, `mode_aware_patterns` a `flat_map`, `anchor_patterns` a glance
+    at the first/last token (escaping + inertness already resolved, so its old `escaped?`/`in_inert?`
+    string heuristics fell away). How the risk was managed: a **byte-identical differential fuzz** against
+    the pre-refactor module over 300k patterns showed the new folds match the old walks on **every
+    compiling original** save two *improvements* the shared reader brought for free — it now treats a
+    `(?#…)` PCRE comment as inert for `scan`/`alt` too (the old `inert_spans` only knew `\Q`/`x`-comments,
+    so `scan` had been mutating comment content into guaranteed-equivalents), and it fixed a stray
+    `alt_walk` miss. `Flags.open/2` grew a `:push | :mutate | :comment` tag so the reader can classify a
+    `(`-token (real group vs bare `(?m)` modifier vs `(?#…)` comment) — the one API ripple. (The forcing
+    function the earlier note named — the escape grammar growing — is now also where *new* lexing goes:
+    one place, not four.)
   - **`Mutare.Transform.Analyze.Conditions`' parallel spine-walks** (`spine_rewrite`, `spine_bindings`,
     `eval_steps`, `offspine_escaping_binding?`, `prune_binding_ancestors`). All share one structural
     skeleton (stop at `@binding_isolating_forms`, recurse-left at `@short_circuit_ops`, flag at

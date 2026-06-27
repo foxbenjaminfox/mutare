@@ -100,13 +100,15 @@ defmodule Mutare.Mutators.RegexLiteral do
   compiled with `Regex.compile/2` — the *same* PCRE validity the rendered `~r/…/<mods>`
   is held to — and any that does not compile is dropped, so a byte-level edit that lets
   neighbouring characters re-tokenize (`{42+}` → `{42}`) can never poison the single
-  metamutant compile. The byte ranges where regex syntax does not apply — a `\\Q…\\E`
-  literal-quote span and an `x`-mode `#` comment (read **positionally**, so an inline
-  `(?x)` is honoured) — are computed once by `inert_spans/2` and consumed by every pass,
-  so no anchor/dot/quantifier/literal/alternation inside them is ever mutated, dropped,
-  or split (and a quoted/commented `(` cannot perturb the flag scope stack). Only
-  non-interpolated patterns are touched: an interpolated `~r/\#{x}/` parses with multiple
-  `<<>>` parts, not a single binary.
+  metamutant compile. Every pass is a fold over **one** shared token stream (`tokens/2`),
+  which owns all cross-cutting lexing — escapes, character classes, group structure + the
+  `Flags` scope stack, and the inert spans where regex syntax does not apply: a `\\Q…\\E`
+  literal quote, an `x`-mode `#` comment (read **positionally**, so an inline `(?x)` is
+  honoured), and a `(?#…)` PCRE comment. Inert spans become a single `:inert` token whose
+  content is not lexed, so no anchor/dot/quantifier/literal/alternation inside them is ever
+  mutated, dropped, or split (and a quoted/commented `(` cannot perturb the flag scope
+  stack). Only non-interpolated patterns are touched: an interpolated `~r/\#{x}/` parses
+  with multiple `<<>>` parts, not a single binary.
   """
   @behaviour Mutare.Mutator
 
@@ -126,17 +128,18 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   @impl Mutare.Mutator
   def mutate({:sigil_r, meta, [{:<<>>, bmeta, [pattern]}, modifiers]}) when is_binary(pattern) do
-    # The byte ranges where regex syntax does not apply — `\Q…\E` literal quotes and
-    # `x`-mode `#` comments — computed once (positionally, via `Flags`) and shared by the
-    # passes that are not themselves flag-aware, so none of them mutate inert content.
-    inert = inert_spans(pattern, MapSet.new(modifiers))
+    # One lexical pass: the shared `tokens/2` reader owns all cross-cutting state —
+    # escapes, character classes, group structure + the `Flags` scope stack, and the inert
+    # (`\Q…\E` / `x`-comment) spans — and every pass below is a fold over its output, so the
+    # escape/class/flag/inert handling lives in exactly one place.
+    toks = tokens(pattern, MapSet.new(modifiers))
 
     pattern_variants =
       (["", @sentinel] ++
-         anchor_patterns(pattern, inert) ++
-         mode_aware_patterns(pattern, modifiers) ++
-         scan_patterns(pattern, inert) ++
-         alternation_patterns(pattern, inert))
+         anchor_patterns(pattern, toks) ++
+         mode_aware_patterns(pattern, modifiers, toks) ++
+         scan_patterns(pattern, toks) ++
+         alternation_patterns(pattern, toks))
       |> Enum.map(&{&1, modifiers})
 
     modifier_variants = Enum.map(modifier_drops(modifiers), &{pattern, &1})
@@ -152,75 +155,136 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   # --- inert spans (shared `x`-aware reader) -------------------------------
 
-  # A single positional walk recording every byte range where regex *syntax* does not
-  # apply: a `\Q…\E` literal-quote span and an `x`-mode `#` comment (to end-of-line). It
-  # tracks escapes, character classes and the `Flags` scope stack (so `x` is read
-  # positionally and a quoted/commented `(` is *not* mistaken for a group). The
-  # flag-unaware passes (`scan`/`alt_walk`/`anchor_patterns`) consult the result by byte
-  # offset so they never mutate, drop, or branch on inert content. (`mode_walk` is itself
-  # flag-aware and skips these spans inline.) Returns `[{start, len}]`, ascending.
-  defp inert_spans(pattern, baseline),
-    do: inert_walk(pattern, 0, false, false, Flags.initial(baseline), [])
+  # The shared token reader. One positional walk produces the `[token]` stream every pass
+  # folds over, so the cross-cutting lexical state lives here once: escape pairs, character
+  # classes (`in_class`/`just_opened`), group structure with the `Flags` scope stack, and
+  # the inert (`\Q…\E` / `x`-comment) spans. A token is
+  # `%{kind, text, offset, in_class, flags}` (a `:bound` also carries its parsed `bound`;
+  # a `:group_open` its `removable?`). `text`/`offset` let a consumer splice a replacement
+  # by `binary_part`; `flags` is the effective flag set at that point. Inert spans become a
+  # single `:inert` token (their content is *not* lexed), so every pass skips them simply
+  # by not matching that kind. Kinds: `:char :escape :class_open :class_close :range
+  # :bound :group_open :group_close :modifier :inert`.
+  defp tokens(pattern, baseline), do: lex(pattern, 0, false, false, Flags.initial(baseline), [])
 
-  defp inert_walk(<<>>, _i, _ic, _jo, _stack, acc), do: Enum.reverse(acc)
+  defp tok(kind, text, offset, in_class, stack),
+    do: %{kind: kind, text: text, offset: offset, in_class: in_class, flags: hd(stack)}
 
-  defp inert_walk(<<?\\, ?Q, rest::binary>>, i, ic, _jo, stack, acc) do
+  defp lex(<<>>, _i, _ic, _jo, _stack, acc), do: Enum.reverse(acc)
+
+  # `\Q…\E` literal-quote span → one inert token.
+  defp lex(<<?\\, ?Q, rest::binary>>, i, ic, _jo, stack, acc) do
     {quoted, tail} = take_quoted(rest)
-    len = 2 + byte_size(quoted)
-    inert_walk(tail, i + len, ic, false, stack, [{i, len} | acc])
+    text = "\\Q" <> quoted
+    lex(tail, i + byte_size(text), ic, false, stack, [tok(:inert, text, i, ic, stack) | acc])
   end
 
-  defp inert_walk(<<?\\, c::utf8, rest::binary>>, i, ic, _jo, stack, acc),
-    do: inert_walk(rest, i + 1 + byte_size(<<c::utf8>>), ic, false, stack, acc)
-
-  defp inert_walk(<<?\\>>, i, ic, jo, stack, acc),
-    do: inert_walk(<<>>, i + 1, ic, jo, stack, acc)
-
-  defp inert_walk(<<?[, ?^, rest::binary>>, i, false, _jo, stack, acc),
-    do: inert_walk(rest, i + 2, true, true, stack, acc)
-
-  defp inert_walk(<<?[, rest::binary>>, i, false, _jo, stack, acc),
-    do: inert_walk(rest, i + 1, true, true, stack, acc)
-
-  defp inert_walk(<<?], rest::binary>>, i, true, false, stack, acc),
-    do: inert_walk(rest, i + 1, false, false, stack, acc)
-
-  defp inert_walk(<<?(, rest::binary>>, i, false, _jo, stack, acc) do
-    {consumed, rest2, stack2} = Flags.open(rest, stack)
-    inert_walk(rest2, i + 1 + byte_size(consumed), false, false, stack2, acc)
+  # Escape pair.
+  defp lex(<<?\\, c::utf8, rest::binary>>, i, ic, _jo, stack, acc) do
+    text = <<?\\, c::utf8>>
+    lex(rest, i + byte_size(text), ic, false, stack, [tok(:escape, text, i, ic, stack) | acc])
   end
 
-  defp inert_walk(<<?), rest::binary>>, i, false, _jo, stack, acc),
-    do: inert_walk(rest, i + 1, false, false, Flags.close(stack), acc)
+  # Lone trailing backslash (invalid but consumed gracefully) — a literal char.
+  defp lex(<<?\\>>, i, ic, _jo, stack, acc),
+    do: lex(<<>>, i + 1, ic, false, stack, [tok(:char, "\\", i, ic, stack) | acc])
 
-  defp inert_walk(<<?#, rest::binary>>, i, false, _jo, stack, acc) do
+  # Character class open / close.
+  defp lex(<<?[, ?^, rest::binary>>, i, false, _jo, stack, acc),
+    do: lex(rest, i + 2, true, true, stack, [tok(:class_open, "[^", i, false, stack) | acc])
+
+  defp lex(<<?[, rest::binary>>, i, false, _jo, stack, acc),
+    do: lex(rest, i + 1, true, true, stack, [tok(:class_open, "[", i, false, stack) | acc])
+
+  defp lex(<<?], rest::binary>>, i, true, false, stack, acc),
+    do: lex(rest, i + 1, false, false, stack, [tok(:class_close, "]", i, true, stack) | acc])
+
+  # Character-class range `lo-hi` (alphanumeric endpoints) — a lexical unit so a consumer
+  # never has to re-stitch one from single chars.
+  defp lex(<<lo::utf8, ?-, hi::utf8, rest::binary>>, i, true, _jo, stack, acc)
+       when (lo in ?0..?9 or lo in ?a..?z or lo in ?A..?Z) and
+              (hi in ?0..?9 or hi in ?a..?z or hi in ?A..?Z) do
+    text = <<lo::utf8, ?-, hi::utf8>>
+    lex(rest, i + byte_size(text), true, false, stack, [tok(:range, text, i, true, stack) | acc])
+  end
+
+  # `x`-mode `#` comment (outside a class, `x` active) → inert.
+  defp lex(<<?#, rest::binary>>, i, false, _jo, stack, acc) do
     if Flags.active?(stack, ?x) do
       {comment, tail} = take_comment_line(rest)
-      len = 1 + byte_size(comment)
-      inert_walk(tail, i + len, false, false, stack, [{i, len} | acc])
+      text = "#" <> comment
+
+      lex(tail, i + byte_size(text), false, false, stack, [
+        tok(:inert, text, i, false, stack) | acc
+      ])
     else
-      inert_walk(rest, i + 1, false, false, stack, acc)
+      lex(rest, i + 1, false, false, stack, [tok(:char, "#", i, false, stack) | acc])
     end
   end
 
-  defp inert_walk(<<c::utf8, rest::binary>>, i, ic, _jo, stack, acc),
-    do: inert_walk(rest, i + byte_size(<<c::utf8>>), ic, false, stack, acc)
+  # Group open (outside a class) — `Flags.open/2` advances the flag scope and tells us
+  # whether this is a real group (`:push`), a bare inline modifier (`:mutate`, no frame) or
+  # a `(?#…)` comment (`:inert`). `removable?` (a plain capturing `(`, not `(?…`) is what
+  # the alternation pass needs.
+  defp lex(<<?(, rest::binary>>, i, false, _jo, stack, acc) do
+    {action, consumed, tail, stack2} = Flags.open(rest, stack)
+    text = "(" <> consumed
+    next = i + byte_size(text)
 
-  # If an inert span starts at byte offset `at`, return `{span_text, rest}` to consume it
-  # whole; else `:none`. `bin` is the pattern slice beginning at `at`.
-  defp take_inert(inert, at, bin) do
-    case List.keyfind(inert, at, 0) do
-      {^at, len} ->
-        <<span::binary-size(len), rest::binary>> = bin
-        {span, rest}
+    token =
+      case action do
+        :comment ->
+          tok(:inert, text, i, false, stack)
 
-      nil ->
-        :none
+        :mutate ->
+          tok(:modifier, text, i, false, stack)
+
+        :push ->
+          Map.put(tok(:group_open, text, i, false, stack), :removable?, not modifier_open?(rest))
+      end
+
+    lex(tail, next, false, false, stack2, [token | acc])
+  end
+
+  defp lex(<<?), rest::binary>>, i, false, _jo, stack, acc),
+    do:
+      lex(rest, i + 1, false, false, Flags.close(stack), [
+        tok(:group_close, ")", i, false, stack) | acc
+      ])
+
+  # Bounded quantifier `{n,m}` (a valid bound, outside a class) → one token carrying the
+  # parsed bound; an invalid `{` is a literal char.
+  defp lex(<<?{, rest::binary>>, i, false, _jo, stack, acc) do
+    case parse_bound(rest) do
+      {:ok, bound, tail} ->
+        text = "{" <> binary_part(rest, 0, byte_size(rest) - byte_size(tail))
+        token = Map.put(tok(:bound, text, i, false, stack), :bound, bound)
+        lex(tail, i + byte_size(text), false, false, stack, [token | acc])
+
+      :error ->
+        lex(rest, i + 1, false, false, stack, [tok(:char, "{", i, false, stack) | acc])
     end
   end
 
-  # Is byte offset `at` *inside* any inert span (not just at its start)?
-  defp in_inert?(inert, at), do: Enum.any?(inert, fn {s, len} -> at >= s and at < s + len end)
+  # Any other single codepoint (an anchor `^`/`$`, the dot, a quantifier `*`/`+`/`?`, a
+  # pipe, a class member, a plain literal…). Consumers dispatch on `text`.
+  defp lex(<<c::utf8, rest::binary>>, i, ic, _jo, stack, acc),
+    do:
+      lex(rest, i + byte_size(<<c::utf8>>), ic, false, stack, [
+        tok(:char, <<c::utf8>>, i, ic, stack) | acc
+      ])
+
+  defp modifier_open?(<<??, _::binary>>), do: true
+  defp modifier_open?(_), do: false
+
+  # --- splice helpers: rebuild the pattern with one token's text replaced ---
+
+  defp before_tok(pattern, %{offset: o}), do: binary_part(pattern, 0, o)
+
+  defp after_tok(pattern, %{offset: o, text: t}) do
+    skip = o + byte_size(t)
+    binary_part(pattern, skip, byte_size(pattern) - skip)
+  end
 
   # Every rewrite above is built to stay a legal regex, but a *byte-level* edit can, in
   # a pathological pattern, let neighbouring characters re-tokenize — `{42+}` (a literal
@@ -244,61 +308,58 @@ defmodule Mutare.Mutators.RegexLiteral do
   # A leading `^`/`\A` is at offset 0, which can never start (or sit inside) an inert span
   # — those begin with `\Q`/`#` — so only the *trailing* drop needs the inert guard (a
   # pattern can end inside an `x`-comment, `~r/a # $/x`).
-  defp anchor_patterns(pattern, inert),
-    do: leading_anchors(pattern) ++ trailing_anchors(pattern, inert)
+  # Drop a leading start-anchor or a trailing end-anchor — now just "is the first/last
+  # token an anchor?". The reader has already resolved escaping (a real `\z` is an
+  # `:escape` token; an escaped-backslash-then-`z` ends in a `:char "z"`) and inertness (a
+  # commented trailing `$` is *inside* an `:inert` token, never the last anchor token), so
+  # the old `escaped?`/`in_inert?` string heuristics fall away.
+  defp anchor_patterns(pattern, tokens),
+    do: leading_drop(pattern, List.first(tokens)) ++ trailing_drop(pattern, List.last(tokens))
 
-  defp leading_anchors(pattern) do
-    cond do
-      String.starts_with?(pattern, "^") -> [chop_front(pattern, 1)]
-      String.starts_with?(pattern, "\\A") -> [chop_front(pattern, 2)]
-      true -> []
-    end
-  end
+  defp leading_drop(pattern, %{kind: :char, text: "^"}), do: [chop_front(pattern, 1)]
+  defp leading_drop(pattern, %{kind: :escape, text: "\\A"}), do: [chop_front(pattern, 2)]
+  defp leading_drop(_pattern, _tok), do: []
 
-  defp trailing_anchors(pattern, inert) do
-    cond do
-      # A trailing anchor whose last byte is inert (an `x`-comment `$`) is not real.
-      in_inert?(inert, byte_size(pattern) - 1) ->
-        []
-
-      # `$` is an anchor unless an odd run of backslashes escapes it.
-      String.ends_with?(pattern, "$") and not escaped?(chop_back(pattern, 1)) ->
-        [chop_back(pattern, 1)]
-
-      # `\z`/`\Z` are anchors only when the backslash genuinely escapes the letter.
-      String.ends_with?(pattern, "\\z") and escaped?(chop_back(pattern, 1)) ->
-        [chop_back(pattern, 2)]
-
-      String.ends_with?(pattern, "\\Z") and escaped?(chop_back(pattern, 1)) ->
-        [chop_back(pattern, 2)]
-
-      true ->
-        []
-    end
-  end
-
-  # Does the metacharacter that *follows* `str` sit behind an odd run of backslashes?
-  defp escaped?(str), do: rem(trailing_backslashes(str), 2) == 1
-
-  defp trailing_backslashes(str),
-    do: byte_size(str) - byte_size(String.trim_trailing(str, "\\"))
+  defp trailing_drop(pattern, %{kind: :char, text: "$"}), do: [chop_back(pattern, 1)]
+  defp trailing_drop(pattern, %{kind: :escape, text: "\\z"}), do: [chop_back(pattern, 2)]
+  defp trailing_drop(pattern, %{kind: :escape, text: "\\Z"}), do: [chop_back(pattern, 2)]
+  defp trailing_drop(_pattern, _tok), do: []
 
   defp chop_front(s, n), do: binary_part(s, n, byte_size(s) - n)
   defp chop_back(s, n), do: binary_part(s, 0, byte_size(s) - n)
 
   # --- mode-aware construct swaps (anchors via `m`, the dot via `s`) -------
 
-  # A focused walk (like `alt_walk/6`, not `scan/6`) for the mutations whose
-  # *equivalence* depends on an option flag: it tracks escape pairs and character-class
-  # nesting to tell a *real* construct from an escaped (`\^`/`\.`) or in-class (`[$.]`)
-  # literal, plus a `Flags` scope stack so the flag is read **positionally** — an inline
-  # `(?m)` / `(?s:…)` / `(?-m)` makes the relevant mode vary along the pattern. Each
-  # construct offers only the swap that is non-equivalent under the mode in force here.
-  defp mode_aware_patterns(pattern, modifiers) do
-    pattern
-    |> mode_walk("", false, false, Flags.initial(MapSet.new(modifiers)), [])
+  # The mutations whose *equivalence* depends on an option flag — anchor swaps (via `m`),
+  # the dot's dotall flip (via `s`). A fold over the token stream: each real anchor / dot
+  # token carries the `flags` in force at its position (so an inline `(?m)`/`(?s:…)` is
+  # honoured), and an escaped/in-class/inert construct simply isn't a token this matches.
+  defp mode_aware_patterns(pattern, modifiers, tokens) do
+    tokens
+    |> Enum.flat_map(&mode_swaps(&1, pattern))
     |> dedup_force_off(pattern, modifiers)
     |> Enum.map(&elem(&1, 0))
+  end
+
+  defp mode_swaps(%{kind: :char, text: "^", in_class: false, flags: f} = t, pat),
+    do: spliced_swaps(caret_swaps(MapSet.member?(f, ?m)), pat, t)
+
+  defp mode_swaps(%{kind: :char, text: "$", in_class: false, flags: f} = t, pat),
+    do: spliced_swaps(dollar_swaps(MapSet.member?(f, ?m)), pat, t)
+
+  defp mode_swaps(%{kind: :char, text: ".", in_class: false, flags: f} = t, pat),
+    do: spliced_swaps(dot_swaps(MapSet.member?(f, ?s)), pat, t)
+
+  defp mode_swaps(%{kind: :escape, text: <<?\\, c::utf8>>, in_class: false, flags: f} = t, pat),
+    do: spliced_swaps(escaped_anchor_swaps(c, MapSet.member?(f, ?m)), pat, t)
+
+  defp mode_swaps(_token, _pat), do: []
+
+  # Splice each `{replacement, tag}` over the token's text, keeping the tag.
+  defp spliced_swaps(swaps, pattern, tok) do
+    pre = before_tok(pattern, tok)
+    post = after_tok(pattern, tok)
+    Enum.map(swaps, fn {repl, tag} -> {pre <> repl <> post, tag} end)
   end
 
   # A **force-flag-off** swap forces one construct to behave as if a flag were off — the
@@ -322,94 +383,6 @@ defmodule Mutare.Mutators.RegexLiteral do
       end)
     end
   end
-
-  defp mode_walk(<<>>, _prefix, _ic, _jo, _stack, acc), do: acc
-
-  # `\Q…\E` quotes a literal span: its `(`/`)`/`^`/`$` are inert, so consuming it whole is
-  # both a correctness *and* a soundness fix — a quoted `(` must not push a phantom flag
-  # frame (which would leak the mode past the real `)` and mis-gate a later anchor).
-  defp mode_walk(<<?\\, ?Q, rest::binary>>, prefix, in_class, _jo, stack, acc) do
-    {quoted, tail} = take_quoted(rest)
-    mode_walk(tail, prefix <> "\\Q" <> quoted, in_class, false, stack, acc)
-  end
-
-  # Escape pair — `\A`/`\z`/`\Z` are anchors; any other escape (incl. `\^`/`\$`) is a
-  # literal, so it offers nothing.
-  defp mode_walk(<<?\\, c::utf8, rest::binary>>, prefix, in_class, _jo, stack, acc) do
-    new =
-      if in_class,
-        do: [],
-        else: tag_swaps(escaped_anchor_swaps(c, multiline?(stack)), prefix, rest)
-
-    mode_walk(rest, prefix <> <<?\\, c::utf8>>, in_class, false, stack, acc ++ new)
-  end
-
-  defp mode_walk(<<?\\>>, prefix, ic, jo, stack, acc),
-    do: mode_walk(<<>>, prefix <> "\\", ic, jo, stack, acc)
-
-  # Character class — `^`/`$` inside it are literals, so swallow it whole (the leading
-  # `^` is the negation, the leading `]` a literal member). Flags don't change in a class.
-  defp mode_walk(<<?[, ?^, rest::binary>>, prefix, false, _jo, stack, acc),
-    do: mode_walk(rest, prefix <> "[^", true, true, stack, acc)
-
-  defp mode_walk(<<?[, rest::binary>>, prefix, false, _jo, stack, acc),
-    do: mode_walk(rest, prefix <> "[", true, true, stack, acc)
-
-  defp mode_walk(<<?], rest::binary>>, prefix, true, false, stack, acc),
-    do: mode_walk(rest, prefix <> "]", false, false, stack, acc)
-
-  # Group open / close (outside a class) — drive the flag scope stack. A modifier group
-  # (`(?m)` / `(?m:…)`) updates flags; an ordinary group just pushes/pops a frame.
-  defp mode_walk(<<?(, rest::binary>>, prefix, false, _jo, stack, acc) do
-    {consumed, rest2, stack2} = Flags.open(rest, stack)
-    mode_walk(rest2, prefix <> "(" <> consumed, false, false, stack2, acc)
-  end
-
-  defp mode_walk(<<?), rest::binary>>, prefix, false, _jo, stack, acc),
-    do: mode_walk(rest, prefix <> ")", false, false, Flags.close(stack), acc)
-
-  # In `x` (extended) mode an unescaped `#` (outside a class) starts a comment running to
-  # end-of-line: its anchors/dots are inert and any `(`/`(?…)` inside must NOT touch the
-  # flag stack. Skip it whole. `x` is itself read positionally, so an inline `(?x)` (or
-  # `(?-x)`) is honoured — a `#` before `(?x)` stays a literal.
-  defp mode_walk(<<?#, rest::binary>>, prefix, false, _jo, stack, acc) do
-    if Flags.active?(stack, ?x) do
-      {comment, tail} = take_comment_line(rest)
-      mode_walk(tail, prefix <> "#" <> comment, false, false, stack, acc)
-    else
-      mode_walk(rest, prefix <> "#", false, false, stack, acc)
-    end
-  end
-
-  # `^` outside a class — a start anchor.
-  defp mode_walk(<<?^, rest::binary>>, prefix, false, _jo, stack, acc) do
-    new = tag_swaps(caret_swaps(multiline?(stack)), prefix, rest)
-    mode_walk(rest, prefix <> "^", false, false, stack, acc ++ new)
-  end
-
-  # `$` outside a class — an end anchor.
-  defp mode_walk(<<?$, rest::binary>>, prefix, false, _jo, stack, acc) do
-    new = tag_swaps(dollar_swaps(multiline?(stack)), prefix, rest)
-    mode_walk(rest, prefix <> "$", false, false, stack, acc ++ new)
-  end
-
-  # `.` outside a class — the any-char metacharacter, whose newline-matching is governed
-  # by `s` (dotall). The `.` → `\.` literal swap is `scan/6`'s (mode-independent); here we
-  # flip its *dotall-ness*.
-  defp mode_walk(<<?., rest::binary>>, prefix, false, _jo, stack, acc) do
-    new = tag_swaps(dot_swaps(dotall?(stack)), prefix, rest)
-    mode_walk(rest, prefix <> ".", false, false, stack, acc ++ new)
-  end
-
-  defp mode_walk(<<c::utf8, rest::binary>>, prefix, in_class, _jo, stack, acc),
-    do: mode_walk(rest, prefix <> <<c::utf8>>, in_class, false, stack, acc)
-
-  defp multiline?(stack), do: Flags.active?(stack, ?m)
-  defp dotall?(stack), do: Flags.active?(stack, ?s)
-
-  # Splice each `{replacement, tag}` into the pattern at the current point, keeping the tag.
-  defp tag_swaps(swaps, prefix, rest),
-    do: Enum.map(swaps, fn {repl, tag} -> {prefix <> repl <> rest, tag} end)
 
   # Each mode swap carries a tag: `{:force_off, flag}` when it forces a construct to behave
   # as if `flag` were off (a candidate to dedup against that flag's modifier-drop), else
@@ -447,125 +420,100 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   # --- per-token scan: shorthands, class negation/ranges, the dot, quantifiers/bounds ---
 
-  # Walk the pattern left-to-right, tracking escape pairs, character-class nesting
-  # (`in_class`/`just_opened`, the latter so a leading `]` is read as a literal
-  # member) and whether the previous token was a quantifier (`prev_quant`, so a lazy
-  # `a+?` / possessive `a++` suffix is not itself swapped). Each swap site appends
-  # one or more fully-rewritten patterns.
-  defp scan_patterns(pattern, inert), do: scan(pattern, "", false, false, false, [], inert)
+  # Shorthand/class/range/quantifier/bound/dot mutations: a fold over the token stream
+  # threading `prev_quant` (so a lazy `a+?` / possessive `a++` suffix is not itself
+  # mutated). The reader resolved escapes, class structure (a leading `]` is a member, not
+  # a `:class_close`), ranges and bounds into single tokens, and dropped inert content — so
+  # each clause is just "given this token, what mutants?". Reconstruction splices the
+  # replacement over the token's text via `before_tok`/`after_tok`.
+  defp scan_patterns(pattern, tokens) do
+    {mutants, _pq} =
+      Enum.reduce(tokens, {[], false}, fn token, {acc, pq} ->
+        {new, pq2} = scan_token(token, pattern, pq)
+        {acc ++ new, pq2}
+      end)
 
-  defp scan(<<>>, _prefix, _in_class, _jo, _pq, acc, _inert), do: acc
-
-  # Dispatcher: an inert span (`\Q…\E` / `x`-comment, from `inert_spans/2`) starting here
-  # is consumed whole as an opaque atom (no mutation; a following quantifier is real, so
-  # reset `prev_quant`/`just_opened`); otherwise the byte goes to the token clauses.
-  defp scan(bin, prefix, in_class, jo, pq, acc, inert) do
-    case take_inert(inert, byte_size(prefix), bin) do
-      {span, rest} -> scan(rest, prefix <> span, in_class, false, false, acc, inert)
-      :none -> scan_token(bin, prefix, in_class, jo, pq, acc, inert)
-    end
+    mutants
   end
 
-  # An escape sequence: backslash + the codepoint it escapes (consumed as a unit, so
-  # `\\d` — an escaped backslash then `d` — is never mistaken for the `\d` shorthand).
-  defp scan_token(<<?\\, c::utf8, rest::binary>>, prefix, in_class, _jo, _pq, acc, inert) do
+  # An escape: a `\d`/`\w`/`\s` shorthand (anywhere) or `\b` (outside a class) flips to its
+  # complement; a `\.` (outside a class) unescapes to `.`.
+  defp scan_token(%{kind: :escape, text: <<?\\, c::utf8>>, in_class: ic} = t, pat, _pq) do
+    pre = before_tok(pat, t)
+    post = after_tok(pat, t)
+
     new =
       cond do
-        c in @shorthand -> [prefix <> <<?\\, flip(c)>> <> rest]
-        c in @boundary and not in_class -> [prefix <> <<?\\, flip(c)>> <> rest]
-        # `\.` (a literal dot) → `.` (any char). Inside a class both are the same
-        # literal, so only swap outside one.
-        c == ?. and not in_class -> [prefix <> "." <> rest]
+        c in @shorthand -> [pre <> <<?\\, flip(c)>> <> post]
+        c in @boundary and not ic -> [pre <> <<?\\, flip(c)>> <> post]
+        c == ?. and not ic -> [pre <> "." <> post]
         true -> []
       end
 
-    scan(rest, prefix <> <<?\\, c::utf8>>, in_class, false, false, acc ++ new, inert)
+    {new, false}
   end
 
-  # A lone trailing backslash (invalid regex, but consume gracefully).
-  defp scan_token(<<?\\>>, prefix, in_class, jo, pq, acc, inert),
-    do: scan(<<>>, prefix <> "\\", in_class, jo, pq, acc, inert)
-
-  # Class open, already negated: `[^…` → `[…` (drop the negation).
-  defp scan_token(<<?[, ?^, rest::binary>>, prefix, false, _jo, _pq, acc, inert),
-    do: scan(rest, prefix <> "[^", true, true, false, acc ++ [prefix <> "[" <> rest], inert)
-
-  # Class open, not negated: `[…` → `[^…` (add the negation).
-  defp scan_token(<<?[, rest::binary>>, prefix, false, _jo, _pq, acc, inert),
-    do: scan(rest, prefix <> "[", true, true, false, acc ++ [prefix <> "[^" <> rest], inert)
-
-  # Class close (a leading `]` is literal, so only closes when not just opened).
-  defp scan_token(<<?], rest::binary>>, prefix, true, false, _pq, acc, inert),
-    do: scan(rest, prefix <> "]", false, false, false, acc, inert)
-
-  # Character-class range `lo-hi` (alphanumeric endpoints) → each in-range off-by-one
-  # neighbour, kept ordered and within a safe literal band (`class_range_mutations/2`).
-  # The first member of a class can itself be a range start, so `just_opened` is allowed.
-  defp scan_token(<<lo::utf8, ?-, hi::utf8, rest::binary>>, prefix, true, _jo, _pq, acc, inert)
-       when (lo in ?0..?9 or lo in ?a..?z or lo in ?A..?Z) and
-              (hi in ?0..?9 or hi in ?a..?z or hi in ?A..?Z) do
-    new = Enum.map(class_range_mutations(lo, hi), &(prefix <> &1 <> rest))
-    scan(rest, prefix <> <<lo::utf8, ?-, hi::utf8>>, true, false, false, acc ++ new, inert)
+  # Class open → toggle the negation (`[…` ↔ `[^…`).
+  defp scan_token(%{kind: :class_open, text: t_open} = t, pat, _pq) do
+    repl = if t_open == "[", do: "[^", else: "["
+    {[before_tok(pat, t) <> repl <> after_tok(pat, t)], false}
   end
 
-  # Quantifier `*`/`+` → its complement, plus collapse-to-one and a lazy suffix, only
-  # as a real (postfix) quantifier.
-  defp scan_token(<<q, rest::binary>>, prefix, false, _jo, pq, acc, inert) when q in [?*, ?+] do
+  # Class range `lo-hi` → each in-range off-by-one neighbour (`class_range_mutations/2`).
+  defp scan_token(%{kind: :range, text: <<lo::utf8, ?-, hi::utf8>>} = t, pat, _pq) do
+    pre = before_tok(pat, t)
+    post = after_tok(pat, t)
+    {Enum.map(class_range_mutations(lo, hi), &(pre <> &1 <> post)), false}
+  end
+
+  # Quantifier `*`/`+` (outside a class) → complement swap, collapse-to-one, lazy suffix,
+  # only as a real (postfix) quantifier.
+  defp scan_token(%{kind: :char, text: <<q>>, in_class: false} = t, pat, pq) when q in [?*, ?+] do
+    pre = before_tok(pat, t)
+    post = after_tok(pat, t)
+
     new =
-      if postfix_quantifier?(prefix, pq),
+      if postfix_quantifier?(pre, pq),
         do:
-          [prefix <> <<flip_quant(q)>> <> rest] ++
-            collapse_variant(prefix, rest) ++ lazy_variant(prefix, <<q>>, rest),
+          [pre <> <<flip_quant(q)>> <> post] ++
+            collapse_variant(pre, post) ++ lazy_variant(pre, <<q>>, post),
         else: []
 
-    scan(rest, prefix <> <<q>>, false, false, true, acc ++ new, inert)
+    {new, true}
   end
 
-  # Optional `?` → mandatory: drop it, raise it to `+` and to `*`, and add a lazy `??`.
-  # Skipped when it is a group marker (`(?…`, via `postfix_quantifier?/2`) *or* already
-  # carries a lazy/possessive suffix (`a??`/`a?+`): there the `?` is the base of a
-  # compound quantifier, so dropping/raising it would reinterpret the trailing `?`/`+`
-  # as the operator (`a?+` → `a+`) rather than touch the optional — leave it whole.
-  defp scan_token(<<??, rest::binary>>, prefix, false, _jo, pq, acc, inert) do
+  # Optional `?` (outside a class) → drop / raise to `+` / raise to `*` / lazy `??`. Skipped
+  # for a group marker (via `postfix_quantifier?/2`) or an already-suffixed compound
+  # (`a??`/`a?+`), where touching the first `?` would reinterpret the trailing `?`/`+`.
+  defp scan_token(%{kind: :char, text: "?", in_class: false} = t, pat, pq) do
+    pre = before_tok(pat, t)
+    post = after_tok(pat, t)
+
     new =
-      if postfix_quantifier?(prefix, pq) and not suffixed?(rest),
-        do: [prefix <> rest, prefix <> "+" <> rest, prefix <> "*" <> rest, prefix <> "??" <> rest],
+      if postfix_quantifier?(pre, pq) and not suffixed?(post),
+        do: [pre <> post, pre <> "+" <> post, pre <> "*" <> post, pre <> "??" <> post],
         else: []
 
-    scan(rest, prefix <> "?", false, false, true, acc ++ new, inert)
+    {new, true}
   end
 
-  # Bounded quantifier `{n}` / `{n,}` / `{n,m}` → its off-by-one / shape neighbours,
-  # plus a lazy `{…}?` suffix — but *only* for a variable count. For a fixed count
-  # (`{n}` or `{n,n}`) the repetition is exact, so a lazy `?` can never change what
-  # matches: `a{3}?` ≡ `a{3}` in every context (a guaranteed-equivalent that would
-  # permanently survive), so it is not offered.
-  defp scan_token(<<?{, rest::binary>>, prefix, false, _jo, _pq, acc, inert) do
-    case parse_bound(rest) do
-      {:ok, bound, tail} ->
-        consumed = binary_part(rest, 0, byte_size(rest) - byte_size(tail))
-        bounds = Enum.map(bound_mutations(bound), &(prefix <> "{" <> &1 <> "}" <> tail))
-
-        lazy =
-          if variable_bound?(bound), do: lazy_variant(prefix, "{" <> consumed, tail), else: []
-
-        scan(tail, prefix <> "{" <> consumed, false, false, true, acc ++ bounds ++ lazy, inert)
-
-      :error ->
-        scan(rest, prefix <> "{", false, false, false, acc, inert)
-    end
+  # Bounded quantifier → off-by-one / shape neighbours, plus a lazy `{…}?` for a *variable*
+  # count only (a fixed `{n}`/`{n,n}` can't vary, so a lazy `?` is a guaranteed no-op).
+  defp scan_token(%{kind: :bound, text: t_bound, bound: bound} = t, pat, _pq) do
+    pre = before_tok(pat, t)
+    post = after_tok(pat, t)
+    bounds = Enum.map(bound_mutations(bound), &(pre <> "{" <> &1 <> "}" <> post))
+    lazy = if variable_bound?(bound), do: lazy_variant(pre, t_bound, post), else: []
+    {bounds ++ lazy, true}
   end
 
-  # Literal-dot swap: `.` (any char) → `\.` (a literal dot), outside a character class
-  # (inside one a `.` is already literal). The `.` is an atom, so a following quantifier
-  # is still a real one (prev-quant reset to false).
-  defp scan_token(<<?., rest::binary>>, prefix, false, _jo, _pq, acc, inert),
-    do: scan(rest, prefix <> ".", false, false, false, acc ++ [prefix <> "\\." <> rest], inert)
+  # Literal-dot swap: `.` (outside a class) → `\.` (a literal dot).
+  defp scan_token(%{kind: :char, text: ".", in_class: false} = t, pat, _pq),
+    do: {[before_tok(pat, t) <> "\\." <> after_tok(pat, t)], false}
 
-  # Any other codepoint: consume it (a class is no longer "just opened" afterwards,
-  # and the previous token is no longer a quantifier).
-  defp scan_token(<<c::utf8, rest::binary>>, prefix, in_class, _jo, _pq, acc, inert),
-    do: scan(rest, prefix <> <<c::utf8>>, in_class, false, false, acc, inert)
+  # Anything else (a plain char, anchor, pipe, group, modifier, inert span): no scan
+  # mutation, and the previous token is no longer a quantifier.
+  defp scan_token(_token, _pat, _pq), do: {[], false}
 
   # A `*`/`+`/`?` is a real quantifier only after an atom: not at the start, not
   # right after a `(`/`|`, and not directly after another quantifier (a suffix).
@@ -691,84 +639,42 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   # --- alternation: drop one branch of a top-level / capturing-group alt ----
 
-  # A second, index-based walk (it tracks byte offsets and a stack of group frames,
-  # which the prefix-string `scan/6` cannot). Each removable frame with ≥1 top-level
-  # `|` yields one deletion span per branch (the branch plus one adjacent pipe).
-  defp alternation_patterns(pattern, inert) do
+  # Drop one branch of a top-level / capturing-group alternation: a fold over the tokens
+  # tracking a stack of group frames (a *removable* frame is a plain capturing `(`). Each
+  # removable frame with ≥1 top-level `|` yields one deletion span per branch (the branch
+  # plus one adjacent pipe). The reader resolved escapes/classes/inert, so only real
+  # `:group_open`/`:group_close`/`:char "|"` tokens reach the frames.
+  defp alternation_patterns(pattern, tokens) do
     top = %{start: 0, removable: true, pipes: []}
+    {frames, spans} = Enum.reduce(tokens, {[top], []}, &alt_token/2)
 
-    pattern
-    |> alt_walk(0, false, false, [top], [], inert)
-    |> Enum.map(fn {start, len} ->
+    final =
+      Enum.reduce(frames, spans, fn frame, acc ->
+        acc ++ frame_spans(frame, byte_size(pattern))
+      end)
+
+    Enum.map(final, fn {start, len} ->
       binary_part(pattern, 0, start) <>
         binary_part(pattern, start + len, byte_size(pattern) - start - len)
     end)
   end
 
-  # End: finalise every still-open frame at the current offset (the whole-pattern
-  # frame for balanced input; any leftover inner frame is malformed and harmless).
-  defp alt_walk(<<>>, i, _ic, _jo, frames, spans, _inert),
-    do: Enum.reduce(frames, spans, fn frame, acc -> acc ++ frame_spans(frame, i) end)
+  # Group open — push a frame whose content starts just past the opener; `removable?`
+  # (a plain capturing `(`) was decided by the reader.
+  defp alt_token(%{kind: :group_open, offset: o, text: t, removable?: rem?}, {frames, spans}),
+    do: {[frame(o + byte_size(t), rem?) | frames], spans}
 
-  # Dispatcher: an inert span (`\Q…\E` / `x`-comment) is swallowed whole — even inside a
-  # class (its `]` must not close the class) — so a quoted/commented `|`/`(` never affects
-  # the alternation frames.
-  defp alt_walk(bin, i, ic, jo, frames, spans, inert) do
-    case take_inert(inert, i, bin) do
-      {span, rest} -> alt_walk(rest, i + byte_size(span), ic, false, frames, spans, inert)
-      :none -> alt_token(bin, i, ic, jo, frames, spans, inert)
-    end
-  end
+  # Group close — pop the frame and emit its branch-removal spans (content_end = the `)`).
+  defp alt_token(%{kind: :group_close, offset: o}, {[frame | outer], spans}),
+    do: {outer, spans ++ frame_spans(frame, o)}
 
-  # Escape pair — the escaped char is literal, so `\(`/`\|`/`\[` never affect frames.
-  defp alt_token(<<?\\, c::utf8, rest::binary>>, i, ic, jo, frames, spans, inert),
-    do: alt_walk(rest, i + 1 + byte_size(<<c::utf8>>), ic, jo, frames, spans, inert)
-
-  defp alt_token(<<?\\>>, i, ic, jo, frames, spans, inert),
-    do: alt_walk(<<>>, i + 1, ic, jo, frames, spans, inert)
-
-  # Character class — `(`/`)`/`|` inside it are literal, so swallow it whole.
-  defp alt_token(<<?[, ?^, rest::binary>>, i, false, _jo, frames, spans, inert),
-    do: alt_walk(rest, i + 2, true, true, frames, spans, inert)
-
-  defp alt_token(<<?[, rest::binary>>, i, false, _jo, frames, spans, inert),
-    do: alt_walk(rest, i + 1, true, true, frames, spans, inert)
-
-  defp alt_token(<<?], rest::binary>>, i, true, false, frames, spans, inert),
-    do: alt_walk(rest, i + 1, false, false, frames, spans, inert)
-
-  defp alt_token(<<c::utf8, rest::binary>>, i, true, _jo, frames, spans, inert),
-    do: alt_walk(rest, i + byte_size(<<c::utf8>>), true, false, frames, spans, inert)
-
-  # Group open — `(?…` is non-capturing/lookaround (not removable); `(` is capturing.
-  defp alt_token(<<?(, ??, rest::binary>>, i, false, _jo, frames, spans, inert),
-    do: alt_walk(rest, i + 2, false, false, [frame(i + 2, false) | frames], spans, inert)
-
-  defp alt_token(<<?(, rest::binary>>, i, false, _jo, frames, spans, inert),
-    do: alt_walk(rest, i + 1, false, false, [frame(i + 1, true) | frames], spans, inert)
-
-  # Group close — pop the frame and emit its branch-removal spans (content_end = `)`).
-  defp alt_token(<<?), rest::binary>>, i, false, _jo, [frame | outer], spans, inert),
-    do: alt_walk(rest, i + 1, false, false, outer, spans ++ frame_spans(frame, i), inert)
-
-  defp alt_token(<<?), rest::binary>>, i, false, _jo, [], spans, inert),
-    do: alt_walk(rest, i + 1, false, false, [], spans, inert)
+  defp alt_token(%{kind: :group_close}, {[], spans}), do: {[], spans}
 
   # Top-level `|` — record the pipe position in the innermost frame.
-  defp alt_token(<<?|, rest::binary>>, i, false, _jo, [frame | outer], spans, inert),
-    do:
-      alt_walk(
-        rest,
-        i + 1,
-        false,
-        false,
-        [%{frame | pipes: frame.pipes ++ [i]} | outer],
-        spans,
-        inert
-      )
+  defp alt_token(%{kind: :char, text: "|", in_class: false, offset: o}, {[frame | outer], spans}),
+    do: {[%{frame | pipes: frame.pipes ++ [o]} | outer], spans}
 
-  defp alt_token(<<c::utf8, rest::binary>>, i, false, _jo, frames, spans, inert),
-    do: alt_walk(rest, i + byte_size(<<c::utf8>>), false, false, frames, spans, inert)
+  defp alt_token(_token, acc), do: acc
 
   defp frame(start, removable), do: %{start: start, removable: removable, pipes: []}
 

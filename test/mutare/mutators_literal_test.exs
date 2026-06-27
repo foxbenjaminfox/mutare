@@ -476,6 +476,12 @@ defmodule Mutare.MutatorsLiteralTest do
       refute "# (?s) c\n(?-s:.)" in pats2
     end
 
+    test "treats a (?#…) PCRE comment as inert in every pass" do
+      # `(?#…)` content is ignored by the engine, so mutating it is guaranteed-equivalent —
+      # the shared reader classifies it as a comment, so scan leaves `x+` inside it alone
+      assert render(RegexLiteral.mutate(parse(~S"~r/a(?#x+y)b/"))) == [~S"~r//", ~S"~r/mutare/"]
+    end
+
     test "swaps a + quantifier to * and back" do
       assert ~S|~r/\d*/| in render(RegexLiteral.mutate(parse(~S|~r/\d+/|)))
       assert ~S|~r/a+/| in render(RegexLiteral.mutate(parse(~S|~r/a*/|)))

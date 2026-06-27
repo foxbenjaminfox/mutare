@@ -57,27 +57,30 @@ defmodule Mutare.Mutators.RegexLiteral.Flags do
 
   @doc """
   Process a group **opener**. `after_paren` is the pattern slice immediately after a `(`
-  encountered outside a character class. Returns `{consumed, rest, stack}`:
+  encountered outside a character class. Returns `{action, consumed, rest, stack}`:
 
+    * `action` — `:push` (a real group / scoped `(?flags:…)` — a frame was pushed),
+      `:mutate` (a bare inline `(?flags)` — the current frame was changed in place, no
+      frame), or `:comment` (a `(?#…)` — nothing but a comment span).
     * `consumed` — the extra bytes the opener itself swallowed (the `?flags:` / `?flags)`
       / `?#…)`; `""` for an ordinary group), so the caller can rebuild its prefix.
     * `rest` — the pattern remaining after `consumed`.
     * `stack` — the updated scope stack.
   """
-  @spec open(binary, stack) :: {binary, binary, stack}
+  @spec open(binary, stack) :: {:push | :mutate | :comment, binary, binary, stack}
   def open(after_paren, stack) do
     case classify(after_paren) do
       {:comment, consumed, rest} ->
-        {consumed, rest, stack}
+        {:comment, consumed, rest, stack}
 
       {:scoped, add, remove, consumed, rest} ->
-        {consumed, rest, [merge(hd(stack), add, remove) | stack]}
+        {:push, consumed, rest, [merge(hd(stack), add, remove) | stack]}
 
       {:bare, add, remove, consumed, rest} ->
-        {consumed, rest, [merge(hd(stack), add, remove) | tl(stack)]}
+        {:mutate, consumed, rest, [merge(hd(stack), add, remove) | tl(stack)]}
 
       :group ->
-        {"", after_paren, [hd(stack) | stack]}
+        {:push, "", after_paren, [hd(stack) | stack]}
     end
   end
 
