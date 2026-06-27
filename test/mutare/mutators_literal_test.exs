@@ -1,0 +1,552 @@
+defmodule Mutare.MutatorsLiteralTest do
+  # Unit tests of the literal-swap families' `mutate/1`: a literal → empty/sentinel/shifted
+  # value, plus `name/0`. Clean-meta rendering and context routing (which positions admit a
+  # literal swap) live in transform_test.exs; this file probes the swap logic directly.
+  use ExUnit.Case, async: true
+
+  alias Mutare.Mutators.{
+    AliasLiteral,
+    AtomLiteral,
+    BitstringLiteral,
+    CharlistLiteral,
+    DateTimeLiteral,
+    FloatLiteral,
+    Literal,
+    MapLiteral,
+    RegexLiteral,
+    StringLiteral,
+    StringSigilLiteral,
+    TupleLiteral,
+    WordListLiteral
+  }
+
+  describe "Literal" do
+    test "mutates an integer to n+1, n-1 and 0, deduped and never itself" do
+      assert render(Literal.mutate(parse("2"))) == ["3", "1", "0"]
+      assert render(Literal.mutate(parse("1"))) == ["2", "0"]
+      assert render(Literal.mutate(parse("0"))) == ["1", "-1"]
+    end
+
+    test "flips a boolean" do
+      assert render(Literal.mutate(parse("true"))) == ["false"]
+      assert render(Literal.mutate(parse("false"))) == ["true"]
+    end
+
+    test "emits clean metadata so the new value renders (not the original token)" do
+      # The original carries `token: \"1\"`; reusing it would render \"1\".
+      assert render(Literal.mutate(parse("1"))) == ["2", "0"]
+      assert Enum.all?(Literal.mutate(parse("1")), fn {:__block__, meta, _} -> meta == [] end)
+    end
+
+    test "skips non-integer, non-boolean literals and operators" do
+      assert Literal.mutate(parse("1.5")) == :skip
+      assert Literal.mutate(parse(~s("s"))) == :skip
+      assert Literal.mutate({:+, [], [1, 2]}) == :skip
+    end
+
+    test "name" do
+      assert Literal.name() == :literal
+    end
+  end
+
+  describe "StringLiteral" do
+    test "mutates a non-empty string into both the empty string and the sentinel" do
+      assert render(StringLiteral.mutate(parse(~s("hello")))) == [~s(""), ~s("mutare")]
+    end
+
+    test "drops the replacement that already equals the original" do
+      # "" can't become "" again; "mutare" can't become "mutare" again
+      assert render(StringLiteral.mutate(parse(~s("")))) == [~s("mutare")]
+      assert render(StringLiteral.mutate(parse(~s("mutare")))) == [~s("")]
+    end
+
+    test "mutates an interpolated string (a delimiter-marked <<>>) as a whole" do
+      assert render(StringLiteral.mutate(parse(~S|"a#{x}b"|))) == [~s(""), ~s("mutare")]
+      assert render(StringLiteral.mutate(parse(~S|"#{x}"|))) == [~s(""), ~s("mutare")]
+    end
+
+    test "skips a real bitstring (no delimiter) — BitstringLiteral's domain" do
+      assert StringLiteral.mutate(parse("<<104, 105>>")) == :skip
+      assert StringLiteral.mutate(parse(~S|<<"x"::utf8>>|)) == :skip
+    end
+
+    test "skips non-string literals" do
+      assert StringLiteral.mutate(parse("1")) == :skip
+      assert StringLiteral.mutate(parse(":atom")) == :skip
+    end
+
+    test "name" do
+      assert StringLiteral.name() == :string
+    end
+  end
+
+  describe "StringSigilLiteral" do
+    test "mutates a non-empty ~s/~S sigil into both the empty string and the sentinel" do
+      assert render(StringSigilLiteral.mutate(parse("~s(hello)"))) == [~s(""), ~s("mutare")]
+      assert render(StringSigilLiteral.mutate(parse("~S(hello)"))) == [~s(""), ~s("mutare")]
+    end
+
+    test "drops the replacement that already equals the sigil's content" do
+      # ~s() is already "" so only the sentinel is offered; ~s(mutare) only the empty string.
+      assert render(StringSigilLiteral.mutate(parse("~s()"))) == [~s("mutare")]
+      assert render(StringSigilLiteral.mutate(parse("~S()"))) == [~s("mutare")]
+      assert render(StringSigilLiteral.mutate(parse("~s(mutare)"))) == [~s("")]
+      assert render(StringSigilLiteral.mutate(parse("~S(mutare)"))) == [~s("")]
+    end
+
+    test "mutates an interpolated ~s as a whole (both variants always apply)" do
+      assert render(StringSigilLiteral.mutate(parse("~s(a\#{x}b)"))) == [~s(""), ~s("mutare")]
+      assert render(StringSigilLiteral.mutate(parse("~s(\#{x})"))) == [~s(""), ~s("mutare")]
+    end
+
+    test "skips plain strings (StringLiteral's domain) and other sigils" do
+      assert StringSigilLiteral.mutate(parse(~s("hello"))) == :skip
+      assert StringSigilLiteral.mutate(parse("~w(a b)")) == :skip
+      assert StringSigilLiteral.mutate(parse(~S|~c"ab"|)) == :skip
+      assert StringSigilLiteral.mutate(parse("~r/ab/")) == :skip
+    end
+
+    test "name" do
+      assert StringSigilLiteral.name() == :string_sigil
+    end
+  end
+
+  describe "FloatLiteral" do
+    test "mutates a float to x+1.0, x-1.0 and 0.0, deduped and never itself" do
+      assert render(FloatLiteral.mutate(parse("1.5"))) == ["2.5", "0.5", "0.0"]
+      assert render(FloatLiteral.mutate(parse("0.0"))) == ["1.0", "-1.0"]
+    end
+
+    test "skips integers" do
+      assert FloatLiteral.mutate(parse("1")) == :skip
+    end
+
+    test "name" do
+      assert FloatLiteral.name() == :float
+    end
+  end
+
+  describe "AtomLiteral" do
+    test "mutates a literal atom into the sentinel atom" do
+      assert render(AtomLiteral.mutate(parse(":waiting"))) == [":mutare"]
+      assert render(AtomLiteral.mutate(parse(":some_status"))) == [":mutare"]
+    end
+
+    test "drops the replacement that already equals the sentinel" do
+      assert AtomLiteral.mutate(parse(":mutare")) == :skip
+    end
+
+    test "skips convention atoms (owned by ConventionAtom, swapped to a sibling)" do
+      assert AtomLiteral.mutate(parse(":ok")) == :skip
+      assert AtomLiteral.mutate(parse(":error")) == :skip
+      assert AtomLiteral.mutate(parse(":cont")) == :skip
+      assert AtomLiteral.mutate(parse(":halt")) == :skip
+      # `:eq` is *not* paired by ConventionAtom (the unpaired middle), so it keeps its sentinel.
+      assert render(AtomLiteral.mutate(parse(":eq"))) == [":mutare"]
+    end
+
+    test "skips true/false/nil (handled by Literal / Conditional, or absence)" do
+      assert AtomLiteral.mutate(parse("true")) == :skip
+      assert AtomLiteral.mutate(parse("false")) == :skip
+      assert AtomLiteral.mutate(parse("nil")) == :skip
+    end
+
+    test "skips non-atom literals and bare atoms (function names, etc.)" do
+      assert AtomLiteral.mutate(parse("1")) == :skip
+      assert AtomLiteral.mutate(parse(~s("str"))) == :skip
+      # A bare (un-`__block__`-wrapped) atom is never a literal node the analyzer offers.
+      assert AtomLiteral.mutate(:upcase) == :skip
+    end
+
+    test "name" do
+      assert AtomLiteral.name() == :atom
+    end
+  end
+
+  describe "CharlistLiteral" do
+    test "mutates a ~c sigil into the empty charlist and the sentinel" do
+      assert render(CharlistLiteral.mutate(parse(~S|~c"abc"|))) == [~S|~c""|, ~S|~c"mutare"|]
+    end
+
+    test "drops the replacement that already equals the original" do
+      assert render(CharlistLiteral.mutate(parse(~S|~c""|))) == [~S|~c"mutare"|]
+      assert render(CharlistLiteral.mutate(parse(~S|~c"mutare"|))) == [~S|~c""|]
+    end
+
+    test "leaves the legacy '...' form alone (owned by List, which empties it)" do
+      assert CharlistLiteral.mutate(parse("'abc'")) == :skip
+    end
+
+    test "skips strings and other literals" do
+      assert CharlistLiteral.mutate(parse(~s("abc"))) == :skip
+      assert CharlistLiteral.mutate(parse(":abc")) == :skip
+    end
+
+    test "name" do
+      assert CharlistLiteral.name() == :charlist
+    end
+  end
+
+  describe "WordListLiteral" do
+    test "mutates a ~w sigil into the empty word list and the sentinel" do
+      assert render(WordListLiteral.mutate(parse("~w(foo bar baz)"))) == ["~w()", "~w(mutare)"]
+    end
+
+    test "mutates an uppercase ~W sigil the same way" do
+      assert render(WordListLiteral.mutate(parse("~W(foo bar)"))) == ["~W()", "~W(mutare)"]
+    end
+
+    test "preserves the modifier so the element type is unchanged" do
+      assert render(WordListLiteral.mutate(parse("~w(foo bar)a"))) == ["~w()a", "~w(mutare)a"]
+      assert render(WordListLiteral.mutate(parse("~w(foo bar)c"))) == ["~w()c", "~w(mutare)c"]
+    end
+
+    test "drops the replacement that already equals the original (by words produced)" do
+      assert render(WordListLiteral.mutate(parse("~w()"))) == ["~w(mutare)"]
+      assert render(WordListLiteral.mutate(parse("~w(mutare)"))) == ["~w()"]
+      # whitespace-only already produces [], so the empty mutant is not re-emitted
+      assert render(WordListLiteral.mutate(parse("~w(   )"))) == ["~w(mutare)"]
+    end
+
+    test "skips an interpolated ~w (parsed as multiple <<>> parts, not a static binary)" do
+      assert WordListLiteral.mutate(parse(~S|~w(foo #{x} bar)|)) == :skip
+    end
+
+    test "skips other sigils and list literals (owned elsewhere)" do
+      assert WordListLiteral.mutate(parse(~S|~c"abc"|)) == :skip
+      assert WordListLiteral.mutate(parse("[1, 2, 3]")) == :skip
+    end
+
+    test "name" do
+      assert WordListLiteral.name() == :word_list
+    end
+  end
+
+  describe "MapLiteral" do
+    test "collapses a non-empty map literal to %{}" do
+      assert render(MapLiteral.mutate(parse("%{a: 1, b: 2}"))) == ["%{}"]
+      assert render(MapLiteral.mutate(parse("%{1 => 2}"))) == ["%{}"]
+    end
+
+    test "skips the empty map and a map update" do
+      assert MapLiteral.mutate(parse("%{}")) == :skip
+      assert MapLiteral.mutate(parse("%{m | a: 1}")) == :skip
+    end
+
+    test "name" do
+      assert MapLiteral.name() == :map
+    end
+  end
+
+  describe "TupleLiteral" do
+    test "collapses a non-empty tuple literal to {} (both 2- and 3+-arity)" do
+      assert render(TupleLiteral.mutate(parse("{1, 2}"))) == ["{}"]
+      assert render(TupleLiteral.mutate(parse("{1, 2, 3}"))) == ["{}"]
+      assert render(TupleLiteral.mutate(parse("{:ok}"))) == ["{}"]
+    end
+
+    test "skips the empty tuple" do
+      assert TupleLiteral.mutate(parse("{}")) == :skip
+    end
+
+    test "name" do
+      assert TupleLiteral.name() == :tuple
+    end
+  end
+
+  describe "BitstringLiteral" do
+    test "collapses a non-empty bitstring literal to <<>>" do
+      assert render(BitstringLiteral.mutate(parse("<<1, 2, 3>>"))) == ["<<>>"]
+      assert render(BitstringLiteral.mutate(parse(~S|<<"abc">>|))) == ["<<>>"]
+    end
+
+    test "skips the empty bitstring" do
+      assert BitstringLiteral.mutate(parse("<<>>")) == :skip
+    end
+
+    test "skips an interpolated string (a `<<>>` written as a string)" do
+      # `"a#{x}b"` parses as a `<<>>` carrying a delimiter — StringLiteral's domain.
+      assert BitstringLiteral.mutate(parse(~S|"a#{x}b"|)) == :skip
+      assert BitstringLiteral.mutate(parse(~S|"#{x}"|)) == :skip
+    end
+
+    test "skips a plain string and other literals" do
+      assert BitstringLiteral.mutate(parse(~s("abc"))) == :skip
+      assert BitstringLiteral.mutate(parse("[1, 2]")) == :skip
+    end
+
+    test "name" do
+      assert BitstringLiteral.name() == :bitstring
+    end
+  end
+
+  describe "RegexLiteral" do
+    test "mutates a ~r pattern into the empty pattern and the sentinel" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/foo/|))) == [~S|~r//|, ~S|~r/mutare/|]
+    end
+
+    test "preserves modifier flags on the whole-pattern replacements" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/foo/i|))) ==
+               [~S|~r//i|, ~S|~r/mutare/i|, ~S|~r/foo/|]
+    end
+
+    test "drops the replacement that already equals the original" do
+      assert render(RegexLiteral.mutate(parse(~S|~r//|))) == [~S|~r/mutare/|]
+    end
+
+    test "drops a leading ^ anchor" do
+      assert ~S|~r/abc/| in render(RegexLiteral.mutate(parse(~S|~r/^abc/|)))
+    end
+
+    test "drops an unescaped trailing $ anchor" do
+      assert ~S|~r/abc/| in render(RegexLiteral.mutate(parse(~S|~r/abc$/|)))
+    end
+
+    test "drops each anchor of ^abc$ independently" do
+      mutants = render(RegexLiteral.mutate(parse(~S|~r/^abc$/|)))
+      assert ~S|~r/abc$/| in mutants
+      assert ~S|~r/^abc/| in mutants
+    end
+
+    test "leaves an escaped trailing $ alone" do
+      refute ~S|~r/abc\$/| in render(RegexLiteral.mutate(parse(~S|~r/abc\$/|)))
+      assert render(RegexLiteral.mutate(parse(~S|~r/abc\$/|))) == [~S|~r//|, ~S|~r/mutare/|]
+    end
+
+    test "complements a \\d/\\w/\\s shorthand and swaps each quantifier, in source order" do
+      # `\d` → `\D` and `+` → `*` interleave left-to-right across the two stages.
+      assert render(RegexLiteral.mutate(parse(~S|~r/\d+\.\d+/|))) ==
+               [
+                 ~S|~r//|,
+                 ~S|~r/mutare/|,
+                 ~S|~r/\D+\.\d+/|,
+                 ~S|~r/\d*\.\d+/|,
+                 ~S|~r/\d+\.\D+/|,
+                 ~S|~r/\d+\.\d*/|
+               ]
+
+      assert ~S|~r/\d/| in render(RegexLiteral.mutate(parse(~S|~r/\D/|)))
+    end
+
+    test "complements a \\b word boundary only outside a character class" do
+      assert ~S|~r/\B/| in render(RegexLiteral.mutate(parse(~S|~r/\b/|)))
+      # inside a class \b is a backspace — only the class negation is offered
+      assert render(RegexLiteral.mutate(parse(~S|~r/[\b]/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/[^\b]/|]
+    end
+
+    test "does not treat an escaped backslash as a shorthand" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/\\d/|))) == [~S|~r//|, ~S|~r/mutare/|]
+    end
+
+    test "toggles a character class between matching and negated" do
+      assert ~S|~r/[^abc]/| in render(RegexLiteral.mutate(parse(~S|~r/[abc]/|)))
+      assert ~S|~r/[abc]/| in render(RegexLiteral.mutate(parse(~S|~r/[^abc]/|)))
+    end
+
+    test "negates a class with a literal leading ] correctly" do
+      assert ~S|~r/[^]a]/| in render(RegexLiteral.mutate(parse(~S|~r/[]a]/|)))
+    end
+
+    test "offers both negation and shorthand swaps inside one class" do
+      mutants = render(RegexLiteral.mutate(parse(~S|~r/[\d]/|)))
+      assert ~S|~r/[^\d]/| in mutants
+      assert ~S|~r/[\D]/| in mutants
+    end
+
+    test "drops a leading \\A and a trailing \\z/\\Z anchor" do
+      assert ~S|~r/start/| in render(RegexLiteral.mutate(parse(~S|~r/\Astart/|)))
+      assert ~S|~r/end/| in render(RegexLiteral.mutate(parse(~S|~r/end\z/|)))
+      assert ~S|~r/end/| in render(RegexLiteral.mutate(parse(~S|~r/end\Z/|)))
+      # an escaped backslash before z is not an anchor
+      assert render(RegexLiteral.mutate(parse(~S|~r/end\\z/|))) == [~S|~r//|, ~S|~r/mutare/|]
+    end
+
+    test "swaps a + quantifier to * and back" do
+      assert ~S|~r/\d*/| in render(RegexLiteral.mutate(parse(~S|~r/\d+/|)))
+      assert ~S|~r/a+/| in render(RegexLiteral.mutate(parse(~S|~r/a*/|)))
+    end
+
+    test "leaves a lazy/possessive suffix and a quantifier inside a class alone" do
+      # the `+` swaps to `*`; the trailing lazy `?` is a suffix, not a fresh quantifier
+      assert render(RegexLiteral.mutate(parse(~S|~r/a+?/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a*?/|]
+
+      # `*`/`+` inside a class are literal — only the class negation is offered
+      assert render(RegexLiteral.mutate(parse(~S|~r/[*+]/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/[^*+]/|]
+    end
+
+    test "turns an optional ? mandatory (drop it, and raise it to +)" do
+      mutants = render(RegexLiteral.mutate(parse(~S|~r/colou?r/|)))
+      assert ~S|~r/colour/| in mutants
+      assert ~S|~r/colou+r/| in mutants
+    end
+
+    test "does not treat a ? group marker as an optional quantifier" do
+      # the `?` in `(?:…)` is a group marker, not a quantifier — nothing to mutate here
+      assert render(RegexLiteral.mutate(parse(~S|~r/(?:ab)/|))) == [~S|~r//|, ~S|~r/mutare/|]
+    end
+
+    test "nudges a bounded quantifier's counts by one, staying in range" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{3}/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{2}/|, ~S|~r/a{4}/|]
+
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{8,}/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{7,}/|, ~S|~r/a{9,}/|]
+
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{2,4}/|))) ==
+               [
+                 ~S|~r//|,
+                 ~S|~r/mutare/|,
+                 ~S|~r/a{1,4}/|,
+                 ~S|~r/a{3,4}/|,
+                 ~S|~r/a{2,3}/|,
+                 ~S|~r/a{2,5}/|
+               ]
+
+      # a lower bound never goes below zero
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{0,2}/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{1,2}/|, ~S|~r/a{0,1}/|, ~S|~r/a{0,3}/|]
+
+      # Boundary cases where a ±1 neighbour lands *exactly* on the clamp edge — the
+      # only inputs that pin the inclusive `>= 0` / `>= n` / `<= m` filters (a
+      # strict `>`/`<` would drop the edge value, an unconditional filter would
+      # keep an out-of-range one).
+      #   `a{1}` (exact): the lower neighbour is exactly 0 — kept (≥ 0), so `a{0}`.
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{1}/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{0}/|, ~S|~r/a{2}/|]
+
+      #   `a{0}` (exact 0): the lower neighbour −1 is dropped (< 0), only `a{1}`.
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{0}/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{1}/|]
+
+      #   `a{1,4}` (range): lower neighbour 0 kept (≥ 0 and ≤ m), so `a{0,4}`.
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{1,4}/|))) ==
+               [
+                 ~S|~r//|,
+                 ~S|~r/mutare/|,
+                 ~S|~r/a{0,4}/|,
+                 ~S|~r/a{2,4}/|,
+                 ~S|~r/a{1,3}/|,
+                 ~S|~r/a{1,5}/|
+               ]
+
+      #   `a{2,3}` (range): the upper's lower neighbour is exactly n (2) — kept
+      #   (≥ n), so `a{2,2}`; the lower's upper neighbour 3 is ≤ m, so `a{3,3}`.
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{2,3}/|))) ==
+               [
+                 ~S|~r//|,
+                 ~S|~r/mutare/|,
+                 ~S|~r/a{1,3}/|,
+                 ~S|~r/a{3,3}/|,
+                 ~S|~r/a{2,2}/|,
+                 ~S|~r/a{2,4}/|
+               ]
+    end
+
+    test "leaves a non-quantifier brace alone" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{b}/|))) == [~S|~r//|, ~S|~r/mutare/|]
+    end
+
+    test "drops one branch of a top-level alternation" do
+      mutants = render(RegexLiteral.mutate(parse(~S"~r/a|b|c/")))
+      assert ~S"~r/b|c/" in mutants
+      assert ~S"~r/a|c/" in mutants
+      assert ~S"~r/a|b/" in mutants
+    end
+
+    test "drops one branch of an alternation inside a capturing group" do
+      mutants = render(RegexLiteral.mutate(parse(~S"~r/^(GET|POST)$/")))
+      assert ~S"~r/^(POST)$/" in mutants
+      assert ~S"~r/^(GET)$/" in mutants
+    end
+
+    test "does not touch alternation inside a non-capturing group" do
+      refute ~S"~r/(?:a)/" in render(RegexLiteral.mutate(parse(~S"~r/(?:a|b)/")))
+      refute ~S"~r/(?:b)/" in render(RegexLiteral.mutate(parse(~S"~r/(?:a|b)/")))
+    end
+
+    test "does not treat a pipe inside a character class as alternation" do
+      # `|` is a literal inside `[…]`, so only the class negation is offered
+      assert render(RegexLiteral.mutate(parse(~S"~r/[a|b]/"))) ==
+               [~S"~r//", ~S"~r/mutare/", ~S"~r/[^a|b]/"]
+    end
+
+    test "drops each present modifier flag one at a time" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/foo/uis|))) ==
+               [~S|~r//uis|, ~S|~r/mutare/uis|, ~S|~r/foo/is|, ~S|~r/foo/us|, ~S|~r/foo/ui|]
+    end
+
+    test "skips an interpolated pattern" do
+      assert RegexLiteral.mutate(parse(~S|~r/a#{b}c/|)) == :skip
+    end
+
+    test "name" do
+      assert RegexLiteral.name() == :regex
+    end
+  end
+
+  describe "DateTimeLiteral" do
+    test "shifts each calendar sigil by one unit, staying valid" do
+      assert render(DateTimeLiteral.mutate(parse("~D[2020-01-31]"))) == ["~D[2020-02-01]"]
+      assert render(DateTimeLiteral.mutate(parse("~T[23:59:59]"))) == ["~T[00:00:00]"]
+
+      assert render(DateTimeLiteral.mutate(parse("~N[2020-01-01 00:00:00]"))) ==
+               ["~N[2020-01-02T00:00:00]"]
+
+      assert render(DateTimeLiteral.mutate(parse("~U[2020-01-01 00:00:00Z]"))) ==
+               ["~U[2020-01-02T00:00:00Z]"]
+    end
+
+    test "every shifted result is a real, re-parseable sigil" do
+      for src <- [
+            "~D[2020-12-31]",
+            "~T[12:00:00]",
+            "~N[2020-02-28 23:59:59]",
+            "~U[1999-12-31 23:59:59Z]"
+          ] do
+        [mutated] = DateTimeLiteral.mutate(parse(src))
+        assert {:ok, _} = Code.string_to_quoted(Sourceror.to_string(mutated))
+      end
+    end
+
+    test "skips non-calendar sigils and other literals" do
+      assert DateTimeLiteral.mutate(parse(~S|~r/foo/|)) == :skip
+      assert DateTimeLiteral.mutate(parse("1")) == :skip
+    end
+
+    test "name" do
+      assert DateTimeLiteral.name() == :datetime
+    end
+  end
+
+  describe "AliasLiteral" do
+    test "replaces a fully-literal alias with the sentinel alias" do
+      assert render(AliasLiteral.mutate(parse("Foo"))) == ["Mutare.Mutant"]
+      assert render(AliasLiteral.mutate(parse("Foo.Bar.Baz"))) == ["Mutare.Mutant"]
+    end
+
+    test "drops the replacement that already equals the sentinel" do
+      assert AliasLiteral.mutate(parse("Mutare.Mutant")) == :skip
+    end
+
+    test "skips a dynamic alias (a segment that is not an atom)" do
+      # `__MODULE__.Sub` — the first segment is `{:__MODULE__, _, nil}`, not an atom.
+      assert AliasLiteral.mutate(parse("__MODULE__.Sub")) == :skip
+    end
+
+    test "skips non-alias nodes" do
+      assert AliasLiteral.mutate(parse(":foo")) == :skip
+      assert AliasLiteral.mutate(parse("foo")) == :skip
+      assert AliasLiteral.mutate(parse("1")) == :skip
+    end
+
+    test "name" do
+      assert AliasLiteral.name() == :alias
+    end
+  end
+
+  defp parse(source), do: Sourceror.parse_string!(source)
+  defp render(nodes), do: Enum.map(nodes, &Sourceror.to_string/1)
+end

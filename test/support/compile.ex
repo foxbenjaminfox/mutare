@@ -14,6 +14,11 @@ defmodule Mutare.Test.Compile do
   `ExUnit.CaptureIO.capture_io(:stderr, …)` it never touches the global
   `:standard_error` device and is safe under `async: true`.
 
+  The compile itself is serialized suite-wide behind a global lock (see
+  `locked_compile/2`): two `async: true` test modules compiling a same-named
+  throwaway fixture (`defmodule M`, …) concurrently would otherwise abort the
+  parallel checker. The lock only spans the brief compile call.
+
   Returns exactly what `Code.compile_string/2` returns (`[{module, binary}]`), so
   it is a drop-in replacement. When you *do* want to assert on a diagnostic, use
   `string_with_diagnostics/2` or capture `:stderr` directly — don't route through
@@ -25,9 +30,7 @@ defmodule Mutare.Test.Compile do
   `Code.compile_string/2`.
   """
   def string(source, file \\ "nofile") do
-    {modules, _diagnostics} =
-      Code.with_diagnostics(fn -> Code.compile_string(source, file) end)
-
+    {modules, _diagnostics} = locked_compile(source, file)
     modules
   end
 
@@ -36,6 +39,20 @@ defmodule Mutare.Test.Compile do
   that wants to inspect them without going through `:stderr`.
   """
   def string_with_diagnostics(source, file \\ "nofile") do
-    Code.with_diagnostics(fn -> Code.compile_string(source, file) end)
+    locked_compile(source, file)
+  end
+
+  # `Code.compile_string/2` registers the module name in the global parallel-checker
+  # table, so two *different* async test modules compiling a same-named throwaway
+  # fixture (`defmodule M`, …) at the same instant make the checker abort with
+  # "cannot compile module M". The throwaway names collide freely across files, so we
+  # serialize the compile step suite-wide with a global lock — letting the (split)
+  # transform test files stay `async: true` without renaming every fixture. The lock is
+  # node-local (one node) and only spans the brief compile call, so concurrency elsewhere
+  # is unaffected; `:global.trans/2` releases it even if the compile raises.
+  defp locked_compile(source, file) do
+    :global.trans({__MODULE__, self()}, fn ->
+      Code.with_diagnostics(fn -> Code.compile_string(source, file) end)
+    end)
   end
 end

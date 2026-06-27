@@ -4,7 +4,8 @@ defmodule Mutare.StrictEqualityTest do
   and `a !== b` → `a != b` (never the reverse). In place in a body, lifted in a guard.
   On by default. Polarity flips are `Mutare.Mutators.Relational`'s job — the two are
   orthogonal, so both fire on a bare equality and the relaxation survives a negation
-  the flip is suppressed under (see `Mutare.TransformTest`'s equivalent-sibling block).
+  the flip is suppressed under (see `Mutare.TransformRedundancyTest`'s equivalent-sibling
+  block).
   """
   use ExUnit.Case, async: false
 
