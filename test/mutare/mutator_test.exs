@@ -27,7 +27,7 @@ end
 defmodule Mutare.MutatorTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.Mutator
+  alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
   alias Mutare.MutatorTest.{BadHost, WrapHost}
 
@@ -42,27 +42,27 @@ defmodule Mutare.MutatorTest do
         Spec.for_module(Mutare.Mutators.Arithmetic)
       ]
 
-      impls = Mutator.implementing(specs, :return_replacements, 1)
+      impls = Dispatch.implementing(specs, :return_replacements, 1)
 
       assert Enum.map(impls, & &1.module) == [Mutare.Mutators.ReturnValue]
     end
 
     test "is empty when no spec implements the callback" do
       specs = [Spec.for_module(Mutare.Mutators.Arithmetic)]
-      assert Mutator.implementing(specs, :return_replacements, 1) == []
+      assert Dispatch.implementing(specs, :return_replacements, 1) == []
     end
   end
 
   describe "host_targets/3" do
     test "keeps a target's custom 1-arity :wrap function" do
-      [target] = Mutator.host_targets(Spec.for_module(WrapHost), {:x, [], nil}, %{})
+      [target] = Dispatch.host_targets(Spec.for_module(WrapHost), {:x, [], nil}, %{})
       assert is_function(target.wrap, 1)
       assert target.range == nil
     end
 
     test "raises on a malformed target (a hosting-mutator bug, surfaced loudly)" do
       assert_raise ArgumentError, ~r/a host target must be a map/, fn ->
-        Mutator.host_targets(Spec.for_module(BadHost), {:x, [], nil}, %{})
+        Dispatch.host_targets(Spec.for_module(BadHost), {:x, [], nil}, %{})
       end
     end
   end
