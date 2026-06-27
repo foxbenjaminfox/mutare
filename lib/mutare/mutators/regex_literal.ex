@@ -101,14 +101,17 @@ defmodule Mutare.Mutators.RegexLiteral do
   is held to — and any that does not compile is dropped, so a byte-level edit that lets
   neighbouring characters re-tokenize (`{42+}` → `{42}`) can never poison the single
   metamutant compile. Every pass is a fold over **one** shared token stream (`tokens/2`),
-  which owns all cross-cutting lexing — escapes, character classes, group structure + the
-  `Flags` scope stack, and the inert spans where regex syntax does not apply: a `\\Q…\\E`
-  literal quote, an `x`-mode `#` comment (read **positionally**, so an inline `(?x)` is
-  honoured), and a `(?#…)` PCRE comment. Inert spans become a single `:inert` token whose
-  content is not lexed, so no anchor/dot/quantifier/literal/alternation inside them is ever
-  mutated, dropped, or split (and a quoted/commented `(` cannot perturb the flag scope
-  stack). Only non-interpolated patterns are touched: an interpolated `~r/\#{x}/` parses
-  with multiple `<<>>` parts, not a single binary.
+  which owns all cross-cutting lexing — escapes, character classes (incl. a POSIX
+  `[:alpha:]` whose inner `]` must not close the class), group structure + the `Flags`
+  scope stack, and the spans where regex syntax does not apply. Those come in two flavours:
+  an **ignored** `:comment` (an `x`-mode `#` line comment — ended at CR or LF, read
+  **positionally** so an inline `(?x)` is honoured — or a `(?#…)` group), behind which a
+  lazy/possessive quantifier suffix can still be seen; and an **inert** atom (`:inert` — a
+  `\\Q…\\E` quote or a `(*VERB…)` control verb) whose body isn't regex. Neither's content
+  is lexed, so no anchor/dot/quantifier/literal/alternation inside them is ever mutated,
+  dropped, or split (and a quoted/commented/verb `(` or `|` cannot perturb the flag scope
+  stack or read as alternation). Only non-interpolated patterns are touched: an interpolated
+  `~r/\#{x}/` parses with multiple `<<>>` parts, not a single binary.
   """
   @behaviour Mutare.Mutator
 
@@ -158,13 +161,17 @@ defmodule Mutare.Mutators.RegexLiteral do
   # The shared token reader. One positional walk produces the `[token]` stream every pass
   # folds over, so the cross-cutting lexical state lives here once: escape pairs, character
   # classes (`in_class`/`just_opened`), group structure with the `Flags` scope stack, and
-  # the inert (`\Q…\E` / `x`-comment) spans. A token is
+  # the spans where regex syntax does not apply. A token is
   # `%{kind, text, offset, in_class, flags}` (a `:bound` also carries its parsed `bound`;
   # a `:group_open` its `removable?`). `text`/`offset` let a consumer splice a replacement
-  # by `binary_part`; `flags` is the effective flag set at that point. Inert spans become a
-  # single `:inert` token (their content is *not* lexed), so every pass skips them simply
-  # by not matching that kind. Kinds: `:char :escape :class_open :class_close :range
-  # :bound :group_open :group_close :modifier :inert`.
+  # by `binary_part`; `flags` is the effective flag set at that point. Two flavours of
+  # "syntax doesn't apply here" span, distinguished because they differ for quantifier
+  # adjacency: a **`:comment`** is *ignored* by the engine (an `x`-mode `#` line comment or
+  # a `(?#…)` group), so a lazy/possessive suffix can hide behind it; an **`:inert`** is a
+  # zero-width *atom* whose body isn't regex (a `\Q…\E` quote, a `(*VERB…)` control verb).
+  # Their content is not lexed, so every pass skips them by not matching the kind. Kinds:
+  # `:char :escape :class_open :class_close :range :bound :group_open :group_close
+  # :modifier :comment :inert`.
   defp tokens(pattern, baseline), do: lex(pattern, 0, false, false, Flags.initial(baseline), [])
 
   defp tok(kind, text, offset, in_class, stack),
@@ -172,11 +179,21 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   defp lex(<<>>, _i, _ic, _jo, _stack, acc), do: Enum.reverse(acc)
 
-  # `\Q…\E` literal-quote span → one inert token.
+  # `\Q…\E` literal-quote span → one inert *atom* token (its body matches as text).
   defp lex(<<?\\, ?Q, rest::binary>>, i, ic, _jo, stack, acc) do
     {quoted, tail} = take_quoted(rest)
     text = "\\Q" <> quoted
     lex(tail, i + byte_size(text), ic, false, stack, [tok(:inert, text, i, ic, stack) | acc])
+  end
+
+  # A PCRE backtracking control verb `(*VERB)` / `(*VERB:arg)` (outside a class). Its
+  # argument is literal text that may contain `(`/`|`/etc., so the whole `(*…)` (to the
+  # first `)`) is an inert atom — it must not push a frame or read as alternation.
+  defp lex(<<?(, ?*, rest::binary>>, i, false, _jo, stack, acc) do
+    {verb, tail} = take_verb(rest)
+    text = "(*" <> verb
+
+    lex(tail, i + byte_size(text), false, false, stack, [tok(:inert, text, i, false, stack) | acc])
   end
 
   # Escape pair.
@@ -199,6 +216,25 @@ defmodule Mutare.Mutators.RegexLiteral do
   defp lex(<<?], rest::binary>>, i, true, false, stack, acc),
     do: lex(rest, i + 1, false, false, stack, [tok(:class_close, "]", i, true, stack) | acc])
 
+  # A POSIX class `[:name:]` / `[:^name:]` *inside* a character class — consume it whole so
+  # its internal `]` is never read as the outer class's close. A bare `[:…` with no closing
+  # `:]` is not POSIX: the `[` is then an ordinary literal member.
+  defp lex(<<?[, ?:, rest::binary>>, i, true, _jo, stack, acc) do
+    case take_posix(rest) do
+      {body, tail} ->
+        text = "[:" <> body
+
+        lex(tail, i + byte_size(text), true, false, stack, [
+          tok(:char, text, i, true, stack) | acc
+        ])
+
+      :none ->
+        lex(<<?:, rest::binary>>, i + 1, true, false, stack, [
+          tok(:char, "[", i, true, stack) | acc
+        ])
+    end
+  end
+
   # Character-class range `lo-hi` (alphanumeric endpoints) — a lexical unit so a consumer
   # never has to re-stitch one from single chars.
   defp lex(<<lo::utf8, ?-, hi::utf8, rest::binary>>, i, true, _jo, stack, acc)
@@ -208,14 +244,14 @@ defmodule Mutare.Mutators.RegexLiteral do
     lex(rest, i + byte_size(text), true, false, stack, [tok(:range, text, i, true, stack) | acc])
   end
 
-  # `x`-mode `#` comment (outside a class, `x` active) → inert.
+  # `x`-mode `#` comment (outside a class, `x` active) → an ignored `:comment` span.
   defp lex(<<?#, rest::binary>>, i, false, _jo, stack, acc) do
     if Flags.active?(stack, ?x) do
       {comment, tail} = take_comment_line(rest)
       text = "#" <> comment
 
       lex(tail, i + byte_size(text), false, false, stack, [
-        tok(:inert, text, i, false, stack) | acc
+        tok(:comment, text, i, false, stack) | acc
       ])
     else
       lex(rest, i + 1, false, false, stack, [tok(:char, "#", i, false, stack) | acc])
@@ -224,7 +260,7 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   # Group open (outside a class) — `Flags.open/2` advances the flag scope and tells us
   # whether this is a real group (`:push`), a bare inline modifier (`:mutate`, no frame) or
-  # a `(?#…)` comment (`:inert`). `removable?` (a plain capturing `(`, not `(?…`) is what
+  # a `(?#…)` comment (`:comment`). `removable?` (a plain capturing `(`, not `(?…`) is what
   # the alternation pass needs.
   defp lex(<<?(, rest::binary>>, i, false, _jo, stack, acc) do
     {action, consumed, tail, stack2} = Flags.open(rest, stack)
@@ -234,7 +270,7 @@ defmodule Mutare.Mutators.RegexLiteral do
     token =
       case action do
         :comment ->
-          tok(:inert, text, i, false, stack)
+          tok(:comment, text, i, false, stack)
 
         :mutate ->
           tok(:modifier, text, i, false, stack)
@@ -430,19 +466,43 @@ defmodule Mutare.Mutators.RegexLiteral do
   # a `:class_close`), ranges and bounds into single tokens, and dropped inert content — so
   # each clause is just "given this token, what mutants?". Reconstruction splices the
   # replacement over the token's text via `before_tok`/`after_tok`.
-  defp scan_patterns(pattern, tokens) do
-    {mutants, _pq} =
-      Enum.reduce(tokens, {[], false}, fn token, {acc, pq} ->
-        {new, pq2} = scan_token(token, pattern, pq)
-        {acc ++ new, pq2}
-      end)
+  defp scan_patterns(pattern, tokens), do: scan_fold(tokens, pattern, false, [])
 
-    mutants
+  defp scan_fold([], _pat, _pq, acc), do: acc
+
+  defp scan_fold([token | rest], pat, pq, acc) do
+    # Text PCRE *ignores* — a `:comment` span or, under `/x`, unescaped whitespace — emits
+    # nothing and carries `prev_quant` through, so a lazy/possessive suffix hidden behind it
+    # (`a+ ?` /x, `a+(?#c)?`) is still recognised as a suffix (`suffix_follows?/1`), not a
+    # fresh quantifier.
+    if scan_ignored?(token) do
+      scan_fold(rest, pat, pq, acc)
+    else
+      {new, pq2} = scan_token(token, rest, pat, pq)
+      scan_fold(rest, pat, pq2, acc ++ new)
+    end
+  end
+
+  defp scan_ignored?(%{kind: :comment}), do: true
+
+  defp scan_ignored?(%{kind: :char, text: <<c>>, in_class: false, flags: f}),
+    do: MapSet.member?(f, ?x) and c in [?\s, ?\t, ?\n, ?\r, ?\f, 0x0B]
+
+  defp scan_ignored?(_token), do: false
+
+  # Does a lazy (`?`) / possessive (`+`) suffix follow this quantifier, possibly across
+  # ignored text? The first *non-ignored* token decides (a `\Q…\E`/verb atom in between
+  # would stop the scan — it is not ignored, so it is not a suffix separator).
+  defp suffix_follows?(rest) do
+    case Enum.drop_while(rest, &scan_ignored?/1) do
+      [%{kind: :char, text: t} | _] when t in ["?", "+"] -> true
+      _ -> false
+    end
   end
 
   # An escape: a `\d`/`\w`/`\s` shorthand (anywhere) or `\b` (outside a class) flips to its
   # complement; a `\.` (outside a class) unescapes to `.`.
-  defp scan_token(%{kind: :escape, text: <<?\\, c::utf8>>, in_class: ic} = t, pat, _pq) do
+  defp scan_token(%{kind: :escape, text: <<?\\, c::utf8>>, in_class: ic} = t, _rest, pat, _pq) do
     pre = before_tok(pat, t)
     post = after_tok(pat, t)
 
@@ -458,13 +518,13 @@ defmodule Mutare.Mutators.RegexLiteral do
   end
 
   # Class open → toggle the negation (`[…` ↔ `[^…`).
-  defp scan_token(%{kind: :class_open, text: t_open} = t, pat, _pq) do
+  defp scan_token(%{kind: :class_open, text: t_open} = t, _rest, pat, _pq) do
     repl = if t_open == "[", do: "[^", else: "["
     {[before_tok(pat, t) <> repl <> after_tok(pat, t)], false}
   end
 
   # Class range `lo-hi` → each in-range off-by-one neighbour (`class_range_mutations/2`).
-  defp scan_token(%{kind: :range, text: <<lo::utf8, ?-, hi::utf8>>} = t, pat, _pq) do
+  defp scan_token(%{kind: :range, text: <<lo::utf8, ?-, hi::utf8>>} = t, _rest, pat, _pq) do
     pre = before_tok(pat, t)
     post = after_tok(pat, t)
     {Enum.map(class_range_mutations(lo, hi), &(pre <> &1 <> post)), false}
@@ -472,15 +532,17 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   # Quantifier `*`/`+` (outside a class) → complement swap, collapse-to-one, lazy suffix,
   # only as a real (postfix) quantifier.
-  defp scan_token(%{kind: :char, text: <<q>>, in_class: false} = t, pat, pq) when q in [?*, ?+] do
+  defp scan_token(%{kind: :char, text: <<q>>, in_class: false} = t, rest, pat, pq)
+       when q in [?*, ?+] do
     pre = before_tok(pat, t)
     post = after_tok(pat, t)
+    suffixed = suffix_follows?(rest)
 
     new =
       if postfix_quantifier?(pre, pq),
         do:
           [pre <> <<flip_quant(q)>> <> post] ++
-            collapse_variant(pre, post) ++ lazy_variant(pre, <<q>>, post),
+            collapse_variant(pre, post, suffixed) ++ lazy_variant(pre, <<q>>, post, suffixed),
         else: []
 
     {new, true}
@@ -488,13 +550,14 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   # Optional `?` (outside a class) → drop / raise to `+` / raise to `*` / lazy `??`. Skipped
   # for a group marker (via `postfix_quantifier?/2`) or an already-suffixed compound
-  # (`a??`/`a?+`), where touching the first `?` would reinterpret the trailing `?`/`+`.
-  defp scan_token(%{kind: :char, text: "?", in_class: false} = t, pat, pq) do
+  # (`a??`/`a?+`, possibly across ignored text), where touching the first `?` would
+  # reinterpret the trailing `?`/`+`.
+  defp scan_token(%{kind: :char, text: "?", in_class: false} = t, rest, pat, pq) do
     pre = before_tok(pat, t)
     post = after_tok(pat, t)
 
     new =
-      if postfix_quantifier?(pre, pq) and not suffixed?(post),
+      if postfix_quantifier?(pre, pq) and not suffix_follows?(rest),
         do: [pre <> post, pre <> "+" <> post, pre <> "*" <> post, pre <> "??" <> post],
         else: []
 
@@ -503,21 +566,26 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   # Bounded quantifier → off-by-one / shape neighbours, plus a lazy `{…}?` for a *variable*
   # count only (a fixed `{n}`/`{n,n}` can't vary, so a lazy `?` is a guaranteed no-op).
-  defp scan_token(%{kind: :bound, text: t_bound, bound: bound} = t, pat, _pq) do
+  defp scan_token(%{kind: :bound, text: t_bound, bound: bound} = t, rest, pat, _pq) do
     pre = before_tok(pat, t)
     post = after_tok(pat, t)
     bounds = Enum.map(bound_mutations(bound), &(pre <> "{" <> &1 <> "}" <> post))
-    lazy = if variable_bound?(bound), do: lazy_variant(pre, t_bound, post), else: []
+
+    lazy =
+      if variable_bound?(bound),
+        do: lazy_variant(pre, t_bound, post, suffix_follows?(rest)),
+        else: []
+
     {bounds ++ lazy, true}
   end
 
   # Literal-dot swap: `.` (outside a class) → `\.` (a literal dot).
-  defp scan_token(%{kind: :char, text: ".", in_class: false} = t, pat, _pq),
+  defp scan_token(%{kind: :char, text: ".", in_class: false} = t, _rest, pat, _pq),
     do: {[before_tok(pat, t) <> "\\." <> after_tok(pat, t)], false}
 
-  # Anything else (a plain char, anchor, pipe, group, modifier, inert span): no scan
+  # Anything else (a plain char, anchor, pipe, group, modifier, inert atom): no scan
   # mutation, and the previous token is no longer a quantifier.
-  defp scan_token(_token, _pat, _pq), do: {[], false}
+  defp scan_token(_token, _rest, _pat, _pq), do: {[], false}
 
   # A `*`/`+`/`?` is a real quantifier only after an atom: not at the start, not
   # right after a `(`/`|`, and not directly after another quantifier (a suffix).
@@ -531,20 +599,12 @@ defmodule Mutare.Mutators.RegexLiteral do
   # Collapse a greedy `*`/`+` to exactly-one by dropping it (`\d+` → `\d`). Skipped
   # when a lazy/possessive suffix already follows (collapsing `a+?` would mean
   # reinterpreting its `?` as the quantifier — left to the base swap instead).
-  defp collapse_variant(prefix, rest) do
-    if suffixed?(rest), do: [], else: [prefix <> rest]
-  end
+  defp collapse_variant(pre, post, suffixed), do: if(suffixed, do: [], else: [pre <> post])
 
   # Add a lazy `?` suffix to a greedy quantifier token (`a+` → `a+?`). Skipped when a
-  # lazy/possessive suffix already follows, since a second one (`a+??`/`a+?+`) is
-  # invalid.
-  defp lazy_variant(prefix, quant, rest) do
-    if suffixed?(rest), do: [], else: [prefix <> quant <> "?" <> rest]
-  end
-
-  # Does a lazy (`?`) or possessive (`+`) suffix immediately follow this quantifier?
-  defp suffixed?(<<c, _::binary>>) when c in [??, ?+], do: true
-  defp suffixed?(_), do: false
+  # lazy/possessive suffix already follows, since a second one (`a+??`/`a+?+`) is invalid.
+  defp lazy_variant(pre, quant, post, suffixed),
+    do: if(suffixed, do: [], else: [pre <> quant <> "?" <> post])
 
   # Is the repetition count variable (so greedy vs. lazy can differ)? A fixed `{n}` or
   # `{n,n}` is not — a lazy `?` on it is a guaranteed no-op.
@@ -559,9 +619,25 @@ defmodule Mutare.Mutators.RegexLiteral do
   defp take_quoted(<<>>, acc), do: {acc, ""}
   defp take_quoted(<<c::utf8, rest::binary>>, acc), do: take_quoted(rest, acc <> <<c::utf8>>)
 
-  # Consume an `x`-mode comment body up to (not including) the terminating newline.
+  # Consume a control-verb body (the bytes after `(*`), up to and including the first `)`
+  # (or to the pattern's end). The argument is literal, so `(`/`|` inside don't matter.
+  defp take_verb(bin), do: take_verb(bin, "")
+  defp take_verb(<<?), rest::binary>>, acc), do: {acc <> ")", rest}
+  defp take_verb(<<>>, acc), do: {acc, ""}
+  defp take_verb(<<c::utf8, rest::binary>>, acc), do: take_verb(rest, acc <> <<c::utf8>>)
+
+  # Consume a POSIX-class body (the bytes after `[:`), up to and including the closing `:]`;
+  # `:none` if there is no `:]` (then the leading `[` was an ordinary class member).
+  defp take_posix(bin), do: take_posix(bin, "")
+  defp take_posix(<<?:, ?], rest::binary>>, acc), do: {acc <> ":]", rest}
+  defp take_posix(<<>>, _acc), do: :none
+  defp take_posix(<<c::utf8, rest::binary>>, acc), do: take_posix(rest, acc <> <<c::utf8>>)
+
+  # Consume an `x`-mode comment body up to (not including) the terminating newline. PCRE
+  # ends the comment at the first CR *or* LF, so we stop at either (a following `.` is then
+  # active, not swallowed).
   defp take_comment_line(bin), do: take_comment_line(bin, "")
-  defp take_comment_line(<<?\n, _::binary>> = rest, acc), do: {acc, rest}
+  defp take_comment_line(<<c, _::binary>> = rest, acc) when c in [?\n, ?\r], do: {acc, rest}
   defp take_comment_line(<<>>, acc), do: {acc, ""}
 
   defp take_comment_line(<<c::utf8, rest::binary>>, acc),

@@ -5828,7 +5828,15 @@ buys less than the duplication costs:
     `alt_walk` miss. `Flags.open/2` grew a `:push | :mutate | :comment` tag so the reader can classify a
     `(`-token (real group vs bare `(?m)` modifier vs `(?#…)` comment) — the one API ripple. (The forcing
     function the earlier note named — the escape grammar growing — is now also where *new* lexing goes:
-    one place, not four.)
+    one place, not four.) Subsequent review then drove the lexer to the full PCRE corner-grammar, each a
+    one-clause add now that there's one reader: a **POSIX class** `[:alpha:]` is consumed whole (its inner
+    `]` no longer closes the enclosing class → no phantom frame); a **`(*VERB…)` control verb** is an inert
+    atom (its literal `(`/`|` argument can't push a frame or read as alternation); the **inline-flag set**
+    is exactly `i m s x J U X` (engine-accepted scoped *and* unset — `X` was missing, `u`/`n` bogus); an
+    **`x`-comment ends at CR *or* LF**; and the two span flavours were split — an **ignored** `:comment`
+    (`x`-comment / `(?#…)`, behind which a quantifier suffix is still visible) vs an **inert atom**
+    `:inert` (`\Q…\E` / verb, which *stops* suffix scanning) — so `scan`'s `prev_quant`/suffix detection
+    looks *through* ignored text (`a+(?#c)?`, `a+ ?`/x are lazy, not collapsible) but not through atoms.
   - **`Mutare.Transform.Analyze.Conditions`' parallel spine-walks** (`spine_rewrite`, `spine_bindings`,
     `eval_steps`, `offspine_escaping_binding?`, `prune_binding_ancestors`). All share one structural
     skeleton (stop at `@binding_isolating_forms`, recurse-left at `@short_circuit_ops`, flag at

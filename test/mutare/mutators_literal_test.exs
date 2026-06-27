@@ -486,6 +486,47 @@ defmodule Mutare.MutatorsLiteralTest do
       assert render(RegexLiteral.mutate(parse(~S"~r/a(?#x+y)b/"))) == [~S"~r//", ~S"~r/mutare/"]
     end
 
+    test "consumes a POSIX class so its inner ] doesn't end the enclosing class" do
+      # the `]` of `[:alpha:]` must not close the outer class; otherwise the `(` after it
+      # would push a phantom frame and `m` would leak to the outside `^b` as a bogus `\A`
+      mutants = render(RegexLiteral.mutate(parse(~S"~r/(?m:[[:alpha:](])^b/")))
+      refute ~S"~r/(?m:[[:alpha:](])\Ab/" in mutants
+      assert ~S"~r/(?m:[^[:alpha:](])^b/" in mutants
+    end
+
+    test "treats a (*VERB…) control verb as an inert atom" do
+      # the verb's argument is literal — its `(`/`|` must not push a frame or read as
+      # alternation, and `m` must not leak to the outside `^b`
+      refute ~S"~r/(?m:(*MARK:()x)\Ab/" in render(
+               RegexLiteral.mutate(parse(~S"~r/(?m:(*MARK:()x)^b/"))
+             )
+
+      assert render(RegexLiteral.mutate(parse(~S"~r/(*MARK:a|b)c/"))) == [
+               ~S"~r//",
+               ~S"~r/mutare/"
+             ]
+    end
+
+    test "sees a quantifier suffix through ignored text (comment or x-whitespace)" do
+      # `a+(?#c)?` is a lazy plus across a comment: only the `+`<->`*` swap; no collapse and
+      # the trailing `?` is the suffix, not a fresh quantifier
+      assert render(RegexLiteral.mutate(parse(~S"~r/a+(?#c)?/"))) ==
+               [~S"~r//", ~S"~r/mutare/", ~S"~r/a*(?#c)?/"]
+
+      # `a+ ?` under /x is `a+?` (the space is ignored) — same: swap only, no collapse
+      ws = render(RegexLiteral.mutate(parse(~S"~r/a+ ?/x")))
+      assert ~S"~r/a* ?/x" in ws
+      refute ~S"~r/a ?/x" in ws
+    end
+
+    test "ends an x-mode comment at a carriage return, not just a line feed" do
+      # PCRE ends the `#` comment at the CR, so the following dot is active and mutates
+      node = {:sigil_r, [], [{:<<>>, [], ["# c\r."]}, ~c"x"]}
+      pats = Enum.map(RegexLiteral.mutate(node), fn {:sigil_r, _, [{:<<>>, _, [p]}, _]} -> p end)
+      assert "# c\r(?s:.)" in pats
+      assert "# c\r\\." in pats
+    end
+
     test "swaps a + quantifier to * and back" do
       assert ~S|~r/\d*/| in render(RegexLiteral.mutate(parse(~S|~r/\d+/|)))
       assert ~S|~r/a+/| in render(RegexLiteral.mutate(parse(~S|~r/a*/|)))
