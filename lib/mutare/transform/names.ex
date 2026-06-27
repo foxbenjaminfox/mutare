@@ -16,8 +16,8 @@ defmodule Mutare.Transform.Names do
   # provably never uses, from one scan of every identifier it mentions (definitions
   # *and* variables).
   #
-  # `Mutare.Transform` pins these once (into `Ctx.prefix`/`Ctx.active_var`/
-  # `Ctx.super_var`) before any lifting assigns them; `Mutare.Manifest` recognises a
+  # `Mutare.Transform` pins these once (into `Config.prefix`/`Config.active_var`/
+  # `Config.super_var`) before any lifting assigns them; `Mutare.Manifest` recognises a
   # lifted mutant clause by its `<active_var> === <id>` gate, not the name, so the
   # salt is invisible to it.
 

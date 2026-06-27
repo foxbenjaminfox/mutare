@@ -152,6 +152,8 @@ defmodule Mutare.Transform do
     Candidate,
     Candidate.Delivery,
     CaseClauseEmit,
+    ClaimState,
+    Config,
     Ctx,
     FunctionPlan,
     HostedEmit,
@@ -164,6 +166,7 @@ defmodule Mutare.Transform do
     PipeEmit,
     Render,
     Resolve,
+    Scope,
     SelectorEmit,
     Super,
     Uses
@@ -214,9 +217,9 @@ defmodule Mutare.Transform do
     # be scoped to a mutator family, so the decision is per `{line, mutator}`, not
     # per line; a matching directive's reason rides along onto the site.
     directives = Mutare.Ignore.directives_from_ast(parsed)
-    sites = Enum.map(Enum.reverse(ctx.sites), &apply_ignore(&1, directives))
+    sites = Enum.map(Enum.reverse(ctx.claim.sites), &apply_ignore(&1, directives))
 
-    {metamutant, sites, ctx.next_id}
+    {metamutant, sites, ctx.claim.next_id}
   end
 
   @doc """
@@ -242,31 +245,23 @@ defmodule Mutare.Transform do
   """
   @spec count_string(String.t(), keyword()) :: non_neg_integer()
   def count_string(source, opts \\ []) when is_binary(source) do
-    {_transformed, ctx, _parsed} = plan_and_emit(source, opts)
-    length(ctx.sites)
+    # The `:count` sink runs the same analyze → plan → emit pipeline but builds and retains no
+    # `Mutare.Site` per claim — only advancing the id and tallying — so the per-mutant `Sourceror`
+    # render in `Mutare.Site` is skipped. The tally is the mutant count (drift-proof: same claim
+    # path as a render; see `Mutare.Transform.ClaimState`).
+    {_transformed, ctx, _parsed} = plan_and_emit(source, Keyword.put(opts, :sink, :count))
+    ClaimState.total(ctx.claim)
   end
 
   # The shared analyze → plan → emit pipeline, stopping *before* `Render.to_source/1`.
-  # Returns the id-assigned (but unrendered) metamutant tree, the final `ctx` (carrying
-  # `next_id` and the accumulated, still-reversed sites), and the pristine parsed AST (for
-  # the comment-based ignore scan). `transform_string/2` renders it and applies ignores;
-  # `count_string/2` reads only `ctx.next_id`. Rendering is the dominant per-file cost (see
-  # NOTES "Scan is transform-bound"), so splitting it out is what makes the count phase cheap.
+  # Returns the id-assigned (but unrendered) metamutant tree, the final `ctx` (whose `claim`
+  # carries `next_id` and the accumulated, still-reversed sites), and the pristine parsed AST
+  # (for the comment-based ignore scan). `transform_string/2` renders it and applies ignores;
+  # `count_string/2` reads only the claim tally. Rendering is the dominant per-file cost (see
+  # NOTES "Scan is transform-bound"), so splitting it out is what makes the count phase cheap;
+  # the `:count` sink (carried on `ctx.claim`) makes it cheaper still by skipping per-mutant
+  # `Mutare.Site` construction.
   defp plan_and_emit(source, opts) do
-    ctx = %Ctx{
-      file: Keyword.get(opts, :file, "nofile"),
-      # Normalize to `Mutare.Mutator.Spec`s — `:mutators` may arrive as family
-      # atoms / bare modules (tests, the default set) or already-resolved specs
-      # (the Options/Config path); `resolve/1` is idempotent on specs.
-      mutators: opts |> Keyword.get(:mutators, @default_mutators) |> Mutare.Mutators.resolve(),
-      next_id: Keyword.get(opts, :start_id, 1),
-      # Mutant ids to drop (e.g. compile-poisoning, found by the runner): their
-      # site is still recorded (`poisoned: true`, for the denominator and id
-      # stability) but no selector/copy is generated, so the metamutant compiles.
-      skip_ids: Keyword.get(opts, :skip_ids, MapSet.new())
-      # `group` and `sites` start at their struct defaults (0 / []).
-    }
-
     parsed = Sourceror.parse_string!(source)
     # Pin the generated names this source provably never collides with before any
     # lifting assigns them: the private-function prefix, the dispatch variable, the
@@ -274,16 +269,35 @@ defmodule Mutare.Transform do
     # (see `Mutare.Transform.Names`).
     names = Names.generated_names(parsed)
 
-    ctx = %{
-      ctx
-      | prefix: names.prefix,
-        active_var: names.active_var,
-        super_var: names.super_var,
-        piped_var: names.piped_var,
-        cond_var: names.cond_var,
-        # Prime the per-module mutator cache for the top-level (empty-behaviours) scope;
-        # `put_behaviours/2` refreshes it at each `defmodule` boundary.
-        analysis_mutators: enrich_mutators(ctx.mutators, ctx.behaviours)
+    config = %Config{
+      file: Keyword.get(opts, :file, "nofile"),
+      # Normalize to `Mutare.Mutator.Spec`s — `:mutators` may arrive as family
+      # atoms / bare modules (tests, the default set) or already-resolved specs
+      # (the Options/Config path); `resolve/1` is idempotent on specs.
+      mutators: opts |> Keyword.get(:mutators, @default_mutators) |> Mutare.Mutators.resolve(),
+      # Mutant ids to drop (e.g. compile-poisoning, found by the runner): their
+      # site is still recorded (`poisoned: true`, for the denominator and id
+      # stability) but no selector/copy is generated, so the metamutant compiles.
+      skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
+      prefix: names.prefix,
+      active_var: names.active_var,
+      super_var: names.super_var,
+      piped_var: names.piped_var,
+      cond_var: names.cond_var
+    }
+
+    ctx = %Ctx{
+      config: config,
+      # Prime the per-module mutator cache for the top-level (empty-behaviours) scope;
+      # `put_behaviours/2` refreshes it at each `defmodule` boundary.
+      scope: %Scope{analysis_mutators: enrich_mutators(config.mutators, MapSet.new())},
+      claim: %ClaimState{
+        # `:render` (default) builds + retains a `Mutare.Site` per claim; `:count` only tallies
+        # (the schema's render-free count pass). `next_id` seeds the id span; `group`/`sites`/
+        # `count` start at their struct defaults.
+        sink: Keyword.get(opts, :sink, :render),
+        next_id: Keyword.get(opts, :start_id, 1)
+      }
     }
 
     # Third-party plugins (`Mutare.Plugin`): their `macros/0` extends the registry below and
@@ -303,7 +317,7 @@ defmodule Mutare.Transform do
     # *specs* are passed straight through (`build/3` reads each's `macros/0`); a `macros/0`
     # registration is opts-independent (a library fact), so the `opts` they carry are ignored there
     # and ride along separately to `expand_use/3`'s context.
-    macros = Mutare.Macros.build(Keyword.get(opts, :macros, []), ctx.mutators, plugins)
+    macros = Mutare.Macros.build(Keyword.get(opts, :macros, []), config.mutators, plugins)
 
     # Resolve `alias`es and `import`s in one lexical pass (`Mutare.Transform.Resolve`),
     # stamping each call with the module it refers to, so the call-matching mutators recognise
@@ -374,14 +388,18 @@ defmodule Mutare.Transform do
   # module that re-enters here overwrites and then restores the outer set.
   defp transform_node({:defmodule, meta, [alias_node, do_keyword]}, ctx)
        when is_list(do_keyword) do
-    outer = ctx.behaviours
-    outer_mutators = ctx.analysis_mutators
+    outer = ctx.scope.behaviours
+    outer_mutators = ctx.scope.analysis_mutators
 
     {do_keyword, ctx} =
       transform_do_keyword(do_keyword, put_behaviours(ctx, Behaviours.behaviours(meta)))
 
-    {{:defmodule, meta, [alias_node, do_keyword]},
-     %{ctx | behaviours: outer, analysis_mutators: outer_mutators}}
+    # Restore only the behaviour-derived scope (behaviours don't inherit); the body's
+    # id/site claims and any depth/binding changes stay as the body left them.
+    restored =
+      Ctx.update_scope(ctx, &%{&1 | behaviours: outer, analysis_mutators: outer_mutators})
+
+    {{:defmodule, meta, [alias_node, do_keyword]}, restored}
   end
 
   # A block: either a module body (contains clauses → plan + emit) or an
@@ -420,23 +438,24 @@ defmodule Mutare.Transform do
   # id-threading.
   defp transform_statements(statements, ctx) do
     statements
-    |> ModulePlan.build(ctx.analysis_mutators, ctx.file)
+    |> ModulePlan.build(ctx.scope.analysis_mutators, ctx.config.file)
     |> emit_module_plan(ctx)
   end
 
   # Enter a module scope: bind its `@behaviour` set and refresh the cached, behaviour-
-  # enriched mutator list (`ctx.analysis_mutators`) the analyze/plan call sites read.
+  # enriched mutator list (`ctx.scope.analysis_mutators`) the analyze/plan call sites read.
   # `behaviours` changes only here (and is restored on the way out), so the enrichment —
   # one fold over ~all mutators — happens once per module scope rather than once per
   # clause/statement.
   defp put_behaviours(ctx, behaviours) do
-    %{ctx | behaviours: behaviours, analysis_mutators: enrich_mutators(ctx.mutators, behaviours)}
+    enriched = enrich_mutators(ctx.config.mutators, behaviours)
+    Ctx.update_scope(ctx, &%{&1 | behaviours: behaviours, analysis_mutators: enriched})
   end
 
   # Fold a `@behaviour` set onto each spec, so it carries the behaviours to every leaf
   # where a mutator runs (`Mutator.Dispatch.mutations/3`, the structural callbacks) and a
   # behaviour-aware mutator sees `context.behaviours` without any new threading. The base
-  # `ctx.mutators` stays untouched (the empty-behaviours config); this enrichment is the
+  # `ctx.config.mutators` stays untouched (the empty-behaviours config); this enrichment is the
   # one place per-module context meets the spec list. Outside any module `behaviours` is
   # empty, so the specs pass through carrying the empty set.
   defp enrich_mutators(mutators, behaviours) do
@@ -491,19 +510,19 @@ defmodule Mutare.Transform do
   # `active_bound` toggles are scoped to this clause and restored on the way out, so they
   # never leak into the next module item.
   defp emit_clause(clause, ctx, lifted?) do
-    bound0 = ctx.active_bound
+    bound0 = ctx.scope.active_bound
 
     {emitted, ctx} =
-      emit_annotated_clause(Analyze.annotate(clause, ctx.analysis_mutators), ctx, lifted?)
+      emit_annotated_clause(Analyze.annotate(clause, ctx.scope.analysis_mutators), ctx, lifted?)
 
-    {emitted, %{ctx | active_bound: bound0}}
+    {emitted, Ctx.update_scope(ctx, &%{&1 | active_bound: bound0})}
   end
 
   # A normal body-bearing def/defp clause: emit the head with the read unbound, then the
   # body blocks (`emit_clause_body/3`).
   defp emit_annotated_clause({vis, meta, [head, body_kw]}, ctx, lifted?)
        when vis in [:def, :defp] and is_list(body_kw) do
-    {head, ctx} = emit(head, %{ctx | active_bound: false})
+    {head, ctx} = emit(head, unbind_active(ctx))
     {body_kw, ctx} = emit_clause_body(body_kw, ctx, lifted?)
     {{vis, meta, [head, body_kw]}, ctx}
   end
@@ -512,7 +531,11 @@ defmodule Mutare.Transform do
   # to hoist into, so emit the whole node with the read unbound — identical to the
   # pre-hoist behaviour. (A header's only runtime sub-positions are its default values,
   # which keep the self-contained read regardless.)
-  defp emit_annotated_clause(node, ctx, _lifted?), do: emit(node, %{ctx | active_bound: false})
+  defp emit_annotated_clause(node, ctx, _lifted?), do: emit(node, unbind_active(ctx))
+
+  # Mark the active-id read as unbound for the enclosed emit (a head's default values run in
+  # a generated head clause where no binding is in scope, so they keep the self-contained read).
+  defp unbind_active(ctx), do: Ctx.update_scope(ctx, &%{&1 | active_bound: false})
 
   # Emit each body block's value with the active-id read bound where the binding reaches:
   # the `:do` block always (a non-lifted clause's prologue binds it; a lifted clause's
@@ -530,11 +553,11 @@ defmodule Mutare.Transform do
     {body_kw, ctx} =
       Enum.map_reduce(body_kw, ctx, fn {key, value}, ctx ->
         bound = AST.key_atom(key) == :do or lifted?
-        {value, ctx} = emit(value, %{ctx | active_bound: bound})
+        {value, ctx} = emit(value, Ctx.update_scope(ctx, &%{&1 | active_bound: bound}))
         {{key, value}, ctx}
       end)
 
-    {if(lifted?, do: body_kw, else: prepend_do_prologue(body_kw, ctx.active_var)), ctx}
+    {if(lifted?, do: body_kw, else: prepend_do_prologue(body_kw, ctx.config.active_var)), ctx}
   end
 
   # Prepend `<var> = :persistent_term.get(...)` to the `:do` block — but only when that
@@ -607,7 +630,7 @@ defmodule Mutare.Transform do
          not Analyze.module_scaffold_statement?(node) do
       emit_block_macro(node, ctx)
     else
-      node |> Analyze.scaffold(ctx.analysis_mutators) |> emit(ctx)
+      node |> Analyze.scaffold(ctx.scope.analysis_mutators) |> emit(ctx)
     end
   end
 
@@ -621,12 +644,14 @@ defmodule Mutare.Transform do
   # untagged (`tag` is `nil`), so the user's `:macros` choice is honoured and never auto-skipped.
   #
   # Sites accumulate newest-first (`SelectorEmit.claim_items/4` prepends), so the ones
-  # this `emit` created are exactly the head of `ctx.sites` above the count we held before it.
+  # this `emit` created are exactly the head of `ctx.claim.sites` above the count we held
+  # before it. (Under the `:count` sink no sites are retained, so `before` is 0 and the
+  # tagging is an inert no-op — the count pass needs no block-macro tags.)
   defp emit_block_macro(node, ctx) do
-    before = length(ctx.sites)
+    before = length(ctx.claim.sites)
 
     {emitted, ctx} =
-      node |> Analyze.analyze_module_macro_block(ctx.analysis_mutators) |> emit(ctx)
+      node |> Analyze.analyze_module_macro_block(ctx.scope.analysis_mutators) |> emit(ctx)
 
     {emitted, tag_block_macro_sites(ctx, before, block_macro_tag(node))}
   end
@@ -649,8 +674,10 @@ defmodule Mutare.Transform do
   defp tag_block_macro_sites(ctx, _before, nil), do: ctx
 
   defp tag_block_macro_sites(ctx, before, tag) do
-    {new, prior} = Enum.split(ctx.sites, length(ctx.sites) - before)
-    %{ctx | sites: Enum.map(new, &%{&1 | block_macro: tag}) ++ prior}
+    Ctx.update_claim(ctx, fn claim ->
+      {new, prior} = Enum.split(claim.sites, length(claim.sites) - before)
+      %{claim | sites: Enum.map(new, &%{&1 | block_macro: tag}) ++ prior}
+    end)
   end
 
   # A lifted clause group becomes ONE private function `<base>` plus a public
@@ -666,16 +693,16 @@ defmodule Mutare.Transform do
   # (`in_place_clauses` over the source clauses), then the lifted candidates in
   # `candidates/1` order — so the scheme is invisible to ids, Sites, and coverage.
   defp emit_function_plan(%FunctionPlan{signature: {vis, name, arity}} = plan, ctx) do
-    group = ctx.group + 1
-    ctx = %{ctx | group: group}
-    base = :"#{LiftedEmit.base_name(name, arity, group, ctx.prefix)}"
-    var = ctx.active_var
+    group = ctx.claim.group + 1
+    ctx = Ctx.update_claim(ctx, &%{&1 | group: group})
+    base = :"#{LiftedEmit.base_name(name, arity, group, ctx.config.prefix)}"
+    var = ctx.config.active_var
 
     # If any lifted body calls `super`, the relocated base copies can't (super is
     # legal only in the overriding function). `super_var` is the closure variable the
     # dispatcher binds and forwards (`Mutare.Transform.Super`); `nil` when the group
     # is super-free, leaving the common path byte-for-byte unchanged.
-    super_var = if Super.in_clauses?(plan.clauses), do: ctx.super_var, else: nil
+    super_var = if Super.in_clauses?(plan.clauses), do: ctx.config.super_var, else: nil
 
     # Source clauses with in-place body selectors — claims the body ids first. The body
     # reads the threaded `mutare_active` parameter directly (the dispatcher binds it);
@@ -720,7 +747,7 @@ defmodule Mutare.Transform do
   # nodes with their candidates, then emit selectors as ids are assigned.
   defp in_place(node, ctx) do
     node
-    |> Analyze.annotate(ctx.analysis_mutators)
+    |> Analyze.annotate(ctx.scope.analysis_mutators)
     |> emit(ctx)
   end
 
@@ -760,7 +787,7 @@ defmodule Mutare.Transform do
     # condition-hoist left behind (`Mutare.Transform.Analyze` builds the hoist in the
     # id-free analyze pass, which has no per-file names). A no-op when nothing was
     # hoisted refutably; runs before everything else so the rest of emit sees a real var.
-    node = Names.substitute_hoist_placeholder(node, ctx.cond_var)
+    node = Names.substitute_hoist_placeholder(node, ctx.config.cond_var)
 
     # Drop redundant leaf candidates a call-rewriting mutator already covers (ModeSwap's
     # mode atom / `shift` key vs AtomLiteral), *before* id assignment — so they leave no id
@@ -782,15 +809,15 @@ defmodule Mutare.Transform do
   # post step. Every other node passes through untouched.
   defp emit_descend(node, ctx) do
     if module_scope?(node),
-      do: {node, %{ctx | module_depth: ctx.module_depth + 1}},
+      do: {node, Ctx.update_scope(ctx, &%{&1 | module_depth: &1.module_depth + 1})},
       else: {node, ctx}
   end
 
   # The post step: a module-scope node only restores the depth (it carries no candidates);
   # every other node runs the id-assigning emit.
-  defp emit_node(current, ctx) when ctx.module_depth > 0 do
+  defp emit_node(current, ctx) when ctx.scope.module_depth > 0 do
     if module_scope?(current),
-      do: {current, %{ctx | module_depth: ctx.module_depth - 1}},
+      do: {current, Ctx.update_scope(ctx, &%{&1 | module_depth: &1.module_depth - 1})},
       else: emit_one(current, ctx)
   end
 

@@ -25,7 +25,7 @@ defmodule Mutare.Transform.CaseClauseEmit do
   @spec emit(Macro.t(), [Candidate.CaseClause.t()], Ctx.t()) :: {Macro.t(), Ctx.t()}
   def emit(node, candidates, ctx) do
     {:case, meta, [emitted_subject, [{do_key, emitted_clauses}]]} = strip_candidates(node)
-    var = ctx.active_var
+    var = ctx.config.active_var
 
     {claimed, ctx} =
       SelectorEmit.claim_items(candidates, ctx, &Delivery.site/3, fn id, candidate ->

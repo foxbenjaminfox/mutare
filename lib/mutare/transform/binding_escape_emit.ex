@@ -40,7 +40,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
       fn c -> match_inner_case(c.raw_rhs, c.mutated, export) end,
       fn ids ->
         inner = match_inner_case(emitted_rhs, original_lhs, export)
-        SelectorEmit.catch_all_clause(ids, inner, ctx.active_var)
+        SelectorEmit.catch_all_clause(ids, inner, ctx.config.active_var)
       end
     )
   end
@@ -104,7 +104,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
       candidates,
       ctx,
       fn c -> macro_pattern_branch(c.mutant_expr, export) end,
-      fn ids -> macro_pattern_catch_all(ids, baseline, export, ctx.active_var) end
+      fn ids -> macro_pattern_catch_all(ids, baseline, export, ctx.config.active_var) end
     )
   end
 

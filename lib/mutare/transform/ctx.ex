@@ -1,99 +1,35 @@
 defmodule Mutare.Transform.Ctx do
   @moduledoc false
 
-  # Threading context for a single transform pass. Two roles live here, kept
-  # visibly apart: read-only config (`file`, `mutators`, `skip_ids`, `prefix`),
-  # set once; and accumulators (`next_id`, `group`, `sites`), updated as ids are
-  # assigned and sites recorded. A struct (not a bare map) makes the split
-  # explicit and a stray field name fail loudly. The whole struct is threaded
-  # through every stage — never destructured into loose values — so the shape
-  # stays uniform.
+  # The single context threaded through every transform stage, split by responsibility into
+  # three sub-structs so each stage touches only what it owns:
+  #
+  #   * `config` (`Mutare.Transform.Config`) — immutable for the pass: the file, the resolved
+  #     mutators, poison `skip_ids`, and the generated-name hygiene.
+  #   * `scope` (`Mutare.Transform.Scope`) — the mutable lexical/emission scope: active-id
+  #     binding, module depth, behaviours, and the per-module behaviour-enriched mutator cache.
+  #   * `claim` (`Mutare.Transform.ClaimState`) — id/site accumulation and the claim sink
+  #     (`:render` vs the render-free `:count`).
+  #
+  # Still threaded as **one** value (never destructured into loose args), so the shape stays
+  # uniform and a stray field name fails loudly; the split is by ownership, not by threading.
+  # `update_scope/2`/`update_claim/2` keep the nested updates terse.
+
+  alias Mutare.Transform.{ClaimState, Config, Scope}
 
   @type t :: %__MODULE__{
-          file: String.t(),
-          mutators: [Mutare.Mutator.Spec.t()],
-          skip_ids: MapSet.t(),
-          prefix: String.t(),
-          active_var: atom(),
-          super_var: atom(),
-          piped_var: atom(),
-          cond_var: atom(),
-          active_bound: boolean(),
-          module_depth: non_neg_integer(),
-          behaviours: MapSet.t(module()),
-          analysis_mutators: [Mutare.Mutator.Spec.t()],
-          next_id: pos_integer(),
-          group: non_neg_integer(),
-          sites: [Mutare.Site.t()]
+          config: Config.t(),
+          scope: Scope.t(),
+          claim: ClaimState.t()
         }
 
-  defstruct [
-    # config — read-only for the pass
-    :file,
-    :mutators,
-    :skip_ids,
-    # The prefix for generated private (lifted) names. `"__mutare_"` is the
-    # canonical value; `Mutare.Transform` recomputes it per file — scanning the
-    # source's own definitions — to a collision-free variant when the target
-    # already defines a `__mutare_`-prefixed name. `Transform` is the authority;
-    # this default is just a safe, non-nil fallback.
-    prefix: "__mutare_",
-    # The variable a dispatcher/selector binds the active mutant id to (and the
-    # lifted clauses' extra arg / guards read). `:mutare_active` canonically;
-    # `Mutare.Transform` salts it per file (off `prefix`) when the source already
-    # uses that identifier, so a generated guard can't capture a user's variable.
-    active_var: :mutare_active,
-    # The variable a dispatcher binds the super-forwarding closure to when a lifted
-    # body calls `super` (`Mutare.Transform.Super`). `:mutare_super` canonically;
-    # `Mutare.Transform` salts it per file like `active_var` so a `super(...)`
-    # rewritten to `<super_var>.(...)` can't capture a user's variable of that name.
-    super_var: :mutare_super,
-    # The closure parameter a hoisted pipe stage binds the piped value to
-    # (`Mutare.Transform.PipeEmit.hoist/2`). `:mutare_piped` canonically; `Mutare.Transform`
-    # salts it per file like `active_var` so a stage argument that mentions a same-named
-    # source variable isn't captured by the closure param.
-    piped_var: :mutare_piped,
-    # The temp a refutable `if`/`unless` condition-hoist binds the match value to
-    # (`Mutare.Transform.Analyze`'s condition hoisting). `:mutare_cond` canonically;
-    # `Mutare.Transform` salts it per file like `active_var`. Emit substitutes it for the
-    # placeholder the (id-free) analyze pass leaves behind.
-    cond_var: :mutare_cond,
-    # Whether `active_var` is already bound as a variable in the current emit scope, so
-    # an in-place selector can read it directly (`case mutare_active do …`) instead of
-    # re-reading `:persistent_term.get(...)` per site (the "hoisted active-id read"). True
-    # inside a lifted base clause (the dispatcher threads it as the first parameter) and
-    # inside a non-lifted function's `:do` block (a prologue binds it once); false at the
-    # module/scaffold level and in a head's default-value position (evaluated in a
-    # generated head clause where no binding is in scope), where the self-contained
-    # `:persistent_term` read is kept. `Mutare.Transform.SelectorEmit.subject/1` reads this.
-    active_bound: false,
-    # How many nested **module** scopes (`defmodule`/`defimpl`/`defprotocol`) the emit
-    # walk is currently inside. A runtime `defmodule` in a function body is walked in
-    # place, but its inner `def` bodies are a *new* scope that can't see the outer
-    # function's hoisted `active_var` binding — so a selector emitted there must fall back
-    # to the self-contained `:persistent_term` read (`SelectorEmit.subject/1` gates the hoisted
-    # form on `module_depth == 0`). `Mutare.Transform.emit/2` increments it on entering such
-    # a node and decrements on leaving; 0 at the top of every function body.
-    module_depth: 0,
-    # The `@behaviour` set of the module the walk is currently inside — direct
-    # `@behaviour Foo` plus `use`-injected behaviours, gathered by
-    # `Mutare.Transform.Behaviours` and stamped on each `defmodule` node's meta.
-    # `Mutare.Transform` save/restores it per `defmodule` (behaviours don't inherit
-    # into nested modules) and folds it onto each spec (cached in `analysis_mutators`
-    # below) before handing the specs to analyze/plan, so it reaches a behaviour-aware mutator's
-    # `mutate/2`/structural callbacks via the context map's `:behaviours` key. Empty
-    # at the top level / outside any module.
-    behaviours: MapSet.new(),
-    # `ctx.mutators` folded with the current module's `behaviours` — the value the
-    # analyze/plan call sites used to recompute on every clause/statement. Since
-    # `behaviours` only changes at a `defmodule` boundary, `Mutare.Transform` caches
-    # the enriched list here once per module scope (recomputed on entry, restored on
-    # exit) and reads it at each call site. `[]` is a safe default; the sole `Ctx`
-    # constructor populates it before any call site is reached.
-    analysis_mutators: [],
-    # accumulators — threaded and updated
-    next_id: 1,
-    group: 0,
-    sites: []
-  ]
+  defstruct config: %Config{}, scope: %Scope{}, claim: %ClaimState{}
+
+  @doc "Apply `fun` to the `scope` sub-struct, leaving `config`/`claim` untouched."
+  @spec update_scope(t(), (Scope.t() -> Scope.t())) :: t()
+  def update_scope(%__MODULE__{} = ctx, fun), do: %{ctx | scope: fun.(ctx.scope)}
+
+  @doc "Apply `fun` to the `claim` sub-struct, leaving `config`/`scope` untouched."
+  @spec update_claim(t(), (ClaimState.t() -> ClaimState.t())) :: t()
+  def update_claim(%__MODULE__{} = ctx, fun), do: %{ctx | claim: fun.(ctx.claim)}
 end

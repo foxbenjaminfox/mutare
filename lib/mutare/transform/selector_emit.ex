@@ -7,7 +7,7 @@ defmodule Mutare.Transform.SelectorEmit do
 
   alias Mutare.Coverage.Recorder
   alias Mutare.Site
-  alias Mutare.Transform.{Ctx, Render}
+  alias Mutare.Transform.{ClaimState, Config, Ctx, Render, Scope}
 
   @doc """
   Claim an id per item, record its site, and collect one artifact per live mutant.
@@ -35,9 +35,9 @@ defmodule Mutare.Transform.SelectorEmit do
   Build an ordinary selector `case` with a coverage-recording catch-all branch.
   """
   @spec selector_case(Macro.t(), [Macro.t()], Ctx.t()) :: Macro.t()
-  def selector_case(default_node, mutant_clauses, %Ctx{} = ctx) do
+  def selector_case(default_node, mutant_clauses, %Ctx{config: %Config{active_var: var}} = ctx) do
     ids = ids_from_clauses(mutant_clauses)
-    catch_all = catch_all_clause(ids, default_node, ctx.active_var)
+    catch_all = catch_all_clause(ids, default_node, var)
     Render.selector_case(subject(ctx), mutant_clauses ++ [catch_all])
   end
 
@@ -54,7 +54,12 @@ defmodule Mutare.Transform.SelectorEmit do
   variable. Otherwise they keep the self-contained `:persistent_term` read.
   """
   @spec subject(Ctx.t()) :: Macro.t()
-  def subject(%Ctx{active_bound: true, module_depth: 0, active_var: var}), do: {var, [], nil}
+  def subject(%Ctx{
+        scope: %Scope{active_bound: true, module_depth: 0},
+        config: %Config{active_var: var}
+      }),
+      do: {var, [], nil}
+
   def subject(%Ctx{}), do: Mutare.Metamutant.subject_ast()
 
   @doc "The selector catch-all branch: baseline plus every inactive mutant."
@@ -66,17 +71,13 @@ defmodule Mutare.Transform.SelectorEmit do
     {:->, [], [[Recorder.catch_all_pattern(var)], body]}
   end
 
-  defp claim_item(%Ctx{} = ctx, item, site_fn, artifact_fn) do
-    id = ctx.next_id
-    site = site_fn.(id, item, ctx.file)
-    ctx = %{ctx | next_id: id + 1}
+  # The id/site/sink mechanics live on `Mutare.Transform.ClaimState` (which owns that state);
+  # here we only read the pass config the claim consults (`file`/`skip_ids`) and thread the
+  # updated `claim` back onto `ctx`. The render vs. count sink branch is `ClaimState.claim/6`.
+  defp claim_item(%Ctx{config: config, claim: claim} = ctx, item, site_fn, artifact_fn) do
+    {artifacts, claim} =
+      ClaimState.claim(claim, config.file, config.skip_ids, item, site_fn, artifact_fn)
 
-    if id in ctx.skip_ids do
-      {[], %{ctx | sites: [poison(site) | ctx.sites]}}
-    else
-      {[artifact_fn.(id, item)], %{ctx | sites: [site | ctx.sites]}}
-    end
+    {artifacts, %{ctx | claim: claim}}
   end
-
-  defp poison(%Site{} = site), do: %{site | poisoned: true}
 end

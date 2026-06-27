@@ -282,6 +282,31 @@ Measured ladder (same machine):
   resource). `from_files/4` dedups its input by relative path first, so a file passed
   twice is rendered once under one id range rather than minting overlapping ids.
 
+#### The count pass skips per-mutant `Site` construction — the count sink `[done]`
+The two-phase build runs analyze→plan→emit *twice* per sited file (count, then render).
+The count pass originally still built a full `Mutare.Site` per claim — `Site.in_place`/
+`return_value`/… each render `original_code`/`mutated_code` through `Sourceror.to_string`,
+the very per-node render that dominates a *whole* metamutant render — and retained the
+growing `[%Site{}]`, none of which a count needs (it wants only "how many ids").
+
+So the claim state carries a **sink**. `Mutare.Transform.ClaimState` (the id/site
+accumulator, see the `Ctx` split below) has two: `:render` builds and retains a `Site` per
+claim (the full transform); `:count` advances the id and bumps a tally only — no `Site`
+built (no `Sourceror.to_string`), none retained. **Both still emit the live artifact**, so
+the emitted tree (hence the *set* of downstream claims) is byte-identical — the count stays
+drift-proof by construction, just without the site cost. `count_string/2` flips the sink and
+reads `ClaimState.total/1`; `Schema.verify_count!` still re-checks count ≡ `next_id -
+start_id` on the render, so a sink mismatch can't hide. The win is heap *and* CPU: the count
+pass no longer holds a `Site` list or renders any diff text.
+
+This rides on splitting the per-pass threading context `Ctx` by **responsibility** into
+`Mutare.Transform.{Config,Scope,ClaimState}` — immutable config + generated-name hygiene;
+the mutable lexical/emission scope + the per-module behaviour-enriched mutator cache; and
+id/site accumulation + the sink. The old single struct conflated five roles behind a comment
+claiming two. The composite `Ctx` still threads as **one** value (the "thread one struct"
+discipline is intact — `update_scope/2`/`update_claim/2` keep the nested updates terse); the
+split just gives the count sink a clean home and keeps each stage reading only what it owns.
+
 #### Why the metamutant was so big — lifting blowup on huge clause groups `[done]`
 The loop heap above scans the *volume* of generated code, and one mechanism used to
 dominate that volume. The old `emit_function_plan/1` emitted, **per lifted

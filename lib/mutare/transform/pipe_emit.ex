@@ -29,8 +29,8 @@ defmodule Mutare.Transform.PipeEmit do
     # Recognise a block-wrapped selector `case` as the pipe's RHS, then confirm its subject in
     # either supported shape: an inline `:persistent_term` read or the hoisted active-id variable.
     with {:ok, subject, clauses} <- Render.selector_case_parts(rhs),
-         true <- Mutare.Metamutant.subject?(subject, ctx.active_var) do
-      var = {ctx.piped_var, [], nil}
+         true <- Mutare.Metamutant.subject?(subject, ctx.config.active_var) do
+      var = {ctx.config.piped_var, [], nil}
 
       piped =
         Enum.map(clauses, fn {:->, m, [pat, body]} ->
