@@ -280,6 +280,41 @@ defmodule Mutare.Mutators.ModeSwap do
   @impl Mutare.Mutator
   def name, do: :mode_swap
 
+  # A probe atom that belongs to no ladder or mode set: `swaps/2` returns `[]` for it on every
+  # *covered* group, but the raising catch-all fires for an uncovered one — the discriminator
+  # `uncovered_swap_groups/0` relies on.
+  @drift_probe :__mutare_drift_probe__
+
+  @doc false
+  # Drift guard for the `@rule_groups` ↔ `swaps/2` pairing, which has no compile-time guarantee:
+  # the swap-set keys any rule group routes to `swaps/2` that have *no* matching clause (so they
+  # would hit the raising catch-all when a real mutant exercises them). Empty in a healthy module;
+  # the `ModeSwap` suite asserts so, turning "added a `@rule_groups` entry, forgot its `swaps/2`
+  # clause" from a latent runtime `ArgumentError` into a failing test.
+  @spec uncovered_swap_groups() :: [atom()]
+  def uncovered_swap_groups, do: Enum.reject(swap_group_keys(), &swaps_defined?/1)
+
+  # The swap-set keys every `@rule_groups` entry routes to `swaps/2`: a plain group atom, or the
+  # value-set atoms of a `{:kw, [key: set]}` group (whose `keyword_value_swaps/2` calls
+  # `swaps(set, value)`). Derived from `@rule_groups` so it can't drift from the table.
+  defp swap_group_keys do
+    @rule_groups
+    |> Enum.flat_map(fn
+      {{_positions, {:kw, specs}}, _sigs} -> Keyword.values(specs)
+      {{_positions, group}, _sigs} -> [group]
+    end)
+    |> Enum.uniq()
+  end
+
+  # Whether `group` has a real `swaps/2` clause: a covered group returns `[]` for the probe atom,
+  # an uncovered one raises from the catch-all.
+  defp swaps_defined?(group) do
+    swaps(group, @drift_probe)
+    true
+  rescue
+    ArgumentError -> false
+  end
+
   @impl Mutare.Mutator
   def mutate(node, %{pipe_mode: pipe_mode}) do
     with {:ok, {positions, group}, {_module, fun, args, rebuild}} <-

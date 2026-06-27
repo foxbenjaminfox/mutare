@@ -209,4 +209,64 @@ defmodule Mutare.Mutators.Helpers do
     |> Enum.reject(&(&1 == value))
     |> Enum.map(&Mutare.AST.literal/1)
   end
+
+  @doc """
+  The variant label(s) for a numeric-literal mutation (`c:Mutare.Mutator.variant/2`), shared by
+  `Mutare.Mutators.Literal`'s integer arm and `Mutare.Mutators.FloatLiteral`.
+
+  Classifies the produced `mutated` node against the original `value` and the same `step`/`zero`
+  the family mutated with (those passed to `numeric_mutations/3`): `"succ"` for `value + step`,
+  `"pred"` for `value - step`, `"zero"` for `zero`. Recomputing with the *same* expression makes
+  the comparison exact even for floats (the round-trip through `Mutare.AST.literal/1` preserves the
+  bit pattern). A mutation may satisfy more than one when the off-by-one collapses onto the zero
+  sentinel (`n = 1` ⇒ `n - 1 = 0`), so *every* matching label is returned; an unreadable node
+  yields `[]`.
+  """
+  @spec numeric_variant_labels(number(), Macro.t(), number(), number()) :: [String.t()]
+  def numeric_variant_labels(value, mutated, step, zero) do
+    m = number_value(mutated)
+
+    for {applies?, label} <- [
+          {m == value + step, "succ"},
+          {m == value - step, "pred"},
+          {m == zero, "zero"}
+        ],
+        applies?,
+        do: label
+  end
+
+  # The number a (possibly negative) literal node carries. `Mutare.AST.literal/1` renders a
+  # negative number as the unary-minus form `{:-, _, [literal(magnitude)]}` (outside
+  # `Mutare.AST.literal_value/1`'s scalar contract), so unwrap that here; the base case defers to
+  # `literal_value/1`. `:error` (equal to no target) for a non-numeric node.
+  defp number_value({:-, _meta, [inner]}), do: number_negate(number_value(inner))
+
+  defp number_value(node) do
+    case Mutare.AST.literal_value(node) do
+      {:ok, v} when is_number(v) -> v
+      _ -> :error
+    end
+  end
+
+  defp number_negate(:error), do: :error
+  defp number_negate(v), do: -v
+
+  @doc """
+  The variant vocabulary shared by the empty/sentinel literal families
+  (`c:Mutare.Mutator.variants/0`) — `Mutare.Mutators.StringLiteral`,
+  `Mutare.Mutators.StringSigilLiteral`, `Mutare.Mutators.CharlistLiteral`,
+  `Mutare.Mutators.WordListLiteral`.
+  """
+  @spec empty_sentinel_variants() :: [String.t()]
+  def empty_sentinel_variants, do: ~w(empty sentinel)
+
+  @doc """
+  Classify an empty/sentinel literal mutation by its produced `content` binary
+  (`c:Mutare.Mutator.variant/2`): `"empty"` for `""`, `"sentinel"` for the family's `sentinel`
+  word, else `nil`. The classification pair behind `empty_sentinel_variants/0`.
+  """
+  @spec empty_sentinel_variant(binary(), binary()) :: String.t() | nil
+  def empty_sentinel_variant("", _sentinel), do: "empty"
+  def empty_sentinel_variant(content, sentinel) when content == sentinel, do: "sentinel"
+  def empty_sentinel_variant(_content, _sentinel), do: nil
 end

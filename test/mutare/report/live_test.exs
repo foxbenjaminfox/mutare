@@ -44,16 +44,6 @@ defmodule Mutare.Report.LiveTest do
     end
   end
 
-  describe "truncate/2" do
-    test "leaves short strings untouched" do
-      assert Live.truncate("hello", 80) == "hello"
-    end
-
-    test "clamps with an ellipsis" do
-      assert Live.truncate("hello world", 5) == "hell…"
-    end
-  end
-
   describe "leave_behind/1" do
     test "survivors and problems earn a permanent line" do
       assert {"SURVIVED", :red} = Live.leave_behind(:survived)

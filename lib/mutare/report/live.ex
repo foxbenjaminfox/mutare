@@ -39,7 +39,7 @@ defmodule Mutare.Report.Live do
 
   use GenServer
 
-  alias Mutare.{Result, Site}
+  alias Mutare.{CLI, Result, Site}
   alias Mutare.Result.Status
 
   @device :standard_error
@@ -296,17 +296,17 @@ defmodule Mutare.Report.Live do
   @spec status_block(map(), integer()) :: [String.t()]
   def status_block(%{phase: :running} = state, now) do
     [
-      truncate(spin(state) <> " " <> activity(state), state.width),
-      truncate(counter(state, now), state.width)
+      CLI.truncate(spin(state) <> " " <> activity(state), state.width),
+      CLI.truncate(counter(state, now), state.width)
     ]
   end
 
   def status_block(%{phase: :scanning} = state, _now) do
-    [truncate(spin(state) <> " " <> scan_activity(state), state.width)]
+    [CLI.truncate(spin(state) <> " " <> scan_activity(state), state.width)]
   end
 
   def status_block(%{phase: phase} = state, _now) when is_map_key(@phase_labels, phase) do
-    [truncate(spin(state) <> " " <> @phase_labels[phase], state.width)]
+    [CLI.truncate(spin(state) <> " " <> @phase_labels[phase], state.width)]
   end
 
   def status_block(_state, _now), do: []
@@ -359,14 +359,6 @@ defmodule Mutare.Report.Live do
   def eta_secs(done, remaining, elapsed) do
     round(remaining * elapsed / done)
   end
-
-  @doc "Clamp `str` to `max` display columns, marking truncation with an ellipsis."
-  @spec truncate(String.t(), pos_integer()) :: String.t()
-  def truncate(str, max) when max > 1 do
-    if String.length(str) > max, do: String.slice(str, 0, max - 1) <> "…", else: str
-  end
-
-  def truncate(str, _max), do: str
 
   # The activity line's payload: the mutant currently being tested, or a
   # placeholder before the first one is picked up.

@@ -10,7 +10,6 @@ defmodule Mutare.CLI.Info do
   alias Mutare.{CLI, Ignore, Macros, Mutators, Options, Project, Site}
   alias Mutare.Ignore.Directive
   alias Mutare.Options.Registry
-  alias Mutare.Report.Live
 
   # `--list-mutators`: print the built-in catalog and exit. Derived from the one
   # `Mutare.Mutators` registry (and each family's own `@moduledoc`), so the list
@@ -70,7 +69,7 @@ defmodule Mutare.CLI.Info do
         |> String.replace("`", "")
         |> String.replace(~r/\s+/, " ")
         |> String.trim()
-        |> Live.truncate(@summary_width)
+        |> CLI.truncate(@summary_width)
 
       :error ->
         ""

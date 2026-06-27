@@ -566,8 +566,10 @@ defmodule Mutare.IgnoreTest do
     test "every site's recorded variant is one its mutator declares (no drift)" do
       # Exercise the opted-in families and assert each recorded label is a member of the
       # producing family's declared vocabulary — the static guarantee `variant/2` ⊆ `variants/0`.
-      # Includes bitwise (`&&&`/`|||`/`<<<`) and list (`++`/`[]`) so those families' membership is
-      # checked here too, not just the non-empty completeness test below.
+      # Includes bitwise (`&&&`/`|||`/`<<<`) and list (`++`/`[]`), plus the value-literal families
+      # that label their two halves (float `succ`/`pred`/`zero`; string/charlist/word_list/
+      # string_sigil `empty`/`sentinel`), so those families' membership is checked here too, not
+      # just the non-empty completeness test below.
       source = """
       defmodule Drift do
         import Bitwise
@@ -577,8 +579,13 @@ defmodule Mutare.IgnoreTest do
           z = i === j
           w = (i &&& j) ||| (i <<< 2)
           v = [i] ++ [j]
+          fl = 1.5
+          s = "hello"
+          c = ~c"hi"
+          wl = ~w(a b)
+          ss = ~s(yo)
           if x, do: build(i), else: y
-          {z, w, v}
+          {z, w, v, fl, s, c, wl, ss}
         end
       end
       """

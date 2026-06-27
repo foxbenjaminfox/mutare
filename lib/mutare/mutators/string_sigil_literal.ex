@@ -26,10 +26,15 @@ defmodule Mutare.Mutators.StringSigilLiteral do
   (it never offers a sigil's content `<<>>` wrapper or bare-binary segment
   separately), so this is the *only* whole-string mutation a `~s`/`~S` receives — and,
   like every sigil offer, only in a runtime position, never in a pattern.
+
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
+  suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `""`) or
+  `sentinel` (the `"mutare"`).
   """
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutators.Helpers
 
   @sentinel AST.sentinel_string()
 
@@ -48,6 +53,19 @@ defmodule Mutare.Mutators.StringSigilLiteral do
   end
 
   def mutate(_node), do: :skip
+
+  # Every mutant is a plain string literal (`""`/`"mutare"`, see the moduledoc), so classify by
+  # its binary value exactly like `Mutare.Mutators.StringLiteral`.
+  @impl Mutare.Mutator
+  def variants, do: Helpers.empty_sentinel_variants()
+
+  @impl Mutare.Mutator
+  def variant(_original, mutated) do
+    case AST.literal_value(mutated) do
+      {:ok, content} when is_binary(content) -> Helpers.empty_sentinel_variant(content, @sentinel)
+      _ -> nil
+    end
+  end
 
   defp sigil_mutations(segments) do
     case segments do

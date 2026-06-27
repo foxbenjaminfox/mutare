@@ -21,10 +21,15 @@ defmodule Mutare.Mutators.WordListLiteral do
   Not mutated: on the **RHS of `in`** (`x in ~w(a b)`) the *empty* variant `~w()` is
   dropped — it is `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already
   produces — but the non-empty *sentinel* `~w(mutare)` is kept.
+
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
+  suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `~w()`) or
+  `sentinel` (the `~w(mutare)`).
   """
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutators.Helpers
 
   @sentinel AST.sentinel_string()
 
@@ -42,4 +47,15 @@ defmodule Mutare.Mutators.WordListLiteral do
   end
 
   def mutate(_node), do: :skip
+
+  # Each mutant is a re-wrapped `~w`/`~W` sigil whose content `<<>>` segment is `""`/`"mutare"`.
+  @impl Mutare.Mutator
+  def variants, do: Helpers.empty_sentinel_variants()
+
+  @impl Mutare.Mutator
+  def variant(_original, {sigil, _meta, [{:<<>>, _bmeta, [content]}, _modifiers]})
+      when sigil in [:sigil_w, :sigil_W] and is_binary(content),
+      do: Helpers.empty_sentinel_variant(content, @sentinel)
+
+  def variant(_original, _mutated), do: nil
 end

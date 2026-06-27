@@ -16,10 +16,15 @@ defmodule Mutare.Mutators.CharlistLiteral do
   Not mutated: on the **RHS of `in`** (`x in ~c"ab"`) the *empty* variant `~c""` is
   dropped — it is `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already
   produces — but the non-empty sentinel `~c"mutare"` is kept.
+
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
+  suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `~c""`) or
+  `sentinel` (the `~c"mutare"`).
   """
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutators.Helpers
 
   @sentinel AST.sentinel_string()
 
@@ -34,4 +39,15 @@ defmodule Mutare.Mutators.CharlistLiteral do
   end
 
   def mutate(_node), do: :skip
+
+  # Each mutant is a re-wrapped `~c` sigil whose content `<<>>` segment is `""`/`"mutare"`.
+  @impl Mutare.Mutator
+  def variants, do: Helpers.empty_sentinel_variants()
+
+  @impl Mutare.Mutator
+  def variant(_original, {:sigil_c, _meta, [{:<<>>, _bmeta, [content]}, _modifiers]})
+      when is_binary(content),
+      do: Helpers.empty_sentinel_variant(content, @sentinel)
+
+  def variant(_original, _mutated), do: nil
 end

@@ -13,10 +13,15 @@ defmodule Mutare.Mutators.StringLiteral do
   apply), while the interpolation's own sub-expressions still mutate independently
   underneath. A real `<<…>>` bitstring (no `delimiter`) is *not* a string — it is left
   to `Mutare.Mutators.BitstringLiteral`.
+
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
+  suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `""`) or
+  `sentinel` (the `"mutare"`).
   """
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutators.Helpers
 
   @sentinel AST.sentinel_string()
 
@@ -42,4 +47,16 @@ defmodule Mutare.Mutators.StringLiteral do
   end
 
   def mutate(_node), do: :skip
+
+  # Every mutant is a plain string literal (`""`/`"mutare"`), so classify by its binary value.
+  @impl Mutare.Mutator
+  def variants, do: Helpers.empty_sentinel_variants()
+
+  @impl Mutare.Mutator
+  def variant(_original, mutated) do
+    case AST.literal_value(mutated) do
+      {:ok, content} when is_binary(content) -> Helpers.empty_sentinel_variant(content, @sentinel)
+      _ -> nil
+    end
+  end
 end

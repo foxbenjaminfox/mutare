@@ -1051,6 +1051,14 @@ defmodule Mutare.MutatorsCallTest do
     test "name" do
       assert ModeSwap.name() == :mode_swap
     end
+
+    test "every @rule_groups group routes to a swaps/2 clause (no drift)" do
+      # The @rule_groups table and the swaps/2 dispatch are two separate edits with no
+      # compile-time guard — a new rule group whose swaps/2 clause is forgotten compiles
+      # fine and only raises (the catch-all ArgumentError) when a mutant exercises it.
+      # This turns that latent runtime failure into a failing test.
+      assert ModeSwap.uncovered_swap_groups() == []
+    end
   end
 
   describe "Numeric" do

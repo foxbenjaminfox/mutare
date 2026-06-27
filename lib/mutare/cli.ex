@@ -10,6 +10,14 @@ defmodule Mutare.CLI do
   def plural(1), do: ""
   def plural(_n), do: "s"
 
+  @doc "Clamp `str` to `max` display columns, marking truncation with an ellipsis."
+  @spec truncate(String.t(), pos_integer()) :: String.t()
+  def truncate(str, max) when max > 1 do
+    if String.length(str) > max, do: String.slice(str, 0, max - 1) <> "…", else: str
+  end
+
+  def truncate(str, _max), do: str
+
   @doc "A short ` in <root>` / ` (umbrella: …)` suffix naming the mutation scope."
   @spec scope_label(Project.t()) :: String.t()
   def scope_label(%Project{umbrella?: true, mutate_scope: scope}) do
