@@ -78,7 +78,11 @@ defmodule Mutare.Mutators.RegexLiteral do
       (`(?:…)`) is left alone, and a quantifier already carrying a lazy/possessive
       suffix is left **whole** — `a+?`/`a++` only `+`↔`*`-swap (no collapse/re-suffix),
       and a compound optional `a??`/`a?+` is offered nothing at all (dropping its first
-      `?` would reinterpret the trailing `?`/`+` as the operator, e.g. `a?+`→`a+`).
+      `?` would reinterpret the trailing `?`/`+` as the operator, e.g. `a?+`→`a+`). On a
+      **zero-width** atom (a lookaround, or a `\\b`/`^`/`$`-style assertion) repetition is
+      idempotent, so the variants that don't change the "always-passes vs requires-once"
+      class are guaranteed-equivalent and dropped (`(?=a)+` offers only `(?=a)*`, never the
+      collapse `(?=a)` or lazy `(?=a)+?`); the class-changing swap survives.
     * **alternation** — drop one branch of an alternation at the pattern's top
       level or inside a *capturing* group: `~r/^(GET|POST)$/` → `~r/^(GET)$/` and
       `~r/^(POST)$/`. Non-capturing/lookaround groups (`(?:…)`, `(?=…)`, …) are
@@ -101,9 +105,10 @@ defmodule Mutare.Mutators.RegexLiteral do
   is held to — and any that does not compile is dropped, so a byte-level edit that lets
   neighbouring characters re-tokenize (`{42+}` → `{42}`) can never poison the single
   metamutant compile. Every pass is a fold over **one** shared token stream (`tokens/2`),
-  which owns all cross-cutting lexing — escapes, character classes (incl. a POSIX
-  `[:alpha:]` whose inner `]` must not close the class), group structure + the `Flags`
-  scope stack, and the spans where regex syntax does not apply. Those come in two flavours:
+  which owns all cross-cutting lexing — escapes (incl. a three-byte `\\cX` control escape),
+  character classes (incl. a POSIX `[:alpha:]` whose inner `]` must not close the class),
+  group structure + the `Flags` scope stack, and the spans where regex syntax does not
+  apply. Those come in two flavours:
   an **ignored** `:comment` (an `x`-mode `#` line comment — ended at CR or LF, read
   **positionally** so an inline `(?x)` is honoured — or a `(?#…)` group), behind which a
   lazy/possessive quantifier suffix can still be seen; and an **inert** atom (`:inert` — a
@@ -184,6 +189,13 @@ defmodule Mutare.Mutators.RegexLiteral do
     {quoted, tail} = take_quoted(rest)
     text = "\\Q" <> quoted
     lex(tail, i + byte_size(text), ic, false, stack, [tok(:inert, text, i, ic, stack) | acc])
+  end
+
+  # A `\cX` control escape is a single three-byte escape — consume its argument too, so the
+  # control character (which may be `(`/`)`/etc.) can't push a frame or close a class.
+  defp lex(<<?\\, ?c, x::utf8, rest::binary>>, i, ic, _jo, stack, acc) do
+    text = <<?\\, ?c, x::utf8>>
+    lex(rest, i + byte_size(text), ic, false, stack, [tok(:escape, text, i, ic, stack) | acc])
   end
 
   # A PCRE backtracking control verb `(*VERB)` / `(*VERB:arg)` (outside a class). Its
@@ -276,7 +288,9 @@ defmodule Mutare.Mutators.RegexLiteral do
           tok(:modifier, text, i, false, stack)
 
         :push ->
-          Map.put(tok(:group_open, text, i, false, stack), :removable?, not modifier_open?(rest))
+          tok(:group_open, text, i, false, stack)
+          |> Map.put(:removable?, not modifier_open?(rest))
+          |> Map.put(:zero_width?, lookaround?(rest))
       end
 
     lex(tail, next, false, false, stack2, [token | acc])
@@ -312,6 +326,15 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   defp modifier_open?(<<??, _::binary>>), do: true
   defp modifier_open?(_), do: false
+
+  # Is this group (the bytes after `(`) a zero-width *lookaround* assertion? Quantifying one
+  # is idempotent, which the scan pass uses to suppress guaranteed-equivalent collapse/lazy
+  # variants. (A named group `(?<n>…)` is *not* a lookbehind — only `(?<=`/`(?<!` are.)
+  defp lookaround?(<<??, ?=, _::binary>>), do: true
+  defp lookaround?(<<??, ?!, _::binary>>), do: true
+  defp lookaround?(<<??, ?<, ?=, _::binary>>), do: true
+  defp lookaround?(<<??, ?<, ?!, _::binary>>), do: true
+  defp lookaround?(_), do: false
 
   # --- splice helpers: rebuild the pattern with one token's text replaced ---
 
@@ -466,20 +489,21 @@ defmodule Mutare.Mutators.RegexLiteral do
   # a `:class_close`), ranges and bounds into single tokens, and dropped inert content — so
   # each clause is just "given this token, what mutants?". Reconstruction splices the
   # replacement over the token's text via `before_tok`/`after_tok`.
-  defp scan_patterns(pattern, tokens), do: scan_fold(tokens, pattern, false, [])
+  defp scan_patterns(pattern, tokens), do: scan_fold(tokens, pattern, false, false, [], [])
 
-  defp scan_fold([], _pat, _pq, acc), do: acc
+  defp scan_fold([], _pat, _pq, _zw, _groups, acc), do: acc
 
-  defp scan_fold([token | rest], pat, pq, acc) do
+  defp scan_fold([token | rest], pat, pq, zw, groups, acc) do
     # Text PCRE *ignores* — a `:comment` span or, under `/x`, unescaped whitespace — emits
-    # nothing and carries `prev_quant` through, so a lazy/possessive suffix hidden behind it
-    # (`a+ ?` /x, `a+(?#c)?`) is still recognised as a suffix (`suffix_follows?/1`), not a
-    # fresh quantifier.
+    # nothing and carries the scan state (`prev_quant`, the preceding atom's zero-width-ness,
+    # the group stack) through, so a lazy/possessive suffix hidden behind it (`a+ ?` /x,
+    # `a+(?#c)?`) is still recognised as a suffix, not a fresh quantifier.
     if scan_ignored?(token) do
-      scan_fold(rest, pat, pq, acc)
+      scan_fold(rest, pat, pq, zw, groups, acc)
     else
-      {new, pq2} = scan_token(token, rest, pat, pq)
-      scan_fold(rest, pat, pq2, acc ++ new)
+      {new, pq2} = scan_token(token, rest, pat, pq, zw)
+      {zw2, groups2} = advance_zero_width(token, groups)
+      scan_fold(rest, pat, pq2, zw2, groups2, acc ++ new)
     end
   end
 
@@ -489,6 +513,24 @@ defmodule Mutare.Mutators.RegexLiteral do
     do: MapSet.member?(f, ?x) and c in [?\s, ?\t, ?\n, ?\r, ?\f, 0x0B]
 
   defp scan_ignored?(_token), do: false
+
+  # The zero-width-ness of the atom this token *completes* (consulted by the next token's
+  # quantifier), and the updated lookaround-group stack. A quantifier on a zero-width atom
+  # (a lookaround, or a `\b`/`^`/`$`-style assertion) is idempotent, so collapse/lazy on it
+  # are guaranteed-equivalent. The group stack pairs each `:group_open` with its close.
+  defp advance_zero_width(%{kind: :group_open, zero_width?: zw}, groups),
+    do: {false, [zw | groups]}
+
+  defp advance_zero_width(%{kind: :group_close}, [zw | groups]), do: {zw, groups}
+  defp advance_zero_width(%{kind: :group_close}, []), do: {false, []}
+
+  defp advance_zero_width(%{kind: :escape, text: <<?\\, c::utf8>>}, groups) when c in ~c"bBAzZGK",
+    do: {true, groups}
+
+  defp advance_zero_width(%{kind: :char, text: t, in_class: false}, groups) when t in ["^", "$"],
+    do: {true, groups}
+
+  defp advance_zero_width(_token, groups), do: {false, groups}
 
   # Does a lazy (`?`) / possessive (`+`) suffix follow this quantifier, possibly across
   # ignored text? The first *non-ignored* token decides (a `\Q…\E`/verb atom in between
@@ -502,7 +544,13 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   # An escape: a `\d`/`\w`/`\s` shorthand (anywhere) or `\b` (outside a class) flips to its
   # complement; a `\.` (outside a class) unescapes to `.`.
-  defp scan_token(%{kind: :escape, text: <<?\\, c::utf8>>, in_class: ic} = t, _rest, pat, _pq) do
+  defp scan_token(
+         %{kind: :escape, text: <<?\\, c::utf8>>, in_class: ic} = t,
+         _rest,
+         pat,
+         _pq,
+         _zw
+       ) do
     pre = before_tok(pat, t)
     post = after_tok(pat, t)
 
@@ -518,21 +566,24 @@ defmodule Mutare.Mutators.RegexLiteral do
   end
 
   # Class open → toggle the negation (`[…` ↔ `[^…`).
-  defp scan_token(%{kind: :class_open, text: t_open} = t, _rest, pat, _pq) do
+  defp scan_token(%{kind: :class_open, text: t_open} = t, _rest, pat, _pq, _zw) do
     repl = if t_open == "[", do: "[^", else: "["
     {[before_tok(pat, t) <> repl <> after_tok(pat, t)], false}
   end
 
   # Class range `lo-hi` → each in-range off-by-one neighbour (`class_range_mutations/2`).
-  defp scan_token(%{kind: :range, text: <<lo::utf8, ?-, hi::utf8>>} = t, _rest, pat, _pq) do
+  defp scan_token(%{kind: :range, text: <<lo::utf8, ?-, hi::utf8>>} = t, _rest, pat, _pq, _zw) do
     pre = before_tok(pat, t)
     post = after_tok(pat, t)
     {Enum.map(class_range_mutations(lo, hi), &(pre <> &1 <> post)), false}
   end
 
   # Quantifier `*`/`+` (outside a class) → complement swap, collapse-to-one, lazy suffix,
-  # only as a real (postfix) quantifier.
-  defp scan_token(%{kind: :char, text: <<q>>, in_class: false} = t, rest, pat, pq)
+  # only as a real (postfix) quantifier. On a *zero-width* atom (a lookaround/assertion),
+  # `+`-collapse (`Z+`→`Z`, both "requires") and the lazy suffix (greediness can't matter)
+  # are guaranteed-equivalent and skipped; the `+`↔`*` swap (requires ↔ always-passes) and
+  # `*`-collapse (`Z*`→`Z`, always-passes → requires) stay killable.
+  defp scan_token(%{kind: :char, text: <<q>>, in_class: false} = t, rest, pat, pq, zw)
        when q in [?*, ?+] do
     pre = before_tok(pat, t)
     post = after_tok(pat, t)
@@ -542,7 +593,8 @@ defmodule Mutare.Mutators.RegexLiteral do
       if postfix_quantifier?(pre, pq),
         do:
           [pre <> <<flip_quant(q)>> <> post] ++
-            collapse_variant(pre, post, suffixed) ++ lazy_variant(pre, <<q>>, post, suffixed),
+            collapse_variant(pre, post, suffixed or (zw and q == ?+)) ++
+            lazy_variant(pre, <<q>>, post, suffixed or zw),
         else: []
 
     {new, true}
@@ -552,40 +604,48 @@ defmodule Mutare.Mutators.RegexLiteral do
   # for a group marker (via `postfix_quantifier?/2`) or an already-suffixed compound
   # (`a??`/`a?+`, possibly across ignored text), where touching the first `?` would
   # reinterpret the trailing `?`/`+`.
-  defp scan_token(%{kind: :char, text: "?", in_class: false} = t, rest, pat, pq) do
+  defp scan_token(%{kind: :char, text: "?", in_class: false} = t, rest, pat, pq, zw) do
     pre = before_tok(pat, t)
     post = after_tok(pat, t)
 
     new =
-      if postfix_quantifier?(pre, pq) and not suffix_follows?(rest),
-        do: [pre <> post, pre <> "+" <> post, pre <> "*" <> post, pre <> "??" <> post],
-        else: []
+      if postfix_quantifier?(pre, pq) and not suffix_follows?(rest) do
+        # drop (`Z`) and raise-to-`+` (`Z+`) flip an optional zero-width atom from
+        # "always-passes" to "requires" → kept; raise-to-`*` (`Z*`) and the lazy `??` stay
+        # "always-passes" → guaranteed-equivalent on a zero-width atom, so skipped there.
+        base = [pre <> post, pre <> "+" <> post]
+        extra = if zw, do: [], else: [pre <> "*" <> post, pre <> "??" <> post]
+        base ++ extra
+      else
+        []
+      end
 
     {new, true}
   end
 
   # Bounded quantifier → off-by-one / shape neighbours, plus a lazy `{…}?` for a *variable*
-  # count only (a fixed `{n}`/`{n,n}` can't vary, so a lazy `?` is a guaranteed no-op).
-  defp scan_token(%{kind: :bound, text: t_bound, bound: bound} = t, rest, pat, _pq) do
+  # count only (a fixed `{n}`/`{n,n}` can't vary, nor can a lazy `?` on a zero-width atom, so
+  # those are guaranteed no-ops).
+  defp scan_token(%{kind: :bound, text: t_bound, bound: bound} = t, rest, pat, _pq, zw) do
     pre = before_tok(pat, t)
     post = after_tok(pat, t)
     bounds = Enum.map(bound_mutations(bound), &(pre <> "{" <> &1 <> "}" <> post))
 
     lazy =
       if variable_bound?(bound),
-        do: lazy_variant(pre, t_bound, post, suffix_follows?(rest)),
+        do: lazy_variant(pre, t_bound, post, suffix_follows?(rest) or zw),
         else: []
 
     {bounds ++ lazy, true}
   end
 
   # Literal-dot swap: `.` (outside a class) → `\.` (a literal dot).
-  defp scan_token(%{kind: :char, text: ".", in_class: false} = t, _rest, pat, _pq),
+  defp scan_token(%{kind: :char, text: ".", in_class: false} = t, _rest, pat, _pq, _zw),
     do: {[before_tok(pat, t) <> "\\." <> after_tok(pat, t)], false}
 
   # Anything else (a plain char, anchor, pipe, group, modifier, inert atom): no scan
   # mutation, and the previous token is no longer a quantifier.
-  defp scan_token(_token, _rest, _pat, _pq), do: {[], false}
+  defp scan_token(_token, _rest, _pat, _pq, _zw), do: {[], false}
 
   # A `*`/`+`/`?` is a real quantifier only after an atom: not at the start, not
   # right after a `(`/`|`, and not directly after another quantifier (a suffix).

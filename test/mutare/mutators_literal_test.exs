@@ -527,6 +527,31 @@ defmodule Mutare.MutatorsLiteralTest do
       assert "# c\r\\." in pats
     end
 
+    test "consumes the argument of a \\cX control escape" do
+      # `\c(` is one escape; its `(` must not push a frame and leak `m` to the outside `^b`
+      mutants = render(RegexLiteral.mutate(parse(~S"~r/(?m:\c(^a)^b/")))
+      refute ~S"~r/(?m:\c(^a)\Ab/" in mutants
+      assert ~S"~r/(?m:\c(\Aa)^b/" in mutants
+    end
+
+    test "skips guaranteed-equivalent quantifier variants on a zero-width atom" do
+      # `(?=a)+` (1+ of a zero-width lookahead) ≡ `(?=a)` ≡ `(?=a)+?`, so only the
+      # class-changing `+`<->`*` swap is offered; collapse and lazy are suppressed
+      assert render(RegexLiteral.mutate(parse(~S"~r/(?=a)+/"))) ==
+               [~S"~r//", ~S"~r/mutare/", ~S"~r/(?=a)*/"]
+
+      # `(?=a)*` keeps the class-changing `*`->`+` swap and `*`-collapse, drops only lazy
+      star = render(RegexLiteral.mutate(parse(~S"~r/(?=a)*/")))
+      assert ~S"~r/(?=a)+/" in star
+      assert ~S"~r/(?=a)/" in star
+      refute ~S"~r/(?=a)*?/" in star
+
+      # a *capturing* group is not zero-width — its quantifier keeps collapse + lazy
+      cap = render(RegexLiteral.mutate(parse(~S"~r/(a)+/")))
+      assert ~S"~r/(a)/" in cap
+      assert ~S"~r/(a)+?/" in cap
+    end
+
     test "swaps a + quantifier to * and back" do
       assert ~S|~r/\d*/| in render(RegexLiteral.mutate(parse(~S|~r/\d+/|)))
       assert ~S|~r/a+/| in render(RegexLiteral.mutate(parse(~S|~r/a*/|)))

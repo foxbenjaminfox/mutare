@@ -5833,10 +5833,15 @@ buys less than the duplication costs:
     `]` no longer closes the enclosing class → no phantom frame); a **`(*VERB…)` control verb** is an inert
     atom (its literal `(`/`|` argument can't push a frame or read as alternation); the **inline-flag set**
     is exactly `i m s x J U X` (engine-accepted scoped *and* unset — `X` was missing, `u`/`n` bogus); an
-    **`x`-comment ends at CR *or* LF**; and the two span flavours were split — an **ignored** `:comment`
+    **`x`-comment ends at CR *or* LF**; a **`\cX` control escape** is one three-byte escape (its argument
+    can't push a frame); and the two span flavours were split — an **ignored** `:comment`
     (`x`-comment / `(?#…)`, behind which a quantifier suffix is still visible) vs an **inert atom**
     `:inert` (`\Q…\E` / verb, which *stops* suffix scanning) — so `scan`'s `prev_quant`/suffix detection
     looks *through* ignored text (`a+(?#c)?`, `a+ ?`/x are lazy, not collapsible) but not through atoms.
+    Finally, a quantifier on a **zero-width atom** (a lookaround `(?=…)`, or a `\b`/`^`/`$` assertion —
+    tracked by `scan` via a lookaround-group stack the reader tags) is idempotent, so the
+    collapse/lazy/same-class variants are guaranteed-equivalent and dropped, keeping only the
+    "always-passes ↔ requires-once" class-changing swap (`(?=a)+` → `(?=a)*` only).
   - **`Mutare.Transform.Analyze.Conditions`' parallel spine-walks** (`spine_rewrite`, `spine_bindings`,
     `eval_steps`, `offspine_escaping_binding?`, `prune_binding_ancestors`). All share one structural
     skeleton (stop at `@binding_isolating_forms`, recurse-left at `@short_circuit_ops`, flag at
