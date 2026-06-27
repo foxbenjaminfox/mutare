@@ -125,6 +125,8 @@ defmodule Mutare.MixProject do
         ],
         "Writing mutators": [
           Mutare.Mutator,
+          Mutare.Mutator.Structural,
+          Mutare.Mutator.MacroAware,
           Mutare.Mutator.Spec,
           Mutare.AST,
           Mutare.Test,

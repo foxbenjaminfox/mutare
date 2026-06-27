@@ -2,27 +2,27 @@ defmodule Mutare.Mutator.MacroAware do
   @moduledoc """
   Behaviour for a **macro-aware mutator** — one that targets a *macro* whose arguments the
   transform must route specially (a pattern, an opaque DSL body, or a fragment hosted inside a
-  compile-time DSL) before the mutator can act on it.
+  compile-time DSL) before the mutator can act on them.
 
-  Ordinary mutators see runtime expressions. A macro can wrap its arguments in a *pattern* position
-  (`match?`), an opaque compile-time DSL (`Ecto.Query.from`), or a fragment with foreign semantics
-  core can't vouch for (`Ecto`'s `where`). A macro-aware mutator teaches the transform how to treat
-  those arguments via `c:macros/0` (and, for routing that depends on the call *shape*,
-  `c:macro_routing/1`), and — for the deep hosted case — delivers its mutations through `c:host/2`.
-  Registration is automatic: listing the mutator under `:mutators` merges its `c:macros/0` into the
-  known-macro registry (`Mutare.Macros`), so a library ships *one* module carrying both its mutator
-  and the macro routing it relies on, and the user adds a single `:mutators` entry. Core never has
-  to know about the library.
+  Ordinary mutators see runtime expressions. A macro can put its arguments somewhere a runtime
+  mutation would be wrong: a *pattern* position (`match?`), an opaque compile-time DSL
+  (`Ecto.Query.from`), or a fragment whose semantics are the library's rather than Elixir's
+  (`Ecto`'s `where`). A macro-aware mutator teaches the transform how to treat those arguments
+  with `c:macros/0` (and, when the treatment depends on the call's *shape*, `c:macro_routing/1`),
+  and — for the deep hosted case — produces its mutations through `c:host/2`.
 
-  This is the mutator-side counterpart to `Mutare.Plugin`'s `c:Mutare.Plugin.macros/0`: a *plugin*
-  registers routing **without** producing mutations; a macro-aware *mutator* registers routing
-  **because** it also mutates the macro. (No built-in mutator is macro-aware — the built-in
-  `Kernel.match?`/`destructure` routings live in `Mutare.Macros` itself.)
+  Registration is automatic: listing the mutator under `:mutators` merges its `c:macros/0` into
+  the known-macro registry, so a library ships *one* module carrying both its mutator and the
+  macro routing it relies on, and the user adds a single `:mutators` entry.
+
+  This is the mutator-side counterpart to a `Mutare.Plugin`'s `c:Mutare.Plugin.macros/0`: a
+  plugin registers routing **without** producing mutations; a macro-aware mutator registers
+  routing **because** it also mutates the macro.
 
   A macro-aware mutator is still a `Mutare.Mutator` (it needs `name/0` and a mutation producer);
   declare **both**:
 
-      defmodule Mutare.Ecto do
+      defmodule MyApp.Mutators.Ecto do
         @behaviour Mutare.Mutator
         @behaviour Mutare.Mutator.MacroAware
 
@@ -39,97 +39,85 @@ defmodule Mutare.Mutator.MacroAware do
 
   ## Registering known macros (`macros/0`)
 
-  Returns a list of `Mutare.Macro.Spec` entries in the declarative form
-  `{module, name, arity, treatment}` or `{module, name, treatment}` (arity `:any`), where
-  `treatment` is one of `:expression` / `:pattern` / `:binding_pattern` / `:skip` / `:hosted`
-  (uniform), a per-position list, or the `:routing` classifier sentinel (deferring to
-  `c:macro_routing/1`). `module`/`name` may be the wildcard `:*` — `{module, :*, treatment}`
-  registers a whole module, `{:*, name, treatment}` a name in any module (see `Mutare.Macro.Spec`).
-  A `:hosted` argument is delivered through this module's `c:host/2` (the deep `Ecto.from`/`where`
-  case); a `:routing` spec lets the treatment depend on the call shape.
+  Return a list of `Mutare.Macro.Spec` entries in the form `{module, name, arity, treatment}` or
+  `{module, name, treatment}` (arity `:any`), where `treatment` is one of `:expression` /
+  `:pattern` / `:binding_pattern` / `:skip` / `:hosted` (applied to every argument), a
+  per-position list, or the `:routing` sentinel (deferring to `c:macro_routing/1`).
+  `module`/`name` may be the wildcard `:*` — `{module, :*, treatment}` registers a whole module,
+  `{:*, name, treatment}` a name in any module (see `Mutare.Macro.Spec`).
 
-  The whole macro node is still offered to the mutator's `c:Mutare.Mutator.mutate/1` regardless of
-  treatment (`:skip` only stops core descending into the args), so the registering mutator fires.
-  `Mutare.Macros.from_mutators/1` discovers implementers by `function_exported?(mod, :macros, 0)`.
+  Whatever the treatment, the whole macro node is still offered to your
+  `c:Mutare.Mutator.mutate/1` — `:skip` only stops the transform descending into the arguments,
+  so your mutator still fires on the call itself.
 
   ## Shape-aware routing (`macro_routing/1`)
 
-  A static per-position treatment list in `c:macros/0` can't express a routing that depends on the
-  call *shape*. Register the macro `:routing` and implement `c:macro_routing/1` to classify each
+  A static per-position treatment list can't express a routing that depends on the call's
+  *shape* — `where(q, category: "Foo")` is plain data while `where(q, [u], u.x == u.y)` is a DSL
+  fragment. Register the macro `:routing` and implement `c:macro_routing/1` to classify each
   concrete call.
 
   ## Selector hosting (`host/2`)
 
-  For a fragment *inside* a compile-time DSL — a `:hosted` argument, where core can neither splice a
-  bare selector `case` (it would poison the single build) nor vouch for the fragment's semantics —
-  the mutator owns the mutation logic and hands core the per-fragment `:original` / `:mutants` /
-  `:wrap` / `:splice` targets; core builds the id-gated selector, records the `Mutare.Site`s, and
-  weaves it in. See `c:host/2` and `Mutare.Transform.HostedEmit.emit/5`.
+  For a fragment *inside* a compile-time DSL — a `:hosted` argument — the transform can't splice
+  its usual mutation machinery in, and the fragment's semantics are the library's. So your
+  mutator owns the mutation logic: it hands the transform the per-fragment `:original` and
+  `:mutants`, plus `:wrap`/`:splice` describing how to weave a selector back into the macro, and
+  the transform assembles and records the rest. See `c:host/2`.
   """
 
   @doc """
-  Optional hook by which a mutator registers the **known macros** it depends on —
-  macros whose arguments the transform must route specially (a pattern argument, an
-  opaque DSL body) for this mutator to work, or simply to keep core from mutating a
-  DSL it does not understand.
+  Register the **known macros** this mutator depends on — macros whose arguments the transform
+  must route specially (a pattern argument, an opaque DSL body) for the mutator to work, or
+  simply to keep the transform from mutating a DSL it doesn't understand.
 
-  Returns a list of `Mutare.Macro.Spec` entries in the declarative form
-  `{module, name, arity, treatment}` or `{module, name, treatment}` (arity `:any`),
-  where `treatment` is one of `:expression` / `:pattern` / `:binding_pattern` / `:skip` /
-  `:hosted` (uniform), a per-position list, or the `:routing` classifier sentinel (deferring
-  to `c:macro_routing/1`). `module`/`name` may be the wildcard `:*` — `{module, :*, treatment}`
-  registers a whole module, `{:*, name, treatment}` a name in any module (see `Mutare.Macro.Spec`).
-  A `:hosted` argument is delivered through this module's `c:host/2`
-  (the deep `Ecto.from`/`where` case); a `:routing` spec lets the treatment depend on the call
-  shape. When the mutator is enabled (listed in `:mutators`), the
-  transform merges these into its macro registry automatically — so a library ships one module
-  carrying *both* its mutator and the registration it relies on, and the
-  user adds a single `:mutators` entry. Core never has to know about the library.
+  Return a list of `Mutare.Macro.Spec` entries in the form `{module, name, arity, treatment}` or
+  `{module, name, treatment}` (arity `:any`), where `treatment` is one of `:expression` /
+  `:pattern` / `:binding_pattern` / `:skip` / `:hosted` (applied to every argument), a
+  per-position list, or the `:routing` sentinel (deferring to `c:macro_routing/1`).
+  `module`/`name` may be the wildcard `:*` — `{module, :*, treatment}` registers a whole module,
+  `{:*, name, treatment}` a name in any module (see `Mutare.Macro.Spec`). A `:hosted` argument is
+  delivered through this mutator's `c:host/2`.
 
-  The motivating case: an Ecto integration registers `{Ecto.Query, :from, :any,
-  :skip}` so core leaves the query DSL untouched, while the same module's
-  `c:Mutare.Mutator.mutate/1` rewrites the query (drop a `where`, flip `:asc`/`:desc`).
-  `Mutare.Macros.from_mutators/1` discovers implementers by
-  `function_exported?(mod, :macros, 0)`; a mutator without it registers nothing.
+  Listing the mutator under `:mutators` merges these into the macro registry automatically, so a
+  library ships one module carrying both its mutator and the registration it relies on.
+
+  The motivating case: an Ecto integration registers `{Ecto.Query, :from, :any, :skip}` so the
+  query DSL is left untouched, while the same module's `c:Mutare.Mutator.mutate/1` rewrites the
+  query (drop a `where`, flip `:asc`/`:desc`).
   """
   @callback macros() :: [tuple()]
 
   @doc """
-  Optional **selector host** for mutating a fragment *inside* a compile-time DSL — a
-  `:hosted` macro argument (see `Mutare.Macro.Spec`). The deep external-DSL case
-  (`Ecto`'s `from`/`where`), where core can neither splice a bare selector `case` (it
-  would poison the single build) nor vouch for the fragment's semantics. So core owns
-  none of the mutation logic: it hands the **whole macro node** to this callback, which
-  returns a list of *targets* — one per fragment to mutate — and core builds the id-gated
-  selector, records the Sites, and weaves it in.
+  Produce mutations for a fragment *inside* a compile-time DSL — a `:hosted` macro argument
+  (see `Mutare.Macro.Spec`), the deep external-DSL case such as `Ecto`'s `from`/`where`. Here the
+  fragment's semantics are the library's, not Elixir's, so your mutator owns the mutation logic:
+  the transform hands you the **whole macro node** and you return a list of *targets* — one per
+  fragment to mutate — and it builds the selector, records the `Mutare.Site`s, and weaves the
+  result back in.
 
   Each target is a map:
 
-    * `:original` — the logical fragment before mutation (the Site diff's left side, and
-      what the wrapped catch-all baseline runs);
-    * `:mutants` — the list of logical mutated fragments (one mutant id + `Mutare.Site` each),
-      from the library's *own* semantics catalog (e.g. SQL's, **not** core's Elixir mutators).
-      Each entry is a bare fragment node, a `%Mutare.Mutator.Mutation{}` (a `node` + a `note`
-      recorded on that mutant's Site for the report, e.g. "kill may require NULL/boundary data"),
-      or `nil` (dropped) — the same `t:Mutare.Mutator.mutation/0` forms `mutate/1`/`mutate/2`
-      accept;
-    * `:splice` — a 2-arity `(macro_node, case_node -> macro_node)` weaving the assembled
-      selector `case` into a copy of the (emitted) macro node (for Ecto, `^`-pinning it into
-      the `where:` position);
-    * `:wrap` — optional 1-arity `(fragment -> woven_node)` mapping each logical fragment to
-      its branch value (`&dynamic([u], &1)`); defaults to identity;
+    * `:original` — the fragment before mutation (the left side of the Site diff, and the
+      baseline the unmutated run uses);
+    * `:mutants` — the list of mutated fragments (one mutant id and `Mutare.Site` each), drawn
+      from your library's *own* semantics (e.g. SQL's, not Elixir's). Each entry is a bare
+      fragment node, a `%Mutare.Mutator.Mutation{}` (a `node` plus a `note` recorded on that
+      mutant's Site for the report, e.g. `"kill may require NULL/boundary data"`), or `nil`
+      (dropped) — the same `t:Mutare.Mutator.mutation/0` forms `c:Mutare.Mutator.mutate/1`
+      accepts;
+    * `:splice` — a 2-arity `(macro_node, case_node -> macro_node)` that weaves the assembled
+      selector into a copy of the macro node (for Ecto, `^`-pinning it into the `where:`
+      position);
+    * `:wrap` — optional 1-arity `(fragment -> node)` mapping each fragment to its branch value
+      (`&dynamic([u], &1)`); defaults to identity;
     * `:range` — optional `Sourceror.Range.t()` for the Site; defaults to the `:original`'s.
 
-  Core builds, per target, `case <id-selector> do <id> -> wrap(mutant); … ; <var> -> <cov>;
-  wrap(original) end`, splices it with `:splice`, assigns the ids, and records each mutant as
-  an `:in_place` `Mutare.Site` showing the logical fragment swap (the `wrap`/`splice`
-  scaffolding invisible). The single rule that keeps this sound: *the mutator hands core
-  `wrap`/`splice` and lets core build the selector* — so the four cross-cutting contracts
-  (compile-once, contiguous poison-stable ids, coverage, poison line-mapping) stay in core.
+  You describe how to weave the selector in (`:wrap`/`:splice`) and let the transform build it —
+  the diff a survivor shows is just the fragment swap, with the scaffolding invisible.
 
-  Registered by a `:hosted` (or `:routing`-classified) treatment in `c:macros/0`; the
-  transform discovers it by `function_exported?(mod, :host, 2)`. `context` is the same map
-  as `c:Mutare.Mutator.mutate/2`'s (`:pipe_mode`/`:opts`/`:behaviours`).
+  Registered by a `:hosted` (or `:routing`-classified) treatment in `c:macros/0`. `context` is
+  the same map `c:Mutare.Mutator.mutate/2` receives (`:pipe_mode`/`:opts`/`:behaviours`).
   """
   @callback host(macro_node :: Macro.t(), context :: Mutare.Mutator.context()) :: [map()]
 
