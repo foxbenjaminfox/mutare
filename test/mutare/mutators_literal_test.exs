@@ -425,6 +425,10 @@ defmodule Mutare.MutatorsLiteralTest do
       toggled = render(RegexLiteral.mutate(parse(~S"~r/(?m)^a(?-m)^b/")))
       assert ~S"~r/(?m)\Aa(?-m)^b/" in toggled
       refute ~S"~r/(?m)^a(?-m)\Ab/" in toggled
+
+      # an unset combined with another flag (`(?-Xm)`, X being a real inline flag) still
+      # disables `m`, so `^` stays non-multiline — no guaranteed-equivalent `\A` swap
+      refute ~S"~r/(?-Xm)\Aa/m" in render(RegexLiteral.mutate(parse(~S"~r/(?-Xm)^a/m")))
     end
 
     test "an inline (?i) does not enable anchor multiline-ness, and a comment is skipped" do
@@ -710,6 +714,11 @@ defmodule Mutare.MutatorsLiteralTest do
 
       # an inline modifier group disables the dedup (it could change the equivalence)
       assert ~S"~r/(?i)a(?-s:.)b/s" in render(RegexLiteral.mutate(parse(~S"~r/(?i)a.b/s")))
+
+      # a *duplicated* flag (`/ss`) disables the dedup: dropping one `s` leaves `/s` (still
+      # dotall — a no-op drop, not equivalent to `(?-s:.)`), so the swap must be kept
+      dup = render(RegexLiteral.mutate(parse(~S|~r/a./ss|)))
+      assert ~S"~r/a(?-s:.)/ss" in dup
     end
 
     test "suppresses a force-m-off anchor swap when it duplicates dropping sigil m" do

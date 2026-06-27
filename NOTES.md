@@ -4897,9 +4897,13 @@ feeds opener strings and asserts the stack) — the kind of fragile, subtle logi
 project keeps in one tested home. The flag-aware `mode_walk/6` threads the stack in
 place of the old `multiline?` boolean and reads `Flags.active?(stack, ?m)` at each
 anchor (and `?s` at each dot). The
-classifier deliberately whitelists only the genuine inline-flag letters
-(`imsxuUJn`) so a *named* group `(?P<n>…)` is never misread as a flag set — the one
-collision (`P`) that would corrupt scoping.
+classifier whitelists *exactly* the inline-flag letters the engine accepts both scoped
+(`(?L:…)`) and unset (`(?-L)`) — `i m s x` plus uppercase `J U X` — so a *named* group
+`(?P<n>…)` is never misread as a flag set (the `P` collision that would corrupt scoping),
+while a real flag like `X` is still parsed (else `(?-Xm)` mis-splits and leaves `m`
+wrongly active). Sigil-only/unsupported-inline letters (`u`, `n`) are deliberately *out*:
+a `(?u…)` doesn't compile here anyway, so treating it as an ordinary group only ever
+affects a non-compiling original.
 
 **`x`-mode comments and `\Q…\E` — two inert spans the walk must respect.** Both are
 regions where regex syntax does *not* apply, and an early version that ignored them was

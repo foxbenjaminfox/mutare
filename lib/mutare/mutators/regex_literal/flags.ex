@@ -40,10 +40,14 @@ defmodule Mutare.Mutators.RegexLiteral.Flags do
   comment, never invent one — consistent with how an unrecognised construct fails safe.
   """
 
-  # Letters legal inside an inline `(?…)` modifier group. Deliberately excludes the
-  # letters that *introduce a construct* — `P` (named), `R` (recursion), `C` (callout) —
-  # so a named group `(?P<n>…)` is never misread as a flag set.
-  @inline_flags ~c"imsxuUJn"
+  # Letters legal inside an inline `(?…)` modifier group — exactly those Elixir's regex
+  # engine accepts both scoped (`(?L:…)`) and unset (`(?-L)`): `i m s x` (lowercase) and
+  # `J U X` (uppercase). Deliberately excludes the letters that *introduce a construct* —
+  # `P` (named), `R` (recursion), `C` (callout) — so e.g. `(?P<n>…)` is never misread as a
+  # flag set; and excludes `u`/`n` (sigil-only / unsupported inline here), so a `(?u…)` is
+  # treated as an ordinary group rather than a phantom flag set. Missing a real flag like
+  # `X` would mis-split `(?-Xm)` and leave `m` wrongly active.
+  @inline_flags ~c"imsxJUX"
 
   @type stack :: [MapSet.t()]
 

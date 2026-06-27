@@ -59,6 +59,20 @@ defmodule Mutare.Mutators.RegexLiteral.FlagsTest do
       assert Flags.active?(s, ?m)
     end
 
+    test "recognises the full inline-flag set, including the uppercase X/J/U" do
+      # `(?-Xm)` must be read as a bare modifier (X *and* m are real inline flags), so the
+      # `-m` actually disables multiline — not mistaken for an ordinary group.
+      {action, consumed, _r, s} = Flags.open("?-Xm)a", base(~c"m"))
+      assert action == :mutate
+      assert consumed == "?-Xm)"
+      refute Flags.active?(s, ?m)
+
+      for f <- ~c"imsxJUX" do
+        {a, _c, _r, _s} = Flags.open("?#{<<f>>})x", base())
+        assert a == :mutate, "(?#{<<f>>}) should be a modifier"
+      end
+    end
+
     test "lookaround / named / atomic groups are ordinary openers, never flag sets" do
       for opener <- ["?=x)", "?!x)", "?<=x)", "?<!x)", "?<n>x)", "?P<n>x)", "?'n'x)", "?>x)"] do
         {action, consumed, rest, s} = Flags.open(opener, base())

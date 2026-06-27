@@ -368,16 +368,20 @@ defmodule Mutare.Mutators.RegexLiteral do
   # is on, the pattern has no inline modifier group (so the construct's behaviour comes
   # solely from the sigil), and there is exactly one such swap (one construct). Both then
   # yield the same matcher for every input, so we drop the swap and keep the modifier-drop
-  # sibling. Guarding on the *absence* of any `(?…)` keeps it sound: an inline `(?s)`/`(?-m)`
-  # could break the equivalence, and is left un-deduped (a kept redundancy, never a wrong
-  # drop). Each mode swap is tagged `{:force_off, flag}` (or `:keep`) by `mode_walk`.
+  # sibling. Soundness guards: the pattern has no inline `(?…)` (an inline `(?s)`/`(?-m)`
+  # could break the equivalence), and the flag appears **exactly once** in the modifiers —
+  # `modifier_drops/1` removes one occurrence, so dropping `s` from `…/ss` leaves `/s` with
+  # dotall still on (a *no-op* drop, *not* equivalent to `(?-s:.)`), in which case the swap
+  # must be kept. Each mode swap is tagged `{:force_off, flag}` (or `:keep`).
   defp dedup_force_off(tagged, pattern, modifiers) do
     if String.contains?(pattern, "(?") do
       tagged
     else
-      Enum.reduce(modifiers, tagged, fn flag, acc ->
-        case Enum.filter(acc, fn {_mutant, tag} -> tag == {:force_off, flag} end) do
-          [_one] = swap -> acc -- swap
+      Enum.reduce(Enum.uniq(modifiers), tagged, fn flag, acc ->
+        with true <- Enum.count(modifiers, &(&1 == flag)) == 1,
+             [_one] = swap <- Enum.filter(acc, fn {_mutant, tag} -> tag == {:force_off, flag} end) do
+          acc -- swap
+        else
           _ -> acc
         end
       end)
