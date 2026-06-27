@@ -41,24 +41,21 @@ def f(a) when a >= 1, do: x
 def f(a) when a < 1,  do: y
 def f(_),             do: z
 
-# becomes: two full copies + a catch-all dispatcher
-defp __mut1234_orig(a) when a >= 1, do: x
-defp __mut1234_orig(a) when a < 1,  do: y
-defp __mut1234_orig(_),             do: z
-
-defp __mut1234_mut(a) when a > 1, do: x   # only clause 1's guard changed
-defp __mut1234_mut(a) when a < 1, do: y
-defp __mut1234_mut(_),            do: z
+# becomes: one lifted clause group + a dispatcher. `mutare_active` rides in as an extra
+# first arg; each mutant is one extra clause gated `=== <id>`, placed before the original
+# it overrides (now gated `!== <id>`). A group with C clauses and M mutants emits C + M, not C × M.
+defp __mutare_f_1_g1(mutare_active, a) when mutare_active === 1234 and a > 1, do: x   # mutant 1234: clause 1's guard
+defp __mutare_f_1_g1(mutare_active, a) when mutare_active !== 1234 and a >= 1, do: x  # clause 1, yields to its mutant
+defp __mutare_f_1_g1(mutare_active, a) when a < 1, do: y                             # clause 2 (untouched)
+defp __mutare_f_1_g1(mutare_active, _), do: z                                         # clause 3 (untouched)
 
 def f(a) do
-  case :persistent_term.get(:mutare_active, 0) do
-    1234 -> __mut1234_mut(a)
-    _    -> __mut1234_orig(a)
-  end
+  mutare_active = :persistent_term.get(:mutare_active, 0)
+  __mutare_f_1_g1(mutare_active, a)
 end
 ```
 
-The dispatcher head is a bare catch-all (`f(a)`, not the original patterns): it forwards raw args and lets the private copies do all pattern/guard matching, preserving fallthrough inside each copy. The public `f/arity` is unchanged at the module boundary — see "External transparency" below.
+The dispatcher head is a bare catch-all (`f(a)`, not the original patterns): it forwards raw args and lets the lifted clause group do all pattern/guard matching, preserving fallthrough inside the one function. The public `f/arity` is unchanged at the module boundary — see "External transparency" below.
 
 ### Optimization: in-place selector (body expressions)
 

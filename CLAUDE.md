@@ -139,7 +139,7 @@ contract between them is the whole game.
     `alias X, as: B; @behaviour B` records `X`; Erlang atoms like `@behaviour :gen_statem` kept
     as-is) ∪ `use`-injected behaviours (`Uses.injected_behaviours/1`) — stamping a `MapSet` on
     `meta[:mutare_behaviours]`. `Transform` reads it per module (save/restore, behaviours don't
-    inherit) and folds it onto each mutator `Spec` (`analysis_mutators/1`), so a behaviour-aware
+    inherit) and folds it onto each mutator `Spec` (`enrich_mutators/2`), so a behaviour-aware
     custom mutator gets it via the context map's `:behaviours` key in `mutate/2` and the
     structural callbacks (`return_replacements/2`/`condition_replacements/2`/`pattern_mutations/3`)
     — a GenServer-only mutator, etc. Only canonical `@behaviour` (Elixir rejects `@behavior`);
@@ -204,12 +204,13 @@ contract between them is the whole game.
     `FunctionPlan` (lifted def-clause guards/literals) and `Analyze` (the `case`/`receive`/`fn`
     clause-pattern/guard discovery). The walks keep a remote call's *form* opaque and a bitstring
     spec / keyword-or-map *key* unoffered (the subtleties live here once).
-  - **`Transform.Candidate.{InPlace,Guard,Pattern,PatternStructure,CaseClause,CasePattern,MatchPattern,MacroPattern,Drop}`** —
+  - **`Transform.Candidate.{InPlace,Lifted,PatternStructure,CaseClause,CasePattern,MatchPattern,MacroPattern,GuardDrop,RescueDrop,Hosted,Return,Drop}`** —
     typed
     candidate variants (one struct per legal kind), replacing the old single struct that redundantly
-    stored `context`/`kind`/`operation` and admitted illegal combinations. `Pattern` (a head-pattern
-    literal swap) is a mechanical twin of `Guard` — both tag a node in the shared group and replace it
-    in the one gated mutant clause — but a distinct kind (head, not `when`; literal families only).
+    stored `context`/`kind`/`operation` and admitted illegal combinations. `Lifted` (a `when`-guard
+    operator swap **or** a head-pattern literal swap) tags a node in the shared clause group and
+    replaces it in the one gated mutant clause — one struct for both, since the mechanism is identical
+    (the head-literal kind is restricted to the literal families).
     `PatternStructure` (a variable swap or duplicate→wildcard in a `def`/`defp` head) spans sibling
     positions / repeated variables that a single tag can't capture, so it is applied by **whole-clause
     replacement by index** (like `Drop`), carrying the mutated head args. `CaseClause` is a `case`
@@ -236,7 +237,7 @@ contract between them is the whole game.
     no new variant — they're a `CaseClause` with a `nil` mutant guard / a `CasePattern` whose
     `replacement` is the guard-stripped construct. The matching `Site` constructor is chosen by
     pattern-matching the variant at emit
-    (`Guard`/`Pattern`/`PatternStructure`/`GuardDrop` → `Site.lifted_replace/6`;
+    (`Lifted`/`PatternStructure`/`GuardDrop` → `Site.lifted_replace/6`;
     `InPlace`/`Return`/`CaseClause`/`CasePattern`/`MatchPattern`/`MacroPattern`
     → `Site.in_place/6` family — guard removals reuse it with `original` the `{:when, …}` head and
     `mutated` the bare head, so the diff drops just the ` when g`). The `case` tuple-the-scrutinee
@@ -370,8 +371,8 @@ contract between them is the whole game.
     (e.g. an Ecto `field …, default: x` inside a macro `do` block) are left to the **poison backstop**
     if the macro rejects a mutated key — consistent with how the unknown is handled everywhere.
     The key of a keyword list passed as a *call's final argument* (`foo(x, timeout: 5)` →
-    `timeout:`, the trailing-keyword sugar) is a **per-mutator opt-out**: `recurse_runtime/3` knows
-    the call context, so it tags those key candidates `call_option_key?` (via `mark_call_option_keys/1`,
+    `timeout:`, the trailing-keyword sugar) is a **per-mutator opt-out**: `recurse_runtime/2` knows
+    the call context, so it tags those key candidates `call_option_key?` (via `CallOptions.mark/1`,
     `call_form?/1` distinguishing a real call from a `%{}`/tuple by `@non_call_forms`). A mutator
     configured `{Module, call_option_keys: false}` (the `Mutare.Mutator.Spec` opts mechanism)
     suppresses *its own* tagged candidates: `Transform.gate_candidates/1` reads each candidate's own
@@ -556,7 +557,7 @@ contract between them is the whole game.
   re-materialise via `sync/3`: rewrite a file only when its bytes change so unchanged files keep
   their mtime and mix's incremental compiler reuses `_build`; prune what's gone; never touch
   `@excluded` dirs). For CI build caching; see `NOTES.md` for the cache pattern. Either mode then
-  **seeds the dependencies' compiled `_build`** (`seed_dep_build/2`): `@excluded` keeps `_build`
+  **seeds the dependencies' compiled `_build`** (`Sandbox.Seed.dep_build/2`): `@excluded` keeps `_build`
   out of the copy, so a fresh sandbox would otherwise recompile *every* test-env dep cold each run
   (the deps are byte-identical to what the user already built — pure waste, often dominating the
   one `mix compile`). It copies each `deps/`-named dir's `_build/test/lib/<dep>` (deps only —
@@ -564,7 +565,7 @@ contract between them is the whole game.
   idempotently (skips deps already present, so a kept `_build` is untouched) and best-effort (a
   dev-only or never-test-compiled dep is simply absent). See `NOTES.md` "Seed the deps' `_build`".
   When a run rewrites only some files it *also* seeds the **mutated app's own** `_build`
-  (`seed_app_build/3`), so the one compile rebuilds only the metamutant file(s) — not the whole
+  (`Sandbox.Seed.app_build/4`), so the one compile rebuilds only the metamutant file(s) — not the whole
   (possibly huge) app — the first-run experience when someone aims Mutare at a single module. The
   app build can't be seeded as-is for two reasons: mix gates app-source staleness on a manifest
   that embeds the **absolute project root** (transplanted, every source looks stale → cold compile),
@@ -912,7 +913,7 @@ contract between them is the whole game.
   `mutate/2` via the context map's `:opts` key — so a *configurable* mutator
   reads its parameters there (and therefore implements `mutate/2`, since `mutate/1` has no context).
   `behaviours` is **not** user config — it is the enclosing module's `@behaviour` set, folded onto
-  the spec **per module** by `Transform.analysis_mutators/1` and delivered under the context's
+  the spec **per module** by `Transform.enrich_mutators/2` and delivered under the context's
   `:behaviours` key (the same spec→context path `opts` rides), so a behaviour-targeted mutator gates
   on it. The base specs carry the empty default; only the per-module re-bind populates it.
   The reserved `:as` key in `opts` overrides the recorded `name`, so the **same module can run
@@ -1124,7 +1125,7 @@ built-in examples).
 For a *structural in-place* mutator at a position core routes — a `def`/`defp` clause **return
 tail** or an `if`/`unless`/`cond` **condition** — you omit `mutate/1` and implement
 `return_replacements(tail)` or `condition_replacements(condition)` (each returning replacement
-nodes). `Transform` discovers implementers by export (`Mutare.Mutator.implementing/3`) and asks
+nodes). `Transform` discovers implementers by export (`Mutare.Mutator.Dispatch.implementing/3`) and asks
 *all* of them at each routed position, recording each under its own name — so these are no longer
 hardcoded to the built-in `ReturnValue`/`IfCondition`. `test/support/structural_mutator.ex` is a
 working example. (The third structural built-in, `RescueType`, stays special — its `try`-rebuild
@@ -1138,7 +1139,7 @@ set from the **context's `:behaviours` key** (a `MapSet` of module atoms, gather
 arities** `return_replacements/2`, `condition_replacements/2`, `pattern_mutations/3` (a
 `%{behaviours: bs}` context appended; implement the `+1`-arity instead of the base, `Transform`
 prefers it when exported) — in the structural positions too. No registration/plumbing: the
-behaviours ride on each `Mutare.Mutator.Spec` (folded per module by `Transform.analysis_mutators/1`)
+behaviours ride on each `Mutare.Mutator.Spec` (folded per module by `Transform.enrich_mutators/2`)
 exactly like `opts`. `test/support/behaviour_mutator.ex` is a working example (a GenServer
 `{:reply, …}` → `{:noreply, …}` swap via `mutate/2`, plus a `return_replacements/2` arm).
 
