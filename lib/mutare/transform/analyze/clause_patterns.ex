@@ -19,7 +19,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
-  alias Mutare.Transform.{Candidate, NodeRange, PatternStructure, Tag}
+  alias Mutare.Transform.{Candidate, Meta, NodeRange, PatternStructure, Tag}
   alias Mutare.Transform.Analyze
 
   # A fresh `{tag_counter, targets}` accumulator for a single-node tag walk. The candidates
@@ -247,8 +247,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
     end
   end
 
-  def put_case_candidates({form, meta, args}, candidates),
-    do: {form, [{:mutare_case, candidates} | meta], args}
+  def put_case_candidates(node, candidates), do: Meta.put_candidates(node, :case, candidates)
 
   # --- receive / fn: whole-construct selector (Candidate.CasePattern) --------
 

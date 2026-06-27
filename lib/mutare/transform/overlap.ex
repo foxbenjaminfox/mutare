@@ -105,7 +105,7 @@ defmodule Mutare.Transform.Overlap do
   # arguments, never guards/patterns, so it is never lifted and never a structural/pattern
   # candidate kind; those (and `:mutare_case`) are left untouched.
 
-  alias Mutare.Transform.{Candidate, Resolve}
+  alias Mutare.Transform.{Candidate, Meta, Resolve}
 
   @doc """
   Drop each non-covering `Candidate.InPlace` whose host node is some other candidate's
@@ -133,9 +133,9 @@ defmodule Mutare.Transform.Overlap do
     set
   end
 
-  defp collect({_form, meta, _args}, acc) when is_list(meta) do
-    meta
-    |> Keyword.get(:mutare, [])
+  defp collect({_form, _meta, _args} = node, acc) do
+    node
+    |> Meta.candidates(:in_place)
     |> Enum.reduce(acc, fn
       %Candidate.InPlace{original: o, mutated: m}, acc ->
         case footprint_nid(o, m) do

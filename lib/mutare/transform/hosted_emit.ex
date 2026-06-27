@@ -8,9 +8,7 @@ defmodule Mutare.Transform.HostedEmit do
   # `Mutare.Transform`, because ordinary selector delivery owns pipe hoisting and pinned cases.
 
   alias Mutare.Site
-  alias Mutare.Transform.{Candidate, Ctx, MetaKeys, SelectorEmit}
-
-  @delivery_keys MetaKeys.delivery()
+  alias Mutare.Transform.{Candidate, Ctx, Meta, SelectorEmit}
 
   @type emit_inplace :: (Macro.t(), [Candidate.t()], Ctx.t() -> {Macro.t(), Ctx.t()})
 
@@ -20,7 +18,7 @@ defmodule Mutare.Transform.HostedEmit do
   @spec emit(Macro.t(), [Candidate.Hosted.t()], [Candidate.t()], Ctx.t(), emit_inplace()) ::
           {Macro.t(), Ctx.t()}
   def emit(node, hosted, inplace, ctx, emit_inplace) when is_function(emit_inplace, 3) do
-    base = strip_candidates(node)
+    base = Meta.strip_delivery(node)
 
     {spliced, ctx} =
       Enum.reduce(hosted, {base, ctx}, fn candidate, {node, ctx} ->
@@ -64,9 +62,4 @@ defmodule Mutare.Transform.HostedEmit do
   # the Site for the report.
   defp hosted_site(id, %{candidate: cand, mutated: mutated, note: note}, file),
     do: Site.in_place(id, file, cand.range, cand.original, mutated, cand.mutator, note)
-
-  defp strip_candidates({form, meta, args}) when is_list(meta),
-    do: {form, Keyword.drop(meta, @delivery_keys), args}
-
-  defp strip_candidates(node), do: node
 end

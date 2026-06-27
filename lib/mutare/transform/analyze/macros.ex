@@ -15,7 +15,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   # API (`Analyze.annotate/2`, `Analyze.pattern/2`, `Analyze.offer/4`).
 
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{Analyze, Candidate, NodeRange}
+  alias Mutare.Transform.{Analyze, Candidate, Meta, NodeRange}
   alias Mutare.Transform.Analyze.CallOptions
 
   # Analyze a known-macro call: offer the *whole* node to mutators (so a custom mutator
@@ -86,8 +86,7 @@ defmodule Mutare.Transform.Analyze.Macros do
     |> Enum.filter(& &1.range)
   end
 
-  defp put_hosted_candidates({form, meta, args}, candidates),
-    do: {form, [{:mutare_hosted, candidates} | meta], args}
+  defp put_hosted_candidates(node, candidates), do: Meta.put_candidates(node, :hosted, candidates)
 
   # Route each argument by its treatment. A position past the routing list defaults to
   # `:expression`.
@@ -202,10 +201,8 @@ defmodule Mutare.Transform.Analyze.Macros do
     found?
   end
 
-  defp inplace_candidate?({_form, meta, _args}) when is_list(meta),
-    do: Enum.any?(Keyword.get(meta, :mutare, []), &match?(%Candidate.InPlace{}, &1))
-
-  defp inplace_candidate?(_), do: false
+  defp inplace_candidate?(node),
+    do: Enum.any?(Meta.candidates(node, :in_place), &match?(%Candidate.InPlace{}, &1))
 
   # Route a keyword list's pair *values* by `value_treatments` (keys raw). Handles the bare list
   # (a trailing keyword argument, `where(q, x: v)`) and the Sourceror `{:__block__, _, [list]}`
@@ -241,7 +238,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   # a written first argument: a `1 |> match?(1)` LHS routes as `:pattern`, a `:skip` macro's LHS
   # is left raw, and any other LHS stays ordinary runtime.
   def analyze_piped_value(lhs, {_form, rhs_meta, _args}, mutators) when is_list(rhs_meta) do
-    case Keyword.get(rhs_meta, :mutare_macro_piped) do
+    case Meta.piped_macro_routing(rhs_meta) do
       nil -> Analyze.annotate(lhs, mutators)
       treatment -> route_macro_arg(lhs, treatment, mutators)
     end

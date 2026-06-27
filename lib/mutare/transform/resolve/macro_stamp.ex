@@ -7,11 +7,7 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
 
   alias Mutare.{Macros, Mutator}
   alias Mutare.Macro.Spec
-  alias Mutare.Transform.{Imports, MetaKeys}
-
-  @macro_key MetaKeys.macro_key()
-  @piped_macro_key MetaKeys.piped_macro_key()
-  @macro_call_key MetaKeys.macro_call_key()
+  alias Mutare.Transform.{Imports, Meta}
 
   @doc """
   Stamp a call's meta with known-macro argument routing, when the registry matches it.
@@ -50,7 +46,7 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
 
   # Record the resolved macro identity on the call meta, read back by
   # `Mutare.Transform.Calls.resolved_macro_call/1`.
-  defp stamp_identity(meta, module_key, fun), do: [{@macro_call_key, {module_key, fun}} | meta]
+  defp stamp_identity(meta, module_key, fun), do: Meta.stamp_macro_call(meta, {module_key, fun})
 
   # Replace a call node's own (top) meta — `{head, _meta, args}` covers both the remote
   # (`head = {:., …}`) and bare (`head = fun`) shapes the resolver hands here.
@@ -66,7 +62,7 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
     validate_routing!(spec, raw)
     routing = inject_host(raw, spec)
     reject_undeliverable_hosted!(spec, routing)
-    [{@macro_key, routing} | meta]
+    Meta.stamp_macro_routing(meta, routing)
   end
 
   defp stamp_spec(meta, spec, _call_node, arity, pipe_mode) do
@@ -154,10 +150,10 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
   defp inject_host_treatment(other, _host), do: other
 
   # Split effective routing across the visible-call stamp and the piped-LHS stamp.
-  defp stamp_routing(meta, routing, :unpiped), do: [{@macro_key, routing} | meta]
+  defp stamp_routing(meta, routing, :unpiped), do: Meta.stamp_macro_routing(meta, routing)
 
   defp stamp_routing(meta, [piped | visible], :piped) do
-    meta = [{@macro_key, visible} | meta]
-    if piped == :expression, do: meta, else: [{@piped_macro_key, piped} | meta]
+    meta = Meta.stamp_macro_routing(meta, visible)
+    if piped == :expression, do: meta, else: Meta.stamp_piped_macro_routing(meta, piped)
   end
 end

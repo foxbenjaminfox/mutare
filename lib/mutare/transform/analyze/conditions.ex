@@ -15,7 +15,7 @@ defmodule Mutare.Transform.Analyze.Conditions do
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
-  alias Mutare.Transform.{Candidate, Names}
+  alias Mutare.Transform.{Candidate, Meta, Names}
   alias Mutare.Transform.Analyze
 
   # Analyze a `cond` clause *condition*: the generic runtime walk, plus the IfCondition
@@ -439,12 +439,9 @@ defmodule Mutare.Transform.Analyze.Conditions do
     {nodes, Enum.any?(hass)}
   end
 
-  # mutare:ignore[guard_drop] equivalent — `strip_inplace_candidates/1` only runs on `{form, meta, args}` nodes whose meta is always a keyword list, so the guard never excludes a real node.
-  defp strip_inplace_candidates({form, meta, args}) when is_list(meta),
-    do: {form, Keyword.delete(meta, :mutare), args}
-
-  # mutare:ignore[clause_drop] equivalent — the head above matches every node `prune_binding_ancestors/1` passes here (always a list-meta 3-tuple), so this fallback is unreachable for valid input.
-  defp strip_inplace_candidates(node), do: node
+  # Drop the in-place candidates from a binding-ancestor node (`Meta.put_candidates(_, [])` deletes
+  # the key); total over a bare literal.
+  defp strip_inplace_candidates(node), do: Meta.put_candidates(node, :in_place, [])
 
   # Force an `if`/`unless`/`cond` *condition* to `true`/`false` via the in-place
   # selector. `IfCondition.replacements/1` returns the `[true, false]` pair (or `[]`

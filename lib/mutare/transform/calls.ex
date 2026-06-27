@@ -62,9 +62,7 @@ defmodule Mutare.Transform.Calls do
   # *not* resolve is a bare `Kernel` call (`abs`, `min`) — those families key on effective
   # arity in their own clauses.
 
-  alias Mutare.Transform.{Aliases, Imports, MetaKeys}
-
-  @macro_call_key MetaKeys.macro_call_key()
+  alias Mutare.Transform.{Aliases, Imports, Meta}
 
   @typedoc """
   A resolved module: an Elixir-module path (`[:Enum]`, `[:String]`) or an Erlang-module atom
@@ -233,7 +231,7 @@ defmodule Mutare.Transform.Calls do
   # The resolved `{module_key, name}` identity from a node's own meta, or `nil` when absent —
   # i.e. when the node was never matched against the macro registry.
   defp macro_identity(meta) do
-    case Keyword.get(meta, @macro_call_key) do
+    case Meta.macro_call(meta) do
       {_module, _name} = identity -> identity
       _ -> nil
     end

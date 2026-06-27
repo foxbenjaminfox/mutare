@@ -14,9 +14,7 @@ defmodule Mutare.Transform.CaseClauseEmit do
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
   alias Mutare.Transform.Candidate.Delivery
-  alias Mutare.Transform.{Candidate, Ctx, GuardBuild, MetaKeys, SelectorEmit}
-
-  @delivery_keys MetaKeys.delivery()
+  alias Mutare.Transform.{Candidate, Ctx, GuardBuild, Meta, SelectorEmit}
 
   @doc """
   Rewrite a `case` with per-clause `Candidate.CaseClause`s by tupleing the scrutinee with
@@ -24,7 +22,7 @@ defmodule Mutare.Transform.CaseClauseEmit do
   """
   @spec emit(Macro.t(), [Candidate.CaseClause.t()], Ctx.t()) :: {Macro.t(), Ctx.t()}
   def emit(node, candidates, ctx) do
-    {:case, meta, [emitted_subject, [{do_key, emitted_clauses}]]} = strip_candidates(node)
+    {:case, meta, [emitted_subject, [{do_key, emitted_clauses}]]} = Meta.strip_delivery(node)
     var = ctx.config.active_var
 
     {claimed, ctx} =
@@ -163,9 +161,4 @@ defmodule Mutare.Transform.CaseClauseEmit do
   end
 
   defp emitted_clause_parts({:->, meta, [[pattern], body]}), do: {meta, pattern, nil, body}
-
-  defp strip_candidates({form, meta, args}) when is_list(meta),
-    do: {form, Keyword.drop(meta, @delivery_keys), args}
-
-  defp strip_candidates(node), do: node
 end

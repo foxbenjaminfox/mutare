@@ -461,27 +461,16 @@ defmodule Mutare.Transform.Candidate do
           | Return.t()
 
   @doc """
-  Apply `fun` to the in-place candidate list a node carries under its `meta[:mutare]`
-  key, splicing the transformed list back. A **no-op** (the node is returned unchanged)
-  when the node has no keyword metadata or carries no `:mutare` candidates — so a caller
-  that only ever *narrows* (`Enum.reject`) or *re-flags* (`Enum.map`) an existing list
-  needs no nil/shape handling of its own.
+  Apply `fun` to the **in-place** candidate list a node carries, splicing the transformed list
+  back. A **no-op** (the node is returned unchanged) when the node carries no in-place candidates
+  — so a caller that only ever *narrows* (`Enum.reject`) or *re-flags* (`Enum.map`) an existing
+  list needs no nil/shape handling of its own.
 
-  The single home for the "transform the candidates attached to this node" mechanic the
-  analyze pass and `Mutare.Transform.Overlap` share — each used to repeat the same
-  `Keyword.get`/`Keyword.put` dance per narrowing.
+  A thin alias for `Mutare.Transform.Meta.update_candidates/3` pinned to the `:in_place` kind —
+  the "transform the candidates attached to this node" mechanic the analyze pass and
+  `Mutare.Transform.Overlap` share.
   """
   @spec update_candidates(Macro.t(), ([t()] -> [t()])) :: Macro.t()
-  def update_candidates({form, meta, args} = node, fun) when is_list(meta) do
-    case Keyword.get(meta, :mutare) do
-      nil ->
-        node
-
-      candidates ->
-        # mutare:ignore[map_keyword] this branch runs only when :mutare is already present, so put ≡ replace (equivalent)
-        {form, Keyword.put(meta, :mutare, fun.(candidates)), args}
-    end
-  end
-
-  def update_candidates(node, _fun), do: node
+  def update_candidates(node, fun),
+    do: Mutare.Transform.Meta.update_candidates(node, :in_place, fun)
 end

@@ -4,14 +4,14 @@ defmodule Mutare.Transform.MetaKeys do
   # node's `meta` keyword list. These are bookkeeping the families and emit read; none may
   # reach the rendered metamutant source. Two aggregators derive their strip lists from here,
   # so neither can silently drift from a stamp site (the bug this module exists to prevent —
-  # before it, `Mutare.Transform.Render`'s list and `Mutare.Transform.strip_candidates`'s
-  # list were maintained by hand and `:mutare_hosted` had already gone missing from the
-  # former):
+  # before it, `Mutare.Transform.Render`'s list and the emit-time strip's list were maintained
+  # by hand and `:mutare_hosted` had already gone missing from the former):
   #
   #   * `Mutare.Transform.Render` strips **all** of them (`all/0`) just before rendering —
   #     the belt-and-suspenders final scrub.
-  #   * `Mutare.Transform` strips the **candidate-delivery** subset (`delivery/0`) during emit,
-  #     once a node's candidates are consumed and before the bare node is rebuilt.
+  #   * `Mutare.Transform.Meta.strip_delivery/1` strips the **candidate-delivery** subset
+  #     (`delivery/0`) during emit, once a node's candidates are consumed and before the bare
+  #     node is rebuilt.
   #
   # Only node-`meta` keys belong here. The other `:mutare_*` atoms are **not** metadata and
   # stay owned by their modules: runtime-contract identifiers (`:mutare_active`/`:mutare_track`
@@ -21,13 +21,25 @@ defmodule Mutare.Transform.MetaKeys do
   # `:mutare_unmatched` placeholder var, and the `{:mutare_behaviour, mod}` tagged tuple in
   # `Mutare.Transform.Uses.Harvest`.
 
-  # Candidate-delivery keys — each holds a list of `Mutare.Transform.Candidate` structs that an
-  # emit path consumes, then strips from the node before building it. These are read by literal
-  # atom at their (few, central) emit sites, so they stay a plain list:
-  #   * `:mutare`        — in-place / lifted candidates, the node-wrapping selector  (Analyze)
-  #   * `:mutare_case`   — `case` tuple-the-scrutinee per-clause candidates           (Analyze.ClausePatterns)
-  #   * `:mutare_hosted` — selector-host candidates for a DSL fragment (Ecto-style)   (Analyze, via Mutator host/2)
-  @delivery [:mutare, :mutare_case, :mutare_hosted]
+  # Candidate-delivery keys, as `kind: :meta_key` pairs. Each holds a list of
+  # `Mutare.Transform.Candidate` structs that an emit path consumes, then strips from the node
+  # before building it. No module names these atoms directly any more: `Mutare.Transform.Meta`
+  # maps each *logical kind* to its key through the generated `<kind>_key/0` accessor (below), so
+  # the candidate API (`candidates/2`, `put_candidates/3`, …) speaks in kinds and the raw atoms
+  # stay here. Owning analyze path in parentheses:
+  #   * `in_place` → `:mutare`        — in-place / lifted candidates, the node-wrapping selector  (Analyze)
+  #   * `case`     → `:mutare_case`   — `case` tuple-the-scrutinee per-clause candidates          (Analyze.ClausePatterns)
+  #   * `hosted`   → `:mutare_hosted` — selector-host candidates for a DSL fragment (Ecto-style)  (Analyze, via Mutator host/2)
+  @delivery_kinds [in_place: :mutare, case: :mutare_case, hosted: :mutare_hosted]
+  @delivery Keyword.values(@delivery_kinds)
+
+  # One zero-arity accessor per delivery kind (`in_place_key/0`, `case_key/0`, `hosted_key/0`),
+  # generated from the registry above so `Mutare.Transform.Meta`'s kind→key mapping can't drift.
+  for {kind, key} <- @delivery_kinds do
+    @doc false
+    @spec unquote(:"#{kind}_key")() :: atom()
+    def unquote(:"#{kind}_key")(), do: unquote(key)
+  end
 
   # Pre-pass / resolution bookkeeping stamps, as `accessor_name: :meta_key` pairs. This list is
   # the single source of truth: `all/0`'s strip set is derived from it, and the per-key accessor
@@ -73,7 +85,7 @@ defmodule Mutare.Transform.MetaKeys do
     def unquote(name)(), do: unquote(key)
   end
 
-  @doc "The candidate-delivery meta keys — `Mutare.Transform` strips these during emit."
+  @doc "The candidate-delivery meta keys — `Mutare.Transform.Meta.strip_delivery/1` drops these during emit."
   @spec delivery() :: [atom()]
   def delivery, do: @delivery
 

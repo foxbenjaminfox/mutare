@@ -159,7 +159,7 @@ defmodule Mutare.Transform do
     HostedEmit,
     ImportWitness,
     LiftedEmit,
-    MetaKeys,
+    Meta,
     ModulePlan,
     Names,
     Overlap,
@@ -175,10 +175,6 @@ defmodule Mutare.Transform do
   # The default set is the built-in catalog's `all/0` — one source of truth, so a
   # family registered in `Mutare.Mutators` is part of the default automatically.
   @default_mutators Mutare.Mutators.all()
-
-  # The candidate-bearing meta keys `strip_candidates/1` clears once a node's candidates
-  # are consumed. Canonical list (and the full registry) in `Mutare.Transform.MetaKeys`.
-  @delivery_keys MetaKeys.delivery()
 
   @doc """
   Transform a source string into `{metamutant_source, [%Site{}], next_id}`.
@@ -751,30 +747,17 @@ defmodule Mutare.Transform do
     |> emit(ctx)
   end
 
-  defp candidates_of(node), do: meta_candidates(node, :mutare)
+  defp candidates_of(node), do: Meta.candidates(node, :in_place)
 
   # The per-clause `Candidate.CaseClause`s a `case` node carries (the tuple-the-scrutinee
-  # path), kept under a dedicated meta key separate from `:mutare` because they drive a
-  # different emit (rewriting the `case`, not wrapping the node in a selector).
-  defp case_candidates_of(node), do: meta_candidates(node, :mutare_case)
+  # path), kept under a dedicated meta key separate from the `:in_place` candidates because they
+  # drive a different emit (rewriting the `case`, not wrapping the node in a selector).
+  defp case_candidates_of(node), do: Meta.candidates(node, :case)
 
   # The `Candidate.Hosted`s a known-macro node carries (the selector-host path), under a
-  # dedicated meta key — like `:mutare_case`, a different emit (weaving a host-supplied selector
-  # into the node) than the node-wrapping `:mutare` selectors.
-  defp hosted_candidates_of(node), do: meta_candidates(node, :mutare_hosted)
-
-  # Read a node's candidate list stored under `key` in its metadata; `[]` for a node with no
-  # metadata (a bare atom/literal) or no candidates of that kind. The three delivery keys
-  # (`:mutare`, `:mutare_case`, `:mutare_hosted`) each drive a different emit but share this read.
-  defp meta_candidates({_form, meta, _args}, key) when is_list(meta),
-    do: Keyword.get(meta, key, [])
-
-  defp meta_candidates(_, _), do: []
-
-  defp strip_candidates({form, meta, args}) when is_list(meta),
-    do: {form, Keyword.drop(meta, @delivery_keys), args}
-
-  defp strip_candidates(node), do: node
+  # dedicated meta key — like the `:case` candidates, a different emit (weaving a host-supplied
+  # selector into the node) than the node-wrapping `:in_place` selectors.
+  defp hosted_candidates_of(node), do: Meta.candidates(node, :hosted)
 
   # --- assign + emit: ids in post-order, selectors built from candidates ------
 
@@ -877,10 +860,10 @@ defmodule Mutare.Transform do
 
       # No deliverable candidates. A `|>` never carries candidates itself, but its
       # already-emitted RHS may now be a selector `case` — illegal as a pipe target — so
-      # rewrite it here. `strip_candidates` clears any meta left by candidates the gate dropped
+      # rewrite it here. `Meta.strip_delivery` clears any meta left by candidates the gate dropped
       # (a no-op when there were none), so the node renders clean.
       :none ->
-        {PipeEmit.hoist(strip_candidates(current), ctx), ctx}
+        {PipeEmit.hoist(Meta.strip_delivery(current), ctx), ctx}
     end
   end
 
@@ -932,7 +915,7 @@ defmodule Mutare.Transform do
     # ReturnValue candidate) whose RHS is an already-emitted selector, the selector
     # would sit illegally as a pipe target inside this default/catch-all — hoist the
     # pipe into it. A no-op for every other node shape.
-    default = PipeEmit.hoist(strip_candidates(node), ctx)
+    default = PipeEmit.hoist(Meta.strip_delivery(node), ctx)
 
     # All mutations here skipped → no selector; emit the node unchanged.
     case clauses do

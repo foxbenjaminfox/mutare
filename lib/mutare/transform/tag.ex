@@ -26,7 +26,7 @@ defmodule Mutare.Transform.Tag do
 
   alias Mutare.{AST, Mutator}
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{NodeRange, Suppression}
+  alias Mutare.Transform.{Meta, NodeRange, Suppression}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
   # the guard path matches the guard-legal subset of the body path's sets, so its clauses
@@ -95,13 +95,8 @@ defmodule Mutare.Transform.Tag do
   @doc "Replace the node carrying `meta[:mutare_tag] == tag` anywhere in `ast` with `replacement`."
   @spec replace_tag(Macro.t(), non_neg_integer(), Macro.t()) :: Macro.t()
   def replace_tag(ast, tag, replacement) do
-    Macro.prewalk(ast, fn
-      # mutare:ignore[guard_drop] equivalent — every node `Macro.prewalk` visits is `{form, meta, args}` with a keyword-list `meta`, so the guard never excludes a real node; it only fences out a malformed 3-tuple that can't occur here.
-      {_form, meta, _args} = node when is_list(meta) ->
-        if Keyword.get(meta, :mutare_tag) == tag, do: replacement, else: node
-
-      node ->
-        node
+    Macro.prewalk(ast, fn node ->
+      if Meta.tag(node) == tag, do: replacement, else: node
     end)
   end
 
@@ -463,7 +458,7 @@ defmodule Mutare.Transform.Tag do
 
   # === tagging ===============================================================
 
-  defp put_tag({form, meta, args}, tag), do: {form, [{:mutare_tag, tag} | meta], args}
+  defp put_tag(node, tag), do: Meta.put_tag(node, tag)
 
   # Tag `node` with the next free tag and record its target, given the node's mutation list —
   # or leave it untagged when there are none. The shared tail of every tagger (guards, pattern

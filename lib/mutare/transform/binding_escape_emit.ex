@@ -19,9 +19,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
   alias Mutare.Coverage.Recorder
   alias Mutare.Transform.Candidate
   alias Mutare.Transform.Candidate.Delivery
-  alias Mutare.Transform.{Ctx, MetaKeys, SelectorEmit}
-
-  @delivery_keys MetaKeys.delivery()
+  alias Mutare.Transform.{Ctx, Meta, SelectorEmit}
 
   # === binding-escaping `=` match: tuple re-export =====================================
 
@@ -96,7 +94,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
           {Macro.t(), Ctx.t()}
   def macro_pattern_site(node, candidates, ctx) do
     %Candidate.MacroPattern{export: export} = hd(candidates)
-    baseline = strip_candidates(node)
+    baseline = Meta.strip_delivery(node)
 
     binding_site(
       node,
@@ -139,7 +137,7 @@ defmodule Mutare.Transform.BindingEscapeEmit do
 
     case clauses do
       [] ->
-        {strip_candidates(node), ctx}
+        {Meta.strip_delivery(node), ctx}
 
       _ ->
         ids = SelectorEmit.ids_from_clauses(clauses)
@@ -147,9 +145,4 @@ defmodule Mutare.Transform.BindingEscapeEmit do
         {{:=, [], [export, case_node]}, ctx}
     end
   end
-
-  defp strip_candidates({form, meta, args}) when is_list(meta),
-    do: {form, Keyword.drop(meta, @delivery_keys), args}
-
-  defp strip_candidates(node), do: node
 end

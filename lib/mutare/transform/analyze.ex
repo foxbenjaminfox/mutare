@@ -16,7 +16,7 @@ defmodule Mutare.Transform.Analyze do
 
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{Candidate, NodeRange, Suppression}
+  alias Mutare.Transform.{Candidate, Meta, NodeRange, Suppression}
 
   # The suppression operator vocabulary, in guard position (see `Suppression`'s twin-map):
   # the body path's five equivalent-sibling clauses below match on these shared `defguard`s
@@ -714,7 +714,7 @@ defmodule Mutare.Transform.Analyze do
   # sigil-content path: a `|>` RHS (`:piped`) is never sigil syntax, so only the generic-runtime
   # (`:unpiped`) path descends sigil content.
   defp do_analyze_call_node({form, meta, _args} = node, mutators, context) do
-    case macro_routing(meta) do
+    case Meta.macro_routing(meta) do
       nil ->
         node = offer(node, node, mutators, context)
 
@@ -762,22 +762,12 @@ defmodule Mutare.Transform.Analyze do
 
   # === known macros ==========================================================
 
-  @doc """
-  The per-argument routing stamped on a call by `Mutare.Transform.Resolve` when it
-  resolves to a known macro (`Mutare.Macros`), or `nil` for an ordinary call. The one
-  reader of the `:mutare_macro` contract key — `Mutare.Transform.Analyze.MatchPatterns`
-  shares it rather than reimplementing the accessor.
-  """
-  @spec macro_routing(keyword() | term()) :: term()
-  def macro_routing(meta) when is_list(meta), do: Keyword.get(meta, :mutare_macro)
-  def macro_routing(_meta), do: nil
-
   # The known-macro argument *routing* lives in `Mutare.Transform.Analyze.Macros`:
   # `Macros.analyze_known_macro/4` (a written/piped stage) and `Macros.analyze_piped_value/3`
   # (the `|>` LHS reaching back into a macro's argument-0 treatment) route each argument by its
   # declared treatment — a pattern, an opaque `:skip` DSL body, a `:hosted` fragment — driving the
-  # descent back through `annotate/2`/`pattern/2`/`offer/4`. The core walk reads the stamp here
-  # (`macro_routing/1`) and dispatches there.
+  # descent back through `annotate/2`/`pattern/2`/`offer/4`. The core walk reads the stamp via
+  # `Mutare.Transform.Meta.macro_routing/1` and dispatches there.
 
   # One argument of a `for`: a generator/filter/match is descended as a *statement*
   # (its value is discarded — a qualifier only binds/filters), while the trailing
@@ -967,7 +957,7 @@ defmodule Mutare.Transform.Analyze do
 
   # `build_candidates/2` and `put_candidates/2` are part of the small sub-walk API
   # the split-out `Mutare.Transform.Analyze.ClausePatterns` uses (build node-level
-  # `Candidate.InPlace`s, attach a candidate list under `:mutare`); public for it.
+  # `Candidate.InPlace`s, attach them as a node's in-place candidates); public for it.
   def build_candidates(node, muts) do
     range = NodeRange.get(node)
 
@@ -982,42 +972,33 @@ defmodule Mutare.Transform.Analyze do
     end)
   end
 
-  def put_candidates({form, meta, args}, candidates),
-    do: {form, [{:mutare, candidates} | meta], args}
+  def put_candidates(node, candidates), do: Meta.put_candidates(node, :in_place, candidates)
 
   @doc """
-  `put_candidates/2` guarded on a non-empty list: attach the candidates under `:mutare` when
-  some fired, else return the node untouched (no empty `:mutare` key). The shared shape of the
-  "offer a position to the structural families, attach only if any produced a candidate" attach
-  helpers (`MatchPattern`/`MacroPattern`/clause-pattern/`try`-rescue).
+  `put_candidates/2` guarded on a non-empty list: attach the in-place candidates when some fired,
+  else return the node untouched (no empty key). The shared shape of the "offer a position to the
+  structural families, attach only if any produced a candidate" attach helpers
+  (`MatchPattern`/`MacroPattern`/clause-pattern/`try`-rescue).
   """
   @spec put_candidates_if_any(Macro.t(), [struct()]) :: Macro.t()
   def put_candidates_if_any(node, []), do: node
   def put_candidates_if_any(node, candidates), do: put_candidates(node, candidates)
 
   @doc """
-  Append candidates to a node's `:mutare` metadata, **preserving** any already there (so an
-  operator candidate keeps its id before a return/condition one at a shared node). The
-  candidate list is built by `build_fun.(range)` from `raw`'s source range — kept at the call
-  site because the condition and return-tail descents build different `Candidate` structs. The
-  node is returned unchanged when it carries no metadata or `raw` can't be ranged (no mutant
-  recorded). The shared half of `Analyze.Conditions`/`Analyze.Returns`' tail attachment.
+  Append in-place candidates to a node, **preserving** any already there (so an operator candidate
+  keeps its id before a return/condition one at a shared node). The candidate list is built by
+  `build_fun.(range)` from `raw`'s source range — kept at the call site because the condition and
+  return-tail descents build different `Candidate` structs. The node is returned unchanged when
+  `raw` can't be ranged (no mutant recorded). The shared half of `Analyze.Conditions`/
+  `Analyze.Returns`' tail attachment.
   """
   @spec append_candidates(Macro.t(), Macro.t(), (map() -> [struct()])) :: Macro.t()
-  # mutare:ignore[guard_drop] equivalent — a `{form, meta, args}` AST node always carries keyword-list meta, so the guard never excludes a real node.
-  def append_candidates({form, meta, args} = node, raw, build_fun) when is_list(meta) do
+  def append_candidates(node, raw, build_fun) do
     case NodeRange.get(raw) do
-      %{} = range ->
-        existing = Keyword.get(meta, :mutare, [])
-        {form, Keyword.put(meta, :mutare, existing ++ build_fun.(range)), args}
-
-      _ ->
-        node
+      %{} = range -> Meta.append_candidates(node, :in_place, build_fun.(range))
+      _ -> node
     end
   end
-
-  # mutare:ignore[clause_drop] equivalent — Sourceror wraps every scalar/tuple/list node in a `:__block__` 3-tuple, so the head matches every real node; this fallback is unreachable for valid input.
-  def append_candidates(node, _raw, _build_fun), do: node
 
   def module_scaffold_statement?({form, _meta, _args}) when form in @module_scaffold_forms,
     do: true
@@ -1052,7 +1033,7 @@ defmodule Mutare.Transform.Analyze do
   # module-level use). `Resolve` stamps `meta[:mutare_macro]` for bare-imported and
   # qualified forms alike, so both route.
   def analyze_module_macro_block({form, meta, args}, mutators) do
-    routing = macro_routing(meta)
+    routing = Meta.macro_routing(meta)
     {init, [last]} = Enum.split(args, -1)
 
     init =
@@ -1083,7 +1064,7 @@ defmodule Mutare.Transform.Analyze do
   """
   @spec unknown_block_macro_name(Macro.t()) :: atom() | nil
   def unknown_block_macro_name({form, meta, _args}) do
-    if macro_routing(meta) == nil, do: form, else: nil
+    if Meta.macro_routing(meta) == nil, do: form, else: nil
   end
 
   # Whether the macro argument at position `i` is routed `:skip` (a known macro's opaque
