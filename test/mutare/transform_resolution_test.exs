@@ -1486,6 +1486,28 @@ defmodule Mutare.TransformResolutionTest do
     end
   end
 
+  describe "KeywordDelete (delete ↔ delete_first breadth swap)" do
+    test "swaps delete ↔ delete_first at /2 (piped and not), skips delete/3, and compiles" do
+      source = """
+      defmodule K do
+        def a(kw, k), do: Keyword.delete(kw, k)
+        def b(kw, k), do: kw |> Keyword.delete_first(k)
+        def c(kw, k, v), do: Keyword.delete(kw, k, v)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.KeywordDelete])
+
+      pairs = for s <- sites, s.mutator == :keyword_delete, do: {s.original_code, s.mutated_code}
+      assert {"Keyword.delete(kw, k)", "Keyword.delete_first(kw, k)"} in pairs
+      assert {"Keyword.delete_first(k)", "Keyword.delete(k)"} in pairs
+      # The deprecated delete/3 has no delete_first/3 twin — left alone.
+      refute Enum.any?(pairs, fn {orig, _} -> orig =~ "delete(kw, k, v)" end)
+      assert_compiles(meta)
+    end
+  end
+
   describe "MapSet (union/intersection complementary swaps)" do
     test "swaps union ↔ intersection in place, records the swap, and compiles — including in a pipe" do
       source = """

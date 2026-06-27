@@ -11,6 +11,7 @@ defmodule Mutare.MutatorsCallTest do
     CollectionArity,
     DefaultDrop,
     Integer,
+    KeywordDelete,
     Math,
     MapKeyword,
     ModeSwap,
@@ -331,6 +332,41 @@ defmodule Mutare.MutatorsCallTest do
 
     test "name" do
       assert MapKeyword.name() == :map_keyword
+    end
+  end
+
+  describe "KeywordDelete" do
+    test "does not implement mutate/1 (arity-gated logic lives in mutate/2)" do
+      refute function_exported?(KeywordDelete, :mutate, 1)
+    end
+
+    test "swaps delete ↔ delete_first at /2, keeping arguments" do
+      assert kwdel("Keyword.delete(kw, k)", false) == ["Keyword.delete_first(kw, k)"]
+      assert kwdel("Keyword.delete_first(kw, k)", false) == ["Keyword.delete(kw, k)"]
+    end
+
+    test "leaves the deprecated delete/3 alone (delete_first has no /3 twin)" do
+      assert KeywordDelete.mutate(parse("Keyword.delete(kw, k, v)"), %{pipe_mode: :unpiped}) ==
+               :skip
+    end
+
+    test "piped: effective arity is +1, so a /2 reaches us as one visible arg" do
+      # `kw |> Keyword.delete(k)` — effective arity 2, swapped, keeping the stage shape.
+      assert kwdel("Keyword.delete(k)", true) == ["Keyword.delete_first(k)"]
+      assert kwdel("Keyword.delete_first(k)", true) == ["Keyword.delete(k)"]
+      # `kw |> Keyword.delete(k, v)` — effective arity 3, the deprecated form, left alone.
+      assert KeywordDelete.mutate(parse("Keyword.delete(k, v)"), %{pipe_mode: :piped}) == :skip
+    end
+
+    test "skips Map (no duplicate-key distinction) and unrelated calls" do
+      # Map keys are unique — there is no Map.delete_first.
+      assert KeywordDelete.mutate(parse("Map.delete(m, k)"), %{pipe_mode: :unpiped}) == :skip
+      assert KeywordDelete.mutate(parse("Keyword.drop(kw, ks)"), %{pipe_mode: :unpiped}) == :skip
+      assert KeywordDelete.mutate(parse("Other.delete(kw, k)"), %{pipe_mode: :unpiped}) == :skip
+    end
+
+    test "name" do
+      assert KeywordDelete.name() == :keyword_delete
     end
   end
 
@@ -1188,6 +1224,9 @@ defmodule Mutare.MutatorsCallTest do
 
   defp mode(src, piped?),
     do: render(Mutare.Mutators.ModeSwap.mutate(parse(src), context(piped?)))
+
+  defp kwdel(src, piped?),
+    do: render(Mutare.Mutators.KeywordDelete.mutate(parse(src), context(piped?)))
 
   defp numeric(src, piped?),
     do: render(Mutare.Mutators.Numeric.mutate(parse(src), context(piped?)))

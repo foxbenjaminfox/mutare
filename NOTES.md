@@ -4090,6 +4090,28 @@ Two judgment calls worth recording:
 removal covers both (the keyword list is the first arg either way), so no arity gate is
 needed. No new family/registry entry — `CallRemoval`'s moduledoc is the source of truth.
 
+### KeywordDelete — duplicate-key deletion breadth `[done]`
+A Keyword-only complementary swap `Keyword.delete ↔ delete_first` — "does any test depend
+on whether *all* matching entries are removed or only the *first*?", the untested edge of a
+keyword list with a repeated key (accumulated/merged options). The Keyword-only sibling of
+`MapKeyword`: a `Map` key is unique, so there is no breadth distinction and no
+`Map.delete_first`. A new one-pair family (the codebase already has single-rule families —
+`StringByte`, `MapSet`).
+
+The non-obvious bit — **it can't use the arity-blind `swap_call/2` the other rename
+families use.** `Keyword.delete` has both `/2` and the deprecated `/3` (key+value) form, but
+`Keyword.delete_first` exists *only at `/2`*; an arity-blind rename would rewrite a
+`delete/3` to a nonexistent `delete_first/3` and poison the single build. So it is keyed on
+**effective arity** via the pipe-aware `Helpers.lookup_resolved_arity` (`mutate/2`, like
+`CollectionArity`), gated to `/2` — which also makes the piped `kw |> Keyword.delete(k)`
+swap correctly (effective arity 2) while leaving `kw |> Keyword.delete(k, v)` (effective 3)
+alone. Verified `delete_first/2` is the only arity by reflection, the same discipline #2/#3
+used.
+
+Deliberately co-fires with the `Keyword.delete` *removal* just added to `CallRemoval` (#3):
+`Keyword.delete(kw, k)` gets both a removal (→ `kw`) and a breadth swap (→ `delete_first`),
+two distinct mutants; the `/3` form gets only the (arity-agnostic) removal, never a swap.
+
 ### OperandSwap — operand-order swap for non-commutative operators `[done]`
 The operand-order sibling of the operator-swap families (`Arithmetic`/`List`): it
 **keeps the operator and transposes the operands** of a non-commutative binary
