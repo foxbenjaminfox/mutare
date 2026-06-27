@@ -17,19 +17,37 @@ defmodule Mutare.Mutators.RegexLiteral do
       outside a class (inside `[…]` `\\b` is a backspace, so it is left alone).
     * **class negation** — toggle a bracketed character class between matching and
       not matching its members: `[abc]` ↔ `[^abc]`.
+    * **character-class ranges** — nudge a class range's endpoints by one
+      (`[a-z]` → `[b-z]`/`[a-y]`, `[0-9]` → `[1-9]`/`[0-8]`), the byte-walk analogue
+      of the bounded-quantifier nudge. Only **alphanumeric** endpoints are mutated,
+      each result kept ordered (`lo ≤ hi`) and within a safe printable-literal band
+      (never a class metacharacter `] [ \\ ^ -`), so the rewrite is always a legal,
+      non-empty class.
+    * **literal dot** — `.` (any character) ↔ `\\.` (a literal dot), outside a class:
+      `~r/a.b/` → `~r/a\\.b/` and `~r/a\\.b/` → `~r/a.b/`. The unescaped→escaped
+      direction catches the classic "forgot to escape the dot" bug. Inside `[…]` a
+      `.` is already a literal, so it is left alone (the swap there is a no-op).
     * **quantifiers** — swap `+`↔`*` (the cleanest complement: `+` is 1-or-more,
       `*` is 0-or-more, distinct under most uses — though *not* under
       `String.replace(s, _, "")` / `Regex.replace(s, _, "")`, where deleting the
       `\\s*` vs `\\s+` matches yields the same string: a context-dependent
       equivalent left to surface as a suspected survivor / `# mutare:ignore[regex]`,
       since recognising it would mean a node-local mutator inspecting its enclosing
-      call); turn an
-      optional `?` mandatory by dropping it (`colou?r` → `colour`) *and* by
-      raising it to `+` (`-?\\d` → `-+\\d`); and nudge a bounded quantifier's
-      counts by one (`{3}`→`{2}`/`{4}`, `{8,}`→`{7,}`/`{9,}`, `{2,4}`→
-      `{1,4}`/`{3,4}`/`{2,3}`/`{2,5}`), staying within `0 ≤ n ≤ m`. A `?`/`*`/`+`
-      that is a group marker (`(?:…)`) or a lazy/possessive suffix (`a+?`) is left
-      alone.
+      call); **collapse** a `+`/`*` to exactly-one by dropping it (`\\d+` → `\\d`);
+      turn an optional `?` mandatory by dropping it (`colou?r` → `colour`) and
+      raise it to `+` *and* `*` (`-?\\d` → `-+\\d`/`-*\\d`); add a **lazy** `?`
+      suffix to a greedy quantifier (`a+` → `a+?`, `a{2,4}` → `a{2,4}?` — distinct
+      wherever match *length* matters, e.g. a capture or `Regex.replace`; a boolean
+      `Regex.match?/2` never observes greediness, so like `+`/`*` this can be a
+      context-dependent equivalent → suspected survivor / `# mutare:ignore[regex]`);
+      and nudge a bounded quantifier's counts by one (`{3}`→`{2}`/`{4}`, `{8,}`→
+      `{7,}`/`{9,}`, `{2,4}`→`{1,4}`/`{3,4}`/`{2,3}`/`{2,5}`), staying within
+      `0 ≤ n ≤ m`, *plus* dropping the upper bound (`{2,4}`→`{2,}`) and pinning to
+      exact (`{2,4}`→`{2}`, `{8,}`→`{8}`; skipped when it would re-create the
+      original, e.g. `{2,2}`→`{2}`). A `?`/`*`/`+` that is a group marker
+      (`(?:…)`) is left alone, and a quantifier already carrying a lazy/possessive
+      suffix (`a+?`/`a++`) is neither collapsed nor re-suffixed — only its
+      `+`↔`*` base swaps.
     * **alternation** — drop one branch of an alternation at the pattern's top
       level or inside a *capturing* group: `~r/^(GET|POST)$/` → `~r/^(GET)$/` and
       `~r/^(POST)$/`. Non-capturing/lookaround groups (`(?:…)`, `(?=…)`, …) are
@@ -46,9 +64,13 @@ defmodule Mutare.Mutators.RegexLiteral do
       opt-out.
 
   Every replacement is written to stay a legal regex (an escaped `\\$`/`\\d`/`\]` is
-  left alone, a leading `]` in a class is literal, bound counts are kept ordered). Only
-  non-interpolated patterns are touched: an interpolated `~r/\#{x}/` parses with multiple
-  `<<>>` parts, not a single binary.
+  left alone, a leading `]` in a class is literal, bound counts are kept ordered, class
+  ranges stay within a safe literal band). As a final backstop, each candidate is
+  compiled with `Regex.compile/2` — the *same* PCRE validity the rendered `~r/…/<mods>`
+  is held to — and any that does not compile is dropped, so a byte-level edit that lets
+  neighbouring characters re-tokenize (`{42+}` → `{42}`) can never poison the single
+  metamutant compile. Only non-interpolated patterns are touched: an interpolated
+  `~r/\#{x}/` parses with multiple `<<>>` parts, not a single binary.
   """
   @behaviour Mutare.Mutator
 
@@ -79,10 +101,28 @@ defmodule Mutare.Mutators.RegexLiteral do
     (pattern_variants ++ modifier_variants)
     |> Enum.reject(&(&1 == {pattern, modifiers}))
     |> Enum.uniq()
+    |> keep_compilable({pattern, modifiers})
     |> Enum.map(fn {p, m} -> {:sigil_r, meta, [{:<<>>, bmeta, [p]}, m]} end)
   end
 
   def mutate(_node), do: :skip
+
+  # Every rewrite above is built to stay a legal regex, but a *byte-level* edit can, in
+  # a pathological pattern, let neighbouring characters re-tokenize — `{42+}` (a literal
+  # brace, the `+` quantifying the `2`) collapses to `{42}`, now a real bound with
+  # nothing to repeat. Such a mutant would poison the single metamutant compile, so we
+  # drop any candidate that does not compile under the *same* PCRE validity the rendered
+  # `~r/…/<mods>` is held to. Guarded on the original compiling, so a future modifier
+  # letter `Regex.compile/2` doesn't accept can never silently drop every mutant.
+  defp keep_compilable(candidates, original) do
+    if compilable?(original),
+      do: Enum.filter(candidates, &compilable?/1),
+      else: candidates
+  end
+
+  defp compilable?({pattern, modifiers}) do
+    match?({:ok, _}, Regex.compile(pattern, List.to_string(modifiers)))
+  end
 
   # --- anchors -------------------------------------------------------------
 
@@ -132,7 +172,7 @@ defmodule Mutare.Mutators.RegexLiteral do
     |> Enum.map(&(modifiers -- [&1]))
   end
 
-  # --- per-token scan: shorthands, class negation, quantifiers, bounds -----
+  # --- per-token scan: shorthands, class negation/ranges, the dot, quantifiers/bounds ---
 
   # Walk the pattern left-to-right, tracking escape pairs, character-class nesting
   # (`in_class`/`just_opened`, the latter so a leading `]` is read as a literal
@@ -150,6 +190,9 @@ defmodule Mutare.Mutators.RegexLiteral do
       cond do
         c in @shorthand -> [prefix <> <<?\\, flip(c)>> <> rest]
         c in @boundary and not in_class -> [prefix <> <<?\\, flip(c)>> <> rest]
+        # `\.` (a literal dot) → `.` (any char). Inside a class both are the same
+        # literal, so only swap outside one.
+        c == ?. and not in_class -> [prefix <> "." <> rest]
         true -> []
       end
 
@@ -172,39 +215,63 @@ defmodule Mutare.Mutators.RegexLiteral do
   defp scan(<<?], rest::binary>>, prefix, true, false, _pq, acc),
     do: scan(rest, prefix <> "]", false, false, false, acc)
 
-  # Quantifier `*`/`+` → its complement, only as a real (postfix) quantifier.
+  # Character-class range `lo-hi` (alphanumeric endpoints) → each in-range off-by-one
+  # neighbour, kept ordered and within a safe literal band (`class_range_mutations/2`).
+  # The first member of a class can itself be a range start, so `just_opened` is allowed.
+  defp scan(<<lo::utf8, ?-, hi::utf8, rest::binary>>, prefix, true, _jo, _pq, acc)
+       when (lo in ?0..?9 or lo in ?a..?z or lo in ?A..?Z) and
+              (hi in ?0..?9 or hi in ?a..?z or hi in ?A..?Z) do
+    new = Enum.map(class_range_mutations(lo, hi), &(prefix <> &1 <> rest))
+    scan(rest, prefix <> <<lo::utf8, ?-, hi::utf8>>, true, false, false, acc ++ new)
+  end
+
+  # Quantifier `*`/`+` → its complement, plus collapse-to-one and a lazy suffix, only
+  # as a real (postfix) quantifier.
   defp scan(<<q, rest::binary>>, prefix, false, _jo, pq, acc) when q in [?*, ?+] do
     new =
       if postfix_quantifier?(prefix, pq),
-        do: [prefix <> <<flip_quant(q)>> <> rest],
+        do:
+          [prefix <> <<flip_quant(q)>> <> rest] ++
+            collapse_variant(prefix, rest) ++ lazy_variant(prefix, <<q>>, rest),
         else: []
 
     scan(rest, prefix <> <<q>>, false, false, true, acc ++ new)
   end
 
-  # Optional `?` → mandatory: drop it, and raise it to `+`. Skipped when it is a
-  # group marker (`(?…`) or a lazy suffix (`postfix_quantifier?/2` covers both).
+  # Optional `?` → mandatory: drop it, raise it to `+` and to `*`, and add a lazy `??`.
+  # Skipped when it is a group marker (`(?…`) or a lazy suffix (`postfix_quantifier?/2`
+  # covers both).
   defp scan(<<??, rest::binary>>, prefix, false, _jo, pq, acc) do
     new =
       if postfix_quantifier?(prefix, pq),
-        do: [prefix <> rest, prefix <> "+" <> rest],
+        do:
+          [prefix <> rest, prefix <> "+" <> rest, prefix <> "*" <> rest] ++
+            lazy_variant(prefix, "?", rest),
         else: []
 
     scan(rest, prefix <> "?", false, false, true, acc ++ new)
   end
 
-  # Bounded quantifier `{n}` / `{n,}` / `{n,m}` → each in-range off-by-one neighbour.
+  # Bounded quantifier `{n}` / `{n,}` / `{n,m}` → its off-by-one / shape neighbours,
+  # plus a lazy `{…}?` suffix.
   defp scan(<<?{, rest::binary>>, prefix, false, _jo, _pq, acc) do
     case parse_bound(rest) do
       {:ok, bound, tail} ->
         consumed = binary_part(rest, 0, byte_size(rest) - byte_size(tail))
-        new = Enum.map(bound_mutations(bound), &(prefix <> "{" <> &1 <> "}" <> tail))
-        scan(tail, prefix <> "{" <> consumed, false, false, true, acc ++ new)
+        bounds = Enum.map(bound_mutations(bound), &(prefix <> "{" <> &1 <> "}" <> tail))
+        lazy = lazy_variant(prefix, "{" <> consumed, tail)
+        scan(tail, prefix <> "{" <> consumed, false, false, true, acc ++ bounds ++ lazy)
 
       :error ->
         scan(rest, prefix <> "{", false, false, false, acc)
     end
   end
+
+  # Literal-dot swap: `.` (any char) → `\.` (a literal dot), outside a character class
+  # (inside one a `.` is already literal). The `.` is an atom, so a following quantifier
+  # is still a real one (prev-quant reset to false).
+  defp scan(<<?., rest::binary>>, prefix, false, _jo, _pq, acc),
+    do: scan(rest, prefix <> ".", false, false, false, acc ++ [prefix <> "\\." <> rest])
 
   # Any other codepoint: consume it (a class is no longer "just opened" afterwards,
   # and the previous token is no longer a quantifier).
@@ -219,6 +286,38 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   defp flip_quant(?*), do: ?+
   defp flip_quant(?+), do: ?*
+
+  # Collapse a greedy `*`/`+` to exactly-one by dropping it (`\d+` → `\d`). Skipped
+  # when a lazy/possessive suffix already follows (collapsing `a+?` would mean
+  # reinterpreting its `?` as the quantifier — left to the base swap instead).
+  defp collapse_variant(prefix, rest) do
+    if suffixed?(rest), do: [], else: [prefix <> rest]
+  end
+
+  # Add a lazy `?` suffix to a greedy quantifier token (`a+` → `a+?`). Skipped when a
+  # lazy/possessive suffix already follows, since a second one (`a+??`/`a+?+`) is
+  # invalid.
+  defp lazy_variant(prefix, quant, rest) do
+    if suffixed?(rest), do: [], else: [prefix <> quant <> "?" <> rest]
+  end
+
+  # Does a lazy (`?`) or possessive (`+`) suffix immediately follow this quantifier?
+  defp suffixed?(<<c, _::binary>>) when c in [??, ?+], do: true
+  defp suffixed?(_), do: false
+
+  # In-range off-by-one neighbours of a class range's endpoints, kept ordered
+  # (`lo ≤ hi`) and within a safe literal band so the rewrite stays a legal class.
+  defp class_range_mutations(lo, hi) do
+    for {lo2, hi2} <- [{lo - 1, hi}, {lo + 1, hi}, {lo, hi - 1}, {lo, hi + 1}],
+        lo2 <= hi2,
+        safe_class_char?(lo2),
+        safe_class_char?(hi2),
+        do: <<lo2::utf8, ?-, hi2::utf8>>
+  end
+
+  # A printable-ASCII character that is an unambiguous literal inside `[…]` — not a
+  # class metacharacter that could close the class or start a negation/escape/range.
+  defp safe_class_char?(c), do: c in 0x20..0x7E and c not in [?[, ?], ?\\, ?^, ?-]
 
   defp flip(c) when c in ?a..?z, do: c - 32
   defp flip(c) when c in ?A..?Z, do: c + 32
@@ -260,15 +359,24 @@ defmodule Mutare.Mutators.RegexLiteral do
   end
 
   defp bound_mutations({:atleast, n}) do
-    [n - 1, n + 1]
-    |> Enum.filter(&(&1 >= 0))
-    |> Enum.map(&"#{&1},")
+    offsets =
+      [n - 1, n + 1]
+      |> Enum.filter(&(&1 >= 0))
+      |> Enum.map(&"#{&1},")
+
+    # Pin the open upper bound to exact (`{n,}` → `{n}`); always a real change.
+    offsets ++ ["#{n}"]
   end
 
   defp bound_mutations({:range, n, m}) do
     ns = Enum.filter([n - 1, n + 1], &(&1 >= 0 and &1 <= m))
     ms = Enum.filter([m - 1, m + 1], &(&1 >= n))
-    Enum.map(ns, &"#{&1},#{m}") ++ Enum.map(ms, &"#{n},#{&1}")
+    offsets = Enum.map(ns, &"#{&1},#{m}") ++ Enum.map(ms, &"#{n},#{&1}")
+    # Drop the upper bound (`{n,m}` → `{n,}`); pin to exact (`{n,m}` → `{n}`), unless
+    # that just re-creates the original (`{n,n}` → `{n}`).
+    drop_upper = ["#{n},"]
+    exact = if n != m, do: ["#{n}"], else: []
+    offsets ++ drop_upper ++ exact
   end
 
   # --- alternation: drop one branch of a top-level / capturing-group alt ----

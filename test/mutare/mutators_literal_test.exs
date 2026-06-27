@@ -313,16 +313,22 @@ defmodule Mutare.MutatorsLiteralTest do
       assert render(RegexLiteral.mutate(parse(~S|~r/abc\$/|))) == [~S|~r//|, ~S|~r/mutare/|]
     end
 
-    test "complements a \\d/\\w/\\s shorthand and swaps each quantifier, in source order" do
-      # `\d` → `\D` and `+` → `*` interleave left-to-right across the two stages.
+    test "interleaves every per-token axis left-to-right, in source order" do
+      # Each `\d` offers its shorthand flip; each `+` offers swap/collapse/lazy; the
+      # `\.` offers its dot-unescape — all emitted in left-to-right source order.
       assert render(RegexLiteral.mutate(parse(~S|~r/\d+\.\d+/|))) ==
                [
                  ~S|~r//|,
                  ~S|~r/mutare/|,
                  ~S|~r/\D+\.\d+/|,
                  ~S|~r/\d*\.\d+/|,
+                 ~S|~r/\d\.\d+/|,
+                 ~S|~r/\d+?\.\d+/|,
+                 ~S|~r/\d+.\d+/|,
                  ~S|~r/\d+\.\D+/|,
-                 ~S|~r/\d+\.\d*/|
+                 ~S|~r/\d+\.\d*/|,
+                 ~S|~r/\d+\.\d/|,
+                 ~S|~r/\d+\.\d+?/|
                ]
 
       assert ~S|~r/\d/| in render(RegexLiteral.mutate(parse(~S|~r/\D/|)))
@@ -367,20 +373,41 @@ defmodule Mutare.MutatorsLiteralTest do
       assert ~S|~r/a+/| in render(RegexLiteral.mutate(parse(~S|~r/a*/|)))
     end
 
+    test "collapses a + / * quantifier to exactly-one, and adds a lazy suffix" do
+      # `\d+` → swap `\d*`, collapse `\d`, lazy `\d+?`
+      assert render(RegexLiteral.mutate(parse(~S|~r/\d+/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/\D+/|, ~S|~r/\d*/|, ~S|~r/\d/|, ~S|~r/\d+?/|]
+
+      # `a*` → swap `a+`, collapse `a`, lazy `a*?`
+      assert render(RegexLiteral.mutate(parse(~S|~r/a*/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a+/|, ~S|~r/a/|, ~S|~r/a*?/|]
+    end
+
     test "leaves a lazy/possessive suffix and a quantifier inside a class alone" do
-      # the `+` swaps to `*`; the trailing lazy `?` is a suffix, not a fresh quantifier
+      # the `+` swaps to `*`, but its lazy `?` suffix blocks both collapse and a second
+      # suffix — so neither `a` (collapse) nor `a+??` (lazy) is offered, only `a*?`
       assert render(RegexLiteral.mutate(parse(~S|~r/a+?/|))) ==
                [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a*?/|]
+
+      # a possessive suffix `a++` likewise blocks collapse / re-suffix on the first `+`
+      assert render(RegexLiteral.mutate(parse(~S|~r/a++/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a*+/|]
 
       # `*`/`+` inside a class are literal — only the class negation is offered
       assert render(RegexLiteral.mutate(parse(~S|~r/[*+]/|))) ==
                [~S|~r//|, ~S|~r/mutare/|, ~S|~r/[^*+]/|]
     end
 
-    test "turns an optional ? mandatory (drop it, and raise it to +)" do
-      mutants = render(RegexLiteral.mutate(parse(~S|~r/colou?r/|)))
-      assert ~S|~r/colour/| in mutants
-      assert ~S|~r/colou+r/| in mutants
+    test "turns an optional ? mandatory (drop it, raise it to + and *, add a lazy ??)" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/colou?r/|))) ==
+               [
+                 ~S|~r//|,
+                 ~S|~r/mutare/|,
+                 ~S|~r/colour/|,
+                 ~S|~r/colou+r/|,
+                 ~S|~r/colou*r/|,
+                 ~S|~r/colou??r/|
+               ]
     end
 
     test "does not treat a ? group marker as an optional quantifier" do
@@ -388,13 +415,23 @@ defmodule Mutare.MutatorsLiteralTest do
       assert render(RegexLiteral.mutate(parse(~S|~r/(?:ab)/|))) == [~S|~r//|, ~S|~r/mutare/|]
     end
 
-    test "nudges a bounded quantifier's counts by one, staying in range" do
+    test "nudges a bounded quantifier's counts by one, and reshapes it, staying in range" do
+      # exact: ±1 neighbours, then a lazy `{n}?` suffix
       assert render(RegexLiteral.mutate(parse(~S|~r/a{3}/|))) ==
-               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{2}/|, ~S|~r/a{4}/|]
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{2}/|, ~S|~r/a{4}/|, ~S|~r/a{3}?/|]
 
+      # at-least: ±1 neighbours, pin-to-exact `{n}`, lazy `{n,}?`
       assert render(RegexLiteral.mutate(parse(~S|~r/a{8,}/|))) ==
-               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{7,}/|, ~S|~r/a{9,}/|]
+               [
+                 ~S|~r//|,
+                 ~S|~r/mutare/|,
+                 ~S|~r/a{7,}/|,
+                 ~S|~r/a{9,}/|,
+                 ~S|~r/a{8}/|,
+                 ~S|~r/a{8,}?/|
+               ]
 
+      # range: each endpoint ±1, drop-upper `{n,}`, pin-to-exact `{n}`, lazy `{n,m}?`
       assert render(RegexLiteral.mutate(parse(~S|~r/a{2,4}/|))) ==
                [
                  ~S|~r//|,
@@ -402,12 +439,24 @@ defmodule Mutare.MutatorsLiteralTest do
                  ~S|~r/a{1,4}/|,
                  ~S|~r/a{3,4}/|,
                  ~S|~r/a{2,3}/|,
-                 ~S|~r/a{2,5}/|
+                 ~S|~r/a{2,5}/|,
+                 ~S|~r/a{2,}/|,
+                 ~S|~r/a{2}/|,
+                 ~S|~r/a{2,4}?/|
                ]
 
       # a lower bound never goes below zero
       assert render(RegexLiteral.mutate(parse(~S|~r/a{0,2}/|))) ==
-               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{1,2}/|, ~S|~r/a{0,1}/|, ~S|~r/a{0,3}/|]
+               [
+                 ~S|~r//|,
+                 ~S|~r/mutare/|,
+                 ~S|~r/a{1,2}/|,
+                 ~S|~r/a{0,1}/|,
+                 ~S|~r/a{0,3}/|,
+                 ~S|~r/a{0,}/|,
+                 ~S|~r/a{0}/|,
+                 ~S|~r/a{0,2}?/|
+               ]
 
       # Boundary cases where a ±1 neighbour lands *exactly* on the clamp edge — the
       # only inputs that pin the inclusive `>= 0` / `>= n` / `<= m` filters (a
@@ -415,11 +464,11 @@ defmodule Mutare.MutatorsLiteralTest do
       # keep an out-of-range one).
       #   `a{1}` (exact): the lower neighbour is exactly 0 — kept (≥ 0), so `a{0}`.
       assert render(RegexLiteral.mutate(parse(~S|~r/a{1}/|))) ==
-               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{0}/|, ~S|~r/a{2}/|]
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{0}/|, ~S|~r/a{2}/|, ~S|~r/a{1}?/|]
 
       #   `a{0}` (exact 0): the lower neighbour −1 is dropped (< 0), only `a{1}`.
       assert render(RegexLiteral.mutate(parse(~S|~r/a{0}/|))) ==
-               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{1}/|]
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{1}/|, ~S|~r/a{0}?/|]
 
       #   `a{1,4}` (range): lower neighbour 0 kept (≥ 0 and ≤ m), so `a{0,4}`.
       assert render(RegexLiteral.mutate(parse(~S|~r/a{1,4}/|))) ==
@@ -429,7 +478,10 @@ defmodule Mutare.MutatorsLiteralTest do
                  ~S|~r/a{0,4}/|,
                  ~S|~r/a{2,4}/|,
                  ~S|~r/a{1,3}/|,
-                 ~S|~r/a{1,5}/|
+                 ~S|~r/a{1,5}/|,
+                 ~S|~r/a{1,}/|,
+                 ~S|~r/a{1}/|,
+                 ~S|~r/a{1,4}?/|
                ]
 
       #   `a{2,3}` (range): the upper's lower neighbour is exactly n (2) — kept
@@ -441,7 +493,10 @@ defmodule Mutare.MutatorsLiteralTest do
                  ~S|~r/a{1,3}/|,
                  ~S|~r/a{3,3}/|,
                  ~S|~r/a{2,2}/|,
-                 ~S|~r/a{2,4}/|
+                 ~S|~r/a{2,4}/|,
+                 ~S|~r/a{2,}/|,
+                 ~S|~r/a{2}/|,
+                 ~S|~r/a{2,3}?/|
                ]
     end
 
@@ -473,9 +528,59 @@ defmodule Mutare.MutatorsLiteralTest do
                [~S"~r//", ~S"~r/mutare/", ~S"~r/[^a|b]/"]
     end
 
+    test "swaps a dot between any-char and a literal dot, outside a class" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/a.b/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a\.b/|]
+
+      assert render(RegexLiteral.mutate(parse(~S|~r/a\.b/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a.b/|]
+
+      # inside a class a `.` is already a literal — swapping it would be a no-op
+      assert render(RegexLiteral.mutate(parse(~S|~r/[a.b]/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/[^a.b]/|]
+    end
+
+    test "nudges a character-class range's endpoints by one, staying ordered and legal" do
+      assert render(RegexLiteral.mutate(parse(~S|~r/[a-z]/|))) ==
+               [
+                 ~S|~r//|,
+                 ~S|~r/mutare/|,
+                 ~S|~r/[^a-z]/|,
+                 ~S|~r/[`-z]/|,
+                 ~S|~r/[b-z]/|,
+                 ~S|~r/[a-y]/|,
+                 ~S|~r/[a-{]/|
+               ]
+
+      assert ~S|~r/[1-9]/| in render(RegexLiteral.mutate(parse(~S|~r/[0-9]/|)))
+      assert ~S|~r/[0-8]/| in render(RegexLiteral.mutate(parse(~S|~r/[0-9]/|)))
+    end
+
+    test "leaves a non-alphanumeric range and a literal dash alone" do
+      # `[a-]` is `a` plus a literal trailing `-`, not a range
+      assert render(RegexLiteral.mutate(parse(~S|~r/[a-]/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/[^a-]/|]
+
+      # an escaped `\-` is a literal dash, never a range endpoint separator
+      assert render(RegexLiteral.mutate(parse(~S|~r/[a\-z]/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/[^a\-z]/|]
+    end
+
     test "drops each present modifier flag one at a time" do
       assert render(RegexLiteral.mutate(parse(~S|~r/foo/uis|))) ==
                [~S|~r//uis|, ~S|~r/mutare/uis|, ~S|~r/foo/is|, ~S|~r/foo/us|, ~S|~r/foo/ui|]
+    end
+
+    test "drops a candidate that a byte-level edit makes uncompilable" do
+      # `{42+}` is a literal brace with the `+` quantifying the `2`; collapsing the `+`
+      # would yield `{42}` — a real bound with nothing to repeat (a poison). The compile
+      # backstop drops it, so every emitted mutant still compiles.
+      for {:sigil_r, _, [{:<<>>, _, [p]}, mods]} <-
+            RegexLiteral.mutate(parse(~S|~r/{42+}/|)) do
+        assert {:ok, _} = Regex.compile(p, List.to_string(mods))
+      end
+
+      refute ~S|~r/{42}/| in render(RegexLiteral.mutate(parse(~S|~r/{42+}/|)))
     end
 
     test "skips an interpolated pattern" do
