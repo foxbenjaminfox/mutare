@@ -437,6 +437,80 @@ defmodule Mutare.TransformMacroRoutingTest do
     end
   end
 
+  describe "an Erlang/atom-module known macro is routed (direct, piped, aliased)" do
+    # An atom-module DSL macro (`:my_dsl.filter(...)`) resolves and routes exactly like an
+    # Elixir-module one — the `Mutare.Transform.Resolve` atom-remote walk clause stamps a genuine
+    # atom receiver, so a `:skip` registration keeps core out of the argument. `:my_dsl` is a
+    # fictitious DSL module (its routing is purely syntactic, no reflection), and the metamutant
+    # still compiles (an undefined atom module is a warning, not an error). Each test pairs the
+    # `:skip` with a no-registration control, so the empty site list is provably the routing's work.
+    @atom_lit [Mutare.Mutators.Literal]
+    @atom_skip [{:my_dsl, :filter, :any, :skip}]
+
+    test "a direct atom-module `:skip` macro leaves its argument raw" do
+      source = """
+      defmodule AtomDirect do
+        def f(q), do: :my_dsl.filter(q, 99)
+      end
+      """
+
+      {meta, sites, _next} =
+        Mutare.transform_string(source, mutators: @atom_lit, macros: @atom_skip)
+
+      # The `99` lives in a `:skip` argument of the atom-module macro, so it is never offered.
+      assert sites == []
+      assert_compiles(meta)
+    end
+
+    test "a piped atom-module `:skip` macro leaves the piped value raw" do
+      source = """
+      defmodule AtomPiped do
+        def f(q), do: q |> :my_dsl.filter(99)
+      end
+      """
+
+      {meta, sites, _next} =
+        Mutare.transform_string(source, mutators: @atom_lit, macros: @atom_skip)
+
+      # `q |> :my_dsl.filter(99)` is `:my_dsl.filter(q, 99)` — effective arity 2 matches the
+      # `:any`-arity registration, so the visible `99` is left raw even as a piped stage.
+      assert sites == []
+      assert_compiles(meta)
+    end
+
+    test "an aliased atom-module `:skip` macro is routed through the alias" do
+      source = """
+      defmodule AtomAliased do
+        alias :my_dsl, as: D
+        def f(q), do: D.filter(q, 99)
+      end
+      """
+
+      {meta, sites, _next} =
+        Mutare.transform_string(source, mutators: @atom_lit, macros: @atom_skip)
+
+      # `alias :my_dsl, as: D; D.filter(...)` resolves `D` back to `:my_dsl` (the `__aliases__`
+      # walk clause), so the registration on `:my_dsl` still routes the call's arg `:skip`.
+      assert sites == []
+      assert_compiles(meta)
+    end
+
+    test "without the registration, the same atom-module argument mutates (routing is doing the work)" do
+      source = """
+      defmodule AtomNoReg do
+        def f(q), do: :my_dsl.filter(q, 99)
+      end
+      """
+
+      {_meta, sites, _next} = Mutare.transform_string(source, mutators: @atom_lit)
+
+      # Unregistered, `:my_dsl.filter` is an ordinary atom-module call, so its `99` argument is
+      # ordinary runtime and the literal family mutates it — exactly what the `:skip` prevents.
+      assert sites != []
+      assert Enum.all?(sites, &(&1.mutator == :literal and &1.original_code == "99"))
+    end
+  end
+
   describe "a piped value reaches back to the macro's effective position-0 treatment" do
     # `x |> macro(...)` is `macro(x, ...)`, so the piped value is the macro's effective
     # argument 0 and must inherit position 0's treatment — even though it is the `|>` LHS,
