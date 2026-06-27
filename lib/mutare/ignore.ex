@@ -1,69 +1,62 @@
 defmodule Mutare.Ignore do
   @moduledoc """
-  `# mutare:ignore` directives: which mutants they suppress, and why.
+  The `# mutare:ignore` comment directive — suppress a mutant you've judged
+  *equivalent* (no test could ever kill it) or simply not worth a test, keeping it
+  out of the score.
 
-  A site is *ignored* when a directive applies to its line **and** that
-  directive's filter admits the site's mutator. Two forms, by where the comment
-  sits relative to the code:
+  Two forms, by where the comment sits:
 
-    * **trailing** — `code # mutare:ignore` — suppresses its own line.
-    * **standalone** — `# mutare:ignore` on its own line — suppresses the next.
+    * **trailing** — `code  # mutare:ignore` — suppresses a mutant on its own line.
+    * **standalone** — `# mutare:ignore` on its own line — suppresses the next line.
 
   ## Grammar
 
-  After the `# mutare:ignore` keyword, two optional parts may follow, in order:
+  After the keyword, two optional parts may follow, in order — a `[...]` filter and
+  a free-text reason:
 
       # mutare:ignore                              suppress every mutant on the line
-      # mutare:ignore equivalent under int math    suppress all; reason = the trailing text
-      # mutare:ignore[arithmetic]                  suppress only :arithmetic mutants
+      # mutare:ignore equivalent under int math    suppress all; record the reason
+      # mutare:ignore[arithmetic]                  suppress only arithmetic mutants
       # mutare:ignore[arithmetic, relational]      suppress two families
-      # mutare:ignore[relational:>]                suppress only the relational `> ` result
-      # mutare:ignore[relational:>, relational:>=] suppress two specific results
-      # mutare:ignore[literal] off-by-one is fine  filter + reason together
+      # mutare:ignore[relational:>]                suppress only the `i > j` swap
+      # mutare:ignore[literal] off-by-one is fine  a filter and a reason together
 
-    * A **filter** in `[...]` — a comma/space-separated list of entries. Each
-      entry is a mutator name (the family atoms in `Mutare.Mutators`, e.g.
-      `arithmetic`, plus `clause_drop` and any custom mutator's `name/0`),
-      optionally **qualified** with `:<label>` to name *one* of that family's
-      mutants by its **variant label** (`relational:>` ⇒ only the mutant whose
-      operator becomes `>`, leaving `i <= j` to run). A site is suppressed only if
-      some entry's family matches its `mutator` *and* the entry's qualifier admits
-      the site's `variant`; a bare family admits every variant. With no brackets,
-      *every* mutator is suppressed. The label is a name the **mutator declares**
-      (`c:Mutare.Mutator.variants/0`), opt-in per family — `relational` →
-      `> >= < <= == != === !==`, `return_value` → `empty sentinel`, `literal` →
-      `zero succ pred negate` — *not* derived from the rendered AST.
-    * A free-text **reason** — anything after the keyword (or after the closing
-      `]`). It is recorded on the site (`Site.ignore_reason`) and surfaced in the
-      report, so an exclusion documents itself.
+  ### The filter
 
-  A **qualified** `[family:label]` filter is **strict — but only where the mistake is
-  certain**: when the family *is* in the active vocabulary (every built-in always; an active
-  custom) and declares no variant labels, or declares some but not this one, `validate!/3` raises
-  `Mutare.Ignore.SpecError` with a "did you mean". An **unknown** family — one not in the active
-  vocabulary — is *not* an error even when qualified: it is indistinguishable from a
-  `--mutators`-disabled or removed custom family (which we can't enumerate), so it stays lenient,
-  exactly like a bare `[family]` typo — a soft `ineffective/2` warning, never a hard abort. The
-  bare `[family]` form (and a `[]` empty list) is likewise lenient end to end. The brackets are
-  what make a token a filter — without them, trailing words are always prose, never a filter — so
-  prose can never accidentally suppress a family.
+  Each entry in `[...]` is a mutator family — the names from
+  `Mutare.Mutators.families/0` (e.g. `arithmetic`, `relational`, `literal`), plus
+  `clause_drop` and any custom mutator's `name/0`. A bare family suppresses all of
+  its mutants on the line; with no `[...]` at all, every mutant is suppressed.
 
-  A lenient filter failing to match is silent, though: a directive that admits no
-  mutant (a typo, an empty `[]`, a misplaced standalone line, or a family that
-  produced no mutant there) does *nothing*, and the user believes otherwise.
-  `ineffective/2` surfaces exactly those — every directive that suppressed no
-  recorded site — so the scan can warn (and `--strict-ignores` can fail) on them.
-  (A *qualified* bad label on a *known* family is caught earlier and harder, by `validate!/3`.)
+  ### Variant qualifiers
 
-  Directives are read from **Sourceror's parsed comment metadata**, not by
-  scanning the raw source. Each comment carries its `line`, `text`, and a
-  `previous_eol_count` (`0` ⇒ code precedes it on the line ⇒ trailing; `≥ 1` ⇒
-  the comment stands alone). Because only genuine comments are considered, a
-  literal string that merely *reads* like `"# mutare:ignore"` is never mistaken
-  for a directive.
+  A single expression often yields several mutants — `i < j` becomes both `i <= j`
+  and `i > j`. Qualify a family with `:label` to suppress just *one* kind:
+  `[relational:>]` silences the `i > j` reflection while `i <= j` keeps running.
+  Each family declares its own labels — `relational` → `> >= < <= == != === !==`,
+  `return_value` → `empty sentinel`, `literal` → `zero succ pred negate`. Run
+  `mix mutare --list-mutators` to see every family's labels, or read a family's page
+  under *Built-in mutators*. A label that has several kinds at once is matched by
+  any of them, and matching is case-insensitive.
 
-  Lines are in original-source line space, the same space `Mutare.Site` records
-  its `line` in.
+  ### The reason
+
+  Anything after the keyword (or after the closing `]`) is free text. It is
+  recorded on the mutant and shown in the report, so an exclusion documents itself.
+
+  ## When a directive errors or does nothing
+
+  A qualified `[family:label]` whose family is active but whose `label` that family
+  doesn't declare is a **hard error**, with a "did you mean" — a qualifier typo
+  can't silently fail to match. Everything else fails safe toward *running* the
+  mutant: an unknown family, a bare-family typo, or an empty `[]` simply matches
+  nothing. Because a silent no-match is easy to miss, any directive that suppressed
+  nothing (a typo, a misplaced standalone line, a family that produced no mutant
+  there) is reported as a warning — escalated to a non-zero exit by
+  `--strict-ignores`.
+
+  Directives are read from real comments, so a string literal that merely *reads*
+  like `"# mutare:ignore"` is never mistaken for one.
   """
 
   alias Mutare.Ignore.Directive
@@ -81,10 +74,8 @@ defmodule Mutare.Ignore do
   # follows. Only tried when `rest` starts with `[`.
   @filter ~r/\A\[(?<families>[^\]]*)\](?<reason>.*)/s
 
-  @doc """
-  The `# mutare:ignore` directives in `source`, grouped by suppressed line:
-  `%{line => [%Directive{}]}`.
-  """
+  @doc false
+  # The `# mutare:ignore` directives in `source`, grouped by suppressed line.
   @spec directives(String.t()) :: %{pos_integer() => [Directive.t()]}
   def directives(source) when is_binary(source) do
     source
@@ -92,12 +83,9 @@ defmodule Mutare.Ignore do
     |> directives_from_ast()
   end
 
-  @doc """
-  Like `directives/1`, but for an AST already parsed by `Sourceror`.
-
-  `Mutare.Transform` parses each file once and passes that AST straight in,
-  avoiding a second full `Sourceror.parse_string!` per file.
-  """
+  @doc false
+  # Like `directives/1`, but for an AST `Sourceror` already parsed — so `Mutare.Transform` reuses
+  # the AST it parsed for the transform, avoiding a second `Sourceror.parse_string!` per file.
   @spec directives_from_ast(Macro.t()) :: %{pos_integer() => [Directive.t()]}
   def directives_from_ast(ast) do
     ast
@@ -114,18 +102,12 @@ defmodule Mutare.Ignore do
     |> Enum.group_by(& &1.line)
   end
 
-  @doc """
-  The directive (if any) that suppresses a site at `line` produced by `mutator`
-  whose variant is `target` (the site's declared `Mutare.Site` `variant` label list).
-
-  Returns the **most specific** matching `%Directive{}` — its `reason` is what the site
-  records — or `nil` when the site is not ignored: when both a qualified `[family:label]` and a
-  bare `[family]`/`:all` directive land on the line, the one matching via the exact label wins, so
-  the recorded reason is the one the user wrote *for this mutant* rather than whichever directive
-  was harvested first. Ties keep source order. The lookup `directives` is the map from
-  `directives_from_ast/1`. `target` defaults to `:any` (the family-level question — does any
-  directive admit this family at all?).
-  """
+  @doc false
+  # The directive (if any) that suppresses a site at `line` for `mutator`/`target` (the site's
+  # `variant` label list). Returns the most specific match — an exact `[family:label]` over a bare
+  # `[family]`/`:all` — ties broken by source order, so the recorded `reason` is the one the user
+  # wrote for this mutant. `target` defaults to `:any` (the family-level "does any directive admit
+  # this family?" question).
   @spec directive_for(
           %{pos_integer() => [Directive.t()]},
           pos_integer(),
@@ -152,18 +134,11 @@ defmodule Mutare.Ignore do
     end
   end
 
-  @doc """
-  Strictly validate every **qualified** `[family:label]` filter in `directives` against
-  `vocabulary` (`Mutare.Mutators.vocabulary/1`), raising `Mutare.Ignore.SpecError` on the first
-  whose family *is* in the vocabulary but whose label can't be resolved — a family with no declared
-  variants, or an unknown label (with a "did you mean" suggestion). `file` locates the directive.
-
-  An **unknown family** (not in the vocabulary) is *not* raised even when qualified: it may be a
-  `--mutators`-excluded or removed custom family, which we can't enumerate, so it is left to the
-  soft `ineffective/2` warning — exactly like a bare `[family]` typo. Only a *known* family with a
-  bad label is certain enough to be a hard error. A **bare** `[family]` entry is never checked here.
-  Returns `:ok` when every qualifier resolves.
-  """
+  @doc false
+  # Strictly validate every qualified `[family:label]` filter against `vocabulary`, raising
+  # `Mutare.Ignore.SpecError` on the first whose family is *known* but whose label can't be resolved
+  # (with a "did you mean"). An unknown family is left to the soft `ineffective/2` warning, and a
+  # bare `[family]` is never checked here. `file` locates the directive. Returns `:ok` otherwise.
   @spec validate!(
           %{pos_integer() => [Directive.t()]},
           %{String.t() => :none | MapSet.t(String.t())},
@@ -184,11 +159,9 @@ defmodule Mutare.Ignore do
     :ok
   end
 
-  @doc """
-  Whether any directive in `directives` carries a **qualified** `[family:label]` entry — the only
-  kind `validate!/3` checks. The transform uses it to skip building the variant vocabulary (a
-  registry-reflection pass) for the common file whose directives are all bare `[family]`/`:all`.
-  """
+  @doc false
+  # Whether any directive carries a qualified `[family:label]` entry — the only kind `validate!/3`
+  # checks, so the transform skips building the variant vocabulary when every filter is bare.
   @spec any_qualified?(%{pos_integer() => [Directive.t()]}) :: boolean()
   def any_qualified?(directives) do
     Enum.any?(directives, fn {_line, ds} -> Enum.any?(ds, &(qualified_entries(&1) != [])) end)
@@ -258,28 +231,16 @@ defmodule Mutare.Ignore do
     end
   end
 
-  @doc """
-  The directives in `directives` that suppressed *nothing* — every directive no
-  recorded site admits, sorted by line.
-
-  A directive is *ineffective* when no mutant on its line satisfies its filter:
-  a typo'd bare family (`[arithmatic]`), a valid variant label absent on this line
-  (`[relational:>]` where only `<=`/`!=` were produced), an empty `[]`, a standalone
-  directive on the wrong line (`line + 1` has no mutant), or a family that produced
-  no mutant there. All reduce to the one check below — `Directive.applies_to?/3` is
-  false for every occupied `{mutator, variant}` on the directive's line. (A typo'd
-  *qualifier* — an unknown family or label after a `:` — never reaches here: it is a
-  hard `validate!/3` error.)
-
-  `occupied` is the `{line, mutator, variant}` of each recorded site (a `nil` line,
-  which no directive's `pos_integer` line can equal, is harmless; `variant` is the
-  site's declared `variant` label **list**, `[]` when unlabeled). It is passed as plain
-  tuples rather than `Mutare.Site` structs so this module stays unaware of the site representation.
-
-  Detection is relative to the mutants actually produced: a family disabled this
-  run (`--mutators`) yields no site, so a directive naming only it is reported —
-  the warning reflects the active configuration.
-  """
+  @doc false
+  # The directives in `directives` that suppressed *nothing* (sorted by line): a bare-family typo,
+  # a valid variant label absent on this line, an empty `[]`, a standalone directive on the wrong
+  # line, or a family that produced no mutant there — every directive `Directive.applies_to?/3`
+  # rejects for every occupied `{mutator, variant}` on its line. (A qualified bad label on a *known*
+  # family never reaches here — it is a hard `validate!/3` error.) `occupied` is the
+  # `{line, mutator, variant}` (the `variant` label list) of each recorded site, passed as plain
+  # tuples so this module stays unaware of the `Mutare.Site` representation. Detection reflects the
+  # active config — a family disabled by `--mutators` produces no site, so a directive naming only
+  # it is reported.
   @spec ineffective(%{pos_integer() => [Directive.t()]}, [
           {pos_integer() | nil, atom(), Directive.query()}
         ]) :: [Directive.t()]

@@ -286,56 +286,49 @@ defmodule Mutare.Mutator do
   @callback mutate(Macro.t(), context()) :: :skip | [mutation()]
 
   @doc """
-  Optional hook declaring the **variant vocabulary** — the names a user may write in a
-  qualified `# mutare:ignore[family:label]` directive to suppress *one* kind of mutation
-  this mutator produces rather than the whole family.
+  Optional hook declaring this mutator's **variant vocabulary** — the labels a user may write in a
+  qualified `# mutare:ignore[family:label]` directive to suppress *one* kind of mutation it
+  produces rather than the whole family.
 
-  A single source node often yields several sibling mutants (a `Mutare.Mutators.Relational`
+  A single source node often yields several sibling mutants (`Mutare.Mutators.Relational`'s
   `i < j` becomes both `i <= j` and `i > j`); without a vocabulary, `# mutare:ignore[relational]`
   can only suppress *all* of them. By declaring labels — and tagging each mutation with one via
-  `c:variant/2` — a mutator lets `# mutare:ignore[relational:>]` name just the symmetric
-  reflection while `i <= j` keeps running.
+  `c:variant/2` — a mutator lets `# mutare:ignore[relational:>]` name just the `i > j` reflection
+  while `i <= j` keeps running.
 
-  This is **opt-in**, and the two callbacks are a **pair**: a mutator must export *both*
-  `variants/0` (the vocabulary) and `c:variant/2` (the tagging), or neither — implementing only
-  one records no labels (`Mutare.Mutator.Dispatch.variant/3` requires both). A mutator with no vocabulary
-  supports only the bare `[family]` filter, and a qualifier against it is a hard error
-  (`Mutare.Ignore` validates `[family:label]` against this set, so a typo is caught
-  statically). Each label must be a **wire-safe** token — no whitespace, `,`, `(`, `)`,
-  `]`, or `"` — checked when the variant vocabulary is built (`Mutare.Mutators.vocabulary/1`, the
-  first time a `[family:label]`-bearing file is scanned); a wire-unsafe label is a mutator bug,
-  raised as a `Mutare.Ignore.SpecError` (rendered as a clean abort, not a stacktrace). `c:variant/2`
-  must likewise return only members of this list (one, several, or `nil`); that inclusion is
-  exercised by the suite rather than enforced on every mutation, so a stray label surfaces as a
-  `[family:label]` filter that fails to validate. The vocabulary the mutator chooses is its own public contract:
-  operator names (`relational` → `> >= < <= == != === !==`) or semantic kinds (`return_value` →
-  `empty sentinel`, `literal` → `zero succ pred negate`).
+  Opt-in, and the two callbacks are a **pair**: implement *both* `variants/0` and `c:variant/2`,
+  or neither (one alone records no labels). A mutator with no vocabulary supports only the bare
+  `[family]` filter, and a qualifier against it is a hard error — so a user's typo is reported with
+  a clear message rather than silently failing to match.
+
+  Each label must be a **wire-safe** token — no whitespace, `,`, `(`, `)`, `]`, or `"`, and not
+  empty — so it can be written as a `[family:label]` qualifier. The vocabulary you choose is your
+  mutator's public contract (users write it in source comments), so prefer stable, self-describing
+  names: operator symbols (`relational` → `> >= < <= == != === !==`) or semantic kinds
+  (`return_value` → `empty sentinel`, `literal` → `zero succ pred negate`).
   """
   @callback variants() :: [String.t() | atom()]
 
   @doc """
   Optional hook tagging one produced mutation with its **variant label(s)** (see `c:variants/0`).
 
-  Given the `original` node and the `mutated` node this mutator emitted for it, return the
-  label naming *which kind* of mutation it is — a member of `c:variants/0` — or `nil` for a
-  mutation with no label (matchable only by the bare `[family]` filter). Discovered by export
-  (this *and* `c:variants/0` must both be present — see `Mutare.Mutator.Dispatch.variant/3`) and recorded
-  on the `Mutare.Site` (downcased); a mutator without the pair leaves every site unlabeled
-  (bare-family only).
+  Given the `original` node and the `mutated` node it produced, return the label naming *which
+  kind* of mutation it is — a member of `c:variants/0` — or `nil` for a mutation with no label
+  (matchable only by the bare `[family]` filter). The label is recorded on the mutant and is what a
+  `[family:label]` qualifier matches; matching is case-insensitive. Implement this *and*
+  `c:variants/0` together (the pair rule under `c:variants/0`).
 
-  A single mutant may belong to **more than one kind**, so a list of labels is also accepted:
-  when a value-family mutation collapses two relationships onto one mutant (`Mutare.Mutators.Literal`'s
-  `1 - 1` and `0` sentinel are the *same* `0` after dedup), returning `["pred", "zero"]` makes
-  *both* `[literal:pred]` and `[literal:zero]` suppress it. `Mutare.Mutator.Dispatch.variant/3`
-  normalizes any return — `nil`, a single label, or a list — to a deduplicated, downcased label
-  list (`nil` ⇒ `[]`), so most mutators return a single label or `nil` and only a genuinely
-  multi-kind mutation returns a list.
+  A single mutant may belong to **more than one kind** — return a *list* of labels and a qualifier
+  naming any of them suppresses it. For instance, when a value family's mutation collapses two
+  relationships onto one value (`Mutare.Mutators.Literal`'s `1 - 1` and its `0` sentinel are the
+  same `0` after dedup), returning `["pred", "zero"]` lets *both* `[literal:pred]` and
+  `[literal:zero]` select it. A `nil`, a single label, and a list of labels are all accepted; most
+  mutations are a single kind.
 
   Classify from the `{original, mutated}` *pair*, not the mutated node alone — a strip
   mutation (`-(a + b)` → `a + b`) emits a node whose head (`+`) would otherwise be
-  mis-read as an operator swap. The operator families single-source this through the shared
-  `Mutare.Mutator.op_swap_variant/3` helper (a strip's *unary* original can't match a 2-arg
-  operator swap, so it returns `nil` for free):
+  mis-read as an operator swap. The operator families share the `Mutare.Mutator.op_swap_variant/3`
+  helper for this (a strip's *unary* original can't match a 2-arg swap, so it returns `nil`):
 
       # in Mutare.Mutators.Relational
       @swap_ops [:>, :>=, :<, :<=, :==, :!=, :===, :!==]
@@ -426,12 +419,11 @@ defmodule Mutare.Mutator do
   def visible_index(pos, :piped), do: pos - 1
 
   @doc """
-  Classify a **binary operator swap** by its resulting operator: when `original` and `mutated` are
-  both two-argument operator nodes whose heads are in `ops`, the label is `to_string(new_op)`;
-  otherwise `nil`. The one home for the operator-family `c:variant/2` shape, so the
-  swap/strip distinction (a strip's original is *unary*, so it can't match) lives in a single place
-  and each family declares only its operator set. Classify from the `{original, mutated}` pair, not
-  the mutated node alone — a strip emitting an operator-headed node must not be read as a swap.
+  Classify a **binary operator swap** for `c:variant/2`: when `original` and `mutated` are both
+  two-argument operator nodes whose heads are in `ops`, the label is `to_string(new_op)`; otherwise
+  `nil`. A ready-made `c:variant/2` for an operator family — pass your swap-operator set and it
+  reads the label off the result. It takes the `{original, mutated}` *pair* so a strip (whose
+  original is *unary*) can't be mistaken for a swap.
 
       def variant(o, m), do: Mutare.Mutator.op_swap_variant(o, m, @swap_ops)
   """
@@ -442,13 +434,10 @@ defmodule Mutare.Mutator do
 
   def op_swap_variant(_original, _mutated, _ops), do: nil
 
-  @doc """
-  Fold a declared / recorded variant label to its canonical form (`to_string/1` then downcased) —
-  the case-insensitive matching contract shared by the *declaring* side
-  (`Mutare.Mutators.vocabulary/1`) and the *recording* side (`Mutare.Mutator.Dispatch.variant/3`). A
-  `# mutare:ignore[family:label]` filter token is folded the same way at parse time, so a declared
-  `TRUE` label matches a `[conditional:true]` filter.
-  """
+  @doc false
+  # Fold a declared/recorded variant label to its canonical form (`to_string/1` then downcased) —
+  # the case-insensitive matching contract the declaring, recording, and filter-parsing sides share,
+  # so a declared `TRUE` label matches a `[conditional:true]` filter.
   @spec normalize_label(String.t() | atom()) :: String.t()
   def normalize_label(label), do: label |> to_string() |> String.downcase()
 end

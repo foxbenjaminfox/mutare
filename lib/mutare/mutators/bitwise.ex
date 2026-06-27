@@ -33,6 +33,9 @@ defmodule Mutare.Mutators.Bitwise do
   that compiles is still stripped, but the primary complement form is the function `bnot`.
   A `bnot` **as a pipe stage** (`x |> bnot()`) is not stripped — a rare, safe miss.
   `use Bitwise` injects its imports via macro expansion, invisible without expanding it.
+
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
+  suppress just one kind (`c:Mutare.Mutator.variants/0`): `&&&`, `|||`, `<<<`, `>>>`.
   """
   @behaviour Mutare.Mutator
 

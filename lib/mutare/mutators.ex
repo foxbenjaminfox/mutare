@@ -139,25 +139,15 @@ defmodule Mutare.Mutators do
   # — so an empty *declared* label would be permanently unsuppressable rather than a filter token.
   @wire_unsafe ~r/[\s,()\]"]/
 
-  @doc """
-  The **variant vocabulary** for `active_specs`: a map `family_name => :none | MapSet(labels)`,
-  the names a `# mutare:ignore[family:label]` qualifier may use (see `c:Mutare.Mutator.variants/0`).
-
-  Covers **every built-in family** (from the registry, regardless of whether it is in
-  `active_specs` — a directive may name a family disabled this run, which is legitimate, not a
-  typo), the unregistered `clause_drop`, and each active custom/renamed spec (keyed by its
-  recorded `name`, downcased — so an uppercase custom name still matches the downcased filter
-  token). Family keys are case-folded; an active spec whose recorded name collides with a built-in
-  (an `:as`-renamed custom) **overrides** the registry entry, so its qualifier is validated against
-  *its own* vocabulary, not the shadowed built-in's. A family whose module declares no `variants/0`
-  maps to `:none` (qualifiers against it are rejected; it supports only the bare `[family]` filter).
-  Labels are downcased.
-
-  Raises a `Mutare.Ignore.SpecError` if a mutator declares a **wire-unsafe** label
-  (`:wire_unsafe_label`) or has a **family name** a filter token can't express — one containing a
-  `:` or a wire-unsafe character (`:unfilterable_family`) — surfacing the config bug loudly rather
-  than silently producing an unmatchable label/family.
-  """
+  @doc false
+  # The variant vocabulary for `active_specs`: a map `family_name => :none | MapSet(labels)`, the
+  # labels a `# mutare:ignore[family:label]` qualifier may use. Covers every built-in family (from
+  # the registry, regardless of whether it is active this run — a directive may legitimately name a
+  # `--mutators`-disabled family), the unregistered `clause_drop`, and each active custom/renamed
+  # spec (keyed by its downcased recorded `name`; an `:as`-rename that collides with a built-in
+  # overrides it). A family that declares no `variants/0` maps to `:none` (bare `[family]` only).
+  # Raises `Mutare.Ignore.SpecError` for a wire-unsafe declared label (`:wire_unsafe_label`) or a
+  # family name a filter token can't express — a `:` or wire-unsafe char (`:unfilterable_family`).
   @spec vocabulary([Spec.t()]) :: %{String.t() => :none | MapSet.t(String.t())}
   def vocabulary(active_specs) when is_list(active_specs) do
     # Case-fold a family name to its lookup key via the *same* contract a filter's family token is

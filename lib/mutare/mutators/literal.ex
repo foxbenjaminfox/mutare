@@ -13,6 +13,9 @@ defmodule Mutare.Mutators.Literal do
   Integer literals are pervasive, so this is the highest-volume built-in — the
   cost is paid in the denominator, the benefit is catching constants the suite
   never pins down.
+
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
+  suppress just one kind (`c:Mutare.Mutator.variants/0`): `zero`, `succ`, `pred`, `negate`.
   """
   @behaviour Mutare.Mutator
 

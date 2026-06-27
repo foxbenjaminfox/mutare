@@ -64,12 +64,19 @@ defmodule Mix.Tasks.Mutare do
       # mutare:ignore                            suppress every mutant on the line
       # mutare:ignore the reason text            suppress all; record the reason
       # mutare:ignore[arithmetic, relational]    suppress only those families
+      # mutare:ignore[relational:>]              suppress one kind: the `i > j` swap
       # mutare:ignore[literal] off-by-one is ok  a filter and a reason together
 
-  The names inside `[...]` are mutator families (see below). Filtering fails safe:
-  an unknown name or an empty `[]` matches nothing, so the mutant runs rather than
-  hides. An ignore that suppresses no mutant (a typo'd family, a line that has no
-  mutant) is reported as a warning — and with `--strict-ignores`, exits the run 1.
+  The names inside `[...]` are mutator families (see below). A family may be
+  qualified with `:label` to suppress only one *kind* of its mutants — `relational`
+  declares `> >= < <= == != === !==`, `return_value` declares `empty`/`sentinel`,
+  `literal` declares `zero`/`succ`/`pred`/`negate`. Run `--list-mutators` to see
+  every family's labels. Filtering fails safe: an unknown family or an empty `[]`
+  matches nothing, so the mutant runs rather than hides — but a qualified label a
+  known family doesn't declare is a hard error (with a "did you mean"), so a typo
+  can't silently fail to match. An ignore that suppresses no mutant (a typo'd
+  family, a line that has no mutant) is reported as a warning — and with
+  `--strict-ignores`, exits the run 1.
 
   ## Mutator families
 

@@ -76,6 +76,7 @@ defmodule Mutare.MixProject do
         "Core API": [
           Mutare,
           Mix.Tasks.Mutare,
+          Mutare.Ignore,
           Mutare.Runner,
           Mutare.Options,
           Mutare.Result,

@@ -26,6 +26,9 @@ defmodule Mutare.Mutators.StrictEquality do
   (`not (a !== b)` ≡ `a === b`, which Logical already produces) and is suppressed, but
   this family's relaxation is **not** its polarity complement (`not (a == b)` ≢ `a === b`),
   so it is kept.
+
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
+  suppress just one kind (`c:Mutare.Mutator.variants/0`): `==`, `!=`.
   """
   @behaviour Mutare.Mutator
 

@@ -59,6 +59,9 @@ defmodule Mutare.Mutators.ReturnValue do
       (PHILOSOPHY: "macro-generated code is a different tool"). Replacing its return
       would be safe, but keeping `quote` uniformly hands-off is the simpler, more
       consistent boundary.
+
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
+  suppress just one kind (`c:Mutare.Mutator.variants/0`): `empty`, `sentinel`.
   """
   @behaviour Mutare.Mutator
   @behaviour Mutare.Mutator.Structural

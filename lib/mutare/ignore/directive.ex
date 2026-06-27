@@ -1,41 +1,16 @@
 defmodule Mutare.Ignore.Directive do
-  @moduledoc """
-  One parsed `# mutare:ignore` directive: the line it suppresses, the mutators it
-  admits, and an optional human reason.
-
-    * `line` — the suppressed source line (already resolved from trailing-vs-
-      standalone by `Mutare.Ignore`).
-    * `mutators` — `:all` (no `[...]` filter ⇒ every mutator), or a `MapSet` of
-      `{family, label}` **filter entries** (the `[...]` filter contents). `family`
-      is a mutator-name string; `label` is `:any` (a bare `[relational]` entry,
-      admitting every variant) or a variant-label string (a qualified `[relational:>]`
-      entry, admitting only the mutant tagged with that label). A site matches only
-      if some entry's `family` equals its `mutator` *and* the entry's `label` admits
-      the site's variant.
-    * `reason` — the free-text explanation, or `nil`.
-    * `source_order` — the directive's 0-based position in document (source) order,
-      stamped by `Mutare.Ignore.directives_from_ast/1`. `Mutare.Ignore.directive_for/4`
-      ranks ties on it so the *source-first* directive's `reason` is the one recorded.
-
-  ## The variant label
-
-  A single site (one `i < j`) can yield several mutants — for `relational`,
-  `i <= j` and `i > j`. A bare `[relational]` filter can only suppress *all* of
-  them; the qualifier names *one* by its **variant label**. The labels compared are
-  the site's `variant` **list** — names the producing mutator *declares*
-  (`c:Mutare.Mutator.variants/0`) and tags each mutation with
-  (`c:Mutare.Mutator.variant/2`), **not** anything read off the rendered AST. A
-  qualifier matches when its token is one of that list, so `relational` labels its
-  results `>`/`<=`/… and `[relational:>]` ignores the symmetric `i > j` reflection
-  while `i <= j` still runs; `return_value` labels its pair `empty`/`sentinel`. One
-  mutant may carry **several** labels — `Mutare.Mutators.Literal`'s deduped `1 - 1`/`0`
-  is both `pred` and `zero` — and either qualifier then suppresses it.
-
-  Labels are **opt-in** and **validated**: a family declaring no vocabulary admits
-  only the bare `[family]`, and a `[family:label]` naming an unknown family/label is
-  a hard `Mutare.Ignore.SpecError` (see `Mutare.Ignore.validate!/3`), so a typo is
-  caught statically rather than silently failing to match.
-  """
+  @moduledoc false
+  # One parsed `# mutare:ignore` directive — the internal representation behind the user-facing
+  # grammar documented on `Mutare.Ignore`. Fields:
+  #
+  #   * `line` — the suppressed source line (already resolved from trailing-vs-standalone).
+  #   * `mutators` — `:all` (no `[...]` filter), or a `MapSet` of `{family, label}` filter entries;
+  #     `family` is a mutator-name string and `label` is `:any` (a bare `[relational]`) or a
+  #     variant-label string (a qualified `[relational:>]`). A site matches when some entry's family
+  #     equals its mutator *and* the entry's label is in the site's `variant` list (`:any` admits any).
+  #   * `reason` — the free-text explanation, or `nil`.
+  #   * `source_order` — the directive's 0-based document-order position, used to break specificity
+  #     ties so the source-first directive's reason is the one recorded.
 
   @type target :: :any | String.t()
   @type entry :: {String.t(), target()}

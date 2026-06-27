@@ -126,6 +126,11 @@ defmodule Mix.Tasks.MutareTest do
       # names the comma-separated form.
       assert output =~ "Arithmetic operator swaps"
       assert output =~ "--mutators relational,arithmetic"
+
+      # An opted-in family lists its `# mutare:ignore[family:label]` qualifier labels;
+      # a bare-only family (no variant vocabulary) shows no label line.
+      assert output =~ "ignore labels: zero succ pred negate"
+      assert output =~ ~r/relational\b.*\n\s+ignore labels: .*>=/
     end
   end
 

@@ -22,6 +22,9 @@ defmodule Mutare.Mutators.Relational do
       (Logical's strip). The **ordering** operators are *not* suppressed there: their
       boundary/reversal swaps are not the negation complement, so they survive a
       surrounding negation as genuinely new mutants.
+
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
+  suppress just one kind (`c:Mutare.Mutator.variants/0`): `>`, `>=`, `<`, `<=`, `==`, `!=`, `===`, `!==`.
   """
   @behaviour Mutare.Mutator
 

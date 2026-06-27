@@ -1,33 +1,28 @@
 defmodule Mutare.Ignore.SpecError do
   @moduledoc """
-  Something in the `# mutare:ignore` **variant-label** system is unusable — raised fail-loud and
-  rendered by the Mix task as a clean abort (the library API lets it crash).
+  Raised when a `# mutare:ignore` **variant qualifier** can't be honoured — surfaced by
+  `mix mutare` as a clean abort with a fix-it message, before any mutant runs.
 
-  Two of the reasons are about a **qualified** `[family:label]` filter naming a label that, for a
-  *known* family, can't be resolved — raised by `Mutare.Ignore.validate!/3` against the declared
-  variant vocabulary (`Mutare.Mutators.vocabulary/1`), caught *statically* (no per-line site
-  needed); `file`/`line` locate the directive:
+  Two reasons are about a qualified `[family:label]` directive whose `label`, for a *known* family,
+  can't be resolved (a typo; `file`/`line` locate the directive):
 
-    * `:no_variants` — the family is real but declares no variant vocabulary
-      (`c:Mutare.Mutator.variants/0`), so it admits only the bare `[family]` filter;
-    * `:unknown_variant` — the family declares variants, but not this label.
+    * `:no_variants` — the family declares no variant labels, so it admits only the bare `[family]`
+      filter. Drop the `:label`.
+    * `:unknown_variant` — the family declares variants, but not this one. The message lists the
+      family's known labels and suggests the closest.
 
-  An **unknown family** (one not in the vocabulary) is deliberately *not* an error, qualified or
-  bare: it is indistinguishable from a `--mutators`-excluded or removed custom family, so it stays
-  a soft `Mutare.Ignore.ineffective/2` warning. The hard error is reserved for the case where the
-  family is present and the label is therefore *certainly* wrong, with a "did you mean" suggestion.
+  An *unknown family* (qualified or bare) is never this error — it can't be told apart from a family
+  you disabled with `--mutators`, so it stays a soft "ineffective ignore" warning instead.
 
-  The last two reasons are **mutator-authoring / config** bugs, raised by `Mutare.Mutators.vocabulary/1`
-  when it harvests the active mutator set (no directive involved, so `file`/`line` are `nil`):
+  The other two are bugs in a *custom mutator's* declaration (no directive involved, so `file`/`line`
+  are `nil`):
 
-    * `:wire_unsafe_label` — a `c:Mutare.Mutator.variants/0` label that can't be written as a
-      `[family:label]` qualifier selecting it: it is empty, or contains a character a filter token
-      can't carry (whitespace, `,`, `(`, `)`, `]`, `"`). Surfaced loudly rather than silently
-      producing an unmatchable label; `label` is the offending token (`family` is `nil`).
-    * `:unfilterable_family` — a mutator's recorded family name (`c:Mutare.Mutator.name/0` or an
-      `:as` rename) can't be written as a `# mutare:ignore[...]` token: it contains a `:` (read as
-      the variant-qualifier separator, so `[ecto:query]` could never name a whole `ecto:query`
-      family) or a wire-unsafe character. `family` is the offending name (`label` is `nil`).
+    * `:wire_unsafe_label` — a declared variant label (`c:Mutare.Mutator.variants/0`) that can't be
+      written as a `[family:label]` token: it is empty, or contains whitespace, `,`, `(`, `)`, `]`,
+      or `"`. `label` is the offending token.
+    * `:unfilterable_family` — the mutator's family name (its `c:Mutare.Mutator.name/0` or `:as`
+      rename) can't be written as a `# mutare:ignore[...]` token: it contains a `:` (the qualifier
+      separator) or a wire-unsafe character. `family` is the offending name; rename it.
   """
 
   defexception [:message, :reason, :file, :line, :family, :label]

@@ -15,6 +15,9 @@ defmodule Mutare.Mutators.Logical do
   inner strip is identical to the outer's, so only the outer is offered. A *mixed*
   `not !x` is kept — its two strips can diverge on a non-boolean operand (`not x` raises
   where `!x` coerces).
+
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
+  suppress just one kind (`c:Mutare.Mutator.variants/0`): `and`, `or`, `&&`, `||`.
   """
   @behaviour Mutare.Mutator
 

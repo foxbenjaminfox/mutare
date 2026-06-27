@@ -14,6 +14,9 @@ defmodule Mutare.Mutators.Conditional do
   actually exercised — is worth the volume. (On a short-circuit `and`/`or` whose
   left operand is itself a boolean op, the redundant whole-node constant is
   dropped, since forcing the left operand already covers it.)
+
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
+  suppress just one kind (`c:Mutare.Mutator.variants/0`): `true`, `false`.
   """
   @behaviour Mutare.Mutator
 

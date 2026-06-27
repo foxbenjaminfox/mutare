@@ -8,6 +8,9 @@ defmodule Mutare.Mutators.List do
   Not mutated: on the **RHS of `in`** (`x in [a, b]`) the `[]` collapse yields
   `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already produces — so it
   is dropped there (the list's elements still mutate).
+
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
+  suppress just one kind (`c:Mutare.Mutator.variants/0`): `++`, `--`, `empty`.
   """
   @behaviour Mutare.Mutator
 

@@ -32,6 +32,9 @@ defmodule Mutare.Mutators.Arithmetic do
 
   `div`/`rem` are never identities either: `div(a, 1)` is `a`, but `rem(a, 1)`
   is always `0`.
+
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
+  suppress just one kind (`c:Mutare.Mutator.variants/0`): `+`, `-`, `*`, `/`, `div`, `rem`.
   """
   @behaviour Mutare.Mutator
 

@@ -28,6 +28,13 @@ defmodule Mutare.CLI.Info do
     Enum.each(registry, fn {family, module} ->
       name = family |> to_string() |> String.pad_trailing(pad)
       Mix.shell().info("  #{name}  #{mutator_summary(module)}")
+
+      # A second indented line listing the family's `# mutare:ignore[family:label]` qualifiers,
+      # for a family that declares a variant vocabulary; omitted for the bare-only families.
+      case variant_labels(module) do
+        nil -> :ok
+        labels -> Mix.shell().info("  #{String.duplicate(" ", pad)}  ignore labels: #{labels}")
+      end
     end)
 
     Mix.shell().info("""
@@ -40,6 +47,14 @@ defmodule Mutare.CLI.Info do
 
         mix mutare --mutators builtins,MyApp.MyMutator\
     """)
+  end
+
+  # The family's `# mutare:ignore[family:label]` qualifier labels, space-joined in declared order,
+  # or `nil` when the family declares no variant vocabulary (it supports only the bare `[family]`).
+  defp variant_labels(module) do
+    if Mutare.Mutator.Dispatch.opted_in?(module) do
+      Enum.map_join(module.variants(), " ", &Mutare.Mutator.normalize_label/1)
+    end
   end
 
   # A one-line summary for the catalog: the family module's `@moduledoc` flattened
