@@ -11,6 +11,7 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
 
   @macro_key MetaKeys.macro_key()
   @piped_macro_key MetaKeys.piped_macro_key()
+  @macro_call_key MetaKeys.macro_call_key()
 
   @doc """
   Stamp a call's meta with known-macro argument routing, when the registry matches it.
@@ -35,11 +36,25 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
         # A known macro routes its arguments specially, so a bare-import witness that rebuilds
         # the call as an anonymous function may be invalid. Drop the witness where the macro is
         # known; the resolution stamp itself stays.
-        meta
-        |> Imports.drop_witness()
-        |> stamp_spec(spec, call_node, arity, pipe_mode)
+        #
+        # Stamp the resolved identity (`{module_key, name}`) *before* dispatching, and thread the
+        # updated meta back onto `call_node` — so a `:routing` classifier (invoked *inside*
+        # `stamp_spec`) that normalizes the node via `Mutare.Transform.Calls.resolved_macro_call/1`
+        # already sees it. `module_key` is `nil` only for a name-only (`{:*, name, …}`) match whose
+        # module the resolver couldn't see; the reader then returns `{nil, name, …}`, which a
+        # module-matching classifier clause simply skips (its purpose — match by name instead).
+        meta = stamp_identity(Imports.drop_witness(meta), module_key, fun)
+        stamp_spec(meta, spec, put_meta(call_node, meta), arity, pipe_mode)
     end
   end
+
+  # Record the resolved macro identity on the call meta, read back by
+  # `Mutare.Transform.Calls.resolved_macro_call/1`.
+  defp stamp_identity(meta, module_key, fun), do: [{@macro_call_key, {module_key, fun}} | meta]
+
+  # Replace a call node's own (top) meta — `{head, _meta, args}` covers both the remote
+  # (`head = {:., …}`) and bare (`head = fun`) shapes the resolver hands here.
+  defp put_meta({head, _meta, args}, meta), do: {head, meta, args}
 
   # Compute and stamp a matched macro spec's per-position routing.
   #

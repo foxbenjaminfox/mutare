@@ -15,6 +15,11 @@ defmodule Mutare.Transform.Calls do
   mutators run, so it is only meaningful on a node handed to a mutator by the transform (a
   `mutate/1` argument) — exactly where a call-matching mutator needs it.
 
+  `resolved_macro_call/1` is the **known-macro** twin: the same normalization for the node core
+  hands a `:routing`/`:hosted` mutator's `c:Mutare.Mutator.macro_routing/1` / `c:Mutare.Mutator.host/2`
+  callback, so those recognise their macro across the bare/qualified/aliased forms `Resolve`
+  accepts instead of pattern-matching the raw head.
+
   ## Example
 
       defmodule MyApp.Mutators.Upcase do
@@ -57,7 +62,9 @@ defmodule Mutare.Transform.Calls do
   # *not* resolve is a bare `Kernel` call (`abs`, `min`) — those families key on effective
   # arity in their own clauses.
 
-  alias Mutare.Transform.{Aliases, Imports}
+  alias Mutare.Transform.{Aliases, Imports, MetaKeys}
+
+  @macro_call_key MetaKeys.macro_call_key()
 
   @typedoc """
   A resolved module: an Elixir-module path (`[:Enum]`, `[:String]`) or an Erlang-module atom
@@ -158,6 +165,83 @@ defmodule Mutare.Transform.Calls do
   end
 
   def resolved_call(_node), do: nil
+
+  @doc """
+  Deconstruct a recognised **known-macro** call into `{module, name, visible_args, rebuild}`,
+  or `nil` — the macro-node twin of `resolved_call/1`.
+
+  This is the helper a `:routing`/`:hosted` mutator (`c:Mutare.Mutator.macro_routing/1`,
+  `c:Mutare.Mutator.host/2`) should use instead of pattern-matching the node head. Core hands
+  those callbacks the *visible call node*, which — depending on how the source wrote it — is a
+  **bare** `where(q, …)`, a **qualified** `Ecto.Query.where(q, …)`, or an **aliased**
+  `Q.where(q, …)`. A callback that guards on a bare atom head silently fails to recognise the
+  qualified/aliased forms (and routes every argument as `:expression`, poisoning a DSL fragment
+  or mutating it with core's families). Normalising through this reader makes the written form
+  transparent: a single `{[:Ecto, :Query], macro, args, _}` match covers all three.
+
+  Returns:
+
+    * **`module`** — the resolved module the macro lives in (`[:Ecto, :Query]`, or an Erlang
+      atom for an atom-module macro), as `resolve` saw it. `nil` only for a *name-only*
+      (`{:*, name, …}`) registry match whose module the resolver couldn't see — a classifier
+      matching on module then simply skips it (matching by name is the name-only hatch's point).
+    * **`name`** — the macro name atom (`:where`, `:from`).
+    * **`visible_args`** — the written argument list, exactly as the callback receives it (the
+      pipe LHS already excluded for a piped stage), so positional routing indexes unchanged.
+    * **`rebuild`** — `rebuild.(name, new_args)` re-emits the call in the *written* form (bare
+      stays bare, qualified keeps its `Ecto.Query.`, aliased keeps its `Q.`), so a `host/2`
+      splice stays a minimal, shape-correct diff.
+
+  `nil` when the node is not a recognised known-macro call. The identity is read from the
+  `Mutare.Transform.Resolve.MacroStamp` stamp placed when the call matched the macro registry,
+  so it is authoritative (never diverges from the matcher) and recognises a registered macro
+  even when its module can't be reflected on — exactly the bare-import case `resolved_call/1`
+  cannot resolve.
+
+  ## Example
+
+      def macro_routing(node) do
+        case Mutare.Transform.Calls.resolved_macro_call(node) do
+          {[:Ecto, :Query], macro, args, _rebuild} when macro in @condition_macros ->
+            route_condition(macro, args)
+
+          _ ->
+            []
+        end
+      end
+
+  """
+  @spec resolved_macro_call(Macro.t()) ::
+          {module_key() | nil, atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
+  def resolved_macro_call({head, meta, args}) when is_list(meta) and is_list(args) do
+    case macro_identity(meta) do
+      {module, name} -> {module, name, args, macro_rebuild(head, meta)}
+      nil -> nil
+    end
+  end
+
+  def resolved_macro_call(_node), do: nil
+
+  # The resolved `{module_key, name}` identity from a node's own meta, or `nil` when absent —
+  # i.e. when the node was never matched against the macro registry.
+  defp macro_identity(meta) do
+    case Keyword.get(meta, @macro_call_key) do
+      {_module, _name} = identity -> identity
+      _ -> nil
+    end
+  end
+
+  # Re-emit a swap in the call's *written* form. The two heads are the only shapes the macro
+  # stamp is ever placed on (a remote `Mod.fun`/`:mod.fun` and a bare `fun`), so the rebuild
+  # reuses the written receiver/meta verbatim — qualified keeps its module path, aliased keeps
+  # its alias, bare stays bare.
+  defp macro_rebuild({:., dot_meta, [recv, _fun]}, call_meta) do
+    fn new_name, new_args -> {{:., dot_meta, [recv, new_name]}, call_meta, new_args} end
+  end
+
+  defp macro_rebuild(fun, meta) when is_atom(fun) do
+    fn new_name, new_args -> {new_name, meta, new_args} end
+  end
 
   # Build the qualifier node for a `:qualify` rebuild — naming the resolved module in a form
   # that **bypasses lexical aliases**, since the import captured a specific module but a later

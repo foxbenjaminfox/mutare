@@ -44,6 +44,7 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_kernel_displaced` — a Kernel fn displaced by `import …, except:`    (Imports)
   #   * `:mutare_macro`            — known-macro per-argument routing                (Resolve.MacroStamp, from Macros)
   #   * `:mutare_macro_piped`      — piped-value routing for a known-macro RHS       (Resolve.MacroStamp, from Macros)
+  #   * `:mutare_macro_call`       — resolved `{module_key, name}` macro identity    (Resolve.MacroStamp, read by Calls.resolved_macro_call/1)
   #   * `:mutare_use_directives`   — import/alias/require a `use` injects            (Uses)
   #   * `:mutare_use_behaviours`   — `@behaviour`s a `use` injects (on the `use`)    (Uses)
   #   * `:mutare_behaviours`       — a `defmodule`'s behaviour MapSet               (Behaviours)
@@ -56,6 +57,7 @@ defmodule Mutare.Transform.MetaKeys do
     kernel_displaced_key: :mutare_kernel_displaced,
     macro_key: :mutare_macro,
     piped_macro_key: :mutare_macro_piped,
+    macro_call_key: :mutare_macro_call,
     use_directives_key: :mutare_use_directives,
     use_behaviours_key: :mutare_use_behaviours,
     behaviours_key: :mutare_behaviours
