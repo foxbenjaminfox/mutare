@@ -14,9 +14,12 @@ defmodule Mutare.Mutators.RegexLiteral do
       independently. An unanchored pattern matches anywhere in the subject.
     * **anchor swaps** — swap an anchor for a *non-equivalent* sibling, at any real
       anchor position (escaped `\\^`/`\\$` and in-class `^`/`$` are skipped). The
-      equivalences depend on the **`m` (multiline)** flag, which is read from the
-      sigil's modifiers — so a swap is offered *only* when the two anchors actually
-      differ under the regex's own mode, never as a guaranteed no-op:
+      equivalences depend on the **`m` (multiline)** flag, read **positionally** via
+      `Mutare.Mutators.RegexLiteral.Flags`: the sigil's own modifiers *and* any inline
+      `(?m)` / `(?m:…)` / `(?-m)`, so `m` may be on at one anchor and off at another
+      (`^a(?m)$` — the `^` is not multiline, the `$` is). A swap is offered *only*
+      where the two anchors actually differ under the mode in force at that point,
+      never as a guaranteed no-op:
         * `^` ↔ `\\A` — equivalent without `/m` (both = subject start), so offered
           **only under `/m`**, where `^` is a *line* start.
         * `$` ↔ `\\Z` — `\\Z` equals `$` without `/m`, so likewise offered **only
@@ -89,6 +92,7 @@ defmodule Mutare.Mutators.RegexLiteral do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutators.RegexLiteral.Flags
 
   @sentinel AST.sentinel_string()
 
@@ -106,7 +110,7 @@ defmodule Mutare.Mutators.RegexLiteral do
     pattern_variants =
       (["", @sentinel] ++
          anchor_patterns(pattern) ++
-         anchor_swap_patterns(pattern, ?m in modifiers) ++
+         anchor_swap_patterns(pattern, modifiers) ++
          scan_patterns(pattern) ++
          alternation_patterns(pattern))
       |> Enum.map(&{&1, modifiers})
@@ -180,52 +184,66 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   # --- anchor swaps --------------------------------------------------------
 
-  # A focused walk (like `alt_walk/6`, not `scan/6`): it only needs escape pairs and
+  # A focused walk (like `alt_walk/6`, not `scan/6`): it tracks escape pairs and
   # character-class nesting to tell a *real* anchor from an escaped (`\^`) or in-class
-  # (`[$]`) literal. At each real anchor it offers the mode-aware swaps. `multiline?`
-  # rides through unchanged.
-  defp anchor_swap_patterns(pattern, multiline?),
-    do: anchor_walk(pattern, "", false, false, multiline?, [])
+  # (`[$]`) literal, plus a `Flags` scope stack so the `m`-flag is read **positionally**
+  # — an inline `(?m)` / `(?m:…)` / `(?-m)` makes multiline-ness vary along the pattern.
+  defp anchor_swap_patterns(pattern, modifiers),
+    do: anchor_walk(pattern, "", false, false, Flags.initial(MapSet.new(modifiers)), [])
 
-  defp anchor_walk(<<>>, _prefix, _ic, _jo, _ml, acc), do: acc
+  defp anchor_walk(<<>>, _prefix, _ic, _jo, _stack, acc), do: acc
 
   # Escape pair — `\A`/`\z`/`\Z` are anchors; any other escape (incl. `\^`/`\$`) is a
   # literal, so it offers nothing.
-  defp anchor_walk(<<?\\, c::utf8, rest::binary>>, prefix, in_class, _jo, ml, acc) do
+  defp anchor_walk(<<?\\, c::utf8, rest::binary>>, prefix, in_class, _jo, stack, acc) do
     new =
-      if in_class, do: [], else: Enum.map(escaped_anchor_swaps(c, ml), &(prefix <> &1 <> rest))
+      if in_class,
+        do: [],
+        else: Enum.map(escaped_anchor_swaps(c, multiline?(stack)), &(prefix <> &1 <> rest))
 
-    anchor_walk(rest, prefix <> <<?\\, c::utf8>>, in_class, false, ml, acc ++ new)
+    anchor_walk(rest, prefix <> <<?\\, c::utf8>>, in_class, false, stack, acc ++ new)
   end
 
-  defp anchor_walk(<<?\\>>, prefix, ic, jo, ml, acc),
-    do: anchor_walk(<<>>, prefix <> "\\", ic, jo, ml, acc)
+  defp anchor_walk(<<?\\>>, prefix, ic, jo, stack, acc),
+    do: anchor_walk(<<>>, prefix <> "\\", ic, jo, stack, acc)
 
   # Character class — `^`/`$` inside it are literals, so swallow it whole (the leading
-  # `^` is the negation, the leading `]` a literal member).
-  defp anchor_walk(<<?[, ?^, rest::binary>>, prefix, false, _jo, ml, acc),
-    do: anchor_walk(rest, prefix <> "[^", true, true, ml, acc)
+  # `^` is the negation, the leading `]` a literal member). Flags don't change in a class.
+  defp anchor_walk(<<?[, ?^, rest::binary>>, prefix, false, _jo, stack, acc),
+    do: anchor_walk(rest, prefix <> "[^", true, true, stack, acc)
 
-  defp anchor_walk(<<?[, rest::binary>>, prefix, false, _jo, ml, acc),
-    do: anchor_walk(rest, prefix <> "[", true, true, ml, acc)
+  defp anchor_walk(<<?[, rest::binary>>, prefix, false, _jo, stack, acc),
+    do: anchor_walk(rest, prefix <> "[", true, true, stack, acc)
 
-  defp anchor_walk(<<?], rest::binary>>, prefix, true, false, ml, acc),
-    do: anchor_walk(rest, prefix <> "]", false, false, ml, acc)
+  defp anchor_walk(<<?], rest::binary>>, prefix, true, false, stack, acc),
+    do: anchor_walk(rest, prefix <> "]", false, false, stack, acc)
+
+  # Group open / close (outside a class) — drive the flag scope stack. A modifier group
+  # (`(?m)` / `(?m:…)`) updates flags; an ordinary group just pushes/pops a frame.
+  defp anchor_walk(<<?(, rest::binary>>, prefix, false, _jo, stack, acc) do
+    {consumed, rest2, stack2} = Flags.open(rest, stack)
+    anchor_walk(rest2, prefix <> "(" <> consumed, false, false, stack2, acc)
+  end
+
+  defp anchor_walk(<<?), rest::binary>>, prefix, false, _jo, stack, acc),
+    do: anchor_walk(rest, prefix <> ")", false, false, Flags.close(stack), acc)
 
   # `^` outside a class — a start anchor.
-  defp anchor_walk(<<?^, rest::binary>>, prefix, false, _jo, ml, acc) do
-    new = Enum.map(caret_swaps(ml), &(prefix <> &1 <> rest))
-    anchor_walk(rest, prefix <> "^", false, false, ml, acc ++ new)
+  defp anchor_walk(<<?^, rest::binary>>, prefix, false, _jo, stack, acc) do
+    new = Enum.map(caret_swaps(multiline?(stack)), &(prefix <> &1 <> rest))
+    anchor_walk(rest, prefix <> "^", false, false, stack, acc ++ new)
   end
 
   # `$` outside a class — an end anchor.
-  defp anchor_walk(<<?$, rest::binary>>, prefix, false, _jo, ml, acc) do
-    new = Enum.map(dollar_swaps(ml), &(prefix <> &1 <> rest))
-    anchor_walk(rest, prefix <> "$", false, false, ml, acc ++ new)
+  defp anchor_walk(<<?$, rest::binary>>, prefix, false, _jo, stack, acc) do
+    new = Enum.map(dollar_swaps(multiline?(stack)), &(prefix <> &1 <> rest))
+    anchor_walk(rest, prefix <> "$", false, false, stack, acc ++ new)
   end
 
-  defp anchor_walk(<<c::utf8, rest::binary>>, prefix, in_class, _jo, ml, acc),
-    do: anchor_walk(rest, prefix <> <<c::utf8>>, in_class, false, ml, acc)
+  defp anchor_walk(<<c::utf8, rest::binary>>, prefix, in_class, _jo, stack, acc),
+    do: anchor_walk(rest, prefix <> <<c::utf8>>, in_class, false, stack, acc)
+
+  defp multiline?(stack), do: Flags.active?(stack, ?m)
 
   # `^` ↔ `\A`: a no-op without `/m` (both = subject start), so only under `/m`.
   defp caret_swaps(true), do: ["\\A"]

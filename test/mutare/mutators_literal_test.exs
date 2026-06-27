@@ -402,6 +402,38 @@ defmodule Mutare.MutatorsLiteralTest do
                [~S|~r//|, ~S|~r/mutare/|, ~S|~r/[^$^]/|]
     end
 
+    test "reads the m flag positionally through an inline (?m)" do
+      # a global (?m): both anchors are multiline, so `^`<->`\A` and `$`<->`\Z` are live
+      assert ~S"~r/(?m)\Aa$/" in render(RegexLiteral.mutate(parse(~S"~r/(?m)^a$/")))
+
+      # `^` *before* the (?m) is not multiline (no `\A` swap); the `$` *after* it is
+      before_after = render(RegexLiteral.mutate(parse(~S"~r/^a(?m)$/")))
+      refute ~S"~r/\Aa(?m)$/" in before_after
+      assert ~S"~r/^a(?m)\Z/" in before_after
+
+      # scoped (?m:…): only the in-scope `^` swaps; the one after the group does not
+      scoped = render(RegexLiteral.mutate(parse(~S"~r/(?m:^a)^b/")))
+      assert ~S"~r/(?m:\Aa)^b/" in scoped
+      refute ~S"~r/(?m:^a)\Ab/" in scoped
+
+      # a bare (?m) inside a group expires at the group's ) — `^c` is not multiline
+      nested = render(RegexLiteral.mutate(parse(~S"~r/a((?m)^b)^c/")))
+      assert ~S"~r/a((?m)\Ab)^c/" in nested
+      refute ~S"~r/a((?m)^b)\Ac/" in nested
+
+      # (?-m) turns multiline back off
+      toggled = render(RegexLiteral.mutate(parse(~S"~r/(?m)^a(?-m)^b/")))
+      assert ~S"~r/(?m)\Aa(?-m)^b/" in toggled
+      refute ~S"~r/(?m)^a(?-m)\Ab/" in toggled
+    end
+
+    test "an inline (?i) does not enable anchor multiline-ness, and a comment is skipped" do
+      # `(?i)` changes case, not anchors — no `^`<->`\A`
+      refute ~S"~r/(?i)\Aa/" in render(RegexLiteral.mutate(parse(~S"~r/(?i)^a/")))
+      # a `^` inside a `(?#…)` comment is not an anchor at all
+      assert render(RegexLiteral.mutate(parse(~S"~r/(?#^c)b/"))) == [~S"~r//", ~S"~r/mutare/"]
+    end
+
     test "swaps a + quantifier to * and back" do
       assert ~S|~r/\d*/| in render(RegexLiteral.mutate(parse(~S|~r/\d+/|)))
       assert ~S|~r/a+/| in render(RegexLiteral.mutate(parse(~S|~r/a*/|)))

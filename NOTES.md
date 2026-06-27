@@ -4843,6 +4843,67 @@ everything else** — even when the kill needs an unusual input (invalid UTF-8) 
 only manifests through the enclosing call. "Looks redundant" is a finding to
 report, not a mutant to hide.
 
+### Regex anchor swaps and *positional* flag tracking
+
+The regex **anchor-swap** family (`^`↔`\A`, `$`↔`\z`/`\Z`) is the first mutation
+whose *equivalence* turns on a regex **option flag** — specifically `m`
+(multiline). Without `/m`, `^`≡`\A` and `$`≡`\Z` for **every** input (both anchor
+the subject ends), so emitting the swap there would be a *guaranteed*-equivalent
+mutant — strictly worse than the `+`/`*` / `/u` cases above (those are
+*context*-dependent killable; this one no input can ever kill). So the swap **must**
+be gated on the flag, which makes "is `m` active?" a precondition we have to answer
+correctly — not a nicety. (`$`↔`\z` is the exception: `\z` is the strict end, so it
+differs from `$` regardless of `/m` — always emitted, a suspected-equivalent without
+`/m` like `+`/`*`.)
+
+The catch: `m` is not one value for the whole pattern. An **inline modifier** sets
+it *positionally* — `(?m)` turns it on for the rest of its enclosing group, `(?m:…)`
+for one group, `(?-m)` off — so `^a(?m)$` has a non-multiline `^` and a multiline
+`$`. A single `?m in modifiers` boolean is therefore **wrong**, and — worse — a naive
+"pattern contains `(?m`" heuristic would flip the global flag and emit the very
+guaranteed-equivalent mutants the gate exists to prevent (at every anchor *outside*
+the `(?m)`'s scope). The only safe answer is a *correct* positional one; a partial
+one is a regression, not a partial win. (Under-detecting — treating an inline `(?m)`
+as absent — fails **safe**: a missed killable swap, never a wrong emission. That's
+why the flag-only first cut was already sound; this is the principled completion.)
+
+`Mutare.Mutators.RegexLiteral.Flags` is that answer, built as a **reusable, flag-
+agnostic** primitive (the next mode-aware mutation — a dotall-aware `.` reading `s`,
+a caseless mutation reading `i` — consults the same thing). The model is a **stack of
+flag sets**, baseline (the sigil modifiers) at the bottom, threaded through a
+left-to-right walk by `open/2`/`close/1`:
+
+- **scoped** `(?flags:…)` → **push** a frame (current ∪ adds ∖ removes); the matching
+  `)` pops it (the change is confined to the group).
+- **bare** `(?flags)` → **mutate the top frame in place**, push nothing. Because that
+  frame is popped at the enclosing group's `)`, the change automatically applies to
+  "the rest of the enclosing group" (PCRE's exact rule) and is inherited by nested
+  groups (each pushes a copy of the *mutated* frame). At the top level there's no
+  enclosing `)`, so it runs to the pattern's end.
+- **ordinary** group / lookaround / named capture / `(?:` → push a copy, no flag
+  change. Recursion/backref atoms (`(?R)`, `(?P=n)`) self-balance through the same
+  push/pop, harmless. **Comments** `(?#…)` are swallowed whole (body isn't regex, so a
+  `^` inside it is *not* an anchor — a real correctness point, not just flags).
+
+Why a **separate** primitive and not a 7th param threaded through `scan/6`: the flag
+state is genuinely cross-cutting (every future positional mutator needs it), and
+`open/2`/`close/1` are pure and **independently unit-tested** (`regex_flags_test.exs`
+feeds opener strings and asserts the stack) — the kind of fragile, subtle logic the
+project keeps in one tested home. `anchor_walk/6` threads the stack in place of the
+old `multiline?` boolean and reads `Flags.active?(stack, ?m)` at each anchor. The
+classifier deliberately whitelists only the genuine inline-flag letters
+(`imsxuUJn`) so a *named* group `(?P<n>…)` is never misread as a flag set — the one
+collision (`P`) that would corrupt scoping.
+
+**Boundary, documented not papered over:** `x`-mode (extended) whitespace/`#`-comment
+stripping is *not* modelled — we don't tokenize x-mode. Its only effect would be a
+`^`/`$` sitting in an x-mode line comment being read as a real anchor; it can only
+ever *miss* a flag context, never invent one, so it fails safe like any unrecognised
+construct, and the `Regex.compile/2` backstop still guarantees every emitted mutant
+compiles. Verified by a 150k-pattern fuzz seeded with `(?m)`/`(?m:`/`(?-m)`/`(?:`/
+`(?#…)` tokens: every mutant of every compiling original compiles (a flag-stack
+desync would corrupt parens and surface as a non-compiling mutant).
+
 `# mutare:ignore` (done) is the manual escape hatch: a trailing comment ignores
 its line, a standalone comment the next line; matching mutants are recorded
 `:ignored` — not run, kept out of the score's denominator (`killed / (total −
@@ -5699,12 +5760,19 @@ Three near-
 duplications were measured against the cost of unifying them and **deliberately kept** — the merge
 buys less than the duplication costs:
 
-  - **`Mutare.Mutators.RegexLiteral`'s two byte-walks** (`scan/6` and `alt_walk/6`). Both consume the
-    Elixir regex string and share the escape-pair / character-class handling, but their *accumulators*
-    differ fundamentally — `scan` threads a `prev_quant` for quantifier detection, `alt_walk` a frame
-    stack for alternation spans. A shared driver would have to thread both states through pluggable
-    callbacks; the combined state is *more* tangled than the two focused walks, and the module is
-    already well-tested. Revisit only if a *third* walk appears or the escape grammar grows (`\Q…\E`).
+  - **`Mutare.Mutators.RegexLiteral`'s now-three byte-walks** (`scan/6`, `alt_walk/6`, `anchor_walk/6`).
+    All consume the Elixir regex string and share the escape-pair / character-class handling, but their
+    *accumulators* differ fundamentally — `scan` threads a `prev_quant` for quantifier detection,
+    `alt_walk` a frame stack for alternation spans, `anchor_walk` a `Flags` scope stack for positional
+    `m`-tracking. The earlier note here said to "revisit only if a *third* walk appears"; it now has
+    (anchor swaps), so the escape/class handling is genuinely triplicated and a shared *regex token
+    reader* (yield `{token, in_class?, escaped?}`, let each walk keep its own accumulator) is now the
+    leading consolidation candidate. It's still **deferred, not forgotten**: the three accumulators stay
+    distinct under any shared reader, the merge is a real refactor with its own poison risk, and the
+    module is heavily fuzzed — so it wants doing as a *focused* pass with the property/fuzz suite green
+    before and after, not bolted onto a feature commit. The escape grammar growing (`\Q…\E`) would be
+    the forcing function. (The `Flags` scope logic itself is already extracted + unit-tested, so it is
+    *not* part of the duplication — only the escape/class skeleton is.)
   - **`Mutare.Transform.Analyze.Conditions`' parallel spine-walks** (`spine_rewrite`, `spine_bindings`,
     `eval_steps`, `offspine_escaping_binding?`, `prune_binding_ancestors`). All share one structural
     skeleton (stop at `@binding_isolating_forms`, recurse-left at `@short_circuit_ops`, flag at
