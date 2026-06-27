@@ -12,6 +12,20 @@ defmodule Mutare.Mutators.RegexLiteral do
     * **anchors** — drop a leading `^`/`\\A` (`~r/^abc/` → `~r/abc/`) or an
       unescaped trailing `$`/`\\z`/`\\Z` (`~r/abc$/` → `~r/abc/`), each
       independently. An unanchored pattern matches anywhere in the subject.
+    * **anchor swaps** — swap an anchor for a *non-equivalent* sibling, at any real
+      anchor position (escaped `\\^`/`\\$` and in-class `^`/`$` are skipped). The
+      equivalences depend on the **`m` (multiline)** flag, which is read from the
+      sigil's modifiers — so a swap is offered *only* when the two anchors actually
+      differ under the regex's own mode, never as a guaranteed no-op:
+        * `^` ↔ `\\A` — equivalent without `/m` (both = subject start), so offered
+          **only under `/m`**, where `^` is a *line* start.
+        * `$` ↔ `\\Z` — `\\Z` equals `$` without `/m`, so likewise offered **only
+          under `/m`** (where `$` is a *line* end).
+        * `$` ↔ `\\z` — `\\z` is the *strict* subject end (rejects a trailing
+          newline that `$` accepts), so it differs regardless of `/m` and is
+          **always** offered. Without `/m` it is killable only on a subject with a
+          trailing newline, so a survivor is a suspected-equivalent /
+          `# mutare:ignore[regex]` case (like `+`/`*`).
     * **character-class shorthands** — flip a `\\d`/`\\w`/`\\s` to its complement
       `\\D`/`\\W`/`\\S` (and back), anywhere, plus the word-boundary `\\b`↔`\\B`
       outside a class (inside `[…]` `\\b` is a backspace, so it is left alone).
@@ -92,6 +106,7 @@ defmodule Mutare.Mutators.RegexLiteral do
     pattern_variants =
       (["", @sentinel] ++
          anchor_patterns(pattern) ++
+         anchor_swap_patterns(pattern, ?m in modifiers) ++
          scan_patterns(pattern) ++
          alternation_patterns(pattern))
       |> Enum.map(&{&1, modifiers})
@@ -162,6 +177,69 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   defp chop_front(s, n), do: binary_part(s, n, byte_size(s) - n)
   defp chop_back(s, n), do: binary_part(s, 0, byte_size(s) - n)
+
+  # --- anchor swaps --------------------------------------------------------
+
+  # A focused walk (like `alt_walk/6`, not `scan/6`): it only needs escape pairs and
+  # character-class nesting to tell a *real* anchor from an escaped (`\^`) or in-class
+  # (`[$]`) literal. At each real anchor it offers the mode-aware swaps. `multiline?`
+  # rides through unchanged.
+  defp anchor_swap_patterns(pattern, multiline?),
+    do: anchor_walk(pattern, "", false, false, multiline?, [])
+
+  defp anchor_walk(<<>>, _prefix, _ic, _jo, _ml, acc), do: acc
+
+  # Escape pair — `\A`/`\z`/`\Z` are anchors; any other escape (incl. `\^`/`\$`) is a
+  # literal, so it offers nothing.
+  defp anchor_walk(<<?\\, c::utf8, rest::binary>>, prefix, in_class, _jo, ml, acc) do
+    new =
+      if in_class, do: [], else: Enum.map(escaped_anchor_swaps(c, ml), &(prefix <> &1 <> rest))
+
+    anchor_walk(rest, prefix <> <<?\\, c::utf8>>, in_class, false, ml, acc ++ new)
+  end
+
+  defp anchor_walk(<<?\\>>, prefix, ic, jo, ml, acc),
+    do: anchor_walk(<<>>, prefix <> "\\", ic, jo, ml, acc)
+
+  # Character class — `^`/`$` inside it are literals, so swallow it whole (the leading
+  # `^` is the negation, the leading `]` a literal member).
+  defp anchor_walk(<<?[, ?^, rest::binary>>, prefix, false, _jo, ml, acc),
+    do: anchor_walk(rest, prefix <> "[^", true, true, ml, acc)
+
+  defp anchor_walk(<<?[, rest::binary>>, prefix, false, _jo, ml, acc),
+    do: anchor_walk(rest, prefix <> "[", true, true, ml, acc)
+
+  defp anchor_walk(<<?], rest::binary>>, prefix, true, false, ml, acc),
+    do: anchor_walk(rest, prefix <> "]", false, false, ml, acc)
+
+  # `^` outside a class — a start anchor.
+  defp anchor_walk(<<?^, rest::binary>>, prefix, false, _jo, ml, acc) do
+    new = Enum.map(caret_swaps(ml), &(prefix <> &1 <> rest))
+    anchor_walk(rest, prefix <> "^", false, false, ml, acc ++ new)
+  end
+
+  # `$` outside a class — an end anchor.
+  defp anchor_walk(<<?$, rest::binary>>, prefix, false, _jo, ml, acc) do
+    new = Enum.map(dollar_swaps(ml), &(prefix <> &1 <> rest))
+    anchor_walk(rest, prefix <> "$", false, false, ml, acc ++ new)
+  end
+
+  defp anchor_walk(<<c::utf8, rest::binary>>, prefix, in_class, _jo, ml, acc),
+    do: anchor_walk(rest, prefix <> <<c::utf8>>, in_class, false, ml, acc)
+
+  # `^` ↔ `\A`: a no-op without `/m` (both = subject start), so only under `/m`.
+  defp caret_swaps(true), do: ["\\A"]
+  defp caret_swaps(false), do: []
+
+  # `$` → `\z` always (`\z` is the strict end), `\Z` only under `/m` (else `\Z` ≡ `$`).
+  defp dollar_swaps(true), do: ["\\z", "\\Z"]
+  defp dollar_swaps(false), do: ["\\z"]
+
+  # The escaped anchors swapping back toward `^`/`$`, mirroring the above.
+  defp escaped_anchor_swaps(?A, true), do: ["^"]
+  defp escaped_anchor_swaps(?z, _ml), do: ["$"]
+  defp escaped_anchor_swaps(?Z, true), do: ["$"]
+  defp escaped_anchor_swaps(_c, _ml), do: []
 
   # --- modifiers -----------------------------------------------------------
 

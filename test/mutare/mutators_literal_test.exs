@@ -368,6 +368,40 @@ defmodule Mutare.MutatorsLiteralTest do
       assert render(RegexLiteral.mutate(parse(~S|~r/end\\z/|))) == [~S|~r//|, ~S|~r/mutare/|]
     end
 
+    test "swaps $ for the strict \\z end-anchor regardless of /m (\\z differs from $)" do
+      assert ~S|~r/abc\z/| in render(RegexLiteral.mutate(parse(~S|~r/abc$/|)))
+      assert ~S|~r/\Aabc$/| in render(RegexLiteral.mutate(parse(~S|~r/\Aabc\z/|)))
+    end
+
+    test "offers ^<->\\A and $<->\\Z only under /m (they are equivalent otherwise)" do
+      # without /m: `^`≡`\A` and `$`≡`\Z`, so neither swap is offered (only `$`→`\z`)
+      without = render(RegexLiteral.mutate(parse(~S|~r/^abc$/|)))
+      refute ~S|~r/\Aabc$/| in without
+      refute ~S|~r/^abc\Z/| in without
+      assert ~S|~r/^abc\z/| in without
+
+      # with /m: `^` is a line start and `$` a line end — every swap is live
+      with_m = render(RegexLiteral.mutate(parse(~S|~r/^abc$/m|)))
+      assert ~S|~r/\Aabc$/m| in with_m
+      assert ~S|~r/^abc\z/m| in with_m
+      assert ~S|~r/^abc\Z/m| in with_m
+    end
+
+    test "swaps an anchor anywhere it is real (mid-pattern), under /m" do
+      mutants = render(RegexLiteral.mutate(parse(~S"~r/(^a|b$)/m")))
+      # the `^` after `(` and the `$` before `)` are both real anchors
+      assert ~S"~r/(\Aa|b$)/m" in mutants
+      assert ~S"~r/(^a|b\z)/m" in mutants
+    end
+
+    test "does not swap an escaped or in-class anchor" do
+      # `\$` is a literal dollar; `\Z` here is preceded by an escaped backslash
+      assert render(RegexLiteral.mutate(parse(~S|~r/a\$b/|))) == [~S|~r//|, ~S|~r/mutare/|]
+      # `^`/`$` inside a class are literals — only the class negation is offered
+      assert render(RegexLiteral.mutate(parse(~S|~r/[$^]/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/[^$^]/|]
+    end
+
     test "swaps a + quantifier to * and back" do
       assert ~S|~r/\d*/| in render(RegexLiteral.mutate(parse(~S|~r/\d+/|)))
       assert ~S|~r/a+/| in render(RegexLiteral.mutate(parse(~S|~r/a*/|)))
