@@ -5234,8 +5234,12 @@ a metamutant with **zero** poisons.
   families (short names); custom modules go in `.mutare.exs`.
 - **Validated options struct (done).** The shared keyword list that threaded
   through `Config → Schema → Runner → Sandbox` is now `Mutare.Options`, built and
-  validated once by `Options.new/1` at each public entry point (idempotent on a
-  struct, so the pipeline normalizes once and passes the struct down). Validation
+  validated by `Options.new/1` at each public entry point. `Config` owns only file/CLI
+  precedence and CLI-syntax translation; `Options` is the single normalization
+  boundary for every source (including mutator resolution, bare reporter atoms, and
+  the `:all`/`:builtins` default-set shorthand). An existing `%Options{}` is
+  re-normalized and revalidated too, so a hand-built struct cannot bypass validation
+  or retain an unresolved computed default such as `workers: nil`. Validation
   was previously scattered (the `:timeout` positive-int check lived inline in the
   runner) or absent (`:workers`, `:test_selection`, `:paths`, `:sandbox` shape) —
   an invalid `:test_selection` silently fell through to the coverage probe, a

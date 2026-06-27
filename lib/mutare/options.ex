@@ -12,9 +12,9 @@ defmodule Mutare.Options do
   The fields and their types are listed in `t:t/0` below.
   """
 
-  # `new/1` is idempotent on a struct, so the pipeline normalises once at each
-  # public entry point and passes the struct down without re-validating. Two
-  # things are deliberately *not* options: transform plumbing (`:file`,
+  # `new/1` is the normalization boundary for every entry path: raw keyword
+  # values and an existing struct are both validated into the canonical runtime
+  # shape. Two things are deliberately *not* options: transform plumbing (`:file`,
   # `:start_id`, `:skip_ids`) is per-file machinery threaded by `Mutare.Schema`,
   # and the sandbox/project disjointness check lives in `Mutare.Sandbox` (it is
   # relational to `root`); here we only validate the shape of `:sandbox`.
@@ -143,8 +143,8 @@ defmodule Mutare.Options do
   Resolve and validate options.
 
   Accepts a keyword list (typically `Mutare.Config.merge/2`'s output, plus
-  `:only_files`/`:reporter`) or an existing `Options` (returned unchanged).
-  Raises `ArgumentError` on an unknown key or an invalid value. `:workers`
+  `:only_files`/`:reporter`) or an existing `Options` (re-normalized and
+  revalidated). Raises `ArgumentError` on an unknown key or an invalid value. `:workers`
   defaults to `System.schedulers_online/0`, resolved here so the struct always
   carries a concrete positive integer.
 
@@ -162,7 +162,12 @@ defmodule Mutare.Options do
       true
   """
   @spec new(t() | keyword()) :: t()
-  def new(%__MODULE__{} = options), do: options
+  def new(%__MODULE__{} = options) do
+    options
+    |> Map.from_struct()
+    |> Map.to_list()
+    |> new()
+  end
 
   def new(opts) when is_list(opts) do
     reject_unknown!(opts)
@@ -251,21 +256,25 @@ defmodule Mutare.Options do
         "#{inspect(key)} must be a list of strings"
       )
 
-  # Resolve and validate `:mutators` through the one `Mutare.Mutators` catalog into
+  # A bare `:all`/`:builtins` means the default set, represented canonically as
+  # `nil` so `Mutare.Transform` remains the single owner of that default. A
+  # `:mutators` list is resolved through the one `Mutare.Mutators` catalog into
   # `Mutare.Mutator.Spec`s, so the direct API (`Mutare.run/2`, `Options.new/1`)
   # resolves family atoms, accepts `{module, opts}` configured entries, and rejects
-  # non-mutator modules exactly as the CLI/`.mutare.exs` path does — a list already
-  # resolved by `Mutare.Config` passes through unchanged (resolution is idempotent).
+  # non-mutator modules exactly as the CLI/`.mutare.exs` path does. An already
+  # resolved list passes through unchanged (resolution is idempotent).
   # `nil` means "let `Mutare.Transform` pick its default set". `resolve/1` raises a
-  # descriptive "unknown mutator" error on a bad entry; the non-list clause keeps
-  # the clear "list of modules" message for an outright wrong shape.
+  # descriptive "unknown mutator" error on a bad entry; the fallback keeps a
+  # clear accepted-shapes message for an outright wrong value.
   defp validate_mutators!(nil), do: nil
+  defp validate_mutators!(token) when token in [:all, :builtins], do: nil
 
   defp validate_mutators!(mutators) when is_list(mutators),
     do: Mutare.Mutators.resolve(mutators)
 
   defp validate_mutators!(other) do
-    raise ArgumentError, ":mutators must be a list of modules, got: #{inspect(other)}"
+    raise ArgumentError,
+          ":mutators must be :all, :builtins, nil, or a list of modules, got: #{inspect(other)}"
   end
 
   # Resolve and validate `:macros` through `Mutare.Macros` into `Mutare.Macro.Spec`s. The
@@ -471,15 +480,19 @@ defmodule Mutare.Options do
 
   # `:reporters` is the list of *output formats* (the single source of truth for
   # format validation). Distinct from `:reporter` below, the live per-mutant
-  # progress callback. Each entry is `{format, path | nil}` — `nil` path = stdout.
+  # progress callback. Input accepts a bare format atom (stdout) or
+  # `{format, path | nil}`; the canonical struct always stores the tuple form.
   defp validate_reporters!(reporters) when is_list(reporters) do
     Enum.map(reporters, &validate_reporter_entry!/1)
   end
 
   defp validate_reporters!(other) do
     raise ArgumentError,
-          ":reporters must be a list of {format, path | nil} tuples, got: #{inspect(other)}"
+          ":reporters must be a list of format atoms or {format, path | nil} tuples, " <>
+            "got: #{inspect(other)}"
   end
+
+  defp validate_reporter_entry!(format) when format in @formats, do: {format, nil}
 
   defp validate_reporter_entry!({format, path})
        when format in @formats and (is_nil(path) or (is_binary(path) and path != "")) do
@@ -488,7 +501,7 @@ defmodule Mutare.Options do
 
   defp validate_reporter_entry!(other) do
     raise ArgumentError,
-          ":reporters entries must be {format, path | nil} with format in " <>
+          ":reporters entries must be a format atom or {format, path | nil} with format in " <>
             "#{inspect(@formats)}, got: #{inspect(other)}"
   end
 

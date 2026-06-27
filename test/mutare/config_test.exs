@@ -2,8 +2,6 @@ defmodule Mutare.ConfigTest do
   use ExUnit.Case, async: true
 
   alias Mutare.Config
-  alias Mutare.Mutators.{Arithmetic, Relational}
-
   doctest Mutare.Config
 
   describe "load/1" do
@@ -91,9 +89,9 @@ defmodule Mutare.ConfigTest do
                4.0
     end
 
-    test "--mutators resolves a CSV to specs, preserving order" do
-      assert Config.merge([], mutators: "relational,arithmetic")[:mutators]
-             |> Enum.map(& &1.module) == [Relational, Arithmetic]
+    test "--mutators translates a CSV to names, preserving order" do
+      assert Config.merge([], mutators: "relational,arithmetic")[:mutators] ==
+               [:relational, :arithmetic]
     end
 
     test "--mutators resolves a custom module name to the real module atom" do
@@ -222,27 +220,24 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([partition_env: "FromFile"], [])[:partition_env] == "FromFile"
     end
 
-    test "file config mutators: :all resolves to the default set (key omitted)" do
-      refute Keyword.has_key?(Config.merge([mutators: :all], []), :mutators)
+    test "file config mutators: :all passes through for Options to normalize" do
+      assert Config.merge([mutators: :all], [])[:mutators] == :all
     end
 
-    test "file config mutators: :builtins (bare) also resolves to the default set" do
-      refute Keyword.has_key?(Config.merge([mutators: :builtins], []), :mutators)
+    test "file config mutators: :builtins passes through for Options to normalize" do
+      assert Config.merge([mutators: :builtins], [])[:mutators] == :builtins
     end
 
-    test "file config mutators list resolves to specs" do
-      assert Config.merge([mutators: [:relational]], [])[:mutators] ==
-               [Mutare.Mutator.Spec.for_module(Relational)]
+    test "file config mutator lists pass through unchanged" do
+      assert Config.merge([mutators: [:relational]], [])[:mutators] == [:relational]
     end
 
-    test "the :builtins token in a list expands to the full default set" do
-      assert Config.merge([mutators: [:builtins]], [])[:mutators] ==
-               Mutare.Mutators.resolve(Mutare.Mutators.all())
+    test "the :builtins token in a list passes through for Options to expand" do
+      assert Config.merge([mutators: [:builtins]], [])[:mutators] == [:builtins]
     end
 
-    test "--mutators builtins (CLI) expands the group token" do
-      assert Config.merge([], mutators: "builtins")[:mutators] ==
-               Mutare.Mutators.resolve(Mutare.Mutators.all())
+    test "--mutators builtins translates the group token for Options" do
+      assert Config.merge([], mutators: "builtins")[:mutators] == [:builtins]
     end
 
     test "CLI flags win over file config" do
@@ -281,11 +276,11 @@ defmodule Mutare.ConfigTest do
                [{:json, nil}, {:sarif, nil}]
     end
 
-    test "without --format, .mutare.exs reporters are used (bare atoms normalised to stdout)" do
+    test "without --format, .mutare.exs reporters pass through for Options to normalize" do
       refute Keyword.has_key?(Config.merge([], []), :reporters)
 
       assert Config.merge([reporters: [:human, {:json, "r.json"}]], [])[:reporters] ==
-               [{:human, nil}, {:json, "r.json"}]
+               [:human, {:json, "r.json"}]
     end
 
     test "--format wins over .mutare.exs reporters" do
@@ -299,31 +294,15 @@ defmodule Mutare.ConfigTest do
       # not silently dropped/rewritten.
       assert Config.merge([reporters: :json], [])[:reporters] == :json
     end
-  end
 
-  describe "mutator_modules/1" do
-    test "maps known families to specs" do
-      assert Config.mutator_modules([:arithmetic, :relational]) |> Enum.map(& &1.module) ==
-               [Arithmetic, Relational]
-    end
+    test "Options owns runtime normalization after Config translation" do
+      options =
+        [mutators: :all, reporters: [:human, {:json, "r.json"}]]
+        |> Config.merge([])
+        |> Mutare.Options.new()
 
-    test "accepts a custom module implementing the behaviour, mixed with families" do
-      assert Config.mutator_modules([:arithmetic, Mutare.Test.BooleanMutator])
-             |> Enum.map(& &1.module) == [Arithmetic, Mutare.Test.BooleanMutator]
-    end
-
-    test "raises on an unknown family, listing the known ones" do
-      error = assert_raise ArgumentError, fn -> Config.mutator_modules([:bogus_family]) end
-      message = Exception.message(error)
-      assert message =~ "unknown mutator :bogus_family"
-      assert message =~ "arithmetic"
-      assert message =~ "relational"
-    end
-
-    test "raises on a module that does not implement the behaviour" do
-      error = assert_raise ArgumentError, fn -> Config.mutator_modules([Enum]) end
-      assert Exception.message(error) =~ "implementing Mutare.Mutator"
-      assert Exception.message(error) =~ "missing name/0"
+      assert options.mutators == nil
+      assert options.reporters == [{:human, nil}, {:json, "r.json"}]
     end
   end
 end

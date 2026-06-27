@@ -1,10 +1,11 @@
 defmodule Mutare.Config do
   @moduledoc """
-  Resolve Mutare options from an optional `.mutare.exs` file and CLI flags.
+  Translate Mutare options from an optional `.mutare.exs` file and CLI flags.
 
-  CLI flags win over file config. The result is a keyword list that
-  `Mutare.Options.new/1` validates and resolves into the `Mutare.Options` struct
-  threaded through the rest of the pipeline.
+  CLI flags win over file config. The result is a raw keyword list that
+  `Mutare.Options.new/1` normalizes and validates into the `Mutare.Options`
+  struct threaded through the rest of the pipeline. This module owns CLI syntax
+  and precedence only; it does not resolve runtime option values.
   """
 
   @doc "Load `.mutare.exs` from `root`, or `[]` when it is absent."
@@ -21,8 +22,8 @@ defmodule Mutare.Config do
   end
 
   @doc """
-  Merge `file_config` with parsed CLI `flags` into a resolved options keyword list
-  (what `Mutare.Options.new/1` validates). CLI flags win over file config: each set
+  Merge `file_config` with parsed CLI `flags` into an options keyword list for
+  `Mutare.Options.new/1`. CLI flags win over file config: each set
   flag is translated to its option key and put over the file value; an unset flag
   leaves the file's value (or the option default) in place.
 
@@ -31,12 +32,9 @@ defmodule Mutare.Config do
   mappings that aren't a 1:1 rename: a repeatable `--only` accumulates into `:paths`
   (each a directory or single `.ex` file, in order), `--line FILE:LINE` into
   `:only_lines`, `--full` sets `test_selection: :full`, and
-  `--partition-db`/`--partition-env` resolve to `:partition_env`. A bare `:mutators`
-  value of `:all` or `:builtins` (or none) resolves to "use the default set" by
-  omitting the key, so `Mutare.Transform` picks it; a `:mutators` *list* is resolved
-  through `Mutare.Mutators.resolve/1`, where the `:builtins` token expands to every
-  built-in family in place (so `--mutators builtins,relational` works). Raises
-  `ArgumentError` on an unknown mutator family.
+  `--partition-db`/`--partition-env` resolve to `:partition_env`. A `:mutators`
+  CLI value is translated from CSV into a list of names; `Mutare.Options` resolves
+  those names, including the `:builtins` group token, through the mutator catalog.
 
       iex> opts = Mutare.Config.merge([paths: ["lib"], min_score: 70], only: "lib/billing", full: true)
       iex> {opts[:paths], opts[:min_score], opts[:test_selection]}
@@ -58,7 +56,6 @@ defmodule Mutare.Config do
     |> put_unless_nil(:partition_env, partition_env(flags))
     |> put_unless_nil(:mutators, flags[:mutators] && parse_families(flags[:mutators]))
     |> put_passthrough_flags(flags)
-    |> normalize_mutators()
     |> resolve_reporters(flags)
   end
 
@@ -89,19 +86,6 @@ defmodule Mutare.Config do
     end)
   end
 
-  @doc """
-  Resolve a list of mutators to `Mutare.Mutator.Spec`s via the `Mutare.Mutators`
-  catalog. Each entry is a built-in family atom (`:arithmetic`, `:relational`), a
-  module implementing `Mutare.Mutator`, or a `{module, opts}` configured pair.
-  Raises `ArgumentError` on anything else.
-
-      iex> Mutare.Config.mutator_modules([:arithmetic]) |> Enum.map(& &1.module)
-      [Mutare.Mutators.Arithmetic]
-  """
-  @spec mutator_modules([atom() | module() | {atom() | module(), term()}]) ::
-          [Mutare.Mutator.Spec.t()]
-  defdelegate mutator_modules(mutators), to: Mutare.Mutators, as: :resolve
-
   # Resolve output reporters. `--format` (CLI) wins over a `.mutare.exs`
   # `reporters:` list. Both `--format` and `--output` are **repeatable** (`:keep`)
   # and paired by position (the Nth `--format` with the Nth `--output`); a format
@@ -112,10 +96,7 @@ defmodule Mutare.Config do
   defp resolve_reporters(config, flags) do
     case Keyword.get_values(flags, :format) do
       [] ->
-        case Keyword.fetch(config, :reporters) do
-          {:ok, reporters} -> Keyword.put(config, :reporters, normalize_reporters(reporters))
-          :error -> config
-        end
+        config
 
       formats ->
         outputs = Keyword.get_values(flags, :output)
@@ -148,18 +129,6 @@ defmodule Mutare.Config do
       [{:human, nil} | reporters]
     end
   end
-
-  # Normalise a `.mutare.exs` `reporters:` list: a bare format atom means
-  # "to stdout" (`{atom, nil}`); a `{format, path}` tuple is kept. Anything else
-  # passes through untouched for `Mutare.Options` to reject with a clear message.
-  defp normalize_reporters(reporters) when is_list(reporters) do
-    Enum.map(reporters, fn
-      format when is_atom(format) -> {format, nil}
-      other -> other
-    end)
-  end
-
-  defp normalize_reporters(other), do: other
 
   # --- internals -----------------------------------------------------------
 
@@ -253,16 +222,6 @@ defmodule Mutare.Config do
     case Keyword.get_values(flags, :only) do
       [] -> nil
       paths -> paths
-    end
-  end
-
-  defp normalize_mutators(config) do
-    case Keyword.get(config, :mutators, :all) do
-      # A bare `:all`/`:builtins` (not in a list) means "the default set" — drop the
-      # key and let `Mutare.Transform` supply it. Inside a list, `:builtins` is instead
-      # a group token `Mutare.Mutators.resolve/1` expands (see that module).
-      token when token in [:all, :builtins] -> Keyword.delete(config, :mutators)
-      mutators -> Keyword.put(config, :mutators, mutator_modules(mutators))
     end
   end
 

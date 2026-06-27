@@ -29,10 +29,18 @@ defmodule Mutare.OptionsTest do
     end
   end
 
-  describe "new/1 idempotency" do
-    test "an existing struct is returned unchanged" do
+  describe "new/1 on an existing struct" do
+    test "a valid existing struct normalizes to the same value" do
       options = Options.new(workers: 4, timeout: 1_000)
       assert Options.new(options) == options
+    end
+
+    test "revalidates and fills computed defaults instead of trusting a raw struct" do
+      assert Options.new(%Options{}).workers == System.schedulers_online()
+
+      assert_raise ArgumentError, ~r/:workers must be a positive integer/, fn ->
+        Options.new(%Options{workers: 0})
+      end
     end
   end
 
@@ -392,6 +400,11 @@ defmodule Mutare.OptionsTest do
                [Mutare.Mutators.Relational, Mutare.Mutators.Arithmetic]
     end
 
+    test "normalizes the bare default-set tokens to nil" do
+      assert Options.new(mutators: :all).mutators == nil
+      assert Options.new(mutators: :builtins).mutators == nil
+    end
+
     test "accepts {module, opts} configured entries, carrying opts onto the spec" do
       assert Options.new(mutators: [{Mutare.Test.BooleanMutator, as: :strict, k: 1}]).mutators ==
                [
@@ -416,7 +429,7 @@ defmodule Mutare.OptionsTest do
     end
 
     test "rejects a non-list or non-atom elements" do
-      assert_raise ArgumentError, ~r/:mutators must be a list of modules/, fn ->
+      assert_raise ArgumentError, ~r/:mutators must be :all, :builtins, nil, or a list/, fn ->
         Options.new(mutators: :arithmetic)
       end
 
@@ -462,6 +475,13 @@ defmodule Mutare.OptionsTest do
       assert Options.new(reporters: reporters).reporters == reporters
     end
 
+    test "normalizes bare format atoms to stdout entries" do
+      assert Options.new(reporters: [:human, :json]).reporters == [
+               {:human, nil},
+               {:json, nil}
+             ]
+    end
+
     test "rejects an unknown format" do
       assert_raise ArgumentError, ~r/format in/, fn ->
         Options.new(reporters: [{:xml, "out.xml"}])
@@ -469,8 +489,8 @@ defmodule Mutare.OptionsTest do
     end
 
     test "rejects malformed entries" do
-      # a bare atom is not a {format, path} tuple
-      assert_raise ArgumentError, fn -> Options.new(reporters: [:json]) end
+      # an unknown bare format
+      assert_raise ArgumentError, fn -> Options.new(reporters: [:xml]) end
       # an empty path string
       assert_raise ArgumentError, fn -> Options.new(reporters: [{:json, ""}]) end
       # not a list at all
