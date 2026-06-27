@@ -74,6 +74,45 @@ defmodule Mutare.Transform.CallsTest do
                Sourceror.to_string(rebuild.(:reject, [{:q, [], nil}, {:c, [], nil}]))
     end
 
+    test "a selectively-imported bare macro requalifies a renamed sibling, keeps a value-only swap bare" do
+      arg_q = {:q, [], nil}
+      arg_c = {:c, [], nil}
+
+      # The stamps `Mutare.Transform.Resolve` writes for a bare macro reached through a *selective*
+      # import (`import Mx.DSL, only: [filter: 2]` — a `:qualify` kind): the resolved identity plus
+      # the import resolution. Set directly to drive the bare rebuild's `:qualify` branch.
+      meta = [mutare_macro_call: {[:Mx, :DSL], :filter}, mutare_import: {[:Mx, :DSL], :qualify}]
+      node = {:filter, meta, [arg_q, arg_c]}
+
+      assert {[:Mx, :DSL], :filter, [^arg_q, ^arg_c], rebuild} = Calls.resolved_macro_call(node)
+
+      # A value-only swap (same name + arity) stays bare — it resolves as the compiling original did.
+      assert "filter(q, c)" == Sourceror.to_string(rebuild.(:filter, [arg_q, arg_c]))
+
+      # A renamed sibling is requalified with the alias-proof `Elixir.`-prefixed module: bare
+      # `reject` may not be imported under `only: [filter: 2]`.
+      assert "Elixir.Mx.DSL.reject(q, c)" ==
+               Sourceror.to_string(rebuild.(:reject, [arg_q, arg_c]))
+
+      # An arity change requalifies too (the lower/higher arity is not selectively imported).
+      assert "Elixir.Mx.DSL.filter(q)" == Sourceror.to_string(rebuild.(:filter, [arg_q]))
+    end
+
+    test "a direct atom-module macro call is stamped by Resolve and rebuilt in the atom form" do
+      registry = Mutare.Macros.build([{:my_dsl, :filter, :any, :skip}], [])
+
+      node =
+        ":my_dsl.filter(q, c)"
+        |> Sourceror.parse_string!()
+        |> Resolve.annotate(registry)
+
+      assert {:my_dsl, :filter, [_q, _c], rebuild} = Calls.resolved_macro_call(node)
+
+      # rebuild keeps the written `:my_dsl.` atom-module receiver.
+      assert ":my_dsl.reject(q, c)" ==
+               Sourceror.to_string(rebuild.(:reject, [{:q, [], nil}, {:c, [], nil}]))
+    end
+
     test "an ordinary (unregistered) call resolves to nil — not a routable macro" do
       assert resolved_macro("String.upcase(s)") == nil
       assert resolved_macro("filter(q, c)") == nil

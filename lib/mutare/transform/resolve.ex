@@ -101,6 +101,30 @@ defmodule Mutare.Transform.Resolve do
     {{:., dot_meta, [stamped, fun]}, call_meta, descend(args, env)}
   end
 
+  # A direct Erlang/atom-module remote call `:mod.fun(...)`: the receiver is a bare (or Sourceror-
+  # wrapped) atom — never alias-stamped, so the atom *is* the module key. (An *aliased* atom module
+  # `alias :binary, as: B; B.fun(...)` is the `__aliases__` shape above, resolved via the alias env.)
+  # `Aliases.resolve_node/2` returns the atom for an atom receiver and `nil` for any other expression
+  # (a variable/result dispatch `obj.fun(...)`), so only a genuine atom-module call is stamped with
+  # its known-macro routing — bringing the macro path level with `Mutare.Transform.Calls.resolved_call/1`,
+  # which already resolves this shape. A non-atom receiver falls through to a plain descent (the
+  # generic clause's behaviour), so dynamic dispatch is untouched.
+  defp walk({{:., dot_meta, [mod, fun]}, call_meta, args}, env)
+       when is_atom(fun) and is_list(args) do
+    case Aliases.resolve_node(mod, env.aliases) do
+      nil ->
+        {{:., dot_meta, [mod, fun]}, call_meta, descend(args, env)}
+
+      module_key ->
+        call_node = {{:., dot_meta, [mod, fun]}, call_meta, args}
+
+        call_meta =
+          MacroStamp.stamp(call_meta, module_key, fun, args, call_node, env.macros, env.pipe_mode)
+
+        {{:., dot_meta, [mod, fun]}, call_meta, descend(args, env)}
+    end
+  end
+
   # A bare call `fun(...)`: stamp it with its resolved import (or Kernel-displacement) using
   # the current pipe context for effective arity, then — when it resolves to a known macro —
   # its argument routing, then descend the arguments un-piped. The macro stamp runs *after*
