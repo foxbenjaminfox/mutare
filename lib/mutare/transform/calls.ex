@@ -215,7 +215,7 @@ defmodule Mutare.Transform.Calls do
           {module_key() | nil, atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
   def resolved_macro_call({head, meta, args}) when is_list(meta) and is_list(args) do
     case macro_identity(meta) do
-      {module, name} -> {module, name, args, macro_rebuild(head, meta, args)}
+      {module, name} -> {module, name, args, macro_rebuild(head, meta, module, args)}
       nil -> nil
     end
   end
@@ -233,33 +233,53 @@ defmodule Mutare.Transform.Calls do
 
   # Re-emit a swap in the call's *written* form. The macro stamp is only ever placed on a remote
   # `Mod.fun`/`:mod.fun` head or a bare `fun` head. A remote head reuses its written receiver/meta
-  # verbatim — qualified keeps its module path, aliased keeps its alias.
-  defp macro_rebuild({:., dot_meta, [recv, _fun]}, call_meta, _args) do
+  # verbatim — qualified keeps its module path, aliased keeps its alias. (`module` is the resolved
+  # identity, unused for a remote: the written receiver already names the module.)
+  defp macro_rebuild({:., dot_meta, [recv, _fun]}, call_meta, _module, _args) do
     fn new_name, new_args -> {{:., dot_meta, [recv, new_name]}, call_meta, new_args} end
   end
 
-  # A bare imported macro mirrors `resolved_call/1`'s bare rebuild — comparing the proposed name to
-  # the **written head** `fun`, exactly as that twin compares `new_fun == fun`. It stays **bare** for
-  # a sole whole import (`:bare` — the renamed sibling is importable too) and for an un-reflectable
-  # whole import (no `:mutare_import` stamp — the registry-fallback path,
-  # `Resolve.registered_macro_module/3`), but a **selective or overlapping** import (`:qualify`)
-  # requalifies a *renamed* (or re-aritied) macro with the alias-proof module: the new name may not be
-  # imported, so a bare call could fail to compile or resolve to the wrong module. A **value-only**
-  # swap (same name *and* arity) keeps the bare form, since it resolves exactly as the (compiling)
-  # original did.
-  defp macro_rebuild(fun, meta, args) when is_atom(fun) do
+  # A bare imported/Kernel macro mirrors `resolved_call/1`'s bare rebuild — comparing the proposed
+  # name to the **written head** `fun`, exactly as that twin compares `new_fun == fun`. The three
+  # sources of a bare macro call differ in whether a *renamed* (or re-aritied) sibling is safe to
+  # leave bare:
+  #
+  #   * `:bare` — a **sole whole import** with an unmanipulated `Kernel` (`Imports.rebuild_kind/3`
+  #     guarantees it): the only other in-scope provider is `Kernel`, so the renamed sibling is
+  #     unambiguously bare-callable to the same module. Stays **bare** even on a rename.
+  #   * `:qualify` — a **selective or overlapping** import: the new name may not be imported, or a
+  #     second import could make a bare sibling ambiguous / point it elsewhere. Requalify a
+  #     renamed/re-aritied sibling with the alias-proof module.
+  #   * `nil` (no `:mutare_import` stamp) — a `Kernel` macro (`match?`, auto-imported) **or** a
+  #     **registry-fallback** whole import Mutare couldn't reflect on
+  #     (`Resolve.registered_macro_module/3`). Neither carries the sole-whole-import guarantee
+  #     `:bare` rests on: a renamed/re-aritied sibling may be displaced
+  #     (`import Kernel, except: [destructure: 2]`) or shadowed by an overlapping provider, so a
+  #     bare emit could fail to compile. Requalify it with the resolved **identity** module (the
+  #     `@macro_call_key` stamp, threaded in as `module`).
+  #
+  # A **value-only** swap (same name *and* arity) keeps the bare form in every case — it resolves
+  # exactly as the (compiling) original did. A `nil` *identity module* (a name-only `{:*, name}`
+  # match the resolver never pinned to a module) has nothing to qualify against, so it too stays
+  # bare — the best available, the name-only hatch's inherent limit.
+  defp macro_rebuild(fun, meta, module, args) when is_atom(fun) do
     case Imports.resolved_import(meta) do
-      {module, :qualify} ->
-        fn new_name, new_args ->
-          if new_name == fun and length(new_args) == length(args) do
-            {new_name, meta, new_args}
-          else
-            {{:., [], [qualifier(module), new_name]}, meta, new_args}
-          end
-        end
+      {import_module, :qualify} -> bare_macro_rebuild(import_module, meta, fun, args)
+      {_import_module, :bare} -> fn new_name, new_args -> {new_name, meta, new_args} end
+      nil -> bare_macro_rebuild(module, meta, fun, args)
+    end
+  end
 
-      _ ->
-        fn new_name, new_args -> {new_name, meta, new_args} end
+  # The bare rebuild closure: a value-only swap (same name *and* arity as the written head `fun`)
+  # stays bare; a renamed/re-aritied sibling requalifies with `module` (alias-proof), unless
+  # `module` is `nil` (a name-only match) where bare is the only option.
+  defp bare_macro_rebuild(module, meta, fun, args) do
+    fn new_name, new_args ->
+      if (new_name == fun and length(new_args) == length(args)) or is_nil(module) do
+        {new_name, meta, new_args}
+      else
+        {{:., [], [qualifier(module), new_name]}, meta, new_args}
+      end
     end
   end
 

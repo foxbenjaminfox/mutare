@@ -1232,6 +1232,25 @@ target's deps loaded anyway). A known macro in a `:scaffold`/compile-time positi
 (it's already non-mutating there, so `:skip` would be a no-op anyway). `test/support/macro_mutator.ex`
 is the worked `macros/0` example (with a piped `where/2` stage).
 
+**Rebuilding a renamed/re-aritied bare macro must qualify when the import isn't proven sole**
+(`Calls.macro_rebuild/5`). `resolved_macro_call/1` hands a `:routing`/`:hosted` mutator a `rebuild`
+closure to re-emit a swap in the written form. For a *bare* macro the safety of leaving a **renamed**
+(or re-aritied) sibling bare hinges on the import shape, and the three sources diverge: a `:bare`
+import stamp is the `rebuild_kind`-guaranteed **sole whole import** with an unmanipulated `Kernel`, so
+the sibling is unambiguously bare-callable (stay bare); a `:qualify` stamp already requalifies. But a
+**`nil` import stamp** has *two* origins that look identical and are **both unsafe** to leave bare on a
+rename: a `Kernel` macro (`match?`, auto-imported — the renamed sibling might be displaced by
+`import Kernel, except: [destructure: 2]`, so a bare `destructure` is a compile error) and the
+**registry-fallback** whole import above (Mutare never proved it the *sole* import, so an overlapping
+provider could shadow a bare sibling). Neither carries the sole-whole-import guarantee `:bare` rests
+on, so the old `_`-fallback's unconditional bare emit was a latent poison. The fix threads the resolved
+**identity** module (the `@macro_call_key` stamp `resolved_macro_call/1` already reads) into the
+rebuild and requalifies a renamed/re-aritied sibling with the alias-proof `Elixir.`-prefixed module —
+the same `Calls.qualifier/1` the `:qualify` path uses (see "Absolute `Elixir.`-led aliases"). A
+**value-only** swap (same name *and* arity) still stays bare in every case (it resolves as the
+compiling original did), and a `nil` *identity* module (a name-only `{:*, name}` match never pinned to
+a module) has nothing to qualify against, so it stays bare too — the name-only hatch's inherent limit.
+
 **Structural pattern mutation of a binding-escaping macro arg (`:binding_pattern`)**
 (`destructure([x, y], v)` → `[y, x]`/wildcard). A bare `:pattern`-routed macro arg is *safe* —
 descended-not-mutated, so no literal is mutated in place and no selector is spliced into pattern

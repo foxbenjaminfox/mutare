@@ -63,15 +63,46 @@ defmodule Mutare.Transform.CallsTest do
                Sourceror.to_string(rebuild.(:reject, [{:q, [], nil}, {:c, [], nil}]))
     end
 
-    test "a bare imported call resolves via the registry fallback and rebuilds bare" do
+    test "a bare imported call resolves via the registry fallback, qualifying a renamed sibling" do
       assert {[:Mx, :DSL], :filter, [_q, _c], rebuild} =
                resolved_macro("""
                import Mx.DSL
                filter(q, c)
                """)
 
-      assert "reject(q, c)" ==
+      # A value-only swap (same name + arity) stays bare — it resolves as the compiling original did.
+      assert "filter(q, c)" ==
+               Sourceror.to_string(rebuild.(:filter, [{:q, [], nil}, {:c, [], nil}]))
+
+      # A renamed sibling requalifies through the alias-proof module: the import carried no
+      # `:mutare_import` stamp (registry-fallback resolution, Mutare can't reflect on `Mx.DSL`),
+      # so the sole-whole-import guarantee a `:bare` rebuild rests on is absent — a bare `reject`
+      # could be ambiguous under an overlapping import, so it is qualified to be compile-safe.
+      assert "Elixir.Mx.DSL.reject(q, c)" ==
                Sourceror.to_string(rebuild.(:reject, [{:q, [], nil}, {:c, [], nil}]))
+    end
+
+    test "a bare Kernel macro (no import stamp) requalifies a renamed sibling, keeps a value-only swap bare" do
+      # `match?` is a built-in known macro resolving to Kernel with *no* `:mutare_import` stamp
+      # (Kernel is auto-imported). A renamed/re-aritied sibling could have been displaced out of
+      # Kernel (`import Kernel, except: [destructure: 2]`), so the bare rebuild must requalify it
+      # via the alias-proof Kernel module rather than emit the excluded sibling bare.
+      node =
+        "match?(x, 1)"
+        |> Sourceror.parse_string!()
+        |> Resolve.annotate(Mutare.Macros.build([], []))
+
+      assert {[:Kernel], :match?, [_x, _one], rebuild} = Calls.resolved_macro_call(node)
+
+      x = {:x, [], nil}
+      one = {:__block__, [], [1]}
+
+      # A value-only swap stays bare (resolves as the compiling original did).
+      assert "match?(x, 1)" == Sourceror.to_string(rebuild.(:match?, [x, one]))
+
+      # A renamed sibling requalifies with the alias-proof `Elixir.Kernel` module.
+      assert "Elixir.Kernel.destructure(x, 1)" ==
+               Sourceror.to_string(rebuild.(:destructure, [x, one]))
     end
 
     test "a selectively-imported bare macro requalifies a renamed sibling, keeps a value-only swap bare" do
@@ -130,7 +161,12 @@ defmodule Mutare.Transform.CallsTest do
         |> Sourceror.parse_string!()
         |> Resolve.annotate(registry)
 
-      assert {nil, :only_macro, [_a, _b], _rebuild} = Calls.resolved_macro_call(node)
+      assert {nil, :only_macro, [_a, _b], rebuild} = Calls.resolved_macro_call(node)
+
+      # A `nil` identity module has nothing to qualify against, so even a renamed sibling stays
+      # bare (the name-only hatch's inherent limit).
+      assert "renamed(a, b)" ==
+               Sourceror.to_string(rebuild.(:renamed, [{:a, [], nil}, {:b, [], nil}]))
     end
 
     test "the identity stamp never leaks into the rendered metamutant" do
