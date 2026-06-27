@@ -3993,6 +3993,49 @@ poison recovery, per the project's standing preference. (`:math`'s atom module n
 reaches a guard — `:math` calls aren't guard-legal — so only the `Integer` path
 needed the fix, but the fix is general: any guard-safe qualified macro is now safe.)
 
+### DefaultDrop generalized — drop a trailing arg back to *any* implicit default `[done]`
+`default_drop` began as a nil-only family: drop the trailing fallback of a lookup
+(`Map.get/3`→`/2`, …) and skip a literal-`nil` default as equivalent. The mechanic —
+pop the trailing arg, keep the rest — is identical for *any* call whose trailing
+argument is optional with a known implicit default, so the family now covers a second
+vein of **refinement defaults**: `Float.round`/`ceil`/`floor` precision (implicit `0`),
+`Integer.to_string`/`to_charlist`/`parse`/`digits`/`undigits` base (`10`), `Enum.join`
+separator (`""`), `String.pad_leading`/`pad_trailing` fill (`" "`), and
+`String.trim`/`trim_leading`/`trim_trailing` to-trim string (no value form). Each asks
+the same "is this refinement tested?" question the nil-lookups ask of the not-found
+path. No new plumbing — it stays one `mutate/2` over the pipe-aware
+`Helpers.lookup_resolved_arity` path; only the `@rules` value and the skip guard changed.
+
+The non-obvious parts:
+
+- **The equivalence guard generalized from `nil_literal?/1` to a per-rule list.** Each
+  rule value is now `{base_fun, equivalent_defaults}` where `equivalent_defaults` lists
+  the literal value(s) that *equal* the implicit default — dropping one is a no-op, so it
+  is skipped (`Map.get(m, k, nil)`, `Float.round(x, 0)`, `Integer.to_string(n, 10)`,
+  `Enum.join(xs, "")`, `String.pad_leading(s, n, " ")`). The check is `AST.literal_value/1`
+  (the inverse of `AST.literal/1`) `in` that list, which subsumes the old `nil` case
+  (`nil` is an atom literal) and reduces to "never skip" for an **empty** list. Two cases
+  use the empty list deliberately: a `_lazy` fallback (a fun is never a literal — already
+  always-drop) and `String.trim`'s to-trim string, because `String.trim(s, " ")` trims
+  *only* spaces, not all whitespace, so it is genuinely **not** equivalent to
+  `String.trim(s)` (the pad fill `" "` *is* equivalent — the asymmetry is real, not an
+  oversight).
+- **Escaped-string defaults are a documented false-keep.** The comparison reads a
+  string literal's value, but Sourceror keeps escapes un-decoded, so an exotic spelling of
+  a whitespace default — `String.pad_leading(s, n, "\s")`, where `"\s"` *is* a space and so
+  equals the implicit `" "` — isn't recognised as equivalent and yields a phantom mutant.
+  This errs toward *emitting* an equivalent mutant (a false survivor), never toward
+  silently dropping a real one — the safe direction, consistent with BitstringSpec's
+  literal-equivalence handling, and not worth a re-parse for the rare escaped whitespace.
+- **Two deliberate overlaps with sibling families, producing distinct mutants on one
+  call.** `call_removal` removes `String.trim`/`pad_leading`/`pad_trailing` outright (→ the
+  raw input) where this drops only the refining arg (→ default behaviour); `numeric`
+  renames `Float.ceil ↔ Float.floor` (keeping precision) orthogonal to this precision drop.
+  These are different code, so neither is a redundant sibling for `Overlap` to prune.
+- **`Enum.map_join` is excluded on purpose.** Its joiner is the *middle* argument
+  (`map_join(enum, joiner \\ "", mapper)`), so dropping it is a non-trailing drop the
+  pop-the-last mechanic can't express cleanly — left out the way `reverse/2` is.
+
 ### OperandSwap — operand-order swap for non-commutative operators `[done]`
 The operand-order sibling of the operator-swap families (`Arithmetic`/`List`): it
 **keeps the operator and transposes the operands** of a non-commutative binary

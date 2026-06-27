@@ -476,6 +476,63 @@ defmodule Mutare.MutatorsCallTest do
       assert dropd("Map.pop_lazy(m, k, f)", false) == ["Map.pop(m, k)"]
     end
 
+    test "drops a rounding precision, reverting to the /1 form (implicit 0)" do
+      assert dropd("Float.round(x, 2)", false) == ["Float.round(x)"]
+      assert dropd("Float.ceil(x, 3)", false) == ["Float.ceil(x)"]
+      assert dropd("Float.floor(x, 1)", false) == ["Float.floor(x)"]
+      # An explicit precision of 0 is the implicit default — equivalent, skipped.
+      assert DefaultDrop.mutate(parse("Float.round(x, 0)"), %{pipe_mode: :unpiped}) == :skip
+    end
+
+    test "drops an integer base, reverting to base 10 (implicit 10)" do
+      assert dropd("Integer.to_string(n, 16)", false) == ["Integer.to_string(n)"]
+      assert dropd("Integer.to_charlist(n, 2)", false) == ["Integer.to_charlist(n)"]
+      assert dropd("Integer.parse(s, 16)", false) == ["Integer.parse(s)"]
+      assert dropd("Integer.digits(n, 2)", false) == ["Integer.digits(n)"]
+      assert dropd("Integer.undigits(ds, 2)", false) == ["Integer.undigits(ds)"]
+      # An explicit base of 10 is the implicit default — equivalent, skipped.
+      assert DefaultDrop.mutate(parse("Integer.to_string(n, 10)"), %{pipe_mode: :unpiped}) ==
+               :skip
+    end
+
+    test "drops the Enum.join separator (implicit \"\")" do
+      assert dropd(~s|Enum.join(xs, ", ")|, false) == ["Enum.join(xs)"]
+      # The empty-string separator is the implicit default — equivalent, skipped.
+      assert DefaultDrop.mutate(parse(~s|Enum.join(xs, "")|), %{pipe_mode: :unpiped}) == :skip
+    end
+
+    test "drops the String pad fill (implicit \" \")" do
+      assert dropd(~s|String.pad_leading(s, n, "*")|, false) == ["String.pad_leading(s, n)"]
+      assert dropd(~s|String.pad_trailing(s, n, "0")|, false) == ["String.pad_trailing(s, n)"]
+      # A single-space fill is the implicit default — equivalent, skipped.
+      assert DefaultDrop.mutate(parse(~s|String.pad_leading(s, n, " ")|), %{pipe_mode: :unpiped}) ==
+               :skip
+    end
+
+    test "drops the String trim char (no literal default — always drops, even \" \")" do
+      assert dropd(~s|String.trim(s, "x")|, false) == ["String.trim(s)"]
+      assert dropd(~s|String.trim_leading(s, "x")|, false) == ["String.trim_leading(s)"]
+      assert dropd(~s|String.trim_trailing(s, "x")|, false) == ["String.trim_trailing(s)"]
+      # `String.trim(s, " ")` trims only spaces, not all whitespace — NOT equivalent to
+      # `String.trim(s)`, so it is still dropped (unlike the pad fill above).
+      assert dropd(~s|String.trim(s, " ")|, false) == ["String.trim(s)"]
+    end
+
+    test "piped: refinement drops carry the +1 effective arity too" do
+      assert dropd("Float.round(2)", true) == ["Float.round()"]
+      assert dropd("Integer.to_string(16)", true) == ["Integer.to_string()"]
+      assert dropd(~s|Enum.join(", ")|, true) == ["Enum.join()"]
+      assert dropd(~s|String.pad_leading(n, "*")|, true) == ["String.pad_leading(n)"]
+      # Piped equivalent default is still skipped.
+      assert DefaultDrop.mutate(parse("Float.round(0)"), %{pipe_mode: :piped}) == :skip
+    end
+
+    test "the base /1 forms (nothing to drop) are not mutated" do
+      assert DefaultDrop.mutate(parse("Float.round(x)"), %{pipe_mode: :unpiped}) == :skip
+      assert DefaultDrop.mutate(parse("Integer.to_string(n)"), %{pipe_mode: :unpiped}) == :skip
+      assert DefaultDrop.mutate(parse("Enum.join(xs)"), %{pipe_mode: :unpiped}) == :skip
+    end
+
     test "piped: effective arity is +1, so a /3 reaches us as 2 visible args" do
       # `m |> Map.get(k, :d)` — drop the trailing visible default, leaving the /2 stage.
       assert dropd("Map.get(k, :default)", true) == ["Map.get(k)"]

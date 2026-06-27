@@ -1409,6 +1409,36 @@ defmodule Mutare.TransformResolutionTest do
       refute Enum.any?(pairs, fn {orig, _} -> orig =~ "nil" end)
       assert_compiles(meta)
     end
+
+    test "drops refinement defaults (precision/base/separator/fill/trim) and compiles" do
+      source = """
+      defmodule R do
+        def a(x), do: Float.round(x, 2)
+        def b(n), do: Integer.to_string(n, 16)
+        def c(xs), do: Enum.join(xs, ", ")
+        def d(s, n), do: String.pad_leading(s, n, "*")
+        def e(s), do: String.trim(s, "x")
+        def f(x), do: Float.round(x, 0)
+        def g(xs), do: Enum.join(xs, "")
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.DefaultDrop])
+
+      pairs = for s <- sites, s.mutator == :default_drop, do: {s.original_code, s.mutated_code}
+      assert {"Float.round(x, 2)", "Float.round(x)"} in pairs
+      assert {"Integer.to_string(n, 16)", "Integer.to_string(n)"} in pairs
+      assert {"Enum.join(xs, \", \")", "Enum.join(xs)"} in pairs
+      assert {"String.pad_leading(s, n, \"*\")", "String.pad_leading(s, n)"} in pairs
+      assert {"String.trim(s, \"x\")", "String.trim(s)"} in pairs
+      # The implicit-default precision (0) and separator ("") are equivalent — no mutant.
+      refute Enum.any?(pairs, fn {orig, _} ->
+               orig =~ "round(x, 0)" or orig =~ ~s|join(xs, "")|
+             end)
+
+      assert_compiles(meta)
+    end
   end
 
   describe "MapKeyword (put/put_new overwrite-semantics swaps)" do
