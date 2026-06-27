@@ -494,6 +494,16 @@ defmodule Mutare.HostedTest do
              )
 
       assert meta =~ "case mutare_active do"
+
+      # Two keyword leaves (`name`, `count`) host on one macro node — the multi-target weave; make
+      # sure the woven metamutant actually compiles, not just that a `case` string is present.
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        send(self(), {:keyword_hosted_compiled, Code.compile_string(meta)})
+      end)
+
+      assert_received {:keyword_hosted_compiled, [{module, _binary}]}
+      :code.purge(module)
+      :code.delete(module)
     end
 
     test "is found recursively inside a nested keyword value" do

@@ -389,6 +389,11 @@ defmodule Mutare.Test.KeywordHostedMutator do
     do: {:__block__, meta, [value <> "!"]}
 
   defp replacement({:__block__, meta, [_value]}), do: {:__block__, meta, [:hosted]}
+
+  # A keyword leaf value need not be a Sourceror-wrapped literal — it can be a variable or any
+  # expression. Fall back to a clean-meta sentinel so `replacement/1` stays total (and the mutant
+  # still compiles in a value position) rather than raising on the shapes the fixtures don't use.
+  defp replacement(_node), do: {:__block__, [], [:hosted]}
 end
 
 defmodule Mutare.Test.UnknownTreatmentMutator do

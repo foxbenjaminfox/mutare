@@ -1993,30 +1993,36 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     non-pair. This is the third foreign-DSL extension after the host (#1) and `:routing`/`:hosted` (#2):
     it unblocks `mutare_ecto`'s shorthand-split + `nil`-pair exclusion without the plugin re-implementing
     core's literal families. Tested via the `set/2` fixture macro (`Mutare.Test.HostDSL`/`HostMutator`).
-    A keyword *value* is narrowed to `t:Mutare.Mutator.keyword_value_treatment/0` — every treatment
-    **except `:hosted`**. The recursive arm originally reused the full `routing_treatment` (which
-    *includes* `:hosted`), but a keyword value can't be hosted: hosting delivers through `host/2`,
-    which weaves into the **whole macro node** (#1), and core has no per-keyword-value host delivery, so
-    MacroStamp's host injection / hosted detector only recognise a *top-level* `{:hosted, host}`. A `:hosted` nested in
-    a `{:keyword, …}` would slip past both — left raw and never hosted (a silent miss), or, but for the
-    `route_macro_arg/3` raw-`:hosted` backstop, spliced as a bare selector into the DSL value (poison).
-    Rather than make injection/detection recurse for an untested, marginal capability (host the *whole*
-    keyword argument `:hosted` if you must reach a value inside it), the type is narrowed and the
-    classifier output is validated at stamp time (see *classifier output is validated* below), fail-loud
-    over silent-drop. A deeper `{:keyword, [{:keyword, [:hosted]}]}` is caught too (the validator
-    recurses). Tested via `Mutare.Test.KeywordHostedMutator` (`hosted_test`).
+    A keyword *value* is `t:Mutare.Mutator.keyword_value_treatment/0`, which **includes `:hosted`**:
+    a value inside a keyword shorthand can be a foreign-DSL fragment too (e.g. an `mutare_ecto`
+    `where(q, x: u.a == u.b)`-shaped value), so it routes to the registering mutator's `host/2` like a
+    top-level `:hosted` argument. Hosting still delivers through `host/2`, which weaves into the **whole
+    macro node** (#1) — there is no *per-keyword-value* delivery — but that's never needed: core only has
+    to (a) leave the value **raw** during descent and (b) find the host. Both fall out of making the three
+    routing walks recurse through `{:keyword, …}`: `route_macro_arg/3` already left a `{:hosted, host}`
+    value raw, `MacroStamp.inject_host/2` now rewrites a nested bare `:hosted` → `{:hosted, host}` at any
+    depth, and `hosted_host/1` (analyzer detection) / `reject_undeliverable_hosted!`'s `hosted?/1` (stamp
+    check) now descend keyword treatments to find it. The host's `splice` navigates a *path* into the
+    keyword tree to the target value, so whole-node delivery reaches an arbitrarily-nested leaf, and
+    `HostedEmit.emit/5` threads the node across targets so several keyword leaves on one call weave
+    independently. This **replaces** the earlier narrowing (which excluded `:hosted` from a keyword value
+    and rejected a nested one at stamp time, on the now-wrong premise that injection/detection couldn't
+    recurse): with all three walks recursive, the silent-miss / poison risk that justified the rejection
+    is gone, so there is nothing to reject. A deeper `{:keyword, [{:keyword, [:hosted]}]}` routes too
+    (every walk recurses). Tested via `Mutare.Test.KeywordHostedMutator` (`hosted_test`) — a direct
+    keyword value and a nested one, each round-tripped through `Code.compile_string`.
 
   * *Classifier output is validated in `Resolve.MacroStamp`.* A `:routing` classifier's return
     is **untrusted input**, but only its hosted corners were originally checked. An unrecognised or
-    mis-shaped treatment (`:expresion` typo, `{:keyword, non_list}`, a non-list return, or a keyword-value
-    `:hosted`) would otherwise fall through `route_macro_arg/3`'s `:expression` catch-all and *silently
-    mutate* a position core was asked to skip/host/pin — a wrong-position mutation or a poison.
-    MacroStamp's validator (the classifier analogue of `Macro.Spec.validate_args/1`'s build-time check for
-    static `args`) recurses the **raw** output (pre-`inject_host`) and raises with the offending value;
-    its one positional rule is that `:hosted` is valid for a whole argument but not a keyword value (the
-    keyword-hosted case above folds into it). The recognised atom set is derived from `Spec.treatments/0`
-    (+ `:pinned`) so it can't drift. It subsumes the old `reject_keyword_hosted!/2`. Tested via
-    `Mutare.Test.UnknownTreatmentMutator` and a non-list-returning classifier (`hosted_test`).
+    mis-shaped treatment (`:expresion` typo, `{:keyword, non_list}`, or a non-list return) would
+    otherwise fall through `route_macro_arg/3`'s `:expression` catch-all and *silently mutate* a position
+    core was asked to skip/host/pin — a wrong-position mutation or a poison. MacroStamp's validator (the
+    classifier analogue of `Macro.Spec.validate_args/1`'s build-time check for static `args`) recurses the
+    **raw** output (pre-`inject_host`) and raises with the offending value; `:hosted` is valid in **any**
+    position (a whole argument *or* a keyword value — see the keyword-hosted case above), and a
+    `{:keyword, …}` recurses into its values. The recognised atom set is derived from `Spec.treatments/0`
+    (+ `:pinned`) so it can't drift. Tested via `Mutare.Test.UnknownTreatmentMutator` and a
+    non-list-returning classifier (`hosted_test`).
 
   * *`:pinned` — `^`-pinned in-place mutation.* Per-pair routing alone isn't enough for the shorthand
     split: a shorthand value sits **inside** Ecto's query macro, which rejects a bare selector `case`
