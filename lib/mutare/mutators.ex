@@ -56,6 +56,7 @@ defmodule Mutare.Mutators do
     string_byte: Mutare.Mutators.StringByte,
     map_keyword: Mutare.Mutators.MapKeyword,
     map_set: Mutare.Mutators.MapSet,
+    period_boundary: Mutare.Mutators.PeriodBoundary,
     call_removal: Mutare.Mutators.CallRemoval,
     default_drop: Mutare.Mutators.DefaultDrop,
     mode_swap: Mutare.Mutators.ModeSwap,

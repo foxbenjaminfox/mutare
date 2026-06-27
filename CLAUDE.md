@@ -859,7 +859,7 @@ contract between them is the whole game.
     encoders, not decoders. See NOTES "Unicode encoding/byte-order specifiers".
   - **Call-matching** (resolve the call through `Mutare.Transform.Calls`, so direct / aliased /
     imported, Elixir or Erlang-atom forms all match): Collection, StringCall, StringByte, MapKeyword,
-    MapSet, Numeric, Math, Integer — arity-blind renames; CollectionArity, DefaultDrop, ModeSwap,
+    MapSet, PeriodBoundary, Numeric, Math, Integer — arity-blind renames; CollectionArity, DefaultDrop, ModeSwap,
     CallRemoval — arity-changing / option-value / removal, **pipe-aware** via the optional `mutate/2`
     (a `|>` stage hides one arg, so effective arity needs the flag). A *bare* `Kernel` call
     (`abs`/`min`/`max`/`div`/`binary_slice`…) has no module to prove it's the `Kernel` one, so those

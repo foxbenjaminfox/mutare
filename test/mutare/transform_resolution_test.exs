@@ -1513,6 +1513,46 @@ defmodule Mutare.TransformResolutionTest do
     end
   end
 
+  describe "PeriodBoundary (beginning_of ↔ end_of direction swaps)" do
+    test "swaps each boundary for its opposite end (including the arity-2 week form), and compiles" do
+      source = """
+      defmodule P do
+        def a(d), do: Date.beginning_of_month(d)
+        def b(d), do: Date.end_of_week(d, :sunday)
+        def c(n), do: NaiveDateTime.beginning_of_day(n)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.PeriodBoundary])
+
+      pairs = for s <- sites, s.mutator == :period_boundary, do: {s.original_code, s.mutated_code}
+      assert {"Date.beginning_of_month(d)", "Date.end_of_month(d)"} in pairs
+      assert {"Date.end_of_week(d, :sunday)", "Date.beginning_of_week(d, :sunday)"} in pairs
+
+      assert {"NaiveDateTime.beginning_of_day(n)", "NaiveDateTime.end_of_day(n)"} in pairs
+
+      assert_compiles(meta)
+    end
+
+    test "an aliased call mutates, keeping the alias" do
+      {meta, sites, _next_id} =
+        Mutare.transform_string(
+          """
+          defmodule P do
+            alias Date, as: D
+            def a(d), do: D.beginning_of_month(d)
+          end
+          """,
+          mutators: [Mutare.Mutators.PeriodBoundary]
+        )
+
+      pairs = for s <- sites, s.mutator == :period_boundary, do: {s.original_code, s.mutated_code}
+      assert {"D.beginning_of_month(d)", "D.end_of_month(d)"} in pairs
+      assert_compiles(meta)
+    end
+  end
+
   # Transform with only CollectionArity, assert the metamutant compiles, and return
   # the `{original_code, mutated_code}` pairs of its sites (for the pipe-aware tests).
   defp arity_sites(source) do

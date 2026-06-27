@@ -15,6 +15,7 @@ defmodule Mutare.MutatorsCallTest do
     MapKeyword,
     ModeSwap,
     Numeric,
+    PeriodBoundary,
     StringByte,
     StringCall
   }
@@ -84,6 +85,48 @@ defmodule Mutare.MutatorsCallTest do
 
     test "name" do
       assert Collection.name() == :collection
+    end
+  end
+
+  describe "PeriodBoundary" do
+    test "swaps a period boundary for its opposite end, keeping arguments" do
+      assert render(PeriodBoundary.mutate(parse("Date.beginning_of_month(d)"))) ==
+               ["Date.end_of_month(d)"]
+
+      assert render(PeriodBoundary.mutate(parse("Date.end_of_month(d)"))) ==
+               ["Date.beginning_of_month(d)"]
+
+      assert render(PeriodBoundary.mutate(parse("Date.beginning_of_week(d)"))) ==
+               ["Date.end_of_week(d)"]
+
+      assert render(PeriodBoundary.mutate(parse("Date.end_of_week(d)"))) ==
+               ["Date.beginning_of_week(d)"]
+
+      assert render(PeriodBoundary.mutate(parse("NaiveDateTime.beginning_of_day(n)"))) ==
+               ["NaiveDateTime.end_of_day(n)"]
+
+      assert render(PeriodBoundary.mutate(parse("NaiveDateTime.end_of_day(n)"))) ==
+               ["NaiveDateTime.beginning_of_day(n)"]
+    end
+
+    test "is arity-blind — the week pair carries its starting_on weekday along" do
+      assert render(PeriodBoundary.mutate(parse("Date.beginning_of_week(d, :sunday)"))) ==
+               ["Date.end_of_week(d, :sunday)"]
+
+      assert render(PeriodBoundary.mutate(parse("Date.end_of_week(d, :sunday)"))) ==
+               ["Date.beginning_of_week(d, :sunday)"]
+    end
+
+    test "skips functions and modules it does not own" do
+      # DateTime has no beginning_of_day/end_of_day; Time has no period boundaries.
+      assert PeriodBoundary.mutate(parse("DateTime.beginning_of_day(dt)")) == :skip
+      assert PeriodBoundary.mutate(parse("Date.add(d, 1)")) == :skip
+      assert PeriodBoundary.mutate(parse("Other.beginning_of_month(d)")) == :skip
+      assert PeriodBoundary.mutate(parse("local(d)")) == :skip
+    end
+
+    test "name" do
+      assert PeriodBoundary.name() == :period_boundary
     end
   end
 

@@ -4036,6 +4036,34 @@ The non-obvious parts:
   (`map_join(enum, joiner \\ "", mapper)`), so dropping it is a non-trailing drop the
   pop-the-last mechanic can't express cleanly — left out the way `reverse/2` is.
 
+### PeriodBoundary — calendar start/end direction swap `[done]`
+A Collection/StringCall-style directional rename for the date/time **period boundaries**:
+`Date.beginning_of_month ↔ end_of_month`, `Date.beginning_of_week ↔ end_of_week`,
+`NaiveDateTime.beginning_of_day ↔ end_of_day` — the calendar twin of `List.first ↔ last`
+and `String.starts_with? ↔ ends_with?`. Both ends return the same type and a different
+boundary, so it is a plain arity-blind `Helpers.swap_call/2` family (`mutate/1`), one new
+`@registry` entry; "does the code use the *start* or the *end* of the period?" is the
+off-by-a-boundary bug at a reporting-window / billing-cycle edge.
+
+Settled here:
+
+- **The actual stdlib inventory ≠ the obvious guess — verified, not remembered.** The
+  initial sketch listed `Date.beginning_of_year`/`end_of_year` and `DateTime.beginning_of_day`,
+  *neither of which exists*; reflecting `__info__(:functions)` on `Date`/`DateTime`/
+  `NaiveDateTime`/`Time` showed the real set is the three pairs above (and only `Date`'s
+  week pair carries the optional `/2` `starting_on`). A wrong rename would have poisoned the
+  single build, so the table is grounded in reflection.
+- **Arity-blind is safe because the pair's arities match.** `beginning_of_week`/`end_of_week`
+  both have `/1` and `/2`, and the `/2` `starting_on` is symmetric, so the rename carries it
+  along unchanged (`beginning_of_week(d, :sunday)` → `end_of_week(d, :sunday)`). Mutating the
+  weekday itself is `ModeSwap`'s orthogonal axis; mutating the day amount, `Literal`'s.
+- **Deliberate triple overlap on one call, all distinct mutants.** `CallRemoval` already
+  *removes* these same boundary normalizers (→ the original timestamp) and `ModeSwap` swaps
+  the `starting_on` weekday; this flips the boundary direction. Three families, three
+  independent axes (remove / which-weekday / which-end) — different code, so none is a
+  redundant sibling for `Overlap` to prune, the same way `CollectionArity` and `CallRemoval`
+  both fire on `Enum.sort(xs)`.
+
 ### OperandSwap — operand-order swap for non-commutative operators `[done]`
 The operand-order sibling of the operator-swap families (`Arithmetic`/`List`): it
 **keeps the operator and transposes the operands** of a non-commutative binary
