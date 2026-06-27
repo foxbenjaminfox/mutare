@@ -256,7 +256,7 @@ defmodule Mutare.Macros do
 
   @doc """
   The `Mutare.Macro.Spec` a call resolving to `module_key`/`name` at `arity` matches, or `nil`.
-  Returns the whole spec, so `Mutare.Transform.Resolve` can read its `host`/`args` to resolve a
+  Returns the whole spec, so the transform can read its `host`/`args` to resolve a
   `:routing` classifier or stamp a `:hosted` treatment with its hosting mutator. The per-position
   treatment list for a static spec is `Mutare.Macro.Spec.routing/2` of the result.
 

@@ -9,11 +9,6 @@ defmodule Mutare.Options do
   command line or in `.mutare.exs` goes through the same validation — see
   `mix help mutare` for the full list of settable keys and their defaults.
 
-  Every option's default, CLI passthrough shape, `--show-config` visibility, and
-  validator live in one place — `Mutare.Options.Registry` — which this module
-  derives its `defstruct`, `@keys`, and `new/1` from. Adding an option is a single
-  registry entry.
-
   Runtime *wiring* (the resolved `Mutare.Project` and the live-progress hooks) is
   **not** configuration and does not live here — see `Mutare.Run.Context`.
 
@@ -80,8 +75,7 @@ defmodule Mutare.Options do
 
   @doc """
   The output formats a reporter entry may name (`:human`, `:json`, `:html`,
-  `:sarif`) — the single source of truth, so `Mutare.Config` can map a CLI
-  `--format` string without re-listing them or interning arbitrary input.
+  `:sarif`).
 
       iex> Mutare.Options.formats()
       [:human, :json, :html, :sarif]

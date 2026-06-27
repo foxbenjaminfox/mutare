@@ -142,7 +142,7 @@ defmodule Mutare.Macro.Spec do
   @host_required [:hosted, :routing]
 
   @doc """
-  The valid argument treatments — the single source of truth for validation.
+  The valid argument treatments.
 
       iex> Mutare.Macro.Spec.treatments()
       [:expression, :pattern, :binding_pattern, :skip, :hosted]

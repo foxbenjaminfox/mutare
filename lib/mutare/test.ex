@@ -3,7 +3,7 @@ defmodule Mutare.Test do
   Test helpers for projects that implement their own `Mutare.Mutator`.
 
   A custom-mutator project wants to assert three things: what a single mutator offers for a
-  parsed node (the pure-AST path, `Mutare.Mutator.Dispatch.mutations/3`), what the *whole* transform
+  parsed node (the pure-AST path, `node_mutations/3` below), what the *whole* transform
   records for a source string (`Mutare.transform_string/2`, which adds alias/import
   resolution, pipe handling, and equivalent-sibling suppression), and — the *semantic* check —
   that a recorded mutant is **live**: that flipping its id actually changes what the compiled
@@ -13,14 +13,14 @@ defmodule Mutare.Test do
   `:persistent_term` selection contract to do it.
 
   The AST helpers route through `Mutare.AST.parse!/1` and `Mutare.AST.to_string/1`, so a
-  consumer needs no direct `:sourceror` dependency; the live-mutant helpers route through
-  `Mutare.Selector`, so a consumer never hardcodes the selection key or its baseline — both are
+  consumer needs no direct `:sourceror` dependency; the live-mutant helpers manage the
+  selection key for you, so a consumer never hardcodes it or its baseline — both are
   Mutare-internal and resolved at runtime (the key is even reconfigurable under self-hosting).
   Depend on these, not on the contracts behind them.
 
   > #### Selection is process-global {: .warning}
   >
-  > `with_active_mutant/2` flips the active mutant through `Mutare.Selector`, which writes a
+  > `with_active_mutant/2` flips the active mutant by writing a
   > VM-wide `:persistent_term` slot every compiled metamutant reads. A test module that drives a
   > live mutant must therefore be `use ExUnit.Case, async: false` — two `async` modules sharing
   > the one slot would clobber each other's active id. (Mutare's own `selector_test.exs` is
@@ -53,8 +53,8 @@ defmodule Mutare.Test do
       global compiler, and the fixture's modules can't collide with real top-level ones), and
       return `{modules, sites}`. The compiled modules are purged on test exit. Look a mutant's id
       up from `sites` with `site_id/2` / `site_by/3`.
-    * `with_active_mutant/2` — run a body with a chosen mutant id active (via `Mutare.Selector`,
-      restored after), against modules you already compiled with `compile_metamutant/3`. The
+    * `with_active_mutant/2` — run a body with a chosen mutant id active (restored
+      after), against modules you already compiled with `compile_metamutant/3`. The
       compile-once / run-under-many-ids pattern a semantic test wants. Requires `async: false`
       (see the warning above).
 
@@ -95,7 +95,7 @@ defmodule Mutare.Test do
 
   @doc """
   The rendered mutations a single mutator (or list) offers for a parsed top-level node —
-  the pure-AST path (`Mutare.Mutator.Dispatch.mutations/3`), with no transform pre-pass, so only
+  the pure-AST path, with no transform pre-pass, so only
   *qualified* calls resolve and no structural siblings are added.
 
   `mutators` is a module or `Mutare.Mutator.Spec` (or a list of them) — *not* a family
@@ -328,7 +328,7 @@ defmodule Mutare.Test do
   @doc """
   Run `fun` with mutant `id` active, restoring the previous active id afterwards.
 
-  Sets the selection switch via `Mutare.Selector.put/1` — the same runtime-resolved key the
+  Sets the selection switch on the same runtime-resolved key the
   metamutant reads, so this is correct even under self-hosting (it never hardcodes
   `:mutare_active`) — runs the zero-arity `fun` (typically building/calling into modules you
   compiled with `compile_metamutant/3`), and restores whatever was active before, so one

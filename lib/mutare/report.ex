@@ -151,7 +151,7 @@ defmodule Mutare.Report do
 
   @doc """
   Format a percentage value (already on a 0..100 scale) to one decimal place,
-  without a trailing `%`. The single home for the score/percent number format.
+  without a trailing `%`.
 
       iex> Mutare.Report.percent(2 / 3 * 100)
       "66.7"

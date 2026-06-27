@@ -11,7 +11,7 @@ defmodule Mutare.Transform.Calls do
   same `{[:String], :upcase, args, rebuild}`, and `rebuild` re-emits the swap in the form the
   source wrote (bare/qualified/aliased preserved, so the diff stays minimal).
 
-  This reads the `alias`/`import` stamps `Mutare.Transform.Resolve` places on the AST before
+  This reads the `alias`/`import` stamps the transform places on the AST before
   mutators run, so it is only meaningful on a node handed to a mutator by the transform (a
   `mutate/1` argument) — exactly where a call-matching mutator needs it.
 
@@ -191,7 +191,7 @@ defmodule Mutare.Transform.Calls do
       splice stays a minimal, shape-correct diff.
 
   `nil` when the node is not a recognised known-macro call. The identity is read from the
-  `Mutare.Transform.Resolve.MacroStamp` stamp placed when the call matched the macro registry,
+  stamp the transform places when the call matched the macro registry,
   so it is authoritative (never diverges from the matcher) and recognises a registered macro
   even when its module can't be reflected on — exactly the bare-import case `resolved_call/1`
   cannot resolve.

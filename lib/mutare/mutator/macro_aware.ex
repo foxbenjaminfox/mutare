@@ -137,7 +137,7 @@ defmodule Mutare.Mutator.MacroAware do
   Optional **shape-aware routing** classifier for a macro registered `:routing` in
   `c:macros/0`. A static per-position treatment list can't express a routing that depends
   on the call *shape* — `where(q, category: "Foo")` is plain data (`:expression`) while
-  `where(q, [u], u.x == u.y)` is a `:hosted` DSL fragment. `Mutare.Transform.Resolve` calls
+  `where(q, [u], u.x == u.y)` is a `:hosted` DSL fragment. The transform calls
   this with the concrete call node and uses the returned per-position treatment list (for the
   node's **visible** arguments) instead of a fixed one. Each element is a
   `t:Mutare.Macro.Spec.treatment/0` (`:expression`/`:pattern`/`:binding_pattern`/`:skip`/
@@ -147,7 +147,7 @@ defmodule Mutare.Mutator.MacroAware do
   the piped value is the `|>` LHS — *not* a visible argument and never routed here (it stays an
   ordinary `:expression`), so a piped call passes one fewer argument than the written form. A
   classifier that matches on arity must handle that reduced shape (match the visible args, not a
-  fixed count). The returned treatments are validated by `Mutare.Transform.Resolve`: an
+  fixed count). The returned treatments are validated by the transform: an
   unrecognised or mis-shaped treatment raises rather than silently mutating a position you meant
   to skip or host.
 

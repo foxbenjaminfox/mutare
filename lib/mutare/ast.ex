@@ -183,8 +183,7 @@ defmodule Mutare.AST do
   @doc """
   Map over a keyword list, replacing the value of the `:do` entry with `fun.(value)`.
 
-  The single home for "find the `:do` block in a keyword list and transform its
-  value". Recognises both Sourceror's keyword-block key (`{:__block__, _, [:do]}`)
+  Recognises both Sourceror's keyword-block key (`{:__block__, _, [:do]}`)
   and a plain `:do` (via `key_atom/1`), preserves the original key node (so its
   `format: :keyword` marker survives for the renderer), and leaves every other entry
   — and a non-list argument — untouched.
@@ -230,9 +229,8 @@ defmodule Mutare.AST do
   `format: :keyword` marker. Such a key is a structural label, never a runtime
   value, so it must not be offered to a mutator.
 
-  This is the head/pattern-context check (`format: :keyword` only). The value
-  context additionally treats block keys (`do`/`else`/…) as labels — that fuller
-  rule lives in `Mutare.Transform.Analyze`, which owns the block-key set.
+  This is the head/pattern-context check (`format: :keyword` only). In a value
+  context, block keys (`do`/`else`/…) are additionally treated as labels.
   """
   @spec keyword_label?(Macro.t()) :: boolean()
   def keyword_label?({:__block__, meta, [atom]}) when is_atom(atom) and is_list(meta),
@@ -245,10 +243,9 @@ defmodule Mutare.AST do
 
   Sourceror parses an interpolated string (`"a\#{x}b"`, or an interpolated heredoc) into a
   `<<>>` node, distinguished from a true `<<…>>` bitstring literal by a `:delimiter` key cached
-  in its metadata. This is the single home for that invariant: the string- and
-  bitstring-literal families route on it with opposite intent — `StringLiteral` mutates these
-  (an interpolated string), `BitstringLiteral`/`BitstringSpec` skip them (they own real
-  bitstrings). A non-`<<>>` node is never a string binary.
+  in its metadata. The string- and bitstring-literal families route on it with opposite intent
+  — `StringLiteral` mutates these (an interpolated string), `BitstringLiteral`/`BitstringSpec`
+  skip them (they own real bitstrings). A non-`<<>>` node is never a string binary.
 
       iex> Mutare.AST.string_binary?({:<<>>, [delimiter: ~s(")], ["hi"]})
       true
@@ -285,8 +282,8 @@ defmodule Mutare.AST do
 
   This recognises the **standard** literal shapes, for any mutator. A custom mutator with
   a *non-standard* empty collection (its own sigil, a `MapSet.new([])` builder) declares it
-  through the optional `c:Mutare.Mutator.empty_collection?/1` callback instead — the two are
-  OR-ed at the drop site by `Mutare.Mutator.Dispatch.empty_collection?/2`.
+  through the optional `c:Mutare.Mutator.empty_collection?/1` callback instead; the two are
+  OR-ed together at the drop site.
   """
   @spec empty_collection_literal?(Macro.t()) :: boolean()
   def empty_collection_literal?([]), do: true

@@ -45,7 +45,7 @@ defmodule Mutare.Mutators.ReturnValue do
     * **Boolean-valued tails** (a comparison/logical operator) — already covered by
       `Mutare.Mutators.Conditional`, which forces the result to `true`/`false`.
       Mutating them here too would just duplicate that. (Detected via
-      `Conditional.boolean_op?/1`, the single definition of "boolean-valued op".)
+      `Conditional.boolean_op?/1`.)
     * **Bare literals already mutated by a value family** — an integer/float/string
       literal, a list literal, a boolean. `Literal`/`FloatLiteral`/`StringLiteral`/
       `List` already replace these *at the node*, so a whole-tail constant would
@@ -55,10 +55,7 @@ defmodule Mutare.Mutators.ReturnValue do
     * **A `nil` tail** — replacing `nil` with `nil` is equivalent, and with anything
       else is low-signal (a `nil`-returning function is usually side-effecting).
     * **A `quote` block** — a function whose tail is a `quote` builds macro AST,
-      which `Mutare.Transform` already classifies as compile-time and leaves whole
-      (PHILOSOPHY: "macro-generated code is a different tool"). Replacing its return
-      would be safe, but keeping `quote` uniformly hands-off is the simpler, more
-      consistent boundary.
+      which Mutare treats as compile-time code and leaves whole.
 
   Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
   suppress just one kind (`c:Mutare.Mutator.variants/0`): `empty`, `sentinel`.

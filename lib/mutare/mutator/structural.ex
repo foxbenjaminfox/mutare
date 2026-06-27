@@ -9,7 +9,7 @@ defmodule Mutare.Mutator.Structural do
   pattern-match (a return position is a clause's tail wherever it sits; a head pattern spans
   sibling argument positions). So the transform *names* each such position as it descends and asks
   every enabled mutator implementing the matching callback here, discovered by export
-  (`Mutare.Mutator.Dispatch.implementing/3`) rather than hardcoded. Each result is delivered by the
+  rather than hardcoded. Each result is delivered by the
   transform — **in place** for return/condition, by **lifting** for head patterns — and recorded
   under the mutator's own `c:Mutare.Mutator.name/0`. The built-in `Mutare.Mutators.ReturnValue` /
   `Mutare.Mutators.IfCondition` / `Mutare.Mutators.PatternSwap` / `Mutare.Mutators.PatternWildcard`
@@ -36,7 +36,7 @@ defmodule Mutare.Mutator.Structural do
   module's `@behaviour` set — so a structural mutator can gate on it (a GenServer return-tuple
   mutator that rewrites a `handle_call` tail only under `@behaviour GenServer`). Implement *either*
   the base arity *or* the context arity; the transform prefers the context arity when exported. The
-  behaviour set is gathered by `Mutare.Transform.Behaviours` from direct `@behaviour Foo` and
+  behaviour set is gathered from direct `@behaviour Foo` and
   `use`-injected ones, exactly as `c:Mutare.Mutator.mutate/2` receives it under `context.behaviours`.
   """
 
@@ -57,7 +57,7 @@ defmodule Mutare.Mutator.Structural do
 
   Given a clause's head argument patterns and `used_outside` (the set of variable names
   read in the clause body/guard), it returns a list of mutated argument lists, one per
-  mutant. `Mutare.Transform.FunctionPlan` discovers implementers by
+  mutant. The transform discovers implementers by
   `function_exported?(mod, :pattern_mutations, 2)` and delivers each by lifting (a
   selector `case` is illegal in a pattern), so an implementer must return only
   *pattern-legal*, compile-safe argument lists. See `Mutare.Mutators.PatternSwap` and

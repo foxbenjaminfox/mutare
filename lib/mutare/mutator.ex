@@ -139,7 +139,7 @@ defmodule Mutare.Mutator do
   `c:Mutare.Mutator.Structural.condition_replacements/1`, or
   `c:Mutare.Mutator.Structural.pattern_mutations/2` (declaring both `Mutare.Mutator` and
   `Mutare.Mutator.Structural`). The transform names the position and asks *every* enabled mutator
-  implementing the callback (via `Mutare.Mutator.Dispatch.implementing/3`), delivering each and
+  implementing the callback, delivering each and
   recording it under its own name. `Mutare.Mutators.ReturnValue` / `Mutare.Mutators.IfCondition` /
   `Mutare.Mutators.PatternSwap` are the built-ins; a custom mutator participates identically.
 
@@ -147,8 +147,8 @@ defmodule Mutare.Mutator do
 
   A mutator can fire differently — or only — inside modules that implement a given
   `@behaviour`. The enclosing module's behaviour set (a `MapSet` of module atoms, gathered
-  from direct `@behaviour Foo` *and* `use`-injected ones like `use GenServer`, see
-  `Mutare.Transform.Behaviours`) reaches a mutator under the context map's `:behaviours` key:
+  from direct `@behaviour Foo` *and* `use`-injected ones like `use GenServer`) reaches a
+  mutator under the context map's `:behaviours` key:
 
       defmodule MyApp.Mutators.GenServerReply do
         @behaviour Mutare.Mutator
@@ -198,8 +198,8 @@ defmodule Mutare.Mutator do
       stripped), or `[]` for an unconfigured mutator. This is how a configurable
       mutator receives its parameters — see `Mutare.Mutator.Spec`.
     * `:behaviours` — the enclosing module's behaviour set: a `MapSet` of the modules it
-      implements via `@behaviour Foo` (directly or injected by a `use`, see
-      `Mutare.Transform.Behaviours`). Empty outside a module. This is how a
+      implements via `@behaviour Foo` (directly or injected by a `use`). Empty outside a
+      module. This is how a
       **behaviour-targeted** mutator gates itself — e.g. a GenServer mutator firing only
       when `MapSet.member?(context.behaviours, GenServer)`.
 
@@ -346,8 +346,8 @@ defmodule Mutare.Mutator do
 
   On the right side of `in`, such a mutant is redundant: `Mutare.Mutators.Conditional`
   already forces the whole `x in …` to `false` on the `in` node, so `Mutare.Transform`
-  drops it (see `Mutare.AST.empty_collection_literal?/1` and NOTES "Equivalent-sibling
-  suppression"). Core recognises the *standard* empty literals itself — `[]`, `%{}`,
+  drops it (see `Mutare.AST.empty_collection_literal?/1`). Core recognises the *standard*
+  empty literals itself — `[]`, `%{}`,
   `~w()`, `~c""` — so a mutator whose collapse produces one of those needs nothing. This
   callback is for a **non-standard** shape: a custom collection *sigil* (`~SET[]`), or a
   call/struct that builds an empty enumerable (`MapSet.new([])`). The transform asks the
@@ -366,8 +366,7 @@ defmodule Mutare.Mutator do
   @typedoc """
   A call node's pipe context, as an atom: `:piped` (the node is a `|>` right-hand
   side, so its effective first argument is the pipe's left side) or `:unpiped`.
-  Built directly by `Mutare.Transform` — it is what `Mutare.Transform.Resolve`'s
-  `env.pipe_mode` and the `mutate/2` context's `:pipe_mode` carry — and the form
+  It is what the `mutate/2` context's `:pipe_mode` carries, and the form
   `effective_arity/2` and `visible_index/2` take.
   """
   @type pipe_mode :: :piped | :unpiped
@@ -379,10 +378,10 @@ defmodule Mutare.Mutator do
   effective first argument is the `|>` left side, which Elixir splices in only after
   this transform runs, so it is *not* in the node's own `args`. A pipe-aware mutator
   (`mutate/2`) recovers the real arity as `length(args)`, plus one when `:piped`.
-  The single home for that off-by-one — see `Mutare.Mutators.CollectionArity` et al.
+  `Mutare.Mutators.CollectionArity` is the built-in example.
 
-  The pipe context (`:piped`/`:unpiped`) comes straight from the `mutate/2` context's
-  `:pipe_mode` key (`Mutare.Transform.Resolve`'s `env.pipe_mode`).
+  The pipe context (`:piped`/`:unpiped`) comes from the `mutate/2` context's
+  `:pipe_mode` key.
 
       iex> Mutare.Mutator.effective_arity([:a, :b], :unpiped)
       2
@@ -400,11 +399,11 @@ defmodule Mutare.Mutator do
 
   When piped, effective index `0` is the `|>` left side, which isn't in the
   node's own `args`, so it has no visible index (`nil`) and every later index
-  shifts down by one. Unpiped, effective and visible indices coincide. The single
-  home for that mapping — see `Mutare.Mutators.{ModeSwap,CollectionArity}`.
+  shifts down by one. Unpiped, effective and visible indices coincide.
+  `Mutare.Mutators.ModeSwap` and `Mutare.Mutators.CollectionArity` use it.
 
-  The pipe context (`:piped`/`:unpiped`) comes straight from the `mutate/2` context's
-  `:pipe_mode` key (`Mutare.Transform.Resolve`'s `env.pipe_mode`).
+  The pipe context (`:piped`/`:unpiped`) comes from the `mutate/2` context's
+  `:pipe_mode` key.
 
       iex> Mutare.Mutator.visible_index(2, :unpiped)
       2
