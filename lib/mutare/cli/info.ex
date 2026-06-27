@@ -101,11 +101,27 @@ defmodule Mutare.CLI.Info do
         {family, module}
 
       nil ->
-        module = Module.concat([name])
+        with module when is_atom(module) <- resolve_module(name),
+             true <- Code.ensure_loaded?(module) and function_exported?(module, :name, 0) do
+          {module.name(), module}
+        else
+          _ -> nil
+        end
+    end
+  end
 
-        if Code.ensure_loaded?(module) and function_exported?(module, :name, 0),
-          do: {module.name(), module},
-          else: nil
+  # Resolve a custom-module `--explain` argument to a module atom **without minting
+  # one for arbitrary input**: only after the candidate's beam is found on the code
+  # path (`:code.where_is_file/1` searches by filename and interns nothing) do we
+  # build the atom, so the table grows only by genuinely-present modules and junk
+  # input falls through to the "unknown mutator" error. Built-in families never
+  # reach here — they match the registry above.
+  defp resolve_module(name) do
+    candidate = "Elixir." <> name
+
+    case :code.where_is_file(String.to_charlist(candidate <> ".beam")) do
+      :non_existing -> nil
+      _path -> String.to_atom(candidate)
     end
   end
 

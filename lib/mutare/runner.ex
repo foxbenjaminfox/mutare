@@ -559,14 +559,21 @@ defmodule Mutare.Runner do
   # empty scope (single project, unknown app, or an unreadable graph) means run
   # everything — never narrow on doubt.
   defp broaden([], %Site{file: file}, scopes) when map_size(scopes) > 0 do
-    Map.get(scopes, owning_app(file), [])
+    Map.get(scopes, owning_app(file, scopes), [])
   end
 
   defp broaden(test_args, _site, _scopes), do: test_args
 
-  defp owning_app(file) do
+  # Resolve an `apps/<app>/…` sandbox path to its owning app by matching the path
+  # segment against the *known* `scopes` keys — never `String.to_atom/1` on a path
+  # segment. The segment is input-derived (a discovered file path), so minting an
+  # atom from it is unbounded-atom-table risk; matching the existing keys instead
+  # removes that risk and is exactly the lookup we want (a segment naming no scope
+  # app yields `nil` ⇒ `Map.get` default `[]` ⇒ run everything — never narrow on
+  # doubt).
+  defp owning_app(file, scopes) do
     case Path.split(file) do
-      ["apps", app | _] -> String.to_atom(app)
+      ["apps", app | _] -> Enum.find(Map.keys(scopes), &(to_string(&1) == app))
       _ -> nil
     end
   end
