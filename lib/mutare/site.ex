@@ -5,6 +5,17 @@ defmodule Mutare.Site do
   A "site" in the source (e.g. one `>=` occurrence) may yield several `Site`
   structs — one per mutation the mutators emit there — each with its own `id`.
   The `id` is what the metamutant switches on at runtime (`0` = baseline).
+
+  This is a **lean persisted DTO**: every field is something running or reporting
+  needs *after* the transform has finished — id/location, the producing `mutator`
+  and its `kind`/`operation`, the **rendered** before/after code, and small
+  classification fields (`original_form`/`mutated_form`, `note`, `ignore_reason`,
+  `poisoned`, `block_macro`). The original/mutated **AST nodes** are deliberately
+  *not* retained: the constructors derive everything from them at build time (the
+  `*_form` head tags and the `*_code` rendering), and no consumer reads a tree
+  afterwards — the report patches the original source by `range`, not by re-rendering
+  a node. Keeping the trees would duplicate the whole rewritten AST per mutant, which
+  for a project with thousands of mutants is substantial retained memory for no use.
   """
 
   @type t :: %__MODULE__{
@@ -23,8 +34,6 @@ defmodule Mutare.Site do
           mutated_form: atom() | nil,
           original_code: String.t(),
           mutated_code: String.t(),
-          original_node: Macro.t(),
-          mutated_node: Macro.t() | nil,
           note: String.t() | nil,
           block_macro: {atom(), non_neg_integer()} | nil
         }
@@ -41,8 +50,6 @@ defmodule Mutare.Site do
     :mutated_form,
     :original_code,
     :mutated_code,
-    :original_node,
-    :mutated_node,
     operation: :replace,
     ignored: false,
     ignore_reason: nil,
@@ -170,9 +177,7 @@ defmodule Mutare.Site do
         original_form: nil,
         mutated_form: nil,
         original_code: clause_code(clause_node),
-        mutated_code: "",
-        original_node: clause_node,
-        mutated_node: nil
+        mutated_code: ""
     }
   end
 
@@ -214,9 +219,7 @@ defmodule Mutare.Site do
         original_form: nil,
         mutated_form: nil,
         original_code: Sourceror.to_string(original_node),
-        mutated_code: Sourceror.to_string(mutated_node),
-        original_node: original_node,
-        mutated_node: mutated_node
+        mutated_code: Sourceror.to_string(mutated_node)
     }
   end
 
@@ -239,9 +242,7 @@ defmodule Mutare.Site do
         original_form: elem(original_node, 0),
         mutated_form: elem(mutated_node, 0),
         original_code: render_code(original_node, keyword_key?),
-        mutated_code: render_code(mutated_node, keyword_key?),
-        original_node: original_node,
-        mutated_node: mutated_node
+        mutated_code: render_code(mutated_node, keyword_key?)
     }
   end
 
