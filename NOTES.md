@@ -276,7 +276,7 @@ emission now threads the active id as an extra arg (`mutare_active`) and emits e
 source clause **once** (gated `when mutare_active !== <id>` for the mutants that
 override/drop it) plus **one** gated clause per mutant (`when mutare_active === <id>
 …`) — `C+M` clauses, not `C×M`. (`FunctionPlan.mutated_clause/2` returns the single
-affected clause + index; `Transform.lifted_mutant/3`/`lifted_original/3` assemble
+affected clause + index; `LiftedEmit.lifted_mutant/6`/`lifted_original/5` assemble
 them; the dispatcher's coverage record moved out of the old `case` catch-all into the
 dispatcher body.) `transform.ex`'s metamutant shrank to ~0.4 MB / 11k lines (~4.6×),
 its transform/render to ~2.7 s, the whole scan to ~7.6 s. `Mutare.Manifest` maps a
@@ -312,7 +312,7 @@ silently re-paid per run. Measured on Mutare's own deps: a cold sandbox compile 
 itself is ~1.7 s. (This is the `mix compile` of the metamutant — distinct from the
 *scan*/transform-render cost tracked under "Scan is transform-bound".)
 
-**Fix (`Sandbox.seed_dep_build/2`):** after materialising the copy, copy each
+**Fix (`Sandbox.Seed.dep_build/2`):** after materialising the copy, copy each
 dependency's already-built dir (`_build/<env>/lib/<dep>`, i.e. `ebin` + its `.mix`
 manifest) from the original into the sandbox. mix gates dependency staleness on the
 **lock + manifest**, not per-source mtime — verified: the deps are *not* recompiled
@@ -368,7 +368,7 @@ that reports everything killed. (Verified both: a `cp -rp`'d build recompiled co
 manifest's root was rewritten; and a relocated-manifest seed *without* deleting the
 metamutant's beam served the stale original beam — the injected code never compiled in.)
 
-**Fix (`Sandbox.seed_app_build/4`, scoped runs only):** after the copy, seed the mutated
+**Fix (`Sandbox.Seed.app_build/4`, scoped runs only):** after the copy, seed the mutated
 app's own `_build/<env>/lib/<app>`, then make both contracts hold:
 
   - **Relocate the manifest** (`relocate_manifests/3` → `rewrite_paths/3`): rewrite the
@@ -676,7 +676,7 @@ exactly once per run — retries re-render into the already-claimed sandbox via
 `rematerialize/2` and never re-claim (see below).
 
 ### Stable sandbox across poison retries `[done]`
-`Runner.prepare_compiling/6` recurses to recover from compile-poisoning: drop the
+`Runner.prepare_compiling/3` recurses to recover from compile-poisoning: drop the
 implicated mutant ids, `Schema.rebuild`, recompile. It used to call
 `Sandbox.prepare/3` *every* attempt — which in the default fresh mode generated a
 **new** `default_sandbox` path each time (a new `unique_integer`), re-copied the
@@ -965,8 +965,8 @@ Options field, CLI flag, or `Ctx`/`Schema` plumbing; it composes with `{module, 
 any other mutator option, and is per-mutator for free (configure `AtomLiteral` and an
 integer key — `Literal`'s — is untouched).
 
-  * **Detect + tag in `Analyze`** (it alone knows the call context): `recurse_runtime/3`
-    post-processes its result with `mark_call_option_keys/1`, which — when the node is a
+  * **Detect + tag in `Analyze`** (it alone knows the call context): `recurse_runtime/2`
+    post-processes its result with `CallOptions.mark/1`, which — when the node is a
     real call (`call_form?/1`: a remote `{:., …}` or an atom form not in `@non_call_forms`,
     so a `%{}` map / `{}` tuple ending in a keyword-shaped list isn't mistaken for one) and
     its last arg is keyword-list-shaped — stamps each *key* candidate `call_option_key?: true`
@@ -1235,7 +1235,7 @@ user opts their own macro in via `:macros` / `macros/0` (e.g. `{MyDsl, :unpack, 
 everywhere); the *extra* structural mutants are delivered by the **`MacroPattern`** candidate — the
 `MatchPattern` tuple re-export generalized from a `=` to running the macro itself inside each selector
 branch (`{x, y} = case <sel> do <id> -> destructure(<mut>, v); {x, y} … end`). The shared discovery
-(`Analyze.pattern_export/3`: `bound_var_names`, per-occurrence export tuple, forced-thin wildcard) is
+(`pattern_export_context/1`: `PatternStructure.bound_var_names/1`, per-occurrence export tuple, forced-thin wildcard) is
 factored out of the `=`-match path and reused verbatim. Both the directly-written `destructure([x, y],
 v)` and the **piped** `[x, y] |> destructure(v)` form route (the pipe LHS is effective arg 0, read
 back off the `:mutare_macro_piped` stamp); the mutant branch runs the *raw* call, the catch-all the
@@ -1376,8 +1376,8 @@ resolve the body's short-name `use`/calls through an outer/top-level `Foo` or no
 standard-quoted**, where an `unquote(mod)`/`bind_quoted` alias carries its target as a **bare module
 atom** (`{:alias, _, [Mutare.Foo, [as: T]]}`) — a shape `Aliases.register/2` silently no-ops on. So
 `alias unquote(target), as: T; use T` bound nothing, `use T` didn't resolve, and the directives from
-that nested `use` were dropped. Fix: `register_harvested/2` runs the same Sourceror `normalize`
-(atom → `{:__aliases__, …}`) that `harvest` applies at the end *before* `Aliases.register`, so the
+that nested `use` were dropped. Fix: `register_harvested/2` runs the same Sourceror conversion (`to_sourceror/1`)
+(atom → `{:__aliases__, …}`) that `Harvest` applies at the end *before* `Aliases.register`, so the
 alias binds and the sibling `use` expands. (The stamped output already normalizes; only the in-body
 *env fold* missed it.) Tested via `Mutare.Test.UnquoteAliasUsing`.
 
@@ -1402,8 +1402,9 @@ visible to any reader that observes its `:test`. Regression-tested by `Mutare.Te
 (slow + env-sensitive) run concurrently in a `:dev` base across several rounds (the race is timing-
 dependent, so rounds make catching it reliable; the fix passes every round deterministically).
 
-**Degrades, never errors** (all wrapped in `try`): a non-loadable module (external target, or an aliased
-`use Web` we can't statically resolve — `Uses` does no alias tracking), non-literal args (`use Foo, var`),
+**Degrades, never errors** (all wrapped in `try`): a non-loadable module (an external target, or a `use`
+target that can't be resolved to a loaded module — note `Uses` *does* alias-track the target, so an
+aliased `use Web` resolves when its alias is in scope), non-literal args (`use Foo, var`),
 a `__using__` that raises (e.g. reads caller-module attributes), or an import gated behind a runtime
 `if`/`unless` in the body — all become *no stamp* = the old unresolved behaviour. The stamp is stripped
 before render (`Render.@internal_meta_keys`) and `use` is already pruned from mutation in `Analyze`, so
@@ -1414,19 +1415,19 @@ only vehicle — `examples/*` have no deps and are external) in `test/mutare/use
 Ecto `:skip`-now-fires case with/without expansion.
 
 **Isolate failure per `use`, not per bundle.** The "degrades, never errors" `try` was originally only
-on `harvest/3` — the *per-top-level-`use`* boundary. But a bundle is recursive: idiomatic Phoenix's
+on `run/4` — the *per-top-level-`use`* boundary. But a bundle is recursive: idiomatic Phoenix's
 `use MyAppWeb, :live_view` expands to a **block** that itself contains `use Gettext, backend: …`, whose
 `__using__` runs `Module.put_attribute` on the (already-compiled) caller and **raises `ArgumentError`**.
 That raise originates one level down, inside the *nested* `expand_and_collect(Gettext, …)`, and with the
 catch only at the top it propagated through the enclosing block's `flat_map_reduce` and collapsed the
 whole bundle to `{[], []}` — silently dropping the good `import Phoenix.LiveView` / `@behaviour
-Phoenix.LiveView` sitting right beside the bad `use`. Fix: move the isolation onto **`expand_and_collect/6`**
+Phoenix.LiveView` sitting right beside the bad `use`. Fix: move the isolation onto **`expand_and_collect/7`**
 itself — the recursion unit *and* the only site that runs a `__using__` (the only thing that can raise).
 Now each `use` (top-level *and* every nested one) self-isolates: a raising `__using__` drops only its own
 contribution while its siblings, harvested in the enclosing block, survive. Partial harvest is strictly
 better than empty: every directive we keep expanded cleanly, and we never emit a half-baked one from the
 failed `use` (the only loss is env-advancement for *its* injected aliases — already unavoidable, since it
-couldn't expand at all). `harvest/3`'s outer `try` stays as a backstop for `standardize`/`normalize`. The
+couldn't expand at all). `run/4`'s outer `try` stays as a backstop for `to_sourceror`. The
 rescue is left **broad** (`rescue _` + `catch _, _`) on purpose: other `__using__`s raise other things
 (`KeyError`, `RuntimeError`, …) for the same compiled-caller reason, so narrowing to `ArgumentError` would
 be fragile. The bug was invisible precisely because the degradation is silent, so it's regression-guarded:
@@ -1505,10 +1506,10 @@ would be a global-vs-per-call category error; YAGNI.
 old `standardize/2` coupled module-resolution with the **static-literal opts gate** — fatal here, since
 Gettext's `backend:` is a module alias, *not* a literal, so the gate would `:error` before any plugin
 could be asked. Split it: `target/2` alias-resolves the module and returns the **raw** args (no gate);
-plugins are consulted first via `Plugin.expand_use/4`; only on `:decline` does `in_process/4` apply the
+plugins are consulted first via `Plugin.expand_use/4`; only on `:decline` does `in_process/5` apply the
 opts gate + `Code.ensure_loaded?` + expand. The plugin path needs *neither* gate (it never invokes
 `__using__`, so it asserts the directives rather than deriving them). Its returned directives are
-standard-quoted (from `quote`), so they ride the **same** `normalize/1`
+standard-quoted (from `quote`), so they ride the **same** `to_sourceror/1`
 (`Macro.to_string |> Sourceror.parse_string!`) as a harvested directive and arrive as the Sourceror form
 `Resolve.register/2` folds — zero new register clauses. The nested-`use` recursion (`collect/7`, formerly
 `/6`) is now **also** plugin-aware: `handlers` thread through `in_process → expand_and_collect → collect`,
@@ -1519,7 +1520,7 @@ gate + loadability check). This is the **positive fix for the Phoenix integratio
 not just a directly-written top-level one — the original "internal `use`s stay in-process" boundary
 silently defeated the motivating case (the bare `gettext` calls never resolved, the msgids poisoned the
 build). A plugin override of a nested `use` returns `collect/7`-shape items (`plugin_items/2`): directives
-left standard-quoted for `in_process/5`'s final `normalize`, behaviours as `{:mutare_behaviour, atom}`
+left standard-quoted for `in_process/5`'s final `to_sourceror`, behaviours as `{:mutare_behaviour, atom}`
 tuples. (Cycle/depth caps still backstop a genuinely recursive in-process chain; a plugin override is
 terminal for its `use`, so it adds no recursion.)
 
@@ -1616,11 +1617,11 @@ module-scope walk folding an alias env (reusing `Aliases`), stamping each `defmo
 with a `MapSet` on `meta[:mutare_behaviours]`: direct `@behaviour Foo` resolved through the alias env
 in force (so `alias X, as: B; @behaviour B` records `X`, not the literal `B` — a *wrong* entry, not a
 miss, if unresolved), Erlang atoms (`@behaviour :gen_statem`) kept as-is, unioned with the
-`use`-injected set. The injected half piggybacks on the **existing** `Uses` expansion: a new `collect/6`
+`use`-injected set. The injected half piggybacks on the **existing** `Uses` expansion: a new `collect/7`
 clause harvests `{:@, _, [{:behaviour, _, [mod]}]}` from the expanded `__using__` body (it appears as a
 top-level statement there, reached by the same block/nested-`use` recursion that harvests
-imports/aliases), tagged `{:mutare_behaviour, mod}` so `harvest/3` can split it from the
-name-resolution directives and stamp `meta[:mutare_use_behaviours]` (read by `Behaviours.injected_behaviours/1`).
+imports/aliases), tagged `{:mutare_behaviour, mod}` so `run/4` can split it from the
+name-resolution directives and stamp `meta[:mutare_use_behaviours]` (read by `Uses.injected_behaviours/1`).
 Only canonical `@behaviour` is recognised — Elixir **rejects** `@behavior` outright, so matching the
 American spelling would be wrong, not lenient.
 
@@ -1628,9 +1629,9 @@ American spelling would be wrong, not lenient.
 per-module fact, but the value threaded to *every* leaf where a mutator runs (`Mutator.mutations/3`,
 the structural callbacks, `Tag`, `FunctionPlan`) is the `Spec` list. So we add a `behaviours` field
 to `Spec` (empty default) and **re-bind it per module** at the few analyze/plan entry points
-(`Transform.analysis_mutators/1` = `Enum.map(ctx.mutators, &%{&1 | behaviours: ctx.behaviours})`,
+(`enrich_mutators/2` = `Enum.map(ctx.mutators, &%{&1 | behaviours: ctx.behaviours})`, cached as `ctx.analysis_mutators`,
 `ctx.behaviours` set save/restore per `defmodule`). The deep `analyze/3` recursion is untouched — it
-already forwards the spec list opaquely; only `analysis_mutators/1` and `Mutator.mutations/3` (which
+already forwards the spec list opaquely; only `enrich_mutators/2` and `Mutator.mutations/3` (which
 injects `spec.behaviours` into the `mutate/2` context, beside `:opts`) change. The alternative — a
 threaded env bundling specs+behaviours — would have changed the *type* of the value passed through
 ~400 `mutators` references; the spec-field re-bind keeps the value a plain `[%Spec{}]` list, so every
@@ -2022,7 +2023,7 @@ delivery mechanics** — the note is a pure carry-along that never touches the A
   * **Threaded as the third tuple element.** `Mutator.mutations/3` now returns `{spec, mutated, note}`
     triples (was a pair). Everything that consumes the pair widened to `{spec, mutated, _note}` — the
     `Tag` suppression/literal filters, `Tag.expand_targets/2`'s build closure (`… mutator, mutated, note,
-    range`), `Analyze.build_candidates/2`, `Captures.capture_mutations/3`, `Mutare.Test.node_mutations/3`.
+    range`), `Analyze.build_candidates/2`, `Captures.capture_mutations/4`, `Mutare.Test.node_mutations/3`.
     A note-bearing candidate gains a `note` field: `Candidate.{InPlace,Lifted,CaseClause,CasePattern}` —
     the four kinds a `mutate` result lands in *directly* (in-place body, lifted `def`-head guard/literal,
     `case` clause, `receive`/`fn` clause) — **plus `MacroPattern`**, the one kind a `mutate` result reaches
@@ -2154,7 +2155,7 @@ descended as ordinary segments). See `transform_corpus_test.exs`
 `interp_string_gen` property generators.
 
 ### Guard tagger is now bitstring-spec-aware `[done]`
-`tag_targets/3` (the lifted-guard path) used to be a blind descent that ran
+`tag_walk/3` (the lifted-guard path) used to be a blind descent that ran
 mutators on every guard node. A multi-specifier bitstring *construction* is a
 legal guard (`def f(x) when <<x::integer-size(8)>> == <<0>>`), so the walk would
 offer the `-` separator to Arithmetic and lift `<<x::(integer + size(8))>>` — an
@@ -2179,9 +2180,9 @@ pattern), so for a long time heads were left untouched (the in-place `:pattern`
 routing skips them). Now they are mutated by the **same lift machinery as guards**:
 `FunctionPlan.build_pattern_literals/3` tags each mutatable head literal in the
 shared tagged clause group (continuing the guard tag counter so tags are unique
-group-wide), and each `Candidate.Pattern` materializes a `__mut` copy with that one
+group-wide), and each `Candidate.Lifted` materializes a mutant clause with that one
 literal swapped — `def f(2)`, etc. The `Site` is a `:lifted` replace, identical in
-shape to a guard's (`Site.lifted_replace/6`), with the literal mutator's name.
+shape to a guard's (`Site.lifted_replace/7`), with the literal mutator's name.
 
 Consequences worth knowing:
 - A function now lifts if it admits a guard swap, a head-pattern literal swap, **or**
@@ -2478,7 +2479,7 @@ that *would* re-target a clause to match that value is wrongly scored `:no_cover
 a false negative. (When the suite also hits *some* matching value, the full-id-set record above
 already covers every mutant, so the gap is exactly the match-nothing case.) Fix: a trailing
 `{<active>, mutare_unmatched} -> <record all ids>; Elixir.Kernel.raise(Elixir.CaseClauseError, term:
-mutare_unmatched)` clause (`case_unmatched_clause/2`) restores both — it attributes the ids and
+mutare_unmatched)` clause (`unmatched_clause/2`) restores both — it attributes the ids and
 re-raises the original error on the bare subject (`Elixir.Kernel.raise`/`Elixir.CaseClauseError`
 both spelled in the absolute, import/alias-proof form, like the `=`-match `MatchError` raise). It is **omitted** when an original clause
 is already an unconditional catch-all (`exhaustive_clauses?/2` — an irrefutable pattern, no source
@@ -2659,7 +2660,7 @@ Three things this bought, vs. the prior implicit version:
   don't reintroduce a subtractive key set or a flat skip-depth.
 - **Untyped lifted maps** (`%{type: :guard, …}` / `%{type: :drop, …}`) are now
   **typed candidate variants** — one struct per legal kind (`Candidate.InPlace`,
-  `Candidate.Guard`, `Candidate.Drop`), shared by in-place and lifted alike.
+  `Candidate.Lifted`, `Candidate.Drop`), shared by in-place and lifted alike.
 - **`{line, column}` node identity** is gone. In-place candidates ride in the
   node's intrinsic `meta[:mutare]`; guard targets are tagged with a unique
   `meta[:mutare_tag]` so emission never re-finds the node. Metadata survives
@@ -2687,7 +2688,8 @@ illegal combinations (a `:clause_drop` claiming to be `:in_place`/`:replace`)
 that only discipline kept out — and every **guard** candidate carried a full
 copy of the clause group with its one guard pre-swapped (`mutated_clauses`), N
 near-identical copies for N guard mutants. Both are fixed:
-- **One struct per legal kind.** `Candidate.{InPlace,Guard,Drop}` — the
+- **One struct per legal kind.** `Candidate.{InPlace,Lifted,Drop}` (and the other
+  variants) — the
   `context`/`kind`/`operation` triple is gone; the variant *is* the kind, and the
   matching `Site` constructor is chosen by pattern-matching the struct in
   `Candidate.Delivery.site/3`, alongside the selector-branch axis. The delivery
@@ -2699,9 +2701,10 @@ near-identical copies for N guard mutants. Both are fixed:
 - **The clause group is stored once.** `FunctionPlan` holds a single *tagged*
   clause group (every mutatable guard operator marked with a unique
   `meta[:mutare_tag]`, the tag counter threaded across clauses so tags are
-  group-unique); each `Candidate.Guard` carries only its `tag` + replacement.
-  `FunctionPlan.mutated_clauses/2` reconstructs a copy on demand
-  (`replace_tag/3` for a guard, `List.delete_at/2` for a drop). Leftover tags on
+  group-unique); each `Candidate.Lifted` carries only its `tag` + replacement.
+  `FunctionPlan.mutated_clause/2` reconstructs the single affected clause on
+  demand (`replace_tag/3` for a guard; a `Candidate.Drop` yields a `:drop`
+  sentinel, the original gated off rather than deleted). Leftover tags on
   sibling operators are stripped before rendering, so the rendered metamutant is
   identical to the old per-candidate-copy output.
 - **`ModulePlan` is the module-planning stage.** `build/3` chunks a statement
@@ -2781,7 +2784,7 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
   the calls. Self-call redirection (point self-calls at the active copy) is
   deferred (DESIGN open question / v2).
 - **Error provenance shifts.** `FunctionClauseError` now raises from the lifted
-  private fn (`__mutare_f_1_g3_orig`), so its message names that, not `f`.
+  private fn (`__mutare_f_1_g3`), so its message names that, not `f`.
   Irrelevant to kill/survive; mildly ugly in raw error output.
 - **`@doc`/`@spec`/`@impl`** ride on the public dispatcher because we emit it
   *first* in the lifted group (attributes attach to the next def). Private copies
@@ -2896,7 +2899,7 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
   no shadowing). Still **out of scope**: mutating inside `unquote(expr)` (compile-time
   splice; deferred, as for `quote`), and lifting any of these
   (head-pattern/guard/clause-drop mutants).
-- **Private names** are `<prefix><name>_<arity>_g<group>_{orig,m<id>}`. The
+- **Private names** are `<prefix><name>_<arity>_g<group>`. The
   group counter keeps generated names unique *among themselves*, and `?`/`!`
   (legal only at a name's end) are replaced so they can sit mid-identifier. The
   public dispatcher keeps the real name.
@@ -3557,7 +3560,7 @@ Two design decisions, both load-bearing:
 Plumbing: `Transform.transform_string` normalizes its `:mutators` opt through `resolve/1` at
 the boundary (so tests passing bare modules, the default set, and the Options/Config path all
 become specs); every internal consumer (`Mutator.mutations/3`, `analyze`'s structural-mutator
-discovery via `Mutator.implementing/3` (`return_replacements`/`condition_replacements`) and
+discovery via `Mutator.Dispatch.implementing/3` (`return_replacements`/`condition_replacements`) and
 `RescueType` enablement via `Spec.find/2`, `PatternStructure`, `FunctionPlan`,
 `Site.replace`) reads `spec.module`/`spec.name`/`spec.opts`. The CLI's `--mutators` CSV can't
 express opts (strings only) — configured mutators are a `.mutare.exs`/`Mutare.run/2` feature.
@@ -3902,14 +3905,14 @@ forbidden in guards (`Enum`/`List` calls, `++`). `Integer.is_even`/`is_odd` are 
 first family members that are **guard-legal qualified remote macros** — they *do*
 appear in `when` clauses (the source's existing `require Integer` carries to the
 lifted copy, so `is_odd` compiles). That exposed a latent bug in the guard lift
-path: `FunctionPlan.tag_targets` used a context-free `Macro.postwalk`, which visits
+path: the guard tagger used a context-free `Macro.postwalk`, which visits
 the `{:__aliases__, _, [:Integer]}` node sitting in the call's *form* position and
 offered it to `AliasLiteral` — minting a `when Mutare.Mutant.is_even(n)` mutant that
 is **illegal in a guard** ("cannot invoke remote function … inside a guard") and
 poisons the single build. The in-place analyzer never hit this because its `recurse`
 descends a node's *args* only, never its *form*, keeping a remote call's module
 opaque (the same reason `:erlang.foo()`'s module is untouched). The fix makes the
-guard tagger mirror that: `tag_targets` is now an explicit post-order `tag_walk`
+guard tagger mirror that: `Mutare.Transform.Tag.tag_walk` is now an explicit post-order walk
 (args only, never form), so the whole call node and its arguments are still offered
 (the `is_even`→`is_odd` swap, a literal argument) but the module alias is not. This
 is *positive* compile-safety — fixing it at the classifier rather than leaning on
@@ -4030,8 +4033,8 @@ A sentinel equal to the original tail — reachable only for a bare-atom tail li
 **All return paths, not just `:do` (done).** A `def`/`defp` body has more return
 paths than its `:do` block: each `rescue`/`catch`/`else` clause body also returns
 (a rescued/caught error, or an `else` match on the do result). All four are now
-targeted (`Transform.annotate_returns/3` → `annotate_block_returns/3`): the `:do`
-tail via `attach_return/2`, and each clause body tail via `map_clauses/3` (the same
+targeted (`Transform.annotate_returns/3` → `annotate_block_returns/4`): the `:do`
+tail via `attach_return/3`, and each clause body tail via `map_clauses/3` (the same
 clause walk a `try` *expression* uses — a `def … rescue …` is an implicit `try`).
 **`:after` is deliberately excluded** — `try` discards the after block's value, so
 its tail is *not* a return path (a mutant there would be unobservable). The after
@@ -4156,7 +4159,7 @@ so you could not write a custom return/condition mutator. (Foreseen in "Structur
 optional callback" above.)
 
 The fix mirrors `pattern_mutations/2`: two optional callbacks `return_replacements/1` and
-`condition_replacements/1`, discovered by `Mutare.Mutator.implementing/3` (the shared "enabled
+`condition_replacements/1`, discovered by `Mutare.Mutator.Dispatch.implementing/3` (the shared "enabled
 specs exporting `fun/arity`" helper, which `PatternStructure.mutators/1` now also uses). The two
 `attach_return`/`attach_if_condition` sites ask **every** implementer instead of one built-in;
 `ReturnValue`/`IfCondition` simply renamed `replacements/1` → the callback name. Each candidate
@@ -4351,7 +4354,7 @@ mutates). This drops exactly the redundant mutants and nothing of value: a plain
 `x in y` keeps its three (`not in`, `true`, `false`); a `x not in y` keeps its
 three (`in`, `true`, `false`) instead of six. The suppression lives in **two**
 parallel descents — `Transform.analyze` (the `{:not, _, [{:in, …}]}` runtime
-clause, for bodies) and `FunctionPlan.tag_walk` (the matching guard clause) —
+clause, for bodies) and `Transform.Tag.tag_walk` (the matching guard clause) —
 because guards offer nodes through a separate path and the same redundancy arises
 there. The rule is uniform (any mutator, not just the two built-ins) so a future
 membership mutator inherits it. This is the first of a family — see
@@ -5286,7 +5289,7 @@ a metamutant with **zero** poisons.
     re-runs a harness-erroring mutant up to N times before recording it — a fresh
     `mix` boot is its own natural backoff. Only `:harness_error` is retried; a
     real verdict (passed/failed/timeout) never is. Retry lives in the runner's
-    `run_mutant/5`, *not* in `Command` — `Command` does one clean run and reports
+    `run_mutant/6`, *not* in `Command` — `Command` does one clean run and reports
     its outcome; whether to re-run is an orchestration decision. (So
     `Command.timed_test/4` and `harness_test.exs` see exactly one run.)
   - **Abort threshold** (`:max_harness_error_rate`, default `0.5`, `nil`/`1.0`
@@ -5398,7 +5401,7 @@ a metamutant with **zero** poisons.
     kill (**unanimous-kill** — the honest combine rule; "any-kill" defends the
     wrong direction). Under unanimous-kill only kills need re-running, so the honest
     rule is also the cheap one; it's a near-copy of the `:harness_retries` machinery
-    in `run_mutant/5`. Orthogonal to harness retries (that's infra flakiness, this
+    in `run_mutant/6`. Orthogonal to harness retries (that's infra flakiness, this
     is test flakiness). Not built here.
 
 ## Consolidations weighed and left as-is
@@ -5430,4 +5433,4 @@ The other two items from that pass are documented where they live: the `Uses` en
 invariant** in `Mutare.Transform.Uses.EnvMirror`'s module comment (the home the extraction gave it),
 and the **harness-retry contract** — only `:harness_error` is retried, because the kill outcomes
 `Command.outcome/2` recovers (`:suite_compile_error`, `:atom_exhausted`) are already distinct by the
-time `Runner.run_mutant/5` reads `result.outcome` — at that guard.
+time `Runner.run_mutant/6` reads `result.outcome` — at that guard.
