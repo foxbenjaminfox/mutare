@@ -4927,19 +4927,22 @@ seeded with `\Q`/`\E`/`#`/`\n`/`(?m)`/`(?s:`/`(?-m)`/`(?:`/`(?#…)` and `/x`/`/
 every mutant of every compiling original compiles (a flag-stack desync corrupts parens
 and surfaces as a non-compiling mutant).
 
-**The other equivalence the flag-positions expose — dot-swap vs. `s`-drop.** A
-force-non-dotall `(?-s:.)` on a dot and dropping a sigil `s` are the *same* matcher when
-they touch the same dot set: one dot, sigil `s` on, no inline modifier group. Both leave
-that dot non-dotall and nothing else, for every input. So `drop_redundant_force_nondotall/3`
-suppresses the dot-swap (keeping the modifier-drop) under exactly that guard — and the
-guard is the *sound* shape: it fires only when the pattern has **no** `(?…` at all (so
-every dot's dotall is purely the sigil's) and exactly one such swap exists; any inline
-`(?s)`/`(?-s)` that could break the equivalence leaves the pair un-deduped (a kept
-redundancy, never a wrong drop). The analogous anchor case (`^`→`\A` under a sole `/m`
-duplicating the `m`-drop) is **not** yet deduped — it's the same phenomenon and folds
-naturally into the future *relevance-gated modifier-drop* work (only drop a flag the
-pattern's constructs actually respond to), so it's left there rather than special-cased
-here.
+**The other equivalence the flag-positions expose — a *force-flag-off* swap vs. that
+flag's modifier-drop.** Forcing one construct to behave as if a flag were off — the dot's
+`(?-s:.)` (s off), `^`→`\A` and `$`→`\Z` (m off) — is the *same* matcher as dropping that
+sigil flag **when they touch the same construct set**: the sigil flag on, no inline
+modifier group (so the construct's behaviour comes solely from the sigil), and exactly one
+such swap (one construct). So each mode swap is tagged `{:force_off, flag}` (or `:keep`) by
+`mode_walk`, and `dedup_force_off/3` drops the lone force-off swap for any sigil flag —
+**uniformly** for `s` (the dot) and `m` (anchors), no per-flag special-casing. `$`→`\z`
+stays (`\z` is the strict end, *not* the m-off behaviour). The guard is the *sound* shape:
+it fires only when the pattern has **no** `(?…` at all (so the behaviour is purely the
+sigil's) and exactly one force-off swap for that flag exists; any inline modifier that
+could break the equivalence leaves the pair un-deduped (a kept redundancy, never a wrong
+drop), and two same-flag anchors (`^a$/m` → `\A` *and* `\Z`) likewise — a single swap no
+longer equals the all-anchors drop. (The deeper *relevance-gated modifier-drop* — never
+*emit* a flag-drop the pattern can't respond to — is still future work; this closes only
+the swap-vs-drop *duplication*, not an inert flag-drop.)
 
 `# mutare:ignore` (done) is the manual escape hatch: a trailing comment ignores
 its line, a standalone comment the next line; matching mutants are recorded

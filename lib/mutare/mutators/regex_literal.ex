@@ -217,24 +217,29 @@ defmodule Mutare.Mutators.RegexLiteral do
   defp mode_aware_patterns(pattern, modifiers) do
     pattern
     |> mode_walk("", false, false, Flags.initial(MapSet.new(modifiers)), [])
-    |> drop_redundant_force_nondotall(pattern, modifiers)
+    |> dedup_force_off(pattern, modifiers)
+    |> Enum.map(&elem(&1, 0))
   end
 
-  # A force-non-dotall dot swap `(?-s:.)` is semantically identical to dropping a
-  # sigil-level `s` *when they touch the same dot set* — i.e. when sigil `s` is on, the
-  # pattern has no inline modifier group (so every dot's dotall comes solely from the
-  # sigil), and there is exactly one such swap (one dot). Both then yield the same matcher
-  # for every input, so we drop the dot swap and keep the modifier-drop sibling. Guarding
-  # on the *absence* of any `(?…)` keeps this sound: an inline `(?s)`/`(?-s)` could make
-  # the two differ, and is simply left un-deduped (a kept redundancy, never a wrong drop).
-  defp drop_redundant_force_nondotall(mutants, pattern, modifiers) do
-    if ?s in modifiers and not String.contains?(pattern, "(?") do
-      case Enum.filter(mutants, &String.contains?(&1, "(?-s:.)")) do
-        [_one] = swap -> mutants -- swap
-        _ -> mutants
-      end
+  # A **force-flag-off** swap forces one construct to behave as if a flag were off — the
+  # dot's `(?-s:.)` (s off), `^`→`\A` and `$`→`\Z` (m off). Each is *semantically identical*
+  # to dropping that sigil flag **when they touch the same construct set**: the sigil flag
+  # is on, the pattern has no inline modifier group (so the construct's behaviour comes
+  # solely from the sigil), and there is exactly one such swap (one construct). Both then
+  # yield the same matcher for every input, so we drop the swap and keep the modifier-drop
+  # sibling. Guarding on the *absence* of any `(?…)` keeps it sound: an inline `(?s)`/`(?-m)`
+  # could break the equivalence, and is left un-deduped (a kept redundancy, never a wrong
+  # drop). Each mode swap is tagged `{:force_off, flag}` (or `:keep`) by `mode_walk`.
+  defp dedup_force_off(tagged, pattern, modifiers) do
+    if String.contains?(pattern, "(?") do
+      tagged
     else
-      mutants
+      Enum.reduce(modifiers, tagged, fn flag, acc ->
+        case Enum.filter(acc, fn {_mutant, tag} -> tag == {:force_off, flag} end) do
+          [_one] = swap -> acc -- swap
+          _ -> acc
+        end
+      end)
     end
   end
 
@@ -254,7 +259,7 @@ defmodule Mutare.Mutators.RegexLiteral do
     new =
       if in_class,
         do: [],
-        else: Enum.map(escaped_anchor_swaps(c, multiline?(stack)), &(prefix <> &1 <> rest))
+        else: tag_swaps(escaped_anchor_swaps(c, multiline?(stack)), prefix, rest)
 
     mode_walk(rest, prefix <> <<?\\, c::utf8>>, in_class, false, stack, acc ++ new)
   end
@@ -298,13 +303,13 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   # `^` outside a class — a start anchor.
   defp mode_walk(<<?^, rest::binary>>, prefix, false, _jo, stack, acc) do
-    new = Enum.map(caret_swaps(multiline?(stack)), &(prefix <> &1 <> rest))
+    new = tag_swaps(caret_swaps(multiline?(stack)), prefix, rest)
     mode_walk(rest, prefix <> "^", false, false, stack, acc ++ new)
   end
 
   # `$` outside a class — an end anchor.
   defp mode_walk(<<?$, rest::binary>>, prefix, false, _jo, stack, acc) do
-    new = Enum.map(dollar_swaps(multiline?(stack)), &(prefix <> &1 <> rest))
+    new = tag_swaps(dollar_swaps(multiline?(stack)), prefix, rest)
     mode_walk(rest, prefix <> "$", false, false, stack, acc ++ new)
   end
 
@@ -312,7 +317,7 @@ defmodule Mutare.Mutators.RegexLiteral do
   # by `s` (dotall). The `.` → `\.` literal swap is `scan/6`'s (mode-independent); here we
   # flip its *dotall-ness*.
   defp mode_walk(<<?., rest::binary>>, prefix, false, _jo, stack, acc) do
-    new = Enum.map(dot_swaps(dotall?(stack)), &(prefix <> &1 <> rest))
+    new = tag_swaps(dot_swaps(dotall?(stack)), prefix, rest)
     mode_walk(rest, prefix <> ".", false, false, stack, acc ++ new)
   end
 
@@ -322,25 +327,34 @@ defmodule Mutare.Mutators.RegexLiteral do
   defp multiline?(stack), do: Flags.active?(stack, ?m)
   defp dotall?(stack), do: Flags.active?(stack, ?s)
 
+  # Splice each `{replacement, tag}` into the pattern at the current point, keeping the tag.
+  defp tag_swaps(swaps, prefix, rest),
+    do: Enum.map(swaps, fn {repl, tag} -> {prefix <> repl <> rest, tag} end)
+
+  # Each mode swap carries a tag: `{:force_off, flag}` when it forces a construct to behave
+  # as if `flag` were off (a candidate to dedup against that flag's modifier-drop), else
+  # `:keep`. `^`→`\A` and `$`→`\Z` force `m` off; the dot's `(?-s:.)` forces `s` off.
   # `^` ↔ `\A`: a no-op without `/m` (both = subject start), so only under `/m`.
-  defp caret_swaps(true), do: ["\\A"]
+  defp caret_swaps(true), do: [{"\\A", {:force_off, ?m}}]
   defp caret_swaps(false), do: []
 
-  # `$` → `\z` always (`\z` is the strict end), `\Z` only under `/m` (else `\Z` ≡ `$`).
-  defp dollar_swaps(true), do: ["\\z", "\\Z"]
-  defp dollar_swaps(false), do: ["\\z"]
+  # `$` → `\z` always (`\z` is the strict end, never the m-off behaviour); `\Z` only under
+  # `/m` (else `\Z` ≡ `$`), and it *is* the m-off behaviour.
+  defp dollar_swaps(true), do: [{"\\z", :keep}, {"\\Z", {:force_off, ?m}}]
+  defp dollar_swaps(false), do: [{"\\z", :keep}]
 
-  # The escaped anchors swapping back toward `^`/`$`, mirroring the above.
-  defp escaped_anchor_swaps(?A, true), do: ["^"]
-  defp escaped_anchor_swaps(?z, _ml), do: ["$"]
-  defp escaped_anchor_swaps(?Z, true), do: ["$"]
+  # The escaped anchors swapping back toward `^`/`$` — never an m-off direction (they go
+  # toward the m-*on* line anchors), so always `:keep`.
+  defp escaped_anchor_swaps(?A, true), do: [{"^", :keep}]
+  defp escaped_anchor_swaps(?z, _ml), do: [{"$", :keep}]
+  defp escaped_anchor_swaps(?Z, true), do: [{"$", :keep}]
   defp escaped_anchor_swaps(_c, _ml), do: []
 
   # Force the dot's newline-matching the *other* way than the active mode (so the swap is
-  # never a no-op): where `s` is on, `(?-s:.)` now excludes a newline; where it's off,
-  # `(?s:.)` now matches one. The scoped `(?…:.)` confines the change to this one dot.
-  defp dot_swaps(true), do: ["(?-s:.)"]
-  defp dot_swaps(false), do: ["(?s:.)"]
+  # never a no-op): where `s` is on, `(?-s:.)` now excludes a newline (the s-off behaviour);
+  # where it's off, `(?s:.)` now matches one. The scoped `(?…:.)` confines it to this dot.
+  defp dot_swaps(true), do: [{"(?-s:.)", {:force_off, ?s}}]
+  defp dot_swaps(false), do: [{"(?s:.)", :keep}]
 
   # --- modifiers -----------------------------------------------------------
 

@@ -693,6 +693,24 @@ defmodule Mutare.MutatorsLiteralTest do
       assert ~S"~r/(?i)a(?-s:.)b/s" in render(RegexLiteral.mutate(parse(~S"~r/(?i)a.b/s")))
     end
 
+    test "suppresses a force-m-off anchor swap when it duplicates dropping sigil m" do
+      # one m-anchor under /m: `\Aa/m` ≡ `^a/` (the m-drop), so the `^`→`\A` swap is dropped
+      caret = render(RegexLiteral.mutate(parse(~S|~r/^a/m|)))
+      refute ~S"~r/\Aa/m" in caret
+      assert ~S"~r/^a/" in caret
+
+      # `$`→`\Z` likewise duplicates the m-drop, but `$`→`\z` (strict end) is kept
+      dollar = render(RegexLiteral.mutate(parse(~S|~r/a$/m|)))
+      refute ~S"~r/a\Z/m" in dollar
+      assert ~S"~r/a\z/m" in dollar
+      assert ~S"~r/a$/" in dollar
+
+      # two m-anchors: a single swap no longer equals the m-drop, so both swaps are kept
+      both = render(RegexLiteral.mutate(parse(~S|~r/^a$/m|)))
+      assert ~S"~r/\Aa$/m" in both
+      assert ~S"~r/^a\Z/m" in both
+    end
+
     test "nudges a character-class range's endpoints by one, staying ordered and legal" do
       assert render(RegexLiteral.mutate(parse(~S|~r/[a-z]/|))) ==
                [
