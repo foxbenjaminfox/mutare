@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Cancel superseded runs on the same PR branch (e.g. rapid pushes). Pushes to
+# master always run to completion, so every commit there keeps its own status.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # Quality gate: format, Credo, and Dialyzer (the `mix check` alias). Runs on a
+  # single, stable toolchain — the one the project is developed against — so the
+  # formatter / Credo / Dialyzer verdicts match a local `mix check`. Dialyxir is
+  # `only: :dev`, so this job stays in the default (dev) MIX_ENV.
+  check:
+    name: mix check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Elixir / OTP
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19"
+          otp-version: "27"
+
+      - run: mix local.hex --force
+      - run: mix local.rebar --force
+
+      - name: Cache deps and _build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-dev-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-dev-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-
+
+      # The PLT is keyed by toolchain + deps; rebuilding it is the slow part of
+      # Dialyzer, so cache it separately (it survives mix.lock-only churn poorly,
+      # hence the restore-keys fallback to warm-start from a near-match).
+      - name: Cache Dialyzer PLTs
+        uses: actions/cache@v4
+        with:
+          path: priv/plts
+          key: ${{ runner.os }}-plt-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-plt-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-
+
+      - run: mix deps.get --check-locked
+      - run: mix deps.compile
+      - run: mix compile --warnings-as-errors
+      - run: mix check
+
+  # Test matrix. We support Elixir 1.18 (`mix.exs` floor `~> 1.18`) and 1.19, so
+  # the supported Erlang/OTP set is the union of their windows — OTP 25, 26, 27,
+  # 28. This is a diagonal: each OTP is exercised exactly once, with each Elixir
+  # line pinned to both ends of its own OTP window (1.18 at 25 & 27, 1.19 at 26 &
+  # 28 — OTP 25 only pairs with 1.18, OTP 28 only with 1.19). `ubuntu-latest`
+  # (24.04) ships prebuilt binaries for all of them. Released combos are blocking;
+  # the development tip is informational only (continue-on-error) so churn
+  # upstream never reds the run.
+  test:
+    name: test (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.allow-failure || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Elixir 1.18 — supported Erlang/OTP 25-27 (tested at both ends).
+          - { elixir: "1.18", otp: "25" }
+          - { elixir: "1.18", otp: "27" }
+          # Elixir 1.19 — supported Erlang/OTP 26-28 (tested at both ends).
+          - { elixir: "1.19", otp: "26" }
+          - { elixir: "1.19", otp: "28" }
+          # Elixir's development tip (main). Non-blocking: an early-warning signal
+          # for upcoming breakage, not a gate.
+          - { elixir: "main", otp: "28", allow-failure: true }
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Elixir / OTP
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - run: mix local.hex --force
+      - run: mix local.rebar --force
+
+      - name: Cache deps and _build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-test-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-test-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-
+
+      - run: mix deps.get --check-locked
+
+      # The project is kept warnings-clean; on released versions a new warning is
+      # a failure. On main it may flag an upcoming deprecation — non-blocking.
+      - run: mix compile --warnings-as-errors
+
+      - run: mix test

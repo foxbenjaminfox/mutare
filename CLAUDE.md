@@ -15,9 +15,9 @@ unusually load-bearing and will save you re-deriving things.
 ## Commands
 
 ```
-mix test                                        # full suite (~3 min; subprocess + property soaks included)
-mix test --exclude runner --exclude property    # fast loop (~4s): skips subprocesses and the property soak
-mix test --only property                        # just the transform property soak (~2 min)
+mix test                                        # full suite (subprocess + property soaks included)
+mix test --exclude runner --exclude property    # fast loop: skips subprocesses and the property soak
+mix test --only property                        # just the transform property soak
 mix test test/mutare/transform_test.exs          # a single file
 mix test test/mutare/transform_test.exs:42       # a single test (by line)
 mix format
@@ -30,7 +30,7 @@ Tests tagged `@moduletag :runner` (e.g. `runner_test`, `coverage_test`, `mix_tas
 `timeout_test`, `poison_test`, `ignore_test`) shell out to real `mix test` subprocesses; tests
 tagged `@moduletag :property` (`transform_property_test`, `transform_compile_property_test`,
 `transform_baseline_property_test`) are PropCheck soaks that render / compile / run a stream of
-generated modules (~2 min). Both are slow — exclude them while iterating
+generated modules. Both are slow — exclude them while iterating
 (`--exclude runner --exclude property`), but run the full suite before committing. `mix run` uses
 the `:dev` env, where `test/support/*.ex` fixtures are **not** compiled; those (custom mutator
 fixtures) only exist under `MIX_ENV=test`.
