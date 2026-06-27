@@ -12,40 +12,58 @@ a *single* program (the **metamutant**) that embeds every mutant behind a runtim
 switch, then selects the active mutant per test run via an environment variable.
 **Compile once; run the suite N times.**
 
-See [`DESIGN.md`](DESIGN.md) for the full rationale and roadmap.
+## Installation
 
-## Status
+Add `mutare` to your `deps`:
 
-**Milestone 1 — walking skeleton.** Proven end to end:
+```elixir
+def deps do
+  [
+    {:mutare, "~> 0.1", only: [:dev, :test], runtime: false}
+  ]
+end
+```
 
-- source → metamutant transform via Sourceror (in-place `:persistent_term`
-  selector), for **arithmetic** and **relational** mutators
-- one compilation, then a fresh OS process per mutant (`MUTANT_UNDER_TEST`)
-- baseline-first execution, kill/survive classification
-- survivors reported as one-line diffs at `file:line`, plus a mutation score
+Then run `mix mutare`.
 
-**Milestone 2 — function lifting + dispatcher.** For mutations that touch
-*dispatch*, the clause group is duplicated and a bare catch-all dispatcher routes
-to the active copy by id:
+## How it works
 
-- **guard mutations** — operator swaps inside `when` (a `case` can't live in a
-  guard)
-- **clause-drop** — remove one clause of a multi-clause function
-- coexists with in-place selectors, which still apply inside the lifted `__orig`
-  copy; the public `f/arity` is unchanged at the module boundary
+1. **Transform.** Every source file under `lib/` is rewritten into a *metamutant*
+   that embeds all of its mutants. A body mutation hides behind an in-place
+   `case` selector keyed on the active mutant id; a guard, head-pattern, or
+   clause-structure mutation (where a `case` is illegal) is delivered by lifting
+   the clause group behind a dispatcher.
+2. **Compile once.** The metamutant compiles a single time. Sources never change
+   between runs, so there is no per-mutant recompilation — the dominant cost of
+   every other approach.
+3. **Run the suite per mutant.** A baseline run (mutant `0`) must be green; a
+   coverage probe then maps each mutant to the test files that exercise it. Each
+   mutant runs in a fresh `mix test` OS process with `MUTANT_UNDER_TEST` set,
+   `:workers` at a time, each capped by a wall-clock timeout.
+4. **Report.** Surviving mutants are shown as one-line diffs at `file:line`, with
+   a mutation score, in your choice of human, JSON, HTML, or SARIF format.
 
-**Milestone 3 — coverage probe.** The baseline runs with `--cover`:
+## Features
 
-- **no-coverage skipping** — a mutant whose selector line no test executes is
-  skipped and excluded from the score's denominator
-- **test selection** — each test file is probed once for coverage; a mutant runs
-  only the files that cover its line (file-granular; `--full` runs the whole
-  suite per mutant)
-
-**Milestone 4 (in progress) — parallel workers + timeouts.** Mutants run
-`:workers` at a time; each run is capped (`baseline × :timeout_multiplier`), and
-a mutation that hangs (e.g. a loop turned infinite) is caught — the run halts
-itself after the deadline (portable; no process-killing) and counts as a kill.
+- **Compile once, run N times** — the whole point: no per-mutant recompilation.
+- **Coverage-guided selection** — each mutant runs only the test files that cover
+  it; uncovered mutants are skipped and excluded from the score (`--full` opts
+  out).
+- **Parallel workers + timeouts** — mutants run concurrently, each capped; a
+  mutation that hangs (a loop turned infinite) halts itself after the deadline
+  and counts as a kill (portable — no process-tree killing).
+- **Compile-poison recovery** — a mutant that wouldn't compile is identified from
+  the compile error, dropped (reported as *poisoned*), and the build retried, so
+  one bad mutation never sinks the whole run.
+- **A broad built-in mutator set** — arithmetic/operator swaps, relational and
+  logical swaps, literals of every kind, collection/string/map call rewrites,
+  pattern and clause restructurings, and more. See
+  [`Mutare.Mutators`](https://hexdocs.pm/mutare/Mutare.Mutators.html), and write
+  your own with [`Mutare.Mutator`](https://hexdocs.pm/mutare/Mutare.Mutator.html).
+- **Umbrella-aware** — target one app, several, or the whole workspace.
+- **CI-friendly** — `--since <ref>` to scope to changed files, `--min-score` to
+  gate, machine-readable reports, and `--keep-sandbox` to cache the compiled
+  sandbox across runs.
 
 Suppress a known-equivalent mutant with a comment — trailing ignores its line,
 standalone ignores the next line; ignored mutants are excluded from the score:
@@ -65,20 +83,17 @@ def passthrough(x), do: x + 0
 def parity(n), do: rem(n, 2) == 0  # mutare:ignore[arithmetic] only `rem` is equivalent here
 ```
 
-A filter accepts the built-in family names (`arithmetic`, `relational`,
-`logical`, `literal`, `conditional`, `list`, `collection`, `collection_arity`,
-`string_call`, `map_keyword`, `call_removal`, `default_drop`, `numeric`, `math`,
-`integer`, `string`, `float`),
-plus `clause_drop` and any custom mutator's `name/0`. Filtering fails safe: an
-unknown name (a typo) or an empty `[]` matches nothing, so the mutant runs
-rather than being silently hidden.
+A filter accepts any built-in family name (the full list is
+[`Mutare.Mutators.families/0`](https://hexdocs.pm/mutare/Mutare.Mutators.html#families/0)
+— `arithmetic`, `relational`, `literal`, `collection`, …), plus `clause_drop`
+and any custom mutator's `name/0`. Filtering fails safe: an unknown name (a typo)
+or an empty `[]` matches nothing, so the mutant runs rather than being silently
+hidden.
 
 If a mutant won't compile (e.g. a custom mutator emits something invalid), it
 would normally sink the whole single build — so Mutare detects the offending
 mutant from the compile error, drops it (reported as *poisoned*, excluded from
 the score), and rebuilds.
-
-This completes the design's milestones (M1–M4).
 
 ## Installation
 
@@ -92,13 +107,13 @@ mix igniter.install mutare
 It inspects your dependencies and, for each framework it finds, adds the matching
 companion package and wires it into a generated `.mutare.exs`:
 
-| Detected dependency  | Package added              | Wired into                                    |
-| -------------------- | -------------------------- | --------------------------------------------- |
-| `:phoenix`           | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`          |
-| `:phoenix_live_view` | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
-| `:ecto` / `:ecto_sql`| `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
-| `:oban` / `:oban_pro`| `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`             |
-| `:gettext`           | `mutare_gettext`           | `:plugins` — `Mutare.Gettext`                 |
+| Detected dependency                     | Package added              | Wired into                                    |
+| --------------------------------------- | -------------------------- | --------------------------------------------- |
+| `:phoenix`                              | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`          |
+| `:phoenix_live_view`                    | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
+| `:ecto_sql` / `:phoenix_ecto` / `:ecto` | `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
+| `:oban` / `:oban_pro`                   | `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`             |
+| `:gettext`                              | `mutare_gettext`           | `:plugins` — `Mutare.Gettext`                 |
 
 A mutator package extends the `:mutators` list; a non-mutating **plugin** like
 `mutare_gettext` (which teaches Mutare a library's compile-time vocabulary so the
@@ -336,6 +351,18 @@ from `>=` at the boundary — a missing boundary test.
 ## Development
 
 ```
-mix test                    # full suite (incl. an end-to-end runner test)
-mix test --exclude runner   # skip the slower subprocess integration test
+mix test                                      # full suite (~3 min; subprocess + property soaks)
+mix test --exclude runner --exclude property  # fast loop (~4s)
+mix format
+mix compile --warnings-as-errors              # the project is kept warnings-clean
+mix docs                                      # generate the HexDocs locally
 ```
+
+Contributions are welcome. `DESIGN.md` is the blueprint, `PHILOSOPHY.md` the
+project's values, and `NOTES.md` the implementation logbook (deferred work, sharp
+edges, and the *why* behind non-obvious decisions) — they are load-bearing and
+worth reading before substantial changes.
+
+## License
+
+[MIT](LICENSE) © Benjamin Fox
