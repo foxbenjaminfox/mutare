@@ -359,8 +359,14 @@ defmodule Mutare.Mutators.RegexLiteral do
   end
 
   defp compilable?({pattern, modifiers}) do
-    match?({:ok, _}, Regex.compile(pattern, List.to_string(modifiers)))
+    match?({:ok, _}, Regex.compile(pattern, validation_opts(modifiers)))
   end
+
+  # Options for the *validation* compile only — the rendered mutant keeps the author's
+  # modifiers verbatim. The deprecated `/r` (an exact alias of `/U`, same compiled form)
+  # makes `Regex.compile/2` emit a deprecation warning *every call*, which — run once per
+  # candidate — would flood a run; normalise it to `U` so the check is quiet.
+  defp validation_opts(modifiers), do: modifiers |> List.to_string() |> String.replace("r", "U")
 
   # --- anchors -------------------------------------------------------------
 
@@ -400,8 +406,9 @@ defmodule Mutare.Mutators.RegexLiteral do
     |> Enum.map(&elem(&1, 0))
   end
 
-  defp mode_swaps(%{kind: :char, text: "^", in_class: false, flags: f} = t, pat),
-    do: spliced_swaps(caret_swaps(MapSet.member?(f, ?m)), pat, t)
+  defp mode_swaps(%{kind: :char, text: "^", in_class: false, offset: o, flags: f} = t, pat),
+    do:
+      spliced_swaps(caret_swaps(MapSet.member?(f, ?m) and not firstline_anchored?(f, o)), pat, t)
 
   defp mode_swaps(%{kind: :char, text: "$", in_class: false, flags: f} = t, pat),
     do: spliced_swaps(dollar_swaps(MapSet.member?(f, ?m)), pat, t)
@@ -446,6 +453,12 @@ defmodule Mutare.Mutators.RegexLiteral do
       end)
     end
   end
+
+  # Under `/f` (firstline) the match must *start* in the first line, so a *leading* `^`
+  # (offset 0) is pinned to the subject start even under `/m` — i.e. it already equals `\A`,
+  # making the swap a guaranteed no-op. (A non-leading `^` isn't the match start, so `/f`
+  # doesn't constrain it; we only suppress the offset-0 case, which is always sound.)
+  defp firstline_anchored?(flags, offset), do: MapSet.member?(flags, ?f) and offset == 0
 
   # Each mode swap carries a tag: `{:force_off, flag}` when it forces a construct to behave
   # as if `flag` were off (a candidate to dedup against that flag's modifier-drop), else
@@ -625,11 +638,16 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   # Bounded quantifier → off-by-one / shape neighbours, plus a lazy `{…}?` for a *variable*
   # count only (a fixed `{n}`/`{n,n}` can't vary, nor can a lazy `?` on a zero-width atom, so
-  # those are guaranteed no-ops).
+  # those are guaranteed no-ops). On a zero-width atom only the count mutations that cross
+  # the "min-count 0 ↔ ≥1" boundary survive (`(?=a){1}`→`{0}` is killable; `{2}`→`{1}`/`{3}`
+  # stay "requires" → equivalent).
   defp scan_token(%{kind: :bound, text: t_bound, bound: bound} = t, rest, pat, _pq, zw) do
     pre = before_tok(pat, t)
     post = after_tok(pat, t)
-    bounds = Enum.map(bound_mutations(bound), &(pre <> "{" <> &1 <> "}" <> post))
+
+    counts = bound_mutations(bound)
+    counts = if zw, do: Enum.filter(counts, &bound_class_changes?(&1, bound)), else: counts
+    bounds = Enum.map(counts, &(pre <> "{" <> &1 <> "}" <> post))
 
     lazy =
       if variable_bound?(bound),
@@ -671,6 +689,21 @@ defmodule Mutare.Mutators.RegexLiteral do
   defp variable_bound?({:exact, _}), do: false
   defp variable_bound?({:atleast, _}), do: true
   defp variable_bound?({:range, n, m}), do: n != m
+
+  # On a zero-width atom a bound's only observable trait is whether its min count is 0
+  # ("always-passes") or ≥1 ("requires"); a mutation matters iff it crosses that boundary.
+  # `mutated` is a bound *body* string (`"3"`, `"2,"`, `"1,4"`) — its min is the leading int.
+  defp bound_class_changes?(mutated, bound),
+    do: bound_body_min(mutated) == 0 != (bound_min(bound) == 0)
+
+  defp bound_min({:exact, n}), do: n
+  defp bound_min({:atleast, n}), do: n
+  defp bound_min({:range, n, _m}), do: n
+
+  defp bound_body_min(body) do
+    {min, _rest} = take_digits(body, "")
+    String.to_integer(min)
+  end
 
   # Consume a `\Q…\E` literal span (the bytes after `\Q`), up to and including the `\E`
   # (or to the pattern's end). Returns `{quoted, rest}`.

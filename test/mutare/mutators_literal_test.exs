@@ -552,6 +552,36 @@ defmodule Mutare.MutatorsLiteralTest do
       assert ~S"~r/(a)+?/" in cap
     end
 
+    test "skips equivalent bounded-quantifier counts on a zero-width atom" do
+      # repeating a zero-width assertion a positive number of times is idempotent, so a
+      # `{n}`/`{n,m}` mutation matters only if it crosses the min-count 0 ↔ ≥1 boundary
+      assert render(RegexLiteral.mutate(parse(~S"~r/(?=a){2}/"))) == [~S"~r//", ~S"~r/mutare/"]
+      assert ~S"~r/(?=a){0}/" in render(RegexLiteral.mutate(parse(~S"~r/(?=a){1}/")))
+      assert ~S"~r/(?=a){1,2}/" in render(RegexLiteral.mutate(parse(~S"~r/(?=a){0,2}/")))
+
+      # a normal (non-zero-width) bound keeps its off-by-one neighbours
+      assert ~S"~r/a{1}/" in render(RegexLiteral.mutate(parse(~S"~r/a{2}/")))
+    end
+
+    test "skips the leading ^ swap under firstline+multiline (it is pinned to \\A)" do
+      # `/f` requires the match to start in the first line, so a *leading* `^` under `/mf`
+      # is the subject start = `\A` — a guaranteed-equivalent swap, suppressed
+      refute ~S"~r/\Aa$/mf" in render(RegexLiteral.mutate(parse(~S"~r/^a$/mf")))
+      # without `/f`, the `^`<->`\A` swap is still offered under `/m`
+      assert ~S"~r/\Aa$/m" in render(RegexLiteral.mutate(parse(~S"~r/^a$/m")))
+    end
+
+    test "validates a /r (deprecated) regex without emitting deprecation warnings" do
+      # `/r` is an alias of `/U`; the compile-safety check normalises it so the validation
+      # (run once per candidate) doesn't flood the run with deprecation warnings
+      out =
+        ExUnit.CaptureIO.capture_io(:stderr, fn -> RegexLiteral.mutate(parse(~S"~r/a+b/r")) end)
+
+      refute out =~ "deprecated"
+      # and mutants are still produced (validation still works)
+      assert ~S"~r/a*b/r" in render(RegexLiteral.mutate(parse(~S"~r/a+b/r")))
+    end
+
     test "swaps a + quantifier to * and back" do
       assert ~S|~r/\d*/| in render(RegexLiteral.mutate(parse(~S|~r/\d+/|)))
       assert ~S|~r/a+/| in render(RegexLiteral.mutate(parse(~S|~r/a*/|)))

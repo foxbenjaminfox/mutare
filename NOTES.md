@@ -5841,7 +5841,15 @@ buys less than the duplication costs:
     Finally, a quantifier on a **zero-width atom** (a lookaround `(?=…)`, or a `\b`/`^`/`$` assertion —
     tracked by `scan` via a lookaround-group stack the reader tags) is idempotent, so the
     collapse/lazy/same-class variants are guaranteed-equivalent and dropped, keeping only the
-    "always-passes ↔ requires-once" class-changing swap (`(?=a)+` → `(?=a)*` only).
+    "always-passes ↔ requires-once" class-changing swap (`(?=a)+` → `(?=a)*` only) — and the same
+    class rule prunes its **bounded** form (`(?=a){2}` → `{1}`/`{3}` both "requires", dropped;
+    `(?=a){1}` → `{0}` crosses to "always-passes", kept). Two final flag corners: a **`\cX`** control
+    escape is one three-byte escape; and a *leading* `^` under **`/mf`** (firstline) is pinned to the
+    subject start, so its `\A` swap is a guaranteed no-op and suppressed (offset-0 only — sound; a
+    non-leading `^` isn't the match start, so `/f` doesn't constrain it). One non-grammar fix rode
+    along: the compile-safety check normalises the deprecated `/r` modifier to its `/U` alias *for the
+    validation `Regex.compile/2` only* (the rendered mutant keeps `/r`), so the once-per-candidate
+    check no longer floods a run with `/r`-deprecation warnings.
   - **`Mutare.Transform.Analyze.Conditions`' parallel spine-walks** (`spine_rewrite`, `spine_bindings`,
     `eval_steps`, `offspine_escaping_binding?`, `prune_binding_ancestors`). All share one structural
     skeleton (stop at `@binding_isolating_forms`, recurse-left at `@short_circuit_ops`, flag at
