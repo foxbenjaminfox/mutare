@@ -295,6 +295,7 @@ defmodule Mutare.Mutators.RegexLiteral do
           tok(:group_open, text, i, false, stack)
           |> Map.put(:removable?, not modifier_open?(rest))
           |> Map.put(:zero_width?, lookaround?(rest))
+          |> Map.put(:capturing?, capturing?(rest))
       end
 
     lex(tail, next, false, false, stack2, [token | acc])
@@ -331,14 +332,28 @@ defmodule Mutare.Mutators.RegexLiteral do
   defp modifier_open?(<<??, _::binary>>), do: true
   defp modifier_open?(_), do: false
 
-  # Is this group (the bytes after `(`) a zero-width *lookaround* assertion? Quantifying one
-  # is idempotent, which the scan pass uses to suppress guaranteed-equivalent collapse/lazy
-  # variants. (A named group `(?<n>…)` is *not* a lookbehind — only `(?<=`/`(?<!` are.)
+  # Is this group (the bytes after `(`) a zero-width *lookaround* assertion? Quantifying a
+  # *capture-free* one is idempotent, which the scan pass uses to suppress guaranteed-
+  # equivalent collapse/lazy/bound variants. (A named group `(?<n>…)` is *not* a lookbehind —
+  # only `(?<=`/`(?<!` are.)
   defp lookaround?(<<??, ?=, _::binary>>), do: true
   defp lookaround?(<<??, ?!, _::binary>>), do: true
   defp lookaround?(<<??, ?<, ?=, _::binary>>), do: true
   defp lookaround?(<<??, ?<, ?!, _::binary>>), do: true
   defp lookaround?(_), do: false
+
+  # Is this group a **capturing** group — a plain `(…)` or a *named* capture
+  # (`(?<n>…)`/`(?'n'…)`/`(?P<n>…)`)? A capture inside a lookaround makes its repetition
+  # observable (the captured text, or a later backreference, differs), so such a lookaround is
+  # *not* idempotent. Everything else `(?:`, `(?=`, `(?>`, `(?#`, `(?flags…)`, `(?<=`/`(?<!`)
+  # is non-capturing.
+  defp capturing?(<<??, ?P, ?<, _::binary>>), do: true
+  defp capturing?(<<??, ?<, ?=, _::binary>>), do: false
+  defp capturing?(<<??, ?<, ?!, _::binary>>), do: false
+  defp capturing?(<<??, ?<, _::binary>>), do: true
+  defp capturing?(<<??, ?', _::binary>>), do: true
+  defp capturing?(<<??, _::binary>>), do: false
+  defp capturing?(_), do: true
 
   # --- splice helpers: rebuild the pattern with one token's text replaced ---
 
@@ -590,13 +605,20 @@ defmodule Mutare.Mutators.RegexLiteral do
   defp scan_ignored?(_token), do: false
 
   # The zero-width-ness of the atom this token *completes* (consulted by the next token's
-  # quantifier), and the updated lookaround-group stack. A quantifier on a zero-width atom
-  # (a lookaround, or a `\b`/`^`/`$`-style assertion) is idempotent, so collapse/lazy on it
-  # are guaranteed-equivalent. The group stack pairs each `:group_open` with its close.
-  defp advance_zero_width(%{kind: :group_open, zero_width?: zw}, groups),
-    do: {false, [zw | groups]}
+  # quantifier), and the updated group stack. A quantifier on a zero-width atom (a
+  # *capture-free* lookaround, or a `\b`/`^`/`$`-style assertion) is idempotent, so its
+  # collapse/lazy/bound variants are guaranteed-equivalent. A lookaround that *captures*,
+  # though, is observably non-idempotent (the captured text / a later backreference differs
+  # with the repetition count), so it must not count as zero-width. The group stack pairs each
+  # `:group_open` with its close as a `{lookaround?, capturing?, contains_capture?}` frame; on
+  # close the frame's capture is propagated to its parent, so a capture nested at any depth
+  # taints the enclosing lookaround.
+  defp advance_zero_width(%{kind: :group_open, zero_width?: la, capturing?: cap}, groups),
+    do: {false, [{la, cap, false} | groups]}
 
-  defp advance_zero_width(%{kind: :group_close}, [zw | groups]), do: {zw, groups}
+  defp advance_zero_width(%{kind: :group_close}, [{la, self_cap, inner_cap} | groups]),
+    do: {la and not inner_cap, mark_capture(groups, self_cap or inner_cap)}
+
   defp advance_zero_width(%{kind: :group_close}, []), do: {false, []}
 
   defp advance_zero_width(%{kind: :escape, text: <<?\\, c::utf8>>}, groups) when c in ~c"bBAzZGK",
@@ -606,6 +628,9 @@ defmodule Mutare.Mutators.RegexLiteral do
     do: {true, groups}
 
   defp advance_zero_width(_token, groups), do: {false, groups}
+
+  defp mark_capture([{la, self_cap, _} | rest], true), do: [{la, self_cap, true} | rest]
+  defp mark_capture(groups, _captured), do: groups
 
   # Does a lazy (`?`) / possessive (`+`) suffix follow this quantifier, possibly across
   # ignored text? The first *non-ignored* token decides (a `\Q…\E`/verb atom in between

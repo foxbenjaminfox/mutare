@@ -5838,12 +5838,17 @@ buys less than the duplication costs:
     (`x`-comment / `(?#…)`, behind which a quantifier suffix is still visible) vs an **inert atom**
     `:inert` (`\Q…\E` / verb, which *stops* suffix scanning) — so `scan`'s `prev_quant`/suffix detection
     looks *through* ignored text (`a+(?#c)?`, `a+ ?`/x are lazy, not collapsible) but not through atoms.
-    Finally, a quantifier on a **zero-width atom** (a lookaround `(?=…)`, or a `\b`/`^`/`$` assertion —
-    tracked by `scan` via a lookaround-group stack the reader tags) is idempotent, so the
+    Finally, a quantifier on a **zero-width atom** (a *capture-free* lookaround `(?=…)`, or a
+    `\b`/`^`/`$` assertion — tracked by `scan` via a group stack the reader tags) is idempotent, so the
     collapse/lazy/same-class variants are guaranteed-equivalent and dropped, keeping only the
     "always-passes ↔ requires-once" class-changing swap (`(?=a)+` → `(?=a)*` only) — and the same
     class rule prunes its **bounded** form (`(?=a){2}` → `{1}`/`{3}` both "requires", dropped;
-    `(?=a){1}` → `{0}` crosses to "always-passes", kept). Two final flag corners: a **`\cX`** control
+    `(?=a){1}` → `{0}` crosses to "always-passes", kept). The **capture-free** qualifier is load-bearing:
+    a lookaround that *captures* (`(?=(a))`) is observably non-idempotent — greediness/count change the
+    captured text and any later backreference (`(?=(a))*` greedy captures `a`, lazy `*?` leaves it
+    unset) — so the group stack carries a `{lookaround?, capturing?, contains_capture?}` per frame,
+    propagating a nested capture (even through a `(?:…)`) up to the enclosing lookaround on close; a
+    tainted lookaround is *not* zero-width, so all its quantifier/bound mutants are kept. Two final flag corners: a **`\cX`** control
     escape is one three-byte escape; and a *leading* anchor (`^` **or** `\A`) under **`/mf`**
     (firstline) is pinned to the subject start, so the `^`↔`\A` swap is a guaranteed no-op in both
     directions and suppressed. "Leading" is tracked by `mode_aware_patterns` (preceded only by

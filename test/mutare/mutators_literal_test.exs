@@ -552,6 +552,16 @@ defmodule Mutare.MutatorsLiteralTest do
       assert ~S"~r/(a)+?/" in cap
     end
 
+    test "keeps lazy variants for a lookaround that captures (greediness is observable)" do
+      # `(?=(a))*` greedily executes the assertion and captures "a"; the lazy `*?` does not,
+      # so the lazy mutant is killable and must NOT be suppressed (a capturing lookaround is
+      # not idempotent). A capture nested through a non-capturing group still taints it.
+      assert ~S"~r/(?=(a))*?/" in render(RegexLiteral.mutate(parse(~S"~r/(?=(a))*/")))
+      assert ~S"~r/(?=(?:(a)))*?/" in render(RegexLiteral.mutate(parse(~S"~r/(?=(?:(a)))*/")))
+      # a non-capturing lookaround stays idempotent — lazy still suppressed
+      refute ~S"~r/(?=(?:a))*?/" in render(RegexLiteral.mutate(parse(~S"~r/(?=(?:a))*/")))
+    end
+
     test "skips equivalent bounded-quantifier counts on a zero-width atom" do
       # repeating a zero-width assertion a positive number of times is idempotent, so a
       # `{n}`/`{n,m}` mutation matters only if it crosses the min-count 0 ↔ ≥1 boundary
@@ -561,6 +571,15 @@ defmodule Mutare.MutatorsLiteralTest do
 
       # a normal (non-zero-width) bound keeps its off-by-one neighbours
       assert ~S"~r/a{1}/" in render(RegexLiteral.mutate(parse(~S"~r/a{2}/")))
+    end
+
+    test "keeps bound mutations for a lookaround that captures" do
+      # `(?=(a)){0,2}` greedily executes the assertion (captures "a"); pin-to-`{0}` does not,
+      # so the min-class filter must not drop it — a capturing lookaround isn't idempotent
+      caps = render(RegexLiteral.mutate(parse(~S"~r/(?=(a)){0,2}/")))
+      assert ~S"~r/(?=(a)){0}/" in caps
+      assert ~S"~r/(?=(a)){0,1}/" in caps
+      assert ~S"~r/(?=(a)){1}/" in render(RegexLiteral.mutate(parse(~S"~r/(?=(a)){2}/")))
     end
 
     test "skips leading anchor swaps (both directions) under firstline+multiline" do
