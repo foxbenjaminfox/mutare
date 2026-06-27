@@ -169,6 +169,35 @@ defmodule Mutare.Transform.CallsTest do
                Sourceror.to_string(rebuild.(:renamed, [{:a, [], nil}, {:b, [], nil}]))
     end
 
+    test "a stamped node with an unrebuildable head degrades to nil (total, never raises)" do
+      # The identity stamp is only ever placed on a remote `Mod.fun`/`:mod.fun` or a bare `fun`
+      # head — the two shapes the rebuild handles. A stamp on a `recv.()` anonymous-call head is an
+      # impossible state Mutare never produces; `resolved_macro_call/1` returns nil rather than
+      # raising a `FunctionClauseError` from the (otherwise partial) rebuild.
+      anon_head = {{:., [], [{:f, [], nil}]}, [mutare_macro_call: {[:X], :f}], [{:a, [], nil}]}
+      assert Calls.resolved_macro_call(anon_head) == nil
+    end
+
+    test "the registry fallback resolves a deterministic module across several whole imports" do
+      # Two un-loadable DSL modules, both whole-imported and both registering `where/2`. Neither
+      # reflects, so the bare call falls to the registry; `env.imports` is a map (undefined order),
+      # so the resolved identity must be sorted-stable — `[:Alpha, :Dsl]` wins over `[:Zeta, :Dsl]`
+      # — and never flip run to run (the stamp feeds id-stable analysis and a module classifier).
+      registry =
+        Mutare.Macros.build([{Zeta.Dsl, :where, 2, :skip}, {Alpha.Dsl, :where, 2, :skip}], [])
+
+      resolve = fn ->
+        "import Zeta.Dsl\nimport Alpha.Dsl\nwhere(q, c)"
+        |> Sourceror.parse_string!()
+        |> Resolve.annotate(registry)
+        |> Macro.prewalk(nil, fn node, acc -> {node, acc || Calls.resolved_macro_call(node)} end)
+        |> elem(1)
+      end
+
+      assert {[:Alpha, :Dsl], :where, [_q, _c], _rebuild} = resolve.()
+      assert Enum.uniq(for _ <- 1..10, do: elem(resolve.(), 0)) == [[:Alpha, :Dsl]]
+    end
+
     test "the identity stamp never leaks into the rendered metamutant" do
       {metamutant, _sites, _next} =
         Mutare.transform_string(

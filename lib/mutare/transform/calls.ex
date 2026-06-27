@@ -214,9 +214,17 @@ defmodule Mutare.Transform.Calls do
   @spec resolved_macro_call(Macro.t()) ::
           {module_key() | nil, atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
   def resolved_macro_call({head, meta, args}) when is_list(meta) and is_list(args) do
-    case macro_identity(meta) do
-      {module, name} -> {module, name, args, macro_rebuild(head, meta, module, args)}
-      nil -> nil
+    # Stay **total**: the identity stamp is only ever placed (by `Mutare.Transform.Resolve`) on a
+    # remote `Mod.fun`/`:mod.fun` or a bare `fun` head, the two shapes `macro_rebuild/4` handles —
+    # so a node carrying the stamp on any *other* head (e.g. a `recv.()` anonymous-call head) is an
+    # impossible state Mutare never produces. Rather than commit to a partial `macro_rebuild` that
+    # would raise on it, degrade to `nil` (the documented "not a recognised known-macro call"), so a
+    # caller handing in an arbitrary node can never crash here.
+    with {module, name} <- macro_identity(meta),
+         rebuild when is_function(rebuild, 2) <- macro_rebuild(head, meta, module, args) do
+      {module, name, args, rebuild}
+    else
+      _ -> nil
     end
   end
 
@@ -269,6 +277,10 @@ defmodule Mutare.Transform.Calls do
       nil -> bare_macro_rebuild(module, meta, fun, args)
     end
   end
+
+  # An unexpected head shape (never produced by `Mutare.Transform.Resolve`): no rebuild — the `nil`
+  # makes `resolved_macro_call/1` degrade to `nil` instead of raising a `FunctionClauseError`.
+  defp macro_rebuild(_head, _meta, _module, _args), do: nil
 
   # The bare rebuild closure: a value-only swap (same name *and* arity as the written head `fun`)
   # stays bare; a renamed/re-aritied sibling requalifies with `module` (alias-proof), unless

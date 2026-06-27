@@ -215,8 +215,21 @@ defmodule Mutare.Transform.Resolve do
   # to exclude (and `Runner.escalate_block_poison/3` can then drop every sibling mutant in the block).
   # Limited to whole imports: a selective `import Mod, only: [m: 1]` already resolves without
   # reflection (the `{:only, set}` is read straight from the source), so it never reaches here.
+  #
+  # `env.imports` is a **map**, so its iteration order is undefined; sort the candidates before
+  # picking, so the chosen module is **deterministic** across runs (the stamped identity feeds
+  # `meta[:mutare_macro_call]`, and a `:hosted`/`:routing` mutator may key on it — a run-to-run
+  # flip would be a non-reproducible result, and the **mutant-id stability** Mutare relies on for
+  # poison recovery assumes a stable analysis). More than one match is itself degenerate: a bare
+  # call under two whole imports that *both* genuinely export `fun/arity` is an ambiguous call that
+  # would not compile, so a compiling program has at most one real provider — a second match means
+  # the (syntactic, un-reflected) registry over-claims a module that doesn't truly export it. Either
+  # way the treatment is the same, so any deterministic pick is sound; sorting by module key is the
+  # stable, explanation-free choice.
   defp registered_macro_module(fun, arity, env) do
-    Enum.find_value(env.imports, fn {module_key, selector} ->
+    env.imports
+    |> Enum.sort()
+    |> Enum.find_value(fn {module_key, selector} ->
       if Imports.whole?(selector) and Macros.lookup(env.macros, module_key, fun, arity),
         do: module_key
     end)
