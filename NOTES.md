@@ -4901,14 +4901,45 @@ classifier deliberately whitelists only the genuine inline-flag letters
 (`imsxuUJn`) so a *named* group `(?P<n>…)` is never misread as a flag set — the one
 collision (`P`) that would corrupt scoping.
 
-**Boundary, documented not papered over:** `x`-mode (extended) whitespace/`#`-comment
-stripping is *not* modelled — we don't tokenize x-mode. Its only effect would be a
-`^`/`$` sitting in an x-mode line comment being read as a real anchor; it can only
-ever *miss* a flag context, never invent one, so it fails safe like any unrecognised
-construct, and the `Regex.compile/2` backstop still guarantees every emitted mutant
-compiles. Verified by a 150k-pattern fuzz seeded with `(?m)`/`(?m:`/`(?-m)`/`(?:`/
-`(?#…)` tokens: every mutant of every compiling original compiles (a flag-stack
-desync would corrupt parens and surface as a non-compiling mutant).
+**`x`-mode comments and `\Q…\E` — two inert spans the walk must respect.** Both are
+regions where regex syntax does *not* apply, and an early version that ignored them was
+unsound in the same way: it processed their bytes as syntax. Under `x` (extended), an
+unescaped `#` starts a comment to end-of-line; a `\Q…\E` quotes a literal span. In
+*both*, a `^`/`$`/`.` is inert (mutating it yields a guaranteed-equivalent) **and** — the
+sharper bug — a `(`/`(?…)` would push a phantom frame onto the flag stack, leaking the
+mode past the real `)` and mis-gating a *real* later anchor (e.g. `(?m:\Q(\E^a)^b`
+emitting a bogus `\A` on the non-multiline `^b`). So the earlier "x-mode can only *miss*
+a flag context, never invent one — fails safe" claim was **wrong**: a quoted/commented
+`(` actively invents one. The flag-aware `mode_walk/6` now skips both spans — `\Q…\E`
+unconditionally (`take_quoted/1`), an `x`-comment when `x` is positionally active
+(`take_comment_line/1`, so an inline `(?x)` is honoured and a `#` before it stays
+literal). `scan/6` skips `\Q…\E` too (no flags needed there).
+
+The **residual** (documented, not fixed): the two flag-*un*aware passes still mishandle
+`x`-mode comments — the leading/trailing anchor *drop* (`trailing_anchors` sees a comment
+`$` as a droppable anchor) and `scan/6` (a *commented* `a+`/`.` is still mutated). Both
+only ever produce a **guaranteed-equivalent** mutant inside an `x`-comment
+(a denominator nick, never a wrong score or a poison — the `Regex.compile/2` backstop
+still holds, and there is no flag stack in those passes to corrupt). Fully closing it
+needs `x`-positional awareness in those passes, i.e. the shared `x`-aware token reader —
+the same deferred consolidation as the three byte-walks. Verified by a 200k-pattern fuzz
+seeded with `\Q`/`\E`/`#`/`\n`/`(?m)`/`(?s:`/`(?-m)`/`(?:`/`(?#…)` and `/x`/`/s` mods:
+every mutant of every compiling original compiles (a flag-stack desync corrupts parens
+and surfaces as a non-compiling mutant).
+
+**The other equivalence the flag-positions expose — dot-swap vs. `s`-drop.** A
+force-non-dotall `(?-s:.)` on a dot and dropping a sigil `s` are the *same* matcher when
+they touch the same dot set: one dot, sigil `s` on, no inline modifier group. Both leave
+that dot non-dotall and nothing else, for every input. So `drop_redundant_force_nondotall/3`
+suppresses the dot-swap (keeping the modifier-drop) under exactly that guard — and the
+guard is the *sound* shape: it fires only when the pattern has **no** `(?…` at all (so
+every dot's dotall is purely the sigil's) and exactly one such swap exists; any inline
+`(?s)`/`(?-s)` that could break the equivalence leaves the pair un-deduped (a kept
+redundancy, never a wrong drop). The analogous anchor case (`^`→`\A` under a sole `/m`
+duplicating the `m`-drop) is **not** yet deduped — it's the same phenomenon and folds
+naturally into the future *relevance-gated modifier-drop* work (only drop a flag the
+pattern's constructs actually respond to), so it's left there rather than special-cased
+here.
 
 `# mutare:ignore` (done) is the manual escape hatch: a trailing comment ignores
 its line, a standalone comment the next line; matching mutants are recorded

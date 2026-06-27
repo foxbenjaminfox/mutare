@@ -52,7 +52,9 @@ defmodule Mutare.Mutators.RegexLiteral do
       `(?…:.)` confines the change to this one dot, so two dots under different inline
       modes (`a.b(?s).c`) each get their own correct swap. Killable on a subject with a
       newline at that point — without one in the test data, a survivor is a suspected
-      equivalent (like `$`↔`\\z`).
+      equivalent (like `$`↔`\\z`). The force-non-dotall `(?-s:.)` is **suppressed** when
+      it would duplicate dropping a sigil `s` (one dot, no inline modifier group — both
+      then yield the same matcher), keeping the modifier-drop sibling instead.
     * **quantifiers** — swap `+`↔`*` (the cleanest complement: `+` is 1-or-more,
       `*` is 0-or-more, distinct under most uses — though *not* under
       `String.replace(s, _, "")` / `Regex.replace(s, _, "")`, where deleting the
@@ -65,15 +67,18 @@ defmodule Mutare.Mutators.RegexLiteral do
       suffix to a greedy quantifier (`a+` → `a+?`, `a{2,4}` → `a{2,4}?` — distinct
       wherever match *length* matters, e.g. a capture or `Regex.replace`; a boolean
       `Regex.match?/2` never observes greediness, so like `+`/`*` this can be a
-      context-dependent equivalent → suspected survivor / `# mutare:ignore[regex]`);
+      context-dependent equivalent → suspected survivor / `# mutare:ignore[regex]`;
+      **not** offered on a *fixed*-count `{n}`/`{n,n}`, where the repetition can't vary
+      so a lazy `?` is a guaranteed no-op);
       and nudge a bounded quantifier's counts by one (`{3}`→`{2}`/`{4}`, `{8,}`→
       `{7,}`/`{9,}`, `{2,4}`→`{1,4}`/`{3,4}`/`{2,3}`/`{2,5}`), staying within
       `0 ≤ n ≤ m`, *plus* dropping the upper bound (`{2,4}`→`{2,}`) and pinning to
       exact (`{2,4}`→`{2}`, `{8,}`→`{8}`; skipped when it would re-create the
       original, e.g. `{2,2}`→`{2}`). A `?`/`*`/`+` that is a group marker
       (`(?:…)`) is left alone, and a quantifier already carrying a lazy/possessive
-      suffix (`a+?`/`a++`) is neither collapsed nor re-suffixed — only its
-      `+`↔`*` base swaps.
+      suffix is left **whole** — `a+?`/`a++` only `+`↔`*`-swap (no collapse/re-suffix),
+      and a compound optional `a??`/`a?+` is offered nothing at all (dropping its first
+      `?` would reinterpret the trailing `?`/`+` as the operator, e.g. `a?+`→`a+`).
     * **alternation** — drop one branch of an alternation at the pattern's top
       level or inside a *capturing* group: `~r/^(GET|POST)$/` → `~r/^(GET)$/` and
       `~r/^(POST)$/`. Non-capturing/lookaround groups (`(?:…)`, `(?=…)`, …) are
@@ -95,8 +100,18 @@ defmodule Mutare.Mutators.RegexLiteral do
   compiled with `Regex.compile/2` — the *same* PCRE validity the rendered `~r/…/<mods>`
   is held to — and any that does not compile is dropped, so a byte-level edit that lets
   neighbouring characters re-tokenize (`{42+}` → `{42}`) can never poison the single
-  metamutant compile. Only non-interpolated patterns are touched: an interpolated
-  `~r/\#{x}/` parses with multiple `<<>>` parts, not a single binary.
+  metamutant compile. A `\\Q…\\E` literal-quote span is consumed whole (its
+  metacharacters are inert, and its quoted `(` must not perturb the flag scope stack).
+  Only non-interpolated patterns are touched: an interpolated `~r/\#{x}/` parses with
+  multiple `<<>>` parts, not a single binary.
+
+  > #### Extended (`/x`) mode {: .info}
+  > The flag-aware walk (anchors, the dot) honours `x`-mode `#` comments positionally,
+  > so a construct hidden in a comment is correctly ignored. The two flag-*un*aware
+  > passes — the leading/trailing anchor *drop* and `scan/6` (literals, quantifiers,
+  > classes) — do **not** track `x`, so content inside an `x`-mode comment can still
+  > yield a guaranteed-equivalent mutant there; this is the residual limitation a shared
+  > `x`-aware token reader would close (see `NOTES.md`).
   """
   @behaviour Mutare.Mutator
 
@@ -199,10 +214,39 @@ defmodule Mutare.Mutators.RegexLiteral do
   # literal, plus a `Flags` scope stack so the flag is read **positionally** — an inline
   # `(?m)` / `(?s:…)` / `(?-m)` makes the relevant mode vary along the pattern. Each
   # construct offers only the swap that is non-equivalent under the mode in force here.
-  defp mode_aware_patterns(pattern, modifiers),
-    do: mode_walk(pattern, "", false, false, Flags.initial(MapSet.new(modifiers)), [])
+  defp mode_aware_patterns(pattern, modifiers) do
+    pattern
+    |> mode_walk("", false, false, Flags.initial(MapSet.new(modifiers)), [])
+    |> drop_redundant_force_nondotall(pattern, modifiers)
+  end
+
+  # A force-non-dotall dot swap `(?-s:.)` is semantically identical to dropping a
+  # sigil-level `s` *when they touch the same dot set* — i.e. when sigil `s` is on, the
+  # pattern has no inline modifier group (so every dot's dotall comes solely from the
+  # sigil), and there is exactly one such swap (one dot). Both then yield the same matcher
+  # for every input, so we drop the dot swap and keep the modifier-drop sibling. Guarding
+  # on the *absence* of any `(?…)` keeps this sound: an inline `(?s)`/`(?-s)` could make
+  # the two differ, and is simply left un-deduped (a kept redundancy, never a wrong drop).
+  defp drop_redundant_force_nondotall(mutants, pattern, modifiers) do
+    if ?s in modifiers and not String.contains?(pattern, "(?") do
+      case Enum.filter(mutants, &String.contains?(&1, "(?-s:.)")) do
+        [_one] = swap -> mutants -- swap
+        _ -> mutants
+      end
+    else
+      mutants
+    end
+  end
 
   defp mode_walk(<<>>, _prefix, _ic, _jo, _stack, acc), do: acc
+
+  # `\Q…\E` quotes a literal span: its `(`/`)`/`^`/`$` are inert, so consuming it whole is
+  # both a correctness *and* a soundness fix — a quoted `(` must not push a phantom flag
+  # frame (which would leak the mode past the real `)` and mis-gate a later anchor).
+  defp mode_walk(<<?\\, ?Q, rest::binary>>, prefix, in_class, _jo, stack, acc) do
+    {quoted, tail} = take_quoted(rest)
+    mode_walk(tail, prefix <> "\\Q" <> quoted, in_class, false, stack, acc)
+  end
 
   # Escape pair — `\A`/`\z`/`\Z` are anchors; any other escape (incl. `\^`/`\$`) is a
   # literal, so it offers nothing.
@@ -238,6 +282,19 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   defp mode_walk(<<?), rest::binary>>, prefix, false, _jo, stack, acc),
     do: mode_walk(rest, prefix <> ")", false, false, Flags.close(stack), acc)
+
+  # In `x` (extended) mode an unescaped `#` (outside a class) starts a comment running to
+  # end-of-line: its anchors/dots are inert and any `(`/`(?…)` inside must NOT touch the
+  # flag stack. Skip it whole. `x` is itself read positionally, so an inline `(?x)` (or
+  # `(?-x)`) is honoured — a `#` before `(?x)` stays a literal.
+  defp mode_walk(<<?#, rest::binary>>, prefix, false, _jo, stack, acc) do
+    if Flags.active?(stack, ?x) do
+      {comment, tail} = take_comment_line(rest)
+      mode_walk(tail, prefix <> "#" <> comment, false, false, stack, acc)
+    else
+      mode_walk(rest, prefix <> "#", false, false, stack, acc)
+    end
+  end
 
   # `^` outside a class — a start anchor.
   defp mode_walk(<<?^, rest::binary>>, prefix, false, _jo, stack, acc) do
@@ -305,6 +362,13 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   defp scan(<<>>, _prefix, _in_class, _jo, _pq, acc), do: acc
 
+  # `\Q…\E` quotes a literal span — every metacharacter inside is inert, so consume it
+  # whole and offer nothing (else a quoted `a+`/`.`/`[` would be mutated as if syntax).
+  defp scan(<<?\\, ?Q, rest::binary>>, prefix, in_class, _jo, _pq, acc) do
+    {quoted, tail} = take_quoted(rest)
+    scan(tail, prefix <> "\\Q" <> quoted, in_class, false, false, acc)
+  end
+
   # An escape sequence: backslash + the codepoint it escapes (consumed as a unit, so
   # `\\d` — an escaped backslash then `d` — is never mistaken for the `\d` shorthand).
   defp scan(<<?\\, c::utf8, rest::binary>>, prefix, in_class, _jo, _pq, acc) do
@@ -361,27 +425,33 @@ defmodule Mutare.Mutators.RegexLiteral do
   end
 
   # Optional `?` → mandatory: drop it, raise it to `+` and to `*`, and add a lazy `??`.
-  # Skipped when it is a group marker (`(?…`) or a lazy suffix (`postfix_quantifier?/2`
-  # covers both).
+  # Skipped when it is a group marker (`(?…`, via `postfix_quantifier?/2`) *or* already
+  # carries a lazy/possessive suffix (`a??`/`a?+`): there the `?` is the base of a
+  # compound quantifier, so dropping/raising it would reinterpret the trailing `?`/`+`
+  # as the operator (`a?+` → `a+`) rather than touch the optional — leave it whole.
   defp scan(<<??, rest::binary>>, prefix, false, _jo, pq, acc) do
     new =
-      if postfix_quantifier?(prefix, pq),
-        do:
-          [prefix <> rest, prefix <> "+" <> rest, prefix <> "*" <> rest] ++
-            lazy_variant(prefix, "?", rest),
+      if postfix_quantifier?(prefix, pq) and not suffixed?(rest),
+        do: [prefix <> rest, prefix <> "+" <> rest, prefix <> "*" <> rest, prefix <> "??" <> rest],
         else: []
 
     scan(rest, prefix <> "?", false, false, true, acc ++ new)
   end
 
   # Bounded quantifier `{n}` / `{n,}` / `{n,m}` → its off-by-one / shape neighbours,
-  # plus a lazy `{…}?` suffix.
+  # plus a lazy `{…}?` suffix — but *only* for a variable count. For a fixed count
+  # (`{n}` or `{n,n}`) the repetition is exact, so a lazy `?` can never change what
+  # matches: `a{3}?` ≡ `a{3}` in every context (a guaranteed-equivalent that would
+  # permanently survive), so it is not offered.
   defp scan(<<?{, rest::binary>>, prefix, false, _jo, _pq, acc) do
     case parse_bound(rest) do
       {:ok, bound, tail} ->
         consumed = binary_part(rest, 0, byte_size(rest) - byte_size(tail))
         bounds = Enum.map(bound_mutations(bound), &(prefix <> "{" <> &1 <> "}" <> tail))
-        lazy = lazy_variant(prefix, "{" <> consumed, tail)
+
+        lazy =
+          if variable_bound?(bound), do: lazy_variant(prefix, "{" <> consumed, tail), else: []
+
         scan(tail, prefix <> "{" <> consumed, false, false, true, acc ++ bounds ++ lazy)
 
       :error ->
@@ -426,6 +496,27 @@ defmodule Mutare.Mutators.RegexLiteral do
   # Does a lazy (`?`) or possessive (`+`) suffix immediately follow this quantifier?
   defp suffixed?(<<c, _::binary>>) when c in [??, ?+], do: true
   defp suffixed?(_), do: false
+
+  # Is the repetition count variable (so greedy vs. lazy can differ)? A fixed `{n}` or
+  # `{n,n}` is not — a lazy `?` on it is a guaranteed no-op.
+  defp variable_bound?({:exact, _}), do: false
+  defp variable_bound?({:atleast, _}), do: true
+  defp variable_bound?({:range, n, m}), do: n != m
+
+  # Consume a `\Q…\E` literal span (the bytes after `\Q`), up to and including the `\E`
+  # (or to the pattern's end). Returns `{quoted, rest}`.
+  defp take_quoted(bin), do: take_quoted(bin, "")
+  defp take_quoted(<<?\\, ?E, rest::binary>>, acc), do: {acc <> "\\E", rest}
+  defp take_quoted(<<>>, acc), do: {acc, ""}
+  defp take_quoted(<<c::utf8, rest::binary>>, acc), do: take_quoted(rest, acc <> <<c::utf8>>)
+
+  # Consume an `x`-mode comment body up to (not including) the terminating newline.
+  defp take_comment_line(bin), do: take_comment_line(bin, "")
+  defp take_comment_line(<<?\n, _::binary>> = rest, acc), do: {acc, rest}
+  defp take_comment_line(<<>>, acc), do: {acc, ""}
+
+  defp take_comment_line(<<c::utf8, rest::binary>>, acc),
+    do: take_comment_line(rest, acc <> <<c::utf8>>)
 
   # In-range off-by-one neighbours of a class range's endpoints, kept ordered
   # (`lo ≤ hi`) and within a safe literal band so the rewrite stays a legal class.

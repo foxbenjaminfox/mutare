@@ -434,6 +434,35 @@ defmodule Mutare.MutatorsLiteralTest do
       assert render(RegexLiteral.mutate(parse(~S"~r/(?#^c)b/"))) == [~S"~r//", ~S"~r/mutare/"]
     end
 
+    test "treats a \\Q…\\E span as an inert literal (no mutation, no flag-scope effect)" do
+      # quoted metacharacters are literals — `a+`/`.`/`(` inside must not be mutated
+      assert render(RegexLiteral.mutate(parse(~S|~r/\Qa+.(\E/|))) == [~S|~r//|, ~S|~r/mutare/|]
+
+      # the quoted `(` must NOT push a flag frame: `m` from `(?m:…)` must not leak past
+      # the real `)` onto the outside `^b` (which would emit a guaranteed-equivalent `\A`)
+      quoted = render(RegexLiteral.mutate(parse(~S"~r/(?m:\Q(\E^a)^b/")))
+      assert ~S"~r/(?m:\Q(\E\Aa)^b/" in quoted
+      refute ~S"~r/(?m:\Q(\E^a)\Ab/" in quoted
+    end
+
+    test "ignores anchors, dots and flags hidden in an extended-mode comment" do
+      # under /x an unescaped `#` starts a comment: the `$` there is inert, not an anchor
+      refute Enum.any?(
+               render(RegexLiteral.mutate(parse(~S|~r/foo # $/x|))),
+               &String.contains?(&1, "\\z")
+             )
+
+      # a `(?s)` inside an x-comment must not activate dotall for the real dot after the
+      # newline — that dot is non-dotall, so its swap is `(?s:.)`, never `(?-s:.)`
+      node = {:sigil_r, [], [{:<<>>, [], ["# (?s) c\n."]}, ~c"x"]}
+
+      patterns =
+        Enum.map(RegexLiteral.mutate(node), fn {:sigil_r, _, [{:<<>>, _, [p]}, _]} -> p end)
+
+      assert "# (?s) c\n(?s:.)" in patterns
+      refute "# (?s) c\n(?-s:.)" in patterns
+    end
+
     test "swaps a + quantifier to * and back" do
       assert ~S|~r/\d*/| in render(RegexLiteral.mutate(parse(~S|~r/\d+/|)))
       assert ~S|~r/a+/| in render(RegexLiteral.mutate(parse(~S|~r/a*/|)))
@@ -464,6 +493,14 @@ defmodule Mutare.MutatorsLiteralTest do
                [~S|~r//|, ~S|~r/mutare/|, ~S|~r/[^*+]/|]
     end
 
+    test "does not reinterpret an already-suffixed optional quantifier" do
+      # `a??` (lazy) / `a?+` (possessive): the first `?` is the base of a compound
+      # quantifier, so dropping/raising it would turn the trailing `?`/`+` into the
+      # operator (`a?+` → `a+`) — leave both whole, offering no quantifier mutation
+      assert render(RegexLiteral.mutate(parse(~S|~r/a??/|))) == [~S|~r//|, ~S|~r/mutare/|]
+      assert render(RegexLiteral.mutate(parse(~S|~r/a?+/|))) == [~S|~r//|, ~S|~r/mutare/|]
+    end
+
     test "turns an optional ? mandatory (drop it, raise it to + and *, add a lazy ??)" do
       assert render(RegexLiteral.mutate(parse(~S|~r/colou?r/|))) ==
                [
@@ -482,9 +519,13 @@ defmodule Mutare.MutatorsLiteralTest do
     end
 
     test "nudges a bounded quantifier's counts by one, and reshapes it, staying in range" do
-      # exact: ±1 neighbours, then a lazy `{n}?` suffix
+      # exact: ±1 neighbours only — no lazy `{n}?` (a fixed count makes `?` a no-op)
       assert render(RegexLiteral.mutate(parse(~S|~r/a{3}/|))) ==
-               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{2}/|, ~S|~r/a{4}/|, ~S|~r/a{3}?/|]
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{2}/|, ~S|~r/a{4}/|]
+
+      # a *fixed* range `{n,n}` is likewise no-lazy (and `{n}` exact-pin is skipped)
+      assert render(RegexLiteral.mutate(parse(~S|~r/a{2,2}/|))) ==
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{1,2}/|, ~S|~r/a{2,3}/|, ~S|~r/a{2,}/|]
 
       # at-least: ±1 neighbours, pin-to-exact `{n}`, lazy `{n,}?`
       assert render(RegexLiteral.mutate(parse(~S|~r/a{8,}/|))) ==
@@ -530,11 +571,11 @@ defmodule Mutare.MutatorsLiteralTest do
       # keep an out-of-range one).
       #   `a{1}` (exact): the lower neighbour is exactly 0 — kept (≥ 0), so `a{0}`.
       assert render(RegexLiteral.mutate(parse(~S|~r/a{1}/|))) ==
-               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{0}/|, ~S|~r/a{2}/|, ~S|~r/a{1}?/|]
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{0}/|, ~S|~r/a{2}/|]
 
       #   `a{0}` (exact 0): the lower neighbour −1 is dropped (< 0), only `a{1}`.
       assert render(RegexLiteral.mutate(parse(~S|~r/a{0}/|))) ==
-               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{1}/|, ~S|~r/a{0}?/|]
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a{1}/|]
 
       #   `a{1,4}` (range): lower neighbour 0 kept (≥ 0 and ≤ m), so `a{0,4}`.
       assert render(RegexLiteral.mutate(parse(~S|~r/a{1,4}/|))) ==
@@ -614,9 +655,10 @@ defmodule Mutare.MutatorsLiteralTest do
       refute ~S"~r/a(?-s:.)b/" in without
 
       # with /s: `.` matches a newline, so force-non-dotall `(?-s:.)` is the live swap
-      with_s = render(RegexLiteral.mutate(parse(~S|~r/a.b/s|)))
-      assert ~S"~r/a(?-s:.)b/s" in with_s
-      refute ~S"~r/a(?s:.)b/s" in with_s
+      # (two dots, so neither coincides with dropping the sigil `s` — see the dedup test)
+      with_s = render(RegexLiteral.mutate(parse(~S|~r/a.b.c/s|)))
+      assert ~S"~r/a(?-s:.)b.c/s" in with_s
+      refute ~S"~r/a(?s:.)b.c/s" in with_s
 
       # positional: an inline (?s) flips which swap each dot gets
       inline = render(RegexLiteral.mutate(parse(~S"~r/a.b(?s).c/")))
@@ -633,6 +675,22 @@ defmodule Mutare.MutatorsLiteralTest do
                render(RegexLiteral.mutate(parse(~S|~r/[.]/|))),
                &String.contains?(&1, "(?")
              )
+    end
+
+    test "suppresses the force-non-dotall swap when it duplicates dropping sigil s" do
+      # one dot under sigil /s: `a(?-s:.)b/s` ≡ `a.b/` (the s-drop), so only the s-drop is
+      # kept — the dot swap would be a guaranteed-equivalent duplicate
+      mutants = render(RegexLiteral.mutate(parse(~S|~r/a.b/s|)))
+      refute ~S"~r/a(?-s:.)b/s" in mutants
+      assert ~S"~r/a.b/" in mutants
+
+      # two dots: the s-drop flips both, the dot swap flips one — not equivalent, so kept
+      two = render(RegexLiteral.mutate(parse(~S|~r/a.b.c/s|)))
+      assert ~S"~r/a(?-s:.)b.c/s" in two
+      assert ~S"~r/a.b.c/" in two
+
+      # an inline modifier group disables the dedup (it could change the equivalence)
+      assert ~S"~r/(?i)a(?-s:.)b/s" in render(RegexLiteral.mutate(parse(~S"~r/(?i)a.b/s")))
     end
 
     test "nudges a character-class range's endpoints by one, staying ordered and legal" do
