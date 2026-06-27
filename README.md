@@ -90,19 +90,20 @@ and any custom mutator's `name/0`. Filtering fails safe: an unknown name (a typo
 or an empty `[]` matches nothing, so the mutant runs rather than being silently
 hidden.
 
-Qualify a family with `:label` to suppress just one *kind* of its mutants. A
-single `i < j` yields both `i <= j` and `i > j`; if only the symmetric reflection
-is equivalent, silence that one and let the other keep running:
+Qualify a family with `:label` to suppress just one *kind* of its mutants. Here
+`x < 0` and `x <= 0` are equivalent — the boundary `0` returns `0` down either
+branch — so that one mutant can never be killed; suppress it while every other
+relational mutant (`>`, `>=`, `==`, …) keeps running:
 
 ```elixir
-def min(i, j), do: if(i < j, do: i, else: j)  # mutare:ignore[relational:>] i and j are symmetric
+def floor_zero(x), do: if(x < 0, do: 0, else: x)  # mutare:ignore[relational:<=] 0 ≤ 0 returns 0 here
 ```
 
 Each family names its own labels — `relational` → `> >= < <= == != === !==`,
 `literal` → `zero succ pred negate`, `return_value` → `empty sentinel` — and
-`mix mutare --list-mutators` prints them all. A qualified label a known family
-doesn't declare is a hard error with a "did you mean", so a typo can't slip
-through as a silent no-op. The full grammar is in
+`mix mutare --list-mutators` prints every built-in family's labels. A qualified
+label a known family doesn't declare is a hard error with a "did you mean", so a
+typo can't slip through as a silent no-op. The full grammar is in
 [`Mutare.Ignore`](https://hexdocs.pm/mutare/Mutare.Ignore.html).
 
 If a mutant won't compile (e.g. a custom mutator emits something invalid), it

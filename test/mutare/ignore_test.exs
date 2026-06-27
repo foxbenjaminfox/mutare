@@ -107,12 +107,12 @@ defmodule Mutare.IgnoreTest do
     end
 
     test "a `[family:result]` qualifier suppresses one mutant, not the whole family" do
-      # `i` and `j` are symmetric, so `i > j` is an equivalent reflection of
-      # `i < j` — but `i <= j` (cutting the diagonal) is a real, non-equivalent
-      # mutant that must still run. Ignoring `[relational]` would lose both.
+      # A qualifier targets exactly one of a family's variants: `[relational:>]`
+      # suppresses only the `i > j` swap, while `i <= j` (and the rest of the family)
+      # still runs. Ignoring the whole `[relational]` would lose both.
       source = """
       defmodule Ig do
-        def f(i, j), do: i < j   # mutare:ignore[relational:>] symmetric
+        def f(i, j), do: i < j   # mutare:ignore[relational:>] reviewed
       end
       """
 
@@ -120,12 +120,12 @@ defmodule Mutare.IgnoreTest do
       relational = Enum.filter(sites, &(&1.mutator == :relational))
       ignored? = Map.new(relational, &{&1.mutated_form, &1.ignored})
 
-      # Both relational mutants exist; only the `>` reflection is suppressed.
+      # Both relational mutants exist; only the `>` swap is suppressed.
       assert ignored?[:>] == true
       assert ignored?[:<=] == false
 
       ignored = Enum.filter(relational, & &1.ignored)
-      assert Enum.all?(ignored, &(&1.ignore_reason == "symmetric"))
+      assert Enum.all?(ignored, &(&1.ignore_reason == "reviewed"))
     end
 
     test "a semantic label (not an operator) suppresses just that mutation kind" do
@@ -282,6 +282,28 @@ defmodule Mutare.IgnoreTest do
         # nothing, so it must not report as "involving" the family either.
         refute Ignore.directive_for(directives, 1, :relational),
                "[#{body}] wrongly matched the family-level query"
+      end
+    end
+
+    test "a filter with no closing bracket suppresses nothing, not the whole line" do
+      # `# mutare:ignore[relational` (missing `]`) must NOT degrade to `:all` — that would
+      # silently hide every mutant on the line (the one dangerous direction). It is treated as
+      # an empty filter (matches nothing), surfaced by `ineffective/2` as a soft warning.
+      for body <- ["[relational", "[relational, arithmetic", "["] do
+        %Directive{mutators: mutators, reason: reason} =
+          directive_on(Ignore.directives("x = i < j # mutare:ignore#{body}"), 1)
+
+        assert mutators == MapSet.new([]),
+               "#{body} should be an empty filter, got #{inspect(mutators)}"
+
+        assert reason == nil
+
+        refute Ignore.directive_for(
+                 %{1 => [%Directive{line: 1, mutators: mutators}]},
+                 1,
+                 :relational,
+                 [">"]
+               )
       end
     end
 

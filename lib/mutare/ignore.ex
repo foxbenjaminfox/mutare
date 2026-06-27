@@ -32,12 +32,12 @@ defmodule Mutare.Ignore do
 
   A single expression often yields several mutants — `i < j` becomes both `i <= j`
   and `i > j`. Qualify a family with `:label` to suppress just *one* kind:
-  `[relational:>]` silences the `i > j` reflection while `i <= j` keeps running.
-  Each family declares its own labels — `relational` → `> >= < <= == != === !==`,
-  `return_value` → `empty sentinel`, `literal` → `zero succ pred negate`. Run
-  `mix mutare --list-mutators` to see every family's labels, or read a family's page
-  under *Built-in mutators*. A label that has several kinds at once is matched by
-  any of them, and matching is case-insensitive.
+  `[relational:<=]` silences only the `<=` swap. Each family declares its own labels
+  — `relational` → `> >= < <= == != === !==`, `return_value` → `empty sentinel`,
+  `literal` → `zero succ pred negate`. Run `mix mutare --list-mutators` to see every
+  built-in family's labels, or read a family's page under *Built-in mutators*. A
+  mutant that is several kinds at once is matched by any of its labels, and matching
+  is case-insensitive.
 
   ### The reason
 
@@ -46,13 +46,15 @@ defmodule Mutare.Ignore do
 
   ## When a directive errors or does nothing
 
-  A qualified `[family:label]` whose family is active but whose `label` that family
-  doesn't declare is a **hard error**, with a "did you mean" — a qualifier typo
-  can't silently fail to match. Everything else fails safe toward *running* the
-  mutant: an unknown family, a bare-family typo, or an empty `[]` simply matches
-  nothing. Because a silent no-match is easy to miss, any directive that suppressed
-  nothing (a typo, a misplaced standalone line, a family that produced no mutant
-  there) is reported as a warning — escalated to a non-zero exit by
+  A qualified `[family:label]` whose family is a **known built-in** (always — even one
+  disabled this run with `--mutators`) or an **active custom mutator**, but whose `label`
+  that family doesn't declare, is a **hard error** with a "did you mean" — a qualifier
+  typo can't silently fail to match. Everything else fails safe toward *running* the
+  mutant: an unknown family (a typo, or a custom family not enabled this run), a
+  bare-family typo, an empty `[]`, or a malformed `[…` missing its closing bracket all
+  simply match nothing. Because a silent no-match is easy to miss, any directive that
+  suppressed nothing (a typo, a misplaced standalone line, a family that produced no
+  mutant there) is reported as a warning — escalated to a non-zero exit by
   `--strict-ignores`.
 
   Directives are read from real comments, so a string literal that merely *reads*
@@ -302,12 +304,23 @@ defmodule Mutare.Ignore do
   # leading `[...]` is the filter (otherwise the filter is `:all`); whatever
   # remains, trimmed, is the reason (or `nil` when blank).
   defp parse_rest(rest) do
-    case Regex.named_captures(@filter, String.trim_leading(rest)) do
+    trimmed = String.trim_leading(rest)
+
+    case Regex.named_captures(@filter, trimmed) do
       %{"families" => families, "reason" => reason} ->
         {parse_filter(families), clean_reason(reason)}
 
       nil ->
-        {:all, clean_reason(rest)}
+        # No `[...]` matched. A **malformed filter** — a leading `[` with no closing `]`
+        # (`# mutare:ignore[relational`) — must NOT degrade to `:all`: that would silently
+        # suppress *every* mutant on the line, the one dangerous direction. Treat it as an
+        # empty filter (matches nothing, fail-safe toward running the mutant), surfaced by
+        # `ineffective/2` as a soft warning. Text not starting with `[` is an ordinary reason.
+        if String.starts_with?(trimmed, "[") do
+          {MapSet.new([]), nil}
+        else
+          {:all, clean_reason(rest)}
+        end
     end
   end
 

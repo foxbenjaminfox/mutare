@@ -11,8 +11,9 @@ defmodule Mutare.Ignore.SpecError do
     * `:unknown_variant` — the family declares variants, but not this one. The message lists the
       family's known labels and suggests the closest.
 
-  An *unknown family* (qualified or bare) is never this error — it can't be told apart from a family
-  you disabled with `--mutators`, so it stays a soft "ineffective ignore" warning instead.
+  An *unknown family* (qualified or bare) is never this error — a built-in is always known (even one
+  disabled this run with `--mutators`), but a custom family not enabled this run can't be told apart
+  from a typo, so it stays a soft "ineffective ignore" warning instead.
 
   The other two are bugs in a *custom mutator's* declaration (no directive involved, so `file`/`line`
   are `nil`):

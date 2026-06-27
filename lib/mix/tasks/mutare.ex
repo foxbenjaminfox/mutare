@@ -71,10 +71,11 @@ defmodule Mix.Tasks.Mutare do
   qualified with `:label` to suppress only one *kind* of its mutants — `relational`
   declares `> >= < <= == != === !==`, `return_value` declares `empty`/`sentinel`,
   `literal` declares `zero`/`succ`/`pred`/`negate`. Run `--list-mutators` to see
-  every family's labels. Filtering fails safe: an unknown family or an empty `[]`
-  matches nothing, so the mutant runs rather than hides — but a qualified label a
-  known family doesn't declare is a hard error (with a "did you mean"), so a typo
-  can't silently fail to match. An ignore that suppresses no mutant (a typo'd
+  every built-in family's labels. Filtering fails safe: an unknown family, an empty
+  `[]`, or a malformed `[…` (no closing bracket) matches nothing, so the mutant runs
+  rather than hides — but a qualified label a known built-in (or active custom)
+  doesn't declare is a hard error (with a "did you mean"), so a typo can't silently
+  fail to match. An ignore that suppresses no mutant (a typo'd
   family, a line that has no mutant) is reported as a warning — and with
   `--strict-ignores`, exits the run 1.
 
