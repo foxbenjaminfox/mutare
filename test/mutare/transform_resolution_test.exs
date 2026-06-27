@@ -1315,6 +1315,31 @@ defmodule Mutare.TransformResolutionTest do
       assert_compiles(meta)
     end
 
+    test "Map/Keyword/List key & element strippers are removed and compile" do
+      source = """
+      defmodule R do
+        def a(m, k), do: Map.delete(m, k)
+        def b(m, ks), do: Map.take(m, ks)
+        def c(kw, k), do: Keyword.delete(kw, k)
+        def d(xs, x), do: List.delete(xs, x)
+        def e(xs), do: xs |> Map.drop([:a]) |> List.delete_at(0)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+
+      pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
+      assert {"Map.delete(m, k)", "m"} in pairs
+      assert {"Map.take(m, ks)", "m"} in pairs
+      assert {"Keyword.delete(kw, k)", "kw"} in pairs
+      assert {"List.delete(xs, x)", "xs"} in pairs
+      # Piped stages collapse to the no-op the pipe feeds.
+      assert {"Map.drop([:a])", "Elixir.Function.identity()"} in pairs
+      assert {"List.delete_at(0)", "Elixir.Function.identity()"} in pairs
+      assert_compiles(meta)
+    end
+
     test "map/filter are not removable" do
       source = """
       defmodule R do

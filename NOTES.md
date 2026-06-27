@@ -4064,6 +4064,32 @@ Settled here:
   redundant sibling for `Overlap` to prune, the same way `CollectionArity` and `CallRemoval`
   both fire on `Enum.sort(xs)`.
 
+### CallRemoval — Map/Keyword/List key & element strippers `[done]`
+Extended `call_removal`'s arity-agnostic `@removable` set with the collection strippers it
+was missing: `Map.delete`/`drop`/`take`, `Keyword.delete`/`drop`/`take`, and
+`List.delete`/`delete_at`/`keydelete`. Each takes the collection as its first argument and
+returns the same kind of collection, so the existing first-arg-return mechanic (or
+`Function.identity()` in a pipe) drops them with no new code — just table rows.
+
+Two judgment calls worth recording:
+
+- **Why these count as "strips," not the excluded `map`/`filter`/`reduce`.** The family's
+  charter excludes calls that "change *which* data is present" as too coarse/noisy. A
+  named-key `delete`/`drop` *does* change which data is present — but precisely and
+  type-preservingly (one or a few named keys, map→map), which is the `Enum.uniq`/`dedup`
+  side of the line (included), not the predicate-driven `filter` side (a comparator could
+  drop nearly everything — excluded). The signal is sharp: "does removing *this* key matter
+  to any test?" with a one-key diff, not a wholesale data change.
+- **`take` is a projection, handled like `String.slice`.** `Map.take(m, ks)`/`Keyword.take`
+  return a *subset*, so removal returns the *superset* (the whole collection) — exactly the
+  inversion `String.slice` already does (return a part; removal returns the whole). Same
+  type, plausibly interchangeable for code that only reads the projected keys, so it earns
+  the same "is the projection exercised?" probe.
+
+`Keyword.delete` has a deprecated `/3` (key+value) form alongside `/2`; arity-agnostic
+removal covers both (the keyword list is the first arg either way), so no arity gate is
+needed. No new family/registry entry — `CallRemoval`'s moduledoc is the source of truth.
+
 ### OperandSwap — operand-order swap for non-commutative operators `[done]`
 The operand-order sibling of the operator-swap families (`Arithmetic`/`List`): it
 **keeps the operator and transposes the operands** of a non-commutative binary

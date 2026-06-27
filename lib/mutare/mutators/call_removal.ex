@@ -14,6 +14,14 @@ defmodule Mutare.Mutators.CallRemoval do
     * the lazy `Stream` twins that exist — `Stream.uniq` / `uniq_by` / `dedup` /
       `dedup_by` / `intersperse` (`Stream` has no `sort`/`reverse`/`shuffle`)
     * `List.flatten`
+    * `Map.delete` / `Map.drop` / `Map.take` and the `Keyword` twins
+      (`Keyword.delete` / `Keyword.drop` / `Keyword.take`) — each returns the same kind of
+      collection with keys removed (`delete`/`drop`) or *only* the named keys kept (`take`),
+      so dropping the call returns the original collection: "does removing — or projecting
+      down to — these keys matter to any test?" (`take` is the `Map`/`Keyword` analogue of
+      `String.slice` — it selects a subset, and removing it returns the whole collection.)
+    * `List.delete` / `List.delete_at` / `List.keydelete` — drop one element by value,
+      index, or tuple-key, each returning a list with that element back in place
     * `String.trim` / `String.trim_leading` / `String.trim_trailing`
     * `String.downcase` / `String.upcase` / `String.capitalize`
     * `String.reverse` / `String.normalize` / `String.replace_invalid`
@@ -89,6 +97,22 @@ defmodule Mutare.Mutators.CallRemoval do
                {[:Stream], :dedup_by},
                {[:Stream], :intersperse},
                {[:List], :flatten},
+               # `Map`/`Keyword` key strippers — each returns the same kind of collection
+               # with keys removed (`delete`/`drop`) or only the named keys kept (`take`),
+               # so removal returns the original collection. `delete`/`take`/`drop` are all
+               # single-arity except `Keyword.delete/3` (the deprecated key+value form),
+               # whose first arg is still the keyword list — so arity-blind removal is safe.
+               {[:Map], :delete},
+               {[:Map], :drop},
+               {[:Map], :take},
+               {[:Keyword], :delete},
+               {[:Keyword], :drop},
+               {[:Keyword], :take},
+               # `List` element strippers — drop one element by value (`delete`), index
+               # (`delete_at`), or tuple-key (`keydelete`), each returning a list.
+               {[:List], :delete},
+               {[:List], :delete_at},
+               {[:List], :keydelete},
                {[:String], :trim},
                {[:String], :trim_leading},
                {[:String], :trim_trailing},

@@ -376,6 +376,26 @@ defmodule Mutare.MutatorsCallTest do
       assert removal("Date.end_of_week(d, :sunday)", false) == ["d"]
     end
 
+    test "removes Map/Keyword/List key & element strippers, returning the collection" do
+      # Map/Keyword strippers — same-typed collection back, with the keys un-removed
+      # (delete/drop) or un-projected (take returns a subset; removal returns the whole).
+      assert removal("Map.delete(m, k)", false) == ["m"]
+      assert removal("Map.drop(m, ks)", false) == ["m"]
+      assert removal("Map.take(m, ks)", false) == ["m"]
+      assert removal("Keyword.delete(kw, k)", false) == ["kw"]
+      # Keyword.delete/3 (the deprecated key+value form) is removed arity-blind too.
+      assert removal("Keyword.delete(kw, k, v)", false) == ["kw"]
+      assert removal("Keyword.drop(kw, ks)", false) == ["kw"]
+      assert removal("Keyword.take(kw, ks)", false) == ["kw"]
+      # List element strippers — by value, index, or tuple-key.
+      assert removal("List.delete(xs, x)", false) == ["xs"]
+      assert removal("List.delete_at(xs, 2)", false) == ["xs"]
+      assert removal("List.keydelete(xs, :k, 0)", false) == ["xs"]
+      # Piped: a no-op stage the pipe feeds (the collection is the |> LHS).
+      assert removal("Map.delete(k)", true) == ["Elixir.Function.identity()"]
+      assert removal("List.delete_at(2)", true) == ["Elixir.Function.identity()"]
+    end
+
     test "removes the analogous Erlang :string transparent transforms" do
       # case, trim, reverse, pad/justify, substring-select — each returns its input
       assert removal(":string.lowercase(s)", false) == ["s"]
