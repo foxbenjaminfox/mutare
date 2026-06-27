@@ -4,23 +4,25 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # Clause-list pattern mutation for `case`, `receive`/`fn`, and `try`/`rescue`.
   # Split out of `Mutare.Transform.Analyze`: the main descent routes the three
   # constructs here to build their pattern/guard/structure candidates, which the
-  # heavy `Tag` / `PatternStructure` machinery dominates. The dependency is almost
-  # entirely one-way (Analyze → ClausePatterns); the only callbacks back into the
-  # descent are the three sub-walk helpers `Analyze.recurse/3`,
-  # `Analyze.build_candidates/2`, and `Analyze.put_candidates/2`, used to analyze a
-  # `receive`/`fn`/`try` node normally before attaching its clause candidates.
+  # heavy `Tag` / `PatternStructure` machinery dominates. The dependency is one-way
+  # (Analyze → ClausePatterns): the one place a construct is analyzed *normally* (a
+  # `receive`/`fn`'s bodies before attaching clause candidates) re-enters the walk
+  # through the **injected `descent`** (the `Mutare.Transform.Analyze` module, passed
+  # in by the caller) rather than naming it statically — so this module is a
+  # parametrized fragment of the walk, not a cycle. Candidate construction goes
+  # through the dependency-neutral `Attach`.
   #
   # Entry points the descent calls (`Mutare.Transform.Analyze`):
   #   * case     → `case_clause_candidates/2` + `put_case_candidates/2`
-  #   * receive  → `receive_do_clauses/2` + `attach_clause_pattern_candidates/4`
-  #   * fn       → `attach_clause_pattern_candidates/4`
+  #   * receive  → `receive_do_clauses/2` + `attach_clause_pattern_candidates/5`
+  #   * fn       → `attach_clause_pattern_candidates/5`
   #   * try      → `rescue_type_candidates/3`
 
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Spec
   alias Mutare.Transform.{Candidate, Meta, NodeRange, PatternStructure, Tag}
-  alias Mutare.Transform.Analyze
+  alias Mutare.Transform.Analyze.Attach
 
   # A fresh `{tag_counter, targets}` accumulator for a single-node tag walk. The candidates
   # here are discovered one node at a time, each re-tagged from scratch, so the starting
@@ -42,7 +44,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # node at emit; only the mutants come from here.
   # NOTE (equivalent survivors): the `++` operand_swap mutants on the candidate-group
   # concatenations in this module (here and in `clause_pattern_candidates/3`,
-  # `attach_clause_pattern_candidates/4`, `clause_guard_candidates/3`, `rescue_clause_candidates/3`)
+  # `attach_clause_pattern_candidates/5`, `clause_guard_candidates/3`, `rescue_clause_candidates/3`)
   # only reorder the produced candidates — the *set* of mutants is unchanged, just their id
   # order — so no behaviour or test distinguishes them. Left as documented survivors rather than
   # `# mutare:ignore`d to keep them visible.
@@ -257,15 +259,15 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # from a mutated clause list (the only thing that differs across receive/fn). The
   # node-level mutator offer is preserved for parity with the generic runtime clause (a
   # custom mutator matching the whole node; built-ins match none).
-  def attach_clause_pattern_candidates(node, clauses, rebuild_fn, mutators) do
-    # mutare:ignore[atom] equivalent — `Analyze.body_context/1` maps every non-`:scaffold` context (including a mutated `:mutare`) to `:runtime`, so the clause bodies mutate identically.
-    analyzed = Analyze.recurse(node, :runtime, mutators)
+  def attach_clause_pattern_candidates(descent, node, clauses, rebuild_fn, mutators) do
+    # mutare:ignore[atom] equivalent — the descent's `body_context/1` maps every non-`:scaffold` context (including a mutated `:mutare`) to `:runtime`, so the clause bodies mutate identically.
+    analyzed = descent.recurse(node, :runtime, mutators)
 
     candidates =
-      Analyze.build_candidates(node, Dispatch.mutations(node, mutators)) ++
+      Attach.build_candidates(node, Dispatch.mutations(node, mutators)) ++
         clause_list_candidates(clauses, rebuild_fn, mutators)
 
-    Analyze.put_candidates_if_any(analyzed, candidates)
+    Attach.put_candidates_if_any(analyzed, candidates)
   end
 
   # The receive's `do` clauses plus a rebuilder that swaps them back into `blocks`

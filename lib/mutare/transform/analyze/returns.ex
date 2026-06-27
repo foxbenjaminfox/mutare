@@ -19,7 +19,8 @@ defmodule Mutare.Transform.Analyze.Returns do
 
   alias Mutare.AST
   alias Mutare.Mutator.Dispatch
-  alias Mutare.Transform.{Analyze, Candidate}
+  alias Mutare.Transform.Candidate
+  alias Mutare.Transform.Analyze.{Attach, Syntax}
 
   # The control-flow forms whose branch bodies are return paths when the form is in
   # tail position, and the kind of each return-path block key: `:value` is a single
@@ -85,7 +86,7 @@ defmodule Mutare.Transform.Analyze.Returns do
   # `return_replacements/_` mutator being enabled, like `annotate_returns/3`.
   #
   # The whole `fn` node is taken (its `meta` may already carry the clause-pattern
-  # candidates `ClausePatterns.attach_clause_pattern_candidates/4` attached) and
+  # candidates `ClausePatterns.attach_clause_pattern_candidates/5` attached) and
   # rebuilt with the annotated clauses; `raw_node` is the pre-analysis copy supplying
   # each candidate's clean `original`/`range`, navigated in lockstep with `analyzed`
   # (analysis only adds metadata). A structural surprise (mismatched shape/length —
@@ -113,10 +114,10 @@ defmodule Mutare.Transform.Analyze.Returns do
   # value, and its expression payload isn't a clause list so it falls through here.
   defp annotate_block_returns(key, analyzed, raw, return_mutators) do
     cond do
-      Analyze.do_key?(key) ->
+      Syntax.do_key?(key) ->
         attach_return(analyzed, raw, return_mutators)
 
-      Analyze.clause_block_key?(key) and clause_list?(analyzed) and clause_list?(raw) and
+      Syntax.clause_block_key?(key) and clause_list?(analyzed) and clause_list?(raw) and
           length(analyzed) == length(raw) ->
         map_clauses(analyzed, raw, build_leaf_attacher(return_mutators))
 
@@ -283,9 +284,9 @@ defmodule Mutare.Transform.Analyze.Returns do
   # return id at a shared node). The candidate's `original`/`range` come from the
   # *raw* tail, so the diff is clean. A tail we can't annotate (a non-`{f,m,a}`
   # node, or one Sourceror can't range) gets no return mutant — handled by the shared
-  # `Analyze.append_candidates/3`.
+  # `Attach.append_candidates/3`.
   defp append_return_candidates(node, raw_tail, replacements) do
-    Analyze.append_candidates(node, raw_tail, fn range ->
+    Attach.append_candidates(node, raw_tail, fn range ->
       Enum.map(replacements, fn {spec, replacement} ->
         %Candidate.Return{
           mutator: spec,

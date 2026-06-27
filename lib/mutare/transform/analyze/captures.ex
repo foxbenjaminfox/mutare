@@ -43,7 +43,7 @@ defmodule Mutare.Transform.Analyze.Captures do
   # not resolve. Deferred — see NOTES "Capture mutation".
 
   alias Mutare.{AST, Mutator.Dispatch}
-  alias Mutare.Transform.Analyze
+  alias Mutare.Transform.Analyze.Attach
 
   @proj_arg :mutare_capture_arg
 
@@ -58,7 +58,7 @@ defmodule Mutare.Transform.Analyze.Captures do
     with {:ok, arity} <- arity(right),
          {:ok, synth, args} <- synth_call(left, arity),
          [_ | _] = muts <- capture_mutations(synth, args, arity, mutators) do
-      Analyze.put_candidates(node, Analyze.build_candidates(node, muts))
+      Attach.put_candidates(node, Attach.build_candidates(node, muts))
     else
       _ -> node
     end
