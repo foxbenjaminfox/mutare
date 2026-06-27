@@ -13,7 +13,7 @@ defmodule Stats.MixProject do
     [
       app: :stats,
       version: "0.1.0",
-      elixir: "~> 1.15"
+      elixir: "~> 1.18"
     ]
   end
 

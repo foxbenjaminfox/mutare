@@ -12,7 +12,7 @@ defmodule Auth.MixProject do
     [
       app: :auth,
       version: "0.1.0",
-      elixir: "~> 1.15"
+      elixir: "~> 1.18"
     ]
   end
 
