@@ -26,6 +26,7 @@ defmodule Mutare.Report.Live do
   use GenServer
 
   alias Mutare.{Result, Site}
+  alias Mutare.Result.Status
 
   @device :standard_error
   @tick_ms 80
@@ -46,17 +47,18 @@ defmodule Mutare.Report.Live do
     coverage_probe: "probing coverage…"
   }
 
-  # Which result statuses leave a permanent line behind, and how each is styled.
-  # Survivors are the product; timeouts, atom-table crashes, and harness errors are
-  # problems worth surfacing the moment they happen. Everything else only moves the
-  # counter. (`:atom_exhausted` is a kill, like `:timeout`, but still worth a line —
-  # an unusual divergence the author probably wants to see.)
-  @leave_behind %{
-    survived: {"SURVIVED", :red},
-    timeout: {"TIMEOUT", :yellow},
-    atom_exhausted: {"ATOMS", :yellow},
-    harness_error: {"ERROR", :magenta}
-  }
+  # Which result statuses leave a permanent line behind, and how each is styled —
+  # the `:leave_behind` field of each `Mutare.Result.Status` descriptor (a status
+  # with none only moves the counter). Survivors are the product; timeouts,
+  # atom-table crashes, and harness errors are problems worth surfacing the moment
+  # they happen. Derived from the registry so a new status's styling lives with its
+  # other facts (CLAUDE.md "Result statuses").
+  @leave_behind for d <- Status.all(), d.leave_behind, into: %{}, do: {d.name, d.leave_behind}
+
+  # The only-when-nonzero tail of the live counter: each status carrying an
+  # `:extra_label` (i.e. everything but `:killed`/`:survived`, which own the counter
+  # headline), in render order.
+  @extras for d <- Status.all(), d.extra_label, do: {d.name, d.extra_label}
 
   # The server's internal state. A struct (not a bare map) so a mistyped field access in
   # any handler is a compile error, not a silent runtime `nil`. `init/1` overrides the four
@@ -301,15 +303,7 @@ defmodule Mutare.Report.Live do
 
   # Optional, only-when-nonzero tail of the counter (the unusual outcomes).
   defp extras(state) do
-    [
-      {:timeout, "timeout"},
-      {:atom_exhausted, "atom-table"},
-      {:no_coverage, "no-coverage"},
-      {:ignored, "ignored"},
-      {:poisoned, "poisoned"},
-      {:harness_error, "errors"}
-    ]
-    |> Enum.map_join(fn {status, label} ->
+    Enum.map_join(@extras, fn {status, label} ->
       case count(state, status) do
         0 -> ""
         n -> " · #{n} #{label}"

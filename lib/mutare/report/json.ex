@@ -14,6 +14,7 @@ defmodule Mutare.Report.Json do
   """
 
   alias Mutare.Result
+  alias Mutare.Result.Status
 
   # The report schema is versioned `^([1-2])(\.([1-9]\d*|0)){0,2}$`. We depend on
   # no v2-only feature, so we emit the conservative `"1.0"`.
@@ -25,21 +26,12 @@ defmodule Mutare.Report.Json do
   @default_high 80
   @default_low 60
 
-  # Mutare status -> schema MutantStatus. The mapping is total over
-  # `Mutare.Result.status/0` and is the single place the two vocabularies meet.
-  # `:atom_exhausted` has no dedicated schema status; it is a detected
-  # resource-divergence, so it maps to "Timeout" (the schema's other "detected by
-  # non-completion" status) — score-consistent with how Stryker counts it.
-  @status %{
-    killed: "Killed",
-    survived: "Survived",
-    no_coverage: "NoCoverage",
-    timeout: "Timeout",
-    atom_exhausted: "Timeout",
-    ignored: "Ignored",
-    poisoned: "CompileError",
-    harness_error: "RuntimeError"
-  }
+  # Mutare status -> schema MutantStatus is the `:json` field of each
+  # `Mutare.Result.Status` descriptor — the single place the two vocabularies meet,
+  # total over `Mutare.Result.status/0` by construction (a status with no row makes
+  # `Status.fetch!/1` raise, exactly as the old `Map.fetch!` did). `:atom_exhausted`
+  # has no dedicated schema status; its descriptor maps it to "Timeout" (the schema's
+  # other "detected by non-completion" status) — score-consistent with Stryker.
 
   @doc """
   Render `results` and their original `sources` as a report-schema JSON string.
@@ -82,7 +74,7 @@ defmodule Mutare.Report.Json do
       mutatorName: to_string(site.mutator),
       replacement: site.mutated_code || "",
       location: location(site.range),
-      status: Map.fetch!(@status, result.status)
+      status: Status.fetch!(result.status).json
     }
     |> put_present(:statusReason, site.ignore_reason)
     |> put_present(:description, site.note)

@@ -26,10 +26,19 @@ defmodule Mutare.Result do
   # The single home for the scoring semantics the reporters and the runner share (see
   # CLAUDE.md "Result statuses"). Centralised here so a new status is classified once,
   # not re-listed inline in `Mutare.Report`'s score and harness-rate computations.
+  #
+  # The three sets are *derived* from the `Mutare.Result.Status` descriptor registry
+  # (the single source of every per-status fact) so adding a status — a row there plus
+  # the `@type status` union above — classifies it without a second list to keep in
+  # sync. The `in`-list form is preserved (a non-status atom answers `false`/`true`
+  # rather than raising), so these predicates' contract is unchanged.
 
-  @kill_statuses [:killed, :timeout, :atom_exhausted]
-  @unscored_statuses [:no_coverage, :ignored, :poisoned, :harness_error]
-  @unran_statuses [:no_coverage, :ignored, :poisoned]
+  @kill_statuses Mutare.Result.Status.where(:kill?)
+  @unscored_statuses Enum.reject(
+                       Mutare.Result.Status.names(),
+                       &Mutare.Result.Status.fetch!(&1).scored?
+                     )
+  @unran_statuses Enum.reject(Mutare.Result.Status.names(), &Mutare.Result.Status.fetch!(&1).ran?)
 
   @doc """
   A detected mutant — counted in the score *numerator*: `:killed` outright, or a

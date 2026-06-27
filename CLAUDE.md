@@ -1303,6 +1303,22 @@ nothing about the mutation; classified by `Mutare.Sandbox.Command`'s exit-code c
 charged as a kill). `:timeout` and `:atom_exhausted` (the mutation minted unbounded atoms and
 crashed the BEAM — a resource-divergence like a timeout) both count as kills.
 
+Every **per-status** fact lives once in the **`Mutare.Result.Status`** descriptor registry — an
+ordered list of one descriptor map per status carrying its classification (`kill?`/`scored?`/
+`ran?`), its Stryker/JSON name, its `summary/1` and live-counter labels, and its
+`Mutare.Report.Live` leave-behind styling. The consumers *derive* from it instead of re-listing the
+vocabulary: `Mutare.Result.kill?/scored?/ran?` build their constant lists from the descriptor flags
+(keeping the `in`-list contract — a non-status atom answers, never raises), `Mutare.Report.summary/1`
+iterates `Status.all/0` in render order, `Mutare.Report.Json` reads each descriptor's schema name
+(`fetch!/1`, loud on an unregistered status like the old `Map.fetch!`), and `Mutare.Report.Live`
+folds `@leave_behind`/the counter extras out of the same rows. Rows are validated against the schema
+at compile time (an unknown/missing key fails the build), and `Mutare.Result.StatusTest` pins
+`Status.names/0` to the `@type status` union (read straight from the compiled typespec) — so adding a
+status is two edits (a row plus the type) and the five formerly-drifting lists can't diverge
+silently. Note the distinct *input* vocabulary `Mutare.Sandbox.Command.outcome` → `Result.status`
+(`Mutare.Runner.status_for/1`) is many-to-one (`:boot_failure`/`:suite_compile_error` collapse onto
+one status), so it stays a hand-written mapping, not part of the per-status registry.
+
 ### The `# mutare:ignore` directive (`Mutare.Ignore`)
 
 Parsed from Sourceror's comment metadata (not a raw-text scan), so a literal string that *reads*

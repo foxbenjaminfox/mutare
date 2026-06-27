@@ -9,6 +9,7 @@ defmodule Mutare.Report do
   """
 
   alias Mutare.{Result, Site}
+  alias Mutare.Result.Status
 
   @doc "Apply a single mutation to the original source string."
   @spec patch(Site.t(), String.t()) :: String.t()
@@ -232,29 +233,21 @@ defmodule Mutare.Report do
   @spec summary([Result.t()]) :: String.t()
   def summary(results) do
     counts = tally(results)
-    killed = count(counts, :killed)
-    timeout = count(counts, :timeout)
-    atom_exhausted = count(counts, :atom_exhausted)
-    survived = count(counts, :survived)
-    no_coverage = count(counts, :no_coverage)
-    ignored = count(counts, :ignored)
-    poisoned = count(counts, :poisoned)
-    harness_error = count(counts, :harness_error)
-    total = total(counts)
 
+    # One labelled count per status, in the registry's render order; the unusual
+    # statuses (everything but `:killed`/`:survived`, which are `always_in_summary?`)
+    # appear only when nonzero. Driven by `Mutare.Result.Status` so a new status is
+    # tallied without editing this list (CLAUDE.md "Result statuses").
     tally =
-      [
-        "#{killed} killed",
-        if(timeout > 0, do: "#{timeout} timeout"),
-        if(atom_exhausted > 0, do: "#{atom_exhausted} atom-table"),
-        "#{survived} survived",
-        if(no_coverage > 0, do: "#{no_coverage} no-coverage"),
-        if(ignored > 0, do: "#{ignored} ignored"),
-        if(poisoned > 0, do: "#{poisoned} poisoned"),
-        if(harness_error > 0, do: "#{harness_error} harness-error"),
-        "#{total} total"
-      ]
-      |> Enum.reject(&is_nil/1)
+      Status.all()
+      |> Enum.flat_map(fn descriptor ->
+        n = count(counts, descriptor.name)
+
+        if descriptor.always_in_summary? or n > 0,
+          do: ["#{n} #{descriptor.summary_label}"],
+          else: []
+      end)
+      |> Kernel.++(["#{total(counts)} total"])
       |> Enum.join(", ")
 
     score = score_from_tally(counts)
