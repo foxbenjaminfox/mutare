@@ -1,11 +1,16 @@
 defmodule Mutare.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+  @source_url "https://github.com/foxbenjaminfox/mutare"
+
   def project do
     [
       app: :mutare,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.18",
+      description: description(),
+      package: package(),
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -23,6 +28,22 @@ defmodule Mutare.MixProject do
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
+
+  defp description do
+    "A compile-once mutation testing tool for Elixir."
+  end
+
+  defp package do
+    [
+      maintainers: ["Benjamin Fox"],
+      licenses: ["MIT"],
+      links: %{"GitHub" => @source_url},
+      # Hex's default file set already includes LICENSE*, README*, mix.exs,
+      # and lib/; list it explicitly so the bundled demo projects don't slip
+      # into the package while keeping the licence and docs in.
+      files: ["lib", "mix.exs", "README.md", "LICENSE"]
+    ]
+  end
 
   defp deps do
     [
@@ -44,7 +65,8 @@ defmodule Mutare.MixProject do
   defp docs do
     [
       main: "readme",
-      source_url: "https://github.com/foxbenjaminfox/mutare",
+      source_url: @source_url,
+      source_ref: "v#{@version}",
       extras: ["README.md"],
       # Modules fall into the first group whose entry matches, so the explicit
       # lists win over the trailing catch-alls. "Internal" (`~r//`) sweeps up
