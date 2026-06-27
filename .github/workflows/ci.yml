@@ -8,7 +8,7 @@ on:
 # Cancel superseded runs on the same PR branch (e.g. rapid pushes). Pushes to
 # master always run to completion, so every commit there keeps its own status.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
