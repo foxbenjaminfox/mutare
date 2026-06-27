@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Mutare is a **mutation testing tool for Elixir**, built on one bet: **compile once**.
 It rewrites a target project's source into a single *metamutant* program that embeds every
 mutant behind a `:persistent_term` runtime switch, compiles it once, then runs the suite once
-per mutant by flipping `MUTANT_UNDER_TEST`. Read `DESIGN.md` (the blueprint), `PHILOSOPHY.md`
-(how the project thinks), and `NOTES.md` (the implementation logbook — deferred work, sharp
+per mutant by flipping `MUTANT_UNDER_TEST`. Read `PHILOSOPHY.md`
+(how the project thinks) and `NOTES.md` (the implementation logbook — deferred work, sharp
 edges, and the *why* behind non-obvious decisions) before substantial changes; they are
 unusually load-bearing and will save you re-deriving things.
 

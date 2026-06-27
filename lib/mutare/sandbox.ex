@@ -9,8 +9,7 @@ defmodule Mutare.Sandbox do
   dependency on Mutare, so the sandbox needs nothing added to its deps.
 
   Full-copy isolation is the simplest correct choice; swapping it for a shared
-  build path is an open question (see DESIGN.md) to settle by measuring on a
-  large umbrella.
+  build path is an open question to settle by measuring on a large umbrella.
 
   Two materialisation modes, chosen by `:keep_sandbox`:
 

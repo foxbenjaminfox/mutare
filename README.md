@@ -358,10 +358,10 @@ mix compile --warnings-as-errors              # the project is kept warnings-cle
 mix docs                                      # generate the HexDocs locally
 ```
 
-Contributions are welcome. `DESIGN.md` is the blueprint, `PHILOSOPHY.md` the
-project's values, and `NOTES.md` the implementation logbook (deferred work, sharp
-edges, and the *why* behind non-obvious decisions) — they are load-bearing and
-worth reading before substantial changes.
+Contributions are welcome. `PHILOSOPHY.md` captures the project's values, and
+`NOTES.md` the implementation logbook (deferred work, sharp edges, and the *why*
+behind non-obvious decisions) — they are load-bearing and worth reading before
+substantial changes.
 
 ## License
 

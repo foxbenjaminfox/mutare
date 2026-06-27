@@ -1,7 +1,7 @@
 # Implementation notes & deferred work
 
 A running log of decisions made and limitations discovered while building Mutare.
-`DESIGN.md` is the vision; this file tracks reality and what's intentionally left
+`PHILOSOPHY.md` is the vision; this file tracks reality and what's intentionally left
 for later. Items are tagged with the milestone that should resolve them.
 
 ## Deferred / known limitations
@@ -523,8 +523,8 @@ was right there in scope.
 The id is **process-constant** (`:persistent_term`, write-once, set once per run
 before any test executes), so reading it once per function activation and having every
 selector read that variable is semantically identical — a win on *both* axes (fewer
-nodes for the frontend/SSA passes to chew, and the per-line lookups DESIGN.md flags as
-the "per-site runtime tax" collapsed to one per function activation), with **no
+nodes for the frontend/SSA passes to chew, and the "per-site runtime tax" of the
+per-line lookups collapsed to one per function activation), with **no
 tradeoff** (unlike the `no_ssa_opt*` options that buy compile time with per-run
 runtime).
 
@@ -2036,7 +2036,7 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     analyzed value and raises if any in-place candidate sits below the top node (the offending value in
     the message), rather than silently degrading those inner mutants to `:poisoned` (the recall-loss the
     classifier-trust audit surfaced). A non-literal value with no candidate at all (a bare variable) is
-    fine — nothing to pin. This is why the DESIGN's "shorthand values are plain interpolated Elixir,
+    fine — nothing to pin. This is why "shorthand values are plain interpolated Elixir,
     *not* hosted" was half-right: the value *mutation* is core's (not the SQL catalog), but the
     *delivery* must be pinned, not a bare selector. Tested via `Mutare.Test.CompoundPinnedMutator`.
 
@@ -2849,7 +2849,7 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
 - **Recursion bounces through the dispatcher.** A self-call inside a lifted copy
   hits the public dispatcher and re-dispatches — correct, LCO survives, but ~2×
   the calls. Self-call redirection (point self-calls at the active copy) is
-  deferred (DESIGN open question / v2).
+  deferred (open question / v2).
 - **Error provenance shifts.** `FunctionClauseError` now raises from the lifted
   private fn (`__mutare_f_1_g3`), so its message names that, not `f`.
   Irrelevant to kill/survive; mildly ugly in raw error output.
@@ -4679,7 +4679,7 @@ common case is clean) — excluding them would need `AtomLiteral` to read runtim
 a guard, which it can't.
 
 ### Equivalent mutants `[partial]`
-Per DESIGN's "don't emit obviously-equivalent mutations" mitigation, the
+Per the "don't emit obviously-equivalent mutations" mitigation, the
 arithmetic mutator skips the multiplicative-identity swap on a right operand
 (`a * 1`, `a / 1`) — only the right operand, since `1 * a → 1 / a` is a
 reciprocal. `div`/`rem` are never identities (`rem(a, 1)` is `0`).
@@ -5456,8 +5456,8 @@ a metamutant with **zero** poisons.
   `Runner` → new `format_error(:baseline_flaky, _)`). The end-to-end `:runner` test
   makes a suite deterministically flaky via a counter file persisted in the reused
   sandbox cwd (red on run 1, green on run 2).
-  - **Decision: abort-and-name, not quarantine.** Matches DESIGN's "abort loudly"
-    and "mitigate, don't pretend": we refuse to score a flaky suite rather than
+  - **Decision: abort-and-name, not quarantine.** Matches the "abort loudly"
+    and "mitigate, don't pretend" principles: we refuse to score a flaky suite rather than
     guess which tests to drop. **Deferred** as a follow-up: *quarantine* the flaky
     tests and proceed over the stable subset (needs the exclusion threaded through
     the baseline re-measure, the coverage probe, *and* every per-mutant run — and a

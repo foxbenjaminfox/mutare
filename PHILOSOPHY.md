@@ -1,9 +1,9 @@
 # The philosophy of Mutare
 
-`DESIGN.md` is the blueprint and `NOTES.md` is the running logbook. This document
-is the third thing: how Mutare *thinks*. The recurring ideas, the way decisions
-get made, the values that survived contact with reality. If you understand these,
-the rest of the code reads as inevitable.
+`NOTES.md` is the running logbook. This document is the companion to it: how
+Mutare *thinks*. The recurring ideas, the way decisions get made, the values that
+survived contact with reality. If you understand these, the rest of the code reads
+as inevitable.
 
 ---
 
