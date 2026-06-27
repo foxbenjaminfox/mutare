@@ -305,16 +305,16 @@ defmodule Mutare.Mutator do
   `]`, or `"` — checked when the variant vocabulary is built (`Mutare.Mutators.vocabulary/1`, the
   first time a `[family:label]`-bearing file is scanned); a wire-unsafe label is a mutator bug,
   raised as a `Mutare.Ignore.SpecError` (rendered as a clean abort, not a stacktrace). `c:variant/2`
-  must likewise return only members of this list (or `nil`); that inclusion is exercised by the
-  suite rather than enforced on every mutation, so a stray label surfaces as a `[family:label]`
-  filter that fails to validate. The vocabulary the mutator chooses is its own public contract:
+  must likewise return only members of this list (one, several, or `nil`); that inclusion is
+  exercised by the suite rather than enforced on every mutation, so a stray label surfaces as a
+  `[family:label]` filter that fails to validate. The vocabulary the mutator chooses is its own public contract:
   operator names (`relational` → `> >= < <= == != === !==`) or semantic kinds (`return_value` →
   `empty sentinel`, `literal` → `zero succ pred negate`).
   """
   @callback variants() :: [String.t() | atom()]
 
   @doc """
-  Optional hook tagging one produced mutation with its **variant label** (see `c:variants/0`).
+  Optional hook tagging one produced mutation with its **variant label(s)** (see `c:variants/0`).
 
   Given the `original` node and the `mutated` node this mutator emitted for it, return the
   label naming *which kind* of mutation it is — a member of `c:variants/0` — or `nil` for a
@@ -322,6 +322,14 @@ defmodule Mutare.Mutator do
   (this *and* `c:variants/0` must both be present — see `Mutare.Mutator.Dispatch.variant/3`) and recorded
   on the `Mutare.Site` (downcased); a mutator without the pair leaves every site unlabeled
   (bare-family only).
+
+  A single mutant may belong to **more than one kind**, so a list of labels is also accepted:
+  when a value-family mutation collapses two relationships onto one mutant (`Mutare.Mutators.Literal`'s
+  `1 - 1` and `0` sentinel are the *same* `0` after dedup), returning `["pred", "zero"]` makes
+  *both* `[literal:pred]` and `[literal:zero]` suppress it. `Mutare.Mutator.Dispatch.variant/3`
+  normalizes any return — `nil`, a single label, or a list — to a deduplicated, downcased label
+  list (`nil` ⇒ `[]`), so most mutators return a single label or `nil` and only a genuinely
+  multi-kind mutation returns a list.
 
   Classify from the `{original, mutated}` *pair*, not the mutated node alone — a strip
   mutation (`-(a + b)` → `a + b`) emits a node whose head (`+`) would otherwise be
@@ -335,7 +343,8 @@ defmodule Mutare.Mutator do
       def variant(original, mutated),
         do: Mutare.Mutator.op_swap_variant(original, mutated, @swap_ops)
   """
-  @callback variant(original :: Macro.t(), mutated :: Macro.t()) :: String.t() | atom() | nil
+  @callback variant(original :: Macro.t(), mutated :: Macro.t()) ::
+              String.t() | atom() | [String.t() | atom()] | nil
 
   @doc """
   Optional hook by which a mutator declares that one of *its own* mutation results is

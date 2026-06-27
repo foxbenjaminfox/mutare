@@ -34,7 +34,7 @@ defmodule Mutare.Site do
           mutated_form: atom() | nil,
           original_code: String.t(),
           mutated_code: String.t(),
-          variant: String.t() | nil,
+          variant: [String.t()],
           note: String.t() | nil,
           block_macro: {atom(), non_neg_integer()} | nil
         }
@@ -51,13 +51,15 @@ defmodule Mutare.Site do
     :mutated_form,
     :original_code,
     :mutated_code,
-    # The mutator-declared **variant label** of this mutation (downcased), or `nil` when the
+    # The mutator-declared **variant label(s)** of this mutation (downcased), or `[]` when the
     # producing mutator did not opt in (no `c:Mutare.Mutator.variant/2`) or returned `nil` for
-    # this mutation (a delete site, or an unlabeled mutant). It is the token a qualified
-    # `# mutare:ignore[family:label]` filter matches — declared by the mutator, *not* derived
-    # from the rendered AST (so `relational:>` names the `>` swap, `return_value:empty` the empty
-    # constant). Set by `Mutare.Mutator.Dispatch.variant/3` from the producing `Mutare.Mutator.Spec`'s module.
-    variant: nil,
+    # this mutation (a delete site, or an unlabeled mutant). A list because one mutant may belong
+    # to several kinds (`Mutare.Mutators.Literal`'s deduped `1 - 1`/`0` is both `pred` and `zero`),
+    # and a qualified `# mutare:ignore[family:label]` filter matches if *any* of these labels equals
+    # its token — declared by the mutator, *not* derived from the rendered AST (so `relational:>`
+    # names the `>` swap, `return_value:empty` the empty constant). Set by
+    # `Mutare.Mutator.Dispatch.variant/3` from the producing `Mutare.Mutator.Spec`'s module.
+    variant: [],
     operation: :replace,
     ignored: false,
     ignore_reason: nil,

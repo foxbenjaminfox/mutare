@@ -21,13 +21,15 @@ defmodule Mutare.Ignore.Directive do
 
   A single site (one `i < j`) can yield several mutants — for `relational`,
   `i <= j` and `i > j`. A bare `[relational]` filter can only suppress *all* of
-  them; the qualifier names *one* by its **variant label**. The label compared is
-  the site's `variant` — a name the producing mutator *declares*
+  them; the qualifier names *one* by its **variant label**. The labels compared are
+  the site's `variant` **list** — names the producing mutator *declares*
   (`c:Mutare.Mutator.variants/0`) and tags each mutation with
-  (`c:Mutare.Mutator.variant/2`), **not** anything read off the rendered AST. So
-  `relational` labels its results `>`/`<=`/… and `[relational:>]` ignores the
-  symmetric `i > j` reflection while `i <= j` still runs; `return_value` labels its
-  pair `empty`/`sentinel`.
+  (`c:Mutare.Mutator.variant/2`), **not** anything read off the rendered AST. A
+  qualifier matches when its token is one of that list, so `relational` labels its
+  results `>`/`<=`/… and `[relational:>]` ignores the symmetric `i > j` reflection
+  while `i <= j` still runs; `return_value` labels its pair `empty`/`sentinel`. One
+  mutant may carry **several** labels — `Mutare.Mutators.Literal`'s deduped `1 - 1`/`0`
+  is both `pred` and `zero` — and either qualifier then suppresses it.
 
   Labels are **opt-in** and **validated**: a family declaring no vocabulary admits
   only the bare `[family]`, and a `[family:label]` naming an unknown family/label is
@@ -38,11 +40,12 @@ defmodule Mutare.Ignore.Directive do
   @type target :: :any | String.t()
   @type entry :: {String.t(), target()}
 
-  # The **query** side of a match: a site's recorded `variant` label (a string), or `nil` when
-  # the mutant is unlabeled, *plus* `:any` for the family-level "does any entry involve this
-  # family?" question. (An *entry*'s target is only `:any | String.t()` — never `nil` — so it
-  # stays `target/0`; a query may additionally be `nil`.)
-  @type query :: target() | nil
+  # The **query** side of a match: a site's recorded `variant` **label list** (`[]` when the mutant
+  # is unlabeled, one or more labels otherwise — one mutant may be several kinds), *plus* `:any` for
+  # the family-level "does any entry involve this family?" question. (An *entry*'s target is a single
+  # `:any | String.t()` token — never a list — so it stays `target/0`; a query is the site-side list
+  # or `:any`.)
+  @type query :: :any | [String.t()]
 
   @type t :: %__MODULE__{
           line: pos_integer(),
@@ -65,12 +68,15 @@ defmodule Mutare.Ignore.Directive do
 
   @doc """
   Whether this directive suppresses a mutant of family `mutator` whose variant is
-  `target` (the site's declared `variant` label string, or `nil` when unlabeled).
+  `target` (the site's declared `variant` label **list** — `[]` when unlabeled, one or
+  more labels when the mutant belongs to one or more kinds).
 
   `:all` admits every mutant. A filter set admits the mutant iff some entry's
   family equals `mutator`'s name (`to_string/1`, downcased — so an uppercase custom
   `name/0` still matches the downcased filter token) *and* the entry's label admits
-  `target` — `:any` admits any variant, otherwise the strings must be equal. So an
+  `target` — a bare `:any` entry admits any variant, otherwise the entry's label must be
+  a **member** of the site's label list (so the deduped `1 - 1`/`0` mutant, labeled both
+  `pred` and `zero`, is suppressed by `[literal:pred]` *or* `[literal:zero]`). So an
   unknown family, an unknown label, or an empty filter admits nothing
   (filtering fails safe toward *running* the mutant).
 
@@ -106,8 +112,9 @@ defmodule Mutare.Ignore.Directive do
   end
 
   # The match strength of a single `{family, entry_target}` filter entry against a query
-  # `target`: a bare-family entry (`:any`) or a family-level query (`:any`) is a loose match (1);
-  # two concrete tokens that are equal is an exact match (2); anything else is no match (-1).
+  # `target` (the site's label list, or `:any` for the family-level question): a bare-family entry
+  # (`:any`) or a family-level query (`:any`) is a loose match (1); a concrete entry label that is a
+  # **member** of the site's label list is an exact match (2); anything else is no match (-1).
   defp entry_specificity(false, _entry_target, _target), do: -1
   defp entry_specificity(true, :any, _target), do: 1
   # A **malformed empty-label entry** (`{family, ""}`, from a `[family:]` slip) matches no real
@@ -117,6 +124,14 @@ defmodule Mutare.Ignore.Directive do
   # `Mutare.Ignore.parse_entry/1` deliberately avoids — a silent family-wide suppression).
   defp entry_specificity(true, "", _target), do: -1
   defp entry_specificity(true, _entry_target, :any), do: 1
-  defp entry_specificity(true, entry_target, target) when entry_target == target, do: 2
+
+  # A concrete entry label against the site's label list: an **exact** match (2) iff the label is one
+  # of the site's variants, else no match. A mutant carrying several labels (`pred`+`zero`) is thus
+  # selected by a qualifier naming *any* of them; an unlabeled mutant (`[]`) by none.
+  defp entry_specificity(true, entry_target, labels) when is_list(labels),
+    do: if(entry_target in labels, do: 2, else: -1)
+
+  # Defensive: any other query shape (e.g. a stray `nil`) matches no concrete entry. Bare and
+  # `:any`-query entries are already handled above, so this only ever rejects a qualified entry.
   defp entry_specificity(true, _entry_target, _target), do: -1
 end

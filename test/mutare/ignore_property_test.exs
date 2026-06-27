@@ -52,8 +52,12 @@ defmodule Mutare.IgnorePropertyTest do
     end
   end
 
-  # A query target: a concrete label, `nil` (an unlabeled site), or the `:any` family query.
-  defp target_gen, do: oneof([token(), exactly(nil), exactly(:any)])
+  # A query target (the site side of a match): the site's label *list* (`[]` when unlabeled, one or
+  # more labels — a mutant may be several kinds), or the `:any` family-level query.
+  defp target_gen, do: oneof([exactly(:any), variant_gen()])
+
+  # A site's recorded `variant`: a label list, empty (unlabeled) or a few labels.
+  defp variant_gen, do: oneof([exactly([]), small_list(token())])
 
   # A family *token* — sometimes a real family, sometimes an arbitrary (almost-surely unknown)
   # one — so the validation boundary sees known and unknown families alike.
@@ -82,10 +86,14 @@ defmodule Mutare.IgnorePropertyTest do
     end
   end
 
-  # `{line, mutator, variant}` site tuples (possibly empty — a line with no mutants).
+  # `{line, mutator, variant}` site tuples (possibly empty — a line with no mutants). A real site's
+  # `variant` is a label list (never the `:any` query), so draw it from `variant_gen/0`.
   defp occupied_gen,
     do:
-      let(n <- oneof([0, 1, 2, 3]), do: vector(n, {oneof([1, 2, 3]), one_family(), target_gen()}))
+      let(
+        n <- oneof([0, 1, 2, 3]),
+        do: vector(n, {oneof([1, 2, 3]), one_family(), variant_gen()})
+      )
 
   defp directive(line, mutators, order),
     do: %Directive{line: line, mutators: mutators, reason: "r#{order}", source_order: order}
@@ -114,12 +122,14 @@ defmodule Mutare.IgnorePropertyTest do
       qual = sole("x = 1 # mutare:ignore[#{fam}:#{label}]")
       dl = String.downcase(label)
 
-      # A bare family admits *any* target (a label, an unlabeled `nil`, or the `:any` query);
-      # a qualifier admits its own label and the `:any` family query, and nothing else.
+      # A bare family admits *any* target (any label list — empty or not — and the `:any` query);
+      # a qualifier admits a site whose label list contains its label, plus the `:any` family query,
+      # and nothing else.
       Directive.applies_to?(bare, fam, target) and
-        Directive.applies_to?(qual, fam, dl) and
+        Directive.applies_to?(qual, fam, [dl]) and
         Directive.applies_to?(qual, fam, :any) and
-        Directive.applies_to?(qual, fam, target) == (target == :any or target == dl)
+        Directive.applies_to?(qual, fam, target) ==
+          (target == :any or (is_list(target) and dl in target))
     end
   end
 
@@ -156,8 +166,8 @@ defmodule Mutare.IgnorePropertyTest do
     forall {fam, label} <- {one_family(), word()} do
       d = sole("x = 1 # mutare:ignore[#{String.upcase(to_string(fam))}:#{String.upcase(label)}]")
 
-      Directive.applies_to?(d, fam, String.downcase(label)) and
-        not Directive.applies_to?(d, fam, String.downcase(label) <> "x")
+      Directive.applies_to?(d, fam, [String.downcase(label)]) and
+        not Directive.applies_to?(d, fam, [String.downcase(label) <> "x"])
     end
   end
 

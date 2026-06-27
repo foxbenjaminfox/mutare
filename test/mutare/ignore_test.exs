@@ -140,7 +140,8 @@ defmodule Mutare.IgnoreTest do
 
       {_meta, sites, _next_id} = Mutare.transform_string(source)
       returns = Enum.filter(sites, &(&1.mutator == :return_value))
-      ignored? = Map.new(returns, &{&1.variant, &1.ignored})
+      # Each return_value mutant carries exactly one label (`empty`/`sentinel` are disjoint).
+      ignored? = Map.new(returns, &{List.first(&1.variant), &1.ignored})
 
       assert ignored?["empty"] == true
       assert ignored?["sentinel"] == false
@@ -244,8 +245,8 @@ defmodule Mutare.IgnoreTest do
       assert set == MapSet.new([{"relational", ">"}])
 
       # The `>` result is suppressed; the sibling `<=` (and the family at large) is not.
-      assert Ignore.directive_for(directives, 1, :relational, ">")
-      refute Ignore.directive_for(directives, 1, :relational, "<=")
+      assert Ignore.directive_for(directives, 1, :relational, [">"])
+      refute Ignore.directive_for(directives, 1, :relational, ["<="])
       # ...but the family-level query (no result in hand) still finds it.
       assert Ignore.directive_for(directives, 1, :relational)
     end
@@ -259,9 +260,9 @@ defmodule Mutare.IgnoreTest do
 
     test "qualified and bare entries of the same family coexist" do
       directives = Ignore.directives("x = 1 # mutare:ignore[arithmetic, relational:>]")
-      assert Ignore.directive_for(directives, 1, :arithmetic, "-")
-      assert Ignore.directive_for(directives, 1, :relational, ">")
-      refute Ignore.directive_for(directives, 1, :relational, "<=")
+      assert Ignore.directive_for(directives, 1, :arithmetic, ["-"])
+      assert Ignore.directive_for(directives, 1, :relational, [">"])
+      refute Ignore.directive_for(directives, 1, :relational, ["<="])
     end
 
     test "a malformed empty-label qualifier ([family:]) suppresses nothing, not the whole family" do
@@ -271,10 +272,10 @@ defmodule Mutare.IgnoreTest do
       for body <- ["relational:", "relational: >"] do
         directives = Ignore.directives("x = i < j # mutare:ignore[#{body}]")
 
-        refute Ignore.directive_for(directives, 1, :relational, ">"),
+        refute Ignore.directive_for(directives, 1, :relational, [">"]),
                "[#{body}] wrongly suppressed the > mutant"
 
-        refute Ignore.directive_for(directives, 1, :relational, "<="),
+        refute Ignore.directive_for(directives, 1, :relational, ["<="]),
                "[#{body}] wrongly suppressed the <= mutant"
 
         # ...and not even the *family-level* (`:any`) query: an empty-label entry suppresses
@@ -297,9 +298,9 @@ defmodule Mutare.IgnoreTest do
 
       directives = Ignore.directives(source)
 
-      assert %{reason: "specific"} = Ignore.directive_for(directives, 2, :relational, ">")
+      assert %{reason: "specific"} = Ignore.directive_for(directives, 2, :relational, [">"])
       # A sibling variant the qualifier doesn't name still falls to the bare directive.
-      assert %{reason: "bare"} = Ignore.directive_for(directives, 2, :relational, "<=")
+      assert %{reason: "bare"} = Ignore.directive_for(directives, 2, :relational, ["<="])
     end
 
     test "between two equal-specificity directives on a line, the source-first reason wins" do
@@ -310,7 +311,7 @@ defmodule Mutare.IgnoreTest do
 
       directives = Ignore.directives(source)
 
-      assert %{reason: "first"} = Ignore.directive_for(directives, 2, :relational, ">")
+      assert %{reason: "first"} = Ignore.directive_for(directives, 2, :relational, [">"])
     end
 
     defp directive_on(directives, line), do: directives |> Map.fetch!(line) |> hd()
@@ -321,7 +322,7 @@ defmodule Mutare.IgnoreTest do
 
     test "a typo'd family is flagged (it matches no mutant on the line)" do
       directives = Ignore.directives("x = 1 # mutare:ignore[arithmatic]")
-      occupied = [{1, :arithmetic, "-"}, {1, :literal, "0"}]
+      occupied = [{1, :arithmetic, ["-"]}, {1, :literal, ["0"]}]
 
       assert [%{line: 1, mutators: set}] = Ignore.ineffective(directives, occupied)
       assert MapSet.member?(set, {"arithmatic", :any})
@@ -331,7 +332,7 @@ defmodule Mutare.IgnoreTest do
       # `>` is a real relational variant, but this line produced only `<=`/`!=` — so the
       # qualifier is *ineffective* (not invalid; an unknown label is a hard validate! error).
       directives = Ignore.directives("x = 1 # mutare:ignore[relational:>]")
-      occupied = [{1, :relational, "<="}, {1, :relational, "!="}]
+      occupied = [{1, :relational, ["<="]}, {1, :relational, ["!="]}]
 
       assert [%{line: 1, mutators: set}] = Ignore.ineffective(directives, occupied)
       assert MapSet.member?(set, {"relational", ">"})
@@ -339,7 +340,7 @@ defmodule Mutare.IgnoreTest do
 
     test "a present label qualifier is not flagged" do
       directives = Ignore.directives("x = 1 # mutare:ignore[relational:>]")
-      occupied = [{1, :relational, ">"}, {1, :relational, "<="}]
+      occupied = [{1, :relational, [">"]}, {1, :relational, ["<="]}]
       assert Ignore.ineffective(directives, occupied) == []
     end
 
@@ -347,42 +348,42 @@ defmodule Mutare.IgnoreTest do
       # The empty-label slip suppresses no real variant, so the user is warned rather than
       # silently over-suppressing the whole family.
       directives = Ignore.directives("x = 1 # mutare:ignore[relational:]")
-      occupied = [{1, :relational, ">"}, {1, :relational, "<="}]
+      occupied = [{1, :relational, [">"]}, {1, :relational, ["<="]}]
       assert [%{line: 1}] = Ignore.ineffective(directives, occupied)
     end
 
     test "an empty `[]` filter is flagged" do
       directives = Ignore.directives("x = 1 # mutare:ignore[]")
-      assert [%{line: 1}] = Ignore.ineffective(directives, [{1, :arithmetic, "-"}])
+      assert [%{line: 1}] = Ignore.ineffective(directives, [{1, :arithmetic, ["-"]}])
     end
 
     test "a bare directive on a line with no mutant is flagged (wrong line)" do
       directives = Ignore.directives("x = 1 # mutare:ignore")
-      assert [%{line: 1}] = Ignore.ineffective(directives, [{2, :arithmetic, "-"}])
+      assert [%{line: 1}] = Ignore.ineffective(directives, [{2, :arithmetic, ["-"]}])
     end
 
     test "a bare directive on an occupied line is not flagged" do
       directives = Ignore.directives("x = 1 # mutare:ignore")
-      assert Ignore.ineffective(directives, [{1, :arithmetic, "-"}]) == []
+      assert Ignore.ineffective(directives, [{1, :arithmetic, ["-"]}]) == []
     end
 
     test "a filter matching a present family is not flagged" do
       directives = Ignore.directives("x = 1 # mutare:ignore[arithmetic]")
-      assert Ignore.ineffective(directives, [{1, :arithmetic, "-"}, {1, :literal, "0"}]) == []
+      assert Ignore.ineffective(directives, [{1, :arithmetic, ["-"]}, {1, :literal, ["0"]}]) == []
     end
 
     test "a real but absent family (present on the line, but a different one) is flagged" do
       directives = Ignore.directives("x = 1 # mutare:ignore[arithmetic]")
 
       assert [%{line: 1}] =
-               Ignore.ineffective(directives, [{1, :relational, ">"}, {1, :literal, "0"}])
+               Ignore.ineffective(directives, [{1, :relational, [">"]}, {1, :literal, ["0"]}])
     end
 
     test "results are sorted by line" do
       source = "a # mutare:ignore[x]\nb # mutare:ignore[y]\nc # mutare:ignore[z]"
       directives = Ignore.directives(source)
       # No site admits any of the filters → all three flagged, in line order.
-      occupied = [{1, :arithmetic, "-"}, {2, :arithmetic, "-"}, {3, :arithmetic, "-"}]
+      occupied = [{1, :arithmetic, ["-"]}, {2, :arithmetic, ["-"]}, {3, :arithmetic, ["-"]}]
       assert [1, 2, 3] == directives |> Ignore.ineffective(occupied) |> Enum.map(& &1.line)
     end
   end
@@ -541,10 +542,10 @@ defmodule Mutare.IgnoreTest do
     end
 
     test "every site's recorded variant is one its mutator declares (no drift)" do
-      # Exercise the opted-in families and assert each non-nil variant is a member of the
+      # Exercise the opted-in families and assert each recorded label is a member of the
       # producing family's declared vocabulary — the static guarantee `variant/2` ⊆ `variants/0`.
       # Includes bitwise (`&&&`/`|||`/`<<<`) and list (`++`/`[]`) so those families' membership is
-      # checked here too, not just the `!= nil` completeness test below.
+      # checked here too, not just the non-empty completeness test below.
       source = """
       defmodule Drift do
         import Bitwise
@@ -562,14 +563,14 @@ defmodule Mutare.IgnoreTest do
 
       {_meta, sites, _} = Mutare.transform_string(source)
 
-      for site <- sites, site.variant != nil do
+      for site <- sites, label <- site.variant do
         case Map.fetch!(@vocab, to_string(site.mutator)) do
           %MapSet{} = labels ->
-            assert MapSet.member?(labels, site.variant),
-                   "#{site.mutator} produced undeclared variant #{inspect(site.variant)}"
+            assert MapSet.member?(labels, label),
+                   "#{site.mutator} produced undeclared variant #{inspect(label)}"
 
           :none ->
-            flunk("#{site.mutator} recorded a variant #{inspect(site.variant)} but declares none")
+            flunk("#{site.mutator} recorded a variant #{inspect(label)} but declares none")
         end
       end
     end
@@ -612,7 +613,7 @@ defmodule Mutare.IgnoreTest do
       refute swaps == [], "expected operator-swap sites to exercise the families"
 
       for site <- swaps do
-        assert site.variant != nil,
+        assert site.variant != [],
                "#{site.mutator}: #{site.original_code} → #{site.mutated_code} recorded no variant"
       end
     end
@@ -630,7 +631,7 @@ defmodule Mutare.IgnoreTest do
 
       bitwise = Enum.filter(sites, &(&1.mutator == :bitwise))
       refute bitwise == []
-      assert Enum.all?(bitwise, &(&1.variant == "|||"))
+      assert Enum.all?(bitwise, &(&1.variant == ["|||"]))
     end
 
     test "a Bitwise capture swap is labeled like its call form (so [bitwise:op] suppresses it)" do
@@ -648,20 +649,39 @@ defmodule Mutare.IgnoreTest do
       bitwise = Enum.filter(sites, &(&1.mutator == :bitwise))
       assert [site] = bitwise
       assert site.mutated_code == "&Bw.bor/2"
-      assert site.variant == "|||"
+      assert site.variant == ["|||"]
       assert site.ignored
     end
 
-    test "a literal off-by-one that collapses onto 0 is labeled by the off-by-one, not zero" do
-      # `x - 1`: the `1` literal's `n - 1` mutant is `0`, merged with the zero sentinel. It must
-      # be named `pred` (the off-by-one), so `[literal:pred]` suppresses it as the user expects.
+    test "a literal off-by-one that collapses onto 0 carries BOTH the off-by-one and zero labels" do
+      # `x - 1`: the `1` literal's `n - 1` mutant is `0`, merged with the zero sentinel into one
+      # deduped mutant. It belongs to both kinds, so it advertises *both* labels — and a user
+      # reasoning about the decrement (`pred`) or about the zero boundary (`zero`) each find it.
       {_meta, sites, _} =
         Mutare.transform_string("defmodule L do\n  def f(x), do: x - 1\nend\n")
 
-      pred = Enum.filter(sites, &(&1.mutator == :literal and &1.variant == "pred"))
+      zero_mutant = Enum.find(sites, &(&1.mutator == :literal and &1.mutated_code == "0"))
+      assert zero_mutant, "expected a 1 -> 0 literal mutant"
+      assert Enum.sort(zero_mutant.variant) == ["pred", "zero"]
 
-      assert Enum.any?(pred, &(&1.mutated_code == "0")),
-             "the 1 -> 0 decrement mutant should be labeled pred, not zero"
+      # The sibling `1 -> 2` succ mutant is a single, distinct kind.
+      succ_mutant = Enum.find(sites, &(&1.mutator == :literal and &1.mutated_code == "2"))
+      assert succ_mutant.variant == ["succ"]
+    end
+
+    test "either [literal:pred] or [literal:zero] suppresses the collapsed 1 -> 0 mutant" do
+      # The payoff of the dual label: the merged mutant is selectable by *either* qualifier, while
+      # the unrelated `succ` mutant on the same literal keeps running.
+      for label <- ~w(pred zero) do
+        src = "defmodule L do\n  def f(x), do: x - 1 # mutare:ignore[literal:#{label}]\nend\n"
+        {_meta, sites, _} = Mutare.transform_string(src)
+
+        zero_mutant = Enum.find(sites, &(&1.mutator == :literal and &1.mutated_code == "0"))
+        assert zero_mutant.ignored, "[literal:#{label}] should suppress the 1 -> 0 mutant"
+
+        succ_mutant = Enum.find(sites, &(&1.mutator == :literal and &1.mutated_code == "2"))
+        refute succ_mutant.ignored, "[literal:#{label}] must not touch the succ mutant"
+      end
     end
   end
 

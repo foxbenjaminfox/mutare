@@ -297,14 +297,20 @@ defmodule Mutare.Mutator.Dispatch do
   end
 
   @doc """
-  The **variant label** `spec`'s module declares for the mutation `{original, mutated}`, downcased
-  — or `nil` when the mutator hasn't opted in (it must export *both* `c:Mutare.Mutator.variants/0`
-  and `c:Mutare.Mutator.variant/2`) or returns `nil` for this pair (an unlabeled mutant). The single
-  home for invoking the optional `c:Mutare.Mutator.variant/2` callback (mirroring `empty_collection?/2`),
-  so `Mutare.Site` records the label without reaching into a mutator module itself. Dispatching on the
-  *producing* spec's module is correct: only the mutator that emitted the mutation knows which kind it is.
+  The **variant label(s)** `spec`'s module declares for the mutation `{original, mutated}` — a
+  deduplicated, downcased label list, or `[]` when the mutator hasn't opted in (it must export
+  *both* `c:Mutare.Mutator.variants/0` and `c:Mutare.Mutator.variant/2`) or returned `nil` for this
+  pair (an unlabeled mutant). The single home for invoking the optional `c:Mutare.Mutator.variant/2`
+  callback (mirroring `empty_collection?/2`), so `Mutare.Site` records the labels without reaching
+  into a mutator module itself. Dispatching on the *producing* spec's module is correct: only the
+  mutator that emitted the mutation knows which kind(s) it is.
+
+  A mutation is usually **one** kind (a single label), but may be several: a value-family mutant
+  that collapses two relationships onto one value (`Mutare.Mutators.Literal`'s deduped `1 - 1`/`0`)
+  returns `["pred", "zero"]`, and a qualifier naming *either* suppresses it. `c:Mutare.Mutator.variant/2`
+  may therefore return `nil`, a single label, or a list — all normalized here through `List.wrap/1`.
   """
-  @spec variant(Spec.t(), Macro.t(), Macro.t()) :: String.t() | nil
+  @spec variant(Spec.t(), Macro.t(), Macro.t()) :: [String.t()]
   def variant(%Spec{module: module}, original, mutated) do
     # `variants/0` and `variant/2` are a **pair** (see `opted_in?/1`): a mutator must export *both*
     # to record a label. Gating on the shared predicate keeps the *recording* side here consistent
@@ -312,10 +318,12 @@ defmodule Mutare.Mutator.Dispatch do
     # label *and* exposes no vocabulary, so a `[family:label]` qualifier against it can't both
     # validate-as-known and silently match nothing.
     if opted_in?(module) do
-      case module.variant(original, mutated) do
-        nil -> nil
-        label -> Mutare.Mutator.normalize_label(label)
-      end
+      module.variant(original, mutated)
+      |> List.wrap()
+      |> Enum.map(&Mutare.Mutator.normalize_label/1)
+      |> Enum.uniq()
+    else
+      []
     end
   end
 

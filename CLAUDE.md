@@ -1291,14 +1291,17 @@ For a mutator whose users may want to suppress *one kind* of its mutations (a `#
 qualifier — `[relational:>]` keeps `<=`), declare a **variant vocabulary**: `variants/0` returns
 the label set (its own public contract — operator names like `> <= ==`, or semantic kinds like
 `empty sentinel` / `zero succ pred`), and `variant(original, mutated)` tags each produced mutation
-with one of them (or `nil` for an unlabeled mutant — bare-family only). The two callbacks are a
+with one of them (or `nil` for an unlabeled mutant — bare-family only; **or a list** when one mutant
+is several kinds — `Mutare.Mutators.Literal`'s deduped `1 - 1`/`0` is both `pred` and `zero`, so a
+qualifier naming *either* suppresses it). The two callbacks are a
 **pair**: implement *both* or neither (`Mutare.Mutator.Dispatch.variant/3` requires both, so a half-declared
 mutator records no labels). Classify from the
 `{original, mutated}` *pair*, not the mutated node alone (a strip's `{:+, …}` output must not be
 read as a `+` swap — the operator families route through `Mutare.Mutator.op_swap_variant/3`, which
-ignores a unary original for free). The label is recorded on `Site.variant` and is what a
-`[family:label]` filter matches; it is *not* derived from the rendered AST, so it stays stable and
-can name a result no filter token could spell (`empty`, not `[]`). Opt-in (no vocabulary ⇒ only the
+ignores a unary original for free). The label(s) are recorded on `Site.variant` (a list, `[]` when
+unlabeled; `Mutare.Mutator.Dispatch.variant/3` normalizes the callback's `nil`/single/list return)
+and a `[family:label]` filter matches when its token is one of them; they are *not* derived from the
+rendered AST, so they stay stable and can name a result no filter token could spell (`empty`, not `[]`). Opt-in (no vocabulary ⇒ only the
 bare `[family]` works, and a qualifier against the family is a hard error) and validated: each label
 must be **wire-safe** (no whitespace/`,`/`()`/`]`/`"`, checked at `Mutare.Mutators.vocabulary/1`
 build — a violation is a `Mutare.Ignore.SpecError`), and `variant/2` must return a member of
@@ -1392,7 +1395,9 @@ The `[...]` **filter** is a list of entries; each matches a site's `mutator` nam
 `Mutare.Mutators`, plus `clause_drop` and any custom `name/0`), optionally **qualified** with
 `:<label>` to name *one* of that family's mutants by its **variant label**. The label is **not**
 derived from the rendered AST — it is a name the *mutator declares* (`c:Mutare.Mutator.variants/0`)
-and tags each mutation with (`c:Mutare.Mutator.variant/2`), recorded on `Site.variant`. So
+and tags each mutation with (`c:Mutare.Mutator.variant/2`), recorded as a list on `Site.variant`
+(usually one label; several when a deduped mutant is several kinds, e.g. `literal`'s `1 - 1`/`0` is
+both `pred` and `zero`, matched by either qualifier). So
 `relational` declares its results `> >= < <= == != === !==` (a symmetric `i < j` suppresses the
 `i > j` reflection via `[relational:>]`, keeping `i <= j`), `return_value` declares the *semantic*
 pair `empty`/`sentinel`, `literal` declares `zero succ pred negate` — labels free of how the value

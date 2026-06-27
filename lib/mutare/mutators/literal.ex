@@ -33,20 +33,22 @@ defmodule Mutare.Mutators.Literal do
   # not the resulting value (which is unbounded). `succ` = `n + 1`, `pred` = `n - 1`,
   # `zero` = the `0` sentinel, `negate` = the boolean flip. Classified by value relationship.
   # When the off-by-one collapses *onto* `0` (the merged mutant: `n = 1` ⇒ `n - 1 = 0`,
-  # `n = -1` ⇒ `n + 1 = 0`), the **off-by-one** label wins over `zero` — it is the more specific
-  # relationship (the value is reachable as `n ± 1` only for those `n`), so `[literal:pred]`
-  # suppresses the `1 → 0` mutant of `x - 1` as a user reasoning about the decrement expects.
+  # `n = -1` ⇒ `n + 1 = 0`), the single deduped mutant is **both** kinds — so it carries *both*
+  # labels and `[literal:pred]` *and* `[literal:zero]` each suppress the `1 → 0` mutant of `x - 1`,
+  # whichever way the user reasons about it. A non-collapsing mutant carries exactly one label.
   @impl Mutare.Mutator
   def variants, do: ~w(zero succ pred negate)
 
   @impl Mutare.Mutator
   def variant({:__block__, _m, [n]}, mutated) when is_integer(n) do
-    case int_value(mutated) do
-      m when m == n + 1 -> "succ"
-      m when m == n - 1 -> "pred"
-      0 -> "zero"
-      _ -> nil
-    end
+    # `int_value/1` yields the mutated integer (or `:error`, which equals none of the targets, so
+    # the comprehension is empty). A mutated value can satisfy more than one relationship at once
+    # (`0` is both `n - 1` and the zero sentinel when `n = 1`), so collect *every* matching label.
+    m = int_value(mutated)
+
+    for {applies?, label} <- [{m == n + 1, "succ"}, {m == n - 1, "pred"}, {m == 0, "zero"}],
+        applies?,
+        do: label
   end
 
   def variant({:__block__, _m, [b]}, _mutated) when is_boolean(b), do: "negate"

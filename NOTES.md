@@ -232,15 +232,19 @@ list result is `[]` which the filter's `]` terminator can't even spell, a negati
 not that's meaningful. The replacement: the **mutator declares its own vocabulary** and tags each
 mutation. Two optional callbacks (discovered by export, the `macros/0` pattern): `variants/0` → the
 label set (a family's *public contract* — operator names `> <= ==`, or semantic kinds `empty
-sentinel` / `zero succ pred negate`), and `variant(original, mutated)` → the label for one produced
-mutation (a member of `variants/0`, or `nil` = unlabeled/bare-only). Classify from the
+sentinel` / `zero succ pred negate`), and `variant(original, mutated)` → the label(s) for one produced
+mutation (a member of `variants/0`, or `nil` = unlabeled/bare-only — **or a list** when the mutation
+is several kinds at once). Classify from the
 `{original, mutated}` **pair**, never the mutated node alone — a strip (`-(a+b)` → `a+b`) emits a
 `{:+, …}` that would otherwise be mis-read as a `+` swap.
 
-`Site` stores the (downcased) label in a `variant` field, set by `variant_of/3` from the producing
-`Spec`'s module (`function_exported?` guard, so a non-opting mutator yields `nil`). The matching is
-unchanged from the first cut — `Directive.applies_to?/3` against the site's token, `:any` a wildcard
-on either side — only the token's *source* flipped from derived to declared. Opt-in falls straight
+`Site` stores the (downcased) label **list** in a `variant` field (`[]` when unlabeled), set by
+`Mutare.Mutator.Dispatch.variant/3` from the producing `Spec`'s module (`function_exported?` guard,
+so a non-opting mutator yields `[]`; the callback's `nil`/single/list return is normalized through
+`List.wrap`). A list because one deduped mutant can be several kinds — `literal`'s `1 - 1`/`0` is both
+`pred` and `zero`, so `[literal:pred]` *and* `[literal:zero]` each suppress it. The matching is
+otherwise unchanged — `Directive.applies_to?/3` against the site's label list, a qualifier matching
+when its token is a **member**, `:any` a wildcard on either side. Opt-in falls straight
 out of "did the module export `variants/0`?": a family that didn't (Collection, the call families,
 most structural) is bare-only, and the call/structural half-broken tokens simply don't exist.
 

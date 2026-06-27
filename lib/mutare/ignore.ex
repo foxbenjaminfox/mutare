@@ -116,7 +116,7 @@ defmodule Mutare.Ignore do
 
   @doc """
   The directive (if any) that suppresses a site at `line` produced by `mutator`
-  whose variant is `target` (the site's declared `Mutare.Site` `variant` label).
+  whose variant is `target` (the site's declared `Mutare.Site` `variant` label list).
 
   Returns the **most specific** matching `%Directive{}` — its `reason` is what the site
   records — or `nil` when the site is not ignored: when both a qualified `[family:label]` and a
@@ -273,8 +273,8 @@ defmodule Mutare.Ignore do
 
   `occupied` is the `{line, mutator, variant}` of each recorded site (a `nil` line,
   which no directive's `pos_integer` line can equal, is harmless; `variant` is the
-  site's declared `variant` label, or `nil`). It is passed as plain tuples rather
-  than `Mutare.Site` structs so this module stays unaware of the site representation.
+  site's declared `variant` label **list**, `[]` when unlabeled). It is passed as plain
+  tuples rather than `Mutare.Site` structs so this module stays unaware of the site representation.
 
   Detection is relative to the mutants actually produced: a family disabled this
   run (`--mutators`) yields no site, so a directive naming only it is reported —
