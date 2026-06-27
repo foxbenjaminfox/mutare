@@ -571,6 +571,10 @@ defmodule Mutare.MutatorsLiteralTest do
       refute ~S"~r/(?m)\Aa/f" in render(RegexLiteral.mutate(parse(~S"~r/(?m)^a/f")))
       # the reverse `\A`->`^` swap is suppressed for a leading `\A` too
       refute ~S"~r/^a/fm" in render(RegexLiteral.mutate(parse(~S"~r/\Aa/fm")))
+      # `/x` whitespace before the `^` is ignored by PCRE, so the `^` is still leading
+      refute ~S"~r/  \Aa$/mfx" in render(RegexLiteral.mutate(parse(~S"~r/  ^a$/mfx")))
+      # but a real consuming char before the `^` makes it non-leading — swap offered
+      assert ~S"~r/a \Aa$/mfx" in render(RegexLiteral.mutate(parse(~S"~r/a ^a$/mfx")))
       # without `/f`, the `\A`<->`^` swap is still offered under `/m`
       assert ~S"~r/^a/m" in render(RegexLiteral.mutate(parse(~S"~r/\Aa/m")))
     end

@@ -5847,8 +5847,10 @@ buys less than the duplication costs:
     escape is one three-byte escape; and a *leading* anchor (`^` **or** `\A`) under **`/mf`**
     (firstline) is pinned to the subject start, so the `^`↔`\A` swap is a guaranteed no-op in both
     directions and suppressed. "Leading" is tracked by `mode_aware_patterns` (preceded only by
-    non-consuming tokens — other anchors/assertions, inline `(?…)` modifiers, comments), so `(?m)^a/f`
-    and `\Aa/fm` are covered, not just an offset-0 `^`; a group (even a zero-width lookaround) is
+    non-consuming tokens — other anchors/assertions, inline `(?…)` modifiers, and PCRE-ignored text:
+    comments and, under `/x`, whitespace — the last shared with the scan pass via `scan_ignored?/1`, so
+    `  ^a/fx` still sees `^` as leading), so `(?m)^a/f` and `\Aa/fm` are covered, not just an offset-0
+    `^`; a group (even a zero-width lookaround) is
     conservatively treated as consuming, so the under-approximation only ever *misses* a no-op, never
     drops a killable swap. Two non-grammar fixes rode along: (1) the compile-safety check normalises
     the deprecated `/r` modifier to its `/U` alias *for the validation `Regex.compile/2` only* (the

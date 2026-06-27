@@ -437,17 +437,21 @@ defmodule Mutare.Mutators.RegexLiteral do
   end
 
   # A start-anchor is at the *match start* ("leading") iff only non-consuming tokens precede
-  # it — other anchors/assertions, inline `(?…)` modifiers, comments. Conservative: a group
-  # (even a zero-width lookaround) is treated as consuming, so a `^` after one is offered the
-  # swap rather than wrongly suppressed (sound — at worst a missed dedup, never a false drop).
-  defp consumes_input?(%{kind: kind}) when kind in [:modifier, :comment], do: false
-  defp consumes_input?(%{kind: :char, text: t, in_class: false}) when t in ["^", "$"], do: false
+  # it — other anchors/assertions, inline `(?…)` modifiers, and PCRE-ignored text (a comment
+  # or, under `/x`, whitespace — shared with the scan pass via `scan_ignored?/1`, so `  ^a/fx`
+  # still sees `^` as leading). Conservative: a group (even a zero-width lookaround) is treated
+  # as consuming, so a `^` after one is offered the swap rather than wrongly suppressed (sound
+  # — at worst a missed dedup, never a false drop).
+  defp consumes_input?(token), do: not non_consuming?(token)
 
-  defp consumes_input?(%{kind: :escape, text: <<?\\, c::utf8>>, in_class: false})
+  defp non_consuming?(%{kind: :modifier}), do: true
+  defp non_consuming?(%{kind: :char, text: t, in_class: false}) when t in ["^", "$"], do: true
+
+  defp non_consuming?(%{kind: :escape, text: <<?\\, c::utf8>>, in_class: false})
        when c in ~c"bBAzZGK",
-       do: false
+       do: true
 
-  defp consumes_input?(_token), do: true
+  defp non_consuming?(token), do: scan_ignored?(token)
 
   defp mode_swaps(%{kind: :char, text: "^", in_class: false, flags: f} = t, pat, leading?),
     do:
