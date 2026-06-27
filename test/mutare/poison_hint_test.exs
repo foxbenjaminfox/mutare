@@ -33,7 +33,7 @@ defmodule Mutare.Poison.HintTest do
       ** (FunctionClauseError) no function clause matching in Size.megabytes/1
           expanding macro: Size.megabytes/1
           lib/usage.ex:4: Usage.limit/0
-          (elixir 1.19.5) expanding macro: Kernel.if/2
+          (elixir #{System.version()}) expanding macro: Kernel.if/2
           lib/usage.ex:4: Usage.limit/0
       """
 
@@ -49,7 +49,7 @@ defmodule Mutare.Poison.HintTest do
       ** (FunctionClauseError) no function clause matching in A.one/1
           expanding macro: A.one/1
           lib/a.ex:3: AMod.f/0
-          (elixir 1.19.5) expanding macro: Kernel.if/2
+          (elixir #{System.version()}) expanding macro: Kernel.if/2
           lib/a.ex:3: AMod.f/0
       == Compilation error in file lib/b.ex ==
       ** (ArgumentError) argument error
