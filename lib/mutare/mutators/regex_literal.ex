@@ -100,11 +100,15 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   Every replacement is written to stay a legal regex (an escaped `\\$`/`\\d`/`\]` is
   left alone, a leading `]` in a class is literal, bound counts are kept ordered, class
-  ranges stay within a safe literal band). As a final backstop, each candidate is
-  compiled with `Regex.compile/2` — the *same* PCRE validity the rendered `~r/…/<mods>`
-  is held to — and any that does not compile is dropped, so a byte-level edit that lets
-  neighbouring characters re-tokenize (`{42+}` → `{42}`) can never poison the single
-  metamutant compile. Every pass is a fold over **one** shared token stream (`tokens/2`),
+  ranges stay within a safe literal band). As a final backstop, each candidate must pass
+  **two** independent validity gates, since the mutant must be legal on both levels: it is
+  compiled with `Regex.compile/2` (the *same* PCRE validity the rendered `~r/…/<mods>` is
+  held to, so a byte-level edit that re-tokenizes — `{42+}` → `{42}` — is dropped), **and**
+  it must render back to the same single-binary sigil as Elixir *source* — the two diverge
+  on `\#{`, which PCRE reads as a literal `#`/`{` but Elixir reads as interpolation (a
+  collapse of `#+{` → `\#{` passes PCRE yet would poison the metamutant). Either failing
+  drops the candidate, so neither poisons the single compile. Every pass is a fold over
+  **one** shared token stream (`tokens/2`),
   which owns all cross-cutting lexing — escapes (incl. a three-byte `\\cX` control escape),
   character classes (incl. a POSIX `[:alpha:]` whose inner `]` must not close the class),
   group structure + the `Flags` scope stack, and the spans where regex syntax does not
@@ -345,21 +349,43 @@ defmodule Mutare.Mutators.RegexLiteral do
     binary_part(pattern, skip, byte_size(pattern) - skip)
   end
 
-  # Every rewrite above is built to stay a legal regex, but a *byte-level* edit can, in
-  # a pathological pattern, let neighbouring characters re-tokenize — `{42+}` (a literal
-  # brace, the `+` quantifying the `2`) collapses to `{42}`, now a real bound with
-  # nothing to repeat. Such a mutant would poison the single metamutant compile, so we
-  # drop any candidate that does not compile under the *same* PCRE validity the rendered
-  # `~r/…/<mods>` is held to. Guarded on the original compiling, so a future modifier
-  # letter `Regex.compile/2` doesn't accept can never silently drop every mutant.
+  # Two independent compile-safety gates, since a mutant must be valid on *both* levels:
+  #
+  #   * **PCRE validity** (`regex_compilable?`). A byte-level edit can, in a pathological
+  #     pattern, let neighbouring characters re-tokenize — `{42+}` (a literal brace, the `+`
+  #     quantifying the `2`) collapses to `{42}`, now a real bound with nothing to repeat.
+  #     Gated on the *original* compiling, so a future modifier letter `Regex.compile/2`
+  #     doesn't accept can never silently drop every mutant.
+  #   * **Elixir-source validity** (`renderable?`). The mutant is emitted as `~r/…/` source,
+  #     which `Regex.compile/2` does *not* vet: the two diverge on `#{`, which PCRE reads as
+  #     a literal `#` then `{` but Elixir reads as (here unterminated) interpolation. A
+  #     collapse of `#+{` → `#{` thus passes PCRE yet poisons the metamutant. This is checked
+  #     **unconditionally** (a non-rendering candidate poisons regardless of the original).
   defp keep_compilable(candidates, original) do
-    if compilable?(original),
-      do: Enum.filter(candidates, &compilable?/1),
+    candidates = Enum.filter(candidates, &renderable?/1)
+
+    if regex_compilable?(original),
+      do: Enum.filter(candidates, &regex_compilable?/1),
       else: candidates
   end
 
-  defp compilable?({pattern, modifiers}) do
-    match?({:ok, _}, Regex.compile(pattern, validation_opts(modifiers)))
+  defp regex_compilable?({pattern, modifiers}),
+    do: match?({:ok, _}, Regex.compile(pattern, validation_opts(modifiers)))
+
+  # A candidate that introduces an `#{` must render and parse back to the *same* single-binary
+  # sigil (the metamutant is built the same way). `#{` is the only sigil-content sequence the
+  # renderer leaves un-escaped, so a candidate free of it is renderable by construction.
+  defp renderable?({pattern, modifiers}) do
+    not String.contains?(pattern, <<?#, ?{>>) or round_trips?(pattern, modifiers)
+  end
+
+  defp round_trips?(pattern, modifiers) do
+    node = {:sigil_r, [], [{:<<>>, [], [pattern]}, modifiers]}
+
+    case node |> Sourceror.to_string() |> Code.string_to_quoted() do
+      {:ok, {:sigil_r, _, [{:<<>>, _, [bin]}, _]}} -> bin == pattern
+      _ -> false
+    end
   end
 
   # Options for the *validation* compile only — the rendered mutant keeps the author's
@@ -400,26 +426,57 @@ defmodule Mutare.Mutators.RegexLiteral do
   # token carries the `flags` in force at its position (so an inline `(?m)`/`(?s:…)` is
   # honoured), and an escaped/in-class/inert construct simply isn't a token this matches.
   defp mode_aware_patterns(pattern, modifiers, tokens) do
-    tokens
-    |> Enum.flat_map(&mode_swaps(&1, pattern))
+    {swaps, _leading} =
+      Enum.reduce(tokens, {[], true}, fn tok, {acc, leading?} ->
+        {acc ++ mode_swaps(tok, pattern, leading?), leading? and not consumes_input?(tok)}
+      end)
+
+    swaps
     |> dedup_force_off(pattern, modifiers)
     |> Enum.map(&elem(&1, 0))
   end
 
-  defp mode_swaps(%{kind: :char, text: "^", in_class: false, offset: o, flags: f} = t, pat),
-    do:
-      spliced_swaps(caret_swaps(MapSet.member?(f, ?m) and not firstline_anchored?(f, o)), pat, t)
+  # A start-anchor is at the *match start* ("leading") iff only non-consuming tokens precede
+  # it — other anchors/assertions, inline `(?…)` modifiers, comments. Conservative: a group
+  # (even a zero-width lookaround) is treated as consuming, so a `^` after one is offered the
+  # swap rather than wrongly suppressed (sound — at worst a missed dedup, never a false drop).
+  defp consumes_input?(%{kind: kind}) when kind in [:modifier, :comment], do: false
+  defp consumes_input?(%{kind: :char, text: t, in_class: false}) when t in ["^", "$"], do: false
 
-  defp mode_swaps(%{kind: :char, text: "$", in_class: false, flags: f} = t, pat),
+  defp consumes_input?(%{kind: :escape, text: <<?\\, c::utf8>>, in_class: false})
+       when c in ~c"bBAzZGK",
+       do: false
+
+  defp consumes_input?(_token), do: true
+
+  defp mode_swaps(%{kind: :char, text: "^", in_class: false, flags: f} = t, pat, leading?),
+    do:
+      spliced_swaps(
+        caret_swaps(MapSet.member?(f, ?m) and not firstline_anchored?(f, leading?)),
+        pat,
+        t
+      )
+
+  defp mode_swaps(%{kind: :char, text: "$", in_class: false, flags: f} = t, pat, _leading),
     do: spliced_swaps(dollar_swaps(MapSet.member?(f, ?m)), pat, t)
 
-  defp mode_swaps(%{kind: :char, text: ".", in_class: false, flags: f} = t, pat),
+  defp mode_swaps(%{kind: :char, text: ".", in_class: false, flags: f} = t, pat, _leading),
     do: spliced_swaps(dot_swaps(MapSet.member?(f, ?s)), pat, t)
 
-  defp mode_swaps(%{kind: :escape, text: <<?\\, c::utf8>>, in_class: false, flags: f} = t, pat),
-    do: spliced_swaps(escaped_anchor_swaps(c, MapSet.member?(f, ?m)), pat, t)
+  # `\A`→`^` (the reverse caret swap) is likewise a no-op for a *leading* `\A` under `/fm`,
+  # where firstline pins `^` to the subject start; the `\z`/`\Z`→`$` end swaps are unaffected
+  # by firstline (it constrains the match *start*).
+  defp mode_swaps(
+         %{kind: :escape, text: <<?\\, c::utf8>>, in_class: false, flags: f} = t,
+         pat,
+         leading?
+       ) do
+    swaps = escaped_anchor_swaps(c, MapSet.member?(f, ?m))
+    swaps = if c == ?A and firstline_anchored?(f, leading?), do: [], else: swaps
+    spliced_swaps(swaps, pat, t)
+  end
 
-  defp mode_swaps(_token, _pat), do: []
+  defp mode_swaps(_token, _pat, _leading), do: []
 
   # Splice each `{replacement, tag}` over the token's text, keeping the tag.
   defp spliced_swaps(swaps, pattern, tok) do
@@ -454,11 +511,12 @@ defmodule Mutare.Mutators.RegexLiteral do
     end
   end
 
-  # Under `/f` (firstline) the match must *start* in the first line, so a *leading* `^`
-  # (offset 0) is pinned to the subject start even under `/m` — i.e. it already equals `\A`,
-  # making the swap a guaranteed no-op. (A non-leading `^` isn't the match start, so `/f`
-  # doesn't constrain it; we only suppress the offset-0 case, which is always sound.)
-  defp firstline_anchored?(flags, offset), do: MapSet.member?(flags, ?f) and offset == 0
+  # Under `/f` (firstline) the match must *start* in the first line, so a *leading* anchor
+  # (`^` or `\A`, with only non-consuming tokens before it) is pinned to the subject start
+  # even under `/m` — making `^` and `\A` equivalent there, so the swap between them is a
+  # guaranteed no-op. (A non-leading `^`/`\A` isn't the match start, so `/f` doesn't
+  # constrain it; `leading?` under-approximates, so we only ever suppress a true no-op.)
+  defp firstline_anchored?(flags, leading?), do: leading? and MapSet.member?(flags, ?f)
 
   # Each mode swap carries a tag: `{:force_off, flag}` when it forces a construct to behave
   # as if `flag` were off (a candidate to dedup against that flag's modifier-drop), else

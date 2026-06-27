@@ -563,12 +563,25 @@ defmodule Mutare.MutatorsLiteralTest do
       assert ~S"~r/a{1}/" in render(RegexLiteral.mutate(parse(~S"~r/a{2}/")))
     end
 
-    test "skips the leading ^ swap under firstline+multiline (it is pinned to \\A)" do
-      # `/f` requires the match to start in the first line, so a *leading* `^` under `/mf`
-      # is the subject start = `\A` — a guaranteed-equivalent swap, suppressed
+    test "skips leading anchor swaps (both directions) under firstline+multiline" do
+      # `/f` requires the match to start in the first line, so a *leading* `^`/`\A` under
+      # `/mf` is the subject start — `^` and `\A` are equivalent there, both swaps no-ops
       refute ~S"~r/\Aa$/mf" in render(RegexLiteral.mutate(parse(~S"~r/^a$/mf")))
-      # without `/f`, the `^`<->`\A` swap is still offered under `/m`
-      assert ~S"~r/\Aa$/m" in render(RegexLiteral.mutate(parse(~S"~r/^a$/m")))
+      # a leading `^` need not be at offset 0 — `(?m)^a/f` has it after the inline modifier
+      refute ~S"~r/(?m)\Aa/f" in render(RegexLiteral.mutate(parse(~S"~r/(?m)^a/f")))
+      # the reverse `\A`->`^` swap is suppressed for a leading `\A` too
+      refute ~S"~r/^a/fm" in render(RegexLiteral.mutate(parse(~S"~r/\Aa/fm")))
+      # without `/f`, the `\A`<->`^` swap is still offered under `/m`
+      assert ~S"~r/^a/m" in render(RegexLiteral.mutate(parse(~S"~r/\Aa/m")))
+    end
+
+    test "drops a quantifier-collapse that would render an interpolation marker" do
+      # `Regex.compile/2` accepts `#{` (literal `#` then `{`), but rendered as `~r/#{/` it is
+      # an unterminated Elixir interpolation that would poison the metamutant — so dropped
+      mutants = render(RegexLiteral.mutate(parse(~S"~r/#+{/")))
+      refute Enum.any?(mutants, &(&1 =~ ~r/~r.#\{/))
+      # the other mutations of the same pattern still render fine
+      assert ~S"~r/#*{/" in mutants
     end
 
     test "validates a /r (deprecated) regex without emitting deprecation warnings" do
