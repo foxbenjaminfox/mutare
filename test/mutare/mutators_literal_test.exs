@@ -595,8 +595,9 @@ defmodule Mutare.MutatorsLiteralTest do
     end
 
     test "swaps a dot between any-char and a literal dot, outside a class" do
+      # the dotall swap `(?s:.)` (mode-aware) precedes the literal swap `\.` (scan)
       assert render(RegexLiteral.mutate(parse(~S|~r/a.b/|))) ==
-               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a\.b/|]
+               [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a(?s:.)b/|, ~S|~r/a\.b/|]
 
       assert render(RegexLiteral.mutate(parse(~S|~r/a\.b/|))) ==
                [~S|~r//|, ~S|~r/mutare/|, ~S|~r/a.b/|]
@@ -604,6 +605,34 @@ defmodule Mutare.MutatorsLiteralTest do
       # inside a class a `.` is already a literal — swapping it would be a no-op
       assert render(RegexLiteral.mutate(parse(~S|~r/[a.b]/|))) ==
                [~S|~r//|, ~S|~r/mutare/|, ~S|~r/[^a.b]/|]
+    end
+
+    test "flips the dot's dotall-ness, gated positionally on the s flag" do
+      # without /s: `.` excludes a newline, so force-dotall `(?s:.)` is the live swap
+      without = render(RegexLiteral.mutate(parse(~S|~r/a.b/|)))
+      assert ~S"~r/a(?s:.)b/" in without
+      refute ~S"~r/a(?-s:.)b/" in without
+
+      # with /s: `.` matches a newline, so force-non-dotall `(?-s:.)` is the live swap
+      with_s = render(RegexLiteral.mutate(parse(~S|~r/a.b/s|)))
+      assert ~S"~r/a(?-s:.)b/s" in with_s
+      refute ~S"~r/a(?s:.)b/s" in with_s
+
+      # positional: an inline (?s) flips which swap each dot gets
+      inline = render(RegexLiteral.mutate(parse(~S"~r/a.b(?s).c/")))
+      assert ~S"~r/a(?s:.)b(?s).c/" in inline
+      assert ~S"~r/a.b(?s)(?-s:.)c/" in inline
+
+      # scoped (?s:…): the dot inside the scope is dotall, the one after is not
+      scoped = render(RegexLiteral.mutate(parse(~S"~r/(?s:a.)b./")))
+      assert ~S"~r/(?s:a(?-s:.))b./" in scoped
+      assert ~S"~r/(?s:a.)b(?s:.)/" in scoped
+
+      # a `.` inside a class is a literal — not offered the dotall swap
+      refute Enum.any?(
+               render(RegexLiteral.mutate(parse(~S|~r/[.]/|))),
+               &String.contains?(&1, "(?")
+             )
     end
 
     test "nudges a character-class range's endpoints by one, staying ordered and legal" do

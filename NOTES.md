@@ -4868,8 +4868,13 @@ as absent — fails **safe**: a missed killable swap, never a wrong emission. Th
 why the flag-only first cut was already sound; this is the principled completion.)
 
 `Mutare.Mutators.RegexLiteral.Flags` is that answer, built as a **reusable, flag-
-agnostic** primitive (the next mode-aware mutation — a dotall-aware `.` reading `s`,
-a caseless mutation reading `i` — consults the same thing). The model is a **stack of
+agnostic** primitive — and the payoff is already concrete: the **dotall dot** mutation
+(`.` → `(?s:.)` where `s` is off, `(?-s:.)` where it's on — flip the dot's
+newline-matching the non-equivalent way) is the *second* consumer, reading `?s` from
+the **same** `Flags.active?/2` with no new infrastructure (it shares the one flag-aware
+`mode_walk/6`, since anchors and the dot have identical walk state — `acc` + the flag
+stack — so they are one walk, not the fourth). A caseless mutation reading `i`, a flag
+*add* gated on relevance, … all plug into the same resolver. The model is a **stack of
 flag sets**, baseline (the sigil modifiers) at the bottom, threaded through a
 left-to-right walk by `open/2`/`close/1`:
 
@@ -4889,8 +4894,9 @@ Why a **separate** primitive and not a 7th param threaded through `scan/6`: the 
 state is genuinely cross-cutting (every future positional mutator needs it), and
 `open/2`/`close/1` are pure and **independently unit-tested** (`regex_flags_test.exs`
 feeds opener strings and asserts the stack) — the kind of fragile, subtle logic the
-project keeps in one tested home. `anchor_walk/6` threads the stack in place of the
-old `multiline?` boolean and reads `Flags.active?(stack, ?m)` at each anchor. The
+project keeps in one tested home. The flag-aware `mode_walk/6` threads the stack in
+place of the old `multiline?` boolean and reads `Flags.active?(stack, ?m)` at each
+anchor (and `?s` at each dot). The
 classifier deliberately whitelists only the genuine inline-flag letters
 (`imsxuUJn`) so a *named* group `(?P<n>…)` is never misread as a flag set — the one
 collision (`P`) that would corrupt scoping.
@@ -5760,12 +5766,13 @@ Three near-
 duplications were measured against the cost of unifying them and **deliberately kept** — the merge
 buys less than the duplication costs:
 
-  - **`Mutare.Mutators.RegexLiteral`'s now-three byte-walks** (`scan/6`, `alt_walk/6`, `anchor_walk/6`).
+  - **`Mutare.Mutators.RegexLiteral`'s now-three byte-walks** (`scan/6`, `alt_walk/6`, `mode_walk/6`).
     All consume the Elixir regex string and share the escape-pair / character-class handling, but their
     *accumulators* differ fundamentally — `scan` threads a `prev_quant` for quantifier detection,
-    `alt_walk` a frame stack for alternation spans, `anchor_walk` a `Flags` scope stack for positional
-    `m`-tracking. The earlier note here said to "revisit only if a *third* walk appears"; it now has
-    (anchor swaps), so the escape/class handling is genuinely triplicated and a shared *regex token
+    `alt_walk` a frame stack for alternation spans, `mode_walk` a `Flags` scope stack for the positional
+    flag-aware swaps (anchors via `m`, the dot via `s` — kept one walk because their state is identical).
+    The earlier note here said to "revisit only if a *third* walk appears"; it now has (the flag-aware
+    walk), so the escape/class handling is genuinely triplicated and a shared *regex token
     reader* (yield `{token, in_class?, escaped?}`, let each walk keep its own accumulator) is now the
     leading consolidation candidate. It's still **deferred, not forgotten**: the three accumulators stay
     distinct under any shared reader, the merge is a real refactor with its own poison risk, and the

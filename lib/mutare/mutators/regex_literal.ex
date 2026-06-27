@@ -44,6 +44,15 @@ defmodule Mutare.Mutators.RegexLiteral do
       `~r/a.b/` → `~r/a\\.b/` and `~r/a\\.b/` → `~r/a.b/`. The unescaped→escaped
       direction catches the classic "forgot to escape the dot" bug. Inside `[…]` a
       `.` is already a literal, so it is left alone (the swap there is a no-op).
+    * **dotall dot** — `.` matches any character *except* a newline unless `s` (dotall)
+      is active. Gated **positionally** on `s` (the same `Flags` resolver as the anchor
+      swaps), flip the dot's newline-matching the *other* way than the mode in force, so
+      the swap is never a no-op: where `s` is **off**, `.` → `(?s:.)` (now matches a
+      newline); where `s` is **on**, `.` → `(?-s:.)` (now excludes one). The scoped
+      `(?…:.)` confines the change to this one dot, so two dots under different inline
+      modes (`a.b(?s).c`) each get their own correct swap. Killable on a subject with a
+      newline at that point — without one in the test data, a survivor is a suspected
+      equivalent (like `$`↔`\\z`).
     * **quantifiers** — swap `+`↔`*` (the cleanest complement: `+` is 1-or-more,
       `*` is 0-or-more, distinct under most uses — though *not* under
       `String.replace(s, _, "")` / `Regex.replace(s, _, "")`, where deleting the
@@ -110,7 +119,7 @@ defmodule Mutare.Mutators.RegexLiteral do
     pattern_variants =
       (["", @sentinel] ++
          anchor_patterns(pattern) ++
-         anchor_swap_patterns(pattern, modifiers) ++
+         mode_aware_patterns(pattern, modifiers) ++
          scan_patterns(pattern) ++
          alternation_patterns(pattern))
       |> Enum.map(&{&1, modifiers})
@@ -182,68 +191,79 @@ defmodule Mutare.Mutators.RegexLiteral do
   defp chop_front(s, n), do: binary_part(s, n, byte_size(s) - n)
   defp chop_back(s, n), do: binary_part(s, 0, byte_size(s) - n)
 
-  # --- anchor swaps --------------------------------------------------------
+  # --- mode-aware construct swaps (anchors via `m`, the dot via `s`) -------
 
-  # A focused walk (like `alt_walk/6`, not `scan/6`): it tracks escape pairs and
-  # character-class nesting to tell a *real* anchor from an escaped (`\^`) or in-class
-  # (`[$]`) literal, plus a `Flags` scope stack so the `m`-flag is read **positionally**
-  # — an inline `(?m)` / `(?m:…)` / `(?-m)` makes multiline-ness vary along the pattern.
-  defp anchor_swap_patterns(pattern, modifiers),
-    do: anchor_walk(pattern, "", false, false, Flags.initial(MapSet.new(modifiers)), [])
+  # A focused walk (like `alt_walk/6`, not `scan/6`) for the mutations whose
+  # *equivalence* depends on an option flag: it tracks escape pairs and character-class
+  # nesting to tell a *real* construct from an escaped (`\^`/`\.`) or in-class (`[$.]`)
+  # literal, plus a `Flags` scope stack so the flag is read **positionally** — an inline
+  # `(?m)` / `(?s:…)` / `(?-m)` makes the relevant mode vary along the pattern. Each
+  # construct offers only the swap that is non-equivalent under the mode in force here.
+  defp mode_aware_patterns(pattern, modifiers),
+    do: mode_walk(pattern, "", false, false, Flags.initial(MapSet.new(modifiers)), [])
 
-  defp anchor_walk(<<>>, _prefix, _ic, _jo, _stack, acc), do: acc
+  defp mode_walk(<<>>, _prefix, _ic, _jo, _stack, acc), do: acc
 
   # Escape pair — `\A`/`\z`/`\Z` are anchors; any other escape (incl. `\^`/`\$`) is a
   # literal, so it offers nothing.
-  defp anchor_walk(<<?\\, c::utf8, rest::binary>>, prefix, in_class, _jo, stack, acc) do
+  defp mode_walk(<<?\\, c::utf8, rest::binary>>, prefix, in_class, _jo, stack, acc) do
     new =
       if in_class,
         do: [],
         else: Enum.map(escaped_anchor_swaps(c, multiline?(stack)), &(prefix <> &1 <> rest))
 
-    anchor_walk(rest, prefix <> <<?\\, c::utf8>>, in_class, false, stack, acc ++ new)
+    mode_walk(rest, prefix <> <<?\\, c::utf8>>, in_class, false, stack, acc ++ new)
   end
 
-  defp anchor_walk(<<?\\>>, prefix, ic, jo, stack, acc),
-    do: anchor_walk(<<>>, prefix <> "\\", ic, jo, stack, acc)
+  defp mode_walk(<<?\\>>, prefix, ic, jo, stack, acc),
+    do: mode_walk(<<>>, prefix <> "\\", ic, jo, stack, acc)
 
   # Character class — `^`/`$` inside it are literals, so swallow it whole (the leading
   # `^` is the negation, the leading `]` a literal member). Flags don't change in a class.
-  defp anchor_walk(<<?[, ?^, rest::binary>>, prefix, false, _jo, stack, acc),
-    do: anchor_walk(rest, prefix <> "[^", true, true, stack, acc)
+  defp mode_walk(<<?[, ?^, rest::binary>>, prefix, false, _jo, stack, acc),
+    do: mode_walk(rest, prefix <> "[^", true, true, stack, acc)
 
-  defp anchor_walk(<<?[, rest::binary>>, prefix, false, _jo, stack, acc),
-    do: anchor_walk(rest, prefix <> "[", true, true, stack, acc)
+  defp mode_walk(<<?[, rest::binary>>, prefix, false, _jo, stack, acc),
+    do: mode_walk(rest, prefix <> "[", true, true, stack, acc)
 
-  defp anchor_walk(<<?], rest::binary>>, prefix, true, false, stack, acc),
-    do: anchor_walk(rest, prefix <> "]", false, false, stack, acc)
+  defp mode_walk(<<?], rest::binary>>, prefix, true, false, stack, acc),
+    do: mode_walk(rest, prefix <> "]", false, false, stack, acc)
 
   # Group open / close (outside a class) — drive the flag scope stack. A modifier group
   # (`(?m)` / `(?m:…)`) updates flags; an ordinary group just pushes/pops a frame.
-  defp anchor_walk(<<?(, rest::binary>>, prefix, false, _jo, stack, acc) do
+  defp mode_walk(<<?(, rest::binary>>, prefix, false, _jo, stack, acc) do
     {consumed, rest2, stack2} = Flags.open(rest, stack)
-    anchor_walk(rest2, prefix <> "(" <> consumed, false, false, stack2, acc)
+    mode_walk(rest2, prefix <> "(" <> consumed, false, false, stack2, acc)
   end
 
-  defp anchor_walk(<<?), rest::binary>>, prefix, false, _jo, stack, acc),
-    do: anchor_walk(rest, prefix <> ")", false, false, Flags.close(stack), acc)
+  defp mode_walk(<<?), rest::binary>>, prefix, false, _jo, stack, acc),
+    do: mode_walk(rest, prefix <> ")", false, false, Flags.close(stack), acc)
 
   # `^` outside a class — a start anchor.
-  defp anchor_walk(<<?^, rest::binary>>, prefix, false, _jo, stack, acc) do
+  defp mode_walk(<<?^, rest::binary>>, prefix, false, _jo, stack, acc) do
     new = Enum.map(caret_swaps(multiline?(stack)), &(prefix <> &1 <> rest))
-    anchor_walk(rest, prefix <> "^", false, false, stack, acc ++ new)
+    mode_walk(rest, prefix <> "^", false, false, stack, acc ++ new)
   end
 
   # `$` outside a class — an end anchor.
-  defp anchor_walk(<<?$, rest::binary>>, prefix, false, _jo, stack, acc) do
+  defp mode_walk(<<?$, rest::binary>>, prefix, false, _jo, stack, acc) do
     new = Enum.map(dollar_swaps(multiline?(stack)), &(prefix <> &1 <> rest))
-    anchor_walk(rest, prefix <> "$", false, false, stack, acc ++ new)
+    mode_walk(rest, prefix <> "$", false, false, stack, acc ++ new)
   end
 
-  defp anchor_walk(<<c::utf8, rest::binary>>, prefix, in_class, _jo, stack, acc),
-    do: anchor_walk(rest, prefix <> <<c::utf8>>, in_class, false, stack, acc)
+  # `.` outside a class — the any-char metacharacter, whose newline-matching is governed
+  # by `s` (dotall). The `.` → `\.` literal swap is `scan/6`'s (mode-independent); here we
+  # flip its *dotall-ness*.
+  defp mode_walk(<<?., rest::binary>>, prefix, false, _jo, stack, acc) do
+    new = Enum.map(dot_swaps(dotall?(stack)), &(prefix <> &1 <> rest))
+    mode_walk(rest, prefix <> ".", false, false, stack, acc ++ new)
+  end
+
+  defp mode_walk(<<c::utf8, rest::binary>>, prefix, in_class, _jo, stack, acc),
+    do: mode_walk(rest, prefix <> <<c::utf8>>, in_class, false, stack, acc)
 
   defp multiline?(stack), do: Flags.active?(stack, ?m)
+  defp dotall?(stack), do: Flags.active?(stack, ?s)
 
   # `^` ↔ `\A`: a no-op without `/m` (both = subject start), so only under `/m`.
   defp caret_swaps(true), do: ["\\A"]
@@ -258,6 +278,12 @@ defmodule Mutare.Mutators.RegexLiteral do
   defp escaped_anchor_swaps(?z, _ml), do: ["$"]
   defp escaped_anchor_swaps(?Z, true), do: ["$"]
   defp escaped_anchor_swaps(_c, _ml), do: []
+
+  # Force the dot's newline-matching the *other* way than the active mode (so the swap is
+  # never a no-op): where `s` is on, `(?-s:.)` now excludes a newline; where it's off,
+  # `(?s:.)` now matches one. The scoped `(?…:.)` confines the change to this one dot.
+  defp dot_swaps(true), do: ["(?-s:.)"]
+  defp dot_swaps(false), do: ["(?s:.)"]
 
   # --- modifiers -----------------------------------------------------------
 
