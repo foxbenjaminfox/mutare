@@ -136,37 +136,44 @@ defmodule Mutare.Sandbox.Seed do
       expanded_sandbox = Path.expand(sandbox)
       meta_sources = MapSet.new(Map.keys(metamutants), &Path.join(expanded_root, &1))
 
-      try do
-        forced =
-          Enum.reduce(to_seed, MapSet.new(), fn {src, dst}, found ->
-            File.mkdir_p!(Path.dirname(dst))
-            File.cp_r!(src, dst)
-            deleted = delete_metamutant_beams(dst, meta_sources)
-            relocate_manifests(dst, expanded_root, expanded_sandbox)
-            MapSet.union(found, deleted)
-          end)
-
+      case do_seed(to_seed, meta_sources, expanded_root, expanded_sandbox) do
         # Only keep the seed if we *guaranteed* every metamutant will recompile.
-        unless MapSet.subset?(meta_sources, forced), do: teardown(to_seed)
-      rescue
-        e ->
-          Logger.debug(
-            "Mutare: app-build seed failed, falling back to cold compile: " <>
-              Exception.message(e)
-          )
-
-          teardown(to_seed)
-      catch
-        kind, reason ->
-          Logger.debug(
-            "Mutare: app-build seed aborted (#{kind} #{inspect(reason)}), falling back to cold compile"
-          )
-
-          teardown(to_seed)
+        {:ok, forced} -> unless MapSet.subset?(meta_sources, forced), do: teardown(to_seed)
+        {:error, message} -> tear_down_after(message, to_seed)
       end
     end
 
     :ok
+  end
+
+  # The seeding work, isolated so `app_build/4`'s happy path reads as a plain `case`. Copies
+  # each seedable app into the sandbox `_build`, deletes the metamutant beams (so they
+  # recompile) and relocates manifests, returning the set of source files whose beams were
+  # forced to recompile — or `{:error, message}` if any file op raised/threw (→ cold compile).
+  defp do_seed(to_seed, meta_sources, expanded_root, expanded_sandbox) do
+    forced =
+      Enum.reduce(to_seed, MapSet.new(), fn {src, dst}, found ->
+        File.mkdir_p!(Path.dirname(dst))
+        File.cp_r!(src, dst)
+        deleted = delete_metamutant_beams(dst, meta_sources)
+        relocate_manifests(dst, expanded_root, expanded_sandbox)
+        MapSet.union(found, deleted)
+      end)
+
+    {:ok, forced}
+  rescue
+    e ->
+      {:error,
+       "Mutare: app-build seed failed, falling back to cold compile: " <> Exception.message(e)}
+  catch
+    kind, reason ->
+      {:error,
+       "Mutare: app-build seed aborted (#{kind} #{inspect(reason)}), falling back to cold compile"}
+  end
+
+  defp tear_down_after(message, to_seed) do
+    Logger.debug(message)
+    teardown(to_seed)
   end
 
   # Worth seeding when the metamutant files are a small enough fraction of the app's

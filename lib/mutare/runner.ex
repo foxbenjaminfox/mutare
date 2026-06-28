@@ -183,10 +183,7 @@ defmodule Mutare.Runner do
     if Schema.count(schema) == 0 do
       {:error, :nothing_to_mutate, "no mutation sites found under #{inspect(options.paths)}"}
     else
-      reporter = Context.hook(context, :reporter)
       on_phase = Context.hook(context, :on_phase)
-      on_start = Context.hook(context, :on_start)
-      mode = options.test_selection
 
       on_phase.(:compiling)
       compile_started = System.monotonic_time(:millisecond)
@@ -207,7 +204,7 @@ defmodule Mutare.Runner do
           on_phase.({:compiled, System.monotonic_time(:millisecond) - compile_started})
 
           try do
-            run_mutants(schema, sandbox, context, on_phase, on_start, reporter, mode)
+            run_mutants(schema, sandbox, context)
           after
             cleanup_sandbox(sandbox, options)
           end
@@ -218,8 +215,11 @@ defmodule Mutare.Runner do
   # Baseline → coverage probe → per-mutant run, against an already-compiled
   # sandbox. Returns `{:ok, run}` or a `{:error, reason, detail}` (a red/flaky
   # baseline, or too many harness errors).
-  defp run_mutants(schema, sandbox, %Context{} = context, on_phase, on_start, reporter, mode) do
+  defp run_mutants(schema, sandbox, %Context{} = context) do
     options = context.options
+    on_phase = Context.hook(context, :on_phase)
+    on_start = Context.hook(context, :on_start)
+    reporter = Context.hook(context, :reporter)
 
     # Per-worker partition pool (e.g. `MIX_TEST_PARTITION`) for DB isolation across
     # the concurrent runs; `:disabled` (the default) when `:partition_env` is unset.
@@ -240,9 +240,7 @@ defmodule Mutare.Runner do
       with {:ok, baseline_ms} <- run_baseline(on_phase, sandbox, options.baseline_runs, fixed_env) do
         # Verbose-only detail: the baseline timing the cap is scaled from.
         on_phase.({:baseline_done, baseline_ms})
-
-        ctx =
-          build_run_ctx(schema, sandbox, context, mode, baseline_ms, fixed_env, on_phase, hydrate)
+        ctx = build_run_ctx(schema, sandbox, context, baseline_ms, fixed_env, hydrate)
 
         # The run configuration the verbose running line reports (worker count); fired
         # just before `{:running, total}` so the reporter has it when it renders the label.
@@ -273,17 +271,10 @@ defmodule Mutare.Runner do
 
   # The coverage probe + per-app test scopes + timeout cap, assembled into the `RunCtx` threaded
   # to every per-mutant `classify`. Runs after a green baseline, on the fixed (pre-pool) partition.
-  defp build_run_ctx(
-         schema,
-         sandbox,
-         %Context{} = context,
-         mode,
-         baseline_ms,
-         fixed_env,
-         on_phase,
-         hydrate
-       ) do
+  defp build_run_ctx(schema, sandbox, %Context{} = context, baseline_ms, fixed_env, hydrate) do
     options = context.options
+    on_phase = Context.hook(context, :on_phase)
+    mode = options.test_selection
     on_phase.(:coverage_probe)
     selection = CoverageProbe.run(sandbox, schema, mode, fixed_env)
     cap = timeout_cap(baseline_ms, options)
