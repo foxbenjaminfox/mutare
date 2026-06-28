@@ -313,6 +313,50 @@ defmodule Mutare.MacroPatternTest do
       assert swap.note == nil
     end
 
+    test "the whole-call mutant's variant tag rides through the re-home onto the Site", %{
+      sites: sites
+    } do
+      # The same re-home must also carry the `%Mutation{}`'s `# mutare:ignore` `variant` tag
+      # (`"value"`) — it was dropped when `MacroPattern` had no `variant` field, leaving the Site
+      # with `variant: []` (unsuppressable by a `[family:label]` directive). The pattern-swap
+      # mutant's family doesn't opt into variants, so it records none.
+      call = Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
+      swap = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 5))
+      assert call.variant == ["value"]
+      assert swap.variant == []
+    end
+
+    test "a [unpack_call:value] directive now suppresses the re-homed whole-call mutant" do
+      # End-to-end: the recovered variant makes the qualified directive effective. Without the
+      # carried tag the Site's `variant: []` matches no `[family:label]` qualifier, so this mutant
+      # stayed live; with it, `value` matches and the mutant is ignored.
+      source = """
+      defmodule Mutare.WholeCallIgnoreFixture do
+        import Mutare.Test.QueryDSL
+
+        def go(v) do
+          unpack([x, y], v) # mutare:ignore[unpack_call:value]
+          x - y
+        end
+      end
+      """
+
+      {_meta, sites, _next} =
+        Mutare.transform_string(source,
+          file: "whole_ignore.ex",
+          mutators: [Mutare.Mutators.PatternSwap, Mutare.Test.UnpackMutator]
+        )
+
+      call = Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))
+      swap = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 5))
+
+      assert call.ignored,
+             "the tagged whole-call mutant should be suppressed by [unpack_call:value]"
+
+      # The sibling pattern-swap mutant is a different family — the qualifier leaves it live.
+      refute swap.ignored
+    end
+
     test "each mutant switches independently and the bindings escape", %{mod: mod, sites: sites} do
       swap = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.line == 5))
       call = Enum.find(sites, &(&1.mutator == :unpack_call and &1.line == 5))

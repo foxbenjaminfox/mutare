@@ -32,11 +32,14 @@ defmodule Mutare.Transform.HostedEmit do
   # mutant clause `<id> -> wrap(mutant)` for each, then a coverage catch-all running
   # `wrap(original)`, and hand the assembled case to the target's `splice`.
   defp weave_target(node, %Candidate.Hosted{} = cand, ctx) do
-    # Host fragments carry no variant tag (foreign semantics, no vocabulary), so the third tuple
-    # element is ignored here.
+    # A host fragment usually carries no variant tag (foreign semantics, no vocabulary). But a
+    # hosting mutator that declares `variants/0` *may* tag a `host/2` mutant via `Mutation.tagged/2`
+    # — `Mutare.Mutator.Dispatch.normalize_target/1` preserves it as the third tuple element — so
+    # carry it onto the carrier and through to the Site, where `Dispatch.variant/4` gates it on
+    # `opted_in?/1` (an untagged or non-opted-in fragment still records `variant: []`).
     carriers =
-      Enum.map(cand.mutants, fn {mutated, note, _variant} ->
-        %{candidate: cand, mutated: mutated, note: note}
+      Enum.map(cand.mutants, fn {mutated, note, variant} ->
+        %{candidate: cand, mutated: mutated, note: note, variant: variant}
       end)
 
     {clauses, ctx} =
@@ -61,7 +64,8 @@ defmodule Mutare.Transform.HostedEmit do
 
   # The `Mutare.Site` for one hosted mutant: an `:in_place` replacement showing the logical
   # fragment swap, not the `wrap`/`splice`/selector scaffolding. The optional note rides onto
-  # the Site for the report.
-  defp hosted_site(id, %{candidate: cand, mutated: mutated, note: note}, file),
-    do: Site.in_place(id, file, cand.range, cand.original, mutated, cand.mutator, note)
+  # the Site for the report, and the optional variant label onto the Site for `# mutare:ignore`
+  # filtering (`nil` for the common untagged fragment).
+  defp hosted_site(id, %{candidate: cand, mutated: mutated, note: note, variant: variant}, file),
+    do: Site.in_place(id, file, cand.range, cand.original, mutated, cand.mutator, note, variant)
 end

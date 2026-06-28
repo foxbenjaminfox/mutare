@@ -96,6 +96,13 @@ defmodule Mutare.Test.HostMutator do
   @impl Mutare.Mutator
   def name, do: :host_filter
 
+  # Opt into the variant-label system so a tagged *host* mutant's label is recorded on its Site —
+  # the boundary flip carries `boundary` (see `flips/1`), proving a `host/2`-supplied variant rides
+  # through `Mutare.Transform.HostedEmit` to the Site (and a `[host_filter:boundary]` directive
+  # validates against this vocabulary).
+  @impl Mutare.Mutator
+  def variants, do: ~w(boundary)
+
   # No whole-node mutation — every mutation rides the host.
   @impl Mutare.Mutator
   def mutate(_node), do: :skip
@@ -184,14 +191,19 @@ defmodule Mutare.Test.HostMutator do
   end
 
   # The host's own (foreign-semantics) catalog: flip a comparison both ways, reusing the operands
-  # so each mutant is compile-safe. The **boundary** neighbour carries a per-mutant note (the
-  # `%Mutare.Mutator.Mutation{}` form — a hosting mutator's advisory the report surfaces on the
-  # Site), while the **reversal** is a bare node (no note) — so one target exercises both forms.
+  # so each mutant is compile-safe. The **boundary** neighbour carries per-mutant metadata (the
+  # `%Mutare.Mutator.Mutation{}` form — a `note` advisory the report surfaces *and* a `boundary`
+  # variant label, both recorded on the Site), while the **reversal** is a bare node (no metadata)
+  # — so one target exercises both forms.
   defp flips({op, meta, [left, right]}) when op in @comparisons do
     [boundary, reversal] = flip_targets(op)
 
     [
-      %Mutation{node: {boundary, meta, [left, right]}, note: "kill may require boundary data"},
+      %Mutation{
+        node: {boundary, meta, [left, right]},
+        note: "kill may require boundary data",
+        variant: "boundary"
+      },
       {reversal, meta, [left, right]}
     ]
   end

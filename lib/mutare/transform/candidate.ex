@@ -339,11 +339,13 @@ defmodule Mutare.Transform.Candidate do
     # wildcards forced *thin*), so the export is consistent across branches. Recorded as an
     # `:in_place` `Mutare.Site`, like `MatchPattern`.
     #
-    # `note` carries the producing mutator's optional per-mutant advisory (a
-    # `%Mutare.Mutator.Mutation{}` return). The structural swap/wildcard source never sets it
+    # `note`/`variant` carry the producing mutator's optional per-mutant metadata (a
+    # `%Mutare.Mutator.Mutation{}` return). The structural swap/wildcard source never sets either
     # (default `nil`), but the **whole-call re-home** (`Analyze.MatchPatterns.call_mutation_candidate/3`,
     # turning a `mutate`-built `Candidate.InPlace` on a binding-escaping macro call into this kind)
-    # carries the InPlace's note through to the `Mutare.Site`.
+    # carries the InPlace's `note` *and* `variant` through to the `Mutare.Site` — so a tagged
+    # whole-call mutation on a `:binding_pattern` macro keeps the label a `[family:label]` directive
+    # filters on (without it the re-homed Site would carry `variant: []` and be unsuppressable).
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
@@ -352,10 +354,20 @@ defmodule Mutare.Transform.Candidate do
             export: Macro.t(),
             mutant_expr: Macro.t(),
             range: Sourceror.Range.t(),
-            note: String.t() | nil
+            note: String.t() | nil,
+            variant: Mutare.Mutator.Mutation.variant()
           }
 
-    defstruct [:mutator, :original, :mutated, :export, :mutant_expr, :range, note: nil]
+    defstruct [
+      :mutator,
+      :original,
+      :mutated,
+      :export,
+      :mutant_expr,
+      :range,
+      note: nil,
+      variant: nil
+    ]
   end
 
   defmodule Hosted do
@@ -380,9 +392,11 @@ defmodule Mutare.Transform.Candidate do
     # `original` is the logical fragment before mutation (rendered in each Site's diff and run by
     # the wrapped catch-all baseline); `mutants` are the logical mutated fragments as
     # `{node, note, variant}` triples (one id + Site each, the optional `note` recorded on the Site
-    # for the report; `variant` is always `nil` — a host fragment has foreign semantics and no
-    # variant vocabulary — `Mutare.Mutator.Dispatch.normalize_mutant/1` triples a bare-node mutant
-    # with `nil, nil`); `wrap` maps a logical fragment to its woven branch value; `splice` weaves
+    # for the report; `variant` is *usually* `nil` — a host fragment has foreign semantics and no
+    # variant vocabulary, and `Mutare.Mutator.Dispatch.normalize_mutant/1` triples a bare-node
+    # mutant with `nil, nil` — but a hosting mutator declaring `variants/0` may tag one via
+    # `Mutation.tagged/2`, and that label rides through `HostedEmit` to the Site's `# mutare:ignore`
+    # filter); `wrap` maps a logical fragment to its woven branch value; `splice` weaves
     # the assembled `case` into a copy of the (emitted) macro node; `range` locates the fragment for
     # the Site; `mutator` is the hosting `Mutare.Mutator.Spec` (its name on every Site).
 

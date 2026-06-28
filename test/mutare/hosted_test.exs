@@ -140,6 +140,48 @@ defmodule Mutare.HostedTest do
     end
   end
 
+  describe "a host target's per-mutant variant tag rides onto the Site" do
+    test "a tagged host mutant carries its variant label; a bare one records none", %{
+      sites: sites
+    } do
+      # The boundary flip (`x >= 1`) is a `%Mutare.Mutator.Mutation{}` tagged `boundary` and the
+      # host opts into `variants/0`, so the label must ride through `HostedEmit` onto the Site —
+      # it was dropped when `weave_target/3` discarded the carrier's variant. The reversal
+      # (`x < 1`) is a bare node (no tag), so it records `[]`.
+      boundary = Enum.find(sites, &(&1.mutator == :host_filter and &1.mutated_code == "x >= 1"))
+      reversal = Enum.find(sites, &(&1.mutator == :host_filter and &1.mutated_code == "x < 1"))
+      assert boundary.variant == ["boundary"]
+      assert reversal.variant == []
+    end
+
+    test "a [host_filter:boundary] directive now suppresses only the boundary flip" do
+      # End-to-end: the recovered variant makes the qualified directive effective. Without the
+      # carried tag the boundary flip's Site had `variant: []` and no `[family:label]` qualifier
+      # could reach it.
+      source = """
+      defmodule Mutare.HostedIgnoreFixture do
+        import Mutare.Test.HostDSL
+
+        def direct(x) do
+          filter([:ok], x > 1) # mutare:ignore[host_filter:boundary]
+        end
+      end
+      """
+
+      {_meta, sites, _next} =
+        Mutare.transform_string(source, file: "hosted_ignore.ex", mutators: @mutators)
+
+      boundary = Enum.find(sites, &(&1.mutator == :host_filter and &1.mutated_code == "x >= 1"))
+      reversal = Enum.find(sites, &(&1.mutator == :host_filter and &1.mutated_code == "x < 1"))
+
+      assert boundary.ignored,
+             "the tagged boundary flip should be suppressed by [host_filter:boundary]"
+
+      # The reversal is untagged, so the qualified directive leaves it live.
+      refute reversal.ignored
+    end
+  end
+
   describe "baseline behaves like the original" do
     test "every clause runs its DSL untouched at the baseline mutant" do
       assert F.direct(2) == [:ok]

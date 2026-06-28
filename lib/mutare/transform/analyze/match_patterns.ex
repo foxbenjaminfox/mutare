@@ -252,8 +252,10 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # Convert one whole-call in-place mutation into a `MacroPattern` branch: the diff
   # (`original`/`mutated`/`range`) stays the call/stage the mutator changed, while `mutant_expr`
   # is what the branch *runs* — the (possibly piped) mutated call, before the export tuple. The
-  # InPlace's `note` (a `mutate`-supplied per-mutant advisory) rides through, so a noted mutation
-  # on a binding-escaping macro call keeps its note on the `Mutare.Site`.
+  # InPlace's `note` (a `mutate`-supplied per-mutant advisory) and `variant` (a `Mutation.tagged/2`
+  # `# mutare:ignore` label) both ride through, so a noted *and* a tagged whole-call mutation on a
+  # binding-escaping macro call keep their note and label on the `Mutare.Site` — the latter is what
+  # a `[family:label]` directive matches on, so dropping it would leave the mutant unsuppressable.
   defp call_mutation_candidate(%Candidate.InPlace{} = ip, export, mutant_expr) do
     %Candidate.MacroPattern{
       mutator: ip.mutator,
@@ -262,7 +264,8 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
       export: export,
       mutant_expr: mutant_expr,
       range: ip.range,
-      note: ip.note
+      note: ip.note,
+      variant: ip.variant
     }
   end
 

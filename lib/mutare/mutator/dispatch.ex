@@ -172,8 +172,10 @@ defmodule Mutare.Mutator.Dispatch do
   # Default `:wrap` to identity and `:range` to absent; require `:original`, a list `:mutants`,
   # and a 2-arity `:splice`. A malformed target raises (a library bug, not a target to silently
   # drop) — caught at transform time with the offending value. Each mutant is normalized to a
-  # `{node, note, variant}` triple by the shared `normalize_mutants/1` (dropping any `nil` slot);
-  # a host fragment carries no variant tag (foreign semantics, no vocabulary), so `variant` is nil.
+  # `{node, note, variant}` triple by the shared `normalize_mutants/1` (dropping any `nil` slot).
+  # A host fragment is *usually* untagged (foreign semantics, no vocabulary), so `variant` is nil —
+  # but a hosting mutator declaring `variants/0` may tag one via `Mutation.tagged/2`, and that label
+  # is preserved here and carried through `Mutare.Transform.HostedEmit` to the Site.
   defp normalize_target(%{original: original, mutants: mutants, splice: splice} = target)
        when is_list(mutants) and is_function(splice, 2) do
     %{
