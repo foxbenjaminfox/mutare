@@ -801,7 +801,9 @@ defmodule Mutare.TransformResolutionTest do
       stderr =
         assert_compile_error(
           meta,
-          "imported from both Enum and HiddenImportReplacement",
+          # Elixir <1.20: "filter/2 imported from both Enum and HiddenImportReplacement";
+          # Elixir 1.20+: "conflicting filter/2 import from modules Enum and HiddenImportReplacement".
+          ["filter/2", "Enum and HiddenImportReplacement"],
           "lib/hidden_import_replacement.ex"
         )
 
@@ -843,7 +845,9 @@ defmodule Mutare.TransformResolutionTest do
       stderr =
         assert_compile_error(
           meta,
-          "imported from both Integer and HiddenIntegerReplacement",
+          # Elixir <1.20: "is_even/1 imported from both Integer and HiddenIntegerReplacement";
+          # Elixir 1.20+: "conflicting is_even/1 import from modules Integer and HiddenIntegerReplacement".
+          ["is_even/1", "Integer and HiddenIntegerReplacement"],
           "lib/hidden_integer_replacement.ex"
         )
 
@@ -1634,13 +1638,16 @@ defmodule Mutare.TransformResolutionTest do
     assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
 
+  # `message` is either a single substring or a list of substrings that must all
+  # be present. A list lets callers match on tokens common to multiple Elixir
+  # error-message phrasings (e.g. the import-conflict wording changed in 1.20).
   defp assert_compile_error(meta, message, file) do
     stderr =
       ExUnit.CaptureIO.capture_io(:stderr, fn ->
         assert_raise CompileError, fn -> Code.compile_string(meta, file) end
       end)
 
-    assert stderr =~ message
+    for m <- List.wrap(message), do: assert(stderr =~ m)
     stderr
   end
 end

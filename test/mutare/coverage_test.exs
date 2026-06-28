@@ -437,7 +437,10 @@ defmodule Mutare.CoverageTest do
       # run the whole suite rather than being skipped as :no_coverage.
       assert [%Result{status: :survived, duration_ms: ms, output: output}] = run.results
       assert ms > 0
-      assert output =~ "1 test"
+      # Elixir <1.20 summarizes a green run as "1 test, 0 failures"; 1.20+ as
+      # "Result: 1 passed". Either proves the whole (1-test) suite ran rather
+      # than being skipped as :no_coverage.
+      assert output =~ ~r/1 test|1 passed/
     end
 
     @tag :runner
