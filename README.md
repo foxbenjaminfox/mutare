@@ -113,8 +113,8 @@ Optional `.mutare.exs`:
   exclude: ["lib/generated/**"],
   # which mutators run (see "Choosing which mutators run" below). Built-in family
   # atoms and/or your own modules; the `:builtins` token means "all built-ins", so
-  # `[:builtins, MyApp.Mutators.Boolean]` extends the defaults rather than replacing.
-  mutators: [:arithmetic, :relational, MyApp.Mutators.Boolean],
+  # `[:builtins, MyApp.Mutators.AccessPolicy]` extends the defaults rather than replacing.
+  mutators: [:builtins, MyApp.Mutators.AccessPolicy],
   # mark a macro's arguments as off-limits for mutation, by module/name/arity
   # (see "Skipping macro arguments" below). `:skip` = every argument; a list
   # skips only the marked positions (`:expression` = mutate as normal).
@@ -197,10 +197,10 @@ The `:mutators` list (in `.mutare.exs`, or `--mutators` on the CLI) is **a list 
 
 ```elixir
 # 1. The canonical form — a mutator and its config:
-mutators: [{Mutare.Mutators.Arithmetic, []}, {MyApp.Mutators.Boolean, []}]
+mutators: [{Mutare.Mutators.Arithmetic, []}, {MyApp.Mutators.AccessPolicy, []}]
 
 # 2. Drop the config when it's empty — bare module or family atom:
-mutators: [:arithmetic, MyApp.Mutators.Boolean]
+mutators: [:arithmetic, MyApp.Mutators.AccessPolicy]
 #          ^ a built-in family atom expands to its module with default config.
 #            (Atoms name built-ins; external mutators are named by their module.)
 
@@ -210,8 +210,8 @@ mutators: [:arithmetic, MyApp.Mutators.Boolean]
 To work *from* the defaults rather than listing everything, use the **`:builtins`** group token (its synonym is `:all`). Whether it appears decides extend vs. replace:
 
 ```elixir
-mutators: [:builtins, MyApp.Mutators.Boolean]   # EXTEND  — all built-ins + your own
-mutators: [MyApp.Mutators.Boolean]              # REPLACE — only your own
+mutators: [:builtins, MyApp.Mutators.AccessPolicy]   # EXTEND  — all built-ins + your own
+mutators: [MyApp.Mutators.AccessPolicy]              # REPLACE — only your own
 
 mutators: [{:builtins, except: [:arithmetic, :relational]}]   # all built-ins but these
 ```
@@ -230,19 +230,33 @@ On the CLI, `--mutators` takes a CSV of those atoms (`--mutators builtins,relati
 
 ### Custom mutators
 
-A mutator is any module implementing the two-callback `Mutare.Mutator` behaviour — `mutate/1` (an AST node → `:skip` or a list of mutated nodes) and `name/0`. List it under `:mutators` above. Placement (in-place vs lifted into a guard) is decided by *where the node sits*, so the same `mutate/1` works in both:
+A custom mutator is useful when your application has a meaningful alternative that a general-purpose tool cannot know about. Suppose editing requires stricter permission than viewing: replacing `Permissions.can_edit?/2` with `Permissions.can_view?/2` checks whether the tests prevent a view-only user from editing.
+
+A mutator implements `Mutare.Mutator`: `name/0` supplies the report name, while `mutate/1` returns either `:skip` or a list of replacement AST nodes. `resolved_call/1` recognizes the call even when `MyApp.Permissions` is aliased, and its `rebuild` function preserves the form used by the source:
 
 ```elixir
-defmodule MyApp.Mutators.Boolean do
+defmodule MyApp.Mutators.AccessPolicy do
   @behaviour Mutare.Mutator
+
+  alias Mutare.Transform.Calls
+
   @impl true
-  def name, do: :boolean
+  def name, do: :access_policy
+
   @impl true
-  def mutate({:and, meta, [l, r]}), do: [{:or, meta, [l, r]}]
-  def mutate({:or, meta, [l, r]}), do: [{:and, meta, [l, r]}]
-  def mutate(_node), do: :skip
+  def mutate(node) do
+    case Calls.resolved_call(node) do
+      {[:MyApp, :Permissions], :can_edit?, [actor, record], rebuild} ->
+        [rebuild.(:can_view?, [actor, record])]
+
+      _ ->
+        :skip
+    end
+  end
 end
 ```
+
+This assumes both permission functions exist with the same arity, keeping the generated mutant compile-safe. Enable it with `mutators: [:builtins, MyApp.Mutators.AccessPolicy]`.
 
 Example output:
 
