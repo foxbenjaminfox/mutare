@@ -39,7 +39,7 @@ defmodule Mutare.Runner.Partitions do
   tokens; `Mutare.Runner` owns its lifecycle (`new/2` … `stop/1`).
   """
 
-  @opaque t :: :disabled | {String.t(), pid()}
+  @opaque t :: :disabled | {String.t(), pid(), pos_integer()}
 
   @doc """
   Env entries for a *fixed* partition `n` (the baseline and coverage probe use
@@ -68,13 +68,26 @@ defmodule Mutare.Runner.Partitions do
 
   def new(env_name, size) when is_binary(env_name) and is_integer(size) and size > 0 do
     {:ok, agent} = Agent.start_link(fn -> Enum.to_list(1..size) end)
-    {env_name, agent}
+    {env_name, agent, size}
   end
+
+  @doc """
+  The `Task.async_stream` `max_concurrency` that keeps the non-blocking checkout
+  invariant: the pool size when partitioning is on (one token per lane), else
+  `default` (no pool, so nothing to bound — use the caller's worker count). Drive
+  `max_concurrency` from this so it can never drift from the token count.
+
+      iex> Mutare.Runner.Partitions.max_concurrency(:disabled, 8)
+      8
+  """
+  @spec max_concurrency(t(), pos_integer()) :: pos_integer()
+  def max_concurrency(:disabled, default), do: default
+  def max_concurrency({_env_name, _agent, size}, _default), do: size
 
   @doc "Stop the pool (a no-op when disabled)."
   @spec stop(t()) :: :ok
   def stop(:disabled), do: :ok
-  def stop({_env_name, agent}), do: Agent.stop(agent)
+  def stop({_env_name, agent, _size}), do: Agent.stop(agent)
 
   @doc """
   Check out a free partition, call `fun` with its env entries
@@ -84,7 +97,7 @@ defmodule Mutare.Runner.Partitions do
   @spec with_slot(t(), ([{String.t(), String.t()}] -> result)) :: result when result: var
   def with_slot(:disabled, fun), do: fun.([])
 
-  def with_slot({env_name, agent}, fun) do
+  def with_slot({env_name, agent, _size}, fun) do
     slot = checkout(agent)
 
     try do
@@ -94,10 +107,26 @@ defmodule Mutare.Runner.Partitions do
     end
   end
 
-  # Pop a free token. With one token per concurrency lane (`size` == `workers` ==
-  # `Task.async_stream`'s `max_concurrency`), a free token always exists when a
-  # task asks — `[slot | rest]` matches without blocking (see the moduledoc).
-  defp checkout(agent), do: Agent.get_and_update(agent, fn [slot | rest] -> {slot, rest} end)
+  # Pop a free token. With one token per concurrency lane (`size` ==
+  # `Task.async_stream`'s `max_concurrency`, now driven from `max_concurrency/2`),
+  # a free token always exists when a task asks (see the moduledoc's counting
+  # argument). The `[]` clause is therefore unreachable; it exists only to convert
+  # a broken invariant into a clear error *in the caller* rather than an opaque
+  # `FunctionClauseError` inside the Agent process.
+  defp checkout(agent) do
+    case Agent.get_and_update(agent, fn
+           [slot | rest] -> {slot, rest}
+           [] -> {:pool_exhausted, []}
+         end) do
+      :pool_exhausted ->
+        raise "Mutare.Runner.Partitions: slot pool exhausted — every token is " <>
+                "checked out. Task.async_stream's max_concurrency must equal the pool " <>
+                "size; drive it from Partitions.max_concurrency/2."
+
+      slot ->
+        slot
+    end
+  end
 
   defp checkin(agent, slot), do: Agent.update(agent, &[slot | &1])
 end

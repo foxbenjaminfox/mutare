@@ -350,11 +350,9 @@ defmodule Mutare.Options.Registry do
 
   defp show_mutators(nil), do: "(all built-ins — see --list-mutators)"
 
-  defp show_mutators(mutators) do
-    mutators |> Mutare.Mutators.resolve() |> Enum.map_join(", ", &to_string(&1.name))
-  rescue
-    _ -> inspect(mutators)
-  end
+  # `validate_mutators!/1` has already resolved this to `[Mutare.Mutator.Spec{}]`, so we
+  # just read the names — no re-resolution, and no `rescue` masking a real bug.
+  defp show_mutators(mutators), do: Enum.map_join(mutators, ", ", &to_string(&1.name))
 
   defp show_plugins([]), do: "(none)"
 

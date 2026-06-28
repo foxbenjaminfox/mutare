@@ -325,10 +325,11 @@ defmodule Mutare.Runner do
         reporter.(result)
         result
       end,
-      # INVARIANT: `max_concurrency` must equal the pool size (`workers`, the arg to
-      # `Partitions.new/2` in `run_mutants/7`) — the pool's non-blocking checkout
-      # relies on one token per concurrency lane. See `Mutare.Runner.Partitions`.
-      max_concurrency: options.workers,
+      # `max_concurrency` is driven from the pool itself so it can never drift from
+      # the token count: the pool's non-blocking checkout relies on one token per
+      # concurrency lane. Falls back to `options.workers` when partitioning is off
+      # (no pool). See `Mutare.Runner.Partitions`.
+      max_concurrency: Partitions.max_concurrency(partitions, options.workers),
       ordered: true,
       timeout: :infinity
     )

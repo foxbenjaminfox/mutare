@@ -442,8 +442,8 @@ defmodule Mutare.Mutators.RegexLiteral do
   # honoured), and an escaped/in-class/inert construct simply isn't a token this matches.
   defp mode_aware_patterns(pattern, modifiers, tokens) do
     {swaps, _leading} =
-      Enum.reduce(tokens, {[], true}, fn tok, {acc, leading?} ->
-        {acc ++ mode_swaps(tok, pattern, leading?), leading? and not consumes_input?(tok)}
+      Enum.flat_map_reduce(tokens, true, fn tok, leading? ->
+        {mode_swaps(tok, pattern, leading?), leading? and not consumes_input?(tok)}
       end)
 
     swaps
@@ -579,7 +579,14 @@ defmodule Mutare.Mutators.RegexLiteral do
   # a `:class_close`), ranges and bounds into single tokens, and dropped inert content — so
   # each clause is just "given this token, what mutants?". Reconstruction splices the
   # replacement over the token's text via `before_tok`/`after_tok`.
-  defp scan_patterns(pattern, tokens), do: scan_fold(tokens, pattern, false, false, [], [])
+  # `acc` accumulates each token's mutants as a list-of-lists in reverse token order,
+  # flattened once at the end — `acc ++ new` per token would be O(n²) over the stream.
+  defp scan_patterns(pattern, tokens) do
+    tokens
+    |> scan_fold(pattern, false, false, [], [])
+    |> Enum.reverse()
+    |> Enum.concat()
+  end
 
   defp scan_fold([], _pat, _pq, _zw, _groups, acc), do: acc
 
@@ -593,7 +600,7 @@ defmodule Mutare.Mutators.RegexLiteral do
     else
       {new, pq2} = scan_token(token, rest, pat, pq, zw)
       {zw2, groups2} = advance_zero_width(token, groups)
-      scan_fold(rest, pat, pq2, zw2, groups2, acc ++ new)
+      scan_fold(rest, pat, pq2, zw2, groups2, [new | acc])
     end
   end
 
@@ -906,14 +913,15 @@ defmodule Mutare.Mutators.RegexLiteral do
   # `:group_open`/`:group_close`/`:char "|"` tokens reach the frames.
   defp alternation_patterns(pattern, tokens) do
     top = %{start: 0, removable: true, pipes: []}
-    {frames, spans} = Enum.reduce(tokens, {[top], []}, &alt_token/2)
+    # `span_lists` accumulates each closed frame's spans as a list-of-lists in reverse
+    # walk order (prepended per group-close, not `spans ++ new`, which would be O(n²)).
+    {frames, span_lists} = Enum.reduce(tokens, {[top], []}, &alt_token/2)
 
-    final =
-      Enum.reduce(frames, spans, fn frame, acc ->
-        acc ++ frame_spans(frame, byte_size(pattern))
-      end)
+    # Unclosed (leftover) frames contribute their spans last, in stack order.
+    leftover = Enum.map(frames, &frame_spans(&1, byte_size(pattern)))
+    spans = Enum.concat(Enum.reverse(span_lists) ++ leftover)
 
-    Enum.map(final, fn {start, len} ->
+    Enum.map(spans, fn {start, len} ->
       binary_part(pattern, 0, start) <>
         binary_part(pattern, start + len, byte_size(pattern) - start - len)
     end)
@@ -921,18 +929,25 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   # Group open — push a frame whose content starts just past the opener; `removable?`
   # (a plain capturing `(`) was decided by the reader.
-  defp alt_token(%{kind: :group_open, offset: o, text: t, removable?: rem?}, {frames, spans}),
-    do: {[frame(o + byte_size(t), rem?) | frames], spans}
+  defp alt_token(
+         %{kind: :group_open, offset: o, text: t, removable?: rem?},
+         {frames, span_lists}
+       ),
+       do: {[frame(o + byte_size(t), rem?) | frames], span_lists}
 
-  # Group close — pop the frame and emit its branch-removal spans (content_end = the `)`).
-  defp alt_token(%{kind: :group_close, offset: o}, {[frame | outer], spans}),
-    do: {outer, spans ++ frame_spans(frame, o)}
+  # Group close — pop the frame and prepend its branch-removal spans (content_end = the `)`).
+  defp alt_token(%{kind: :group_close, offset: o}, {[frame | outer], span_lists}),
+    do: {outer, [frame_spans(frame, o) | span_lists]}
 
-  defp alt_token(%{kind: :group_close}, {[], spans}), do: {[], spans}
+  defp alt_token(%{kind: :group_close}, {[], span_lists}), do: {[], span_lists}
 
-  # Top-level `|` — record the pipe position in the innermost frame.
-  defp alt_token(%{kind: :char, text: "|", in_class: false, offset: o}, {[frame | outer], spans}),
-    do: {[%{frame | pipes: frame.pipes ++ [o]} | outer], spans}
+  # Top-level `|` — record the pipe position in the innermost frame. Prepended (reversed in
+  # `frame_spans`) so a many-branch alt isn't O(branches²) on `pipes ++ [o]`.
+  defp alt_token(
+         %{kind: :char, text: "|", in_class: false, offset: o},
+         {[frame | outer], span_lists}
+       ),
+       do: {[%{frame | pipes: [o | frame.pipes]} | outer], span_lists}
 
   defp alt_token(_token, acc), do: acc
 
@@ -941,7 +956,9 @@ defmodule Mutare.Mutators.RegexLiteral do
   defp frame_spans(%{removable: false}, _content_end), do: []
   defp frame_spans(%{pipes: []}, _content_end), do: []
 
-  defp frame_spans(%{start: start, pipes: pipes}, content_end) do
+  defp frame_spans(%{start: start, pipes: rev_pipes}, content_end) do
+    # `pipes` are recorded reversed (newest-first); restore ascending offset order.
+    pipes = Enum.reverse(rev_pipes)
     # Branch 0: delete from the content start through the first pipe (inclusive).
     first = {start, hd(pipes) + 1 - start}
     # Branch i>0: delete the preceding pipe through the branch's end.
