@@ -323,19 +323,21 @@ defmodule Mix.Tasks.MutareTest do
     # fail. `--format json --output` adds a file reporter; both reporters run
     # *before* the gate, so the human report prints and the JSON is written even
     # on a fail.
-    assert_raise Mix.Error, ~r/below the required minimum/, fn ->
-      Mix.Tasks.Mutare.run([
-        "examples/auth",
-        "--min-score",
-        "100",
-        "--format",
-        "json",
-        "--output",
-        out,
-        "--sandbox",
-        sandbox
-      ])
-    end
+    ExUnit.CaptureIO.capture_io(:stderr, fn ->
+      assert_raise Mix.Error, ~r/below the required minimum/, fn ->
+        Mix.Tasks.Mutare.run([
+          "examples/auth",
+          "--min-score",
+          "100",
+          "--format",
+          "json",
+          "--output",
+          out,
+          "--sandbox",
+          sandbox
+        ])
+      end
+    end)
 
     # The human report is printed before the gate fires.
     messages = shell_info()
