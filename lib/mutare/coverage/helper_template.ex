@@ -79,12 +79,16 @@ defmodule Mutare.Coverage.HelperTemplate do
 
   def dump(_suite_result) do
     # Serialise plain data (lists, not `MapSet`s) so the reader makes no assumption about a
-    # struct's wire representation.
-    aggregate = for {id} <- :ets.tab2list(@agg_table), do: id
-    unlabeled = for {id} <- :ets.tab2list(@unlabeled_table), do: id
+    # struct's wire representation. `tab_list/1` tolerates a vanished table (→ `[]`) for the
+    # same self-hosting reason `hit/1` does: dogfooding Mutare runs its own coverage tests,
+    # which create and tear down these named tables, so an `after_suite` dump can find one
+    # already gone. An empty/partial dump just degrades the caller to run-all selection (the
+    # `Mutare.Runner.CoverageProbe` empty-aggregate path) — far better than crashing the probe.
+    aggregate = for {id} <- tab_list(@agg_table), do: id
+    unlabeled = for {id} <- tab_list(@unlabeled_table), do: id
 
     by_file =
-      Enum.reduce(:ets.tab2list(@attr_table), %{}, fn {{mod, id}}, acc ->
+      Enum.reduce(tab_list(@attr_table), %{}, fn {{mod, id}}, acc ->
         case source_file(mod) do
           nil -> acc
           file -> Map.update(acc, file, [id], &[id | &1])
@@ -99,6 +103,11 @@ defmodule Mutare.Coverage.HelperTemplate do
     # files — the single union is the point.
     dump_path = System.get_env(@dump_path_env) || @dump_file
     File.write!(dump_path, :erlang.term_to_binary(payload))
+  end
+
+  # `:ets.tab2list/1`, but `[]` for a table that doesn't exist (see `dump/1`).
+  defp tab_list(table) do
+    if :ets.whereis(table) == :undefined, do: [], else: :ets.tab2list(table)
   end
 
   # The owning test's `{module, name}` label, used to attribute coverage to a test *file*. Resolved

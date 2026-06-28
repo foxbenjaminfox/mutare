@@ -194,14 +194,17 @@ defmodule Mutare.CoverageTest do
       # of Mutare's lib that records into the *same* names. A test that opens the gate and
       # then exits — its process-owned table dying with it — would otherwise leave a later
       # instrumented line (even its own `on_exit`) to `:ets.insert` into a vanished table and
-      # crash, cascading across the suite. `hit/1` must skip when the table is gone. Leaving
-      # the tables dropped is safe: every other coverage test recreates what it needs.
-      for t <- [:mutare_cov_agg, :mutare_cov_attr, :mutare_cov_unlabeled],
-          table?(t),
-          do: :ets.delete(t)
-
-      refute table?(:mutare_cov_agg)
-      assert Mutare.Coverage.HelperTemplate.hit([123_456]) == true
+      # crash, cascading across the suite. `hit/1` must skip when the table is gone.
+      #
+      # Exercise that only when the table is genuinely absent — never tear it down. Under the
+      # probe (and a dogfood self-host) the bootstrap owns it for the whole suite and dropping
+      # it would corrupt coverage selection (NOTES "Self-hosting"). In a normal run nothing
+      # created it, so the guard is exercised here; a probe run skips (its table exists).
+      if table?(:mutare_cov_agg) do
+        :ok
+      else
+        assert Mutare.Coverage.HelperTemplate.hit([123_456]) == true
+      end
     end
   end
 

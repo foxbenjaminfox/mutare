@@ -5438,16 +5438,38 @@ later instrumented line crashes the same way. (In a normal run these functions a
 instrumented, so `on_exit` never records and the leak never happens — a pure
 self-hosting artifact.)
 
-**The fix (best-effort `hit/1`).** The generated helper's `hit/1`
-(`Mutare.Coverage.HelperTemplate`) now returns `true` without recording when its
-aggregate table is absent — the same "never crash, a missing signal just means nothing
-to record" discipline as its dead-pid label guards. That keeps the metamutant's records
-from ever crashing an unrelated line, so the `setup_ast/0` `on_exit` completes,
-`restore_track/1` runs, and the leak is gone (302 → 0 ETS failures; baseline now green
-but for one *unrelated*, pre-existing `Mutare.ManifestTest` selector-key fixture
-artifact). A real probe run never reaches the guard: the bootstrap creates the tables in
-the test-helper process, which outlives the whole suite. Guard is `coverage_test`'s "a
-record is a no-op … when the aggregate table is absent".
+**The fix (best-effort `hit/1` *and* `dump/1`).** The generated helper
+(`Mutare.Coverage.HelperTemplate`) now treats a missing table as "nothing to record":
+`hit/1` returns `true` without recording when its aggregate table is absent, and `dump/1`
+reads each table through a `tab_list/1` that yields `[]` for a vanished one — the same
+"never crash, a missing signal just means nothing to record" discipline as the dead-pid
+label guards. So the metamutant's records can no longer crash an unrelated line: the
+`setup_ast/0` `on_exit` completes, `restore_track/1` runs, and the leak is gone (302 → 0
+ETS failures). A real probe run never reaches the `hit/1` guard — the bootstrap creates
+the tables in the test-helper process, which outlives the whole suite. Guard is
+`coverage_test`'s "a record is a no-op … when the aggregate table is absent".
+
+**Two follow-ons surfaced once the baseline went green** (the abort had masked them):
+
+1. **The `:case`-anchor `Mutare.ManifestTest` failure** — *not* ETS, the selector-key
+   twin of the `:mutare_active` story. The fixture hand-built a metamutant string with a
+   literal `:persistent_term.get(:mutare_active, 0)`, but the subject recogniser
+   (`Mutare.Metamutant.subject?/2`) matches the key against `Selector.key/0` *at runtime*
+   — `:mutare_active__suite` under the sandbox — so the subject went unrecognised and the
+   id mapped to `[]`. Fixed in the test: fixtures build the read with `Selector.key/0`
+   (the dispatch *variable* stays the un-overridden `Recorder.var_name/0`), so the key
+   tracks whatever the recogniser expects in either context. (`manifest_test`'s `pt_key/0`.)
+
+2. **The coverage *probe* then degrades to run-all, not real selection (accepted).** The
+   probe sets `MUTARE_COVERAGE`, so the bootstrap creates the shared tables — but Mutare's
+   own coverage tests churn those same global names: `helper_template_test`'s `setup_all`
+   deletes-and-recreates them (its copy dying with the module), and others write
+   probe-colliding ids. So the dump comes back empty and `CoverageProbe` runs every mutant
+   against the whole suite. Correct verdicts, just slower — the documented run-all
+   fallback. Making the probe do real *selection* under a full self-host needs those tests
+   to stop tearing down the shared tables (e.g. probe-impossible ids + create-if-missing),
+   a separate change; the `dump/1` guard above only ensures it degrades gracefully (no
+   crash) instead of aborting the probe.
 
 ### Report diff fidelity for call-final keyword args `[fixed]`
 A `mix mutare --only lib/mutare/ignore.ex` surfaced two *corrupt survivor diffs* on
