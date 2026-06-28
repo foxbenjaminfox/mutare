@@ -449,6 +449,58 @@ defmodule Mutare.TransformTest do
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
+  describe "for ... reduce: comprehension do-blocks" do
+    # The `do:` body of a `reduce:` comprehension is a *stab-clause* set (`acc -> expr`).
+    # Sourceror represents it identically to a list literal — `{:__block__, _, [[…]]}` —
+    # so before the fix `Mutare.Mutators.List` collapsed it to `[]`, and the `for` special
+    # form rejects that at *compile* time ("the do block must be written using acc -> expr
+    # clauses"), poisoning the single build. `Code.string_to_quoted` would not catch it (the
+    # metamutant parses fine), so these assertions compile the metamutant, not just parse it.
+    @reduce """
+    defmodule R do
+      def sum(counts, pred) do
+        for {status, n} <- counts, pred.(status), reduce: 0, do: (acc -> acc + n)
+      end
+    end
+    """
+
+    test "the List family never collapses the do-block to []" do
+      {meta, sites, _next_id} =
+        Mutare.transform_string(@reduce, mutators: [Mutare.Mutators.List])
+
+      # The wrapper is a stab-clause block, not a real list literal, so List finds nothing.
+      assert sites == []
+      refute meta =~ "do: []"
+      assert_compiles(meta)
+    end
+
+    test "the accumulator body still mutates and the full-set metamutant compiles" do
+      {meta, sites, _next_id} = Mutare.transform_string(@reduce)
+
+      # The body `acc + n` is ordinary runtime, so it still mutates (we suppress only the
+      # bogus wrapper collapse, not the legitimate sub-position mutations)...
+      assert Enum.any?(sites, &(&1.mutator == :arithmetic and &1.original_form == :+))
+      # ...and the whole metamutant compiles under every default family, not just parses.
+      assert_compiles(meta)
+    end
+
+    test "a multi-clause reduce body (guards + several arrows) compiles" do
+      source = """
+      defmodule R2 do
+        def tally(xs) do
+          for x <- xs, reduce: %{} do
+            acc when is_integer(x) -> Map.update(acc, :int, 1, &(&1 + 1))
+            acc -> Map.update(acc, :other, 1, &(&1 + 1))
+          end
+        end
+      end
+      """
+
+      {meta, _sites, _next_id} = Mutare.transform_string(source)
+      assert_compiles(meta)
+    end
+  end
+
   test "a cond-clause condition is runtime and still mutates" do
     source = """
     defmodule C do

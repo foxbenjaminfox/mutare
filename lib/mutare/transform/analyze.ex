@@ -788,12 +788,23 @@ defmodule Mutare.Transform.Analyze do
   # `:uniq` *value* must also be a literal boolean (a selector there would poison the
   # build), so it is held back; every other value (`:into`/`:reduce` and the `:do`/
   # `:reduce` body) descends as ordinary runtime.
+  #
+  # The exception is a **`reduce:` `do:` body**, which is a *stab-clause* block
+  # (`acc -> expr`) that Sourceror represents identically to a list literal —
+  # `{:__block__, _, [[…]]}` — so the generic runtime descent would *offer* the
+  # wrapper and let `Mutare.Mutators.List` collapse it to `[]`. But the `for` special
+  # form requires those literal `acc -> expr` clauses ("the do block must be written
+  # using acc -> expr clauses"), so a `case`/`[]` spliced there poisons the single
+  # build. Such a body is descended *clause-wise* (each clause body still mutates; its
+  # pattern stays a pattern via the generic `->` clause) with the wrapper left raw.
   defp analyze_for_arg(opts, mutators) when is_list(opts) do
     Enum.map(opts, fn
       {key, value} ->
-        if AST.key_atom(key) == :uniq,
-          do: {key, value},
-          else: {key, analyze(value, :runtime, mutators)}
+        cond do
+          AST.key_atom(key) == :uniq -> {key, value}
+          stab_clause_block?(value) -> {key, analyze_stab_clause_block(value, mutators)}
+          true -> {key, analyze(value, :runtime, mutators)}
+        end
 
       other ->
         analyze(other, :runtime, mutators)
@@ -807,6 +818,17 @@ defmodule Mutare.Transform.Analyze do
   # *bare macro call* qualifier is a filter, not value-discarded, so it stays unrewritten.)
   defp analyze_for_arg(arg, mutators),
     do: MatchPatterns.analyze_match_statement(__MODULE__, arg, mutators)
+
+  # A `reduce:` `do:` body: a block whose sole child is a non-empty list of `->`
+  # clauses. Only do-blocks with arrow clauses parse to this shape, and every other
+  # clause-bearing construct (`case`/`fn`/`cond`/`receive`/`try`) is intercepted by a
+  # dedicated `analyze/3` clause before reaching here, so this is the lone runtime spot
+  # a raw stab-clause block surfaces.
+  defp stab_clause_block?({:__block__, _meta, [[{:->, _, _} | _]]}), do: true
+  defp stab_clause_block?(_), do: false
+
+  defp analyze_stab_clause_block({:__block__, meta, [clauses]}, mutators),
+    do: {:__block__, meta, [Enum.map(clauses, &analyze(&1, :runtime, mutators))]}
 
   # One entry of a struct's field map: keep the key (a compile-time field name) raw and
   # descend only the value. A struct update (`%S{base | a: 1}`) carries a `:|` node
