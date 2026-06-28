@@ -261,6 +261,30 @@ defmodule Mutare.Transform do
     ClaimState.total(ctx.claim)
   end
 
+  @doc """
+  Re-derive a source's `[%Site{}]` **with rendered diff code**, skipping the metamutant render
+  and `# mutare:ignore` application.
+
+  This is the read side of the scan's diff deferral. A `mix mutare` scan builds sites with
+  `:render_site_code` `false` — no per-mutant `Sourceror` render, the build's dominant cost (see
+  `Mutare.Transform.Config`) — so the displayed survivors carry no `original_code`/`mutated_code`.
+  The report re-derives just those by calling this on each survivor's file with the **same**
+  `opts` and the file's `:start_id`; because the pipeline is deterministic for one source, the
+  ids and rendered code match exactly what an eager `transform_string/2` would have produced
+  (`Mutare.Runner.Hydrate` memoises one call per file). Forces `:render_site_code` on regardless
+  of the caller's opts, since rendering the code is the whole point.
+
+  Accepts the same `opts` as `transform_string/2`; raises the same parser exceptions on an
+  unparseable source.
+  """
+  @spec render_sites(String.t(), keyword()) :: [Site.t()]
+  def render_sites(source, opts \\ []) when is_binary(source) do
+    {_transformed, ctx, _parsed} =
+      plan_and_emit(source, Keyword.put(opts, :render_site_code, true))
+
+    Enum.reverse(ctx.claim.sites)
+  end
+
   # Hard-fail a qualified `[family:label]` filter whose family *is* in the active vocabulary but
   # whose label can't be resolved (`Mutare.Ignore.validate!/3`) — a *known* family's bad label. An
   # unknown family or a bare `[family]` stays a soft `ineffective` warning. Gated on a **qualified**
@@ -300,6 +324,9 @@ defmodule Mutare.Transform do
       # site is still recorded (`poisoned: true`, for the denominator and id
       # stability) but no selector/copy is generated, so the metamutant compiles.
       skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
+      # Default `true`: the public API and tests render each site's diff eagerly. A `mix mutare`
+      # scan passes `false` to defer it (see `Mutare.Transform.Config`).
+      render_site_code: Keyword.get(opts, :render_site_code, true),
       prefix: names.prefix,
       active_var: names.active_var,
       super_var: names.super_var,
@@ -740,7 +767,7 @@ defmodule Mutare.Transform do
       SelectorEmit.claim_items(
         FunctionPlan.candidates(plan),
         ctx,
-        &Delivery.site/3,
+        &Delivery.site/4,
         fn id, candidate ->
           {index, clause} = FunctionPlan.mutated_clause(plan, candidate)
           {id, index, clause, ImportWitness.for_candidate(candidate)}
@@ -928,7 +955,7 @@ defmodule Mutare.Transform do
 
   defp emit_site(node, candidates, ctx) do
     {clauses, ctx} =
-      SelectorEmit.claim_items(candidates, ctx, &Delivery.site/3, fn id, candidate ->
+      SelectorEmit.claim_items(candidates, ctx, &Delivery.site/4, fn id, candidate ->
         {:->, [],
          [
            [id],

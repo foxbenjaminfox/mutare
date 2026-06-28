@@ -426,6 +426,61 @@ literal must be clean-meta `{:__block__, [], [n]}` — a *bare* int gets a `:lin
 no `:token` from Sourceror's normalizer and crashes the formatter (`subject_ast/0`
 and `record_ast/1`'s `0` were latently bare; now wrapped).
 
+#### Defer the per-mutant diff render to report time `[done]`
+With the count pass freed of `Site` construction and the metamutant volume tamed, the next
+driver measured was the **per-`Site` diff render**: every `Site` constructor renders
+`original_code`/`mutated_code` through `Sourceror.to_string`, and the render pass does this for
+*every* mutant. Instrumented in-process on this repo's `lib/` (155 files, ~18.7k mutants, shared
+atomic counters so the split is load-independent), the render CPU broke down as: per-`Site`
+**~29 s** (`original_code` ~15.7 s over 18.7k, `mutated_code` ~13.5 s over 17.3k) vs the
+whole-metamutant render **~13.5 s** over 146 files. So **per-`Site` rendering was ~2.2× the
+whole-tree render** — the single biggest build cost — and nearly all of it is waste: the default
+human report only diffs **survivors** (a handful), and killed/no-coverage mutants (the 90 %+) are
+never shown. (`Sourceror.to_string` is also ~32× slower than `Macro.to_string` on these small
+nodes, but the diff text is patched back into the report by `Sourceror.patch_string`, so the
+faithful renderer stays.)
+
+**Fix: render the diff lazily, only for the sites a reporter actually shows.** `Site`'s
+constructors take a `render?` flag (default `true`, threaded `Config.render_site_code →
+ClaimState.claim → Delivery.site/4 → Site`); a `mix mutare` scan passes `false`, leaving
+`original_code`/`mutated_code` `nil`. The flag gates **only** those two fields — ids, the
+`*_form` tags, `variant` (read for `# mutare:ignore`), and the emitted tree are all unchanged, so
+deferral is provably id/tree/count-neutral (the same property the count sink rests on). The report
+re-derives a displayed site's code on demand: `Mutare.Runner.Hydrate` re-renders that one file
+(`Transform.render_sites/2`, `Mutare.Schema.render_opts/3` for the matching `:start_id`), memoised
+once per file, and fills the code in **before the result reaches the reporter** — so the live
+`leave_behind` lines (`:survived`/`:timeout`/`:atom_exhausted`/`:harness_error`, the only streamed
+statuses that show a diff) and the final/SARIF reports are byte-identical to eager. Because the
+re-render is the same deterministic pipeline at the same `:start_id`, the recovered ids and code
+match the schema's exactly (verified: hydration reproduces eager code byte-for-byte).
+
+Measured: scan **31.0 s → 18.7 s (~1.66×)** on this 16-core box; the win is larger on a
+core-starved CI box, where the ~29 s of per-`Site` CPU serialises instead of fanning out (the same
+asymmetry the `no_ssa_opt_alias` note calls out — CI is where it matters).
+
+Three load-bearing choices (mirroring the dep-seed's "never produce a wrong result" discipline):
+- **Eager stays the default and the safety net.** `transform_string/2` and the test helpers keep
+  `render?: true`, so the public API and the ~390 test assertions reading `Site` code are
+  untouched. Only the Mix task opts in (`defer_site_code?`), and only when every active reporter
+  needs code for **survivors alone** — *not* `--verbose` (a diff per mutant, streamed) and *not*
+  `:json`/`:html` (every mutant's replacement); those render eagerly up front. The library
+  `Mutare.run/2` path never defers (a custom `:reporter` hook may read any result's code), and the
+  `--dry-run`/`--list-ignores` info commands stay eager (they `describe` every site).
+- **Hydrate in the worker, not after the run.** The live reporter consumes a survivor's diff *as
+  it streams*, so deferral can't wait for a post-run batch; `Hydrate.result/2` runs in the
+  per-mutant task just before `reporter.(result)`, and the hydrated result is what's collected, so
+  the final report needs no second pass. Killed/no-coverage results (no `leave_behind`) are never
+  hydrated — that's the whole win.
+- **A miss is a no-op, not a crash.** If the deterministic re-render ever failed to cover an id,
+  `Hydrate` leaves the site's code `nil` rather than raising a reporting path. Poisoned sites keep
+  `nil` code (never displayed, never read).
+
+Not pursued: retaining the mutated/original AST nodes on the `Site` to render lazily without a
+re-render — rejected for the same reason `Site`'s moduledoc gives for not keeping trees at all
+(an operator-swap node shares the source operands, so retaining ~18.7k of them pins large source
+subtrees — substantial heap for a handful of eventual reads). Re-rendering the few survivor files
+is cheaper than the heap.
+
 ### Sandbox isolation & dependencies `[M4 / open question]`
 `Mutare.Sandbox` copies the whole project (excluding `_build`/`.git`, keeping
 `deps`) to a temp dir. Consequences:

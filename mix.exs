@@ -30,6 +30,8 @@ defmodule Mutare.MixProject do
     Mutare.Transform.GuardBuild
     Mutare.Transform.ClauseAST
     Mutare.Transform.BindingEscapeEmit
+    Mutare.Transform.Config
+    Mutare.Runner.Hydrate
     Mutare.Options.Registry
     Mutare.Mutator.Dispatch
     Mutare.Coverage.HelperTemplate

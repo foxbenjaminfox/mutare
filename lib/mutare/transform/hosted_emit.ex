@@ -43,7 +43,7 @@ defmodule Mutare.Transform.HostedEmit do
       end)
 
     {clauses, ctx} =
-      SelectorEmit.claim_items(carriers, ctx, &hosted_site/3, fn id, carrier ->
+      SelectorEmit.claim_items(carriers, ctx, &hosted_site/4, fn id, carrier ->
         {:->, [], [[id], cand.wrap.(carrier.mutated)]}
       end)
 
@@ -65,7 +65,17 @@ defmodule Mutare.Transform.HostedEmit do
   # The `Mutare.Site` for one hosted mutant: an `:in_place` replacement showing the logical
   # fragment swap, not the `wrap`/`splice`/selector scaffolding. The optional note rides onto
   # the Site for the report, and the optional variant label onto the Site for `# mutare:ignore`
-  # filtering (`nil` for the common untagged fragment).
-  defp hosted_site(id, %{candidate: cand, mutated: mutated, note: note, variant: variant}, file),
-    do: Site.in_place(id, file, cand.range, cand.original, mutated, cand.mutator, note, variant)
+  # filtering (`nil` for the common untagged fragment). `render?` is the scan's diff-deferral flag.
+  defp hosted_site(
+         id,
+         %{candidate: cand, mutated: mutated, note: note, variant: variant},
+         file,
+         render?
+       ),
+       do:
+         Site.in_place(id, file, cand.range, cand.original, mutated, cand.mutator,
+           note: note,
+           variant: variant,
+           render?: render?
+         )
 end

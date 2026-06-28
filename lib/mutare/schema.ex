@@ -173,7 +173,13 @@ defmodule Mutare.Schema do
     # Phase 2 — render (parallel, heap-isolated per worker): prefix-sum the counts so
     # each sited file knows its `:start_id` up front, then emit + render it. A failure
     # here is a tool bug (the file already parsed in phase 1) — re-raised faithfully.
-    rendered = counted |> render_jobs() |> render_files(options, skip_ids)
+    # The render pass renders each site's diff eagerly unless the run deferred it
+    # (`context.defer_site_code`) — a `mix mutare` run with reporters that only show survivors,
+    # which re-derive their code at report time (`Mutare.Runner.Hydrate`). The count pass builds
+    # no sites, so it is unaffected. Deferral changes no id/tree/count — only whether each
+    # `Mutare.Site` carries rendered code now or `nil`.
+    render_site_code = not context.defer_site_code
+    rendered = counted |> render_jobs() |> render_files(options, skip_ids, render_site_code)
 
     rel_files
     |> assemble(counted, rendered)
@@ -304,10 +310,10 @@ defmodule Mutare.Schema do
   # Emit + render every sited file in parallel throwaway workers (`render_one/5`),
   # returning `%{rel => {metamutant, sites}}`. The dominant `Sourceror.to_string` heap
   # dies with each worker. A tool bug captured by a worker is re-raised here.
-  defp render_files(jobs, options, skip_ids) do
+  defp render_files(jobs, options, skip_ids, render_site_code) do
     jobs
     |> async_stream(fn {rel, source, start_id, count} ->
-      render_one(rel, source, start_id, count, options, skip_ids)
+      render_one(rel, source, start_id, count, options, skip_ids, render_site_code)
     end)
     |> Enum.map(&reraise_if_raised/1)
     |> Map.new(fn {:rendered, rel, meta, sites} -> {rel, {meta, sites}} end)
@@ -318,9 +324,11 @@ defmodule Mutare.Schema do
   # re-raised faithfully, never swallowed. `verify_count!/3` guards the load-bearing id
   # invariant: the rendered `next_id - start_id` must equal phase 1's count, or files would
   # silently overlap ids (the two passes are the same deterministic pipeline, so they agree).
-  defp render_one(rel, source, start_id, count, %Options{} = options, skip_ids) do
+  defp render_one(rel, source, start_id, count, %Options{} = options, skip_ids, render_site_code) do
     # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
-    opts = transform_opts(options) ++ [file: rel, start_id: start_id, skip_ids: skip_ids]
+    opts =
+      transform_opts(options) ++
+        [file: rel, start_id: start_id, skip_ids: skip_ids, render_site_code: render_site_code]
 
     try do
       {meta, sites, next_id} = Mutare.Transform.transform_string(source, opts)
@@ -430,6 +438,21 @@ defmodule Mutare.Schema do
 
     # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
     mutator_opts ++ macro_opts ++ plugin_opts ++ [expand_uses: expand_uses]
+  end
+
+  @doc """
+  The transform options for re-rendering one `file`'s sites at `start_id` — the same
+  `transform_opts/1` the render pass uses, plus the file and its start id.
+
+  The read side of the scan's diff deferral (`Mutare.Runner.Hydrate`): a deferred-diff scan
+  builds sites without rendered code, and the report re-derives a displayed site's code by
+  calling `Mutare.Transform.render_sites/2` with **these** opts, so the re-rendered ids line up
+  with the schema's. `:skip_ids`/`:render_site_code` are left to `render_sites/2` — neither
+  affects the id→code mapping (a skipped id still claims its id and renders its code).
+  """
+  @spec render_opts(Options.t(), String.t(), pos_integer()) :: keyword()
+  def render_opts(%Options{} = options, file, start_id) do
+    transform_opts(options) ++ [file: file, start_id: start_id]
   end
 
   defp finalize(%__MODULE__{} = schema) do

@@ -4,7 +4,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
   # Single source of truth for how each `Mutare.Transform.Candidate` variant is *delivered*:
   # its node-local emit route, the `Mutare.Site` constructor that records it, and — for the
   # selector-delivered kinds — the struct field holding an ordinary in-place selector's mutant
-  # branch body. `site/3`, `route/1`, and `selector_branch/1` all read the one per-variant
+  # branch body. `site/4`, `route/1`, and `selector_branch/1` all read the one per-variant
   # `profile/1` table below, so the three facets can't drift apart: this collapses the manual
   # mirror (one struct re-listed in three separate dispatch functions, where adding a variant
   # meant remembering to touch each). Adding a candidate is one new `profile/1` clause — the
@@ -19,8 +19,8 @@ defmodule Mutare.Transform.Candidate.Delivery do
   #     `Mutare.Transform.FunctionPlan`, never node-local; `route/1` reports `:lifted` and
   #     `classify_node_candidates/1` rejects them.
   #   * hosted (`Hosted`) — consumed from its own metadata by `Mutare.Transform.HostedEmit`,
-  #     which records its Sites *per logical mutant* there, not through `site/3`. `route/1`
-  #     reports `:hosted` (so `classify_node_candidates/1` rejects it); `site/3` is never called
+  #     which records its Sites *per logical mutant* there, not through `site/4`. `route/1`
+  #     reports `:hosted` (so `classify_node_candidates/1` rejects it); `site/4` is never called
   #     on it.
 
   alias Mutare.Site
@@ -51,11 +51,16 @@ defmodule Mutare.Transform.Candidate.Delivery do
     {route, candidates}
   end
 
-  @doc "Build the recorded `Mutare.Site` for a claimed candidate id."
-  @spec site(pos_integer(), Candidate.t(), String.t()) :: Site.t()
-  def site(id, candidate, file) do
+  @doc """
+  Build the recorded `Mutare.Site` for a claimed candidate id.
+
+  `render?` is the scan's diff-deferral flag (`false` defers the per-site `Sourceror` render —
+  see `Mutare.Transform.Config`); it is forwarded verbatim to the `Mutare.Site` constructor.
+  """
+  @spec site(pos_integer(), Candidate.t(), String.t(), boolean()) :: Site.t()
+  def site(id, candidate, file, render?) do
     {_route, site_kind, _branch_field} = profile(candidate)
-    build_site(site_kind, id, candidate, file)
+    build_site(site_kind, id, candidate, file, render?)
   end
 
   @doc """
@@ -101,34 +106,34 @@ defmodule Mutare.Transform.Candidate.Delivery do
 
   # Each `site_kind` knows which `Mutare.Site` constructor to call and which candidate fields it
   # reads (the constructors differ in arity and in which fields they record).
-  defp build_site(:in_place, id, c, file),
-    do: Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator, note(c), variant(c))
-
-  defp build_site(:lifted_replace, id, c, file),
+  defp build_site(:in_place, id, c, file, render?),
     do:
-      Site.lifted_replace(
-        id,
-        file,
-        c.range,
-        c.original,
-        c.mutated,
-        c.mutator,
-        note(c),
-        variant(c)
+      Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator,
+        note: note(c),
+        variant: variant(c),
+        render?: render?
       )
 
-  defp build_site(:return_value, id, c, file),
-    do: Site.return_value(id, file, c.range, c.original, c.mutated, c.mutator)
+  defp build_site(:lifted_replace, id, c, file, render?),
+    do:
+      Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator,
+        note: note(c),
+        variant: variant(c),
+        render?: render?
+      )
 
-  defp build_site(:in_place_drop, id, c, file),
-    do: Site.in_place_drop(id, file, c.range, c.dropped, c.mutator)
+  defp build_site(:return_value, id, c, file, render?),
+    do: Site.return_value(id, file, c.range, c.original, c.mutated, c.mutator, render?)
 
-  defp build_site(:clause_drop, id, c, file),
-    do: Site.clause_drop(id, file, c.range, c.original)
+  defp build_site(:in_place_drop, id, c, file, render?),
+    do: Site.in_place_drop(id, file, c.range, c.dropped, c.mutator, render?)
 
-  # `Hosted` records its Sites per logical mutant in `HostedEmit`, never through `site/3`; the
+  defp build_site(:clause_drop, id, c, file, render?),
+    do: Site.clause_drop(id, file, c.range, c.original, render?)
+
+  # `Hosted` records its Sites per logical mutant in `HostedEmit`, never through `site/4`; the
   # clause exists so a stray call fails loudly rather than as a `FunctionClauseError`.
-  defp build_site(:hosted, _id, c, _file),
+  defp build_site(:hosted, _id, c, _file, _render?),
     do:
       raise(ArgumentError, "#{inspect(c.__struct__)} records its Sites per mutant in HostedEmit")
 

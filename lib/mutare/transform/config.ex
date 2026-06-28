@@ -20,6 +20,7 @@ defmodule Mutare.Transform.Config do
           file: String.t(),
           mutators: [Mutare.Mutator.Spec.t()],
           skip_ids: MapSet.t(),
+          render_site_code: boolean(),
           prefix: String.t(),
           active_var: atom(),
           super_var: atom(),
@@ -30,6 +31,15 @@ defmodule Mutare.Transform.Config do
   defstruct file: "nofile",
             mutators: [],
             skip_ids: MapSet.new(),
+            # Whether each `Mutare.Site` records its rendered before/after diff text at build time
+            # (`true`, the default), or defers it (`false`). Deferral is the scan's optimisation:
+            # rendering a `Sourceror` diff per mutant dominates the build, yet only the handful of
+            # sites a reporter actually shows need it, so a `mix mutare` run scans with this `false`
+            # and re-derives the displayed sites' code at report time (`Mutare.Runner.Hydrate`).
+            # It changes **no** id, tree, or count — only whether `Site.original_code`/`mutated_code`
+            # are populated now or `nil` for later. `transform_string/2` defaults it `true`, so the
+            # public API and tests are unaffected.
+            render_site_code: true,
             # The prefix for generated private (lifted) names. `"__mutare_"` is the canonical
             # value; `Mutare.Transform` recomputes it per file — scanning the source's own
             # definitions — to a collision-free variant when the target already defines a

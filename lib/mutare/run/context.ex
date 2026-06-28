@@ -42,7 +42,8 @@ defmodule Mutare.Run.Context do
           reporter: hook(),
           on_phase: hook(),
           on_start: hook(),
-          on_scan: hook()
+          on_scan: hook(),
+          defer_site_code: boolean()
         }
 
   defstruct options: %Options{},
@@ -50,11 +51,19 @@ defmodule Mutare.Run.Context do
             reporter: nil,
             on_phase: nil,
             on_start: nil,
-            on_scan: nil
+            on_scan: nil,
+            # Whether the scan should **defer** rendering each site's before/after diff text,
+            # re-deriving it later only for the sites a reporter actually shows (`Mutare.Runner.Hydrate`).
+            # A run-mode decision, not user config: the Mix task sets it `true` only when it knows the
+            # active reporters need code for survivors alone (no `--verbose`, no `:json`/`:html`), so the
+            # build skips the per-mutant `Sourceror` render that dominates it. `false` (the default) keeps
+            # the eager behaviour — what every library caller and a custom `:reporter` hook (which may read
+            # any result's code) safely gets. Read by `Mutare.Schema` (scan) and `Mutare.Runner` (hydration).
+            defer_site_code: false
 
   # The wiring keys, split out of a keyword list before the rest goes to `Options.new/1`. Anything
   # not here is a configuration key (or an unknown key `Options` rejects).
-  @context_keys [:project, :reporter, :on_phase, :on_start, :on_scan]
+  @context_keys [:project, :reporter, :on_phase, :on_start, :on_scan, :defer_site_code]
 
   @doc """
   Normalize an input into a `Run.Context`.
@@ -97,7 +106,8 @@ defmodule Mutare.Run.Context do
       reporter: validate_callback!(:reporter, wiring[:reporter]),
       on_phase: validate_callback!(:on_phase, wiring[:on_phase]),
       on_start: validate_callback!(:on_start, wiring[:on_start]),
-      on_scan: validate_callback!(:on_scan, wiring[:on_scan])
+      on_scan: validate_callback!(:on_scan, wiring[:on_scan]),
+      defer_site_code: wiring[:defer_site_code] == true
     }
   end
 

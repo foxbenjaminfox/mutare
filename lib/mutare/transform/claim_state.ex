@@ -14,9 +14,11 @@ defmodule Mutare.Transform.ClaimState do
   # The `sink` selects what each claim *retains* — the one knob that splits a render from the
   # schema's render-free count pass:
   #
-  #   * `:render` — build a `Mutare.Site` per claim (rendering its diff via `Sourceror`) and
-  #     accumulate it in `sites`; a poison-skipped id records a poisoned site but emits no
-  #     artifact. This is the full transform.
+  #   * `:render` — build a `Mutare.Site` per claim and accumulate it in `sites`; a poison-skipped
+  #     id records a poisoned site but emits no artifact. This is the full transform. Whether the
+  #     site renders its diff via `Sourceror` now or defers it is the `render_code` flag threaded
+  #     to `site_fn` (`false` for a `mix mutare` scan — see `Mutare.Transform.Config`); either way
+  #     a `Site` is built and retained.
   #   * `:count` — advance the id and bump `count` only. No `Site` is built (so the per-mutant
   #     `Sourceror` render in `Mutare.Site` is skipped) and none is retained, but the live
   #     artifact is still emitted, so the metamutant tree stays well-formed and the *set* of
@@ -24,7 +26,7 @@ defmodule Mutare.Transform.ClaimState do
   #     construction — it comes from the same claim path, just without the site cost (see
   #     `Mutare.Schema`'s two-phase build and NOTES "Scan is transform-bound").
   #
-  # `claim/6` is the one place the two sinks diverge; everything upstream is sink-agnostic.
+  # `claim/7` is the one place the two sinks diverge; everything upstream is sink-agnostic.
 
   alias Mutare.Site
 
@@ -56,18 +58,35 @@ defmodule Mutare.Transform.ClaimState do
           String.t(),
           MapSet.t(),
           item,
-          (pos_integer(), item, String.t() -> Site.t()),
-          (pos_integer(), item -> artifact)
+          (pos_integer(), item, String.t(), boolean() -> Site.t()),
+          (pos_integer(), item -> artifact),
+          boolean()
         ) :: {[artifact], t()}
         when item: term(), artifact: term()
-  def claim(%__MODULE__{sink: :count} = claim, _file, _skip_ids, item, _site_fn, artifact_fn) do
+  def claim(
+        %__MODULE__{sink: :count} = claim,
+        _file,
+        _skip_ids,
+        item,
+        _site_fn,
+        artifact_fn,
+        _render_code
+      ) do
     id = claim.next_id
     {[artifact_fn.(id, item)], %{claim | next_id: id + 1, count: claim.count + 1}}
   end
 
-  def claim(%__MODULE__{sink: :render} = claim, file, skip_ids, item, site_fn, artifact_fn) do
+  def claim(
+        %__MODULE__{sink: :render} = claim,
+        file,
+        skip_ids,
+        item,
+        site_fn,
+        artifact_fn,
+        render_code
+      ) do
     id = claim.next_id
-    site = site_fn.(id, item, file)
+    site = site_fn.(id, item, file, render_code)
     claim = %{claim | next_id: id + 1}
 
     if id in skip_ids do

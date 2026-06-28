@@ -406,6 +406,13 @@ defmodule Mix.Tasks.Mutare do
   defp run_mutation_testing(%Project{} = project, %Context{} = context, root) do
     options = context.options
 
+    # Defer the per-mutant diff render (the build's dominant cost) when the active reporters need
+    # diff text for survivors *alone* — re-derived at report time (`Mutare.Runner.Hydrate`). Set on
+    # the context so both the scan (`Schema.build`) and the run (`run_with_schema`) see it. The
+    # info commands (`--dry-run`/`--list-ignores`) use the un-flagged context above, so they keep
+    # rendering eagerly (they describe *every* site).
+    context = %{context | defer_site_code: defer_site_code?(options)}
+
     # Surface first-party `use MyAppWeb, :controller` bundles: `Mutare.Transform.Uses` expands
     # `use` in-process, which needs the host app's modules loadable. Deps are already on the
     # code path; the host app is compiled here, best-effort, before the scan transforms it.
@@ -461,6 +468,19 @@ defmodule Mix.Tasks.Mutare do
     ensure_host_compiled(context.options, root)
     Schema.build(root, context)
   end
+
+  # Whether the run may defer per-mutant diff rendering — the build's dominant cost (rendering a
+  # `Sourceror` diff for *every* mutant when only the displayed handful need it). Safe to defer
+  # when every active reporter needs diff text for survivors **alone**: the default human report
+  # and SARIF. `--verbose` leaves a line (with its diff) for *every* mutant as the run streams,
+  # and `:json`/`:html` emit *every* mutant's replacement, so those render eagerly up front.
+  # `Mutare.Runner.Hydrate` re-derives the deferred survivors' code at report time. Scoped to the
+  # Mix task's known reporters; the library `Mutare.run/2` path never sets it (a custom `:reporter`
+  # hook may read any result's code), so it stays eager.
+  defp defer_site_code?(%Options{verbose: true}), do: false
+
+  defp defer_site_code?(%Options{reporters: reporters}),
+    do: Enum.all?(reporters, fn {format, _path} -> format in [:human, :sarif] end)
 
   # Start the live progress reporter unless `--quiet`. `nil` means "no live
   # reporter" — the Mix task leaves every `Live` hook unset and the run is silent

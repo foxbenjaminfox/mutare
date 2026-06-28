@@ -16,6 +16,18 @@ defmodule Mutare.Site do
   afterwards — the report patches the original source by `range`, not by re-rendering
   a node. Keeping the trees would duplicate the whole rewritten AST per mutant, which
   for a project with thousands of mutants is substantial retained memory for no use.
+
+  ## Deferred diff code
+
+  Rendering `original_code`/`mutated_code` via `Sourceror` *per mutant* dominates the
+  build, yet only the handful of mutants a reporter actually shows ever need the diff
+  text. So the constructors take a `render?` flag (default `true`): a `mix mutare` scan
+  whose reporters show survivors alone passes `false`, leaving both fields `nil`, and the
+  report re-derives them only for the sites it displays (`Mutare.Transform.render_sites/2`
+  via `Mutare.Runner.Hydrate`). The flag gates *only* those two fields — `range`, the
+  `*_form` tags, and `variant` (read for `# mutare:ignore` filtering) are always computed,
+  so deferral changes no id, classification, or count. The public `transform_string/2` and
+  the test helpers keep the default, so they always carry rendered code.
   """
 
   @type t :: %__MODULE__{
@@ -95,11 +107,16 @@ defmodule Mutare.Site do
   An in-place mutation: an operator swapped behind a selector `case` in a
   function body. `range` locates the original node; `mutator` is the
   `Mutare.Mutator.Spec` that produced `mutated_node` (its `name` is recorded).
-  An optional `note` is recorded on the site for the report (a hosting mutator's
-  advisory, e.g. "kill may require NULL/boundary data") — `nil` for an ordinary mutation.
-  An optional `variant` is the `# mutare:ignore` label(s) the producing mutator attached at
-  production time (`Mutare.Mutator.Mutation.tagged/2`); `nil` lets `replace/8` derive it via
-  `c:Mutare.Mutator.variant/2`.
+
+  `opts` carries the optional metadata (all absent for an ordinary mutation):
+
+    * `:note` — a report advisory (a hosting mutator's, e.g. "kill may require NULL/boundary
+      data").
+    * `:variant` — the `# mutare:ignore` label(s) the producing mutator tagged at production time
+      (`Mutare.Mutator.Mutation.tagged/2`); absent lets `replace/8` derive it via
+      `c:Mutare.Mutator.variant/2`.
+    * `:render?` — `false` defers the per-site diff render (the scan's optimisation — see the
+      "Deferred diff code" section); defaults `true`.
   """
   @spec in_place(
           pos_integer(),
@@ -108,13 +125,12 @@ defmodule Mutare.Site do
           Macro.t(),
           Macro.t(),
           Mutare.Mutator.Spec.t(),
-          String.t() | nil,
-          Mutare.Mutator.Mutation.variant()
+          keyword()
         ) :: t()
-  def in_place(id, file, range, original_node, mutated_node, mutator, note \\ nil, variant \\ nil) do
+  def in_place(id, file, range, original_node, mutated_node, mutator, opts \\ []) do
     %{
-      replace(id, file, range, original_node, mutated_node, mutator, :in_place, variant)
-      | note: note
+      replace(id, file, range, original_node, mutated_node, mutator, :in_place, opts)
+      | note: opts[:note]
     }
   end
 
@@ -125,9 +141,7 @@ defmodule Mutare.Site do
   clause *head* pattern (a literal swap). Same replacement shape as `in_place/6`,
   recorded as `:lifted`; `mutator` (a `Mutare.Mutator.Spec`) distinguishes a guard
   operator swap (`:relational`, …) from a head-pattern literal swap (`:literal`, …).
-  An optional `note` is recorded for the report (a producing mutator's per-mutant
-  advisory) — `nil` for an ordinary mutation, exactly like `in_place/8`. An optional `variant`
-  carries the production-time `# mutare:ignore` label(s), exactly like `in_place/8`.
+  `opts` carries the same optional metadata as `in_place/7` (`:note`, `:variant`, `:render?`).
   """
   @spec lifted_replace(
           pos_integer(),
@@ -136,22 +150,12 @@ defmodule Mutare.Site do
           Macro.t(),
           Macro.t(),
           Mutare.Mutator.Spec.t(),
-          String.t() | nil,
-          Mutare.Mutator.Mutation.variant()
+          keyword()
         ) :: t()
-  def lifted_replace(
-        id,
-        file,
-        range,
-        original_node,
-        mutated_node,
-        mutator,
-        note \\ nil,
-        variant \\ nil
-      ) do
+  def lifted_replace(id, file, range, original_node, mutated_node, mutator, opts \\ []) do
     %{
-      replace(id, file, range, original_node, mutated_node, mutator, :lifted, variant)
-      | note: note
+      replace(id, file, range, original_node, mutated_node, mutator, :lifted, opts)
+      | note: opts[:note]
     }
   end
 
@@ -173,9 +177,9 @@ defmodule Mutare.Site do
   A dropped function clause — a `:lifted`, `:delete` mutation. The clause is
   removed entirely, so there is no mutated node, op, or code.
   """
-  @spec clause_drop(pos_integer(), String.t(), Sourceror.Range.t(), Macro.t()) :: t()
-  def clause_drop(id, file, range, clause_node) do
-    delete_site(id, file, range, clause_node, :clause_drop, :lifted)
+  @spec clause_drop(pos_integer(), String.t(), Sourceror.Range.t(), Macro.t(), boolean()) :: t()
+  def clause_drop(id, file, range, clause_node, render? \\ true) do
+    delete_site(id, file, range, clause_node, :clause_drop, :lifted, render?)
   end
 
   @doc """
@@ -190,17 +194,18 @@ defmodule Mutare.Site do
           String.t(),
           Sourceror.Range.t(),
           Macro.t(),
-          Mutare.Mutator.Spec.t()
+          Mutare.Mutator.Spec.t(),
+          boolean()
         ) :: t()
-  def in_place_drop(id, file, range, clause_node, mutator) do
-    delete_site(id, file, range, clause_node, mutator.name, :in_place)
+  def in_place_drop(id, file, range, clause_node, mutator, render? \\ true) do
+    delete_site(id, file, range, clause_node, mutator.name, :in_place, render?)
   end
 
   # The shared body of the two delete-site constructors (`clause_drop/4`, `in_place_drop/5`):
   # a `:delete` mutation removes the whole clause, so there is no mutated node, op, or code — the
   # constructors differ only in `mutator` and `kind`. One home so a change to how a delete site is
   # built (a new field, the `clause_code/1` rendering) lands once.
-  defp delete_site(id, file, range, clause_node, mutator_name, kind) do
+  defp delete_site(id, file, range, clause_node, mutator_name, kind, render?) do
     %{
       base_site(id, file, range)
       | mutator: mutator_name,
@@ -208,7 +213,7 @@ defmodule Mutare.Site do
         operation: :delete,
         original_form: nil,
         mutated_form: nil,
-        original_code: clause_code(clause_node),
+        original_code: clause_code(clause_node, render?),
         mutated_code: ""
     }
   end
@@ -220,10 +225,14 @@ defmodule Mutare.Site do
   # diff reads source lines by range, so it is unaffected.) Rescue clauses carry one
   # pattern and no `when` guard; anything else — a dropped `def`/`defp` function clause
   # included — falls back to the default rendering.
-  defp clause_code({:->, _meta, [[head], body]}),
+  # Lazy mode (`render?` false) records no diff text — the scan defers it, and the report
+  # re-derives it for the few sites it actually shows (see `Mutare.Runner.Hydrate`).
+  defp clause_code(_node, false), do: nil
+
+  defp clause_code({:->, _meta, [[head], body]}, true),
     do: "#{Sourceror.to_string(head)} -> #{Sourceror.to_string(body)}"
 
-  defp clause_code(node), do: Sourceror.to_string(node)
+  defp clause_code(node, true), do: Sourceror.to_string(node)
 
   @doc """
   A return-value mutation: a function clause's tail expression replaced with a
@@ -240,9 +249,10 @@ defmodule Mutare.Site do
           Sourceror.Range.t(),
           Macro.t(),
           Macro.t(),
-          Mutare.Mutator.Spec.t()
+          Mutare.Mutator.Spec.t(),
+          boolean()
         ) :: t()
-  def return_value(id, file, range, original_node, mutated_node, mutator) do
+  def return_value(id, file, range, original_node, mutated_node, mutator, render? \\ true) do
     %{
       base_site(id, file, range)
       | mutator: mutator.name,
@@ -250,16 +260,24 @@ defmodule Mutare.Site do
         operation: :replace,
         original_form: nil,
         mutated_form: nil,
-        original_code: Sourceror.to_string(original_node),
-        mutated_code: Sourceror.to_string(mutated_node),
+        original_code: maybe_render(original_node, render?),
+        mutated_code: maybe_render(mutated_node, render?),
         variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node)
     }
   end
 
+  # Render a node to source, or `nil` in lazy mode (`render?` false). The single gate the
+  # node-rendering constructors share so deferral is one decision, not three.
+  defp maybe_render(_node, false), do: nil
+  defp maybe_render(node, true), do: Sourceror.to_string(node)
+
   # In-place and lifted sites differ only in `kind`: both are a node replacement
   # recorded with the original/mutated nodes, their AST *forms* (the node's head tag —
   # `:+`/`:==` for an operator swap, `:__block__` for a literal), and rendered code.
-  defp replace(id, file, range, original_node, mutated_node, mutator, kind, variant) do
+  defp replace(id, file, range, original_node, mutated_node, mutator, kind, opts) do
+    variant = opts[:variant]
+    render? = Keyword.get(opts, :render?, true)
+
     # When the mutated node is a *keyword-list key* (`trim:`), its recorded `range`
     # spans the `name:` source — colon included — so the report's textual patch must
     # render it in keyword form too. `Sourceror.to_string/1` of the bare atom node
@@ -274,8 +292,8 @@ defmodule Mutare.Site do
         kind: kind,
         original_form: elem(original_node, 0),
         mutated_form: elem(mutated_node, 0),
-        original_code: render_code(original_node, keyword_key?),
-        mutated_code: render_code(mutated_node, keyword_key?),
+        original_code: render_code(original_node, keyword_key?, render?),
+        mutated_code: render_code(mutated_node, keyword_key?, render?),
         variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node, variant)
     }
   end
@@ -283,10 +301,12 @@ defmodule Mutare.Site do
   defp keyword_key?({:__block__, meta, [atom]}) when is_atom(atom), do: meta[:format] == :keyword
   defp keyword_key?(_node), do: false
 
-  defp render_code({:__block__, _meta, [atom]}, true) when is_atom(atom),
+  defp render_code(_node, _keyword_key?, false), do: nil
+
+  defp render_code({:__block__, _meta, [atom]}, true, true) when is_atom(atom),
     do: Macro.inspect_atom(:key, atom)
 
-  defp render_code(node, _keyword_key?), do: Sourceror.to_string(node)
+  defp render_code(node, _keyword_key?, true), do: Sourceror.to_string(node)
 
   @doc """
   Human-readable one-liner, e.g. `relational  >= → >` or

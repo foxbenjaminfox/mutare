@@ -98,7 +98,7 @@ defmodule Mutare.Runner do
 
   alias Mutare.{Options, Poison, Project, Report, Result, Sandbox, Schema, Selector, Site}
   alias Mutare.Run.Context
-  alias Mutare.Runner.{Baseline, CoverageProbe, Partitions}
+  alias Mutare.Runner.{Baseline, CoverageProbe, Hydrate, Partitions}
   alias Mutare.Sandbox.{Command, CompilerOptions}
   alias Mutare.Sandbox.Command.Invocation
 
@@ -114,7 +114,9 @@ defmodule Mutare.Runner do
   defmodule RunCtx do
     @moduledoc false
     @enforce_keys [:sandbox, :selection, :cap, :scopes, :retries]
-    defstruct @enforce_keys
+    # `hydrate` is the deferred-diff hydrator (`Mutare.Runner.Hydrate`), or `nil` for the eager
+    # path; it fills a displayed survivor's diff code in just before it reaches the reporter.
+    defstruct @enforce_keys ++ [hydrate: nil]
   end
 
   # `sandbox` is where the run *was* materialised. For a default (throwaway) run it
@@ -225,6 +227,11 @@ defmodule Mutare.Runner do
     # here: started before the run, stopped on every exit path.
     partitions = Partitions.new(options.partition_env, options.workers)
 
+    # The deferred-diff hydrator (`nil` for the eager path). Lifecycle owned here like the
+    # partition pool: started before the run, stopped on every exit path. It re-renders a
+    # displayed survivor's diff code on demand, since the scan skipped it.
+    hydrate = Hydrate.maybe_new(schema, context)
+
     try do
       # The baseline + coverage probe are sequential (pre-pool), so they share one
       # fixed partition (`1`) — a partitioned suite still needs a valid database.
@@ -233,7 +240,9 @@ defmodule Mutare.Runner do
       with {:ok, baseline_ms} <- run_baseline(on_phase, sandbox, options.baseline_runs, fixed_env) do
         # Verbose-only detail: the baseline timing the cap is scaled from.
         on_phase.({:baseline_done, baseline_ms})
-        ctx = build_run_ctx(schema, sandbox, context, mode, baseline_ms, fixed_env, on_phase)
+
+        ctx =
+          build_run_ctx(schema, sandbox, context, mode, baseline_ms, fixed_env, on_phase, hydrate)
 
         # The run configuration the verbose running line reports (worker count); fired
         # just before `{:running, total}` so the reporter has it when it renders the label.
@@ -258,6 +267,7 @@ defmodule Mutare.Runner do
       end
     after
       Partitions.stop(partitions)
+      Hydrate.stop(hydrate)
     end
   end
 
@@ -270,7 +280,8 @@ defmodule Mutare.Runner do
          mode,
          baseline_ms,
          fixed_env,
-         on_phase
+         on_phase,
+         hydrate
        ) do
     options = context.options
     on_phase.(:coverage_probe)
@@ -291,7 +302,8 @@ defmodule Mutare.Runner do
       selection: selection,
       cap: cap,
       scopes: scopes,
-      retries: options.harness_retries
+      retries: options.harness_retries,
+      hydrate: hydrate
     }
   end
 
@@ -306,6 +318,10 @@ defmodule Mutare.Runner do
         # Check out a distinct partition for this run (and its harness retries),
         # check it back in when done — see `Mutare.Runner.Partitions`.
         result = Partitions.with_slot(partitions, fn env -> classify(ctx, site, env) end)
+        # Fill in a displayed survivor's deferred diff code before it reaches the reporter (and
+        # rides on into the collected results for the final/SARIF reports). A no-op on the eager
+        # path or a killed/no-coverage result — see `Mutare.Runner.Hydrate`.
+        result = Hydrate.result(ctx.hydrate, result)
         reporter.(result)
         result
       end,
