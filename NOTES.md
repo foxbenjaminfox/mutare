@@ -5460,16 +5460,32 @@ the tables in the test-helper process, which outlives the whole suite. Guard is
    (the dispatch *variable* stays the un-overridden `Recorder.var_name/0`), so the key
    tracks whatever the recogniser expects in either context. (`manifest_test`'s `pt_key/0`.)
 
-2. **The coverage *probe* then degrades to run-all, not real selection (accepted).** The
-   probe sets `MUTARE_COVERAGE`, so the bootstrap creates the shared tables — but Mutare's
-   own coverage tests churn those same global names: `helper_template_test`'s `setup_all`
-   deletes-and-recreates them (its copy dying with the module), and others write
-   probe-colliding ids. So the dump comes back empty and `CoverageProbe` runs every mutant
-   against the whole suite. Correct verdicts, just slower — the documented run-all
-   fallback. Making the probe do real *selection* under a full self-host needs those tests
-   to stop tearing down the shared tables (e.g. probe-impossible ids + create-if-missing),
-   a separate change; the `dump/1` guard above only ensures it degrades gracefully (no
-   crash) instead of aborting the probe.
+2. **The coverage *probe* recorded nothing → run-all** `[fixed — exclude the table-owning test]`.
+   The probe sets `MUTARE_COVERAGE`, so the bootstrap creates the shared `:mutare_cov_*`
+   tables in the test-helper process (alive for the whole suite). But one module destroyed
+   them: `helper_template_test`'s `setup_all` unconditionally `:ets.delete`s and recreates
+   them — its copy owned by the (module-lifetime) `setup_all` process, so it dies when the
+   module finishes, *before* `after_suite`. Everything recorded into the bootstrap's table
+   before it ran was lost with the delete; everything after fell to the `hit/1` missing-table
+   guard. The dump came back empty and `CoverageProbe` ran every mutant against the whole
+   suite. (The *other* coverage tests are already safe — `coverage_test` saves/restores and
+   `drop_table_unless`-es, and uses probe-impossible `999_999_*` ids — so only this one
+   module had to change.)
+
+   **The fix is the *other* self-hosting tool, not a dynamic table name.** A runtime-resolved
+   name can't separate the two the way the selector key does: the selector key works because
+   the metamutant's read-*sites* bake the key as a literal (transform-time) while only the
+   suite's `Selector.key/0` *calls* resolve at runtime — two non-interacting uses. Coverage
+   has no such split: the real `:mutare_cov` helper and the metamutant of `HelperTemplate`
+   are byte-identical recording logic in one sandbox BEAM sharing one env, so a runtime name
+   resolves identically for both (and a test-local override still diverts the *real* records
+   firing during that test's window). So `helper_template_test` is tagged `:coverage_tables`
+   and excluded under `MUTANT_UNDER_TEST` alongside `:runner`/`:property` (see
+   `test/test_helper.exs`). The probe's tables then survive the whole suite → a non-empty
+   dump → real per-file selection. Cost (same as `:runner`): `HelperTemplate`'s own
+   recording/attribution mutants, killed only by that module, go uncovered under dogfood and
+   surface as survivors rather than `:no_coverage`. The `dump/1` missing-table guard above
+   stays as the backstop for any other transient absence.
 
 ### Report diff fidelity for call-final keyword args `[fixed]`
 A `mix mutare --only lib/mutare/ignore.ex` surfaced two *corrupt survivor diffs* on

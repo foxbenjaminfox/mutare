@@ -5,7 +5,14 @@ defmodule Mutare.Coverage.HelperTemplateTest do
   # own VM. These tests exercise that logic directly against the shared ETS tables it owns, so
   # a regression in the recording/attribution tiers is caught in Mutare's own suite rather than
   # only when a sandbox runs. Named global ETS tables ⇒ `async: false`.
+  #
+  # `:coverage_tables` excludes the whole module under self-hosting: its `setup_all`
+  # `:ets.delete`s and recreates the `:mutare_cov_*` tables (and writes small, real-id-range
+  # markers) — under a dogfood run those are the *same* tables the coverage probe records into,
+  # so running it would wipe the probe's data and silently force run-all selection. See
+  # `test/test_helper.exs` and NOTES "Self-hosting".
   use ExUnit.Case, async: false
+  @moduletag :coverage_tables
 
   alias Mutare.Coverage.HelperTemplate, as: H
 
