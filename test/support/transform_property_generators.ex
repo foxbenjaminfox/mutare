@@ -190,7 +190,10 @@ defmodule Mutare.TransformPropertyGenerators do
   # A runtime expression over the in-scope names `vars`. Depth is capped low (4): each
   # generated `def` is rendered to source twice (input, then metamutant) and Sourceror's
   # formatter is super-linear in nesting depth, so a deeper tree mostly buys rendering
-  # time, not coverage of the syntactic corners the mutators care about.
+  # time, not coverage of the syntactic corners the mutators care about. Note the cap is on
+  # *depth* only — proper's outer `size` still scales leaf magnitudes and the module's function
+  # count, so generation cost keeps climbing with size (single samples reach ~18s near `max_size`
+  # 42); the property tests cap `max_size` to keep that tail off the timeout.
   def expr_gen(vars), do: sized(size, expr_sized(min(size, 4), vars))
 
   defp expr_sized(0, vars), do: leaf_gen(vars)

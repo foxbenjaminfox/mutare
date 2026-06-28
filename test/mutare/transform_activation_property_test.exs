@@ -45,7 +45,13 @@ defmodule Mutare.TransformActivationPropertyTest do
   # case than the baseline property's two compiles, so the budget can be a touch larger. The
   # deepened generator keeps coverage high per case. Raise locally for a longer soak.
   @numtests 40
-  @moduletag timeout: 300_000
+  # Cap proper's size — `expr_gen` already bounds depth (`min(size, 4)`), so larger sizes only
+  # inflate leaf/function counts, and the uncapped high-size tail tripped the timeout under load
+  # (see `transform_property_test.exs` for the full rationale).
+  @max_size 16
+  # Headroom over the per-property budget for a slow-but-correct soak under load
+  # (see `transform_property_test.exs`).
+  @moduletag timeout: 600_000
   @moduletag :property
 
   setup do
@@ -54,7 +60,9 @@ defmodule Mutare.TransformActivationPropertyTest do
     :ok
   end
 
-  property "activating any single mutant perturbs at most one function", numtests: @numtests do
+  property "activating any single mutant perturbs at most one function",
+    numtests: @numtests,
+    max_size: @max_size do
     forall module_ast <- Gen.module_gen() do
       source = Macro.to_string(module_ast)
       {metamutant, sites, _next_id} = Mutare.transform_string(source, file: "prop.ex")

@@ -35,10 +35,23 @@ defmodule Mutare.TransformPropertyTest do
   # buys comparable coverage at a fraction of the old wall-clock, keeping it fast-loop
   # friendly. Raise locally for a longer soak.
   @numtests 100
-  @moduletag timeout: 300_000
+  # Cap proper's size. `expr_gen` already bounds expression *depth* (`min(size, 4)`), so size
+  # beyond ~16 only inflates leaf magnitudes and function count — cost without structural coverage
+  # — while the uncapped tail (single `module_gen` samples up to ~18s near `max_size` 42) is what
+  # occasionally pushed a run past the timeout under CPU contention, surfacing as a flaky failure
+  # whose stack was an ExUnit-timeout snapshot taken mid-generation.
+  @max_size 16
+  # Headroom over the per-property budget. The cap above bounds the *worst-case* generation sample,
+  # but this property still runs `@numtests` full transform+render cycles, so on a loaded machine
+  # (several test suites contending for cores — the exact situation that first tripped this) its
+  # wall-clock can climb. A generous timeout keeps a slow-but-correct soak from being scored a
+  # failure; these tests are already `:property`-tagged out of the fast loop.
+  @moduletag timeout: 600_000
   @moduletag :property
 
-  property "the transform renders valid Elixir with no equivalent mutant", numtests: @numtests do
+  property "the transform renders valid Elixir with no equivalent mutant",
+    numtests: @numtests,
+    max_size: @max_size do
     forall module_ast <- Gen.module_gen() do
       source = Macro.to_string(module_ast)
 
