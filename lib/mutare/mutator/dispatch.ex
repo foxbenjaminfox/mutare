@@ -255,17 +255,13 @@ defmodule Mutare.Mutator.Dispatch do
   # one of these. `mutate/1` is no longer required — a structural/pipe-only family produces its
   # mutations through `mutate/2` or a structural hook instead. (`macros/0`/`empty_collection?/1`
   # are routing/classification, not producers, so they don't qualify a module on their own.)
-  @producing_callbacks [
-    mutate: 1,
-    mutate: 2,
-    pattern_mutations: 2,
-    pattern_mutations: 3,
-    return_replacements: 1,
-    return_replacements: 2,
-    condition_replacements: 1,
-    condition_replacements: 2,
-    host: 2
-  ]
+  #
+  # `mutate/1,2` are base-behaviour, `host/2` is `MacroAware`; the structural hooks
+  # (`return_replacements`, `condition_replacements`, `pattern_mutations`) are derived from
+  # `Structural`'s own `@callback`s, so adding a structural hook there updates this set
+  # automatically — it can't drift. Order is irrelevant (consumed via `Enum.any?`).
+  @producing_callbacks [mutate: 1, mutate: 2, host: 2] ++
+                         Mutare.Mutator.Structural.behaviour_info(:callbacks)
 
   @doc """
   Whether `term` is a module that implements `Mutare.Mutator` — it exports `name/0` and at least

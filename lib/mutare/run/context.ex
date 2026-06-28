@@ -46,24 +46,33 @@ defmodule Mutare.Run.Context do
           defer_site_code: boolean()
         }
 
-  defstruct options: %Options{},
-            project: nil,
-            reporter: nil,
-            on_phase: nil,
-            on_start: nil,
-            on_scan: nil,
-            # Whether the scan should **defer** rendering each site's before/after diff text,
-            # re-deriving it later only for the sites a reporter actually shows (`Mutare.Runner.Hydrate`).
-            # A run-mode decision, not user config: the Mix task sets it `true` only when it knows the
-            # active reporters need code for survivors alone (no `--verbose`, no `:json`/`:html`), so the
-            # build skips the per-mutant `Sourceror` render that dominates it. `false` (the default) keeps
-            # the eager behaviour — what every library caller and a custom `:reporter` hook (which may read
-            # any result's code) safely gets. Read by `Mutare.Schema` (scan) and `Mutare.Runner` (hydration).
-            defer_site_code: false
+  # The wiring fields — everything on the struct except `:options` (the hooks, `:project`, and the
+  # run-mode `:defer_site_code` flag). `defstruct` and `@context_keys` both derive from this single
+  # list, so a newly-added wiring field can't leave `@context_keys` stale: it is split out of the
+  # keyword input automatically rather than silently mis-routed into `Options.new/1` (where it would
+  # fail as an unknown option).
+  #
+  # `defer_site_code`: whether the scan should **defer** rendering each site's before/after diff text,
+  # re-deriving it later only for the sites a reporter actually shows (`Mutare.Runner.Hydrate`). A
+  # run-mode decision, not user config: the Mix task sets it `true` only when it knows the active
+  # reporters need code for survivors alone (no `--verbose`, no `:json`/`:html`), so the build skips
+  # the per-mutant `Sourceror` render that dominates it. `false` (the default) keeps the eager
+  # behaviour — what every library caller and a custom `:reporter` hook (which may read any result's
+  # code) safely gets. Read by `Mutare.Schema` (scan) and `Mutare.Runner` (hydration).
+  @wiring_fields [
+    project: nil,
+    reporter: nil,
+    on_phase: nil,
+    on_start: nil,
+    on_scan: nil,
+    defer_site_code: false
+  ]
+
+  defstruct [options: %Options{}] ++ @wiring_fields
 
   # The wiring keys, split out of a keyword list before the rest goes to `Options.new/1`. Anything
   # not here is a configuration key (or an unknown key `Options` rejects).
-  @context_keys [:project, :reporter, :on_phase, :on_start, :on_scan, :defer_site_code]
+  @context_keys Keyword.keys(@wiring_fields)
 
   @doc """
   Normalize an input into a `Run.Context`.

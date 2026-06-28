@@ -286,13 +286,37 @@ defmodule Mutare.Mutators.ModeSwap do
   @drift_probe :__mutare_drift_probe__
 
   @doc false
-  # Drift guard for the `@rule_groups` ↔ `swaps/2` pairing, which has no compile-time guarantee:
-  # the swap-set keys any rule group routes to `swaps/2` that have *no* matching clause (so they
-  # would hit the raising catch-all when a real mutant exercises them). Empty in a healthy module;
-  # the `ModeSwap` suite asserts so, turning "added a `@rule_groups` entry, forgot its `swaps/2`
-  # clause" from a latent runtime `ArgumentError` into a failing test.
+  # Drift guard for the `@rule_groups` ↔ `swaps/2` pairing, which has no *structural* compile-time
+  # guarantee: the swap-set keys any rule group routes to `swaps/2` that have *no* matching clause
+  # (so they would hit the raising catch-all when a real mutant exercises them). Empty in a healthy
+  # module — `__assert_swap_coverage__/2` (an `@after_compile` hook) makes a non-empty result a
+  # **compile** error, turning "added a `@rule_groups` entry, forgot its `swaps/2` clause" from a
+  # latent runtime `ArgumentError` into a failed build (the `ModeSwap` suite asserts it too).
   @spec uncovered_swap_groups() :: [atom()]
   def uncovered_swap_groups, do: Enum.reject(swap_group_keys(), &swaps_defined?/1)
+
+  @after_compile {__MODULE__, :__assert_swap_coverage__}
+
+  @doc false
+  # Fail the build on drift, checked at compile time rather than only under the test suite. Two ways
+  # the `@rule_groups`/`swaps/2` contract can break: a routed group with no clause (the common slip),
+  # and — subtler — a `swaps/2` catch-all softened so it no longer raises, which would silently
+  # defeat `swaps_defined?/1`'s probe. Both are caught here.
+  def __assert_swap_coverage__(_env, _bytecode) do
+    unless catch_all_raises?() do
+      raise "ModeSwap drift guard defunct: the swaps/2 catch-all no longer raises for an " <>
+              "undefined group, so swaps_defined?/1 can no longer detect a missing clause."
+    end
+
+    case uncovered_swap_groups() do
+      [] ->
+        :ok
+
+      groups ->
+        raise "ModeSwap: @rule_groups route to swap group(s) with no swaps/2 clause: " <>
+                "#{inspect(groups)} — add the clause(s) or fix the table."
+    end
+  end
 
   # The swap-set keys every `@rule_groups` entry routes to `swaps/2`: a plain group atom, or the
   # value-set atoms of a `{:kw, [key: set]}` group (whose `keyword_value_swaps/2` calls
@@ -313,6 +337,16 @@ defmodule Mutare.Mutators.ModeSwap do
     true
   rescue
     ArgumentError -> false
+  end
+
+  # Whether the `swaps/2` catch-all still raises for a group with no clause — the property
+  # `swaps_defined?/1` depends on. A healthy module raises here; a catch-all softened to return
+  # `[]` would not, silently defeating the guard, which `__assert_swap_coverage__/2` rejects.
+  defp catch_all_raises? do
+    swaps(:__mutare_undefined_group__, @drift_probe)
+    false
+  rescue
+    ArgumentError -> true
   end
 
   @impl Mutare.Mutator
@@ -485,7 +519,9 @@ defmodule Mutare.Mutators.ModeSwap do
 
   # A `@rules` group with no swap-set clause above is a programming error — a new rule
   # added without its `swaps/2` entry. Fail loudly at analysis time rather than with an
-  # opaque FunctionClauseError, since the two-edit pairing has no compile-time guard.
+  # opaque FunctionClauseError. **Load-bearing**: `swaps_defined?/1` / `catch_all_raises?/0`
+  # rely on this clause raising `ArgumentError`; softening it to return `[]` defeats the drift
+  # guard, which `__assert_swap_coverage__/2` catches at compile time.
   defp swaps(group, _atom),
     do: raise(ArgumentError, "ModeSwap: no swap-set defined for group #{inspect(group)}")
 

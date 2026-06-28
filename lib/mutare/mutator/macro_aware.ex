@@ -200,5 +200,8 @@ defmodule Mutare.Mutator.MacroAware do
           | :pinned
           | {:keyword, [keyword_value_treatment()]}
 
-  @optional_callbacks macros: 0, host: 2, macro_routing: 1
+  # `macros/0` is **required**: a `MacroAware` module exists to register macros, so omitting it is
+  # always a mistake — a typo'd callback name would otherwise compile to a silently inert mutator.
+  # Only `host/2` and `macro_routing/1` are genuinely optional (needed only for `:hosted` treatments).
+  @optional_callbacks host: 2, macro_routing: 1
 end
