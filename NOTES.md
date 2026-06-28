@@ -2622,6 +2622,14 @@ Three deliberate constraints keep it sound:
   empty-bound guard (`bound_var_names/1` → `[]`) skips it (the assertion-only mutation an
   empty `{} = case …` would express is left to the poison-free common case — a small,
   deliberate gap).
+* **An outer pin cannot overlap a chained RHS binding.** In
+  `{^x, y, q} = {x, z, q} = point`, the source snapshots the pre-match `x` for the pin before
+  evaluating the right-associative chain. The tuple-export rewrite would evaluate `{x, z, q} =
+  point` as its inner-case scrutinee first, so `^x` would incorrectly see the rebound value.
+  `MatchPatterns` rejects structural candidates when an outer pinned name intersects the exact
+  binding set of any RHS-chain pattern; the original statement remains untouched. Snapshotting
+  pinned values through fresh temporaries and every selector branch would recover these rare
+  candidates, but is not justified by their value.
 * **The export set is the *exact* binding set, including `_`-prefixed names.** This is why
   `bound_var_names/1` can't reuse `var_name/1`: that drops both bare `_` *and* `_`-prefixed
   names, which is right for a swap/wildcard *target* (you don't reorder `_x`) but wrong for

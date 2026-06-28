@@ -71,21 +71,27 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   end
 
   defp match_pattern_candidates(raw_lhs, raw_rhs, structural) do
-    case pattern_export_with_mutations(raw_lhs, structural) do
-      nil ->
-        []
+    if rhs_chain_rebinds_lhs_pin?(raw_lhs, raw_rhs) do
+      []
+    else
+      case pattern_export_with_mutations(raw_lhs, structural) do
+        nil ->
+          []
 
-      {lhs, range, export, mutations} ->
-        Enum.map(mutations, fn {mutator, mutated} ->
-          %Candidate.MatchPattern{
-            mutator: mutator,
-            original: lhs,
-            mutated: mutated,
-            export: export,
-            raw_rhs: raw_rhs,
-            range: range
-          }
-        end)
+        {lhs, range, export, mutations} ->
+          export = export_with_rhs_chain(export, raw_rhs)
+
+          Enum.map(mutations, fn {mutator, mutated} ->
+            %Candidate.MatchPattern{
+              mutator: mutator,
+              original: lhs,
+              mutated: mutated,
+              export: export,
+              raw_rhs: raw_rhs,
+              range: range
+            }
+          end)
+      end
     end
   end
 
@@ -371,4 +377,86 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # mutare:ignore[clause_drop, pattern_swap] equivalent — dropping the 2-element head leaves the general clause to build `{:{}, [], [a, b]}`, which renders and matches identically to `{a, b}`; and reversing `[a, b]` reverses the tuple consistently in *both* the outer match and the inner returns (the same `export` value is used for both), so the bindings still map correctly.
   defp export_tuple([a, b]), do: {a, b}
   defp export_tuple(vars), do: {:{}, [], vars}
+
+  # A **chained** match (`pat = mid = rhs`) binds `mid` — and any deeper chain pattern — on top
+  # of `pat`. Those bindings escape the original statement, but the tuple-re-export delivery makes
+  # `rhs` the selector's inner-case *scrutinee* (`case rhs do <pat> -> <export>; … end`), so a
+  # chain var bound while evaluating the scrutinee is trapped inside the selector branch — left
+  # out of the export tuple it is undefined for the rest of the scope and the metamutant fails to
+  # compile. Append every chain-bound var to the export so it rides back out through the outer
+  # rebind; the scrutinee binds it in both the mutant and baseline branches, so it is in scope for
+  # every branch's `<export>` return.
+  #
+  # Each chain var is repeated by its **occurrence count** in the chain pattern — exactly as the
+  # LHS pattern's own vars are (`pattern_export_context/1`). A self-constraining link like
+  # `{x, y} = {a, a} = e` thus exports `a` twice (`{x, y, a, a} = …`), so the outer rebind keeps
+  # the self-use and doesn't gain an "unused variable a" warning the original never had; the two
+  # slots come from the *same* binding, so the rebind's `{a, a} = {va, va}` is trivially satisfied
+  # and re-imposes no constraint. A var the LHS pattern already exports is skipped (it is carried
+  # once there, with its own multiplicity — a second slot *would* re-impose a spurious
+  # `t[i] == t[j]` equality between two distinct tuple positions on the rebind).
+  defp export_with_rhs_chain(export, raw_rhs) do
+    existing = export_vars(export)
+    existing_names = MapSet.new(existing, fn {name, _meta, _ctx} -> name end)
+    link_patterns = rhs_chain_patterns(raw_rhs)
+
+    counts =
+      Enum.reduce(link_patterns, %{}, fn pattern, acc ->
+        Map.merge(acc, PatternStructure.occurrence_counts(pattern), fn _name, a, b -> a + b end)
+      end)
+
+    extra =
+      link_patterns
+      |> Enum.flat_map(&PatternStructure.bound_var_names/1)
+      |> Enum.uniq()
+      |> Enum.reject(&MapSet.member?(existing_names, &1))
+      |> Enum.flat_map(&List.duplicate({&1, [], nil}, Map.fetch!(counts, &1)))
+
+    case extra do
+      [] -> export
+      _ -> export_tuple(existing ++ extra)
+    end
+  end
+
+  # The tuple-export rewrite evaluates a chained RHS (`mid = value`) as the inner `case`
+  # scrutinee, then matches the outer LHS inside that case. Usually that preserves the source's
+  # right-to-left match order. It does not when the outer LHS pins a name that a chain pattern
+  # rebinds: in the source, `^x` keeps the value from before the whole match, while inside the
+  # generated case it sees the chain's new `x`. Decline structural candidates for exactly that
+  # intersection so the baseline remains the original match. Preserving these candidates would
+  # require snapshotting every pinned value before evaluating the chain, including fresh-name
+  # and export plumbing; this rare shape is safer to leave unmutated.
+  defp rhs_chain_rebinds_lhs_pin?(raw_lhs, raw_rhs) do
+    pinned = pinned_var_names(raw_lhs)
+
+    Enum.any?(rhs_chain_patterns(raw_rhs), fn pattern ->
+      Enum.any?(PatternStructure.bound_var_names(pattern), &MapSet.member?(pinned, &1))
+    end)
+  end
+
+  defp pinned_var_names(pattern) do
+    {_pattern, names} =
+      Macro.prewalk(pattern, MapSet.new(), fn
+        {:^, _meta, [{name, _var_meta, ctx}]} = pin, acc
+        when is_atom(name) and is_atom(ctx) ->
+          {pin, MapSet.put(acc, name)}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    names
+  end
+
+  # The LHS pattern of each `=` along a chained match's right spine (`a = b = {c, c} = e` →
+  # `[b, {c, c}]`), stopping at the non-`=` **terminal** expression — whose vars are *reads*
+  # (`parse(node)`), not bindings, so they must not be exported. Each returned node is a pure
+  # pattern, safe for `bound_var_names`/`occurrence_counts`.
+  defp rhs_chain_patterns({:=, _meta, [lhs, rhs]}), do: [lhs | rhs_chain_patterns(rhs)]
+  defp rhs_chain_patterns(_rhs), do: []
+
+  # The bound-variable nodes inside an export tuple built by `export_tuple/1`: the explicit
+  # `{:{}, …}` n-tuple form (1 or 3+ vars) or the bare 2-tuple `{a, b}`.
+  defp export_vars({:{}, _meta, vars}), do: vars
+  defp export_vars({a, b}), do: [a, b]
 end

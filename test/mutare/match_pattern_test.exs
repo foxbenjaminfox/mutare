@@ -66,6 +66,11 @@ defmodule Mutare.MatchPatternTest do
       {_keep, y, z} = t
       _keep + y - z
     end
+
+    def chained(point) do
+      {x, y} = whole = point
+      {whole, x - y}
+    end
   end
   """
 
@@ -203,6 +208,25 @@ defmodule Mutare.MatchPatternTest do
 
       Selector.put(id(sites, :pattern_swap, "{_keep, z, y}", 51))
       assert F.underscored({10, 5, 2}) == 10 + 2 - 5
+    end
+  end
+
+  describe "a chained match re-exports the chain's own bindings" do
+    # Regression: `{x, y} = whole = point` is a *chained* match. The tuple-re-export delivery
+    # makes the RHS (`whole = point`) the selector's inner-case scrutinee, so `whole` — bound by
+    # the chain link — was trapped inside the branch and left undefined for the trailing
+    # `{whole, …}` read, so the metamutant failed to compile (setup_all would crash). This is the
+    # exact shape mutare_ecto hit with `%QueryCall{…} = call = QueryCall.parse(node)`. The fix
+    # appends every chain var to the export tuple so it rides back out through the outer rebind.
+    test "the chain variable escapes to the rest of the scope (baseline)" do
+      assert F.chained({5, 2}) == {{5, 2}, 3}
+    end
+
+    test "the pattern still swaps while the chain variable stays bound", %{sites: sites} do
+      # `whole` (the chain var) is rebound in the enclosing scope, and the swapped `{y, x}`
+      # makes the trailing `x - y` read the transposed values — both reachable at once.
+      Selector.put(id(sites, :pattern_swap, "{y, x}", 56))
+      assert F.chained({5, 2}) == {{5, 2}, 2 - 5}
     end
   end
 
@@ -392,6 +416,102 @@ defmodule Mutare.MatchPatternTest do
   end
 
   describe "Mutare.Transform.Analyze.MatchPatterns mechanics" do
+    test "a chain that rebinds an outer pinned name is not rewritten" do
+      # The source match snapshots `x` for `^x` before evaluating the right-associative chain.
+      # Moving the chain into an inner-case scrutinee would rebind `x` first, making the pin see
+      # the new value and changing the baseline from MatchError to success. This shape therefore
+      # gets no structural candidate; the original match stays intact.
+      source = """
+      defmodule Mutare.MPPinnedChainFixture do
+        def f(point) do
+          x = 1
+          {^x, y, q} = {x, z, q} = point
+          {x, y, z, q}
+        end
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+
+      assert sites == []
+
+      {compiled, _io} =
+        ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+
+      [{module, _binary}] = compiled
+
+      assert module.f({1, 3, 4}) == {1, 3, 3, 4}
+      assert_raise MatchError, fn -> module.f({2, 3, 4}) end
+    end
+
+    test "a chained match's RHS-bound vars are appended to the export tuple" do
+      # `{a, b} = call = build(node)` — the chain link `call = …` binds `call`, which the
+      # tuple-re-export delivery would trap inside the inner-case scrutinee. `export_with_rhs_chain/2`
+      # appends it to the export so the outer rebind becomes `{a, b, call} = case … end`, keeping
+      # `call` in scope for the trailing `combine(call, …)`. Without it the metamutant raised
+      # "undefined variable call" (mutare_ecto's poison).
+      source = """
+      defmodule Mutare.MPChainFixture do
+        def go(node) do
+          {a, b} = call = build(node)
+          combine(call, a - b)
+        end
+
+        defp build(n), do: {n, n}
+        defp combine(c, d), do: {c, d}
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+
+      assert Enum.any?(sites, &(&1.mutator == :pattern_swap and &1.mutated_code == "{b, a}"))
+      assert meta =~ "{a, b, call} ="
+
+      {compiled, io} = ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+      assert [{_module, _binary}] = compiled
+      refute io =~ "undefined variable"
+    end
+
+    test "a chained match's self-constraining link keeps its occurrence multiplicity" do
+      # `{x, y} = {a, a} = point` — `a` is bound by a *self-constraint* (`{a, a}`) in the chain.
+      # The appended export var must repeat `a` by its occurrence count (`{x, y, a, a} = …`), not
+      # collapse to a single `a`: the repeated slot keeps the self-use, so an `a` the rest of the
+      # scope never reads doesn't gain an "unused variable" warning the original `{a, a} = point`
+      # never had. (The two slots are the same binding, so the rebind re-imposes no real constraint.)
+      source = """
+      defmodule Mutare.MPSelfConstraintFixture do
+        def f(point) do
+          {x, y} = {a, a} = point
+          x - y
+        end
+      end
+      """
+
+      {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+      assert meta =~ "{x, y, a, a} ="
+
+      {_compiled, io} = ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+      refute io =~ "is unused"
+    end
+
+    test "a non-chained match's export is unchanged (no spurious passthrough vars)" do
+      # A plain `<pat> = e` (non-`=` RHS) must export only the pattern's own vars — the RHS
+      # `point` is a *read*, not a binding, so `rhs_chain_bound_names/1` returns `[]` and the
+      # export stays `{x, y}` (the 2-tuple form), never `{x, y, point}`.
+      source = """
+      defmodule Mutare.MPPlainFixture do
+        def f(point) do
+          {x, y} = point
+          x - y
+        end
+      end
+      """
+
+      {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+      assert meta =~ "{x, y} ="
+      refute meta =~ "point} ="
+    end
+
     test "a non-final statement that is not a binding macro is analyzed normally" do
       # `binding_pattern_macro/1`'s fallback returns nil for any statement that isn't a
       # binding-escaping macro call. A bare-variable statement (`{:x, meta, nil}`, whose

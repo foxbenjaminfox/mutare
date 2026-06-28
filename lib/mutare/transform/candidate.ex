@@ -292,7 +292,9 @@ defmodule Mutare.Transform.Candidate do
     #
     # `original`/`mutated` are the LHS pattern before/after (the focused one-line diff)
     # and `range` locates it; `export` is the shared `{vars}` tuple (built once from the
-    # pattern's `bound_var_names`, so every branch and the outer match agree on it);
+    # pattern's `bound_var_names`, so every branch and the outer match agree on it — plus,
+    # for a **chained** match `<pat> = mid = e`, the chain vars `mid` binds, which escape the
+    # scrutinee and so must ride the tuple too; see `Analyze.MatchPatterns.export_with_rhs_chain/2`);
     # `raw_rhs` is the un-emitted matched expression the mutant branch matches (the
     # baseline branch uses the *emitted* rhs, so nested mutations there still fire). Only
     # mutations that preserve the bound-variable set are admitted (swaps always do;
