@@ -80,14 +80,43 @@ defmodule Mutare.NoteTest do
     end
   end
 
-  describe "Mutation.new/2 and normalize_mutant/1 (the shared noted-mutant contract)" do
+  describe "Mutation.new/tagged and normalize_mutant/1 (the shared noted-mutant contract)" do
     test "new/2 builds the struct; new/1 defaults the note to nil" do
       assert Mutation.new(1, "why") == %Mutation{node: 1, note: "why"}
       assert Mutation.new(1) == %Mutation{node: 1, note: nil}
     end
 
-    test "new/2 rejects a non-string note at the guard" do
+    test "new/2 rejects a non-string positional note at the guard" do
       assert_raise FunctionClauseError, fn -> Mutation.new(1, 42) end
+    end
+
+    test "new/2 takes a keyword list to carry note and/or variant together" do
+      assert Mutation.new(1, note: "why", variant: "zero") ==
+               %Mutation{node: 1, note: "why", variant: "zero"}
+
+      # Either key is optional; absent ones default to nil (an empty list = no metadata).
+      assert Mutation.new(1, variant: "zero") == %Mutation{node: 1, note: nil, variant: "zero"}
+      assert Mutation.new(1, note: "why") == %Mutation{node: 1, note: "why", variant: nil}
+      assert Mutation.new(1, []) == %Mutation{node: 1, note: nil, variant: nil}
+
+      # A list of labels rides through unchanged (normalized downstream, like variant/2's return).
+      assert Mutation.new(1, variant: ["pred", "zero"]).variant == ["pred", "zero"]
+    end
+
+    test "new/2 keyword form is the same value as tagged/2 for a variant-only mutant" do
+      assert Mutation.new(1, variant: "zero") == Mutation.tagged(1, "zero")
+    end
+
+    test "new/2 rejects an unknown keyword key (a typo fails loud, not silently dropped)" do
+      assert_raise ArgumentError, ~r/unknown keys \[:varient\]/, fn ->
+        Mutation.new(1, varient: "zero")
+      end
+    end
+
+    test "new/2 rejects a non-string note given via the keyword form" do
+      assert_raise ArgumentError, ~r/:note must be a string or nil/, fn ->
+        Mutation.new(1, note: 42)
+      end
     end
 
     test "normalize_mutant triples a struct / bare node with its note and variant" do
