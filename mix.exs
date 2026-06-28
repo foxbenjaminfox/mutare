@@ -79,11 +79,14 @@ defmodule Mutare.MixProject do
     [
       maintainers: ["Benjamin Fox"],
       licenses: ["MIT"],
-      links: %{"GitHub" => @source_url},
+      links: %{
+        "GitHub" => @source_url,
+        "Changelog" => "https://hexdocs.pm/mutare/changelog.html"
+      },
       # Hex's default file set already includes LICENSE*, README*, mix.exs,
       # and lib/; list it explicitly so the bundled demo projects don't slip
       # into the package while keeping the licence and docs in.
-      files: ["lib", "mix.exs", "README.md", "LICENSE"]
+      files: ["lib", "mix.exs", "README.md", "CHANGELOG.md", "LICENSE"]
     ]
   end
 
@@ -109,7 +112,7 @@ defmodule Mutare.MixProject do
       main: "readme",
       source_url: @source_url,
       source_ref: "v#{@version}",
-      extras: ["README.md", "LICENSE"],
+      extras: ["README.md", "CHANGELOG.md", "LICENSE"],
       skip_code_autolink_to: &skip_autolink_to?/1,
       skip_undefined_reference_warnings_on: &(&1 in @typespec_refs_to_hidden),
       # Modules fall into the first group whose entry matches, so the explicit

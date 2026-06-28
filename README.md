@@ -14,14 +14,36 @@ switch, then selects the active mutant per test run via an environment variable.
 
 ## Installation
 
-Add `mutare` to your `deps`:
+The quickest path is the [igniter](https://hexdocs.pm/igniter) installer, which adds
+Mutare to your `:dev`/`:test` deps and auto-configures the framework plugins:
+
+```
+mix igniter.install mutare
+```
+
+It inspects your dependencies and, for each framework it finds, adds the matching
+companion package and wires it into a generated `.mutare.exs`:
+
+| Detected dependency                     | Package added              | Wired into                                    |
+| --------------------------------------- | -------------------------- | --------------------------------------------- |
+| `:phoenix`                              | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`          |
+| `:phoenix_live_view`                    | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
+| `:ecto_sql` / `:phoenix_ecto` / `:ecto` | `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
+| `:oban` / `:oban_pro`                   | `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`             |
+| `:gettext`                              | `mutare_gettext`           | `:plugins` — `Mutare.Gettext`                 |
+
+A mutator package extends the `:mutators` list; a non-mutating **plugin** like
+`mutare_gettext` (which teaches Mutare a library's compile-time vocabulary so the
+built-in mutators land on it) joins the `:plugins` list. The Ecto repo is detected
+automatically (pass `--repo MyApp.Repo` to override). If you already have a
+`.mutare.exs`, it is left untouched and the recommended keys are printed for you to
+merge in. (No igniter yet? `mix archive.install hex igniter_new`.)
+
+Or add it by hand — Mutare is a test-time tool, so keep it out of production:
 
 ```elixir
-def deps do
-  [
-    {:mutare, "~> 0.1", only: [:dev, :test], runtime: false}
-  ]
-end
+# mix.exs
+{:mutare, "~> 0.1", only: [:dev, :test], runtime: false}
 ```
 
 Then run `mix mutare`.
@@ -110,40 +132,6 @@ If a mutant won't compile (e.g. a custom mutator emits something invalid), it
 would normally sink the whole single build — so Mutare detects the offending
 mutant from the compile error, drops it (reported as *poisoned*, excluded from
 the score), and rebuilds.
-
-## Installation
-
-The quickest path is the [igniter](https://hexdocs.pm/igniter) installer, which adds
-Mutare to your `:dev`/`:test` deps and auto-configures the framework plugins:
-
-```
-mix igniter.install mutare
-```
-
-It inspects your dependencies and, for each framework it finds, adds the matching
-companion package and wires it into a generated `.mutare.exs`:
-
-| Detected dependency                     | Package added              | Wired into                                    |
-| --------------------------------------- | -------------------------- | --------------------------------------------- |
-| `:phoenix`                              | `mutare_phoenix`           | `:mutators` — `Mutare.Phoenix.all/0`          |
-| `:phoenix_live_view`                    | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
-| `:ecto_sql` / `:phoenix_ecto` / `:ecto` | `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
-| `:oban` / `:oban_pro`                   | `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`             |
-| `:gettext`                              | `mutare_gettext`           | `:plugins` — `Mutare.Gettext`                 |
-
-A mutator package extends the `:mutators` list; a non-mutating **plugin** like
-`mutare_gettext` (which teaches Mutare a library's compile-time vocabulary so the
-built-in mutators land on it) joins the `:plugins` list. The Ecto repo is detected
-automatically (pass `--repo MyApp.Repo` to override). If you already have a
-`.mutare.exs`, it is left untouched and the recommended keys are printed for you to
-merge in. (No igniter yet? `mix archive.install hex igniter_new`.)
-
-Or add it by hand — Mutare is a test-time tool, so keep it out of production:
-
-```elixir
-# mix.exs
-{:mutare, "~> 0.1", only: [:dev, :test], runtime: false}
-```
 
 ## Usage
 

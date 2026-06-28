@@ -41,8 +41,12 @@ if Code.ensure_loaded?(Igniter) do
 
     @example "mix igniter.install mutare"
 
-    # Published plugin versions. Bump alongside the plugins' releases.
-    @plugin_version "~> 0.1"
+    # Companion packages release independently of Mutare, so the installer adds
+    # them with an open requirement: `mix deps.get` then resolves whatever version
+    # is current and compatible (each companion pins the Mutare versions it
+    # supports in its own mix.exs). This keeps the two uncoupled — a Mutare release
+    # never has to re-pin or re-release the companions in lockstep.
+    @plugin_requirement ">= 0.0.0"
 
     @impl Igniter.Mix.Task
     def info(_argv, _composing_task) do
@@ -109,7 +113,7 @@ if Code.ensure_loaded?(Igniter) do
       else
         Igniter.Project.Deps.add_dep(
           igniter,
-          {name, @plugin_version, only: [:dev, :test], runtime: false}
+          {name, @plugin_requirement, only: [:dev, :test], runtime: false}
         )
       end
     end

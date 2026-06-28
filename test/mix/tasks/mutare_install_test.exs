@@ -150,7 +150,7 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     igniter = project([{:oban, "~> 2.17"}]) |> install()
 
     assert {:ok, declaration} = Deps.get_dep(igniter, :mutare_oban)
-    assert declaration =~ ~s({:mutare_oban, "~> 0.1")
+    assert declaration =~ ~s({:mutare_oban, ">= 0.0.0")
     assert declaration =~ "only: [:dev, :test]"
     assert declaration =~ "runtime: false"
   end
@@ -185,7 +185,7 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     igniter = project([{:gettext, "~> 0.26"}]) |> install()
 
     assert {:ok, declaration} = Deps.get_dep(igniter, :mutare_gettext)
-    assert declaration =~ ~s({:mutare_gettext, "~> 0.1")
+    assert declaration =~ ~s({:mutare_gettext, ">= 0.0.0")
     assert declaration =~ "only: [:dev, :test]"
     assert declaration =~ "runtime: false"
   end
@@ -222,7 +222,7 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     igniter = project([{:phoenix, "~> 1.7"}]) |> install()
 
     assert {:ok, declaration} = Deps.get_dep(igniter, :mutare_phoenix)
-    assert declaration =~ ~s({:mutare_phoenix, "~> 0.1")
+    assert declaration =~ ~s({:mutare_phoenix, ">= 0.0.0")
     assert declaration =~ "only: [:dev, :test]"
     assert declaration =~ "runtime: false"
   end
