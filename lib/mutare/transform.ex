@@ -313,16 +313,42 @@ defmodule Mutare.Transform do
     # super-forwarding closure variable, and the hoisted pipe-stage closure variable
     # (see `Mutare.Transform.Names`).
     names = Names.generated_names(parsed)
+    config = build_config(opts, names)
+    ctx = build_ctx(config, opts)
 
-    config = %Config{
+    # Third-party plugins (`Mutare.Plugin`): their `macros/0` extends the registry below and
+    # their `expand_use/3` overrides `use`-expansion. Not mutators — they make the built-in
+    # mutators' work land on a library's DSL (the Gettext case). Validated + resolved here at the
+    # boundary (like `:mutators`) to `Mutare.Plugin.Spec`s — carrying each plugin's `opts`,
+    # delivered to `expand_use/3`'s context — so a non-plugin entry fails loudly rather than being
+    # silently dropped by the downstream per-callback filters. `Mutare.Options` validates the same
+    # way, so the `Mutare.run/2` path is covered too.
+    plugins = opts |> Keyword.get(:plugins, []) |> Mutare.Plugin.validate!()
+
+    # The known-macro registry (`Mutare.Macros`): built-ins (`Kernel.match?`/`destructure`)
+    # merged with the declarative `:macros` option, any enabled mutator's `macros/0`, and any
+    # enabled plugin's `macros/0`. It tells the resolution pass how to route a recognised
+    # macro's arguments (a pattern, an opaque DSL body). Built from the resolved mutator specs
+    # in `config`, so a library's mutator/plugin auto-registers the macros it relies on. The plugin
+    # *specs* are passed straight through (`build/3` reads each's `macros/0`); a `macros/0`
+    # registration is opts-independent (a library fact), so the `opts` they carry are ignored there
+    # and ride along separately to `expand_use/3`'s context.
+    macros = Mutare.Macros.build(Keyword.get(opts, :macros, []), config.mutators, plugins)
+
+    {transformed, ctx} = transform_node(annotate_tree(parsed, opts, plugins, macros), ctx)
+
+    {transformed, ctx, parsed}
+  end
+
+  # The immutable transform config for one source: generated names + the resolved/validated
+  # `:mutators` and `:skip_ids`. `:mutators` may arrive as family atoms / bare modules (tests,
+  # the default set) or already-resolved specs (the Options/Config path); `resolve/1` is
+  # idempotent on specs. A skipped id's site is still recorded (`poisoned: true`, for the
+  # denominator and id stability) but emits no selector/copy, so the metamutant compiles.
+  defp build_config(opts, names) do
+    %Config{
       file: Keyword.get(opts, :file, "nofile"),
-      # Normalize to `Mutare.Mutator.Spec`s — `:mutators` may arrive as family
-      # atoms / bare modules (tests, the default set) or already-resolved specs
-      # (the Options/Config path); `resolve/1` is idempotent on specs.
       mutators: opts |> Keyword.get(:mutators, @default_mutators) |> Mutare.Mutators.resolve(),
-      # Mutant ids to drop (e.g. compile-poisoning, found by the runner): their
-      # site is still recorded (`poisoned: true`, for the denominator and id
-      # stability) but no selector/copy is generated, so the metamutant compiles.
       skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
       # Default `true`: the public API and tests render each site's diff eagerly. A `mix mutare`
       # scan passes `false` to defer it (see `Mutare.Transform.Config`).
@@ -333,65 +359,44 @@ defmodule Mutare.Transform do
       piped_var: names.piped_var,
       cond_var: names.cond_var
     }
+  end
 
-    ctx = %Ctx{
+  # The per-source transform context: the config, a primed top-level (empty-behaviours) mutator
+  # scope (`put_behaviours/2` refreshes the cache at each `defmodule` boundary), and the claim
+  # accumulator. The `:render` sink (default) builds + retains a `Mutare.Site` per claim; `:count`
+  # only tallies (the schema's render-free count pass). `next_id` seeds the id span;
+  # `group`/`sites`/`count` start at their struct defaults.
+  defp build_ctx(config, opts) do
+    %Ctx{
       config: config,
-      # Prime the per-module mutator cache for the top-level (empty-behaviours) scope;
-      # `put_behaviours/2` refreshes it at each `defmodule` boundary.
       scope: %Scope{analysis_mutators: enrich_mutators(config.mutators, MapSet.new())},
       claim: %ClaimState{
-        # `:render` (default) builds + retains a `Mutare.Site` per claim; `:count` only tallies
-        # (the schema's render-free count pass). `next_id` seeds the id span; `group`/`sites`/
-        # `count` start at their struct defaults.
         sink: Keyword.get(opts, :sink, :render),
         next_id: Keyword.get(opts, :start_id, 1)
       }
     }
+  end
 
-    # Third-party plugins (`Mutare.Plugin`): their `macros/0` extends the registry below and
-    # their `expand_use/3` overrides `use`-expansion. Not mutators — they make the built-in
-    # mutators' work land on a library's DSL (the Gettext case). Validated + resolved here at the
-    # boundary (like `:mutators` above) to `Mutare.Plugin.Spec`s — carrying each plugin's `opts`,
-    # delivered to `expand_use/3`'s context — so a non-plugin entry fails loudly rather than being
-    # silently dropped by the downstream per-callback filters. `Mutare.Options` validates the same
-    # way, so the `Mutare.run/2` path is covered too.
-    plugins = opts |> Keyword.get(:plugins, []) |> Mutare.Plugin.validate!()
-
-    # The known-macro registry (`Mutare.Macros`): built-ins (`Kernel.match?`/`destructure`)
-    # merged with the declarative `:macros` option, any enabled mutator's `macros/0`, and any
-    # enabled plugin's `macros/0`. It tells the resolution pass how to route a recognised
-    # macro's arguments (a pattern, an opaque DSL body). Built from the resolved mutator specs
-    # in `ctx`, so a library's mutator/plugin auto-registers the macros it relies on. The plugin
-    # *specs* are passed straight through (`build/3` reads each's `macros/0`); a `macros/0`
-    # registration is opts-independent (a library fact), so the `opts` they carry are ignored there
-    # and ride along separately to `expand_use/3`'s context.
-    macros = Mutare.Macros.build(Keyword.get(opts, :macros, []), config.mutators, plugins)
-
-    # Resolve `alias`es and `import`s in one lexical pass (`Mutare.Transform.Resolve`),
-    # stamping each call with the module it refers to, so the call-matching mutators recognise
-    # an aliased `S.upcase` as `String.upcase` and a bare imported `reject(xs, f)` (after
-    # `import Enum`) as `Enum.reject`. The two interleave in source order (an `alias` can
-    # rebind a later `import`'s module), which the single fold gets right by construction.
-    # The same pass stamps each known-macro call with its argument routing. `parsed` itself
-    # stays pristine for the comment-based ignore scan below.
-    #
-    # First, surface directives hidden behind `use` (`Mutare.Transform.Uses`): a module-level
-    # `use MyAppWeb, :controller` / `use Ecto.Schema` is expanded in-process and the
-    # `import`/`alias` it injects is stamped onto the `use` node, so `Resolve` resolves the
-    # calls (and DSL macros) that depend on it. Stamps only meta, so `parsed` stays usable for
-    # the ignore scan; degrades to a no-op when a `use` can't be expanded.
+  # Stamp the parsed tree with everything the planner reads off node meta, in dependency order —
+  # all passes touch **meta only**, so `parsed` stays pristine for the comment-based ignore scan.
+  #
+  # First surface directives hidden behind `use` (`Mutare.Transform.Uses`): a module-level
+  # `use MyAppWeb, :controller` / `use Ecto.Schema` is expanded in-process and the `import`/`alias`
+  # it injects is stamped onto the `use` node, so `Resolve` resolves the calls (and DSL macros)
+  # that depend on it; degrades to a no-op when a `use` can't be expanded. Then gather each
+  # module's `@behaviour` set (direct + `use`-injected) onto the `defmodule` nodes
+  # (`Mutare.Transform.Behaviours`) — after `Uses` (to see the injected behaviours), before
+  # `Resolve` (which preserves the stamp), so a behaviour-aware mutator can gate on it. Finally
+  # `Resolve` resolves `alias`es/`import`s in one lexical source-order pass (an `alias` can rebind
+  # a later `import`'s module — the single fold gets it right), stamping each call with the module
+  # it refers to (an aliased `S.upcase` seen as `String.upcase`, a bare imported `reject(xs, f)` as
+  # `Enum.reject`) and each known-macro call with its argument routing.
+  defp annotate_tree(parsed, opts, plugins, macros) do
     expanded =
       if Keyword.get(opts, :expand_uses, true), do: Uses.annotate(parsed, plugins), else: parsed
 
-    # Gather each module's `@behaviour` set (direct + `use`-injected) and stamp it on the
-    # `defmodule` nodes (`Mutare.Transform.Behaviours`), so a behaviour-aware custom mutator
-    # can gate on it. Runs after `Uses` (to see the injected behaviours) and before
-    # `Resolve` (which preserves the stamp); `transform_node` reads it per module.
     with_behaviours = Behaviours.annotate(expanded)
-
-    {transformed, ctx} = transform_node(Resolve.annotate(with_behaviours, macros), ctx)
-
-    {transformed, ctx, parsed}
+    Resolve.annotate(with_behaviours, macros)
   end
 
   # Mark a site ignored (and record the reason) when a `# mutare:ignore` directive

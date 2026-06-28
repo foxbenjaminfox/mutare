@@ -43,6 +43,17 @@ defmodule Mutare.Transform.Uses.Harvest do
   alias Mutare.Plugin
   alias Mutare.Transform.Aliases
 
+  # The recursion context threaded through `collect/3` and `expand_and_collect/3`, so the
+  # clauses carry one `ctx` instead of five positional args most of them ignore. `caller`
+  # and `handlers` are constant for a whole harvest; `caller_aliases`, `depth` and `seen`
+  # update only at the recursion boundaries — a nested `use` merges the body's aliases in,
+  # and `expand_and_collect` bumps `depth` and records the `{mod, opts}` key in `seen`.
+  defmodule Ctx do
+    @moduledoc false
+    @enforce_keys [:caller, :caller_aliases, :depth, :seen, :handlers]
+    defstruct [:caller, :caller_aliases, :depth, :seen, :handlers]
+  end
+
   @max_depth 16
 
   @doc """
@@ -96,9 +107,17 @@ defmodule Mutare.Transform.Uses.Harvest do
   defp in_process(mod, args, caller_module, env, handlers) do
     with {:ok, opts} <- use_opts(args),
          true <- Code.ensure_loaded?(mod) do
+      ctx = %Ctx{
+        caller: caller_module,
+        caller_aliases: env,
+        depth: 0,
+        seen: MapSet.new(),
+        handlers: handlers
+      }
+
       {behaviour_items, directive_items} =
         mod
-        |> expand_and_collect(opts, caller_module, env, 0, MapSet.new(), handlers)
+        |> expand_and_collect(opts, ctx)
         |> Enum.split_with(&match?({:mutare_behaviour, _}, &1))
 
       directives = to_sourceror_directives(directive_items)
@@ -153,7 +172,7 @@ defmodule Mutare.Transform.Uses.Harvest do
   # valid `[Macro.t()]` lists. (`expand/2` itself requires a list, so the block must be wrapped in
   # one; a *bare* `quote do … end` is rejected by its contract.) `Resolve.register/2` folds one
   # directive at a time and treats a `__block__` as a no-op, so descend a block into its component
-  # statements here (mirroring the in-process `collect/7`, which descends `__using__` blocks the
+  # statements here (mirroring the in-process `collect/3`, which descends `__using__` blocks the
   # same way); a non-block directive passes through unchanged. The descent **recurses**,
   # so a block nested inside a block (a legal, if unusual, `Macro.t()`) is flattened to its leaves
   # rather than surfacing an inner `__block__` that `to_sourceror/1` would render and `register/2` drop.
@@ -183,7 +202,7 @@ defmodule Mutare.Transform.Uses.Harvest do
   # round-trip) and a **nested** `use` reached in a `__using__` body. It resolves the module through
   # the `env` (an aliased `alias RealUse, as: Foo; use Foo` yields the real module) and returns the
   # **raw** args with no static-literal gate, so a plugin override sees them as written (Gettext's
-  # `backend:` is not a literal); the in-process fallbacks (`in_process/5`, `nested_in_process/7`)
+  # `backend:` is not a literal); the in-process fallbacks (`in_process/5`, `nested_in_process/3`)
   # apply the opts gate.
   #
   # `not is_nil` matters: `Aliases.resolve_node/2` returns `nil` (itself an atom) for an unresolvable
@@ -202,16 +221,16 @@ defmodule Mutare.Transform.Uses.Harvest do
   # In-process expansion of a nested `use` no plugin overrode: apply the static-literal opts gate
   # + loadability check (the old `use_args/2` behaviour), then recurse. `caller_aliases` already
   # carries the body's injected aliases (merged by the caller).
-  defp nested_in_process(mod, raw_args, caller, caller_aliases, depth, seen, handlers) do
+  defp nested_in_process(mod, raw_args, %Ctx{} = ctx) do
     with {:ok, opts} <- use_opts(raw_args),
          true <- Code.ensure_loaded?(mod) do
-      expand_and_collect(mod, opts, caller, caller_aliases, depth, seen, handlers)
+      expand_and_collect(mod, opts, ctx)
     else
       _ -> []
     end
   end
 
-  # A plugin override of a *nested* `use` → `collect/7`-shape items, so it merges with the
+  # A plugin override of a *nested* `use` → `collect/3`-shape items, so it merges with the
   # in-process harvest of its sibling directives. Directives stay standard-quoted (a single quoted
   # block flattened to its leaves) and are normalized later by `in_process/5` like every collected
   # directive; behaviours become `{:mutare_behaviour, mod}` tuples (atoms only, via
@@ -240,21 +259,21 @@ defmodule Mutare.Transform.Uses.Harvest do
   # `caller_aliases` is the **source alias env in scope at the original `use` site** (a
   # `%{name => path | atom}` map), threaded down so the expanded `__using__` sees a faithful
   # `__CALLER__.aliases` — see `expand_using/4`.
-  defp expand_and_collect(mod, opts, caller, caller_aliases, depth, seen, handlers) do
+  defp expand_and_collect(mod, opts, %Ctx{} = ctx) do
     key = {mod, opts}
 
     cond do
-      depth > @max_depth ->
+      ctx.depth > @max_depth ->
         []
 
-      MapSet.member?(seen, key) ->
+      MapSet.member?(ctx.seen, key) ->
         []
 
       # A fresh alias scope (`%{}`) for this `__using__` body — its directives are folded as the
       # block is descended, so an in-body `alias … as: T` resolves a sibling `use T`.
       #
       # The `try` makes **each `use` expansion** the failure-isolation unit — both this top-level
-      # call (from `run/4`) and every *nested* `use` reached recursively via `collect/7`. A
+      # call (from `run/4`) and every *nested* `use` reached recursively via `collect/3`. A
       # raising `__using__` (e.g. `use Gettext, backend: …`, whose body runs `Module.put_attribute`
       # on the already-compiled caller → `ArgumentError`) then drops only *its own* contribution,
       # while its siblings — harvested in the enclosing block's `flat_map_reduce` — survive. Without
@@ -263,8 +282,8 @@ defmodule Mutare.Transform.Uses.Harvest do
       # See NOTES "isolate failure per `use`, not per bundle".
       true ->
         try do
-          expand_using(mod, opts, caller, caller_aliases)
-          |> collect(caller, caller_aliases, depth + 1, MapSet.put(seen, key), %{}, handlers)
+          expand_using(mod, opts, ctx.caller, ctx.caller_aliases)
+          |> collect(%{ctx | depth: ctx.depth + 1, seen: MapSet.put(ctx.seen, key)}, %{})
         rescue
           # A plugin contract violation in a *nested* `use`'s override must stay loud (see `run/4`);
           # everything else degrades this one `use` to `[]`.
@@ -280,7 +299,7 @@ defmodule Mutare.Transform.Uses.Harvest do
   # `mod.__using__(opts)` directly with `mod` required. The env's `:module` is the using
   # module so `__CALLER__.module` reads faithfully. **`expand_once`, not `expand`** — `expand`
   # would keep going, and a nested `use Bar` in the body (itself a macro) would over-expand to
-  # `require Bar; Bar.__using__(...)`; one step leaves the nested `use` intact for `collect/7`
+  # `require Bar; Bar.__using__(...)`; one step leaves the nested `use` intact for `collect/3`
   # to re-expand.
   #
   # The env's `:aliases` is populated from the threaded source alias env (not left as
@@ -315,11 +334,11 @@ defmodule Mutare.Transform.Uses.Harvest do
   # and re-expanding nested `use`s — never `def`/`quote`/`if` bodies (those degrade). An alias
   # env (`env`) is folded left-to-right over a block so an in-body `alias … as: T` resolves a
   # sibling `use T` (the way the compiler expands it).
-  defp collect({:__block__, _, stmts}, caller, caller_aliases, depth, seen, env, handlers)
+  defp collect({:__block__, _, stmts}, %Ctx{} = ctx, env)
        when is_list(stmts) do
     {collected, _env} =
       Enum.flat_map_reduce(stmts, env, fn stmt, env ->
-        harvested = collect(stmt, caller, caller_aliases, depth, seen, env, handlers)
+        harvested = collect(stmt, ctx, env)
 
         # Advance the env with the directives this statement *yields*, not its literal text — so a
         # nested `use` (or `require …, as:`) that injects an alias resolves a later sibling `use`
@@ -331,23 +350,14 @@ defmodule Mutare.Transform.Uses.Harvest do
     collected
   end
 
-  defp collect({directive, _, _} = node, _caller, _caller_aliases, _depth, _seen, _env, _handlers)
+  defp collect({directive, _, _} = node, _ctx, _env)
        when directive in [:import, :alias],
        do: [node]
 
   # `require Foo, as: Bar` introduces an alias; harvest it as the equivalent `alias` directive
   # (its canonical form) so it folds into resolution like any other harvested binding. A plain
   # `require` doesn't affect name resolution and is dropped.
-  defp collect(
-         {:require, _, [mod_ast, opts]},
-         _caller,
-         _caller_aliases,
-         _depth,
-         _seen,
-         _env,
-         _handlers
-       )
-       when is_list(opts) do
+  defp collect({:require, _, [mod_ast, opts]}, _ctx, _env) when is_list(opts) do
     case as_value(opts) do
       nil -> []
       as -> [{:alias, [], [mod_ast, [as: as]]}]
@@ -358,20 +368,20 @@ defmodule Mutare.Transform.Uses.Harvest do
   # body injects `use Gettext, …` — the idiomatic Phoenix integration point). Like the **top-level**
   # `use`, the plugin `handlers` are consulted **first** (so the same override that surfaces a
   # directly-written `use Gettext` also surfaces a nested one); only on `:decline` does it expand
-  # in-process (`nested_in_process/7`, which keeps the static-literal opts gate + loadability check).
+  # in-process (`nested_in_process/3`, which keeps the static-literal opts gate + loadability check).
   # The module is resolved through the body's own alias scope (`env`) so an earlier sibling
   # `alias … as: T` redirects `use T`; the recursion's `__CALLER__.aliases` is the source aliases
   # *plus* the ones this body injected (`Map.merge(caller_aliases, env)`, body-injected shadowing
   # source) — exactly how the compiler expands a later nested `use`. The plugin override sees the
   # **raw** args (no opts gate), matching `target/2`.
-  defp collect({:use, _, args}, caller, caller_aliases, depth, seen, env, handlers) do
+  defp collect({:use, _, args}, %Ctx{} = ctx, env) do
     case use_target(args, env) do
       {:ok, mod, raw_args} ->
-        nested_aliases = Map.merge(caller_aliases, env)
+        nested_ctx = %{ctx | caller_aliases: Map.merge(ctx.caller_aliases, env)}
 
-        case Plugin.expand_use(handlers, mod, raw_args, %{module: caller}) do
+        case Plugin.expand_use(ctx.handlers, mod, raw_args, %{module: ctx.caller}) do
           :decline ->
-            nested_in_process(mod, raw_args, caller, nested_aliases, depth, seen, handlers)
+            nested_in_process(mod, raw_args, nested_ctx)
 
           %Plugin.Expansion{directives: directives, behaviours: behaviours} ->
             plugin_items(directives, behaviours)
@@ -388,22 +398,14 @@ defmodule Mutare.Transform.Uses.Harvest do
   # name-resolution directives. Only the canonical `@behaviour` is recognised — Elixir
   # rejects `@behavior`. A non-static / unresolvable module (`Aliases.resolve_node/2` → `nil`) is
   # dropped, like an un-round-trippable directive.
-  defp collect(
-         {:@, _, [{:behaviour, _, [mod_ast]}]},
-         _caller,
-         _caller_aliases,
-         _depth,
-         _seen,
-         env,
-         _handlers
-       ) do
+  defp collect({:@, _, [{:behaviour, _, [mod_ast]}]}, _ctx, env) do
     case Aliases.resolve_node(mod_ast, env) do
       nil -> []
       mod -> [{:mutare_behaviour, mod}]
     end
   end
 
-  defp collect(_other, _caller, _caller_aliases, _depth, _seen, _env, _handlers), do: []
+  defp collect(_other, _ctx, _env), do: []
 
   defp as_value(opts), do: Keyword.get(opts, :as)
 
