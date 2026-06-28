@@ -772,6 +772,31 @@ mirroring production. A non-compiling-lib fixture therefore exercises the compil
 verdict by a different route, since in production a non-compiling lib is caught at the compile step
 (poison recovery) and never reaches per-mutant runs.
 
+### Early stop after N survivors `[done]`
+`--max-survivors N` is for the iterate-and-fix loop: surface a handful of concrete test gaps, not a
+full score. Every mutant is still compiled in (only `--max-mutants`, a `Mutare.Schema` site cap,
+reduces *what is built*); the **run** halts once N survivors have surfaced. Two decisions make it
+well-behaved:
+
+- **Stop at the Nth survivor in *source order*, not the Nth-to-finish.** The per-mutant stream is
+  consumed `ordered: true`, so the cap triggers on the Nth survivor by position — deterministic
+  regardless of which worker finished first, and the reported set is exactly the first N. An
+  early-stop run is then a clean *prefix* of a full run, which is why `finalize_run` skips the
+  harness-error abort guard and the Mix task skips the `--min-score` gate (a partial prefix is not a
+  verdict).
+
+- **Drain in-flight runs on stop, don't kill them.** The obvious implementation — `Enum.reduce_while`
+  halting the `Task.async_stream` — shuts the stream's in-flight tasks down, killing their `mix test`
+  OS subprocesses mid-write. Those dying processes then race the sandbox/project teardown
+  (`cleanup_sandbox`, and a test's `on_exit File.rm_rf`): an intermittent `File.rm_rf` `:eexist` that
+  surfaces only under concurrent load (it passes serially and in isolation). Fix: an `:atomics`
+  `capped` flag the collector sets when the cap is reached, making any task that *starts after* it
+  skip its real run (returning `:capped`). The collector then **drains** the rest of the stream
+  rather than halting — the already-in-flight stragglers (≤ one per worker, the same handful that ran
+  before) finish cleanly and are discarded; every later site is a trivial skip. So no extra mutant is
+  actually run, and no live subprocess outlives the run to race teardown. See
+  `Mutare.Runner.collect_until_survivors/3`.
+
 ### Umbrella support `[M5 / in progress]`
 Following the cargo-mutants precedent: **copy the whole umbrella, mutate a scoped
 subset of apps.** The whole tree travels to the sandbox so `in_umbrella` sibling

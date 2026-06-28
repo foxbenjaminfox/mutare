@@ -43,7 +43,9 @@ defmodule Mutare.Runner do
   is still compiled in — only the *run* halts early. The per-mutant stream is
   consumed `ordered: true`, so the stop is deterministic: the Nth survivor in
   source order, regardless of which worker finished first, and the reported
-  survivors are exactly the first N. The returned run carries `stopped_early`; on
+  survivors are exactly the first N. Runs already in flight when the cap is hit are
+  *drained* (not killed), so the sandbox teardown never races a live `mix`
+  subprocess. The returned run carries `stopped_early`; on
   an early stop the harness-error abort guard is skipped (the score is already a
   partial prefix — the Mix task notes it and skips the `--min-score` gate too),
   since aborting would discard the very survivors the user asked to find.
@@ -302,19 +304,31 @@ defmodule Mutare.Runner do
   # result as it lands, and collect in source order — stopping early at the Nth survivor when
   # `--max-survivors` is set. Returns `{results, stopped_early?}`.
   defp stream_and_collect(schema, ctx, partitions, %Options{} = options, on_start, reporter) do
+    # Set once the survivor cap is reached (`collect_until_survivors/3`): tasks that start *after*
+    # it skip their real run, letting the collector **drain** the rest of the stream cheaply rather
+    # than halting it. Draining lets the already-in-flight `mix test` runs finish instead of being
+    # killed mid-write — which used to leave a dying subprocess racing the sandbox/project teardown
+    # (a flaky `File.rm_rf`). No extra mutant is actually run: at most the in-flight stragglers (≤
+    # one per worker, exactly as before) complete, and every later site comes back a trivial skip.
+    capped = :atomics.new(1, signed: false)
+
     schema.sites
     |> Task.async_stream(
       fn site ->
-        on_start.(site)
-        # Check out a distinct partition for this run (and its harness retries),
-        # check it back in when done — see `Mutare.Runner.Partitions`.
-        result = Partitions.with_slot(partitions, fn env -> classify(ctx, site, env) end)
-        # Fill in a displayed survivor's deferred diff code before it reaches the reporter (and
-        # rides on into the collected results for the final/SARIF reports). A no-op on the eager
-        # path or a killed/no-coverage result — see `Mutare.Runner.Hydrate`.
-        result = Hydrate.result(ctx.hydrate, result)
-        reporter.(result)
-        result
+        if :atomics.get(capped, 1) == 1 do
+          :capped
+        else
+          on_start.(site)
+          # Check out a distinct partition for this run (and its harness retries),
+          # check it back in when done — see `Mutare.Runner.Partitions`.
+          result = Partitions.with_slot(partitions, fn env -> classify(ctx, site, env) end)
+          # Fill in a displayed survivor's deferred diff code before it reaches the reporter (and
+          # rides on into the collected results for the final/SARIF reports). A no-op on the eager
+          # path or a killed/no-coverage result — see `Mutare.Runner.Hydrate`.
+          result = Hydrate.result(ctx.hydrate, result)
+          reporter.(result)
+          result
+        end
       end,
       # `max_concurrency` is driven from the pool itself so it can never drift from
       # the token count: the pool's non-blocking checkout relies on one token per
@@ -324,7 +338,7 @@ defmodule Mutare.Runner do
       ordered: true,
       timeout: :infinity
     )
-    |> collect_until_survivors(options.max_survivors)
+    |> collect_until_survivors(options.max_survivors, capped)
   end
 
   # A complete run applies the harness-error abort guard; an early stop
@@ -349,39 +363,46 @@ defmodule Mutare.Runner do
     Baseline.run(sandbox, baseline_runs, env)
   end
 
-  # Consume the ordered per-mutant result stream. With no `:max_survivors` cap we
-  # drain the whole stream (today's behaviour); with a cap we stop once that many
-  # `:survived` results have been seen. Returns `{results_in_source_order,
-  # stopped_early?}`.
+  # Consume the ordered per-mutant result stream. With no `:max_survivors` cap we drain the whole
+  # stream; with a cap we record results until the Nth `:survived`, then signal `capped` (so tasks
+  # not yet started skip — see `stream_and_collect/6`) and **drain the rest** rather than halting.
+  # Returns `{results_in_source_order, stopped_early?}`.
   #
-  # Because the stream is consumed `ordered: true`, the stop point is the Nth
-  # survivor *in source order* — deterministic regardless of which worker finished
-  # first — so the reported survivors are exactly the first N. Halting a
-  # `Task.async_stream` shuts down its in-flight tasks; a handful of mutants past
-  # the trigger may have already run concurrently, but their results are discarded
-  # (and any orphaned `mix` process is bounded by the timeout watcher and the
-  # throwaway sandbox). See NOTES "Early stop after N survivors".
-  defp collect_until_survivors(stream, nil) do
+  # Because the stream is consumed `ordered: true`, the stop point is the Nth survivor *in source
+  # order* — deterministic regardless of which worker finished first — so the reported survivors are
+  # exactly the first N. We drain (not halt) so the in-flight `mix test` runs already started past
+  # the trigger finish cleanly instead of being killed mid-write; their real results are discarded,
+  # and every post-trigger site comes back as a cheap `:capped` skip. Draining is what keeps the
+  # sandbox/project teardown from racing a dying subprocess. See NOTES "Early stop after N survivors".
+  defp collect_until_survivors(stream, nil, _capped) do
     {Enum.map(stream, fn {:ok, result} -> result end), false}
   end
 
-  defp collect_until_survivors(stream, limit) do
-    reduction =
-      Enum.reduce_while(stream, {[], 0}, fn {:ok, result}, {acc, survivors} ->
-        survivors = survivors + survivor_count(result)
-        acc = [result | acc]
+  defp collect_until_survivors(stream, limit, capped) do
+    {acc, _survivors, stopped} =
+      Enum.reduce(stream, {[], 0, false}, fn
+        # A task that skipped because the cap was already set — discard.
+        {:ok, :capped}, state ->
+          state
 
-        if survivors >= limit do
-          {:halt, {:stopped, Enum.reverse(acc)}}
-        else
-          {:cont, {acc, survivors}}
-        end
+        # An in-flight straggler that finished its real run after the cap — drain but discard,
+        # keeping the reported set to exactly the first N survivors.
+        {:ok, _result}, {acc, survivors, true} ->
+          {acc, survivors, true}
+
+        {:ok, result}, {acc, survivors, false} ->
+          survivors = survivors + survivor_count(result)
+          acc = [result | acc]
+
+          if survivors >= limit do
+            :atomics.put(capped, 1, 1)
+            {acc, survivors, true}
+          else
+            {acc, survivors, false}
+          end
       end)
 
-    case reduction do
-      {:stopped, results} -> {results, true}
-      {acc, _survivors} -> {Enum.reverse(acc), false}
-    end
+    {Enum.reverse(acc), stopped}
   end
 
   # 1 for a survivor (`:survived`), 0 otherwise — the only status `--max-survivors`
