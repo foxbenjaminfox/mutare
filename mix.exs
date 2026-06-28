@@ -36,6 +36,7 @@ defmodule Mutare.MixProject do
     Mutare.Mutator.Dispatch
     Mutare.Coverage.HelperTemplate
     Mutare.Ignore.Directive
+    Mutare.Mutators.RegexLiteral.Tokens
   )
 
   # A couple of *typespecs* in visible modules reference a hidden internal type
