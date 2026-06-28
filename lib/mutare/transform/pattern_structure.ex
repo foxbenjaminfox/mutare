@@ -112,6 +112,7 @@ defmodule Mutare.Transform.PatternStructure do
   are classified positively, the way the in-place analyzer classifies contexts:
 
     * a pin `^x` binds nothing (it *references* an outer binding) — skipped whole;
+    * a module-attribute read `@tag` is a compile-time literal, not a binding — skipped whole;
     * a map/struct **key** is an expression matched against, not a binding — only the
       *value* side of each pair is descended (`%{k => v}` binds `v`, never `k`);
     * a bitstring **spec** (`size(n)`, type atoms) references/declares no new binding —
@@ -132,6 +133,10 @@ defmodule Mutare.Transform.PatternStructure do
 
   # A pin references an outer binding — it introduces nothing.
   defp collect_bound({:^, _meta, _args}, acc), do: acc
+
+  # A module-attribute read is a compile-time literal in a pattern. Its inner AST node has
+  # variable shape (`{:tag, meta, ctx}`), but `tag` is not introduced by the pattern.
+  defp collect_bound({:@, _meta, _args}, acc), do: acc
 
   # A bitstring segment `value :: spec`: only the value side binds (the spec's type
   # atoms / `size(n)` references declare no new binding).

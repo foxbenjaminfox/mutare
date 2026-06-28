@@ -494,6 +494,32 @@ defmodule Mutare.MatchPatternTest do
       refute io =~ "is unused"
     end
 
+    test "a module-attribute literal in a chain pattern is not exported as a binding" do
+      # `@tag` expands to a literal in the chain pattern; the inner `tag` AST node only looks
+      # variable-shaped. Exporting it would make every selector branch reference an undefined
+      # `tag` variable and prevent the metamutant from compiling.
+      source = """
+      defmodule Mutare.MPAttributeChainFixture do
+        @tag :point
+
+        def f(point) do
+          {x, y} = {@tag, _} = point
+          {x, y}
+        end
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+
+      assert Enum.any?(sites, &(&1.mutator == :pattern_swap and &1.mutated_code == "{y, x}"))
+      refute meta =~ "{x, y, tag} ="
+
+      {compiled, io} = ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
+      assert [{module, _binary}] = compiled
+      refute io =~ "undefined variable"
+      assert module.f({:point, 7}) == {:point, 7}
+    end
+
     test "a non-chained match's export is unchanged (no spurious passthrough vars)" do
       # A plain `<pat> = e` (non-`=` RHS) must export only the pattern's own vars — the RHS
       # `point` is a *read*, not a binding, so `rhs_chain_bound_names/1` returns `[]` and the
