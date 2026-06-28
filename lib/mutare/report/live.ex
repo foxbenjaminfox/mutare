@@ -471,10 +471,10 @@ defmodule Mutare.Report.Live do
     draw(state)
   end
 
-  # Plain-mode-only line (a phase note). In ANSI mode phases live in the block,
-  # so this is a no-op there.
-  defp plain_line(%{ansi: true} = state, _text), do: state
-
+  # A plain-mode phase note. Only ever reached from the non-ANSI (`true ->`) branch of the phase
+  # casts — in ANSI mode phases live in the animated block, never as a scrollback line — so it
+  # writes unconditionally. (An `%{ansi: true}` no-op clause here would be dead code: the call sites
+  # narrow `ansi` to `false`, which Elixir 1.20's type checker proves and flags.)
   defp plain_line(state, text) do
     IO.write(state.device, [text, "\n"])
     state
