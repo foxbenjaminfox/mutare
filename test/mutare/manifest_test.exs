@@ -1,7 +1,16 @@
 defmodule Mutare.ManifestTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.Manifest
+  alias Mutare.{Manifest, Selector}
+
+  # The metamutant's `:persistent_term` key is `Selector.key/0` resolved at *runtime*
+  # (`:mutare_active` normally; the private suite key when these tests themselves run
+  # inside a dogfood sandbox). The subject recognisers (`Mutare.Metamutant.subject?/2`)
+  # read the same `Selector.key/0`, so a hand-crafted fixture must use it too rather than
+  # a hardcoded `:mutare_active` — otherwise the key mismatches under self-hosting and the
+  # subject goes unrecognised. (The dispatch *variable* name is `Recorder.var_name/0`,
+  # never overridden, so `mutare_active` stays literal — see transform_test's note.)
+  defp pt_key, do: inspect(Selector.key())
 
   # A guard whose `+` poisons (→ unbound var, won't compile) plus relational
   # swaps and clause drops — exercises a lifted mutant whose bad code lives in a
@@ -253,7 +262,7 @@ defmodule Mutare.ManifestTest do
       src = """
       defmodule D do
         def f(_x) do
-          mutare_active = :persistent_term.get(:mutare_active, 0)
+          mutare_active = :persistent_term.get(#{pt_key()}, 0)
 
           case mutare_active do
             1 -> :mutated
@@ -275,7 +284,7 @@ defmodule Mutare.ManifestTest do
       src = """
       defmodule D do
         def f(_x) do
-          case {:persistent_term.get(:mutare_active, 0), _x} do
+          case {:persistent_term.get(#{pt_key()}, 0), _x} do
             {mutare_active, 1} when mutare_active === 1 -> :a
             {mutare_active, _} -> :b
           end
