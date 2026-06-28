@@ -372,6 +372,30 @@ defmodule Mutare.TransformCorpusTest do
       min_sites: 1,
       expect_log: ~r{clauses of f/1 are augmented by compile-time},
       refute_log: ~r{clauses of f/1 are non-consecutive}
+    },
+    %{
+      name: "sigils: a returned ~r value stays baseline-equivalent across separate compiles",
+      # A returned `~r/…/` is the one corpus value whose struct equality is engine-
+      # dependent: on Erlang/OTP 28 its PCRE2 `re_pattern` is a NIF resource (`#Reference`)
+      # minted afresh per compilation unit, so the original and the *separately compiled*
+      # baseline metamutant hold different references and are never `==` — until the probe
+      # reduces each regex to its `{source, opts}` identity. `nested` checks the deep-walk
+      # (regex inside a tuple); `date` is a value-comparable `~D` control that needs no
+      # normalisation. RegexLiteral mutates both patterns, so the site floor is non-zero.
+      # See NOTES "OTP 28 regex `re_pattern` is a per-compile reference".
+      source: """
+      defmodule Mutare.Corpus.Sigils do
+        def pattern, do: ~r/ab/
+        def nested, do: {:re, ~r/cd/}
+        def date, do: ~D[2020-01-15]
+      end
+      """,
+      probes: [
+        {Mutare.Corpus.Sigils, :pattern, []},
+        {Mutare.Corpus.Sigils, :nested, []},
+        {Mutare.Corpus.Sigils, :date, []}
+      ],
+      min_sites: 2
     }
   ]
 
@@ -437,13 +461,19 @@ defmodule Mutare.TransformCorpusTest do
 
   # Run one probe, capturing a normal return *or* a raise/throw/exit, so the
   # original and the baseline metamutant are compared on identical, total
-  # outcomes — even for a fixture whose contract is to raise.
+  # outcomes — even for a fixture whose contract is to raise. Like the property
+  # probe, the value is `Mutare.PropertyProbe.normalize/1`-d: `original` and
+  # `baseline` here are two **separate** compiles, so a returned `~r/…/` would
+  # diverge spuriously on Erlang/OTP 28 (its PCRE2 `re_pattern` is a per-compile
+  # `#Reference`). No corpus entry returns a regex today; this keeps that from
+  # becoming a silent trap. See NOTES "OTP 28 regex `re_pattern` is a per-compile
+  # reference".
   defp probe({module, function, args}) do
-    {:ok, apply(module, function, args)}
+    {:ok, Mutare.PropertyProbe.normalize(apply(module, function, args))}
   rescue
     error -> {:raised, error.__struct__}
   catch
-    kind, value -> {kind, value}
+    kind, value -> {kind, Mutare.PropertyProbe.normalize(value)}
   end
 
   # Compile a source string, swallowing the "redefining module" warning the

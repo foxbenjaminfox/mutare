@@ -66,14 +66,41 @@ defmodule Mutare.PropertyProbe do
   Run one `{name, args}` probe, capturing a normal return *or* a raise / throw / exit, so two
   states are compared on identical, total outcomes (the tags keep a returned value from ever
   colliding with a captured failure).
+
+  The captured value is `normalize/1`-d first: starting on Erlang/OTP 28 a `~r/…/` literal
+  compiles to a PCRE2 NIF **resource** — an `#Reference` carried in the `Regex` struct's
+  `re_pattern` — which is *unique per compilation unit*, so two independently compiled but
+  textually identical regexes are never `==` even though their `source`/`opts` match (on OTP 27-
+  `re_pattern` is a plain, value-equal binary). The baseline property compares the original and
+  the metamutant as two **separate** compiles, so an un-normalised regex return manufactures a
+  spurious divergence there (the activation property, comparing one compile under two selectors,
+  is immune). Reducing every regex to its stable `{source, opts}` identity makes the comparison
+  OTP-version-independent. See NOTES "OTP 28 regex `re_pattern` is a per-compile reference".
   """
   def probe({name, args}) do
-    {:value, apply(@module, name, args)}
+    {:value, normalize(apply(@module, name, args))}
   rescue
     error -> {:raised, error.__struct__}
   catch
-    kind, value -> {:caught, kind, value}
+    kind, value -> {:caught, kind, normalize(value)}
   end
+
+  @doc """
+  Reduce a probed value to a form whose equality is stable across separate compiles, by replacing
+  every `Regex` with its `{source, opts}` identity (see `probe/1` for why). Deep-walked through
+  lists / tuples / plain maps so a regex nested in a returned collection is normalised too; other
+  structs (`Date`, `DateTime`, …) and scalars pass through untouched.
+  """
+  def normalize(%Regex{} = regex), do: {:"$regex", Regex.source(regex), Regex.opts(regex)}
+  def normalize(list) when is_list(list), do: Enum.map(list, &normalize/1)
+
+  def normalize(tuple) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> normalize() |> List.to_tuple()
+
+  def normalize(map) when is_map(map) and not is_struct(map),
+    do: Map.new(map, fn {k, v} -> {normalize(k), normalize(v)} end)
+
+  def normalize(other), do: other
 
   # Public functions of the compiled fixture (`{name, arity}`), default-arg arities included.
   defp exported(module), do: apply(module, :__info__, [:functions])

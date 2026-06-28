@@ -5212,6 +5212,39 @@ the survivors and the summary. Two deliberate design calls worth remembering:
 
 Suspected-equivalent auto-reporting is still future work.
 
+### OTP 28 regex `re_pattern` is a per-compile reference `[fixed — probe normalises regexes]`
+The runtime property tests (`transform_baseline_property_test`,
+`transform_activation_property_test`) compare two probed outcomes for equality via
+`Mutare.PropertyProbe.probe/1`. On **Erlang/OTP 28** this started spuriously failing
+the **baseline** property — and only it — whenever the generator happened to emit a
+runtime `~r/…/` (one of nine `sigil_gen/0` choices, so seed-gated: red on some CI
+seeds, green on others — it *looked* flaky but is fully deterministic per regex).
+
+OTP 28 swapped the `re` engine to PCRE2, which compiles a pattern to a **NIF
+resource** — an `#Reference` — carried in the `Regex` struct's `re_pattern`. A
+reference is unique per compilation unit, so two **separately compiled** but textually
+identical regexes (`~r/ab/` in the original *and* in the metamutant — distinct
+`Code.compile_string` calls) hold different references and are never `==`, even though
+`source`/`opts` match. On OTP 27- `re_pattern` was a plain, value-equal binary, so the
+same comparison passed; that is why it surfaced only on the OTP 28 CI cell. Proven in
+a container: 50/50 trials of two independently compiled `~r/ab/` compared **unequal**
+(`#Reference<…992>` vs `#Reference<…993>`), `source/opts` identical `{"ab", []}`.
+
+The **activation** property is immune by construction: it compares one metamutant
+compile under two selector states, so a regex that no mutant touches is the *same*
+compiled literal (same reference) on both sides. Only the baseline property, comparing
+the original against a *separate* metamutant compile, sees two references.
+
+**The fix (normalise in the shared probe).** `probe/1` now passes every captured value
+through `PropertyProbe.normalize/1`, which reduces each `Regex` to its stable
+`{:"$regex", source, opts}` identity (deep-walked through lists / tuples / plain maps;
+other structs and scalars pass through). The comparison is now OTP-version-independent
+and the change is the *correct* normalisation regardless of engine — `re_pattern` is an
+opaque compiled artifact that was never a sound equality key. Regression coverage in
+`test/mutare/property_probe_test.exs` pins it on **every** OTP (it asserts the
+normalised shape directly, not the OTP-28-only symptom). The other generated sigils
+(`~D`/`~T`/`~N`/`~U` structs) compare by value and need no normalisation.
+
 ### Self-hosting: tests that touch `:mutare_active` `[fixed — private suite key]`
 Mutation-testing Mutare *with Mutare* had a trap: many of Mutare's own tests
 (`selector_test`, `integration_test`, `lift_test`, `transform_corpus_test`,
