@@ -178,8 +178,16 @@ defmodule Mutare.Schema do
     # which re-derive their code at report time (`Mutare.Runner.Hydrate`). The count pass builds
     # no sites, so it is unaffected. Deferral changes no id/tree/count — only whether each
     # `Mutare.Site` carries rendered code now or `nil`.
+    # Independently, build the cheap `Macro` live `summary` per site when a live reporter will
+    # show the in-flight mutant (`context.summarize_sites`, set by the Mix task unless `--quiet`).
+    # Unlike `render_site_code`, the live line can't defer — it shows every mutant as it runs.
     render_site_code = not context.defer_site_code
-    rendered = counted |> render_jobs() |> render_files(options, skip_ids, render_site_code)
+    summarize_sites = context.summarize_sites
+
+    rendered =
+      counted
+      |> render_jobs()
+      |> render_files(options, skip_ids, render_site_code, summarize_sites)
 
     rel_files
     |> assemble(counted, rendered)
@@ -310,10 +318,19 @@ defmodule Mutare.Schema do
   # Emit + render every sited file in parallel throwaway workers (`render_one/5`),
   # returning `%{rel => {metamutant, sites}}`. The dominant `Sourceror.to_string` heap
   # dies with each worker. A tool bug captured by a worker is re-raised here.
-  defp render_files(jobs, options, skip_ids, render_site_code) do
+  defp render_files(jobs, options, skip_ids, render_site_code, summarize_sites) do
     jobs
     |> async_stream(fn {rel, source, start_id, count} ->
-      render_one(rel, source, start_id, count, options, skip_ids, render_site_code)
+      render_one(
+        rel,
+        source,
+        start_id,
+        count,
+        options,
+        skip_ids,
+        render_site_code,
+        summarize_sites
+      )
     end)
     |> Enum.map(&reraise_if_raised/1)
     |> Map.new(fn {:rendered, rel, meta, sites} -> {rel, {meta, sites}} end)
@@ -324,11 +341,26 @@ defmodule Mutare.Schema do
   # re-raised faithfully, never swallowed. `verify_count!/3` guards the load-bearing id
   # invariant: the rendered `next_id - start_id` must equal phase 1's count, or files would
   # silently overlap ids (the two passes are the same deterministic pipeline, so they agree).
-  defp render_one(rel, source, start_id, count, %Options{} = options, skip_ids, render_site_code) do
+  defp render_one(
+         rel,
+         source,
+         start_id,
+         count,
+         %Options{} = options,
+         skip_ids,
+         render_site_code,
+         summarize_sites
+       ) do
     # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
     opts =
       transform_opts(options) ++
-        [file: rel, start_id: start_id, skip_ids: skip_ids, render_site_code: render_site_code]
+        [
+          file: rel,
+          start_id: start_id,
+          skip_ids: skip_ids,
+          render_site_code: render_site_code,
+          summarize_sites: summarize_sites
+        ]
 
     try do
       {meta, sites, next_id} = Mutare.Transform.transform_string(source, opts)

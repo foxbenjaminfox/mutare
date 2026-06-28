@@ -134,7 +134,7 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
               range: @range
             }
           ] do
-        site = Delivery.site(7, candidate, "lib/x.ex", true)
+        site = Delivery.site(7, candidate, "lib/x.ex", {true, false})
         assert %Site{id: 7, kind: :in_place, operation: :replace, mutator: :relational} = site
         assert site.original_form == :>=
       end
@@ -148,7 +148,7 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
         range: @range
       }
 
-      site = Delivery.site(7, candidate, "lib/x.ex", true)
+      site = Delivery.site(7, candidate, "lib/x.ex", {true, false})
 
       assert %Site{kind: :in_place, operation: :replace, mutator: :relational} = site
       # return_value/6 keeps no AST form (the replacement is a bare constant).
@@ -171,28 +171,28 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
               range: @range
             }
           ] do
-        site = Delivery.site(7, candidate, "lib/x.ex", true)
+        site = Delivery.site(7, candidate, "lib/x.ex", {true, false})
         assert %Site{kind: :lifted, operation: :replace, mutator: :relational} = site
       end
     end
 
     test "a rescue-drop records an in-place :delete site" do
       candidate = %Candidate.RescueDrop{mutator: spec(), dropped: clause(), range: @range}
-      site = Delivery.site(7, candidate, "lib/x.ex", true)
+      site = Delivery.site(7, candidate, "lib/x.ex", {true, false})
 
       assert %Site{kind: :in_place, operation: :delete, mutator: :relational} = site
     end
 
     test "a clause-drop records a lifted :delete site under the clause_drop mutator" do
       candidate = %Candidate.Drop{original: clause(), range: @range}
-      site = Delivery.site(7, candidate, "lib/x.ex", true)
+      site = Delivery.site(7, candidate, "lib/x.ex", {true, false})
 
       assert %Site{kind: :lifted, operation: :delete, mutator: :clause_drop} = site
     end
 
     test "a hosted candidate has no site/4 path (HostedEmit records its Sites per mutant)" do
       assert_raise ArgumentError, ~r/records its Sites per mutant in HostedEmit/, fn ->
-        Delivery.site(7, %Candidate.Hosted{}, "lib/x.ex", true)
+        Delivery.site(7, %Candidate.Hosted{}, "lib/x.ex", {true, false})
       end
     end
 
@@ -204,8 +204,8 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
         range: @range
       }
 
-      eager = Delivery.site(7, candidate, "lib/x.ex", true)
-      deferred = Delivery.site(7, candidate, "lib/x.ex", false)
+      eager = Delivery.site(7, candidate, "lib/x.ex", {true, false})
+      deferred = Delivery.site(7, candidate, "lib/x.ex", {false, false})
 
       # Deferred records no diff text...
       assert deferred.original_code == nil
@@ -216,6 +216,23 @@ defmodule Mutare.Transform.Candidate.DeliveryTest do
 
       assert %{deferred | original_code: eager.original_code, mutated_code: eager.mutated_code} ==
                eager
+    end
+
+    test "the summary flag is independent of render? (the live line on a deferred scan)" do
+      candidate = %Candidate.InPlace{
+        mutator: spec(),
+        original: op(:>=),
+        mutated: op(:>),
+        range: @range
+      }
+
+      # Deferred *_code, but summary on — the `mix mutare` non-quiet path.
+      site = Delivery.site(7, candidate, "lib/x.ex", {false, true})
+      assert site.original_code == nil
+      assert site.summary == "relational  a >= b → a > b"
+
+      # ...and off by default leaves it nil (eager render, no live reporter).
+      assert Delivery.site(7, candidate, "lib/x.ex", {true, false}).summary == nil
     end
   end
 end

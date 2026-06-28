@@ -353,6 +353,9 @@ defmodule Mutare.Transform do
       # Default `true`: the public API and tests render each site's diff eagerly. A `mix mutare`
       # scan passes `false` to defer it (see `Mutare.Transform.Config`).
       render_site_code: Keyword.get(opts, :render_site_code, true),
+      # Default `false`: build no live `summary`. A `mix mutare` run passes `true` (unless
+      # `--quiet`) so the live in-flight line has a cheap one-liner (see `Mutare.Transform.Config`).
+      summarize_sites: Keyword.get(opts, :summarize_sites, false),
       prefix: names.prefix,
       active_var: names.active_var,
       super_var: names.super_var,

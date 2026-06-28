@@ -43,7 +43,8 @@ defmodule Mutare.Run.Context do
           on_phase: hook(),
           on_start: hook(),
           on_scan: hook(),
-          defer_site_code: boolean()
+          defer_site_code: boolean(),
+          summarize_sites: boolean()
         }
 
   # The wiring fields — everything on the struct except `:options` (the hooks, `:project`, and the
@@ -59,13 +60,21 @@ defmodule Mutare.Run.Context do
   # the per-mutant `Sourceror` render that dominates it. `false` (the default) keeps the eager
   # behaviour — what every library caller and a custom `:reporter` hook (which may read any result's
   # code) safely gets. Read by `Mutare.Schema` (scan) and `Mutare.Runner` (hydration).
+  #
+  # `summarize_sites`: whether the scan should build each site's cheap `Macro`-rendered live
+  # `summary` one-liner (`Mutare.Site`'s "Live summary"). Set `true` by the Mix task only when a
+  # live reporter is attached (a non-`--quiet` run) — the in-flight activity line is its sole
+  # consumer, and unlike `defer_site_code` it can't be deferred (it shows every mutant as it runs).
+  # `false` (the default) for `--quiet`, the info commands, and library callers, which show no
+  # in-flight line. Read by `Mutare.Schema`.
   @wiring_fields [
     project: nil,
     reporter: nil,
     on_phase: nil,
     on_start: nil,
     on_scan: nil,
-    defer_site_code: false
+    defer_site_code: false,
+    summarize_sites: false
   ]
 
   defstruct [options: %Options{}] ++ @wiring_fields
@@ -116,7 +125,8 @@ defmodule Mutare.Run.Context do
       on_phase: validate_callback!(:on_phase, wiring[:on_phase]),
       on_start: validate_callback!(:on_start, wiring[:on_start]),
       on_scan: validate_callback!(:on_scan, wiring[:on_scan]),
-      defer_site_code: wiring[:defer_site_code] == true
+      defer_site_code: wiring[:defer_site_code] == true,
+      summarize_sites: wiring[:summarize_sites] == true
     }
   end
 

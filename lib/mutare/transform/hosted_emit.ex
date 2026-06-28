@@ -65,17 +65,19 @@ defmodule Mutare.Transform.HostedEmit do
   # The `Mutare.Site` for one hosted mutant: an `:in_place` replacement showing the logical
   # fragment swap, not the `wrap`/`splice`/selector scaffolding. The optional note rides onto
   # the Site for the report, and the optional variant label onto the Site for `# mutare:ignore`
-  # filtering (`nil` for the common untagged fragment). `render?` is the scan's diff-deferral flag.
+  # filtering (`nil` for the common untagged fragment). `flags` is the `{render?, summary?}` pair
+  # (the scan's diff-deferral flag + the live-summary flag).
   defp hosted_site(
          id,
          %{candidate: cand, mutated: mutated, note: note, variant: variant},
          file,
-         render?
+         {render?, summary?}
        ),
        do:
          Site.in_place(id, file, cand.range, cand.original, mutated, cand.mutator,
            note: note,
            variant: variant,
-           render?: render?
+           render?: render?,
+           summary?: summary?
          )
 end

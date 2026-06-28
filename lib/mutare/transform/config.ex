@@ -21,6 +21,7 @@ defmodule Mutare.Transform.Config do
           mutators: [Mutare.Mutator.Spec.t()],
           skip_ids: MapSet.t(),
           render_site_code: boolean(),
+          summarize_sites: boolean(),
           prefix: String.t(),
           active_var: atom(),
           super_var: atom(),
@@ -40,6 +41,13 @@ defmodule Mutare.Transform.Config do
             # are populated now or `nil` for later. `transform_string/2` defaults it `true`, so the
             # public API and tests are unaffected.
             render_site_code: true,
+            # Whether each `Mutare.Site` records the cheap `Macro`-rendered live `summary` one-liner
+            # (`true`), or leaves it `nil` (`false`, the default). Orthogonal to `render_site_code`:
+            # the summary feeds the live in-flight activity line, which a deferred scan still shows,
+            # so a `mix mutare` run sets this `true` unless `--quiet` (no live block). Off by default
+            # so `transform_string/2`, the count pass, and tests build no summary. See
+            # `Mutare.Site`'s "Live summary" section.
+            summarize_sites: false,
             # The prefix for generated private (lifted) names. `"__mutare_"` is the canonical
             # value; `Mutare.Transform` recomputes it per file — scanning the source's own
             # definitions — to a collision-free variant when the target already defines a

@@ -15,10 +15,11 @@ defmodule Mutare.Transform.ClaimState do
   # schema's render-free count pass:
   #
   #   * `:render` — build a `Mutare.Site` per claim and accumulate it in `sites`; a poison-skipped
-  #     id records a poisoned site but emits no artifact. This is the full transform. Whether the
-  #     site renders its diff via `Sourceror` now or defers it is the `render_code` flag threaded
-  #     to `site_fn` (`false` for a `mix mutare` scan — see `Mutare.Transform.Config`); either way
-  #     a `Site` is built and retained.
+  #     id records a poisoned site but emits no artifact. This is the full transform. The
+  #     `{render_code?, summary?}` flags threaded to `site_fn` decide which diff text the site
+  #     carries — the `Sourceror` `*_code` (deferred for a `mix mutare` scan) and/or the cheap
+  #     `Macro` live `summary` (off under `--quiet`); see `Mutare.Transform.Config`. Either way a
+  #     `Site` is built and retained.
   #   * `:count` — advance the id and bump `count` only. No `Site` is built (so the per-mutant
   #     `Sourceror` render in `Mutare.Site` is skipped) and none is retained, but the live
   #     artifact is still emitted, so the metamutant tree stays well-formed and the *set* of
@@ -58,9 +59,9 @@ defmodule Mutare.Transform.ClaimState do
           String.t(),
           MapSet.t(),
           item,
-          (pos_integer(), item, String.t(), boolean() -> Site.t()),
+          (pos_integer(), item, String.t(), {boolean(), boolean()} -> Site.t()),
           (pos_integer(), item -> artifact),
-          boolean()
+          {boolean(), boolean()}
         ) :: {[artifact], t()}
         when item: term(), artifact: term()
   def claim(
@@ -70,7 +71,7 @@ defmodule Mutare.Transform.ClaimState do
         item,
         _site_fn,
         artifact_fn,
-        _render_code
+        _render_flags
       ) do
     id = claim.next_id
     {[artifact_fn.(id, item)], %{claim | next_id: id + 1, count: claim.count + 1}}
@@ -83,10 +84,10 @@ defmodule Mutare.Transform.ClaimState do
         item,
         site_fn,
         artifact_fn,
-        render_code
+        render_flags
       ) do
     id = claim.next_id
-    site = site_fn.(id, item, file, render_code)
+    site = site_fn.(id, item, file, render_flags)
     claim = %{claim | next_id: id + 1}
 
     if id in skip_ids do

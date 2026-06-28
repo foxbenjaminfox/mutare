@@ -361,9 +361,12 @@ defmodule Mutare.Report.Live do
   end
 
   # The activity line's payload: the mutant currently being tested, or a
-  # placeholder before the first one is picked up.
+  # placeholder before the first one is picked up. The in-flight line uses the cheap
+  # `Site.summary_line/1` (the `Macro` `summary`, present on a non-`--quiet` run), so a deferred
+  # scan's un-hydrated site needs no `Sourceror` render just to show progress; the permanent
+  # leave-behind / verbose lines below stay on `descriptor/1` (hydrated `*_code`).
   defp activity(%{current: nil}), do: "testing mutants…"
-  defp activity(%{current: %Site{} = site}), do: "testing #{descriptor(site)}"
+  defp activity(%{current: %Site{} = site}), do: "testing #{live_descriptor(site)}"
 
   # The scanning line's payload: per-file progress with a running mutant tally
   # once the first file is in, else the bare label (during file discovery).
@@ -428,8 +431,15 @@ defmodule Mutare.Report.Live do
     end
   end
 
-  # `file:line  <describe>`, the shared one-liner for activity + leave-behind.
+  # `file:line  <describe>`, the one-liner for the permanent leave-behind / verbose lines (whose
+  # result sites carry `*_code` — eager, or hydrated for survivors).
   defp descriptor(%Site{} = site), do: "#{site.file}:#{site.line}  #{Site.describe(site)}"
+
+  # The same shape for the live in-flight line, but via `Site.summary_line/1` — the cheap `Macro`
+  # `summary` when present, else `describe/1`. Lets the activity line render an un-hydrated
+  # (deferred-scan) site without a `Sourceror` round-trip.
+  defp live_descriptor(%Site{} = site),
+    do: "#{site.file}:#{site.line}  #{Site.summary_line(site)}"
 
   # A permanent line: a padded status label (coloured when `color?`) then the mutant
   # descriptor. `color?` is decoupled from animation, so `NO_COLOR` yields a plain

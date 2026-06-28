@@ -425,6 +425,12 @@ defmodule Mix.Tasks.Mutare do
     # machine reports are untouched.
     live = maybe_start_live(options)
 
+    # Build the cheap per-site live `summary` only when a live reporter will show the in-flight
+    # mutant — `live != nil` (i.e. not `--quiet`). Skipped otherwise so a quiet/CI run pays no
+    # extra `Macro` render. The deferred-scan in-flight line reads `summary`; survivors/verbose
+    # lines use the hydrated `*_code`.
+    context = %{context | summarize_sites: live != nil}
+
     try do
       # The scan (discovery + transform of every source) runs before the runner, so
       # we drive its live progress directly from here — `:on_scan` updates the block

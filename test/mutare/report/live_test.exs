@@ -107,6 +107,36 @@ defmodule Mutare.Report.LiveTest do
       assert counter =~ "~1m 2s left"
     end
 
+    test "the in-flight line uses the cheap summary for a deferred (un-rendered) site" do
+      # On a `mix mutare` scan the in-flight site carries no Sourceror `*_code` (deferred), only
+      # the cheap `Macro` `summary`. The activity line must read that, not crash trying to render
+      # `nil` (the original FunctionClauseError in String.replace/4).
+      deferred = %Site{
+        id: 1,
+        file: "lib/rate_limits.ex",
+        line: 56,
+        mutator: :return_value,
+        original_code: nil,
+        mutated_code: nil,
+        summary: "return_value  compute(x) → []"
+      }
+
+      state = %{
+        phase: :running,
+        width: 120,
+        spinner: 0,
+        current: deferred,
+        total: 10,
+        counts: %{},
+        started_at: 0
+      }
+
+      [activity, _counter] = Live.status_block(state, 1_000)
+
+      assert activity =~ "testing lib/rate_limits.ex:56"
+      assert activity =~ "return_value  compute(x) → []"
+    end
+
     test "the counter surfaces unusual outcomes only when present" do
       state = %{
         phase: :running,
@@ -281,6 +311,38 @@ defmodule Mutare.Report.LiveTest do
 
       # Plain mode emits no cursor-control codes.
       refute out =~ "\e["
+    end
+  end
+
+  describe "end to end (ansi)" do
+    test "a deferred (un-rendered) in-flight site draws its summary without crashing" do
+      # Regression: a `mix mutare` scan hands `{:start, site}` an un-rendered Site (`*_code` nil).
+      # With ansi on, the start cast redraws the in-flight line — which used to crash in
+      # String.replace(nil, …). It must now draw the cheap `summary` instead.
+      {:ok, io} = StringIO.open("")
+      {:ok, live} = Live.start_link(device: io, ansi: true, color: false, width: 101)
+
+      deferred = %Site{
+        id: 1,
+        file: "lib/importfeed/rate_limits.ex",
+        line: 56,
+        mutator: :return_value,
+        original_code: nil,
+        mutated_code: nil,
+        summary: "return_value  bucket(key) → []"
+      }
+
+      Live.phase(live, {:running, 109})
+
+      # The crash path: handle_cast({:start, …}) → redraw → draw → activity → summary_line.
+      Live.started(live, deferred)
+      # The GenServer is still alive (a crash would have taken it down).
+      assert Process.alive?(live)
+      Live.finish(live)
+
+      {_in, out} = StringIO.contents(io)
+      assert out =~ "testing lib/importfeed/rate_limits.ex:56"
+      assert out =~ "return_value  bucket(key) → []"
     end
   end
 

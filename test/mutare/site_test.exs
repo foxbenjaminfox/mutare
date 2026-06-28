@@ -103,4 +103,87 @@ defmodule Mutare.SiteTest do
       assert site.mutated_code == "a > b"
     end
   end
+
+  describe "live summary (summary?: true)" do
+    setup do
+      original = {:>=, [], [{:a, [], nil}, {:b, [], nil}]}
+      mutated = {:>, [], [{:a, [], nil}, {:b, [], nil}]}
+
+      %{
+        spec: Mutare.Mutator.Spec.for_module(Mutare.Mutators.Relational),
+        original: original,
+        mutated: mutated
+      }
+    end
+
+    test "builds the cheap Macro one-liner for a replacement", %{
+      spec: spec,
+      original: o,
+      mutated: m
+    } do
+      site = Site.in_place(1, "lib/x.ex", @range, o, m, spec, summary?: true)
+      assert site.summary == "relational  a >= b → a > b"
+    end
+
+    test "is off by default — no summary unless requested", %{spec: spec, original: o, mutated: m} do
+      assert Site.in_place(1, "lib/x.ex", @range, o, m, spec).summary == nil
+      assert Site.lifted_replace(1, "lib/x.ex", @range, o, m, spec).summary == nil
+    end
+
+    test "can be built independently of the Sourceror *_code (the deferred-scan case)",
+         %{spec: spec, original: o, mutated: m} do
+      # render?: false leaves *_code nil (deferred), but summary?: true still renders the live line.
+      site = Site.in_place(1, "lib/x.ex", @range, o, m, spec, render?: false, summary?: true)
+      assert site.original_code == nil
+      assert site.mutated_code == nil
+      assert site.summary == "relational  a >= b → a > b"
+    end
+
+    test "renders a return-value constant swap with the real tail expression" do
+      spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.ReturnValue)
+      tail = Sourceror.parse_string!("compute(a) + offset")
+      empty = Mutare.AST.literal(0)
+      site = Site.return_value(1, "lib/x.ex", @range, tail, empty, spec, summary?: true)
+      assert site.summary == "return_value  compute(a) + offset → 0"
+    end
+
+    test "renders a clause drop as a (drop), collapsing a multi-line clause to one line" do
+      node = Sourceror.parse_string!("def f(0) do\n  :z\nend")
+      site = Site.clause_drop(1, "lib/x.ex", @range, node, summary?: true)
+      refute site.summary =~ "\n"
+      assert site.summary == "clause_drop  (drop) def f(0) do :z end"
+    end
+  end
+
+  describe "summary_line/1" do
+    test "prefers the summary when present" do
+      site = %Site{mutator: :relational, summary: "relational  a >= b → a > b"}
+      assert Site.summary_line(site) == "relational  a >= b → a > b"
+    end
+
+    test "falls back to describe/1 when there is no summary (the eager / hydrated site)" do
+      site = %Site{
+        mutator: :relational,
+        operation: :replace,
+        original_code: "a >= b",
+        mutated_code: "a > b"
+      }
+
+      assert Site.summary_line(site) == "relational  a >= b → a > b"
+    end
+
+    test "does not crash on a wholly un-rendered site (regression: String.replace(nil, …))" do
+      # A deferred scan under --quiet builds neither summary nor *_code. The reporter owns the
+      # terminal, so reaching this site must never raise — it degrades to a bare mutator label.
+      site = %Site{
+        mutator: :return_value,
+        operation: :replace,
+        summary: nil,
+        original_code: nil,
+        mutated_code: nil
+      }
+
+      assert Site.summary_line(site) == "return_value   → "
+    end
+  end
 end

@@ -54,13 +54,15 @@ defmodule Mutare.Transform.Candidate.Delivery do
   @doc """
   Build the recorded `Mutare.Site` for a claimed candidate id.
 
-  `render?` is the scan's diff-deferral flag (`false` defers the per-site `Sourceror` render —
-  see `Mutare.Transform.Config`); it is forwarded verbatim to the `Mutare.Site` constructor.
+  `flags` is the `{render?, summary?}` pair carried from `Mutare.Transform.Config`: `render?` is
+  the scan's diff-deferral flag (`false` defers the per-site `Sourceror` `*_code` render) and
+  `summary?` builds the cheap `Macro` live one-liner (`true` only when a live reporter will show
+  it — off under `--quiet`). Both are forwarded verbatim to the `Mutare.Site` constructor.
   """
-  @spec site(pos_integer(), Candidate.t(), String.t(), boolean()) :: Site.t()
-  def site(id, candidate, file, render?) do
+  @spec site(pos_integer(), Candidate.t(), String.t(), {boolean(), boolean()}) :: Site.t()
+  def site(id, candidate, file, flags) do
     {_route, site_kind, _branch_field} = profile(candidate)
-    build_site(site_kind, id, candidate, file, render?)
+    build_site(site_kind, id, candidate, file, flags)
   end
 
   @doc """
@@ -105,35 +107,46 @@ defmodule Mutare.Transform.Candidate.Delivery do
   defp profile(%Candidate.Hosted{}), do: {:hosted, :hosted, nil}
 
   # Each `site_kind` knows which `Mutare.Site` constructor to call and which candidate fields it
-  # reads (the constructors differ in arity and in which fields they record).
-  defp build_site(:in_place, id, c, file, render?),
+  # reads (the constructors differ in arity and in which fields they record). `flags` is the
+  # `{render?, summary?}` pair, forwarded as the two render opts.
+  defp build_site(:in_place, id, c, file, {render?, summary?}),
     do:
       Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator,
         note: note(c),
         variant: variant(c),
-        render?: render?
+        render?: render?,
+        summary?: summary?
       )
 
-  defp build_site(:lifted_replace, id, c, file, render?),
+  defp build_site(:lifted_replace, id, c, file, {render?, summary?}),
     do:
       Site.lifted_replace(id, file, c.range, c.original, c.mutated, c.mutator,
         note: note(c),
         variant: variant(c),
-        render?: render?
+        render?: render?,
+        summary?: summary?
       )
 
-  defp build_site(:return_value, id, c, file, render?),
-    do: Site.return_value(id, file, c.range, c.original, c.mutated, c.mutator, render?)
+  defp build_site(:return_value, id, c, file, {render?, summary?}),
+    do:
+      Site.return_value(id, file, c.range, c.original, c.mutated, c.mutator,
+        render?: render?,
+        summary?: summary?
+      )
 
-  defp build_site(:in_place_drop, id, c, file, render?),
-    do: Site.in_place_drop(id, file, c.range, c.dropped, c.mutator, render?)
+  defp build_site(:in_place_drop, id, c, file, {render?, summary?}),
+    do:
+      Site.in_place_drop(id, file, c.range, c.dropped, c.mutator,
+        render?: render?,
+        summary?: summary?
+      )
 
-  defp build_site(:clause_drop, id, c, file, render?),
-    do: Site.clause_drop(id, file, c.range, c.original, render?)
+  defp build_site(:clause_drop, id, c, file, {render?, summary?}),
+    do: Site.clause_drop(id, file, c.range, c.original, render?: render?, summary?: summary?)
 
   # `Hosted` records its Sites per logical mutant in `HostedEmit`, never through `site/4`; the
   # clause exists so a stray call fails loudly rather than as a `FunctionClauseError`.
-  defp build_site(:hosted, _id, c, _file, _render?),
+  defp build_site(:hosted, _id, c, _file, _flags),
     do:
       raise(ArgumentError, "#{inspect(c.__struct__)} records its Sites per mutant in HostedEmit")
 

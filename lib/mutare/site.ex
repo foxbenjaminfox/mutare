@@ -28,6 +28,18 @@ defmodule Mutare.Site do
   `*_form` tags, and `variant` (read for `# mutare:ignore` filtering) are always computed,
   so deferral changes no id, classification, or count. The public `transform_string/2` and
   the test helpers keep the default, so they always carry rendered code.
+
+  ## Live summary
+
+  The deferred path leaves `*_code` `nil`, but the live progress reporter still wants a
+  one-line `orig -> mutated` for the *in-flight* mutant — and it can't defer, because it
+  shows every mutant as it runs, not just the displayed handful. So a second, independent
+  flag `summary?` builds `summary`: the same `describe/1`-style one-liner, but rendered with
+  `Macro.to_string/1` (~8x cheaper than `Sourceror`, ample for an ephemeral spinner line)
+  instead of the high-fidelity `Sourceror` the `*_code` fields and the reports use. A
+  `mix mutare` run sets `summary?` for every site unless `--quiet` (no live block, so nothing
+  reads it); `transform_string/2`, the count pass, and the test helpers leave it `nil`. Only
+  the live activity line reads it (`summary_line/1`); every report uses `*_code`.
   """
 
   @type t :: %__MODULE__{
@@ -46,6 +58,7 @@ defmodule Mutare.Site do
           mutated_form: atom() | nil,
           original_code: String.t(),
           mutated_code: String.t(),
+          summary: String.t() | nil,
           variant: [String.t()],
           note: String.t() | nil,
           block_macro: {atom(), non_neg_integer()} | nil
@@ -63,6 +76,10 @@ defmodule Mutare.Site do
     :mutated_form,
     :original_code,
     :mutated_code,
+    # The cheap `Macro.to_string`-rendered `mutator  orig → mutated` one-liner for the live
+    # in-flight activity line, or `nil` when not requested (the `summary?` flag — see the "Live
+    # summary" section). Read only by `summary_line/1`; the reports use `*_code`.
+    :summary,
     # The mutator-declared **variant label(s)** of this mutation (downcased), or `[]` when the
     # producing mutator did not opt in (no `c:Mutare.Mutator.variants/0` vocabulary) or this
     # mutation has no label (a delete site, or an unlabeled mutant). A list because one mutant may
@@ -117,6 +134,8 @@ defmodule Mutare.Site do
       `c:Mutare.Mutator.variant/2`.
     * `:render?` — `false` defers the per-site diff render (the scan's optimisation — see the
       "Deferred diff code" section); defaults `true`.
+    * `:summary?` — `true` builds the cheap `Macro`-rendered live one-liner (`summary`); defaults
+      `false` (see the "Live summary" section).
   """
   @spec in_place(
           pos_integer(),
@@ -176,10 +195,13 @@ defmodule Mutare.Site do
   @doc """
   A dropped function clause — a `:lifted`, `:delete` mutation. The clause is
   removed entirely, so there is no mutated node, op, or code.
+
+  `opts` carries the two render flags (`:render?`/`:summary?`, both `true` by default — see
+  "Deferred diff code" and "Live summary").
   """
-  @spec clause_drop(pos_integer(), String.t(), Sourceror.Range.t(), Macro.t(), boolean()) :: t()
-  def clause_drop(id, file, range, clause_node, render? \\ true) do
-    delete_site(id, file, range, clause_node, :clause_drop, :lifted, render?)
+  @spec clause_drop(pos_integer(), String.t(), Sourceror.Range.t(), Macro.t(), keyword()) :: t()
+  def clause_drop(id, file, range, clause_node, opts \\ []) do
+    delete_site(id, file, range, clause_node, :clause_drop, :lifted, opts)
   end
 
   @doc """
@@ -195,17 +217,18 @@ defmodule Mutare.Site do
           Sourceror.Range.t(),
           Macro.t(),
           Mutare.Mutator.Spec.t(),
-          boolean()
+          keyword()
         ) :: t()
-  def in_place_drop(id, file, range, clause_node, mutator, render? \\ true) do
-    delete_site(id, file, range, clause_node, mutator.name, :in_place, render?)
+  def in_place_drop(id, file, range, clause_node, mutator, opts \\ []) do
+    delete_site(id, file, range, clause_node, mutator.name, :in_place, opts)
   end
 
   # The shared body of the two delete-site constructors (`clause_drop/4`, `in_place_drop/5`):
   # a `:delete` mutation removes the whole clause, so there is no mutated node, op, or code — the
   # constructors differ only in `mutator` and `kind`. One home so a change to how a delete site is
-  # built (a new field, the `clause_code/1` rendering) lands once.
-  defp delete_site(id, file, range, clause_node, mutator_name, kind, render?) do
+  # built (a new field, the `clause_code/1` rendering) lands once. `opts` carries the two render
+  # flags (`:render?` for the `Sourceror` `original_code`, `:summary?` for the `Macro` summary).
+  defp delete_site(id, file, range, clause_node, mutator_name, kind, opts) do
     %{
       base_site(id, file, range)
       | mutator: mutator_name,
@@ -213,8 +236,9 @@ defmodule Mutare.Site do
         operation: :delete,
         original_form: nil,
         mutated_form: nil,
-        original_code: clause_code(clause_node, render?),
-        mutated_code: ""
+        original_code: clause_code(clause_node, Keyword.get(opts, :render?, true)),
+        mutated_code: "",
+        summary: delete_summary(mutator_name, clause_node, Keyword.get(opts, :summary?, false))
     }
   end
 
@@ -234,6 +258,29 @@ defmodule Mutare.Site do
 
   defp clause_code(node, true), do: Sourceror.to_string(node)
 
+  # The live-summary builders (`summary?` true) — the cheap `Macro`-rendered counterparts of
+  # `describe/1`, gated to `nil` when not requested. A replacement shows `mutator  orig → mutated`;
+  # a delete shows `mutator  (drop) <clause>`. See the "Live summary" section.
+  defp replace_summary(_mutator, _orig, _mutated, false), do: nil
+
+  defp replace_summary(mutator, orig, mutated, true),
+    do: "#{mutator}  #{one_line(macro(orig))} → #{one_line(macro(mutated))}"
+
+  defp delete_summary(_mutator, _clause, false), do: nil
+
+  defp delete_summary(mutator, clause, true),
+    do: "#{mutator}  (drop) #{one_line(macro(clause))}"
+
+  # Render a node to source via `Macro.to_string/1` for the live summary — far cheaper than
+  # `Sourceror.to_string/1` and fine for an ephemeral one-liner (it normalises formatting, which
+  # the report/JSON/SARIF can't tolerate but a spinner line can). A bare `->` clause (a dropped
+  # `rescue`) renders in call form (`->(head, body)`); show it in arrow syntax, mirroring
+  # `clause_code/2`'s handling of the same shape.
+  defp macro({:->, _meta, [[head], body]}),
+    do: "#{Macro.to_string(head)} -> #{Macro.to_string(body)}"
+
+  defp macro(node), do: Macro.to_string(node)
+
   @doc """
   A return-value mutation: a function clause's tail expression replaced with a
   constant (`nil`/`0`/`""`/`[]`) behind an in-place selector `case`. Structural
@@ -241,7 +288,7 @@ defmodule Mutare.Site do
   operator atoms — but it *is* `:in_place` (a tail is a body position), with the
   original tail and the replacement constant kept for the diff. `mutator` is the
   producing `Mutare.Mutator.Spec` (`ReturnValue` or a custom return mutator), and the
-  site records its `name`.
+  site records its `name`. `opts` carries the two render flags (`:render?`/`:summary?`).
   """
   @spec return_value(
           pos_integer(),
@@ -250,9 +297,12 @@ defmodule Mutare.Site do
           Macro.t(),
           Macro.t(),
           Mutare.Mutator.Spec.t(),
-          boolean()
+          keyword()
         ) :: t()
-  def return_value(id, file, range, original_node, mutated_node, mutator, render? \\ true) do
+  def return_value(id, file, range, original_node, mutated_node, mutator, opts \\ []) do
+    render? = Keyword.get(opts, :render?, true)
+    summary? = Keyword.get(opts, :summary?, false)
+
     %{
       base_site(id, file, range)
       | mutator: mutator.name,
@@ -262,6 +312,7 @@ defmodule Mutare.Site do
         mutated_form: nil,
         original_code: maybe_render(original_node, render?),
         mutated_code: maybe_render(mutated_node, render?),
+        summary: replace_summary(mutator.name, original_node, mutated_node, summary?),
         variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node)
     }
   end
@@ -277,6 +328,7 @@ defmodule Mutare.Site do
   defp replace(id, file, range, original_node, mutated_node, mutator, kind, opts) do
     variant = opts[:variant]
     render? = Keyword.get(opts, :render?, true)
+    summary? = Keyword.get(opts, :summary?, false)
 
     # When the mutated node is a *keyword-list key* (`trim:`), its recorded `range`
     # spans the `name:` source — colon included — so the report's textual patch must
@@ -294,6 +346,7 @@ defmodule Mutare.Site do
         mutated_form: elem(mutated_node, 0),
         original_code: render_code(original_node, keyword_key?, render?),
         mutated_code: render_code(mutated_node, keyword_key?, render?),
+        summary: replace_summary(mutator.name, original_node, mutated_node, summary?),
         variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node, variant)
     }
   end
@@ -336,6 +389,16 @@ defmodule Mutare.Site do
     "#{site.mutator}  #{one_line(site.original_code)} → #{one_line(site.mutated_code)}"
   end
 
+  @doc """
+  The one-liner for the **live in-flight** activity line: the cheap `Macro`-rendered `summary`
+  when present (a `mix mutare` run builds it for every site unless `--quiet`), else the
+  `Sourceror`-based `describe/1` (the eager / hydrated path). Decoupled from `describe/1` so a
+  deferred scan's un-hydrated site — `*_code` `nil` — never has to render to show progress.
+  """
+  @spec summary_line(t()) :: String.t()
+  def summary_line(%__MODULE__{summary: nil} = site), do: describe(site)
+  def summary_line(%__MODULE__{summary: summary}), do: summary
+
   # Sourceror renders a multi-line node (a dropped `case` clause, a wrapped tuple,
   # a multi-line return) as multi-line code. `describe/1` promises a *one*-liner —
   # and its consumers depend on it: the live status block counts list elements, not
@@ -344,6 +407,11 @@ defmodule Mutare.Site do
   # Collapse each newline (plus the indentation around it) to a single space; spaces
   # *within* a line (e.g. inside a string literal) are left intact. The raw
   # `original_code`/`mutated_code` fields stay multi-line for the diff/JSON reports.
+  # `nil` (a deferred, un-hydrated site reached via `describe/1`) collapses to "" rather
+  # than raising — the summary path is what such a site should use, but `describe/1` stays
+  # total so a stray call can never crash the reporter that owns the terminal.
+  defp one_line(nil), do: ""
+
   defp one_line(code) do
     code |> String.replace(~r/\s*\n\s*/, " ") |> String.trim()
   end
