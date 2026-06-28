@@ -5416,6 +5416,39 @@ selection — `25 killed / 1 timeout / 39 survived / 76 no-coverage` (the dump c
 survived / 0 no-coverage`. The honest score replaces one inflated by charging every
 uncovered mutant's whole-suite timeout as a kill.
 
+### Self-hosting: a leaked tracking flag + a vanished table crashed the baseline `[fixed — `hit/1` skips a missing table]`
+The two coverage self-hosting fixes above isolate the helper *module name*; this is the
+twin for the helper's *runtime state*. Once the `reduce:`-comprehension poison (above)
+was fixed and the metamutant of Mutare finally compiled, the **baseline** run of a full
+self-host (`mix mutare` on Mutare) collapsed with ~300 failures, almost all the same
+`** (ArgumentError) the table identifier does not refer to an existing ETS table` from
+`:ets.insert(:mutare_cov_agg, …)` — fired by the metamutant's own coverage records
+inside ordinary lib functions (`Mutare.Transform.transform_string/2`,
+`Mutare.Ignore.directives/1`, …) that almost every test calls.
+
+Root cause is a single leak that cascades. `Mutare.CoverageTest`'s `setup_ast/0` test
+sets `MUTARE_COVERAGE`, evals `Recorder.setup_ast/0` (which flips `:mutare_track` true
+and `:ets.new`s the tables **in the test process**), then ends — and a process-owned
+ETS table dies with its process. `on_exit` runs in a *separate* process, and its very
+first line calls `Recorder.env_var/0` — a **metamutant** function whose coverage record
+fires (`mutare_active == 0` at baseline, `:mutare_track` still true) and `:ets.insert`s
+into the now-gone `:mutare_cov_agg`. That raise aborts `on_exit` **before**
+`restore_track/1` runs, so `:mutare_track` leaks true for the rest of the BEAM and every
+later instrumented line crashes the same way. (In a normal run these functions aren't
+instrumented, so `on_exit` never records and the leak never happens — a pure
+self-hosting artifact.)
+
+**The fix (best-effort `hit/1`).** The generated helper's `hit/1`
+(`Mutare.Coverage.HelperTemplate`) now returns `true` without recording when its
+aggregate table is absent — the same "never crash, a missing signal just means nothing
+to record" discipline as its dead-pid label guards. That keeps the metamutant's records
+from ever crashing an unrelated line, so the `setup_ast/0` `on_exit` completes,
+`restore_track/1` runs, and the leak is gone (302 → 0 ETS failures; baseline now green
+but for one *unrelated*, pre-existing `Mutare.ManifestTest` selector-key fixture
+artifact). A real probe run never reaches the guard: the bootstrap creates the tables in
+the test-helper process, which outlives the whole suite. Guard is `coverage_test`'s "a
+record is a no-op … when the aggregate table is absent".
+
 ### Report diff fidelity for call-final keyword args `[fixed]`
 A `mix mutare --only lib/mutare/ignore.ex` surfaced two *corrupt survivor diffs* on
 `|> String.split(re, trim: true)` — both in `Mutare.Report`, **not** the metamutant

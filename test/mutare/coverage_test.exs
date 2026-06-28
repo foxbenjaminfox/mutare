@@ -187,6 +187,22 @@ defmodule Mutare.CoverageTest do
       assert :ets.whereis(:mutare_cov_agg) != :undefined
       assert :ets.whereis(:mutare_cov_unlabeled) != :undefined
     end
+
+    test "a record is a no-op (not a crash) when the aggregate table is absent" do
+      # The self-hosting trap: mutation-testing Mutare *with Mutare* runs its own coverage
+      # tests (which create and tear down these process-global tables) against a metamutant
+      # of Mutare's lib that records into the *same* names. A test that opens the gate and
+      # then exits — its process-owned table dying with it — would otherwise leave a later
+      # instrumented line (even its own `on_exit`) to `:ets.insert` into a vanished table and
+      # crash, cascading across the suite. `hit/1` must skip when the table is gone. Leaving
+      # the tables dropped is safe: every other coverage test recreates what it needs.
+      for t <- [:mutare_cov_agg, :mutare_cov_attr, :mutare_cov_unlabeled],
+          table?(t),
+          do: :ets.delete(t)
+
+      refute table?(:mutare_cov_agg)
+      assert Mutare.Coverage.HelperTemplate.hit([123_456]) == true
+    end
   end
 
   # The owning test *file* is recovered from the process label ExUnit sets — but its runner only

@@ -38,8 +38,24 @@ defmodule Mutare.Coverage.HelperTemplate do
   def root_env, do: @root_env
 
   def hit(ids) do
-    label = label()
+    # Best-effort, never crash: a missing aggregate table means there is nowhere to
+    # record, so skip (mirrors the dead-pid label guards below). A real probe run
+    # never hits this — the bootstrap creates the tables in the test-helper process,
+    # which outlives the whole suite. It only arises when Mutare is mutation-tested
+    # *with Mutare*: its own coverage tests create these process-global, named tables
+    # and tear them down, while the metamutant of Mutare's lib records into the *same*
+    # names. A coverage test that sets the tracking flag and then exits (its
+    # process-owned table dying with it) would otherwise leave the gate open over a
+    # vanished table, and the next instrumented line — in that test's own `on_exit`,
+    # or any later test — would crash on the `:ets.insert`. See NOTES "Self-hosting".
+    if :ets.whereis(@agg_table) == :undefined do
+      true
+    else
+      record(ids, label())
+    end
+  end
 
+  defp record(ids, label) do
     Enum.each(ids, fn id ->
       :ets.insert(@agg_table, {id})
 
