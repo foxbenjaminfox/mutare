@@ -2268,6 +2268,25 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     bare-node host mutant still works. Tested via the `filter` fixture noting its boundary flip but not
     its reversal (`hosted_test`).
 
+  * *Reading how a **nested** macro is registered — `Calls.macro_treatment/1`.*
+    A `:hosted` argument is left **raw** and core does **not** descend, so it never routes the macros
+    *inside* the fragment — they're the host's to own (the `host/2` walk decides what's mutable). That
+    means a nested `:skip`-registered macro (`from(t in U, where: custom_fn(t.x) and t.age > 18)`, with
+    `custom_fn` marked `:skip`) is *not* auto-respected: core isn't looking in there. But it isn't lost
+    either — the `Resolve` pre-pass walks **uniformly** (`descend(args, env)` doesn't prune at a
+    `:skip`/`:hosted` boundary), so every nested known-macro call in the raw node handed to `host/2`
+    already carries its `:mutare_macro_call` identity + `:mutare_macro` routing stamp, from the *merged*
+    registry (built-ins + mutators'/plugins' `macros/0` + the declarative `:macros`) and the same
+    alias/import/`use` resolution. So the reader is pure stamp-reading — no new plumbing, no registry in
+    `host/2`'s context: `macro_treatment(node)` returns the resolved **per-visible-arg** routing (or
+    `nil`). It is deliberately per-argument with *no* all-`:skip` convenience predicate: a macro is
+    registered per position (`[:skip, :expression]`), so collapsing that to one boolean would hide the
+    very distinction a host needs. The one normalization: `Resolve` rewrote each `:hosted` → the internal
+    `{:hosted, host_module}` (and recurses through `{:keyword, …}`), so `author_treatment/1` maps it back
+    to the `:hosted`/`:keyword` vocabulary the author wrote. Resolution is whatever `Resolve` could see —
+    a qualified/imported macro resolves cleanly, a *bare* call to a locally-defined, un-imported macro
+    only via the name-only `{:*, name, …}` hatch. Tested in `calls_test`.
+
 **Explicitly not needed.** `context.uses` — every Ecto target self-identifies *node-locally* (a resolved
 call or a known macro), unlike a GenServer return tuple (shape-ambiguous, *does* need module context); the
 node never has to ask the module who it is. `opts` for `macros/0` — Ecto's macro set is fixed. Caveat

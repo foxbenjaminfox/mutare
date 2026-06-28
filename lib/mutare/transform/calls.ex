@@ -20,6 +20,12 @@ defmodule Mutare.Transform.Calls do
   callback, so those recognise their macro across the bare/qualified/aliased forms `Resolve`
   accepts instead of pattern-matching the raw head.
 
+  `macro_treatment/1` reads *how a node's macro is registered* — the resolved per-argument routing
+  the merged registry (built-ins + every mutator's/plugin's `macros/0` + the declarative `:macros`
+  option) assigned it. A hosting mutator walking a `:hosted` fragment uses it to ask whether a
+  **nested** macro routes a given argument `:skip` (leave it opaque) or otherwise specially, rather
+  than re-deriving the registry itself.
+
   ## Example
 
       defmodule MyApp.Mutators.Upcase do
@@ -227,6 +233,63 @@ defmodule Mutare.Transform.Calls do
   end
 
   def resolved_macro_call(_node), do: nil
+
+  @doc """
+  The resolved per-visible-argument **routing** of `node` when it is a recognised known macro,
+  else `nil` — the reader a hosting mutator uses to ask *how a nested macro is registered* while
+  it walks a `:hosted` fragment (so it can leave a `:skip`-registered call opaque, route around a
+  `:pattern` argument, and so on).
+
+  The routing is read from the stamp `Mutare.Transform.Resolve` places before mutators run, so it
+  reflects the **fully merged** registry (the `Kernel` built-ins, every enabled mutator's
+  `c:Mutare.Mutator.MacroAware.macros/0`, every plugin's `c:Mutare.Plugin.macros/0`, and the
+  declarative `:macros` option — later sources winning, exactly as core itself routed the call)
+  and the same alias/import/`use` resolution `resolved_call/1`/`resolved_macro_call/1` use. You do
+  not re-resolve the module yourself.
+
+  Returns a list with one `t:Mutare.Mutator.MacroAware.routing_treatment/0` per **visible**
+  argument — `[:skip]` for an opaque DSL body, `[:pattern, :expression]` for `match?`, or a
+  `:routing`-classified macro's already-resolved per-shape routing (whose entries may be `:hosted`
+  or `{:keyword, …}`). `nil` when the node is not a recognised known macro (an ordinary call, or a
+  macro nobody registered — i.e. nothing special to do).
+
+  For a **piped** stage the list covers the visible arguments only (the piped value's treatment,
+  like `resolved_macro_call/1`'s `visible_args`, is not included). Resolution is whatever `Resolve`
+  could see: a qualified or imported macro resolves cleanly; a bare call to a locally-defined,
+  un-imported macro is recognised only when registered via the name-only `{:*, name, …}` hatch.
+
+  ## Example
+
+      # inside a host/2 walking an Ecto-style condition fragment: check the nested
+      # call's *own* argument routing — per position, since that is how a macro is registered.
+      defp mutate_arg(arg, index, node) do
+        case Mutare.Transform.Calls.macro_treatment(node) do
+          nil -> flips(arg)                          # not a known macro — mutate it
+          routing -> if Enum.at(routing, index) == :skip, do: [], else: flips(arg)
+        end
+      end
+  """
+  @spec macro_treatment(Macro.t()) :: [Mutare.Mutator.MacroAware.routing_treatment()] | nil
+  def macro_treatment({_head, meta, _args}) when is_list(meta) do
+    case Meta.macro_routing(meta) do
+      routing when is_list(routing) -> Enum.map(routing, &author_treatment/1)
+      _ -> nil
+    end
+  end
+
+  def macro_treatment(_node), do: nil
+
+  # Map the resolved routing back to the author-facing treatment vocabulary
+  # (`Mutare.Mutator.MacroAware.routing_treatment/0`): `Resolve` rewrites each `:hosted` to the
+  # internal `{:hosted, host_module}` (stamping the delivering mutator) and recurses through
+  # `{:keyword, …}`, so undo that here — a mutator reading `macro_treatment/1` sees the `:hosted`
+  # word it wrote, not Mutare's stamp shape.
+  defp author_treatment({:hosted, _host}), do: :hosted
+
+  defp author_treatment({:keyword, treatments}),
+    do: {:keyword, Enum.map(treatments, &author_treatment/1)}
+
+  defp author_treatment(treatment), do: treatment
 
   # The resolved `{module_key, name}` identity from a node's own meta, or `nil` when absent —
   # i.e. when the node was never matched against the macro registry.

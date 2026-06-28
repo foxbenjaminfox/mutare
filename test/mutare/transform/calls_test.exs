@@ -1,7 +1,7 @@
 defmodule Mutare.Transform.CallsTest do
   use ExUnit.Case, async: true
 
-  alias Mutare.Transform.{Calls, Resolve}
+  alias Mutare.Transform.{Calls, Meta, Resolve}
 
   doctest Mutare.Transform.Calls
 
@@ -210,6 +210,68 @@ defmodule Mutare.Transform.CallsTest do
         )
 
       refute metamutant =~ "mutare_macro_call"
+    end
+  end
+
+  describe "macro_treatment/1 — inspect how a node's macro is registered, per argument" do
+    @skip_registry Mutare.Macros.build([{Mx.DSL, :filter, :any, :skip}], [])
+
+    # Find the macro *node* (not the resolved tuple) so the reader can be applied to it.
+    defp macro_node(source, registry) do
+      source
+      |> Sourceror.parse_string!()
+      |> Resolve.annotate(registry)
+      |> Macro.prewalk(nil, fn node, acc ->
+        {node, acc || (Calls.resolved_macro_call(node) && node)}
+      end)
+      |> elem(1)
+    end
+
+    test "a uniformly :skip-registered macro reports :skip for every visible argument" do
+      node = macro_node("Mx.DSL.filter(q, c)", @skip_registry)
+
+      assert Calls.macro_treatment(node) == [:skip, :skip]
+    end
+
+    test "a per-position registration reports each argument's own treatment" do
+      registry = Mutare.Macros.build([{Mx.DSL, :filter, 2, [:skip, :expression]}], [])
+      node = macro_node("Mx.DSL.filter(q, c)", registry)
+
+      assert Calls.macro_treatment(node) == [:skip, :expression]
+    end
+
+    test "a pattern macro (match?) reports its routing" do
+      node = macro_node("match?({:ok, x}, v)", Mutare.Macros.build([], []))
+
+      assert Calls.macro_treatment(node) == [:pattern, :expression]
+    end
+
+    test "an unregistered call reports nil; the reader is total over any term" do
+      node = "plain(q, c)" |> Sourceror.parse_string!() |> Resolve.annotate(@skip_registry)
+
+      assert Calls.macro_treatment(node) == nil
+      assert Calls.macro_treatment(:literal) == nil
+      assert Calls.macro_treatment({:x, [], nil}) == nil
+    end
+
+    test "the internal {:hosted, host}/{:keyword, …} stamp reads back as the author vocabulary" do
+      hosted = Meta.stamp_macro_routing([], [:expression, {:hosted, SomeHost}])
+
+      assert Calls.macro_treatment({:filter, hosted, [{:q, [], nil}, {:c, [], nil}]}) ==
+               [:expression, :hosted]
+
+      keyword =
+        Meta.stamp_macro_routing([], [:expression, {:keyword, [{:hosted, SomeHost}, :skip]}])
+
+      assert Calls.macro_treatment({:set, keyword, [{:q, [], nil}, {:c, [], nil}]}) ==
+               [:expression, {:keyword, [:hosted, :skip]}]
+    end
+
+    test "a 0-arg known macro reports [] (recognised, but nothing inside) — distinct from nil" do
+      registry = Mutare.Macros.build([{Mx.DSL, :thing, 0, :skip}], [])
+      node = macro_node("Mx.DSL.thing()", registry)
+
+      assert Calls.macro_treatment(node) == []
     end
   end
 end

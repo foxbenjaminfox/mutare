@@ -118,6 +118,12 @@ defmodule Mutare.Mutator.MacroAware do
 
   Registered by a `:hosted` (or `:routing`-classified) treatment in `c:macros/0`. `context` is
   the same map `c:Mutare.Mutator.mutate/2` receives (`:pipe_mode`/`:opts`/`:behaviours`).
+
+  Core leaves the whole hosted fragment **raw** and does not route the macros *nested inside* it —
+  that is now your fragment to own. To honour how a nested macro is registered (e.g. leave the
+  argument of a `:skip`-registered call opaque rather than mutating into it), read its resolved
+  per-argument routing as you walk the fragment with `Mutare.Transform.Calls.macro_treatment/1` —
+  the same merged registry and name resolution core itself used, already stamped on the node.
   """
   @callback host(macro_node :: Macro.t(), context :: Mutare.Mutator.context()) :: [map()]
 
