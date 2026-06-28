@@ -7,9 +7,9 @@ defmodule Stats.SeriesTest do
     assert Series.mean([2, 4, 6]) == 4.0
   end
 
-  # This pins the empty branch — but loosely. `assert == 0.0` uses value
-  # equality, and `0 == 0.0` is true in Elixir, so a mutant returning the
-  # integer 0 survives. (Using `===` would kill it.)
+  # Pins the empty branch: drop the clause and `Enum.sum([]) / length([])` is
+  # 0 / 0, which raises — so the clause_drop dies, and shifting the 0.0 literal
+  # changes the result. median/1, by contrast, has *no* empty-list test below.
   test "mean of an empty series is zero" do
     assert Series.mean([]) == 0.0
   end
@@ -42,6 +42,15 @@ defmodule Stats.SeriesTest do
   # negates the answer — this asymmetric fixture kills it.
   test "spread is the distance between largest and smallest" do
     assert Series.spread([3, 1, 4, 1, 5]) == 4
+  end
+
+  # midrange/1 and spread/1 each declare an empty-list base clause; covering
+  # them here (drop the clause and the fallthrough call to Enum.min_max([])
+  # raises) leaves median([]) as the *one* untested empty branch — the lone
+  # clause_drop survivor, on purpose.
+  test "midrange and spread handle an empty series" do
+    assert Series.midrange([]) == nil
+    assert Series.spread([]) == 0
   end
 
   # clamp/3 is exercised inside the range and past each end, but never with

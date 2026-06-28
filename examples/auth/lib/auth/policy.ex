@@ -59,7 +59,7 @@ defmodule Auth.Policy do
     end
   end
 
-  defp has_upper?(password), do: String.match?(password, ~r/[A-Z]/)
-  defp has_lower?(password), do: String.match?(password, ~r/[a-z]/)
-  defp has_digit?(password), do: String.match?(password, ~r/[0-9]/)
+  defp has_upper?(password), do: String.match?(password, ~r/[[:upper:]]/)
+  defp has_lower?(password), do: String.match?(password, ~r/[[:lower:]]/)
+  defp has_digit?(password), do: String.match?(password, ~r/[[:digit:]]/)
 end

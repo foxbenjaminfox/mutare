@@ -14,21 +14,21 @@ mix mutare examples/auth
 Expected (abridged):
 
 ```
-mutare in examples/auth: 43 mutants across 1 file(s)
+mutare in examples/auth: 56 mutants across 1 file(s)
 
-lib/auth/policy.ex:19  [relational, in-place]  SURVIVED
+lib/auth/policy.ex:24  [relational, in-place]  SURVIVED
 -    String.length(password) >= @min_length and
 +    String.length(password) > @min_length and
 
-lib/auth/policy.ex:37  [regex, in-place]  SURVIVED
--  defp has_upper?(password), do: String.match?(password, ~r/[A-Z]/)
-+  defp has_upper?(password), do: String.match?(password, ~r//)
+lib/auth/policy.ex:24  [string_byte, in-place]  SURVIVED
+-    String.length(password) >= @min_length and
++    Elixir.Kernel.byte_size(password) >= @min_length and
 
-lib/auth/policy.ex:39  [return_value, in-place]  SURVIVED
--  defp has_digit?(password), do: String.match?(password, ~r/[0-9]/)
-+  defp has_digit?(password), do: :mutare
+lib/auth/policy.ex:62  [regex, in-place]  SURVIVED
+-  defp has_upper?(password), do: String.match?(password, ~r/[[:upper:]]/)
++  defp has_upper?(password), do: String.match?(password, ~r//)
 ...
-mutation score: 86.8%  (33 killed, 5 survived, 5 no-coverage, 43 total)
+mutation score: 83.7%  (41 killed, 8 survived, 7 no-coverage, 56 total)
 ```
 
 Why those survive (or skip):
@@ -36,21 +36,33 @@ Why those survive (or skip):
 - **The length boundary (`>= @min_length` → `>`).** The suite only ever checks a
   clearly-long password (`"Secret123"`) and a clearly-short one (`"Ab1"`); no
   password of length 7 vs 8 is ever compared, so widening the comparison by one
-  is invisible. A **missing boundary test**.
-- **The character-class checks (`~r/[A-Z]/` → `~r//`).** An empty regex matches
-  *any* string, so each of `has_upper?`/`has_lower?`/`has_digit?` becomes
-  "always true". The only weak password in the suite, `"Ab1"`, is rejected on
-  *length* before the classes matter — so no test ever isolates a long password
-  that is missing exactly one class. Three survivors, one per class.
-- **`has_digit?` forced to a truthy sentinel (`return_value` → `:mutare`).** The
-  return-value mutant replaces the body with a non-`nil`/non-`false` value. Since
-  `has_digit?` is only ever *true* on the happy path, and the failing test fails
-  earlier, the substitution is never observed. (The matching `nil`/`false`
-  variant *is* killed — it breaks the happy path.)
-- **`attempts_left/1` has no test at all** (the 5 no-coverage skips). The
+  is invisible. A **missing boundary test** — the same gap [`calc`](../calc/)
+  shows in miniature.
+- **`String.length` → `byte_size` (the same line).** Both count 8 for every
+  password in the suite, because every fixture is plain ASCII, where one
+  character is one byte. A password with an accented letter near the threshold
+  (`"Sécret1"` — 7 graphemes, 8 bytes) would tell grapheme-length from
+  byte-length apart; nothing in the suite does. **Weak (all-ASCII) test data.**
+- **The character-class checks (`~r/[[:upper:]]/` → `~r//`, and → `~r/[^...]/`).**
+  An empty regex matches *any* string and a negated class matches the complement,
+  so each of `has_upper?`/`has_lower?`/`has_digit?` becomes "always true" or
+  "inverted". The only weak password in the suite, `"Ab1"`, is rejected on
+  *length* before the classes ever matter — so no test isolates a long password
+  missing exactly one class. Two survivors per class, all the same gap: nothing
+  proves a character class is actually *required*. A test like
+  `refute strong_password?("lowercase123")` (long, but no upper-case) closes it.
+- **`attempts_left/1` has no test at all** (the 7 no-coverage skips). The
   coverage probe sees no test touch its line and leaves its mutants out of the
   score's denominator — they can never be killed, so they don't drag the number.
 
-For contrast, `normalize_email/1` is **pinned down**: its fixture has both
-surrounding whitespace and mixed case, so dropping either `String` call — or
-swapping `downcase` for `upcase` — changes the result and is killed.
+For contrast, two things are **pinned down**. `normalize_email/1`'s fixture has
+both surrounding whitespace and mixed case, so dropping either `String` call — or
+swapping `downcase` for `upcase` — changes the result and is killed. And the
+`{email, password}` destructure in `authorize/2`'s `with` chain is mutated by
+PatternSwap into `{password, email}`; the test's email (`"ada@example.com"`)
+isn't itself a strong password, so the swapped roles change the outcome and that
+mutant dies too.
+
+> The character-class checks here use POSIX classes (`[[:upper:]]`), so each
+> regex has a small, focused set of mutants. For the regex *range-boundary*
+> lesson — `[a-z]` vs `[a-y]` — see [`text`](../text/).
