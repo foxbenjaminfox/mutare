@@ -85,41 +85,45 @@ defmodule Mutare.Coverage.HelperTemplate do
     File.write!(dump_path, :erlang.term_to_binary(payload))
   end
 
-  # The owning test's `{module, name}` label, used to attribute coverage to a test *file*.
-  # Resolution has three tiers, tried in order:
+  # The owning test's `{module, name}` label, used to attribute coverage to a test *file*. Resolved
+  # for the process that ran the line (`self()`), and — failing that — for each process in its
+  # caller chain, by `label_of/1`. Two signals back it:
   #
-  #   1. our own `$process_label` — the test process is labeled directly;
-  #   2. a labeled ancestor via the `$callers`/`$ancestors` chain — a `Task` records its caller
-  #      chain, so a task started from a test belongs to that test;
-  #   3. the `setup_all` recovery (`stacktrace_label/0`) — a `setup_all` block runs in an
-  #      unlabeled, caller-less process, but *within* the test module's generated `__ex_unit__/2`
-  #      dispatch, so the owning module is on our own stack.
+  #   1. a `$process_label` (`proc_label/1`) — ExUnit's runner labels the test process directly on
+  #      **Elixir 1.19+**, and a `Task` records its `$callers` chain, so a task started from a test
+  #      belongs to that test;
+  #   2. an ExUnit test / `setup_all` frame on the process's current stack (`stacktrace_label/1`) —
+  #      the only signal on **Elixir 1.18**, whose runner does *not* label the test process
+  #      (`Process.set_label` was added to it in 1.19): a direct test then has no label and no
+  #      caller chain, but its own `:"test …"` function is on the stack; a `setup_all` carries the
+  #      `{module, __ex_unit__, 2}` frame on every version; and a `Task`'s awaiting caller still has
+  #      its test frame (read cross-process).
   #
-  # `on_exit`/a bare spawn matches none (no label, no caller chain, no `__ex_unit__/2` frame) →
-  # `nil`, and the caller routes that id to the unlabeled bucket (whole suite). Only the module is
-  # recovered in tier 3, which is all file-granular selection needs.
+  # `on_exit`/a bare spawn matches neither (no label, no caller chain, no ExUnit frame) → `nil`, and
+  # the caller routes that id to the unlabeled bucket (whole suite). Only the module is needed for
+  # file-granular selection; the name half is incidental.
   defp label do
-    case proc_label(self()) do
+    label_of(self()) || recovered_label()
+  end
+
+  # `pid`'s owning `{module, name}`: its `$process_label`, else an ExUnit frame on its current stack
+  # (so attribution works on Elixir 1.18, which leaves test processes unlabeled — see `label/0`).
+  defp label_of(pid) do
+    case proc_label(pid) do
       {mod, _name} = labeled when is_atom(mod) -> labeled
-      _ -> recovered_label() || stacktrace_label()
+      _ -> stacktrace_label(pid)
     end
   end
 
   defp recovered_label do
-    # `$callers` (set by `Task`) then `$ancestors`: walk to the first ancestor carrying a
-    # `{module, name}` test label. The test pid sits at the tail of the chain even for nested
-    # tasks, so a labeled owner is found if one exists.
+    # `$callers` (set by `Task`) then `$ancestors`: walk to the first ancestor we can attribute a
+    # `{module, name}` to. The test pid sits at the tail of the chain even for nested tasks, so a
+    # labeled (or stack-recoverable) owner is found if one exists.
     callers = Process.get(:"$callers", []) ++ Process.get(:"$ancestors", [])
 
     Enum.find_value(callers, fn
-      pid when is_pid(pid) ->
-        case proc_label(pid) do
-          {mod, _name} = labeled when is_atom(mod) -> labeled
-          _ -> nil
-        end
-
-      _ ->
-        nil
+      pid when is_pid(pid) -> label_of(pid)
+      _ -> nil
     end)
   end
 
@@ -144,14 +148,29 @@ defmodule Mutare.Coverage.HelperTemplate do
     end
   end
 
-  # Tier 3 of `label/0`: a `setup_all` runs in an unlabeled, caller-less process, but it executes
-  # synchronously inside the test module's generated `__ex_unit__(:setup_all, _)` dispatch — so
-  # that frame is on *our own* current stack and names the owning module. Module granularity is
-  # exactly what file-granular selection wants; the `:setup_all` name half is ignored by the
-  # attribution (only the module maps to a file). Absent — e.g. a line reached through a `Task`
-  # spawned inside `setup_all`, whose fresh stack has no such frame — we return `nil` and the id
-  # falls to the unlabeled bucket (whole suite). `:setup` needs nothing here: it runs in the
-  # labeled test process, so tier 1 already catches it.
+  # An ExUnit frame on `pid`'s current stack, naming the owning module — the recovery `label_of/1`
+  # uses when no `$process_label` is set (every line on **Elixir 1.18**; a `setup_all` on every
+  # version, which runs unlabeled). This is *only* ever reached on 1.18 and for `setup_all`: from
+  # Elixir 1.19 the runner labels every test process — `test`, `doctest`, and `property` alike — so
+  # `proc_label/1` (tier 1) resolves them and none of the frame-shape guesswork below runs.
+  #
+  # A test **body** is recognised two ways, the second a naming-agnostic backstop for the first:
+  #
+  #   * by its function name (`test_label/2`) — ExUnit names test bodies `:"test …"`, `:"doctest …"`,
+  #     `:"property …"`; the embedded space can't occur in an ordinary identifier;
+  #   * else by position (`dispatched_test_frame/1`) — the frame directly above ExUnit's per-test
+  #     dispatcher `ExUnit.Runner.exec_test/2` *is* the test body, whatever generator named it, so a
+  #     test kind the name list doesn't know still attributes to the right module.
+  #
+  # A `setup_all` (or `setup`) is recognised by its `{module, :__ex_unit__, 2, _}` dispatch frame:
+  # it runs synchronously inside the test module's generated `__ex_unit__/2`, so that frame is on
+  # the stack and names the module (the `:setup_all` name half is ignored — only the module maps to
+  # a file). `:setup` needs no special case: on 1.19+ it runs in the labeled test process (tier 1);
+  # on 1.18 its `__ex_unit__/2` frame is recovered here, same as `setup_all`.
+  #
+  # `Process.info/2` reads the stack cross-process too, so an awaiting `Task` caller is recovered
+  # the same way. Absent — a bare spawn, or a `Task` whose caller has already exited (a dead pid
+  # yields `nil`) — the id falls to the unlabeled bucket (whole suite).
   #
   # Soundness note: this attributes a `setup_all`-covered id to its *own* module's file. That
   # captures every test that can observe the mutation through the `setup_all` *context*
@@ -161,17 +180,51 @@ defmodule Mutare.Coverage.HelperTemplate do
   # cross-file-dependency limitation `:coverage` mode already has for ordinary per-file attribution
   # (`:full` is the escape hatch) — the only change is that `setup_all` no longer gets the extra
   # whole-suite conservatism the unlabeled bucket used to give it.
-  defp stacktrace_label do
-    case Process.info(self(), :current_stacktrace) do
-      {:current_stacktrace, stack} ->
-        Enum.find_value(stack, fn
-          {mod, :__ex_unit__, 2, _} -> {mod, :setup_all}
-          _ -> nil
-        end)
+  defp stacktrace_label(pid) do
+    case Process.info(pid, :current_stacktrace) do
+      {:current_stacktrace, stack} -> named_frame(stack) || dispatched_test_frame(stack)
+      _ -> nil
+    end
+  end
+
+  # A `setup_all`/`setup` dispatch, or a named ExUnit test body, taken from the first matching frame.
+  defp named_frame(stack) do
+    Enum.find_value(stack, fn
+      {mod, :__ex_unit__, 2, _} -> {mod, :setup_all}
+      {mod, fun, _arity, _} when is_atom(mod) and is_atom(fun) -> test_label(mod, fun)
+      _ -> nil
+    end)
+  end
+
+  # `{mod, fun}` when `fun` is an ExUnit-generated test name, else `nil`. ExUnit's three test
+  # generators name their bodies `:"test <name>"`, `:"doctest <module> (<n>)"`, and
+  # `:"property <name>"` — the embedded space can't appear in an ordinary identifier, so the prefix
+  # never collides with a target's own function on the stack. Need only track 1.18's generators
+  # (1.19+ labels the process); `dispatched_test_frame/1` is the backstop for any this list misses.
+  defp test_label(mod, fun) do
+    case Atom.to_string(fun) do
+      "test " <> _ -> {mod, fun}
+      "doctest " <> _ -> {mod, fun}
+      "property " <> _ -> {mod, fun}
+      _ -> nil
+    end
+  end
+
+  # The frame directly above ExUnit's per-test dispatcher (`ExUnit.Runner.exec_test/2`) — the test
+  # body, whatever named it — recovering its module name-agnostically. The dispatcher reference is
+  # a bare atom match (no call, no module load), so this stays dependency-free; absent it (a stack
+  # without that frame), `nil` falls through to the unlabeled bucket.
+  defp dispatched_test_frame(stack) do
+    stack
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.find_value(fn
+      [{mod, fun, _arity, _}, {ExUnit.Runner, :exec_test, 2, _}]
+      when is_atom(mod) and is_atom(fun) ->
+        {mod, fun}
 
       _ ->
         nil
-    end
+    end)
   end
 
   defp source_file(mod) do

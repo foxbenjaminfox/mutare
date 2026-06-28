@@ -3658,28 +3658,35 @@ site's mutant ids into shared ETS:
 no race:
 - **aggregate** `{id}` — written by any process → process-agnostic no-coverage
   detection.
-- **attribution** `{{label, id}}` — `label` is resolved in three tiers (`label/0`)
-  → maps to the test *file* → per-file selection:
-  1. the test process's own `Process.set_label({case, name})` (proc-dict
-     `:"$process_label"` on OTP 26 and earlier, `:proc_lib.get_label/1` on 27+);
-  2. for a `Task` (no own label), the owning test's label recovered from the
-     `$callers`/`$ancestors` chain — read cross-process (`:proc_lib.get_label/1` on
-     27+, the target's `:dictionary` via `Process.info/2` on 26 and earlier) — so a task spawned
-     from a test still attributes to that test's file;
-  3. for a `setup_all` (no label, no caller chain), the owning *module* recovered
-     from the `{module, __ex_unit__, 2}` frame on its own `current_stacktrace`
-     (`stacktrace_label/0`): a `setup_all` runs in an unlabeled, caller-less process
-     but synchronously inside the test module's generated `__ex_unit__/2` dispatch,
-     so the module is right there on our stack. Module granularity == file
-     granularity, all selection needs. *Soundness*: this captures every test that
+- **attribution** `{{label, id}}` — `label` is resolved per process by `label_of/1`
+  (the running process, then each in its caller chain) → maps to the test *file* →
+  per-file selection. Two signals back it:
+  1. the process's own `$process_label` — `Process.set_label({case, name})`, which
+     **ExUnit's runner only sets on Elixir 1.19+**. Read OTP-tolerantly:
+     `:proc_lib.get_label/1` on OTP 27+, the proc-dict `:"$process_label"` via
+     `Process.info(:dictionary)` on OTP 26 and earlier. A `Task` records its
+     `$callers` chain, so a task started from a test resolves to the test's label
+     this way too. (`get_label/1` reads the same dictionary key cross-process, so the
+     OTP split is only about *how* the dict is read.)
+  2. an ExUnit frame on the process's `current_stacktrace` (`stacktrace_label/1`) —
+     the fallback when (1) yields nothing. This is **the only signal on Elixir 1.18**,
+     whose runner leaves the test process unlabeled: a direct test then has no label
+     and no caller chain, but its own `:"test …"`/`:"property …"` function is on the
+     stack (`test_label/2`); a `setup_all` carries the `{module, __ex_unit__, 2}`
+     frame on *every* version (it runs unlabeled, but synchronously inside the test
+     module's generated `__ex_unit__/2` dispatch). `Process.info/2` reads the stack
+     cross-process, so an awaiting `Task`'s caller is recovered the same way — which
+     is what keeps Task/`setup_all` attribution working on 1.18. Module granularity ==
+     file granularity, all selection needs. *Soundness* (setup_all): this attributes
+     a `setup_all`-covered id to its **own** module's file — capturing every test that
      observes the mutation through the `setup_all` **context** (module-scoped — the
      common case), but NOT a different module's test that fails only because the
      `setup_all` had a cross-module global side effect (a seeded DB, a
-     `:persistent_term`) — that id, run only against its own file, could survive.
-     That is the same cross-file-dependency limitation `:coverage` already has for
-     ordinary attribution (`:full` is the escape hatch); the change is that
-     `setup_all` no longer gets the *extra* whole-suite conservatism the unlabeled
-     bucket used to give it. See "setup_all stacktrace recovery" below.
+     `:persistent_term`) — that id, run only against its own file, could survive. That
+     is the same cross-file-dependency limitation `:coverage` already has for ordinary
+     attribution (`:full` is the escape hatch); the change is that `setup_all` no
+     longer gets the *extra* whole-suite conservatism the unlabeled bucket used to
+     give it. See "setup_all stacktrace recovery" below.
 - **unlabeled** `{id}` — written when *no* tier recovers a label: `on_exit`/a
   bare-spawned process, or the rare `setup_all` whose work ran off-stack in a `Task`
   it spawned (a fresh stack with no `__ex_unit__/2` frame). The line ran, but no test
@@ -3763,8 +3770,8 @@ straight to the unlabeled bucket → whole suite, on the premise that an unlabel
 caller-less process carries *no* recoverable owner. That premise is too strong:
 `setup_all` is dispatched **synchronously inside the test module's generated
 `__ex_unit__(:setup_all, _)`**, so a `{module, __ex_unit__, 2}` frame is on the
-recording process's own `current_stacktrace`. Tier 3 of `label/0`
-(`stacktrace_label/0`) reads it and attributes the id to that module's file — and
+recording process's own `current_stacktrace`. The stacktrace fallback of `label_of/1`
+(`stacktrace_label/1`) reads it and attributes the id to that module's file — and
 since `setup_all` is per-module, module granularity is exactly the file granularity
 selection wants. This is strictly tighter than whole-suite *and* still fixes the
 original false survivor (the motivating case: file B's `setup_all` builds a value
@@ -3778,16 +3785,32 @@ cross-file-dependency hole `:coverage` already has for ordinary per-file attribu
 (`:full` runs every covered mutant whole-suite and is the documented escape hatch).
 Net: we dropped the *extra* conservatism `setup_all` alone got, making it consistent
 with every other attribution in `:coverage` mode. Boundaries: `:setup` needs nothing
-(it runs in the labeled test process — tier 1); a `setup_all` whose work runs in a
-spawned `Task` has a fresh stack with no `__ex_unit__/2` frame and *no* labeled
-ancestor (its caller is the unlabeled `setup_all` process), so it correctly falls
-to unlabeled → whole suite. Cost is only paid when tiers 1–2 miss (i.e. exactly the
-`setup_all`/`on_exit`/spawn cases), never on the labeled-test hot path. Found while
-investigating why `setup_all`-heavy suites ran the whole suite for so many ids;
-considered (and rejected) rewriting test files to label these processes — too much
-blast radius for the trust anchor, and stacktrace recovery gets `setup_all` for free
-without touching tests. `on_exit` stays unrecoverable (detached runner-loop process,
-TCO erases the callback frame).
+(it runs in the labeled test process, or — on Elixir 1.18 — carries its own
+`__ex_unit__/2` frame); a `setup_all` whose work runs in a `Task` it **awaits** is now
+recovered too (the cross-process stack read finds the `__ex_unit__/2` frame on the
+blocked-in-`await` caller — consistent with a synchronous `setup_all`), while a
+**fire-and-forget** `Task` whose caller has already returned/exited still falls to
+unlabeled → whole suite. Cost is only paid when the label is absent (i.e. exactly the
+`setup_all`/`on_exit`/spawn cases, plus every test on Elixir 1.18), never on the
+labeled-test hot path. Found while investigating why `setup_all`-heavy suites ran the
+whole suite for so many ids; considered (and rejected) rewriting test files to label
+these processes — too much blast radius for the trust anchor, and stacktrace recovery
+gets `setup_all` for free without touching tests. `on_exit` stays unrecoverable
+(detached runner-loop process, TCO erases the callback frame).
+
+**Elixir 1.18 has no test-process label (done).** ExUnit's runner only began calling
+`Process.set_label({case, name})` in **Elixir 1.19**; on 1.18 the test process is
+unlabeled, so tier 1 misses for *every* hit — a direct test then has no label, no
+caller chain, and (unlike `setup_all`) no `__ex_unit__/2` frame, so **all** coverage
+fell to the unlabeled bucket → every mutant ran the whole suite (per-file selection
+silently disabled). The fix reuses the same stacktrace mechanism: `stacktrace_label/1`
+also recognises a `{module, :"test …"/:"property …", _, _}` test-body frame
+(`test_label/2`, keyed on the space-bearing ExUnit naming convention), and `label_of/1`
+runs it for the caller chain too (`Process.info/2` reads a stack cross-process), so an
+awaited `Task`'s caller is recovered as well. Only surfaces when the **sandbox** runs
+1.18 (so the bug hid on a 1.19+ dev machine and only reddened CI's 1.18 lane); the
+regression tests drive `:mutare_cov.hit/1` from a raw-spawned (label-less) process
+directly, catching it on any host Elixir.
 
 **The `hit([ids])` argument must render as a list, never a charlist.** The catch-all
 splices `MutareCov.hit([<ids>])` into the metamutant, where `<ids>` is a list of

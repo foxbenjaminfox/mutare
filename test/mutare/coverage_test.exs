@@ -1,3 +1,42 @@
+# Mimics an ExUnit-*compiled* test module for the label-recovery regression tests below: a
+# function named like an ExUnit test (`:"test …"`, the runtime-compiled shape the helper's
+# stacktrace recovery keys on) and a plainly-named one that must NOT be mistaken for a test. The
+# functions call the real coverage helper (`Mutare.Coverage.HelperTemplate`, the very source copied
+# into every sandbox as `:mutare_cov`), so the test pins the code that actually runs there.
+defmodule Mutare.CoverageTest.ExUnitFrameFixture do
+  @moduledoc false
+
+  # An ExUnit-named test body: a hit made from inside it carries a `{__MODULE__, :"test …", …}`
+  # frame, so the helper attributes it even when the process has no `$process_label` (Elixir 1.18).
+  # The `:ok` after the call keeps `hit/1` out of tail position so this frame survives on the stack
+  # — exactly as the metamutant records (`hit(ids); <original expression>`, never a tail call).
+  def unquote(:"test runs a body")(ids) do
+    Mutare.Coverage.HelperTemplate.hit(ids)
+    :ok
+  end
+
+  # A doctest body: ExUnit generates these as `:"doctest <module> (<n>)"` (a distinct prefix from
+  # `test`), so doctest-heavy projects need their own recovery on Elixir 1.18.
+  def unquote(:"doctest Mutare (1)")(ids) do
+    Mutare.Coverage.HelperTemplate.hit(ids)
+    :ok
+  end
+
+  # A test process blocked in `Task.await`: keeps its `:"test …"` frame on the stack until released,
+  # so a *cross-process* stack read recovers it for an awaited `Task`'s otherwise-unlabeled hit.
+  def unquote(:"test awaits a task")(parent, ref) do
+    send(parent, {ref, :ready})
+
+    receive do
+      {^ref, :release} -> :ok
+    end
+  end
+
+  # Not an ExUnit-named function (no `"test "`/`"property "` prefix), so a hit from here identifies
+  # no owning test and must fall to the unlabeled bucket.
+  def plain(ids), do: Mutare.Coverage.HelperTemplate.hit(ids)
+end
+
 defmodule Mutare.CoverageTest do
   use ExUnit.Case, async: false
 
@@ -147,6 +186,107 @@ defmodule Mutare.CoverageTest do
       assert {_, _} = Code.eval_quoted(ast)
       assert :ets.whereis(:mutare_cov_agg) != :undefined
       assert :ets.whereis(:mutare_cov_unlabeled) != :undefined
+    end
+  end
+
+  # The owning test *file* is recovered from the process label ExUnit sets — but its runner only
+  # started doing that in Elixir 1.19. On **Elixir 1.18** the test process is unlabeled, so the
+  # helper falls back to an ExUnit frame on the stack (a `:"test …"` body, a `setup_all`'s
+  # `__ex_unit__/2`, or an awaiting `Task` caller's frame). Without that fallback, every direct
+  # test's coverage lands in the unlabeled bucket → every mutant runs the whole suite (no per-file
+  # selection at all). These exercise the recovery *directly*, so the regression is caught on any
+  # host Elixir — the end-to-end selection tests only surface it when the *sandbox* runs 1.18 (CI's
+  # 1.18 lane). `hit/1` records into the shared, process-global ETS tables, so — like the table
+  # test above — we restore the prior state exactly and use ids no real mutant can own.
+  describe "label recovery without a `$process_label` (Elixir 1.18)" do
+    @attr_id 999_999_001
+    @unlabeled_id 999_999_002
+    @fixture Mutare.CoverageTest.ExUnitFrameFixture
+
+    setup do
+      pre = Map.new([:mutare_cov_agg, :mutare_cov_attr, :mutare_cov_unlabeled], &{&1, table?(&1)})
+      Enum.each(Map.keys(pre), &ensure_table/1)
+
+      on_exit(fn ->
+        # Drop our probe ids first (they may live in a table the bootstrap owns under dogfooding),
+        # then drop only the tables this test created.
+        delete_key(:mutare_cov_agg, @attr_id)
+        delete_key(:mutare_cov_agg, @unlabeled_id)
+        delete_key(:mutare_cov_unlabeled, @unlabeled_id)
+        delete_key(:mutare_cov_attr, {@fixture, @attr_id})
+        Enum.each(pre, fn {table, existed?} -> drop_table_unless(table, existed?) end)
+      end)
+
+      :ok
+    end
+
+    test "an unlabeled process attributes its hit to the ExUnit test frame on its stack" do
+      in_unlabeled_process(fn -> apply(@fixture, :"test runs a body", [[@attr_id]]) end)
+
+      assert :ets.member(:mutare_cov_attr, {@fixture, @attr_id})
+      refute :ets.member(:mutare_cov_unlabeled, @attr_id)
+    end
+
+    test "an unlabeled process attributes a doctest body's hit to its module" do
+      in_unlabeled_process(fn -> apply(@fixture, :"doctest Mutare (1)", [[@attr_id]]) end)
+
+      assert :ets.member(:mutare_cov_attr, {@fixture, @attr_id})
+      refute :ets.member(:mutare_cov_unlabeled, @attr_id)
+    end
+
+    test "an unlabeled Task attributes its hit to its awaiting test caller's frame" do
+      ref = make_ref()
+      parent = self()
+      holder = spawn(fn -> apply(@fixture, :"test awaits a task", [parent, ref]) end)
+      assert_receive {^ref, :ready}
+
+      # The Task: unlabeled, with `$callers` pointing at the awaiting test (as `Task` sets it).
+      in_unlabeled_process(fn ->
+        Process.put(:"$callers", [holder])
+        Mutare.Coverage.HelperTemplate.hit([@attr_id])
+      end)
+
+      send(holder, {ref, :release})
+      assert :ets.member(:mutare_cov_attr, {@fixture, @attr_id})
+      refute :ets.member(:mutare_cov_unlabeled, @attr_id)
+    end
+
+    test "an unlabeled process with no ExUnit frame and no callers stays unlabeled" do
+      in_unlabeled_process(fn -> apply(@fixture, :plain, [[@unlabeled_id]]) end)
+
+      assert :ets.member(:mutare_cov_unlabeled, @unlabeled_id)
+      refute :ets.member(:mutare_cov_attr, {@fixture, @unlabeled_id})
+    end
+  end
+
+  defp table?(name), do: :ets.whereis(name) != :undefined
+
+  defp ensure_table(name) do
+    unless table?(name), do: :ets.new(name, [:named_table, :public, :set])
+    :ok
+  end
+
+  defp delete_key(table, key) do
+    if table?(table), do: :ets.delete(table, key)
+    :ok
+  end
+
+  # Run `fun` in a fresh process and wait for it to finish. A raw `spawn` inherits no
+  # `$process_label`, `$callers`, or `$ancestors` — exactly an Elixir 1.18 test process — so each
+  # test controls precisely which recovery signal (if any) is present.
+  defp in_unlabeled_process(fun) do
+    parent = self()
+    ref = make_ref()
+
+    spawn(fn ->
+      fun.()
+      send(parent, {ref, :done})
+    end)
+
+    receive do
+      {^ref, :done} -> :ok
+    after
+      2_000 -> flunk("unlabeled worker did not finish")
     end
   end
 
