@@ -157,6 +157,16 @@ defmodule Mutare.Report.Live do
   @spec finish(GenServer.server()) :: :ok
   def finish(server), do: GenServer.call(server, :finish)
 
+  @doc """
+  Whether the reporter animates a live block (ANSI mode). Only an animated run draws the in-flight
+  **activity** line — a plain (piped/CI) run prints only the leave-behind lines and drops `{:start,
+  …}` on the floor. The Mix task reads this to decide whether building each site's `Macro` `summary`
+  is worth it: a non-animating reporter never shows the in-flight line, so the summary would be
+  built and never consumed.
+  """
+  @spec animating?(GenServer.server()) :: boolean()
+  def animating?(server), do: GenServer.call(server, :animating?)
+
   # === server ================================================================
 
   @impl true
@@ -276,6 +286,8 @@ defmodule Mutare.Report.Live do
   def handle_info(:tick, state), do: {:noreply, %{state | ticking: false}}
 
   @impl true
+  def handle_call(:animating?, _from, state), do: {:reply, state.ansi, state}
+
   def handle_call(:clear, _from, state) do
     # Erase the block and drop to idle, but stay live (the tick keeps running, the
     # next phase redraws). Distinct from `:finish`, which is terminal.

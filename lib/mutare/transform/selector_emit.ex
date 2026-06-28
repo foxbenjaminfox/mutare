@@ -17,7 +17,7 @@ defmodule Mutare.Transform.SelectorEmit do
   @spec claim_items(
           [item],
           Ctx.t(),
-          (pos_integer(), item, String.t(), boolean() -> Site.t()),
+          (pos_integer(), item, String.t(), {boolean(), boolean()} -> Site.t()),
           (pos_integer(), item -> artifact)
         ) :: {[artifact], Ctx.t()}
         when item: term(), artifact: term()

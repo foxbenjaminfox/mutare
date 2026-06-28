@@ -425,11 +425,15 @@ defmodule Mix.Tasks.Mutare do
     # machine reports are untouched.
     live = maybe_start_live(options)
 
-    # Build the cheap per-site live `summary` only when a live reporter will show the in-flight
-    # mutant — `live != nil` (i.e. not `--quiet`). Skipped otherwise so a quiet/CI run pays no
-    # extra `Macro` render. The deferred-scan in-flight line reads `summary`; survivors/verbose
-    # lines use the hydrated `*_code`.
-    context = %{context | summarize_sites: live != nil}
+    # Build the cheap per-site live `summary` only when the in-flight activity line will actually
+    # consume it — which needs *both*:
+    #   * an **animating** (ANSI/tty) reporter — a plain piped/CI run prints only leave-behind
+    #     lines and drops `{:start, …}`, so the activity line, and the summary, are never shown; and
+    #   * a **deferred** scan (`defer_site_code`) — the eager modes (`--verbose`, JSON/HTML) already
+    #     carry `*_code`, so the activity line falls back to `describe/1` and the summary is redundant.
+    # Everything else (`--quiet`, a pipe, an eager render) builds no summary and pays no `Macro` cost.
+    summarize? = live != nil and Live.animating?(live) and context.defer_site_code
+    context = %{context | summarize_sites: summarize?}
 
     try do
       # The scan (discovery + transform of every source) runs before the runner, so

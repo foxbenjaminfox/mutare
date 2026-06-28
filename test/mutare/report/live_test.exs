@@ -224,6 +224,20 @@ defmodule Mutare.Report.LiveTest do
     end
   end
 
+  describe "animating?/1" do
+    test "reports the ANSI mode (the Mix task's summary gate reads it)" do
+      {:ok, io} = StringIO.open("")
+
+      {:ok, ansi} = Live.start_link(device: io, ansi: true, width: 80)
+      assert Live.animating?(ansi)
+
+      # A plain (piped/CI) reporter does not animate — it never draws the in-flight line, so the
+      # Mix task must not build a per-site summary nothing will consume.
+      {:ok, plain} = Live.start_link(device: io, ansi: false, width: 80)
+      refute Live.animating?(plain)
+    end
+  end
+
   describe "detail_line/1" do
     test "renders the per-phase ✓ notes" do
       assert Live.detail_line({:compiled, 4200}) == "  ✓ compiled in 4.2s"

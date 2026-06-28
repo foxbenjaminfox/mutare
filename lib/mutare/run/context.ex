@@ -62,11 +62,12 @@ defmodule Mutare.Run.Context do
   # code) safely gets. Read by `Mutare.Schema` (scan) and `Mutare.Runner` (hydration).
   #
   # `summarize_sites`: whether the scan should build each site's cheap `Macro`-rendered live
-  # `summary` one-liner (`Mutare.Site`'s "Live summary"). Set `true` by the Mix task only when a
-  # live reporter is attached (a non-`--quiet` run) — the in-flight activity line is its sole
-  # consumer, and unlike `defer_site_code` it can't be deferred (it shows every mutant as it runs).
-  # `false` (the default) for `--quiet`, the info commands, and library callers, which show no
-  # in-flight line. Read by `Mutare.Schema`.
+  # `summary` one-liner (`Mutare.Site`'s "Live summary"). The in-flight activity line is its sole
+  # consumer, so the Mix task sets it `true` only when that line will actually render it — an
+  # **animating** (ANSI/tty) reporter that is also **deferring** `*_code` (`defer_site_code`).
+  # `false` (the default) for `--quiet`, a piped/CI run (no animation — `{:start, …}` is dropped),
+  # an eager render (`--verbose`/JSON/HTML already carry `*_code`), the info commands, and library
+  # callers. Read by `Mutare.Schema`.
   @wiring_fields [
     project: nil,
     reporter: nil,
