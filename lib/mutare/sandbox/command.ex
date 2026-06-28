@@ -78,6 +78,25 @@ defmodule Mutare.Sandbox.Command do
   @timeout_exit 124
   @failure_exit 101
 
+  # Startup work a per-mutant `mix test` can safely skip. The metamutant lib is compiled
+  # **once** before any mutant runs and its sources never change between runs (the
+  # one-compile invariant), so each per-mutant boot otherwise re-does pure-overhead checks:
+  #
+  #   * `--no-compile` — skip mix's compile-staleness scan (it `stat`s every source against
+  #     the compile manifest only to find nothing changed). The beams are already present;
+  #     `.exs` test scripts are still evaluated, so a mutation that breaks a *test file* at
+  #     load time still surfaces as `:suite_compile_error` (a lib compile error can't happen
+  #     per-mutant — the lib is built once).
+  #   * `--no-deps-check` — deps are resolved/compiled at the one compile step and don't change.
+  #   * `--no-archives-check` — installed archives don't change between runs.
+  #
+  # Pure overhead paid N times: a per-mutant run is process boot + the covering tests, and for
+  # a fast suite that boot dominates (see NOTES "Skip redundant per-mutant `mix test` startup
+  # work"). Applied to the per-mutant kill-detection path only — not the one-time baseline /
+  # coverage probe, where the saving is negligible and a plain `mix test` is the conservative
+  # authoritative check.
+  @boot_skip_flags ["--no-compile", "--no-deps-check", "--no-archives-check"]
+
   @typedoc """
   What a `mix test` mutant run did, decoded from its exit status (and, for the
   last case, its output):
@@ -197,19 +216,25 @@ defmodule Mutare.Sandbox.Command do
   @doc """
   Build the `mix test` argv for a mutant kill-detection run from `test_args`.
 
-  Always prepends `test --exit-status #{@failure_exit} --max-failures 1`:
+  Always prepends `test --exit-status #{@failure_exit} --max-failures 1` plus the
+  boot-skip flags `#{Enum.join(@boot_skip_flags, " ")}`:
 
     * `--exit-status #{@failure_exit}` makes a clean test failure (a kill)
       distinguishable from a harness error — see the moduledoc.
     * `--max-failures 1` stops ExUnit at the first failure, since one failing test
       is enough to declare a kill (also see the moduledoc).
+    * `#{Enum.join(@boot_skip_flags, " ")}` skip mix startup checks that are pure
+      overhead under the one-compile invariant (the lib is built once, sources never
+      change between runs) — see `@boot_skip_flags`.
 
   `test_args` are the extra arguments (`[]` = whole suite, file-granular args
-  otherwise). Pure, so the contract is unit-testable without spawning `mix`.
+  otherwise), appended last so file-granular selection stays at the tail. Pure, so
+  the contract is unit-testable without spawning `mix`.
   """
   @spec test_argv([String.t()]) :: [String.t()]
   def test_argv(test_args) do
-    ["test", "--exit-status", Integer.to_string(@failure_exit), "--max-failures", "1" | test_args]
+    ["test", "--exit-status", Integer.to_string(@failure_exit), "--max-failures", "1"] ++
+      @boot_skip_flags ++ test_args
   end
 
   @doc """

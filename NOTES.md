@@ -662,6 +662,41 @@ head-default + non-`:do`-block + module/scaffold selectors — all legitimately
 self-contained), with 559 hoisted `case mutare_active do` body selectors + 11 hoisted
 tupled `case {mutare_active, …}` reading the bound variable instead.
 
+### Skip redundant per-mutant `mix test` startup work `[done]`
+PHILOSOPHY says "boot is cheap, amortized by running only the covering tests" — but for a
+*fast* suite that premise breaks down. Measured on the `auth` example (warm `_build`): ExUnit
+runs the 6 tests in **0.07 s** while the whole `mix test` wall is **~1.0 s** — so **~93% of a
+per-mutant run is BEAM + Mix boot**, paid once per mutant, and test selection (running only the
+covering subset) makes that fraction *larger*, not smaller. Boot is the dominant per-mutant
+cost, not metamutant execution (that side is already lean — see "Hoist the per-site active-id
+read" / "Compiler options for the one metamutant compile").
+
+The isolation-preserving lever (PHILOSOPHY forbids trading isolation for speed, so a shared/warm
+BEAM is off the table): keep the fresh OS process, just make its boot do less. `Command.test_argv/1`
+now appends `--no-compile --no-deps-check --no-archives-check` to **per-mutant** runs only. All
+three are pure overhead under the one-compile invariant — the lib is built once and sources never
+change between runs (`@boot_skip_flags` documents each). `--no-compile` skips mix's compile-staleness
+`stat` scan (which grows with source count, so the win scales with project size); the dep/archive
+checks are redundant work the one compile already did. Neutral on a tiny depless project like
+`auth`; the payoff is on large / deps-heavy targets, multiplied by N mutants.
+
+Two correctness anchors:
+- **Per-mutant path only.** The one-time baseline (the authoritative green check) and coverage
+  probe keep a plain `mix test` — the saving there is one-off and a full check is the conservative
+  choice. Only the N-times kill-detection argv changes.
+- **`:suite_compile_error` detection survives.** `--no-compile` skips the *lib* recompile (which
+  can't fail per-mutant anyway — it's built once), but `.exs` **test scripts** are still evaluated
+  at `mix test` time, so a mutation that breaks a test file at load time still trips the test-file
+  compile banner `outcome/2` reads as a kill.
+
+Implication for tests: `--no-compile` makes `Command.timed_test/4` strictly a *post-compile* tool
+(exactly its production contract). The `Mutare.HarnessTest` first-block tests that drove it directly
+were relying on `mix test`'s on-the-fly compile; they now compile up front via `Mutare.Test.Project.compile/1`,
+mirroring production. A non-compiling-lib fixture therefore exercises the compile step's failure
+*plus* the per-mutant path failing safe (no `.app` ⇒ `:harness_error`, never a kill) — the same
+verdict by a different route, since in production a non-compiling lib is caught at the compile step
+(poison recovery) and never reaches per-mutant runs.
+
 ### Umbrella support `[M5 / in progress]`
 Following the cargo-mutants precedent: **copy the whole umbrella, mutate a scoped
 subset of apps.** The whole tree travels to the sandbox so `in_umbrella` sibling

@@ -49,6 +49,25 @@ defmodule Mutare.Test.Project do
     %{base: base, project: project, sandbox: sandbox}
   end
 
+  @doc """
+  Compile `project` under `MIX_ENV=test`, returning `{output, status}`.
+
+  Mirrors production's one-compile step: `Mutare.Runner` always compiles the sandbox
+  once before any per-mutant `mix test`, which then runs with `--no-compile` (the
+  sources never change between runs). A unit test that drives the per-mutant path
+  (`Mutare.Sandbox.Command.timed_test/4`) directly must therefore compile first, or
+  the `--no-compile` run finds no `.app`/beams. Tolerant of a failing compile (returns
+  the non-zero status) so a deliberately-broken-lib fixture can assert on it.
+  """
+  @spec compile(Path.t()) :: {String.t(), non_neg_integer()}
+  def compile(project) do
+    System.cmd("mix", ["compile"],
+      cd: project,
+      env: [{"MIX_ENV", "test"}],
+      stderr_to_stdout: true
+    )
+  end
+
   defp mix_exs(app) do
     module = app |> to_string() |> Macro.camelize()
 

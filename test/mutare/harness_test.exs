@@ -10,6 +10,12 @@ defmodule Mutare.HarnessTest do
   harness error — explicitly **not** a kill, which the old "non-zero ⇒ killed"
   rule got wrong).
 
+  Each first-block test compiles its project up front (`Project.compile/1`) before
+  calling `timed_test/4`, mirroring production: `Mutare.Runner` compiles the sandbox
+  **once**, and every per-mutant `mix test` then runs with `--no-compile` (the sources
+  never change between runs). Driving `timed_test/4` against an *uncompiled* project
+  would just measure a missing-`.app` boot failure, not the exit-code contract.
+
   The `through the runner` tests then drive a harness error through the *whole*
   `Mutare.run/2` pipeline. A post-baseline harness error can't be produced by a
   broken sandbox (that fails the baseline first), so a target test simulates one
@@ -42,6 +48,9 @@ defmodule Mutare.HarnessTest do
         """
       })
 
+    # Production compiles the sandbox once, then per-mutant runs go `--no-compile`.
+    assert {_out, 0} = Project.compile(project)
+
     assert %Result{outcome: :passed, exit_status: 0, duration_ms: ms} =
              Command.timed_test(project, [], 0)
 
@@ -60,16 +69,18 @@ defmodule Mutare.HarnessTest do
         """
       })
 
+    assert {_out, 0} = Project.compile(project)
+
     # The forced `--exit-status` is what makes this a `:failed` (kill) rather than
     # an ambiguous non-zero exit indistinguishable from infrastructure failure.
     assert %Result{outcome: :failed, exit_status: status} = Command.timed_test(project, [], 0)
     assert status == Command.failure_exit()
   end
 
-  test "a suite that can't compile is a harness error, NOT a kill" do
+  test "a lib that can't compile is a harness error, NOT a kill" do
     %{project: project} =
       Project.build(:harness_broken, %{
-        # Syntax error: never compiles, so `mix test` exits 1 before any verdict.
+        # Syntax error: the lib never compiles.
         "lib/m.ex" => "defmodule M do\n  def add(a, b), do: a +\nend\n",
         "test/m_test.exs" => """
         defmodule MTest do
@@ -79,11 +90,17 @@ defmodule Mutare.HarnessTest do
         """
       })
 
+    # In production a non-compiling lib is caught at the one-compile step (poison
+    # recovery), never reaching per-mutant runs — so the compile genuinely fails here.
+    assert {_out, status} = Project.compile(project)
+    refute status == 0
+
+    # And the per-mutant path itself fails safe: with no `.app`/beams the `--no-compile`
+    # run can't start the app, exits non-zero, and is read as a harness error — never a
+    # clean test failure, so never charged as a kill.
     assert %Result{outcome: :harness_error, exit_status: status} =
              Command.timed_test(project, [], 0)
 
-    # Whatever mix exits with, it is neither success nor a clean test failure, so
-    # it is never charged as a kill.
     refute status in [0, Command.failure_exit()]
   end
 
@@ -99,6 +116,11 @@ defmodule Mutare.HarnessTest do
         # Syntax error in the test script ⇒ exit 1 with a test-file compile banner.
         "test/m_test.exs" => "defmodule MTest do\n  use ExUnit.Case\n  def broken(, do: :x\nend\n"
       })
+
+    # The lib is valid, so the up-front compile succeeds; the `.exs` test script is only
+    # evaluated at `mix test` time, where `--no-compile` still re-reads it and trips the
+    # test-file compile banner that `outcome/2` reads as a kill.
+    assert {_out, 0} = Project.compile(project)
 
     assert %Result{outcome: :suite_compile_error, exit_status: status} =
              Command.timed_test(project, [], 0)

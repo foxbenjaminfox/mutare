@@ -163,6 +163,15 @@ defmodule Mutare.Sandbox.CommandTest do
       assert flag_value(Command.test_argv([]), "--max-failures") == "1"
     end
 
+    test "skips mix startup checks that are pure overhead under the one-compile invariant" do
+      argv = Command.test_argv([])
+      # Sources never change between per-mutant runs, so the compile-staleness scan and the
+      # deps/archives checks are redundant work paid N times — see `@boot_skip_flags`.
+      assert "--no-compile" in argv
+      assert "--no-deps-check" in argv
+      assert "--no-archives-check" in argv
+    end
+
     test "appends the caller's test args (file-granular selection) after the flags" do
       argv = Command.test_argv(["test/foo_test.exs", "test/bar_test.exs"])
       # The forced flags come first; the selection is appended verbatim at the tail.
@@ -170,8 +179,10 @@ defmodule Mutare.Sandbox.CommandTest do
       assert Enum.take(argv, -2) == ["test/foo_test.exs", "test/bar_test.exs"]
     end
 
-    test "a whole-suite run ([] args) carries only the forced flags" do
-      assert Command.test_argv([]) == ["test", "--exit-status", "101", "--max-failures", "1"]
+    test "a whole-suite run ([] args) carries the forced + boot-skip flags, no selection" do
+      assert Command.test_argv([]) ==
+               ["test", "--exit-status", "101", "--max-failures", "1"] ++
+                 ["--no-compile", "--no-deps-check", "--no-archives-check"]
     end
   end
 end
