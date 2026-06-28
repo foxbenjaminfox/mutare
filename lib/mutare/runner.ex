@@ -2,37 +2,17 @@ defmodule Mutare.Runner do
   @moduledoc """
   Compile once, then run the suite once per mutant in a fresh OS process.
 
-  The flow protects the one-compile invariant: we compile the sandbox a single
-  time, run the baseline green, then launch one `mix test` process per mutant
-  with `MUTANT_UNDER_TEST` set. Sources never change between runs, so mix's
-  incremental compiler finds nothing to rebuild — the per-mutant cost is process
-  boot plus the suite (only up to the first failure for a kill), never
-  recompilation.
+  The flow protects the one-compile invariant: we compile the sandbox a single time, run the tests as a baseline to ensure it passes, then launch one `mix test` process per mutant with `MUTANT_UNDER_TEST` set. Sources never change between runs, so mix's incremental compiler finds nothing to rebuild — the per-mutant cost is process boot plus the suite (only up to the first failure for a kill), never recompilation.
 
-  `run/2` returns `%{schema, results, sandbox, baseline_ms}`: the `Mutare.Schema`
-  that was run, the list of per-mutant `Mutare.Result`s, the sandbox path, and the
-  baseline run's wall-clock in milliseconds.
+  `run/2` returns `%{schema, results, sandbox, baseline_ms}`: the `Mutare.Schema` that was run, the list of per-mutant `Mutare.Result`s, the sandbox path, and the baseline run's wall-clock in milliseconds.
 
   ## Baseline + coverage probe
 
-  Before the per-mutant loop we run the suite green once (`Mutare.Runner.Baseline`)
-  — the authoritative green check, and the timing the per-mutant timeout cap is
-  scaled from — then build a per-mutant test selection
-  (`Mutare.Runner.CoverageProbe`), which picks the test files each mutant needs (or
-  marks it `:no_coverage`). The two are split on purpose: a red baseline aborts,
-  while coverage is advisory and degrades to running everything. The baseline can
-  be run more than once (`:baseline_runs`) to catch a flaky suite: runs that
-  disagree abort with `:baseline_flaky` rather than let a flaky test manufacture
-  false kills. See those modules for the selection modes.
+  Before the per-mutant loop we run the test suite once and ensure it passes (`Mutare.Runner.Baseline`) — then build a per-mutant test selection (`Mutare.Runner.CoverageProbe`) which picks the test files each mutant needs (or marks it `:no_coverage`). The two are split on purpose: a failing baseline test aborts, while coverage is advisory and degrades to running everything. The baseline can be run more than once (`:baseline_runs`) to catch a flaky suite: runs that disagree abort with `:baseline_flaky` rather than let a flaky test manufacture false mutant kills. See those modules for the selection modes.
 
   ## Parallel workers and timeouts
 
-  The per-mutant phase runs `:workers` mutants concurrently (default
-  `System.schedulers_online/0`), each its own `mix test` OS process in the shared
-  sandbox. Each run has a wall-clock cap (`baseline × :timeout_multiplier`,
-  default 3.0, with a floor; or an explicit `:timeout` in ms): a mutation can
-  turn a terminating loop infinite, so the run is capped. A capped run counts as
-  `:timeout` — a kill, since the hang is observable misbehavior.
+  The per-mutant phase runs `:workers` mutants concurrently (default `System.schedulers_online/0`), each its own `mix test` OS process in the shared sandbox. Each run has a wall-clock cap (`baseline × :timeout_multiplier`, default 3.0, with a floor; or an explicit `:timeout` in ms): a mutation can turn a terminating loop infinite, so the run is capped. A capped run counts as `:timeout` — a kill, since the hang is observable misbehavior.
 
   ## Early stop after N survivors (`:max_survivors`)
 

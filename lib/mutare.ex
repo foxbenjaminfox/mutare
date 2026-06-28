@@ -1,6 +1,6 @@
 defmodule Mutare do
   @moduledoc """
-  Mutare — mutation testing for Elixir built on a single compilation.
+  Mutare is a mutation testing system for Elixir, that mutates the source you actually write, and compiles **once**.
 
   The whole project is downstream of one invariant: **compile once**. Mutare
   rewrites a project's source into a *metamutant* — a single program that embeds
