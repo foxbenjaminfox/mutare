@@ -11,8 +11,7 @@ defmodule Mutare.Mutator.MacroHost do
   Registration is automatic when the mutator is enabled. Static, non-hosting routes belong to
   the independent `Mutare.MacroRouting` capability; a mutator may implement both behaviours.
 
-  A macro-aware mutator is still a `Mutare.Mutator` (it needs `name/0` and a mutation producer);
-  declare **both**:
+  A macro-aware mutator is still a `Mutare.Mutator` (it needs `name/0` and a mutation producer), so declare both:
 
       defmodule MyApp.Mutators.Ecto do
         @behaviour Mutare.Mutator
@@ -37,25 +36,15 @@ defmodule Mutare.Mutator.MacroHost do
 
   ## Registering known macros (`hosted_routes/0`)
 
-  Every entry must use `:routing` or contain at least one `:hosted` treatment. This makes the
-  mutator provenance explicit in the API instead of inferring it from which configuration list
-  happened to contribute a generic route. Use `c:Mutare.MacroRouting.macro_routes/0` for ordinary
-  `:expression` / `:pattern` / `:binding_pattern` / `:skip` declarations.
+  Every entry must use `:routing` or contain at least one `:hosted` treatment. Use `c:Mutare.MacroRouting.macro_routes/0` for ordinary `:expression` / `:pattern` / `:binding_pattern` / `:skip` declarations.
 
   ## Shape-aware routing (`macro_routing/1`)
 
-  A static per-position treatment list can't express a routing that depends on the call's
-  *shape* — `where(q, category: "Foo")` is plain data while `where(q, [u], u.x == u.y)` is a DSL
-  fragment. Register the macro `:routing` and implement `c:macro_routing/1` to classify each
-  concrete call.
+  A static per-position treatment list can't express a routing that depends on the call's shape — for instance, in `where(q, category: "Foo")` we're passing plain data, while in `where(q, [u], u.x == u.y)` we're giving the macro a fragment of the Ecto DSL. Register the macro `:routing` and implement `c:macro_routing/1` to classify which of the two cases applies.
 
   ## Selector hosting (`host/2`)
 
-  For a fragment *inside* a compile-time DSL — a `:hosted` argument — the transform can't splice
-  its usual mutation machinery in, and the fragment's semantics are the library's. So your
-  mutator owns the mutation logic: it hands the transform the per-fragment `:original` and
-  `:mutants`, plus `:wrap`/`:splice` describing how to weave a selector back into the macro, and
-  the transform assembles and records the rest. See `c:host/2`.
+  For a fragment inside a compile-time DSL — a `:hosted` argument — the transform can't splice its usual mutation machinery in, and the fragment's semantics are the macro's. So the macro-hosting mutator will own the mutation logic, handilg the transform a per-fragment `:original` and `:mutants`, plus `:wrap`/`:splice` describing how to weave a selector back into the macro, and the transform assembles and records the rest. See `c:host/2`.
   """
 
   @doc """
