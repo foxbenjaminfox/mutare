@@ -143,7 +143,7 @@ defmodule Mutare.Transform do
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
   alias Mutare.Site
-  alias Mutare.Mutator.Spec
+  alias Mutare.Mutator.Dispatch
 
   alias Mutare.Transform.{
     Analyze,
@@ -941,25 +941,21 @@ defmodule Mutare.Transform do
     end
   end
 
-  # Drop the candidates a mutator opts out of *before* id assignment, so they leave no
-  # id, selector, or site — they simply don't exist for this run (unlike a poisoned id,
-  # which is recorded). The only opt today is **per-mutator** and read straight from the
-  # candidate's own `Mutare.Mutator.Spec`: a mutator configured `{Module, call_option_keys:
-  # false}` suppresses its mutations of a *call-option key* (a key of a keyword list passed
-  # as a call's final argument, tagged `call_option_key?` by the analyzer) while still
-  # mutating everywhere else. Ids stay stable across a run's poison rebuilds because the
-  # mutator list — hence each spec's opts — is constant within a run.
+  # Drop the candidates their producing mutator opts out of *before* id assignment, so
+  # they leave no id, selector, or site — they simply don't exist for this run (unlike a
+  # poisoned id, which is recorded). The analyzer owns the positional fact that a
+  # candidate targets a call-option key; the mutator owns the policy through
+  # `mutate_call_option_keys?/1`. Ids stay stable across a run's poison rebuilds because
+  # the mutator list — hence each spec's opts and policy — is constant within a run.
   defp gate_candidates(candidates) do
     Enum.reject(candidates, fn
-      %Candidate.InPlace{call_option_key?: true, mutator: spec} -> call_option_keys_off?(spec)
-      _candidate -> false
+      %Candidate.InPlace{call_option_key?: true, mutator: spec} ->
+        not Dispatch.mutate_call_option_keys?(spec)
+
+      _candidate ->
+        false
     end)
   end
-
-  defp call_option_keys_off?(%Spec{opts: opts}) when is_list(opts),
-    do: Keyword.get(opts, :call_option_keys, true) == false
-
-  defp call_option_keys_off?(_spec), do: false
 
   defp emit_site(node, candidates, ctx) do
     {clauses, ctx} =

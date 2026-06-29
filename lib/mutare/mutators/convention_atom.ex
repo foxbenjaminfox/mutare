@@ -56,6 +56,9 @@ defmodule Mutare.Mutators.ConventionAtom do
   swapping one out: `pairs: [[:ok, :okay]]` makes `:ok` mutate to **both** `:error`
   and `:okay`. (The built-in pairs can't be turned off — only extended.)
 
+  Like `AtomLiteral`, call-option names can be omitted without affecting atoms in
+  ordinary data: `{Mutare.Mutators.ConventionAtom, call_option_keys: false}`.
+
   Like `AtomLiteral`, it mutates a convention atom wherever an atom literal appears —
   value positions, `def`/`defp` head patterns, and `case` clause patterns — but never a
   bare atom that is a function name (`:upcase` in `String.upcase`). On by default.
@@ -81,6 +84,11 @@ defmodule Mutare.Mutators.ConventionAtom do
 
   @impl Mutare.Mutator
   def name, do: :convention
+
+  @impl Mutare.Mutator
+  def mutate_call_option_keys?(opts) do
+    not (Keyword.keyword?(opts) and Keyword.get(opts, :call_option_keys, true) == false)
+  end
 
   @doc """
   The built-in convention atoms, as a flat list. `Mutare.Mutators.AtomLiteral` excludes

@@ -41,11 +41,11 @@ defmodule Mutare.Transform.Candidate do
     #
     # `call_option_key?` flags an in-place candidate that mutates the *key* of a keyword
     # list passed as a call's final argument (`foo(x, timeout: 5)` → `timeout:`). The
-    # analyzer tags it (it alone knows the call context); emission drops it when this
-    # candidate's own mutator was configured `{Module, call_option_keys: false}` (read
-    # from its `Mutare.Mutator.Spec.opts` in `Transform.gate_candidates/1`), so the key
-    # stays raw while its value still mutates. Default `false` — every other candidate is
-    # a normal mutation, never gated.
+    # analyzer tags it (it alone knows the call context); emission asks the candidate's
+    # own mutator through `c:Mutare.Mutator.mutate_call_option_keys?/1` whether to keep it.
+    # This lets a context-free atom family suppress noisy option-name changes without
+    # imposing the same policy on call-aware rewrites. Default `false` — every other
+    # candidate is a normal mutation, never gated.
     #
     # `pin?` flags an in-place candidate whose selector `case` must be **`^`-pinned** —
     # the value sits in a compile-time DSL position that accepts an interpolated value but

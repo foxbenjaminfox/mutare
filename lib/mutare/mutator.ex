@@ -4,7 +4,7 @@ defmodule Mutare.Mutator do
 
   A mutator inspects a single AST node and returns either `:skip` (it does not apply here) or a list of mutated nodes, one per mutant to generate at that site.
 
-  You must define `name/0` to identify the mutator in reports, and at least one of `mutate/1` or `mutate/2` to produce mutations. Optionally, you may implement `variants/0` and `variant/2` to classify your mutations into kinds.
+  You must define `name/0` to identify the mutator in reports, and at least one of `mutate/1` or `mutate/2` to produce mutations. Optionally, you may implement `variants/0` and `variant/2` to classify your mutations into kinds, and `mutate_call_option_keys?/1` to control mutations of call-option names.
 
   Implement also `Mutare.Mutator.Structural` if you seek to participate in the structural mutation work—identifying a nonstandard position to mutate. (Amoung the built in mutators that use `Mutare.Mutator.Structural` are, for example, `Mutare.Mutators.ReturnValue`, `Mutare.Mutators.IfCondition`, and `Mutare.Mutators.PatternSwap`.)
 
@@ -68,12 +68,13 @@ defmodule Mutare.Mutator do
 
   The reserved `:as` key in `opts` overrides the recorded family name (so the same module can run twice under distinct names); it is stripped before `opts` reaches the mutator. See `Mutare.Mutator.Spec`.
 
-  Besides mutator-defined opts (read via `context.opts`, above), the **transform**
-  recognises one positional opt directly from the spec — `call_option_keys: false`,
-  which suppresses *this* mutator's mutations of a **call-option key** (a key of a
-  keyword list passed as a call's final argument, `foo(x, timeout: 5)` → `timeout:`).
-  It is positional — only the transform knows a node is a call-option key — so it can't
-  be a `mutate/2` decision, but the *choice* is the mutator's, carried in its spec:
+  A mutator that changes atom-like keys may optionally implement
+  `c:mutate_call_option_keys?/1` to decide whether it wants to mutate a **call-option
+  key** (a key of a keyword list passed as a call's final argument,
+  `foo(x, timeout: 5)` → `timeout:`). The position is known only after the transform
+  has analyzed the enclosing call, so this cannot be a `mutate/2` decision; the
+  callback receives the mutator's own opts and owns the policy while the transform
+  owns only detection and enforcement:
 
       # mutate option values but not the option names, for atom keys
       [mutators: [..., {Mutare.Mutators.AtomLiteral, call_option_keys: false}]]
@@ -307,7 +308,30 @@ defmodule Mutare.Mutator do
   @callback variant(original :: Macro.t(), mutated :: Macro.t()) ::
               String.t() | atom() | [String.t() | atom()] | nil
 
-  @optional_callbacks mutate: 1, mutate: 2, variants: 0, variant: 2
+  @doc """
+  Optional policy hook for mutations of a call's trailing keyword-option keys.
+
+  The transform invokes this only for a candidate already identified as mutating an
+  option key in a call such as `foo(timeout: 5)`. It passes the producing mutator
+  instance's configured `opts`; return `true` to keep the candidate or `false` to
+  suppress it. A mutator without this callback keeps such candidates.
+
+  This hook is deliberately mutator-owned rather than a transform-wide option:
+  context-free atom replacement tends to turn an option name into an ignored unknown
+  key, while a call-aware family may replace a known key with another legal key and
+  should remain enabled. `Mutare.Mutators.AtomLiteral` and
+  `Mutare.Mutators.ConventionAtom` implement it; `Mutare.Mutators.ModeSwap` does not.
+
+  The hook is separate from `c:mutate/2` because a key node is offered to mutators
+  before its enclosing call has been reassembled and classified.
+  """
+  @callback mutate_call_option_keys?(opts :: term()) :: boolean()
+
+  @optional_callbacks mutate: 1,
+                      mutate: 2,
+                      mutate_call_option_keys?: 1,
+                      variants: 0,
+                      variant: 2
 
   @typedoc """
   A call node's pipe context, as an atom: `:piped` (the node is a `|>` right-hand

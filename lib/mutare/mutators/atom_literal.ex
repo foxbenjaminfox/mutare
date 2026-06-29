@@ -23,8 +23,8 @@ defmodule Mutare.Mutators.AtomLiteral do
 
   Ordinary atoms in data keyword/map keys (`%{a: :b}`, `[a: :b]`) and in
   `case`/`receive`/`fn` clause patterns **are** mutated. The key of a keyword passed as
-  a call's trailing argument (`foo(timeout: 5)`) is mutated too — opt out per mutator
-  with `{Mutare.Mutators.AtomLiteral, call_option_keys: false}`.
+  a call's trailing argument (`foo(timeout: 5)`) is mutated too — AtomLiteral owns the
+  opt-out policy through `{Mutare.Mutators.AtomLiteral, call_option_keys: false}`.
   """
   @behaviour Mutare.Mutator
 
@@ -42,6 +42,11 @@ defmodule Mutare.Mutators.AtomLiteral do
 
   @impl Mutare.Mutator
   def name, do: :atom
+
+  @impl Mutare.Mutator
+  def mutate_call_option_keys?(opts) do
+    not (Keyword.keyword?(opts) and Keyword.get(opts, :call_option_keys, true) == false)
+  end
 
   @impl Mutare.Mutator
   # `true`/`false`/`nil` are atom literals but belong elsewhere (see @moduledoc).

@@ -185,6 +185,18 @@ defmodule Mutare.TransformResolutionTest do
       assert {"Date.shift(d, week: 2)", "Date.shift(d, month: 2)"} in sites
     end
 
+    test "call_option_keys is not a ModeSwap policy" do
+      {_meta, sites, _} =
+        Mutare.transform_string(
+          "defmodule M do\n  def soon(dt), do: DateTime.shift(dt, minute: 10)\nend\n",
+          mutators: [{Mutare.Mutators.ModeSwap, call_option_keys: false}]
+        )
+
+      mutations = for site <- sites, site.mutator == :mode_swap, do: site.mutated_code
+      assert "DateTime.shift(dt, second: 10)" in mutations
+      assert "DateTime.shift(dt, hour: 10)" in mutations
+    end
+
     test "a swapped shift unit key drops the redundant AtomLiteral, but Literal still mutates the amount" do
       # ModeSwap rewrites the call swapping the `minute:` key, so `Overlap` prunes the
       # redundant AtomLiteral on that key (it'd raise as `:mutare:`). The amount is a

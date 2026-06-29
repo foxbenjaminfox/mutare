@@ -358,7 +358,7 @@ defmodule Mutare.TransformContextTest do
     end
   end
 
-  describe "call-option keys: a mutator's `call_option_keys: false` opt (keyword list as a call's final arg)" do
+  describe "call-option keys: mutator-owned policy (keyword list as a call's final arg)" do
     # Bare AtomLiteral mutates call-option keys; configured with `call_option_keys: false`
     # it skips them. `Literal` rides along so an option *value* still mutates either way.
     @kw [Mutare.Mutators.AtomLiteral, Mutare.Mutators.Literal]
@@ -422,6 +422,34 @@ defmodule Mutare.TransformContextTest do
 
       {_m, sites, _} = Mutare.transform_string(source, mutators: @kw_off)
       assert Enum.any?(sites, &(&1.mutator == :literal and &1.line == 2))
+    end
+
+    test "core does not interpret `call_option_keys` for a mutator without the callback" do
+      # This pair-list shape is tagged as a trailing call-options candidate, but Literal
+      # does not declare the policy callback. Its similarly named opt is therefore inert.
+      source = "defmodule N do\n  def f(x), do: foo(x, [{1, :a}])\nend\n"
+
+      {_m, sites, _} =
+        Mutare.transform_string(source,
+          mutators: [{Mutare.Mutators.Literal, call_option_keys: false}]
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :literal and &1.original_code == "1"))
+    end
+
+    test "ConventionAtom can own the same positional policy" do
+      source = "defmodule C do\n  def f, do: foo(ok: 1)\nend\n"
+
+      {_m, default_sites, _} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.ConventionAtom])
+
+      {_m, gated_sites, _} =
+        Mutare.transform_string(source,
+          mutators: [{Mutare.Mutators.ConventionAtom, call_option_keys: false}]
+        )
+
+      assert Enum.any?(default_sites, &(&1.mutator == :convention))
+      refute Enum.any?(gated_sites, &(&1.mutator == :convention))
     end
 
     test "gated keys leave no id gap — ids stay contiguous" do

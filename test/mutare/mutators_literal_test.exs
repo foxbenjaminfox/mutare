@@ -164,6 +164,12 @@ defmodule Mutare.MutatorsLiteralTest do
     test "name" do
       assert AtomLiteral.name() == :atom
     end
+
+    test "owns its call-option-key policy" do
+      assert AtomLiteral.mutate_call_option_keys?([])
+      assert AtomLiteral.mutate_call_option_keys?(call_option_keys: true)
+      refute AtomLiteral.mutate_call_option_keys?(call_option_keys: false)
+    end
   end
 
   describe "CharlistLiteral" do

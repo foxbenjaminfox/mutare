@@ -252,8 +252,9 @@ defmodule Mutare.Mutator.Dispatch do
 
   # The mutation-producing callbacks: a module is a mutator if it exports `name/0` *and* at least
   # one of these. `mutate/1` is no longer required — a structural/pipe-only family produces its
-  # mutations through `mutate/2` or a structural hook instead. (`macros/0` is routing, not a
-  # producer, so it doesn't qualify a module on its own.)
+  # mutations through `mutate/2` or a structural hook instead.
+  # (`macros/0`/`mutate_call_option_keys?/1` are routing/policy, not producers, so they don't
+  # qualify a module on their own.)
   #
   # `mutate/1,2` are base-behaviour, `host/2` is `MacroAware`; the structural hooks
   # (`return_replacements`, `condition_replacements`, `pattern_mutations`) are derived from
@@ -284,6 +285,22 @@ defmodule Mutare.Mutator.Dispatch do
   # Total over any term: a non-atom (e.g. a string in `.mutare.exs`) is simply
   # not a mutator, so resolution reports it rather than crashing on the guard.
   def implemented_by?(_term), do: false
+
+  @doc """
+  Whether `spec`'s mutator wants to keep candidates that mutate a call's trailing
+  keyword-option keys.
+
+  This is opt-in policy: a module without `c:Mutare.Mutator.mutate_call_option_keys?/1`
+  keeps the candidate regardless of similarly named opts. A module implementing the
+  callback receives its own configured opts and decides. The transform remains the
+  owner of identifying the position; this dispatcher keeps callback discovery out of
+  emission.
+  """
+  @spec mutate_call_option_keys?(Spec.t()) :: boolean()
+  def mutate_call_option_keys?(%Spec{module: module, opts: opts}) do
+    not function_exported?(module, :mutate_call_option_keys?, 1) or
+      module.mutate_call_option_keys?(opts)
+  end
 
   @doc """
   The **variant label(s)** recorded for one mutation of `spec`'s module — a deduplicated, downcased

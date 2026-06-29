@@ -4,8 +4,8 @@ defmodule Mutare.Transform.Analyze.CallOptions do
   # The "call-option key" sub-concern of the analyze pass: detecting that a runtime
   # node is a *call* whose trailing argument is a keyword list, and tagging that list's
   # *key* candidates `call_option_key?` so emission (`Transform.gate_candidates/1`) can
-  # drop them for a mutator configured `{Module, call_option_keys: false}`. A pure leaf —
-  # it transforms an already-analyzed node and never calls back into the descent.
+  # ask their producing mutator whether to keep them. A pure leaf — it transforms an
+  # already-analyzed node and never calls back into the descent.
   #
   # `Mutare.Transform.Analyze` runs `mark/1` over every runtime call (`recurse_runtime/2`)
   # and over a known macro's offered node; `keyword_list_shaped?/1` is the generic
@@ -22,7 +22,7 @@ defmodule Mutare.Transform.Analyze.CallOptions do
   # (`foo(x, timeout: 5, retries: 3)` — the trailing-keyword sugar, the same AST as
   # an explicit `[timeout: 5, …]` last arg), tag each of that list's *key* candidates
   # `call_option_key?`. Emission (`Transform.gate_candidates/1`) then drops a tagged
-  # candidate whose mutator was configured `{Module, call_option_keys: false}` — leaving
+  # candidate whose mutator's `mutate_call_option_keys?/1` policy returns false — leaving
   # that option name unmutated while its value still mutates. A data/structural form
   # (`%{}`, a 3+-tuple) is not a call, so its trailing element is left alone; only the
   # call context (known here) can make this distinction. The marking is shallow: nested

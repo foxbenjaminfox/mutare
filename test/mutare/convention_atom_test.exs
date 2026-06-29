@@ -79,6 +79,13 @@ defmodule Mutare.ConventionAtomTest do
     end
   end
 
+  describe "call-option-key policy" do
+    test "is owned by ConventionAtom's own opts" do
+      assert ConventionAtom.mutate_call_option_keys?([])
+      refute ConventionAtom.mutate_call_option_keys?(call_option_keys: false)
+    end
+  end
+
   describe "in a body (value position)" do
     test "swaps the tag of an :ok / :error tuple, payload untouched" do
       assert mutated_codes("{:ok, a}") == [":error"]

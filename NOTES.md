@@ -1212,11 +1212,13 @@ quiet.
 Why per-mutator (not a global flag / CLI option), and why a transform-side gate rather
 than `mutate/2`: the gate is **positional** (the call-key position is known only to the
 transform, never to a position-agnostic mutator), so a mutator's `mutate/1`/`mutate/2`
-can't decide it. But the *choice* is genuinely the mutator's config — so the candidate
-carries its `Mutare.Mutator.Spec`, and the transform reads `spec.opts` at gate time. No
-Options field, CLI flag, or `Ctx`/`Schema` plumbing; it composes with `{module, opts}` like
-any other mutator option, and is per-mutator for free (configure `AtomLiteral` and an
-integer key — `Literal`'s — is untouched).
+can't decide it. But the *policy* belongs to the mutator: a context-free atom replacement
+usually makes an ignored unknown option, while `ModeSwap` changes a known key to another
+legal key and must keep firing. The candidate therefore carries its `Mutare.Mutator.Spec`,
+and the transform asks the producing module's optional `mutate_call_option_keys?/1`
+callback, passing `spec.opts`. `AtomLiteral` and `ConventionAtom` implement it; a module
+without the callback is unaffected even if its opts happen to contain a
+`call_option_keys` key. No Options field, CLI flag, or `Ctx`/`Schema` plumbing.
 
   * **Detect + tag in `Analyze`** (it alone knows the call context): `recurse_runtime/2`
     post-processes its result with `CallOptions.mark/1`, which — when the node is a
@@ -1226,7 +1228,7 @@ integer key — `Literal`'s — is untouched).
     (a `Candidate.InPlace` field). Shallow: a nested map/list inside an option *value* keeps
     its own keys. Piped calls (`x |> foo(opt: 1)`) go through `recurse_runtime` too.
   * **Gate in `Transform`**: `emit`'s `gate_candidates/1` drops a `call_option_key?: true`
-    candidate when its own `spec.opts` say `call_option_keys: false` (`call_option_keys_off?/1`)
+    candidate when its producing mutator's `mutate_call_option_keys?/1` callback returns false
     — *before* `SelectorEmit.claim_items/4`, so it consumes no id and records no site
     (unlike a poisoned id, which is recorded). Ids stay **contiguous** and stable: the mutator
     list (hence each spec's opts) is constant within a run, so poison rebuilds reproduce the
