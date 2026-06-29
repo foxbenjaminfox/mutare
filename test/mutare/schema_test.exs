@@ -9,10 +9,24 @@ defmodule Mutare.SchemaTest do
   @probe [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
 
   setup do
-    root = Path.join(System.tmp_dir!(), "mutare_schema_#{System.unique_integer([:positive])}")
+    root = fresh_tmp("mutare_schema")
     File.mkdir_p!(Path.join(root, "lib/sub"))
     on_exit(fn -> File.rm_rf!(root) end)
     %{root: root}
+  end
+
+  # `unique_integer/1` is unique only inside one BEAM. Self-hosting runs this
+  # module in several parallel `mix test` processes that share /tmp, so using it
+  # alone lets one test process delete another's fixture during `on_exit`.
+  defp fresh_tmp(prefix) do
+    name = "#{prefix}_#{System.pid()}_#{System.unique_integer([:positive])}"
+    path = Path.join(System.tmp_dir!(), name)
+
+    if File.exists?(path) do
+      raise "expected a fresh tmp path but #{path} already exists (stale leftover or pid reuse)"
+    end
+
+    path
   end
 
   defp write(root, rel, contents) do
