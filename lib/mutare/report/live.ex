@@ -1,40 +1,14 @@
 defmodule Mutare.Report.Live do
   @moduledoc """
-  The live, cargo-mutants-style console progress for the human run.
+  Live progress for the human report.
 
-  This is the *interactive* face of a run, distinct from `Mutare.Report` (the
-  final survivor diffs + score) and the machine renderers under `Mutare.Report.*`:
-  it shows what the run is **currently doing** as it goes — starting with the
-  pre-run **scan** (per-file mutant discovery, via `scanned/2`), then the runner's
-  phases — leaves a permanent line behind for each mutant it finds (survivors) or
-  trips over (timeouts, harness errors), and — when attached to a terminal — paints
-  a live-updating status block at the bottom (a spinner, the activity line, and a
-  counter with an ETA).
+  Progress is written to stderr so stdout remains safe for the final or machine-readable report.
+  An interactive terminal gets a spinner, current mutant, counts, and ETA; pipes and CI logs get
+  plain scrollback. Survivors, timeouts, and harness errors remain visible after the live display
+  advances.
 
-  ## Output modes
-
-  All output goes to **stderr** so it never corrupts a machine report written to
-  stdout (`--format json` piped to a file). A real terminal on stderr with ANSI
-  enabled gets the live status block (a spinner and a redrawn counter); anything
-  else (a pipe, a CI log) degrades to plain scrollback — phase transitions and the
-  leave-behind lines, no cursor tricks, no spinner. Colour is decided separately:
-  the `NO_COLOR` convention drops the leave-behind label colour while keeping the
-  live block. `--quiet` suppresses the reporter entirely (the Mix task simply
-  doesn't start it).
-
-  ## Verbose mode
-
-  `--verbose` (the `:verbose` start option) turns the compact display into a full
-  behind-the-scenes narrative: a permanent scrollback line for **every** mutant as
-  it finishes (not just survivors/problems), each with its outcome label and
-  duration, plus a `✓` detail line after each phase — the one compile's time, the
-  baseline timing, the coverage breakdown + derived timeout cap, and the worker
-  count on the testing line. The extra phase numbers ride on the same `:on_phase`
-  hook as structured detail events (`{:compiled, ms}`, `{:baseline_done, ms}`,
-  `{:coverage_done, summary}`, `{:run_config, cfg}`) that the runner fires
-  unconditionally; this reporter renders them only when `verbose` is set, so the
-  runner stays ignorant of the display. `--quiet` wins over `--verbose` (a quiet
-  run starts no reporter at all).
+  `--verbose` prints a line for every mutant and timing details for each phase. `--quiet`
+  suppresses live progress entirely and takes precedence over `--verbose`.
   """
 
   use GenServer

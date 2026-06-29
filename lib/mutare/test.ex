@@ -2,29 +2,17 @@ defmodule Mutare.Test do
   @moduledoc """
   Test helpers for projects that implement their own `Mutare.Mutator`.
 
-  A custom-mutator project wants to assert three things: what a single mutator offers for a
-  parsed node (the pure-AST path, `node_mutations/3` below), what the *whole* transform
-  records for a source string (`Mutare.transform_string/2`, which adds alias/import
-  resolution, pipe handling, and equivalent-sibling suppression), and — the *semantic* check —
-  that a recorded mutant is **live**: that flipping its id actually changes what the compiled
-  code does, not just the source on disk. The first two wrap parse-in / render-out around
-  Mutare's public surface; the third compiles a real metamutant and drives the selection switch.
-  Without these every such project re-implements the same harness — and reaches into the private
-  `:persistent_term` selection contract to do it.
+  Import this module into an `ExUnit.Case` to test a mutator at three levels:
 
-  The AST helpers route through `Mutare.AST.parse!/1` and `Mutare.AST.to_string/1`, so a
-  consumer needs no direct `:sourceror` dependency; the live-mutant helpers manage the
-  selection key for you, so a consumer never hardcodes it or its baseline — both are
-  Mutare-internal and resolved at runtime (the key is even reconfigurable under self-hosting).
-  Depend on these, not on the contracts behind them.
+    * `node_mutations/3` tests the replacements returned for one parsed node;
+    * `diffs/2` and `diffs_for/3` test sites produced by the full source transform;
+    * `compile_metamutant/3` and `with_active_mutant/2` verify that selecting a mutant changes
+      the compiled program's behaviour.
 
   > #### Selection is process-global {: .warning}
   >
-  > `with_active_mutant/2` flips the active mutant by writing a
-  > VM-wide `:persistent_term` slot every compiled metamutant reads. A test module that drives a
-  > live mutant must therefore be `use ExUnit.Case, async: false` — two `async` modules sharing
-  > the one slot would clobber each other's active id. (Mutare's own `selector_test.exs` is
-  > `async: false` for exactly this reason.)
+  > Tests that call `with_active_mutant/2` must use `async: false`, because the active mutant is
+  > shared across the VM.
 
   `import Mutare.Test` in an `ExUnit.Case` to use them:
 
@@ -36,27 +24,6 @@ defmodule Mutare.Test do
           assert node_mutations("1 + 2", MyApp.PlusMutator) == ["1 - 2"]
         end
       end
-
-  ## Which helper to reach for
-
-    * `node_mutations/3` — the **node** path. Offers one (or more) mutators a single parsed
-      node directly, with no transform pre-pass, so only *qualified* calls resolve and no
-      structural siblings (`return_value`, `clause_drop`) appear. The tightest unit test of
-      a mutator's `mutate/1`·`mutate/2`.
-    * `diffs/2` / `diffs_for/3` — the **source** path. Drives the real
-      `Mutare.transform_string/2`, so alias/import resolution, pipe handling, and
-      equivalent-sibling suppression are all exercised exactly as in a `mix mutare` run.
-    * `assert_metamutant_compiles/2` — the single-build safety net: every mutant a source
-      produces is embedded in one program that must compile.
-    * `compile_metamutant/3` — the **live** path's workhorse: render `source`, compile it inside a
-      uniquely-named wrapper module (so two compiles never redefine one module name through the
-      global compiler, and the fixture's modules can't collide with real top-level ones), and
-      return `{modules, sites}`. The compiled modules are purged on test exit. Look a mutant's id
-      up from `sites` with `site_id/2` / `site_by/3`.
-    * `with_active_mutant/2` — run a body with a chosen mutant id active (restored
-      after), against modules you already compiled with `compile_metamutant/3`. The
-      compile-once / run-under-many-ids pattern a semantic test wants. Requires `async: false`
-      (see the warning above).
 
   ## Driving a live mutant in-process
 

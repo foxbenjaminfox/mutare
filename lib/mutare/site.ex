@@ -2,44 +2,14 @@ defmodule Mutare.Site do
   @moduledoc """
   One mutant: a single mutation applied at a single source location.
 
-  A "site" in the source (e.g. one `>=` occurrence) may yield several `Site`
-  structs — one per mutation the mutators emit there — each with its own `id`.
-  The `id` is what the metamutant switches on at runtime (`0` = baseline).
+  One source expression may produce several sites, one for each replacement. Each site records
+  its id, source range, mutator, replacement kind, before/after code, ignore state, and optional
+  variant or advisory note. `Mutare.transform_string/2` returns sites alongside the generated
+  metamutant source.
 
-  This is a **lean persisted DTO**: every field is something running or reporting
-  needs *after* the transform has finished — id/location, the producing `mutator`
-  and its `kind`/`operation`, the **rendered** before/after code, and small
-  classification fields (`original_form`/`mutated_form`, `note`, `ignore_reason`,
-  `poisoned`, `block_macro`). The original/mutated **AST nodes** are deliberately
-  *not* retained: the constructors derive everything from them at build time (the
-  `*_form` head tags and the `*_code` rendering), and no consumer reads a tree
-  afterwards — the report patches the original source by `range`, not by re-rendering
-  a node. Keeping the trees would duplicate the whole rewritten AST per mutant, which
-  for a project with thousands of mutants is substantial retained memory for no use.
-
-  ## Deferred diff code
-
-  Rendering `original_code`/`mutated_code` via `Sourceror` *per mutant* dominates the
-  build, yet only the handful of mutants a reporter actually shows ever need the diff
-  text. So the constructors take a `render?` flag (default `true`): a `mix mutare` scan
-  whose reporters show survivors alone passes `false`, leaving both fields `nil`, and the
-  report re-derives them only for the sites it displays (`Mutare.Transform.render_sites/2`
-  via `Mutare.Runner.Hydrate`). The flag gates *only* those two fields — `range`, the
-  `*_form` tags, and `variant` (read for `# mutare:ignore` filtering) are always computed,
-  so deferral changes no id, classification, or count. The public `transform_string/2` and
-  the test helpers keep the default, so they always carry rendered code.
-
-  ## Live summary
-
-  The deferred path leaves `*_code` `nil`, but the live progress reporter still wants a
-  one-line `orig -> mutated` for the *in-flight* mutant — and it can't defer, because it
-  shows every mutant as it runs, not just the displayed handful. So a second, independent
-  flag `summary?` builds `summary`: the same `describe/1`-style one-liner, but rendered with
-  `Macro.to_string/1` (~8x cheaper than `Sourceror`, ample for an ephemeral spinner line)
-  instead of the high-fidelity `Sourceror` the `*_code` fields and the reports use. A
-  `mix mutare` run sets `summary?` for every site unless `--quiet` (no live block, so nothing
-  reads it); `transform_string/2`, the count pass, and the test helpers leave it `nil`. Only
-  the live activity line reads it (`summary_line/1`); every report uses `*_code`.
+  A runner may defer rendering `original_code` and `mutated_code`, leaving them `nil` until the
+  result needs to be displayed. `summary` may hold a cheaper one-line description for live
+  progress. `Mutare.transform_string/2` renders the code fields by default.
   """
 
   @type t :: %__MODULE__{
@@ -56,8 +26,8 @@ defmodule Mutare.Site do
           poisoned: boolean(),
           original_form: atom() | nil,
           mutated_form: atom() | nil,
-          original_code: String.t(),
-          mutated_code: String.t(),
+          original_code: String.t() | nil,
+          mutated_code: String.t() | nil,
           summary: String.t() | nil,
           variant: [String.t()],
           note: String.t() | nil,
@@ -77,8 +47,7 @@ defmodule Mutare.Site do
     :original_code,
     :mutated_code,
     # The cheap `Macro.to_string`-rendered `mutator  orig → mutated` one-liner for the live
-    # in-flight activity line, or `nil` when not requested (the `summary?` flag — see the "Live
-    # summary" section). Read only by `summary_line/1`; the reports use `*_code`.
+    # in-flight activity line, or `nil` when not requested via `summary?`.
     :summary,
     # The mutator-declared **variant label(s)** of this mutation (downcased), or `[]` when the
     # producing mutator did not opt in (no `c:Mutare.Mutator.variants/0` vocabulary) or this
@@ -132,10 +101,10 @@ defmodule Mutare.Site do
     * `:variant` — the `# mutare:ignore` label(s) the producing mutator tagged at production time
       (`Mutare.Mutator.Mutation.tagged/2`); absent lets `replace/8` derive it via
       `c:Mutare.Mutator.variant/2`.
-    * `:render?` — `false` defers the per-site diff render (the scan's optimisation — see the
-      "Deferred diff code" section); defaults `true`.
+    * `:render?` — `false` leaves `original_code` and `mutated_code` as `nil` for later rendering;
+      defaults `true`.
     * `:summary?` — `true` builds the cheap `Macro`-rendered live one-liner (`summary`); defaults
-      `false` (see the "Live summary" section).
+      `false`.
   """
   @spec in_place(
           pos_integer(),
@@ -160,7 +129,7 @@ defmodule Mutare.Site do
   clause *head* pattern (a literal swap). Same replacement shape as `in_place/6`,
   recorded as `:lifted`; `mutator` (a `Mutare.Mutator.Spec`) distinguishes a guard
   operator swap (`:relational`, …) from a head-pattern literal swap (`:literal`, …).
-  `opts` carries the same optional metadata as `in_place/7` (`:note`, `:variant`, `:render?`).
+  `opts` carries the same optional metadata as `in_place/7`.
   """
   @spec lifted_replace(
           pos_integer(),
@@ -196,8 +165,7 @@ defmodule Mutare.Site do
   A dropped function clause — a `:lifted`, `:delete` mutation. The clause is
   removed entirely, so there is no mutated node, op, or code.
 
-  `opts` carries the two render flags (`:render?`/`:summary?`, both `true` by default — see
-  "Deferred diff code" and "Live summary").
+  In `opts`, `:render?` defaults to `true` and `:summary?` defaults to `false`.
   """
   @spec clause_drop(pos_integer(), String.t(), Sourceror.Range.t(), Macro.t(), keyword()) :: t()
   def clause_drop(id, file, range, clause_node, opts \\ []) do
@@ -260,7 +228,7 @@ defmodule Mutare.Site do
 
   # The live-summary builders (`summary?` true) — the cheap `Macro`-rendered counterparts of
   # `describe/1`, gated to `nil` when not requested. A replacement shows `mutator  orig → mutated`;
-  # a delete shows `mutator  (drop) <clause>`. See the "Live summary" section.
+  # a delete shows `mutator  (drop) <clause>`.
   defp replace_summary(_mutator, _orig, _mutated, false), do: nil
 
   defp replace_summary(mutator, orig, mutated, true),

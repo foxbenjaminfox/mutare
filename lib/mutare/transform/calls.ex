@@ -1,33 +1,13 @@
 defmodule Mutare.Transform.Calls do
   @moduledoc """
-  Resolve a call node to the module it actually targets — the helper a **call-matching
-  mutator** uses so it matches aliased, imported, and Erlang-atom forms, not just the
-  written `Mod.fun(...)`.
+  Call-resolution helpers for custom mutators and macro integrations.
 
-  Every built-in call family (Collection, StringCall, ModeSwap, Numeric, …) reads
-  `resolved_call/1`; a **custom** mutator should too. Without it, a mutator matching a raw
-  `{:., _, [{:__aliases__, _, [:String]}, :upcase]}` node misses `alias String, as: S;
-  S.upcase(x)` and `import String; upcase(x)` — `resolved_call/1` resolves all three to the
-  same `{[:String], :upcase, args, rebuild}`, and `rebuild` re-emits the swap in the form the
-  source wrote (bare/qualified/aliased preserved, so the diff stays minimal).
+  `resolved_call/1` normalizes qualified, aliased, imported, and Erlang-module calls to
+  `{module, function, arguments, rebuild}`. Use `rebuild` to preserve the source's written call
+  form in the resulting diff. It operates on nodes passed to a mutator by Mutare's transform.
 
-  This reads the `alias`/`import` stamps the transform places on the AST before
-  mutators run, so it is only meaningful on a node handed to a mutator by the transform (a
-  `mutate/1` argument) — exactly where a call-matching mutator needs it.
-
-  `resolved_macro_call/1` is the **known-macro** twin: the same normalization for the node core
-  hands a router's `c:Mutare.MacroRouting.macro_routing/1` or a host's
-  `c:Mutare.Mutator.MacroHost.host/2` callback, so those recognise their macro across the
-  bare/qualified/aliased forms `Resolve`
-  accepts instead of pattern-matching the raw head.
-
-  `macro_treatment/1` reads *how a node's macro is registered* — the resolved per-argument routing
-  the merged registry (built-ins + every mutator's/extension's `macro_routes/0` + the declarative `:macro_routes`
-  option) assigned it. A hosting mutator walking a `:hosted` fragment uses it to ask whether a
-  **nested** macro routes a given argument `:skip` (leave it opaque) or otherwise specially, rather
-  than re-deriving the registry itself.
-
-  ## Example
+  `resolved_macro_call/1` provides the same normalization for macro-routing and hosting callbacks.
+  `macro_treatment/1` returns the registered argument routing for a macro node.
 
       defmodule MyApp.Mutators.Upcase do
         @behaviour Mutare.Mutator
@@ -40,7 +20,6 @@ defmodule Mutare.Transform.Calls do
           end
         end
       end
-
   """
 
   # The single reader every call-matching mutator family uses to recognise a stdlib call

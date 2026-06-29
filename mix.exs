@@ -28,6 +28,7 @@ defmodule Mutare.MixProject do
     Mutare.Transform.ImportWitness
     Mutare.Transform.HostedEmit
     Mutare.Transform.GuardBuild
+    Mutare.Transform.Tag
     Mutare.Transform.ClauseAST
     Mutare.Transform.BindingEscapeEmit
     Mutare.Transform.Config

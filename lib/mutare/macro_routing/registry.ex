@@ -1,56 +1,13 @@
 defmodule Mutare.MacroRouting.Registry do
   @moduledoc """
-  The catalog of **known macros** — macros whose arguments the transform routes by
-  a declared treatment instead of the default all-runtime descent.
+  The merged catalog of known macro-argument routes.
 
-  The counterpart to `Mutare.Mutators`, but for *argument routing* rather than node
-  mutation. A `Mutare.Macro.Spec` says, per argument, whether it is an
-  `:expression` (mutate), a `:pattern` (a match context — descend but don't mutate
-  the pattern), `:skip` (leave raw — an opaque DSL body), or `:hosted` (leave raw for
-  core, but deliver mutations through the registering mutator's selector host — the deep
-  `Ecto.from`/`where` case; see `Mutare.Macro.Spec`). The per-argument treatment may also
-  be a `:routing` classifier deferred to its contributor's
-  `c:Mutare.MacroRouting.macro_routing/1`, for a treatment that depends on the call *shape*.
-  Specs come from **four** sources, merged
-  in this order so a **later** entry wins a key:
+  Routes come from built-ins, enabled mutators, enabled extensions, and the declarative
+  `:macro_routes` option, in that order; later entries override earlier entries. Use
+  `:macro_routes` to describe an application macro directly, or implement `Mutare.MacroRouting`
+  when shipping routes in a mutator or extension.
 
-    * **built-ins** (`builtin/0`) — `Kernel.match?/2` and `Kernel.destructure/2`,
-      both routing argument 0 as a pattern. Always on.
-    * `c:Mutare.MacroRouting.macro_routes/0` on enabled mutators (`from_mutators/1`) — static,
-      shape-aware, or hosted routes a custom mutator relies on.
-    * `c:Mutare.MacroRouting.macro_routes/0` on enabled extensions (`from_extensions/1`) — static
-      or shape-aware non-mutating library vocabulary. Folded after mutators, so an extension wins
-      a tie over a mutator. Extensions cannot use `:hosted` because they produce no mutations.
-    * the declarative **`:macro_routes`** option (`.mutare.exs` / `Mutare.run/2`) — a list
-      of `{module, name, arity, treatment}` / `{module, name, treatment}` entries,
-      resolved by `resolve/1`. Folded **last**, so an explicit config entry is the
-      final authority for a key (winning over a mutator's *or* an extension's `macro_routes/0`).
-
-  Resolution of declarative entries is **purely syntactic** (no reflection on the
-  module), so a `{Ecto.Query, :from, :any, :skip}` entry resolves even when `Ecto`
-  is not a dependency of the Mutare process.
-
-  ## Wildcards (`:*`)
-
-  Beyond a specific `{module, name, arity}`/`{module, name}` entry, the glob atom
-  `:*` (`Mutare.Macro.Spec.wildcard/0`) wildcards a slot:
-
-    * `{module, :*, treatment}` — a **whole module**: route *every* macro in `module`
-      (e.g. `{Ecto.Query, :*, :skip}` to leave a whole query DSL raw). Override a
-      single macro with a more specific entry on a separate line — `{Ecto.Query, :from,
-      2, :hosted}` wins for `from/2` while the rest stay `:skip`.
-    * `{:*, name, treatment}` — a **name-only escape hatch**: route a macro of that name
-      no matter which module exports it. This is the fallback for when module resolution
-      can't see the macro's module (a `use`-injected import, an alias Mutare can't follow);
-      it is deliberately *not* the standard way to register a macro, and is consulted last
-      (see `lookup/4`).
-
-  See `Mutare.Macro.Spec` for the precedence and the wildcard validation rules.
-
-  For the no-mutator case (just route a custom DSL's argument as a pattern, or
-  leave a macro body opaque) the declarative `:macro_routes` option is enough; a mutator or
-  extension that ships routing implements `Mutare.MacroRouting` instead.
-  See `Mutare.Macro.Spec` for the per-argument treatments.
+  See `Mutare.Macro.Spec` for entry forms, treatments, and wildcard precedence.
   """
 
   alias Mutare.Macro.Spec

@@ -1,31 +1,12 @@
 defmodule Mutare.Mutator.Spec do
   @moduledoc """
-  A resolved mutator slot: the module to run, the family name to record, and the
-  per-instance `opts` threaded to its callbacks.
+  A resolved mutator module, report name, and per-instance options.
 
-  Every mutator runs as a `Spec`, configured or not — `Mutare.Mutators.resolve/1`
-  builds one per entry in a `:mutators` list. A bare built-in (`:arithmetic`) or a
-  bare custom module is a `Spec` with empty `opts` named by its `name/0`. A
-  `{module, opts}` entry carries `opts`, delivered to `c:Mutare.Mutator.mutate/2`
-  via the context map's `:opts` key. (A mutator that wants its options must
-  therefore implement `mutate/2`; `mutate/1` has no context to carry them.)
+  A bare module uses its `name/0` and receives empty options. A `{module, opts}` entry passes
+  `opts` to context-taking callbacks; the reserved `:as` option changes the report and
+  `# mutare:ignore` name and is removed before the mutator receives the remaining options.
 
-  ## Naming / identity
-
-  `name` defaults to `module.name()`. The reserved `:as` key in a keyword `opts`
-  overrides it, so the **same module can run twice under distinct names** — which
-  matters because the recorded name is what mutant reports show and what the
-  `# mutare:ignore[...]` filter matches on, so two configurations must be
-  distinguishable. `:as` is consumed here and never reaches the mutator.
-
-  ## `behaviours` — the enclosing module's behaviour set
-
-  `behaviours` is **not** user config: it is the `MapSet` of behaviour modules the
-  enclosing module implements (`@behaviour Foo` directly, or injected by a `use`),
-  populated per module by the transform. It is delivered to the context-taking
-  callbacks (`c:Mutare.Mutator.mutate/2`, `c:Mutare.Mutator.Structural.return_replacements/2`,
-  …) under the context map's `:behaviours` key, so a behaviour-targeted custom
-  mutator can gate on it. See `Mutare.Mutator`.
+  The transform also attaches the enclosing module's `@behaviour` set before invoking a mutator.
   """
 
   @enforce_keys [:module, :name]

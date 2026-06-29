@@ -1,98 +1,36 @@
 defmodule Mutare.Macro.Spec do
   @moduledoc """
-  A resolved **known-macro** entry: a macro the transform should route the
-  arguments of by a declared treatment, instead of the default all-runtime
-  descent.
+  A validated macro-argument routing entry.
 
-  Mutare classifies each position's context *positionally* — `:runtime` (mutate
-  in place), `:pattern` (descend but don't mutate), and so on. Ordinary calls are
-  routed by the lexical resolution pre-pass, but a *macro* whose argument is a
-  pattern or an opaque DSL body looks like an ordinary call, so its args would be
-  mutated as runtime values (a literal in `match?`'s pattern arg is a pattern, not
-  a value — splicing a selector there is illegal and poisons the single build). A
-  `Spec` teaches the transform how to treat each argument.
+  Macro arguments may be runtime expressions, patterns, or compile-time DSL fragments. A spec
+  tells Mutare how to handle each argument instead of treating every argument as runtime code.
 
-  ## Identity
+  Entries are written as `{module, name, arity, treatment}`, or `{module, name, treatment}` to
+  match any arity. A treatment atom applies to every argument; a list assigns treatments by
+  position and is padded with `:expression`.
 
-  You write `module` the natural way — `Kernel`, `Ecto.Query`, `:binary` — and it
-  is normalised to the key the transform uses internally. `arity` is a
-  non-negative integer or `:any` (matches a call of any arity).
+  The treatments are:
+
+    * `:expression` — mutate ordinary runtime code;
+    * `:pattern` — descend as a match pattern without mutating the pattern itself;
+    * `:binding_pattern` — a pattern whose bindings escape into the enclosing scope; in a
+      value-discarded position it is also eligible for structural pattern mutations;
+    * `:skip` — leave an opaque argument untouched;
+    * `:hosted` — leave the argument raw for core and delegate its mutations to a
+      `Mutare.Mutator.MacroHost`.
 
   ## Wildcards
 
-  The glob atom `:*` (`wildcard/0`) means "match anything" in the **module**, **name**, or
-  **arity** slot (in the arity slot `:*` is a synonym for `:any`, the canonical arity
-  wildcard). Two compound forms fall out of it:
-
-    * a **whole-module** entry — `:*` in the *name* slot (`{Ecto.Query, :*, :skip}`) — routes
-      *every* macro in the module, at every arity. (It is therefore all-arities; pinning an
-      arity alongside a name wildcard is rejected.)
-    * a **name-only** escape hatch — `:*` in the *module* slot (`{:*, :sigil_X, :skip}`) — routes
-      a macro of that name *regardless of which module exports it*. This is the fallback for when
-      the module-resolution machinery can't see the macro's module (a `use`-injected import Mutare
-      can't expand, an alias it can't follow); it is **not** the standard way to register a macro.
-
-  `:*` is a *practically* collision-free sentinel — not a strictly impossible name. `*` *can*
-  name a macro, function, or module: it is the multiplication operator `Kernel.*/2`, `defmodule :*`
-  compiles, and a metaprogrammed `def unquote(:*)` works. But nobody registers the `*` operator as
-  a known macro (operator handling is out of scope here), so in practice `:*` never collides —
-  unlike `:any`, which is an ordinary, idiomatic identifier. Wildcarding *both* module and name
-  (`{:*, :*, …}`) is rejected — that would route every macro everywhere.
-
-  Lookup is **most-specific-wins** (see `Mutare.MacroRouting.Registry.lookup/4`), so a specific
-  `{Module, name, arity}` entry overrides a whole-module one, which overrides a name-only one;
-  the name-only hatch is the last resort and never shadows a module-matched treatment (including
-  the built-in `Kernel.match?`/`destructure`).
-
-  ## Argument treatments
-
-  `args` is either a single treatment atom (applied uniformly to every argument),
-  a per-position list (padded with `:expression`), or the **classifier sentinel**
-  `:routing` (see "Shape-aware routing" below). The treatments:
-
-    * `:expression` (default) — an ordinary value: mutate it normally.
-    * `:pattern` — a match context (`match?`'s first argument): descend so nested
-      runtime expressions are still reached, but never mutate the pattern itself.
-      Its bindings are local to the macro's expansion.
-    * `:binding_pattern` — a `:pattern` whose bindings **escape into the enclosing
-      scope** (`destructure([x, y], v)` binds `x`/`y` for the rest of the block).
-      Routed like `:pattern`, but **additionally** earns structural swap/wildcard
-      mutants when the call sits in a value-discarded position. The registrant
-      vouches that the macro binds every variable named in the pattern and accepts
-      pattern-legal swap/wildcard rewrites (`destructure` does).
-    * `:skip` — leave the argument **raw**: no descent, no mutation. The opaque DSL
-      case (`Ecto.Query.from`'s body). The whole macro node is still offered to
-      every mutator, so a registering library's own mutator can still fire on it.
-    * `:hosted` — like `:skip`, raw for core, but its mutations are delivered
-      through the hosting mutator's `c:Mutare.Mutator.MacroHost.host/2` callback. The deep-DSL
-      case (mutating *inside* `Ecto`'s `from`/`where`, where the fragment has SQL
-      semantics, not Elixir's). Only valid when the spec carries a `host`.
+  `:*` in the name position matches every macro in a module. In the module position it matches a
+  macro name regardless of module, as a fallback when module resolution is unavailable. Specific
+  entries take precedence over wildcards; a whole-module entry takes precedence over a name-only
+  entry. Wildcarding both module and name is invalid.
 
   ## Shape-aware routing (the `:routing` classifier)
 
-  A static per-position list can't express a treatment that depends on the *call shape*:
-  `where(q, category: "Foo")` is plain data (mutate the value, `:expression`) while
-  `where(q, [u], u.x == u.y)` is a `:hosted` DSL fragment. The sentinel `args: :routing`
-  defers the per-position routing to the contributing module's
-  `c:Mutare.MacroRouting.macro_routing/1`. A classified `:hosted` position additionally needs a
-  selector host.
-
-  The classifier may also return, for a **keyword-list argument**, the tuple
-  `{:keyword, value_treatments}` — finer than the per-argument treatments here: core routes each
-  pair's *value* by its own treatment and leaves the *keys* raw (a DSL keyword key is a field
-  name, not a value), nesting for a keyword list of keyword lists. This is classifier-only — a
-  static `args` entry cannot carry it. See `c:Mutare.MacroRouting.macro_routing/1`.
-
-  ## Router and host
-
-  `router` is the module that answers a `:routing` classifier through
-  `c:Mutare.MacroRouting.macro_routing/1`. `host` is the enabled mutator that delivers a
-  `:hosted` argument through `c:Mutare.Mutator.MacroHost.host/2`. They are stamped by the registry,
-  not written on route entries. Keeping the roles separate allows a non-mutating extension to
-  classify call shapes without pretending to be a selector host.
-
-  Declarative `:macro_routes` entries have neither callback provider, so they must be static and
-  cannot use `:routing` or `:hosted`.
+  A module implementing `Mutare.MacroRouting` may register `:routing` and classify each call with
+  `c:Mutare.MacroRouting.macro_routing/1`. Declarative `:macro_routes` configuration is static and
+  therefore cannot use `:routing` or `:hosted`.
   """
 
   @typedoc """
