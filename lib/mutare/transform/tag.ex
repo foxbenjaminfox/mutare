@@ -210,27 +210,30 @@ defmodule Mutare.Transform.Tag do
   # offer the top node with any *empty-collection* mutation dropped — `x in <empty>` ≡
   # `false`, the mutant Conditional already produces on the `in`. The drop is per mutation,
   # so a `~w(a b)` / `~c"ab"` keeps its non-empty sentinel and loses only its empty sibling;
-  # `List`'s sole `[]` collapse is removed outright. (A map can't appear in a guard `in`, so
-  # only lists and word/charlist sigils are reachable here.) Any non-collection RHS yields no
-  # empty-collection mutation, so it is offered unchanged. This suppression is guard-only:
+  # `List`'s sole `[]` collapse is removed outright. A map-valued custom mutation is also
+  # rejected: although maps are valid membership RHS values in a body, Elixir forbids them
+  # on the RHS of a guard `in`. This suppression is guard-only:
   # in a body, replacing the whole membership expression with `false` skips evaluation of
   # the left operand, while emptying only the RHS does not.
   # mutare:ignore[guard_drop] equivalent — Sourceror wraps every collection literal as a 3-tuple with list args, so this guard never fails for valid input.
   defp tag_in_rhs({form, meta, args}, acc, mutators) when is_list(args) do
     {args, acc} = Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))
-    offer_nonempty_collection({form, meta, args}, acc, mutators)
+    offer_legal_in_rhs({form, meta, args}, acc, mutators)
   end
 
   # mutare:ignore[clause_drop] equivalent — a variable can't be a guard `in`-RHS, so this fallback is unreachable for valid input.
   defp tag_in_rhs(other, acc, mutators), do: tag_walk(other, acc, mutators)
 
-  # `offer_target/3` minus the empty-collection mutations (see `tag_in_rhs/3`).
-  defp offer_nonempty_collection(node, acc, mutators) do
-    muts = Enum.reject(Dispatch.mutations(node, mutators), &empty_collection_mutation?/1)
+  # `offer_target/3` minus redundant empty-collection mutations and guard-illegal map
+  # replacements (see `tag_in_rhs/3`).
+  defp offer_legal_in_rhs(node, acc, mutators) do
+    muts = Enum.reject(Dispatch.mutations(node, mutators), &invalid_in_rhs_mutation?/1)
     tag_node(node, muts, acc)
   end
 
-  defp empty_collection_mutation?({_spec, mutated, _note, _variant}),
+  defp invalid_in_rhs_mutation?({_spec, {:%{}, _meta, _pairs}, _note, _variant}), do: true
+
+  defp invalid_in_rhs_mutation?({_spec, mutated, _note, _variant}),
     do: AST.empty_collection_literal?(mutated)
 
   # `offer_target/3` minus the Conditional mutant forcing the node to `bool` — the redundant

@@ -16,7 +16,8 @@ defmodule Mutare.Transform.TagTest do
       shorthand is a label, not a value), while an arrow key is offered,
     * **non-scalar map keys** descending (so their nested literals mutate), and
     * **tag uniqueness** across an `in`-RHS collection plus its `in` node, so a
-      sentinel mutant rewrites only the collection, not the whole guard.
+      sentinel mutant rewrites only the collection, not the whole guard, and
+    * **guard-RHS legality** when a custom mutator replaces a list with a map.
 
   Everything goes through `Mutare.transform_string` (the project convention): a
   corruption in the tag walk shows up in the resulting `sites` / rendered `meta`,
@@ -75,6 +76,19 @@ defmodule Mutare.Transform.TagTest do
   use ExUnit.Case, async: true
 
   alias Mutare.Mutators
+
+  defmodule ListToMapMutator do
+    @behaviour Mutare.Mutator
+
+    @impl Mutare.Mutator
+    def name, do: :list_to_map
+
+    @impl Mutare.Mutator
+    def mutate({:__block__, _meta, [elements]}) when is_list(elements) and elements != [],
+      do: [{:%{}, [], []}]
+
+    def mutate(_node), do: :skip
+  end
 
   # One literal in any position the tag walks reach; lets the asserted sites be
   # exactly the literal sites, not perturbed by other families.
@@ -192,6 +206,28 @@ defmodule Mutare.Transform.TagTest do
       # The left element (`1`) is tagged before the right (`2`); swapping the
       # descent order would give `2` the lower ids.
       assert first_id(sites, "1") < first_id(sites, "2")
+    end
+  end
+
+  describe "guard membership RHS legality" do
+    test "drops a custom list-to-map mutation in a guard but retains it in a body" do
+      {guard_meta, guard_sites} =
+        transform(
+          """
+          def f(x) when x in [1, 2], do: :ok
+          def f(_), do: :no
+          """,
+          [ListToMapMutator]
+        )
+
+      refute Enum.any?(guard_sites, &(&1.mutator == :list_to_map))
+      assert [_ | _] = Mutare.Test.Compile.string(guard_meta)
+
+      {body_meta, body_sites} =
+        transform("def f(x), do: x in [1, 2]", [ListToMapMutator])
+
+      assert {:list_to_map, "[1, 2]", "%{}"} in triples(body_sites)
+      assert [_ | _] = Mutare.Test.Compile.string(body_meta)
     end
   end
 
