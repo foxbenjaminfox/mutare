@@ -2,25 +2,17 @@ defmodule Mutare.Mutator do
   @moduledoc """
   Behaviour for mutators — pure functions over AST nodes.
 
-  A mutator inspects a single AST node and returns either `:skip` (it does not
-  apply here) or a list of mutated nodes, one per mutant to generate at that
-  site. Mutators **never touch source text**; the transform locates the node,
-  records its range, and splices the mutation in (a clean one-line diff).
+  A mutator inspects a single AST node and returns either `:skip` (it does not apply here) or a list of mutated nodes, one per mutant to generate at that site.
 
-  This is the **core, node-level** contract — `name/0` plus a mutation producer (`mutate/1`,
-  the pipe-aware/configurable `mutate/2`, or one of the structural hooks). Two *capability*
-  behaviours sit alongside it for the mutators that need more than a node rewrite, each declared
-  in addition to `Mutare.Mutator`:
+  You must define `name/0` to identify the mutator in reports, and at least one of `mutate/1` or `mutate/2` to produce mutations. Optionally, you may implement `variants/0` and `variant/2` to classify your mutations into kinds, and `empty_collection?/1` to declare that one of your mutations is an empty enumerable literal.
 
-    * `Mutare.Mutator.Structural` — mutating a *position* no node identifies (a return tail, an
-      `if`/`cond` condition, a `def` head pattern).
-    * `Mutare.Mutator.MacroAware` — targeting a *macro* whose arguments must be routed specially
-      (a pattern, an opaque DSL body, a hosted fragment).
+  Implement also `Mutare.Mutator.Structural` if you seek to participate in the structural mutation work—identifying a nonstandard position to mutate. (Amoung the built in mutators that use `Mutare.Mutator.Structural` are, for example, `Mutare.Mutators.ReturnValue`, `Mutare.Mutators.IfCondition`, and `Mutare.Mutators.PatternSwap`.)
 
-  ## Writing one
+  Implement also `Mutare.Mutator.MacroAware` if you target a macro whose arguments must be routed specially (e.g. a pattern, an opaque DSL body, a hosted fragment).
 
-  Match the node shapes you care about and rebuild them with the change,
-  **reusing the original operand AST** so the mutation stays minimal:
+  ## Writing a mutator
+
+  Match the node shapes you care about and rebuild them with the change, ideally reusing the original operand AST to keep the mutation minimal:
 
       defmodule MyApp.Mutators.Boolean do
         @behaviour Mutare.Mutator
@@ -37,32 +29,23 @@ defmodule Mutare.Mutator do
   Two rules:
 
     * **Be compile-safe.** Every mutation lives in the *one* metamutant build, so
-      a single mutation that won't compile sinks the whole run. Swapping one
-      operator for another of the same kind always compiles; emitting an unbound
-      variable does not.
+      you had better not produce a mutation that doesn't compile. 
     * **You don't choose placement.** Whether a mutation is delivered in place
       (a body expression) or by lifting (inside a `when` guard) is decided by
       *where the node sits*, not by the mutator. The same operator swap is used
       both ways.
 
-  Build literal replacements with `Mutare.AST.literal/1` (it gets the Sourceror clean-meta
-  rule right — a hand-built `{:__block__, [], ["x"]}` renders as the charlist `~c"x"`); see
-  `Mutare.AST` for the sentinels and node predicates. To match aliased/imported calls,
-  resolve with `Mutare.Transform.Calls.resolved_call/1`.
+  Build literal replacements with `Mutare.AST.literal/1` see `Mutare.AST` for the sentinels and node predicates. To match aliased/imported calls, resolve with `Mutare.Transform.Calls.resolved_call/1`.
 
-  ## Registering one
+  ## Registering a mutator
 
-  List it under `:mutators` in `.mutare.exs` alongside (or instead of) the
-  built-in family atoms — the value may be a built-in family atom or any module
-  implementing this behaviour:
+  List it under `:mutators` in `.mutare.exs` alongside (or instead of) the built-in family atoms:
 
       [mutators: [:arithmetic, :relational, MyApp.Mutators.Boolean]]
 
-  ## Configuring one (`{module, opts}`)
+  ## Configuring a mutator (`{module, opts}`)
 
-  To parametrize a mutator, give it `{module, opts}` instead of a bare module.
-  `opts` reaches the mutator through the `context` of `mutate/2` as
-  `context.opts` — so a configurable mutator implements `mutate/2`:
+  To parametrize a mutator, register it with `{module, opts}` instead of a bare module. `opts` reaches the mutator through the `context` of `mutate/2` as `context.opts` — so a configurable mutator implements `mutate/2`:
 
       defmodule MyApp.Mutators.MagicNumber do
         @behaviour Mutare.Mutator
@@ -83,9 +66,7 @@ defmodule Mutare.Mutator do
       # .mutare.exs
       [mutators: [:arithmetic, {MyApp.Mutators.MagicNumber, swaps: %{200 => 500}}]]
 
-  The reserved `:as` key in `opts` overrides the recorded family name (so the same
-  module can run twice under distinct names); it is stripped before `opts` reaches
-  the mutator. See `Mutare.Mutator.Spec`.
+  The reserved `:as` key in `opts` overrides the recorded family name (so the same module can run twice under distinct names); it is stripped before `opts` reaches the mutator. See `Mutare.Mutator.Spec`.
 
   Besides mutator-defined opts (read via `context.opts`, above), the **transform**
   recognises one positional opt directly from the spec — `call_option_keys: false`,

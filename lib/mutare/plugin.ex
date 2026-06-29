@@ -1,80 +1,12 @@
 defmodule Mutare.Plugin do
   @moduledoc """
-  A **plugin** teaches Mutare a library's **compile-time vocabulary** — how to *resolve and
-  route* the constructs the built-in mutators encounter — and **never participates in the run,
-  verdict, or score**. That sentence is the whole charter; it is what decides, for years,
-  whether a proposed capability belongs here:
+  Behaviour for plugins to augment mutare's compile-time vocabulary.
 
-    * **In** — *vocabulary*, all at **mutant-generation** time: macro-argument routing
-      (`c:macros/0`), `use`-expansion overrides (`c:expand_use/3`), block-macro treatment,
-      opaque-literal declarations — anything that changes *how source is understood and which
-      mutants are generated*.
-    * **Out** — *judgment*: anything that reads a run or weighs a generated mutant — coverage /
-      test-selection, exonerating an equivalent survivor, adjusting the score, reporting. Those
-      shape the **verdict**, so they are not plugin concerns. (A *runtime* extension point may
-      host them one day; it would be a capability-named **peer** of this behaviour — like
-      `Mutare.Mutator` is — not a member of a `Plugin.*` family.)
+  A **plugin** extends the manner in which mutare understands source code. It teaches mutare how to resolve and route the constructs that mutators encounter, allowing the mutators to understand otherwise unrecognized code. Plugins are not mutators themselves; they do not generate mutations, but they influence how existing mutators operate.
 
-  The bright line is **vocabulary vs. judgment**, not literally compile-vs-runtime: a plugin acts
-  *at* mutant generation and never *after* it. Both sides change the mutant set (a `:skip` removes
-  mutants too), so "affects the score" is *not* the test — and "compile-time" alone wouldn't draw
-  the line either, since statically proving a mutant equivalent is compile-time yet *judges* a
-  generated mutant. The load-bearing clause is **never participates in the run, verdict, or score**.
+  A plugin acts at mutant generation and never after it. Both plugins and mutants may change the mutant set, but a plugin does not directly produce mutations. Rather, it helps mutators, including perhaps custom mutators, understand the code so as to be able to mutate it appopriately.
 
-  A plugin is **not** a `Mutare.Mutator`: it produces no mutations, is charged no slot, and never
-  appears in a report — it only makes the built-in mutators' work *land* (the calls resolve, the
-  right arguments are offered). A library that *also* ships custom mutators lists those separately
-  under `:mutators`. A plugin contributes through two optional callbacks (a module is a usable
-  plugin if loaded and exporting at least one): `c:macros/0` and `c:expand_use/3`. It is listed
-  under `:plugins` (in `.mutare.exs` or `Mutare.run/2`) as a bare module **or** a `{module, opts}`
-  pair — *typically* its own package (an installer like Igniter adds the one entry), but that
-  third-party packaging is **incidental**: the built-in `Kernel.match?` / `destructure` routings
-  are the same kind of vocabulary, just first-party.
-
-  ## Two kinds of callback, two combination rules
-
-  The callbacks split by *what they do*, and that split decides how multiple plugins
-  combine and whether a callback sees configuration:
-
-    * **Registration** — `c:macros/0`. Every enabled plugin's entries are **merged** into
-      one registry (a later entry wins a key; see `Mutare.Macros`). A registration is a
-      static declaration of *library facts* (which macros exist, how their arguments route),
-      so it is **opts-independent** — it takes no context. Mirrors a mutator's
-      `c:Mutare.Mutator.MacroAware.macros/0`.
-    * **Decision / override** — `c:expand_use/3`. The enabled plugins are consulted in
-      `:plugins` order and the **first** that does not `:decline` wins (`expand_use/4`). A
-      decision *is* behavior, so it is **opts-aware** and **context-carrying** — it receives
-      the plugin's per-instance `opts` and the caller `:module` in its `context` map (the
-      same way a mutator's `opts` reach `c:Mutare.Mutator.mutate/2`, never its `macros/0`).
-
-  In short: **registrations merge and ignore opts; decisions first-win and read opts.**
-
-  ## The motivating case: Gettext
-
-  `use Gettext, backend: MyApp.Gettext` injects `import Gettext.Macros`, bringing
-  `gettext/1`, `ngettext/3`, … into scope as **bare calls** whose msgid arguments
-  must be *compile-time literals*. Two problems compound:
-
-    * Gettext's `__using__` registers its backend by mutating the caller module, so
-      the in-process expansion in `Mutare.Transform.Uses` raises and harvests no
-      directives — the `import` never becomes visible, so the bare `gettext` calls
-      never resolve.
-    * Even with the import visible, splicing a mutation selector into a msgid would
-      poison the single build (the macro requires a literal there).
-
-  A Gettext plugin fixes both: `c:expand_use/3` returns the `import Gettext.Macros`
-  directive the failing expansion would have produced (so the calls resolve), and
-  `c:macros/0` routes each macro's literal positions `:skip` while leaving the
-  runtime positions (`ngettext`'s count, a bindings map) `:expression` — so those
-  *are* mutated. See `Mutare.Macro.Spec` for the per-argument treatments.
-
-  ## Per-instance options
-
-  A `{module, opts}` entry carries `opts` (a keyword list) to the plugin, delivered to
-  `c:expand_use/3` through its `t:context/0` map's `:opts` key — so a configurable plugin
-  reads its parameters there. `c:macros/0` does **not** receive `opts` (a registration is a
-  library fact, not behavior). Resolution is `Mutare.Plugin.Spec` (the plugin counterpart of
-  `Mutare.Mutator.Spec`); a bare module is a spec with empty `opts`.
+  A plugin must define at least one of two optional callbacks: `c:macros/0` and `c:expand_use/3`. It is listed under `:plugins` (in `.mutare.exs` or `Mutare.run/2`) as a bare module or a `{module, opts}` pair. If opts are provided they are passed to `c:expand_use/3` in the `t:context/0` map's `:opts` key.
   """
 
   alias Mutare.Plugin.{ContractError, Expansion, Spec}

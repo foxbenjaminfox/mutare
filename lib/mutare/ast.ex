@@ -1,22 +1,10 @@
 defmodule Mutare.AST do
   @moduledoc """
-  Small constructors and predicates over the Sourceror AST — the rules about *how* a node
-  must be built live here rather than being re-derived in every mutator.
+  Small constructors and predicates over the Sourceror AST — the rules about how to build a node.
 
-  Custom mutators (`Mutare.Mutator`) should use these instead of hand-rolling AST. In
-  particular `literal/1` encodes the **clean-meta rule**: Sourceror parses a literal as
-  `{:__block__, meta, [value]}` and renders it from a `:token`/`delimiter` cached in `meta`,
-  so a hand-built node gets this subtly wrong — reusing a parsed literal's meta re-renders the
-  *original* text even after you change the value (a silent equivalent no-op), and a bare
-  `{:__block__, [], ["x"]}` for a string renders as the *charlist* `~c"x"`. `literal/1` gets
-  both right. `literal_value/1` is the inverse — it reads a literal node back to its value.
-  The `sentinel_*` helpers give the same survivor marker the built-in families use, so a custom
-  mutant reads consistently in reports, and `absolute_call/3`/`absolute_alias/1` build calls and
-  module references that survive any `alias`/`import` in the target being mutated.
+  Custom mutators (`Mutare.Mutator`) should use these instead of hand-rolling AST. In particular `literal/1` encodes the **clean-meta rule**: Sourceror parses a literal as `{:__block__, meta, [value]}` and renders it from a `:token`/`delimiter` cached in `meta`, so a hand-built node gets this subtly wrong — reusing a parsed literal's meta re-renders the *original* text even after you change the value, and a bare `{:__block__, [], ["x"]}` for a string renders as the *charlist* `~c"x"`. `literal/1` gets both right. `literal_value/1` is the inverse — it reads a literal node back to its value. The `sentinel_*` helpers give the same survivor marker the built-in families use, so a custom mutant reads consistently in reports, and `absolute_call/3`/`absolute_alias/1` build calls and module references that survive any `alias`/`import` in the target being mutated.
 
-  `parse!/1` and `to_string/1` are the AST front door: a custom mutator and its tests
-  go through these rather than naming `Sourceror` directly, so the dependency on a
-  particular AST library (and its version) stays inside Mutare.
+  `parse!/1` and `to_string/1` are for custom mutators to use so as to not need to depend on `Sourceror` directly.
   """
 
   # The two ends of the round-trip route through Mutare, so callers never need a
