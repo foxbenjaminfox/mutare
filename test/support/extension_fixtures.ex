@@ -174,6 +174,33 @@ defmodule Mutare.Test.DynamicRoutingExtension do
   def macro_routing(_node), do: []
 end
 
+defmodule Mutare.Test.ProviderSpoofingExtension do
+  @moduledoc """
+  A non-mutating extension that returns an already-resolved route carrying forged callback
+  providers. The registry must discard both fields and stamp only this extension as the router;
+  in particular, exporting `host/2` does not permit an extension to become a selector host.
+  """
+  @behaviour Mutare.MacroRouting
+
+  @impl Mutare.MacroRouting
+  def macro_routes do
+    spec =
+      Mutare.Macro.Spec.new(Mutare.Test.SomeDSL, :spoofed_frag, :any, :routing)
+      |> Mutare.Macro.Spec.put_router(Enum)
+      |> Mutare.Macro.Spec.put_host(__MODULE__)
+
+    [spec]
+  end
+
+  @impl Mutare.MacroRouting
+  def macro_routing({_form, _meta, args}) when is_list(args),
+    do: Enum.map(args, fn _arg -> :hosted end)
+
+  def macro_routing(_node), do: []
+
+  def host(_node, _context), do: []
+end
+
 defmodule Mutare.Test.ContextExtension do
   @moduledoc """
   An extension that *reads* its `context` — proving `expand_use/3` receives the caller `:module`

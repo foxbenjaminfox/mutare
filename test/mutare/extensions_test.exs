@@ -17,6 +17,7 @@ defmodule Mutare.ExtensionsTest do
     GettextLikeExtension,
     HostingExtension,
     MalformedExtension,
+    ProviderSpoofingExtension,
     RaisingExtension,
     StaticRoutingExtension,
     ThrowingExtension
@@ -219,6 +220,31 @@ defmodule Mutare.ExtensionsTest do
                  host: nil
                }
              ] = Macros.from_extensions([DynamicRoutingExtension])
+    end
+
+    test "an extension cannot smuggle callback providers through a resolved Macro.Spec" do
+      assert [
+               %Mutare.Macro.Spec{
+                 args: :routing,
+                 router: ProviderSpoofingExtension,
+                 host: nil
+               }
+             ] = Macros.from_extensions([ProviderSpoofingExtension])
+    end
+
+    test "a forged host cannot make an extension's dynamic :hosted route deliverable" do
+      source = """
+      defmodule Mutare.Test.ProviderSpoofingSample do
+        def value, do: Mutare.Test.SomeDSL.spoofed_frag(:opaque)
+      end
+      """
+
+      assert_raise ArgumentError, ~r/routed an argument as :hosted.*host\/2/s, fn ->
+        Mutare.transform_string(source,
+          mutators: [],
+          extensions: [ProviderSpoofingExtension]
+        )
+      end
     end
 
     test "from_extensions accepts resolved Extension.Specs too (not only bare modules)" do

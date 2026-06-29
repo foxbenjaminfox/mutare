@@ -103,6 +103,8 @@ defmodule Mutare.MacroRouting.Registry do
   defp extension_module(module) when is_atom(module), do: module
 
   defp prepare_mutator_route!({spec, module}) do
+    spec = clear_providers(spec)
+
     cond do
       Spec.classifier?(spec) ->
         require_callback!(spec, module, :macro_routing, 1)
@@ -121,6 +123,8 @@ defmodule Mutare.MacroRouting.Registry do
   end
 
   defp prepare_extension_route!({spec, module}) do
+    spec = clear_providers(spec)
+
     cond do
       Spec.host_required?(spec) ->
         raise ArgumentError,
@@ -141,6 +145,12 @@ defmodule Mutare.MacroRouting.Registry do
   defp maybe_put_host(spec, module) do
     if exports?(module, :host, 2), do: Spec.put_host(spec, module), else: spec
   end
+
+  # Route entries describe routing only. Callback providers are provenance stamped by this
+  # registry from the contributing module; accepting provider fields from an already-resolved
+  # `%Spec{}` would let an extension smuggle in a selector host (or a mutator name a different
+  # provider) through the otherwise-idempotent `resolve/1` path.
+  defp clear_providers(%Spec{} = spec), do: %{spec | router: nil, host: nil}
 
   defp require_callback!(spec, module, fun, arity) do
     unless exports?(module, fun, arity) do
