@@ -8,7 +8,6 @@ defmodule Mutare.Mutator.Dispatch do
   # `Mutare.Mutators` registry) call into here. Split out of `Mutare.Mutator` so the behaviour
   # module stays a focused author-facing contract.
 
-  alias Mutare.AST
   alias Mutare.Mutator.{Mutation, Spec}
 
   @doc """
@@ -253,8 +252,8 @@ defmodule Mutare.Mutator.Dispatch do
 
   # The mutation-producing callbacks: a module is a mutator if it exports `name/0` *and* at least
   # one of these. `mutate/1` is no longer required — a structural/pipe-only family produces its
-  # mutations through `mutate/2` or a structural hook instead. (`macros/0`/`empty_collection?/1`
-  # are routing/classification, not producers, so they don't qualify a module on their own.)
+  # mutations through `mutate/2` or a structural hook instead. (`macros/0` is routing, not a
+  # producer, so it doesn't qualify a module on its own.)
   #
   # `mutate/1,2` are base-behaviour, `host/2` is `MacroAware`; the structural hooks
   # (`return_replacements`, `condition_replacements`, `pattern_mutations`) are derived from
@@ -285,23 +284,6 @@ defmodule Mutare.Mutator.Dispatch do
   # Total over any term: a non-atom (e.g. a string in `.mutare.exs`) is simply
   # not a mutator, so resolution reports it rather than crashing on the guard.
   def implemented_by?(_term), do: false
-
-  @doc """
-  Whether the mutation `{spec, mutated, _note}` produces an **empty enumerable literal** — a
-  value for which `x in v` is constantly `false`, so it is redundant on the right of `in`
-  (the in-RHS suppression; see `Mutare.Transform.Analyze` / `Mutare.Transform.Tag`).
-
-  Two sources, OR-ed: the shape-based `Mutare.AST.empty_collection_literal?/1` (the
-  standard `[]`/`%{}`/`~w()`/`~c""`, recognised for any mutator), and the producing
-  mutator's optional `c:Mutare.Mutator.empty_collection?/1` (its own non-standard shape — a
-  custom sigil, `MapSet.new([])`, …). Dispatching on the *producing* spec's module is correct
-  because only the mutator that emitted the value knows the shape of its own output.
-  """
-  @spec empty_collection?(Spec.t(), Macro.t()) :: boolean()
-  def empty_collection?(%Spec{module: module}, mutated) do
-    AST.empty_collection_literal?(mutated) or
-      (function_exported?(module, :empty_collection?, 1) and module.empty_collection?(mutated))
-  end
 
   @doc """
   The **variant label(s)** recorded for one mutation of `spec`'s module — a deduplicated, downcased

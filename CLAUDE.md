@@ -170,7 +170,6 @@ contract docs on the behaviour. The capability callbacks live on `Mutator.Struct
 | Call-matching (stdlib/remote) | resolve via `Transform.Calls.resolved_call/1` | `resolved_call_mutator.ex` |
 | Macro-aware (route an arg / skip a DSL) | `macros/0` | `macro_mutator.ex` |
 | Selector-hosting (mutate inside a DSL fragment) | `macros/0` (`:hosted`/`:routing`) + `host/2` | `host_mutator.ex` |
-| Collection-emptying | `empty_collection?/1` | `collection_mutator.ex` |
 | Per-kind `# mutare:ignore` qualifier | `variants/0` (opt-in) + tag via `Mutation.tagged/2` *or* `variant/2` | (value & operator families) |
 
 A **plugin** (`Mutare.Plugin`) is the *non-mutating* extension: it teaches Mutare a library's

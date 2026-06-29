@@ -4814,13 +4814,11 @@ running. This is *sibling equivalence* — distinct from the *containment* dedup
 `Transform.Overlap` (a leaf swap covered by a call rewrite, derived from footprints).
 We collapse it exactly as the `not in` precedent always did: at analysis time, descend
 the operands but do **not** offer the inner/redundant node — leaving no id/site/selector,
-so ids stay contiguous (the same property as `Overlap`/`gate_candidates`). (Cases 1 and 4
-below instead *offer* the node and drop *specific* mutations — a per-mutation filter, the
-same shape as the `in`-RHS empty-collection drop; cases 2–3 and the `not in` precedent don't
-offer the inner node at all.) Four new
-cases, each mirrored across the two parallel descents — `Transform.Analyze` for bodies,
-`Transform.Tag` for `when` guards (`!`/`&&`/`||` are guard-illegal, so the guard side
-handles only `not` and `and`/`or`):
+so ids stay contiguous (the same property as `Overlap`/`gate_candidates`). Four new cases
+span the two descents — `Transform.Analyze` for bodies and `Transform.Tag` for `when`
+guards (`!`/`&&`/`||` are guard-illegal, so the guard side handles only `not` and
+`and`/`or`). Cases 1, 2, and 4 offer a node and drop one specific mutation; case 3 and
+the `not in` precedent do not offer the redundant inner node:
 
 1. **`not`/`!` over an equality operator** (`==`/`!=`/`===`/`!==`) — the `in` rule
    generalized. Each equality op is its own *exact polarity complement*, so under the
@@ -4843,38 +4841,24 @@ handles only `not` and `and`/`or`):
    filter is `drop_negation_redundant_candidates/2` in `Analyze`, `offer_negation_survivors/4`
    in `Tag`.
 
-2. **`x in <collection literal>`** — a mutation that *empties* the RHS collection makes
-   `x in <empty>` constantly `false`, which `Conditional` already produces on the `in`
-   node. This covers `List` (`→ []`), `MapLiteral` (`→ %{}`), `WordListLiteral` (`→ ~w()`)
-   and `CharlistLiteral` (`→ ~c""`) uniformly, via one recognizer
-   `AST.empty_collection_literal?/1`. The `in` clause routes its RHS through
-   `analyze_in_rhs`, which analyzes it *normally* (keys/values/elements still mutate) then
-   drops — **from the top node only** — any candidate whose result is an empty enumerable.
-   Two properties earn their keep:
-   - **per mutation, not per node** — a word/charlist sigil keeps its non-empty *sentinel*
-     (`~w(mutare)`/`~c"mutare"`, a genuine membership test) and loses only its empty
-     sibling; `List`/`MapLiteral` have a single empty mutation, so they vanish from the RHS.
-   - **top-node scoped** — a *nested* empty (`x in foo([a, b])` → `foo([])`, or
-     `x in [a, [1, 2]]` → `[a, []]`) is **not** constantly false, so it is left alone.
-   Non-list/map collections (tuple, bitstring) are excluded — they aren't enumerable, so
-   `x in {…}` raises rather than testing membership. The rule holds under `not(x in …)`
-   too (`not(x in <empty>)` ≡ `true` ≡ the outer Conditional), and in **guards** for the
-   collections legal there — lists and word/charlist sigils; a *map* RHS is illegal in a
-   guard `in`, so it can't occur — via the same recognizer in `Transform.Tag`.
+2. **A guard `x in <collection literal>`** — a mutation that *empties* the RHS
+   collection makes the guard fail, which is the same result as `Conditional` replacing
+   the whole `in` node with `false`. This covers the guard-legal standard shapes — `List`
+   (`→ []`), `WordListLiteral` (`→ ~w()`), and `CharlistLiteral` (`→ ~c""`) — through
+   `AST.empty_collection_literal?/1` in `Transform.Tag`. The drop is per mutation, so a
+   word/charlist sigil keeps its non-empty sentinel and loses only its empty sibling.
 
-   **Extensible.** A *custom* mutator that empties a non-standard collection — its own
-   sigil, or a builder like `MapSet.new([])` — declares the result empty through the
-   optional `Mutator.empty_collection?/1` callback, and earns the same in-RHS drop. The
-   drop site already knows the *producing* mutator (every mutation is tagged with its
-   `Mutator.Spec`, which carries the module), so dispatch needs **no registry or
-   plumbing** — unlike the `:macros` path it isn't a pre-pass that stamps the AST, just a
-   question asked at drop time. `Mutator.empty_collection?/2` ORs the shape-based
-   `AST.empty_collection_literal?/1` (standard literals, any mutator) with the producing
-   module's callback (its own shape) — so a custom mutator emitting a *standard* `[]`/`%{}`
-   is covered for free and only needs the callback for a non-standard shape. Trusting the
-   callback can only lose recall (drop a real mutant), never manufacture a false kill, so
-   it's a "trusted contract" extension like `mutate/1`'s compile-safety. Fixture:
-   `test/support/collection_mutator.ex`.
+   **Correction: body suppression was unsound.** The first implementation applied the
+   same rule in `Transform.Analyze` and exposed `Mutator.empty_collection?/1` so custom
+   builders such as `MapSet.new([])` could participate. But `effectful() in []` still
+   evaluates `effectful()`, whereas replacing the whole expression with `false` does not.
+   That is exactly the purity-dependent equivalence this section otherwise refuses to
+   assume. Bodies now keep every empty-RHS mutation (including standard lists, maps, and
+   sigils); only guards suppress standard empty literals. Guards admit no observable side
+   effects, and a guard error is a failed guard, so the equivalence is sound there. The
+   custom callback was removed rather than generalized: non-standard builder calls are not
+   guard-legal, and a general mutator-supplied equivalence hook would put parent-context
+   reasoning on the wrong side of the transform boundary.
 
 3. **Double negation `not not x` / `!!x`** — the **same** operator twice. Both Logical
    strips yield the identical single-negation, and Conditional on the inner duplicates the
@@ -4896,9 +4880,9 @@ handles only `not` and `and`/`or`):
    and R` has no `is_binary(a) → false`, so its node `→ false` is genuine and kept (and is
    *not* equivalent there: forcing the left false would still run `is_binary(a)`). Unlike
    cases 1–3 this *offers* the node and drops a single mutation (`drop_constant_candidate/2`
-   in `Analyze`, `offer_without_constant/4` in `Tag`) — the per-mutation shape of the
-   `in`-RHS empty-collection drop, because we keep the sibling constant and the swap. `&&`/
-   `||` are body-only; the guard twin handles `and`/`or`. It composes down a chain:
+   in `Analyze`, `offer_without_constant/4` in `Tag`) — the same per-mutation filtering
+   shape as the guard-only empty-collection drop. `&&`/`||` are body-only; the guard twin
+   handles `and`/`or`. It composes down a chain:
    `a > 0 and b > 0 and c > 0` parses `(… and …) and …` and each `and` (whose left is a
    boolean op — the inner `and` is one) drops its own `false`.
 
@@ -6247,8 +6231,9 @@ time `Runner.run_mutant/6` reads `result.outcome` — at that guard.
 mutation (`mutate/1`, `mutate/2`), structural positions
 (`return_replacements`/`condition_replacements`/`pattern_mutations`, each with a behaviour-aware `+1`
 arity), macro/DSL targeting (`macros/0`, `macro_routing/1`, `host/2`), and the in-RHS suppression
-classifier (`empty_collection?/1`). A reader opening the behaviour to write a one-line operator swap
-met all of it. At 0.1.0, before there are external mutators to break, was the moment to fix the shape.
+classifier (`empty_collection?/1`, subsequently removed with the unsound body suppression above).
+A reader opening the behaviour to write a one-line operator swap met all of it. At 0.1.0, before
+there are external mutators to break, was the moment to fix the shape.
 
 **Two ways to fix it, and why one was wrong.** The choice was *split the behaviour* vs *add an
 explicit `capabilities/0` declaration*. The declaration is the wrong tool for Elixir:
@@ -6259,16 +6244,16 @@ is the house style: it's exactly the capability-named-peer move `Mutare.Plugin` 
 vocabulary-vs-judgment, and the principle is recorded above ("a new capability gets a capability-named
 peer, not a declaration mechanism").
 
-**The split.** `Mutare.Mutator` keeps `name/0` + the node-level producers (`mutate/1`, `mutate/2`,
-`empty_collection?/1` — the last classifies the mutator's *own* node output, so it pairs with node
-mutation). Two companion behaviours, declared *alongside* `Mutare.Mutator`:
+**The split.** `Mutare.Mutator` keeps `name/0` + the node-level producers (`mutate/1`, `mutate/2`).
+At the time it also kept `empty_collection?/1` because that classified a mutator's own node output;
+the guard-only correction above later removed it entirely. Two companion behaviours, declared
+*alongside* `Mutare.Mutator`:
 `Mutare.Mutator.Structural` (the position-routed hooks + their structural `context` type) and
 `Mutare.Mutator.MacroAware` (the three DSL-targeting callbacks + the `routing_treatment` /
-`keyword_value_treatment` types). The fault line was visible in the data: of the eight non-`mutate`
-callbacks, **four** (`macros/0`/`macro_routing/1`/`host/2`/`empty_collection?/1`) have *zero* built-in
-implementers — they exist purely for external library mutators — and `macros/0` is already duplicated
-on `Mutare.Plugin`. So "teach Mutare a macro's shape" is genuinely a different capability from "produce
-a mutation."
+`keyword_value_treatment` types). The fault line was visible in the data: the macro-aware callbacks
+have *zero* built-in implementers — they exist purely for external library mutators — and `macros/0`
+is already duplicated on `Mutare.Plugin`. So "teach Mutare a macro's shape" is genuinely a different
+capability from "produce a mutation."
 
 **What it is and isn't.** It is **documentation/ergonomics**, not a structural change: dispatch is
 byte-for-byte unchanged. `Mutare.Mutator.Dispatch` discovers every hook by `function_exported?`, never

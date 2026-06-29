@@ -28,11 +28,11 @@ defmodule Mutare.ASTTest do
   end
 
   describe "node predicates" do
-    test "empty_collection_literal?/1 recognises empty list/map/word/charlist literals" do
+    test "empty_collection_literal?/1 recognises guard-legal empty collection literals" do
       assert AST.empty_collection_literal?(AST.literal([]))
-      assert AST.empty_collection_literal?({:%{}, [], []})
       assert AST.empty_collection_literal?(Sourceror.parse_string!("~w()"))
       assert AST.empty_collection_literal?(Sourceror.parse_string!(~S|~c""|))
+      refute AST.empty_collection_literal?({:%{}, [], []})
       refute AST.empty_collection_literal?(Sourceror.parse_string!("~w(a b)"))
       refute AST.empty_collection_literal?(Sourceror.parse_string!("{}"))
     end

@@ -115,7 +115,9 @@ defmodule Mutare.Transform.Tag do
   # (`in` → `not in`) re-negates to `x in y` ≡ Logical's strip of the outer; Conditional
   # on the inner (`not true`/`not false`) ≡ the outer's `true`/`false`. So the inner `in`
   # is not offered, and its RHS list is List-suppressed too (`x in []` ≡ `false`, the
-  # outer's Conditional — see `tag_in_rhs/3`). The outer `not` is offered (strip/true/false).
+  # outer's Conditional — sound here because guards have no observable side effects and
+  # guard errors fail the guard; see `tag_in_rhs/3`). The outer `not` is offered
+  # (strip/true/false).
   defp tag_walk({:not, meta, [{:in, in_meta, [left, right]}]}, acc, mutators) do
     {left, acc} = tag_walk(left, acc, mutators)
     {right, acc} = tag_in_rhs(right, acc, mutators)
@@ -210,7 +212,9 @@ defmodule Mutare.Transform.Tag do
   # so a `~w(a b)` / `~c"ab"` keeps its non-empty sentinel and loses only its empty sibling;
   # `List`'s sole `[]` collapse is removed outright. (A map can't appear in a guard `in`, so
   # only lists and word/charlist sigils are reachable here.) Any non-collection RHS yields no
-  # empty-collection mutation, so it is offered unchanged.
+  # empty-collection mutation, so it is offered unchanged. This suppression is guard-only:
+  # in a body, replacing the whole membership expression with `false` skips evaluation of
+  # the left operand, while emptying only the RHS does not.
   # mutare:ignore[guard_drop] equivalent — Sourceror wraps every collection literal as a 3-tuple with list args, so this guard never fails for valid input.
   defp tag_in_rhs({form, meta, args}, acc, mutators) when is_list(args) do
     {args, acc} = Enum.map_reduce(args, acc, &tag_walk(&1, &2, mutators))
@@ -226,8 +230,8 @@ defmodule Mutare.Transform.Tag do
     tag_node(node, muts, acc)
   end
 
-  defp empty_collection_mutation?({spec, mutated, _note, _variant}),
-    do: Dispatch.empty_collection?(spec, mutated)
+  defp empty_collection_mutation?({_spec, mutated, _note, _variant}),
+    do: AST.empty_collection_literal?(mutated)
 
   # `offer_target/3` minus the Conditional mutant forcing the node to `bool` — the redundant
   # short-circuit constant (see the `and`/`or` clause and `Mutare.Transform.Analyze`).

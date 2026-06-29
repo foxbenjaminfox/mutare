@@ -257,26 +257,19 @@ defmodule Mutare.AST do
   def nil_literal?(_), do: false
 
   @doc """
-  Whether `node` is an *always-empty enumerable literal* — the result of a
-  collection-emptying mutation: `List` → `[]`, `MapLiteral` → `%{}`,
-  `WordListLiteral` → `~w()`, `CharlistLiteral` → `~c""`.
+  Whether `node` is an *always-empty enumerable literal* admitted on the right of
+  `in` in a guard: `List` → `[]`, `WordListLiteral` → `~w()`, or
+  `CharlistLiteral` → `~c""`.
 
-  On the right side of `in`, such a value makes `x in <empty>` constantly `false`,
-  which `Mutare.Mutators.Conditional` already produces on the `in` node — so
-  `Mutare.Transform` drops these mutations there as redundant siblings. A non-list/map
-  collection (tuple, bitstring) is deliberately *excluded*: it isn't enumerable, so
-  `x in {…}` raises rather than testing membership (emptying it changes nothing
-  observable about that).
-
-  This recognises the **standard** literal shapes, for any mutator. A custom mutator with
-  a *non-standard* empty collection (its own sigil, a `MapSet.new([])` builder) declares it
-  through the optional `c:Mutare.Mutator.empty_collection?/1` callback instead; the two are
-  OR-ed together at the drop site.
+  In a guard, `x in <empty>` is equivalent to the `false` mutant that
+  `Mutare.Mutators.Conditional` already produces on the `in` node: guards have no
+  observable side effects and a guard error is a failed guard. `Mutare.Transform.Tag`
+  therefore drops the empty-literal sibling there. Body expressions deliberately do not
+  use this predicate because evaluating `x` can be observable.
   """
   @spec empty_collection_literal?(Macro.t()) :: boolean()
   def empty_collection_literal?([]), do: true
   def empty_collection_literal?({:__block__, _meta, [[]]}), do: true
-  def empty_collection_literal?({:%{}, _meta, []}), do: true
 
   def empty_collection_literal?({sigil, _meta, [{:<<>>, _bmeta, [""]}, _modifiers]})
       when sigil in [:sigil_w, :sigil_W, :sigil_c, :sigil_C],

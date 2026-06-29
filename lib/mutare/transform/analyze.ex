@@ -526,13 +526,13 @@ defmodule Mutare.Transform.Analyze do
 
   # === redundancy suppression: equivalent sibling mutants ====================
   #
-  # Five shapes where one family's mutant is *guaranteed equivalent* to another's, so
+  # Four shapes where one family's mutant is *guaranteed equivalent* to another's, so
   # the redundant one is dropped. The shared move (clauses 1–4) is the same as `not in`
   # always did: descend operands (so their literals still mutate) but do **not** *offer*
-  # the inner/redundant node — only the outer. (Clause 5, the short-circuit connective,
-  # instead *offers* the node and drops a single one of its mutations — the per-mutation
-  # shape of the `in`-RHS empty-collection drop below.) Dropping a candidate here (rather
-  # than post-hoc) leaves no id/site/selector, exactly like the other positive suppressions.
+  # the inner/redundant node — only the outer. (Clause 4, the short-circuit connective,
+  # instead *offers* the node and drops a single one of its mutations.) Dropping a candidate
+  # here (rather than post-hoc) leaves no id/site/selector, exactly like the other positive
+  # suppressions.
   #
   # (1) **Double negation** `not not x` / `!!x` — the **same** operator twice. Logical
   # strips the outer *and* the inner to the identical single-negation (`not x` / `!x`),
@@ -549,11 +549,14 @@ defmodule Mutare.Transform.Analyze do
   # only Relational mutation (`in` → `not in`) re-negates to `x in y` ≡ Logical's strip
   # of the outer; Conditional on the inner (`not true`/`not false`) ≡ the outer's
   # `true`/`false`. So the inner `in` is not offered (only its operands descend), and its
-  # RHS is further List-suppressed — an empty list makes `x in []` ≡ `false`, again the
-  # outer's Conditional (see `analyze_in_rhs/2`). The outer `not`/`!` is offered normally.
+  # outer's Conditional. Its operands still mutate normally: an empty RHS mutant is not
+  # equivalent in a body because it evaluates the left operand while the outer constant
+  # skips it. The outer `not`/`!` is offered normally.
   defp analyze({neg, meta, [{:in, in_meta, [left, right]}]} = node, :runtime, mutators)
        when is_negation_op(neg) do
-    inner = {:in, in_meta, [analyze(left, :runtime, mutators), analyze_in_rhs(right, mutators)]}
+    inner =
+      {:in, in_meta, [analyze(left, :runtime, mutators), analyze(right, :runtime, mutators)]}
+
     Attach.offer({neg, meta, [inner]}, node, mutators)
   end
 
@@ -584,15 +587,7 @@ defmodule Mutare.Transform.Analyze do
     Attach.offer({neg, meta, [inner]}, node, mutators)
   end
 
-  # (4) **A bare `x in [list]`** — offer the `in` node normally (Conditional `true`/`false`,
-  # Relational → `not in`), but its RHS list literal is List-suppressed: collapsing it to
-  # `[]` makes `x in []` ≡ `false`, which Conditional already produces on the `in` node.
-  defp analyze({:in, meta, [left, right]} = node, :runtime, mutators) do
-    rebuilt = {:in, meta, [analyze(left, :runtime, mutators), analyze_in_rhs(right, mutators)]}
-    Attach.offer(rebuilt, node, mutators)
-  end
-
-  # (5) **A short-circuit connective whose left operand is itself a boolean op**
+  # (4) **A short-circuit connective whose left operand is itself a boolean op**
   # (`and`/`&&`/`or`/`||`). Conditional forces this connective node to `true`/`false`, but one
   # of those constants is identical to Conditional forcing the *left* operand: on `and`/`&&`,
   # `(L and R) → false` ≡ `L → false` (the false left short-circuits the whole node to false,
@@ -643,27 +638,6 @@ defmodule Mutare.Transform.Analyze do
   # descend without mutating so boundary forms (`\\`, `<<>>`) still fire on
   # children, but attach no candidate here.
   defp analyze(node, context, mutators), do: recurse(node, context, mutators)
-
-  # The RHS of `in`: analyze it as ordinary runtime (so its keys/values/elements still
-  # mutate), then drop from the **top node** any mutation whose result is an *empty
-  # enumerable literal* — `[]` (List), `%{}` (MapLiteral), `~w()` (WordListLiteral),
-  # `~c""` (CharlistLiteral). On the right of `in`, `x in <empty>` is constantly `false`,
-  # exactly the mutant Conditional already produces on the `in` node, so it is redundant.
-  # The drop is **per mutation**, not per node: a word/charlist sigil keeps its non-empty
-  # sentinel (`~w(mutare)`) — only its empty sibling goes. It is scoped to the top node, so
-  # an empty mutation on a *nested* literal (`x in foo([a, b])` → `foo([])`, which is *not*
-  # constantly false) is left alone. Any non-collection RHS (a variable, range, call) yields
-  # no empty-collection mutation, so nothing is dropped.
-  defp analyze_in_rhs(right, mutators) do
-    right |> analyze(:runtime, mutators) |> drop_empty_collection_candidates()
-  end
-
-  defp drop_empty_collection_candidates(node), do: reject_candidates(node, &empty_collection?/1)
-
-  defp empty_collection?(%Candidate.InPlace{mutator: spec, mutated: mutated}),
-    do: Dispatch.empty_collection?(spec, mutated)
-
-  defp empty_collection?(_candidate), do: false
 
   # Drop from the **top node** the Conditional candidate forcing it to `bool` — the redundant
   # short-circuit constant. Per mutation (the sibling constant and Logical's swap stay) and

@@ -4,7 +4,7 @@ defmodule Mutare.Mutator do
 
   A mutator inspects a single AST node and returns either `:skip` (it does not apply here) or a list of mutated nodes, one per mutant to generate at that site.
 
-  You must define `name/0` to identify the mutator in reports, and at least one of `mutate/1` or `mutate/2` to produce mutations. Optionally, you may implement `variants/0` and `variant/2` to classify your mutations into kinds, and `empty_collection?/1` to declare that one of your mutations is an empty enumerable literal.
+  You must define `name/0` to identify the mutator in reports, and at least one of `mutate/1` or `mutate/2` to produce mutations. Optionally, you may implement `variants/0` and `variant/2` to classify your mutations into kinds.
 
   Implement also `Mutare.Mutator.Structural` if you seek to participate in the structural mutation work—identifying a nonstandard position to mutate. (Amoung the built in mutators that use `Mutare.Mutator.Structural` are, for example, `Mutare.Mutators.ReturnValue`, `Mutare.Mutators.IfCondition`, and `Mutare.Mutators.PatternSwap`.)
 
@@ -87,29 +87,6 @@ defmodule Mutare.Mutator do
   integration) bundles its mutator and its macro routing in one module that declares both
   `Mutare.Mutator` and `Mutare.Mutator.MacroAware`. See `Mutare.Macros` for the declarative
   `:macros` option (the no-mutator case, e.g. routing a custom DSL's argument as a pattern).
-
-  ## Registering a collection literal (`empty_collection?/1`)
-
-  On the right of `in`, a mutant that empties a collection (`x in <empty>`) is
-  constantly `false` — exactly what `Mutare.Mutators.Conditional` already produces on
-  the `in` node — so the transform drops it as a redundant sibling. Core recognises the
-  standard empty literals (`[]`, `%{}`, `~w()`, `~c""`). A mutator that collapses a
-  *non-standard* collection — its own sigil (`~SET[]`), or a builder call
-  (`MapSet.new([])`) — declares that with the optional `c:empty_collection?/1` callback,
-  and earns the same suppression for its shape:
-
-      defmodule MyApp.Mutators.Set do
-        @behaviour Mutare.Mutator
-        def name, do: :set
-        def mutate({:sigil_SET, m, [{:<<>>, bm, [_]}, mods]}),
-          do: [{:sigil_SET, m, [{:<<>>, bm, [""]}, mods]}]   # collapse ~SET[…] → ~SET[]
-        def mutate(_), do: :skip
-        def empty_collection?({:sigil_SET, _, [{:<<>>, _, [""]}, _]}), do: true
-        def empty_collection?(_), do: false
-      end
-
-  The transform asks the mutator that *produced* the mutation, so the value is its own
-  output; discovered by `function_exported?(mod, :empty_collection?, 1)`.
 
   ## Structural mutators at routed positions (`Mutare.Mutator.Structural`)
 
@@ -330,29 +307,7 @@ defmodule Mutare.Mutator do
   @callback variant(original :: Macro.t(), mutated :: Macro.t()) ::
               String.t() | atom() | [String.t() | atom()] | nil
 
-  @doc """
-  Optional hook by which a mutator declares that one of *its own* mutation results is
-  an **empty enumerable literal** — a value `v` for which `x in v` is constantly
-  `false`.
-
-  On the right side of `in`, such a mutant is redundant: `Mutare.Mutators.Conditional`
-  already forces the whole `x in …` to `false` on the `in` node, so `Mutare.Transform`
-  drops it (see `Mutare.AST.empty_collection_literal?/1`). Core recognises the *standard*
-  empty literals itself — `[]`, `%{}`,
-  `~w()`, `~c""` — so a mutator whose collapse produces one of those needs nothing. This
-  callback is for a **non-standard** shape: a custom collection *sigil* (`~SET[]`), or a
-  call/struct that builds an empty enumerable (`MapSet.new([])`). The transform asks the
-  mutator that *produced* the mutation (its `mutated` node is the argument), so a library
-  bundles this with its mutator like `c:Mutare.Mutator.MacroAware.macros/0`; discovered by
-  `function_exported?(mod, :empty_collection?, 1)`.
-
-  Returning `true` for a value where `x in v` is *not* always false would drop a real
-  mutant (a recall loss, never a false kill) — so it must answer only for genuinely
-  empty enumerables. A mutator without this callback simply takes no part.
-  """
-  @callback empty_collection?(mutated :: Macro.t()) :: boolean()
-
-  @optional_callbacks mutate: 1, mutate: 2, empty_collection?: 1, variants: 0, variant: 2
+  @optional_callbacks mutate: 1, mutate: 2, variants: 0, variant: 2
 
   @typedoc """
   A call node's pipe context, as an atom: `:piped` (the node is a `|>` right-hand

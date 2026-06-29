@@ -3,15 +3,15 @@ defmodule Mutare.Transform.Suppression do
   # Equivalent-mutant suppression predicates, shared by the two paths that drop a redundant
   # mutation: the in-place **body** path (`Mutare.Transform.Analyze`, which drops
   # `%Candidate.InPlace{}` candidates) and the lifted **guard** path (`Mutare.Transform.Tag`,
-  # which rejects `{spec, mutated, note}` mutation tuples). Both reduce to the same question asked of a
-  # *mutated node* — "is this the redundant sibling of a mutation another family already
-  # produces?" — so the recognition rules live here once; each caller unwraps its own
-  # candidate/mutation shape down to the bare node before asking. (Before this module the two
+  # which rejects `{spec, mutated, note, variant}` mutation tuples). Both reduce to the
+  # same question asked of a *mutated node* — "is this the redundant sibling of a mutation
+  # another family already produces?" — so the recognition rules live here once; each caller
+  # unwraps its own candidate/mutation shape down to the bare node before asking. (Before this module the two
   # carried character-for-character copies of these predicates, including two `@equality_complements`
   # maps that had to be kept in lockstep by hand — see NOTES "equivalent-sibling suppression".)
   #
   # The rules, and where each path implements its descent (the call sites carry the
-  # surrounding why). Both paths walk the same five shapes; the *structural* clauses
+  # surrounding why). Both paths walk the same four shared shapes; the *structural* clauses
   # stay in each module because the two deliver differently — the body path attaches
   # `%Candidate.InPlace{}` to node meta while threading only `mutators`, the guard path
   # accumulates `{tag, original, [{spec, mutated, note}]}` targets while threading a tag
@@ -26,8 +26,11 @@ defmodule Mutare.Transform.Suppression do
   #   | double negation `not not`  | `is_negation_op/1` clause   | literal `:not` clause    |
   #   | negation over `in`         | `is_negation_op/1` clause   | literal `:not` clause    |
   #   | negation over equality op  | `is_negation_op` + `is_equality_op` | `is_equality_op/1` clause |
-  #   | bare `x in [list]`         | `analyze_in_rhs/2`          | `tag_in_rhs/3`           |
   #   | short-circuit connective   | `is_body_connective/1`      | `is_guard_connective/1`  |
+  #
+  # `Tag` additionally suppresses an empty collection literal on the RHS of guard `in`.
+  # There is deliberately no body twin: emptying only the RHS still evaluates the left
+  # operand, while replacing the whole body expression with `false` skips it.
   #
   # The body path admits `!`/`&&`/`||` (`is_negation_op`/`is_body_connective` carry the
   # extra operators); the guard path can't (they are guard-illegal), so it matches the

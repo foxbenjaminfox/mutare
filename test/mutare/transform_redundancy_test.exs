@@ -7,8 +7,8 @@ defmodule Mutare.TransformRedundancyTest do
   # Logical strips a `not`, Conditional forces a boolean to true/false.
   @membership [Mutare.Mutators.Relational, Mutare.Mutators.Conditional, Mutare.Mutators.Logical]
 
-  # For the `x in [list]` redundancy: List would collapse the list to `[]` (≡ `false`,
-  # which Conditional already produces). Relational/Conditional are the membership pair.
+  # For `x in [list]`: List collapses the list to `[]`; Relational/Conditional are the
+  # membership pair. The collapse survives in bodies and is suppressed only in guards.
   @membership_list [Mutare.Mutators.Relational, Mutare.Mutators.Conditional, Mutare.Mutators.List]
 
   # For the double-negation redundancy: Logical strips a `not`/`!`, Conditional forces
@@ -109,10 +109,13 @@ defmodule Mutare.TransformRedundancyTest do
 
     test "a guard `x not in [..]` strips to `in` plus true/false — inner `in` suppressed in guards too" do
       {meta, triples} =
-        membership_triples("""
-        def f(x) when x not in [1, 2, 3], do: :ok
-        def f(_x), do: :no
-        """)
+        redundancy_triples(
+          """
+          def f(x) when x not in [1, 2, 3], do: :ok
+          def f(_x), do: :no
+          """,
+          @membership_list ++ [Mutare.Mutators.Logical]
+        )
 
       # Only the membership families on the guard node (clause_drop sites are
       # unrelated). The inner `in` is suppressed in guards too, so exactly the strip
@@ -125,27 +128,38 @@ defmodule Mutare.TransformRedundancyTest do
       assert {:conditional, "x not in [1, 2, 3]", "false"} in membership
       refute Enum.any?(membership, fn {m, _o, _mut} -> m == :relational end)
       assert length(membership) == 3
+      refute Enum.any?(triples, fn {m, _o, _mut} -> m == :list end)
       assert_compiles(meta)
     end
   end
 
   describe "equivalent-sibling suppression (collapsing mutants that compute the same thing)" do
-    test "a body `x in [list]`: List's `[]` collapse is suppressed (≡ Conditional's false)" do
-      {meta, triples} = redundancy_triples("def f(x), do: x in [1, 2, 3]", @membership_list)
+    test "a body `in` keeps the empty-RHS mutant because left-operand evaluation is observable" do
+      {meta, triples} =
+        redundancy_triples(
+          ~S|def f, do: raise("observed") in [1, 2, 3]|,
+          @membership_list
+        )
 
-      # The membership trio survives; List does NOT fire on the RHS list (its `x in []`
-      # would be a redundant always-false, which Conditional already produces).
-      assert triples == [
-               {:relational, "x in [1, 2, 3]", "x not in [1, 2, 3]"},
-               {:conditional, "x in [1, 2, 3]", "true"},
-               {:conditional, "x in [1, 2, 3]", "false"}
-             ]
-
-      refute Enum.any?(triples, fn {m, _o, _mut} -> m == :list end)
+      # Emptying only the RHS still evaluates `raise/1`; forcing the whole membership
+      # expression to `false` does not. They are therefore distinct body mutants.
+      assert {:list, "[1, 2, 3]", "[]"} in triples
+      assert {:conditional, ~S|raise("observed") in [1, 2, 3]|, "false"} in triples
       assert_compiles(meta)
     end
 
-    test "a standalone list literal still collapses to `[]` (only the `in`-RHS is special)" do
+    test "a body `not in` also keeps the empty-RHS mutant" do
+      {meta, triples} =
+        redundancy_triples(
+          ~S|def f, do: raise("observed") not in [1, 2, 3]|,
+          @membership_list ++ [Mutare.Mutators.Logical]
+        )
+
+      assert {:list, "[1, 2, 3]", "[]"} in triples
+      assert_compiles(meta)
+    end
+
+    test "a standalone list literal still collapses to `[]`" do
       {_meta, triples} = redundancy_triples("def f, do: foo([1, 2, 3])", [Mutare.Mutators.List])
       assert triples == [{:list, "[1, 2, 3]", "[]"}]
     end
@@ -169,25 +183,19 @@ defmodule Mutare.TransformRedundancyTest do
       assert_compiles(meta)
     end
 
-    test "a body `x in %{map}`: MapLiteral's `%{}` collapse is suppressed (≡ Conditional's false)" do
+    test "a body `x in %{map}` keeps MapLiteral's `%{}` collapse" do
       {meta, triples} =
         redundancy_triples(
           "def f(x), do: x in %{a: 1}",
           [Mutare.Mutators.MapLiteral, Mutare.Mutators.Conditional]
         )
 
-      # `x in %{}` is constantly false, exactly Conditional's mutant on the `in` node — the
-      # same rule as lists (a map can only appear in a *body* `in`; a guard `in` rejects it).
-      assert triples == [
-               {:conditional, "x in %{a: 1}", "true"},
-               {:conditional, "x in %{a: 1}", "false"}
-             ]
-
-      refute Enum.any?(triples, fn {m, _o, _mut} -> m == :map end)
+      assert {:map, "%{a: 1}", "%{}"} in triples
+      assert {:conditional, "x in %{a: 1}", "false"} in triples
       assert_compiles(meta)
     end
 
-    test "a body `x in ~w(..)` / `~c\"..\"`: the empty sigil is dropped, the sentinel kept" do
+    test "a body `x in ~w(..)` / `~c\"..\"` keeps both empty and sentinel mutants" do
       for {family, src, sentinel} <- [
             {Mutare.Mutators.WordListLiteral, "~w(a b)", "~w(mutare)"},
             {Mutare.Mutators.CharlistLiteral, ~S|~c"ab"|, ~S|~c"mutare"|}
@@ -195,26 +203,22 @@ defmodule Mutare.TransformRedundancyTest do
         {meta, triples} =
           redundancy_triples("def f(x), do: x in #{src}", [family, Mutare.Mutators.Conditional])
 
-        # Only the *empty* variant (≡ `x in []` ≡ false) is redundant; the non-empty sentinel
-        # is a genuine membership test — so the drop is per-mutation, not per-node.
-        refute Enum.any?(triples, fn {_m, _o, mut} -> mut in ["~w()", ~S|~c""|] end)
+        assert Enum.any?(triples, fn {_m, _o, mut} -> mut in ["~w()", ~S|~c""|] end)
         assert Enum.any?(triples, fn {_m, _o, mut} -> mut == sentinel end)
         assert {:conditional, "x in #{src}", "true"} in triples
         assert_compiles(meta)
       end
     end
 
-    test "only the top-level `in`-RHS collection is dropped (a nested literal keeps its `[]`)" do
+    test "both top-level and nested body `in`-RHS collections keep their `[]` mutants" do
       {meta, triples} =
         redundancy_triples(
           "def f(x, a), do: x in [a, [1, 2]]",
           [Mutare.Mutators.List, Mutare.Mutators.Conditional]
         )
 
-      # The outer list is the `in` RHS → its `[]` (≡ false) is dropped; the *nested* `[1, 2]`
-      # is a descendant, and `x in [a, []]` is not constantly false, so its `[]` survives.
       assert {:list, "[1, 2]", "[]"} in triples
-      refute {:list, "[a, [1, 2]]", "[]"} in triples
+      assert {:list, "[a, [1, 2]]", "[]"} in triples
       assert_compiles(meta)
     end
 
@@ -232,32 +236,6 @@ defmodule Mutare.TransformRedundancyTest do
       assert {:word_list, "~w(a b)", "~w(mutare)"} in triples
       assert {:conditional, "x in ~w(a b)", "true"} in triples
       assert_compiles(meta)
-    end
-
-    test "a custom mutator's `empty_collection?` callback drives the in-RHS drop for its shape" do
-      {meta, triples} =
-        redundancy_triples(
-          "def f(x), do: x in MapSet.new([1, 2])",
-          [Mutare.Test.CollectionMutator, Mutare.Mutators.Conditional]
-        )
-
-      # `x in MapSet.new([])` ≡ false (≡ Conditional) — a *non-standard* empty collection
-      # (a call, not a `[]`/`%{}`/sigil literal core recognises), but the mutator declares
-      # it via `empty_collection?/1`, so its collapse is dropped on the `in` RHS.
-      assert triples == [
-               {:conditional, "x in MapSet.new([1, 2])", "true"},
-               {:conditional, "x in MapSet.new([1, 2])", "false"}
-             ]
-
-      refute Enum.any?(triples, fn {m, _o, _mut} -> m == :collection end)
-      assert_compiles(meta)
-    end
-
-    test "a custom collection mutant is kept outside an `in` RHS" do
-      {_meta, triples} =
-        redundancy_triples("def g, do: MapSet.new([1, 2])", [Mutare.Test.CollectionMutator])
-
-      assert triples == [{:collection, "MapSet.new([1, 2])", "MapSet.new([])"}]
     end
 
     test "a body `!(a == b)` / `not (a == b)`: Relational's flip is suppressed (≡ the strip)" do
