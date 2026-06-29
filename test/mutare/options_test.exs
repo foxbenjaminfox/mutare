@@ -12,7 +12,7 @@ defmodule Mutare.OptionsTest do
       assert options.paths == ["lib"]
       assert options.exclude == []
       assert options.mutators == nil
-      assert options.plugins == []
+      assert options.extensions == []
       assert options.only_files == nil
       assert options.test_selection == :coverage
       assert options.timeout == nil
@@ -453,13 +453,13 @@ defmodule Mutare.OptionsTest do
     end
   end
 
-  describe ":macros" do
+  describe ":macro_routes" do
     test "defaults to an empty list" do
-      assert Options.new([]).macros == []
+      assert Options.new([]).macro_routes == []
     end
 
     test "resolves declarative entries to Macro.Specs (no reflection on the module)" do
-      assert Options.new(macros: [{Ecto.Query, :from, :any, :skip}]).macros ==
+      assert Options.new(macro_routes: [{Ecto.Query, :from, :any, :skip}]).macro_routes ==
                [
                  %Mutare.Macro.Spec{
                    module: [:Ecto, :Query],
@@ -471,13 +471,13 @@ defmodule Mutare.OptionsTest do
     end
 
     test "rejects a non-list" do
-      assert_raise ArgumentError, ~r/:macros must be a list/, fn ->
-        Options.new(macros: :nope)
+      assert_raise ArgumentError, ~r/:macro_routes must be a list/, fn ->
+        Options.new(macro_routes: :nope)
       end
     end
 
     test "rejects a malformed entry" do
-      assert_raise ArgumentError, fn -> Options.new(macros: [{Kernel, :match?}]) end
+      assert_raise ArgumentError, fn -> Options.new(macro_routes: [{Kernel, :match?}]) end
     end
   end
 
@@ -526,42 +526,48 @@ defmodule Mutare.OptionsTest do
     end
   end
 
-  describe ":plugins" do
-    test "defaults to an empty list and resolves plugin modules to specs" do
-      assert Options.new([]).plugins == []
+  describe ":extensions" do
+    test "defaults to an empty list and resolves extension modules to specs" do
+      assert Options.new([]).extensions == []
 
-      assert Options.new(plugins: [Mutare.Test.GettextLikePlugin]).plugins ==
-               [%Mutare.Plugin.Spec{module: Mutare.Test.GettextLikePlugin, opts: []}]
+      assert Options.new(extensions: [Mutare.Test.GettextLikeExtension]).extensions ==
+               [%Mutare.Extension.Spec{module: Mutare.Test.GettextLikeExtension, opts: []}]
     end
 
     test "accepts a {module, opts} entry, carrying the opts onto the spec" do
-      assert Options.new(plugins: [{Mutare.Test.GettextLikePlugin, [domain: "errors"]}]).plugins ==
+      assert Options.new(extensions: [{Mutare.Test.GettextLikeExtension, [domain: "errors"]}]).extensions ==
                [
-                 %Mutare.Plugin.Spec{
-                   module: Mutare.Test.GettextLikePlugin,
+                 %Mutare.Extension.Spec{
+                   module: Mutare.Test.GettextLikeExtension,
                    opts: [domain: "errors"]
                  }
                ]
     end
 
-    test "rejects a module that does not implement Mutare.Plugin" do
-      assert_raise ArgumentError, ~r/:plugins entries must be loaded modules/, fn ->
-        Options.new(plugins: [Enum])
-      end
+    test "rejects a module that implements neither extension capability" do
+      assert_raise ArgumentError,
+                   ~r/:extensions entries must be loaded non-mutator modules/,
+                   fn ->
+                     Options.new(extensions: [Enum])
+                   end
     end
 
     test "rejects a malformed entry (bad opts shape)" do
-      # The entry-shape dispatch is single-homed in `Mutare.Plugin.Spec.new/1`, so a non-keyword
+      # The entry-shape dispatch is single-homed in `Mutare.Extension.Spec.new/1`, so a non-keyword
       # opts surfaces its message.
       assert_raise ArgumentError,
-                   ~r/invalid plugin entry: expected a module or a \{module, opts\} pair/,
-                   fn -> Options.new(plugins: [{Mutare.Test.GettextLikePlugin, :not_kw}]) end
+                   ~r/invalid extension entry: expected a module or a \{module, opts\} pair/,
+                   fn ->
+                     Options.new(extensions: [{Mutare.Test.GettextLikeExtension, :not_kw}])
+                   end
     end
 
     test "rejects a hand-built spec with non-keyword opts (opts re-checked at the boundary)" do
-      assert_raise ArgumentError, ~r/:plugins entry opts must be a keyword list/, fn ->
+      assert_raise ArgumentError, ~r/:extensions entry opts must be a keyword list/, fn ->
         Options.new(
-          plugins: [%Mutare.Plugin.Spec{module: Mutare.Test.GettextLikePlugin, opts: :garbage}]
+          extensions: [
+            %Mutare.Extension.Spec{module: Mutare.Test.GettextLikeExtension, opts: :garbage}
+          ]
         )
       end
     end
@@ -569,26 +575,28 @@ defmodule Mutare.OptionsTest do
     test "rejects a {module, opts} entry whose opts is a non-keyword list" do
       # `is_list/1` would accept `[:a, :b]` and silently treat it as empty opts; `Keyword.keyword?`
       # rejects it loudly with the keyword-list message.
-      assert_raise ArgumentError, ~r/:plugins entry opts must be a keyword list/, fn ->
-        Options.new(plugins: [{Mutare.Test.GettextLikePlugin, [:a, :b]}])
+      assert_raise ArgumentError, ~r/:extensions entry opts must be a keyword list/, fn ->
+        Options.new(extensions: [{Mutare.Test.GettextLikeExtension, [:a, :b]}])
       end
     end
 
-    test "rejects a mutator listed under :plugins, even one exporting macros/0" do
-      # A macro-aware mutator exports `macros/0`, but it is a `Mutare.Mutator`, not a plugin —
+    test "rejects a mutator listed under :extensions, even one exporting macro_routes/0" do
+      # A macro-aware mutator exports `macro_routes/0`, but it is a `Mutare.Mutator`, not an extension —
       # listing it here would merge its routing yet never run its mutations, so it fails loudly.
-      assert_raise ArgumentError, ~r/:plugins entries must be loaded modules/, fn ->
-        Options.new(plugins: [Mutare.Test.QueryMutator])
-      end
+      assert_raise ArgumentError,
+                   ~r/:extensions entries must be loaded non-mutator modules/,
+                   fn ->
+                     Options.new(extensions: [Mutare.Test.QueryMutator])
+                   end
     end
 
-    test "coerces an explicit nil to an empty list (like :macros)" do
-      assert Options.new(plugins: nil).plugins == []
+    test "coerces an explicit nil to an empty list (like :macro_routes)" do
+      assert Options.new(extensions: nil).extensions == []
     end
 
     test "rejects a non-list" do
-      assert_raise ArgumentError, ~r/:plugins must be a list/, fn ->
-        Options.new(plugins: Mutare.Test.GettextLikePlugin)
+      assert_raise ArgumentError, ~r/:extensions must be a list/, fn ->
+        Options.new(extensions: Mutare.Test.GettextLikeExtension)
       end
     end
   end

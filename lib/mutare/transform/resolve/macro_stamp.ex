@@ -5,7 +5,8 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
   # resolves to; this module turns a matched `Mutare.Macro.Spec` into the metadata the analyzer
   # later reads, including shape-aware classifier validation and pipe-position splitting.
 
-  alias Mutare.{Macros, Mutator}
+  alias Mutare.MacroRouting.Registry, as: Macros
+  alias Mutare.Mutator
   alias Mutare.Macro.Spec
   alias Mutare.Transform.{Imports, Meta}
 

@@ -172,7 +172,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # candidate carries the pattern before/after (the diff), the shared export tuple, and the
   # *raw* mutant call (`rebuild_mutant.(mutated)`).
   #
-  # A custom mutator that registered this macro (`macros/0`) may *also* have produced a
+  # A custom mutator that registered this macro (`macro_routes/0`) may *also* have produced a
   # **whole-call** mutation — `analyze(:runtime)` offered the macro node to it, attaching a
   # `Candidate.InPlace`. Such a mutation can't ride an ordinary in-place selector: the macro's
   # bindings *escape*, so a selector wrapping the call would trap them inside the branch (and
@@ -186,7 +186,7 @@ defmodule Mutare.Transform.Analyze.MatchPatterns do
   # The export tuple is computed up front (`pattern_export_context/1`) from the pattern's bound
   # vars alone — **independent of whether any structural swap/wildcard mutant fires** — so a
   # whole-call mutation is re-homed even when no pattern mutant is produced (the user enabled
-  # only their `macros/0` mutator, or the pattern admits no swap/wildcard). Without that the
+  # only their `macro_routes/0` mutator, or the pattern admits no swap/wildcard). Without that the
   # whole-call `Candidate.InPlace` would survive as an ordinary hoisted-pipe selector and
   # poison the build. When the pattern binds nothing (or isn't rangeable) there is no escape to
   # re-export, so an in-place selector is already safe and `analyzed` is left untouched.

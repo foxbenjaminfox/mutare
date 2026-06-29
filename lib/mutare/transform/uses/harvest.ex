@@ -40,8 +40,9 @@ defmodule Mutare.Transform.Uses.Harvest do
   # fallback directives we harvest are the ones that will actually be in scope when the metamutant
   # compiles (see `expand_using/4`).
 
-  alias Mutare.Plugin
+  alias Mutare.{Extension, UseExpansion}
   alias Mutare.Transform.Aliases
+  alias Mutare.UseExpansion.Dispatch
 
   # The recursion context threaded through `collect/3` and `expand_and_collect/3`, so the
   # clauses carry one `ctx` instead of five positional args most of them ignore. `caller`
@@ -62,48 +63,49 @@ defmodule Mutare.Transform.Uses.Harvest do
   to Sourceror form, the shape `Resolve.register/2` folds). Returns `{directives, behaviours}`;
   both `[]` on any failure (degrades to the unresolved behaviour, never raises).
 
-  `handlers` are the plugin `use`-expansion overrides (`Mutare.Plugin.use_handlers/1`).
-  After the `use` target is alias-resolved, they are consulted **first**: a plugin that does
+  `handlers` are the extension `use`-expansion overrides
+  (`Mutare.UseExpansion.Dispatch.handlers/1`).
+  After the `use` target is alias-resolved, they are consulted **first**: an extension that does
   not `:decline` supplies the directives directly, bypassing in-process expansion entirely —
   so a `use` whose `__using__` can't run in the scan process (Gettext mutates its caller and
-  raises) still surfaces its directives. When every plugin declines, the `use` is expanded
-  in-process as before. The plugin path skips both the static-literal opts gate (Gettext's
-  `backend:` is a module alias, not a literal) and the `Code.ensure_loaded?` check (the plugin
+  raises) still surfaces its directives. When every extension declines, the `use` is expanded
+  in-process as before. The extension path skips both the static-literal opts gate (Gettext's
+  `backend:` is a module alias, not a literal) and the `Code.ensure_loaded?` check (the extension
   asserts the directives), since it never invokes `__using__`.
   """
-  @spec run(Macro.t(), module(), map(), [Plugin.Spec.t()]) :: {[Macro.t()], [module()]}
+  @spec run(Macro.t(), module(), map(), [Extension.Spec.t()]) :: {[Macro.t()], [module()]}
   def run(sourceror_use_node, caller_module, env, handlers) do
     case target(sourceror_use_node, env) do
       {:ok, mod, args} ->
-        # The plugin `context`: the caller `:module` (the dispatcher adds each handler's `:opts`).
+        # The extension `context`: the caller `:module` (the dispatcher adds each handler's `:opts`).
         # A map, so `expand_use/3` can gain context keys without an arity bump.
-        case Plugin.expand_use(handlers, mod, args, %{module: caller_module}) do
+        case Dispatch.run(handlers, mod, args, %{module: caller_module}) do
           :decline ->
             in_process(mod, args, caller_module, env, handlers)
 
-          %Plugin.Expansion{directives: directives, behaviours: behaviours} ->
-            from_plugin(directives, behaviours)
+          %UseExpansion.Expansion{directives: directives, behaviours: behaviours} ->
+            from_extension(directives, behaviours)
         end
 
       :error ->
         {[], []}
     end
   rescue
-    # Any plugin **misbehavior** — a malformed return, or a raise/throw — reaches here as a
-    # `Mutare.Plugin.ContractError` (`safe_expand/4` wraps a raise/throw). That is a *configuration*
-    # error — the user installed a broken plugin — not a property of the target being scanned, so it
+    # Any extension **misbehavior** — a malformed return, or a raise/throw — reaches here as a
+    # `Mutare.UseExpansion.ContractError` (`safe_expand/4` wraps a raise/throw). That is a *configuration*
+    # error — the user installed a broken extension — not a property of the target being scanned, so it
     # must surface loudly rather than degrade like an un-expandable `use`: it rides *through* the
     # otherwise catch-all rescue up to `Mutare.Schema`, which re-raises it.
-    e in Plugin.ContractError -> reraise e, __STACKTRACE__
+    e in UseExpansion.ContractError -> reraise e, __STACKTRACE__
     _ -> {[], []}
   catch
     _, _ -> {[], []}
   end
 
   # In-process expansion: expand `mod.__using__(opts)` and harvest, the path taken when no
-  # plugin overrides the `use`. The static-literal opts gate and the loadability check live
-  # here — a plugin override needs neither (see `run/4`). `handlers` are threaded through so a
-  # `use` nested in the expanded `__using__` body is *also* offered to the plugins (see `collect`).
+  # extension overrides the `use`. The static-literal opts gate and the loadability check live
+  # here — an extension override needs neither (see `run/4`). `handlers` are threaded through so a
+  # `use` nested in the expanded `__using__` body is *also* offered to the extensions (see `collect`).
   defp in_process(mod, args, caller_module, env, handlers) do
     with {:ok, opts} <- use_opts(args),
          true <- Code.ensure_loaded?(mod) do
@@ -128,17 +130,17 @@ defmodule Mutare.Transform.Uses.Harvest do
     end
   end
 
-  # A plugin override's result → the `{directives, behaviours}` harvest shape. The directives
-  # are standard-quoted (from the plugin's `quote/2`), so they go through the same `to_sourceror/1`
+  # An extension override's result → the `{directives, behaviours}` harvest shape. The directives
+  # are standard-quoted (from the extension's `quote/2`), so they go through the same `to_sourceror/1`
   # (`Macro.to_string |> Sourceror.parse_string!`) as an in-process harvest, arriving as the
   # Sourceror directives `Resolve.register/2` folds. Behaviours are kept as bare atoms.
-  defp from_plugin(directives, behaviours) do
+  defp from_extension(directives, behaviours) do
     {directives |> flatten_directives() |> to_sourceror_directives(),
      normalize_behaviours(behaviours)}
   end
 
-  # Plugin behaviours arrive as resolved **module atoms** per the `Mutare.Plugin.Expansion`
-  # contract (`behaviours: [module()]`) — a plugin writes module literals (`[GenServer]`), which
+  # Extension behaviours arrive as resolved **module atoms** per the `Mutare.UseExpansion.Expansion`
+  # contract (`behaviours: [module()]`) — an extension writes module literals (`[GenServer]`), which
   # *are* atoms, never quoted `{:__aliases__, …}` nodes. So keep every **concrete atom** (an Elixir
   # module `GenServer`, or an Erlang behaviour atom `:gen_statem`), dropping only a non-atom (a stray
   # quoted node, a junk string/number) and the degenerate `nil`/`true`/`false`. It does **not** verify
@@ -153,21 +155,21 @@ defmodule Mutare.Transform.Uses.Harvest do
 
   defp behaviour_module?(term), do: is_atom(term) and term not in [nil, true, false]
 
-  # Flatten a plugin's directive list to one element per directive: `List.wrap` (a plugin may hand a
+  # Flatten an extension's directive list to one element per directive: `List.wrap` (an extension may hand a
   # single node, though `expand/2` requires a list) then descend any quoted `__block__` into its
-  # component statements (`flatten_directive/1`). The shared front-half of both plugin harvests
-  # (`from_plugin/2` top-level, `plugin_items/2` nested).
+  # component statements (`flatten_directive/1`). The shared front-half of both extension harvests
+  # (`from_extension/2` top-level, `extension_items/2` nested).
   defp flatten_directives(directives),
     do: directives |> List.wrap() |> Enum.flat_map(&flatten_directive/1)
 
   # Standard-quoted directives → the Sourceror form `Resolve.register/2` folds (`to_sourceror/1`),
-  # dropping any that fail to round-trip. Shared by `from_plugin/2` (a top-level plugin override) and
-  # `in_process/5` (every collected directive, plugin or in-process).
+  # dropping any that fail to round-trip. Shared by `from_extension/2` (a top-level extension override) and
+  # `in_process/5` (every collected directive, extension or in-process).
   defp to_sourceror_directives(directives),
     do: directives |> Enum.map(&to_sourceror/1) |> Enum.reject(&is_nil/1)
 
-  # A plugin's directives list may hold a single quoted **block** of several directives
-  # (`Mutare.Plugin.expand([quote do import A; import B end])` → a one-element list wrapping a
+  # An extension's directives list may hold a single quoted **block** of several directives
+  # (`Mutare.UseExpansion.expand([quote do import A; import B end])` → a one-element list wrapping a
   # `{:__block__, _, [import_a, import_b]}` node) instead of one element per directive — both are
   # valid `[Macro.t()]` lists. (`expand/2` itself requires a list, so the block must be wrapped in
   # one; a *bare* `quote do … end` is rejected by its contract.) `Resolve.register/2` folds one
@@ -187,7 +189,7 @@ defmodule Mutare.Transform.Uses.Harvest do
   # convert between quoting formats rather than reimplementing Sourceror's block-wrapping inverse by
   # hand — which would have to track every wrapped shape (nested keyword lists, maps, tuples) and
   # would be *more* fragile. It also strips block-wrapping so `__using__` receives the real term
-  # (`:controller`, not `{:__block__, [], [:controller]}`) and a plugin sees a clean opts AST. The
+  # (`:controller`, not `{:__block__, [], [:controller]}`) and an extension sees a clean opts AST. The
   # round-tripped `{:use, _, args}` is exactly `use_target/2`'s arg shape, so module resolution + the
   # `nil`-is-an-atom guard are delegated there — the single home — rather than duplicated.
   defp target(sourceror_use_node, env) do
@@ -201,13 +203,13 @@ defmodule Mutare.Transform.Uses.Harvest do
   # home for resolving a `use` target + its raw args, shared by the top-level `target/2` (after its
   # round-trip) and a **nested** `use` reached in a `__using__` body. It resolves the module through
   # the `env` (an aliased `alias RealUse, as: Foo; use Foo` yields the real module) and returns the
-  # **raw** args with no static-literal gate, so a plugin override sees them as written (Gettext's
+  # **raw** args with no static-literal gate, so an extension override sees them as written (Gettext's
   # `backend:` is not a literal); the in-process fallbacks (`in_process/5`, `nested_in_process/3`)
   # apply the opts gate.
   #
   # `not is_nil` matters: `Aliases.resolve_node/2` returns `nil` (itself an atom) for an unresolvable
   # target, so an un-guarded `is_atom` would yield `{:ok, nil, rest}` and hand a `nil` module to every
-  # plugin's `expand_use/3`. The in-process path degrades safely on `nil`, but a plugin with an
+  # extension's `expand_use/3`. The in-process path degrades safely on `nil`, but an extension with an
   # unguarded catch-all clause would fire on a `use` it can't see.
   defp use_target([mod_ast | rest], env) do
     case Aliases.resolve_node(mod_ast, env) do
@@ -218,7 +220,7 @@ defmodule Mutare.Transform.Uses.Harvest do
 
   defp use_target(_args, _env), do: :error
 
-  # In-process expansion of a nested `use` no plugin overrode: apply the static-literal opts gate
+  # In-process expansion of a nested `use` no extension overrode: apply the static-literal opts gate
   # + loadability check (the old `use_args/2` behaviour), then recurse. `caller_aliases` already
   # carries the body's injected aliases (merged by the caller).
   defp nested_in_process(mod, raw_args, %Ctx{} = ctx) do
@@ -230,13 +232,13 @@ defmodule Mutare.Transform.Uses.Harvest do
     end
   end
 
-  # A plugin override of a *nested* `use` → `collect/3`-shape items, so it merges with the
+  # An extension override of a *nested* `use` → `collect/3`-shape items, so it merges with the
   # in-process harvest of its sibling directives. Directives stay standard-quoted (a single quoted
   # block flattened to its leaves) and are normalized later by `in_process/5` like every collected
   # directive; behaviours become `{:mutare_behaviour, mod}` tuples (atoms only, via
   # `normalize_behaviours/1`) — the same shape the in-process `@behaviour` clause produces. Mirrors
-  # the top-level `from_plugin/2`, but in the un-normalized collect-item shape its position needs.
-  defp plugin_items(directives, behaviours) do
+  # the top-level `from_extension/2`, but in the un-normalized collect-item shape its position needs.
+  defp extension_items(directives, behaviours) do
     directive_items = flatten_directives(directives)
     behaviour_items = behaviours |> normalize_behaviours() |> Enum.map(&{:mutare_behaviour, &1})
     directive_items ++ behaviour_items
@@ -285,9 +287,9 @@ defmodule Mutare.Transform.Uses.Harvest do
           expand_using(mod, opts, ctx.caller, ctx.caller_aliases)
           |> collect(%{ctx | depth: ctx.depth + 1, seen: MapSet.put(ctx.seen, key)}, %{})
         rescue
-          # A plugin contract violation in a *nested* `use`'s override must stay loud (see `run/4`);
+          # An extension contract violation in a *nested* `use`'s override must stay loud (see `run/4`);
           # everything else degrades this one `use` to `[]`.
-          e in Plugin.ContractError -> reraise e, __STACKTRACE__
+          e in UseExpansion.ContractError -> reraise e, __STACKTRACE__
           _ -> []
         catch
           _, _ -> []
@@ -366,25 +368,25 @@ defmodule Mutare.Transform.Uses.Harvest do
 
   # A nested `use` harvested from an *expanded* `__using__` body (e.g. `use MyAppWeb, :html` whose
   # body injects `use Gettext, …` — the idiomatic Phoenix integration point). Like the **top-level**
-  # `use`, the plugin `handlers` are consulted **first** (so the same override that surfaces a
+  # `use`, the extension `handlers` are consulted **first** (so the same override that surfaces a
   # directly-written `use Gettext` also surfaces a nested one); only on `:decline` does it expand
   # in-process (`nested_in_process/3`, which keeps the static-literal opts gate + loadability check).
   # The module is resolved through the body's own alias scope (`env`) so an earlier sibling
   # `alias … as: T` redirects `use T`; the recursion's `__CALLER__.aliases` is the source aliases
   # *plus* the ones this body injected (`Map.merge(caller_aliases, env)`, body-injected shadowing
-  # source) — exactly how the compiler expands a later nested `use`. The plugin override sees the
+  # source) — exactly how the compiler expands a later nested `use`. The extension override sees the
   # **raw** args (no opts gate), matching `target/2`.
   defp collect({:use, _, args}, %Ctx{} = ctx, env) do
     case use_target(args, env) do
       {:ok, mod, raw_args} ->
         nested_ctx = %{ctx | caller_aliases: Map.merge(ctx.caller_aliases, env)}
 
-        case Plugin.expand_use(ctx.handlers, mod, raw_args, %{module: ctx.caller}) do
+        case Dispatch.run(ctx.handlers, mod, raw_args, %{module: ctx.caller}) do
           :decline ->
             nested_in_process(mod, raw_args, nested_ctx)
 
-          %Plugin.Expansion{directives: directives, behaviours: behaviours} ->
-            plugin_items(directives, behaviours)
+          %UseExpansion.Expansion{directives: directives, behaviours: behaviours} ->
+            extension_items(directives, behaviours)
         end
 
       :error ->

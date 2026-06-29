@@ -61,11 +61,12 @@ defmodule Mutare.Transform.Uses do
   # module and rewrote later bare calls accordingly.)
 
   alias Mutare.AST
-  alias Mutare.Plugin
+  alias Mutare.Extension
   alias Mutare.Transform.Aliases
   alias Mutare.Transform.MetaKeys
   alias Mutare.Transform.Uses.EnvMirror
   alias Mutare.Transform.Uses.Harvest
+  alias Mutare.UseExpansion.Dispatch
 
   @directives_key MetaKeys.use_directives_key()
   @behaviours_key MetaKeys.use_behaviours_key()
@@ -80,8 +81,8 @@ defmodule Mutare.Transform.Uses do
   Sourceror-form `import`/`alias`/`require …, as:` directives it injects (flattened across
   nested `use`s). A `use` that can't be expanded is left untouched.
 
-  `plugins` (the resolved `:plugins` specs, default none) may **override** a `use`'s
-  expansion: a plugin's `c:Mutare.Plugin.expand_use/3` is consulted before in-process
+  `extensions` (the resolved `:extensions` specs, default none) may **override** a `use`'s
+  expansion: an extension's `c:Mutare.UseExpansion.expand_use/3` is consulted before in-process
   expansion, so a `use` whose `__using__` cannot run in the scan process (Gettext registers
   its backend by mutating the caller and raises) still surfaces its directives. See `Harvest`.
 
@@ -89,9 +90,9 @@ defmodule Mutare.Transform.Uses do
   `Mutare.Transform.Uses.EnvMirror`, so an env-sensitive `__using__` is expanded under the env
   the metamutant will compile in, not the scan env.
   """
-  @spec annotate(Macro.t(), [Plugin.Spec.t() | module() | {module(), keyword()}]) :: Macro.t()
-  def annotate(ast, plugins \\ []) do
-    handlers = Plugin.use_handlers(plugins)
+  @spec annotate(Macro.t(), [Extension.Spec.t() | module() | {module(), keyword()}]) :: Macro.t()
+  def annotate(ast, extensions \\ []) do
+    handlers = Dispatch.handlers(extensions)
     EnvMirror.with_sandbox_env(fn -> walk_generic(ast, nil, %{}, handlers) end)
   end
 
@@ -341,8 +342,8 @@ defmodule Mutare.Transform.Uses do
   # Stamp the `use` node with its harvested directives, or return it unchanged. Never raises:
   # any expansion failure degrades to `[]` (the current, unresolved behaviour). A `use` inside a
   # module whose name we couldn't resolve is left unexpanded — expanding it would run `__using__`
-  # with the wrong (parent) caller module. `handlers` are the plugin `use`-expansion overrides
-  # (`Mutare.Plugin.use_handlers/1`), consulted by `Harvest.run/4` before in-process expansion.
+  # with the wrong (parent) caller module. `handlers` are the extension `use`-expansion overrides
+  # (`Mutare.UseExpansion.Dispatch.handlers/1`), consulted by `Harvest.run/4` before in-process expansion.
   defp stamp(node, @unresolved, _env, _handlers), do: node
 
   defp stamp({:use, meta, args} = node, module, env, handlers) do

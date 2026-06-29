@@ -81,7 +81,7 @@ Implementation notes:
 - `Mutare.Metamutant` shrank to just the selector-subject AST contract
   (`subject_ast/0` + `subject?/1`); the metamutant *walk* now lives in `Mutare.Manifest`.
 
-### Unknown block macros: poison the whole block, not one mutant at a time `[done]`
+### Unknown block macro_routes: poison the whole block, not one mutant at a time `[done]`
 An **unknown module-level block macro** (`custom_dsl do … end`) has its `do` body
 analyzed as **runtime** — the guess that a DSL `unquote`s it into a function body, so a
 literal/operator there could be a real runtime value (`analyze_module_macro_block/2`).
@@ -230,7 +230,7 @@ an implementation artifact (`>` works, but a call rewrite is the whole `Enum.fil
 list result is `[]` which the filter's `]` terminator can't even spell, a negative int collapses to
 `-`), it can't be validated statically, and it makes every family half-support qualifiers whether or
 not that's meaningful. The replacement: the **mutator declares its own vocabulary** and tags each
-mutation. Two optional callbacks (discovered by export, the `macros/0` pattern): `variants/0` → the
+mutation. Two optional callbacks (discovered by export, the `macro_routes/0` pattern): `variants/0` → the
 label set (a family's *public contract* — operator names `> <= ==`, or semantic kinds `empty
 sentinel` / `zero succ pred negate`), and `variant(original, mutated)` → the label(s) for one produced
 mutation (a member of `variants/0`, or `nil` = unlabeled/bare-only — **or a list** when the mutation
@@ -356,7 +356,7 @@ Measured ladder (same machine):
   captured + re-raised faithfully in the parent — the surfaced-error contract the old
   single-worker had). The cost is that analyze+plan+emit runs twice for a sited file
   (count, then render) — so the count/render agreement *rests on that pipeline being
-  deterministic for one source*: a nondeterministic custom mutator or plugin
+  deterministic for one source*: a nondeterministic custom mutator or extension
   `expand_use/3` surfaces as a `render_one/5` drift crash, never a silent id overlap (this
   is why caching only `use`-expansion across the two passes wouldn't help — a mutator can
   drift too, and the full pipeline output *is* the render the design splits off). But
@@ -1151,7 +1151,7 @@ by a blacklist. The positions:
   false end`). It looks like an ordinary call, so without special handling its
   pattern arg was routed `:runtime` and a literal/tuple/string there was mutated in
   place — splicing a `case` into a pattern ("case not allowed in matches"). It is
-  now a **known macro** (`Mutare.Macros`): arg 1 `:pattern`, arg 2 `:expression`.
+  now a **known macro** (`Mutare.MacroRouting.Registry`): arg 1 `:pattern`, arg 2 `:expression`.
   This generalises the old hard-coded clause (which matched the bare name only,
   leaving a qualified `Kernel.match?/2` to poison fallback): the registry resolves
   the call's module through the existing alias/import/displacement machinery, so
@@ -1351,7 +1351,7 @@ moved there.
   from both …", which Poison maps back to the generated mutant id. This does not make
   macro-generated imports visible, but it turns the known wrong-but-compiling shape into a poisoned
   mutant. (A *call* `fun(args)`, not a capture `&fun/arity` — though both trigger the ambiguity,
-  even for guard macros: the original source was already a call, so a call is guaranteed legal
+  even for guard macro_routes: the original source was already a call, so a call is guaranteed legal
   wherever the original compiled, with no function-vs-macro case analysis.)
 - **The witness is *complete* for compiling original code, not merely a mitigation** (re-verified
   against the compiler). The except-plus-hidden-*import* replacement is the **only** reachable way
@@ -1378,7 +1378,7 @@ A macro whose argument is a *pattern* or an *opaque DSL body* looks like an ordi
 the positional analyzer would mutate literals inside it (a literal in `match?`'s pattern arg
 is a pattern, not a value → splicing a selector there is "case not allowed in matches", which
 poisons the single build). The fix generalises the old hard-coded `match?/2` clause into an
-extensible **registry** (`Mutare.Macros` + `Mutare.Macro.Spec`): a spec declares, per argument,
+extensible **registry** (`Mutare.MacroRouting.Registry` + `Mutare.Macro.Spec`): a spec declares, per argument,
 a treatment — `:expression` (analyze `:runtime`, the default), `:pattern` (analyze `:pattern`),
 or `:skip` (leave the arg **raw** — no descent, no mutation). `args` is a uniform atom or a
 per-position list padded with `:expression`.
@@ -1402,7 +1402,7 @@ Three load-bearing decisions:
   qualified/aliased `Kernel.match?`/`Q.from` resolves through `Aliases.resolve_path` — so the
   registry handles bare, qualified, and aliased forms uniformly (the old clause did bare only).
 - **Three sources, merged later-wins.** Built-ins (`Kernel.match?/2`, `Kernel.destructure/2`),
-  a declarative `:macros` option, and an optional **`macros/0` callback on `Mutare.Mutator`**.
+  a declarative `:macro_routes` option, and an optional **`macro_routes/0` callback on `Mutare.Mutator`**.
   The last is the extensibility win: a library ships *one* module carrying both its custom
   mutator and the macro routing it relies on, and the user adds a single `:mutators` entry —
   Mutare core never knows about the library. The motivating case is Ecto: register
@@ -1410,7 +1410,7 @@ Three load-bearing decisions:
   `mutate/1` rewrites the query (drop a `where`, flip `:asc`/`:desc`). `:skip` is also the
   mechanism behind "owned only by a custom mutator": core skips the args, but the **whole macro
   node is still offered to every mutator**, so the registering mutator fires on it.
-- **Reflection-free config resolution.** `Mutare.Macros.resolve/1` (and the `:macros` validator
+- **Reflection-free config resolution.** `Mutare.MacroRouting.Registry.resolve/1` (and the `:macro_routes` validator
   in `Options`) never reflect on the module — module keys are purely syntactic (`Module.split`
   via `Macro.classify_atom` to tell an Elixir alias from an Erlang atom) — so a
   `{Ecto.Query, …}` entry validates even when `Ecto` is not a dependency of the Mutare process.
@@ -1452,9 +1452,9 @@ and the macro is then misclassified as **unknown**. That is the worst place to l
 a `:skip` body is mutated as an ordinary runtime body (it *was* meant to be opaque), and the
 unknown-block tag means a recurring compile poison makes `Runner.escalate_block_poison/3`
 drop *every* sibling mutant in the block — silently skipping valid mutants despite the user's
-`:macros` registration. The fix: when reflection can't resolve the call, consult the **registry**
+`:macro_routes` registration. The fix: when reflection can't resolve the call, consult the **registry**
 directly — among the *whole*-imported modules in scope, find one registering `fun/arity` as a known
-macro. Sound by the same compile-unambiguity rule `Imports` rests on: the user's `:macros` entry
+macro. Sound by the same compile-unambiguity rule `Imports` rests on: the user's `:macro_routes` entry
 asserts the module provides the macro, and a whole import of it makes the bare call unambiguously
 its macro. Scoped to whole imports because a selective `import Mod, only: [m: 1]` resolves straight
 from the source (no reflection), so it never reaches the fallback. This does **not** lift the
@@ -1462,7 +1462,7 @@ inherited `Imports` limit for *un*registered bare calls (the ordinary stdlib *fu
 still need reflection — but those modules are always loadable, and a real `mix mutare` run has the
 target's deps loaded anyway). A known macro in a `:scaffold`/compile-time position isn't routed
 (it's already non-mutating there, so `:skip` would be a no-op anyway). `test/support/macro_mutator.ex`
-is the worked `macros/0` example (with a piped `where/2` stage).
+is the worked `macro_routes/0` example (with a piped `where/2` stage).
 
 **Rebuilding a renamed/re-aritied bare macro must qualify when the import isn't proven sole**
 (`Calls.macro_rebuild/5`). `resolved_macro_call/1` hands a `:routing`/`:hosted` mutator a `rebuild`
@@ -1504,7 +1504,7 @@ semantics*, which the plain `:pattern` treatment doesn't encode:
 So the binding semantics are declared per-macro, by a **fourth treatment** beyond `:pattern`:
 `:binding_pattern` (`Mutare.Macro.Spec`) means "this pattern arg's bindings *escape*, and the call
 sits where its value is discarded". `Kernel.destructure`'s arg 0 is flipped to it (a built-in), and a
-user opts their own macro in via `:macros` / `macros/0` (e.g. `{MyDsl, :unpack, 2, [:binding_pattern,
+user opts their own macro in via `:macro_routes` / `macro_routes/0` (e.g. `{MyDsl, :unpack, 2, [:binding_pattern,
 :expression]}`). The treatment routes identically to `:pattern` for the in-place descent (still safe
 everywhere); the *extra* structural mutants are delivered by the **`MacroPattern`** candidate — the
 `MatchPattern` tuple re-export generalized from a `=` to running the macro itself inside each selector
@@ -1535,7 +1535,7 @@ arg 0 stays plain `:pattern`.
 #### Whole-call mutants on a binding macro, and why `=` needs no mirror `[done]`
 
 The macro node is **offered to mutators** (`analyze_known_macro` → `offer`) so a *registering*
-custom mutator (`macros/0`) can mutate the whole call — the Ecto-style use, where the library
+custom mutator (`macro_routes/0`) can mutate the whole call — the Ecto-style use, where the library
 ships both the macro registration and a DSL-aware rewrite. For a `:binding_pattern` macro that
 whole-call mutation is a hazard, in two ways the original `MacroPattern` commit got wrong:
 
@@ -1562,7 +1562,7 @@ node is **never offered to mutators**: the dedicated `analyze({:=, …})` clause
 `:pattern`, RHS → context) *without* `offer`, and it precedes the generic runtime clause — so no
 mutator, built-in or custom, can ever produce a whole-`=` `InPlace`. So `attach_match_pattern_candidates`'s
 `put_candidates` has nothing to shadow, and there is no standalone-selector-traps-bindings case to
-avoid. The asymmetry is deliberate: the macro node is offered *on purpose* (the `macros/0` feature),
+avoid. The asymmetry is deliberate: the macro node is offered *on purpose* (the `macro_routes/0` feature),
 the `=` operator has no "mutate the whole node" entry point. The invariant is guarded by a test
 (`match_pattern_test.exs`, "a bare `=` node is never offered…"): a probe mutator that *does* match `=`
 earns a site on an offered control node but **none** on the `=`. **If that test ever fails** — someone
@@ -1709,9 +1709,9 @@ be fragile. The bug was invisible precisely because the degradation is silent, s
 raiser that mirrors Gettext) in `uses_test.exs` asserts the siblings survive and only the raiser's own
 directive is dropped.
 
-### Plugin `use`-expansion override (`Mutare.Plugin`) `[done]`
+### Extension `use`-expansion override (`Mutare.UseExpansion`) `[done]`
 
-**Charter (the in/out rule, pinned).** A plugin teaches Mutare a library's **compile-time vocabulary**
+**Charter (the in/out rule, pinned).** An extension teaches Mutare a library's **compile-time vocabulary**
 — how to *resolve and route* the constructs the built-in mutators encounter — and **never participates
 in the run, verdict, or score**. The defining axis is **vocabulary vs. judgment**, *not* compile-vs-
 runtime: in = macro routing, `use`-expansion, block-macro treatment, opaque-literal declarations (act
@@ -1721,13 +1721,13 @@ both sides change the mutant *set* (a `:skip` removes mutants), so "affects the 
 and "compile-time" alone is too weak, since statically proving a mutant equivalent is compile-time yet
 *judges* a generated mutant — so it's **out**. The doc leads with the capability, not "third-party"
 (which is *incidental* — the built-in `Kernel.match?`/`destructure` routings are the same vocabulary,
-first-party). **Naming:** kept top-level `Mutare.Plugin` rather than `Mutare.Plugin.Compile`. A
+first-party). **Naming:** kept top-level `Mutare.UseExpansion` rather than `Mutare.UseExpansion.Compile`. A
 `.Compile`/`.Runtime` split would (a) encode the *wrong* axis (compile-vs-runtime, not vocabulary-vs-
 judgment) and invite the exact misread the charter forbids, (b) name for an unknown sibling that may
 never exist and may not even be cleanly "runtime" (a coverage strategy spans transform-time
 instrumentation + runtime readout), and (c) break the established convention of capability-named *peers*
-(`Mutare.Mutator` is top-level, not `Plugin.Mutator`). If a judgment-side extension point ever lands, it
-gets its own capability name as a peer (`Mutare.Reporter`/`Mutare.CoverageSource`/…), not a `Plugin.*`
+(`Mutare.Mutator` is top-level, not `Extension.Mutator`). If a judgment-side extension point ever lands, it
+gets its own capability name as a peer (`Mutare.Reporter`/`Mutare.CoverageSource`/…), not a `Extension.*`
 child. The charter — not the name — is what pins the boundary.
 
 The "degrades, never errors" stance keeps the build alive when a `use` can't be expanded, but it leaves
@@ -1743,34 +1743,34 @@ to that module, and `# mutare:ignore` can't save us either (it's applied *after*
 the selector splice that poisons). So the user *wants* to mark the macros `:skip` but **can't make the
 registration take effect** — the resolution it keys on depends on the very expansion that failed. Deadlock.
 
-**Why this is a plugin, not a core special-case.** The fix has to (a) supply the `import` the failing
+**Why this is an extension, not a core special-case.** The fix has to (a) supply the `import` the failing
 `__using__` would have, and (b) route each macro's literal positions `:skip` while *mutating* the runtime
 ones (`ngettext`'s count, a bindings map — great signal we'd otherwise lose to a blanket skip). Both are
 **library knowledge** (Gettext's macro table, its backend wiring), so they belong in a `mutare_gettext`
-package, not in Mutare core. `Mutare.Plugin` is the extension point: a module listed under `:plugins`
-that contributes *registrations* without being a mutator (no `name/0`, no mutation producer, never in a
-report — it only makes the built-in mutators land). Two optional callbacks, a module is a plugin if it
-exports either:
-- **`macros/0`** (a *registration*) — identical to a mutator's; collected by `Macros.from_plugins/1`
-  (a shared `collect_macros/1` with `from_mutators/1`, host-stamped the same way) and **merged** by
-  `build/3`. Opts-independent (a static library fact).
-- **`expand_use(used_module, args, context) -> Mutare.Plugin.Expansion.t() | :decline`** (a
+package, not in Mutare core. `Mutare.Extension` is the configuration boundary: a module listed under
+`:extensions` contributes source-understanding capabilities without being a mutator (no `name/0`, no
+mutation producer, never in a report — it only makes the built-in mutators land). Two independent
+behaviours are recognized:
+- **`Mutare.MacroRouting.macro_routes/0`** (a *registration*) — the same capability an enabled
+  mutator may implement; collected by `Macros.from_extensions/1` and **merged** by `build/3`.
+  Opts-independent (a static library fact).
+- **`expand_use(used_module, args, context) -> Mutare.UseExpansion.Expansion.t() | :decline`** (a
   *decision*) — the `use`-expansion override, **first-non-`:decline`-wins**. `context` is a map
-  carrying the caller `:module` + the plugin's `:opts`; the return is a struct (`%Expansion{directives,
-  behaviours}`, built by `Plugin.expand/2`).
+  carrying the caller `:module` + the extension's `:opts`; the return is a struct (`%Expansion{directives,
+  behaviours}`, built by `Mutare.UseExpansion.expand/2`).
 
-**API-surface decisions (locking the third-party boundary before there are external plugins).** The
+**API-surface decisions (locking the third-party boundary before there are external extensions).** The
 callbacks divide by **kind**, and the kind fixes both combination and configuration: a *registration*
-(`macros/0`) **merges** across plugins and ignores opts (it declares library facts); a *decision*
+(`macro_routes/0`) **merges** across extensions and ignores opts (it declares library facts); a *decision*
 (`expand_use`) is **first-win** and reads opts — exactly mirroring mutators (`opts` reach `mutate/2`,
-never `macros/0`). Three deliberate future-proofing choices fell out: (1) `expand_use` takes a
+never `macro_routes/0`). Three deliberate future-proofing choices fell out: (1) `expand_use` takes a
 **`context` map** (`:module` + `:opts`) rather than more positional args — the map gains keys without
 an arity bump, and `:module` is real parity (in-process expansion already threads the caller module/
-aliases for a `__CALLER__`-dependent `__using__`; a plugin replacing it deserves the same). (2) It
-returns a **struct** (`Mutare.Plugin.Expansion`), not a `{:ok, …}` tuple — a new field is a default,
-not a breaking widen. (3) `:plugins` entries accept **`{module, opts}`** (resolved to
-`Mutare.Plugin.Spec`, the plugin twin of `Mutator.Spec`), so a plugin is configurable like a mutator.
-`macros/0` deliberately **stayed arity-0**: the registry is built once, globally, before any file is
+aliases for a `__CALLER__`-dependent `__using__`; an extension replacing it deserves the same). (2) It
+returns a **struct** (`Mutare.UseExpansion.Expansion`), not a `{:ok, …}` tuple — a new field is a default,
+not a breaking widen. (3) `:extensions` entries accept **`{module, opts}`** (resolved to
+`Mutare.Extension.Spec`, the extension twin of `Mutator.Spec`), so an extension is configurable like a mutator.
+`macro_routes/0` deliberately **stayed arity-0**: the registry is built once, globally, before any file is
 walked — there is no per-file "module it's registering for", and per-*call* routing variation is
 already served by the `:routing` classifier (`macro_routing/1` sees the call node). A `context` there
 would be a global-vs-per-call category error; YAGNI.
@@ -1778,79 +1778,79 @@ would be a global-vs-per-call category error; YAGNI.
 **Where the override hooks in (and why there).** `Harvest.run/4` is the one site that both resolves the
 `use` *target* and decides expansion, so the dispatch lives there, not in the recursive `Uses` walk. The
 old `standardize/2` coupled module-resolution with the **static-literal opts gate** — fatal here, since
-Gettext's `backend:` is a module alias, *not* a literal, so the gate would `:error` before any plugin
+Gettext's `backend:` is a module alias, *not* a literal, so the gate would `:error` before any extension
 could be asked. Split it: `target/2` alias-resolves the module and returns the **raw** args (no gate);
-plugins are consulted first via `Plugin.expand_use/4`; only on `:decline` does `in_process/5` apply the
-opts gate + `Code.ensure_loaded?` + expand. The plugin path needs *neither* gate (it never invokes
+extensions are consulted first via `UseExpansion.Dispatch.run/4`; only on `:decline` does `in_process/5` apply the
+opts gate + `Code.ensure_loaded?` + expand. The extension path needs *neither* gate (it never invokes
 `__using__`, so it asserts the directives rather than deriving them). Its returned directives are
 standard-quoted (from `quote`), so they ride the **same** `to_sourceror/1`
 (`Macro.to_string |> Sourceror.parse_string!`) as a harvested directive and arrive as the Sourceror form
 `Resolve.register/2` folds — zero new register clauses. The nested-`use` recursion (`collect/7`, formerly
-`/6`) is now **also** plugin-aware: `handlers` thread through `in_process → expand_and_collect → collect`,
-and `collect`'s `use` clause consults the plugins *first* (via `use_target/2` — the raw-args, no-gate
+`/6`) is now **also** extension-aware: `handlers` thread through `in_process → expand_and_collect → collect`,
+and `collect`'s `use` clause consults the extensions *first* (via `use_target/2` — the raw-args, no-gate
 nested twin of `target/2`) before falling back to in-process (`nested_in_process/7`, which keeps the
 gate + loadability check). This is the **positive fix for the Phoenix integration point**: `use MyAppWeb,
 :html` expands to a body that itself does `use Gettext, …`, so the override has to reach a *nested* `use`,
 not just a directly-written top-level one — the original "internal `use`s stay in-process" boundary
 silently defeated the motivating case (the bare `gettext` calls never resolved, the msgids poisoned the
-build). A plugin override of a nested `use` returns `collect/7`-shape items (`plugin_items/2`): directives
+build). An extension override of a nested `use` returns `collect/7`-shape items (`extension_items/2`): directives
 left standard-quoted for `in_process/5`'s final `to_sourceror`, behaviours as `{:mutare_behaviour, atom}`
-tuples. (Cycle/depth caps still backstop a genuinely recursive in-process chain; a plugin override is
+tuples. (Cycle/depth caps still backstop a genuinely recursive in-process chain; an extension override is
 terminal for its `use`, so it adds no recursion.)
 
-**Dispatch + safety.** `Plugin.expand_use/4` is **first-non-`:decline`-wins** over the ordered `:plugins`,
+**Dispatch + safety.** `Mutare.UseExpansion.Dispatch.run/4` is **first-non-`:decline`-wins** over the ordered `:extensions`,
 each handler call wrapped (`safe_expand/4`). The boundary is **`:decline` is the only opt-out; every other
-outcome is loud.** A plugin *bug* — whether a return that is neither `%Expansion{}` nor `:decline` (a
-non-list `Mutare.Plugin.expand/2` call lands here too), or a **raise/throw/exit** from `expand_use/3` — is a
-*misconfiguration* (a broken installed plugin, not a property of the target), so it surfaces as
-`Mutare.Plugin.ContractError` **loudly** (like `validate!/1` on a non-plugin module): a malformed return
+outcome is loud.** An extension *bug* — whether a return that is neither `%Expansion{}` nor `:decline` (a
+non-list `Mutare.UseExpansion.expand/2` call lands here too), or a **raise/throw/exit** from `expand_use/3` — is a
+*misconfiguration* (a broken installed extension, not a property of the target), so it surfaces as
+`Mutare.UseExpansion.ContractError` **loudly** (like `validate!/1` on a non-extension module): a malformed return
 raises it directly, a raise/throw is *wrapped* in it (original cause in the message, stacktrace preserved).
 That single type rides *through* `Harvest`'s otherwise-catch-all rescue (via a dedicated
 `e in ContractError -> reraise` clause at every layer) up to `Schema`, which re-raises it — while the
 *target*'s own un-expandable `use` (a raising `__using__`, a non-static head) still degrades silently, the
 behaviour that boundary exists to provide. **Why loud, not isolated** (the deliberate choice): an earlier
 design swallowed a raising handler to `:decline`, but that is indistinguishable from a deliberate decline —
-a plugin silently doing nothing for every run, the worst failure mode for a tool whose job is to *not* miss
-mutants. A plugin author's only fall-through is an explicit `:decline`; `nil` (an `if` with no `else`), a
+an extension silently doing nothing for every run, the worst failure mode for a tool whose job is to *not* miss
+mutants. An extension author's only fall-through is an explicit `:decline`; `nil` (an `if` with no `else`), a
 crash, or junk all fail the run with a message naming the culprit. (`Harvest`'s rescue still absorbs target
-failures, so a missing/raising plugin can't sink a scan — only a plugin that is *present and broken* does.)
+failures, so a missing/raising extension can't sink a scan — only an extension that is *present and broken* does.)
 An **empty** `%Expansion{}` is *not* a failure — it is a deliberate "handle and inject nothing" that still
-wins first-non-`:decline` (a plugin wanting to fall through must return `:decline`). The dispatcher merges **each handler's own `:opts`** into the shared `context` before the call,
-so a `{module, opts}` plugin reads its config in `expand_use/3`. `use_handlers/1` `Code.ensure_loaded?`s
+wins first-non-`:decline` (an extension wanting to fall through must return `:decline`). The dispatcher merges **each handler's own `:opts`** into the shared `context` before the call,
+so a `{module, opts}` extension reads its config in `expand_use/3`. `handlers/1` `Code.ensure_loaded?`s
 each module before `function_exported?` (false on a not-yet-loaded module — an order-dependent footgun
-the standalone tests caught) and resolves each entry to a `Plugin.Spec`.
+the standalone tests caught) and resolves each entry to an `Extension.Spec`.
 
-**Threading + validation.** `:plugins` is an `Options` field (default `[]`) that resolves to
-`Mutare.Plugin.Spec`s (bare module → empty opts; `{module, opts}` → carried opts), validated by
-`Plugin.plugin?/1` — **reflection-based** (loaded + exports a plugin callback), unlike `:macros`'s
-syntactic validation, because a plugin module genuinely *is* on the Mutare process path (it's a dep of the
-target, like a custom mutator), whereas a `:macros` entry only names a possibly-absent module. `Schema`
-forwards the specs; `Transform` threads the plugin **specs** into both `Macros.build/3` (which reads each
+**Threading + validation.** `:extensions` is an `Options` field (default `[]`) that resolves to
+`Mutare.Extension.Spec`s (bare module → empty opts; `{module, opts}` → carried opts), validated by
+`Extension.extension?/1` — **reflection-based** (loaded + exports a capability callback), unlike `:macro_routes`'s
+syntactic validation, because an extension module genuinely *is* on the Mutare process path (it's a dep of the
+target, like a custom mutator), whereas a `:macro_routes` entry only names a possibly-absent module. `Schema`
+forwards the specs; `Transform` threads the extension **specs** into both `Macros.build/3` (which reads each
 spec's `.module` — registration is opts-independent, so `Macros` ignores the opts) and `Uses.annotate/2`
-(so `opts` reach `expand_use/3` via context). `Macros.from_plugins/1` accepts specs *or* bare modules
-(extracting the module from each, mirroring `from_mutators/1`), and **rejects** a plugin `macros/0` that
-declares a `:hosted`/`:routing` treatment — a plugin produces no mutations, so it can't host one (a
-plugin-specific error, rather than `build/3`'s generic `validate_host!` mislabeling the plugin a "hosting
-mutator"). Plugin behaviours are kept **atoms-only** (`normalize_behaviours/1` filters to concrete module
+(so `opts` reach `expand_use/3` via context). `Macros.from_extensions/1` accepts specs *or* bare modules
+(extracting the module from each, mirroring `from_mutators/1`), and **rejects** an extension `macro_routes/0` that
+declares a `:hosted`/`:routing` treatment — static routing cannot carry a host, so the entry must move
+to an enabled mutator's `hosted_routes/0`. Extension behaviours are kept **atoms-only**
+(`normalize_behaviours/1` filters to concrete module
 atoms, dropping a stray quoted node / junk / the degenerate `nil`/`true`/`false`) per the
 `Expansion` `behaviours: [module()]` contract — *not* alias-resolved against an empty env, which would
 silently mis-resolve a single-segment or aliased node to the wrong module.
-It's `.mutare.exs`-only (no CLI flag) — plugins are modules, and the UX is the **Igniter installer**
+It's `.mutare.exs`-only (no CLI flag) — extensions are modules, and the UX is the **Igniter installer**
 (`Mix.Tasks.Mutare.Install`), which on detecting `:gettext` adds the `mutare_gettext` dependency and
-writes the one `:plugins` entry (`plugins: [Mutare.Gettext]`) into the generated `.mutare.exs` — the
-plugin counterpart of how a detected `:phoenix`/`:ecto` extends the `:mutators` list (the "without
+writes the one `:extensions` entry (`extensions: [Mutare.Gettext]`) into the generated `.mutare.exs` — the
+extension counterpart of how a detected `:phoenix`/`:ecto` extends the `:mutators` list (the "without
 editing config" goal). So a console string flag earns nothing.
 
-**Scope decision — tied to `:expand_uses`.** When `--no-expand-uses` freezes the pre-pass, plugin overrides
+**Scope decision — tied to `:expand_uses`.** When `--no-expand-uses` freezes the pre-pass, extension overrides
 are frozen with it (the whole `Uses.annotate` is skipped). Defensible: `--no-expand-uses` means "no `use`
-magic at all," and it's a debug/count-pinning flag. Making explicit plugin overrides independent of the
+magic at all," and it's a debug/count-pinning flag. Making explicit extension overrides independent of the
 heuristic in-process expansion is a possible refinement, deferred.
 
 **Merge precedence — explicit config is the final authority.** `build/3` folds **built-ins → mutator
-`macros/0` → plugin `macros/0` → declarative `:macros`** (`Map.put`, later wins), so a `.mutare.exs`
-`:macros` entry overrides *both* a mutator's and a plugin's registration for the same
-`{module, name, arity}`; among the code extensions a plugin wins a tie over a mutator. The earlier order
-folded config *first* (weakest), which let an installed plugin silently override a user's explicit
+`macro_routes/0` → extension `macro_routes/0` → declarative `:macro_routes`** (`Map.put`, later wins), so a `.mutare.exs`
+`:macro_routes` entry overrides *both* a mutator's and an extension's registration for the same
+`{module, name, arity}`; among the code extensions an extension wins a tie over a mutator. The earlier order
+folded config *first* (weakest), which let an installed extension silently override a user's explicit
 routing — a footgun. Folding config last fixes it under the rule "the user's explicit config is always
 the final say." The accepted cost: config now also outranks a *mutator's* macro registration, so a user
 who explicitly writes `{Ecto.Query, :from, :expression}` can un-skip a DSL its mutator needs left raw —
@@ -1860,24 +1860,24 @@ to an *installed dependency* is the more surprising failure.)
 
 **Three robustness guards on the override path** (small, each closing a gap a review surfaced):
 `target/2` guards `not is_nil(mod)` — `Aliases.resolve_node/2` returns `nil` (itself an atom) for an
-unresolvable target, so a bare `is_atom` would hand a `nil` module to every plugin's `expand_use/3`
-(harmless on the in-process path, but a plugin with an unguarded catch-all clause would fire on a `use`
-it can't see). `from_plugin/2` runs plugin-injected behaviours through `normalize_behaviours/1`
+unresolvable target, so a bare `is_atom` would hand a `nil` module to every extension's `expand_use/3`
+(harmless on the in-process path, but an extension with an unguarded catch-all clause would fire on a `use`
+it can't see). `from_extension/2` runs extension-injected behaviours through `normalize_behaviours/1`
 (`Aliases.resolve_node` each, drop the un-resolvable) so only concrete module atoms reach the behaviour
 set — matching the in-process harvest, where a non-atom would silently match no `@behaviour`.
 `flatten_directive/1` **recurses** through nested `__block__`s, so a block-in-a-block (a legal if unusual
-`Macro.t()` a plugin might `quote`) flattens to its leaf directives rather than surfacing an inner
+`Macro.t()` an extension might `quote`) flattens to its leaf directives rather than surfacing an inner
 `__block__` that `register/2` would drop.
 
 **Superseded alternative.** An earlier idea was to match a registered `:skip` macro by **bare name** on an
 *unresolved* call (sound because `:skip` only ever *removes* mutation, never poisons). The override is
 strictly better: it produces *real* resolution, which enables **per-position** routing (mutate the count,
 skip only the msgid) that a name-only skip can't do safely — so we built the override and dropped the
-bare-name path. Tested in `plugin_test.exs` (dispatch, macro merge, the config-over-mutator precedence,
+bare-name path. Tested in `extension_test.exs` (dispatch, macro merge, the config-over-mutator precedence,
 the `Uses` override surfacing the directive a raising `__using__` can't, a 3-tuple `@behaviour` injection
 normalized to module atoms, and end-to-end per-position routing through `transform_string`) with
-`test/support/plugin_fixtures.ex` (`GettextLike` + its raising caller-mutating `__using__`,
-`GettextLikeMacros`, `GettextLikePlugin`, `BlockDirectivePlugin`, `BehaviourPlugin`).
+`test/support/extension_fixtures.ex` (`GettextLike` + its raising caller-mutating `__using__`,
+`GettextLikeMacros`, `GettextLikeExtension`, `BlockDirectiveExtension`, `BehaviourExtension`).
 
 ### Behaviour detection — `@behaviour` set per module, surfaced to custom mutators `[done]`
 A custom mutator often wants to fire *only* inside modules of a kind — the motivating case a
@@ -2024,7 +2024,7 @@ the guard is in the `analyze` capture clause, not in `Captures` (placement is po
 caller's job).
 
 ### Macro registry wildcards — whole-module and name-only escape hatch `[done]`
-Two flexibility asks on `:macros`: (1) mark a **whole module**'s macros with one treatment (a
+Two flexibility asks on `:macro_routes`: (1) mark a **whole module**'s macros with one treatment (a
 whole DSL `:skip`), overridable per-macro on a separate line; (2) configure a treatment **by name
 only**, applying to any module exporting that name — the escape hatch for when the module-resolution
 machinery can't see the macro (a `use`-injected import Mutare can't expand, an alias it can't follow).
@@ -2075,7 +2075,7 @@ mutations via `Calls`/`context.behaviours`; a **basic** library works *today* by
 extensions here are strictly about **localization + scale** — wrapping the *whole* query per mutant
 duplicates it and blows up (`(mutants+1)^depth`, the pipe-hoist pathology). Both now exist:
 
-**#1 — mutator-supplied selector host (the delivery seam, `c:Mutare.Mutator.MacroAware.host/2`).** You can't
+**#1 — mutator-supplied selector host (the delivery seam, `c:Mutare.Mutator.MacroHost.host/2`).** You can't
 splice `case :persistent_term.get(...)` into a query, but Ecto's `^` + `dynamic/2` injects a
 runtime-chosen fragment the query *actually runs* (exactly one branch bakes in, the active id being
 constant per run):
@@ -2110,7 +2110,7 @@ default-`wrap` normalizer). Multiple targets fold over the node (each `splice` r
 position); a whole-node `:mutare` mutation on the *same* node still rides an ordinary selector wrapping
 the spliced result (`emit_site/3`) — a no-op when there is none, the common case.
 
-**#2 — a `:hosted` macro-arg treatment + shape-aware routing (`c:Mutare.Mutator.MacroAware.macro_routing/1`).**
+**#2 — a `:hosted` macro-arg treatment + shape-aware routing (`c:Mutare.Mutator.MacroHost.macro_routing/1`).**
 Treatments were a closed set only core's analyzer reads. `:hosted` (now in `Macro.Spec.@treatments`)
 means "don't splice a *bare* selector here (it'd poison the DSL) — route this position's mutations
 through the mutator's host (#1)." It must also be chosen per **call shape**, which a static per-position
@@ -2122,7 +2122,7 @@ no piped split; a builder's piped value `q` is an ordinary `:expression` analyze
 clause). `Resolve` rewrites each `:hosted` → `{:hosted, host}` (the hosting mutator, stamped on the spec
 by `Macros.from_mutators/1`, so the analyzer can reach the right `host/2`); `route_macro_arg/3` leaves a
 `{:hosted, _}` position **raw** (like `:skip`), and `analyze_known_macro` attaches the host's targets.
-A declarative `:macros` entry can't use `:hosted`/`:routing` (no host to deliver/answer) — `Macros.build/2`
+A declarative `:macro_routes` entry can't use `:hosted`/`:routing` (no host to deliver/answer) — `Macros.build/2`
 raises (`Macro.Spec.host_required?/1`). Both shapes (direct + piped builder) route; the fixture
 (`test/support/host_mutator.ex`, `Mutare.Test.{HostDSL,HostMutator}`) and `test/mutare/hosted_test.exs`
 prove the full machinery — classifier, host seam, core-built selector + ids + Site + coverage + poison —
@@ -2198,9 +2198,9 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     Classifier-only (a static `args` can't produce it — `Spec.routing/2` only emits validated atoms), and
     a non-keyword argument under it falls back to raw, so a mis-classification never splices into a
     non-pair. This is the third foreign-DSL extension after the host (#1) and `:routing`/`:hosted` (#2):
-    it unblocks `mutare_ecto`'s shorthand-split + `nil`-pair exclusion without the plugin re-implementing
+    it unblocks `mutare_ecto`'s shorthand-split + `nil`-pair exclusion without the extension re-implementing
     core's literal families. Tested via the `set/2` fixture macro (`Mutare.Test.HostDSL`/`HostMutator`).
-    A keyword *value* is `t:Mutare.Mutator.MacroAware.keyword_value_treatment/0`, which **includes `:hosted`**:
+    A keyword *value* is `t:Mutare.Mutator.MacroHost.keyword_value_treatment/0`, which **includes `:hosted`**:
     a value inside a keyword shorthand can be a foreign-DSL fragment too (e.g. an `mutare_ecto`
     `where(q, x: u.a == u.b)`-shaped value), so it routes to the registering mutator's `host/2` like a
     top-level `:hosted` argument. Hosting still delivers through `host/2`, which weaves into the **whole
@@ -2236,7 +2236,7 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     (`where(q, category: case … end)` → "unbound/`case` not supported") but accepts the interpolated
     `where(q, category: ^(case … end))`. So core can't mutate a shorthand value with its ordinary
     in-place selector — the same wall the host (#1) climbs for *conditions*, but here the mutants are
-    core's literal families, not the plugin's catalog. New value treatment `:pinned`
+    core's literal families, not the extension's catalog. New value treatment `:pinned`
     (`route_macro_arg/3`): analyze the value as ordinary runtime so the configured families attach
     their `Candidate.InPlace`s (their **own** family name reaches the Site — `:string`/`:literal`, not
     the host), flag those candidates `pin?`, and `emit_site/3`'s `pin_if_needed/2` wraps the built
@@ -2278,7 +2278,7 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     either — the `Resolve` pre-pass walks **uniformly** (`descend(args, env)` doesn't prune at a
     `:skip`/`:hosted` boundary), so every nested known-macro call in the raw node handed to `host/2`
     already carries its `:mutare_macro_call` identity + `:mutare_macro` routing stamp, from the *merged*
-    registry (built-ins + mutators'/plugins' `macros/0` + the declarative `:macros`) and the same
+    registry (built-ins + mutators'/extensions' `macro_routes/0` + the declarative `:macro_routes`) and the same
     alias/import/`use` resolution. So the reader is pure stamp-reading — no new plumbing, no registry in
     `host/2`'s context: `macro_treatment(node)` returns the resolved **per-visible-arg** routing (or
     `nil`). It is deliberately per-argument with *no* all-`:skip` convenience predicate: a macro is
@@ -2291,7 +2291,7 @@ mutates the raw fragment — `:hosted` leaves it raw.)
 
 **Explicitly not needed.** `context.uses` — every Ecto target self-identifies *node-locally* (a resolved
 call or a known macro), unlike a GenServer return tuple (shape-ambiguous, *does* need module context); the
-node never has to ask the module who it is. `opts` for `macros/0` — Ecto's macro set is fixed. Caveat
+node never has to ask the module who it is. `opts` for `macro_routes/0` — Ecto's macro set is fixed. Caveat
 inherited from `Uses`: an external-path target whose deps aren't on the task's code path won't expand
 `use Ecto.Schema`, so schema-skip silently degrades and the body poisons — run mutare **as a dep of the
 app under test**, the supported deployment.
@@ -6232,7 +6232,7 @@ time `Runner.run_mutant/6` reads `result.outcome` — at that guard.
 `Mutare.Mutator` had grown to **twelve** `@optional_callbacks` spanning five unrelated jobs — node
 mutation (`mutate/1`, `mutate/2`), structural positions
 (`return_replacements`/`condition_replacements`/`pattern_mutations`, each with a behaviour-aware `+1`
-arity), macro/DSL targeting (`macros/0`, `macro_routing/1`, `host/2`), and the in-RHS suppression
+arity), macro/DSL targeting (`hosted_routes/0`, `macro_routing/1`, `host/2`), and the in-RHS suppression
 classifier (`empty_collection?/1`, subsequently removed with the unsound body suppression above).
 A reader opening the behaviour to write a one-line operator swap met all of it. At 0.1.0, before
 there are external mutators to break, was the moment to fix the shape.
@@ -6242,7 +6242,7 @@ explicit `capabilities/0` declaration*. The declaration is the wrong tool for El
 `function_exported?` is already an implicit, zero-drift capability check, and the whole codebase is
 built on "discovered by export / classified positively" — a `capabilities/0` would be a second source
 of truth that can disagree with what's actually exported (declare `:host`, forget `host/2`). The split
-is the house style: it's exactly the capability-named-peer move `Mutare.Plugin` made for
+is the house style: it's exactly the capability-named-peer move `Mutare.UseExpansion` made for
 vocabulary-vs-judgment, and the principle is recorded above ("a new capability gets a capability-named
 peer, not a declaration mechanism").
 
@@ -6251,11 +6251,10 @@ At the time it also kept `empty_collection?/1` because that classified a mutator
 the guard-only correction above later removed it entirely. Two companion behaviours, declared
 *alongside* `Mutare.Mutator`:
 `Mutare.Mutator.Structural` (the position-routed hooks + their structural `context` type) and
-`Mutare.Mutator.MacroAware` (the three DSL-targeting callbacks + the `routing_treatment` /
-`keyword_value_treatment` types). The fault line was visible in the data: the macro-aware callbacks
-have *zero* built-in implementers — they exist purely for external library mutators — and `macros/0`
-is already duplicated on `Mutare.Plugin`. So "teach Mutare a macro's shape" is genuinely a different
-capability from "produce a mutation."
+`Mutare.Mutator.MacroHost` (the three DSL-targeting callbacks + the `routing_treatment` /
+`keyword_value_treatment` types). The fault line was visible in the data: the macro-host callbacks
+have *zero* built-in implementers — they exist purely for external library mutators. So "teach Mutare
+a macro's shape" is genuinely a different capability from "produce a mutation."
 
 **What it is and isn't.** It is **documentation/ergonomics**, not a structural change: dispatch is
 byte-for-byte unchanged. `Mutare.Mutator.Dispatch` discovers every hook by `function_exported?`, never
@@ -6270,7 +6269,37 @@ doesn't reduce.
 `@impl true`), which turns into a hard `--warnings-as-errors` failure the instant its callback leaves
 `Mutare.Mutator`. So each of the five built-ins (`ReturnValue`/`GenServer`/`IfCondition`/`PatternSwap`/
 `PatternWildcard`) and the macro/structural test fixtures gained the new `@behaviour` line and had the
-*moved* callback's annotation flipped to `@impl Mutare.Mutator.Structural` / `.MacroAware`, while
+*moved* callback's annotation flipped to `@impl Mutare.Mutator.Structural` / `.MacroHost`, while
 `name/0`'s stayed `@impl Mutare.Mutator`. The `host_mutator.ex` fixtures share so many identical
-`@impl`/`def macros` blocks that a rule-based pass (flip only the `@impl` immediately above a
-`macros`/`macro_routing`/`host` def) was the safe edit, not hand-anchored replaces.
+`@impl`/`def hosted_routes` blocks that a rule-based pass (flip only the `@impl` immediately above a
+`hosted_routes`/`macro_routing`/`host` def) was the safe edit, not hand-anchored replaces.
+
+### Macro routing and `use` expansion — capability peers, not duplicated extension callbacks `[done]`
+
+The first capability split still left the awkward part visible: both a non-mutating extension and a
+mutator exposed `macro_routes/0`, but through two different behaviours. The declaration itself was
+identical; only its **provenance** changed what core did. Routes found through a mutator were stamped
+with that module as a possible selector host, while routes found through an extension were rejected
+if they mentioned `:hosted`/`:routing`. In other words, the API duplicated one fact and the collector
+silently supplied the real distinction.
+
+Before 0.1.0, the surface was split on the actual capabilities:
+
+- **`Mutare.MacroRouting.macro_routes/0`** declares static library vocabulary. Enabled mutators and
+  modules under `:extensions` are both inspected for it. Its entries may use only `:expression`,
+  `:pattern`, `:binding_pattern`, and `:skip`; it is global, merged, and opts-independent.
+- **`Mutare.Mutator.MacroHost.hosted_routes/0`** declares only routes containing `:hosted` or the
+  `:routing` classifier. The registry stamps these with the contributing mutator, then validates the
+  corresponding `host/2` / `macro_routing/1` callback. Returning a static-only entry here is a loud
+  contract error, just as returning a host-dependent entry from `macro_routes/0` is.
+- **`Mutare.UseExpansion.expand_use/3`** is solely the ordered, opts-aware `use` override. It keeps
+  the first-non-`:decline` dispatch and the loud `Mutare.UseExpansion.ContractError` boundary.
+- **`Mutare.Extension`** is configuration plumbing, not another behaviour. `:extensions` accepts a
+  non-mutating module implementing `Mutare.MacroRouting`, `Mutare.UseExpansion`, or both; a package
+  such as Gettext therefore remains one entry while the callbacks have one owner each. Mutators are
+  rejected from this list and discovered through `:mutators` instead.
+
+The user-facing `:plugins` and `:macros` keys became `:extensions` and `:macro_routes` at the same
+pre-release boundary. There is deliberately no compatibility alias: accepting both names would make
+the old conceptual split part of the released contract. Likewise there is no `capabilities/0` or
+`extensions/0` manifest; exported callbacks remain the zero-drift capability check.

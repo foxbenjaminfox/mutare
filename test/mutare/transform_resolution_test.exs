@@ -1097,7 +1097,7 @@ defmodule Mutare.TransformResolutionTest do
       {_, skipped, _} =
         Mutare.transform_string(source,
           mutators: [Mutare.Mutators.Literal],
-          macros: [{:my_dsl, :filter, :any, :skip}]
+          macro_routes: [{:my_dsl, :filter, :any, :skip}]
         )
 
       {_, control, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.Literal])

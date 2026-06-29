@@ -26,11 +26,11 @@ defmodule Mutare.Transform.CallsTest do
 
   describe "resolved_macro_call/1 — normalize a known-macro node across written forms" do
     # Register a macro on a (deliberately un-loadable) DSL module. Module-key resolution for a
-    # `:macros` entry is reflection-free, and an `import` of the same module registers in the env
+    # `:macro_routes` entry is reflection-free, and an `import` of the same module registers in the env
     # regardless of loadability — so the *bare* form exercises the registry-fallback path that
     # `resolved_call/1` cannot resolve (no reflectable import stamp), the whole point of reading
     # the authoritative `MacroStamp` identity instead.
-    @registry Mutare.Macros.build([{Mx.DSL, :filter, :any, :skip}], [])
+    @registry Mutare.MacroRouting.Registry.build([{Mx.DSL, :filter, :any, :skip}], [])
 
     defp resolved_macro(source) do
       source
@@ -90,7 +90,7 @@ defmodule Mutare.Transform.CallsTest do
       node =
         "match?(x, 1)"
         |> Sourceror.parse_string!()
-        |> Resolve.annotate(Mutare.Macros.build([], []))
+        |> Resolve.annotate(Mutare.MacroRouting.Registry.build([], []))
 
       assert {[:Kernel], :match?, [_x, _one], rebuild} = Calls.resolved_macro_call(node)
 
@@ -130,7 +130,7 @@ defmodule Mutare.Transform.CallsTest do
     end
 
     test "a direct atom-module macro call is stamped by Resolve and rebuilt in the atom form" do
-      registry = Mutare.Macros.build([{:my_dsl, :filter, :any, :skip}], [])
+      registry = Mutare.MacroRouting.Registry.build([{:my_dsl, :filter, :any, :skip}], [])
 
       node =
         ":my_dsl.filter(q, c)"
@@ -154,7 +154,7 @@ defmodule Mutare.Transform.CallsTest do
     test "a name-only registry match keeps the macro identity with a nil module" do
       # `{:*, name, …}` is the escape hatch for a macro whose module the resolver can't see; the
       # reader still surfaces the name so a name-matching classifier works.
-      registry = Mutare.Macros.build([{:*, :only_macro, :any, :skip}], [])
+      registry = Mutare.MacroRouting.Registry.build([{:*, :only_macro, :any, :skip}], [])
 
       node =
         "only_macro(a, b)"
@@ -184,7 +184,10 @@ defmodule Mutare.Transform.CallsTest do
       # so the resolved identity must be sorted-stable — `[:Alpha, :Dsl]` wins over `[:Zeta, :Dsl]`
       # — and never flip run to run (the stamp feeds id-stable analysis and a module classifier).
       registry =
-        Mutare.Macros.build([{Zeta.Dsl, :where, 2, :skip}, {Alpha.Dsl, :where, 2, :skip}], [])
+        Mutare.MacroRouting.Registry.build(
+          [{Zeta.Dsl, :where, 2, :skip}, {Alpha.Dsl, :where, 2, :skip}],
+          []
+        )
 
       resolve = fn ->
         "import Zeta.Dsl\nimport Alpha.Dsl\nwhere(q, c)"
@@ -206,7 +209,7 @@ defmodule Mutare.Transform.CallsTest do
             def f(s), do: Mx.DSL.filter(s, s)
           end
           """,
-          macros: [{Mx.DSL, :filter, :any, :skip}]
+          macro_routes: [{Mx.DSL, :filter, :any, :skip}]
         )
 
       refute metamutant =~ "mutare_macro_call"
@@ -214,7 +217,7 @@ defmodule Mutare.Transform.CallsTest do
   end
 
   describe "macro_treatment/1 — inspect how a node's macro is registered, per argument" do
-    @skip_registry Mutare.Macros.build([{Mx.DSL, :filter, :any, :skip}], [])
+    @skip_registry Mutare.MacroRouting.Registry.build([{Mx.DSL, :filter, :any, :skip}], [])
 
     # Find the macro *node* (not the resolved tuple) so the reader can be applied to it.
     defp macro_node(source, registry) do
@@ -234,14 +237,16 @@ defmodule Mutare.Transform.CallsTest do
     end
 
     test "a per-position registration reports each argument's own treatment" do
-      registry = Mutare.Macros.build([{Mx.DSL, :filter, 2, [:skip, :expression]}], [])
+      registry =
+        Mutare.MacroRouting.Registry.build([{Mx.DSL, :filter, 2, [:skip, :expression]}], [])
+
       node = macro_node("Mx.DSL.filter(q, c)", registry)
 
       assert Calls.macro_treatment(node) == [:skip, :expression]
     end
 
     test "a pattern macro (match?) reports its routing" do
-      node = macro_node("match?({:ok, x}, v)", Mutare.Macros.build([], []))
+      node = macro_node("match?({:ok, x}, v)", Mutare.MacroRouting.Registry.build([], []))
 
       assert Calls.macro_treatment(node) == [:pattern, :expression]
     end
@@ -268,7 +273,7 @@ defmodule Mutare.Transform.CallsTest do
     end
 
     test "a 0-arg known macro reports [] (recognised, but nothing inside) — distinct from nil" do
-      registry = Mutare.Macros.build([{Mx.DSL, :thing, 0, :skip}], [])
+      registry = Mutare.MacroRouting.Registry.build([{Mx.DSL, :thing, 0, :skip}], [])
       node = macro_node("Mx.DSL.thing()", registry)
 
       assert Calls.macro_treatment(node) == []

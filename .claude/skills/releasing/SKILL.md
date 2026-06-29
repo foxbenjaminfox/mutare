@@ -23,11 +23,11 @@ Pre-1.0, this project treats the **minor** as the breaking slot:
 | --- | --- |
 | Bug fix, doc fix, new mutator that's on-by-default but compile-safe | **patch** `0.1.0 → 0.1.1` |
 | New config option / CLI flag / reporter; new opt-in behaviour | **minor** `0.1.x → 0.2.0` |
-| Breaking change to `.mutare.exs`, the `Mutare.Mutator`/`Mutare.Plugin` contracts, CLI semantics, or the result-status set | **minor** (pre-1.0) `0.x → 0.(x+1).0` — lead the changelog entry with it |
+| Breaking change to `.mutare.exs`, the mutator/extension capability contracts, CLI semantics, or the result-status set | **minor** (pre-1.0) `0.x → 0.(x+1).0` — lead the changelog entry with it |
 
-When unsure whether something is breaking for **custom mutators / plugins**, treat
+When unsure whether something is breaking for **custom mutators / extensions**, treat
 the public behaviours (`Mutare.Mutator`, `Mutare.Mutator.Structural`,
-`Mutare.Mutator.MacroAware`, `Mutare.Plugin`, `Mutare.Macros`) as the API surface
+`Mutare.Mutator.MacroHost`, `Mutare.MacroRouting`, `Mutare.UseExpansion`) as the API surface
 and bump accordingly. Companion packages are **not** part of this decision — they
 version independently (see the last section).
 
@@ -101,7 +101,7 @@ The companion packages (`mutare_phoenix`, `mutare_phoenix_live_view`,
 `mutare_ecto`, `mutare_oban`, `mutare_gettext`) are **deliberately uncoupled** from
 the core. Releasing `mutare` does **not** require touching or re-releasing them:
 
-- The installer adds them with an open requirement (`@plugin_requirement
+- The installer adds them with an open requirement (`@companion_requirement
   ">= 0.0.0"` in `lib/mix/tasks/mutare.install.ex`), so `mix deps.get` resolves
   whatever companion version is current and compatible. Nothing to bump here on a
   Mutare release.
@@ -112,8 +112,8 @@ the core. Releasing `mutare` does **not** require touching or re-releasing them:
 
 What makes this safe is the **contract**, owned on the companion side: each
 companion's own `mix.exs` declares the range of `mutare` it supports, and Mutare
-keeps the public mutator/plugin behaviours (`Mutare.Mutator`, `Mutare.Plugin`,
-`Mutare.Macros`, …) stable within a version line. So when a Mutare release breaks
+keeps the public mutator/extension behaviours (`Mutare.Mutator`, `Mutare.MacroRouting`,
+`Mutare.UseExpansion`, …) stable within a version line. So when a Mutare release breaks
 one of those behaviours, flag it in the changelog and the companions update on
 their own schedule — the Mutare release is never blocked on them, and a user on an
 older companion simply keeps the older, compatible Mutare until the companion

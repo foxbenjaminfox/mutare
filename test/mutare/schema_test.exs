@@ -419,7 +419,7 @@ defmodule Mutare.SchemaTest do
       assert Schema.count(off) == 0
     end
 
-    test ":macros reaches the transform (a :skip routing keeps core out of the DSL body)",
+    test ":macro_routes reaches the transform (a :skip routing keeps core out of the DSL body)",
          %{root: root} do
       write(root, "lib/q.ex", """
       defmodule UsesQuery do
@@ -432,7 +432,7 @@ defmodule Mutare.SchemaTest do
         Schema.build(root,
           paths: ["lib/q.ex"],
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
-          macros: macros
+          macro_routes: macros
         )
       end
 

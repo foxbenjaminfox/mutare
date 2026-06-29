@@ -300,7 +300,7 @@ defmodule Mutare.Transform.Analyze do
 
   # match `=`: the left side is a pattern, the right keeps the context. The `=` node itself is
   # deliberately **not** offered to mutators (no `offer/3` here) — there is no "mutate `=`" entry
-  # point, unlike the *macro* node (`analyze_known_macro` offers it so a `macros/0` mutator can
+  # point, unlike the *macro* node (`analyze_known_macro` offers it so a `macro_routes/0` mutator can
   # fire). This is load-bearing: it is *why* the value-discarded-`=` path
   # (`attach_match_pattern_candidates/4`) can prepend its `MatchPattern` candidates with
   # `put_candidates` without shadowing anything, and why no whole-`=` mutation can trap the
@@ -320,7 +320,7 @@ defmodule Mutare.Transform.Analyze do
   end
 
   # (`match?`/`destructure` and any other pattern-context macro are no longer a
-  # dedicated clause here: they are *known macros* (`Mutare.Macros`), recognised by
+  # dedicated clause here: they are *known macros* (`Mutare.MacroRouting.Registry`), recognised by
   # the lexical pre-pass via their resolved module — so a bare `match?(p, e)` is
   # routed only when it is genuinely `Kernel.match?`, and an aliased/qualified or
   # user-registered macro is handled the same way. The routing is read from the
@@ -691,7 +691,7 @@ defmodule Mutare.Transform.Analyze do
 
   # The shared call-node dispatch behind the generic runtime `analyze/3` clause and
   # `analyze_pipe_stage/2`: a call stamped a **known macro** (`meta[:mutare_macro]`, set by
-  # `Mutare.Transform.Resolve` from `Mutare.Macros`) routes its arguments by their declared
+  # `Mutare.Transform.Resolve` from `Mutare.MacroRouting.Registry`) routes its arguments by their declared
   # treatment (`Macros.analyze_known_macro` — so a pattern arg isn't mutated in place and an
   # opaque DSL body is left raw) while the whole node is still offered to mutators; every other
   # node is offered and its children descended. `context` carries `:pipe_mode` (`:piped` for a
@@ -1007,7 +1007,7 @@ defmodule Mutare.Transform.Analyze do
   An unknown DSL block is mutated on the guess that it is unquoted into a function;
   if the injected selector `case` is illegal in the DSL it poisons the single build,
   and `Mutare.Runner` skips the whole macro by this name (see `Mutare.Site`). A
-  *registered* macro (`routing != nil`) returns `nil` — the user's `:macros` choice
+  *registered* macro (`routing != nil`) returns `nil` — the user's `:macro_routes` choice
   (mutate or `:skip`) is honoured and never auto-skipped. Only meaningful for a node
   that `module_macro_block_statement?/1` already accepted.
   """

@@ -220,7 +220,10 @@ defmodule Mix.Tasks.Mutare do
         # mutated — `:skip` covers every argument, a list marks each position;
         # `:*` wildcards a slot: {M, :*, :skip} = whole module, {:*, name, :skip}
         # = that name in any module (a more specific line overrides)
-        macros: [{Ecto.Query, :from, :skip}],
+        macro_routes: [{Ecto.Query, :from, :skip}],
+        # non-mutating source-understanding modules implementing
+        # Mutare.MacroRouting, Mutare.UseExpansion, or both
+        extensions: [],
         # expand `use` to surface the import/alias it injects (--no-expand-uses)
         expand_uses: true,
 

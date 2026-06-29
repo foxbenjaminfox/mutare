@@ -237,7 +237,7 @@ defmodule Mutare.Test do
   `@compile {:no_warn_undefined, …}` for the coverage helper it references, and that `hit/1` is
   gated off at baseline, so the reference compiles clean and never fires here.
 
-  `opts` are forwarded to `Mutare.transform_string/2` (e.g. `:expand_uses`, `:macros`,
+  `opts` are forwarded to `Mutare.transform_string/2` (e.g. `:expand_uses`, `:macro_routes`,
   `:start_id`), except:
 
     * `:uniquify` — compile inside the isolating wrapper (default `true`; pass `false` to compile

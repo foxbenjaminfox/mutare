@@ -6,9 +6,13 @@ defmodule Mutare.Mutator do
 
   You must define `name/0` to identify the mutator in reports, and at least one of `mutate/1` or `mutate/2` to produce mutations. Optionally, you may implement `variants/0` and `variant/2` to classify your mutations into kinds, and `mutate_call_option_keys?/1` to control mutations of call-option names.
 
-  Implement also `Mutare.Mutator.Structural` if you seek to participate in the structural mutation work—identifying a nonstandard position to mutate. (Amoung the built in mutators that use `Mutare.Mutator.Structural` are, for example, `Mutare.Mutators.ReturnValue`, `Mutare.Mutators.IfCondition`, and `Mutare.Mutators.PatternSwap`.)
+  Implement also `Mutare.Mutator.Structural` if you seek to participate in structural mutation
+  work—identifying a nonstandard position to mutate. Built-in examples include
+  `Mutare.Mutators.ReturnValue`, `Mutare.Mutators.IfCondition`, and
+  `Mutare.Mutators.PatternSwap`.
 
-  Implement also `Mutare.Mutator.MacroAware` if you target a macro whose arguments must be routed specially (e.g. a pattern, an opaque DSL body, a hosted fragment).
+  Implement `Mutare.MacroRouting` when the mutator depends on static macro-argument routing.
+  Implement `Mutare.Mutator.MacroHost` only when it owns mutations inside a hosted DSL fragment.
 
   ## Writing a mutator
 
@@ -79,15 +83,16 @@ defmodule Mutare.Mutator do
       # mutate option values but not the option names, for atom keys
       [mutators: [..., {Mutare.Mutators.AtomLiteral, call_option_keys: false}]]
 
-  ## Targeting a macro / DSL (`Mutare.Mutator.MacroAware`)
+  ## Targeting a macro / DSL
 
-  A mutator that targets a *macro* — whose arguments the transform must route as patterns,
-  leave opaque, or host a fragment of — declares those macros through the separate
-  `Mutare.Mutator.MacroAware` behaviour (`c:Mutare.Mutator.MacroAware.macros/0` and friends).
-  Listing the mutator in `:mutators` auto-registers them, so a library (e.g. an Ecto
-  integration) bundles its mutator and its macro routing in one module that declares both
-  `Mutare.Mutator` and `Mutare.Mutator.MacroAware`. See `Mutare.Macros` for the declarative
-  `:macros` option (the no-mutator case, e.g. routing a custom DSL's argument as a pattern).
+  A mutator whose whole-node mutation depends on a macro's arguments being routed as patterns or
+  left opaque implements `Mutare.MacroRouting` and returns those static declarations from
+  `c:Mutare.MacroRouting.macro_routes/0`. Listing it in `:mutators` auto-registers them.
+
+  A mutator that produces mutations *inside* a compile-time DSL additionally implements
+  `Mutare.Mutator.MacroHost`: `c:Mutare.Mutator.MacroHost.hosted_routes/0` declares only
+  `:hosted`/`:routing` entries, while `host/2` and `macro_routing/1` supply the mutation-specific
+  behavior. See `Mutare.MacroRouting.Registry` for the declarative `:macro_routes` option.
 
   ## Structural mutators at routed positions (`Mutare.Mutator.Structural`)
 
@@ -187,7 +192,7 @@ defmodule Mutare.Mutator do
   A bare `%{node:, note:}` *map* is **not** accepted — the struct is required (a quoted map
   literal is itself a valid mutation node, so only the struct unambiguously means "noted
   mutant"). The same three forms a selector host's `:mutants` accept (see
-  `c:Mutare.Mutator.MacroAware.host/2`).
+  `c:Mutare.Mutator.MacroHost.host/2`).
   """
   @type mutation :: nil | Macro.t() | Mutation.t()
 

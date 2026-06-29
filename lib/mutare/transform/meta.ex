@@ -125,7 +125,7 @@ defmodule Mutare.Transform.Meta do
 
   @doc """
   The per-argument routing `Mutare.Transform.Resolve` stamped on a call that resolved to a known
-  macro (`Mutare.Macros`), or `nil` for an ordinary call. The reader of the `:mutare_macro`
+  macro (`Mutare.MacroRouting.Registry`), or `nil` for an ordinary call. The reader of the `:mutare_macro`
   contract key.
   """
   @spec macro_routing(keyword() | term()) :: term()

@@ -35,7 +35,7 @@ defmodule Mutare.Schema do
 
   The two passes agree only because the pipeline they share — parse, `use`-expansion,
   resolution, and every mutator — is a *deterministic* function of the source and opts;
-  it runs once per pass, so a nondeterministic custom mutator or plugin `expand_use/3`
+  it runs once per pass, so a nondeterministic custom mutator or extension `expand_use/3`
   surfaces as that `render_one/5` drift crash rather than a silent id overlap.
   `from_files/4` also dedups its input by relative path, so a file passed twice is
   rendered once, under one id range — never two overlapping ones.
@@ -377,7 +377,7 @@ defmodule Mutare.Schema do
     raise "Mutare.Schema: mutant-count drift for #{rel} — counted #{counted}, rendered #{rendered}. " <>
             "The two-phase build runs the same analyze→plan→emit pipeline twice (count, then " <>
             "render), so the counts agree only if that pipeline is deterministic for one source — " <>
-            "a nondeterministic custom mutator or `Mutare.Plugin.expand_use/3` (both run in each " <>
+            "a nondeterministic custom mutator or `Mutare.UseExpansion.expand_use/3` (both run in each " <>
             "pass) is the usual cause. Cross-file id stability depends on the counts matching."
   end
 
@@ -446,30 +446,30 @@ defmodule Mutare.Schema do
   # `mix test` OS processes (a different resource).
   defp scan_concurrency, do: System.schedulers_online()
 
-  # Forward `:mutators` (when set), `:macros`, and `:plugins` to the transform. A `nil`
+  # Forward `:mutators` (when set), `:macro_routes`, and `:extensions` to the transform. A `nil`
   # `:mutators` lets `Mutare.Transform` use its default set (we never hard-code that default
   # here); when set it carries the resolved `Mutare.Mutator.Spec`s — including any
-  # `{module, opts}` config (e.g. a mutator's `call_option_keys: false`). `:macros` carries the
-  # resolved `Mutare.Macro.Spec`s (known-macro argument routing), `[]` when none; `:plugins`
-  # carries the `Mutare.Plugin` modules (their `macros/0` + `use`-expansion overrides); the
-  # transform merges all of these with the built-ins and any enabled mutator's `macros/0`.
+  # `{module, opts}` config (e.g. a mutator's `call_option_keys: false`). `:macro_routes` carries the
+  # resolved `Mutare.Macro.Spec`s (known-macro argument routing), `[]` when none; `:extensions`
+  # carries non-mutating modules implementing `Mutare.MacroRouting`, `Mutare.UseExpansion`, or both;
+  # the transform merges those capabilities with built-ins and enabled mutator capabilities.
   # `:expand_uses` carries the `use`-expansion toggle (default `true`).
   defp transform_opts(%Options{
          mutators: mutators,
-         macros: macros,
-         plugins: plugins,
+         macro_routes: macros,
+         extensions: extensions,
          expand_uses: expand_uses
        }) do
     mutator_opts = if mutators == nil, do: [], else: [mutators: mutators]
 
-    # `macro_opts`'s `if false` mutant is equivalent (`[macros: []]` behaves as no `:macros`), but
+    # `macro_opts`'s `if false` mutant is equivalent (`[macro_routes: []]` behaves as no `:macro_routes`), but
     # `if true` is a real kill (macros then never reach the transform) on the same [conditional]
     # family/line — so it is deliberately *not* ignored (a line filter would hide the kill).
-    macro_opts = if macros == [], do: [], else: [macros: macros]
-    plugin_opts = if plugins == [], do: [], else: [plugins: plugins]
+    macro_opts = if macros == [], do: [], else: [macro_routes: macros]
+    extension_opts = if extensions == [], do: [], else: [extensions: extensions]
 
     # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
-    mutator_opts ++ macro_opts ++ plugin_opts ++ [expand_uses: expand_uses]
+    mutator_opts ++ macro_opts ++ extension_opts ++ [expand_uses: expand_uses]
   end
 
   @doc """

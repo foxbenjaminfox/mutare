@@ -30,7 +30,8 @@ defmodule Mutare.Transform.Resolve do
   # whether the current node is a `|>` right-hand side, so `Imports` can recover a piped call's
   # effective arity).
 
-  alias Mutare.{Macros, Mutator}
+  alias Mutare.MacroRouting.Registry, as: Macros
+  alias Mutare.Mutator
   alias Mutare.Transform.{Aliases, Imports, Uses}
   alias Mutare.Transform.Resolve.{MacroStamp, NodeIds}
 
@@ -40,7 +41,7 @@ defmodule Mutare.Transform.Resolve do
 
   @doc """
   As `annotate/1`, plus stamp each call that resolves to a **known macro** (in the
-  `registry` built by `Mutare.Macros.build/3`) with its per-argument routing under
+  `registry` built by `Mutare.MacroRouting.Registry.build/3`) with its per-argument routing under
   `meta[:mutare_macro]`, so the analyzer routes a pattern/opaque argument correctly
   instead of mutating it. The registry is carried in the env (read-only) and
   consulted at each remote and bare call.
@@ -53,7 +54,7 @@ defmodule Mutare.Transform.Resolve do
       imports: %{},
       kernel: Imports.default_selector(),
       pipe_mode: :unpiped,
-      macros: registry
+      macro_routes: registry
     })
     |> NodeIds.stamp()
   end
@@ -96,7 +97,15 @@ defmodule Mutare.Transform.Resolve do
     call_node = {{:., dot_meta, [aliases, fun]}, call_meta, args}
 
     call_meta =
-      MacroStamp.stamp(call_meta, module_key, fun, args, call_node, env.macros, env.pipe_mode)
+      MacroStamp.stamp(
+        call_meta,
+        module_key,
+        fun,
+        args,
+        call_node,
+        env.macro_routes,
+        env.pipe_mode
+      )
 
     {{:., dot_meta, [stamped, fun]}, call_meta, descend(args, env)}
   end
@@ -130,7 +139,15 @@ defmodule Mutare.Transform.Resolve do
         call_node = {{:., dot_meta, [mod, fun]}, call_meta, args}
 
         call_meta =
-          MacroStamp.stamp(call_meta, module_key, fun, args, call_node, env.macros, env.pipe_mode)
+          MacroStamp.stamp(
+            call_meta,
+            module_key,
+            fun,
+            args,
+            call_node,
+            env.macro_routes,
+            env.pipe_mode
+          )
 
         {{:., dot_meta, [mod, fun]}, call_meta, descend(args, env)}
     end
@@ -146,7 +163,15 @@ defmodule Mutare.Transform.Resolve do
     module_key = bare_module_key(fun, arity, meta, env)
 
     meta =
-      MacroStamp.stamp(meta, module_key, fun, args, {fun, meta, args}, env.macros, env.pipe_mode)
+      MacroStamp.stamp(
+        meta,
+        module_key,
+        fun,
+        args,
+        {fun, meta, args},
+        env.macro_routes,
+        env.pipe_mode
+      )
 
     {fun, meta, descend(args, env)}
   end
@@ -205,7 +230,7 @@ defmodule Mutare.Transform.Resolve do
   # `Imports.stamp` resolves a whole `import Mod` by **reflection** (`Code.ensure_loaded?` +
   # `function_exported?`), so a DSL module defined **only in the target project** — which the
   # Mutare process can't load — leaves a bare macro call's `meta[:mutare_import]` unstamped, and
-  # `bare_module_key/4` then returns `nil`. But the user's `:macros` entry *asserts* the module
+  # `bare_module_key/4` then returns `nil`. But the user's `:macro_routes` entry *asserts* the module
   # provides that macro, and the compile-unambiguity rule means a bare call under a whole import
   # of that module is unambiguously its macro. So when reflection can't resolve the call, consult
   # the registry directly: among the **whole**-imported modules in scope, find one that registers
@@ -230,7 +255,7 @@ defmodule Mutare.Transform.Resolve do
     env.imports
     |> Enum.sort()
     |> Enum.find_value(fn {module_key, selector} ->
-      if Imports.whole?(selector) and Macros.lookup(env.macros, module_key, fun, arity),
+      if Imports.whole?(selector) and Macros.lookup(env.macro_routes, module_key, fun, arity),
         do: module_key
     end)
   end

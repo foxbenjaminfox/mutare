@@ -43,9 +43,9 @@ Initial public release.
   to gate, `--line` to target lines, and `--keep-sandbox` to cache the compiled
   sandbox across runs.
 - **Umbrella-aware** — target one app, several, or the whole workspace.
-- **Extension surface** — `Mutare.Mutator` (custom mutators), `Mutare.Plugin`
-  (compile-time vocabulary for libraries), and `:macros` config to leave a
-  macro's arguments unmutated.
+- **Extension surface** — `Mutare.Mutator` (custom mutators), independent
+  `Mutare.MacroRouting` and `Mutare.UseExpansion` capabilities, `:extensions` for
+  non-mutating integrations, and declarative `:macro_routes` configuration.
 - **`mix igniter.install mutare`** installer that detects frameworks and wires up
   the matching companion packages and `.mutare.exs`.
 

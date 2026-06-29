@@ -109,7 +109,7 @@ defmodule Mutare.Site do
     # `nid` (the block-macro statement node's stable DFS identity) makes it
     # **per-invocation**: a poison in `guarded :guard do …` must not suppress a
     # sibling `guarded :body do …` of the same macro that expands differently. A
-    # *registered* macro is left untagged: the user's `:macros` routing is honoured,
+    # *registered* macro is left untagged: the user's `:macro_routes` routing is honoured,
     # never auto-skipped.
     block_macro: nil
   ]

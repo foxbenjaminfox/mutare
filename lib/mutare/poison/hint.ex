@@ -11,7 +11,7 @@ defmodule Mutare.Poison.Hint do
   mutant to drop. The whole run aborts.
 
   The way out is to leave that macro's arguments unmutated by marking it `:skip`
-  in `.mutare.exs` (the `:macros` option). This module recognises the situation
+  in `.mutare.exs` (the `:macro_routes` option). This module recognises the situation
   from the failed compile's output, identifies the macro(s) at fault, and produces
   that advice — including a copy-pasteable snippet — so the error the user sees
   explains how to get unblocked instead of just echoing the raw compiler error.
@@ -137,7 +137,7 @@ defmodule Mutare.Poison.Hint do
 
     #{snippet(macros)}
 
-    See `mix help mutare` for the `:macros` option.\
+    See `mix help mutare` for the `:macro_routes` option.\
     """
   end
 
@@ -155,7 +155,7 @@ defmodule Mutare.Poison.Hint do
 
     """
         [
-          macros: [
+          macro_routes: [
     #{entries}
           ]
         ]\

@@ -188,19 +188,20 @@ defmodule Mutare.Transform do
     * `:file` — path recorded on each site (default `"nofile"`)
     * `:mutators` — list of mutator entries (family atoms, modules, `{module, opts}`
       pairs, or `Mutare.Mutator.Spec`s); defaults to the full built-in set
-    * `:macros` — list of known-macro entries (`{module, name, arity, treatment}` /
-      `{module, name, treatment}`, see `Mutare.Macros`) that route a macro's
-      arguments specially; merged with the built-ins and any enabled mutator's
-      `macros/0`. Defaults to `[]`.
-    * `:plugins` — list of `Mutare.Plugin` entries (third-party extensions), each a
-      bare module or a `{module, opts}` pair. Their `macros/0` registrations merge into
-      the macro registry and their `expand_use/3` overrides feed `use`-expansion (the
-      plugin's `opts` ride along to `expand_use/3`'s context). Defaults to `[]`.
+    * `:macro_routes` — list of known-macro entries (`{module, name, arity, treatment}` /
+      `{module, name, treatment}`, see `Mutare.MacroRouting.Registry`) that route a macro's
+      arguments specially; merged with the built-ins and routing capabilities on enabled
+      mutators/extensions. Defaults to `[]`.
+    * `:extensions` — list of non-mutating extension modules, each implementing
+      `Mutare.MacroRouting`, `Mutare.UseExpansion`, or both; entries may be bare modules or
+      `{module, opts}` pairs. Static routes merge into the registry and `expand_use/3` overrides
+      feed `use`-expansion (the
+      extension's `opts` ride along to `expand_use/3`'s context). Defaults to `[]`.
     * `:start_id` — first mutant id to assign (default `1`)
     * `:expand_uses` — when `true` (the default), expand module-level `use` statements with
       static args and feed their injected `import`/`alias` directives into resolution (see
       `Mutare.Transform.Uses`); `false` freezes the pre-expansion behaviour (and, with it, any
-      plugin `use`-expansion overrides)
+      extension `use`-expansion overrides)
   """
   @spec transform_string(String.t(), keyword()) :: {String.t(), [Site.t()], pos_integer()}
   def transform_string(source, opts \\ []) when is_binary(source) do
@@ -316,26 +317,31 @@ defmodule Mutare.Transform do
     config = build_config(opts, names)
     ctx = build_ctx(config, opts)
 
-    # Third-party plugins (`Mutare.Plugin`): their `macros/0` extends the registry below and
-    # their `expand_use/3` overrides `use`-expansion. Not mutators — they make the built-in
+    # Non-mutating extensions implement `Mutare.MacroRouting`, `Mutare.UseExpansion`, or both:
+    # static routes extend the registry below and `expand_use/3` overrides `use`-expansion. They make the built-in
     # mutators' work land on a library's DSL (the Gettext case). Validated + resolved here at the
-    # boundary (like `:mutators`) to `Mutare.Plugin.Spec`s — carrying each plugin's `opts`,
-    # delivered to `expand_use/3`'s context — so a non-plugin entry fails loudly rather than being
+    # boundary (like `:mutators`) to `Mutare.Extension.Spec`s — carrying each extension's `opts`,
+    # delivered to `expand_use/3`'s context — so a non-extension entry fails loudly rather than being
     # silently dropped by the downstream per-callback filters. `Mutare.Options` validates the same
     # way, so the `Mutare.run/2` path is covered too.
-    plugins = opts |> Keyword.get(:plugins, []) |> Mutare.Plugin.validate!()
+    extensions = opts |> Keyword.get(:extensions, []) |> Mutare.Extension.validate!()
 
-    # The known-macro registry (`Mutare.Macros`): built-ins (`Kernel.match?`/`destructure`)
-    # merged with the declarative `:macros` option, any enabled mutator's `macros/0`, and any
-    # enabled plugin's `macros/0`. It tells the resolution pass how to route a recognised
+    # The known-macro registry (`Mutare.MacroRouting.Registry`): built-ins (`Kernel.match?`/`destructure`)
+    # merged with declarative `:macro_routes`, static routes from enabled mutators/extensions, and
+    # host-dependent routes from enabled macro-host mutators. It tells the resolution pass how to route a recognised
     # macro's arguments (a pattern, an opaque DSL body). Built from the resolved mutator specs
-    # in `config`, so a library's mutator/plugin auto-registers the macros it relies on. The plugin
-    # *specs* are passed straight through (`build/3` reads each's `macros/0`); a `macros/0`
-    # registration is opts-independent (a library fact), so the `opts` they carry are ignored there
+    # in `config`, so a library's mutator/extension auto-registers the macros it relies on. Extension
+    # specs are passed straight through (`build/3` reads each static routing capability); routes are
+    # opts-independent library facts, so the `opts` they carry are ignored there
     # and ride along separately to `expand_use/3`'s context.
-    macros = Mutare.Macros.build(Keyword.get(opts, :macros, []), config.mutators, plugins)
+    macros =
+      Mutare.MacroRouting.Registry.build(
+        Keyword.get(opts, :macro_routes, []),
+        config.mutators,
+        extensions
+      )
 
-    {transformed, ctx} = transform_node(annotate_tree(parsed, opts, plugins, macros), ctx)
+    {transformed, ctx} = transform_node(annotate_tree(parsed, opts, extensions, macros), ctx)
 
     {transformed, ctx, parsed}
   end
@@ -394,9 +400,11 @@ defmodule Mutare.Transform do
   # a later `import`'s module — the single fold gets it right), stamping each call with the module
   # it refers to (an aliased `S.upcase` seen as `String.upcase`, a bare imported `reject(xs, f)` as
   # `Enum.reject`) and each known-macro call with its argument routing.
-  defp annotate_tree(parsed, opts, plugins, macros) do
+  defp annotate_tree(parsed, opts, extensions, macros) do
     expanded =
-      if Keyword.get(opts, :expand_uses, true), do: Uses.annotate(parsed, plugins), else: parsed
+      if Keyword.get(opts, :expand_uses, true),
+        do: Uses.annotate(parsed, extensions),
+        else: parsed
 
     with_behaviours = Behaviours.annotate(expanded)
     Resolve.annotate(with_behaviours, macros)
@@ -699,7 +707,7 @@ defmodule Mutare.Transform do
   # recovery can skip the *whole* block at once (`Mutare.Runner.escalate_block_poison/3`,
   # on the block's second strike) — the runtime-stable equivalent of `:skip` — rather than
   # dropping one mutant at a time and re-hitting the next selector. A *registered* macro is left
-  # untagged (`tag` is `nil`), so the user's `:macros` choice is honoured and never auto-skipped.
+  # untagged (`tag` is `nil`), so the user's `:macro_routes` choice is honoured and never auto-skipped.
   #
   # Sites accumulate newest-first (`SelectorEmit.claim_items/4` prepends), so the ones
   # this `emit` created are exactly the head of `ctx.claim.sites` above the count we held

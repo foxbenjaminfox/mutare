@@ -13,14 +13,14 @@ things the other examples don't:
 
 ```
 examples/shop/
-├── .mutare.exs            # mutator selection + macros: skip (the config tour)
+├── .mutare.exs            # mutator selection + macro_routes: skip (the config tour)
 ├── lib/shop/
 │   ├── cart.ex            # lists, maps, tuples, Enum rewrites, pattern families
 │   ├── pricing.ex         # the operator/number families + the ignore directives
 │   ├── inventory.ex       # bitwise, Integer, MapSet, a guard, a try/rescue, apply/3
 │   ├── catalog.ex         # strings, sigils, regex, calendar + bitstring literals
 │   ├── query.ex           # a one-macro query DSL (stands in for Ecto.Query)
-│   ├── search.ex          # uses the DSL — the macros: skip target
+│   ├── search.ex          # uses the DSL — the macro_routes: skip target
 │   └── server.ex          # a GenServer (the genserver family)
 └── test/shop/             # a deliberately good-but-imperfect suite
 ```
@@ -59,7 +59,7 @@ This is the example's real subject — open
 - **`mutators: [:builtins]`** runs the whole catalogue (the default, spelled out).
   The file shows the forms for narrowing it (`[:arithmetic, :relational]`,
   `[{:builtins, except: [:regex]}]`, or adding your own module).
-- **`macros: [{Shop.Query, :matching, [:expression, :skip]}]`** leaves the second
+- **`macro_routes: [{Shop.Query, :matching, [:expression, :skip]}]`** leaves the second
   argument of the `matching/2` query macro raw. `lib/shop/search.ex` writes
   `matching(products, row.price <= budget)` — a query *expression*, not runtime
   code. Skipping it drops `search.ex` from 11 mutants to 4. **Comment that line

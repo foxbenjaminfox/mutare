@@ -1,54 +1,46 @@
-defmodule Mutare.Mutator.MacroAware do
+defmodule Mutare.Mutator.MacroHost do
   @moduledoc """
-  Behaviour for a **macro-aware mutator** — one that targets a *macro* whose arguments the
-  transform must route specially (a pattern, an opaque DSL body, or a fragment hosted inside a
-  compile-time DSL) before the mutator can act on them.
+  Capability behaviour for a mutator that hosts mutations inside a compile-time DSL.
 
-  Ordinary mutators see runtime expressions. A macro can put its arguments somewhere a runtime
-  mutation would be wrong: a *pattern* position (`match?`), an opaque compile-time DSL
-  (`Ecto.Query.from`), or a fragment whose semantics are the library's rather than Elixir's
-  (`Ecto`'s `where`). A macro-aware mutator teaches the transform how to treat those arguments
-  with `c:macros/0` (and, when the treatment depends on the call's *shape*, `c:macro_routing/1`),
-  and — for the deep hosted case — produces its mutations through `c:host/2`.
+  Ordinary mutators see runtime Elixir expressions. A fragment inside a macro such as Ecto's
+  `where` has the library's semantics and cannot contain Mutare's ordinary selector directly.
+  A macro host declares the host-dependent entries through `c:hosted_routes/0`, optionally
+  classifies concrete call shapes with `c:macro_routing/1`, and weaves selectors into the DSL
+  through `c:host/2`.
 
-  Registration is automatic: listing the mutator under `:mutators` merges its `c:macros/0` into
-  the known-macro registry, so a library ships *one* module carrying both its mutator and the
-  macro routing it relies on, and the user adds a single `:mutators` entry.
-
-  This is the mutator-side counterpart to a `Mutare.Plugin`'s `c:Mutare.Plugin.macros/0`: a
-  plugin registers routing **without** producing mutations; a macro-aware mutator registers
-  routing **because** it also mutates the macro.
+  Registration is automatic when the mutator is enabled. Static, non-hosting routes belong to
+  the independent `Mutare.MacroRouting` capability; a mutator may implement both behaviours.
 
   A macro-aware mutator is still a `Mutare.Mutator` (it needs `name/0` and a mutation producer);
   declare **both**:
 
       defmodule MyApp.Mutators.Ecto do
         @behaviour Mutare.Mutator
-        @behaviour Mutare.Mutator.MacroAware
+        @behaviour Mutare.Mutator.MacroHost
 
         @impl Mutare.Mutator
         def name, do: :ecto_query
         @impl Mutare.Mutator
         def mutate(node), do: ...                       # drop a where, flip :asc/:desc
 
-        @impl Mutare.Mutator.MacroAware
-        def macros, do: [{Ecto.Query, :from, :any, :skip}]
+        @impl Mutare.Mutator.MacroHost
+        def hosted_routes, do: [{Ecto.Query, :where, :any, :routing}]
+
+        @impl Mutare.Mutator.MacroHost
+        def macro_routing(call), do: ...
+
+        @impl Mutare.Mutator.MacroHost
+        def host(call, context), do: ...
       end
 
-  `test/support/macro_mutator.ex` and `test/support/host_mutator.ex` are working examples.
+  `test/support/host_mutator.ex` contains working examples.
 
-  ## Registering known macros (`macros/0`)
+  ## Registering known macros (`hosted_routes/0`)
 
-  Return a list of `Mutare.Macro.Spec` entries in the form `{module, name, arity, treatment}` or
-  `{module, name, treatment}` (arity `:any`), where `treatment` is one of `:expression` /
-  `:pattern` / `:binding_pattern` / `:skip` / `:hosted` (applied to every argument), a
-  per-position list, or the `:routing` sentinel (deferring to `c:macro_routing/1`).
-  `module`/`name` may be the wildcard `:*` — `{module, :*, treatment}` registers a whole module,
-  `{:*, name, treatment}` a name in any module (see `Mutare.Macro.Spec`).
-
-  Whatever the treatment, the whole macro node is still offered to your
-  `c:Mutare.Mutator.mutate/1` — `:skip` only stops the transform descending into the arguments,
-  so your mutator still fires on the call itself.
+  Every entry must use `:routing` or contain at least one `:hosted` treatment. This makes the
+  mutator provenance explicit in the API instead of inferring it from which configuration list
+  happened to contribute a generic route. Use `c:Mutare.MacroRouting.macro_routes/0` for ordinary
+  `:expression` / `:pattern` / `:binding_pattern` / `:skip` declarations.
 
   ## Shape-aware routing (`macro_routing/1`)
 
@@ -67,26 +59,18 @@ defmodule Mutare.Mutator.MacroAware do
   """
 
   @doc """
-  Register the **known macros** this mutator depends on — macros whose arguments the transform
-  must route specially (a pattern argument, an opaque DSL body) for the mutator to work, or
-  simply to keep the transform from mutating a DSL it doesn't understand.
+  Register macros with host-dependent routing supplied by this mutator.
 
   Return a list of `Mutare.Macro.Spec` entries in the form `{module, name, arity, treatment}` or
-  `{module, name, treatment}` (arity `:any`), where `treatment` is one of `:expression` /
-  `:pattern` / `:binding_pattern` / `:skip` / `:hosted` (applied to every argument), a
-  per-position list, or the `:routing` sentinel (deferring to `c:macro_routing/1`).
+  `{module, name, treatment}` (arity `:any`). Each entry must use `:routing` (deferring to
+  `c:macro_routing/1`) or contain a `:hosted` treatment delivered through `c:host/2`.
   `module`/`name` may be the wildcard `:*` — `{module, :*, treatment}` registers a whole module,
   `{:*, name, treatment}` a name in any module (see `Mutare.Macro.Spec`). A `:hosted` argument is
   delivered through this mutator's `c:host/2`.
 
-  Listing the mutator under `:mutators` merges these into the macro registry automatically, so a
-  library ships one module carrying both its mutator and the registration it relies on.
-
-  The motivating case: an Ecto integration registers `{Ecto.Query, :from, :any, :skip}` so the
-  query DSL is left untouched, while the same module's `c:Mutare.Mutator.mutate/1` rewrites the
-  query (drop a `where`, flip `:asc`/`:desc`).
+  Listing the mutator under `:mutators` merges these into the routing registry automatically.
   """
-  @callback macros() :: [tuple()]
+  @callback hosted_routes() :: [tuple() | Mutare.Macro.Spec.t()]
 
   @doc """
   Produce mutations for a fragment *inside* a compile-time DSL — a `:hosted` macro argument
@@ -116,7 +100,7 @@ defmodule Mutare.Mutator.MacroAware do
   You describe how to weave the selector in (`:wrap`/`:splice`) and let the transform build it —
   the diff a survivor shows is just the fragment swap, with the scaffolding invisible.
 
-  Registered by a `:hosted` (or `:routing`-classified) treatment in `c:macros/0`. `context` is
+  Registered by a `:hosted` (or `:routing`-classified) treatment in `c:hosted_routes/0`. `context` is
   the same map `c:Mutare.Mutator.mutate/2` receives (`:pipe_mode`/`:opts`/`:behaviours`).
 
   Core leaves the whole hosted fragment **raw** and does not route the macros *nested inside* it —
@@ -129,7 +113,7 @@ defmodule Mutare.Mutator.MacroAware do
 
   @doc """
   Optional **shape-aware routing** classifier for a macro registered `:routing` in
-  `c:macros/0`. A static per-position treatment list can't express a routing that depends
+  `c:hosted_routes/0`. A static per-position treatment list can't express a routing that depends
   on the call *shape* — `where(q, category: "Foo")` is plain data (`:expression`) while
   `where(q, [u], u.x == u.y)` is a `:hosted` DSL fragment. The transform calls
   this with the concrete call node and uses the returned per-position treatment list (for the
@@ -206,7 +190,7 @@ defmodule Mutare.Mutator.MacroAware do
           | :pinned
           | {:keyword, [keyword_value_treatment()]}
 
-  # `macros/0` is **required**: a `MacroAware` module exists to register macros, so omitting it is
+  # `hosted_routes/0` is required: a MacroHost exists to register host-dependent routes, so omitting it is
   # always a mistake — a typo'd callback name would otherwise compile to a silently inert mutator.
   # Only `host/2` and `macro_routing/1` are genuinely optional (needed only for `:hosted` treatments).
   @optional_callbacks host: 2, macro_routing: 1

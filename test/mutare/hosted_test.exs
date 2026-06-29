@@ -4,10 +4,10 @@ defmodule Mutare.HostedTest do
   deep `Ecto.from`/`where` case) where core can't splice a bare selector and can't vouch
   for the fragment's foreign semantics. Two pieces work together:
 
-    * the `:routing` **shape-aware classifier** (`c:Mutare.Mutator.MacroAware.macro_routing/1`) decides,
+    * the `:routing` **shape-aware classifier** (`c:Mutare.Mutator.MacroHost.macro_routing/1`) decides,
       per call, whether the `filter` condition is a `:hosted` DSL fragment (a comparison) or
       ordinary `:expression` data (a keyword list);
-    * the **selector host** (`c:Mutare.Mutator.MacroAware.host/2`) hands core the logical original/mutant
+    * the **selector host** (`c:Mutare.Mutator.MacroHost.host/2`) hands core the logical original/mutant
       fragments and a `splice`, and core builds the id-gated selector `case`, records the Site
       (showing only the `x > 1` → `x >= 1` fragment diff), emits coverage, and weaves it in.
 

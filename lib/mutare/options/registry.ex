@@ -21,8 +21,8 @@ defmodule Mutare.Options.Registry do
   # Only *configuration* lives here. The runtime-wiring fields (`project` + the live-progress hooks)
   # are **not** options — they live on `Mutare.Run.Context`, validated there.
   #
-  # The validators that resolve through other modules (`Mutare.Mutators`/`Mutare.Macros`/
-  # `Mutare.Plugin`, `Invocation.reserved_env_names/0`, and the reporters' `Mutare.Options.formats/0`)
+  # The validators that resolve through other modules (`Mutare.Mutators`/`Mutare.MacroRouting.Registry`/
+  # `Mutare.UseExpansion`, `Invocation.reserved_env_names/0`, and the reporters' `Mutare.Options.formats/0`)
   # do so at *runtime*, inside the validator bodies — so there is no compile cycle with `Mutare.Options`
   # (which compile-depends on `defaults/0` here; this module never compile-depends on it).
 
@@ -86,30 +86,31 @@ defmodule Mutare.Options.Registry do
           ":mutators must be :all, :builtins, nil, or a list of modules, got: #{inspect(other)}"
   end
 
-  # Resolve and validate `:macros` through `Mutare.Macros` into `Mutare.Macro.Spec`s. The
+  # Resolve and validate `:macro_routes` through `Mutare.MacroRouting.Registry` into `Mutare.Macro.Spec`s. The
   # resolution is purely syntactic (no reflection), so an entry naming a module that is not a
   # dependency of the Mutare process (e.g. `Ecto.Query`) is accepted. `nil`/absent means none;
   # the built-ins (`Kernel.match?`/`destructure`) and mutator-provided macros are merged later,
-  # in `Mutare.Transform`. `Mutare.Macros.resolve/1` raises a descriptive error on a bad entry.
-  defp validate_macros!(nil), do: []
-  defp validate_macros!(macros) when is_list(macros), do: Mutare.Macros.resolve(macros)
+  # in `Mutare.Transform`. `Mutare.MacroRouting.Registry.resolve/1` raises a descriptive error on a bad entry.
+  defp validate_macro_routes!(nil), do: []
 
-  defp validate_macros!(other) do
-    raise ArgumentError, ":macros must be a list of macro entries, got: #{inspect(other)}"
+  defp validate_macro_routes!(macros) when is_list(macros),
+    do: Mutare.MacroRouting.Registry.resolve(macros)
+
+  defp validate_macro_routes!(other) do
+    raise ArgumentError, ":macro_routes must be a list of macro entries, got: #{inspect(other)}"
   end
 
-  # `:plugins` (default `[]`) lists `Mutare.Plugin` entries — third-party extensions that
-  # contribute known-macro routing (`macros/0`) and/or `use`-expansion overrides
-  # (`expand_use/3`), e.g. a Gettext integration. Each entry is a bare module or a
+  # `:extensions` (default `[]`) lists non-mutating modules implementing `Mutare.MacroRouting`,
+  # `Mutare.UseExpansion`, or both, e.g. a Gettext integration. Each entry is a bare module or a
   # `{module, opts}` pair (opts delivered to `expand_use/3`'s context), resolved to a
-  # `Mutare.Plugin.Spec`; the module must be a loaded plugin. Resolution is by reflection (a
-  # plugin module *is* on the Mutare process path, unlike a `:macros` module which is only
-  # named). `Mutare.Plugin.validate!/1` is the single home for the check — shared with
-  # `Mutare.Transform`, so a non-plugin fails loudly on either entry path. Plugins are not
+  # `Mutare.Extension.Spec`; the module must be a loaded extension. Resolution is by reflection (a
+  # module *is* on the Mutare process path, unlike a `:macro_routes` module which is only
+  # named). `Mutare.Extension.validate!/1` is the single home for the check — shared with
+  # `Mutare.Transform`, so a non-extension fails loudly on either entry path. Extensions are not
   # mutators — they make the built-in mutators' work land, never produce mutations themselves.
-  # An explicit `nil` (like `:macros`) means "none", coerced to `[]` rather than raising.
-  defp validate_plugins!(nil), do: []
-  defp validate_plugins!(plugins), do: Mutare.Plugin.validate!(plugins)
+  # An explicit `nil` (like `:macro_routes`) means "none", coerced to `[]` rather than raising.
+  defp validate_extensions!(nil), do: []
+  defp validate_extensions!(extensions), do: Mutare.Extension.validate!(extensions)
 
   # `:expand_uses` (default `true`) toggles the `use`-expansion pre-pass
   # (`Mutare.Transform.Uses`) that surfaces `import`/`alias` hidden behind `use`. `false`
@@ -354,12 +355,12 @@ defmodule Mutare.Options.Registry do
   # just read the names — no re-resolution, and no `rescue` masking a real bug.
   defp show_mutators(mutators), do: Enum.map_join(mutators, ", ", &to_string(&1.name))
 
-  defp show_plugins([]), do: "(none)"
+  defp show_extensions([]), do: "(none)"
 
-  defp show_plugins(plugins) do
-    Enum.map_join(plugins, ", ", fn
-      %Mutare.Plugin.Spec{module: module, opts: []} -> inspect(module)
-      %Mutare.Plugin.Spec{module: module, opts: opts} -> "#{inspect(module)} #{inspect(opts)}"
+  defp show_extensions(extensions) do
+    Enum.map_join(extensions, ", ", fn
+      %Mutare.Extension.Spec{module: module, opts: []} -> inspect(module)
+      %Mutare.Extension.Spec{module: module, opts: opts} -> "#{inspect(module)} #{inspect(opts)}"
     end)
   end
 
@@ -416,8 +417,13 @@ defmodule Mutare.Options.Registry do
       spec(key: :paths, default: ["lib"], validate: &validate_paths!/1),
       spec(key: :exclude, default: [], validate: &validate_exclude!/1),
       spec(key: :mutators, default: nil, show: &show_mutators/1, validate: &validate_mutators!/1),
-      spec(key: :macros, default: [], validate: &validate_macros!/1),
-      spec(key: :plugins, default: [], show: &show_plugins/1, validate: &validate_plugins!/1),
+      spec(key: :macro_routes, default: [], validate: &validate_macro_routes!/1),
+      spec(
+        key: :extensions,
+        default: [],
+        show: &show_extensions/1,
+        validate: &validate_extensions!/1
+      ),
       spec(key: :expand_uses, default: true, cli: :boolean, validate: &validate_expand_uses!/1),
       spec(
         key: :only_files,

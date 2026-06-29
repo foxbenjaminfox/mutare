@@ -149,7 +149,7 @@ defmodule Mutare.Mutator.Dispatch do
 
   @doc """
   The **selector-host targets** `spec`'s mutator declares for the known-macro node `node`
-  (`c:Mutare.Mutator.MacroAware.host/2`), normalized — each a map with `:original`, a list `:mutants`, a
+  (`c:Mutare.Mutator.MacroHost.host/2`), normalized — each a map with `:original`, a list `:mutants`, a
   2-arity `:splice`, a 1-arity `:wrap` (defaulted to identity), and an optional `:range`. `[]`
   when the module doesn't implement `host/2`. `context0` (`%{pipe_mode: …}`) is enriched with the
   spec's `:opts`/`:behaviours` before the callback runs, mirroring `mutations/3`.
@@ -253,10 +253,10 @@ defmodule Mutare.Mutator.Dispatch do
   # The mutation-producing callbacks: a module is a mutator if it exports `name/0` *and* at least
   # one of these. `mutate/1` is no longer required — a structural/pipe-only family produces its
   # mutations through `mutate/2` or a structural hook instead.
-  # (`macros/0`/`mutate_call_option_keys?/1` are routing/policy, not producers, so they don't
+  # (`macro_routes/0`/`mutate_call_option_keys?/1` are routing/policy, not producers, so they don't
   # qualify a module on their own.)
   #
-  # `mutate/1,2` are base-behaviour, `host/2` is `MacroAware`; the structural hooks
+  # `mutate/1,2` are base-behaviour, `host/2` is `MacroHost`; the structural hooks
   # (`return_replacements`, `condition_replacements`, `pattern_mutations`) are derived from
   # `Structural`'s own `@callback`s, so adding a structural hook there updates this set
   # automatically — it can't drift. Order is irrelevant (consumed via `Enum.any?`).

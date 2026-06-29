@@ -2,7 +2,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   @moduledoc false
 
   # The known-macro routing of the analyze pass: once `Mutare.Transform.Resolve` has
-  # stamped a call's per-argument routing (`meta[:mutare_macro]`, from `Mutare.Macros`),
+  # stamped a call's per-argument routing (`meta[:mutare_macro]`, from `Mutare.MacroRouting.Registry`),
   # this module routes each argument by its declared treatment instead of the default
   # all-runtime descent — a pattern arg (`match?`/`destructure`) isn't mutated in place,
   # an opaque DSL body (`Ecto.Query.from`) is left raw, and a `:hosted` fragment is handed
@@ -34,7 +34,7 @@ defmodule Mutare.Transform.Analyze.Macros do
 
   # When the routing marks any argument `{:hosted, host}` (see `Mutare.Transform.Resolve`),
   # the fragment in that position is mutated by the **hosting mutator's selector host**
-  # (`c:Mutare.Mutator.MacroAware.host/2`), not by core. Hand the host the *raw* macro node (so it can
+  # (`c:Mutare.Mutator.MacroHost.host/2`), not by core. Hand the host the *raw* macro node (so it can
   # pull the DSL's bindings for its `wrap`) and attach one `Candidate.Hosted` per target it
   # returns, under a dedicated `:mutare_hosted` key (separate from `:mutare`, since emission
   # weaves the selector into the node rather than wrapping the node in one —
@@ -123,7 +123,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   defp route_macro_arg(_descent, arg, :hosted, _mutators), do: arg
 
   # **Per-keyword-pair** routing for a keyword-list argument (classifier-only — produced by a
-  # `c:Mutare.Mutator.MacroAware.macro_routing/1` that inspected the node; a static `args` can't express it).
+  # `c:Mutare.Mutator.MacroHost.macro_routing/1` that inspected the node; a static `args` can't express it).
   # For each `key: value` pair the **key is left raw** (a keyword key in a DSL is a field/option
   # *name*, not a value to mutate) and the **value is routed by its own treatment** from
   # `value_treatments`, positionally. The motivating case is Ecto's keyword-shorthand `where`

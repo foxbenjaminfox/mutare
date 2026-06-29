@@ -1,11 +1,11 @@
-defmodule Mutare.MacrosTest do
+defmodule Mutare.MacroRouting.RegistryTest do
   use ExUnit.Case, async: true
 
   alias Mutare.Macro.Spec
-  alias Mutare.Macros
+  alias Mutare.MacroRouting.Registry, as: Macros
   alias Mutare.Mutator
 
-  doctest Mutare.Macros
+  doctest Mutare.MacroRouting.Registry
   doctest Mutare.Macro.Spec
 
   describe "Macro.Spec.normalize_module/1" do
@@ -103,19 +103,19 @@ defmodule Mutare.MacrosTest do
       assert %Spec{arity: :any, args: :skip} = Macros.lookup(registry, [:Foo], :bar, 2)
     end
 
-    test "a mutator's macros/0 contributes entries" do
+    test "a mutator's macro_routes/0 contributes entries" do
       specs = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
       registry = Macros.build([], [specs])
 
       assert %Spec{args: :skip} = Macros.lookup(registry, [:Mutare, :Test, :QueryDSL], :query, 1)
     end
 
-    test "a mutator without macros/0 contributes nothing" do
+    test "a mutator without macro_routes/0 contributes nothing" do
       specs = Mutator.Spec.for_module(Mutare.Test.BooleanMutator)
       assert Macros.from_mutators([specs]) == []
     end
 
-    test "an explicit :macros config entry wins over a mutator's macros/0 for the same key" do
+    test "an explicit :macro_routes config entry wins over a mutator's macro_routes/0 for the same key" do
       # QueryMutator registers {Mutare.Test.QueryDSL, :query, 1, :skip}; an explicit config entry
       # for the same key overrides it (config is the final authority — folded last).
       specs = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
@@ -181,11 +181,11 @@ defmodule Mutare.MacrosTest do
     end
 
     test "build/3 raises when a declarative entry asks for :hosted/:routing (no host)" do
-      assert_raise ArgumentError, ~r/needs a hosting mutator/, fn ->
+      assert_raise ArgumentError, ~r/requires an enabled mutator's hosted_routes\/0/, fn ->
         Macros.build([{Ecto.Query, :where, :any, :routing}], [])
       end
 
-      assert_raise ArgumentError, ~r/needs a hosting mutator/, fn ->
+      assert_raise ArgumentError, ~r/requires an enabled mutator's hosted_routes\/0/, fn ->
         Macros.build([{Ecto.Query, :where, 2, [:expression, :hosted]}], [])
       end
     end
@@ -199,6 +199,24 @@ defmodule Mutare.MacrosTest do
       assert_raise ArgumentError, ~r/must implement host\/2/, fn ->
         Macros.build([], [specs])
       end
+    end
+
+    test "static macro routing rejects host-dependent entries from a mutator" do
+      specs = Mutator.Spec.for_module(Mutare.Test.HostedRouteInStaticMutator)
+
+      assert_raise ArgumentError, ~r/from macro_routes\/0/, fn ->
+        Macros.build([], [specs])
+      end
+    end
+
+    test "a macro host rejects entries that do not require hosting" do
+      specs = Mutator.Spec.for_module(Mutare.Test.StaticRouteInMacroHostMutator)
+
+      assert_raise ArgumentError,
+                   ~r/Move routes without :hosted\/:routing to macro_routes\/0/,
+                   fn ->
+                     Macros.build([], [specs])
+                   end
     end
   end
 

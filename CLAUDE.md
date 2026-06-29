@@ -56,7 +56,7 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
     `Behaviours`) — one walk that stamps every call/construct with what it resolves to, so the
     call-matching families recognise aliased / imported / Erlang-atom / `use`-injected forms, and
     behaviour-gated mutators see the enclosing `@behaviour` set. `Uses` expands `use` (in-process,
-    or via a plugin override) to recover the `import`/`alias` idiomatic Phoenix/Ecto hide.
+    or via an extension override) to recover the `import`/`alias` idiomatic Phoenix/Ecto hide.
   - **`Calls` / `Analyze.Captures`** — the single `resolved_call/1` reader every call family uses
     (returns `{module, fun, args, rebuild}`), plus `&Mod.fun/N` capture mutation.
   - **`Analyze`** — the context-threaded recursive descent that names each position's context
@@ -106,10 +106,11 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   the resolved project + the four live-progress hooks). `Mutare.Config`/`Changes` +
   `Mix.Tasks.Mutare` resolve `.mutare.exs` + CLI flags + `git diff` for `--since`.
 - **Extension surface** — `Mutare.Mutator` (+ capability behaviours `Mutator.Structural` /
-  `Mutator.MacroAware`) and `Mutare.Mutators.*` (the built-in families); `Mutare.Mutators` (the one
+  `Mutator.MacroHost`) and `Mutare.Mutators.*` (the built-in families); `Mutare.Mutators` (the one
   ordered registry + resolver); `Mutare.Mutator.Spec` (the resolved unit of "a mutator to run");
-  `Mutare.Macros`/`Macro.Spec` (the known-macro routing registry); `Mutare.Plugin` (compile-time
-  vocabulary extension — resolves/routes constructs, never mutates or scores). See "Extending it".
+  `Mutare.MacroRouting` + `MacroRouting.Registry`/`Macro.Spec` (static known-macro routing);
+  `Mutare.UseExpansion` (a `use` override); `Mutare.Extension` (the non-mutating `:extensions`
+  boundary). See "Extending it".
 
 The built-in mutator families are **all on by default**. Don't catalogue them here — the
 `Mutare.Mutators` `@registry` is the source of truth for *which* exist, and each family's swap
@@ -156,8 +157,7 @@ re-renders the original). Register a built-in by adding one `family: Module` ent
 `Mutare.Mutators` `@registry`; users add custom modules under `:mutators` in `.mutare.exs`.
 
 Pick the callback by what you're mutating — each has a working fixture under `test/support/` and full
-contract docs on the behaviour. The capability callbacks live on `Mutator.Structural` /
-`Mutator.MacroAware`, declared alongside `@behaviour Mutare.Mutator`:
+contract docs on the behaviour. Capability behaviours are declared alongside `Mutare.Mutator`:
 
 | Kind | Implement | Example fixture |
 | --- | --- | --- |
@@ -168,19 +168,20 @@ contract docs on the behaviour. The capability callbacks live on `Mutator.Struct
 | Structural head pattern | `pattern_mutations/2` | (`PatternSwap`/`PatternWildcard`) |
 | Behaviour-gated | read `context.behaviours` (or the `+1`-arity structural callbacks) | `behaviour_mutator.ex` |
 | Call-matching (stdlib/remote) | resolve via `Transform.Calls.resolved_call/1` | `resolved_call_mutator.ex` |
-| Macro-aware (route an arg / skip a DSL) | `macros/0` | `macro_mutator.ex` |
-| Selector-hosting (mutate inside a DSL fragment) | `macros/0` (`:hosted`/`:routing`) + `host/2` | `host_mutator.ex` |
+| Static macro routing (route an arg / skip a DSL) | `Mutare.MacroRouting.macro_routes/0` | `macro_mutator.ex` |
+| Selector-hosting (mutate inside a DSL fragment) | `Mutator.MacroHost.hosted_routes/0` + `host/2` | `host_mutator.ex` |
 | Per-kind `# mutare:ignore` qualifier | `variants/0` (opt-in) + tag via `Mutation.tagged/2` *or* `variant/2` | (value & operator families) |
 
-A **plugin** (`Mutare.Plugin`) is the *non-mutating* extension: it teaches Mutare a library's
-compile-time vocabulary (`macros/0` for argument routing, `expand_use/3` to override a `use` Mutare
-can't expand in-process) so the **built-in** mutators land correctly. It has no `name/0` and never
-appears in a report. Listed under `:plugins`. The motivating case is Gettext; the worked end-to-end
-example is `test/support/plugin_fixtures.ex`. See NOTES "Plugin `use`-expansion override".
+An **extension** is a non-mutating module implementing `Mutare.MacroRouting`,
+`Mutare.UseExpansion`, or both. It has no `name/0`, never appears in a report, and is listed under
+`:extensions`; enabled mutators are inspected for routing capabilities separately. The motivating
+case is Gettext; see `test/support/extension_fixtures.ex` and NOTES "Extension `use`-expansion
+override".
 
 The contract details (notes, `:as` renaming, the macro-routing treatments
 `:expression`/`:pattern`/`:binding_pattern`/`:skip`/`:hosted`, the variant-label rules) are in the
-`Mutare.Mutator` / `Mutare.Macros` / `Mutare.Plugin` moduledocs — read those when implementing.
+`Mutare.Mutator` / `Mutare.MacroRouting` / `Mutare.Mutator.MacroHost` /
+`Mutare.UseExpansion` moduledocs — read those when implementing.
 
 ## Result statuses & `# mutare:ignore`
 

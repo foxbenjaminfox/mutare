@@ -379,7 +379,7 @@ defmodule Mutare.Transform.Candidate do
     # (`Ecto`'s `from`/`where`) where core can neither reach `:persistent_term` with a bare
     # selector (the `case` would poison the single build) nor vouch for the fragment's
     # semantics (SQL's three-valued logic ≠ Elixir's). Core therefore owns none of the
-    # mutation logic: the **hosting mutator** (`c:Mutare.Mutator.MacroAware.host/2`) supplies, per macro
+    # mutation logic: the **hosting mutator** (`c:Mutare.Mutator.MacroHost.host/2`) supplies, per macro
     # node, a list of *targets*, each carrying `{logical original, logical mutants}` and two
     # pure transforms — `wrap` (each branch → the woven runtime form, e.g. `dynamic([u], _)`;
     # default identity) and `splice` (where the woven `case` goes in a copy of the macro node,

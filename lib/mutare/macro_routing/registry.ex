@@ -1,4 +1,4 @@
-defmodule Mutare.Macros do
+defmodule Mutare.MacroRouting.Registry do
   @moduledoc """
   The catalog of **known macros** — macros whose arguments the transform routes by
   a declared treatment instead of the default all-runtime descent.
@@ -9,24 +9,22 @@ defmodule Mutare.Macros do
   the pattern), `:skip` (leave raw — an opaque DSL body), or `:hosted` (leave raw for
   core, but deliver mutations through the registering mutator's selector host — the deep
   `Ecto.from`/`where` case; see `Mutare.Macro.Spec`). The per-argument treatment may also
-  be a `:routing` classifier deferred to the mutator's `c:Mutare.Mutator.MacroAware.macro_routing/1`,
+  be a `:routing` classifier deferred to the mutator's `c:Mutare.Mutator.MacroHost.macro_routing/1`,
   for a treatment that depends on the call *shape*. Specs come from **four** sources, merged
   in this order so a **later** entry wins a key:
 
     * **built-ins** (`builtin/0`) — `Kernel.match?/2` and `Kernel.destructure/2`,
       both routing argument 0 as a pattern. Always on.
-    * an optional **`c:Mutare.Mutator.MacroAware.macros/0`** callback on any enabled mutator
-      (`from_mutators/1`) — so a library ships its custom mutator *and* the macro
-      registration it relies on in one module, and the user adds a single
-      `:mutators` entry. Mutare core never needs to know about the library.
-    * an optional **`c:Mutare.Plugin.macros/0`** callback on any enabled plugin
-      (`from_plugins/1`) — the non-mutating counterpart, for a library that only
-      teaches routing (e.g. a Gettext plugin). Folded after mutators, so a plugin
-      wins a tie over a mutator.
-    * the declarative **`:macros`** option (`.mutare.exs` / `Mutare.run/2`) — a list
+    * `c:Mutare.MacroRouting.macro_routes/0` on enabled mutators — static routing a custom
+      mutator relies on — plus `c:Mutare.Mutator.MacroHost.hosted_routes/0` for routes tied to
+      that mutator's selector host (`from_mutators/1`).
+    * `c:Mutare.MacroRouting.macro_routes/0` on enabled extensions (`from_extensions/1`) —
+      non-mutating library vocabulary such as Gettext's literal argument positions. Folded after
+      mutators, so an extension wins a tie over a mutator.
+    * the declarative **`:macro_routes`** option (`.mutare.exs` / `Mutare.run/2`) — a list
       of `{module, name, arity, treatment}` / `{module, name, treatment}` entries,
       resolved by `resolve/1`. Folded **last**, so an explicit config entry is the
-      final authority for a key (winning over a mutator's *or* a plugin's `macros/0`).
+      final authority for a key (winning over a mutator's *or* an extension's `macro_routes/0`).
 
   Resolution of declarative entries is **purely syntactic** (no reflection on the
   module), so a `{Ecto.Query, :from, :any, :skip}` entry resolves even when `Ecto`
@@ -50,8 +48,8 @@ defmodule Mutare.Macros do
   See `Mutare.Macro.Spec` for the precedence and the wildcard validation rules.
 
   For the no-mutator case (just route a custom DSL's argument as a pattern, or
-  leave a macro body opaque) the declarative `:macros` option is enough; a mutator
-  that needs the routing usually ships it via `c:Mutare.Mutator.MacroAware.macros/0` instead.
+  leave a macro body opaque) the declarative `:macro_routes` option is enough; a mutator or
+  extension that ships static routing implements `Mutare.MacroRouting` instead.
   See `Mutare.Macro.Spec` for the per-argument treatments.
   """
 
@@ -91,7 +89,7 @@ defmodule Mutare.Macros do
   `:*` (a name-only escape hatch / a whole-module entry — see the moduledoc).
   Raises `ArgumentError` on a malformed entry.
 
-      iex> [spec] = Mutare.Macros.resolve([{Ecto.Query, :from, :skip}])
+      iex> [spec] = Mutare.MacroRouting.Registry.resolve([{Ecto.Query, :from, :skip}])
       iex> {spec.module, spec.name, spec.arity, spec.args}
       {[:Ecto, :Query], :from, :any, :skip}
   """
@@ -99,7 +97,11 @@ defmodule Mutare.Macros do
   def resolve(entries) when is_list(entries), do: Enum.map(entries, &resolve!/1)
 
   def resolve(other),
-    do: raise(ArgumentError, ":macros must be a list of macro entries, got: #{inspect(other)}")
+    do:
+      raise(
+        ArgumentError,
+        ":macro_routes must be a list of route entries, got: #{inspect(other)}"
+      )
 
   defp resolve!(%Spec{} = spec), do: spec
   defp resolve!({module, name, arity, args}), do: Spec.new(module, name, arity, args)
@@ -112,110 +114,135 @@ defmodule Mutare.Macros do
   end
 
   @doc """
-  Collect macro specs contributed by enabled mutators via the optional
-  `c:Mutare.Mutator.MacroAware.macros/0` callback.
+  Collect static and hosted routes contributed by enabled mutators.
 
   `mutator_specs` are resolved `Mutare.Mutator.Spec`s; each distinct module that is
-  loaded and exports `macros/0` contributes its entries (resolved like declarative
-  ones). A module is consulted once even if listed twice.
+  loaded and exporting `c:Mutare.MacroRouting.macro_routes/0` contributes static routes;
+  `c:Mutare.Mutator.MacroHost.hosted_routes/0` contributes host-dependent routes stamped with
+  that mutator module. A module is consulted once even if configured more than once.
   """
   @spec from_mutators([Mutator.Spec.t()]) :: [Spec.t()]
-  def from_mutators(mutator_specs) when is_list(mutator_specs),
-    do: mutator_specs |> Enum.map(& &1.module) |> collect_macros(&Spec.put_host/2)
+  def from_mutators(mutator_specs) when is_list(mutator_specs) do
+    modules = Enum.map(mutator_specs, & &1.module)
+
+    static = modules |> collect_routes(:macro_routes) |> validate_static!(:mutator)
+
+    hosted =
+      modules
+      |> collect_routes(:hosted_routes)
+      |> Enum.map(fn {spec, module} ->
+        spec |> require_hosted!(module) |> Spec.put_host(module)
+      end)
+
+    static ++ hosted
+  end
 
   @doc """
-  Collect macro specs contributed by enabled **plugins** via the optional
-  `c:Mutare.Plugin.macros/0` callback — the plugin counterpart of `from_mutators/1`.
+  Collect static routes contributed by enabled non-mutating extensions.
 
-  `plugins` are resolved `Mutare.Plugin.Spec`s **or** bare modules (it extracts the module from
-  each, mirroring `from_mutators/1`'s `& &1.module`, so either shape works); each that is loaded and
-  exports `macros/0` contributes its entries (resolved exactly like a mutator's), so a plugin ships
-  its DSL's argument routing alongside its `use` override. A module is consulted once even if listed
-  twice.
-
-  A plugin produces **no mutations**, so it cannot *host* one: a `:hosted` argument or a `:routing`
-  classifier needs a hosting mutator's `host/2`/`macro_routing/1`. A plugin's `macros/0` declaring
-  either is rejected here with a plugin-specific message — rather than letting `build/3`'s generic
-  `validate_host!` abort the run calling the plugin a "hosting mutator" it can never be.
+  Host-dependent routes are rejected by the `Mutare.MacroRouting` contract; they must come from
+  an enabled mutator's `c:Mutare.Mutator.MacroHost.hosted_routes/0`.
   """
-  @spec from_plugins([Mutare.Plugin.Spec.t() | module()]) :: [Spec.t()]
-  def from_plugins(plugins) when is_list(plugins) do
-    specs = plugins |> Enum.map(&plugin_module/1) |> collect_macros()
-    Enum.each(specs, &reject_plugin_hosting!/1)
-    specs
+  @spec from_extensions([Mutare.Extension.Spec.t() | module()]) :: [Spec.t()]
+  def from_extensions(extensions) when is_list(extensions) do
+    extensions
+    |> Enum.map(&extension_module/1)
+    |> collect_routes(:macro_routes)
+    |> validate_static!(:extension)
   end
 
-  defp plugin_module(%Mutare.Plugin.Spec{module: module}), do: module
-  defp plugin_module(module) when is_atom(module), do: module
+  defp extension_module(%Mutare.Extension.Spec{module: module}), do: module
+  defp extension_module(module) when is_atom(module), do: module
 
-  # `Spec.host_required?/1` already covers both hosting treatments — `@host_required` is
-  # `[:hosted, :routing]`, so a `:routing` classifier (whose `args` *is* `:routing`) reports
-  # `host_required?` true — hence no separate `classifier?/1` check is needed here.
-  defp reject_plugin_hosting!(%Spec{} = spec) do
-    if Spec.host_required?(spec) do
-      raise ArgumentError,
-            "the plugin macro entry #{inspect(Spec.key(spec))} uses a :hosted/:routing treatment, " <>
-              "but a plugin produces no mutations and cannot host one. Use " <>
-              ":skip/:pattern/:binding_pattern/:expression, or register the hosting routing from a " <>
-              "mutator's macros/0 instead."
-    end
-  end
+  defp validate_static!(route_modules, source) do
+    Enum.map(route_modules, fn {spec, module} ->
+      if Spec.host_required?(spec) do
+        raise ArgumentError,
+              "#{source} #{inspect(module)} returned host-dependent route " <>
+                "#{inspect(Spec.key(spec))} from macro_routes/0. Static macro routes may use only " <>
+                ":expression/:pattern/:binding_pattern/:skip; move :hosted/:routing entries to " <>
+                "a mutator's hosted_routes/0."
+      end
 
-  # Harvest `macros/0` from a list of modules (mutators or plugins): dedupe, keep the exporters,
-  # resolve each module's entries, and apply `stamp` to each `{spec, contributing module}` pair. A
-  # **mutator** passes `&Spec.put_host/2`, stamping the contributing module as the host so a
-  # `:hosted`/`:routing` registration points back at its `c:Mutare.Mutator.MacroAware.host/2` /
-  # `c:Mutare.Mutator.MacroAware.macro_routing/1`. A **plugin** keeps the default (no stamp): a plugin can never
-  # host (`reject_plugin_hosting!` rejects a `:hosted`/`:routing` plugin entry off its `args`, not its
-  # `host`), so its specs carry no host — keeping `Spec.host` a true invariant (a non-nil host always
-  # names a real hosting mutator) instead of stamping a plugin as its own impossible host.
-  defp collect_macros(modules, stamp \\ fn spec, _module -> spec end) do
-    modules
-    |> Enum.uniq()
-    |> Enum.filter(&exports_macros?/1)
-    |> Enum.flat_map(fn module ->
-      module.macros() |> resolve() |> Enum.map(&stamp.(&1, module))
+      spec
     end)
   end
 
-  defp exports_macros?(module),
-    do: Code.ensure_loaded?(module) and function_exported?(module, :macros, 0)
+  defp require_hosted!(spec, module) do
+    unless Spec.host_required?(spec) do
+      raise ArgumentError,
+            "macro host #{inspect(module)} returned static route #{inspect(Spec.key(spec))} from " <>
+              "hosted_routes/0. Move routes without :hosted/:routing to macro_routes/0 and " <>
+              "implement Mutare.MacroRouting."
+    end
+
+    spec
+  end
+
+  # Return `{resolved_spec, contributing_module}` pairs so each capability boundary can validate
+  # and, for hosted routes, stamp provenance explicitly.
+  defp collect_routes(modules, callback) do
+    modules
+    |> Enum.uniq()
+    |> Enum.filter(fn module ->
+      Code.ensure_loaded?(module) and function_exported?(module, callback, 0)
+    end)
+    |> Enum.flat_map(fn module ->
+      module
+      |> apply(callback, [])
+      |> resolve()
+      |> Enum.map(&{&1, module})
+    end)
+  end
 
   @doc """
-  Build the merged lookup registry from declarative `:macros` entries, the enabled
-  mutator specs, and the enabled plugin modules.
+  Build the merged lookup registry from declarative `:macro_routes`, enabled mutators, and
+  enabled extensions.
 
-  Order is built-ins, then mutator-provided, then plugin-provided, then declarative
-  `:macros` — collected with `Map.new`, so a later entry for the same
-  `{module_key, name, arity}` overrides an earlier one. An explicit `:macros` config
+  Order is built-ins, then mutator-provided, then extension-provided, then declarative
+  `:macro_routes` — collected with `Map.new`, so a later entry for the same
+  `{module_key, name, arity}` overrides an earlier one. An explicit `:macro_routes` config
   entry is therefore the **final authority** for a key (it wins over a mutator's *or* a
-  plugin's `macros/0`); among the code extensions a plugin wins a tie over a mutator;
+  extension's `macro_routes/0`); among code capabilities an extension wins a tie over a mutator;
   all three override the built-ins. So a user can always pin a macro's routing from
-  `.mutare.exs`, even against an installed plugin — at the cost of being able to override
+  `.mutare.exs`, even against an installed extension — at the cost of being able to override
   a mutator's correctness-critical routing (e.g. an Ecto mutator's `{Ecto.Query, :from,
   :skip}`), which is a deliberate, explicit opt-in the poison backstop still guards.
   `config_macros` may be raw entries or already-resolved specs (idempotent);
-  `plugins` are resolved `Mutare.Plugin.Spec`s or bare modules (it reads each's `macros/0`),
+  `extensions` are resolved `Mutare.Extension.Spec`s or bare modules,
   and defaults to none.
 
-      iex> registry = Mutare.Macros.build([{Ecto.Query, :from, :skip}], [])
-      iex> Mutare.Macros.lookup(registry, [:Kernel], :match?, 2).args
+      iex> registry = Mutare.MacroRouting.Registry.build([{Ecto.Query, :from, :skip}], [])
+      iex> Mutare.MacroRouting.Registry.lookup(registry, [:Kernel], :match?, 2).args
       [:pattern, :expression]
-      iex> Mutare.Macros.lookup(registry, [:Ecto, :Query], :from, 2).args
+      iex> Mutare.MacroRouting.Registry.lookup(registry, [:Ecto, :Query], :from, 2).args
       :skip
   """
-  @spec build([tuple() | Spec.t()], [Mutator.Spec.t()], [Mutare.Plugin.Spec.t() | module()]) ::
+  @spec build([tuple() | Spec.t()], [Mutator.Spec.t()], [Mutare.Extension.Spec.t() | module()]) ::
           registry()
-  def build(config_macros, mutator_specs, plugins \\ []) do
+  def build(config_routes, mutator_specs, extensions \\ []) do
     (builtin() ++
-       from_mutators(mutator_specs) ++ from_plugins(plugins) ++ resolve(config_macros))
+       from_mutators(mutator_specs) ++
+       from_extensions(extensions) ++ validate_config!(resolve(config_routes)))
     |> Enum.map(&validate_host/1)
     |> Map.new(&{Spec.key(&1), &1})
   end
 
+  defp validate_config!(specs) do
+    Enum.map(specs, fn spec ->
+      if Spec.host_required?(spec) do
+        raise ArgumentError,
+              "declarative :macro_routes entry #{inspect(Spec.key(spec))} uses :hosted/:routing, " <>
+                "which requires an enabled mutator's hosted_routes/0"
+      end
+
+      spec
+    end)
+  end
+
   # A `:hosted` argument or the `:routing` classifier needs a hosting mutator to deliver /
   # answer it. `from_mutators/1` stamps the host for a mutator-contributed spec; a declarative
-  # `:macros` entry (or a built-in) has none, so asking for hosting there is a configuration
+  # `:macro_routes` entry (or a built-in) has none, so asking for hosting there is a configuration
   # error caught here rather than silently producing an un-deliverable mutant — or a cryptic
   # `UndefinedFunctionError` at resolve time — later. Checked at build (the host is an enabled,
   # loaded mutator), so a missing callback is named with a clear message.
@@ -242,7 +269,7 @@ defmodule Mutare.Macros do
         raise ArgumentError,
               "the macro entry #{inspect(Spec.key(spec))} uses a :hosted/:routing treatment, " <>
                 "which needs a hosting mutator (implementing #{fun}/#{arity}) — register it via " <>
-                "a mutator's macros/0, not the declarative :macros option"
+                "a mutator's hosted_routes/0, not the declarative :macro_routes option"
 
       not (Code.ensure_loaded?(host) and function_exported?(host, fun, arity)) ->
         raise ArgumentError,
@@ -274,19 +301,19 @@ defmodule Mutare.Macros do
   treatment. A name-only entry fires even when `module_key` is `nil` (an unresolvable bare call),
   which is exactly the case it exists for.
 
-      iex> registry = Mutare.Macros.build([{Foo, :*, :skip}, {Foo, :bar, 1, [:pattern]}], [])
+      iex> registry = Mutare.MacroRouting.Registry.build([{Foo, :*, :skip}, {Foo, :bar, 1, [:pattern]}], [])
       iex> # the whole-module entry catches any other macro in Foo…
-      iex> Mutare.Macros.lookup(registry, [:Foo], :baz, 2).args
+      iex> Mutare.MacroRouting.Registry.lookup(registry, [:Foo], :baz, 2).args
       :skip
       iex> # …but a specific {Foo, :bar, 1} entry wins for bar/1
-      iex> Mutare.Macros.lookup(registry, [:Foo], :bar, 1).args
+      iex> Mutare.MacroRouting.Registry.lookup(registry, [:Foo], :bar, 1).args
       [:pattern]
 
-      iex> registry = Mutare.Macros.build([{:*, :sigil_X, :skip}], [])
+      iex> registry = Mutare.MacroRouting.Registry.build([{:*, :sigil_X, :skip}], [])
       iex> # a name-only entry matches the name in any module (here even an unresolved one)
-      iex> Mutare.Macros.lookup(registry, [:Whatever], :sigil_X, 1).args
+      iex> Mutare.MacroRouting.Registry.lookup(registry, [:Whatever], :sigil_X, 1).args
       :skip
-      iex> Mutare.Macros.lookup(registry, nil, :sigil_X, 2).args
+      iex> Mutare.MacroRouting.Registry.lookup(registry, nil, :sigil_X, 2).args
       :skip
   """
   @spec lookup(registry(), Spec.module_key() | nil, atom(), non_neg_integer()) :: Spec.t() | nil

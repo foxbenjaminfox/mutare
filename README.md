@@ -8,7 +8,7 @@ Other Elixir mutation testing libraries, such as [Muex](https://github.com/Oedit
 
 ## Installation
 
-The easist way to install mutare is the [igniter](https://hexdocs.pm/igniter) installer, which adds mutare to your `:dev`/`:test` deps and auto-configures the framework plugins:
+The easiest way to install mutare is the [igniter](https://hexdocs.pm/igniter) installer, which adds mutare to your `:dev`/`:test` deps and auto-configures framework integrations:
 
 ```
 mix igniter.install mutare
@@ -22,9 +22,9 @@ It inspects your dependencies and, for each framework it finds, adds the matchin
 | `:phoenix_live_view`                    | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
 | `:ecto_sql` / `:phoenix_ecto` / `:ecto` | `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
 | `:oban` / `:oban_pro`                   | `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`             |
-| `:gettext`                              | `mutare_gettext`           | `:plugins` — `Mutare.Gettext`                 |
+| `:gettext`                              | `mutare_gettext`           | `:extensions` — `Mutare.Gettext`              |
 
-A mutator package extends the `:mutators` list; a non-mutating **plugin** like `mutare_gettext` (which teaches mutare a library's compile-time vocabulary so the built-in mutators can deal with it) joins the `:plugins` list. The Ecto repo is detected automatically (pass `--repo MyApp.Repo` to override). If you already have a `.mutare.exs`, it is left untouched and the recommended keys are printed for you to merge in. 
+A mutator package extends the `:mutators` list; a non-mutating **extension** like `mutare_gettext` (which teaches mutare a library's compile-time vocabulary so the built-in mutators can deal with it) joins the `:extensions` list. The Ecto repo is detected automatically (pass `--repo MyApp.Repo` to override). If you already have a `.mutare.exs`, it is left untouched and the recommended keys are printed for you to merge in.
 
 You can install igniter globally, with `mix archive.install hex igniter_new`, or add it to your project's `mix.exs`:
 
@@ -33,7 +33,7 @@ You can install igniter globally, with `mix archive.install hex igniter_new`, or
 ```
 
 
-Or add mutare by hand — though if you're using any macro-heavy libraries, like `ecto` or `gettext`, you'll need to add the relevent mutator or plugin too.
+Or add mutare by hand — though if you're using any macro-heavy libraries, like `ecto` or `gettext`, you'll need to add the relevant mutator or extension too.
 
 ```elixir
 # mix.exs
@@ -118,7 +118,7 @@ Optional `.mutare.exs`:
   # mark a macro's arguments as off-limits for mutation, by module/name/arity
   # (see "Skipping macro arguments" below). `:skip` = every argument; a list
   # skips only the marked positions (`:expression` = mutate as normal).
-  macros: [
+  macro_routes: [
     {Ecto.Query, :from, :skip},
     {MyApp.Schema, :field, 2, [:expression, :skip]}
   ],
@@ -153,10 +153,10 @@ When a machine format is written to a file, the human report still prints to the
 
 ### Skipping macro arguments
 
-Some macros take arguments that aren't ordinary runtime code — a query DSL body, a pattern, a schema definition. Mutating inside them is pointless at best and can break the single compile at worst (a selector spliced into `Ecto.Query.from`'s body, say). When Mutare can't tell a macro call from a normal function call, list the macro under `macros:` in `.mutare.exs` and its arguments are left **raw** — no custom mutator required:
+Some macros take arguments that aren't ordinary runtime code — a query DSL body, a pattern, a schema definition. Mutating inside them is pointless at best and can break the single compile at worst (a selector spliced into `Ecto.Query.from`'s body, say). When Mutare can't tell a macro call from a normal function call, list the macro under `macro_routes:` in `.mutare.exs` and its arguments are left **raw** — no custom mutator required:
 
 ```elixir
-macros: [
+macro_routes: [
   # every argument of `from/_` (any arity) is left untouched
   {Ecto.Query, :from, :skip},
   # only the 2nd argument of `field/2` is skipped; the 1st mutates as normal
@@ -178,7 +178,7 @@ A per-position list is padded with `:expression`, so `[:expression, :skip]` mean
 The glob atom `:*` matches anything in the module, name, or arity slot:
 
 ```elixir
-macros: [
+macro_routes: [
   # whole module — leave every macro in this DSL untouched
   {MyApp.Sql, :*, :skip},
   # …but override one of them (a more specific line always wins)

@@ -7,7 +7,8 @@ defmodule Mutare.CLI.Info do
   # `--list-ignores`) take a pre-built `Mutare.Schema`, so this module never needs
   # to scan/compile the host itself — the task supplies it.
 
-  alias Mutare.{CLI, Ignore, Macros, Mutators, Options, Project, Site}
+  alias Mutare.{CLI, Ignore, Mutators, Options, Project, Site}
+  alias Mutare.MacroRouting.Registry, as: Macros
   alias Mutare.Ignore.Directive
   alias Mutare.Options.Registry
 
@@ -189,14 +190,14 @@ defmodule Mutare.CLI.Info do
     Enum.each(rows, fn {k, v} -> Mix.shell().info("  #{String.pad_trailing(k, pad)}  #{v}") end)
   end
 
-  # `--list-macros`: the known-macro registry (built-ins + the `:macros` option + any
-  # enabled mutator's `macros/0` + any enabled plugin's `macros/0`) whose arguments the
-  # transform routes specially. Threads `options.plugins` into `Macros.build/3` exactly as
+  # `--list-macros`: the known-macro registry (built-ins + the `:macro_routes` option + any
+  # enabled mutator/extension routing capabilities) whose arguments the
+  # transform routes specially. Threads `options.extensions` into `Macros.build/3` exactly as
   # the real transform does (`Transform`), so the inspected registry is the *effective* one
-  # — omitting them would hide every plugin-contributed routing.
+  # — omitting them would hide every extension-contributed routing.
   def print_macro_registry(%Options{} = options) do
     specs = Mutators.resolve(options.mutators || Mutators.all())
-    registry = Macros.build(options.macros, specs, options.plugins)
+    registry = Macros.build(options.macro_routes, specs, options.extensions)
 
     Mix.shell().info(
       "Known macros (arguments routed specially, not mutated as plain expressions):\n"

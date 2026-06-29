@@ -132,13 +132,21 @@ defmodule Mutare.MixProject do
         "Writing mutators": [
           Mutare.Mutator,
           Mutare.Mutator.Structural,
-          Mutare.Mutator.MacroAware,
+          Mutare.Mutator.MacroHost,
           Mutare.Mutator.Spec,
           Mutare.AST,
           Mutare.Test,
-          Mutare.Transform.Calls,
-          Mutare.Macros,
-          Mutare.Macro.Spec
+          Mutare.Transform.Calls
+        ],
+        "Writing extensions": [
+          Mutare.Extension,
+          Mutare.Extension.Spec,
+          Mutare.MacroRouting,
+          Mutare.MacroRouting.Registry,
+          Mutare.Macro.Spec,
+          Mutare.UseExpansion,
+          Mutare.UseExpansion.Expansion,
+          Mutare.UseExpansion.ContractError
         ],
         "Built-in mutators": ~r/^Mutare\.Mutators/,
         Reporters: [

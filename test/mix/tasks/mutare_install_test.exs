@@ -50,7 +50,7 @@ defmodule Mix.Tasks.Mutare.InstallTest do
 
   # --- nothing detected ----------------------------------------------------
 
-  test "no frameworks: creates a starter .mutare.exs and adds no plugins" do
+  test "no frameworks: creates a starter .mutare.exs and adds no companion packages" do
     igniter = project([]) |> install()
 
     assert_creates(igniter, ".mutare.exs")
@@ -81,7 +81,7 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     assert config(igniter) =~ "[:builtins] ++ Mutare.Phoenix.all()"
   end
 
-  test "phoenix + live_view: adds both plugins and composes both presets" do
+  test "phoenix + live_view: adds both companion packages and composes both presets" do
     igniter = project([{:phoenix, "~> 1.7"}, {:phoenix_live_view, "~> 1.0"}]) |> install()
 
     assert Deps.has_dep?(igniter, :mutare_phoenix)
@@ -155,9 +155,9 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     assert declaration =~ "runtime: false"
   end
 
-  # --- gettext (a plugin, not a mutator) -----------------------------------
+  # --- gettext (an extension, not a mutator) -----------------------------------
 
-  test "gettext: adds mutare_gettext and lists it under :plugins" do
+  test "gettext: adds mutare_gettext and lists it under :extensions" do
     igniter = project([{:gettext, "~> 0.26"}]) |> install()
 
     assert Deps.has_dep?(igniter, :mutare_gettext)
@@ -165,12 +165,12 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     refute Deps.has_dep?(igniter, :mutare_ecto)
 
     content = config(igniter)
-    assert content =~ "plugins: [Mutare.Gettext]"
+    assert content =~ "extensions: [Mutare.Gettext]"
     # Gettext contributes no mutator families, so no :mutators key is written.
     refute content =~ "mutators:"
   end
 
-  test "gettext + phoenix: composes both a :mutators and a :plugins key" do
+  test "gettext + phoenix: composes both a :mutators and a :extensions key" do
     igniter = project([{:phoenix, "~> 1.7"}, {:gettext, "~> 0.26"}]) |> install()
 
     assert Deps.has_dep?(igniter, :mutare_phoenix)
@@ -178,7 +178,7 @@ defmodule Mix.Tasks.Mutare.InstallTest do
 
     content = config(igniter)
     assert content =~ "Mutare.Phoenix.all()"
-    assert content =~ "plugins: [Mutare.Gettext]"
+    assert content =~ "extensions: [Mutare.Gettext]"
   end
 
   test "gettext dep is dev/test-only and runtime: false" do
@@ -190,13 +190,13 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     assert declaration =~ "runtime: false"
   end
 
-  test "existing .mutare.exs with gettext: dep added, file untouched, :plugins surfaced" do
+  test "existing .mutare.exs with gettext: dep added, file untouched, :extensions surfaced" do
     existing = %{".mutare.exs" => ~s([paths: ["lib"]]\n)}
     igniter = project([{:gettext, "~> 0.26"}], existing) |> install()
 
     assert Deps.has_dep?(igniter, :mutare_gettext)
     assert_unchanged(igniter, ".mutare.exs")
-    assert Enum.any?(igniter.notices, &(&1 =~ "plugins: [Mutare.Gettext]"))
+    assert Enum.any?(igniter.notices, &(&1 =~ "extensions: [Mutare.Gettext]"))
   end
 
   # --- full stack ----------------------------------------------------------
@@ -218,7 +218,7 @@ defmodule Mix.Tasks.Mutare.InstallTest do
 
   # --- the dep options it sets ---------------------------------------------
 
-  test "plugin deps are dev/test-only and runtime: false" do
+  test "companion deps are dev/test-only and runtime: false" do
     igniter = project([{:phoenix, "~> 1.7"}]) |> install()
 
     assert {:ok, declaration} = Deps.get_dep(igniter, :mutare_phoenix)

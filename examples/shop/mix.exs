@@ -4,7 +4,7 @@ defmodule Shop.MixProject do
   # The "kitchen sink" demo — a small multi-module shop with no dependencies,
   # written to exercise *every* built-in Mutare mutator family across several
   # files, and shipped with a `.mutare.exs` that shows the config surface
-  # (mutator selection, `# mutare:ignore`, and `macros:` skips).
+  # (mutator selection, `# mutare:ignore`, and `macro_routes:` skips).
   #
   # Run it from the repo root:
   #

@@ -709,7 +709,7 @@ defmodule Mutare.UsesTest do
       {meta, sites, _next_id} =
         Mutare.transform_string(@schema_source,
           mutators: @schema_mutators,
-          macros: [{Mutare.Test.SchemaDSL, :schema, 1, :skip}]
+          macro_routes: [{Mutare.Test.SchemaDSL, :schema, 1, :skip}]
         )
 
       # `schema` resolves to `Mutare.Test.SchemaDSL` only because the `use` injected its import,
@@ -722,7 +722,7 @@ defmodule Mutare.UsesTest do
       {_meta, sites, _next_id} =
         Mutare.transform_string(@schema_source,
           mutators: @schema_mutators,
-          macros: [{Mutare.Test.SchemaDSL, :schema, 1, :skip}],
+          macro_routes: [{Mutare.Test.SchemaDSL, :schema, 1, :skip}],
           expand_uses: false
         )
 

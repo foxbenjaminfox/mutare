@@ -218,7 +218,7 @@ defmodule Mutare.MacroPatternTest do
   describe "user opt-in: a registered :binding_pattern macro" do
     # A user macro (`Mutare.Test.QueryDSL.unpack/2`) that binds its pattern into the
     # enclosing scope (it expands to `pattern = value`), registered `:binding_pattern` via
-    # the declarative `:macros` option — exactly how a library exposes a destructure-like
+    # the declarative `:macro_routes` option — exactly how a library exposes a destructure-like
     # macro. The transform must route its pattern arg like `Kernel.destructure`'s.
     @user_source """
     defmodule Mutare.UserUnpackFixture do
@@ -237,7 +237,7 @@ defmodule Mutare.MacroPatternTest do
       {meta, sites, _next} =
         Mutare.transform_string(@user_source,
           file: "user.ex",
-          macros: [{Mutare.Test.QueryDSL, :unpack, 2, [:binding_pattern, :expression]}]
+          macro_routes: [{Mutare.Test.QueryDSL, :unpack, 2, [:binding_pattern, :expression]}]
         )
 
       # Recompiled per test (the fixture is redefined) — capture the benign warning.
@@ -449,7 +449,7 @@ defmodule Mutare.MacroPatternTest do
       {meta, sites, _next} =
         Mutare.transform_string(@source,
           file: "visible.ex",
-          macros: [{Mutare.Test.QueryDSL, :unpack2, 2, [:expression, :binding_pattern]}]
+          macro_routes: [{Mutare.Test.QueryDSL, :unpack2, 2, [:expression, :binding_pattern]}]
         )
 
       {[{mod, _}], _io} =

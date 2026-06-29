@@ -95,11 +95,11 @@ defmodule Mutare.Poison.HintTest do
       assert hint =~ "compile-time literal"
       assert hint =~ "* Size.megabytes"
       assert hint =~ ".mutare.exs"
-      assert hint =~ "macros: ["
+      assert hint =~ "macro_routes: ["
       assert hint =~ "{Size, :megabytes, :skip}"
     end
 
-    test "the snippet is valid Elixir that resolves through Mutare.Macros" do
+    test "the snippet is valid Elixir that resolves through Mutare.MacroRouting.Registry" do
       output = """
       ** (FunctionClauseError) no function clause matching in Size.megabytes/1
           expanding macro: Size.megabytes/1
@@ -111,8 +111,8 @@ defmodule Mutare.Poison.HintTest do
 
       hint = Hint.for_compile_failure(output)
 
-      # Pull the `[ macros: [...] ]` snippet out of the prose and evaluate it, then
-      # confirm it round-trips through the real `:macros` resolver — so the advice we
+      # Pull the `[ macro_routes: [...] ]` snippet out of the prose and evaluate it, then
+      # confirm it round-trips through the real `:macro_routes` resolver — so the advice we
       # print is exactly what the user can paste into `.mutare.exs`.
       lines = String.split(hint, "\n")
       start = Enum.find_index(lines, &(&1 == "    ["))
@@ -121,7 +121,7 @@ defmodule Mutare.Poison.HintTest do
       snippet = rest |> Enum.take(stop + 1) |> Enum.join("\n")
 
       {config, _} = Code.eval_string(snippet)
-      specs = Mutare.Macros.resolve(config[:macros])
+      specs = Mutare.MacroRouting.Registry.resolve(config[:macro_routes])
 
       assert Enum.map(specs, &{&1.name, &1.arity, &1.args}) ==
                [{:megabytes, :any, :skip}, {:field, :any, :skip}]

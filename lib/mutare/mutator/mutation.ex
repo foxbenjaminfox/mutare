@@ -27,7 +27,7 @@ defmodule Mutare.Mutator.Mutation do
     * a `c:Mutare.Mutator.mutate/1`/`c:Mutare.Mutator.mutate/2` return-list element
       (alongside a bare node, or `nil` to drop that slot — see `t:Mutare.Mutator.mutation/0`),
       and
-    * a selector host target's `:mutants` entry (`c:Mutare.Mutator.MacroAware.host/2`).
+    * a selector host target's `:mutants` entry (`c:Mutare.Mutator.MacroHost.host/2`).
   """
 
   @typedoc "A produced mutation's variant label(s): `nil`, one label, or a list (see `c:Mutare.Mutator.variant/2`)."

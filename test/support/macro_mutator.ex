@@ -63,7 +63,7 @@ end
 defmodule Mutare.Test.QueryMutator do
   @moduledoc """
   A reference **macro-aware** custom mutator, used in tests to exercise the
-  `c:Mutare.Mutator.MacroAware.macros/0` extension point and the `:skip` argument treatment.
+  `c:Mutare.MacroRouting.macro_routes/0` extension point and the `:skip` argument treatment.
 
   It registers `Mutare.Test.QueryDSL.query/1` as a known macro whose argument is
   `:skip`ped — so Mutare core never mutates the DSL body — and mutates the query
@@ -72,13 +72,13 @@ defmodule Mutare.Test.QueryMutator do
   enables it with a single `:mutators` entry and core stays DSL-agnostic.
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.Mutator.MacroAware
+  @behaviour Mutare.MacroRouting
 
   @impl Mutare.Mutator
   def name, do: :query_dsl
 
-  @impl Mutare.Mutator.MacroAware
-  def macros, do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
+  @impl Mutare.MacroRouting
+  def macro_routes, do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
 
   @impl Mutare.Mutator
   # A `query([clause, clause, ...])` with more than one clause — drop the last one.
@@ -111,7 +111,7 @@ defmodule Mutare.Test.UnpackMutator do
   `variant` field — the latter leaving a valid `[unpack_call:value]` directive unable to suppress it.)
   """
   @behaviour Mutare.Mutator
-  @behaviour Mutare.Mutator.MacroAware
+  @behaviour Mutare.MacroRouting
 
   alias Mutare.Mutator.Mutation
 
@@ -126,8 +126,8 @@ defmodule Mutare.Test.UnpackMutator do
   @impl Mutare.Mutator
   def variants, do: ~w(value)
 
-  @impl Mutare.Mutator.MacroAware
-  def macros, do: [{Mutare.Test.QueryDSL, :unpack, 2, [:binding_pattern, :expression]}]
+  @impl Mutare.MacroRouting
+  def macro_routes, do: [{Mutare.Test.QueryDSL, :unpack, 2, [:binding_pattern, :expression]}]
 
   @impl Mutare.Mutator
   # `unpack(pattern, value)` (directly written) — replace the value, keeping the pattern.
