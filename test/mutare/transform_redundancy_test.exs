@@ -7,6 +7,14 @@ defmodule Mutare.TransformRedundancyTest do
   # Logical strips a `not`, Conditional forces a boolean to true/false.
   @membership [Mutare.Mutators.Relational, Mutare.Mutators.Conditional, Mutare.Mutators.Logical]
 
+  # A range guard adds Literal for the two integer endpoints; Relational and Conditional
+  # exercise the enclosing membership expression.
+  @range_guard [
+    Mutare.Mutators.Literal,
+    Mutare.Mutators.Relational,
+    Mutare.Mutators.Conditional
+  ]
+
   # For `x in [list]`: List collapses the list to `[]`; Relational/Conditional are the
   # membership pair. The collapse survives in bodies and is suppressed only in guards.
   @membership_list [Mutare.Mutators.Relational, Mutare.Mutators.Conditional, Mutare.Mutators.List]
@@ -104,6 +112,34 @@ defmodule Mutare.TransformRedundancyTest do
       assert {:relational, "x in [1, 2, 3]", "x not in [1, 2, 3]"} in triples
       assert {:conditional, "x in [1, 2, 3]", "true"} in triples
       assert {:conditional, "x in [1, 2, 3]", "false"} in triples
+      assert_compiles(meta)
+    end
+
+    test "a guard `x in 1..10` mutates both range endpoints and the membership expression" do
+      source = """
+      def f(x) when x in 1..10, do: :ok
+      def f(_x), do: :no
+      """
+
+      module_source = "defmodule M do\n  #{String.trim_trailing(source)}\nend\n"
+      {meta, sites, _next_id} = Mutare.transform_string(module_source, mutators: @range_guard)
+
+      range_guard_mutants =
+        for s <- sites, s.mutator in [:literal, :relational, :conditional] do
+          {s.mutator, s.kind, s.original_code, s.mutated_code}
+        end
+
+      assert range_guard_mutants == [
+               {:literal, :lifted, "1", "2"},
+               {:literal, :lifted, "1", "0"},
+               {:literal, :lifted, "10", "11"},
+               {:literal, :lifted, "10", "9"},
+               {:literal, :lifted, "10", "0"},
+               {:relational, :lifted, "x in 1..10", "x not in 1..10"},
+               {:conditional, :lifted, "x in 1..10", "true"},
+               {:conditional, :lifted, "x in 1..10", "false"}
+             ]
+
       assert_compiles(meta)
     end
 
