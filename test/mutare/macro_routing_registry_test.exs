@@ -138,11 +138,11 @@ defmodule Mutare.MacroRouting.RegistryTest do
       assert %Spec{args: :routing} = Spec.new(Ecto.Query, :where, :any, :routing)
     end
 
-    test "classifier?/1 and host_required?/1 recognise the host-needing modes" do
+    test "classifier?/1 and host_required?/1 distinguish routing from hosting" do
       assert Spec.classifier?(Spec.new(Foo, :bar, :any, :routing))
       refute Spec.classifier?(Spec.new(Foo, :bar, 2, [:expression, :hosted]))
 
-      assert Spec.host_required?(Spec.new(Foo, :bar, :any, :routing))
+      refute Spec.host_required?(Spec.new(Foo, :bar, :any, :routing))
       assert Spec.host_required?(Spec.new(Foo, :bar, 2, [:expression, :hosted]))
       assert Spec.host_required?(Spec.new(Foo, :bar, 1, :hosted))
       refute Spec.host_required?(Spec.new(Foo, :bar, 2, [:pattern, :expression]))
@@ -155,37 +155,43 @@ defmodule Mutare.MacroRouting.RegistryTest do
     end
   end
 
-  describe "host stamping (from_mutators/1) and validation (build/3)" do
-    test "from_mutators stamps the hosting mutator onto every spec it contributes" do
+  describe "router/host stamping (from_mutators/1) and validation (build/3)" do
+    test "from_mutators stamps classifier and hosting capabilities independently" do
       specs = Mutator.Spec.for_module(Mutare.Test.HostMutator)
       contributed = Macros.from_mutators([specs])
 
-      # Both of HostMutator's macro registrations (`filter` via `:routing`, `pick` via a static
-      # `[:binding_pattern, :hosted]`) are stamped with the contributing mutator as their host.
+      # HostMutator's dynamic registrations carry both roles because it implements both
+      # capabilities. Its static hosted registration needs only the host.
       assert Enum.all?(contributed, &(&1.host == Mutare.Test.HostMutator))
       assert Enum.all?(contributed, &(&1.module == [:Mutare, :Test, :HostDSL]))
 
       filter = Enum.find(contributed, &(&1.name == :filter))
       assert filter.args == :routing
+      assert filter.router == Mutare.Test.HostMutator
 
       pick = Enum.find(contributed, &(&1.name == :pick))
       assert pick.args == [:binding_pattern, :hosted]
+      assert pick.router == nil
     end
 
     test "build/3 resolves a host-needing macro through a mutator" do
       specs = Mutator.Spec.for_module(Mutare.Test.HostMutator)
       registry = Macros.build([], [specs])
 
-      assert %Spec{args: :routing, host: Mutare.Test.HostMutator} =
+      assert %Spec{
+               args: :routing,
+               router: Mutare.Test.HostMutator,
+               host: Mutare.Test.HostMutator
+             } =
                Macros.lookup(registry, [:Mutare, :Test, :HostDSL], :filter, 2)
     end
 
-    test "build/3 raises when a declarative entry asks for :hosted/:routing (no host)" do
-      assert_raise ArgumentError, ~r/requires an enabled mutator's hosted_routes\/0/, fn ->
+    test "build/3 raises when a declarative entry asks for callback-backed routing" do
+      assert_raise ArgumentError, ~r/requires macro_routes\/0 and macro_routing\/1/, fn ->
         Macros.build([{Ecto.Query, :where, :any, :routing}], [])
       end
 
-      assert_raise ArgumentError, ~r/requires an enabled mutator's hosted_routes\/0/, fn ->
+      assert_raise ArgumentError, ~r/requires macro_routes\/0 on an enabled mutator/, fn ->
         Macros.build([{Ecto.Query, :where, 2, [:expression, :hosted]}], [])
       end
     end
@@ -201,22 +207,15 @@ defmodule Mutare.MacroRouting.RegistryTest do
       end
     end
 
-    test "static macro routing rejects host-dependent entries from a mutator" do
-      specs = Mutator.Spec.for_module(Mutare.Test.HostedRouteInStaticMutator)
+    test "a shape-aware router need not implement MacroHost" do
+      specs = Mutator.Spec.for_module(Mutare.Test.NoDeliveryHostMutator)
+      registry = Macros.build([], [specs])
 
-      assert_raise ArgumentError, ~r/from macro_routes\/0/, fn ->
-        Macros.build([], [specs])
-      end
-    end
-
-    test "a macro host rejects entries that do not require hosting" do
-      specs = Mutator.Spec.for_module(Mutare.Test.StaticRouteInMacroHostMutator)
-
-      assert_raise ArgumentError,
-                   ~r/Move routes without :hosted\/:routing to macro_routes\/0/,
-                   fn ->
-                     Macros.build([], [specs])
-                   end
+      assert %Spec{
+               args: :routing,
+               router: Mutare.Test.NoDeliveryHostMutator,
+               host: nil
+             } = Macros.lookup(registry, [:Mutare, :Test, :HostDSL], :filter, 2)
     end
   end
 

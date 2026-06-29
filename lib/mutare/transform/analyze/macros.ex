@@ -123,7 +123,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   defp route_macro_arg(_descent, arg, :hosted, _mutators), do: arg
 
   # **Per-keyword-pair** routing for a keyword-list argument (classifier-only — produced by a
-  # `c:Mutare.Mutator.MacroHost.macro_routing/1` that inspected the node; a static `args` can't express it).
+  # `c:Mutare.MacroRouting.macro_routing/1` that inspected the node; a static `args` can't express it).
   # For each `key: value` pair the **key is left raw** (a keyword key in a DSL is a field/option
   # *name*, not a value to mutate) and the **value is routed by its own treatment** from
   # `value_treatments`, positionally. The motivating case is Ecto's keyword-shorthand `where`

@@ -215,8 +215,20 @@ defmodule Mutare.CLI.Info do
     sig =
       "#{format_module_key(spec.module)}.#{format_macro_name(spec.name)}/#{format_arity(spec.arity)}"
 
-    via = if spec.host, do: "  (via #{inspect(spec.host)})", else: ""
+    via = format_macro_providers(spec)
     "#{String.pad_trailing(sig, 28)}  #{inspect(spec.args)}#{via}"
+  end
+
+  defp format_macro_providers(%{router: provider, host: provider}) when not is_nil(provider),
+    do: "  (router/host #{inspect(provider)})"
+
+  defp format_macro_providers(%{router: router, host: host}) do
+    [if(router, do: "router #{inspect(router)}"), if(host, do: "host #{inspect(host)}")]
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> ""
+      providers -> "  (#{Enum.join(providers, ", ")})"
+    end
   end
 
   defp format_module_key(:*), do: "*"

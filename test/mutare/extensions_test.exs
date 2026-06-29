@@ -10,6 +10,7 @@ defmodule Mutare.ExtensionsTest do
     BlockDirectiveExtension,
     ContextExtension,
     DecliningExtension,
+    DynamicRoutingExtension,
     EmptyExpansionExtension,
     ExitingExtension,
     GettextLike,
@@ -186,15 +187,15 @@ defmodule Mutare.ExtensionsTest do
   end
 
   describe "Macros.from_extensions/1 + build/3" do
-    test "an extension's macro_routes/0 entries are collected, carrying no host (an extension can't host)" do
+    test "an extension's static macro_routes/0 entries carry no callback provider" do
       [_ | _] = specs = Macros.from_extensions([GettextLikeExtension])
       keys = Enum.map(specs, &Mutare.Macro.Spec.key/1)
 
       assert {[:Mutare, :Test, :GettextLikeMacros], :translate, 1} in keys
       assert {[:Mutare, :Test, :GettextLikeMacros], :ntranslate, 3} in keys
 
-      # An extension produces no mutations, so it can never host one — its specs carry no host, keeping
-      # Spec.host a true invariant (a non-nil host always names a real hosting mutator).
+      # Static routing needs neither callback role.
+      assert Enum.all?(specs, &is_nil(&1.router))
       assert Enum.all?(specs, &is_nil(&1.host))
     end
 
@@ -207,6 +208,16 @@ defmodule Mutare.ExtensionsTest do
                Macros.from_extensions([StaticRoutingExtension])
     end
 
+    test "an extension may provide shape-aware routing without becoming a macro host" do
+      assert [
+               %Mutare.Macro.Spec{
+                 args: :routing,
+                 router: DynamicRoutingExtension,
+                 host: nil
+               }
+             ] = Macros.from_extensions([DynamicRoutingExtension])
+    end
+
     test "from_extensions accepts resolved Extension.Specs too (not only bare modules)" do
       from_module = Macros.from_extensions([GettextLikeExtension])
       from_spec = Macros.from_extensions([%Extension.Spec{module: GettextLikeExtension}])
@@ -215,10 +226,10 @@ defmodule Mutare.ExtensionsTest do
                Enum.map(from_module, &Mutare.Macro.Spec.key/1)
     end
 
-    test "an extension macro_routes/0 declaring a :hosted/:routing treatment is rejected (extensions can't host)" do
+    test "an extension macro_routes/0 declaring :hosted is rejected (extensions can't host)" do
       # An extension produces no mutations, so it cannot host one — caught with an extension-specific
       # message rather than build/3's generic "hosting mutator" abort that mislabels the extension.
-      assert_raise ArgumentError, ~r/returned host-dependent route/, fn ->
+      assert_raise ArgumentError, ~r/returned hosted route/, fn ->
         Macros.from_extensions([HostingExtension])
       end
     end
@@ -369,6 +380,26 @@ defmodule Mutare.ExtensionsTest do
       # either way — the extension removes *only* the literal-position mutations, nothing else.
       assert count(with_extension, :arithmetic) == count(without_extension, :arithmetic)
       assert count(with_extension, :arithmetic) > 0
+    end
+
+    test "a non-mutating extension's shape-aware classifier controls transform routing" do
+      source = """
+      defmodule Mutare.Test.DynamicRoutingSample do
+        def value, do: Mutare.Test.SomeDSL.dynamic_frag("skip me")
+      end
+      """
+
+      {_meta, with_extension, _} =
+        Mutare.transform_string(source,
+          mutators: [Mutare.Mutators.StringLiteral],
+          extensions: [DynamicRoutingExtension]
+        )
+
+      {_meta, without_extension, _} =
+        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringLiteral])
+
+      assert count(without_extension, :string) > 0
+      assert count(with_extension, :string) == 0
     end
   end
 

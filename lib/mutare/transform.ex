@@ -318,7 +318,7 @@ defmodule Mutare.Transform do
     ctx = build_ctx(config, opts)
 
     # Non-mutating extensions implement `Mutare.MacroRouting`, `Mutare.UseExpansion`, or both:
-    # static routes extend the registry below and `expand_use/3` overrides `use`-expansion. They make the built-in
+    # routes extend the registry below and `expand_use/3` overrides `use`-expansion. They make the built-in
     # mutators' work land on a library's DSL (the Gettext case). Validated + resolved here at the
     # boundary (like `:mutators`) to `Mutare.Extension.Spec`s — carrying each extension's `opts`,
     # delivered to `expand_use/3`'s context — so a non-extension entry fails loudly rather than being
@@ -327,11 +327,11 @@ defmodule Mutare.Transform do
     extensions = opts |> Keyword.get(:extensions, []) |> Mutare.Extension.validate!()
 
     # The known-macro registry (`Mutare.MacroRouting.Registry`): built-ins (`Kernel.match?`/`destructure`)
-    # merged with declarative `:macro_routes`, static routes from enabled mutators/extensions, and
-    # host-dependent routes from enabled macro-host mutators. It tells the resolution pass how to route a recognised
+    # merged with declarative `:macro_routes` and routes from enabled mutators/extensions. It tells
+    # the resolution pass how to route a recognised
     # macro's arguments (a pattern, an opaque DSL body). Built from the resolved mutator specs
     # in `config`, so a library's mutator/extension auto-registers the macros it relies on. Extension
-    # specs are passed straight through (`build/3` reads each static routing capability); routes are
+    # specs are passed straight through (`build/3` reads each routing capability); routes are
     # opts-independent library facts, so the `opts` they carry are ignored there
     # and ride along separately to `expand_use/3`'s context.
     macros =

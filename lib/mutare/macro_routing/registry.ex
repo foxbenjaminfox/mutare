@@ -9,18 +9,18 @@ defmodule Mutare.MacroRouting.Registry do
   the pattern), `:skip` (leave raw — an opaque DSL body), or `:hosted` (leave raw for
   core, but deliver mutations through the registering mutator's selector host — the deep
   `Ecto.from`/`where` case; see `Mutare.Macro.Spec`). The per-argument treatment may also
-  be a `:routing` classifier deferred to the mutator's `c:Mutare.Mutator.MacroHost.macro_routing/1`,
-  for a treatment that depends on the call *shape*. Specs come from **four** sources, merged
+  be a `:routing` classifier deferred to its contributor's
+  `c:Mutare.MacroRouting.macro_routing/1`, for a treatment that depends on the call *shape*.
+  Specs come from **four** sources, merged
   in this order so a **later** entry wins a key:
 
     * **built-ins** (`builtin/0`) — `Kernel.match?/2` and `Kernel.destructure/2`,
       both routing argument 0 as a pattern. Always on.
-    * `c:Mutare.MacroRouting.macro_routes/0` on enabled mutators — static routing a custom
-      mutator relies on — plus `c:Mutare.Mutator.MacroHost.hosted_routes/0` for routes tied to
-      that mutator's selector host (`from_mutators/1`).
-    * `c:Mutare.MacroRouting.macro_routes/0` on enabled extensions (`from_extensions/1`) —
-      non-mutating library vocabulary such as Gettext's literal argument positions. Folded after
-      mutators, so an extension wins a tie over a mutator.
+    * `c:Mutare.MacroRouting.macro_routes/0` on enabled mutators (`from_mutators/1`) — static,
+      shape-aware, or hosted routes a custom mutator relies on.
+    * `c:Mutare.MacroRouting.macro_routes/0` on enabled extensions (`from_extensions/1`) — static
+      or shape-aware non-mutating library vocabulary. Folded after mutators, so an extension wins
+      a tie over a mutator. Extensions cannot use `:hosted` because they produce no mutations.
     * the declarative **`:macro_routes`** option (`.mutare.exs` / `Mutare.run/2`) — a list
       of `{module, name, arity, treatment}` / `{module, name, treatment}` entries,
       resolved by `resolve/1`. Folded **last**, so an explicit config entry is the
@@ -49,7 +49,7 @@ defmodule Mutare.MacroRouting.Registry do
 
   For the no-mutator case (just route a custom DSL's argument as a pattern, or
   leave a macro body opaque) the declarative `:macro_routes` option is enough; a mutator or
-  extension that ships static routing implements `Mutare.MacroRouting` instead.
+  extension that ships routing implements `Mutare.MacroRouting` instead.
   See `Mutare.Macro.Spec` for the per-argument treatments.
   """
 
@@ -114,73 +114,94 @@ defmodule Mutare.MacroRouting.Registry do
   end
 
   @doc """
-  Collect static and hosted routes contributed by enabled mutators.
+  Collect macro routes contributed by enabled mutators.
 
   `mutator_specs` are resolved `Mutare.Mutator.Spec`s; each distinct module that is
-  loaded and exporting `c:Mutare.MacroRouting.macro_routes/0` contributes static routes;
-  `c:Mutare.Mutator.MacroHost.hosted_routes/0` contributes host-dependent routes stamped with
-  that mutator module. A module is consulted once even if configured more than once.
+  loaded and exporting `c:Mutare.MacroRouting.macro_routes/0` contributes routes. A `:routing`
+  entry is stamped with that module as its router. A static `:hosted` entry is stamped with it as
+  its host after validating `c:Mutare.Mutator.MacroHost.host/2`. A classifier's host is attached
+  only when the mutator exports `host/2`, because the need for hosting is shape-dependent. A module
+  is consulted once even if configured more than once.
   """
   @spec from_mutators([Mutator.Spec.t()]) :: [Spec.t()]
   def from_mutators(mutator_specs) when is_list(mutator_specs) do
-    modules = Enum.map(mutator_specs, & &1.module)
-
-    static = modules |> collect_routes(:macro_routes) |> validate_static!(:mutator)
-
-    hosted =
-      modules
-      |> collect_routes(:hosted_routes)
-      |> Enum.map(fn {spec, module} ->
-        spec |> require_hosted!(module) |> Spec.put_host(module)
-      end)
-
-    static ++ hosted
+    mutator_specs
+    |> Enum.map(& &1.module)
+    |> collect_routes(:macro_routes)
+    |> Enum.map(&prepare_mutator_route!/1)
   end
 
   @doc """
-  Collect static routes contributed by enabled non-mutating extensions.
+  Collect routes contributed by enabled non-mutating extensions.
 
-  Host-dependent routes are rejected by the `Mutare.MacroRouting` contract; they must come from
-  an enabled mutator's `c:Mutare.Mutator.MacroHost.hosted_routes/0`.
+  Static and shape-aware routes are accepted. Static `:hosted` routes are rejected because an
+  extension produces no mutations and therefore cannot implement selector delivery. A `:routing`
+  extension may classify call shapes but may not return `:hosted` at runtime.
   """
   @spec from_extensions([Mutare.Extension.Spec.t() | module()]) :: [Spec.t()]
   def from_extensions(extensions) when is_list(extensions) do
     extensions
     |> Enum.map(&extension_module/1)
     |> collect_routes(:macro_routes)
-    |> validate_static!(:extension)
+    |> Enum.map(&prepare_extension_route!/1)
   end
 
   defp extension_module(%Mutare.Extension.Spec{module: module}), do: module
   defp extension_module(module) when is_atom(module), do: module
 
-  defp validate_static!(route_modules, source) do
-    Enum.map(route_modules, fn {spec, module} ->
-      if Spec.host_required?(spec) do
-        raise ArgumentError,
-              "#{source} #{inspect(module)} returned host-dependent route " <>
-                "#{inspect(Spec.key(spec))} from macro_routes/0. Static macro routes may use only " <>
-                ":expression/:pattern/:binding_pattern/:skip; move :hosted/:routing entries to " <>
-                "a mutator's hosted_routes/0."
-      end
+  defp prepare_mutator_route!({spec, module}) do
+    cond do
+      Spec.classifier?(spec) ->
+        require_callback!(spec, module, :macro_routing, 1)
 
-      spec
-    end)
-  end
+        spec
+        |> Spec.put_router(module)
+        |> maybe_put_host(module)
 
-  defp require_hosted!(spec, module) do
-    unless Spec.host_required?(spec) do
-      raise ArgumentError,
-            "macro host #{inspect(module)} returned static route #{inspect(Spec.key(spec))} from " <>
-              "hosted_routes/0. Move routes without :hosted/:routing to macro_routes/0 and " <>
-              "implement Mutare.MacroRouting."
+      Spec.host_required?(spec) ->
+        require_callback!(spec, module, :host, 2)
+        Spec.put_host(spec, module)
+
+      true ->
+        spec
     end
-
-    spec
   end
+
+  defp prepare_extension_route!({spec, module}) do
+    cond do
+      Spec.host_required?(spec) ->
+        raise ArgumentError,
+              "extension #{inspect(module)} returned hosted route #{inspect(Spec.key(spec))} " <>
+                "from macro_routes/0. Extensions do not produce mutations and cannot host them; " <>
+                "register this route from an enabled mutator implementing " <>
+                "Mutare.Mutator.MacroHost."
+
+      Spec.classifier?(spec) ->
+        require_callback!(spec, module, :macro_routing, 1)
+        Spec.put_router(spec, module)
+
+      true ->
+        spec
+    end
+  end
+
+  defp maybe_put_host(spec, module) do
+    if exports?(module, :host, 2), do: Spec.put_host(spec, module), else: spec
+  end
+
+  defp require_callback!(spec, module, fun, arity) do
+    unless exports?(module, fun, arity) do
+      raise ArgumentError,
+            "macro-routing module #{inspect(module)} must implement #{fun}/#{arity} for route " <>
+              inspect(Spec.key(spec))
+    end
+  end
+
+  defp exports?(module, fun, arity),
+    do: Code.ensure_loaded?(module) and function_exported?(module, fun, arity)
 
   # Return `{resolved_spec, contributing_module}` pairs so each capability boundary can validate
-  # and, for hosted routes, stamp provenance explicitly.
+  # and stamp router/host provenance explicitly.
   defp collect_routes(modules, callback) do
     modules
     |> Enum.uniq()
@@ -224,56 +245,57 @@ defmodule Mutare.MacroRouting.Registry do
     (builtin() ++
        from_mutators(mutator_specs) ++
        from_extensions(extensions) ++ validate_config!(resolve(config_routes)))
-    |> Enum.map(&validate_host/1)
+    |> Enum.map(&validate_providers/1)
     |> Map.new(&{Spec.key(&1), &1})
   end
 
   defp validate_config!(specs) do
     Enum.map(specs, fn spec ->
-      if Spec.host_required?(spec) do
-        raise ArgumentError,
-              "declarative :macro_routes entry #{inspect(Spec.key(spec))} uses :hosted/:routing, " <>
-                "which requires an enabled mutator's hosted_routes/0"
-      end
+      cond do
+        Spec.classifier?(spec) ->
+          raise ArgumentError,
+                "declarative :macro_routes entry #{inspect(Spec.key(spec))} uses :routing, " <>
+                  "which requires macro_routes/0 and macro_routing/1 on an enabled " <>
+                  "Mutare.MacroRouting module"
 
-      spec
+        Spec.host_required?(spec) ->
+          raise ArgumentError,
+                "declarative :macro_routes entry #{inspect(Spec.key(spec))} uses :hosted, " <>
+                  "which requires macro_routes/0 on an enabled mutator implementing " <>
+                  "Mutare.Mutator.MacroHost"
+
+        true ->
+          spec
+      end
     end)
   end
 
-  # A `:hosted` argument or the `:routing` classifier needs a hosting mutator to deliver /
-  # answer it. `from_mutators/1` stamps the host for a mutator-contributed spec; a declarative
-  # `:macro_routes` entry (or a built-in) has none, so asking for hosting there is a configuration
-  # error caught here rather than silently producing an un-deliverable mutant — or a cryptic
-  # `UndefinedFunctionError` at resolve time — later. Checked at build (the host is an enabled,
-  # loaded mutator), so a missing callback is named with a clear message.
-  #
-  # A `:routing` classifier needs `macro_routing/1` (called every resolve); a static `:hosted`
-  # needs `host/2` (called to deliver). `host/2` is *not* demanded of a `:routing` spec at build —
-  # a classifier may legitimately route only to `:expression`/`:pattern` and never host. But if it
-  # *does* route a position `:hosted` without a `host/2` to deliver it,
-  # `Mutare.Transform.Resolve.MacroStamp` raises loudly at resolve — the first point the undeliverable
-  # `:hosted` is known — rather than silently leaving the fragment raw and dropping the mutation.
-  defp validate_host(%Spec{} = spec) do
+  # Final invariant check after every source has been normalized. Static routes need no callback
+  # provider. A classifier needs a router; a static hosted route needs a host. Dynamic hosting is
+  # checked after classification in `Resolve.MacroStamp`.
+  defp validate_providers(%Spec{} = spec) do
     cond do
-      Spec.classifier?(spec) -> validate_host!(spec, :macro_routing, 1)
-      Spec.host_required?(spec) -> validate_host!(spec, :host, 2)
+      Spec.classifier?(spec) -> validate_provider!(spec, :router, :macro_routing, 1)
+      Spec.host_required?(spec) -> validate_provider!(spec, :host, :host, 2)
       true -> :ok
     end
 
     spec
   end
 
-  defp validate_host!(%Spec{host: host} = spec, fun, arity) do
-    cond do
-      is_nil(host) ->
-        raise ArgumentError,
-              "the macro entry #{inspect(Spec.key(spec))} uses a :hosted/:routing treatment, " <>
-                "which needs a hosting mutator (implementing #{fun}/#{arity}) — register it via " <>
-                "a mutator's hosted_routes/0, not the declarative :macro_routes option"
+  defp validate_provider!(%Spec{} = spec, field, fun, arity) do
+    provider = Map.fetch!(spec, field)
 
-      not (Code.ensure_loaded?(host) and function_exported?(host, fun, arity)) ->
+    cond do
+      is_nil(provider) ->
         raise ArgumentError,
-              "the hosting mutator #{inspect(host)} for macro #{inspect(Spec.key(spec))} must " <>
+              "the macro entry #{inspect(Spec.key(spec))} needs a #{field} implementing " <>
+                "#{fun}/#{arity}; register it through macro_routes/0 on an enabled module, not " <>
+                "the declarative :macro_routes option"
+
+      not exports?(provider, fun, arity) ->
+        raise ArgumentError,
+              "the macro #{field} #{inspect(provider)} for #{inspect(Spec.key(spec))} must " <>
                 "implement #{fun}/#{arity} for its :hosted/:routing treatment"
 
       true ->
@@ -283,7 +305,7 @@ defmodule Mutare.MacroRouting.Registry do
 
   @doc """
   The `Mutare.Macro.Spec` a call resolving to `module_key`/`name` at `arity` matches, or `nil`.
-  Returns the whole spec, so the transform can read its `host`/`args` to resolve a
+  Returns the whole spec, so the transform can read its `router`/`host`/`args` to resolve a
   `:routing` classifier or stamp a `:hosted` treatment with its hosting mutator. The per-position
   treatment list for a static spec is `Mutare.Macro.Spec.routing/2` of the result.
 

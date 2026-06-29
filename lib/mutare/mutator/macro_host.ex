@@ -4,28 +4,27 @@ defmodule Mutare.Mutator.MacroHost do
 
   Ordinary mutators see runtime Elixir expressions. A fragment inside a macro such as Ecto's
   `where` has the library's semantics and cannot contain Mutare's ordinary selector directly.
-  A macro host declares the host-dependent entries through `c:hosted_routes/0`, optionally
-  classifies concrete call shapes with `c:macro_routing/1`, and weaves selectors into the DSL
-  through `c:host/2`.
+  A macro host weaves selectors into that DSL through `c:host/2`.
 
-  Registration is automatic when the mutator is enabled. Static, non-hosting routes belong to
-  the independent `Mutare.MacroRouting` capability; a mutator may implement both behaviours.
-
-  A macro-aware mutator is still a `Mutare.Mutator` (it needs `name/0` and a mutation producer), so declare both:
+  Macro registration and all argument routing belong to the independent
+  `Mutare.MacroRouting` capability. A hosting mutator implements both behaviours, registers a
+  `:hosted` treatment (or a `:routing` classifier that may return one) from
+  `c:Mutare.MacroRouting.macro_routes/0`, and supplies the hosted mutations here.
 
       defmodule MyApp.Mutators.Ecto do
         @behaviour Mutare.Mutator
+        @behaviour Mutare.MacroRouting
         @behaviour Mutare.Mutator.MacroHost
 
         @impl Mutare.Mutator
         def name, do: :ecto_query
         @impl Mutare.Mutator
-        def mutate(node), do: ...                       # drop a where, flip :asc/:desc
+        def mutate(node), do: ...
 
-        @impl Mutare.Mutator.MacroHost
-        def hosted_routes, do: [{Ecto.Query, :where, :any, :routing}]
+        @impl Mutare.MacroRouting
+        def macro_routes, do: [{Ecto.Query, :where, :any, :routing}]
 
-        @impl Mutare.Mutator.MacroHost
+        @impl Mutare.MacroRouting
         def macro_routing(call), do: ...
 
         @impl Mutare.Mutator.MacroHost
@@ -33,154 +32,35 @@ defmodule Mutare.Mutator.MacroHost do
       end
 
   `test/support/host_mutator.ex` contains working examples.
-
-  ## Registering known macros (`hosted_routes/0`)
-
-  Every entry must use `:routing` or contain at least one `:hosted` treatment. Use `c:Mutare.MacroRouting.macro_routes/0` for ordinary `:expression` / `:pattern` / `:binding_pattern` / `:skip` declarations.
-
-  ## Shape-aware routing (`macro_routing/1`)
-
-  A static per-position treatment list can't express a routing that depends on the call's shape — for instance, in `where(q, category: "Foo")` we're passing plain data, while in `where(q, [u], u.x == u.y)` we're giving the macro a fragment of the Ecto DSL. Register the macro `:routing` and implement `c:macro_routing/1` to classify which of the two cases applies.
-
-  ## Selector hosting (`host/2`)
-
-  For a fragment inside a compile-time DSL — a `:hosted` argument — the transform can't splice its usual mutation machinery in, and the fragment's semantics are the macro's. So the macro-hosting mutator will own the mutation logic, handilg the transform a per-fragment `:original` and `:mutants`, plus `:wrap`/`:splice` describing how to weave a selector back into the macro, and the transform assembles and records the rest. See `c:host/2`.
   """
 
   @doc """
-  Register macros with host-dependent routing supplied by this mutator.
+  Produce mutations for fragments inside a compile-time DSL.
 
-  Return a list of `Mutare.Macro.Spec` entries in the form `{module, name, arity, treatment}` or
-  `{module, name, treatment}` (arity `:any`). Each entry must use `:routing` (deferring to
-  `c:macro_routing/1`) or contain a `:hosted` treatment delivered through `c:host/2`.
-  `module`/`name` may be the wildcard `:*` — `{module, :*, treatment}` registers a whole module,
-  `{:*, name, treatment}` a name in any module (see `Mutare.Macro.Spec`). A `:hosted` argument is
-  delivered through this mutator's `c:host/2`.
+  The transform hands the callback the **whole macro node** and expects a list of targets, one per
+  fragment to mutate. Each target is a map:
 
-  Listing the mutator under `:mutators` merges these into the routing registry automatically.
-  """
-  @callback hosted_routes() :: [tuple() | Mutare.Macro.Spec.t()]
+    * `:original` — the fragment before mutation, used for the baseline and the left side of the
+      reported diff;
+    * `:mutants` — mutated fragments, `%Mutare.Mutator.Mutation{}` values carrying report metadata,
+      or `nil` entries to drop;
+    * `:splice` — a 2-arity `(macro_node, case_node -> macro_node)` function that weaves the
+      assembled selector into a copy of the macro node;
+    * `:wrap` — optional 1-arity `(fragment -> node)` function mapping each fragment to its branch
+      value, such as `&dynamic([u], &1)`; defaults to identity;
+    * `:range` — optional `Sourceror.Range.t()` used for the site; defaults to the original
+      fragment's range.
 
-  @doc """
-  Produce mutations for a fragment *inside* a compile-time DSL — a `:hosted` macro argument
-  (see `Mutare.Macro.Spec`), the deep external-DSL case such as `Ecto`'s `from`/`where`. Here the
-  fragment's semantics are the library's, not Elixir's, so your mutator owns the mutation logic:
-  the transform hands you the **whole macro node** and you return a list of *targets* — one per
-  fragment to mutate — and it builds the selector, records the `Mutare.Site`s, and weaves the
-  result back in.
+  The callback owns the foreign DSL's mutation semantics and selector placement. Core owns ids,
+  sites, coverage, and selector assembly, so survivor diffs contain only the logical fragment swap.
 
-  Each target is a map:
+  Register the macro and its `:hosted` treatment through
+  `c:Mutare.MacroRouting.macro_routes/0`. For shape-dependent hosting, register `:routing` and
+  return `:hosted` from `c:Mutare.MacroRouting.macro_routing/1` for the applicable call shapes.
+  `context` is the same map `c:Mutare.Mutator.mutate/2` receives.
 
-    * `:original` — the fragment before mutation (the left side of the Site diff, and the
-      baseline the unmutated run uses);
-    * `:mutants` — the list of mutated fragments (one mutant id and `Mutare.Site` each), drawn
-      from your library's *own* semantics (e.g. SQL's, not Elixir's). Each entry is a bare
-      fragment node, a `%Mutare.Mutator.Mutation{}` (a `node` plus a `note` recorded on that
-      mutant's Site for the report, e.g. `"kill may require NULL/boundary data"`), or `nil`
-      (dropped) — the same `t:Mutare.Mutator.mutation/0` forms `c:Mutare.Mutator.mutate/1`
-      accepts;
-    * `:splice` — a 2-arity `(macro_node, case_node -> macro_node)` that weaves the assembled
-      selector into a copy of the macro node (for Ecto, `^`-pinning it into the `where:`
-      position);
-    * `:wrap` — optional 1-arity `(fragment -> node)` mapping each fragment to its branch value
-      (`&dynamic([u], &1)`); defaults to identity;
-    * `:range` — optional `Sourceror.Range.t()` for the Site; defaults to the `:original`'s.
-
-  You describe how to weave the selector in (`:wrap`/`:splice`) and let the transform build it —
-  the diff a survivor shows is just the fragment swap, with the scaffolding invisible.
-
-  Registered by a `:hosted` (or `:routing`-classified) treatment in `c:hosted_routes/0`. `context` is
-  the same map `c:Mutare.Mutator.mutate/2` receives (`:pipe_mode`/`:opts`/`:behaviours`).
-
-  Core leaves the whole hosted fragment **raw** and does not route the macros *nested inside* it —
-  that is now your fragment to own. To honour how a nested macro is registered (e.g. leave the
-  argument of a `:skip`-registered call opaque rather than mutating into it), read its resolved
-  per-argument routing as you walk the fragment with `Mutare.Transform.Calls.macro_treatment/1` —
-  the same merged registry and name resolution core itself used, already stamped on the node.
+  Core leaves a hosted fragment raw and does not route nested macros inside it. A host walking the
+  fragment can read their resolved routing with `Mutare.Transform.Calls.macro_treatment/1`.
   """
   @callback host(macro_node :: Macro.t(), context :: Mutare.Mutator.context()) :: [map()]
-
-  @doc """
-  Optional **shape-aware routing** classifier for a macro registered `:routing` in
-  `c:hosted_routes/0`. A static per-position treatment list can't express a routing that depends
-  on the call *shape* — `where(q, category: "Foo")` is plain data (`:expression`) while
-  `where(q, [u], u.x == u.y)` is a `:hosted` DSL fragment. The transform calls
-  this with the concrete call node and uses the returned per-position treatment list (for the
-  node's **visible** arguments) instead of a fixed one. Each element is a
-  `t:Mutare.Macro.Spec.treatment/0` (`:expression`/`:pattern`/`:binding_pattern`/`:skip`/
-  `:hosted`); a `:hosted` here is delivered through this same mutator's `c:host/2`.
-
-  The list covers only the call's **visible** arguments. For a **piped** call (`q |> where(c)`)
-  the piped value is the `|>` LHS — *not* a visible argument and never routed here (it stays an
-  ordinary `:expression`), so a piped call passes one fewer argument than the written form. A
-  classifier that matches on arity must handle that reduced shape (match the visible args, not a
-  fixed count). The returned treatments are validated by the transform: an
-  unrecognised or mis-shaped treatment raises rather than silently mutating a position you meant
-  to skip or host.
-
-  ## Per-keyword-pair routing — `{:keyword, value_treatments}`
-
-  Besides the static treatments, the classifier may return two **classifier-only** routing
-  values (a static `args` can't carry them):
-
-    * `{:keyword, value_treatments}` for a **keyword-list argument**, a routing the per-argument
-      granularity can't otherwise reach. Core routes each `key: value` pair's **value** by the
-      corresponding treatment in `value_treatments` (positional; a value past the list defaults
-      to `:skip`) and leaves every **key** raw — a keyword key in a DSL is a field/option *name*,
-      not a value to mutate. A value treatment may itself be `{:keyword, …}`, so a *nested*
-      keyword list (a list whose values are keyword lists) routes too. A non-keyword argument
-      under it falls back to raw, so a mis-shaped classification can never splice into a non-pair.
-      A keyword value is a `t:keyword_value_treatment/0`. A nested `:hosted` value is left raw by
-      core and delivered through this module's `c:host/2`, which still receives and weaves into the
-      whole macro node.
-
-    * `:pinned` for a **value that must be `^`-pinned** — it sits in a compile-time DSL position
-      (an Ecto keyword-shorthand value) that accepts an interpolated value but not a bare
-      selector `case`. Core mutates it with the configured literal families (their *own* names on
-      the Site — the value mutation stays core's), but wraps the selector in `^`. Use it as a
-      value treatment inside `{:keyword, …}`, for a **scalar** value only (a compound value would
-      mutate nested nodes, where an inner `^` still poisons). A bare `^` is a compile error
-      outside such a context, so only route a position `:pinned` when the macro genuinely
-      interpolates it.
-
-  The motivating case is Ecto's keyword-shorthand `where(q, category: "Foo", deleted_at: nil)`:
-  `{:keyword, [:pinned, :skip]}` — mutate `"Foo"` `^`-pinned (core's literal families), the
-  column-name keys raw, and the `deleted_at: nil` pair skipped (it compiles to `IS NULL`).
-  """
-  @callback macro_routing(call_node :: Macro.t()) :: [routing_treatment()]
-
-  @typedoc """
-  A treatment a `c:macro_routing/1` classifier may return for one **visible argument**: a static
-  `t:Mutare.Macro.Spec.treatment/0` (`:expression`/`:pattern`/`:binding_pattern`/`:skip`/`:hosted`)
-  plus the two **classifier-only** routings a fixed `args` can't carry — `:pinned` (mutate the
-  value but deliver the selector `^`-pinned) and `{:keyword, [keyword_value_treatment]}` (route each
-  keyword pair's value, keys raw). The `{:keyword, …}` arm is **recursive**: a value treatment may
-  itself be `{:keyword, …}`, so a nested keyword shorthand (`from(S, where: [x: v])`) routes too.
-
-  A keyword *value* is a `t:keyword_value_treatment/0`. A nested `:hosted` treatment leaves that
-  value raw during core descent and asks the registering mutator's `c:host/2` to weave selectors
-  into the whole macro node.
-  """
-  @type routing_treatment ::
-          Mutare.Macro.Spec.treatment()
-          | :pinned
-          | {:keyword, [keyword_value_treatment()]}
-
-  @typedoc """
-  A treatment for a **value inside a `{:keyword, …}` routing**. A value may itself be
-  `{:keyword, …}`, so a nested keyword shorthand routes too.
-  """
-  @type keyword_value_treatment ::
-          :expression
-          | :pattern
-          | :binding_pattern
-          | :skip
-          | :hosted
-          | :pinned
-          | {:keyword, [keyword_value_treatment()]}
-
-  # `hosted_routes/0` is required: a MacroHost exists to register host-dependent routes, so omitting it is
-  # always a mistake — a typo'd callback name would otherwise compile to a silently inert mutator.
-  # Only `host/2` and `macro_routing/1` are genuinely optional (needed only for `:hosted` treatments).
-  @optional_callbacks host: 2, macro_routing: 1
 end

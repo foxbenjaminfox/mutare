@@ -4,7 +4,7 @@ defmodule Mutare.Extension.Spec do
 
   A bare module in `:extensions` resolves with empty options. A `{module, opts}` entry carries
   configuration to `c:Mutare.UseExpansion.expand_use/3` through `context.opts`.
-  `c:Mutare.MacroRouting.macro_routes/0` is static and never receives these options.
+  `Mutare.MacroRouting` callbacks never receive these options.
   """
 
   @enforce_keys [:module]

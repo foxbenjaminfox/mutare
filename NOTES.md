@@ -6303,3 +6303,29 @@ The user-facing `:plugins` and `:macros` keys became `:extensions` and `:macro_r
 pre-release boundary. There is deliberately no compatibility alias: accepting both names would make
 the old conceptual split part of the released contract. Likewise there is no `capabilities/0` or
 `extensions/0` manifest; exported callbacks remain the zero-drift capability check.
+
+### Macro routing owns all routing; MacroHost only hosts `[done]`
+
+The split above left a conceptual seam in the wrong place: `Mutare.MacroRouting` owned only static
+routes, while `Mutare.Mutator.MacroHost` still owned both `hosted_routes/0` and the shape-aware
+`macro_routing/1` classifier. That meant routing had two registration surfaces and a module called
+`MacroHost` could be implemented solely to classify arguments without ever hosting a mutation.
+
+The capability boundary now follows the operation:
+
+- **`Mutare.MacroRouting` owns all routing.** `macro_routes/0` is the single registration surface
+  for static, `:routing`, and `:hosted` entries; optional `macro_routing/1` classifies concrete call
+  shapes. Both enabled mutators and non-mutating extensions may classify dynamically.
+- **`Mutare.Mutator.MacroHost` owns only selector delivery.** Its sole callback is `host/2`. A
+  mutator that routes a static position `:hosted` implements both behaviours. A dynamic router only
+  needs `MacroHost` if a concrete classification actually returns `:hosted`; the resolver rejects
+  that result loudly otherwise.
+- **`Mutare.Macro.Spec` records the roles independently.** `router` names the provider of
+  `macro_routing/1`; `host` names the enabled mutator providing `host/2`. Static routes need neither,
+  a dynamic extension has only a router, a static hosted route has only a host, and a shape-aware
+  hosting mutator normally has both. This removes the old overload where `host` also meant router.
+
+Declarative `:macro_routes` remains static because configuration cannot supply callbacks. Extensions
+may classify dynamically but cannot use `:hosted`, since they deliberately produce no mutations.
+The registry still discovers capabilities by exported callbacks and keeps routing declarations
+opts-independent.

@@ -160,6 +160,20 @@ defmodule Mutare.Test.StaticRoutingExtension do
   def macro_routes, do: [{Mutare.Test.SomeDSL, :frag, 2, [:expression, :skip]}]
 end
 
+defmodule Mutare.Test.DynamicRoutingExtension do
+  @moduledoc "A non-mutating extension that classifies a macro's routing per concrete call."
+  @behaviour Mutare.MacroRouting
+
+  @impl Mutare.MacroRouting
+  def macro_routes, do: [{Mutare.Test.SomeDSL, :dynamic_frag, :any, :routing}]
+
+  @impl Mutare.MacroRouting
+  def macro_routing({_form, _meta, args}) when is_list(args),
+    do: Enum.map(args, fn _arg -> :skip end)
+
+  def macro_routing(_node), do: []
+end
+
 defmodule Mutare.Test.ContextExtension do
   @moduledoc """
   An extension that *reads* its `context` — proving `expand_use/3` receives the caller `:module`

@@ -58,8 +58,14 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
   # A `:routing` classifier sees the concrete visible call node and returns visible-argument
   # routing, so it rides whole on @macro_key. A static spec is effective-arity based and is split
   # for piped calls so the LHS can be routed as effective argument 0.
-  defp stamp_spec(meta, %Spec{args: :routing, host: host} = spec, call_node, _arity, _pipe_mode) do
-    raw = host.macro_routing(call_node)
+  defp stamp_spec(
+         meta,
+         %Spec{args: :routing, router: router} = spec,
+         call_node,
+         _arity,
+         _pipe_mode
+       ) do
+    raw = router.macro_routing(call_node)
     validate_routing!(spec, raw)
     routing = inject_host(raw, spec)
     reject_undeliverable_hosted!(spec, routing)
@@ -86,12 +92,13 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
 
   # A `:routing` classifier is only required to implement host/2 once it actually routes a
   # position as hosted. Fail at the stamp point, where that concrete routing is first known.
-  defp reject_undeliverable_hosted!(%Spec{host: host} = spec, routing) do
+  defp reject_undeliverable_hosted!(%Spec{router: router, host: host} = spec, routing) do
     if hosted?(routing) and not host_exports?(host, :host, 2) do
       raise ArgumentError,
             "macro #{inspect(Spec.key(spec))}'s macro_routing/1 routed an argument as :hosted, " <>
-              "but its hosting mutator #{inspect(host)} does not implement host/2 to deliver it " <>
-              "— implement host/2, or do not route that position as :hosted."
+              "but its router #{inspect(router)} is not an enabled mutator implementing " <>
+              "Mutare.Mutator.MacroHost.host/2 to deliver it — implement MacroHost, or do not " <>
+              "route that position as :hosted."
     end
   end
 

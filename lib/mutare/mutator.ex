@@ -11,7 +11,7 @@ defmodule Mutare.Mutator do
   `Mutare.Mutators.ReturnValue`, `Mutare.Mutators.IfCondition`, and
   `Mutare.Mutators.PatternSwap`.
 
-  Implement `Mutare.MacroRouting` when the mutator depends on static macro-argument routing.
+  Implement `Mutare.MacroRouting` when the mutator controls macro-argument routing.
   Implement `Mutare.Mutator.MacroHost` only when it owns mutations inside a hosted DSL fragment.
 
   ## Writing a mutator
@@ -85,14 +85,16 @@ defmodule Mutare.Mutator do
 
   ## Targeting a macro / DSL
 
-  A mutator whose whole-node mutation depends on a macro's arguments being routed as patterns or
-  left opaque implements `Mutare.MacroRouting` and returns those static declarations from
-  `c:Mutare.MacroRouting.macro_routes/0`. Listing it in `:mutators` auto-registers them.
+  A mutator whose mutation depends on a macro's arguments being routed specially implements
+  `Mutare.MacroRouting` and registers the macros from `c:Mutare.MacroRouting.macro_routes/0`.
+  Routes may be static or use `:routing` with `c:Mutare.MacroRouting.macro_routing/1` for
+  shape-aware classification. Listing the mutator in `:mutators` auto-registers them.
 
   A mutator that produces mutations *inside* a compile-time DSL additionally implements
-  `Mutare.Mutator.MacroHost`: `c:Mutare.Mutator.MacroHost.hosted_routes/0` declares only
-  `:hosted`/`:routing` entries, while `host/2` and `macro_routing/1` supply the mutation-specific
-  behavior. See `Mutare.MacroRouting.Registry` for the declarative `:macro_routes` option.
+  `Mutare.Mutator.MacroHost`. Routing remains entirely in `Mutare.MacroRouting`; the host's sole
+  responsibility is delivering the foreign-DSL mutations through
+  `c:Mutare.Mutator.MacroHost.host/2`. See `Mutare.MacroRouting.Registry` for the declarative
+  `:macro_routes` option.
 
   ## Structural mutators at routed positions (`Mutare.Mutator.Structural`)
 

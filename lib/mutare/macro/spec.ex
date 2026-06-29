@@ -73,22 +73,26 @@ defmodule Mutare.Macro.Spec do
   A static per-position list can't express a treatment that depends on the *call shape*:
   `where(q, category: "Foo")` is plain data (mutate the value, `:expression`) while
   `where(q, [u], u.x == u.y)` is a `:hosted` DSL fragment. The sentinel `args: :routing`
-  defers the per-position routing to the hosting mutator's `c:Mutare.Mutator.MacroHost.macro_routing/1`.
-  Like `:hosted`, `:routing` is only valid with a `host`.
+  defers the per-position routing to the contributing module's
+  `c:Mutare.MacroRouting.macro_routing/1`. A classified `:hosted` position additionally needs a
+  selector host.
 
   The classifier may also return, for a **keyword-list argument**, the tuple
   `{:keyword, value_treatments}` — finer than the per-argument treatments here: core routes each
   pair's *value* by its own treatment and leaves the *keys* raw (a DSL keyword key is a field
   name, not a value), nesting for a keyword list of keyword lists. This is classifier-only — a
-  static `args` entry cannot carry it. See `c:Mutare.Mutator.MacroHost.macro_routing/1`.
+  static `args` entry cannot carry it. See `c:Mutare.MacroRouting.macro_routing/1`.
 
-  ## Host
+  ## Router and host
 
-  `host` is the mutator module that delivers a `:hosted` argument's mutations and answers
-  the `:routing` classifier — `nil` for an ordinary spec. It is **not** written on the
-  entry: a mutator that registers a `:hosted`/`:routing` macro via
-  `c:Mutare.Mutator.MacroHost.hosted_routes/0` is stamped as its own host automatically. A *declarative*
-  `:macro_routes` entry (no mutator) therefore can't use `:hosted`/`:routing`.
+  `router` is the module that answers a `:routing` classifier through
+  `c:Mutare.MacroRouting.macro_routing/1`. `host` is the enabled mutator that delivers a
+  `:hosted` argument through `c:Mutare.Mutator.MacroHost.host/2`. They are stamped by the registry,
+  not written on route entries. Keeping the roles separate allows a non-mutating extension to
+  classify call shapes without pretending to be a selector host.
+
+  Declarative `:macro_routes` entries have neither callback provider, so they must be static and
+  cannot use `:routing` or `:hosted`.
   """
 
   @typedoc """
@@ -112,11 +116,12 @@ defmodule Mutare.Macro.Spec do
           name: atom(),
           arity: non_neg_integer() | :any,
           args: args(),
+          router: module() | nil,
           host: module() | nil
         }
 
   @enforce_keys [:module, :name, :arity, :args]
-  defstruct [:module, :name, :arity, :args, host: nil]
+  defstruct [:module, :name, :arity, :args, router: nil, host: nil]
 
   @treatments [:expression, :pattern, :binding_pattern, :skip, :hosted]
 
@@ -136,11 +141,6 @@ defmodule Mutare.Macro.Spec do
   @spec wildcard() :: :*
   def wildcard, do: @wildcard
 
-  # The arg modes that require a `host` (a mutator implementing the delivery/classifier
-  # callbacks): the `:hosted` treatment (delivered through `c:Mutare.Mutator.MacroHost.host/2`) and
-  # the `:routing` classifier sentinel (resolved through `c:Mutare.Mutator.MacroHost.macro_routing/1`).
-  @host_required [:hosted, :routing]
-
   @doc """
   The valid argument treatments.
 
@@ -152,7 +152,7 @@ defmodule Mutare.Macro.Spec do
 
   @doc """
   Whether `spec`'s `args` is the `:routing` classifier sentinel (resolved per call node by
-  the hosting mutator's `c:Mutare.Mutator.MacroHost.macro_routing/1`), rather than a static treatment.
+  its router's `c:Mutare.MacroRouting.macro_routing/1`), rather than a static treatment.
 
       iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, :pattern) |> Mutare.Macro.Spec.classifier?()
       false
@@ -162,19 +162,23 @@ defmodule Mutare.Macro.Spec do
   def classifier?(%__MODULE__{}), do: false
 
   @doc """
-  Whether `spec`'s static `args` mention a treatment that needs a `host` — a `:hosted`
-  position, or the `:routing` classifier sentinel. Used by `Mutare.MacroRouting.Registry.build/3` to
-  reject a declarative `:macro_routes` entry that asks for hosting it cannot deliver.
+  Whether `spec`'s static `args` mention a `:hosted` position. A `:routing` classifier is not
+  itself hosted; whether it needs a host is known only after classifying a concrete call.
   """
   @spec host_required?(t()) :: boolean()
-  def host_required?(%__MODULE__{args: args}) when args in @host_required, do: true
+  def host_required?(%__MODULE__{args: :hosted}), do: true
 
   def host_required?(%__MODULE__{args: args}) when is_list(args),
-    do: Enum.any?(args, &(&1 in @host_required))
+    do: Enum.any?(args, &(&1 == :hosted))
 
   def host_required?(%__MODULE__{}), do: false
 
-  @doc "Stamp the hosting mutator module onto `spec` (`Mutare.MacroRouting.Registry.from_mutators/1`)."
+  @doc "Stamp the shape-aware router module onto `spec`."
+  @spec put_router(t(), module()) :: t()
+  def put_router(%__MODULE__{} = spec, router) when is_atom(router),
+    do: %{spec | router: router}
+
+  @doc "Stamp the selector-hosting mutator module onto `spec`."
   @spec put_host(t(), module()) :: t()
   def put_host(%__MODULE__{} = spec, host) when is_atom(host), do: %{spec | host: host}
 
@@ -265,7 +269,7 @@ defmodule Mutare.Macro.Spec do
   @spec routing(t(), non_neg_integer()) :: [treatment()]
   def routing(%__MODULE__{args: :routing}, _count) do
     raise ArgumentError,
-          "a :routing macro spec is resolved per call node by its host's macro_routing/1 " <>
+          "a :routing macro spec is resolved per call node by its router's macro_routing/1 " <>
             "(Mutare.Transform.Resolve), not by Mutare.Macro.Spec.routing/2"
   end
 

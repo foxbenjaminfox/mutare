@@ -16,8 +16,9 @@ defmodule Mutare.Transform.Calls do
   `mutate/1` argument) — exactly where a call-matching mutator needs it.
 
   `resolved_macro_call/1` is the **known-macro** twin: the same normalization for the node core
-  hands a `:routing`/`:hosted` mutator's `c:Mutare.Mutator.MacroHost.macro_routing/1` / `c:Mutare.Mutator.MacroHost.host/2`
-  callback, so those recognise their macro across the bare/qualified/aliased forms `Resolve`
+  hands a router's `c:Mutare.MacroRouting.macro_routing/1` or a host's
+  `c:Mutare.Mutator.MacroHost.host/2` callback, so those recognise their macro across the
+  bare/qualified/aliased forms `Resolve`
   accepts instead of pattern-matching the raw head.
 
   `macro_treatment/1` reads *how a node's macro is registered* — the resolved per-argument routing
@@ -174,7 +175,7 @@ defmodule Mutare.Transform.Calls do
   Deconstruct a recognised **known-macro** call into `{module, name, visible_args, rebuild}`,
   or `nil` — the macro-node twin of `resolved_call/1`.
 
-  This is the helper a `:routing`/`:hosted` mutator (`c:Mutare.Mutator.MacroHost.macro_routing/1`,
+  This is the helper a router or host (`c:Mutare.MacroRouting.macro_routing/1`,
   `c:Mutare.Mutator.MacroHost.host/2`) should use instead of pattern-matching the node head. Core hands
   those callbacks the *visible call node*, which — depending on how the source wrote it — is a
   **bare** `where(q, …)`, a **qualified** `Ecto.Query.where(q, …)`, or an **aliased**
@@ -241,14 +242,14 @@ defmodule Mutare.Transform.Calls do
   `:pattern` argument, and so on).
 
   The routing is read from the stamp `Mutare.Transform.Resolve` places before mutators run, so it
-  reflects the **fully merged** registry (the `Kernel` built-ins, every enabled mutator's
-  `c:Mutare.MacroRouting.macro_routes/0` from enabled mutators/extensions,
-  `c:Mutare.Mutator.MacroHost.hosted_routes/0`, and the declarative `:macro_routes` option —
+  reflects the **fully merged** registry (the `Kernel` built-ins,
+  `c:Mutare.MacroRouting.macro_routes/0` from enabled mutators/extensions, and the declarative
+  `:macro_routes` option —
   later sources winning, exactly as core itself routed the call)
   and the same alias/import/`use` resolution `resolved_call/1`/`resolved_macro_call/1` use. You do
   not re-resolve the module yourself.
 
-  Returns a list with one `t:Mutare.Mutator.MacroHost.routing_treatment/0` per **visible**
+  Returns a list with one `t:Mutare.MacroRouting.routing_treatment/0` per **visible**
   argument — `[:skip]` for an opaque DSL body, `[:pattern, :expression]` for `match?`, or a
   `:routing`-classified macro's already-resolved per-shape routing (whose entries may be `:hosted`
   or `{:keyword, …}`). `nil` when the node is not a recognised known macro (an ordinary call, or a
@@ -270,7 +271,7 @@ defmodule Mutare.Transform.Calls do
         end
       end
   """
-  @spec macro_treatment(Macro.t()) :: [Mutare.Mutator.MacroHost.routing_treatment()] | nil
+  @spec macro_treatment(Macro.t()) :: [Mutare.MacroRouting.routing_treatment()] | nil
   def macro_treatment({_head, meta, _args}) when is_list(meta) do
     case Meta.macro_routing(meta) do
       routing when is_list(routing) -> Enum.map(routing, &author_treatment/1)
@@ -281,7 +282,7 @@ defmodule Mutare.Transform.Calls do
   def macro_treatment(_node), do: nil
 
   # Map the resolved routing back to the author-facing treatment vocabulary
-  # (`Mutare.Mutator.MacroHost.routing_treatment/0`): `Resolve` rewrites each `:hosted` to the
+  # (`Mutare.MacroRouting.routing_treatment/0`): `Resolve` rewrites each `:hosted` to the
   # internal `{:hosted, host_module}` (stamping the delivering mutator) and recurses through
   # `{:keyword, …}`, so undo that here — a mutator reading `macro_treatment/1` sees the `:hosted`
   # word it wrote, not Mutare's stamp shape.
