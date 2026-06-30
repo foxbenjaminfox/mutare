@@ -68,9 +68,9 @@ defmodule Mutare.Mutator.Dispatch do
   defp tag(_spec, :skip), do: []
 
   # Pair each returned mutation with its producing spec, carrying its note and variant tag:
-  # `normalize_mutants/1` drops the `nil` slots and turns a bare node / a `%Mutation{}` into
-  # `{node, note, variant}` (enforcing the enriched-mutant contract — struct required, string
-  # note), then each triple gains its spec.
+  # `normalize_mutants/1` turns a bare node / a `%Mutation{}` into
+  # `{node, note, variant}` (enforcing the enriched-mutant contract — no bare nil slot, struct
+  # required, string note), then each triple gains its spec.
   defp tag(spec, mutations) when is_list(mutations),
     do:
       mutations
@@ -178,7 +178,7 @@ defmodule Mutare.Mutator.Dispatch do
   # Default `:wrap` to identity and `:range` to absent; require `:original`, a list `:mutants`,
   # and a 2-arity `:splice`. A malformed target raises (a library bug, not a target to silently
   # drop) — caught at transform time with the offending value. Each mutant is normalized to a
-  # `{node, note, variant}` triple by the shared `normalize_mutants/1` (dropping any `nil` slot).
+  # `{node, note, variant}` triple by the shared `normalize_mutants/1`.
   # A host fragment is *usually* untagged (foreign semantics, no vocabulary), so `variant` is nil —
   # but a hosting mutator declaring `variants/0` may tag one via `Mutation.tagged/2`, and that label
   # is preserved here and carried through `Mutare.Transform.HostedEmit` to the Site.
@@ -205,14 +205,14 @@ defmodule Mutare.Mutator.Dispatch do
   # path (`tag/2`) and the selector-host `:mutants` path (`normalize_target/1`).
   #
   # Anything other than a bare node or a well-formed `%Mutation{}` is a library bug — a bare
-  # `%{node:, note:}` *map* (the struct is required: a quoted map literal is itself a valid
-  # mutation node, so a bare map can't unambiguously mean "noted mutant"), some *other* struct
-  # (no AST node is a struct, and the note would otherwise silently vanish), or a `%Mutation{}`
-  # whose `:note` is neither a string nor nil (the report renders it verbatim). All raise rather
-  # than silently drop — fail loud over a vanishing/garbled mutant. (`nil` is filtered by the
-  # callers — see `normalize_mutants/1` — never reaching here.) An empty-string note is coerced
-  # to `nil`: a blank note carries no signal, and `nil` keeps the report from rendering a dangling
-  # `— ` suffix (and the JSON reporter from emitting an empty `description`).
+  # top-level `nil` (filter it before returning the list, or use `Mutare.AST.literal(nil)` for a
+  # literal nil replacement), a bare `%{node:, note:}` *map* (the struct is required: a quoted map
+  # literal is itself a valid mutation node, so a bare map can't unambiguously mean "noted mutant"),
+  # some *other* struct (no AST node is a struct, and the note would otherwise silently vanish), or a
+  # `%Mutation{}` whose `:note` is neither a string nor nil (the report renders it verbatim). All
+  # raise rather than silently drop — fail loud over a vanishing/garbled mutant. An empty-string note
+  # is coerced to `nil`: a blank note carries no signal, and `nil` keeps the report from rendering a
+  # dangling `— ` suffix (and the JSON reporter from emitting an empty `description`).
   @spec normalize_mutant(Macro.t() | Mutation.t() | map()) ::
           {Macro.t(), String.t() | nil, Mutation.variant()}
   def normalize_mutant(%Mutation{node: node, note: note, variant: variant})
@@ -222,6 +222,12 @@ defmodule Mutare.Mutator.Dispatch do
   def normalize_mutant(%Mutation{note: note}) do
     raise ArgumentError,
           "a Mutare.Mutator.Mutation :note must be a string or nil, got: #{inspect(note)}"
+  end
+
+  def normalize_mutant(nil) do
+    raise ArgumentError,
+          "a mutation list item cannot be bare nil; filter inapplicable entries before returning " <>
+            "the list, or return Mutare.AST.literal(nil) to replace with literal nil"
   end
 
   def normalize_mutant(%{node: _} = map) when not is_struct(map) do
@@ -241,11 +247,10 @@ defmodule Mutare.Mutator.Dispatch do
   defp presence(""), do: nil
   defp presence(note), do: note
 
-  # Reject the `nil` slots, then normalize each surviving mutant to a `{node, note, variant}` triple.
-  # The shared front of both enriched-mutant paths — the `mutate/1`/`mutate/2` return (`tag/2`) and
-  # the selector-host `:mutants` (`normalize_target/1`) — so the nil-drop rule lives in one place.
-  defp normalize_mutants(mutants),
-    do: mutants |> Enum.reject(&is_nil/1) |> Enum.map(&normalize_mutant/1)
+  # Normalize each mutant to a `{node, note, variant}` triple. The shared front of both
+  # enriched-mutant paths — the `mutate/1`/`mutate/2` return (`tag/2`) and the selector-host
+  # `:mutants` (`normalize_target/1`) — so malformed entries fail loud in one place.
+  defp normalize_mutants(mutants), do: Enum.map(mutants, &normalize_mutant/1)
 
   defp target_wrap(nil), do: &Function.identity/1
   defp target_wrap(wrap) when is_function(wrap, 1), do: wrap

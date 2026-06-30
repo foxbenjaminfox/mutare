@@ -44,7 +44,8 @@ defmodule Mutare.Mutator.MacroHost do
     * `:original` — the fragment before mutation, used for the baseline and the left side of the
       reported diff;
     * `:mutants` — mutated fragments, `%Mutare.Mutator.Mutation{}` values carrying report metadata,
-      or `nil` entries to drop;
+      with inapplicable entries filtered out before returning the list. A top-level bare `nil`
+      entry is rejected; use `Mutare.AST.literal(nil)` for a literal-`nil` replacement;
     * `:splice` — a 2-arity `(macro_node, case_node -> macro_node)` function that inserts the
       assembled selector into a copy of the macro node;
     * `:wrap` — optional 1-arity `(fragment -> node)` function mapping each fragment to its branch

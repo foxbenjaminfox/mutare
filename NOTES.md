@@ -2305,19 +2305,21 @@ delivery mechanics** — the note is a pure carry-along that never touches the A
 `Overlap` footprinting, or lifting.
 
   * **One shape, a struct — `Mutare.Mutator.Mutation`.** A `mutate` return-list element (and a host
-    target's `:mutants` entry) is now `t:Mutare.Mutator.mutation/0`: `nil` (a dropped slot — so a mutator
-    may `Enum.map` and emit `nil` for the inapplicable ones), a **bare node** (no note), or a
+    target's `:mutants` entry) is now `t:Mutare.Mutator.mutation/0`: a **bare node** (no note; except a
+    top-level bare `nil`, which is rejected so it cannot masquerade as “drop this slot”), or a
     `%Mutare.Mutator.Mutation{node:, note:}`. The struct is **required for the noted form** — *not* a bare
     `%{node:, note:}` map — because a quoted **map literal** (`%{a: 1}`) is itself a perfectly valid
     mutation node, so a bare map can't unambiguously mean "noted mutant"; a struct never collides with
     quoted AST. (This supersedes the host path's earlier bare-map form; `mutare_ecto` moves to the struct.)
     `normalize_mutant/1` is the **one** home for the contract — struct → `{node, note}`, bare node →
-    `{node, nil}`; a bare map, **any non-`Mutation` struct** (no AST node is a struct, so it would otherwise
-    pass through as `mutated` and crash Sourceror), or a non-string note **raises** (fail loud over a
-    vanishing/garbled mutant); an **empty-string note collapses to `nil`** (a blank note carries no signal,
+    `{node, nil}`; a bare `nil` (filter inapplicable entries before returning the list, or use
+    `Mutare.AST.literal(nil)` for a literal-nil replacement), a bare map, **any non-`Mutation` struct**
+    (no AST node is a struct, so it would otherwise pass through as `mutated` and crash Sourceror), or a
+    non-string note **raises** (fail loud over a vanishing/garbled mutant); an **empty-string note collapses
+    to `nil`** (a blank note carries no signal,
     and `nil` keeps the report from rendering a dangling `— ` suffix / an empty JSON `description`). The
-    `nil`-drop + per-mutant normalize is itself single-homed in `normalize_mutants/1`, shared by both `tag/2`
-    (the `mutate` path) and `normalize_target/1` (the host path).
+    per-mutant normalize is itself single-homed in `normalize_mutants/1`, shared by both `tag/2` (the
+    `mutate` path) and `normalize_target/1` (the host path), so bare-`nil` items fail loud in both paths.
 
   * **Threaded as the third tuple element.** `Mutator.mutations/3` now returns `{spec, mutated, note}`
     triples (was a pair). Everything that consumes the pair widened to `{spec, mutated, _note}` — the
@@ -2349,8 +2351,9 @@ delivery mechanics** — the note is a pure carry-along that never touches the A
     callbacks return bare nodes by contract. The hook is there if needed (give those callbacks the
     `t:mutation/0` shape and route through `normalize_mutant/1`) — named here so the limitation is a
     decision, not a hidden gap. Tested via `Mutare.Test.NotedMutator` (`note_test`), which returns a noted
-    `0`, a `nil` slot, and a bare `1` for `42`, proving the note across in-place/lifted/case positions and
-    the `nil`-drop; the **re-homed `MacroPattern`** note is proven via `Mutare.Test.UnpackMutator` on both the
+    `0`, a literal-`nil` replacement, and a bare `1` for `42`, proving the note across
+    in-place/lifted/case positions and that nil replacements do not disappear; the **re-homed `MacroPattern`**
+    note is proven via `Mutare.Test.UnpackMutator` on both the
     direct and piped binding-escaping-macro forms (`macro_pattern_test`); the bare-map rejection, the
     foreign-struct rejection, and the empty-note coercion on both paths (`note_test`, `hosted_test`).
 

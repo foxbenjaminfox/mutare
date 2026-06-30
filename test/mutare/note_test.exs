@@ -4,15 +4,27 @@ defmodule Mutare.NoteTest do
   API — generalized from the selector host so *any* node-level mutator can attach an advisory the
   report surfaces on a survivor.
 
-  A `mutate` return-list element is one of `t:Mutare.Mutator.mutation/0`: a bare node (no note), a
-  `%Mutare.Mutator.Mutation{}` (a node + a note), or `nil` (a dropped slot). Proven across the three
-  positions a `mutate` result lands — an in-place body literal, a lifted `def`-head literal, and a
-  `case`-clause literal — with `Mutare.Test.NotedMutator`, which returns one of each form for `42`.
+  A `mutate` return-list element is one of `t:Mutare.Mutator.mutation/0`: a bare node (no note) or a
+  `%Mutare.Mutator.Mutation{}` (a node + a note). A top-level bare `nil` list item is rejected
+  instead of being a drop sentinel; literal nil is expressed as `Mutare.AST.literal(nil)`. Proven
+  across the three positions a `mutate` result lands — an in-place body literal, a lifted `def`-head
+  literal, and a `case`-clause literal — with `Mutare.Test.NotedMutator`.
   """
   use ExUnit.Case, async: true
 
   alias Mutare.Mutator.Dispatch
   alias Mutare.Mutator.Mutation
+
+  defmodule BareNilMutator do
+    @moduledoc false
+    @behaviour Mutare.Mutator
+
+    @impl Mutare.Mutator
+    def name, do: :bare_nil
+
+    @impl Mutare.Mutator
+    def mutate(_node), do: [nil]
+  end
 
   @source """
   defmodule Mutare.NoteFixture do
@@ -43,20 +55,25 @@ defmodule Mutare.NoteTest do
   defp bare_site(sites, line),
     do: Enum.find(sites, &(&1.mutated_code == "1" and &1.line == line))
 
+  defp nil_site(sites, line),
+    do: Enum.find(sites, &(&1.mutated_code == "nil" and &1.line == line))
+
   describe "the note channel across positions" do
-    test "each mutated 42 yields a noted 0 and a bare 1; the nil slot is dropped", %{sites: sites} do
-      # Three positions (body, head, case clause) × {0, 1} = 6 `:noted` sites; the `nil` mutation
-      # produced none (else there would be 9). (The always-on `clause_drop` also fires on the
-      # two-clause `head/1`, so we filter to this mutator's own sites.)
+    test "each mutated 42 yields a noted 0, literal nil, and a bare 1", %{sites: sites} do
+      # Three positions (body, head, case clause) × {0, nil, 1} = 9 `:noted` sites. (The always-on
+      # `clause_drop` also fires on the two-clause `head/1`, so we filter to this mutator's own
+      # sites.)
       noted = Enum.filter(sites, &(&1.mutator == :noted))
-      assert length(noted) == 6
+      assert length(noted) == 9
       assert Enum.count(noted, &(&1.mutated_code == "0")) == 3
+      assert Enum.count(noted, &(&1.mutated_code == "nil")) == 3
       assert Enum.count(noted, &(&1.mutated_code == "1")) == 3
     end
 
-    test "the note rides onto the noted Site; the bare mutant has none", %{sites: sites} do
+    test "the note rides onto the noted Site; unnoted mutants have none", %{sites: sites} do
       for line <- [2, 4, 9] do
         assert noted_site(sites, line).note == "off-by-one suspected"
+        assert nil_site(sites, line).note == nil
         assert bare_site(sites, line).note == nil
       end
     end
@@ -162,6 +179,14 @@ defmodule Mutare.NoteTest do
       # So the report never renders a dangling "  — " suffix; the same coercion the header
       # already proves it produces no em-dash for a noteless mutant (see above).
       assert Dispatch.normalize_mutant(%Mutation{node: 1, note: ""}) == {1, nil, nil}
+    end
+
+    test "a bare nil mutation item raises instead of disappearing" do
+      assert_raise ArgumentError,
+                   ~r/cannot be bare nil.*filter.*Mutare\.AST\.literal\(nil\)/s,
+                   fn ->
+                     Dispatch.mutations({:__block__, [], [42]}, [BareNilMutator])
+                   end
     end
   end
 end

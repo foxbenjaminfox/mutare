@@ -175,16 +175,17 @@ defmodule Mutare.Mutator do
   @typedoc """
   One element of a `c:mutate/1` or `c:mutate/2` return list.
 
-    * `nil` drops the slot. To replace a node with the literal `nil`, return
-      `Mutare.AST.literal(nil)`.
-    * A bare AST node is an ordinary replacement.
+    * A bare AST node is an ordinary replacement. A top-level bare `nil` item is
+      rejected because it is too easy to confuse with “no replacement”; filter
+      inapplicable entries before returning the list. To replace a node with the
+      literal `nil`, return `Mutare.AST.literal(nil)`.
     * A `t:Mutare.Mutator.Mutation.t/0` carries a replacement plus metadata such
       as a report note or ignore variant.
 
   A plain map is not treated as mutation metadata because a quoted map is also a
-  valid AST replacement. Selector hosts use the same three forms for `:mutants`.
+  valid AST replacement. Selector hosts use the same forms for `:mutants`.
   """
-  @type mutation :: nil | Macro.t() | Mutation.t()
+  @type mutation :: Macro.t() | Mutation.t()
 
   @doc """
   Produces node-level mutations for `node`.
