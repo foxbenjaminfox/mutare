@@ -2,7 +2,9 @@ defmodule Mutare.ExtensionsTest do
   use ExUnit.Case, async: true
 
   alias Mutare.{Extension, UseExpansion}
+  alias Mutare.Macro.Spec
   alias Mutare.MacroRouting.Registry, as: Macros
+  alias Mutare.MacroRouting.Registry.Entry
   alias Mutare.UseExpansion.Dispatch
 
   alias Mutare.Test.{
@@ -15,9 +17,9 @@ defmodule Mutare.ExtensionsTest do
     ExitingExtension,
     GettextLike,
     GettextLikeExtension,
+    HostedRoutingExtension,
     HostingExtension,
     MalformedExtension,
-    ProviderSpoofingExtension,
     RaisingExtension,
     StaticRoutingExtension,
     ThrowingExtension
@@ -192,15 +194,15 @@ defmodule Mutare.ExtensionsTest do
 
   describe "Macros.from_extensions/1 + build/3" do
     test "an extension's static macro_routes/0 entries carry no callback provider" do
-      [_ | _] = specs = Macros.from_extensions([GettextLikeExtension])
-      keys = Enum.map(specs, &Mutare.Macro.Spec.key/1)
+      [_ | _] = entries = Macros.from_extensions([GettextLikeExtension])
+      keys = Enum.map(entries, &Entry.key/1)
 
       assert {[:Mutare, :Test, :GettextLikeMacros], :translate, 1} in keys
       assert {[:Mutare, :Test, :GettextLikeMacros], :ntranslate, 3} in keys
 
       # Static routing needs neither callback role.
-      assert Enum.all?(specs, &is_nil(&1.router))
-      assert Enum.all?(specs, &is_nil(&1.host))
+      assert Enum.all?(entries, &is_nil(&1.router))
+      assert Enum.all?(entries, &is_nil(&1.host))
     end
 
     test "an extension module with no macro_routes/0 contributes nothing" do
@@ -208,33 +210,28 @@ defmodule Mutare.ExtensionsTest do
     end
 
     test "a macro-routing-only extension contributes without implementing use expansion" do
-      assert [%Mutare.Macro.Spec{args: [:expression, :skip]}] =
+      assert [%Entry{spec: %Spec{args: [:expression, :skip]}}] =
                Macros.from_extensions([StaticRoutingExtension])
     end
 
     test "an extension may provide shape-aware routing without becoming a macro host" do
+      # Providers live on the Entry, never on the user-constructed Spec — so an extension's
+      # classifier is stamped as the route's router, and host stays nil (it can't host).
       assert [
-               %Mutare.Macro.Spec{
-                 args: :routing,
+               %Entry{
+                 spec: %Spec{args: :routing},
                  router: DynamicRoutingExtension,
                  host: nil
                }
              ] = Macros.from_extensions([DynamicRoutingExtension])
     end
 
-    test "an extension cannot smuggle callback providers through a resolved Macro.Spec" do
-      assert [
-               %Mutare.Macro.Spec{
-                 args: :routing,
-                 router: ProviderSpoofingExtension,
-                 host: nil
-               }
-             ] = Macros.from_extensions([ProviderSpoofingExtension])
-    end
-
-    test "a forged host cannot make an extension's dynamic :hosted route deliverable" do
+    test "an extension's dynamic :hosted classification is undeliverable and raises at resolve" do
+      # An extension can classify a position :hosted but produces no mutations, so it can never be
+      # stamped as the host (even though it exports host/2). The undeliverable :hosted is caught the
+      # moment a concrete call is classified, not silently dropped.
       source = """
-      defmodule Mutare.Test.ProviderSpoofingSample do
+      defmodule Mutare.Test.HostedRoutingSample do
         def value, do: Mutare.Test.SomeDSL.spoofed_frag(:opaque)
       end
       """
@@ -242,7 +239,7 @@ defmodule Mutare.ExtensionsTest do
       assert_raise ArgumentError, ~r/routed an argument as :hosted.*host\/2/s, fn ->
         Mutare.transform_string(source,
           mutators: [],
-          extensions: [ProviderSpoofingExtension]
+          extensions: [HostedRoutingExtension]
         )
       end
     end
@@ -251,8 +248,7 @@ defmodule Mutare.ExtensionsTest do
       from_module = Macros.from_extensions([GettextLikeExtension])
       from_spec = Macros.from_extensions([%Extension.Spec{module: GettextLikeExtension}])
 
-      assert Enum.map(from_spec, &Mutare.Macro.Spec.key/1) ==
-               Enum.map(from_module, &Mutare.Macro.Spec.key/1)
+      assert Enum.map(from_spec, &Entry.key/1) == Enum.map(from_module, &Entry.key/1)
     end
 
     test "an extension macro_routes/0 declaring :hosted is rejected (extensions can't host)" do
@@ -266,10 +262,10 @@ defmodule Mutare.ExtensionsTest do
     test "build/3 merges extension macros into the registry" do
       registry = Macros.build([], [], [GettextLikeExtension])
 
-      assert Macros.lookup(registry, [:Mutare, :Test, :GettextLikeMacros], :translate, 2).args ==
+      assert Macros.lookup(registry, [:Mutare, :Test, :GettextLikeMacros], :translate, 2).spec.args ==
                [:skip, :expression]
 
-      assert Macros.lookup(registry, [:Mutare, :Test, :GettextLikeMacros], :ntranslate, 3).args ==
+      assert Macros.lookup(registry, [:Mutare, :Test, :GettextLikeMacros], :ntranslate, 3).spec.args ==
                [:skip, :skip, :expression]
     end
   end

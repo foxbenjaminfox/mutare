@@ -7,9 +7,23 @@ defmodule Mutare.Transform.Calls do
   form when that is compile-safe; bare imported calls may be requalified when the replacement
   changes name or arity. It operates on nodes passed to a mutator by Mutare's transform.
 
-  `resolved_macro_call/1` provides the same normalization and rebuild policy for macro-routing
-  and hosting callbacks. `macro_treatment/1` returns the registered argument routing for a macro
-  node.
+  This reads the `alias`/`import` stamps the transform places on the AST before
+  mutators run, so it is only meaningful on a node handed to a mutator by the transform (a
+  `mutate/1` argument) — exactly where a call-matching mutator needs it.
+
+  `resolved_macro_call/1` is the **known-macro** twin: the same normalization and rebuild policy
+  for the node core hands a router's `c:Mutare.MacroRouting.macro_routing/2` or a host's
+  `c:Mutare.Mutator.MacroHost.host/2` callback, so those recognise their macro across the
+  bare/qualified/aliased forms `Resolve`
+  accepts instead of pattern-matching the raw head.
+
+  `macro_treatment/1` reads *how a node's macro is registered* — the resolved per-argument routing
+  the merged registry (built-ins + every mutator's/extension's `macro_routes/0` + the declarative `:macro_routes`
+  option) assigned it. A hosting mutator walking a `:hosted` fragment uses it to ask whether a
+  **nested** macro routes a given argument `:skip` (leave it opaque) or otherwise specially, rather
+  than re-deriving the registry itself.
+
+  ## Example
 
       defmodule MyApp.Mutators.Upcase do
         @behaviour Mutare.Mutator
@@ -177,9 +191,14 @@ defmodule Mutare.Transform.Calls do
   Returns `{module, name, visible_arguments, rebuild}` for a registered macro call,
   or `nil`.
 
-  The result normalizes bare, qualified, and aliased calls. `module` is the resolved
-  Elixir alias path or Erlang module atom. It may be `nil` for an unresolved call
-  matched through a name-only route.
+  This is the helper a router or host (`c:Mutare.MacroRouting.macro_routing/2`,
+  `c:Mutare.Mutator.MacroHost.host/2`) should use instead of pattern-matching the node head. Core hands
+  those callbacks the *visible call node*, which — depending on how the source wrote it — is a
+  **bare** `where(q, …)`, a **qualified** `Ecto.Query.where(q, …)`, or an **aliased**
+  `Q.where(q, …)`. A callback that guards on a bare atom head silently fails to recognise the
+  qualified/aliased forms (and routes every argument as `:expression`, poisoning a DSL fragment
+  or mutating it with core's families). Normalising through this reader makes the written form
+  transparent: a single `{[:Ecto, :Query], macro, args, _}` match covers all three.
 
   `visible_arguments` excludes the left side of a pipe. The rebuild function
   preserves the written form when safe, including remote qualifiers and aliases. Bare imported
@@ -189,7 +208,7 @@ defmodule Mutare.Transform.Calls do
   so this function also supports registered macros that cannot be resolved through
   runtime module reflection.
 
-      def macro_routing(node) do
+      def macro_routing(node, _context) do
         case Mutare.Transform.Calls.resolved_macro_call(node) do
           {[:Ecto, :Query], name, arguments, _rebuild} ->
             route(name, arguments)

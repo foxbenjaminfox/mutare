@@ -4,7 +4,7 @@ defmodule Mutare.HostedTest do
   deep `Ecto.from`/`where` case) where core can't splice a bare selector and can't vouch
   for the fragment's foreign semantics. Two pieces work together:
 
-    * the `:routing` **shape-aware classifier** (`c:Mutare.MacroRouting.macro_routing/1`) decides,
+    * the `:routing` **shape-aware classifier** (`c:Mutare.MacroRouting.macro_routing/2`) decides,
       per call, whether the `filter` condition is a `:hosted` DSL fragment (a comparison) or
       ordinary `:expression` data (a keyword list);
     * the **selector host** (`c:Mutare.Mutator.MacroHost.host/2`) hands core the logical original/mutant
@@ -323,7 +323,7 @@ defmodule Mutare.HostedTest do
   describe "a :routing classifier routing :hosted with no host/2 is rejected (not silently dropped)" do
     test "raises with an actionable message pointing at host/2" do
       # `Mutare.Test.NoDeliveryHostMutator` passes build (a `:routing` spec only needs
-      # `macro_routing/1`), but its classifier routes the comparison condition `:hosted` while
+      # `macro_routing/2`), but its classifier routes the comparison condition `:hosted` while
       # the mutator omits `host/2` — undeliverable. Resolve raises rather than leaving the
       # fragment raw and dropping the mutation without a trace.
       source = """
@@ -603,7 +603,7 @@ defmodule Mutare.HostedTest do
       end
     end
 
-    test "a non-list macro_routing/1 return raises" do
+    test "a non-list macro_routing/2 return raises" do
       # Defensive: a classifier that returns a non-list (a contract violation) is caught with a
       # clear message rather than crashing inside the host-injection `Enum.map`.
       source = """

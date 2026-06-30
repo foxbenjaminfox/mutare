@@ -12,6 +12,9 @@ defmodule Mutare.Mutator.MacroHost do
   `:hosted` treatment (or a `:routing` classifier that may return one) from
   `c:Mutare.MacroRouting.macro_routes/0`, and supplies the hosted mutations here.
 
+  `host/2` is itself a mutation-producing callback, so a mutator that delivers **all** of its
+  mutations through the DSL needs no `mutate/1` — just `name/0` to identify it in reports:
+
       defmodule MyApp.Mutators.Ecto do
         @behaviour Mutare.Mutator
         @behaviour Mutare.MacroRouting
@@ -19,19 +22,19 @@ defmodule Mutare.Mutator.MacroHost do
 
         @impl Mutare.Mutator
         def name, do: :ecto_query
-        @impl Mutare.Mutator
-        def mutate(node), do: ...
 
         @impl Mutare.MacroRouting
         def macro_routes, do: [{Ecto.Query, :where, :any, :routing}]
 
         @impl Mutare.MacroRouting
-        def macro_routing(call), do: ...
+        def macro_routing(call, _context), do: ...
 
         @impl Mutare.Mutator.MacroHost
         def host(call, context), do: ...
       end
 
+  (Add a `mutate/1` only if the mutator *also* mutates whole nodes outside the DSL.) See
+  `Mutare.MacroRouting` for the "which behaviours do I implement?" table.
   `test/support/host_mutator.ex` contains working examples.
   """
 
@@ -59,7 +62,7 @@ defmodule Mutare.Mutator.MacroHost do
 
   Register the macro and its `:hosted` treatment through
   `c:Mutare.MacroRouting.macro_routes/0`. For shape-dependent hosting, register `:routing` and
-  return `:hosted` from `c:Mutare.MacroRouting.macro_routing/1` for the applicable call shapes.
+  return `:hosted` from `c:Mutare.MacroRouting.macro_routing/2` for the applicable call shapes.
   `context` is the same map `c:Mutare.Mutator.mutate/2` receives.
 
   Core leaves hosted fragments raw and does not route nested macros inside them. A

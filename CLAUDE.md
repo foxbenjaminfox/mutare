@@ -168,7 +168,7 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Structural head pattern | `pattern_mutations/2` | (`PatternSwap`/`PatternWildcard`) |
 | Behaviour-gated | read `context.behaviours` (or the `+1`-arity structural callbacks) | `behaviour_mutator.ex` |
 | Call-matching (stdlib/remote) | resolve via `Transform.Calls.resolved_call/1` | `resolved_call_mutator.ex` |
-| Macro routing (static or shape-aware) | `Mutare.MacroRouting.macro_routes/0` + optional `macro_routing/1` | `macro_mutator.ex` / `host_mutator.ex` |
+| Macro routing (static or shape-aware) | `Mutare.MacroRouting.macro_routes/0` + optional `macro_routing/2` | `macro_mutator.ex` / `host_mutator.ex` |
 | Selector-hosting (mutate inside a DSL fragment) | route `:hosted` via `Mutare.MacroRouting` + implement `Mutator.MacroHost.host/2` | `host_mutator.ex` |
 | Per-kind `# mutare:ignore` qualifier | `variants/0` (opt-in) + tag via `Mutation.tagged/2` *or* `variant/2` | (value & operator families) |
 

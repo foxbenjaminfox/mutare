@@ -6376,3 +6376,35 @@ Declarative `:macro_routes` remains static because configuration cannot supply c
 may classify dynamically but cannot use `:hosted`, since they deliberately produce no mutations.
 The registry still discovers capabilities by exported callbacks and keeps routing declarations
 opts-independent.
+
+### Hardening the macro-routing interface for commitment
+
+Before exposing the routing/hosting behaviours as a contract third parties build on, the surface was
+tightened. The capability *boundaries* from the previous entry were right; the work here shrank and
+future-proofed what gets committed.
+
+- **Providers live off `Mutare.Macro.Spec`, on the registry's `Entry`.** The `router`/`host`
+  fields moved from the public `Spec` struct onto an internal `Mutare.MacroRouting.Registry.Entry`
+  (`{spec, router, host}`), stamped only from the contributing module. A user-built `Spec` now
+  *structurally* cannot carry (or forge) a provider, so the `clear_providers` defense and the
+  `put_router/2`/`put_host/2` setters are gone — the attack they guarded is no longer expressible.
+  `lookup/4` returns an `Entry`; `Spec` is committed as pure routing data.
+- **`macro_routing/1` → `macro_routing/2`.** The classifier takes an opt-independent
+  `t:Mutare.MacroRouting.routing_context/0` (currently `%{pipe_mode: ...}`) so the piped-vs-visible
+  arity it must already reconcile is *given*, and so the callback can gain context later without a
+  breaking arity change. The context deliberately carries no mutator opts — routing stays a global
+  library fact.
+- **A hosting mutator needs no vestigial `mutate/1`.** `host/2` is already a producing callback and
+  `mutate/1` is optional, so `name/0` + `host/2` is a complete mutator. The reference hosts dropped
+  their `def mutate(_), do: :skip`, and the docs teach the minimal form plus a "which behaviours do
+  I implement?" table.
+- **`macro_routes/0` advertises tuples; struct passthrough is internal.** The public entry form is
+  the `{module, name, …}` tuple (`t:Mutare.MacroRouting.route/0`). `resolve/1` still accepts a
+  resolved `%Spec{}` idempotently, but only because the `:macro_routes` option is validated once and
+  re-resolved in `build/3`; that round-trip is not part of the callback contract.
+- **Silently-inert callbacks are rejected at build.** Because capability discovery is by exported
+  callback, a typo'd or forgotten route would leave a `host/2`/`macro_routing/2` dead. `build/3` now
+  rejects a module whose hosting/classifier callback no route ever reaches, naming the fix.
+- **`Mutare.MacroRouting.Registry` (and its `Entry`) are marked internal.** The committed public
+  surface is the behaviours, the `Mutare.Macro.Spec` entry forms, and the `Transform.Calls`
+  readers — not the registry plumbing.

@@ -168,36 +168,33 @@ defmodule Mutare.Test.DynamicRoutingExtension do
   def macro_routes, do: [{Mutare.Test.SomeDSL, :dynamic_frag, :any, :routing}]
 
   @impl Mutare.MacroRouting
-  def macro_routing({_form, _meta, args}) when is_list(args),
+  def macro_routing({_form, _meta, args}, _context) when is_list(args),
     do: Enum.map(args, fn _arg -> :skip end)
 
-  def macro_routing(_node), do: []
+  def macro_routing(_node, _context), do: []
 end
 
-defmodule Mutare.Test.ProviderSpoofingExtension do
+defmodule Mutare.Test.HostedRoutingExtension do
   @moduledoc """
-  A non-mutating extension that returns an already-resolved route carrying forged callback
-  providers. The registry must discard both fields and stamp only this extension as the router;
-  in particular, exporting `host/2` does not permit an extension to become a selector host.
+  A non-mutating extension whose shape-aware classifier routes a position `:hosted`. An extension
+  produces no mutations and so can never deliver a `:hosted` fragment: even though it exports
+  `host/2`, the registry stamps it only as the route's **router** (never its host — provenance is
+  off `Mutare.Macro.Spec` and stamped solely from the contributing module's capability), so the
+  moment a concrete call is classified `:hosted`, `Mutare.Transform.Resolve.MacroStamp` raises
+  rather than silently dropping the mutation.
   """
   @behaviour Mutare.MacroRouting
 
   @impl Mutare.MacroRouting
-  def macro_routes do
-    spec =
-      Mutare.Macro.Spec.new(Mutare.Test.SomeDSL, :spoofed_frag, :any, :routing)
-      |> Mutare.Macro.Spec.put_router(Enum)
-      |> Mutare.Macro.Spec.put_host(__MODULE__)
-
-    [spec]
-  end
+  def macro_routes, do: [{Mutare.Test.SomeDSL, :spoofed_frag, :any, :routing}]
 
   @impl Mutare.MacroRouting
-  def macro_routing({_form, _meta, args}) when is_list(args),
+  def macro_routing({_form, _meta, args}, _context) when is_list(args),
     do: Enum.map(args, fn _arg -> :hosted end)
 
-  def macro_routing(_node), do: []
+  def macro_routing(_node, _context), do: []
 
+  # An extension's host/2 is never consulted — it cannot become a selector host.
   def host(_node, _context), do: []
 end
 

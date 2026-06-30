@@ -6,6 +6,7 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
   # later reads, including shape-aware classifier validation and pipe-position splitting.
 
   alias Mutare.MacroRouting.Registry, as: Macros
+  alias Mutare.MacroRouting.Registry.Entry
   alias Mutare.Mutator
   alias Mutare.Macro.Spec
   alias Mutare.Transform.{Imports, Meta}
@@ -29,7 +30,7 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
       nil ->
         meta
 
-      %Spec{} = spec ->
+      %Entry{} = entry ->
         # A known macro routes its arguments specially, so a bare-import witness that rebuilds
         # the call as an anonymous function may be invalid. Drop the witness where the macro is
         # known; the resolution stamp itself stays.
@@ -41,7 +42,7 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
         # module the resolver couldn't see; the reader then returns `{nil, name, …}`, which a
         # module-matching classifier clause simply skips (its purpose — match by name instead).
         meta = stamp_identity(Imports.drop_witness(meta), module_key, fun)
-        stamp_spec(meta, spec, put_meta(call_node, meta), arity, pipe_mode)
+        stamp_spec(meta, entry, put_meta(call_node, meta), arity, pipe_mode)
     end
   end
 
@@ -58,22 +59,26 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
   # A `:routing` classifier sees the concrete visible call node and returns visible-argument
   # routing, so it rides whole on @macro_key. A static spec is effective-arity based and is split
   # for piped calls so the LHS can be routed as effective argument 0.
+  #
+  # `macro_routing/2` receives an opt-independent routing context carrying the call's `:pipe_mode`,
+  # so a classifier can tell a piped call (one fewer visible argument) from an unpiped one without
+  # re-deriving it.
   defp stamp_spec(
          meta,
-         %Spec{args: :routing, router: router} = spec,
+         %Entry{spec: %Spec{args: :routing} = spec, router: router} = entry,
          call_node,
          _arity,
-         _pipe_mode
+         pipe_mode
        ) do
-    raw = router.macro_routing(call_node)
+    raw = router.macro_routing(call_node, %{pipe_mode: pipe_mode})
     validate_routing!(spec, raw)
-    routing = inject_host(raw, spec)
-    reject_undeliverable_hosted!(spec, routing)
+    routing = inject_host(raw, entry)
+    reject_undeliverable_hosted!(entry, routing)
     Meta.stamp_macro_routing(meta, routing)
   end
 
-  defp stamp_spec(meta, spec, _call_node, arity, pipe_mode) do
-    routing = Spec.routing(spec, arity) |> inject_host(spec)
+  defp stamp_spec(meta, %Entry{spec: spec} = entry, _call_node, arity, pipe_mode) do
+    routing = Spec.routing(spec, arity) |> inject_host(entry)
     reject_piped_hosted!(spec, routing, pipe_mode)
     stamp_routing(meta, routing, pipe_mode)
   end
@@ -92,10 +97,10 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
 
   # A `:routing` classifier is only required to implement host/2 once it actually routes a
   # position as hosted. Fail at the stamp point, where that concrete routing is first known.
-  defp reject_undeliverable_hosted!(%Spec{router: router, host: host} = spec, routing) do
+  defp reject_undeliverable_hosted!(%Entry{spec: spec, router: router, host: host}, routing) do
     if hosted?(routing) and not host_exports?(host, :host, 2) do
       raise ArgumentError,
-            "macro #{inspect(Spec.key(spec))}'s macro_routing/1 routed an argument as :hosted, " <>
+            "macro #{inspect(Spec.key(spec))}'s macro_routing/2 routed an argument as :hosted, " <>
               "but its router #{inspect(router)} is not an enabled mutator implementing " <>
               "Mutare.Mutator.MacroHost.host/2 to deliver it — implement MacroHost, or do not " <>
               "route that position as :hosted."
@@ -112,7 +117,7 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
   defp host_exports?(host, fun, arity),
     do: Code.ensure_loaded?(host) and function_exported?(host, fun, arity)
 
-  # Validate the raw macro_routing/1 output before `inject_host/2`. A classifier is untrusted:
+  # Validate the raw macro_routing/2 output before `inject_host/2`. A classifier is untrusted:
   # unrecognised or mis-shaped treatments would otherwise fall through to expression routing.
   defp validate_routing!(spec, routing) when is_list(routing) do
     Enum.each(routing, &validate_treatment!(spec, &1, :argument))
@@ -120,7 +125,7 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
 
   defp validate_routing!(spec, routing) do
     raise ArgumentError,
-          "macro #{inspect(Spec.key(spec))}'s macro_routing/1 must return a list of treatments " <>
+          "macro #{inspect(Spec.key(spec))}'s macro_routing/2 must return a list of treatments " <>
             "(one per visible argument), got: #{inspect(routing)}"
   end
 
@@ -136,7 +141,7 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
       :ok
     else
       raise ArgumentError,
-            "macro #{inspect(Spec.key(spec))}'s macro_routing/1 returned an unrecognised treatment " <>
+            "macro #{inspect(Spec.key(spec))}'s macro_routing/2 returned an unrecognised treatment " <>
               "#{inspect(treatment)} — expected one of :expression/:pattern/:binding_pattern/:skip/" <>
               ":hosted/:pinned or {:keyword, [value_treatments]}."
     end
@@ -146,7 +151,7 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
 
   # Tag each `:hosted` treatment with its hosting mutator module so the analyzer can reach host/2.
   # Keyword routing can nest arbitrarily, so preserve its shape while injecting recursively.
-  defp inject_host(routing, %Spec{host: host}) do
+  defp inject_host(routing, %Entry{host: host}) do
     Enum.map(routing, &inject_host_treatment(&1, host))
   end
 

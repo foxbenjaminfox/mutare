@@ -12,9 +12,13 @@ defmodule Mutare.Extension do
 
       [extensions: [Mutare.Gettext]]
 
-  Options are passed to `c:Mutare.UseExpansion.expand_use/3`. Macro-routing callbacks do not
-  receive extension options. A module that also produces mutations belongs under `:mutators`, not
-  `:extensions`.
+  Entries may be bare modules or `{module, opts}` pairs. Options are delivered only to
+  `c:Mutare.UseExpansion.expand_use/3`; `c:Mutare.MacroRouting.macro_routes/0` declarations and
+  `c:Mutare.MacroRouting.macro_routing/2` classification are intentionally options-independent.
+
+  Mutators may implement `Mutare.MacroRouting` too, but belong under `:mutators`. They are rejected
+  from `:extensions` so their mutation producers cannot be enabled accidentally as routing-only
+  modules.
   """
 
   alias Mutare.Extension.Spec

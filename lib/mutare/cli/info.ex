@@ -205,17 +205,17 @@ defmodule Mutare.CLI.Info do
 
     registry
     |> Map.values()
-    |> Enum.sort_by(fn s ->
+    |> Enum.sort_by(fn %{spec: s} ->
       {format_module_key(s.module), to_string(s.name), to_string(s.arity)}
     end)
-    |> Enum.each(fn s -> Mix.shell().info("  #{format_macro_spec(s)}") end)
+    |> Enum.each(fn entry -> Mix.shell().info("  #{format_macro_spec(entry)}") end)
   end
 
-  defp format_macro_spec(spec) do
+  defp format_macro_spec(%{spec: spec} = entry) do
     sig =
       "#{format_module_key(spec.module)}.#{format_macro_name(spec.name)}/#{format_arity(spec.arity)}"
 
-    via = format_macro_providers(spec)
+    via = format_macro_providers(entry)
     "#{String.pad_trailing(sig, 28)}  #{inspect(spec.args)}#{via}"
   end
 
