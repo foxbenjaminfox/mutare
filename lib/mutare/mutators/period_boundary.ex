@@ -1,32 +1,22 @@
 defmodule Mutare.Mutators.PeriodBoundary do
   @moduledoc """
-  Swap a calendar **period-boundary** call for its opposite end — does the code use the
-  *start* or the *end* of the month / week / day?
+  Exchanges the beginning and end of a calendar period:
 
     * `Date.beginning_of_month` ↔ `Date.end_of_month`
     * `Date.beginning_of_week` ↔ `Date.end_of_week`
     * `NaiveDateTime.beginning_of_day` ↔ `NaiveDateTime.end_of_day`
 
-  The date/time sibling of `Mutare.Mutators.Collection`/`Mutare.Mutators.StringCall` (the
-  `first`↔`last`, `starts_with?`↔`ends_with?` directional swaps): both ends return the
-  **same type** (`Date`→`Date`, `NaiveDateTime`→`NaiveDateTime`) and a different boundary,
-  so the swap is compile-safe and never equivalent. A survivor means no test pins down
-  *which* end of the period the code computes — the classic off-by-a-boundary bug at a
-  reporting-window or billing-cycle edge.
+  Only the function name changes. Optional arguments are retained, so
+  `Date.beginning_of_week(date, :sunday)` becomes
+  `Date.end_of_week(date, :sunday)`. The weekday may be changed separately by
+  `Mutare.Mutators.ModeSwap`.
 
-  **Arity-blind**, like its siblings: `beginning_of_week`/`end_of_week` carry an optional
-  `starting_on` weekday (`/2`) that rides along unchanged on the swap
-  (`Date.beginning_of_week(d, :sunday)` → `Date.end_of_week(d, :sunday)`) — mutating *that*
-  weekday is `Mutare.Mutators.ModeSwap`'s job, an orthogonal axis. `DateTime` has no
-  `beginning_of_day`/`end_of_day`, and `Time` no period boundaries, so neither appears here.
+  `Mutare.Mutators.CallRemoval` may produce another mutant at the same call by
+  removing the boundary operation entirely. This family retains the call and changes
+  its direction.
 
-  Distinct from `Mutare.Mutators.CallRemoval`, which *removes* these same boundary
-  normalizers (→ the original timestamp); here the call is kept and its direction flipped —
-  a different mutant on the same call.
-
-  On by default. Matches aliased and bare-imported calls too (`alias Date, as: D;
-  D.beginning_of_month` → `D.end_of_month`), while a shadowing `alias MyApp.Date` is left
-  alone.
+  Direct, aliased, and imported calls are supported. An alias that resolves to
+  another module does not match. This family is enabled by default.
   """
   @behaviour Mutare.Mutator
 

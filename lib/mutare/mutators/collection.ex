@@ -1,6 +1,6 @@
 defmodule Mutare.Mutators.Collection do
   @moduledoc """
-  Swap complementary `Enum`/`List` calls for their opposite:
+  Renames collection calls to a complementary operation:
 
     * `Enum.filter` ↔ `Enum.reject`
     * `Enum.all?` ↔ `Enum.any?`
@@ -12,24 +12,17 @@ defmodule Mutare.Mutators.Collection do
     * `Enum.sum` ↔ `Enum.product`
     * `List.first` ↔ `List.last`
     * `List.foldl` ↔ `List.foldr`
-
-  …plus the lazy `Stream` twins of the `Enum` directional pairs (the functions
-  `Stream` actually provides — its eager reducers like `all?`/`min`/`sum` have no
-  lazy form, so only these four carry over):
-
     * `Stream.filter` ↔ `Stream.reject`
     * `Stream.take` ↔ `Stream.drop`
     * `Stream.take_while` ↔ `Stream.drop_while`
     * `Stream.take_every` ↔ `Stream.drop_every`
 
-  The family is deliberately **arity-blind**: it only renames, never adds or drops
-  an argument. An arity-*discriminating* swap (e.g. `Enum.sort`↔`Enum.reverse`,
-  whose 2-arg forms diverge — `reverse/2` is `reverse(list, tail)`) is therefore
-  not offered here.
+  The family only changes the function name; it does not add or remove arguments.
+  Pairs whose same-arity forms have different meanings, such as `Enum.sort/2` and
+  `Enum.reverse/2`, are therefore not included.
 
-  On by default — the Elixir-flavoured family, high signal on idiomatic collection
-  code. Matches aliased and bare-imported calls too (`alias Enum, as: E; E.filter`,
-  `import Enum; filter`), while a shadowing `alias MyApp.Enum` is left alone.
+  Direct, aliased, and imported calls are supported. An alias that resolves to
+  another module does not match. This family is enabled by default.
   """
   @behaviour Mutare.Mutator
 

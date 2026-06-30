@@ -1,30 +1,21 @@
 defmodule Mutare.Mutators.AtomLiteral do
   @moduledoc """
-  Atom-literal mutations: replace a literal atom with a distinct sentinel atom
-  (`:mutare`), dropping the replacement when the original already equals it.
+  Replaces a literal atom with `:mutare`. The replacement is omitted when the
+  original atom is already `:mutare`.
 
-  So `:waiting` → `:mutare` (one mutant); `:mutare` itself yields none. The sentinel
-  is the atom counterpart of `Mutare.Mutators.StringLiteral`'s non-empty `"mutare"`
-  arm — a guaranteed-distinct value that a real assertion (`status == :waiting`, a
-  message atom) pins down but a too-weak suite does not. Unlike a string there is no
-  "empty" atom, so a single sentinel is the whole family.
+  The following atoms are excluded:
 
-  ## What is *not* mutated
+    * `true`, `false`, and `nil`, which are handled by literal and conditional
+      families
+    * `:ok`/`:error`, `:cont`/`:halt`, and `:lt`/`:gt`, which are handled by
+      `Mutare.Mutators.ConventionAtom`
+    * block keys such as `do:`, `else:`, and `rescue:`
+    * struct field names and `for` options such as `into:`, `uniq:`, and `reduce:`
 
-    * **`true` / `false` / `nil`** — these parse as atom literals too, but booleans
-      belong to `Mutare.Mutators.Literal` (and `Conditional`), and `nil` is the absence
-      sentinel.
-    * **Convention atoms** (`:ok`/`:error`, `:cont`/`:halt`, `:lt`/`:gt`) — owned by
-      `Mutare.Mutators.ConventionAtom`, which swaps each for its high-signal same-shape
-      *sibling* (`:ok` → `:error`) rather than the sentinel.
-    * **Block keys** (`do:`/`else:`/`rescue:`/`catch:`/`after:`), a `%Struct{field: v}`
-      field name, and a `for` option (`into:`/`uniq:`/`reduce:`) — mutating these would
-      be illegal or a compile error.
-
-  Ordinary atoms in data keyword/map keys (`%{a: :b}`, `[a: :b]`) and in
-  `case`/`receive`/`fn` clause patterns **are** mutated. The key of a keyword passed as
-  a call's trailing argument (`foo(timeout: 5)`) is mutated too — AtomLiteral owns the
-  opt-out policy through `{Mutare.Mutators.AtomLiteral, call_option_keys: false}`.
+  Ordinary atom values, data map and keyword keys, and atoms in `case`, `receive`,
+  and `fn` patterns remain eligible. Keys in a trailing call-options list are also
+  mutated by default. Configure
+  `{Mutare.Mutators.AtomLiteral, call_option_keys: false}` to exclude those keys.
   """
   @behaviour Mutare.Mutator
 

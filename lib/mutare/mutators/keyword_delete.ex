@@ -1,30 +1,19 @@
 defmodule Mutare.Mutators.KeywordDelete do
   @moduledoc """
-  Swap a `Keyword` duplicate-key **deletion breadth** for its complement:
+  Exchanges the two duplicate-key deletion operations for keyword lists:
 
-    * `Keyword.delete` ↔ `Keyword.delete_first`
+    * `Keyword.delete/2` ↔ `Keyword.delete_first/2`
 
-  A keyword list can carry the **same key more than once** — it is an ordered list of
-  `{key, value}` pairs, not a `Map`. `Keyword.delete(kw, key)` removes **every** entry for
-  `key`; `Keyword.delete_first(kw, key)` removes only the **first**. Swapping them asks:
-  does any test actually depend on *which* — would a list with a repeated key behave the
-  same either way? A survivor means the suite never exercises a duplicate key at this call,
-  the classic untested edge of accumulated/merged options.
+  `delete/2` removes every entry for a key, while `delete_first/2` removes only the
+  first. There is no corresponding `Map` mutation because map keys are unique.
 
-  `Map` has no twin: a `Map` key is unique, so there is no "delete first vs all" distinction
-  (and no `Map.delete_first`). This is the Keyword-only sibling of
-  `Mutare.Mutators.MapKeyword` (the conditional-*write* lattice) — here the axis is deletion
-  *breadth*, not insert/overwrite.
+  Matching is restricted to effective arity two. The deprecated three-argument
+  `delete` form has no three-argument `delete_first` counterpart and is not mutated.
+  Piped, direct, aliased, and imported calls are supported.
 
-  **Arity-gated to `/2`, and pipe-aware.** `Keyword.delete` also has a deprecated `/3`
-  (key+value) form, but `Keyword.delete_first` has no `/3` — so a `delete/3` is left alone
-  rather than renamed to a nonexistent `delete_first/3` (which would poison the build). The
-  gate is on **effective** arity, so a piped `kw |> Keyword.delete(k)` swaps too.
-
-  On by default. Matches aliased and bare-imported calls, while a shadowing
-  `alias MyApp.Keyword` is left alone. `Mutare.Mutators.CallRemoval` separately *removes*
-  `Keyword.delete` outright (→ the original list) — a distinct mutant on the same call;
-  here the call is kept and its breadth flipped.
+  `Mutare.Mutators.CallRemoval` may separately replace `Keyword.delete` with the
+  original keyword list. This family retains the call and changes its deletion
+  breadth. It is enabled by default.
   """
   @behaviour Mutare.Mutator
 

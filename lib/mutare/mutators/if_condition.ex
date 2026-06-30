@@ -1,28 +1,20 @@
 defmodule Mutare.Mutators.IfCondition do
   @moduledoc """
-  Force an `if`/`unless`/`cond` **condition** to the constants `true` and `false` —
-  the "remove the decision" mutation, asked of every branch the suite gates: *is
-  each side of this condition actually exercised?* A condition pinned to one
-  constant that no test notices is a precisely located gap.
+  Replaces each eligible `if`, `unless`, and `cond` condition with `true` and
+  `false`.
 
-  This is the positional sibling of `Mutare.Mutators.Conditional`: where that family
-  fires only where a node *proves* it is boolean-valued (a comparison/membership/
-  logical operator), this fires on a **bare** condition (`if user`, `if valid?(x)`,
-  `if is_nil(v)`, `if Map.has_key?(m, k)`) that is positionally a boolean decision.
-  On by default, named in reports, selectable via `:mutators`, and filterable by
-  `# mutare:ignore[if_condition]`, like every family.
+  This family handles conditions whose boolean role comes from their position, such
+  as `if user`, `if valid?(value)`, or `if Map.has_key?(map, key)`. Boolean
+  operators are excluded because `Mutare.Mutators.Conditional` already produces the
+  same constant replacements.
 
-  ## Deliberately left alone
+  Literal `true`, `false`, and `nil` conditions are also excluded.
 
-    * **Boolean-operator conditions** — a comparison / membership / `and`/`or` /
-      `&&`/`||` / `not`/`!`. `Conditional` already forces these to `true`/`false`,
-      so a condition mutant here would just duplicate it.
-    * **A literal `true`/`false`/`nil` condition** — forcing `if true` to `true` is
-      a no-op and to `false` is dead-code removal; both are degenerate, low signal.
-    * **A binding condition** — `if user = fetch()`. The condition's bindings leak
-      into the body, so the decision can't simply be replaced in place. (For an
-      `if`/`unless` the transform hoists the binding out and mutates the condition
-      anyway; a `cond` binding condition is left unmutated.)
+  A binding condition requires special handling because its bindings may be used in
+  the branch body. Bindings in `if` and `unless` conditions are hoisted before the
+  condition is mutated. A binding condition in `cond` is not mutated.
+
+  This family is enabled by default and uses the `if_condition` ignore name.
   """
   @behaviour Mutare.Mutator
   @behaviour Mutare.Mutator.Structural

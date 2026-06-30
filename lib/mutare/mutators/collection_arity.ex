@@ -1,28 +1,23 @@
 defmodule Mutare.Mutators.CollectionArity do
   @moduledoc """
-  Arity-*changing* call mutations — drop a refining argument (or collapse to a
-  coarser operation), turning a discriminating call into a blunter one. Each asks
-  directly: does the refinement — a comparator, key function, predicate, or update
-  function — actually matter to any test?
+  Changes collection calls to a related operation with fewer arguments:
 
-    * `Enum.sort/1`            → `Enum.reverse/1`     — reorder differently
-    * `Enum.sort/2`            → `Enum.reverse/1`     — drop the comparator
-    * `Enum.reverse/1`         → `Enum.sort/1`
-    * `Enum.sort_by/2`         → `Enum.reverse/1`     — drop the key function
-    * `Enum.sort_by/3`         → `Enum.reverse/1`     — drop key + sorter
-    * `Enum.count/2`           → `Enum.count/1`       — count everything, not matches
-    * `Enum.count_until/3`     → `Enum.count_until/2` — drop the predicate, keep the limit
-    * `Access.get_and_update/3` → `Access.get/2`      — drop the update function,
-      collapsing a read-and-write into a plain read. The result shape changes too
-      (`{get, new_container}` → the bare value), so any test that destructures the
-      `get_and_update` tuple kills it; one that ignores the write does not — exactly
-      the "is the update path exercised?" signal.
+    * `Enum.sort/1` → `Enum.reverse/1`
+    * `Enum.sort/2` → `Enum.reverse/1`, dropping the comparator
+    * `Enum.reverse/1` → `Enum.sort/1`
+    * `Enum.sort_by/2` → `Enum.reverse/1`, dropping the key function
+    * `Enum.sort_by/3` → `Enum.reverse/1`, dropping the key function and sorter
+    * `Enum.count/2` → `Enum.count/1`, dropping the predicate
+    * `Enum.count_until/3` → `Enum.count_until/2`, dropping the predicate but
+      retaining the limit
+    * `Access.get_and_update/3` → `Access.get/2`, dropping the update function
 
-  `Enum.reverse/2` (`reverse(list, tail)`, an unrelated operation) is deliberately
-  left alone.
+  The `Access` replacement also changes the result from `{value, updated_container}`
+  to the value alone. `Enum.reverse/2` is not mutated because its second argument is
+  a list tail rather than a sorting refinement.
 
-  On by default. The arity-changing sibling of `Mutare.Mutators.Collection`. Matches
-  aliased and bare-imported calls too.
+  Direct, aliased, imported, and piped calls are supported. This family is enabled
+  by default.
   """
   @behaviour Mutare.Mutator
 

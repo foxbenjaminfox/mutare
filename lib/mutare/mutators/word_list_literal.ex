@@ -1,30 +1,23 @@
 defmodule Mutare.Mutators.WordListLiteral do
   @moduledoc """
-  Word-sigil mutations: a `~w(…)`/`~W(…)` word list is a list literal in disguise,
-  so it is mutated the same way `Mutare.Mutators.List` collapses one and
-  `Mutare.Mutators.CharlistLiteral` mutates a charlist — into both the empty word
-  list `~w()` (→ `[]`) and a single-element sentinel `~w(mutare)` (→ `["mutare"]`),
-  dropping whichever already equals the original. A contrasting pair like
-  `StringLiteral`/`CharlistLiteral`: between them they catch a suite that never
-  checks the list's emptiness or its contents.
+  Replaces a non-interpolated `~w` or `~W` word list with an empty list and a
+  one-element sentinel list:
 
-  The modifier is preserved, so the mutant stays the same element type as the
-  original: `~w(a b)a` → `~w()a` (`[]`) and `~w(mutare)a` (`[:mutare]`); likewise
-  for the `c` (charlist) modifier. Equivalence is judged on the *words produced*
-  (`String.split/1`, which mirrors the sigil's own whitespace splitting), not the
-  raw content — so a whitespace-only `~w(   )` (already `[]`) doesn't re-emit the
-  empty mutant.
+    * `~w(a b)` → `~w()`
+    * `~w(a b)` → `~w(mutare)`
 
-  Only non-interpolated word lists are touched: an interpolated `~w(a \#{x} b)` parses
-  with multiple `<<>>` parts, not a single binary (`~W` never interpolates).
+  The sigil modifier is retained, so `a` and `c` word lists keep atom and charlist
+  elements. Equivalent replacements are detected from the parsed words rather than
+  the raw source; for example, a whitespace-only word list does not produce another
+  empty-list mutant.
 
-  Not mutated: on the **RHS of `in`** (`x in ~w(a b)`) the *empty* variant `~w()` is
-  dropped — it is `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already
-  produces — but the non-empty *sentinel* `~w(mutare)` is kept.
+  Interpolated `~w` sigils are not mutated. `~W` never interpolates.
 
-  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
-  suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `~w()`) or
-  `sentinel` (the `~w(mutare)`).
+  On the right side of `in`, the empty replacement is suppressed because membership
+  in an empty list is already covered by `Mutare.Mutators.Conditional`. The sentinel
+  replacement remains eligible.
+
+  The ignore variants are `empty` and `sentinel`.
   """
   @behaviour Mutare.Mutator
 

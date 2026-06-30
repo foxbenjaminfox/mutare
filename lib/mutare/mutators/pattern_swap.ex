@@ -1,31 +1,27 @@
 defmodule Mutare.Mutators.PatternSwap do
   @moduledoc """
-  Swap two variables inside a pattern container — `{x, y}` → `{y, x}`,
-  `[a, b]` → `[b, a]`, `%{k1: x, k2: y}` → `%{k1: y, k2: x}`, the *values* of a keyword
-  list `[a: x, b: y]` → `[a: y, b: x]`, and the segment *values* of a bitstring
-  `<<a::8, b::16>>` → `<<b::8, a::16>>`.
+  Exchanges two variables within a container in a function-head pattern:
 
-  This asks a precise question: *does any test depend on which value lands in which
-  position?* If a function destructures `{lat, lng}` and nothing distinguishes the two,
-  swapping them survives — a located gap.
+    * `{x, y}` → `{y, x}`
+    * `[x, y]` → `[y, x]`
+    * `%{left: x, right: y}` → `%{left: y, right: x}`
+    * `[left: x, right: y]` → `[left: y, right: x]`
+    * `<<x::8, y::16>>` → `<<y::8, x::16>>`
 
-  On by default, named in reports, toggleable via `:mutators`, filterable by
-  `# mutare:ignore[pattern_swap]`.
+  Only `def` and `defp` heads are considered. Swaps occur within tuples, lists, map
+  and keyword values, and bitstring segment values. Map and keyword keys and
+  bitstring specifiers remain in place. The top-level function argument list is not
+  a swap site.
 
-  ## Scope
+  The two variables must have distinct names. `_` and underscore-prefixed names are
+  excluded. Pinned variables may be swapped with another pin or with a binding.
+  Repeated same-name variables are handled by
+  `Mutare.Mutators.PatternWildcard` instead.
 
-  Only `def`/`defp` *heads* are mutated, and only **within containers** — tuples, lists,
-  the *values* of a map or keyword-list pattern (labels stay fixed), and the segment
-  *values* of a bitstring (the bindable left of each `::`, the spec staying put). The
-  top-level argument list is deliberately not a swap site (transposing whole arguments is
-  a separate, noisier mutation the project chose not to emit).
+  A bitstring value used by another segment as a size is not moved. For example,
+  `n` in `<<n, rest::binary-size(n)>>` remains in place.
 
-  Only two **distinct-named** variables/pins are swapped — a same-name swap (`{x, x}`,
-  `{^a, a}`) is a no-op (repetition is `Mutare.Mutators.PatternWildcard`'s domain), and
-  `_`/`_`-prefixed names are never swapped. **Pins participate** (`{^a, ^b}` → `{^b, ^a}`,
-  and a pin can trade places with a distinct-named binding, `{^a, b}` → `{b, ^a}`). For a
-  bitstring the type/size specs stay pinned, and a value read as a *size* elsewhere in the
-  same binary (`<<n, rest::binary-size(n)>>`) is never moved.
+  This family is enabled by default and uses the `pattern_swap` ignore name.
   """
   @behaviour Mutare.Mutator
   @behaviour Mutare.Mutator.Structural

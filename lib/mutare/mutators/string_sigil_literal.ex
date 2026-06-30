@@ -1,35 +1,21 @@
 defmodule Mutare.Mutators.StringSigilLiteral do
   @moduledoc """
-  String-sigil mutation: the `~s`/`~S` analogue of `Mutare.Mutators.StringLiteral`.
-  A `~s(…)`/`~S(…)` sigil is a plain string wearing different delimiters, so it is
-  mutated exactly the same way — into both the empty string `""` and a non-empty
-  sentinel (`"mutare"`), dropping whichever already equals the sigil's content. So a
-  typical `~s(hello)` yields *two* mutants (empties it and swaps its content); `~s()`
-  yields just the sentinel; `~s(mutare)` yields just `""`. Equivalence is judged on
-  the sigil's content binary as parsed, mirroring `StringLiteral`'s `&(&1 == s)`.
+  Replaces a `~s` or `~S` sigil with the plain string literals `""` and
+  `"mutare"`. A replacement equal to a static sigil value is omitted:
 
-  The mutant is a **plain string literal** (`""` / `"mutare"`), not a re-wrapped
-  sigil: unlike `~w`'s `a`/`c` modifier (which `Mutare.Mutators.WordListLiteral`
-  preserves to keep the element type), a `~s`/`~S` sigil takes no type-changing
-  modifier — the value is a binary either way — so the plain form gives the cleaner
-  diff. This is why it is a sibling of `StringLiteral` rather than folded into it:
-  `StringLiteral` matches only a quoted `{:__block__, _, [binary]}` literal, while a
-  sigil parses as `{:sigil_s, _, [<<…>>, modifiers]}` whose content is a *bare*
-  binary segment — neither shape the other touches.
+    * `~s(hello)` produces both replacements
+    * `~s()` produces only `"mutare"`
+    * `~s(mutare)` produces only `""`
 
-  **Interpolated** sigils are mutated too. A non-interpolated `~s(hello)`/`~S(…)` has
-  a single static binary segment, so the empty/sentinel no-op is dropped as above. An
-  interpolated `~s(a\#{x}b)` parses with multiple `<<>>` parts (`~S` never
-  interpolates); its runtime binary can never be statically `""`/`"mutare"`, so both
-  variants always apply, while the interpolation's own sub-expressions still mutate
-  independently underneath. `Mutare.Transform` offers the **whole** sigil node here
-  (it never offers a sigil's content `<<>>` wrapper or bare-binary segment
-  separately), so this is the *only* whole-string mutation a `~s`/`~S` receives — and,
-  like every sigil offer, only in a runtime position, never in a pattern.
+  Replacements are plain string literals because these sigils have no modifier that
+  changes their value type.
 
-  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
-  suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `""`) or
-  `sentinel` (the `"mutare"`).
+  Interpolated `~s` sigils also receive both replacements because their runtime value
+  cannot be compared statically. Expressions inside the interpolation remain eligible
+  for their own mutations. `~S` sigils do not interpolate.
+
+  The whole sigil is mutated only in runtime positions, not in patterns. The ignore
+  variants are `empty` and `sentinel`.
   """
   @behaviour Mutare.Mutator
 

@@ -1,6 +1,6 @@
 defmodule Mutare.Mutators.StringCall do
   @moduledoc """
-  Swap complementary `String` calls for their directional opposite:
+  Renames string calls to a complementary operation:
 
     * `String.starts_with?` ↔ `String.ends_with?`
     * `String.upcase` ↔ `String.downcase`
@@ -10,39 +10,21 @@ defmodule Mutare.Mutators.StringCall do
     * `String.pad_leading` ↔ `String.pad_trailing`
     * `String.first` ↔ `String.last`
     * `String.graphemes` ↔ `String.codepoints`
+    * `:string.uppercase` ↔ `:string.lowercase`
+    * `:string.to_upper` ↔ `:string.to_lower`
+    * `:string.left` ↔ `:string.right`
+    * `:binary.first` ↔ `:binary.last`
 
-  …plus the Erlang `:string` module's directional/case pairs:
+  The Erlang `:string` trim direction is an argument rather than a function name,
+  so it is not included.
 
-    * `:string.uppercase` ↔ `:string.lowercase`  (analogue of `upcase`/`downcase`)
-    * `:string.to_upper` ↔ `:string.to_lower`     (the legacy case pair)
-    * `:string.left` ↔ `:string.right`            (justify/pad direction — the
-      analogue of `pad_leading`/`pad_trailing`)
+  `String.equivalent?(a, b)` also produces `Kernel.==(a, b)`, removing Unicode
+  normalization from the comparison.
 
-  …plus the Erlang `:binary` module's first/last pair — the byte-level twin of
-  `String.first`/`String.last`:
-
-    * `:binary.first` ↔ `:binary.last`            (the first vs last *byte* of a
-      binary, where `String.first`/`last` take the first/last grapheme)
-
-  (The trim/predicate pairs have no `:string` twin — there the *direction* is an
-  argument atom, e.g. `:string.trim(s, :leading)`, not a distinct function name,
-  so renaming cannot express the swap.)
-
-  It also makes one **call → operator** substitution: `String.equivalent?(a, b)`
-  (Unicode-canonical equality) → `Kernel.==(a, b)`, dropping the normalization. The
-  mutant survives unless a test feeds canonically-equivalent-but-distinct encodings —
-  pointing at exactly that gap.
-
-  The sibling of `Mutare.Mutators.Collection` (the `Enum`/`List` swaps). `String`, the
-  Erlang `:string` module, and the Erlang `:binary` module are all matched in their
-  direct, aliased, and bare-imported forms (`String.upcase`, `alias String, as: S;
-  S.upcase`, `import String; upcase`, and likewise `:string.uppercase`, `:binary.first`),
-  while a shadowing `alias MyApp.String` is left alone.
-
-  On by default — high signal on the affix/case/predicate functions that anchor
-  string-handling logic, exactly where an off-by-direction bug hides. Distinct
-  from `Mutare.Mutators.StringLiteral` (the `:string` family), which mutates the
-  string *value*; this mutates the *call*.
+  Direct, aliased, and imported calls are supported for Elixir and Erlang modules.
+  An alias that resolves to another module does not match. This family is enabled
+  by default and is separate from `Mutare.Mutators.StringLiteral`, which changes
+  string values rather than calls.
   """
   @behaviour Mutare.Mutator
 

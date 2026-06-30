@@ -1,30 +1,26 @@
 defmodule Mutare.Mutators.MapKeyword do
   @moduledoc """
-  Swap a `Map`/`Keyword` write for a complement along the **conditional-write**
-  axis — does the call insert new keys, overwrite existing ones, or raise on a
-  missing key? The four operations form a small lattice, identical for `Map` and
-  `Keyword`, all `/3`:
+  Renames `Map` and `Keyword` writes according to how they handle present and absent
+  keys:
 
-      | function   | writes if key present | writes if key absent |
-      |------------|-----------------------|----------------------|
-      | put        | yes (overwrite)       | yes (insert)         |
-      | put_new    | no                    | yes (insert)         |
-      | replace    | yes (overwrite)       | no (ignored)         |
-      | replace!   | yes (overwrite)       | no — raises          |
+  | function | key present | key absent |
+  | --- | --- | --- |
+  | `put` | overwrite | insert |
+  | `put_new` | leave unchanged | insert |
+  | `replace` | overwrite | ignore |
+  | `replace!` | overwrite | raise |
 
-  Swaps (each bidirectional, isolating one distinction):
+  The following `/3` pairs are exchanged:
 
-    * `put` ↔ `put_new`      — does overwriting an existing key matter?
-    * `put` ↔ `replace`      — does inserting a *new* key matter?
-    * `put_new` ↔ `replace`  — the present/absent condition, fully inverted
-    * `replace` ↔ `replace!` — silently ignore a missing key, or raise?
+    * `put` ↔ `put_new`
+    * `put` ↔ `replace`
+    * `put_new` ↔ `replace`
+    * `replace` ↔ `replace!`
 
-  High signal: the conditional-write distinctions are classic untested edges (the
-  already-present and still-absent paths a happy-path test never hits).
+  The same pairs apply to both `Map` and `Keyword`. Direct, aliased, and imported
+  calls are supported; an alias that resolves to another module does not match.
 
-  On by default. Matches aliased and bare-imported calls too, while a shadowing
-  `alias MyApp.Map` is left alone. The family atom is `:map_keyword` (`:map` is
-  `MapLiteral`).
+  This family is enabled by default. Its family name is `map_keyword`.
   """
   @behaviour Mutare.Mutator
 
