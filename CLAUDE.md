@@ -20,7 +20,7 @@ belongs in its moduledoc. Keep this navigational.
 Mutare is a **mutation testing tool for Elixir**, built on one bet: **compile once**.
 It rewrites a target project's source into a single *metamutant* program that embeds every
 mutant behind a `:persistent_term` runtime switch, compiles it once, then runs the suite once
-per mutant by flipping `MUTANT_UNDER_TEST`. Read `PHILOSOPHY.md` and `NOTES.md` before
+per mutant by flipping `MUTARE_ACTIVE_MUTANT`. Read `PHILOSOPHY.md` and `NOTES.md` before
 substantial changes — they are unusually load-bearing and will save you re-deriving things.
 
 ## Commands
@@ -129,7 +129,7 @@ another family's.
 These span modules, so no single moduledoc holds them. Internalize them before substantial changes.
 
 - **The selection/coverage/timeout contracts are split across modules and baked into generated
-  code.** The `:persistent_term` selection key and `MUTANT_UNDER_TEST` live in `Mutare.Selector`;
+  code.** The `:persistent_term` selection key and `MUTARE_ACTIVE_MUTANT` live in `Mutare.Selector`;
   the timeout env var + watcher in `Mutare.Sandbox.Command.Invocation` and its exit code in
   `Mutare.Sandbox.Command`; the coverage contract (`MUTARE_COVERAGE`, `:mutare_track`, the ETS
   tables, `MutareCov`, the dump file) in `Mutare.Coverage.Recorder`. `Mutare.Transform` emits the

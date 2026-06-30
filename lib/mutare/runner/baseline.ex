@@ -1,7 +1,7 @@
 defmodule Mutare.Runner.Baseline do
   @moduledoc """
   Run the complete test suite green-checked against the baseline mutant
-  (`MUTANT_UNDER_TEST=0`) — once, or several times to catch a flaky suite.
+  (`MUTARE_ACTIVE_MUTANT=0`) — once, or several times to catch a flaky suite.
 
   This is the authoritative green check *and* the source of `baseline_ms`. Two
   things hang on it being a run of the *whole* suite:

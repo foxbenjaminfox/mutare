@@ -5,7 +5,7 @@ defmodule Mutare do
   The whole project is downstream of one invariant: **compile once**. Mutare
   rewrites a project's source into a *metamutant* — a single program that embeds
   every mutant behind a `:persistent_term` runtime switch — compiles it once,
-  then runs the suite once per mutant by flipping `MUTANT_UNDER_TEST`.
+  then runs the suite once per mutant by flipping `MUTARE_ACTIVE_MUTANT`.
 
   On top of that, the runner adds coverage-guided test selection, compile-poison
   recovery, parallel execution, timeouts, ignore annotations, and changed-file

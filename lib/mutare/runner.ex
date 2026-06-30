@@ -2,7 +2,7 @@ defmodule Mutare.Runner do
   @moduledoc """
   Compile once, then run the suite once per mutant in a fresh OS process.
 
-  The flow protects the one-compile invariant: we compile the sandbox a single time, run the tests as a baseline to ensure it passes, then launch one `mix test` process per mutant with `MUTANT_UNDER_TEST` set. Sources never change between runs, so mix's incremental compiler finds nothing to rebuild — the per-mutant cost is process boot plus the suite (only up to the first failure for a kill), never recompilation.
+  The flow protects the one-compile invariant: we compile the sandbox a single time, run the tests as a baseline to ensure it passes, then launch one `mix test` process per mutant with `MUTARE_ACTIVE_MUTANT` set. Sources never change between runs, so mix's incremental compiler finds nothing to rebuild — the per-mutant cost is process boot plus the suite (only up to the first failure for a kill), never recompilation.
 
   `run/2` returns `%{schema, results, sandbox, baseline_ms}`: the `Mutare.Schema` that was run, the list of per-mutant `Mutare.Result`s, the sandbox path, and the baseline run's wall-clock in milliseconds.
 

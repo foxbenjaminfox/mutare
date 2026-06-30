@@ -1037,7 +1037,7 @@ by a blacklist. The positions:
   definition. (A bare attribute *read*, `@x`, has no value list and is not
   skipped.) Pinned by a transform_test.
 - **Macro bodies** (`defmacro`/`defmacrop`): **excluded** (also `:compile_time`).
-  A macro body runs at expansion time, before `MUTANT_UNDER_TEST` is set at test
+  A macro body runs at expansion time, before `MUTARE_ACTIVE_MUTANT` is set at test
   runtime, so a selector there is frozen on the default → inert — exactly the
   module-attribute problem. (A macro *can* `quote` runtime code, but per
   PHILOSOPHY "instrumenting macro-generated code is a different tool"; the whole
@@ -3457,7 +3457,7 @@ all "partition" semantics. Inert by default: `partition_env` `nil` → `Partitio
 `:disabled` → `[]` everywhere → byte-identical to the old behaviour.
 
 Because the partition entry is *appended* to that base env, a `:partition_env`
-naming a key Mutare itself sets (`MIX_ENV`, `MUTANT_UNDER_TEST`, the coverage
+naming a key Mutare itself sets (`MIX_ENV`, `MUTARE_ACTIVE_MUTANT`, the coverage
 vars…) would land a duplicate key in the `System.cmd` env list, where Erlang's
 resolution is unspecified — silently clobbering, say, `MIX_ENV`. So `Options`
 rejects such a name up front, validated against the authoritative
@@ -5305,7 +5305,7 @@ suite-key override, `put/1` leaves the harness key untouched".
 
 What else is in place (unchanged):
 - **Sandbox skips `:runner` tests.** `test/test_helper.exs` calls
-  `ExUnit.configure(exclude: [:runner])` iff `MUTANT_UNDER_TEST` is set — true on
+  `ExUnit.configure(exclude: [:runner])` iff `MUTARE_ACTIVE_MUTANT` is set — true on
   every per-mutant run (and the baseline) but never on a normal `mix test`. Those
   tests shell out to nested `mix test`; running them per mutant would be a fork
   bomb. This is *orthogonal* to the key collision — it bounds cost. Its cost is
@@ -5466,7 +5466,7 @@ the tables in the test-helper process, which outlives the whole suite. Guard is
    are byte-identical recording logic in one sandbox BEAM sharing one env, so a runtime name
    resolves identically for both (and a test-local override still diverts the *real* records
    firing during that test's window). So `helper_template_test` is tagged `:coverage_tables`
-   and excluded under `MUTANT_UNDER_TEST` alongside `:runner`/`:property` (see
+   and excluded under `MUTARE_ACTIVE_MUTANT` alongside `:runner`/`:property` (see
    `test/test_helper.exs`). The probe's tables then survive the whole suite → a non-empty
    dump → real per-file selection. Cost (same as `:runner`): `HelperTemplate`'s own
    recording/attribution mutants, killed only by that module, go uncovered under dogfood and
@@ -5734,7 +5734,7 @@ Design choices, and why:
 - **Line granularity, not a single mutant.** A source line can host several mutants
   (`a + b - c`); `--line` keeps *all* of them. The user asked for a *line*, and the
   report identifies a survivor by `file:line` + diff, not by the internal
-  `MUTANT_UNDER_TEST` id (which isn't user-visible and *shifts* when discovery is
+  `MUTARE_ACTIVE_MUTANT` id (which isn't user-visible and *shifts* when discovery is
   narrowed — see below). Column-level scoping would buy little and break the
   copy-from-report ergonomics.
 - **Filter applied inside `from_files/4`, file-prune inside `build/2`.** Same split as

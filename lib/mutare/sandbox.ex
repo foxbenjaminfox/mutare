@@ -4,7 +4,7 @@ defmodule Mutare.Sandbox do
 
   We copy the project to a dedicated directory (excluding build output), write
   each metamutant over its original, and inject a tiny bootstrap into
-  `test/test_helper.exs` that reads `MUTANT_UNDER_TEST` into `:persistent_term`
+  `test/test_helper.exs` that reads `MUTARE_ACTIVE_MUTANT` into `:persistent_term`
   before the suite starts. The bootstrap is plain Erlang/Elixir with no
   dependency on Mutare, so the sandbox needs nothing added to its deps.
 

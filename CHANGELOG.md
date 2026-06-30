@@ -16,7 +16,7 @@ Initial public release.
 - **Compile-once metamutant.** Source under `lib/` is rewritten into a single
   program that embeds every mutant behind a `:persistent_term` runtime switch,
   compiled once; the suite then runs once per mutant by flipping
-  `MUTANT_UNDER_TEST` — no per-mutant recompilation.
+  `MUTARE_ACTIVE_MUTANT` — no per-mutant recompilation.
 - **A broad built-in mutator set** (all on by default): arithmetic/operator and
   operand swaps, relational and logical swaps, strict-equality relaxation,
   literals of every kind (integer/float/string/charlist/atom/sigil/regex/

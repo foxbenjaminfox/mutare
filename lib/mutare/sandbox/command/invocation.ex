@@ -5,7 +5,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   Every mutant is exercised by its own `mix test` process: the sources never
   change between runs, so mix's incremental compiler finds nothing to rebuild
   and the per-mutant cost is process boot plus the suite. `MIX_ENV=test` and
-  `MUTANT_UNDER_TEST=<mutant_id>` are always set; an optional `cap` (ms) bounds a
+  `MUTARE_ACTIVE_MUTANT=<mutant_id>` are always set; an optional `cap` (ms) bounds a
   run that overruns (a mutation can turn a terminating loop infinite).
 
   This module owns everything about *how a run is invoked*: the environment it
@@ -42,7 +42,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   Run `mix <args>` in `sandbox` as a fresh OS process, returning
   `{output, exit_status}`.
 
-  `MIX_ENV=test` and `MUTANT_UNDER_TEST=<mutant_id>` are always set; `mutant_id`
+  `MIX_ENV=test` and `MUTARE_ACTIVE_MUTANT=<mutant_id>` are always set; `mutant_id`
   is the integer the metamutant switches on (`Mutare.Selector.baseline/0` for a
   baseline run), rendered into the env var here. `opts`:
 

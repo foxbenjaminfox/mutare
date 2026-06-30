@@ -51,7 +51,7 @@ Then run `mix mutare`.
 
 1. **Transform.** Every source file under `lib/` is rewritten into a *metamutant* that embeds all of its mutants. Mutare transforms the code you write, before macro expansion—so any macros that don't accept arbitrary expressions will probably need to be marked `:skip` in your config.
 2. **Compile once.** The metamutant compiles a single time. The source code doesn't change between runs, so there is no per-mutant recompilation.
-3. **Run the suite per mutant.** A baseline test run must pass; a coverage probe then maps each mutant to the test files that exercise it. Each mutant runs in a fresh `mix test` OS process with `MUTANT_UNDER_TEST` set, `:workers` at a time, each capped by a wall-clock timeout.
+3. **Run the suite per mutant.** A baseline test run must pass; a coverage probe then maps each mutant to the test files that exercise it. Each mutant runs in a fresh `mix test` OS process with `MUTARE_ACTIVE_MUTANT` set, `:workers` at a time, each capped by a wall-clock timeout.
 4. **Report.** Surviving mutants are listed in an abreviated format as the run progresses, and you get a full report, with diffs and a mutation score, at the end. You can also enable JSON, HTML, or SARIF format output.
 
 ## Features

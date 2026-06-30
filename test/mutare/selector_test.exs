@@ -28,7 +28,7 @@ defmodule Mutare.SelectorTest do
     # `default_key/0` is the env-independent harness key; `key/0` equals it unless
     # the override is set (which it is when this suite runs under dogfooding).
     assert Selector.default_key() == :mutare_active
-    assert Selector.env_var() == "MUTANT_UNDER_TEST"
+    assert Selector.env_var() == "MUTARE_ACTIVE_MUTANT"
     assert Selector.baseline() == 0
   end
 

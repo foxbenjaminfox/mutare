@@ -33,7 +33,7 @@ defmodule Mutare.Selector do
   """
 
   @key :mutare_active
-  @env_var "MUTANT_UNDER_TEST"
+  @env_var "MUTARE_ACTIVE_MUTANT"
   @baseline 0
   # The env var that lets a sandbox suite-under-test select on a private key (see
   # the moduledoc). Set by `Mutare.Sandbox.Command` on every sandbox `mix`; unset
