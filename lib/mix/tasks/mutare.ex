@@ -3,11 +3,11 @@ defmodule Mix.Tasks.Mutare do
   @moduledoc """
   Mutation-test the current project.
 
-  Mutare builds a single *metamutant*, embeding every possible mutant behind a runtime switch, compiles it once, runs your test suite once as baseline with no mutants active, then for each mutant runs the part of the suite that potentially covers the mutant, reporting back with the mutants your tests failed to catch.
+  Mutare builds a single *metamutant*, embedding every possible mutant behind a runtime switch, compiles it once, runs your test suite once as baseline with no mutants active, then for each mutant runs the part of the suite that potentially covers the mutant, reporting back with the mutants your tests failed to catch.
 
   ## Getting started
 
-  Run it with no arguments to mutate everything under `lib/`. On a large project, start with a single module. It often is convinent to mutation test one module at a time, or otherwise slice-by-slice.
+  Run it with no arguments to mutate everything under `lib/`. On a large project, start with a single module. It often is convenient to mutation test one module at a time, or otherwise slice-by-slice.
 
       mix mutare                                 # mutate everything under lib/
       mix mutare --only lib/billing/invoice.ex   # ...or just one file (a good first run)

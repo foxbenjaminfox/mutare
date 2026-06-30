@@ -49,10 +49,10 @@ Then run `mix mutare`.
 
 ## How it works
 
-1. **Transform.** Every source file under `lib/` is rewritten into a *metamutant* that embeds all of its mutants. Mutare transforms the code you write, before macro expansion—so any macros that don't accept arbitrary expressions will probably need to be marked `:skip` in your config.
+1. **Transform.** Every in-scope source file is rewritten into a *metamutant* that embeds all of its mutants. Mutare transforms the code you write, before macro expansion—so any macros that don't accept arbitrary expressions will probably need to be marked `:skip` in your config.
 2. **Compile once.** The metamutant compiles a single time. The source code doesn't change between runs, so there is no per-mutant recompilation.
 3. **Run the suite per mutant.** A baseline test run must pass; a coverage probe then maps each mutant to the test files that exercise it. Each mutant runs in a fresh `mix test` OS process with `MUTARE_ACTIVE_MUTANT` set, `:workers` at a time, each capped by a wall-clock timeout.
-4. **Report.** Surviving mutants are listed in an abreviated format as the run progresses, and you get a full report, with diffs and a mutation score, at the end. You can also enable JSON, HTML, or SARIF format output.
+4. **Report.** Surviving mutants are listed in an abbreviated format as the run progresses, and you get a full report, with diffs and a mutation score, at the end. You can also enable JSON, HTML, or SARIF format output.
 
 ## Features
 
@@ -71,7 +71,7 @@ Suppress a known-equivalent mutant with a comment — a trailing comment marks i
 def discounted(amount, percent), do: amount - amount * percent / 100  # mutare:ignore
 ```
 
-You may add a free-text reason; it is also possible narrow the directive to specific mutator families with a `[...]` filter listing the families to suppress.
+You may add a free-text reason; it is also possible to narrow the directive to specific mutator families with a `[...]` filter listing the families to suppress.
 
 ```elixir
 # mutare:ignore nothing on the next line will be mutated
@@ -89,7 +89,7 @@ Qualify a family with `:label` to suppress just one *kind* of its mutants. Here 
 def floor_zero(x), do: if(x < 0, do: 0, else: x)  # mutare:ignore[relational:<=] 0 ≤ 0 returns 0 here
 ```
 
-Each family names its own labels — `relational` → `> >= < <= == != === !==`, `literal` → `zero succ pred negate`, `return_value` → `empty sentinel` — and `mix mutare --list-mutators` prints every built-in family's labels. A qualified label a known family doesn't declare is a hard error with a "did you mean", so a typo can't slip through as a silent no-op. The full grammar is in [`Mutare.Ignore`](https://hexdocs.pm/mutare/Mutare.Ignore.html).
+Each family names its own labels — `relational` → `> >= < <= == != === !==`, `literal` → `zero succ pred negate`, `return_value` → `empty sentinel` — and `mix mutare --list-mutators` prints every built-in family's labels. A qualified label that a known family doesn't declare is a hard error with a "did you mean", so a typo can't slip through as a silent no-op. The full grammar is in [`Mutare.Ignore`](https://hexdocs.pm/mutare/Mutare.Ignore.html).
 
 ## Usage
 
