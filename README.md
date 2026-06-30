@@ -146,7 +146,7 @@ While a run is in flight, Mutare shows live progress on **stderr**: the current 
 By default Mutare prints the human report to the console (stdout). `--format` selects a machine format, and `--output PATH` writes it to a file (otherwise it goes to stdout). To emit more than one format in a single run, list `reporters:` in `.mutare.exs` (above).
 
 - **`json`** — the [mutation-testing-elements](https://github.com/stryker-mutator/mutation-testing-elements) / Stryker **report schema**. A standardized, versioned document covering every mutant (not just survivors), ready for the Stryker dashboard and other tooling.
-- **`html`** — that same JSON embedded in the official interactive report viewer: a single self-contained file with a file tree, inline mutant annotations on the source, and the score. (Opening it fetches the viewer bundle from a CDN.)
+- **`html`** — that same JSON embedded in a single HTML file that loads the official interactive report viewer from a pinned CDN bundle, with a file tree, inline mutant annotations on the source, and the score.
 - **`sarif`** — surviving mutants as SARIF 2.1.0 findings, so GitHub code scanning shows each one as an inline annotation on the pull-request diff.
 
 When a machine format is written to a file, the human report still prints to the console; when it takes stdout (no `--output`), the human report is suppressed to avoid a collision.

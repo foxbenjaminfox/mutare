@@ -30,7 +30,7 @@ defmodule Mutare.Report.HtmlTest do
     |> List.first()
   end
 
-  test "produces a standalone HTML document hosting the report web component" do
+  test "produces an HTML document hosting the report web component" do
     html = Html.render([result()], %{"lib/a.ex" => "a >= b"})
 
     assert html =~ "<!DOCTYPE html>"

@@ -1,12 +1,12 @@
 defmodule Mutare.Report.Html do
   @moduledoc """
-  Renders a self-contained HTML page that hosts the interactive mutation report.
+  Renders an HTML page that hosts the interactive mutation report.
 
   Deliberately **not** a bespoke renderer: it embeds the `Mutare.Report.Json`
   document into the official `mutation-test-report-app` web component (loaded
   from a pinned CDN bundle), which renders the file tree, per-file source with
-  inline mutant annotations, and the score. The whole report is one HTML file
-  you can open or attach to CI.
+  inline mutant annotations, and the score. The report data is embedded in one
+  HTML file you can open or attach to CI.
 
   Tradeoff: viewing the page fetches the component bundle from unpkg, so it
   needs network access. Vendoring the bundle is a possible later toggle.
@@ -17,7 +17,7 @@ defmodule Mutare.Report.Html do
   @bundle "https://www.unpkg.com/mutation-testing-elements@3.8.0/dist/mutation-test-elements.js"
 
   @doc """
-  Render a standalone HTML report. `opts` is forwarded to `Mutare.Report.Json`
+  Render an HTML report. `opts` is forwarded to `Mutare.Report.Json`
   (so `:min_score` sets the thresholds the viewer colours by).
   """
   @spec render([Result.t()], %{optional(String.t()) => String.t()}, keyword()) :: String.t()
