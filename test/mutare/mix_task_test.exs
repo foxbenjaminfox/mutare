@@ -40,6 +40,12 @@ defmodule Mix.Tasks.MutareTest do
       end
     end
 
+    test "raises a clean Mix error on parser syntax errors" do
+      assert_raise Mix.Error, ~r/--line : Missing argument of type string/, fn ->
+        Mix.Tasks.Mutare.run(["--line"])
+      end
+    end
+
     test "--line scoping to a line with no mutants yields no sites" do
       root = Project.tmp_dir(:task)
       File.mkdir_p!(Path.join(root, "lib"))

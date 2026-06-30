@@ -308,10 +308,14 @@ defmodule Mix.Tasks.Mutare do
                 show_config: :boolean,
                 dry_run: :boolean
               ]
+  @parse_error_switches Enum.map(@switches, fn
+                          {key, [type, :keep]} -> {key, type}
+                          switch -> switch
+                        end)
 
   @impl Mix.Task
   def run(argv) do
-    {flags, rest} = OptionParser.parse!(argv, strict: @switches)
+    {flags, rest} = parse_args!(argv)
 
     # Inspect-and-exit flags print information and do nothing else. These three need
     # no project or config, so they short-circuit before any resolution.
@@ -321,6 +325,40 @@ defmodule Mix.Tasks.Mutare do
       flags[:explain] -> Info.explain_mutator(flags[:explain])
       true -> dispatch_with_options(flags, rest)
     end
+  end
+
+  defp parse_args!(argv) do
+    OptionParser.parse!(argv, strict: @switches)
+  rescue
+    error in OptionParser.ParseError ->
+      Mix.raise(Exception.message(error))
+
+    error in ArgumentError ->
+      # Some Elixir versions accept repeatable switch specs for parsing but choke on them while
+      # formatting a parse error's "Supported options" block. Re-render with equivalent
+      # non-repeatable specs so malformed CLI syntax still surfaces as a Mix usage error.
+      if option_parser_format_error?(__STACKTRACE__) do
+        Mix.raise(parse_error_message(argv))
+      else
+        reraise error, __STACKTRACE__
+      end
+  end
+
+  defp parse_error_message(argv) do
+    OptionParser.parse!(argv, strict: @parse_error_switches)
+    "invalid command-line arguments"
+  rescue
+    error in OptionParser.ParseError -> Exception.message(error)
+  end
+
+  defp option_parser_format_error?(stacktrace) do
+    Enum.any?(stacktrace, fn
+      {OptionParser, function, _arity, _meta} when function in [:format_error, :format_errors] ->
+        true
+
+      _entry ->
+        false
+    end)
   end
 
   # Everything past the no-config flags resolves the project + options first; the
