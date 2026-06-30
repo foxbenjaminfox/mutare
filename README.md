@@ -29,7 +29,7 @@ A mutator package extends the `:mutators` list; a non-mutating **extension** lik
 You can install igniter globally, with `mix archive.install hex igniter_new`, or add it to your project's `mix.exs`:
 
 ```elixir
-{:igniter, "~> 0.5", only: [:dev]},
+{:igniter, "~> 0.8", only: [:dev]},
 ```
 
 
