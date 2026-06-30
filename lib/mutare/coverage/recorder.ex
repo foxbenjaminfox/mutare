@@ -145,30 +145,29 @@ defmodule Mutare.Coverage.Recorder do
   def var_name, do: @var_name
 
   @doc """
-  The catch-all clause pattern that binds the selector subject to `var` (default
-  `mutare_active`).
+  Catch-all clause pattern that binds the selector subject to `var`.
 
-  `Mutare.Transform` uses this in place of the old `_` so `record_ast/2` can read
-  the active id without a second `:persistent_term` lookup — passing the same
-  per-file `var` to both.
+  `Mutare.Transform` uses this instead of `_` so `record_ast/2` can read the
+  active id without a second `:persistent_term` lookup. Pass the same per-file
+  variable to this function and to `record_ast/2`.
   """
   @spec catch_all_pattern(atom()) :: Macro.t()
   def catch_all_pattern(var \\ @var_name), do: {var, [], nil}
 
   @doc """
-  The expression `Mutare.Transform` prepends to a catch-all body to record that
-  this selector's mutant `ids` ran (see the moduledoc for the gate).
+  AST that records coverage for this selector's mutant ids.
 
-  Hand-built (not `quote`d) to share the `var` binding `catch_all_pattern/1`
-  introduces (the same per-file name must be passed to both) and to splice `ids` as
-  a literal list of integers.
+  `Mutare.Transform` prepends this expression to a selector catch-all body. It
+  records only when the selector is at baseline and the coverage probe has enabled
+  tracking; see the moduledoc for the full gate.
 
-  Literal args carry clean (empty) metadata — the `0` especially: a *bare* integer
-  makes Sourceror's normalizer assign it a `:line` but no `:token`, which crashes
-  the Elixir formatter when this expression is rendered as a statement in a `def`
-  body (a lifted dispatcher's coverage record). Clean-meta `{:__block__, [], [lit]}`
-  renders via the inspect path in any position (the same rule literal mutators
-  follow — see CLAUDE.md).
+  `var` must be the variable introduced by `catch_all_pattern/1`. The AST is
+  built directly so it can share that binding and splice `ids` as a literal list
+  of integers.
+
+  Literal arguments use clean metadata. In particular, the `0` must be wrapped as
+  `{:__block__, [], [0]}`; a bare integer can render badly when this expression is
+  emitted as a statement in a generated function body.
   """
   @spec record_ast([pos_integer()], atom()) :: Macro.t()
   def record_ast(ids, var \\ @var_name) when is_list(ids) do
@@ -180,23 +179,20 @@ defmodule Mutare.Coverage.Recorder do
   end
 
   @doc """
-  The dispatch variable a coverage record reads — the inverse of `record_ast/2` — or
-  `nil` when `node` is not a coverage record.
+  Return the dispatch variable read by a coverage record, or `nil`.
 
-  A coverage record is `<var> == 0 and :persistent_term.get(<track_key>, false) and
-  <helper>.hit(<ids>)`, so its `<var>` is this metamutant's per-file (possibly salted)
-  dispatch name. The embedded `<track_key>` read (`:mutare_track`) is internal — a
-  target's own source can't forge it — so this is the *unambiguous* way to recover the
-  dispatch name from a rendered metamutant: it is uniform across the file (every record
-  reads the same name) and present wherever a hoisted selector or lifted gate uses the
-  variable. `Mutare.Manifest` recovers the name from it in preference to a `<var> =
-  :persistent_term.get(...)` binding, which a source file could itself write (with a
-  same-family name, masking the real salted one).
+  This is the inverse of `record_ast/2`. A coverage record has this shape:
 
-  The `<helper>.hit(...)` arm is ignored — only the unforgeable `<track_key>` arm is
-  matched — so a self-hosting helper-module override does not affect recognition.
-  Tolerant of the `{:__block__, _, [literal]}` wrapping a literal-encoding re-parse
-  adds to the `0` / `<track_key>` literals.
+      <var> == 0 and :persistent_term.get(<track_key>, false) and <helper>.hit(<ids>)
+
+  `<var>` is the file's dispatch variable, possibly salted. The internal
+  `<track_key>` read identifies a real coverage record, so `Mutare.Manifest` can
+  recover the dispatch name from rendered metamutant source without trusting a
+  source-level binding that only looks similar.
+
+  The helper call is not part of recognition; that keeps self-hosting helper-name
+  overrides from changing the result. Literal `{:__block__, _, [literal]}`
+  wrappers added during reparse are accepted.
   """
   @spec record_var(Macro.t()) :: atom() | nil
   def record_var({:and, _, [{:and, _, [active_zero, track_read]}, _hit]}) do
@@ -227,17 +223,14 @@ defmodule Mutare.Coverage.Recorder do
   defp ids_literal(ids), do: Enum.map(ids, &{:__block__, [], [&1]})
 
   @doc """
-  The `@compile {:no_warn_undefined, {<helper>, :hit, 1}}` attribute
-  `Mutare.Transform` prepends to every metamutant module body.
+  AST for the `@compile {:no_warn_undefined, {<helper>, :hit, 1}}` attribute.
 
-  Each module's selector catch-alls call the coverage helper's `hit/1` (see
-  `record_ast/1`). In an umbrella the helper lives in a generated sibling app the
-  mutated app declares no dep on, so `mix` may compile the caller before the
-  helper and the compiler's xref check draws a benign "undefined function"
-  warning. The call still resolves at runtime; this attribute suppresses only the
-  compile-time check, and is a harmless no-op where the helper is co-compiled (a
-  single-app target, which never warns) — so `Transform` can emit it
-  unconditionally.
+  `Mutare.Transform` prepends this to every metamutant module body. Selector
+  catch-alls call the generated coverage helper's `hit/1`; in an umbrella that
+  helper can live in a generated sibling app, so the mutated app may compile before
+  the helper and trigger a benign xref warning. The call resolves at runtime. This
+  attribute suppresses only that compile-time warning and is harmless when the
+  helper is compiled in the same app.
   """
   @spec no_warn_attr_ast() :: Macro.t()
   def no_warn_attr_ast do
@@ -269,24 +262,26 @@ defmodule Mutare.Coverage.Recorder do
                   end)
 
   @doc """
-  Source of the dependency-free coverage helper `Mutare.Sandbox` writes into the sandbox
-  (compiled once, with the app). It is `Mutare.Coverage.HelperTemplate`'s own source — a real,
-  compile-checked module, not a stringified `quote` — with its `defmodule` line rewritten to
+  Source for the dependency-free coverage helper written into the sandbox.
+
+  The source comes from `Mutare.Coverage.HelperTemplate`, a normal
+  compile-checked module. Only its `defmodule` line is rewritten to
   `helper_module/0` (`:mutare_cov`).
 
-  `hit/1` records into the shared ETS tables; `dump/1` (run by `after_suite`) serialises them to
-  `dump_file/0`, mapping each test module to its source file.
+  The helper's `hit/1` writes coverage to shared ETS tables. Its `dump/1`
+  callback, registered with `ExUnit.after_suite/1`, writes `dump_file/0` and
+  maps each test module back to its source file.
   """
   @spec helper_source() :: String.t()
   def helper_source, do: @helper_source
 
   @doc """
-  The setup snippet `Mutare.Sandbox` prepends before the target's test helper.
+  Setup AST prepended before the target's test helper.
 
-  Inert unless `env_var/0` is set: only the probe run creates the tables and sets
-  the tracking flag. This runs before user helper code so coverage caused by app
-  startup or helper setup is not missed. The tables are owned by the test-helper
-  process, which hosts the `at_exit` suite run and so outlives it.
+  It is inert unless `env_var/0` is set. During the coverage probe it creates the
+  ETS tables and enables the tracking flag before user helper code runs, so app
+  startup and helper setup can be attributed. The tables are owned by the
+  test-helper process, which outlives the suite run.
   """
   @spec setup_ast() :: Macro.t()
   def setup_ast do
@@ -320,10 +315,11 @@ defmodule Mutare.Coverage.Recorder do
   end
 
   @doc """
-  The after-suite snippet `Mutare.Sandbox` appends after the target's test helper.
+  After-suite AST appended after the target's test helper.
 
-  `ExUnit.after_suite/1` requires ExUnit to have been started, so registration
-  stays after the user's helper even though coverage tracking starts before it.
+  `ExUnit.after_suite/1` requires ExUnit to be started, so the dump callback is
+  registered after the user's helper even though coverage tracking starts before
+  it.
   """
   @spec after_suite_ast() :: Macro.t()
   def after_suite_ast do

@@ -225,23 +225,18 @@ defmodule Mutare.Transform do
   @doc """
   Count the mutants a source would produce, **without rendering** the metamutant.
 
-  Returns the number of mutant ids the source claims — exactly the length of the
-  `[%Site{}]` a full `transform_string/2` returns (`next_id - start_id`) — by running
-  the same analyze → plan → emit pipeline but skipping the dominant final
-  `Render.to_source/1`. The count is **drift-proof**: every id claim records exactly
-  one site through the *same* path emission uses
-  (`Mutare.Transform.SelectorEmit.claim_item/4`), so the site count equals the id span
-  by construction — no separate candidate walk that could fall out of sync.
+  The count is the number of ids claimed by `transform_string/2`:
+  `next_id - start_id`, which is also the number of returned sites. It is computed
+  by running the same analysis, planning, and emit pipeline as `transform_string/2`,
+  but without rendering the final metamutant source.
 
-  This is the **count** half of the schema's two-phase build: counts let the prefix
-  sum hand each file its `:start_id` up front, so the (render-bound) `transform_string/2`
-  pass can run files concurrently (`Mutare.Schema.from_files/4`). The count is
-  independent of `:start_id` and `:skip_ids` (skipped ids still advance the counter),
-  so a count pass need not thread either; whatever ids it would assign, the matching
-  `transform_string/2` call assigns the same number.
+  `Mutare.Schema` uses this for its two-phase build. First it counts each file, then
+  assigns each file a stable `:start_id`, then renders files in parallel. The count
+  does not depend on the caller's `:start_id` or `:skip_ids`; skipped ids still
+  claim their position so the later render assigns the same span.
 
-  Accepts the same `opts` as `transform_string/2`; raises the same parser exceptions
-  on an unparseable source.
+  Accepts the same options as `transform_string/2` and raises the same parser
+  exceptions for invalid source.
   """
   @spec count_string(String.t(), keyword()) :: non_neg_integer()
   def count_string(source, opts \\ []) when is_binary(source) do
@@ -263,20 +258,20 @@ defmodule Mutare.Transform do
   end
 
   @doc """
-  Re-derive a source's `[%Site{}]` **with rendered diff code**, skipping the metamutant render
-  and `# mutare:ignore` application.
+  Rebuild a source's sites with `original_code` and `mutated_code` populated.
 
-  This is the read side of the scan's diff deferral. A `mix mutare` scan builds sites with
-  `:render_site_code` `false` — no per-mutant `Sourceror` render, the build's dominant cost (see
-  `Mutare.Transform.Config`) — so the displayed survivors carry no `original_code`/`mutated_code`.
-  The report re-derives just those by calling this on each survivor's file with the **same**
-  `opts` and the file's `:start_id`; because the pipeline is deterministic for one source, the
-  ids and rendered code match exactly what an eager `transform_string/2` would have produced
-  (`Mutare.Runner.Hydrate` memoises one call per file). Forces `:render_site_code` on regardless
-  of the caller's opts, since rendering the code is the whole point.
+  This skips metamutant rendering and ignore application. It exists for deferred
+  diff rendering: a `mix mutare` scan can set `:render_site_code` to `false`,
+  then `Mutare.Runner.Hydrate` can call this later for the few sites that need to
+  be displayed.
 
-  Accepts the same `opts` as `transform_string/2`; raises the same parser exceptions on an
-  unparseable source.
+  Call it with the same options used for the original scan, including the file's
+  `:start_id`. Because the transform is deterministic for one source, the ids and
+  rendered code match an eager `transform_string/2` run. This function always
+  enables `:render_site_code`, regardless of the caller's option value.
+
+  Accepts the same options as `transform_string/2` and raises the same parser
+  exceptions for invalid source.
   """
   @spec render_sites(String.t(), keyword()) :: [Site.t()]
   def render_sites(source, opts \\ []) when is_binary(source) do

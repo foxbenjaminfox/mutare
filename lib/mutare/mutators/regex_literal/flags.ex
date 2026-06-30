@@ -51,23 +51,24 @@ defmodule Mutare.Mutators.RegexLiteral.Flags do
 
   @type stack :: [MapSet.t()]
 
-  @doc "The initial single-frame stack from the sigil's baseline flag bytes."
+  @doc "Return the initial stack for the sigil's baseline flag bytes."
   @spec initial(MapSet.t()) :: stack
   def initial(%MapSet{} = baseline), do: [baseline]
 
-  @doc "Is `flag` (a byte, e.g. `?m`) active in the innermost scope?"
+  @doc "Return whether `flag` (a byte, e.g. `?m`) is active in the innermost scope."
   @spec active?(stack, byte) :: boolean
   def active?([current | _], flag), do: MapSet.member?(current, flag)
 
   @doc """
-  Process a group **opener**. `after_paren` is the pattern slice immediately after a `(`
-  encountered outside a character class. Returns `{action, consumed, rest, stack}`:
+  Process a group opener encountered outside a character class.
 
-    * `action` — `:push` (a real group / scoped `(?flags:…)` — a frame was pushed),
-      `:mutate` (a bare inline `(?flags)` — the current frame was changed in place, no
-      frame), or `:comment` (a `(?#…)` — nothing but a comment span).
-    * `consumed` — the extra bytes the opener itself swallowed (the `?flags:` / `?flags)`
-      / `?#…)`; `""` for an ordinary group), so the caller can rebuild its prefix.
+  `after_paren` is the pattern slice immediately after `(`. Returns
+  `{action, consumed, rest, stack}`:
+
+    * `action` — `:push` for a normal group or scoped `(?flags:…)`, `:mutate`
+      for a bare inline `(?flags)`, or `:comment` for `(?#…)`.
+    * `consumed` — the bytes consumed after `(` itself, such as `?flags:`,
+      `?flags)`, or `?#…)`; `""` for an ordinary group.
     * `rest` — the pattern remaining after `consumed`.
     * `stack` — the updated scope stack.
   """
@@ -88,7 +89,7 @@ defmodule Mutare.Mutators.RegexLiteral.Flags do
     end
   end
 
-  @doc "Process a group **closer** `)` (outside a class): pop, never below the baseline."
+  @doc "Process a group closer outside a character class, never popping below the baseline."
   @spec close(stack) :: stack
   def close([_only] = stack), do: stack
   def close([_inner | outer]), do: outer

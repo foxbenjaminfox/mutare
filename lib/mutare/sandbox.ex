@@ -111,21 +111,20 @@ defmodule Mutare.Sandbox do
   @doc """
   Prepare a sandbox for `schema` taken from `root`. Returns the sandbox path.
 
-  `opts` is a `Mutare.Run.Context` (or a `Mutare.Options` / keyword list resolved
-  into one); the options' `:sandbox` field is the target directory (default: a
-  fresh temp dir) and the context's `:project` selects the umbrella scope.
+  `opts` may be a `Mutare.Run.Context`, a `Mutare.Options` struct, or a keyword
+  list. `:sandbox` selects the target directory; without it Mutare uses a fresh
+  temp directory. The context's project scope controls which umbrella apps are
+  materialized.
 
-  The sandbox must be disjoint from the project tree: it cannot be the project
-  root, contain it, or be contained by it. `Options` validates the *shape* of the
-  path; this disjointness check is enforced here because it is relative to `root`.
+  The sandbox must be separate from the project tree: it may not be the project
+  root, contain the project, or live inside it. This check is done here because it
+  depends on `root`.
 
-  To avoid deleting arbitrary data, the target path is only used when it is
-  absent, an empty directory, or a directory carrying Mutare's ownership marker
-  (a sandbox from an earlier run); anything else is refused untouched. An *owned*
-  directory is reused only when its path was chosen explicitly (`:sandbox`) or in
-  `--keep-sandbox` mode; an owned directory found at an auto-generated fresh path
-  is treated as a stale leftover and refused, since the pid-salted name rules out
-  a benign collision with a live run.
+  Mutare will only use a target path that is absent, empty, or already marked as a
+  Mutare-owned sandbox. Any other existing path is refused without modification.
+  An owned directory is reused only for an explicit `:sandbox` path or when
+  `:keep_sandbox` is enabled. If a generated fresh-path sandbox already exists,
+  Mutare treats it as a stale leftover and refuses it.
   """
   @spec prepare(Path.t(), Schema.t(), Context.t() | Options.t() | keyword()) :: Path.t()
   def prepare(root, %Schema{} = schema, opts \\ []) do
@@ -172,15 +171,13 @@ defmodule Mutare.Sandbox do
   @doc """
   Re-render `schema`'s metamutants into an already-prepared `sandbox`, in place.
 
-  This is the **poison-recovery** path: after a failed compile drops the
-  offending mutants and rebuilds the schema, only the metamutant *sources* differ
-  — the copied project, injected bootstrap, coverage helper, and seeded deps are
-  identical to the first `prepare/3`. So we rewrite just those sources (and only
-  where their bytes changed, so mix recompiles the minimum), reusing the same
-  sandbox path rather than materialising a fresh one each attempt. Keeping the
-  path stable also keeps `prepare/3`'s ownership claim a once-per-run event.
+  This is the poison-recovery path. After a failed compile removes the implicated
+  mutant ids and rebuilds the schema, the project copy, bootstrap, coverage
+  helper, and seeded builds are still valid. Only the metamutant source files may
+  have changed.
 
-  Returns `sandbox`, for symmetry with `prepare/3`.
+  The rewrite is byte-aware, so unchanged files keep their timestamps and Mix
+  recompiles as little as possible. The same sandbox path is returned.
   """
   @spec rematerialize(Path.t(), Schema.t()) :: Path.t()
   def rematerialize(sandbox, %Schema{} = schema) do

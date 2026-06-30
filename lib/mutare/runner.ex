@@ -138,22 +138,31 @@ defmodule Mutare.Runner do
   @doc """
   Run a pre-built schema (lets a caller report the mutant count before launching).
 
-  `opts` is a `Mutare.Run.Context` (or a `Mutare.Options` / keyword list resolved
-  into one). Beyond the schema/sandbox fields, it uses three live-progress hooks —
-  carried on the context — `:reporter` (a
-  1-arity function called with each `Mutare.Result` as it completes), `:on_phase`
-  (called with the phase as the run moves through `:compiling` → `:baseline` →
-  `:coverage_probe` → `{:running, total}`, interleaved with structured **detail**
-  events carrying the behind-the-scenes numbers — `{:compiled, ms}`,
-  `{:baseline_done, ms}`, `{:coverage_done, summary}`, `{:run_config, cfg}` — which a
-  reporter may render or ignore; a custom hook should tolerate unknown events), and
-  `:on_start` (called with each
-  `Mutare.Site` just before its run begins) — and `:test_selection`,
-  `:workers`, `:timeout`, `:timeout_multiplier`, `:baseline_runs` (re-run the
-  baseline to catch a flaky suite), `:harness_retries` (re-run a harness-errored
-  mutant before recording it), `:max_harness_error_rate` (abort if too many runs
-  fail at the harness level), and `:max_survivors` (stop the run once that many
-  survivors are found, flagging the returned run `stopped_early`).
+  `opts` may be a `Mutare.Run.Context`, a `Mutare.Options` struct, or a keyword
+  list. The resolved context supplies the sandbox options, run options, and live
+  progress hooks.
+
+  Live progress hooks:
+
+    * `:reporter` — called with each `Mutare.Result` as it completes.
+    * `:on_start` — called with each `Mutare.Site` just before its test run starts.
+    * `:on_phase` — called as the run enters `:compiling`, `:baseline`,
+      `:coverage_probe`, and `{:running, total}`.
+
+  `:on_phase` may also receive detail events:
+
+    * `{:compiled, ms}`
+    * `{:baseline_done, ms}`
+    * `{:coverage_done, summary}`
+    * `{:run_config, cfg}`
+
+  Custom hooks should ignore phase or detail events they do not recognise.
+
+  The run uses the resolved `:test_selection`, `:workers`, `:timeout`,
+  `:timeout_multiplier`, `:baseline_runs`, `:harness_retries`,
+  `:max_harness_error_rate`, and `:max_survivors` options. When
+  `:max_survivors` stops the run early, the returned run has
+  `stopped_early: true`.
   """
   @spec run_with_schema(Schema.t(), Path.t(), Context.t() | Options.t() | keyword()) ::
           {:ok, run()} | error()

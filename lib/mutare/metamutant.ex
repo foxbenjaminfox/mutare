@@ -74,21 +74,21 @@ defmodule Mutare.Metamutant do
   end
 
   @doc """
-  Whether `node` is a selector subject — the predicate `Mutare.Manifest` walks with.
+  Returns whether `node` is a selector subject.
 
-  Two shapes are accepted:
+  `Mutare.Manifest` uses this while walking rendered metamutant source. Two shapes
+  match:
 
-    * the **inline read** `:persistent_term.get(<key>, <baseline>)` (`subject_ast/0`) —
-      what a module-level / `:scaffold` / head-default selector splices, recognised
-      independently of `var`; and
-    * the **hoisted read** — a bare reference to the active-id variable `var`, what a
-      selector inside a function body splices once the read is hoisted to a prologue /
-      threaded parameter (see `Mutare.Transform.SelectorEmit.subject/1`). Recognised
-      only when `var` is supplied (the canonical/salted dispatch name the caller
-      discovers), so a user's `case some_var do …` is never mistaken for a selector.
+    * the inline read built by `subject_ast/0`:
+      `:persistent_term.get(<key>, <baseline>)`
+    * the hoisted read used inside function bodies: a bare reference to the active
+      mutant variable `var`
 
-  Tolerant of the `{:__block__, _, [literal]}` wrapping `Sourceror.parse_string!`
-  adds (and a no-op on the bare-atom shape `Code.string_to_quoted` produces).
+  The hoisted form is recognised only when `var` is supplied. That prevents an
+  ordinary source-level `case some_var do ...` from being treated as a selector.
+
+  Literal wrappers added by `Sourceror.parse_string!` are accepted, as are the
+  bare atoms returned by `Code.string_to_quoted`.
   """
   @spec subject?(Macro.t(), atom() | nil) :: boolean()
   def subject?(node, var \\ nil)
@@ -105,18 +105,16 @@ defmodule Mutare.Metamutant do
   def subject?(_node, _var), do: false
 
   @doc """
-  Whether `node` is the **tupled** subject of a `case` rewritten by the tuple-the-scrutinee
-  path (`Mutare.Transform.CaseClauseEmit.emit/3`): a 2-tuple `{<subject>, <scrutinee>}`
-  whose first element is the plain selector subject. `Mutare.Manifest` uses this to spot such
-  a `case` (its mutant clauses gate on the active id via a `when` guard, not the clause
-  pattern, so the dispatch is recognised by the subject, then by the gate).
+  Returns whether `node` is a tupled selector subject.
 
-  A 2-tuple *is* a literal, so when `Mutare.Manifest` parses the metamutant back with a
-  `:literal_encoder`, the subject arrives wrapped as `{:__block__, _, [{first, scrutinee}]}`;
-  the bare 2-tuple form is matched too (the shape `Transform` splices). `var` is the
-  hoisted active-id variable (or `nil`), threaded to `subject?/2` so a tupled subject
-  whose first element is the bare variable (`{mutare_active, <subject>}`) is recognised
-  too.
+  The tuple-the-scrutinee path emits case subjects as
+  `{<selector_subject>, <scrutinee>}`. The mutant clauses then gate on the active
+  id in guards, so `Mutare.Manifest` recognises the dispatch by checking the
+  tuple's first element with `subject?/2`.
+
+  Both the bare two-tuple and the `{:__block__, _, [{first, scrutinee}]}` wrapper
+  produced by literal-encoded reparse are accepted. `var` is passed through so the
+  hoisted selector-variable form is recognised too.
   """
   @spec pattern_subject?(Macro.t(), atom() | nil) :: boolean()
   def pattern_subject?(node, var \\ nil)

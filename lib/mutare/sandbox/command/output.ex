@@ -80,43 +80,43 @@ defmodule Mutare.Sandbox.Command.Output do
   @warning_marker ~r/^\s*warning:/
 
   @doc """
-  Regex matching mix's `== Compilation error in file <path> ==` banner, capturing
-  `<path>`. Read here by `suite_compile_error?/1`; exposed so the banner has a
-  single home.
+  Regex for Mix's `== Compilation error in file <path> ==` banner.
+
+  The regex captures `<path>` and is used by `suite_compile_error?/1`.
   """
   @spec compile_error_banner() :: Regex.t()
   def compile_error_banner, do: @compile_error_banner
 
   @doc """
-  Regex matching a `<file>:<line>` source reference in mix output (an `.ex`/`.exs`
-  path and a line, e.g. `lib/foo.ex:5` or `test/foo_test.exs:42`), capturing the
-  file and the line. `Mutare.Poison` scans it to map a compile error back to a
-  mutant id; it lives here so mix's output shape has one home.
+  Regex for a `<file>:<line>` source reference in Mix output.
+
+  It matches `.ex` and `.exs` paths such as `lib/foo.ex:5` or
+  `test/foo_test.exs:42`, capturing the file and line. `Mutare.Poison` uses it
+  to map compile errors back to mutant ids.
   """
   @spec source_location_regex() :: Regex.t()
   def source_location_regex, do: @source_location
 
   @doc """
-  Regex matching a `<test_file>:<line>` reference in mix output — a narrowing of
-  `source_location_regex/0` to `_test.exs` files, capturing the file and the line.
-  `Mutare.Runner.Baseline` scans it to name the tests in a flaky run.
+  Regex for a `<test_file>:<line>` reference in Mix output.
+
+  This narrows `source_location_regex/0` to `_test.exs` files. The baseline
+  runner uses it to name tests involved in a flaky run.
   """
   @spec test_location_regex() :: Regex.t()
   def test_location_regex, do: @test_location
 
   @doc """
-  The diagnostic severity a compiler-output `line` *starts*: `:error` (an `error:`
-  header or a raised `** (…Error)`), `:warning` (a `warning:` header), or `nil` (any
-  other line — a diagnostic's body/footer, or chatter — which inherits its block's
-  severity from the preceding header).
+  Returns the diagnostic block started by a compiler-output line.
 
-  `Mutare.Poison` threads this across the output so it scans only non-warning lines for
-  mutant locations: a failed metamutant compile prints every warning the mutations
-  provoked (an `unused variable` from a mutant forcing a guard to `true`, a
-  `cannot match` from a widened clause), each footered with the same `file:line` shape
-  `source_location_regex/0` matches — and mistaking those for the real error's location
-  dropped valid mutants as false poison. Co-located with the other mix-output patterns
-  so a diagnostic-format change is a single fix.
+  The result is `:error` for an `error:` header or raised `** (…Error)`,
+  `:warning` for a `warning:` header, and `nil` for any other line. Body,
+  footer, and chatter lines inherit the previous header's severity in the caller.
+
+  `Mutare.Poison` uses this to scan only non-warning lines for mutant locations.
+  A failed metamutant compile can include warnings caused by mutations, and those
+  warnings carry the same `file:line` footer shape as real errors. Separating the
+  diagnostic blocks keeps warning locations from being treated as poison.
   """
   @spec diagnostic_severity(String.t()) :: :error | :warning | nil
   def diagnostic_severity(line) when is_binary(line) do
@@ -129,11 +129,11 @@ defmodule Mutare.Sandbox.Command.Output do
   end
 
   @doc """
-  Whether `output` reports a `mix` compilation error in a **test script** — the
-  signature of a mutation that broke the test suite's compilation (see
-  `Mutare.Sandbox.Command.outcome/2`). Matches the `compile_error_banner/0` only
-  when the captured path is a `.exs` under a `test/` directory; a lib-file error or
-  no banner is not one. Pure, so the discriminator is unit-testable.
+  Returns whether `output` reports a Mix compilation error in a test script.
+
+  This identifies a mutation that broke test-suite compilation. It matches the
+  `compile_error_banner/0` only when the captured path is a `.exs` file under a
+  `test/` directory. Lib-file errors and output without the banner return `false`.
   """
   @spec suite_compile_error?(String.t()) :: boolean()
   def suite_compile_error?(output) when is_binary(output) do
@@ -151,15 +151,15 @@ defmodule Mutare.Sandbox.Command.Output do
   end
 
   @doc """
-  Whether `output` shows the BEAM aborting because the **atom table** filled — the
-  signature of a mutation that mints unbounded atoms (see
-  `Mutare.Sandbox.Command.outcome/2`). Such a run is a detected resource-divergence
-  (the suite can never complete with it), so the runner treats it as a kill — like a
-  timeout — rather than an infra failure.
+  Returns whether `output` shows the BEAM aborting because the atom table filled.
 
-  Matches only when the otherwise-`:harness_error` exit code is *also* paired with
-  this VM-abort banner; a normal pass/fail/timeout verdict still wins in
-  `Mutare.Sandbox.Command.outcome/2`. Pure, so the discriminator is unit-testable.
+  This is the signature of a mutation that mints unbounded atoms. The runner
+  treats that as a kill, like a timeout, because the suite cannot complete with
+  the mutation active.
+
+  This predicate only refines an otherwise-`:harness_error` exit in
+  `Mutare.Sandbox.Command.outcome/2`; normal pass, fail, and timeout verdicts
+  take precedence.
   """
   @spec atom_exhausted?(String.t()) :: boolean()
   def atom_exhausted?(output) when is_binary(output) do
@@ -167,19 +167,17 @@ defmodule Mutare.Sandbox.Command.Output do
   end
 
   @doc """
-  Whether `output` shows the sandbox node **dying during boot** with its own
-  diagnostic erased by a secondary `:standard_error` failure (see
-  `Mutare.Sandbox.Command.outcome/2`). The signature is the emulator's
-  `terminating during boot` abort slogan paired with the torn-down `standard_error`
-  device the CLI reporter recursed on.
+  Returns whether `output` matches the known boot-failure harness error.
 
-  Such a run is a harness error (the mutation says nothing — it is almost always
-  resource/connection contention across concurrent workers at startup), but a
-  *known-transient* one whose real cause is unrecoverable from output, so the
-  runner messages it specifically and retries it harder. Matches only when the
-  otherwise-`:harness_error` exit code is *also* paired with this banner; a normal
-  pass/fail/timeout verdict still wins in `Mutare.Sandbox.Command.outcome/2`. Pure,
-  so the discriminator is unit-testable.
+  The signature is the emulator's `terminating during boot` message paired with a
+  secondary `:standard_error` failure. The original diagnostic is usually gone by
+  then, and the common cause is resource or connection contention while concurrent
+  workers start.
+
+  The runner still records this as `:harness_error`, but it can show a more useful
+  message and use the dedicated boot-failure retry budget. This predicate only
+  refines an otherwise-`:harness_error` exit; normal pass, fail, and timeout
+  verdicts take precedence.
   """
   @spec boot_failure?(String.t()) :: boolean()
   def boot_failure?(output) when is_binary(output) do
@@ -188,10 +186,10 @@ defmodule Mutare.Sandbox.Command.Output do
   end
 
   @doc """
-  The last `lines` lines of captured `mix` output — enough to point at a failure
-  without dumping a whole suite run into an error message. The one home for "tail
-  the output", shared by the baseline, the coverage probe, and the Mix task's
-  error formatter (each picks its own `lines`).
+  Return the last `lines` lines of captured Mix output.
+
+  Used by baseline, coverage-probe, and Mix-task errors to show enough context
+  without printing an entire suite run.
   """
   @spec output_tail(String.t(), pos_integer()) :: String.t()
   def output_tail(output, lines \\ 20) when is_binary(output) do

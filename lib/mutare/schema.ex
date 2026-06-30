@@ -78,14 +78,17 @@ defmodule Mutare.Schema do
   @doc """
   Build a schema by discovering files under `root`.
 
-  `opts` is a `Mutare.Options` (or a keyword list resolved into one). It reads
-  `:paths` (directories to scan recursively, or individual `.ex` files),
-  `:exclude` (wildcard patterns dropped),
-  `:only_files` (restrict to an explicit set, e.g. `--since`), `:only_lines`
-  (restrict the run to specific `file:line` sites — `--line` — also narrowing the
-  scanned files to those named; see `from_files/4`), `:mutators` (passed through
-  to `Mutare.Transform`), and `:max_mutants` (cap the schema to the first N
-  mutants; see `from_files/4`).
+  `opts` may be a `Mutare.Run.Context`, a `Mutare.Options` struct, or a keyword
+  list. Discovery uses:
+
+    * `:paths` — directories to scan recursively, or individual `.ex` files.
+    * `:exclude` — wildcard patterns to drop.
+    * `:only_files` — an explicit root-relative file set, such as `--since`.
+    * `:only_lines` — `file:line` filters, such as `--line`; discovery is
+      narrowed to the named files, then `from_files/4` filters the sites.
+    * `:mutators` — forwarded to `Mutare.Transform`.
+    * `:max_mutants` — caps the final schema to the first N sites; see
+      `from_files/4`.
   """
   @spec build(Path.t(), Context.t() | Options.t() | keyword()) :: t()
   def build(root, opts \\ []) do
@@ -133,16 +136,19 @@ defmodule Mutare.Schema do
   @doc """
   Build a schema from an explicit list of files (paths recorded relative to `root`).
 
-  `skip_ids` is poison-recovery state (mutant ids to drop), threaded separately
-  from the user `Options` because it is internal transform plumbing, not config.
+  Duplicate file entries are collapsed by root-relative path so each source file
+  owns one stable id range.
 
-  Honors `:only_lines` (`--line`) and `:max_mutants` (`--max-mutants`): the
-  finished schema's sites are filtered to the named `file:line`s, then capped to
-  the first N (in source order). Both are applied here — inside *every*
-  `from_files/4` — so they survive a poison rebuild (which regenerates the sites
-  from scratch); the per-file metamutant sources still embed every mutant, so
-  poison recovery is unaffected and a poisoned site within the first N is simply
-  backfilled by the next one on rebuild.
+  `skip_ids` is poison-recovery state: ids to leave out of the emitted
+  metamutant while still advancing the id counter. It is passed separately from
+  `Options` because it is run state, not user configuration.
+
+  `:only_lines` filters the finished sites to the requested `file:line` pairs.
+  `:max_mutants` then caps those sites in source order. Both filters are applied
+  here so poison recovery can rebuild from the same inputs and still return the
+  same visible slice. The rendered metamutants still reserve every id, including
+  skipped ids, so a poisoned site inside the cap can be replaced by the next
+  eligible site after rebuild.
   """
   @spec from_files([Path.t()], Path.t(), Context.t() | Options.t() | keyword(), MapSet.t()) :: t()
   def from_files(files, root \\ ".", opts \\ [], skip_ids \\ MapSet.new()) do
@@ -198,17 +204,15 @@ defmodule Mutare.Schema do
   end
 
   @doc """
-  Rebuild a schema against the *same* files it was originally built from.
+  Rebuild a schema from the same file list it was built with.
 
-  Poison recovery (`Mutare.Runner`) relies on this: re-discovering via `build/2`
-  would ignore any restriction baked into the supplied schema (a custom
-  `from_files/4` set, or an `:only_files`/`:exclude`-restricted `build/2`) and
-  could silently expand to a different file set. Replaying the recorded file list
-  preserves the restriction and keeps mutant ids stable (the transform advances
-  its id counter even for `:skip_ids`).
+  This is the poison-recovery entry point. It does not rediscover files, because
+  rediscovery could lose restrictions from `from_files/4`, `:only_files`,
+  `:exclude`, or `:only_lines`. Reusing the recorded file list keeps the run's
+  scope and mutant ids stable while adding the new `skip_ids`.
 
-  Pass through the original `Options` (so `:mutators` survive) and the new
-  accumulated `skip_ids`.
+  Pass the same options used for the original schema so mutator and extension
+  configuration stays unchanged.
   """
   @spec rebuild(t(), Path.t(), Context.t() | Options.t() | keyword(), MapSet.t()) :: t()
   def rebuild(%__MODULE__{files: files}, root, opts, skip_ids) do
@@ -473,14 +477,16 @@ defmodule Mutare.Schema do
   end
 
   @doc """
-  The transform options for re-rendering one `file`'s sites at `start_id` — the same
-  `transform_opts/1` the render pass uses, plus the file and its start id.
+  Transform options for re-rendering one file's sites.
 
-  The read side of the scan's diff deferral (`Mutare.Runner.Hydrate`): a deferred-diff scan
-  builds sites without rendered code, and the report re-derives a displayed site's code by
-  calling `Mutare.Transform.render_sites/2` with **these** opts, so the re-rendered ids line up
-  with the schema's. `:skip_ids`/`:render_site_code` are left to `render_sites/2` — neither
-  affects the id→code mapping (a skipped id still claims its id and renders its code).
+  The returned keyword list is `transform_opts/1` plus `:file` and `:start_id`.
+  `Mutare.Runner.Hydrate` uses it when a scan deferred site-code rendering and a
+  report later needs the original/mutated code for one displayed site.
+
+  The `:start_id` must match the schema's recorded id range for `file`, so the
+  re-rendered sites line up with the original scan. `:skip_ids` and
+  `:render_site_code` are intentionally left to `Mutare.Transform.render_sites/2`;
+  neither changes the id-to-code mapping.
   """
   @spec render_opts(Options.t(), String.t(), pos_integer()) :: keyword()
   def render_opts(%Options{} = options, file, start_id) do
