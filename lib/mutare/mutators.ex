@@ -1,36 +1,17 @@
 defmodule Mutare.Mutators do
   @moduledoc """
-  The catalog of built-in mutator families — the single source of truth.
+  The registry and resolver for Mutare's built-in mutator families.
 
-  Owns the *ordered* registry mapping a built-in family atom to its module; every
-  consumer derives from it, so there is no second list to keep in sync:
+  All built-in families run by default. Set `:mutators` to a list of family atoms or custom
+  mutator modules to choose a different set. A `{mutator, opts}` pair configures one entry.
 
-    * `all/0` is the default mutator set — every built-in module, in order — what
-      an unset `:mutators` (or `:all`) means to `Mutare.Transform`. All built-in
-      families are on by default; a user narrows the set by listing a subset
-      under `:mutators`.
-    * `families/0` is every registered family atom; `resolve/1` accepts any of
-      them by name.
-    * `resolve/1` turns a user-supplied list (built-in family atoms, custom
-      modules implementing `Mutare.Mutator`, `{module, opts}` configured entries,
-      and/or the `:builtins` group token) into `Mutare.Mutator.Spec` structs,
-      validating each. Both the CLI/`.mutare.exs` path (`Mutare.Config`) and the
-      direct API (`Mutare.Options`, hence `Mutare.run/2`) route through it, so a
-      family atom resolves, a configured entry carries its options, and a
-      non-mutator module is rejected the same way wherever mutators are supplied.
+  Include `:builtins` (or `:all`) to add entries to the default set:
 
-  A `:mutators` list is read as sugar over one canonical shape — a list of
-  mutators, each with its config. A bare module/family means "default config"; the
-  `:builtins` token (synonym `:all`) expands to every built-in family at its
-  position, so including it *extends* the defaults (`[:builtins, MyMutator]`) and
-  omitting it *replaces* them (`[A, B]`). `{:builtins, except: [families]}` drops
-  named built-ins; reconfigure one by excluding then re-adding it configured.
+      mutators: [:builtins, MyApp.Mutators.AccessPolicy]
 
-  Most families are **mutators** (they implement `Mutare.Mutator` — `name/0` plus a
-  producing callback). A few are **transform-managed** (`transform_managed/0`): their
-  mutation logic lives in `Mutare.Transform`, so they carry only `name/0` and do not
-  implement the producing behaviour, yet are toggled and `# mutare:ignore`-filtered like
-  any family. `resolve/1` accepts both.
+  Without that token, the list replaces the defaults. Use
+  `{:builtins, except: [:family]}` to start with all built-ins except selected families. See
+  `resolve/1` for every accepted entry form.
   """
 
   alias Mutare.Ignore.SpecError

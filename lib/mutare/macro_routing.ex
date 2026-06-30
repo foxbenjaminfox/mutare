@@ -1,20 +1,13 @@
 defmodule Mutare.MacroRouting do
   @moduledoc """
-  Capability behaviour for controlling macro-argument routing.
+  Behaviour for describing how Mutare should handle macro arguments.
 
-  A macro can place an argument in a pattern or compile-time DSL position where Mutare's
-  ordinary runtime descent would be invalid. A module implementing this behaviour registers
-  those macros through `c:macro_routes/0`. A route may be static, or use the `:routing` sentinel
-  to defer a concrete call's argument treatments to `c:macro_routing/1`.
+  Macro arguments may be patterns or compile-time DSL fragments rather than runtime expressions.
+  Register those macros with `c:macro_routes/0`. Use a static route when every call has the same
+  argument layout, or `:routing` with `c:macro_routing/1` when the layout depends on the call.
 
-  The capability is deliberately independent of how the module is enabled:
-
-    * a non-mutating module listed under `:extensions` may implement it alongside
-      `Mutare.UseExpansion`;
-    * a `Mutare.Mutator` may implement it when its mutation depends on macro routing.
-
-  Enabled mutators and extensions are inspected automatically, so either form still needs only
-  one configuration entry.
+  Both extensions and mutators may implement this behaviour. Enabling the module under
+  `:extensions` or `:mutators` also enables its routes.
 
       defmodule MyApp.EctoRouting do
         @behaviour Mutare.MacroRouting
@@ -31,13 +24,9 @@ defmodule Mutare.MacroRouting do
         def macro_routing(call), do: ...
       end
 
-  Static routes may use `:expression`, `:pattern`, `:binding_pattern`, `:skip`, or `:hosted`.
-  Shape-dependent routes use `:routing`. A `:hosted` treatment additionally requires the
-  contributing module to be an enabled mutator implementing `Mutare.Mutator.MacroHost`; routing
-  extensions can classify arguments dynamically, but cannot host mutations because they do not
-  produce mutations.
-
-  See `Mutare.Macro.Spec` for entry forms, wildcards, and argument treatments.
+  A route that uses `:hosted` must come from an enabled mutator implementing
+  `Mutare.Mutator.MacroHost`. Extensions can classify arguments but cannot host mutations. See
+  `Mutare.Macro.Spec` for route forms, wildcards, and treatments.
   """
 
   @doc """

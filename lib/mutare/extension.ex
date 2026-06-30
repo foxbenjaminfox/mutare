@@ -1,25 +1,20 @@
 defmodule Mutare.Extension do
   @moduledoc """
-  Validation and configuration boundary for non-mutating source-understanding extensions.
+  Non-mutating extensions that help Mutare understand source code.
 
-  `:extensions` accepts modules implementing one or both independent capabilities:
+  An extension implements one or both of these behaviours:
 
     * `Mutare.MacroRouting` — static or shape-aware macro-argument routing;
-    * `Mutare.UseExpansion` — `use`-expansion overrides through `expand_use/3`.
+    * `Mutare.UseExpansion` — an override for a `use` that cannot be expanded normally.
 
-  An extension acts only while Mutare understands and transforms source. It produces no mutation,
-  consumes no runner slot, and never appears in a report. A module may implement both capabilities
-  so a library integration remains one configuration entry:
+  Extensions do not produce mutations or appear in reports. Add them to `:extensions` as modules
+  or `{module, opts}` pairs:
 
       [extensions: [Mutare.Gettext]]
 
-  Entries may be bare modules or `{module, opts}` pairs. Options are delivered only to
-  `c:Mutare.UseExpansion.expand_use/3`; `c:Mutare.MacroRouting.macro_routes/0` declarations and
-  `c:Mutare.MacroRouting.macro_routing/1` classification are intentionally options-independent.
-
-  Mutators may implement `Mutare.MacroRouting` too, but belong under `:mutators`. They are rejected
-  from `:extensions` so their mutation producers cannot be enabled accidentally as routing-only
-  modules.
+  Options are passed to `c:Mutare.UseExpansion.expand_use/3`. Macro-routing callbacks do not
+  receive extension options. A module that also produces mutations belongs under `:mutators`, not
+  `:extensions`.
   """
 
   alias Mutare.Extension.Spec

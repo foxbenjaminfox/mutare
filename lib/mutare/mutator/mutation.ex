@@ -1,33 +1,18 @@
 defmodule Mutare.Mutator.Mutation do
   @moduledoc """
-  One mutant carrying per-mutant metadata — an advisory `note` and/or a `# mutare:ignore`
-  `variant` label — the enriched form of a value a mutator (or a selector host) returns.
+  A replacement AST node with optional report metadata.
 
-  Wherever a mutator yields a replacement it may yield either a **bare node** (the common
-  case, no metadata) or a `%Mutare.Mutator.Mutation{}` — a `node` plus optional `note`/`variant`.
-  This is the *only* enriched form accepted: a bare `%{node:, …}` map is rejected (a quoted map
-  literal `%{a: 1}` is an ordinary mutation *node*, so a bare map can't unambiguously mean
-  "enriched mutant"; the struct is unambiguous).
+  Mutators normally return a bare replacement node. Return a `Mutation` when the replacement also
+  needs either of these fields:
 
-  Two independent pieces of metadata, both surfaced on the mutant's `Mutare.Site`:
+    * `note` — text shown with a surviving mutant. It does not suppress the mutant or change its
+      score.
+    * `variant` — one or more labels used by `# mutare:ignore[family:label]`. A mutator may attach
+      the label here or derive it with `c:Mutare.Mutator.variant/2`.
 
-    * **`note`** — an advisory string the report shows on a survivor (e.g. a hosting mutator
-      flagging "kill may require NULL/boundary data"). Distinct from a `# mutare:ignore` reason
-      (which *suppresses* a mutant): a noted mutant is live and scored.
-    * **`variant`** — the `# mutare:ignore[family:label]` variant label(s) (see
-      `c:Mutare.Mutator.variants/0`), attached **at production time** by a mutator that knows
-      which *kind* of mutation it just produced — the alternative to deriving the label from the
-      node afterwards via `c:Mutare.Mutator.variant/2`. A value family (`Literal`/`StringLiteral`/…)
-      tags here, where the semantic kind (`zero`/`empty`/`sentinel`) is known at construction; an
-      operator family leaves it `nil` and lets `variant/2` read it off the swapped node. `nil` (no
-      tag), a single label, or a list of labels — normalized downstream like `variant/2`'s return.
-
-  Used in two places, normalized by the one `Mutare.Mutator.Dispatch.normalize_mutant/1`:
-
-    * a `c:Mutare.Mutator.mutate/1`/`c:Mutare.Mutator.mutate/2` return-list element
-      (alongside a bare node, or `nil` to drop that slot — see `t:Mutare.Mutator.mutation/0`),
-      and
-    * a selector host target's `:mutants` entry (`c:Mutare.Mutator.MacroHost.host/2`).
+  `Mutation` values are accepted by `c:Mutare.Mutator.mutate/1`,
+  `c:Mutare.Mutator.mutate/2`, and `c:Mutare.Mutator.MacroHost.host/2`. Use this struct rather than
+  a plain map, because a map is also a valid replacement AST node.
   """
 
   @typedoc "A produced mutation's variant label(s): `nil`, one label, or a list (see `c:Mutare.Mutator.variant/2`)."

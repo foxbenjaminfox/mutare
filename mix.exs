@@ -134,6 +134,7 @@ defmodule Mutare.MixProject do
           Mutare.Mutator,
           Mutare.Mutator.Structural,
           Mutare.Mutator.MacroHost,
+          Mutare.Mutator.Mutation,
           Mutare.Mutator.Spec,
           Mutare.AST,
           Mutare.Test,
