@@ -11,11 +11,9 @@ defmodule Mutare.Transform.Calls do
   mutators run, so it is only meaningful on a node handed to a mutator by the transform (a
   `mutate/1` argument) — exactly where a call-matching mutator needs it.
 
-  `resolved_macro_call/1` is the **known-macro** twin: the same normalization and rebuild policy
-  for the node core hands a router's `c:Mutare.MacroRouting.macro_routing/2` or a host's
-  `c:Mutare.Mutator.MacroHost.host/2` callback, so those recognise their macro across the
-  bare/qualified/aliased forms `Resolve`
-  accepts instead of pattern-matching the raw head.
+  `resolved_macro_call/1` is the **known-macro** twin. It returns a stable
+  `Mutare.MacroRouting.Call` with a natural module atom, visible arguments, pipe information, and
+  a source-preserving rebuild function.
 
   `macro_treatment/1` reads *how a node's macro is registered* — the resolved per-argument routing
   the merged registry (built-ins + every mutator's/extension's `macro_routes/0` + the declarative `:macro_routes`
@@ -188,48 +186,29 @@ defmodule Mutare.Transform.Calls do
   end
 
   @doc """
-  Returns `{module, name, visible_arguments, rebuild}` for a registered macro call,
-  or `nil`.
-
-  This is the helper a router or host (`c:Mutare.MacroRouting.macro_routing/2`,
-  `c:Mutare.Mutator.MacroHost.host/2`) should use instead of pattern-matching the node head. Core hands
-  those callbacks the *visible call node*, which — depending on how the source wrote it — is a
-  **bare** `where(q, …)`, a **qualified** `Ecto.Query.where(q, …)`, or an **aliased**
-  `Q.where(q, …)`. A callback that guards on a bare atom head silently fails to recognise the
-  qualified/aliased forms (and routes every argument as `:expression`, poisoning a DSL fragment
-  or mutating it with core's families). Normalising through this reader makes the written form
-  transparent: a single `{[:Ecto, :Query], macro, args, _}` match covers all three.
-
-  `visible_arguments` excludes the left side of a pipe. The rebuild function
-  preserves the written form when safe, including remote qualifiers and aliases. Bare imported
-  or registry-fallback macro calls may be requalified when the replacement changes name or arity.
-
-  Macro identity comes from the route-resolution metadata attached by the transform,
-  so this function also supports registered macros that cannot be resolved through
-  runtime module reflection.
-
-      def macro_routing(node, _context) do
-        case Mutare.Transform.Calls.resolved_macro_call(node) do
-          {[:Ecto, :Query], name, arguments, _rebuild} ->
-            route(name, arguments)
-
-          _ ->
-            []
-        end
-      end
+  Return the stable call value for a node stamped by the known-macro resolver, or `nil` for any
+  other node. Extension callbacks receive this value directly; the reader remains useful to a
+  host walking nested macro nodes.
   """
-  @spec resolved_macro_call(Macro.t()) ::
-          {module_key() | nil, atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
-  def resolved_macro_call({head, meta, args}) when is_list(meta) and is_list(args) do
+  @spec resolved_macro_call(Macro.t()) :: Mutare.MacroRouting.Call.t() | nil
+  def resolved_macro_call({head, meta, args} = node) when is_list(meta) and is_list(args) do
     # Stay **total**: the identity stamp is only ever placed (by `Mutare.Transform.Resolve`) on a
     # remote `Mod.fun`/`:mod.fun` or a bare `fun` head, the two shapes `macro_rebuild/4` handles —
     # so a node carrying the stamp on any *other* head (e.g. a `recv.()` anonymous-call head) is an
     # impossible state Mutare never produces. Rather than commit to a partial `macro_rebuild` that
     # would raise on it, degrade to `nil` (the documented "not a recognised known-macro call"), so a
     # caller handing in an arbitrary node can never crash here.
-    with {module, name} <- macro_identity(meta),
-         rebuild when is_function(rebuild, 2) <- macro_rebuild(head, meta, module, args) do
-      {module, name, args, rebuild}
+    with {module_key, name, pipe_mode} <- macro_identity(meta),
+         rebuild when is_function(rebuild, 2) <- macro_rebuild(head, meta, module_key, args) do
+      %Mutare.MacroRouting.Call{
+        node: node,
+        module: natural_module(module_key),
+        name: name,
+        arguments: args,
+        pipe_mode: pipe_mode,
+        effective_arity: Mutare.Mutator.effective_arity(args, pipe_mode),
+        rebuild: rebuild
+      }
     else
       _ -> nil
     end
@@ -270,14 +249,18 @@ defmodule Mutare.Transform.Calls do
 
   defp author_treatment(treatment), do: treatment
 
-  # The resolved `{module_key, name}` identity from a node's own meta, or `nil` when absent —
+  # The resolved `{module_key, name, pipe_mode}` identity from a node's own meta, or `nil` when absent —
   # i.e. when the node was never matched against the macro registry.
   defp macro_identity(meta) do
     case Meta.macro_call(meta) do
-      {_module, _name} = identity -> identity
+      {_module, _name, pipe_mode} = identity when pipe_mode in [:piped, :unpiped] -> identity
       _ -> nil
     end
   end
+
+  defp natural_module(nil), do: nil
+  defp natural_module(module) when is_list(module), do: Module.concat(module)
+  defp natural_module(module) when is_atom(module), do: module
 
   # Re-emit a swap in the call's *written* form. The macro stamp is only ever placed on a remote
   # `Mod.fun`/`:mod.fun` head or a bare `fun` head. A remote head reuses its written receiver/meta

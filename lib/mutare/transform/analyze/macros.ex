@@ -32,8 +32,8 @@ defmodule Mutare.Transform.Analyze.Macros do
     attach_hosted_candidates(routed, node, routing, mutators, context)
   end
 
-  # When the routing marks any argument `{:hosted, host}` (see `Mutare.Transform.Resolve`),
-  # the fragment in that position is mutated by the **hosting mutator's selector host**
+  # When routing marks any argument `{:hosted, hosts}` (see `Mutare.Transform.Resolve`),
+  # the fragment is offered to every subscribed selector host
   # (`c:Mutare.Mutator.MacroHost.host/2`), not by core. Hand the host the *raw* macro node (so it can
   # pull the DSL's bindings for its `wrap`) and attach one `Candidate.Hosted` per target it
   # returns, under a dedicated `:mutare_hosted` key (separate from `:mutare`, since emission
@@ -48,8 +48,8 @@ defmodule Mutare.Transform.Analyze.Macros do
   # so we host *each* matching spec — not just the first — or a duplicate-configured host mutator
   # would silently lose every config past the first.
   defp attach_hosted_candidates(routed, raw_node, routing, mutators, context) do
-    with host when not is_nil(host) <- hosted_host(routing),
-         specs = Enum.filter(mutators, &(&1.module == host)),
+    with [_ | _] = hosts <- hosted_hosts(routing),
+         specs = Enum.filter(mutators, &(&1.module in hosts)),
          [_ | _] = candidates <- Enum.flat_map(specs, &host_candidates(&1, raw_node, context)) do
       put_hosted_candidates(routed, candidates)
     else
@@ -57,24 +57,21 @@ defmodule Mutare.Transform.Analyze.Macros do
     end
   end
 
-  # The hosting mutator module named by the first `{:hosted, host}` treatment in a routing tree,
-  # or `nil` when no position is hosted. All hosted positions of one macro share a host (the
-  # registering mutator), so the first is enough.
-  defp hosted_host(routing) when is_list(routing) do
-    Enum.find_value(routing, &hosted_host/1)
-  end
+  defp hosted_hosts(routing) when is_list(routing),
+    do: routing |> Enum.flat_map(&hosted_hosts/1) |> Enum.uniq()
 
-  defp hosted_host({:hosted, host}), do: host
-  defp hosted_host({:keyword, treatments}), do: hosted_host(treatments)
-
-  defp hosted_host(_), do: nil
+  defp hosted_hosts({:hosted, hosts}), do: hosts
+  defp hosted_hosts({:keyword, treatments}), do: hosted_hosts(treatments)
+  defp hosted_hosts(_), do: []
 
   # Build the `Candidate.Hosted`s for a macro node from the host's targets, dropping any whose
   # fragment isn't rangeable (no `Mutare.Site` could be recorded). `range` defaults to the
   # logical fragment's own range.
   defp host_candidates(spec, raw_node, context) do
+    call = Mutare.Transform.Calls.resolved_macro_call(raw_node)
+
     spec
-    |> Dispatch.host_targets(raw_node, Map.take(context, [:pipe_mode]))
+    |> Dispatch.host_targets(call, Map.take(context, [:pipe_mode]))
     |> Enum.map(fn target ->
       %Candidate.Hosted{
         mutator: spec,
@@ -114,7 +111,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   # A `:hosted` position (stamped `{:hosted, host}` by `Mutare.Transform.Resolve`) is left
   # **raw** like `:skip` — core mutates nothing in place here (a bare selector would poison
   # the DSL); the hosting mutator weaves its own selector via `attach_hosted_candidates/5`.
-  defp route_macro_arg(_descent, arg, {:hosted, _host}, _mutators), do: arg
+  defp route_macro_arg(_descent, arg, {:hosted, _hosts}, _mutators), do: arg
 
   # A *bare* `:hosted` should never reach routing — `Resolve.MacroStamp` rewrites hosted treatments
   # to `{:hosted, host}` recursively. Leave it raw anyway, never the runtime catch-all below:
@@ -123,7 +120,8 @@ defmodule Mutare.Transform.Analyze.Macros do
   defp route_macro_arg(_descent, arg, :hosted, _mutators), do: arg
 
   # **Per-keyword-pair** routing for a keyword-list argument (classifier-only — produced by a
-  # `c:Mutare.MacroRouting.macro_routing/2` that inspected the node; a static `args` can't express it).
+  # recursive keyword routing from either a static route or
+  # `c:Mutare.MacroRouting.route_arguments/2`).
   # For each `key: value` pair the **key is left raw** (a keyword key in a DSL is a field/option
   # *name*, not a value to mutate) and the **value is routed by its own treatment** from
   # `value_treatments`, positionally. The motivating case is Ecto's keyword-shorthand `where`

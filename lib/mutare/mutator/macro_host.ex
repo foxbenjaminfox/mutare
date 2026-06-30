@@ -7,42 +7,57 @@ defmodule Mutare.Mutator.MacroHost do
   Mutare's ordinary selector. A macro host inserts selectors in the form that DSL
   accepts.
 
-  Macro registration and all argument routing belong to the independent
-  `Mutare.MacroRouting` capability. A hosting mutator implements both behaviours, registers a
-  `:hosted` treatment (or a `:routing` classifier that may return one) from
-  `c:Mutare.MacroRouting.macro_routes/0`, and supplies the hosted mutations here.
+  Macro registration and argument routing belong to the independent `Mutare.MacroRouting`
+  capability. A host subscribes to the macros it can mutate through `c:hosted_macros/0`; a
+  separate library extension may own their routing. This lets several independent mutators target
+  the same DSL without replacing one another.
 
   `host/2` is itself a mutation-producing callback, so a mutator that delivers **all** of its
   mutations through the DSL needs no `mutate/1` — just `name/0` to identify it in reports:
 
       defmodule MyApp.Mutators.Ecto do
+        alias Mutare.Mutator.MacroHost.Target
+
         @behaviour Mutare.Mutator
-        @behaviour Mutare.MacroRouting
         @behaviour Mutare.Mutator.MacroHost
 
         @impl Mutare.Mutator
         def name, do: :ecto_query
 
-        @impl Mutare.MacroRouting
-        def macro_routes, do: [{Ecto.Query, :where, :any, :routing}]
-
-        @impl Mutare.MacroRouting
-        def macro_routing(call, _context), do: ...
+        @impl Mutare.Mutator.MacroHost
+        def hosted_macros, do: [{Ecto.Query, :where, :any}]
 
         @impl Mutare.Mutator.MacroHost
-        def host(call, context), do: ...
+        def host(call, context) do
+          [Target.new(fragment, mutations, &splice/2)]
+        end
       end
 
   (Add a `mutate/1` only if the mutator *also* mutates whole nodes outside the DSL.) See
   `Mutare.MacroRouting` for the "which behaviours do I implement?" table.
-  `test/support/host_mutator.ex` contains working examples.
+  The same module may also implement `Mutare.MacroRouting` when it owns the DSL adapter as well as
+  its mutations, but the capabilities remain independently composable.
   """
+
+  @typedoc "A macro selector returned by `c:hosted_macros/0`."
+  @type macro_selector ::
+          {module :: atom(), name :: atom()}
+          | {module :: atom(), name :: atom(), arity :: non_neg_integer() | :any}
+
+  @doc """
+  Declare the macros this host can mutate.
+
+  Selectors contain identity only, not argument treatments. The merged `Mutare.MacroRouting`
+  declaration remains the sole source of routing semantics. Wildcards follow `macro_routes/0`:
+  `:*` may occupy the module or name slot, and omitted arity means `:any`.
+  """
+  @callback hosted_macros() :: [macro_selector()]
 
   @doc """
   Produces mutations for fragments inside a compile-time DSL.
 
-  The callback receives the whole macro node and returns one target map per
-  fragment to mutate:
+  The transform hands the callback a resolved `Mutare.MacroRouting.Call` and expects a list of
+  `Mutare.Mutator.MacroHost.Target` values, one per fragment to mutate. A target carries:
 
     * `:original` — the fragment before mutation, used for the baseline and the left side of the
       reported diff;
@@ -60,14 +75,16 @@ defmodule Mutare.Mutator.MacroHost do
   Core owns ids, sites, coverage, and selector assembly, so survivor diffs contain
   only the logical fragment change.
 
-  Register the macro and its `:hosted` treatment through
-  `c:Mutare.MacroRouting.macro_routes/0`. For shape-dependent hosting, register `:routing` and
-  return `:hosted` from `c:Mutare.MacroRouting.macro_routing/2` for the applicable call shapes.
-  `context` is the same map `c:Mutare.Mutator.mutate/2` receives.
+  Subscribe through `c:hosted_macros/0`. The active macro route must contain `:hosted`, either
+  statically or from `c:Mutare.MacroRouting.route_arguments/2`. `context` is the same map
+  `c:Mutare.Mutator.mutate/2` receives.
 
   Core leaves hosted fragments raw and does not route nested macros inside them. A
   host that walks the fragment can read nested macro routing with
   `Mutare.Transform.Calls.macro_treatment/1`.
   """
-  @callback host(macro_node :: Macro.t(), context :: Mutare.Mutator.context()) :: [map()]
+  @callback host(
+              call :: Mutare.MacroRouting.Call.t(),
+              context :: Mutare.Mutator.context()
+            ) :: [Mutare.Mutator.MacroHost.Target.t()]
 end

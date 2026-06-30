@@ -95,15 +95,14 @@ defmodule Mutare.Mutator do
 
   A mutator whose mutation depends on a macro's arguments being routed specially implements
   `Mutare.MacroRouting` and registers the macros from `c:Mutare.MacroRouting.macro_routes/0`.
-  Routes may be static or use `:routing` with `c:Mutare.MacroRouting.macro_routing/2` for
+  Routes may be static or use `:routing` with `c:Mutare.MacroRouting.route_arguments/2` for
   shape-aware classification. Listing the mutator in `:mutators` auto-registers them.
 
   A mutator that produces mutations *inside* a compile-time DSL additionally implements
-  `Mutare.Mutator.MacroHost`. Routing remains entirely in `Mutare.MacroRouting`; the host's sole
-  responsibility is delivering the foreign-DSL mutations through
-  `c:Mutare.Mutator.MacroHost.host/2` (its `name/0`-plus-`host/2` form needs no `mutate/1`). See
-  the "which behaviours do I implement?" table in `Mutare.MacroRouting`, and
-  `Mutare.MacroRouting.Registry` for the declarative `:macro_routes` option.
+  `Mutare.Mutator.MacroHost`, subscribes with `c:Mutare.Mutator.MacroHost.hosted_macros/0`, and
+  delivers foreign-DSL mutations through `c:Mutare.Mutator.MacroHost.host/2`. It need not own the
+  DSL's routing: a separate extension may declare the `:hosted` position, and several hosts may
+  subscribe to it. See the "which behaviours do I implement?" table in `Mutare.MacroRouting`.
 
   ## Structural mutators at routed positions (`Mutare.Mutator.Structural`)
 

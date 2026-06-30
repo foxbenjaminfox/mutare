@@ -6408,3 +6408,34 @@ future-proofed what gets committed.
 - **`Mutare.MacroRouting.Registry` (and its `Entry`) are marked internal.** The committed public
   surface is the behaviours, the `Mutare.Macro.Spec` entry forms, and the `Transform.Calls`
   readers — not the registry plumbing.
+
+### Macro routing as an ecosystem contract: one route, many hosts
+
+The first hardening pass still encoded an ecosystem assumption in the registry: every route had
+one `host`, stamped from the same module that declared its routing. That works when one package owns
+an entire DSL adapter, but not when independent mutation packages target the same Ecto/Phoenix DSL.
+It also made duplicate route keys silently last-wins, so installing an unrelated extension could
+remove a host without an error.
+
+The committed boundary now separates three things completely:
+
+- **Routing is one library fact.** `Mutare.MacroRouting.macro_routes/0` declares treatments, and the
+  shape-aware callback is the more direct `route_arguments/2`. Identical static declarations
+  coalesce; conflicting code providers raise `Mutare.MacroRouting.ContractError`. Declarative
+  `:macro_routes` remains the one explicit final override.
+- **Hosting is a subscription.** `Mutare.Mutator.MacroHost.hosted_macros/0` declares only macro
+  identity, never duplicate routing semantics. Every enabled matching host receives the call, so
+  one routing extension can support several independent mutators. A static declarative `:hosted`
+  route is valid when an enabled host subscribes to it.
+- **Callbacks receive stable values.** Routers and hosts receive `%Mutare.MacroRouting.Call{}`
+  (natural module atom, resolved identity, visible args, pipe mode/effective arity, rebuild), not a
+  raw node that requires reading private resolution metadata. Dynamic routing returns the opaque
+  `ArgumentRoutes`, whose `visible` and `piped` spaces are explicit and length-checked. Static and
+  dynamic routing share the same recursive treatment grammar, including `:pinned` and
+  `{:keyword, …}`.
+
+Host output likewise became the opaque `Mutare.Mutator.MacroHost.Target`, built through `new/4`,
+instead of an untyped map. The public route tuple now has an exact type, while `Mutare.Macro.Spec`
+is hidden as registry normalization data. Callback failures, malformed results, missing providers,
+and provider conflicts use the structured routing `ContractError`; user configuration syntax stays
+`ArgumentError`.

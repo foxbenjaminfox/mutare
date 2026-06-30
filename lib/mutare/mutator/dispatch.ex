@@ -155,21 +155,44 @@ defmodule Mutare.Mutator.Dispatch do
   end
 
   @doc """
-  The **selector-host targets** `spec`'s mutator declares for the known-macro node `node`
-  (`c:Mutare.Mutator.MacroHost.host/2`), normalized — each a map with `:original`, a list `:mutants`, a
-  2-arity `:splice`, a 1-arity `:wrap` (defaulted to identity), and an optional `:range`. `[]`
-  when the module doesn't implement `host/2`. `context0` (`%{pipe_mode: …}`) is enriched with the
-  spec's `:opts`/`:behaviours` before the callback runs, mirroring `mutations/3`.
+  The **selector-host targets** `spec`'s mutator declares for the resolved known-macro `call`
+  (`c:Mutare.Mutator.MacroHost.host/2`), normalized from public `MacroHost.Target` values into the
+  transform's internal candidate shape. `[]` when the module doesn't implement `host/2`.
+  `context0` is enriched with the spec's `:opts`/`:behaviours` before the callback runs, mirroring
+  `mutations/3`.
 
   The single home for invoking a hosting mutator and validating its target shape, so
   `Mutare.Transform.Analyze` builds `Mutare.Transform.Candidate.Hosted`s without re-deriving
   the contract.
   """
-  @spec host_targets(Spec.t(), Macro.t(), Mutare.Mutator.context()) :: [map()]
-  def host_targets(%Spec{module: module, opts: opts, behaviours: behaviours}, node, context0) do
+  @spec host_targets(
+          Spec.t(),
+          Mutare.MacroRouting.Call.t(),
+          Mutare.Mutator.context()
+        ) :: [map()]
+  def host_targets(%Spec{module: module, opts: opts, behaviours: behaviours}, call, context0) do
     if exports?(module, :host, 2) do
       context = context0 |> Map.put(:opts, opts) |> Map.put(:behaviours, behaviours)
-      module.host(node, context) |> Enum.map(&normalize_target/1)
+
+      try do
+        case module.host(call, context) do
+          targets when is_list(targets) ->
+            Enum.map(targets, &normalize_target(&1, module))
+
+          other ->
+            host_contract_error!(module, other, "host/2 must return a list of Target values")
+        end
+      rescue
+        error in Mutare.MacroRouting.ContractError ->
+          reraise error, __STACKTRACE__
+
+        error ->
+          host_contract_error!(
+            module,
+            error,
+            "host/2 produced an invalid target: #{Exception.message(error)}"
+          )
+      end
     else
       []
     end
@@ -182,7 +205,14 @@ defmodule Mutare.Mutator.Dispatch do
   # A host fragment is *usually* untagged (foreign semantics, no vocabulary), so `variant` is nil —
   # but a hosting mutator declaring `variants/0` may tag one via `Mutation.tagged/2`, and that label
   # is preserved here and carried through `Mutare.Transform.HostedEmit` to the Site.
-  defp normalize_target(%{original: original, mutants: mutants, splice: splice} = target)
+  defp normalize_target(
+         %Mutare.Mutator.MacroHost.Target{
+           original: original,
+           mutants: mutants,
+           splice: splice
+         } = target,
+         _module
+       )
        when is_list(mutants) and is_function(splice, 2) do
     %{
       original: original,
@@ -193,10 +223,22 @@ defmodule Mutare.Mutator.Dispatch do
     }
   end
 
-  defp normalize_target(other) do
-    raise ArgumentError,
-          "a host target must be a map with :original, a list :mutants and a 2-arity :splice " <>
-            "(optional :wrap/:range), got: #{inspect(other)}"
+  defp normalize_target(other, module) do
+    host_contract_error!(
+      module,
+      other,
+      "host/2 must return Mutare.Mutator.MacroHost.Target values built with Target.new/4"
+    )
+  end
+
+  @spec host_contract_error!(module(), term(), String.t()) :: no_return()
+  defp host_contract_error!(module, value, message) do
+    raise Mutare.MacroRouting.ContractError,
+      provider: module,
+      callback: {:host, 2},
+      value: value,
+      reason: :invalid_host_target,
+      message: "#{inspect(module)} #{message}, got: #{inspect(value)}"
   end
 
   # Normalize one mutant — a bare node, or a `%Mutare.Mutator.Mutation{}` carrying a note and/or a
@@ -277,7 +319,7 @@ defmodule Mutare.Mutator.Dispatch do
   # (`return_replacements`, `condition_replacements`, `pattern_mutations`) are derived from
   # `Structural`'s own `@callback`s, so adding a structural hook there updates this set
   # automatically — it can't drift. Order is irrelevant (consumed via `Enum.any?`).
-  @producing_callbacks [mutate: 1, mutate: 2, host: 2] ++
+  @producing_callbacks [mutate: 1, mutate: 2] ++
                          Mutare.Mutator.Structural.behaviour_info(:callbacks)
 
   @doc """
@@ -296,7 +338,8 @@ defmodule Mutare.Mutator.Dispatch do
   @spec implemented_by?(term()) :: boolean()
   def implemented_by?(module) when is_atom(module) do
     exports?(module, :name, 0) and
-      Enum.any?(@producing_callbacks, fn {fun, arity} -> exports?(module, fun, arity) end)
+      (Enum.any?(@producing_callbacks, fn {fun, arity} -> exports?(module, fun, arity) end) or
+         (exports?(module, :host, 2) and exports?(module, :hosted_macros, 0)))
   end
 
   # Total over any term: a non-atom (e.g. a string in `.mutare.exs`) is simply

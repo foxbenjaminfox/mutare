@@ -181,6 +181,17 @@ An entry is `{Module, :name, arity, treatment}`, or `{Module, :name, treatment}`
 - `:expression` — mutate it as normal runtime code (the default).
 - `:pattern` — treat it as a match pattern (descend, but don't mutate the pattern
   itself); for the rare macro that takes one (like `match?/2`).
+- `:binding_pattern` — like `:pattern`, for a macro whose bindings escape into the caller.
+- `:pinned` — mutate a scalar DSL value but emit its selector under `^` interpolation.
+- `{:keyword, treatments}` — route the values of a keyword list positionally while leaving its
+  field/option keys raw; this form may nest.
+- `:hosted` — leave the fragment raw for core and offer the resolved call to every enabled
+  `Mutare.Mutator.MacroHost` subscribed to that macro.
+
+Library extensions can provide shape-dependent routing with `Mutare.MacroRouting`; independent
+host mutators subscribe through `Mutare.Mutator.MacroHost.hosted_macros/0`. Multiple hosts may
+target the same routed macro. Conflicting code-provided routes fail explicitly rather than being
+selected by configuration order.
 
 A per-position list is padded with `:expression`, so `[:expression, :skip]` means "mutate the first argument, skip the second, mutate the rest". The macro is matched however it's written — directly, aliased, or imported (bare).
 

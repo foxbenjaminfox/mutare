@@ -160,6 +160,24 @@ defmodule Mutare.Test.StaticRoutingExtension do
   def macro_routes, do: [{Mutare.Test.SomeDSL, :frag, 2, [:expression, :skip]}]
 end
 
+defmodule Mutare.Test.ConflictingQueryRoutingExtension do
+  @moduledoc "A conflicting code-provided route used to verify deterministic conflict errors."
+  @behaviour Mutare.MacroRouting
+
+  @impl Mutare.MacroRouting
+  def macro_routes,
+    do: [{Mutare.Test.QueryDSL, :query, 1, :expression}]
+end
+
+defmodule Mutare.Test.IdenticalQueryRoutingExtension do
+  @moduledoc "An identical code-provided route used to verify declaration coalescing."
+  @behaviour Mutare.MacroRouting
+
+  @impl Mutare.MacroRouting
+  def macro_routes,
+    do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
+end
+
 defmodule Mutare.Test.DynamicRoutingExtension do
   @moduledoc "A non-mutating extension that classifies a macro's routing per concrete call."
   @behaviour Mutare.MacroRouting
@@ -168,20 +186,19 @@ defmodule Mutare.Test.DynamicRoutingExtension do
   def macro_routes, do: [{Mutare.Test.SomeDSL, :dynamic_frag, :any, :routing}]
 
   @impl Mutare.MacroRouting
-  def macro_routing({_form, _meta, args}, _context) when is_list(args),
-    do: Enum.map(args, fn _arg -> :skip end)
-
-  def macro_routing(_node, _context), do: []
+  def route_arguments(%Mutare.MacroRouting.Call{arguments: args} = call, _context) do
+    Mutare.MacroRouting.ArgumentRoutes.from_visible(
+      call,
+      Enum.map(args, fn _arg -> :skip end)
+    )
+  end
 end
 
 defmodule Mutare.Test.HostedRoutingExtension do
   @moduledoc """
-  A non-mutating extension whose shape-aware classifier routes a position `:hosted`. An extension
-  produces no mutations and so can never deliver a `:hosted` fragment: even though it exports
-  `host/2`, the registry stamps it only as the route's **router** (never its host — provenance is
-  off `Mutare.Macro.Spec` and stamped solely from the contributing module's capability), so the
-  moment a concrete call is classified `:hosted`, `Mutare.Transform.Resolve.MacroStamp` raises
-  rather than silently dropping the mutation.
+  A non-mutating extension whose shape-aware classifier routes a position `:hosted`, with no
+  enabled host mutator subscribing to the macro. Resolution raises at the concrete call rather
+  than silently dropping the mutation.
   """
   @behaviour Mutare.MacroRouting
 
@@ -189,10 +206,12 @@ defmodule Mutare.Test.HostedRoutingExtension do
   def macro_routes, do: [{Mutare.Test.SomeDSL, :spoofed_frag, :any, :routing}]
 
   @impl Mutare.MacroRouting
-  def macro_routing({_form, _meta, args}, _context) when is_list(args),
-    do: Enum.map(args, fn _arg -> :hosted end)
-
-  def macro_routing(_node, _context), do: []
+  def route_arguments(%Mutare.MacroRouting.Call{arguments: args} = call, _context) do
+    Mutare.MacroRouting.ArgumentRoutes.from_visible(
+      call,
+      Enum.map(args, fn _arg -> :hosted end)
+    )
+  end
 
   # An extension's host/2 is never consulted — it cannot become a selector host.
   def host(_node, _context), do: []

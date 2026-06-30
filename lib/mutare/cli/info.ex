@@ -204,7 +204,7 @@ defmodule Mutare.CLI.Info do
     )
 
     registry
-    |> Map.values()
+    |> Macros.entries()
     |> Enum.sort_by(fn %{spec: s} ->
       {format_module_key(s.module), to_string(s.name), to_string(s.arity)}
     end)
@@ -219,11 +219,14 @@ defmodule Mutare.CLI.Info do
     "#{String.pad_trailing(sig, 28)}  #{inspect(spec.args)}#{via}"
   end
 
-  defp format_macro_providers(%{router: provider, host: provider}) when not is_nil(provider),
-    do: "  (router/host #{inspect(provider)})"
+  defp format_macro_providers(%{router: router, hosts: hosts}) do
+    host_text =
+      case hosts do
+        [] -> nil
+        modules -> "hosts #{Enum.map_join(modules, ", ", &inspect/1)}"
+      end
 
-  defp format_macro_providers(%{router: router, host: host}) do
-    [if(router, do: "router #{inspect(router)}"), if(host, do: "host #{inspect(host)}")]
+    [if(router, do: "router #{inspect(router)}"), host_text]
     |> Enum.reject(&is_nil/1)
     |> case do
       [] -> ""

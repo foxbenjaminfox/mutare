@@ -27,7 +27,7 @@ defmodule Mutare.Options do
           paths: [String.t()],
           exclude: [String.t()],
           mutators: [Mutare.Mutator.Spec.t()] | nil,
-          macro_routes: [Mutare.Macro.Spec.t()],
+          macro_routes: list(),
           extensions: [Mutare.Extension.Spec.t()],
           expand_uses: boolean(),
           only_files: MapSet.t() | nil,

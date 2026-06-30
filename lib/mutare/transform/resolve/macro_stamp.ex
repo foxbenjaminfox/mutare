@@ -7,9 +7,10 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
 
   alias Mutare.MacroRouting.Registry, as: Macros
   alias Mutare.MacroRouting.Registry.Entry
+  alias Mutare.MacroRouting.{ArgumentRoutes, Call, ContractError}
   alias Mutare.Mutator
   alias Mutare.Macro.Spec
-  alias Mutare.Transform.{Imports, Meta}
+  alias Mutare.Transform.{Calls, Imports, Meta}
 
   @doc """
   Stamp a call's meta with known-macro argument routing, when the registry matches it.
@@ -41,14 +42,15 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
         # already sees it. `module_key` is `nil` only for a name-only (`{:*, name, …}`) match whose
         # module the resolver couldn't see; the reader then returns `{nil, name, …}`, which a
         # module-matching classifier clause simply skips (its purpose — match by name instead).
-        meta = stamp_identity(Imports.drop_witness(meta), module_key, fun)
+        meta = stamp_identity(Imports.drop_witness(meta), module_key, fun, pipe_mode)
         stamp_spec(meta, entry, put_meta(call_node, meta), arity, pipe_mode)
     end
   end
 
   # Record the resolved macro identity on the call meta, read back by
   # `Mutare.Transform.Calls.resolved_macro_call/1`.
-  defp stamp_identity(meta, module_key, fun), do: Meta.stamp_macro_call(meta, {module_key, fun})
+  defp stamp_identity(meta, module_key, fun, pipe_mode),
+    do: Meta.stamp_macro_call(meta, {module_key, fun, pipe_mode})
 
   # Replace a call node's own (top) meta — `{head, _meta, args}` covers both the remote
   # (`head = {:., …}`) and bare (`head = fun`) shapes the resolver hands here.
@@ -56,13 +58,8 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
 
   # Compute and stamp a matched macro spec's per-position routing.
   #
-  # A `:routing` classifier sees the concrete visible call node and returns visible-argument
-  # routing, so it rides whole on @macro_key. A static spec is effective-arity based and is split
-  # for piped calls so the LHS can be routed as effective argument 0.
-  #
-  # `macro_routing/2` receives an opt-independent routing context carrying the call's `:pipe_mode`,
-  # so a classifier can tell a piped call (one fewer visible argument) from an unpiped one without
-  # re-deriving it.
+  # Both static and dynamic declarations normalize to `ArgumentRoutes`: visible treatments align
+  # exactly with the call node, while a piped LHS has its own explicit slot.
   defp stamp_spec(
          meta,
          %Entry{spec: %Spec{args: :routing} = spec, router: router} = entry,
@@ -70,103 +67,112 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
          _arity,
          pipe_mode
        ) do
-    raw = router.macro_routing(call_node, %{pipe_mode: pipe_mode})
-    validate_routing!(spec, raw)
-    routing = inject_host(raw, entry)
-    reject_undeliverable_hosted!(entry, routing)
-    Meta.stamp_macro_routing(meta, routing)
+    call = resolved_call!(call_node, spec)
+    routes = invoke_router!(router, call, spec, pipe_mode)
+    routes = validate_routes!(spec, call, routes)
+    stamp_routes(meta, attach_hosts!(routes, entry), spec)
   end
 
-  defp stamp_spec(meta, %Entry{spec: spec} = entry, _call_node, arity, pipe_mode) do
-    routing = Spec.routing(spec, arity) |> inject_host(entry)
-    reject_piped_hosted!(spec, routing, pipe_mode)
-    stamp_routing(meta, routing, pipe_mode)
+  defp stamp_spec(meta, %Entry{spec: spec} = entry, call_node, arity, _pipe_mode) do
+    call = resolved_call!(call_node, spec)
+    routes = ArgumentRoutes.from_effective(call, Spec.routing(spec, arity))
+    stamp_routes(meta, attach_hosts!(routes, entry), spec)
   end
 
-  # A static `:hosted` at effective position 0 is undeliverable when the call is piped, because
-  # that position is the pipe LHS, not a visible macro-node argument handed to host/2.
-  defp reject_piped_hosted!(spec, [{:hosted, _host} | _], :piped) do
-    raise ArgumentError,
-          "macro #{inspect(Spec.key(spec))} routes argument 0 as :hosted, but it is called " <>
-            "piped (`x |> #{spec.name}(...)`) where argument 0 is the piped value — not part of " <>
-            "the macro node handed to host/2, so it cannot be hosted. A :hosted position must be " <>
-            "a visible argument; use the :routing classifier for shape/position-dependent hosting."
-  end
-
-  defp reject_piped_hosted!(_spec, _routing, _pipe_mode), do: :ok
-
-  # A `:routing` classifier is only required to implement host/2 once it actually routes a
-  # position as hosted. Fail at the stamp point, where that concrete routing is first known.
-  defp reject_undeliverable_hosted!(%Entry{spec: spec, router: router, host: host}, routing) do
-    if hosted?(routing) and not host_exports?(host, :host, 2) do
-      raise ArgumentError,
-            "macro #{inspect(Spec.key(spec))}'s macro_routing/2 routed an argument as :hosted, " <>
-              "but its router #{inspect(router)} is not an enabled mutator implementing " <>
-              "Mutare.Mutator.MacroHost.host/2 to deliver it — implement MacroHost, or do not " <>
-              "route that position as :hosted."
+  defp resolved_call!(call_node, spec) do
+    case Calls.resolved_macro_call(call_node) do
+      %Call{} = call -> call
+      nil -> contract_error!(route: Spec.key(spec), reason: :unresolved_call)
     end
   end
 
-  defp hosted?(routing) when is_list(routing), do: Enum.any?(routing, &hosted?/1)
-  defp hosted?({:hosted, _host}), do: true
-  defp hosted?({:keyword, treatments}), do: hosted?(treatments)
-  defp hosted?(_treatment), do: false
-
-  # `host` is `module() | nil`; `Code.ensure_loaded?(nil)` and `function_exported?(nil, …)` are
-  # both false, so a nil host is handled for free.
-  defp host_exports?(host, fun, arity),
-    do: Code.ensure_loaded?(host) and function_exported?(host, fun, arity)
-
-  # Validate the raw macro_routing/2 output before `inject_host/2`. A classifier is untrusted:
-  # unrecognised or mis-shaped treatments would otherwise fall through to expression routing.
-  defp validate_routing!(spec, routing) when is_list(routing) do
-    Enum.each(routing, &validate_treatment!(spec, &1, :argument))
+  defp invoke_router!(router, call, spec, pipe_mode) do
+    router.route_arguments(call, %{pipe_mode: pipe_mode})
+  rescue
+    error ->
+      contract_error!(
+        provider: router,
+        route: Spec.key(spec),
+        callback: {:route_arguments, 2},
+        value: error,
+        reason: :callback_failed,
+        message:
+          "#{inspect(router)}.route_arguments/2 failed for #{inspect(Spec.key(spec))}: " <>
+            Exception.message(error)
+      )
   end
 
-  defp validate_routing!(spec, routing) do
-    raise ArgumentError,
-          "macro #{inspect(Spec.key(spec))}'s macro_routing/2 must return a list of treatments " <>
-            "(one per visible argument), got: #{inspect(routing)}"
-  end
-
-  defp validate_treatment!(_spec, :hosted, _position), do: :ok
-
-  defp validate_treatment!(spec, {:keyword, value_treatments}, _position)
-       when is_list(value_treatments) do
-    Enum.each(value_treatments, &validate_treatment!(spec, &1, :keyword_value))
-  end
-
-  defp validate_treatment!(spec, treatment, _position) do
-    if treatment in recognised_atom_treatments() do
-      :ok
-    else
-      raise ArgumentError,
-            "macro #{inspect(Spec.key(spec))}'s macro_routing/2 returned an unrecognised treatment " <>
-              "#{inspect(treatment)} — expected one of :expression/:pattern/:binding_pattern/:skip/" <>
-              ":hosted/:pinned or {:keyword, [value_treatments]}."
+  defp validate_routes!(spec, call, routes) do
+    case ArgumentRoutes.validate(routes, call) do
+      :ok -> routes
+      {:error, detail} -> invalid_routes!(spec, routes, detail)
     end
   end
 
-  defp recognised_atom_treatments, do: [:pinned | Spec.treatments()]
-
-  # Tag each `:hosted` treatment with its hosting mutator module so the analyzer can reach host/2.
-  # Keyword routing can nest arbitrarily, so preserve its shape while injecting recursively.
-  defp inject_host(routing, %Entry{host: host}) do
-    Enum.map(routing, &inject_host_treatment(&1, host))
+  @spec invalid_routes!(Spec.t(), term(), String.t()) :: no_return()
+  defp invalid_routes!(spec, value, detail) do
+    contract_error!(
+      route: Spec.key(spec),
+      callback: {:route_arguments, 2},
+      value: value,
+      reason: :invalid_result,
+      message:
+        "route_arguments/2 for #{inspect(Spec.key(spec))} #{detail}, got: #{inspect(value)}"
+    )
   end
 
-  defp inject_host_treatment(:hosted, host), do: {:hosted, host}
+  defp attach_hosts!(routes, %Entry{spec: spec, hosts: hosts}) do
+    if routes_contain_hosted?(routes) and hosts == [] do
+      contract_error!(
+        route: Spec.key(spec),
+        reason: :missing_host,
+        message:
+          "macro #{inspect(Spec.key(spec))} routes an argument as :hosted, but no enabled " <>
+            "MacroHost subscribes to this concrete call"
+      )
+    end
 
-  defp inject_host_treatment({:keyword, treatments}, host),
-    do: {:keyword, Enum.map(treatments, &inject_host_treatment(&1, host))}
+    {
+      Enum.map(ArgumentRoutes.visible(routes), &attach_hosts(&1, hosts)),
+      attach_hosts(ArgumentRoutes.piped(routes), hosts)
+    }
+  end
 
-  defp inject_host_treatment(other, _host), do: other
+  defp attach_hosts(:hosted, hosts), do: {:hosted, hosts}
 
-  # Split effective routing across the visible-call stamp and the piped-LHS stamp.
-  defp stamp_routing(meta, routing, :unpiped), do: Meta.stamp_macro_routing(meta, routing)
+  defp attach_hosts({:keyword, treatments}, hosts),
+    do: {:keyword, Enum.map(treatments, &attach_hosts(&1, hosts))}
 
-  defp stamp_routing(meta, [piped | visible], :piped) do
+  defp attach_hosts(other, _hosts), do: other
+
+  defp routes_contain_hosted?(routes),
+    do:
+      Enum.any?(ArgumentRoutes.visible(routes), &contains_hosted?/1) or
+        contains_hosted?(ArgumentRoutes.piped(routes))
+
+  defp contains_hosted?(:hosted), do: true
+  defp contains_hosted?({:hosted, _hosts}), do: true
+  defp contains_hosted?({:keyword, treatments}), do: Enum.any?(treatments, &contains_hosted?/1)
+  defp contains_hosted?(_), do: false
+
+  defp stamp_routes(meta, {visible, piped}, spec) do
+    if contains_hosted?(piped) do
+      contract_error!(
+        route: Spec.key(spec),
+        reason: :unhostable_pipe_argument,
+        message:
+          "macro #{inspect(Spec.key(spec))} routes the pipe's left side as :hosted, but host/2 " <>
+            "receives only the visible macro call"
+      )
+    end
+
     meta = Meta.stamp_macro_routing(meta, visible)
-    if piped == :expression, do: meta, else: Meta.stamp_piped_macro_routing(meta, piped)
+
+    if is_nil(piped) or piped == :expression,
+      do: meta,
+      else: Meta.stamp_piped_macro_routing(meta, piped)
   end
+
+  @spec contract_error!(keyword()) :: no_return()
+  defp contract_error!(opts), do: raise(ContractError, opts)
 end

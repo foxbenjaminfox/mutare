@@ -4,7 +4,7 @@ defmodule Mutare.HostedTest do
   deep `Ecto.from`/`where` case) where core can't splice a bare selector and can't vouch
   for the fragment's foreign semantics. Two pieces work together:
 
-    * the `:routing` **shape-aware classifier** (`c:Mutare.MacroRouting.macro_routing/2`) decides,
+    * the `:routing` **shape-aware classifier** (`c:Mutare.MacroRouting.route_arguments/2`) decides,
       per call, whether the `filter` condition is a `:hosted` DSL fragment (a comparison) or
       ordinary `:expression` data (a keyword list);
     * the **selector host** (`c:Mutare.Mutator.MacroHost.host/2`) hands core the logical original/mutant
@@ -281,6 +281,24 @@ defmodule Mutare.HostedTest do
     end
   end
 
+  describe "independent host mutators on one routed macro" do
+    test "all subscribed hosts emit candidates without replacing one another" do
+      {meta, sites, _next} =
+        Mutare.transform_string(@source,
+          file: "hosted.ex",
+          mutators: [Mutare.Test.HostMutator, Mutare.Test.SecondHostMutator]
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :host_filter and &1.mutated_code == "x >= 1"))
+      assert Enum.any?(sites, &(&1.mutator == :second_host and &1.mutated_code == "true"))
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        source = String.replace(meta, "Mutare.HostedFixture", "Mutare.HostedFixtureMultiHost")
+        assert [{_module, _binary}] = Code.compile_string(source)
+      end)
+    end
+  end
+
   describe "a static :hosted at the piped-value position is rejected (not silently dropped)" do
     test "raises with an actionable message pointing at :routing" do
       source = """
@@ -293,7 +311,7 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      assert_raise ArgumentError, ~r/argument 0 as :hosted.*piped.*:routing/s, fn ->
+      assert_raise Mutare.MacroRouting.ContractError, ~r/pipe's left side as :hosted/s, fn ->
         Mutare.transform_string(source,
           file: "p.ex",
           mutators: [Mutare.Test.PipedHostMutator]
@@ -323,7 +341,7 @@ defmodule Mutare.HostedTest do
   describe "a :routing classifier routing :hosted with no host/2 is rejected (not silently dropped)" do
     test "raises with an actionable message pointing at host/2" do
       # `Mutare.Test.NoDeliveryHostMutator` passes build (a `:routing` spec only needs
-      # `macro_routing/2`), but its classifier routes the comparison condition `:hosted` while
+      # `route_arguments/2`), but its classifier routes the comparison condition `:hosted` while
       # the mutator omits `host/2` — undeliverable. Resolve raises rather than leaving the
       # fragment raw and dropping the mutation without a trace.
       source = """
@@ -336,7 +354,7 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      assert_raise ArgumentError, ~r/routed an argument as :hosted.*host\/2/s, fn ->
+      assert_raise Mutare.MacroRouting.ContractError, ~r/no enabled MacroHost subscribes/s, fn ->
         Mutare.transform_string(source,
           file: "nd.ex",
           mutators: [Mutare.Test.NoDeliveryHostMutator]
@@ -456,6 +474,20 @@ defmodule Mutare.HostedTest do
       assert_received {:compiled, [{module, _binary}]}
       :code.purge(module)
       :code.delete(module)
+    end
+
+    test "the same recursive treatments are valid in a static declarative route" do
+      {meta, sites, _next} =
+        Mutare.transform_string(@kw_source,
+          file: "kw_static.ex",
+          mutators: [:string],
+          macro_routes: [
+            {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:pinned, :skip]}]}
+          ]
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :string and &1.original_code == ~s|"keep"|))
+      assert meta =~ ~r/name:\s*\^\(?case mutare_active do/
     end
   end
 
@@ -595,7 +627,7 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      assert_raise ArgumentError, ~r/unrecognised treatment :bogus/, fn ->
+      assert_raise Mutare.MacroRouting.ContractError, ~r/unrecognised treatment.*:bogus/s, fn ->
         Mutare.transform_string(source,
           file: "ut.ex",
           mutators: [Mutare.Test.UnknownTreatmentMutator]
@@ -603,9 +635,7 @@ defmodule Mutare.HostedTest do
       end
     end
 
-    test "a non-list macro_routing/2 return raises" do
-      # Defensive: a classifier that returns a non-list (a contract violation) is caught with a
-      # clear message rather than crashing inside the host-injection `Enum.map`.
+    test "a non-ArgumentRoutes route_arguments/2 return raises" do
       source = """
       defmodule Mutare.BadShapeFixture do
         import Mutare.Test.HostDSL
@@ -616,9 +646,14 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      assert_raise ArgumentError, ~r/must return a list of treatments/, fn ->
-        Mutare.transform_string(source, file: "bs.ex", mutators: [Mutare.Test.BadShapeMutator])
-      end
+      assert_raise Mutare.MacroRouting.ContractError,
+                   ~r/must return a Mutare\.MacroRouting\.ArgumentRoutes/,
+                   fn ->
+                     Mutare.transform_string(source,
+                       file: "bs.ex",
+                       mutators: [Mutare.Test.BadShapeMutator]
+                     )
+                   end
     end
   end
 
@@ -704,25 +739,45 @@ defmodule Mutare.HostedTest do
       }
     end
 
+    defp malformed_call(node) do
+      %Mutare.MacroRouting.Call{
+        node: node,
+        module: Mutare.Test.HostDSL,
+        name: elem(node, 0),
+        arguments: elem(node, 2),
+        pipe_mode: :unpiped,
+        effective_arity: length(elem(node, 2)),
+        rebuild: fn name, args -> {name, [], args} end
+      }
+    end
+
     test "a non-1-arity :wrap raises (not a raw FunctionClauseError)" do
-      assert_raise ArgumentError, ~r/:wrap must be a 1-arity function/, fn ->
-        Dispatch.host_targets(malformed_spec(), {:bad_wrap, [], []}, %{pipe_mode: :unpiped})
+      assert_raise Mutare.MacroRouting.ContractError, ~r/:wrap must be a 1-arity function/, fn ->
+        Dispatch.host_targets(malformed_spec(), malformed_call({:bad_wrap, [], []}), %{
+          pipe_mode: :unpiped
+        })
       end
     end
 
     test "a non-string mutant :note raises (not a silently dropped note)" do
-      assert_raise ArgumentError, ~r/:note must be a string or nil/, fn ->
-        Dispatch.host_targets(malformed_spec(), {:bad_note, [], []}, %{pipe_mode: :unpiped})
+      assert_raise Mutare.MacroRouting.ContractError, ~r/:note must be a string or nil/, fn ->
+        Dispatch.host_targets(malformed_spec(), malformed_call({:bad_note, [], []}), %{
+          pipe_mode: :unpiped
+        })
       end
     end
 
     test "a bare %{node:, note:} map mutant raises (the struct is required)" do
-      assert_raise ArgumentError,
+      assert_raise Mutare.MacroRouting.ContractError,
                    ~r/must be a %Mutare.Mutator.Mutation\{\}, not a bare map/,
                    fn ->
-                     Dispatch.host_targets(malformed_spec(), {:bare_map, [], []}, %{
-                       pipe_mode: :unpiped
-                     })
+                     Dispatch.host_targets(
+                       malformed_spec(),
+                       malformed_call({:bare_map, [], []}),
+                       %{
+                         pipe_mode: :unpiped
+                       }
+                     )
                    end
     end
   end

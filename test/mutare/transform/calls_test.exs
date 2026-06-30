@@ -2,6 +2,7 @@ defmodule Mutare.Transform.CallsTest do
   use ExUnit.Case, async: true
 
   alias Mutare.Transform.{Calls, Meta, Resolve}
+  alias Mutare.MacroRouting.Call
 
   doctest Mutare.Transform.Calls
 
@@ -41,7 +42,8 @@ defmodule Mutare.Transform.CallsTest do
     end
 
     test "a qualified call resolves to its module, name, visible args, and a qualified rebuild" do
-      assert {[:Mx, :DSL], :filter, [q, c], rebuild} = resolved_macro("Mx.DSL.filter(q, c)")
+      assert %Call{module: Mx.DSL, name: :filter, arguments: [q, c], rebuild: rebuild} =
+               resolved_macro("Mx.DSL.filter(q, c)")
 
       # visible_args are the written arguments, in order.
       assert match?({:q, _, nil}, q)
@@ -52,7 +54,7 @@ defmodule Mutare.Transform.CallsTest do
     end
 
     test "an aliased call resolves through the alias and rebuilds in the aliased form" do
-      assert {[:Mx, :DSL], :filter, [_q, _c], rebuild} =
+      assert %Call{module: Mx.DSL, name: :filter, arguments: [_q, _c], rebuild: rebuild} =
                resolved_macro("""
                alias Mx.DSL, as: D
                D.filter(q, c)
@@ -64,7 +66,7 @@ defmodule Mutare.Transform.CallsTest do
     end
 
     test "a bare imported call resolves via the registry fallback, qualifying a renamed sibling" do
-      assert {[:Mx, :DSL], :filter, [_q, _c], rebuild} =
+      assert %Call{module: Mx.DSL, name: :filter, arguments: [_q, _c], rebuild: rebuild} =
                resolved_macro("""
                import Mx.DSL
                filter(q, c)
@@ -92,7 +94,8 @@ defmodule Mutare.Transform.CallsTest do
         |> Sourceror.parse_string!()
         |> Resolve.annotate(Mutare.MacroRouting.Registry.build([], []))
 
-      assert {[:Kernel], :match?, [_x, _one], rebuild} = Calls.resolved_macro_call(node)
+      assert %Call{module: Kernel, name: :match?, arguments: [_x, _one], rebuild: rebuild} =
+               Calls.resolved_macro_call(node)
 
       x = {:x, [], nil}
       one = {:__block__, [], [1]}
@@ -112,10 +115,19 @@ defmodule Mutare.Transform.CallsTest do
       # The stamps `Mutare.Transform.Resolve` writes for a bare macro reached through a *selective*
       # import (`import Mx.DSL, only: [filter: 2]` — a `:qualify` kind): the resolved identity plus
       # the import resolution. Set directly to drive the bare rebuild's `:qualify` branch.
-      meta = [mutare_macro_call: {[:Mx, :DSL], :filter}, mutare_import: {[:Mx, :DSL], :qualify}]
+      meta = [
+        mutare_macro_call: {[:Mx, :DSL], :filter, :unpiped},
+        mutare_import: {[:Mx, :DSL], :qualify}
+      ]
+
       node = {:filter, meta, [arg_q, arg_c]}
 
-      assert {[:Mx, :DSL], :filter, [^arg_q, ^arg_c], rebuild} = Calls.resolved_macro_call(node)
+      assert %Call{
+               module: Mx.DSL,
+               name: :filter,
+               arguments: [^arg_q, ^arg_c],
+               rebuild: rebuild
+             } = Calls.resolved_macro_call(node)
 
       # A value-only swap (same name + arity) stays bare — it resolves as the compiling original did.
       assert "filter(q, c)" == Sourceror.to_string(rebuild.(:filter, [arg_q, arg_c]))
@@ -137,7 +149,8 @@ defmodule Mutare.Transform.CallsTest do
         |> Sourceror.parse_string!()
         |> Resolve.annotate(registry)
 
-      assert {:my_dsl, :filter, [_q, _c], rebuild} = Calls.resolved_macro_call(node)
+      assert %Call{module: :my_dsl, name: :filter, arguments: [_q, _c], rebuild: rebuild} =
+               Calls.resolved_macro_call(node)
 
       # rebuild keeps the written `:my_dsl.` atom-module receiver.
       assert ":my_dsl.reject(q, c)" ==
@@ -161,7 +174,8 @@ defmodule Mutare.Transform.CallsTest do
         |> Sourceror.parse_string!()
         |> Resolve.annotate(registry)
 
-      assert {nil, :only_macro, [_a, _b], rebuild} = Calls.resolved_macro_call(node)
+      assert %Call{module: nil, name: :only_macro, arguments: [_a, _b], rebuild: rebuild} =
+               Calls.resolved_macro_call(node)
 
       # A `nil` identity module has nothing to qualify against, so even a renamed sibling stays
       # bare (the name-only hatch's inherent limit).
@@ -174,7 +188,9 @@ defmodule Mutare.Transform.CallsTest do
       # head — the two shapes the rebuild handles. A stamp on a `recv.()` anonymous-call head is an
       # impossible state Mutare never produces; `resolved_macro_call/1` returns nil rather than
       # raising a `FunctionClauseError` from the (otherwise partial) rebuild.
-      anon_head = {{:., [], [{:f, [], nil}]}, [mutare_macro_call: {[:X], :f}], [{:a, [], nil}]}
+      anon_head =
+        {{:., [], [{:f, [], nil}]}, [mutare_macro_call: {[:X], :f, :unpiped}], [{:a, [], nil}]}
+
       assert Calls.resolved_macro_call(anon_head) == nil
     end
 
@@ -197,8 +213,8 @@ defmodule Mutare.Transform.CallsTest do
         |> elem(1)
       end
 
-      assert {[:Alpha, :Dsl], :where, [_q, _c], _rebuild} = resolve.()
-      assert Enum.uniq(for _ <- 1..10, do: elem(resolve.(), 0)) == [[:Alpha, :Dsl]]
+      assert %Call{module: Alpha.Dsl, name: :where, arguments: [_q, _c]} = resolve.()
+      assert Enum.uniq(for _ <- 1..10, do: resolve.().module) == [Alpha.Dsl]
     end
 
     test "the identity stamp never leaks into the rendered metamutant" do
@@ -260,13 +276,13 @@ defmodule Mutare.Transform.CallsTest do
     end
 
     test "the internal {:hosted, host}/{:keyword, …} stamp reads back as the author vocabulary" do
-      hosted = Meta.stamp_macro_routing([], [:expression, {:hosted, SomeHost}])
+      hosted = Meta.stamp_macro_routing([], [:expression, {:hosted, [SomeHost]}])
 
       assert Calls.macro_treatment({:filter, hosted, [{:q, [], nil}, {:c, [], nil}]}) ==
                [:expression, :hosted]
 
       keyword =
-        Meta.stamp_macro_routing([], [:expression, {:keyword, [{:hosted, SomeHost}, :skip]}])
+        Meta.stamp_macro_routing([], [:expression, {:keyword, [{:hosted, [SomeHost]}, :skip]}])
 
       assert Calls.macro_treatment({:set, keyword, [{:q, [], nil}, {:c, [], nil}]}) ==
                [:expression, {:keyword, [:hosted, :skip]}]

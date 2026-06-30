@@ -6,9 +6,6 @@ defmodule Mutare.MacroRouting.RegistryTest do
   alias Mutare.MacroRouting.Registry.Entry
   alias Mutare.Mutator
 
-  doctest Mutare.MacroRouting.Registry
-  doctest Mutare.Macro.Spec
-
   describe "Macro.Spec.normalize_module/1" do
     test "an Elixir-module alias becomes its path as atoms (without the Elixir. prefix)" do
       assert Spec.normalize_module(Ecto.Query) == [:Ecto, :Query]
@@ -50,6 +47,11 @@ defmodule Mutare.MacroRouting.RegistryTest do
       assert_raise ArgumentError, fn -> Spec.new(Kernel, :match?, -1, :pattern) end
       assert_raise ArgumentError, fn -> Spec.new(Kernel, :match?, 2, :bogus) end
       assert_raise ArgumentError, fn -> Spec.new(Kernel, :match?, 2, [:pattern, :bogus]) end
+    end
+
+    test "static routes accept pinned and recursive keyword treatments" do
+      assert %Spec{args: [:expression, {:keyword, [:pinned, :skip]}]} =
+               Spec.new(Foo, :set, 2, [:expression, {:keyword, [:pinned, :skip]}])
     end
   end
 
@@ -163,15 +165,12 @@ defmodule Mutare.MacroRouting.RegistryTest do
     end
   end
 
-  describe "router/host stamping (from_mutators/1) and validation (build/3)" do
-    test "from_mutators stamps classifier and hosting capabilities independently" do
+  describe "router and host composition" do
+    test "from_mutators stamps only routing provenance; hosts are independent subscriptions" do
       specs = Mutator.Spec.for_module(Mutare.Test.HostMutator)
       contributed = Macros.from_mutators([specs])
 
-      # HostMutator's dynamic registrations carry both roles because it implements both
-      # capabilities. Its static hosted registration needs only the host. Providers live on the
-      # Entry, not the wrapped Spec.
-      assert Enum.all?(contributed, &(&1.host == Mutare.Test.HostMutator))
+      assert Enum.all?(contributed, &(&1.hosts == []))
       assert Enum.all?(contributed, &(&1.spec.module == [:Mutare, :Test, :HostDSL]))
 
       filter = Enum.find(contributed, &(&1.spec.name == :filter))
@@ -190,17 +189,70 @@ defmodule Mutare.MacroRouting.RegistryTest do
       assert %Entry{
                spec: %Spec{args: :routing},
                router: Mutare.Test.HostMutator,
-               host: Mutare.Test.HostMutator
+               hosts: [Mutare.Test.HostMutator]
              } =
                Macros.lookup(registry, [:Mutare, :Test, :HostDSL], :filter, 2)
     end
 
+    test "several host mutators subscribe to one independently-owned route" do
+      router = Mutator.Spec.for_module(Mutare.Test.HostMutator)
+      second_host = Mutator.Spec.for_module(Mutare.Test.SecondHostMutator)
+      registry = Macros.build([], [router, second_host])
+
+      assert %Entry{hosts: hosts} =
+               Macros.lookup(registry, [:Mutare, :Test, :HostDSL], :filter, 2)
+
+      assert MapSet.new(hosts) ==
+               MapSet.new([Mutare.Test.HostMutator, Mutare.Test.SecondHostMutator])
+    end
+
+    test "an explicit static hosted route composes with a host-only mutator" do
+      host = Mutator.Spec.for_module(Mutare.Test.SecondHostMutator)
+
+      registry =
+        Macros.build(
+          [{Mutare.Test.HostDSL, :filter, 2, [:expression, :hosted]}],
+          [host]
+        )
+
+      assert %Entry{router: nil, hosts: [Mutare.Test.SecondHostMutator]} =
+               Macros.lookup(registry, [:Mutare, :Test, :HostDSL], :filter, 2)
+    end
+
+    test "conflicting code-provided routes raise instead of depending on provider order" do
+      mutator = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
+
+      assert_raise Mutare.MacroRouting.ContractError, ~r/conflicting macro routes/, fn ->
+        Macros.build([], [mutator], [Mutare.Test.ConflictingQueryRoutingExtension])
+      end
+    end
+
+    test "identical static declarations from independent providers coalesce" do
+      mutator = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
+
+      registry = Macros.build([], [mutator], [Mutare.Test.IdenticalQueryRoutingExtension])
+
+      assert %Entry{spec: %Spec{args: :skip}, sources: sources} =
+               Macros.lookup(registry, [:Mutare, :Test, :QueryDSL], :query, 1)
+
+      assert {:mutator, Mutare.Test.QueryMutator} in sources
+      assert {:extension, Mutare.Test.IdenticalQueryRoutingExtension} in sources
+    end
+
+    test "a broad static hosted route requires a host subscription covering its full selector" do
+      host = Mutator.Spec.for_module(Mutare.Test.SecondHostMutator)
+
+      assert_raise Mutare.MacroRouting.ContractError, ~r/no enabled.*MacroHost/s, fn ->
+        Macros.build([{Mutare.Test.HostDSL, :*, :hosted}], [host])
+      end
+    end
+
     test "build/3 raises when a declarative entry asks for callback-backed routing" do
-      assert_raise ArgumentError, ~r/requires macro_routes\/0 and macro_routing\/2/, fn ->
+      assert_raise ArgumentError, ~r/requires macro_routes\/0 and route_arguments\/2/, fn ->
         Macros.build([{Ecto.Query, :where, :any, :routing}], [])
       end
 
-      assert_raise ArgumentError, ~r/requires macro_routes\/0 on an enabled mutator/, fn ->
+      assert_raise Mutare.MacroRouting.ContractError, ~r/no enabled.*MacroHost/s, fn ->
         Macros.build([{Ecto.Query, :where, 2, [:expression, :hosted]}], [])
       end
     end
@@ -211,7 +263,7 @@ defmodule Mutare.MacroRouting.RegistryTest do
       # delivery later.
       specs = Mutator.Spec.for_module(Mutare.Test.IncompleteHostMutator)
 
-      assert_raise ArgumentError, ~r/must implement host\/2/, fn ->
+      assert_raise Mutare.MacroRouting.ContractError, ~r/no enabled.*MacroHost/s, fn ->
         Macros.build([], [specs])
       end
     end
@@ -223,25 +275,25 @@ defmodule Mutare.MacroRouting.RegistryTest do
       assert %Entry{
                spec: %Spec{args: :routing},
                router: Mutare.Test.NoDeliveryHostMutator,
-               host: nil
+               hosts: []
              } = Macros.lookup(registry, [:Mutare, :Test, :HostDSL], :filter, 2)
     end
 
     test "build/3 rejects a host/2 no route reaches (silently-inert safety net)" do
       specs = Mutator.Spec.for_module(Mutare.Test.DeadHostMutator)
 
-      assert_raise ArgumentError,
-                   ~r/implements Mutare\.Mutator\.MacroHost\.host\/2 but registers no/,
+      assert_raise Mutare.MacroRouting.ContractError,
+                   ~r/subscribes to.*no active/s,
                    fn ->
                      Macros.build([], [specs])
                    end
     end
 
-    test "build/3 rejects a macro_routing/2 no :routing route reaches" do
+    test "build/3 rejects a route_arguments/2 no :routing route reaches" do
       specs = Mutator.Spec.for_module(Mutare.Test.DeadRouterMutator)
 
-      assert_raise ArgumentError,
-                   ~r/implements Mutare\.MacroRouting\.macro_routing\/2 but registers no/,
+      assert_raise Mutare.MacroRouting.ContractError,
+                   ~r/implements route_arguments\/2 but registers no :routing route/,
                    fn ->
                      Macros.build([], [specs])
                    end

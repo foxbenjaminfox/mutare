@@ -1,106 +1,8 @@
 defmodule Mutare.Macro.Spec do
-  @moduledoc """
-  A validated macro-argument routing entry.
+  @moduledoc false
 
-  Macro arguments may be runtime expressions, patterns, or compile-time DSL fragments. A spec
-  tells Mutare how to handle each argument instead of treating every argument as runtime code.
-
-  Entries are written as `{module, name, arity, treatment}`, or `{module, name, treatment}` to
-  match any arity. A treatment atom applies to every argument; a list assigns treatments by
-  position and is padded with `:expression`.
-
-  The treatments are:
-
-    * `:expression` — mutate ordinary runtime code;
-    * `:pattern` — descend as a match pattern without mutating the pattern itself;
-    * `:binding_pattern` — a pattern whose bindings escape into the enclosing scope; in a
-      value-discarded position it is also eligible for structural pattern mutations;
-    * `:skip` — leave an opaque argument untouched;
-    * `:hosted` — leave the argument raw for core and delegate its mutations to a
-      `Mutare.Mutator.MacroHost`.
-
-  ## Wildcards
-
-  The glob atom `:*` (`wildcard/0`) means "match anything" in the **module**, **name**, or
-  **arity** slot (in the arity slot `:*` is a synonym for `:any`, the canonical arity
-  wildcard). Two compound forms fall out of it:
-
-    * a **whole-module** entry — `:*` in the *name* slot (`{Ecto.Query, :*, :skip}`) — routes
-      *every* macro in the module, at every arity. (It is therefore all-arities; pinning an
-      arity alongside a name wildcard is rejected.)
-    * a **name-only** escape hatch — `:*` in the *module* slot (`{:*, :sigil_X, :skip}`) — routes
-      a macro of that name *regardless of which module exports it*. This is the fallback for when
-      the module-resolution machinery can't see the macro's module (a `use`-injected import Mutare
-      can't expand, an alias it can't follow); it is **not** the standard way to register a macro.
-
-  `:*` is a *practically* collision-free sentinel — not a strictly impossible name. `*` *can*
-  name a macro, function, or module: it is the multiplication operator `Kernel.*/2`, `defmodule :*`
-  compiles, and a metaprogrammed `def unquote(:*)` works. But nobody registers the `*` operator as
-  a known macro (operator handling is out of scope here), so in practice `:*` never collides —
-  unlike `:any`, which is an ordinary, idiomatic identifier. Wildcarding *both* module and name
-  (`{:*, :*, …}`) is rejected — that would route every macro everywhere.
-
-  Lookup is **most-specific-wins** (see `Mutare.MacroRouting.Registry.lookup/4`), so a specific
-  `{Module, name, arity}` entry overrides a whole-module one, which overrides a name-only one;
-  the name-only hatch is the last resort and never shadows a module-matched treatment (including
-  the built-in `Kernel.match?`/`destructure`).
-
-  ## Argument treatments
-
-  `args` is either a single treatment atom (applied uniformly to every argument),
-  a per-position list (padded with `:expression`), or the **classifier sentinel**
-  `:routing` (see "Shape-aware routing" below). The treatments:
-
-    * `:expression` (default) — an ordinary value: mutate it normally.
-    * `:pattern` — a match context (`match?`'s first argument): descend so nested
-      runtime expressions are still reached, but never mutate the pattern itself.
-      Its bindings are local to the macro's expansion.
-    * `:binding_pattern` — a `:pattern` whose bindings **escape into the enclosing
-      scope** (`destructure([x, y], v)` binds `x`/`y` for the rest of the block).
-      Routed like `:pattern`, but **additionally** earns structural swap/wildcard
-      mutants when the call sits in a value-discarded position. The registrant
-      vouches that the macro binds every variable named in the pattern and accepts
-      pattern-legal swap/wildcard rewrites (`destructure` does).
-    * `:skip` — leave the argument **raw**: no descent, no mutation. The opaque DSL
-      case (`Ecto.Query.from`'s body). The whole macro node is still offered to
-      every mutator, so a registering library's own mutator can still fire on it.
-    * `:hosted` — like `:skip`, raw for core, but its mutations are delivered
-      through the hosting mutator's `c:Mutare.Mutator.MacroHost.host/2` callback. The deep-DSL
-      case (mutating *inside* `Ecto`'s `from`/`where`, where the fragment has SQL
-      semantics, not Elixir's). Only valid when an enabled mutator implementing
-      `Mutare.Mutator.MacroHost` registers it (see "Routing and hosting providers").
-
-  ## Shape-aware routing (the `:routing` classifier)
-
-  A static per-position list can't express a treatment that depends on the *call shape*:
-  `where(q, category: "Foo")` is plain data (mutate the value, `:expression`) while
-  `where(q, [u], u.x == u.y)` is a `:hosted` DSL fragment. The sentinel `args: :routing`
-  defers the per-position routing to the contributing module's
-  `c:Mutare.MacroRouting.macro_routing/2`. A classified `:hosted` position additionally needs a
-  selector host.
-
-  The classifier may also return, for a **keyword-list argument**, the tuple
-  `{:keyword, value_treatments}` — finer than the per-argument treatments here: core routes each
-  pair's *value* by its own treatment and leaves the *keys* raw (a DSL keyword key is a field
-  name, not a value), nesting for a keyword list of keyword lists. This is classifier-only — a
-  static `args` entry cannot carry it. See `c:Mutare.MacroRouting.macro_routing/2`.
-
-  ## Routing and hosting providers
-
-  A `Spec` is **pure routing data** — module, name, arity, treatments. The two callback
-  *providers* a `:routing`/`:hosted` treatment depends on are **not** fields here; they are tracked
-  separately by `Mutare.MacroRouting.Registry` (its internal `Entry`), stamped from the contributing
-  module:
-
-    * the **router** answers a `:routing` classifier through `c:Mutare.MacroRouting.macro_routing/2`;
-    * the **host** delivers a `:hosted` argument through `c:Mutare.Mutator.MacroHost.host/2`.
-
-  Keeping providers off the spec means a user-built `Spec` can never carry (or forge) one, and a
-  non-mutating extension can classify call shapes without pretending to be a selector host.
-
-  Declarative `:macro_routes` entries have no contributing module, so they must be static and
-  cannot use `:routing` or `:hosted`.
-  """
+  # Internal normalized representation of a public `Mutare.MacroRouting.route/0` tuple.
+  # Resolution keys and registry helpers deliberately stay out of the extension contract.
 
   @typedoc """
   A resolved module key: an Elixir-module atom path, an Erlang-module atom, or the
@@ -112,8 +14,8 @@ defmodule Mutare.Macro.Spec do
   # inverting the layering. The `:*` wildcard is this registry's own addition (an `atom()`).
   @type module_key :: [atom()] | atom()
 
-  @typedoc "How one argument is routed."
-  @type treatment :: :expression | :pattern | :binding_pattern | :skip | :hosted
+  @typedoc false
+  @type treatment :: Mutare.MacroRouting.treatment()
 
   @typedoc "An `args` value: a uniform treatment, a per-position list, or the `:routing` classifier sentinel."
   @type args :: treatment() | [treatment()] | :routing
@@ -128,7 +30,7 @@ defmodule Mutare.Macro.Spec do
   @enforce_keys [:module, :name, :arity, :args]
   defstruct [:module, :name, :arity, :args]
 
-  @treatments [:expression, :pattern, :binding_pattern, :skip, :hosted]
+  @treatments [:expression, :pattern, :binding_pattern, :skip, :hosted, :pinned]
 
   # The glob wildcard atom. Means "match anything" in the module, name, or arity slot.
   # Chosen as a sentinel because `*` is a vanishingly unlikely identifier to register — it *can*
@@ -150,14 +52,14 @@ defmodule Mutare.Macro.Spec do
   The valid argument treatments.
 
       iex> Mutare.Macro.Spec.treatments()
-      [:expression, :pattern, :binding_pattern, :skip, :hosted]
+      [:expression, :pattern, :binding_pattern, :skip, :hosted, :pinned]
   """
   @spec treatments() :: [treatment()]
   def treatments, do: @treatments
 
   @doc """
   Whether `spec`'s `args` is the `:routing` classifier sentinel (resolved per call node by
-  its router's `c:Mutare.MacroRouting.macro_routing/2`), rather than a static treatment.
+  its router's `c:Mutare.MacroRouting.route_arguments/2`), rather than a static treatment.
 
       iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, :pattern)
       ...> |> Mutare.Macro.Spec.classifier?()
@@ -173,12 +75,8 @@ defmodule Mutare.Macro.Spec do
   Shape-aware routes are classified per call and therefore return `false` here.
   """
   @spec host_required?(t()) :: boolean()
-  def host_required?(%__MODULE__{args: :hosted}), do: true
-
-  def host_required?(%__MODULE__{args: args}) when is_list(args),
-    do: Enum.any?(args, &(&1 == :hosted))
-
-  def host_required?(%__MODULE__{}), do: false
+  def host_required?(%__MODULE__{args: :routing}), do: false
+  def host_required?(%__MODULE__{args: args}), do: hosted?(args)
 
   @doc """
   Builds and validates a macro route spec.
@@ -256,13 +154,14 @@ defmodule Mutare.Macro.Spec do
   @spec routing(t(), non_neg_integer()) :: [treatment()]
   def routing(%__MODULE__{args: :routing}, _count) do
     raise ArgumentError,
-          "a :routing macro spec is resolved per call node by its router's macro_routing/2 " <>
+          "a :routing macro spec is resolved per call node by its router's route_arguments/2 " <>
             "(Mutare.Transform.Resolve), not by Mutare.Macro.Spec.routing/2"
   end
 
   def routing(%__MODULE__{args: args}, count), do: expand_args(args, count)
 
-  defp expand_args(treatment, count) when is_atom(treatment), do: List.duplicate(treatment, count)
+  defp expand_args(treatment, count) when not is_list(treatment),
+    do: List.duplicate(treatment, count)
 
   # Take the first `count` per-position treatments, padding any shortfall with the `:expression`
   # default (a position the list doesn't name is an ordinary mutatable argument).
@@ -326,21 +225,31 @@ defmodule Mutare.Macro.Spec do
   end
 
   defp validate_args(:routing), do: :routing
-  defp validate_args(treatment) when treatment in @treatments, do: treatment
 
   defp validate_args(list) when is_list(list) do
-    Enum.each(list, fn
-      t when t in @treatments -> :ok
-      other -> raise ArgumentError, bad_treatment_message(other)
-    end)
+    Enum.each(list, &validate_treatment!/1)
 
     list
   end
 
-  defp validate_args(other), do: raise(ArgumentError, bad_treatment_message(other))
+  defp validate_args(treatment), do: validate_treatment!(treatment)
+
+  defp validate_treatment!(treatment) when treatment in @treatments, do: treatment
+
+  defp validate_treatment!({:keyword, treatments} = treatment) when is_list(treatments) do
+    Enum.each(treatments, &validate_treatment!/1)
+    treatment
+  end
+
+  defp validate_treatment!(other), do: raise(ArgumentError, bad_treatment_message(other))
 
   defp bad_treatment_message(other) do
-    "macro arg treatment must be one of #{inspect(@treatments)} " <>
-      "(a list of them, or :routing), got: #{inspect(other)}"
+    "macro arg treatment must be one of #{inspect(@treatments)}, " <>
+      "{:keyword, [treatments]}, a list of treatments, or :routing; got: #{inspect(other)}"
   end
+
+  defp hosted?(:hosted), do: true
+  defp hosted?({:keyword, treatments}), do: Enum.any?(treatments, &hosted?/1)
+  defp hosted?(treatments) when is_list(treatments), do: Enum.any?(treatments, &hosted?/1)
+  defp hosted?(_), do: false
 end

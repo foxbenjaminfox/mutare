@@ -14,7 +14,7 @@ defmodule Mutare.Extension do
 
   Entries may be bare modules or `{module, opts}` pairs. Options are delivered only to
   `c:Mutare.UseExpansion.expand_use/3`; `c:Mutare.MacroRouting.macro_routes/0` declarations and
-  `c:Mutare.MacroRouting.macro_routing/2` classification are intentionally options-independent.
+  `c:Mutare.MacroRouting.route_arguments/2` classification are intentionally options-independent.
 
   Mutators may implement `Mutare.MacroRouting` too, but belong under `:mutators`. They are rejected
   from `:extensions` so their mutation producers cannot be enabled accidentally as routing-only

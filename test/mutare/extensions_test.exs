@@ -202,7 +202,7 @@ defmodule Mutare.ExtensionsTest do
 
       # Static routing needs neither callback role.
       assert Enum.all?(entries, &is_nil(&1.router))
-      assert Enum.all?(entries, &is_nil(&1.host))
+      assert Enum.all?(entries, &(&1.hosts == []))
     end
 
     test "an extension module with no macro_routes/0 contributes nothing" do
@@ -215,13 +215,13 @@ defmodule Mutare.ExtensionsTest do
     end
 
     test "an extension may provide shape-aware routing without becoming a macro host" do
-      # Providers live on the Entry, never on the user-constructed Spec — so an extension's
-      # classifier is stamped as the route's router, and host stays nil (it can't host).
+      # Providers live on the Entry, never on route data. Host subscriptions are attached only
+      # after the full registry is built and a concrete call is looked up.
       assert [
                %Entry{
                  spec: %Spec{args: :routing},
                  router: DynamicRoutingExtension,
-                 host: nil
+                 hosts: []
                }
              ] = Macros.from_extensions([DynamicRoutingExtension])
     end
@@ -236,7 +236,7 @@ defmodule Mutare.ExtensionsTest do
       end
       """
 
-      assert_raise ArgumentError, ~r/routed an argument as :hosted.*host\/2/s, fn ->
+      assert_raise Mutare.MacroRouting.ContractError, ~r/no enabled MacroHost subscribes/s, fn ->
         Mutare.transform_string(source,
           mutators: [],
           extensions: [HostedRoutingExtension]
@@ -251,11 +251,12 @@ defmodule Mutare.ExtensionsTest do
       assert Enum.map(from_spec, &Entry.key/1) == Enum.map(from_module, &Entry.key/1)
     end
 
-    test "an extension macro_routes/0 declaring :hosted is rejected (extensions can't host)" do
-      # An extension produces no mutations, so it cannot host one — caught with an extension-specific
-      # message rather than build/3's generic "hosting mutator" abort that mislabels the extension.
-      assert_raise ArgumentError, ~r/returned hosted route/, fn ->
-        Macros.from_extensions([HostingExtension])
+    test "an extension may declare :hosted, but the merged registry requires a subscriber" do
+      assert [%Entry{spec: %Spec{args: [:expression, :hosted]}}] =
+               Macros.from_extensions([HostingExtension])
+
+      assert_raise Mutare.MacroRouting.ContractError, ~r/no enabled.*MacroHost/s, fn ->
+        Macros.build([], [], [HostingExtension])
       end
     end
 

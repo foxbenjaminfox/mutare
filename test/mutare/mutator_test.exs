@@ -6,12 +6,12 @@ defmodule Mutare.MutatorTest.WrapHost do
 
   def host(_node, _context) do
     [
-      %{
-        original: {:x, [], nil},
-        mutants: [{:y, [], nil}],
-        splice: fn macro_node, _case_node -> macro_node end,
+      Mutare.Mutator.MacroHost.Target.new(
+        {:x, [], nil},
+        [{:y, [], nil}],
+        fn macro_node, _case_node -> macro_node end,
         wrap: fn branch -> branch end
-      }
+      )
     ]
   end
 end
@@ -55,15 +55,27 @@ defmodule Mutare.MutatorTest do
   end
 
   describe "host_targets/3" do
+    defp call do
+      %Mutare.MacroRouting.Call{
+        node: {:x, [], []},
+        module: Mutare.Test.HostDSL,
+        name: :x,
+        arguments: [],
+        pipe_mode: :unpiped,
+        effective_arity: 0,
+        rebuild: fn name, args -> {name, [], args} end
+      }
+    end
+
     test "keeps a target's custom 1-arity :wrap function" do
-      [target] = Dispatch.host_targets(Spec.for_module(WrapHost), {:x, [], nil}, %{})
+      [target] = Dispatch.host_targets(Spec.for_module(WrapHost), call(), %{})
       assert is_function(target.wrap, 1)
       assert target.range == nil
     end
 
     test "raises on a malformed target (a hosting-mutator bug, surfaced loudly)" do
-      assert_raise ArgumentError, ~r/a host target must be a map/, fn ->
-        Dispatch.host_targets(Spec.for_module(BadHost), {:x, [], nil}, %{})
+      assert_raise Mutare.MacroRouting.ContractError, ~r/must return.*Target values/s, fn ->
+        Dispatch.host_targets(Spec.for_module(BadHost), call(), %{})
       end
     end
   end

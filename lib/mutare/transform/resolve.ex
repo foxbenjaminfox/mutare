@@ -40,7 +40,7 @@ defmodule Mutare.Transform.Resolve do
 
   @doc "Stamp remote calls, bare imported calls, and bare imported captures with their resolved module."
   @spec annotate(Macro.t()) :: Macro.t()
-  def annotate(ast), do: annotate(ast, %{})
+  def annotate(ast), do: annotate(ast, %Macros{routes: %{}, hosts: []})
 
   @doc """
   As `annotate/1`, plus stamp each call that resolves to a **known macro** (in the

@@ -108,7 +108,7 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
 - **Extension surface** — `Mutare.Mutator` (+ capability behaviours `Mutator.Structural` /
   `Mutator.MacroHost`) and `Mutare.Mutators.*` (the built-in families); `Mutare.Mutators` (the one
   ordered registry + resolver); `Mutare.Mutator.Spec` (the resolved unit of "a mutator to run");
-  `Mutare.MacroRouting` + `MacroRouting.Registry`/`Macro.Spec` (static and shape-aware known-macro routing);
+  `Mutare.MacroRouting` + its internal registry (static and shape-aware known-macro routing);
   `Mutare.UseExpansion` (a `use` override); `Mutare.Extension` (the non-mutating `:extensions`
   boundary). See "Extending it".
 
@@ -168,8 +168,8 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Structural head pattern | `pattern_mutations/2` | (`PatternSwap`/`PatternWildcard`) |
 | Behaviour-gated | read `context.behaviours` (or the `+1`-arity structural callbacks) | `behaviour_mutator.ex` |
 | Call-matching (stdlib/remote) | resolve via `Transform.Calls.resolved_call/1` | `resolved_call_mutator.ex` |
-| Macro routing (static or shape-aware) | `Mutare.MacroRouting.macro_routes/0` + optional `macro_routing/2` | `macro_mutator.ex` / `host_mutator.ex` |
-| Selector-hosting (mutate inside a DSL fragment) | route `:hosted` via `Mutare.MacroRouting` + implement `Mutator.MacroHost.host/2` | `host_mutator.ex` |
+| Macro routing (static or shape-aware) | `Mutare.MacroRouting.macro_routes/0` + optional `route_arguments/2` | `macro_mutator.ex` / `host_mutator.ex` |
+| Selector-hosting (mutate inside a DSL fragment) | subscribe via `Mutator.MacroHost.hosted_macros/0` + implement `host/2` | `host_mutator.ex` |
 | Per-kind `# mutare:ignore` qualifier | `variants/0` (opt-in) + tag via `Mutation.tagged/2` *or* `variant/2` | (value & operator families) |
 
 An **extension** is a non-mutating module implementing `Mutare.MacroRouting`,
