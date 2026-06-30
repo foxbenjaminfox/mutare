@@ -3896,6 +3896,14 @@ discovery via `Mutator.Dispatch.implementing/3` (`return_replacements`/`conditio
 `Site.replace`) reads `spec.module`/`spec.name`/`spec.opts`. The CLI's `--mutators` CSV can't
 express opts (strings only) — configured mutators are a `.mutare.exs`/`Mutare.run/2` feature.
 
+Dispatch precedence: `mutate/2` is an override, not an additive second producer. If a module
+exports `mutate/2`, `Mutator.Dispatch.mutations/3` calls it and does **not** also call
+`mutate/1`; otherwise it falls back to `mutate/1`. A mutator that wants composition calls its
+own one-arity helper from `mutate/2` and combines the results explicitly. This removes the
+non-obvious duplicate-production footgun from the public contract while preserving the few
+built-ins that need mixed context-free/context-aware production (`Arithmetic`, `Numeric`,
+`OperandSwap`) as local, visible composition.
+
 ### Overlap resolution — diff-derived, replacing `owned_args` `[done]`
 A *call-rewriting* mutator (`ModeSwap`) and a *leaf* mutator (`AtomLiteral`) can target the
 same node: `DateTime.truncate(dt, :second)` → ModeSwap rewrites the call to `:millisecond`
@@ -5019,7 +5027,7 @@ single source of truth), exactly as it defers `true`/`false`/`nil` to
 unmutated by `:atom` too — accepted, precedented.
 
 **`mutate/2`-only — one table path, configurable for free.** Logic lives in `mutate/2`
-(`mutate/1` is `:skip`, like `ModeSwap`): `mutations/3` always runs `mutate/2` when
+(there is no `mutate/1` path, like `ModeSwap`): `mutations/3` runs `mutate/2` when
 exported (with `opts: []` when unconfigured), so the built-ins always fire *and* a
 `{ConventionAtom, pairs: [[:active, :inactive]]}` config merges its `:pairs` with the
 built-ins — no second code path, no double-emit. It needs no `pipe_mode` (an atom's

@@ -27,8 +27,9 @@ defmodule Mutare.Mutators.Arithmetic do
   alias Mutare.AST
   alias Mutare.Mutators.Helpers
 
-  # Genuine binary *operators* — always written infix (arity 2, never piped), so an
-  # arity-blind `mutate/1` is safe. (`div`/`rem` are *calls*, handled in `mutate/2`.)
+  # Genuine binary *operators* — always written infix (arity 2, never piped), so the
+  # context-free helper can handle them. (`div`/`rem` are *calls*, handled in `mutate/2`,
+  # which explicitly composes the context-free helper.)
   @swaps %{
     :+ => [:-],
     :- => [:+],
@@ -79,6 +80,11 @@ defmodule Mutare.Mutators.Arithmetic do
 
   def mutate(_node), do: :skip
 
+  # Compose the ordinary operator mutations with the context-aware bare-`Kernel`
+  # `div`/`rem` call mutations explicitly. Dispatch prefers `mutate/2` when it is
+  # exported, so mixed families make this choice locally rather than relying on
+  # hidden double-dispatch.
+  #
   # `div`/`rem` are bare `Kernel` calls, not operators. Swapping `div`↔`rem` keeps the
   # argument list, so it is a valid rename at any position (a pipe stage included), gated on
   # **effective arity 2** so a same-named user `div/3` is never rewritten to a `rem/3` that may
@@ -86,7 +92,11 @@ defmodule Mutare.Mutators.Arithmetic do
   # (`Helpers.swap_bare_kernel/3`, also used by `Numeric`).
   @impl Mutare.Mutator
   def mutate(node, %{pipe_mode: pipe_mode}),
-    do: Helpers.swap_bare_kernel(node, pipe_mode, @call_swaps)
+    do:
+      Helpers.combine_mutations(
+        mutate(node),
+        Helpers.swap_bare_kernel(node, pipe_mode, @call_swaps)
+      )
 
   # Variant labels for `# mutare:ignore[arithmetic:<op>]`: the resulting operator of a binary
   # swap (`a - b` → `a + b` is the `+` variant, classified by the shared `op_swap_variant/3` over

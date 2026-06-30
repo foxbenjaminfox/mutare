@@ -66,14 +66,23 @@ defmodule Mutare.Mutators.Numeric do
 
   # A qualified `Float.ceil`/`floor` or `Kernel.min`/`max`/`round`/`trunc`/`ceil`/`floor`:
   # an arity-blind remote rename — the swap keeps the argument list and the sibling exists
-  # at the same arity, so no pipe context is needed.
+  # at the same arity, so the context-free helper can handle it. `mutate/2` explicitly
+  # composes this helper with the bare-Kernel path below.
   @impl Mutare.Mutator
   def mutate(node), do: Helpers.swap_call(node, @remote_swaps)
 
+  # Compose the arity-blind qualified-call mutations with the context-aware bare-`Kernel`
+  # mutations explicitly. Dispatch prefers `mutate/2` when it is exported, so mixed families
+  # make this choice locally rather than relying on hidden double-dispatch.
+  #
   # Bare `Kernel` `min`/`max`/`round`/`trunc`/`ceil`/`floor`: the swap is offered only at the
   # function's true (effective) arity, and a `Kernel`-displaced call is skipped — the shared
   # bare-`Kernel` safeguard (`Helpers.swap_bare_kernel/3`, also used by `Arithmetic`'s div/rem).
   @impl Mutare.Mutator
   def mutate(node, %{pipe_mode: pipe_mode}),
-    do: Helpers.swap_bare_kernel(node, pipe_mode, @kernel_swaps)
+    do:
+      Helpers.combine_mutations(
+        mutate(node),
+        Helpers.swap_bare_kernel(node, pipe_mode, @kernel_swaps)
+      )
 end

@@ -9,6 +9,24 @@ defmodule Mutare.Mutators.Helpers do
   alias Mutare.Transform.{Calls, Imports}
 
   @doc """
+  Combine two mutation callback results, preserving the public `:skip | list` shape.
+
+  Used by mutators that intentionally compose a context-free helper with a
+  context-aware branch under the `mutate/2`-over-`mutate/1` dispatch rule.
+  """
+  @spec combine_mutations(
+          :skip | [Mutare.Mutator.mutation()],
+          :skip | [Mutare.Mutator.mutation()]
+        ) ::
+          :skip | [Mutare.Mutator.mutation()]
+  def combine_mutations(left, right) do
+    case mutation_list(left) ++ mutation_list(right) do
+      [] -> :skip
+      mutations -> mutations
+    end
+  end
+
+  @doc """
   Rename a resolved call by looking its `{module, fun}` up in a swap `table`.
 
   The single shape behind the "swap-table" families (`Collection`, `Integer`,
@@ -233,6 +251,9 @@ defmodule Mutare.Mutators.Helpers do
   # list (`["pred", "zero"]`). Both are valid `Mutare.Mutator.Mutation` variant tags.
   defp one_or_many([label]), do: label
   defp one_or_many(labels), do: labels
+
+  defp mutation_list(:skip), do: []
+  defp mutation_list(mutations) when is_list(mutations), do: mutations
 
   @doc """
   The variant vocabulary shared by the empty/sentinel literal families

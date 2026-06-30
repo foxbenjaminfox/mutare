@@ -12,6 +12,10 @@ defmodule Mutare.Mutator do
   should be addressable by `# mutare:ignore[family:label]`. Use
   `mutate_call_option_keys?/1` to control mutations of trailing call-option names.
 
+  When both `mutate/1` and `mutate/2` are exported, Mutare calls `mutate/2`.
+  If a mutator needs both context-free and context-aware production, call the
+  context-free helper explicitly from `mutate/2`.
+
   Structural positions use `Mutare.Mutator.Structural`. Macro-aware mutators use
   `Mutare.MacroRouting`, and mutators that emit mutations inside hosted DSL
   fragments also use `Mutare.Mutator.MacroHost`.
@@ -119,7 +123,6 @@ defmodule Mutare.Mutator do
       defmodule MyApp.Mutators.GenServerReply do
         @behaviour Mutare.Mutator
         def name, do: :genserver_reply
-        def mutate(_node), do: :skip
 
         def mutate({:{}, m, [{:__block__, am, [:reply]}, _r, state]}, %{behaviours: bs}) do
           if MapSet.member?(bs, GenServer),
@@ -206,9 +209,10 @@ defmodule Mutare.Mutator do
   calls; `context.opts` carries per-instance configuration; `context.behaviours`
   carries the enclosing module's behaviour set.
 
-  When both `mutate/1` and `mutate/2` are exported, both run and their results
-  are combined. Keep their outputs disjoint to avoid emitting the same mutation
-  twice. The return shape is the same as `mutate/1`.
+  When both `mutate/1` and `mutate/2` are exported, this callback takes
+  precedence. Mutare does not also call `mutate/1`. To compose them, call
+  `mutate/1` from `mutate/2` and combine the results explicitly. The return
+  shape is the same as `mutate/1`.
   """
   @callback mutate(Macro.t(), context()) :: :skip | [mutation()]
 

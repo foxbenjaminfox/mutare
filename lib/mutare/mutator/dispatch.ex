@@ -18,11 +18,13 @@ defmodule Mutare.Mutator.Dispatch do
   call this, so "which mutations does this node admit" has one answer regardless of
   where the node sits — placement is decided afterwards, positionally.
 
-  Each entry is a `Mutare.Mutator.Spec` (a bare module is coerced to one); its
-  `mutate/1` is always run, and its optional `mutate/2` is *also* run when
-  implemented, with a per-spec `context` carrying the pipe mode **and** the spec's
-  `:opts`. So pipe-aware/arity-changing *and* configurable mutators both
-  participate here. `context` defaults to `%{pipe_mode: :unpiped}`; the transform passes
+  Each entry is a `Mutare.Mutator.Spec` (a bare module is coerced to one). If the
+  module exports `mutate/2`, dispatch calls that context-aware callback; otherwise
+  it falls back to `mutate/1`. A mutator that wants both behaviours can call its
+  own `mutate/1` helper from `mutate/2`, making composition explicit instead of
+  a hidden double-dispatch rule. The per-spec `context` carries the pipe mode
+  **and** the spec's `:opts`, so pipe-aware/arity-changing and configurable
+  mutators both participate here. `context` defaults to `%{pipe_mode: :unpiped}`; the transform passes
   `%{pipe_mode: :piped}` for a `|>` right-hand side. Each result is a `{spec, node, note, variant}`
   quad: the **spec** (not the bare module), so the family name and config travel with it; the
   `note` (`nil` unless the mutator returned a `%Mutare.Mutator.Mutation{}` with one), so a
@@ -40,22 +42,27 @@ defmodule Mutare.Mutator.Dispatch do
     Enum.flat_map(mutators, fn entry ->
       spec = Spec.coerce(entry)
       ctx = context |> Map.put(:opts, spec.opts) |> Map.put(:behaviours, spec.behaviours)
-      node_local(spec, node) ++ contextual(spec, node, ctx)
+      node_level(spec, node, ctx)
     end)
   end
 
-  # `mutate/1` is optional (a structural/pipe-only family omits it), so call it only when exported —
-  # mirroring `contextual/1`'s guard on `mutate/2`.
+  # `mutate/2` is the context-aware override; `mutate/1` is the fallback. This keeps the
+  # author-facing contract conventional and avoids silently running two callbacks from one
+  # mutator. A mutator that wants composition can make that visible in its own `mutate/2`.
+  defp node_level(spec, node, context) do
+    cond do
+      function_exported?(spec.module, :mutate, 2) -> contextual(spec, node, context)
+      function_exported?(spec.module, :mutate, 1) -> node_local(spec, node)
+      true -> []
+    end
+  end
+
   defp node_local(spec, node) do
-    if function_exported?(spec.module, :mutate, 1),
-      do: tag(spec, spec.module.mutate(node)),
-      else: []
+    tag(spec, spec.module.mutate(node))
   end
 
   defp contextual(spec, node, context) do
-    if function_exported?(spec.module, :mutate, 2),
-      do: tag(spec, spec.module.mutate(node, context)),
-      else: []
+    tag(spec, spec.module.mutate(node, context))
   end
 
   defp tag(_spec, :skip), do: []

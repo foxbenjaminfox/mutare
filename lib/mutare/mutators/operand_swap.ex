@@ -44,11 +44,13 @@ defmodule Mutare.Mutators.OperandSwap do
   """
   @behaviour Mutare.Mutator
 
+  alias Mutare.Mutators.Helpers
   alias Mutare.Transform.Calls
 
   # The non-commutative binary *operators* whose operands we transpose. Always written
-  # infix (arity 2, never piped), so a plain `mutate/1` is enough. The call-form
-  # `div`/`rem` are handled in `mutate/2` (they need the effective-arity safeguard).
+  # infix (arity 2, never piped), so the context-free helper can handle them. The
+  # call-form `div`/`rem` are handled in `mutate/2` (they need the effective-arity
+  # safeguard), which explicitly composes the context-free helper.
   @operators [:-, :/, :**, :<>, :++, :--]
 
   # Bare `Kernel` call-form operators, swappable only at effective arity 2.
@@ -94,15 +96,21 @@ defmodule Mutare.Mutators.OperandSwap do
 
   def mutate(_node), do: :skip
 
+  # Compose the ordinary operator transpositions with the context-aware call transpositions
+  # explicitly. Dispatch prefers `mutate/2` when it is exported, so mixed families make this
+  # choice locally rather than relying on hidden double-dispatch.
+  @impl Mutare.Mutator
+  def mutate(node, %{pipe_mode: pipe_mode}),
+    do: Helpers.combine_mutations(mutate(node), contextual_mutate(node, pipe_mode))
+
   # `div`/`rem`: bare `Kernel` calls. Transpose only a direct, non-piped two-argument
   # call — that is exactly effective arity 2 (the bare-`Kernel` safeguard from `Numeric`,
   # confirming the builtin over a same-named user `div/3`), and the only form that holds
   # both operands. A piped `x |> div(b)` supplies its first operand from the pipe, so
   # there is nothing local to transpose; effective arity 2 there has only one visible arg,
   # which fails the `[left, right]` match and is skipped.
-  @impl Mutare.Mutator
-  def mutate({op, meta, [left, right] = args}, %{pipe_mode: :unpiped})
-      when op in @call_operators do
+  defp contextual_mutate({op, meta, [left, right] = args}, :unpiped)
+       when op in @call_operators do
     if Mutare.Mutator.effective_arity(args, :unpiped) == 2 and not same?(left, right),
       do: [{op, meta, [right, left]}],
       else: :skip
@@ -114,7 +122,7 @@ defmodule Mutare.Mutators.OperandSwap do
   # aliased, and imported forms all match and a shadowing alias resolves elsewhere.
   # Non-piped only: a piped stage draws its first operand from the pipe, so it has only
   # one local operand to swap — the `[a, b | rest]` destructure fails and it is skipped.
-  def mutate(node, %{pipe_mode: :unpiped}) do
+  defp contextual_mutate(node, :unpiped) do
     with {module, fun, [a, b | rest], rebuild} <- Calls.resolved_call(node),
          true <- MapSet.member?(@remote_swaps, {module, fun}),
          false <- same?(a, b) do
@@ -128,7 +136,7 @@ defmodule Mutare.Mutators.OperandSwap do
   # nothing to transpose — skip it. Matched explicitly as `:piped` (not a `_context`
   # wildcard) so an unrecognised pipe mode raises a FunctionClauseError rather than
   # silently skipping.
-  def mutate(_node, %{pipe_mode: :piped}), do: :skip
+  defp contextual_mutate(_node, :piped), do: :skip
 
   # Structural equality ignoring metadata — a transpose of identical operands is an
   # equivalent no-op (`x - x`, `5 / 5`, `-2 - -2`), so we suppress it rather than count it.
