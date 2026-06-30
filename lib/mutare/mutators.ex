@@ -5,7 +5,7 @@ defmodule Mutare.Mutators do
   All built-in families run by default. Set `:mutators` to a list of family atoms or custom
   mutator modules to choose a different set. A `{mutator, opts}` pair configures one entry.
 
-  Include `:builtins` (or `:all`) to add entries to the default set:
+  Include `:builtins` to add entries to the default set:
 
       mutators: [:builtins, MyApp.Mutators.AccessPolicy]
 
@@ -214,10 +214,10 @@ defmodule Mutare.Mutators do
     end
   end
 
-  # The reserved list tokens that stand for "the whole built-in set" — expanded
+  # The reserved list token that stands for "the whole built-in set" — expanded
   # in place (and `except:`-filtered) before any per-entry resolution, since one
-  # token yields many entries. `:all` is an accepted synonym of `:builtins`.
-  @group_tokens [:builtins, :all]
+  # token yields many entries.
+  @group_tokens [:builtins]
 
   @doc """
   Resolves mutator configuration entries to `Mutare.Mutator.Spec` structs in the
@@ -228,7 +228,7 @@ defmodule Mutare.Mutators do
     * a registered family atom
     * a custom mutator module
     * a configured `{family_or_module, options}` pair
-    * `:builtins` or `:all` for every built-in family
+    * `:builtins` for every built-in family
     * `{:builtins, except: families}` to exclude selected built-ins
     * an existing `Mutare.Mutator.Spec`
 
@@ -254,7 +254,7 @@ defmodule Mutare.Mutators do
     |> Enum.map(&resolve!/1)
   end
 
-  # Expand the `:builtins`/`:all` group token (bare or `{token, except: ...}`) into
+  # Expand the `:builtins` group token (as a list entry or `{:builtins, except: ...}`) into
   # its family atoms before per-entry resolution; everything else passes through as
   # a single entry. Placed first so a `{:builtins, ...}` tuple never reaches the
   # generic `{entry, opts}` configured-pair clause below.

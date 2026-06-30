@@ -117,12 +117,16 @@ defmodule Mutare.Options do
     options
     |> Map.from_struct()
     |> Map.to_list()
-    |> new()
+    |> build()
   end
 
   def new(opts) when is_list(opts) do
     reject_unknown!(opts)
+    reject_invalid_mutators_shape!(opts)
+    build(opts)
+  end
 
+  defp build(opts) do
     Registry.specs()
     |> Enum.map(fn %{key: key, validate: validate} -> {key, validate.(opt(opts, key))} end)
     |> then(&struct(__MODULE__, &1))
@@ -140,6 +144,14 @@ defmodule Mutare.Options do
 
       unknown ->
         raise ArgumentError, "unknown option(s) #{inspect(unknown)}; valid: #{inspect(@keys)}"
+    end
+  end
+
+  defp reject_invalid_mutators_shape!(opts) do
+    if Keyword.has_key?(opts, :mutators) and not is_list(Keyword.fetch!(opts, :mutators)) do
+      raise ArgumentError,
+            ":mutators must be omitted or set to a list of mutators, got: " <>
+              inspect(Keyword.fetch!(opts, :mutators))
     end
   end
 end

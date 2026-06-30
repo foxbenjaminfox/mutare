@@ -211,11 +211,11 @@ defmodule Mix.Tasks.Mutare do
         paths: ["lib"],
         exclude: ["lib/generated/**"],
         # built-in family atoms and/or your own Mutare.Mutator modules. The
-        # `:builtins` token (synonym `:all`) means "all built-ins", so
-        # `[:builtins, MyMutator]` extends the defaults and `[MyMutator]` replaces
-        # them; `{:builtins, except: [:arithmetic]}` drops a family. Omit the key
-        # (or `:all`/`:builtins` bare) for the full default set.
-        mutators: :all,
+        # `:builtins` token means "all built-ins", so `[:builtins, MyMutator]`
+        # extends the defaults and `[MyMutator]` replaces them;
+        # `{:builtins, except: [:arithmetic]}` drops a family. Omit the key for
+        # the full default set.
+        mutators: [:builtins],
         # leave a macro's arguments raw (a DSL body, a pattern) so they aren't
         # mutated — `:skip` covers every argument, a list marks each position;
         # `:*` wildcards a slot: {M, :*, :skip} = whole module, {:*, name, :skip}

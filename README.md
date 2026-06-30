@@ -207,7 +207,7 @@ mutators: [:arithmetic, MyApp.Mutators.AccessPolicy]
 # 3. Omit :mutators entirely → every built-in family, default config, no externals.
 ```
 
-To work *from* the defaults rather than listing everything, use the **`:builtins`** group token (its synonym is `:all`). Whether it appears decides extend vs. replace:
+To work *from* the defaults rather than listing everything, use the **`:builtins`** group token. Whether it appears decides extend vs. replace:
 
 ```elixir
 mutators: [:builtins, MyApp.Mutators.AccessPolicy]   # EXTEND  — all built-ins + your own

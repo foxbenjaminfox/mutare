@@ -405,8 +405,8 @@ defmodule Mutare.OptionsTest do
   end
 
   describe ":mutators" do
-    test "accepts nil (default set) or a list of modules, resolved to specs" do
-      assert Options.new(mutators: nil).mutators == nil
+    test "uses the default set when :mutators is omitted, or resolves a list of modules to specs" do
+      assert Options.new([]).mutators == nil
       mods = [Mutare.Mutators.Arithmetic, Mutare.Mutators.Relational]
       assert Options.new(mutators: mods).mutators |> Enum.map(& &1.module) == mods
     end
@@ -416,9 +416,14 @@ defmodule Mutare.OptionsTest do
                [Mutare.Mutators.Relational, Mutare.Mutators.Arithmetic]
     end
 
-    test "normalizes the bare default-set tokens to nil" do
-      assert Options.new(mutators: :all).mutators == nil
-      assert Options.new(mutators: :builtins).mutators == nil
+    test "rejects bare default-set tokens" do
+      assert_raise ArgumentError, ~r/:mutators must be omitted or set to a list/, fn ->
+        Options.new(mutators: :builtins)
+      end
+
+      assert_raise ArgumentError, ~r/:mutators must be omitted or set to a list/, fn ->
+        Options.new(mutators: :all)
+      end
     end
 
     test "accepts {module, opts} configured entries, carrying opts onto the spec" do
@@ -445,7 +450,7 @@ defmodule Mutare.OptionsTest do
     end
 
     test "rejects a non-list or non-atom elements" do
-      assert_raise ArgumentError, ~r/:mutators must be :all, :builtins, nil, or a list/, fn ->
+      assert_raise ArgumentError, ~r/:mutators must be omitted or set to a list/, fn ->
         Options.new(mutators: :arithmetic)
       end
 

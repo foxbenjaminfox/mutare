@@ -222,14 +222,6 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([partition_env: "FromFile"], [])[:partition_env] == "FromFile"
     end
 
-    test "file config mutators: :all passes through for Options to normalize" do
-      assert Config.merge([mutators: :all], [])[:mutators] == :all
-    end
-
-    test "file config mutators: :builtins passes through for Options to normalize" do
-      assert Config.merge([mutators: :builtins], [])[:mutators] == :builtins
-    end
-
     test "file config mutator lists pass through unchanged" do
       assert Config.merge([mutators: [:relational]], [])[:mutators] == [:relational]
     end
@@ -240,6 +232,10 @@ defmodule Mutare.ConfigTest do
 
     test "--mutators builtins translates the group token for Options" do
       assert Config.merge([], mutators: "builtins")[:mutators] == [:builtins]
+    end
+
+    test "--mutators all is not a group token" do
+      assert Config.merge([], mutators: "all")[:mutators] == ["all"]
     end
 
     test "CLI flags win over file config" do
@@ -299,11 +295,11 @@ defmodule Mutare.ConfigTest do
 
     test "Options owns runtime normalization after Config translation" do
       options =
-        [mutators: :all, reporters: [:human, {:json, "r.json"}]]
+        [mutators: [:builtins], reporters: [:human, {:json, "r.json"}]]
         |> Config.merge([])
         |> Mutare.Options.new()
 
-      assert options.mutators == nil
+      assert Enum.map(options.mutators, & &1.name) == Mutare.Mutators.families()
       assert options.reporters == [{:human, nil}, {:json, "r.json"}]
     end
   end

@@ -155,7 +155,7 @@ defmodule Mutare.Config do
   # module `MyApp.M` (≡ `:"Elixir.MyApp.M"`), so the documented `--mutators MyApp.M`
   # custom-mutator example never resolved. Three cases, in order:
   #
-  #   * a built-in **family** name or the `:builtins`/`:all` group token resolves to
+  #   * a built-in **family** name or the `:builtins` group token resolves to
   #     its *existing* atom by string lookup (no interning);
   #   * a **module**-shaped name (`MyApp.MyMutator`) is built with `Module.concat/1`,
   #     producing the real module atom (and, helpfully, folding a leading `Elixir.`);
@@ -171,10 +171,10 @@ defmodule Mutare.Config do
     end
   end
 
-  # The existing atom matching a built-in family name or a group token, or `nil`.
+  # The existing atom matching a built-in family name or the group token, or `nil`.
   # String-compared against the live name set, so nothing is interned.
   defp known_mutator_name(name) do
-    Enum.find([:builtins, :all | Mutare.Mutators.families()], &(Atom.to_string(&1) == name))
+    Enum.find([:builtins | Mutare.Mutators.families()], &(Atom.to_string(&1) == name))
   end
 
   # Whether `name` is a well-formed Elixir module alias (`Foo`, `Foo.Bar.Baz`) — every

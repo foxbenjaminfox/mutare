@@ -65,25 +65,23 @@ defmodule Mutare.Options.Registry do
         ":exclude must be a list of strings"
       )
 
-  # A bare `:all`/`:builtins` means the default set, represented canonically as
-  # `nil` so `Mutare.Transform` remains the single owner of that default. A
-  # `:mutators` list is resolved through the one `Mutare.Mutators` catalog into
+  # A `:mutators` list is resolved through the one `Mutare.Mutators` catalog into
   # `Mutare.Mutator.Spec`s, so the direct API (`Mutare.run/2`, `Options.new/1`)
   # resolves family atoms, accepts `{module, opts}` configured entries, and rejects
   # non-mutator modules exactly as the CLI/`.mutare.exs` path does. An already
   # resolved list passes through unchanged (resolution is idempotent).
-  # `nil` means "let `Mutare.Transform` pick its default set". `resolve/1` raises a
-  # descriptive "unknown mutator" error on a bad entry; the fallback keeps a
-  # clear accepted-shapes message for an outright wrong value.
+  # `nil` is the internal "key omitted; let `Mutare.Transform` pick its default set"
+  # sentinel. `Options.new/1` rejects explicit non-list values before this validator.
+  # `resolve/1` raises a descriptive "unknown mutator" error on a bad entry; the
+  # fallback keeps a clear accepted-shapes message for an outright wrong value.
   defp validate_mutators!(nil), do: nil
-  defp validate_mutators!(token) when token in [:all, :builtins], do: nil
 
   defp validate_mutators!(mutators) when is_list(mutators),
     do: Mutare.Mutators.resolve(mutators)
 
   defp validate_mutators!(other) do
     raise ArgumentError,
-          ":mutators must be :all, :builtins, nil, or a list of modules, got: #{inspect(other)}"
+          ":mutators must be omitted or set to a list of mutators, got: #{inspect(other)}"
   end
 
   # Resolve and validate `:macro_routes` through `Mutare.MacroRouting.Registry` into `Mutare.Macro.Spec`s. The

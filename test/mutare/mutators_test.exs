@@ -48,7 +48,7 @@ defmodule Mutare.MutatorsTest do
   }
 
   describe "registry (single source of truth)" do
-    test "all/0 is every registered module, in order — the default/`:all` set" do
+    test "all/0 is every registered module, in order — the default built-in set" do
       assert Mutators.all() == Keyword.values(Mutators.registry())
 
       assert Mutators.all() ==
@@ -210,8 +210,10 @@ defmodule Mutare.MutatorsTest do
       assert Enum.map(builtins, & &1.module) == Mutators.all()
     end
 
-    test "resolve/1 accepts :all as a synonym for :builtins" do
-      assert Mutators.resolve([:all]) == Mutators.resolve([:builtins])
+    test "resolve/1 rejects the removed :all group-token spelling" do
+      assert_raise ArgumentError, ~r/unknown mutator :all/, fn ->
+        Mutators.resolve([:all])
+      end
     end
 
     test "resolve/1 extends the defaults when :builtins is included with custom mutators" do
