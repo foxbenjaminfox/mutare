@@ -1,23 +1,10 @@
 defmodule Mutare.Mutators.GenServer do
   @moduledoc """
-  Mutates the **return value of a GenServer callback** — `handle_call/3`,
-  `handle_cast/2`, `handle_info/2` (and `handle_continue/2`, which shares their
-  shapes) — into a *different but still valid* OTP return tuple. The first
-  behaviour-gated built-in: it fires **only inside a module that implements
-  `GenServer`** (`use GenServer`, or a direct `@behaviour GenServer`), so it is inert
-  everywhere else.
+  Changes a `GenServer` callback return into another valid OTP return tuple. It runs
+  only in modules that use or declare the `GenServer` behaviour.
 
-  Unlike `Mutare.Mutators.ReturnValue` — which replaces a clause tail with a
-  *sentinel* (so the server gets a malformed return and merely crashes, an
-  uninformative kill) — this swaps the **control tag** for another the callback
-  is *allowed* to return, so the mutant runs as a well-formed GenServer that
-  behaves differently. A surviving mutant therefore pinpoints a precise gap:
-  *no test checks this callback's reply / liveness / continuation semantics.*
-
-  ## What it knows about (the full `@callback` return surface)
-
-  Recognised by `{tag, arity}`, so every documented form is accounted for — even
-  the ones left unmutated:
+  The mutator covers return values from `handle_call/3`, `handle_cast/2`,
+  `handle_info/2`, and `handle_continue/2`:
 
       handle_call/3
         {:reply, reply, new_state}                     ->  {:noreply, new_state}
@@ -32,42 +19,12 @@ defmodule Mutare.Mutators.GenServer do
         {:noreply, new_state, action}                  ->  {:stop, :normal, new_state}
         {:stop, reason, new_state}                     ->  {:noreply, new_state}
 
-  where `action` is `timeout() | :hibernate | {:continue, term()}`. The shape is
-  unambiguous from the tag and arity alone — `:reply` appears only in
-  `handle_call`, so the transform never needs to know which callback it is in,
-  and a `{:ok, _}` (an `init/1` return), an `:ignore`, a `{:stop, reason}`
-  two-tuple, or any non-OTP tuple simply does not match.
+  Here `action` is a timeout, `:hibernate`, or `{:continue, term()}`. Each mutation
+  preserves the original state, reply, and action where the new tuple accepts them.
 
-  ## The mutations, and why each is meaningful
-
-    * **`:reply` → `:noreply`** (drop the synchronous reply). The headline
-      `handle_call` mutation: the caller's `GenServer.call` now blocks until
-      timeout instead of receiving `reply`. Any test that asserts the call's
-      result kills it; a survivor means the return value is unchecked.
-    * **`:noreply` → `:stop` (`:normal`)** — the server *terminates* where it
-      meant to keep running. A test that does more than one interaction (or
-      checks the process stays alive) kills it.
-    * **`:stop` → `:noreply`** — the server *keeps running* where it meant to
-      stop. A test asserting termination (a `:DOWN`, `Process.alive?/1`) kills it.
-    * **`{:stop, reason, reply, s}` → `{:reply, reply, s}`** — stops-with-reply
-      becomes reply-and-continue (keeps the reply, drops the shutdown).
-
-  Each reuses the original `new_state` / `reply` operand AST and injects only the
-  literal control atoms (`:noreply` / `:stop` / `:reply` / `:normal`), so every
-  mutant is a **valid GenServer return that compiles** — the single metamutant
-  build is never at risk. Exactly one alternative is offered per recognised tail
-  (the clearest behaviour change), keeping the mutant set tight.
-
-  ## Deliberately left alone
-
-    * The `action` element (`timeout`/`:hibernate`/`{:continue, _}`) is reused or
-      dropped, never rewritten — a `:hibernate`↔drop is a perf-only no-op
-      (equivalent mutant), and a `{:continue, _}` target is mutated by other
-      families if it is code.
-    * The `:stop` `reason` is reused (or dropped when the tag changes), not
-      swapped — a reason swap is rarely observable.
-    * `init/1`, `terminate/2`, `code_change/3`, `format_status/*` returns aren't
-      these tagged tuples, so they are out of scope by construction.
+  Other tuple shapes do not match. This excludes `init/1` returns, `:ignore`,
+  two-element `{:stop, reason}` tuples, and returns from callbacks such as
+  `terminate/2` and `code_change/3`. Actions and stop reasons are not mutated.
   """
 
   @behaviour Mutare.Mutator

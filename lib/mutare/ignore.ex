@@ -1,18 +1,16 @@
 defmodule Mutare.Ignore do
   @moduledoc """
-  The `# mutare:ignore` comment directive — suppress a mutant you've judged
-  *equivalent* (no test could ever kill it) or simply not worth a test, keeping it
-  out of the score.
+  Suppresses selected mutants with a source comment. Ignored mutants remain in the
+  report but are excluded from the mutation score.
 
-  Two forms, by where the comment sits:
+  A trailing directive applies to its own line. A standalone directive applies to
+  the next line:
 
-    * **trailing** — `code  # mutare:ignore` — suppresses a mutant on its own line.
-    * **standalone** — `# mutare:ignore` on its own line — suppresses the next line.
+      expression() # mutare:ignore
+      # mutare:ignore
+      expression()
 
-  ## Grammar
-
-  After the keyword, two optional parts may follow, in order — a `[...]` filter and
-  a free-text reason:
+  A directive may include a family filter, a reason, or both:
 
       # mutare:ignore                              suppress every mutant on the line
       # mutare:ignore equivalent under int math    suppress all; record the reason
@@ -21,44 +19,28 @@ defmodule Mutare.Ignore do
       # mutare:ignore[relational:>]                suppress only the `i > j` swap
       # mutare:ignore[literal] off-by-one is fine  a filter and a reason together
 
-  ### The filter
+  Filter entries are mutator family names from `Mutare.Mutators.families/0`,
+  `clause_drop`, or a custom mutator's `c:Mutare.Mutator.name/0`. Without a filter,
+  the directive suppresses every mutant on the line.
 
-  Each entry in `[...]` is a mutator family — the names from
-  `Mutare.Mutators.families/0` (e.g. `arithmetic`, `relational`, `literal`), plus
-  `clause_drop` and any custom mutator's `name/0`. A bare family suppresses all of
-  its mutants on the line; with no `[...]` at all, every mutant is suppressed.
+  Use `family:label` to select one variant from a family. For example,
+  `[relational:<=]` suppresses the `<=` replacement but not the other relational
+  replacements. Labels are declared by each family and matched case-insensitively.
+  If a mutant has several labels, any matching label suppresses it. Run
+  `mix mutare --list-mutators` for the complete built-in list.
 
-  ### Variant qualifiers
-
-  A single expression often yields several mutants — `i < j` becomes both `i <= j`
-  and `i > j`. Qualify a family with `:label` to suppress just *one* kind:
-  `[relational:<=]` silences only the `<=` swap. Each family declares its own labels
-  — `relational` → `> >= < <= == != === !==`, `return_value` → `empty sentinel`,
-  `literal` → `zero succ pred negate`. Run `mix mutare --list-mutators` to see every
-  built-in family's labels, or read a family's page under *Built-in mutators*. A
-  mutant that is several kinds at once is matched by any of its labels, and matching
-  is case-insensitive.
-
-  ### The reason
-
-  Anything after the keyword (or after the closing `]`) is free text. It is
-  recorded on the mutant and shown in the report, so an exclusion documents itself.
+  Text after the keyword or filter is stored as the ignore reason and shown in the
+  report.
 
   ## When a directive errors or does nothing
 
-  A qualified `[family:label]` whose family is a **known built-in** (always — even one
-  disabled this run with `--mutators`) or an **active custom mutator**, but whose `label`
-  that family doesn't declare, is a **hard error** with a "did you mean" — a qualifier
-  typo can't silently fail to match. Everything else fails safe toward *running* the
-  mutant: an unknown family (a typo, or a custom family not enabled this run), a
-  bare-family typo, an empty `[]`, or a malformed `[…` missing its closing bracket all
-  simply match nothing. Because a silent no-match is easy to miss, any directive that
-  suppressed nothing (a typo, a misplaced standalone line, a family that produced no
-  mutant there) is reported as a warning — escalated to a non-zero exit by
-  `--strict-ignores`.
+  An unknown label for a built-in family, including a disabled one, or an active
+  custom family is an error. Unknown families, bare-family typos, empty filters, and
+  malformed filters match nothing. Any directive that suppresses no mutant produces
+  a warning; `--strict-ignores` turns that warning into a non-zero exit.
 
-  Directives are read from real comments, so a string literal that merely *reads*
-  like `"# mutare:ignore"` is never mistaken for one.
+  Only source comments are parsed. Text such as `"# mutare:ignore"` inside a string
+  has no effect.
   """
 
   alias Mutare.Ignore.Directive

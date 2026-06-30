@@ -1,93 +1,46 @@
 defmodule Mutare.Mutators.OperandSwap do
   @moduledoc """
-  Operand-order swaps for **non-commutative** binary operators: `a - b` → `b - a`,
-  `a / b` → `b / a`, `a ** b` → `b ** a`, `a <> b` → `b <> a`, `a ++ b` → `b ++ a`,
-  `a -- b` → `b -- a`, the function-call forms `div(a, b)` → `div(b, a)`,
-  `rem(a, b)` → `rem(b, a)`, the **non-commutative date/time calls**
-  `DateTime.before?(a, b)` → `DateTime.before?(b, a)` (likewise `after?`),
-  `DateTime.compare(a, b)` → `DateTime.compare(b, a)`, and
-  `DateTime.diff(a, b, unit)` → `DateTime.diff(b, a, unit)` (with the `Date` /
-  `Time` / `NaiveDateTime` twins), the **version comparison**
-  `Version.compare(a, b)` → `Version.compare(b, a)`, and the **non-commutative
-  `MapSet` calls** `MapSet.difference(a, b)` → `MapSet.difference(b, a)` and
-  `MapSet.subset?(a, b)` → `MapSet.subset?(b, a)`.
+  Reverses the first two operands of non-commutative operators and calls.
 
-  The complement of `Mutare.Mutators.Arithmetic`/`List`, which swap the *operator*
-  and keep the operands; this keeps the operator and swaps the operands. It catches
-  the symmetric class of bugs those miss — code that gets the operator right but the
-  argument order wrong (`elapsed = finish - start` written `start - finish`,
-  `path <> sep` written `sep <> path`, `DateTime.before?(deadline, now)` written
-  `DateTime.before?(now, deadline)`).
+  ## Operators
 
-  ## Which operators (and why not the others)
-
-  Only operators where order is *observable and the swap stays legal* are included:
-
-    * `-`, `/`, `**` — arithmetic / power; non-commutative. (`+`, `*` are
-      commutative — a swap is a guaranteed equivalent no-op, excluded.)
-    * `<>` — binary concatenation; order matters.
-    * `++`, `--` — list concat / difference; order matters. (Distinct from
-      `Mutare.Mutators.List`, which swaps `++`↔`--`; here the operator is kept.)
+    * `-`, `/`, and `**`
+    * `<>`
+    * `++` and `--`
     * `div`, `rem` — integer division / remainder.
 
-  Deliberately **excluded**:
+  The operator is retained; only the operands are exchanged.
 
-    * **Comparison operators** (`>`, `>=`, `<`, `<=`) — swapping operands is
-      semantically identical to flipping direction (`a > b` ≡ `b < a`), which
-      `Mutare.Mutators.Relational` already produces. (This is about the *operators*:
-      the date/time comparison *call* `DateTime.before?` is included — no family flips
-      its direction, so the swap is not a duplicate. See below.)
-    * **Commutative operators** (`+`, `*`, `==`, `!=`, `===`, `!==`, `and`, `or`,
-      `&&`, `||`) — the result is order-independent, so the mutant is equivalent.
-      (Boolean ops are owned by `Mutare.Mutators.Logical`.)
-    * **`in`** — `x in [1, 2]` swapped to `[1, 2] in x` is generally not
-      compile-safe (the RHS must be enumerable), so it is left out.
-    * **`=`, `|>`** — swapping operands changes binding / data-flow semantics.
+  The following operators are excluded:
 
-  ## Remote non-commutative calls (`DateTime`/`Date`/`Time`/`NaiveDateTime`, `Version`, `MapSet`)
+    * `>`, `>=`, `<`, and `<=`, because `Mutare.Mutators.Relational` already
+      produces the equivalent direction change
+    * commutative operators such as `+`, `*`, equality, and boolean operators
+    * `in`, because the swapped right operand may not be enumerable
+    * `=` and `|>`, whose operands have different roles
 
-  The operand-swap idea applied to named *calls*: keep the function, transpose the first
-  two arguments. Three date/time families qualify, on every calendar type (`DateTime`,
-  `Date`, `Time`, `NaiveDateTime`):
+  ## Calls
 
-    * `before?(a, b)` → `before?(b, a)` and `after?(a, b)` → `after?(b, a)` — the
-      chronological-comparison direction flip (`before?(b, a)` ≡ `after?(a, b)`). No
-      operator/relational family covers a `before?`/`after?` call, so this is not a
-      duplicate of the excluded comparison operators above.
-    * `compare(a, b)` → `compare(b, a)` — the three-way comparison; the swap inverts
-      `:lt` ↔ `:gt` (and leaves `:eq`), the same direction flip as `before?`.
-    * `diff(a, b)` / `diff(a, b, unit)` → `diff(b, a)` / `diff(b, a, unit)` — negates
-      the difference. The **trailing `unit`** is kept untouched: it is a mode atom that
-      `Mutare.Mutators.ModeSwap` already mutates, so the two families cover the call's
-      two independent axes (argument order, time unit) as separate mutants. `Date.diff/2`
-      carries no unit (it is always in days), so only the two-argument transpose applies
-      there — `Date.diff(a, b)` → `Date.diff(b, a)`.
+  The first two arguments are exchanged in these calls:
 
-  Two more non-commutative calls join them, the same way:
+    * `before?/2`, `after?/2`, `compare/2`, and `diff/2,3` on `DateTime`, `Date`,
+      `Time`, and `NaiveDateTime`, where those functions exist
+    * `Version.compare/2`
+    * `MapSet.difference/2` and `MapSet.subset?/2`
 
-    * `Version.compare(a, b)` → `Version.compare(b, a)` — the three-way version
-      comparison; like `DateTime.compare` the swap inverts `:lt` ↔ `:gt` (and leaves
-      `:eq`). No family flips its direction, so it is not a duplicate.
-    * `MapSet.difference(a, b)` → `MapSet.difference(b, a)` — set difference is
-      asymmetric (`a \\ b ≠ b \\ a`), and `MapSet.subset?(a, b)` →
-      `MapSet.subset?(b, a)` — "is `a` a subset of `b`" is not "is `b` a subset of
-      `a`". The complementary `MapSet.union` ↔ `MapSet.intersection` *name* swap is
-      `Mutare.Mutators.MapSet`'s, not here (those are commutative — nothing to transpose).
+  A trailing unit in `diff/3` is retained and may be mutated separately by
+  `Mutare.Mutators.ModeSwap`.
 
-  Matches aliased and imported calls too, while a shadowing `alias MyApp.DateTime`
-  resolves elsewhere and is left alone.
+  Aliased and imported calls are supported. An alias that resolves to another module
+  does not match.
 
-  ## Skipped (equivalent or no operand to swap)
+  ## Skipped cases
 
-  When both operands are structurally identical — `x - x`, `5 / 5`, `acc ++ acc`,
-  `DateTime.diff(t, t)` — the swap is a guaranteed no-op, so it is not emitted. A
-  **piped** stage of any of these calls (`x |> div(b)`, `a |> DateTime.before?(b)`)
-  draws its first operand from the pipe, so there is nothing local to transpose — also
-  skipped. Unary minus (`-x`) is out of scope (nothing to swap; `Mutare.Mutators.Arithmetic`
-  owns its removal).
+  Identical operands are not swapped. Piped calls are skipped because their first
+  operand is supplied outside the call node. Unary minus has no second operand and is
+  handled by `Mutare.Mutators.Arithmetic`.
 
-  `-`, `/`, `div`, `rem` are guard-legal, so an instance inside a `when` guard is
-  mutated too.
+  Guard-safe operators and calls are also mutated in guards.
   """
   @behaviour Mutare.Mutator
 

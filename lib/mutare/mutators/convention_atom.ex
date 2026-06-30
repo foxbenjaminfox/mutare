@@ -1,67 +1,33 @@
 defmodule Mutare.Mutators.ConventionAtom do
   @moduledoc """
-  Swap a **convention atom** for its **same-shape sibling** — `:ok` ↔ `:error`,
-  `:cont` ↔ `:halt`, `:lt` ↔ `:gt` — rather than for the generic `:mutare` sentinel.
-  Asks the question the sentinel can't: does any test distinguish the *success* path
-  from the *error* path (or `:cont` from `:halt`, `:lt` from `:gt`) here?
-
-  This is the semantic sibling of `Mutare.Mutators.ModeSwap`: where ModeSwap swaps a
-  *mode/unit* atom for a sibling of a closed set in a known stdlib call, this swaps a
-  *status/result tag* for its convention sibling wherever it appears as a literal —
-  no call context needed, because a convention atom's identity is position-independent.
-  It **replaces** `Mutare.Mutators.AtomLiteral`'s coverage of these specific atoms
-  (which excludes them by guard, the way `Mutare.Mutators.Literal`/`Conditional` own
-  `true`/`false`/`nil`), so a convention atom yields the high-signal sibling, not
-  `:mutare`.
-
-  ## Why a sibling beats `:mutare`
-
-  `:mutare` is a guaranteed-never-real value, so where a `case` handles both
-  `{:ok, _}` and `{:error, _}`, the mutant `{:mutare, _}` matches *no* clause →
-  `CaseClauseError` → killed trivially, telling you nothing. `:error` is a
-  *plausible* value the error branch **handles**, so a surviving `:ok` → `:error`
-  mutant pinpoints a genuinely untested success/error distinction. The
-  more-realistic mutant is the higher-signal one precisely because it is harder to
-  kill by accident.
-
-  ## Same-shape only
-
-  A sibling is paired **only when it preserves the surrounding shape**, so the
-  mutant is a *plausible alternative* rather than a malformed value:
+  Replaces convention atoms with a compatible alternative:
 
     * `{:ok, payload}` ↔ `{:error, reason}` — both 2-tuples
     * `{:cont, acc}` ↔ `{:halt, acc}` — both 2-tuples (`Enum.reduce_while`,
       `Stream.transform`)
-    * `:lt` ↔ `:gt` — both bare comparator results (`:eq`, the middle, is
-      deliberately *unpaired* — its swap is the weaker, more-equivalent-prone
-      mutant, so it keeps its `AtomLiteral` `:mutare` mutant)
+    * `:lt` ↔ `:gt` — bare comparison results
 
-  OTP return tags (`:reply`/`:noreply`/`:stop`) fail this test — `:reply` implies a
-  3-tuple, so swapping the bare atom yields a malformed `{:reply, state}` that just
-  crashes (no better than `:mutare`) — and are excluded. 3+ member conventions are
-  carried as the **polarity pair only** (mirroring `Numeric`/`Relational`'s
-  "complementary pairs, not a full mesh"), so the table stays a flat list of pairs.
+  These atoms are excluded from `Mutare.Mutators.AtomLiteral`, so only the compatible
+  replacement is emitted. `:eq` remains under `AtomLiteral`. OTP return tags such as
+  `:reply`, `:noreply`, and `:stop` are not included because changing only the tag can
+  produce an invalid return tuple.
 
   ## Configurable
 
-  Teach it your codebase's own tag conventions with a `:pairs` option — each entry a
-  same-shape sibling pair:
+  Add application-specific pairs with the `:pairs` option:
 
       [mutators: [..., {Mutare.Mutators.ConventionAtom, pairs: [[:active, :inactive]]}]]
 
-  Your pairs are **added to** the built-ins (`:ok`/`:error`, `:cont`/`:halt`,
-  `:lt`/`:gt`), never replacing them — so the built-in conventions keep firing
-  alongside yours, and an unconfigured instance still gets them all. Listing a pair
-  for an atom that already has a built-in sibling *adds* a sibling rather than
-  swapping one out: `pairs: [[:ok, :okay]]` makes `:ok` mutate to **both** `:error`
-  and `:okay`. (The built-in pairs can't be turned off — only extended.)
+  Custom pairs extend the built-in pairs; they do not replace them. For example,
+  `pairs: [[:ok, :okay]]` makes `:ok` mutate to both `:error` and `:okay`.
 
-  Like `AtomLiteral`, call-option names can be omitted without affecting atoms in
-  ordinary data: `{Mutare.Mutators.ConventionAtom, call_option_keys: false}`.
+  Set `call_option_keys: false` to skip atoms used as call-option names without
+  changing ordinary atom values:
 
-  Like `AtomLiteral`, it mutates a convention atom wherever an atom literal appears —
-  value positions, `def`/`defp` head patterns, and `case` clause patterns — but never a
-  bare atom that is a function name (`:upcase` in `String.upcase`). On by default.
+      {Mutare.Mutators.ConventionAtom, call_option_keys: false}
+
+  The family applies in value positions and patterns, but not where an atom names a
+  function. It is enabled by default.
   """
   @behaviour Mutare.Mutator
 

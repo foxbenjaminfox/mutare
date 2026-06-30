@@ -1,76 +1,43 @@
 defmodule Mutare.Mutators.CallRemoval do
   @moduledoc """
-  Remove a *transparent transform* — a call that reorders, strips, pads, dedups, or
-  normalizes its first argument — leaving the raw input. The classic "non-void method
-  call removal" operator, asking: does this tidying step matter, or did someone *forget*
-  it and nothing noticed?
+  Removes a call that transforms its first argument and returns that argument instead.
 
-  Targets (any arity — the first argument is always the value being transformed, and
-  the result is the same kind of thing, so dropping the call stays compile-safe):
+  The following calls are supported at every available arity:
 
     * `Enum.sort` / `Enum.sort_by` / `Enum.reverse` / `Enum.shuffle`
     * `Enum.uniq` / `Enum.uniq_by` / `Enum.dedup` / `Enum.dedup_by`
-    * `Enum.intersperse` (drops the separators, returning the un-interspersed input)
-    * the lazy `Stream` twins that exist — `Stream.uniq` / `uniq_by` / `dedup` /
-      `dedup_by` / `intersperse` (`Stream` has no `sort`/`reverse`/`shuffle`)
+    * `Enum.intersperse`
+    * `Stream.uniq` / `Stream.uniq_by` / `Stream.dedup` / `Stream.dedup_by` /
+      `Stream.intersperse`
     * `List.flatten`
-    * `Map.delete` / `Map.drop` / `Map.take` and the `Keyword` twins
-      (`Keyword.delete` / `Keyword.drop` / `Keyword.take`) — each returns the same kind of
-      collection with keys removed (`delete`/`drop`) or *only* the named keys kept (`take`),
-      so dropping the call returns the original collection: "does removing — or projecting
-      down to — these keys matter to any test?" (`take` is the `Map`/`Keyword` analogue of
-      `String.slice` — it selects a subset, and removing it returns the whole collection.)
-    * `List.delete` / `List.delete_at` / `List.keydelete` — drop one element by value,
-      index, or tuple-key, each returning a list with that element back in place
+    * `Map.delete` / `Map.drop` / `Map.take`, and the corresponding `Keyword` calls
+    * `List.delete` / `List.delete_at` / `List.keydelete`
     * `String.trim` / `String.trim_leading` / `String.trim_trailing`
     * `String.downcase` / `String.upcase` / `String.capitalize`
     * `String.reverse` / `String.normalize` / `String.replace_invalid`
     * `String.pad_leading` / `String.pad_trailing` / `String.slice` / `String.byte_slice`
-    * `URI.encode_www_form` / `URI.decode_www_form` (both `binary() -> binary()`,
-      so dropping the percent-en/decoding step returns the raw binary — "does any
-      test actually depend on the form-encoding?")
-    * `NaiveDateTime.beginning_of_day` / `NaiveDateTime.end_of_day` (each returns a
-      `NaiveDateTime` for the same day, so dropping the day-boundary normalization
-      leaves the original timestamp)
+    * `URI.encode_www_form` / `URI.decode_www_form`
+    * `NaiveDateTime.beginning_of_day` / `NaiveDateTime.end_of_day`
     * `Date.beginning_of_month` / `Date.end_of_month` / `Date.beginning_of_week` /
-      `Date.end_of_week` (each returns a `Date` — the `Date`-level boundary normalizers,
-      the analogue of `NaiveDateTime.beginning_of_day`; dropping the snap-to-boundary step
-      leaves the original date, the "is the period boundary actually relied on?" probe)
+      `Date.end_of_week`
     * `Kernel.abs` (`abs(x)` → `x`)
-    * the `Kernel` binary slicers — `binary_slice/2`, `binary_slice/3`,
-      `binary_part/3` (each selects a sub-binary; removing it returns the whole
-      binary, the binary analogue of `String.slice`). `binary_part/2` is not a
-      `Kernel` function — its only incarnation is `:erlang.binary_part/2` — so the
-      Erlang form `:erlang.binary_part` (`/2` and `/3`) is removed too.
-    * the analogous Erlang `:string` transforms — `trim`/`strip`/`chomp`,
+    * `Kernel.binary_slice/2,3`, `Kernel.binary_part/3`, and
+      `:erlang.binary_part/2,3`
+    * the corresponding Erlang `:string` transforms — `trim`/`strip`/`chomp`,
       `lowercase`/`uppercase`/`titlecase`/`casefold`/`to_lower`/`to_upper`, `reverse`,
       `pad`/`left`/`right`/`centre`, `slice`/`substr`/`sub_string`
 
-  Kept to transforms whose removal yields a same-typed, plausibly-interchangeable value.
-  `String.slice` / `String.byte_slice` (and `:string.slice`/`substr`/`sub_string`, and the
-  `binary_slice`/`binary_part` binary slicers) are included even though they *select* a part —
-  removing them returns the whole input, a clean "is the slice actually exercised?" probe — but
-  `String`/`:string` `replace`/`split` (and `String.first`,
-  `:string.prefix`, which can return `:nomatch`) stay excluded, since they change *which*
-  characters are present or change the type. `abs` fits squarely: `abs(x)` and `x` are both
-  numbers and *equal* for every non-negative input, so a suite that only ever exercises
-  non-negative values can't tell them apart — exactly the "did someone forget the `abs` and
-  nothing noticed?" signal.
+  The list is limited to calls whose first argument and result have compatible types.
+  Slicing calls are included because returning the whole input remains type-compatible.
+  Calls such as `map`, `filter`, `reduce`, `replace`, and `split` are excluded.
 
-  Deliberately *excludes* `map`/`filter`/`reduce` and friends: those change *which*
-  data is present, not just its order/shape, so their removal is a coarser, noisier
-  mutation. This family keeps to transforms whose removal yields a same-typed,
-  plausibly-interchangeable value.
+  A regular call is replaced by its first argument: `Enum.sort(xs)` becomes `xs`.
+  A pipe stage is replaced by `Function.identity/1`. Guard-safe removals, such as
+  `abs(x)`, also apply inside guards.
 
-  A non-piped call drops to its first argument (`Enum.sort(x)` → `x`); a pipe stage
-  becomes `Function.identity()` (`x |> Enum.sort()` ≡ `x`), since a stage can't be made
-  to vanish. A guard-legal removal (`abs(x) > 0` → `x > 0`) is mutated inside a `when`
-  too.
-
-  On by default. Matches aliased and bare-imported calls (Elixir and Erlang modules
-  alike) — `alias Enum, as: E; E.sort(x)`, `import :string; trim(x)`. A bare `Kernel`
-  call (`abs`, the binary slicers) is removed only at its true arity, so a same-named
-  user function is left alone.
+  This family is enabled by default. It matches aliased and imported calls, including
+  Erlang modules. Bare `Kernel` calls match only at their defined arities, so a
+  same-named local function is not removed.
   """
   @behaviour Mutare.Mutator
 

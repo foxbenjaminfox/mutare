@@ -1,127 +1,67 @@
 defmodule Mutare.Mutators.ModeSwap do
   @moduledoc """
-  Swap a **mode / unit atom** drawn from a closed set, in a known argument position
-  of a known stdlib function, for a sibling of the same set. Asks the question the
-  literal mutators can't reach: does any test actually depend on the *granularity*,
-  *unit*, or *mode* this call was given?
+  Replaces mode and unit atoms in supported standard-library calls. Each replacement
+  is valid for that function and argument position.
 
-  Unlike a literal swap this is **semantic** — it needs to know the function and which
-  of its arguments is the mode atom — so it is table-driven on `{module, fun, arity}`,
-  the sibling of `Mutare.Mutators.{Collection,StringCall,MapKeyword,CallRemoval}`. Where
-  those swap the *function name* or drop an *argument*, this swaps an *option value*.
+  ## Time and calendar units
 
-  ## What it mutates
-
-  Time units (the richest vein — `truncate`'s 3-member set is just a slice of the
-  calendar ladder, which recurs across `add`/`diff` on every calendar type and the
-  `System` clock):
-
-    * `DateTime.add/3,4`, `DateTime.diff/3`, and the `NaiveDateTime`/`Time` twins —
-      the trailing unit (`:second` → `:millisecond` / `:minute`, an adjacent neighbour
-      on the magnitude ladder)
-    * `DateTime.truncate/2`, `NaiveDateTime.truncate/2`, `Time.truncate/2` — the
-      precision (`:microsecond` ↔ `:millisecond` ↔ `:second`)
+    * `DateTime.add/3,4`, `DateTime.diff/3`, and the corresponding
+      `NaiveDateTime` and `Time` calls: replace the trailing time unit with an
+      adjacent unit.
+    * `DateTime.truncate/2`, `NaiveDateTime.truncate/2`, and `Time.truncate/2`:
+      replace `:microsecond`, `:millisecond`, or `:second` with an adjacent
+      precision.
     * `System.system_time/1`, `System.monotonic_time/1`, `System.os_time/1`,
-      `System.convert_time_unit/3` (both unit positions) — the clock unit, with the
-      `System`-only `:native` mapped to a concrete `:second`
-    * `DateTime.from_unix/2,3`, `DateTime.from_unix!/2,3`, `DateTime.to_unix/2` — the
-      Unix-timestamp unit, the same `System.time_unit` set (so `:native` → `:second`);
-      the optional trailing `Calendar` on the `/3` arities leaves the unit at position 1
-    * `DateTime.shift/2,3`, `NaiveDateTime.shift/2`, `Time.shift/2`, `Date.shift/2` — the
-      **duration units**. Unlike the others, the unit isn't a lone positional atom but the
-      *keys* of a keyword list of `unit: amount` pairs (`shift(dt, minute: 10, day: -1)`).
-      This is the generalisation of `mode_atom`: each *key* is a duration unit on a ladder
-      (`:second`…`:year`; `Time` is time-only — `:second`…`:hour`; `Date` is date-only —
-      `:day`…`:year`, since `Date.shift` rejects any time unit), so each swappable key is
-      moved to an adjacent neighbour independently (`minute:` → `second:`/`hour:`), its
-      amount kept. (`:microsecond` is excluded — its amount is a `{count, precision}`
-      tuple, incompatible with the integer-valued units, so swapping its key would only
-      ever raise. The amounts themselves still mutate via `Mutare.Mutators.Literal`.)
+      and both unit arguments of `System.convert_time_unit/3`: replace the clock
+      unit. `:native` changes to `:second`.
+    * `DateTime.from_unix/2,3`, `DateTime.from_unix!/2,3`, and
+      `DateTime.to_unix/2`: replace the timestamp unit.
+    * `DateTime.shift/2,3`, `NaiveDateTime.shift/2`, `Time.shift/2`, and
+      `Date.shift/2`: replace each duration key with an adjacent valid unit while
+      retaining its amount. `Time` accepts only time units and `Date` only date
+      units. `:microsecond` is excluded because its value has a different shape.
+    * `Date.day_of_week/2`, `Date.beginning_of_week/2`, and
+      `Date.end_of_week/2`: replace the starting weekday with an adjacent day.
+      `:default` changes to `:tuesday`.
 
-  Unicode modes:
+  ## String and encoding modes
 
-    * `String.upcase/2`, `String.downcase/2`, `String.capitalize/2` — the casing mode,
-      swapping only the exotic locale modes back to the default (`:greek` → `:default`,
-      `:turkic` → `:default`). `:default` ↔ `:ascii` is *not* swapped: it only diverges
-      on non-ASCII input (which a test exercising the call must already cover), so it
-      tended to survive as a low-signal equivalent rather than expose a real gap.
-    * `String.normalize/2` — the normalization form (`:nfc` ↔ `:nfd`, `:nfkc` ↔ `:nfkd`,
-      toggling composition while preserving compatibility)
+    * `String.upcase/2`, `String.downcase/2`, and `String.capitalize/2`:
+      `:greek` and `:turkic` change to `:default`. `:default` and `:ascii`
+      are not exchanged.
+    * `String.normalize/2`: exchange `:nfc` with `:nfd`, and `:nfkc` with
+      `:nfkd`.
+    * `DateTime.to_iso8601/2,3` and the corresponding `NaiveDateTime`, `Time`,
+      and `Date` calls: exchange `:extended` and `:basic`.
+    * `URI.encode_query/2` and `URI.decode_query/3`: exchange `:www_form` and
+      `:rfc3986`.
 
-  Sort order:
+  ## Sort modes
 
-    * `Enum.sort/2` (sorter at arg 1), `Enum.sort_by/3` and `List.keysort/3` (sorter at
-      arg 2) — the `:asc` ↔ `:desc` direction, a reversal that any test asserting on the
-      result's *order* must catch. Three sorter shapes are handled:
-        * the lone `:asc`/`:desc` shorthand — swapped;
-        * the `{:asc | :desc, module}` tuple (the per-sort comparison-module form) — only
-          the direction flips, the module is kept;
-        * a **bare module** alias (`Enum.sort(xs, Date)`, the ascending default, exactly
-          `{:asc, Date}`) — *wrapped* descending, `{:desc, Date}`. This is the lone
-          non-equivalent order swap on a module-keyed sort, so order-dependence is tested
-          even with no direction atom present. Only a literal module **alias** is wrapped: a
-          variable / fun sorter might be `:asc` or a comparator, which a `{:desc, _}` wrap
-          would reject at runtime.
-      `Enum.min_by/max_by` look similar but reject the shorthand (they read the atom as a
-      comparison module), so they are deliberately absent.
+  For `Enum.sort/2`, `Enum.sort_by/3`, and `List.keysort/3`, the mutator
+  exchanges `:asc` and `:desc`. It also changes the direction in
+  `{:asc | :desc, module}` tuples. A literal module sorter, such as
+  `Enum.sort(values, Date)`, becomes `{:desc, Date}`. Variables and function
+  sorters are not wrapped.
 
-  ISO 8601 rendering:
+  ## Keyword option modes
 
-    * `DateTime.to_iso8601/2,3` and the `NaiveDateTime`/`Time`/`Date` `to_iso8601/2` twins —
-      the positional `format` atom, `:extended` ↔ `:basic` (the separator-laden
-      `2020-01-01T00:00:00Z` vs the compact `20200101T000000Z`), a string-shape change any
-      `to_iso8601` assertion catches. `/1` defaults the format (no atom to swap); on
-      `DateTime`'s `/3` the trailing `offset` keeps the format at position 1.
+    * The `case:` option for `Base.encode16/2`, `Base.decode16/2`,
+      `Base.decode16!/2`, and the corresponding Base32 and hex Base32 functions
+      exchanges `:upper` and `:lower`. `:mixed` is unchanged.
+    * The `return:` option for `Regex.scan/3` and `Regex.run/3` exchanges
+      `:index` and `:binary`.
+    * The `on:` option for `Regex.split/3` changes `:first` and `:all` to
+      `:none`; `:none`, `:all_but_first`, and `:all_names` change to
+      `:first`. Lists of capture references are unchanged.
 
-  Calendar week start:
+  Ordered sets use adjacent replacements, so a position produces at most two
+  mutants. Unrecognized atoms and values of other types are ignored.
 
-    * `Date.day_of_week/2`, `Date.beginning_of_week/2`, `Date.end_of_week/2` — the
-      `starting_on` weekday (`:monday` … `:sunday`), an ordered ladder swapped to an
-      adjacent day, so a US-style `:sunday` week start moves to `:saturday`/`:monday` (a
-      different computed boundary or index any assertion catches). `:default` ≡ `:monday`,
-      so — like `System`'s `:native` — it maps to a concrete neighbour (`:tuesday`), never
-      its own meaning. The `/1` arities default the day (no atom to swap).
-
-  URL query encoding:
-
-    * `URI.encode_query/2`, `URI.decode_query/3` — the trailing `encoding`,
-      `:www_form` ↔ `:rfc3986` (space-as-`+` vs percent-encoded `%20`), a query-string
-      shape change. `encode_query/1` / `decode_query/2` default the encoding.
-
-  Keyword-option modes (the atom is the *value* of a named option key — the value-side
-  mirror of `shift`'s keyword *keys*):
-
-    * `Base.encode16/2`, `decode16/2`, `decode16!/2` and the Base32 family
-      (`encode32/2`, `decode32/2`, `decode32!/2`, `hex_encode32/2`, `hex_decode32/2`,
-      `hex_decode32!/2`) — the `case:` option, `:upper` ↔ `:lower` (a different rendering,
-      or accepted input on decode). The decoders' `:mixed` is left alone: it accepts both
-      cases, so a swap from it only narrows acceptance on input the test already exercises —
-      the `:default` ↔ `:ascii` trap.
-    * `Regex.scan/3`, `Regex.run/3` — the `return:` option, `:index` ↔ `:binary` (offset
-      tuples vs the matched substrings, a result-shape change any assertion catches).
-    * `Regex.split/3` — the `on:` option, *which* captures define the split points (the
-      value-side sibling of `scan`/`run`'s `return:`). Its swaps cross the one axis that
-      is observable on any matching input — whether the whole match acts as a split point:
-      the whole-match modes `:first` (the default) and `:all` move to `:none` (split on
-      nothing), and the rest — `:none`, `:all_but_first`, `:all_names` — move to `:first`.
-      (An `on:` given a *list* of capture references rather than an atom is not a mode, so
-      it is left alone.)
-
-  ## Swap strategy — small, legal, behavioural
-
-  Each swap stays **within the legal set of *that* function** (a `truncate` only accepts
-  `:microsecond | :millisecond | :second`, so its swaps never reach `:minute`, which would
-  raise), and an ordered ladder always swaps to an **adjacent** member — a single
-  factor-of-1000/60 step, subtle enough to slip past a loose assertion yet always
-  observable. So a site yields at most two mutants (one finer, one coarser); the unordered
-  mode sets (case, form) emit one curated, behaviourally-distinct sibling. A position
-  holding a non-atom or an unrecognised atom contributes nothing, and a swap is never the
-  original atom — no equivalent no-ops.
-
-  On by default. Matches aliased calls too (`alias DateTime, as: DT; DT.truncate(dt,
-  :second)`), and the mode atom is found at its true position whether the call is piped
-  or not. Because the swap rewrites the whole call, the redundant `AtomLiteral` leaf
-  mutant on the same atom (and the `AliasLiteral` leaf on a bare-module sort) is dropped.
+  This family is enabled by default. It matches aliased and piped calls and locates
+  the option at its effective argument position. Because it rewrites the whole call,
+  overlapping `Mutare.Mutators.AtomLiteral` and `Mutare.Mutators.AliasLiteral`
+  leaf mutants are removed.
   """
   @behaviour Mutare.Mutator
 

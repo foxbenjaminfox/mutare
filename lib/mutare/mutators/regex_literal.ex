@@ -1,126 +1,64 @@
 defmodule Mutare.Mutators.RegexLiteral do
   @moduledoc """
-  Regex-sigil mutations. A `~r/…/` literal is mutated along several independent
-  axes, each occurrence/flag yielding its own mutant:
+  Mutates non-interpolated `~r` sigils. Each changed token or modifier produces a
+  separate mutant.
 
-    * **whole-pattern** — replace the pattern with both the empty pattern `~r//`
-      (matches everywhere, so `Regex.match?/2` is always true) and a sentinel
-      `~r/mutare/` (matches essentially no real input, always false), dropping
-      whichever already equals the original. A contrasting pair, like
-      `Mutare.Mutators.StringLiteral`: between them they catch a suite that never
-      exercises what the pattern accepts or rejects.
-    * **anchors** — drop a leading `^`/`\\A` (`~r/^abc/` → `~r/abc/`) or an
-      unescaped trailing `$`/`\\z`/`\\Z` (`~r/abc$/` → `~r/abc/`), each
-      independently. An unanchored pattern matches anywhere in the subject.
-    * **anchor swaps** — swap an anchor for a *non-equivalent* sibling, at any real
-      anchor position (escaped `\\^`/`\\$` and in-class `^`/`$` are skipped). The
-      equivalences depend on the **`m` (multiline)** flag, read **positionally** via
-      `Mutare.Mutators.RegexLiteral.Flags`: the sigil's own modifiers *and* any inline
-      `(?m)` / `(?m:…)` / `(?-m)`, so `m` may be on at one anchor and off at another
-      (`^a(?m)$` — the `^` is not multiline, the `$` is). A swap is offered *only*
-      where the two anchors actually differ under the mode in force at that point,
-      never as a guaranteed no-op:
-        * `^` ↔ `\\A` — equivalent without `/m` (both = subject start), so offered
-          **only under `/m`**, where `^` is a *line* start.
-        * `$` ↔ `\\Z` — `\\Z` equals `$` without `/m`, so likewise offered **only
-          under `/m`** (where `$` is a *line* end).
-        * `$` ↔ `\\z` — `\\z` is the *strict* subject end (rejects a trailing
-          newline that `$` accepts), so it differs regardless of `/m` and is
-          **always** offered. Without `/m` it is killable only on a subject with a
-          trailing newline, so a survivor is a suspected-equivalent /
-          `# mutare:ignore[regex]` case (like `+`/`*`).
-    * **character-class shorthands** — flip a `\\d`/`\\w`/`\\s` to its complement
-      `\\D`/`\\W`/`\\S` (and back), anywhere, plus the word-boundary `\\b`↔`\\B`
-      outside a class (inside `[…]` `\\b` is a backspace, so it is left alone).
-    * **class negation** — toggle a bracketed character class between matching and
-      not matching its members: `[abc]` ↔ `[^abc]`.
-    * **character-class ranges** — nudge a class range's endpoints by one
-      (`[a-z]` → `[b-z]`/`[a-y]`, `[0-9]` → `[1-9]`/`[0-8]`), the byte-walk analogue
-      of the bounded-quantifier nudge. Only **alphanumeric** endpoints are mutated,
-      each result kept ordered (`lo ≤ hi`) and within a safe printable-literal band
-      (never a class metacharacter `] [ \\ ^ -`), so the rewrite is always a legal,
-      non-empty class.
-    * **literal dot** — `.` (any character) ↔ `\\.` (a literal dot), outside a class:
-      `~r/a.b/` → `~r/a\\.b/` and `~r/a\\.b/` → `~r/a.b/`. The unescaped→escaped
-      direction catches the classic "forgot to escape the dot" bug. Inside `[…]` a
-      `.` is already a literal, so it is left alone (the swap there is a no-op).
-    * **dotall dot** — `.` matches any character *except* a newline unless `s` (dotall)
-      is active. Gated **positionally** on `s` (the same `Flags` resolver as the anchor
-      swaps), flip the dot's newline-matching the *other* way than the mode in force, so
-      the swap is never a no-op: where `s` is **off**, `.` → `(?s:.)` (now matches a
-      newline); where `s` is **on**, `.` → `(?-s:.)` (now excludes one). The scoped
-      `(?…:.)` confines the change to this one dot, so two dots under different inline
-      modes (`a.b(?s).c`) each get their own correct swap. Killable on a subject with a
-      newline at that point — without one in the test data, a survivor is a suspected
-      equivalent (like `$`↔`\\z`). The force-non-dotall `(?-s:.)` is **suppressed** when
-      it would duplicate dropping a sigil `s` (one dot, no inline modifier group — both
-      then yield the same matcher), keeping the modifier-drop sibling instead.
-    * **quantifiers** — swap `+`↔`*` (the cleanest complement: `+` is 1-or-more,
-      `*` is 0-or-more, distinct under most uses — though *not* under
-      `String.replace(s, _, "")` / `Regex.replace(s, _, "")`, where deleting the
-      `\\s*` vs `\\s+` matches yields the same string: a context-dependent
-      equivalent left to surface as a suspected survivor / `# mutare:ignore[regex]`,
-      since recognising it would mean a node-local mutator inspecting its enclosing
-      call); **collapse** a `+`/`*` to exactly-one by dropping it (`\\d+` → `\\d`);
-      turn an optional `?` mandatory by dropping it (`colou?r` → `colour`) and
-      raise it to `+` *and* `*` (`-?\\d` → `-+\\d`/`-*\\d`); add a **lazy** `?`
-      suffix to a greedy quantifier (`a+` → `a+?`, `a{2,4}` → `a{2,4}?` — distinct
-      wherever match *length* matters, e.g. a capture or `Regex.replace`; a boolean
-      `Regex.match?/2` never observes greediness, so like `+`/`*` this can be a
-      context-dependent equivalent → suspected survivor / `# mutare:ignore[regex]`;
-      **not** offered on a *fixed*-count `{n}`/`{n,n}`, where the repetition can't vary
-      so a lazy `?` is a guaranteed no-op);
-      and nudge a bounded quantifier's counts by one (`{3}`→`{2}`/`{4}`, `{8,}`→
-      `{7,}`/`{9,}`, `{2,4}`→`{1,4}`/`{3,4}`/`{2,3}`/`{2,5}`), staying within
-      `0 ≤ n ≤ m`, *plus* dropping the upper bound (`{2,4}`→`{2,}`) and pinning to
-      exact (`{2,4}`→`{2}`, `{8,}`→`{8}`; skipped when it would re-create the
-      original, e.g. `{2,2}`→`{2}`). A `?`/`*`/`+` that is a group marker
-      (`(?:…)`) is left alone, and a quantifier already carrying a lazy/possessive
-      suffix is left **whole** — `a+?`/`a++` only `+`↔`*`-swap (no collapse/re-suffix),
-      and a compound optional `a??`/`a?+` is offered nothing at all (dropping its first
-      `?` would reinterpret the trailing `?`/`+` as the operator, e.g. `a?+`→`a+`). On a
-      **zero-width** atom (a lookaround, or a `\\b`/`^`/`$`-style assertion) repetition is
-      idempotent, so the variants that don't change the "always-passes vs requires-once"
-      class are guaranteed-equivalent and dropped (`(?=a)+` offers only `(?=a)*`, never the
-      collapse `(?=a)` or lazy `(?=a)+?`); the class-changing swap survives.
-    * **alternation** — drop one branch of an alternation at the pattern's top
-      level or inside a *capturing* group: `~r/^(GET|POST)$/` → `~r/^(GET)$/` and
-      `~r/^(POST)$/`. Non-capturing/lookaround groups (`(?:…)`, `(?=…)`, …) are
-      skipped, since rewriting them risks shifting capture semantics rather than
-      just narrowing what matches.
-    * **modifiers** — drop a present flag one at a time: `~r/x/uis` yields mutants
-      `~r/x/is`, `~r/x/us`, `~r/x/ui`. Removing `i` (caseless), `s` (dotall), `u`
-      (unicode), `m` (multiline), … each changes what the pattern accepts. The
-      `u`-drop is emitted even on an all-ASCII pattern where it *looks* redundant:
-      it is still **killable** — a `/u` regex raises on invalid UTF-8 where the
-      no-`u` form byte-matches — so a surviving `u`-drop is a real finding (the `/u`
-      is dead cruft, or its only effect — rejecting invalid UTF-8 — is untested),
-      not an equivalent no-op to suppress. `# mutare:ignore[regex]` is the per-case
-      opt-out.
+  ## Pattern replacements
 
-  Every replacement is written to stay a legal regex (an escaped `\\$`/`\\d`/`\]` is
-  left alone, a leading `]` in a class is literal, bound counts are kept ordered, class
-  ranges stay within a safe literal band). As a final backstop, each candidate must pass
-  **two** independent validity gates, since the mutant must be legal on both levels: it is
-  compiled with `Regex.compile/2` (the *same* PCRE validity the rendered `~r/…/<mods>` is
-  held to, so a byte-level edit that re-tokenizes — `{42+}` → `{42}` — is dropped), **and**
-  it must render back to the same single-binary sigil as Elixir *source* — the two diverge
-  on `\#{`, which PCRE reads as a literal `#`/`{` but Elixir reads as interpolation (a
-  collapse of `#+{` → `\#{` passes PCRE yet would poison the metamutant). Either failing
-  drops the candidate, so neither poisons the single compile. Every pass is a fold over
-  **one** shared token stream (`Mutare.Mutators.RegexLiteral.Tokens`),
-  which owns all cross-cutting lexing — escapes (incl. a three-byte `\\cX` control escape),
-  character classes (incl. a POSIX `[:alpha:]` whose inner `]` must not close the class),
-  group structure + the `Flags` scope stack, and the spans where regex syntax does not
-  apply. Those come in two flavours:
-  an **ignored** `:comment` (an `x`-mode `#` line comment — ended at CR or LF, read
-  **positionally** so an inline `(?x)` is honoured — or a `(?#…)` group), behind which a
-  lazy/possessive quantifier suffix can still be seen; and an **inert** atom (`:inert` — a
-  `\\Q…\\E` quote or a `(*VERB…)` control verb) whose body isn't regex. Neither's content
-  is lexed, so no anchor/dot/quantifier/literal/alternation inside them is ever mutated,
-  dropped, or split (and a quoted/commented/verb `(` or `|` cannot perturb the flag scope
-  stack or read as alternation). Only non-interpolated patterns are touched: an interpolated
-  `~r/\#{x}/` parses with multiple `<<>>` parts, not a single binary.
+    * **Whole pattern:** replace the pattern with `~r//` and `~r/mutare/`. A
+      replacement equal to the original is omitted.
+    * **Anchors:** remove a leading `^` or `\\A`, or a trailing `$`, `\\z`, or
+      `\\Z`. Escaped and character-class occurrences are ignored.
+    * **Anchor variants:** exchange `^` and `\\A`, or `$` and `\\Z`, only
+      where multiline mode makes them different. Exchange `$` and `\\z` in
+      either mode. Sigil modifiers and inline flag groups determine the mode at each
+      anchor.
+    * **Character classes:** complement `\\d`, `\\w`, and `\\s`; exchange
+      `\\b` and `\\B` outside classes; toggle class negation; and move an
+      alphanumeric range endpoint by one. Range changes remain ordered and avoid
+      class metacharacters.
+    * **Dots:** exchange `.` and `\\.` outside classes. A wildcard dot also gets a
+      scoped variant that reverses its newline behavior: `(?s:.)` when dotall mode
+      is off, or `(?-s:.)` when it is on. Inline flags are applied positionally.
+      A force-off variant that duplicates dropping the sigil's `s` modifier is
+      omitted.
+    * **Alternation:** remove one top-level branch or one branch inside a capturing
+      group. Non-capturing groups and lookarounds are not rewritten this way.
+    * **Modifiers:** remove each sigil modifier separately. This includes `u`; its
+      removal changes handling of invalid UTF-8 even when the pattern itself is
+      ASCII.
+
+  ## Quantifiers
+
+    * Exchange `+` and `*`, and remove either to require exactly one occurrence.
+    * Remove `?` to make an optional atom mandatory, or change it to `+` or `*`.
+    * Add a lazy suffix to a greedy variable-count quantifier.
+    * Move each legal bound by one. For example, `{2,4}` can become `{1,4}`,
+      `{3,4}`, `{2,3}`, or `{2,5}`.
+    * Remove an upper bound or pin a range to an exact count.
+
+  Bounds remain non-negative and ordered. A fixed count does not receive a lazy
+  variant. Group markers are not treated as quantifiers. Quantifiers with an existing
+  lazy or possessive suffix receive only changes that cannot reinterpret that suffix.
+  Repetition of zero-width assertions is limited to variants that change whether the
+  assertion is required.
+
+  Some valid mutations are equivalent in a particular calling context. For example,
+  greediness does not affect `Regex.match?/2`, and `+` and `*` may produce the
+  same result when all matches are removed. These mutants remain visible and can be
+  suppressed with `# mutare:ignore[regex]` where appropriate.
+
+  ## Safety and parsing
+
+  Every candidate must compile with `Regex.compile/2` and render as a
+  single-binary Elixir sigil. This checks both regex syntax and Elixir interpolation
+  syntax before the candidate enters the metamutant.
+
+  All mutations use one token stream that tracks escapes, character classes, group
+  structure, and positional flags. Extended-mode comments, `(?#...)` comments,
+  `\\Q...\\E` quoted spans, and control verbs are treated as non-pattern content.
+  Tokens inside them are not mutated and do not affect grouping. Interpolated sigils
+  are not mutated.
   """
   @behaviour Mutare.Mutator
 

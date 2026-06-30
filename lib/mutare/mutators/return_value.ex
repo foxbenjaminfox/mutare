@@ -1,26 +1,13 @@
 defmodule Mutare.Mutators.ReturnValue do
   @moduledoc """
-  Replace a function clause's **return value** — the tail expression of its body —
-  with a fixed constant. The highest-signal question in mutation testing, asked
-  directly: *does any test pin what this function returns?* If the suite never
-  constrains a function's result, every constant survives, and the survivor is a
-  precisely located gap.
+  Replaces function return expressions with fixed constants.
 
-  It fires at each `def`/`defp` **return tail**. Tail position is transitive: when a
+  It applies to each `def` and `defp` return path. When a
   clause tail is a `case`/`cond`/`if`/`unless`/`with`/`try`/`receive`, each branch's tail
-  is its own return path, so a branchy function gets one return mutant per branch rather
-  than one coarse mutant on the whole construct (`try`'s `:after` is excluded — its value
-  is discarded). The same applies inside an **anonymous function** — each `fn` clause
-  body tail is a return path. On by default, named in reports, selectable via
-  `:mutators`, filterable by `# mutare:ignore[return_value]`.
+  is its own return path. The value of a `try` `after` block is excluded because it is
+  discarded. Each clause of an anonymous function is handled in the same way.
 
-  ## Which constants (a contrasting *pair*)
-
-  Any bare constant compiles and is a valid signal, so the choice is about
-  *contrast* — picking values different enough from the real return that a test
-  asserting on it would notice — and about *not duplicating* the node-level
-  families. Like `Mutare.Mutators.StringLiteral`'s `""`+`"mutare"` pair, each
-  eligible tail yields **two** replacements, shape-directed:
+  Each eligible return path produces two replacements based on its shape:
 
     | tail shape                                   | empty/zero | sentinel   |
     |----------------------------------------------|------------|------------|
@@ -30,35 +17,19 @@ defmodule Mutare.Mutators.ReturnValue do
     | anything else (variable, call, tuple, map,   | `nil`      | `:mutare`  |
     | `:ok`/`:error` atom, an opaque-macro result) |            |            |
 
-  The two halves catch *opposite* weak assertions. The **empty/zero** value is
-  killed by a test that asserts the result is present/non-empty/non-nil but
-  survives one that pins the exact value; the **non-empty/non-nil sentinel** is
-  the mirror — it is killed by a test pinning the value but survives one that only
-  checks `!= nil` (or truthiness, or "the list is non-empty"). A function whose
-  result the suite never constrains leaves *both* alive, a doubly-loud survivor.
-  (A sentinel that would equal the original tail — only possible when the tail is
-  itself a bare atom, e.g. `def f, do: :mutare` — is dropped as an equivalent
-  no-op, exactly as `StringLiteral` drops the half equal to its source string.)
+  A replacement equal to the original return is omitted.
 
-  ## What it deliberately leaves alone (no redundant mutant)
+  ## Exclusions
 
-    * **Boolean-valued tails** (a comparison/logical operator) — already covered by
-      `Mutare.Mutators.Conditional`, which forces the result to `true`/`false`.
-      Mutating them here too would just duplicate that. (Detected via
-      `Conditional.boolean_op?/1`.)
-    * **Bare literals already mutated by a value family** — an integer/float/string
-      literal, a list literal, a boolean. `Literal`/`FloatLiteral`/`StringLiteral`/
-      `List` already replace these *at the node*, so a whole-tail constant would
-      reproduce their work. (A bare *atom* like `:ok` is **not** in this set — no
-      family mutates arbitrary atoms — so `def save(_), do: :ok` does get a
-      `:ok → nil` return mutant.)
-    * **A `nil` tail** — replacing `nil` with `nil` is equivalent, and with anything
-      else is low-signal (a `nil`-returning function is usually side-effecting).
-    * **A `quote` block** — a function whose tail is a `quote` builds macro AST,
-      which Mutare treats as compile-time code and leaves whole.
+    * Boolean expressions are handled by `Mutare.Mutators.Conditional`.
+    * Integer, float, string, list, and boolean literals are handled by their
+      node-level families. Bare atoms remain eligible.
+    * `nil` return expressions are not mutated.
+    * `quote` blocks are compile-time code and are not mutated as a whole.
 
-  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
-  suppress just one kind (`c:Mutare.Mutator.variants/0`): `empty`, `sentinel`.
+  The `empty` and `sentinel` variants can be selected independently in an ignore
+  directive, for example `# mutare:ignore[return_value:empty]`. This family is
+  enabled by default.
   """
   @behaviour Mutare.Mutator
   @behaviour Mutare.Mutator.Structural
