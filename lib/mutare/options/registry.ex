@@ -299,6 +299,25 @@ defmodule Mutare.Options.Registry do
         ":min_score must be a number between 0 and 100, or nil"
       )
 
+  # nil disables the coverage-gap gate; otherwise this is an absolute count of
+  # :no_coverage mutants allowed in a complete run. 0 means fail CI on any
+  # uncovered mutant while preserving the score denominator.
+  defp validate_max_no_coverage!(n),
+    do:
+      validate_nullable!(
+        n,
+        &(is_integer(&1) and &1 >= 0),
+        ":max_no_coverage must be a non-negative integer or nil"
+      )
+
+  # Post-run CI gates for statuses deliberately kept out of the score. These do
+  # not change the score semantics; they make “Mutare could not test this
+  # meaningfully” actionable when a CI policy wants that to be fatal.
+  defp validate_fail_on_poisoned!(value), do: validate_boolean!(:fail_on_poisoned, value)
+
+  defp validate_fail_on_harness_error!(value),
+    do: validate_boolean!(:fail_on_harness_error, value)
+
   # `:reporters` is the list of *output formats* (the single source of truth for
   # format validation). Distinct from `:reporter` (a `Mutare.Run.Context` hook). Input
   # accepts a bare format atom (stdout) or `{format, path | nil}`; the canonical struct
@@ -375,8 +394,8 @@ defmodule Mutare.Options.Registry do
   defp show_cap(nil), do: "(no cap)"
   defp show_cap(n), do: to_string(n)
 
-  defp show_min_score(nil), do: "(no gate)"
-  defp show_min_score(n), do: to_string(n)
+  defp show_gate(nil), do: "(no gate)"
+  defp show_gate(n), do: to_string(n)
 
   defp show_sandbox(nil), do: "(throwaway temp dir)"
   defp show_sandbox(path), do: path
@@ -401,7 +420,7 @@ defmodule Mutare.Options.Registry do
 
   This is a function rather than a module attribute because the `:validate`/`:show` values are
   captures of this module's *private* functions, which a module attribute cannot hold (only a
-  function body can capture a local). It is rebuilt per call — cheap (25 maps + named-fun captures),
+  function body can capture a local). It is rebuilt per call — cheap (28 maps + named-fun captures),
   and only called a handful of times per run (each `Options.new/1`, the CLI switch composition, a
   `--show-config`).
 
@@ -487,8 +506,27 @@ defmodule Mutare.Options.Registry do
         key: :min_score,
         default: nil,
         cli: :float,
-        show: &show_min_score/1,
+        show: &show_gate/1,
         validate: &validate_min_score!/1
+      ),
+      spec(
+        key: :max_no_coverage,
+        default: nil,
+        cli: :integer,
+        show: &show_gate/1,
+        validate: &validate_max_no_coverage!/1
+      ),
+      spec(
+        key: :fail_on_poisoned,
+        default: false,
+        cli: :boolean,
+        validate: &validate_fail_on_poisoned!/1
+      ),
+      spec(
+        key: :fail_on_harness_error,
+        default: false,
+        cli: :boolean,
+        validate: &validate_fail_on_harness_error!/1
       ),
       spec(
         key: :strict_ignores,

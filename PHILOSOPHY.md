@@ -118,8 +118,8 @@ dependency-free. Reach for the primitive that works everywhere before the one
 that works cleverly.
 
 **Never lie in the output.** The score is `killed / (total − no_coverage −
-ignored − poisoned)`: mutants that *can't* be killed are removed from the
-denominator, not silently counted as wins or losses. Skipped files are surfaced.
+ignored − poisoned − harness_error)`: mutants that *can't* be killed are removed
+from the denominator, not silently counted as wins or losses. Skipped files are surfaced.
 Test selection's one soundness risk — a kill that happens indirectly — is
 documented and given an escape hatch (`--full`), not hidden. A mutation-testing
 tool's whole value is telling you the truth about your suite; the moment it

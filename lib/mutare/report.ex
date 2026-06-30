@@ -168,6 +168,42 @@ defmodule Mutare.Report do
   def passes_gate?(results, min_score), do: score(results) >= min_score
 
   @doc """
+  Human-readable failures for complete-run CI gates.
+
+  These gates are separate from score semantics: `:no_coverage`, `:poisoned`,
+  and `:harness_error` stay out of the mutation-score denominator, but a caller
+  can still make them fatal for CI. `opts` may be a keyword list or an options
+  map carrying:
+
+    * `:min_score` — minimum mutation score percentage, or `nil`
+    * `:max_no_coverage` — maximum allowed `:no_coverage` count, or `nil`
+    * `:fail_on_poisoned` — fail if any mutant is `:poisoned`
+    * `:fail_on_harness_error` — fail if any mutant is `:harness_error`
+  """
+  @spec gate_failures([Result.t()], keyword() | map()) :: [String.t()]
+  def gate_failures(results, opts \\ []) do
+    counts = tally(results)
+
+    [
+      score_gate_failure(results, gate_opt(opts, :min_score)),
+      max_count_gate_failure(count(counts, :no_coverage), gate_opt(opts, :max_no_coverage)),
+      fail_on_status_failure(
+        count(counts, :poisoned),
+        gate_opt(opts, :fail_on_poisoned, false),
+        "poisoned",
+        "--fail-on-poisoned"
+      ),
+      fail_on_status_failure(
+        count(counts, :harness_error),
+        gate_opt(opts, :fail_on_harness_error, false),
+        "harness-error",
+        "--fail-on-harness-error"
+      )
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  @doc """
   Fraction of launched mutant runs that ended in `:harness_error`.
 
   The denominator includes `:killed`, `:survived`, `:timeout`,
@@ -269,6 +305,32 @@ defmodule Mutare.Report do
 
   defp tally(results), do: Enum.frequencies_by(results, & &1.status)
 
+  defp gate_opt(opts, key, default \\ nil)
+  defp gate_opt(opts, key, default) when is_list(opts), do: Keyword.get(opts, key, default)
+  defp gate_opt(opts, key, default) when is_map(opts), do: Map.get(opts, key, default)
+
+  defp score_gate_failure(_results, nil), do: nil
+
+  defp score_gate_failure(results, min_score) do
+    unless passes_gate?(results, min_score) do
+      "mutation score #{percent(score(results))}% is below the required minimum of #{percent(min_score)}%"
+    end
+  end
+
+  defp max_count_gate_failure(_n, nil), do: nil
+  defp max_count_gate_failure(n, max) when n <= max, do: nil
+
+  defp max_count_gate_failure(n, max) do
+    "#{n} no-coverage mutant#{plural(n)} #{exceed(n)} the allowed maximum of #{max}"
+  end
+
+  defp fail_on_status_failure(0, _enabled, _label, _flag), do: nil
+  defp fail_on_status_failure(_n, false, _label, _flag), do: nil
+
+  defp fail_on_status_failure(n, true, label, flag) do
+    "#{n} #{label} mutant#{plural(n)} #{present(n)} and #{flag} is set"
+  end
+
   defp score_from_tally(counts) do
     # Kills (numerator) and the scored set (denominator) are classified by `Mutare.Result`:
     # a timeout/atom-exhaustion is a kill, while no-coverage/ignored/poisoned/harness-error
@@ -285,6 +347,15 @@ defmodule Mutare.Report do
   defp count_where(counts, pred) do
     for {status, n} <- counts, pred.(status), reduce: 0, do: (acc -> acc + n)
   end
+
+  defp plural(1), do: ""
+  defp plural(_), do: "s"
+
+  defp exceed(1), do: "exceeds"
+  defp exceed(_), do: "exceed"
+
+  defp present(1), do: "is present"
+  defp present(_), do: "are present"
 
   defp total(counts), do: counts |> Map.values() |> Enum.sum()
 end

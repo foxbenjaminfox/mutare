@@ -136,6 +136,25 @@ defmodule Mutare.ConfigTest do
       assert merged[:sandbox] == "/tmp/sb"
     end
 
+    test "non-score CI gates pass through; absent leaves them to defaults" do
+      merged =
+        Config.merge([],
+          max_no_coverage: 0,
+          fail_on_poisoned: true,
+          fail_on_harness_error: true
+        )
+
+      assert merged[:max_no_coverage] == 0
+      assert merged[:fail_on_poisoned] == true
+      assert merged[:fail_on_harness_error] == true
+
+      refute Keyword.has_key?(Config.merge([], []), :max_no_coverage)
+      refute Keyword.has_key?(Config.merge([], []), :fail_on_poisoned)
+      refute Keyword.has_key?(Config.merge([], []), :fail_on_harness_error)
+
+      assert Config.merge([max_no_coverage: 2], max_no_coverage: 1)[:max_no_coverage] == 1
+    end
+
     test "--full sets test_selection: :full; otherwise it's left to default" do
       assert Config.merge([], full: true)[:test_selection] == :full
       refute Keyword.has_key?(Config.merge([], []), :test_selection)

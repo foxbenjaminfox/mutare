@@ -63,7 +63,7 @@ Then run `mix mutare`.
   the compile error, dropped (reported as *poisoned*), and the build retried, to try and avoid a bad mutant spoiling the whole run—but ideally this shouldn't be necessary, and it usually isn't.
 - **A very broad built-in mutator set** — arithmetic/operator swaps, relational and logical swaps, literals of every kind, collection/string/map call rewrites, pattern and clause restructurings, and more. See [`Mutare.Mutators`](https://hexdocs.pm/mutare/Mutare.Mutators.html), and write your own with [`Mutare.Mutator`](https://hexdocs.pm/mutare/Mutare.Mutator.html).
 - **Umbrella-aware** — target one app, several, or the whole workspace.
-- **CI-friendly** — `--since <ref>` to scope to changed files, `--min-score` to gate, machine-readable reports, and `--keep-sandbox` to cache the compiled sandbox across runs.
+- **CI-friendly** — `--since <ref>` to scope to changed files, score/coverage/infra gates, machine-readable reports, and `--keep-sandbox` to cache the compiled sandbox across runs.
 
 Suppress a known-equivalent mutant with a comment — a trailing comment marks its line as ignored, and a standalone comment applies to the next line. Ignored mutants are excluded from the score.
 
@@ -99,6 +99,9 @@ mix mutare --only lib/billing       # scope to a path
 mix mutare --since master           # only files changed vs a git ref (CI)
 mix mutare --mutators relational    # choose mutator families
 mix mutare --min-score 70           # fail (CI) below a score
+mix mutare --max-no-coverage 0      # fail (CI) on uncovered mutants
+mix mutare --fail-on-poisoned       # fail (CI) on compile-poisoned mutants
+mix mutare --fail-on-harness-error  # fail (CI) on infrastructure verdict gaps
 mix mutare --full                   # whole suite per mutant (no test selection)
 mix mutare --workers 4              # run N mutants concurrently
 mix mutare --timeout 30000          # per-mutant wall-clock cap, in ms
@@ -125,6 +128,10 @@ Optional `.mutare.exs`:
   # fail the run (non-zero exit) if the mutation score drops below this;
   # the same CI gate as `--min-score`, which overrides this when given
   min_score: 70,
+  # separate CI gates for mutants Mutare could not test meaningfully
+  max_no_coverage: 0,
+  fail_on_poisoned: true,
+  fail_on_harness_error: true,
   workers: System.schedulers_online(),
   # per-mutant cap = baseline × timeout_multiplier, unless an absolute
   # `timeout:` (ms) is set — both also available as --workers / --timeout
@@ -135,7 +142,7 @@ Optional `.mutare.exs`:
 ]
 ```
 
-These are the common keys; `mix help mutare` documents the full set — sandbox / build-cache reuse (`sandbox`, `keep_sandbox`), baseline re-runs (`baseline_runs`), the harness-error guards (`harness_retries`, `max_harness_error_rate`), `max_mutants`, `strict_ignores`, `quiet`, and `expand_uses` — each also a CLI flag.
+These are the common keys; `mix help mutare` documents the full set — sandbox / build-cache reuse (`sandbox`, `keep_sandbox`), baseline re-runs (`baseline_runs`), harness-error retry/abort guards (`harness_retries`, `max_harness_error_rate`), run caps (`max_mutants`, `max_survivors`), CI gates (`min_score`, `max_no_coverage`, `fail_on_poisoned`, `fail_on_harness_error`, `strict_ignores`), `quiet`, and `expand_uses` — each also a CLI flag.
 
 ### Live progress
 

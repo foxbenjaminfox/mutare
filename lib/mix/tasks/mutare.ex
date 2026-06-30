@@ -117,13 +117,17 @@ defmodule Mix.Tasks.Mutare do
 
   ## Continuous integration
 
-  By default a run exits 0 no matter how many mutants survive. Two flags add a non-zero exit so a CI job can fail the build:
+  By default a run exits 0 no matter how many mutants survive. CI gates add a non-zero exit when a run violates the policy you choose:
 
       mix mutare --min-score 70           # exit 1 if the mutation score is below 70%
+      mix mutare --max-no-coverage 0      # exit 1 if any mutant has no covering test
+      mix mutare --fail-on-poisoned       # exit 1 if any mutant had to be dropped
+                                          #   because the mutated code would not compile
+      mix mutare --fail-on-harness-error  # exit 1 if any mutant run reached no verdict
       mix mutare --strict-ignores         # exit 1 if any `# mutare:ignore` matched
                                           #   no mutant (a typo'd family or stale line)
 
-  Combine `--since` with `--min-score` to gate only the code a pull request changed, and `--quiet` to drop the live progress animation (spinner, phases, per-survivor lines); the final report (and any machine reports) will still be printed.
+  Combine `--since` with CI gates to gate only the code a pull request changed, and `--quiet` to drop the live progress animation (spinner, phases, per-survivor lines); the final report (and any machine reports) will still be printed.
 
       mix mutare --since origin/main --min-score 80 --quiet
 
@@ -150,9 +154,8 @@ defmodule Mix.Tasks.Mutare do
                                           #   level (1.0 = never abort on these)
       mix mutare --max-survivors 5        # stop the run once 5 mutants have survived
                                           #   (in source order) — surface a few test
-                                          #   gaps to fix without a full run. The score
-                                          #   is then partial, so the --min-score gate
-                                          #   is skipped
+                                          #   gaps to fix without a full run. The result
+                                          #   set is then partial, so CI gates are skipped
       mix mutare --verbose                # narrate what's happening at each step: a
                                           #   line per mutant (with its duration) plus
                                           #   per-phase detail — compile time, baseline
@@ -252,7 +255,7 @@ defmodule Mix.Tasks.Mutare do
         # test at most the first N mutants in source order (a quick smoke run)
         max_mutants: nil,
         # stop the run once the first N surviving mutants are found (an
-        # iterate-and-fix workflow); the partial score skips the --min-score gate
+        # iterate-and-fix workflow); the partial result set skips CI gates
         max_survivors: nil,
 
         # --- sandbox reuse / build cache (see "Sandbox and build cache" above) ---
@@ -266,6 +269,12 @@ defmodule Mix.Tasks.Mutare do
         # --- output & CI gates ---
         # exit the run with code 1 if the mutation score drops below this percentage; by default there is no minimum score
         # min_score: 70,
+        # exit 1 if the run records more than this many uncovered mutants; nil disables the gate
+        max_no_coverage: nil,
+        # exit 1 if any mutant had to be dropped because the mutated code would not compile
+        fail_on_poisoned: false,
+        # exit 1 if any mutant's test run reached no pass/fail/timeout verdict
+        fail_on_harness_error: false,
 
         # exit 1 if any `# mutare:ignore` suppresses no mutant (a typo or stale line)
         strict_ignores: false,
@@ -671,20 +680,21 @@ defmodule Mix.Tasks.Mutare do
     finish_run(run, options)
   end
 
-  # On a complete run, apply the `--min-score` CI gate. On an early stop
-  # (`--max-survivors`), the score is over a partial prefix of the mutants, so a
-  # gate would be misleading — instead note what happened (on stderr, so a machine
-  # report on stdout stays clean, like `warn_ineffective_ignores/1`) and skip it.
+  # On a complete run, apply the post-report CI gates. On an early stop
+  # (`--max-survivors`), the result set is only a partial prefix of the mutants,
+  # so a gate would be misleading — instead note what happened (on stderr, so a
+  # machine report on stdout stays clean, like `warn_ineffective_ignores/1`) and
+  # skip it.
   defp finish_run(%{stopped_early: false} = run, %Options{} = options),
-    do: gate(run.results, options.min_score)
+    do: gate(run.results, options)
 
   defp finish_run(%{stopped_early: true} = run, %Options{} = options) do
     IO.puts(:stderr, early_stop_note(run, options))
   end
 
   # The partial-run note for an early stop: how many survivors were found, how much
-  # of the candidate set was evaluated, and — only when a `--min-score` was set —
-  # that its gate was skipped because the score is partial.
+  # of the candidate set was evaluated, and — only when a CI gate was configured —
+  # that gates were skipped because the result set is partial.
   defp early_stop_note(run, %Options{} = options) do
     survivors = Enum.count(run.results, &(&1.status == :survived))
     evaluated = length(run.results)
@@ -692,11 +702,16 @@ defmodule Mix.Tasks.Mutare do
 
     "stopped after finding #{survivors} survivor#{CLI.plural(survivors)} (--max-survivors " <>
       "#{options.max_survivors}); evaluated #{evaluated} of #{total} mutant#{CLI.plural(total)}. " <>
-      "The mutation score above is over this partial set" <> gate_skipped_note(options.min_score)
+      "The mutation score above is over this partial set" <> gate_skipped_note(options)
   end
 
-  defp gate_skipped_note(nil), do: "."
-  defp gate_skipped_note(_min_score), do: ", so the --min-score gate was not applied."
+  defp gate_skipped_note(%Options{} = options) do
+    if ci_gates_configured?(options) do
+      ", so CI gates were not applied."
+    else
+      "."
+    end
+  end
 
   # A `nil` path means stdout (the console); a path means write the rendered
   # report to that file and note where it went.
@@ -713,12 +728,19 @@ defmodule Mix.Tasks.Mutare do
     Options.renderer(format).render(run.results, run.schema.sources, min_score: options.min_score)
   end
 
-  defp gate(results, min_score) do
-    unless Report.passes_gate?(results, min_score) do
-      Mix.raise(
-        "mutation score #{Report.percent(Report.score(results))}% is below the required minimum of #{Report.percent(min_score)}%"
-      )
+  defp gate(results, %Options{} = options) do
+    case Report.gate_failures(results, options) do
+      [] ->
+        :ok
+
+      failures ->
+        Mix.raise("CI gate failed:\n" <> Enum.map_join(failures, "\n", &"  * #{&1}"))
     end
+  end
+
+  defp ci_gates_configured?(%Options{} = options) do
+    options.min_score != nil or options.max_no_coverage != nil or options.fail_on_poisoned or
+      options.fail_on_harness_error
   end
 
   defp format_error(:nothing_to_mutate, detail), do: detail

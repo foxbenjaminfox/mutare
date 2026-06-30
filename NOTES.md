@@ -3545,9 +3545,10 @@ likewise flash a couple above N before the halt — cosmetic; the final report i
 mutants, so its score is over a partial denominator (and artificially low — we stopped
 *because* survivors piled up). The run is flagged `stopped_early`; on that flag the runner
 **skips the harness-error abort guard** (aborting would throw away the very survivors the
-user asked for), and `Mix.Tasks.Mutare` **skips the `--min-score` gate**, printing a note
+user asked for), and `Mix.Tasks.Mutare` **skips the CI gates** (`--min-score`,
+`--max-no-coverage`, `--fail-on-poisoned`, `--fail-on-harness-error`), printing a note
 to **stderr** (so a machine report on stdout stays clean, like the ineffective-ignore
-warnings) naming the survivor count, `M of T` evaluated, and that the gate was skipped.
+warnings) naming the survivor count, `M of T` evaluated, and that the gates were skipped.
 
 ### Mutations that break the *test suite's* compilation are kills `[done]`
 Surfaced mutation testing on the plug library's `lib/plug/router`: 17 of 187

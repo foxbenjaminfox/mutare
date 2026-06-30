@@ -21,6 +21,9 @@ defmodule Mutare.OptionsTest do
       assert options.max_harness_error_rate == 0.5
       assert options.sandbox == nil
       assert options.min_score == nil
+      assert options.max_no_coverage == nil
+      assert options.fail_on_poisoned == false
+      assert options.fail_on_harness_error == false
     end
 
     test ":workers defaults to the scheduler count (a concrete positive integer)" do
@@ -362,6 +365,43 @@ defmodule Mutare.OptionsTest do
         assert_raise ArgumentError, ~r/:min_score must be a number between 0 and 100/, fn ->
           Options.new(min_score: bad)
         end
+      end
+    end
+  end
+
+  describe ":max_no_coverage" do
+    test "accepts nil or a non-negative integer" do
+      assert Options.new(max_no_coverage: nil).max_no_coverage == nil
+      assert Options.new(max_no_coverage: 0).max_no_coverage == 0
+      assert Options.new(max_no_coverage: 3).max_no_coverage == 3
+    end
+
+    test "rejects negatives and non-integers" do
+      for bad <- [-1, 1.5, "0"] do
+        assert_raise ArgumentError,
+                     ~r/:max_no_coverage must be a non-negative integer or nil/,
+                     fn ->
+                       Options.new(max_no_coverage: bad)
+                     end
+      end
+    end
+  end
+
+  describe "non-score CI gate booleans" do
+    test "accept true and false" do
+      assert Options.new(fail_on_poisoned: true).fail_on_poisoned == true
+      assert Options.new(fail_on_poisoned: false).fail_on_poisoned == false
+      assert Options.new(fail_on_harness_error: true).fail_on_harness_error == true
+      assert Options.new(fail_on_harness_error: false).fail_on_harness_error == false
+    end
+
+    test "reject non-booleans" do
+      assert_raise ArgumentError, ~r/:fail_on_poisoned must be true or false/, fn ->
+        Options.new(fail_on_poisoned: "yes")
+      end
+
+      assert_raise ArgumentError, ~r/:fail_on_harness_error must be true or false/, fn ->
+        Options.new(fail_on_harness_error: "yes")
       end
     end
   end

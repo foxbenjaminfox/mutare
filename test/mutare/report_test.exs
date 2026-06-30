@@ -435,6 +435,58 @@ defmodule Mutare.ReportTest do
     end
   end
 
+  describe "gate_failures/2" do
+    test "returns no failures when gates are disabled" do
+      results = [
+        %Result{status: :survived},
+        %Result{status: :no_coverage},
+        %Result{status: :poisoned},
+        %Result{status: :harness_error}
+      ]
+
+      assert Report.gate_failures(results, []) == []
+    end
+
+    test "reports score and non-meaningful-result gate failures" do
+      results = [
+        %Result{status: :killed},
+        %Result{status: :survived},
+        %Result{status: :no_coverage},
+        %Result{status: :no_coverage},
+        %Result{status: :poisoned},
+        %Result{status: :harness_error}
+      ]
+
+      assert Report.gate_failures(results,
+               min_score: 75,
+               max_no_coverage: 1,
+               fail_on_poisoned: true,
+               fail_on_harness_error: true
+             ) == [
+               "mutation score 50.0% is below the required minimum of 75.0%",
+               "2 no-coverage mutants exceed the allowed maximum of 1",
+               "1 poisoned mutant is present and --fail-on-poisoned is set",
+               "1 harness-error mutant is present and --fail-on-harness-error is set"
+             ]
+    end
+
+    test "treats max_no_coverage as an inclusive count boundary" do
+      results = [%Result{status: :no_coverage}]
+
+      assert Report.gate_failures(results, max_no_coverage: 1) == []
+
+      assert Report.gate_failures(results, max_no_coverage: 0) == [
+               "1 no-coverage mutant exceeds the allowed maximum of 0"
+             ]
+    end
+
+    test "accepts an options map as well as a keyword list" do
+      assert Report.gate_failures([%Result{status: :poisoned}], %{fail_on_poisoned: true}) == [
+               "1 poisoned mutant is present and --fail-on-poisoned is set"
+             ]
+    end
+  end
+
   test "render/2 lists survivors as diffs plus a summary line" do
     sites = [site(:>), site(:<=)]
     sources = %{"lib/billing.ex" => @source}

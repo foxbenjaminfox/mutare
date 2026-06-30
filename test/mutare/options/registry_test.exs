@@ -30,6 +30,9 @@ defmodule Mutare.Options.RegistryTest do
     assert {:expand_uses, :boolean} in switches
     assert {:workers, :integer} in switches
     assert {:min_score, :float} in switches
+    assert {:max_no_coverage, :integer} in switches
+    assert {:fail_on_poisoned, :boolean} in switches
+    assert {:fail_on_harness_error, :boolean} in switches
 
     # exceptional/translated flags are owned by Mutare.Config, not the registry
     refute Keyword.has_key?(switches, :mutators)
