@@ -1,34 +1,26 @@
 defmodule Mutare.Mutators.PatternWildcard do
   @moduledoc """
-  Where a variable appears **more than once** in a pattern, replace an occurrence with
-  `_` — dropping the (non-linear) equality constraint the repetition encodes.
+  Replaces repeated variables in a pattern with `_`, removing the equality
+  constraint created by the repetition:
 
-  `def equal?(x, x), do: true` matches only when its two arguments are equal; mutating
-  it to `def equal?(_, x), do: true` makes it match *any* two arguments. This asks: *is
-  the case where the values differ actually tested?* If only equal inputs are exercised,
-  the mutant survives — a precisely located gap.
+      def equal?(x, x), do: true  →  def equal?(_, _), do: true
 
-  On by default, named in reports, toggleable via `:mutators`, filterable by
-  `# mutare:ignore[pattern_wildcard]`.
+  The replacement policy keeps required bindings intact:
 
-  ## How many occurrences are replaced
+    * If the variable is read by the guard or body, or appears at least three times
+      in the head, one mutant is produced for each wildcarded occurrence.
+    * If it appears exactly twice and is not read elsewhere, both occurrences are
+      replaced in one mutant. Replacing only one would leave an unused binding.
 
-  Wildcarding never strands the variable:
+  `_`, underscore-prefixed names, and pinned variables are not counted or replaced.
+  On the right side of a bitstring `::`, atoms such as `binary` have the same AST
+  shape as variables, so that side is not searched for pattern occurrences.
 
-    * If the variable is read in the body/guard, **or** it appears ≥ 3 times in the head,
-      one mutant is emitted per occurrence (`def f(x, x), do: x` → `f(_, x)` and `f(x, _)`).
-    * If it appears exactly twice in the head and is **not** read elsewhere, *both*
-      occurrences are replaced at once (`def equal?(x, x), do: true` →
-      `def equal?(_, _), do: true`) — thinning to one would leave a lone unused binding.
+  A variable read by a bitstring specifier is also excluded. For example, the `n`
+  bound and read by `<<n, rest::size(n)>>` cannot be wildcarded without leaving an
+  invalid size reference.
 
-  `_`, `_`-prefixed names, and pinned variables (`^x`) are never counted or replaced.
-  Nor is the **specifier side of a bitstring segment** (`<<v::binary>>`, `<<v::size(k)>>`):
-  a type atom like `binary` parses identically to a variable, so counting it would
-  invent a phantom duplicate of a same-named value/arg, and replacing it yields an
-  illegal `<<v::_>>`. The walk descends only the *value* side of a `::` segment. A name
-  *read* in a spec (a `size(k)` reference) is excluded from wildcarding entirely, even
-  when it is also bound elsewhere in the head (`f(<<n, r::size(n)>>, n)`): a size variable
-  must be bound earlier in the same bitstring, so wildcarding that binding strands the read.
+  This family is enabled by default and uses the `pattern_wildcard` ignore name.
   """
   @behaviour Mutare.Mutator
   @behaviour Mutare.Mutator.Structural

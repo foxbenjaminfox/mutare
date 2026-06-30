@@ -1,56 +1,31 @@
 defmodule Mutare.Mutators.BitstringSpec do
   @moduledoc """
-  Unicode bitstring-specifier mutation: swap a segment's **text encoding** and
-  **byte order** in a `<<…>>` *constructor*. The fault model is a wrong
-  representation choice in binary I/O — encoding a codepoint as the wrong UTF
-  width, or with the wrong endianness — exactly the "looks right, subtly wrong"
-  bug that codec / protocol / file-format code should pin down and that nothing
-  else here reaches (the whole spec side of a `::` segment is otherwise excluded).
+  Mutates Unicode encoding and byte-order specifiers in bitstring constructors.
+  Each mutant changes one segment along one of these axes.
 
-  Two axes, both **compile-safe by construction** and (after the equivalence
-  filter below) **never-equivalent** — the reason this is the only spec-position
-  family worth running:
+  ## Encoding
 
-    * **encoding** — `utf8 ↔ utf16 ↔ utf32` (a 3-way swap, so each utf segment
-      yields two encoding mutants). The three share one validity domain (a valid
-      Unicode scalar; a surrogate / over-max value raises identically for all
-      three), so a swap *never* turns a working segment into a crashing one — it
-      only changes the bytes emitted, which is precisely the observable a test
-      should catch. Every codepoint encodes to a different byte *width* under each
-      encoding (`?h` → `<<104>>` / `<<0, 104>>` / `<<0, 0, 0, 104>>`), so the swap
-      differs for any non-empty value.
-    * **byte order** — `big ↔ little`, only for `utf16`/`utf32` (a `utf8` segment
-      is byte-oriented; endianness is meaningless on it). A bare `<<x::utf16>>`
-      defaults to big-endian, so it earns one mutant that *adds* `-little`; an
-      explicit `utf16-big`/`utf16-little` flips to the other. `native` is left
-      untouched as **source and target** — it resolves to the host's endianness,
-      so a `native` swap would be equivalent on one architecture and not another
-      (an unkillable-or-flaky mutant).
+  A segment using `utf8`, `utf16`, or `utf32` receives replacements using each of
+  the other encodings. These encodings accept the same Unicode scalar values but
+  produce different byte widths for non-empty values.
 
-  **The equivalence filter** (`reject_equivalent/3`) is what makes both axes
-  exactly never-equivalent for a **literal** value — an integer codepoint *or* a
-  binary string (whose utf encoding is each codepoint in turn). It encodes the
-  original segment and each variant and drops any whose bytes match, catching both
-  axes' coincidences: a byte-palindromic value reads the same in either order
-  (`<<0::utf16>>` and `<<"\\0"::utf16>>` are `<<0, 0>>`; `<<0x0101::utf16>>` is
-  `<<1, 1>>`), and an **empty** value is `<<>>` under every width
-  (`<<""::utf16>>`), so even its encoding swaps coincide. A swap on a *variable*
-  value is kept — it is killable by some input, so a real mutant, not equivalent.
+  ## Byte order
 
-  Delivery is positional and needs nothing special: the whole `<<…>>` node is
-  offered to `mutate/1` only in a **runtime body** (a constructor — where the
-  in-place selector legally wraps it, the same path `BitstringLiteral` rides), and
-  each mutant is a *complete* `<<…>>` with one segment's spec rewritten. So a
-  spec in a **pattern** (`<<cp::utf16, rest::binary>> = decode(x)` — the decoding
-  side, where the matching bug bites) is *not* reached: a selector can't wrap a
-  pattern, and a spec atom isn't a literal the lift / tuple-the-scrutinee paths
-  carry. v1 catches encoders, not decoders — a deliberate, documented gap.
+  `big` and `little` are exchanged for `utf16` and `utf32` segments. A bare UTF-16
+  or UTF-32 specifier defaults to big-endian and receives a variant with `little`
+  added. UTF-8 has no byte-order mutation. `native` is not used as a source or
+  replacement because its result depends on the host architecture.
 
-  Not mutated: an **interpolated string** (`"a\#{x}b"`, a `<<>>` with a
-  `:delimiter` — `StringLiteral`'s domain, and its segments are `::binary`, never
-  utf anyway); a segment with no utf encoding (`integer`/`binary`/`float`/…, a
-  `size`/`unit`-bearing spec — none of which a utf segment can carry). The segment
-  *values* still mutate independently via their own families.
+  For literal integer and binary values, each candidate is encoded before emission.
+  A candidate whose bytes equal the original is removed. This filters empty values
+  and byte-palindromic values whose byte order is unobservable. Variable values
+  remain eligible because some runtime input can distinguish the encodings.
+
+  The family applies only to runtime bitstring constructors. Bitstring patterns are
+  not mutated because an in-place selector cannot wrap a pattern. Interpolated
+  strings and segments without a UTF encoding are also excluded. UTF segments with
+  `size` or `unit` specifiers are not valid targets. Segment values may still be
+  mutated independently by other families.
   """
   @behaviour Mutare.Mutator
 

@@ -1,41 +1,24 @@
 defmodule Mutare.Mutators.Bitwise do
   @moduledoc """
-  Bitwise operator/function swaps — the bit-twiddling sibling of
-  `Mutare.Mutators.Arithmetic`, asking: does any test actually depend on *which*
-  bitwise combination this does?
+  Mutates bitwise operators and their `Bitwise` function forms:
 
-    * `&&&` ↔ `|||`   (band ↔ bor)       — the AND/OR pair
-    * `<<<` ↔ `>>>`   (bsl ↔ bsr)        — the shift-left/right pair
-    * `~~~x` → `x`    (bnot)             — drop the complement, the bitwise twin of
-      Arithmetic's unary-minus removal
+    * `&&&` ↔ `|||` (`band` ↔ `bor`)
+    * `<<<` ↔ `>>>` (`bsl` ↔ `bsr`)
+    * `~~~x` → `x` (`bnot(x)` → `x`)
 
-  Both spellings are covered: the **operators** (`a &&& b`, `~~~x`) and the
-  **function** forms (`Bitwise.band(a, b)`, `import Bitwise; bsl(x, n)`,
-  `Bitwise.bnot(x)`). The function forms match aliased and imported calls too, and are
-  pipe-safe (`x |> bsl(n)` → `x |> bsr(n)`).
+  Function calls may be direct, aliased, imported, or piped. Bitwise operations are
+  guard-safe and are also mutated in guards.
 
-  All bitwise operators and functions are **guard-legal**, so a swap inside a `when`
-  guard is mutated too. On by default.
+  A left/right shift by the literal value `0` is unchanged and is therefore
+  omitted. AND/OR replacements and complement removal remain eligible.
 
-  ## Equivalent shifts are skipped
+  `bxor` and `^^^` are not mutated because XOR has no complementary operator.
+  The deprecated `~~~` form is supported, but a piped `bnot` call is not removed.
+  Imports introduced by `use Bitwise` are available only when that `use` can be
+  expanded during resolution.
 
-  A shift by a literal `0` is an identity in *both* directions (`x <<< 0 == x == x >>> 0`),
-  so swapping `<<<`↔`>>>` (or `bsl`↔`bsr`) there is an equivalent no-op — skipped. The
-  AND/OR pair has no such literal identity (`x &&& 0 == 0` but `x ||| 0 == x`), so those
-  are always offered. `~~~x` is never equivalent to `x` (`~~~x == -x - 1`), so it is
-  always offered.
-
-  ## Scope and known gaps
-
-  `bxor`/`^^^` are left alone — XOR has no natural complementary sibling, so swapping it to
-  AND or OR would be an arbitrary mapping, trading signal for noise. `~~~` and `^^^` are the
-  *deprecated* operators (the compiler nudges toward `Bitwise.bnot/1`/`bxor/2`); a `~~~`
-  that compiles is still stripped, but the primary complement form is the function `bnot`.
-  A `bnot` **as a pipe stage** (`x |> bnot()`) is not stripped — a rare, safe miss.
-  `use Bitwise` injects its imports via macro expansion, invisible without expanding it.
-
-  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
-  suppress just one kind (`c:Mutare.Mutator.variants/0`): `&&&`, `|||`, `<<<`, `>>>`.
+  This family is enabled by default. Its ignore variants are `&&&`, `|||`, `<<<`,
+  and `>>>`.
   """
   @behaviour Mutare.Mutator
 

@@ -1,40 +1,24 @@
 defmodule Mutare.Mutators.Numeric do
   @moduledoc """
-  Swap a numeric `Kernel`/`Float` builtin for its complementary sibling — the
-  arithmetic cousin of `Mutare.Mutators.Collection`/`StringCall`, asking: does any
-  test actually depend on *which* selection or rounding direction this call uses?
+  Renames numeric selection and rounding calls to a complementary function:
 
-    * `min/2` ↔ `max/2`              — the bound it selects (the `Kernel` twins of
-      `Enum.min`/`max`, which `Collection` already covers)
-    * `round/1` ↔ `trunc/1`          — round-to-nearest vs truncate-toward-zero
-    * `ceil/1` ↔ `floor/1`           — round up vs round down
-    * `Float.ceil` ↔ `Float.floor`   — the float-precision pair (any arity)
-    * `Float.max_finite` ↔ `Float.min_finite` — the extreme-finite-float pair
-      (`/0` constants returning the largest/smallest representable float; an
-      arity-blind rename like the `Float.ceil`/`floor` pair, the two extremes of
-      the finite range)
+    * `Kernel.min/2` ↔ `Kernel.max/2`
+    * `Kernel.round/1` ↔ `Kernel.trunc/1`
+    * `Kernel.ceil/1` ↔ `Kernel.floor/1`
+    * `Float.ceil` ↔ `Float.floor` at any arity
+    * `Float.max_finite/0` ↔ `Float.min_finite/0`
 
-  The `Kernel` functions (`min`/`max`/`round`/`trunc`/`ceil`/`floor`) are all guard-safe,
-  so a swap is mutated even inside a `when`.
+  Only the listed pairs are produced. In particular, the four integer-returning
+  rounding functions are not treated as a full set because some cross-pair
+  replacements are equivalent for common inputs. `Float.round` is not included
+  because it has no complementary `Float` function.
 
-  ## Complementary pairs, not a full mesh
+  Kernel calls are matched only at their defined arities and may also be mutated in
+  guards. Aliased and imported calls are supported; a Kernel function displaced by
+  an import is not matched. The `div`/`rem` pair belongs to
+  `Mutare.Mutators.Arithmetic`.
 
-  `round`/`trunc`/`ceil`/`floor` all coerce a number to an integer and differ only in
-  rounding *direction*, so they could in principle each map to the other three. Only the
-  two **complementary pairs** (`round`↔`trunc`, `ceil`↔`floor`) are offered, not the full
-  mesh: a mesh would triple the mutant count at every rounding call and surface more
-  *equivalent* survivors (for a positive non-integer `x`, `floor(x) == trunc(x)`, so that
-  swap is a no-op the suite can never kill). The two pairs capture the two questions worth
-  asking: nearest-vs-truncate, and up-vs-down.
-
-  ## Scope and known gaps
-
-  Matches aliased and bare-imported calls too. A bare `Kernel` call is swapped only at
-  its true arity (min/max `/2`, the coercions `/1`), so a same-named user `floor/2` or
-  `max/3` is left alone, and a `Kernel` function displaced by `import Kernel, except:`
-  is skipped. `Float.round` is intentionally absent — round-to-nearest has no
-  complementary `Float` sibling. `div`↔`rem` lives in `Mutare.Mutators.Arithmetic` (it is
-  an operator swap, not a call). On by default.
+  This family is enabled by default.
   """
   @behaviour Mutare.Mutator
 

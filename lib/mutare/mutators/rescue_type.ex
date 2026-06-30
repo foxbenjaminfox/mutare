@@ -1,40 +1,25 @@
 defmodule Mutare.Mutators.RescueType do
   @moduledoc """
-  Narrow a `rescue` clause's caught **exception types** — drop one type from a
-  `var in [Type1, Type2, ...]` list, so the clause rescues one fewer kind. The
-  question it asks: *does any test rely on each rescued exception actually being
-  caught here?* If a type can be dropped and the suite stays green, nothing
-  exercises that rescue path — a precisely located gap.
+  Narrows the exceptions handled by a `rescue`.
 
-  ## What it drops (and what it leaves alone)
+  For a clause with two or more exception types, the mutator removes each type in
+  turn:
 
-  A type list of **two or more** types is mutated — in either the bound
-  `var in [A, B, ...]` or the bare `[A, B, ...]` form — dropping each type in turn
-  (`[A, B]` → `[A]` and `[B]`; `[A, B, C]` → `[B, C]`, `[A, C]`, `[A, B]`). Every
-  result is a non-empty exception list, so the metamutant always compiles. A single
-  type (`var in A` / `rescue A`), a bare variable (`rescue e` — catches everything),
-  and an empty drop (which would be `in []`, catching nothing) are left alone — none
-  has a meaningful, compile-safe narrowing.
+      rescue e in [ArgumentError, RuntimeError] -> handle(e)
 
-  ## Multi-branch rescues: drop a whole clause
+  produces clauses that rescue only `ArgumentError` or only `RuntimeError`. Both
+  bound `var in [A, B]` and bare `[A, B]` forms are supported. A one-element list,
+  a single type, and a bare variable are unchanged because they cannot be narrowed
+  this way without removing the rescue entirely.
 
-  The idiomatic way to handle several exception types *differently* is one clause each:
+  A rescue with two or more clauses also produces one mutant per removed clause.
+  This covers the common form where each clause handles one exception type. At least
+  one clause is always retained, and the removed clause may have any valid head,
+  including a catch-all variable.
 
-      rescue
-        e in ArgumentError -> handle_arg(e)
-        e in RuntimeError  -> handle_run(e)
-
-  Each branch catches a single type, so there is no list to narrow — but the same
-  question ("is each rescued exception's handling actually relied on?") is asked one
-  level up by **dropping a whole `rescue` branch**: drop the `ArgumentError` clause and
-  that exception propagates while `RuntimeError` is still caught, and vice versa. This is
-  the structural twin of list-narrowing, reusing the same "≥2, never to empty" invariant —
-  a clause is dropped **only when the `rescue` has two or more clauses** (a `try` cannot
-  carry an empty `rescue`), so every result compiles. The branch's head shape is irrelevant:
-  a bare-variable catch-all clause among others is droppable too. Both operations are
-  recorded under this one `:rescue_type` family.
-
-  Both the **explicit `try`** and the **`def … rescue …` shorthand** are mutated.
+  Both explicit `try` expressions and the `def ... rescue ...` shorthand are
+  supported. Type-list narrowing and clause removal are reported under the
+  `rescue_type` family.
   """
 
   # A **transform-managed** family (`Mutare.Mutators.transform_managed/0`): discovery and

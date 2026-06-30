@@ -1,34 +1,21 @@
 defmodule Mutare.Mutators.StrictEquality do
   @moduledoc """
-  Relax strict equality to value equality, **one direction only**:
+  Relaxes strict equality without changing polarity:
 
     * `a === b` → `a == b`
     * `a !== b` → `a != b`
 
-  The bet is asymmetric on purpose. `===`/`!==` distinguish `1` from `1.0` (and an
-  integer-keyed term from its float-keyed twin); `==`/`!=` don't. Writing the strict
-  form is a claim that the distinction matters — so the *useful* mutant relaxes it and
-  asks the suite to prove the claim. If `a == b` passes every test, the `===` was
-  unjustified. The reverse (`==` → `===`) is **not** produced: tightening an already-
-  loose comparison rarely changes behaviour the suite exercises, so it would mostly mint
-  equivalent survivors. (`==`/`!=` polarity is `Mutare.Mutators.Relational`'s job.)
+  The reverse replacements are not produced. This family checks whether the numeric
+  type distinction made by strict equality is required.
 
-  Guard-legal, so a swap inside a `when` guard is mutated too.
+  `Mutare.Mutators.Relational` independently changes equality polarity, such as
+  `===` to `!==`. Both families may therefore produce distinct mutants at the
+  same expression. Under `not` or `!`, relational polarity changes may overlap
+  with a logical mutation and be suppressed; strictness relaxation remains distinct
+  and is retained.
 
-  ## Relation to `Mutare.Mutators.Relational`
-
-  `Relational` flips an equality operator's *polarity* (`===` → `!==`, `==` → `!=`); this
-  family changes its *strictness* (`===` → `==`). The two are orthogonal — a strictness
-  relaxation is never a polarity complement — so they never produce the same mutant, and
-  both fire on a bare `a === b`.
-
-  Under a negation (`not (a === b)` / `!(a === b)`) Relational's flip is redundant
-  (`not (a !== b)` ≡ `a === b`, which Logical already produces) and is suppressed, but
-  this family's relaxation is **not** its polarity complement (`not (a == b)` ≢ `a === b`),
-  so it is kept.
-
-  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
-  suppress just one kind (`c:Mutare.Mutator.variants/0`): `==`, `!=`.
+  These operators are guard-safe and are also mutated in guards. The ignore variants
+  are `==` and `!=`.
   """
   @behaviour Mutare.Mutator
 

@@ -1,43 +1,26 @@
 defmodule Mutare.Mutators.GuardDrop do
   @moduledoc """
-  Remove a clause's `when` guard entirely, broadening the clause to match
-  unconditionally:
+  Removes a clause guard so the clause matches without its `when` condition:
 
-      def f(x) when is_binary(x), do: …   →   def f(x), do: …
-      case v do x when is_atom(x) -> … end →   case v do x -> … end
+      def f(x) when is_binary(x), do: value  →  def f(x), do: value
+      case value do x when is_atom(x) -> x end  →  case value do x -> x end
 
-  The highest-signal question a guard can be asked: *is this guard load-bearing at
-  all?* If the suite never exercises an input the guard is meant to reject, the
-  whole guard can vanish and every test still passes — a precisely located gap.
+  Guards on `def`, `defp`, `case`, `receive`, and `fn` clauses are eligible. A
+  multi-pattern anonymous-function clause is skipped because its guardless head
+  cannot be rendered as a clean report diff.
 
-  Removes the guard at every clause head — `def`/`defp`, `case`, `receive`, and `fn`.
-  On by default, named `:guard_drop` in reports, selectable via `:mutators`, filterable
-  by `# mutare:ignore[guard_drop]`. The one construct it skips is a multi-pattern `fn`
-  clause (`fn x, y when … -> …`), where the report diff can't cleanly render the
-  guardless head.
+  A guard is removed only when no other enabled mutator produces a mutation inside
+  it. This avoids duplicating mutations such as:
 
-  ## What it deliberately leaves alone — the "incidentally covered" rule
+    * `x > 0`, already covered by relational and conditional mutations
+    * `Integer.is_even(x)`, covered by the Integer family
+    * `abs(x) > 0`, covered by relational and call-removal mutations
 
-  A guard removal is only offered when **no other enabled mutator already mutates
-  anything inside the guard**. If some family is already probing the guard, a full
-  removal would pile a redundant mutant on top — so only an **inert** guard, one no
-  other family touches, earns the removal, because there the removal is the *only*
-  signal. Concretely:
+  Guards such as `is_binary(x)`, a bare value, or an otherwise untouched custom
+  guard remain eligible. This check uses the active mutator set: disabling the
+  family that covers a guard can make guard removal available.
 
-    * `when x > 0`, `when a == b`, `when a and b` — a boolean operator: Relational/
-      Logical/Conditional/Literal already mutate it (and Conditional's `→ true` is
-      itself equivalent to removing the guard). **Skipped.**
-    * `when Integer.is_even(x)` — the `Integer` family swaps it to `is_odd`.
-      **Skipped.**
-    * `when abs(x) > 0` — Relational on `>`, CallRemoval on `abs`. **Skipped.**
-    * `when is_binary(x)`, `when is_atom(x)`, `when x`, a custom `defguard` — no
-      family touches it. **Removed** — this is the motivating case, where a single
-      type-guard would otherwise survive completely unmutated.
-
-  The rule is *relative to the enabled set*: disable `Integer`, and
-  `when Integer.is_even(x)` becomes genuinely uncovered, so guard removal is then
-  offered there. No hard-coded list of "coverable" guards — the dedup is derived
-  from what the mutators actually produce.
+  This family is enabled by default and uses the `guard_drop` ignore name.
   """
 
   # A **transform-managed** family (`Mutare.Mutators.transform_managed/0`): its mutation logic

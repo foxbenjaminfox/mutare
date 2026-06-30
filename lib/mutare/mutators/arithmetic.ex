@@ -1,40 +1,26 @@
 defmodule Mutare.Mutators.Arithmetic do
   @moduledoc """
-  Arithmetic operator swaps: `+`↔`-`, `*`↔`/`, `div`↔`rem`, plus unary-minus
-  removal (`-x` → `x`).
+  Mutates arithmetic operators:
 
-  On by default. `div`/`rem` are guard-legal, so a `div`/`rem` in a `when` guard is
-  mutated too. `div`/`rem` are also pipe-aware (`x |> div(y)` → `x |> rem(y)`).
+    * `+` ↔ `-`
+    * `*` ↔ `/`
+    * `div` ↔ `rem`
+    * `-x` → `x`
 
-  ## Unary-minus removal (`-x` → `x`)
+  `div` and `rem` are mutated in guards and piped calls.
 
-  The classic "invert negatives" mutation: a sign flip the suite should notice.
-  `-0` (a literal zero) is skipped — `-0 == 0`, so the mutant is equivalent. (`-0.0`
-  is *not* skipped: dropping the unary minus normalizes negative zero, an observable
-  change.)
+  Equivalent identity mutations are omitted. Unary `-0` is not removed, while
+  `-0.0` remains eligible because the sign of floating-point zero is observable.
+  `a * 1` and `a / 1` are not exchanged; this applies only when `1` is the
+  right operand. Although multiplication by one may retain an integer where division
+  returns a float, the two are treated as equivalent for this filter.
 
-  ## Multiplicative identity is skipped
+  Additive zero is not filtered. In particular, exchanging `x + 0.0` and
+  `x - 0.0` can change the sign of floating-point zero. `div` and `rem` are
+  also retained when the divisor is one because their results differ.
 
-  `a * 1` and `a / 1` are skipped — swapping `*`↔`/` there leaves the value
-  unchanged, an equivalent mutant. Only the **right** operand qualifies: `1 * a` →
-  `1 / a` is a reciprocal, a real change.
-
-  Caveat (rare, `==`-invisible): `/` always yields a float, so for integer `a`,
-  `a * 1` and `a / 1` differ in *type* — equal under `==`, not under `===`. Treated
-  as equivalent for scoring.
-
-  ## Additive identity is NOT skipped
-
-  `a + 0` and `a - 0` are deliberately kept as mutants. Adding/subtracting a literal
-  zero has one genuine, test-observable use: normalizing floating-point negative zero
-  (`x + 0.0` turns `-0.0` into `0.0`, but `x - 0.0` keeps it) — so the `+`↔`-` mutant
-  is surfaced as the check that an author actually tests the result.
-
-  `div`/`rem` are never identities either: `div(a, 1)` is `a`, but `rem(a, 1)`
-  is always `0`.
-
-  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
-  suppress just one kind (`c:Mutare.Mutator.variants/0`): `+`, `-`, `*`, `/`, `div`, `rem`.
+  This family is enabled by default. Its ignore variants are `+`, `-`, `*`,
+  `/`, `div`, and `rem`.
   """
   @behaviour Mutare.Mutator
 
