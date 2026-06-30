@@ -33,13 +33,11 @@ defmodule Mutare.Mutators.PatternSwap do
   def name, do: :pattern_swap
 
   @doc """
-  Every single-swap variant of a `def`/`defp` clause's head argument list.
+  Returns every single-swap variant of the function-head arguments.
 
-  Returns a list of mutated argument lists, one per swap of two distinct-named
-  variables that sit as siblings inside a container (tuple / list / map value) anywhere
-  in `head_args`. `used_outside` (the names read in the clause body/guard) is ignored —
-  a swap never changes variable usage, so it has no bearing here. `[]` when no container
-  holds two swappable variables.
+  Each variant exchanges two distinct variables within the same container.
+  `used_outside` does not affect swaps because variable usage is unchanged.
+  Returns `[]` when no eligible pair exists.
   """
   @impl Mutare.Mutator.Structural
   @spec pattern_mutations([Macro.t()], MapSet.t()) :: [[Macro.t()]]

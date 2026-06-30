@@ -42,8 +42,8 @@ defmodule Mutare.MacroRouting.Registry do
 
   Each entry is a `{module, name, arity, treatment}` 4-tuple, a
   `{module, name, treatment}` 3-tuple (arity `:any`), or an already-resolved
-  `%Mutare.Macro.Spec{}` (idempotent). The `module` and `name` may be the wildcard
-  `:*` (a name-only escape hatch / a whole-module entry — see the moduledoc).
+  `%Mutare.Macro.Spec{}` (idempotent). The `module` and `name` may use `:*` for a
+  name-only or whole-module wildcard.
   Raises `ArgumentError` on a malformed entry.
 
       iex> [spec] = Mutare.MacroRouting.Registry.resolve([{Ecto.Query, :from, :skip}])
@@ -71,14 +71,11 @@ defmodule Mutare.MacroRouting.Registry do
   end
 
   @doc """
-  Collect macro routes contributed by enabled mutators.
+  Returns routes contributed by enabled mutators.
 
-  `mutator_specs` are resolved `Mutare.Mutator.Spec`s; each distinct module that is
-  loaded and exporting `c:Mutare.MacroRouting.macro_routes/0` contributes routes. A `:routing`
-  entry is stamped with that module as its router. A static `:hosted` entry is stamped with it as
-  its host after validating `c:Mutare.Mutator.MacroHost.host/2`. A classifier's host is attached
-  only when the mutator exports `host/2`, because the need for hosting is shape-dependent. A module
-  is consulted once even if configured more than once.
+  Each distinct loaded module is consulted once. Shape-aware routes record the
+  module as their router. Hosted routes also require the module to implement
+  `Mutare.Mutator.MacroHost`.
   """
   @spec from_mutators([Mutator.Spec.t()]) :: [Spec.t()]
   def from_mutators(mutator_specs) when is_list(mutator_specs) do
@@ -89,11 +86,10 @@ defmodule Mutare.MacroRouting.Registry do
   end
 
   @doc """
-  Collect routes contributed by enabled non-mutating extensions.
+  Returns routes contributed by enabled extensions.
 
-  Static and shape-aware routes are accepted. Static `:hosted` routes are rejected because an
-  extension produces no mutations and therefore cannot implement selector delivery. A `:routing`
-  extension may classify call shapes but may not return `:hosted` at runtime.
+  Extensions may provide static and shape-aware routes. They may not provide hosted
+  routes because extensions do not emit mutations.
   """
   @spec from_extensions([Mutare.Extension.Spec.t() | module()]) :: [Spec.t()]
   def from_extensions(extensions) when is_list(extensions) do
@@ -174,26 +170,29 @@ defmodule Mutare.MacroRouting.Registry do
   end
 
   @doc """
-  Build the merged lookup registry from declarative `:macro_routes`, enabled mutators, and
-  enabled extensions.
+  Builds the macro-route lookup registry.
 
-  Order is built-ins, then mutator-provided, then extension-provided, then declarative
-  `:macro_routes` — collected with `Map.new`, so a later entry for the same
-  `{module_key, name, arity}` overrides an earlier one. An explicit `:macro_routes` config
-  entry is therefore the **final authority** for a key (it wins over a mutator's *or* a
-  extension's `macro_routes/0`); among code capabilities an extension wins a tie over a mutator;
-  all three override the built-ins. So a user can always pin a macro's routing from
-  `.mutare.exs`, even against an installed extension — at the cost of being able to override
-  a mutator's correctness-critical routing (e.g. an Ecto mutator's `{Ecto.Query, :from,
-  :skip}`), which is a deliberate, explicit opt-in the poison backstop still guards.
-  `config_macros` may be raw entries or already-resolved specs (idempotent);
-  `extensions` are resolved `Mutare.Extension.Spec`s or bare modules,
-  and defaults to none.
+  Sources are applied in this order:
 
-      iex> registry = Mutare.MacroRouting.Registry.build([{Ecto.Query, :from, :skip}], [])
+    1. built-in routes
+    2. routes from enabled mutators
+    3. routes from enabled extensions
+    4. declarative `:macro_routes` entries
+
+  Later entries replace earlier entries with the same key, so declarative
+  configuration has the highest precedence. Raw entries and resolved
+  `Mutare.Macro.Spec` structs are accepted.
+
+      iex> registry =
+      ...>   Mutare.MacroRouting.Registry.build([{Ecto.Query, :from, :skip}], [])
       iex> Mutare.MacroRouting.Registry.lookup(registry, [:Kernel], :match?, 2).args
       [:pattern, :expression]
-      iex> Mutare.MacroRouting.Registry.lookup(registry, [:Ecto, :Query], :from, 2).args
+      iex> Mutare.MacroRouting.Registry.lookup(
+      ...>   registry,
+      ...>   [:Ecto, :Query],
+      ...>   :from,
+      ...>   2
+      ...> ).args
       :skip
   """
   @spec build([tuple() | Spec.t()], [Mutator.Spec.t()], [Mutare.Extension.Spec.t() | module()]) ::
@@ -261,39 +260,27 @@ defmodule Mutare.MacroRouting.Registry do
   end
 
   @doc """
-  The `Mutare.Macro.Spec` a call resolving to `module_key`/`name` at `arity` matches, or `nil`.
-  Returns the whole spec, so the transform can read its `router`/`host`/`args` to resolve a
-  `:routing` classifier or stamp a `:hosted` treatment with its hosting mutator. The per-position
-  treatment list for a static spec is `Mutare.Macro.Spec.routing/2` of the result.
+  Returns the most specific macro spec matching `module_key`, `name`, and `arity`,
+  or `nil`.
 
-  Resolution is **most-specific-wins**, cascading from the exact entry down to the wildcards
-  (`#{inspect(Spec.wildcard())}`, see `Mutare.Macro.Spec`):
+  Match precedence is:
 
-    1. `{module, name, arity}` — the exact macro at the exact arity;
-    2. `{module, name, :any}` — that macro at any arity;
-    3. `{module, :*, :any}` — a **whole-module** entry (every macro in the module);
-    4. `{:*, name, arity}` — a **name-only** entry at the exact arity;
-    5. `{:*, name, :any}` — a name-only entry at any arity.
+    1. exact module, name, and arity
+    2. exact module and name at any arity
+    3. any macro in the exact module
+    4. the exact name in any module at the exact arity
+    5. the exact name in any module at any arity
 
-  So a module-specific entry always beats a whole-module one, which beats the name-only escape
-  hatch — and the hatch is consulted last, never shadowing a module-matched (or built-in)
-  treatment. A name-only entry fires even when `module_key` is `nil` (an unresolvable bare call),
-  which is exactly the case it exists for.
+  A name-only route may match when `module_key` is `nil`.
 
-      iex> registry = Mutare.MacroRouting.Registry.build([{Foo, :*, :skip}, {Foo, :bar, 1, [:pattern]}], [])
-      iex> # the whole-module entry catches any other macro in Foo…
+      iex> registry = Mutare.MacroRouting.Registry.build(
+      ...>   [{Foo, :*, :skip}, {Foo, :bar, 1, [:pattern]}],
+      ...>   []
+      ...> )
       iex> Mutare.MacroRouting.Registry.lookup(registry, [:Foo], :baz, 2).args
       :skip
-      iex> # …but a specific {Foo, :bar, 1} entry wins for bar/1
       iex> Mutare.MacroRouting.Registry.lookup(registry, [:Foo], :bar, 1).args
       [:pattern]
-
-      iex> registry = Mutare.MacroRouting.Registry.build([{:*, :sigil_X, :skip}], [])
-      iex> # a name-only entry matches the name in any module (here even an unresolved one)
-      iex> Mutare.MacroRouting.Registry.lookup(registry, [:Whatever], :sigil_X, 1).args
-      :skip
-      iex> Mutare.MacroRouting.Registry.lookup(registry, nil, :sigil_X, 2).args
-      :skip
   """
   @spec lookup(registry(), Spec.module_key() | nil, atom(), non_neg_integer()) :: Spec.t() | nil
   def lookup(registry, module_key, name, arity) when is_map(registry) do

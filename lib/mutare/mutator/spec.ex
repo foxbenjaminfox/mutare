@@ -31,17 +31,17 @@ defmodule Mutare.Mutator.Spec do
     do: %__MODULE__{module: module, name: module.name(), opts: []}
 
   @doc """
-  A spec for a `{module, opts}` entry. When `opts` is a keyword list, a `:as` key
-  overrides the recorded family name and is stripped from the opts passed to the
-  mutator; the remainder is the mutator's config.  A non-keyword `opts` (e.g. a
-  map or any term) is passed through verbatim under the default name.
+  Builds a spec for `module` with configuration `opts`.
 
-      iex> spec = Mutare.Mutator.Spec.configured(Mutare.Mutators.Arithmetic, threshold: 5)
-      iex> {spec.name, spec.opts}
-      {:arithmetic, [threshold: 5]}
+  For keyword options, `:as` overrides the recorded family name and is removed
+  before the remaining options are passed to the mutator. Other option values are
+  passed through unchanged.
 
-      iex> # `:as` renames the family (so one module can run twice) and is stripped from opts
-      iex> spec = Mutare.Mutator.Spec.configured(Mutare.Mutators.Arithmetic, as: :strict, threshold: 5)
+      iex> spec = Mutare.Mutator.Spec.configured(
+      ...>   Mutare.Mutators.Arithmetic,
+      ...>   as: :strict,
+      ...>   threshold: 5
+      ...> )
       iex> {spec.name, spec.opts}
       {:strict, [threshold: 5]}
   """
@@ -69,8 +69,7 @@ defmodule Mutare.Mutator.Spec do
   def coerce(module) when is_atom(module), do: for_module(module)
 
   @doc """
-  The spec in `specs` whose module is `module`, or `nil` — for the structural
-  families the transform checks by module.
+  Returns the spec in `specs` for `module`, or `nil`.
 
       iex> specs = Mutare.Mutators.resolve([:arithmetic, :relational])
       iex> Mutare.Mutator.Spec.find(specs, Mutare.Mutators.Relational).name

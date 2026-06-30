@@ -90,21 +90,20 @@ defmodule Mutare.Site do
   # decides *which* one to call from a node's position; it never stuffs fields.
 
   @doc """
-  An in-place mutation: an operator swapped behind a selector `case` in a
-  function body. `range` locates the original node; `mutator` is the
-  `Mutare.Mutator.Spec` that produced `mutated_node` (its `name` is recorded).
+  Builds a site for a node replacement delivered by an in-place selector.
 
-  `opts` carries the optional metadata (all absent for an ordinary mutation):
+  `range` identifies the original node. The recorded family name comes from
+  `mutator`.
 
-    * `:note` — a report advisory (a hosting mutator's, e.g. "kill may require NULL/boundary
-      data").
-    * `:variant` — the `# mutare:ignore` label(s) the producing mutator tagged at production time
-      (`Mutare.Mutator.Mutation.tagged/2`); absent lets `replace/8` derive it via
-      `c:Mutare.Mutator.variant/2`.
-    * `:render?` — `false` leaves `original_code` and `mutated_code` as `nil` for later rendering;
-      defaults `true`.
-    * `:summary?` — `true` builds the cheap `Macro`-rendered live one-liner (`summary`); defaults
-      `false`.
+  Options:
+
+    * `:note` — advisory text shown in reports
+    * `:variant` — one or more ignore labels; when absent, the mutator callback
+      derives the variant
+    * `:render?` — render `original_code` and `mutated_code` immediately; defaults
+      to `true`
+    * `:summary?` — build the lightweight live-progress summary; defaults to
+      `false`
   """
   @spec in_place(
           pos_integer(),
@@ -123,13 +122,11 @@ defmodule Mutare.Site do
   end
 
   @doc """
-  A mutation delivered by lifting (a single id-gated clause in the lifted private
-  function behind a dispatcher) rather than by an in-place selector `case` — because
-  the mutated node sits where a `case` is illegal: inside a `when` guard, or inside a
-  clause *head* pattern (a literal swap). Same replacement shape as `in_place/6`,
-  recorded as `:lifted`; `mutator` (a `Mutare.Mutator.Spec`) distinguishes a guard
-  operator swap (`:relational`, …) from a head-pattern literal swap (`:literal`, …).
-  `opts` carries the same optional metadata as `in_place/7`.
+  Builds a site for a node replacement delivered through function lifting.
+
+  Lifted delivery is used where an in-place selector is not legal, including guards
+  and clause-head patterns. The site records `kind: :lifted`. Options are the same
+  as for `in_place/7`.
   """
   @spec lifted_replace(
           pos_integer(),
@@ -162,10 +159,10 @@ defmodule Mutare.Site do
   end
 
   @doc """
-  A dropped function clause — a `:lifted`, `:delete` mutation. The clause is
-  removed entirely, so there is no mutated node, op, or code.
+  Builds a lifted deletion site for a function clause.
 
-  In `opts`, `:render?` defaults to `true` and `:summary?` defaults to `false`.
+  The site is recorded under the `clause_drop` family. `:render?` defaults to
+  `true`; `:summary?` defaults to `false`.
   """
   @spec clause_drop(pos_integer(), String.t(), Sourceror.Range.t(), Macro.t(), keyword()) :: t()
   def clause_drop(id, file, range, clause_node, opts \\ []) do
@@ -173,11 +170,10 @@ defmodule Mutare.Site do
   end
 
   @doc """
-  A `rescue` clause dropped from an explicit `try` — a `:delete` mutation delivered
-  **in place** by the whole-`try` selector (not by lifting, so `:in_place`, unlike
-  `clause_drop/4`). The clause is removed entirely, so there is no mutated node, op,
-  or code; `mutator` is the family spec (`RescueType`) whose name the report and the
-  `# mutare:ignore[...]` filter read.
+  Builds an in-place deletion site for a `rescue` clause.
+
+  `mutator` supplies the recorded family name. The deleted clause has no mutated
+  AST or replacement code.
   """
   @spec in_place_drop(
           pos_integer(),
@@ -250,13 +246,11 @@ defmodule Mutare.Site do
   defp macro(node), do: Macro.to_string(node)
 
   @doc """
-  A return-value mutation: a function clause's tail expression replaced with a
-  constant (`nil`/`0`/`""`/`[]`) behind an in-place selector `case`. Structural
-  (the transform names the tail; there is no node-level mutator), so there are no
-  operator atoms — but it *is* `:in_place` (a tail is a body position), with the
-  original tail and the replacement constant kept for the diff. `mutator` is the
-  producing `Mutare.Mutator.Spec` (`ReturnValue` or a custom return mutator), and the
-  site records its `name`. `opts` carries the two render flags (`:render?`/`:summary?`).
+  Builds an in-place site for a return-expression replacement.
+
+  The recorded family name comes from `mutator`. `:render?` controls immediate
+  source rendering and defaults to `true`; `:summary?` controls the live-progress
+  summary and defaults to `false`.
   """
   @spec return_value(
           pos_integer(),
@@ -330,8 +324,7 @@ defmodule Mutare.Site do
   defp render_code(node, _keyword_key?, true), do: Sourceror.to_string(node)
 
   @doc """
-  Human-readable one-liner, e.g. `relational  >= → >` or
-  `clause_drop  (drop) <clause>`.
+  Returns a one-line description of a site.
 
       iex> Mutare.Site.describe(%Mutare.Site{
       ...>   mutator: :relational,
@@ -358,10 +351,10 @@ defmodule Mutare.Site do
   end
 
   @doc """
-  The one-liner for the **live in-flight** activity line: the cheap `Macro`-rendered `summary`
-  when present (a `mix mutare` run builds it for every site unless `--quiet`), else the
-  `Sourceror`-based `describe/1` (the eager / hydrated path). Decoupled from `describe/1` so a
-  deferred scan's un-hydrated site — `*_code` `nil` — never has to render to show progress.
+  Returns the live-progress description for a site.
+
+  Uses the lightweight `summary` when present and otherwise falls back to
+  `describe/1`.
   """
   @spec summary_line(t()) :: String.t()
   def summary_line(%__MODULE__{summary: nil} = site), do: describe(site)

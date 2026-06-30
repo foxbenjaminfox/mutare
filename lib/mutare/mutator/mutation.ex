@@ -24,25 +24,18 @@ defmodule Mutare.Mutator.Mutation do
   @type t :: %__MODULE__{node: Macro.t(), note: String.t() | nil, variant: variant()}
 
   @doc """
-  Build a `Mutare.Mutator.Mutation` for replacement `node`, optionally carrying per-mutant metadata.
+  Builds a mutation for replacement `node`.
 
-  The terse common case is a bare node, or a node plus an advisory `note` string — a thin
-  constructor so a mutator reads `Mutation.new(mutated, "kill needs NULL data")` rather than the
-  struct literal:
+  The second argument may be a note string or a keyword list containing `:note`
+  and `:variant`:
 
-      Mutation.new(mutated)                          # the bare node wrapped, no metadata
-      Mutation.new(mutated, "kill needs NULL data")  # node + note
+      Mutation.new(mutated)
+      Mutation.new(mutated, "kill needs boundary data")
+      Mutation.new(mutated, note: "kill needs boundary data", variant: "zero")
+      Mutation.new(mutated, variant: "zero")
 
-  To attach a `# mutare:ignore` `variant` label as well as — or instead of — a note, pass a
-  keyword list (both keys optional). This is the form a custom mutator reaches for when it wants a
-  mutant that is **both** noted *and* tagged (e.g. an equivalence-sensitive family that classifies
-  the kind of mutant it just produced):
-
-      Mutation.new(mutated, note: "kill needs NULL data", variant: "zero")
-      Mutation.new(mutated, variant: "zero")         # variant only — same as `tagged/2`
-
-  `note` must be a string or `nil`; `variant` is a `t:variant/0` (`nil`, one label, or a list of
-  labels). An unknown key raises `ArgumentError`. `tagged/2` is the variant-only shorthand.
+  `note` must be a string or `nil`. `variant` may be one label, a list of labels,
+  or `nil`. Unknown options raise `ArgumentError`.
   """
   @spec new(Macro.t(), String.t() | nil | keyword()) :: t()
   def new(node, note_or_opts \\ nil)
@@ -62,10 +55,9 @@ defmodule Mutare.Mutator.Mutation do
   end
 
   @doc """
-  Build a `Mutare.Mutator.Mutation` tagging replacement `node` with its `# mutare:ignore`
-  `variant` label(s) (see the `variant` field) — the production-time alternative to
-  `c:Mutare.Mutator.variant/2`. A value family reads cleaner as
-  `Mutation.tagged(AST.literal(0), "zero")` than re-deriving the label afterwards.
+  Builds a mutation with one or more ignore-variant labels.
+
+  This is equivalent to `new(node, variant: variant)`.
   """
   @spec tagged(Macro.t(), variant()) :: t()
   def tagged(node, variant), do: %__MODULE__{node: node, variant: variant}

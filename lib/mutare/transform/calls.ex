@@ -58,25 +58,26 @@ defmodule Mutare.Transform.Calls do
   @type module_key :: Aliases.module_key()
 
   @doc """
-  Deconstruct a recognised stdlib call into `{module, fun, args, rebuild}`, or `nil`.
+  Returns `{module, function, arguments, rebuild}` for a resolved standard-library
+  call, or `nil`.
 
-  `module` is the resolved key — an Elixir path (`[:String]`) or an Erlang atom
-  (`:binary`); `rebuild.(new_fun, new_args)` re-emits a swap in the *written* form
-  (so a swap keeps the source's `Mod.`/alias and stays a minimal diff).
+  `module` is an Elixir alias path such as `[:String]` or an Erlang module atom.
+  `rebuild.(new_function, new_arguments)` preserves the call's written qualifier.
 
       iex> node = Sourceror.parse_string!("String.upcase(s)")
-      iex> {module, fun, args, rebuild} = Mutare.Transform.Calls.resolved_call(node)
-      iex> {module, fun}
+      iex> {module, function, arguments, rebuild} =
+      ...>   Mutare.Transform.Calls.resolved_call(node)
+      iex> {module, function}
       {[:String], :upcase}
-      iex> Sourceror.to_string(rebuild.(:downcase, args))
+      iex> Sourceror.to_string(rebuild.(:downcase, arguments))
       "String.downcase(s)"
 
       iex> erlang = Sourceror.parse_string!(":binary.first(b)")
-      iex> {module, fun, _args, _rebuild} = Mutare.Transform.Calls.resolved_call(erlang)
-      iex> {module, fun}
+      iex> {module, function, _arguments, _rebuild} =
+      ...>   Mutare.Transform.Calls.resolved_call(erlang)
+      iex> {module, function}
       {:binary, :first}
 
-      iex> # a bare local call resolves to nothing
       iex> Mutare.Transform.Calls.resolved_call(Sourceror.parse_string!("foo(x)"))
       nil
   """
@@ -151,49 +152,29 @@ defmodule Mutare.Transform.Calls do
   def resolved_call(_node), do: nil
 
   @doc """
-  Deconstruct a recognised **known-macro** call into `{module, name, visible_args, rebuild}`,
-  or `nil` — the macro-node twin of `resolved_call/1`.
+  Returns `{module, name, visible_arguments, rebuild}` for a registered macro call,
+  or `nil`.
 
-  This is the helper a router or host (`c:Mutare.MacroRouting.macro_routing/1`,
-  `c:Mutare.Mutator.MacroHost.host/2`) should use instead of pattern-matching the node head. Core hands
-  those callbacks the *visible call node*, which — depending on how the source wrote it — is a
-  **bare** `where(q, …)`, a **qualified** `Ecto.Query.where(q, …)`, or an **aliased**
-  `Q.where(q, …)`. A callback that guards on a bare atom head silently fails to recognise the
-  qualified/aliased forms (and routes every argument as `:expression`, poisoning a DSL fragment
-  or mutating it with core's families). Normalising through this reader makes the written form
-  transparent: a single `{[:Ecto, :Query], macro, args, _}` match covers all three.
+  The result normalizes bare, qualified, and aliased calls. `module` is the resolved
+  Elixir alias path or Erlang module atom. It may be `nil` for an unresolved call
+  matched through a name-only route.
 
-  Returns:
+  `visible_arguments` excludes the left side of a pipe. The rebuild function
+  preserves the written form of the call, including its qualifier or alias.
 
-    * **`module`** — the resolved module the macro lives in (`[:Ecto, :Query]`, or an Erlang
-      atom for an atom-module macro), as `resolve` saw it. `nil` only for a *name-only*
-      (`{:*, name, …}`) registry match whose module the resolver couldn't see — a classifier
-      matching on module then simply skips it (matching by name is the name-only hatch's point).
-    * **`name`** — the macro name atom (`:where`, `:from`).
-    * **`visible_args`** — the written argument list, exactly as the callback receives it (the
-      pipe LHS already excluded for a piped stage), so positional routing indexes unchanged.
-    * **`rebuild`** — `rebuild.(name, new_args)` re-emits the call in the *written* form (bare
-      stays bare, qualified keeps its `Ecto.Query.`, aliased keeps its `Q.`), so a `host/2`
-      splice stays a minimal, shape-correct diff.
-
-  `nil` when the node is not a recognised known-macro call. The identity is read from the
-  stamp the transform places when the call matched the macro registry,
-  so it is authoritative (never diverges from the matcher) and recognises a registered macro
-  even when its module can't be reflected on — exactly the bare-import case `resolved_call/1`
-  cannot resolve.
-
-  ## Example
+  Macro identity comes from the route-resolution metadata attached by the transform,
+  so this function also supports registered macros that cannot be resolved through
+  runtime module reflection.
 
       def macro_routing(node) do
         case Mutare.Transform.Calls.resolved_macro_call(node) do
-          {[:Ecto, :Query], macro, args, _rebuild} when macro in @condition_macros ->
-            route_condition(macro, args)
+          {[:Ecto, :Query], name, arguments, _rebuild} ->
+            route(name, arguments)
 
           _ ->
             []
         end
       end
-
   """
   @spec resolved_macro_call(Macro.t()) ::
           {module_key() | nil, atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
@@ -215,40 +196,15 @@ defmodule Mutare.Transform.Calls do
   def resolved_macro_call(_node), do: nil
 
   @doc """
-  The resolved per-visible-argument **routing** of `node` when it is a recognised known macro,
-  else `nil` — the reader a hosting mutator uses to ask *how a nested macro is registered* while
-  it walks a `:hosted` fragment (so it can leave a `:skip`-registered call opaque, route around a
-  `:pattern` argument, and so on).
+  Returns the resolved treatment for each visible argument of a registered macro
+  call, or `nil`.
 
-  The routing is read from the stamp `Mutare.Transform.Resolve` places before mutators run, so it
-  reflects the **fully merged** registry (the `Kernel` built-ins,
-  `c:Mutare.MacroRouting.macro_routes/0` from enabled mutators/extensions, and the declarative
-  `:macro_routes` option —
-  later sources winning, exactly as core itself routed the call)
-  and the same alias/import/`use` resolution `resolved_call/1`/`resolved_macro_call/1` use. You do
-  not re-resolve the module yourself.
+  Treatments come from the fully merged macro-routing registry and include any
+  shape-aware classification already performed for the call. The result may contain
+  static treatments, `:hosted`, or nested keyword routing.
 
-  Returns a list with one `t:Mutare.MacroRouting.routing_treatment/0` per **visible**
-  argument — `[:skip]` for an opaque DSL body, `[:pattern, :expression]` for `match?`, or a
-  `:routing`-classified macro's already-resolved per-shape routing (whose entries may be `:hosted`
-  or `{:keyword, …}`). `nil` when the node is not a recognised known macro (an ordinary call, or a
-  macro nobody registered — i.e. nothing special to do).
-
-  For a **piped** stage the list covers the visible arguments only (the piped value's treatment,
-  like `resolved_macro_call/1`'s `visible_args`, is not included). Resolution is whatever `Resolve`
-  could see: a qualified or imported macro resolves cleanly; a bare call to a locally-defined,
-  un-imported macro is recognised only when registered via the name-only `{:*, name, …}` hatch.
-
-  ## Example
-
-      # inside a host/2 walking an Ecto-style condition fragment: check the nested
-      # call's *own* argument routing — per position, since that is how a macro is registered.
-      defp mutate_arg(arg, index, node) do
-        case Mutare.Transform.Calls.macro_treatment(node) do
-          nil -> flips(arg)                          # not a known macro — mutate it
-          routing -> if Enum.at(routing, index) == :skip, do: [], else: flips(arg)
-        end
-      end
+  For a piped call, the left side of the pipe is not included. A call that has no
+  registered macro route returns `nil`.
   """
   @spec macro_treatment(Macro.t()) :: [Mutare.MacroRouting.routing_treatment()] | nil
   def macro_treatment({_head, meta, _args}) when is_list(meta) do

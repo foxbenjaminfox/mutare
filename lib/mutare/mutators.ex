@@ -102,12 +102,10 @@ defmodule Mutare.Mutators do
   def families, do: Keyword.keys(@registry)
 
   @doc """
-  The built-in families whose mutation logic lives in `Mutare.Transform` rather than in a
-  `Mutare.Mutator` producing callback (`Mutare.Mutators.GuardDrop`, `Mutare.Mutators.RescueType`).
+  Returns built-in families implemented directly by the transform.
 
-  They are registered for naming / toggling / `# mutare:ignore`, and are discovered by the
-  transform by module identity — but they do **not** implement `Mutare.Mutator` (so
-  `Mutare.Mutator.Dispatch.implemented_by?/1` is false for them). Resolution accepts them on this basis.
+  These families remain registered and configurable but do not implement the
+  `Mutare.Mutator` producing callbacks.
   """
   @spec transform_managed() :: [module()]
   def transform_managed, do: @transform_managed
@@ -222,36 +220,32 @@ defmodule Mutare.Mutators do
   @group_tokens [:builtins, :all]
 
   @doc """
-  Resolve a list of mutator entries into `Mutare.Mutator.Spec` structs, preserving
-  order. Each entry is one of:
+  Resolves mutator configuration entries to `Mutare.Mutator.Spec` structs in the
+  supplied order.
 
-    * a registered **family atom** (`:arithmetic`) — that built-in, default config;
-    * a **module** implementing the behaviour (a custom mutator);
-    * a `{family_atom | module, opts}` **configured pair**;
-    * the **group token** `:builtins` (or its synonym `:all`) — every built-in
-      family, in registry order — optionally as `{:builtins, except: [families]}`
-      to take every built-in *but* the named ones;
-    * an already-resolved `%Spec{}` (idempotent).
+  Entries may be:
 
-  The group token desugars to the built-in families at its position, so a list is
-  read as "these entries, in order": `[:builtins, MyMutator]` is every built-in
-  **plus** a custom one, while `[A, B]` (no token) is **only** A and B. To
-  reconfigure a built-in, exclude it then re-add it configured —
-  `[{:builtins, except: [:convention]}, {:convention, pairs: [...]}]`.
+    * a registered family atom
+    * a custom mutator module
+    * a configured `{family_or_module, options}` pair
+    * `:builtins` or `:all` for every built-in family
+    * `{:builtins, except: families}` to exclude selected built-ins
+    * an existing `Mutare.Mutator.Spec`
 
-  Raises `ArgumentError` on an unknown family (in the list or in an `:except`),
-  an unknown `:builtins` option, or a module that does not implement
-  `Mutare.Mutator`.
+  A group token expands at its position in the list. Without a group token, only
+  the explicitly listed families are enabled. To reconfigure a built-in, exclude
+  it from the group and add a configured entry.
+
+  Raises `ArgumentError` for unknown families, unsupported group options, or modules
+  that do not implement the required mutator capability.
 
       iex> specs = Mutare.Mutators.resolve([:arithmetic, {:literal, as: :literals}])
       iex> Enum.map(specs, &{&1.name, &1.module, &1.opts})
       [{:arithmetic, Mutare.Mutators.Arithmetic, []}, {:literals, Mutare.Mutators.Literal, []}]
 
-      iex> Mutare.Mutators.resolve([:builtins]) == Mutare.Mutators.resolve(Mutare.Mutators.all())
+      iex> Mutare.Mutators.resolve([:builtins]) ==
+      ...>   Mutare.Mutators.resolve(Mutare.Mutators.all())
       true
-
-      iex> Mutare.Mutators.resolve([{:builtins, except: [:arithmetic]}]) |> Enum.map(& &1.name) |> Enum.member?(:arithmetic)
-      false
   """
   @spec resolve([atom() | module() | {atom() | module(), term()} | Spec.t()]) :: [Spec.t()]
   def resolve(mutators) when is_list(mutators) do

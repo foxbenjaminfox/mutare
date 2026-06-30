@@ -30,55 +30,37 @@ defmodule Mutare.MacroRouting do
   """
 
   @doc """
-  Register macro routes as `{module, name, arity, treatment}` or
-  `{module, name, treatment}` entries.
+  Returns macro-route declarations.
 
-  A treatment may be static or the `:routing` sentinel. `:routing` requires
-  `c:macro_routing/1`; a static `:hosted` treatment requires
-  `c:Mutare.Mutator.MacroHost.host/2` on an enabled mutator.
+  Entries use `{module, name, arity, treatment}` or
+  `{module, name, treatment}`. A `:routing` treatment requires
+  `macro_routing/1`. A static `:hosted` treatment requires an enabled mutator
+  implementing `Mutare.Mutator.MacroHost`.
 
-  These declarations are global library facts and therefore receive no per-extension or
-  per-mutator options.
+  Route declarations do not receive per-instance options.
   """
   @callback macro_routes() :: [tuple() | Mutare.Macro.Spec.t()]
 
   @doc """
-  Classify the visible arguments of a concrete macro registered with the `:routing` sentinel.
+  Returns one treatment for each visible argument of a registered macro call.
 
-  A static per-position treatment list cannot express routing that depends on the call's shape —
-  `where(q, category: "Foo")` is plain data while `where(q, [u], u.x == u.y)` contains a DSL
-  fragment. Return one routing treatment per visible argument.
+  Use this callback when routing depends on the call's shape. For a piped call, the
+  pipe's left side is not a visible argument and is not included in the result.
+  Returned treatments are validated.
 
-  The list covers only the call's **visible** arguments. For a piped call (`q |> where(c)`), the
-  piped value is the `|>` LHS, not a visible argument, and stays an ordinary `:expression`. A
-  classifier matching on arity must therefore match the visible arguments, not a fixed written
-  arity. Returned treatments are validated by the transform: an unrecognised or mis-shaped
-  treatment raises rather than silently mutating a position intended to be skipped or hosted.
+  In addition to static treatments, this callback may return:
 
-  ## Per-keyword-pair routing — `{:keyword, value_treatments}`
+    * `{:keyword, treatments}` — routes keyword values positionally while leaving
+      keys unchanged; extra values default to `:skip`, and nested keyword routing is
+      supported
+    * `:pinned` — applies configured literal mutations to a scalar DSL value and
+      wraps the selector in `^`; use only where the macro accepts interpolation
+    * `:hosted` — delegates the position to
+      `c:Mutare.Mutator.MacroHost.host/2`; only an enabled hosting mutator may return
+      it
 
-  Besides the static treatments, a classifier may return two classifier-only values:
-
-    * `{:keyword, value_treatments}` for a keyword-list argument. Core routes each pair's value by
-      the corresponding positional treatment (values past the list default to `:skip`) and leaves
-      every key raw, because a DSL keyword key is a field or option name, not a value. A value
-      treatment may itself be `{:keyword, ...}`, so nested keyword lists route recursively. A
-      non-keyword argument under this treatment is left raw. A nested `:hosted` value is delivered
-      through `c:Mutare.Mutator.MacroHost.host/2`, which still receives the whole macro node.
-
-    * `:pinned` for a scalar value in a compile-time DSL position that accepts interpolation but
-      not a bare selector `case`. Core applies its configured literal families, records their own
-      mutator names, and wraps the selector in `^`. Use it only where the macro genuinely accepts
-      interpolation and only for a scalar value: mutations inside a compound value cannot be
-      pinned at the correct depth and are rejected rather than allowed to poison the build.
-
-  Returning `:hosted` leaves that position raw for core and delivers it through
-  `c:Mutare.Mutator.MacroHost.host/2`. Only an enabled mutator implementing that capability may
-  return `:hosted`.
-
-  The motivating keyword case is `where(q, category: "Foo", deleted_at: nil)`, classified as
-  `{:keyword, [:pinned, :skip]}`: mutate `"Foo"` through a pinned selector, keep the column-name
-  keys raw, and skip the `nil` pair whose DSL meaning may be `IS NULL` rather than an Elixir value.
+  A non-keyword value under `{:keyword, ...}` is left unchanged. Compound values
+  cannot use `:pinned` because the selector cannot be pinned at the required depth.
   """
   @callback macro_routing(call_node :: Macro.t()) :: [routing_treatment()]
 

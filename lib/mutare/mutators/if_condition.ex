@@ -26,14 +26,11 @@ defmodule Mutare.Mutators.IfCondition do
   def name, do: :if_condition
 
   @doc """
-  The constant replacements for one `if`/`unless`/`cond` condition, as clean-meta
-  AST nodes ready to splice into a selector clause: the pair `[true, false]`, or
-  `[]` when the condition should get no mutant (a boolean operator `Conditional`
-  already covers, a literal `true`/`false`/`nil`, or a binding `x = …` whose
-  un-binding would poison the body). See the moduledoc for the rules.
+  Returns clean-meta `true` and `false` replacements for an eligible condition.
 
-  This is the `c:Mutare.Mutator.Structural.condition_replacements/1` hook: the transform discovers
-  it by export and calls it at each `if`/`unless`/`cond` condition.
+  Returns `[]` for boolean operators handled by `Mutare.Mutators.Conditional`,
+  literal boolean or `nil` conditions, and binding nodes. The transform may hoist
+  bindings from `if` and `unless` before calling this callback.
   """
   @impl Mutare.Mutator.Structural
   @spec condition_replacements(Macro.t()) :: [Macro.t()]

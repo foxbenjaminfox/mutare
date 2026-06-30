@@ -74,15 +74,11 @@ defmodule Mutare.Mutators.ReturnValue do
   end
 
   @doc """
-  The constant replacements for one clause-tail expression, as clean-meta AST
-  nodes ready to splice into a selector clause. Returns `[]` when the tail should
-  get no return mutant (a boolean-valued expression, a literal a value family
-  already mutates, or `nil`); otherwise the contrasting *pair* — the shape's
-  empty/zero value and its non-empty/non-nil sentinel — minus any half that would
-  equal the original tail. See the moduledoc for the rules.
+  Returns clean-meta constant replacements for a clause return expression.
 
-  This is the `c:Mutare.Mutator.Structural.return_replacements/1` hook: the transform discovers it
-  by export and calls it at each return-path tail.
+  Eligible expressions receive an empty or zero value and a non-empty sentinel,
+  excluding any replacement equal to the original. Returns `[]` for expressions
+  handled by another value family, boolean expressions, `nil`, and quoted code.
   """
   @impl Mutare.Mutator.Structural
   @spec return_replacements(Macro.t()) :: [Macro.t()]

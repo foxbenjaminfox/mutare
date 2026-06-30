@@ -31,10 +31,10 @@ defmodule Mutare.Mutators.RescueType do
   def name, do: :rescue_type
 
   @doc """
-  The narrowed exception-type lists for a rescue clause's `in [t1, ..., tn]` list:
-  each list with one type removed, **only** when ≥2 types are present (so the result
-  is always non-empty — dropping the last would leave `in []`, which rescues
-  nothing). Returns `[]` for a single type / bare alias / bare variable.
+  Returns one list for each exception type removed from `types`.
+
+  At least two types are required, so every returned list remains non-empty.
+  Returns `[]` for shorter lists.
   """
   @spec drops([Macro.t()]) :: [[Macro.t()]]
   def drops(types) when is_list(types) and length(types) >= 2 do

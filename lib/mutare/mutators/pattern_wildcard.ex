@@ -31,12 +31,11 @@ defmodule Mutare.Mutators.PatternWildcard do
   def name, do: :pattern_wildcard
 
   @doc """
-  For each variable that appears more than once in `head_args`, the mutant argument
-  list(s) that replace an occurrence with `_`.
+  Returns the wildcard variants for repeated variables in `head_args`.
 
-  `used_outside` is the set of variable names read in the clause body/guard; it decides
-  whether thinning a duplicate to a single occurrence is safe (see the moduledoc).
-  Returns `[]` when no variable is duplicated.
+  `used_outside` contains variable names read by the clause body or guard and
+  determines whether one occurrence must remain bound. Returns `[]` when no
+  variable is repeated.
   """
   @impl Mutare.Mutator.Structural
   @spec pattern_mutations([Macro.t()], MapSet.t()) :: [[Macro.t()]]

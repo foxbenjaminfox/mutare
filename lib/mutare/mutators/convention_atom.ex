@@ -57,8 +57,10 @@ defmodule Mutare.Mutators.ConventionAtom do
   end
 
   @doc """
-  The built-in convention atoms, as a flat list. `Mutare.Mutators.AtomLiteral` excludes
-  these so each yields its convention sibling here, not the `:mutare` sentinel.
+  Returns the built-in convention atoms.
+
+  `Mutare.Mutators.AtomLiteral` excludes these atoms so this family can replace
+  them with their configured convention sibling.
   """
   @spec members() :: [atom()]
   def members, do: @members

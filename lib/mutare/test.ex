@@ -61,25 +61,19 @@ defmodule Mutare.Test do
           atom() | module() | {atom() | module(), term()} | Mutare.Mutator.Spec.t()
 
   @doc """
-  The rendered mutations a single mutator (or list) offers for a parsed top-level node —
-  the pure-AST path, with no transform pre-pass, so only
-  *qualified* calls resolve and no structural siblings are added.
+  Returns the rendered node-level mutations for a parsed source snippet.
 
-  `mutators` is a module or `Mutare.Mutator.Spec` (or a list of them) — *not* a family
-  atom, since this path skips the registry that would resolve one. `pipe_mode` defaults to
-  `:unpiped`; pass `:piped` to exercise a `|>` right-hand side, where the piped value is an
-  implicit extra argument and the effective arity is one higher than the written call.
+  This helper calls mutators directly without the transform's resolution passes or
+  structural mutations. `mutators` must therefore be a module, a resolved
+  `Mutare.Mutator.Spec`, or a list of either; family atoms are not accepted.
+
+  `pipe_mode` defaults to `:unpiped`. Use `:piped` when the snippet represents the
+  right side of a pipe and therefore has one implicit argument.
 
       iex> import Mutare.Test
       iex> node_mutations("1 + 2", Mutare.Mutators.Arithmetic)
       ["1 - 2"]
 
-  The `pipe_mode` flag is what an arity-changing mutator reads to recover the effective
-  arity, so a written call and the equivalent pipe stage produce the same mutant:
-
-      iex> import Mutare.Test
-      iex> node_mutations("Enum.sort(coll)", Mutare.Mutators.CollectionArity)
-      ["Enum.reverse(coll)"]
       iex> node_mutations("Enum.sort()", Mutare.Mutators.CollectionArity, :piped)
       ["Enum.reverse()"]
   """
@@ -98,13 +92,11 @@ defmodule Mutare.Test do
   end
 
   @doc """
-  Every recorded mutation site for `source` as `{mutator_name, original_code, mutated_code}`,
-  in the order the transform records them.
+  Returns every recorded mutation as
+  `{family_name, original_code, mutated_code}`.
 
-  Drives the real transform pipeline (`Mutare.transform_string/2`), so resolution, pipe
-  handling, and equivalent-sibling suppression are all exercised exactly as in a `mix mutare`
-  run — and the structural families the transform also records (`return_value`, `clause_drop`,
-  …) show up alongside yours. Use `diffs_for/3` to isolate one family.
+  This helper uses the complete transform pipeline, including name resolution, pipe
+  handling, overlap suppression, and structural families.
 
       iex> import Mutare.Test
       iex> diffs("def f(a, b), do: a + b", [Mutare.Mutators.Arithmetic])
@@ -117,12 +109,9 @@ defmodule Mutare.Test do
   end
 
   @doc """
-  The `{original_code, mutated_code}` pairs `name` produced for `source`, isolating that one
-  family from any structural sibling (`return_value`, `clause_drop`, …) the transform also
-  records.
+  Returns the `{original_code, mutated_code}` pairs recorded for one family.
 
-  `name` is the recorded family name — a built-in's `c:Mutare.Mutator.name/0`, or the `:as`
-  override when the mutator was configured under one.
+  `name` is the recorded family name, including any configured `:as` override.
 
       iex> import Mutare.Test
       iex> mutators = [Mutare.Mutators.Arithmetic, Mutare.Mutators.ReturnValue]
@@ -137,24 +126,20 @@ defmodule Mutare.Test do
   end
 
   @doc """
-  Assert the metamutant embedding *every* mutant `source` produces compiles — the
-  single-build safety net a custom mutator most needs, since one uncompilable mutant would
-  sink the whole shared build.
+  Transforms `source`, compiles the complete metamutant, and returns its compiled
+  `{module, binary}` pairs.
 
-  `source` must be a complete compilation unit (a `defmodule`, not a bare `def`); the metamutant
-  is compiled inside a uniquely-named wrapper module — the same isolation `compile_metamutant/3`
-  uses, so a self-referential fixture compiles and repeated calls never clash — then purged.
-  Returns the `[{module, binary}]` the metamutant's own modules compiled to (the wrapper shell
-  excluded). Compiler output is captured so a mutant's compile-time warning never noises up the
-  suite.
+  `source` must contain a complete compilation unit such as a `defmodule`. The
+  helper compiles it inside a unique wrapper, captures compiler output, and purges
+  all compiled modules before returning.
 
       defmodule MyMutatorTest do
         use ExUnit.Case, async: true
         import Mutare.Test
 
-        test "every mutant still compiles" do
+        test "every mutant compiles" do
           assert_metamutant_compiles(
-            "defmodule Sample do\\n  def f(a, b), do: a + b\\nend",
+            "defmodule Sample do\n  def f(a, b), do: a + b\nend",
             [MyApp.PlusMutator]
           )
         end
@@ -172,57 +157,32 @@ defmodule Mutare.Test do
   end
 
   @doc """
-  Render `source` to its metamutant, compile it, and return `{modules, sites}`.
+  Transforms and compiles `source`, returning `{modules, sites}`.
 
-  The render-and-compile half of a semantic test: it compiles the rendered metamutant inside a
-  uniquely-named wrapper module, so compiling the same fixture more than once never redefines a
-  single module name through the global `Code.compile_string`, and a plainly-named fixture can't
-  collide with a real top-level module. Isolation is by *nesting*: a metamutant `Foo` nests to
-  `<wrapper>.Foo`, and Elixir's nested-alias rule rebinds a fixture's short-name self-references
-  and *backward* sibling references (`Q.f()`, `%Q{}`, `__MODULE__`, a sibling defined earlier in
-  the source) to the nested name — so the common single-`defmodule` fixture compiles untouched, no
-  source rewriting.
+  By default, compilation occurs inside a uniquely named wrapper module. This
+  prevents module-name collisions and keeps ordinary self-references working.
+  Compiled modules are purged when the test process exits.
 
-  The nesting has one sharp edge, since that alias rebinds a defined module's *leading* segment: a
-  fixture under a multi-segment namespace that references a **real same-prefix** module
-  (`defmodule MyApp.Worker` calling `MyApp.Config.f()`), or that **forward-references** a
-  later-defined sibling, has that reference captured into the wrapper's namespace
-  (`<wrapper>.MyApp.Config`) and fails to resolve — and at runtime `__MODULE__` is the nested name,
-  not the written one. Keep a fixture self-contained under a plain name, or pass `uniquify: false`
-  (below) to compile at the real top-level names and manage collisions yourself.
+  Wrapper nesting can capture references to a real module with the same leading
+  namespace, and it cannot resolve a forward reference to a later sibling module.
+  Use self-contained fixtures with short module names. When top-level names are
+  required, pass `uniquify: false` and manage collisions explicitly.
 
-  Each call also mints a fresh wrapper atom (plus the nested module atoms the metamutant compiles
-  to), and atoms are never reclaimed — so this is for a bounded number of fixtures, not a
-  generative (PropCheck/StreamData) loop that would compile thousands of distinct sources.
+  Each isolated compilation creates permanent module-name atoms, so this helper is
+  intended for a bounded set of fixtures rather than an unbounded generated test.
 
-  `modules` are the metamutant's own compiled module atoms (the empty wrapper shell excluded), in
-  compilation order — typically a single-element list for a single `defmodule`; `sites` are the
-  `Mutare.Site`s, used to resolve a mutant's id from its logical diff (`site_id/2` / `site_by/3`).
-  All compiled modules are purged when the test exits.
+  Options are forwarded to `Mutare.transform_string/2`. `:uniquify` is consumed by
+  this helper, and the `mutators` argument overrides any `:mutators` option.
 
-  Needs no coverage setup: every metamutant module carries an
-  `@compile {:no_warn_undefined, …}` for the coverage helper it references, and that `hit/1` is
-  gated off at baseline, so the reference compiles clean and never fires here.
+      {[module], sites} =
+        compile_metamutant(
+          "defmodule Q do\n  def n, do: 1 + 1\nend",
+          [MyApp.PlusMutator]
+        )
 
-  `opts` are forwarded to `Mutare.transform_string/2` (e.g. `:expand_uses`, `:macro_routes`,
-  `:start_id`), except:
-
-    * `:uniquify` — compile inside the isolating wrapper (default `true`; pass `false` to compile
-      the metamutant at its own top-level names, when you manage isolation yourself). A passed-in
-      `:mutators` is overridden by the `mutators` argument.
-
-      defmodule MyMutatorTest do
-        use ExUnit.Case, async: false
-        import Mutare.Test
-
-        test "the mutant runs" do
-          {[mod], sites} =
-            compile_metamutant("defmodule Q do\\n  def n, do: 1 + 1\\nend", [MyApp.PlusMutator])
-
-          assert mod.n() == 2
-          assert with_active_mutant(site_id(sites, {"1 + 1", "1 - 1"}), fn -> mod.n() end) == 0
-        end
-      end
+      assert module.n() == 2
+      id = site_id(sites, {"1 + 1", "1 - 1"})
+      assert with_active_mutant(id, fn -> module.n() end) == 0
   """
   @spec compile_metamutant(String.t(), [mutator()], keyword()) :: {[module()], [Site.t()]}
   def compile_metamutant(source, mutators, opts \\ []) do
@@ -293,21 +253,12 @@ defmodule Mutare.Test do
   end
 
   @doc """
-  Run `fun` with mutant `id` active, restoring the previous active id afterwards.
+  Runs zero-arity `fun` with mutant `id` selected, then restores the previous
+  selection.
 
-  Sets the selection switch on the same runtime-resolved key the
-  metamutant reads, so this is correct even under self-hosting (it never hardcodes
-  `:mutare_active`) — runs the zero-arity `fun` (typically building/calling into modules you
-  compiled with `compile_metamutant/3`), and restores whatever was active before, so one
-  assertion can't leak an active id into the next.
-
-  The slot is VM-wide — one `:persistent_term` shared by every process — so the enclosing test
-  module must be `async: false` (see the module warning); the save/restore only sequences calls
-  *within* one process.
-
-      {[mod], sites} = compile_metamutant(source, mutators)
-      baseline = mod.run()                                       # id 0
-      mutant   = with_active_mutant(site_id(sites, diff), fn -> mod.run() end)
+  The selector uses VM-wide `:persistent_term` state. Tests that call this helper
+  must therefore run with `async: false`; restoration prevents leakage between
+  sequential calls but does not isolate concurrent processes.
   """
   @spec with_active_mutant(non_neg_integer(), (-> result)) :: result when result: var
   def with_active_mutant(id, fun) when is_integer(id) and id >= 0 and is_function(fun, 0) do
@@ -322,20 +273,13 @@ defmodule Mutare.Test do
   end
 
   @doc """
-  The id of the single site whose recorded diff matches `{original_code, mutated_code}`.
+  Returns the id of the single site matching `{original_code, mutated_code}`.
 
-  Sites carry the *logical* before/after a report would show (`a + b` → `a - b`), never any
-  selector/scaffolding, so a semantic test names a mutant the way the report does and resolves it
-  to the id the switch selects on. Each slot matches by its **type**: a string matches **exactly**
-  — `{"1 + 1", "1 - 1"}` can't accidentally resolve to a `"11 + 1"` site — while a `Regex` matches
-  by pattern, for the whole-statement diffs a fragment can't name verbatim (an in-place mutator
-  that replaces a large node records the whole enclosing expression): `{~r/limit: 2/, ~r/limit:
-  3/}`. The two slots opt in independently, so you can pin `original` exactly and loosen only
-  `mutated`; anchor a regex (`~r/\\b1 \\+ 1\\b/`) to recover exactness within the loose mode.
-  Either way it flunks (listing the candidates) on zero *or* multiple matches, so a fixture whose
-  mutation silently stopped being emitted — or whose pattern grew an unexpected sibling — fails
-  loudly instead of resolving to the wrong mutant. Reach for `site_by/3` when even a regex pair
-  can't express the match.
+  A string matches exactly. A `Regex` matches the corresponding code field by
+  pattern, and either side may use a different match type. The lookup fails when
+  zero or multiple sites match and lists the candidates in the failure message.
+
+  Use `site_by/3` when code matching cannot identify the site.
   """
   @spec site_id([Site.t()], {pattern, pattern}) :: pos_integer()
         when pattern: String.t() | Regex.t()
@@ -352,13 +296,10 @@ defmodule Mutare.Test do
   defp match_code?(code, pattern) when is_binary(pattern), do: code == pattern
 
   @doc """
-  The single site satisfying `pred`, returned whole (read `.id` for the selector id).
+  Returns the single site for which `predicate` returns true.
 
-  The same exactly-one guarantee as `site_id/2`, for the cases an `{original, mutated}` pair can't
-  express even as regexes — e.g. matching on `.mutator` (or another field), or a mutant recognized
-  by the *absence* of a token in its output.
-  `label` names the lookup in the failure message. Flunks (listing the candidates) on zero *or*
-  multiple matches, so an ad-hoc `Enum.find/2` can't silently resolve to the first of several.
+  `label` identifies the lookup in failure messages. The lookup fails and lists
+  candidates when zero or multiple sites match.
   """
   @spec site_by([Site.t()], String.t(), (Site.t() -> boolean())) :: Site.t()
   def site_by(sites, label, pred) when is_function(pred, 1) do

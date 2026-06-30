@@ -30,24 +30,20 @@ defmodule Mutare.Mutator.Structural do
   @type context :: %{behaviours: MapSet.t(module())}
 
   @doc """
-  Optional hook for restructuring a `def`/`defp` clause **head pattern** as a whole —
-  mutations that `c:Mutare.Mutator.mutate/1` can't express because they span sibling argument
-  positions or repeated variables (variable swaps, duplicate-variable wildcarding).
+  Returns whole-head pattern replacements for a `def` or `defp` clause.
 
-  Called with the clause's head argument patterns and `used_outside` (the set of variable
-  names the clause body and guard read). Return a list of mutated argument lists, one per
-  mutant. Every list you return must be a **pattern-legal, compile-safe** head — the transform
-  splices it back as a clause head. See `Mutare.Mutators.PatternSwap` and
-  `Mutare.Mutators.PatternWildcard`.
+  `head_args` contains the clause argument patterns. `used_outside` contains
+  variable names read by the guard or body. Each returned argument list must be a
+  valid, compile-safe clause head.
   """
   @callback pattern_mutations(head_args :: [Macro.t()], used_outside :: MapSet.t()) ::
               [[Macro.t()]]
 
   @doc """
-  Behaviour-aware variant of `c:pattern_mutations/2`, also receiving the `t:context/0`
-  (`%{behaviours: …}`) so head-pattern mutations can gate on the enclosing module's
-  behaviours. Implement *this* arity instead of `/2`; the transform uses it when you provide
-  it, otherwise `/2`.
+  Context-aware form of `pattern_mutations/2`.
+
+  Implement this form to use the enclosing module's behaviours. When exported, it
+  takes precedence over `pattern_mutations/2`.
   """
   @callback pattern_mutations(
               head_args :: [Macro.t()],
@@ -56,36 +52,34 @@ defmodule Mutare.Mutator.Structural do
             ) :: [[Macro.t()]]
 
   @doc """
-  Optional hook for mutating a **clause return value** — the expression a `def`/`defp` clause
-  (or a `rescue`/`catch`/`else` clause) returns. Called with the tail node; return the
-  replacement nodes (one per mutant) as clean-meta AST ready to splice (see
-  `Mutare.AST.literal/1`). `Mutare.Mutators.ReturnValue` is the built-in. Return `[]` for a
-  tail you don't want to mutate.
+  Returns replacements for a clause return expression.
+
+  Each result must be clean-meta AST suitable for direct insertion. Return `[]`
+  when the expression is not eligible.
   """
   @callback return_replacements(tail :: Macro.t()) :: [Macro.t()]
 
   @doc """
-  Behaviour-aware variant of `c:return_replacements/1`, also receiving the `t:context/0`
-  (`%{behaviours: …}`). Implement *this* arity to gate return-value mutations on the enclosing
-  module's behaviours — for example a GenServer mutator that swaps a `handle_call`
-  `{:reply, r, s}` tail to `{:noreply, s}` only when the module implements `GenServer`. The
-  transform uses `/2` when you provide it, otherwise `/1`.
+  Context-aware form of `return_replacements/1`.
+
+  Implement this form to use the enclosing module's behaviours. When exported, it
+  takes precedence over `return_replacements/1`.
   """
   @callback return_replacements(tail :: Macro.t(), context :: context()) ::
               [Macro.t()]
 
   @doc """
-  Optional hook for mutating an **`if`/`unless`/`cond` condition**. Called with the condition
-  node; return the replacement nodes (one per mutant). The condition-position twin of
-  `c:return_replacements/1`. `Mutare.Mutators.IfCondition` is the built-in (it forces the
-  condition to `true`/`false`). Return `[]` to skip.
+  Returns replacements for an `if`, `unless`, or `cond` condition.
+
+  Return `[]` when the condition is not eligible.
   """
   @callback condition_replacements(condition :: Macro.t()) :: [Macro.t()]
 
   @doc """
-  Behaviour-aware variant of `c:condition_replacements/1`, also receiving the `t:context/0`
-  (`%{behaviours: …}`). Implement *this* arity to gate condition mutations on the enclosing
-  module's behaviours. The transform uses `/2` when you provide it, otherwise `/1`.
+  Context-aware form of `condition_replacements/1`.
+
+  Implement this form to use the enclosing module's behaviours. When exported, it
+  takes precedence over `condition_replacements/1`.
   """
   @callback condition_replacements(condition :: Macro.t(), context :: context()) ::
               [Macro.t()]

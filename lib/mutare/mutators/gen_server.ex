@@ -36,9 +36,8 @@ defmodule Mutare.Mutators.GenServer do
   def name, do: :genserver
 
   @doc """
-  Offer the alternative GenServer return for `tail`, but only inside a module that
-  implements `GenServer` (read from `context.behaviours`). The behaviour-aware
-  variant of `c:Mutare.Mutator.Structural.return_replacements/1`.
+  Returns the alternative GenServer return for `tail` when the enclosing module
+  implements `GenServer`. Returns `[]` otherwise.
   """
   @impl Mutare.Mutator.Structural
   def return_replacements(tail, %{behaviours: behaviours}) do

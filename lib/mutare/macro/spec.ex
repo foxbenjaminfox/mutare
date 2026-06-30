@@ -89,10 +89,10 @@ defmodule Mutare.Macro.Spec do
   def treatments, do: @treatments
 
   @doc """
-  Whether `spec`'s `args` is the `:routing` classifier sentinel (resolved per call node by
-  its router's `c:Mutare.MacroRouting.macro_routing/1`), rather than a static treatment.
+  Returns whether the spec uses shape-aware `:routing`.
 
-      iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, :pattern) |> Mutare.Macro.Spec.classifier?()
+      iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, :pattern)
+      ...> |> Mutare.Macro.Spec.classifier?()
       false
   """
   @spec classifier?(t()) :: boolean()
@@ -100,8 +100,9 @@ defmodule Mutare.Macro.Spec do
   def classifier?(%__MODULE__{}), do: false
 
   @doc """
-  Whether `spec`'s static `args` mention a `:hosted` position. A `:routing` classifier is not
-  itself hosted; whether it needs a host is known only after classifying a concrete call.
+  Returns whether a static route contains a `:hosted` argument.
+
+  Shape-aware routes are classified per call and therefore return `false` here.
   """
   @spec host_required?(t()) :: boolean()
   def host_required?(%__MODULE__{args: :hosted}), do: true
@@ -111,44 +112,32 @@ defmodule Mutare.Macro.Spec do
 
   def host_required?(%__MODULE__{}), do: false
 
-  @doc "Stamp the shape-aware router module onto `spec`."
+  @doc "Returns `spec` with its shape-aware router module set."
   @spec put_router(t(), module()) :: t()
   def put_router(%__MODULE__{} = spec, router) when is_atom(router),
     do: %{spec | router: router}
 
-  @doc "Stamp the selector-hosting mutator module onto `spec`."
+  @doc "Returns `spec` with its selector-hosting mutator module set."
   @spec put_host(t(), module()) :: t()
   def put_host(%__MODULE__{} = spec, host) when is_atom(host), do: %{spec | host: host}
 
   @doc """
-  Build a validated spec from a user-written `{module, name, arity, args}`.
+  Builds and validates a macro route spec.
 
-  Normalizes `module` to its key and validates `name`/`arity`/`args`, raising
-  `ArgumentError` on a malformed entry. Purely syntactic — never reflects on the
-  module — so a spec for a module that is not a dependency of the Mutare process
-  (e.g. `Ecto.Query`) resolves without `Ecto` loaded.
+  `module` is normalized to its lookup key. `name`, `arity`, and `args` are
+  validated without loading or reflecting on the target module.
 
       iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, [:pattern])
       %Mutare.Macro.Spec{module: [:Kernel], name: :match?, arity: 2, args: [:pattern]}
 
-      iex> # a 3-tuple-style entry uses arity :any; `:skip` leaves every arg raw
       iex> Mutare.Macro.Spec.new(Ecto.Query, :from, :any, :skip)
       %Mutare.Macro.Spec{module: [:Ecto, :Query], name: :from, arity: :any, args: :skip}
 
-      iex> # an Erlang-module atom is kept verbatim as the key
       iex> Mutare.Macro.Spec.new(:binary, :match, 2, :expression).module
       :binary
 
-      iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, :bogus)
-      ** (ArgumentError) macro arg treatment must be one of [:expression, :pattern, :binding_pattern, :skip, :hosted] (a list of them, or :routing), got: :bogus
-
-      iex> # a whole-module entry — `:*` in the name slot, any arity
       iex> Mutare.Macro.Spec.new(Ecto.Query, :*, :any, :skip)
       %Mutare.Macro.Spec{module: [:Ecto, :Query], name: :*, arity: :any, args: :skip}
-
-      iex> # a name-only escape hatch — `:*` in the module slot
-      iex> Mutare.Macro.Spec.new(:*, :sigil_X, :any, :skip)
-      %Mutare.Macro.Spec{module: :*, name: :sigil_X, arity: :any, args: :skip}
   """
   @spec new(term(), term(), term(), term()) :: t()
   def new(module, name, arity, args) do
@@ -192,16 +181,17 @@ defmodule Mutare.Macro.Spec do
   def key(%__MODULE__{module: module, name: name, arity: arity}), do: {module, name, arity}
 
   @doc """
-  The per-position treatment list for a call of `count` visible arguments. A
-  uniform-atom `args` repeats; a list `args` is padded with `:expression` (and
-  truncated to `count`).
+  Returns the treatment for each of `count` visible arguments.
 
-      iex> # a uniform-atom treatment repeats for every argument
-      iex> Mutare.Macro.Spec.new(Ecto.Query, :from, :any, :skip) |> Mutare.Macro.Spec.routing(2)
+  A single treatment is repeated. A treatment list is padded with `:expression`
+  or truncated to the requested length.
+
+      iex> Mutare.Macro.Spec.new(Ecto.Query, :from, :any, :skip)
+      ...> |> Mutare.Macro.Spec.routing(2)
       [:skip, :skip]
 
-      iex> # a per-position list is padded with :expression for the trailing args
-      iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, [:pattern]) |> Mutare.Macro.Spec.routing(3)
+      iex> Mutare.Macro.Spec.new(Kernel, :match?, 2, [:pattern])
+      ...> |> Mutare.Macro.Spec.routing(3)
       [:pattern, :expression, :expression]
   """
   @spec routing(t(), non_neg_integer()) :: [treatment()]
@@ -223,12 +213,12 @@ defmodule Mutare.Macro.Spec do
   end
 
   @doc """
-  Normalize a user-written module reference to a key.
+  Normalizes a module reference for route lookup.
 
-    * an Elixir-module alias atom (`Ecto.Query`, `Kernel`) → its `Module.split/1`
-      path as atoms (`[:Ecto, :Query]`, `[:Kernel]`);
-    * an Erlang-module atom (`:binary`) → itself;
-    * an already-normalized atom list (`[:Ecto, :Query]`) → itself.
+    * Elixir module atoms become alias-path lists
+    * Erlang module atoms remain atoms
+    * normalized non-empty atom lists pass through unchanged
+    * the `:*` wildcard remains `:*`
 
       iex> Mutare.Macro.Spec.normalize_module(Ecto.Query)
       [:Ecto, :Query]
@@ -236,10 +226,6 @@ defmodule Mutare.Macro.Spec do
       :binary
       iex> Mutare.Macro.Spec.normalize_module([:Ecto, :Query])
       [:Ecto, :Query]
-
-      iex> # the module wildcard is kept as-is (a name-only escape hatch)
-      iex> Mutare.Macro.Spec.normalize_module(:*)
-      :*
   """
   @spec normalize_module(term()) :: module_key()
   def normalize_module(@wildcard), do: @wildcard

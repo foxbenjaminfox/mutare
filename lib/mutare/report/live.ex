@@ -79,30 +79,34 @@ defmodule Mutare.Report.Live do
   # === client API ============================================================
 
   @doc """
-  Start the live reporter. Options (all optional, for testing):
+  Starts the live reporter.
 
-    * `:device` — IO device to write to (default `:standard_error`)
-    * `:ansi` — force animation on/off (default: stderr is a tty *and* `IO.ANSI.enabled?/0`)
-    * `:color` — force the leave-behind label colour on/off (default: animation on
-      *and* `NO_COLOR` unset; see `color_enabled?/0`)
-    * `:width` — terminal width for truncation (default: detected, else 80)
-    * `:verbose` — leave a line behind for every mutant and render the per-phase
-      detail notes (default `false`); see the "Verbose mode" section above
+  Options:
+
+    * `:device` — output device; defaults to `:standard_error`
+    * `:ansi` — enables or disables animation; by default it is enabled when stderr
+      is a terminal and ANSI output is available
+    * `:color` — enables or disables colored persistent labels; by default it
+      follows animation and `NO_COLOR`
+    * `:width` — terminal width; defaults to the detected width or 80
+    * `:verbose` — retains a line for every mutant and shows phase details;
+      defaults to `false`
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts)
   end
 
-  @doc "Announce a phase transition (`:scanning`, `:compiling`, `:baseline`, `:coverage_probe`, `{:running, total}`)."
+  @doc "Sets the current phase (`:scanning`, `:compiling`, `:baseline`, `:coverage_probe`, or `{:running, total}`)."
   @spec phase(GenServer.server(), atom() | {:running, non_neg_integer()}) :: :ok
   def phase(server, phase), do: GenServer.cast(server, {:phase, phase})
 
   @doc """
-  Update scan progress during the `:scanning` phase: files processed so far out of
-  the total, and the running count of mutants found. Refreshes the status block
-  (animated only in ANSI mode — in plain mode the one-time `:scanning` note already
-  printed, so per-file ticks are silent).
+  Updates scanning progress with the processed file count, total file count, and
+  number of mutants found.
+
+  Animated reporters redraw the status block. Plain reporters do not print a line
+  for each update.
   """
   @spec scanned(GenServer.server(), %{
           done: non_neg_integer(),
@@ -111,32 +115,31 @@ defmodule Mutare.Report.Live do
         }) :: :ok
   def scanned(server, progress), do: GenServer.cast(server, {:scan, progress})
 
-  @doc "Note that a mutant run has started (drives the current-activity line)."
+  @doc "Records the mutant currently being tested."
   @spec started(GenServer.server(), Site.t()) :: :ok
   def started(server, %Site{} = site), do: GenServer.cast(server, {:start, site})
 
-  @doc "Record a completed mutant result (moves the counter; may leave a line behind)."
+  @doc "Records a completed mutant result and updates the progress display."
   @spec report(GenServer.server(), Result.t()) :: :ok
   def report(server, %Result{} = result), do: GenServer.cast(server, {:report, result})
 
   @doc """
-  Erase the current status block but keep the reporter live — used to clear the
-  scan block before the mutant count prints to stdout, so the two don't collide on
-  one line. A synchronous `call` so the erase is flushed before the caller writes.
+  Clears the current status block without stopping the reporter.
+
+  This call is synchronous, so the terminal is clear before subsequent output.
   """
   @spec clear(GenServer.server()) :: :ok
   def clear(server), do: GenServer.call(server, :clear)
 
-  @doc "Tear down the status block, leaving the terminal clean for the final report."
+  @doc "Stops the status display and clears its terminal lines."
   @spec finish(GenServer.server()) :: :ok
   def finish(server), do: GenServer.call(server, :finish)
 
   @doc """
-  Whether the reporter animates a live block (ANSI mode). Only an animated run draws the in-flight
-  **activity** line — a plain (piped/CI) run prints only the leave-behind lines and drops `{:start,
-  …}` on the floor. The Mix task reads this to decide whether building each site's `Macro` `summary`
-  is worth it: a non-animating reporter never shows the in-flight line, so the summary would be
-  built and never consumed.
+  Returns whether the reporter is using an animated ANSI status block.
+
+  Plain reporters emit persistent lines but do not display the current-mutant
+  activity line.
   """
   @spec animating?(GenServer.server()) :: boolean()
   def animating?(server), do: GenServer.call(server, :animating?)
@@ -275,9 +278,10 @@ defmodule Mutare.Report.Live do
   # === rendering (pure) ======================================================
 
   @doc """
-  The lines of the bottom status block for `state` at `now_ms` (monotonic),
-  *without* any cursor codes. Two lines while testing mutants (activity +
-  counter), one line during a pre-mutant phase (the phase label), none when idle.
+  Returns the status-block lines for `state` at monotonic time `now_ms`.
+
+  A running phase has an activity line and a counter. A pre-run phase has one
+  line. An idle state has none. Cursor-control sequences are not included.
   """
   @spec status_block(map(), integer()) :: [String.t()]
   def status_block(%{phase: :running} = state, now) do
@@ -298,25 +302,22 @@ defmodule Mutare.Report.Live do
   def status_block(_state, _now), do: []
 
   @doc """
-  The `{label, colour}` styling for a result status that earns a permanent line,
-  or `nil` for one that only moves the counter (killed, no-coverage, ignored,
-  poisoned).
+  Returns the persistent `{label, color}` for `status`, or `nil` when the status
+  only updates the counter.
   """
   @spec leave_behind(Result.status()) :: {String.t(), atom()} | nil
   def leave_behind(status), do: Map.get(@leave_behind, status)
 
   @doc """
-  The `{label, colour}` for a status in `--verbose` mode, where every outcome (kills
-  included) earns a permanent line. Total over the status vocabulary — raises on an
-  unregistered name, since every descriptor carries a `verbose_label`.
+  Returns the persistent `{label, color}` for `status` in verbose mode.
+
+  Every registered status has a verbose label. An unknown status raises.
   """
   @spec verbose_leave(Result.status()) :: {String.t(), atom()}
   def verbose_leave(status), do: Map.fetch!(@verbose_labels, status)
 
   @doc """
-  The `✓` scrollback note for a verbose phase-detail event — the pure render of a
-  `{:compiled, ms}` / `{:baseline_done, ms}` / `{:coverage_done, summary}` event the
-  runner fires on `:on_phase`.
+  Renders a verbose phase-completion event as a persistent status line.
   """
   @spec detail_line(tuple()) :: String.t()
   def detail_line({:compiled, ms}), do: "  ✓ compiled in #{humanize_ms(ms)}"
@@ -333,9 +334,10 @@ defmodule Mutare.Report.Live do
   def humanize_ms(ms), do: "#{:erlang.float_to_binary(ms / 1000, decimals: 1)}s"
 
   @doc """
-  Estimated seconds remaining: `remaining / rate`, where `rate = done /
-  elapsed_secs`. `nil` when there is nothing to extrapolate from yet (no elapsed
-  time or nothing finished).
+  Estimates remaining seconds from completed work, remaining work, and elapsed
+  seconds.
+
+  Returns `nil` until at least one item has completed and elapsed time is non-zero.
   """
   @spec eta_secs(non_neg_integer(), non_neg_integer(), non_neg_integer()) ::
           non_neg_integer() | nil
@@ -551,12 +553,10 @@ defmodule Mutare.Report.Live do
   end
 
   @doc """
-  Whether the leave-behind labels may be coloured: the `NO_COLOR` env var is unset
-  or empty (the https://no-color.org convention — *any* non-empty value disables
-  colour). Distinct from the `ansi` decision (`detect_terminal/0` + `IO.ANSI.enabled?/0`):
-  `NO_COLOR` drops the colour but keeps the live block, since the convention is about
-  colour, not the whole terminal UI. `IO.ANSI.enabled?/0` (folded into `ansi`) does not
-  check `NO_COLOR`, so this does.
+  Returns whether persistent labels may use color.
+
+  Any non-empty `NO_COLOR` value disables color. This does not disable ANSI cursor
+  animation.
   """
   @spec color_enabled?() :: boolean()
   def color_enabled?, do: System.get_env("NO_COLOR") in [nil, ""]

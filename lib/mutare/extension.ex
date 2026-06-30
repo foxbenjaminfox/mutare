@@ -22,8 +22,8 @@ defmodule Mutare.Extension do
   @capability_callbacks [macro_routes: 0, expand_use: 3]
 
   @doc """
-  Whether `module` is a loaded, non-mutating extension exporting at least one extension
-  capability callback.
+  Returns whether `module` is loaded and implements at least one extension
+  capability.
   """
   @spec extension?(term()) :: boolean()
   def extension?(module) when is_atom(module) do
@@ -36,10 +36,10 @@ defmodule Mutare.Extension do
   def extension?(_other), do: false
 
   @doc """
-  Validate and resolve an `:extensions` value to `Mutare.Extension.Spec`s.
+  Validates and resolves an `:extensions` list.
 
-  Accepts a list of bare modules, `{module, opts}` pairs, or already-resolved specs. Invalid
-  entries fail loudly rather than being silently ignored by capability-specific collectors.
+  Entries may be modules, `{module, options}` pairs, or resolved
+  `Mutare.Extension.Spec` structs. Raises `ArgumentError` for invalid entries.
   """
   @spec validate!(term()) :: [Spec.t()]
   def validate!(extensions) when is_list(extensions),
