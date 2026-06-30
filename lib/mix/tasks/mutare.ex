@@ -289,7 +289,7 @@ defmodule Mix.Tasks.Mutare do
   """
   use Mix.Task
 
-  alias Mutare.{Config, Options, Project, Report, Runner, Schema}
+  alias Mutare.{Config, Options, Project, Report, Run, Runner, Schema}
   alias Mutare.CLI
   alias Mutare.CLI.Info
   alias Mutare.Options.Registry
@@ -685,10 +685,10 @@ defmodule Mix.Tasks.Mutare do
   # so a gate would be misleading — instead note what happened (on stderr, so a
   # machine report on stdout stays clean, like `warn_ineffective_ignores/1`) and
   # skip it.
-  defp finish_run(%{stopped_early: false} = run, %Options{} = options),
+  defp finish_run(%Run{stopped_early: false} = run, %Options{} = options),
     do: gate(run.results, options)
 
-  defp finish_run(%{stopped_early: true} = run, %Options{} = options) do
+  defp finish_run(%Run{stopped_early: true} = run, %Options{} = options) do
     IO.puts(:stderr, early_stop_note(run, options))
   end
 

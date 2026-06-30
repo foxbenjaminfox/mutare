@@ -125,6 +125,7 @@ defmodule Mutare.MixProject do
           Mutare,
           Mix.Tasks.Mutare,
           Mutare.Ignore,
+          Mutare.Run,
           Mutare.Runner,
           Mutare.Options,
           Mutare.Result,

@@ -6,7 +6,7 @@ defmodule Mutare.RunnerTest do
   """
   use ExUnit.Case, async: false
 
-  alias Mutare.{Report, Result}
+  alias Mutare.{Report, Result, Run}
   alias Mutare.Test.Project
 
   # Pin to the operator-swap families: this fixture is built around a precise
@@ -49,6 +49,7 @@ defmodule Mutare.RunnerTest do
   } do
     assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
 
+    assert %Run{} = run
     assert length(run.results) == 3
     assert Enum.count(run.results, &(&1.status == :killed)) == 2
     assert [survivor] = Enum.filter(run.results, &(&1.status == :survived))

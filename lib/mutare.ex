@@ -27,6 +27,9 @@ defmodule Mutare do
   """
   defdelegate transform_string(source, opts \\ []), to: Mutare.Transform
 
-  @doc "Run mutation testing against the project at `root`. See `Mutare.Runner.run/2`."
+  @doc """
+  Run mutation testing against the project at `root`, returning
+  `{:ok, %Mutare.Run{}}` on success. See `Mutare.Runner.run/2`.
+  """
   defdelegate run(root \\ ".", opts \\ []), to: Mutare.Runner
 end

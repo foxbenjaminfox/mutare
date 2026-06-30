@@ -4,7 +4,9 @@ defmodule Mutare.Runner do
 
   The flow protects the one-compile invariant: we compile the sandbox a single time, run the tests as a baseline to ensure it passes, then launch one `mix test` process per mutant with `MUTARE_ACTIVE_MUTANT` set. Sources never change between runs, so mix's incremental compiler finds nothing to rebuild — the per-mutant cost is process boot plus the suite (only up to the first failure for a kill), never recompilation.
 
-  `run/2` returns `%{schema, results, sandbox, baseline_ms}`: the `Mutare.Schema` that was run, the list of per-mutant `Mutare.Result`s, the sandbox path, and the baseline run's wall-clock in milliseconds.
+  `run/2` returns `{:ok, %Mutare.Run{}}`: the `Mutare.Schema` that was run,
+  the list of per-mutant `Mutare.Result`s, the sandbox path, the baseline run's
+  wall-clock in milliseconds, and whether `:max_survivors` stopped the run early.
 
   ## Baseline + coverage probe
 
@@ -78,7 +80,7 @@ defmodule Mutare.Runner do
   messaging and retry effort differ.
   """
 
-  alias Mutare.{Options, Poison, Project, Report, Result, Sandbox, Schema, Selector, Site}
+  alias Mutare.{Options, Poison, Project, Report, Result, Run, Sandbox, Schema, Selector, Site}
   alias Mutare.Run.Context
   alias Mutare.Runner.{Baseline, CoverageProbe, Hydrate, Partitions}
   alias Mutare.Sandbox.{Command, CompilerOptions}
@@ -105,13 +107,7 @@ defmodule Mutare.Runner do
   # is removed once the run completes — the path is informational, not a live dir;
   # only `--sandbox`/`--keep-sandbox` runs leave it in place. The report reads
   # `schema`/`results`, never the sandbox, so this is safe.
-  @type run :: %{
-          schema: Schema.t(),
-          results: [Result.t()],
-          sandbox: Path.t(),
-          baseline_ms: non_neg_integer(),
-          stopped_early: boolean()
-        }
+  @type run :: Run.t()
 
   @type error ::
           {:error,
@@ -125,7 +121,7 @@ defmodule Mutare.Runner do
   Run mutation testing against the project at `root`.
 
   `opts` is a `Mutare.Run.Context` (or a `Mutare.Options` / keyword list resolved
-  into one). Returns `{:ok, run}` or `{:error, reason, detail}`.
+  into one). Returns `{:ok, %Mutare.Run{}}` or `{:error, reason, detail}`.
   """
   @spec run(Path.t(), Context.t() | Options.t() | keyword()) :: {:ok, run()} | error()
   def run(input_root \\ ".", opts \\ []) do
@@ -244,7 +240,7 @@ defmodule Mutare.Runner do
         {results, stopped_early} =
           stream_and_collect(schema, ctx, partitions, options, on_start, reporter)
 
-        run = %{
+        run = %Run{
           schema: schema,
           results: results,
           sandbox: sandbox,
@@ -334,9 +330,9 @@ defmodule Mutare.Runner do
   # (`--max-survivors`) skips it. Aborting on an early stop would discard the very
   # survivors the user asked us to find — and the run is already flagged
   # `stopped_early` (the Mix task notes it and skips the `--min-score` gate).
-  defp finalize_run(%{stopped_early: true} = run, _options), do: {:ok, run}
+  defp finalize_run(%Run{stopped_early: true} = run, _options), do: {:ok, run}
 
-  defp finalize_run(%{stopped_early: false} = run, %Options{} = options) do
+  defp finalize_run(%Run{stopped_early: false} = run, %Options{} = options) do
     case harness_error_guard(run.results, options) do
       :ok -> {:ok, run}
       {:error, _reason, _detail} = error -> error
