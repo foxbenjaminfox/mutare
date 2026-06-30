@@ -499,8 +499,17 @@ is cheaper than the heap.
   copy root still breaks in `/tmp`. That's why the examples are driven via
   `mix mutare examples/<name>` (positional root) rather than depending on Mutare.
   Hex deps are fine (they're under the copied `deps/`).
-- We don't run `mix deps.get` in the sandbox; relies on the original having
-  fetched deps already. Fine for the common case, revisit for robustness.
+- We deliberately don't run `mix deps.get` in the sandbox. The old "fine for
+  the common case, revisit" diagnostic gap is **OUTDATED** (2026-06-30): the one
+  sandbox compile already performs Mix's authoritative dependency validation,
+  and `Sandbox.Command.Output.dependency_issue/1` now classifies its result as
+  fetch/compile/diverged/unavailable/invalid. `Runner` returns the distinct
+  `:dependency_failed` **before poison recovery** (dropping mutants cannot repair
+  dependency state), and `Sandbox.DependencyDiagnostic` names the original
+  project root, recommends `MIX_ENV=test mix deps.get` / `deps.compile` / `deps`
+  as appropriate, explains the external-path-dep case, and preserves Mix's raw
+  diagnostic. Fetching stays a user action: it can use network credentials,
+  modify `mix.lock`, and would otherwise write into a disposable sandbox.
 - The design's open question stands: full source copy vs per-worker
   `MIX_BUILD_PATH` against one shared schema build — measure on a large umbrella.
 

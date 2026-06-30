@@ -53,6 +53,37 @@ defmodule Mutare.Sandbox.Command.OutputTest do
     end
   end
 
+  describe "dependency_issue/1" do
+    test "classifies Mix's requested dependency remedy" do
+      assert Output.dependency_issue(
+               unchecked("the dependency is not available, run \"mix deps.get\"")
+             ) ==
+               :fetch
+
+      assert Output.dependency_issue(
+               unchecked(
+                 "the dependency build is outdated, please run \"MIX_ENV=test mix deps.compile\""
+               )
+             ) == :compile
+
+      assert Output.dependency_issue(
+               "Dependencies have diverged:\n* plug (Hex package)\n  different specs were given"
+             ) == :diverged
+
+      assert Output.dependency_issue(unchecked("the dependency is not available")) ==
+               :unavailable
+
+      assert Output.dependency_issue(
+               unchecked("the dependency does not match the requirement ~> 2.0, got 1.0.0")
+             ) == :invalid
+    end
+
+    test "does not classify unrelated compiler output from a stray command mention" do
+      refute Output.dependency_issue("** (CompileError) try running mix deps.get in this macro")
+      refute Output.dependency_issue("Compiling 3 files (.ex)\nGenerated example app")
+    end
+  end
+
   describe "verdict-refinement discriminators (read by Command.outcome/2)" do
     @test_compile_error """
     == Compilation error in file test/plug/router_test.exs ==
@@ -108,5 +139,10 @@ defmodule Mutare.Sandbox.Command.OutputTest do
       refute Output.boot_failure?(@test_compile_error)
       refute Output.boot_failure?(@atom_crash)
     end
+  end
+
+  defp unchecked(status) do
+    "Unchecked dependencies for environment test:\n* example (Hex package)\n  #{status}\n" <>
+      "** (Mix) Can't continue due to errors on dependencies"
   end
 end

@@ -4,6 +4,12 @@ defmodule Mutare.Runner do
 
   The flow protects the one-compile invariant: we compile the sandbox a single time, run the tests as a baseline to ensure it passes, then launch one `mix test` process per mutant with `MUTARE_ACTIVE_MUTANT` set. Sources never change between runs, so mix's incremental compiler finds nothing to rebuild — the per-mutant cost is process boot plus the suite (only up to the first failure for a kill), never recompilation.
 
+  The compile step distinguishes Mix dependency validation from actual
+  compile-poisoning. A dependency failure returns `:dependency_failed`
+  immediately: dropping mutant ids cannot repair copied dependency state, so it
+  never enters poison recovery. The Mix task then points remediation at the
+  original project rather than the disposable sandbox.
+
   `run/2` returns `{:ok, %Mutare.Run{}}`: the `Mutare.Schema` that was run,
   the list of per-mutant `Mutare.Result`s, the sandbox path, the baseline run's
   wall-clock in milliseconds, and whether `:max_survivors` stopped the run early.
@@ -93,7 +99,7 @@ defmodule Mutare.Runner do
   alias Mutare.Run.Context
   alias Mutare.Runner.{Baseline, CoverageProbe, Hydrate, Partitions}
   alias Mutare.Sandbox.{Command, CompilerOptions}
-  alias Mutare.Sandbox.Command.Invocation
+  alias Mutare.Sandbox.Command.{Invocation, Output}
 
   require Logger
 
@@ -121,6 +127,7 @@ defmodule Mutare.Runner do
   @type error ::
           {:error,
            :compile_failed
+           | :dependency_failed
            | :baseline_failed
            | :baseline_flaky
            | :nothing_to_mutate
@@ -435,8 +442,9 @@ defmodule Mutare.Runner do
     compile_with_recovery(deps, schema, MapSet.new(), MapSet.new(), @poison_attempts)
   end
 
-  # Compile the materialised sandbox; on a poisoned compile, drop the implicated mutants,
-  # rebuild + rematerialise into the same sandbox, and retry — bounded by `attempts`. `deps`
+  # Compile the materialised sandbox. A dependency-check failure stops immediately;
+  # on a poisoned compile, drop the implicated mutants, rebuild + rematerialise into
+  # the same sandbox, and retry — bounded by `attempts`. `deps`
   # (`root`/`options`/`sandbox`) is fixed for the whole loop; the rest is per-round state — the
   # `schema` rebuilt each round, accumulating `skip_ids`/`struck`, and the remaining `attempts`.
   defp compile_with_recovery(%{sandbox: sandbox} = deps, schema, skip_ids, struck, attempts) do
@@ -450,31 +458,46 @@ defmodule Mutare.Runner do
         {:ok, schema, sandbox}
 
       {:error, :compile_failed, output} ->
-        # The implicated mutant ids this round, then evidence-based escalation for an
-        # unknown module-level block macro: a block is dropped *wholesale* only once a
-        # *second, distinct* poison lands in it after a targeted single-id drop — the
-        # only signal that distinguishes a DSL rejecting the injected selector wholesale
-        # (recurs under a single drop) from one mutant's broken replacement (does not).
-        # See `escalate_block_poison/3`.
-        raw = Poison.ids(output, schema.metamutants)
-        {poison, struck} = escalate_block_poison(raw, schema.sites, struck)
+        dependency_issue = Output.dependency_issue(output)
 
-        if attempts > 0 and not MapSet.subset?(poison, skip_ids) do
-          # Drop the poisoning mutants and rebuild. Ids are stable across rebuilds
-          # (the transform advances its counter for skipped ids), so accumulated
-          # `skip_ids` keep referring to the same mutations. Rebuild against the *same*
-          # files this schema covers (not a fresh discovery), so a restricted schema
-          # (`from_files/4`, `:only_files`, `:exclude`) can't silently expand. Forward
-          # the original options so `:mutators` survive.
-          skip_ids = MapSet.union(skip_ids, poison)
-          schema = Schema.rebuild(schema, deps.root, deps.options, skip_ids)
-          Sandbox.rematerialize(sandbox, schema)
-          compile_with_recovery(deps, schema, skip_ids, struck, attempts - 1)
+        if dependency_issue do
+          # Dependency validation happens before the compiler can reach a
+          # metamutant. It is infrastructure, never compile-poisoning: retrying
+          # with dropped mutant ids cannot change the copied dependency state.
+          {:error, :dependency_failed, output, sandbox}
         else
-          # Couldn't identify (or keep making progress on) the poison → give up. Hand the
-          # sandbox back for the caller to clean up.
-          {:error, :compile_failed, output, sandbox}
+          recover_compile_poison(deps, schema, skip_ids, struck, attempts, output)
         end
+    end
+  end
+
+  defp recover_compile_poison(deps, schema, skip_ids, struck, attempts, output) do
+    sandbox = deps.sandbox
+
+    # The implicated mutant ids this round, then evidence-based escalation for an
+    # unknown module-level block macro: a block is dropped *wholesale* only once a
+    # *second, distinct* poison lands in it after a targeted single-id drop — the
+    # only signal that distinguishes a DSL rejecting the injected selector wholesale
+    # (recurs under a single drop) from one mutant's broken replacement (does not).
+    # See `escalate_block_poison/3`.
+    raw = Poison.ids(output, schema.metamutants)
+    {poison, struck} = escalate_block_poison(raw, schema.sites, struck)
+
+    if attempts > 0 and not MapSet.subset?(poison, skip_ids) do
+      # Drop the poisoning mutants and rebuild. Ids are stable across rebuilds
+      # (the transform advances its counter for skipped ids), so accumulated
+      # `skip_ids` keep referring to the same mutations. Rebuild against the *same*
+      # files this schema covers (not a fresh discovery), so a restricted schema
+      # (`from_files/4`, `:only_files`, `:exclude`) can't silently expand. Forward
+      # the original options so `:mutators` survive.
+      skip_ids = MapSet.union(skip_ids, poison)
+      schema = Schema.rebuild(schema, deps.root, deps.options, skip_ids)
+      Sandbox.rematerialize(sandbox, schema)
+      compile_with_recovery(deps, schema, skip_ids, struck, attempts - 1)
+    else
+      # Couldn't identify (or keep making progress on) the poison → give up. Hand the
+      # sandbox back for the caller to clean up.
+      {:error, :compile_failed, output, sandbox}
     end
   end
 

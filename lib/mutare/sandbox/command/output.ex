@@ -3,7 +3,7 @@ defmodule Mutare.Sandbox.Command.Output do
   Read shapes out of a `mix` run's captured output.
 
   A mutant's exit code is the *primary* signal (`Mutare.Sandbox.Command` decodes
-  it), but two jobs need to look *past* the code at the human-readable output:
+  it), but three jobs need to look *past* the code at the human-readable output:
 
     * **Refining a verdict.** Exit `1` is ambiguous — a genuine harness failure or
       a mutation that broke the test suite's own compilation — and a BEAM abort can
@@ -14,6 +14,10 @@ defmodule Mutare.Sandbox.Command.Output do
     * **Locating a failure.** `Mutare.Poison` maps a failed metamutant compile back
       to mutant ids (`source_location_regex/0` + `diagnostic_severity/1`), and
       `Mutare.Runner.Baseline` names the tests in a flaky run (`test_location_regex/0`).
+    * **Diagnosing dependencies.** `dependency_issue/1` distinguishes Mix's
+      dependency-check failures from compile-poisoning so the runner can stop
+      recovery immediately and the Mix task can recommend the correct command in
+      the original project rather than the disposable sandbox.
 
   ## Why these live together
 
@@ -38,6 +42,8 @@ defmodule Mutare.Sandbox.Command.Output do
   @compile_error_banner ~r/== Compilation error in file (\S+) ==/
   @source_location ~r{([\w/.\-]+\.exs?):(\d+)}
   @test_location ~r{([\w/.\-]+_test\.exs):(\d+)}
+  @unchecked_dependencies ~r/^Unchecked dependencies for environment [^:]+:/m
+  @diverged_dependencies ~r/^Dependencies have diverged:/m
 
   # A BEAM *abort* banner — not mix output, but read for the same job (refining a
   # verdict from captured output), so co-located here. The emulator prints this to
@@ -70,6 +76,49 @@ defmodule Mutare.Sandbox.Command.Output do
   # so plainly and treats it as known-transient. Wording stable across OTP.
   @boot_during_startup ~r/terminating during boot/i
   @torn_down_standard_error ~r/put_chars.{0,8}standard_error/
+
+  @typedoc "The remediation class of a Mix dependency-check failure."
+  @type dependency_issue :: :fetch | :compile | :diverged | :unavailable | :invalid
+
+  @doc """
+  Classify a dependency-check failure in captured Mix output.
+
+  Returns `nil` for output unrelated to dependencies. The categories deliberately
+  follow Mix's own recommendations:
+
+    * `:fetch` — the lock/source state requires `mix deps.get`;
+    * `:compile` — sources exist but require `mix deps.compile`;
+    * `:diverged` — dependency declarations conflict;
+    * `:unavailable` — a non-fetchable dependency (normally a local/path dep) is
+      missing from the sandbox's view of the filesystem;
+    * `:invalid` — another status under Mix's unchecked-dependencies banner.
+
+  The broad banner proves this is dependency validation, while the narrower
+  recommendation phrases choose remediation. This keeps an arbitrary compiler
+  error that merely mentions `mix deps.get` from being reclassified.
+  """
+  @spec dependency_issue(String.t()) :: dependency_issue() | nil
+  def dependency_issue(output) when is_binary(output) do
+    cond do
+      Regex.match?(@diverged_dependencies, output) ->
+        :diverged
+
+      not Regex.match?(@unchecked_dependencies, output) ->
+        nil
+
+      String.contains?(output, "mix deps.get") ->
+        :fetch
+
+      String.contains?(output, "mix deps.compile") ->
+        :compile
+
+      String.contains?(output, "dependency is not available") ->
+        :unavailable
+
+      true ->
+        :invalid
+    end
+  end
 
   # Compiler-diagnostic *headers*. Elixir prints each warning/error as a block headed
   # by one of these markers, the rest of the block (gutter, carets, `└─ file:line:col:`

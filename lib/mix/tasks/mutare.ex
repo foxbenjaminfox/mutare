@@ -301,6 +301,7 @@ defmodule Mix.Tasks.Mutare do
   alias Mutare.Options.Registry
   alias Mutare.Report.Live
   alias Mutare.Run.Context
+  alias Mutare.Sandbox.DependencyDiagnostic
   alias Mutare.Sandbox.Command.Output
 
   # The strict `OptionParser` switch list, composed from three sources so each flag's parse shape
@@ -465,7 +466,7 @@ defmodule Mix.Tasks.Mutare do
 
       case result do
         {:ok, run} -> report(run, options)
-        {:error, reason, detail} -> Mix.raise(format_error(reason, detail))
+        {:error, reason, detail} -> Mix.raise(format_error(reason, detail, root))
       end
     after
       # Backstop for an unexpected raise mid-run; `finish/1` is idempotent. A variant-label
@@ -749,16 +750,16 @@ defmodule Mix.Tasks.Mutare do
       options.fail_on_harness_error
   end
 
-  defp format_error(:nothing_to_mutate, detail), do: detail
+  defp format_error(:nothing_to_mutate, detail, _root), do: detail
 
-  defp format_error(:too_many_harness_errors, detail), do: detail
+  defp format_error(:too_many_harness_errors, detail, _root), do: detail
 
   # A poisoned compile that recovery couldn't isolate. Lead with a remediation
   # hint when we recognise the cause (a macro requiring a literal argument — see
   # `Mutare.Poison.Hint`), then the raw compiler error for the full detail. The
   # raw error can be long, so a footer points back up to the hint (the fix is at
   # the top, but the user reads the error dump last).
-  defp format_error(:compile_failed, detail) do
+  defp format_error(:compile_failed, detail, _root) do
     intro = "the metamutant failed to compile (compile-poisoning).\n\n"
     tail = Output.output_tail(detail, 25)
 
@@ -774,12 +775,16 @@ defmodule Mix.Tasks.Mutare do
     end
   end
 
-  defp format_error(:baseline_failed, detail) do
+  defp format_error(:dependency_failed, detail, root) do
+    DependencyDiagnostic.format(detail, root)
+  end
+
+  defp format_error(:baseline_failed, detail, _root) do
     "baseline suite is not green; mutation testing needs a passing suite.\n\n" <>
       Output.output_tail(detail, 25)
   end
 
-  defp format_error(:baseline_flaky, detail) do
+  defp format_error(:baseline_flaky, detail, _root) do
     "baseline suite is flaky (passed on some runs, failed on others); mutation " <>
       "testing needs a deterministically green suite — a flaky test manufactures " <>
       "false kills. Fix or quarantine the test(s), then re-run.\n\n" <> detail
