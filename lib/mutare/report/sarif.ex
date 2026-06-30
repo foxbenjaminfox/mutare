@@ -9,7 +9,7 @@ defmodule Mutare.Report.Sarif do
   actionable and are omitted. The mutation description (`Mutare.Site.describe/1`)
   is reused verbatim as the finding message.
 
-  Emitted by `mix mutare --format sarif`.
+  Emitted by `mix mutare --report sarif` or `mix mutare --report sarif:path.sarif`.
   """
 
   alias Mutare.{Result, Site}

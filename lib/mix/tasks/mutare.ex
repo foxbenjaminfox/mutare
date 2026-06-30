@@ -188,18 +188,16 @@ defmodule Mix.Tasks.Mutare do
 
   ## Output formats
 
-      mix mutare --format json --output mutare.json
+      mix mutare --report json:mutare.json
                                           # write a machine report to a file; the
                                           #   human report still prints to the console
-      mix mutare --format sarif           # emit SARIF to stdout (this suppresses the
+      mix mutare --report sarif           # emit SARIF to stdout (this suppresses the
                                           #   human report, so the two don't collide)
-      mix mutare --format json --output mutare.json --format sarif --output mutare.sarif
-                                          # `--format`/`--output` are repeatable and
-                                          #   paired by position (Nth format ↔ Nth
-                                          #   output); a format with no matching
-                                          #   `--output` goes to stdout
+      mix mutare --report json:mutare.json --report sarif:mutare.sarif
+                                          # `--report` is repeatable; omit :PATH to
+                                          #   write that report to stdout
 
-  `--format` is one of `human` (the default console report), `json` (the mutation-testing-elements / Stryker report schema), `html` (that JSON embedded in the interactive report viewer), or `sarif` (survivors as findings for GitHub code scanning).
+  `--report` takes `FORMAT[:PATH]`, where `FORMAT` is one of `human` (the default console report), `json` (the mutation-testing-elements / Stryker report schema), `html` (that JSON embedded in the interactive report viewer), or `sarif` (survivors as findings for GitHub code scanning).
 
   ## Configuration file (`.mutare.exs`)
 
@@ -290,7 +288,7 @@ defmodule Mix.Tasks.Mutare do
   # The strict `OptionParser` switch list, composed from three sources so each flag's parse shape
   # lives next to its meaning: the **passthrough** option flags from `Mutare.Options.Registry`
   # (a 1:1 `--key`/`--no-key` rename), the **exceptional/translated** flags from `Mutare.Config`
-  # (`--only`/`--full`/`--format`/…), and the task's own **project/scope + inspect-and-exit** flags
+  # (`--only`/`--full`/`--report`/…), and the task's own **project/scope + inspect-and-exit** flags
   # below (which are neither options nor config-translated). Adding a passthrough option is then a
   # single registry entry — no edit here.
   @switches Registry.cli_switches() ++

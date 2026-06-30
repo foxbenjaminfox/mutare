@@ -22,6 +22,16 @@ defmodule Mutare.ConfigTest do
     end
   end
 
+  describe "cli_switches/0" do
+    test "exposes only the combined report flag" do
+      switches = Config.cli_switches()
+
+      assert switches[:report] == [:string, :keep]
+      refute Keyword.has_key?(switches, :format)
+      refute Keyword.has_key?(switches, :output)
+    end
+  end
+
   describe "merge/2" do
     test "no file config and no flags resolves to empty (mutators key omitted)" do
       assert Config.merge([], []) == []
@@ -243,46 +253,44 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([min_score: 50], min_score: 90.0)[:min_score] == 90.0
     end
 
-    test "--format with --output writes a file reporter alongside the console report" do
-      assert Config.merge([], format: "json", output: "out.json")[:reporters] ==
+    test "--report FORMAT:PATH writes a file reporter alongside the console report" do
+      assert Config.merge([], report: "json:out.json")[:reporters] ==
                [{:human, nil}, {:json, "out.json"}]
     end
 
-    test "--format alone sends the machine format to stdout and drops the human report" do
-      assert Config.merge([], format: "sarif")[:reporters] == [{:sarif, nil}]
+    test "--report FORMAT sends the machine format to stdout and drops the human report" do
+      assert Config.merge([], report: "sarif")[:reporters] == [{:sarif, nil}]
     end
 
-    test "repeated --format/--output pair by position and keep the human report" do
+    test "repeated file --report flags accumulate and keep the human report" do
       merged =
         Config.merge([],
-          format: "json",
-          output: "out.json",
-          format: "sarif",
-          output: "out.sarif"
+          report: "json:out.json",
+          report: "sarif:out.sarif"
         )
 
       assert merged[:reporters] == [{:human, nil}, {:json, "out.json"}, {:sarif, "out.sarif"}]
     end
 
-    test "a --format past the last --output goes to stdout (and drops the human report)" do
-      merged = Config.merge([], format: "json", output: "out.json", format: "sarif")
+    test "a stdout --report among file reports drops the human report" do
+      merged = Config.merge([], report: "json:out.json", report: "sarif")
       assert merged[:reporters] == [{:json, "out.json"}, {:sarif, nil}]
     end
 
-    test "repeated --format with no --output sends every machine format to stdout" do
-      assert Config.merge([], format: "json", format: "sarif")[:reporters] ==
+    test "repeated stdout --report flags send every machine format to stdout" do
+      assert Config.merge([], report: "json", report: "sarif")[:reporters] ==
                [{:json, nil}, {:sarif, nil}]
     end
 
-    test "without --format, .mutare.exs reporters pass through for Options to normalize" do
+    test "without --report, .mutare.exs reporters pass through for Options to normalize" do
       refute Keyword.has_key?(Config.merge([], []), :reporters)
 
       assert Config.merge([reporters: [:human, {:json, "r.json"}]], [])[:reporters] ==
                [:human, {:json, "r.json"}]
     end
 
-    test "--format wins over .mutare.exs reporters" do
-      merged = Config.merge([reporters: [:sarif]], format: "json", output: "o.json")
+    test "--report wins over .mutare.exs reporters" do
+      merged = Config.merge([reporters: [:sarif]], report: "json:o.json")
       assert merged[:reporters] == [{:human, nil}, {:json, "o.json"}]
     end
 

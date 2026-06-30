@@ -326,7 +326,7 @@ defmodule Mix.Tasks.MutareTest do
     on_exit(fn -> File.rm(out) end)
 
     # The example has surviving mutants (well under 100%), so a 100% floor must
-    # fail. `--format json --output` adds a file reporter; both reporters run
+    # fail. `--report json:PATH` adds a file reporter; both reporters run
     # *before* the gate, so the human report prints and the JSON is written even
     # on a fail.
     ExUnit.CaptureIO.capture_io(:stderr, fn ->
@@ -335,10 +335,8 @@ defmodule Mix.Tasks.MutareTest do
           "examples/auth",
           "--min-score",
           "100",
-          "--format",
-          "json",
-          "--output",
-          out,
+          "--report",
+          "json:" <> out,
           "--sandbox",
           sandbox
         ])

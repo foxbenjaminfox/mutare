@@ -47,7 +47,7 @@ defmodule Mutare.Config do
       iex> {opts[:paths], opts[:min_score], opts[:test_selection]}
       {["lib/billing"], 70, :full}
 
-      iex> Mutare.Config.merge([], format: "json", output: "mutare.json")[:reporters]
+      iex> Mutare.Config.merge([], report: "json:mutare.json")[:reporters]
       [{:human, nil}, {:json, "mutare.json"}]
   """
   @spec merge(keyword(), keyword()) :: keyword()
@@ -81,8 +81,7 @@ defmodule Mutare.Config do
     full: :boolean,
     partition_db: :boolean,
     partition_env: :string,
-    format: [:string, :keep],
-    output: [:string, :keep]
+    report: [:string, :keep]
   ]
   @spec cli_switches() :: keyword()
   def cli_switches, do: @cli_switches
@@ -97,25 +96,23 @@ defmodule Mutare.Config do
     end)
   end
 
-  # Resolve output reporters. `--format` (CLI) wins over a `.mutare.exs`
-  # `reporters:` list. Both `--format` and `--output` are **repeatable** (`:keep`)
-  # and paired by position (the Nth `--format` with the Nth `--output`); a format
-  # with no matching `--output` writes to stdout. With at least one file output, the
-  # human report still prints to the console; if any machine format takes stdout the
-  # human report is dropped (they would collide). The valid-format check is left to
-  # `Mutare.Options`, so a typo'd `--format` gets the descriptive error there.
+  # Resolve output reporters. `--report FORMAT[:PATH]` (CLI) wins over a
+  # `.mutare.exs` `reporters:` list. The flag is repeatable (`:keep`); an entry
+  # without a `:PATH` writes to stdout. With only file outputs, the human report still
+  # prints to the console; if any machine format takes stdout the human report is
+  # dropped (they would collide). The valid-format check is left to `Mutare.Options`,
+  # so a typo'd `--report jsoon:out.json` gets the descriptive error there.
   defp resolve_reporters(config, flags) do
-    case Keyword.get_values(flags, :format) do
+    case Keyword.get_values(flags, :report) do
       [] ->
         config
 
-      formats ->
-        outputs = Keyword.get_values(flags, :output)
-        Keyword.put(config, :reporters, cli_reporters(formats, outputs))
+      reports ->
+        Keyword.put(config, :reporters, cli_reporters(reports))
     end
   end
 
-  # Map a CLI `--format` string to its atom *without* `String.to_atom/1` — which
+  # Map a CLI report-format string to its atom *without* `String.to_atom/1` — which
   # would intern an arbitrary user string into the (never-collected) atom table. A
   # known format resolves to its atom; an unknown one is left as the raw string, so
   # `Mutare.Options` rejects it with the descriptive "format in [...]" error rather
@@ -124,20 +121,25 @@ defmodule Mutare.Config do
     Enum.find(Mutare.Options.formats(), format, &(Atom.to_string(&1) == format))
   end
 
-  # Pair the Nth `--format` with the Nth `--output` (a format past the last
-  # `--output` goes to stdout, `nil`); extra `--output`s beyond the formats are
-  # ignored. Prepend the human console report unless some machine format already
-  # owns stdout (a `nil` path), which it would collide with.
-  defp cli_reporters(formats, outputs) do
-    reporters =
-      formats
-      |> Enum.with_index()
-      |> Enum.map(fn {format, i} -> {to_format(format), Enum.at(outputs, i)} end)
+  # Parse `FORMAT[:PATH]`, splitting only on the first colon. An absent path means
+  # stdout (`nil`); an explicit empty path (`json:`) is preserved as `""` so
+  # `Mutare.Options` rejects it with the existing reporter-entry validation.
+  # Prepend the human console report unless some machine format already owns stdout
+  # (a `nil` path), which it would collide with.
+  defp cli_reporters(reports) do
+    reporters = Enum.map(reports, &parse_report/1)
 
     if Enum.any?(reporters, fn {_format, path} -> is_nil(path) end) do
       reporters
     else
       [{:human, nil} | reporters]
+    end
+  end
+
+  defp parse_report(report) do
+    case String.split(report, ":", parts: 2) do
+      [format] -> {to_format(format), nil}
+      [format, path] -> {to_format(format), path}
     end
   end
 

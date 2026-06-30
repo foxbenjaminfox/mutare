@@ -10,7 +10,7 @@ defmodule Mutare.Report.Json do
   ecosystem — `Mutare.Report.Html` embeds this same document into the report
   web component, and it can be uploaded to the Stryker dashboard unchanged.
 
-  Emitted by `mix mutare --format json`.
+  Emitted by `mix mutare --report json` or `mix mutare --report json:path.json`.
   """
 
   alias Mutare.Result

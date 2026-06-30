@@ -102,7 +102,7 @@ mix mutare --min-score 70           # fail (CI) below a score
 mix mutare --full                   # whole suite per mutant (no test selection)
 mix mutare --workers 4              # run N mutants concurrently
 mix mutare --timeout 30000          # per-mutant wall-clock cap, in ms
-mix mutare --format json --output mutare.json   # machine-readable report to a file
+mix mutare --report json:mutare.json   # machine-readable report to a file
 ```
 
 Optional `.mutare.exs`:
@@ -143,13 +143,13 @@ While a run is in flight, Mutare shows live progress on **stderr**: the current 
 
 ### Machine-readable output
 
-By default Mutare prints the human report to the console (stdout). `--format` selects a machine format, and `--output PATH` writes it to a file (otherwise it goes to stdout). To emit more than one format in a single run, list `reporters:` in `.mutare.exs` (above).
+By default Mutare prints the human report to the console (stdout). `--report FORMAT[:PATH]` selects a report format and optional output file, and the flag is repeatable: `--report json:mutare.json --report sarif:mutare.sarif`.
 
 - **`json`** — the [mutation-testing-elements](https://github.com/stryker-mutator/mutation-testing-elements) / Stryker **report schema**. A standardized, versioned document covering every mutant (not just survivors), ready for the Stryker dashboard and other tooling.
 - **`html`** — that same JSON embedded in a single HTML file that loads the official interactive report viewer from a pinned CDN bundle, with a file tree, inline mutant annotations on the source, and the score.
 - **`sarif`** — surviving mutants as SARIF 2.1.0 findings, so GitHub code scanning shows each one as an inline annotation on the pull-request diff.
 
-When a machine format is written to a file, the human report still prints to the console; when it takes stdout (no `--output`), the human report is suppressed to avoid a collision.
+When every machine format is written to a file, the human report still prints to the console; when any report takes stdout (no `:PATH`), the human report is suppressed to avoid a collision.
 
 ### Skipping macro arguments
 

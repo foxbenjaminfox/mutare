@@ -5595,7 +5595,7 @@ ETA) that animates via an internal tick timer. Design decisions worth rememberin
   delivery complete) before the stream returned, FIFO guarantees `finish` sees the
   final state and clears the block before the after-the-fact `Mutare.Report` prints.
 - **stderr, always; animation, conditionally.** Output goes to stderr so a machine
-  report piped to stdout (`--format json > f`) is never corrupted. Animation is gated
+  report piped to stdout (`--report json > f`) is never corrupted. Animation is gated
   on `detect_ansi/0` = a real **stderr** tty (`:io.columns/1` succeeds) *and*
   `IO.ANSI.enabled?`. We key on stderr (not stdout) deliberately; the cost is that
   redirecting stdout (which flips `IO.ANSI.enabled?` off at boot) drops us to plain
@@ -6054,9 +6054,9 @@ a metamutant with **zero** poisons.
   - **`:reporters` vs `:reporter`.** Deliberately distinct: `:reporters` is the
     output-format list (validated in `Options`, the single source of truth for
     format validation); `:reporter` is the pre-existing live per-mutant progress
-    callback. The collision rule lives in `Config.resolve_reporters/2`: `--format`
-    with `--output` writes the machine format to a file *and* keeps the human
-    report on the console; `--format` alone takes stdout and drops the human
+    callback. The collision rule lives in `Config.resolve_reporters/2`: `--report FORMAT:PATH`
+    writes the machine format to a file *and* keeps the human
+    report on the console; `--report FORMAT` takes stdout and drops the human
     report (they'd interleave). `.mutare.exs` `reporters:` is the multi-format
     path (a bare atom normalises to stdout). The `--min-score` gate is orthogonal
     to format (it's an exit code) and runs after all reporters regardless.
@@ -6113,7 +6113,7 @@ folds `passthrough_keys/0`; the Mix task's `@switches` is `Registry.cli_switches
 Config.cli_switches() ++ <project/inspect flags>`; `info.ex`'s `--show-config` is `Registry.display_rows/1`
 (so every visible option appears — the omissions are now structurally impossible). Adding a typical
 passthrough option is a single registry entry. The *exceptional* CLI translations (`--full`/`--only`/
-`--format`/…) deliberately stay in `Config` (`cli_switches/0` + `merge/2`); the registry only owns the
+`--report`/…) deliberately stay in `Config` (`cli_switches/0` + `merge/2`); the registry only owns the
 1:1 passthroughs.
 
 Two sharp edges:
