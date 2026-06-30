@@ -143,6 +143,11 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([test_selection: :full], [])[:test_selection] == :full
     end
 
+    test "--no-full restores coverage selection and overrides file config" do
+      assert Config.merge([], full: false)[:test_selection] == :coverage
+      assert Config.merge([test_selection: :full], full: false)[:test_selection] == :coverage
+    end
+
     test "--keep-sandbox passes through; otherwise it's left to default" do
       assert Config.merge([], keep_sandbox: true)[:keep_sandbox] == true
       refute Keyword.has_key?(Config.merge([], []), :keep_sandbox)
@@ -226,10 +231,15 @@ defmodule Mutare.ConfigTest do
                "MY_DB_SLOT"
     end
 
-    test "no partition flag (or --no-partition-db) leaves it to the file config / default" do
+    test "no partition flag leaves it to the file config / default" do
       refute Keyword.has_key?(Config.merge([], []), :partition_env)
-      refute Keyword.has_key?(Config.merge([], partition_db: false), :partition_env)
       assert Config.merge([partition_env: "FromFile"], [])[:partition_env] == "FromFile"
+    end
+
+    test "--no-partition-db disables partitioning and overrides file config" do
+      assert Keyword.has_key?(Config.merge([], partition_db: false), :partition_env)
+      assert Config.merge([], partition_db: false)[:partition_env] == nil
+      assert Config.merge([partition_env: "FromFile"], partition_db: false)[:partition_env] == nil
     end
 
     test "file config mutator lists pass through unchanged" do

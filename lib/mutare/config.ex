@@ -32,14 +32,18 @@ defmodule Mutare.Config do
   Merge `file_config` with parsed CLI `flags` into an options keyword list for
   `Mutare.Options.new/1`. CLI flags win over file config: each set
   flag is translated to its option key and put over the file value; an unset flag
-  leaves the file's value (or the option default) in place.
+  leaves the file's value (or the option default) in place. For translated boolean
+  flags, the negative form is a real override too: e.g. `--no-full` restores
+  coverage-guided selection and `--no-partition-db` disables partitioning even when
+  `.mutare.exs` enabled it.
 
   The recognised flags and what they mean are documented for users in the
   `Mix.Tasks.Mutare` moduledoc — this is the translation layer, so it records only the
   mappings that aren't a 1:1 rename: a repeatable `--only` accumulates into `:paths`
   (each a directory or single `.ex` file, in order), `--line FILE:LINE` into
-  `:only_lines`, `--full` sets `test_selection: :full`, and
-  `--partition-db`/`--partition-env` resolve to `:partition_env`. A `:mutators`
+  `:only_lines`, `--full`/`--no-full` resolve to `:test_selection`, and
+  `--partition-db`/`--no-partition-db`/`--partition-env` resolve to
+  `:partition_env`. A `:mutators`
   CLI value is translated from CSV into a list of names; `Mutare.Options` resolves
   those names, including the `:builtins` group token, through the mutator catalog.
 
@@ -59,8 +63,8 @@ defmodule Mutare.Config do
     |> put_unless_nil(:paths, only_paths(flags))
     |> put_unless_nil(:exclude, exclude_globs(flags))
     |> put_unless_nil(:only_lines, parse_lines(flags))
-    |> put_unless_nil(:test_selection, flags[:full] && :full)
-    |> put_unless_nil(:partition_env, partition_env(flags))
+    |> put_translation(:test_selection, test_selection(flags))
+    |> put_translation(:partition_env, partition_env(flags))
     |> put_unless_nil(:mutators, flags[:mutators] && parse_families(flags[:mutators]))
     |> put_passthrough_flags(flags)
     |> resolve_reporters(flags)
@@ -238,18 +242,34 @@ defmodule Mutare.Config do
     end
   end
 
-  # Per-worker partition env var. `--partition-env NAME` sets a custom name and
-  # wins; the boolean convenience `--partition-db` enables it under the
-  # `mix test --partitions` default `MIX_TEST_PARTITION`. Absent (or an explicit
-  # `--no-partition-db`) leaves the key unset so the file config / default (off)
-  # stands. See `Mutare.Runner.Partitions`.
-  defp partition_env(flags) do
-    cond do
-      is_binary(flags[:partition_env]) -> flags[:partition_env]
-      flags[:partition_db] == true -> "MIX_TEST_PARTITION"
-      true -> nil
+  # `--full` opts out of coverage-guided test selection; `--no-full` opts back in
+  # and must override a `.mutare.exs` `test_selection: :full`. An absent flag leaves
+  # the file config / default (`:coverage`) in place.
+  defp test_selection(flags) do
+    case Keyword.fetch(flags, :full) do
+      {:ok, true} -> {:set, :full}
+      {:ok, false} -> {:set, :coverage}
+      :error -> :unset
     end
   end
+
+  # Per-worker partition env var. `--partition-env NAME` sets a custom name and
+  # wins; the boolean convenience `--partition-db` enables it under the
+  # `mix test --partitions` default `MIX_TEST_PARTITION`; `--no-partition-db`
+  # disables partitioning and must override a `.mutare.exs` `partition_env: ...`.
+  # Absent leaves the key unset so the file config / default (off) stands. See
+  # `Mutare.Runner.Partitions`.
+  defp partition_env(flags) do
+    cond do
+      is_binary(flags[:partition_env]) -> {:set, flags[:partition_env]}
+      flags[:partition_db] == true -> {:set, "MIX_TEST_PARTITION"}
+      Keyword.fetch(flags, :partition_db) == {:ok, false} -> {:set, nil}
+      true -> :unset
+    end
+  end
+
+  defp put_translation(config, _key, :unset), do: config
+  defp put_translation(config, key, {:set, value}), do: Keyword.put(config, key, value)
 
   defp put_unless_nil(config, _key, nil), do: config
   defp put_unless_nil(config, key, value), do: Keyword.put(config, key, value)

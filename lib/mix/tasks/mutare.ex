@@ -133,6 +133,8 @@ defmodule Mix.Tasks.Mutare do
                                           #   (default: System.schedulers_online/0)
       mix mutare --full                   # run the whole suite for every mutant
                                           #   (default: only the tests that cover it)
+      mix mutare --no-full                # force coverage-guided selection even if
+                                          #   .mutare.exs set test_selection: :full
       mix mutare --timeout 30000          # per-mutant wall-clock cap, in ms
                                           #   (default: derived from the baseline run)
       mix mutare --timeout-multiplier 5   # ...or set the cap to baseline × this
@@ -170,6 +172,7 @@ defmodule Mix.Tasks.Mutare do
 
       mix mutare --workers 4 --partition-db           # distinct MIX_TEST_PARTITION per worker
       mix mutare --workers 4 --partition-env MY_SLOT  # ...under a custom variable name
+      mix mutare --no-partition-db                    # disable a partition_env from .mutare.exs
 
   This is the same convention as `mix test --partitions`, so a project already set up for that needs no code change:
 
