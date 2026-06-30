@@ -66,13 +66,22 @@ defmodule Mutare.MacroRouting.Registry do
     mutator_modules = modules(mutator_specs)
     hosts = collect_hosts(mutator_modules)
 
+    config_entries =
+      config_routes
+      |> resolve()
+      |> validate_config!()
+      |> reject_duplicate_config!()
+
+    config_keys = MapSet.new(config_entries, &Entry.key/1)
+
     code_routes =
       builtin() ++ from_mutators(mutator_specs) ++ from_extensions(extensions)
 
     routes =
       code_routes
+      |> reject_config_overridden(config_keys)
       |> merge_code_routes()
-      |> apply_config_routes(validate_config!(resolve(config_routes)))
+      |> apply_config_routes(config_entries)
 
     validate_hosts!(routes, hosts)
     %__MODULE__{routes: routes, hosts: hosts}
@@ -264,6 +273,10 @@ defmodule Mutare.MacroRouting.Registry do
     end)
   end
 
+  defp reject_config_overridden(entries, config_keys) do
+    Enum.reject(entries, &MapSet.member?(config_keys, Entry.key(&1)))
+  end
+
   defp merge_code_entry!(left, right) do
     cond do
       left.spec.args != right.spec.args ->
@@ -307,9 +320,7 @@ defmodule Mutare.MacroRouting.Registry do
   end
 
   defp apply_config_routes(routes, config_entries) do
-    config_entries
-    |> reject_duplicate_config!()
-    |> Enum.reduce(routes, fn entry, acc -> Map.put(acc, Entry.key(entry), entry) end)
+    Enum.reduce(config_entries, routes, fn entry, acc -> Map.put(acc, Entry.key(entry), entry) end)
   end
 
   defp reject_duplicate_config!(entries) do

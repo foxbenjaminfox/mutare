@@ -8,7 +8,7 @@ defmodule Mutare.Transform.HostedEmit do
   # `Mutare.Transform`, because ordinary selector delivery owns pipe hoisting and pinned cases.
 
   alias Mutare.Site
-  alias Mutare.Transform.{Candidate, Ctx, Meta, SelectorEmit}
+  alias Mutare.Transform.{Candidate, Ctx, Meta, NodeRange, SelectorEmit}
 
   @type emit_inplace :: (Macro.t(), [Candidate.t()], Ctx.t() -> {Macro.t(), Ctx.t()})
 
@@ -66,10 +66,12 @@ defmodule Mutare.Transform.HostedEmit do
   end
 
   # Hosts independently describe logical targets, so two modules targeting the same source
-  # fragment carry separate splice closures. Key by the stable source range plus logical original;
-  # when a later splice replaces that position, its catch-all runs the selector already woven by
-  # the earlier host instead of reverting to the raw original and erasing the earlier ids.
-  defp target_key(%Candidate.Hosted{range: range, original: original}), do: {range, original}
+  # fragment carry separate splice closures. Key by the source fragment's own stable range plus
+  # logical original, not by the Site/report range a host may customize; when a later splice
+  # replaces that position, its catch-all runs the selector already woven by the earlier host
+  # instead of reverting to the raw original and erasing the earlier ids.
+  defp target_key(%Candidate.Hosted{range: report_range, original: original}),
+    do: {NodeRange.get(original) || report_range, original}
 
   # The `Mutare.Site` for one hosted mutant: an `:in_place` replacement showing the logical
   # fragment swap, not the `wrap`/`splice`/selector scaffolding. The optional note rides onto

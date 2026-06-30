@@ -134,6 +134,22 @@ defmodule Mutare.MacroRouting.RegistryTest do
       assert %Entry{spec: %Spec{args: [:expression]}} =
                Macros.lookup(registry, [:Mutare, :Test, :QueryDSL], :query, 1)
     end
+
+    test "an explicit :macro_routes config entry resolves code-provider conflicts for the same key" do
+      # Config is the final authority. If a user explicitly routes the same macro, the registry
+      # must not reject two enabled code providers before the override can break the tie.
+      specs = Mutator.Spec.for_module(Mutare.Test.QueryMutator)
+
+      registry =
+        Macros.build(
+          [{Mutare.Test.QueryDSL, :query, 1, [:expression]}],
+          [specs],
+          [Mutare.Test.ConflictingQueryRoutingExtension]
+        )
+
+      assert %Entry{spec: %Spec{args: [:expression]}, sources: [:config]} =
+               Macros.lookup(registry, [:Mutare, :Test, :QueryDSL], :query, 1)
+    end
   end
 
   describe "the :hosted treatment and :routing classifier" do

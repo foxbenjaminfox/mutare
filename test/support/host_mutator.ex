@@ -264,6 +264,54 @@ defmodule Mutare.Test.SecondHostMutator do
   def host(_call, _context), do: []
 end
 
+defmodule Mutare.Test.CustomRangeHostMutator do
+  @moduledoc """
+  A second host-only subscriber that targets the same fragment as HostMutator, but reports a
+  custom Site range. Selector nesting must still use the fragment's own source identity, not this
+  report range, or this host's splice overwrites the selector woven by the earlier host.
+  """
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.MacroHost
+
+  @impl Mutare.Mutator
+  def name, do: :custom_range_host
+
+  @impl Mutare.Mutator.MacroHost
+  def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, :any}]
+
+  @impl Mutare.Mutator.MacroHost
+  def host(%Mutare.MacroRouting.Call{node: {form, _meta, args}}, _context)
+      when form == :filter and length(args) in [1, 2] do
+    index = length(args) - 1
+    original = Enum.at(args, index)
+
+    splice = fn {name, meta, current_args}, case_node ->
+      {name, meta, List.replace_at(current_args, index, case_node)}
+    end
+
+    [
+      Mutare.Mutator.MacroHost.Target.new(
+        original,
+        [Mutare.AST.literal(true)],
+        splice,
+        range: expanded_range(original)
+      )
+    ]
+  end
+
+  def host(_call, _context), do: []
+
+  defp expanded_range(original) do
+    case Mutare.Transform.NodeRange.get(original) do
+      %Sourceror.Range{} = range ->
+        %{range | end: Keyword.update!(range.end, :column, &(&1 + 1))}
+
+      nil ->
+        nil
+    end
+  end
+end
+
 defmodule Mutare.Test.ShadowedHostMutator do
   @moduledoc "An exact host subscription shadowed by a more specific non-hosted route."
   @behaviour Mutare.Mutator

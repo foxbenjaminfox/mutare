@@ -312,6 +312,48 @@ defmodule Mutare.HostedTest do
       :code.purge(compiled)
       :code.delete(compiled)
     end
+
+    test "a custom report range does not split selector nesting for the same hosted fragment" do
+      {meta, sites, _next} =
+        Mutare.transform_string(@source,
+          file: "hosted.ex",
+          mutators: [Mutare.Test.HostMutator, Mutare.Test.CustomRangeHostMutator]
+        )
+
+      host_site =
+        Enum.find(
+          sites,
+          &(&1.mutator == :host_filter and &1.mutated_code == "x >= 1" and &1.line == 5)
+        )
+
+      custom_site =
+        Enum.find(
+          sites,
+          &(&1.mutator == :custom_range_host and &1.mutated_code == "true" and &1.line == 5)
+        )
+
+      assert host_site
+      assert custom_site
+      assert custom_site.range != host_site.range
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        source = String.replace(meta, "Mutare.HostedFixture", "Mutare.HostedFixtureCustomRange")
+        [{module, _binary}] = Code.compile_string(source)
+        send(self(), {:custom_range_host_compiled, module})
+      end)
+
+      assert_received {:custom_range_host_compiled, compiled}
+
+      Selector.put(host_site.id)
+      assert apply(compiled, :direct, [1]) == [:ok]
+
+      Selector.put(custom_site.id)
+      assert apply(compiled, :direct, [0]) == [:ok]
+
+      Selector.put(Selector.baseline())
+      :code.purge(compiled)
+      :code.delete(compiled)
+    end
   end
 
   describe "a static :hosted at the piped-value position is rejected (not silently dropped)" do
