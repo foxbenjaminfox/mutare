@@ -72,12 +72,12 @@ Implementation notes:
   tolerant of that wrapping — one recognizer, both parsers) and the integer
   clause-pattern unwrapping keep working unchanged. (Sourceror remains the
   *renderer*; only this readback parse moved.)
-  NB this only tamed cause #2 (the slow re-parse). Cause #1 — lifting duplicates
-  the *whole* clause group per mutant, so `analyze/3`'s 25 clauses × ~100 lift
-  candidates ≈ 2500 generated clause-defs → the 1.8 MB blowup and the ~20 s
-  transform/render — is still open. See "lifting blowup" below.
-- A lifted private copy is attributed to its id by name (`~r/\A__mutare_.*_m(\d+)\z/`);
-  `…_orig` and user code never match, so they're left out.
+  > **OUTDATED (deferred-work audit, 2026-06-30):** cause #1 is no longer open.
+  > Per-clause lifting changed the generated volume from `C×M` to `C+M`; see
+  > *Why the metamutant was so big — lifting blowup on huge clause groups* below.
+- The old lifted private-copy attribution by `_m<id>` name is also **outdated**.
+  Per-clause lifting now attributes a lifted mutant through its
+  `mutare_active === <id>` clause gate; `Manifest.gate_id/1` is the current reader.
 - `Mutare.Metamutant` shrank to just the selector-subject AST contract
   (`subject_ast/0` + `subject?/1`); the metamutant *walk* now lives in `Mutare.Manifest`.
 
@@ -306,7 +306,15 @@ try/after — without it those modes leaked a raw stacktrace. (3) A custom **fam
 the qualifier separator, so `[ecto:query]` parses as family `ecto` + label `query` and could never
 name a whole `ecto:query` family — better to fail loud than let the filter silently match nothing.
 
-### Scan is transform-bound, and the loop heap makes it worse `[deferred]`
+### Scan is transform-bound, and the loop heap makes it worse `[resolved; was deferred]`
+
+> **OUTDATED as a current-state claim (deferred-work audit, 2026-06-30):** the
+> timings in the next two paragraphs describe the old sequential/eager pipeline.
+> The loop-heap penalty, lifting blowup, count-pass `Site` cost, and eager diff
+> rendering were all addressed by the completed steps in this section. The
+> current `Schema.from_files/4` uses two parallel, heap-isolated passes and lazy
+> site-code hydration where reporters allow it.
+
 After the manifest went lazy (above), the scan (`Schema.from_files` → `Transform`
 per file) is dominated by `Sourceror.to_string` rendering each metamutant, and one
 big file dominates the whole scan. Measured on this repo's own `lib/` (62 files,
@@ -484,8 +492,11 @@ is cheaper than the heap.
 ### Sandbox isolation & dependencies `[M4 / open question]`
 `Mutare.Sandbox` copies the whole project (excluding `_build`/`.git`, keeping
 `deps`) to a temp dir. Consequences:
-- **Path deps don't resolve in the copy.** A target using `{:mutare, path: ...}`
-  (or any local path dep) breaks in `/tmp`. That's why the examples are driven via
+- **Path deps outside the copied root don't resolve in the copy.** The old claim
+  that *any* local path dep breaks is **OUTDATED** (deferred-work audit,
+  2026-06-30): an in-tree sibling (notably an umbrella app) is copied and keeps
+  resolving. A target using `{:mutare, path: ...}` to a directory outside the
+  copy root still breaks in `/tmp`. That's why the examples are driven via
   `mix mutare examples/<name>` (positional root) rather than depending on Mutare.
   Hex deps are fine (they're under the copied `deps/`).
 - We don't run `mix deps.get` in the sandbox; relies on the original having
@@ -797,7 +808,7 @@ well-behaved:
   actually run, and no live subprocess outlives the run to race teardown. See
   `Mutare.Runner.collect_until_survivors/3`.
 
-### Umbrella support `[M5 / in progress]`
+### Umbrella support `[M5, done; was in progress]`
 Following the cargo-mutants precedent: **copy the whole umbrella, mutate a scoped
 subset of apps.** The whole tree travels to the sandbox so `in_umbrella` sibling
 deps and the shared `deps/`/`config/` keep resolving for free; only selected
@@ -1024,12 +1035,15 @@ unaffected. Keep an eye on Sourceror releases in case this becomes unnecessary.
 Context is classified *positively* by `Mutare.Transform`'s `analyze/3`, a
 context-threaded recursive walk (see "Transform pipeline" below), not subtracted
 by a blacklist. The positions:
-- **Guards:** mutated via lifting (M2) — operators in a `when` are swapped in a
-  duplicated clause group, since a `case` can't live in a guard. The analyzer
+- **Guards:** function-clause guards are mutated via lifting (M2), since a `case`
+  can't live in a guard. The analyzer
   returns the whole `when` untouched for *in-place*; this is position-independent,
-  so `case`/`fn` clause guards are skipped too. (The clause *head's* literals are
-  not mutated in place either, but they **are** mutated by the same lift path — see
-  "Head-pattern literals are lifted" below.)
+  so a bare selector is never spliced into a guard. The former claim that
+  `case`/`fn` clause guards are skipped is **OUTDATED** (deferred-work audit,
+  2026-06-30): `case` guards now use `Candidate.CaseClause`, while `receive`/`fn`
+  guards use the whole-construct `Candidate.CasePattern` path. (A function clause
+  *head's* literals are not mutated in place either, but they **are** mutated by
+  lifting — see "Head-pattern literals are lifted" below.)
 - **Module-attribute expressions** (`@x 1 + 2`): **excluded** (context
   `:compile_time`). Such a value is frozen at compile time — `persistent_term`
   reads the default → original — so a selector there could never activate (an
@@ -1139,8 +1153,11 @@ by a blacklist. The positions:
   mainly shielded *custom* mutators — until the **atom** mutator (the first built-in
   that matches a bare-atom node) made the gap bite. (A `def`/`defp` *head* pattern's
   literals are nonetheless mutated — by **lifting**, not in place — see "Head-pattern
-  literals are lifted" below; `=`-LHS and `case`/`fn`/… clause patterns stay
-  unmutated, having no lift path.)
+  literals are lifted" below.) The former claim that every `=` LHS and
+  `case`/`fn`/… clause pattern stays unmutated is **OUTDATED** (deferred-work audit,
+  2026-06-30): value-discarded `=` patterns and `case`/`receive`/`fn` clause patterns
+  now have dedicated delivery paths. The narrower exclusions are recorded under
+  *Pattern-structure mutators* and *Clause-pattern mutation* below.
   **Now done** (was deferred): clause-pattern / generator routing for
   `case`/`fn`/`with`/`for`/`receive`/`try`. A generic `->` clause routes a
   clause's LHS to `:pattern` and the body to `:runtime`; a `<-` clause mirrors
@@ -1330,8 +1347,11 @@ moved there.
   (`module_key?`/`to_module`) accept an atom key beside a path. (`alias :binary` *without* `as:`
   binds nothing — an atom has no last segment.)
 - **Out of scope (documented limitations).** Operator displacement (`import Kernel,
-  except: [+: 2]` + a custom `+`) — Arithmetic/Relational/Logical don't read the stamp. Like
-  `alias`, `use`/macro-injected imports are invisible.
+  except: [+: 2]` + a custom `+`) — Arithmetic/Relational/Logical don't read the stamp.
+  Imports introduced by macro expansion that the `Uses` pre-pass cannot expand remain invisible.
+  The old blanket claim that **`use`-injected imports are invisible is OUTDATED**
+  (deferred-work audit, 2026-06-30): `Mutare.Transform.Uses` surfaces directives from
+  successfully expanded `use`s, with `Mutare.UseExpansion` as the explicit override.
 - **Correctness boundary: sound for what we can *see*; the macro replacement hole is fail-loud.**
   For *visible* code the scheme is correct-or-poison-or-missed, resting on one Elixir fact
   (re-verified): calling a name provided by more than one visible source — two imports, an
@@ -3610,12 +3630,15 @@ also not retried (only `:harness_error` is) and skips the per-mutant harness war
 Effect on the plug run: 83.7% (128 killed, 17 harness-error) → 85.3% (145 killed, 0
 harness-error), and the misleading "fix your sandbox" warnings vanish.
 
-Deferred: the same shape exists for *any* compile-time-executed code (compile-time
-`@attr` expressions, `EEx`/`use`-time calls, custom route DSLs). The discriminator is
-general (any test-script compile error), so those are covered too — but if a target
-compiled lib modules *lazily* per-run (it doesn't today; the metamutant is built
-once), a lib compile error here could be a real kill we conservatively keep as a
-harness error. Acceptable while "lib compiles once" holds.
+> **OUTDATED defer label (deferred-work audit, 2026-06-30):** the same shape exists
+> for *any* compile-time-executed code in a test script (compile-time `@attr`
+> expressions, `EEx`/`use`-time calls, custom route DSLs), but the implemented
+> discriminator is already general: any test-script compile error is covered.
+> There is no remaining work for those cases under the compile-once invariant.
+> If a target compiled lib modules *lazily* per-run (it doesn't today; the
+> metamutant is built once), a lib compile error here could be a real kill we
+> conservatively keep as a harness error. Acceptable while "lib compiles once"
+> holds.
 
 ### A self-erasing boot crash is a *named*, harder-retried harness error `[done]`
 Surfaced on a full-stack Phoenix/LiveView/Ecto target at `--workers 16`: 6–13 of 39
@@ -5259,10 +5282,12 @@ the survivors and the summary. Two deliberate design calls worth remembering:
 * **Filtering fails safe toward *running* the mutant.** An unknown family (a
   typo) or an empty `[]` matches nothing, so the mutant runs and can surface as a
   survivor — the self-correcting failure mode — rather than being silently
-  hidden. We deliberately *don't* validate filter tokens against the active
-  mutator set: custom mutators have arbitrary `name/0` values that `Ignore` (which
-  sees only source) can't know, so a warning there would false-positive. If we
-  ever want typo-warnings, cross-check in `Transform`, which knows the live set.
+  hidden. The old "if we ever want typo-warnings" follow-up is **OUTDATED**
+  (deferred-work audit, 2026-06-30): `Transform` now validates qualified labels
+  against the known vocabulary, and `Schema` records directives that suppress no
+  site so the task warns (or fails under `--strict-ignores`). Unknown *family*
+  names remain deliberately lenient because they are indistinguishable from
+  disabled/custom families at parse time.
 
 Suspected-equivalent auto-reporting is still future work.
 
@@ -5610,12 +5635,14 @@ clean `-old`/`+new` pair (and every existing single-line diff assertion) still h
 A pure report-rendering fix; the regression test asserts the where-drop shape shows just the dropped
 line with context and that the patched source re-parses (`report_test.exs`).
 
-### Surface skipped files more loudly `[soon]`
-`Schema`/`safe_transform` skips a file that fails to transform (good — one bad
-file shouldn't sink the run) and the task prints `skipped <file>: <reason>` in
-its banner. But that's easy to miss, and it's exactly how the two
-compile-poisoning bugs below hid. Consider a `--strict` mode that fails on any
-skip, and/or making poisoning structural exclusions (below) the norm.
+### Surface skipped files more loudly `[deferred; corrected scope]`
+The old claim that `Schema`/`safe_transform` skips **any transform failure** is
+**OUTDATED** (deferred-work audit, 2026-06-30). `safe_transform` is gone:
+`Schema.count_one/3` skips only parser failures (`SyntaxError`,
+`TokenMissingError`, `MismatchedDelimiterError`), while every post-parse transform
+or mutator failure is re-raised as a tool/configuration error. The task still only
+prints `skipped <file>: <reason>` for those unparseable files, which can be easy to
+miss. A strict mode that fails on any parse skip remains deferred.
 
 ### Live human progress (`Mutare.Report.Live`) `[done]`
 The human run used to print a test-runner stream of symbols (`.`/`S`/`T`/…) via a
@@ -5963,9 +5990,12 @@ a metamutant with **zero** poisons.
   atoms *and* any module implementing the behaviour (validated, with a helpful
   error otherwise). Dropped the old `kind/0` callback — it was vestigial and
   misleading: placement (in-place selector vs lifting into a guard) is decided
-  by the node's *position*, not declared by the mutator. Limit: `mutate/1` does
-  node-level mutations; structural mutations (clause-drop) remain built-in only,
-  not expressible by a custom mutator. CLI `--mutators` CSV is for built-in
+  by the node's *position*, not declared by the mutator. The old blanket limit
+  that custom mutators cannot express structural mutations is **OUTDATED**
+  (deferred-work audit, 2026-06-30): `Mutare.Mutator.Structural` now exposes
+  return-tail, condition, and head-pattern callbacks. Transform-managed structural
+  families such as clause/guard/rescue drop still have no custom callback. CLI
+  `--mutators` CSV is for built-in
   families (short names); custom modules go in `.mutare.exs`.
 - **Validated options struct (done).** The shared keyword list that threaded
   through `Config → Schema → Runner → Sandbox` is now `Mutare.Options`, built and
