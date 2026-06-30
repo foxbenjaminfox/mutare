@@ -124,7 +124,7 @@ defmodule Mix.Tasks.MutareTest do
 
       # A summary line is rendered from a family's @moduledoc, and the usage hint
       # names the comma-separated form.
-      assert output =~ "Arithmetic operator swaps"
+      assert output =~ "Mutates arithmetic operators"
       assert output =~ "--mutators relational,arithmetic"
 
       # An opted-in family lists its `# mutare:ignore[family:label]` qualifier labels;
