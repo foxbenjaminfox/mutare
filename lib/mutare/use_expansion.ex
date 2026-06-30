@@ -50,12 +50,12 @@ defmodule Mutare.UseExpansion do
         }
 
   @doc """
-  Override expansion of `use used_module, ...`.
+  Overrides expansion of `use used_module, ...`.
 
-  `used_module` is alias-resolved. `args` is the standard quoted argument list written after the
-  module. Return an expansion built by `expand/2`, or `:decline` to fall through. Invalid returns,
-  raises, throws, and exits are wrapped in `Mutare.UseExpansion.ContractError` and abort loudly;
-  silently losing source-understanding directives would make mutation coverage unsound.
+  `used_module` is alias-resolved. `args` is the quoted argument list written
+  after the module. Return an expansion built by `expand/2`, or `:decline` to let
+  the next handler try. Invalid returns, raises, throws, and exits are wrapped in
+  `Mutare.UseExpansion.ContractError`.
   """
   @callback expand_use(used_module :: module(), args :: [Macro.t()], context :: context()) ::
               expansion()

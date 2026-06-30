@@ -1,7 +1,6 @@
 defmodule Mutare.Report do
   @moduledoc """
-  Turns results into the product: a list of surviving mutants, each rendered as
-  a diff at `file:line`.
+  Renders mutation results for the human report.
 
   Diffs are patched against the **original** source via `Sourceror.patch_string`
   at the site's recorded range, so the rest of every line stays byte-identical
@@ -18,11 +17,11 @@ defmodule Mutare.Report do
   end
 
   @doc """
-  Header line for a surviving mutant, e.g. `lib/x.ex:42  [relational, in-place]  SURVIVED`.
+  Header line for a surviving mutant, e.g.
+  `lib/x.ex:42  [relational, in-place]  SURVIVED`.
 
-  A mutation that carries a `note` (a hosting mutator's advisory, e.g. "kill may require
-  NULL/boundary data") appends it as a trailing `— note`, like an ignored mutant's reason — so a
-  survivor that may be legitimately hard to kill reads as honest signal, not just a test gap.
+  A mutation with a note appends it as a trailing `— note`, matching the ignored
+  mutant reason format.
   """
   @spec header(Site.t()) :: String.t()
   def header(%Site{} = site) do
@@ -38,18 +37,12 @@ defmodule Mutare.Report do
   defp kind(:lifted), do: "lifted"
 
   @doc """
-  A `-`/`+` diff of the line(s) the mutation touches.
+  A `-`/`+` diff of the lines touched by the mutation.
 
-  Computed by a **line-based** diff (`List.myers_difference/2`) between the
-  original and patched text *within* the site's line span, so only the lines that
-  actually change are shown as `-`/`+`; unchanged lines inside a multi-line
-  fragment appear as ` ` context. This matters for a mutation that removes (or
-  adds) a line in the middle of a multi-line fragment — e.g. an Ecto `:hosted`
-  swap dropping one `where:` from a big `from` block: a naive line-by-line
-  pairing would re-emit every following line as a spurious delete+insert (they
-  "shift" past the removal), whereas the diff aligns the unchanged lines and
-  shows just the dropped one. A single-line swap still renders as a clean
-  `-old`/`+new` pair.
+  The diff is line-based within the site's source range. Changed lines are shown
+  as deletions and insertions; unchanged lines inside a multi-line fragment are
+  shown as context. This keeps multi-line replacements aligned when a mutation adds
+  or removes a line in the middle of the fragment.
   """
   @spec diff(Site.t(), String.t()) :: String.t()
   def diff(%Site{operation: :delete} = site, source) do
@@ -122,9 +115,9 @@ defmodule Mutare.Report do
   end
 
   @doc """
-  Conform to the machine reporters' `(results, sources, opts)` signature so all
-  four formats dispatch uniformly. The human report ignores `opts` — the score
-  gate is applied separately by the Mix task, not rendered here.
+  Renders the human report with the same arity as machine reporters.
+
+  `opts` is ignored; score gating is handled by the caller.
   """
   @spec render([Result.t()], %{optional(String.t()) => String.t()}, keyword()) :: String.t()
   def render(results, sources, _opts), do: render(results, sources)
@@ -160,8 +153,9 @@ defmodule Mutare.Report do
   def percent(value), do: :erlang.float_to_binary(value / 1, decimals: 1)
 
   @doc """
-  Whether `results` meet a minimum score (a percentage). A `nil` minimum always
-  passes — this is the CI gate's decision, kept pure here so it is testable.
+  Returns whether `results` meet a minimum score percentage.
+
+  A `nil` minimum always passes.
 
       iex> results = [%Mutare.Result{status: :killed}, %Mutare.Result{status: :survived}]
       iex> Mutare.Report.passes_gate?(results, 60)
@@ -174,16 +168,12 @@ defmodule Mutare.Report do
   def passes_gate?(results, min_score), do: score(results) >= min_score
 
   @doc """
-  Fraction (0.0..1.0) of the mutants that actually *ran* which ended in a
-  `:harness_error`.
+  Fraction of launched mutant runs that ended in `:harness_error`.
 
-  "Ran" is `:killed`/`:survived`/`:timeout`/`:atom_exhausted`/`:harness_error` —
-  the runs that reached (or tried to reach) a verdict. `:no_coverage`/`:ignored`/
-  `:poisoned` never launched a `mix test`, so they are not part of this
-  denominator: this rate measures how broken the *running* was, not how much was
-  skipped. Returns `0.0` when nothing ran. The runner compares it to
-  `:max_harness_error_rate` to decide whether to abort; kept pure here so it is
-  testable (cf. `passes_gate?/2`).
+  The denominator includes `:killed`, `:survived`, `:timeout`,
+  `:atom_exhausted`, and `:harness_error`. It excludes `:no_coverage`,
+  `:ignored`, and `:poisoned`, which never launch a test run. Returns `0.0`
+  when nothing ran.
 
       iex> results = [
       ...>   %Mutare.Result{status: :killed},
@@ -203,13 +193,10 @@ defmodule Mutare.Report do
   end
 
   @doc """
-  Whether `harness_error_rate/1` exceeds `max_rate` (a fraction in 0.0..1.0). A
-  `nil` `max_rate` disables the check (always `false`).
+  Returns whether `harness_error_rate/1` exceeds `max_rate`.
 
-  This is the runner's abort decision, kept pure here so it is testable — the
-  mirror of `passes_gate?/2` for the harness-error guard. When it is `true` the
-  score would be computed over a denominator hollowed out by infrastructure
-  failures, so the run aborts rather than report it.
+  `max_rate` is a fraction from `0.0` to `1.0`. A `nil` value disables the
+  check and returns `false`.
   """
   @spec harness_errors_exceed?([Result.t()], number() | nil) :: boolean()
   # Equivalent mutant: dropping this clause changes nothing. The fallback clause

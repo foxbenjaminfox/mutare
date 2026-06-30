@@ -1,16 +1,15 @@
 defmodule Mutare.Options do
   @moduledoc """
-  Validated **configuration** for a mutation run — the struct `Mutare.run/2` accepts.
+  Validated configuration for a mutation run.
 
   `new/1` resolves a keyword list (or another `Options`) into a struct,
-  validating every field up front so a bad `:workers`, `:timeout`,
-  `:test_selection`, `:paths`, and so on fails loudly with an `ArgumentError`
-  rather than misbehaving deep in the run. Passing the same options on the
-  command line or in `.mutare.exs` goes through the same validation — see
+  validating every field up front. Invalid values raise `ArgumentError`. Passing
+  the same options on the command line or in `.mutare.exs` uses the same
+  validation; see
   `mix help mutare` for the full list of settable keys and their defaults.
 
-  Runtime *wiring* (the resolved `Mutare.Project` and the live-progress hooks) is
-  **not** configuration and does not live here — see `Mutare.Run.Context`.
+  Runtime wiring, such as the resolved `Mutare.Project` and live-progress hooks,
+  lives in `Mutare.Run.Context`, not in this struct.
 
   The fields and their types are listed in `t:t/0` below.
   """
@@ -84,9 +83,10 @@ defmodule Mutare.Options do
   def formats, do: @formats
 
   @doc """
-  The renderer module for an output `format` — `:human` → `Mutare.Report`, the rest the machine
-  renderers under `Mutare.Report.*`. The format→module half of the `@format_renderers` single
-  source `formats/0` shares, so the Mix task dispatches without re-listing the mapping.
+  The renderer module for an output `format`.
+
+  `:human` maps to `Mutare.Report`; machine formats map to modules under
+  `Mutare.Report.*`.
   """
   @spec renderer(atom()) :: module()
   def renderer(format), do: Keyword.fetch!(@format_renderers, format)
@@ -94,11 +94,10 @@ defmodule Mutare.Options do
   @doc """
   Resolve and validate options.
 
-  Accepts a keyword list (typically `Mutare.Config.merge/2`'s output, plus
-  `:only_files`) or an existing `Options` (re-normalized and revalidated). Raises
-  `ArgumentError` on an unknown key or an invalid value. `:workers` defaults to
-  `System.schedulers_online/0`, resolved here so the struct always carries a
-  concrete positive integer.
+  Accepts a keyword list or an existing `Options` struct. Raises `ArgumentError`
+  on an unknown key or invalid value. `:workers` defaults to
+  `System.schedulers_online/0`, resolved here so the struct carries a concrete
+  positive integer.
 
       iex> opts = Mutare.Options.new(
       ...>   paths: ["lib/billing"],

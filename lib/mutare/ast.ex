@@ -1,10 +1,19 @@
 defmodule Mutare.AST do
   @moduledoc """
-  Small constructors and predicates over the Sourceror AST — the rules about how to build a node.
+  Small constructors and predicates for Sourceror AST nodes.
 
-  Custom mutators (`Mutare.Mutator`) should use these instead of hand-rolling AST. In particular `literal/1` encodes the **clean-meta rule**: Sourceror parses a literal as `{:__block__, meta, [value]}` and renders it from a `:token`/`delimiter` cached in `meta`, so a hand-built node gets this subtly wrong — reusing a parsed literal's meta re-renders the *original* text even after you change the value, and a bare `{:__block__, [], ["x"]}` for a string renders as the *charlist* `~c"x"`. `literal/1` gets both right. `literal_value/1` is the inverse — it reads a literal node back to its value. The `sentinel_*` helpers give the same survivor marker the built-in families use, so a custom mutant reads consistently in reports, and `absolute_call/3`/`absolute_alias/1` build calls and module references that survive any `alias`/`import` in the target being mutated.
+  These helpers are the supported way for custom mutators to build AST.
+  `literal/1` is the most important one: it builds literal nodes with fresh
+  metadata, so Sourceror renders the new value rather than stale source text.
+  It also handles string delimiters and negative-number shape correctly.
 
-  `parse!/1` and `to_string/1` are for custom mutators to use so as to not need to depend on `Sourceror` directly.
+  `literal_value/1` reads supported literal nodes back to their values. The
+  `sentinel_*` helpers return the same survivor markers used by the built-in
+  families. `absolute_alias/1` and `absolute_call/3` build references that are
+  not affected by aliases or imports in the target source.
+
+  `parse!/1` and `to_string/1` expose the Sourceror round trip without requiring
+  custom mutators to depend on Sourceror directly.
   """
 
   # The two ends of the round-trip route through Mutare, so callers never need a
@@ -34,26 +43,19 @@ defmodule Mutare.AST do
   def to_string(ast), do: Sourceror.to_string(ast)
 
   @doc """
-  A scalar-literal node with clean (fresh) metadata.
+  Builds a scalar-literal node with fresh metadata.
 
-  Sourceror parses a literal as `{:__block__, meta, [value]}` and renders it from a
-  `:token` string cached in `meta`. Reusing a node's *original* meta would therefore
-  render the *original* text even after the value changed — a silent equivalent
-  no-op. So a mutator that emits a new literal value must give it fresh metadata,
-  which is what this builds.
+  Sourceror parses a literal as `{:__block__, meta, [value]}` and may render it
+  from cached token metadata. Reusing metadata from a parsed literal can therefore
+  render the original source text after the value has changed. This helper builds a
+  fresh literal node for replacement values.
 
-  A **string** value additionally needs a `delimiter` in its metadata, or Sourceror
-  renders a printable binary as a charlist (`~c"…"`); this adds the double-quote
-  delimiter automatically, so callers never have to remember the distinction.
+  String values include a double-quote delimiter. Without it, Sourceror may render a
+  printable binary as a charlist.
 
-  A **negative number** is built as the canonical unary-minus AST the parser itself
-  produces — `-0.5` is `{:-, _, [0.5]}`, *never* a bare negative literal. A bare
-  `{:__block__, [], [-0.5]}` renders fine alone but glues into `--0.5` (the invalid
-  list-subtraction token) the moment it lands under a parent unary minus — exactly
-  what happens when a literal mutator negates the positive magnitude of an already
-  negative source literal (`-0.5` mutated via `0.5 - 1.0`). Wrapping the magnitude in
-  an explicit `{:-, …}` keeps the inner node an operator (not an atomic literal), so
-  the formatter spaces nested minuses (`-(-0.5)`) and the result always re-parses.
+  Negative numbers use the same unary-minus AST shape the parser emits. This keeps
+  nested negative-number mutations renderable and parseable, for example when a
+  mutation inside `-0.5` would otherwise format as an invalid `--0.5`.
 
       iex> Mutare.AST.literal(0)
       {:__block__, [], [0]}
@@ -68,14 +70,14 @@ defmodule Mutare.AST do
   def literal(value), do: {:__block__, [], [value]}
 
   @doc """
-  The scalar value a literal node carries — `{:ok, value}` for a number, binary, or atom in
-  either bare or Sourceror block-wrapped (`{:__block__, _, [value]}`) form, and `:error` for
-  anything else (a variable, call, collection, …).
+  Reads the scalar value from a literal node.
 
-  The reading counterpart to `literal/1`: use it in a mutator to recover the underlying value
-  of a node before deciding how — or whether — to mutate it, for example to skip a mutation
-  that would be an equivalent no-op. Booleans and `nil` are atoms, so they round-trip too;
-  exclude them by filtering the returned value.
+  Returns `{:ok, value}` for a number, binary, or atom in either bare form or
+  Sourceror's `{:__block__, _, [value]}` wrapper. Returns `:error` for variables,
+  calls, collections, and other non-scalar nodes.
+
+  Booleans and `nil` are atoms and are returned as values; filter them separately
+  when a mutator does not own them.
 
       iex> Mutare.AST.literal_value({:__block__, [], [0]})
       {:ok, 0}
@@ -95,15 +97,11 @@ defmodule Mutare.AST do
   def literal_value(_node), do: :error
 
   @doc """
-  See through a single-element `{:__block__, _, [inner]}` wrapper, returning `inner`;
-  any other node passes through untouched.
+  Removes one Sourceror literal wrapper.
 
-  This is the wrapper Sourceror (and a `Code.string_to_quoted` literal-encoding re-parse)
-  put around a literal, so a recognizer comparing a node's *value* (`unwrap_literal(node)
-  == :persistent_term`) sees through it. Unlike `literal_value/1` it makes no claim the
-  inner term is a scalar literal and returns the value bare (not `{:ok, _}`) — so it is also
-  the tool for comparing a clean-meta constant against a recomputed one regardless of
-  metadata, where the value may be a collection (`[]`, `[:mutare]`).
+  A single-element `{:__block__, _, [inner]}` returns `inner`; any other node is
+  returned unchanged. Unlike `literal_value/1`, this helper does not require the
+  inner term to be a scalar literal and does not wrap the result in `{:ok, _}`.
 
       iex> Mutare.AST.unwrap_literal({:__block__, [], [:persistent_term]})
       :persistent_term
@@ -115,12 +113,11 @@ defmodule Mutare.AST do
   def unwrap_literal(node), do: node
 
   @doc """
-  An **absolute-qualified** module alias — `{:__aliases__, [], [:"Elixir" | path]}`, the
-  `Elixir.`-prefixed form that `alias`/`import` resolution never rewrites.
+  Builds an absolute-qualified module alias.
 
-  Use it in a mutator when a mutation must reference a specific module no matter what the
-  target code aliases or imports: an `alias Foo, as: Kernel` in the target cannot redirect
-  `absolute_alias([:Kernel])`. Pair it with `absolute_call/3` to build a whole call.
+  The result is the `Elixir.`-prefixed form that alias and import resolution do
+  not rewrite. Use it when a mutation must refer to a specific module regardless of
+  aliases in the target source. Pair it with `absolute_call/3` to build a call.
 
       iex> Mutare.AST.absolute_alias([:Kernel])
       {:__aliases__, [], [:"Elixir", :Kernel]}
@@ -129,13 +126,11 @@ defmodule Mutare.AST do
   def absolute_alias(path) when is_list(path), do: {:__aliases__, [], [:"Elixir" | path]}
 
   @doc """
-  An **alias-proof remote call** `Elixir.Mod.fun(args)`, built on `absolute_alias/1` so a
-  target's `alias`/`import` can never redirect the callee.
+  Builds an absolute-qualified remote call.
 
-  Use it in a mutator whose mutation renames a call to a function in a *different* module —
-  for example swapping `String.length(s)` for a byte count with
-  `absolute_call([:Kernel], :byte_size, args)`. Because the module is absolute-qualified, no
-  `alias`/`import` in the target can point the swapped call elsewhere.
+  The callee cannot be redirected by aliases or imports in the target source. This
+  is useful when a mutator replaces a call with a function from another module, such
+  as replacing `String.length(s)` with `Kernel.byte_size(s)`.
 
       iex> Mutare.AST.absolute_call([:Kernel], :==, [1, 2])
       {{:., [], [{:__aliases__, [], [:"Elixir", :Kernel]}, :==]}, [], [1, 2]}
@@ -154,11 +149,10 @@ defmodule Mutare.AST do
   def key_atom(_), do: nil
 
   @doc """
-  The value node bound to option `key` in a Sourceror-form keyword list `opts`, or `default`
-  (`nil` unless given) when absent. Reads Sourceror's block-wrapped keys via `key_atom/1`, so a
-  written `[as: B]` and an explicitly-quoted `[{:as, B}]` both match. The shared reader behind the
-  `alias`/`import`/`use` vocabularies' option lookups (`Aliases.as_name`, `Imports.opt_value`,
-  `Uses.for_type`).
+  Returns the value bound to `key` in a Sourceror-form keyword list.
+
+  Returns `default` when the key is absent. Keys are read with `key_atom/1`, so
+  both `[as: B]` and `[{:as, B}]` match.
   """
   @spec opts_get([Macro.t()], atom(), term()) :: Macro.t() | term()
   def opts_get(opts, key, default \\ nil) when is_list(opts) do
@@ -212,13 +206,13 @@ defmodule Mutare.AST do
   def update_do_block_reduce(other, acc, _fun), do: {other, acc}
 
   @doc """
-  Whether `node` is an *inline keyword label* — the key side of an `a: x` pair,
-  which Sourceror wraps as `{:__block__, meta, [atom]}` carrying a
-  `format: :keyword` marker. Such a key is a structural label, never a runtime
-  value, so it must not be offered to a mutator.
+  Returns whether `node` is the key side of an inline keyword pair.
 
-  This is the head/pattern-context check (`format: :keyword` only). In a value
-  context, block keys (`do`/`else`/…) are additionally treated as labels.
+  Sourceror represents `a:` as `{:__block__, meta, [:a]}` with
+  `format: :keyword`. Such keys are structural labels, not runtime values.
+
+  This predicate checks only the inline-keyword marker. Value-context block keys
+  such as `do` and `else` are handled separately.
   """
   @spec keyword_label?(Macro.t()) :: boolean()
   def keyword_label?({:__block__, meta, [atom]}) when is_atom(atom) and is_list(meta),
@@ -264,8 +258,8 @@ defmodule Mutare.AST do
   In a guard, `x in <empty>` is equivalent to the `false` mutant that
   `Mutare.Mutators.Conditional` already produces on the `in` node: guards have no
   observable side effects and a guard error is a failed guard. `Mutare.Transform.Tag`
-  therefore drops the empty-literal sibling there. Body expressions deliberately do not
-  use this predicate because evaluating `x` can be observable.
+  therefore drops the empty-literal sibling there. Body expressions do not use this
+  predicate because evaluating `x` can be observable.
   """
   @spec empty_collection_literal?(Macro.t()) :: boolean()
   def empty_collection_literal?([]), do: true

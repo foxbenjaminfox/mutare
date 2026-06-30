@@ -41,27 +41,27 @@ defmodule Mutare.Result do
   @unran_statuses Enum.reject(Mutare.Result.Status.names(), &Mutare.Result.Status.fetch!(&1).ran?)
 
   @doc """
-  A detected mutant — counted in the score *numerator*: `:killed` outright, or a
-  resource-divergence the suite still caught (`:timeout`, a hang; `:atom_exhausted`,
-  unbounded atoms that crashed the VM).
+  Returns whether `status` counts as a killed mutant.
+
+  `:killed`, `:timeout`, and `:atom_exhausted` count as kills.
   """
   @spec kill?(status()) :: boolean()
   def kill?(status), do: status in @kill_statuses
 
   @doc """
-  Counted in the score *denominator*. False for the four statuses that reached no verdict
-  about the mutation — `:no_coverage` (no test ran the line), `:ignored` (`# mutare:ignore`),
-  `:poisoned` (wouldn't compile), `:harness_error` (the run itself failed) — so the score
-  measures only mutations the suite actually exercised.
+  Returns whether `status` counts in the mutation-score denominator.
+
+  `:no_coverage`, `:ignored`, `:poisoned`, and `:harness_error` are excluded
+  because they do not produce a test-suite verdict for the mutation.
   """
   @spec scored?(status()) :: boolean()
   def scored?(status), do: status not in @unscored_statuses
 
   @doc """
-  Whether a mutant's run actually launched a `mix test` (reached, or tried to reach, a
-  verdict). True for everything except `:no_coverage`/`:ignored`/`:poisoned`, which never
-  started one. The denominator of `Mutare.Report.harness_error_rate/1` — unlike `scored?/1`
-  it *includes* `:harness_error` (a run that launched but failed).
+  Returns whether a mutant launched a test run.
+
+  `:no_coverage`, `:ignored`, and `:poisoned` never start a test run.
+  `:harness_error` does start one and is included here.
   """
   @spec ran?(status()) :: boolean()
   def ran?(status), do: status not in @unran_statuses
