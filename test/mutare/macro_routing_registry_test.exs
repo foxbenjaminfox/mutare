@@ -247,6 +247,22 @@ defmodule Mutare.MacroRouting.RegistryTest do
       end
     end
 
+    test "a broader dynamic route does not make a host reachable through a shadowing exact route" do
+      host = Mutator.Spec.for_module(Mutare.Test.ShadowedHostMutator)
+
+      assert_raise Mutare.MacroRouting.ContractError, ~r/no active.*route can reach/s, fn ->
+        Macros.build([], [host], [Mutare.Test.ShadowingRoutingExtension])
+      end
+    end
+
+    test "a host-only mutator must subscribe to at least one macro" do
+      host = Mutator.Spec.for_module(Mutare.Test.EmptySubscriptionHostMutator)
+
+      assert_raise Mutare.MacroRouting.ContractError, ~r/returned an empty list/, fn ->
+        Macros.build([], [host])
+      end
+    end
+
     test "build/3 raises when a declarative entry asks for callback-backed routing" do
       assert_raise ArgumentError, ~r/requires macro_routes\/0 and route_arguments\/2/, fn ->
         Macros.build([{Ecto.Query, :where, :any, :routing}], [])

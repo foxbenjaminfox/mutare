@@ -80,18 +80,9 @@ defmodule Mutare.MacroRouting.Registry do
 
   @spec lookup(registry(), Spec.module_key() | nil, atom(), non_neg_integer()) :: Entry.t() | nil
   def lookup(%__MODULE__{routes: routes, hosts: hosts}, module_key, name, arity) do
-    wild = Spec.wildcard()
-
-    entry =
-      Map.get(routes, {module_key, name, arity}) ||
-        Map.get(routes, {module_key, name, :any}) ||
-        Map.get(routes, {module_key, wild, :any}) ||
-        Map.get(routes, {wild, name, arity}) ||
-        Map.get(routes, {wild, name, :any})
-
-    case entry do
+    case lookup_route(routes, module_key, name, arity) do
       nil -> nil
-      %Entry{} -> %{entry | hosts: matching_hosts(hosts, {module_key, name, arity})}
+      %Entry{} = entry -> %{entry | hosts: matching_hosts(hosts, {module_key, name, arity})}
     end
   end
 
@@ -218,6 +209,18 @@ defmodule Mutare.MacroRouting.Registry do
     end)
   end
 
+  defp resolve_host_selectors!([], module) do
+    contract_error!(
+      provider: module,
+      callback: {:hosted_macros, 0},
+      value: [],
+      reason: :empty_selectors,
+      message:
+        "#{inspect(module)} hosted_macros/0 returned an empty list; a host mutator must " <>
+          "subscribe to at least one macro"
+    )
+  end
+
   defp resolve_host_selectors!(selectors, module) when is_list(selectors) do
     Enum.map(selectors, fn
       {route_module, name} -> selector!(route_module, name, :any, module)
@@ -339,11 +342,7 @@ defmodule Mutare.MacroRouting.Registry do
     end)
 
     Enum.each(hosts, fn host ->
-      reachable? =
-        Enum.any?(routes, fn {_key, entry} ->
-          (Spec.host_required?(entry.spec) or Spec.classifier?(entry.spec)) and
-            selectors_overlap?(Spec.key(entry.spec), host.selector)
-        end)
+      reachable? = host_reachable?(routes, host.selector)
 
       if not reachable? do
         contract_error!(
@@ -369,10 +368,66 @@ defmodule Mutare.MacroRouting.Registry do
       |> Enum.map(& &1.module)
       |> Enum.uniq()
 
+  # A host is reachable only when some concrete call matching its selector resolves, through the
+  # same specificity cascade as `lookup/4`, to a hosted or shape-aware route. Testing every route
+  # constant plus one unmatched representative per wildcard dimension is exhaustive for this
+  # equality/wildcard pattern language: calls within each resulting class have identical lookup
+  # behaviour.
+  defp host_reachable?(routes, {host_module, host_name, host_arity} = host_selector) do
+    modules = witness_values(routes, 0, host_module, Spec.wildcard())
+    names = witness_values(routes, 1, host_name, Spec.wildcard())
+    arities = witness_values(routes, 2, host_arity, :any)
+
+    Enum.any?(modules, fn module ->
+      Enum.any?(names, fn name ->
+        Enum.any?(arities, fn arity ->
+          concrete = {module, name, arity}
+
+          selector_matches?(host_selector, concrete) and
+            case lookup_route(routes, module, name, arity) do
+              %Entry{spec: spec} -> Spec.host_required?(spec) or Spec.classifier?(spec)
+              nil -> false
+            end
+        end)
+      end)
+    end)
+  end
+
+  defp witness_values(_routes, _position, host_value, wildcard) when host_value != wildcard,
+    do: [host_value]
+
+  defp witness_values(routes, position, _host_value, wildcard) do
+    values =
+      routes
+      |> Map.keys()
+      |> Enum.map(&elem(&1, position))
+      |> Enum.reject(&(&1 == wildcard))
+      |> Enum.uniq()
+
+    Enum.uniq(values ++ unmatched_witness(position, values))
+  end
+
+  # These sentinels cannot be valid normalized route slots, so unlike a made-up atom/integer they
+  # are guaranteed not to collide with a user declaration. Lookup only compares them for equality
+  # or against a wildcard, which is exactly the equivalence class they represent.
+  defp unmatched_witness(0, _values), do: [nil]
+  defp unmatched_witness(1, _values), do: [{:__mutare_unmatched__, :name}]
+  defp unmatched_witness(2, _values), do: [-1]
+
   defp selector_matches?({module, name, arity}, {actual_module, actual_name, actual_arity}) do
     slot_matches?(module, actual_module, Spec.wildcard()) and
       slot_matches?(name, actual_name, Spec.wildcard()) and
       slot_matches?(arity, actual_arity, :any)
+  end
+
+  defp lookup_route(routes, module_key, name, arity) do
+    wild = Spec.wildcard()
+
+    Map.get(routes, {module_key, name, arity}) ||
+      Map.get(routes, {module_key, name, :any}) ||
+      Map.get(routes, {module_key, wild, :any}) ||
+      Map.get(routes, {wild, name, arity}) ||
+      Map.get(routes, {wild, name, :any})
   end
 
   defp selectors_overlap?({lm, ln, la}, {rm, rn, ra}) do

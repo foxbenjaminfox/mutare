@@ -292,10 +292,25 @@ defmodule Mutare.HostedTest do
       assert Enum.any?(sites, &(&1.mutator == :host_filter and &1.mutated_code == "x >= 1"))
       assert Enum.any?(sites, &(&1.mutator == :second_host and &1.mutated_code == "true"))
 
-      ExUnit.CaptureIO.capture_io(:stderr, fn ->
-        source = String.replace(meta, "Mutare.HostedFixture", "Mutare.HostedFixtureMultiHost")
-        assert [{_module, _binary}] = Code.compile_string(source)
-      end)
+      module =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          source = String.replace(meta, "Mutare.HostedFixture", "Mutare.HostedFixtureMultiHost")
+          [{module, _binary}] = Code.compile_string(source)
+          send(self(), {:multi_host_compiled, module})
+        end)
+
+      assert module == ""
+      assert_received {:multi_host_compiled, compiled}
+
+      Selector.put(id(sites, :host_filter, "x >= 1", 5))
+      assert apply(compiled, :direct, [1]) == [:ok]
+
+      Selector.put(id(sites, :second_host, "true", 5))
+      assert apply(compiled, :direct, [0]) == [:ok]
+
+      Selector.put(Selector.baseline())
+      :code.purge(compiled)
+      :code.delete(compiled)
     end
   end
 

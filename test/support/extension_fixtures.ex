@@ -178,6 +178,24 @@ defmodule Mutare.Test.IdenticalQueryRoutingExtension do
     do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
 end
 
+defmodule Mutare.Test.ShadowingRoutingExtension do
+  @moduledoc "Broad dynamic routing shadowed by an exact non-hosted route."
+  @behaviour Mutare.MacroRouting
+
+  @impl Mutare.MacroRouting
+  def macro_routes,
+    do: [
+      {Mutare.Test.HostDSL, :filter, :any, :routing},
+      {Mutare.Test.HostDSL, :filter, 2, :skip}
+    ]
+
+  @impl Mutare.MacroRouting
+  def route_arguments(call, _context) do
+    routes = Enum.map(call.arguments, fn _argument -> :expression end)
+    Mutare.MacroRouting.ArgumentRoutes.from_visible(call, routes)
+  end
+end
+
 defmodule Mutare.Test.DynamicRoutingExtension do
   @moduledoc "A non-mutating extension that classifies a macro's routing per concrete call."
   @behaviour Mutare.MacroRouting

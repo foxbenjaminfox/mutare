@@ -20,9 +20,13 @@ defmodule Mutare.Transform.HostedEmit do
   def emit(node, hosted, inplace, ctx, emit_inplace) when is_function(emit_inplace, 3) do
     base = Meta.strip_delivery(node)
 
-    {spliced, ctx} =
-      Enum.reduce(hosted, {base, ctx}, fn candidate, {node, ctx} ->
-        weave_target(node, candidate, ctx)
+    {spliced, ctx, _selectors} =
+      Enum.reduce(hosted, {base, ctx, %{}}, fn candidate, {node, ctx, selectors} ->
+        key = target_key(candidate)
+        fallback = Map.get_lazy(selectors, key, fn -> candidate.wrap.(candidate.original) end)
+        {node, ctx, selector} = weave_target(node, candidate, fallback, ctx)
+        selectors = if selector, do: Map.put(selectors, key, selector), else: selectors
+        {node, ctx, selectors}
       end)
 
     emit_inplace.(spliced, inplace, ctx)
@@ -31,7 +35,7 @@ defmodule Mutare.Transform.HostedEmit do
   # Weave one host target's selector into `node`. Claim an id per logical mutant, build a
   # mutant clause `<id> -> wrap(mutant)` for each, then a coverage catch-all running
   # `wrap(original)`, and hand the assembled case to the target's `splice`.
-  defp weave_target(node, %Candidate.Hosted{} = cand, ctx) do
+  defp weave_target(node, %Candidate.Hosted{} = cand, fallback, ctx) do
     # A host fragment usually carries no variant tag (foreign semantics, no vocabulary). But a
     # hosting mutator that declares `variants/0` *may* tag a `host/2` mutant via `Mutation.tagged/2`
     # — `Mutare.Mutator.Dispatch.normalize_target/1` preserves it as the third tuple element — so
@@ -49,18 +53,23 @@ defmodule Mutare.Transform.HostedEmit do
 
     case clauses do
       [] ->
-        {node, ctx}
+        {node, ctx, nil}
 
       _ ->
         ids = SelectorEmit.ids_from_clauses(clauses)
 
-        catch_all =
-          SelectorEmit.catch_all_clause(ids, cand.wrap.(cand.original), ctx.config.active_var)
+        catch_all = SelectorEmit.catch_all_clause(ids, fallback, ctx.config.active_var)
 
         case_node = SelectorEmit.raw_case(clauses, catch_all, ctx)
-        {cand.splice.(node, case_node), ctx}
+        {cand.splice.(node, case_node), ctx, case_node}
     end
   end
+
+  # Hosts independently describe logical targets, so two modules targeting the same source
+  # fragment carry separate splice closures. Key by the stable source range plus logical original;
+  # when a later splice replaces that position, its catch-all runs the selector already woven by
+  # the earlier host instead of reverting to the raw original and erasing the earlier ids.
+  defp target_key(%Candidate.Hosted{range: range, original: original}), do: {range, original}
 
   # The `Mutare.Site` for one hosted mutant: an `:in_place` replacement showing the logical
   # fragment swap, not the `wrap`/`splice`/selector scaffolding. The optional note rides onto

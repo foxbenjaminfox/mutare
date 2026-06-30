@@ -264,6 +264,36 @@ defmodule Mutare.Test.SecondHostMutator do
   def host(_call, _context), do: []
 end
 
+defmodule Mutare.Test.ShadowedHostMutator do
+  @moduledoc "An exact host subscription shadowed by a more specific non-hosted route."
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.MacroHost
+
+  @impl Mutare.Mutator
+  def name, do: :shadowed_host
+
+  @impl Mutare.Mutator.MacroHost
+  def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, 2}]
+
+  @impl Mutare.Mutator.MacroHost
+  def host(_call, _context), do: []
+end
+
+defmodule Mutare.Test.EmptySubscriptionHostMutator do
+  @moduledoc "A host-only mutator whose empty subscription list is an invalid inert capability."
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.MacroHost
+
+  @impl Mutare.Mutator
+  def name, do: :empty_subscription_host
+
+  @impl Mutare.Mutator.MacroHost
+  def hosted_macros, do: []
+
+  @impl Mutare.Mutator.MacroHost
+  def host(_call, _context), do: []
+end
+
 defmodule Mutare.Test.PipedDSL do
   @moduledoc """
   A one-argument DSL macro (`rotate/1`) whose **sole** argument is a hosted fragment — used

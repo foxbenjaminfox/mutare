@@ -6439,3 +6439,16 @@ instead of an untyped map. The public route tuple now has an exact type, while `
 is hidden as registry normalization data. Callback failures, malformed results, missing providers,
 and provider conflicts use the structured routing `ContractError`; user configuration syntax stays
 `ArgumentError`.
+
+Two composition details were fixed immediately after that boundary landed. First, independently
+subscribed hosts can return targets for the same source fragment. Emitting their splices naively in
+sequence lets a later `List.replace_at` erase the earlier selector while leaving its Sites behind.
+`HostedEmit` now remembers the selector for each `{range, logical_original}` target and uses it as
+the next selector's catch-all, nesting the selectors so every recorded id remains executable.
+Second, the unused-host check cannot use raw selector overlap: a broad dynamic route may overlap a
+host while a more-specific static `:skip` route wins every actual lookup. Reachability now evaluates
+representative concrete calls through the real specificity cascade; because routes contain only
+equality slots and wildcards, every declared constant plus one unmatched sentinel per wildcard
+dimension exhausts the lookup-equivalence classes without enumerating an open atom universe.
+An exported `host/2` paired with `hosted_macros/0` returning `[]` is rejected at the same boundary;
+otherwise the empty list disappears during collection and bypasses that reachability audit.
