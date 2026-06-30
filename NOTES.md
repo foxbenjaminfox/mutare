@@ -6379,6 +6379,10 @@ opts-independent.
 
 ### Hardening the macro-routing interface for commitment
 
+> *Superseded in part by the next entry ("…one route, many hosts"): `macro_routing/2` became
+> `route_arguments/2`, and the single-`host` `{spec, router, host}` `Entry` became a host-list
+> subscription. The shrink-and-future-proof rationale below still holds; those two shapes do not.*
+
 Before exposing the routing/hosting behaviours as a contract third parties build on, the surface was
 tightened. The capability *boundaries* from the previous entry were right; the work here shrank and
 future-proofed what gets committed.
