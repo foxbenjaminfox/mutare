@@ -483,7 +483,11 @@ defmodule Mutare.Transform.Tag do
   # genuinely killed, which a `[literal]` filter would hide. See `TagTest` moduledoc.
   defp tag_node(node, [], acc), do: {node, acc}
 
-  # mutare:ignore[arithmetic] equivalent — a strictly-monotonic tag counter; `-1` still hands out unique tags.
-  defp tag_node(node, muts, {next, targets}),
-    do: {put_tag(node, next), {next + 1, [{next, node, muts} | targets]}}
+  defp tag_node(node, muts, {next, targets}) do
+    {
+      put_tag(node, next),
+      # mutare:ignore[arithmetic] equivalent — a strictly-monotonic tag counter; `-1` still hands out unique tags.
+      {next + 1, [{next, node, muts} | targets]}
+    }
+  end
 end

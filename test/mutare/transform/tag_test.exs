@@ -156,6 +156,21 @@ defmodule Mutare.Transform.TagTest do
     end
   end
 
+  describe "guard redundancy suppression: short-circuit connectives" do
+    test "keeps the whole-node constant when the left side has no subsuming boolean-op mutant" do
+      {_meta, sites} =
+        transform(
+          """
+          def f(x) when is_integer(x) and x > 0, do: :ok
+          def f(_), do: :no
+          """,
+          [Mutators.Conditional, Mutators.Logical]
+        )
+
+      assert {:conditional, "is_integer(x) and x > 0", "false"} in triples(sites)
+    end
+  end
+
   describe "guard descent into collection literals (lines 161, 167)" do
     test "a literal inside a tuple in a guard still mutates (the 2-tuple clause descends)" do
       {meta, sites} =
