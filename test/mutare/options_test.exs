@@ -95,6 +95,12 @@ defmodule Mutare.OptionsTest do
       assert_raise ArgumentError, fn -> Options.new(paths: "lib") end
       assert_raise ArgumentError, fn -> Options.new(paths: [:lib]) end
     end
+
+    test "rejects a mixed list even when at least one entry is a valid path string" do
+      assert_raise ArgumentError, ~r/:paths must be a non-empty list of path strings/, fn ->
+        Options.new(paths: ["lib", :src])
+      end
+    end
   end
 
   describe ":exclude" do
@@ -118,6 +124,19 @@ defmodule Mutare.OptionsTest do
     test "rejects any other mode" do
       assert_raise ArgumentError, ~r/:test_selection must be :coverage or :full/, fn ->
         Options.new(test_selection: :partial)
+      end
+    end
+  end
+
+  describe ":expand_uses" do
+    test "accepts true and false" do
+      assert Options.new(expand_uses: true).expand_uses == true
+      assert Options.new(expand_uses: false).expand_uses == false
+    end
+
+    test "rejects a non-boolean with the option name in the message" do
+      assert_raise ArgumentError, ":expand_uses must be true or false, got: :yes", fn ->
+        Options.new(expand_uses: :yes)
       end
     end
   end
@@ -208,6 +227,10 @@ defmodule Mutare.OptionsTest do
   end
 
   describe ":workers" do
+    test "accepts one worker" do
+      assert Options.new(workers: 1).workers == 1
+    end
+
     test "accepts a positive integer" do
       assert Options.new(workers: 8).workers == 8
     end
@@ -252,11 +275,25 @@ defmodule Mutare.OptionsTest do
                      end
       end
     end
+
+    test "reserved-name errors list every reserved env var with comma separators" do
+      reserved = List.first(Mutare.Sandbox.Command.Invocation.reserved_env_names())
+
+      message =
+        ":partition_env must not name a variable Mutare reserves " <>
+          "(#{Enum.join(Mutare.Sandbox.Command.Invocation.reserved_env_names(), ", ")}), " <>
+          "got: #{inspect(reserved)}"
+
+      assert_raise ArgumentError, message, fn ->
+        Options.new(partition_env: reserved)
+      end
+    end
   end
 
   describe ":timeout" do
     test "accepts nil or a positive integer (ms)" do
       assert Options.new(timeout: nil).timeout == nil
+      assert Options.new(timeout: 1).timeout == 1
       assert Options.new(timeout: 2_000).timeout == 2_000
     end
 
@@ -271,6 +308,8 @@ defmodule Mutare.OptionsTest do
 
   describe ":timeout_multiplier" do
     test "accepts a positive number" do
+      assert Options.new(timeout_multiplier: 0.5).timeout_multiplier == 0.5
+      assert Options.new(timeout_multiplier: 1).timeout_multiplier == 1
       assert Options.new(timeout_multiplier: 2).timeout_multiplier == 2
       assert Options.new(timeout_multiplier: 1.5).timeout_multiplier == 1.5
     end
@@ -367,6 +406,7 @@ defmodule Mutare.OptionsTest do
     test "defaults to nil (no cap) and accepts a positive integer" do
       assert Options.new([]).max_mutants == nil
       assert Options.new(max_mutants: nil).max_mutants == nil
+      assert Options.new(max_mutants: 1).max_mutants == 1
       assert Options.new(max_mutants: 50).max_mutants == 50
     end
 
@@ -383,6 +423,7 @@ defmodule Mutare.OptionsTest do
     test "defaults to nil (no cap) and accepts a positive integer" do
       assert Options.new([]).max_survivors == nil
       assert Options.new(max_survivors: nil).max_survivors == nil
+      assert Options.new(max_survivors: 1).max_survivors == 1
       assert Options.new(max_survivors: 5).max_survivors == 5
     end
 
@@ -485,6 +526,15 @@ defmodule Mutare.OptionsTest do
         end
       end
     end
+
+    test "entry errors state both path and line requirements in order" do
+      assert_raise ArgumentError,
+                   ":only_lines entries must be {file, line} with a non-empty path string and a " <>
+                     "positive integer line, got: {\"lib/a.ex\", 0}",
+                   fn ->
+                     Options.new(only_lines: [{"lib/a.ex", 0}])
+                   end
+    end
   end
 
   describe ":mutators" do
@@ -514,6 +564,14 @@ defmodule Mutare.OptionsTest do
                    ":mutators must be omitted or set to a list of mutators, got: nil",
                    fn ->
                      Options.new(mutators: nil)
+                   end
+    end
+
+    test "revalidates malformed mutators on an existing struct through the registry validator" do
+      assert_raise ArgumentError,
+                   ":mutators must be omitted or set to a list of mutators, got: :builtins",
+                   fn ->
+                     Options.new(%Options{mutators: :builtins})
                    end
     end
 
@@ -554,6 +612,10 @@ defmodule Mutare.OptionsTest do
       assert Options.new([]).macro_routes == []
     end
 
+    test "coerces an explicit nil to an empty route list" do
+      assert Options.new(macro_routes: nil).macro_routes == []
+    end
+
     test "resolves declarative entries to Macro.Specs (no reflection on the module)" do
       assert Options.new(macro_routes: [{Ecto.Query, :from, :any, :skip}]).macro_routes ==
                [
@@ -567,9 +629,11 @@ defmodule Mutare.OptionsTest do
     end
 
     test "rejects a non-list" do
-      assert_raise ArgumentError, ~r/:macro_routes must be a list/, fn ->
-        Options.new(macro_routes: :nope)
-      end
+      assert_raise ArgumentError,
+                   ":macro_routes must be a list of macro entries, got: :nope",
+                   fn ->
+                     Options.new(macro_routes: :nope)
+                   end
     end
 
     test "rejects a malformed entry" do
@@ -609,6 +673,24 @@ defmodule Mutare.OptionsTest do
       assert_raise ArgumentError, ~r/:reporters must be a list/, fn ->
         Options.new(reporters: "json")
       end
+    end
+
+    test "non-list errors include the complete expected shape" do
+      assert_raise ArgumentError,
+                   ":reporters must be a list of format atoms or {format, path | nil} tuples, " <>
+                     "got: \"json\"",
+                   fn ->
+                     Options.new(reporters: "json")
+                   end
+    end
+
+    test "bad entry errors include the valid format set before the bad entry" do
+      assert_raise ArgumentError,
+                   ":reporters entries must be a format atom or {format, path | nil} with format in " <>
+                     "[:human, :json, :html, :sarif], got: {:xml, \"out.xml\"}",
+                   fn ->
+                     Options.new(reporters: [{:xml, "out.xml"}])
+                   end
     end
   end
 

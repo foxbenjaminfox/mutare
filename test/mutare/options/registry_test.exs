@@ -24,17 +24,31 @@ defmodule Mutare.Options.RegistryTest do
   end
 
   test "cli_switches/0 are the 1:1 passthrough flags, shaped for OptionParser" do
-    switches = Registry.cli_switches()
-
-    assert Keyword.keyword?(switches)
-    assert {:expand_uses, :boolean} in switches
-    assert {:workers, :integer} in switches
-    assert {:min_score, :float} in switches
-    assert {:max_no_coverage, :integer} in switches
-    assert {:fail_on_poisoned, :boolean} in switches
-    assert {:fail_on_harness_error, :boolean} in switches
+    assert Registry.cli_switches() == [
+             expand_uses: :boolean,
+             workers: :integer,
+             timeout: :integer,
+             timeout_multiplier: :float,
+             baseline_runs: :integer,
+             kill_runs: :integer,
+             harness_retries: :integer,
+             max_harness_error_rate: :float,
+             max_mutants: :integer,
+             max_survivors: :integer,
+             min_score: :float,
+             max_no_coverage: :integer,
+             fail_on_poisoned: :boolean,
+             fail_on_harness_error: :boolean,
+             strict_ignores: :boolean,
+             sandbox: :string,
+             keep_sandbox: :boolean,
+             seed_app_build: :boolean,
+             quiet: :boolean,
+             verbose: :boolean
+           ]
 
     # exceptional/translated flags are owned by Mutare.Config, not the registry
+    switches = Registry.cli_switches()
     refute Keyword.has_key?(switches, :mutators)
     refute Keyword.has_key?(switches, :full)
     refute Keyword.has_key?(switches, :reporters)
@@ -57,5 +71,91 @@ defmodule Mutare.Options.RegistryTest do
 
   test "verbose is a 1:1 passthrough boolean flag" do
     assert {:verbose, :boolean} in Registry.cli_switches()
+  end
+
+  test "display_rows/1 renders default values with each option's configured formatter" do
+    assert Registry.display_rows(Options.new([])) == [
+             {"paths", "[\"lib\"]"},
+             {"exclude", "[]"},
+             {"mutators", "(all built-ins — see --list-mutators)"},
+             {"macro_routes", "[]"},
+             {"extensions", "(none)"},
+             {"expand_uses", "true"},
+             {"only_files", "(all discovered files)"},
+             {"only_lines", "(all lines)"},
+             {"test_selection", "coverage"},
+             {"workers", to_string(System.schedulers_online())},
+             {"partition_env", "(off)"},
+             {"timeout", "derived from baseline run"},
+             {"timeout_multiplier", "3.0"},
+             {"baseline_runs", "1"},
+             {"kill_runs", "1"},
+             {"harness_retries", "2"},
+             {"max_harness_error_rate", "0.5"},
+             {"max_mutants", "(no cap)"},
+             {"max_survivors", "(no cap)"},
+             {"min_score", "(no gate)"},
+             {"max_no_coverage", "(no gate)"},
+             {"fail_on_poisoned", "false"},
+             {"fail_on_harness_error", "false"},
+             {"strict_ignores", "false"},
+             {"sandbox", "(throwaway temp dir)"},
+             {"keep_sandbox", "false"},
+             {"seed_app_build", "true"},
+             {"quiet", "false"},
+             {"verbose", "false"},
+             {"reporters", "human (stdout)"}
+           ]
+  end
+
+  test "display_rows/1 renders custom values through specialised formatters" do
+    options =
+      Options.new(
+        mutators: [:arithmetic, :relational],
+        extensions: [
+          Mutare.Test.GettextLikeExtension,
+          {Mutare.Test.GettextLikeExtension, domain: "errors"}
+        ],
+        only_files: ["lib/a.ex", "lib/b.ex"],
+        only_lines: [{"lib/a.ex", 42}],
+        workers: 1,
+        partition_env: "MIX_TEST_PARTITION",
+        timeout: 1,
+        timeout_multiplier: 1,
+        max_harness_error_rate: nil,
+        max_mutants: 1,
+        max_survivors: 1,
+        min_score: 1,
+        max_no_coverage: 1,
+        sandbox: "/tmp/mutare-sandbox",
+        reporters: [:human, {:json, "mutare.json"}]
+      )
+
+    rows = Map.new(Registry.display_rows(options))
+
+    assert rows["mutators"] == "arithmetic, relational"
+
+    assert rows["extensions"] ==
+             "Mutare.Test.GettextLikeExtension, " <>
+               "Mutare.Test.GettextLikeExtension [domain: \"errors\"]"
+
+    assert rows["only_files"] == "MapSet.new([\"lib/a.ex\", \"lib/b.ex\"])"
+    assert rows["only_lines"] == "MapSet.new([{\"lib/a.ex\", 42}])"
+    assert rows["partition_env"] == "MIX_TEST_PARTITION"
+    assert rows["timeout"] == "1"
+    assert rows["timeout_multiplier"] == "1"
+    assert rows["max_harness_error_rate"] == "nil"
+    assert rows["max_mutants"] == "1"
+    assert rows["max_survivors"] == "1"
+    assert rows["min_score"] == "1"
+    assert rows["max_no_coverage"] == "1"
+    assert rows["sandbox"] == "/tmp/mutare-sandbox"
+    assert rows["reporters"] == "human (stdout), json (mutare.json)"
+  end
+
+  test "display_rows/1 requires a map-shaped option source" do
+    assert_raise FunctionClauseError, fn ->
+      Registry.display_rows(:not_options)
+    end
   end
 end
