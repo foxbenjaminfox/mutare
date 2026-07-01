@@ -28,14 +28,16 @@ defmodule Mutare.Transform.Resolve do
   # The env: `aliases` (the alias map), `imports` (`%{module_path => selector}`), `kernel`
   # (the tracked `Kernel` selector, default `:all`), and `pipe_mode` (`:piped`/`:unpiped` —
   # whether the current node is a `|>` right-hand side, so `Imports` can recover a piped call's
-  # effective arity).
+  # effective arity). Bare function captures (`&fun/N`) are not calls syntactically, but when
+  # `fun/N` resolves to an import they get the same import stamp a synthesized `fun(args…)` probe
+  # needs for capture mutation.
 
   alias Mutare.MacroRouting.Registry, as: Macros
   alias Mutare.Mutator
-  alias Mutare.Transform.{Aliases, Imports, Uses}
+  alias Mutare.Transform.{Aliases, Imports, MetaKeys, Uses}
   alias Mutare.Transform.Resolve.{MacroStamp, NodeIds}
 
-  @doc "Stamp every remote call's module and every bare imported call with its resolved module."
+  @doc "Stamp remote calls, bare imported calls, and bare imported captures with their resolved module."
   @spec annotate(Macro.t()) :: Macro.t()
   def annotate(ast), do: annotate(ast, %{})
 
@@ -85,6 +87,29 @@ defmodule Mutare.Transform.Resolve do
   # RHS's own arguments are ordinary expressions, so descent resets the flag.
   defp walk({:|>, meta, [lhs, rhs]}, env) do
     {:|>, meta, [walk(lhs, %{env | pipe_mode: :unpiped}), walk(rhs, %{env | pipe_mode: :piped})]}
+  end
+
+  # A bare function-reference capture `&fun/N` is a call value, but the ref node is
+  # `{fun, meta, context}`, not a bare call `{fun, meta, args}`, so the ordinary bare-call
+  # clause below never sees it. Stamp the ref with the import metadata a synthesized N-ary
+  # `fun(v1, …, vN)` probe would get. The analyzer still decides whether the surrounding
+  # runtime context may mutate it; this pass only records lexical resolution.
+  #
+  # If the right side is not a literal arity, this is an expression capture/body division
+  # (`&foo / bar`), not `&fun/N`; fall back to normal descent so `/` remains mutatable there.
+  defp walk({:&, amp_meta, [{:/, slash_meta, [{fun, ref_meta, context} = ref, right]}]}, env)
+       when is_atom(fun) and is_list(ref_meta) and is_atom(context) do
+    case capture_arity(right) do
+      {:ok, arity} ->
+        ref_meta =
+          Imports.stamp(fun, ref_meta, placeholder_args(arity), env.imports, env.kernel, :unpiped)
+
+        amp_meta = copy_import_witness(amp_meta, ref_meta)
+        {:&, amp_meta, [{:/, slash_meta, [{fun, ref_meta, context}, right]}]}
+
+      :error ->
+        {:&, amp_meta, [walk({:/, slash_meta, [ref, right]}, env)]}
+    end
   end
 
   # A remote call `Mod.fun(...)`: stamp its module position with the alias-resolved module
@@ -185,6 +210,23 @@ defmodule Mutare.Transform.Resolve do
   defp walk(node, _env), do: node
 
   defp descend(args, env), do: Enum.map(args, &walk(&1, %{env | pipe_mode: :unpiped}))
+
+  defp capture_arity(n) when is_integer(n) and n >= 0, do: {:ok, n}
+  defp capture_arity({:__block__, _meta, [n]}) when is_integer(n) and n >= 0, do: {:ok, n}
+  defp capture_arity(_node), do: :error
+
+  defp placeholder_args(0), do: []
+  defp placeholder_args(arity), do: List.duplicate({:_, [], nil}, arity)
+
+  # ImportWitness.for_candidate/1 reads from the candidate's original node. Capture candidates
+  # are attached to the outer `&` node, not the inner ref, so copy just the witness payload there
+  # while keeping the resolution stamp on the ref where `Calls.resolved_call/1` expects it.
+  defp copy_import_witness(amp_meta, ref_meta) do
+    case Imports.import_witness(ref_meta) do
+      nil -> amp_meta
+      witness -> Keyword.put(amp_meta, MetaKeys.import_witness_key(), witness)
+    end
+  end
 
   # Extend the env from one statement: the alias env (any statement, no-op unless an `alias`)
   # and then the import env / Kernel selector (no-op unless an `import`). Imports resolve their

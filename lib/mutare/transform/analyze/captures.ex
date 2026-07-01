@@ -36,22 +36,22 @@ defmodule Mutare.Transform.Analyze.Captures do
   # those either change the arity (can't re-wrap at N) or never fire on a var placeholder
   # (ModeSwap needs a literal option value).
   #
-  # Scope: **remote** captures only — `&Mod.fun/N` (Elixir, alias-resolved through the synth
-  # call's own node) and `&:mod.fun/N` (Erlang atom module). A **bare/local** capture
-  # (`&reject/2` after `import Enum`, `&local/1`) is left pruned: its ref carries no import stamp
-  # (`Resolve` stamps bare *calls*, and a capture ref is not one), so the synth bare call would
-  # not resolve. Deferred — see NOTES "Capture mutation".
+  # Scope: **remote** captures — `&Mod.fun/N` (Elixir, alias-resolved through the synth call's
+  # own node) and `&:mod.fun/N` (Erlang atom module) — plus **bare imported** captures such as
+  # `import Enum; &filter/2`. `Resolve` stamps a bare ref when the `fun/N` resolves through an
+  # import, so the synth bare call resolves through the same `Calls.resolved_call/1` path as a
+  # written `filter(v1, v2)`. A truly local capture (`&local/1`) remains pruned.
 
   alias Mutare.{AST, Mutator.Dispatch}
-  alias Mutare.Transform.Analyze.Attach
+  alias Mutare.Transform.{Analyze.Attach, Imports}
 
   @proj_arg :mutare_capture_arg
 
   @doc """
-  Offer a `&Mod.fun/N` capture to the call-matching mutators, attaching re-captured
+  Offer a `&Mod.fun/N` or imported `&fun/N` capture to the call-matching mutators, attaching re-captured
   `Candidate.InPlace`s to the whole `&` node — so emission wraps the *entire* capture in a
   selector and the baseline branch stays the verbatim capture. Returns the node unchanged when
-  nothing fires or the capture is not a remote reference (bare/local — deferred).
+  nothing fires or the capture is a local bare reference.
   """
   @spec offer(Macro.t(), Macro.t(), Macro.t(), [term()]) :: Macro.t()
   def offer(node, left, right, mutators) do
@@ -69,8 +69,8 @@ defmodule Mutare.Transform.Analyze.Captures do
   rather than an arithmetic `& &1 / 2`: a function reference (remote *or* local) over an
   integer arity. `Mutare.Transform.Analyze` reads this to decide whether to offer the node
   here or recurse into the `/` as division. A local ref counts — so its `/` isn't mistaken
-  for division — even though `offer/4` only mutates remote refs (a local capture is left raw,
-  not recursed).
+  for division — even though `offer/4` only mutates remote or imported refs (a local capture is
+  left raw, not recursed).
   """
   @spec capture_ref?(Macro.t(), Macro.t()) :: boolean()
   def capture_ref?(left, right), do: function_ref?(left) and integer_arity?(right)
@@ -89,10 +89,24 @@ defmodule Mutare.Transform.Analyze.Captures do
   defp arity(_other), do: :error
 
   # Build the equivalent N-ary call from a **remote** ref by filling N placeholder args into the
-  # (zero-arg) call node. A bare/local ref (`{name, _meta, ctx_atom}`) returns `:error`.
+  # (zero-arg) call node, or from an imported bare ref by turning its stamped `&fun/N` metadata
+  # into a synthetic `fun(v1, …, vN)` call. A local bare ref has no import stamp and returns
+  # `:error`.
   defp synth_call({{:., _dot_meta, _mod_fun} = head, call_meta, []}, arity) do
     args = placeholders(arity)
     {:ok, {head, call_meta, args}, args}
+  end
+
+  defp synth_call({fun, meta, context}, arity)
+       when is_atom(fun) and is_list(meta) and is_atom(context) do
+    case Imports.resolved_import(meta) do
+      nil ->
+        :error
+
+      {_module, _kind} ->
+        args = placeholders(arity)
+        {:ok, {fun, meta, args}, args}
+    end
   end
 
   defp synth_call(_left, _arity), do: :error
@@ -128,6 +142,11 @@ defmodule Mutare.Transform.Analyze.Captures do
   defp rename_capture({{:., _dot_meta, [_mod, fun]} = head, meta, args}, synth_args)
        when is_atom(fun) and args == synth_args do
     capture_node({head, meta, []}, length(synth_args))
+  end
+
+  defp rename_capture({fun, meta, args}, synth_args)
+       when is_atom(fun) and is_list(meta) and args == synth_args do
+    capture_node({fun, meta, nil}, length(synth_args))
   end
 
   defp rename_capture(_mutated, _synth_args), do: nil

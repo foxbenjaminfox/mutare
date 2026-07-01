@@ -2003,14 +2003,19 @@ avoids. This is also why coverage records at value-production (see "production-s
 recording"): a capture mutant is killable by identity comparison with the function *never
 invoked*.
 
-**Scope: remote only.** `&Mod.fun/N` (Elixir, alias-resolved through the synth call's own node
-— `&E.first/1` for `alias String, as: E` keeps the `E.` in the diff) and `&:mod.fun/N` (Erlang
-atom module) both route. A **bare/local** capture (`&reject/2` after `import Enum`, `&local/1`)
-is deferred: its ref carries no import stamp (`Resolve` stamps bare *calls*, and a capture ref
-is not one), so the synth bare call wouldn't resolve — `synth_call/2` returns `:error` and the
-node is left pruned. Nested captures (a capture inside another `&`) are illegal source, so they
-never reach the clause; `& &1 / 2` (the shorthand, not a reference) still recurses and mutates
-its body unchanged.
+**Scope: remote + imported bare refs.** `&Mod.fun/N` (Elixir, alias-resolved through the synth
+call's own node — `&E.first/1` for `alias String, as: E` keeps the `E.` in the diff) and
+`&:mod.fun/N` (Erlang atom module) both route. A **bare imported** capture
+(`import Enum; &filter/2`) now routes too: the resolve pass recognises the `&fun/N` ref shape,
+stamps the ref with the same `:mutare_import` metadata a written `fun(args…)` call would carry,
+and copies the import-witness payload to the outer `&` node because capture candidates are
+attached there. The synthetic bare call then goes through `Calls.resolved_call/1` unchanged:
+whole imports can recapture a clean bare sibling (`&filter/2 → &reject/2`), while selective or
+overlapping imports recapture an alias-proof qualified sibling
+(`&filter/2 → &Elixir.Enum.reject/2`). A truly local capture (`&local/1`) still has no import
+stamp, so `synth_call/2` returns `:error` and the node is left pruned. Nested captures (a capture
+inside another `&`) are illegal source, so they never reach the clause; `& &1 / 2` (the
+shorthand, not a reference) still recurses and mutates its body unchanged.
 
 **Runtime-context only.** `offer/4` is called *only* when the capture clause sees `:runtime`. A
 genuine capture reached in a non-runtime context — a module-level **`:scaffold`** statement

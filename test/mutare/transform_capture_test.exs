@@ -81,7 +81,68 @@ defmodule Mutare.TransformCaptureTest do
                sites
     end
 
-    test "a bare/local capture is deferred (no import stamp to resolve it)" do
+    test "a whole-imported bare capture is renamed and kept bare" do
+      source = """
+      defmodule Cap do
+        import Enum
+        def f(l), do: Enum.map(l, &filter/2)
+      end
+      """
+
+      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.Collection])
+
+      assert [
+               %Site{
+                 mutator: :collection,
+                 original_code: "&filter/2",
+                 mutated_code: "&reject/2"
+               }
+             ] = sites
+
+      assert meta =~ "&filter/2"
+      assert meta =~ "&reject/2"
+      assert_compiles(meta)
+    end
+
+    test "a selectively-imported bare capture qualifies a renamed sibling" do
+      source = """
+      defmodule Cap do
+        import Enum, only: [filter: 2]
+        def f(l), do: Enum.map(l, &filter/2)
+      end
+      """
+
+      {_meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.Collection])
+
+      assert [
+               %Site{
+                 mutator: :collection,
+                 original_code: "&filter/2",
+                 mutated_code: "&Elixir.Enum.reject/2"
+               }
+             ] = sites
+    end
+
+    test "a bare imported transparent-transform capture earns a removal" do
+      source = """
+      defmodule Cap do
+        import String, only: [upcase: 1]
+        def f, do: &upcase/1
+      end
+      """
+
+      {_meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+
+      assert [
+               %Site{
+                 mutator: :call_removal,
+                 original_code: "&upcase/1",
+                 mutated_code: "&Elixir.Function.identity/1"
+               }
+             ] = sites
+    end
+
+    test "a bare local capture is still pruned (no import stamp to resolve it)" do
       source =
         "defmodule Cap do\n  def f(l), do: Enum.map(l, &local/1)\n  def local(x), do: x\nend\n"
 
