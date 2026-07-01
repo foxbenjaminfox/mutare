@@ -5625,13 +5625,13 @@ ETA) that animates via an internal tick timer. Design decisions worth rememberin
   delivery complete) before the stream returned, FIFO guarantees `finish` sees the
   final state and clears the block before the after-the-fact `Mutare.Report` prints.
 - **stderr, always; animation, conditionally.** Output goes to stderr so a machine
-  report piped to stdout (`--report json > f`) is never corrupted. Animation is gated
-  on `detect_ansi/0` = a real **stderr** tty (`:io.columns/1` succeeds) *and*
-  `IO.ANSI.enabled?`. We key on stderr (not stdout) deliberately; the cost is that
-  redirecting stdout (which flips `IO.ANSI.enabled?` off at boot) drops us to plain
-  mode even if stderr is a tty — acceptable (safe, just less fancy). Plain mode =
-  phase notes + leave-behind lines as ordinary scrollback, no cursor codes, no spinner
-  — exactly what CI logs want.
+  report piped to stdout (`--report json > f`, or the default human report via
+  `mix mutare > report.txt`) is never corrupted. Animation is gated on a real
+  **stderr** tty (`:io.columns/1` succeeds), not `IO.ANSI.enabled?/0`: Elixir
+  initializes that flag from stdout, so using it here incorrectly disables the live
+  block when only stdout is redirected. Plain mode = phase notes + leave-behind
+  lines as ordinary scrollback, no cursor codes, no spinner — exactly what CI logs
+  want when stderr is not a tty.
 - **Three hooks on the runner, which knows nothing of the display.** Added `:on_phase`
   (`:compiling` → `:baseline` → `:coverage_probe` → `{:running, total}`) and `:on_start`
   (each `Site`) alongside the existing `:reporter`, all 1-arity/optional/`nil`-default,

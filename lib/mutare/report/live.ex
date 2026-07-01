@@ -85,7 +85,7 @@ defmodule Mutare.Report.Live do
 
     * `:device` — output device; defaults to `:standard_error`
     * `:ansi` — enables or disables animation; by default it is enabled when stderr
-      is a terminal and ANSI output is available
+      is a terminal
     * `:color` — enables or disables colored persistent labels; by default it
       follows animation and `NO_COLOR`
     * `:width` — terminal width; defaults to the detected width or 80
@@ -162,6 +162,16 @@ defmodule Mutare.Report.Live do
   @spec animating?(GenServer.server()) :: boolean()
   def animating?(server), do: GenServer.call(server, :animating?)
 
+  @doc """
+  Returns whether the default live reporter should draw its ANSI status block for
+  the detected stderr terminal state.
+
+  This is intentionally independent of `IO.ANSI.enabled?/0`: Elixir's flag is
+  initialized from stdout, but Mutare's live UI is written to stderr.
+  """
+  @spec default_ansi?(boolean()) :: boolean()
+  def default_ansi?(stderr_tty?) when is_boolean(stderr_tty?), do: stderr_tty?
+
   # === server ================================================================
 
   @impl true
@@ -171,10 +181,13 @@ defmodule Mutare.Report.Live do
     # drops the colour but keeps the live block (the convention is about colour, not
     # the whole UI); a non-tty (`ansi: false`) is already colourless.
     #
-    # One stderr probe gives both the tty? flag (ANDed with `IO.ANSI.enabled?/0` for `ansi`)
-    # and the column width — what `detect_ansi`/`detect_width` used to query twice.
+    # One stderr probe gives both the tty? flag (the default `ansi` decision) and the
+    # column width — what `detect_ansi`/`detect_width` used to query twice. Do not
+    # use `IO.ANSI.enabled?/0` here: Elixir initializes that flag from stdout, while
+    # this reporter deliberately draws on stderr so `mix mutare > report.txt` can
+    # still show the live status block in the terminal.
     {tty?, width} = detect_terminal()
-    ansi = Keyword.get_lazy(opts, :ansi, fn -> tty? and IO.ANSI.enabled?() end)
+    ansi = Keyword.get_lazy(opts, :ansi, fn -> default_ansi?(tty?) end)
 
     state = %__MODULE__{
       device: Keyword.get(opts, :device, @device),
@@ -559,9 +572,7 @@ defmodule Mutare.Report.Live do
   # One stderr probe for both animation and width: `:io.columns/1` succeeds only for a real
   # terminal, so a success doubles as the tty test (→ animate) *and* yields the column width;
   # a non-terminal falls back to `@default_width`. We key on stderr (where the block is drawn),
-  # not stdout, so piping the machine report to a file never tricks us into painting cursor
-  # codes into it. The caller ANDs the tty? flag with `IO.ANSI.enabled?/0` (which honours the
-  # Elixir `--no-color` switch, `TERM=dumb`, etc.) for the final `ansi` decision.
+  # not stdout, so redirecting the final report never disables the live status block.
   @spec detect_terminal() :: {boolean(), pos_integer()}
   defp detect_terminal do
     case :io.columns(@device) do

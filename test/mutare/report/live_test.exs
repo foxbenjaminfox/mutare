@@ -1,5 +1,5 @@
 defmodule Mutare.Report.LiveTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Mutare.Report.Live
   alias Mutare.{Result, Site}
@@ -225,6 +225,24 @@ defmodule Mutare.Report.LiveTest do
   end
 
   describe "animating?/1" do
+    test "the default ANSI gate follows stderr tty detection, not Elixir's stdout ANSI flag" do
+      original = Application.get_env(:elixir, :ansi_enabled, :__unset__)
+
+      on_exit(fn ->
+        case original do
+          :__unset__ -> Application.delete_env(:elixir, :ansi_enabled)
+          value -> Application.put_env(:elixir, :ansi_enabled, value)
+        end
+      end)
+
+      # Elixir initializes this flag from stdout. In the bug case, stdout is redirected
+      # so this is false even though stderr is still a terminal.
+      Application.put_env(:elixir, :ansi_enabled, false)
+
+      assert Live.default_ansi?(true)
+      refute Live.default_ansi?(false)
+    end
+
     test "reports the ANSI mode (the Mix task's summary gate reads it)" do
       {:ok, io} = StringIO.open("")
 
