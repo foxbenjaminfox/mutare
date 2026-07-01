@@ -259,8 +259,13 @@ defmodule Mutare.Mutator.Dispatch do
     raise ArgumentError, "a host target :wrap must be a 1-arity function, got: #{inspect(other)}"
   end
 
-  # The structural-callback context: the enclosing module's behaviour set, nothing else.
-  defp structural_context(%Spec{behaviours: behaviours}), do: %{behaviours: behaviours}
+  # The structural-callback context: the same per-spec configuration facts as the
+  # node-level context, minus :pipe_mode (structural positions are not pipe
+  # stages). :opts makes {Module, opts} configurable structural mutators work,
+  # and :behaviours lets behaviour-gated structural mutators restrict themselves
+  # to modules implementing a target behaviour.
+  defp structural_context(%Spec{opts: opts, behaviours: behaviours}),
+    do: %{opts: opts, behaviours: behaviours}
 
   # The mutation-producing callbacks: a module is a mutator if it exports `name/0` *and* at least
   # one of these. `mutate/1` is no longer required — a structural/pipe-only family produces its

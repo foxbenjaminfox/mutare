@@ -286,6 +286,15 @@ defmodule Mutare.BehavioursTest do
                Dispatch.mutations(node, [spec])
     end
 
+    test "structural callbacks receive the spec's opts in their context" do
+      spec =
+        Mutare.Test.ConfigurableReturnMutator
+        |> Spec.configured(replacement: :from_opts)
+
+      assert Dispatch.return_replacements(spec, {:tail, [], nil}) ==
+               [Mutare.AST.literal(:from_opts)]
+    end
+
     test "with empty behaviours the same mutator does not fire" do
       spec = Spec.for_module(Mutare.Test.BehaviourMutator)
       node = {:{}, [], [{:__block__, [], [:reply]}, {:r, [], nil}, {:s, [], nil}]}

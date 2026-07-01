@@ -43,3 +43,28 @@ defmodule Mutare.Test.ConditionMutator do
   @impl Mutare.Mutator.Structural
   def condition_replacements(_condition), do: [AST.literal(true)]
 end
+
+defmodule Mutare.Test.ConfigurableReturnMutator do
+  @moduledoc """
+  A configurable structural return-position mutator, used to prove that `{module, opts}`
+  configuration reaches the context-taking structural callbacks.
+  """
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.Structural
+
+  alias Mutare.AST
+
+  @impl Mutare.Mutator
+  def name, do: :configurable_return
+
+  @impl Mutare.Mutator
+  def mutate(_node), do: :skip
+
+  @impl Mutare.Mutator.Structural
+  def return_replacements(_tail, %{opts: opts}) do
+    case Keyword.get(opts, :replacement) do
+      nil -> []
+      value -> [AST.literal(value)]
+    end
+  end
+end

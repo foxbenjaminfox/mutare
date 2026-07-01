@@ -1616,9 +1616,11 @@ builds (a single-segment name → its module atom via `Module.concat`; an Erlang
 verbatim — `[{U, Enum}, {B, :binary}]`). A **nested** `use`'s caller aliases are the source aliases
 *merged with* the directives the enclosing body injected before it (`Map.merge(caller_aliases, env)`,
 injected shadowing source), matching how the compiler expands a later nested `use` with earlier
-injected aliases in scope. Only `:aliases` is mirrored — `__CALLER__.functions/macros/context_modules`
-aren't, out of scope (the reported case is aliases). Tested in `uses_test.exs` via
-`Mutare.Test.AliasAwareUsing` (a `__using__` that picks its import off `__CALLER__.aliases`).
+injected aliases in scope. **Status: partial `__CALLER__` mirroring.** `:module`, `:requires`,
+`:aliases`, implicit nested-module aliases, and the sandbox `Mix.env()` are mirrored; the remaining
+fields (`__CALLER__.functions/macros/context_modules`) are still out of scope until a concrete
+library needs them. Tested in `uses_test.exs` via `Mutare.Test.AliasAwareUsing` (a `__using__` that
+picks its import off `__CALLER__.aliases`).
 
 **Mirror the implicit alias a nested `defmodule`/`defprotocol` introduces.** Elixir auto-aliases a
 nested module's name when a body *defines* it: inside `Outer`, `defprotocol P` introduces `alias P =>
@@ -1843,8 +1845,9 @@ editing config" goal). So a console string flag earns nothing.
 
 **Scope decision — tied to `:expand_uses`.** When `--no-expand-uses` freezes the pre-pass, extension overrides
 are frozen with it (the whole `Uses.annotate` is skipped). Defensible: `--no-expand-uses` means "no `use`
-magic at all," and it's a debug/count-pinning flag. Making explicit extension overrides independent of the
-heuristic in-process expansion is a possible refinement, deferred.
+magic at all," and it's a debug/count-pinning flag. **Status: still deferred by design.** Making explicit
+extension overrides independent of heuristic in-process expansion would need a new explicit mode (for
+example "extensions only") rather than silently changing the meaning of `--no-expand-uses`.
 
 **Merge precedence — explicit config is the final authority.** `build/3` folds **built-ins → mutator
 `macro_routes/0` → extension `macro_routes/0` → declarative `:macro_routes`** (`Map.put`, later wins), so a `.mutare.exs`
@@ -1916,10 +1919,16 @@ across poison rebuilds — ids stay put.
 
 **Structural callbacks get behaviour-aware arities.** `mutate/2` reads `context.behaviours` directly;
 the structural hooks (`return_replacements`/`condition_replacements`/`pattern_mutations`) take only a
-node, so each gains a `+1`-arity variant taking a `%{behaviours: …}` context. `Mutator` centralises
+node, so each gains a `+1`-arity variant taking a context map. `Mutator` centralises
 the dispatch (`return_replacements/2` etc. call the context arity when exported, else the base) and the
 discovery (`implementing_any(specs, fun, [base, base+1])`), so a mutator implements *either* arity and
 the four call sites stay one-liners.
+
+**Now also configurable.** The same context-taking structural arities now receive `%{opts: spec.opts,
+behaviours: spec.behaviours}`. The base arities remain context-free, but a configured structural
+mutator can implement `return_replacements/2`, `condition_replacements/2`, or `pattern_mutations/3`
+and read its `{Module, opts}` configuration through `context.opts`, matching the node-level
+`mutate/2` channel.
 
 A direct `@behaviour` named through an alias resolves correctly whether the alias came from
 `alias X, as: B` *or* `require X, as: B` — `Aliases.register/2` now folds **both** (Elixir's `:as`
@@ -2350,8 +2359,9 @@ delivery mechanics** — the note is a pure carry-along that never touches the A
     *and* covering a new note-bearing kind the moment it gains the field (no clause to forget — the gap that
     dropped the re-homed `MacroPattern` note when `site_note` enumerated structs).
 
-  * **Scope — `mutate` only, not the structural callbacks (yet).** `return_replacements`/`condition_replacements`/
-    `pattern_mutations` build their own `{spec, mutated}` pairs and don't accept the struct, so a *structural*
+  * **Scope — `mutate` only, not the structural callbacks (yet).** **Status: still deferred.**
+    `return_replacements`/`condition_replacements`/`pattern_mutations` build their own
+    `{spec, mutated}` pairs and don't accept the struct, so a *structural*
     mutator can't note a mutant. Deliberate: the ask was the standard node-level API, and the structural
     callbacks return bare nodes by contract. The hook is there if needed (give those callbacks the
     `t:mutation/0` shape and route through `normalize_mutant/1`) — named here so the limitation is a
@@ -3883,10 +3893,13 @@ Two design decisions, both load-bearing:
   below.) A configurable mutator therefore implements **`mutate/2`** (which is invoked
   on every node, not just pipe stages) and reads `context.opts`. `mutate/1` is left
   untouched (no context, no opts) — this avoided bumping every existing callback's arity and
-  reused the one channel that was already threaded. `pattern_mutations/2` is **not** opts-aware
-  (structural head-pattern mutators stay unconfigurable for now — out of scope, not a use case
-  yet). The change is backward-compatible: existing `mutate/2` clauses match `%{pipe_mode: m}`,
-  which still matches a map that *also* has `:opts`.
+  reused the one channel that was already threaded. **Follow-up now done:** the context-taking
+  structural callbacks receive the same `:opts` value (`return_replacements/2`,
+  `condition_replacements/2`, `pattern_mutations/3`). The context-free base arities remain
+  unchanged; a structural mutator that needs configuration implements the context arity. The
+  change is backward-compatible: existing `mutate/2` clauses match `%{pipe_mode: m}`, which
+  still matches a map that *also* has `:opts`; existing structural callbacks that match
+  `%{behaviours: b}` also match the widened context map.
 
 - **Identity.** `name` defaults to `module.name()`, but a reserved **`:as`** key in `opts`
   overrides it (and is stripped before opts reach the mutator). This matters because the

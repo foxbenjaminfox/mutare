@@ -48,6 +48,17 @@ defmodule Mutare.TransformContextTest do
       assert_compiles(meta)
     end
 
+    test "a configurable custom return-position mutator receives opts" do
+      {meta, triples} =
+        redundancy_triples(
+          "def f(a, b), do: a + b",
+          [{Mutare.Test.ConfigurableReturnMutator, replacement: :configured_return}]
+        )
+
+      assert triples == [{:configurable_return, "a + b", ":configured_return"}]
+      assert_compiles(meta)
+    end
+
     test "a custom return mutator coexists with the built-in ReturnValue" do
       {_meta, triples} =
         redundancy_triples(

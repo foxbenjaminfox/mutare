@@ -17,17 +17,25 @@ defmodule Mutare.Mutator.Structural do
         def return_replacements(_tail), do: [Mutare.AST.literal(nil)]
       end
 
-  Each callback also has a context-taking arity for restricting mutations by the enclosing
-  module's `@behaviour` set. Implement either the base arity or its context-taking counterpart.
+  Each callback also has a context-taking arity for reading the enabled mutator's options
+  and restricting mutations by the enclosing module's `@behaviour` set. Implement either
+  the base arity or its context-taking counterpart.
   """
 
   @typedoc """
-  Context passed to the behaviour-aware structural callbacks (`c:return_replacements/2`,
-  `c:condition_replacements/2`, `c:pattern_mutations/3`). Carries the enclosing module's
-  `:behaviours` — a `MapSet` of the behaviour modules it implements — so a structural mutator
-  can gate on them exactly as `c:Mutare.Mutator.mutate/2` does.
+  Context passed to the context-aware structural callbacks (`c:return_replacements/2`,
+  `c:condition_replacements/2`, `c:pattern_mutations/3`). Carries:
+
+    * `:opts` — the options from a `{Module, opts}` mutator configuration entry;
+    * `:behaviours` — the enclosing module's `@behaviour` set, as a `MapSet`.
+
+  This gives structural mutators the same configuration channel as
+  `c:Mutare.Mutator.mutate/2`, without adding context to the base callback arities.
   """
-  @type context :: %{behaviours: MapSet.t(module())}
+  @type context :: %{
+          required(:opts) => term(),
+          required(:behaviours) => MapSet.t(module())
+        }
 
   @doc """
   Returns pattern replacements for a structural pattern position.
@@ -45,8 +53,8 @@ defmodule Mutare.Mutator.Structural do
   @doc """
   Context-aware form of `pattern_mutations/2`.
 
-  Implement this form to use the enclosing module's behaviours. When exported, it
-  takes precedence over `pattern_mutations/2`.
+  Implement this form to use configuration or the enclosing module's behaviours.
+  When exported, it takes precedence over `pattern_mutations/2`.
   """
   @callback pattern_mutations(
               head_args :: [Macro.t()],
@@ -65,8 +73,8 @@ defmodule Mutare.Mutator.Structural do
   @doc """
   Context-aware form of `return_replacements/1`.
 
-  Implement this form to use the enclosing module's behaviours. When exported, it
-  takes precedence over `return_replacements/1`.
+  Implement this form to use configuration or the enclosing module's behaviours.
+  When exported, it takes precedence over `return_replacements/1`.
   """
   @callback return_replacements(tail :: Macro.t(), context :: context()) ::
               [Macro.t()]
@@ -81,8 +89,8 @@ defmodule Mutare.Mutator.Structural do
   @doc """
   Context-aware form of `condition_replacements/1`.
 
-  Implement this form to use the enclosing module's behaviours. When exported, it
-  takes precedence over `condition_replacements/1`.
+  Implement this form to use configuration or the enclosing module's behaviours.
+  When exported, it takes precedence over `condition_replacements/1`.
   """
   @callback condition_replacements(condition :: Macro.t(), context :: context()) ::
               [Macro.t()]
