@@ -269,6 +269,50 @@ defmodule Mutare.QuoteUnquoteTest do
     assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
 
+  test "prunes live-unquote ancestor mutants for bindings in runtime quote option values" do
+    source = """
+    defmodule Mutare.QuoteUnquoteRuntimeQuoteOptionBindingFixture do
+      def value(y) do
+        ast = quote do
+          unquote(List.wrap(quote line: (x = y) do
+                    :ok
+                  end) ++ List.wrap(y + 1))
+        end
+
+        {ast, x}
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(
+        source,
+        file: "quote_unquote_runtime_quote_option_binding.ex",
+        mutators: @arith ++ @list
+      )
+
+    assert [
+             %Site{
+               mutator: :arithmetic,
+               kind: :in_place,
+               original_code: "y + 1",
+               mutated_code: "y - 1"
+             } = site
+           ] = sites
+
+    refute Enum.any?(sites, &(&1.mutator == :list))
+
+    [{mod, _binary}] = Mutare.Test.Compile.string(meta)
+
+    Selector.put(Selector.baseline())
+    {_ast, x} = mod.value(10)
+    assert x == 10
+
+    Selector.put(site.id)
+    {_ast, x} = mod.value(10)
+    assert x == 10
+  end
+
   test "keeps an outer live-unquote mutant when a case body has only branch-local bindings" do
     source = """
     defmodule Mutare.QuoteUnquoteCaseBindingFixture do

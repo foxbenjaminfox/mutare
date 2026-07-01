@@ -987,12 +987,16 @@ defmodule Mutare.Transform.Analyze do
             {value, has?} = prune_quote_escape_quoted_data(value, quote_level)
             {{key, value}, has?}
 
+          :do ->
+            {pair, false}
+
           :bind_quoted ->
             {value, has?} = prune_quote_escape_binding_ancestors(value)
             {{key, value}, has?}
 
           _ ->
-            {pair, false}
+            {value, has?} = prune_quote_escape_binding_ancestors(value)
+            {{key, value}, has?}
         end
 
       other ->
