@@ -115,6 +115,22 @@ defmodule Mutare.QuoteUnquoteTest do
     assert [_ | _] = Mutare.Test.Compile.string(meta)
   end
 
+  test "bracketed quote unquote: false keeps unquote calls as quoted data" do
+    source = """
+    defmodule Mutare.QuoteBracketedUnquoteFalseFixture do
+      def ast(x) do
+        quote [unquote: false], do: unquote(x + 1)
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, file: "quote_bracketed_unquote_false.ex", mutators: @arith)
+
+    assert sites == []
+    assert [_ | _] = Mutare.Test.Compile.string(meta)
+  end
+
   test "bind_quoted keeps body unquote calls as quoted data" do
     source = """
     defmodule Mutare.QuoteBindQuotedFixture do
@@ -128,6 +144,22 @@ defmodule Mutare.QuoteUnquoteTest do
 
     {meta, sites, _next_id} =
       Mutare.transform_string(source, file: "quote_bind_quoted.ex", mutators: @arith)
+
+    assert sites == []
+    assert [_ | _] = Mutare.Test.Compile.string(meta)
+  end
+
+  test "bracketed bind_quoted keeps body unquote calls as quoted data" do
+    source = """
+    defmodule Mutare.QuoteBracketedBindQuotedFixture do
+      def ast(x) do
+        quote [bind_quoted: [y: x]], do: unquote(y + 1)
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, file: "quote_bracketed_bind_quoted.ex", mutators: @arith)
 
     assert sites == []
     assert [_ | _] = Mutare.Test.Compile.string(meta)

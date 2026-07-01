@@ -830,6 +830,9 @@ defmodule Mutare.Transform.Analyze do
 
   defp quote_keyword_pairs(args) do
     Enum.flat_map(args, fn
+      {:__block__, _meta, [kw]} when is_list(kw) ->
+        Enum.filter(kw, &keyword_pair?/1)
+
       {_key, _value} = pair ->
         [pair]
 
