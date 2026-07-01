@@ -46,10 +46,37 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe "new/1 input shape" do
+    test "rejects non-list, non-Options input at the public boundary" do
+      error = assert_raise FunctionClauseError, fn -> Options.new(:not_options) end
+      assert Exception.message(error) =~ "Mutare.Options."
+    end
+  end
+
   describe "new/1 unknown keys" do
     test "rejects an unknown option" do
       error = assert_raise ArgumentError, fn -> Options.new(worker: 4) end
       assert Exception.message(error) =~ "unknown option(s) [:worker]"
+    end
+
+    test "deduplicates unknown options before rendering the error" do
+      error = assert_raise ArgumentError, fn -> Options.new(worker: 4, worker: 8) end
+      assert Exception.message(error) =~ "unknown option(s) [:worker];"
+    end
+  end
+
+  describe "formats" do
+    test "maps every valid output format to its renderer module" do
+      assert Enum.map(Options.formats(), &{&1, Options.renderer(&1)}) == [
+               human: Mutare.Report,
+               json: Mutare.Report.Json,
+               html: Mutare.Report.Html,
+               sarif: Mutare.Report.Sarif
+             ]
+    end
+
+    test "raises for an unknown renderer format" do
+      assert_raise KeyError, fn -> Options.renderer(:xml) end
     end
   end
 
@@ -480,6 +507,14 @@ defmodule Mutare.OptionsTest do
       assert_raise ArgumentError, ~r/:mutators must be omitted or set to a list/, fn ->
         Options.new(mutators: :all)
       end
+    end
+
+    test "rejects explicit nil; omitting the key is the default-set sentinel" do
+      assert_raise ArgumentError,
+                   ":mutators must be omitted or set to a list of mutators, got: nil",
+                   fn ->
+                     Options.new(mutators: nil)
+                   end
     end
 
     test "accepts {module, opts} configured entries, carrying opts onto the spec" do
