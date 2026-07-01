@@ -12,8 +12,9 @@ defmodule Mutare.Mutators.MapLiteral do
       (a different operation, not a smaller version of the same one).
     * **A struct's field map** (`%User{…}`) — emptying it would drop required fields,
       so the inner `%{}` is left alone (the struct's field *values* still mutate).
-    * **The RHS of `in`** (`x in %{…}`) — `x in %{}` ≡ `false`, which
-      `Mutare.Mutators.Conditional` already produces.
+    * **The RHS of a guard `in`** (`when x in %{…}`) — `x in %{}` ≡ `false`,
+      which `Mutare.Mutators.Conditional` already produces. Body `in`
+      expressions keep the collapse because left-side evaluation is observable.
   """
   @behaviour Mutare.Mutator
 

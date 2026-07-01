@@ -97,8 +97,26 @@ defmodule Mutare.Report.Live do
     GenServer.start_link(__MODULE__, opts)
   end
 
-  @doc "Sets the current phase (`:scanning`, `:compiling`, `:baseline`, `:coverage_probe`, or `{:running, total}`)."
-  @spec phase(GenServer.server(), atom() | {:running, non_neg_integer()}) :: :ok
+  @type phase_event ::
+          :scanning
+          | :compiling
+          | :baseline
+          | :coverage_probe
+          | {:running, non_neg_integer()}
+          | {:compiled, non_neg_integer()}
+          | {:baseline_done, non_neg_integer()}
+          | {:coverage_done, map()}
+          | {:run_config, map()}
+
+  @doc """
+  Records a phase transition or verbose detail event.
+
+  Phase transitions are `:scanning`, `:compiling`, `:baseline`,
+  `:coverage_probe`, and `{:running, total}`. Detail events are
+  `{:compiled, ms}`, `{:baseline_done, ms}`, `{:coverage_done, summary}`, and
+  `{:run_config, cfg}`.
+  """
+  @spec phase(GenServer.server(), phase_event()) :: :ok
   def phase(server, phase), do: GenServer.cast(server, {:phase, phase})
 
   @doc """

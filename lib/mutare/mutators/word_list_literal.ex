@@ -13,9 +13,10 @@ defmodule Mutare.Mutators.WordListLiteral do
 
   Interpolated `~w` sigils are not mutated. `~W` never interpolates.
 
-  On the right side of `in`, the empty replacement is suppressed because membership
-  in an empty list is already covered by `Mutare.Mutators.Conditional`. The sentinel
-  replacement remains eligible.
+  On the right side of a guard `in`, the empty replacement is suppressed because
+  membership in an empty list is already covered by `Mutare.Mutators.Conditional`.
+  The sentinel replacement remains eligible. Body `in` expressions keep the empty
+  replacement because left-side evaluation is observable.
 
   The ignore variants are `empty` and `sentinel`.
   """

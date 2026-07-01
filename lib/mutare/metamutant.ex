@@ -3,10 +3,9 @@ defmodule Mutare.Metamutant do
   The shape of a selector `case` subject in the metamutant.
 
   This is the one piece of generated structure that `Mutare.Transform` writes
-  and that the readers (`Mutare.Manifest`, used by both `Mutare.Coverage` and
-  `Mutare.Poison`) recognise. Owning it in a single module keeps the producer
-  from hand-building the same AST literal twice and keeps the consumers from
-  re-deriving how to spot a selector.
+  and that `Mutare.Manifest` recognises for `Mutare.Poison` readback.
+  Owning it in a single module keeps the producer from hand-building the same AST
+  literal twice and keeps the consumer from re-deriving how to spot a selector.
 
   A selector `case` looks like:
 
@@ -36,11 +35,11 @@ defmodule Mutare.Metamutant do
       predicate `Mutare.Manifest` uses to walk a rendered metamutant, recovering that
       name once via `Manifest.active_var/1`).
 
-  `subject?/2` is tolerant of how the subject is *parsed back*: `Code.string_to_quoted`
-  leaves `:persistent_term`/`:mutare_active` as bare atoms, while `Sourceror.parse_string!`
-  wraps every literal in a `{:__block__, _, [literal]}`. `Mutare.Manifest` re-parses with
-  Sourceror (it needs `Sourceror.get_range/1` for the generated line ranges), so the
-  predicate has to see through that wrapping.
+  `subject?/2` is tolerant of how the subject is *parsed back*: bare ASTs may keep
+  `:persistent_term`/`:mutare_active` as atoms, while `Mutare.Manifest`
+  re-parses with `Code.string_to_quoted!` plus a literal encoder that wraps literals as
+  `{:__block__, _, [literal]}` for `Sourceror.get_range/1` compatibility. The
+  predicate has to see through both shapes.
 
   `Mutare.Selector` owns the runtime constants (the `:persistent_term` key and
   the baseline id); this module owns their AST.
@@ -87,8 +86,8 @@ defmodule Mutare.Metamutant do
   The hoisted form is recognised only when `var` is supplied. That prevents an
   ordinary source-level `case some_var do ...` from being treated as a selector.
 
-  Literal wrappers added by `Sourceror.parse_string!` are accepted, as are the
-  bare atoms returned by `Code.string_to_quoted`.
+  Literal wrappers added by `Mutare.Manifest`'s readback parse are accepted,
+  as are bare atoms from ordinary quoted ASTs.
   """
   @spec subject?(Macro.t(), atom() | nil) :: boolean()
   def subject?(node, var \\ nil)

@@ -13,9 +13,11 @@ defmodule Mutare.Mutators.CharlistLiteral do
   Only non-interpolated charlists are touched: an interpolated `~c"a\#{x}b"` parses
   with multiple `<<>>` parts, not a single binary.
 
-  Not mutated: on the **RHS of `in`** (`x in ~c"ab"`) the *empty* variant `~c""` is
-  dropped — it is `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already
-  produces — but the non-empty sentinel `~c"mutare"` is kept.
+  Not mutated: on the **RHS of a guard `in`** (`when x in ~c"ab"`) the *empty*
+  variant `~c""` is dropped — it is `x in []` ≡ `false`, which
+  `Mutare.Mutators.Conditional` already produces — but the non-empty sentinel
+  `~c"mutare"` is kept. Body `in` expressions keep the empty variant because
+  left-side evaluation is observable.
 
   Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
   suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `~c""`) or

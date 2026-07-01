@@ -428,7 +428,7 @@ defmodule Mutare.Options.Registry do
 
   This is a function rather than a module attribute because the `:validate`/`:show` values are
   captures of this module's *private* functions, which a module attribute cannot hold (only a
-  function body can capture a local). It is rebuilt per call — cheap (29 maps + named-fun captures),
+  function body can capture a local). It is rebuilt per call — cheap map construction plus named-fun captures,
   and only called a handful of times per run (each `Options.new/1`, the CLI switch composition, a
   `--show-config`).
 
