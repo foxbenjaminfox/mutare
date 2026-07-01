@@ -789,8 +789,10 @@ defmodule Mutare.Transform.Analyze do
   end
 
   # A nested `quote` adds one more quote level for its block body. If that quote
-  # disables unquoting, no `unquote` under it can escape, so the whole nested quote
-  # is inert data from this analyzer's perspective.
+  # disables unquoting, its body is inert data from this analyzer's perspective.
+  # Quote option values are different: they belong to the quote expression itself,
+  # not the quoted block, so the prune pass below still scans them at the current
+  # quote level for escaping bindings.
   defp analyze_quoted_data({:quote, meta, args} = node, quote_level, mutators)
        when is_list(args) do
     if quote_unquote_enabled?(args),
@@ -1000,32 +1002,40 @@ defmodule Mutare.Transform.Analyze do
     |> then(fn {kw, hass} -> {kw, Enum.any?(hass)} end)
   end
 
-  defp prune_quote_escape_quote_args(args, quote_level) do
+  defp prune_quote_escape_quote_args(args, quote_level, body_unquote_enabled?) do
     args
-    |> Enum.map(&prune_quote_escape_quote_arg(&1, quote_level))
+    |> Enum.map(&prune_quote_escape_quote_arg(&1, quote_level, body_unquote_enabled?))
     |> Enum.unzip()
     |> then(fn {args, hass} -> {args, Enum.any?(hass)} end)
   end
 
-  defp prune_quote_escape_quote_arg({:__block__, meta, [kw]}, quote_level) when is_list(kw) do
-    {kw, has?} = prune_quote_escape_quote_keyword(kw, quote_level)
+  defp prune_quote_escape_quote_arg({:__block__, meta, [kw]}, quote_level, body_unquote_enabled?)
+       when is_list(kw) do
+    {kw, has?} = prune_quote_escape_quote_keyword(kw, quote_level, body_unquote_enabled?)
     {{:__block__, meta, [kw]}, has?}
   end
 
-  defp prune_quote_escape_quote_arg(kw, quote_level) when is_list(kw),
-    do: prune_quote_escape_quote_keyword(kw, quote_level)
+  defp prune_quote_escape_quote_arg(kw, quote_level, body_unquote_enabled?) when is_list(kw),
+    do: prune_quote_escape_quote_keyword(kw, quote_level, body_unquote_enabled?)
 
-  defp prune_quote_escape_quote_arg(other, _quote_level), do: {other, false}
+  defp prune_quote_escape_quote_arg(other, _quote_level, _body_unquote_enabled?),
+    do: {other, false}
 
-  defp prune_quote_escape_quote_keyword(kw, quote_level) do
+  defp prune_quote_escape_quote_keyword(kw, quote_level, body_unquote_enabled?) do
     kw
     |> Enum.map(fn
       {key, value} = pair ->
-        if AST.key_atom(key) == :do do
-          {value, has?} = prune_quote_escape_quoted_data(value, quote_level)
-          {{key, value}, has?}
-        else
-          {pair, false}
+        case AST.key_atom(key) do
+          :do when body_unquote_enabled? ->
+            {value, has?} = prune_quote_escape_quoted_data(value, quote_level + 1)
+            {{key, value}, has?}
+
+          :do ->
+            {pair, false}
+
+          _option ->
+            {value, has?} = prune_quote_escape_quoted_data(value, quote_level)
+            {{key, value}, has?}
         end
 
       other ->
@@ -1035,17 +1045,15 @@ defmodule Mutare.Transform.Analyze do
     |> then(fn {kw, hass} -> {kw, Enum.any?(hass)} end)
   end
 
-  defp prune_quote_escape_quoted_data({:quote, meta, args} = node, quote_level)
+  defp prune_quote_escape_quoted_data({:quote, meta, args}, quote_level)
        when is_list(args) do
-    if quote_unquote_enabled?(args) do
-      {args, child_has?} = prune_quote_escape_quote_args(args, quote_level + 1)
-      node = {:quote, meta, args}
-      node = if child_has?, do: strip_quote_escape_inplace_candidates(node), else: node
+    {args, child_has?} =
+      prune_quote_escape_quote_args(args, quote_level, quote_unquote_enabled?(args))
 
-      {node, child_has?}
-    else
-      {node, false}
-    end
+    node = {:quote, meta, args}
+    node = if child_has?, do: strip_quote_escape_inplace_candidates(node), else: node
+
+    {node, child_has?}
   end
 
   defp prune_quote_escape_quoted_data({form, meta, [arg]}, 1)

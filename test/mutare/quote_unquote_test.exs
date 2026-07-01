@@ -232,6 +232,43 @@ defmodule Mutare.QuoteUnquoteTest do
     assert mod.value(5) == [1, 3]
   end
 
+  test "prunes live-unquote ancestor mutants for bindings in disabled nested quote options" do
+    source = """
+    defmodule Mutare.QuoteUnquoteDisabledNestedQuoteOptionFixture do
+      def value(y) do
+        x = :outer
+
+        ast = quote do
+          unquote(List.wrap(quote do
+                    quote bind_quoted: [z: unquote((x = y))], do: z
+                  end) ++ List.wrap(y + 1))
+        end
+
+        {ast, x}
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(
+        source,
+        file: "quote_unquote_disabled_nested_quote_option.ex",
+        mutators: @arith ++ @list
+      )
+
+    assert [
+             %Site{
+               mutator: :arithmetic,
+               kind: :in_place,
+               original_code: "y + 1",
+               mutated_code: "y - 1"
+             }
+           ] = sites
+
+    refute Enum.any?(sites, &(&1.mutator == :list))
+    assert [_ | _] = Mutare.Test.Compile.string(meta)
+  end
+
   test "keeps an outer live-unquote mutant when a case body has only branch-local bindings" do
     source = """
     defmodule Mutare.QuoteUnquoteCaseBindingFixture do
