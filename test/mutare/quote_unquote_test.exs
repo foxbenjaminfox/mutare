@@ -9,6 +9,7 @@ defmodule Mutare.QuoteUnquoteTest do
   alias Mutare.{Selector, Site}
 
   @arith [Mutare.Mutators.Arithmetic]
+  @call_removal [Mutare.Mutators.CallRemoval]
 
   setup do
     Selector.put(Selector.baseline())
@@ -76,6 +77,68 @@ defmodule Mutare.QuoteUnquoteTest do
 
     Selector.put(site.id)
     assert mod.value(10) == [9]
+  end
+
+  test "mutates an escaping unquote expression in a bracketed quote do-block" do
+    source = """
+    defmodule Mutare.QuoteBracketedDoFixture do
+      def value(x) do
+        ast = quote [do: unquote(x + 1)]
+        {value, _binding} = Code.eval_quoted(ast)
+        value
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, file: "quote_bracketed_do.ex", mutators: @arith)
+
+    assert [%Site{original_code: "x + 1", mutated_code: "x - 1"} = site] = sites
+    [{mod, _binary}] = Mutare.Test.Compile.string(meta)
+
+    Selector.put(Selector.baseline())
+    assert mod.value(10) == 11
+
+    Selector.put(site.id)
+    assert mod.value(10) == 9
+  end
+
+  test "resolves an escaping unquote expression under the quote site's aliases" do
+    source = """
+    defmodule Mutare.QuoteUnquoteAliasFixture do
+      alias String, as: S
+
+      def value(s) do
+        ast = quote do
+          alias List, as: S
+          unquote(S.trim(s))
+        end
+
+        {value, _binding} = Code.eval_quoted(ast)
+        value
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, file: "quote_unquote_alias.ex", mutators: @call_removal)
+
+    assert [
+             %Site{
+               mutator: :call_removal,
+               kind: :in_place,
+               original_code: "S.trim(s)",
+               mutated_code: "s"
+             } = site
+           ] = sites
+
+    [{mod, _binary}] = Mutare.Test.Compile.string(meta)
+
+    Selector.put(Selector.baseline())
+    assert mod.value("  padded  ") == "padded"
+
+    Selector.put(site.id)
+    assert mod.value("  padded  ") == "  padded  "
   end
 
   test "keeps ordinary quoted body data raw while mutating escaping unquote args" do

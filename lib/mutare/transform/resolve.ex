@@ -32,6 +32,7 @@ defmodule Mutare.Transform.Resolve do
   # `fun/N` resolves to an import they get the same import stamp a synthesized `fun(args…)` probe
   # needs for capture mutation.
 
+  alias Mutare.AST
   alias Mutare.MacroRouting.Registry, as: Macros
   alias Mutare.Mutator
   alias Mutare.Transform.{Aliases, Imports, MetaKeys, Uses}
@@ -80,6 +81,16 @@ defmodule Mutare.Transform.Resolve do
       end)
 
     {:__block__, meta, walked}
+  end
+
+  # A `quote` body is quoted data, not a lexical child scope in the source being transformed.
+  # Walk only escaping `unquote`/`unquote_splicing` arguments, resolving them under the env at the
+  # quote site. That keeps a quoted directive such as `alias List, as: S` from restamping
+  # `unquote(S.trim(s))`, whose expression is evaluated in the outer scope.
+  defp walk({:quote, meta, args} = node, env) when is_list(args) do
+    if quote_unquote_enabled?(args),
+      do: {:quote, meta, walk_quote_args(args, 1, env)},
+      else: node
   end
 
   # `|>` pipe: the RHS is a call whose effective first argument is the LHS, so it carries one
@@ -304,4 +315,94 @@ defmodule Mutare.Transform.Resolve do
 
   defp kernel_export?(fun, arity),
     do: function_exported?(Kernel, fun, arity) or macro_exported?(Kernel, fun, arity)
+
+  # === quote data ============================================================
+
+  defp walk_quote_args(args, quote_level, env) do
+    Enum.map(args, &walk_quote_arg(&1, quote_level, env))
+  end
+
+  defp walk_quote_arg({:__block__, meta, [kw]}, quote_level, env) when is_list(kw) do
+    {:__block__, meta, [walk_quote_keyword(kw, quote_level, env)]}
+  end
+
+  defp walk_quote_arg(kw, quote_level, env) when is_list(kw) do
+    walk_quote_keyword(kw, quote_level, env)
+  end
+
+  defp walk_quote_arg(other, quote_level, env), do: walk_quoted_data(other, quote_level, env)
+
+  defp walk_quote_keyword(kw, quote_level, env) do
+    Enum.map(kw, fn
+      {key, value} = pair ->
+        if AST.key_atom(key) == :do,
+          do: {key, walk_quoted_data(value, quote_level, env)},
+          else: pair
+
+      other ->
+        other
+    end)
+  end
+
+  defp walk_quoted_data({:quote, meta, args} = node, quote_level, env) when is_list(args) do
+    if quote_unquote_enabled?(args),
+      do: {:quote, meta, walk_quote_args(args, quote_level + 1, env)},
+      else: node
+  end
+
+  defp walk_quoted_data({form, meta, [arg]}, 1, env)
+       when form in [:unquote, :unquote_splicing],
+       do: {form, meta, [walk(arg, %{env | pipe_mode: :unpiped})]}
+
+  defp walk_quoted_data({form, _meta, [_arg]} = node, quote_level, _env)
+       when form in [:unquote, :unquote_splicing] and quote_level > 1,
+       do: node
+
+  defp walk_quoted_data({form, meta, args}, quote_level, env) when is_list(args),
+    do: {form, meta, Enum.map(args, &walk_quoted_data(&1, quote_level, env))}
+
+  defp walk_quoted_data({left, right}, quote_level, env),
+    do: {walk_quoted_data(left, quote_level, env), walk_quoted_data(right, quote_level, env)}
+
+  defp walk_quoted_data(list, quote_level, env) when is_list(list),
+    do: Enum.map(list, &walk_quoted_data(&1, quote_level, env))
+
+  defp walk_quoted_data(other, _quote_level, _env), do: other
+
+  @missing_quote_option :__mutare_missing_quote_option__
+
+  defp quote_unquote_enabled?(args) when is_list(args) do
+    pairs = quote_keyword_pairs(args)
+
+    case AST.opts_get(pairs, :unquote, @missing_quote_option) do
+      @missing_quote_option ->
+        AST.opts_get(pairs, :bind_quoted, @missing_quote_option) == @missing_quote_option
+
+      value ->
+        not literal_false?(value)
+    end
+  end
+
+  defp quote_keyword_pairs(args) do
+    Enum.flat_map(args, fn
+      {:__block__, _meta, [kw]} when is_list(kw) ->
+        Enum.filter(kw, &keyword_pair?/1)
+
+      {_key, _value} = pair ->
+        [pair]
+
+      kw when is_list(kw) ->
+        Enum.filter(kw, &keyword_pair?/1)
+
+      _other ->
+        []
+    end)
+  end
+
+  defp keyword_pair?({_key, _value}), do: true
+  defp keyword_pair?(_other), do: false
+
+  defp literal_false?(false), do: true
+  defp literal_false?({:__block__, _meta, [false]}), do: true
+  defp literal_false?(_other), do: false
 end

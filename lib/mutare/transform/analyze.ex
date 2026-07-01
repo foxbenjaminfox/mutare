@@ -766,7 +766,17 @@ defmodule Mutare.Transform.Analyze do
     Enum.map(args, &analyze_quote_arg(&1, quote_level, mutators))
   end
 
+  defp analyze_quote_arg({:__block__, meta, [kw]}, quote_level, mutators) when is_list(kw) do
+    {:__block__, meta, [analyze_quote_keyword(kw, quote_level, mutators)]}
+  end
+
   defp analyze_quote_arg(kw, quote_level, mutators) when is_list(kw) do
+    analyze_quote_keyword(kw, quote_level, mutators)
+  end
+
+  defp analyze_quote_arg(other, _quote_level, _mutators), do: other
+
+  defp analyze_quote_keyword(kw, quote_level, mutators) do
     Enum.map(kw, fn
       {key, value} = pair ->
         if AST.key_atom(key) == :do,
@@ -777,8 +787,6 @@ defmodule Mutare.Transform.Analyze do
         other
     end)
   end
-
-  defp analyze_quote_arg(other, _quote_level, _mutators), do: other
 
   # A nested `quote` adds one more quote level for its block body. If that quote
   # disables unquoting, no `unquote` under it can escape, so the whole nested quote
