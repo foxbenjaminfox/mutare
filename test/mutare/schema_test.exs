@@ -3,6 +3,58 @@ defmodule Mutare.SchemaTest do
 
   alias Mutare.Schema
 
+  defmodule DriftingMutator do
+    @behaviour Mutare.Mutator
+
+    @key {__MODULE__, :calls}
+
+    @impl Mutare.Mutator
+    def name, do: :drifting
+
+    @impl Mutare.Mutator
+    def mutate({:+, meta, [left, right]}) do
+      calls = :persistent_term.get(@key, 0)
+      :persistent_term.put(@key, calls + 1)
+
+      case calls do
+        0 -> [{:-, meta, [left, right]}]
+        _ -> [{:-, meta, [left, right]}, {:*, meta, [left, right]}]
+      end
+    end
+
+    def mutate(_node), do: :skip
+
+    def reset, do: :persistent_term.put(@key, 0)
+    def clear, do: :persistent_term.erase(@key)
+  end
+
+  defmodule ExitingMutator do
+    @behaviour Mutare.Mutator
+
+    @impl Mutare.Mutator
+    def name, do: :exiting
+
+    @impl Mutare.Mutator
+    def mutate({:+, _meta, [_left, _right]}), do: exit(:mutare_schema_test_exit)
+    def mutate(_node), do: :skip
+  end
+
+  defmodule SlowFirstMutator do
+    @behaviour Mutare.Mutator
+
+    @impl Mutare.Mutator
+    def name, do: :slow_first
+
+    @impl Mutare.Mutator
+    def mutate({:+, meta, [left, 1]}) do
+      Process.sleep(75)
+      [{:-, meta, [left, 1]}]
+    end
+
+    def mutate({:+, meta, [left, right]}), do: [{:-, meta, [left, right]}]
+    def mutate(_node), do: :skip
+  end
+
   # Count-asserting tests pin the two operator-swap families so the higher-volume
   # default mutators (literals etc.) can't change the exact site totals; these
   # tests are about id threading / file scoping, not the default set.
@@ -48,18 +100,30 @@ defmodule Mutare.SchemaTest do
   end
 
   test ":on_scan fires once per file with cumulative progress", %{root: root} do
-    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
-    write(root, "lib/sub/b.ex", "defmodule B do\n  def g(a, b), do: a >= b\nend\n")
+    write(root, "lib/a.ex", "defmodule A do\n  def g(a, b), do: a >= b\nend\n")
+    write(root, "lib/empty.ex", "defmodule Empty do\n  def h, do: nil\nend\n")
+    write(root, "lib/sub/b.ex", "defmodule B do\n  def f(x), do: x + 1\nend\n")
 
     test_pid = self()
 
     Schema.build(root, mutators: @probe, on_scan: &send(test_pid, {:scan, &1}))
 
-    # One update per file, in path order, total fixed, `found` accumulating the
-    # running mutant tally (a.ex: 1 site; sub/b.ex: 2 more → 3).
-    assert_received {:scan, %{done: 1, total: 2, found: 1}}
-    assert_received {:scan, %{done: 2, total: 2, found: 3}}
+    # One update per file, in path order, total fixed, `found` accumulating only
+    # real sites (a.ex: 2 sites; empty.ex: 0; sub/b.ex: 1 more → 3).
+    assert_received {:scan, %{done: 1, total: 3, found: 2}}
+    assert_received {:scan, %{done: 2, total: 3, found: 2}}
+    assert_received {:scan, %{done: 3, total: 3, found: 3}}
     refute_received {:scan, _}
+  end
+
+  test "scan preserves input order even when a later worker finishes first", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/b.ex", "defmodule B do\n  def f(x), do: x + 2\nend\n")
+
+    schema = Schema.build(root, mutators: [SlowFirstMutator])
+
+    assert Enum.map(schema.sites, & &1.file) == ["lib/a.ex", "lib/b.ex"]
+    assert Enum.map(schema.sites, & &1.id) == [1, 2]
   end
 
   test "rebuild re-scans silently (drops any :on_scan hook)", %{root: root} do
@@ -394,6 +458,40 @@ defmodule Mutare.SchemaTest do
     assert twice.metamutants == once.metamutants
   end
 
+  test "from_files default root records paths relative to the current directory", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+
+    cwd_rel = Path.relative_to(Path.join(root, "lib/a.ex"), File.cwd!())
+
+    schema = Schema.from_files([cwd_rel])
+
+    assert schema.files == [cwd_rel]
+    assert Map.keys(schema.sources) == [cwd_rel]
+  end
+
+  test "from_files preserves explicit input order for sites and skipped files", %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+    write(root, "lib/b.ex", "defmodule B do\n  def f(x), do: x + 2\nend\n")
+    write(root, "lib/a_bad.ex", "defmodule ABad do\n  def ( oops\nend\n")
+    write(root, "lib/z_bad.ex", "defmodule ZBad do\n  def ( oops\nend\n")
+
+    schema =
+      Schema.from_files(
+        [
+          Path.join(root, "lib/b.ex"),
+          Path.join(root, "lib/a.ex"),
+          Path.join(root, "lib/z_bad.ex"),
+          Path.join(root, "lib/a_bad.ex")
+        ],
+        root,
+        mutators: @probe
+      )
+
+    assert schema.files == ["lib/b.ex", "lib/a.ex", "lib/z_bad.ex", "lib/a_bad.ex"]
+    assert Enum.map(schema.sites, & &1.file) == ["lib/b.ex", "lib/a.ex"]
+    assert Enum.map(schema.skipped, &elem(&1, 0)) == ["lib/z_bad.ex", "lib/a_bad.ex"]
+  end
+
   describe "forwards options through to the transform" do
     test ":skip_ids reaches the transform (poison recovery renders the mutant raw)", %{root: root} do
       write(
@@ -455,6 +553,25 @@ defmodule Mutare.SchemaTest do
       assert Schema.count(build.([])) > 0
       assert Schema.count(build.([{Mutare.Test.QueryDSL, :query, 1, :skip}])) == 0
     end
+
+    test ":defer_site_code controls diff rendering and :summarize_sites controls summaries",
+         %{root: root} do
+      write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+
+      eager = Schema.build(root, mutators: @probe)
+      deferred = Schema.build(root, mutators: @probe, defer_site_code: true)
+
+      summarized =
+        Schema.build(root, mutators: @probe, defer_site_code: true, summarize_sites: true)
+
+      assert [%{original_code: original, mutated_code: mutated, summary: nil}] = eager.sites
+      assert is_binary(original)
+      assert is_binary(mutated)
+
+      assert [%{original_code: nil, mutated_code: nil, summary: nil}] = deferred.sites
+      assert [%{original_code: nil, mutated_code: nil, summary: summary}] = summarized.sites
+      assert summary == "arithmetic  x + 1 → x - 1"
+    end
   end
 
   test "an internal error during transform crashes; it is not swallowed as a skip",
@@ -465,6 +582,35 @@ defmodule Mutare.SchemaTest do
 
     assert_raise RuntimeError, "boom from mutator", fn ->
       Schema.build(root, mutators: [Mutare.Test.RaisingMutator])
+    end
+  end
+
+  test "an exiting transform worker exits the caller with the original reason", %{root: root} do
+    write(root, "lib/ok.ex", "defmodule Ok do\n  def f(x), do: x + 1\nend\n")
+
+    test_pid = self()
+
+    pid =
+      spawn(fn ->
+        Schema.build(root, mutators: [ExitingMutator])
+        send(test_pid, :schema_build_returned)
+      end)
+
+    ref = Process.monitor(pid)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :mutare_schema_test_exit}
+    refute_received :schema_build_returned
+  end
+
+  test "count/render mutant-count drift crashes before overlapping ids can be returned",
+       %{root: root} do
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1\nend\n")
+
+    DriftingMutator.reset()
+    on_exit(&DriftingMutator.clear/0)
+
+    assert_raise RuntimeError, ~r/mutant-count drift .* counted 1, rendered 2/, fn ->
+      Schema.build(root, mutators: [DriftingMutator])
     end
   end
 

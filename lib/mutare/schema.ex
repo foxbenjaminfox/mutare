@@ -355,7 +355,6 @@ defmodule Mutare.Schema do
          render_site_code,
          summarize_sites
        ) do
-    # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
     opts =
       transform_opts(options) ++
         [
@@ -401,9 +400,6 @@ defmodule Mutare.Schema do
         %{
           schema
           | sites: Enum.reverse(sites, schema.sites),
-            # mutare:ignore[map_keyword] equivalent — `from_files/4` dedups its input by relative
-            # path, so each `rel` is assembled exactly once and neither key ever pre-exists; put
-            # and put_new agree (here, and for `sources` in every branch).
             metamutants: Map.put(schema.metamutants, rel, meta),
             sources: Map.put(schema.sources, rel, source)
         }
