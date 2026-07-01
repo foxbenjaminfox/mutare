@@ -105,9 +105,11 @@ defmodule Mutare.Mutator do
   ## Structural mutators at routed positions (`Mutare.Mutator.Structural`)
 
   Some targets are positions rather than individual nodes: a `def`/`defp` return
-  tail, an `if`/`unless`/`cond` condition, or a `def`/`defp` head pattern. Those
-  callbacks live on `Mutare.Mutator.Structural`. A structural mutator declares both
-  behaviours and implements the relevant structural callback.
+  tail, an `if`/`unless`/`cond` condition, or a structural pattern position.
+  Pattern positions include `def`/`defp` heads, clause patterns, destructuring match
+  patterns, and routed `:binding_pattern` macro arguments. Those callbacks live on
+  `Mutare.Mutator.Structural`. A structural mutator declares both behaviours and
+  implements the relevant structural callback.
 
   The transform identifies the position, asks each enabled mutator that exports the
   matching callback, and records each emitted mutation under that mutator's name.

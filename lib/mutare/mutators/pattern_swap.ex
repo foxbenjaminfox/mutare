@@ -1,6 +1,6 @@
 defmodule Mutare.Mutators.PatternSwap do
   @moduledoc """
-  Exchanges two variables within a container in a function-head pattern:
+  Exchanges two variables within a container in a structural pattern position:
 
     * `{x, y}` → `{y, x}`
     * `[x, y]` → `[y, x]`
@@ -8,10 +8,12 @@ defmodule Mutare.Mutators.PatternSwap do
     * `[left: x, right: y]` → `[left: y, right: x]`
     * `<<x::8, y::16>>` → `<<y::8, x::16>>`
 
-  Only `def` and `defp` heads are considered. Swaps occur within tuples, lists, map
-  and keyword values, and bitstring segment values. Map and keyword keys and
-  bitstring specifiers remain in place. The top-level function argument list is not
-  a swap site.
+  Structural pattern positions include `def`/`defp` heads, clause patterns,
+  destructuring match patterns, and routed `:binding_pattern` macro arguments.
+  Swaps occur within tuples, lists, map and keyword values, and bitstring segment
+  values. Map and keyword keys and bitstring specifiers remain in place. A
+  top-level pattern list, such as a function argument list or multi-pattern clause
+  head, is not itself a swap site.
 
   The two variables must have distinct names. `_` and underscore-prefixed names are
   excluded. Pinned variables may be swapped with another pin or with a binding.
@@ -33,7 +35,7 @@ defmodule Mutare.Mutators.PatternSwap do
   def name, do: :pattern_swap
 
   @doc """
-  Returns every single-swap variant of the function-head arguments.
+  Returns every single-swap variant of the structural pattern position.
 
   Each variant exchanges two distinct variables within the same container.
   `used_outside` does not affect swaps because variable usage is unchanged.

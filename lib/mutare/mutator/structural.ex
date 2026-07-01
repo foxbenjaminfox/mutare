@@ -1,7 +1,7 @@
 defmodule Mutare.Mutator.Structural do
   @moduledoc """
   Behaviour for mutating positions that are larger than a single AST node: clause return values,
-  `if`/`unless`/`cond` conditions, and function-head patterns.
+  `if`/`unless`/`cond` conditions, and structural pattern positions.
 
   Declare both `Mutare.Mutator` and this behaviour, define `name/0`, then implement whichever
   structural callbacks you need. A structural mutator does not need `c:Mutare.Mutator.mutate/1`.
@@ -30,11 +30,14 @@ defmodule Mutare.Mutator.Structural do
   @type context :: %{behaviours: MapSet.t(module())}
 
   @doc """
-  Returns whole-head pattern replacements for a `def` or `defp` clause.
+  Returns pattern replacements for a structural pattern position.
 
-  `head_args` contains the clause argument patterns. `used_outside` contains
-  variable names read by the guard or body. Each returned argument list must be a
-  valid, compile-safe clause head.
+  `head_args` contains the patterns for that position. For `def`/`defp` heads
+  and multi-pattern clauses, this is the whole pattern list; for single-pattern
+  positions such as a destructuring match, a case clause, or a routed
+  `:binding_pattern` macro argument, this is a one-element list. `used_outside`
+  contains variable names read after the pattern. Each returned list must be a
+  valid, compile-safe replacement for the same pattern position.
   """
   @callback pattern_mutations(head_args :: [Macro.t()], used_outside :: MapSet.t()) ::
               [[Macro.t()]]
