@@ -82,6 +82,51 @@ defmodule Mutare.RunnerTest do
     end
   end
 
+  test "kill_runs demotes a one-off flaky kill to survived" do
+    %{project: project, sandbox: sandbox} =
+      Project.build(:kill_runs, %{
+        "lib/flaky_kill.ex" => """
+        defmodule FlakyKill do
+          def add(a, b), do: a + b
+        end
+        """,
+        "test/flaky_kill_test.exs" => """
+        defmodule FlakyKillTest do
+          use ExUnit.Case
+
+          test "touches the mutant line but flakes only once per active mutant" do
+            _ = FlakyKill.add(2, 3)
+
+            active = System.get_env("MUTARE_ACTIVE_MUTANT")
+
+            if active not in [nil, "0"] do
+              counter = "kill_counter_\#{active}.txt"
+
+              runs =
+                case File.read(counter) do
+                  {:ok, n} -> String.to_integer(n)
+                  _ -> 0
+                end
+
+              File.write!(counter, Integer.to_string(runs + 1))
+              assert runs >= 1
+            end
+          end
+        end
+        """
+      })
+
+    assert {:ok, run} =
+             Mutare.run(project,
+               sandbox: sandbox,
+               mutators: [Mutare.Mutators.Arithmetic],
+               kill_runs: 2
+             )
+
+    assert [%Result{status: :survived, duration_ms: ms}] = run.results
+    assert ms > 0
+  end
+
   test "removes the default throwaway sandbox when the run completes", %{project: project} do
     # No `--sandbox` and no `--keep-sandbox`: the runner materialises a throwaway
     # sandbox under the temp dir and removes it on completion, so default runs

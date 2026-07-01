@@ -12,6 +12,15 @@ defmodule Mutare.Runner do
 
   Before the per-mutant loop we run the test suite once and ensure it passes (`Mutare.Runner.Baseline`) — then build a per-mutant test selection (`Mutare.Runner.CoverageProbe`) which picks the test files each mutant needs (or marks it `:no_coverage`). The two are split on purpose: a failing baseline test aborts, while coverage is advisory and degrades to running everything. The baseline can be run more than once (`:baseline_runs`) to catch a flaky suite: runs that disagree abort with `:baseline_flaky` rather than let a flaky test manufacture false mutant kills. See those modules for the selection modes.
 
+  ## Unanimous kill reruns
+
+  `:kill_runs` (`--kill-runs`, default 1) handles the narrower case where a
+  residual flaky test appears only under one mutant's timing. Only kill outcomes
+  are rerun, and every attempt must kill. If a later attempt passes, the mutant
+  is recorded as `:survived`; if a later attempt persistently hits the harness,
+  it remains `:harness_error`. Harness retries are the inner infrastructure
+  layer; kill reruns combine settled test-suite verdicts.
+
   ## Parallel workers and timeouts
 
   The per-mutant phase runs `:workers` mutants concurrently (default `System.schedulers_online/0`), each its own `mix test` OS process in the shared sandbox. Each run has a wall-clock cap (`baseline × :timeout_multiplier`, default 3.0, with a floor; or an explicit `:timeout` in ms): a mutation can turn a terminating loop infinite, so the run is capped. A capped run counts as `:timeout` — a kill, since the hang is observable misbehavior.
@@ -97,7 +106,7 @@ defmodule Mutare.Runner do
   # does still thread both positionally, but its two recursive calls are local and obvious.)
   defmodule RunCtx do
     @moduledoc false
-    @enforce_keys [:sandbox, :selection, :cap, :scopes, :retries]
+    @enforce_keys [:sandbox, :selection, :cap, :scopes, :retries, :kill_runs]
     # `hydrate` is the deferred-diff hydrator (`Mutare.Runner.Hydrate`), or `nil` for the eager
     # path; it fills a displayed survivor's diff code in just before it reaches the reporter.
     defstruct @enforce_keys ++ [hydrate: nil]
@@ -155,7 +164,7 @@ defmodule Mutare.Runner do
   Custom hooks should ignore phase or detail events they do not recognise.
 
   The run uses the resolved `:test_selection`, `:workers`, `:timeout`,
-  `:timeout_multiplier`, `:baseline_runs`, `:harness_retries`,
+  `:timeout_multiplier`, `:baseline_runs`, `:kill_runs`, `:harness_retries`,
   `:max_harness_error_rate`, and `:max_survivors` options. When
   `:max_survivors` stops the run early, the returned run has
   `stopped_early: true`.
@@ -281,6 +290,7 @@ defmodule Mutare.Runner do
       cap: cap,
       scopes: scopes,
       retries: options.harness_retries,
+      kill_runs: options.kill_runs,
       hydrate: hydrate
     }
   end
@@ -636,33 +646,66 @@ defmodule Mutare.Runner do
   # third refinement, `:boot_failure`, *is* retried — harder than a generic
   # harness error, from its own dedicated budget — since it is a known-transient
   # startup-contention crash; see `@boot_failure_retries`.
-  defp run_mutant(%RunCtx{retries: retries} = ctx, site, test_args, env),
-    do: run_mutant(ctx, site, test_args, env, retries, @boot_failure_retries)
+  defp run_mutant(%RunCtx{} = ctx, site, test_args, env) do
+    result =
+      ctx
+      |> run_mutant_attempt(site, test_args, env, ctx.retries, @boot_failure_retries)
+      |> require_unanimous_kill(ctx, site, test_args, env, ctx.kill_runs - 1)
+
+    if result.outcome in [:harness_error, :boot_failure], do: warn_harness_error(site, result)
+    record(site, result)
+  end
 
   # `retries` is the general `:harness_retries` budget; `boot_retries` the dedicated
   # boot-failure budget. The two are decremented independently by the *current* run's
   # outcome, so a boot failure that later degrades to a plain harness error still draws
   # its general retries, and vice versa. Only the two retryable outcomes recurse; every
-  # real verdict (and the recovered kills) falls through to `record/2` unretried.
-  defp run_mutant(%RunCtx{} = ctx, site, test_args, env, retries, boot_retries) do
+  # real verdict (and the recovered kills) falls through unretried.
+  defp run_mutant_attempt(%RunCtx{} = ctx, site, test_args, env, retries, boot_retries) do
     result = Command.timed_test(ctx.sandbox, test_args, site.id, ctx.cap, env)
 
     case result.outcome do
       :boot_failure when boot_retries > 0 ->
         Process.sleep(boot_backoff_ms())
-        run_mutant(ctx, site, test_args, env, retries, boot_retries - 1)
+        run_mutant_attempt(ctx, site, test_args, env, retries, boot_retries - 1)
 
       :harness_error when retries > 0 ->
-        run_mutant(ctx, site, test_args, env, retries - 1, boot_retries)
-
-      outcome when outcome in [:harness_error, :boot_failure] ->
-        warn_harness_error(site, result)
-        record(site, result)
+        run_mutant_attempt(ctx, site, test_args, env, retries - 1, boot_retries)
 
       _ ->
-        record(site, result)
+        result
     end
   end
+
+  # The kill-rerun layer sits outside harness retries. Each attempt first settles
+  # its own infrastructure retries above; only kill outcomes are repeated, and all
+  # attempts must kill. A passing rerun is the conservative verdict, while a
+  # persistent harness error stays an infrastructure failure.
+  defp require_unanimous_kill(result, _ctx, _site, _test_args, _env, remaining)
+       when remaining <= 0,
+       do: result
+
+  defp require_unanimous_kill(result, ctx, site, test_args, env, remaining) do
+    if kill_outcome?(result.outcome) do
+      next = run_mutant_attempt(ctx, site, test_args, env, ctx.retries, @boot_failure_retries)
+      combined = combine_attempts(result, next)
+
+      if kill_outcome?(next.outcome) do
+        require_unanimous_kill(combined, ctx, site, test_args, env, remaining - 1)
+      else
+        combined
+      end
+    else
+      result
+    end
+  end
+
+  defp combine_attempts(previous, next) do
+    %{next | duration_ms: previous.duration_ms + next.duration_ms}
+  end
+
+  defp kill_outcome?(outcome),
+    do: outcome in [:failed, :timeout, :suite_compile_error, :atom_exhausted]
 
   defp record(%Site{} = site, result) do
     %Result{

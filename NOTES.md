@@ -5987,13 +5987,14 @@ a metamutant with **zero** poisons.
 - **Harness-error retry + abort threshold (done).** Two knobs harden the above
   against flakiness and systemic breakage, both configurable via `.mutare.exs`
   and CLI (`--harness-retries`, `--max-harness-error-rate`):
-  - **Retry** (`:harness_retries`, default `1`). A harness error can be
+  - **Retry** (`:harness_retries`, default `2`). A harness error can be
     *transient* (a filesystem/lock race under parallel workers), so the runner
     re-runs a harness-erroring mutant up to N times before recording it — a fresh
     `mix` boot is its own natural backoff. Only `:harness_error` is retried; a
     real verdict (passed/failed/timeout) never is. Retry lives in the runner's
-    `run_mutant/6`, *not* in `Command` — `Command` does one clean run and reports
-    its outcome; whether to re-run is an orchestration decision. (So
+    `run_mutant/4` path (via `run_mutant_attempt/6`), *not* in `Command` —
+    `Command` does one clean run and reports its outcome; whether to re-run is
+    an orchestration decision. (So
     `Command.timed_test/4` and `harness_test.exs` see exactly one run.)
   - **Abort threshold** (`:max_harness_error_rate`, default `0.5`, `nil`/`1.0`
     disables). After the per-mutant phase, if *persistent* harness errors exceed
@@ -6092,20 +6093,29 @@ a metamutant with **zero** poisons.
   `Runner` → new `format_error(:baseline_flaky, _)`). The end-to-end `:runner` test
   makes a suite deterministically flaky via a counter file persisted in the reused
   sandbox cwd (red on run 1, green on run 2).
+  Operational recommendation: keep the default `baseline_runs: 1` for the fastest
+  local loop; use `baseline_runs: 2` or `3` in CI or on projects with known flaky
+  edges, where one or two extra whole-suite boots are cheap compared with trusting
+  a false kill.
   - **Decision: abort-and-name, not quarantine.** Matches the "abort loudly"
     and "mitigate, don't pretend" principles: we refuse to score a flaky suite rather than
     guess which tests to drop. **Deferred** as a follow-up: *quarantine* the flaky
     tests and proceed over the stable subset (needs the exclusion threaded through
     the baseline re-measure, the coverage probe, *and* every per-mutant run — and a
     reduced-suite score is a soundness caveat to surface).
-  - **Deferred — Layer 2 (`--runs`/rerun-kills).** A residual flake only visible
-    under one mutant's timing escapes a green baseline. The fix: re-run each
-    *killed* mutant up to N times and demote to `:survived` if any re-run fails to
-    kill (**unanimous-kill** — the honest combine rule; "any-kill" defends the
-    wrong direction). Under unanimous-kill only kills need re-running, so the honest
-    rule is also the cheap one; it's a near-copy of the `:harness_retries` machinery
-    in `run_mutant/6`. Orthogonal to harness retries (that's infra flakiness, this
-    is test flakiness). Not built here.
+  - **Unanimous-kill reruns (done).** A residual flake only visible under one
+    mutant's timing can still escape a green baseline. `--kill-runs N`
+    (`:kill_runs`, default **1** = unchanged behaviour) re-runs only kill
+    outcomes and records a kill only when every attempt kills. If a later attempt
+    passes, the mutant is recorded `:survived`; if a later attempt persistently
+    hits the harness after its own harness/boot retries, it records
+    `:harness_error` rather than pretending either verdict. The combine rule is
+    **unanimous-kill** — the honest direction; "any-kill" would preserve the false
+    kill flakiness manufactures. The runner implements this as an outer layer
+    around `run_mutant_attempt/6`: harness retries settle one attempt first, then
+    kill reruns combine settled test-suite verdicts. Under unanimous-kill only
+    killed mutants pay the extra process boots, so the honest rule is also the
+    cheap one.
 
 ### Option-spec registry + config/wiring split `[done]`
 

@@ -136,13 +136,17 @@ Optional `.mutare.exs`:
   # per-mutant cap = baseline × timeout_multiplier, unless an absolute
   # `timeout:` (ms) is set — both also available as --workers / --timeout
   timeout_multiplier: 3.0,
+  # harden against flaky tests: baseline suite disagreement aborts; one-off kills
+  # from residual mutant-timing flakes are demoted unless every run kills
+  baseline_runs: 2,
+  kill_runs: 2,
   test_selection: :coverage,
   # emit several reports at once (a bare atom goes to stdout)
   reporters: [:human, {:json, "mutare.json"}, {:sarif, "mutare.sarif"}]
 ]
 ```
 
-These are the common keys; `mix help mutare` documents the full set — sandbox / build-cache reuse (`sandbox`, `keep_sandbox`), baseline re-runs (`baseline_runs`), harness-error retry/abort guards (`harness_retries`, `max_harness_error_rate`), run caps (`max_mutants`, `max_survivors`), CI gates (`min_score`, `max_no_coverage`, `fail_on_poisoned`, `fail_on_harness_error`, `strict_ignores`), `quiet`, and `expand_uses` — each also a CLI flag.
+These are the common keys; `mix help mutare` documents the full set — sandbox / build-cache reuse (`sandbox`, `keep_sandbox`), baseline re-runs (`baseline_runs`), unanimous-kill reruns (`kill_runs`), harness-error retry/abort guards (`harness_retries`, `max_harness_error_rate`), run caps (`max_mutants`, `max_survivors`), CI gates (`min_score`, `max_no_coverage`, `fail_on_poisoned`, `fail_on_harness_error`, `strict_ignores`), `quiet`, and `expand_uses` — each also a CLI flag.
 
 ### Live progress
 

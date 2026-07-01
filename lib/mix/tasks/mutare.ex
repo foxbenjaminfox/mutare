@@ -146,6 +146,8 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --baseline-runs 2        # run the green baseline 2× and abort if a
                                           #   test flakes (passes once, fails once) —
                                           #   a flaky test manufactures false kills
+      mix mutare --kill-runs 2            # require each killed mutant to kill twice;
+                                          #   a passing rerun is reported survived
       mix mutare --harness-retries 4      # re-run a mutant up to 4× if its run fails
                                           #   at the infrastructure level (default 2)
       mix mutare --max-harness-error-rate 0.3
@@ -245,6 +247,9 @@ defmodule Mix.Tasks.Mutare do
         timeout: nil,
         # run the baseline N×, aborting if a test flakes (passes one run, fails another)
         baseline_runs: 1,
+        # require a killed mutant to kill N times before recording the kill; if any
+        # rerun passes, record it as survived (unanimous-kill, default unchanged)
+        kill_runs: 1,
         # retry a mutant whose run fails at the harness (infra) level before recording it
         # (a boot-time node crash, a known-transient contention signature, is retried
         # harder still from its own dedicated budget — see `mix help mutare`)

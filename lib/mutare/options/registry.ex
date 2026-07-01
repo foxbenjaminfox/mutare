@@ -212,6 +212,14 @@ defmodule Mutare.Options.Registry do
         ":baseline_runs must be a positive integer (>= 1)"
       )
 
+  defp validate_kill_runs!(n),
+    do:
+      validate!(
+        n,
+        &(is_integer(&1) and &1 >= 1),
+        ":kill_runs must be a positive integer (>= 1)"
+      )
+
   defp validate_harness_retries!(n),
     do:
       validate!(
@@ -420,7 +428,7 @@ defmodule Mutare.Options.Registry do
 
   This is a function rather than a module attribute because the `:validate`/`:show` values are
   captures of this module's *private* functions, which a module attribute cannot hold (only a
-  function body can capture a local). It is rebuilt per call — cheap (28 maps + named-fun captures),
+  function body can capture a local). It is rebuilt per call — cheap (29 maps + named-fun captures),
   and only called a handful of times per run (each `Options.new/1`, the CLI switch composition, a
   `--show-config`).
 
@@ -476,6 +484,7 @@ defmodule Mutare.Options.Registry do
         validate: &validate_multiplier!/1
       ),
       spec(key: :baseline_runs, default: 1, cli: :integer, validate: &validate_baseline_runs!/1),
+      spec(key: :kill_runs, default: 1, cli: :integer, validate: &validate_kill_runs!/1),
       spec(
         key: :harness_retries,
         default: 2,
