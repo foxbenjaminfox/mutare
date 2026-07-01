@@ -89,6 +89,49 @@ defmodule Mutare.QuoteUnquoteTest do
     assert mod.value(10) == {9, 1}
   end
 
+  test "prunes live-unquote ancestor mutants inside scoped fn children" do
+    source = """
+    defmodule Mutare.QuoteUnquoteFnBindingFixture do
+      def ast(y) do
+        quote do
+          unquote(List.wrap(fn -> (x = 1) + (y + 2); x end) ++ List.wrap(y + 3))
+        end
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(
+        source,
+        file: "quote_unquote_fn_binding.ex",
+        mutators: @arith ++ @list
+      )
+
+    assert %Site{
+             mutator: :arithmetic,
+             kind: :in_place,
+             original_code: "y + 2",
+             mutated_code: "y - 2"
+           } = Enum.find(sites, &(&1.original_code == "y + 2"))
+
+    assert %Site{
+             mutator: :arithmetic,
+             kind: :in_place,
+             original_code: "y + 3",
+             mutated_code: "y - 3"
+           } = Enum.find(sites, &(&1.original_code == "y + 3"))
+
+    assert %Site{mutator: :list, kind: :in_place} =
+             Enum.find(sites, &(&1.mutator == :list))
+
+    refute Enum.any?(
+             sites,
+             &(&1.mutator == :arithmetic and String.contains?(&1.original_code, "x = 1"))
+           )
+
+    assert [_ | _] = Mutare.Test.Compile.string(meta)
+  end
+
   test "does not wrap a live unquote argument above a binding-pattern macro used after the quote" do
     source = """
     defmodule Mutare.QuoteUnquoteBindingMacroFixture do

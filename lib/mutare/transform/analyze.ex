@@ -901,10 +901,12 @@ defmodule Mutare.Transform.Analyze do
 
   # Bindings made inside these constructs do not escape to the unquote argument's
   # surrounding scope, so they cannot be the source of a post-quote undefined-variable
-  # failure. Their internals were already analyzed correctly by the runtime walk.
+  # failure. Still prune inside their children: a selector inside the scoped body can
+  # trap a binding that is read later in that same scoped body. Only the binding signal
+  # is stopped at the construct boundary, so whole-construct candidates remain live.
   defp prune_quote_escape_binding_ancestors({form, _meta, _args} = node)
        when form in [:fn, :for, :with, :try],
-       do: {node, false}
+       do: prune_quote_escape_scoped_construct(node)
 
   defp prune_quote_escape_binding_ancestors({:quote, meta, args}) when is_list(args) do
     {args, child_has?} = prune_quote_escape_live_quote_args(args, 1)
@@ -937,6 +939,11 @@ defmodule Mutare.Transform.Analyze do
     do: prune_quote_escape_binding_ancestors_each(list)
 
   defp prune_quote_escape_binding_ancestors(other), do: {other, false}
+
+  defp prune_quote_escape_scoped_construct({form, meta, args}) when is_list(args) do
+    {args, _child_has?} = prune_quote_escape_binding_ancestors_each(args)
+    {{form, meta, args}, false}
+  end
 
   defp prune_quote_escape_binding_ancestors_each(list) do
     {nodes, hass} = list |> Enum.map(&prune_quote_escape_binding_ancestors/1) |> Enum.unzip()
