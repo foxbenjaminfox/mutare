@@ -341,6 +341,13 @@ defmodule Mutare.ReportTest do
              "mutation score: 50.0%  (1 killed, 1 survived, 1 poisoned, 3 total)"
   end
 
+  test "summary/1 shows an absent always-in-summary status as 0, not a garbage default" do
+    # `count/3` defaults a missing status to 0; killed is always rendered, so a lone
+    # survivor must read "0 killed" (a wrong default would surface as "-1 killed").
+    assert Report.summary([%Result{status: :survived}]) ==
+             "mutation score: 0.0%  (0 killed, 1 survived, 1 total)"
+  end
+
   test "summary/1 includes a no-coverage count only when present" do
     refute Report.summary([%Result{status: :killed}]) =~ "no-coverage"
 
@@ -485,6 +492,33 @@ defmodule Mutare.ReportTest do
                "1 poisoned mutant is present and --fail-on-poisoned is set"
              ]
     end
+
+    test "a map without a fail-on key defaults it off (no crash on the missing default)" do
+      # `gate_opt/3`'s map clause must fall back to `false`, not `nil`, for an absent
+      # key — a `nil` flag reaches no `fail_on_status_failure/4` clause and would crash.
+      assert Report.gate_failures([%Result{status: :harness_error}], %{fail_on_poisoned: true}) ==
+               []
+    end
+
+    test "no score failure when the score meets the minimum" do
+      # A passing gate must produce nothing: the `unless passes_gate?(...)` guard has to
+      # actually consult the score, not unconditionally emit a failure.
+      assert Report.gate_failures([%Result{status: :killed}], min_score: 50) == []
+    end
+
+    test "an enabled fail-on flag with zero such mutants raises no failure" do
+      # count is 0, so `fail_on_status_failure/4` must short-circuit — never emit a
+      # spurious "0 poisoned mutants are present".
+      assert Report.gate_failures([%Result{status: :killed}], fail_on_poisoned: true) == []
+    end
+
+    test "pluralises the fail-on wording for two or more mutants" do
+      results = [%Result{status: :poisoned}, %Result{status: :poisoned}]
+
+      assert Report.gate_failures(results, fail_on_poisoned: true) == [
+               "2 poisoned mutants are present and --fail-on-poisoned is set"
+             ]
+    end
   end
 
   test "render/2 lists survivors as diffs plus a summary line" do
@@ -561,6 +595,21 @@ defmodule Mutare.ReportTest do
     # ordering: survivors, then the ignored roll-call, then the summary tally.
     assert index(out, "SURVIVED") < index(out, "IGNORED")
     assert index(out, "IGNORED") < index(out, "mutation score")
+  end
+
+  test "render/2 puts each ignored mutant on its own line" do
+    ignored = fn line ->
+      %Result{
+        status: :ignored,
+        site: %Site{file: "lib/x.ex", line: line, mutator: :arithmetic, ignore_reason: nil}
+      }
+    end
+
+    out = Report.render([ignored.(1), ignored.(2)], %{})
+
+    # The roll-call joins with "\n"; a dropped/altered separator would collapse the
+    # two lines together.
+    assert out =~ "lib/x.ex:1  [arithmetic]  IGNORED\nlib/x.ex:2  [arithmetic]  IGNORED"
   end
 
   defp index(haystack, needle), do: haystack |> :binary.match(needle) |> elem(0)

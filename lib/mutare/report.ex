@@ -297,18 +297,29 @@ defmodule Mutare.Report do
   end
 
   # The `""` default of `Enum.at/3` is unreachable: callers only request lines
-  # within the site's range, always in-file, so the fallback never fires and its
-  # `"" -> "mutare"` mutant can't be killed. Scoped to `[string]` so the genuinely
-  # tested index arithmetic (`n - 1`) on this line still runs (and is killed).
-  # mutare:ignore[string] the "" fallback is unreachable; ranges are always in-file
+  # within the site's range, always in-file, so the fallback never fires. Neither
+  # swapping it (`"" -> "mutare"`) nor dropping it (`Enum.at/2`, which returns `nil`)
+  # is observable. Scoped to `[string, default_drop]` so the genuinely tested index
+  # arithmetic (`n - 1`) on this line still runs (and is killed).
+  # mutare:ignore[string, default_drop] the "" fallback is unreachable; ranges are always in-file
   defp line_at(lines, n), do: Enum.at(lines, n - 1, "")
 
   defp tally(results), do: Enum.frequencies_by(results, & &1.status)
 
   defp gate_opt(opts, key, default \\ nil)
   defp gate_opt(opts, key, default) when is_list(opts), do: Keyword.get(opts, key, default)
+  # Equivalent mutant: `opts` is always a keyword list or a map (per `gate_failures/2`'s
+  # spec), and the `is_list` clause above already claimed every list — so this last clause
+  # only ever runs for maps, whether or not its `is_map` guard remains. Scoped to
+  # `[guard_drop]` so the `default` drop (a real map-default path) stays killable.
+  # mutare:ignore[guard_drop] opts is always keyword|map; the is_list clause owns lists
   defp gate_opt(opts, key, default) when is_map(opts), do: Map.get(opts, key, default)
 
+  # Equivalent mutant: dropping this clause changes nothing. A nil `min_score` then
+  # reaches the general clause, where `passes_gate?(results, nil)` is true (a nil minimum
+  # always passes), so `unless true` yields nil either way. Scoped to the clause-drop so
+  # the `unless` condition mutant on the general clause stays killable.
+  # mutare:ignore[clause_drop] passes_gate?(_, nil) is true, so the general clause also returns nil
   defp score_gate_failure(_results, nil), do: nil
 
   defp score_gate_failure(results, min_score) do
@@ -317,6 +328,11 @@ defmodule Mutare.Report do
     end
   end
 
+  # Equivalent mutant: dropping this clause changes nothing. A nil `max` then reaches the
+  # `n <= max` clause, and a number always sorts before an atom in Erlang term order, so
+  # `n <= nil` is true and it returns nil either way. Scoped to the clause-drop so the
+  # `n <= max` boundary guard stays killable.
+  # mutare:ignore[clause_drop] n <= nil is always true, so the guarded clause also returns nil
   defp max_count_gate_failure(_n, nil), do: nil
   defp max_count_gate_failure(n, max) when n <= max, do: nil
 
