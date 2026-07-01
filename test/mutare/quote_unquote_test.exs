@@ -128,6 +128,67 @@ defmodule Mutare.QuoteUnquoteTest do
     assert mod.value(5) == {[5, 3], 5}
   end
 
+  test "keeps a live-unquote ancestor mutant when a nested quote only contains quoted bindings" do
+    source = """
+    defmodule Mutare.QuoteUnquoteNestedQuoteBindingFixture do
+      def value(y) do
+        ast = quote do
+          unquote(List.wrap(quote do
+                    x = 1
+                  end) ++ List.wrap(y + 2))
+        end
+
+        {value, _binding} = Code.eval_quoted(ast)
+        value
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(
+        source,
+        file: "quote_unquote_nested_quote_binding.ex",
+        mutators: @arith ++ @list
+      )
+
+    assert [
+             %Site{mutator: :arithmetic, original_code: "y + 2"},
+             %Site{mutator: :list}
+           ] = sites
+
+    assert %Site{
+             mutator: :list,
+             kind: :in_place,
+             original_code: original_code,
+             mutated_code: mutated_code
+           } = list_site = Enum.find(sites, &(&1.mutator == :list))
+
+    assert %Site{
+             mutator: :arithmetic,
+             kind: :in_place,
+             original_code: "y + 2",
+             mutated_code: "y - 2"
+           } = arith_site = Enum.find(sites, &(&1.mutator == :arithmetic))
+
+    assert original_code =~ "List.wrap("
+    assert original_code =~ "quote do"
+    assert original_code =~ "++ List.wrap(y + 2)"
+    assert mutated_code =~ "List.wrap("
+    assert mutated_code =~ "quote do"
+    assert mutated_code =~ "-- List.wrap(y + 2)"
+
+    [{mod, _binary}] = Mutare.Test.Compile.string(meta)
+
+    Selector.put(Selector.baseline())
+    assert mod.value(5) == [1, 7]
+
+    Selector.put(list_site.id)
+    assert mod.value(5) == [1]
+
+    Selector.put(arith_site.id)
+    assert mod.value(5) == [1, 3]
+  end
+
   test "keeps an outer live-unquote mutant when a case body has only branch-local bindings" do
     source = """
     defmodule Mutare.QuoteUnquoteCaseBindingFixture do

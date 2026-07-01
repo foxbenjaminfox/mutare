@@ -906,6 +906,14 @@ defmodule Mutare.Transform.Analyze do
        when form in [:fn, :for, :with, :try],
        do: {node, false}
 
+  defp prune_quote_escape_binding_ancestors({:quote, meta, args}) when is_list(args) do
+    {args, child_has?} = prune_quote_escape_live_quote_args(args, 1)
+    node = {:quote, meta, args}
+    node = if child_has?, do: strip_quote_escape_inplace_candidates(node), else: node
+
+    {node, child_has?}
+  end
+
   defp prune_quote_escape_binding_ancestors({form, meta, args}) when is_list(args) do
     {args, child_has?} = prune_quote_escape_binding_ancestors_each(args)
     node = {form, meta, args}
@@ -933,6 +941,141 @@ defmodule Mutare.Transform.Analyze do
   defp prune_quote_escape_binding_ancestors_each(list) do
     {nodes, hass} = list |> Enum.map(&prune_quote_escape_binding_ancestors/1) |> Enum.unzip()
     {nodes, Enum.any?(hass)}
+  end
+
+  defp prune_quote_escape_live_quote_args(args, quote_level) do
+    body_unquote_enabled? = quote_unquote_enabled?(args)
+
+    args
+    |> Enum.map(&prune_quote_escape_live_quote_arg(&1, quote_level, body_unquote_enabled?))
+    |> Enum.unzip()
+    |> then(fn {args, hass} -> {args, Enum.any?(hass)} end)
+  end
+
+  defp prune_quote_escape_live_quote_arg(
+         {:__block__, meta, [kw]},
+         quote_level,
+         body_unquote_enabled?
+       )
+       when is_list(kw) do
+    {kw, has?} = prune_quote_escape_live_quote_keyword(kw, quote_level, body_unquote_enabled?)
+    {{:__block__, meta, [kw]}, has?}
+  end
+
+  defp prune_quote_escape_live_quote_arg(kw, quote_level, body_unquote_enabled?)
+       when is_list(kw),
+       do: prune_quote_escape_live_quote_keyword(kw, quote_level, body_unquote_enabled?)
+
+  defp prune_quote_escape_live_quote_arg(other, _quote_level, _body_unquote_enabled?),
+    do: {other, false}
+
+  defp prune_quote_escape_live_quote_keyword(kw, quote_level, body_unquote_enabled?) do
+    kw
+    |> Enum.map(fn
+      {key, value} = pair ->
+        case AST.key_atom(key) do
+          :do when body_unquote_enabled? ->
+            {value, has?} = prune_quote_escape_quoted_data(value, quote_level)
+            {{key, value}, has?}
+
+          :bind_quoted ->
+            {value, has?} = prune_quote_escape_binding_ancestors(value)
+            {{key, value}, has?}
+
+          _ ->
+            {pair, false}
+        end
+
+      other ->
+        {other, false}
+    end)
+    |> Enum.unzip()
+    |> then(fn {kw, hass} -> {kw, Enum.any?(hass)} end)
+  end
+
+  defp prune_quote_escape_quote_args(args, quote_level) do
+    args
+    |> Enum.map(&prune_quote_escape_quote_arg(&1, quote_level))
+    |> Enum.unzip()
+    |> then(fn {args, hass} -> {args, Enum.any?(hass)} end)
+  end
+
+  defp prune_quote_escape_quote_arg({:__block__, meta, [kw]}, quote_level) when is_list(kw) do
+    {kw, has?} = prune_quote_escape_quote_keyword(kw, quote_level)
+    {{:__block__, meta, [kw]}, has?}
+  end
+
+  defp prune_quote_escape_quote_arg(kw, quote_level) when is_list(kw),
+    do: prune_quote_escape_quote_keyword(kw, quote_level)
+
+  defp prune_quote_escape_quote_arg(other, _quote_level), do: {other, false}
+
+  defp prune_quote_escape_quote_keyword(kw, quote_level) do
+    kw
+    |> Enum.map(fn
+      {key, value} = pair ->
+        if AST.key_atom(key) == :do do
+          {value, has?} = prune_quote_escape_quoted_data(value, quote_level)
+          {{key, value}, has?}
+        else
+          {pair, false}
+        end
+
+      other ->
+        {other, false}
+    end)
+    |> Enum.unzip()
+    |> then(fn {kw, hass} -> {kw, Enum.any?(hass)} end)
+  end
+
+  defp prune_quote_escape_quoted_data({:quote, meta, args} = node, quote_level)
+       when is_list(args) do
+    if quote_unquote_enabled?(args) do
+      {args, child_has?} = prune_quote_escape_quote_args(args, quote_level + 1)
+      node = {:quote, meta, args}
+      node = if child_has?, do: strip_quote_escape_inplace_candidates(node), else: node
+
+      {node, child_has?}
+    else
+      {node, false}
+    end
+  end
+
+  defp prune_quote_escape_quoted_data({form, meta, [arg]}, 1)
+       when form in [:unquote, :unquote_splicing] do
+    {arg, has?} = prune_quote_escape_binding_ancestors(arg)
+    node = {form, meta, [arg]}
+    node = if has?, do: strip_quote_escape_inplace_candidates(node), else: node
+
+    {node, has?}
+  end
+
+  defp prune_quote_escape_quoted_data({form, _meta, [_arg]} = node, quote_level)
+       when form in [:unquote, :unquote_splicing] and quote_level > 1,
+       do: {node, false}
+
+  defp prune_quote_escape_quoted_data({form, meta, args}, quote_level) when is_list(args) do
+    {form, form_has?} = prune_quote_escape_quoted_data(form, quote_level)
+    {args, args_has?} = prune_quote_escape_quoted_data_each(args, quote_level)
+    {{form, meta, args}, form_has? or args_has?}
+  end
+
+  defp prune_quote_escape_quoted_data({left, right}, quote_level) do
+    {left, left_has?} = prune_quote_escape_quoted_data(left, quote_level)
+    {right, right_has?} = prune_quote_escape_quoted_data(right, quote_level)
+    {{left, right}, left_has? or right_has?}
+  end
+
+  defp prune_quote_escape_quoted_data(list, quote_level) when is_list(list),
+    do: prune_quote_escape_quoted_data_each(list, quote_level)
+
+  defp prune_quote_escape_quoted_data(other, _quote_level), do: {other, false}
+
+  defp prune_quote_escape_quoted_data_each(list, quote_level) do
+    list
+    |> Enum.map(&prune_quote_escape_quoted_data(&1, quote_level))
+    |> Enum.unzip()
+    |> then(fn {nodes, hass} -> {nodes, Enum.any?(hass)} end)
   end
 
   defp strip_quote_escape_inplace_candidates(node) do
