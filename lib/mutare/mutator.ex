@@ -58,7 +58,7 @@ defmodule Mutare.Mutator do
   ## Configuring a mutator (`{module, opts}`)
 
   Register a configurable mutator as `{module, opts}`. The options are available as
-  `context.opts`, so configurable mutators implement `mutate/2`:
+  `context.opts`. Node-level configurable mutators implement `mutate/2`:
 
       defmodule MyApp.Mutators.MagicNumber do
         @behaviour Mutare.Mutator
@@ -80,6 +80,11 @@ defmodule Mutare.Mutator do
   The reserved `:as` key changes the recorded family name, allowing the same module
   to run more than once under distinct names. It is removed before options reach the
   mutator. See `Mutare.Mutator.Spec`.
+
+  Structural mutators use the context-aware structural arity instead:
+  `c:Mutare.Mutator.Structural.return_replacements/2`,
+  `c:Mutare.Mutator.Structural.condition_replacements/2`, or
+  `c:Mutare.Mutator.Structural.pattern_mutations/3`.
 
   A mutator that changes atom-like keys may implement
   `c:mutate_call_option_keys?/1` to decide whether to mutate a trailing call-option
@@ -135,11 +140,12 @@ defmodule Mutare.Mutator do
         def mutate(_node, _context), do: :skip
       end
 
-  Structural callbacks have behaviour-aware arities carrying the same behaviour set:
+  Structural callbacks have context-aware arities carrying the same behaviour set:
   `c:Mutare.Mutator.Structural.return_replacements/2`,
   `c:Mutare.Mutator.Structural.condition_replacements/2`, and
-  `c:Mutare.Mutator.Structural.pattern_mutations/3`. Export the context-aware arity
-  when a structural mutation depends on behaviours.
+  `c:Mutare.Mutator.Structural.pattern_mutations/3`. These callbacks receive
+  `context.behaviours` and `context.opts`, so export the context-aware arity when a
+  structural mutation depends on behaviours or configuration.
 
   ## Matching aliased or imported calls (`Mutare.Transform.Calls`)
 

@@ -13,7 +13,7 @@ defmodule Mutare.Transform.PatternStructure do
 
   @doc """
   The enabled mutator specs that implement the structural `pattern_mutations` hook — at
-  either arity (`/2`, or the behaviour-aware `/3`).
+  either arity (`/2`, or the context-aware `/3`).
   """
   @spec mutators([Mutare.Mutator.Spec.t()]) :: [Mutare.Mutator.Spec.t()]
   def mutators(enabled),

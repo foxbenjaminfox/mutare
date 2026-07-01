@@ -2,7 +2,7 @@ defmodule Mutare.Mutator.Dispatch do
   @moduledoc false
   # The transform-facing side of the mutator contract: running mutators over a node, discovering
   # which enabled specs implement a structural hook, invoking those hooks (preferring the
-  # behaviour-aware arity), normalizing the noted-mutant / selector-host return shapes, and the
+  # context-aware arity), normalizing the noted-mutant / selector-host return shapes, and the
   # mutator-resolution check the registry uses. None of this is something a *mutator author*
   # touches — they implement `Mutare.Mutator`'s callbacks; `Mutare.Transform` (and the
   # `Mutare.Mutators` registry) call into here. Split out of `Mutare.Mutator` so the behaviour
@@ -91,7 +91,7 @@ defmodule Mutare.Mutator.Dispatch do
   @doc """
   The specs in `specs` whose module implements `fun` at **any** of `arities` — the
   any-arity variant of `implementing/3`, used to discover the structural hooks that come
-  in a base form (`fun/n`) *and* a behaviour-aware form (`fun/(n+1)`, taking the structural
+  in a base form (`fun/n`) *and* a context-aware form (`fun/(n+1)`, taking the structural
   context): a mutator implements one or the other. `return_replacements/{1,2}`,
   `condition_replacements/{1,2}`, `pattern_mutations/{2,3}`. The dispatch helpers
   (`return_replacements/2`, `condition_replacements/2`, `pattern_mutations/3` below) then
@@ -114,7 +114,7 @@ defmodule Mutare.Mutator.Dispatch do
   end
 
   @doc """
-  Run `spec`'s return-tail hook over `tail`, preferring the behaviour-aware
+  Run `spec`'s return-tail hook over `tail`, preferring the context-aware
   `c:Mutare.Mutator.Structural.return_replacements/2` (passing the structural context) when the module
   exports it, else the base `c:Mutare.Mutator.Structural.return_replacements/1`, so a mutator can
   implement either arity.
@@ -143,7 +143,7 @@ defmodule Mutare.Mutator.Dispatch do
     do: dispatch_structural(spec, :pattern_mutations, [head_args, used_outside])
 
   # The shared arity dispatch behind the three structural hooks above: prefer the
-  # behaviour-aware `fun/(n+1)` (the base args plus the structural context) when the module
+  # context-aware `fun/(n+1)` (the base args plus the structural context) when the module
   # exports it, else the base `fun/n`. So the three are one-line faces and adding a fourth
   # structural hook is one more delegating clause, not another copy of this exported-or-base
   # dance.

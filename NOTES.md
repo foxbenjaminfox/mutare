@@ -1917,7 +1917,7 @@ yes — but it rides the spec→context path *exactly* as `opts` does, so the fr
 behaviours are a deterministic function of the static source, so the same module re-binds the same set
 across poison rebuilds — ids stay put.
 
-**Structural callbacks get behaviour-aware arities.** `mutate/2` reads `context.behaviours` directly;
+**Structural callbacks get context-aware arities.** `mutate/2` reads `context.behaviours` directly;
 the structural hooks (`return_replacements`/`condition_replacements`/`pattern_mutations`) take only a
 node, so each gains a `+1`-arity variant taking a context map. `Mutator` centralises
 the dispatch (`return_replacements/2` etc. call the context arity when exported, else the base) and the
@@ -6271,7 +6271,7 @@ time `Runner.run_mutant/6` reads `result.outcome` — at that guard.
 
 `Mutare.Mutator` had grown to **twelve** `@optional_callbacks` spanning five unrelated jobs — node
 mutation (`mutate/1`, `mutate/2`), structural positions
-(`return_replacements`/`condition_replacements`/`pattern_mutations`, each with a behaviour-aware `+1`
+(`return_replacements`/`condition_replacements`/`pattern_mutations`, each with a context-aware `+1`
 arity), macro/DSL targeting (`hosted_routes/0`, `macro_routing/1`, `host/2`), and the in-RHS suppression
 classifier (`empty_collection?/1`, subsequently removed with the unsound body suppression above).
 A reader opening the behaviour to write a one-line operator swap met all of it. At 0.1.0, before

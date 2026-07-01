@@ -68,7 +68,7 @@ defmodule Mutare.Transform.Analyze.Returns do
   # The shared enablement gate for the `:return_replacements/{1,2}` hook, used by both return-tail
   # paths (`def`/`defp` blocks and `fn` clauses): run `fun` with the enabled return mutators, or
   # return `default` unchanged when none is enabled — so the `[1, 2]` arity pair (the base +
-  # behaviour-aware forms) lives in one place.
+  # context-aware forms) lives in one place.
   defp with_return_mutators(mutators, default, fun) do
     case Dispatch.implementing_any(mutators, :return_replacements, [1, 2]) do
       [] -> default

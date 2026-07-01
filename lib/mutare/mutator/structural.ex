@@ -26,7 +26,8 @@ defmodule Mutare.Mutator.Structural do
   Context passed to the context-aware structural callbacks (`c:return_replacements/2`,
   `c:condition_replacements/2`, `c:pattern_mutations/3`). Carries:
 
-    * `:opts` — the options from a `{Module, opts}` mutator configuration entry;
+    * `:opts` — the options from a `{Module, opts}` mutator configuration entry, or
+      `[]` for an unconfigured mutator;
     * `:behaviours` — the enclosing module's `@behaviour` set, as a `MapSet`.
 
   This gives structural mutators the same configuration channel as
