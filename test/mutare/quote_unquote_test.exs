@@ -141,6 +141,64 @@ defmodule Mutare.QuoteUnquoteTest do
     assert mod.value("  padded  ") == "  padded  "
   end
 
+  test "mutates an escaping unquote expression used as a quoted call head" do
+    source = """
+    defmodule Mutare.QuoteUnquoteCallHeadFixture do
+      def ast(x) do
+        quote do
+          unquote(if x + 1 > 0, do: :foo, else: :bar)()
+        end
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, file: "quote_unquote_call_head.ex", mutators: @arith)
+
+    assert [%Site{original_code: "x + 1", mutated_code: "x - 1"} = site] = sites
+    [{mod, _binary}] = Mutare.Test.Compile.string(meta)
+
+    Selector.put(Selector.baseline())
+    assert Macro.to_string(mod.ast(0)) == "foo()"
+
+    Selector.put(site.id)
+    assert Macro.to_string(mod.ast(0)) == "bar()"
+  end
+
+  test "resolves an escaping unquote expression used as a quoted dot receiver" do
+    source = """
+    defmodule Mutare.QuoteUnquoteReceiverFixture do
+      alias String, as: S
+
+      def ast(s) do
+        quote do
+          unquote(S.trim(s)).trim(s)
+        end
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, file: "quote_unquote_receiver.ex", mutators: @call_removal)
+
+    assert [
+             %Site{
+               mutator: :call_removal,
+               kind: :in_place,
+               original_code: "S.trim(s)",
+               mutated_code: "s"
+             } = site
+           ] = sites
+
+    [{mod, _binary}] = Mutare.Test.Compile.string(meta)
+
+    Selector.put(Selector.baseline())
+    assert Macro.to_string(mod.ast("  padded  ")) == "\"padded\".trim(s)"
+
+    Selector.put(site.id)
+    assert Macro.to_string(mod.ast("  padded  ")) == "\"  padded  \".trim(s)"
+  end
+
   test "keeps ordinary quoted body data raw while mutating escaping unquote args" do
     source = """
     defmodule Mutare.QuoteUnquoteDataFixture do

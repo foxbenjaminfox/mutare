@@ -359,7 +359,9 @@ defmodule Mutare.Transform.Resolve do
        do: node
 
   defp walk_quoted_data({form, meta, args}, quote_level, env) when is_list(args),
-    do: {form, meta, Enum.map(args, &walk_quoted_data(&1, quote_level, env))}
+    do:
+      {walk_quoted_data(form, quote_level, env), meta,
+       Enum.map(args, &walk_quoted_data(&1, quote_level, env))}
 
   defp walk_quoted_data({left, right}, quote_level, env),
     do: {walk_quoted_data(left, quote_level, env), walk_quoted_data(right, quote_level, env)}

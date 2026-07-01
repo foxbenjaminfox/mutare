@@ -810,7 +810,9 @@ defmodule Mutare.Transform.Analyze do
        do: node
 
   defp analyze_quoted_data({form, meta, args}, quote_level, mutators) when is_list(args),
-    do: {form, meta, Enum.map(args, &analyze_quoted_data(&1, quote_level, mutators))}
+    do:
+      {analyze_quoted_data(form, quote_level, mutators), meta,
+       Enum.map(args, &analyze_quoted_data(&1, quote_level, mutators))}
 
   defp analyze_quoted_data({left, right}, quote_level, mutators),
     do:
