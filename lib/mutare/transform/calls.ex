@@ -4,10 +4,12 @@ defmodule Mutare.Transform.Calls do
 
   `resolved_call/1` normalizes qualified, aliased, imported, and Erlang-module calls to
   `{module, function, arguments, rebuild}`. Use `rebuild` to preserve the source's written call
-  form in the resulting diff. It operates on nodes passed to a mutator by Mutare's transform.
+  form when that is compile-safe; bare imported calls may be requalified when the replacement
+  changes name or arity. It operates on nodes passed to a mutator by Mutare's transform.
 
-  `resolved_macro_call/1` provides the same normalization for macro-routing and hosting callbacks.
-  `macro_treatment/1` returns the registered argument routing for a macro node.
+  `resolved_macro_call/1` provides the same normalization and rebuild policy for macro-routing
+  and hosting callbacks. `macro_treatment/1` returns the registered argument routing for a macro
+  node.
 
       defmodule MyApp.Mutators.Upcase do
         @behaviour Mutare.Mutator
@@ -38,8 +40,9 @@ defmodule Mutare.Transform.Calls do
   #     shape above, resolving to the atom via the `:mutare_alias` stamp.)
   #   * a **bare** call `fun(args)` carrying an `import` stamp (`Mutare.Transform.Imports`) —
   #     `rebuild` produces a **bare** call for a whole-module import (`:bare` — the sibling is
-  #     importable too) or a **qualified** `Mod.fun(...)` call for a selective import
-  #     (`:qualify` — the sibling may not be in scope, so qualifying keeps it compile-safe).
+  #     importable too). For a selective import (`:qualify`), value-only replacements stay bare;
+  #     renamed or re-aritied siblings become qualified `Mod.fun(...)` calls because the sibling
+  #     may not be in scope.
   #
   # `module` is the resolved key — an Elixir path (`[:String]`, `[:Enum]`) or an Erlang atom
   # (`:binary`, `:string`). A family matches it against its swap table and calls
@@ -62,7 +65,9 @@ defmodule Mutare.Transform.Calls do
   call, or `nil`.
 
   `module` is an Elixir alias path such as `[:String]` or an Erlang module atom.
-  `rebuild.(new_function, new_arguments)` preserves the call's written qualifier.
+  `rebuild.(new_function, new_arguments)` preserves the call's written qualifier when safe.
+  Remote calls keep their written qualifier or alias. Bare imported calls stay bare for
+  value-only replacements, but may be requalified when the replacement changes name or arity.
 
       iex> node = Sourceror.parse_string!("String.upcase(s)")
       iex> {module, function, arguments, rebuild} =
@@ -160,7 +165,8 @@ defmodule Mutare.Transform.Calls do
   matched through a name-only route.
 
   `visible_arguments` excludes the left side of a pipe. The rebuild function
-  preserves the written form of the call, including its qualifier or alias.
+  preserves the written form when safe, including remote qualifiers and aliases. Bare imported
+  or registry-fallback macro calls may be requalified when the replacement changes name or arity.
 
   Macro identity comes from the route-resolution metadata attached by the transform,
   so this function also supports registered macros that cannot be resolved through
