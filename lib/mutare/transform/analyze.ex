@@ -844,17 +844,59 @@ defmodule Mutare.Transform.Analyze do
   end
 
   # Bottom-up over a live unquote argument: report whether a subtree contains an
-  # escaping binding and strip in-place candidates from every node whose selector would
-  # enclose that binding. The match node itself is intentionally not stripped (the core
+  # escaping binding and strip unsafe ordinary Candidate.InPlace candidates from every
+  # node whose selector would enclose that binding. The match node itself is
+  # intentionally not stripped (the core
   # `=` node is not offered to mutators), and its RHS still mutates safely because the
   # outer match remains outside any selector. A routed `:binding_pattern` macro *is* a
   # call node that can carry whole-call candidates, so strip those too; without the
   # value-discarded tuple-export rewrite, an ordinary selector on the macro call would
-  # trap the macro's escaping bindings exactly like an ancestor selector.
+  # trap the macro's escaping bindings exactly like an ancestor selector. Re-homed
+  # tuple-export candidates already avoid that trap and stay live.
   defp prune_quote_escape_binding_ancestors({:=, meta, [lhs, rhs]}) do
     {lhs, _lhs_has?} = prune_quote_escape_binding_ancestors(lhs)
     {rhs, _rhs_has?} = prune_quote_escape_binding_ancestors(rhs)
     {{:=, meta, [lhs, rhs]}, true}
+  end
+
+  # A case subject is evaluated in the surrounding scope, so bindings there can
+  # escape past the case. Clause bodies are branch-local; prune inside them, but do
+  # not report their bindings to ancestors outside the case.
+  defp prune_quote_escape_binding_ancestors({:case, meta, [subject, blocks]})
+       when is_list(blocks) do
+    {subject, subject_has?} = prune_quote_escape_binding_ancestors(subject)
+    {blocks, _body_has?} = prune_quote_escape_binding_ancestors(blocks)
+    node = {:case, meta, [subject, blocks]}
+    node = if subject_has?, do: strip_quote_escape_inplace_candidates(node), else: node
+
+    {node, subject_has?}
+  end
+
+  # If/unless condition bindings behave like surrounding-scope bindings, but
+  # bindings made inside do/else bodies are branch-local. Keep the condition signal,
+  # discard the body signal.
+  defp prune_quote_escape_binding_ancestors({form, meta, [condition, body_kw]})
+       when form in [:if, :unless] and is_list(body_kw) do
+    {condition, condition_has?} = prune_quote_escape_binding_ancestors(condition)
+    {body_kw, _body_has?} = prune_quote_escape_binding_ancestors(body_kw)
+    node = {form, meta, [condition, body_kw]}
+    node = if condition_has?, do: strip_quote_escape_inplace_candidates(node), else: node
+
+    {node, condition_has?}
+  end
+
+  # Cond clause conditions and bodies share a clause-local scope, but nothing they
+  # bind escapes beyond the cond construct. Prune internally, then stop propagation.
+  defp prune_quote_escape_binding_ancestors({:cond, meta, [blocks]}) when is_list(blocks) do
+    {blocks, _body_has?} = prune_quote_escape_binding_ancestors(blocks)
+    {{:cond, meta, [blocks]}, false}
+  end
+
+  # Receive clause bodies and after clauses are local to the receive construct.
+  # Prune internally without making unrelated outer candidates look unsafe.
+  defp prune_quote_escape_binding_ancestors({:receive, meta, [blocks]}) when is_list(blocks) do
+    {blocks, _body_has?} = prune_quote_escape_binding_ancestors(blocks)
+    {{:receive, meta, [blocks]}, false}
   end
 
   # Bindings made inside these constructs do not escape to the unquote argument's
@@ -870,7 +912,9 @@ defmodule Mutare.Transform.Analyze do
     binding_macro? = quote_escape_binding_pattern_macro?(meta)
 
     node =
-      if child_has? or binding_macro?, do: Meta.put_candidates(node, :in_place, []), else: node
+      if child_has? or binding_macro?,
+        do: strip_quote_escape_inplace_candidates(node),
+        else: node
 
     {node, child_has? or binding_macro?}
   end
@@ -889,6 +933,12 @@ defmodule Mutare.Transform.Analyze do
   defp prune_quote_escape_binding_ancestors_each(list) do
     {nodes, hass} = list |> Enum.map(&prune_quote_escape_binding_ancestors/1) |> Enum.unzip()
     {nodes, Enum.any?(hass)}
+  end
+
+  defp strip_quote_escape_inplace_candidates(node) do
+    Candidate.update_candidates(node, fn candidates ->
+      Enum.reject(candidates, &match?(%Candidate.InPlace{}, &1))
+    end)
   end
 
   defp quote_escape_binding_pattern_macro?(meta) do

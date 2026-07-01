@@ -11,6 +11,7 @@ defmodule Mutare.QuoteUnquoteTest do
   @arith [Mutare.Mutators.Arithmetic]
   @list [Mutare.Mutators.List]
   @call_removal [Mutare.Mutators.CallRemoval]
+  @pattern_swap [Mutare.Mutators.PatternSwap]
 
   setup do
     Selector.put(Selector.baseline())
@@ -125,6 +126,87 @@ defmodule Mutare.QuoteUnquoteTest do
 
     Selector.put(site.id)
     assert mod.value(5) == {[5, 3], 5}
+  end
+
+  test "keeps an outer live-unquote mutant when a case body has only branch-local bindings" do
+    source = """
+    defmodule Mutare.QuoteUnquoteCaseBindingFixture do
+      def value(y) do
+        ast = quote do
+          unquote((case y do
+                     _ -> x = 1
+                   end) + 1)
+        end
+
+        {value, _binding} = Code.eval_quoted(ast)
+        value
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, file: "quote_unquote_case_binding.ex", mutators: @arith)
+
+    assert [
+             %Site{
+               mutator: :arithmetic,
+               kind: :in_place,
+               original_code: original_code,
+               mutated_code: mutated_code
+             } = site
+           ] = sites
+
+    assert original_code =~ "case y do"
+    assert original_code =~ "+ 1"
+    assert mutated_code =~ "case y do"
+    assert mutated_code =~ "- 1"
+
+    [{mod, _binary}] = Mutare.Test.Compile.string(meta)
+
+    Selector.put(Selector.baseline())
+    assert mod.value(:anything) == 2
+
+    Selector.put(site.id)
+    assert mod.value(:anything) == 0
+  end
+
+  test "keeps re-homed binding-pattern macro candidates inside a live unquote" do
+    source = """
+    defmodule Mutare.QuoteUnquoteMacroPatternFixture do
+      def value(y) do
+        ast = quote do
+          unquote((destructure([x, z], y); x - z))
+        end
+
+        {value, _binding} = Code.eval_quoted(ast)
+        value
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(
+        source,
+        file: "quote_unquote_macro_pattern.ex",
+        mutators: @pattern_swap
+      )
+
+    assert [
+             %Site{
+               mutator: :pattern_swap,
+               kind: :in_place,
+               original_code: "[x, z]",
+               mutated_code: "[z, x]"
+             } = site
+           ] = sites
+
+    [{mod, _binary}] = Mutare.Test.Compile.string(meta)
+
+    Selector.put(Selector.baseline())
+    assert mod.value([3, 10]) == -7
+
+    Selector.put(site.id)
+    assert mod.value([3, 10]) == 7
   end
 
   test "mutates an escaping unquote_splicing expression inside a runtime quote" do
