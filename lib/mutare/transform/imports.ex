@@ -187,6 +187,18 @@ defmodule Mutare.Transform.Imports do
   def import_witness(_meta), do: nil
 
   @doc """
+  Replace the compile-time witness on stamped import metadata.
+
+  Bare imported mutant branches that stay bare must prove the emitted name/arity still resolves
+  to the module the resolver believed. The original stamp witnesses the source call; rebuilders use
+  this when they produce a different bare sibling.
+  """
+  @spec put_import_witness(keyword(), {Aliases.module_key(), atom(), non_neg_integer()}) ::
+          keyword()
+  def put_import_witness(meta, witness) when is_list(meta),
+    do: Keyword.put(meta, @import_witness_key, witness)
+
+  @doc """
   Whether a bare `Kernel`-named call has been displaced out of `Kernel` here (by
   `import Kernel, except:/only:`). The bare-`Kernel` mutator families read this to
   skip a call that is no longer the `Kernel` function they assume.

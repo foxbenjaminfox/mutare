@@ -13,33 +13,66 @@ defmodule Mutare.Transform.ImportWitness do
   # the generated mutant instead of letting it run against the wrong provider.
   #
   # `for_candidate/1` reads the import stamp (`Mutare.Transform.Imports.import_witness/1`) off a
-  # candidate's original node, yielding a `{module, fun, arity}` to witness (or `nil`). `wrap/2`
-  # prefixes the witness to a single expression (the in-place path); `prepend/2` splices it into
-  # a clause body's `:do` (the lifted path). Both are no-ops for a `nil` witness — the common
-  # case (a call that isn't a bare import).
+  # candidate's original node and, for in-place rewrites, its mutated branch. A bare imported rename
+  # needs both: the original witness proves the source name was not secretly replaced, while the
+  # mutated-branch witness proves the emitted bare sibling still names the same provider. `wrap/2`
+  # prefixes the witness block(s) to a single expression (the in-place path); `prepend/2` splices
+  # them into a clause body's `:do` (the lifted path). Both are no-ops when no witness exists —
+  # the common case (a call that isn't a bare import).
 
   alias Mutare.AST
   alias Mutare.Transform.{Aliases, Imports}
 
-  @doc "The `{module, fun, arity}` to witness for a candidate's original node, or `nil`."
-  @spec for_candidate(map()) :: {Aliases.module_key(), atom(), arity()} | nil
-  def for_candidate(%{original: original}), do: from_node(original)
+  @type witness :: {Aliases.module_key(), atom(), arity()}
+  @type witness_set :: witness() | [witness()] | nil
+
+  @doc "The witness(es) for a candidate's bare imported node(s), or `nil`."
+  @spec for_candidate(map()) :: witness_set()
+  def for_candidate(%{original: original, mutated: mutated}) do
+    [original, mutated]
+    |> Enum.flat_map(&from_node/1)
+    |> Enum.uniq()
+    |> normalize()
+  end
+
+  def for_candidate(%{original: original}), do: original |> from_node() |> normalize()
   def for_candidate(_candidate), do: nil
 
-  defp from_node({_form, meta, _args}) when is_list(meta), do: Imports.import_witness(meta)
-  defp from_node(_node), do: nil
+  defp from_node({:&, amp_meta, [{:/, _slash_meta, [ref, _arity]}]}) when is_list(amp_meta) do
+    [Imports.import_witness(amp_meta) | from_node(ref)]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp from_node({_form, meta, _args}) when is_list(meta) do
+    case Imports.import_witness(meta) do
+      nil -> []
+      witness -> [witness]
+    end
+  end
+
+  defp from_node(_node), do: []
+
+  defp normalize([]), do: nil
+  defp normalize([witness]), do: witness
+  defp normalize(witnesses), do: witnesses
 
   @doc "Prefix `witness` (as a dead-code block) to a single expression; a no-op for `nil`."
-  @spec wrap(Macro.t(), {Aliases.module_key(), atom(), arity()} | nil) :: Macro.t()
+  @spec wrap(Macro.t(), witness_set()) :: Macro.t()
   def wrap(node, nil), do: node
+  def wrap(node, []), do: node
+
+  def wrap(node, witnesses) when is_list(witnesses),
+    do: {:__block__, [], Enum.map(witnesses, &ast/1) ++ [node]}
+
   def wrap(node, witness), do: {:__block__, [], [ast(witness), node]}
 
   @doc """
   Splice `witness` into a clause body's `:do` block (the lifted path's `[body_kw]` shape); a
   no-op for a `nil` witness or a body that isn't a single keyword list.
   """
-  @spec prepend(Macro.t(), {Aliases.module_key(), atom(), arity()} | nil) :: Macro.t()
+  @spec prepend(Macro.t(), witness_set()) :: Macro.t()
   def prepend(body, nil), do: body
+  def prepend(body, []), do: body
 
   def prepend([kw], witness) when is_list(kw),
     do: [AST.update_do_block(kw, &wrap(&1, witness))]

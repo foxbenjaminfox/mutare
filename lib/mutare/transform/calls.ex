@@ -127,7 +127,10 @@ defmodule Mutare.Transform.Calls do
   def resolved_call({fun, meta, args}) when is_atom(fun) and is_list(args) do
     case Imports.resolved_import(meta) do
       {module, :bare} ->
-        rebuild = fn new_fun, new_args -> {new_fun, meta, new_args} end
+        rebuild = fn new_fun, new_args ->
+          {new_fun, rewitness_bare_rebuild(meta, module, args, new_fun, new_args), new_args}
+        end
+
         {module, fun, args, rebuild}
 
       {module, :qualify} ->
@@ -155,6 +158,20 @@ defmodule Mutare.Transform.Calls do
   end
 
   def resolved_call(_node), do: nil
+
+  defp rewitness_bare_rebuild(meta, module, old_args, new_fun, new_args) do
+    case Imports.import_witness(meta) do
+      {_module, _fun, old_arity} ->
+        new_arity = old_arity + length(new_args) - length(old_args)
+
+        if new_arity >= 0,
+          do: Imports.put_import_witness(meta, {module, new_fun, new_arity}),
+          else: meta
+
+      nil ->
+        meta
+    end
+  end
 
   @doc """
   Returns `{module, name, visible_arguments, rebuild}` for a registered macro call,

@@ -136,9 +136,11 @@ defmodule Mutare.Transform.Analyze.Captures do
     end
   end
 
-  # A renamed remote call reusing the synth args in order → strip the args, re-wrap as a capture
-  # of the renamed function. The head is reused verbatim, so an aliased written form is
-  # preserved (the diff keeps `&E.last/1` for an `alias Enum, as: E`).
+  # A renamed call reusing the synth args in order → strip the args, re-wrap as a capture of the
+  # renamed function. The head is reused verbatim, so an aliased written form is preserved (the
+  # diff keeps `&E.last/1` for an `alias Enum, as: E`). For a bare imported capture, the ref
+  # metadata is also reused; `Calls` has already rewitnessed it to the renamed sibling when that
+  # sibling stays bare, and `ImportWitness` reads it back from the recaptured ref.
   defp rename_capture({{:., _dot_meta, [_mod, fun]} = head, meta, args}, synth_args)
        when is_atom(fun) and args == synth_args do
     capture_node({head, meta, []}, length(synth_args))

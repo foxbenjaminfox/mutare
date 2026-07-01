@@ -104,6 +104,53 @@ defmodule Mutare.TransformCaptureTest do
       assert_compiles(meta)
     end
 
+    test "a whole-imported bare capture witnesses a renamed bare sibling" do
+      {meta, sites, _} =
+        Mutare.transform_string(
+          """
+          defmodule HiddenCaptureRejectReplacement do
+            def reject(xs, fun), do: Enum.map(xs, fun)
+
+            defmacro __using__(_) do
+              quote do
+                import Enum, except: [reject: 2]
+                import HiddenCaptureRejectReplacement, only: [reject: 2]
+              end
+            end
+          end
+
+          defmodule CapHiddenRejectReplacement do
+            import Enum
+            use HiddenCaptureRejectReplacement
+
+            def f(l), do: Enum.map(l, &filter/2)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      assert [
+               %Site{
+                 mutator: :collection,
+                 original_code: "&filter/2",
+                 mutated_code: "&reject/2"
+               } = site
+             ] = sites
+
+      assert meta =~ "import Elixir.Enum, only: [filter: 2]"
+      assert meta =~ "import Elixir.Enum, only: [reject: 2]"
+
+      stderr =
+        assert_compile_error(
+          meta,
+          ["reject/2", "Enum", "HiddenCaptureRejectReplacement"],
+          "lib/hidden_capture_reject_replacement.ex"
+        )
+
+      assert Mutare.Poison.ids(stderr, %{"lib/hidden_capture_reject_replacement.ex" => meta}) ==
+               MapSet.new([site.id])
+    end
+
     test "a selectively-imported bare capture qualifies a renamed sibling" do
       source = """
       defmodule Cap do
@@ -292,5 +339,15 @@ defmodule Mutare.TransformCaptureTest do
 
   defp assert_compiles(meta) do
     assert [_ | _] = Mutare.Test.Compile.string(meta)
+  end
+
+  defp assert_compile_error(meta, message, file) do
+    stderr =
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert_raise CompileError, fn -> Code.compile_string(meta, file) end
+      end)
+
+    for m <- List.wrap(message), do: assert(stderr =~ m)
+    stderr
   end
 end
