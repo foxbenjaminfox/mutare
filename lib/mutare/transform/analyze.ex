@@ -804,11 +804,13 @@ defmodule Mutare.Transform.Analyze do
   #
   # A live unquote argument has one extra binding hazard compared with an ordinary
   # quoted expression: a match inside the argument may bind a variable the caller reads
-  # after the quote is constructed (`quote(do: unquote((x = 1) + 2)); x`). An in-place
-  # selector on an ancestor of that match would wrap the binding in a `case` branch,
-  # and branch bindings do not leak, so even the catch-all/baseline branch leaves the
-  # later read undefined. Keep mutating the live argument, but prune only those ancestor
-  # candidates; descendants and siblings that do not enclose the binding remain live.
+  # after the quote is constructed (`quote(do: unquote((x = 1) + 2)); x`). A routed
+  # `:binding_pattern` macro (for example `Kernel.destructure/2`) has the same
+  # escaping-binding shape. An in-place selector on an ancestor of that binding would
+  # wrap the binding in a `case` branch, and branch bindings do not leak, so even the
+  # catch-all/baseline branch leaves the later read undefined. Keep mutating the live
+  # argument, but prune only those candidates that would enclose the binding; descendants
+  # and siblings that do not enclose it remain live.
   defp analyze_quoted_data({form, meta, [arg]}, 1, mutators)
        when form in [:unquote, :unquote_splicing],
        do: {form, meta, [analyze_quote_escape(arg, mutators)]}
@@ -842,10 +844,13 @@ defmodule Mutare.Transform.Analyze do
   end
 
   # Bottom-up over a live unquote argument: report whether a subtree contains an
-  # escaping match binding and strip in-place candidates from every proper ancestor
-  # of such a binding. The match node itself is intentionally not stripped (the core
+  # escaping binding and strip in-place candidates from every node whose selector would
+  # enclose that binding. The match node itself is intentionally not stripped (the core
   # `=` node is not offered to mutators), and its RHS still mutates safely because the
-  # outer match remains outside any selector.
+  # outer match remains outside any selector. A routed `:binding_pattern` macro *is* a
+  # call node that can carry whole-call candidates, so strip those too; without the
+  # value-discarded tuple-export rewrite, an ordinary selector on the macro call would
+  # trap the macro's escaping bindings exactly like an ancestor selector.
   defp prune_quote_escape_binding_ancestors({:=, meta, [lhs, rhs]}) do
     {lhs, _lhs_has?} = prune_quote_escape_binding_ancestors(lhs)
     {rhs, _rhs_has?} = prune_quote_escape_binding_ancestors(rhs)
@@ -862,8 +867,12 @@ defmodule Mutare.Transform.Analyze do
   defp prune_quote_escape_binding_ancestors({form, meta, args}) when is_list(args) do
     {args, child_has?} = prune_quote_escape_binding_ancestors_each(args)
     node = {form, meta, args}
-    node = if child_has?, do: Meta.put_candidates(node, :in_place, []), else: node
-    {node, child_has?}
+    binding_macro? = quote_escape_binding_pattern_macro?(meta)
+
+    node =
+      if child_has? or binding_macro?, do: Meta.put_candidates(node, :in_place, []), else: node
+
+    {node, child_has? or binding_macro?}
   end
 
   defp prune_quote_escape_binding_ancestors({left, right}) do
@@ -881,6 +890,21 @@ defmodule Mutare.Transform.Analyze do
     {nodes, hass} = list |> Enum.map(&prune_quote_escape_binding_ancestors/1) |> Enum.unzip()
     {nodes, Enum.any?(hass)}
   end
+
+  defp quote_escape_binding_pattern_macro?(meta) do
+    binding_pattern_treatment?(Meta.piped_macro_routing(meta)) or
+      binding_pattern_treatment?(Meta.macro_routing(meta))
+  end
+
+  defp binding_pattern_treatment?(:binding_pattern), do: true
+
+  defp binding_pattern_treatment?(routing) when is_list(routing),
+    do: Enum.any?(routing, &binding_pattern_treatment?/1)
+
+  defp binding_pattern_treatment?({:keyword, treatments}) when is_list(treatments),
+    do: binding_pattern_treatment?(treatments)
+
+  defp binding_pattern_treatment?(_treatment), do: false
 
   @missing_quote_option :__mutare_missing_quote_option__
 
