@@ -801,9 +801,17 @@ defmodule Mutare.Transform.Analyze do
   # `unquote` and `unquote_splicing` escape exactly one quote level. At level 1,
   # their argument is a live runtime expression; above that, the whole unquote is
   # still quoted data relative to the outer quote.
+  #
+  # A live unquote argument has one extra binding hazard compared with an ordinary
+  # quoted expression: a match inside the argument may bind a variable the caller reads
+  # after the quote is constructed (`quote(do: unquote((x = 1) + 2)); x`). An in-place
+  # selector on an ancestor of that match would wrap the binding in a `case` branch,
+  # and branch bindings do not leak, so even the catch-all/baseline branch leaves the
+  # later read undefined. Keep mutating the live argument, but prune only those ancestor
+  # candidates; descendants and siblings that do not enclose the binding remain live.
   defp analyze_quoted_data({form, meta, [arg]}, 1, mutators)
        when form in [:unquote, :unquote_splicing],
-       do: {form, meta, [analyze(arg, :runtime, mutators)]}
+       do: {form, meta, [analyze_quote_escape(arg, mutators)]}
 
   defp analyze_quoted_data({form, _meta, [_arg]} = node, quote_level, _mutators)
        when form in [:unquote, :unquote_splicing] and quote_level > 1,
@@ -823,6 +831,56 @@ defmodule Mutare.Transform.Analyze do
     do: Enum.map(list, &analyze_quoted_data(&1, quote_level, mutators))
 
   defp analyze_quoted_data(other, _quote_level, _mutators), do: other
+
+  defp analyze_quote_escape(arg, mutators) do
+    {arg, _has_binding?} =
+      arg
+      |> analyze(:runtime, mutators)
+      |> prune_quote_escape_binding_ancestors()
+
+    arg
+  end
+
+  # Bottom-up over a live unquote argument: report whether a subtree contains an
+  # escaping match binding and strip in-place candidates from every proper ancestor
+  # of such a binding. The match node itself is intentionally not stripped (the core
+  # `=` node is not offered to mutators), and its RHS still mutates safely because the
+  # outer match remains outside any selector.
+  defp prune_quote_escape_binding_ancestors({:=, meta, [lhs, rhs]}) do
+    {lhs, _lhs_has?} = prune_quote_escape_binding_ancestors(lhs)
+    {rhs, _rhs_has?} = prune_quote_escape_binding_ancestors(rhs)
+    {{:=, meta, [lhs, rhs]}, true}
+  end
+
+  # Bindings made inside these constructs do not escape to the unquote argument's
+  # surrounding scope, so they cannot be the source of a post-quote undefined-variable
+  # failure. Their internals were already analyzed correctly by the runtime walk.
+  defp prune_quote_escape_binding_ancestors({form, _meta, _args} = node)
+       when form in [:fn, :for, :with, :try],
+       do: {node, false}
+
+  defp prune_quote_escape_binding_ancestors({form, meta, args}) when is_list(args) do
+    {args, child_has?} = prune_quote_escape_binding_ancestors_each(args)
+    node = {form, meta, args}
+    node = if child_has?, do: Meta.put_candidates(node, :in_place, []), else: node
+    {node, child_has?}
+  end
+
+  defp prune_quote_escape_binding_ancestors({left, right}) do
+    {left, left_has?} = prune_quote_escape_binding_ancestors(left)
+    {right, right_has?} = prune_quote_escape_binding_ancestors(right)
+    {{left, right}, left_has? or right_has?}
+  end
+
+  defp prune_quote_escape_binding_ancestors(list) when is_list(list),
+    do: prune_quote_escape_binding_ancestors_each(list)
+
+  defp prune_quote_escape_binding_ancestors(other), do: {other, false}
+
+  defp prune_quote_escape_binding_ancestors_each(list) do
+    {nodes, hass} = list |> Enum.map(&prune_quote_escape_binding_ancestors/1) |> Enum.unzip()
+    {nodes, Enum.any?(hass)}
+  end
 
   @missing_quote_option :__mutare_missing_quote_option__
 

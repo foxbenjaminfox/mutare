@@ -52,6 +52,41 @@ defmodule Mutare.QuoteUnquoteTest do
     assert mod.value(10) == 9
   end
 
+  test "does not wrap a live unquote argument above a binding used after the quote" do
+    source = """
+    defmodule Mutare.QuoteUnquoteBindingFixture do
+      def value(y) do
+        ast = quote do
+          unquote((x = 1) + (y + 2))
+        end
+
+        {value, _binding} = Code.eval_quoted(ast)
+        {value, x}
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.transform_string(source, file: "quote_unquote_binding.ex", mutators: @arith)
+
+    assert [
+             %Site{
+               mutator: :arithmetic,
+               kind: :in_place,
+               original_code: "y + 2",
+               mutated_code: "y - 2"
+             } = site
+           ] = sites
+
+    [{mod, _binary}] = Mutare.Test.Compile.string(meta)
+
+    Selector.put(Selector.baseline())
+    assert mod.value(10) == {13, 1}
+
+    Selector.put(site.id)
+    assert mod.value(10) == {9, 1}
+  end
+
   test "mutates an escaping unquote_splicing expression inside a runtime quote" do
     source = """
     defmodule Mutare.QuoteUnquoteSplicingFixture do
