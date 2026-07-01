@@ -68,8 +68,9 @@ defmodule Mix.Tasks.Mutare do
       `charlist`, `word_list`, `string_sigil`, `map`, `tuple`, `bitstring`,
       `bitstring_spec`, `regex`, `datetime`, `alias`
     * **Calls** (rewrite or drop a stdlib/remote call) — `collection`,
-      `collection_arity`, `string_call`, `string_byte`, `map_keyword`, `map_set`,
-      `call_removal`, `default_drop`, `mode_swap`, `numeric`, `math`, `integer`
+      `collection_arity`, `string_call`, `string_byte`, `map_keyword`,
+      `keyword_delete`, `map_set`, `period_boundary`, `call_removal`,
+      `default_drop`, `mode_swap`, `numeric`, `math`, `integer`
     * **Structural** — `return_value`, `if_condition`, `pattern_swap`,
       `pattern_wildcard`, `rescue_type`, `guard_drop`
     * **Behaviour-aware** — `genserver` (swaps an OTP callback's return tuple;
