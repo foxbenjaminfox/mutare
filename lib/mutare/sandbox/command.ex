@@ -54,14 +54,14 @@ defmodule Mutare.Sandbox.Command do
   pointing at output that can't help (the real cause is unrecoverable) and retries
   it harder (see `Mutare.Runner`).
 
-  `timed_test/4` applies the `--exit-status` flag (`test_argv/1`), runs the mutant via
+  `timed_test/5` applies the `--exit-status` flag (`test_argv/1`), runs the mutant via
   `Mutare.Sandbox.Command.Invocation.timed_mix/5`, and returns a typed
   `Mutare.Sandbox.Command.Result` decoded via `outcome/2`.
 
   ## Kill detection stops at the first failure
 
   A mutant is killed the moment *any* test fails — the verdict is killed-vs-survived,
-  not *which* tests fail — so `timed_test/4` also forces `--max-failures 1`. ExUnit
+  not *which* tests fail — so `timed_test/5` also forces `--max-failures 1`. ExUnit
   then stops scheduling tests at the first failure, which is a strict speedup on the
   kill path (the common case for a healthy suite) and changes nothing else: the
   exit-status path is driven solely by `failures > 0` (so one failure still exits
@@ -69,7 +69,7 @@ defmodule Mutare.Sandbox.Command do
   so it still runs the whole (selected) suite to confirm survival. This is the kill
   path *only* — the baseline (`Mutare.Runner.Baseline`, a whole-suite green check and
   the timing source) and the coverage probe (`Mutare.Runner.CoverageProbe`, which
-  must run every test to capture coverage) bypass `timed_test/4` and are unaffected.
+  must run every test to capture coverage) bypass `timed_test/5` and are unaffected.
   """
 
   alias Mutare.Sandbox.Command.{Invocation, Output, Result}
@@ -154,7 +154,7 @@ defmodule Mutare.Sandbox.Command do
   Whether `status` is the clean-success exit code (`0`).
 
   The single home for the "zero means success" reading that every mix run which
-  *doesn't* go through `timed_test/4` — the one metamutant compile, the baseline,
+  *doesn't* go through `timed_test/5` — the one metamutant compile, the baseline,
   the coverage probe — would otherwise re-derive by matching a literal `0`.
   """
   @spec success?(non_neg_integer()) :: boolean()

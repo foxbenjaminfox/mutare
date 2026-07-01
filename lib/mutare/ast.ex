@@ -72,9 +72,10 @@ defmodule Mutare.AST do
   @doc """
   Reads the scalar value from a literal node.
 
-  Returns `{:ok, value}` for a number, binary, or atom in either bare form or
-  Sourceror's `{:__block__, _, [value]}` wrapper. Returns `:error` for variables,
-  calls, collections, and other non-scalar nodes.
+  Returns `{:ok, value}` for a number, binary, or atom in either bare scalar
+  form or Sourceror's `{:__block__, _, [value]}` wrapper. Returns `:error` for
+  variables, calls, collections, unary-minus literal expressions such as
+  `Mutare.AST.literal(-1)`, and other non-scalar nodes.
 
   Booleans and `nil` are atoms and are returned as values; filter them separately
   when a mutator does not own them.

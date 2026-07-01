@@ -15,7 +15,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   (`timeout_env/0`) and the dependency-free watcher AST (`watcher_ast/0`) that
   `Mutare.Sandbox` renders into the target's test bootstrap. The matching half —
   *decoding* what a run did from its exit code, including the `timeout_exit/0` the
-  watcher signals — is `Mutare.Sandbox.Command`; `Mutare.Sandbox.Command.timed_test/4`
+  watcher signals — is `Mutare.Sandbox.Command`; `Mutare.Sandbox.Command.timed_test/5`
   composes the two (run here, decode there).
 
   The cap is not enforced by killing a process tree (which needs platform-specific
