@@ -84,13 +84,14 @@ defmodule Mutare.Transform.Resolve do
   end
 
   # A `quote` body is quoted data, not a lexical child scope in the source being transformed.
-  # Walk only escaping `unquote`/`unquote_splicing` arguments, resolving them under the env at the
-  # quote site. That keeps a quoted directive such as `alias List, as: S` from restamping
-  # `unquote(S.trim(s))`, whose expression is evaluated in the outer scope.
+  # Walk only live quote parts: option values (evaluated where the quote expression runs) and
+  # escaping `unquote`/`unquote_splicing` arguments in the quoted block, resolving them under the
+  # env at the quote site. That keeps a quoted directive such as `alias List, as: S` from
+  # restamping `unquote(S.trim(s))`, whose expression is evaluated in the outer scope.
   defp walk({:quote, meta, args} = node, env) when is_list(args) do
-    if quote_unquote_enabled?(args),
-      do: {:quote, meta, walk_quote_args(args, 1, env)},
-      else: node
+    walked = walk_live_quote_args(args, env)
+
+    if walked == args, do: node, else: {:quote, meta, walked}
   end
 
   # `|>` pipe: the RHS is a call whose effective first argument is the LHS, so it carries one
@@ -318,26 +319,39 @@ defmodule Mutare.Transform.Resolve do
 
   # === quote data ============================================================
 
-  defp walk_quote_args(args, quote_level, env) do
-    Enum.map(args, &walk_quote_arg(&1, quote_level, env))
+  defp walk_live_quote_args(args, env) do
+    body_unquote_enabled? = quote_unquote_enabled?(args)
+    Enum.map(args, &walk_live_quote_arg(&1, body_unquote_enabled?, env))
   end
 
-  defp walk_quote_arg({:__block__, meta, [kw]}, quote_level, env) when is_list(kw) do
-    {:__block__, meta, [walk_quote_keyword(kw, quote_level, env)]}
+  defp walk_live_quote_arg({:__block__, meta, [kw]}, body_unquote_enabled?, env)
+       when is_list(kw) do
+    {:__block__, meta, [walk_live_quote_keyword(kw, body_unquote_enabled?, env)]}
   end
 
-  defp walk_quote_arg(kw, quote_level, env) when is_list(kw) do
-    walk_quote_keyword(kw, quote_level, env)
+  defp walk_live_quote_arg(kw, body_unquote_enabled?, env) when is_list(kw) do
+    walk_live_quote_keyword(kw, body_unquote_enabled?, env)
   end
 
-  defp walk_quote_arg(other, quote_level, env), do: walk_quoted_data(other, quote_level, env)
+  defp walk_live_quote_arg(other, body_unquote_enabled?, env) do
+    if body_unquote_enabled?,
+      do: walk_quoted_data(other, 1, env),
+      else: other
+  end
 
-  defp walk_quote_keyword(kw, quote_level, env) do
+  defp walk_live_quote_keyword(kw, body_unquote_enabled?, env) do
     Enum.map(kw, fn
       {key, value} = pair ->
-        if AST.key_atom(key) == :do,
-          do: {key, walk_quoted_data(value, quote_level, env)},
-          else: pair
+        case AST.key_atom(key) do
+          :do when body_unquote_enabled? ->
+            {key, walk_quoted_data(value, 1, env)}
+
+          :do ->
+            pair
+
+          _option ->
+            {key, walk(value, %{env | pipe_mode: :unpiped})}
+        end
 
       other ->
         other
@@ -345,9 +359,9 @@ defmodule Mutare.Transform.Resolve do
   end
 
   defp walk_quoted_data({:quote, meta, args} = node, quote_level, env) when is_list(args) do
-    if quote_unquote_enabled?(args),
-      do: {:quote, meta, walk_quote_args(args, quote_level + 1, env)},
-      else: node
+    walked = walk_quoted_quote_args(args, quote_level, env)
+
+    if walked == args, do: node, else: {:quote, meta, walked}
   end
 
   defp walk_quoted_data({form, meta, [arg]}, 1, env)
@@ -370,6 +384,45 @@ defmodule Mutare.Transform.Resolve do
     do: Enum.map(list, &walk_quoted_data(&1, quote_level, env))
 
   defp walk_quoted_data(other, _quote_level, _env), do: other
+
+  defp walk_quoted_quote_args(args, quote_level, env) do
+    body_unquote_enabled? = quote_unquote_enabled?(args)
+    Enum.map(args, &walk_quoted_quote_arg(&1, quote_level, body_unquote_enabled?, env))
+  end
+
+  defp walk_quoted_quote_arg({:__block__, meta, [kw]}, quote_level, body_unquote_enabled?, env)
+       when is_list(kw) do
+    {:__block__, meta, [walk_quoted_quote_keyword(kw, quote_level, body_unquote_enabled?, env)]}
+  end
+
+  defp walk_quoted_quote_arg(kw, quote_level, body_unquote_enabled?, env) when is_list(kw) do
+    walk_quoted_quote_keyword(kw, quote_level, body_unquote_enabled?, env)
+  end
+
+  defp walk_quoted_quote_arg(other, quote_level, body_unquote_enabled?, env) do
+    if body_unquote_enabled?,
+      do: walk_quoted_data(other, quote_level + 1, env),
+      else: other
+  end
+
+  defp walk_quoted_quote_keyword(kw, quote_level, body_unquote_enabled?, env) do
+    Enum.map(kw, fn
+      {key, value} = pair ->
+        case AST.key_atom(key) do
+          :do when body_unquote_enabled? ->
+            {key, walk_quoted_data(value, quote_level + 1, env)}
+
+          :do ->
+            pair
+
+          _option ->
+            {key, walk_quoted_data(value, quote_level, env)}
+        end
+
+      other ->
+        other
+    end)
+  end
 
   @missing_quote_option :__mutare_missing_quote_option__
 

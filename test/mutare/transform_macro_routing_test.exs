@@ -81,6 +81,35 @@ defmodule Mutare.TransformMacroRoutingTest do
       assert Enum.frequencies_by(sites, & &1.mutator) == %{arithmetic: 1}
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
+
+    test "an escaping binding macro in a nested quote option prunes unsafe unquote ancestors" do
+      source = """
+      defmodule QuoteOptionBinding do
+        def run(y) do
+          quote do
+            unquote(
+              [quote do
+                 quote line: unquote(destructure([x], List.wrap(y))) do
+                   :generated
+                 end
+               end] ++ []
+            )
+          end
+
+          x
+        end
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: [Mutare.Mutators.List])
+
+      # The line: option value stays unmutated, but Resolve must still stamp the escaping
+      # destructure/2 there. The live-unquote binding-prune pass then sees that x escapes and
+      # drops the unsafe ancestor ++ selector; otherwise the baseline branch traps x inside a
+      # case and the metamutant fails to compile.
+      assert sites == []
+      assert_compiles(meta)
+    end
   end
 
   describe "registered macros (`:macro_routes` / a mutator's `macro_routes/0`)" do
