@@ -701,6 +701,24 @@ defmodule Mutare.IgnoreTest do
       assert site.ignored
     end
 
+    test "an imported Bitwise capture swap keeps its operator label for qualified ignores" do
+      # A bare imported capture's ref is `{band, meta, nil}`, not call-shaped, so variant
+      # derivation must normalize it before resolving the import stamp.
+      {_meta, sites, _} =
+        Mutare.transform_string("""
+        defmodule B do
+          import Bitwise
+          def f, do: &band/2 # mutare:ignore[bitwise:|||]
+        end
+        """)
+
+      bitwise = Enum.filter(sites, &(&1.mutator == :bitwise))
+      assert [site] = bitwise
+      assert site.mutated_code == "&bor/2"
+      assert site.variant == ["|||"]
+      assert site.ignored
+    end
+
     test "a literal off-by-one that collapses onto 0 carries BOTH the off-by-one and zero labels" do
       # `x - 1`: the `1` literal's `n - 1` mutant is `0`, merged with the zero sentinel into one
       # deduped mutant. It belongs to both kinds, so it advertises *both* labels — and a user

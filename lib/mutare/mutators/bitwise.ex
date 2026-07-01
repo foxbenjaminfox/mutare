@@ -146,10 +146,19 @@ defmodule Mutare.Mutators.Bitwise do
   end
 
   # A bitwise function swap reaches `variant/2` as a written call (`Bitwise.band(a, b)`) *or* as a
-  # captured reference (`&Bitwise.band/2` → `&Bitwise.bor/2`, mutated by `Transform.Analyze.Captures`).
-  # A capture records its `&` form, so unwrap it to the inner `Bitwise.band()` ref before resolving —
-  # it carries the same alias stamp that let the synthesized call resolve, so it resolves
-  # identically. A written call (any other node) passes through unchanged.
-  defp call_ref({:&, _meta, [{:/, _meta2, [ref, _arity]}]}), do: ref
+  # captured reference (`&Bitwise.band/2` / imported `&band/2` → the corresponding `bor`
+  # capture, mutated by `Transform.Analyze.Captures`). A capture records its `&` form, so unwrap
+  # it to a call-shaped ref before resolving — the ref carries the same alias/import stamp that let
+  # the synthesized call resolve, so it resolves identically. A written call (any other node)
+  # passes through unchanged.
+  defp call_ref(
+         {:&, _meta, [{:/, _meta2, [{{:., _dot_meta, _mod_fun}, _call_meta, []} = ref, _arity]}]}
+       ),
+       do: ref
+
+  defp call_ref({:&, _meta, [{:/, _meta2, [{fun, meta, context}, _arity]}]})
+       when is_atom(fun) and is_list(meta) and is_atom(context),
+       do: {fun, meta, []}
+
   defp call_ref(node), do: node
 end
