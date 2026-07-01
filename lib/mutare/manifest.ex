@@ -88,6 +88,14 @@ defmodule Mutare.Manifest do
   Re-parses (for `Sourceror.get_range/1`) and walks the tree once, attributing
   every selector clause, lifted private definition, and selector `case` to the
   mutant id(s) it belongs to.
+
+  ## Examples
+
+      iex> source = "defmodule Demo do\\n  def add(a, b), do: a + b\\nend\\n"
+      iex> {metamutant, [_site], _next_id} = Mutare.transform_string(source, mutators: [:arithmetic])
+      iex> %Mutare.Manifest{regions: regions} = Mutare.Manifest.from_source(metamutant)
+      iex> regions == []
+      false
   """
   @spec from_source(String.t()) :: t()
   def from_source(metamutant_source) do
@@ -126,6 +134,21 @@ defmodule Mutare.Manifest do
   coarse whole-`case` fallback, so a precise error drops exactly the offending
   mutant; a structural error that only the `case` range contains drops every mutant
   it hosts. Returns `[]` when no generated code spans `line`.
+
+  ## Examples
+
+      iex> manifest = %Mutare.Manifest{
+      ...>   regions: [
+      ...>     %{ids: [1, 2], lo: 3, hi: 8},
+      ...>     %{ids: [1], lo: 5, hi: 5}
+      ...>   ]
+      ...> }
+      iex> Mutare.Manifest.ids_at_line(manifest, 5)
+      [1]
+      iex> Mutare.Manifest.ids_at_line(manifest, 4)
+      [1, 2]
+      iex> Mutare.Manifest.ids_at_line(manifest, 99)
+      []
   """
   @spec ids_at_line(t(), pos_integer()) :: [pos_integer()]
   def ids_at_line(%__MODULE__{regions: regions}, line) do

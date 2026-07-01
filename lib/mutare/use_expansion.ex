@@ -60,7 +60,15 @@ defmodule Mutare.UseExpansion do
   @callback expand_use(used_module :: module(), args :: [Macro.t()], context :: context()) ::
               expansion()
 
-  @doc "Build an expansion from injected directives and optional behaviour modules."
+  @doc """
+  Build an expansion from injected directives and optional behaviour modules.
+
+  ## Examples
+
+      iex> expansion = Mutare.UseExpansion.expand([quote(do: import String)], [GenServer])
+      iex> {length(expansion.directives), expansion.behaviours}
+      {1, [GenServer]}
+  """
   @spec expand([Macro.t()], [module()]) :: Expansion.t()
   def expand(directives, behaviours \\ [])
 

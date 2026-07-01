@@ -15,6 +15,14 @@ defmodule Mutare.Extension.Spec do
   @doc """
   Resolve one `:extensions` entry to a spec. Capability validation is performed by
   `Mutare.Extension.validate!/1`.
+
+  ## Examples
+
+      iex> Mutare.Extension.Spec.new(Enum)
+      %Mutare.Extension.Spec{module: Enum, opts: []}
+
+      iex> Mutare.Extension.Spec.new({Enum, [domain: "errors"]}).opts
+      [domain: "errors"]
   """
   @spec new(t() | module() | {module(), keyword()}) :: t()
   def new(%__MODULE__{} = spec), do: spec

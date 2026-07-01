@@ -3,6 +3,8 @@ defmodule Mutare.MetamutantTest do
 
   alias Mutare.{Metamutant, Selector}
 
+  doctest Mutare.Metamutant
+
   describe "subject_ast/0 and subject?/1" do
     test "subject_ast/0 builds the persistent_term.get node Transform splices in" do
       # Literal args are block-wrapped (clean-meta) so the node renders cleanly in

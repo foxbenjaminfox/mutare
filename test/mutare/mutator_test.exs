@@ -33,6 +33,7 @@ defmodule Mutare.MutatorTest do
 
   doctest Mutare.Mutator
   doctest Mutare.Mutator.Dispatch
+  doctest Mutare.Mutator.Mutation
   doctest Mutare.Mutator.Spec
 
   describe "implementing/3" do

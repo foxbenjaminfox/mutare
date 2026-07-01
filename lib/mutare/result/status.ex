@@ -172,11 +172,25 @@ defmodule Mutare.Result.Status do
 
   @by_name Map.new(@descriptors, &{&1.name, &1})
 
-  @doc "Every status descriptor, in summary/counter render order."
+  @doc """
+  Every status descriptor, in summary/counter render order.
+
+  ## Examples
+
+      iex> Mutare.Result.Status.all() |> Enum.map(& &1.name) |> Enum.take(3)
+      [:killed, :timeout, :atom_exhausted]
+  """
   @spec all :: [t()]
   def all, do: @descriptors
 
-  @doc "Every status name, in render order."
+  @doc """
+  Every status name, in render order.
+
+  ## Examples
+
+      iex> Mutare.Result.Status.names()
+      [:killed, :timeout, :atom_exhausted, :survived, :no_coverage, :ignored, :poisoned, :harness_error]
+  """
   @spec names :: [Mutare.Result.status()]
   def names, do: Enum.map(@descriptors, & &1.name)
 
@@ -184,15 +198,34 @@ defmodule Mutare.Result.Status do
   The descriptor for `status`, raising on an unregistered name. Loud by design — the
   same fail-fast a missing `Map.fetch!` key gave the JSON map: a status with no row
   is a bug, surfaced rather than silently rendered blank.
+
+  ## Examples
+
+      iex> Mutare.Result.Status.fetch!(:survived).json
+      "Survived"
   """
   @spec fetch!(Mutare.Result.status()) :: t()
   def fetch!(status), do: Map.fetch!(@by_name, status)
 
-  @doc "The descriptor for `status`, or `nil` for an unregistered name."
+  @doc """
+  The descriptor for `status`, or `nil` for an unregistered name.
+
+  ## Examples
+
+      iex> Mutare.Result.Status.get(:not_a_status)
+      nil
+  """
   @spec get(atom()) :: t() | nil
   def get(status), do: Map.get(@by_name, status)
 
-  @doc "The status names whose descriptor field `field` is truthy, in render order."
+  @doc """
+  The status names whose descriptor field `field` is truthy, in render order.
+
+  ## Examples
+
+      iex> Mutare.Result.Status.where(:kill?)
+      [:killed, :timeout, :atom_exhausted]
+  """
   @spec where(atom()) :: [Mutare.Result.status()]
   def where(field) when is_atom(field) do
     for d <- @descriptors, Map.fetch!(d, field), do: d.name

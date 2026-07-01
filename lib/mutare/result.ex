@@ -44,6 +44,13 @@ defmodule Mutare.Result do
   Returns whether `status` counts as a killed mutant.
 
   `:killed`, `:timeout`, and `:atom_exhausted` count as kills.
+
+  ## Examples
+
+      iex> Mutare.Result.kill?(:killed)
+      true
+      iex> Mutare.Result.kill?(:survived)
+      false
   """
   @spec kill?(status()) :: boolean()
   def kill?(status), do: status in @kill_statuses
@@ -53,6 +60,11 @@ defmodule Mutare.Result do
 
   `:no_coverage`, `:ignored`, `:poisoned`, and `:harness_error` are excluded
   because they do not produce a test-suite verdict for the mutation.
+
+  ## Examples
+
+      iex> Enum.filter(Mutare.Result.Status.names(), &Mutare.Result.scored?/1)
+      [:killed, :timeout, :atom_exhausted, :survived]
   """
   @spec scored?(status()) :: boolean()
   def scored?(status), do: status not in @unscored_statuses
@@ -62,6 +74,13 @@ defmodule Mutare.Result do
 
   `:no_coverage`, `:ignored`, and `:poisoned` never start a test run.
   `:harness_error` does start one and is included here.
+
+  ## Examples
+
+      iex> Mutare.Result.ran?(:harness_error)
+      true
+      iex> Mutare.Result.ran?(:ignored)
+      false
   """
   @spec ran?(status()) :: boolean()
   def ran?(status), do: status not in @unran_statuses

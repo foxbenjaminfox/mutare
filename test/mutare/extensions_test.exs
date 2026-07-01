@@ -24,6 +24,9 @@ defmodule Mutare.ExtensionsTest do
 
   alias Mutare.Transform.{Imports, Resolve, Uses}
 
+  doctest Mutare.Extension.Spec
+  doctest Mutare.UseExpansion
+
   describe "extension?/1" do
     test "a loaded module exporting an extension callback is an extension" do
       assert Extension.extension?(GettextLikeExtension)

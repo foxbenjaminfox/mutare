@@ -59,6 +59,11 @@ defmodule Mutare.Metamutant do
   @doc """
   The selector subject `Transform` splices into every selector/dispatcher `case`:
   `:persistent_term.get(<key>, <baseline>)`.
+
+  ## Examples
+
+      iex> Mutare.Metamutant.subject_ast() |> Mutare.Metamutant.subject?()
+      true
   """
   @spec subject_ast() :: Macro.t()
   def subject_ast do
@@ -88,6 +93,15 @@ defmodule Mutare.Metamutant do
 
   Literal wrappers added by `Mutare.Manifest`'s readback parse are accepted,
   as are bare atoms from ordinary quoted ASTs.
+
+  ## Examples
+
+      iex> Mutare.Metamutant.subject?(Mutare.Metamutant.subject_ast())
+      true
+      iex> Mutare.Metamutant.subject?({:mutare_active, [], nil})
+      false
+      iex> Mutare.Metamutant.subject?({:mutare_active, [], nil}, :mutare_active)
+      true
   """
   @spec subject?(Macro.t(), atom() | nil) :: boolean()
   def subject?(node, var \\ nil)
@@ -114,6 +128,18 @@ defmodule Mutare.Metamutant do
   Both the bare two-tuple and the `{:__block__, _, [{first, scrutinee}]}` wrapper
   produced by literal-encoded reparse are accepted. `var` is passed through so the
   hoisted selector-variable form is recognised too.
+
+  ## Examples
+
+      iex> subject = {Mutare.Metamutant.subject_ast(), {:value, [], nil}}
+      iex> Mutare.Metamutant.pattern_subject?(subject)
+      true
+
+      iex> subject = {{:mutare_active, [], nil}, {:value, [], nil}}
+      iex> Mutare.Metamutant.pattern_subject?(subject)
+      false
+      iex> Mutare.Metamutant.pattern_subject?(subject, :mutare_active)
+      true
   """
   @spec pattern_subject?(Macro.t(), atom() | nil) :: boolean()
   def pattern_subject?(node, var \\ nil)

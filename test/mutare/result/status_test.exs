@@ -4,6 +4,9 @@ defmodule Mutare.Result.StatusTest do
   alias Mutare.Result
   alias Mutare.Result.Status
 
+  doctest Mutare.Result
+  doctest Mutare.Result.Status
+
   describe "totality" do
     test "the registry covers exactly the Mutare.Result.status/0 type" do
       # The registry is the single source of every per-status fact; the `@type status`

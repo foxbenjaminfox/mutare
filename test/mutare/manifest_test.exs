@@ -3,6 +3,8 @@ defmodule Mutare.ManifestTest do
 
   alias Mutare.{Manifest, Selector}
 
+  doctest Mutare.Manifest
+
   # The metamutant's `:persistent_term` key is `Selector.key/0` resolved at *runtime*
   # (`:mutare_active` normally; the private suite key when these tests themselves run
   # inside a dogfood sandbox). The subject recognisers (`Mutare.Metamutant.subject?/2`)

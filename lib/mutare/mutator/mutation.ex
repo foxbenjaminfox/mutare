@@ -36,6 +36,17 @@ defmodule Mutare.Mutator.Mutation do
 
   `note` must be a string or `nil`. `variant` may be one label, a list of labels,
   or `nil`. Unknown options raise `ArgumentError`.
+
+  ## Examples
+
+      iex> alias Mutare.Mutator.Mutation
+      iex> mutation = Mutation.new(:replacement, note: "needs a boundary test", variant: "zero")
+      iex> {mutation.node, mutation.note, mutation.variant}
+      {:replacement, "needs a boundary test", "zero"}
+
+      iex> alias Mutare.Mutator.Mutation
+      iex> Mutation.new(:replacement, "shown for survivors").note
+      "shown for survivors"
   """
   @spec new(Macro.t(), String.t() | nil | keyword()) :: t()
   def new(node, note_or_opts \\ nil)
@@ -58,6 +69,12 @@ defmodule Mutare.Mutator.Mutation do
   Builds a mutation with one or more ignore-variant labels.
 
   This is equivalent to `new(node, variant: variant)`.
+
+  ## Examples
+
+      iex> alias Mutare.Mutator.Mutation
+      iex> Mutation.tagged(:replacement, ["pred", "zero"]).variant
+      ["pred", "zero"]
   """
   @spec tagged(Macro.t(), variant()) :: t()
   def tagged(node, variant), do: %__MODULE__{node: node, variant: variant}
