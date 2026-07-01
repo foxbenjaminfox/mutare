@@ -191,9 +191,21 @@ defmodule Mutare.Transform.Analyze do
   # exactly like a `defmacro` body. Worse, a selector `case` spliced into a quoted
   # pattern or guard (e.g. `quote do: (case x do "" -> … end)`) is valid *as a
   # quote* but illegal where the AST is later compiled — a poison the pre-filter
-  # can't see, because the metamutant itself compiles. Pruned whole. (This also
-  # prunes any `unquote(expr)` runtime sub-positions inside; mutating those is
-  # deferred — see NOTES — and losing them is acceptable per the philosophy above.)
+  # can't see, because the metamutant itself compiles. So quoted data stays raw.
+  #
+  # The runtime exception is an escaping `unquote(expr)` / `unquote_splicing(expr)`:
+  # `expr` is evaluated when the quote is built, so in a runtime quote it can host
+  # ordinary in-place selectors. This is quote-level aware: a single unquote inside
+  # an inner quote only escapes that inner quote and remains data to the outer one;
+  # `quote unquote: false` and implicit `bind_quoted` unquote disabling both
+  # leave the quote raw; `unquote: true` explicitly re-enables escaping.
+  defp analyze({:quote, meta, args} = node, :runtime, mutators)
+       when is_list(args) do
+    if quote_unquote_enabled?(args),
+      do: {:quote, meta, analyze_quote_args(args, 1, mutators)},
+      else: node
+  end
+
   defp analyze({:quote, _meta, args} = node, _context, _mutators)
        when is_list(args),
        do: node
@@ -744,6 +756,97 @@ defmodule Mutare.Transform.Analyze do
   defp module_reference?({:__block__, _meta, [atom]}) when is_atom(atom), do: true
   defp module_reference?(atom) when is_atom(atom), do: true
   defp module_reference?(_other), do: false
+
+  # === quote data ============================================================
+
+  # Walk only a quote's block value(s), leaving quote options raw. The values of
+  # `do:` entries are quoted data at `quote_level`; anything under an escaping
+  # `unquote` that reaches level 0 is analyzed as ordinary runtime.
+  defp analyze_quote_args(args, quote_level, mutators) do
+    Enum.map(args, &analyze_quote_arg(&1, quote_level, mutators))
+  end
+
+  defp analyze_quote_arg(kw, quote_level, mutators) when is_list(kw) do
+    Enum.map(kw, fn
+      {key, value} = pair ->
+        if AST.key_atom(key) == :do,
+          do: {key, analyze_quoted_data(value, quote_level, mutators)},
+          else: pair
+
+      other ->
+        other
+    end)
+  end
+
+  defp analyze_quote_arg(other, _quote_level, _mutators), do: other
+
+  # A nested `quote` adds one more quote level for its block body. If that quote
+  # disables unquoting, no `unquote` under it can escape, so the whole nested quote
+  # is inert data from this analyzer's perspective.
+  defp analyze_quoted_data({:quote, meta, args} = node, quote_level, mutators)
+       when is_list(args) do
+    if quote_unquote_enabled?(args),
+      do: {:quote, meta, analyze_quote_args(args, quote_level + 1, mutators)},
+      else: node
+  end
+
+  # `unquote` and `unquote_splicing` escape exactly one quote level. At level 1,
+  # their argument is a live runtime expression; above that, the whole unquote is
+  # still quoted data relative to the outer quote.
+  defp analyze_quoted_data({form, meta, [arg]}, 1, mutators)
+       when form in [:unquote, :unquote_splicing],
+       do: {form, meta, [analyze(arg, :runtime, mutators)]}
+
+  defp analyze_quoted_data({form, _meta, [_arg]} = node, quote_level, _mutators)
+       when form in [:unquote, :unquote_splicing] and quote_level > 1,
+       do: node
+
+  defp analyze_quoted_data({form, meta, args}, quote_level, mutators) when is_list(args),
+    do: {form, meta, Enum.map(args, &analyze_quoted_data(&1, quote_level, mutators))}
+
+  defp analyze_quoted_data({left, right}, quote_level, mutators),
+    do:
+      {analyze_quoted_data(left, quote_level, mutators),
+       analyze_quoted_data(right, quote_level, mutators)}
+
+  defp analyze_quoted_data(list, quote_level, mutators) when is_list(list),
+    do: Enum.map(list, &analyze_quoted_data(&1, quote_level, mutators))
+
+  defp analyze_quoted_data(other, _quote_level, _mutators), do: other
+
+  @missing_quote_option :__mutare_missing_quote_option__
+
+  defp quote_unquote_enabled?(args) when is_list(args) do
+    pairs = quote_keyword_pairs(args)
+
+    case AST.opts_get(pairs, :unquote, @missing_quote_option) do
+      @missing_quote_option ->
+        AST.opts_get(pairs, :bind_quoted, @missing_quote_option) == @missing_quote_option
+
+      value ->
+        not literal_false?(value)
+    end
+  end
+
+  defp quote_keyword_pairs(args) do
+    Enum.flat_map(args, fn
+      {_key, _value} = pair ->
+        [pair]
+
+      kw when is_list(kw) ->
+        Enum.filter(kw, &keyword_pair?/1)
+
+      _other ->
+        []
+    end)
+  end
+
+  defp keyword_pair?({_key, _value}), do: true
+  defp keyword_pair?(_other), do: false
+
+  defp literal_false?(false), do: true
+  defp literal_false?({:__block__, _meta, [false]}), do: true
+  defp literal_false?(_other), do: false
 
   # === known macros ==========================================================
 

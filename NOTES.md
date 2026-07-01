@@ -1053,7 +1053,8 @@ by a blacklist. The positions:
   The default `literal`/`list` mutators are what reach the `only:` list, so the
   regression test must run with the default set — `@probe` (arithmetic+relational)
   doesn't touch it.
-- **`quote` blocks**: **excluded** (also `:compile_time`). A `quote` *constructs
+- **`quote` blocks**: **quoted data excluded; escaping runtime unquotes reached**.
+  A `quote` *constructs
   AST* — its literals become part of the code the quote generates, which is out of
   scope (PHILOSOPHY: "macro-generated code is a different tool"), exactly like a
   `defmacro` body. And it is a *silent* poison if mutated: a selector `case`
@@ -1061,11 +1062,17 @@ by a blacklist. The positions:
   as in `Selector.bootstrap_ast`) is valid *as a quote* — the metamutant compiles
   — but illegal where the AST is later expanded/`Code.eval_quoted`'d, so the
   pre-filter never sees it and it surfaces as a baseline failure. The analyzer
-  prunes the whole `quote`. **Deferred:** `unquote(expr)` args are runtime
-  sub-positions (they run when the quote is built) and are currently pruned along
-  with the body; mutating them precisely (route `unquote` back to `:runtime`, like
-  the `\\` default) is future work — losing them is acceptable per the philosophy
-  above, and `bootstrap_ast`'s unquotes are inert (vars/atoms) anyway.
+  therefore keeps quoted data raw. **Now done** (was deferred): in a runtime
+  `quote`, an escaping `unquote(expr)` / `unquote_splicing(expr)` argument is a
+  runtime sub-position (it runs when the quote is built), so it is routed back to
+  `:runtime`, like the `\\` default. The walk is quote-level-aware: a single
+  `unquote` inside an inner `quote` only escapes that inner quote and stays data
+  to the outer one; even stacked unquotes under that inner quote remain quoted data
+  from the surrounding runtime quote's perspective. `quote unquote: false`
+  disables this escape and is left raw; `bind_quoted:`'s implicit unquote
+  disabling is treated the same unless `unquote: true` is explicit. Quote option
+  values themselves, such as the `bind_quoted:` value list, remain outside this
+  reach.
 - **Bitstring type specifiers** (the right of `::` in `<<>>`): **excluded** from
   *in-place* mutation (context `:spec`), *except* `size(expr)` args. A `case` is
   illegal as a bare spec / in `unit(...)`, and swapping the `-` separator yields
@@ -3221,8 +3228,8 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
   and metaprogrammed heads (`def code(0), do: 53` beside the `for`), the top head
   falls back to in-place via `metaprogrammed_def_names` and the `for` heads route
   through `:scaffold` — both bodies mutate in place, independently (no dispatcher, so
-  no shadowing). Still **out of scope**: mutating inside `unquote(expr)` (compile-time
-  splice; deferred, as for `quote`), and lifting any of these
+  no shadowing). Still **out of scope**: mutating inside `unquote(expr)` here
+  (a compile-time scaffold splice, unlike a runtime `quote` unquote), and lifting any of these
   (head-pattern/guard/clause-drop mutants).
 - **Private names** are `<prefix><name>_<arity>_g<group>`. The
   group counter keeps generated names unique *among themselves*, and `?`/`!`
