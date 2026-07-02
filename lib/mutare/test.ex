@@ -5,9 +5,18 @@ defmodule Mutare.Test do
   Import this module into an `ExUnit.Case` to test a mutator at three levels:
 
     * `node_mutations/3` tests the replacements returned for one parsed node;
-    * `diffs/2` and `diffs_for/3` test sites produced by the full source transform;
-    * `compile_metamutant/3` and `with_active_mutant/2` verify that selecting a mutant changes
-      the compiled program's behaviour.
+    * `diffs/3`, `diffs_for/4`, and `metamutant_source/3` test what the full source
+      transform produces;
+    * `compile_metamutant/3` and `with_active_mutant/2` (or `observe_mutant/3`, which
+      composes them) verify that selecting a mutant changes the compiled program's
+      behaviour.
+
+  The source-driven helpers all call `Mutare.transform_string/2` and inherit its
+  defaults — notably `expand_uses: true`, which the schema/query routing of
+  `use`-heavy DSLs depends on. Each takes a trailing `opts` keyword list forwarded
+  to `Mutare.transform_string/2` (the `mutators` argument overrides any `:mutators`
+  option), so a suite can thread `:macro_routes`, `:extensions`, or `expand_uses:
+  false` without dropping to `Mutare.transform_string/2` itself.
 
   > #### Selection is process-global {: .warning}
   >
@@ -96,15 +105,17 @@ defmodule Mutare.Test do
   `{family_name, original_code, mutated_code}`.
 
   This helper uses the complete transform pipeline, including name resolution, pipe
-  handling, overlap suppression, and structural families.
+  handling, overlap suppression, and structural families. `opts` is forwarded to
+  `Mutare.transform_string/2` (the `mutators` argument overrides any `:mutators`
+  option).
 
       iex> import Mutare.Test
       iex> diffs("def f(a, b), do: a + b", [Mutare.Mutators.Arithmetic])
       [{:arithmetic, "a + b", "a - b"}]
   """
-  @spec diffs(String.t(), [mutator()]) :: [{atom(), String.t(), String.t()}]
-  def diffs(source, mutators) do
-    result = Mutare.transform_string(source, mutators: mutators)
+  @spec diffs(String.t(), [mutator()], keyword()) :: [{atom(), String.t(), String.t()}]
+  def diffs(source, mutators, opts \\ []) do
+    result = Mutare.transform_string(source, Keyword.put(opts, :mutators, mutators))
     for site <- result.mutants, do: {site.mutator, site.original_code, site.mutated_code}
   end
 
@@ -112,17 +123,36 @@ defmodule Mutare.Test do
   Returns the `{original_code, mutated_code}` pairs recorded for one family.
 
   `name` is the recorded family name, including any configured `:as` override.
+  `opts` is forwarded as in `diffs/3`.
 
       iex> import Mutare.Test
       iex> mutators = [Mutare.Mutators.Arithmetic, Mutare.Mutators.ReturnValue]
       iex> diffs_for("def f(a, b), do: a + b", mutators, :arithmetic)
       [{"a + b", "a - b"}]
   """
-  @spec diffs_for(String.t(), [mutator()], atom()) :: [{String.t(), String.t()}]
-  def diffs_for(source, mutators, name) do
-    for {mutator, original, mutated} <- diffs(source, mutators),
+  @spec diffs_for(String.t(), [mutator()], atom(), keyword()) :: [{String.t(), String.t()}]
+  def diffs_for(source, mutators, name, opts \\ []) do
+    for {mutator, original, mutated} <- diffs(source, mutators, opts),
         mutator == name,
         do: {original, mutated}
+  end
+
+  @doc """
+  Returns the rendered metamutant source for `source`.
+
+  For `=~` assertions on the scaffolding the transform weaves — a selector, a host's
+  `dynamic([u], …)` — without destructuring `Mutare.Transform.Result`. `opts` is
+  forwarded as in `diffs/3`.
+
+      metamutant = metamutant_source(source, [{Mutare.Ecto, repo: MyApp.Repo}])
+      assert metamutant =~ "dynamic([u]"
+  """
+  @spec metamutant_source(String.t(), [mutator()], keyword()) :: String.t()
+  def metamutant_source(source, mutators, opts \\ []) do
+    %{metamutant: metamutant} =
+      Mutare.transform_string(source, Keyword.put(opts, :mutators, mutators))
+
+    metamutant
   end
 
   @doc """
@@ -131,7 +161,7 @@ defmodule Mutare.Test do
 
   `source` must contain a complete compilation unit such as a `defmodule`. The
   helper compiles it inside a unique wrapper, captures compiler output, and purges
-  all compiled modules before returning.
+  all compiled modules before returning. `opts` is forwarded as in `diffs/3`.
 
       defmodule MyMutatorTest do
         use ExUnit.Case, async: true
@@ -145,9 +175,9 @@ defmodule Mutare.Test do
         end
       end
   """
-  @spec assert_metamutant_compiles(String.t(), [mutator()]) :: [{module(), binary()}]
-  def assert_metamutant_compiles(source, mutators) do
-    %{metamutant: metamutant} = Mutare.transform_string(source, mutators: mutators)
+  @spec assert_metamutant_compiles(String.t(), [mutator()], keyword()) :: [{module(), binary()}]
+  def assert_metamutant_compiles(source, mutators, opts \\ []) do
+    metamutant = metamutant_source(source, mutators, opts)
     {compiled, wrapper} = compile_metamutant_source!(metamutant, true)
 
     for {module, _binary} <- compiled, do: purge(module)
@@ -274,6 +304,29 @@ defmodule Mutare.Test do
     after
       Selector.put(previous)
     end
+  end
+
+  @doc """
+  Runs `fun` once at baseline and once with the site matching `pattern` active,
+  returning `{baseline, mutated}`.
+
+  `sites` and `pattern` are as in `site_id/2`. The baseline runs first, and with the
+  baseline selection pinned explicitly — so a wrong first element means the *fixture*
+  is broken, not the mutant. Requires `async: false`, like `with_active_mutant/2`.
+
+      {baseline, mutated} =
+        observe_mutant(sites, {"u.age > 18", "u.age >= 18"}, fn -> Repo.all(adults()) end)
+
+      assert boundary_user in mutated -- baseline
+  """
+  @spec observe_mutant([MutationSite.t()], {pattern, pattern}, (-> result)) ::
+          {result, result}
+        when result: var, pattern: String.t() | Regex.t()
+  def observe_mutant(sites, pattern, fun) when is_function(fun, 0) do
+    id = site_id(sites, pattern)
+    baseline = with_active_mutant(Selector.baseline(), fun)
+
+    {baseline, with_active_mutant(id, fun)}
   end
 
   @doc """

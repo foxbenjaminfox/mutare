@@ -6327,6 +6327,26 @@ aliased `Context` vs `RunCtx` to keep them apart in `Runner`.
   `:skip`). Downstream this deletes `mutare_ecto`'s two funnel comprehensions and `split_tag/2`;
   `Config.enrich/3` becomes the body of `finalize/2`.
 
+- **`Mutare.Test` rounded out for plugin suites (proposal 0005, done).** Four gaps the `mutare_ecto`
+  suite papered over: (1) the source helpers (`diffs`, `diffs_for`, `assert_metamutant_compiles`)
+  took no transform opts while `compile_metamutant/3` did — an accidental asymmetry that coupled the
+  Ecto suite to `expand_uses: true` *happening* to be the default and forced raw `transform_string`
+  fallbacks for `:macro_routes` tests; all now take a trailing `opts` forwarded to
+  `transform_string/2`. (2) `metamutant_source/3` returns the rendered metamutant for `=~`
+  scaffolding checks, so plugin suites stop destructuring `%Transform.Result{}` (de-facto public in
+  six Ecto files). (3) `observe_mutant/3` composes `site_id/2` + `with_active_mutant/2` into the
+  flip-and-compare pair `{baseline, mutated}`; the baseline runs **first and pinned to
+  `Selector.baseline()`** (not the current selection), so a leaked active id can't masquerade as
+  baseline and a wrong first element indicts the fixture, not the mutant. (4) A shipped
+  `Mutare.Test.Fixtures.RoutingExtension` — two pass-through macros routed `:skip` /
+  `[:expression, :skip]` — replaces each plugin's hand-rolled no-op routing provider
+  (`MyApp.QueryHelperMutator`) for foreign-routing composition tests. Deliberately scoped down from
+  the proposal's "each treatment kind": it ships as an *extension* (so `:hosted` is illegal on it by
+  contract), and `:interpolated`/`{:keyword, …}` assert semantic facts about a real DSL that a
+  generic pass-through can't honestly claim — those stay modelled per-adapter (the unshipped
+  `test/support/host_mutator.ex` fixtures show how). The domain halves of the Ecto harness (SQLite
+  boot, seeding, `Repo.all` wrapping) stay plugin-side by design.
+
 ## Host sub-contracting of fragment interiors (pin islands)
 
 A `:hosted` argument is left entirely raw by core and every mutant there comes from the host —

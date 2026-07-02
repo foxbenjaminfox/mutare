@@ -136,10 +136,15 @@ Two optional callbacks refine how users interact with your mutator:
 ### Testing your mutator
 
 `import Mutare.Test` in an ExUnit case. It tests at three levels: the
-replacements for one node (`node_mutations/3`), the diffs the full transform
-produces (`diffs/2`), and — the real proof — compiling a metamutant and
-checking that activating your mutant changes runtime behaviour
-(`compile_metamutant/3` + `with_active_mutant/2`).
+replacements for one node (`node_mutations/3`), what the full transform
+produces (`diffs/3`, `metamutant_source/3`), and — the real proof — compiling
+a metamutant and checking that activating your mutant changes runtime
+behaviour (`compile_metamutant/3` + `observe_mutant/3`). Each source-driven
+helper forwards a trailing keyword list to `Mutare.transform_string/2`, so a
+suite can thread `:extensions` or `:macro_routes` through them. To test that
+your mutator composes with macro routing an *independent* library ships, use
+the bundled `Mutare.Test.Fixtures.RoutingExtension` rather than authoring a
+no-op routing provider.
 
 ## Writing an extension
 

@@ -89,6 +89,50 @@ defmodule Mutare.TestTest do
     end
   end
 
+  describe "options passthrough (diffs/3, diffs_for/4, metamutant_source/3)" do
+    # A source whose diff depends on a transform option: the declarative `:macro_routes`
+    # skip suppresses the mutation inside the routed call, so the option observably arrived.
+    @routed_source """
+    defmodule M do
+      import Mutare.Test.Fixtures.RoutingExtension
+      def f(x), do: opaque(x + 1)
+    end
+    """
+    @skip_route [{Mutare.Test.Fixtures.RoutingExtension, :opaque, 1, :skip}]
+
+    test "diffs/3 forwards transform options" do
+      assert {:arithmetic, "x + 1", "x - 1"} in diffs(@routed_source, [Arithmetic])
+      assert diffs(@routed_source, [Arithmetic], macro_routes: @skip_route) == []
+    end
+
+    test "diffs_for/4 forwards transform options" do
+      assert diffs_for(@routed_source, [Arithmetic], :arithmetic) == [{"x + 1", "x - 1"}]
+      assert diffs_for(@routed_source, [Arithmetic], :arithmetic, macro_routes: @skip_route) == []
+    end
+
+    test "the mutators argument overrides a :mutators passed in opts" do
+      diffs = diffs("def f(a, b), do: a + b", [Arithmetic], mutators: [Relational])
+
+      assert {:arithmetic, "a + b", "a - b"} in diffs
+      refute Enum.any?(diffs, &match?({:relational, _, _}, &1))
+    end
+  end
+
+  describe "metamutant_source/3" do
+    test "returns the rendered metamutant for =~ scaffolding assertions" do
+      metamutant = metamutant_source("defmodule Q do\n  def n, do: 1 + 1\nend", [Arithmetic])
+
+      # The woven selector carries the mutant branch — visible only in the rendered source.
+      assert metamutant =~ "1 - 1"
+      assert metamutant =~ "1 + 1"
+    end
+
+    test "forwards transform options" do
+      refute metamutant_source(@routed_source, [Arithmetic], macro_routes: @skip_route) =~
+               "x - 1"
+    end
+  end
+
   describe "assert_metamutant_compiles/2" do
     test "passes for a complete module and returns the (purged) compiled modules" do
       source = "defmodule Mutare.TestTest.Sample do\n  def f(a, b), do: a + b\nend"
@@ -115,6 +159,13 @@ defmodule Mutare.TestTest do
       assert_raise ExUnit.AssertionError, ~r/no modules/, fn ->
         assert_metamutant_compiles("x = 1 + 2", [Arithmetic])
       end
+    end
+
+    test "forwards transform options (the routed fixture still compiles)" do
+      assert [_ | _] =
+               assert_metamutant_compiles(@routed_source, [Arithmetic],
+                 extensions: [Mutare.Test.Fixtures.RoutingExtension]
+               )
     end
   end
 
@@ -224,6 +275,87 @@ defmodule Mutare.TestTest do
       assert mod.f(0) == :other
       assert with_active_mutant(id, fn -> mod.f(0) end) == :pos
       assert mod.f(0) == :other
+    end
+  end
+
+  describe "observe_mutant/3" do
+    test "returns the baseline and mutated observations as a pair, then restores" do
+      {[mod], sites} =
+        compile_metamutant("defmodule Q do\n  def n, do: 1 + 1\nend", [Arithmetic])
+
+      assert observe_mutant(sites, {"1 + 1", "1 - 1"}, fn -> mod.n() end) == {2, 0}
+      # The active selection is restored after both runs.
+      assert mod.n() == 2
+    end
+
+    test "pins the baseline explicitly, even under a leaked active selection" do
+      {[mod], sites} =
+        compile_metamutant("defmodule Q do\n  def n, do: 1 + 1\nend", [Arithmetic])
+
+      id = site_id(sites, {"1 + 1", "1 - 1"})
+
+      # A hostile leak: some earlier code left the mutant active. The baseline
+      # observation must still be the original program, not the leaked mutant.
+      Mutare.Selector.put(id)
+
+      try do
+        assert observe_mutant(sites, {"1 + 1", "1 - 1"}, fn -> mod.n() end) == {2, 0}
+      after
+        Mutare.Selector.put(Mutare.Selector.baseline())
+      end
+    end
+
+    test "flunks before running fun when the pattern matches no site" do
+      {[mod], sites} =
+        compile_metamutant("defmodule Q do\n  def n, do: 1 + 1\nend", [Arithmetic])
+
+      assert_raise ExUnit.AssertionError, ~r/no site matching/, fn ->
+        observe_mutant(sites, {"nope", "nope"}, fn -> mod.n() end)
+      end
+    end
+  end
+
+  describe "Fixtures.RoutingExtension" do
+    alias Mutare.Test.Fixtures.RoutingExtension
+
+    @opaque_source """
+    defmodule M do
+      import Mutare.Test.Fixtures.RoutingExtension
+      def f(x), do: opaque(x + 1)
+    end
+    """
+
+    @tagged_source """
+    defmodule M do
+      import Mutare.Test.Fixtures.RoutingExtension
+      def f(x), do: tagged(x + 1, x * 2)
+    end
+    """
+
+    test "a foreign :skip route leaves the whole call opaque" do
+      # Unrouted (the extension not enabled), the argument mutates — the contrast that
+      # isolates the route as what suppresses it.
+      assert {:arithmetic, "x + 1", "x - 1"} in diffs(@opaque_source, [Arithmetic])
+
+      assert diffs(@opaque_source, [Arithmetic], extensions: [RoutingExtension]) == []
+    end
+
+    test "per-argument routing mutates the :expression argument, never the :skip one" do
+      muts = diffs(@tagged_source, [Arithmetic], extensions: [RoutingExtension])
+
+      assert {:arithmetic, "x + 1", "x - 1"} in muts
+      refute Enum.any?(muts, fn {_family, original, _mutated} -> original == "x * 2" end)
+
+      # Without the routes both arguments mutate.
+      assert {:arithmetic, "x * 2", "x / 2"} in diffs(@tagged_source, [Arithmetic])
+    end
+
+    test "the pass-through macros expand: the routed metamutant compiles and runs live" do
+      {[mod], sites} =
+        compile_metamutant(@tagged_source, [Arithmetic], extensions: [RoutingExtension])
+
+      # `tagged(x + 1, x * 2)` expands to `x + 1`; the surviving expression mutant flips it.
+      assert observe_mutant(sites, {"x + 1", "x - 1"}, fn -> mod.f(1) end) == {2, 0}
     end
   end
 
