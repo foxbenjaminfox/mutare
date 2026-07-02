@@ -209,6 +209,9 @@ defmodule Mutare.Macro.Spec do
   @spec normalize_module(term()) :: module_key()
   def normalize_module(@wildcard), do: @wildcard
 
+  # The atom clause mirrors `Mutare.Transform.Aliases.from_module/1` (the encoding's
+  # transform-layer home) — duplicated here for the same layering reason as the
+  # `module_key` type above.
   def normalize_module(module) when is_atom(module) do
     case Macro.classify_atom(module) do
       :alias -> module |> Module.split() |> Enum.map(&String.to_atom/1)

@@ -284,6 +284,23 @@ defmodule Mutare.Transform.Aliases do
   def to_module(_other), do: nil
 
   @doc """
+  A concrete module atom → its module **key**, the inverse of `to_module/1`: an Elixir
+  module becomes its segment path (`Ecto.Query` → `[:Ecto, :Query]`), an Erlang-module
+  atom stays itself (`:binary` → `:binary`). The one encoding of the key representation,
+  published to authors as `Mutare.Calls.module_key/1` so they can compare configured
+  modules against resolved calls. (`Mutare.Macro.Spec.normalize_module/1` mirrors it for
+  registry input — kept separate, like the `module_key` type, because that layer stays
+  free of any dependency on the transform.)
+  """
+  @spec from_module(module()) :: module_key()
+  def from_module(module) when is_atom(module) do
+    case Macro.classify_atom(module) do
+      :alias -> module |> Module.split() |> Enum.map(&String.to_atom/1)
+      _ -> module
+    end
+  end
+
+  @doc """
   A module **reference node** → its concrete module atom, or `nil`. Resolves the three shapes a
   module reference takes in the AST: an Elixir alias path (`{:__aliases__, _, segments}`,
   resolved through the alias `env` then `Module.concat`-ed — a non-static segment yields `nil`),

@@ -11,6 +11,11 @@ defmodule Mutare.Calls do
   mutators run, so it is only meaningful on a node handed to a mutator by the transform (a
   `mutate/1` argument) — exactly where a call-matching mutator needs it.
 
+  `module_key/1` encodes a real module atom into the key shape `resolved_call/1`
+  returns, and `resolved_call_to/3` bundles the common "is this a call to module M
+  (function F)?" match — together they save a caller from ever constructing or
+  pattern-building the key representation itself.
+
   `resolved_macro_call/1` is the **known-macro** twin. It returns a stable
   `Mutare.MacroRouting.Call` with a natural module atom, visible arguments, pipe information, and
   a source-preserving rebuild function.
@@ -78,6 +83,46 @@ defmodule Mutare.Calls do
   @spec resolved_call(Macro.t()) ::
           {module_key(), atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
   defdelegate resolved_call(node), to: Transform.Calls
+
+  @doc """
+  The resolved-call key for a module atom — the shape `resolved_call/1` returns in its
+  first element. An Elixir module becomes its segment path, an Erlang module stays an
+  atom. Use it to compare a configured module against resolved calls instead of
+  re-deriving the encoding.
+
+      iex> Mutare.Calls.module_key(Ecto.Query)
+      [:Ecto, :Query]
+      iex> Mutare.Calls.module_key(:binary)
+      :binary
+  """
+  @spec module_key(module()) :: module_key()
+  defdelegate module_key(module), to: Transform.Calls
+
+  @doc """
+  Matches a resolved call against a target module and function name(s).
+
+  `module` may be a real module atom or an already-encoded `t:module_key/0`; `functions`
+  is one name, a list of names, or `:any` (the default). Returns
+  `{:ok, function, arguments, rebuild}` on a match, `:error` otherwise — including for a
+  node that is not a resolved call at all. The common call-matching preamble without
+  hand-building the key:
+
+      iex> node = Sourceror.parse_string!("String.upcase(s)")
+      iex> {:ok, fun, args, rebuild} = Mutare.Calls.resolved_call_to(node, String)
+      iex> fun
+      :upcase
+      iex> Sourceror.to_string(rebuild.(:downcase, args))
+      "String.downcase(s)"
+
+      iex> node = Sourceror.parse_string!("String.upcase(s)")
+      iex> Mutare.Calls.resolved_call_to(node, String, [:downcase, :capitalize])
+      :error
+      iex> Mutare.Calls.resolved_call_to(node, Enum)
+      :error
+  """
+  @spec resolved_call_to(Macro.t(), module() | module_key(), atom() | [atom()] | :any) ::
+          {:ok, atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | :error
+  defdelegate resolved_call_to(node, module, functions \\ :any), to: Transform.Calls
 
   @doc """
   Return the stable call value for a node stamped by the known-macro resolver, or `nil` for any

@@ -45,7 +45,10 @@ Initial release.
   `Mutare.MacroRouting` and `Mutare.UseExpansion` capabilities, `:extensions` for
   non-mutating integrations, declarative `:macro_routes` configuration
   (user-tier treatments only; the adapter-grade treatments must come from a
-  module implementing `Mutare.MacroRouting`), and the `Mutare.AST` node
-  constructors that discharge Sourceror's emission invariants for plugins.
+  module implementing `Mutare.MacroRouting`), the `Mutare.AST` node
+  constructors that discharge Sourceror's emission invariants for plugins, and
+  the `Mutare.Calls` call-resolution readers (`resolved_call_to/3`,
+  `module_key/1`) so plugins match calls without building core's key
+  representation.
 - **`mix igniter.install mutare`** installer that detects frameworks and wires up
   the matching companion packages and `.mutare.exs`.

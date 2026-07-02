@@ -89,8 +89,9 @@ defmodule Mutare.TransformContextTest do
       end
       """
 
-      # resolved_call/1 lets a third-party mutator match through alias and import, and rebuild
-      # the swap in the written form (the `S.` alias kept; the bare import kept bare).
+      # resolved_call_to/3 lets a third-party mutator match through alias and import — keying
+      # on the real `String` module, never a hand-built key — and rebuild the swap in the
+      # written form (the `S.` alias kept; the bare import kept bare).
       {ameta, asites, _} =
         Mutare.Transform.transform_string_with_sites(aliased,
           mutators: [Mutare.Test.AliasCallMutator]

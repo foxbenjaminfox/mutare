@@ -1,10 +1,9 @@
 defmodule Mutare.Transform.Calls do
   @moduledoc false
 
-  # `Mutare.Calls` is the published facade re-exporting `resolved_call/1`,
-  # `resolved_macro_call/1`, and `macro_treatment/1` — the author-facing docs (and
-  # doctests) live there. This module is the implementation, free to grow internal
-  # readers the facade doesn't commit to.
+  # `Mutare.Calls` is the published facade re-exporting the author-facing readers —
+  # their docs (and doctests) live there. This module is the implementation, free to
+  # grow internal readers the facade doesn't commit to.
   #
   # The single reader every call-matching mutator family uses to recognise a stdlib call
   # and rebuild a swap of it — the one home for the call AST shape and the alias/import
@@ -114,6 +113,35 @@ defmodule Mutare.Transform.Calls do
   end
 
   def resolved_call(_node), do: nil
+
+  # The resolved-call key for a concrete module atom. See `Mutare.Calls.module_key/1`
+  # for the contract; the encoding lives with the key operations in `Aliases`.
+  @spec module_key(module()) :: module_key()
+  defdelegate module_key(module), to: Aliases, as: :from_module
+
+  # Match a resolved call against a target module and function name(s). See
+  # `Mutare.Calls.resolved_call_to/3` for the contract.
+  @spec resolved_call_to(Macro.t(), module() | module_key(), atom() | [atom()] | :any) ::
+          {:ok, atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | :error
+  def resolved_call_to(node, module, functions \\ :any) do
+    target = target_key(module)
+
+    case resolved_call(node) do
+      {^target, fun, args, rebuild} ->
+        if function_match?(fun, functions), do: {:ok, fun, args, rebuild}, else: :error
+
+      _unresolved_or_other_module ->
+        :error
+    end
+  end
+
+  # An already-encoded key (a segment path) passes through; a module atom is encoded.
+  defp target_key(module) when is_list(module), do: module
+  defp target_key(module) when is_atom(module), do: Aliases.from_module(module)
+
+  defp function_match?(_fun, :any), do: true
+  defp function_match?(fun, functions) when is_list(functions), do: fun in functions
+  defp function_match?(fun, function) when is_atom(function), do: fun == function
 
   defp rewitness_bare_rebuild(meta, module, old_args, new_fun, new_args) do
     case Imports.import_witness(meta) do

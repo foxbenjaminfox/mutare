@@ -19,7 +19,7 @@ under `test/support/` in the Mutare repository.
 | Swap one AST node for another (`and` → `or`) | `Mutare.Mutator` with `mutate/1` | `Mutare.Mutator` |
 | Make a mutator configurable, pipe-aware, or gated on the module's `@behaviour`s | `mutate/2` | `Mutare.Mutator` |
 | Mutate a *position*: a clause's return value, an `if` condition, a head pattern | `Mutare.Mutator.Structural` | `Mutare.Mutator.Structural` |
-| Match calls to a specific library or stdlib function | `mutate/1,2` + `Mutare.Calls.resolved_call/1` | `Mutare.Calls` |
+| Match calls to a specific library or stdlib function | `mutate/1,2` + `Mutare.Calls.resolved_call_to/3` | `Mutare.Calls` |
 | Keep a macro's arguments from being mutated at all | no code — `macro_routes:` in `.mutare.exs` | the README's macro section |
 | Describe how a DSL's macro arguments should be treated | `Mutare.MacroRouting` | `Mutare.MacroRouting` |
 | Emit mutations *inside* a DSL fragment (an Ecto `where`, say) | `Mutare.Mutator.MacroHost` | `Mutare.Mutator.MacroHost` |
@@ -115,9 +115,13 @@ needed.
 
 Don't pattern-match qualified call AST directly — users write `Enum.sort/1` as
 `Enum.sort`, `E.sort` under an alias, or bare `sort` under an import. Use
-`Mutare.Calls.resolved_call/1`: it returns the resolved
-`{module, function, arguments, rebuild}`, and `rebuild` re-emits your
-replacement in whatever form the source used.
+`Mutare.Calls.resolved_call_to/3` to match a specific module (and optionally
+function names): it takes the real module atom — you never build the resolved
+key yourself — and returns `{:ok, function, arguments, rebuild}`, where
+`rebuild` re-emits your replacement in whatever form the source used. The
+lower-level `Mutare.Calls.resolved_call/1` returns the raw resolved tuple for
+table-driven matching across many modules, and `Mutare.Calls.module_key/1`
+encodes a module atom into its key shape when you need to build such a table.
 
 ### Polish: ignore variants and option keys
 
