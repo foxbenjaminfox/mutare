@@ -309,13 +309,23 @@ defmodule Mutare.MacroRouting.Registry do
 
   defp validate_config!(specs) do
     Enum.map(specs, fn spec ->
-      if Spec.classifier?(spec) do
-        raise ArgumentError,
-              "declarative :macro_routes entry #{inspect(Spec.key(spec))} uses :routing, which " <>
-                "requires macro_routes/0 and route_arguments/2 on an enabled provider"
-      end
+      cond do
+        Spec.classifier?(spec) ->
+          raise ArgumentError,
+                "declarative :macro_routes entry #{inspect(Spec.key(spec))} uses :routing, which " <>
+                  "requires macro_routes/0 and route_arguments/2 on an enabled provider"
 
-      %Entry{spec: spec, sources: [:config]}
+        Spec.adapter_graded?(spec) ->
+          raise ArgumentError,
+                "declarative :macro_routes entry #{inspect(Spec.key(spec))} uses an " <>
+                  "adapter-grade treatment (#{inspect(spec.args)}); :pinned, :hosted, and " <>
+                  "{:keyword, ...} assert DSL facts Mutare cannot check, so they must come from " <>
+                  "a module implementing Mutare.MacroRouting (a :mutators or :extensions " <>
+                  "entry), not from configuration"
+
+        true ->
+          %Entry{spec: spec, sources: [:config]}
+      end
     end)
   end
 

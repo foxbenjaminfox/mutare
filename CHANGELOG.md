@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The declarative `:macro_routes` option (`.mutare.exs`) now accepts only the
+  user-tier treatments (`:skip`, `:expression`, `:pattern`,
+  `:binding_pattern`). The adapter-grade treatments — `:pinned`,
+  `{:keyword, ...}`, and `:hosted` — assert DSL facts Mutare cannot check and
+  are rejected with an `ArgumentError`; declare them from a module
+  implementing `Mutare.MacroRouting` (a `:mutators` or `:extensions` entry)
+  instead.
+
 ## [0.1.0] - 2026-06-28
 
 Initial public release.

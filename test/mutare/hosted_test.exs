@@ -545,18 +545,32 @@ defmodule Mutare.HostedTest do
       :code.delete(module)
     end
 
-    test "the same recursive treatments are valid in a static declarative route" do
+    test "the same recursive treatments are valid in a static code-provided route" do
+      # The recursive grammar works statically too — declared by an extension, the code-provider
+      # home of the adapter-grade treatments (a dynamic classifier isn't required).
       {meta, sites, _next} =
         Mutare.Transform.transform_string_with_sites(@kw_source,
           file: "kw_static.ex",
+          mutators: [:string],
+          extensions: [Mutare.Test.KeywordPinnedRoutingExtension]
+        )
+
+      assert Enum.any?(sites, &(&1.mutator == :string and &1.original_code == ~s|"keep"|))
+      assert meta =~ ~r/name:\s*\^\(?case mutare_active do/
+    end
+
+    test "the same recursive treatments are rejected in a declarative :macro_routes entry" do
+      # `:pinned` and `{:keyword, …}` assert DSL facts Mutare cannot check; they must come from
+      # a code provider (the extension above), never from `.mutare.exs` configuration.
+      assert_raise ArgumentError, ~r/adapter-grade treatment/, fn ->
+        Mutare.Transform.transform_string_with_sites(@kw_source,
+          file: "kw_config.ex",
           mutators: [:string],
           macro_routes: [
             {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:pinned, :skip]}]}
           ]
         )
-
-      assert Enum.any?(sites, &(&1.mutator == :string and &1.original_code == ~s|"keep"|))
-      assert meta =~ ~r/name:\s*\^\(?case mutare_active do/
+      end
     end
   end
 

@@ -222,17 +222,23 @@ defmodule Mutare.MacroRouting.RegistryTest do
                MapSet.new([Mutare.Test.HostMutator, Mutare.Test.SecondHostMutator])
     end
 
-    test "an explicit static hosted route composes with a host-only mutator" do
+    test "a declarative entry may not use an adapter-grade treatment" do
+      # `:pinned`, `{:keyword, …}`, and `:hosted` assert DSL facts Mutare cannot check, so they
+      # are reserved for code providers (a `Mutare.MacroRouting` module under `:mutators` /
+      # `:extensions`) — even when an enabled host could deliver the `:hosted` position.
       host = Mutator.Spec.for_module(Mutare.Test.SecondHostMutator)
 
-      registry =
-        Macros.build(
-          [{Mutare.Test.HostDSL, :filter, 2, [:expression, :hosted]}],
-          [host]
-        )
+      assert_raise ArgumentError, ~r/adapter-grade treatment.*:hosted/s, fn ->
+        Macros.build([{Mutare.Test.HostDSL, :filter, 2, [:expression, :hosted]}], [host])
+      end
 
-      assert %Entry{router: nil, hosts: [Mutare.Test.SecondHostMutator]} =
-               Macros.lookup(registry, [:Mutare, :Test, :HostDSL], :filter, 2)
+      assert_raise ArgumentError, ~r/adapter-grade treatment.*:pinned/s, fn ->
+        Macros.build([{Mutare.Test.HostDSL, :set, 2, [:expression, :pinned]}], [])
+      end
+
+      assert_raise ArgumentError, ~r/adapter-grade treatment.*:keyword/s, fn ->
+        Macros.build([{Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:skip]}]}], [])
+      end
     end
 
     test "conflicting code-provided routes raise instead of depending on provider order" do
@@ -256,10 +262,12 @@ defmodule Mutare.MacroRouting.RegistryTest do
     end
 
     test "a broad static hosted route requires a host subscription covering its full selector" do
-      host = Mutator.Spec.for_module(Mutare.Test.SecondHostMutator)
+      # The fixture routes the whole module `:hosted` but subscribes to only one macro, so some
+      # matched call would have no deliverer.
+      broad = Mutator.Spec.for_module(Mutare.Test.BroadHostedRouteMutator)
 
       assert_raise Mutare.MacroRouting.ContractError, ~r/no enabled.*MacroHost/s, fn ->
-        Macros.build([{Mutare.Test.HostDSL, :*, :hosted}], [host])
+        Macros.build([], [broad])
       end
     end
 
@@ -284,7 +292,7 @@ defmodule Mutare.MacroRouting.RegistryTest do
         Macros.build([{Ecto.Query, :where, :any, :routing}], [])
       end
 
-      assert_raise Mutare.MacroRouting.ContractError, ~r/no enabled.*MacroHost/s, fn ->
+      assert_raise ArgumentError, ~r/adapter-grade treatment/, fn ->
         Macros.build([{Ecto.Query, :where, 2, [:expression, :hosted]}], [])
       end
     end

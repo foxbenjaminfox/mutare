@@ -160,6 +160,19 @@ defmodule Mutare.Test.StaticRoutingExtension do
   def macro_routes, do: [{Mutare.Test.SomeDSL, :frag, 2, [:expression, :skip]}]
 end
 
+defmodule Mutare.Test.KeywordPinnedRoutingExtension do
+  @moduledoc """
+  An extension statically routing `set/2`'s keyword argument with the recursive adapter grammar
+  (`{:keyword, [:pinned, :skip]}`) — the code-provider home of the adapter-grade treatments that
+  declarative `:macro_routes` configuration rejects.
+  """
+  @behaviour Mutare.MacroRouting
+
+  @impl Mutare.MacroRouting
+  def macro_routes,
+    do: [{Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:pinned, :skip]}]}]
+end
+
 defmodule Mutare.Test.ConflictingQueryRoutingExtension do
   @moduledoc "A conflicting code-provided route used to verify deterministic conflict errors."
   @behaviour Mutare.MacroRouting

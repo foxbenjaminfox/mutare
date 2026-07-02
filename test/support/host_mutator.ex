@@ -327,6 +327,30 @@ defmodule Mutare.Test.ShadowedHostMutator do
   def host(_call, _context), do: []
 end
 
+defmodule Mutare.Test.BroadHostedRouteMutator do
+  @moduledoc """
+  A host mutator whose `macro_routes/0` declares a **whole-module** static `:hosted` route while
+  its subscription covers only one macro. A broad static `:hosted` requires a subscription
+  covering its *full* selector — otherwise some matched call would have no deliverer — so the
+  registry rejects the pair at build.
+  """
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.Mutator.MacroHost
+  @behaviour Mutare.MacroRouting
+
+  @impl Mutare.Mutator
+  def name, do: :broad_hosted_route
+
+  @impl Mutare.MacroRouting
+  def macro_routes, do: [{Mutare.Test.HostDSL, :*, :hosted}]
+
+  @impl Mutare.Mutator.MacroHost
+  def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, 2}]
+
+  @impl Mutare.Mutator.MacroHost
+  def host(_call, _context), do: []
+end
+
 defmodule Mutare.Test.EmptySubscriptionHostMutator do
   @moduledoc "A host-only mutator whose empty subscription list is an invalid inert capability."
   @behaviour Mutare.Mutator

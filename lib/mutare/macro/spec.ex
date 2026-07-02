@@ -79,6 +79,27 @@ defmodule Mutare.Macro.Spec do
   def host_required?(%__MODULE__{args: args}), do: hosted?(args)
 
   @doc """
+  Returns whether a static route uses an adapter-grade treatment — `:pinned`, `:hosted`, or
+  `{:keyword, …}` — the tier reserved for code providers implementing `Mutare.MacroRouting`.
+
+  The `:routing` classifier is adapter-grade too, but is rejected on its own terms (it needs a
+  `route_arguments/2` callback, which configuration cannot supply), so it returns `false` here.
+  """
+  @spec adapter_graded?(t()) :: boolean()
+  def adapter_graded?(%__MODULE__{args: :routing}), do: false
+
+  def adapter_graded?(%__MODULE__{args: args}) when is_list(args),
+    do: Enum.any?(args, &adapter_treatment?/1)
+
+  def adapter_graded?(%__MODULE__{args: treatment}), do: adapter_treatment?(treatment)
+
+  # `{:keyword, …}` is adapter-grade at its wrapper, so nested values need no recursion here.
+  defp adapter_treatment?(:hosted), do: true
+  defp adapter_treatment?(:pinned), do: true
+  defp adapter_treatment?({:keyword, _treatments}), do: true
+  defp adapter_treatment?(_treatment), do: false
+
+  @doc """
   Builds and validates a macro route spec.
 
   `module` is normalized to its lookup key. `name`, `arity`, and `args` are

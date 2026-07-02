@@ -6577,3 +6577,29 @@ While there, a `Target`'s `:range` gained the same fail-loud validation as its `
 `Target.new/4` for immediate author feedback and again at the dispatch trust boundary (the struct
 can be forged) — so a malformed range raises a `ContractError` naming the host instead of crashing
 at site-recording time.
+
+A second tiering pass hardened the same boundary in prose. The README's pointer paragraph still
+said the adapter treatments "are accepted in `macro_routes:` too", which read as an invitation to
+put them in project config; it now says the user tier is the *whole* `.mutare.exs` vocabulary and
+that wanting more means you're writing an adapter. The consequences of a wrong assertion —
+`:pinned` on a DSL that rejects `^` fails the single compile and is recovered as poison (mutants
+discarded, rebuild paid); a misrouted `{:keyword, …}` silently loses coverage; `:hosted` without an
+enabled subscriber aborts at scan time — are now stated where adapter authors read: expanded in the
+extending guide's routing section, compact in the `Mutare.MacroRouting` moduledoc's new "tiered
+vocabulary" paragraph.
+
+The pass initially stopped at docs ("the tier is a responsibility boundary, not a validation one"),
+on the theory that an app author vendoring an adapter's route line was legitimate. Reversed the same
+day: the vendoring case doesn't need config — a one-module extension carries the same line with an
+owner attached — and leaving the footgun loaded contradicted the tier the docs had just drawn. Now
+`Registry.validate_config!` rejects a declarative entry whose args are adapter-graded
+(`Spec.adapter_graded?/1`: `:pinned`, `:hosted`, or a `{:keyword, …}` wrapper — nested values need
+no recursion since the wrapper itself triggers) with an `ArgumentError`, the same class as the
+existing declarative-`:routing` rejection at the same choke point; code-provider routes are
+untouched. `:routing` stays out of `adapter_graded?/1` on purpose — it is rejected on its own terms
+(config cannot supply the callback), and folding it in would misreport that error. One test
+consequence: registry tests could no longer inject broad/hosted routes through the config argument,
+so the covering-selector check is now exercised by a fixture (`BroadHostedRouteMutator`, whole-module
+`:hosted` route + narrower subscription) and the static recursive-grammar transform test moved to an
+extension provider (`KeywordPinnedRoutingExtension`), with a companion test pinning the config
+rejection.

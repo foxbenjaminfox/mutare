@@ -185,14 +185,15 @@ An entry is `{Module, :name, arity, treatment}`, or `{Module, :name, treatment}`
 
 A per-position list is padded with `:expression`, so `[:expression, :skip]` means "mutate the first argument, skip the second, mutate the rest". The macro is matched however it's written — directly, aliased, or imported (bare).
 
-That vocabulary is the whole escape hatch most projects need: telling Mutare an argument isn't
-ordinary runtime code. Three further treatments — `:pinned`, `{:keyword, …}`, and `:hosted` — plus
-shape-dependent routing exist for **library adapters**: an extension implementing
+That vocabulary is the whole escape hatch most projects need — and the whole vocabulary
+`.mutare.exs` accepts: it only tells Mutare an argument isn't ordinary runtime code. Further
+treatments (and shape-dependent routing) exist for **library adapters**: an extension implementing
 `Mutare.MacroRouting` describes a DSL's argument shapes once, and independent host mutators
-implementing `Mutare.Mutator.MacroHost` deliver mutations *inside* its fragments. They are accepted
-in `macro_routes:` too, but they carry real contracts (`:pinned` interpolates a `^`-pinned selector
-into a scalar DSL value; `:hosted` requires an enabled, subscribed host mutator) — start from the
-[Extending Mutare](https://hexdocs.pm/mutare/extending.html) guide before reaching for them.
+implementing `Mutare.Mutator.MacroHost` deliver mutations *inside* its fragments. Those treatments
+assert facts about the DSL that Mutare cannot check, so they can only come from adapter code that
+takes responsibility for them — a `macro_routes:` config entry using one is rejected. If you find
+yourself wanting one, you're writing an adapter: start from the
+[Extending Mutare](https://hexdocs.pm/mutare/extending.html) guide.
 
 #### Wildcards: a whole module, or a name in any module
 

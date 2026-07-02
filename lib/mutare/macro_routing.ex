@@ -33,6 +33,18 @@ defmodule Mutare.MacroRouting do
   mutation ownership are independent: one library adapter can describe the DSL while several
   mutators contribute mutations inside it.
 
+  The treatment vocabulary is tiered. `:skip`, `:expression`, `:pattern`, and `:binding_pattern`
+  only tell Mutare an argument isn't ordinary runtime code; they are the whole vocabulary the
+  declarative `:macro_routes` configuration key accepts. `:pinned`, `{:keyword, ...}`, and
+  `:hosted` are adapter-grade: each asserts a fact about the DSL that Mutare cannot verify, and
+  the module routing it takes responsibility for that fact. A `:pinned` position must genuinely
+  accept `^` interpolation — where it doesn't, the spliced selector fails the single metamutant
+  compile and is recovered as poison, discarding those mutants after a rebuild. A `:hosted` route
+  without an enabled subscribing host aborts the run at scan time. These treatments must come
+  from a module implementing this behaviour — an adapter written and tested against the library
+  it describes; a declarative `:macro_routes` entry that uses one is rejected with an
+  `ArgumentError`.
+
   ## Which behaviours do I implement?
 
   Routing and selector *delivery* are separate capabilities, so you declare only the ones you use:
@@ -58,7 +70,8 @@ defmodule Mutare.MacroRouting do
 
   Identical declarations from multiple code providers coalesce. Conflicting code-provided routes
   raise `Mutare.MacroRouting.ContractError` instead of depending on configuration order. A
-  declarative `:macro_routes` entry is an explicit final override.
+  declarative `:macro_routes` entry is an explicit final override, restricted to the user-tier
+  treatments above.
 
   ## The committed surface
 

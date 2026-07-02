@@ -158,8 +158,28 @@ keyword *values*, keep keys raw), or `:hosted` (hand the position to a host
 mutator — below). The `:routing` sentinel defers to
 `route_arguments/2` when the right treatment depends on the call's shape —
 `where(q, category: "Foo")` is data, `where(q, [u], u.x == u.y)` is a DSL
-fragment. The full treatment semantics, precedence rules, and the committed
-compatibility surface for adapters are in the `Mutare.MacroRouting` docs.
+fragment.
+
+The first four treatments are also the end-user vocabulary of the declarative
+`macro_routes:` config key. The other three are adapter-grade: routing a
+position `:pinned`, `{:keyword, ...}`, or `:hosted` asserts facts about the
+DSL that Mutare cannot check, and a wrong assertion has real consequences.
+`:pinned` splices a `^`-pinned selector into the argument, so it is sound only
+where the DSL genuinely accepts `^` interpolation, and only for a scalar value
+(a compound value is rejected at transform time with an error rather than left
+to poison the build — but a DSL that rejects `^` outright still breaks the
+single compile, costing a poison-recovery rebuild that drops those mutants).
+`{:keyword, ...}` asserts the argument is a keyword list whose keys are DSL
+vocabulary, never data — a misrouted position silently loses mutation
+coverage. `:hosted` is a delivery contract, not a hint: it leaves the position
+raw and requires an enabled mutator subscribed via `Mutare.Mutator.MacroHost`,
+and the run aborts at scan time if none is. That is why these treatments can
+only come from here — an adapter written and tested against the library it
+describes. A declarative `macro_routes:` entry in `.mutare.exs` that uses one
+is rejected with an error; put the route in a module implementing
+`Mutare.MacroRouting` instead (a one-module extension is enough). The full
+treatment semantics, precedence rules, and the committed compatibility surface
+for adapters are in the `Mutare.MacroRouting` docs.
 
 ### Hosting mutations inside a DSL
 
