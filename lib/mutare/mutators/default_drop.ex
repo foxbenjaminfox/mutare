@@ -9,6 +9,7 @@ defmodule Mutare.Mutators.DefaultDrop do
     * `Map.get/3` → `Map.get/2`            `Keyword.get/3` → `Keyword.get/2`
     * `Map.pop/3` → `Map.pop/2`            `Keyword.pop/3` → `Keyword.pop/2`
     * `Enum.at/3` → `Enum.at/2`
+    * `List.pop_at/3` → `List.pop_at/2`
     * `List.first/2` → `List.first/1`      `List.last/2` → `List.last/1`
     * `Map.get_lazy/3` → `Map.get/2`       `Keyword.get_lazy/3` → `Keyword.get/2`
     * `Map.pop_lazy/3` → `Map.pop/2`       `Keyword.pop_lazy/3` → `Keyword.pop/2`
@@ -67,6 +68,7 @@ defmodule Mutare.Mutators.DefaultDrop do
     {[:Map], :pop, 3} => {:pop, [nil]},
     {[:Keyword], :pop, 3} => {:pop, [nil]},
     {[:Enum], :at, 3} => {:at, [nil]},
+    {[:List], :pop_at, 3} => {:pop_at, [nil]},
     {[:List], :first, 2} => {:first, [nil]},
     {[:List], :last, 2} => {:last, [nil]},
     {[:Map], :get_lazy, 3} => {:get, []},

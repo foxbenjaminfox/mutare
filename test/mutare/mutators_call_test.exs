@@ -557,6 +557,7 @@ defmodule Mutare.MutatorsCallTest do
       assert dropd("Keyword.get(kw, k, 0)", false) == ["Keyword.get(kw, k)"]
       assert dropd("Map.pop(m, k, :d)", false) == ["Map.pop(m, k)"]
       assert dropd("Enum.at(xs, i, :none)", false) == ["Enum.at(xs, i)"]
+      assert dropd("List.pop_at(xs, i, :empty)", false) == ["List.pop_at(xs, i)"]
       assert dropd("List.first(xs, :empty)", false) == ["List.first(xs)"]
       assert dropd("List.last(xs, :empty)", false) == ["List.last(xs)"]
     end
@@ -564,6 +565,10 @@ defmodule Mutare.MutatorsCallTest do
     test "a literal nil default is skipped (equivalent — nil is the implicit default)" do
       assert DefaultDrop.mutate(parse("Map.get(m, k, nil)"), %{pipe_mode: :unpiped}) == :skip
       assert DefaultDrop.mutate(parse("Keyword.get(kw, k, nil)"), %{pipe_mode: :unpiped}) == :skip
+
+      assert DefaultDrop.mutate(parse("List.pop_at(xs, i, nil)"), %{pipe_mode: :unpiped}) ==
+               :skip
+
       # but a non-nil falsy default (false, 0) is a real difference — still dropped.
       assert dropd("Map.get(m, k, false)", false) == ["Map.get(m, k)"]
       assert dropd("Map.get(m, k, 0)", false) == ["Map.get(m, k)"]
@@ -635,10 +640,12 @@ defmodule Mutare.MutatorsCallTest do
     test "piped: effective arity is +1, so a /3 reaches us as 2 visible args" do
       # `m |> Map.get(k, :d)` — drop the trailing visible default, leaving the /2 stage.
       assert dropd("Map.get(k, :default)", true) == ["Map.get(k)"]
+      assert dropd("List.pop_at(i, :empty)", true) == ["List.pop_at(i)"]
       assert dropd("List.first(:empty)", true) == ["List.first()"]
       assert dropd("Map.get_lazy(k, f)", true) == ["Map.get(k)"]
       # A piped nil default is still equivalent → skipped.
       assert DefaultDrop.mutate(parse("Map.get(k, nil)"), %{pipe_mode: :piped}) == :skip
+      assert DefaultDrop.mutate(parse("List.pop_at(i, nil)"), %{pipe_mode: :piped}) == :skip
     end
 
     test "a /2 lookup (no default) is not mutated — needs the piped flag to tell apart" do

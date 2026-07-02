@@ -1471,6 +1471,9 @@ defmodule Mutare.TransformResolutionTest do
         def b(m, k), do: m |> Map.get(k, :default)
         def c(m, k), do: Map.get(m, k, nil)
         def d(m, k, f), do: Keyword.get_lazy(m, k, f)
+        def e(xs, i), do: List.pop_at(xs, i, :empty)
+        def f(xs, i), do: xs |> List.pop_at(i, :empty)
+        def g(xs, i), do: List.pop_at(xs, i, nil)
       end
       """
 
@@ -1483,6 +1486,8 @@ defmodule Mutare.TransformResolutionTest do
       assert {"Map.get(m, k, :default)", "Map.get(m, k)"} in pairs
       assert {"Map.get(k, :default)", "Map.get(k)"} in pairs
       assert {"Keyword.get_lazy(m, k, f)", "Keyword.get(m, k)"} in pairs
+      assert {"List.pop_at(xs, i, :empty)", "List.pop_at(xs, i)"} in pairs
+      assert {"List.pop_at(i, :empty)", "List.pop_at(i)"} in pairs
       # The nil-default call (def c) is equivalent — no mutant.
       refute Enum.any?(pairs, fn {orig, _} -> orig =~ "nil" end)
       assert_compiles(meta)
