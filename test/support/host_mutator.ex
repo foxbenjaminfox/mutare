@@ -541,13 +541,13 @@ defmodule Mutare.Test.KeywordHostedMutator do
   end
 
   # Walk the assigns pairs in lockstep with the routed value treatments: `:hosted` marks a leaf,
-  # `{:keyword, …}` recurses into the Sourceror-wrapped nested list, anything else isn't hosted
-  # (values past the treatment list default to `:skip`, matching core's padding rule).
+  # `{:keyword, …}` recurses into the Sourceror-wrapped nested list, anything else isn't hosted.
+  # The routed list aligns 1:1 with the pairs — core enforces the length strictly at routing.
   defp hosted_leaves(pairs, treatments, path) do
     pairs
     |> Enum.with_index()
     |> Enum.flat_map(fn {{_key, value}, index} ->
-      case Enum.at(treatments, index, :skip) do
+      case Enum.at(treatments, index) do
         :hosted ->
           [{value, path ++ [index]}]
 

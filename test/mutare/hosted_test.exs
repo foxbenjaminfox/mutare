@@ -572,6 +572,33 @@ defmodule Mutare.HostedTest do
         )
       end
     end
+
+    # The treatment list is strict — no silent `:skip` padding for unnamed pairs, no silent
+    # truncation of extras. Either mismatch means the route and the call disagree about the
+    # argument's shape, so it raises (loud, at transform time) instead of under-/over-routing.
+    test "a treatment list shorter than the pairs raises" do
+      assert_raise ArgumentError, ~r/exactly one treatment per pair.*2-pair/, fn ->
+        Mutare.Transform.transform_string_with_sites(@kw_source,
+          file: "kw_short.ex",
+          mutators: [:string],
+          macro_routes: [
+            {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:pinned]}]}
+          ]
+        )
+      end
+    end
+
+    test "a treatment list longer than the pairs raises" do
+      assert_raise ArgumentError, ~r/exactly one treatment per pair/, fn ->
+        Mutare.Transform.transform_string_with_sites(@kw_source,
+          file: "kw_long.ex",
+          mutators: [:string],
+          macro_routes: [
+            {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:pinned, :skip, :skip]}]}
+          ]
+        )
+      end
+    end
   end
 
   describe "nested per-keyword-pair routing ({:keyword, [{:keyword, …}]})" do

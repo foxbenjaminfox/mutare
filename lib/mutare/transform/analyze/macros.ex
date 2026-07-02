@@ -129,9 +129,9 @@ defmodule Mutare.Transform.Analyze.Macros do
   # not the column name `category`, and skip the `deleted_at: nil` pair (`IS NULL`, not `= nil`)
   # by routing its value `:skip`. A value treatment may itself be `{:keyword, …}`, so a *nested*
   # shorthand — a keyword list whose values are keyword lists, e.g. `from(S, where: [x: v])` —
-  # routes too. A value position past the list defaults to `:skip` (raw), so only what the
-  # classifier explicitly marked is ever mutated; a non-keyword argument falls back to raw, so a
-  # mis-shaped classification can never splice into a non-pair.
+  # routes too. The treatment list is strict: exactly one treatment per pair, or routing raises
+  # (`validate_keyword_treatments!/2`) — no silent padding or truncation. A non-keyword argument
+  # falls back to raw, so a mis-shaped classification can never splice into a non-pair.
   defp route_macro_arg(descent, arg, {:keyword, value_treatments}, mutators)
        when is_list(value_treatments),
        do: route_keyword(descent, arg, value_treatments, mutators)
@@ -209,21 +209,18 @@ defmodule Mutare.Transform.Analyze.Macros do
   # (a trailing keyword argument, `where(q, x: v)`) and the Sourceror `{:__block__, _, [list]}`
   # wrap a list takes in a keyword *value* position (`where: [x: v]` inside a `from`) — unwrapped,
   # routed, re-wrapped so the rendering metadata is preserved. A non-keyword-shaped value is left
-  # raw (nothing to route).
+  # raw (nothing to route). The treatment list is **strict**: exactly one treatment per pair, or
+  # `validate_keyword_treatments!/2` raises.
   defp route_keyword(descent, {:__block__, meta, [list]}, value_treatments, mutators)
        when is_list(list),
        do: {:__block__, meta, [route_keyword(descent, list, value_treatments, mutators)]}
 
   defp route_keyword(descent, list, value_treatments, mutators) when is_list(list) do
     if CallOptions.keyword_list_shaped?(list) do
-      list
-      |> Enum.with_index()
-      |> Enum.map(fn
-        {{key, value}, i} ->
-          {key, route_macro_arg(descent, value, Enum.at(value_treatments, i, :skip), mutators)}
+      validate_keyword_treatments!(list, value_treatments)
 
-        {other, _i} ->
-          other
+      Enum.zip_with(list, value_treatments, fn {key, value}, treatment ->
+        {key, route_macro_arg(descent, value, treatment, mutators)}
       end)
     else
       list
@@ -231,6 +228,23 @@ defmodule Mutare.Transform.Analyze.Macros do
   end
 
   defp route_keyword(_descent, arg, _value_treatments, _mutators), do: arg
+
+  # A `{:keyword, value_treatments}` routing is a per-pair contract: a list shorter than the pairs
+  # would silently leave the unnamed values raw (an author who *meant* `:skip` can write it), and a
+  # longer one names positions that don't exist — either way the route and the call disagree about
+  # the argument's shape, so fail loud rather than under- or over-route. A static route can only
+  # satisfy this when every call site has the same pair count; variable shapes belong to `:routing`,
+  # whose classifier sees the concrete call.
+  defp validate_keyword_treatments!(pairs, value_treatments) do
+    if length(pairs) != length(value_treatments) do
+      raise ArgumentError,
+            "a {:keyword, value_treatments} macro routing must name exactly one treatment per " <>
+              "pair, but #{length(value_treatments)} treatment(s) were declared for the " <>
+              "#{length(pairs)}-pair `#{Macro.to_string(pairs)}`. Name every pair (use :skip to " <>
+              "leave a value raw); when call sites vary in pair count, register the macro with " <>
+              ":routing and classify each call's shape in route_arguments/2."
+    end
+  end
 
   # The left side of a `|>` whose right side is a known macro: the piped value is the macro's
   # *effective argument 0*, so it inherits position 0's treatment, which `Resolve` recorded on

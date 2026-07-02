@@ -136,8 +136,8 @@ defmodule Mutare.MacroRouting do
   lengths are validated by the transform.
 
     * `{:keyword, treatments}` — routes keyword values positionally while leaving
-      keys unchanged; extra values default to `:skip`, and nested keyword routing is
-      supported
+      keys unchanged; the list must name exactly one treatment per pair, and nested
+      keyword routing is supported
     * `:pinned` — applies configured literal mutations to a scalar DSL value and
       wraps the selector in `^`; use only where the macro accepts interpolation
     * `:hosted` — delegates the position to
@@ -147,11 +147,14 @@ defmodule Mutare.MacroRouting do
   Static and dynamic routes share one recursive treatment vocabulary:
 
     * `{:keyword, value_treatments}` for a keyword-list argument. Core routes each pair's value by
-      the corresponding positional treatment (values past the list default to `:skip`) and leaves
-      every key raw, because a DSL keyword key is a field or option name, not a value. A value
-      treatment may itself be `{:keyword, ...}`, so nested keyword lists route recursively. A
-      non-keyword argument under this treatment is left raw. A nested `:hosted` value is delivered
-      through `c:Mutare.Mutator.MacroHost.host/2`, which receives the resolved whole macro call.
+      the corresponding positional treatment and leaves every key raw, because a DSL keyword key
+      is a field or option name, not a value. The list is strict — exactly one treatment per pair
+      (`:skip` a value to leave it raw); a length mismatch at a concrete call raises, so a static
+      keyword route fits only call sites with a fixed pair count (variable shapes belong to
+      `:routing`). A value treatment may itself be `{:keyword, ...}`, so nested keyword lists route
+      recursively. A non-keyword argument under this treatment is left raw. A nested `:hosted`
+      value is delivered through `c:Mutare.Mutator.MacroHost.host/2`, which receives the resolved
+      whole macro call.
 
     * `:pinned` for a scalar value in a compile-time DSL position that accepts interpolation but
       not a bare selector `case`. Core applies its configured literal families, records their own
