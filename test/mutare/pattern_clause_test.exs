@@ -221,6 +221,49 @@ defmodule Mutare.PatternClauseTest do
       end
     end
 
+    test "inline keyword receive clause blocks are normalized before runtime descent" do
+      source = """
+      defmodule Mutare.InlineReceiveFixture do
+        def take do
+          receive do: ({x, y} -> x - y)
+        end
+
+        def timeout do
+          receive do: (:msg -> :got), after: (5 -> :timeout)
+        end
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [
+            Mutare.Mutators.List,
+            Mutare.Mutators.PatternSwap,
+            Mutare.Mutators.Arithmetic,
+            Mutare.Mutators.ConventionAtom
+          ]
+        )
+
+      refute Enum.any?(
+               sites,
+               &(&1.mutator == :list and String.contains?(&1.original_code, "->"))
+             )
+
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
+      swap = Enum.find(sites, &(&1.mutator == :pattern_swap and &1.mutated_code == "{y, x}"))
+      assert swap
+
+      Selector.put(Selector.baseline())
+      send(self(), {5, 2})
+      assert mod.take() == 3
+
+      Selector.put(swap.id)
+      send(self(), {5, 2})
+      assert mod.take() == -3
+    after
+      Selector.put(Selector.baseline())
+    end
+
     test "a duplicate case-clause pattern thins (keeps the body-read binding), never `{_, _}`" do
       # `case_clause_parts/1` passes the names read in guard+body as `used_outside`, forcing the
       # wildcard family into *thin* mode; dropping that read-set would let it wildcard both

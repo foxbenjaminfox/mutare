@@ -275,6 +275,32 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # The receive's `do` clauses plus a rebuilder that swaps them back into `blocks`
   # (preserving an `after` block). An absent `do` (shouldn't happen) → no clauses and an
   # identity rebuild, so the construct is still analyzed but offers no pattern mutants.
+  #
+  # Inline keyword receive forms parse their clause blocks with an extra `__block__`
+  # wrapper:
+  #
+  #     receive do: (msg -> :ok)
+  #     # do: {:__block__, _, [[{:->, _, _}]]}
+  #
+  # Leaving that wrapper in the normal runtime descent makes it look like an ordinary
+  # non-empty list literal, so `Mutare.Mutators.List` can collapse the hidden clause list
+  # to `[]` and render `receive do <selector> end` — invalid Elixir, because receive
+  # requires raw `->` clauses. Normalize receive's clause-bearing blocks before descent so
+  # inline and block forms share the same clause-list shape. `after` is normalized too; it
+  # carries the same `timeout -> body` clause syntax and can otherwise hit the same hidden
+  # wrapper path.
+  def normalize_receive_clause_blocks(blocks) do
+    Enum.map(blocks, fn
+      {key, {:__block__, _meta, [clauses]}} = pair ->
+        if receive_clause_block_key?(key) and clause_list?(clauses),
+          do: {key, clauses},
+          else: pair
+
+      pair ->
+        pair
+    end)
+  end
+
   def receive_do_clauses(blocks, meta) do
     # NOTE (equivalent survivor): forcing this finder's `== :do` to `true` is equivalent — the
     # `:do` block is always the first entry of a `receive`, so `Enum.find` returns it either
@@ -297,6 +323,11 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
         {[], fn _new -> {:receive, meta, [blocks]} end}
     end
   end
+
+  defp receive_clause_block_key?(key), do: AST.key_atom(key) in [:do, :after]
+
+  defp clause_list?(clauses),
+    do: is_list(clauses) and clauses != [] and Enum.all?(clauses, &match?({:->, _, _}, &1))
 
   # For each clause: structural pattern rewrites + pattern-literal swaps at each pattern
   # position, plus guard-operator swaps. Each builds a `Candidate.CasePattern` whose
