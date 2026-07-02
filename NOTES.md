@@ -792,6 +792,52 @@ mirroring production. A non-compiling-lib fixture therefore exercises the compil
 verdict by a different route, since in production a non-compiling lib is caught at the compile step
 (poison recovery) and never reaches per-mutant runs.
 
+### Bypassing Mix's build lock per mutant `[dead end]`
+Follow-on to the boot-skip flags above, attempted and abandoned 2026-07-02 (`7657e85`)
+The observation was real:
+`Mix.Tasks.Compile.All` enters `Mix.Project.with_build_lock/2` *before* honoring
+`--no-compile`, so concurrent per-mutant runs serialize around a no-op compiler
+branch and can print "Waiting for lock on the build directory". The fix was
+`MIX_OS_CONCURRENCY_LOCK=false` on the per-mutant path — and each safety layer it
+then needed propped up the one above:
+
+1. The env leaks to nested `mix` calls from the target suite (a suite testing Mix
+   tooling would inherit a disabled real lock) → restore it from an injected
+   snippet in `config/runtime.exs`, which Mix loads after the outer no-op compile
+   but before app start.
+2. Placing that snippet needs `:config_path`, and its timing is only correct when
+   no `test` alias runs work before the inner `test` task → statically parse the
+   target's `mix.exs` (`Sandbox.MixProject`, ~250 lines).
+3. The static parse can't evaluate `aliases: aliases()` — the *most common*
+   real-world `mix.exs` shape — so it classified it "unsafe", which suppressed the
+   bypass **and** dropped the long-standing boot-skip flags: a net regression vs
+   the status quo for typical targets. Edge-case whack-a-mole followed
+   (absolute `:config_path`, umbrella children, lock-override scoping).
+4. Removing the lock removed its *accidental* start staggering, exposing a
+   boot-stampede risk on shared services → a `LaunchStagger` compensator.
+
+Two reasons to abandon rather than polish:
+- **No demonstrated win.** A micro-benchmark (three batches of eight warmed
+  two-scheduler `mix test` runs of `ast_test.exs`) showed no speedup from the
+  bypass. Don't over-read the run: it was taken on a contended host with plenty
+  happening in parallel, so it is *inconclusive* as evidence the bypass is
+  slower — but the burden of proof sat on the bypass, and it wasn't met. Under
+  `--no-compile` the lock's critical section is near-free anyway, and its
+  serialization doubles as an accidental boot-stampede limiter. The case that
+  motivated the work (false serialization on large targets) was never measured.
+- **The "Waiting for lock" noise is invisible anyway** — it lands in captured
+  per-mutant output that only surfaces on failure.
+
+If a large-target measurement ever shows the lock actually costing throughput:
+**don't parse `mix.exs` — ask Mix.** One `MIX_ENV=test mix eval` probe per run,
+in the sandbox during materialization, reads `Mix.Project.config()[:config_path]`
+and `[:aliases][:test]` as ground truth (`mix eval` evaluates the project without
+compiling or starting apps; umbrellas iterate `Mix.Project.apps_paths` +
+`Mix.Project.in_project`). Trust is a non-issue — we already execute the target's
+whole test suite. That replaces the fragile parser with ~30 lines and lets the
+rest of the abandoned design (marker file, restore snippet, conditional argv)
+stand as written.
+
 ### Early stop after N survivors `[done]`
 `--max-survivors N` is for the iterate-and-fix loop: surface a handful of concrete test gaps, not a
 full score. Every mutant is still compiled in (only `--max-mutants`, a `Mutare.Schema` site cap,
@@ -3465,7 +3511,8 @@ lock…") and, since each spawns a full BEAM, oversubscribes CPU — a real but
 bounded overhead (4 workers gave ~2.4× in a spike). The design's open question —
 per-worker `MIX_BUILD_PATH` vs full source copy — would remove the contention;
 deferred. Default workers may be worth lowering from schedulers_online to cut
-oversubscription.
+oversubscription. (Disabling the lock outright was tried and abandoned — see
+"Bypassing Mix's build lock per mutant" above.)
 
 ### Per-worker DB partitioning (`:partition_env`) `[done]`
 A suite with shared mutable state — the common case: an Ecto repo — can't have N
