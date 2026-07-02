@@ -1,3 +1,30 @@
+defmodule Mutare.Test.RawInlineReceiveMutator do
+  @moduledoc false
+  @behaviour Mutare.Mutator
+
+  @impl Mutare.Mutator
+  def name, do: :raw_inline_receive
+
+  @impl Mutare.Mutator
+  def mutate({:receive, _meta, [blocks]}) when is_list(blocks) do
+    if Enum.any?(blocks, &raw_inline_receive_clause_block?/1) do
+      [Mutare.AST.literal(:raw_inline_receive)]
+    else
+      :skip
+    end
+  end
+
+  def mutate(_node), do: :skip
+
+  defp raw_inline_receive_clause_block?({key, {:__block__, _meta, [clauses]}})
+       when is_list(clauses) do
+    Mutare.AST.key_atom(key) in [:do, :after] and
+      Enum.all?(clauses, &match?({:->, _, _}, &1))
+  end
+
+  defp raw_inline_receive_clause_block?(_pair), do: false
+end
+
 defmodule Mutare.PatternClauseTest do
   @moduledoc """
   The structural pattern families (variable swap, duplicate→wildcard) mutate the *clause
@@ -260,6 +287,38 @@ defmodule Mutare.PatternClauseTest do
       Selector.put(swap.id)
       send(self(), {5, 2})
       assert mod.take() == -3
+    after
+      Selector.put(Selector.baseline())
+    end
+
+    test "inline keyword receive preserves the raw whole node for custom mutators" do
+      source = """
+      defmodule Mutare.RawInlineReceiveFixture do
+        def take do
+          receive do: (msg -> {:ok, msg})
+        end
+      end
+      """
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Test.RawInlineReceiveMutator]
+        )
+
+      site = Enum.find(sites, &(&1.mutator == :raw_inline_receive))
+      assert site
+      assert site.original_code =~ "receive"
+      assert site.original_code =~ "msg -> {:ok, msg}"
+      refute site.original_code =~ "->("
+
+      [{mod, _}] = Mutare.Test.Compile.string(meta)
+
+      Selector.put(Selector.baseline())
+      send(self(), :msg)
+      assert mod.take() == {:ok, :msg}
+
+      Selector.put(site.id)
+      assert mod.take() == :raw_inline_receive
     after
       Selector.put(Selector.baseline())
     end

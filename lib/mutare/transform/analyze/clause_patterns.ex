@@ -14,7 +14,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   #
   # Entry points the descent calls (`Mutare.Transform.Analyze`):
   #   * case     → `case_clause_candidates/2` + `put_case_candidates/2`
-  #   * receive  → `receive_do_clauses/2` + `attach_clause_pattern_candidates/5`
+  #   * receive  → `receive_do_clauses/2` + `attach_clause_pattern_candidates/6`
   #   * fn       → `attach_clause_pattern_candidates/5`
   #   * try      → `rescue_type_candidates/3`
 
@@ -258,15 +258,23 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
   # Analyze the construct normally (bodies/subject mutate), then attach the clause-pattern
   # candidates so emission hosts them in the same in-place selector that wraps the whole
   # node. `clauses` is the construct's `->` clause list; `rebuild_fn` rebuilds the whole node
-  # from a mutated clause list (the only thing that differs across receive/fn). The
-  # node-level mutator offer is preserved for parity with the generic runtime clause (a
-  # custom mutator matching the whole node; built-ins match none).
+  # from a mutated clause list (the only thing that differs across receive/fn).
+  #
+  # The node-level mutator offer is preserved for parity with the generic runtime clause (a
+  # custom mutator matching the whole node; built-ins match none). `offer_node` is usually the
+  # same as `node`, but inline keyword `receive do: (...)` uses a normalized `node` for
+  # descent while preserving the raw Sourceror receive as `offer_node` so extension mutators
+  # see and report the author's shape.
   def attach_clause_pattern_candidates(descent, node, clauses, rebuild_fn, mutators) do
+    attach_clause_pattern_candidates(descent, node, node, clauses, rebuild_fn, mutators)
+  end
+
+  def attach_clause_pattern_candidates(descent, node, offer_node, clauses, rebuild_fn, mutators) do
     # mutare:ignore[atom] equivalent — the descent's `body_context/1` maps every non-`:scaffold` context (including a mutated `:mutare`) to `:runtime`, so the clause bodies mutate identically.
     analyzed = descent.recurse(node, :runtime, mutators)
 
     candidates =
-      Attach.build_candidates(node, Dispatch.mutations(node, mutators)) ++
+      Attach.build_candidates(offer_node, Dispatch.mutations(offer_node, mutators)) ++
         clause_list_candidates(clauses, rebuild_fn, mutators)
 
     Attach.put_candidates_if_any(analyzed, candidates)

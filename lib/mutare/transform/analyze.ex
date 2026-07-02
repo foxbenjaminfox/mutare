@@ -408,13 +408,21 @@ defmodule Mutare.Transform.Analyze do
   # normally, and the `Candidate.CasePattern`s are attached so emission hosts them in the
   # same selector. The two differ only in *where the clauses live* and *how to rebuild the
   # whole node*, captured by the clause list + `rebuild_fn` passed to
-  # `attach_clause_pattern_candidates/5`. (Each mutant is a full copy — C×M — acceptable for
-  # these rare, small constructs; `case` uses the per-clause path above.)
-  defp analyze({:receive, meta, [blocks]}, :runtime, mutators) when is_list(blocks) do
-    blocks = ClausePatterns.normalize_receive_clause_blocks(blocks)
-    node = {:receive, meta, [blocks]}
-    {clauses, rebuild} = ClausePatterns.receive_do_clauses(blocks, meta)
-    ClausePatterns.attach_clause_pattern_candidates(__MODULE__, node, clauses, rebuild, mutators)
+  # `attach_clause_pattern_candidates/5` or `/6`. (Each mutant is a full copy — C×M —
+  # acceptable for these rare, small constructs; `case` uses the per-clause path above.)
+  defp analyze({:receive, meta, [blocks]} = node, :runtime, mutators) when is_list(blocks) do
+    normalized_blocks = ClausePatterns.normalize_receive_clause_blocks(blocks)
+    normalized_node = {:receive, meta, [normalized_blocks]}
+    {clauses, rebuild} = ClausePatterns.receive_do_clauses(normalized_blocks, meta)
+
+    ClausePatterns.attach_clause_pattern_candidates(
+      __MODULE__,
+      normalized_node,
+      node,
+      clauses,
+      rebuild,
+      mutators
+    )
   end
 
   # A `fn` additionally has its clause bodies' return tails mutated: each clause
