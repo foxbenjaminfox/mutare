@@ -12,6 +12,11 @@ defmodule Mutare.QuoteUnquoteTest do
   @list [Mutare.Mutators.List]
   @call_removal [Mutare.Mutators.CallRemoval]
   @pattern_swap [Mutare.Mutators.PatternSwap]
+  @variable_shaped_special_forms ~w(
+    alias import require use
+    def defp defmodule defmacro defmacrop defdelegate defoverridable defimpl defprotocol
+    case cond receive try for with quote unquote unquote_splicing if unless super
+  )
 
   setup do
     Selector.put(Selector.baseline())
@@ -93,6 +98,12 @@ defmodule Mutare.QuoteUnquoteTest do
 
     Selector.put(site.id)
     assert mod.value(10) == {9, 1}
+  end
+
+  for name <- @variable_shaped_special_forms do
+    test "does not mistake a live-unquote variable named #{name} for a construct" do
+      assert_variable_shaped_special_form_unquotes(unquote(name))
+    end
   end
 
   test "prunes live-unquote ancestor mutants inside scoped fn children" do
@@ -711,5 +722,47 @@ defmodule Mutare.QuoteUnquoteTest do
 
     assert sites == []
     assert [_ | _] = Mutare.Test.Compile.string(meta)
+  end
+
+  defp assert_variable_shaped_special_form_unquotes(name) do
+    module = "Mutare.QuoteUnquote#{Macro.camelize(name)}VariableFixture"
+
+    source = """
+    defmodule #{module} do
+      def value(x) do
+        #{name} = x + 1
+
+        ast = quote do
+          unquote(#{name})
+        end
+
+        {value, _binding} = Code.eval_quoted(ast)
+        value
+      end
+    end
+    """
+
+    {meta, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_unquote_#{name}_variable.ex",
+        mutators: @arith
+      )
+
+    assert [
+             %Site{
+               mutator: :arithmetic,
+               kind: :in_place,
+               original_code: "x + 1",
+               mutated_code: "x - 1"
+             } = site
+           ] = sites
+
+    [{mod, _binary}] = Mutare.Test.Compile.string(meta)
+
+    Selector.put(Selector.baseline())
+    assert mod.value(10) == 11
+
+    Selector.put(site.id)
+    assert mod.value(10) == 9
   end
 end

@@ -906,8 +906,8 @@ defmodule Mutare.Transform.Analyze do
   # failure. Still prune inside their children: a selector inside the scoped body can
   # trap a binding that is read later in that same scoped body. Only the binding signal
   # is stopped at the construct boundary, so whole-construct candidates remain live.
-  defp prune_quote_escape_binding_ancestors({form, _meta, _args} = node)
-       when form in [:fn, :for, :with, :try],
+  defp prune_quote_escape_binding_ancestors({form, _meta, args} = node)
+       when form in [:fn, :for, :with, :try] and is_list(args),
        do: prune_quote_escape_scoped_construct(node)
 
   defp prune_quote_escape_binding_ancestors({:quote, meta, args}) when is_list(args) do
