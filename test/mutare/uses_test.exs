@@ -671,7 +671,9 @@ defmodule Mutare.UsesTest do
 
     test "a call relying on a use-injected import now produces mutants" do
       {meta, sites, _next_id} =
-        Mutare.transform_string(@controller_source, mutators: [Mutare.Mutators.Collection])
+        Mutare.Transform.transform_string_with_sites(@controller_source,
+          mutators: [Mutare.Mutators.Collection]
+        )
 
       assert Enum.any?(sites, &(&1.mutator == :collection))
       assert_compiles(meta)
@@ -679,7 +681,7 @@ defmodule Mutare.UsesTest do
 
     test "with :expand_uses false, the call is invisible and yields no mutant" do
       {_meta, sites, _next_id} =
-        Mutare.transform_string(@controller_source,
+        Mutare.Transform.transform_string_with_sites(@controller_source,
           mutators: [Mutare.Mutators.Collection],
           expand_uses: false
         )
@@ -707,7 +709,7 @@ defmodule Mutare.UsesTest do
 
     test "the use-injected import makes the registered :skip macro fire" do
       {meta, sites, _next_id} =
-        Mutare.transform_string(@schema_source,
+        Mutare.Transform.transform_string_with_sites(@schema_source,
           mutators: @schema_mutators,
           macro_routes: [{Mutare.Test.SchemaDSL, :schema, 1, :skip}]
         )
@@ -720,7 +722,7 @@ defmodule Mutare.UsesTest do
 
     test "with :expand_uses false the import is invisible, so the :skip is dead and core mutates" do
       {_meta, sites, _next_id} =
-        Mutare.transform_string(@schema_source,
+        Mutare.Transform.transform_string_with_sites(@schema_source,
           mutators: @schema_mutators,
           macro_routes: [{Mutare.Test.SchemaDSL, :schema, 1, :skip}],
           expand_uses: false
@@ -733,7 +735,9 @@ defmodule Mutare.UsesTest do
   describe "the stamp never reaches the rendered metamutant" do
     test "directives are stripped before render" do
       {meta, _sites, _next_id} =
-        Mutare.transform_string(@controller_source, mutators: [Mutare.Mutators.Collection])
+        Mutare.Transform.transform_string_with_sites(@controller_source,
+          mutators: [Mutare.Mutators.Collection]
+        )
 
       refute meta =~ "mutare_use_directives"
     end

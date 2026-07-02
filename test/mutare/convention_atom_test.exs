@@ -21,7 +21,8 @@ defmodule Mutare.ConventionAtomTest do
   # convention sites for a one-line body `def f(a, b), do: <expr>`, isolated to this family.
   defp body_sites(expr) do
     {_meta, sites, _} =
-      Mutare.transform_string("defmodule T do\n  def f(a, b), do: #{expr}\nend\n",
+      Mutare.Transform.transform_string_with_sites(
+        "defmodule T do\n  def f(a, b), do: #{expr}\nend\n",
         mutators: [ConventionAtom]
       )
 
@@ -105,7 +106,8 @@ defmodule Mutare.ConventionAtomTest do
     # The mutated node lives in a head/clause pattern; the convention swap rides the existing
     # literal machinery (lifting for a def head, tuple-the-scrutinee for a `case` clause).
     defp pattern_sites(src) do
-      {_m, sites, _} = Mutare.transform_string(src, mutators: [ConventionAtom])
+      {_m, sites, _} =
+        Mutare.Transform.transform_string_with_sites(src, mutators: [ConventionAtom])
 
       sites
       |> Enum.filter(&(&1.mutator == :convention))
@@ -129,7 +131,8 @@ defmodule Mutare.ConventionAtomTest do
     # With both enabled, a convention atom yields ONLY the sibling; a plain atom ONLY :mutare.
     defp both_codes(expr) do
       {_meta, sites, _} =
-        Mutare.transform_string("defmodule T do\n  def f, do: #{expr}\nend\n",
+        Mutare.Transform.transform_string_with_sites(
+          "defmodule T do\n  def f, do: #{expr}\nend\n",
           mutators: [ConventionAtom, AtomLiteral]
         )
 

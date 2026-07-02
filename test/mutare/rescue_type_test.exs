@@ -77,7 +77,8 @@ defmodule Mutare.RescueTypeTest do
   @compile {:no_warn_undefined, Mutare.RescueTypeFixture}
 
   setup_all do
-    {metamutant, sites, _next_id} = Mutare.transform_string(@source, file: "rt.ex")
+    {metamutant, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(@source, file: "rt.ex")
 
     ExUnit.CaptureIO.capture_io(:stderr, fn ->
       [{_module, _binary}] = Code.compile_string(metamutant)

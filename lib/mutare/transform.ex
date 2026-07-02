@@ -165,6 +165,7 @@ defmodule Mutare.Transform do
     Overlap,
     PipeEmit,
     Render,
+    Result,
     Resolve,
     Scope,
     SelectorEmit,
@@ -177,7 +178,10 @@ defmodule Mutare.Transform do
   @default_mutators Mutare.Mutators.all()
 
   @doc """
-  Transform a source string into `{metamutant_source, [%Site{}], next_id}`.
+  Transform a source string into a stable public result DTO.
+
+  Returns `%Mutare.Transform.Result{}` with the rendered metamutant source, public mutant
+  descriptions, and `next_id`.
 
   `next_id` is the first mutant id left unassigned — what the next file in a
   schema should start from. It equals `:start_id` when nothing was mutated, so
@@ -203,8 +207,16 @@ defmodule Mutare.Transform do
       `Mutare.Transform.Uses`); `false` freezes the pre-expansion behaviour (and, with it, any
       extension `use`-expansion overrides)
   """
-  @spec transform_string(String.t(), keyword()) :: {String.t(), [Site.t()], pos_integer()}
+  @spec transform_string(String.t(), keyword()) :: Result.t()
   def transform_string(source, opts \\ []) when is_binary(source) do
+    {metamutant, sites, next_id} = transform_string_with_sites(source, opts)
+    Result.from_sites(metamutant, sites, next_id)
+  end
+
+  @doc false
+  @spec transform_string_with_sites(String.t(), keyword()) ::
+          {String.t(), [Site.t()], pos_integer()}
+  def transform_string_with_sites(source, opts \\ []) when is_binary(source) do
     {transformed, ctx, parsed} = plan_and_emit(source, opts)
 
     metamutant = transformed |> silence_helper_xref() |> Render.to_source()
@@ -226,7 +238,7 @@ defmodule Mutare.Transform do
   Count the mutants a source would produce, **without rendering** the metamutant.
 
   The count is the number of ids claimed by `transform_string/2`:
-  `next_id - start_id`, which is also the number of returned sites. It is computed
+  `next_id - start_id`, which is also the number of returned public mutants. It is computed
   by running the same analysis, planning, and emit pipeline as `transform_string/2`,
   but without rendering the final metamutant source.
 

@@ -77,7 +77,8 @@ defmodule Mutare.MatchPatternTest do
   @compile {:no_warn_undefined, Mutare.MatchPatternFixture}
 
   setup_all do
-    {metamutant, sites, _next_id} = Mutare.transform_string(@source, file: "mp.ex")
+    {metamutant, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(@source, file: "mp.ex")
 
     # `return_match/1`'s trailing `{a, b} = t` binds a/b unused (it returns the match
     # value); `underscored/1`'s re-exported `_keep` is read in the rewrite's inner-case
@@ -123,7 +124,7 @@ defmodule Mutare.MatchPatternTest do
     end
     """
 
-    {meta, _sites, _next} = Mutare.transform_string(src, file: "lex.ex")
+    {meta, _sites, _next} = Mutare.Transform.transform_string_with_sites(src, file: "lex.ex")
 
     {[{module, _binary}], _io} =
       ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
@@ -238,7 +239,7 @@ defmodule Mutare.MatchPatternTest do
     # *or rebinding the `Kernel` name itself* would break or redirect.
     test "the generated fallback is fully qualified" do
       {meta, _sites, _next} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           "defmodule Z do\n  def f(t) do\n    {x, y} = t\n    x - y\n  end\nend\n"
         )
 
@@ -288,7 +289,7 @@ defmodule Mutare.MatchPatternTest do
     # metamutant doesn't gain a warning the original never had.
     test "a repeated binding constrains without a warning when the var is unused later" do
       {meta, sites, _next} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           "defmodule R do\n  def f(t) do\n    {a, a} = t\n    :ok\n  end\nend\n"
         )
 
@@ -302,7 +303,7 @@ defmodule Mutare.MatchPatternTest do
 
     test "a bitstring size variable does not warn when unused later" do
       {meta, sites, _next} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           "defmodule S do\n  def f(t) do\n    <<a, b, rest::binary-size(a)>> = t\n    {b, rest}\n  end\nend\n"
         )
 
@@ -402,7 +403,7 @@ defmodule Mutare.MatchPatternTest do
       assert Mutare.Test.AssignMutator.mutate({:=, [], [{:x, [], nil}, {:y, [], nil}]}) != :skip
 
       {_meta, sites, _next} =
-        Mutare.transform_string(@probe_source,
+        Mutare.Transform.transform_string_with_sites(@probe_source,
           file: "probe.ex",
           mutators: [Mutare.Test.AssignMutator]
         )
@@ -431,7 +432,10 @@ defmodule Mutare.MatchPatternTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.PatternSwap]
+        )
 
       assert sites == []
 
@@ -462,7 +466,10 @@ defmodule Mutare.MatchPatternTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.PatternSwap]
+        )
 
       assert Enum.any?(sites, &(&1.mutator == :pattern_swap and &1.mutated_code == "{b, a}"))
       assert meta =~ "{a, b, call} ="
@@ -487,7 +494,11 @@ defmodule Mutare.MatchPatternTest do
       end
       """
 
-      {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+      {meta, _sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.PatternSwap]
+        )
+
       assert meta =~ "{x, y, a, a} ="
 
       {_compiled, io} = ExUnit.CaptureIO.with_io(:stderr, fn -> Code.compile_string(meta) end)
@@ -509,7 +520,10 @@ defmodule Mutare.MatchPatternTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.PatternSwap]
+        )
 
       assert Enum.any?(sites, &(&1.mutator == :pattern_swap and &1.mutated_code == "{y, x}"))
       refute meta =~ "{x, y, tag} ="
@@ -533,7 +547,11 @@ defmodule Mutare.MatchPatternTest do
       end
       """
 
-      {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+      {meta, _sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.PatternSwap]
+        )
+
       assert meta =~ "{x, y} ="
       refute meta =~ "point} ="
     end
@@ -551,7 +569,11 @@ defmodule Mutare.MatchPatternTest do
       end
       """
 
-      {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+      {meta, _sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.PatternSwap]
+        )
+
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
@@ -569,7 +591,11 @@ defmodule Mutare.MatchPatternTest do
       end
       """
 
-      {_meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+      {_meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.PatternSwap]
+        )
+
       swap = Enum.find(sites, &(&1.mutator == :pattern_swap))
       assert swap.original_code == "{x, y}"
       assert swap.mutated_code == "{y, x}"
@@ -589,7 +615,7 @@ defmodule Mutare.MatchPatternTest do
       """
 
       {_meta, sites, _} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.PatternSwap],
           macro_routes: [{Foo, :unpack, [:expression, :binding_pattern]}]
         )

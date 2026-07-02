@@ -18,7 +18,9 @@ defmodule Mutare.TransformMacroRoutingTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: @probe ++ [Mutare.Mutators.StringLiteral])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: @probe ++ [Mutare.Mutators.StringLiteral]
+        )
 
       # The string `"x"` lives in the `match?` pattern, so it is never offered to a
       # mutator (splicing a selector there is "case not allowed in matches"). The
@@ -35,7 +37,7 @@ defmodule Mutare.TransformMacroRoutingTest do
       """
 
       {_meta, sites, _next_id} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.StringLiteral, Mutare.Mutators.TupleLiteral]
         )
 
@@ -51,7 +53,9 @@ defmodule Mutare.TransformMacroRoutingTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringLiteral])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringLiteral]
+        )
 
       # The old hard-coded clause matched only the bare `match?`; the registry resolves
       # `Kernel.match?` so the qualified form's pattern arg is left unmutated too.
@@ -72,7 +76,7 @@ defmodule Mutare.TransformMacroRoutingTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.Literal]
         )
 
@@ -101,7 +105,8 @@ defmodule Mutare.TransformMacroRoutingTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: [Mutare.Mutators.List])
+      {meta, sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.List])
 
       # The line: option value stays unmutated, but Resolve must still stamp the escaping
       # destructure/2 there. The live-unquote binding-prune pass then sees that x escapes and
@@ -125,7 +130,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "without registration, core mutates inside the macro's argument" do
       {_meta, sites, _next_id} =
-        Mutare.transform_string(@query_source,
+        Mutare.Transform.transform_string_with_sites(@query_source,
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal]
         )
 
@@ -136,7 +141,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "a `:skip` macro from a mutator's macro_routes/0 keeps core out and lets the mutator fire" do
       {meta, sites, _next_id} =
-        Mutare.transform_string(@query_source,
+        Mutare.Transform.transform_string_with_sites(@query_source,
           mutators: [
             Mutare.Mutators.Relational,
             Mutare.Mutators.Literal,
@@ -152,7 +157,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "a declarative `:macro_routes` `:skip` entry suppresses core with no custom mutator" do
       {_meta, sites, _next_id} =
-        Mutare.transform_string(@query_source,
+        Mutare.Transform.transform_string_with_sites(@query_source,
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
           macro_routes: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
         )
@@ -177,7 +182,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "a whole-module `:*` entry skips every macro in the module" do
       {meta, sites, _next_id} =
-        Mutare.transform_string(@wide_query_source,
+        Mutare.Transform.transform_string_with_sites(@wide_query_source,
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
           macro_routes: [{Mutare.Test.QueryDSL, :*, :skip}]
         )
@@ -190,7 +195,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "a more specific entry overrides the whole-module `:*` (per-macro override)" do
       {meta, sites, _next_id} =
-        Mutare.transform_string(@wide_query_source,
+        Mutare.Transform.transform_string_with_sites(@wide_query_source,
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
           macro_routes: [
             {Mutare.Test.QueryDSL, :*, :skip},
@@ -208,7 +213,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "a name-only `{:*, name, ...}` entry skips the macro regardless of module" do
       {_meta, sites, _next_id} =
-        Mutare.transform_string(@query_source,
+        Mutare.Transform.transform_string_with_sites(@query_source,
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
           macro_routes: [{:*, :query, :skip}]
         )
@@ -226,7 +231,9 @@ defmodule Mutare.TransformMacroRoutingTest do
       # a registered macro keeps its resolution stamp (for `Calls`) but drops the witness. (`query/1`
       # is the importable stand-in here; the real failure mode it guards against is `Ecto.Query.from`.)
       {meta, sites, _next_id} =
-        Mutare.transform_string(@query_source, mutators: [Mutare.Test.QueryMutator])
+        Mutare.Transform.transform_string_with_sites(@query_source,
+          mutators: [Mutare.Test.QueryMutator]
+        )
 
       assert Enum.map(sites, & &1.mutator) == [:query_dsl]
       refute meta =~ "import Elixir.Mutare.Test.QueryDSL"
@@ -247,7 +254,7 @@ defmodule Mutare.TransformMacroRoutingTest do
       # registered `where/2`; the condition (the macro's second/`:skip` arg) is left raw,
       # so core never mutates `1 == y` even though it is a *piped* stage.
       {meta, sites, _next_id} =
-        Mutare.transform_string(@piped_source,
+        Mutare.Transform.transform_string_with_sites(@piped_source,
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
           macro_routes: [{Mutare.Test.QueryDSL, :where, 2, [:expression, :skip]}]
         )
@@ -258,7 +265,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "without the registration, a piped stage's body still mutates (the skip is doing the work)" do
       {_meta, sites, _next_id} =
-        Mutare.transform_string(@piped_source,
+        Mutare.Transform.transform_string_with_sites(@piped_source,
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal]
         )
 
@@ -285,7 +292,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "a `:skip` module-level macro block is left raw (the analyze_module_macro_block path)" do
       {meta, sites, _next_id} =
-        Mutare.transform_string(@schema_source,
+        Mutare.Transform.transform_string_with_sites(@schema_source,
           mutators: @schema_mutators,
           macro_routes: [{Mutare.Test.SchemaDSL, :schema, 1, :skip}]
         )
@@ -301,7 +308,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "without the registration, core mutates inside the module-level block body" do
       {_meta, sites, _next_id} =
-        Mutare.transform_string(@schema_source, mutators: @schema_mutators)
+        Mutare.Transform.transform_string_with_sites(@schema_source, mutators: @schema_mutators)
 
       # The unknown-macro default analyzes a block body as runtime, so the DSL body's
       # literals/operators mutate — exactly what the `:skip` registration prevents.
@@ -311,7 +318,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "an unknown block macro tags every body site with its {name, nid} (for poison recovery)" do
       {_meta, sites, _next_id} =
-        Mutare.transform_string(@schema_source, mutators: @schema_mutators)
+        Mutare.Transform.transform_string_with_sites(@schema_source, mutators: @schema_mutators)
 
       # `schema` is unknown here, so the whole DSL body is mutated and *tagged* —
       # so `Mutare.Runner` can skip the whole block at once if the injected selector
@@ -341,7 +348,7 @@ defmodule Mutare.TransformMacroRoutingTest do
       """
 
       {_meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: @schema_mutators)
+        Mutare.Transform.transform_string_with_sites(source, mutators: @schema_mutators)
 
       tags = sites |> Enum.map(& &1.block_macro) |> Enum.uniq()
 
@@ -355,7 +362,7 @@ defmodule Mutare.TransformMacroRoutingTest do
       # unknown default — but because the user *registered* it, the auto-skip-on-poison
       # tag is withheld: their choice to mutate it is honoured.
       {_meta, sites, _next_id} =
-        Mutare.transform_string(@schema_source,
+        Mutare.Transform.transform_string_with_sites(@schema_source,
           mutators: @schema_mutators,
           macro_routes: [{Mutare.Test.SchemaDSL, :schema, 1, :expression}]
         )
@@ -382,7 +389,7 @@ defmodule Mutare.TransformMacroRoutingTest do
       refute Code.ensure_loaded?(Not.Loadable.Dsl)
 
       {_meta, sites, _next_id} =
-        Mutare.transform_string(@unloadable_block,
+        Mutare.Transform.transform_string_with_sites(@unloadable_block,
           mutators: @schema_mutators,
           macro_routes: [{Not.Loadable.Dsl, :schema, 1, :skip}]
         )
@@ -400,7 +407,7 @@ defmodule Mutare.TransformMacroRoutingTest do
       # tag is withheld. Before the registry fallback it was misclassified as an unknown block
       # macro, and a single poison there dropped every sibling mutant in the block.
       {_meta, sites, _next_id} =
-        Mutare.transform_string(@unloadable_block,
+        Mutare.Transform.transform_string_with_sites(@unloadable_block,
           mutators: @schema_mutators,
           macro_routes: [{Not.Loadable.Dsl, :schema, 1, :expression}]
         )
@@ -413,7 +420,9 @@ defmodule Mutare.TransformMacroRoutingTest do
       # The control: with no `:macro_routes` entry the block is genuinely unknown, so its body is
       # mutated on the runtime-body guess and tagged for whole-block poison recovery.
       {_meta, sites, _next_id} =
-        Mutare.transform_string(@unloadable_block, mutators: @schema_mutators)
+        Mutare.Transform.transform_string_with_sites(@unloadable_block,
+          mutators: @schema_mutators
+        )
 
       assert sites != []
       assert Enum.all?(sites, &match?({:schema, nid} when is_integer(nid), &1.block_macro))
@@ -434,7 +443,7 @@ defmodule Mutare.TransformMacroRoutingTest do
       """
 
       {_meta, sites, _next_id} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
           macro_routes: [{Not.Loadable.Dsl, :where, 2, [:expression, :skip]}]
         )
@@ -457,7 +466,7 @@ defmodule Mutare.TransformMacroRoutingTest do
       """
 
       {_meta, sites, _next_id} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
           macro_routes: [{Not.Loadable.Dsl, :where, 2, [:expression, :skip]}]
         )
@@ -484,7 +493,10 @@ defmodule Mutare.TransformMacroRoutingTest do
       """
 
       {meta, sites, _next} =
-        Mutare.transform_string(source, mutators: @atom_lit, macro_routes: @atom_skip)
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: @atom_lit,
+          macro_routes: @atom_skip
+        )
 
       # The `99` lives in a `:skip` argument of the atom-module macro, so it is never offered.
       assert sites == []
@@ -499,7 +511,10 @@ defmodule Mutare.TransformMacroRoutingTest do
       """
 
       {meta, sites, _next} =
-        Mutare.transform_string(source, mutators: @atom_lit, macro_routes: @atom_skip)
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: @atom_lit,
+          macro_routes: @atom_skip
+        )
 
       # `q |> :my_dsl.filter(99)` is `:my_dsl.filter(q, 99)` — effective arity 2 matches the
       # `:any`-arity registration, so the visible `99` is left raw even as a piped stage.
@@ -516,7 +531,10 @@ defmodule Mutare.TransformMacroRoutingTest do
       """
 
       {meta, sites, _next} =
-        Mutare.transform_string(source, mutators: @atom_lit, macro_routes: @atom_skip)
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: @atom_lit,
+          macro_routes: @atom_skip
+        )
 
       # `alias :my_dsl, as: D; D.filter(...)` resolves `D` back to `:my_dsl` (the `__aliases__`
       # walk clause), so the registration on `:my_dsl` still routes the call's arg `:skip`.
@@ -531,7 +549,8 @@ defmodule Mutare.TransformMacroRoutingTest do
       end
       """
 
-      {_meta, sites, _next} = Mutare.transform_string(source, mutators: @atom_lit)
+      {_meta, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: @atom_lit)
 
       # Unregistered, `:my_dsl.filter` is an ordinary atom-module call, so its `99` argument is
       # ordinary runtime and the literal family mutates it — exactly what the `:skip` prevents.
@@ -554,7 +573,7 @@ defmodule Mutare.TransformMacroRoutingTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.Literal])
+        Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Literal])
 
       # `0 |> match?(1)` is `match?(0, 1)`: the piped `0` is match?'s **pattern** (effective
       # arg 0), the visible `1` is the matched expression. Every site is on the expression
@@ -573,7 +592,7 @@ defmodule Mutare.TransformMacroRoutingTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.Literal])
+        Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Literal])
 
       # The visible arg `n` is a variable; the only literal is the piped `0`, which is the
       # pattern — so nothing is offered. Without the reach-back the `0` would be mutated in
@@ -592,7 +611,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "a `:skip` position-0 treatment leaves the piped value raw (the macro owns it)" do
       {meta, sites, _next_id} =
-        Mutare.transform_string(@skip_piped,
+        Mutare.Transform.transform_string_with_sites(@skip_piped,
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
           macro_routes: [{Mutare.Test.QueryDSL, :where, 2, :skip}]
         )
@@ -606,7 +625,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "without the registration, the same piped value mutates (the reach-back is doing the work)" do
       {_meta, sites, _next_id} =
-        Mutare.transform_string(@skip_piped,
+        Mutare.Transform.transform_string_with_sites(@skip_piped,
           mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal]
         )
 
@@ -645,7 +664,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "a piped `:skip` argument is left raw, never mutated as runtime (no exemption)" do
       {meta, sites, _next_id} =
-        Mutare.transform_string(@piped_skip,
+        Mutare.Transform.transform_string_with_sites(@piped_skip,
           mutators: [Mutare.Mutators.Collection, Mutare.Mutators.Literal],
           macro_routes: [{Mutare.Test.QueryDSL, :where, 2, :skip}]
         )
@@ -663,7 +682,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "the same piped value mutates when its position is `:expression` (the `:skip` is what spares it)" do
       {meta, sites, _next_id} =
-        Mutare.transform_string(@piped_skip,
+        Mutare.Transform.transform_string_with_sites(@piped_skip,
           mutators: [Mutare.Mutators.Collection, Mutare.Mutators.Literal],
           macro_routes: [{Mutare.Test.QueryDSL, :where, 2, [:expression, :skip]}]
         )
@@ -679,7 +698,7 @@ defmodule Mutare.TransformMacroRoutingTest do
 
     test "a piped `:skip` argument spares only itself — the function tail still mutates" do
       {meta, sites, _next_id} =
-        Mutare.transform_string(@piped_skip,
+        Mutare.Transform.transform_string_with_sites(@piped_skip,
           mutators: [Mutare.Mutators.Collection, Mutare.Mutators.ReturnValue],
           macro_routes: [{Mutare.Test.QueryDSL, :where, 2, :skip}]
         )

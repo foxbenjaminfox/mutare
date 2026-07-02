@@ -237,7 +237,7 @@ defmodule Mutare.ExtensionsTest do
       """
 
       assert_raise Mutare.MacroRouting.ContractError, ~r/no enabled MacroHost subscribes/s, fn ->
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           mutators: [],
           extensions: [HostedRoutingExtension]
         )
@@ -392,9 +392,13 @@ defmodule Mutare.ExtensionsTest do
 
     test "the extension skips the msgid literals but keeps the runtime-arg mutations" do
       {_meta, with_extension, _} =
-        Mutare.transform_string(@source, mutators: @mutators, extensions: [GettextLikeExtension])
+        Mutare.Transform.transform_string_with_sites(@source,
+          mutators: @mutators,
+          extensions: [GettextLikeExtension]
+        )
 
-      {_meta, without_extension, _} = Mutare.transform_string(@source, mutators: @mutators)
+      {_meta, without_extension, _} =
+        Mutare.Transform.transform_string_with_sites(@source, mutators: @mutators)
 
       # Without the extension the bare calls don't resolve, so every msgid is mutated as an
       # ordinary runtime string — the path that would poison the build. With the extension the
@@ -416,13 +420,15 @@ defmodule Mutare.ExtensionsTest do
       """
 
       {_meta, with_extension, _} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.StringLiteral],
           extensions: [DynamicRoutingExtension]
         )
 
       {_meta, without_extension, _} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringLiteral])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringLiteral]
+        )
 
       assert count(without_extension, :string) > 0
       assert count(with_extension, :string) == 0
@@ -434,7 +440,8 @@ defmodule Mutare.ExtensionsTest do
       assert_raise ArgumentError,
                    ~r/:extensions entries must be loaded non-mutator modules/,
                    fn ->
-                     Mutare.transform_string("defmodule Mutare.Test.Z do\nend",
+                     Mutare.Transform.transform_string_with_sites(
+                       "defmodule Mutare.Test.Z do\nend",
                        extensions: [Enum]
                      )
                    end
@@ -442,7 +449,7 @@ defmodule Mutare.ExtensionsTest do
 
     test "raises on a non-list" do
       assert_raise ArgumentError, ~r/:extensions must be a list/, fn ->
-        Mutare.transform_string("defmodule Mutare.Test.Z do\nend",
+        Mutare.Transform.transform_string_with_sites("defmodule Mutare.Test.Z do\nend",
           extensions: GettextLikeExtension
         )
       end

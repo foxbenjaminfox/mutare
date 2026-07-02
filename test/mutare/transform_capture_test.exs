@@ -11,7 +11,11 @@ defmodule Mutare.TransformCaptureTest do
 
     test "a remote capture is renamed, kept in capture form (&String.first/1 → &String.last/1)" do
       source = "defmodule Cap do\n  def f(l), do: Enum.map(l, &String.first/1)\nend\n"
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringCall]
+        )
 
       assert [
                %Site{
@@ -31,7 +35,11 @@ defmodule Mutare.TransformCaptureTest do
 
     test "a transparent-transform capture earns a removal (&String.upcase/1 → &Function.identity/1)" do
       source = "defmodule Cap do\n  def f(l), do: Enum.map(l, &String.upcase/1)\nend\n"
-      {_meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+
+      {_meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       # Removal of an arity-1 capture is the named, alias-proof identity capture.
       assert [
@@ -45,7 +53,11 @@ defmodule Mutare.TransformCaptureTest do
 
     test "an arity-N removal becomes the arity-N first-arg projection (no named identity/N)" do
       source = "defmodule Cap do\n  def f(l), do: Enum.map(l, &String.slice/3)\nend\n"
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       assert [%Site{mutator: :call_removal, original_code: "&String.slice/3"} = site] = sites
       assert site.mutated_code == "fn mutare_capture_arg, _, _ -> mutare_capture_arg end"
@@ -54,7 +66,11 @@ defmodule Mutare.TransformCaptureTest do
 
     test "an Erlang-atom-module capture resolves and mutates (&:string.trim/1)" do
       source = "defmodule Cap do\n  def f(l), do: Enum.map(l, &:string.trim/1)\nend\n"
-      {_meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+
+      {_meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       assert [
                %Site{
@@ -69,7 +85,10 @@ defmodule Mutare.TransformCaptureTest do
       source =
         "defmodule Cap do\n  alias String, as: S\n  def f(l), do: Enum.map(l, &S.first/1)\nend\n"
 
-      {_meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
+      {_meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringCall]
+        )
 
       assert [
                %Site{
@@ -89,7 +108,10 @@ defmodule Mutare.TransformCaptureTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.Collection])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.Collection]
+        )
 
       assert [
                %Site{
@@ -106,7 +128,7 @@ defmodule Mutare.TransformCaptureTest do
 
     test "a whole-imported bare capture witnesses a renamed bare sibling" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule HiddenCaptureRejectReplacement do
             def reject(xs, fun), do: Enum.map(xs, fun)
@@ -159,7 +181,10 @@ defmodule Mutare.TransformCaptureTest do
       end
       """
 
-      {_meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.Collection])
+      {_meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.Collection]
+        )
 
       assert [
                %Site{
@@ -178,7 +203,10 @@ defmodule Mutare.TransformCaptureTest do
       end
       """
 
-      {_meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+      {_meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       assert [
                %Site{
@@ -193,7 +221,8 @@ defmodule Mutare.TransformCaptureTest do
       source =
         "defmodule Cap do\n  def f(l), do: Enum.map(l, &local/1)\n  def local(x), do: x\nend\n"
 
-      {_meta, sites, _} = Mutare.transform_string(source, mutators: Mutare.Mutators.all())
+      {_meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: Mutare.Mutators.all())
 
       # No site mutates the capture *itself* (the enclosing `Enum.map(...)` still mutates,
       # so check the capture form exactly, not as a substring).
@@ -216,7 +245,9 @@ defmodule Mutare.TransformCaptureTest do
       """
 
       {meta, sites, _} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringCall]
+        )
 
       # The scaffold's capture renders verbatim — not wrapped in a selector. Only the runtime
       # `def runtime_cap` capture is a site (without the context guard both would be).
@@ -232,14 +263,21 @@ defmodule Mutare.TransformCaptureTest do
       source = "defmodule Cap do\n  def f(l), do: Enum.map(l, &Enum.take/2)\nend\n"
 
       {_meta, sites, _} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.CollectionArity])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CollectionArity]
+        )
 
       refute Enum.any?(sites, &(&1.original_code == "&Enum.take/2"))
     end
 
     test "runtime: baseline keeps the verbatim capture's identity; the mutant is a real external fun" do
       source = "defmodule Mutare.CaptureRuntimeFixture do\n  def fun, do: &String.first/1\nend\n"
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringCall]
+        )
+
       # Bind the module from the compile result (not a literal) so the compiler can't
       # constant-fold a reference to a not-yet-defined module into an "undefined" warning.
       [{mod, _}] = assert_compiles(meta)
@@ -273,7 +311,9 @@ defmodule Mutare.TransformCaptureTest do
       # through to ordinary `:runtime` analysis, and the `&&` is offered to Logical like any
       # other body operator.
       source = "defmodule Cap do\n  def both, do: &(&1 && &2)\nend\n"
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.Logical])
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Logical])
 
       assert [
                %Site{
@@ -295,7 +335,10 @@ defmodule Mutare.TransformCaptureTest do
       # validate. Prove the capture still produces a working 2-arity fun: the baseline keeps
       # `&&` semantics (short-circuit on a falsy LHS) and flipping the mutant swaps to `||`.
       source = "defmodule Mutare.CaptureBodyFixture do\n  def both, do: &(&1 && &2)\nend\n"
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.Logical])
+
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Logical])
+
       # Bind the module from the compile result (not a literal) so the compiler can't fold a
       # reference to a not-yet-defined module into an "undefined" warning.
       [{mod, _}] = assert_compiles(meta)
@@ -324,12 +367,18 @@ defmodule Mutare.TransformCaptureTest do
       lit = [Mutare.Mutators.Literal]
 
       {_m, placeholder_only, _} =
-        Mutare.transform_string("defmodule C do\n  def f, do: &(&1 + &2)\nend\n", mutators: lit)
+        Mutare.Transform.transform_string_with_sites(
+          "defmodule C do\n  def f, do: &(&1 + &2)\nend\n",
+          mutators: lit
+        )
 
       assert placeholder_only == []
 
       {_m, with_literal, _} =
-        Mutare.transform_string("defmodule C do\n  def f, do: &(&1 + 1)\nend\n", mutators: lit)
+        Mutare.Transform.transform_string_with_sites(
+          "defmodule C do\n  def f, do: &(&1 + 1)\nend\n",
+          mutators: lit
+        )
 
       # Only the standalone `1` mutates (succ `2`, and zero/pred deduped to `0`); the
       # placeholder's `1` contributes nothing. Were it mutated too we would see four sites.

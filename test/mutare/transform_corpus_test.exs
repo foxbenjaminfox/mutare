@@ -427,7 +427,7 @@ defmodule Mutare.TransformCorpusTest do
     #    entries deliberately provoke does not leak into test output (and can be
     #    asserted on).
     {{metamutant, sites, _next_id}, log} =
-      with_log(fn -> Mutare.transform_string(source, file: name) end)
+      with_log(fn -> Mutare.Transform.transform_string_with_sites(source, file: name) end)
 
     if expected = entry[:expect_log] do
       assert log =~ expected, "expected a log matching #{inspect(expected)} for #{name}"

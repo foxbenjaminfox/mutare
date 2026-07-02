@@ -49,7 +49,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "chained pipes with arity-changing stages compile" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule A do
             def f(xs, key), do: xs |> Enum.sort_by(key) |> Enum.reverse() |> Enum.join(",")
@@ -138,7 +138,7 @@ defmodule Mutare.TransformResolutionTest do
       # `:weird` is an invalid precision ModeSwap can't swap (no covering footprint →
       # AtomLiteral still fires).
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def at(dt), do: {DateTime.truncate(dt, :second), :tag}
@@ -187,7 +187,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "call_option_keys is not a ModeSwap policy" do
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           "defmodule M do\n  def soon(dt), do: DateTime.shift(dt, minute: 10)\nend\n",
           mutators: [{Mutare.Mutators.ModeSwap, call_option_keys: false}]
         )
@@ -202,7 +202,7 @@ defmodule Mutare.TransformResolutionTest do
       # redundant AtomLiteral on that key (it'd raise as `:mutare:`). The amount is a
       # different node ModeSwap leaves untouched, so Literal still mutates it.
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def soon(dt), do: DateTime.shift(dt, minute: 10)
@@ -234,7 +234,7 @@ defmodule Mutare.TransformResolutionTest do
       # on the `microsecond:` key. The fix for the old blanket "own all keys" bug, which
       # suppressed `microsecond:` only when a swappable sibling shared the list.
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def a(dt), do: DateTime.shift(dt, minute: 10, microsecond: {5, 6})
@@ -259,7 +259,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "overlap consistency: a lone excluded unit also keeps its AtomLiteral" do
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def a(dt), do: DateTime.shift(dt, microsecond: {5, 6})
@@ -278,7 +278,7 @@ defmodule Mutare.TransformResolutionTest do
       # ranges identically to the whole `a - b` node. That whole-host footprint must NOT be
       # treated as covering, or the operator-swap sibling (same host range) would be dropped.
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def f(a, b), do: a - b
@@ -309,7 +309,7 @@ defmodule Mutare.TransformResolutionTest do
       # still recognises the swap covers the `:second` leaf and prunes the redundant
       # AtomLiteral `:mutare` (which `owned_args/2` used to suppress).
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             import DateTime, only: [truncate: 2]
@@ -333,7 +333,7 @@ defmodule Mutare.TransformResolutionTest do
       # arg is orthogonal to mutating its value — a list-valued footprint is never covering, so
       # `Literal 0` (and `AtomLiteral :none` below) survives alongside the drop.
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def f(xs), do: xs |> List.first(0)
@@ -363,7 +363,7 @@ defmodule Mutare.TransformResolutionTest do
       # absolute `Elixir.Kernel.==` makes it a nid-less list footprint.) Either way it prunes
       # nothing: the reused `"x"` literal keeps both its StringLiteral mutants alongside the rewrite.
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def f(a), do: String.equivalent?(a, "x")
@@ -421,7 +421,7 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.Numeric])
+        Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Numeric])
 
       pairs = for s <- sites, s.mutator == :numeric, do: {s.original_code, s.mutated_code}
       assert {"Float.ceil(x, 2)", "Float.floor(x, 2)"} in pairs
@@ -438,7 +438,7 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.Numeric])
+        Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Numeric])
 
       pairs = for s <- sites, s.mutator == :numeric, do: {s.original_code, s.mutated_code}
       assert {"Float.max_finite()", "Float.min_finite()"} in pairs
@@ -477,7 +477,7 @@ defmodule Mutare.TransformResolutionTest do
   describe "alias resolution (aliased remote calls still mutate)" do
     test "an aliased Enum call mutates, and the diff keeps the alias" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             alias Enum, as: E
@@ -495,7 +495,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "an aliased String / Float call mutates through its family, keeping the alias" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             alias String, as: S
@@ -518,7 +518,7 @@ defmodule Mutare.TransformResolutionTest do
       # treated as the stdlib Enum. (No compile here — MyApp.Enum is fictional; the point
       # is the *absence* of a Collection site.)
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             alias MyApp.Enum
@@ -533,7 +533,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "Integer routes through the same machinery — aliased matched, shadow respected" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             require Integer
@@ -552,7 +552,7 @@ defmodule Mutare.TransformResolutionTest do
 
       # A shadowing `alias MyApp.Integer` resolves away from stdlib — no Integer site.
       {_meta, shadow_sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             alias MyApp.Integer
@@ -569,7 +569,7 @@ defmodule Mutare.TransformResolutionTest do
       # The easy case the alias machinery used to skip entirely. The mutant keeps the written
       # `Elixir.String.` (minimal diff), and the metamutant compiles.
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def first(s), do: Elixir.String.first(s)
@@ -585,7 +585,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "a `&Elixir.Mod.fun/N` capture of a fully-qualified call mutates too" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def ref, do: &Elixir.String.first/1
@@ -604,7 +604,7 @@ defmodule Mutare.TransformResolutionTest do
       # `String` and must not mutate — but `Elixir.String.first` is absolute and still must.
       # (No compile — `Wrong` is fictional; the point is the asymmetry of the two sites.)
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             alias Wrong, as: String
@@ -625,7 +625,7 @@ defmodule Mutare.TransformResolutionTest do
       # `String` reached through the alias. The combined key `[Elixir, :String]` must normalize
       # to `[:String]` — else the call would match no swap table and never mutate.
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             alias Elixir, as: E
@@ -644,7 +644,7 @@ defmodule Mutare.TransformResolutionTest do
       # `alias Elixir.{String}` assembles the child key `[Elixir, :String]`, which must normalize
       # to `[:String]` so the bare `String.first` resolves to the stdlib module.
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             alias Elixir.{String}
@@ -663,7 +663,7 @@ defmodule Mutare.TransformResolutionTest do
   describe "import resolution (bare imported calls mutate)" do
     test "CallRemoval removes a bare imported transparent transform" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule ImpRemoval do
             import Enum
@@ -680,7 +680,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "a whole-module import makes a bare call mutate, keeping it bare" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule ImpWhole do
             import Enum
@@ -703,7 +703,7 @@ defmodule Mutare.TransformResolutionTest do
       # guards the import path against a future `resolve_path` refactor (the call path has its
       # own tests above).
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule ImpQualified do
             import Elixir.Enum
@@ -720,7 +720,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "a selective import qualifies the mutant (the sibling may not be imported)" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule ImpOnly do
             import Enum, only: [reject: 2]
@@ -744,7 +744,7 @@ defmodule Mutare.TransformResolutionTest do
       # `Elixir.`-prefixed qualifier bypasses the alias; `assert_compiles` proves it (the
       # metamutant keeps the alias in scope).
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule ImpAliasClash do
             import Enum, only: [reject: 2]
@@ -766,7 +766,7 @@ defmodule Mutare.TransformResolutionTest do
       # compile. Qualifying to the real `Enum.reject` keeps it sound — `assert_compiles` proves
       # there is no ambiguity.
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule ImpMulti do
             import Stream, except: [filter: 2]
@@ -784,7 +784,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "a hidden except-plus-replacement import poisons instead of silently mis-resolving" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule HiddenImportReplacement do
             def filter(xs, fun), do: Enum.map(xs, fun)
@@ -825,7 +825,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "the import witness also protects lifted guard mutants" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule HiddenIntegerReplacement do
             defmacro is_even(n), do: quote(do: is_integer(unquote(n)))
@@ -869,7 +869,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "a same-named local function with no import is not mutated" do
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule ImpLocal do
             def reject(a, b), do: {a, b}
@@ -887,7 +887,7 @@ defmodule Mutare.TransformResolutionTest do
       # conflict). The swap to `filter/2` names Enum's (bare, sole import) and compiles — the
       # incidental local `reject/1` never enters resolution.
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule ImpLocalArity do
             import Enum
@@ -905,7 +905,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "a bare imported guard macro mutates via lifting and compiles" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule ImpGuard do
             import Integer
@@ -926,7 +926,7 @@ defmodule Mutare.TransformResolutionTest do
       # Kernel `abs/1` CallRemoval assumes. (No compile — the other module is fictional; the
       # point is the *absence* of a removal site.)
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule ImpDisplaced do
             import Kernel, except: [abs: 1]
@@ -944,7 +944,7 @@ defmodule Mutare.TransformResolutionTest do
   describe "atom-module (Erlang) resolution via alias / import" do
     test "an aliased Erlang module mutates through its family, keeping the alias" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             alias :string, as: S
@@ -961,7 +961,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "a bare imported Erlang call mutates (Math :math)" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             import :math
@@ -978,7 +978,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "a bare imported Erlang transparent transform is removed (CallRemoval :string)" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             import :string
@@ -1004,7 +1004,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "a direct stdlib call in receiver position mutates, keeping the written receiver" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def f(x), do: Enum.filter(x, & &1).first
@@ -1020,7 +1020,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "an aliased call in receiver position resolves and mutates, keeping the alias" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             alias Enum, as: E
@@ -1038,7 +1038,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "a bare imported call in receiver position resolves and mutates" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             import Enum
@@ -1055,7 +1055,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "a method-style receiver call mutates, and the spliced selector compiles in that position" do
       {meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def f(xs, x), do: Enum.filter(xs, & &1).put(x)
@@ -1075,7 +1075,7 @@ defmodule Mutare.TransformResolutionTest do
       # mutator: `Enum` in `Enum.filter(x).first` is the module side, never a value. AliasLiteral
       # (which mutates a module *value* like `apply(Foo, …)`) therefore produces no site here.
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def f(x), do: Enum.filter(x, & &1).first
@@ -1095,12 +1095,13 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {_, skipped, _} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Literal],
           macro_routes: [{:my_dsl, :filter, :any, :skip}]
         )
 
-      {_, control, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.Literal])
+      {_, control, _} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Literal])
 
       # Walking the receiver carries the macro routing in too: the `99` in the `:skip` macro is
       # left raw even though the macro call is a receiver — while unregistered it mutates.
@@ -1118,7 +1119,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringCall]
+        )
 
       assert Enum.any?(sites, &(&1.mutator == :string_call))
       assert Enum.any?(sites, &(&1.mutated_code == ~s|String.ends_with?(s, "x")|))
@@ -1134,7 +1137,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringCall]
+        )
 
       pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
       assert {"String.graphemes(s)", "String.codepoints(s)"} in pairs
@@ -1153,7 +1158,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringCall]
+        )
 
       pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
       assert {":string.uppercase(s)", ":string.lowercase(s)"} in pairs
@@ -1171,7 +1178,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringCall])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringCall]
+        )
 
       pairs = for s <- sites, s.mutator == :string_call, do: {s.original_code, s.mutated_code}
       assert {"String.equivalent?(a, b)", "Elixir.Kernel.==(a, b)"} in pairs
@@ -1191,7 +1200,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringByte])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringByte]
+        )
 
       pairs = for s <- sites, s.mutator == :string_byte, do: {s.original_code, s.mutated_code}
       # Absolute-qualified so neither a local/selective-import byte_size nor a rebound Kernel
@@ -1212,7 +1223,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringByte])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringByte]
+        )
 
       assert {"String.length(s)", "Elixir.Kernel.byte_size(s)"} in for(
                s <- sites,
@@ -1234,7 +1247,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringByte])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringByte]
+        )
 
       assert Enum.any?(sites, &(&1.mutator == :string_byte))
       assert_compiles(meta)
@@ -1251,7 +1266,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringByte])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringByte]
+        )
 
       pairs = for s <- sites, s.mutator == :string_byte, do: {s.original_code, s.mutated_code}
       # The aliased real String resolves and is narrowed (alias preserved in the diff source).
@@ -1270,7 +1287,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {_meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.StringByte])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.StringByte]
+        )
 
       assert [] == Enum.filter(sites, &(&1.mutator == :string_byte))
     end
@@ -1286,7 +1305,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       # Non-piped: the whole transform collapses to its input.
@@ -1306,7 +1327,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"String.slice(s, 1, 3)", "s"} in pairs
@@ -1323,7 +1346,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"String.byte_slice(s, 1, 3)", "s"} in pairs
@@ -1343,7 +1368,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"Map.delete(m, k)", "m"} in pairs
@@ -1364,7 +1391,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {_meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       assert [] == Enum.filter(sites, &(&1.mutator == :call_removal))
     end
@@ -1380,7 +1409,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"binary_slice(b, 0, 5)", "b"} in pairs
@@ -1399,7 +1430,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       assert {"binary_part(b, 0, 1)", "b"} in for(
                s <- sites,
@@ -1419,7 +1452,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
       assert {"Stream.uniq(xs)", "xs"} in pairs
@@ -1440,7 +1475,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.DefaultDrop])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.DefaultDrop]
+        )
 
       pairs = for s <- sites, s.mutator == :default_drop, do: {s.original_code, s.mutated_code}
       assert {"Map.get(m, k, :default)", "Map.get(m, k)"} in pairs
@@ -1465,7 +1502,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.DefaultDrop])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.DefaultDrop]
+        )
 
       pairs = for s <- sites, s.mutator == :default_drop, do: {s.original_code, s.mutated_code}
       assert {"Float.round(x, 2)", "Float.round(x)"} in pairs
@@ -1492,7 +1531,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.MapKeyword])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.MapKeyword]
+        )
 
       mutated = for s <- sites, s.mutator == :map_keyword, do: s.mutated_code
       assert "Map.put_new(m, k, v)" in mutated
@@ -1513,7 +1554,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.KeywordDelete])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.KeywordDelete]
+        )
 
       pairs = for s <- sites, s.mutator == :keyword_delete, do: {s.original_code, s.mutated_code}
       assert {"Keyword.delete(kw, k)", "Keyword.delete_first(kw, k)"} in pairs
@@ -1534,7 +1577,7 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.MapSet])
+        Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.MapSet])
 
       pairs = for s <- sites, s.mutator == :map_set, do: {s.original_code, s.mutated_code}
       assert {"MapSet.union(x, y)", "MapSet.intersection(x, y)"} in pairs
@@ -1545,7 +1588,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "an aliased MapSet call mutates, keeping the alias" do
       {meta, sites, _next_id} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             alias MapSet, as: MS
@@ -1562,7 +1605,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "a shadowing alias resolves to the local module and is left alone" do
       {_meta, sites, _next_id} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             alias MyApp.MapSet
@@ -1587,7 +1630,9 @@ defmodule Mutare.TransformResolutionTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.PeriodBoundary])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.PeriodBoundary]
+        )
 
       pairs = for s <- sites, s.mutator == :period_boundary, do: {s.original_code, s.mutated_code}
       assert {"Date.beginning_of_month(d)", "Date.end_of_month(d)"} in pairs
@@ -1600,7 +1645,7 @@ defmodule Mutare.TransformResolutionTest do
 
     test "an aliased call mutates, keeping the alias" do
       {meta, sites, _next_id} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule P do
             alias Date, as: D
@@ -1620,7 +1665,9 @@ defmodule Mutare.TransformResolutionTest do
   # the `{original_code, mutated_code}` pairs of its sites (for the pipe-aware tests).
   defp arity_sites(source) do
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, mutators: [Mutare.Mutators.CollectionArity])
+      Mutare.Transform.transform_string_with_sites(source,
+        mutators: [Mutare.Mutators.CollectionArity]
+      )
 
     assert_compiles(meta)
     for s <- sites, s.mutator == :collection_arity, do: {s.original_code, s.mutated_code}
@@ -1630,7 +1677,7 @@ defmodule Mutare.TransformResolutionTest do
   # `{original_code, mutated_code}` pairs of its sites.
   defp mode_sites(source) do
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, mutators: [Mutare.Mutators.ModeSwap])
+      Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.ModeSwap])
 
     assert_compiles(meta)
     for s <- sites, s.mutator == :mode_swap, do: {s.original_code, s.mutated_code}
@@ -1640,7 +1687,7 @@ defmodule Mutare.TransformResolutionTest do
   # `{original_code, mutated_code}` pairs of its sites.
   defp numeric_sites(source) do
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, mutators: [Mutare.Mutators.Numeric])
+      Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Numeric])
 
     assert_compiles(meta)
     for s <- sites, s.mutator == :numeric, do: {s.original_code, s.mutated_code}

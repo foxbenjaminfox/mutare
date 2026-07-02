@@ -25,7 +25,8 @@ defmodule Mutare.PatternLiftTest do
   @compile {:no_warn_undefined, Mutare.PatternStructFixture}
 
   setup_all do
-    {metamutant, sites, _next_id} = Mutare.transform_string(@source, file: "pat.ex")
+    {metamutant, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(@source, file: "pat.ex")
 
     # Wildcarding a duplicate in a multi-clause function broadens the clause, so the
     # later same-arity clause is unreachable — a benign "cannot match" warning here

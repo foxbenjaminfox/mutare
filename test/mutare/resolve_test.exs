@@ -61,7 +61,7 @@ defmodule Mutare.ResolveTest do
       # `:mutare_nid` is internal bookkeeping; like the other `mutare_*` meta keys it must be
       # stripped before Sourceror renders the build artifact.
       {metamutant, _sites, _next} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def f(a), do: DateTime.truncate(a, :second)

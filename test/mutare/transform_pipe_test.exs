@@ -15,7 +15,9 @@ defmodule Mutare.TransformPipeTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.Collection])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.Collection]
+        )
 
       assert Enum.any?(sites, &(&1.mutator == :collection))
       # The diff still shows the bare stage swap, not the whole pipe.
@@ -31,7 +33,9 @@ defmodule Mutare.TransformPipeTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.Collection])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.Collection]
+        )
 
       pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
       assert {"Stream.filter(& &1)", "Stream.reject(& &1)"} in pairs
@@ -49,7 +53,7 @@ defmodule Mutare.TransformPipeTest do
       # Collection swaps the trailing `Enum.reject`; ReturnValue additionally wraps
       # the whole tail pipe — so the selector lands in the ReturnValue catch-all.
       {meta, _sites, _next_id} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.Collection, Mutare.Mutators.ReturnValue]
         )
 
@@ -66,7 +70,9 @@ defmodule Mutare.TransformPipeTest do
       """
 
       {meta, _sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.Collection])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.Collection]
+        )
 
       # `lhs |> (fn <piped> -> case … end).()`, each branch piping the closure var.
       assert meta =~ ~r/\|>\s*\(fn mutare_piped ->/
@@ -93,10 +99,14 @@ defmodule Mutare.TransformPipeTest do
       end
 
       {short, short_sites, _} =
-        Mutare.transform_string(chain.(8), mutators: [Mutare.Mutators.CallRemoval])
+        Mutare.Transform.transform_string_with_sites(chain.(8),
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       {long, long_sites, _} =
-        Mutare.transform_string(chain.(16), mutators: [Mutare.Mutators.CallRemoval])
+        Mutare.Transform.transform_string_with_sites(chain.(16),
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       # Every stage is mutated and therefore hoisted into a closure — otherwise the
       # size assertion below would never exercise the regression-prone path.
@@ -123,7 +133,9 @@ defmodule Mutare.TransformPipeTest do
       """
 
       {meta, _sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.Collection])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.Collection]
+        )
 
       # The canonical name is taken, so the generated closure param is salted away.
       refute meta =~ ~r/\(fn mutare_piped ->/

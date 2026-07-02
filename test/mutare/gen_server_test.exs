@@ -11,7 +11,7 @@ defmodule Mutare.GenServerTest do
   # `{original_code, mutated_code}` for every `:genserver` site, isolating the family
   # (clause-drop is structural and still appears, so filter it out).
   defp genserver_mutations(source) do
-    {_meta, sites, _next} = Mutare.transform_string(source, mutators: [GS])
+    {_meta, sites, _next} = Mutare.Transform.transform_string_with_sites(source, mutators: [GS])
 
     for s <- sites, s.mutator == :genserver, do: {s.original_code, s.mutated_code}
   end
@@ -215,7 +215,9 @@ defmodule Mutare.GenServerTest do
           def handle_info(_m, s), do: {:stop, :shutdown, s}\
         """)
 
-      {metamutant, sites, _} = Mutare.transform_string(source, mutators: [GS])
+      {metamutant, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: [GS])
+
       assert Enum.count(sites, &(&1.mutator == :genserver)) == 5
       assert [{S, _binary}] = Mutare.Test.Compile.string(metamutant)
     after

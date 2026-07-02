@@ -66,18 +66,18 @@ defmodule Mutare.LiftTest do
 
   setup_all do
     {metamutant, sites, _next_id} =
-      Mutare.transform_string(@source, file: "lift.ex", mutators: @probe)
+      Mutare.Transform.transform_string_with_sites(@source, file: "lift.ex", mutators: @probe)
 
     [{_module, _binary}] = Mutare.Test.Compile.string(metamutant)
 
     # Compiled once and switched at runtime by the head-pattern describe block.
     {pattern_meta, pattern_sites, _next_id} =
-      Mutare.transform_string(@pattern_source, file: "pat.ex")
+      Mutare.Transform.transform_string_with_sites(@pattern_source, file: "pat.ex")
 
     [{_module, _binary}] = Mutare.Test.Compile.string(pattern_meta)
 
     {default_meta, default_sites, _next_id} =
-      Mutare.transform_string(@default_source, file: "default.ex")
+      Mutare.Transform.transform_string_with_sites(@default_source, file: "default.ex")
 
     [{_module, _binary}] = Mutare.Test.Compile.string(default_meta)
 
@@ -102,7 +102,7 @@ defmodule Mutare.LiftTest do
 
   describe "structure" do
     test "lifts a guarded group into a dispatcher + one guarded private function", %{sites: sites} do
-      {meta, _, _} = Mutare.transform_string(@source)
+      {meta, _, _} = Mutare.Transform.transform_string_with_sites(@source)
 
       assert meta =~ "def classify(mutare_arg1) do"
       assert meta =~ ~r/defp __mutare_classify_1_g\d+\(/
@@ -119,7 +119,9 @@ defmodule Mutare.LiftTest do
 
     test "lifts an unguarded multi-clause function for clause-drop" do
       {meta, sites, _next_id} =
-        Mutare.transform_string("defmodule M do\n  def g(0), do: :z\n  def g(_), do: :o\nend\n")
+        Mutare.Transform.transform_string_with_sites(
+          "defmodule M do\n  def g(0), do: :z\n  def g(_), do: :o\nend\n"
+        )
 
       assert meta =~ "def g(mutare_arg1) do"
       assert meta =~ ~r/defp __mutare_g_1_g\d+\(mutare_active,/
@@ -141,7 +143,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.transform_string(source)
+      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
 
       refute Enum.any?(sites, &(&1.mutator == :clause_drop))
       assert [{Mutare.BodilessHeadFixture, _}] = Mutare.Test.Compile.string(meta)
@@ -156,7 +158,7 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.transform_string(source)
+      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
 
       # Two body-bearing clauses → two drops; the header (index 0) is never dropped.
       assert Enum.count(sites, &(&1.mutator == :clause_drop)) == 2
@@ -177,7 +179,8 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {meta, _sites, _next_id} = Mutare.transform_string(source, file: "collision.ex")
+      {meta, _sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(source, file: "collision.ex")
 
       # The pre-existing target definition is left untouched...
       assert meta =~ "def __mutare_classify_1_g1_orig(_)"
@@ -205,7 +208,8 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.transform_string(source, file: "av.ex", mutators: @probe)
+      {meta, sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(source, file: "av.ex", mutators: @probe)
 
       # the dispatch variable salts to `mutare_active_0`; the user's `mutare_active`
       # stays its own variable, so the gate reads the id and the body reads the user value
@@ -238,7 +242,7 @@ defmodule Mutare.LiftTest do
       """
 
       {{meta, sites, _next_id}, log} =
-        with_log(fn -> Mutare.transform_string(source, file: "nc.ex") end)
+        with_log(fn -> Mutare.Transform.transform_string_with_sites(source, file: "nc.ex") end)
 
       # Non-consecutive heads fall back to in-place: no dispatcher, no lifted
       # guard/clause-drop mutants. The clauses keep their original positions, so
@@ -269,7 +273,7 @@ defmodule Mutare.LiftTest do
       """
 
       {{meta, _sites, _next_id}, _log} =
-        with_log(fn -> Mutare.transform_string(source) end)
+        with_log(fn -> Mutare.Transform.transform_string_with_sites(source) end)
 
       refute meta =~ "__mutare_f"
       assert [{Mutare.NonConsecutiveAttrFixture, _}] = Mutare.Test.Compile.string(meta)
@@ -298,7 +302,7 @@ defmodule Mutare.LiftTest do
       """
 
       {{meta, sites, _next_id}, log} =
-        with_log(fn -> Mutare.transform_string(source, file: "meta.ex") end)
+        with_log(fn -> Mutare.Transform.transform_string_with_sites(source, file: "meta.ex") end)
 
       refute meta =~ "__mutare_code"
       refute Enum.any?(sites, &(&1.kind == :lifted))
@@ -323,7 +327,8 @@ defmodule Mutare.LiftTest do
       # and the default conditional mutator would rewrite the guard to `when true`
       # (making the catch-all clause unreachable — a benign but noisy generated
       # warning when this metamutant is compiled below).
-      {meta, _sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
+      {meta, _sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: @probe)
 
       # public dispatcher keeps `ok?`; private copies sanitize the `?`
       assert meta =~ "def ok?(mutare_arg1) do"
@@ -351,7 +356,7 @@ defmodule Mutare.LiftTest do
       probe = [Mutare.Mutators.Integer, Mutare.Mutators.AliasLiteral]
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, file: "intguard.ex", mutators: probe)
+        Mutare.Transform.transform_string_with_sites(source, file: "intguard.ex", mutators: probe)
 
       # The guard swap is delivered by lifting...
       assert [%Site{kind: :lifted, mutator: :integer}] =
@@ -374,7 +379,9 @@ defmodule Mutare.LiftTest do
 
     test "lifts a default-arg function: defaults ride on the dispatcher, base takes full arity" do
       {defaulted, sites, _} =
-        Mutare.transform_string("defmodule M do\n  def h(a, b \\\\ 1) when a > b, do: a\nend\n")
+        Mutare.Transform.transform_string_with_sites(
+          "defmodule M do\n  def h(a, b \\\\ 1) when a > b, do: a\nend\n"
+        )
 
       # The guard is lifted (it now gets guard/clause mutants it never had before)...
       assert defaulted =~ "__mutare_h_2_g1"
@@ -393,7 +400,9 @@ defmodule Mutare.LiftTest do
 
     test "falls back to in-place (no lift) for operator names" do
       {operator, _, _} =
-        Mutare.transform_string("defmodule M do\n  def a ~> b when b > 0, do: a\nend\n")
+        Mutare.Transform.transform_string_with_sites(
+          "defmodule M do\n  def a ~> b when b > 0, do: a\nend\n"
+        )
 
       refute operator =~ "__mutare"
     end

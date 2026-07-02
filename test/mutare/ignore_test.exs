@@ -58,7 +58,7 @@ defmodule Mutare.IgnoreTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.transform_string(source)
+      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
       ignored? = Map.new(sites, &{&1.line, &1.ignored})
 
       assert ignored?[2] == true
@@ -77,7 +77,7 @@ defmodule Mutare.IgnoreTest do
       end
       """
 
-      {_meta, sites, _next_id} = Mutare.transform_string(source)
+      {_meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
 
       assert sites != []
       assert Enum.all?(sites, & &1.ignored)
@@ -91,7 +91,7 @@ defmodule Mutare.IgnoreTest do
       end
       """
 
-      {_meta, sites, _next_id} = Mutare.transform_string(source)
+      {_meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
       by_mutator = Enum.group_by(sites, & &1.mutator)
 
       # The arithmetic mutant is ignored (with its reason)...
@@ -111,7 +111,7 @@ defmodule Mutare.IgnoreTest do
       end
       """
 
-      {_meta, sites, _next_id} = Mutare.transform_string(source)
+      {_meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
       ignored = Enum.group_by(sites, & &1.ignored, & &1.mutator)
 
       assert MapSet.new(ignored[true]) == MapSet.new([:arithmetic, :relational])
@@ -128,7 +128,7 @@ defmodule Mutare.IgnoreTest do
       end
       """
 
-      {_meta, sites, _next_id} = Mutare.transform_string(source)
+      {_meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
       relational = Enum.filter(sites, &(&1.mutator == :relational))
       ignored? = Map.new(relational, &{&1.mutated_form, &1.ignored})
 
@@ -150,7 +150,7 @@ defmodule Mutare.IgnoreTest do
       end
       """
 
-      {_meta, sites, _next_id} = Mutare.transform_string(source)
+      {_meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
       returns = Enum.filter(sites, &(&1.mutator == :return_value))
       # Each return_value mutant carries exactly one label (`empty`/`sentinel` are disjoint).
       ignored? = Map.new(returns, &{List.first(&1.variant), &1.ignored})
@@ -166,7 +166,7 @@ defmodule Mutare.IgnoreTest do
       end
       """
 
-      {_meta, sites, _next_id} = Mutare.transform_string(source)
+      {_meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
 
       # Typo'd family matches no mutator, so the mutant runs rather than hides.
       refute Enum.any?(sites, & &1.ignored)
@@ -185,7 +185,9 @@ defmodule Mutare.IgnoreTest do
       # would otherwise also mutate the "# mutare:ignore" *string literal*, which
       # is beside the point here (this test is about the comment directive).
       {_meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.Arithmetic])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.Arithmetic]
+        )
 
       assert [%{line: 2, ignored: false}] = sites
     end
@@ -486,7 +488,7 @@ defmodule Mutare.IgnoreTest do
 
     test "the transform raises on a bad qualifier (end-to-end through the scan)" do
       assert_raise SpecError, fn ->
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           "defmodule M do\n  def f, do: 1 # mutare:ignore[literal:huge]\nend\n"
         )
       end
@@ -609,7 +611,7 @@ defmodule Mutare.IgnoreTest do
       end
       """
 
-      {_meta, sites, _} = Mutare.transform_string(source)
+      {_meta, sites, _} = Mutare.Transform.transform_string_with_sites(source)
 
       for site <- sites, label <- site.variant do
         case Map.fetch!(@vocab, to_string(site.mutator)) do
@@ -647,7 +649,7 @@ defmodule Mutare.IgnoreTest do
       end
       """
 
-      {_meta, sites, _} = Mutare.transform_string(source)
+      {_meta, sites, _} = Mutare.Transform.transform_string_with_sites(source)
 
       # `Mutare.Site` is a lean DTO (no stored AST nodes), so re-parse the recorded code to
       # recover each mutation's shape and keep only the 2-arg op → 2-arg op swaps.
@@ -670,7 +672,7 @@ defmodule Mutare.IgnoreTest do
       # `Bitwise.band(a, b)` → `Bitwise.bor(a, b)` names the `|||` variant, just as `a &&& b` does
       # — so `[bitwise:|||]` suppresses the OR result in either spelling.
       {_meta, sites, _} =
-        Mutare.transform_string("""
+        Mutare.Transform.transform_string_with_sites("""
         defmodule B do
           import Bitwise
           def f(a, b), do: Bitwise.band(a, b)
@@ -687,7 +689,7 @@ defmodule Mutare.IgnoreTest do
       # be the call's `|||` (classified by unwrapping the capture to its inner ref), so a qualified
       # filter can suppress it. The alias-stamped form resolves identically.
       {_meta, sites, _} =
-        Mutare.transform_string("""
+        Mutare.Transform.transform_string_with_sites("""
         defmodule B do
           alias Bitwise, as: Bw
           def f, do: &Bw.band/2 # mutare:ignore[bitwise:|||]
@@ -705,7 +707,7 @@ defmodule Mutare.IgnoreTest do
       # A bare imported capture's ref is `{band, meta, nil}`, not call-shaped, so variant
       # derivation must normalize it before resolving the import stamp.
       {_meta, sites, _} =
-        Mutare.transform_string("""
+        Mutare.Transform.transform_string_with_sites("""
         defmodule B do
           import Bitwise
           def f, do: &band/2 # mutare:ignore[bitwise:|||]
@@ -724,7 +726,9 @@ defmodule Mutare.IgnoreTest do
       # deduped mutant. It belongs to both kinds, so it advertises *both* labels — and a user
       # reasoning about the decrement (`pred`) or about the zero boundary (`zero`) each find it.
       {_meta, sites, _} =
-        Mutare.transform_string("defmodule L do\n  def f(x), do: x - 1\nend\n")
+        Mutare.Transform.transform_string_with_sites(
+          "defmodule L do\n  def f(x), do: x - 1\nend\n"
+        )
 
       zero_mutant = Enum.find(sites, &(&1.mutator == :literal and &1.mutated_code == "0"))
       assert zero_mutant, "expected a 1 -> 0 literal mutant"
@@ -740,7 +744,7 @@ defmodule Mutare.IgnoreTest do
       # the unrelated `succ` mutant on the same literal keeps running.
       for label <- ~w(pred zero) do
         src = "defmodule L do\n  def f(x), do: x - 1 # mutare:ignore[literal:#{label}]\nend\n"
-        {_meta, sites, _} = Mutare.transform_string(src)
+        {_meta, sites, _} = Mutare.Transform.transform_string_with_sites(src)
 
         zero_mutant = Enum.find(sites, &(&1.mutator == :literal and &1.mutated_code == "0"))
         assert zero_mutant.ignored, "[literal:#{label}] should suppress the 1 -> 0 mutant"

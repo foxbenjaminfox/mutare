@@ -43,7 +43,9 @@ defmodule Mutare.TransformCompilePropertyTest do
   property "the metamutant always compiles", numtests: @numtests, max_size: @max_size do
     forall module_ast <- Gen.module_gen() do
       source = Macro.to_string(module_ast)
-      {metamutant, _sites, _next_id} = Mutare.transform_string(source, file: "prop.ex")
+
+      {metamutant, _sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(source, file: "prop.ex")
 
       case compile_quietly(metamutant) do
         :ok ->

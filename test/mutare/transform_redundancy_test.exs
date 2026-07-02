@@ -47,7 +47,7 @@ defmodule Mutare.TransformRedundancyTest do
       # touches) keeps its AtomLiteral. This pins the "any future minimal-rewrite call mutator
       # gets it for free" promise and the precision of the nid match (only the covered leaf).
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def f(x), do: {Widget.scale(x, :small), :keep}
@@ -122,7 +122,9 @@ defmodule Mutare.TransformRedundancyTest do
       """
 
       module_source = "defmodule M do\n  #{String.trim_trailing(source)}\nend\n"
-      {meta, sites, _next_id} = Mutare.transform_string(module_source, mutators: @range_guard)
+
+      {meta, sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(module_source, mutators: @range_guard)
 
       range_guard_mutants =
         for s <- sites, s.mutator in [:literal, :relational, :conditional] do
@@ -574,7 +576,10 @@ defmodule Mutare.TransformRedundancyTest do
   # tests, which exercise Logical/List/Conditional combinations.
   defp redundancy_triples(body, mutators) do
     source = "defmodule M do\n  #{String.trim_trailing(body)}\nend\n"
-    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: mutators)
+
+    {meta, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(source, mutators: mutators)
+
     triples = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
     {meta, triples}
   end

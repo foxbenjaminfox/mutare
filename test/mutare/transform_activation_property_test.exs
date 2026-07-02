@@ -65,7 +65,10 @@ defmodule Mutare.TransformActivationPropertyTest do
     max_size: @max_size do
     forall module_ast <- Gen.module_gen() do
       source = Macro.to_string(module_ast)
-      {metamutant, sites, _next_id} = Mutare.transform_string(source, file: "prop.ex")
+
+      {metamutant, sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(source, file: "prop.ex")
+
       ids = Enum.map(sites, & &1.id)
       Selector.put(Selector.baseline())
 

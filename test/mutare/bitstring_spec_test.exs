@@ -18,7 +18,10 @@ defmodule Mutare.BitstringSpecTest do
 
   defp sites(body) do
     {_meta, sites, _} =
-      Mutare.transform_string("defmodule M do\n  def f(cp), do: #{body}\nend\n", mutators: @only)
+      Mutare.Transform.transform_string_with_sites(
+        "defmodule M do\n  def f(cp), do: #{body}\nend\n",
+        mutators: @only
+      )
 
     sites
   end
@@ -140,7 +143,7 @@ defmodule Mutare.BitstringSpecTest do
 
     test "a spec in a function-head pattern is excluded (no selector hosts a pattern)" do
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           "defmodule M do\n  def f(<<cp::utf16>>), do: cp\nend\n",
           mutators: @only
         )
@@ -150,7 +153,7 @@ defmodule Mutare.BitstringSpecTest do
 
     test "a spec on a `=` match LHS (a decode) is excluded" do
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           "defmodule M do\n  def f(bin) do\n    <<cp::utf16>> = bin\n    cp\n  end\nend\n",
           mutators: @only
         )
@@ -186,7 +189,8 @@ defmodule Mutare.BitstringSpecTest do
       end
       """
 
-      {metamutant, _sites, _} = Mutare.transform_string(source, mutators: @only)
+      {metamutant, _sites, _} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: @only)
 
       # The paren form warns (deprecation); the point is it *compiles*. Before the
       # fix, a `utf16-big()-little` mutant raised CompileError here.
@@ -231,7 +235,9 @@ defmodule Mutare.BitstringSpecTest do
       end
       """
 
-      {metamutant, sites, _} = Mutare.transform_string(source, mutators: @only)
+      {metamutant, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: @only)
+
       Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())
       on_exit(fn -> Selector.put(Selector.baseline()) end)

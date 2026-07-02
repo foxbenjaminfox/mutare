@@ -31,7 +31,9 @@ defmodule Mutare.ReportTest do
   end
 
   defp site(op_to) do
-    {_meta, sites, _next_id} = Mutare.transform_string(@source, file: "lib/billing.ex")
+    {_meta, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(@source, file: "lib/billing.ex")
+
     Enum.find(sites, &(&1.original_form == :>= and &1.mutated_form == op_to))
   end
 
@@ -68,7 +70,9 @@ defmodule Mutare.ReportTest do
     """
 
     defp kw_site(mutator, original_code) do
-      {_meta, sites, _next} = Mutare.transform_string(@kw_source, mutators: [mutator])
+      {_meta, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(@kw_source, mutators: [mutator])
+
       Enum.find(sites, &(&1.original_code == original_code))
     end
 
@@ -109,7 +113,9 @@ defmodule Mutare.ReportTest do
 
     defp rx_site(mutated_code) do
       {_meta, sites, _next} =
-        Mutare.transform_string(@rx_source, mutators: [Mutare.Mutators.RegexLiteral])
+        Mutare.Transform.transform_string_with_sites(@rx_source,
+          mutators: [Mutare.Mutators.RegexLiteral]
+        )
 
       Enum.find(sites, &(&1.mutated_code == mutated_code))
     end
@@ -128,7 +134,9 @@ defmodule Mutare.ReportTest do
 
     test "every regex mutant's patch re-parses as valid Elixir" do
       {_meta, sites, _next} =
-        Mutare.transform_string(@rx_source, mutators: [Mutare.Mutators.RegexLiteral])
+        Mutare.Transform.transform_string_with_sites(@rx_source,
+          mutators: [Mutare.Mutators.RegexLiteral]
+        )
 
       for site <- sites do
         assert {:ok, _} = Code.string_to_quoted(Report.patch(site, @rx_source))

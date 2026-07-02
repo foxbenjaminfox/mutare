@@ -49,8 +49,8 @@ defmodule Mutare.Test do
 
   import ExUnit.Assertions
 
+  alias Mutare.MutationSite
   alias Mutare.Selector
-  alias Mutare.Site
 
   @typedoc """
   A mutator entry the **source** helpers accept — anything `:mutators` takes: a family
@@ -104,8 +104,8 @@ defmodule Mutare.Test do
   """
   @spec diffs(String.t(), [mutator()]) :: [{atom(), String.t(), String.t()}]
   def diffs(source, mutators) do
-    {_metamutant, sites, _next_id} = Mutare.transform_string(source, mutators: mutators)
-    for site <- sites, do: {site.mutator, site.original_code, site.mutated_code}
+    result = Mutare.transform_string(source, mutators: mutators)
+    for site <- result.mutants, do: {site.mutator, site.original_code, site.mutated_code}
   end
 
   @doc """
@@ -147,7 +147,7 @@ defmodule Mutare.Test do
   """
   @spec assert_metamutant_compiles(String.t(), [mutator()]) :: [{module(), binary()}]
   def assert_metamutant_compiles(source, mutators) do
-    {metamutant, _sites, _next_id} = Mutare.transform_string(source, mutators: mutators)
+    %{metamutant: metamutant} = Mutare.transform_string(source, mutators: mutators)
     {compiled, wrapper} = compile_metamutant_source!(metamutant, true)
 
     for {module, _binary} <- compiled, do: purge(module)
@@ -157,7 +157,7 @@ defmodule Mutare.Test do
   end
 
   @doc """
-  Transforms and compiles `source`, returning `{modules, sites}`.
+  Render `source` to its metamutant, compile it, and return `{modules, mutants}`.
 
   By default, compilation occurs inside a uniquely named wrapper module. This
   prevents module-name collisions and keeps ordinary self-references working.
@@ -174,30 +174,34 @@ defmodule Mutare.Test do
   Options are forwarded to `Mutare.transform_string/2`. `:uniquify` is consumed by
   this helper, and the `mutators` argument overrides any `:mutators` option.
 
-      {[module], sites} =
+  `modules` are the metamutant's own compiled module atoms (the empty wrapper shell excluded), in
+  compilation order — typically a single-element list for a single `defmodule`; `mutants` are
+  public `Mutare.MutationSite` DTOs, used to resolve a mutant's id from its logical diff
+  (`site_id/2` / `site_by/3`). All compiled modules are purged when the test exits.
+
+      {[module], mutants} =
         compile_metamutant(
           "defmodule Q do\n  def n, do: 1 + 1\nend",
           [MyApp.PlusMutator]
         )
 
       assert module.n() == 2
-      id = site_id(sites, {"1 + 1", "1 - 1"})
+      id = site_id(mutants, {"1 + 1", "1 - 1"})
       assert with_active_mutant(id, fn -> module.n() end) == 0
   """
-  @spec compile_metamutant(String.t(), [mutator()], keyword()) :: {[module()], [Site.t()]}
+  @spec compile_metamutant(String.t(), [mutator()], keyword()) :: {[module()], [MutationSite.t()]}
   def compile_metamutant(source, mutators, opts \\ []) do
     {isolate?, transform_opts} = Keyword.pop(opts, :uniquify, true)
 
-    {metamutant, sites, _next_id} =
-      Mutare.transform_string(source, Keyword.put(transform_opts, :mutators, mutators))
+    result = Mutare.transform_string(source, Keyword.put(transform_opts, :mutators, mutators))
 
-    {compiled, wrapper} = compile_metamutant_source!(metamutant, isolate?)
+    {compiled, wrapper} = compile_metamutant_source!(result.metamutant, isolate?)
     modules = for {module, _binary} <- compiled, do: module
     loaded = if wrapper, do: [wrapper | modules], else: modules
 
     ExUnit.Callbacks.on_exit(fn -> Enum.each(loaded, &purge/1) end)
 
-    {modules, sites}
+    {modules, result.mutants}
   end
 
   # Compile a rendered metamutant, capturing stderr (a custom mutator's mutant may warn) and
@@ -281,7 +285,7 @@ defmodule Mutare.Test do
 
   Use `site_by/3` when code matching cannot identify the site.
   """
-  @spec site_id([Site.t()], {pattern, pattern}) :: pos_integer()
+  @spec site_id([MutationSite.t()], {pattern, pattern}) :: pos_integer()
         when pattern: String.t() | Regex.t()
   def site_id(sites, {original_code, mutated_code}) do
     sites
@@ -301,7 +305,8 @@ defmodule Mutare.Test do
   `label` identifies the lookup in failure messages. The lookup fails and lists
   candidates when zero or multiple sites match.
   """
-  @spec site_by([Site.t()], String.t(), (Site.t() -> boolean())) :: Site.t()
+  @spec site_by([MutationSite.t()], String.t(), (MutationSite.t() -> boolean())) ::
+          MutationSite.t()
   def site_by(sites, label, pred) when is_function(pred, 1) do
     case Enum.filter(sites, pred) do
       [site] ->

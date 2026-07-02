@@ -5,9 +5,9 @@ defmodule Mutare.TestTest do
 
   import Mutare.Test
 
+  alias Mutare.MutationSite
   alias Mutare.Mutator.Spec
   alias Mutare.Mutators.{Arithmetic, CollectionArity, Relational, ReturnValue}
-  alias Mutare.Site
 
   doctest Mutare.Test
 
@@ -119,7 +119,7 @@ defmodule Mutare.TestTest do
   end
 
   describe "compile_metamutant/3" do
-    test "compiles the metamutant and returns the modules plus sites" do
+    test "compiles the metamutant and returns the modules plus public mutant DTOs" do
       {modules, sites} =
         compile_metamutant("defmodule Q do\n  def n, do: 1 + 1\nend", [Arithmetic])
 
@@ -127,7 +127,11 @@ defmodule Mutare.TestTest do
       assert Code.ensure_loaded?(module)
       # Baseline (no mutant active) runs the original.
       assert module.n() == 2
-      assert Enum.any?(sites, &match?(%Site{original_code: "1 + 1", mutated_code: "1 - 1"}, &1))
+
+      assert Enum.any?(
+               sites,
+               &match?(%MutationSite{original_code: "1 + 1", mutated_code: "1 - 1"}, &1)
+             )
     end
 
     test "isolates each compile so two calls on the same source don't clash" do
@@ -225,8 +229,8 @@ defmodule Mutare.TestTest do
 
   describe "site_id/2 and site_by/3" do
     @sites [
-      %Site{id: 1, mutator: :arithmetic, original_code: "a + b", mutated_code: "a - b"},
-      %Site{id: 2, mutator: :relational, original_code: "a > b", mutated_code: "a >= b"}
+      %{id: 1, mutator: :arithmetic, original_code: "a + b", mutated_code: "a - b"},
+      %{id: 2, mutator: :relational, original_code: "a > b", mutated_code: "a >= b"}
     ]
 
     test "site_id resolves the id from a logical diff" do
@@ -235,7 +239,7 @@ defmodule Mutare.TestTest do
 
     test "site_id matches exactly, not as a substring" do
       sites = [
-        %Site{id: 7, mutator: :arithmetic, original_code: "11 + 1", mutated_code: "11 - 1"}
+        %{id: 7, mutator: :arithmetic, original_code: "11 + 1", mutated_code: "11 - 1"}
       ]
 
       # `"1 + 1"` is a substring of `"11 + 1"`; exact matching must NOT resolve it.
@@ -248,7 +252,7 @@ defmodule Mutare.TestTest do
 
     test "site_id resolves a Regex slot by pattern, for whole-statement diffs" do
       sites = [
-        %Site{
+        %{
           id: 4,
           mutator: :custom,
           original_code: "from(u in User, limit: 2)",
@@ -264,7 +268,7 @@ defmodule Mutare.TestTest do
 
     test "an anchored Regex recovers exactness within the loose mode" do
       sites = [
-        %Site{id: 7, mutator: :arithmetic, original_code: "11 + 1", mutated_code: "11 - 1"}
+        %{id: 7, mutator: :arithmetic, original_code: "11 + 1", mutated_code: "11 - 1"}
       ]
 
       # A loose `1 + 1` regex would resolve against the `11 + 1` site — anchor it to refuse.
@@ -277,8 +281,8 @@ defmodule Mutare.TestTest do
 
     test "site_id flunks when a Regex pair matches more than one site" do
       sites = [
-        %Site{id: 1, mutator: :arithmetic, original_code: "a + b", mutated_code: "a - b"},
-        %Site{id: 2, mutator: :arithmetic, original_code: "a + c", mutated_code: "a - c"}
+        %{id: 1, mutator: :arithmetic, original_code: "a + b", mutated_code: "a - b"},
+        %{id: 2, mutator: :arithmetic, original_code: "a + c", mutated_code: "a - c"}
       ]
 
       assert_raise ExUnit.AssertionError, ~r/ambiguous: 2 sites/, fn ->
@@ -287,7 +291,7 @@ defmodule Mutare.TestTest do
     end
 
     test "site_by returns the whole matching site" do
-      assert %Site{id: 2} = site_by(@sites, "the relational one", &(&1.mutator == :relational))
+      assert %{id: 2} = site_by(@sites, "the relational one", &(&1.mutator == :relational))
     end
 
     test "flunks when nothing matches" do

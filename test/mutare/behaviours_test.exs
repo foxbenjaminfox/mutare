@@ -33,7 +33,10 @@ defmodule Mutare.BehavioursTest do
   # to isolate its sites).
   defp behaviour_sites(source, opts \\ []) do
     {_source, sites, _next} =
-      Transform.transform_string(source, [mutators: [Mutare.Test.BehaviourMutator]] ++ opts)
+      Transform.transform_string_with_sites(
+        source,
+        [mutators: [Mutare.Test.BehaviourMutator]] ++ opts
+      )
 
     Enum.map(sites, & &1.mutator)
   end
@@ -206,7 +209,7 @@ defmodule Mutare.BehavioursTest do
       """
 
       {out, sites, _next} =
-        Transform.transform_string(source, mutators: [Mutare.Test.BehaviourMutator])
+        Transform.transform_string_with_sites(source, mutators: [Mutare.Test.BehaviourMutator])
 
       # both the tuple swap (mutate/2) and the return-tail (return_replacements/2) recorded
       assert Enum.map(sites, & &1.mutator) == [:behaviour_aware, :behaviour_aware]

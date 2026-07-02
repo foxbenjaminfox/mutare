@@ -64,7 +64,9 @@ defmodule Mutare.TransformPropertyTest do
           false
 
         {:ok, _} ->
-          {metamutant, sites, _next_id} = Mutare.transform_string(source, file: "prop.ex")
+          {metamutant, sites, _next_id} =
+            Mutare.Transform.transform_string_with_sites(source, file: "prop.ex")
+
           renders_valid?(metamutant, source) and mutants_observable?(sites, source, metamutant)
       end
     end

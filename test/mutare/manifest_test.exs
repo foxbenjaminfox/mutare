@@ -36,7 +36,10 @@ defmodule Mutare.ManifestTest do
   describe "ids_at_line/2 — mapping a compile error to its mutant" do
     test "an in-place poison maps to the mutant at that line" do
       src = "defmodule P do\n  def f(a, b), do: a + b\nend\n"
-      {meta, [site], _next} = Mutare.transform_string(src, mutators: [Mutare.Test.PoisonMutator])
+
+      {meta, [site], _next} =
+        Mutare.Transform.transform_string_with_sites(src, mutators: [Mutare.Test.PoisonMutator])
+
       manifest = Manifest.from_source(meta)
 
       line = line_of(meta, "mutare_unbound_xyz")
@@ -47,7 +50,9 @@ defmodule Mutare.ManifestTest do
       # Regression: the old line→id mapping matched only a selector clause's start
       # line, so a guard poison (whose code sits in a generated lifted clause, gated
       # by its id — not the public dispatcher) mapped to nothing → abort.
-      {meta, sites, _next} = Mutare.transform_string(@lifted_src, mutators: @lifted_mutators)
+      {meta, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(@lifted_src, mutators: @lifted_mutators)
+
       manifest = Manifest.from_source(meta)
 
       poison = Enum.find(sites, &(&1.mutator == :poison))
@@ -69,7 +74,9 @@ defmodule Mutare.ManifestTest do
       end
       """
 
-      {meta, [site], _next} = Mutare.transform_string(src, mutators: [Mutare.Mutators.Arithmetic])
+      {meta, [site], _next} =
+        Mutare.Transform.transform_string_with_sites(src, mutators: [Mutare.Mutators.Arithmetic])
+
       manifest = Manifest.from_source(meta)
 
       # the mutated body spans more than one line, and its last line still maps back
@@ -86,7 +93,10 @@ defmodule Mutare.ManifestTest do
       # that still recovers the build. (Lifted mutants are each their own gated
       # clause now, so they map precisely; the coarse net is the in-place case.)
       src = "defmodule D do\n  def f, do: 5\nend\n"
-      {meta, sites, _next} = Mutare.transform_string(src, mutators: [Mutare.Mutators.Literal])
+
+      {meta, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(src, mutators: [Mutare.Mutators.Literal])
+
       manifest = Manifest.from_source(meta)
 
       assert length(sites) > 1
@@ -100,7 +110,9 @@ defmodule Mutare.ManifestTest do
     end
 
     test "narrowest range wins: a precise clause line drops only that mutant, not the whole case" do
-      {meta, sites, _next} = Mutare.transform_string(@lifted_src, mutators: @lifted_mutators)
+      {meta, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(@lifted_src, mutators: @lifted_mutators)
+
       manifest = Manifest.from_source(meta)
 
       poison = Enum.find(sites, &(&1.mutator == :poison))
@@ -125,7 +137,9 @@ defmodule Mutare.ManifestTest do
       end
       """
 
-      {meta, sites, _next} = Mutare.transform_string(salted_src, mutators: @lifted_mutators)
+      {meta, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(salted_src, mutators: @lifted_mutators)
+
       manifest = Manifest.from_source(meta)
 
       poison = Enum.find(sites, &(&1.mutator == :poison))
@@ -157,7 +171,9 @@ defmodule Mutare.ManifestTest do
       end
       """
 
-      {meta, [site], _next} = Mutare.transform_string(src, mutators: [Mutare.Test.PoisonMutator])
+      {meta, [site], _next} =
+        Mutare.Transform.transform_string_with_sites(src, mutators: [Mutare.Test.PoisonMutator])
+
       manifest = Manifest.from_source(meta)
 
       # the user binding really does precede the generated prologue / hoisted selector
@@ -185,7 +201,9 @@ defmodule Mutare.ManifestTest do
       end
       """
 
-      {meta, [site], _next} = Mutare.transform_string(src, mutators: [Mutare.Test.PoisonMutator])
+      {meta, [site], _next} =
+        Mutare.Transform.transform_string_with_sites(src, mutators: [Mutare.Test.PoisonMutator])
+
       manifest = Manifest.from_source(meta)
 
       # the scenario is real: the source's `mutare_active` forced the generated binding
@@ -201,7 +219,9 @@ defmodule Mutare.ManifestTest do
     end
 
     test "a line with no generated code maps to nothing" do
-      {meta, _sites, _next} = Mutare.transform_string(@lifted_src, mutators: @lifted_mutators)
+      {meta, _sites, _next} =
+        Mutare.Transform.transform_string_with_sites(@lifted_src, mutators: @lifted_mutators)
+
       manifest = Manifest.from_source(meta)
 
       assert Manifest.ids_at_line(manifest, 9_999) == []
@@ -227,7 +247,7 @@ defmodule Mutare.ManifestTest do
       # so the manifest records the whole clause range against that single id (the `pattern_mutant`
       # path), not a selector clause body.
       {meta, sites, _next} =
-        Mutare.transform_string(@case_src,
+        Mutare.Transform.transform_string_with_sites(@case_src,
           mutators: [Mutare.Mutators.Literal, Mutare.Mutators.Relational]
         )
 
@@ -244,7 +264,9 @@ defmodule Mutare.ManifestTest do
 
     test "the whole tupled `case` is the coarse fallback for every clause-mutant id it hosts" do
       {meta, sites, _next} =
-        Mutare.transform_string(@case_src, mutators: [Mutare.Mutators.Literal])
+        Mutare.Transform.transform_string_with_sites(@case_src,
+          mutators: [Mutare.Mutators.Literal]
+        )
 
       manifest = Manifest.from_source(meta)
 

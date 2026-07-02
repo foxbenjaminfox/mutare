@@ -18,11 +18,12 @@ defmodule Mutare do
   """
 
   @doc """
-  Transform a source string into `{metamutant_source, [%Mutare.Site{}], next_id}`.
+  Transform a source string into a metamutant and public mutant descriptions.
 
       iex> source = "defmodule Calculator do\\n  def add(a, b), do: a + b\\nend\\n"
-      iex> {_metamutant, [site], next_id} = Mutare.transform_string(source, mutators: [:arithmetic])
-      iex> {site.id, site.mutator, site.original_code, site.mutated_code, next_id}
+      iex> result = Mutare.transform_string(source, mutators: [:arithmetic])
+      iex> [site] = result.mutants
+      iex> {site.id, site.mutator, site.original_code, site.mutated_code, result.next_id}
       {1, :arithmetic, "a + b", "a - b", 2}
   """
   defdelegate transform_string(source, opts \\ []), to: Mutare.Transform

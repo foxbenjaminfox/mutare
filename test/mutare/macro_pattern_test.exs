@@ -64,7 +64,8 @@ defmodule Mutare.MacroPatternTest do
   @compile {:no_warn_undefined, Mutare.MacroPatternFixture}
 
   setup_all do
-    {metamutant, sites, _next_id} = Mutare.transform_string(@source, file: "mac.ex")
+    {metamutant, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(@source, file: "mac.ex")
 
     # `trailing/1` returns the destructure value; `repeated/1`'s `[a, a]` self-constrains.
     # Any benign warning is captured so it does not clutter test output.
@@ -235,7 +236,7 @@ defmodule Mutare.MacroPatternTest do
 
     setup do
       {meta, sites, _next} =
-        Mutare.transform_string(@user_source,
+        Mutare.Transform.transform_string_with_sites(@user_source,
           file: "user.ex",
           macro_routes: [{Mutare.Test.QueryDSL, :unpack, 2, [:binding_pattern, :expression]}]
         )
@@ -286,7 +287,7 @@ defmodule Mutare.MacroPatternTest do
 
     setup do
       {meta, sites, _next} =
-        Mutare.transform_string(@source,
+        Mutare.Transform.transform_string_with_sites(@source,
           file: "whole.ex",
           mutators: [Mutare.Mutators.PatternSwap, Mutare.Test.UnpackMutator]
         )
@@ -342,7 +343,7 @@ defmodule Mutare.MacroPatternTest do
       """
 
       {_meta, sites, _next} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           file: "whole_ignore.ex",
           mutators: [Mutare.Mutators.PatternSwap, Mutare.Test.UnpackMutator]
         )
@@ -394,7 +395,7 @@ defmodule Mutare.MacroPatternTest do
 
     setup do
       {meta, sites, _next} =
-        Mutare.transform_string(@source,
+        Mutare.Transform.transform_string_with_sites(@source,
           file: "whole_piped.ex",
           mutators: [Mutare.Mutators.PatternSwap, Mutare.Test.UnpackMutator]
         )
@@ -447,7 +448,7 @@ defmodule Mutare.MacroPatternTest do
 
     setup do
       {meta, sites, _next} =
-        Mutare.transform_string(@source,
+        Mutare.Transform.transform_string_with_sites(@source,
           file: "visible.ex",
           macro_routes: [{Mutare.Test.QueryDSL, :unpack2, 2, [:expression, :binding_pattern]}]
         )
@@ -499,7 +500,7 @@ defmodule Mutare.MacroPatternTest do
 
     setup do
       {meta, sites, _next} =
-        Mutare.transform_string(@source,
+        Mutare.Transform.transform_string_with_sites(@source,
           file: "whole_only.ex",
           mutators: [Mutare.Test.UnpackMutator]
         )
@@ -548,7 +549,7 @@ defmodule Mutare.MacroPatternTest do
 
     setup do
       {meta, sites, _next} =
-        Mutare.transform_string(@source,
+        Mutare.Transform.transform_string_with_sites(@source,
           file: "whole_only_piped.ex",
           mutators: [Mutare.Test.UnpackMutator]
         )

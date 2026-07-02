@@ -84,7 +84,9 @@ defmodule Mutare.NegativeFloatTest do
             {:case, @case_source, "case.ex"}
           ],
           into: %{} do
-        {meta, sites, _} = Mutare.transform_string(source, file: file, mutators: @mutators)
+        {meta, sites, _} =
+          Mutare.Transform.transform_string_with_sites(source, file: file, mutators: @mutators)
+
         {key, %{meta: meta, sites: sites}}
       end
 

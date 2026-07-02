@@ -34,7 +34,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_unquote.ex", mutators: @arith)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_unquote.ex",
+        mutators: @arith
+      )
 
     assert [
              %Site{
@@ -69,7 +72,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_unquote_binding.ex", mutators: @arith)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_unquote_binding.ex",
+        mutators: @arith
+      )
 
     assert [
              %Site{
@@ -101,7 +107,7 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(
+      Mutare.Transform.transform_string_with_sites(
         source,
         file: "quote_unquote_fn_binding.ex",
         mutators: @arith ++ @list
@@ -147,7 +153,7 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(
+      Mutare.Transform.transform_string_with_sites(
         source,
         file: "quote_unquote_binding_macro.ex",
         mutators: @arith ++ @list
@@ -188,7 +194,7 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(
+      Mutare.Transform.transform_string_with_sites(
         source,
         file: "quote_unquote_nested_quote_binding.ex",
         mutators: @arith ++ @list
@@ -250,7 +256,7 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(
+      Mutare.Transform.transform_string_with_sites(
         source,
         file: "quote_unquote_disabled_nested_quote_option.ex",
         mutators: @arith ++ @list
@@ -285,7 +291,7 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(
+      Mutare.Transform.transform_string_with_sites(
         source,
         file: "quote_unquote_runtime_quote_option_binding.ex",
         mutators: @arith ++ @list
@@ -330,7 +336,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_unquote_case_binding.ex", mutators: @arith)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_unquote_case_binding.ex",
+        mutators: @arith
+      )
 
     assert [
              %Site{
@@ -370,7 +379,7 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(
+      Mutare.Transform.transform_string_with_sites(
         source,
         file: "quote_unquote_macro_pattern.ex",
         mutators: @pattern_swap
@@ -409,7 +418,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_unquote_splicing.ex", mutators: @arith)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_unquote_splicing.ex",
+        mutators: @arith
+      )
 
     assert [%Site{original_code: "x + 1", mutated_code: "x - 1"} = site] = sites
     [{mod, _binary}] = Mutare.Test.Compile.string(meta)
@@ -433,7 +445,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_bracketed_do.ex", mutators: @arith)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_bracketed_do.ex",
+        mutators: @arith
+      )
 
     assert [%Site{original_code: "x + 1", mutated_code: "x - 1"} = site] = sites
     [{mod, _binary}] = Mutare.Test.Compile.string(meta)
@@ -463,7 +478,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_unquote_alias.ex", mutators: @call_removal)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_unquote_alias.ex",
+        mutators: @call_removal
+      )
 
     assert [
              %Site{
@@ -495,7 +513,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_unquote_call_head.ex", mutators: @arith)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_unquote_call_head.ex",
+        mutators: @arith
+      )
 
     assert [%Site{original_code: "x + 1", mutated_code: "x - 1"} = site] = sites
     [{mod, _binary}] = Mutare.Test.Compile.string(meta)
@@ -521,7 +542,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_unquote_receiver.ex", mutators: @call_removal)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_unquote_receiver.ex",
+        mutators: @call_removal
+      )
 
     assert [
              %Site{
@@ -553,7 +577,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_data.ex", mutators: @arith)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_data.ex",
+        mutators: @arith
+      )
 
     assert [%Site{original_code: "x + 1"}] = sites
     refute Enum.any?(sites, &(&1.original_code == "1 + 2"))
@@ -572,7 +599,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_unquote_false.ex", mutators: @arith)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_unquote_false.ex",
+        mutators: @arith
+      )
 
     assert sites == []
     assert [_ | _] = Mutare.Test.Compile.string(meta)
@@ -588,7 +618,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_bracketed_unquote_false.ex", mutators: @arith)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_bracketed_unquote_false.ex",
+        mutators: @arith
+      )
 
     assert sites == []
     assert [_ | _] = Mutare.Test.Compile.string(meta)
@@ -606,7 +639,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_bind_quoted.ex", mutators: @arith)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_bind_quoted.ex",
+        mutators: @arith
+      )
 
     assert sites == []
     assert [_ | _] = Mutare.Test.Compile.string(meta)
@@ -622,7 +658,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_bracketed_bind_quoted.ex", mutators: @arith)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_bracketed_bind_quoted.ex",
+        mutators: @arith
+      )
 
     assert sites == []
     assert [_ | _] = Mutare.Test.Compile.string(meta)
@@ -642,7 +681,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_nested.ex", mutators: @arith)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_nested.ex",
+        mutators: @arith
+      )
 
     assert sites == []
     assert [_ | _] = Mutare.Test.Compile.string(meta)
@@ -662,7 +704,10 @@ defmodule Mutare.QuoteUnquoteTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.transform_string(source, file: "quote_stacked_nested.ex", mutators: @arith)
+      Mutare.Transform.transform_string_with_sites(source,
+        file: "quote_stacked_nested.ex",
+        mutators: @arith
+      )
 
     assert sites == []
     assert [_ | _] = Mutare.Test.Compile.string(meta)

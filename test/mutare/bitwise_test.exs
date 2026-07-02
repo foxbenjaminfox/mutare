@@ -14,7 +14,7 @@ defmodule Mutare.BitwiseTest do
   @only [Mutare.Mutators.Bitwise]
 
   defp sites(source) do
-    {_meta, sites, _} = Mutare.transform_string(source, mutators: @only)
+    {_meta, sites, _} = Mutare.Transform.transform_string_with_sites(source, mutators: @only)
     Enum.filter(sites, &(&1.mutator == :bitwise))
   end
 
@@ -131,7 +131,9 @@ defmodule Mutare.BitwiseTest do
       end
       """
 
-      {metamutant, sites, _} = Mutare.transform_string(source, mutators: @only)
+      {metamutant, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: @only)
+
       [site] = Enum.filter(sites, &(&1.mutator == :bitwise))
       Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())

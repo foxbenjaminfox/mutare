@@ -10,13 +10,16 @@ defmodule Mutare.PoisonTest do
 
   describe "transform :skip_ids" do
     test "a skipped id is recorded :poisoned with no selector, so it compiles" do
-      {meta, [site], _next_id} = Mutare.transform_string(@src, @poison)
+      {meta, [site], _next_id} = Mutare.Transform.transform_string_with_sites(@src, @poison)
 
       # Without skipping, the poison mutant is in the metamutant (won't compile).
       assert meta =~ "mutare_unbound_xyz"
 
       {meta2, [site2], _next_id} =
-        Mutare.transform_string(@src, Keyword.put(@poison, :skip_ids, MapSet.new([site.id])))
+        Mutare.Transform.transform_string_with_sites(
+          @src,
+          Keyword.put(@poison, :skip_ids, MapSet.new([site.id]))
+        )
 
       assert site2.id == site.id
       assert site2.poisoned
@@ -31,7 +34,7 @@ defmodule Mutare.PoisonTest do
 
   describe "Poison.ids/2" do
     test "maps a compile error's file:line to the mutant whose generated code spans it" do
-      {meta, [site], _next_id} = Mutare.transform_string(@src, @poison)
+      {meta, [site], _next_id} = Mutare.Transform.transform_string_with_sites(@src, @poison)
 
       line =
         meta
@@ -54,7 +57,7 @@ defmodule Mutare.PoisonTest do
       # Two distinct error lines in the *same* tracked file (the second resolved from the
       # memoized manifest, not a re-parse) plus an error in a file absent from `metamutants`
       # (no manifest → contributes nothing). Exercises the cache-hit and missing-file paths.
-      {meta, [site], _next_id} = Mutare.transform_string(@src, @poison)
+      {meta, [site], _next_id} = Mutare.Transform.transform_string_with_sites(@src, @poison)
 
       poison_line =
         meta
@@ -71,7 +74,7 @@ defmodule Mutare.PoisonTest do
     end
 
     test "ignores a warning's file:line — only error diagnostics locate poison" do
-      {meta, [site], _next_id} = Mutare.transform_string(@src, @poison)
+      {meta, [site], _next_id} = Mutare.Transform.transform_string_with_sites(@src, @poison)
       metamutants = %{"lib/p.ex" => meta}
 
       line =

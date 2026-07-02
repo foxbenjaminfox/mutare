@@ -37,7 +37,8 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @binding)
+      {meta, sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: @binding)
 
       # The binding condition yields no site (any selector would trap `name`).
       refute Enum.any?(sites, &(&1.original_code =~ "name = Keyword"))
@@ -66,7 +67,8 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @binding)
+      {meta, sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: @binding)
 
       assert Enum.filter(sites, &(&1.mutator == :if_condition))
              |> Enum.map(&{&1.original_code, &1.mutated_code}) ==
@@ -94,7 +96,9 @@ defmodule Mutare.TransformBindingHoistTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
 
       assert Enum.any?(sites, &(&1.mutator == :if_condition))
       assert_compiles(meta)
@@ -120,7 +124,9 @@ defmodule Mutare.TransformBindingHoistTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
 
       # The whole condition gets the IfCondition true/false pair — not hoisted, not pruned.
       assert Enum.map(sites, &{&1.mutator, &1.mutated_code}) ==
@@ -147,7 +153,10 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
 
       # The binding is lifted to a preceding statement; the decision selects on the bare var.
       assert meta =~ "x = Keyword.get(opts, :n)\n"
@@ -172,7 +181,10 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
 
       # The match value is bound to a temp first, then the pattern re-matched against it
       # (so a non-match still raises MatchError exactly as the original `=` did); the
@@ -198,7 +210,10 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
 
       # Both bindings lift to their own statements (operands of `!=`, both on the spine).
       assert meta =~ "x = first(a)"
@@ -227,7 +242,7 @@ defmodule Mutare.TransformBindingHoistTest do
       """
 
       {_meta, sites, _} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.IfCondition, Mutare.Mutators.CallRemoval]
         )
 
@@ -259,7 +274,10 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
 
       # Not hoisted: the binding stays inline in the condition (no lifted `x = …` stmt).
       assert meta =~ "(x = Keyword.get(opts, :n))"
@@ -287,7 +305,10 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
 
       # Not hoisted: the binding stays inline (no lifted `x = …` statement, no selector).
       assert meta =~ "(x = compute())"
@@ -317,7 +338,11 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, _sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
+
       [{mod, _}] = assert_compiles(meta)
 
       Selector.put(Selector.baseline())
@@ -341,7 +366,11 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
+
       [{mod, _}] = assert_compiles(meta)
 
       true_id = Enum.find(sites, &(&1.mutated_code == "true")).id
@@ -377,7 +406,11 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, _sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
+
       [{mod, _}] = assert_compiles(meta)
 
       Selector.put(Selector.baseline())
@@ -400,7 +433,11 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, _sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, _sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
+
       [{mod, _}] = assert_compiles(meta)
 
       Selector.put(Selector.baseline())
@@ -431,7 +468,10 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.CallRemoval])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
 
       assert meta =~ "if x = get(o)"
       refute meta =~ ":persistent_term.get(#{inspect(Selector.key())}"
@@ -456,7 +496,10 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
 
       assert Enum.filter(sites, &(&1.mutator == :if_condition)) == []
       # the bindings stay inline in the condition (no lifted `{:ok, x} = pa(a)` statement)
@@ -481,7 +524,10 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
 
       assert meta =~ "x = compute(o)"
       assert Enum.any?(sites, &(&1.mutator == :if_condition))
@@ -503,7 +549,10 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
 
       assert meta =~ "x = first(o)"
       assert Enum.any?(sites, &(&1.mutator == :if_condition))
@@ -525,7 +574,11 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
+
       [{mod, _}] = assert_compiles(meta)
 
       true_id = Enum.find(sites, &(&1.mutated_code == "true")).id
@@ -561,7 +614,10 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
 
       assert meta =~ "x = compute(o)"
       assert Enum.any?(sites, &(&1.mutator == :if_condition))
@@ -583,7 +639,10 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
 
       assert meta =~ "x = first(o)"
       assert Enum.any?(sites, &(&1.mutator == :if_condition))
@@ -608,7 +667,10 @@ defmodule Mutare.TransformBindingHoistTest do
       end
       """
 
-      {meta, sites, _} = Mutare.transform_string(source, mutators: [Mutare.Mutators.IfCondition])
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IfCondition]
+        )
 
       assert meta =~ "x = compute(o)\n"
       assert Enum.any?(sites, &(&1.mutator == :if_condition))
@@ -629,7 +691,8 @@ defmodule Mutare.TransformBindingHoistTest do
     end
     """
 
-    {meta, sites, _next_id} = Mutare.transform_string(source, mutators: @probe)
+    {meta, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(source, mutators: @probe)
 
     assert [%Site{mutator: :arithmetic, original_form: :+}] = sites
     assert {:ok, _} = Code.string_to_quoted(meta)

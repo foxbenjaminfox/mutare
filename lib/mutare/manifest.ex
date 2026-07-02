@@ -92,8 +92,8 @@ defmodule Mutare.Manifest do
   ## Examples
 
       iex> source = "defmodule Demo do\\n  def add(a, b), do: a + b\\nend\\n"
-      iex> {metamutant, [_site], _next_id} = Mutare.transform_string(source, mutators: [:arithmetic])
-      iex> %Mutare.Manifest{regions: regions} = Mutare.Manifest.from_source(metamutant)
+      iex> result = Mutare.transform_string(source, mutators: [:arithmetic])
+      iex> %Mutare.Manifest{regions: regions} = Mutare.Manifest.from_source(result.metamutant)
       iex> regions == []
       false
   """

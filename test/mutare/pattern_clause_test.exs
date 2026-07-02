@@ -59,7 +59,8 @@ defmodule Mutare.PatternClauseTest do
   @compile {:no_warn_undefined, Mutare.PatternClauseFixture}
 
   setup_all do
-    {metamutant, sites, _next_id} = Mutare.transform_string(@source, file: "cl.ex")
+    {metamutant, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(@source, file: "cl.ex")
 
     # Broadening a clause's pattern can make a later clause unreachable — a benign "cannot
     # match" warning (the metamutant compiles); captured so it doesn't clutter test output.
@@ -211,7 +212,11 @@ defmodule Mutare.PatternClauseTest do
         "defmodule T do\n  def r do\n    receive do\n      x -> x + 1\n    end\n  end\nend\n"
 
       for src <- [fn_src, recv_src] do
-        {_meta, sites, _} = Mutare.transform_string(src, mutators: [Mutare.Mutators.Arithmetic])
+        {_meta, sites, _} =
+          Mutare.Transform.transform_string_with_sites(src,
+            mutators: [Mutare.Mutators.Arithmetic]
+          )
+
         assert Enum.any?(sites, &(&1.mutator == :arithmetic and &1.original_code == "x + 1"))
       end
     end
@@ -241,7 +246,9 @@ defmodule Mutare.PatternClauseTest do
       """
 
       {_meta, sites, _} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternWildcard])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.PatternWildcard]
+        )
 
       codes =
         sites |> Enum.filter(&(&1.mutator == :pattern_wildcard)) |> Enum.map(& &1.mutated_code)
@@ -268,7 +275,9 @@ defmodule Mutare.PatternClauseTest do
       """
 
       {_meta, sites, _} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternWildcard])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.PatternWildcard]
+        )
 
       codes =
         sites |> Enum.filter(&(&1.mutator == :pattern_wildcard)) |> Enum.map(& &1.mutated_code)
@@ -290,7 +299,7 @@ defmodule Mutare.PatternClauseTest do
       """
 
       {meta, sites, _} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           mutators: [Mutare.Mutators.PatternSwap, Mutare.Mutators.Relational]
         )
 
@@ -333,7 +342,9 @@ defmodule Mutare.PatternClauseTest do
       """
 
       {meta, sites, _} =
-        Mutare.transform_string(source, mutators: [Mutare.Mutators.PatternSwap])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.PatternSwap]
+        )
 
       # Bind the module from the compile result (not a literal) so the compiler can't
       # constant-fold a reference to a not-yet-defined module into an "undefined" warning.

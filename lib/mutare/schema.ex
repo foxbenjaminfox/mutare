@@ -366,7 +366,7 @@ defmodule Mutare.Schema do
         ]
 
     try do
-      {meta, sites, next_id} = Mutare.Transform.transform_string(source, opts)
+      {meta, sites, next_id} = Mutare.Transform.transform_string_with_sites(source, opts)
       verify_count!(rel, next_id - start_id, count)
       {:rendered, rel, meta, sites}
     rescue

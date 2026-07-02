@@ -43,7 +43,10 @@ defmodule Mutare.HostedTest do
 
   setup_all do
     {metamutant, sites, _next_id} =
-      Mutare.transform_string(@source, file: "hosted.ex", mutators: @mutators)
+      Mutare.Transform.transform_string_with_sites(@source,
+        file: "hosted.ex",
+        mutators: @mutators
+      )
 
     ExUnit.CaptureIO.capture_io(:stderr, fn ->
       [{_module, _binary}] = Code.compile_string(metamutant)
@@ -169,7 +172,10 @@ defmodule Mutare.HostedTest do
       """
 
       {_meta, sites, _next} =
-        Mutare.transform_string(source, file: "hosted_ignore.ex", mutators: @mutators)
+        Mutare.Transform.transform_string_with_sites(source,
+          file: "hosted_ignore.ex",
+          mutators: @mutators
+        )
 
       boundary = Enum.find(sites, &(&1.mutator == :host_filter and &1.mutated_code == "x >= 1"))
       reversal = Enum.find(sites, &(&1.mutator == :host_filter and &1.mutated_code == "x < 1"))
@@ -226,7 +232,7 @@ defmodule Mutare.HostedTest do
       target = id(sites, :host_filter, "x >= 1", 5)
 
       {meta2, sites2, _next} =
-        Mutare.transform_string(@source,
+        Mutare.Transform.transform_string_with_sites(@source,
           file: "hosted.ex",
           mutators: @mutators,
           skip_ids: MapSet.new([target])
@@ -255,7 +261,7 @@ defmodule Mutare.HostedTest do
       # (own name, own opts). The hosted path must run *every* matching spec — exactly as the
       # ordinary mutation path does — not just the first, or the second config silently vanishes.
       {_meta, sites, _next} =
-        Mutare.transform_string(@source,
+        Mutare.Transform.transform_string_with_sites(@source,
           file: "hosted.ex",
           mutators: [
             {Mutare.Test.HostMutator, as: :host_a},
@@ -284,7 +290,7 @@ defmodule Mutare.HostedTest do
   describe "independent host mutators on one routed macro" do
     test "all subscribed hosts emit candidates without replacing one another" do
       {meta, sites, _next} =
-        Mutare.transform_string(@source,
+        Mutare.Transform.transform_string_with_sites(@source,
           file: "hosted.ex",
           mutators: [Mutare.Test.HostMutator, Mutare.Test.SecondHostMutator]
         )
@@ -315,7 +321,7 @@ defmodule Mutare.HostedTest do
 
     test "a custom report range does not split selector nesting for the same hosted fragment" do
       {meta, sites, _next} =
-        Mutare.transform_string(@source,
+        Mutare.Transform.transform_string_with_sites(@source,
           file: "hosted.ex",
           mutators: [Mutare.Test.HostMutator, Mutare.Test.CustomRangeHostMutator]
         )
@@ -369,7 +375,7 @@ defmodule Mutare.HostedTest do
       """
 
       assert_raise Mutare.MacroRouting.ContractError, ~r/pipe's left side as :hosted/s, fn ->
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           file: "p.ex",
           mutators: [Mutare.Test.PipedHostMutator]
         )
@@ -391,7 +397,10 @@ defmodule Mutare.HostedTest do
       # `host/2` returns [] in this fixture, so there are simply no hosted sites — the point
       # is that resolution does not raise.
       {_meta, _sites, _next} =
-        Mutare.transform_string(source, file: "d.ex", mutators: [Mutare.Test.PipedHostMutator])
+        Mutare.Transform.transform_string_with_sites(source,
+          file: "d.ex",
+          mutators: [Mutare.Test.PipedHostMutator]
+        )
     end
   end
 
@@ -412,7 +421,7 @@ defmodule Mutare.HostedTest do
       """
 
       assert_raise Mutare.MacroRouting.ContractError, ~r/no enabled MacroHost subscribes/s, fn ->
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           file: "nd.ex",
           mutators: [Mutare.Test.NoDeliveryHostMutator]
         )
@@ -442,7 +451,10 @@ defmodule Mutare.HostedTest do
 
     test "the metamutant compiles and both the binding and the hosted fragment mutate" do
       {meta, sites, _next} =
-        Mutare.transform_string(@bind_source, file: "bind.ex", mutators: @bind_mutators)
+        Mutare.Transform.transform_string_with_sites(@bind_source,
+          file: "bind.ex",
+          mutators: @bind_mutators
+        )
 
       # Both candidate kinds land on the same line-5 call.
       swap = id(sites, :pattern_swap, "[b, a]", 5)
@@ -490,7 +502,7 @@ defmodule Mutare.HostedTest do
 
     setup do
       {meta, sites, _next} =
-        Mutare.transform_string(@kw_source,
+        Mutare.Transform.transform_string_with_sites(@kw_source,
           file: "kw.ex",
           mutators: [:string, :literal, :atom, Mutare.Test.HostMutator]
         )
@@ -535,7 +547,7 @@ defmodule Mutare.HostedTest do
 
     test "the same recursive treatments are valid in a static declarative route" do
       {meta, sites, _next} =
-        Mutare.transform_string(@kw_source,
+        Mutare.Transform.transform_string_with_sites(@kw_source,
           file: "kw_static.ex",
           mutators: [:string],
           macro_routes: [
@@ -564,7 +576,7 @@ defmodule Mutare.HostedTest do
 
     setup do
       {meta, sites, _next} =
-        Mutare.transform_string(@nested_source,
+        Mutare.Transform.transform_string_with_sites(@nested_source,
           file: "nested_kw.ex",
           mutators: [:string, :literal, :atom, Mutare.Test.HostMutator]
         )
@@ -614,7 +626,7 @@ defmodule Mutare.HostedTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           file: "kwh.ex",
           mutators: [Mutare.Test.KeywordHostedMutator]
         )
@@ -649,7 +661,7 @@ defmodule Mutare.HostedTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           file: "nkwh.ex",
           mutators: [Mutare.Test.KeywordHostedMutator]
         )
@@ -685,7 +697,7 @@ defmodule Mutare.HostedTest do
       """
 
       assert_raise Mutare.MacroRouting.ContractError, ~r/unrecognised treatment.*:bogus/s, fn ->
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           file: "ut.ex",
           mutators: [Mutare.Test.UnknownTreatmentMutator]
         )
@@ -706,7 +718,7 @@ defmodule Mutare.HostedTest do
       assert_raise Mutare.MacroRouting.ContractError,
                    ~r/must return a Mutare\.MacroRouting\.ArgumentRoutes/,
                    fn ->
-                     Mutare.transform_string(source,
+                     Mutare.Transform.transform_string_with_sites(source,
                        file: "bs.ex",
                        mutators: [Mutare.Test.BadShapeMutator]
                      )
@@ -731,7 +743,7 @@ defmodule Mutare.HostedTest do
       """
 
       assert_raise ArgumentError, ~r/:pinned.*scalar.*compound/s, fn ->
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           file: "cp.ex",
           mutators: [:literal, Mutare.Test.CompoundPinnedMutator]
         )
@@ -752,7 +764,7 @@ defmodule Mutare.HostedTest do
       """
 
       {_meta, sites, _next} =
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           file: "sp.ex",
           mutators: [:string, Mutare.Test.CompoundPinnedMutator]
         )
@@ -775,7 +787,7 @@ defmodule Mutare.HostedTest do
       """
 
       assert_raise ArgumentError, ~r/:pinned.*scalar.*compound/s, fn ->
-        Mutare.transform_string(source,
+        Mutare.Transform.transform_string_with_sites(source,
           file: "ap.ex",
           mutators: [:atom, Mutare.Test.ArgPinnedMutator]
         )

@@ -20,7 +20,8 @@ defmodule Mutare.StrictEqualityTest do
   # strict_equality sites for a one-line function body `def f(a, b), do: <expr>`.
   defp relax_sites(expr) do
     {_meta, sites, _} =
-      Mutare.transform_string("defmodule T do\n  def f(a, b), do: #{expr}\nend\n",
+      Mutare.Transform.transform_string_with_sites(
+        "defmodule T do\n  def f(a, b), do: #{expr}\nend\n",
         mutators: @only
       )
 
@@ -59,7 +60,7 @@ defmodule Mutare.StrictEqualityTest do
 
     test "a relaxation inside a `when` guard is delivered by lifting (===/== are guard-legal)" do
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule T do
             def f(a, b) when a === b, do: :ok
@@ -82,7 +83,9 @@ defmodule Mutare.StrictEqualityTest do
       end
       """
 
-      {metamutant, [site], _} = Mutare.transform_string(source, mutators: @only)
+      {metamutant, [site], _} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: @only)
+
       Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())
       on_exit(fn -> Selector.put(Selector.baseline()) end)
@@ -108,7 +111,9 @@ defmodule Mutare.StrictEqualityTest do
       end
       """
 
-      {metamutant, sites, _} = Mutare.transform_string(source, mutators: @only)
+      {metamutant, sites, _} =
+        Mutare.Transform.transform_string_with_sites(source, mutators: @only)
+
       [site] = Enum.filter(sites, &(&1.mutator == :strict_equality))
       Mutare.Test.Compile.string(metamutant)
       Selector.put(Selector.baseline())

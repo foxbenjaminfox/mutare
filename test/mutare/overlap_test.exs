@@ -25,7 +25,7 @@ defmodule Mutare.OverlapTest do
       # clause at all proves `:mutare` holds `Return`. (Killing `do: false → do: true`, which
       # would reject them, and the clause_drop, which would FunctionClauseError here.)
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def f(dt), do: DateTime.truncate(dt, :second)
@@ -48,7 +48,7 @@ defmodule Mutare.OverlapTest do
       # literal wrapper). AliasLiteral would also mutate that same `Date` to the sentinel module
       # (an always-raising `UndefinedFunctionError`), so the call rewrite must suppress it.
       {_meta, sites, _} =
-        Mutare.transform_string(
+        Mutare.Transform.transform_string_with_sites(
           """
           defmodule M do
             def f(xs), do: Enum.sort(xs, Date)

@@ -11,7 +11,9 @@ defmodule Mutare.GuardDropTest do
   alias Mutare.{Report, Selector, Site}
 
   defp sites(src, opts \\ []) do
-    {meta, sites, _} = Mutare.transform_string(src, Keyword.merge([file: "g.ex"], opts))
+    {meta, sites, _} =
+      Mutare.Transform.transform_string_with_sites(src, Keyword.merge([file: "g.ex"], opts))
+
     {meta, sites}
   end
 
