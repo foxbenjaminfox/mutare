@@ -26,7 +26,6 @@ defmodule Mutare.Coverage.HelperTemplate do
   @dump_path_env "MUTARE_COV_DUMP"
   @root_env "MUTARE_COV_ROOT"
   @seen_key :mutare_cov_seen
-  @label_key :mutare_cov_label
 
   # The contract constants, exposed so `Mutare.Coverage.Recorder` sources them from here — the
   # single source of truth shared by the table-creation bootstrap and the dump reader. (These
@@ -177,23 +176,19 @@ defmodule Mutare.Coverage.HelperTemplate do
   # the caller routes that id to the unlabeled bucket (whole suite). Only the module is needed for
   # file-granular selection; the name half is incidental.
   #
-  # Only the current process's own label is cached. Labels recovered through `$callers` are
-  # liveness-sensitive: once the spawning test exits, the same long-lived Task/process must become
-  # unlabeled so coverage selection stays conservative.
+  # The current process label is intentionally re-read for every hit. A reusable process can update
+  # its own `Process.set_label/1` between tests/requests, and stale attribution is worse than the
+  # small read cost. The separate seen cache is keyed by attribution, so repeated hits under the
+  # same label are still suppressed, while a changed label records a new attribution. Labels
+  # recovered through `$callers` are liveness-sensitive too: once the spawning test exits, the same
+  # long-lived Task/process must become unlabeled so coverage selection stays conservative.
   defp label do
-    case Process.get(@label_key) do
-      {:ok, label} ->
+    case label_of(self()) do
+      {mod, _name} = label when is_atom(mod) ->
         label
 
       _ ->
-        case label_of(self()) do
-          {mod, _name} = label when is_atom(mod) ->
-            Process.put(@label_key, {:ok, label})
-            label
-
-          _ ->
-            recovered_label()
-        end
+        recovered_label()
     end
   end
 

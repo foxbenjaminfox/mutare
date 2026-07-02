@@ -56,6 +56,44 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       assert :ets.lookup(H.unlabeled_table(), 101) == []
     end
 
+    test "a long-lived process re-reads changed process labels" do
+      parent = self()
+
+      worker =
+        spawn(fn ->
+          Process.set_label({RelabelFirstMod, :first})
+          H.hit([901, 903])
+
+          Process.set_label({RelabelSecondMod, :second})
+          H.hit([902, 903])
+
+          send(parent, :done)
+        end)
+
+      ref = Process.monitor(worker)
+      assert_receive :done
+      assert_receive {:DOWN, ^ref, :process, ^worker, _}
+
+      assert :ets.lookup(H.attr_table(), {RelabelFirstMod, 901}) == [
+               {{RelabelFirstMod, 901}}
+             ]
+
+      assert :ets.lookup(H.attr_table(), {RelabelSecondMod, 902}) == [
+               {{RelabelSecondMod, 902}}
+             ]
+
+      assert :ets.lookup(H.attr_table(), {RelabelFirstMod, 903}) == [
+               {{RelabelFirstMod, 903}}
+             ]
+
+      assert :ets.lookup(H.attr_table(), {RelabelSecondMod, 903}) == [
+               {{RelabelSecondMod, 903}}
+             ]
+
+      assert :ets.lookup(H.attr_table(), {RelabelFirstMod, 902}) == []
+      assert :ets.lookup(H.unlabeled_table(), 902) == []
+    end
+
     test "a Task recovers its spawning test's label from the caller chain (tier 2)" do
       # The current process is labeled; a Task started from it carries it in `$callers`, so
       # the unlabeled Task process recovers the label rather than falling to the bucket.
