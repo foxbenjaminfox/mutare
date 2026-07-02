@@ -37,7 +37,10 @@ defmodule Mutare.Mutator.Families do
   Only selection and validation are generated. What each family *means* — notes, variant
   labels, delivery — stays the plugin's, typically alongside this `use` in its config module.
   Parse once per run by calling `parse_families!/1` from the mutator's
-  `c:Mutare.Mutator.init/1` and reading the result back from `context.config`.
+  `c:Mutare.Mutator.init/1` and reading the result back from `context.config`; then *apply*
+  the selection once, in `c:Mutare.Mutator.finalize/2` — Mutare runs it on every produced
+  mutation, on both delivery paths, so producers stay pure and no delivery site can forget
+  the filter.
   """
 
   @typedoc """

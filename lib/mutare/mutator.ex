@@ -84,6 +84,12 @@ defmodule Mutare.Mutator do
   Mutare's own option validation. Without `init/1`, `context.config` is the raw options.
   For the common "which of my families are enabled" option, see `Mutare.Mutator.Families`.
 
+  A mutator that must post-process everything it produces — typically to apply that family
+  selection and attach per-family report notes — implements `c:finalize/2`, which Mutare
+  applies to every produced mutation on **every** delivery path (a `mutate/1`/`mutate/2`
+  return and a hosted target's `:mutants`) just before recording, so the funnel cannot miss
+  a delivery site.
+
   Structural mutators use the context-aware structural arity instead:
   `c:Mutare.Mutator.Structural.return_replacements/2`,
   `c:Mutare.Mutator.Structural.condition_replacements/2`, or
@@ -251,6 +257,38 @@ defmodule Mutare.Mutator do
   @callback init(opts :: term()) :: term()
 
   @doc """
+  Post-processes each produced mutation before it is recorded.
+
+  Mutare applies this hook to every mutation the mutator produces, on **both** delivery
+  paths — each element of a `c:mutate/1`/`c:mutate/2` return list and each element of a
+  hosted target's `:mutants` (`c:Mutare.Mutator.MacroHost.host/2`) — with the same context
+  the producing callback received (including `context.config`, see `c:init/1`). Return:
+
+    * a `t:mutation/0` — the (possibly rewrapped) mutation to record;
+    * `:skip` — drop this mutation.
+
+  Because Mutare guarantees the hook runs at every delivery site, a family-rich mutator
+  keeps its producers pure — return `Mutare.Mutator.Mutation.tagged(node, [family | finer])`
+  everywhere — and defines the tag → filter → enrich funnel **once**: `finalize/2` reads the
+  leading variant label as the family, drops mutations of disabled families (see
+  `Mutare.Mutator.Families`), and attaches the family's report note. Delivery code shrinks
+  to pure production, and forgetting a site cannot silently deliver unfiltered, note-less
+  mutants.
+
+  Finalization is part of production, not reporting: it runs before overlap suppression and
+  `# mutare:ignore` filtering, and variant labels carried by the finalized mutation win over
+  `c:variant/2` derivation exactly as at production. Two kinds of mutation are never
+  finalized: a relayed mutation carrying an explicit `:producer`
+  (see `Mutare.Mutator.Mutation` — it belongs to the producing family, whose own
+  `finalize/2` already ran when the mutation was generated), and a
+  `Mutare.Mutator.Structural` hook's bare-AST replacements (they carry no metadata to
+  finalize). A target whose mutants all return `:skip` is dropped entirely.
+
+  A mutator without `finalize/2` records mutations as returned.
+  """
+  @callback finalize(mutation(), context()) :: mutation() | :skip
+
+  @doc """
   Produces context-aware mutations for `node`.
 
   This callback is used for pipe-aware, configurable, and behaviour-targeted
@@ -323,7 +361,8 @@ defmodule Mutare.Mutator do
   """
   @callback mutate_call_option_keys?(opts :: term()) :: boolean()
 
-  @optional_callbacks init: 1,
+  @optional_callbacks finalize: 2,
+                      init: 1,
                       mutate: 1,
                       mutate: 2,
                       mutate_call_option_keys?: 1,

@@ -6303,6 +6303,30 @@ aliased `Context` vs `RunCtx` to keep them apart in `Runner`.
   argument, not a context consumer; changing it would break existing signatures for no motivated
   gain).
 
+- **`finalize/2` — one enrichment seam across both delivery paths (proposal 0004, done).** A
+  family-rich mutator must run the same *tag → filter → enrich* funnel on every mutant it produces
+  (read the family off the tag, drop it when disabled, attach the family's note), but its mutants
+  leave through two different callbacks — a `mutate/1`/`mutate/2` return and a host target's
+  `:mutants` — so the funnel was duplicated verbatim per delivery site in `mutare_ecto`, and
+  forgetting a site didn't error: it silently delivered unfiltered, note-less mutants. A helper
+  (`Families.deliver/2`) would keep that failure mode; the optional `c:Mutare.Mutator.finalize/2`
+  callback inverts control — **core** applies it to every produced mutation just before recording
+  (`Dispatch.finalize_mutations/3`, shared by `tag/3` and `normalize_target/3`), so producers
+  shrink to pure `Mutation.tagged(node, [family | finer])` construction and the funnel cannot miss
+  a site. Decisions baked in: finalize is part of *production* (it runs before overlap suppression
+  and ignore filtering; a tagged label on the finalized mutation wins over `variant/2` derivation,
+  unchanged); a `:skip` drops the mutation and a host target whose mutants all skip is dropped
+  whole; a **relayed** mutation (explicit `:producer` — the sub-contract case) bypasses the
+  returning mutator's finalize, because the producing family's own funnel already ran when the
+  mutation was generated via `expression_mutations/3` — "finalized exactly once, by the family that
+  produced it". Structural-hook returns are *not* finalized (bare AST, no metadata to enrich —
+  extending them would mean accepting `Mutation`s there first, a separate decision). Core stays
+  family-blind: a mutant-level family taxonomy is plugin domain (the rejected alternative was a
+  core-side `family_of/1` + filtering); each raw element is still validated by `normalize_mutant/1`
+  *before* plugin finalize code sees it, and a bare-`nil` finalize return raises (ambiguous with
+  `:skip`). Downstream this deletes `mutare_ecto`'s two funnel comprehensions and `split_tag/2`;
+  `Config.enrich/3` becomes the body of `finalize/2`.
+
 ## Host sub-contracting of fragment interiors (pin islands)
 
 A `:hosted` argument is left entirely raw by core and every mutant there comes from the host —

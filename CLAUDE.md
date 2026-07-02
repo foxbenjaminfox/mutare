@@ -167,6 +167,7 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Arity-changing / pipe-aware call | `mutate/2` (reads `pipe_mode`) | — (`CollectionArity`) |
 | Configurable (`{Module, opts}`) | `mutate/2` (reads `context.opts`) | `configurable_mutator.ex` |
 | Rich option surface, parsed once per run | `init/1` → `context.config` (+ `use Mutare.Mutator.Families` for a `families:` catalog) | `init_mutator.ex` |
+| One tag → filter → enrich funnel over everything produced | `finalize/2` (core runs it on both delivery paths) | `finalize_mutator.ex` |
 | Structural return tail / condition | `return_replacements` / `condition_replacements` | `structural_mutator.ex` |
 | Structural head pattern | `pattern_mutations/2` | (`PatternSwap`/`PatternWildcard`) |
 | Behaviour-gated | read `context.behaviours` (or the `+1`-arity structural callbacks) | `behaviour_mutator.ex` |
