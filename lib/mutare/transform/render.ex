@@ -1,6 +1,8 @@
 defmodule Mutare.Transform.Render do
   @moduledoc false
 
+  alias Mutare.AST
+
   # Sourceror rendering workarounds for the metamutant, kept apart from the
   # semantic transform. The metamutant is a throwaway build artifact that only
   # has to *compile* — these helpers exist solely to get `Sourceror.to_string`
@@ -18,6 +20,7 @@ defmodule Mutare.Transform.Render do
     ast
     |> strip_annotations()
     |> normalize_keyword_blocks()
+    |> normalize_for_options()
     |> Sourceror.to_string()
   end
 
@@ -66,6 +69,44 @@ defmodule Mutare.Transform.Render do
         other
     end)
   end
+
+  # Once keyword-syntax keys are unwrapped, Sourceror may choose the block form for
+  # a for expression. If the original keyword list put do: before another
+  # comprehension option, such as into:, that block rendering becomes invalid
+  # because into is emitted inside the body. The metamutant only needs compiling
+  # source, so canonicalize the final option list to keep all options before do:.
+  # Only the final argument is touched; earlier list arguments can be ordinary
+  # qualifiers or filters.
+  defp normalize_for_options(ast) do
+    Macro.prewalk(ast, fn
+      {:for, meta, args} when is_list(args) ->
+        {:for, meta, normalize_for_args(args)}
+
+      other ->
+        other
+    end)
+  end
+
+  defp normalize_for_args([]), do: []
+
+  defp normalize_for_args(args) do
+    {prefix, [last]} = Enum.split(args, -1)
+    prefix ++ [normalize_for_option_list(last)]
+  end
+
+  defp normalize_for_option_list(opts) when is_list(opts) do
+    if Enum.all?(opts, &match?({_key, _value}, &1)) and Enum.any?(opts, &do_option?/1) do
+      {do_options, other_options} = Enum.split_with(opts, &do_option?/1)
+      other_options ++ do_options
+    else
+      opts
+    end
+  end
+
+  defp normalize_for_option_list(other), do: other
+
+  defp do_option?({key, _value}), do: AST.key_atom(key) == :do
+  defp do_option?(_other), do: false
 
   # Remove the analyzer's internal annotations before rendering — every `:mutare_*` node-meta
   # key is bookkeeping that must never reach the source. The canonical list (and what each key

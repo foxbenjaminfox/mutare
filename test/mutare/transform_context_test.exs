@@ -207,6 +207,25 @@ defmodule Mutare.TransformContextTest do
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
+    test "a `for` comprehension with do: before into: still compiles after transform" do
+      # Sourceror can render this shape as a block after Mutare wraps the return
+      # position in a selector. The metamutant must keep into: before the block body,
+      # not emit it as a bare variable inside the do block.
+      source = """
+      defmodule ForDoBeforeInto do
+        def f(types), do: for {key, :map} <- types, do: key, into: []
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.ReturnValue]
+        )
+
+      assert Enum.map(sites, & &1.mutator) == [:return_value, :return_value]
+      assert_compiles(meta)
+    end
+
     test "a `do:` block key is never mutated (it would otherwise fail to render)" do
       # Regression: a selector spliced into a `case`/`if` `do:` key is malformed
       # and crashed Sourceror's formatter outright (not even poison-recoverable).
