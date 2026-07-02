@@ -111,7 +111,7 @@ defmodule Mutare.MacroRouting.ArgumentRoutes do
               :binding_pattern,
               :skip,
               :hosted,
-              :scalar_interpolation
+              :interpolated
             ],
        do: :ok
 
@@ -130,7 +130,7 @@ defmodule Mutare.MacroRouting.ArgumentRoutes do
               :binding_pattern,
               :skip,
               :hosted,
-              :scalar_interpolation
+              :interpolated
             ],
        do: true
 

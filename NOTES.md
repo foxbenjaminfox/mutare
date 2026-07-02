@@ -2349,7 +2349,7 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     classifier-trust audit surfaced). A non-literal value with no candidate at all (a bare variable) is
     fine — nothing to pin. This is why "shorthand values are plain interpolated Elixir,
     *not* hosted" was half-right: the value *mutation* is core's (not the SQL catalog), but the
-    *delivery* must be pinned, not a bare selector. Tested via `Mutare.Test.CompoundScalarInterpolationMutator` (né `CompoundPinnedMutator`).
+    *delivery* must be pinned, not a bare selector. Tested via `Mutare.Test.CompoundInterpolatedMutator` (né `CompoundPinnedMutator`).
 
   * *Per-mutant report note — `Site.note`.* A hosting mutator may want to flag a *live, scored* mutant
     with advisory text the report shows on a survivor — `mutare_ecto` tags its equivalence-sensitive
@@ -6601,7 +6601,7 @@ untouched. `:routing` stays out of `adapter_graded?/1` on purpose — it is reje
 consequence: registry tests could no longer inject broad/hosted routes through the config argument,
 so the covering-selector check is now exercised by a fixture (`BroadHostedRouteMutator`, whole-module
 `:hosted` route + narrower subscription) and the static recursive-grammar transform test moved to an
-extension provider (`KeywordScalarInterpolationRoutingExtension`, né `KeywordPinnedRoutingExtension`),
+extension provider (`KeywordInterpolatedRoutingExtension`, né `KeywordPinnedRoutingExtension`),
 with a companion test pinning the config rejection.
 
 
@@ -6622,3 +6622,20 @@ because there it names the emitted `^` shape — the mechanism — not the route
 yet (0.1.0 is unreleased), so the rename is free — no changelog entry, no compatibility shim; a
 route still returning `:pinned` fails treatment validation at scan time with the usual
 invalid-treatment error.
+
+
+### `:scalar_interpolation` becomes pin-transparent — and becomes `:interpolated`
+
+Probing "what if the value is `^(cond …)`?" showed the scalar framing was wrong in the *other*
+direction. An already-`^`-pinned value routed `:scalar_interpolation` hit the compound rejection —
+its mutations sit on descendants of the `{:^, …}` top node — so a **static** route aborted the
+whole run on idiomatic target code (`where(q, total: ^(a + b))`), a shape where the route's
+assertion isn't even violated: past a user-written `^` the code is plain Elixir evaluated at query
+build time, where bare selectors are legal. New `route_macro_arg/4` clause: a `{:^, meta, [inner]}`
+value descends `inner` as ordinary runtime — arbitrarily deep, no scalar restriction — and leaves
+the user's `^` where it was written. The scalar-only rejection now fires for *bare* compounds only,
+the case where the assertion genuinely fails. With that, "scalar" no longer described the contract
+(a pinned cond mutates deep in its branches), so the treatment was renamed once more, to
+`:interpolated`: the value is interpolated data, and core delivers every mutation through the
+interpolation — introducing the `^` for a bare scalar, descending inside an existing one. Tested
+via `Mutare.PinnedCondFixture` / `Mutare.PinnedListFixture` (hosted_test).

@@ -136,7 +136,18 @@ defmodule Mutare.Transform.Analyze.Macros do
        when is_list(value_treatments),
        do: route_keyword(descent, arg, value_treatments, mutators)
 
-  # A scalar value that must be mutated **`^`-pinned**: it sits in a compile-time DSL position
+  # An already-`^`-pinned value under `:interpolated` is descended, not re-pinned: past
+  # the user's own `^` the code is plain Elixir evaluated at build time, where a bare selector
+  # `case` is legal — so the inner expression is analyzed as ordinary runtime (arbitrarily deep,
+  # no scalar restriction) and the existing `^` stays where it was written. Without this, a
+  # *static* `:interpolated` route would abort the run on idiomatic target code
+  # (`where(q, total: ^(a + b))`) whose value is already interpolated — a shape where the route's
+  # assertion isn't even violated. The scalar-only rejection below is reserved for *bare*
+  # compounds, where it is.
+  defp route_macro_arg(descent, {:^, meta, [inner]}, :interpolated, mutators),
+    do: {:^, meta, [descent.annotate(inner, mutators)]}
+
+  # A bare scalar value that must be mutated **`^`-pinned**: it sits in a compile-time DSL position
   # that accepts an interpolated value but not a bare selector `case` — an Ecto keyword-shorthand
   # value (`where(q, category: "Foo")`), where Ecto rejects a raw `case` but accepts `^(case …)`.
   # Analyze it as ordinary runtime so the configured literal families attach their in-place
@@ -147,7 +158,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   # those inner selectors un-pinned and poison the DSL. `reject_compound_value!/2` fails loud on
   # that (the classifier analogue of the documented scalar-only contract) rather than silently
   # degrading the inner mutants to `:poisoned`.
-  defp route_macro_arg(descent, arg, :scalar_interpolation, mutators) do
+  defp route_macro_arg(descent, arg, :interpolated, mutators) do
     analyzed = descent.annotate(arg, mutators)
     reject_compound_value!(arg, analyzed)
     pin_inplace_candidates(analyzed)
@@ -159,7 +170,7 @@ defmodule Mutare.Transform.Analyze.Macros do
 
   defp route_macro_arg(descent, arg, _expression, mutators), do: descent.annotate(arg, mutators)
 
-  # Flag the in-place candidates on a node's own metadata `pin?: true` (the `:scalar_interpolation`
+  # Flag the in-place candidates on a node's own metadata `pin?: true` (the `:interpolated`
   # treatment), so emission `^`-pins their selector. Only the node's *own* candidates — a scalar
   # value's mutations sit here; the route is documented scalar-only.
   defp pin_inplace_candidates(node),
@@ -168,7 +179,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   defp pin_candidate(%Candidate.InPlace{} = candidate), do: %{candidate | pin?: true}
   defp pin_candidate(other), do: other
 
-  # A `:scalar_interpolation` value is sound only when every in-place mutation lands on the value
+  # An `:interpolated` value is sound only when every in-place mutation lands on the value
   # node itself — `pin_inplace_candidates/1` `^`-pins only the top node's own candidates. A compound
   # value attaches candidates to *descendant* nodes that pinning would miss; those would emit as
   # bare selector `case`s spliced into the DSL value and poison the build. Raise loudly (the
@@ -178,10 +189,11 @@ defmodule Mutare.Transform.Analyze.Macros do
   defp reject_compound_value!(original, analyzed) do
     if descendant_inplace_candidate?(analyzed) do
       raise ArgumentError,
-            "a :scalar_interpolation macro-routing treatment requires a scalar value (its " <>
+            "an :interpolated macro-routing treatment requires a scalar value (its " <>
               "mutation must pin in place), but `#{Macro.to_string(original)}` is compound — its " <>
               "inner mutations cannot be ^-pinned and would poison the DSL. Route a compound " <>
-              "value :skip, or split it into scalar pairs."
+              "value :skip, or split it into scalar pairs. (A value the source already " <>
+              "^-interpolates is fine: it is descended as plain Elixir.)"
     end
   end
 
@@ -193,7 +205,7 @@ defmodule Mutare.Transform.Analyze.Macros do
   defp child_nodes({_form, _meta, args}) when is_list(args), do: args
   defp child_nodes({left, right}), do: [left, right]
 
-  # A bare list/2-tuple top node (a list argument routed `:scalar_interpolation` directly, not the Sourceror
+  # A bare list/2-tuple top node (a list argument routed `:interpolated` directly, not the Sourceror
   # `{:__block__, _, [list]}`-wrapped keyword value) carries no own meta, so pinning it pins nothing
   # — every candidate is on an element, i.e. a descendant. Descend the elements so it's caught.
   defp child_nodes(list) when is_list(list), do: list

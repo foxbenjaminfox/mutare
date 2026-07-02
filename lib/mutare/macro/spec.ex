@@ -30,7 +30,7 @@ defmodule Mutare.Macro.Spec do
   @enforce_keys [:module, :name, :arity, :args]
   defstruct [:module, :name, :arity, :args]
 
-  @treatments [:expression, :pattern, :binding_pattern, :skip, :hosted, :scalar_interpolation]
+  @treatments [:expression, :pattern, :binding_pattern, :skip, :hosted, :interpolated]
 
   # The glob wildcard atom. Means "match anything" in the module, name, or arity slot.
   # Chosen as a sentinel because `*` is a vanishingly unlikely identifier to register — it *can*
@@ -52,7 +52,7 @@ defmodule Mutare.Macro.Spec do
   The valid argument treatments.
 
       iex> Mutare.Macro.Spec.treatments()
-      [:expression, :pattern, :binding_pattern, :skip, :hosted, :scalar_interpolation]
+      [:expression, :pattern, :binding_pattern, :skip, :hosted, :interpolated]
   """
   @spec treatments() :: [treatment()]
   def treatments, do: @treatments
@@ -79,7 +79,7 @@ defmodule Mutare.Macro.Spec do
   def host_required?(%__MODULE__{args: args}), do: hosted?(args)
 
   @doc """
-  Returns whether a static route uses an adapter-grade treatment — `:scalar_interpolation`, `:hosted`, or
+  Returns whether a static route uses an adapter-grade treatment — `:interpolated`, `:hosted`, or
   `{:keyword, …}` — the tier reserved for code providers implementing `Mutare.MacroRouting`.
 
   The `:routing` classifier is adapter-grade too, but is rejected on its own terms (it needs a
@@ -95,7 +95,7 @@ defmodule Mutare.Macro.Spec do
 
   # `{:keyword, …}` is adapter-grade at its wrapper, so nested values need no recursion here.
   defp adapter_treatment?(:hosted), do: true
-  defp adapter_treatment?(:scalar_interpolation), do: true
+  defp adapter_treatment?(:interpolated), do: true
   defp adapter_treatment?({:keyword, _treatments}), do: true
   defp adapter_treatment?(_treatment), do: false
 

@@ -50,7 +50,7 @@ defmodule Mutare.Transform.Candidate do
     # `pin?` flags an in-place candidate whose selector `case` must be **`^`-pinned** —
     # the value sits in a compile-time DSL position that accepts an interpolated value but
     # not a bare `case` (an Ecto keyword-shorthand value, `where(q, category: "Foo")`,
-    # where Ecto rejects a raw `case` but accepts `^(case …)`). Set by the `:scalar_interpolation`
+    # where Ecto rejects a raw `case` but accepts `^(case …)`). Set by the `:interpolated`
     # argument treatment (`Mutare.Transform.Analyze.route_macro_arg/3`, adapter-grade);
     # emission wraps the built selector in `^`. Default `false` — pinning is illegal outside
     # such a context (a bare `^` is a compile error), so only a deliberate route sets it.

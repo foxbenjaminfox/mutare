@@ -160,10 +160,10 @@ defmodule Mutare.Test.StaticRoutingExtension do
   def macro_routes, do: [{Mutare.Test.SomeDSL, :frag, 2, [:expression, :skip]}]
 end
 
-defmodule Mutare.Test.KeywordScalarInterpolationRoutingExtension do
+defmodule Mutare.Test.KeywordInterpolatedRoutingExtension do
   @moduledoc """
   An extension statically routing `set/2`'s keyword argument with the recursive adapter grammar
-  (`{:keyword, [:scalar_interpolation, :skip]}`) — the code-provider home of the adapter-grade treatments that
+  (`{:keyword, [:interpolated, :skip]}`) — the code-provider home of the adapter-grade treatments that
   declarative `:macro_routes` configuration rejects.
   """
   @behaviour Mutare.MacroRouting
@@ -171,7 +171,7 @@ defmodule Mutare.Test.KeywordScalarInterpolationRoutingExtension do
   @impl Mutare.MacroRouting
   def macro_routes,
     do: [
-      {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:scalar_interpolation, :skip]}]}
+      {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:interpolated, :skip]}]}
     ]
 end
 
@@ -185,7 +185,7 @@ defmodule Mutare.Test.ShortKeywordRoutingExtension do
 
   @impl Mutare.MacroRouting
   def macro_routes,
-    do: [{Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:scalar_interpolation]}]}]
+    do: [{Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:interpolated]}]}]
 end
 
 defmodule Mutare.Test.LongKeywordRoutingExtension do
@@ -199,8 +199,7 @@ defmodule Mutare.Test.LongKeywordRoutingExtension do
   @impl Mutare.MacroRouting
   def macro_routes,
     do: [
-      {Mutare.Test.HostDSL, :set, 2,
-       [:expression, {:keyword, [:scalar_interpolation, :skip, :skip]}]}
+      {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:interpolated, :skip, :skip]}]}
     ]
 end
 
