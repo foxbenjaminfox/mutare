@@ -1461,6 +1461,25 @@ defmodule Mutare.TransformResolutionTest do
       assert {"Stream.dedup_by(& &1)", "Elixir.Function.identity()"} in pairs
       assert_compiles(meta)
     end
+
+    test "List.flatten/1 is removed directly and as a pipe stage, and compiles" do
+      source = """
+      defmodule R do
+        def a(xs), do: List.flatten(xs)
+        def b(xs), do: xs |> List.flatten()
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.CallRemoval]
+        )
+
+      pairs = for s <- sites, s.mutator == :call_removal, do: {s.original_code, s.mutated_code}
+      assert {"List.flatten(xs)", "xs"} in pairs
+      assert {"List.flatten()", "Elixir.Function.identity()"} in pairs
+      assert_compiles(meta)
+    end
   end
 
   describe "DefaultDrop (drop a trailing default/fallback argument)" do

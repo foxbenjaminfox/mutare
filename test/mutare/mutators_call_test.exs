@@ -474,6 +474,7 @@ defmodule Mutare.MutatorsCallTest do
       assert removal("String.trim()", true) == ["Elixir.Function.identity()"]
       assert removal("Enum.uniq()", true) == ["Elixir.Function.identity()"]
       assert removal("Enum.intersperse(0)", true) == ["Elixir.Function.identity()"]
+      assert removal("List.flatten()", true) == ["Elixir.Function.identity()"]
       # `s |> String.normalize(:nfc)` — the form is the LHS-less visible arg, so we
       # must return identity, never the `:nfc` atom.
       assert removal("String.normalize(:nfc)", true) == ["Elixir.Function.identity()"]
