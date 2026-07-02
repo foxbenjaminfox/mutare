@@ -87,7 +87,16 @@ trust on real code.
 
 **Mutate the human's source.** Operators stay operators, clauses stay clauses —
 we work pre-expansion, on what the author actually wrote. Instrumenting
-macro-generated code is a different tool for a different question.
+macro-generated code is a different tool for a different question. Two later
+additions sharpen this line rather than blur it. Expansion in service of
+*understanding* is fine: `use` is expanded to recover the imports and aliases it
+injects, so name resolution sees through the idiom — but nothing recovered that
+way is ever mutated. And a DSL fragment inside a macro argument (an Ecto
+`where`, say) *is* the author's source — it merely carries foreign semantics —
+so a host that speaks that DSL may splice the mutation in the DSL's own terms.
+The principle, restated: mutate what the author wrote, wherever it lives; never
+what a macro wrote for them. Understanding foreign code and mutating it are
+separate powers, granted separately.
 
 ---
 
@@ -107,7 +116,10 @@ Instead, Mutare *recovers* from the one compile it already does: on failure it
 identifies the offending mutant from the error, drops it, and rebuilds. This is a
 pattern, not a one-off: **prefer the design that costs nothing in the common
 case.** The coverage probe reuses the baseline run; poison recovery is free until
-something actually poisons; selection skips work rather than adding it.
+something actually poisons; selection skips work rather than adding it. And the
+one poison class that can't be auto-isolated doesn't get to break the pattern's
+spirit: when recovery is impossible, the failure arrives with a copy-pasteable
+fix, not a stack trace.
 
 **Defend the invariant with the simplest primitive that travels.** A mutation can
 turn a terminating loop infinite, so each run is capped. Rather than kill a hung
@@ -161,10 +173,23 @@ evidence — every one of those findings is recorded with its cause in `NOTES.md
 
 **Compile-safety in layers.** Built-in mutators are compile-safe *by
 construction* (swapping one operator for another reuses the operands and always
-type-checks). Known dangerous positions are excluded *structurally* (guards,
-capture arity). And the compile-poisoning pre-filter is the *backstop* for the
-unknown — especially for user-written custom mutators. Three layers, weakest
-assumption last.
+type-checks). Every position is *positively classified* — the transform names
+what each context is and routes it accordingly, rather than subtracting a
+blacklist from "everything mutates": a guard can't host a selector, so it's
+mutated by lifting; a capture's `/arity` is an arity, not a division, so it
+isn't mutated at all. And the compile-poisoning pre-filter is the *backstop*
+for the unknown — especially for user-written custom mutators. Three layers,
+weakest assumption last.
+
+**Everything has exactly one home.** No two mutator families may emit the same
+mutant: ownership is split explicitly (equality *polarity* and equality
+*relaxation* have different owners; `true` has one owning family, not every
+family that could touch it), and a leaf a call rewrite already covers is
+dropped rather than duplicated. The
+same value governs facts about the system: every status's classification, every
+option's default and validator, every registered family — one registry row
+each, consulted everywhere. Duplication, of a mutant or of a fact, is how two
+copies drift apart and one of them starts lying.
 
 **Write the limitations down.** Every deferral, every sharp edge, every "this is
 the conservative choice and here's what it costs" lives in `NOTES.md`. A
@@ -179,4 +204,5 @@ Pick one invariant worth protecting and let it organize everything. Make the
 output something a human can trust to the character. Choose the mechanism that
 costs nothing when nothing is wrong. Reach for the primitive that travels.
 Decouple what only looks coupled. Try the risky thing small, and when reality
-disagrees with the plan, reality wins. And never, ever lie in the report.
+disagrees with the plan, reality wins. Give every fact one home and every
+mutant one owner. And never, ever lie in the report.
