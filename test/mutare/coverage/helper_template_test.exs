@@ -67,6 +67,56 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       assert :ets.lookup(H.unlabeled_table(), 301) == []
     end
 
+    test "a caller-attributed long-lived process becomes unlabeled after the caller exits" do
+      parent = self()
+
+      holder =
+        spawn(fn ->
+          Process.set_label({RecoveredThenDeadMod, :a_test})
+          send(parent, :holder_ready)
+
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      assert_receive :holder_ready
+      holder_ref = Process.monitor(holder)
+
+      worker =
+        spawn(fn ->
+          Process.put(:"$callers", [holder])
+          send(parent, {:first, H.hit([801])})
+
+          receive do
+            :after_caller_exit -> :ok
+          end
+
+          send(parent, {:second, H.hit([801, 802])})
+        end)
+
+      worker_ref = Process.monitor(worker)
+
+      assert_receive {:first, true}
+
+      assert :ets.lookup(H.attr_table(), {RecoveredThenDeadMod, 801}) == [
+               {{RecoveredThenDeadMod, 801}}
+             ]
+
+      assert :ets.lookup(H.unlabeled_table(), 801) == []
+
+      send(holder, :stop)
+      assert_receive {:DOWN, ^holder_ref, :process, ^holder, _}
+
+      send(worker, :after_caller_exit)
+      assert_receive {:second, true}
+      assert_receive {:DOWN, ^worker_ref, :process, ^worker, _}
+
+      assert :ets.lookup(H.unlabeled_table(), 801) == [{801}]
+      assert :ets.lookup(H.unlabeled_table(), 802) == [{802}]
+      assert :ets.lookup(H.attr_table(), {RecoveredThenDeadMod, 802}) == []
+    end
+
     test "a bare spawn (no label, no caller chain, no setup_all frame) falls to the unlabeled bucket" do
       run_in(fn -> H.hit([201]) end, label: nil)
 
@@ -121,6 +171,8 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       assert {^tid, seen} = Process.get(:mutare_cov_seen)
       assert Map.has_key?(seen, 701)
       assert Map.has_key?(seen, 702)
+      assert Map.has_key?(seen[701], {:labeled, __MODULE__})
+      assert Map.has_key?(seen[702], {:labeled, __MODULE__})
       assert :ets.lookup(H.agg_table(), 701) == [{701}]
       assert :ets.lookup(H.agg_table(), 702) == [{702}]
     end

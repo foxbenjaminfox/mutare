@@ -636,6 +636,85 @@ defmodule Mutare.CoverageTest do
     end
 
     @tag :runner
+    test "a late hit after a caller-attributing process exits forces whole-suite selection" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:late_dead_caller_cov, %{
+          "lib/shared.ex" => "defmodule Shared do\n  def calc(x), do: x + 1\nend\n",
+          "test/spawner_test.exs" => """
+          defmodule SpawnerTest do
+            use ExUnit.Case, async: true
+
+            test "covers through a long-lived caller-attributed worker" do
+              parent = self()
+
+              holder =
+                spawn(fn ->
+                  Process.set_label({__MODULE__, :spawning_test})
+                  send(parent, :holder_ready)
+
+                  receive do
+                    :stop -> :ok
+                  end
+                end)
+
+              assert_receive :holder_ready
+              holder_ref = Process.monitor(holder)
+
+              worker =
+                spawn(fn ->
+                  Process.put(:"$callers", [holder])
+                  Shared.calc(5)
+                  send(parent, :first_done)
+
+                  receive do
+                    :late -> :ok
+                  end
+
+                  :persistent_term.put(:late_dead_caller_value, Shared.calc(5))
+                  send(parent, :late_done)
+                end)
+
+              assert_receive :first_done
+              send(holder, :stop)
+              assert_receive {:DOWN, ^holder_ref, :process, ^holder, _}
+
+              send(worker, :late)
+              assert_receive :late_done
+            end
+          end
+          """,
+          "test/killer_test.exs" => """
+          defmodule KillerTest do
+            use ExUnit.Case, async: true
+
+            test "kills through the late side effect without covering the source line" do
+              assert wait_value(200) == 6
+            end
+
+            defp wait_value(0), do: flunk("late worker did not publish")
+
+            defp wait_value(attempts) do
+              case :persistent_term.get(:late_dead_caller_value, :missing) do
+                :missing ->
+                  Process.sleep(10)
+                  wait_value(attempts - 1)
+
+                value ->
+                  value
+              end
+            end
+          end
+          """
+        })
+
+      assert {:ok, run} =
+               Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Arithmetic])
+
+      assert [%{status: :killed, output: output}] = run.results
+      assert output =~ "2 tests"
+    end
+
+    @tag :runner
     test "a non-zero coverage probe falls back to running every mutant" do
       %{project: project, sandbox: sandbox} =
         Project.build(:probe_failure, %{

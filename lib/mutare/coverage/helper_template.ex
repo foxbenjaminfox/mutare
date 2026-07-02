@@ -55,49 +55,54 @@ defmodule Mutare.Coverage.HelperTemplate do
         true
 
       tid ->
-        case unseen_ids(tid, ids) do
+        label = label()
+
+        case unrecorded_ids(tid, ids, label) do
           [] -> true
-          unseen -> record(unseen, cached_label())
+          unrecorded -> record(unrecorded, label)
         end
     end
   end
 
-  # Coverage is set-like: once this process has recorded an id, recording the same id again
-  # contributes no new aggregate/by-file/unlabeled information. Cache that per process so hot
-  # target loops don't repeatedly recover the ExUnit label and write duplicate ETS rows. The ETS
-  # table id is part of the cache so tests (and self-hosting edge cases) that delete/recreate the
-  # named tables get a fresh seen set instead of silently suppressing new-table writes.
-  defp unseen_ids(tid, ids) do
+  # Coverage is set-like per attribution state, not just per id. A long-lived Task keeps its
+  # `$callers` chain after the spawning test exits: while the caller is alive the hit is attributed
+  # to that test file, but after the caller dies the same process must record the id as unlabeled so
+  # selection runs the whole suite. The process-local cache therefore suppresses only repeats under
+  # the same attribution key (or anything after an unlabeled hit, which already dominates).
+  #
+  # The ETS table id is part of the cache so tests (and self-hosting edge cases) that delete/recreate
+  # the named tables get a fresh seen set instead of silently suppressing new-table writes.
+  defp unrecorded_ids(tid, ids, label) do
     seen =
       case Process.get(@seen_key) do
         {^tid, seen} when is_map(seen) -> seen
         _ -> %{}
       end
 
-    {seen, unseen} =
-      Enum.reduce(ids, {seen, []}, fn id, {seen, unseen} ->
-        if Map.has_key?(seen, id) do
-          {seen, unseen}
-        else
-          {Map.put(seen, id, true), [id | unseen]}
+    key = attribution_key(label)
+
+    {seen, unrecorded} =
+      Enum.reduce(ids, {seen, []}, fn id, {seen, unrecorded} ->
+        keys = Map.get(seen, id, %{})
+
+        cond do
+          Map.has_key?(keys, :unlabeled) ->
+            {seen, unrecorded}
+
+          Map.has_key?(keys, key) ->
+            {seen, unrecorded}
+
+          true ->
+            {Map.put(seen, id, Map.put(keys, key, true)), [id | unrecorded]}
         end
       end)
 
     Process.put(@seen_key, {tid, seen})
-    Enum.reverse(unseen)
+    Enum.reverse(unrecorded)
   end
 
-  defp cached_label do
-    case Process.get(@label_key) do
-      {:ok, label} ->
-        label
-
-      _ ->
-        label = label()
-        Process.put(@label_key, {:ok, label})
-        label
-    end
-  end
+  defp attribution_key({mod, _name}) when is_atom(mod), do: {:labeled, mod}
+  defp attribution_key(_label), do: :unlabeled
 
   defp record(ids, label) do
     Enum.each(ids, fn id ->
@@ -171,8 +176,25 @@ defmodule Mutare.Coverage.HelperTemplate do
   # `on_exit`/a bare spawn matches neither (no label, no caller chain, no ExUnit frame) → `nil`, and
   # the caller routes that id to the unlabeled bucket (whole suite). Only the module is needed for
   # file-granular selection; the name half is incidental.
+  #
+  # Only the current process's own label is cached. Labels recovered through `$callers` are
+  # liveness-sensitive: once the spawning test exits, the same long-lived Task/process must become
+  # unlabeled so coverage selection stays conservative.
   defp label do
-    label_of(self()) || recovered_label()
+    case Process.get(@label_key) do
+      {:ok, label} ->
+        label
+
+      _ ->
+        case label_of(self()) do
+          {mod, _name} = label when is_atom(mod) ->
+            Process.put(@label_key, {:ok, label})
+            label
+
+          _ ->
+            recovered_label()
+        end
+    end
   end
 
   # `pid`'s owning `{module, name}`: its `$process_label`, else an ExUnit frame on its current stack
