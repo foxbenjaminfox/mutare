@@ -18,7 +18,8 @@ defmodule Mutare.MutatorsCallTest do
     Numeric,
     PeriodBoundary,
     StringByte,
-    StringCall
+    StringCall,
+    TemporalOrder
   }
 
   describe "Collection" do
@@ -153,6 +154,34 @@ defmodule Mutare.MutatorsCallTest do
 
     test "name" do
       assert PeriodBoundary.name() == :period_boundary
+    end
+  end
+
+  describe "TemporalOrder" do
+    test "swaps temporal before?/after? calls, keeping arguments" do
+      assert render(TemporalOrder.mutate(parse("Date.before?(a, b)"))) ==
+               ["Date.after?(a, b)"]
+
+      assert render(TemporalOrder.mutate(parse("Date.after?(a, b)"))) ==
+               ["Date.before?(a, b)"]
+
+      assert render(TemporalOrder.mutate(parse("Time.before?(a, b)"))) ==
+               ["Time.after?(a, b)"]
+
+      assert render(TemporalOrder.mutate(parse("DateTime.before?(a, b)"))) ==
+               ["DateTime.after?(a, b)"]
+
+      assert render(TemporalOrder.mutate(parse("NaiveDateTime.after?(a, b)"))) ==
+               ["NaiveDateTime.before?(a, b)"]
+    end
+
+    test "skips unrelated modules and functions" do
+      assert TemporalOrder.mutate(parse("Date.compare(a, b)")) == :skip
+      assert TemporalOrder.mutate(parse("Other.before?(a, b)")) == :skip
+    end
+
+    test "name" do
+      assert TemporalOrder.name() == :temporal_order
     end
   end
 

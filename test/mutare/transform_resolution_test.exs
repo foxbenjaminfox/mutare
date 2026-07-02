@@ -1734,6 +1734,35 @@ defmodule Mutare.TransformResolutionTest do
     end
   end
 
+  describe "TemporalOrder (before? ↔ after? call swaps)" do
+    test "swaps temporal ordering predicates, including pipe and alias forms, and compiles" do
+      source = """
+      defmodule T do
+        alias Date, as: D
+
+        def a(d1, d2), do: Date.before?(d1, d2)
+        def b(t1, t2), do: Time.after?(t1, t2)
+        def c(dt1, dt2), do: dt1 |> DateTime.before?(dt2)
+        def d(n1, n2), do: NaiveDateTime.after?(n1, n2)
+        def e(d1, d2), do: D.after?(d1, d2)
+      end
+      """
+
+      {meta, sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.TemporalOrder]
+        )
+
+      pairs = for s <- sites, s.mutator == :temporal_order, do: {s.original_code, s.mutated_code}
+      assert {"Date.before?(d1, d2)", "Date.after?(d1, d2)"} in pairs
+      assert {"Time.after?(t1, t2)", "Time.before?(t1, t2)"} in pairs
+      assert {"DateTime.before?(dt2)", "DateTime.after?(dt2)"} in pairs
+      assert {"NaiveDateTime.after?(n1, n2)", "NaiveDateTime.before?(n1, n2)"} in pairs
+      assert {"D.after?(d1, d2)", "D.before?(d1, d2)"} in pairs
+      assert_compiles(meta)
+    end
+  end
+
   # Transform with only CollectionArity, assert the metamutant compiles, and return
   # the `{original_code, mutated_code}` pairs of its sites (for the pipe-aware tests).
   defp arity_sites(source) do

@@ -41,6 +41,7 @@ defmodule Mutare.Mutators do
     keyword_delete: Mutare.Mutators.KeywordDelete,
     map_set: Mutare.Mutators.MapSet,
     period_boundary: Mutare.Mutators.PeriodBoundary,
+    temporal_order: Mutare.Mutators.TemporalOrder,
     call_removal: Mutare.Mutators.CallRemoval,
     default_drop: Mutare.Mutators.DefaultDrop,
     mode_swap: Mutare.Mutators.ModeSwap,

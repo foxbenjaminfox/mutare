@@ -43,6 +43,7 @@ defmodule Mutare.MutatorsTest do
     StringCall,
     StringLiteral,
     StringSigilLiteral,
+    TemporalOrder,
     TupleLiteral,
     WordListLiteral
   }
@@ -57,7 +58,7 @@ defmodule Mutare.MutatorsTest do
                  [List] ++
                  [Collection, CollectionArity, StringCall, StringByte, MapKeyword] ++
                  [Mutare.Mutators.KeywordDelete] ++
-                 [Mutare.Mutators.MapSet, Mutare.Mutators.PeriodBoundary] ++
+                 [Mutare.Mutators.MapSet, Mutare.Mutators.PeriodBoundary, TemporalOrder] ++
                  [CallRemoval, DefaultDrop] ++
                  [ModeSwap, Numeric, Math, Integer, ConventionAtom, StringLiteral, FloatLiteral] ++
                  [AtomLiteral] ++
@@ -75,7 +76,7 @@ defmodule Mutare.MutatorsTest do
                  [:relational, :strict_equality, :logical, :literal, :conditional] ++
                  [:if_condition, :list] ++
                  [:collection, :collection_arity, :string_call, :string_byte] ++
-                 [:map_keyword, :keyword_delete, :map_set, :period_boundary] ++
+                 [:map_keyword, :keyword_delete, :map_set, :period_boundary, :temporal_order] ++
                  [:call_removal] ++
                  [:default_drop, :mode_swap, :numeric, :math, :integer, :convention] ++
                  [:string, :float] ++
