@@ -257,6 +257,36 @@ defmodule Mutare.Mutator do
   @callback init(opts :: term()) :: term()
 
   @doc """
+  Declares modules that must be loadable for this mutator's routing and hosting
+  to be valid.
+
+  A DSL plugin has a deployment requirement Mutare cannot infer: the library
+  whose macros it routes (`c:Mutare.MacroRouting.macro_routes/0`) or hosts
+  (`c:Mutare.Mutator.MacroHost.hosted_macros/0`) must be loadable in the Mutare
+  process — otherwise its routes register against nothing and its mutations
+  silently fail to fire. Declaring those modules here turns the silent
+  degradation into a loud startup error: the check runs once, when the
+  `:mutators` entry is resolved to a `Mutare.Mutator.Spec` (before `c:init/1`,
+  before any source is read), and a missing module aborts the run with a
+  `Mutare.EnvironmentError` naming the plugin, the missing modules, and the
+  deployment requirement.
+
+      @impl true
+      def required_modules, do: [Ecto.Schema, Ecto.Query]
+
+  Loadability (`Code.ensure_loaded?/1`) is the whole check — it does not verify
+  that a module's application is started or that its version is compatible. A
+  plugin with a requirement beyond loadability raises its own descriptive error
+  from `c:init/1` (or from `c:Mutare.MacroRouting.macro_routes/0`).
+
+  A non-mutating extension may export the same function — capability discovery
+  is by export, so `Mutare.Extension.validate!/1` applies the same check to
+  `:extensions` entries. A module without this callback is assumed
+  environment-independent.
+  """
+  @callback required_modules() :: [module()]
+
+  @doc """
   Post-processes each produced mutation before it is recorded.
 
   Mutare applies this hook to every mutation the mutator produces, on **both** delivery
@@ -366,6 +396,7 @@ defmodule Mutare.Mutator do
                       mutate: 1,
                       mutate: 2,
                       mutate_call_option_keys?: 1,
+                      required_modules: 0,
                       variants: 0,
                       variant: 2
 

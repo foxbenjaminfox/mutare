@@ -6347,6 +6347,28 @@ aliased `Context` vs `RunCtx` to keep them apart in `Runner`.
   `test/support/host_mutator.ex` fixtures show how). The domain halves of the Ecto harness (SQLite
   boot, seeding, `Repo.all` wrapping) stay plugin-side by design.
 
+- **Declarative environment guard — `required_modules/0` (proposal 0006, done).** A DSL plugin's
+  target library must be loadable in the Mutare process or its routing registers against nothing,
+  and the failure mode is *silently incomplete routing* (mutants that never fire, or a query
+  mutant that poisons the build), not an error. `mutare_ecto` hand-rolled the guard
+  (`ensure_ecto!/1`) and had to invoke it from **both** registration callbacks — `macro_routes/0`
+  and `hosted_macros/0`, since either can be the first entry point depending on configuration — a
+  subtlety every DSL plugin would rediscover. Now an optional `required_modules/0` is checked
+  **once** by core: in `Mutator.Spec` resolution (before `init/1`, so a plugin fails on the
+  deployment error, never on what its `init` does without the library) and in
+  `Extension.validate!/1`, raising the core-owned `Mutare.EnvironmentError` — one consistent
+  message for every plugin, before any source is read. Decisions baked in: **loadability is the
+  whole check** (`Code.ensure_loaded?`; app-started/version-floor requirements stay the plugin's
+  own raise from `init/1`/`macro_routes/0` — documented as the escape hatch on the callback); the
+  callback is declared only on `Mutare.Mutator` and *recognized by export* on extensions, because
+  also declaring it on `MacroRouting`/`MacroHost` would trip the compiler's conflicting-behaviours
+  warning on any module implementing several (exactly the `Mutare.Ecto` shape). Deferred: the
+  deeper degradation where the *target app's own* modules are unresolved isn't expressible as a
+  static module list; if it ever needs a hook, an arbitrary `verify_environment!/0` would grow
+  next to this guard. Downstream this deletes `Mutare.Ecto.ensure_ecto!/1`, its module list, its
+  two invocation sites, and its hand-written error prose, replaced by a one-line
+  `required_modules`.
+
 ## Host sub-contracting of fragment interiors (pin islands)
 
 A `:hosted` argument is left entirely raw by core and every mutant there comes from the host —

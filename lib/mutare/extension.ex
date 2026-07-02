@@ -19,6 +19,12 @@ defmodule Mutare.Extension do
   Mutators may implement `Mutare.MacroRouting` too, but belong under `:mutators`. They are rejected
   from `:extensions` so their mutation producers cannot be enabled accidentally as routing-only
   modules.
+
+  An extension that routes a library's DSL may declare that library's modules by exporting
+  `required_modules/0` (the same optional callback mutators declare — see
+  `c:Mutare.Mutator.required_modules/0`); `validate!/1` checks each is loadable and aborts with a
+  `Mutare.EnvironmentError` otherwise, so an external-source run fails loudly at startup instead
+  of silently registering routes against nothing.
   """
 
   alias Mutare.Extension.Spec
@@ -71,6 +77,7 @@ defmodule Mutare.Extension do
               "(exporting macro_routes/0 or expand_use/3), got: #{inspect(module)}"
     end
 
+    Mutare.EnvironmentError.verify!(module)
     spec
   end
 

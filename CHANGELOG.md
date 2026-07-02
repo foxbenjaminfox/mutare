@@ -49,6 +49,9 @@ Initial release.
   constructors that discharge Sourceror's emission invariants for plugins, and
   the `Mutare.Calls` call-resolution readers (`resolved_call_to/3`,
   `module_key/1`) so plugins match calls without building core's key
-  representation.
+  representation, and a declarative environment guard (`required_modules/0`,
+  on mutators and extensions): the modules a DSL plugin routes are checked
+  loadable once at startup, aborting with `Mutare.EnvironmentError` instead of
+  silently registering routes against nothing on an external-source run.
 - **`mix igniter.install mutare`** installer that detects frameworks and wires up
   the matching companion packages and `.mutare.exs`.

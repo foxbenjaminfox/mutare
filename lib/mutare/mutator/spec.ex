@@ -6,11 +6,13 @@ defmodule Mutare.Mutator.Spec do
   `opts` to context-taking callbacks; the reserved `:as` option changes the report and
   `# mutare:ignore` name and is removed before the mutator receives the remaining options.
 
-  Building a spec also runs the mutator's `c:Mutare.Mutator.init/1` (when exported) on those
-  remaining options and stores the result as the spec's `config` — so option parsing happens
-  once per resolved instance, and an invalid option raises here, at resolution time. Without
-  `init/1`, `config` is the options themselves. Dispatch delivers it to every context-aware
-  callback as `context.config`.
+  Building a spec also verifies the module's declared environment
+  (`c:Mutare.Mutator.required_modules/0`, when exported — a missing module raises
+  `Mutare.EnvironmentError` here, at resolution time) and then runs the mutator's
+  `c:Mutare.Mutator.init/1` (when exported) on those remaining options, storing the result as
+  the spec's `config` — so environment checking and option parsing happen once per resolved
+  instance, and an invalid option raises here too. Without `init/1`, `config` is the options
+  themselves. Dispatch delivers it to every context-aware callback as `context.config`.
 
   The transform also attaches the enclosing module's `@behaviour` set before invoking a mutator.
   """
@@ -78,9 +80,13 @@ defmodule Mutare.Mutator.Spec do
 
   # The instance's normalized configuration: `init/1`'s return when the module exports it
   # (called here — once per resolved instance, before any file is read — so an invalid option
-  # raises at resolution time), else the raw options. `Code.ensure_loaded?` because spec
-  # resolution may be the first time the module is touched.
+  # raises at resolution time), else the raw options. The declared-environment check
+  # (`required_modules/0`) runs first, so a plugin whose library is absent fails on the
+  # deployment error, never on whatever `init/1` does without it. `Code.ensure_loaded?`
+  # because spec resolution may be the first time the module is touched.
   defp init(module, opts) do
+    Mutare.EnvironmentError.verify!(module)
+
     if Code.ensure_loaded?(module) and function_exported?(module, :init, 1),
       do: module.init(opts),
       else: opts
