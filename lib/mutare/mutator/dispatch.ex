@@ -51,9 +51,14 @@ defmodule Mutare.Mutator.Dispatch do
   # mutator. A mutator that wants composition can make that visible in its own `mutate/2`.
   defp node_level(spec, node, context) do
     cond do
-      function_exported?(spec.module, :mutate, 2) -> contextual(spec, node, context)
-      function_exported?(spec.module, :mutate, 1) -> node_local(spec, node)
-      true -> []
+      callback_enabled?(spec, :mutate, 2) and function_exported?(spec.module, :mutate, 2) ->
+        contextual(spec, node, context)
+
+      callback_enabled?(spec, :mutate, 1) and function_exported?(spec.module, :mutate, 1) ->
+        node_local(spec, node)
+
+      true ->
+        []
     end
   end
 
@@ -103,10 +108,15 @@ defmodule Mutare.Mutator.Dispatch do
   """
   @spec implementing_any([Spec.t()], atom(), [arity()]) :: [Spec.t()]
   def implementing_any(specs, fun, arities) do
-    Enum.filter(specs, fn %{module: module} ->
-      Enum.any?(arities, &exports?(module, fun, &1))
+    Enum.filter(specs, fn %{module: module} = spec ->
+      Enum.any?(arities, &(callback_enabled?(spec, fun, &1) and exports?(module, fun, &1)))
     end)
   end
+
+  defp callback_enabled?(%{disabled_callbacks: disabled}, fun, arity),
+    do: not MapSet.member?(disabled, {fun, arity})
+
+  defp callback_enabled?(_spec, _fun, _arity), do: true
 
   # Whether `module` (loaded on demand) exports `fun`/`arity` — the single home for the
   # "ensure the module is loaded, then check the export" probe the structural-hook discovery
@@ -153,9 +163,20 @@ defmodule Mutare.Mutator.Dispatch do
   # dance.
   @spec dispatch_structural(Spec.t(), atom(), [term()]) :: term()
   defp dispatch_structural(%Spec{module: module} = spec, fun, base_args) do
-    if function_exported?(module, fun, length(base_args) + 1),
-      do: apply(module, fun, base_args ++ [structural_context(spec)]),
-      else: apply(module, fun, base_args)
+    context_arity = length(base_args) + 1
+    base_arity = length(base_args)
+
+    cond do
+      callback_enabled?(spec, fun, context_arity) and
+          function_exported?(module, fun, context_arity) ->
+        apply(module, fun, base_args ++ [structural_context(spec)])
+
+      callback_enabled?(spec, fun, base_arity) and function_exported?(module, fun, base_arity) ->
+        apply(module, fun, base_args)
+
+      true ->
+        []
+    end
   end
 
   @doc """
@@ -174,8 +195,12 @@ defmodule Mutare.Mutator.Dispatch do
           Mutare.MacroRouting.Call.t(),
           Mutare.Mutator.context()
         ) :: [map()]
-  def host_targets(%Spec{module: module, opts: opts, behaviours: behaviours}, call, context0) do
-    if exports?(module, :host, 2) do
+  def host_targets(
+        %Spec{module: module, opts: opts, behaviours: behaviours} = spec,
+        call,
+        context0
+      ) do
+    if callback_enabled?(spec, :host, 2) and exports?(module, :host, 2) do
       context = context0 |> Map.put(:opts, opts) |> Map.put(:behaviours, behaviours)
 
       try do

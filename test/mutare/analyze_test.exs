@@ -14,6 +14,30 @@ defmodule Mutare.AnalyzeTest do
   alias Mutare.Analyze
   alias Mutare.Transform.Meta
 
+  defmodule UnlabeledVariantMutator do
+    @behaviour Mutare.Mutator
+
+    alias Mutare.AST
+
+    @impl Mutare.Mutator
+    def name, do: :unlabeled_variant
+
+    @impl Mutare.Mutator
+    def variants, do: ~w(two)
+
+    @impl Mutare.Mutator
+    def mutate({:__block__, _meta, [1]}), do: [AST.literal(2)]
+    def mutate(_node), do: :skip
+
+    @impl Mutare.Mutator
+    def variant({:__block__, _meta, [1]}, {:__block__, _mmeta, [2]}), do: nil
+
+    def variant(original, mutated) do
+      raise "variant/2 should only be called with the collected node pair, got: " <>
+              inspect({original, mutated})
+    end
+  end
+
   # Node-level families only: structural families (return_value, if_condition, the pattern
   # families) are contractually ignored by collect, and the call-matching families need the
   # resolver's stamps, which a bare `Sourceror.parse_string!` subtree doesn't carry.
@@ -118,6 +142,12 @@ defmodule Mutare.AnalyzeTest do
              ) == []
     end
 
+    test "structural callbacks stay inert when a custom structural mutator also exports mutate/1" do
+      subtree = Sourceror.parse_string!("if ok?(), do: 1, else: 2")
+
+      assert Analyze.expression_mutations(subtree, [Mutare.Test.ConditionMutator]) == []
+    end
+
     test "clause-pattern positions are not offered (structural delivery), bodies still mutate" do
       muts = collect("fn 1 -> 2 end", specs([:literal]))
       rendered = Enum.map(muts, fn {_s, m, _n, _v} -> Sourceror.to_string(m) end)
@@ -167,6 +197,36 @@ defmodule Mutare.AnalyzeTest do
     test "an empty or node-level-free mutator list collects nothing" do
       assert collect("a + 1", []) == []
       assert collect("a + 1", specs([:return_value])) == []
+    end
+  end
+
+  describe "variant propagation" do
+    test "an opted-in but unlabeled producer carries [] through a host sub-contract" do
+      source = """
+      defmodule Mutare.UnlabeledVariantHostFixture do
+        import Mutare.Test.HostDSL
+
+        def go(x) do
+          filter([:ok], x > 1)
+        end
+      end
+      """
+
+      {_metamutant, sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(source,
+          file: "unlabeled_variant_host.ex",
+          mutators: [UnlabeledVariantMutator, Mutare.Test.SubcontractHostMutator]
+        )
+
+      site =
+        Enum.find(
+          sites,
+          &(&1.mutator == :unlabeled_variant and &1.mutated_code == "x > 2")
+        )
+
+      assert site
+      assert site.original_code == "x > 1"
+      assert site.variant == []
     end
   end
 

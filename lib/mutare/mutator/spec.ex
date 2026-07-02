@@ -10,13 +10,14 @@ defmodule Mutare.Mutator.Spec do
   """
 
   @enforce_keys [:module, :name]
-  defstruct [:module, :name, opts: [], behaviours: MapSet.new()]
+  defstruct [:module, :name, opts: [], behaviours: MapSet.new(), disabled_callbacks: MapSet.new()]
 
   @type t :: %__MODULE__{
           module: module(),
           name: atom(),
           opts: term(),
-          behaviours: MapSet.t(module())
+          behaviours: MapSet.t(module()),
+          disabled_callbacks: MapSet.t({atom(), arity()})
         }
 
   @doc """
@@ -67,6 +68,12 @@ defmodule Mutare.Mutator.Spec do
   @spec coerce(t() | module()) :: t()
   def coerce(%__MODULE__{} = spec), do: spec
   def coerce(module) when is_atom(module), do: for_module(module)
+
+  @doc false
+  @spec disable_callbacks(t(), [{atom(), arity()}]) :: t()
+  def disable_callbacks(%__MODULE__{} = spec, callbacks) when is_list(callbacks) do
+    %{spec | disabled_callbacks: MapSet.union(spec.disabled_callbacks, MapSet.new(callbacks))}
+  end
 
   @doc """
   Returns the spec in `specs` for `module`, or `nil`.

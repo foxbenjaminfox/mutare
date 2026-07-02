@@ -52,6 +52,8 @@ defmodule Mutare.Transform.Analyze.Collect do
   alias Mutare.Transform.Analyze
   alias Mutare.Transform.Candidate.Delivery
 
+  @structural_callbacks Mutare.Mutator.Structural.behaviour_info(:callbacks)
+
   # `context` is accepted for call-site symmetry with the mutator callbacks (`map()`, not
   # `Mutare.Mutator.context()`, so the bare default doesn't have to fake a `:pipe_mode`).
   @spec expression_mutations(Macro.t(), [Spec.t() | module()], map()) ::
@@ -73,9 +75,11 @@ defmodule Mutare.Transform.Analyze.Collect do
   end
 
   # The specs whose node-level producers run: `mutate/1`/`mutate/2` exporters, minus selector
-  # hosts (see the moduledoc). Structural-only families (ReturnValue, IfCondition, the pattern
-  # families) fall out of the first filter; a host falls out of the second even when it also
-  # exports `mutate/1`.
+  # hosts (see the moduledoc), with structural callbacks masked so a structural mutator that
+  # also exports a no-op `mutate/1` cannot leak return/condition/pattern candidates into
+  # collect mode. Structural-only families (ReturnValue, IfCondition, the pattern families)
+  # fall out of the first filter; a host falls out of the second even when it also exports
+  # `mutate/1`.
   defp node_level_specs(mutators) do
     specs =
       mutators
@@ -83,7 +87,10 @@ defmodule Mutare.Transform.Analyze.Collect do
       |> Dispatch.implementing_any(:mutate, [1, 2])
 
     hosts = Dispatch.implementing(specs, :host, 2)
-    Enum.reject(specs, &(&1 in hosts))
+
+    specs
+    |> Enum.reject(&(&1 in hosts))
+    |> Enum.map(&Spec.disable_callbacks(&1, @structural_callbacks))
   end
 
   # --- collect: post-order walk, stripping delivery meta ----------------------
@@ -159,12 +166,15 @@ defmodule Mutare.Transform.Analyze.Collect do
   # `variant/2` derivation over the `{original, mutated}` node pair). Resolving here matters:
   # once the host wraps the rebuild under its pin, the fragment-level pair no longer has the
   # shape an operator family's `variant/2` derives from, so a Site-time derivation would come up
-  # empty. The resolved list rides the host's `%Mutation{}` as a carried tag, which Site-side
-  # `Dispatch.variant/4` takes verbatim. `nil` when the family declares no label for this mutant.
+  # empty or call a custom derivation with a shape it does not handle. The resolved list rides
+  # the host's `%Mutation{}` as a carried tag, which Site-side `Dispatch.variant/4` takes
+  # verbatim. `[]` is carried for an opted-in family whose node-level mutation has no label;
+  # `nil` is kept only for families with no variant vocabulary.
   defp resolved_variant(%Candidate.InPlace{} = cand) do
-    case Dispatch.variant(cand.mutator, cand.original, cand.mutated, cand.variant) do
-      [] -> nil
-      labels -> labels
-    end
+    labels = Dispatch.variant(cand.mutator, cand.original, cand.mutated, cand.variant)
+
+    if labels == [] and not Dispatch.opted_in?(cand.mutator.module),
+      do: nil,
+      else: labels
   end
 end
