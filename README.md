@@ -61,7 +61,7 @@ Then run `mix mutare`.
 - **Parallel workers + timeouts** — mutants run concurrently, each capped; a mutation that hangs (a loop turned infinite) halts itself after the deadline and counts as a kill.
 - **Compile-poison recovery** — a mutant that wouldn't compile is identified from
   the compile error, dropped (reported as *poisoned*), and the build retried, to try and avoid a bad mutant spoiling the whole run—but ideally this shouldn't be necessary, and it usually isn't.
-- **A very broad built-in mutator set** — arithmetic/operator swaps, relational and logical swaps, literals of every kind, collection/string/map call rewrites, pattern and clause restructurings, and more. See [`Mutare.Mutators`](https://hexdocs.pm/mutare/Mutare.Mutators.html), and write your own with [`Mutare.Mutator`](https://hexdocs.pm/mutare/Mutare.Mutator.html).
+- **A very broad built-in mutator set** — arithmetic/operator swaps, relational and logical swaps, literals of every kind, collection/string/map call rewrites, pattern and clause restructurings, and more. See [`Mutare.Mutators`](https://hexdocs.pm/mutare/Mutare.Mutators.html), and write your own — the [Extending Mutare](https://hexdocs.pm/mutare/extending.html) guide walks through custom mutators and library extensions.
 - **Umbrella-aware** — target one app, several, or the whole workspace.
 - **CI-friendly** — `--since <ref>` to scope to changed files, score/coverage/infra gates, machine-readable reports, and `--keep-sandbox` to cache the compiled sandbox across runs.
 
@@ -191,8 +191,8 @@ shape-dependent routing exist for **library adapters**: an extension implementin
 `Mutare.MacroRouting` describes a DSL's argument shapes once, and independent host mutators
 implementing `Mutare.Mutator.MacroHost` deliver mutations *inside* its fragments. They are accepted
 in `macro_routes:` too, but they carry real contracts (`:pinned` interpolates a `^`-pinned selector
-into a scalar DSL value; `:hosted` requires an enabled, subscribed host mutator) — read those two
-behaviours' docs before reaching for them.
+into a scalar DSL value; `:hosted` requires an enabled, subscribed host mutator) — start from the
+[Extending Mutare](https://hexdocs.pm/mutare/extending.html) guide before reaching for them.
 
 #### Wildcards: a whole module, or a name in any module
 

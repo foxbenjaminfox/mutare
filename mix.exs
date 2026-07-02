@@ -114,7 +114,7 @@ defmodule Mutare.MixProject do
       main: "readme",
       source_url: @source_url,
       source_ref: "v#{@version}",
-      extras: ["README.md", "CHANGELOG.md", "LICENSE"],
+      extras: ["README.md", "guides/extending.md", "CHANGELOG.md", "LICENSE"],
       skip_code_autolink_to: &skip_autolink_to?/1,
       skip_undefined_reference_warnings_on: &(&1 in @typespec_refs_to_hidden),
       # Modules fall into the first group whose entry matches, so the explicit
