@@ -12,10 +12,51 @@ defmodule Mutare.ASTTest do
       assert AST.literal("x") == {:__block__, [delimiter: ~s(")], ["x"]}
     end
 
-    test "non-string literals get fresh, empty meta (so they render from the value)" do
-      assert AST.literal(0) == {:__block__, [], [0]}
+    test "non-string literals get fresh meta (so they render from the value)" do
       assert AST.literal(:ok) == {:__block__, [], [:ok]}
       assert Sourceror.to_string(AST.literal(42)) == "42"
+    end
+
+    test "numeric literals carry a token derived from the new value" do
+      # The formatter fetches token metadata for every numeric literal; without one,
+      # rendering can raise when the literal is woven into already-parsed source.
+      assert AST.literal(0) == {:__block__, [token: "0"], [0]}
+      assert AST.literal(1.5) == {:__block__, [token: "1.5"], [1.5]}
+      assert AST.literal(-3) == {:-, [], [{:__block__, [token: "3"], [3]}]}
+
+      # The reproduction: splice a fresh int into parsed source carrying line meta.
+      original = Sourceror.parse_string!("def q, do: from(u in U, where: u.age > 1)")
+
+      replaced =
+        Macro.postwalk(original, fn
+          {:__block__, meta, [1]} when is_list(meta) -> AST.literal(5)
+          node -> node
+        end)
+
+      assert Sourceror.to_string(replaced) == "def q, do: from(u in U, where: u.age > 5)"
+    end
+  end
+
+  describe "the emission constructors" do
+    test "keyword_key/1 builds a key node the renderer emits as `key:`" do
+      key = AST.keyword_key(:limit)
+      assert key == {:__block__, [format: :keyword], [:limit]}
+      assert AST.keyword_label?(key)
+      assert Sourceror.to_string([{key, AST.literal(1)}]) == "[limit: 1]"
+    end
+
+    test "clean_var/1 drops source meta but keeps the hygiene context" do
+      assert AST.clean_var({:user, [line: 3, column: 7, token: "user"], nil}) ==
+               {:user, [], nil}
+
+      assert AST.clean_var({:user, [line: 3], Some.Context}) == {:user, [], Some.Context}
+    end
+
+    test "remote_call/3 wraps a pre-built callee node; absolute_call/3 is the alias-path form" do
+      callee = AST.absolute_alias([:Kernel])
+      call = AST.remote_call(callee, :==, [AST.literal(1), AST.literal(2)])
+      assert call == AST.absolute_call([:Kernel], :==, [AST.literal(1), AST.literal(2)])
+      assert Sourceror.to_string(call) == "Elixir.Kernel.==(1, 2)"
     end
   end
 

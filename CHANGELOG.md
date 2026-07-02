@@ -43,8 +43,9 @@ Initial release.
 - **Umbrella-aware** — target one app, several, or the whole workspace.
 - **Extension surface** — `Mutare.Mutator` (custom mutators), independent
   `Mutare.MacroRouting` and `Mutare.UseExpansion` capabilities, `:extensions` for
-  non-mutating integrations, and declarative `:macro_routes` configuration
+  non-mutating integrations, declarative `:macro_routes` configuration
   (user-tier treatments only; the adapter-grade treatments must come from a
-  module implementing `Mutare.MacroRouting`).
+  module implementing `Mutare.MacroRouting`), and the `Mutare.AST` node
+  constructors that discharge Sourceror's emission invariants for plugins.
 - **`mix igniter.install mutare`** installer that detects frameworks and wires up
   the matching companion packages and `.mutare.exs`.

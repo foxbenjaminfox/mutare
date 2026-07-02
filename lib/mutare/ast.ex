@@ -5,12 +5,15 @@ defmodule Mutare.AST do
   These helpers are the supported way for custom mutators to build AST.
   `literal/1` is the most important one: it builds literal nodes with fresh
   metadata, so Sourceror renders the new value rather than stale source text.
-  It also handles string delimiters and negative-number shape correctly.
+  It also handles string delimiters, numeric token metadata, and
+  negative-number shape correctly.
 
   `literal_value/1` reads supported literal nodes back to their values. The
   `sentinel_*` helpers return the same survivor markers used by the built-in
-  families. `absolute_alias/1` and `absolute_call/3` build references that are
-  not affected by aliases or imports in the target source.
+  families. `absolute_alias/1`, `absolute_call/3`, and `remote_call/3` build
+  references that are not affected by aliases or imports in the target source.
+  `keyword_key/1` and `clean_var/1` cover the remaining node shapes a mutator
+  emits into existing source: fresh keyword keys and re-declared bindings.
 
   `parse!/1` and `to_string/1` expose the Sourceror round trip without requiring
   custom mutators to depend on Sourceror directly.
@@ -53,20 +56,33 @@ defmodule Mutare.AST do
   String values include a double-quote delimiter. Without it, Sourceror may render a
   printable binary as a charlist.
 
+  Numbers carry a `:token` derived from the new value. The formatter fetches token
+  metadata for every numeric literal and can raise when it cannot synthesize one in
+  an embedded position — for example inside a call node a mutator weaves into
+  already-parsed source. Because the token is the new value's own text, it can never
+  re-render stale source.
+
   Negative numbers use the same unary-minus AST shape the parser emits. This keeps
   nested negative-number mutations renderable and parseable, for example when a
   mutation inside `-0.5` would otherwise format as an invalid `--0.5`.
 
       iex> Mutare.AST.literal(0)
-      {:__block__, [], [0]}
+      {:__block__, [token: "0"], [0]}
       iex> Mutare.AST.literal("mutare")
       {:__block__, [delimiter: ~s(")], ["mutare"]}
       iex> Mutare.AST.literal(-1)
-      {:-, [], [{:__block__, [], [1]}]}
+      {:-, [], [{:__block__, [token: "1"], [1]}]}
   """
   @spec literal(term()) :: Macro.t()
   def literal(value) when is_binary(value), do: {:__block__, [delimiter: ~s(")], [value]}
   def literal(value) when is_number(value) and value < 0, do: {:-, [], [literal(-value)]}
+
+  def literal(value) when is_integer(value),
+    do: {:__block__, [token: Integer.to_string(value)], [value]}
+
+  def literal(value) when is_float(value),
+    do: {:__block__, [token: Float.to_string(value)], [value]}
+
   def literal(value), do: {:__block__, [], [value]}
 
   @doc """
@@ -114,6 +130,20 @@ defmodule Mutare.AST do
   def unwrap_literal(node), do: node
 
   @doc """
+  Strips a variable node's metadata, keeping its name and hygiene context.
+
+  Use it to re-declare a binding inside synthesized scaffolding — a wrapper call a
+  mutator builds around existing code — where the source line/column and token
+  metadata are stale but the context atom must survive for the variable to stay
+  the same variable.
+
+      iex> Mutare.AST.clean_var({:user, [line: 3, column: 7], nil})
+      {:user, [], nil}
+  """
+  @spec clean_var(Macro.t()) :: Macro.t()
+  def clean_var({name, _meta, ctx}) when is_atom(name) and is_atom(ctx), do: {name, [], ctx}
+
+  @doc """
   Builds an absolute-qualified module alias.
 
   The result is the `Elixir.`-prefixed form that alias and import resolution do
@@ -138,7 +168,21 @@ defmodule Mutare.AST do
   """
   @spec absolute_call([atom()], atom(), [Macro.t()]) :: Macro.t()
   def absolute_call(path, fun, args) when is_list(path) and is_atom(fun) and is_list(args),
-    do: {{:., [], [absolute_alias(path), fun]}, [], args}
+    do: remote_call(absolute_alias(path), fun, args)
+
+  @doc """
+  Builds a remote call `mod.fun(args)` around a pre-built callee node.
+
+  The general form of `absolute_call/3`: use it when the module reference is
+  already a node — an `absolute_alias/1` result, a variable, or an alias taken
+  from the source being mutated.
+
+      iex> Mutare.AST.remote_call(Mutare.AST.absolute_alias([:Kernel]), :==, [1, 2])
+      {{:., [], [{:__aliases__, [], [:"Elixir", :Kernel]}, :==]}, [], [1, 2]}
+  """
+  @spec remote_call(Macro.t(), atom(), [Macro.t()]) :: Macro.t()
+  def remote_call(mod, fun, args) when is_atom(fun) and is_list(args),
+    do: {{:., [], [mod, fun]}, [], args}
 
   @doc """
   The bare keyword atom of a key node, whether plain (`:do`) or Sourceror-wrapped
@@ -148,6 +192,18 @@ defmodule Mutare.AST do
   def key_atom({:__block__, _meta, [atom]}) when is_atom(atom), do: atom
   def key_atom(atom) when is_atom(atom), do: atom
   def key_atom(_), do: nil
+
+  @doc """
+  Builds a keyword-list **key** node that renders as `key:` rather than `{:key, …}`.
+
+  The `format: :keyword` marker is what the renderer keys on; `keyword_label?/1`
+  is the matching reader. Use it when a mutation emits a fresh keyword entry.
+
+      iex> Mutare.AST.keyword_key(:limit)
+      {:__block__, [format: :keyword], [:limit]}
+  """
+  @spec keyword_key(atom()) :: Macro.t()
+  def keyword_key(atom) when is_atom(atom), do: {:__block__, [format: :keyword], [atom]}
 
   @doc """
   Returns the value bound to `key` in a Sourceror-form keyword list.

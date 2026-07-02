@@ -69,6 +69,24 @@ Three rules keep you out of trouble; the *why* is in the `Mutare.Mutator` docs:
 3. **Build literals with `Mutare.AST.literal/1`**, not by hand — a hand-built
    literal can silently render as the original source.
 
+### Emitting AST
+
+Sourceror nodes carry rendering metadata with sharp edges, and every one of
+them is core's problem, not yours. Each invariant has a `Mutare.AST` helper
+that discharges it — reach for the helper instead of re-deriving the rule:
+
+| Invariant | Helper |
+| --- | --- |
+| Fresh literals need clean, derived meta, or the renderer re-emits the old source text | `Mutare.AST.literal/1` |
+| Numeric literals woven into parsed source need a `:token`, or rendering raises | `Mutare.AST.literal/1` |
+| Keyword keys need `format: :keyword` to render as `key:` rather than `{:key, …}` | `Mutare.AST.keyword_key/1` |
+| Re-declared variables must drop source meta but keep their hygiene context | `Mutare.AST.clean_var/1` |
+| Emitted module references must be alias-proof (`Elixir.`-prefixed) | `Mutare.AST.absolute_alias/1`, `absolute_call/3`, `remote_call/3` |
+
+If you find yourself building a raw `{:__block__, meta, [value]}` tuple in a
+mutator, one of these is missing from your toolkit — or from `Mutare.AST`, in
+which case that's a bug report.
+
 ### Context: configuration, pipes, and behaviours
 
 Implement `mutate/2` instead of `mutate/1` when the mutation depends on

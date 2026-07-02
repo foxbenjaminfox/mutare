@@ -32,12 +32,13 @@ defmodule Mutare.MutatorsLiteralTest do
       assert render(Literal.mutate(parse("false"))) == ["true"]
     end
 
-    test "emits clean metadata so the new value renders (not the original token)" do
-      # The original carries `token: \"1\"`; reusing it would render \"1\".
+    test "emits fresh metadata so the new value renders (not the original token)" do
+      # The original carries `token: "1"`; reusing its meta would render "1". A fresh
+      # literal carries only a token derived from the *new* value (see Mutare.AST.literal/1).
       assert render(Literal.mutate(parse("1"))) == ["2", "0"]
 
       assert Enum.all?(Literal.mutate(parse("1")), fn m ->
-               match?({:__block__, [], _}, node_of(m))
+               match?({:__block__, [token: _], [value]} when is_integer(value), node_of(m))
              end)
     end
 
