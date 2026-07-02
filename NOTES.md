@@ -479,9 +479,11 @@ Three load-bearing choices (mirroring the dep-seed's "never produce a wrong resu
   per-mutant task just before `reporter.(result)`, and the hydrated result is what's collected, so
   the final report needs no second pass. Killed/no-coverage results (no `leave_behind`) are never
   hydrated — that's the whole win.
-- **A miss is a no-op, not a crash.** If the deterministic re-render ever failed to cover an id,
-  `Hydrate` leaves the site's code `nil` rather than raising a reporting path. Poisoned sites keep
-  `nil` code (never displayed, never read).
+- **A miss is a warned no-op, not a crash.** If the deterministic re-render ever failed to cover
+  an id, `Hydrate` emits a `Logger.warning` naming the mutant (the tripwire for a broken
+  determinism/`:start_id` invariant) and leaves the site's code `nil` — the reporter degrades to
+  an empty diff — rather than raising in a reporting path after the whole run's work is done.
+  Poisoned sites keep `nil` code (never displayed, never read).
 
 Not pursued: retaining the mutated/original AST nodes on the `Site` to render lazily without a
 re-render — rejected for the same reason `Site`'s moduledoc gives for not keeping trees at all
