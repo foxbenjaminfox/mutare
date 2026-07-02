@@ -56,6 +56,31 @@ defmodule Mutare.MutatorsCallTest do
                ["List.foldl(xs, acc, f)"]
     end
 
+    test "swaps Map, Keyword, and MapSet complements, keeping arguments" do
+      assert render(Collection.mutate(parse("Map.filter(m, f)"))) == ["Map.reject(m, f)"]
+      assert render(Collection.mutate(parse("Map.reject(m, f)"))) == ["Map.filter(m, f)"]
+      assert render(Collection.mutate(parse("Map.take(m, keys)"))) == ["Map.drop(m, keys)"]
+      assert render(Collection.mutate(parse("Map.drop(m, keys)"))) == ["Map.take(m, keys)"]
+
+      assert render(Collection.mutate(parse("Keyword.filter(kw, f)"))) ==
+               ["Keyword.reject(kw, f)"]
+
+      assert render(Collection.mutate(parse("Keyword.reject(kw, f)"))) ==
+               ["Keyword.filter(kw, f)"]
+
+      assert render(Collection.mutate(parse("Keyword.take(kw, keys)"))) ==
+               ["Keyword.drop(kw, keys)"]
+
+      assert render(Collection.mutate(parse("Keyword.drop(kw, keys)"))) ==
+               ["Keyword.take(kw, keys)"]
+
+      assert render(Collection.mutate(parse("MapSet.filter(set, f)"))) ==
+               ["MapSet.reject(set, f)"]
+
+      assert render(Collection.mutate(parse("MapSet.reject(set, f)"))) ==
+               ["MapSet.filter(set, f)"]
+    end
+
     test "swaps the lazy Stream twins of the directional Enum pairs" do
       assert render(Collection.mutate(parse("Stream.filter(xs, f)"))) == ["Stream.reject(xs, f)"]
       assert render(Collection.mutate(parse("Stream.reject(xs, f)"))) == ["Stream.filter(xs, f)"]

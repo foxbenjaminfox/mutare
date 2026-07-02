@@ -493,6 +493,35 @@ defmodule Mutare.TransformResolutionTest do
       assert_compiles(meta)
     end
 
+    test "Map, Keyword, and MapSet collection complements mutate, including pipe stages" do
+      {meta, sites, _} =
+        Mutare.Transform.transform_string_with_sites(
+          """
+          defmodule M do
+            def a(m), do: Map.filter(m, fn {_k, v} -> v end)
+            def b(m, keys), do: m |> Map.take(keys)
+            def c(kw), do: Keyword.reject(kw, fn {_k, v} -> v end)
+            def d(kw, keys), do: kw |> Keyword.drop(keys)
+            def e(set), do: MapSet.filter(set, & &1)
+            def f(set), do: set |> MapSet.reject(& &1)
+          end
+          """,
+          mutators: [Mutare.Mutators.Collection]
+        )
+
+      pairs = for s <- sites, s.mutator == :collection, do: {s.original_code, s.mutated_code}
+      assert {"Map.filter(m, fn {_k, v} -> v end)", "Map.reject(m, fn {_k, v} -> v end)"} in pairs
+      assert {"Map.take(keys)", "Map.drop(keys)"} in pairs
+
+      assert {"Keyword.reject(kw, fn {_k, v} -> v end)",
+              "Keyword.filter(kw, fn {_k, v} -> v end)"} in pairs
+
+      assert {"Keyword.drop(keys)", "Keyword.take(keys)"} in pairs
+      assert {"MapSet.filter(set, & &1)", "MapSet.reject(set, & &1)"} in pairs
+      assert {"MapSet.reject(& &1)", "MapSet.filter(& &1)"} in pairs
+      assert_compiles(meta)
+    end
+
     test "an aliased String / Float call mutates through its family, keeping the alias" do
       {meta, sites, _} =
         Mutare.Transform.transform_string_with_sites(

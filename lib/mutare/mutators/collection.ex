@@ -10,8 +10,13 @@ defmodule Mutare.Mutators.Collection do
     * `Enum.take_while` ↔ `Enum.drop_while`
     * `Enum.take_every` ↔ `Enum.drop_every`
     * `Enum.sum` ↔ `Enum.product`
+    * `Map.filter` ↔ `Map.reject`
+    * `Map.take` ↔ `Map.drop`
+    * `Keyword.filter` ↔ `Keyword.reject`
+    * `Keyword.take` ↔ `Keyword.drop`
     * `List.first` ↔ `List.last`
     * `List.foldl` ↔ `List.foldr`
+    * `MapSet.filter` ↔ `MapSet.reject`
     * `Stream.filter` ↔ `Stream.reject`
     * `Stream.take` ↔ `Stream.drop`
     * `Stream.take_while` ↔ `Stream.drop_while`
@@ -47,10 +52,20 @@ defmodule Mutare.Mutators.Collection do
     {[:Enum], :drop_every} => :take_every,
     {[:Enum], :sum} => :product,
     {[:Enum], :product} => :sum,
+    {[:Map], :filter} => :reject,
+    {[:Map], :reject} => :filter,
+    {[:Map], :take} => :drop,
+    {[:Map], :drop} => :take,
+    {[:Keyword], :filter} => :reject,
+    {[:Keyword], :reject} => :filter,
+    {[:Keyword], :take} => :drop,
+    {[:Keyword], :drop} => :take,
     {[:List], :first} => :last,
     {[:List], :last} => :first,
     {[:List], :foldl} => :foldr,
     {[:List], :foldr} => :foldl,
+    {[:MapSet], :filter} => :reject,
+    {[:MapSet], :reject} => :filter,
     # The lazy `Stream` twins — the directional pairs that exist in `Stream`.
     {[:Stream], :filter} => :reject,
     {[:Stream], :reject} => :filter,
