@@ -111,6 +111,13 @@ defmodule Mutare.Mutator do
   Routes may be static or use `:routing` with `c:Mutare.MacroRouting.route_arguments/2` for
   shape-aware classification. Listing the mutator in `:mutators` auto-registers them.
 
+  Core still offers the *whole* registered call to `c:mutate/2`, with `context.mutators`
+  carrying the run's enabled non-host specs — so a mutator that keeps a DSL argument raw
+  (`:skip`) can rewrite the call itself **and** sub-contract the ordinary-Elixir islands
+  inside that raw argument back to core's families via
+  `Mutare.Analyze.expression_mutations/3`, relaying each rebuild as a
+  `Mutare.Mutator.Mutation` with `producer:` set (see `Mutare.Analyze`).
+
   A mutator that produces mutations *inside* a compile-time DSL additionally implements
   `Mutare.Mutator.MacroHost`, subscribes with `c:Mutare.Mutator.MacroHost.hosted_macros/0`, and
   delivers foreign-DSL mutations through `c:Mutare.Mutator.MacroHost.host/2`. It need not own the
@@ -184,15 +191,18 @@ defmodule Mutare.Mutator do
     * `:behaviours` — the enclosing module's behaviour set: a `MapSet` of the modules it
       implements via `@behaviour Foo` (directly or injected by a `use`). Empty outside a
       module.
-    * `:mutators` — present only for selector hosts (`c:Mutare.Mutator.MacroHost.host/2`): the
-      run's enabled non-host `Mutare.Mutator.Spec`s, for sub-contracting ordinary-Elixir
-      islands inside a hosted fragment back to core's generation via
-      `Mutare.Analyze.expression_mutations/3`.
+    * `:mutators` — present for selector hosts (`c:Mutare.Mutator.MacroHost.host/2`) and for
+      the whole-call `mutate/2` offer of a **registered macro call** (a call some enabled
+      mutator or extension registered via `Mutare.MacroRouting`): the run's enabled non-host
+      `Mutare.Mutator.Spec`s, for sub-contracting ordinary-Elixir islands the macro's routing
+      left raw back to core's generation via `Mutare.Analyze.expression_mutations/3`. Absent
+      on ordinary node offers — core fully descends an unregistered node itself, so
+      sub-contracting there would produce the same mutant twice.
 
   The keys other than `:pipe_mode` are optional in the type because the base context
   carries only `:pipe_mode`; dispatch injects the configured options, the normalized
-  configuration, and the behaviour set (and, for a host, the enabled specs) before
-  calling a mutator.
+  configuration, and the behaviour set (and, at the sub-contract seams above, the enabled
+  specs) before calling a mutator.
   """
   @type context :: %{
           :pipe_mode => pipe_mode(),

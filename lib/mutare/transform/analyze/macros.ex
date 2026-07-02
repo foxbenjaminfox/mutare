@@ -26,7 +26,21 @@ defmodule Mutare.Transform.Analyze.Macros do
   # all-runtime descent. `context` carries the pipe flag (so a pipe-aware custom mutator sees
   # the effective arity); `CallOptions.mark/1` still runs (harmless for `:skip`/`:pattern`
   # args, which carry no candidates; correct for `:expression` args, preserving option-key gating).
+  #
+  # The context is enriched with `:mutators` — the run's enabled **ordinary** (non-host) specs —
+  # before both deliveries here: the whole-call offer and the selector hosts
+  # (`attach_hosted_candidates/5`). That is the sub-contract seam
+  # (`Mutare.Analyze.expression_mutations/3`): a mutator whose routing left a region of this
+  # call core-raw (`:skip`, a `{:keyword, …}` `:skip` value, `:hosted`) may hand an
+  # ordinary-Elixir island inside it back to core's generation and relay the rebuilds with
+  # `producer:`. Injected for registered macro calls only, NOT on ordinary `mutate/1,2` offers:
+  # an ordinary node is fully core-descended, so sub-contracting inside one would produce the
+  # same logical mutant twice — a registered macro call is exactly where routing can make
+  # regions core-raw, i.e. where the sub-contract precondition holds. Hosts are excluded from
+  # the list to keep the no-recursive-hosting property obvious: a nested `:hosted` stamp inside
+  # a sub-contracted island is left raw regardless, and the interior has exactly one producer.
   def analyze_known_macro(descent, node, routing, mutators, context \\ %{pipe_mode: :unpiped}) do
+    context = Map.put(context, :mutators, ordinary_mutators(mutators))
     {form, meta, args} = Attach.offer(node, node, mutators, context)
     routed = CallOptions.mark({form, meta, route_macro_args(descent, args, routing, mutators)})
     attach_hosted_candidates(routed, node, routing, mutators, context)
@@ -48,16 +62,13 @@ defmodule Mutare.Transform.Analyze.Macros do
   # so we host *each* matching spec — not just the first — or a duplicate-configured host mutator
   # would silently lose every config past the first.
   #
-  # The context handed down carries `:mutators` — the run's enabled **ordinary** (non-host) specs
-  # — so `host/2` can sub-contract Elixir islands inside its fragment (a pin interior) back to
-  # core's families via `Mutare.Analyze.expression_mutations/3`, under the user's actual
-  # configuration (`:as` names and opts included). Hosts are excluded from the list to keep the
-  # no-recursive-hosting property obvious: a nested `:hosted` stamp inside a fragment is left raw
-  # regardless, and the interior has exactly one producer.
+  # The context handed down already carries `:mutators` (injected once in
+  # `analyze_known_macro/5`) — so `host/2` can sub-contract Elixir islands inside its fragment
+  # (a pin interior) back to core's families via `Mutare.Analyze.expression_mutations/3`, under
+  # the user's actual configuration (`:as` names and opts included).
   defp attach_hosted_candidates(routed, raw_node, routing, mutators, context) do
     with [_ | _] = hosts <- hosted_hosts(routing),
          specs = Enum.filter(mutators, &(&1.module in hosts)),
-         context = Map.put(context, :mutators, ordinary_mutators(mutators)),
          [_ | _] = candidates <- Enum.flat_map(specs, &host_candidates(&1, raw_node, context)) do
       put_hosted_candidates(routed, candidates)
     else
@@ -65,8 +76,8 @@ defmodule Mutare.Transform.Analyze.Macros do
     end
   end
 
-  # The enabled specs that are not selector hosts — what `host/2` receives as
-  # `context.mutators` (see `attach_hosted_candidates/5`).
+  # The enabled specs that are not selector hosts — what `context.mutators` carries on both
+  # sub-contract deliveries (see `analyze_known_macro/5`).
   defp ordinary_mutators(mutators) do
     hosts = Dispatch.implementing(mutators, :host, 2)
     Enum.reject(mutators, &(&1 in hosts))

@@ -20,6 +20,17 @@ defmodule Mutare.Test.QueryDSL do
   end
 
   @doc """
+  A **free-standing fragment builder** (`dyn(x > min + 1)`) — the analog of Ecto's
+  `dynamic/1,2`: a macro in ordinary expression position whose condition argument is opaque DSL
+  (registered `:skip` by `Mutare.Test.SubcontractNodeMutator`, so core keeps it raw), yet whose
+  value is the condition itself — so a whole-call rewrite is observable at runtime. A real,
+  loadable `defmacro` so a bare `import Mutare.Test.QueryDSL` resolves it by reflection.
+  """
+  defmacro dyn(condition) do
+    quote do: unquote(condition)
+  end
+
+  @doc """
   A **binding-escaping** macro (`unpack([a, b], value)`) — expands to a plain `=` match,
   so its pattern's variables bind into the *enclosing* scope (the user-macro analog of
   `Kernel.destructure`). Registered `:binding_pattern`, it earns structural pattern
@@ -89,6 +100,56 @@ defmodule Mutare.Test.QueryMutator do
   end
 
   def mutate(_node), do: :skip
+end
+
+defmodule Mutare.Test.SubcontractNodeMutator do
+  @moduledoc """
+  A **node-level sub-contracting** mutator — the free-standing-`dynamic` pattern, the whole-call
+  twin of `Mutare.Test.SubcontractHostMutator`: it registers `Mutare.Test.QueryDSL.dyn/1` with a
+  `:skip` argument (core keeps the condition raw) and delivers through plain `mutate/2` — no
+  `host/2`, no weave. Its own foreign-semantics catalog contributes only the comparison
+  reversal; every mutant *inside* the comparison's right operand (the island) comes from
+  `Mutare.Analyze.expression_mutations/3` over `context.mutators` — present because the offer is
+  the whole-call offer of a registered macro. Each relay is a `%Mutare.Mutator.Mutation{}` with
+  `producer:` set, so its Site (and `# mutare:ignore` vocabulary) belongs to the producing core
+  family; delivery is the ordinary in-place selector on the rebuilt call.
+  """
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.MacroRouting
+
+  alias Mutare.Mutator.Mutation
+
+  @comparisons [:>, :<, :>=, :<=]
+
+  @impl Mutare.Mutator
+  def name, do: :node_sub
+
+  @impl Mutare.MacroRouting
+  def macro_routes, do: [{Mutare.Test.QueryDSL, :dyn, 1, :skip}]
+
+  @impl Mutare.Mutator
+  def mutate({:dyn, meta, [{op, cmeta, [left, right]}]}, context) when op in @comparisons do
+    reversal = {:dyn, meta, [{reverse(op), cmeta, [left, right]}]}
+
+    islands =
+      for {spec, mutated, note, variant} <-
+            Mutare.Analyze.expression_mutations(right, Map.get(context, :mutators, []), context) do
+        Mutation.new({:dyn, meta, [{op, cmeta, [left, mutated]}]},
+          producer: spec,
+          note: note,
+          variant: variant
+        )
+      end
+
+    [reversal | islands]
+  end
+
+  def mutate(_node, _context), do: :skip
+
+  defp reverse(:>), do: :<
+  defp reverse(:<), do: :>
+  defp reverse(:>=), do: :<=
+  defp reverse(:<=), do: :>=
 end
 
 defmodule Mutare.Test.UnpackMutator do

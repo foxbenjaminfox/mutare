@@ -6425,6 +6425,33 @@ worth remembering: with only a DSL plugin enabled and no core families, a pin in
 mutates to *nothing* — consistent (the user turned the families off), but a behavior change from
 any plugin's previous accidental always-on descent.
 
+**Whole-call sub-contract (free-standing `dynamic`, proposal 0008, done).** The same island
+appears on a second delivery path the seam originally didn't reach: a registered macro in
+ordinary expression position whose routing keeps an argument raw — Ecto's free-standing
+`dynamic([p], p.views > ^(min * 2))`, a `:skip` route — is offered *whole* to `mutate/2`, which
+rewrites it in place (no host, no weave), but `mutate/2` got no `:mutators`, so the pin interior
+stayed dark and hole-or-not depended on spelling (the identical condition in a `where` got island
+mutants). Fix: `Analyze.Macros.analyze_known_macro/5` injects the same non-host spec list into
+the whole-call offer's context, one function above the host-path injection; the output half was
+already uniform (`producer || spec` on the shared normalize path, and relayed mutations already
+bypass the returning mutator's `finalize/2`). Deliberately **gated on registered macro calls,
+not injected into every `mutate/2` offer** (the considered alternative): sub-contracting is sound
+exactly where the sub-contracted region is core-raw, and only macro routing makes regions raw —
+an ordinary node is fully core-descended, so a sub-contract inside one double-produces the same
+logical mutant silently (no error to catch it). The gate encodes "whoever declared a region raw
+may sub-contract inside it" structurally, and — the practical half — keeps the
+`ordinary_mutators/1` export probe off the per-node hot path: `Dispatch.mutations/3` runs at
+essentially every node, `analyze_known_macro/5` only at registered macro calls. Recursion stays
+bounded: collect runs the real annotate descent, so a registered macro *inside* an island gets
+the injection again, but every hop moves strictly deeper into one finite tree, and hosts stay
+excluded from the injected list. `SubcontractNodeMutator` (`macro_mutator.ex`) is the fixture;
+`subcontract_node_test.exs` pins attribution, per-family qualified ignores, no double production,
+runtime switching, and parity — the same island yields the same logical core mutants via hosted
+weave and via whole-call rewrite. (Observed while testing, pre-existing and orthogonal: a node
+whose Sourceror meta carries a same-line comment — e.g. a `# mutare:ignore` directive — renders
+that comment into the Site's `original_code`/`mutated_code`; the built-in in-place families do
+the same.)
+
 ## Consolidations weighed and left as-is
 
 A refactoring pass folded most of the cross-module duplication — shared AST/resolution/suppression

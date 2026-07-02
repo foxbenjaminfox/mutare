@@ -174,7 +174,7 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Call-matching (stdlib/remote) | resolve via `Mutare.Calls.resolved_call_to/3` | `resolved_call_mutator.ex` |
 | Macro routing (static or shape-aware) | `Mutare.MacroRouting.macro_routes/0` + optional `route_arguments/2` | `macro_mutator.ex` / `host_mutator.ex` |
 | Selector-hosting (mutate inside a DSL fragment) | subscribe via `Mutator.MacroHost.hosted_macros/0` + implement `host/2` | `host_mutator.ex` |
-| Sub-contract an Elixir island (pin interior) to core | `Mutare.Analyze.expression_mutations/3` over `context.mutators`, relayed with `producer:` | `host_mutator.ex` (`SubcontractHostMutator`) |
+| Sub-contract an Elixir island (pin interior) to core | `Mutare.Analyze.expression_mutations/3` over `context.mutators` (in `host/2`, or in `mutate/2` at a registered macro's whole-call offer), relayed with `producer:` | `host_mutator.ex` (`SubcontractHostMutator`) / `macro_mutator.ex` (`SubcontractNodeMutator`) |
 | Deployment requirement (routed library must be loadable) | `required_modules/0` (checked once at startup, on mutators and extensions) | `environment_fixtures.ex` |
 | Per-kind `# mutare:ignore` qualifier | `variants/0` (opt-in) + tag via `Mutation.tagged/2` *or* `variant/2` | (value & operator families) |
 
