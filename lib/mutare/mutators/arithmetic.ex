@@ -28,7 +28,7 @@ defmodule Mutare.Mutators.Arithmetic do
   alias Mutare.Mutators.Helpers
 
   # Genuine binary *operators* — always written infix (arity 2, never piped), so the
-  # context-free helper can handle them. (`div`/`rem` are *calls*, handled in `mutate/2`,
+  # private helper can handle them. (`div`/`rem` are *calls*, handled in `mutate/2`,
   # which explicitly composes the context-free helper.)
   @swaps %{
     :+ => [:-],
@@ -52,7 +52,6 @@ defmodule Mutare.Mutators.Arithmetic do
   @impl Mutare.Mutator
   def name, do: :arithmetic
 
-  @impl Mutare.Mutator
   # Unary minus (arity 1) — drop the negation, except on an *integer* literal zero.
   # `-0 === 0` (there is no negative integer zero), so that mutant is equivalent and
   # skipped. But `-0.0` is NOT `0.0`: dropping the unary minus normalizes negative
@@ -60,11 +59,11 @@ defmodule Mutare.Mutators.Arithmetic do
   # and `-0.0 !== 0.0` on OTP 27+) — the same negative-zero behavior the binary
   # additive-identity path deliberately keeps. So the skip uses `===`, not `==`
   # (`0.0 == 0` is `true`, `0.0 === 0` is `false`).
-  def mutate({:-, _meta, [operand]}) do
+  defp operator_mutations({:-, _meta, [operand]}) do
     if AST.literal_value(operand) === {:ok, 0}, do: :skip, else: [operand]
   end
 
-  def mutate({op, meta, [left, right]}) do
+  defp operator_mutations({op, meta, [left, right]}) do
     case Map.fetch(@swaps, op) do
       {:ok, replacements} ->
         if identity_swap?(op, right) do
@@ -78,12 +77,10 @@ defmodule Mutare.Mutators.Arithmetic do
     end
   end
 
-  def mutate(_node), do: :skip
+  defp operator_mutations(_node), do: :skip
 
   # Compose the ordinary operator mutations with the context-aware bare-`Kernel`
-  # `div`/`rem` call mutations explicitly. Dispatch prefers `mutate/2` when it is
-  # exported, so mixed families make this choice locally rather than relying on
-  # hidden double-dispatch.
+  # `div`/`rem` call mutations explicitly in the single exported mutation callback.
   #
   # `div`/`rem` are bare `Kernel` calls, not operators. Swapping `div`↔`rem` keeps the
   # argument list, so it is a valid rename at any position (a pipe stage included), gated on
@@ -94,7 +91,7 @@ defmodule Mutare.Mutators.Arithmetic do
   def mutate(node, %{pipe_mode: pipe_mode}),
     do:
       Helpers.combine_mutations(
-        mutate(node),
+        operator_mutations(node),
         Helpers.swap_bare_kernel(node, pipe_mode, @call_swaps)
       )
 

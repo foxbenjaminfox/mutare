@@ -1,5 +1,5 @@
 defmodule Mutare.MutatorsOperatorTest do
-  # Unit tests of the in-place operator/value-swap families' `mutate/1`: the swap
+  # Unit tests of the in-place operator/value-swap families' mutation callbacks: the swap
   # tables, exclusions, and `name/0`. Integration/runtime coverage of these families
   # lives in their own files (e.g. operand_swap_test.exs) and in transform_test.exs.
   use ExUnit.Case, async: true
@@ -15,25 +15,24 @@ defmodule Mutare.MutatorsOperatorTest do
 
   describe "Arithmetic" do
     test "swaps binary arithmetic operators" do
-      assert Arithmetic.mutate({:+, [], [1, 2]}) == [{:-, [], [1, 2]}]
-      assert Arithmetic.mutate({:-, [], [1, 2]}) == [{:+, [], [1, 2]}]
-      assert Arithmetic.mutate({:*, [], [1, 2]}) == [{:/, [], [1, 2]}]
-      assert Arithmetic.mutate({:/, [], [1, 2]}) == [{:*, [], [1, 2]}]
+      assert arithmetic({:+, [], [1, 2]}) == [{:-, [], [1, 2]}]
+      assert arithmetic({:-, [], [1, 2]}) == [{:+, [], [1, 2]}]
+      assert arithmetic({:*, [], [1, 2]}) == [{:/, [], [1, 2]}]
+      assert arithmetic({:/, [], [1, 2]}) == [{:*, [], [1, 2]}]
     end
 
     test "swaps div/rem (call form) only at effective arity 2, pipe-aware" do
-      # div/rem are bare Kernel calls handled in mutate/2 (mutate/1 skips them).
-      assert Arithmetic.mutate({:div, [], [1, 2]}) == :skip
-      assert Arithmetic.mutate({:div, [], [1, 2]}, %{pipe_mode: :unpiped}) == [{:rem, [], [1, 2]}]
-      assert Arithmetic.mutate({:rem, [], [1, 2]}, %{pipe_mode: :unpiped}) == [{:div, [], [1, 2]}]
+      # div/rem are bare Kernel calls handled only with pipe context.
+      assert arithmetic({:div, [], [1, 2]}, %{pipe_mode: :unpiped}) == [{:rem, [], [1, 2]}]
+      assert arithmetic({:rem, [], [1, 2]}, %{pipe_mode: :unpiped}) == [{:div, [], [1, 2]}]
 
       # Piped: the stage carries one fewer arg (`x |> div(2)` is div/2), so a 1-arg
       # node at piped effective-arity 2 still swaps (the rename keeps the arg list).
-      assert Arithmetic.mutate({:div, [], [2]}, %{pipe_mode: :piped}) == [{:rem, [], [2]}]
+      assert arithmetic({:div, [], [2]}, %{pipe_mode: :piped}) == [{:rem, [], [2]}]
 
       # A same-named user call at another arity is left alone (not Kernel's div/2).
-      assert Arithmetic.mutate({:div, [], [1, 2, 3]}, %{pipe_mode: :unpiped}) == :skip
-      assert Arithmetic.mutate({:div, [], [2]}, %{pipe_mode: :unpiped}) == :skip
+      assert arithmetic({:div, [], [1, 2, 3]}, %{pipe_mode: :unpiped}) == :skip
+      assert arithmetic({:div, [], [2]}, %{pipe_mode: :unpiped}) == :skip
     end
 
     test "skips a div/rem call displaced from Kernel by `import Kernel, except:`" do
@@ -44,84 +43,88 @@ defmodule Mutare.MutatorsOperatorTest do
       # it via `Helpers.swap_bare_kernel/3`. (Before that guard a displaced `div` was wrongly
       # swapped to `rem` — the bug this pins.)
       displaced = [mutare_kernel_displaced: true]
-      assert Arithmetic.mutate({:div, displaced, [1, 2]}, %{pipe_mode: :unpiped}) == :skip
-      assert Arithmetic.mutate({:rem, displaced, [1, 2]}, %{pipe_mode: :unpiped}) == :skip
+      assert arithmetic({:div, displaced, [1, 2]}, %{pipe_mode: :unpiped}) == :skip
+      assert arithmetic({:rem, displaced, [1, 2]}, %{pipe_mode: :unpiped}) == :skip
 
       # Without the stamp the same call still swaps — the displacement guard is the only difference.
-      assert Arithmetic.mutate({:div, [], [1, 2]}, %{pipe_mode: :unpiped}) == [{:rem, [], [1, 2]}]
+      assert arithmetic({:div, [], [1, 2]}, %{pipe_mode: :unpiped}) == [{:rem, [], [1, 2]}]
     end
 
     test "preserves operand AST and operator metadata" do
       meta = [line: 7, column: 3]
       operands = [{:a, [], nil}, {:b, [], nil}]
-      assert Arithmetic.mutate({:+, meta, operands}) == [{:-, meta, operands}]
+      assert arithmetic({:+, meta, operands}) == [{:-, meta, operands}]
     end
 
     test "strips unary minus (arity 1): -x → x" do
-      assert Arithmetic.mutate({:-, [], [{:x, [], nil}]}) == [{:x, [], nil}]
+      assert arithmetic({:-, [], [{:x, [], nil}]}) == [{:x, [], nil}]
     end
 
     test "skips unary minus on an integer literal zero (-0 === 0 is equivalent)" do
-      assert Arithmetic.mutate({:-, [], [0]}) == :skip
-      assert Arithmetic.mutate({:-, [], [{:__block__, [token: "0"], [0]}]}) == :skip
+      assert arithmetic({:-, [], [0]}) == :skip
+      assert arithmetic({:-, [], [{:__block__, [token: "0"], [0]}]}) == :skip
     end
 
     test "DOES strip unary minus on a float zero (-0.0 → 0.0 normalizes negative zero)" do
-      assert Arithmetic.mutate({:-, [], [0.0]}) == [0.0]
+      assert arithmetic({:-, [], [0.0]}) == [0.0]
 
-      assert Arithmetic.mutate({:-, [], [{:__block__, [token: "0.0"], [0.0]}]}) ==
+      assert arithmetic({:-, [], [{:__block__, [token: "0.0"], [0.0]}]}) ==
                [{:__block__, [token: "0.0"], [0.0]}]
     end
 
     test "skips non-arithmetic nodes" do
-      assert Arithmetic.mutate({:>, [], [1, 2]}) == :skip
-      assert Arithmetic.mutate({:foo, [], [1, 2]}) == :skip
-      assert Arithmetic.mutate(42) == :skip
-      assert Arithmetic.mutate({:x, [], nil}) == :skip
+      assert arithmetic({:>, [], [1, 2]}) == :skip
+      assert arithmetic({:foo, [], [1, 2]}) == :skip
+      assert arithmetic(42) == :skip
+      assert arithmetic({:x, [], nil}) == :skip
     end
 
     test "name" do
       assert Arithmetic.name() == :arithmetic
     end
 
+    test "does not expose mutate/1" do
+      refute function_exported?(Arithmetic, :mutate, 1)
+    end
+
     test "skips a multiplicative identity right operand (a * 1, a / 1)" do
       a = {:a, [], nil}
 
-      assert Arithmetic.mutate({:*, [], [a, 1]}) == :skip
-      assert Arithmetic.mutate({:/, [], [a, 1]}) == :skip
+      assert arithmetic({:*, [], [a, 1]}) == :skip
+      assert arithmetic({:/, [], [a, 1]}) == :skip
     end
 
     test "recognizes Sourceror-wrapped literal operands" do
       a = {:a, [], nil}
       one = {:__block__, [token: "1"], [1]}
 
-      assert Arithmetic.mutate({:*, [], [a, one]}) == :skip
-      assert Arithmetic.mutate({:/, [], [a, one]}) == :skip
+      assert arithmetic({:*, [], [a, one]}) == :skip
+      assert arithmetic({:/, [], [a, one]}) == :skip
     end
 
     test "for * and /, only the right operand is an identity (1 * a is a reciprocal)" do
       a = {:a, [], nil}
 
-      assert Arithmetic.mutate({:*, [], [1, a]}) == [{:/, [], [1, a]}]
-      assert Arithmetic.mutate({:/, [], [1, a]}) == [{:*, [], [1, a]}]
+      assert arithmetic({:*, [], [1, a]}) == [{:/, [], [1, a]}]
+      assert arithmetic({:/, [], [1, a]}) == [{:*, [], [1, a]}]
     end
 
     test "DOES mutate additive identity (+ 0 / - 0): -0.0 normalization is testable behavior" do
       a = {:a, [], nil}
 
-      assert Arithmetic.mutate({:+, [], [a, 0]}) == [{:-, [], [a, 0]}]
-      assert Arithmetic.mutate({:-, [], [a, 0]}) == [{:+, [], [a, 0]}]
+      assert arithmetic({:+, [], [a, 0]}) == [{:-, [], [a, 0]}]
+      assert arithmetic({:-, [], [a, 0]}) == [{:+, [], [a, 0]}]
     end
 
     test "div/rem are never treated as identity (rem(a, 1) is 0, not a)" do
       a = {:a, [], nil}
-      assert Arithmetic.mutate({:div, [], [a, 1]}, %{pipe_mode: :unpiped}) == [{:rem, [], [a, 1]}]
-      assert Arithmetic.mutate({:rem, [], [a, 1]}, %{pipe_mode: :unpiped}) == [{:div, [], [a, 1]}]
+      assert arithmetic({:div, [], [a, 1]}, %{pipe_mode: :unpiped}) == [{:rem, [], [a, 1]}]
+      assert arithmetic({:rem, [], [a, 1]}, %{pipe_mode: :unpiped}) == [{:div, [], [a, 1]}]
     end
 
     test "a non-identity literal (e.g. * 2) still mutates" do
       a = {:a, [], nil}
-      assert Arithmetic.mutate({:*, [], [a, 2]}) == [{:/, [], [a, 2]}]
+      assert arithmetic({:*, [], [a, 2]}) == [{:/, [], [a, 2]}]
     end
   end
 
@@ -240,6 +243,9 @@ defmodule Mutare.MutatorsOperatorTest do
       assert List.name() == :list
     end
   end
+
+  defp arithmetic(node), do: arithmetic(node, %{pipe_mode: :unpiped})
+  defp arithmetic(node, context), do: Arithmetic.mutate(node, context)
 
   defp parse(source), do: Sourceror.parse_string!(source)
   defp render(nodes), do: Enum.map(nodes, &Sourceror.to_string/1)

@@ -12,11 +12,6 @@ defmodule Mutare.Test.ConfigurableMutator do
   @impl Mutare.Mutator
   def name, do: :configurable
 
-  # Without options there is nothing to do — and `mutate/1` has no context to
-  # carry them, so the real logic lives in `mutate/2`.
-  @impl Mutare.Mutator
-  def mutate(_node), do: :skip
-
   @impl Mutare.Mutator
   def mutate({:__block__, _meta, [n]}, %{opts: opts}) when is_integer(n) do
     case Keyword.get(opts, :replacement) do

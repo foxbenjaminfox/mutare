@@ -1062,32 +1062,31 @@ defmodule Mutare.MutatorsCallTest do
   end
 
   describe "Numeric" do
-    test "Float.ceil ↔ Float.floor swap in mutate/1 (arity-blind rename)" do
-      assert render(Numeric.mutate(parse("Float.ceil(x)"))) == ["Float.floor(x)"]
-      assert render(Numeric.mutate(parse("Float.floor(x)"))) == ["Float.ceil(x)"]
+    test "Float.ceil ↔ Float.floor swap via mutate/2 (arity-blind rename)" do
+      assert numeric("Float.ceil(x)", false) == ["Float.floor(x)"]
+      assert numeric("Float.floor(x)", false) == ["Float.ceil(x)"]
       # Any arity — the /2 precision form renames too.
-      assert render(Numeric.mutate(parse("Float.ceil(x, 2)"))) == ["Float.floor(x, 2)"]
-      assert render(Numeric.mutate(parse("Float.floor(x, 2)"))) == ["Float.ceil(x, 2)"]
+      assert numeric("Float.ceil(x, 2)", false) == ["Float.floor(x, 2)"]
+      assert numeric("Float.floor(x, 2)", false) == ["Float.ceil(x, 2)"]
     end
 
     test "Float.round and unrelated Float/other calls are not swapped" do
-      assert Numeric.mutate(parse("Float.round(x, 2)")) == :skip
-      assert Numeric.mutate(parse("Float.to_string(x)")) == :skip
-      assert Numeric.mutate(parse("Other.ceil(x)")) == :skip
+      assert numeric_mutations("Float.round(x, 2)", false) == :skip
+      assert numeric_mutations("Float.to_string(x)", false) == :skip
+      assert numeric_mutations("Other.ceil(x)", false) == :skip
     end
 
-    test "Kernel-qualified calls swap in mutate/1 (arity-blind, qualifier proves it)" do
-      assert render(Numeric.mutate(parse("Kernel.min(a, b)"))) == ["Kernel.max(a, b)"]
-      assert render(Numeric.mutate(parse("Kernel.max(a, b)"))) == ["Kernel.min(a, b)"]
-      assert render(Numeric.mutate(parse("Kernel.round(x)"))) == ["Kernel.trunc(x)"]
-      assert render(Numeric.mutate(parse("Kernel.trunc(x)"))) == ["Kernel.round(x)"]
-      assert render(Numeric.mutate(parse("Kernel.ceil(x)"))) == ["Kernel.floor(x)"]
-      assert render(Numeric.mutate(parse("Kernel.floor(x)"))) == ["Kernel.ceil(x)"]
+    test "Kernel-qualified calls swap via mutate/2 (arity-blind, qualifier proves it)" do
+      assert numeric("Kernel.min(a, b)", false) == ["Kernel.max(a, b)"]
+      assert numeric("Kernel.max(a, b)", false) == ["Kernel.min(a, b)"]
+      assert numeric("Kernel.round(x)", false) == ["Kernel.trunc(x)"]
+      assert numeric("Kernel.trunc(x)", false) == ["Kernel.round(x)"]
+      assert numeric("Kernel.ceil(x)", false) == ["Kernel.floor(x)"]
+      assert numeric("Kernel.floor(x)", false) == ["Kernel.ceil(x)"]
     end
 
-    test "mutate/1 never fires on a bare Kernel call (those need effective arity)" do
-      assert Numeric.mutate(parse("min(a, b)")) == :skip
-      assert Numeric.mutate(parse("floor(x)")) == :skip
+    test "does not expose mutate/1" do
+      refute function_exported?(Numeric, :mutate, 1)
     end
 
     test "Kernel min ↔ max swap at arity 2 (non-piped)" do
@@ -1104,9 +1103,9 @@ defmodule Mutare.MutatorsCallTest do
 
     test "a same-named call at the wrong arity is left alone (arity guards the bare call)" do
       # No Kernel.min/3 or Kernel.floor/2 — so these must be user functions, untouched.
-      assert Numeric.mutate(parse("min(a, b, c)"), %{pipe_mode: :unpiped}) == :skip
-      assert Numeric.mutate(parse("floor(x, y)"), %{pipe_mode: :unpiped}) == :skip
-      assert Numeric.mutate(parse("round(x, y)"), %{pipe_mode: :unpiped}) == :skip
+      assert numeric_mutations("min(a, b, c)", false) == :skip
+      assert numeric_mutations("floor(x, y)", false) == :skip
+      assert numeric_mutations("round(x, y)", false) == :skip
     end
 
     test "piped: effective arity is +1, so a piped /1 reaches us as 0 visible args" do
@@ -1121,13 +1120,13 @@ defmodule Mutare.MutatorsCallTest do
     test "piped /1 read non-piped (1 visible arg, effective arity 2) is not a min/max" do
       # `floor(x)` non-piped is arity 1 (swaps); piped it would be effective arity 2,
       # which floor has no rule for — so a piped floor/1-shaped node yields nothing.
-      assert Numeric.mutate(parse("floor(x)"), %{pipe_mode: :piped}) == :skip
+      assert numeric_mutations("floor(x)", true) == :skip
     end
 
     test "skips operators and non-numeric calls" do
-      assert Numeric.mutate(parse("a + b"), %{pipe_mode: :unpiped}) == :skip
-      assert Numeric.mutate(parse("foo(a, b)"), %{pipe_mode: :unpiped}) == :skip
-      assert Numeric.mutate(parse("abs(x)"), %{pipe_mode: :unpiped}) == :skip
+      assert numeric_mutations("a + b", false) == :skip
+      assert numeric_mutations("foo(a, b)", false) == :skip
+      assert numeric_mutations("abs(x)", false) == :skip
     end
 
     test "name" do
@@ -1237,7 +1236,10 @@ defmodule Mutare.MutatorsCallTest do
     do: render(Mutare.Mutators.KeywordDelete.mutate(parse(src), context(piped?)))
 
   defp numeric(src, piped?),
-    do: render(Mutare.Mutators.Numeric.mutate(parse(src), context(piped?)))
+    do: render(numeric_mutations(src, piped?))
+
+  defp numeric_mutations(src, piped?),
+    do: Mutare.Mutators.Numeric.mutate(parse(src), context(piped?))
 
   defp context(true), do: %{pipe_mode: :piped}
   defp context(false), do: %{pipe_mode: :unpiped}

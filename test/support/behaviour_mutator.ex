@@ -27,11 +27,6 @@ defmodule Mutare.Test.BehaviourMutator do
   @impl true
   def name, do: :behaviour_aware
 
-  # No node-local mutation — every decision needs the module context, so this mutator works
-  # through `mutate/2` and the structural hook, never `mutate/1`.
-  @impl true
-  def mutate(_node), do: :skip
-
   @doc """
   Swap a `{:reply, reply, state}` tuple to `{:noreply, state}`, but only inside a module
   implementing one of `@targets`. Reads the behaviour set from `context.behaviours`.

@@ -19,6 +19,10 @@ defmodule Mutare.OperandSwapTest do
   # Isolate the family: with only OperandSwap enabled, every site is a transpose.
   @only [OperandSwap]
 
+  test "does not expose mutate/1" do
+    refute function_exported?(OperandSwap, :mutate, 1)
+  end
+
   # operand_swap sites for a one-line function body `def f(a, b), do: <expr>`.
   defp swap_sites(expr) do
     {_meta, sites, _} =

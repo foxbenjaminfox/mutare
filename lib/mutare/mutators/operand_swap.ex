@@ -89,19 +89,17 @@ defmodule Mutare.Mutators.OperandSwap do
   @impl Mutare.Mutator
   def name, do: :operand_swap
 
-  @impl Mutare.Mutator
-  def mutate({op, meta, [left, right]}) when op in @operators do
+  defp operator_mutations({op, meta, [left, right]}) when op in @operators do
     if same?(left, right), do: :skip, else: [{op, meta, [right, left]}]
   end
 
-  def mutate(_node), do: :skip
+  defp operator_mutations(_node), do: :skip
 
   # Compose the ordinary operator transpositions with the context-aware call transpositions
-  # explicitly. Dispatch prefers `mutate/2` when it is exported, so mixed families make this
-  # choice locally rather than relying on hidden double-dispatch.
+  # explicitly in the single exported mutation callback.
   @impl Mutare.Mutator
   def mutate(node, %{pipe_mode: pipe_mode}),
-    do: Helpers.combine_mutations(mutate(node), contextual_mutate(node, pipe_mode))
+    do: Helpers.combine_mutations(operator_mutations(node), contextual_mutate(node, pipe_mode))
 
   # `div`/`rem`: bare `Kernel` calls. Transpose only a direct, non-piped two-argument
   # call — that is exactly effective arity 2 (the bare-`Kernel` safeguard from `Numeric`,
