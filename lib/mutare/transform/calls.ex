@@ -1,42 +1,11 @@
 defmodule Mutare.Transform.Calls do
-  @moduledoc """
-  Call-resolution helpers for custom mutators and macro integrations.
+  @moduledoc false
 
-  `resolved_call/1` normalizes qualified, aliased, imported, and Erlang-module calls to
-  `{module, function, arguments, rebuild}`. Use `rebuild` to preserve the source's written call
-  form when that is compile-safe; bare imported calls may be requalified when the replacement
-  changes name or arity. It operates on nodes passed to a mutator by Mutare's transform.
-
-  This reads the `alias`/`import` stamps the transform places on the AST before
-  mutators run, so it is only meaningful on a node handed to a mutator by the transform (a
-  `mutate/1` argument) — exactly where a call-matching mutator needs it.
-
-  `resolved_macro_call/1` is the **known-macro** twin. It returns a stable
-  `Mutare.MacroRouting.Call` with a natural module atom, visible arguments, pipe information, and
-  a source-preserving rebuild function.
-
-  `macro_treatment/1` reads *how a node's macro is registered* — the resolved per-argument routing
-  the merged registry (built-ins + every mutator's/extension's `macro_routes/0` + the declarative `:macro_routes`
-  option) assigned it. A macro host uses it in two places: on its **own** call's `node`, to locate
-  the positions the route marked `:hosted` (including values nested under `{:keyword, …}`); and on
-  a **nested** macro inside a fragment it walks, to ask whether an argument routes `:skip` (leave
-  it opaque) or otherwise specially. In both cases it replaces re-deriving the classification.
-
-  ## Example
-
-      defmodule MyApp.Mutators.Upcase do
-        @behaviour Mutare.Mutator
-        def name, do: :upcase_swap
-
-        def mutate(node) do
-          case Mutare.Transform.Calls.resolved_call(node) do
-            {[:String], :upcase, [arg], rebuild} -> [rebuild.(:downcase, [arg])]
-            _ -> :skip
-          end
-        end
-      end
-  """
-
+  # `Mutare.Calls` is the published facade re-exporting `resolved_call/1`,
+  # `resolved_macro_call/1`, and `macro_treatment/1` — the author-facing docs (and
+  # doctests) live there. This module is the implementation, free to grow internal
+  # readers the facade doesn't commit to.
+  #
   # The single reader every call-matching mutator family uses to recognise a stdlib call
   # and rebuild a swap of it — the one home for the call AST shape and the alias/import
   # resolution step they would otherwise each repeat.
@@ -66,39 +35,13 @@ defmodule Mutare.Transform.Calls do
 
   alias Mutare.Transform.{Aliases, Imports, Meta}
 
-  @typedoc """
-  A resolved module: an Elixir-module path (`[:Enum]`, `[:String]`) or an Erlang-module atom
-  (`:binary`, `:string`). A mutator keys its table on whichever shape the function lives in.
-  Defined once in `Mutare.Transform.Aliases` (the module-key operations' owner).
-  """
+  # A resolved module: an Elixir-module path (`[:Enum]`, `[:String]`) or an Erlang-module atom
+  # (`:binary`, `:string`). Defined once in `Mutare.Transform.Aliases` (the module-key
+  # operations' owner); re-exported through `Mutare.Calls` for authors.
   @type module_key :: Aliases.module_key()
 
-  @doc """
-  Returns `{module, function, arguments, rebuild}` for a resolved standard-library
-  call, or `nil`.
-
-  `module` is an Elixir alias path such as `[:String]` or an Erlang module atom.
-  `rebuild.(new_function, new_arguments)` preserves the call's written qualifier when safe.
-  Remote calls keep their written qualifier or alias. Bare imported calls stay bare for
-  value-only replacements, but may be requalified when the replacement changes name or arity.
-
-      iex> node = Sourceror.parse_string!("String.upcase(s)")
-      iex> {module, function, arguments, rebuild} =
-      ...>   Mutare.Transform.Calls.resolved_call(node)
-      iex> {module, function}
-      {[:String], :upcase}
-      iex> Sourceror.to_string(rebuild.(:downcase, arguments))
-      "String.downcase(s)"
-
-      iex> erlang = Sourceror.parse_string!(":binary.first(b)")
-      iex> {module, function, _arguments, _rebuild} =
-      ...>   Mutare.Transform.Calls.resolved_call(erlang)
-      iex> {module, function}
-      {:binary, :first}
-
-      iex> Mutare.Transform.Calls.resolved_call(Sourceror.parse_string!("foo(x)"))
-      nil
-  """
+  # Returns `{module, function, arguments, rebuild}` for a resolved standard-library
+  # call, or `nil`. See `Mutare.Calls.resolved_call/1` for the contract.
   @spec resolved_call(Macro.t()) ::
           {module_key(), atom(), [Macro.t()], (atom(), [Macro.t()] -> Macro.t())} | nil
 
@@ -186,11 +129,8 @@ defmodule Mutare.Transform.Calls do
     end
   end
 
-  @doc """
-  Return the stable call value for a node stamped by the known-macro resolver, or `nil` for any
-  other node. Extension callbacks receive this value directly; the reader remains useful to a
-  host walking nested macro nodes.
-  """
+  # Return the stable call value for a node stamped by the known-macro resolver, or `nil` for
+  # any other node. See `Mutare.Calls.resolved_macro_call/1` for the contract.
   @spec resolved_macro_call(Macro.t()) :: Mutare.MacroRouting.Call.t() | nil
   def resolved_macro_call({head, meta, args} = node) when is_list(meta) and is_list(args) do
     # Stay **total**: the identity stamp is only ever placed (by `Mutare.Transform.Resolve`) on a
@@ -217,21 +157,8 @@ defmodule Mutare.Transform.Calls do
 
   def resolved_macro_call(_node), do: nil
 
-  @doc """
-  Returns the resolved treatment for each visible argument of a registered macro
-  call, or `nil`.
-
-  Treatments come from the fully merged macro-routing registry and include any
-  shape-aware classification already performed for the call. The result may contain
-  static treatments, `:hosted`, or nested keyword routing.
-
-  Inside `c:Mutare.Mutator.MacroHost.host/2`, calling this on the received call's `node` returns
-  the treatments that granted hosting, so a host locates its `:hosted` positions without
-  re-classifying the call.
-
-  For a piped call, the left side of the pipe is not included. A call that has no
-  registered macro route returns `nil`.
-  """
+  # Returns the resolved treatment for each visible argument of a registered macro call, or
+  # `nil`. See `Mutare.Calls.macro_treatment/1` for the contract.
   @spec macro_treatment(Macro.t()) :: [Mutare.MacroRouting.routing_treatment()] | nil
   def macro_treatment({_head, meta, _args}) when is_list(meta) do
     case Meta.macro_routing(meta) do

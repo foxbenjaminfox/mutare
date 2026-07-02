@@ -259,7 +259,7 @@ A mutator implements `Mutare.Mutator`: `name/0` supplies the report name, while 
 defmodule MyApp.Mutators.AccessPolicy do
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.Calls
+  alias Mutare.Calls
 
   @impl true
   def name, do: :access_policy

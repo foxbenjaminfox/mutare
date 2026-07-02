@@ -43,10 +43,10 @@ defmodule Mutare.MixProject do
 
   # A couple of *typespecs* in visible modules reference a hidden internal type
   # (`Mutare.Schema.t`'s `ineffective_ignores` field uses `Mutare.Ignore.Directive.t`;
-  # `Mutare.Transform.Calls`'s `module_key` re-exports `Mutare.Transform.Aliases.module_key`).
+  # `Mutare.Calls`'s `module_key` re-exports `Mutare.Transform.Calls.module_key`).
   # Typespec autolinking bypasses `:skip_code_autolink_to`, so those are silenced by the
   # *referencing* module instead — keep this list tight.
-  @typespec_refs_to_hidden ~w(Mutare.Transform.Calls Mutare.Schema)
+  @typespec_refs_to_hidden ~w(Mutare.Calls Mutare.Schema)
 
   def project do
     [
@@ -140,7 +140,7 @@ defmodule Mutare.MixProject do
           Mutare.Mutator.Spec,
           Mutare.AST,
           Mutare.Test,
-          Mutare.Transform.Calls
+          Mutare.Calls
         ],
         "Writing extensions": [
           Mutare.Extension,

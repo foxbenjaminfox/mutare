@@ -442,7 +442,7 @@ defmodule Mutare.Test.KeywordHostedMutator do
   and weaves into the whole macro node; the nested treatment only identifies which values core must
   leave raw while the host builds its targets. It covers both a direct keyword value and a value in
   a nested keyword list, and its `host/2` locates those leaves by reading the routed treatments
-  back through `Mutare.Transform.Calls.macro_treatment/1` instead of re-classifying the call —
+  back through `Mutare.Calls.macro_treatment/1` instead of re-classifying the call —
   exercising the documented "permission, not a target list" contract end to end.
   """
   @behaviour Mutare.Mutator
@@ -496,14 +496,14 @@ defmodule Mutare.Test.KeywordHostedMutator do
   defp keyword_list?(_node), do: false
 
   # Locate the fragments by reading the routed treatments *back* rather than re-classifying:
-  # `Mutare.Transform.Calls.macro_treatment/1` on the host's own call node returns what
+  # `Mutare.Calls.macro_treatment/1` on the host's own call node returns what
   # `route_arguments/2` produced, so the `:hosted` leaves (and their keyword paths) come from
   # the route itself.
   @impl Mutare.Mutator.MacroHost
   def host(%Mutare.MacroRouting.Call{node: node}, _context) do
     with {_form, _meta, [_query, assigns]} when is_list(assigns) <- node,
          [_query_treatment, {:keyword, treatments}] <-
-           Mutare.Transform.Calls.macro_treatment(node) do
+           Mutare.Calls.macro_treatment(node) do
       for {original, path} <- hosted_leaves(assigns, treatments, []) do
         splice = fn {name, meta, [query, current]}, case_node ->
           {name, meta, [query, replace_keyword_value(current, path, case_node)]}

@@ -69,8 +69,8 @@ defmodule Mutare.MacroRouting do
     * `Mutare.MacroRouting.ArgumentRoutes`, built through its constructors and read through its
       accessors (the struct itself is opaque);
     * `Mutare.Mutator.MacroHost.Target.new/4`;
-    * the `Mutare.Transform.Calls` readers (`Mutare.Transform.Calls.resolved_call/1`,
-      `Mutare.Transform.Calls.resolved_macro_call/1`, `Mutare.Transform.Calls.macro_treatment/1`);
+    * the `Mutare.Calls` readers (`Mutare.Calls.resolved_call/1`,
+      `Mutare.Calls.resolved_macro_call/1`, `Mutare.Calls.macro_treatment/1`);
     * `Mutare.MacroRouting.ContractError` as the failure type for provider conflicts and callback
       contract violations — its structured fields are stable; its message strings may improve at
       any time.

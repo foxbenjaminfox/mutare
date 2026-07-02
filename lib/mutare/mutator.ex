@@ -42,7 +42,7 @@ defmodule Mutare.Mutator do
       appears.
 
   Build literal replacements with `Mutare.AST.literal/1`. Use
-  `Mutare.Transform.Calls.resolved_call/1` when matching aliased or imported calls.
+  `Mutare.Calls.resolved_call/1` when matching aliased or imported calls.
 
   ## Registering a mutator
 
@@ -144,10 +144,10 @@ defmodule Mutare.Mutator do
   `context.behaviours` and `context.opts`, so export the context-aware arity when a
   structural mutation depends on behaviours or configuration.
 
-  ## Matching aliased or imported calls (`Mutare.Transform.Calls`)
+  ## Matching aliased or imported calls (`Mutare.Calls`)
 
   A mutator that targets a standard-library or remote call uses
-  `Mutare.Transform.Calls.resolved_call/1`. It returns
+  `Mutare.Calls.resolved_call/1`. It returns
   `{module, function, arguments, rebuild}` for resolved qualified, aliased,
   imported, and Erlang-atom module calls. `rebuild` emits the replacement in the
   same written form as the source.

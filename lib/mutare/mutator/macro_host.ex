@@ -81,7 +81,7 @@ defmodule Mutare.Mutator.MacroHost do
 
   A `:hosted` route is permission and a delivery mode, **not a target list**: the callback
   receives the whole resolved macro call and owns locating the fragment(s) it will mutate. It
-  need not re-classify the call to do so — `Mutare.Transform.Calls.macro_treatment/1` on the
+  need not re-classify the call to do so — `Mutare.Calls.macro_treatment/1` on the
   call's `node` returns the per-argument treatments the route produced, so the `:hosted`
   positions (including values nested under `{:keyword, …}`) can be read back instead of
   rediscovered. Core leaves hosted fragments raw and does not route nested macros inside them;

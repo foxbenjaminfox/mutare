@@ -1,6 +1,6 @@
 defmodule Mutare.Test.AliasCallMutator do
   @moduledoc """
-  A custom **call-matching** mutator that uses the public `Mutare.Transform.Calls.resolved_call/1`
+  A custom **call-matching** mutator that uses the public `Mutare.Calls.resolved_call/1`
   helper to match `String.reverse/1` and swap it to `String.upcase/1` — *regardless of how the
   call was written*. Because it resolves rather than pattern-matching the raw node, it fires on the
   direct `String.reverse(s)`, an aliased `S.reverse(s)`, and a bare imported `reverse(s)` alike, and
@@ -9,7 +9,7 @@ defmodule Mutare.Test.AliasCallMutator do
   """
   @behaviour Mutare.Mutator
 
-  alias Mutare.Transform.Calls
+  alias Mutare.Calls
 
   @impl Mutare.Mutator
   def name, do: :alias_call

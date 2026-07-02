@@ -58,7 +58,8 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
     behaviour-gated mutators see the enclosing `@behaviour` set. `Uses` expands `use` (in-process,
     or via an extension override) to recover the `import`/`alias` idiomatic Phoenix/Ecto hide.
   - **`Calls` / `Analyze.Captures`** — the single `resolved_call/1` reader every call family uses
-    (returns `{module, fun, args, rebuild}`), plus `&Mod.fun/N` capture mutation.
+    (returns `{module, fun, args, rebuild}`), plus `&Mod.fun/N` capture mutation. `Mutare.Calls`
+    is the published facade re-exporting the author-facing readers.
   - **`Analyze`** — the context-threaded recursive descent that names each position's context
     (`:runtime` / `:pattern` / `:scaffold` / `:compile_time` / …) and attaches a typed candidate to
     each mutatable node's own metadata. This is where most routing subtlety lives (patterns, pipes,
@@ -167,7 +168,7 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Structural return tail / condition | `return_replacements` / `condition_replacements` | `structural_mutator.ex` |
 | Structural head pattern | `pattern_mutations/2` | (`PatternSwap`/`PatternWildcard`) |
 | Behaviour-gated | read `context.behaviours` (or the `+1`-arity structural callbacks) | `behaviour_mutator.ex` |
-| Call-matching (stdlib/remote) | resolve via `Transform.Calls.resolved_call/1` | `resolved_call_mutator.ex` |
+| Call-matching (stdlib/remote) | resolve via `Mutare.Calls.resolved_call/1` | `resolved_call_mutator.ex` |
 | Macro routing (static or shape-aware) | `Mutare.MacroRouting.macro_routes/0` + optional `route_arguments/2` | `macro_mutator.ex` / `host_mutator.ex` |
 | Selector-hosting (mutate inside a DSL fragment) | subscribe via `Mutator.MacroHost.hosted_macros/0` + implement `host/2` | `host_mutator.ex` |
 | Per-kind `# mutare:ignore` qualifier | `variants/0` (opt-in) + tag via `Mutation.tagged/2` *or* `variant/2` | (value & operator families) |

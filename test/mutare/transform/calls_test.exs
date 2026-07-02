@@ -4,8 +4,6 @@ defmodule Mutare.Transform.CallsTest do
   alias Mutare.Transform.{Calls, Meta, Resolve}
   alias Mutare.MacroRouting.Call
 
-  doctest Mutare.Transform.Calls
-
   describe "resolved_call/1 — a `:qualify` rebuild over an Erlang-atom module" do
     test "a renamed sibling is requalified with the Erlang atom module, a same-name swap stays bare" do
       # A bare call stamped as imported from an Erlang atom module under a *selective* import
