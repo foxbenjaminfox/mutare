@@ -205,6 +205,11 @@ defmodule Mutare.Transform do
       static args and feed their injected `import`/`alias` directives into resolution (see
       `Mutare.Transform.Uses`); `false` freezes the pre-expansion behaviour (and, with it, any
       extension `use`-expansion overrides)
+    * `:warnings` — when `true` (the default), print advisory warnings for suspect but
+      non-fatal extension behaviour (currently: a `:routing` classifier returning
+      `{:keyword, …}` for a non-keyword argument). Callers that re-run the pipeline over a
+      source already scanned pass `false` so each warning prints once — `Mutare.Schema`'s
+      render phase (the count phase warned) and `render_sites/2` (report-time re-derivation).
   """
   @spec transform_string(String.t(), keyword()) :: Result.t()
   def transform_string(source, opts \\ []) when is_binary(source) do
@@ -286,8 +291,13 @@ defmodule Mutare.Transform do
   """
   @spec render_sites(String.t(), keyword()) :: [Site.t()]
   def render_sites(source, opts \\ []) when is_binary(source) do
+    # Report-time re-derivation of an already-scanned source: advisory warnings printed once
+    # at scan time would repeat here, so they are always off.
     {_transformed, ctx, _parsed} =
-      plan_and_emit(source, Keyword.put(opts, :render_site_code, true))
+      plan_and_emit(
+        source,
+        opts |> Keyword.put(:render_site_code, true) |> Keyword.put(:warnings, false)
+      )
 
     Enum.reverse(ctx.claim.sites)
   end
@@ -413,7 +423,11 @@ defmodule Mutare.Transform do
         else: parsed
 
     with_behaviours = Behaviours.annotate(expanded)
-    Resolve.annotate(with_behaviours, macros)
+
+    Resolve.annotate(with_behaviours, macros,
+      warnings: Keyword.get(opts, :warnings, true),
+      file: Keyword.get(opts, :file, "nofile")
+    )
   end
 
   # Mark a site ignored (and record the reason) when a `# mutare:ignore` directive

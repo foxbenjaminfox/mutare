@@ -40,8 +40,12 @@ defmodule Mutare.MacroRouting do
   Mutare cannot verify, and the module routing it takes responsibility for that fact. An
   `:interpolated` position must genuinely accept `^` interpolation — where it doesn't,
   the spliced selector fails the single metamutant compile and is recovered as poison, discarding
-  those mutants after a rebuild. A `:hosted` route
-  without an enabled subscribing host aborts the run at scan time. These treatments must come
+  those mutants after a rebuild. A
+  `{:keyword, ...}` list must name exactly one treatment per pair — a length mismatch raises at
+  transform time, and a non-keyword argument under it is left raw (warned when a `:routing`
+  classifier routed it; silent for a static route, whose other call shapes may be legal forms).
+  A `:hosted` route without an enabled subscribing host aborts the run at scan time. These
+  treatments must come
   from a module implementing this behaviour — an adapter written and tested against the library
   it describes; a declarative `:macro_routes` entry that uses one is rejected with an
   `ArgumentError`.
@@ -155,9 +159,11 @@ defmodule Mutare.MacroRouting do
       (`:skip` a value to leave it raw); a length mismatch at a concrete call raises, so a static
       keyword route fits only call sites with a fixed pair count (variable shapes belong to
       `:routing`). A value treatment may itself be `{:keyword, ...}`, so nested keyword lists route
-      recursively. A non-keyword argument under this treatment is left raw. A nested `:hosted`
-      value is delivered through `c:Mutare.Mutator.MacroHost.host/2`, which receives the resolved
-      whole macro call.
+      recursively. A non-keyword argument under this treatment is left raw — silently for a static
+      route (a non-keyword call site is a legitimate alternate macro form, `set(q, opts)`), with a
+      printed warning when a `:routing` classifier did it (the classifier saw the concrete
+      argument, so the mismatch is a classifier bug). A nested `:hosted` value is delivered
+      through `c:Mutare.Mutator.MacroHost.host/2`, which receives the resolved whole macro call.
 
     * `:interpolated` for a value in a compile-time DSL position that accepts interpolation but
       not a bare selector `case`. The name is the contract: the value is *interpolated data*, and

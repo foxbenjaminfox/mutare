@@ -576,6 +576,7 @@ defmodule Mutare.HostedTest do
     # The treatment list is strict — no silent `:skip` padding for unnamed pairs, no silent
     # truncation of extras. Either mismatch means the route and the call disagree about the
     # argument's shape, so it raises (loud, at transform time) instead of under-/over-routing.
+    # Declared through extensions: adapter-grade treatments only exist on code providers.
     test "a treatment list shorter than the pairs raises" do
       # Via an extension provider: a declarative `macro_routes:` entry with the adapter-grade
       # `{:keyword, …}` is rejected before the length check could run (the test above).
@@ -596,6 +597,71 @@ defmodule Mutare.HostedTest do
           extensions: [Mutare.Test.LongKeywordRoutingExtension]
         )
       end
+    end
+  end
+
+  describe "a :routing classifier routing {:keyword, …} onto a non-keyword argument" do
+    # `set(q, opts)` — the second argument is a variable, so there are no pairs to route. The
+    # shape fallback leaves it raw (never poison), but the classifier *saw* the argument and
+    # still called it keyword — a classifier bug worth naming, so MacroStamp prints an
+    # advisory warning. (A *static* keyword route on the same shape stays silent: a
+    # non-keyword call site is a legitimate alternate macro form there.)
+    @misrouted_source """
+    defmodule Mutare.MisroutedKwFixture do
+      import Mutare.Test.HostDSL
+
+      def assign(q, opts) do
+        set(q, opts)
+      end
+    end
+    """
+
+    test "warns, naming the classifier, and leaves the argument raw" do
+      warning =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          send(
+            self(),
+            {:transformed,
+             Mutare.Transform.transform_string_with_sites(@misrouted_source,
+               file: "misrouted.ex",
+               mutators: [:string, Mutare.Test.MisroutedKeywordMutator]
+             )}
+          )
+        end)
+
+      assert warning =~ "Mutare.Test.MisroutedKeywordMutator"
+      assert warning =~ "not a literal keyword list"
+      assert warning =~ "misrouted.ex:5"
+
+      # The transform still succeeds; the mis-routed argument is left raw (no selector on it).
+      assert_received {:transformed, {meta, _sites, _next}}
+      assert meta =~ ~r/set\(q, opts\)/
+    end
+
+    test "warnings: false suppresses the advisory (the two-phase build's re-run path)" do
+      output =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          Mutare.Transform.transform_string_with_sites(@misrouted_source,
+            file: "misrouted.ex",
+            warnings: false,
+            mutators: [:string, Mutare.Test.MisroutedKeywordMutator]
+          )
+        end)
+
+      refute output =~ "not a literal keyword list"
+    end
+
+    test "a static keyword route on the same non-keyword shape stays silent" do
+      output =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          Mutare.Transform.transform_string_with_sites(@misrouted_source,
+            file: "misrouted_static.ex",
+            mutators: [:string],
+            extensions: [Mutare.Test.KeywordInterpolatedRoutingExtension]
+          )
+        end)
+
+      refute output =~ "not a literal keyword list"
     end
   end
 

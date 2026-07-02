@@ -695,6 +695,37 @@ defmodule Mutare.Test.UnknownTreatmentMutator do
   end
 end
 
+defmodule Mutare.Test.MisroutedKeywordMutator do
+  @moduledoc """
+  A buggy `:routing` classifier that routes `set`'s second argument `{:keyword, …}` **without
+  checking its shape** — so a call site passing a variable (`set(q, opts)`) gets a keyword
+  routing for an argument with no pairs. Core leaves the argument raw (the shape fallback) but
+  `Mutare.Transform.Resolve.MacroStamp` prints an advisory warning naming this classifier: the
+  classifier saw the concrete argument, so the mismatch is its bug, and silent raw-ness would
+  read as "no mutants here".
+  """
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.MacroRouting
+
+  @impl Mutare.Mutator
+  def name, do: :misrouted_keyword
+
+  @impl Mutare.Mutator
+  def mutate(_node), do: :skip
+
+  @impl Mutare.MacroRouting
+  def macro_routes, do: [{Mutare.Test.HostDSL, :set, 2, :routing}]
+
+  # Argument 1 is always routed `{:keyword, [:skip]}`, shape unchecked — the bug under test.
+  @impl Mutare.MacroRouting
+  def route_arguments(%Mutare.MacroRouting.Call{} = call, _context),
+    do:
+      Mutare.MacroRouting.ArgumentRoutes.from_visible(
+        call,
+        [:expression, {:keyword, [:skip]}]
+      )
+end
+
 defmodule Mutare.Test.CompoundInterpolatedMutator do
   @moduledoc """
   A `:routing` classifier that routes every keyword *value* `:interpolated` regardless of shape, so a

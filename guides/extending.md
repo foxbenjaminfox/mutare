@@ -195,8 +195,12 @@ an error rather than left to poison the build — but a DSL that rejects `^`
 outright still breaks the single compile, costing a poison-recovery rebuild
 that drops those mutants).
 `{:keyword, ...}` asserts the argument is a keyword list whose keys are DSL
-vocabulary, never data — a misrouted position silently loses mutation
-coverage. `:hosted` is a delivery contract, not a hint: it leaves the position
+vocabulary, never data — the treatment list must name exactly one treatment
+per pair (a mismatch is an error at transform time), and a non-keyword
+argument is left raw with no mutants: silently for a static route (another
+call shape may be a legal form of the macro), with a printed warning when a
+`:routing` classifier misrouted it (the classifier saw the concrete argument,
+so the mismatch is its bug). `:hosted` is a delivery contract, not a hint: it leaves the position
 raw and requires an enabled mutator subscribed via `Mutare.Mutator.MacroHost`,
 and the run aborts at scan time if none is. That is why these treatments can
 only come from here — an adapter written and tested against the library it

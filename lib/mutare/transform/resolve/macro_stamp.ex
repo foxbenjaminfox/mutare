@@ -10,10 +10,16 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
   alias Mutare.MacroRouting.{ArgumentRoutes, Call, ContractError}
   alias Mutare.Mutator
   alias Mutare.Macro.Spec
+  alias Mutare.Transform.Analyze.CallOptions
   alias Mutare.Transform.{Calls, Imports, Meta}
+
+  @typep diag :: %{warn?: boolean(), file: String.t()}
 
   @doc """
   Stamp a call's meta with known-macro argument routing, when the registry matches it.
+
+  `diag` carries the pass's diagnostics wiring (whether advisory warnings print, and the
+  file that labels them) — see `Mutare.Transform.Resolve.annotate/3`.
   """
   @spec stamp(
           keyword(),
@@ -22,9 +28,10 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
           [Macro.t()],
           Macro.t(),
           Macros.registry(),
-          Mutator.pipe_mode()
+          Mutator.pipe_mode(),
+          diag()
         ) :: keyword()
-  def stamp(meta, module_key, fun, args, call_node, registry, pipe_mode) do
+  def stamp(meta, module_key, fun, args, call_node, registry, pipe_mode, diag) do
     arity = Mutator.effective_arity(args, pipe_mode)
 
     case Macros.lookup(registry, module_key, fun, arity) do
@@ -43,7 +50,7 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
         # module the resolver couldn't see; the reader then returns `{nil, name, …}`, which a
         # module-matching classifier clause simply skips (its purpose — match by name instead).
         meta = stamp_identity(Imports.drop_witness(meta), module_key, fun, pipe_mode)
-        stamp_spec(meta, entry, put_meta(call_node, meta), arity, pipe_mode)
+        stamp_spec(meta, entry, put_meta(call_node, meta), arity, pipe_mode, diag)
     end
   end
 
@@ -65,19 +72,82 @@ defmodule Mutare.Transform.Resolve.MacroStamp do
          %Entry{spec: %Spec{args: :routing} = spec, router: router} = entry,
          call_node,
          _arity,
-         pipe_mode
+         pipe_mode,
+         diag
        ) do
     call = resolved_call!(call_node, spec)
     routes = invoke_router!(router, call, spec, pipe_mode)
     routes = validate_routes!(spec, call, routes)
+    warn_misshapen_keyword_routes(diag, router, spec, call, routes)
     stamp_routes(meta, attach_hosts!(routes, entry), spec)
   end
 
-  defp stamp_spec(meta, %Entry{spec: spec} = entry, call_node, arity, _pipe_mode) do
+  defp stamp_spec(meta, %Entry{spec: spec} = entry, call_node, arity, _pipe_mode, _diag) do
     call = resolved_call!(call_node, spec)
     routes = ArgumentRoutes.from_effective(call, Spec.routing(spec, arity))
     stamp_routes(meta, attach_hosts!(routes, entry), spec)
   end
+
+  # Advisory (dynamic path only): a `:routing` classifier that returns `{:keyword, …}` for an
+  # argument that is not a literal keyword list is almost certainly buggy — unlike a static
+  # route, it *saw* the concrete argument and classified it anyway. The analyzer's shape
+  # fallback still leaves the argument raw (never poison, never splice into a non-pair — see
+  # `Mutare.Transform.Analyze.Macros`), so this can't be a hard error; but silent raw-ness
+  # reads as "no mutants here", so name the classifier while the author is looking. Static
+  # routes stay silent on purpose: their non-keyword call sites are legitimate polymorphic
+  # macro forms (`set(q, opts)`, `where(q, ^dyn)`), not mistakes.
+  #
+  # The walk mirrors the analyzer's: unwrap the Sourceror `{:__block__, _, [list]}` a keyword
+  # value takes, recurse into nested `{:keyword, …}` value treatments (zip truncates — a
+  # keyword-shaped length mismatch is the analyzer's strict raise, not this warning's job).
+  # The piped LHS is not checked: it isn't among `call.arguments` here.
+  defp warn_misshapen_keyword_routes(%{warn?: false}, _router, _spec, _call, _routes), do: :ok
+
+  defp warn_misshapen_keyword_routes(diag, router, spec, call, routes) do
+    routes
+    |> ArgumentRoutes.visible()
+    |> Enum.zip(call.arguments)
+    |> Enum.with_index()
+    |> Enum.each(fn {{treatment, arg}, index} ->
+      warn_misshapen_keyword(treatment, arg, index, diag, router, spec)
+    end)
+  end
+
+  defp warn_misshapen_keyword({:keyword, treatments}, arg, index, diag, router, spec) do
+    case keyword_pairs(arg) do
+      {:ok, pairs} ->
+        pairs
+        |> Enum.zip(treatments)
+        |> Enum.each(fn {{_key, value}, treatment} ->
+          warn_misshapen_keyword(treatment, value, index, diag, router, spec)
+        end)
+
+      :error ->
+        IO.warn(
+          "#{inspect(router)}.route_arguments/2 routed argument #{index} of " <>
+            "#{inspect(Spec.key(spec))} as {:keyword, …}, but " <>
+            "`#{Macro.to_string(arg)}` is not a literal keyword list " <>
+            "(#{location(diag, arg)}). The value is left unrouted and produces no " <>
+            "mutants. A runtime-built keyword list has no pairs to route — classify this " <>
+            "shape explicitly (:skip to leave it raw).",
+          []
+        )
+    end
+  end
+
+  defp warn_misshapen_keyword(_treatment, _arg, _index, _diag, _router, _spec), do: :ok
+
+  defp keyword_pairs({:__block__, _meta, [list]}) when is_list(list), do: keyword_pairs(list)
+
+  defp keyword_pairs(list) when is_list(list),
+    do: if(CallOptions.keyword_list_shaped?(list), do: {:ok, list}, else: :error)
+
+  defp keyword_pairs(_other), do: :error
+
+  defp location(diag, {_form, meta, _rest}) when is_list(meta),
+    do: "#{diag.file}:#{meta[:line] || "?"}"
+
+  defp location(diag, _arg), do: diag.file
 
   defp resolved_call!(call_node, spec) do
     case Calls.resolved_macro_call(call_node) do

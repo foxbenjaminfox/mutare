@@ -146,7 +146,10 @@ defmodule Mutare.Transform.Analyze.Macros do
   # shorthand — a keyword list whose values are keyword lists, e.g. `from(S, where: [x: v])` —
   # routes too. The treatment list is strict: exactly one treatment per pair, or routing raises
   # (`validate_keyword_treatments!/2`) — no silent padding or truncation. A non-keyword argument
-  # falls back to raw, so a mis-shaped classification can never splice into a non-pair.
+  # falls back to raw, so a mis-shaped classification can never splice into a non-pair; when a
+  # `:routing` classifier caused that fallback, `Mutare.Transform.Resolve.MacroStamp` already
+  # printed an advisory warning at stamp time (a static route stays silent — its non-keyword
+  # call sites are legitimate alternate macro forms).
   defp route_macro_arg(descent, arg, {:keyword, value_treatments}, mutators)
        when is_list(value_treatments),
        do: route_keyword(descent, arg, value_treatments, mutators)

@@ -48,16 +48,25 @@ defmodule Mutare.Transform.Resolve do
   `meta[:mutare_macro]`, so the analyzer routes a pattern/opaque argument correctly
   instead of mutating it. The registry is carried in the env (read-only) and
   consulted at each remote and bare call.
+
+  `opts` carries the pass's diagnostics wiring: `:warnings` (default `true`) gates the
+  advisory classifier warnings `MacroStamp` may print, and `:file` labels them. The
+  transform's two-phase callers disable warnings on re-runs of the same source so each
+  prints once (see `Mutare.Transform`'s `:warnings` option).
   """
-  @spec annotate(Macro.t(), Macros.registry()) :: Macro.t()
-  def annotate(ast, registry) do
+  @spec annotate(Macro.t(), Macros.registry(), keyword()) :: Macro.t()
+  def annotate(ast, registry, opts \\ []) do
     ast
     |> walk(%{
       aliases: %{},
       imports: %{},
       kernel: Imports.default_selector(),
       pipe_mode: :unpiped,
-      macro_routes: registry
+      macro_routes: registry,
+      diag: %{
+        warn?: Keyword.get(opts, :warnings, true),
+        file: Keyword.get(opts, :file, "nofile")
+      }
     })
     |> NodeIds.stamp()
   end
@@ -141,7 +150,8 @@ defmodule Mutare.Transform.Resolve do
         args,
         call_node,
         env.macro_routes,
-        env.pipe_mode
+        env.pipe_mode,
+        env.diag
       )
 
     {{:., dot_meta, [stamped, fun]}, call_meta, descend(args, env)}
@@ -183,7 +193,8 @@ defmodule Mutare.Transform.Resolve do
             args,
             call_node,
             env.macro_routes,
-            env.pipe_mode
+            env.pipe_mode,
+            env.diag
           )
 
         {{:., dot_meta, [mod, fun]}, call_meta, descend(args, env)}
@@ -207,7 +218,8 @@ defmodule Mutare.Transform.Resolve do
         args,
         {fun, meta, args},
         env.macro_routes,
-        env.pipe_mode
+        env.pipe_mode,
+        env.diag
       )
 
     {fun, meta, descend(args, env)}

@@ -362,7 +362,11 @@ defmodule Mutare.Schema do
           start_id: start_id,
           skip_ids: skip_ids,
           render_site_code: render_site_code,
-          summarize_sites: summarize_sites
+          summarize_sites: summarize_sites,
+          # The count pass already ran this source through the same pipeline and printed any
+          # advisory warnings (there, so a zero-site file — counted but never rendered — still
+          # warns); re-printing them here would double every warning for sited files.
+          warnings: false
         ]
 
     try do
