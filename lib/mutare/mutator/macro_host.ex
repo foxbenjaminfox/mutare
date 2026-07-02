@@ -79,9 +79,13 @@ defmodule Mutare.Mutator.MacroHost do
   statically or from `c:Mutare.MacroRouting.route_arguments/2`. `context` is the same map
   `c:Mutare.Mutator.mutate/2` receives.
 
-  Core leaves hosted fragments raw and does not route nested macros inside them. A
-  host that walks the fragment can read nested macro routing with
-  `Mutare.Transform.Calls.macro_treatment/1`.
+  A `:hosted` route is permission and a delivery mode, **not a target list**: the callback
+  receives the whole resolved macro call and owns locating the fragment(s) it will mutate. It
+  need not re-classify the call to do so — `Mutare.Transform.Calls.macro_treatment/1` on the
+  call's `node` returns the per-argument treatments the route produced, so the `:hosted`
+  positions (including values nested under `{:keyword, …}`) can be read back instead of
+  rediscovered. Core leaves hosted fragments raw and does not route nested macros inside them;
+  the same reader answers for a nested macro the host walks into.
   """
   @callback host(
               call :: Mutare.MacroRouting.Call.t(),

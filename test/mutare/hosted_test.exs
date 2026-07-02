@@ -824,6 +824,20 @@ defmodule Mutare.HostedTest do
       end
     end
 
+    test "a non-Sourceror.Range :range raises (not a deep crash at site-recording time)" do
+      assert_raise Mutare.MacroRouting.ContractError,
+                   ~r/:range must be a %Sourceror.Range\{\} or nil/,
+                   fn ->
+                     Dispatch.host_targets(
+                       malformed_spec(),
+                       malformed_call({:bad_range, [], []}),
+                       %{
+                         pipe_mode: :unpiped
+                       }
+                     )
+                   end
+    end
+
     test "a bare %{node:, note:} map mutant raises (the struct is required)" do
       assert_raise Mutare.MacroRouting.ContractError,
                    ~r/must be a %Mutare.Mutator.Mutation\{\}, not a bare map/,

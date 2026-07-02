@@ -59,6 +59,25 @@ defmodule Mutare.MacroRouting do
   Identical declarations from multiple code providers coalesce. Conflicting code-provided routes
   raise `Mutare.MacroRouting.ContractError` instead of depending on configuration order. A
   declarative `:macro_routes` entry is an explicit final override.
+
+  ## The committed surface
+
+  An adapter should build against exactly these, and can expect compatibility from them:
+
+    * this behaviour's callbacks and `Mutare.Mutator.MacroHost`'s;
+    * `Mutare.MacroRouting.Call` — fields may be *added*, so match only the ones you need;
+    * `Mutare.MacroRouting.ArgumentRoutes`, built through its constructors and read through its
+      accessors (the struct itself is opaque);
+    * `Mutare.Mutator.MacroHost.Target.new/4`;
+    * the `Mutare.Transform.Calls` readers (`Mutare.Transform.Calls.resolved_call/1`,
+      `Mutare.Transform.Calls.resolved_macro_call/1`, `Mutare.Transform.Calls.macro_treatment/1`);
+    * `Mutare.MacroRouting.ContractError` as the failure type for provider conflicts and callback
+      contract violations — its structured fields are stable; its message strings may improve at
+      any time.
+
+  Everything else in the routing path — the registry and its entries, the normalized route spec,
+  transform metadata keys, candidate structs, and how selectors are assembled and nested — is
+  internal and free to change between releases.
   """
 
   @typedoc """

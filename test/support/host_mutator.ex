@@ -441,7 +441,9 @@ defmodule Mutare.Test.KeywordHostedMutator do
   A `:routing` classifier that hosts values nested inside keyword routing. The host still receives
   and weaves into the whole macro node; the nested treatment only identifies which values core must
   leave raw while the host builds its targets. It covers both a direct keyword value and a value in
-  a nested keyword list.
+  a nested keyword list, and its `host/2` locates those leaves by reading the routed treatments
+  back through `Mutare.Transform.Calls.macro_treatment/1` instead of re-classifying the call —
+  exercising the documented "permission, not a target list" contract end to end.
   """
   @behaviour Mutare.Mutator
   @behaviour Mutare.MacroRouting
@@ -493,38 +495,47 @@ defmodule Mutare.Test.KeywordHostedMutator do
 
   defp keyword_list?(_node), do: false
 
+  # Locate the fragments by reading the routed treatments *back* rather than re-classifying:
+  # `Mutare.Transform.Calls.macro_treatment/1` on the host's own call node returns what
+  # `route_arguments/2` produced, so the `:hosted` leaves (and their keyword paths) come from
+  # the route itself.
   @impl Mutare.Mutator.MacroHost
-  def host(%Mutare.MacroRouting.Call{node: {form, _meta, [_query, assigns]}}, _context)
-      when form == :set and is_list(assigns) do
-    for {original, path} <- keyword_leaves(assigns, []) do
-      splice = fn {name, meta, [query, current]}, case_node ->
-        {name, meta, [query, replace_keyword_value(current, path, case_node)]}
-      end
+  def host(%Mutare.MacroRouting.Call{node: node}, _context) do
+    with {_form, _meta, [_query, assigns]} when is_list(assigns) <- node,
+         [_query_treatment, {:keyword, treatments}] <-
+           Mutare.Transform.Calls.macro_treatment(node) do
+      for {original, path} <- hosted_leaves(assigns, treatments, []) do
+        splice = fn {name, meta, [query, current]}, case_node ->
+          {name, meta, [query, replace_keyword_value(current, path, case_node)]}
+        end
 
-      Mutare.Mutator.MacroHost.Target.new(original, [replacement(original)], splice)
+        Mutare.Mutator.MacroHost.Target.new(original, [replacement(original)], splice)
+      end
+    else
+      _ -> []
     end
   end
 
-  def host(_call, _context), do: []
-
-  defp keyword_leaves(pairs, path) do
+  # Walk the assigns pairs in lockstep with the routed value treatments: `:hosted` marks a leaf,
+  # `{:keyword, …}` recurses into the Sourceror-wrapped nested list, anything else isn't hosted
+  # (values past the treatment list default to `:skip`, matching core's padding rule).
+  defp hosted_leaves(pairs, treatments, path) do
     pairs
     |> Enum.with_index()
     |> Enum.flat_map(fn {{_key, value}, index} ->
-      next_path = path ++ [index]
+      case Enum.at(treatments, index, :skip) do
+        :hosted ->
+          [{value, path ++ [index]}]
 
-      case nested_keyword(value) do
-        nil -> [{value, next_path}]
-        nested -> keyword_leaves(nested, next_path)
+        {:keyword, nested_treatments} ->
+          {:__block__, _meta, [nested]} = value
+          hosted_leaves(nested, nested_treatments, path ++ [index])
+
+        _other ->
+          []
       end
     end)
   end
-
-  defp nested_keyword({:__block__, _meta, [list]}) when is_list(list) do
-    if keyword_list?(list), do: list, else: nil
-  end
-
-  defp nested_keyword(_value), do: nil
 
   defp replace_keyword_value(pairs, [index], replacement) do
     {key, _value} = Enum.at(pairs, index)
@@ -716,10 +727,11 @@ defmodule Mutare.Test.MalformedHost do
   @moduledoc """
   A plain module with a `host/2` returning **malformed** targets, used to prove
   `Mutare.Mutator.Dispatch.host_targets/3` normalization fails loud: a non-1-arity `:wrap`, a non-string
-  `%Mutare.Mutator.Mutation{}` `:note`, and a **bare `%{node:, note:}` map** mutant (the rejected
-  pre-struct form) each raise an `ArgumentError` (rather than a raw `FunctionClauseError`, a
-  silently dropped note, or a bare selector spliced into the DSL). Dispatched by the probe node's
-  head so one module covers every case.
+  `%Mutare.Mutator.Mutation{}` `:note`, a **bare `%{node:, note:}` map** mutant (the rejected
+  pre-struct form), and a non-`Sourceror.Range` `:range` each raise an `ArgumentError` (rather
+  than a raw `FunctionClauseError`, a silently dropped note, a bare selector spliced into the
+  DSL, or a deep crash at site-recording time). Dispatched by the probe node's head so one module
+  covers every case.
   """
   alias Mutare.Mutator.Mutation
   alias Mutare.Mutator.MacroHost.Target
@@ -732,6 +744,9 @@ defmodule Mutare.Test.MalformedHost do
 
   def host(%Mutare.MacroRouting.Call{node: {:bare_map, _meta, _args}}, _context),
     do: [%Target{original: 1, mutants: [%{node: 2, note: "x"}], splice: &splice/2}]
+
+  def host(%Mutare.MacroRouting.Call{node: {:bad_range, _meta, _args}}, _context),
+    do: [%Target{original: 1, mutants: [2], splice: &splice/2, range: {3, 7}}]
 
   def host(_call, _context), do: []
 

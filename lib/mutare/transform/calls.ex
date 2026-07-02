@@ -17,9 +17,10 @@ defmodule Mutare.Transform.Calls do
 
   `macro_treatment/1` reads *how a node's macro is registered* — the resolved per-argument routing
   the merged registry (built-ins + every mutator's/extension's `macro_routes/0` + the declarative `:macro_routes`
-  option) assigned it. A hosting mutator walking a `:hosted` fragment uses it to ask whether a
-  **nested** macro routes a given argument `:skip` (leave it opaque) or otherwise specially, rather
-  than re-deriving the registry itself.
+  option) assigned it. A macro host uses it in two places: on its **own** call's `node`, to locate
+  the positions the route marked `:hosted` (including values nested under `{:keyword, …}`); and on
+  a **nested** macro inside a fragment it walks, to ask whether an argument routes `:skip` (leave
+  it opaque) or otherwise specially. In both cases it replaces re-deriving the classification.
 
   ## Example
 
@@ -223,6 +224,10 @@ defmodule Mutare.Transform.Calls do
   Treatments come from the fully merged macro-routing registry and include any
   shape-aware classification already performed for the call. The result may contain
   static treatments, `:hosted`, or nested keyword routing.
+
+  Inside `c:Mutare.Mutator.MacroHost.host/2`, calling this on the received call's `node` returns
+  the treatments that granted hosting, so a host locates its `:hosted` positions without
+  re-classifying the call.
 
   For a piped call, the left side of the pipe is not included. A call that has no
   registered macro route returns `nil`.

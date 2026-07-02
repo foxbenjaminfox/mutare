@@ -35,9 +35,15 @@ defmodule Mutare.Mutator.MacroHost.Target do
   def new(original, mutants, splice, opts)
       when is_list(mutants) and is_function(splice, 2) and is_list(opts) do
     wrap = Keyword.get(opts, :wrap)
+    range = Keyword.get(opts, :range)
 
     if not is_nil(wrap) and not is_function(wrap, 1) do
       raise ArgumentError, "a host target :wrap must be a 1-arity function, got: #{inspect(wrap)}"
+    end
+
+    if not is_nil(range) and not is_struct(range, Sourceror.Range) do
+      raise ArgumentError,
+            "a host target :range must be a %Sourceror.Range{} or nil, got: #{inspect(range)}"
     end
 
     %__MODULE__{
@@ -45,7 +51,7 @@ defmodule Mutare.Mutator.MacroHost.Target do
       mutants: mutants,
       splice: splice,
       wrap: wrap,
-      range: Keyword.get(opts, :range)
+      range: range
     }
   end
 

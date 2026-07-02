@@ -6456,3 +6456,36 @@ equality slots and wildcards, every declared constant plus one unmatched sentine
 dimension exhausts the lookup-equivalence classes without enumerating an open atom universe.
 An exported `host/2` paired with `hosted_macros/0` returning `[]` is rejected at the same boundary;
 otherwise the empty list disappears during collection and bypasses that reachability audit.
+
+### Tiering the routing docs; hosts read their targets back from the route
+
+An external review of the extension boundary agreed with the design but flagged two
+audience problems before commitment. Both were resolved with docs plus one fixture change —
+no API was added.
+
+First, the README's "Skipping macro arguments" section listed all seven treatments in one flat
+list, presenting `:pinned`/`{:keyword, …}`/`:hosted` as routine project config. They aren't:
+`:skip`/`:expression`/`:pattern`/`:binding_pattern` are the user escape hatch ("this argument
+isn't runtime code"), while the other three carry adapter-grade contracts (scalar-only `^`
+interpolation; a required enabled host). The README now shows only the user tier and points
+adapters at the two behaviours' moduledocs — subtractive on purpose, since the moduledocs
+already own the SPI (the Mix task help was already tiered correctly). `Mutare.MacroRouting`
+gained a compact "The committed surface" section naming exactly what an adapter may rely on
+(the behaviours, `Call` with additive-only fields, the `ArgumentRoutes` constructors/accessors,
+`Target.new/4`, the `Transform.Calls` readers, `ContractError`'s fields-not-messages) and that
+the registry/spec/metadata/candidates/nesting are not it.
+
+Second, the review called `host/2` receiving the whole call "the main footgun": the route says
+*somewhere here is hostable*, and a host seemed to need a parallel classifier to find where. The
+requested helper already existed — `Transform.Calls.macro_treatment/1` returns the author-vocabulary
+treatments from the node's routing stamp, and the stamp rides the same node `Call` carries — it was
+just documented only for *nested* macros. The `MacroHost` docs now state the rule ("`:hosted` is
+permission and a delivery mode, not a target list") and position `macro_treatment/1` on the host's
+own `call.node` as the way to read the `:hosted` positions back instead of rediscovering them. The
+keyword-hosted fixture's `host/2` now does exactly that (dropping its duplicate `keyword_leaves`
+classifier), so the existing nested-keyword hosted tests prove the read-back contract end to end.
+
+While there, a `Target`'s `:range` gained the same fail-loud validation as its `:wrap` — checked at
+`Target.new/4` for immediate author feedback and again at the dispatch trust boundary (the struct
+can be forged) — so a malformed range raises a `ContractError` naming the host instead of crashing
+at site-recording time.

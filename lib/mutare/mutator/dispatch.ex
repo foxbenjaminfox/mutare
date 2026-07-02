@@ -219,7 +219,7 @@ defmodule Mutare.Mutator.Dispatch do
       mutants: normalize_mutants(mutants),
       splice: splice,
       wrap: target_wrap(Map.get(target, :wrap)),
-      range: Map.get(target, :range)
+      range: target_range(Map.get(target, :range))
     }
   end
 
@@ -299,6 +299,14 @@ defmodule Mutare.Mutator.Dispatch do
 
   defp target_wrap(other) do
     raise ArgumentError, "a host target :wrap must be a 1-arity function, got: #{inspect(other)}"
+  end
+
+  defp target_range(nil), do: nil
+  defp target_range(%Sourceror.Range{} = range), do: range
+
+  defp target_range(other) do
+    raise ArgumentError,
+          "a host target :range must be a %Sourceror.Range{} or nil, got: #{inspect(other)}"
   end
 
   # The structural-callback context: the same per-spec configuration facts as the

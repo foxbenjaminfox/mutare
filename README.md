@@ -182,18 +182,17 @@ An entry is `{Module, :name, arity, treatment}`, or `{Module, :name, treatment}`
 - `:pattern` — treat it as a match pattern (descend, but don't mutate the pattern
   itself); for the rare macro that takes one (like `match?/2`).
 - `:binding_pattern` — like `:pattern`, for a macro whose bindings escape into the caller.
-- `:pinned` — mutate a scalar DSL value but emit its selector under `^` interpolation.
-- `{:keyword, treatments}` — route the values of a keyword list positionally while leaving its
-  field/option keys raw; this form may nest.
-- `:hosted` — leave the fragment raw for core and offer the resolved call to every enabled
-  `Mutare.Mutator.MacroHost` subscribed to that macro.
-
-Library extensions can provide shape-dependent routing with `Mutare.MacroRouting`; independent
-host mutators subscribe through `Mutare.Mutator.MacroHost.hosted_macros/0`. Multiple hosts may
-target the same routed macro. Conflicting code-provided routes fail explicitly rather than being
-selected by configuration order.
 
 A per-position list is padded with `:expression`, so `[:expression, :skip]` means "mutate the first argument, skip the second, mutate the rest". The macro is matched however it's written — directly, aliased, or imported (bare).
+
+That vocabulary is the whole escape hatch most projects need: telling Mutare an argument isn't
+ordinary runtime code. Three further treatments — `:pinned`, `{:keyword, …}`, and `:hosted` — plus
+shape-dependent routing exist for **library adapters**: an extension implementing
+`Mutare.MacroRouting` describes a DSL's argument shapes once, and independent host mutators
+implementing `Mutare.Mutator.MacroHost` deliver mutations *inside* its fragments. They are accepted
+in `macro_routes:` too, but they carry real contracts (`:pinned` interpolates a `^`-pinned selector
+into a scalar DSL value; `:hosted` requires an enabled, subscribed host mutator) — read those two
+behaviours' docs before reaching for them.
 
 #### Wildcards: a whole module, or a name in any module
 
@@ -215,7 +214,7 @@ A **whole-module** entry (`:*` in the name slot) routes every macro in the modul
 
 ### Choosing which mutators run
 
-The `:mutators` list (in `.mutare.exs`, or `--mutators` on the CLI) is **a list of mutators, each optionally with its configuration.
+The `:mutators` list (in `.mutare.exs`, or `--mutators` on the CLI) is a list of mutators, each optionally with its configuration.
 
 ```elixir
 # 1. The canonical form — a mutator and its config:

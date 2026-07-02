@@ -34,6 +34,7 @@ defmodule Mutare.MixProject do
     Mutare.Transform.Config
     Mutare.Runner.Hydrate
     Mutare.Options.Registry
+    Mutare.MacroRouting.Registry
     Mutare.Mutator.Dispatch
     Mutare.Coverage.HelperTemplate
     Mutare.Ignore.Directive
