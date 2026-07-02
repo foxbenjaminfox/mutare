@@ -22,6 +22,7 @@ It inspects your dependencies and, for each framework it finds, adds the matchin
 | `:phoenix_live_view`                    | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
 | `:ecto_sql` / `:phoenix_ecto` / `:ecto` | `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
 | `:oban` / `:oban_pro`                   | `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`             |
+| `:decimal`                              | `mutare_decimal`           | `:mutators` — `Mutare.Decimal.all/0`          |
 | `:gettext`                              | `mutare_gettext`           | `:extensions` — `Mutare.Gettext`              |
 
 A mutator package extends the `:mutators` list; a non-mutating **extension** like `mutare_gettext` (which teaches mutare a library's compile-time vocabulary so the built-in mutators can deal with it) joins the `:extensions` list. The Ecto repo is detected automatically (pass `--repo MyApp.Repo` to override). If you already have a `.mutare.exs`, it is left untouched and the recommended keys are printed for you to merge in.
@@ -40,6 +41,7 @@ Or add mutare by hand — though if you're using any macro-heavy libraries, like
 {:mutare, "~> 0.1", only: [:dev, :test], runtime: false}
 # Optionally, also:
 # {:mutare_ecto, "~> 0.1", only: [:dev, :test], runtime: false}
+# {:mutare_decimal, "~> 0.1", only: [:dev, :test], runtime: false}
 # {:mutare_gettext, "~> 0.1", only: [:dev, :test], runtime: false}
 # {:mutare_phoenix, "~> 0.1", only: [:dev, :test], runtime: false}
 # {:mutare_phoenix_live_view, "~> 0.1", only: [:dev, :test], runtime: false}

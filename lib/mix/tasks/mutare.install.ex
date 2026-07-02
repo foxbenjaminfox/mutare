@@ -8,8 +8,8 @@ if Code.ensure_loaded?(Igniter) do
 
     Adds `:mutare` to your `:dev`/`:test` dependencies (`runtime: false`), then looks
     at what your project already depends on and wires up the matching companion
-    packages — so a Phoenix/Ecto/Gettext app gets framework-aware mutants without any
-    manual configuration:
+    packages — so a Phoenix/Ecto/Oban/Decimal/Gettext app gets framework-aware
+    mutants without any manual configuration:
 
     | Detected dependency                     | Package added              | Wired into                                    |
     | --------------------------------------- | -------------------------- | --------------------------------------------- |
@@ -17,6 +17,7 @@ if Code.ensure_loaded?(Igniter) do
     | `:phoenix_live_view`                    | `mutare_phoenix_live_view` | `:mutators` — `Mutare.Phoenix.LiveView.all/0` |
     | `:ecto_sql` / `:phoenix_ecto` / `:ecto` | `mutare_ecto`              | `:mutators` — `{Mutare.Ecto, repo: YourRepo}` |
     | `:oban` / `:oban_pro`                   | `mutare_oban`              | `:mutators` — `Mutare.Oban.all/0`             |
+    | `:decimal`                              | `mutare_decimal`           | `:mutators` — `Mutare.Decimal.all/0`          |
     | `:gettext`                              | `mutare_gettext`           | `:extensions` — `Mutare.Gettext`              |
 
     Each detected package is added as a `:dev`/`:test` dependency and wired into a
@@ -82,7 +83,11 @@ if Code.ensure_loaded?(Igniter) do
         # Oban contributes mutator families (`Mutare.Oban.all/0`). `mutare_oban` gates on
         # both the OSS `Oban.Worker` and the Pro `Oban.Pro.Worker` behaviour; a Pro-only
         # app may declare just `:oban_pro`, so check either signal.
-        oban: Enum.any?([:oban, :oban_pro], &Igniter.Project.Deps.has_dep?(igniter, &1))
+        oban: Enum.any?([:oban, :oban_pro], &Igniter.Project.Deps.has_dep?(igniter, &1)),
+        # Decimal contributes mutator families (`Mutare.Decimal.all/0`) for Decimal
+        # arithmetic/comparison calls. Unlike Ecto, decimal-using packages normally
+        # declare `:decimal` directly, so a declared-dep check is the right signal.
+        decimal: Igniter.Project.Deps.has_dep?(igniter, :decimal)
       }
 
       {igniter, repo} = resolve_repo(igniter, detected.ecto)
@@ -100,6 +105,7 @@ if Code.ensure_loaded?(Igniter) do
       |> maybe_add_dep(detected.live_view, :mutare_phoenix_live_view)
       |> maybe_add_dep(detected.ecto, :mutare_ecto)
       |> maybe_add_dep(detected.oban, :mutare_oban)
+      |> maybe_add_dep(detected.decimal, :mutare_decimal)
       |> maybe_add_dep(detected.gettext, :mutare_gettext)
     end
 
@@ -199,6 +205,7 @@ if Code.ensure_loaded?(Igniter) do
     #   phoenix + liveview  → [:builtins] ++ Mutare.Phoenix.all() ++ Mutare.Phoenix.LiveView.all()
     #   ecto                → [:builtins, {Mutare.Ecto, repo: MyApp.Repo}]
     #   oban                → [:builtins] ++ Mutare.Oban.all()
+    #   decimal             → [:builtins] ++ Mutare.Decimal.all()
     #   ecto + oban         → [:builtins, {Mutare.Ecto, repo: MyApp.Repo}] ++ Mutare.Oban.all()
     defp mutators_expr(detected, repo) do
       literals =
@@ -211,7 +218,8 @@ if Code.ensure_loaded?(Igniter) do
         [
           {detected.phoenix, "Mutare.Phoenix.all()"},
           {detected.live_view, "Mutare.Phoenix.LiveView.all()"},
-          {detected.oban, "Mutare.Oban.all()"}
+          {detected.oban, "Mutare.Oban.all()"},
+          {detected.decimal, "Mutare.Decimal.all()"}
         ]
         |> Enum.filter(&elem(&1, 0))
         |> Enum.map(&elem(&1, 1))
@@ -236,7 +244,9 @@ if Code.ensure_loaded?(Igniter) do
     # Whether any detected dependency contributes a *mutator* family (and so a
     # `:mutators` key). Gettext is an extension, not a mutator, so it is excluded here.
     defp mutator_package?(detected),
-      do: detected.phoenix or detected.live_view or detected.ecto or detected.oban
+      do:
+        detected.phoenix or detected.live_view or detected.ecto or detected.oban or
+          detected.decimal
 
     # --- generated file bodies -----------------------------------------------
 
@@ -269,7 +279,7 @@ if Code.ensure_loaded?(Igniter) do
       #
       #   mutators: [:builtins, MyApp.Mutators.Custom]
       #
-      # No Phoenix, LiveView, Ecto, Oban, or Gettext was detected; add one and re-run
+      # No Phoenix, LiveView, Ecto, Oban, Decimal, or Gettext was detected; add one and re-run
       # `mix igniter.install mutare` to wire up the matching mutare_* package.
       []
       """

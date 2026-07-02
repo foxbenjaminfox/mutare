@@ -58,12 +58,14 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     refute Deps.has_dep?(igniter, :mutare_phoenix_live_view)
     refute Deps.has_dep?(igniter, :mutare_ecto)
     refute Deps.has_dep?(igniter, :mutare_oban)
+    refute Deps.has_dep?(igniter, :mutare_decimal)
     refute Deps.has_dep?(igniter, :mutare_gettext)
 
     content = config(igniter)
     refute content =~ "Mutare.Phoenix"
     refute content =~ "Mutare.Ecto"
     refute content =~ "Mutare.Oban"
+    refute content =~ "Mutare.Decimal"
     refute content =~ "Mutare.Gettext"
     # The active config is the empty list (defaults); guidance lives in comments.
     assert content =~ "[]"
@@ -155,6 +157,38 @@ defmodule Mix.Tasks.Mutare.InstallTest do
     assert declaration =~ "runtime: false"
   end
 
+  # --- decimal (a mutator package) -----------------------------------------
+
+  test "decimal: adds mutare_decimal and splices its preset into :mutators" do
+    igniter = project([{:decimal, "~> 2.0"}]) |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_decimal)
+    refute Deps.has_dep?(igniter, :mutare_phoenix)
+    refute Deps.has_dep?(igniter, :mutare_ecto)
+
+    assert config(igniter) =~ "[:builtins] ++ Mutare.Decimal.all()"
+  end
+
+  test "decimal + oban: composes both mutator presets" do
+    igniter = project([{:decimal, "~> 2.0"}, {:oban, "~> 2.17"}]) |> install()
+
+    assert Deps.has_dep?(igniter, :mutare_decimal)
+    assert Deps.has_dep?(igniter, :mutare_oban)
+
+    content = config(igniter)
+    assert content =~ "Mutare.Oban.all()"
+    assert content =~ "Mutare.Decimal.all()"
+  end
+
+  test "decimal dep is dev/test-only and runtime: false" do
+    igniter = project([{:decimal, "~> 2.0"}]) |> install()
+
+    assert {:ok, declaration} = Deps.get_dep(igniter, :mutare_decimal)
+    assert declaration =~ ~s({:mutare_decimal, ">= 0.0.0")
+    assert declaration =~ "only: [:dev, :test]"
+    assert declaration =~ "runtime: false"
+  end
+
   # --- gettext (an extension, not a mutator) -----------------------------------
 
   test "gettext: adds mutare_gettext and lists it under :extensions" do
@@ -201,19 +235,27 @@ defmodule Mix.Tasks.Mutare.InstallTest do
 
   # --- full stack ----------------------------------------------------------
 
-  test "phoenix + live_view + ecto: all three deps and a composed :mutators" do
-    deps = [{:phoenix, "~> 1.7"}, {:phoenix_live_view, "~> 1.0"}, {:ecto_sql, "~> 3.10"}]
+  test "phoenix + live_view + ecto + decimal: all deps and a composed :mutators" do
+    deps = [
+      {:phoenix, "~> 1.7"},
+      {:phoenix_live_view, "~> 1.0"},
+      {:ecto_sql, "~> 3.10"},
+      {:decimal, "~> 2.0"}
+    ]
+
     igniter = project(deps, %{"lib/repo.ex" => @repo}) |> install()
 
     assert Deps.has_dep?(igniter, :mutare_phoenix)
     assert Deps.has_dep?(igniter, :mutare_phoenix_live_view)
     assert Deps.has_dep?(igniter, :mutare_ecto)
+    assert Deps.has_dep?(igniter, :mutare_decimal)
 
     content = config(igniter)
     assert content =~ ":builtins"
     assert content =~ "{Mutare.Ecto, repo: MyApp.Repo}"
     assert content =~ "Mutare.Phoenix.all()"
     assert content =~ "Mutare.Phoenix.LiveView.all()"
+    assert content =~ "Mutare.Decimal.all()"
   end
 
   # --- the dep options it sets ---------------------------------------------
