@@ -25,6 +25,8 @@ defmodule Mutare.Coverage.HelperTemplate do
   @dump_file "mutare_cov.terms"
   @dump_path_env "MUTARE_COV_DUMP"
   @root_env "MUTARE_COV_ROOT"
+  @seen_key :mutare_cov_seen
+  @label_key :mutare_cov_label
 
   # The contract constants, exposed so `Mutare.Coverage.Recorder` sources them from here — the
   # single source of truth shared by the table-creation bootstrap and the dump reader. (These
@@ -48,10 +50,52 @@ defmodule Mutare.Coverage.HelperTemplate do
     # process-owned table dying with it) would otherwise leave the gate open over a
     # vanished table, and the next instrumented line — in that test's own `on_exit`,
     # or any later test — would crash on the `:ets.insert`. See NOTES "Self-hosting".
-    if :ets.whereis(@agg_table) == :undefined do
-      true
-    else
-      record(ids, label())
+    case :ets.whereis(@agg_table) do
+      :undefined ->
+        true
+
+      tid ->
+        case unseen_ids(tid, ids) do
+          [] -> true
+          unseen -> record(unseen, cached_label())
+        end
+    end
+  end
+
+  # Coverage is set-like: once this process has recorded an id, recording the same id again
+  # contributes no new aggregate/by-file/unlabeled information. Cache that per process so hot
+  # target loops don't repeatedly recover the ExUnit label and write duplicate ETS rows. The ETS
+  # table id is part of the cache so tests (and self-hosting edge cases) that delete/recreate the
+  # named tables get a fresh seen set instead of silently suppressing new-table writes.
+  defp unseen_ids(tid, ids) do
+    seen =
+      case Process.get(@seen_key) do
+        {^tid, seen} when is_map(seen) -> seen
+        _ -> %{}
+      end
+
+    {seen, unseen} =
+      Enum.reduce(ids, {seen, []}, fn id, {seen, unseen} ->
+        if Map.has_key?(seen, id) do
+          {seen, unseen}
+        else
+          {Map.put(seen, id, true), [id | unseen]}
+        end
+      end)
+
+    Process.put(@seen_key, {tid, seen})
+    Enum.reverse(unseen)
+  end
+
+  defp cached_label do
+    case Process.get(@label_key) do
+      {:ok, label} ->
+        label
+
+      _ ->
+        label = label()
+        Process.put(@label_key, {:ok, label})
+        label
     end
   end
 

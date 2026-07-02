@@ -109,6 +109,21 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       assert :ets.lookup(H.attr_table(), {__MODULE__, 777}) == [{{__MODULE__, 777}}]
       assert :ets.lookup(H.agg_table(), 777) == [{777}]
     end
+
+    test "hit/1 tracks ids seen by the current process" do
+      # Coverage is set-like. The helper records an id once per process and then returns early for
+      # repeated hits, keeping the probe closer to target timing in hot loops.
+      tid = :ets.whereis(H.agg_table())
+
+      H.hit([701])
+      H.hit([701, 702])
+
+      assert {^tid, seen} = Process.get(:mutare_cov_seen)
+      assert Map.has_key?(seen, 701)
+      assert Map.has_key?(seen, 702)
+      assert :ets.lookup(H.agg_table(), 701) == [{701}]
+      assert :ets.lookup(H.agg_table(), 702) == [{702}]
+    end
   end
 
   describe "dump/1 — serialising the tables to the dump file" do
