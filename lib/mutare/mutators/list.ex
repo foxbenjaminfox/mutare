@@ -5,13 +5,9 @@ defmodule Mutare.Mutators.List do
     * `++` ↔ `--` (list concatenation ↔ difference)
     * a non-empty list literal → `[]`
 
-  Not mutated: on the **RHS of a guard `in`** (`when x in [a, b]`) the `[]`
-  collapse yields `x in []` ≡ `false`, which `Mutare.Mutators.Conditional`
-  already produces — so it is dropped there (the list's elements still mutate).
-  Body `in` expressions keep the collapse because left-side evaluation is observable.
+  Not mutated: on the RHS of a guard `in` (`when x in [a, b]`) the `[]` collapse yields `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already produces — so it is dropped there (the list's elements still mutate). Body `in` expressions keep the collapse because left-side evaluation is observable.
 
-  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
-  suppress just one kind (`c:Mutare.Mutator.variants/0`): `++`, `--`, `empty`.
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one kind (`c:Mutare.Mutator.variants/0`): `++`, `--`, `empty`.
   """
   @behaviour Mutare.Mutator
 

@@ -2,24 +2,15 @@ defmodule Mutare.Mutators.RescueType do
   @moduledoc """
   Narrows the exceptions handled by a `rescue`.
 
-  For a clause with two or more exception types, the mutator removes each type in
-  turn:
+  For a clause with two or more exception types, the mutator removes each type in turn:
 
       rescue e in [ArgumentError, RuntimeError] -> handle(e)
 
-  produces clauses that rescue only `ArgumentError` or only `RuntimeError`. Both
-  bound `var in [A, B]` and bare `[A, B]` forms are supported. A one-element list,
-  a single type, and a bare variable are unchanged because they cannot be narrowed
-  this way without removing the rescue entirely.
+  produces clauses that rescue only `ArgumentError` or only `RuntimeError`. Both bound `var in [A, B]` and bare `[A, B]` forms are supported. A one-element list, a single type, and a bare variable are unchanged because they cannot be narrowed this way without removing the rescue entirely.
 
-  A rescue with two or more clauses also produces one mutant per removed clause.
-  This covers the common form where each clause handles one exception type. At least
-  one clause is always retained, and the removed clause may have any valid head,
-  including a catch-all variable.
+  A rescue with two or more clauses also produces one mutant per removed clause. This covers the common form where each clause handles one exception type. At least one clause is always retained, and the removed clause may have any valid head, including a catch-all variable.
 
-  Both explicit `try` expressions and the `def ... rescue ...` shorthand are
-  supported. Type-list narrowing and clause removal are reported under the
-  `rescue_type` family.
+  Both explicit `try` expressions and the `def ... rescue ...` shorthand are supported. Type-list narrowing and clause removal are reported under the `rescue_type` family.
   """
 
   # A **transform-managed** family (`Mutare.Mutators.transform_managed/0`): discovery and

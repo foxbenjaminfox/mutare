@@ -1,20 +1,12 @@
 defmodule Mutare do
   @moduledoc """
-  Mutare is a mutation testing system for Elixir, that mutates the source you actually write, and compiles **once**.
+  Mutare is a mutation testing system for Elixir, that mutates the source you actually write, and compiles once.
 
-  The whole project is downstream of one invariant: **compile once**. Mutare
-  rewrites a project's source into a *metamutant* — a single program that embeds
-  every mutant behind a `:persistent_term` runtime switch — compiles it once,
-  then runs the suite once per mutant by flipping `MUTARE_ACTIVE_MUTANT`.
+  The whole project is downstream of one invariant: compile once. Mutare rewrites a project's source into a *metamutant* — a single program that embeds every mutant behind a `:persistent_term` runtime switch — compiles it once, then runs the suite once per mutant by flipping `MUTARE_ACTIVE_MUTANT`.
 
-  On top of that, the runner adds coverage-guided test selection, compile-poison
-  recovery, parallel execution, timeouts, ignore annotations, and changed-file
-  scoping via `--since`.
+  On top of that, the runner adds coverage-guided test selection, compile-poison recovery, parallel execution, timeouts, ignore annotations, and changed-file scoping via `--since`.
 
-  Most users drive Mutare through the `mix mutare` task; `run/2` is the
-  programmatic entry point and `transform_string/2` exposes the source rewrite on
-  its own. See `Mutare.Runner` for the run flow and `Mutare.Mutator` for writing
-  your own mutators.
+  Most users drive Mutare through the `mix mutare` task; `run/2` is the programmatic entry point and `transform_string/2` exposes the source rewrite on its own. See `Mutare.Runner` for the run flow and `Mutare.Mutator` for writing your own mutators.
   """
 
   @doc """

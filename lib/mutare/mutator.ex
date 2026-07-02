@@ -2,24 +2,17 @@ defmodule Mutare.Mutator do
   @moduledoc """
   Behaviour for mutators: modules that produce AST replacements.
 
-  A mutator examines an AST node and returns either `:skip` or a list of
-  mutations to generate at that site. Every mutator defines `name/0` and at least
-  one mutation-producing callback.
+  A mutator examines an AST node and returns either `:skip` or a list of mutations to generate at that site. Every mutator defines `name/0` and at least one mutation-producing callback.
 
   You must define `name/0` to identify the mutator in reports, and at least one mutation-producing callback. The usual producer is `mutate/1` (or the pipe-aware/configurable `mutate/2`), but a `Mutare.Mutator.Structural` hook or a `c:Mutare.Mutator.MacroHost.host/2` selector host counts too — a mutator that produces *only* through one of those needs no `mutate/1`. Optionally, you may implement `variants/0` and `variant/2` to classify your mutations into kinds, and `mutate_call_option_keys?/1` to control mutations of call-option names.
 
-  When both `mutate/1` and `mutate/2` are exported, Mutare calls `mutate/2`.
-  If a mutator needs both context-free and context-aware production, call the
-  context-free helper explicitly from `mutate/2`.
+  When both `mutate/1` and `mutate/2` are exported, Mutare calls `mutate/2`. If a mutator needs both context-free and context-aware production, call the context-free helper explicitly from `mutate/2`.
 
-  Structural positions use `Mutare.Mutator.Structural`. Macro-aware mutators use
-  `Mutare.MacroRouting`, and mutators that emit mutations inside hosted DSL
-  fragments also use `Mutare.Mutator.MacroHost`.
+  Structural positions use `Mutare.Mutator.Structural`. Macro-aware mutators use `Mutare.MacroRouting`, and mutators that emit mutations inside hosted DSL fragments also use `Mutare.Mutator.MacroHost`.
 
   ## Writing a mutator
 
-  Match the node shapes to mutate and rebuild them with the changed node. Reuse the
-  original operand AST when possible so the mutation stays small:
+  Match the node shapes to mutate and rebuild them with the changed node. Reuse the original operand AST when possible so the mutation stays small:
 
       defmodule MyApp.Mutators.Boolean do
         @behaviour Mutare.Mutator
@@ -35,26 +28,20 @@ defmodule Mutare.Mutator do
 
   Two rules are important:
 
-    * **Keep every replacement compile-safe.** Mutare compiles one shared
-      metamutant containing all emitted mutants.
-    * **Do not choose delivery placement.** The transform decides whether a
-      mutation is delivered in place or through lifting based on where the node
-      appears.
+    * Keep every replacement compile-safe. Mutare compiles one shared metamutant containing all emitted mutants.
+    * Do not choose delivery placement. The transform decides whether a mutation is delivered in place or through lifting based on where the node appears.
 
-  Build literal replacements with `Mutare.AST.literal/1`. Use
-  `Mutare.Calls.resolved_call_to/3` when matching aliased or imported calls.
+  Build literal replacements with `Mutare.AST.literal/1`. Use `Mutare.Calls.resolved_call_to/3` when matching aliased or imported calls.
 
   ## Registering a mutator
 
-  List it under `:mutators` in `.mutare.exs` alongside, or instead of, built-in
-  family atoms:
+  List it under `:mutators` in `.mutare.exs` alongside, or instead of, built-in family atoms:
 
       [mutators: [:arithmetic, :relational, MyApp.Mutators.Boolean]]
 
   ## Configuring a mutator (`{module, opts}`)
 
-  Register a configurable mutator as `{module, opts}`. The options are available as
-  `context.opts`. Node-level configurable mutators implement `mutate/2`:
+  Register a configurable mutator as `{module, opts}`. The options are available as `context.opts`. Node-level configurable mutators implement `mutate/2`:
 
       defmodule MyApp.Mutators.MagicNumber do
         @behaviour Mutare.Mutator
@@ -73,76 +60,35 @@ defmodule Mutare.Mutator do
       # .mutare.exs
       [mutators: [:arithmetic, {MyApp.Mutators.MagicNumber, swaps: %{200 => 500}}]]
 
-  The reserved `:as` key changes the recorded family name, allowing the same module
-  to run more than once under distinct names. It is removed before options reach the
-  mutator. See `Mutare.Mutator.Spec`.
+  The reserved `:as` key changes the recorded family name, allowing the same module to run more than once under distinct names. It is removed before options reach the mutator. See `Mutare.Mutator.Spec`.
 
-  A mutator with a rich option surface implements `c:init/1` to parse and validate its
-  options **once**, when the instance is resolved — before any file is read — instead of
-  re-reading `context.opts` at every offered node. The value `init/1` returns reaches every
-  context-aware callback as `context.config`; a typo'd option raises at startup, next to
-  Mutare's own option validation. Without `init/1`, `context.config` is the raw options.
-  For the common "which of my families are enabled" option, see `Mutare.Mutator.Families`.
+  A mutator with a rich option surface implements `c:init/1` to parse and validate its options once, when the instance is resolved — before any file is read — instead of re-reading `context.opts` at every offered node. The value `init/1` returns reaches every context-aware callback as `context.config`; a typo'd option raises at startup, next to Mutare's own option validation. Without `init/1`, `context.config` is the raw options. For the common "which of my families are enabled" option, see `Mutare.Mutator.Families`.
 
-  A mutator that must post-process everything it produces — typically to apply that family
-  selection and attach per-family report notes — implements `c:finalize/2`, which Mutare
-  applies to every produced mutation on **every** delivery path (a `mutate/1`/`mutate/2`
-  return and a hosted target's `:mutants`) just before recording, so the funnel cannot miss
-  a delivery site.
+  A mutator that must post-process everything it produces — typically to apply that family selection and attach per-family report notes — implements `c:finalize/2`, which Mutare applies to every produced mutation on every delivery path (a `mutate/1`/`mutate/2` return and a hosted target's `:mutants`) just before recording, so the funnel cannot miss a delivery site.
 
-  Structural mutators use the context-aware structural arity instead:
-  `c:Mutare.Mutator.Structural.return_replacements/2`,
-  `c:Mutare.Mutator.Structural.condition_replacements/2`, or
-  `c:Mutare.Mutator.Structural.pattern_mutations/3`.
+  Structural mutators use the context-aware structural arity instead: `c:Mutare.Mutator.Structural.return_replacements/2`, `c:Mutare.Mutator.Structural.condition_replacements/2`, or `c:Mutare.Mutator.Structural.pattern_mutations/3`.
 
-  A mutator that changes atom-like keys may implement
-  `c:mutate_call_option_keys?/1` to decide whether to mutate a trailing call-option
-  key such as `timeout:` in `foo(x, timeout: 5)`. This policy belongs to the
-  mutator because a context-free atom replacement may turn an option name into an
-  unknown key, while a call-aware family may replace one legal option key with
-  another.
+  A mutator that changes atom-like keys may implement `c:mutate_call_option_keys?/1` to decide whether to mutate a trailing call-option key such as `timeout:` in `foo(x, timeout: 5)`. This policy belongs to the mutator because a context-free atom replacement may turn an option name into an unknown key, while a call-aware family may replace one legal option key with another.
 
       [mutators: [..., {Mutare.Mutators.AtomLiteral, call_option_keys: false}]]
 
   ## Targeting a macro or DSL
 
-  A mutator whose mutation depends on a macro's arguments being routed specially implements
-  `Mutare.MacroRouting` and registers the macros from `c:Mutare.MacroRouting.macro_routes/0`.
-  Routes may be static or use `:routing` with `c:Mutare.MacroRouting.route_arguments/2` for
-  shape-aware classification. Listing the mutator in `:mutators` auto-registers them.
+  A mutator whose mutation depends on a macro's arguments being routed specially implements `Mutare.MacroRouting` and registers the macros from `c:Mutare.MacroRouting.macro_routes/0`. Routes may be static or use `:routing` with `c:Mutare.MacroRouting.route_arguments/2` for shape-aware classification. Listing the mutator in `:mutators` auto-registers them.
 
-  Core still offers the *whole* registered call to `c:mutate/2`, with `context.mutators`
-  carrying the run's enabled non-host specs — so a mutator that keeps a DSL argument raw
-  (`:skip`) can rewrite the call itself **and** sub-contract the ordinary-Elixir islands
-  inside that raw argument back to core's families via
-  `Mutare.Analyze.expression_mutations/3`, relaying each rebuild as a
-  `Mutare.Mutator.Mutation` with `producer:` set (see `Mutare.Analyze`).
+  Core still offers the *whole* registered call to `c:mutate/2`, with `context.mutators` carrying the run's enabled non-host specs — so a mutator that keeps a DSL argument raw (`:skip`) can rewrite the call itself and sub-contract the ordinary-Elixir islands inside that raw argument back to core's families via `Mutare.Analyze.expression_mutations/3`, relaying each rebuild as a `Mutare.Mutator.Mutation` with `producer:` set (see `Mutare.Analyze`).
 
-  A mutator that produces mutations *inside* a compile-time DSL additionally implements
-  `Mutare.Mutator.MacroHost`, subscribes with `c:Mutare.Mutator.MacroHost.hosted_macros/0`, and
-  delivers foreign-DSL mutations through `c:Mutare.Mutator.MacroHost.host/2`. It need not own the
-  DSL's routing: a separate extension may declare the `:hosted` position, and several hosts may
-  subscribe to it. See the "which behaviours do I implement?" table in `Mutare.MacroRouting`.
+  A mutator that produces mutations *inside* a compile-time DSL additionally implements `Mutare.Mutator.MacroHost`, subscribes with `c:Mutare.Mutator.MacroHost.hosted_macros/0`, and delivers foreign-DSL mutations through `c:Mutare.Mutator.MacroHost.host/2`. It need not own the DSL's routing: a separate extension may declare the `:hosted` position, and several hosts may subscribe to it. See the "which behaviours do I implement?" table in `Mutare.MacroRouting`.
 
   ## Structural mutators at routed positions (`Mutare.Mutator.Structural`)
 
-  Some targets are positions rather than individual nodes: a `def`/`defp` return
-  tail, an `if`/`unless`/`cond` condition, or a structural pattern position.
-  Pattern positions include `def`/`defp` heads, clause patterns, destructuring match
-  patterns, and routed `:binding_pattern` macro arguments. Those callbacks live on
-  `Mutare.Mutator.Structural`. A structural mutator declares both behaviours and
-  implements the relevant structural callback.
+  Some targets are positions rather than individual nodes: a `def`/`defp` return tail, an `if`/`unless`/`cond` condition, or a structural pattern position. Pattern positions include `def`/`defp` heads, clause patterns, destructuring match patterns, and routed `:binding_pattern` macro arguments. Those callbacks live on `Mutare.Mutator.Structural`. A structural mutator declares both behaviours and implements the relevant structural callback.
 
-  The transform identifies the position, asks each enabled mutator that exports the
-  matching callback, and records each emitted mutation under that mutator's name.
-  Built-in examples are `Mutare.Mutators.ReturnValue`,
-  `Mutare.Mutators.IfCondition`, and `Mutare.Mutators.PatternSwap`.
+  The transform identifies the position, asks each enabled mutator that exports the matching callback, and records each emitted mutation under that mutator's name. Built-in examples are `Mutare.Mutators.ReturnValue`, `Mutare.Mutators.IfCondition`, and `Mutare.Mutators.PatternSwap`.
 
   ## Behaviour-targeted mutators (`context.behaviours`)
 
-  A mutator can depend on behaviours implemented by the enclosing module. The
-  behaviour set is available as `context.behaviours`, a `MapSet` of module atoms
-  gathered from direct `@behaviour` attributes and `use`-injected behaviours.
+  A mutator can depend on behaviours implemented by the enclosing module. The behaviour set is available as `context.behaviours`, a `MapSet` of module atoms gathered from direct `@behaviour` attributes and `use`-injected behaviours.
 
       defmodule MyApp.Mutators.GenServerReply do
         @behaviour Mutare.Mutator
@@ -157,22 +103,11 @@ defmodule Mutare.Mutator do
         def mutate(_node, _context), do: :skip
       end
 
-  Structural callbacks have context-aware arities carrying the same behaviour set:
-  `c:Mutare.Mutator.Structural.return_replacements/2`,
-  `c:Mutare.Mutator.Structural.condition_replacements/2`, and
-  `c:Mutare.Mutator.Structural.pattern_mutations/3`. These callbacks receive
-  `context.behaviours` and `context.opts`, so export the context-aware arity when a
-  structural mutation depends on behaviours or configuration.
+  Structural callbacks have context-aware arities carrying the same behaviour set: `c:Mutare.Mutator.Structural.return_replacements/2`, `c:Mutare.Mutator.Structural.condition_replacements/2`, and `c:Mutare.Mutator.Structural.pattern_mutations/3`. These callbacks receive `context.behaviours` and `context.opts`, so export the context-aware arity when a structural mutation depends on behaviours or configuration.
 
   ## Matching aliased or imported calls (`Mutare.Calls`)
 
-  A mutator that targets a standard-library or remote call uses
-  `Mutare.Calls.resolved_call_to/3` with the real module atom (and optionally
-  the function names it owns); it returns `{:ok, function, arguments, rebuild}`
-  for resolved qualified, aliased, imported, and Erlang-atom module calls, and
-  `rebuild` emits the replacement in the same written form as the source. For
-  table-driven matching across modules, `Mutare.Calls.resolved_call/1` returns
-  the raw resolved tuple, keyed by `Mutare.Calls.module_key/1`.
+  A mutator that targets a standard-library or remote call uses `Mutare.Calls.resolved_call_to/3` with the real module atom (and optionally the function names it owns); it returns `{:ok, function, arguments, rebuild}` for resolved qualified, aliased, imported, and Erlang-atom module calls, and `rebuild` emits the replacement in the same written form as the source. For table-driven matching across modules, `Mutare.Calls.resolved_call/1` returns the raw resolved tuple, keyed by `Mutare.Calls.module_key/1`.
   """
 
   alias Mutare.Mutator.Mutation

@@ -5,17 +5,11 @@ defmodule Mutare.Mutators.StrictEquality do
     * `a === b` → `a == b`
     * `a !== b` → `a != b`
 
-  The reverse replacements are not produced. This family checks whether the numeric
-  type distinction made by strict equality is required.
+  The reverse replacements are not produced. This family checks whether the numeric type distinction made by strict equality is required.
 
-  `Mutare.Mutators.Relational` independently changes equality polarity, such as
-  `===` to `!==`. Both families may therefore produce distinct mutants at the
-  same expression. Under `not` or `!`, relational polarity changes may overlap
-  with a logical mutation and be suppressed; strictness relaxation remains distinct
-  and is retained.
+  `Mutare.Mutators.Relational` independently changes equality polarity, such as `===` to `!==`. Both families may therefore produce distinct mutants at the same expression. Under `not` or `!`, relational polarity changes may overlap with a logical mutation and be suppressed; strictness relaxation remains distinct and is retained.
 
-  These operators are guard-safe and are also mutated in guards. The ignore variants
-  are `==` and `!=`.
+  These operators are guard-safe and are also mutated in guards. The ignore variants are `==` and `!=`.
   """
   @behaviour Mutare.Mutator
 

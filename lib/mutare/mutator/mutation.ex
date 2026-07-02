@@ -2,24 +2,13 @@ defmodule Mutare.Mutator.Mutation do
   @moduledoc """
   A replacement AST node with optional report metadata.
 
-  Mutators normally return a bare replacement node. Return a `Mutation` when the replacement also
-  needs either of these fields:
+  Mutators normally return a bare replacement node. Return a `Mutation` when the replacement also needs either of these fields:
 
-    * `note` — text shown with a surviving mutant. It does not suppress the mutant or change its
-      score.
-    * `variant` — one or more labels used by `# mutare:ignore[family:label]`. A mutator may attach
-      the label here or derive it with `c:Mutare.Mutator.variant/2`.
-    * `producer` — the `Mutare.Mutator.Spec` this mutation is recorded under *instead of* the
-      mutator that returned it. Set it only when relaying a mutation another family reasoned
-      about — the selector-host sub-contract case, where `c:Mutare.Mutator.MacroHost.host/2`
-      returns interior mutants collected from core's families via
-      `Mutare.Analyze.expression_mutations/3`: the site (and its `# mutare:ignore` vocabulary)
-      then belongs to the producing family, not the host. `nil` (the default) records the
-      mutation under the returning mutator, exactly as before.
+    * `note` — text shown with a surviving mutant. It does not suppress the mutant or change its score.
+    * `variant` — one or more labels used by `# mutare:ignore[family:label]`. A mutator may attach the label here or derive it with `c:Mutare.Mutator.variant/2`.
+    * `producer` — the `Mutare.Mutator.Spec` this mutation is recorded under *instead of* the mutator that returned it. Set it only when relaying a mutation another family reasoned about — the selector-host sub-contract case, where `c:Mutare.Mutator.MacroHost.host/2` returns interior mutants collected from core's families via `Mutare.Analyze.expression_mutations/3`: the site (and its `# mutare:ignore` vocabulary) then belongs to the producing family, not the host. `nil` (the default) records the mutation under the returning mutator, exactly as before.
 
-  `Mutation` values are accepted by `c:Mutare.Mutator.mutate/1`,
-  `c:Mutare.Mutator.mutate/2`, and `c:Mutare.Mutator.MacroHost.host/2`. Use this struct rather than
-  a plain map, because a map is also a valid replacement AST node.
+  `Mutation` values are accepted by `c:Mutare.Mutator.mutate/1`, `c:Mutare.Mutator.mutate/2`, and `c:Mutare.Mutator.MacroHost.host/2`. Use this struct rather than a plain map, because a map is also a valid replacement AST node.
   """
 
   @typedoc "A produced mutation's variant label(s): `nil`, one label, or a list (see `c:Mutare.Mutator.variant/2`)."

@@ -2,14 +2,9 @@ defmodule Mutare.Site do
   @moduledoc """
   One mutant: a single mutation applied at a single source location.
 
-  One source expression may produce several sites, one for each replacement. Each site records
-  its id, source range, mutator, replacement kind, before/after code, ignore state, and optional
-  variant or advisory note. `Mutare.transform_string/2` returns sites alongside the generated
-  metamutant source.
+  One source expression may produce several sites, one for each replacement. Each site records its id, source range, mutator, replacement kind, before/after code, ignore state, and optional variant or advisory note. `Mutare.transform_string/2` returns sites alongside the generated metamutant source.
 
-  A runner may defer rendering `original_code` and `mutated_code`, leaving them `nil` until the
-  result needs to be displayed. `summary` may hold a cheaper one-line description for live
-  progress. `Mutare.transform_string/2` renders the code fields by default.
+  A runner may defer rendering `original_code` and `mutated_code`, leaving them `nil` until the result needs to be displayed. `summary` may hold a cheaper one-line description for live progress. `Mutare.transform_string/2` renders the code fields by default.
   """
 
   @type t :: %__MODULE__{

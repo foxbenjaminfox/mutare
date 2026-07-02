@@ -2,18 +2,11 @@ defmodule Mutare.Mutator.MacroHost do
   @moduledoc """
   Capability behaviour for a mutator that hosts mutations inside a compile-time DSL.
 
-  Ordinary mutators see runtime Elixir expressions. A fragment inside a macro such
-  as Ecto's `where` has the library's own semantics and cannot necessarily contain
-  Mutare's ordinary selector. A macro host inserts selectors in the form that DSL
-  accepts.
+  Ordinary mutators see runtime Elixir expressions. A fragment inside a macro such as Ecto's `where` has the library's own semantics and cannot necessarily contain Mutare's ordinary selector. A macro host inserts selectors in the form that DSL accepts.
 
-  Macro registration and argument routing belong to the independent `Mutare.MacroRouting`
-  capability. A host subscribes to the macros it can mutate through `c:hosted_macros/0`; a
-  separate library extension may own their routing. This lets several independent mutators target
-  the same DSL without replacing one another.
+  Macro registration and argument routing belong to the independent `Mutare.MacroRouting` capability. A host subscribes to the macros it can mutate through `c:hosted_macros/0`; a separate library extension may own their routing. This lets several independent mutators target the same DSL without replacing one another.
 
-  `host/2` is itself a mutation-producing callback, so a mutator that delivers **all** of its
-  mutations through the DSL needs no `mutate/1` — just `name/0` to identify it in reports:
+  `host/2` is itself a mutation-producing callback, so a mutator that delivers all of its mutations through the DSL needs no `mutate/1` — just `name/0` to identify it in reports:
 
       defmodule MyApp.Mutators.Ecto do
         alias Mutare.Mutator.MacroHost.Target
@@ -33,10 +26,7 @@ defmodule Mutare.Mutator.MacroHost do
         end
       end
 
-  (Add a `mutate/1` only if the mutator *also* mutates whole nodes outside the DSL.) See
-  `Mutare.MacroRouting` for the "which behaviours do I implement?" table.
-  The same module may also implement `Mutare.MacroRouting` when it owns the DSL adapter as well as
-  its mutations, but the capabilities remain independently composable.
+  (Add a `mutate/1` only if the mutator *also* mutates whole nodes outside the DSL.) See `Mutare.MacroRouting` for the "which behaviours do I implement?" table. The same module may also implement `Mutare.MacroRouting` when it owns the DSL adapter as well as its mutations, but the capabilities remain independently composable.
   """
 
   @typedoc "A macro selector returned by `c:hosted_macros/0`."

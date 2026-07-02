@@ -1,14 +1,8 @@
 defmodule Mutare.Report.Json do
   @moduledoc """
-  Renders a mutation run as a **mutation-testing-elements** report-schema JSON
-  document (the schema Stryker and its viewer/dashboard speak).
+  Renders a mutation run as a mutation-testing-elements report-schema JSON document (the schema Stryker and its viewer/dashboard speak).
 
-  This is the lossless machine format: every mutant (not just survivors) is
-  emitted, keyed by file, with its location and status. Mutare's
-  `Mutare.Result` statuses map exactly onto the schema's `MutantStatus`
-  vocabulary (see `status/1`), so the report drops straight into the existing
-  ecosystem — `Mutare.Report.Html` embeds this same document into the report
-  web component, and it can be uploaded to the Stryker dashboard unchanged.
+  This is the lossless machine format: every mutant (not just survivors) is emitted, keyed by file, with its location and status. Mutare's `Mutare.Result` statuses map exactly onto the schema's `MutantStatus` vocabulary (see `status/1`), so the report drops straight into the existing ecosystem — `Mutare.Report.Html` embeds this same document into the report web component, and it can be uploaded to the Stryker dashboard unchanged.
 
   Emitted by `mix mutare --report json` or `mix mutare --report json:path.json`.
   """

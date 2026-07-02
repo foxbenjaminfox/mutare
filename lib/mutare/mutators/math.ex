@@ -1,8 +1,6 @@
 defmodule Mutare.Mutators.Math do
   @moduledoc """
-  Mutate calls to the Erlang `:math` module — the floating-point cousin of
-  `Mutare.Mutators.Numeric`, asking: does any test actually depend on *which*
-  trigonometric/logarithmic function (or constant) this call computes?
+  Mutate calls to the Erlang `:math` module — the floating-point cousin of `Mutare.Mutators.Numeric`, asking: does any test actually depend on *which* trigonometric/logarithmic function (or constant) this call computes?
 
     * `:math.pi()`  → `3.0`                  — a nearby-but-wrong constant
     * `:math.tau()` → `6.0`                  — likewise (τ = 2π)
@@ -10,15 +8,11 @@ defmodule Mutare.Mutators.Math do
     * `:math.asin`  ↔ `:math.acos`
     * `:math.sinh`  ↔ `:math.cosh`
     * `:math.asinh` ↔ `:math.acosh`
-    * `:math.log` ↔ `:math.log2` ↔ `:math.log10` — the logarithm-base trio (each
-      maps to the other two)
+    * `:math.log` ↔ `:math.log2` ↔ `:math.log10` — the logarithm-base trio (each maps to the other two)
 
-  The constant swaps (`pi`/`tau`, both `/0`) replace the whole call with a plain float
-  literal that is the right shape but the wrong value — a magnitude any test pinning down
-  the geometry will catch.
+  The constant swaps (`pi`/`tau`, both `/0`) replace the whole call with a plain float literal that is the right shape but the wrong value — a magnitude any test pinning down the geometry will catch.
 
-  On by default. Matches the direct `:math.sin`, an aliased `alias :math, as: M; M.sin`,
-  and a bare imported `import :math; sin` alike.
+  On by default. Matches the direct `:math.sin`, an aliased `alias :math, as: M; M.sin`, and a bare imported `import :math; sin` alike.
   """
   @behaviour Mutare.Mutator
 

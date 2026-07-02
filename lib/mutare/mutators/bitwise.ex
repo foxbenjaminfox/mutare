@@ -6,19 +6,13 @@ defmodule Mutare.Mutators.Bitwise do
     * `<<<` ↔ `>>>` (`bsl` ↔ `bsr`)
     * `~~~x` → `x` (`bnot(x)` → `x`)
 
-  Function calls may be direct, aliased, imported, or piped. Bitwise operations are
-  guard-safe and are also mutated in guards.
+  Function calls may be direct, aliased, imported, or piped. Bitwise operations are guard-safe and are also mutated in guards.
 
-  A left/right shift by the literal value `0` is unchanged and is therefore
-  omitted. AND/OR replacements and complement removal remain eligible.
+  A left/right shift by the literal value `0` is unchanged and is therefore omitted. AND/OR replacements and complement removal remain eligible.
 
-  `bxor` and `^^^` are not mutated because XOR has no complementary operator.
-  The deprecated `~~~` form is supported, but a piped `bnot` call is not removed.
-  Imports introduced by `use Bitwise` are available only when that `use` can be
-  expanded during resolution.
+  `bxor` and `^^^` are not mutated because XOR has no complementary operator. The deprecated `~~~` form is supported, but a piped `bnot` call is not removed. Imports introduced by `use Bitwise` are available only when that `use` can be expanded during resolution.
 
-  This family is enabled by default. Its ignore variants are `&&&`, `|||`, `<<<`,
-  and `>>>`.
+  This family is enabled by default. Its ignore variants are `&&&`, `|||`, `<<<`, and `>>>`.
   """
   @behaviour Mutare.Mutator
 

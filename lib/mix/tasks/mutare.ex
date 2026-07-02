@@ -17,26 +17,17 @@ defmodule Mix.Tasks.Mutare do
 
   ## Reading the results
 
-  Every mutant finishes in one of these states. The headline mutation score is
-  the percentage of *testable* mutants your suite killed:
+  Every mutant finishes in one of these states. The headline mutation score is the percentage of *testable* mutants your suite killed:
 
       score = killed / (total − no_coverage − ignored − poisoned − harness_error)
 
     * `killed`      — a test failed on the mutant. Your suite caught the change.
-    * `survived`    — every test still passed: no test tells the mutated code apart
-                      from the original. Survivors are the point of the tool, and
-                      print as a one-line diff so you can see exactly what slipped
-                      through.
-    * `timeout`     — the mutant ran past the per-mutant time cap (e.g. it created
-                      an infinite loop). Counts as killed. (So does a mutant that
-                      exhausts the atom table and crashes the VM.)
-    * `no_coverage` — no test runs that line at all, so nothing could catch it.
-                      Excluded from the score; fix it by covering the line.
+    * `survived`    — every test still passed: no test tells the mutated code apart from the original. Survivors are the point of the tool, and print as a one-line diff so you can see exactly what slipped through.
+    * `timeout`     — the mutant ran past the per-mutant time cap (e.g. it created an infinite loop). Counts as killed. (So does a mutant that exhausts the atom table and crashes the VM.)
+    * `no_coverage` — no test runs that line at all, so nothing could catch it. Excluded from the score; fix it by covering the line.
     * `ignored`     — suppressed by a `# mutare:ignore` comment (below). Excluded.
-    * `poisoned`    — the mutated code would not compile, so it was dropped.
-                      Excluded. (Rare — the built-in mutators are compile-safe.)
-    * `harness_error` — the mutant's test run never reached a pass/fail verdict (an
-                      infrastructure hiccup, not a real result). Excluded.
+    * `poisoned`    — the mutated code would not compile, so it was dropped. Excluded. (Rare — the built-in mutators are compile-safe.)
+    * `harness_error` — the mutant's test run never reached a pass/fail verdict (an infrastructure hiccup, not a real result). Excluded.
 
   A run exits 0 even when mutants survive — survivors are findings to act on, not a build failure. See "Continuous integration" below to make a low score or a stale ignore exit non-zero.
 
@@ -58,23 +49,13 @@ defmodule Mix.Tasks.Mutare do
 
   ## Mutator families
 
-  All families run by default. Run `mix mutare --list-mutators` to print the catalog.
-  Select a subset with `--mutators a,b,c` (or the `:mutators` key in `.mutare.exs`);
-  list `builtins` to keep the whole default set and add to it — `--mutators builtins,relational` is every built-in, while `--mutators relational` is *only* the relational family. The family atoms, by kind:
+  All families run by default. Run `mix mutare --list-mutators` to print the catalog. Select a subset with `--mutators a,b,c` (or the `:mutators` key in `.mutare.exs`); list `builtins` to keep the whole default set and add to it — `--mutators builtins,relational` is every built-in, while `--mutators relational` is *only* the relational family. The family atoms, by kind:
 
-    * **Operators** — `arithmetic`, `operand_swap`, `bitwise`, `relational`,
-      `strict_equality`, `logical`, `list`, `conditional`
-    * **Literals** — `literal`, `string`, `float`, `atom`, `convention`,
-      `charlist`, `word_list`, `string_sigil`, `map`, `tuple`, `bitstring`,
-      `bitstring_spec`, `regex`, `datetime`, `alias`
-    * **Calls** (rewrite or drop a stdlib/remote call) — `collection`,
-      `collection_arity`, `string_call`, `string_byte`, `map_keyword`,
-      `keyword_delete`, `map_set`, `period_boundary`, `call_removal`,
-      `default_drop`, `mode_swap`, `numeric`, `math`, `integer`
-    * **Structural** — `return_value`, `if_condition`, `pattern_swap`,
-      `pattern_wildcard`, `rescue_type`, `guard_drop`
-    * **Behaviour-aware** — `genserver` (swaps an OTP callback's return tuple;
-      fires only inside a `@behaviour GenServer` module)
+    * Operators — `arithmetic`, `operand_swap`, `bitwise`, `relational`, `strict_equality`, `logical`, `list`, `conditional`
+    * Literals — `literal`, `string`, `float`, `atom`, `convention`, `charlist`, `word_list`, `string_sigil`, `map`, `tuple`, `bitstring`, `bitstring_spec`, `regex`, `datetime`, `alias`
+    * Calls (rewrite or drop a stdlib/remote call) — `collection`, `collection_arity`, `string_call`, `string_byte`, `map_keyword`, `keyword_delete`, `map_set`, `period_boundary`, `call_removal`, `default_drop`, `mode_swap`, `numeric`, `math`, `integer`
+    * Structural — `return_value`, `if_condition`, `pattern_swap`, `pattern_wildcard`, `rescue_type`, `guard_drop`
+    * Behaviour-aware — `genserver` (swaps an OTP callback's return tuple; fires only inside a `@behaviour GenServer` module)
 
   Each family's exact swap table lives in its own module's docs — print one with `mix mutare --explain relational`. You can also list your own module implementing `Mutare.Mutator` under `:mutators` to add a custom mutator.
 
@@ -174,7 +155,7 @@ defmodule Mix.Tasks.Mutare do
 
   ## Database isolation across workers
 
-  A suite with shared state (a database, say) can collide when several mutants run at once. `--partition-db` (or `--partition-env <NAME>` for a custom variable) gives each of the `--workers` concurrent runs a **distinct** partition id (`1..workers`) under an environment variable — `MIX_TEST_PARTITION` by default — so each worker can point at its own database:
+  A suite with shared state (a database, say) can collide when several mutants run at once. `--partition-db` (or `--partition-env <NAME>` for a custom variable) gives each of the `--workers` concurrent runs a distinct partition id (`1..workers`) under an environment variable — `MIX_TEST_PARTITION` by default — so each worker can point at its own database:
 
       mix mutare --workers 4 --partition-db           # distinct MIX_TEST_PARTITION per worker
       mix mutare --workers 4 --partition-env MY_SLOT  # ...under a custom variable name
@@ -193,7 +174,7 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --sandbox /tmp/mut                 # keep the generated sandbox to inspect it
       mix mutare --sandbox /tmp/mut --keep-sandbox  # reuse the sandbox + its build cache (CI)
 
-  By default Mutare materialises a throwaway sandbox copy, recompiles the metamutant cold every run, and removes the sandbox when it finishes (so the temp dir does not accumulate). `--sandbox <path>` keeps that sandbox around — handy for inspecting the generated metamutant. `--keep-sandbox` instead **preserves** the sandbox between runs and re-materialises it incrementally (only changed files are rewritten, so mix's compiler reuses the cached `_build`). On CI, pair it with `--sandbox <path>` pointed at a cached directory (cache `<path>/_build` and `<path>/deps`, keyed on `mix.lock`); locally, `--keep-sandbox` alone reuses a stable per-project temp dir.
+  By default Mutare materialises a throwaway sandbox copy, recompiles the metamutant cold every run, and removes the sandbox when it finishes (so the temp dir does not accumulate). `--sandbox <path>` keeps that sandbox around — handy for inspecting the generated metamutant. `--keep-sandbox` instead preserves the sandbox between runs and re-materialises it incrementally (only changed files are rewritten, so mix's compiler reuses the cached `_build`). On CI, pair it with `--sandbox <path>` pointed at a cached directory (cache `<path>/_build` and `<path>/deps`, keyed on `mix.lock`); locally, `--keep-sandbox` alone reuses a stable per-project temp dir.
 
   ## Output formats
 

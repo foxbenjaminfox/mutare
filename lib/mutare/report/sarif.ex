@@ -2,12 +2,7 @@ defmodule Mutare.Report.Sarif do
   @moduledoc """
   Renders surviving mutants as a SARIF 2.1.0 log.
 
-  A surviving mutant is a gap in the suite at a specific location, which is
-  exactly what SARIF models — so GitHub code scanning (and other SARIF
-  consumers) surface each survivor as an inline annotation on the PR diff. Only
-  `:survived` results become findings; killed/skipped mutants are not
-  actionable and are omitted. The mutation description (`Mutare.Site.describe/1`)
-  is reused verbatim as the finding message.
+  A surviving mutant is a gap in the suite at a specific location, which is exactly what SARIF models — so GitHub code scanning (and other SARIF consumers) surface each survivor as an inline annotation on the PR diff. Only `:survived` results become findings; killed/skipped mutants are not actionable and are omitted. The mutation description (`Mutare.Site.describe/1`) is reused verbatim as the finding message.
 
   Emitted by `mix mutare --report sarif` or `mix mutare --report sarif:path.sarif`.
   """

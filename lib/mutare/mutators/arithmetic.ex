@@ -9,18 +9,11 @@ defmodule Mutare.Mutators.Arithmetic do
 
   `div` and `rem` are mutated in guards and piped calls.
 
-  Equivalent identity mutations are omitted. Unary `-0` is not removed, while
-  `-0.0` remains eligible because the sign of floating-point zero is observable.
-  `a * 1` and `a / 1` are not exchanged; this applies only when `1` is the
-  right operand. Although multiplication by one may retain an integer where division
-  returns a float, the two are treated as equivalent for this filter.
+  Equivalent identity mutations are omitted. Unary `-0` is not removed, while `-0.0` remains eligible because the sign of floating-point zero is observable. `a * 1` and `a / 1` are not exchanged; this applies only when `1` is the right operand. Although multiplication by one may retain an integer where division returns a float, the two are treated as equivalent for this filter.
 
-  Additive zero is not filtered. In particular, exchanging `x + 0.0` and
-  `x - 0.0` can change the sign of floating-point zero. `div` and `rem` are
-  also retained when the divisor is one because their results differ.
+  Additive zero is not filtered. In particular, exchanging `x + 0.0` and `x - 0.0` can change the sign of floating-point zero. `div` and `rem` are also retained when the divisor is one because their results differ.
 
-  This family is enabled by default. Its ignore variants are `+`, `-`, `*`,
-  `/`, `div`, and `rem`.
+  This family is enabled by default. Its ignore variants are `+`, `-`, `*`, `/`, `div`, and `rem`.
   """
   @behaviour Mutare.Mutator
 

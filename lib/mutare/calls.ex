@@ -2,30 +2,15 @@ defmodule Mutare.Calls do
   @moduledoc """
   Call-resolution readers for custom mutators and macro integrations.
 
-  `resolved_call/1` normalizes qualified, aliased, imported, and Erlang-module calls to
-  `{module, function, arguments, rebuild}`. Use `rebuild` to preserve the source's written call
-  form when that is compile-safe; bare imported calls may be requalified when the replacement
-  changes name or arity. It operates on nodes passed to a mutator by Mutare's transform.
+  `resolved_call/1` normalizes qualified, aliased, imported, and Erlang-module calls to `{module, function, arguments, rebuild}`. Use `rebuild` to preserve the source's written call form when that is compile-safe; bare imported calls may be requalified when the replacement changes name or arity. It operates on nodes passed to a mutator by Mutare's transform.
 
-  This reads the `alias`/`import` stamps the transform places on the AST before
-  mutators run, so it is only meaningful on a node handed to a mutator by the transform (a
-  `mutate/1` argument) — exactly where a call-matching mutator needs it.
+  This reads the `alias`/`import` stamps the transform places on the AST before mutators run, so it is only meaningful on a node handed to a mutator by the transform (a `mutate/1` argument) — exactly where a call-matching mutator needs it.
 
-  `module_key/1` encodes a real module atom into the key shape `resolved_call/1`
-  returns, and `resolved_call_to/3` bundles the common "is this a call to module M
-  (function F)?" match — together they save a caller from ever constructing or
-  pattern-building the key representation itself.
+  `module_key/1` encodes a real module atom into the key shape `resolved_call/1` returns, and `resolved_call_to/3` bundles the common "is this a call to module M (function F)?" match — together they save a caller from ever constructing or pattern-building the key representation itself.
 
-  `resolved_macro_call/1` is the **known-macro** twin. It returns a stable
-  `Mutare.MacroRouting.Call` with a natural module atom, visible arguments, pipe information, and
-  a source-preserving rebuild function.
+  `resolved_macro_call/1` is the known-macro twin. It returns a stable `Mutare.MacroRouting.Call` with a natural module atom, visible arguments, pipe information, and a source-preserving rebuild function.
 
-  `macro_treatment/1` reads *how a node's macro is registered* — the resolved per-argument routing
-  the merged registry (built-ins + every mutator's/extension's `macro_routes/0` + the declarative `:macro_routes`
-  option) assigned it. A macro host uses it in two places: on its **own** call's `node`, to locate
-  the positions the route marked `:hosted` (including values nested under `{:keyword, …}`); and on
-  a **nested** macro inside a fragment it walks, to ask whether an argument routes `:skip` (leave
-  it opaque) or otherwise specially. In both cases it replaces re-deriving the classification.
+  `macro_treatment/1` reads *how a node's macro is registered* — the resolved per-argument routing the merged registry (built-ins + every mutator's/extension's `macro_routes/0` + the declarative `:macro_routes` option) assigned it. A macro host uses it in two places: on its own call's `node`, to locate the positions the route marked `:hosted` (including values nested under `{:keyword, …}`); and on a nested macro inside a fragment it walks, to ask whether an argument routes `:skip` (leave it opaque) or otherwise specially. In both cases it replaces re-deriving the classification.
 
   ## Example
 

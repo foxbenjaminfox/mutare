@@ -1,67 +1,36 @@
 defmodule Mutare.Mutators.ModeSwap do
   @moduledoc """
-  Replaces mode and unit atoms in supported standard-library calls. Each replacement
-  is valid for that function and argument position.
+  Replaces mode and unit atoms in supported standard-library calls. Each replacement is valid for that function and argument position.
 
   ## Time and calendar units
 
-    * `DateTime.add/3,4`, `DateTime.diff/3`, and the corresponding
-      `NaiveDateTime` and `Time` calls: replace the trailing time unit with an
-      adjacent unit.
-    * `DateTime.truncate/2`, `NaiveDateTime.truncate/2`, and `Time.truncate/2`:
-      replace `:microsecond`, `:millisecond`, or `:second` with an adjacent
-      precision.
-    * `System.system_time/1`, `System.monotonic_time/1`, `System.os_time/1`,
-      and both unit arguments of `System.convert_time_unit/3`: replace the clock
-      unit. `:native` changes to `:second`.
-    * `DateTime.from_unix/2,3`, `DateTime.from_unix!/2,3`, and
-      `DateTime.to_unix/2`: replace the timestamp unit.
-    * `DateTime.shift/2,3`, `NaiveDateTime.shift/2`, `Time.shift/2`, and
-      `Date.shift/2`: replace each duration key with an adjacent valid unit while
-      retaining its amount. `Time` accepts only time units and `Date` only date
-      units. `:microsecond` is excluded because its value has a different shape.
-    * `Date.day_of_week/2`, `Date.beginning_of_week/2`, and
-      `Date.end_of_week/2`: replace the starting weekday with an adjacent day.
-      `:default` changes to `:tuesday`.
+    * `DateTime.add/3,4`, `DateTime.diff/3`, and the corresponding `NaiveDateTime` and `Time` calls: replace the trailing time unit with an adjacent unit.
+    * `DateTime.truncate/2`, `NaiveDateTime.truncate/2`, and `Time.truncate/2`: replace `:microsecond`, `:millisecond`, or `:second` with an adjacent precision.
+    * `System.system_time/1`, `System.monotonic_time/1`, `System.os_time/1`, and both unit arguments of `System.convert_time_unit/3`: replace the clock unit. `:native` changes to `:second`.
+    * `DateTime.from_unix/2,3`, `DateTime.from_unix!/2,3`, and `DateTime.to_unix/2`: replace the timestamp unit.
+    * `DateTime.shift/2,3`, `NaiveDateTime.shift/2`, `Time.shift/2`, and `Date.shift/2`: replace each duration key with an adjacent valid unit while retaining its amount. `Time` accepts only time units and `Date` only date units. `:microsecond` is excluded because its value has a different shape.
+    * `Date.day_of_week/2`, `Date.beginning_of_week/2`, and `Date.end_of_week/2`: replace the starting weekday with an adjacent day. `:default` changes to `:tuesday`.
 
   ## String and encoding modes
 
-    * `String.upcase/2`, `String.downcase/2`, and `String.capitalize/2`:
-      `:greek` and `:turkic` change to `:default`. `:default` and `:ascii`
-      are not exchanged.
-    * `String.normalize/2`: exchange `:nfc` with `:nfd`, and `:nfkc` with
-      `:nfkd`.
-    * `DateTime.to_iso8601/2,3` and the corresponding `NaiveDateTime`, `Time`,
-      and `Date` calls: exchange `:extended` and `:basic`.
-    * `URI.encode_query/2` and `URI.decode_query/3`: exchange `:www_form` and
-      `:rfc3986`.
+    * `String.upcase/2`, `String.downcase/2`, and `String.capitalize/2`: `:greek` and `:turkic` change to `:default`. `:default` and `:ascii` are not exchanged.
+    * `String.normalize/2`: exchange `:nfc` with `:nfd`, and `:nfkc` with `:nfkd`.
+    * `DateTime.to_iso8601/2,3` and the corresponding `NaiveDateTime`, `Time`, and `Date` calls: exchange `:extended` and `:basic`.
+    * `URI.encode_query/2` and `URI.decode_query/3`: exchange `:www_form` and `:rfc3986`.
 
   ## Sort modes
 
-  For `Enum.sort/2`, `Enum.sort_by/3`, and `List.keysort/3`, the mutator
-  exchanges `:asc` and `:desc`. It also changes the direction in
-  `{:asc | :desc, module}` tuples. A literal module sorter, such as
-  `Enum.sort(values, Date)`, becomes `{:desc, Date}`. Variables and function
-  sorters are not wrapped.
+  For `Enum.sort/2`, `Enum.sort_by/3`, and `List.keysort/3`, the mutator exchanges `:asc` and `:desc`. It also changes the direction in `{:asc | :desc, module}` tuples. A literal module sorter, such as `Enum.sort(values, Date)`, becomes `{:desc, Date}`. Variables and function sorters are not wrapped.
 
   ## Keyword option modes
 
-    * The `case:` option for `Base.encode16/2`, `Base.decode16/2`,
-      `Base.decode16!/2`, and the corresponding Base32 and hex Base32 functions
-      exchanges `:upper` and `:lower`. `:mixed` is unchanged.
-    * The `return:` option for `Regex.scan/3` and `Regex.run/3` exchanges
-      `:index` and `:binary`.
-    * The `on:` option for `Regex.split/3` changes `:first` and `:all` to
-      `:none`; `:none`, `:all_but_first`, and `:all_names` change to
-      `:first`. Lists of capture references are unchanged.
+    * The `case:` option for `Base.encode16/2`, `Base.decode16/2`, `Base.decode16!/2`, and the corresponding Base32 and hex Base32 functions exchanges `:upper` and `:lower`. `:mixed` is unchanged.
+    * The `return:` option for `Regex.scan/3` and `Regex.run/3` exchanges `:index` and `:binary`.
+    * The `on:` option for `Regex.split/3` changes `:first` and `:all` to `:none`; `:none`, `:all_but_first`, and `:all_names` change to `:first`. Lists of capture references are unchanged.
 
-  Ordered sets use adjacent replacements, so a position produces at most two
-  mutants. Unrecognized atoms and values of other types are ignored.
+  Ordered sets use adjacent replacements, so a position produces at most two mutants. Unrecognized atoms and values of other types are ignored.
 
-  This family is enabled by default. It matches aliased and piped calls and locates
-  the option at its effective argument position. Because it rewrites the whole call,
-  overlapping `Mutare.Mutators.AtomLiteral` and `Mutare.Mutators.AliasLiteral`
-  leaf mutants are removed.
+  This family is enabled by default. It matches aliased and piped calls and locates the option at its effective argument position. Because it rewrites the whole call, overlapping `Mutare.Mutators.AtomLiteral` and `Mutare.Mutators.AliasLiteral` leaf mutants are removed.
   """
   @behaviour Mutare.Mutator
 

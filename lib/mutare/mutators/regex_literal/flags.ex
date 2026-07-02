@@ -2,42 +2,22 @@ defmodule Mutare.Mutators.RegexLiteral.Flags do
   @moduledoc """
   Positional flag-scope tracking for a regex pattern.
 
-  A regex's *effective* option flags (`i`/`m`/`s`/`x`/`u`/…) are not a single set for
-  the whole pattern: an **inline modifier** changes them *positionally*, so the same
-  `^` can be multiline in one place and not in another. This module models that, so a
-  mode-aware mutator (anchor swaps today; a dotall-aware `.`, a caseless mutation, …
-  tomorrow) can ask "is flag X active *here*?" rather than reading one global boolean.
+  A regex's *effective* option flags (`i`/`m`/`s`/`x`/`u`/…) are not a single set for the whole pattern: an inline modifier changes them *positionally*, so the same `^` can be multiline in one place and not in another. This module models that, so a mode-aware mutator (anchor swaps today; a dotall-aware `.`, a caseless mutation, … tomorrow) can ask "is flag X active *here*?" rather than reading one global boolean.
 
   ## The model — a scope stack
 
-  The state is a **stack of flag sets** (`MapSet` of flag bytes), innermost on top, the
-  baseline (the sigil's own modifiers) at the bottom. As a left-to-right byte walk meets
-  group boundaries *outside a character class* it threads the stack through `open/2` and
-  `close/1`, and reads the current frame with `active?/2`:
+  The state is a stack of flag sets (`MapSet` of flag bytes), innermost on top, the baseline (the sigil's own modifiers) at the bottom. As a left-to-right byte walk meets group boundaries *outside a character class* it threads the stack through `open/2` and `close/1`, and reads the current frame with `active?/2`:
 
-    * **scoped** `(?flags:…)` / `(?flags-flags:…)` — *push* a frame = current ∪ adds ∖
-      removes. The matching `)` pops it (so the change is confined to the group).
-    * **bare** `(?flags)` / `(?-flags)` — *mutate the current (top) frame in place* and
-      push **nothing**. Because that frame is popped by the enclosing group's `)`, the
-      change automatically applies to "the rest of the enclosing group" — PCRE's exact
-      semantics — and is inherited by nested groups (which push a copy of the mutated
-      frame). At the top level there is no enclosing `)`, so it runs to the pattern end.
-    * **ordinary** group / lookaround / named capture / atomic / conditional / `(?:` —
-      push a copy of the current frame (no flag change). Recursion/backref atoms like
-      `(?R)`/`(?P=n)` self-balance through the same push/pop and are harmless.
-    * **comment** `(?#…)` — swallowed whole (its body is not regex), no flag change.
+    * scoped `(?flags:…)` / `(?flags-flags:…)` — *push* a frame = current ∪ adds ∖ removes. The matching `)` pops it (so the change is confined to the group).
+    * bare `(?flags)` / `(?-flags)` — *mutate the current (top) frame in place* and push nothing. Because that frame is popped by the enclosing group's `)`, the change automatically applies to "the rest of the enclosing group" — PCRE's exact semantics — and is inherited by nested groups (which push a copy of the mutated frame). At the top level there is no enclosing `)`, so it runs to the pattern end.
+    * ordinary group / lookaround / named capture / atomic / conditional / `(?:` — push a copy of the current frame (no flag change). Recursion/backref atoms like `(?R)`/`(?P=n)` self-balance through the same push/pop and are harmless.
+    * comment `(?#…)` — swallowed whole (its body is not regex), no flag change.
 
-  `open/2`'s job is purely to classify the opener and update the stack; the consuming
-  walk keeps doing its own escape/character-class tracking (a `(` inside `[…]` is a
-  literal and never reaches here).
+  `open/2`'s job is purely to classify the opener and update the stack; the consuming walk keeps doing its own escape/character-class tracking (a `(` inside `[…]` is a literal and never reaches here).
 
   ## Boundaries
 
-  Only the genuine inline-flag letters (`i m s x u U J n`) are recognised as a modifier
-  group; an unknown future letter degrades to an *ordinary* group (safe — no spurious
-  flag change). `x`-mode whitespace/`#`-comment stripping is **not** modelled
-  (we don't tokenize x-mode), which can only ever *miss* a flag change inside an x-mode
-  comment, never invent one — consistent with how an unrecognised construct fails safe.
+  Only the genuine inline-flag letters (`i m s x u U J n`) are recognised as a modifier group; an unknown future letter degrades to an *ordinary* group (safe — no spurious flag change). `x`-mode whitespace/`#`-comment stripping is not modelled (we don't tokenize x-mode), which can only ever *miss* a flag change inside an x-mode comment, never invent one — consistent with how an unrecognised construct fails safe.
   """
 
   # Letters legal inside an inline `(?…)` modifier group — exactly those Elixir's regex

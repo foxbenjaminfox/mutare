@@ -2,34 +2,28 @@ defmodule Mutare.Mutators.ReturnValue do
   @moduledoc """
   Replaces function return expressions with fixed constants.
 
-  It applies to each `def` and `defp` return path. When a
-  clause tail is a `case`/`cond`/`if`/`unless`/`with`/`try`/`receive`, each branch's tail
-  is its own return path. The value of a `try` `after` block is excluded because it is
-  discarded. Each clause of an anonymous function is handled in the same way.
+  It applies to each `def` and `defp` return path. When a clause tail is a `case`/`cond`/`if`/`unless`/`with`/`try`/`receive`, each branch's tail is its own return path. The value of a `try` `after` block is excluded because it is discarded. Each clause of an anonymous function is handled in the same way.
 
   Each eligible return path produces two replacements based on its shape:
 
-    | tail shape                                   | empty/zero | sentinel   |
-    |----------------------------------------------|------------|------------|
-    | numeric (`a + b`, `x * 2`, `div(a, b)`, `-n`)| `0`        | `1`        |
-    | string concatenation (`a <> b`)              | `""`       | `"mutare"` |
-    | list expression (`a ++ b`, `xs -- ys`)       | `[]`       | `[:mutare]`|
-    | anything else (variable, call, tuple, map,   | `nil`      | `:mutare`  |
-    | `:ok`/`:error` atom, an opaque-macro result) |            |            |
+  | tail shape                                   | empty/zero | sentinel   |
+  |----------------------------------------------|------------|------------|
+  | numeric (`a + b`, `x * 2`, `div(a, b)`, `-n`)| `0`        | `1`        |
+  | string concatenation (`a <> b`)              | `""`       | `"mutare"` |
+  | list expression (`a ++ b`, `xs -- ys`)       | `[]`       | `[:mutare]`|
+  | anything else (variable, call, tuple, map,   | `nil`      | `:mutare`  |
+  | `:ok`/`:error` atom, an opaque-macro result) |            |            |
 
   A replacement equal to the original return is omitted.
 
   ## Exclusions
 
     * Boolean expressions are handled by `Mutare.Mutators.Conditional`.
-    * Integer, float, string, list, and boolean literals are handled by their
-      node-level families. Bare atoms remain eligible.
+    * Integer, float, string, list, and boolean literals are handled by their node-level families. Bare atoms remain eligible.
     * `nil` return expressions are not mutated.
     * `quote` blocks are compile-time code and are not mutated as a whole.
 
-  The `empty` and `sentinel` variants can be selected independently in an ignore
-  directive, for example `# mutare:ignore[return_value:empty]`. This family is
-  enabled by default.
+  The `empty` and `sentinel` variants can be selected independently in an ignore directive, for example `# mutare:ignore[return_value:empty]`. This family is enabled by default.
   """
   @behaviour Mutare.Mutator
   @behaviour Mutare.Mutator.Structural

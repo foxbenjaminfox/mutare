@@ -1,27 +1,14 @@
 defmodule Mutare.Mutators.CharlistLiteral do
   @moduledoc """
-  Charlist-sigil mutations: replace a `~c"…"` charlist with both the empty
-  charlist `~c""` and a non-empty sentinel (`~c"mutare"`), dropping whichever
-  already equals the original. The charlist counterpart of
-  `Mutare.Mutators.StringLiteral`.
+  Charlist-sigil mutations: replace a `~c"…"` charlist with both the empty charlist `~c""` and a non-empty sentinel (`~c"mutare"`), dropping whichever already equals the original. The charlist counterpart of `Mutare.Mutators.StringLiteral`.
 
-  Only the **sigil** form `~c"…"` is mutated. The legacy single-quoted form
-  `'…'` parses as an ordinary list literal (`{:__block__, _, [charlist]}`) and is
-  already collapsed to `[]` by `Mutare.Mutators.List` — matching it here too would
-  emit a duplicate empty-mutant, so this module leaves it alone.
+  Only the sigil form `~c"…"` is mutated. The legacy single-quoted form `'…'` parses as an ordinary list literal (`{:__block__, _, [charlist]}`) and is already collapsed to `[]` by `Mutare.Mutators.List` — matching it here too would emit a duplicate empty-mutant, so this module leaves it alone.
 
-  Only non-interpolated charlists are touched: an interpolated `~c"a\#{x}b"` parses
-  with multiple `<<>>` parts, not a single binary.
+  Only non-interpolated charlists are touched: an interpolated `~c"a\#{x}b"` parses with multiple `<<>>` parts, not a single binary.
 
-  Not mutated: on the **RHS of a guard `in`** (`when x in ~c"ab"`) the *empty*
-  variant `~c""` is dropped — it is `x in []` ≡ `false`, which
-  `Mutare.Mutators.Conditional` already produces — but the non-empty sentinel
-  `~c"mutare"` is kept. Body `in` expressions keep the empty variant because
-  left-side evaluation is observable.
+  Not mutated: on the RHS of a guard `in` (`when x in ~c"ab"`) the *empty* variant `~c""` is dropped — it is `x in []` ≡ `false`, which `Mutare.Mutators.Conditional` already produces — but the non-empty sentinel `~c"mutare"` is kept. Body `in` expressions keep the empty variant because left-side evaluation is observable.
 
-  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
-  suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `~c""`) or
-  `sentinel` (the `~c"mutare"`).
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `~c""`) or `sentinel` (the `~c"mutare"`).
   """
   @behaviour Mutare.Mutator
 

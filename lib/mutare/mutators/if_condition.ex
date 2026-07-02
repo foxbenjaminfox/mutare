@@ -1,18 +1,12 @@
 defmodule Mutare.Mutators.IfCondition do
   @moduledoc """
-  Replaces each eligible `if`, `unless`, and `cond` condition with `true` and
-  `false`.
+  Replaces each eligible `if`, `unless`, and `cond` condition with `true` and `false`.
 
-  This family handles conditions whose boolean role comes from their position, such
-  as `if user`, `if valid?(value)`, or `if Map.has_key?(map, key)`. Boolean
-  operators are excluded because `Mutare.Mutators.Conditional` already produces the
-  same constant replacements.
+  This family handles conditions whose boolean role comes from their position, such as `if user`, `if valid?(value)`, or `if Map.has_key?(map, key)`. Boolean operators are excluded because `Mutare.Mutators.Conditional` already produces the same constant replacements.
 
   Literal `true`, `false`, and `nil` conditions are also excluded.
 
-  A binding condition requires special handling because its bindings may be used in
-  the branch body. Bindings in `if` and `unless` conditions are hoisted before the
-  condition is mutated. A binding condition in `cond` is not mutated.
+  A binding condition requires special handling because its bindings may be used in the branch body. Bindings in `if` and `unless` conditions are hoisted before the condition is mutated. A binding condition in `cond` is not mutated.
 
   This family is enabled by default and uses the `if_condition` ignore name.
   """

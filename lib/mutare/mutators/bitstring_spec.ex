@@ -1,31 +1,18 @@
 defmodule Mutare.Mutators.BitstringSpec do
   @moduledoc """
-  Mutates Unicode encoding and byte-order specifiers in bitstring constructors.
-  Each mutant changes one segment along one of these axes.
+  Mutates Unicode encoding and byte-order specifiers in bitstring constructors. Each mutant changes one segment along one of these axes.
 
   ## Encoding
 
-  A segment using `utf8`, `utf16`, or `utf32` receives replacements using each of
-  the other encodings. These encodings accept the same Unicode scalar values but
-  produce different byte widths for non-empty values.
+  A segment using `utf8`, `utf16`, or `utf32` receives replacements using each of the other encodings. These encodings accept the same Unicode scalar values but produce different byte widths for non-empty values.
 
   ## Byte order
 
-  `big` and `little` are exchanged for `utf16` and `utf32` segments. A bare UTF-16
-  or UTF-32 specifier defaults to big-endian and receives a variant with `little`
-  added. UTF-8 has no byte-order mutation. `native` is not used as a source or
-  replacement because its result depends on the host architecture.
+  `big` and `little` are exchanged for `utf16` and `utf32` segments. A bare UTF-16 or UTF-32 specifier defaults to big-endian and receives a variant with `little` added. UTF-8 has no byte-order mutation. `native` is not used as a source or replacement because its result depends on the host architecture.
 
-  For literal integer and binary values, each candidate is encoded before emission.
-  A candidate whose bytes equal the original is removed. This filters empty values
-  and byte-palindromic values whose byte order is unobservable. Variable values
-  remain eligible because some runtime input can distinguish the encodings.
+  For literal integer and binary values, each candidate is encoded before emission. A candidate whose bytes equal the original is removed. This filters empty values and byte-palindromic values whose byte order is unobservable. Variable values remain eligible because some runtime input can distinguish the encodings.
 
-  The family applies only to runtime bitstring constructors. Bitstring patterns are
-  not mutated because an in-place selector cannot wrap a pattern. Interpolated
-  strings and segments without a UTF encoding are also excluded. UTF segments with
-  `size` or `unit` specifiers are not valid targets. Segment values may still be
-  mutated independently by other families.
+  The family applies only to runtime bitstring constructors. Bitstring patterns are not mutated because an in-place selector cannot wrap a pattern. Interpolated strings and segments without a UTF encoding are also excluded. UTF segments with `size` or `unit` specifiers are not valid targets. Segment values may still be mutated independently by other families.
   """
   @behaviour Mutare.Mutator
 

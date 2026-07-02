@@ -2,15 +2,10 @@ defmodule Mutare.Mutators.Integer do
   @moduledoc """
   Swap complementary `Integer` calls for their opposite:
 
-    * `Integer.mod` ↔ `Integer.floor_div` — the two halves of floored division
-      (`mod` is the remainder, `floor_div` the quotient); confusing one for the
-      other is a classic off-by-operation bug
+    * `Integer.mod` ↔ `Integer.floor_div` — the two halves of floored division (`mod` is the remainder, `floor_div` the quotient); confusing one for the other is a classic off-by-operation bug
     * `Integer.is_even` ↔ `Integer.is_odd` — the parity predicates
 
-  `Integer.is_even`/`is_odd` are **guard-safe macros**, so a swap in a `when` clause is
-  mutated too. On by default. Matches aliased and bare-imported calls
-  (`alias Integer, as: I; I.is_even` → `I.is_odd`), while a shadowing `alias MyApp.Integer`
-  is left alone.
+  `Integer.is_even`/`is_odd` are guard-safe macros, so a swap in a `when` clause is mutated too. On by default. Matches aliased and bare-imported calls (`alias Integer, as: I; I.is_even` → `I.is_odd`), while a shadowing `alias MyApp.Integer` is left alone.
   """
   @behaviour Mutare.Mutator
 

@@ -7,24 +7,14 @@ defmodule Mutare.Mutators.Relational do
       :<   → :<=, :>       :=== → :!==
       :<=  → :<,  :>=      :!== → :===
 
-  Ordering operators mutate to both their boundary neighbour and their direction flip
-  (the classic boundary + reversal pair); equality operators flip polarity, and
-  membership (`in`) flips to `not in` (the polarity flip for membership, mirroring
-  `==` → `!=`). Legal in bodies *and* `when` guards.
+  Ordering operators mutate to both their boundary neighbour and their direction flip (the classic boundary + reversal pair); equality operators flip polarity, and membership (`in`) flips to `not in` (the polarity flip for membership, mirroring `==` → `!=`). Legal in bodies *and* `when` guards.
 
   Not mutated:
 
-    * `not in` → `in` is not produced — `x not in y` parses as `not(x in y)`, which
-      `Mutare.Mutators.Logical` already strips. For the same reason, an `in` node that
-      is the direct operand of `not`/`!` is left to Logical.
-    * An **equality** operator (`==`/`!=`/`===`/`!==`) directly under `not`/`!` is left
-      to Logical — each is its own exact polarity complement, so `!(a != b)` ≡ `a == b`
-      (Logical's strip). The **ordering** operators are *not* suppressed there: their
-      boundary/reversal swaps are not the negation complement, so they survive a
-      surrounding negation as genuinely new mutants.
+    * `not in` → `in` is not produced — `x not in y` parses as `not(x in y)`, which `Mutare.Mutators.Logical` already strips. For the same reason, an `in` node that is the direct operand of `not`/`!` is left to Logical.
+    * An equality operator (`==`/`!=`/`===`/`!==`) directly under `not`/`!` is left to Logical — each is its own exact polarity complement, so `!(a != b)` ≡ `a == b` (Logical's strip). The ordering operators are *not* suppressed there: their boundary/reversal swaps are not the negation complement, so they survive a surrounding negation as genuinely new mutants.
 
-  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
-  suppress just one kind (`c:Mutare.Mutator.variants/0`): `>`, `>=`, `<`, `<=`, `==`, `!=`, `===`, `!==`.
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one kind (`c:Mutare.Mutator.variants/0`): `>`, `>=`, `<`, `<=`, `==`, `!=`, `===`, `!==`.
   """
   @behaviour Mutare.Mutator
 

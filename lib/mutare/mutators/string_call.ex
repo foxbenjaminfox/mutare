@@ -15,16 +15,11 @@ defmodule Mutare.Mutators.StringCall do
     * `:string.left` ↔ `:string.right`
     * `:binary.first` ↔ `:binary.last`
 
-  The Erlang `:string` trim direction is an argument rather than a function name,
-  so it is not included.
+  The Erlang `:string` trim direction is an argument rather than a function name, so it is not included.
 
-  `String.equivalent?(a, b)` also produces `Kernel.==(a, b)`, removing Unicode
-  normalization from the comparison.
+  `String.equivalent?(a, b)` also produces `Kernel.==(a, b)`, removing Unicode normalization from the comparison.
 
-  Direct, aliased, and imported calls are supported for Elixir and Erlang modules.
-  An alias that resolves to another module does not match. This family is enabled
-  by default and is separate from `Mutare.Mutators.StringLiteral`, which changes
-  string values rather than calls.
+  Direct, aliased, and imported calls are supported for Elixir and Erlang modules. An alias that resolves to another module does not match. This family is enabled by default and is separate from `Mutare.Mutators.StringLiteral`, which changes string values rather than calls.
   """
   @behaviour Mutare.Mutator
 

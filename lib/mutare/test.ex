@@ -5,23 +5,12 @@ defmodule Mutare.Test do
   Import this module into an `ExUnit.Case` to test a mutator at three levels:
 
     * `node_mutations/3` tests the replacements returned for one parsed node;
-    * `diffs/3`, `diffs_for/4`, and `metamutant_source/3` test what the full source
-      transform produces;
-    * `compile_metamutant/3` and `with_active_mutant/2` (or `observe_mutant/3`, which
-      composes them) verify that selecting a mutant changes the compiled program's
-      behaviour.
+    * `diffs/3`, `diffs_for/4`, and `metamutant_source/3` test what the full source transform produces;
+    * `compile_metamutant/3` and `with_active_mutant/2` (or `observe_mutant/3`, which composes them) verify that selecting a mutant changes the compiled program's behaviour.
 
-  The source-driven helpers all call `Mutare.transform_string/2` and inherit its
-  defaults — notably `expand_uses: true`, which the schema/query routing of
-  `use`-heavy DSLs depends on. Each takes a trailing `opts` keyword list forwarded
-  to `Mutare.transform_string/2` (the `mutators` argument overrides any `:mutators`
-  option), so a suite can thread `:macro_routes`, `:extensions`, or `expand_uses:
-  false` without dropping to `Mutare.transform_string/2` itself.
+  The source-driven helpers all call `Mutare.transform_string/2` and inherit its defaults — notably `expand_uses: true`, which the schema/query routing of `use`-heavy DSLs depends on. Each takes a trailing `opts` keyword list forwarded to `Mutare.transform_string/2` (the `mutators` argument overrides any `:mutators` option), so a suite can thread `:macro_routes`, `:extensions`, or `expand_uses: false` without dropping to `Mutare.transform_string/2` itself.
 
-  > #### Selection is process-global {: .warning}
-  >
-  > Tests that call `with_active_mutant/2` must use `async: false`, because the active mutant is
-  > shared across the VM.
+  > #### Selection is process-global {: .warning} > > Tests that call `with_active_mutant/2` must use `async: false`, because the active mutant is > shared across the VM.
 
   `import Mutare.Test` in an `ExUnit.Case` to use them:
 
@@ -36,8 +25,7 @@ defmodule Mutare.Test do
 
   ## Driving a live mutant in-process
 
-  The semantic check — *does the mutant actually run?* — compiles a metamutant once, then flips
-  the selection switch per id:
+  The semantic check — *does the mutant actually run?* — compiles a metamutant once, then flips the selection switch per id:
 
       defmodule MyQueryTest do
         use ExUnit.Case, async: false
@@ -45,7 +33,7 @@ defmodule Mutare.Test do
 
         test "the mutant changes the result, not just the source" do
           {[mod], sites} =
-            compile_metamutant("defmodule Q do\\n  def n, do: 1 + 1\\nend", [MyApp.PlusMutator])
+            compile_metamutant("defmodule Q do\n  def n, do: 1 + 1\nend", [MyApp.PlusMutator])
 
           id = site_id(sites, {"1 + 1", "1 - 1"})
 

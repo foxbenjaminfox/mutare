@@ -2,14 +2,9 @@ defmodule Mutare.UseExpansion do
   @moduledoc """
   Capability behaviour for overriding a `use` that Mutare cannot expand safely in-process.
 
-  `Mutare.Transform.Uses` normally expands module-level `use` calls to recover injected imports,
-  aliases, requires, and behaviours. Some `__using__` macros mutate their caller or depend on
-  compile-time state unavailable to the scan process. An enabled extension can implement
-  `c:expand_use/3` to supply those directives explicitly.
+  `Mutare.Transform.Uses` normally expands module-level `use` calls to recover injected imports, aliases, requires, and behaviours. Some `__using__` macros mutate their caller or depend on compile-time state unavailable to the scan process. An enabled extension can implement `c:expand_use/3` to supply those directives explicitly.
 
-  This capability is independent of macro routing. A library integration commonly implements
-  both `Mutare.UseExpansion` and `Mutare.MacroRouting`, but either may be used alone. The module is
-  listed once under `:extensions`:
+  This capability is independent of macro routing. A library integration commonly implements both `Mutare.UseExpansion` and `Mutare.MacroRouting`, but either may be used alone. The module is listed once under `:extensions`:
 
       defmodule Mutare.Gettext do
         @behaviour Mutare.UseExpansion
@@ -26,8 +21,7 @@ defmodule Mutare.UseExpansion do
         def macro_routes, do: [{Gettext.Macros, :gettext, 1, [:skip]}]
       end
 
-  Multiple handlers are consulted in `:extensions` order; the first result other than
-  `:decline` wins. Options from a `{module, opts}` entry arrive in `context.opts`.
+  Multiple handlers are consulted in `:extensions` order; the first result other than `:decline` wins. Options from a `{module, opts}` entry arrive in `context.opts`.
   """
 
   alias Mutare.UseExpansion.{ContractError, Expansion}

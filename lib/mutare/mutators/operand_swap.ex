@@ -13,8 +13,7 @@ defmodule Mutare.Mutators.OperandSwap do
 
   The following operators are excluded:
 
-    * `>`, `>=`, `<`, and `<=`, because `Mutare.Mutators.Relational` already
-      produces the equivalent direction change
+    * `>`, `>=`, `<`, and `<=`, because `Mutare.Mutators.Relational` already produces the equivalent direction change
     * commutative operators such as `+`, `*`, equality, and boolean operators
     * `in`, because the swapped right operand may not be enumerable
     * `=` and `|>`, whose operands have different roles
@@ -23,22 +22,17 @@ defmodule Mutare.Mutators.OperandSwap do
 
   The first two arguments are exchanged in these calls:
 
-    * `before?/2`, `after?/2`, `compare/2`, and `diff/2,3` on `DateTime`, `Date`,
-      `Time`, and `NaiveDateTime`, where those functions exist
+    * `before?/2`, `after?/2`, `compare/2`, and `diff/2,3` on `DateTime`, `Date`, `Time`, and `NaiveDateTime`, where those functions exist
     * `Version.compare/2`
     * `MapSet.difference/2` and `MapSet.subset?/2`
 
-  A trailing unit in `diff/3` is retained and may be mutated separately by
-  `Mutare.Mutators.ModeSwap`.
+  A trailing unit in `diff/3` is retained and may be mutated separately by `Mutare.Mutators.ModeSwap`.
 
-  Aliased and imported calls are supported. An alias that resolves to another module
-  does not match.
+  Aliased and imported calls are supported. An alias that resolves to another module does not match.
 
   ## Skipped cases
 
-  Identical operands are not swapped. Piped calls are skipped because their first
-  operand is supplied outside the call node. Unary minus has no second operand and is
-  handled by `Mutare.Mutators.Arithmetic`.
+  Identical operands are not swapped. Piped calls are skipped because their first operand is supplied outside the call node. Unary minus has no second operand and is handled by `Mutare.Mutators.Arithmetic`.
 
   Guard-safe operators and calls are also mutated in guards.
   """

@@ -2,17 +2,9 @@ defmodule Mutare.Mutator.Spec do
   @moduledoc """
   A resolved mutator module, report name, and per-instance options.
 
-  A bare module uses its `name/0` and receives empty options. A `{module, opts}` entry passes
-  `opts` to context-taking callbacks; the reserved `:as` option changes the report and
-  `# mutare:ignore` name and is removed before the mutator receives the remaining options.
+  A bare module uses its `name/0` and receives empty options. A `{module, opts}` entry passes `opts` to context-taking callbacks; the reserved `:as` option changes the report and `# mutare:ignore` name and is removed before the mutator receives the remaining options.
 
-  Building a spec also verifies the module's declared environment
-  (`c:Mutare.Mutator.required_modules/0`, when exported — a missing module raises
-  `Mutare.EnvironmentError` here, at resolution time) and then runs the mutator's
-  `c:Mutare.Mutator.init/1` (when exported) on those remaining options, storing the result as
-  the spec's `config` — so environment checking and option parsing happen once per resolved
-  instance, and an invalid option raises here too. Without `init/1`, `config` is the options
-  themselves. Dispatch delivers it to every context-aware callback as `context.config`.
+  Building a spec also verifies the module's declared environment (`c:Mutare.Mutator.required_modules/0`, when exported — a missing module raises `Mutare.EnvironmentError` here, at resolution time) and then runs the mutator's `c:Mutare.Mutator.init/1` (when exported) on those remaining options, storing the result as the spec's `config` — so environment checking and option parsing happen once per resolved instance, and an invalid option raises here too. Without `init/1`, `config` is the options themselves. Dispatch delivers it to every context-aware callback as `context.config`.
 
   The transform also attaches the enclosing module's `@behaviour` set before invoking a mutator.
   """

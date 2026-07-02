@@ -7,8 +7,7 @@ defmodule Mutare.Mutators.CallRemoval do
     * `Enum.sort` / `Enum.sort_by` / `Enum.reverse` / `Enum.shuffle`
     * `Enum.uniq` / `Enum.uniq_by` / `Enum.dedup` / `Enum.dedup_by`
     * `Enum.intersperse`
-    * `Stream.uniq` / `Stream.uniq_by` / `Stream.dedup` / `Stream.dedup_by` /
-      `Stream.intersperse`
+    * `Stream.uniq` / `Stream.uniq_by` / `Stream.dedup` / `Stream.dedup_by` / `Stream.intersperse`
     * `List.flatten`
     * `Map.delete` / `Map.drop` / `Map.take`, and the corresponding `Keyword` calls
     * `List.delete` / `List.delete_at` / `List.keydelete`
@@ -18,26 +17,16 @@ defmodule Mutare.Mutators.CallRemoval do
     * `String.pad_leading` / `String.pad_trailing` / `String.slice` / `String.byte_slice`
     * `URI.encode_www_form` / `URI.decode_www_form`
     * `NaiveDateTime.beginning_of_day` / `NaiveDateTime.end_of_day`
-    * `Date.beginning_of_month` / `Date.end_of_month` / `Date.beginning_of_week` /
-      `Date.end_of_week`
+    * `Date.beginning_of_month` / `Date.end_of_month` / `Date.beginning_of_week` / `Date.end_of_week`
     * `Kernel.abs` (`abs(x)` → `x`)
-    * `Kernel.binary_slice/2,3`, `Kernel.binary_part/3`, and
-      `:erlang.binary_part/2,3`
-    * the corresponding Erlang `:string` transforms — `trim`/`strip`/`chomp`,
-      `lowercase`/`uppercase`/`titlecase`/`casefold`/`to_lower`/`to_upper`, `reverse`,
-      `pad`/`left`/`right`/`centre`, `slice`/`substr`/`sub_string`
+    * `Kernel.binary_slice/2,3`, `Kernel.binary_part/3`, and `:erlang.binary_part/2,3`
+    * the corresponding Erlang `:string` transforms — `trim`/`strip`/`chomp`, `lowercase`/`uppercase`/`titlecase`/`casefold`/`to_lower`/`to_upper`, `reverse`, `pad`/`left`/`right`/`centre`, `slice`/`substr`/`sub_string`
 
-  The list is limited to calls whose first argument and result have compatible types.
-  Slicing calls are included because returning the whole input remains type-compatible.
-  Calls such as `map`, `filter`, `reduce`, `replace`, and `split` are excluded.
+  The list is limited to calls whose first argument and result have compatible types. Slicing calls are included because returning the whole input remains type-compatible. Calls such as `map`, `filter`, `reduce`, `replace`, and `split` are excluded.
 
-  A regular call is replaced by its first argument: `Enum.sort(xs)` becomes `xs`.
-  A pipe stage is replaced by `Function.identity/1`. Guard-safe removals, such as
-  `abs(x)`, also apply inside guards.
+  A regular call is replaced by its first argument: `Enum.sort(xs)` becomes `xs`. A pipe stage is replaced by `Function.identity/1`. Guard-safe removals, such as `abs(x)`, also apply inside guards.
 
-  This family is enabled by default. It matches aliased and imported calls, including
-  Erlang modules. Bare `Kernel` calls match only at their defined arities, so a
-  same-named local function is not removed.
+  This family is enabled by default. It matches aliased and imported calls, including Erlang modules. Bare `Kernel` calls match only at their defined arities, so a same-named local function is not removed.
   """
   @behaviour Mutare.Mutator
 

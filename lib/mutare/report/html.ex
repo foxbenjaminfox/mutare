@@ -2,14 +2,9 @@ defmodule Mutare.Report.Html do
   @moduledoc """
   Renders an HTML page that hosts the interactive mutation report.
 
-  Deliberately **not** a bespoke renderer: it embeds the `Mutare.Report.Json`
-  document into the official `mutation-test-report-app` web component (loaded
-  from a pinned CDN bundle), which renders the file tree, per-file source with
-  inline mutant annotations, and the score. The report data is embedded in one
-  HTML file you can open or attach to CI.
+  Deliberately not a bespoke renderer: it embeds the `Mutare.Report.Json` document into the official `mutation-test-report-app` web component (loaded from a pinned CDN bundle), which renders the file tree, per-file source with inline mutant annotations, and the score. The report data is embedded in one HTML file you can open or attach to CI.
 
-  Tradeoff: viewing the page fetches the component bundle from unpkg, so it
-  needs network access. Vendoring the bundle is a possible later toggle.
+  Tradeoff: viewing the page fetches the component bundle from unpkg, so it needs network access. Vendoring the bundle is a possible later toggle.
   """
 
   alias Mutare.{Report.Json, Result}

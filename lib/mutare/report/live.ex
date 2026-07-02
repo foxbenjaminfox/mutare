@@ -2,13 +2,9 @@ defmodule Mutare.Report.Live do
   @moduledoc """
   Live progress for the human report.
 
-  Progress is written to stderr so stdout remains safe for the final or machine-readable report.
-  An interactive terminal gets a spinner, current mutant, counts, and ETA; pipes and CI logs get
-  plain scrollback. Survivors, timeouts, and harness errors remain visible after the live display
-  advances.
+  Progress is written to stderr so stdout remains safe for the final or machine-readable report. An interactive terminal gets a spinner, current mutant, counts, and ETA; pipes and CI logs get plain scrollback. Survivors, timeouts, and harness errors remain visible after the live display advances.
 
-  `--verbose` prints a line for every mutant and timing details for each phase. `--quiet`
-  suppresses live progress entirely and takes precedence over `--verbose`.
+  `--verbose` prints a line for every mutant and timing details for each phase. `--quiet` suppresses live progress entirely and takes precedence over `--verbose`.
   """
 
   use GenServer

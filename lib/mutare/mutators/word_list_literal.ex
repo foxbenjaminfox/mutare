@@ -1,22 +1,15 @@
 defmodule Mutare.Mutators.WordListLiteral do
   @moduledoc """
-  Replaces a non-interpolated `~w` or `~W` word list with an empty list and a
-  one-element sentinel list:
+  Replaces a non-interpolated `~w` or `~W` word list with an empty list and a one-element sentinel list:
 
     * `~w(a b)` → `~w()`
     * `~w(a b)` → `~w(mutare)`
 
-  The sigil modifier is retained, so `a` and `c` word lists keep atom and charlist
-  elements. Equivalent replacements are detected from the parsed words rather than
-  the raw source; for example, a whitespace-only word list does not produce another
-  empty-list mutant.
+  The sigil modifier is retained, so `a` and `c` word lists keep atom and charlist elements. Equivalent replacements are detected from the parsed words rather than the raw source; for example, a whitespace-only word list does not produce another empty-list mutant.
 
   Interpolated `~w` sigils are not mutated. `~W` never interpolates.
 
-  On the right side of a guard `in`, the empty replacement is suppressed because
-  membership in an empty list is already covered by `Mutare.Mutators.Conditional`.
-  The sentinel replacement remains eligible. Body `in` expressions keep the empty
-  replacement because left-side evaluation is observable.
+  On the right side of a guard `in`, the empty replacement is suppressed because membership in an empty list is already covered by `Mutare.Mutators.Conditional`. The sentinel replacement remains eligible. Body `in` expressions keep the empty replacement because left-side evaluation is observable.
 
   The ignore variants are `empty` and `sentinel`.
   """

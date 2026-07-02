@@ -5,20 +5,15 @@ defmodule Mutare.Mutators.GuardDrop do
       def f(x) when is_binary(x), do: value  →  def f(x), do: value
       case value do x when is_atom(x) -> x end  →  case value do x -> x end
 
-  Guards on `def`, `defp`, `case`, `receive`, and `fn` clauses are eligible. A
-  multi-pattern anonymous-function clause is skipped because its guardless head
-  cannot be rendered as a clean report diff.
+  Guards on `def`, `defp`, `case`, `receive`, and `fn` clauses are eligible. A multi-pattern anonymous-function clause is skipped because its guardless head cannot be rendered as a clean report diff.
 
-  A guard is removed only when no other enabled mutator produces a mutation inside
-  it. This avoids duplicating mutations such as:
+  A guard is removed only when no other enabled mutator produces a mutation inside it. This avoids duplicating mutations such as:
 
     * `x > 0`, already covered by relational and conditional mutations
     * `Integer.is_even(x)`, covered by the Integer family
     * `abs(x) > 0`, covered by relational and call-removal mutations
 
-  Guards such as `is_binary(x)`, a bare value, or an otherwise untouched custom
-  guard remain eligible. This check uses the active mutator set: disabling the
-  family that covers a guard can make guard removal available.
+  Guards such as `is_binary(x)`, a bare value, or an otherwise untouched custom guard remain eligible. This check uses the active mutator set: disabling the family that covers a guard can make guard removal available.
 
   This family is enabled by default and uses the `guard_drop` ignore name.
   """

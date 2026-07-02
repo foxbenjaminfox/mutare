@@ -2,21 +2,11 @@ defmodule Mutare.AST do
   @moduledoc """
   Small constructors and predicates for Sourceror AST nodes.
 
-  These helpers are the supported way for custom mutators to build AST.
-  `literal/1` is the most important one: it builds literal nodes with fresh
-  metadata, so Sourceror renders the new value rather than stale source text.
-  It also handles string delimiters, numeric token metadata, and
-  negative-number shape correctly.
+  These helpers are the supported way for custom mutators to build AST. `literal/1` is the most important one: it builds literal nodes with fresh metadata, so Sourceror renders the new value rather than stale source text. It also handles string delimiters, numeric token metadata, and negative-number shape correctly.
 
-  `literal_value/1` reads supported literal nodes back to their values. The
-  `sentinel_*` helpers return the same survivor markers used by the built-in
-  families. `absolute_alias/1`, `absolute_call/3`, and `remote_call/3` build
-  references that are not affected by aliases or imports in the target source.
-  `keyword_key/1` and `clean_var/1` cover the remaining node shapes a mutator
-  emits into existing source: fresh keyword keys and re-declared bindings.
+  `literal_value/1` reads supported literal nodes back to their values. The `sentinel_*` helpers return the same survivor markers used by the built-in families. `absolute_alias/1`, `absolute_call/3`, and `remote_call/3` build references that are not affected by aliases or imports in the target source. `keyword_key/1` and `clean_var/1` cover the remaining node shapes a mutator emits into existing source: fresh keyword keys and re-declared bindings.
 
-  `parse!/1` and `to_string/1` expose the Sourceror round trip without requiring
-  custom mutators to depend on Sourceror directly.
+  `parse!/1` and `to_string/1` expose the Sourceror round trip without requiring custom mutators to depend on Sourceror directly.
   """
 
   # The two ends of the round-trip route through Mutare, so callers never need a

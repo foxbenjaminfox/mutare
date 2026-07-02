@@ -1,23 +1,14 @@
 defmodule Mutare.Mutators.Logical do
   @moduledoc """
-  Logical/boolean operator mutations: `and`↔`or`, `&&`↔`||`, and negation
-  stripping (`not x` → `x`, `!x` → `x`).
+  Logical/boolean operator mutations: `and`↔`or`, `&&`↔`||`, and negation stripping (`not x` → `x`, `!x` → `x`).
 
-  The strict connectives `and`/`or` and `not` are legal in `when` guards, so a swap
-  there is mutated too; the relaxed `&&`/`||`/`!` are forbidden in guards by the
-  compiler, so they only ever appear in ordinary bodies.
+  The strict connectives `and`/`or` and `not` are legal in `when` guards, so a swap there is mutated too; the relaxed `&&`/`||`/`!` are forbidden in guards by the compiler, so they only ever appear in ordinary bodies.
 
-  The two pairs are kept distinct rather than collapsed: `&&`/`||` accept any term and
-  short-circuit on truthiness, while `and`/`or` require booleans. Swapping within each
-  pair preserves that contract.
+  The two pairs are kept distinct rather than collapsed: `&&`/`||` accept any term and short-circuit on truthiness, while `and`/`or` require booleans. Swapping within each pair preserves that contract.
 
-  Not mutated: in a double negation with the **same** operator (`not not x` / `!!x`) the
-  inner strip is identical to the outer's, so only the outer is offered. A *mixed*
-  `not !x` is kept — its two strips can diverge on a non-boolean operand (`not x` raises
-  where `!x` coerces).
+  Not mutated: in a double negation with the same operator (`not not x` / `!!x`) the inner strip is identical to the outer's, so only the outer is offered. A *mixed* `not !x` is kept — its two strips can diverge on a non-boolean operand (`not x` raises where `!x` coerces).
 
-  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
-  suppress just one kind (`c:Mutare.Mutator.variants/0`): `and`, `or`, `&&`, `||`.
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one kind (`c:Mutare.Mutator.variants/0`): `and`, `or`, `&&`, `||`.
   """
   @behaviour Mutare.Mutator
 

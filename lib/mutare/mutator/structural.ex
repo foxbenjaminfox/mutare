@@ -1,10 +1,8 @@
 defmodule Mutare.Mutator.Structural do
   @moduledoc """
-  Behaviour for mutating positions that are larger than a single AST node: clause return values,
-  `if`/`unless`/`cond` conditions, and structural pattern positions.
+  Behaviour for mutating positions that are larger than a single AST node: clause return values, `if`/`unless`/`cond` conditions, and structural pattern positions.
 
-  Declare both `Mutare.Mutator` and this behaviour, define `name/0`, then implement whichever
-  structural callbacks you need. A structural mutator does not need `c:Mutare.Mutator.mutate/1`.
+  Declare both `Mutare.Mutator` and this behaviour, define `name/0`, then implement whichever structural callbacks you need. A structural mutator does not need `c:Mutare.Mutator.mutate/1`.
 
       defmodule MyApp.Mutators.AlwaysReturnNil do
         @behaviour Mutare.Mutator
@@ -17,9 +15,7 @@ defmodule Mutare.Mutator.Structural do
         def return_replacements(_tail), do: [Mutare.AST.literal(nil)]
       end
 
-  Each callback also has a context-taking arity for reading the enabled mutator's options
-  and restricting mutations by the enclosing module's `@behaviour` set. Implement either
-  the base arity or its context-taking counterpart.
+  Each callback also has a context-taking arity for reading the enabled mutator's options and restricting mutations by the enclosing module's `@behaviour` set. Implement either the base arity or its context-taking counterpart.
   """
 
   @typedoc """

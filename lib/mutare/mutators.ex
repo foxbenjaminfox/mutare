@@ -2,16 +2,13 @@ defmodule Mutare.Mutators do
   @moduledoc """
   The registry and resolver for Mutare's built-in mutator families.
 
-  All built-in families run by default. Set `:mutators` to a list of family atoms or custom
-  mutator modules to choose a different set. A `{mutator, opts}` pair configures one entry.
+  All built-in families run by default. Set `:mutators` to a list of family atoms or custom mutator modules to choose a different set. A `{mutator, opts}` pair configures one entry.
 
   Include `:builtins` to add entries to the default set:
 
       mutators: [:builtins, MyApp.Mutators.AccessPolicy]
 
-  Without that token, the list replaces the defaults. Use
-  `{:builtins, except: [:family]}` to start with all built-ins except selected families. See
-  `resolve/1` for every accepted entry form.
+  Without that token, the list replaces the defaults. Use `{:builtins, except: [:family]}` to start with all built-ins except selected families. See `resolve/1` for every accepted entry form.
   """
 
   alias Mutare.Ignore.SpecError

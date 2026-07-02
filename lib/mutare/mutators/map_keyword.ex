@@ -1,7 +1,6 @@
 defmodule Mutare.Mutators.MapKeyword do
   @moduledoc """
-  Renames `Map` and `Keyword` writes according to how they handle present and absent
-  keys:
+  Renames `Map` and `Keyword` writes according to how they handle present and absent keys:
 
   | function | key present | key absent |
   | --- | --- | --- |
@@ -17,8 +16,7 @@ defmodule Mutare.Mutators.MapKeyword do
     * `put_new` ↔ `replace`
     * `replace` ↔ `replace!`
 
-  The same pairs apply to both `Map` and `Keyword`. Direct, aliased, and imported
-  calls are supported; an alias that resolves to another module does not match.
+  The same pairs apply to both `Map` and `Keyword`. Direct, aliased, and imported calls are supported; an alias that resolves to another module does not match.
 
   This family is enabled by default. Its family name is `map_keyword`.
   """

@@ -3,14 +3,10 @@ defmodule Mutare.Mutators.ConventionAtom do
   Replaces convention atoms with a compatible alternative:
 
     * `{:ok, payload}` ↔ `{:error, reason}` — both 2-tuples
-    * `{:cont, acc}` ↔ `{:halt, acc}` — both 2-tuples (`Enum.reduce_while`,
-      `Stream.transform`)
+    * `{:cont, acc}` ↔ `{:halt, acc}` — both 2-tuples (`Enum.reduce_while`, `Stream.transform`)
     * `:lt` ↔ `:gt` — bare comparison results
 
-  These atoms are excluded from `Mutare.Mutators.AtomLiteral`, so only the compatible
-  replacement is emitted. `:eq` remains under `AtomLiteral`. OTP return tags such as
-  `:reply`, `:noreply`, and `:stop` are not included because changing only the tag can
-  produce an invalid return tuple.
+  These atoms are excluded from `Mutare.Mutators.AtomLiteral`, so only the compatible replacement is emitted. `:eq` remains under `AtomLiteral`. OTP return tags such as `:reply`, `:noreply`, and `:stop` are not included because changing only the tag can produce an invalid return tuple.
 
   ## Configurable
 
@@ -18,16 +14,13 @@ defmodule Mutare.Mutators.ConventionAtom do
 
       [mutators: [..., {Mutare.Mutators.ConventionAtom, pairs: [[:active, :inactive]]}]]
 
-  Custom pairs extend the built-in pairs; they do not replace them. For example,
-  `pairs: [[:ok, :okay]]` makes `:ok` mutate to both `:error` and `:okay`.
+  Custom pairs extend the built-in pairs; they do not replace them. For example, `pairs: [[:ok, :okay]]` makes `:ok` mutate to both `:error` and `:okay`.
 
-  Set `call_option_keys: false` to skip atoms used as call-option names without
-  changing ordinary atom values:
+  Set `call_option_keys: false` to skip atoms used as call-option names without changing ordinary atom values:
 
       {Mutare.Mutators.ConventionAtom, call_option_keys: false}
 
-  The family applies in value positions and patterns, but not where an atom names a
-  function. It is enabled by default.
+  The family applies in value positions and patterns, but not where an atom names a function. It is enabled by default.
   """
   @behaviour Mutare.Mutator
 

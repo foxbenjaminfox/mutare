@@ -22,38 +22,21 @@ defmodule Mutare.Mutators.DefaultDrop do
 
   ## Refinement defaults — a precision, base, separator, or fill
 
-  These calls revert to their standard precision, base, separator, fill, or trimming
-  behavior:
+  These calls revert to their standard precision, base, separator, fill, or trimming behavior:
 
-    * `Float.round/2`, `Float.ceil/2`, `Float.floor/2` → `/1` — drop the **precision**
-      (implicit `0`)
-    * `Integer.to_string/2`, `Integer.to_charlist/2`, `Integer.parse/2`,
-      `Integer.digits/2`, `Integer.undigits/2` → `/1` — drop the **base** (implicit `10`)
-    * `Enum.join/2` → `Enum.join/1` — drop the **separator** (implicit `""`)
-    * `String.pad_leading/3`, `String.pad_trailing/3` → `/2` — drop the **fill**
-      (implicit `" "`)
-    * `String.trim/2`, `String.trim_leading/2`, `String.trim_trailing/2` → `/1` — drop
-      the **to-trim string**, reverting to whitespace trimming
+    * `Float.round/2`, `Float.ceil/2`, `Float.floor/2` → `/1` — drop the precision (implicit `0`)
+    * `Integer.to_string/2`, `Integer.to_charlist/2`, `Integer.parse/2`, `Integer.digits/2`, `Integer.undigits/2` → `/1` — drop the base (implicit `10`)
+    * `Enum.join/2` → `Enum.join/1` — drop the separator (implicit `""`)
+    * `String.pad_leading/3`, `String.pad_trailing/3` → `/2` — drop the fill (implicit `" "`)
+    * `String.trim/2`, `String.trim_leading/2`, `String.trim_trailing/2` → `/1` — drop the to-trim string, reverting to whitespace trimming
 
-  A call is skipped when its trailing literal already equals the implicit default:
-  `nil` for the lookups, `0` for the rounding precision, `10` for the integer base, `""`
-  for `Enum.join`, `" "` for the pads — `Map.get(m, k, nil)`, `Float.round(x, 0)`,
-  `Integer.to_string(n, 10)`, `Enum.join(xs, "")`, `String.pad_leading(s, n, " ")` are
-  all unchanged. `List.flatten(xs, [])` is also skipped because `[]` is the implicit tail.
-  Non-default literals, variables, and expressions are eligible.
+  A call is skipped when its trailing literal already equals the implicit default: `nil` for the lookups, `0` for the rounding precision, `10` for the integer base, `""` for `Enum.join`, `" "` for the pads — `Map.get(m, k, nil)`, `Float.round(x, 0)`, `Integer.to_string(n, 10)`, `Enum.join(xs, "")`, `String.pad_leading(s, n, " ")` are all unchanged. `List.flatten(xs, [])` is also skipped because `[]` is the implicit tail. Non-default literals, variables, and expressions are eligible.
 
-  Lazy fallbacks are always eligible. The string argument to `String.trim/2` and its
-  directional variants is also always eligible because no string value reproduces
-  the default whitespace behavior.
+  Lazy fallbacks are always eligible. The string argument to `String.trim/2` and its directional variants is also always eligible because no string value reproduces the default whitespace behavior.
 
   Default comparison uses the decoded value of a string literal.
 
-  This mutator is enabled by default and matches aliased and imported calls. It may
-  produce a separate mutant alongside:
-  `Mutare.Mutators.CallRemoval` removes `String.trim`/`pad_leading`/`pad_trailing`
-  outright, while this family retains the call with default behavior;
-  `Mutare.Mutators.Numeric` changes `Float.ceil` to `Float.floor` or vice versa while
-  retaining the precision.
+  This mutator is enabled by default and matches aliased and imported calls. It may produce a separate mutant alongside: `Mutare.Mutators.CallRemoval` removes `String.trim`/`pad_leading`/`pad_trailing` outright, while this family retains the call with default behavior; `Mutare.Mutators.Numeric` changes `Float.ceil` to `Float.floor` or vice versa while retaining the precision.
   """
   @behaviour Mutare.Mutator
 

@@ -2,9 +2,7 @@ defmodule Mutare.Report do
   @moduledoc """
   Renders mutation results for the human report.
 
-  Diffs are patched against the **original** source via `Sourceror.patch_string`
-  at the site's recorded range, so untouched source stays byte-identical and a
-  survivor reads as a precise source-range change.
+  Diffs are patched against the original source via `Sourceror.patch_string` at the site's recorded range, so untouched source stays byte-identical and a survivor reads as a precise source-range change.
   """
 
   alias Mutare.{Result, Site}

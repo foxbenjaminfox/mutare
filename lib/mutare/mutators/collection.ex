@@ -22,12 +22,9 @@ defmodule Mutare.Mutators.Collection do
     * `Stream.take_while` ↔ `Stream.drop_while`
     * `Stream.take_every` ↔ `Stream.drop_every`
 
-  The family only changes the function name; it does not add or remove arguments.
-  Pairs whose same-arity forms have different meanings, such as `Enum.sort/2` and
-  `Enum.reverse/2`, are therefore not included.
+  The family only changes the function name; it does not add or remove arguments. Pairs whose same-arity forms have different meanings, such as `Enum.sort/2` and `Enum.reverse/2`, are therefore not included.
 
-  Direct, aliased, and imported calls are supported. An alias that resolves to
-  another module does not match. This family is enabled by default.
+  Direct, aliased, and imported calls are supported. An alias that resolves to another module does not match. This family is enabled by default.
   """
   @behaviour Mutare.Mutator
 

@@ -1,12 +1,10 @@
 defmodule Mutare.Mutators.FloatLiteral do
   @moduledoc """
-  Float-literal mutations: `x` → `x + 1.0`, `x - 1.0`, and `0.0`, deduplicated
-  and never equal to `x`.
+  Float-literal mutations: `x` → `x + 1.0`, `x - 1.0`, and `0.0`, deduplicated and never equal to `x`.
 
   The float counterpart of `Mutare.Mutators.Literal`'s integer arm. On by default.
 
-  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
-  suppress just one kind (`c:Mutare.Mutator.variants/0`): `zero`, `succ`, `pred`.
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one kind (`c:Mutare.Mutator.variants/0`): `zero`, `succ`, `pred`.
   """
   @behaviour Mutare.Mutator
 

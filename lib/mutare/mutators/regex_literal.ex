@@ -1,64 +1,34 @@
 defmodule Mutare.Mutators.RegexLiteral do
   @moduledoc """
-  Mutates non-interpolated `~r` sigils. Each changed token or modifier produces a
-  separate mutant.
+  Mutates non-interpolated `~r` sigils. Each changed token or modifier produces a separate mutant.
 
   ## Pattern replacements
 
-    * **Whole pattern:** replace the pattern with `~r//` and `~r/mutare/`. A
-      replacement equal to the original is omitted.
-    * **Anchors:** remove a leading `^` or `\\A`, or a trailing `$`, `\\z`, or
-      `\\Z`. Escaped and character-class occurrences are ignored.
-    * **Anchor variants:** exchange `^` and `\\A`, or `$` and `\\Z`, only
-      where multiline mode makes them different. Exchange `$` and `\\z` in
-      either mode. Sigil modifiers and inline flag groups determine the mode at each
-      anchor.
-    * **Character classes:** complement `\\d`, `\\w`, and `\\s`; exchange
-      `\\b` and `\\B` outside classes; toggle class negation; and move an
-      alphanumeric range endpoint by one. Range changes remain ordered and avoid
-      class metacharacters.
-    * **Dots:** exchange `.` and `\\.` outside classes. A wildcard dot also gets a
-      scoped variant that reverses its newline behavior: `(?s:.)` when dotall mode
-      is off, or `(?-s:.)` when it is on. Inline flags are applied positionally.
-      A force-off variant that duplicates dropping the sigil's `s` modifier is
-      omitted.
-    * **Alternation:** remove one top-level branch or one branch inside a capturing
-      group. Non-capturing groups and lookarounds are not rewritten this way.
-    * **Modifiers:** remove each sigil modifier separately. This includes `u`; its
-      removal changes handling of invalid UTF-8 even when the pattern itself is
-      ASCII.
+    * Whole pattern: replace the pattern with `~r//` and `~r/mutare/`. A replacement equal to the original is omitted.
+    * Anchors: remove a leading `^` or `\A`, or a trailing `$`, `\z`, or `\Z`. Escaped and character-class occurrences are ignored.
+    * Anchor variants: exchange `^` and `\A`, or `$` and `\Z`, only where multiline mode makes them different. Exchange `$` and `\z` in either mode. Sigil modifiers and inline flag groups determine the mode at each anchor.
+    * Character classes: complement `\d`, `\w`, and `\s`; exchange `\b` and `\B` outside classes; toggle class negation; and move an alphanumeric range endpoint by one. Range changes remain ordered and avoid class metacharacters.
+    * Dots: exchange `.` and `\.` outside classes. A wildcard dot also gets a scoped variant that reverses its newline behavior: `(?s:.)` when dotall mode is off, or `(?-s:.)` when it is on. Inline flags are applied positionally. A force-off variant that duplicates dropping the sigil's `s` modifier is omitted.
+    * Alternation: remove one top-level branch or one branch inside a capturing group. Non-capturing groups and lookarounds are not rewritten this way.
+    * Modifiers: remove each sigil modifier separately. This includes `u`; its removal changes handling of invalid UTF-8 even when the pattern itself is ASCII.
 
   ## Quantifiers
 
     * Exchange `+` and `*`, and remove either to require exactly one occurrence.
     * Remove `?` to make an optional atom mandatory, or change it to `+` or `*`.
     * Add a lazy suffix to a greedy variable-count quantifier.
-    * Move each legal bound by one. For example, `{2,4}` can become `{1,4}`,
-      `{3,4}`, `{2,3}`, or `{2,5}`.
+    * Move each legal bound by one. For example, `{2,4}` can become `{1,4}`, `{3,4}`, `{2,3}`, or `{2,5}`.
     * Remove an upper bound or pin a range to an exact count.
 
-  Bounds remain non-negative and ordered. A fixed count does not receive a lazy
-  variant. Group markers are not treated as quantifiers. Quantifiers with an existing
-  lazy or possessive suffix receive only changes that cannot reinterpret that suffix.
-  Repetition of zero-width assertions is limited to variants that change whether the
-  assertion is required.
+  Bounds remain non-negative and ordered. A fixed count does not receive a lazy variant. Group markers are not treated as quantifiers. Quantifiers with an existing lazy or possessive suffix receive only changes that cannot reinterpret that suffix. Repetition of zero-width assertions is limited to variants that change whether the assertion is required.
 
-  Some valid mutations are equivalent in a particular calling context. For example,
-  greediness does not affect `Regex.match?/2`, and `+` and `*` may produce the
-  same result when all matches are removed. These mutants remain visible and can be
-  suppressed with `# mutare:ignore[regex]` where appropriate.
+  Some valid mutations are equivalent in a particular calling context. For example, greediness does not affect `Regex.match?/2`, and `+` and `*` may produce the same result when all matches are removed. These mutants remain visible and can be suppressed with `# mutare:ignore[regex]` where appropriate.
 
   ## Safety and parsing
 
-  Every candidate must compile with `Regex.compile/2` and render as a
-  single-binary Elixir sigil. This checks both regex syntax and Elixir interpolation
-  syntax before the candidate enters the metamutant.
+  Every candidate must compile with `Regex.compile/2` and render as a single-binary Elixir sigil. This checks both regex syntax and Elixir interpolation syntax before the candidate enters the metamutant.
 
-  All mutations use one token stream that tracks escapes, character classes, group
-  structure, and positional flags. Extended-mode comments, `(?#...)` comments,
-  `\\Q...\\E` quoted spans, and control verbs are treated as non-pattern content.
-  Tokens inside them are not mutated and do not affect grouping. Interpolated sigils
-  are not mutated.
+  All mutations use one token stream that tracks escapes, character classes, group structure, and positional flags. Extended-mode comments, `(?#...)` comments, `\Q...\E` quoted spans, and control verbs are treated as non-pattern content. Tokens inside them are not mutated and do not affect grouping. Interpolated sigils are not mutated.
   """
   @behaviour Mutare.Mutator
 

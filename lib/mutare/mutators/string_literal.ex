@@ -1,22 +1,10 @@
 defmodule Mutare.Mutators.StringLiteral do
   @moduledoc """
-  String-literal mutations: replace a string with both the empty string `""` and
-  a non-empty sentinel (`"mutare"`), dropping whichever already equals the
-  original. So a typical non-empty string yields *two* mutants (empties it and
-  swaps its content); `""` yields just the sentinel; `"mutare"` yields just `""`.
+  String-literal mutations: replace a string with both the empty string `""` and a non-empty sentinel (`"mutare"`), dropping whichever already equals the original. So a typical non-empty string yields *two* mutants (empties it and swaps its content); `""` yields just the sentinel; `"mutare"` yields just `""`.
 
-  Both plain and **interpolated** strings are mutated. A plain literal parses as
-  `{:__block__, _, [binary]}` and gets the value-based no-op drop above. An
-  interpolated string (`"a\#{x}b"`) — and an interpolated heredoc — parses instead
-  as a `<<>>` carrying a `delimiter` meta key; the whole thing is replaced by
-  `""`/`"mutare"` (its runtime value can never be statically either, so both variants
-  apply), while the interpolation's own sub-expressions still mutate independently
-  underneath. A real `<<…>>` bitstring (no `delimiter`) is *not* a string — it is left
-  to `Mutare.Mutators.BitstringLiteral`.
+  Both plain and interpolated strings are mutated. A plain literal parses as `{:__block__, _, [binary]}` and gets the value-based no-op drop above. An interpolated string (`"a\#{x}b"`) — and an interpolated heredoc — parses instead as a `<<>>` carrying a `delimiter` meta key; the whole thing is replaced by `""`/`"mutare"` (its runtime value can never be statically either, so both variants apply), while the interpolation's own sub-expressions still mutate independently underneath. A real `<<…>>` bitstring (no `delimiter`) is *not* a string — it is left to `Mutare.Mutators.BitstringLiteral`.
 
-  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
-  suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `""`) or
-  `sentinel` (the `"mutare"`).
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `""`) or `sentinel` (the `"mutare"`).
   """
   @behaviour Mutare.Mutator
 

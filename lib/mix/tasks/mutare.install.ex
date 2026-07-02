@@ -6,10 +6,7 @@ if Code.ensure_loaded?(Igniter) do
 
         mix igniter.install mutare
 
-    Adds `:mutare` to your `:dev`/`:test` dependencies (`runtime: false`), then looks
-    at what your project already depends on and wires up the matching companion
-    packages — so a Phoenix/Ecto/Oban/Decimal/Gettext app gets framework-aware
-    mutants without any manual configuration:
+    Adds `:mutare` to your `:dev`/`:test` dependencies (`runtime: false`), then looks at what your project already depends on and wires up the matching companion packages — so a Phoenix/Ecto/Oban/Decimal/Gettext app gets framework-aware mutants without any manual configuration:
 
     | Detected dependency                     | Package added              | Wired into                                    |
     | --------------------------------------- | -------------------------- | --------------------------------------------- |
@@ -20,23 +17,13 @@ if Code.ensure_loaded?(Igniter) do
     | `:decimal`                              | `mutare_decimal`           | `:mutators` — `Mutare.Decimal.all/0`          |
     | `:gettext`                              | `mutare_gettext`           | `:extensions` — `Mutare.Gettext`              |
 
-    Each detected package is added as a `:dev`/`:test` dependency and wired into a
-    generated `.mutare.exs`: a **mutator** package extends the `:mutators` list
-    (alongside the `:builtins` group token, which keeps Mutare's own families on),
-    while a non-mutating **extension** like `mutare_gettext` — which only teaches Mutare a
-    library's compile-time vocabulary so the built-in mutators land on it correctly —
-    joins the `:extensions` list. Nothing detected? You still get a starter `.mutare.exs`
-    and a ready-to-run `mix mutare`.
+    Each detected package is added as a `:dev`/`:test` dependency and wired into a generated `.mutare.exs`: a mutator package extends the `:mutators` list (alongside the `:builtins` group token, which keeps Mutare's own families on), while a non-mutating extension like `mutare_gettext` — which only teaches Mutare a library's compile-time vocabulary so the built-in mutators land on it correctly — joins the `:extensions` list. Nothing detected? You still get a starter `.mutare.exs` and a ready-to-run `mix mutare`.
 
-    If you already have a `.mutare.exs`, it is left untouched and the recommended
-    `:mutators` / `:extensions` keys are printed as a notice for you to merge in by hand.
+    If you already have a `.mutare.exs`, it is left untouched and the recommended `:mutators` / `:extensions` keys are printed as a notice for you to merge in by hand.
 
     ## Options
 
-      * `--repo MyApp.Repo` — the Ecto repo to configure `mutare_ecto` with. When
-        omitted the repo is detected from your project (you are prompted if there is
-        more than one); if none is found a `YourApp.Repo` placeholder is written and a
-        warning tells you to edit it.
+      * `--repo MyApp.Repo` — the Ecto repo to configure `mutare_ecto` with. When omitted the repo is detected from your project (you are prompted if there is more than one); if none is found a `YourApp.Repo` placeholder is written and a warning tells you to edit it.
     """
     use Igniter.Mix.Task
 

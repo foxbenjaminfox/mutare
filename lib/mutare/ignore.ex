@@ -1,10 +1,8 @@
 defmodule Mutare.Ignore do
   @moduledoc """
-  Suppresses selected mutants with a source comment. Ignored mutants remain in the
-  report but are excluded from the mutation score.
+  Suppresses selected mutants with a source comment. Ignored mutants remain in the report but are excluded from the mutation score.
 
-  A trailing directive applies to its own line. A standalone directive applies to
-  the next line:
+  A trailing directive applies to its own line. A standalone directive applies to the next line:
 
       expression() # mutare:ignore
       # mutare:ignore
@@ -19,28 +17,17 @@ defmodule Mutare.Ignore do
       # mutare:ignore[relational:>]                suppress only the `i > j` swap
       # mutare:ignore[literal] off-by-one is fine  a filter and a reason together
 
-  Filter entries are mutator family names from `Mutare.Mutators.families/0`,
-  `clause_drop`, or a custom mutator's `c:Mutare.Mutator.name/0`. Without a filter,
-  the directive suppresses every mutant on the line.
+  Filter entries are mutator family names from `Mutare.Mutators.families/0`, `clause_drop`, or a custom mutator's `c:Mutare.Mutator.name/0`. Without a filter, the directive suppresses every mutant on the line.
 
-  Use `family:label` to select one variant from a family. For example,
-  `[relational:<=]` suppresses the `<=` replacement but not the other relational
-  replacements. Labels are declared by each family and matched case-insensitively.
-  If a mutant has several labels, any matching label suppresses it. Run
-  `mix mutare --list-mutators` for the complete built-in list.
+  Use `family:label` to select one variant from a family. For example, `[relational:<=]` suppresses the `<=` replacement but not the other relational replacements. Labels are declared by each family and matched case-insensitively. If a mutant has several labels, any matching label suppresses it. Run `mix mutare --list-mutators` for the complete built-in list.
 
-  Text after the keyword or filter is stored as the ignore reason and shown in the
-  report.
+  Text after the keyword or filter is stored as the ignore reason and shown in the report.
 
   ## When a directive errors or does nothing
 
-  An unknown label for a built-in family, including a disabled one, or an active
-  custom family is an error. Unknown families, bare-family typos, empty filters, and
-  malformed filters match nothing. Any directive that suppresses no mutant produces
-  a warning; `--strict-ignores` turns that warning into a non-zero exit.
+  An unknown label for a built-in family, including a disabled one, or an active custom family is an error. Unknown families, bare-family typos, empty filters, and malformed filters match nothing. Any directive that suppresses no mutant produces a warning; `--strict-ignores` turns that warning into a non-zero exit.
 
-  Only source comments are parsed. Text such as `"# mutare:ignore"` inside a string
-  has no effect.
+  Only source comments are parsed. Text such as `"# mutare:ignore"` inside a string has no effect.
   """
 
   alias Mutare.Ignore.Directive

@@ -4,15 +4,9 @@ defmodule Mutare.Runner do
 
   The flow protects the one-compile invariant: we compile the sandbox a single time, run the tests as a baseline to ensure it passes, then launch one `mix test` process per mutant with `MUTARE_ACTIVE_MUTANT` set. Sources never change between runs, so mix's incremental compiler finds nothing to rebuild — the per-mutant cost is process boot plus the suite (only up to the first failure for a kill), never recompilation.
 
-  The compile step distinguishes Mix dependency validation from actual
-  compile-poisoning. A dependency failure returns `:dependency_failed`
-  immediately: dropping mutant ids cannot repair copied dependency state, so it
-  never enters poison recovery. The Mix task then points remediation at the
-  original project rather than the disposable sandbox.
+  The compile step distinguishes Mix dependency validation from actual compile-poisoning. A dependency failure returns `:dependency_failed` immediately: dropping mutant ids cannot repair copied dependency state, so it never enters poison recovery. The Mix task then points remediation at the original project rather than the disposable sandbox.
 
-  `run/2` returns `{:ok, %Mutare.Run{}}`: the `Mutare.Schema` that was run,
-  the list of per-mutant `Mutare.Result`s, the sandbox path, the baseline run's
-  wall-clock in milliseconds, and whether `:max_survivors` stopped the run early.
+  `run/2` returns `{:ok, %Mutare.Run{}}`: the `Mutare.Schema` that was run, the list of per-mutant `Mutare.Result`s, the sandbox path, the baseline run's wall-clock in milliseconds, and whether `:max_survivors` stopped the run early.
 
   ## Baseline + coverage probe
 
@@ -20,12 +14,7 @@ defmodule Mutare.Runner do
 
   ## Unanimous kill reruns
 
-  `:kill_runs` (`--kill-runs`, default 1) handles the narrower case where a
-  residual flaky test appears only under one mutant's timing. Only kill outcomes
-  are rerun, and every attempt must kill. If a later attempt passes, the mutant
-  is recorded as `:survived`; if a later attempt persistently hits the harness,
-  it remains `:harness_error`. Harness retries are the inner infrastructure
-  layer; kill reruns combine settled test-suite verdicts.
+  `:kill_runs` (`--kill-runs`, default 1) handles the narrower case where a residual flaky test appears only under one mutant's timing. Only kill outcomes are rerun, and every attempt must kill. If a later attempt passes, the mutant is recorded as `:survived`; if a later attempt persistently hits the harness, it remains `:harness_error`. Harness retries are the inner infrastructure layer; kill reruns combine settled test-suite verdicts.
 
   ## Parallel workers and timeouts
 
@@ -33,66 +22,24 @@ defmodule Mutare.Runner do
 
   ## Early stop after N survivors (`:max_survivors`)
 
-  `:max_survivors` (`--max-survivors`) stops the per-mutant loop once that many
-  **survivors** (`:survived` results) have surfaced, for an iterate-and-fix
-  workflow that wants a handful of concrete test gaps rather than a full run.
-  Unlike `:max_mutants` (a `Mutare.Schema` cap on candidate *sites*), every mutant
-  is still compiled in — only the *run* halts early. The per-mutant stream is
-  consumed `ordered: true`, so the stop is deterministic: the Nth survivor in
-  source order, regardless of which worker finished first, and the reported
-  survivors are exactly the first N. Runs already in flight when the cap is hit are
-  *drained* (not killed), so the sandbox teardown never races a live `mix`
-  subprocess. The returned run carries `stopped_early`; on
-  an early stop the harness-error abort guard is skipped (the score is already a
-  partial prefix — the Mix task notes it and skips the `--min-score` gate too),
-  since aborting would discard the very survivors the user asked to find.
+  `:max_survivors` (`--max-survivors`) stops the per-mutant loop once that many survivors (`:survived` results) have surfaced, for an iterate-and-fix workflow that wants a handful of concrete test gaps rather than a full run. Unlike `:max_mutants` (a `Mutare.Schema` cap on candidate *sites*), every mutant is still compiled in — only the *run* halts early. The per-mutant stream is consumed `ordered: true`, so the stop is deterministic: the Nth survivor in source order, regardless of which worker finished first, and the reported survivors are exactly the first N. Runs already in flight when the cap is hit are *drained* (not killed), so the sandbox teardown never races a live `mix` subprocess. The returned run carries `stopped_early`; on an early stop the harness-error abort guard is skipped (the score is already a partial prefix — the Mix task notes it and skips the `--min-score` gate too), since aborting would discard the very survivors the user asked to find.
 
   ## Per-worker partitioning (DB isolation)
 
-  Optionally (`:partition_env`, off by default), each concurrent run is handed a
-  **distinct** partition id under a named env var (default `MIX_TEST_PARTITION`),
-  so a stateful suite can point each worker at its own database — the `mix test
-  --partitions` convention. The ids come from a bounded, recycled pool
-  (`Mutare.Runner.Partitions`) sized to `:workers`, so two live runs never share a
-  partition and only `:workers` databases are needed. The one compile, the
-  baseline, and the coverage probe (all sequential, pre-pool) take a fixed
-  partition — the compile too, since it evaluates the target's config, where a
-  partitioned default-less `System.fetch_env!` would otherwise raise. Inert when
-  unset.
+  Optionally (`:partition_env`, off by default), each concurrent run is handed a distinct partition id under a named env var (default `MIX_TEST_PARTITION`), so a stateful suite can point each worker at its own database — the `mix test --partitions` convention. The ids come from a bounded, recycled pool (`Mutare.Runner.Partitions`) sized to `:workers`, so two live runs never share a partition and only `:workers` databases are needed. The one compile, the baseline, and the coverage probe (all sequential, pre-pool) take a fixed partition — the compile too, since it evaluates the target's config, where a partitioned default-less `System.fetch_env!` would otherwise raise. Inert when unset.
 
   ## Harness errors are kept out of the score
 
-  A mutant run that never reaches a verdict — a compile error, a missing
-  dependency, a filesystem race — says *nothing* about the mutation, so it is
-  recorded as `:harness_error` and kept out of the score's denominator, never
-  silently miscounted as a kill the way a raw "non-zero ⇒ killed" rule would.
+  A mutant run that never reaches a verdict — a compile error, a missing dependency, a filesystem race — says *nothing* about the mutation, so it is recorded as `:harness_error` and kept out of the score's denominator, never silently miscounted as a kill the way a raw "non-zero ⇒ killed" rule would.
 
   Two knobs harden this against flakiness and systemic breakage:
 
-    * `:harness_retries` (default 2) re-runs a harness-errored mutant before
-      recording it, so a *transient* failure (a filesystem/lock race) gets
-      another chance; a real verdict is never retried.
-    * `:max_harness_error_rate` (default 0.5, `nil` to disable) aborts the whole
-      run — `{:error, :too_many_harness_errors, detail}` — when persistent
-      harness errors exceed that fraction of the mutants that *ran*. Past that,
-      the sandbox is broken, not the mutations tested, and a score over the
-      surviving denominator would mislead; better to fail loudly.
+    * `:harness_retries` (default 2) re-runs a harness-errored mutant before recording it, so a *transient* failure (a filesystem/lock race) gets another chance; a real verdict is never retried.
+    * `:max_harness_error_rate` (default 0.5, `nil` to disable) aborts the whole run — `{:error, :too_many_harness_errors, detail}` — when persistent harness errors exceed that fraction of the mutants that *ran*. Past that, the sandbox is broken, not the mutations tested, and a score over the surviving denominator would mislead; better to fail loudly.
 
   ## Boot-failure: a known-transient harness error retried harder
 
-  One harness-error *cause* is recognised by name (`Output.boot_failure?/1` →
-  the `:boot_failure` outcome): the sandbox node dies **during boot** with its own
-  diagnostic erased by a secondary `:standard_error` failure. It is almost always
-  concurrent workers contending on shared singletons at startup (a test DB, a
-  connection pool), so it clears on a retry that doesn't re-collide with the boot
-  stampede. It gets its **own** retry budget (`@boot_failure_retries`), independent
-  of `:harness_retries` and with a short jittered backoff, plus a *specific*
-  warning that stops pointing at output that can't help (the real cause is
-  unrecoverable) and names the actual contention levers — `--workers` and
-  `--partition-db`/`--partition-env`. (Not `--harness-retries`: a `:boot_failure`
-  draws only from its own dedicated budget, so raising that knob would not retry it
-  more.) The verdict is unchanged (a harness error, out of the score); only the
-  messaging and retry effort differ.
+  One harness-error *cause* is recognised by name (`Output.boot_failure?/1` → the `:boot_failure` outcome): the sandbox node dies during boot with its own diagnostic erased by a secondary `:standard_error` failure. It is almost always concurrent workers contending on shared singletons at startup (a test DB, a connection pool), so it clears on a retry that doesn't re-collide with the boot stampede. It gets its own retry budget (`@boot_failure_retries`), independent of `:harness_retries` and with a short jittered backoff, plus a *specific* warning that stops pointing at output that can't help (the real cause is unrecoverable) and names the actual contention levers — `--workers` and `--partition-db`/`--partition-env`. (Not `--harness-retries`: a `:boot_failure` draws only from its own dedicated budget, so raising that knob would not retry it more.) The verdict is unchanged (a harness error, out of the score); only the messaging and retry effort differ.
   """
 
   alias Mutare.{Options, Poison, Project, Report, Result, Run, Sandbox, Schema, Selector, Site}

@@ -8,16 +8,12 @@ defmodule Mutare.Mutators.CollectionArity do
     * `Enum.sort_by/2` → `Enum.reverse/1`, dropping the key function
     * `Enum.sort_by/3` → `Enum.reverse/1`, dropping the key function and sorter
     * `Enum.count/2` → `Enum.count/1`, dropping the predicate
-    * `Enum.count_until/3` → `Enum.count_until/2`, dropping the predicate but
-      retaining the limit
+    * `Enum.count_until/3` → `Enum.count_until/2`, dropping the predicate but retaining the limit
     * `Access.get_and_update/3` → `Access.get/2`, dropping the update function
 
-  The `Access` replacement also changes the result from `{value, updated_container}`
-  to the value alone. `Enum.reverse/2` is not mutated because its second argument is
-  a list tail rather than a sorting refinement.
+  The `Access` replacement also changes the result from `{value, updated_container}` to the value alone. `Enum.reverse/2` is not mutated because its second argument is a list tail rather than a sorting refinement.
 
-  Direct, aliased, imported, and piped calls are supported. This family is enabled
-  by default.
+  Direct, aliased, imported, and piped calls are supported. This family is enabled by default.
   """
   @behaviour Mutare.Mutator
 

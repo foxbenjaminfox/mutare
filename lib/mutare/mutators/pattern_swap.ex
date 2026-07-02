@@ -8,20 +8,11 @@ defmodule Mutare.Mutators.PatternSwap do
     * `[left: x, right: y]` → `[left: y, right: x]`
     * `<<x::8, y::16>>` → `<<y::8, x::16>>`
 
-  Structural pattern positions include `def`/`defp` heads, clause patterns,
-  destructuring match patterns, and routed `:binding_pattern` macro arguments.
-  Swaps occur within tuples, lists, map and keyword values, and bitstring segment
-  values. Map and keyword keys and bitstring specifiers remain in place. A
-  top-level pattern list, such as a function argument list or multi-pattern clause
-  head, is not itself a swap site.
+  Structural pattern positions include `def`/`defp` heads, clause patterns, destructuring match patterns, and routed `:binding_pattern` macro arguments. Swaps occur within tuples, lists, map and keyword values, and bitstring segment values. Map and keyword keys and bitstring specifiers remain in place. A top-level pattern list, such as a function argument list or multi-pattern clause head, is not itself a swap site.
 
-  The two variables must have distinct names. `_` and underscore-prefixed names are
-  excluded. Pinned variables may be swapped with another pin or with a binding.
-  Repeated same-name variables are handled by
-  `Mutare.Mutators.PatternWildcard` instead.
+  The two variables must have distinct names. `_` and underscore-prefixed names are excluded. Pinned variables may be swapped with another pin or with a binding. Repeated same-name variables are handled by `Mutare.Mutators.PatternWildcard` instead.
 
-  A bitstring value used by another segment as a size is not moved. For example,
-  `n` in `<<n, rest::binary-size(n)>>` remains in place.
+  A bitstring value used by another segment as a size is not moved. For example, `n` in `<<n, rest::binary-size(n)>>` remains in place.
 
   This family is enabled by default and uses the `pattern_swap` ignore name.
   """

@@ -1,10 +1,8 @@
 defmodule Mutare.Mutators.GenServer do
   @moduledoc """
-  Changes a `GenServer` callback return into another valid OTP return tuple. It runs
-  only in modules that use or declare the `GenServer` behaviour.
+  Changes a `GenServer` callback return into another valid OTP return tuple. It runs only in modules that use or declare the `GenServer` behaviour.
 
-  The mutator covers return values from `handle_call/3`, `handle_cast/2`,
-  `handle_info/2`, and `handle_continue/2`:
+  The mutator covers return values from `handle_call/3`, `handle_cast/2`, `handle_info/2`, and `handle_continue/2`:
 
       handle_call/3
         {:reply, reply, new_state}                     ->  {:noreply, new_state}
@@ -19,12 +17,9 @@ defmodule Mutare.Mutators.GenServer do
         {:noreply, new_state, action}                  ->  {:stop, :normal, new_state}
         {:stop, reason, new_state}                     ->  {:noreply, new_state}
 
-  Here `action` is a timeout, `:hibernate`, or `{:continue, term()}`. Each mutation
-  preserves the original state, reply, and action where the new tuple accepts them.
+  Here `action` is a timeout, `:hibernate`, or `{:continue, term()}`. Each mutation preserves the original state, reply, and action where the new tuple accepts them.
 
-  Other tuple shapes do not match. This excludes `init/1` returns, `:ignore`,
-  two-element `{:stop, reason}` tuples, and returns from callbacks such as
-  `terminate/2` and `code_change/3`. Actions and stop reasons are not mutated.
+  Other tuple shapes do not match. This excludes `init/1` returns, `:ignore`, two-element `{:stop, reason}` tuples, and returns from callbacks such as `terminate/2` and `code_change/3`. Actions and stop reasons are not mutated.
   """
 
   @behaviour Mutare.Mutator

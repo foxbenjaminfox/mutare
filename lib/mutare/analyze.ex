@@ -2,31 +2,14 @@ defmodule Mutare.Analyze do
   @moduledoc """
   Expression-level mutant generation for selector hosts and integrations.
 
-  A region that macro routing declared raw — a `:hosted` DSL fragment owned by its
-  `Mutare.Mutator.MacroHost`, or a `:skip` argument owned by the mutator that registered the
-  macro — is never descended by core. But such a region can contain islands of ordinary Elixir
-  that are exactly core's business: everything under an Ecto `^` pin is evaluated at runtime and
-  interpolated as a query parameter, so `^18` or `^(min + 1)` deserves core's value mutations
-  under the user's configured families — not a DSL-semantics catalog, and not nothing.
+  A region that macro routing declared raw — a `:hosted` DSL fragment owned by its `Mutare.Mutator.MacroHost`, or a `:skip` argument owned by the mutator that registered the macro — is never descended by core. But such a region can contain islands of ordinary Elixir that are exactly core's business: everything under an Ecto `^` pin is evaluated at runtime and interpolated as a query parameter, so `^18` or `^(min + 1)` deserves core's value mutations under the user's configured families — not a DSL-semantics catalog, and not nothing.
 
-  `expression_mutations/3` is the sub-contract seam: it generates the logical single-point
-  mutants of an expression subtree exactly as core's analyzer would for the same code outside a
-  DSL, and returns them as data. **Generation is core's; delivery stays the caller's** — on
-  either delivery path a raw region can take:
+  `expression_mutations/3` is the sub-contract seam: it generates the logical single-point mutants of an expression subtree exactly as core's analyzer would for the same code outside a DSL, and returns them as data. Generation is core's; delivery stays the caller's — on either delivery path a raw region can take:
 
-    * a **selector host** (`c:Mutare.Mutator.MacroHost.host/2`) wraps each rebuilt subtree back
-      under its pin, appends it to its `Mutare.Mutator.MacroHost.Target` mutants (tagged with
-      the producing spec via `Mutare.Mutator.Mutation`'s `:producer`), and the ordinary hosted
-      pipeline assigns ids, records sites under the producing family, and weaves the host's
-      selector;
-    * a mutator offered the **whole call of a registered macro** (`c:Mutare.Mutator.mutate/2` —
-      the free-standing `dynamic/1,2` shape, where the macro sits in ordinary expression
-      position and its `:skip` argument stays raw) rebuilds the call around each mutant and
-      relays it the same way; delivery is the ordinary in-place selector.
+    * a selector host (`c:Mutare.Mutator.MacroHost.host/2`) wraps each rebuilt subtree back under its pin, appends it to its `Mutare.Mutator.MacroHost.Target` mutants (tagged with the producing spec via `Mutare.Mutator.Mutation`'s `:producer`), and the ordinary hosted pipeline assigns ids, records sites under the producing family, and weaves the host's selector;
+    * a mutator offered the whole call of a registered macro (`c:Mutare.Mutator.mutate/2` — the free-standing `dynamic/1,2` shape, where the macro sits in ordinary expression position and its `:skip` argument stays raw) rebuilds the call around each mutant and relays it the same way; delivery is the ordinary in-place selector.
 
-  On both paths the run's enabled non-host specs arrive as `context.mutators`, so the interior
-  follows the user's actual configuration (`:as` renames and per-instance options included —
-  and with a family disabled, its interior mutants simply don't exist):
+  On both paths the run's enabled non-host specs arrive as `context.mutators`, so the interior follows the user's actual configuration (`:as` renames and per-instance options included — and with a family disabled, its interior mutants simply don't exist):
 
       defp pin_mutants({:^, meta, [inner]}, context) do
         for {spec, mutated, note, variant} <-

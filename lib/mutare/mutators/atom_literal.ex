@@ -1,21 +1,15 @@
 defmodule Mutare.Mutators.AtomLiteral do
   @moduledoc """
-  Replaces a literal atom with `:mutare`. The replacement is omitted when the
-  original atom is already `:mutare`.
+  Replaces a literal atom with `:mutare`. The replacement is omitted when the original atom is already `:mutare`.
 
   The following atoms are excluded:
 
-    * `true`, `false`, and `nil`, which are handled by literal and conditional
-      families
-    * `:ok`/`:error`, `:cont`/`:halt`, and `:lt`/`:gt`, which are handled by
-      `Mutare.Mutators.ConventionAtom`
+    * `true`, `false`, and `nil`, which are handled by literal and conditional families
+    * `:ok`/`:error`, `:cont`/`:halt`, and `:lt`/`:gt`, which are handled by `Mutare.Mutators.ConventionAtom`
     * block keys such as `do:`, `else:`, and `rescue:`
     * struct field names and `for` options such as `into:`, `uniq:`, and `reduce:`
 
-  Ordinary atom values, data map and keyword keys, and atoms in `case`, `receive`,
-  and `fn` patterns remain eligible. Keys in a trailing call-options list are also
-  mutated by default. Configure
-  `{Mutare.Mutators.AtomLiteral, call_option_keys: false}` to exclude those keys.
+  Ordinary atom values, data map and keyword keys, and atoms in `case`, `receive`, and `fn` patterns remain eligible. Keys in a trailing call-options list are also mutated by default. Configure `{Mutare.Mutators.AtomLiteral, call_option_keys: false}` to exclude those keys.
   """
   @behaviour Mutare.Mutator
 

@@ -1,21 +1,16 @@
 defmodule Mutare.Mutators.StringSigilLiteral do
   @moduledoc """
-  Replaces a `~s` or `~S` sigil with the plain string literals `""` and
-  `"mutare"`. A replacement equal to a static sigil value is omitted:
+  Replaces a `~s` or `~S` sigil with the plain string literals `""` and `"mutare"`. A replacement equal to a static sigil value is omitted:
 
     * `~s(hello)` produces both replacements
     * `~s()` produces only `"mutare"`
     * `~s(mutare)` produces only `""`
 
-  Replacements are plain string literals because these sigils have no modifier that
-  changes their value type.
+  Replacements are plain string literals because these sigils have no modifier that changes their value type.
 
-  Interpolated `~s` sigils also receive both replacements because their runtime value
-  cannot be compared statically. Expressions inside the interpolation remain eligible
-  for their own mutations. `~S` sigils do not interpolate.
+  Interpolated `~s` sigils also receive both replacements because their runtime value cannot be compared statically. Expressions inside the interpolation remain eligible for their own mutations. `~S` sigils do not interpolate.
 
-  The whole sigil is mutated only in runtime positions, not in patterns. The ignore
-  variants are `empty` and `sentinel`.
+  The whole sigil is mutated only in runtime positions, not in patterns. The ignore variants are `empty` and `sentinel`.
   """
   @behaviour Mutare.Mutator
 

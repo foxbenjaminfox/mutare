@@ -1,22 +1,12 @@
 defmodule Mutare.Mutators.Conditional do
   @moduledoc """
-  Replace a boolean-valued expression with the constants `true` and `false` —
-  the "remove conditionals" mutation. Forcing a decision to one side checks that
-  *both* branches it guards are actually exercised by the suite.
+  Replace a boolean-valued expression with the constants `true` and `false` — the "remove conditionals" mutation. Forcing a decision to one side checks that *both* branches it guards are actually exercised by the suite.
 
-  Applies to the nodes that are guaranteed boolean-typed: the comparison and
-  membership operators (`>`, `>=`, `<`, `<=`, `==`, `!=`, `===`, `!==`, `in`) and
-  the logical connectives (`and`, `or`, `&&`, `||`, `not`, `!`). Guard-safe — a
-  bare boolean is legal in a `when`.
+  Applies to the nodes that are guaranteed boolean-typed: the comparison and membership operators (`>`, `>=`, `<`, `<=`, `==`, `!=`, `===`, `!==`, `in`) and the logical connectives (`and`, `or`, `&&`, `||`, `not`, `!`). Guard-safe — a bare boolean is legal in a `when`.
 
-  On by default. It overlaps the relational/logical swaps and roughly doubles the
-  mutants at every condition, but the extra signal — proving each branch is
-  actually exercised — is worth the volume. (On a short-circuit `and`/`or` whose
-  left operand is itself a boolean op, the redundant whole-node constant is
-  dropped, since forcing the left operand already covers it.)
+  On by default. It overlaps the relational/logical swaps and roughly doubles the mutants at every condition, but the extra signal — proving each branch is actually exercised — is worth the volume. (On a short-circuit `and`/`or` whose left operand is itself a boolean op, the redundant whole-node constant is dropped, since forcing the left operand already covers it.)
 
-  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to
-  suppress just one kind (`c:Mutare.Mutator.variants/0`): `true`, `false`.
+  Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one kind (`c:Mutare.Mutator.variants/0`): `true`, `false`.
   """
   @behaviour Mutare.Mutator
 

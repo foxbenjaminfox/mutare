@@ -2,14 +2,9 @@ defmodule Mutare.Options do
   @moduledoc """
   Validated configuration for a mutation run.
 
-  `new/1` resolves a keyword list (or another `Options`) into a struct,
-  validating every field up front. Invalid values raise `ArgumentError`. Passing
-  the same options on the command line or in `.mutare.exs` uses the same
-  validation; see
-  `mix help mutare` for the full list of settable keys and their defaults.
+  `new/1` resolves a keyword list (or another `Options`) into a struct, validating every field up front. Invalid values raise `ArgumentError`. Passing the same options on the command line or in `.mutare.exs` uses the same validation; see `mix help mutare` for the full list of settable keys and their defaults.
 
-  Runtime wiring, such as the resolved `Mutare.Project` and live-progress hooks,
-  lives in `Mutare.Run.Context`, not in this struct.
+  Runtime wiring, such as the resolved `Mutare.Project` and live-progress hooks, lives in `Mutare.Run.Context`, not in this struct.
 
   The fields and their types are listed in `t:t/0` below.
   """

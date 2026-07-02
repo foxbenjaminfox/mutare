@@ -1,24 +1,17 @@
 defmodule Mutare.Mutators.PatternWildcard do
   @moduledoc """
-  Replaces repeated variables in a pattern with `_`, removing the equality
-  constraint created by the repetition:
+  Replaces repeated variables in a pattern with `_`, removing the equality constraint created by the repetition:
 
       def equal?(x, x), do: true  →  def equal?(_, _), do: true
 
   The replacement policy keeps required bindings intact:
 
-    * If the variable is read by the guard or body, or appears at least three times
-      in the head, one mutant is produced for each wildcarded occurrence.
-    * If it appears exactly twice and is not read elsewhere, both occurrences are
-      replaced in one mutant. Replacing only one would leave an unused binding.
+    * If the variable is read by the guard or body, or appears at least three times in the head, one mutant is produced for each wildcarded occurrence.
+    * If it appears exactly twice and is not read elsewhere, both occurrences are replaced in one mutant. Replacing only one would leave an unused binding.
 
-  `_`, underscore-prefixed names, and pinned variables are not counted or replaced.
-  On the right side of a bitstring `::`, atoms such as `binary` have the same AST
-  shape as variables, so that side is not searched for pattern occurrences.
+  `_`, underscore-prefixed names, and pinned variables are not counted or replaced. On the right side of a bitstring `::`, atoms such as `binary` have the same AST shape as variables, so that side is not searched for pattern occurrences.
 
-  A variable read by a bitstring specifier is also excluded. For example, the `n`
-  bound and read by `<<n, rest::size(n)>>` cannot be wildcarded without leaving an
-  invalid size reference.
+  A variable read by a bitstring specifier is also excluded. For example, the `n` bound and read by `<<n, rest::size(n)>>` cannot be wildcarded without leaving an invalid size reference.
 
   This family is enabled by default and uses the `pattern_wildcard` ignore name.
   """

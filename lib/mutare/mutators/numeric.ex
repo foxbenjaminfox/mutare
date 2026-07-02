@@ -8,15 +8,9 @@ defmodule Mutare.Mutators.Numeric do
     * `Float.ceil` ↔ `Float.floor` at any arity
     * `Float.max_finite/0` ↔ `Float.min_finite/0`
 
-  Only the listed pairs are produced. In particular, the four integer-returning
-  rounding functions are not treated as a full set because some cross-pair
-  replacements are equivalent for common inputs. `Float.round` is not included
-  because it has no complementary `Float` function.
+  Only the listed pairs are produced. In particular, the four integer-returning rounding functions are not treated as a full set because some cross-pair replacements are equivalent for common inputs. `Float.round` is not included because it has no complementary `Float` function.
 
-  Kernel calls are matched only at their defined arities and may also be mutated in
-  guards. Aliased and imported calls are supported; a Kernel function displaced by
-  an import is not matched. The `div`/`rem` pair belongs to
-  `Mutare.Mutators.Arithmetic`.
+  Kernel calls are matched only at their defined arities and may also be mutated in guards. Aliased and imported calls are supported; a Kernel function displaced by an import is not matched. The `div`/`rem` pair belongs to `Mutare.Mutators.Arithmetic`.
 
   This family is enabled by default.
   """

@@ -2,13 +2,9 @@ defmodule Mutare.MacroRouting do
   @moduledoc """
   Behaviour for describing how Mutare should handle macro arguments.
 
-  A macro can place an argument in a pattern or compile-time DSL position where Mutare's
-  ordinary runtime descent would be invalid. A module implementing this behaviour registers
-  those macros through `c:macro_routes/0`. A route may be static, or use the `:routing` sentinel
-  to defer a concrete call's argument treatments to `c:route_arguments/2`.
+  A macro can place an argument in a pattern or compile-time DSL position where Mutare's ordinary runtime descent would be invalid. A module implementing this behaviour registers those macros through `c:macro_routes/0`. A route may be static, or use the `:routing` sentinel to defer a concrete call's argument treatments to `c:route_arguments/2`.
 
-  Both extensions and mutators may implement this behaviour. Enabling the module under
-  `:extensions` or `:mutators` also enables its routes.
+  Both extensions and mutators may implement this behaviour. Enabling the module under `:extensions` or `:mutators` also enables its routes.
 
       defmodule MyApp.EctoRouting do
         @behaviour Mutare.MacroRouting
@@ -28,27 +24,9 @@ defmodule Mutare.MacroRouting do
         end
       end
 
-  Shape-dependent routes use `:routing`. A `:hosted` treatment marks a position as raw for core
-  and available to every enabled `Mutare.Mutator.MacroHost` subscribing to that macro. Routing and
-  mutation ownership are independent: one library adapter can describe the DSL while several
-  mutators contribute mutations inside it.
+  Shape-dependent routes use `:routing`. A `:hosted` treatment marks a position as raw for core and available to every enabled `Mutare.Mutator.MacroHost` subscribing to that macro. Routing and mutation ownership are independent: one library adapter can describe the DSL while several mutators contribute mutations inside it.
 
-  The treatment vocabulary is tiered. `:skip`, `:expression`, `:pattern`, and `:binding_pattern`
-  only tell Mutare an argument isn't ordinary runtime code; they are the whole vocabulary the
-  declarative `:macro_routes` configuration key accepts. `:interpolated`,
-  `{:keyword, ...}`, and `:hosted` are adapter-grade: each asserts a fact about the DSL that
-  Mutare cannot verify, and the module routing it takes responsibility for that fact. An
-  `:interpolated` position must genuinely accept `^` interpolation — where it doesn't,
-  the spliced selector fails the single metamutant compile and is recovered as poison, discarding
-  those mutants after a rebuild. A
-  `{:keyword, ...}` list must name exactly one treatment per pair — a length mismatch raises at
-  transform time, and a non-keyword argument under it is left raw (warned when a `:routing`
-  classifier routed it; silent for a static route, whose other call shapes may be legal forms).
-  A `:hosted` route without an enabled subscribing host aborts the run at scan time. These
-  treatments must come
-  from a module implementing this behaviour — an adapter written and tested against the library
-  it describes; a declarative `:macro_routes` entry that uses one is rejected with an
-  `ArgumentError`.
+  The treatment vocabulary is tiered. `:skip`, `:expression`, `:pattern`, and `:binding_pattern` only tell Mutare an argument isn't ordinary runtime code; they are the whole vocabulary the declarative `:macro_routes` configuration key accepts. `:interpolated`, `{:keyword, ...}`, and `:hosted` are adapter-grade: each asserts a fact about the DSL that Mutare cannot verify, and the module routing it takes responsibility for that fact. An `:interpolated` position must genuinely accept `^` interpolation — where it doesn't, the spliced selector fails the single metamutant compile and is recovered as poison, discarding those mutants after a rebuild. A `{:keyword, ...}` list must name exactly one treatment per pair — a length mismatch raises at transform time, and a non-keyword argument under it is left raw (warned when a `:routing` classifier routed it; silent for a static route, whose other call shapes may be legal forms). A `:hosted` route without an enabled subscribing host aborts the run at scan time. These treatments must come from a module implementing this behaviour — an adapter written and tested against the library it describes; a declarative `:macro_routes` entry that uses one is rejected with an `ArgumentError`.
 
   ## Which behaviours do I implement?
 
@@ -60,23 +38,13 @@ defmodule Mutare.MacroRouting do
   | A mutator whose mutation depends on routing | `Mutare.Mutator` + `Mutare.MacroRouting` | `name/0`, a producer, `macro_routes/0` (+ `route_arguments/2`) |
   | A mutator that mutates *inside* a DSL fragment (`:hosted`) | `Mutare.Mutator` + `Mutare.Mutator.MacroHost` | `name/0`, `hosted_macros/0`, `host/2`; it may also implement `MacroRouting` when it owns the DSL's routes |
 
-  **Always declare the `@behaviour`s you implement.** The registry discovers capabilities by
-  exported callbacks, so a typo'd or missing callback would otherwise compile to a silently inert
-  module. Declaring `@behaviour` lets the compiler check the required callbacks, and the registry
-  additionally rejects, at scan time, a module whose `route_arguments/2` or `host/2` no route ever
-  reaches (a forgotten `:routing`/`:hosted` registration).
+  Always declare the `@behaviour`s you implement. The registry discovers capabilities by exported callbacks, so a typo'd or missing callback would otherwise compile to a silently inert module. Declaring `@behaviour` lets the compiler check the required callbacks, and the registry additionally rejects, at scan time, a module whose `route_arguments/2` or `host/2` no route ever reaches (a forgotten `:routing`/`:hosted` registration).
 
   ## Route forms and precedence
 
-  A route is `{module, name, arity, treatments}` or `{module, name, treatments}` for any arity.
-  `:*` in the name position covers a whole module; `:*` in the module position is the last-resort
-  name-only match for calls whose module cannot be resolved. Exact routes beat any-arity routes,
-  which beat whole-module routes, which beat name-only routes.
+  A route is `{module, name, arity, treatments}` or `{module, name, treatments}` for any arity. `:*` in the name position covers a whole module; `:*` in the module position is the last-resort name-only match for calls whose module cannot be resolved. Exact routes beat any-arity routes, which beat whole-module routes, which beat name-only routes.
 
-  Identical declarations from multiple code providers coalesce. Conflicting code-provided routes
-  raise `Mutare.MacroRouting.ContractError` instead of depending on configuration order. A
-  declarative `:macro_routes` entry is an explicit final override, restricted to the user-tier
-  treatments above.
+  Identical declarations from multiple code providers coalesce. Conflicting code-provided routes raise `Mutare.MacroRouting.ContractError` instead of depending on configuration order. A declarative `:macro_routes` entry is an explicit final override, restricted to the user-tier treatments above.
 
   ## The committed surface
 
@@ -84,18 +52,12 @@ defmodule Mutare.MacroRouting do
 
     * this behaviour's callbacks and `Mutare.Mutator.MacroHost`'s;
     * `Mutare.MacroRouting.Call` — fields may be *added*, so match only the ones you need;
-    * `Mutare.MacroRouting.ArgumentRoutes`, built through its constructors and read through its
-      accessors (the struct itself is opaque);
+    * `Mutare.MacroRouting.ArgumentRoutes`, built through its constructors and read through its accessors (the struct itself is opaque);
     * `Mutare.Mutator.MacroHost.Target.new/4`;
-    * the `Mutare.Calls` readers (`Mutare.Calls.resolved_call/1`,
-      `Mutare.Calls.resolved_macro_call/1`, `Mutare.Calls.macro_treatment/1`);
-    * `Mutare.MacroRouting.ContractError` as the failure type for provider conflicts and callback
-      contract violations — its structured fields are stable; its message strings may improve at
-      any time.
+    * the `Mutare.Calls` readers (`Mutare.Calls.resolved_call/1`, `Mutare.Calls.resolved_macro_call/1`, `Mutare.Calls.macro_treatment/1`);
+    * `Mutare.MacroRouting.ContractError` as the failure type for provider conflicts and callback contract violations — its structured fields are stable; its message strings may improve at any time.
 
-  Everything else in the routing path — the registry and its entries, the normalized route spec,
-  transform metadata keys, candidate structs, and how selectors are assembled and nested — is
-  internal and free to change between releases.
+  Everything else in the routing path — the registry and its entries, the normalized route spec, transform metadata keys, candidate structs, and how selectors are assembled and nested — is internal and free to change between releases.
   """
 
   @typedoc """

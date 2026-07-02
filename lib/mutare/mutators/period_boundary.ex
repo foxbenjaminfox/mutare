@@ -6,17 +6,11 @@ defmodule Mutare.Mutators.PeriodBoundary do
     * `Date.beginning_of_week` ↔ `Date.end_of_week`
     * `NaiveDateTime.beginning_of_day` ↔ `NaiveDateTime.end_of_day`
 
-  Only the function name changes. Optional arguments are retained, so
-  `Date.beginning_of_week(date, :sunday)` becomes
-  `Date.end_of_week(date, :sunday)`. The weekday may be changed separately by
-  `Mutare.Mutators.ModeSwap`.
+  Only the function name changes. Optional arguments are retained, so `Date.beginning_of_week(date, :sunday)` becomes `Date.end_of_week(date, :sunday)`. The weekday may be changed separately by `Mutare.Mutators.ModeSwap`.
 
-  `Mutare.Mutators.CallRemoval` may produce another mutant at the same call by
-  removing the boundary operation entirely. This family retains the call and changes
-  its direction.
+  `Mutare.Mutators.CallRemoval` may produce another mutant at the same call by removing the boundary operation entirely. This family retains the call and changes its direction.
 
-  Direct, aliased, and imported calls are supported. An alias that resolves to
-  another module does not match. This family is enabled by default.
+  Direct, aliased, and imported calls are supported. An alias that resolves to another module does not match. This family is enabled by default.
   """
   @behaviour Mutare.Mutator
 
