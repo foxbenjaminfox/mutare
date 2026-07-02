@@ -1493,6 +1493,16 @@ defmodule Mutare.TransformResolutionTest do
         def e(xs, i), do: List.pop_at(xs, i, :empty)
         def f(xs, i), do: xs |> List.pop_at(i, :empty)
         def g(xs, i), do: List.pop_at(xs, i, nil)
+        def h(m, k), do: Access.get(m, k, :default)
+        def i(k), do: Access.key(k, :default)
+        def j(kw, k), do: Keyword.pop_first(kw, k, :default)
+        def k(xs, key, pos), do: List.keyfind(xs, key, pos, :default)
+        def l(xs), do: List.flatten(xs, [:tail])
+        def m(data, key), do: data |> Access.get(key, :default)
+        def n(kw, key), do: kw |> Keyword.pop_first(key, :default)
+        def o(xs, key, pos), do: xs |> List.keyfind(key, pos, :default)
+        def p(xs), do: xs |> List.flatten([:tail])
+        def q(xs), do: List.flatten(xs, [])
       end
       """
 
@@ -1507,8 +1517,18 @@ defmodule Mutare.TransformResolutionTest do
       assert {"Keyword.get_lazy(m, k, f)", "Keyword.get(m, k)"} in pairs
       assert {"List.pop_at(xs, i, :empty)", "List.pop_at(xs, i)"} in pairs
       assert {"List.pop_at(i, :empty)", "List.pop_at(i)"} in pairs
+      assert {"Access.get(m, k, :default)", "Access.get(m, k)"} in pairs
+      assert {"Access.key(k, :default)", "Access.key(k)"} in pairs
+      assert {"Keyword.pop_first(kw, k, :default)", "Keyword.pop_first(kw, k)"} in pairs
+      assert {"List.keyfind(xs, key, pos, :default)", "List.keyfind(xs, key, pos)"} in pairs
+      assert {"List.flatten(xs, [:tail])", "List.flatten(xs)"} in pairs
+      assert {"Access.get(key, :default)", "Access.get(key)"} in pairs
+      assert {"Keyword.pop_first(key, :default)", "Keyword.pop_first(key)"} in pairs
+      assert {"List.keyfind(key, pos, :default)", "List.keyfind(key, pos)"} in pairs
+      assert {"List.flatten([:tail])", "List.flatten()"} in pairs
       # The nil-default call (def c) is equivalent — no mutant.
       refute Enum.any?(pairs, fn {orig, _} -> orig =~ "nil" end)
+      refute Enum.any?(pairs, fn {orig, _} -> orig == "List.flatten(xs, [])" end)
       assert_compiles(meta)
     end
 

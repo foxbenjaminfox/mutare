@@ -556,9 +556,14 @@ defmodule Mutare.MutatorsCallTest do
     test "non-piped: drops a non-nil trailing default, reverting to the /2 lookup" do
       assert dropd("Map.get(m, k, :default)", false) == ["Map.get(m, k)"]
       assert dropd("Keyword.get(kw, k, 0)", false) == ["Keyword.get(kw, k)"]
+      assert dropd("Access.get(m, k, :default)", false) == ["Access.get(m, k)"]
+      assert dropd("Access.key(k, :default)", false) == ["Access.key(k)"]
       assert dropd("Map.pop(m, k, :d)", false) == ["Map.pop(m, k)"]
+      assert dropd("Keyword.pop_first(kw, k, :d)", false) == ["Keyword.pop_first(kw, k)"]
       assert dropd("Enum.at(xs, i, :none)", false) == ["Enum.at(xs, i)"]
       assert dropd("List.pop_at(xs, i, :empty)", false) == ["List.pop_at(xs, i)"]
+      assert dropd("List.keyfind(xs, k, 0, :none)", false) == ["List.keyfind(xs, k, 0)"]
+      assert dropd("List.flatten(xs, [:tail])", false) == ["List.flatten(xs)"]
       assert dropd("List.first(xs, :empty)", false) == ["List.first(xs)"]
       assert dropd("List.last(xs, :empty)", false) == ["List.last(xs)"]
     end
@@ -567,7 +572,21 @@ defmodule Mutare.MutatorsCallTest do
       assert DefaultDrop.mutate(parse("Map.get(m, k, nil)"), %{pipe_mode: :unpiped}) == :skip
       assert DefaultDrop.mutate(parse("Keyword.get(kw, k, nil)"), %{pipe_mode: :unpiped}) == :skip
 
+      assert DefaultDrop.mutate(parse("Access.get(m, k, nil)"), %{pipe_mode: :unpiped}) ==
+               :skip
+
+      assert DefaultDrop.mutate(parse("Access.key(k, nil)"), %{pipe_mode: :unpiped}) == :skip
+
+      assert DefaultDrop.mutate(parse("Keyword.pop_first(kw, k, nil)"), %{pipe_mode: :unpiped}) ==
+               :skip
+
       assert DefaultDrop.mutate(parse("List.pop_at(xs, i, nil)"), %{pipe_mode: :unpiped}) ==
+               :skip
+
+      assert DefaultDrop.mutate(parse("List.keyfind(xs, k, 0, nil)"), %{pipe_mode: :unpiped}) ==
+               :skip
+
+      assert DefaultDrop.mutate(parse("List.flatten(xs, [])"), %{pipe_mode: :unpiped}) ==
                :skip
 
       # but a non-nil falsy default (false, 0) is a real difference — still dropped.
@@ -641,12 +660,18 @@ defmodule Mutare.MutatorsCallTest do
     test "piped: effective arity is +1, so a /3 reaches us as 2 visible args" do
       # `m |> Map.get(k, :d)` — drop the trailing visible default, leaving the /2 stage.
       assert dropd("Map.get(k, :default)", true) == ["Map.get(k)"]
+      assert dropd("Access.get(k, :default)", true) == ["Access.get(k)"]
+      assert dropd("Access.key(:default)", true) == ["Access.key()"]
+      assert dropd("Keyword.pop_first(k, :default)", true) == ["Keyword.pop_first(k)"]
       assert dropd("List.pop_at(i, :empty)", true) == ["List.pop_at(i)"]
+      assert dropd("List.keyfind(k, 0, :none)", true) == ["List.keyfind(k, 0)"]
+      assert dropd("List.flatten([:tail])", true) == ["List.flatten()"]
       assert dropd("List.first(:empty)", true) == ["List.first()"]
       assert dropd("Map.get_lazy(k, f)", true) == ["Map.get(k)"]
       # A piped nil default is still equivalent → skipped.
       assert DefaultDrop.mutate(parse("Map.get(k, nil)"), %{pipe_mode: :piped}) == :skip
       assert DefaultDrop.mutate(parse("List.pop_at(i, nil)"), %{pipe_mode: :piped}) == :skip
+      assert DefaultDrop.mutate(parse("List.flatten([])"), %{pipe_mode: :piped}) == :skip
     end
 
     test "a /2 lookup (no default) is not mutated — needs the piped flag to tell apart" do

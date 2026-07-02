@@ -7,9 +7,13 @@ defmodule Mutare.Mutators.DefaultDrop do
   These lookups use `nil` when the optional fallback is removed:
 
     * `Map.get/3` → `Map.get/2`            `Keyword.get/3` → `Keyword.get/2`
+    * `Access.get/3` → `Access.get/2`      `Access.key/2` → `Access.key/1`
     * `Map.pop/3` → `Map.pop/2`            `Keyword.pop/3` → `Keyword.pop/2`
+    * `Keyword.pop_first/3` → `Keyword.pop_first/2`
     * `Enum.at/3` → `Enum.at/2`
     * `List.pop_at/3` → `List.pop_at/2`
+    * `List.keyfind/4` → `List.keyfind/3`
+    * `List.flatten/2` → `List.flatten/1`
     * `List.first/2` → `List.first/1`      `List.last/2` → `List.last/1`
     * `Map.get_lazy/3` → `Map.get/2`       `Keyword.get_lazy/3` → `Keyword.get/2`
     * `Map.pop_lazy/3` → `Map.pop/2`       `Keyword.pop_lazy/3` → `Keyword.pop/2`
@@ -35,7 +39,8 @@ defmodule Mutare.Mutators.DefaultDrop do
   `nil` for the lookups, `0` for the rounding precision, `10` for the integer base, `""`
   for `Enum.join`, `" "` for the pads — `Map.get(m, k, nil)`, `Float.round(x, 0)`,
   `Integer.to_string(n, 10)`, `Enum.join(xs, "")`, `String.pad_leading(s, n, " ")` are
-  all unchanged. Non-default literals, variables, and expressions are eligible.
+  all unchanged. `List.flatten(xs, [])` is also skipped because `[]` is the implicit tail.
+  Non-default literals, variables, and expressions are eligible.
 
   Lazy fallbacks are always eligible. The string argument to `String.trim/2` and its
   directional variants is also always eligible because no string value reproduces
@@ -65,10 +70,15 @@ defmodule Mutare.Mutators.DefaultDrop do
     # Not-found defaults — implicit nil.
     {[:Map], :get, 3} => {:get, [nil]},
     {[:Keyword], :get, 3} => {:get, [nil]},
+    {[:Access], :get, 3} => {:get, [nil]},
+    {[:Access], :key, 2} => {:key, [nil]},
     {[:Map], :pop, 3} => {:pop, [nil]},
     {[:Keyword], :pop, 3} => {:pop, [nil]},
+    {[:Keyword], :pop_first, 3} => {:pop_first, [nil]},
     {[:Enum], :at, 3} => {:at, [nil]},
     {[:List], :pop_at, 3} => {:pop_at, [nil]},
+    {[:List], :keyfind, 4} => {:keyfind, [nil]},
+    {[:List], :flatten, 2} => {:flatten, [[]]},
     {[:List], :first, 2} => {:first, [nil]},
     {[:List], :last, 2} => {:last, [nil]},
     {[:Map], :get_lazy, 3} => {:get, []},
@@ -117,9 +127,12 @@ defmodule Mutare.Mutators.DefaultDrop do
   # (so dropping it is a no-op). A non-literal argument (a variable, expression, or a
   # `_lazy` fallback fun) is never an equivalent default.
   defp equivalent_default?(node, equivalent_defaults) do
-    case AST.literal_value(node) do
-      {:ok, value} -> value in equivalent_defaults
-      :error -> false
-    end
+    empty_list_default? = [] in equivalent_defaults and AST.empty_collection_literal?(node)
+
+    empty_list_default? or
+      case AST.literal_value(node) do
+        {:ok, value} -> value in equivalent_defaults
+        :error -> false
+      end
   end
 end
