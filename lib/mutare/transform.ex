@@ -997,9 +997,9 @@ defmodule Mutare.Transform do
     end
   end
 
-  # A `:pinned` in-place candidate's selector must be **`^`-pinned**: the value sits in a
-  # compile-time DSL position (an Ecto keyword-shorthand value) that accepts `^(case …)` but
-  # rejects a bare `case`. The `:pinned` route flags *every* in-place candidate on the node, so
+  # A `:scalar_interpolation` in-place candidate's selector must be **`^`-pinned**: the value sits
+  # in a compile-time DSL position (an Ecto keyword-shorthand value) that accepts `^(case …)` but
+  # rejects a bare `case`. The `:scalar_interpolation` route flags *every* in-place candidate on the node, so
   # a pinned value carries only pinned candidates and wrapping the whole built selector is sound.
   # No pinned candidate ⇒ the selector is returned untouched (every existing site is unaffected).
   defp pin_if_needed(case_node, candidates) do

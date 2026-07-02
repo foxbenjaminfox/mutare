@@ -50,8 +50,8 @@ defmodule Mutare.MacroRouting.RegistryTest do
     end
 
     test "static routes accept pinned and recursive keyword treatments" do
-      assert %Spec{args: [:expression, {:keyword, [:pinned, :skip]}]} =
-               Spec.new(Foo, :set, 2, [:expression, {:keyword, [:pinned, :skip]}])
+      assert %Spec{args: [:expression, {:keyword, [:scalar_interpolation, :skip]}]} =
+               Spec.new(Foo, :set, 2, [:expression, {:keyword, [:scalar_interpolation, :skip]}])
     end
   end
 
@@ -223,7 +223,7 @@ defmodule Mutare.MacroRouting.RegistryTest do
     end
 
     test "a declarative entry may not use an adapter-grade treatment" do
-      # `:pinned`, `{:keyword, …}`, and `:hosted` assert DSL facts Mutare cannot check, so they
+      # `:scalar_interpolation`, `{:keyword, …}`, and `:hosted` assert DSL facts Mutare cannot check, so they
       # are reserved for code providers (a `Mutare.MacroRouting` module under `:mutators` /
       # `:extensions`) — even when an enabled host could deliver the `:hosted` position.
       host = Mutator.Spec.for_module(Mutare.Test.SecondHostMutator)
@@ -232,8 +232,8 @@ defmodule Mutare.MacroRouting.RegistryTest do
         Macros.build([{Mutare.Test.HostDSL, :filter, 2, [:expression, :hosted]}], [host])
       end
 
-      assert_raise ArgumentError, ~r/adapter-grade treatment.*:pinned/s, fn ->
-        Macros.build([{Mutare.Test.HostDSL, :set, 2, [:expression, :pinned]}], [])
+      assert_raise ArgumentError, ~r/adapter-grade treatment.*:scalar_interpolation/s, fn ->
+        Macros.build([{Mutare.Test.HostDSL, :set, 2, [:expression, :scalar_interpolation]}], [])
       end
 
       assert_raise ArgumentError, ~r/adapter-grade treatment.*:keyword/s, fn ->

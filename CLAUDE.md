@@ -180,7 +180,7 @@ case is Gettext; see `test/support/extension_fixtures.ex` and NOTES "Extension `
 override".
 
 The contract details (notes, `:as` renaming, the macro-routing treatments
-`:expression`/`:pattern`/`:binding_pattern`/`:skip`/`:hosted`/`:pinned`/`{:keyword, …}`, the
+`:expression`/`:pattern`/`:binding_pattern`/`:skip`/`:hosted`/`:scalar_interpolation`/`{:keyword, …}`, the
 variant-label rules) are in the
 `Mutare.Mutator` / `Mutare.MacroRouting` / `Mutare.Mutator.MacroHost` /
 `Mutare.UseExpansion` moduledocs — read those when implementing.

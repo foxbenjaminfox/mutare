@@ -5,21 +5,9 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## 0.1.0 - Unreleased
 
-### Changed
-
-- The declarative `:macro_routes` option (`.mutare.exs`) now accepts only the
-  user-tier treatments (`:skip`, `:expression`, `:pattern`,
-  `:binding_pattern`). The adapter-grade treatments — `:pinned`,
-  `{:keyword, ...}`, and `:hosted` — assert DSL facts Mutare cannot check and
-  are rejected with an `ArgumentError`; declare them from a module
-  implementing `Mutare.MacroRouting` (a `:mutators` or `:extensions` entry)
-  instead.
-
-## [0.1.0] - 2026-06-28
-
-Initial public release.
+Initial release.
 
 ### Added
 
@@ -55,9 +43,8 @@ Initial public release.
 - **Umbrella-aware** — target one app, several, or the whole workspace.
 - **Extension surface** — `Mutare.Mutator` (custom mutators), independent
   `Mutare.MacroRouting` and `Mutare.UseExpansion` capabilities, `:extensions` for
-  non-mutating integrations, and declarative `:macro_routes` configuration.
+  non-mutating integrations, and declarative `:macro_routes` configuration
+  (user-tier treatments only; the adapter-grade treatments must come from a
+  module implementing `Mutare.MacroRouting`).
 - **`mix igniter.install mutare`** installer that detects frameworks and wires up
   the matching companion packages and `.mutare.exs`.
-
-[Unreleased]: https://github.com/foxbenjaminfox/mutare/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/foxbenjaminfox/mutare/releases/tag/v0.1.0

@@ -152,8 +152,9 @@ end
 ```
 
 Each argument gets a *treatment*: `:expression` (mutate normally), `:skip`
-(leave raw), `:pattern`/`:binding_pattern` (treat as a pattern), `:pinned`
-(mutate a scalar DSL value behind `^` interpolation), `{:keyword, ...}` (route
+(leave raw), `:pattern`/`:binding_pattern` (treat as a pattern),
+`:scalar_interpolation` (reuse core's scalar mutations on a DSL value,
+delivered behind `^` interpolation), `{:keyword, ...}` (route
 keyword *values*, keep keys raw), or `:hosted` (hand the position to a host
 mutator — below). The `:routing` sentinel defers to
 `route_arguments/2` when the right treatment depends on the call's shape —
@@ -162,9 +163,9 @@ fragment.
 
 The first four treatments are also the end-user vocabulary of the declarative
 `macro_routes:` config key. The other three are adapter-grade: routing a
-position `:pinned`, `{:keyword, ...}`, or `:hosted` asserts facts about the
+position `:scalar_interpolation`, `{:keyword, ...}`, or `:hosted` asserts facts about the
 DSL that Mutare cannot check, and a wrong assertion has real consequences.
-`:pinned` splices a `^`-pinned selector into the argument, so it is sound only
+`:scalar_interpolation` splices a `^`-pinned selector into the argument, so it is sound only
 where the DSL genuinely accepts `^` interpolation, and only for a scalar value
 (a compound value is rejected at transform time with an error rather than left
 to poison the build — but a DSL that rejects `^` outright still breaks the

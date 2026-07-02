@@ -489,7 +489,7 @@ defmodule Mutare.HostedTest do
     end
   end
 
-  describe "per-keyword-pair routing ({:keyword, value_treatments}) + :pinned values" do
+  describe "per-keyword-pair routing ({:keyword, value_treatments}) + :scalar_interpolation values" do
     @kw_source """
     defmodule Mutare.KwFixture do
       import Mutare.Test.HostDSL
@@ -511,7 +511,7 @@ defmodule Mutare.HostedTest do
     end
 
     test "routes each pair's value by its own treatment, leaving the keys raw", %{sites: sites} do
-      # `name: "keep"` — the string value is routed :pinned, so a core literal family mutates it
+      # `name: "keep"` — the string value is routed :scalar_interpolation, so a core literal family mutates it
       # (its *own* name on the Site — the value mutation stays core's, not the host's).
       assert Enum.any?(sites, &(&1.mutator == :string and &1.mutated_code == "\"\""))
       assert Enum.any?(sites, &(&1.mutator == :string and &1.mutated_code == "\"mutare\""))
@@ -526,7 +526,7 @@ defmodule Mutare.HostedTest do
       refute Enum.any?(sites, &(&1.mutator == :atom))
     end
 
-    test "a :pinned value's selector is ^-pinned (not a bare case)", %{meta: meta} do
+    test "a :scalar_interpolation value's selector is ^-pinned (not a bare case)", %{meta: meta} do
       # The string value's selector is delivered `^case … end` — the pin a DSL value position
       # requires (Ecto rejects a bare `case` there). The recorded Site stays the clean
       # `"keep"` → `""` diff (no `^`), asserted above; the `^` is emit-only scaffolding.
@@ -552,7 +552,7 @@ defmodule Mutare.HostedTest do
         Mutare.Transform.transform_string_with_sites(@kw_source,
           file: "kw_static.ex",
           mutators: [:string],
-          extensions: [Mutare.Test.KeywordPinnedRoutingExtension]
+          extensions: [Mutare.Test.KeywordScalarInterpolationRoutingExtension]
         )
 
       assert Enum.any?(sites, &(&1.mutator == :string and &1.original_code == ~s|"keep"|))
@@ -560,14 +560,15 @@ defmodule Mutare.HostedTest do
     end
 
     test "the same recursive treatments are rejected in a declarative :macro_routes entry" do
-      # `:pinned` and `{:keyword, …}` assert DSL facts Mutare cannot check; they must come from
+      # `:scalar_interpolation` and `{:keyword, …}` assert DSL facts Mutare cannot check; they must come from
       # a code provider (the extension above), never from `.mutare.exs` configuration.
       assert_raise ArgumentError, ~r/adapter-grade treatment/, fn ->
         Mutare.Transform.transform_string_with_sites(@kw_source,
           file: "kw_config.ex",
           mutators: [:string],
           macro_routes: [
-            {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:pinned, :skip]}]}
+            {Mutare.Test.HostDSL, :set, 2,
+             [:expression, {:keyword, [:scalar_interpolation, :skip]}]}
           ]
         )
       end
@@ -577,13 +578,13 @@ defmodule Mutare.HostedTest do
     # truncation of extras. Either mismatch means the route and the call disagree about the
     # argument's shape, so it raises (loud, at transform time) instead of under-/over-routing.
     test "a treatment list shorter than the pairs raises" do
+      # Via an extension provider: a declarative `macro_routes:` entry with the adapter-grade
+      # `{:keyword, …}` is rejected before the length check could run (the test above).
       assert_raise ArgumentError, ~r/exactly one treatment per pair.*2-pair/, fn ->
         Mutare.Transform.transform_string_with_sites(@kw_source,
           file: "kw_short.ex",
           mutators: [:string],
-          macro_routes: [
-            {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:pinned]}]}
-          ]
+          extensions: [Mutare.Test.ShortKeywordRoutingExtension]
         )
       end
     end
@@ -593,9 +594,7 @@ defmodule Mutare.HostedTest do
         Mutare.Transform.transform_string_with_sites(@kw_source,
           file: "kw_long.ex",
           mutators: [:string],
-          macro_routes: [
-            {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:pinned, :skip, :skip]}]}
-          ]
+          extensions: [Mutare.Test.LongKeywordRoutingExtension]
         )
       end
     end
@@ -603,7 +602,7 @@ defmodule Mutare.HostedTest do
 
   describe "nested per-keyword-pair routing ({:keyword, [{:keyword, …}]})" do
     # A value that is itself a keyword list — the `from(S, where: [x: v])` shape. The `filters:`
-    # value routes `{:keyword, [:pinned]}` (its `name: "keep"` pair's value pinned), `count: 5`
+    # value routes `{:keyword, [:scalar_interpolation]}` (its `name: "keep"` pair's value pinned), `count: 5`
     # stays `:skip`.
     @nested_source """
     defmodule Mutare.NestedKwFixture do
@@ -767,14 +766,14 @@ defmodule Mutare.HostedTest do
     end
   end
 
-  describe "a :pinned compound value is rejected (not silently poisoned)" do
-    test "a compound (list) value routed :pinned raises pointing at the scalar-only contract" do
-      # `Mutare.Test.CompoundPinnedMutator` routes the `ids: [1, 2]` value :pinned, but pinning
+  describe "a :scalar_interpolation compound value is rejected (not silently poisoned)" do
+    test "a compound (list) value routed :scalar_interpolation raises pointing at the scalar-only contract" do
+      # `Mutare.Test.CompoundScalarInterpolationMutator` routes the `ids: [1, 2]` value :scalar_interpolation, but pinning
       # `^`-wraps only the value node's own selector — the inner `1`/`2` mutations would emit as
       # bare selectors and poison the DSL. `Analyze.reject_non_scalar_pinned!/2` raises rather than
       # silently degrading them to :poisoned.
       source = """
-      defmodule Mutare.CompoundPinnedFixture do
+      defmodule Mutare.CompoundScalarInterpolationFixture do
         import Mutare.Test.HostDSL
 
         def assign(q) do
@@ -783,19 +782,19 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      assert_raise ArgumentError, ~r/:pinned.*scalar.*compound/s, fn ->
+      assert_raise ArgumentError, ~r/:scalar_interpolation.*scalar.*compound/s, fn ->
         Mutare.Transform.transform_string_with_sites(source,
           file: "cp.ex",
-          mutators: [:literal, Mutare.Test.CompoundPinnedMutator]
+          mutators: [:literal, Mutare.Test.CompoundScalarInterpolationMutator]
         )
       end
     end
 
-    test "a scalar value routed :pinned still pins normally (no false rejection)" do
+    test "a scalar value routed :scalar_interpolation still pins normally (no false rejection)" do
       # Regression: the scalar pinned path is unaffected — the value's mutation sits on its own
       # node, so there is no descendant candidate and pinning proceeds.
       source = """
-      defmodule Mutare.ScalarPinnedFixture do
+      defmodule Mutare.ScalarInterpolationFixture do
         import Mutare.Test.HostDSL
 
         def assign(q) do
@@ -807,18 +806,18 @@ defmodule Mutare.HostedTest do
       {_meta, sites, _next} =
         Mutare.Transform.transform_string_with_sites(source,
           file: "sp.ex",
-          mutators: [:string, Mutare.Test.CompoundPinnedMutator]
+          mutators: [:string, Mutare.Test.CompoundScalarInterpolationMutator]
         )
 
       assert Enum.any?(sites, &(&1.mutator == :string and &1.mutated_code == "\"\""))
     end
 
-    test "a bare list argument routed :pinned (not a wrapped keyword value) is also rejected" do
-      # `Mutare.Test.ArgPinnedMutator` routes `filter`'s first argument — the bare list `[:foo]` —
-      # :pinned. The list has no own candidate, so the `:foo` mutation sits on a descendant that
+    test "a bare list argument routed :scalar_interpolation (not a wrapped keyword value) is also rejected" do
+      # `Mutare.Test.ArgScalarInterpolationMutator` routes `filter`'s first argument — the bare list `[:foo]` —
+      # :scalar_interpolation. The list has no own candidate, so the `:foo` mutation sits on a descendant that
       # pinning would miss; the bare-list descent in `reject_non_scalar_pinned!/2` catches it.
       source = """
-      defmodule Mutare.ArgPinnedFixture do
+      defmodule Mutare.ArgScalarInterpolationFixture do
         import Mutare.Test.HostDSL
 
         def f(x) do
@@ -827,10 +826,10 @@ defmodule Mutare.HostedTest do
       end
       """
 
-      assert_raise ArgumentError, ~r/:pinned.*scalar.*compound/s, fn ->
+      assert_raise ArgumentError, ~r/:scalar_interpolation.*scalar.*compound/s, fn ->
         Mutare.Transform.transform_string_with_sites(source,
           file: "ap.ex",
-          mutators: [:atom, Mutare.Test.ArgPinnedMutator]
+          mutators: [:atom, Mutare.Test.ArgScalarInterpolationMutator]
         )
       end
     end

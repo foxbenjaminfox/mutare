@@ -35,11 +35,12 @@ defmodule Mutare.MacroRouting do
 
   The treatment vocabulary is tiered. `:skip`, `:expression`, `:pattern`, and `:binding_pattern`
   only tell Mutare an argument isn't ordinary runtime code; they are the whole vocabulary the
-  declarative `:macro_routes` configuration key accepts. `:pinned`, `{:keyword, ...}`, and
-  `:hosted` are adapter-grade: each asserts a fact about the DSL that Mutare cannot verify, and
-  the module routing it takes responsibility for that fact. A `:pinned` position must genuinely
-  accept `^` interpolation — where it doesn't, the spliced selector fails the single metamutant
-  compile and is recovered as poison, discarding those mutants after a rebuild. A `:hosted` route
+  declarative `:macro_routes` configuration key accepts. `:scalar_interpolation`,
+  `{:keyword, ...}`, and `:hosted` are adapter-grade: each asserts a fact about the DSL that
+  Mutare cannot verify, and the module routing it takes responsibility for that fact. A
+  `:scalar_interpolation` position must genuinely accept `^` interpolation — where it doesn't,
+  the spliced selector fails the single metamutant compile and is recovered as poison, discarding
+  those mutants after a rebuild. A `:hosted` route
   without an enabled subscribing host aborts the run at scan time. These treatments must come
   from a module implementing this behaviour — an adapter written and tested against the library
   it describes; a declarative `:macro_routes` entry that uses one is rejected with an
@@ -138,8 +139,9 @@ defmodule Mutare.MacroRouting do
     * `{:keyword, treatments}` — routes keyword values positionally while leaving
       keys unchanged; the list must name exactly one treatment per pair, and nested
       keyword routing is supported
-    * `:pinned` — applies configured literal mutations to a scalar DSL value and
-      wraps the selector in `^`; use only where the macro accepts interpolation
+    * `:scalar_interpolation` — reuses core's configured mutators on a scalar DSL
+      value and delivers the selector through `^` interpolation; use only where
+      the macro accepts interpolation, and only for scalar values
     * `:hosted` — delegates the position to
       `c:Mutare.Mutator.MacroHost.host/2`; only an enabled hosting mutator may return
       it
@@ -156,17 +158,28 @@ defmodule Mutare.MacroRouting do
       value is delivered through `c:Mutare.Mutator.MacroHost.host/2`, which receives the resolved
       whole macro call.
 
-    * `:pinned` for a scalar value in a compile-time DSL position that accepts interpolation but
-      not a bare selector `case`. Core applies its configured literal families, records their own
-      mutator names, and wraps the selector in `^`. Use it only where the macro genuinely accepts
-      interpolation and only for a scalar value: mutations inside a compound value cannot be
-      pinned at the correct depth and are rejected rather than allowed to poison the build.
+    * `:scalar_interpolation` for a scalar value in a compile-time DSL position that accepts
+      interpolation but not a bare selector `case`. The name is the contract: core *reuses its own
+      mutators* on the value, restricted to those that swap a scalar in place. Its configured
+      literal families attach their ordinary mutations — each Site records the owning family's
+      name (`:string`, `:literal`, …), never the adapter's — and the selector is delivered wrapped
+      in `^`. Its limits, precisely:
+
+      * **Scalar values only.** A compound value (a list, map, or tuple) attaches mutations to
+        *descendant* nodes that the `^` wrap cannot reach, so it is rejected at transform time
+        with an `ArgumentError` rather than left to poison the build. Route a compound value
+        `:skip`, or route a keyword list per-pair via `{:keyword, ...}`.
+      * **The DSL must genuinely accept `^` interpolation at that position.** Mutare cannot check
+        this assertion; where it is wrong, the spliced `^(case …)` fails the single metamutant
+        compile and is recovered as poison — those mutants are discarded after a rebuild.
+      * **Only in-place scalar swaps apply.** Structural, call-rewriting, and pattern mutators
+        never fire here, and a non-literal scalar (a variable) yields no mutants at all.
 
   Returning `:hosted` leaves that position raw for core and offers the call to every subscribed
   host mutator.
 
   The motivating keyword case is `where(q, category: "Foo", deleted_at: nil)`, classified as
-  `{:keyword, [:pinned, :skip]}`: mutate `"Foo"` through a pinned selector, keep the column-name
+  `{:keyword, [:scalar_interpolation, :skip]}`: mutate `"Foo"` through a `^`-pinned selector, keep the column-name
   keys raw, and skip the `nil` pair whose DSL meaning may be `IS NULL` rather than an Elixir value.
   """
   @callback route_arguments(call :: Mutare.MacroRouting.Call.t(), context :: routing_context()) ::
@@ -188,7 +201,7 @@ defmodule Mutare.MacroRouting do
           | :binding_pattern
           | :skip
           | :hosted
-          | :pinned
+          | :scalar_interpolation
           | {:keyword, [treatment()]}
 
   @type routing_treatment :: treatment()

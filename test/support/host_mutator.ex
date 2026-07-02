@@ -41,12 +41,12 @@ defmodule Mutare.Test.HostDSL do
   A **keyword-shorthand** DSL macro — the analog of Ecto's `where(q, col: val)` form, whose
   second argument is a keyword list of `field: value` pairs (the keys are field *names*, not
   values to mutate). Exercises the per-keyword-pair `{:keyword, value_treatments}` routing and
-  the `:pinned` value treatment: a value is routed `:pinned`, so core mutates it (a literal
+  the `:scalar_interpolation` value treatment: a value is routed `:scalar_interpolation`, so core mutates it (a literal
   family) but delivers the selector `^`-pinned (`category: ^(case … end)`). Like Ecto, this DSL
   accepts an interpolated `^value` but not a bare `case` — so the macro **strips the pin** from
   each value (the test analog of Ecto interpolating it), proving the pinned metamutant compiles.
   A nested keyword list value (`filters: [name: "x"]`, the `from(S, where: [x: v])` shape) is
-  unpinned recursively, so a nested `:pinned` value compiles too.
+  unpinned recursively, so a nested `:scalar_interpolation` value compiles too.
   """
   defmacro set(query, assigns) do
     assigns = unpin(assigns)
@@ -130,9 +130,9 @@ defmodule Mutare.Test.HostMutator do
   #
   #   * `set` (the keyword-shorthand macro) routes its keyword-list argument as
   #     `{:keyword, value_treatments}` — per-pair *value* routing, keys left raw. The fixture
-  #     policy: a string value is mutable data delivered `:pinned` (core mutates it, the selector
+  #     policy: a string value is mutable data delivered `:scalar_interpolation` (core mutates it, the selector
   #     is `^`-pinned for the DSL), anything else is left raw (`:skip`) — so a test can observe
-  #     the value-`:pinned`/value-`:skip` split and that the keys are never mutated.
+  #     the value-`:scalar_interpolation`/value-`:skip` split and that the keys are never mutated.
   #   * any other macro (`filter`) routes a comparison condition `:hosted` and everything else
   #     (the query, keyword data) as an ordinary `:expression`.
   @impl Mutare.MacroRouting
@@ -156,7 +156,7 @@ defmodule Mutare.Test.HostMutator do
   defp keyword_list?(_node), do: false
 
   # Per-pair value treatments for `set`'s keyword arg: a string value is mutated and delivered
-  # `:pinned` (the DSL needs `^`); a nested keyword list recurses as `{:keyword, …}` (so a value
+  # `:scalar_interpolation` (the DSL needs `^`); a nested keyword list recurses as `{:keyword, …}` (so a value
   # that is itself `field: value` pairs routes per-pair too — the `from(S, where: [x: v])` shape);
   # anything else (an integer, here) is left raw (`:skip`).
   defp value_treatments(pairs), do: Enum.map(pairs, fn {_k, v} -> value_treatment(v) end)
@@ -165,7 +165,7 @@ defmodule Mutare.Test.HostMutator do
   defp value_treatment({:__block__, _meta, [list]}) when is_list(list),
     do: if(keyword_list?(list), do: {:keyword, value_treatments(list)}, else: :skip)
 
-  defp value_treatment(v), do: if(string_literal?(v), do: :pinned, else: :skip)
+  defp value_treatment(v), do: if(string_literal?(v), do: :scalar_interpolation, else: :skip)
 
   defp string_literal?({:__block__, _meta, [s]}) when is_binary(s), do: true
   defp string_literal?(_node), do: false
@@ -610,10 +610,10 @@ defmodule Mutare.Test.UnknownTreatmentMutator do
   end
 end
 
-defmodule Mutare.Test.CompoundPinnedMutator do
+defmodule Mutare.Test.CompoundScalarInterpolationMutator do
   @moduledoc """
-  A `:routing` classifier that routes every keyword *value* `:pinned` regardless of shape, so a
-  **compound** value (a list/map) lands on `:pinned`. `:pinned` is scalar-only — pinning `^`-wraps
+  A `:routing` classifier that routes every keyword *value* `:scalar_interpolation` regardless of shape, so a
+  **compound** value (a list/map) lands on `:scalar_interpolation`. `:scalar_interpolation` is scalar-only — pinning `^`-wraps
   only the value node's own selector, so a compound value's *inner* mutations would emit as bare
   selector `case`s and poison the DSL. `Mutare.Transform.Analyze.reject_non_scalar_pinned!/2` raises
   at analyze time (loud) rather than silently degrading those inner mutants to `:poisoned`. A scalar
@@ -639,7 +639,7 @@ defmodule Mutare.Test.CompoundPinnedMutator do
       when is_list(assigns) do
     Mutare.MacroRouting.ArgumentRoutes.from_visible(
       call,
-      [:expression, {:keyword, Enum.map(assigns, fn _pair -> :pinned end)}]
+      [:expression, {:keyword, Enum.map(assigns, fn _pair -> :scalar_interpolation end)}]
     )
   end
 
@@ -673,13 +673,13 @@ defmodule Mutare.Test.BadShapeMutator do
   def route_arguments(_call, _context), do: :not_an_argument_routes_struct
 end
 
-defmodule Mutare.Test.ArgPinnedMutator do
+defmodule Mutare.Test.ArgScalarInterpolationMutator do
   @moduledoc """
-  A `:routing` classifier that routes a whole **list argument** `:pinned` (the top-level, not
-  keyword-value, `:pinned` shape — a bare list rather than the Sourceror `{:__block__, _, [list]}`
+  A `:routing` classifier that routes a whole **list argument** `:scalar_interpolation` (the top-level, not
+  keyword-value, `:scalar_interpolation` shape — a bare list rather than the Sourceror `{:__block__, _, [list]}`
   wrap). It exercises `reject_non_scalar_pinned!/2`'s bare-list descent: the list carries no own
   candidate, so every mutation is on an element (a descendant), and pinning would miss them — caught
-  loud rather than poisoned. Routes `filter`'s first argument (the `[:foo]` list) `:pinned`.
+  loud rather than poisoned. Routes `filter`'s first argument (the `[:foo]` list) `:scalar_interpolation`.
   """
   @behaviour Mutare.Mutator
   @behaviour Mutare.MacroRouting
@@ -695,7 +695,8 @@ defmodule Mutare.Test.ArgPinnedMutator do
 
   @impl Mutare.MacroRouting
   def route_arguments(%Mutare.MacroRouting.Call{} = call, _context),
-    do: Mutare.MacroRouting.ArgumentRoutes.from_visible(call, [:pinned, :expression])
+    do:
+      Mutare.MacroRouting.ArgumentRoutes.from_visible(call, [:scalar_interpolation, :expression])
 end
 
 defmodule Mutare.Test.DeadHostMutator do

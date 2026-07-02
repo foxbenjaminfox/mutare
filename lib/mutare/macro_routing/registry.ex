@@ -318,7 +318,7 @@ defmodule Mutare.MacroRouting.Registry do
         Spec.adapter_graded?(spec) ->
           raise ArgumentError,
                 "declarative :macro_routes entry #{inspect(Spec.key(spec))} uses an " <>
-                  "adapter-grade treatment (#{inspect(spec.args)}); :pinned, :hosted, and " <>
+                  "adapter-grade treatment (#{inspect(spec.args)}); :scalar_interpolation, :hosted, and " <>
                   "{:keyword, ...} assert DSL facts Mutare cannot check, so they must come from " <>
                   "a module implementing Mutare.MacroRouting (a :mutators or :extensions " <>
                   "entry), not from configuration"

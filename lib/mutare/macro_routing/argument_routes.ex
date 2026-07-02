@@ -105,7 +105,14 @@ defmodule Mutare.MacroRouting.ArgumentRoutes do
   end
 
   defp validate_treatment!(treatment)
-       when treatment in [:expression, :pattern, :binding_pattern, :skip, :hosted, :pinned],
+       when treatment in [
+              :expression,
+              :pattern,
+              :binding_pattern,
+              :skip,
+              :hosted,
+              :scalar_interpolation
+            ],
        do: :ok
 
   defp validate_treatment!({:keyword, treatments}) when is_list(treatments) do
@@ -117,7 +124,14 @@ defmodule Mutare.MacroRouting.ArgumentRoutes do
   end
 
   defp valid_treatment?(treatment)
-       when treatment in [:expression, :pattern, :binding_pattern, :skip, :hosted, :pinned],
+       when treatment in [
+              :expression,
+              :pattern,
+              :binding_pattern,
+              :skip,
+              :hosted,
+              :scalar_interpolation
+            ],
        do: true
 
   defp valid_treatment?({:keyword, treatments}) when is_list(treatments),

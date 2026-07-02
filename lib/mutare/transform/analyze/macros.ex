@@ -136,20 +136,20 @@ defmodule Mutare.Transform.Analyze.Macros do
        when is_list(value_treatments),
        do: route_keyword(descent, arg, value_treatments, mutators)
 
-  # A value that must be mutated **`^`-pinned** (classifier-only): it sits in a compile-time DSL
-  # position that accepts an interpolated value but not a bare selector `case` — an Ecto
-  # keyword-shorthand value (`where(q, category: "Foo")`), where Ecto rejects a raw `case` but
-  # accepts `^(case …)`. Analyze it as ordinary runtime so the configured literal families attach
-  # their in-place candidates (their *own* names ride to the Site, the value's mutation stays
-  # core's), then flag those candidates `pin?` so `emit_site/3` wraps the selector in `^`. Only a
-  # **scalar** value belongs here: `pin_inplace_candidates/1` pins only the value node's *own*
-  # candidates, so a compound value (`[1, 2]`, `%{…}`) — whose mutations land on *descendant* nodes
-  # — would leave those inner selectors un-pinned and poison the DSL. `reject_non_scalar_pinned!/2`
-  # fails loud on that (the classifier analogue of the documented scalar-only contract) rather than
-  # silently degrading the inner mutants to `:poisoned`.
-  defp route_macro_arg(descent, arg, :pinned, mutators) do
+  # A scalar value that must be mutated **`^`-pinned**: it sits in a compile-time DSL position
+  # that accepts an interpolated value but not a bare selector `case` — an Ecto keyword-shorthand
+  # value (`where(q, category: "Foo")`), where Ecto rejects a raw `case` but accepts `^(case …)`.
+  # Analyze it as ordinary runtime so the configured literal families attach their in-place
+  # candidates (their *own* names ride to the Site, the value's mutation stays core's), then flag
+  # those candidates `pin?` so `emit_site/3` wraps the selector in `^`. Only a **scalar** value
+  # belongs here: `pin_inplace_candidates/1` pins only the value node's *own* candidates, so a
+  # compound value (`[1, 2]`, `%{…}`) — whose mutations land on *descendant* nodes — would leave
+  # those inner selectors un-pinned and poison the DSL. `reject_compound_value!/2` fails loud on
+  # that (the classifier analogue of the documented scalar-only contract) rather than silently
+  # degrading the inner mutants to `:poisoned`.
+  defp route_macro_arg(descent, arg, :scalar_interpolation, mutators) do
     analyzed = descent.annotate(arg, mutators)
-    reject_non_scalar_pinned!(arg, analyzed)
+    reject_compound_value!(arg, analyzed)
     pin_inplace_candidates(analyzed)
   end
 
@@ -159,28 +159,29 @@ defmodule Mutare.Transform.Analyze.Macros do
 
   defp route_macro_arg(descent, arg, _expression, mutators), do: descent.annotate(arg, mutators)
 
-  # Flag the in-place candidates on a node's own metadata `pin?: true` (the `:pinned` treatment),
-  # so emission `^`-pins their selector. Only the node's *own* candidates — a scalar value's
-  # mutations sit here; the route is documented scalar-only.
+  # Flag the in-place candidates on a node's own metadata `pin?: true` (the `:scalar_interpolation`
+  # treatment), so emission `^`-pins their selector. Only the node's *own* candidates — a scalar
+  # value's mutations sit here; the route is documented scalar-only.
   defp pin_inplace_candidates(node),
     do: Candidate.update_candidates(node, fn cands -> Enum.map(cands, &pin_candidate/1) end)
 
   defp pin_candidate(%Candidate.InPlace{} = candidate), do: %{candidate | pin?: true}
   defp pin_candidate(other), do: other
 
-  # A `:pinned` value is sound only when every in-place mutation lands on the value node itself —
-  # `pin_inplace_candidates/1` `^`-pins only the top node's own candidates. A compound value attaches
-  # candidates to *descendant* nodes that pinning would miss; those would emit as bare selector
-  # `case`s spliced into the DSL value and poison the build. Raise loudly (the offending value in the
-  # message) rather than silently degrade them to `:poisoned`. A value with no descendant candidate —
-  # a scalar literal, or a non-literal like a variable (no candidate at all) — is fine.
-  defp reject_non_scalar_pinned!(original, analyzed) do
+  # A `:scalar_interpolation` value is sound only when every in-place mutation lands on the value
+  # node itself — `pin_inplace_candidates/1` `^`-pins only the top node's own candidates. A compound
+  # value attaches candidates to *descendant* nodes that pinning would miss; those would emit as
+  # bare selector `case`s spliced into the DSL value and poison the build. Raise loudly (the
+  # offending value in the message) rather than silently degrade them to `:poisoned`. A value with
+  # no descendant candidate — a scalar literal, or a non-literal like a variable (no candidate at
+  # all) — is fine.
+  defp reject_compound_value!(original, analyzed) do
     if descendant_inplace_candidate?(analyzed) do
       raise ArgumentError,
-            "a :pinned macro-routing treatment requires a scalar value (its mutation must pin in " <>
-              "place), but `#{Macro.to_string(original)}` is compound — its inner mutations cannot " <>
-              "be ^-pinned and would poison the DSL. Route a compound value :skip, or split it into " <>
-              "scalar pairs."
+            "a :scalar_interpolation macro-routing treatment requires a scalar value (its " <>
+              "mutation must pin in place), but `#{Macro.to_string(original)}` is compound — its " <>
+              "inner mutations cannot be ^-pinned and would poison the DSL. Route a compound " <>
+              "value :skip, or split it into scalar pairs."
     end
   end
 
@@ -191,7 +192,8 @@ defmodule Mutare.Transform.Analyze.Macros do
 
   defp child_nodes({_form, _meta, args}) when is_list(args), do: args
   defp child_nodes({left, right}), do: [left, right]
-  # A bare list/2-tuple top node (a list argument routed `:pinned` directly, not the Sourceror
+
+  # A bare list/2-tuple top node (a list argument routed `:scalar_interpolation` directly, not the Sourceror
   # `{:__block__, _, [list]}`-wrapped keyword value) carries no own meta, so pinning it pins nothing
   # — every candidate is on an element, i.e. a descendant. Descend the elements so it's caught.
   defp child_nodes(list) when is_list(list), do: list

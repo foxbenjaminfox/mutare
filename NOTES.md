@@ -2349,7 +2349,7 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     classifier-trust audit surfaced). A non-literal value with no candidate at all (a bare variable) is
     fine — nothing to pin. This is why "shorthand values are plain interpolated Elixir,
     *not* hosted" was half-right: the value *mutation* is core's (not the SQL catalog), but the
-    *delivery* must be pinned, not a bare selector. Tested via `Mutare.Test.CompoundPinnedMutator`.
+    *delivery* must be pinned, not a bare selector. Tested via `Mutare.Test.CompoundScalarInterpolationMutator` (né `CompoundPinnedMutator`).
 
   * *Per-mutant report note — `Site.note`.* A hosting mutator may want to flag a *live, scored* mutant
     with advisory text the report shows on a survivor — `mutare_ecto` tags its equivalence-sensitive
@@ -6601,5 +6601,24 @@ untouched. `:routing` stays out of `adapter_graded?/1` on purpose — it is reje
 consequence: registry tests could no longer inject broad/hosted routes through the config argument,
 so the covering-selector check is now exercised by a fixture (`BroadHostedRouteMutator`, whole-module
 `:hosted` route + narrower subscription) and the static recursive-grammar transform test moved to an
-extension provider (`KeywordPinnedRoutingExtension`), with a companion test pinning the config
-rejection.
+extension provider (`KeywordScalarInterpolationRoutingExtension`, né `KeywordPinnedRoutingExtension`),
+with a companion test pinning the config rejection.
+
+
+### Renaming the `:pinned` treatment to `:scalar_interpolation`
+
+The adapter-grade treatment introduced for Ecto's keyword shorthand (see *`:pinned` — `^`-pinned
+in-place mutation* above) was named for its delivery mechanism: the selector gets wrapped in `^`.
+That name undersold — and slightly misled about — the contract. It read as "some DSL interpolation
+marker", when what an adapter is actually asserting and getting is narrower on both sides: **reuse
+core's own mutators on this value, but only those that swap a scalar in place**, delivered through
+`^` interpolation. Renamed `:scalar_interpolation` so the atom carries both halves of the contract
+(scalar-only, interpolation-delivered); the limits are now spelled out where the treatment is
+defined (`Mutare.MacroRouting`'s route_arguments doc — scalar-only enforced at transform time,
+`^`-acceptance unverifiable and failing as poison, in-place-swaps-only so a variable yields no
+mutants) rather than scattered. Deliberately **not** renamed: the emission-side vocabulary
+(`Candidate.InPlace.pin?`, `pin_if_needed/2`, `pin_inplace_candidates/1`) still speaks of pinning,
+because there it names the emitted `^` shape — the mechanism — not the route. Nothing has shipped
+yet (0.1.0 is unreleased), so the rename is free — no changelog entry, no compatibility shim; a
+route still returning `:pinned` fails treatment validation at scan time with the usual
+invalid-treatment error.

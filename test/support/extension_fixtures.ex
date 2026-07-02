@@ -160,17 +160,48 @@ defmodule Mutare.Test.StaticRoutingExtension do
   def macro_routes, do: [{Mutare.Test.SomeDSL, :frag, 2, [:expression, :skip]}]
 end
 
-defmodule Mutare.Test.KeywordPinnedRoutingExtension do
+defmodule Mutare.Test.KeywordScalarInterpolationRoutingExtension do
   @moduledoc """
   An extension statically routing `set/2`'s keyword argument with the recursive adapter grammar
-  (`{:keyword, [:pinned, :skip]}`) — the code-provider home of the adapter-grade treatments that
+  (`{:keyword, [:scalar_interpolation, :skip]}`) — the code-provider home of the adapter-grade treatments that
   declarative `:macro_routes` configuration rejects.
   """
   @behaviour Mutare.MacroRouting
 
   @impl Mutare.MacroRouting
   def macro_routes,
-    do: [{Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:pinned, :skip]}]}]
+    do: [
+      {Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:scalar_interpolation, :skip]}]}
+    ]
+end
+
+defmodule Mutare.Test.ShortKeywordRoutingExtension do
+  @moduledoc """
+  An extension whose static `{:keyword, …}` route names *fewer* treatments than the call's pairs
+  (one for `set/2`'s 2-pair keyword) — pins that the strict one-treatment-per-pair check raises
+  rather than silently `:skip`-padding.
+  """
+  @behaviour Mutare.MacroRouting
+
+  @impl Mutare.MacroRouting
+  def macro_routes,
+    do: [{Mutare.Test.HostDSL, :set, 2, [:expression, {:keyword, [:scalar_interpolation]}]}]
+end
+
+defmodule Mutare.Test.LongKeywordRoutingExtension do
+  @moduledoc """
+  An extension whose static `{:keyword, …}` route names *more* treatments than the call's pairs
+  (three for `set/2`'s 2-pair keyword) — pins that the strict check raises rather than silently
+  truncating the extras.
+  """
+  @behaviour Mutare.MacroRouting
+
+  @impl Mutare.MacroRouting
+  def macro_routes,
+    do: [
+      {Mutare.Test.HostDSL, :set, 2,
+       [:expression, {:keyword, [:scalar_interpolation, :skip, :skip]}]}
+    ]
 end
 
 defmodule Mutare.Test.ConflictingQueryRoutingExtension do
