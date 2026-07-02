@@ -6,16 +6,30 @@ defmodule Mutare.Mutator.Spec do
   `opts` to context-taking callbacks; the reserved `:as` option changes the report and
   `# mutare:ignore` name and is removed before the mutator receives the remaining options.
 
+  Building a spec also runs the mutator's `c:Mutare.Mutator.init/1` (when exported) on those
+  remaining options and stores the result as the spec's `config` — so option parsing happens
+  once per resolved instance, and an invalid option raises here, at resolution time. Without
+  `init/1`, `config` is the options themselves. Dispatch delivers it to every context-aware
+  callback as `context.config`.
+
   The transform also attaches the enclosing module's `@behaviour` set before invoking a mutator.
   """
 
   @enforce_keys [:module, :name]
-  defstruct [:module, :name, opts: [], behaviours: MapSet.new(), disabled_callbacks: MapSet.new()]
+  defstruct [
+    :module,
+    :name,
+    opts: [],
+    config: [],
+    behaviours: MapSet.new(),
+    disabled_callbacks: MapSet.new()
+  ]
 
   @type t :: %__MODULE__{
           module: module(),
           name: atom(),
           opts: term(),
+          config: term(),
           behaviours: MapSet.t(module()),
           disabled_callbacks: MapSet.t({atom(), arity()})
         }
@@ -29,7 +43,7 @@ defmodule Mutare.Mutator.Spec do
   """
   @spec for_module(module()) :: t()
   def for_module(module) when is_atom(module),
-    do: %__MODULE__{module: module, name: module.name(), opts: []}
+    do: %__MODULE__{module: module, name: module.name(), opts: [], config: init(module, [])}
 
   @doc """
   Builds a spec for `module` with configuration `opts`.
@@ -50,10 +64,26 @@ defmodule Mutare.Mutator.Spec do
   def configured(module, opts) when is_atom(module) do
     if Keyword.keyword?(opts) do
       {name, rest} = Keyword.pop(opts, :as)
-      %__MODULE__{module: module, name: name || module.name(), opts: rest}
+
+      %__MODULE__{
+        module: module,
+        name: name || module.name(),
+        opts: rest,
+        config: init(module, rest)
+      }
     else
-      %__MODULE__{module: module, name: module.name(), opts: opts}
+      %__MODULE__{module: module, name: module.name(), opts: opts, config: init(module, opts)}
     end
+  end
+
+  # The instance's normalized configuration: `init/1`'s return when the module exports it
+  # (called here — once per resolved instance, before any file is read — so an invalid option
+  # raises at resolution time), else the raw options. `Code.ensure_loaded?` because spec
+  # resolution may be the first time the module is touched.
+  defp init(module, opts) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :init, 1),
+      do: module.init(opts),
+      else: opts
   end
 
   @doc """

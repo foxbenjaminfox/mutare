@@ -23,7 +23,7 @@ defmodule Mutare.Mutator.Dispatch do
   it falls back to `mutate/1`. A mutator that wants both behaviours can call its
   own `mutate/1` helper from `mutate/2`, making composition explicit instead of
   a hidden double-dispatch rule. The per-spec `context` carries the pipe mode
-  **and** the spec's `:opts`, so pipe-aware/arity-changing and configurable
+  **and** the spec's `:opts`/`:config`, so pipe-aware/arity-changing and configurable
   mutators both participate here. `context` defaults to `%{pipe_mode: :unpiped}`; the transform passes
   `%{pipe_mode: :piped}` for a `|>` right-hand side. Each result is a `{spec, node, note, variant}`
   quad: the **spec** (not the bare module), so the family name and config travel with it; the
@@ -41,9 +41,20 @@ defmodule Mutare.Mutator.Dispatch do
   def mutations(node, mutators, context \\ %{pipe_mode: :unpiped}) do
     Enum.flat_map(mutators, fn entry ->
       spec = Spec.coerce(entry)
-      ctx = context |> Map.put(:opts, spec.opts) |> Map.put(:behaviours, spec.behaviours)
-      node_level(spec, node, ctx)
+      node_level(spec, node, put_spec_context(context, spec))
     end)
+  end
+
+  # Inject the per-spec configuration facts into a callback context: the raw `:opts`, the
+  # `init/1`-normalized `:config`, and the enclosing module's `:behaviours`. The one place
+  # the spec-derived context keys are named, shared by the node-level (`mutations/3`) and
+  # selector-host (`host_targets/3`) paths — `structural_context/1` builds the same keys
+  # minus `:pipe_mode` from scratch.
+  defp put_spec_context(context, %Spec{opts: opts, config: config, behaviours: behaviours}) do
+    context
+    |> Map.put(:opts, opts)
+    |> Map.put(:config, config)
+    |> Map.put(:behaviours, behaviours)
   end
 
   # `mutate/2` is the context-aware override; `mutate/1` is the fallback. This keeps the
@@ -183,8 +194,8 @@ defmodule Mutare.Mutator.Dispatch do
   The **selector-host targets** `spec`'s mutator declares for the resolved known-macro `call`
   (`c:Mutare.Mutator.MacroHost.host/2`), normalized from public `MacroHost.Target` values into the
   transform's internal candidate shape. `[]` when the module doesn't implement `host/2`.
-  `context0` is enriched with the spec's `:opts`/`:behaviours` before the callback runs, mirroring
-  `mutations/3`.
+  `context0` is enriched with the spec's `:opts`/`:config`/`:behaviours` before the callback runs,
+  mirroring `mutations/3`.
 
   The single home for invoking a hosting mutator and validating its target shape, so
   `Mutare.Transform.Analyze` builds `Mutare.Transform.Candidate.Hosted`s without re-deriving
@@ -195,13 +206,9 @@ defmodule Mutare.Mutator.Dispatch do
           Mutare.MacroRouting.Call.t(),
           Mutare.Mutator.context()
         ) :: [map()]
-  def host_targets(
-        %Spec{module: module, opts: opts, behaviours: behaviours} = spec,
-        call,
-        context0
-      ) do
+  def host_targets(%Spec{module: module} = spec, call, context0) do
     if callback_enabled?(spec, :host, 2) and exports?(module, :host, 2) do
-      context = context0 |> Map.put(:opts, opts) |> Map.put(:behaviours, behaviours)
+      context = put_spec_context(context0, spec)
 
       try do
         case module.host(call, context) do
@@ -351,11 +358,10 @@ defmodule Mutare.Mutator.Dispatch do
 
   # The structural-callback context: the same per-spec configuration facts as the
   # node-level context, minus :pipe_mode (structural positions are not pipe
-  # stages). :opts makes {Module, opts} configurable structural mutators work,
-  # and :behaviours lets behaviour-gated structural mutators restrict themselves
-  # to modules implementing a target behaviour.
-  defp structural_context(%Spec{opts: opts, behaviours: behaviours}),
-    do: %{opts: opts, behaviours: behaviours}
+  # stages). :opts/:config make {Module, opts} configurable structural mutators
+  # work, and :behaviours lets behaviour-gated structural mutators restrict
+  # themselves to modules implementing a target behaviour.
+  defp structural_context(%Spec{} = spec), do: put_spec_context(%{}, spec)
 
   # The mutation-producing callbacks: a module is a mutator if it exports `name/0` *and* at least
   # one of these. `mutate/1` is no longer required — a structural/pipe-only family produces its

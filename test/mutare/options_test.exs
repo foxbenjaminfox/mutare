@@ -581,7 +581,8 @@ defmodule Mutare.OptionsTest do
                  %Mutare.Mutator.Spec{
                    module: Mutare.Test.BooleanMutator,
                    name: :strict,
-                   opts: [k: 1]
+                   opts: [k: 1],
+                   config: [k: 1]
                  }
                ]
     end

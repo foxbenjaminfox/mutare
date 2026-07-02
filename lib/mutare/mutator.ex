@@ -77,6 +77,13 @@ defmodule Mutare.Mutator do
   to run more than once under distinct names. It is removed before options reach the
   mutator. See `Mutare.Mutator.Spec`.
 
+  A mutator with a rich option surface implements `c:init/1` to parse and validate its
+  options **once**, when the instance is resolved — before any file is read — instead of
+  re-reading `context.opts` at every offered node. The value `init/1` returns reaches every
+  context-aware callback as `context.config`; a typo'd option raises at startup, next to
+  Mutare's own option validation. Without `init/1`, `context.config` is the raw options.
+  For the common "which of my families are enabled" option, see `Mutare.Mutator.Families`.
+
   Structural mutators use the context-aware structural arity instead:
   `c:Mutare.Mutator.Structural.return_replacements/2`,
   `c:Mutare.Mutator.Structural.condition_replacements/2`, or
@@ -165,6 +172,9 @@ defmodule Mutare.Mutator do
     * `:opts` — the configured mutator's per-instance options (the `opts` of a
       `{module, opts}` entry in `:mutators`, with any `:as` name override
       stripped), or `[]` for an unconfigured mutator.
+    * `:config` — the mutator's normalized configuration: what its `c:init/1`
+      returned for those options, or the raw options themselves when the mutator
+      does not export `init/1`.
     * `:behaviours` — the enclosing module's behaviour set: a `MapSet` of the modules it
       implements via `@behaviour Foo` (directly or injected by a `use`). Empty outside a
       module.
@@ -174,12 +184,14 @@ defmodule Mutare.Mutator do
       `Mutare.Analyze.expression_mutations/3`.
 
   The keys other than `:pipe_mode` are optional in the type because the base context
-  carries only `:pipe_mode`; dispatch injects the configured options and behaviour
-  set (and, for a host, the enabled specs) before calling a mutator.
+  carries only `:pipe_mode`; dispatch injects the configured options, the normalized
+  configuration, and the behaviour set (and, for a host, the enabled specs) before
+  calling a mutator.
   """
   @type context :: %{
           :pipe_mode => pipe_mode(),
           optional(:opts) => term(),
+          optional(:config) => term(),
           optional(:behaviours) => MapSet.t(module()),
           optional(:mutators) => [Mutare.Mutator.Spec.t()]
         }
@@ -213,6 +225,30 @@ defmodule Mutare.Mutator do
 
   @doc "Short family name, shown in reports (e.g. `:arithmetic`)."
   @callback name() :: atom()
+
+  @doc """
+  Parses the instance's options into its normalized configuration, once per
+  resolved instance.
+
+  Called when a `:mutators` entry is resolved to a `Mutare.Mutator.Spec` — before
+  the transform reads any file — with the instance's raw options (the `opts` of a
+  `{module, opts}` entry, `:as` already stripped; `[]` for a bare module). Raise
+  for invalid options: this is where a typo'd option fails loudly, at startup,
+  rather than on the first mutated node.
+
+  The return value is delivered to every context-aware callback as
+  `context.config` — `c:mutate/2`, the context-aware `Mutare.Mutator.Structural`
+  arities, and `c:Mutare.Mutator.MacroHost.host/2`. `context.opts` continues to
+  carry the raw options. A mutator without `init/1` gets
+  `context.config == context.opts`.
+
+  A module listed more than once (the documented multi-instance `:as` pattern)
+  runs `init/1` once **per instance**, each call receiving that entry's own
+  options. `c:Mutare.MacroRouting.route_arguments/2` is *not* config-aware: macro
+  routing is shared by every mutator that meets the routed call, so its
+  classification stays instance-independent by design (see `Mutare.MacroRouting`).
+  """
+  @callback init(opts :: term()) :: term()
 
   @doc """
   Produces context-aware mutations for `node`.
@@ -287,7 +323,8 @@ defmodule Mutare.Mutator do
   """
   @callback mutate_call_option_keys?(opts :: term()) :: boolean()
 
-  @optional_callbacks mutate: 1,
+  @optional_callbacks init: 1,
+                      mutate: 1,
                       mutate: 2,
                       mutate_call_option_keys?: 1,
                       variants: 0,

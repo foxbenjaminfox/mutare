@@ -6280,6 +6280,29 @@ leaves it unset. Naming: this is `Mutare.Run.Context`; the **unrelated** `Mutare
 per-mutant invariants: sandbox/selection/cap/scopes/retries) stays — different struct, similar name,
 aliased `Context` vs `RunCtx` to keep them apart in `Runner`.
 
+- **Plugin-config toolkit: `init/1` + `Mutare.Mutator.Families` (proposal 0003, done).** Two
+  additive pieces for family-rich plugins (the motivating case: `mutare_ecto`'s ~410-line hand-rolled
+  `Config`). `c:Mutare.Mutator.init/1` parses an instance's options **once**, at `Mutare.Mutator.Spec`
+  resolution (stored as `spec.config`; a bad option raises at startup next to core's own option
+  validation, not on the first mutated node), and dispatch delivers it as `context.config` on the
+  three per-spec context paths — `mutate/2`, the context-aware structural arities, and `host/2` —
+  via one `put_spec_context/2` helper. A module listed twice (the multi-repo/`:as` pattern) runs
+  `init/1` once *per spec*. This deletes the plugin-side memoization dance (re-parsing
+  `context.opts` per node, caching under a private context key, a double-headed `from_context/1`).
+  `use Mutare.Mutator.Families` generates the family-catalog half (`all_families`/`default_families`/
+  `parse_families!`/`family_enabled?` + the `family` type union, all overridable) so the
+  `:default | :all | list | {base, except: […]}` grammar stays consistent with core's
+  `{:builtins, except: […]}` instead of being manually mirrored per plugin. **One deliberate
+  deviation from the proposal:** `route_arguments/2`'s context does *not* gain `:config`. Routing is
+  per **call node** and shared by every mutator that meets it (its `routing_context` is documented
+  opt-independent, and `macro_routes/0` is 0-arity — registration can't see options either); two
+  instances of one module with different configs would otherwise demand conflicting treatments for
+  the same position. The motivating plugin's classifier reads no config, confirming the cut. A
+  config-dependent *emission* decision belongs in `host/2`/`mutate/2`, which do see `context.config`.
+  `mutate_call_option_keys?/1` also still receives raw opts (a policy callback with its own
+  argument, not a context consumer; changing it would break existing signatures for no motivated
+  gain).
+
 ## Host sub-contracting of fragment interiors (pin islands)
 
 A `:hosted` argument is left entirely raw by core and every mutant there comes from the host —

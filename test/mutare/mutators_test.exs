@@ -117,13 +117,28 @@ defmodule Mutare.MutatorsTest do
     end
 
     test "resolve/1 carries {module, opts} configuration, stripping the :as name override" do
+      # No init/1 on the module, so the normalized config is the opts themselves.
       assert Mutators.resolve([{Mutare.Test.BooleanMutator, threshold: 5}]) ==
-               [%Spec{module: Mutare.Test.BooleanMutator, name: :boolean, opts: [threshold: 5]}]
+               [
+                 %Spec{
+                   module: Mutare.Test.BooleanMutator,
+                   name: :boolean,
+                   opts: [threshold: 5],
+                   config: [threshold: 5]
+                 }
+               ]
 
       # `:as` renames the family (so the same module can run twice) and never
       # reaches the mutator's opts.
       assert Mutators.resolve([{Mutare.Test.BooleanMutator, as: :strict, threshold: 5}]) ==
-               [%Spec{module: Mutare.Test.BooleanMutator, name: :strict, opts: [threshold: 5]}]
+               [
+                 %Spec{
+                   module: Mutare.Test.BooleanMutator,
+                   name: :strict,
+                   opts: [threshold: 5],
+                   config: [threshold: 5]
+                 }
+               ]
     end
 
     test "resolve/1 accepts a built-in family atom in a configured pair too" do

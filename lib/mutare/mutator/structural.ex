@@ -28,6 +28,8 @@ defmodule Mutare.Mutator.Structural do
 
     * `:opts` — the options from a `{Module, opts}` mutator configuration entry, or
       `[]` for an unconfigured mutator;
+    * `:config` — the normalized configuration `c:Mutare.Mutator.init/1` returned for
+      those options (the options themselves when the mutator has no `init/1`);
     * `:behaviours` — the enclosing module's `@behaviour` set, as a `MapSet`.
 
   This gives structural mutators the same configuration channel as
@@ -35,6 +37,7 @@ defmodule Mutare.Mutator.Structural do
   """
   @type context :: %{
           required(:opts) => term(),
+          required(:config) => term(),
           required(:behaviours) => MapSet.t(module())
         }
 

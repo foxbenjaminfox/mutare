@@ -166,6 +166,7 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Node-level swap | `mutate/1` | `boolean_mutator.ex` |
 | Arity-changing / pipe-aware call | `mutate/2` (reads `pipe_mode`) | — (`CollectionArity`) |
 | Configurable (`{Module, opts}`) | `mutate/2` (reads `context.opts`) | `configurable_mutator.ex` |
+| Rich option surface, parsed once per run | `init/1` → `context.config` (+ `use Mutare.Mutator.Families` for a `families:` catalog) | `init_mutator.ex` |
 | Structural return tail / condition | `return_replacements` / `condition_replacements` | `structural_mutator.ex` |
 | Structural head pattern | `pattern_mutations/2` | (`PatternSwap`/`PatternWildcard`) |
 | Behaviour-gated | read `context.behaviours` (or the `+1`-arity structural callbacks) | `behaviour_mutator.ex` |
@@ -183,9 +184,9 @@ override".
 
 The contract details (notes, `:as` renaming, the macro-routing treatments
 `:expression`/`:pattern`/`:binding_pattern`/`:skip`/`:hosted`/`:interpolated`/`{:keyword, …}`, the
-variant-label rules) are in the
+variant-label rules, the `families:` grammar) are in the
 `Mutare.Mutator` / `Mutare.MacroRouting` / `Mutare.Mutator.MacroHost` /
-`Mutare.UseExpansion` moduledocs — read those when implementing.
+`Mutare.UseExpansion` / `Mutare.Mutator.Families` moduledocs — read those when implementing.
 
 ## Result statuses & `# mutare:ignore`
 
