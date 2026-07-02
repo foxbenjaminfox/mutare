@@ -143,7 +143,6 @@ defmodule Mutare.Transform do
   alias Mutare.AST
   alias Mutare.Coverage.Recorder
   alias Mutare.Site
-  alias Mutare.Mutator.Dispatch
 
   alias Mutare.Transform.{
     Analyze,
@@ -956,21 +955,10 @@ defmodule Mutare.Transform do
     end
   end
 
-  # Drop the candidates their producing mutator opts out of *before* id assignment, so
-  # they leave no id, selector, or site — they simply don't exist for this run (unlike a
-  # poisoned id, which is recorded). The analyzer owns the positional fact that a
-  # candidate targets a call-option key; the mutator owns the policy through
-  # `mutate_call_option_keys?/1`. Ids stay stable across a run's poison rebuilds because
-  # the mutator list — hence each spec's opts and policy — is constant within a run.
-  defp gate_candidates(candidates) do
-    Enum.reject(candidates, fn
-      %Candidate.InPlace{call_option_key?: true, mutator: spec} ->
-        not Dispatch.mutate_call_option_keys?(spec)
-
-      _candidate ->
-        false
-    end)
-  end
+  # Drop the candidates their producing mutator opts out of *before* id assignment — the
+  # call-option-key policy gate, shared with the collect walk via `Candidate.Delivery.gate/1`
+  # (see there for the full rationale).
+  defp gate_candidates(candidates), do: Delivery.gate(candidates)
 
   defp emit_site(node, candidates, ctx) do
     {clauses, ctx} =

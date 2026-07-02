@@ -231,6 +231,91 @@ defmodule Mutare.Test.HostMutator do
   defp comparison?(_node), do: false
 end
 
+defmodule Mutare.Test.SubcontractHostMutator do
+  @moduledoc """
+  A selector host that **sub-contracts** the ordinary-Elixir island inside its hosted fragment
+  back to core's mutant generation — the `mutare_ecto` pin-interior pattern
+  (`where: u.age > ^(min + 1)`), minus the pin syntax this dependency-free DSL doesn't need.
+
+  It hosts `filter/2`'s comparison condition (like `Mutare.Test.HostMutator`) and treats the
+  comparison's **right operand** as the island: its own foreign-semantics catalog contributes
+  only the comparison reversal, while every mutant *inside* the right operand comes from
+  `Mutare.Analyze.expression_mutations/3` over `context.mutators` (the run's enabled non-host
+  specs, threaded by core) — each relayed as a `%Mutare.Mutator.Mutation{}` with `producer:`
+  set, so the Site (and its `# mutare:ignore` vocabulary) belongs to the core family that
+  reasoned about it, not to this host. Delivery stays 100% host-owned: the relayed rebuilds are
+  just more branches of the same woven selector.
+  """
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.MacroRouting
+  @behaviour Mutare.Mutator.MacroHost
+
+  alias Mutare.MacroRouting.{ArgumentRoutes, Call}
+  alias Mutare.Mutator.MacroHost.Target
+  alias Mutare.Mutator.Mutation
+
+  @comparisons [:>, :<, :>=, :<=]
+
+  @impl Mutare.Mutator
+  def name, do: :sub_host
+
+  @impl Mutare.MacroRouting
+  def macro_routes, do: [{Mutare.Test.HostDSL, :filter, :any, :routing}]
+
+  @impl Mutare.Mutator.MacroHost
+  def hosted_macros, do: [{Mutare.Test.HostDSL, :filter, :any}]
+
+  @impl Mutare.MacroRouting
+  def route_arguments(%Call{arguments: args} = call, _context) do
+    routes = Enum.map(args, fn arg -> if comparison?(arg), do: :hosted, else: :expression end)
+    ArgumentRoutes.from_visible(call, routes)
+  end
+
+  # The condition is the last visible argument (index 1 direct, 0 piped).
+  @impl Mutare.Mutator.MacroHost
+  def host(%Call{node: {_form, _meta, args}}, context) when length(args) in [1, 2] do
+    index = length(args) - 1
+
+    case Enum.at(args, index) do
+      {op, meta, [left, right]} = condition when op in @comparisons ->
+        mutants = [
+          own_reversal(op, meta, left, right) | island_mutants(op, meta, left, right, context)
+        ]
+
+        splice = fn {form, smeta, sargs}, case_node ->
+          {form, smeta, List.replace_at(sargs, index, case_node)}
+        end
+
+        [Target.new(condition, mutants, splice)]
+
+      _other ->
+        []
+    end
+  end
+
+  def host(_call, _context), do: []
+
+  # The host's own (foreign-semantics) catalog: just the comparison reversal, a bare node.
+  defp own_reversal(op, meta, left, right), do: {reverse(op), meta, [left, right]}
+
+  # The sub-contract: core generates the right operand's mutants under the user's configured
+  # families; the host rebuilds its condition around each and relays it with `producer:` set.
+  defp island_mutants(op, meta, left, right, context) do
+    for {spec, mutated, note, variant} <-
+          Mutare.Analyze.expression_mutations(right, context.mutators, context) do
+      Mutation.new({op, meta, [left, mutated]}, producer: spec, note: note, variant: variant)
+    end
+  end
+
+  defp reverse(:>), do: :<
+  defp reverse(:<), do: :>
+  defp reverse(:>=), do: :<=
+  defp reverse(:<=), do: :>=
+
+  defp comparison?({op, _meta, [_left, _right]}) when op in @comparisons, do: true
+  defp comparison?(_node), do: false
+end
+
 defmodule Mutare.Test.SecondHostMutator do
   @moduledoc "A second host-only subscriber used to prove independent hosts compose."
   @behaviour Mutare.Mutator

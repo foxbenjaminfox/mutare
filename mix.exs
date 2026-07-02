@@ -140,7 +140,8 @@ defmodule Mutare.MixProject do
           Mutare.Mutator.Spec,
           Mutare.AST,
           Mutare.Test,
-          Mutare.Calls
+          Mutare.Calls,
+          Mutare.Analyze
         ],
         "Writing extensions": [
           Mutare.Extension,

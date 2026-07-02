@@ -139,21 +139,36 @@ defmodule Mutare.NoteTest do
       end
     end
 
-    test "normalize_mutant triples a struct / bare node with its note and variant" do
+    test "normalize_mutant quads a struct / bare node with its note, variant, and producer" do
       assert Dispatch.normalize_mutant(%Mutation{node: {:x, [], nil}, note: "n"}) ==
-               {{:x, [], nil}, "n", nil}
+               {{:x, [], nil}, "n", nil, nil}
 
-      assert Dispatch.normalize_mutant({:x, [], nil}) == {{:x, [], nil}, nil, nil}
+      assert Dispatch.normalize_mutant({:x, [], nil}) == {{:x, [], nil}, nil, nil, nil}
     end
 
     test "tagged/2 carries the variant label(s) through normalize_mutant" do
       assert Mutation.tagged(1, "zero") == %Mutation{node: 1, note: nil, variant: "zero"}
 
       assert Dispatch.normalize_mutant(%Mutation{node: {:x, [], nil}, variant: "zero"}) ==
-               {{:x, [], nil}, nil, "zero"}
+               {{:x, [], nil}, nil, "zero", nil}
 
       assert Dispatch.normalize_mutant(%Mutation{node: 1, note: "n", variant: ["pred", "zero"]}) ==
-               {1, "n", ["pred", "zero"]}
+               {1, "n", ["pred", "zero"], nil}
+    end
+
+    test "a producer spec rides through normalize_mutant; a non-spec producer is rejected" do
+      spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.Literal)
+
+      assert Dispatch.normalize_mutant(%Mutation{node: 1, producer: spec}) ==
+               {1, nil, nil, spec}
+
+      assert_raise ArgumentError, ~r/:producer must be a Mutare.Mutator.Spec or nil/, fn ->
+        Dispatch.normalize_mutant(%Mutation{node: 1, producer: Mutare.Mutators.Literal})
+      end
+
+      assert_raise ArgumentError, ~r/:producer must be a Mutare.Mutator.Spec or nil/, fn ->
+        Mutation.new(1, producer: :literal)
+      end
     end
 
     test "a bare %{node:, note:} map is rejected (the struct is required)" do
@@ -181,7 +196,7 @@ defmodule Mutare.NoteTest do
     test "an empty-string note is coerced to nil (a blank note carries no signal)" do
       # So the report never renders a dangling "  — " suffix; the same coercion the header
       # already proves it produces no em-dash for a noteless mutant (see above).
-      assert Dispatch.normalize_mutant(%Mutation{node: 1, note: ""}) == {1, nil, nil}
+      assert Dispatch.normalize_mutant(%Mutation{node: 1, note: ""}) == {1, nil, nil, nil}
     end
 
     test "a bare nil mutation item raises instead of disappearing" do

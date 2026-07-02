@@ -168,15 +168,20 @@ defmodule Mutare.Mutator do
     * `:behaviours` — the enclosing module's behaviour set: a `MapSet` of the modules it
       implements via `@behaviour Foo` (directly or injected by a `use`). Empty outside a
       module.
+    * `:mutators` — present only for selector hosts (`c:Mutare.Mutator.MacroHost.host/2`): the
+      run's enabled non-host `Mutare.Mutator.Spec`s, for sub-contracting ordinary-Elixir
+      islands inside a hosted fragment back to core's generation via
+      `Mutare.Analyze.expression_mutations/3`.
 
-  `:opts` and `:behaviours` are optional in the type because the base context
+  The keys other than `:pipe_mode` are optional in the type because the base context
   carries only `:pipe_mode`; dispatch injects the configured options and behaviour
-  set before calling a mutator.
+  set (and, for a host, the enabled specs) before calling a mutator.
   """
   @type context :: %{
           :pipe_mode => pipe_mode(),
           optional(:opts) => term(),
-          optional(:behaviours) => MapSet.t(module())
+          optional(:behaviours) => MapSet.t(module()),
+          optional(:mutators) => [Mutare.Mutator.Spec.t()]
         }
 
   @typedoc """

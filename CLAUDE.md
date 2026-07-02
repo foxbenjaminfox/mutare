@@ -111,7 +111,8 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   ordered registry + resolver); `Mutare.Mutator.Spec` (the resolved unit of "a mutator to run");
   `Mutare.MacroRouting` + its internal registry (static and shape-aware known-macro routing);
   `Mutare.UseExpansion` (a `use` override); `Mutare.Extension` (the non-mutating `:extensions`
-  boundary). See "Extending it".
+  boundary); `Mutare.Analyze` (the expression-collect facade a host uses to sub-contract Elixir
+  islands inside its fragment back to core's generation). See "Extending it".
 
 The built-in mutator families are **all on by default**. Don't catalogue them here — the
 `Mutare.Mutators` `@registry` is the source of truth for *which* exist, and each family's swap
@@ -171,6 +172,7 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Call-matching (stdlib/remote) | resolve via `Mutare.Calls.resolved_call_to/3` | `resolved_call_mutator.ex` |
 | Macro routing (static or shape-aware) | `Mutare.MacroRouting.macro_routes/0` + optional `route_arguments/2` | `macro_mutator.ex` / `host_mutator.ex` |
 | Selector-hosting (mutate inside a DSL fragment) | subscribe via `Mutator.MacroHost.hosted_macros/0` + implement `host/2` | `host_mutator.ex` |
+| Sub-contract an Elixir island (pin interior) to core | `Mutare.Analyze.expression_mutations/3` over `context.mutators`, relayed with `producer:` | `host_mutator.ex` (`SubcontractHostMutator`) |
 | Per-kind `# mutare:ignore` qualifier | `variants/0` (opt-in) + tag via `Mutation.tagged/2` *or* `variant/2` | (value & operator families) |
 
 An **extension** is a non-mutating module implementing `Mutare.MacroRouting`,

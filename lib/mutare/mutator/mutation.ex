@@ -9,6 +9,13 @@ defmodule Mutare.Mutator.Mutation do
       score.
     * `variant` — one or more labels used by `# mutare:ignore[family:label]`. A mutator may attach
       the label here or derive it with `c:Mutare.Mutator.variant/2`.
+    * `producer` — the `Mutare.Mutator.Spec` this mutation is recorded under *instead of* the
+      mutator that returned it. Set it only when relaying a mutation another family reasoned
+      about — the selector-host sub-contract case, where `c:Mutare.Mutator.MacroHost.host/2`
+      returns interior mutants collected from core's families via
+      `Mutare.Analyze.expression_mutations/3`: the site (and its `# mutare:ignore` vocabulary)
+      then belongs to the producing family, not the host. `nil` (the default) records the
+      mutation under the returning mutator, exactly as before.
 
   `Mutation` values are accepted by `c:Mutare.Mutator.mutate/1`,
   `c:Mutare.Mutator.mutate/2`, and `c:Mutare.Mutator.MacroHost.host/2`. Use this struct rather than
@@ -19,23 +26,30 @@ defmodule Mutare.Mutator.Mutation do
   @type variant :: nil | String.t() | atom() | [String.t() | atom()]
 
   @enforce_keys [:node]
-  defstruct [:node, note: nil, variant: nil]
+  defstruct [:node, note: nil, variant: nil, producer: nil]
 
-  @type t :: %__MODULE__{node: Macro.t(), note: String.t() | nil, variant: variant()}
+  @type t :: %__MODULE__{
+          node: Macro.t(),
+          note: String.t() | nil,
+          variant: variant(),
+          producer: Mutare.Mutator.Spec.t() | nil
+        }
 
   @doc """
   Builds a mutation for replacement `node`.
 
-  The second argument may be a note string or a keyword list containing `:note`
-  and `:variant`:
+  The second argument may be a note string or a keyword list containing `:note`,
+  `:variant`, and `:producer`:
 
       Mutation.new(mutated)
       Mutation.new(mutated, "kill needs boundary data")
       Mutation.new(mutated, note: "kill needs boundary data", variant: "zero")
       Mutation.new(mutated, variant: "zero")
+      Mutation.new(mutated, producer: literal_spec)
 
   `note` must be a string or `nil`. `variant` may be one label, a list of labels,
-  or `nil`. Unknown options raise `ArgumentError`.
+  or `nil`. `producer` must be a `Mutare.Mutator.Spec` or `nil` (see the moduledoc).
+  Unknown options raise `ArgumentError`.
 
   ## Examples
 
@@ -55,14 +69,21 @@ defmodule Mutare.Mutator.Mutation do
     do: %__MODULE__{node: node, note: note}
 
   def new(node, opts) when is_list(opts) do
-    opts = Keyword.validate!(opts, [:note, :variant])
+    opts = Keyword.validate!(opts, [:note, :variant, :producer])
     note = opts[:note]
+    producer = opts[:producer]
 
     unless is_binary(note) or is_nil(note) do
       raise ArgumentError, "Mutation.new/2 :note must be a string or nil, got: #{inspect(note)}"
     end
 
-    %__MODULE__{node: node, note: note, variant: opts[:variant]}
+    unless is_nil(producer) or is_struct(producer, Mutare.Mutator.Spec) do
+      raise ArgumentError,
+            "Mutation.new/2 :producer must be a Mutare.Mutator.Spec or nil, " <>
+              "got: #{inspect(producer)}"
+    end
+
+    %__MODULE__{node: node, note: note, variant: opts[:variant], producer: producer}
   end
 
   @doc """

@@ -6280,6 +6280,62 @@ leaves it unset. Naming: this is `Mutare.Run.Context`; the **unrelated** `Mutare
 per-mutant invariants: sandbox/selection/cap/scopes/retries) stays — different struct, similar name,
 aliased `Context` vs `RunCtx` to keep them apart in `Runner`.
 
+## Host sub-contracting of fragment interiors (pin islands)
+
+A `:hosted` argument is left entirely raw by core and every mutant there comes from the host —
+correct for the DSL itself, but a hosted fragment can contain **islands of ordinary Elixir**
+(everything under an Ecto `^` pin) that are core's business and nobody else's. Before this seam,
+a plugin author faced a trilemma: leave pin interiors dark (a blind spot that depends on spelling
+— `u.score > 18` covered, `u.score > ^18` not), hand-mirror core's value conventions inside the
+host (drift, wrong attribution), or apply DSL semantics to Elixir code (mutare_ecto's accidental
+status quo: an SQL-rationale `^(min * 2)` → `^(min / 2)` whose `/` changes the parameter's type —
+a crash-mutant).
+
+Not the `:interpolated` treatment's territory, though the two are cousins: `:interpolated` is an
+*argument route* — the adapter declares a whole macro position interpolated data and **core**
+delivers there (introducing or descending the `^` itself) — while this seam covers islands
+*inside a `:hosted` fragment*, a region core never routes into, so only the host can carry the
+mutants out. Same user-visible outcome (core's families reach pin interiors), disjoint positions,
+one producer each.
+
+**The shape:** the host sub-contracts designated interiors back to core's *generation* while
+keeping *delivery* 100 % host-owned (an in-place selector is illegal inside a query clause; every
+interior mutant rides the host's weave). Three additive pieces:
+
+1. **`Mutare.Analyze.expression_mutations/3`** (impl: `Mutare.Transform.Analyze.Collect`) — the
+   collect mode of the analyze pass. Deliberately **not** a parallel walker: it runs the real
+   `Analyze.annotate/2` plus the same pre-emission passes emission runs (`Overlap.resolve/1`, the
+   call-option gate — extracted to `Candidate.Delivery.gate/1` so the two paths share it), then
+   reads the annotations back as rebuild-per-mutant data. Sharing the walk is what makes the
+   parity contract ("a host cannot out-mutate core") structural rather than aspirational — the
+   parity test in `analyze_test.exs` pins it. Node-level producers only; `Candidate.InPlace`
+   only (clause-pattern mutants inside the subtree are structural-delivery and stay uncollected);
+   hosts excluded from the spec list (no recursive hosting — a nested `{:hosted, …}` stays raw
+   either way). Variant labels are resolved *at collect time* (node-level pair), because once the
+   host wraps the rebuild the fragment pair no longer has the shape `variant/2` derives from.
+2. **`context.mutators`** threaded to `host/2` (`Analyze.Macros.attach_hosted_candidates/5`) —
+   without it the host can't know which families are on, under what `:as` names, with which opts.
+3. **`producer:` on `%Mutation{}`** — per-mutant attribution. `Dispatch.normalize_mutant/1`
+   quads carry it; `HostedEmit` records the Site under `producer || cand.mutator`, so qualified
+   ignores resolve against the producing family's vocabulary (`[literal:succ]` suppresses the
+   in-pin literal; `[my_host]` doesn't touch it). The rule is uniform: a `producer` on an
+   ordinary `mutate/1,2` return also re-attributes (one rule, no host-only special case).
+
+**Rejected alternative — recursive island routing:** a treatment grammar where a `:hosted`
+argument marks interior `:expression` islands core analyzes itself and merges into the host's
+Target. It breaks the contract stated verbatim in `MacroHost`'s docs ("Core leaves hosted
+fragments raw"), splits one region between two producers (overlap/claim bookkeeping), and still
+needs the host consulted for the rebuild — much more core surface for the same user-visible
+mutants.
+
+**Accepted fidelity edges** (documented in `Collect`'s module comment): rebuilds of a bitstring
+construction carry the analyzer's `::binary` type pins (cosmetic, compile-equivalent); candidates
+the analyzer pruned for selector-delivery reasons (escaping-binding ancestors) stay pruned in
+collect too — under-mutating those rare shapes keeps the shared-walk property exact. Consequence
+worth remembering: with only a DSL plugin enabled and no core families, a pin interior now
+mutates to *nothing* — consistent (the user turned the families off), but a behavior change from
+any plugin's previous accidental always-on descent.
+
 ## Consolidations weighed and left as-is
 
 A refactoring pass folded most of the cross-module duplication — shared AST/resolution/suppression

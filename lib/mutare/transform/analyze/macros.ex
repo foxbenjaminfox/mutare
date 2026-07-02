@@ -47,14 +47,29 @@ defmodule Mutare.Transform.Analyze.Macros do
   # `opts` reaching `host/2`), exactly as the ordinary path runs every spec in `Dispatch.mutations/3`,
   # so we host *each* matching spec — not just the first — or a duplicate-configured host mutator
   # would silently lose every config past the first.
+  #
+  # The context handed down carries `:mutators` — the run's enabled **ordinary** (non-host) specs
+  # — so `host/2` can sub-contract Elixir islands inside its fragment (a pin interior) back to
+  # core's families via `Mutare.Analyze.expression_mutations/3`, under the user's actual
+  # configuration (`:as` names and opts included). Hosts are excluded from the list to keep the
+  # no-recursive-hosting property obvious: a nested `:hosted` stamp inside a fragment is left raw
+  # regardless, and the interior has exactly one producer.
   defp attach_hosted_candidates(routed, raw_node, routing, mutators, context) do
     with [_ | _] = hosts <- hosted_hosts(routing),
          specs = Enum.filter(mutators, &(&1.module in hosts)),
+         context = Map.put(context, :mutators, ordinary_mutators(mutators)),
          [_ | _] = candidates <- Enum.flat_map(specs, &host_candidates(&1, raw_node, context)) do
       put_hosted_candidates(routed, candidates)
     else
       _ -> routed
     end
+  end
+
+  # The enabled specs that are not selector hosts — what `host/2` receives as
+  # `context.mutators` (see `attach_hosted_candidates/5`).
+  defp ordinary_mutators(mutators) do
+    hosts = Dispatch.implementing(mutators, :host, 2)
+    Enum.reject(mutators, &(&1 in hosts))
   end
 
   defp hosted_hosts(routing) when is_list(routing),
@@ -71,7 +86,7 @@ defmodule Mutare.Transform.Analyze.Macros do
     call = Mutare.Transform.Calls.resolved_macro_call(raw_node)
 
     spec
-    |> Dispatch.host_targets(call, Map.take(context, [:pipe_mode]))
+    |> Dispatch.host_targets(call, Map.take(context, [:pipe_mode, :mutators]))
     |> Enum.map(fn target ->
       %Candidate.Hosted{
         mutator: spec,

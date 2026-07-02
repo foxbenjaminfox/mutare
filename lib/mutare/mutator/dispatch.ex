@@ -69,13 +69,17 @@ defmodule Mutare.Mutator.Dispatch do
 
   # Pair each returned mutation with its producing spec, carrying its note and variant tag:
   # `normalize_mutants/1` turns a bare node / a `%Mutation{}` into
-  # `{node, note, variant}` (enforcing the enriched-mutant contract — no bare nil slot, struct
-  # required, string note), then each triple gains its spec.
+  # `{node, note, variant, producer}` (enforcing the enriched-mutant contract — no bare nil slot,
+  # struct required, string note), then each gains its spec — or the `%Mutation{}`'s explicit
+  # `producer` when set (the relayed-mutation attribution: the site and its ignore vocabulary
+  # belong to the family that reasoned about the mutant, not the one that returned it).
   defp tag(spec, mutations) when is_list(mutations),
     do:
       mutations
       |> normalize_mutants()
-      |> Enum.map(fn {node, note, variant} -> {spec, node, note, variant} end)
+      |> Enum.map(fn {node, note, variant, producer} ->
+        {producer || spec, node, note, variant}
+      end)
 
   @doc """
   The specs in `specs` whose module implements the optional callback `fun`/`arity`.
@@ -201,10 +205,13 @@ defmodule Mutare.Mutator.Dispatch do
   # Default `:wrap` to identity and `:range` to absent; require `:original`, a list `:mutants`,
   # and a 2-arity `:splice`. A malformed target raises (a library bug, not a target to silently
   # drop) — caught at transform time with the offending value. Each mutant is normalized to a
-  # `{node, note, variant}` triple by the shared `normalize_mutants/1`.
+  # `{node, note, variant, producer}` quad by the shared `normalize_mutants/1`.
   # A host fragment is *usually* untagged (foreign semantics, no vocabulary), so `variant` is nil —
   # but a hosting mutator declaring `variants/0` may tag one via `Mutation.tagged/2`, and that label
-  # is preserved here and carried through `Mutare.Transform.HostedEmit` to the Site.
+  # is preserved here and carried through `Mutare.Transform.HostedEmit` to the Site. `producer` is
+  # the sub-contract attribution: a mutant the host relayed from a core family (collected via
+  # `Mutare.Analyze.expression_mutations/3`) carries that family's spec, and `HostedEmit` records
+  # its Site under the producer instead of the host.
   defp normalize_target(
          %Mutare.Mutator.MacroHost.Target{
            original: original,
@@ -241,8 +248,9 @@ defmodule Mutare.Mutator.Dispatch do
       message: "#{inspect(module)} #{message}, got: #{inspect(value)}"
   end
 
-  # Normalize one mutant — a bare node, or a `%Mutare.Mutator.Mutation{}` carrying a note and/or a
-  # variant tag — to a `{node, note, variant}` triple (a bare node gets `note: nil, variant: nil`).
+  # Normalize one mutant — a bare node, or a `%Mutare.Mutator.Mutation{}` carrying a note, a
+  # variant tag, and/or a producer spec — to a `{node, note, variant, producer}` quad (a bare
+  # node gets `note: nil, variant: nil, producer: nil`).
   # The single home for the enriched-mutant contract, shared by the `mutate/1`,`mutate/2` return
   # path (`tag/2`) and the selector-host `:mutants` path (`normalize_target/1`).
   #
@@ -256,14 +264,21 @@ defmodule Mutare.Mutator.Dispatch do
   # is coerced to `nil`: a blank note carries no signal, and `nil` keeps the report from rendering a
   # dangling `— ` suffix (and the JSON reporter from emitting an empty `description`).
   @spec normalize_mutant(Macro.t() | Mutation.t() | map()) ::
-          {Macro.t(), String.t() | nil, Mutation.variant()}
-  def normalize_mutant(%Mutation{node: node, note: note, variant: variant})
-      when is_binary(note) or is_nil(note),
-      do: {node, presence(note), variant}
+          {Macro.t(), String.t() | nil, Mutation.variant(), Spec.t() | nil}
+  def normalize_mutant(%Mutation{node: node, note: note, variant: variant, producer: producer})
+      when (is_binary(note) or is_nil(note)) and
+             (is_nil(producer) or is_struct(producer, Spec)),
+      do: {node, presence(note), variant, producer}
 
-  def normalize_mutant(%Mutation{note: note}) do
+  def normalize_mutant(%Mutation{note: note}) when not is_binary(note) and not is_nil(note) do
     raise ArgumentError,
           "a Mutare.Mutator.Mutation :note must be a string or nil, got: #{inspect(note)}"
+  end
+
+  def normalize_mutant(%Mutation{producer: producer}) do
+    raise ArgumentError,
+          "a Mutare.Mutator.Mutation :producer must be a Mutare.Mutator.Spec or nil, " <>
+            "got: #{inspect(producer)}"
   end
 
   def normalize_mutant(nil) do
@@ -283,13 +298,13 @@ defmodule Mutare.Mutator.Dispatch do
             "#{inspect(other.__struct__)}: #{inspect(other)}"
   end
 
-  def normalize_mutant(node), do: {node, nil, nil}
+  def normalize_mutant(node), do: {node, nil, nil, nil}
 
   # A blank note is no note — collapse `""` to `nil` so downstream rendering treats it as absent.
   defp presence(""), do: nil
   defp presence(note), do: note
 
-  # Normalize each mutant to a `{node, note, variant}` triple. The shared front of both
+  # Normalize each mutant to a `{node, note, variant, producer}` quad. The shared front of both
   # enriched-mutant paths — the `mutate/1`/`mutate/2` return (`tag/2`) and the selector-host
   # `:mutants` (`normalize_target/1`) — so malformed entries fail loud in one place.
   defp normalize_mutants(mutants), do: Enum.map(mutants, &normalize_mutant/1)

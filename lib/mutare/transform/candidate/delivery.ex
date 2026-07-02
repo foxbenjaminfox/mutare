@@ -41,6 +41,28 @@ defmodule Mutare.Transform.Candidate.Delivery do
   # candidates report `:lifted` / `:hosted` and are routed by their dedicated emit paths.
   @node_routes [:in_place, :case_clause, :match_pattern, :macro_pattern]
 
+  @doc """
+  Drop the candidates their producing mutator opts out of — the call-option-key policy gate.
+
+  Run *before* id assignment, so a dropped candidate leaves no id, selector, or site — it simply
+  doesn't exist for this run (unlike a poisoned id, which is recorded). The analyzer owns the
+  positional fact that a candidate targets a call-option key (`call_option_key?`); the mutator
+  owns the policy through `c:Mutare.Mutator.mutate_call_option_keys?/1`. Ids stay stable across a
+  run's poison rebuilds because the mutator list — hence each spec's opts and policy — is constant
+  within a run. Shared by emission (`Mutare.Transform`) and the collect walk
+  (`Mutare.Transform.Analyze.Collect`), so the two can't disagree about which mutants exist.
+  """
+  @spec gate([node_candidate()]) :: [node_candidate()]
+  def gate(candidates) do
+    Enum.reject(candidates, fn
+      %Candidate.InPlace{call_option_key?: true, mutator: spec} ->
+        not Mutare.Mutator.Dispatch.mutate_call_option_keys?(spec)
+
+      _candidate ->
+        false
+    end)
+  end
+
   @doc "Classify homogeneous AST-node candidates by their node-local emit route."
   @spec classify_node_candidates([node_candidate()]) :: routed_node_candidates()
   def classify_node_candidates([]), do: :none

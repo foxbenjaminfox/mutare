@@ -77,7 +77,8 @@ defmodule Mutare.Mutator.MacroHost do
 
   Subscribe through `c:hosted_macros/0`. The active macro route must contain `:hosted`, either
   statically or from `c:Mutare.MacroRouting.route_arguments/2`. `context` is the same map
-  `c:Mutare.Mutator.mutate/2` receives.
+  `c:Mutare.Mutator.mutate/2` receives, plus `:mutators` — the run's enabled non-host
+  `Mutare.Mutator.Spec`s.
 
   A `:hosted` route is permission and a delivery mode, **not a target list**: the callback
   receives the whole resolved macro call and owns locating the fragment(s) it will mutate. It
@@ -86,6 +87,17 @@ defmodule Mutare.Mutator.MacroHost do
   positions (including values nested under `{:keyword, …}`) can be read back instead of
   rediscovered. Core leaves hosted fragments raw and does not route nested macros inside them;
   the same reader answers for a nested macro the host walks into.
+
+  ## Sub-contracting ordinary Elixir inside a fragment
+
+  A hosted fragment may contain islands of ordinary Elixir that are core's business, not the
+  DSL's — everything under an Ecto `^` pin is evaluated at runtime. Rather than mirroring
+  core's value conventions (or applying DSL semantics to non-DSL code), hand the island back to
+  core's generation: `Mutare.Analyze.expression_mutations(island, context.mutators, context)`
+  returns each single-point mutant as a rebuild of the island, produced by the user's actual
+  configuration. Relay each rebuild as a `Mutare.Mutator.Mutation` with `producer:` set to the
+  returned spec — the mutant then rides this host's weave (delivery stays host-owned) while its
+  site and `# mutare:ignore` vocabulary belong to the producing core family.
   """
   @callback host(
               call :: Mutare.MacroRouting.Call.t(),

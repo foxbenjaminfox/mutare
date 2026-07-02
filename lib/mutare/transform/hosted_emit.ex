@@ -41,9 +41,20 @@ defmodule Mutare.Transform.HostedEmit do
     # — `Mutare.Mutator.Dispatch.normalize_target/1` preserves it as the third tuple element — so
     # carry it onto the carrier and through to the Site, where `Dispatch.variant/4` gates it on
     # `opted_in?/1` (an untagged or non-opted-in fragment still records `variant: []`).
+    #
+    # `producer` (the fourth element) is the sub-contract attribution: a mutant the host relayed
+    # from a core family (`Mutare.Analyze.expression_mutations/3` inside `host/2`) carries that
+    # family's spec, so its Site — and the vocabulary its variant gates against — belongs to the
+    # producer, not the host. `nil` (every host-authored mutant) keeps the host's own spec.
     carriers =
-      Enum.map(cand.mutants, fn {mutated, note, variant} ->
-        %{candidate: cand, mutated: mutated, note: note, variant: variant}
+      Enum.map(cand.mutants, fn {mutated, note, variant, producer} ->
+        %{
+          candidate: cand,
+          mutated: mutated,
+          note: note,
+          variant: variant,
+          mutator: producer || cand.mutator
+        }
       end)
 
     {clauses, ctx} =
@@ -76,16 +87,17 @@ defmodule Mutare.Transform.HostedEmit do
   # The `Mutare.Site` for one hosted mutant: an `:in_place` replacement showing the logical
   # fragment swap, not the `wrap`/`splice`/selector scaffolding. The optional note rides onto
   # the Site for the report, and the optional variant label onto the Site for `# mutare:ignore`
-  # filtering (`nil` for the common untagged fragment). `flags` is the `{render?, summary?}` pair
-  # (the scan's diff-deferral flag + the live-summary flag).
+  # filtering (`nil` for the common untagged fragment). The carrier's `mutator` is the recording
+  # spec — the relayed mutant's producer, or the hosting mutator itself. `flags` is the
+  # `{render?, summary?}` pair (the scan's diff-deferral flag + the live-summary flag).
   defp hosted_site(
          id,
-         %{candidate: cand, mutated: mutated, note: note, variant: variant},
+         %{candidate: cand, mutated: mutated, note: note, variant: variant, mutator: mutator},
          file,
          {render?, summary?}
        ),
        do:
-         Site.in_place(id, file, cand.range, cand.original, mutated, cand.mutator,
+         Site.in_place(id, file, cand.range, cand.original, mutated, mutator,
            note: note,
            variant: variant,
            render?: render?,
