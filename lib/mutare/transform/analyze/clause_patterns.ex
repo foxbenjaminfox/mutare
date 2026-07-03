@@ -101,7 +101,7 @@ defmodule Mutare.Transform.Analyze.ClausePatterns do
       case {guard, head} do
         {nil, _head} -> patterns
         {_guard, [{:when, wm, _args}]} -> [{:when, wm, patterns ++ [guard]}]
-        # mutare:ignore[clause_drop] equivalent — a non-nil guard only ever arrives from a clause that was already guarded (head `[{:when, …}]`), so the branch above always matches first.
+        # mutare:ignore[atom, list, operand_swap, tuple] equivalent — a non-nil guard only ever arrives from a clause that was already guarded (head `[{:when, …}]`), so the branch above always matches first.
         {_guard, _head} -> [{:when, [], patterns ++ [guard]}]
       end
 
