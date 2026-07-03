@@ -34,7 +34,7 @@ defmodule Mutare.Sandbox do
   alias Mutare.{Options, Schema}
   alias Mutare.Coverage.Recorder
   alias Mutare.Run.Context
-  alias Mutare.Sandbox.{Paths, Seed}
+  alias Mutare.Sandbox.{CompilerOptions, Paths, Seed}
   alias Mutare.Sandbox.Command.Invocation
 
   @excluded ~w(_build .git .elixir_ls .lexical cover)
@@ -104,10 +104,19 @@ defmodule Mutare.Sandbox do
   # config code that might raise; it calls no `Config` macro, so position is
   # otherwise irrelevant. Inert without `Invocation.owner_watch_env/0` (only
   # `Invocation.mix/4` sets it), so a manual run in a kept sandbox is unaffected.
+  #
+  # The same "before the compilers run" property carries the second snippet:
+  # type-signature inference off for the metamutant compile (a project-level
+  # `elixirc_options` setting with no CLI/env form — the config prefix is the one
+  # hook Mutare owns). Diagnostics-only, and pathological on metamutant-shaped
+  # code; rationale and measurements live on `CompilerOptions`.
+  @infer_signatures_off Macro.to_string(CompilerOptions.infer_signatures_off_ast())
   @config_rel "config/config.exs"
   @config_bootstrap """
   # ---- injected by Mutare: halt when the spawning Mutare process dies --------
   #{@owner_watcher}
+  # ---- injected by Mutare: skip type-signature inference (diagnostics-only) --
+  #{@infer_signatures_off}
   # ---------------------------------------------------------------------------
   """
 

@@ -54,4 +54,43 @@ defmodule Mutare.Sandbox.CompilerOptionsTest do
     assert [{"ERL_COMPILER_OPTIONS", value}] = CompilerOptions.compiler_env()
     assert value =~ "no_ssa_opt_alias"
   end
+
+  describe "compile_args/1 (verify pass off, version-gated)" do
+    # An unknown switch makes `mix compile` abort, sinking the one build — so the
+    # gate must be exact: `--no-verification` exists since Elixir 1.19.
+    test "passes --no-verification on 1.19 and later" do
+      for version <- ["1.19.0", "1.19.5", "1.20.1", "1.21.0-dev"] do
+        assert CompilerOptions.compile_args(version) == ["--no-verification"]
+      end
+    end
+
+    test "passes nothing before 1.19 (the switch does not exist there)" do
+      for version <- ["1.18.4", "1.17.3", "1.19.0-rc.0"] do
+        assert CompilerOptions.compile_args(version) == []
+      end
+    end
+
+    test "defaults to the running Elixir" do
+      assert CompilerOptions.compile_args() == CompilerOptions.compile_args(System.version())
+    end
+  end
+
+  describe "infer_signatures_off_ast/0 (inference off via the config prefix)" do
+    test "evaluating the snippet turns signature inference off, and it never raises" do
+      original = Code.get_compiler_option(:infer_signatures)
+
+      try do
+        Code.eval_quoted(CompilerOptions.infer_signatures_off_ast())
+        assert Code.get_compiler_option(:infer_signatures) == false
+      after
+        Code.put_compiler_option(:infer_signatures, original)
+      end
+    end
+
+    test "renders to source that reparses (the shape the config prefix embeds)" do
+      source = Macro.to_string(CompilerOptions.infer_signatures_off_ast())
+      assert {:ok, _} = Code.string_to_quoted(source)
+      assert source =~ "infer_signatures"
+    end
+  end
 end

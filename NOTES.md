@@ -6905,3 +6905,50 @@ halves (not offered; not a phantom duplicate). The poison pre-filter would have 
 these at runtime, but built-in families must be compile-safe *by construction* — poison is
 the backstop for the unknown, not a license.
 
+### Type inference and verification off for the metamutant compile `[done]`
+On Elixir ≥ 1.18/1.19 the dominant cost of the one metamutant compile is not codegen but the
+**type checker**, and on some targets it is not a tax but a cliff. Measured cold (deps
+pre-seeded, OTP 26 / Elixir 1.19.5, 16 cores, `MaxRSS` via `/usr/bin/time -v`):
+
+  - **phoenix_live_view (~23k sites) never finishes on stock config**: killed after 80+ min
+    (vs ~30 s for the unmutated app). Five modules trigger it (`diff.ex`,
+    `tag_engine/compiler.ex`, `channel.ex`, `upload_config.ex`, `test/client_proxy.ex` — the
+    `--long-compilation-threshold` warnings name them). With signature inference off the
+    compile phase is **14 s**; the verify pass alone still costs **~12.5 min** (cross-module
+    type checking against stdlib/dep signatures), so both must go: inference off + verify off
+    → **14 s total**. The pathology is shape-dependent, not volume-dependent: Mutare-on-Mutare
+    (22k sites) and phoenix (14.5k) compile in ~11 s with the checker fully on.
+  - Both switches are **diagnostics-only** — warnings on a build artifact nobody lints; the
+    compiled code a mutant executes is byte-identical, so unlike `no_ssa_opt` there is no
+    per-run price. Poison detection is untouched: it reads hard compile *errors*, raised
+    during compilation, not verification.
+
+Delivery is split by what each switch is (all three compile-tuning switches keep one home,
+`Mutare.Sandbox.CompilerOptions`):
+
+  - `--no-verification` → `CompilerOptions.compile_args/1`, spliced into the runner's one
+    `mix compile`. **Version-gated** (`>= 1.19.0`, when the switch appeared) because an
+    unknown switch makes `mix compile` abort — the opposite failure mode of
+    `ERL_COMPILER_OPTIONS`, where unknown options are silently ignored. Pre-1.19 verify has
+    no cross-module type checking, so nothing meaningful is forgone.
+  - `infer_signatures: false` is project-level `elixirc_options` with **no CLI or env form**,
+    so it rides the one hook Mutare already owns: the `config/config.exs` prefix (mix
+    evaluates config before the compilers run — the same property the owner-death watcher
+    uses). `CompilerOptions.infer_signatures_off_ast/0` is the snippet;
+    `Code.put_compiler_option/2` in a `try/rescue` makes it a no-op pre-1.18 (where the
+    option — and inference — don't exist). A target that sets `:infer_signatures` explicitly
+    in its own `elixirc_options` wins (Mix applies project options after config load) —
+    explicit user config beating our default is correct. Verified end-to-end on the stock
+    phoenix_live_view sandbox: config-prefix injection alone took the compile from 80+ min
+    (killed) to 21 s. Caveat inherited from the config injection: a project with a custom
+    `config_path:` never loads this file, so its compile keeps inference on — and can still
+    hit the cliff (the "no wall-clock cap on the one compile" deferred item above is the
+    matching guard).
+
+Memory, the question that prompted the measurement, turned out secondary: peak RSS of the
+compile is base (~110 MB) + the few biggest generated modules (210–380 MB each above base;
+mutare 558 MB / phoenix 589 MB / phoenix_live_view ~1.1 GB at 16 schedulers). It is
+floor-bounded by the single biggest module, so concurrency capping (`ELIXIR_ERL_OPTIONS`
+`+S 2:2`) trims 23–51% of peak for 1.4–2.8× wall — a plausible future `--compile-workers`
+opt-in for memory-starved CI, not a default. `no_ssa_opt_alias` is memory-neutral (324 vs
+319 MB on the worst module). No memory work shipped; the numbers live here for when it bites.

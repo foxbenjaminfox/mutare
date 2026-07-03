@@ -526,13 +526,14 @@ defmodule Mutare.Runner do
   defp block_macro_key(_), do: nil
 
   # The one compilation. `Command.success?/1` owns the "0 means success" reading;
-  # `CompilerOptions.compiler_env/0` carries the SSA-alias-pass-off speed option (a
-  # free compile win, applied only here — per-mutant runs never recompile the lib).
+  # `CompilerOptions` carries the diagnostics-only speed switches (the SSA alias
+  # pass off via env, the verify pass off via `compile_args/0` — free compile
+  # wins, applied only here since per-mutant runs never recompile the lib).
   # `partition_env` is the fixed partition entry (or `[]`), so a config read at
   # compile time finds a valid partition — see `compile_with_recovery/5`.
   defp compile(sandbox, partition_env) do
     {output, status} =
-      Invocation.mix(sandbox, ["compile"], Selector.baseline(),
+      Invocation.mix(sandbox, ["compile" | CompilerOptions.compile_args()], Selector.baseline(),
         env: CompilerOptions.compiler_env() ++ partition_env
       )
 
