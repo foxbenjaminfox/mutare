@@ -130,7 +130,7 @@ Most projects can start without configuration. Add `.mutare.exs` when you want t
   fail_on_poisoned: true,
   fail_on_harness_error: true,
 
-  workers: System.schedulers_online(),
+  workers: 4,
   timeout_multiplier: 3.0,
 
   # Harden against flaky tests.

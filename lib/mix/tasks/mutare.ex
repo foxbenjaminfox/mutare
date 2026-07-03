@@ -115,15 +115,18 @@ defmodule Mix.Tasks.Mutare do
 
   ## Tuning the run
 
-      mix mutare --workers 4              # run 4 mutants concurrently
-                                          #   (default: System.schedulers_online/0)
+      mix mutare --workers 4              # run 4 mutants concurrently (default: half
+                                          #   your schedulers — each worker is a full
+                                          #   `mix test` BEAM that uses all of them)
       mix mutare --full                   # run the whole suite for every mutant
                                           #   (default: only the tests that cover it)
       mix mutare --no-full                # force coverage-guided selection even if
                                           #   .mutare.exs set test_selection: :full
       mix mutare --timeout 30000          # per-mutant wall-clock cap, in ms
                                           #   (default: derived from the baseline run)
-      mix mutare --timeout-multiplier 5   # ...or set the cap to baseline × this
+      mix mutare --timeout-multiplier 5   # ...or set the cap to baseline × this,
+                                          #   scaled by half the concurrent workers
+                                          #   (the baseline is timed uncontended)
                                           #   (default: 3.0; ignored if --timeout is set)
       mix mutare --probe-timeout 600000   # wall-clock cap for the coverage probe run,
                                           #   in ms (default: 10× the per-mutant cap);
@@ -228,12 +231,15 @@ defmodule Mix.Tasks.Mutare do
         # --- how the suite runs ---
         # :coverage runs only the test files covering each mutant; :full runs all
         test_selection: :coverage,
-        workers: System.schedulers_online(),
+        # concurrent mutant runs; default: half the schedulers (each worker is a
+        # full `mix test` BEAM that itself uses every scheduler)
+        workers: 4,
         # give each concurrent worker a distinct partition id under this env var
         # (1..workers), for per-worker DB isolation — read it in config/test.exs
         # like `mix test --partitions`; nil (default) is off. Needs `workers` DBs.
         partition_env: nil,
-        # per-mutant wall-clock cap = baseline run × multiplier, unless an
+        # per-mutant wall-clock cap = baseline run × multiplier × half the
+        # concurrent workers (the baseline is timed uncontended), unless an
         # absolute `timeout:` in ms is given instead (then the multiplier is moot)
         timeout_multiplier: 3.0,
         timeout: nil,

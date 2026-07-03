@@ -18,9 +18,9 @@ defmodule Mutare.Runner do
 
   ## Parallel workers and timeouts
 
-  The per-mutant phase runs `:workers` mutants concurrently (default `System.schedulers_online/0`), each its own `mix test` OS process in the shared sandbox. Each run has a wall-clock cap (`baseline × :timeout_multiplier`, default 3.0, with a floor; or an explicit `:timeout` in ms): a mutation can turn a terminating loop infinite, so the run is capped. A capped run counts as `:timeout` — a kill, since the hang is observable misbehavior.
+  The per-mutant phase runs `:workers` mutants concurrently (default: half `System.schedulers_online/0` — each worker is a full `mix test` BEAM that itself uses every scheduler), each its own OS process in the shared sandbox. Each run has a wall-clock cap: an explicit `:timeout` in ms, or `baseline × :timeout_multiplier` (default 3.0) scaled by half the concurrent lanes — the baseline is measured *uncontended*, so wall time under contention legitimately inflates with the lane count — with a floor. A mutation can turn a terminating loop infinite, so the run is capped; a capped run counts as `:timeout` — a kill, since the hang is observable misbehavior.
 
-  The baseline is measured *uncontended*, though, while mutants run `:workers` wide — so a slow-but-finite run can overrun the cap without hanging, and survivors are the most exposed (a kill exits at its first failing test; a survivor must run its entire selected set). A false `:timeout` is a false kill hiding a true survivor, so by default (`:confirm_timeouts`) a streamed `:timeout` is *provisional*: after the stream drains, each timed-out mutant is re-run sequentially — no contention — with the same cap, and that verdict is recorded instead. Only a repeat overrun records `:timeout`; a genuine hang pays one extra cap. `confirm_timeouts: false` (`--no-confirm-timeouts`) records the first overrun as-is.
+  Even a scaled cap can be overrun by a slow-but-finite run, and survivors are the most exposed (a kill exits at its first failing test; a survivor must run its entire selected set). A false `:timeout` is a false kill hiding a true survivor, so by default (`:confirm_timeouts`) a streamed `:timeout` is *provisional*: after the stream drains, each timed-out mutant is re-run sequentially — no contention — with the same cap, and that verdict is recorded instead. Only a repeat overrun records `:timeout`; a genuine hang pays one extra cap. `confirm_timeouts: false` (`--no-confirm-timeouts`) records the first overrun as-is.
 
   ## Early stop after N survivors (`:max_survivors`)
 
@@ -238,7 +238,7 @@ defmodule Mutare.Runner do
     on_phase = Context.hook(context, :on_phase)
     mode = options.test_selection
     on_phase.(:coverage_probe)
-    cap = timeout_cap(baseline_ms, options)
+    cap = timeout_cap(baseline_ms, schema, options)
     selection = CoverageProbe.run(sandbox, schema, mode, fixed_env, probe_cap(cap, options))
 
     # Verbose-only detail: the per-mutant coverage breakdown plus the derived timeout
@@ -416,17 +416,25 @@ defmodule Mutare.Runner do
   end
 
   # Per-mutant wall-clock cap. An explicit `:timeout` (ms) wins; otherwise
-  # baseline × `:timeout_multiplier` (default 3.0), with a floor so tiny suites
-  # don't get an absurdly small cap. A mutation can turn a terminating loop
-  # infinite, so without a cap a single mutant could hang the whole run.
-  defp timeout_cap(_baseline_ms, %Options{timeout: ms}) when is_integer(ms) and ms > 0, do: ms
+  # baseline × `:timeout_multiplier` (default 3.0), scaled by the concurrent lanes
+  # (below), with a floor so tiny suites don't get an absurdly small cap. A mutation
+  # can turn a terminating loop infinite, so without a cap a single mutant could
+  # hang the whole run.
+  defp timeout_cap(_baseline_ms, _schema, %Options{timeout: ms}) when is_integer(ms) and ms > 0,
+    do: ms
 
-  defp timeout_cap(baseline_ms, %Options{timeout_multiplier: multiplier}) do
-    # A generous floor: under parallel workers the baseline (measured
-    # uncontended) underestimates a mutant's wall time, so a tight cap would
-    # false-timeout a slow-but-finite mutant. A true infinite loop runs far
-    # past any floor, so we still catch it.
-    max(round(baseline_ms * multiplier), 10_000)
+  defp timeout_cap(baseline_ms, schema, %Options{} = options) do
+    # The baseline is measured uncontended, but up to `lanes` runs — each a full
+    # BEAM — execute at once, so an honest run's wall time inflates with the lane
+    # count (~2.4× at 4 workers, >4× at 16 — NOTES "Timeouts"). Scale the cap by
+    # half the lanes so slow-but-finite runs rarely reach the confirmation pass;
+    # over-generosity only delays catching a genuine hang, which the confirmation
+    # re-run bounds anyway. `lanes` is capped by the site count (a `--line` rerun
+    # of two mutants has next to no contention), and the generous floor keeps tiny
+    # suites honest. A true infinite loop runs far past any cap, so we still catch it.
+    lanes = min(options.workers, length(schema.sites))
+    contention = max(1.0, lanes / 2)
+    max(round(baseline_ms * options.timeout_multiplier * contention), 10_000)
   end
 
   # The coverage probe's wall-clock cap. An explicit `:probe_timeout` (ms) wins —

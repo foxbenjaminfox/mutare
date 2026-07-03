@@ -87,7 +87,7 @@ defmodule Mutare.Options.RegistryTest do
              {"only_files", "(all discovered files)"},
              {"only_lines", "(all lines)"},
              {"test_selection", "coverage"},
-             {"workers", to_string(System.schedulers_online())},
+             {"workers", to_string(max(1, div(System.schedulers_online(), 2)))},
              {"partition_env", "(off)"},
              {"timeout", "derived from baseline run"},
              {"timeout_multiplier", "3.0"},

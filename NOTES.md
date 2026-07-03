@@ -3516,19 +3516,25 @@ streamed `:timeout` is provisional and re-run sequentially after the stream
 drains; only a repeat overrun records `:timeout` (mechanics in the
 `Mutare.Runner` moduledoc). The asymmetry that decides it: an over-generous
 verdict path costs one extra cap per *genuine* hang (rare); a tight one silently
-corrupts the score. Per-covering-file caps would be tighter and more precise —
-still a refinement.
+corrupts the score. Two companions attack the cause so few honest runs reach the
+confirmation pass at all: the derived cap scales by half the concurrent lanes
+(`min(workers, sites)`), and the default `:workers` dropped to half the
+schedulers (see "Parallel workers"). Per-covering-file caps would be tighter and
+more precise — still a refinement.
 
 ### Parallel workers (M4 done) `[refine]`
-The per-mutant phase runs `:workers` mutants concurrently (default
-`System.schedulers_online/0`) via `Task.async_stream` in the shared sandbox.
-Concurrent `mix test` in one sandbox contends on mix's build lock ("Waiting for
-lock…") and, since each spawns a full BEAM, oversubscribes CPU — a real but
-bounded overhead (4 workers gave ~2.4× in a spike). The design's open question —
+The per-mutant phase runs `:workers` mutants concurrently (default: **half**
+`System.schedulers_online/0`, floored at 1) via `Task.async_stream` in the shared
+sandbox. Concurrent `mix test` in one sandbox contends on mix's build lock
+("Waiting for lock…") and, since each spawns a full BEAM, oversubscribes CPU — a
+real overhead (4 workers gave ~2.4× in a spike; >4× observed at 16). The default
+was schedulers_online originally; it was halved after the oversubscription
+manufactured false `:timeout` kills on phoenix_live_view (see "Timeouts" round
+two) — each worker's BEAM already uses every scheduler, so a worker per scheduler
+ran ~N× oversubscribed for no throughput gain. The design's open question —
 per-worker `MIX_BUILD_PATH` vs full source copy — would remove the contention;
-deferred. Default workers may be worth lowering from schedulers_online to cut
-oversubscription. (Disabling the lock outright was tried and abandoned — see
-"Bypassing Mix's build lock per mutant" above.)
+deferred. (Disabling the lock outright was tried and abandoned — see "Bypassing
+Mix's build lock per mutant" above.)
 
 ### Per-worker DB partitioning (`:partition_env`) `[done]`
 A suite with shared mutable state — the common case: an Ecto repo — can't have N
