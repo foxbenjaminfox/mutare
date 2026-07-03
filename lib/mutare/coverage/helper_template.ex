@@ -112,9 +112,10 @@ defmodule Mutare.Coverage.HelperTemplate do
         {mod, _name} when is_atom(mod) ->
           :ets.insert(@attr_table, {{mod, id}})
 
-        # No recoverable test label — the line ran in `on_exit`/a bare spawn/a `setup_all` whose
-        # work ran off-stack in a `Task` (an ordinary `setup_all` is recovered by tier 3,
-        # `stacktrace_label/0`, and takes the attribution branch above). Record it so the caller
+        # No recoverable test label — the line ran in a bare spawn, a `setup`-registered
+        # `on_exit` closure, or a `setup_all` whose work ran off-stack in a `Task` (an ordinary
+        # `setup_all`, and an `on_exit` registered in a test body, are recovered by tier 3,
+        # `stacktrace_label/1`, and take the attribution branch above). Record it so the caller
         # runs the whole suite for this id rather than trusting partial per-file attribution (a
         # test that also touches the line directly would otherwise mask this run and manufacture a
         # false survivor).
@@ -173,9 +174,12 @@ defmodule Mutare.Coverage.HelperTemplate do
   #      `{module, __ex_unit__, 2}` frame on every version; and a `Task`'s awaiting caller still has
   #      its test frame (read cross-process).
   #
-  # `on_exit`/a bare spawn matches neither (no label, no caller chain, no ExUnit frame) → `nil`, and
-  # the caller routes that id to the unlabeled bucket (whole suite). Only the module is needed for
-  # file-granular selection; the name half is incidental.
+  # An `on_exit` callback registered in a test body is recovered too (`on_exit_frame/1`): its
+  # closure frame names the owning test module, and ExUnit's per-test runner-loop frame scopes the
+  # match. A bare spawn / a `setup`-registered `on_exit` closure matches nothing (no label, no live
+  # caller chain, no recognisable frame) → `nil`, and the caller routes that id to the unlabeled
+  # bucket (whole suite). Only the module is needed for file-granular selection; the name half is
+  # incidental.
   #
   # Cost discipline — this runs on EVERY hit, inside the target's hottest loops, so each tier pays
   # only what its freshness contract needs:
@@ -284,10 +288,10 @@ defmodule Mutare.Coverage.HelperTemplate do
   end
 
   # An ExUnit frame on `pid`'s current stack, naming the owning module — the recovery `label_of/1`
-  # uses when no `$process_label` is set (every line on **Elixir 1.18**; a `setup_all` on every
-  # version, which runs unlabeled). This is *only* ever reached on 1.18 and for `setup_all`: from
-  # Elixir 1.19 the runner labels every test process — `test`, `doctest`, and `property` alike — so
-  # `proc_label/1` (tier 1) resolves them and none of the frame-shape guesswork below runs.
+  # uses when no `$process_label` is set (every line on **Elixir 1.18**; a `setup_all` and an
+  # `on_exit` callback on every version, which run unlabeled). From Elixir 1.19 the runner labels
+  # every test process — `test`, `doctest`, and `property` alike — so `proc_label/1` (tier 1)
+  # resolves them and, of the frame shapes below, only the `setup_all` and `on_exit` ones still run.
   #
   # A test **body** is recognised two ways, the second a naming-agnostic backstop for the first:
   #
@@ -296,6 +300,10 @@ defmodule Mutare.Coverage.HelperTemplate do
   #   * else by position (`dispatched_test_frame/1`) — the frame directly above ExUnit's per-test
   #     dispatcher `ExUnit.Runner.exec_test/2` *is* the test body, whatever generator named it, so a
   #     test kind the name list doesn't know still attributes to the right module.
+  #
+  # An `on_exit` callback registered in a test body is recognised by `on_exit_frame/1` (its own
+  # comment has the soundness argument): the closure frame names the module, and ExUnit's per-test
+  # runner-loop frame scopes the match to real `on_exit` runs.
   #
   # A `setup_all` (or `setup`) is recognised by its `{module, :__ex_unit__, 2, _}` dispatch frame:
   # it runs synchronously inside the test module's generated `__ex_unit__/2`, so that frame is on
@@ -317,8 +325,11 @@ defmodule Mutare.Coverage.HelperTemplate do
   # whole-suite conservatism the unlabeled bucket used to give it.
   defp stacktrace_label(pid) do
     case Process.info(pid, :current_stacktrace) do
-      {:current_stacktrace, stack} -> named_frame(stack) || dispatched_test_frame(stack)
-      _ -> nil
+      {:current_stacktrace, stack} ->
+        named_frame(stack) || dispatched_test_frame(stack) || on_exit_frame(stack)
+
+      _ ->
+        nil
     end
   end
 
@@ -341,6 +352,49 @@ defmodule Mutare.Coverage.HelperTemplate do
       "test " <> _ -> {mod, fun}
       "doctest " <> _ -> {mod, fun}
       "property " <> _ -> {mod, fun}
+      _ -> nil
+    end
+  end
+
+  # An `on_exit` callback, attributed to the test that registered it. ExUnit runs each test's
+  # `on_exit` callbacks in a dedicated per-test runner process whose stack bottoms out in
+  # `ExUnit.OnExitHandler.on_exit_runner_loop/0`, and a callback registered *in a test body* is a
+  # closure whose frame is named `:"-test …/N-fun-M-"` — the embedded space, exactly as in
+  # `test_label/2`, cannot occur for a target's own function (a target function literally named
+  # `test` yields `-test/1-fun-0-`, no space). Requiring BOTH signals scopes the recovery to real
+  # `on_exit` callbacks, which is what keeps it sound: an `on_exit` failure fails the *owning*
+  # test, so that test's own file kills the mutant. A detached `spawn` from a test body carries
+  # the same closure frame but no runner-loop frame — its effects may be observable only by
+  # another file's tests, so it must stay in the unlabeled bucket (whole suite). A callback
+  # registered from a `setup`/`setup_all` block (closure named `-__ex_unit_setup…`, possibly
+  # defined in an `ExUnit.CaseTemplate` whose source is not a runnable test file) is deliberately
+  # not recognised either — unlabeled, conservative. If ExUnit ever renames the runner loop, the
+  # match just stops firing and `on_exit` ids fall back to the unlabeled bucket — degraded, never
+  # wrong. Both ExUnit references are bare atom matches (no call, no module load), keeping this
+  # dependency-free.
+  defp on_exit_frame(stack) do
+    on_exit_runner? =
+      Enum.any?(stack, fn
+        {ExUnit.OnExitHandler, :on_exit_runner_loop, _arity, _} -> true
+        _ -> false
+      end)
+
+    if on_exit_runner? do
+      Enum.find_value(stack, fn
+        {mod, fun, _arity, _} when is_atom(mod) and is_atom(fun) -> closure_test_label(mod, fun)
+        _ -> nil
+      end)
+    end
+  end
+
+  # `{mod, fun}` when `fun` is a closure defined inside an ExUnit-generated test body —
+  # `test_label/2`'s naming rule applied to anonymous-fun frames (`-<enclosing name>/<arity>-fun-N-`,
+  # nesting only appends further `-fun-M-` suffixes, so the prefix survives).
+  defp closure_test_label(mod, fun) do
+    case Atom.to_string(fun) do
+      "-test " <> _ -> {mod, fun}
+      "-doctest " <> _ -> {mod, fun}
+      "-property " <> _ -> {mod, fun}
       _ -> nil
     end
   end

@@ -509,6 +509,42 @@ defmodule Mutare.CoverageTest do
     end
 
     @tag :runner
+    test "a mutant covered only via a test body's on_exit is attributed to that file (not the whole suite)" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:on_exit_cov, %{
+          "lib/cleanup.ex" => "defmodule Cleanup do\n  def verify(x), do: x + 1\nend\n",
+          # Cleanup.verify runs *only* inside an `on_exit` registered in the test body. The
+          # callback runs in ExUnit's per-test runner process (no label, caller already dead) —
+          # attributed via its `:"-test …"` closure frame. An `on_exit` failure fails the owning
+          # test, so this file alone kills the mutant.
+          "test/on_exit_test.exs" => """
+          defmodule OnExitTest do
+            use ExUnit.Case
+            test "verifies in cleanup" do
+              on_exit(fn -> assert Cleanup.verify(1) == 2 end)
+              assert true
+            end
+          end
+          """,
+          "test/other_test.exs" => """
+          defmodule OtherTest do
+            use ExUnit.Case
+            test "unrelated", do: assert(1 == 1)
+          end
+          """
+        })
+
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
+
+      # Killed by on_exit_test.exs *alone* (1 test, not the 2-test whole suite): the closure-frame
+      # recovery attributed the id instead of dropping it to the unlabeled (run-everything) bucket.
+      assert [result] = run.results
+      assert result.status == :killed
+      assert result.output =~ "1 test"
+      refute result.output =~ "2 tests"
+    end
+
+    @tag :runner
     test "a mutant covered via another file's setup_all is attributed to both files (no false survivor)" do
       %{project: project, sandbox: sandbox} =
         Project.build(:setup_all_cov, %{
@@ -718,6 +754,47 @@ defmodule Mutare.CoverageTest do
       # Whole-suite selection ran both files. Elixir <1.20 summarizes the aborted
       # (max-failures) run as "2 tests, 1 failure"; 1.20+ as "Result: 1/2 passed".
       assert output =~ ~r{2 tests|/2 passed}
+    end
+
+    @tag :runner
+    test "a probe-only flake is retried, preserving coverage selection" do
+      # The baseline is green, but the first probe attempt hits a flake (simulated with a
+      # marker file: fail once under MUTARE_COVERAGE, pass ever after). Without the retry
+      # this degrades to run-all — under which `uncovered/0`'s mutant would run the whole
+      # suite and *survive*; with the retry the probe succeeds and classifies it
+      # `:no_coverage`, proving selection quality survived the flake.
+      %{project: project, sandbox: sandbox} =
+        Project.build(:probe_retry, %{
+          "lib/probe_retry.ex" => """
+          defmodule ProbeRetry do
+            def covered, do: 1 + 1
+            def uncovered, do: 3 + 4
+          end
+          """,
+          "test/probe_retry_test.exs" => """
+          defmodule ProbeRetryTest do
+            use ExUnit.Case
+
+            test "covers only covered/0, flaking on the first probe attempt" do
+              if System.get_env("MUTARE_COVERAGE") && !File.exists?("probe_retry_marker") do
+                File.write!("probe_retry_marker", "")
+                flunk("first probe attempt")
+              end
+
+              assert ProbeRetry.covered() == 2
+            end
+          end
+          """
+        })
+
+      assert {:ok, run} =
+               Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Arithmetic])
+
+      by_status = Enum.group_by(run.results, & &1.status)
+      assert [%{site: killed_site}] = by_status[:killed]
+      assert [%{site: skipped_site}] = by_status[:no_coverage]
+      assert killed_site.line != skipped_site.line
+      refute Map.has_key?(by_status, :survived)
     end
 
     @tag :runner

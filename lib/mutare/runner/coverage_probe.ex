@@ -20,8 +20,9 @@ defmodule Mutare.Runner.CoverageProbe do
 
     * `:coverage` (default) — per mutant, run only the test files that covered its
       line (a `setup_all` attributes to its own module's file via the `__ex_unit__/2`
-      stacktrace frame; a `Task` via its caller chain); a mutant whose code ran in an
-      *unlabeled* process (`on_exit`, a bare spawn, or a `setup_all` whose work
+      stacktrace frame; a `Task` via its caller chain; a test-registered `on_exit`
+      via its closure frame); a mutant whose code ran in an *unlabeled* process (a
+      bare spawn, a `setup`-registered `on_exit` closure, or a `setup_all` whose work
       happened in a spawned `Task`) runs the whole suite — even if some file *also*
       attributes it, since that partial attribution would otherwise mask the
       unlabeled coverage and produce a false survivor; a mutant that never ran at all
@@ -39,7 +40,11 @@ defmodule Mutare.Runner.CoverageProbe do
   Coverage is advisory, never authoritative. Anything uncertain — a non-zero
   probe exit, an unreadable dump, or an empty dump (the probe recorded nothing,
   so the capture itself likely failed) — degrades to `:run_all`: we never skip a
-  mutant on doubt. The probe run is wall-clock capped for the same reason (by
+  mutant on doubt. But because `:run_all` makes every covered mutant run the
+  whole suite — prohibitive on a large project — a failed probe run is retried
+  once before degrading: the baseline was green moments earlier, so a probe
+  failure is usually a flaky test, and one extra suite run is cheap next to a
+  whole run's selection quality. The probe run is wall-clock capped for the same reason (by
   default a generous multiple of the per-mutant cap, since instrumentation adds
   overhead a plain baseline doesn't have; `:probe_timeout` sets an explicit cap
   instead): a pathological interaction between the coverage capture and the
@@ -53,6 +58,14 @@ defmodule Mutare.Runner.CoverageProbe do
   alias Mutare.Sandbox.Command.{Invocation, Output}
 
   require Logger
+
+  # How many times the probe run may be attempted in total (1 + retries). The
+  # baseline was confirmed green moments before the probe, so a failed probe is
+  # far more often a flaky test than anything systematic — and degrading to
+  # run-all on one flake makes *every* covered mutant run the whole suite, which
+  # on a large project can make the run de facto infeasible. One retry buys back
+  # that whole class of degradations for the price of one extra suite run.
+  @probe_attempts 2
 
   @typedoc """
   What the probe decided for one mutant:
@@ -106,9 +119,8 @@ defmodule Mutare.Runner.CoverageProbe do
     # normalised against the sandbox root, not whichever app is running.
     root = Path.expand(sandbox)
     dump = Path.join(root, Recorder.dump_file())
-    File.rm(dump)
 
-    with true <- Command.success?(run_probe(sandbox, root, dump, env, cap)),
+    with true <- Command.success?(attempt_probe(sandbox, root, dump, env, cap, @probe_attempts)),
          {:ok, coverage} <- Coverage.read_dump(dump) do
       select(mode, schema, coverage)
     else
@@ -140,11 +152,47 @@ defmodule Mutare.Runner.CoverageProbe do
     %{covered: covered, no_coverage: no_coverage, run_all?: false}
   end
 
+  # Run the probe, retrying a failed attempt while attempts remain. A cap overrun
+  # (`Command.timeout_exit/0`) is NOT retried: the overrun is systematic — the
+  # retry would just burn another full cap and overrun again. Each attempt clears
+  # the dump first: `ExUnit.after_suite/1` writes it even for a failing suite, so
+  # a failed attempt can leave a partial dump the next read must not trust.
+  defp attempt_probe(sandbox, root, dump, env, cap, attempts_left) do
+    File.rm(dump)
+    {output, status} = run_probe(sandbox, root, dump, env, cap)
+
+    cond do
+      Command.success?(status) ->
+        status
+
+      status != Command.timeout_exit() and attempts_left > 1 ->
+        Logger.warning(
+          "coverage probe exited #{status} (the baseline was green, so likely a flaky test); " <>
+            "retrying (#{attempts_left - 1} left) rather than degrading to run-all selection"
+        )
+
+        attempt_probe(sandbox, root, dump, env, cap, attempts_left - 1)
+
+      true ->
+        # The baseline already confirmed the suite green, so a non-zero probe is
+        # unexpected — and silently degrading to run-all (every covered mutant runs
+        # the whole suite) is a big, invisible slowdown. Surface it.
+        Logger.warning(
+          probe_failure(status, cap) <>
+            "; falling back to run-all selection " <>
+            "(every covered mutant runs the whole suite). Probe output:\n#{Output.output_tail(output, 15)}"
+        )
+
+        status
+    end
+  end
+
   # One instrumented baseline run: the metamutant self-records coverage. A non-zero
   # exit means the dump may be partial (for example `max_failures` can abort before
-  # later files run), so the caller treats it as uncertainty → `:run_all`. The dump
-  # path and the path-normalisation root travel in env vars so the helper, running
-  # with a per-app cwd in an umbrella, writes one union dump with root-relative keys.
+  # later files run), so the caller treats it as uncertainty → retry/`:run_all`
+  # (`attempt_probe/6` owns that policy). The dump path and the path-normalisation
+  # root travel in env vars so the helper, running with a per-app cwd in an
+  # umbrella, writes one union dump with root-relative keys.
   defp run_probe(sandbox, root, dump, partition_env, cap) do
     env =
       [
@@ -153,20 +201,7 @@ defmodule Mutare.Runner.CoverageProbe do
         {Recorder.root_env(), root}
       ] ++ partition_env
 
-    {output, status} = Invocation.mix(sandbox, ["test"], Selector.baseline(), cap: cap, env: env)
-
-    unless Command.success?(status) do
-      # The baseline already confirmed the suite green, so a non-zero probe is
-      # unexpected — and silently degrading to run-all (every covered mutant runs
-      # the whole suite) is a big, invisible slowdown. Surface it.
-      Logger.warning(
-        probe_failure(status, cap) <>
-          "; falling back to run-all selection " <>
-          "(every covered mutant runs the whole suite). Probe output:\n#{Output.output_tail(output, 15)}"
-      )
-    end
-
-    status
+    Invocation.mix(sandbox, ["test"], Selector.baseline(), cap: cap, env: env)
   end
 
   # Name the overrun case explicitly: "exited 124" hides that the probe was
@@ -200,14 +235,16 @@ defmodule Mutare.Runner.CoverageProbe do
 
   # `:coverage`, per id:
   #   * never ran (not in the aggregate) → `:no_coverage`;
-  #   * ran in an unlabeled process (`on_exit`/a bare spawn/a `setup_all` whose work
-  #     ran off-stack in a `Task`) → whole suite. This dominates attribution on
-  #     purpose: an id can be attributed to file A (a test there touches the line)
-  #     *and* be covered via an unlabeled process. Trusting the partial attribution
-  #     would run only A and miss the unlabeled killer — a false survivor.
+  #   * ran in an unlabeled process (a bare spawn / a `setup`-registered `on_exit`
+  #     closure / a `setup_all` whose work ran off-stack in a `Task`) → whole
+  #     suite. This dominates attribution on purpose: an id can be attributed to
+  #     file A (a test there touches the line) *and* be covered via an unlabeled
+  #     process. Trusting the partial attribution would run only A and miss the
+  #     unlabeled killer — a false survivor.
   #   * otherwise → only the files that attributed it (a `setup_all` attributes to
-  #     its own module's file via the `__ex_unit__/2` stacktrace recovery, so it is
-  #     no longer forced to whole-suite — see `Mutare.Coverage.Recorder`).
+  #     its own module's file via the `__ex_unit__/2` stacktrace recovery, and a
+  #     test-registered `on_exit` via its closure frame, so neither is forced to
+  #     whole-suite — see `Mutare.Coverage.Recorder`).
   defp outcome(:coverage, id, %{aggregate: aggregate, unlabeled: unlabeled, by_file: by_file}) do
     cond do
       not MapSet.member?(aggregate, id) -> :no_coverage

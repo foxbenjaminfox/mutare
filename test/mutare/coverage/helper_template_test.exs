@@ -1,3 +1,20 @@
+# A run-time stand-in for an ExUnit-*compiled* test module, for the `on_exit` recovery tests: a
+# `:"test …"`-named function (the shape ExUnit's `test` macro generates) that *returns* the closure
+# a test body would register with `on_exit`. The closure's frame is therefore named
+# `:"-test registers on_exit/1-fun-0-"` — exactly what `on_exit_frame/1` recognises.
+defmodule Mutare.Coverage.HelperTemplateTest.OnExitFixture do
+  @moduledoc false
+
+  # The trailing `:ok` keeps `hit/1` off tail position, so the closure frame survives on the
+  # stack while the hit records — as in the metamutant, where the hit is never a tail call.
+  def unquote(:"test registers on_exit")(ids) do
+    fn ->
+      Mutare.Coverage.HelperTemplate.hit(ids)
+      :ok
+    end
+  end
+end
+
 defmodule Mutare.Coverage.HelperTemplateTest do
   # The coverage helper is a real, compiled module (`Mutare.Coverage.HelperTemplate`) whose
   # *source* is copied verbatim into each sandbox as `:mutare_cov` — so in a normal run its
@@ -15,6 +32,7 @@ defmodule Mutare.Coverage.HelperTemplateTest do
   @moduletag :coverage_tables
 
   alias Mutare.Coverage.HelperTemplate, as: H
+  alias Mutare.Coverage.HelperTemplateTest.OnExitFixture
 
   # Tables are created once and owned by the (module-lifetime) setup_all process, so they
   # survive across every test. `hit([777])` here runs *inside* `__ex_unit__/2`, exercising the
@@ -244,6 +262,40 @@ defmodule Mutare.Coverage.HelperTemplateTest do
 
       assert :ets.lookup(H.unlabeled_table(), 551) == [{551}]
       refute Enum.any?(:ets.tab2list(H.attr_table()), fn {{_mod, id}} -> id == 551 end)
+    end
+
+    test "an on_exit callback registered in a test body attributes to that test's module" do
+      # The real mechanism, end to end: ExUnit runs a test's `on_exit` callbacks in a dedicated
+      # runner process (`ExUnit.OnExitHandler.on_exit_runner_loop/0`); the callback is a closure
+      # defined in the test body, so its `:"-test …/1-fun-N-"` frame names the owning module.
+      # Drive the actual runner loop so a rename of either signal breaks this test, not a sandbox.
+      callback = apply(OnExitFixture, :"test registers on_exit", [[861]])
+      {runner, ref} = spawn_monitor(ExUnit.OnExitHandler, :on_exit_runner_loop, [])
+
+      # The reply value is ExUnit-internal (nil on success in current versions) — only the
+      # round-trip matters here; the attribution assertions below carry the test.
+      send(runner, {:run, self(), callback})
+      assert_receive {^runner, _reply}
+
+      Process.exit(runner, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^runner, _}
+
+      assert :ets.lookup(H.attr_table(), {OnExitFixture, 861}) == [{{OnExitFixture, 861}}]
+      assert :ets.lookup(H.agg_table(), 861) == [{861}]
+      assert :ets.lookup(H.unlabeled_table(), 861) == []
+    end
+
+    test "the same test-body closure in a detached spawn stays unlabeled (whole suite)" do
+      # A bare `spawn` from a test body carries the identical `:"-test …"` closure frame — but no
+      # on_exit runner-loop frame. It must NOT be attributed: a detached process can outlive its
+      # test, and its effects may only be observable by another file's tests, so trusting the
+      # spawning test's file could mask the real killer (a false survivor). Unlabeled → whole suite.
+      callback = apply(OnExitFixture, :"test registers on_exit", [[862]])
+      run_in(fn -> callback.() end, label: nil)
+
+      assert :ets.lookup(H.unlabeled_table(), 862) == [{862}]
+      assert :ets.lookup(H.agg_table(), 862) == [{862}]
+      refute Enum.any?(:ets.tab2list(H.attr_table()), fn {{_mod, id}} -> id == 862 end)
     end
 
     test "a setup_all-recovered id is attributed to its own module's file (tier 3)" do

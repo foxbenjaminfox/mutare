@@ -7042,3 +7042,40 @@ deliberately *no* uncapped setting — a legitimately slow instrumented suite wa
 not the hang back (`:full` is no escape either, that mode probes too). The **baseline** stays
 uncapped, knowingly — it has no earlier timing to derive from, and a hung baseline is the suite's
 own behavior, not instrumentation's.
+
+### Selection-quality hardening: probe retry + `on_exit` attribution `[done]`
+Follow-on to the livelock entry above, prompted by the observation that every path into
+"run the whole suite" — the probe's run-all degrade at run level, the unlabeled bucket at
+mutant level — makes mutation testing de facto infeasible on a large target. Two levers, both
+sound; two weighed and left (for now):
+
+  - **The probe retries once before degrading** (`@probe_attempts` in `CoverageProbe`). The
+    baseline was confirmed green *moments* earlier, so a non-zero probe is far more often a flaky
+    test than anything systematic — and one flake used to cost the entire run's selection,
+    silently. Each attempt clears the dump first (`after_suite` writes it even for a failing
+    suite, so a failed attempt leaves a partial dump the retry must not trust). A **cap overrun is
+    not retried**: it is systematic, and the retry would just burn another full cap. Regression:
+    `coverage_test.exs` "probe-only flake is retried" (marker-file flake: fail the first
+    `MUTARE_COVERAGE` run, pass ever after → the uncovered mutant stays `:no_coverage` instead of
+    a run-all survivor).
+  - **`on_exit` callbacks registered in a test body now attribute** to their test's file
+    (`on_exit_frame/1` in the helper) instead of falling to the unlabeled (whole-suite) bucket.
+    Two stack signals are required together: ExUnit's per-test `on_exit` runner-loop frame
+    (`ExUnit.OnExitHandler.on_exit_runner_loop/0` — the callbacks run in a dedicated per-test
+    process, so the label memo can't leak across tests) *and* a `:"-test …/N-fun-M-"` closure
+    frame, whose embedded space can't occur for a target's own function. Requiring both is the
+    soundness line: an `on_exit` failure fails the *owning* test (its file kills the mutant), but
+    a detached `spawn` from a test body carries the identical closure frame and may only be
+    observable from another file — it must stay unlabeled. Also deliberately not recognised:
+    `-__ex_unit_setup…` closures (a `setup`-registered `on_exit`), which can live in an
+    `ExUnit.CaseTemplate` whose `test/support/*.ex` source is not a runnable test file — feeding
+    that to `mix test` would be worse than conservative. If ExUnit renames the runner loop, the
+    match stops firing and `on_exit` ids degrade back to unlabeled — never wrong.
+
+Weighed and left until asked for: **abort-instead-of-degrade** (a `--strict-coverage` that fails
+the run rather than accepting run-all) and a **`:max_run_all` gate** (abort if selection quality
+collapses past a budget) — both are policy knobs on top of the same signals, easy to add when a
+large-project user wants the loud-failure contract. Also rejected on soundness grounds: salvaging
+a *partial* dump from a failed probe — an id attributed to file A may also be covered by a file
+the aborted run never reached, so its covering-file set is silently incomplete and selection built
+on it can manufacture false survivors; retry-then-degrade is the sound shape.

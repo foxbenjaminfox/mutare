@@ -20,8 +20,10 @@ defmodule Mutare.Coverage do
       frame (module-granular, the file selection needs). This drives per-file **test
       selection**.
     * `:unlabeled` — the set of mutant ids whose selector ran in a process with no
-      recoverable test label *at all* — `on_exit`/a bare spawn, or the rare
-      `setup_all` whose work happened off-stack in a `Task` it spawned. An id here
+      recoverable test label *at all* — a bare spawn, a `setup`-registered `on_exit`
+      closure, or the rare `setup_all` whose work happened off-stack in a `Task` it
+      spawned (an `on_exit` registered in a test body *is* recovered, via its
+      closure frame in ExUnit's per-test runner process). An id here
       was covered, but *which* test owns it is unknown, so the caller runs the
       **whole suite** for it — even if `:by_file` *also* attributes it to some file,
       since that partial attribution would otherwise mask the unlabeled coverage and
