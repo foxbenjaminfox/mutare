@@ -1,7 +1,7 @@
 defmodule Mix.Tasks.MutareTest do
   use ExUnit.Case, async: false
 
-  alias Mutare.Test.Project
+  alias Mutare.Test.{Project, Umbrella}
 
   setup do
     # Capture Mix.shell output as messages to this process.
@@ -88,11 +88,30 @@ defmodule Mix.Tasks.MutareTest do
       assert quiet == ""
     end
 
+    test "warns about ineffective filtered ignores with stable labels and location" do
+      root = Project.tmp_dir(:task)
+      File.mkdir_p!(Path.join(root, "lib"))
+
+      File.write!(
+        Path.join(root, "lib/a.ex"),
+        "defmodule A do\n  def f, do: nil # mutare:ignore[relational, arithmetic]\nend\n"
+      )
+
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      stderr =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/no mutation sites/, fn -> Mix.Tasks.Mutare.run([root]) end
+        end)
+
+      assert stderr =~
+               "warning: # mutare:ignore[arithmetic, relational] at lib/a.ex:2 suppressed no mutant"
+    end
+
     test "--strict-ignores aborts (with a stderr warning) on an ineffective directive" do
       root = Project.tmp_dir(:task)
       File.mkdir_p!(Path.join(root, "lib"))
-      # A real arithmetic mutant on line 2 (so the run has sites), but the
-      # `[bogus]` filter matches no mutant there — the directive suppresses nothing.
+
       File.write!(
         Path.join(root, "lib/a.ex"),
         "defmodule A do\n  def f(x), do: x + 1 # mutare:ignore[bogus]\nend\n"
@@ -100,15 +119,48 @@ defmodule Mix.Tasks.MutareTest do
 
       on_exit(fn -> File.rm_rf!(root) end)
 
+      test_pid = self()
+
       stderr =
         ExUnit.CaptureIO.capture_io(:stderr, fn ->
-          assert_raise Mix.Error, ~r/strict-ignores/, fn ->
-            Mix.Tasks.Mutare.run([root, "--strict-ignores"])
-          end
+          error =
+            assert_raise Mix.Error, fn ->
+              Mix.Tasks.Mutare.run([root, "--strict-ignores"])
+            end
+
+          send(test_pid, {:strict_ignores_error, error})
         end)
 
-      assert stderr =~ "mutare:ignore[bogus]"
-      assert stderr =~ "suppressed no mutant"
+      assert_receive {:strict_ignores_error, error}
+
+      assert error.message ==
+               "--strict-ignores: 1 `# mutare:ignore` directive suppressed no mutant (see the warnings above)"
+
+      assert stderr =~ "warning: # mutare:ignore[bogus] at lib/a.ex:2 suppressed no mutant"
+    end
+
+    test "announces the counted scope and configured caps before a no-site run aborts" do
+      root = Project.tmp_dir(:task)
+      File.mkdir_p!(Path.join(root, "lib"))
+      File.write!(Path.join(root, "lib/empty.ex"), "defmodule Empty do\n  def f, do: nil\nend\n")
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert_raise Mix.Error, ~r/no mutation sites/, fn ->
+          Mix.Tasks.Mutare.run([
+            root,
+            "--max-mutants",
+            "7",
+            "--max-survivors",
+            "2"
+          ])
+        end
+      end)
+
+      output = drain_shell_info()
+
+      assert output =~
+               "mutare in #{root}: 0 mutants (--max-mutants 7) (stop after 2 survivors) across 0 file(s)"
     end
   end
 
@@ -204,6 +256,54 @@ defmodule Mix.Tasks.MutareTest do
       assert output =~ "Effective configuration"
       assert output =~ "relational, arithmetic"
       assert output =~ ~r/workers\s+3/
+    end
+
+    test "--show-config defaults to the current project when no target is supplied" do
+      Mix.Tasks.Mutare.run(["--show-config"])
+      output = drain_shell_info()
+
+      assert output =~ ~r/target\s+\./
+    end
+
+    test "--show-config uses the first positional target" do
+      first = bare_project("defmodule FirstTarget do\n  def f(x), do: x + 1\nend\n")
+      second = bare_project("defmodule SecondTarget do\n  def f(x), do: x + 2\nend\n")
+
+      Mix.Tasks.Mutare.run([first, second, "--show-config"])
+      output = drain_shell_info()
+
+      assert output =~ ~r/target\s+#{Regex.escape(first)}/
+      refute output =~ ~r/target\s+#{Regex.escape(second)}/
+    end
+
+    test "--show-config scopes umbrella apps from comma-separated --app values" do
+      %{umbrella: umbrella} =
+        Umbrella.build(:task_scope_umbrella, %{
+          core: %{files: %{"lib/core.ex" => "defmodule Core do\n  def f, do: :ok\nend\n"}},
+          solo: %{files: %{"lib/solo.ex" => "defmodule Solo do\n  def f, do: :ok\nend\n"}},
+          web: %{files: %{"lib/web.ex" => "defmodule Web do\n  def f, do: :ok\nend\n"}}
+        })
+
+      Mix.Tasks.Mutare.run([umbrella, "--show-config", "--app", "core, web"])
+      output = drain_shell_info()
+
+      assert output =~ ~r/target\s+#{Regex.escape(umbrella)} \(umbrella apps: core, web\)/
+      refute output =~ "solo"
+    end
+
+    test "--show-config lets --workspace override a narrower --app scope" do
+      %{umbrella: umbrella} =
+        Umbrella.build(:task_workspace_umbrella, %{
+          core: %{files: %{"lib/core.ex" => "defmodule Core do\n  def f, do: :ok\nend\n"}},
+          solo: %{files: %{"lib/solo.ex" => "defmodule Solo do\n  def f, do: :ok\nend\n"}},
+          web: %{files: %{"lib/web.ex" => "defmodule Web do\n  def f, do: :ok\nend\n"}}
+        })
+
+      Mix.Tasks.Mutare.run([umbrella, "--show-config", "--app", "core", "--workspace"])
+      output = drain_shell_info()
+
+      assert output =~
+               ~r/target\s+#{Regex.escape(umbrella)} \(umbrella apps: core, solo, web\)/
     end
 
     test "--list-macros prints the known-macro registry, including the built-ins" do
@@ -354,6 +454,13 @@ defmodule Mix.Tasks.MutareTest do
     doc = out |> File.read!() |> JSON.decode!()
     assert doc["schemaVersion"] == "1.0"
     assert map_size(doc["files"]) > 0
+
+    mutants = all_report_mutants(doc)
+
+    assert Enum.any?(
+             mutants,
+             &(&1["status"] == "Killed" and &1["replacement"] not in [nil, ""])
+           )
   end
 
   defp shell_info(acc \\ []) do
@@ -362,5 +469,11 @@ defmodule Mix.Tasks.MutareTest do
     after
       0 -> Enum.reverse(acc)
     end
+  end
+
+  defp all_report_mutants(doc) do
+    doc["files"]
+    |> Map.values()
+    |> Enum.flat_map(& &1["mutants"])
   end
 end
