@@ -590,15 +590,15 @@ defmodule Mutare.SchemaTest do
 
     test_pid = self()
 
-    pid =
-      spawn(fn ->
+    {pid, ref} =
+      spawn_monitor(fn ->
         Schema.build(root, mutators: [ExitingMutator])
         send(test_pid, :schema_build_returned)
       end)
 
-    ref = Process.monitor(pid)
-
-    assert_receive {:DOWN, ^ref, :process, ^pid, :mutare_schema_test_exit}
+    # Generous timeout: Schema.build spawns transform workers first, and on a
+    # loaded CI machine the exit can take longer than the default 100ms.
+    assert_receive {:DOWN, ^ref, :process, ^pid, :mutare_schema_test_exit}, 5_000
     refute_received :schema_build_returned
   end
 

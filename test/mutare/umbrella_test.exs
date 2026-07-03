@@ -125,7 +125,9 @@ defmodule Mutare.UmbrellaTest do
     web = Enum.find(run.results, &(&1.site.file == "apps/web/lib/web.ex"))
     assert web.status == :killed
     assert web.output =~ "1 test"
-    refute web.output =~ "2 tests"
+    # Elixir <1.20 would summarize a whole-suite run as "2 tests"; 1.20+ as
+    # "Result: N/2 passed" — refute both phrasings.
+    refute web.output =~ ~r{2 tests|/2 passed}
   end
 
   test "a broad (:full) run is narrowed to the owning app + its dependents" do
