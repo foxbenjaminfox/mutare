@@ -6883,3 +6883,25 @@ Deferred, same diagnosis (see `FIX-subprocess-lifecycle.md` while it lives):
 Regression coverage: `subprocess_lifecycle_test.exs` (SIGKILL the owner mid-compile, assert the
 compiling BEAM reaps itself; verified red with the gate disarmed) and the PATH-shim gate test in
 `invocation_test.exs` (`mix/4` arms the gate on every run).
+
+### `PatternWildcard` counted a module-attribute read as a variable `[done]`
+Found running Mutare against stock phoenix_live_view: `lifecycle.ex` heads like
+`def after_render(%Socket{private: %{@lifecycle => lifecycle}} = socket)` produced two
+compile-breaking mutants (34 poisoned sites across the file). An attribute read in a pattern
+(`@lifecycle`) is a compile-time constant key, but its *inner* AST node (`{:lifecycle, meta, nil}`)
+has plain-variable shape, and the occurrence walk descended into it:
+
+  - it was offered as a wildcard target itself → the nonsense `@_`;
+  - it was **counted** as a second occurrence of the same-named real binding, so the
+    "a binding always remains" policy believed thinning was safe and wildcarded the
+    one real `lifecycle` — stranding the body read (`undefined variable`, hard
+    CompileError, exactly the class the family exists to never produce).
+
+Fix: attribute nodes are opaque to the walk — neither counted, descended, nor replaced —
+the same treatment pins (`^x`) already got, next to the bitstring-spec exclusion (the
+previous instance of "var-shaped AST that isn't a variable"; `__MODULE__` never bit only
+because underscore-prefixed names were already excluded). Regression tests cover both
+halves (not offered; not a phantom duplicate). The poison pre-filter would have recovered
+these at runtime, but built-in families must be compile-safe *by construction* — poison is
+the backstop for the unknown, not a license.
+

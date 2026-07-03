@@ -74,6 +74,24 @@ defmodule Mutare.Mutators.PatternWildcardTest do
     end
   end
 
+  describe "module-attribute reads are not variables" do
+    # `%{@key => v}` reads the attribute as a compile-time constant key; its inner
+    # AST node (`{:key, meta, nil}`) merely looks like a variable. Wildcarding it
+    # yields the nonsense `@_`, and counting it invents a phantom duplicate of a
+    # same-named real binding — wildcarding *that* strands the body read (the
+    # phoenix_live_view `%{@lifecycle => lifecycle}` poison).
+    test "an attribute key is neither counted nor wildcarded" do
+      assert wildcards("%{@lifecycle => lifecycle} = socket", [:lifecycle]) == []
+    end
+
+    test "an attribute is not a duplicate of a same-named real variable" do
+      # `key` really does appear twice (both real occurrences); the attribute must
+      # not inflate the count or be offered as a target itself.
+      assert wildcards("%{@key => key}, key", [:key]) ==
+               ["f(%{@key => _}, key)", "f(%{@key => key}, _)"]
+    end
+  end
+
   describe "no-ops" do
     test "a variable that appears once is never wildcarded" do
       assert wildcards("x, y") == []

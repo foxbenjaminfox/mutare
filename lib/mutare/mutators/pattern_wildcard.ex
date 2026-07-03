@@ -9,7 +9,9 @@ defmodule Mutare.Mutators.PatternWildcard do
     * If the variable is read by the guard or body, or appears at least three times in the head, one mutant is produced for each wildcarded occurrence.
     * If it appears exactly twice and is not read elsewhere, both occurrences are replaced in one mutant. Replacing only one would leave an unused binding.
 
-  `_`, underscore-prefixed names, and pinned variables are not counted or replaced. On the right side of a bitstring `::`, atoms such as `binary` have the same AST shape as variables, so that side is not searched for pattern occurrences.
+  `_`, underscore-prefixed names, pinned variables, and module-attribute reads
+  (`%{@key => v}` — a compile-time constant whose inner AST merely looks like a
+  variable) are not counted or replaced. On the right side of a bitstring `::`, atoms such as `binary` have the same AST shape as variables, so that side is not searched for pattern occurrences.
 
   A variable read by a bitstring specifier is also excluded. For example, the `n` bound and read by `<<n, rest::size(n)>>` cannot be wildcarded without leaving an invalid size reference.
 
@@ -93,6 +95,14 @@ defmodule Mutare.Mutators.PatternWildcard do
   # result. Pins (`^x`) are opaque — neither counted nor descended — so a pinned
   # variable is never wildcarded.
   defp walk_vars({:^, _meta, _args} = pin, acc, _fun), do: {pin, acc}
+
+  # A module-attribute read in a pattern (`%{@key => v}`): a compile-time constant
+  # key, not a binding. Its inner node has plain-var shape (`{:key, meta, nil}`), so
+  # descending would both offer the nonsense `@_` mutant and count a phantom
+  # occurrence of a same-named real var (`%{@lifecycle => lifecycle}` — the phantom
+  # makes the lone binding look safely duplicated, so wildcarding it strands the
+  # body read: a hard CompileError). Opaque, like pins.
+  defp walk_vars({:@, _meta, _args} = attr, acc, _fun), do: {attr, acc}
 
   # A bitstring segment `value::spec` (`<<binary::binary>>`, `<<n::size(k)>>`): only
   # the *value* side is a pattern-variable position. The spec side's type atoms
