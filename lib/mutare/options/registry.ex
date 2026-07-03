@@ -194,6 +194,19 @@ defmodule Mutare.Options.Registry do
         ":timeout must be a positive integer (milliseconds) or nil"
       )
 
+  # Generous by default (30 min): the cap exists to bound a *pathological* compile
+  # (observed: orphaned metamutant compiles at multi-day ages, and a type-checker
+  # cliff past 80 minutes — see NOTES), not to police a legitimately slow one. A
+  # cold compile of a big target with unseeded deps is the slowest honest case and
+  # stays far under it. `nil` disables the cap.
+  defp validate_compile_timeout!(ms),
+    do:
+      validate_nullable!(
+        ms,
+        &(is_integer(&1) and &1 > 0),
+        ":compile_timeout must be a positive integer (milliseconds) or nil"
+      )
+
   defp validate_multiplier!(multiplier),
     do:
       validate!(
@@ -399,6 +412,9 @@ defmodule Mutare.Options.Registry do
   defp show_timeout(nil), do: "derived from baseline run"
   defp show_timeout(ms), do: to_string(ms)
 
+  defp show_compile_timeout(nil), do: "uncapped"
+  defp show_compile_timeout(ms), do: to_string(ms)
+
   defp show_cap(nil), do: "(no cap)"
   defp show_cap(n), do: to_string(n)
 
@@ -482,6 +498,13 @@ defmodule Mutare.Options.Registry do
         default: 3.0,
         cli: :float,
         validate: &validate_multiplier!/1
+      ),
+      spec(
+        key: :compile_timeout,
+        default: 1_800_000,
+        cli: :integer,
+        show: &show_compile_timeout/1,
+        validate: &validate_compile_timeout!/1
       ),
       spec(key: :baseline_runs, default: 1, cli: :integer, validate: &validate_baseline_runs!/1),
       spec(key: :kill_runs, default: 1, cli: :integer, validate: &validate_kill_runs!/1),

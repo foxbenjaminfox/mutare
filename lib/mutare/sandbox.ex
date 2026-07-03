@@ -105,16 +105,24 @@ defmodule Mutare.Sandbox do
   # otherwise irrelevant. Inert without `Invocation.owner_watch_env/0` (only
   # `Invocation.mix/4` sets it), so a manual run in a kept sandbox is unaffected.
   #
-  # The same "before the compilers run" property carries the second snippet:
-  # type-signature inference off for the metamutant compile (a project-level
-  # `elixirc_options` setting with no CLI/env form — the config prefix is the one
-  # hook Mutare owns). Diagnostics-only, and pathological on metamutant-shaped
-  # code; rationale and measurements live on `CompilerOptions`.
+  # The same "before the compilers run" property carries the other two snippets:
+  #
+  #   * type-signature inference off for the metamutant compile (a project-level
+  #     `elixirc_options` setting with no CLI/env form — the config prefix is the
+  #     one hook Mutare owns). Diagnostics-only, and pathological on
+  #     metamutant-shaped code; rationale and measurements live on `CompilerOptions`.
+  #   * the compile's wall-clock cap (`Invocation.compile_watcher_ast/0`) — the
+  #     same self-halt watcher as the per-mutant cap, armed by a dedicated env var
+  #     (`Invocation.compile_timeout_env/0`) that only the runner's compile
+  #     invocation sets, so every other sandbox boot evaluates it inert.
   @infer_signatures_off Macro.to_string(CompilerOptions.infer_signatures_off_ast())
+  @compile_watcher Macro.to_string(Invocation.compile_watcher_ast())
   @config_rel "config/config.exs"
   @config_bootstrap """
   # ---- injected by Mutare: halt when the spawning Mutare process dies --------
   #{@owner_watcher}
+  # ---- injected by Mutare: wall-clock cap for the one metamutant compile -----
+  #{@compile_watcher}
   # ---- injected by Mutare: skip type-signature inference (diagnostics-only) --
   #{@infer_signatures_off}
   # ---------------------------------------------------------------------------

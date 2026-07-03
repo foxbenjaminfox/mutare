@@ -205,10 +205,15 @@ defmodule Mutare.SandboxTest do
       assert String.starts_with?(injected, "# ---- injected by Mutare: #{@owner_watch_comment}")
       assert injected =~ "config :demo, key: :value"
 
-      # The second snippet: type-signature inference off for the metamutant
-      # compile (diagnostics-only; pathological on metamutant-shaped code — see
-      # `CompilerOptions.infer_signatures_off_ast/0`).
+      # The other two snippets riding the same "config runs before the compilers"
+      # property: type-signature inference off (diagnostics-only; pathological on
+      # metamutant-shaped code — `CompilerOptions.infer_signatures_off_ast/0`) and
+      # the compile's wall-clock cap (`Invocation.compile_watcher_ast/0`, armed
+      # only by the runner's compile invocation).
       assert injected =~ "Code.put_compiler_option(:infer_signatures, false)"
+
+      assert injected =~
+               Macro.to_string(Mutare.Sandbox.Command.Invocation.compile_watcher_ast())
     end
 
     test "replaces a copied config symlink before injecting", context do

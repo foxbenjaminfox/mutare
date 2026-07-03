@@ -7,21 +7,26 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
   alias Mutare.Sandbox.Command.Invocation
 
   setup do
-    on_exit(fn -> System.delete_env(Invocation.timeout_env()) end)
+    on_exit(fn ->
+      System.delete_env(Invocation.timeout_env())
+      System.delete_env(Invocation.compile_timeout_env())
+    end)
   end
 
   test "the sandbox environment constants" do
     assert Invocation.mix_env() == "test"
     assert Invocation.timeout_env() == "MUTARE_TIMEOUT"
+    assert Invocation.compile_timeout_env() == "MUTARE_COMPILE_TIMEOUT"
     assert Invocation.owner_watch_env() == "MUTARE_OWNER_WATCH"
   end
 
   test "reserved_env_names/0 lists the variables Mutare sets on every sandbox mix" do
     names = Invocation.reserved_env_names()
-    # The base env and the cap var are always reserved (a `:partition_env` colliding
+    # The base env and the cap vars are always reserved (a `:partition_env` colliding
     # with one of these is rejected by `Mutare.Options`).
     assert "MIX_ENV" in names
     assert Invocation.timeout_env() in names
+    assert Invocation.compile_timeout_env() in names
     assert Invocation.owner_watch_env() in names
     # Sourced from the accessors that build the env, so no duplicates can creep in.
     assert names == Enum.uniq(names)
@@ -43,6 +48,24 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
 
   test "sandbox renders the canonical watcher AST" do
     assert Sandbox.bootstrap() =~ Macro.to_string(Invocation.watcher_ast())
+  end
+
+  test "compile-watcher AST carries its own env var and the timeout exit code" do
+    rendered = Macro.to_string(Invocation.compile_watcher_ast())
+
+    # A dedicated variable, not `timeout_env/0`: this watcher lives in the config
+    # prefix, evaluated on *every* sandbox boot, so it must arm only when the
+    # runner's compile invocation sets it — never from a mutant run's test cap.
+    assert rendered =~ ~s|System.get_env("#{Invocation.compile_timeout_env()}")|
+    refute rendered =~ ~s|"#{Invocation.timeout_env()}"|
+    assert rendered =~ "System.halt(#{Command.timeout_exit()})"
+  end
+
+  test "compile-watcher AST is inert when no cap is set" do
+    System.delete_env(Invocation.compile_timeout_env())
+    # nil branch returns :ok and spawns nothing — safe to evaluate in-process
+    # (the boot path of every uncapped sandbox run).
+    assert {:ok, _binding} = Code.eval_quoted(Invocation.compile_watcher_ast())
   end
 
   test "owner-watch AST carries the gate env var and exit code" do

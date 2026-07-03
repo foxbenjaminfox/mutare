@@ -4,7 +4,7 @@ defmodule Mutare.Runner do
 
   The flow protects the one-compile invariant: we compile the sandbox a single time, run the tests as a baseline to ensure it passes, then launch one `mix test` process per mutant with `MUTARE_ACTIVE_MUTANT` set. Sources never change between runs, so mix's incremental compiler finds nothing to rebuild — the per-mutant cost is process boot plus the suite (only up to the first failure for a kill), never recompilation.
 
-  The compile step distinguishes Mix dependency validation from actual compile-poisoning. A dependency failure returns `:dependency_failed` immediately: dropping mutant ids cannot repair copied dependency state, so it never enters poison recovery. The Mix task then points remediation at the original project rather than the disposable sandbox.
+  The compile step distinguishes Mix dependency validation from actual compile-poisoning. A dependency failure returns `:dependency_failed` immediately: dropping mutant ids cannot repair copied dependency state, so it never enters poison recovery. The Mix task then points remediation at the original project rather than the disposable sandbox. The compile also carries a wall-clock cap (`:compile_timeout`, default 30 minutes, `nil` to disable): a config-hosted sibling of the per-mutant timeout watcher self-halts a pathological compile, surfaced as `:compile_timed_out` — likewise never fed to poison recovery, since there is no error to attribute and a rebuild cannot make an oversized compile faster.
 
   `run/2` returns `{:ok, %Mutare.Run{}}`: the `Mutare.Schema` that was run, the list of per-mutant `Mutare.Result`s, the sandbox path, the baseline run's wall-clock in milliseconds, and whether `:max_survivors` stopped the run early.
 
@@ -74,6 +74,7 @@ defmodule Mutare.Runner do
   @type error ::
           {:error,
            :compile_failed
+           | :compile_timed_out
            | :dependency_failed
            | :baseline_failed
            | :baseline_flaky
@@ -400,9 +401,19 @@ defmodule Mutare.Runner do
     # `System.fetch_env!("MIX_TEST_PARTITION")`) must see it *here* too — before
     # the baseline/probe that also set it — or the compile fails. Sequential like
     # those, so the fixed partition (`1`) suffices.
-    case compile(sandbox, Partitions.entry(deps.options.partition_env, 1)) do
+    case compile(
+           sandbox,
+           Partitions.entry(deps.options.partition_env, 1),
+           deps.options.compile_timeout
+         ) do
       :ok ->
         {:ok, schema, sandbox}
+
+      {:error, :compile_timed_out, output} ->
+        # The compile self-halted past its wall-clock cap. Infrastructure, like a
+        # dependency failure: there is no compiler error to attribute to a mutant,
+        # and a poison-recovery rebuild cannot make an oversized compile faster.
+        {:error, :compile_timed_out, output, sandbox}
 
       {:error, :compile_failed, output} ->
         dependency_issue = Output.dependency_issue(output)
@@ -531,14 +542,29 @@ defmodule Mutare.Runner do
   # wins, applied only here since per-mutant runs never recompile the lib).
   # `partition_env` is the fixed partition entry (or `[]`), so a config read at
   # compile time finds a valid partition — see `compile_with_recovery/5`.
-  defp compile(sandbox, partition_env) do
+  #
+  # `:compile_timeout` arms the config-hosted wall-clock watcher
+  # (`Invocation.compile_watcher_ast/0`): the compile halts *itself* with the
+  # timeout exit past the cap, which we decode here as `:compile_timed_out` —
+  # never fed to poison recovery (there is no error to attribute, and a rebuild
+  # cannot make an oversized compile faster).
+  defp compile(sandbox, partition_env, compile_timeout) do
     {output, status} =
       Invocation.mix(sandbox, ["compile" | CompilerOptions.compile_args()], Selector.baseline(),
-        env: CompilerOptions.compiler_env() ++ partition_env
+        env: CompilerOptions.compiler_env() ++ partition_env ++ cap_env(compile_timeout)
       )
 
-    if Command.success?(status), do: :ok, else: {:error, :compile_failed, output}
+    cond do
+      Command.success?(status) -> :ok
+      status == Command.timeout_exit() -> {:error, :compile_timed_out, output}
+      true -> {:error, :compile_failed, output}
+    end
   end
+
+  defp cap_env(nil), do: []
+
+  defp cap_env(ms) when is_integer(ms),
+    do: [{Invocation.compile_timeout_env(), Integer.to_string(ms)}]
 
   # === per-mutant runs =======================================================
 

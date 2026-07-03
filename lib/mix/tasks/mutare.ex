@@ -756,6 +756,18 @@ defmodule Mix.Tasks.Mutare do
     end
   end
 
+  defp format_error(:compile_timed_out, detail, _root) do
+    "the metamutant compile exceeded its wall-clock cap (:compile_timeout, " <>
+      "default 30 minutes) and halted itself.\n\n" <>
+      "A legitimate compile rarely gets near the cap — this usually means a " <>
+      "compiler pass is pathological on the generated code (see NOTES \"Type " <>
+      "inference and verification off for the metamutant compile\" for a known " <>
+      "class) or a compile-time hook is hanging. Raise the cap with " <>
+      "--compile-timeout <ms> (or `compile_timeout: nil` in .mutare.exs to " <>
+      "disable) if the compile is genuinely that slow.\n\n" <>
+      Output.output_tail(detail, 25)
+  end
+
   defp format_error(:dependency_failed, detail, root) do
     DependencyDiagnostic.format(detail, root)
   end

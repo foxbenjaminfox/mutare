@@ -6869,7 +6869,9 @@ lane and the regression tests' harnesses (kill(1), a `#!/bin/sh` shim) are POSIX
 
 Deferred, same diagnosis (see `FIX-subprocess-lifecycle.md` while it lives):
 
-- **The one-time compile still has no wall-clock cap.** A thrashing metamutant compile now dies
+- **The one-time compile still has no wall-clock cap.** `[resolved — see "Wall-clock cap for
+  the one metamutant compile"; the baseline and coverage probe remain uncapped]` A thrashing
+  metamutant compile now dies
   with its owner, but still blocks a *live* run in `System.cmd` indefinitely. The config
   injection point can host a timeout watcher for it (a `MUTARE_COMPILE_TIMEOUT` sibling of the
   test watcher) — no `Task`-wrapper needed on the runner side. The baseline and coverage probe
@@ -6952,3 +6954,41 @@ floor-bounded by the single biggest module, so concurrency capping (`ELIXIR_ERL_
 `+S 2:2`) trims 23–51% of peak for 1.4–2.8× wall — a plausible future `--compile-workers`
 opt-in for memory-starved CI, not a default. `no_ssa_opt_alias` is memory-neutral (324 vs
 319 MB on the worst module). No memory work shipped; the numbers live here for when it bites.
+
+### Wall-clock cap for the one metamutant compile `[done]`
+The deferred item above, built exactly as sketched there — made urgent by the type-checker
+cliff two entries up (a compile that runs 80+ minutes is indistinguishable from one that
+never finishes, and the owner-death watcher only helps when the *owner* dies; a live run
+blocked in `System.cmd` indefinitely). The design reuses both existing primitives, one new
+name each:
+
+  - **The watcher** is the per-mutant timeout watcher verbatim (`Invocation.deadline_watcher/1`
+    now builds both), armed by its own env var (`MUTARE_COMPILE_TIMEOUT`,
+    `Invocation.compile_timeout_env/0`) and hosted in the `config/config.exs` prefix — the
+    same "config runs before the compilers" property the owner-death watcher and the
+    inference-off snippet use. A dedicated variable, not `MUTARE_TIMEOUT`, because the config
+    prefix is evaluated on *every* sandbox boot: only the runner's compile invocation sets it,
+    so the baseline, the coverage probe, and every per-mutant `mix test` evaluate the watcher
+    inert. It halts with the existing `Command.timeout_exit/0` (124) — same meaning,
+    "self-halted past a wall-clock cap".
+  - **The option** is `:compile_timeout` (`--compile-timeout`, ms), default **30 minutes**,
+    `nil` to disable. Generous on purpose: the cap bounds *pathological* compiles (the
+    observed multi-day orphans, the 80-minute type-checker cliff), not legitimately slow
+    ones — a cold compile of a big target with unseeded deps is the slowest honest case and
+    stays far under it. No baseline exists yet to derive from (contrast `:timeout`), so a
+    fixed generous default is the only shape available.
+  - **The decode**: `Runner.compile/3` maps exit 124 to `:compile_timed_out`, a new top-level
+    error like `:dependency_failed` — and like it, *never* fed to poison recovery: there is no
+    compiler error to attribute to a mutant, and a rebuild cannot make an oversized compile
+    faster. Each poison-recovery retry does get a fresh cap (the env is set per invocation).
+    The Mix task's message names the option and points at the known pathological class.
+
+Regression: `compile_timeout_test.exs` (`:runner`) — a module body that sleeps 10 minutes at
+compile time (baseline code, untouched by the pinned arithmetic run) under a 2 s cap surfaces
+`{:error, :compile_timed_out, _}` in ~3 s wall; any broken link in the chain
+(env threading → config snippet → self-halt → decode) would instead hang to the test's own
+timeout.
+
+Still uncapped, knowingly: the baseline and the coverage probe (the remainder of the deferred
+bullet). Both run *after* a successful compile with the suite's own semantics, so a cap there
+wants `:timeout`-style derivation rather than a fixed bound; deferred until it bites.

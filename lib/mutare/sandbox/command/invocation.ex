@@ -33,6 +33,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   """
 
   @timeout_env "MUTARE_TIMEOUT"
+  @compile_timeout_env "MUTARE_COMPILE_TIMEOUT"
   @owner_watch_env "MUTARE_OWNER_WATCH"
   @mix_env "test"
 
@@ -47,6 +48,20 @@ defmodule Mutare.Sandbox.Command.Invocation do
   @doc "Env var the runner sets to give a mutant run its wall-clock cap (ms)."
   @spec timeout_env() :: String.t()
   def timeout_env, do: @timeout_env
+
+  @doc """
+  Env var the runner sets to give the **one metamutant compile** its wall-clock
+  cap (ms).
+
+  A sibling of `timeout_env/0` with its own name on purpose: the watcher that
+  reads it (`compile_watcher_ast/0`) lives in the sandbox `config/config.exs`
+  prefix, which mix evaluates on *every* sandbox boot — so it must be armed only
+  when `Mutare.Runner` sets this variable on the compile invocation, and stay
+  inert on the baseline, the coverage probe, and every per-mutant `mix test`
+  (whose cap is `timeout_env/0`, armed from the test bootstrap instead).
+  """
+  @spec compile_timeout_env() :: String.t()
+  def compile_timeout_env, do: @compile_timeout_env
 
   @doc """
   Env var that arms the owner-death watcher (`owner_watch_ast/0`).
@@ -119,6 +134,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
     [
       "MIX_ENV",
       @timeout_env,
+      @compile_timeout_env,
       @owner_watch_env,
       Mutare.Selector.env_var(),
       Mutare.Selector.override_env(),
@@ -157,12 +173,31 @@ defmodule Mutare.Sandbox.Command.Invocation do
   so the target needs nothing platform-specific and no dependency on Mutare.
   """
   @spec watcher_ast() :: Macro.t()
-  def watcher_ast do
-    timeout_env = @timeout_env
+  def watcher_ast, do: deadline_watcher(@timeout_env)
+
+  @doc """
+  Dependency-free watcher that enforces the one metamutant compile's wall-clock cap.
+
+  The same self-halt watcher as `watcher_ast/0`, armed by `compile_timeout_env/0`
+  instead: `Mutare.Sandbox` renders it into the sandbox's `config/config.exs`
+  prefix (mix evaluates config before the compilers run, the same property the
+  owner-death watcher uses), and `Mutare.Runner` sets the variable only on the
+  compile invocation — so a thrashing compile halts itself with
+  `Mutare.Sandbox.Command.timeout_exit/0` instead of blocking the run
+  indefinitely, and every other sandbox boot evaluates the watcher inert.
+  """
+  @spec compile_watcher_ast() :: Macro.t()
+  def compile_watcher_ast, do: deadline_watcher(@compile_timeout_env)
+
+  # The self-halt deadline primitive both wall-clock watchers share: read a cap
+  # (ms) from `env_var`, then sleep-and-halt with the timeout exit code. Inert
+  # when the variable is unset or empty, so each watcher fires only for the run
+  # kind whose invocation arms it.
+  defp deadline_watcher(env_var) do
     timeout_exit = Mutare.Sandbox.Command.timeout_exit()
 
     quote do
-      case System.get_env(unquote(timeout_env)) do
+      case System.get_env(unquote(env_var)) do
         nil ->
           :ok
 

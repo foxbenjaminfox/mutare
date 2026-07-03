@@ -306,6 +306,22 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":compile_timeout" do
+    test "defaults to 30 minutes and accepts nil (uncapped) or a positive integer (ms)" do
+      assert Options.new([]).compile_timeout == 1_800_000
+      assert Options.new(compile_timeout: nil).compile_timeout == nil
+      assert Options.new(compile_timeout: 60_000).compile_timeout == 60_000
+    end
+
+    test "rejects zero, negatives, and non-integers" do
+      for bad <- [0, -5, 1.5, "60000"] do
+        assert_raise ArgumentError, ~r/:compile_timeout must be a positive integer/, fn ->
+          Options.new(compile_timeout: bad)
+        end
+      end
+    end
+  end
+
   describe ":timeout_multiplier" do
     test "accepts a positive number" do
       assert Options.new(timeout_multiplier: 0.5).timeout_multiplier == 0.5
