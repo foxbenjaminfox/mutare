@@ -26,6 +26,7 @@ defmodule Mutare.Coverage.HelperTemplate do
   @dump_path_env "MUTARE_COV_DUMP"
   @root_env "MUTARE_COV_ROOT"
   @seen_key :mutare_cov_seen
+  @label_key :mutare_cov_label
 
   # The contract constants, exposed so `Mutare.Coverage.Recorder` sources them from here — the
   # single source of truth shared by the table-creation bootstrap and the dump reader. (These
@@ -176,20 +177,58 @@ defmodule Mutare.Coverage.HelperTemplate do
   # the caller routes that id to the unlabeled bucket (whole suite). Only the module is needed for
   # file-granular selection; the name half is incidental.
   #
-  # The current process label is intentionally re-read for every hit. A reusable process can update
-  # its own `Process.set_label/1` between tests/requests, and stale attribution is worse than the
-  # small read cost. The separate seen cache is keyed by attribution, so repeated hits under the
-  # same label are still suppressed, while a changed label records a new attribution. Labels
-  # recovered through `$callers` are liveness-sensitive too: once the spawning test exits, the same
-  # long-lived Task/process must become unlabeled so coverage selection stays conservative.
+  # Cost discipline — this runs on EVERY hit, inside the target's hottest loops, so each tier pays
+  # only what its freshness contract needs:
+  #
+  #   * The process's **own** label is re-read every hit, but straight from the process dictionary
+  #     (`Process.get/1`, ~free) — `Process.set_label/1` stores the label under `:"$process_label"`
+  #     on every Elixir/OTP combination we support, so no `Process.info(self(), :dictionary)`
+  #     full-copy is needed. A reusable process that relabels itself between tests/requests is
+  #     always seen (stale attribution is worse than the read cost).
+  #   * The **recovery** tiers (own-stack ExUnit frames; the `$callers`/`$ancestors` walk) do
+  #     stacktrace builds and cross-process `Process.info` reads — a signal round-trip per pid.
+  #     Paying that per hit livelocked real probes: a LiveView suite's render/diff loops run in
+  #     unlabeled channel processes, and per-hit ancestor walks turned a ~2-minute suite into an
+  #     unbounded crawl (the probe looked hung). So the recovery *result* is memoized in the
+  #     process dictionary and revalidated per hit with cheap local reads only; it is recomputed
+  #     when the `$callers` chain changes (a reused worker serving a new caller) or when the
+  #     witness pid that produced the label dies — a long-lived Task outliving its spawning test
+  #     must degrade to unlabeled (whole suite) so selection stays conservative.
   defp label do
-    case label_of(self()) do
-      {mod, _name} = label when is_atom(mod) ->
-        label
-
-      _ ->
-        recovered_label()
+    case Process.get(:"$process_label") do
+      {mod, _name} = label when is_atom(mod) -> label
+      _ -> recovery_label()
     end
+  end
+
+  # The memoized recovery: `{callers, witness, label}` under `@label_key`, where `witness` is the
+  # pid whose label/stack produced `label` (`self()` for an own-stack recovery). Valid while the
+  # `$callers` chain is unchanged and the witness is alive; `{callers, nil, nil}` memoizes "no
+  # attribution" (the unlabeled bucket) under the same `$callers` guard — a later hit with a new
+  # caller re-resolves, and the per-hit own-label read above already catches a self relabel.
+  defp recovery_label do
+    callers = Process.get(:"$callers")
+
+    case Process.get(@label_key) do
+      {^callers, nil, nil} -> nil
+      {^callers, witness, label} when is_pid(witness) -> validate(witness, label, callers)
+      _ -> recover(callers)
+    end
+  end
+
+  defp validate(witness, label, callers) do
+    if Process.alive?(witness), do: label, else: recover(callers)
+  end
+
+  defp recover(callers) do
+    {witness, label} =
+      case stacktrace_label(self()) do
+        {mod, _name} = label when is_atom(mod) -> {self(), label}
+        _ -> recovered_label()
+      end
+
+    Process.put(@label_key, {callers, witness, label})
+    label
   end
 
   # `pid`'s owning `{module, name}`: its `$process_label`, else an ExUnit frame on its current stack
@@ -203,22 +242,32 @@ defmodule Mutare.Coverage.HelperTemplate do
 
   defp recovered_label do
     # `$callers` (set by `Task`) then `$ancestors`: walk to the first ancestor we can attribute a
-    # `{module, name}` to. The test pid sits at the tail of the chain even for nested tasks, so a
-    # labeled (or stack-recoverable) owner is found if one exists.
+    # `{module, name}` to, returning it with the pid that witnessed it (for the memo's liveness
+    # check). The test pid sits at the tail of the chain even for nested tasks, so a labeled (or
+    # stack-recoverable) owner is found if one exists. Local pids only: `Process.info/2` (and the
+    # memo's `Process.alive?/1`) raise on a remote pid, and a cross-node caller can't map to a
+    # local test file anyway.
     callers = Process.get(:"$callers", []) ++ Process.get(:"$ancestors", [])
 
-    Enum.find_value(callers, fn
-      pid when is_pid(pid) -> label_of(pid)
-      _ -> nil
+    Enum.find_value(callers, {nil, nil}, fn
+      pid when is_pid(pid) and node(pid) == node() ->
+        case label_of(pid) do
+          {mod, _name} = label when is_atom(mod) -> {pid, label}
+          _ -> nil
+        end
+
+      _ ->
+        nil
     end)
   end
 
-  # The `$process_label` of `pid` (our own — `self()` — or an ancestor's), OTP-tolerant and the
-  # single home for the version check. On OTP 27+ `:proc_lib.get_label/1` reads it directly
-  # (cross-process too); on OTP 26 and earlier the label lives in the process dictionary, which
-  # `Process.info(pid, :dictionary)` exposes (`Process.get/1` would only read our own). `apply/3`,
-  # not a direct call, so a static reference to the OTP 27-only function doesn't warn "undefined"
-  # on OTP 26 and earlier. Best-effort — a dead pid yields `nil`, never a crash (harmless for `self()`).
+  # The `$process_label` of `pid` (an ancestor's — `label/0` reads our own straight from the
+  # process dictionary), OTP-tolerant and the single home for the version check. On OTP 27+
+  # `:proc_lib.get_label/1` reads it directly (cross-process too); on OTP 26 and earlier the label
+  # lives in the process dictionary, which `Process.info(pid, :dictionary)` exposes
+  # (`Process.get/1` would only read our own). `apply/3`, not a direct call, so a static reference
+  # to the OTP 27-only function doesn't warn "undefined" on OTP 26 and earlier. Best-effort — a
+  # dead pid yields `nil`, never a crash.
   defp proc_label(pid) do
     if function_exported?(:proc_lib, :get_label, 1) do
       try do

@@ -155,6 +155,62 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       assert :ets.lookup(H.attr_table(), {RecoveredThenDeadMod, 802}) == []
     end
 
+    test "a reused worker re-resolves when its `$callers` chain changes" do
+      # The recovery memo (`:mutare_cov_label`) must not pin the first caller's attribution on a
+      # worker that serves a *new* caller: the memo is guarded by the `$callers` value, so a
+      # changed chain re-resolves even while the old caller is still alive.
+      parent = self()
+
+      first = labeled_holder({ReusedFirstMod, :a_test})
+      second = labeled_holder({ReusedSecondMod, :a_test})
+
+      worker =
+        spawn(fn ->
+          Process.put(:"$callers", [first])
+          H.hit([811])
+
+          Process.put(:"$callers", [second])
+          H.hit([812])
+
+          send(parent, :done)
+        end)
+
+      ref = Process.monitor(worker)
+      assert_receive :done
+      assert_receive {:DOWN, ^ref, :process, ^worker, _}
+
+      assert :ets.lookup(H.attr_table(), {ReusedFirstMod, 811}) == [{{ReusedFirstMod, 811}}]
+      assert :ets.lookup(H.attr_table(), {ReusedSecondMod, 812}) == [{{ReusedSecondMod, 812}}]
+      assert :ets.lookup(H.attr_table(), {ReusedFirstMod, 812}) == []
+      assert :ets.lookup(H.unlabeled_table(), 811) == []
+      assert :ets.lookup(H.unlabeled_table(), 812) == []
+    end
+
+    test "an unlabeled process re-resolves once it gains a caller chain" do
+      # The memoized "no attribution" result is guarded by `$callers` too: a process that recorded
+      # unlabeled and *then* gains a caller must attribute later ids, not stay pinned unlabeled.
+      parent = self()
+      holder = labeled_holder({GainedCallerMod, :a_test})
+
+      worker =
+        spawn(fn ->
+          H.hit([821])
+
+          Process.put(:"$callers", [holder])
+          H.hit([822])
+
+          send(parent, :done)
+        end)
+
+      ref = Process.monitor(worker)
+      assert_receive :done
+      assert_receive {:DOWN, ^ref, :process, ^worker, _}
+
+      assert :ets.lookup(H.unlabeled_table(), 821) == [{821}]
+      assert :ets.lookup(H.attr_table(), {GainedCallerMod, 822}) == [{{GainedCallerMod, 822}}]
+      assert :ets.lookup(H.unlabeled_table(), 822) == []
+    end
+
     test "a bare spawn (no label, no caller chain, no setup_all frame) falls to the unlabeled bucket" do
       run_in(fn -> H.hit([201]) end, label: nil)
 
@@ -263,6 +319,22 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       assert 601 in payload.aggregate
       refute payload.by_file |> Map.values() |> List.flatten() |> Enum.member?(601)
     end
+  end
+
+  # A live, labeled process to stand in a worker's `$callers` chain; killed on test exit.
+  defp labeled_holder(label) do
+    parent = self()
+
+    holder =
+      spawn(fn ->
+        Process.set_label(label)
+        send(parent, :holder_ready)
+        Process.sleep(:infinity)
+      end)
+
+    assert_receive :holder_ready
+    on_exit(fn -> Process.exit(holder, :kill) end)
+    holder
   end
 
   # Run `fun` in a fresh process, optionally labeled, and block until it finishes. Returns the

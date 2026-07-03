@@ -227,8 +227,8 @@ defmodule Mutare.Runner do
     on_phase = Context.hook(context, :on_phase)
     mode = options.test_selection
     on_phase.(:coverage_probe)
-    selection = CoverageProbe.run(sandbox, schema, mode, fixed_env)
     cap = timeout_cap(baseline_ms, options)
+    selection = CoverageProbe.run(sandbox, schema, mode, fixed_env, probe_cap(cap))
 
     # Verbose-only detail: the per-mutant coverage breakdown plus the derived timeout
     # cap (the probe summary is pure; this assembles the display payload).
@@ -374,6 +374,14 @@ defmodule Mutare.Runner do
     # past any floor, so we still catch it.
     max(round(baseline_ms * multiplier), 10_000)
   end
+
+  # The coverage probe's wall-clock cap: a generous multiple of the per-mutant
+  # cap, since the instrumented run legitimately pays coverage-capture overhead a
+  # plain baseline doesn't. It exists only so a pathological capture slowdown
+  # degrades to run-all selection (logged by `Mutare.Runner.CoverageProbe`)
+  # instead of hanging the whole run at the probe stage; a probe anywhere near
+  # this bound is already far outside normal overhead.
+  defp probe_cap(mutant_cap), do: mutant_cap * 10
 
   # Materialise the schema and compile it once, recovering from compile-poisoning.
   @poison_attempts 25

@@ -6992,3 +6992,51 @@ timeout.
 Still uncapped, knowingly: the baseline and the coverage probe (the remainder of the deferred
 bullet). Both run *after* a successful compile with the suite's own semantics, so a cap there
 wants `:timeout`-style derivation rather than a fixed bound; deferred until it bites.
+
+### Coverage-probe livelock in unlabeled hot loops `[fixed — memoized label recovery + probe cap]`
+The deferred half of the entry above bit immediately: `mix mutare` on phoenix_live_view got
+"stuck forever" at the probe stage — a green ~2-minute baseline whose *instrumented* run never
+finished (BEAM pinned at ~1100% CPU, output trickling then flatlining). A SIGUSR1 crash dump of
+the spinning node showed every busy process inside `mutare_cov:hit/1` →
+`Enum.find_value` → `label_of` → `Process.info/2`, called from LiveView's hottest loops
+(`Phoenix.LiveView.Channel.render_diff/3`, `LiveViewTest.TreeDOM.do_reduce/3` under
+`ClientProxy.init/1`).
+
+Root cause: `hit/1` resolved the owning-test label **before** consulting the per-process seen
+cache, so the cache only ever suppressed ETS writes — the label dance ran on *every* hit. For a
+labeled test process that was one full `Process.info(self(), :dictionary)` copy per hit (OTP ≤ 26);
+for an **unlabeled** process (a LiveView channel, a `ClientProxy`) it was an own-stacktrace build
+plus a `$callers`/`$ancestors` walk doing cross-process `Process.info` — a signal round-trip per
+pid that also interrupts each target. Millions of hits inside render/diff loops multiplied a
+~2-minute suite into an unbounded crawl, and the round-trips hammered every process in the
+attribution chain, which is why the whole node was busy, not one process.
+
+The fix keeps the freshness contracts and moves the cost to where each contract needs it
+(`Mutare.Coverage.HelperTemplate`, `label/0`):
+
+  - **Own label**: still re-read every hit (a reusable process relabeling itself must be seen),
+    but via `Process.get(:"$process_label")` — `Process.set_label/1` stores under that pdict key
+    on every supported Elixir/OTP, so the per-hit cost is a pdict lookup, not a dict copy.
+  - **Recovery tiers** (own-stack ExUnit frames; the caller/ancestor walk): memoized in the pdict
+    as `{callers, witness, label}` and revalidated per hit with local reads only — recomputed when
+    the `$callers` value changes (a reused worker serving a new caller; also lets a memoized
+    "unlabeled" result upgrade once a caller appears) or the witness pid that produced the label
+    dies (the long-lived-Task-outlives-its-test case, which must degrade to unlabeled/whole-suite).
+    The walk now also skips remote pids — `Process.info/2` raises on them, and a cross-node caller
+    maps to no local test file.
+
+Empirically: the same sandbox that spun >30 minutes without finishing completes its probe run in
+**18.5 s wall** with the memoized helper (a ~17 s suite — instrumentation overhead back to noise).
+Regressions: `helper_template_test.exs` pins the two new revalidation edges (caller-chain change
+re-attributes; unlabeled-then-gains-a-caller attributes) alongside the existing relabel and
+caller-death tests.
+
+And the probe is no longer uncapped: `CoverageProbe.run/5` now takes a cap — `Runner.probe_cap/1`,
+10× the per-mutant cap, i.e. the `:timeout`-style derivation the entry above asked for (default
+30× baseline, floor 100 s) — armed through the ordinary `MUTARE_TIMEOUT` self-halt watcher. An
+overrun exits 124, is named in the warning ("overran its cap" — pointing at `:timeout`, the one
+knob the probe cap derives from; `:full` is no escape, that mode probes too), and degrades to
+run-all like any other probe failure: coverage is advisory, so a pathological capture must cost
+selection quality, never hang the run. The **baseline** stays uncapped, knowingly — it has no
+earlier timing to derive from, and a hung baseline is the suite's own behavior, not
+instrumentation's.

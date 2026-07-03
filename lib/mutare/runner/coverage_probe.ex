@@ -39,7 +39,11 @@ defmodule Mutare.Runner.CoverageProbe do
   Coverage is advisory, never authoritative. Anything uncertain — a non-zero
   probe exit, an unreadable dump, or an empty dump (the probe recorded nothing,
   so the capture itself likely failed) — degrades to `:run_all`: we never skip a
-  mutant on doubt.
+  mutant on doubt. The probe run is wall-clock capped for the same reason (a
+  generous multiple of the per-mutant cap, since instrumentation adds overhead a
+  plain baseline doesn't have): a pathological interaction between the coverage
+  capture and the target's hot loops must degrade to `:run_all`, not hang the
+  whole run at the probe stage forever.
   """
 
   alias Mutare.{Coverage, Schema, Selector}
@@ -81,9 +85,21 @@ defmodule Mutare.Runner.CoverageProbe do
   `MIX_TEST_PARTITION=1`) when `:partition_env` is on, so the partitioned suite
   finds a valid database; `[]` (the default) adds none. The probe is a single
   sequential run, so one fixed partition suffices (`Mutare.Runner.Partitions`).
+
+  `cap` (ms, or `nil` for uncapped) bounds the probe's wall clock via the same
+  injected self-halt watcher a per-mutant run uses; an overrun exits
+  `Mutare.Sandbox.Command.timeout_exit/0` and degrades to `:run_all` like any
+  other non-zero probe exit (see the moduledoc).
   """
-  @spec run(Path.t(), Schema.t(), :coverage | :full, [{String.t(), String.t()}]) :: selection()
-  def run(sandbox, %Schema{} = schema, mode, env \\ []) when mode in [:coverage, :full] do
+  @spec run(
+          Path.t(),
+          Schema.t(),
+          :coverage | :full,
+          [{String.t(), String.t()}],
+          pos_integer() | nil
+        ) :: selection()
+  def run(sandbox, %Schema{} = schema, mode, env \\ [], cap \\ nil)
+      when mode in [:coverage, :full] do
     # Absolute paths: an umbrella runs each app's suite with cwd = the app dir, so
     # the dump must land at one fixed place and the test-file paths must be
     # normalised against the sandbox root, not whichever app is running.
@@ -91,7 +107,7 @@ defmodule Mutare.Runner.CoverageProbe do
     dump = Path.join(root, Recorder.dump_file())
     File.rm(dump)
 
-    with true <- Command.success?(run_probe(sandbox, root, dump, env)),
+    with true <- Command.success?(run_probe(sandbox, root, dump, env, cap)),
          {:ok, coverage} <- Coverage.read_dump(dump) do
       select(mode, schema, coverage)
     else
@@ -123,13 +139,12 @@ defmodule Mutare.Runner.CoverageProbe do
     %{covered: covered, no_coverage: no_coverage, run_all?: false}
   end
 
-  # One instrumented baseline run: the metamutant self-records coverage. We don't
-  # cap it (it is a baseline-equivalent run), but a non-zero exit means the dump
-  # may be partial (for example `max_failures` can abort before later files run),
-  # so the caller treats it as uncertainty → `:run_all`. The dump path and the
-  # path-normalisation root travel in env vars so the helper, running with a
-  # per-app cwd in an umbrella, writes one union dump with root-relative keys.
-  defp run_probe(sandbox, root, dump, partition_env) do
+  # One instrumented baseline run: the metamutant self-records coverage. A non-zero
+  # exit means the dump may be partial (for example `max_failures` can abort before
+  # later files run), so the caller treats it as uncertainty → `:run_all`. The dump
+  # path and the path-normalisation root travel in env vars so the helper, running
+  # with a per-app cwd in an umbrella, writes one union dump with root-relative keys.
+  defp run_probe(sandbox, root, dump, partition_env, cap) do
     env =
       [
         {Recorder.env_var(), "1"},
@@ -137,19 +152,33 @@ defmodule Mutare.Runner.CoverageProbe do
         {Recorder.root_env(), root}
       ] ++ partition_env
 
-    {output, status} = Invocation.mix(sandbox, ["test"], Selector.baseline(), env: env)
+    {output, status} = Invocation.mix(sandbox, ["test"], Selector.baseline(), cap: cap, env: env)
 
     unless Command.success?(status) do
       # The baseline already confirmed the suite green, so a non-zero probe is
       # unexpected — and silently degrading to run-all (every covered mutant runs
       # the whole suite) is a big, invisible slowdown. Surface it.
       Logger.warning(
-        "coverage probe exited #{status}; falling back to run-all selection " <>
+        probe_failure(status, cap) <>
+          "; falling back to run-all selection " <>
           "(every covered mutant runs the whole suite). Probe output:\n#{Output.output_tail(output, 15)}"
       )
     end
 
     status
+  end
+
+  # Name the overrun case explicitly: "exited 124" hides that the probe was
+  # halted by its own cap, which is the one failure whose remedy (an explicit
+  # `:timeout`, which the probe cap is derived from) differs from an ordinary
+  # suite failure.
+  defp probe_failure(status, cap) do
+    if status == Command.timeout_exit() do
+      "coverage probe overran its #{cap}ms cap and was halted " <>
+        "(the cap scales with `:timeout`, so raise that if the instrumented suite is legitimately slow)"
+    else
+      "coverage probe exited #{status}"
+    end
   end
 
   # An empty aggregate means the capture recorded nothing (it likely failed), not
