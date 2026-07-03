@@ -7031,12 +7031,14 @@ Regressions: `helper_template_test.exs` pins the two new revalidation edges (cal
 re-attributes; unlabeled-then-gains-a-caller attributes) alongside the existing relabel and
 caller-death tests.
 
-And the probe is no longer uncapped: `CoverageProbe.run/5` now takes a cap — `Runner.probe_cap/1`,
+And the probe is no longer uncapped: `CoverageProbe.run/5` now takes a cap — `Runner.probe_cap/2`,
 10× the per-mutant cap, i.e. the `:timeout`-style derivation the entry above asked for (default
 30× baseline, floor 100 s) — armed through the ordinary `MUTARE_TIMEOUT` self-halt watcher. An
-overrun exits 124, is named in the warning ("overran its cap" — pointing at `:timeout`, the one
-knob the probe cap derives from; `:full` is no escape, that mode probes too), and degrades to
-run-all like any other probe failure: coverage is advisory, so a pathological capture must cost
-selection quality, never hang the run. The **baseline** stays uncapped, knowingly — it has no
-earlier timing to derive from, and a hung baseline is the suite's own behavior, not
-instrumentation's.
+overrun exits 124, is named in the warning ("overran its cap" — pointing at the remedy), and
+degrades to run-all like any other probe failure: coverage is advisory, so a pathological capture
+must cost selection quality, never hang the run. The cap is configurable as **`:probe_timeout`**
+(`--probe-timeout`, ms), mirroring `:timeout`'s explicit-beats-derived shape (`nil` = derived);
+deliberately *no* uncapped setting — a legitimately slow instrumented suite wants a bigger number,
+not the hang back (`:full` is no escape either, that mode probes too). The **baseline** stays
+uncapped, knowingly — it has no earlier timing to derive from, and a hung baseline is the suite's
+own behavior, not instrumentation's.

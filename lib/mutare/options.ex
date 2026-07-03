@@ -33,6 +33,7 @@ defmodule Mutare.Options do
           timeout: pos_integer() | nil,
           timeout_multiplier: number(),
           compile_timeout: pos_integer() | nil,
+          probe_timeout: pos_integer() | nil,
           baseline_runs: pos_integer(),
           kill_runs: pos_integer(),
           harness_retries: non_neg_integer(),

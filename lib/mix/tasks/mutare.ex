@@ -125,6 +125,9 @@ defmodule Mix.Tasks.Mutare do
                                           #   (default: derived from the baseline run)
       mix mutare --timeout-multiplier 5   # ...or set the cap to baseline × this
                                           #   (default: 3.0; ignored if --timeout is set)
+      mix mutare --probe-timeout 600000   # wall-clock cap for the coverage probe run,
+                                          #   in ms (default: 10× the per-mutant cap);
+                                          #   an overrun degrades to run-all selection
       mix mutare --baseline-runs 2        # run the green baseline 2× and abort if a
                                           #   test flakes (passes once, fails once) —
                                           #   a flaky test manufactures false kills

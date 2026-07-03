@@ -207,6 +207,21 @@ defmodule Mutare.Options.Registry do
         ":compile_timeout must be a positive integer (milliseconds) or nil"
       )
 
+  # `nil` (the default) derives the cap from the per-mutant cap (×10 — see
+  # `Mutare.Runner`); an explicit value overrides it, mirroring how `:timeout`
+  # overrides the baseline derivation. There is no "uncapped" setting on purpose:
+  # the cap exists so a pathological coverage capture degrades to run-all
+  # selection instead of hanging the run at the probe stage (see
+  # `Mutare.Runner.CoverageProbe`); a legitimately slow instrumented suite wants
+  # a bigger number, not no bound.
+  defp validate_probe_timeout!(ms),
+    do:
+      validate_nullable!(
+        ms,
+        &(is_integer(&1) and &1 > 0),
+        ":probe_timeout must be a positive integer (milliseconds) or nil"
+      )
+
   defp validate_multiplier!(multiplier),
     do:
       validate!(
@@ -415,6 +430,9 @@ defmodule Mutare.Options.Registry do
   defp show_compile_timeout(nil), do: "uncapped"
   defp show_compile_timeout(ms), do: to_string(ms)
 
+  defp show_probe_timeout(nil), do: "derived from the per-mutant cap"
+  defp show_probe_timeout(ms), do: to_string(ms)
+
   defp show_cap(nil), do: "(no cap)"
   defp show_cap(n), do: to_string(n)
 
@@ -505,6 +523,13 @@ defmodule Mutare.Options.Registry do
         cli: :integer,
         show: &show_compile_timeout/1,
         validate: &validate_compile_timeout!/1
+      ),
+      spec(
+        key: :probe_timeout,
+        default: nil,
+        cli: :integer,
+        show: &show_probe_timeout/1,
+        validate: &validate_probe_timeout!/1
       ),
       spec(key: :baseline_runs, default: 1, cli: :integer, validate: &validate_baseline_runs!/1),
       spec(key: :kill_runs, default: 1, cli: :integer, validate: &validate_kill_runs!/1),

@@ -39,11 +39,12 @@ defmodule Mutare.Runner.CoverageProbe do
   Coverage is advisory, never authoritative. Anything uncertain — a non-zero
   probe exit, an unreadable dump, or an empty dump (the probe recorded nothing,
   so the capture itself likely failed) — degrades to `:run_all`: we never skip a
-  mutant on doubt. The probe run is wall-clock capped for the same reason (a
-  generous multiple of the per-mutant cap, since instrumentation adds overhead a
-  plain baseline doesn't have): a pathological interaction between the coverage
-  capture and the target's hot loops must degrade to `:run_all`, not hang the
-  whole run at the probe stage forever.
+  mutant on doubt. The probe run is wall-clock capped for the same reason (by
+  default a generous multiple of the per-mutant cap, since instrumentation adds
+  overhead a plain baseline doesn't have; `:probe_timeout` sets an explicit cap
+  instead): a pathological interaction between the coverage capture and the
+  target's hot loops must degrade to `:run_all`, not hang the whole run at the
+  probe stage forever.
   """
 
   alias Mutare.{Coverage, Schema, Selector}
@@ -169,13 +170,12 @@ defmodule Mutare.Runner.CoverageProbe do
   end
 
   # Name the overrun case explicitly: "exited 124" hides that the probe was
-  # halted by its own cap, which is the one failure whose remedy (an explicit
-  # `:timeout`, which the probe cap is derived from) differs from an ordinary
-  # suite failure.
+  # halted by its own cap, which is the one failure whose remedy (`:probe_timeout`)
+  # differs from an ordinary suite failure.
   defp probe_failure(status, cap) do
     if status == Command.timeout_exit() do
       "coverage probe overran its #{cap}ms cap and was halted " <>
-        "(the cap scales with `:timeout`, so raise that if the instrumented suite is legitimately slow)"
+        "(set `:probe_timeout` / --probe-timeout if the instrumented suite is legitimately slow)"
     else
       "coverage probe exited #{status}"
     end

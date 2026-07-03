@@ -322,6 +322,22 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":probe_timeout" do
+    test "defaults to nil (derived from the per-mutant cap) and accepts a positive integer (ms)" do
+      assert Options.new([]).probe_timeout == nil
+      assert Options.new(probe_timeout: 600_000).probe_timeout == 600_000
+      assert Options.new(probe_timeout: nil).probe_timeout == nil
+    end
+
+    test "rejects zero, negatives, and non-integers" do
+      for bad <- [0, -5, 1.5, "600000"] do
+        assert_raise ArgumentError, ~r/:probe_timeout must be a positive integer/, fn ->
+          Options.new(probe_timeout: bad)
+        end
+      end
+    end
+  end
+
   describe ":timeout_multiplier" do
     test "accepts a positive number" do
       assert Options.new(timeout_multiplier: 0.5).timeout_multiplier == 0.5
