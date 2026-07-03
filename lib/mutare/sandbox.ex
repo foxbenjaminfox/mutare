@@ -339,23 +339,25 @@ defmodule Mutare.Sandbox do
     end
   end
 
-  # `put_if_changed` (not a blind `File.write!`) so a poison-recovery rewrite
+  # The sandbox writer is byte-aware (not a blind `File.write!`) so poison-recovery
+  # rewrites
   # (`rematerialize/2`) touches only the metamutants whose rendered source changed,
   # leaving the rest at their original mtime for mix's incremental compiler. On the
   # first fresh write the copied original always differs from its metamutant, so
   # every mutated file is still written.
   defp write_metamutants(sandbox, %Schema{metamutants: metamutants}) do
     for {rel, source} <- metamutants do
-      put_if_changed(Path.join(sandbox, rel), source)
+      put_sandbox_file_if_changed(sandbox, rel, source)
     end
   end
 
   # Overlay each generated file (the `override_files/3` manifest) onto the bulk-copied project
   # — the fresh-mode counterpart to `sync/4`'s in-place overlay, sharing the one manifest.
-  # `put_if_changed` keeps the rest at their copied mtime; the metamutant always differs from
-  # the copied original on a fresh write, so every mutated file is still written.
+  # The byte-aware sandbox writer keeps the rest at their copied mtime; the
+  # metamutant always differs from the copied original on a fresh write, so
+  # every mutated file is still written.
   defp write_overrides(sandbox, overrides) do
-    for {rel, content} <- overrides, do: put_if_changed(Path.join(sandbox, rel), content)
+    for {rel, content} <- overrides, do: put_sandbox_file_if_changed(sandbox, rel, content)
     :ok
   end
 
@@ -447,13 +449,13 @@ defmodule Mutare.Sandbox do
     #    and the injected test helper) in place of the original.
     for rel <- sources do
       content = Map.get_lazy(overrides, rel, fn -> File.read!(Path.join(root, rel)) end)
-      put_if_changed(Path.join(sandbox, rel), content)
+      put_sandbox_file_if_changed(sandbox, rel, content)
     end
 
     # 2. write generated files that have no backing source (the coverage helper,
     #    and the test helper when the target ships none).
     for {rel, content} <- overrides, not MapSet.member?(source_set, rel) do
-      put_if_changed(Path.join(sandbox, rel), content)
+      put_sandbox_file_if_changed(sandbox, rel, content)
     end
 
     # 3. drop anything left in the sandbox that Mutare should no longer own.
@@ -546,6 +548,67 @@ defmodule Mutare.Sandbox do
       File.write!(path, content)
     end
   end
+
+  # Generated sandbox files must be materialised inside the sandbox even when the
+  # copied target contained a symlink at that path (or in one of its parent
+  # components). File.write!/2 would follow those symlinks and mutate the linked
+  # file outside the sandbox, so this helper first recreates the path as ordinary
+  # directories plus a regular file.
+  defp put_sandbox_file_if_changed(sandbox, rel, content) do
+    path = Path.join(sandbox, rel)
+    ensure_sandbox_parent!(sandbox, rel)
+
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular, size: size}} when size == byte_size(content) ->
+        unless File.read(path) == {:ok, content}, do: File.write!(path, content)
+
+      {:ok, %File.Stat{type: :regular}} ->
+        File.write!(path, content)
+
+      {:ok, %File.Stat{type: type}} ->
+        remove_existing_path!(path, type)
+        File.write!(path, content)
+
+      {:error, :enoent} ->
+        File.write!(path, content)
+
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "inspect sandbox file", path: path
+    end
+  end
+
+  defp ensure_sandbox_parent!(sandbox, rel) do
+    rel
+    |> Path.dirname()
+    |> Path.split()
+    |> Enum.reject(&(&1 in [".", ""]))
+    |> Enum.reduce(sandbox, fn part, parent ->
+      path = Path.join(parent, part)
+      ensure_sandbox_dir!(path)
+      path
+    end)
+  end
+
+  defp ensure_sandbox_dir!(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :directory}} ->
+        :ok
+
+      {:ok, %File.Stat{type: type}} ->
+        remove_existing_path!(path, type)
+        File.mkdir!(path)
+
+      {:error, :enoent} ->
+        File.mkdir!(path)
+
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "inspect sandbox directory", path: path
+    end
+  end
+
+  defp remove_existing_path!(path, :directory), do: File.rm_rf!(path)
+  defp remove_existing_path!(path, :symlink), do: File.rm!(path)
+  defp remove_existing_path!(path, _type), do: File.rm!(path)
 
   defp same_content?(path, content) do
     case File.stat(path) do

@@ -206,6 +206,50 @@ defmodule Mutare.SandboxTest do
       assert injected =~ "config :demo, key: :value"
     end
 
+    test "replaces a copied config symlink before injecting", context do
+      original = "import Config\n\nconfig :shared, key: :value\n"
+      outside = Path.join(context.base, "shared_config.exs")
+      File.write!(outside, original)
+
+      config = Path.join(context.project, "config/config.exs")
+      File.mkdir_p!(Path.dirname(config))
+      :ok = File.ln_s(outside, config)
+
+      sandbox = Path.join(context.base, "sandbox")
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
+
+      sandbox_config = Path.join(sandbox, "config/config.exs")
+      assert %File.Stat{type: :regular} = File.lstat!(sandbox_config)
+      assert File.read!(outside) == original
+
+      injected = File.read!(sandbox_config)
+      assert String.starts_with?(injected, "# ---- injected by Mutare: #{@owner_watch_comment}")
+      assert injected =~ "config :shared, key: :value"
+    end
+
+    test "recreates a symlinked config directory before injecting", context do
+      original = "import Config\n\nconfig :shared, dir: true\n"
+      outside_dir = Path.join(context.base, "shared_config_dir")
+      File.mkdir_p!(outside_dir)
+      File.write!(Path.join(outside_dir, "config.exs"), original)
+
+      :ok = File.ln_s(outside_dir, Path.join(context.project, "config"))
+
+      sandbox = Path.join(context.base, "sandbox")
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
+
+      sandbox_config_dir = Path.join(sandbox, "config")
+      sandbox_config = Path.join(sandbox_config_dir, "config.exs")
+
+      assert %File.Stat{type: :directory} = File.lstat!(sandbox_config_dir)
+      assert %File.Stat{type: :regular} = File.lstat!(sandbox_config)
+      assert File.read!(Path.join(outside_dir, "config.exs")) == original
+
+      injected = File.read!(sandbox_config)
+      assert String.starts_with?(injected, "# ---- injected by Mutare: #{@owner_watch_comment}")
+      assert injected =~ "config :shared, dir: true"
+    end
+
     test "generates a config when the target ships none", context do
       refute File.exists?(Path.join(context.project, "config"))
 
