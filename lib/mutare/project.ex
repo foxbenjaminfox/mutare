@@ -250,12 +250,22 @@ defmodule Mutare.Project do
       umbrella_root?(Path.dirname(parent))
   end
 
-  # A cheap, dependency-free read: an umbrella's root `mix.exs` sets `apps_path:`.
-  # We match the source text rather than evaluate it (Mutare runs outside the
-  # target's Mix, and must not execute target build code to classify a directory).
+  # An umbrella's root `mix.exs` sets `apps_path:`. We *parse* the source and look
+  # for the keyword key rather than evaluate it — Mutare runs outside the target's
+  # Mix and must not execute target build code to classify a directory (and Mix has
+  # no API that reads a project file without evaluating it). Parsing keeps the check
+  # static while ignoring `apps_path:` in comments, strings, or docs.
   defp declares_apps_path?(mix_exs) do
-    case File.read(mix_exs) do
-      {:ok, source} -> Regex.match?(~r/\bapps_path:/, source)
+    with {:ok, source} <- File.read(mix_exs),
+         {:ok, ast} <- Code.string_to_quoted(source) do
+      {_ast, found} =
+        Macro.prewalk(ast, false, fn
+          {:apps_path, _value} = node, _found -> {node, true}
+          node, found -> {node, found}
+        end)
+
+      found
+    else
       _ -> false
     end
   end

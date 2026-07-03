@@ -70,6 +70,51 @@ defmodule Mutare.ProjectTest do
     end
   end
 
+  describe "umbrella_root?/1 — static mix.exs detection" do
+    defp root_with_mix_exs(mix_exs_source) do
+      dir = Mutare.Test.Project.tmp_dir(:umbrella_root)
+      ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(dir) end)
+      File.mkdir_p!(Path.join(dir, "apps"))
+      File.write!(Path.join(dir, "mix.exs"), mix_exs_source)
+      dir
+    end
+
+    test "detects apps_path: in the project keyword list" do
+      dir =
+        root_with_mix_exs("""
+        defmodule U.MixProject do
+          use Mix.Project
+          def project, do: [apps_path: "apps", version: "0.1.0"]
+        end
+        """)
+
+      assert Project.umbrella_root?(dir)
+    end
+
+    test "ignores apps_path: mentioned only in comments or strings" do
+      dir =
+        root_with_mix_exs("""
+        defmodule S.MixProject do
+          use Mix.Project
+          # not an umbrella; do not add apps_path: here
+          @note "apps_path: is deliberately absent"
+          def project, do: [app: :s, version: "0.1.0", note: @note]
+        end
+        """)
+
+      refute Project.umbrella_root?(dir)
+    end
+
+    test "an unparsable or missing mix.exs is not an umbrella root" do
+      refute Project.umbrella_root?(root_with_mix_exs("def project, do: ["))
+
+      dir = Mutare.Test.Project.tmp_dir(:no_mix_exs)
+      ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(dir) end)
+      File.mkdir_p!(Path.join(dir, "apps"))
+      refute Project.umbrella_root?(dir)
+    end
+  end
+
   describe "resolve/2 — app target" do
     test "targeting apps/<app> copies the whole umbrella but scopes to that app" do
       %{umbrella: umbrella} = demo_umbrella()
