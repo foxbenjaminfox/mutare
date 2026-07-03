@@ -3498,12 +3498,26 @@ hung beam — SIGTERM is trapped). Caveat: a hang that wedges *every* scheduler 
 a non-yielding NIF could starve the watcher — not reachable from mutating Elixir
 source, so not handled.
 
-False-timeout guard: the cap floor is 10 s. The baseline is measured uncontended
-but mutants run under parallel-worker contention, so a tight cap was
+False-timeout guard, round one: the cap floor is 10 s. The baseline is measured
+uncontended but mutants run under parallel-worker contention, so a tight cap was
 false-timing-out slow-but-finite mutants (a non-deterministic false kill, seen in
 testing). A true infinite loop overruns any floor, so the generous floor keeps
-correctness without missing real hangs. Per-covering-file caps would be tighter
-and more precise — a refinement.
+correctness without missing real hangs.
+
+Round two — the floor wasn't enough at scale: on phoenix_live_view (16 workers,
+16.5 s baseline → 49.5 s cap) mutants in `phoenix_component.ex` recorded
+`:timeout` that ran 11.9 s and **survived** uncontended. Two compounding effects:
+16 concurrent `mix test` BEAMs each wanting every scheduler blow well past the
+3.0 multiplier, and the false kills concentrate on *survivors* — a kill exits at
+its first failing test (`--max-failures 1`), while a survivor must run its whole
+selected set, so the slowest honest runs are exactly the broadly-covered
+survivors, the product's entire output. Hence `:confirm_timeouts` (default on): a
+streamed `:timeout` is provisional and re-run sequentially after the stream
+drains; only a repeat overrun records `:timeout` (mechanics in the
+`Mutare.Runner` moduledoc). The asymmetry that decides it: an over-generous
+verdict path costs one extra cap per *genuine* hang (rare); a tight one silently
+corrupts the score. Per-covering-file caps would be tighter and more precise —
+still a refinement.
 
 ### Parallel workers (M4 done) `[refine]`
 The per-mutant phase runs `:workers` mutants concurrently (default

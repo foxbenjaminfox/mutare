@@ -60,7 +60,7 @@ Then run `mix mutare`.
 
 - Compile once, run N times — no per-mutant recompilation.
 - Coverage-guided selection — each mutant runs only the test files that cover it; uncovered mutants are skipped and excluded from the score (`--full` opts out).
-- Parallel workers + timeouts — mutants run concurrently, each capped; a mutation that hangs (a loop turned infinite) halts itself after the deadline and counts as a kill.
+- Parallel workers + timeouts — mutants run concurrently, each capped; a mutation that hangs (a loop turned infinite) halts itself after the deadline and counts as a kill. A timed-out run is first confirmed with an uncontended re-run, so a merely-slow mutant is never falsely recorded as killed.
 - Compile-poison recovery — a mutant that wouldn't compile is identified from the compile error, dropped (reported as *poisoned*), and the build retried, to try and avoid a bad mutant spoiling the whole run—but ideally this shouldn't be necessary, and it usually isn't.
 - A very broad built-in mutator set — arithmetic/operator swaps, relational and logical swaps, literals of every kind, collection/string/map call rewrites, pattern and clause restructurings, and more. See [`Mutare.Mutators`](https://hexdocs.pm/mutare/Mutare.Mutators.html), and write your own — the [Extending Mutare](https://hexdocs.pm/mutare/extending.html) guide walks through custom mutators and library extensions.
 - Umbrella-aware — target one app, several, or the whole workspace.

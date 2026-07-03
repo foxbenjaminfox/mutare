@@ -233,6 +233,20 @@ defmodule Mutare.Report.Live do
   def handle_cast({:phase, {:run_config, cfg}}, state),
     do: {:noreply, %{state | run_config: cfg}}
 
+  # The post-stream timeout-confirmation pass (`Mutare.Runner`): each provisional
+  # `:timeout` is re-run sequentially and its final verdict arrives as a normal
+  # `:report`, so this only announces the pass. The phase stays `:running` — the
+  # counter block keeps animating while the confirmations report in.
+  def handle_cast({:phase, {:confirming_timeouts, count}}, state) do
+    label = "confirming #{count} timeout#{plural(count)} without contention…"
+
+    cond do
+      state.verbose -> {:noreply, put_line(state, label)}
+      state.ansi -> {:noreply, redraw(state)}
+      true -> {:noreply, plain_line(state, label)}
+    end
+  end
+
   def handle_cast({:phase, phase}, state) when is_map_key(@phase_labels, phase) do
     state = %{state | phase: phase}
 

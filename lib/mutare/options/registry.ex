@@ -248,6 +248,14 @@ defmodule Mutare.Options.Registry do
         ":kill_runs must be a positive integer (>= 1)"
       )
 
+  # On by default: the per-mutant cap is scaled from an *uncontended* baseline, but
+  # mutants run under parallel-worker contention, so a slow-but-finite run can
+  # overrun the cap and record a false `:timeout` kill — hiding a true survivor.
+  # Confirming each timeout with one sequential (uncontended) re-run keeps the
+  # verdict honest; only genuinely hanging mutants pay the second cap
+  # (`--no-confirm-timeouts` opts out). See `Mutare.Runner`.
+  defp validate_confirm_timeouts!(value), do: validate_boolean!(:confirm_timeouts, value)
+
   defp validate_harness_retries!(n),
     do:
       validate!(
@@ -533,6 +541,12 @@ defmodule Mutare.Options.Registry do
       ),
       spec(key: :baseline_runs, default: 1, cli: :integer, validate: &validate_baseline_runs!/1),
       spec(key: :kill_runs, default: 1, cli: :integer, validate: &validate_kill_runs!/1),
+      spec(
+        key: :confirm_timeouts,
+        default: true,
+        cli: :boolean,
+        validate: &validate_confirm_timeouts!/1
+      ),
       spec(
         key: :harness_retries,
         default: 2,

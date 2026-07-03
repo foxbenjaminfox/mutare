@@ -133,6 +133,13 @@ defmodule Mix.Tasks.Mutare do
                                           #   a flaky test manufactures false kills
       mix mutare --kill-runs 2            # require each killed mutant to kill twice;
                                           #   a passing rerun is reported survived
+      mix mutare --no-confirm-timeouts    # record a timed-out run as :timeout right
+                                          #   away. By default a timeout is confirmed
+                                          #   with one sequential (uncontended) re-run
+                                          #   first — the cap is derived from an
+                                          #   uncontended baseline, so under parallel
+                                          #   workers a slow-but-finite mutant could
+                                          #   otherwise be falsely recorded as killed
       mix mutare --harness-retries 4      # re-run a mutant up to 4× if its run fails
                                           #   at the infrastructure level (default 2)
       mix mutare --max-harness-error-rate 0.3

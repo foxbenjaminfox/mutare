@@ -91,7 +91,8 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   once (recovering from poison), check the baseline is green, run a coverage probe for test
   selection, then run `:workers` mutants concurrently and map each outcome to a result status.
   Owns the retry/abort guards (`:harness_retries`, `:max_harness_error_rate`, the dedicated
-  `:boot_failure` budget) and the runner-loop caps (`:max_survivors`).
+  `:boot_failure` budget, the `:confirm_timeouts` sequential re-run that keeps worker
+  contention from minting false `:timeout` kills) and the runner-loop caps (`:max_survivors`).
 - **`Mutare.Coverage` / `Mutare.Coverage.Recorder`** — coverage is **self-recorded** by the
   metamutant at runtime (not `:cover`), keyed by mutant id and attributed per test process. Drives
   `:no_coverage` and per-file test selection.
