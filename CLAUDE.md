@@ -81,8 +81,9 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   no metamutant↔original line mapping.
 - **`Mutare.Sandbox`** (+ `Seed`, `Command`, `Command.Invocation`/`Output`, `CompilerOptions`) —
   materializes a temp copy of the target, overwrites the metamutant sources, injects a
-  dependency-free bootstrap (selector reader + timeout watcher + coverage helper), and seeds the
-  deps'/app's compiled `_build` so the one compile is minimal. `Command` is the **run side of the
+  dependency-free bootstrap (selector reader + timeout/owner-death watchers + coverage helper —
+  the owner-death watcher also prefixes `config/config.exs`, covering the one compile), and seeds
+  the deps'/app's compiled `_build` so the one compile is minimal. `Command` is the **run side of the
   exit-code contract**: it runs a mutant `mix test` and decodes the exit code into a typed outcome
   (`:passed`/`:failed`/`:timeout`/`:harness_error`, refined from output into
   `:suite_compile_error`/`:atom_exhausted`/`:boot_failure`).
@@ -130,13 +131,15 @@ another family's.
 
 These span modules, so no single moduledoc holds them. Internalize them before substantial changes.
 
-- **The selection/coverage/timeout contracts are split across modules and baked into generated
-  code.** The `:persistent_term` selection key and `MUTARE_ACTIVE_MUTANT` live in `Mutare.Selector`;
-  the timeout env var + watcher in `Mutare.Sandbox.Command.Invocation` and its exit code in
-  `Mutare.Sandbox.Command`; the coverage contract (`MUTARE_COVERAGE`, `:mutare_track`, the ETS
-  tables, `MutareCov`, the dump file) in `Mutare.Coverage.Recorder`. `Mutare.Transform` emits the
-  selectors/coverage into the metamutant; `Mutare.Sandbox` emits the reader/watcher/helper into the
-  bootstrap. Change one half in isolation and the metamutant stops responding. (The selection key is
+- **The selection/coverage/timeout/owner-death contracts are split across modules and baked into
+  generated code.** The `:persistent_term` selection key and `MUTARE_ACTIVE_MUTANT` live in
+  `Mutare.Selector`; the timeout and owner-death env vars + watchers in
+  `Mutare.Sandbox.Command.Invocation` and their exit codes in `Mutare.Sandbox.Command`; the
+  coverage contract (`MUTARE_COVERAGE`, `:mutare_track`, the ETS tables, `MutareCov`, the dump
+  file) in `Mutare.Coverage.Recorder`. `Mutare.Transform` emits the selectors/coverage into the
+  metamutant; `Mutare.Sandbox` emits the reader/watchers/helper into the bootstrap (and the
+  owner-death watcher into `config/config.exs`, so it guards the one compile too — NOTES
+  "Owner-death reaping"). Change one half in isolation and the metamutant stops responding. (The selection key is
   resolved at *runtime* by `Selector.key/0` so Mutare can dogfood itself without clobbering its own
   active mutant — NOTES "Self-hosting".)
 - **Two renderers, on purpose.** The metamutant is a build artifact (AST rewrite via

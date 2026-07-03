@@ -5,8 +5,12 @@ defmodule Mutare.Sandbox do
   We copy the project to a dedicated directory (excluding build output), write
   each metamutant over its original, and inject a tiny bootstrap into
   `test/test_helper.exs` that reads `MUTARE_ACTIVE_MUTANT` into `:persistent_term`
-  before the suite starts. The bootstrap is plain Erlang/Elixir with no
-  dependency on Mutare, so the sandbox needs nothing added to its deps.
+  before the suite starts. A second injection prefixes `config/config.exs` with
+  the owner-death watcher (`Mutare.Sandbox.Command.Invocation.owner_watch_ast/0`),
+  so every sandbox `mix` — including the one-time compile, which runs before any
+  test bootstrap — halts itself if the Mutare process that spawned it dies,
+  instead of surviving as an orphan. Everything injected is plain Erlang/Elixir
+  with no dependency on Mutare, so the sandbox needs nothing added to its deps.
 
   Full-copy isolation is the simplest correct choice; swapping it for a shared
   build path is an open question to settle by measuring on a large umbrella.
@@ -63,18 +67,22 @@ defmodule Mutare.Sandbox do
   project. Mutare overwrites and prunes it on every run — keep nothing here.
   """
 
-  # The bootstrap is two dependency-free snippets, each rendered the same way from
-  # a quoted AST its owner defines: the mutant selector
-  # (`Mutare.Selector.bootstrap_ast/0`) and the per-mutant timeout watcher
-  # (`Mutare.Sandbox.Command.Invocation.watcher_ast/0`). The watcher enforces the wall-clock
-  # cap *portably* — instead of the runner killing a hung OS process tree (which
-  # needs platform-specific signals), the mutant process halts *itself* after the
-  # deadline. `System.halt/1` stops the VM immediately and uncatchably, and the
-  # BEAM preempts a looping process so the watcher always gets to run; if the
-  # suite finishes first it dies with the VM. Each snippet stays owned next to its
-  # own constants and is parsed at build time, not assembled here as a string.
+  # The bootstrap is three dependency-free snippets, each rendered the same way
+  # from a quoted AST its owner defines: the mutant selector
+  # (`Mutare.Selector.bootstrap_ast/0`), the per-mutant timeout watcher
+  # (`Mutare.Sandbox.Command.Invocation.watcher_ast/0`), and the owner-death
+  # watcher (`Invocation.owner_watch_ast/0`). Both watchers enforce their bound
+  # *portably* — instead of the runner killing a hung OS process tree (which
+  # needs platform-specific signals), the mutant process halts *itself*: after
+  # the deadline for the timeout, on stdin EOF (the spawning Mutare process died)
+  # for the owner watch. `System.halt/1` stops the VM immediately and
+  # uncatchably, and the BEAM preempts a looping process so a watcher always gets
+  # to run; if the suite finishes first they die with the VM. Each snippet stays
+  # owned next to its own constants and is parsed at build time, not assembled
+  # here as a string.
   @selector_bootstrap Macro.to_string(Mutare.Selector.bootstrap_ast())
   @timeout_watcher Macro.to_string(Invocation.watcher_ast())
+  @owner_watcher Macro.to_string(Invocation.owner_watch_ast())
 
   @bootstrap """
   # ---- injected by Mutare: select the active mutant from the environment ----
@@ -82,6 +90,24 @@ defmodule Mutare.Sandbox do
 
   # ---- injected by Mutare: per-mutant timeout (self-halt; no external kill) --
   #{@timeout_watcher}
+
+  # ---- injected by Mutare: halt when the spawning Mutare process dies --------
+  #{@owner_watcher}
+  # ---------------------------------------------------------------------------
+  """
+
+  # The owner-death watcher again, as a `config/config.exs` prefix: mix evaluates
+  # config at boot, *before* the compilers run, so this one injection covers the
+  # runs the test bootstrap can't — the one-time metamutant compile (the run most
+  # likely to be killed mid-flight and orphaned) and every `mix test`'s boot
+  # phase. Prepended ahead of the target's own config so it is armed before any
+  # config code that might raise; it calls no `Config` macro, so position is
+  # otherwise irrelevant. Inert without `Invocation.owner_watch_env/0` (only
+  # `Invocation.mix/4` sets it), so a manual run in a kept sandbox is unaffected.
+  @config_rel "config/config.exs"
+  @config_bootstrap """
+  # ---- injected by Mutare: halt when the spawning Mutare process dies --------
+  #{@owner_watcher}
   # ---------------------------------------------------------------------------
   """
 
@@ -443,6 +469,24 @@ defmodule Mutare.Sandbox do
     metamutants
     |> Map.merge(coverage_helper_files(root, project))
     |> Map.merge(helper_files(root, project))
+    |> Map.merge(config_files(root))
+  end
+
+  # The root config with the owner-death watcher prepended (see
+  # `@config_bootstrap`). Mix loads the default `config_path` whenever the file
+  # exists, so a target that ships none gets a generated one holding just the
+  # watcher. Deliberately no attempt to resolve a custom `config_path:` — that
+  # would mean divining it from `mix.exs` without evaluating target build code.
+  # A project pointing `config_path` elsewhere simply never loads this file
+  # (harmless dead weight): its one-time compile goes unguarded, while its
+  # `mix test` runs still carry the watcher via the test bootstrap. The content
+  # is derived from the *root's* config on every (re-)materialisation, so
+  # kept-mode syncs are stable and never stack a second prefix.
+  defp config_files(root) do
+    case File.read(Path.join(root, @config_rel)) do
+      {:ok, original} -> %{@config_rel => @config_bootstrap <> "\n" <> original}
+      {:error, _} -> %{@config_rel => "import Config\n\n" <> @config_bootstrap}
+    end
   end
 
   # The dependency-free coverage helper, compiled with the app so the metamutant's per-site

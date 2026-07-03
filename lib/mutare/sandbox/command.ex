@@ -26,6 +26,12 @@ defmodule Mutare.Sandbox.Command do
       failure from a harness error — they are no longer both "non-zero".
     * `timeout_exit/0` — the injected watcher self-halted a run that overran its
       cap: a `:timeout` (counted as a kill).
+    * `owner_lost_exit/0` — the injected owner-death watcher self-halted a run
+      whose spawning Mutare process died (see
+      `Mutare.Sandbox.Command.Invocation.owner_watch_ast/0`). Never *decoded*:
+      by construction it is only ever exited with after the process that would
+      read it is gone — it exists so the halt has a documented, recognisable
+      code rather than an arbitrary one.
     * anything else — the suite never returned a verdict: a `:harness_error`,
       which says nothing about the mutation and is kept out of the score.
 
@@ -77,6 +83,7 @@ defmodule Mutare.Sandbox.Command do
   @success_exit 0
   @timeout_exit 124
   @failure_exit 101
+  @owner_lost_exit 97
 
   # Startup work a per-mutant `mix test` can safely skip. The metamutant lib is compiled
   # **once** before any mutant runs and its sources never change between runs (the
@@ -137,6 +144,19 @@ defmodule Mutare.Sandbox.Command do
   @doc "Exit code the self-halt watcher uses, signalling a timed-out mutant."
   @spec timeout_exit() :: non_neg_integer()
   def timeout_exit, do: @timeout_exit
+
+  @doc """
+  Exit code the owner-death watcher uses when a sandbox run halts itself because
+  the Mutare process that spawned it died (its stdin pipe hit EOF).
+
+  Nobody is left to decode it — the owner is gone — so unlike `timeout_exit/0`
+  it has no `outcome/1` branch; it is reserved here so the halt is documented
+  and distinguishable in e.g. a wrapper script's logs. Chosen outside the codes
+  that carry meaning elsewhere in the contract: `0`, `1`/`2` (mix/ExUnit
+  failures), `failure_exit/0`, `timeout_exit/0`, and the `128 + signal` range.
+  """
+  @spec owner_lost_exit() :: non_neg_integer()
+  def owner_lost_exit, do: @owner_lost_exit
 
   @doc """
   Exit code a clean ExUnit test failure is forced to (via `mix test

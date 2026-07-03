@@ -6811,3 +6811,75 @@ the case where the assertion genuinely fails. With that, "scalar" no longer desc
 `:interpolated`: the value is interpolated data, and core delivers every mutation through the
 interpolation — introducing the `^` for a bare scalar, descending inside an existing one. Tested
 via `Mutare.PinnedCondFixture` / `Mutare.PinnedListFixture` (hosted_test).
+
+
+### Owner-death reaping — sandbox runs halt on stdin EOF `[done]`
+
+`System.cmd/3` never guaranteed a sandbox `mix` dies with the Mutare run that spawned it: when
+the owning BEAM exits abnormally (SIGKILL, OOM-kill, a closed terminal), Erlang only closes the
+port's pipes, and a compute-bound `mix compile`/`mix test` that isn't writing to stdout never
+notices — it runs on, reparented to init. Observed in the wild: a `mix compile` orphan at 15 GB
+RSS, a survey finding orphans aged 13 h–6 days plus dozens of leaked `/tmp/mutare_sandbox_*`
+dirs on a RAM-backed tmpfs. Note the *capped* runs were never the long-lived offenders: the
+timeout watcher lives inside the child and self-halts it whether or not the owner survives. The
+multi-day orphans are the **uncapped** invocations — the one-time compile above all — or any run
+whose owner died before the cap.
+
+**Decision: extend the self-halt primitive, don't adopt a process-tree killer.** The obvious
+fix, `muontrap`, wraps the spawn in a C port binary that kills the child's process group when
+the Erlang side goes away. It works, but it puts `elixir_make` + a working C toolchain into
+every consumer's dep tree, drops Windows, and reintroduces exactly the mechanism PHILOSOPHY
+rejects ("kill a hung OS-process tree… platform-specific signals"). The portable alternative
+falls out of what a port already is: every sandbox run's stdin is a pipe whose **write end only
+the owning BEAM holds**, and the kernel closes descriptors on *any* death, SIGKILL included — so
+EOF on stdin *is* the owner-died signal. A third injected snippet
+(`Mutare.Sandbox.Command.Invocation.owner_watch_ast/0`) blocks in `:io.get_line/2` and
+`System.halt/1`s on `:eof` with `Command.owner_lost_exit/0`. Prototyped before adopting:
+owner-SIGKILL → child-dead in 15–50 ms, including 4 concurrent workers (sibling ports do not
+inherit each other's pipe write ends — OTP's forker closes them) and a mid-`mix compile` kill
+via the config injection.
+
+Mechanics live in the owning moduledocs (`Invocation.owner_watch_ast/0`, `Mutare.Sandbox`).
+Two decisions worth recording:
+
+- **Injected at `config/config.exs`, not just the test bootstrap.** Mix evaluates config before
+  the compilers run, so the one injection covers the run the bootstrap never reaches — the
+  one-time metamutant compile, precisely the most orphan-prone invocation — plus every run's
+  boot phase. A target shipping no config gets a generated one (mix loads the default
+  `config_path` whenever the file exists). A custom `config_path:` is **deliberately not
+  resolved** — that would mean divining it from the target's `mix.exs` (regex- or AST-reading
+  build code was weighed and rejected as over-clever for how rare the layout is). Such a
+  project simply never loads the injected file: its one-time compile goes unguarded, while
+  its `mix test` runs still carry the watcher via the test bootstrap. If that gap ever bites
+  in practice, `muontrap` (spawn-side process-group reaping, no injection or layout knowledge
+  needed) is the honest fix — not a smarter guesser.
+- **Env-gated (`MUTARE_OWNER_WATCH`), armed only by `Invocation.mix/4`.** Not hygiene:
+  stdin-EOF means "owner died" only when stdin is the owner's pipe. A sandbox `mix test` run by
+  hand in a kept sandbox, or by CI with stdin at `/dev/null`, would otherwise halt instantly.
+
+Accepted limitation: OS processes the *target suite* spawns (a chromedriver, a node) die with
+the suite's VM only if their own lifecycle is tied to it — a group/cgroup kill (muontrap) is the
+only full answer there. Revisit if it bites in practice.
+
+Windows: the mechanism is deliberately OS-neutral — the OS closes a dead process's pipe handles
+on win32 too, and the watcher halts on `:eof` and `{:error, _}` alike (part of why muontrap,
+POSIX-only by construction, was passed over) — but it is *unverified* there: CI has no Windows
+lane and the regression tests' harnesses (kill(1), a `#!/bin/sh` shim) are POSIX, so both are
+`:os.type()`-gated with skip messages saying exactly that.
+
+Deferred, same diagnosis (see `FIX-subprocess-lifecycle.md` while it lives):
+
+- **The one-time compile still has no wall-clock cap.** A thrashing metamutant compile now dies
+  with its owner, but still blocks a *live* run in `System.cmd` indefinitely. The config
+  injection point can host a timeout watcher for it (a `MUTARE_COMPILE_TIMEOUT` sibling of the
+  test watcher) — no `Task`-wrapper needed on the runner side. The baseline and coverage probe
+  are likewise uncapped.
+- **No sweeper for leaked sandboxes.** `try/after` cleanup can't survive a hard kill. A safe
+  sweep exists if wanted: fresh-mode dir names embed the creator's OS pid
+  (`mutare_sandbox_<pid>_<n>`), so pid-liveness + an mtime threshold is the staleness test
+  (never mtime alone — a live run's dir root goes stale-looking mid-run); only dirs bearing the
+  ownership marker may be removed, and kept-mode digest-named caches never.
+
+Regression coverage: `subprocess_lifecycle_test.exs` (SIGKILL the owner mid-compile, assert the
+compiling BEAM reaps itself; verified red with the gate disarmed) and the PATH-shim gate test in
+`invocation_test.exs` (`mix/4` arms the gate on every run).

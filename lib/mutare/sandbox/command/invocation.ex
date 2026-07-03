@@ -21,9 +21,19 @@ defmodule Mutare.Sandbox.Command.Invocation do
   The cap is not enforced by killing a process tree (which needs platform-specific
   signals); instead the watcher reads `timeout_env/0` and, after the deadline,
   `System.halt/1`s the run itself with `Mutare.Sandbox.Command.timeout_exit/0`.
+
+  A second, structurally identical self-halt guards against the opposite failure:
+  the *owner* dying rather than the run overrunning. Every run's stdin is a pipe
+  whose write end only the spawning Mutare process holds, so if that process dies
+  — however abruptly — the pipe hits EOF. The owner-death watcher
+  (`owner_watch_ast/0`, gated by `owner_watch_env/0`, rendered by `Mutare.Sandbox`
+  into the sandbox's config and test bootstrap) blocks reading stdin and halts the
+  run with `Mutare.Sandbox.Command.owner_lost_exit/0` the moment that EOF arrives,
+  so no sandbox `mix` outlives the run that spawned it.
   """
 
   @timeout_env "MUTARE_TIMEOUT"
+  @owner_watch_env "MUTARE_OWNER_WATCH"
   @mix_env "test"
 
   @doc """
@@ -37,6 +47,18 @@ defmodule Mutare.Sandbox.Command.Invocation do
   @doc "Env var the runner sets to give a mutant run its wall-clock cap (ms)."
   @spec timeout_env() :: String.t()
   def timeout_env, do: @timeout_env
+
+  @doc """
+  Env var that arms the owner-death watcher (`owner_watch_ast/0`).
+
+  Set by `mix/4` on every sandbox run, and only there: the watcher halts the run
+  the moment stdin hits EOF, which is the owner-died signal *only* when stdin is
+  the spawning process's pipe. A sandbox `mix` run by hand (or by CI with stdin
+  at `/dev/null`) must stay unaffected, so the watcher is inert unless this
+  variable is set.
+  """
+  @spec owner_watch_env() :: String.t()
+  def owner_watch_env, do: @owner_watch_env
 
   @doc """
   Run `mix <args>` in `sandbox` as a fresh OS process, returning
@@ -60,6 +82,9 @@ defmodule Mutare.Sandbox.Command.Invocation do
     env =
       [
         {"MIX_ENV", @mix_env},
+        # Arm the owner-death watcher: this run's stdin is our pipe, so EOF on it
+        # means we died and the run must halt itself rather than orphan.
+        {@owner_watch_env, "1"},
         {Mutare.Selector.env_var(), Integer.to_string(mutant_id)},
         # Self-hosting isolation: give the suite-under-test a private selection
         # key so its own `Selector.put/1` calls can't clobber the harness's
@@ -94,6 +119,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
     [
       "MIX_ENV",
       @timeout_env,
+      @owner_watch_env,
       Mutare.Selector.env_var(),
       Mutare.Selector.override_env(),
       Mutare.Coverage.Recorder.env_var(),
@@ -147,6 +173,61 @@ defmodule Mutare.Sandbox.Command.Invocation do
           spawn(fn ->
             Process.sleep(String.to_integer(raw))
             System.halt(unquote(timeout_exit))
+          end)
+      end
+    end
+  end
+
+  @doc """
+  Dependency-free watcher that halts a sandbox run whose owner died.
+
+  Reads `owner_watch_env/0`: unset (a manual run in a kept sandbox, CI with a
+  closed stdin) it is inert, otherwise it spawns a process that blocks reading
+  stdin and, on `:eof`, `System.halt/1`s the run with
+  `Mutare.Sandbox.Command.owner_lost_exit/0`. Under `mix/4` the run's stdin is a
+  pipe whose write end only the owning Mutare process holds; when that process
+  dies — clean exit, crash, or SIGKILL (the kernel closes its descriptors) — the
+  pipe hits EOF and the run reaps itself, instead of surviving re-parented (a
+  compute-bound `mix` never touches stdout, so it would otherwise run on
+  untouched). `Mutare.Sandbox` renders this AST into the sandbox's
+  `config/config.exs` (mix evaluates config before compiling, so the one-time
+  metamutant compile and every run's boot phase are covered) and into the test
+  bootstrap alongside `watcher_ast/0` (covering suites under a config layout the
+  config injection can't reach). Like the timeout watcher, it needs nothing
+  platform-specific and no dependency on Mutare — the same self-halt primitive
+  pointed at a second hazard.
+
+  Data on stdin never arrives under `mix/4` (Mutare writes nothing to the pipe),
+  so the watcher simply re-blocks on anything that isn't `:eof`; a target suite
+  that reads stdin itself sees exactly what it would without the watcher —
+  a silent, open pipe.
+  """
+  @spec owner_watch_ast() :: Macro.t()
+  def owner_watch_ast do
+    owner_watch_env = @owner_watch_env
+    owner_lost_exit = Mutare.Sandbox.Command.owner_lost_exit()
+
+    quote do
+      case System.get_env(unquote(owner_watch_env)) do
+        nil ->
+          :ok
+
+        "" ->
+          :ok
+
+        _armed ->
+          spawn(fn ->
+            watch = fn watch ->
+              # `:io.get_line/2` (not `IO.read/2`) so the rendered snippet stays
+              # stable across Elixir versions in the target project.
+              case :io.get_line(:standard_io, "") do
+                :eof -> System.halt(unquote(owner_lost_exit))
+                {:error, _} -> System.halt(unquote(owner_lost_exit))
+                _data -> watch.(watch)
+              end
+            end
+
+            watch.(watch)
           end)
       end
     end

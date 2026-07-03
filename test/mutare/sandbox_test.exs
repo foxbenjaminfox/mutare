@@ -189,6 +189,77 @@ defmodule Mutare.SandboxTest do
   end
 
   @selector_comment "select the active mutant from the environment"
+  @owner_watch_comment "halt when the spawning Mutare process dies"
+
+  describe "config injection (owner-death watcher)" do
+    test "prefixes an existing config, preserving the target's own content", context do
+      config = Path.join(context.project, "config/config.exs")
+      File.mkdir_p!(Path.dirname(config))
+      File.write!(config, "import Config\n\nconfig :demo, key: :value\n")
+
+      sandbox = Path.join(context.base, "sandbox")
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
+
+      injected = File.read!(Path.join(sandbox, "config/config.exs"))
+      # Watcher first — armed before any target config code that might raise.
+      assert String.starts_with?(injected, "# ---- injected by Mutare: #{@owner_watch_comment}")
+      assert injected =~ "config :demo, key: :value"
+    end
+
+    test "generates a config when the target ships none", context do
+      refute File.exists?(Path.join(context.project, "config"))
+
+      sandbox = Path.join(context.base, "sandbox")
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
+
+      injected = File.read!(Path.join(sandbox, "config/config.exs"))
+      # Mix loads the default `config_path` whenever the file exists, so the
+      # generated file is picked up without touching the target's `mix.exs`.
+      assert injected =~ "import Config"
+      assert injected =~ @owner_watch_comment
+    end
+
+    test "injects exactly once across repeated kept runs", context do
+      config = Path.join(context.project, "config/config.exs")
+      File.mkdir_p!(Path.dirname(config))
+      File.write!(config, "import Config\n")
+
+      sandbox = Path.join(context.base, "sandbox")
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox, keep_sandbox: true)
+
+      injected = File.read!(Path.join(sandbox, "config/config.exs"))
+      occurrences = injected |> String.split(@owner_watch_comment) |> length()
+      assert occurrences == 2, "expected one injected block, got #{occurrences - 1}"
+    end
+
+    test "a custom config_path target still gets the default placement, untouched elsewhere",
+         context do
+      # Deliberately unresolved (see `config_files/1`): divining a custom
+      # `config_path` would mean parsing or evaluating the target's `mix.exs`.
+      # The injected default-path file is dead weight mix never loads; the
+      # target's real config is not modified, and `mix test` runs stay covered
+      # by the test-bootstrap copy of the watcher.
+      File.write!(Path.join(context.project, "mix.exs"), """
+      defmodule Demo.MixProject do
+        use Mix.Project
+        def project, do: [app: :demo, version: "0.1.0", config_path: "conf/main.exs"]
+      end
+      """)
+
+      custom = Path.join(context.project, "conf/main.exs")
+      File.mkdir_p!(Path.dirname(custom))
+      File.write!(custom, "import Config\n\nconfig :demo, key: :value\n")
+
+      sandbox = Path.join(context.base, "sandbox")
+      Sandbox.prepare(context.project, context.schema, sandbox: sandbox)
+
+      assert File.read!(Path.join(sandbox, "config/config.exs")) =~ @owner_watch_comment
+      # The real (custom-path) config is copied verbatim, never prefixed.
+      assert File.read!(Path.join(sandbox, "conf/main.exs")) ==
+               "import Config\n\nconfig :demo, key: :value\n"
+    end
+  end
 
   describe "keep_sandbox: true" do
     test "preserves a previous build between runs, but a fresh run wipes it", context do
