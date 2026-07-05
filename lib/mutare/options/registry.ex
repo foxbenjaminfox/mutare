@@ -244,6 +244,17 @@ defmodule Mutare.Options.Registry do
         ":baseline_runs must be a positive integer (>= 1)"
       )
 
+  # Retry an all-red baseline attempt before aborting. This is deliberately
+  # separate from `:baseline_runs`: runs detect pass/fail disagreement, retries
+  # survive a consistently-red attempt that may go green on the next try.
+  defp validate_baseline_retries!(n),
+    do:
+      validate!(
+        n,
+        &(is_integer(&1) and &1 >= 0),
+        ":baseline_retries must be a non-negative integer"
+      )
+
   defp validate_kill_runs!(n),
     do:
       validate!(
@@ -544,6 +555,12 @@ defmodule Mutare.Options.Registry do
         validate: &validate_probe_timeout!/1
       ),
       spec(key: :baseline_runs, default: 1, cli: :integer, validate: &validate_baseline_runs!/1),
+      spec(
+        key: :baseline_retries,
+        default: 0,
+        cli: :integer,
+        validate: &validate_baseline_retries!/1
+      ),
       spec(key: :kill_runs, default: 1, cli: :integer, validate: &validate_kill_runs!/1),
       spec(
         key: :confirm_timeouts,

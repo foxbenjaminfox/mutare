@@ -10,7 +10,7 @@ defmodule Mutare.Runner do
 
   ## Baseline + coverage probe
 
-  Before the per-mutant loop we run the test suite once and ensure it passes (`Mutare.Runner.Baseline`) — then build a per-mutant test selection (`Mutare.Runner.CoverageProbe`) which picks the test files each mutant needs (or marks it `:no_coverage`). The two are split on purpose: a failing baseline test aborts, while coverage is advisory and degrades to running everything. The baseline can be run more than once (`:baseline_runs`) to catch a flaky suite: runs that disagree abort with `:baseline_flaky` rather than let a flaky test manufacture false mutant kills. See those modules for the selection modes.
+  Before the per-mutant loop we run the test suite once and ensure it passes (`Mutare.Runner.Baseline`) — then build a per-mutant test selection (`Mutare.Runner.CoverageProbe`) which picks the test files each mutant needs (or marks it `:no_coverage`). The two are split on purpose: a failing baseline test aborts, while coverage is advisory and degrades to running everything. The baseline can be run more than once (`:baseline_runs`) to catch a flaky suite: runs that disagree abort with `:baseline_flaky` rather than let a flaky test manufacture false mutant kills. A consistently red baseline attempt can also be retried (`:baseline_retries`, default 0) to survive startup/load flakes without weakening `:baseline_runs`' mixed-outcome check. See those modules for the selection modes.
 
   ## Unanimous kill reruns
 
@@ -123,8 +123,9 @@ defmodule Mutare.Runner do
   Custom hooks should ignore phase or detail events they do not recognise.
 
   The run uses the resolved `:test_selection`, `:workers`, `:timeout`,
-  `:timeout_multiplier`, `:baseline_runs`, `:kill_runs`, `:confirm_timeouts`,
-  `:harness_retries`, `:max_harness_error_rate`, and `:max_survivors` options. When
+  `:timeout_multiplier`, `:baseline_runs`, `:baseline_retries`, `:kill_runs`,
+  `:confirm_timeouts`, `:harness_retries`, `:max_harness_error_rate`, and
+  `:max_survivors` options. When
   `:max_survivors` stops the run early, the returned run has
   `stopped_early: true`.
   """
@@ -192,7 +193,14 @@ defmodule Mutare.Runner do
       # fixed partition (`1`) — a partitioned suite still needs a valid database.
       fixed_env = Partitions.entry(options.partition_env, 1)
 
-      with {:ok, baseline_ms} <- run_baseline(on_phase, sandbox, options.baseline_runs, fixed_env) do
+      with {:ok, baseline_ms} <-
+             run_baseline(
+               on_phase,
+               sandbox,
+               options.baseline_runs,
+               options.baseline_retries,
+               fixed_env
+             ) do
         # Verbose-only detail: the baseline timing the cap is scaled from.
         on_phase.({:baseline_done, baseline_ms})
         ctx = build_run_ctx(schema, sandbox, context, baseline_ms, fixed_env, hydrate)
@@ -324,12 +332,12 @@ defmodule Mutare.Runner do
   end
 
   # Announce the baseline phase, then run it. A thin wrapper so the `:baseline`
-  # notification fires immediately before `Baseline.run/3` inside the `with`
+  # notification fires immediately before `Baseline.run/4` inside the `with`
   # chain (where a bare side effect between `<-` clauses can't live). `env` carries
   # the fixed partition entry (or `[]`).
-  defp run_baseline(on_phase, sandbox, baseline_runs, env) do
+  defp run_baseline(on_phase, sandbox, baseline_runs, baseline_retries, env) do
     on_phase.(:baseline)
-    Baseline.run(sandbox, baseline_runs, env)
+    Baseline.run(sandbox, baseline_runs, baseline_retries, env)
   end
 
   # Consume the ordered per-mutant result stream. With no `:max_survivors` cap we drain the whole

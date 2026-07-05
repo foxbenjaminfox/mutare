@@ -17,6 +17,7 @@ defmodule Mutare.OptionsTest do
       assert options.test_selection == :coverage
       assert options.timeout == nil
       assert options.timeout_multiplier == 3.0
+      assert options.baseline_retries == 0
       assert options.harness_retries == 2
       assert options.max_harness_error_rate == 0.5
       assert options.sandbox == nil
@@ -381,6 +382,22 @@ defmodule Mutare.OptionsTest do
       for bad <- [0, -1, 1.5, "2"] do
         assert_raise ArgumentError, ~r/:baseline_runs must be a positive integer/, fn ->
           Options.new(baseline_runs: bad)
+        end
+      end
+    end
+  end
+
+  describe ":baseline_retries" do
+    test "defaults to 0 and accepts a non-negative integer" do
+      assert Options.new([]).baseline_retries == 0
+      assert Options.new(baseline_retries: 0).baseline_retries == 0
+      assert Options.new(baseline_retries: 3).baseline_retries == 3
+    end
+
+    test "rejects negatives and non-integers" do
+      for bad <- [-1, 1.5, "2"] do
+        assert_raise ArgumentError, ~r/:baseline_retries must be a non-negative integer/, fn ->
+          Options.new(baseline_retries: bad)
         end
       end
     end

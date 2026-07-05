@@ -135,6 +135,7 @@ Most projects can start without configuration. Add `.mutare.exs` when you want t
 
   # Harden against flaky tests.
   baseline_runs: 2,
+  baseline_retries: 1,
   kill_runs: 2,
   test_selection: :coverage,
 

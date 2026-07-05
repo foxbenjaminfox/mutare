@@ -134,6 +134,9 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --baseline-runs 2        # run the green baseline 2× and abort if a
                                           #   test flakes (passes once, fails once) —
                                           #   a flaky test manufactures false kills
+      mix mutare --baseline-retries 3     # retry an all-red baseline up to 3× before
+                                          #   aborting; mixed pass/fail baseline runs
+                                          #   still abort as flaky
       mix mutare --kill-runs 2            # require each killed mutant to kill twice;
                                           #   a passing rerun is reported survived
       mix mutare --no-confirm-timeouts    # record a timed-out run as :timeout right
@@ -245,6 +248,9 @@ defmodule Mix.Tasks.Mutare do
         timeout: nil,
         # run the baseline N×, aborting if a test flakes (passes one run, fails another)
         baseline_runs: 1,
+        # retry a consistently-red baseline attempt before aborting (useful for
+        # target suites with occasional startup/load flakes)
+        baseline_retries: 0,
         # require a killed mutant to kill N times before recording the kill; if any
         # rerun passes, record it as survived (unanimous-kill, default unchanged)
         kill_runs: 1,

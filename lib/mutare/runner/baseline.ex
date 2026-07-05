@@ -1,7 +1,8 @@
 defmodule Mutare.Runner.Baseline do
   @moduledoc """
   Run the complete test suite green-checked against the baseline mutant
-  (`MUTARE_ACTIVE_MUTANT=0`) — once, or several times to catch a flaky suite.
+  (`MUTARE_ACTIVE_MUTANT=0`) — once, several times to catch a flaky suite, or
+  with retries to survive an occasionally red startup run.
 
   This is the authoritative green check *and* the source of `baseline_ms`. Two
   things hang on it being a run of the *whole* suite:
@@ -18,7 +19,9 @@ defmodule Mutare.Runner.Baseline do
       being checked.
 
   Mutation testing on a red suite is meaningless — every "kill" is suspect — so a
-  non-green baseline aborts the run: `{:error, :baseline_failed, output}`. No
+  non-green baseline aborts the run: `{:error, :baseline_failed, output}`. When
+  `:baseline_retries` is non-zero, an all-red baseline attempt is retried before
+  aborting; a mixed pass/fail attempt still aborts as flaky immediately. No
   `--cover` here: mutant runs don't use it, so an uninstrumented baseline times
   the cap against like conditions (and the `--cover` instrumentation belongs to
   `Mutare.Runner.CoverageProbe`, which runs separately afterwards).
@@ -42,6 +45,16 @@ defmodule Mutare.Runner.Baseline do
   Collection short-circuits the moment outcomes disagree — flakiness is already
   proven, so there's no point running the rest. With `:baseline_runs` at its
   default of 1 this is exactly the old single-run behavior: one run, green or red.
+
+  ## Retry survival (`:baseline_retries`)
+
+  `:baseline_retries` (default 0) wraps the whole `:baseline_runs` check: if an
+  attempt is consistently red (`:baseline_failed`), Mutare tries the baseline
+  again up to that many times. This is for startup/load/order flakes where the
+  project may be green on a later run. It deliberately does **not** retry
+  `:baseline_flaky`: when one `:baseline_runs` attempt observes both pass and
+  fail, the suite has already disagreed with itself and scoring against it would
+  hide false kills.
   """
 
   alias Mutare.Selector
@@ -67,7 +80,20 @@ defmodule Mutare.Runner.Baseline do
   """
   @spec run(Path.t(), pos_integer(), [{String.t(), String.t()}]) :: result()
   def run(sandbox, runs \\ 1, env \\ []) when is_integer(runs) and runs >= 1 do
-    sandbox |> collect(runs, env) |> classify()
+    run(sandbox, runs, 0, env)
+  end
+
+  @doc """
+  Run the baseline check with `retries` extra all-red attempts before returning
+  `:baseline_failed`.
+
+  A retry wraps the full `runs` sample. `:baseline_flaky` is never retried because
+  a mixed pass/fail sample has already proven suite nondeterminism.
+  """
+  @spec run(Path.t(), pos_integer(), non_neg_integer(), [{String.t(), String.t()}]) :: result()
+  def run(sandbox, runs, retries, env)
+      when is_integer(runs) and runs >= 1 and is_integer(retries) and retries >= 0 do
+    retry(sandbox, runs, retries, env)
   end
 
   @doc """
@@ -88,6 +114,18 @@ defmodule Mutare.Runner.Baseline do
       fails == [] -> {:ok, Enum.max(passes)}
       passes == [] -> {:error, :baseline_failed, List.last(fails)}
       true -> {:error, :baseline_flaky, flaky_detail(fails)}
+    end
+  end
+
+  defp retry(sandbox, runs, retries_left, env) do
+    result = sandbox |> collect(runs, env) |> classify()
+
+    case result do
+      {:error, :baseline_failed, _output} when retries_left > 0 ->
+        retry(sandbox, runs, retries_left - 1, env)
+
+      result ->
+        result
     end
   end
 
