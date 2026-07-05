@@ -586,6 +586,18 @@ defmodule Mutare.ReportTest do
     assert Report.ignored(without) == "lib/x.ex:9  [arithmetic]  IGNORED"
   end
 
+  test "harness_error/1 renders file:line, mutator, and the diagnostic" do
+    result = %Result{
+      site: %Site{file: "lib/x.ex", line: 9, mutator: :arithmetic},
+      status: :harness_error,
+      exit_status: 99,
+      output: "** (RuntimeError) checkout failed"
+    }
+
+    assert Report.harness_error(result) ==
+             "lib/x.ex:9  [arithmetic]  HARNESS_ERROR  — exit 99; ** (RuntimeError) checkout failed"
+  end
+
   test "render/2 lists ignored mutants (with reasons) between survivors and the summary" do
     survivor = %Result{site: site(:>), status: :survived}
 
@@ -618,6 +630,22 @@ defmodule Mutare.ReportTest do
     # The roll-call joins with "\n"; a dropped/altered separator would collapse the
     # two lines together.
     assert out =~ "lib/x.ex:1  [arithmetic]  IGNORED\nlib/x.ex:2  [arithmetic]  IGNORED"
+  end
+
+  test "render/2 lists harness errors before the summary" do
+    error = %Result{
+      status: :harness_error,
+      site: %Site{file: "lib/x.ex", line: 9, mutator: :arithmetic},
+      exit_status: 99,
+      output: "** (RuntimeError) checkout failed"
+    }
+
+    out = Report.render([error], %{})
+
+    assert out =~
+             "lib/x.ex:9  [arithmetic]  HARNESS_ERROR  — exit 99; ** (RuntimeError) checkout failed"
+
+    assert index(out, "HARNESS_ERROR") < index(out, "mutation score")
   end
 
   defp index(haystack, needle), do: haystack |> :binary.match(needle) |> elem(0)

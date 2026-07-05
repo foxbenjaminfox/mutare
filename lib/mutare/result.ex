@@ -17,10 +17,11 @@ defmodule Mutare.Result do
           site: Site.t(),
           status: status(),
           duration_ms: non_neg_integer() | nil,
-          output: String.t() | nil
+          output: String.t() | nil,
+          exit_status: non_neg_integer() | nil
         }
 
-  defstruct [:site, :status, :duration_ms, :output]
+  defstruct [:site, :status, :duration_ms, :output, :exit_status]
 
   # --- status classification -------------------------------------------------
   # The single home for the scoring semantics the reporters and the runner share (see

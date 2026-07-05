@@ -792,7 +792,8 @@ defmodule Mutare.Runner do
       site: site,
       status: status_for(result.outcome),
       duration_ms: result.duration_ms,
-      output: result.output
+      output: result.output,
+      exit_status: result.exit_status
     }
   end
 
@@ -878,12 +879,25 @@ defmodule Mutare.Runner do
     errors = Enum.count(results, &(&1.status == :harness_error))
     rate = Report.harness_error_rate(results)
 
-    "#{errors} mutant run(s) failed at the harness level — #{pct(rate)} of the mutants that " <>
-      "ran, above the --max-harness-error-rate limit of #{pct(max_rate)}. A harness error " <>
-      "means the suite never reached a verdict (a compile error, a missing dependency, or a " <>
-      "filesystem/lock problem), so the score would be computed over a denominator hollowed " <>
-      "out by infrastructure failures. Inspect a harness-errored mutant's output and fix the " <>
-      "sandbox, or raise --max-harness-error-rate to proceed anyway."
+    base =
+      "#{errors} mutant run(s) failed at the harness level — #{pct(rate)} of the mutants that " <>
+        "ran, above the --max-harness-error-rate limit of #{pct(max_rate)}. A harness error " <>
+        "means the suite never reached a verdict (a compile error, a missing dependency, or a " <>
+        "filesystem/lock problem), so the score would be computed over a denominator hollowed " <>
+        "out by infrastructure failures. Fix the sandbox, or raise --max-harness-error-rate " <>
+        "to proceed anyway."
+
+    case harness_error_examples(results) do
+      "" -> base
+      examples -> base <> "\n\nExamples:\n" <> examples
+    end
+  end
+
+  defp harness_error_examples(results) do
+    results
+    |> Enum.filter(&(&1.status == :harness_error))
+    |> Enum.take(3)
+    |> Enum.map_join("\n", &("  " <> Report.HarnessDiagnostic.line(&1)))
   end
 
   defp pct(rate), do: "#{Report.percent(rate * 100)}%"

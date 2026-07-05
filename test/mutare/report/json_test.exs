@@ -23,7 +23,9 @@ defmodule Mutare.Report.JsonTest do
     %Result{
       site: site(Keyword.get(opts, :id, 1), opts),
       status: status,
-      duration_ms: opts[:duration_ms]
+      duration_ms: opts[:duration_ms],
+      output: opts[:output],
+      exit_status: opts[:exit_status]
     }
   end
 
@@ -94,6 +96,20 @@ defmodule Mutare.Report.JsonTest do
     [bare] = decode([result(:survived)])["files"]["lib/a.ex"]["mutants"]
     refute Map.has_key?(bare, "statusReason")
     refute Map.has_key?(bare, "duration")
+  end
+
+  test "records a compact harness-error diagnostic as statusReason" do
+    doc =
+      decode([
+        result(:harness_error,
+          exit_status: 99,
+          output: "\nCompiling 1 file\n** (RuntimeError) database checkout failed\n"
+        )
+      ])
+
+    [mutant] = doc["files"]["lib/a.ex"]["mutants"]
+    assert mutant["status"] == "RuntimeError"
+    assert mutant["statusReason"] == "exit 99; ** (RuntimeError) database checkout failed"
   end
 
   test "a clause-drop mutant has an empty replacement" do

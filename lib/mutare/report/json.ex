@@ -8,6 +8,7 @@ defmodule Mutare.Report.Json do
   """
 
   alias Mutare.Result
+  alias Mutare.Report.HarnessDiagnostic
   alias Mutare.Result.Status
 
   # The report schema is versioned `^([1-2])(\.([1-9]\d*|0)){0,2}$`. We depend on
@@ -70,10 +71,15 @@ defmodule Mutare.Report.Json do
       location: location(site.range),
       status: Status.fetch!(result.status).json
     }
-    |> put_present(:statusReason, site.ignore_reason)
+    |> put_present(:statusReason, status_reason(result))
     |> put_present(:description, site.note)
     |> put_present(:duration, result.duration_ms)
   end
+
+  defp status_reason(%Result{status: :harness_error} = result),
+    do: HarnessDiagnostic.summary(result)
+
+  defp status_reason(%Result{site: site}), do: site.ignore_reason
 
   # Every real `Site` carries a range; this default only guards the typespec's
   # `range: nil` corner so a malformed site can't crash the whole report.

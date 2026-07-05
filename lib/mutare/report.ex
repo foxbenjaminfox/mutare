@@ -6,6 +6,7 @@ defmodule Mutare.Report do
   """
 
   alias Mutare.{Result, Site}
+  alias Mutare.Report.HarnessDiagnostic
   alias Mutare.Result.Status
 
   @doc "Apply a single mutation to the original source string."
@@ -96,6 +97,15 @@ defmodule Mutare.Report do
   end
 
   @doc """
+  One line for a harness-errored mutant, including a compact diagnostic.
+  """
+  @spec harness_error(Result.t()) :: String.t()
+  def harness_error(%Result{site: %Site{} = site} = result) do
+    "#{site.file}:#{site.line}  [#{site.mutator}]  HARNESS_ERROR  — " <>
+      HarnessDiagnostic.summary(result)
+  end
+
+  @doc """
   Render the whole report from results and a `%{file => original_source}` map.
   """
   @spec render([Result.t()], %{optional(String.t()) => String.t()}) :: String.t()
@@ -107,7 +117,12 @@ defmodule Mutare.Report do
         survivor(site, Map.fetch!(sources, site.file))
       end)
 
-    [survivor_section(survivors, blocks), ignored_section(results), summary(results)]
+    [
+      survivor_section(survivors, blocks),
+      ignored_section(results),
+      harness_error_section(results),
+      summary(results)
+    ]
     |> Enum.reject(&(&1 == ""))
     |> Enum.join("\n\n")
   end
@@ -292,6 +307,14 @@ defmodule Mutare.Report do
     results
     |> Enum.filter(&(&1.status == :ignored))
     |> Enum.map_join("\n", fn %Result{site: site} -> ignored(site) end)
+  end
+
+  # Harness errors are infrastructure failures, not survivor diffs. List them so
+  # the final report carries the same triage clue the live warning did.
+  defp harness_error_section(results) do
+    results
+    |> Enum.filter(&(&1.status == :harness_error))
+    |> Enum.map_join("\n", &harness_error/1)
   end
 
   # The `""` default of `Enum.at/3` is unreachable: callers only request lines

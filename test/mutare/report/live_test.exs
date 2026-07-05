@@ -273,6 +273,25 @@ defmodule Mutare.Report.LiveTest do
   end
 
   describe "verbose mode (plain)" do
+    test "non-verbose harness-error lines include the diagnostic" do
+      {:ok, io} = StringIO.open("")
+      {:ok, live} = Live.start_link(device: io, ansi: false, verbose: false, width: 200)
+
+      Live.report(live, %Result{
+        site: site(file: "lib/a.ex", line: 3),
+        status: :harness_error,
+        duration_ms: 400,
+        exit_status: 99,
+        output: "** (RuntimeError) checkout failed"
+      })
+
+      Live.finish(live)
+      {_in, out} = StringIO.contents(io)
+
+      assert out =~
+               "ERROR     lib/a.ex:3  relational  >= → >  — exit 99; ** (RuntimeError) checkout failed"
+    end
+
     test "narrates each phase with detail and leaves a line per mutant, with durations" do
       {:ok, io} = StringIO.open("")
       {:ok, live} = Live.start_link(device: io, ansi: false, verbose: true, width: 200)
@@ -321,6 +340,14 @@ defmodule Mutare.Report.LiveTest do
         output: nil
       })
 
+      Live.report(live, %Result{
+        site: site(file: "lib/c.ex", line: 4),
+        status: :harness_error,
+        duration_ms: 500,
+        exit_status: 99,
+        output: "** (RuntimeError) checkout failed"
+      })
+
       Live.finish(live)
       {_in, out} = StringIO.contents(io)
 
@@ -339,6 +366,10 @@ defmodule Mutare.Report.LiveTest do
       assert out =~ "KILLED    lib/a.ex:3  relational  >= → >  0.4s"
       assert out =~ "SURVIVED  lib/a.ex:7  arithmetic  + → -  0.6s"
       assert out =~ "NOCOV     lib/b.ex:2  relational"
+
+      assert out =~
+               "ERROR     lib/c.ex:4  relational  >= → >  0.5s  — exit 99; ** (RuntimeError) checkout failed"
+
       refute out =~ "NOCOV     lib/b.ex:2  relational  >= → >  0.0s"
 
       # Plain mode emits no cursor-control codes.

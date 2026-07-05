@@ -10,6 +10,7 @@ defmodule Mutare.Report.Live do
   use GenServer
 
   alias Mutare.{CLI, Result, Site}
+  alias Mutare.Report.HarnessDiagnostic
   alias Mutare.Result.Status
 
   @device :standard_error
@@ -287,7 +288,7 @@ defmodule Mutare.Report.Live do
 
       # Non-verbose: only survivors/problems leave a line; the rest move the counter.
       styled = leave_behind(result.status) ->
-        {:noreply, put_line(state, format_leave(styled, result.site, state.color))}
+        {:noreply, put_line(state, format_leave(styled, result, state.color))}
 
       true ->
         {:noreply, refresh(state)}
@@ -479,13 +480,23 @@ defmodule Mutare.Report.Live do
     "  " <> tag <> "  " <> descriptor(site)
   end
 
+  defp format_leave(label, %Result{site: site} = result, color?) do
+    format_leave(label, site, color?) <> diagnostic_suffix(result)
+  end
+
   # The verbose per-mutant line: every status's `verbose_label` (coloured when
   # `color?`), the shared descriptor, and a duration suffix for a mutant that
   # actually ran (`duration_ms > 0` — so a no-coverage/ignored/poisoned mutant, which
   # launched no suite, shows no time).
-  defp format_verbose(%Result{site: site, status: status, duration_ms: ms}, color?) do
-    format_leave(verbose_leave(status), site, color?) <> duration_suffix(ms)
+  defp format_verbose(%Result{status: status, duration_ms: ms} = result, color?) do
+    format_leave(verbose_leave(status), result.site, color?) <>
+      duration_suffix(ms) <> diagnostic_suffix(result)
   end
+
+  defp diagnostic_suffix(%Result{status: :harness_error} = result),
+    do: "  — " <> HarnessDiagnostic.summary(result)
+
+  defp diagnostic_suffix(%Result{}), do: ""
 
   defp duration_suffix(ms) when is_integer(ms) and ms > 0, do: "  " <> humanize_ms(ms)
   defp duration_suffix(_ms), do: ""

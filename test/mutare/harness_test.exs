@@ -170,6 +170,8 @@ defmodule Mutare.HarnessTest do
       assert {:error, :too_many_harness_errors, detail} = result
       assert detail =~ "harness level"
       assert detail =~ "--max-harness-error-rate"
+      assert detail =~ "Examples:"
+      assert detail =~ "mutant 1 — exit 99; no output captured"
 
       # ...and it was surfaced loudly per-mutant, not just tallied.
       assert log =~ "mutant 1 failed at the harness level (exit 99)"
@@ -190,7 +192,8 @@ defmodule Mutare.HarnessTest do
         end)
 
       assert {:ok, run} = result
-      assert [%{status: :harness_error}] = run.results
+      assert [%{status: :harness_error, exit_status: 99, output: output}] = run.results
+      assert is_binary(output)
 
       # Excluded from the denominator: nothing was actually measured (100% over 0).
       assert Report.summary(run.results) =~ "1 harness-error"
