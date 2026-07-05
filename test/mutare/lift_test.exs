@@ -315,6 +315,72 @@ defmodule Mutare.LiftTest do
       assert apply(Mutare.MetaprogrammedLiftFixture, :code, [:not_found]) == 404
     end
 
+    test "does not lift a clause that shares name/arity with a defdelegate" do
+      # The delegate expands to a sibling `assign/2` clause, but its AST form is
+      # `:defdelegate`, invisible to clause grouping. Lifting the explicit clause
+      # would leave an *unconditional* public wrapper in its position, shadowing
+      # the delegate — `assign(map, %{...})` (the delegate's whole reason to
+      # exist) would raise FunctionClauseError at baseline, no mutant active.
+      # The Phoenix.Controller.assign/2 shape that crashed the whole run.
+      source = """
+      defmodule Mutare.DefdelegateLiftFixture do
+        def assign(map, fun) when is_function(fun, 1) do
+          assign(map, fun.(map))
+        end
+
+        defdelegate assign(map, other), to: Map, as: :merge
+      end
+      """
+
+      {{meta, sites, _next_id}, log} =
+        with_log(fn -> Mutare.Transform.transform_string_with_sites(source, file: "dd.ex") end)
+
+      refute meta =~ "__mutare_assign"
+      refute Enum.any?(sites, &(&1.kind == :lifted))
+      assert log =~ "dd.ex: assign/2 is also defined by a defdelegate — not lifting"
+      assert [{Mutare.DefdelegateLiftFixture, _}] = Mutare.Test.Compile.string(meta)
+
+      Selector.put(Selector.baseline())
+      # the delegate clause stays reachable — this call crashed pre-fix
+      assert apply(Mutare.DefdelegateLiftFixture, :assign, [%{a: 1}, %{b: 2}]) ==
+               %{a: 1, b: 2}
+
+      # and the explicit clause still handles its special case
+      assert apply(Mutare.DefdelegateLiftFixture, :assign, [
+               %{a: 1},
+               fn m -> %{n: map_size(m)} end
+             ]) ==
+               %{a: 1, n: 1}
+    end
+
+    test "a defdelegate of a different arity does not block lifting" do
+      # The delegate head's arity is statically visible, so the block is keyed by
+      # {name, arity} — `f/2`'s delegate must not cost `f/1` its lifted mutants.
+      source = """
+      defmodule Mutare.DefdelegateArityFixture do
+        def f(x) when x > 0, do: :positive
+        def f(_), do: :other
+
+        defdelegate f(map, key), to: Map, as: :get
+      end
+      """
+
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source, file: "dd2.ex", mutators: @probe)
+        end)
+
+      assert meta =~ "__mutare_f"
+      assert Enum.any?(sites, &(&1.kind == :lifted))
+      refute log =~ "defdelegate"
+      assert [{Mutare.DefdelegateArityFixture, _}] = Mutare.Test.Compile.string(meta)
+
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.DefdelegateArityFixture, :f, [1]) == :positive
+      assert apply(Mutare.DefdelegateArityFixture, :f, [0]) == :other
+      assert apply(Mutare.DefdelegateArityFixture, :f, [%{a: 1}, :a]) == 1
+    end
+
     test "lifts functions whose names end in ? or ! (sanitized private names)" do
       source = """
       defmodule Mutare.OkFixture do

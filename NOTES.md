@@ -3229,9 +3229,10 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
   *also* metaprogrammed (see the next note): there the metaprogrammed warning
   wins, because grouping the literal heads can't enable lifting (the generated
   clauses still force in-place), so "group the clauses" would mislead.
-  `non_consecutive_only/2` drops those names from the non-consecutive warning set
-  and `metaprogrammed_signatures/2` warns them instead — exactly one accurate
-  warning, never both. **Deferred:** the cases we *can* lift
+  `non_consecutive_only/3` drops those names from the non-consecutive warning set
+  and `metaprogrammed_signatures/3` warns them instead — exactly one accurate
+  warning, never both (a `defdelegate` sibling outranks both as the diagnosis —
+  see the defdelegate note below). **Deferred:** the cases we *can* lift
   safely — e.g. heads separated only by another `def`, with no compile-time read
   whose value differs across the split — are worth recovering later
   (normalize/relocate the reads, or detect attribute-independence and lift). For
@@ -3255,7 +3256,7 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
 
   `metaprogrammed_def_names/1` collects every name `def`/`defp`'d *inside* a
   non-clause statement (pruning nested `defmodule`/`defimpl`/`defprotocol`, a
-  different scope), and `plan_clause_group/4` refuses to lift any clause group
+  different scope), and `plan_clause_group/5` refuses to lift any clause group
   whose name is in that set — falling back to in-place exactly like the
   non-consecutive case. Keyed by **name only** (not name/arity): a generated
   head's arity can be obscured by metaprogramming, and over-refusing only costs
@@ -3265,6 +3266,37 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
   `reason_atom/1` / `reason_phrase/1` in the same file were *already* safe via the
   non-consecutive path (their two literal clauses straddle the `for`), so this
   closes the remaining hole where the literal clauses happen to be consecutive.
+- **A `defdelegate` sibling blocks lifting for its exact name/arity** `[done]`.
+  Same shadowing hazard, third source — and the most idiomatic one: "handle one
+  special case explicitly, delegate the rest." A `defdelegate` expands to a plain
+  `def` clause of its head's name/arity, but its AST form is `:defdelegate`,
+  invisible to `clause_signature/1`'s grouping, so a literal sibling run looks
+  complete and would lift — leaving an *unconditional* public wrapper that
+  shadows the delegate clause and crashes the delegate's inputs at **baseline**,
+  no mutant active. The real break (Phoenix dogfooding — see
+  `MUTARE-ON-PHOENIX.md`'s 🔴 section), `Phoenix.Controller`:
+
+  ```elixir
+  def assign(conn, fun) when is_function(fun, 1), do: assign(conn, fun.(conn.assigns))
+  defdelegate assign(conn, assigns), to: Plug.Conn, as: :merge_assigns
+  # lifted, the wrapper matched every call — assign(conn, %{...}) raised
+  # FunctionClauseError on the unmutated baseline, aborting the whole run
+  ```
+
+  `delegated_name_arities/1` walks the non-clause statements (same territory and
+  pruning as `metaprogrammed_def_names/1`) collecting `{name, arity}` pairs from
+  `defdelegate` heads, and `plan_clause_group/5` refuses to lift a matching
+  group. Unlike the metaprogrammed set, this one **is** keyed by exact
+  `{name, arity}` — a delegate head is statically visible, so a same-named
+  function at another arity keeps its lifted mutants. Defaults contribute only
+  the full arity (an explicit def at an implied lower arity is a compile error
+  anyway — "def f/1 conflicts with defaults from f/2"). Warned by
+  `warn_delegated/2`; delegation outranks the other two diagnoses when several
+  apply (it's exact, and neither remedy restores lifting while the delegate
+  exists). **Deferred:** recognizing the delegate as a *real* sibling clause —
+  grouping it into the run so the function lifts with the delegate as an extra
+  dispatched clause — would recover the forfeited guard/clause-drop mutants for
+  the explicit clauses (the safety net only degrades the crash to in-place).
 - **Module-level compile-time statements are scaffolded; def bodies still mutate**
   `[done]`. Lifting is out for a `def` created inside a module-level
   `for`/`if`/`unless`/… (see the two notes above), but the generated function's

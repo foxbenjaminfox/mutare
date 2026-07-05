@@ -43,12 +43,26 @@ defmodule Mutare.Transform.ModulePlan do
     chunks = chunk_clause_runs(statements)
     non_consecutive = non_consecutive_signatures(chunks)
     metaprogrammed = metaprogrammed_def_names(chunks)
-    # Metaprogramming wins the diagnosis when a signature is *both* non-consecutive
-    # and metaprogrammed: grouping its clauses can't enable lifting (the generated
-    # clauses still force in-place), so the non-consecutive advice ("group the
-    # clauses") would mislead. Warn only the binding, accurate reason for each.
-    warn_non_consecutive(non_consecutive_only(non_consecutive, metaprogrammed), file)
-    warn_metaprogrammed(metaprogrammed_signatures(chunks, metaprogrammed), file)
+    delegated = delegated_name_arities(chunks)
+    # Each blocked signature gets exactly one warning, for its binding reason.
+    # Delegation wins the diagnosis when it applies: it is keyed by exact
+    # {name, arity}, so it is never a false positive, and neither of the other
+    # two remedies (grouping clauses, nothing) would restore lifting while the
+    # defdelegate exists. Metaprogramming wins over non-consecutive: grouping
+    # the clauses can't enable lifting (the generated clauses still force
+    # in-place), so the non-consecutive advice ("group the clauses") would
+    # mislead.
+    warn_delegated(delegated_signatures(chunks, delegated), file)
+
+    warn_metaprogrammed(
+      metaprogrammed_signatures(chunks, metaprogrammed, delegated),
+      file
+    )
+
+    warn_non_consecutive(
+      non_consecutive_only(non_consecutive, metaprogrammed, delegated),
+      file
+    )
 
     items =
       Enum.map(chunks, fn
@@ -56,7 +70,7 @@ defmodule Mutare.Transform.ModulePlan do
           {:statement, statement}
 
         {:clauses, clauses} ->
-          plan_clause_group(clauses, non_consecutive, metaprogrammed, mutators)
+          plan_clause_group(clauses, non_consecutive, metaprogrammed, delegated, mutators)
       end)
 
     %__MODULE__{items: items}
@@ -79,9 +93,9 @@ defmodule Mutare.Transform.ModulePlan do
 
   # --- clause-group classification ------------------------------------------
 
-  defp plan_clause_group(clauses, non_consecutive, metaprogrammed, mutators) do
+  defp plan_clause_group(clauses, non_consecutive, metaprogrammed, delegated, mutators) do
     signature = clause_signature(hd(clauses))
-    {_vis, name, _arity} = signature
+    {_vis, name, arity} = signature
 
     # Non-consecutive heads can't be lifted (for now). A dispatcher is a catch-all
     # for the whole signature, so lifting one run would shadow the others; and
@@ -99,7 +113,16 @@ defmodule Mutare.Transform.ModulePlan do
     # dispatcher that shadows every metaprogrammed clause and forwards to a lifted
     # group missing them — a guaranteed `FunctionClauseError`. Refuse to lift any
     # name that is also defined inside a non-`def` statement.
-    if signature in non_consecutive or name in metaprogrammed do
+    #
+    # A `defdelegate` sharing the name/arity is the same shadowing hazard in its
+    # most idiomatic form ("one explicit clause for the special case, delegate the
+    # rest" — hit for real on `Phoenix.Controller.assign/2`): the delegate expands
+    # to a sibling `def` clause invisible to this grouping, so the lifted run's
+    # unconditional public wrapper would shadow it and the delegate's inputs would
+    # crash *at baseline*, no mutant active. Delegates carry an exact, statically
+    # visible arity, so this check is keyed by {name, arity}, not bare name.
+    if signature in non_consecutive or name in metaprogrammed or
+         {name, arity} in delegated do
       {:in_place, clauses}
     else
       case FunctionPlan.plan(signature, clauses, mutators) do
@@ -140,6 +163,16 @@ defmodule Mutare.Transform.ModulePlan do
     |> Enum.reverse()
   end
 
+  # The deduplicated signatures of all top-level clause groups.
+  defp clause_group_signatures(chunks) do
+    chunks
+    |> Enum.flat_map(fn
+      {:clauses, clauses} -> [clause_signature(hd(clauses))]
+      {:other, _statement} -> []
+    end)
+    |> Enum.uniq()
+  end
+
   # Signatures whose clauses are split across more than one consecutive run —
   # something (another definition, a module attribute) appears between them.
   # These are the functions Transform refuses to lift.
@@ -160,10 +193,12 @@ defmodule Mutare.Transform.ModulePlan do
   # The non-consecutive signatures whose binding reason really *is* being
   # non-consecutive — i.e. not also metaprogrammed (which is keyed by name only,
   # and refuses lifting at the name level regardless of consecutiveness, so its
-  # warning is the accurate one). Dropping the metaprogrammed names here avoids a
+  # warning is the accurate one) or delegated. Dropping those here avoids a
   # misleading "group the clauses" suggestion that grouping wouldn't honour.
-  defp non_consecutive_only(non_consecutive, metaprogrammed) do
-    Enum.reject(non_consecutive, fn {_vis, name, _arity} -> name in metaprogrammed end)
+  defp non_consecutive_only(non_consecutive, metaprogrammed, delegated) do
+    Enum.reject(non_consecutive, fn {_vis, name, arity} ->
+      name in metaprogrammed or {name, arity} in delegated
+    end)
   end
 
   # Lifting is silently disabled for non-consecutive clauses, which costs that
@@ -217,18 +252,16 @@ defmodule Mutare.Transform.ModulePlan do
   end
 
   # The top-level clause-group signatures blocked from lifting by metaprogramming,
-  # for the warning. Deduplicated by signature. Metaprogramming is the binding
-  # reason whenever it applies (it refuses lifting at the name level), so a
-  # signature that is *also* non-consecutive is warned here, not by
-  # `warn_non_consecutive` — see `non_consecutive_only/2` and `build/3`.
-  defp metaprogrammed_signatures(chunks, metaprogrammed) do
+  # for the warning. Deduplicated by signature. Metaprogramming outranks
+  # non-consecutiveness as the diagnosis (it refuses lifting at the name level),
+  # but yields to delegation, whose exact {name, arity} keying makes it the more
+  # precise reason — see the precedence note in `build/3`.
+  defp metaprogrammed_signatures(chunks, metaprogrammed, delegated) do
     chunks
-    |> Enum.flat_map(fn
-      {:clauses, clauses} -> [clause_signature(hd(clauses))]
-      {:other, _statement} -> []
+    |> clause_group_signatures()
+    |> Enum.filter(fn {_vis, name, arity} ->
+      name in metaprogrammed and {name, arity} not in delegated
     end)
-    |> Enum.uniq()
-    |> Enum.filter(fn {_vis, name, _arity} -> name in metaprogrammed end)
   end
 
   # Mirror of warn_non_consecutive/2 for the metaprogramming case. Not user-fixable
@@ -239,6 +272,83 @@ defmodule Mutare.Transform.ModulePlan do
       Logger.warning(
         "#{file}: clauses of #{name}/#{arity} are augmented by compile-time " <>
           "metaprogramming — not lifting (no guard or clause-drop mutants for it)"
+      )
+    end)
+  end
+
+  # --- defdelegate siblings ---------------------------------------------------
+
+  # {name, arity} pairs defined by a `defdelegate` anywhere in this statement
+  # sequence (top level, or nested inside a non-clause statement — the same
+  # territory metaprogrammed_def_names/1 covers). A delegate expands to a plain
+  # `def` clause of that exact name/arity, but its AST form is `:defdelegate`,
+  # invisible to clause_signature/1 — so a sibling top-level run of the same
+  # signature looks complete and would lift, installing an unconditional public
+  # wrapper that shadows the delegate clause and crashes the delegate's inputs
+  # at *baseline*, no mutant active. Unlike metaprogrammed defs, a delegate head
+  # is statically visible, so the exact arity is known — this set is keyed by
+  # {name, arity}, never blocking same-named functions of other arities.
+  #
+  # Default arguments (`defdelegate f(a, b \\ [])`) contribute only the full
+  # arity: an explicit def at one of the implied lower arities cannot legally
+  # coexist with the defaults anyway ("def f/1 conflicts with defaults from
+  # f/2" is a compile error), so no compilable module needs them blocked.
+  defp delegated_name_arities(chunks) do
+    chunks
+    |> Enum.flat_map(fn
+      {:other, statement} -> nested_delegated_name_arities(statement)
+      {:clauses, _clauses} -> []
+    end)
+    |> MapSet.new()
+  end
+
+  defp nested_delegated_name_arities(statement) do
+    {_ast, name_arities} =
+      Macro.prewalk(statement, [], fn
+        {form, _meta, _args}, acc when form in [:defmodule, :defimpl, :defprotocol] ->
+          # Prune: return a leaf so prewalk does not descend into the nested scope.
+          {:__mutare_pruned__, acc}
+
+        {:defdelegate, _meta, [funs | _opts]} = node, acc ->
+          {node, delegate_name_arities(funs) ++ acc}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    name_arities
+  end
+
+  # `defdelegate` historically accepted a list of heads; List.wrap/1 keeps the
+  # extraction total over both the single-head and list shapes.
+  defp delegate_name_arities(funs) do
+    funs
+    |> List.wrap()
+    |> Enum.flat_map(fn head ->
+      case name_arity(head) do
+        {name, arity} -> [{name, arity}]
+        :error -> []
+      end
+    end)
+  end
+
+  # The top-level clause-group signatures blocked from lifting by a defdelegate
+  # sibling, for the warning. Delegation is the binding diagnosis whenever it
+  # applies — see the precedence note in `build/3`.
+  defp delegated_signatures(chunks, delegated) do
+    chunks
+    |> clause_group_signatures()
+    |> Enum.filter(fn {_vis, name, arity} -> {name, arity} in delegated end)
+  end
+
+  # Mirror of warn_metaprogrammed/2 for the defdelegate case: the delegate is an
+  # invisible sibling clause, so lifting is refused and the mutant gap should be
+  # visible.
+  defp warn_delegated(signatures, file) do
+    Enum.each(signatures, fn {_vis, name, arity} ->
+      Logger.warning(
+        "#{file}: #{name}/#{arity} is also defined by a defdelegate — not lifting " <>
+          "(no guard or clause-drop mutants for it)"
       )
     end)
   end
