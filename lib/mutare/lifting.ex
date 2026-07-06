@@ -115,6 +115,9 @@ defmodule Mutare.Lifting do
     if literal_path?(rest), do: {:ok, [current_module | rest]}, else: :error
   end
 
+  defp module_path([{:__MODULE__, _meta, _context} | rest], nil),
+    do: literal_module_path(rest)
+
   defp module_path(path, current_module)
        when is_atom(current_module) and not is_nil(current_module) do
     if literal_path?(path), do: {:ok, [current_module | path]}, else: :error

@@ -659,6 +659,45 @@ defmodule Mutare.LiftTest do
       assert apply(Mutare.SkipLiftDynamicOuter.Child, :f, [0]) == -1
     end
 
+    test ":skip_lifting resolves top-level __MODULE__ module heads" do
+      source = """
+      defmodule __MODULE__.SkipLiftTopDynamicChild do
+        def f(x) when x > 0, do: x + 1
+        def f(x), do: x - 1
+      end
+      """
+
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source,
+            file: "dynamic_top_skip.ex",
+            mutators: @probe,
+            skip_lifting: [{SkipLiftTopDynamicChild, :f, 1}]
+          )
+        end)
+
+      skipped_lines = 2..3
+
+      refute Enum.any?(sites, fn site ->
+               site.kind == :lifted and site.line in skipped_lines
+             end)
+
+      assert Enum.any?(sites, fn site ->
+               site.kind == :in_place and site.mutator == :arithmetic and
+                 site.line in skipped_lines
+             end)
+
+      assert log =~
+               "dynamic_top_skip.ex: SkipLiftTopDynamicChild.f/1 matched :skip_lifting — not lifting"
+
+      compiled_modules = meta |> Mutare.Test.Compile.string() |> Enum.map(&elem(&1, 0))
+      assert SkipLiftTopDynamicChild in compiled_modules
+
+      Selector.put(Selector.baseline())
+      assert apply(SkipLiftTopDynamicChild, :f, [2]) == 3
+      assert apply(SkipLiftTopDynamicChild, :f, [0]) == -1
+    end
+
     test "lifts functions whose names end in ? or ! (sanitized private names)" do
       source = """
       defmodule Mutare.OkFixture do
