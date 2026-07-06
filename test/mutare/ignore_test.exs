@@ -196,6 +196,46 @@ defmodule Mutare.IgnoreTest do
       refute Enum.any?(sites, & &1.ignored)
     end
 
+    test "a [regex:laziness] qualifier suppresses only the lazy-suffix mutants" do
+      # The writeup-motivating case (MUTARE-ON-PHOENIX.md item 10): one regex line
+      # with one provably-equivalent greedy→lazy mutant beside real, killable
+      # mutants. The qualifier must suppress exactly the lazy one — a bare
+      # [regex] would silently forfeit credit for the rest of the line.
+      source = """
+      defmodule Ig do
+        def scrub(s), do: Regex.replace(~r/a+b/, s, "")   # mutare:ignore[regex:laziness]
+      end
+      """
+
+      {_meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+
+      regex = Enum.filter(sites, &(&1.mutator == :regex))
+      {lazy, others} = Enum.split_with(regex, &("laziness" in &1.variant))
+
+      assert lazy != []
+      assert Enum.all?(lazy, & &1.ignored)
+      assert others != []
+      refute Enum.any?(others, & &1.ignored)
+    end
+
+    test "an unknown [regex:<label>] is a hard error listing the regex vocabulary" do
+      # RegexLiteral declares variants now, so a wrong label on it is a *certain*
+      # mistake — a SpecError with a did-you-mean, not a silent no-op.
+      source = """
+      defmodule Ig do
+        def f(s), do: Regex.match?(~r/a+/, s)  # mutare:ignore[regex:lazyness]
+      end
+      """
+
+      error =
+        assert_raise Mutare.Ignore.SpecError, fn ->
+          Mutare.Transform.transform_string_with_sites(source)
+        end
+
+      assert error.message =~ ~s(did you mean "laziness"?)
+      assert error.message =~ "quantifier"
+    end
+
     test "a string literal that reads like the directive is not a directive" do
       # Directives come from parsed comment metadata, not a raw-text scan, so a
       # string that merely *contains* `# mutare:ignore` suppresses nothing.

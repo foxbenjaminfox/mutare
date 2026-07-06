@@ -22,7 +22,20 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   Bounds remain non-negative and ordered. A fixed count does not receive a lazy variant. Group markers are not treated as quantifiers. Quantifiers with an existing lazy or possessive suffix receive only changes that cannot reinterpret that suffix. Repetition of zero-width assertions is limited to variants that change whether the assertion is required.
 
-  Some valid mutations are equivalent in a particular calling context. For example, greediness does not affect `Regex.match?/2`, and `+` and `*` may produce the same result when all matches are removed. These mutants remain visible and can be suppressed with `# mutare:ignore[regex]` where appropriate.
+  ## Filterable variants
+
+  Qualify a `# mutare:ignore` filter with `:label` to suppress just one kind (`c:Mutare.Mutator.variants/0`):
+
+    * `pattern` — whole-pattern replacements (`~r//`, `~r/mutare/`)
+    * `anchor` — anchor removals and exchanges
+    * `class` — shorthand complements (`\\d`/`\\D`, …), `\\b`/`\\B`, class negation, range endpoints
+    * `dot` — `.`/`\\.` exchanges and the scoped dotall variants
+    * `quantifier` — quantifier exchanges, collapses, raises, and bound changes
+    * `laziness` — added lazy suffixes (`a+` → `a+?`, `a?` → `a??`, `{n,m}` → `{n,m}?`)
+    * `alternation` — branch removals
+    * `modifier` — sigil modifier removals
+
+  Some valid mutations are equivalent in a particular calling context. For example, greediness does not affect `Regex.match?/2`, and `+` and `*` may produce the same result when all matches are removed. These mutants remain visible and can be suppressed precisely with a variant qualifier — `# mutare:ignore[regex:laziness]` suppresses just the added-lazy-suffix mutants on its line, leaving the line's other regex mutants live.
 
   ## Safety and parsing
 
@@ -33,6 +46,7 @@ defmodule Mutare.Mutators.RegexLiteral do
   @behaviour Mutare.Mutator
 
   alias Mutare.AST
+  alias Mutare.Mutator.Mutation
   alias Mutare.Mutators.RegexLiteral.Tokens
 
   @sentinel AST.sentinel_string()
@@ -46,32 +60,58 @@ defmodule Mutare.Mutators.RegexLiteral do
   @impl Mutare.Mutator
   def name, do: :regex
 
+  # The `# mutare:ignore[regex:label]` vocabulary — one label per mutation kind, tagged at
+  # production (each pass below labels what it emits; no `variant/2` re-derivation from the
+  # rendered AST, which is exactly the token-matching the ignore grammar avoids).
+  @impl Mutare.Mutator
+  def variants, do: ~w(pattern anchor class dot quantifier laziness alternation modifier)
+
   @impl Mutare.Mutator
   def mutate({:sigil_r, meta, [{:<<>>, bmeta, [pattern]}, modifiers]}) when is_binary(pattern) do
     # One lexical pass: the shared `Tokens.tokens/2` reader owns all cross-cutting state —
     # escapes, character classes, group structure + the `Flags` scope stack, and the inert
     # (`\Q…\E` / `x`-comment) spans — and every pass below is a fold over its output, so the
-    # escape/class/flag/inert handling lives in exactly one place.
+    # escape/class/flag/inert handling lives in exactly one place. Each pass yields
+    # `{pattern, label}` pairs; two passes producing the *same* candidate merge their labels
+    # (`merge_labels/1`), so a mutant reachable two ways is suppressed by either qualifier.
     toks = Tokens.tokens(pattern, MapSet.new(modifiers))
 
-    pattern_variants =
-      (["", @sentinel] ++
-         anchor_patterns(pattern, toks) ++
-         mode_aware_patterns(pattern, modifiers, toks) ++
-         scan_patterns(pattern, toks) ++
-         alternation_patterns(pattern, toks))
-      |> Enum.map(&{&1, modifiers})
+    labeled_patterns =
+      Enum.map(["", @sentinel], &{&1, "pattern"}) ++
+        Enum.map(anchor_patterns(pattern, toks), &{&1, "anchor"}) ++
+        mode_aware_patterns(pattern, modifiers, toks) ++
+        scan_patterns(pattern, toks) ++
+        Enum.map(alternation_patterns(pattern, toks), &{&1, "alternation"})
 
-    modifier_variants = Enum.map(modifier_drops(modifiers), &{pattern, &1})
+    candidates =
+      Enum.map(labeled_patterns, fn {p, label} -> {{p, modifiers}, label} end) ++
+        Enum.map(modifier_drops(modifiers), &{{pattern, &1}, "modifier"})
 
-    (pattern_variants ++ modifier_variants)
-    |> Enum.reject(&(&1 == {pattern, modifiers}))
-    |> Enum.uniq()
+    candidates
+    |> Enum.reject(fn {candidate, _label} -> candidate == {pattern, modifiers} end)
+    |> merge_labels()
     |> keep_compilable({pattern, modifiers})
-    |> Enum.map(fn {p, m} -> {:sigil_r, meta, [{:<<>>, bmeta, [p]}, m]} end)
+    |> Enum.map(fn {{p, m}, labels} ->
+      Mutation.tagged({:sigil_r, meta, [{:<<>>, bmeta, [p]}, m]}, labels)
+    end)
   end
 
   def mutate(_node), do: :skip
+
+  # Collapse duplicate candidates (the old `Enum.uniq/1`, first-occurrence order preserved),
+  # unioning their labels: a leading-`^` pattern's anchor drop and its whole-pattern `""`
+  # replacement can coincide, and the shared mutant must answer to either qualifier.
+  defp merge_labels(candidates) do
+    labels_by_candidate =
+      Enum.reduce(candidates, %{}, fn {candidate, label}, acc ->
+        Map.update(acc, candidate, [label], &(&1 ++ [label]))
+      end)
+
+    candidates
+    |> Enum.map(fn {candidate, _label} -> candidate end)
+    |> Enum.uniq()
+    |> Enum.map(&{&1, Enum.uniq(labels_by_candidate[&1])})
+  end
 
   # --- token stream -------------------------------------------------------
 
@@ -100,10 +140,10 @@ defmodule Mutare.Mutators.RegexLiteral do
   #     collapse of `#+{` → `#{` thus passes PCRE yet poisons the metamutant. This is checked
   #     **unconditionally** (a non-rendering candidate poisons regardless of the original).
   defp keep_compilable(candidates, original) do
-    candidates = Enum.filter(candidates, &renderable?/1)
+    candidates = Enum.filter(candidates, fn {candidate, _labels} -> renderable?(candidate) end)
 
     if regex_compilable?(original),
-      do: Enum.filter(candidates, &regex_compilable?/1),
+      do: Enum.filter(candidates, fn {candidate, _labels} -> regex_compilable?(candidate) end),
       else: candidates
   end
 
@@ -163,6 +203,8 @@ defmodule Mutare.Mutators.RegexLiteral do
   # the dot's dotall flip (via `s`). A fold over the token stream: each real anchor / dot
   # token carries the `flags` in force at its position (so an inline `(?m)`/`(?s:…)` is
   # honoured), and an escaped/in-class/inert construct simply isn't a token this matches.
+  # Yields `{pattern, variant_label}` pairs ("anchor" for the anchor swaps, "dot" for the
+  # dotall flips) — the label rides each swap from its `*_swaps` table.
   defp mode_aware_patterns(pattern, modifiers, tokens) do
     {swaps, _leading} =
       Enum.flat_map_reduce(tokens, true, fn tok, leading? ->
@@ -171,7 +213,7 @@ defmodule Mutare.Mutators.RegexLiteral do
 
     swaps
     |> dedup_force_off(pattern, modifiers)
-    |> Enum.map(&elem(&1, 0))
+    |> Enum.map(fn {mutant, _tag, label} -> {mutant, label} end)
   end
 
   # A start-anchor is at the *match start* ("leading") iff only non-consuming tokens precede
@@ -220,11 +262,11 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   defp mode_swaps(_token, _pat, _leading), do: []
 
-  # Splice each `{replacement, tag}` over the token's text, keeping the tag.
+  # Splice each `{replacement, tag, label}` over the token's text, keeping the tag and label.
   defp spliced_swaps(swaps, pattern, tok) do
     pre = before_tok(pattern, tok)
     post = after_tok(pattern, tok)
-    Enum.map(swaps, fn {repl, tag} -> {pre <> repl <> post, tag} end)
+    Enum.map(swaps, fn {repl, tag, label} -> {pre <> repl <> post, tag, label} end)
   end
 
   # A **force-flag-off** swap forces one construct to behave as if a flag were off — the
@@ -244,7 +286,8 @@ defmodule Mutare.Mutators.RegexLiteral do
     else
       Enum.reduce(Enum.uniq(modifiers), tagged, fn flag, acc ->
         with true <- Enum.count(modifiers, &(&1 == flag)) == 1,
-             [_one] = swap <- Enum.filter(acc, fn {_mutant, tag} -> tag == {:force_off, flag} end) do
+             [_one] = swap <-
+               Enum.filter(acc, fn {_mutant, tag, _label} -> tag == {:force_off, flag} end) do
           acc -- swap
         else
           _ -> acc
@@ -260,30 +303,31 @@ defmodule Mutare.Mutators.RegexLiteral do
   # constrain it; `leading?` under-approximates, so we only ever suppress a true no-op.)
   defp firstline_anchored?(flags, leading?), do: leading? and MapSet.member?(flags, ?f)
 
-  # Each mode swap carries a tag: `{:force_off, flag}` when it forces a construct to behave
-  # as if `flag` were off (a candidate to dedup against that flag's modifier-drop), else
-  # `:keep`. `^`→`\A` and `$`→`\Z` force `m` off; the dot's `(?-s:.)` forces `s` off.
+  # Each mode swap carries a tag and its `# mutare:ignore[regex:…]` variant label. The tag:
+  # `{:force_off, flag}` when it forces a construct to behave as if `flag` were off (a
+  # candidate to dedup against that flag's modifier-drop), else `:keep`. `^`→`\A` and
+  # `$`→`\Z` force `m` off; the dot's `(?-s:.)` forces `s` off.
   # `^` ↔ `\A`: a no-op without `/m` (both = subject start), so only under `/m`.
-  defp caret_swaps(true), do: [{"\\A", {:force_off, ?m}}]
+  defp caret_swaps(true), do: [{"\\A", {:force_off, ?m}, "anchor"}]
   defp caret_swaps(false), do: []
 
   # `$` → `\z` always (`\z` is the strict end, never the m-off behaviour); `\Z` only under
   # `/m` (else `\Z` ≡ `$`), and it *is* the m-off behaviour.
-  defp dollar_swaps(true), do: [{"\\z", :keep}, {"\\Z", {:force_off, ?m}}]
-  defp dollar_swaps(false), do: [{"\\z", :keep}]
+  defp dollar_swaps(true), do: [{"\\z", :keep, "anchor"}, {"\\Z", {:force_off, ?m}, "anchor"}]
+  defp dollar_swaps(false), do: [{"\\z", :keep, "anchor"}]
 
   # The escaped anchors swapping back toward `^`/`$` — never an m-off direction (they go
   # toward the m-*on* line anchors), so always `:keep`.
-  defp escaped_anchor_swaps(?A, true), do: [{"^", :keep}]
-  defp escaped_anchor_swaps(?z, _ml), do: [{"$", :keep}]
-  defp escaped_anchor_swaps(?Z, true), do: [{"$", :keep}]
+  defp escaped_anchor_swaps(?A, true), do: [{"^", :keep, "anchor"}]
+  defp escaped_anchor_swaps(?z, _ml), do: [{"$", :keep, "anchor"}]
+  defp escaped_anchor_swaps(?Z, true), do: [{"$", :keep, "anchor"}]
   defp escaped_anchor_swaps(_c, _ml), do: []
 
   # Force the dot's newline-matching the *other* way than the active mode (so the swap is
   # never a no-op): where `s` is on, `(?-s:.)` now excludes a newline (the s-off behaviour);
   # where it's off, `(?s:.)` now matches one. The scoped `(?…:.)` confines it to this dot.
-  defp dot_swaps(true), do: [{"(?-s:.)", {:force_off, ?s}}]
-  defp dot_swaps(false), do: [{"(?s:.)", :keep}]
+  defp dot_swaps(true), do: [{"(?-s:.)", {:force_off, ?s}, "dot"}]
+  defp dot_swaps(false), do: [{"(?s:.)", :keep, "dot"}]
 
   # --- modifiers -----------------------------------------------------------
 
@@ -301,7 +345,8 @@ defmodule Mutare.Mutators.RegexLiteral do
   # mutated). The reader resolved escapes, class structure (a leading `]` is a member, not
   # a `:class_close`), ranges and bounds into single tokens, and dropped inert content — so
   # each clause is just "given this token, what mutants?". Reconstruction splices the
-  # replacement over the token's text via `before_tok`/`after_tok`.
+  # replacement over the token's text via `before_tok`/`after_tok`. Each clause labels its
+  # `{pattern, label}` output with the mutation's `# mutare:ignore[regex:…]` variant.
   # `acc` accumulates each token's mutants as a list-of-lists in reverse token order,
   # flattened once at the end — `acc ++ new` per token would be O(n²) over the stream.
   defp scan_patterns(pattern, tokens) do
@@ -386,9 +431,9 @@ defmodule Mutare.Mutators.RegexLiteral do
 
     new =
       cond do
-        c in @shorthand -> [pre <> <<?\\, flip(c)>> <> post]
-        c in @boundary and not ic -> [pre <> <<?\\, flip(c)>> <> post]
-        c == ?. and not ic -> [pre <> "." <> post]
+        c in @shorthand -> [{pre <> <<?\\, flip(c)>> <> post, "class"}]
+        c in @boundary and not ic -> [{pre <> <<?\\, flip(c)>> <> post, "class"}]
+        c == ?. and not ic -> [{pre <> "." <> post, "dot"}]
         true -> []
       end
 
@@ -398,14 +443,14 @@ defmodule Mutare.Mutators.RegexLiteral do
   # Class open → toggle the negation (`[…` ↔ `[^…`).
   defp scan_token(%{kind: :class_open, text: t_open} = t, _rest, pat, _pq, _zw) do
     repl = if t_open == "[", do: "[^", else: "["
-    {[before_tok(pat, t) <> repl <> after_tok(pat, t)], false}
+    {[{before_tok(pat, t) <> repl <> after_tok(pat, t), "class"}], false}
   end
 
   # Class range `lo-hi` → each in-range off-by-one neighbour (`class_range_mutations/2`).
   defp scan_token(%{kind: :range, text: <<lo::utf8, ?-, hi::utf8>>} = t, _rest, pat, _pq, _zw) do
     pre = before_tok(pat, t)
     post = after_tok(pat, t)
-    {Enum.map(class_range_mutations(lo, hi), &(pre <> &1 <> post)), false}
+    {Enum.map(class_range_mutations(lo, hi), &{pre <> &1 <> post, "class"}), false}
   end
 
   # Quantifier `*`/`+` (outside a class) → complement swap, collapse-to-one, lazy suffix,
@@ -422,7 +467,7 @@ defmodule Mutare.Mutators.RegexLiteral do
     new =
       if postfix_quantifier?(pre, pq),
         do:
-          [pre <> <<flip_quant(q)>> <> post] ++
+          [{pre <> <<flip_quant(q)>> <> post, "quantifier"}] ++
             collapse_variant(pre, post, suffixed or (zw and q == ?+)) ++
             lazy_variant(pre, <<q>>, post, suffixed or zw),
         else: []
@@ -443,8 +488,13 @@ defmodule Mutare.Mutators.RegexLiteral do
         # drop (`Z`) and raise-to-`+` (`Z+`) flip an optional zero-width atom from
         # "always-passes" to "requires" → kept; raise-to-`*` (`Z*`) and the lazy `??` stay
         # "always-passes" → guaranteed-equivalent on a zero-width atom, so skipped there.
-        base = [pre <> post, pre <> "+" <> post]
-        extra = if zw, do: [], else: [pre <> "*" <> post, pre <> "??" <> post]
+        base = [{pre <> post, "quantifier"}, {pre <> "+" <> post, "quantifier"}]
+
+        extra =
+          if zw,
+            do: [],
+            else: [{pre <> "*" <> post, "quantifier"}, {pre <> "??" <> post, "laziness"}]
+
         base ++ extra
       else
         []
@@ -464,7 +514,7 @@ defmodule Mutare.Mutators.RegexLiteral do
 
     counts = bound_mutations(bound)
     counts = if zw, do: Enum.filter(counts, &bound_class_changes?(&1, bound)), else: counts
-    bounds = Enum.map(counts, &(pre <> "{" <> &1 <> "}" <> post))
+    bounds = Enum.map(counts, &{pre <> "{" <> &1 <> "}" <> post, "quantifier"})
 
     lazy =
       if variable_bound?(bound),
@@ -476,7 +526,7 @@ defmodule Mutare.Mutators.RegexLiteral do
 
   # Literal-dot swap: `.` (outside a class) → `\.` (a literal dot).
   defp scan_token(%{kind: :char, text: ".", in_class: false} = t, _rest, pat, _pq, _zw),
-    do: {[before_tok(pat, t) <> "\\." <> after_tok(pat, t)], false}
+    do: {[{before_tok(pat, t) <> "\\." <> after_tok(pat, t), "dot"}], false}
 
   # Anything else (a plain char, anchor, pipe, group, modifier, inert atom): no scan
   # mutation, and the previous token is no longer a quantifier.
@@ -494,12 +544,16 @@ defmodule Mutare.Mutators.RegexLiteral do
   # Collapse a greedy `*`/`+` to exactly-one by dropping it (`\d+` → `\d`). Skipped
   # when a lazy/possessive suffix already follows (collapsing `a+?` would mean
   # reinterpreting its `?` as the quantifier — left to the base swap instead).
-  defp collapse_variant(pre, post, suffixed), do: if(suffixed, do: [], else: [pre <> post])
+  defp collapse_variant(pre, post, suffixed),
+    do: if(suffixed, do: [], else: [{pre <> post, "quantifier"}])
 
   # Add a lazy `?` suffix to a greedy quantifier token (`a+` → `a+?`). Skipped when a
   # lazy/possessive suffix already follows, since a second one (`a+??`/`a+?+`) is invalid.
+  # The `laziness` label is the writeup-motivating one: greediness is unobservable through
+  # `Regex.match?/2` and often provably equivalent, so this is the variant users need to
+  # suppress *without* swallowing the line's real quantifier/class mutants.
   defp lazy_variant(pre, quant, post, suffixed),
-    do: if(suffixed, do: [], else: [pre <> quant <> "?" <> post])
+    do: if(suffixed, do: [], else: [{pre <> quant <> "?" <> post, "laziness"}])
 
   # Is the repetition count variable (so greedy vs. lazy can differ)? A fixed `{n}` or
   # `{n,n}` is not — a lazy `?` on it is a guaranteed no-op.

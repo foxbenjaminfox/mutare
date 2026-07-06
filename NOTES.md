@@ -336,6 +336,17 @@ try/after — without it those modes leaked a raw stacktrace. (3) A custom **fam
 the qualifier separator, so `[ecto:query]` parses as family `ecto` + label `query` and could never
 name a whole `ecto:query` family — better to fail loud than let the filter silently match nothing.
 
+`RegexLiteral` adopted the mechanism after the Phoenix dogfooding sweep (`MUTARE-ON-PHOENIX.md`,
+polish item 10) caught its moduledoc promising a suppression its granularity couldn't deliver: one
+line's regex produced 5 killable character-class mutants plus exactly 1 provably-equivalent
+lazy-quantifier mutant, and the only available qualifier — the line-granular `[regex]` — would have
+swallowed all six. It now declares eight production-tagged labels (`pattern`/`anchor`/`class`/
+`dot`/`quantifier`/`laziness`/`alternation`/`modifier` — see the family moduledoc), so
+`[regex:laziness]` suppresses exactly that mutant. One wrinkle unique to this family: two passes
+can produce the *same* candidate (a leading-`^` pattern's anchor drop coincides with the
+whole-pattern `""` replacement), so candidate dedup **unions** the labels — the shared mutant
+answers to either qualifier — instead of keeping whichever pass ran first.
+
 ### Scan is transform-bound, and the loop heap makes it worse `[resolved; was deferred]`
 
 > **OUTDATED as a current-state claim (deferred-work audit, 2026-06-30):** the

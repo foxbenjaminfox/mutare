@@ -295,6 +295,34 @@ defmodule Mutare.MutatorsLiteralTest do
       assert render(RegexLiteral.mutate(parse(~S|~r/foo/|))) == [~S|~r//|, ~S|~r/mutare/|]
     end
 
+    test "declares the ignore vocabulary and tags each mutation kind at production" do
+      assert RegexLiteral.variants() ==
+               ~w(pattern anchor class dot quantifier laziness alternation modifier)
+
+      # One fixture exercising most kinds; each rendered mutant maps to its label(s).
+      labels = labels_for(~S|~r/[a-y]+.$/m|)
+
+      assert labels[~S|~r//m|] == ["pattern"]
+      assert labels[~S|~r/[a-y]+.\z/m|] == ["anchor"]
+      assert labels[~S|~r/[b-y]+.$/m|] == ["class"]
+      assert labels[~S|~r/[^a-y]+.$/m|] == ["class"]
+      assert labels[~S|~r/[a-y]+(?s:.)$/m|] == ["dot"]
+      assert labels[~S|~r/[a-y]+\.$/m|] == ["dot"]
+      assert labels[~S|~r/[a-y]*.$/m|] == ["quantifier"]
+      assert labels[~S|~r/[a-y].$/m|] == ["quantifier"]
+      assert labels[~S|~r/[a-y]+?.$/m|] == ["laziness"]
+      assert labels[~S|~r/[a-y]+.$/|] == ["modifier"]
+
+      assert labels_for(~S"~r/x|y/")[~S"~r/x/"] == ["alternation"]
+    end
+
+    test "a mutant two passes produce carries both labels (either qualifier suppresses)" do
+      # For `~r/^/` the leading-anchor drop and the whole-pattern `""` replacement
+      # coincide: the shared candidate must answer to `[regex:pattern]` AND
+      # `[regex:anchor]` alike.
+      assert labels_for(~S|~r/^/|)[~S|~r//|] == ["pattern", "anchor"]
+    end
+
     test "preserves modifier flags on the whole-pattern replacements" do
       assert render(RegexLiteral.mutate(parse(~S|~r/foo/i|))) ==
                [~S|~r//i|, ~S|~r/mutare/i|, ~S|~r/foo/|]
@@ -475,16 +503,14 @@ defmodule Mutare.MutatorsLiteralTest do
 
       # a quantifier inside an x-comment is not mutated (scan); the real dot on line 2 is
       node = {:sigil_r, [], [{:<<>>, [], ["a # b+\nc."]}, ~c"x"]}
-      pats = Enum.map(RegexLiteral.mutate(node), fn {:sigil_r, _, [{:<<>>, _, [p]}, _]} -> p end)
+      pats = Enum.map(RegexLiteral.mutate(node), &pattern_of/1)
       refute "a # b*\nc." in pats
       assert "a # b+\nc(?s:.)" in pats
 
       # a `(?s)` inside an x-comment must not activate dotall for the real dot after the
       # newline — that dot is non-dotall, so its swap is `(?s:.)`, never `(?-s:.)`
       node2 = {:sigil_r, [], [{:<<>>, [], ["# (?s) c\n."]}, ~c"x"]}
-
-      pats2 =
-        Enum.map(RegexLiteral.mutate(node2), fn {:sigil_r, _, [{:<<>>, _, [p]}, _]} -> p end)
+      pats2 = Enum.map(RegexLiteral.mutate(node2), &pattern_of/1)
 
       assert "# (?s) c\n(?s:.)" in pats2
       refute "# (?s) c\n(?-s:.)" in pats2
@@ -532,7 +558,7 @@ defmodule Mutare.MutatorsLiteralTest do
     test "ends an x-mode comment at a carriage return, not just a line feed" do
       # PCRE ends the `#` comment at the CR, so the following dot is active and mutates
       node = {:sigil_r, [], [{:<<>>, [], ["# c\r."]}, ~c"x"]}
-      pats = Enum.map(RegexLiteral.mutate(node), fn {:sigil_r, _, [{:<<>>, _, [p]}, _]} -> p end)
+      pats = Enum.map(RegexLiteral.mutate(node), &pattern_of/1)
       assert "# c\r(?s:.)" in pats
       assert "# c\r\\." in pats
     end
@@ -1026,6 +1052,22 @@ defmodule Mutare.MutatorsLiteralTest do
 
   defp node_of(%Mutare.Mutator.Mutation{node: node}), do: node
   defp node_of(node), do: node
+
+  # The regex sigil's pattern binary, unwrapping a tagged `Mutation` first.
+  defp pattern_of(mutation) do
+    {:sigil_r, _, [{:<<>>, _, [p]}, _]} = node_of(mutation)
+    p
+  end
+
+  # Rendered mutant → its variant label list, for the RegexLiteral tagging tests.
+  defp labels_for(source) do
+    source
+    |> parse()
+    |> RegexLiteral.mutate()
+    |> Map.new(fn %Mutare.Mutator.Mutation{node: node, variant: labels} ->
+      {Sourceror.to_string(node), labels}
+    end)
+  end
 
   # `{rendered_node, variant_tag}` for each produced mutation, for asserting the production-time tag.
   defp tags(nodes) do
