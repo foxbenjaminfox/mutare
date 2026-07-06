@@ -3307,6 +3307,26 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
   both refinements at once. Regression pins in lift_test: arity-scoped recovery,
   `__using__`/`__before_compile__`/plain-macro recovery (with compiled-baseline
   checks), the splicing wildcard, and the `for`-generated def staying blocked.
+
+  **Accepted limitation — the scan sees only literal def nodes in *this*
+  module's source.** A def manufactured by an opaque module-level macro call is
+  invisible by construction: `use SomeLib`, an imported or remote def-generating
+  macro (`defmemo f(x) do … end`, a decorator, `SomeLib.defroutes(...)`) is just
+  a call node with no `def` AST inside it, and the code that generates the defs
+  lives in another module entirely. If such a macro adds clauses to a signature
+  the module *also* defines literally, lifting shadows them — the same
+  baseline-crash class every note above guards against — and no static scan of
+  this file can know. Peering in would mean expanding arbitrary third-party
+  macros at scan time, which is exactly what the transform architecture refuses
+  to do generally (the `Uses` pre-pass expands the one `use` idiom, best-effort,
+  for *name resolution* — not as a general expansion engine). Two things keep
+  this acceptable: the failure mode is loud (a baseline crash before any mutant
+  runs, never a silently wrong verdict), and it has not been observed on a real
+  target (Phoenix's sweep hit the visible-`for` and `defdelegate` shapes, both
+  now handled). If it ever bites, the `use` sub-case has a natural mitigation
+  already half-built: `Uses` computes the injected AST during resolution, and
+  feeding *that expansion* through this same head scan would cover use-injected
+  clauses without any new expansion machinery.
 - **A `defdelegate` sibling blocks lifting for its exact name/arity** `[done]`.
   Same shadowing hazard, third source — and the most idiomatic one: "handle one
   special case explicitly, delegate the rest." A `defdelegate` expands to a plain

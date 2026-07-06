@@ -324,6 +324,13 @@ defmodule Mutare.Transform.ModulePlan do
   # A bare module-level `quote` (outside any macro definition) is NOT pruned:
   # its AST can be fed to `Module.eval_quoted(__MODULE__, …)`, which really does
   # inject defs into this module — scanning it is what keeps that shape safe.
+  #
+  # Accepted limitation: only literal def nodes in *this module's source* are
+  # visible. A def manufactured by an opaque module-level macro call (`use
+  # SomeLib`, `defmemo f(x) do … end`, a remote def-generating macro) is a call
+  # node with no def AST inside — nothing static here can see the clauses it
+  # mints. See NOTES "Metaprogramming-augmented clauses" for why that is
+  # accepted and the half-built `Uses`-expansion mitigation if it ever bites.
   defp collect_chunk_heads(chunks, forms) do
     Enum.reduce(chunks, {MapSet.new(), MapSet.new()}, fn
       {:other, statement}, acc -> collect_heads(statement, forms, acc)
