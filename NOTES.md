@@ -3323,10 +3323,23 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
   this acceptable: the failure mode is loud (a baseline crash before any mutant
   runs, never a silently wrong verdict), and it has not been observed on a real
   target (Phoenix's sweep hit the visible-`for` and `defdelegate` shapes, both
-  now handled). If it ever bites, the `use` sub-case has a natural mitigation
-  already half-built: `Uses` computes the injected AST during resolution, and
-  feeding *that expansion* through this same head scan would cover use-injected
-  clauses without any new expansion machinery.
+  now handled).
+
+  Why the common injection patterns don't produce the hazard: shadowing needs
+  the invisible clause to sit *after* the lifted run (the defdelegate crash was
+  a delegate *below* the lifted clause, shadowed by the wrapper left in that
+  clause's position). `use`-injected clauses land at the top of the module —
+  *before* any literal siblings — so they keep matching first and the wrapper
+  only catches what already fell through to the user's clauses, which the
+  dispatcher replicates faithfully. And `defoverridable` injections are
+  *replaced* by a user def, not merged as clauses (the `super` path is handled —
+  see "`super` in a lifted body"). The residually hazardous direction is
+  clauses injected after everything — `@before_compile` hooks — which no
+  expansion Mutare owns can see. That is also why the once-considered
+  mitigation of feeding the `Uses` pre-pass expansion through this head scan
+  buys little: it could only see `__using__` injections (which are lift-safe by
+  position, and which good practice keeps to imports/delegation anyway), not
+  the `@before_compile` direction that could actually bite. Not pursued.
 - **A `defdelegate` sibling blocks lifting for its exact name/arity** `[done]`.
   Same shadowing hazard, third source — and the most idiomatic one: "handle one
   special case explicitly, delegate the rest." A `defdelegate` expands to a plain
