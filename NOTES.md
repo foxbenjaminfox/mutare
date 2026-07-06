@@ -7343,3 +7343,33 @@ directly to `System.tmp_dir!()` is a *sibling* of the sandbox, not a descendant 
 (non-`--keep-sandbox`) sandbox's teardown (`Runner.cleanup_sandbox/2`, `File.rm_rf(sandbox)`) would
 never reach it, leaking one small DETS file into `/tmp` per mutant run (baseline + probe + every
 mutant), forever, in both sandbox modes alike.
+
+### Why `:mutare` (and companion mutator packages) need `only: [:dev, :test]`, not just `:dev`
+The scan — where mutator modules actually run, whether built-in, a hand-written custom mutator,
+or a companion package like `mutare_ecto` — executes in the process that invoked `mix mutare`.
+That task declares no `@preferred_cli_env`, so it inherits whatever env it's run under: `:dev`
+by default. The sandboxed side is fully decoupled from all of this — the injected bootstrap
+(selector reader, timeout/owner-death watchers, coverage helper) is plain generated source with
+zero `Mutare.*` references (`Sandbox` moduledoc), and the per-mutant `mix test` subprocess never
+loads `Mutare` or any mutator module. So "does the mutator run inside the sandbox" is never the
+reason `:test` is needed — it isn't, for built-in, custom, or companion mutators alike.
+
+What actually forces `:mutare` into `:test` is Mix's dependency-env model: a dep scoped
+`only: [:dev, :test]` gets *compiled* whenever the current build is in `:test`, independent of
+whether your own code references it. `Mix.Tasks.Mutare.Install` scopes every companion package
+that way (`maybe_add_dep/2`), so `mutare_ecto`/`mutare_phoenix`/etc. are compiled on every
+ordinary `mix test` you run — not only when `mix mutare` itself runs — and that compile needs
+`Mutare.Mutator`/`Mutare.Mutator.Families` reachable, so `:mutare` must be present in `:test`
+too. A hand-written custom mutator hits the identical wall if it lives under `test/support/`
+(the conventional location — see `guides/extending.md` and Mutare's own `test/support`
+fixtures): `elixirc_paths(:test)` compiles it on every plain `mix test`, sandboxed or not.
+
+Second, independent reason: some CI pipelines set `MIX_ENV=test` globally and run every `mix`
+command under it, including `mix mutare`. Since the task has no preferred env of its own, a
+`:dev`-only `:mutare` would make `MIX_ENV=test mix mutare` fail to even find the task.
+
+Neither reason is about the sandbox or about who authored the mutator — it's about which env(s)
+actually compile the mutator module, wherever it lives. A project that (a) never invokes any
+`mix` command under `MIX_ENV=test` except `mix test` itself, and (b) keeps every custom mutator
+and companion package scoped `only: [:dev]`, could genuinely skip `:test` — but that's a fragile
+deviation from what the installer and README set up by default, not a recommended configuration.

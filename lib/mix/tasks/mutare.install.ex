@@ -43,6 +43,8 @@ if Code.ensure_loaded?(Igniter) do
         example: @example,
         # How `mix igniter.install mutare` should add Mutare itself: a mutation-testing
         # tool belongs in dev/test only and runs as a Mix task, never at app runtime.
+        # `:test` isn't belt-and-suspenders — see NOTES "Why `:mutare` (and companion
+        # mutator packages) need `only: [:dev, :test]`, not just `:dev`".
         only: [:dev, :test],
         dep_opts: [runtime: false],
         schema: [repo: :string]
@@ -101,6 +103,14 @@ if Code.ensure_loaded?(Igniter) do
     defp maybe_add_dep(igniter, true, name) do
       # Guard on `has_dep?` ourselves rather than rely on `add_dep`'s `:on_exists`, so a
       # A companion package the user already pinned (a different version/source) is never clobbered.
+      #
+      # Scoped `only: [:dev, :test]` below like Mutare itself, and for the same non-obvious
+      # reason (NOTES "Why `:mutare` (and companion mutator packages) need `only: [:dev,
+      # :test]`, not just `:dev`"): a companion is a mutator package too (it implements
+      # `Mutare.Mutator`), and Mix compiles any `only: [:dev, :test]` dep on every ordinary
+      # `mix test`, whether or not the app's own code references it — so `:mutare` must be
+      # reachable in `:test` for *this* package to compile there, regardless of whether the
+      # user ever writes a custom mutator themselves.
       if Igniter.Project.Deps.has_dep?(igniter, name) do
         igniter
       else
