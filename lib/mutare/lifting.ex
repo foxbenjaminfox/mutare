@@ -1,6 +1,8 @@
 defmodule Mutare.Lifting do
   @moduledoc false
 
+  alias Mutare.Transform.Aliases
+
   @type skip_entry :: {module(), String.t(), non_neg_integer()}
 
   @alias_segment ~r/\A[A-Z][A-Za-z0-9_]*\z/
@@ -54,10 +56,10 @@ defmodule Mutare.Lifting do
   end
 
   @spec module_from_alias(Macro.t(), module() | nil) :: module() | nil
-  def module_from_alias({:__aliases__, _meta, path}, current_module)
+  def module_from_alias({:__aliases__, meta, path}, current_module)
       when is_list(path) and path != [] do
-    case module_path(path, current_module) do
-      {:ok, path} -> Module.concat(path)
+    case module_path(path, meta, current_module) do
+      {:ok, module_key} -> to_module(module_key)
       :error -> nil
     end
   end
@@ -108,26 +110,40 @@ defmodule Mutare.Lifting do
 
   defp function_name?(name), do: Regex.match?(@function_name, name)
 
-  defp module_path([:"Elixir" | rest], _current_module), do: literal_module_path(rest)
+  defp module_path([:"Elixir" | rest], _meta, _current_module), do: literal_module_path(rest)
 
-  defp module_path([{:__MODULE__, _meta, _context} | rest], current_module)
+  defp module_path([{:__MODULE__, _node_meta, _context} | rest], _meta, current_module)
        when is_atom(current_module) and not is_nil(current_module) do
     if literal_path?(rest), do: {:ok, [current_module | rest]}, else: :error
   end
 
-  defp module_path([{:__MODULE__, _meta, _context} | rest], nil),
+  defp module_path([{:__MODULE__, _node_meta, _context} | rest], _meta, nil),
     do: literal_module_path(rest)
 
-  defp module_path(path, current_module)
+  # A **nested** head: Elixir prefixes the *written* path with the enclosing module and does
+  # **not** apply aliases to it (`alias Foo.Bar; defmodule Bar.Baz` inside `Outer` defines
+  # `Outer.Bar.Baz`, not `Foo.Bar.Baz`), so any alias stamp is ignored here.
+  defp module_path(path, _meta, current_module)
        when is_atom(current_module) and not is_nil(current_module) do
     if literal_path?(path), do: {:ok, [current_module | path]}, else: :error
   end
 
-  defp module_path(path, nil), do: literal_module_path(path)
+  # A **top-level** head: Elixir resolves the written path through the lexical alias env, so
+  # consult the module the Resolve pre-pass stamped under `:mutare_alias` (`alias Real.Parent,
+  # as: RP; defmodule RP.Child` defines `Real.Parent.Child`). No stamp ⇒ the literal path.
+  defp module_path(path, meta, nil) do
+    case Aliases.resolved_module(meta, path) do
+      module when is_atom(module) -> {:ok, module}
+      resolved when is_list(resolved) -> literal_module_path(resolved)
+    end
+  end
 
   defp literal_module_path(path) do
     if path != [] and literal_path?(path), do: {:ok, path}, else: :error
   end
 
   defp literal_path?(path), do: Enum.all?(path, &is_atom/1)
+
+  defp to_module(module) when is_atom(module), do: module
+  defp to_module(path) when is_list(path), do: Module.concat(path)
 end

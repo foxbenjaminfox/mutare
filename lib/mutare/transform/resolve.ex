@@ -201,6 +201,18 @@ defmodule Mutare.Transform.Resolve do
     end
   end
 
+  # A `defmodule Alias do … end`: stamp the *head* `__aliases__` node with the module its path
+  # resolves to under the alias env (same `:mutare_alias` contract as a remote call's module),
+  # so `Mutare.Lifting.module_from_alias/2` can resolve a **top-level** aliased head to the module
+  # Elixir actually defines (`alias Real.Parent, as: RP; defmodule RP.Child` → `Real.Parent.Child`).
+  # A *nested* head ignores the stamp (Elixir nests the written path under the enclosing module),
+  # and a dynamic head (not `__aliases__`) falls through to the bare-call clause below, so its
+  # interior calls still get walked. Must precede that clause — `:defmodule` is an atom form.
+  defp walk({:defmodule, meta, [{:__aliases__, _, _} = head, body]}, env) when is_list(body) do
+    stamped = Aliases.stamp_module(head, env.aliases)
+    {:defmodule, meta, [stamped, walk(body, %{env | pipe_mode: :unpiped})]}
+  end
+
   # A bare call `fun(...)`: stamp it with its resolved import (or Kernel-displacement) using
   # the current pipe context for effective arity, then — when it resolves to a known macro —
   # its argument routing, then descend the arguments un-piped. The macro stamp runs *after*

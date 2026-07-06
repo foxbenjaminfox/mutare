@@ -698,6 +698,95 @@ defmodule Mutare.LiftTest do
       assert apply(SkipLiftTopDynamicChild, :f, [0]) == -1
     end
 
+    test ":skip_lifting resolves top-level aliased module heads" do
+      source = """
+      alias Mutare.SkipLiftAliasTarget, as: SLAT
+
+      defmodule SLAT.Child do
+        def f(x) when x > 0, do: x + 1
+        def f(x), do: x - 1
+      end
+      """
+
+      # `alias Mutare.SkipLiftAliasTarget, as: SLAT; defmodule SLAT.Child` defines
+      # `Mutare.SkipLiftAliasTarget.Child` — the skip target must name what Elixir defines,
+      # not the written `SLAT.Child`.
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source,
+            file: "alias_top_skip.ex",
+            mutators: @probe,
+            skip_lifting: [{Mutare.SkipLiftAliasTarget.Child, :f, 1}]
+          )
+        end)
+
+      skipped_lines = 4..5
+
+      refute Enum.any?(sites, fn site ->
+               site.kind == :lifted and site.line in skipped_lines
+             end)
+
+      assert Enum.any?(sites, fn site ->
+               site.kind == :in_place and site.mutator == :arithmetic and
+                 site.line in skipped_lines
+             end)
+
+      assert log =~
+               "alias_top_skip.ex: Mutare.SkipLiftAliasTarget.Child.f/1 matched :skip_lifting — not lifting"
+
+      compiled_modules = meta |> Mutare.Test.Compile.string() |> Enum.map(&elem(&1, 0))
+      assert Mutare.SkipLiftAliasTarget.Child in compiled_modules
+
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.SkipLiftAliasTarget.Child, :f, [2]) == 3
+      assert apply(Mutare.SkipLiftAliasTarget.Child, :f, [0]) == -1
+    end
+
+    test ":skip_lifting ignores an alias on a nested module head (Elixir nests it verbatim)" do
+      source = """
+      alias Mutare.SkipLiftNestedAliasTarget, as: SNAT
+
+      defmodule Mutare.SkipLiftNestedAliasOuter do
+        defmodule SNAT.Inner do
+          def f(x) when x > 0, do: x + 1
+          def f(x), do: x - 1
+        end
+      end
+      """
+
+      # A nested `defmodule SNAT.Inner` ignores the `SNAT` alias: Elixir nests the *written*
+      # path under the enclosing module, defining `Mutare.SkipLiftNestedAliasOuter.SNAT.Inner`.
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source,
+            file: "alias_nested_skip.ex",
+            mutators: @probe,
+            skip_lifting: [{Mutare.SkipLiftNestedAliasOuter.SNAT.Inner, :f, 1}]
+          )
+        end)
+
+      skipped_lines = 5..6
+
+      refute Enum.any?(sites, fn site ->
+               site.kind == :lifted and site.line in skipped_lines
+             end)
+
+      assert Enum.any?(sites, fn site ->
+               site.kind == :in_place and site.mutator == :arithmetic and
+                 site.line in skipped_lines
+             end)
+
+      assert log =~
+               "alias_nested_skip.ex: Mutare.SkipLiftNestedAliasOuter.SNAT.Inner.f/1 matched :skip_lifting — not lifting"
+
+      compiled_modules = meta |> Mutare.Test.Compile.string() |> Enum.map(&elem(&1, 0))
+      assert Mutare.SkipLiftNestedAliasOuter.SNAT.Inner in compiled_modules
+
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.SkipLiftNestedAliasOuter.SNAT.Inner, :f, [2]) == 3
+      assert apply(Mutare.SkipLiftNestedAliasOuter.SNAT.Inner, :f, [0]) == -1
+    end
+
     test "lifts functions whose names end in ? or ! (sanitized private names)" do
       source = """
       defmodule Mutare.OkFixture do
