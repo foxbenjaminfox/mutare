@@ -144,6 +144,52 @@ defmodule Mutare.ReportTest do
     end
   end
 
+  # Regression: an interpolated string that escapes its quote *after* the last
+  # interpolation (`"set to \"#{x}\"."`) used to render corrupt survivor diffs —
+  # the same tokenizer collapse as the sigil case above (`\"` stored as `"`), so
+  # the range ended one column short and the whole-string swap left the original
+  # closing quote behind: `toast(""")` / `toast("mutare"")`.
+  # See `Mutare.Transform.NodeRange`.
+  describe "diff/2 of an interpolated string with an escaped quote" do
+    @str_source ~S"""
+    defmodule M do
+      def f(new_status), do: toast("User status set to \"#{new_status}\".")
+    end
+    """
+
+    defp str_site(mutated_code) do
+      {_meta, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(@str_source,
+          mutators: [Mutare.Mutators.StringLiteral]
+        )
+
+      Enum.find(sites, &(&1.mutated_code == mutated_code))
+    end
+
+    test "the empty-string swap consumes the whole literal (no stray quote)" do
+      assert Report.diff(str_site(~S{""}), @str_source) ==
+               ~S|-  def f(new_status), do: toast("User status set to \"#{new_status}\".")| <>
+                 "\n" <> ~S|+  def f(new_status), do: toast("")|
+    end
+
+    test "the sentinel swap consumes the whole literal (no stray quote)" do
+      assert Report.diff(str_site(~S{"mutare"}), @str_source) ==
+               ~S|-  def f(new_status), do: toast("User status set to \"#{new_status}\".")| <>
+                 "\n" <> ~S|+  def f(new_status), do: toast("mutare")|
+    end
+
+    test "every string mutant's patch re-parses as valid Elixir" do
+      {_meta, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(@str_source,
+          mutators: [Mutare.Mutators.StringLiteral]
+        )
+
+      for site <- sites do
+        assert {:ok, _} = Code.string_to_quoted(Report.patch(site, @str_source))
+      end
+    end
+  end
+
   # Regression: a multi-line `:replace` that removes (or adds) a line in the middle
   # of the fragment — the shape an Ecto `:hosted` mutation produces when it drops one
   # `where:` from a big `from` block. A naive line-by-line pairing re-emits every line

@@ -44,7 +44,7 @@ defmodule Mutare.Transform.NodeRangeTest do
   # with that escape collapsed, so `Sourceror.get_range/1` ends one column short
   # per escape. `get/1` adds it back. The range starts at the `~`, so for a sigil
   # of length n starting at column c it ends (exclusive) at column c + n.
-  defp sigil_end_col(literal) do
+  defp literal_end_col(literal) do
     node = Sourceror.parse_string!(literal)
     NodeRange.get(node).end[:column]
   end
@@ -53,25 +53,25 @@ defmodule Mutare.Transform.NodeRangeTest do
     test "a regex with one escaped delimiter spans its full written width" do
       # `~r/a\/b/u` is 9 chars (1..9), so the corrected end is column 10 — one wider
       # than Sourceror's content-length count (the `\/` stored as `/`).
-      assert sigil_end_col(~S|~r/a\/b/u|) == 10
-      assert sigil_end_col(~S|~r/a\/b/u|) == String.length(~S|~r/a\/b/u|) + 1
+      assert literal_end_col(~S|~r/a\/b/u|) == 10
+      assert literal_end_col(~S|~r/a\/b/u|) == String.length(~S|~r/a\/b/u|) + 1
     end
 
     test "the count scales with the number of escaped delimiters" do
       # Two `\/`: ~r/\/\//  → 8 chars, end 9. (Only `\/` collapses; `\\` etc. don't.)
-      assert sigil_end_col(~S|~r/\/\//|) == String.length(~S|~r/\/\//|) + 1
-      assert sigil_end_col(~S|~r/a\/b\/c/u|) == String.length(~S|~r/a\/b\/c/u|) + 1
+      assert literal_end_col(~S|~r/\/\//|) == String.length(~S|~r/\/\//|) + 1
+      assert literal_end_col(~S|~r/a\/b\/c/u|) == String.length(~S|~r/a\/b\/c/u|) + 1
     end
 
     test "a paired delimiter counts only the collapsed closing escape" do
       # `~r{a\}b}u` — the `\}` collapses (off by one); a `\{` would keep its backslash.
-      assert sigil_end_col(~S|~r{a\}b}u|) == String.length(~S|~r{a\}b}u|) + 1
-      assert sigil_end_col(~S|~r{a\{b\}c}u|) == String.length(~S|~r{a\{b\}c}u|) + 1
+      assert literal_end_col(~S|~r{a\}b}u|) == String.length(~S|~r{a\}b}u|) + 1
+      assert literal_end_col(~S|~r{a\{b\}c}u|) == String.length(~S|~r{a\{b\}c}u|) + 1
     end
 
     test "non-regex sigils with an escaped delimiter are corrected too" do
-      assert sigil_end_col(~S|~s/a\/b/|) == String.length(~S|~s/a\/b/|) + 1
-      assert sigil_end_col(~S|~w/a\/b c/|) == String.length(~S|~w/a\/b c/|) + 1
+      assert literal_end_col(~S|~s/a\/b/|) == String.length(~S|~s/a\/b/|) + 1
+      assert literal_end_col(~S|~w/a\/b c/|) == String.length(~S|~w/a\/b c/|) + 1
     end
 
     test "a sigil with no escaped delimiter is unchanged from Sourceror" do
@@ -91,13 +91,13 @@ defmodule Mutare.Transform.NodeRangeTest do
                Sourceror.get_range(Sourceror.parse_string!(before))
 
       trailing = ~S|~r/a#{x}b\/c/u|
-      assert sigil_end_col(trailing) == String.length(trailing) + 1
+      assert literal_end_col(trailing) == String.length(trailing) + 1
     end
 
     test "an angle-bracket delimiter is corrected like the other paired ones" do
       # Exercises the `<`→`>` close_delimiter clause; the escaped `>` collapses, so the range
       # widens by one just like the `{`/`(`/`[` cases.
-      assert sigil_end_col(~S|~r<a\>b>u|) == String.length(~S|~r<a\>b>u|) + 1
+      assert literal_end_col(~S|~r<a\>b>u|) == String.length(~S|~r<a\>b>u|) + 1
       # with no escape, close_delimiter(<) still runs but the range is unchanged
       node = Sourceror.parse_string!(~S|~r<abc>|)
       assert NodeRange.get(node) == Sourceror.get_range(node)
@@ -107,6 +107,72 @@ defmodule Mutare.Transform.NodeRangeTest do
       # `close_delimiter/1` returns nil for the heredoc fence, so the correction is skipped
       # entirely (the else branch), leaving Sourceror's range untouched.
       node = Sourceror.parse_string!(~s|~s"""\nhi\n"""|)
+      assert NodeRange.get(node) == Sourceror.get_range(node)
+    end
+  end
+
+  # The same tokenizer collapse (`\"` stored as `"`) hits interpolated strings,
+  # charlists, and quoted atoms — their ranges are also sized from stored segment
+  # lengths, so an escaped quote after the last interpolation leaves the range one
+  # column short per escape and a report patch leaves the closing quote behind
+  # (`toast("…\"#{x}\".")` → `toast(""")`).
+  describe "interpolated-string escaped-quote under-count" do
+    test "an escaped quote after the last interpolation spans its full written width" do
+      literal = ~S|"set to \"#{status}\"."|
+      assert literal_end_col(literal) == String.length(literal) + 1
+    end
+
+    test "the count scales with the number of trailing escaped quotes" do
+      literal = ~S|"a#{x}\"b\"c"|
+      assert literal_end_col(literal) == String.length(literal) + 1
+    end
+
+    test "only the quote collapses — other escapes in the tail keep their backslash" do
+      # `\\`, `\n`, `\t` are stored raw (two chars), so only the `\"` is added back.
+      literal = ~S|"a#{x}\"b\nc\\d"|
+      assert literal_end_col(literal) == String.length(literal) + 1
+    end
+
+    test "an escaped quote before the last interpolation is already correct" do
+      # Its absolute `closing` position is baked into the interpolation metadata,
+      # so Sourceror's range is right and the correction leaves it alone.
+      node = Sourceror.parse_string!(~S|"a\"b#{x}c"|)
+      assert NodeRange.get(node) == Sourceror.get_range(node)
+    end
+
+    test "an interpolated string with no escaped quote is unchanged from Sourceror" do
+      node = Sourceror.parse_string!(~S|"a#{x}b"|)
+      assert NodeRange.get(node) == Sourceror.get_range(node)
+    end
+
+    test "a plain (non-interpolated) string keeps its raw escapes → left unchanged" do
+      # No interpolation → no `<<>>` node; the literal's stored content keeps the
+      # backslash, so Sourceror's count is already right.
+      literal = ~S|"a\"b"|
+      node = Sourceror.parse_string!(literal)
+      assert NodeRange.get(node) == Sourceror.get_range(node)
+      assert NodeRange.get(node).end[:column] == String.length(literal) + 1
+    end
+
+    test "a real <<…>> bitstring (no delimiter meta) is a passthrough" do
+      node = Sourceror.parse_string!(~S|<<1, x::binary>>|)
+      assert NodeRange.get(node) == Sourceror.get_range(node)
+    end
+
+    test "an interpolated charlist with a trailing escaped quote is corrected too" do
+      literal = ~S|'a#{x}b\'c'|
+      assert literal_end_col(literal) == String.length(literal) + 1
+    end
+
+    test "an interpolated quoted atom with a trailing escaped quote is corrected too" do
+      literal = ~S|:"a#{x}b\"c"|
+      assert literal_end_col(literal) == String.length(literal) + 1
+    end
+
+    test "an interpolated heredoc (fence delimiter) is left unchanged" do
+      # The fence never needs an escaped quote at the tail; `interpolated_range/3`
+      # falls through for the `"""` delimiter.
+      node = Sourceror.parse_string!(~s|"""\na\#{x}b\n"""|)
       assert NodeRange.get(node) == Sourceror.get_range(node)
     end
   end

@@ -7373,3 +7373,38 @@ actually compile the mutator module, wherever it lives. A project that (a) never
 `mix` command under `MIX_ENV=test` except `mix test` itself, and (b) keeps every custom mutator
 and companion package scoped `only: [:dev]`, could genuinely skip `:test` — but that's a fragile
 deviation from what the installer and README set up by default, not a recommended configuration.
+
+### Report diff fidelity for interpolated strings that escape the quote `[fixed]`
+A dogfood run on a Phoenix app rendered two corrupt survivor diffs on
+`|> toast("User status set to \"#{new_status}\".")` — the `string` family's whole-literal
+swaps came back as `toast(""")` and `toast("mutare"")`, a stray closing quote after the
+replacement. Same class as the sigil escaped-delimiter fix above, and literally the same
+upstream mechanism: Sourceror parses with escapes kept raw (`\\`/`\n`/`\t` stay two-char
+sequences — which is why those never bit), **except** the tokenizer collapses an escaped
+closing delimiter, and that collapse applies to plain interpolated strings too (`\"` → `"`,
+`\'` → `'` in a charlist). `get_end_pos_for_interpolation_segments/3` then sizes the tail
+after the last interpolation by stored `String.length`, so the range ends one column short
+per trailing `\"` and `Sourceror.patch_string` leaves the original closing quote in place.
+
+Only the *interpolated* form is affected: a non-interpolated string parses as a single
+`__block__` literal whose stored content keeps the backslash (Sourceror's count is right),
+and an escape *before* the last interpolation is absorbed by the interpolation's absolute
+`closing` metadata (same subtlety (c) as the sigil entry). The collapse was confirmed for
+all three interpolated containers — string (`<<>>` + `delimiter` meta), charlist
+(`List.to_charlist` call), quoted atom (`:erlang.binary_to_atom` call) — so
+`Mutare.Transform.NodeRange.get/1` now applies the same trailing-binary-segment count to
+each; the exactness argument carries over verbatim (a bare quote in stored tail content
+can only have come from `\"`). Heredocs fall through (the fence never escapes its tail),
+as does a delimiter-less `<<…>>` (a real bitstring, BitstringLiteral's domain).
+
+Two punts, both deliberate: (a) the correction keeps the sigil fix's single-line
+guard, because Sourceror's own end column for a multi-line tail is computed
+start-relative (`start_pos[:column] + length`) and is wrong on its own — there is no
+stable base to add columns to; (b) a paren-less call whose *last argument* is such a
+string (`foo "a#{x}\"b"`) still ranges the enclosing call through the uncorrected
+`Sourceror.get_range` recursion — `NodeRange` corrects only the node it is handed, same
+as the sigil fix. Neither shape has surfaced in a real diff yet.
+
+A pure report-rendering fix; regression tests assert the corrected widths per container
+and that the exact reported shape renders clean, re-parseable diffs
+(`transform/node_range_test.exs`, `report_test.exs`).

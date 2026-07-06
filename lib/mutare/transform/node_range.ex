@@ -12,22 +12,32 @@ defmodule Mutare.Transform.NodeRange do
   `true` swapped renders as `…, trim: false` (closing paren swallowed). `get/1`
   trims that phantom column.
 
-  **2. The escaped-delimiter under-count in sigils.** Sourceror computes a sigil's
-  end column from the **stored** content length (`range.ex`
-  `get_end_pos_for_interpolation_segments/3`, `String.length` of the `<<>>`
-  segments). The tokenizer keeps a sigil's content raw — `\\n`/`\\\\`/`\\t` stay
-  two-character sequences — *except* it collapses an escaped **closing** delimiter
-  (`\\/` → `/` in `~r/…/`, `\\}` → `}` in `~r{…}`), so the stored content is one
-  byte shorter per such escape and the range falls short by that many columns. A
-  textual patch over the short range leaves the sigil's tail in place — and when
-  the mutation only drops a trailing flag (`~r/…/u` → `~r/…/`, RegexLiteral), the
-  patch lands *exactly* on the dropped `u` and the diff shows **no change at all**
-  (a survivor with an empty diff). `get/1` adds back one column per collapsed
-  closing delimiter. (Escaped delimiters *before* the last interpolation are
-  already accounted for — their absolute `closing` position is baked into the
-  segment metadata — so only the trailing binary segments are counted; an opening
-  delimiter escape `\\{` keeps its backslash and never collapses, so only the
-  *closing* char is counted.)
+  **2. The escaped-delimiter under-count in sigils and interpolated strings.**
+  Sourceror computes a sigil's end column from the **stored** content length
+  (`range.ex` `get_end_pos_for_interpolation_segments/3`, `String.length` of the
+  `<<>>` segments). The tokenizer keeps a sigil's content raw — `\\n`/`\\\\`/`\\t`
+  stay two-character sequences — *except* it collapses an escaped **closing**
+  delimiter (`\\/` → `/` in `~r/…/`, `\\}` → `}` in `~r{…}`), so the stored content
+  is one byte shorter per such escape and the range falls short by that many
+  columns. A textual patch over the short range leaves the sigil's tail in place —
+  and when the mutation only drops a trailing flag (`~r/…/u` → `~r/…/`,
+  RegexLiteral), the patch lands *exactly* on the dropped `u` and the diff shows
+  **no change at all** (a survivor with an empty diff). `get/1` adds back one
+  column per collapsed closing delimiter. (Escaped delimiters *before* the last
+  interpolation are already accounted for — their absolute `closing` position is
+  baked into the segment metadata — so only the trailing binary segments are
+  counted; an opening delimiter escape `\\{` keeps its backslash and never
+  collapses, so only the *closing* char is counted.)
+
+  The same collapse hits the interpolated string family — `"a\\"\#{x}\\"b"` and
+  its charlist / quoted-atom cousins also range from segment lengths, and the
+  tokenizer collapses `\\"` → `"` (or `\\'` → `'`) there too, so an escaped quote
+  after the last interpolation shortens the range and the patch leaves the
+  original closing quote behind (`toast("…\\"\#{x}\\".")` mutated to `""` renders
+  as `toast(\""")`). `get/1` applies the same trailing-segment count to those
+  three container shapes. Non-interpolated strings are immune (their raw content
+  keeps the backslash), and heredocs never escape their fence, so only the
+  quote-delimited (non-heredoc), single-line, interpolated forms are corrected.
 
   Only `Mutare.Report` reads the range, so the quirks are invisible at runtime:
   the metamutant is built from the AST, never the range. They corrupt only the
@@ -39,7 +49,7 @@ defmodule Mutare.Transform.NodeRange do
   # is right there — the guard in `correct/2` excludes it.
   @bare_atoms [true, false, nil]
 
-  @doc "Like `Sourceror.get_range/1`, correcting the bare-atom over-count and the sigil under-count."
+  @doc "Like `Sourceror.get_range/1`, correcting the bare-atom over-count and the sigil/interpolated-string under-count."
   @spec get(Macro.t()) :: Sourceror.Range.t() | nil
   def get(node), do: node |> Sourceror.get_range() |> correct(node)
 
@@ -62,7 +72,51 @@ defmodule Mutare.Transform.NodeRange do
     sigil_range(range, Atom.to_string(sigil), meta, segments)
   end
 
+  # An interpolated string: `{:<<>>, meta, segments}` carrying a `delimiter` meta
+  # key (a real `<<…>>` bitstring has none, and `interpolated_range/3` passes it
+  # through untouched).
+  defp correct(%Sourceror.Range{} = range, {:<<>>, meta, segments}) when is_list(segments) do
+    interpolated_range(range, meta[:delimiter], segments)
+  end
+
+  # An interpolated charlist: `'a#{x}b'` parses to a `List.to_charlist` call whose
+  # single argument is the segment list.
+  defp correct(%Sourceror.Range{} = range, {{:., _, [List, :to_charlist]}, meta, [segments]})
+       when is_list(segments) do
+    interpolated_range(range, meta[:delimiter], segments)
+  end
+
+  # An interpolated quoted atom: `:"a#{x}b"` parses to an `:erlang.binary_to_atom`
+  # call wrapping the segments in a `<<>>`; the delimiter rides on the call meta.
+  defp correct(
+         %Sourceror.Range{} = range,
+         {{:., _, [:erlang, :binary_to_atom]}, meta, [{:<<>>, _, segments}, _encoding]}
+       )
+       when is_list(segments) do
+    interpolated_range(range, meta[:delimiter], segments)
+  end
+
   defp correct(range, _node), do: range
+
+  # The string-family analogue of `sigil_range/4`: the closing delimiter is the
+  # quote itself, and the tokenizer collapses only its escape (`\"` → `"`), so the
+  # trailing-segment count is exact for the same reason as in a sigil. A heredoc
+  # fence (`"""`/`'''`) never needs an escaped quote at the tail and falls through,
+  # as does a delimiter-less node (a real bitstring). Single-line only: Sourceror's
+  # own end-column arithmetic for a multi-line tail is start-relative and off on its
+  # own, so there is no stable base to correct against.
+  defp interpolated_range(range, delimiter, segments) when delimiter in ["\"", "'"] do
+    if range.start[:line] == range.end[:line] do
+      case collapsed_closing_count(segments, delimiter) do
+        0 -> range
+        n -> %{range | end: Keyword.update!(range.end, :column, &(&1 + n))}
+      end
+    else
+      range
+    end
+  end
+
+  defp interpolated_range(range, _delimiter, _segments), do: range
 
   defp sigil_range(range, "sigil_" <> _, meta, segments) do
     close = close_delimiter(meta[:delimiter])
@@ -92,10 +146,10 @@ defmodule Mutare.Transform.NodeRange do
   defp close_delimiter(_), do: nil
 
   # How many closing-delimiter escapes the tokenizer collapsed in the part of the
-  # sigil whose length feeds the end column: the binary (literal) segments after
-  # the last interpolation — or all of them when the sigil has none. In a
-  # *parseable* sigil every bare closing-delimiter char in that text came from a
-  # `\<close>` (an unescaped one would have ended the sigil; Sourceror rejects
+  # literal whose length feeds the end column: the binary (literal) segments after
+  # the last interpolation — or all of them when there is none. In a *parseable*
+  # sigil or string every bare closing-delimiter char in that text came from a
+  # `\<close>` (an unescaped one would have ended the literal; Sourceror rejects
   # unescaped balanced pairs), so counting them is exact.
   defp collapsed_closing_count(segments, close) do
     segments
