@@ -3254,18 +3254,59 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
   end
   ```
 
-  `metaprogrammed_def_names/1` collects every name `def`/`defp`'d *inside* a
-  non-clause statement (pruning nested `defmodule`/`defimpl`/`defprotocol`, a
-  different scope), and `plan_clause_group/5` refuses to lift any clause group
-  whose name is in that set — falling back to in-place exactly like the
-  non-consecutive case. Keyed by **name only** (not name/arity): a generated
-  head's arity can be obscured by metaprogramming, and over-refusing only costs
-  guard/clause-drop mutants, never correctness. Not silent —
-  `warn_metaprogrammed/2` logs once per blocked signature (it is not
-  user-fixable; the generated clauses are intentional). Note the sibling functions
-  `reason_atom/1` / `reason_phrase/1` in the same file were *already* safe via the
-  non-consecutive path (their two literal clauses straddle the `for`), so this
-  closes the remaining hole where the literal clauses happen to be consecutive.
+  `metaprogrammed_heads/1` (via the shared `collect_heads/3` walk) collects every
+  head `def`/`defp`'d *inside* a non-clause statement, and `plan_clause_group/5`
+  refuses to lift any clause group it blocks — falling back to in-place exactly
+  like the non-consecutive case. Not silent — `warn_metaprogrammed/2` logs once
+  per blocked signature (it is not user-fixable; the generated clauses are
+  intentional). Note the sibling functions `reason_atom/1` / `reason_phrase/1` in
+  the same file were *already* safe via the non-consecutive path (their two
+  literal clauses straddle the `for`), so this closes the remaining hole where
+  the literal clauses happen to be consecutive.
+
+  **Precision (originally name-only, now `{name, arity}` + macro-body pruning).**
+  The first version keyed the set by bare *name* and walked into everything,
+  which the Phoenix dogfooding sweep (`MUTARE-ON-PHOENIX.md`, polish item 6)
+  showed over-blocks badly: `Phoenix.Presence`'s `defmacro __using__` quotes
+  `def list(topic)` boilerplate destined for *other* modules, and the name-only
+  match cost the module's own, metaprogramming-free `list/2`/`get_by_key/3`
+  their lifting — a pattern endemic to `use`-heavy libraries (injected
+  convenience wrappers deliberately reuse short names at a shifted arity,
+  prepending `__MODULE__`). Two refinements, each argued against the
+  false-negative direction (an under-block is a *baseline crash*, an over-block
+  only costs mutants):
+
+  - **Exact `{name, arity}` keying.** An in-argument `unquote` doesn't obscure
+    arity (`def code(unquote(atom))` is arity 1 whatever `atom` is), so most
+    generated heads block only their own arity. `unquote_splicing` is the
+    exception — arity unknowable — and degrades that head to a bare-name
+    wildcard (blocked at every arity). A fully dynamic name
+    (`def unquote(name)(…)`) stays statically invisible and contributes
+    nothing — the accepted residual hole (unchanged from the name-only version,
+    which also saw `:error` there; the only static alternative is blocking the
+    whole module). Defaults contribute only the full arity (an explicit def at
+    an implied lower arity is a compile error beside the defaults).
+  - **`defmacro`/`defmacrop` bodies are pruned as scope boundaries** (alongside
+    `defmodule`/`defimpl`/`defprotocol`). A macro's body — quoted or not — runs
+    only where the macro is *invoked*, and no invocation can target the
+    defining module's own top level: a local macro call in the module body does
+    not compile ("undefined function" — the module's own macros don't exist
+    until it is compiled, the same principle that forbids `use __MODULE__` and
+    `@before_compile __MODULE__`, whose docs require the callback to live in a
+    separate module), and a generated `def` inside a function body is illegal
+    ("cannot invoke def inside function"). All three routes verified
+    empirically before widening — the initial design was a timid
+    `__using__`/`__before_compile__`-only whitelist until the "local
+    def-generating macro invoked later in the same module body" counterexample
+    turned out not to compile at all. Bare module-level `quote`s (outside any
+    macro definition) are **not** pruned: `Module.eval_quoted(__MODULE__, …)`
+    really does inject their defs into the module (verified), and scanning them
+    is what keeps that shape safe.
+
+  The same walk feeds the defdelegate sibling set (next note), so both nets got
+  both refinements at once. Regression pins in lift_test: arity-scoped recovery,
+  `__using__`/`__before_compile__`/plain-macro recovery (with compiled-baseline
+  checks), the splicing wildcard, and the `for`-generated def staying blocked.
 - **A `defdelegate` sibling blocks lifting for its exact name/arity** `[done]`.
   Same shadowing hazard, third source — and the most idiomatic one: "handle one
   special case explicitly, delegate the rest." A `defdelegate` expands to a plain
@@ -3283,16 +3324,17 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
   # FunctionClauseError on the unmutated baseline, aborting the whole run
   ```
 
-  `delegated_name_arities/1` walks the non-clause statements (same territory and
-  pruning as `metaprogrammed_def_names/1`) collecting `{name, arity}` pairs from
-  `defdelegate` heads, and `plan_clause_group/5` refuses to lift a matching
-  group. Unlike the metaprogrammed set, this one **is** keyed by exact
-  `{name, arity}` — a delegate head is statically visible, so a same-named
-  function at another arity keeps its lifted mutants. Defaults contribute only
-  the full arity (an explicit def at an implied lower arity is a compile error
-  anyway — "def f/1 conflicts with defaults from f/2"). Warned by
-  `warn_delegated/2`; delegation outranks the other two diagnoses when several
-  apply (it's exact, and neither remedy restores lifting while the delegate
+  `delegated_heads/1` collects `defdelegate` heads via the same shared
+  `collect_heads/3` walk the metaprogrammed set uses (same scope-boundary
+  pruning, same exact-`{name, arity}`-with-splicing-wildcard keying — see the
+  precision passage in the previous note), and `plan_clause_group/5` refuses to
+  lift a matching group; a same-named function at another arity keeps its
+  lifted mutants, and a delegate quoted inside `__using__` boilerplate blocks
+  nothing (it targets the using module). Defaults contribute only the full
+  arity (an explicit def at an implied lower arity is a compile error anyway —
+  "def f/1 conflicts with defaults from f/2"). Warned by `warn_delegated/2`;
+  delegation outranks the other two diagnoses when several apply (it's the
+  most specific message, and no remedy restores lifting while the delegate
   exists). **Deferred:** recognizing the delegate as a *real* sibling clause —
   grouping it into the run so the function lifts with the delegate as an extra
   dispatched clause — would recover the forfeited guard/clause-drop mutants for
@@ -3335,7 +3377,7 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
   **Crucially**,
   the *mixed* case works for free: when a function has both a normal top-level head
   and metaprogrammed heads (`def code(0), do: 53` beside the `for`), the top head
-  falls back to in-place via `metaprogrammed_def_names` and the `for` heads route
+  falls back to in-place via `metaprogrammed_heads` and the `for` heads route
   through `:scaffold` — both bodies mutate in place, independently (no dispatcher, so
   no shadowing). Still **out of scope**: mutating inside `unquote(expr)` here
   (a compile-time scaffold splice, unlike a runtime `quote` unquote), and lifting any of these

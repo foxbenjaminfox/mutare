@@ -353,6 +353,150 @@ defmodule Mutare.LiftTest do
                %{a: 1, n: 1}
     end
 
+    test "a metaprogrammed head blocks only its own arity" do
+      # The `for` generates `list/1` clauses; the module's own `list/2` is an
+      # ordinary, complete top-level function the metaprogramming can never
+      # touch — it must keep its lifted guard/clause-drop mutants. (The
+      # Phoenix.Presence collateral: `__using__` boilerplate reusing short names
+      # at a shifted arity cost `list/2`/`get_by_key/3` their mutants.)
+      source = """
+      defmodule Mutare.ArityScopedMetaFixture do
+        def list(a, b) when a > 0, do: {:pos, a, b}
+        def list(a, b), do: {:other, a, b}
+
+        for name <- [:topic, :presence] do
+          def list(unquote(name)), do: :injected
+        end
+      end
+      """
+
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source, file: "as.ex", mutators: @probe)
+        end)
+
+      assert meta =~ ~r/defp __mutare_list_2_g\d+/
+      assert Enum.any?(sites, &(&1.kind == :lifted))
+      refute log =~ "augmented by compile-time metaprogramming"
+      assert [{Mutare.ArityScopedMetaFixture, _}] = Mutare.Test.Compile.string(meta)
+
+      Selector.put(Selector.baseline())
+      # the generated arity-1 clauses stay reachable beside the lifted list/2
+      assert apply(Mutare.ArityScopedMetaFixture, :list, [:topic]) == :injected
+      assert apply(Mutare.ArityScopedMetaFixture, :list, [1, :x]) == {:pos, 1, :x}
+      assert apply(Mutare.ArityScopedMetaFixture, :list, [0, :x]) == {:other, 0, :x}
+    end
+
+    test "defs quoted in __using__/__before_compile__ do not block lifting" do
+      # Boilerplate quoted inside the two compile-time callbacks targets the
+      # modules that `use`/`@before_compile` this one — never this module itself
+      # (invoking either requires it to already be compiled; `use __MODULE__`
+      # cannot compile). Same name, same arity as the host's own function, and
+      # the host must still lift. Covers both walks: a `def` in `__using__`, a
+      # `defdelegate` in `__before_compile__`.
+      source = """
+      defmodule Mutare.UsingBoilerplateFixture do
+        defmacro __using__(_opts) do
+          quote do
+            def rank(a, b), do: {:injected, a, b}
+          end
+        end
+
+        defmacro __before_compile__(_env) do
+          quote do
+            defdelegate rank(map, key), to: Map, as: :get
+          end
+        end
+
+        def rank(a, b) when a > 0, do: {:pos, a, b}
+        def rank(a, b), do: {:other, a, b}
+      end
+      """
+
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source, file: "ub.ex", mutators: @probe)
+        end)
+
+      assert meta =~ ~r/defp __mutare_rank_2_g\d+/
+      assert Enum.any?(sites, &(&1.kind == :lifted))
+      refute log =~ "augmented by compile-time metaprogramming"
+      refute log =~ "defdelegate"
+      assert [{Mutare.UsingBoilerplateFixture, _}] = Mutare.Test.Compile.string(meta)
+
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.UsingBoilerplateFixture, :rank, [1, :x]) == {:pos, 1, :x}
+      assert apply(Mutare.UsingBoilerplateFixture, :rank, [0, :x]) == {:other, 0, :x}
+    end
+
+    test "defs quoted in any macro definition do not block lifting" do
+      # Macro bodies are scope boundaries to the scan: their code runs only
+      # where the macro is *invoked*, and no invocation can target this module's
+      # own top level — a local macro call in the module body does not compile
+      # (the module's own macros don't exist until it is compiled), and a
+      # generated `def` inside a function body is illegal. So this def-generating
+      # helper, meant for other modules, must not cost the host's own `code/1`
+      # its lifted mutants. (Contrast: a `for`-generated def DOES execute at
+      # this module's compile — the "does not lift a function whose clauses are
+      # augmented by metaprogramming" test above pins that side.)
+      source = """
+      defmodule Mutare.MacroBodyLiftFixture do
+        defmacro defstatus(atom, code) do
+          quote do
+            def code(unquote(atom)), do: unquote(code)
+          end
+        end
+
+        def code(int) when int > 99, do: int
+        def code(_), do: :error
+      end
+      """
+
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source, file: "mb.ex", mutators: @probe)
+        end)
+
+      assert meta =~ ~r/defp __mutare_code_1_g\d+/
+      assert Enum.any?(sites, &(&1.kind == :lifted))
+      refute log =~ "augmented by compile-time metaprogramming"
+      assert [{Mutare.MacroBodyLiftFixture, _}] = Mutare.Test.Compile.string(meta)
+
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.MacroBodyLiftFixture, :code, [200]) == 200
+      assert apply(Mutare.MacroBodyLiftFixture, :code, [50]) == :error
+    end
+
+    test "a spliced generated head blocks the name at every arity" do
+      # `unquote_splicing` makes the generated arity unknowable statically, so
+      # the head degrades to a bare-name wildcard: `g/1` stays unlifted even
+      # though the splice happens to generate `g/2` — conservative on purpose.
+      source = """
+      defmodule Mutare.SplicedMetaFixture do
+        def g(x) when is_integer(x), do: {:int, x}
+        def g(_), do: :other
+
+        for n <- [2] do
+          args = Macro.generate_arguments(n, __MODULE__)
+          def g(unquote_splicing(args)), do: {:generated, unquote(n)}
+        end
+      end
+      """
+
+      {{meta, sites, _next_id}, log} =
+        with_log(fn -> Mutare.Transform.transform_string_with_sites(source, file: "sp.ex") end)
+
+      refute meta =~ "__mutare_g"
+      refute Enum.any?(sites, &(&1.kind == :lifted))
+      assert log =~ "sp.ex: clauses of g/1 are augmented by compile-time metaprogramming"
+      assert [{Mutare.SplicedMetaFixture, _}] = Mutare.Test.Compile.string(meta)
+
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.SplicedMetaFixture, :g, [1]) == {:int, 1}
+      assert apply(Mutare.SplicedMetaFixture, :g, [:a]) == :other
+      assert apply(Mutare.SplicedMetaFixture, :g, [:a, :b]) == {:generated, 2}
+    end
+
     test "a defdelegate of a different arity does not block lifting" do
       # The delegate head's arity is statically visible, so the block is keyed by
       # {name, arity} — `f/2`'s delegate must not cost `f/1` its lifted mutants.

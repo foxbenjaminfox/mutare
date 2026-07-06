@@ -42,16 +42,15 @@ defmodule Mutare.Transform.ModulePlan do
   def build(statements, mutators, file) do
     chunks = chunk_clause_runs(statements)
     non_consecutive = non_consecutive_signatures(chunks)
-    metaprogrammed = metaprogrammed_def_names(chunks)
-    delegated = delegated_name_arities(chunks)
+    metaprogrammed = metaprogrammed_heads(chunks)
+    delegated = delegated_heads(chunks)
     # Each blocked signature gets exactly one warning, for its binding reason.
-    # Delegation wins the diagnosis when it applies: it is keyed by exact
-    # {name, arity}, so it is never a false positive, and neither of the other
-    # two remedies (grouping clauses, nothing) would restore lifting while the
-    # defdelegate exists. Metaprogramming wins over non-consecutive: grouping
-    # the clauses can't enable lifting (the generated clauses still force
-    # in-place), so the non-consecutive advice ("group the clauses") would
-    # mislead.
+    # Delegation wins the diagnosis when it applies — the delegate is a concrete,
+    # named sibling clause, the most specific thing we can tell the user, and no
+    # other remedy restores lifting while it exists. Metaprogramming wins over
+    # non-consecutive: grouping the clauses can't enable lifting (the generated
+    # clauses still force in-place), so the non-consecutive advice ("group the
+    # clauses") would mislead.
     warn_delegated(delegated_signatures(chunks, delegated), file)
 
     warn_metaprogrammed(
@@ -107,22 +106,28 @@ defmodule Mutare.Transform.ModulePlan do
     #
     # Same hazard, different source: a function whose clause set is *augmented by
     # compile-time metaprogramming* — a module-level `for`/macro that `def`s the
-    # same name (`def code(integer) when …` beside `for … do def code(atom) …`).
+    # same signature (`def code(integer) when …` beside `for … do def code(atom) …`).
     # Those generated clauses are invisible here (they live inside an `{:other}`
     # statement), so the run looks complete and consecutive; lifting it installs a
     # dispatcher that shadows every metaprogrammed clause and forwards to a lifted
     # group missing them — a guaranteed `FunctionClauseError`. Refuse to lift any
-    # name that is also defined inside a non-`def` statement.
+    # signature whose head is also generated inside a non-`def` statement.
     #
     # A `defdelegate` sharing the name/arity is the same shadowing hazard in its
     # most idiomatic form ("one explicit clause for the special case, delegate the
     # rest" — hit for real on `Phoenix.Controller.assign/2`): the delegate expands
     # to a sibling `def` clause invisible to this grouping, so the lifted run's
     # unconditional public wrapper would shadow it and the delegate's inputs would
-    # crash *at baseline*, no mutant active. Delegates carry an exact, statically
-    # visible arity, so this check is keyed by {name, arity}, not bare name.
-    if signature in non_consecutive or name in metaprogrammed or
-         {name, arity} in delegated do
+    # crash *at baseline*, no mutant active.
+    #
+    # Both sets are keyed by exact {name, arity} — a same-named function at
+    # another arity keeps its lifted mutants — degrading to an arity-wildcard on
+    # the bare name only where `unquote_splicing` makes a generated head's arity
+    # unknowable. `collect_heads/3` owns the walk, its keying, and its pruning
+    # rules (including why macro bodies — `__using__` boilerplate above all —
+    # don't count).
+    if signature in non_consecutive or blocked?({name, arity}, metaprogrammed) or
+         blocked?({name, arity}, delegated) do
       {:in_place, clauses}
     else
       case FunctionPlan.plan(signature, clauses, mutators) do
@@ -191,13 +196,13 @@ defmodule Mutare.Transform.ModulePlan do
   end
 
   # The non-consecutive signatures whose binding reason really *is* being
-  # non-consecutive — i.e. not also metaprogrammed (which is keyed by name only,
-  # and refuses lifting at the name level regardless of consecutiveness, so its
-  # warning is the accurate one) or delegated. Dropping those here avoids a
-  # misleading "group the clauses" suggestion that grouping wouldn't honour.
+  # non-consecutive — i.e. not also metaprogrammed or delegated (either of which
+  # refuses lifting regardless of consecutiveness, so its warning is the accurate
+  # one). Dropping those here avoids a misleading "group the clauses" suggestion
+  # that grouping wouldn't honour.
   defp non_consecutive_only(non_consecutive, metaprogrammed, delegated) do
     Enum.reject(non_consecutive, fn {_vis, name, arity} ->
-      name in metaprogrammed or {name, arity} in delegated
+      blocked?({name, arity}, metaprogrammed) or blocked?({name, arity}, delegated)
     end)
   end
 
@@ -215,52 +220,23 @@ defmodule Mutare.Transform.ModulePlan do
 
   # --- metaprogramming-augmented signatures ----------------------------------
 
-  # Names `def`/`defp`'d *inside* a non-clause statement (a module-level `for`,
-  # `if`, `Enum.each`, macro body, …). A function with such a name may gain
+  # Heads `def`/`defp`'d *inside* a non-clause statement (a module-level `for`,
+  # `if`, `Enum.each`, macro body, …). A function with such a head may gain
   # clauses at compile time that aren't visible as top-level `def` statements, so
   # its top-level run is not the whole function and must not be lifted (the
-  # dispatcher would shadow the generated clauses). Nested module/protocol bodies
-  # are a different scope — their defs can't add clauses here — so the walk is
-  # pruned at those boundaries.
-  defp metaprogrammed_def_names(chunks) do
-    chunks
-    |> Enum.flat_map(fn
-      {:other, statement} -> nested_def_names(statement)
-      {:clauses, _clauses} -> []
-    end)
-    |> MapSet.new()
-  end
-
-  defp nested_def_names(statement) do
-    {_ast, names} =
-      Macro.prewalk(statement, [], fn
-        {form, _meta, _args}, acc when form in [:defmodule, :defimpl, :defprotocol] ->
-          # Prune: return a leaf so prewalk does not descend into the nested scope.
-          {:__mutare_pruned__, acc}
-
-        {form, _meta, [head | _rest]} = node, acc when form in [:def, :defp] ->
-          case name_arity(head) do
-            {name, _arity} -> {node, [name | acc]}
-            :error -> {node, acc}
-          end
-
-        node, acc ->
-          {node, acc}
-      end)
-
-    names
-  end
+  # dispatcher would shadow the generated clauses). Collected by the shared
+  # `collect_heads/4` walk — see its comment for the pruning and keying rules.
+  defp metaprogrammed_heads(chunks), do: collect_chunk_heads(chunks, [:def, :defp])
 
   # The top-level clause-group signatures blocked from lifting by metaprogramming,
   # for the warning. Deduplicated by signature. Metaprogramming outranks
-  # non-consecutiveness as the diagnosis (it refuses lifting at the name level),
-  # but yields to delegation, whose exact {name, arity} keying makes it the more
-  # precise reason — see the precedence note in `build/3`.
+  # non-consecutiveness as the diagnosis, but yields to delegation — see the
+  # precedence note in `build/3`.
   defp metaprogrammed_signatures(chunks, metaprogrammed, delegated) do
     chunks
     |> clause_group_signatures()
     |> Enum.filter(fn {_vis, name, arity} ->
-      name in metaprogrammed and {name, arity} not in delegated
+      blocked?({name, arity}, metaprogrammed) and not blocked?({name, arity}, delegated)
     end)
   end
 
@@ -278,59 +254,15 @@ defmodule Mutare.Transform.ModulePlan do
 
   # --- defdelegate siblings ---------------------------------------------------
 
-  # {name, arity} pairs defined by a `defdelegate` anywhere in this statement
-  # sequence (top level, or nested inside a non-clause statement — the same
-  # territory metaprogrammed_def_names/1 covers). A delegate expands to a plain
-  # `def` clause of that exact name/arity, but its AST form is `:defdelegate`,
-  # invisible to clause_signature/1 — so a sibling top-level run of the same
-  # signature looks complete and would lift, installing an unconditional public
-  # wrapper that shadows the delegate clause and crashes the delegate's inputs
-  # at *baseline*, no mutant active. Unlike metaprogrammed defs, a delegate head
-  # is statically visible, so the exact arity is known — this set is keyed by
-  # {name, arity}, never blocking same-named functions of other arities.
-  #
-  # Default arguments (`defdelegate f(a, b \\ [])`) contribute only the full
-  # arity: an explicit def at one of the implied lower arities cannot legally
-  # coexist with the defaults anyway ("def f/1 conflicts with defaults from
-  # f/2" is a compile error), so no compilable module needs them blocked.
-  defp delegated_name_arities(chunks) do
-    chunks
-    |> Enum.flat_map(fn
-      {:other, statement} -> nested_delegated_name_arities(statement)
-      {:clauses, _clauses} -> []
-    end)
-    |> MapSet.new()
-  end
-
-  defp nested_delegated_name_arities(statement) do
-    {_ast, name_arities} =
-      Macro.prewalk(statement, [], fn
-        {form, _meta, _args}, acc when form in [:defmodule, :defimpl, :defprotocol] ->
-          # Prune: return a leaf so prewalk does not descend into the nested scope.
-          {:__mutare_pruned__, acc}
-
-        {:defdelegate, _meta, [funs | _opts]} = node, acc ->
-          {node, delegate_name_arities(funs) ++ acc}
-
-        node, acc ->
-          {node, acc}
-      end)
-
-    name_arities
-  end
-
-  # `defdelegate` historically accepted a list of heads; List.wrap/1 keeps the
-  # extraction total over both the single-head and list shapes.
-  defp delegate_name_arities(funs) do
-    funs
-    |> List.wrap()
-    |> Enum.flat_map(fn head ->
-      case name_arity(head) do
-        {name, arity} -> [{name, arity}]
-        :error -> []
-      end
-    end)
-  end
+  # Heads defined by a `defdelegate` anywhere in this statement sequence (top
+  # level, or nested inside a non-clause statement — the same `collect_heads/4`
+  # walk the metaprogrammed set uses). A delegate expands to a plain `def` clause
+  # of its head's exact name/arity, but its AST form is `:defdelegate`, invisible
+  # to clause_signature/1 — so a sibling top-level run of the same signature
+  # looks complete and would lift, installing an unconditional public wrapper
+  # that shadows the delegate clause and crashes the delegate's inputs at
+  # *baseline*, no mutant active.
+  defp delegated_heads(chunks), do: collect_chunk_heads(chunks, [:defdelegate])
 
   # The top-level clause-group signatures blocked from lifting by a defdelegate
   # sibling, for the warning. Delegation is the binding diagnosis whenever it
@@ -338,7 +270,7 @@ defmodule Mutare.Transform.ModulePlan do
   defp delegated_signatures(chunks, delegated) do
     chunks
     |> clause_group_signatures()
-    |> Enum.filter(fn {_vis, name, arity} -> {name, arity} in delegated end)
+    |> Enum.filter(fn {_vis, name, arity} -> blocked?({name, arity}, delegated) end)
   end
 
   # Mirror of warn_metaprogrammed/2 for the defdelegate case: the delegate is an
@@ -352,4 +284,107 @@ defmodule Mutare.Transform.ModulePlan do
       )
     end)
   end
+
+  # --- nested-head collection (the shared walk) -------------------------------
+
+  # Both safety-net sets — metaprogrammed def/defp heads and defdelegate heads —
+  # come from this one walk over the non-clause statements, returning
+  # `{exact, wildcard}`: a MapSet of `{name, arity}` pairs plus a MapSet of bare
+  # names blocked at *every* arity. Query with `blocked?/2`.
+  #
+  # Keying: a head found inside a `for`/`if`/`Enum.each` body usually has a
+  # statically certain arity — `def code(unquote(atom))` is arity 1 no matter
+  # what `atom` unquotes to — so it blocks only its own `{name, arity}` and
+  # same-named functions at other arities keep their lifted mutants (the
+  # Phoenix.Presence collateral: `__using__` boilerplate reusing short names at
+  # a shifted arity cost real functions their guard/clause-drop mutants).
+  # `unquote_splicing` in the args is the exception — the real arity is
+  # unknowable — so such a head degrades to the bare-name wildcard. A fully
+  # dynamic name (`def unquote(name)(…)`) is statically invisible and
+  # contributes nothing: the accepted residual hole (see NOTES
+  # "Metaprogramming-augmented clauses"). Defaults in a generated head
+  # contribute only the full arity — an explicit def at an implied lower arity
+  # cannot legally coexist with the defaults anyway ("def f/1 conflicts with
+  # defaults from f/2" is a compile error).
+  #
+  # Pruned as scope boundaries — their defs can't add clauses here:
+  #
+  #   * nested `defmodule`/`defimpl`/`defprotocol` — a different module scope;
+  #   * `defmacro`/`defmacrop` bodies — a macro's body (quoted or not) runs only
+  #     where the macro is *invoked*, and no invocation can target this module's
+  #     own top level: a local macro call in the module body does not compile
+  #     ("undefined function" — the module's own macros don't exist until it is
+  #     compiled, the same principle that forbids `use __MODULE__` and
+  #     `@before_compile __MODULE__`), and inside a function body a generated
+  #     `def` is illegal ("cannot invoke def inside function"). All verified
+  #     empirically; the `use`-boilerplate shape this recovers is pinned in
+  #     lift_test. So quoted defs in `__using__`/`__before_compile__`/any
+  #     def-generating macro target only *other* modules.
+  #
+  # A bare module-level `quote` (outside any macro definition) is NOT pruned:
+  # its AST can be fed to `Module.eval_quoted(__MODULE__, …)`, which really does
+  # inject defs into this module — scanning it is what keeps that shape safe.
+  defp collect_chunk_heads(chunks, forms) do
+    Enum.reduce(chunks, {MapSet.new(), MapSet.new()}, fn
+      {:other, statement}, acc -> collect_heads(statement, forms, acc)
+      {:clauses, _clauses}, acc -> acc
+    end)
+  end
+
+  # Whether `{name, arity}` is blocked by a collected `{exact, wildcard}` set.
+  defp blocked?({name, arity}, {exact, wildcard}),
+    do: name in wildcard or {name, arity} in exact
+
+  @scope_boundaries [:defmodule, :defimpl, :defprotocol, :defmacro, :defmacrop]
+
+  defp collect_heads(statement, forms, initial) do
+    {_ast, acc} =
+      Macro.prewalk(statement, initial, fn
+        {form, _meta, _args}, acc when form in @scope_boundaries ->
+          # Prune: return a leaf so prewalk does not descend into the boundary.
+          {:__mutare_pruned__, acc}
+
+        {form, _meta, [_ | _]} = node, acc ->
+          if form in forms, do: {node, collect_node(node, acc)}, else: {node, acc}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    acc
+  end
+
+  # `defdelegate` historically accepted a list of heads; List.wrap/1 keeps the
+  # extraction total over both the single-head and list shapes.
+  defp collect_node({:defdelegate, _meta, [funs | _opts]}, acc) do
+    funs |> List.wrap() |> Enum.reduce(acc, &classify_head/2)
+  end
+
+  defp collect_node({form, _meta, [head | _rest]}, acc) when form in [:def, :defp] do
+    classify_head(head, acc)
+  end
+
+  defp collect_node(_node, acc), do: acc
+
+  defp classify_head(head, {exact, wildcard} = acc) do
+    case name_arity(head) do
+      # A dynamic name — statically invisible; the accepted residual hole.
+      :error ->
+        acc
+
+      {name, arity} ->
+        if spliced?(head) do
+          {exact, MapSet.put(wildcard, name)}
+        else
+          {MapSet.put(exact, {name, arity}), wildcard}
+        end
+    end
+  end
+
+  defp spliced?({:when, _, [call | _guards]}), do: spliced?(call)
+
+  defp spliced?({_name, _, args}) when is_list(args),
+    do: Enum.any?(args, &match?({:unquote_splicing, _, _}, &1))
+
+  defp spliced?(_head), do: false
 end
