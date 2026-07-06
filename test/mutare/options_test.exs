@@ -505,6 +505,33 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":time_budget" do
+    test "defaults to nil (no budget) and accepts a duration string, stored verbatim" do
+      assert Options.new([]).time_budget == nil
+      assert Options.new(time_budget: nil).time_budget == nil
+      assert Options.new(time_budget: "10m").time_budget == "10m"
+      assert Options.new(time_budget: "1h30m").time_budget == "1h30m"
+    end
+
+    test "re-validating an existing struct is idempotent (the stored string re-parses)" do
+      opts = Options.new(time_budget: "90s")
+      assert Options.new(opts) == opts
+    end
+
+    test "rejects a bare number (string or integer) — the unit is ambiguous" do
+      assert_raise ArgumentError, ~r/:time_budget/, fn -> Options.new(time_budget: "600") end
+      assert_raise ArgumentError, ~r/:time_budget/, fn -> Options.new(time_budget: 600) end
+    end
+
+    test "rejects malformed duration strings" do
+      for bad <- ["", "30s10m", "10d", "10M", " 10m", "0s"] do
+        assert_raise ArgumentError, ~r/:time_budget/, fn ->
+          Options.new(time_budget: bad)
+        end
+      end
+    end
+  end
+
   describe ":min_score" do
     test "accepts nil or a number in 0..100" do
       assert Options.new(min_score: nil).min_score == nil

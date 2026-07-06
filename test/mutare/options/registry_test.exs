@@ -40,6 +40,7 @@ defmodule Mutare.Options.RegistryTest do
              max_harness_error_rate: :float,
              max_mutants: :integer,
              max_survivors: :integer,
+             time_budget: :string,
              min_score: :float,
              max_no_coverage: :integer,
              fail_on_poisoned: :boolean,
@@ -106,6 +107,7 @@ defmodule Mutare.Options.RegistryTest do
              {"max_harness_error_rate", "0.5"},
              {"max_mutants", "(no cap)"},
              {"max_survivors", "(no cap)"},
+             {"time_budget", "(no budget)"},
              {"min_score", "(no gate)"},
              {"max_no_coverage", "(no gate)"},
              {"fail_on_poisoned", "false"},
@@ -141,6 +143,7 @@ defmodule Mutare.Options.RegistryTest do
         max_harness_error_rate: nil,
         max_mutants: 1,
         max_survivors: 1,
+        time_budget: "10m",
         min_score: 1,
         max_no_coverage: 1,
         sandbox: "/tmp/mutare-sandbox",
@@ -166,6 +169,7 @@ defmodule Mutare.Options.RegistryTest do
     assert rows["max_harness_error_rate"] == "nil"
     assert rows["max_mutants"] == "1"
     assert rows["max_survivors"] == "1"
+    assert rows["time_budget"] == "10m"
     assert rows["min_score"] == "1"
     assert rows["max_no_coverage"] == "1"
     assert rows["sandbox"] == "/tmp/mutare-sandbox"

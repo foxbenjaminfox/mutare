@@ -376,6 +376,26 @@ defmodule Mutare.Options.Registry do
         ":max_survivors must be a positive integer or nil"
       )
 
+  # nil (the default) sets no wall-clock budget. Otherwise a duration *string* —
+  # "10m", "90s", "1h30m" (units h/m/s; see `Mutare.Duration`). It is stored as the
+  # string (validated well-formed here) and parsed to milliseconds by `Mutare.Runner`,
+  # which stops launching new mutants once the budget elapses and drains the in-flight
+  # ones — the same drain-don't-kill early stop as `:max_survivors`. A bare number is
+  # rejected on purpose: `600` gives no unit, so we won't guess seconds vs milliseconds.
+  defp validate_time_budget!(nil), do: nil
+
+  defp validate_time_budget!(budget) when is_binary(budget) do
+    case Mutare.Duration.parse(budget) do
+      {:ok, _ms} -> budget
+      {:error, reason} -> raise ArgumentError, ":time_budget #{reason}, got: #{inspect(budget)}"
+    end
+  end
+
+  defp validate_time_budget!(other) do
+    raise ArgumentError,
+          ~s(:time_budget must be a duration string like "10m" or nil, got: #{inspect(other)})
+  end
+
   defp validate_min_score!(score),
     do:
       validate_nullable!(
@@ -484,6 +504,9 @@ defmodule Mutare.Options.Registry do
 
   defp show_cap(nil), do: "(no cap)"
   defp show_cap(n), do: to_string(n)
+
+  defp show_time_budget(nil), do: "(no budget)"
+  defp show_time_budget(budget), do: budget
 
   defp show_gate(nil), do: "(no gate)"
   defp show_gate(n), do: to_string(n)
@@ -636,6 +659,13 @@ defmodule Mutare.Options.Registry do
         cli: :integer,
         show: &show_cap/1,
         validate: &validate_max_survivors!/1
+      ),
+      spec(
+        key: :time_budget,
+        default: nil,
+        cli: :string,
+        show: &show_time_budget/1,
+        validate: &validate_time_budget!/1
       ),
       spec(
         key: :min_score,

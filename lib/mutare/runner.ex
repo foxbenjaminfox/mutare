@@ -6,7 +6,7 @@ defmodule Mutare.Runner do
 
   The compile step distinguishes Mix dependency validation from actual compile-poisoning. A dependency failure returns `:dependency_failed` immediately: dropping mutant ids cannot repair copied dependency state, so it never enters poison recovery. The Mix task then points remediation at the original project rather than the disposable sandbox. The compile also carries a wall-clock cap (`:compile_timeout`, default 30 minutes, `nil` to disable): a config-hosted sibling of the per-mutant timeout watcher self-halts a pathological compile, surfaced as `:compile_timed_out` — likewise never fed to poison recovery, since there is no error to attribute and a rebuild cannot make an oversized compile faster.
 
-  `run/2` returns `{:ok, %Mutare.Run{}}`: the `Mutare.Schema` that was run, the list of per-mutant `Mutare.Result`s, the sandbox path, the baseline run's wall-clock in milliseconds, and whether `:max_survivors` stopped the run early.
+  `run/2` returns `{:ok, %Mutare.Run{}}`: the `Mutare.Schema` that was run, the list of per-mutant `Mutare.Result`s, the sandbox path, the baseline run's wall-clock in milliseconds, and whether an early-stop condition (`:max_survivors` or `:time_budget`) stopped the run early.
 
   ## Baseline + coverage probe
 
@@ -22,9 +22,11 @@ defmodule Mutare.Runner do
 
   Even a scaled cap can be overrun by a slow-but-finite run, and survivors are the most exposed (a kill exits at its first failing test; a survivor must run its entire selected set). A false `:timeout` is a false kill hiding a true survivor, so by default (`:confirm_timeouts`) a streamed `:timeout` is *provisional*: after the stream drains, each timed-out mutant is re-run sequentially — no contention — with the same cap, and that verdict is recorded instead. Only a repeat overrun records `:timeout`; a genuine hang pays one extra cap. `confirm_timeouts: false` (`--no-confirm-timeouts`) records the first overrun as-is.
 
-  ## Early stop after N survivors (`:max_survivors`)
+  ## Early stop: survivor cap (`:max_survivors`) or time budget (`:time_budget`)
 
-  `:max_survivors` (`--max-survivors`) stops the per-mutant loop once that many survivors (`:survived` results) have surfaced, for an iterate-and-fix workflow that wants a handful of concrete test gaps rather than a full run. Unlike `:max_mutants` (a `Mutare.Schema` cap on candidate *sites*), every mutant is still compiled in — only the *run* halts early. The per-mutant stream is consumed `ordered: true`, so the stop is deterministic: the Nth survivor in source order, regardless of which worker finished first, and the reported survivors are exactly the first N. Runs already in flight when the cap is hit are *drained* (not killed), so the sandbox teardown never races a live `mix` subprocess. The returned run carries `stopped_early`; on an early stop the harness-error abort guard is skipped (the score is already a partial prefix — the Mix task notes it and skips the `--min-score` gate too), since aborting would discard the very survivors the user asked to find.
+  Two conditions can stop the per-mutant loop before every mutant runs, whichever fires first. `:max_survivors` (`--max-survivors`) stops once that many survivors (`:survived` results) have surfaced — an iterate-and-fix workflow that wants a handful of concrete test gaps rather than a full run. `:time_budget` (`--time-budget`, a duration string like `"10m"` parsed by `Mutare.Duration`) stops once that much wall-clock elapses in the per-mutant phase — a "see what I can get in ten minutes" run. The clock starts as the phase begins (compile/baseline/probe are not charged against it) and is read when each result *lands*, which under `Task.async_stream` is exactly when a worker slot frees and the next mutant would launch — so no out-of-band timer is needed, and the stop lands at most one in-flight mutant's runtime past the budget.
+
+  Unlike `:max_mutants` (a `Mutare.Schema` cap on candidate *sites*), both leave every mutant compiled in — only the *run* halts early. The per-mutant stream is consumed `ordered: true`, so a survivor stop is deterministic: the Nth survivor in source order, regardless of which worker finished first, and the reported survivors are exactly the first N. (A time-budget stop is not deterministic — it depends on how far the run got.) Runs already in flight when either condition trips are *drained* (not killed), so the sandbox teardown never races a live `mix` subprocess. The returned run carries `stopped_early`; on an early stop the harness-error abort guard is skipped (the score is already a partial prefix — the Mix task notes it and skips the `--min-score` gate too), since aborting would discard the very survivors the user asked to find.
 
   ## Per-worker partitioning (DB isolation)
 
@@ -50,7 +52,20 @@ defmodule Mutare.Runner do
   The mitigation is `:max_heap_mb` (`--max-heap-mb`, off by default): a per-process BEAM heap cap injected into every *runtime* sandbox run — baseline, coverage probe, per-mutant — so a runaway-allocation mutant dies as an ordinary, fast test failure inside its own run instead of endangering the host. The baseline running under the same cap validates up front that the suite itself fits under it. The one metamutant compile is deliberately not capped. Mechanism and sizing guidance: `Mutare.Sandbox.Command.Invocation.heap_cap_env/1`.
   """
 
-  alias Mutare.{Options, Poison, Project, Report, Result, Run, Sandbox, Schema, Selector, Site}
+  alias Mutare.{
+    Duration,
+    Options,
+    Poison,
+    Project,
+    Report,
+    Result,
+    Run,
+    Sandbox,
+    Schema,
+    Selector,
+    Site
+  }
+
   alias Mutare.Run.Context
   alias Mutare.Runner.{Baseline, CoverageProbe, Hydrate, Partitions}
   alias Mutare.Sandbox.{Command, CompilerOptions}
@@ -310,8 +325,9 @@ defmodule Mutare.Runner do
   end
 
   # Run every site through `classify` concurrently (one partition slot per lane), reporting each
-  # result as it lands, and collect in source order — stopping early at the Nth survivor when
-  # `--max-survivors` is set. Returns `{results, stopped_early?}`.
+  # result as it lands, and collect in source order — stopping early at the Nth survivor
+  # (`--max-survivors`) or once the wall-clock budget elapses (`--time-budget`), whichever comes
+  # first. Returns `{results, stopped_early?}`.
   defp stream_and_collect(schema, ctx, partitions, %Options{} = options, on_start, reporter) do
     # Set once the survivor cap is reached (`collect_until_survivors/3`): tasks that start *after*
     # it skip their real run, letting the collector **drain** the rest of the stream cheaply rather
@@ -355,7 +371,18 @@ defmodule Mutare.Runner do
       ordered: true,
       timeout: :infinity
     )
-    |> collect_until_survivors(options.max_survivors, capped)
+    |> collect_until_stop(options.max_survivors, deadline(options.time_budget), capped)
+  end
+
+  # The monotonic instant the wall-clock budget (`--time-budget`) expires, or nil when unset. Read
+  # once, here, so the clock starts as the per-mutant phase begins (compile/baseline/probe are not
+  # charged against it — the budget is "how long to spend running mutants"). The string is already
+  # validated by `Options`, so parsing cannot fail.
+  defp deadline(nil), do: nil
+
+  defp deadline(time_budget) do
+    {:ok, ms} = Duration.parse(time_budget)
+    System.monotonic_time(:millisecond) + ms
   end
 
   # A complete run applies the harness-error abort guard; an early stop
@@ -380,22 +407,29 @@ defmodule Mutare.Runner do
     Baseline.run(sandbox, baseline_runs, baseline_retries, env)
   end
 
-  # Consume the ordered per-mutant result stream. With no `:max_survivors` cap we drain the whole
-  # stream; with a cap we record results until the Nth `:survived`, then signal `capped` (so tasks
-  # not yet started skip — see `stream_and_collect/6`) and **drain the rest** rather than halting.
-  # Returns `{results_in_source_order, stopped_early?}`.
+  # Consume the ordered per-mutant result stream. With neither early-stop condition set we drain the
+  # whole stream; otherwise we record results until the Nth `:survived` (`--max-survivors`) or the
+  # wall-clock budget elapses (`--time-budget`) — whichever fires first — then signal `capped` (so
+  # tasks not yet started skip — see `stream_and_collect/6`) and **drain the rest** rather than
+  # halting. Returns `{results_in_source_order, stopped_early?}`.
   #
-  # Because the stream is consumed `ordered: true`, the stop point is the Nth survivor *in source
-  # order* — deterministic regardless of which worker finished first — so the reported survivors are
-  # exactly the first N. We drain (not halt) so the in-flight `mix test` runs already started past
-  # the trigger finish cleanly instead of being killed mid-write; their real results are discarded,
-  # and every post-trigger site comes back as a cheap `:capped` skip. Draining is what keeps the
-  # sandbox/project teardown from racing a dying subprocess. See NOTES "Early stop after N survivors".
-  defp collect_until_survivors(stream, nil, _capped) do
+  # Because the stream is consumed `ordered: true`, a survivor stop is deterministic: the Nth
+  # survivor *in source order*, regardless of which worker finished first, so the reported survivors
+  # are exactly the first N. The deadline is only observed when a result *lands* — which, under
+  # `Task.async_stream`, is exactly when a worker slot frees and the next mutant would launch, so
+  # checking it here gates launches at precisely the right moments (an out-of-band timer would gain
+  # nothing: nothing launches between landings). The consequence is that the stop lands at most one
+  # in-flight mutant's runtime past the deadline — the same bounded overrun the survivor path has.
+  #
+  # We drain (not halt) either way, so the in-flight `mix test` runs already started past the trigger
+  # finish cleanly instead of being killed mid-write; their real results are discarded, and every
+  # post-trigger site comes back as a cheap `:capped` skip. Draining is what keeps the sandbox/project
+  # teardown from racing a dying subprocess. See NOTES "Early stop after N survivors".
+  defp collect_until_stop(stream, nil, nil, _capped) do
     {Enum.map(stream, fn {:ok, result} -> result end), false}
   end
 
-  defp collect_until_survivors(stream, limit, capped) do
+  defp collect_until_stop(stream, limit, deadline, capped) do
     {acc, _survivors, stopped} =
       Enum.reduce(stream, {[], 0, false}, fn
         # A task that skipped because the cap was already set — discard.
@@ -403,7 +437,7 @@ defmodule Mutare.Runner do
           state
 
         # An in-flight straggler that finished its real run after the cap — drain but discard,
-        # keeping the reported set to exactly the first N survivors.
+        # keeping the reported set to exactly the mutants evaluated before the stop.
         {:ok, _result}, {acc, survivors, true} ->
           {acc, survivors, true}
 
@@ -411,7 +445,7 @@ defmodule Mutare.Runner do
           survivors = survivors + survivor_count(result)
           acc = [result | acc]
 
-          if survivors >= limit do
+          if stop_now?(survivors, limit, deadline) do
             :atomics.put(capped, 1, 1)
             {acc, survivors, true}
           else
@@ -421,6 +455,14 @@ defmodule Mutare.Runner do
 
     {Enum.reverse(acc), stopped}
   end
+
+  # Stop once the survivor cap is reached or the wall-clock budget has elapsed (either may be unset).
+  defp stop_now?(survivors, limit, deadline) do
+    (limit != nil and survivors >= limit) or past_deadline?(deadline)
+  end
+
+  defp past_deadline?(nil), do: false
+  defp past_deadline?(deadline), do: System.monotonic_time(:millisecond) >= deadline
 
   # 1 for a survivor (`:survived`), 0 otherwise — the only status `--max-survivors`
   # counts. A timeout/atom-exhaustion is a kill, and no-coverage/ignored/poisoned/

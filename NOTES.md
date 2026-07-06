@@ -952,11 +952,13 @@ whole test suite. That replaces the fragile parser with ~30 lines and lets the
 rest of the abandoned design (marker file, restore snippet, conditional argv)
 stand as written.
 
-### Early stop after N survivors `[done]`
+### Early stop: survivor cap and time budget `[done]`
 `--max-survivors N` is for the iterate-and-fix loop: surface a handful of concrete test gaps, not a
-full score. Every mutant is still compiled in (only `--max-mutants`, a `Mutare.Schema` site cap,
-reduces *what is built*); the **run** halts once N survivors have surfaced. Two decisions make it
-well-behaved:
+full score. `--time-budget "10m"` (added later) is the sibling for a fixed wall-clock window: "see
+what I can get in ten minutes." Both are *run-loop* early stops sharing one mechanism — every mutant
+is still compiled in (only `--max-mutants`, a `Mutare.Schema` site cap, reduces *what is built*); the
+**run** halts once its condition trips, whichever fires first. `collect_until_stop/4` ORs the two
+conditions into the one drain trigger. Several decisions make it well-behaved:
 
 - **Stop at the Nth survivor in *source order*, not the Nth-to-finish.** The per-mutant stream is
   consumed `ordered: true`, so the cap triggers on the Nth survivor by position — deterministic
@@ -975,7 +977,27 @@ well-behaved:
   rather than halting — the already-in-flight stragglers (≤ one per worker, the same handful that ran
   before) finish cleanly and are discarded; every later site is a trivial skip. So no extra mutant is
   actually run, and no live subprocess outlives the run to race teardown. See
-  `Mutare.Runner.collect_until_survivors/3`.
+  `Mutare.Runner.collect_until_stop/4`.
+
+- **The budget clock is read per-landing, not on a timer.** `collect_until_stop/4` checks the
+  deadline in the same reduce that receives each result. That looks like it could miss the deadline
+  while all workers are mid-run — but under `Task.async_stream` a result landing is *exactly* when a
+  worker slot frees and the next mutant would launch, so the check gates launches at precisely the
+  moments that matter; nothing launches *between* landings, so an out-of-band `send_after` + atomics
+  timer would gain nothing (and we drain rather than preempt in-flight runs anyway). The one
+  consequence is that the stop lands up to one in-flight mutant's runtime past the budget — the same
+  bounded overrun the survivor path already has.
+
+- **The budget is a duration *string*, stored un-canonicalized; parsed to ms at use.** `--time-budget`
+  takes `"10m"`/`"90s"`/`"1h30m"` (`Mutare.Duration`), never a bare number — `600` gives no unit and
+  we won't guess seconds vs milliseconds. It is tempting to canonicalize to integer ms in the
+  `Options` validator, but that reopens the bare-number footgun: `Options.new(%Options{})`
+  re-validates the *stored* value, so accepting an integer for idempotency would also silently accept
+  `time_budget: 600` from `.mutare.exs`. Keeping the string as the canonical form makes re-validation
+  trivially idempotent and the rejection unconditional; the runner parses it once, when the phase
+  begins. The clock therefore starts at the *mutant phase*, not process start — compile/baseline/probe
+  are not charged against it (they have their own caps), so the budget means "time spent running
+  mutants."
 
 ### Umbrella support `[M5, done; was in progress]`
 Following the cargo-mutants precedent: **copy the whole umbrella, mutate a scoped

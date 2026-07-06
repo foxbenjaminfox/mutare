@@ -196,6 +196,12 @@ defmodule Mix.Tasks.Mutare do
                                           #   (in source order) — surface a few test
                                           #   gaps to fix without a full run. The result
                                           #   set is then partial, so CI gates are skipped
+      mix mutare --time-budget 10m        # stop launching new mutants once 10 minutes of
+                                          #   the per-mutant phase elapse (units h/m/s,
+                                          #   e.g. 90s, 1h30m), draining the in-flight ones.
+                                          #   "see what I can get in 10 minutes"; like
+                                          #   --max-survivors the result set is partial, so
+                                          #   CI gates are skipped
       mix mutare --verbose                # narrate what's happening at each step: a
                                           #   line per mutant (with its duration) plus
                                           #   per-phase detail — compile time, baseline
@@ -321,6 +327,11 @@ defmodule Mix.Tasks.Mutare do
         # stop the run once the first N surviving mutants are found (an
         # iterate-and-fix workflow); the partial result set skips CI gates
         max_survivors: nil,
+        # stop launching new mutants once this much wall-clock time in the
+        # per-mutant phase elapses — a duration string like "10m"/"90s"/"1h30m"
+        # (nil = no budget); in-flight mutants drain, and the partial result set
+        # skips CI gates, exactly like max_survivors
+        time_budget: nil,
 
         # --- sandbox reuse / build cache (see "Sandbox and build cache" above) ---
         sandbox: nil,
@@ -723,13 +734,19 @@ defmodule Mix.Tasks.Mutare do
   defp cap_label(%Options{max_mutants: nil}), do: ""
   defp cap_label(%Options{max_mutants: n}), do: " (--max-mutants #{n})"
 
-  # `--max-survivors` doesn't reduce the candidate count (every mutant is still
-  # compiled in), but the run may end early once N survivors surface, so flag it
-  # up front rather than have the run stop unexpectedly.
-  defp stop_label(%Options{max_survivors: nil}), do: ""
+  # Neither `--max-survivors` nor `--time-budget` reduces the candidate count (every mutant is still
+  # compiled in), but either may end the run early — the first once N survivors surface, the second
+  # once the wall-clock budget elapses — so flag them up front rather than have the run stop
+  # unexpectedly.
+  defp stop_label(%Options{} = options), do: survivor_label(options) <> budget_label(options)
 
-  defp stop_label(%Options{max_survivors: n}),
+  defp survivor_label(%Options{max_survivors: nil}), do: ""
+
+  defp survivor_label(%Options{max_survivors: n}),
     do: " (stop after #{n} survivor#{CLI.plural(n)})"
+
+  defp budget_label(%Options{time_budget: nil}), do: ""
+  defp budget_label(%Options{time_budget: budget}), do: " (time budget #{budget})"
 
   # Warn about every comment that claims the reserved `mutare:` namespace without a
   # recognized directive — a typo'd verb (`# mutare:ingore`), a colon-detached one
@@ -868,18 +885,31 @@ defmodule Mix.Tasks.Mutare do
     IO.puts(:stderr, early_stop_note(run, options))
   end
 
-  # The partial-run note for an early stop: how many survivors were found, how much
-  # of the candidate set was evaluated, and — only when a CI gate was configured —
-  # that gates were skipped because the result set is partial.
+  # The partial-run note for an early stop: why it stopped, how much of the candidate
+  # set was evaluated, and — only when a CI gate was configured — that gates were
+  # skipped because the result set is partial.
   defp early_stop_note(run, %Options{} = options) do
     survivors = Enum.count(run.results, &(&1.status == :survived))
     evaluated = length(run.results)
     total = Schema.count(run.schema)
 
-    "stopped after finding #{survivors} survivor#{CLI.plural(survivors)} (--max-survivors " <>
-      "#{options.max_survivors}); evaluated #{evaluated} of #{total} mutant#{CLI.plural(total)}. " <>
-      "The mutation score above is over this partial set" <> gate_skipped_note(options)
+    "stopped #{stop_cause(options, survivors)}; evaluated #{evaluated} of #{total} " <>
+      "mutant#{CLI.plural(total)}. The mutation score above is over this partial set" <>
+      gate_skipped_note(options)
   end
+
+  # Which early-stop condition fired. The survivor cap stops the loop the instant the count reaches
+  # the limit and discards later stragglers, so `survivors == max_survivors` *exactly* on a survivor
+  # stop — when both caps are set and the count is short of the limit, the wall-clock budget must
+  # have fired. (The final clause is unreachable given `stopped_early`, but keeps the note total.)
+  defp stop_cause(%Options{max_survivors: n}, survivors) when is_integer(n) and survivors >= n,
+    do: "after finding #{survivors} survivor#{CLI.plural(survivors)} (--max-survivors #{n})"
+
+  defp stop_cause(%Options{time_budget: budget}, _survivors) when is_binary(budget),
+    do: "on reaching the time budget (--time-budget #{budget})"
+
+  defp stop_cause(%Options{max_survivors: n}, survivors),
+    do: "after finding #{survivors} survivor#{CLI.plural(survivors)} (--max-survivors #{n})"
 
   defp gate_skipped_note(%Options{} = options) do
     if ci_gates_configured?(options) do

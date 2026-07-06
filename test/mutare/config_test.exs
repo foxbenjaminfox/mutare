@@ -294,6 +294,12 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([max_survivors: 3], max_survivors: 8)[:max_survivors] == 8
     end
 
+    test "--time-budget passes through (as a string); flag wins over file; absent leaves default" do
+      assert Config.merge([], time_budget: "10m")[:time_budget] == "10m"
+      refute Keyword.has_key?(Config.merge([], []), :time_budget)
+      assert Config.merge([time_budget: "5m"], time_budget: "10m")[:time_budget] == "10m"
+    end
+
     test "--workers passes through; flag wins over file; absent leaves it to default" do
       assert Config.merge([], workers: 4)[:workers] == 4
       refute Keyword.has_key?(Config.merge([], []), :workers)

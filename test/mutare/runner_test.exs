@@ -164,7 +164,7 @@ defmodule Mutare.RunnerTest do
     assert File.exists?(marker)
   end
 
-  describe "--max-survivors (early stop)" do
+  describe "--max-survivors / --time-budget (early stop)" do
     setup do
       # Two weakly-tested comparisons (each tested only well clear of its
       # boundary), so `>=`→`>` and `<=`→`<` both slip through: two survivors, in
@@ -219,6 +219,19 @@ defmodule Mutare.RunnerTest do
       # Exactly the cap: the first survivor in source order triggers the stop.
       assert Enum.count(run.results, &(&1.status == :survived)) == 1
       # The run halted before testing every mutant, so the score is over a prefix.
+      assert length(run.results) < Mutare.Schema.count(run.schema)
+    end
+
+    test "stops once the wall-clock budget elapses, over a partial set", %{
+      project: project,
+      sandbox: sandbox
+    } do
+      # Each mutant is a full `mix test` subprocess (>1s), so a 1s budget trips as soon
+      # as the first result lands — draining the rest rather than testing every mutant.
+      assert {:ok, run} =
+               Mutare.run(project, sandbox: sandbox, mutators: @probe, time_budget: "1s")
+
+      assert run.stopped_early == true
       assert length(run.results) < Mutare.Schema.count(run.schema)
     end
   end

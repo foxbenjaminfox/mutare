@@ -52,6 +52,7 @@ defmodule Mutare.Options do
           verbose: boolean(),
           max_mutants: pos_integer() | nil,
           max_survivors: pos_integer() | nil,
+          time_budget: String.t() | nil,
           min_score: number() | nil,
           reporters: [{:human | :json | :html | :sarif, String.t() | nil}]
         }
