@@ -61,7 +61,7 @@ One observable difference is worth knowing: a suite that is green under plain `m
 ## Features
 
 - Compile once, run N times — no per-mutant recompilation.
-- Coverage-guided selection — each mutant runs only the test files that cover it; uncovered mutants are skipped and excluded from the score (`--full` opts out).
+- Coverage-guided selection — each mutant runs only the individual test *cases* that cover it (`--per-file` widens this to whole covering files for stateful `async: false` suites; `--full` runs the whole suite per mutant); uncovered mutants are skipped and excluded from the score.
 - Parallel workers + timeouts — mutants run concurrently, each capped; a mutation that hangs (a loop turned infinite) halts itself after the deadline and counts as a kill. A timed-out run is first confirmed with an uncontended re-run, so a merely-slow mutant is never falsely recorded as killed.
 - Compile-poison recovery — a mutant that wouldn't compile is identified from the compile error, dropped (reported as *poisoned*), and the build retried, to try and avoid a bad mutant spoiling the whole run—but ideally this shouldn't be necessary, and it usually isn't.
 - A very broad built-in mutator set — arithmetic/operator swaps, relational and logical swaps, literals of every kind, collection/string/map call rewrites, pattern and clause restructurings, and more. See [`Mutare.Mutators`](https://hexdocs.pm/mutare/Mutare.Mutators.html), and write your own — the [Extending Mutare](https://hexdocs.pm/mutare/extending.html) guide walks through custom mutators and library extensions.
@@ -119,6 +119,7 @@ mix mutare --min-score 70              # fail below a mutation score
 mix mutare --max-no-coverage 0         # fail on uncovered mutants
 mix mutare --fail-on-poisoned          # fail on compile-poisoned mutants
 mix mutare --fail-on-harness-error     # fail on infrastructure verdict gaps
+mix mutare --per-file                  # run whole covering files, not per-test-case
 mix mutare --full                      # run the whole suite per mutant
 mix mutare --workers 4                 # run N mutants concurrently
 mix mutare --timeout 30000             # per-mutant wall-clock cap, in ms
@@ -160,7 +161,7 @@ Most projects can start without configuration. Add `.mutare.exs` when you want t
   baseline_runs: 2,
   baseline_retries: 1,
   kill_runs: 2,
-  test_selection: :coverage,
+  test_selection: :tests,
 
   # Emit several reports at once.
   reporters: [:human, {:json, "mutare.json"}, {:sarif, "mutare.sarif"}]

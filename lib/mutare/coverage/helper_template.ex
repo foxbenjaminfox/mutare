@@ -18,10 +18,24 @@ defmodule Mutare.Coverage.HelperTemplate do
   # the dump file, mapping each test module to its source file. The label read is OTP-version
   # tolerant: `:proc_lib.get_label/1` on OTP 27+, the `:"$process_label"` process-dictionary key
   # on OTP 26 and earlier. `hit/1` returns `true` so the spliced `and` chain stays boolean.
+  #
+  # Attribution is recorded at TWO granularities from the one `{module, name}` label. The module
+  # half always maps to a test *file* (`@attr_table`) — the granularity file-level selection
+  # (`:coverage`) needs. The name half is *also* kept (`@test_table`) whenever it is a **runnable
+  # ExUnit test name** (`filterable_name?/1`: a `test `/`doctest `/`property ` prefix), so
+  # per-test-case selection (`:tests`) can run `mix test <file> --only test:<name>`. A labeled hit
+  # whose name is NOT a runnable test — `setup_all` (`:setup_all`), an `on_exit` closure
+  # (`-test …`) — is recorded to `@wholefile_table` instead: it covers the id but pins to no single
+  # test, so `:tests` must run its whole file (never narrowing away the covering context).
 
   @agg_table :mutare_cov_agg
   @attr_table :mutare_cov_attr
   @unlabeled_table :mutare_cov_unlabeled
+  # Per-test-case attribution: `{{mod, name, id}}` for hits whose label is a runnable ExUnit test
+  # name — the finer key `:tests` narrows with. `@wholefile_table` holds ids with a labeled but
+  # NON-narrowable attribution (`setup_all`/`on_exit`), which `:tests` must not narrow.
+  @test_table :mutare_cov_test
+  @wholefile_table :mutare_cov_wholefile
   @dump_file "mutare_cov.terms"
   @dump_path_env "MUTARE_COV_DUMP"
   @root_env "MUTARE_COV_ROOT"
@@ -35,6 +49,8 @@ defmodule Mutare.Coverage.HelperTemplate do
   def agg_table, do: @agg_table
   def attr_table, do: @attr_table
   def unlabeled_table, do: @unlabeled_table
+  def test_table, do: @test_table
+  def wholefile_table, do: @wholefile_table
   def dump_file, do: @dump_file
   def dump_path_env, do: @dump_path_env
   def root_env, do: @root_env
@@ -101,7 +117,14 @@ defmodule Mutare.Coverage.HelperTemplate do
     Enum.reverse(unrecorded)
   end
 
-  defp attribution_key({mod, _name}) when is_atom(mod), do: {:labeled, mod}
+  # A concrete (runnable-test) label dedups per `{mod, name}`, so one id recorded under test A does
+  # not suppress the same id under sibling test B in the same module — both names must reach
+  # `@test_table` for `:tests` to narrow to either. A non-narrowable labeled hit (`setup_all`/
+  # `on_exit`) dedups per module (`{:labeled, mod}`) — its name is not a key `:tests` uses.
+  defp attribution_key({mod, name}) when is_atom(mod) do
+    if filterable_name?(name), do: {:test, mod, name}, else: {:labeled, mod}
+  end
+
   defp attribution_key(_label), do: :unlabeled
 
   defp record(ids, label) do
@@ -109,8 +132,21 @@ defmodule Mutare.Coverage.HelperTemplate do
       :ets.insert(@agg_table, {id})
 
       case label do
-        {mod, _name} when is_atom(mod) ->
+        {mod, name} when is_atom(mod) ->
+          # Module → file, always: the granularity `:coverage` (and the `:tests` fallback) needs.
           :ets.insert(@attr_table, {{mod, id}})
+
+          if filterable_name?(name) do
+            # A runnable ExUnit test name — the finer key `:tests` narrows with
+            # (`mix test <file> --only test:<name>`).
+            :ets.insert(@test_table, {{mod, name, id}})
+          else
+            # Labeled, but NOT a single runnable test: `setup_all` (`:setup_all`) or an `on_exit`
+            # closure (`-test …`). It covers the id through a module-scoped context, so `:tests`
+            # must run the whole file — narrowing to named tests would drop the covering context
+            # and manufacture a false survivor.
+            :ets.insert(@wholefile_table, {id})
+          end
 
         # No recoverable test label — the line ran in a bare spawn, a `setup`-registered
         # `on_exit` closure, or a `setup_all` whose work ran off-stack in a `Task` (an ordinary
@@ -127,6 +163,23 @@ defmodule Mutare.Coverage.HelperTemplate do
     true
   end
 
+  # Is `name` a **runnable** ExUnit test name — one `mix test --only test:<name>` can select? The
+  # three ExUnit generators name their bodies `:"test …"`, `:"doctest …"`, `:"property …"` (the
+  # embedded space cannot occur in an ordinary identifier, so it never collides with a target's own
+  # function). This is the exact rule `test_label/2`/`closure_test_label/1` key on — so a
+  # `setup_all` (`:setup_all`, no space) and an `on_exit` closure (`-test …`, leading `-`) both
+  # fail it and stay whole-file. Anything unexpected also fails → whole-file, the conservative side.
+  defp filterable_name?(name) when is_atom(name) do
+    case Atom.to_string(name) do
+      "test " <> _ -> true
+      "doctest " <> _ -> true
+      "property " <> _ -> true
+      _ -> false
+    end
+  end
+
+  defp filterable_name?(_), do: false
+
   def dump(_suite_result) do
     # Serialise plain data (lists, not `MapSet`s) so the reader makes no assumption about a
     # struct's wire representation. `tab_list/1` tolerates a vanished table (→ `[]`) for the
@@ -136,6 +189,7 @@ defmodule Mutare.Coverage.HelperTemplate do
     # `Mutare.Runner.CoverageProbe` empty-aggregate path) — far better than crashing the probe.
     aggregate = for {id} <- tab_list(@agg_table), do: id
     unlabeled = for {id} <- tab_list(@unlabeled_table), do: id
+    wholefile = for {id} <- tab_list(@wholefile_table), do: id
 
     by_file =
       Enum.reduce(tab_list(@attr_table), %{}, fn {{mod, id}}, acc ->
@@ -145,7 +199,22 @@ defmodule Mutare.Coverage.HelperTemplate do
         end
       end)
 
-    payload = %{aggregate: aggregate, by_file: by_file, unlabeled: unlabeled}
+    # Per-test-case attribution, keyed by mutant id → the runnable test names that covered it. Names
+    # are strings (the `mix test --only test:<name>` value); `:tests` unions them with the covering
+    # files from `by_file`. Keyed by id, not file: an id in a shared lib function covered by tests
+    # in several modules carries every covering name, and the covering files ride `by_file`.
+    by_test =
+      Enum.reduce(tab_list(@test_table), %{}, fn {{_mod, name, id}}, acc ->
+        Map.update(acc, id, [to_string(name)], &[to_string(name) | &1])
+      end)
+
+    payload = %{
+      aggregate: aggregate,
+      by_file: by_file,
+      unlabeled: unlabeled,
+      by_test: by_test,
+      wholefile: wholefile
+    }
 
     # Every umbrella app's `after_suite` calls this; the ETS tables are shared and accumulate-only,
     # so each write is the full union and the last app to finish wins. The path is absolute (set by

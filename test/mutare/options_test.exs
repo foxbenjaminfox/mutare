@@ -14,7 +14,7 @@ defmodule Mutare.OptionsTest do
       assert options.mutators == nil
       assert options.extensions == []
       assert options.only_files == nil
-      assert options.test_selection == :coverage
+      assert options.test_selection == :tests
       assert options.timeout == nil
       assert options.timeout_multiplier == 3.0
       assert options.baseline_retries == 0
@@ -119,13 +119,14 @@ defmodule Mutare.OptionsTest do
   end
 
   describe ":test_selection" do
-    test "accepts :coverage and :full" do
+    test "accepts :tests, :coverage, and :full" do
+      assert Options.new(test_selection: :tests).test_selection == :tests
       assert Options.new(test_selection: :coverage).test_selection == :coverage
       assert Options.new(test_selection: :full).test_selection == :full
     end
 
     test "rejects any other mode" do
-      assert_raise ArgumentError, ~r/:test_selection must be :coverage or :full/, fn ->
+      assert_raise ArgumentError, ~r/:test_selection must be :tests, :coverage, or :full/, fn ->
         Options.new(test_selection: :partial)
       end
     end

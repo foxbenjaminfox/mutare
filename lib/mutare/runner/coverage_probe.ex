@@ -16,10 +16,21 @@ defmodule Mutare.Runner.CoverageProbe do
   subprocess fan-out, and no async-formatter race that loses fast `async: false`
   modules' coverage.
 
-  Two modes, set by `:test_selection`:
+  Three modes, set by `:test_selection`, a granularity ladder from safest/slowest to
+  fastest — `:full` ⊃ `:coverage` ⊃ `:tests`:
 
-    * `:coverage` (default) — per mutant, run only the test files that covered its
-      line (a `setup_all` attributes to its own module's file via the `__ex_unit__/2`
+    * `:tests` (default) — per mutant, run only the individual **test cases** that
+      covered its line, via `mix test <file> --only test:<name>` (one `--only`
+      per covering test). Finer than `:coverage`: where `:coverage` runs a whole
+      covering file, `:tests` runs just the tests in it that touched the line. It
+      falls back to `:coverage`'s whole-file selection for any id whose coverage
+      can't be pinned to runnable tests — an id in the `wholefile` set (covered
+      through a `setup_all`/`on_exit`, which map to a module-scoped context, not a
+      single test), or one covered via an unlabeled process (whole suite). So the
+      narrowing is applied *only* where every covering attribution is a concrete,
+      runnable test.
+    * `:coverage` — per mutant, run only the test *files* that covered its line (a
+      `setup_all` attributes to its own module's file via the `__ex_unit__/2`
       stacktrace frame; a `Task` via its caller chain; a test-registered `on_exit`
       via its closure frame); a mutant whose code ran in an *unlabeled* process (a
       bare spawn, a `setup`-registered `on_exit` closure, or a `setup_all` whose work
@@ -28,14 +39,27 @@ defmodule Mutare.Runner.CoverageProbe do
       unlabeled coverage and produce a false survivor; a mutant that never ran at all
       is `:no_coverage` (skipped, and kept out of the score's denominator).
     * `:full` — no per-file selection: every covered mutant runs the whole suite,
-      the rest are `:no_coverage`. Safer for suites with cross-file dependencies —
+      the rest are `:no_coverage`. Safest for suites with cross-file dependencies —
       including a `setup_all` with cross-module global side effects, which `:coverage`
       attributes to its own file only (see `Mutare.Coverage.Recorder`).
 
-  Selection is file-granular, not per-individual-test: if any test in a file covers
-  the line, the whole file runs — so a test that kills a mutant indirectly (without
-  touching the line itself) is still included, as long as a sibling test in its
-  file does touch the line.
+  ## `:tests` and the file-granular safety margin it trades away
+
+  `:coverage` is file-granular on purpose: if any test in a file covers the line, the
+  whole file runs — so a **sibling test that kills the mutant indirectly** (fails
+  because a covering test in the same `async: false` module ran the mutated line and
+  left corrupt shared state, without the sibling touching the line itself) is still
+  run. `:tests` narrows to the covering tests only, dropping that sibling — so on a
+  stateful, cross-test-dependent suite `:tests` can turn such a kill into a false
+  survivor. It is the default on the assumption that suites are predominantly
+  `async: true` with per-test-isolated state (where a sibling that never runs the
+  line cannot observe the mutation, so nothing is lost); `:coverage` is the opt-out
+  (`--per-file`) and `:full` the fully conservative escape hatch.
+
+  The narrowing never manufactures a false *kill*: every name emitted is a test that
+  actually ran in one of the included files during the probe, so at least one test
+  always matches and `mix test --only` never hits its "no test executed" error (which
+  would otherwise surface as a harness error, not a kill).
 
   Coverage is advisory, never authoritative. Anything uncertain — a non-zero
   probe exit, an unreadable dump, or an empty dump (the probe recorded nothing,
@@ -71,7 +95,8 @@ defmodule Mutare.Runner.CoverageProbe do
   What the probe decided for one mutant:
 
     * `{:run, test_args}` — its line is covered; run `mix test` with these args
-      (`[]` = whole suite, file-granular args otherwise).
+      (`[]` = whole suite; file-granular file paths otherwise; under `:tests` those
+      file paths plus `--only test:<name>` flags narrowing to the covering tests).
     * `:no_coverage` — nothing runs its line; skip it and keep it out of the
       score's denominator.
   """
@@ -108,12 +133,12 @@ defmodule Mutare.Runner.CoverageProbe do
   @spec run(
           Path.t(),
           Schema.t(),
-          :coverage | :full,
+          :tests | :coverage | :full,
           [{String.t(), String.t()}],
           pos_integer() | nil
         ) :: selection()
   def run(sandbox, %Schema{} = schema, mode, env \\ [], cap \\ nil)
-      when mode in [:coverage, :full] do
+      when mode in [:tests, :coverage, :full] do
     # Absolute paths: an umbrella runs each app's suite with cwd = the app dir, so
     # the dump must land at one fixed place and the test-file paths must be
     # normalised against the sandbox root, not whichever app is running.
@@ -216,9 +241,18 @@ defmodule Mutare.Runner.CoverageProbe do
     end
   end
 
-  # An empty aggregate means the capture recorded nothing (it likely failed), not
-  # that the suite genuinely covers nothing — so run everything.
-  defp select(mode, %Schema{} = schema, coverage) do
+  @doc """
+  Decide the per-mutant `t:selection/0` from an already-decoded coverage dump.
+
+  The pure core of `run/5` (no IO): given the `mode`, the `Mutare.Schema` (for the
+  total id list), and a `Mutare.Coverage.t()`, it returns `:run_all` (empty
+  aggregate — the capture recorded nothing, so it likely failed) or a **total**
+  `{:selective, outcomes}`. Exposed so the mode reconciliation — including `:tests`
+  narrowing and its whole-file/whole-suite fallbacks — is unit-testable without
+  spawning a probe.
+  """
+  @spec select(:tests | :coverage | :full, Schema.t(), Coverage.t()) :: selection()
+  def select(mode, %Schema{} = schema, coverage) do
     if MapSet.size(coverage.aggregate) == 0 do
       :run_all
     else
@@ -251,6 +285,43 @@ defmodule Mutare.Runner.CoverageProbe do
       MapSet.member?(unlabeled, id) -> {:run, []}
       true -> by_file |> covering_files(id) |> run_args()
     end
+  end
+
+  # `:tests` refines the `:coverage` decision: it narrows a whole-file selection to the
+  # individual covering tests when — and only when — every attribution of the id is a concrete,
+  # runnable test. It reuses `:coverage` verbatim for everything else, so all of that mode's
+  # conservatism is inherited unchanged:
+  #   * `:no_coverage` and the whole-suite (`{:run, []}`) unlabeled/degraded cases pass through —
+  #     `narrow/2` only touches a non-empty file list;
+  #   * an id in `wholefile` (covered via a `setup_all`/`on_exit`, not a single test) keeps its
+  #     whole covering files — narrowing would drop the covering context;
+  #   * a narrowable id runs its covering files plus `--only test:<name>` for each covering test.
+  defp outcome(:tests, id, coverage) do
+    case outcome(:coverage, id, coverage) do
+      {:run, [_ | _] = files} = base -> narrow(id, files, coverage) || base
+      other -> other
+    end
+  end
+
+  # `{:run, files ++ name filters}` when the id is safely narrowable, else `nil` (keep whole files).
+  # Narrowable = not in `wholefile` (no non-runnable attribution) AND at least one covering test
+  # name — an empty name set can't be narrowed without risking a `mix test --only` "no test
+  # executed" error, so it degrades to the whole-file `:coverage` decision.
+  defp narrow(id, files, %{wholefile: wholefile, by_test: by_test}) do
+    with false <- MapSet.member?(wholefile, id),
+         %MapSet{} = names <- Map.get(by_test, id),
+         false <- MapSet.size(names) == 0 do
+      {:run, files ++ only_args(names)}
+    else
+      _ -> nil
+    end
+  end
+
+  # `["--only", "test:<name>", ...]`, sorted for a deterministic argv. Built as list elements, so a
+  # test name with spaces (`"test foo bar"`) is one argv token needing no shell quoting; `mix test`
+  # splits `test:<name>` on the first `:` (`ExUnit.Filters.parse/1`), so a name with a `:` survives.
+  defp only_args(names) do
+    names |> Enum.sort() |> Enum.flat_map(&["--only", "test:" <> &1])
   end
 
   defp run_args([]), do: {:run, []}

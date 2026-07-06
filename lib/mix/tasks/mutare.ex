@@ -144,9 +144,14 @@ defmodule Mix.Tasks.Mutare do
                                           #   is a full `mix test` BEAM that uses all
                                           #   of them)
       mix mutare --full                   # run the whole suite for every mutant
-                                          #   (default: only the tests that cover it)
+                                          #   (default: only the test cases that cover it)
+      mix mutare --per-file               # run whole covering test *files*, not just
+                                          #   the individual covering tests — the opt-out
+                                          #   for stateful async:false suites where
+                                          #   per-test narrowing could hide a kill
       mix mutare --no-full                # force coverage-guided selection even if
                                           #   .mutare.exs set test_selection: :full
+                                          #   (--no-per-file likewise restores :tests)
       mix mutare --timeout 30000          # per-mutant wall-clock cap, in ms
                                           #   (default: derived from the baseline run)
       mix mutare --timeout-multiplier 5   # ...or set the cap to baseline × this,
@@ -276,8 +281,10 @@ defmodule Mix.Tasks.Mutare do
         expand_uses: true,
 
         # --- how the suite runs ---
-        # :coverage runs only the test files covering each mutant; :full runs all
-        test_selection: :coverage,
+        # :tests runs only the individual test cases covering each mutant; :coverage
+        # runs whole covering files (opt-out for stateful async:false suites); :full
+        # runs the whole suite for every mutant
+        test_selection: :tests,
         # concurrent mutant runs; default: half the schedulers, capped at 4 (each
         # worker is a full `mix test` BEAM that itself uses every scheduler)
         workers: 4,

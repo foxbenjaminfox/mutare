@@ -55,33 +55,67 @@ defmodule Mutare.CoverageTest do
 
   describe "read_dump/1" do
     @tag :tmp_dir
-    test "decodes the aggregate, per-file, and unlabeled id lists into MapSets", %{tmp_dir: dir} do
+    test "decodes the aggregate, per-file, unlabeled, per-test, and whole-file data into MapSets",
+         %{tmp_dir: dir} do
       path = Path.join(dir, "dump.terms")
 
       payload = %{
         aggregate: [1, 2, 3],
         by_file: %{"test/a_test.exs" => [1, 2], "test/b_test.exs" => [3]},
-        unlabeled: [2]
+        unlabeled: [2],
+        by_test: %{1 => ["test alpha", "test beta"], 3 => ["test gamma"]},
+        wholefile: [3]
       }
 
       File.write!(path, :erlang.term_to_binary(payload))
 
-      assert {:ok, %{aggregate: aggregate, by_file: by_file, unlabeled: unlabeled}} =
-               Coverage.read_dump(path)
+      assert {:ok,
+              %{
+                aggregate: aggregate,
+                by_file: by_file,
+                unlabeled: unlabeled,
+                by_test: by_test,
+                wholefile: wholefile
+              }} = Coverage.read_dump(path)
 
       assert aggregate == MapSet.new([1, 2, 3])
       assert by_file["test/a_test.exs"] == MapSet.new([1, 2])
       assert by_file["test/b_test.exs"] == MapSet.new([3])
       assert unlabeled == MapSet.new([2])
+      assert by_test[1] == MapSet.new(["test alpha", "test beta"])
+      assert by_test[3] == MapSet.new(["test gamma"])
+      assert wholefile == MapSet.new([3])
     end
 
     @tag :tmp_dir
-    test "tolerates a dump without an :unlabeled key (defaults to empty)", %{tmp_dir: dir} do
+    test "tolerates a dump without :unlabeled/:by_test/:wholefile keys (all default to empty)",
+         %{tmp_dir: dir} do
       path = Path.join(dir, "legacy.terms")
       File.write!(path, :erlang.term_to_binary(%{aggregate: [1], by_file: %{}}))
 
-      assert {:ok, %{unlabeled: unlabeled}} = Coverage.read_dump(path)
+      assert {:ok, %{unlabeled: unlabeled, by_test: by_test, wholefile: wholefile}} =
+               Coverage.read_dump(path)
+
       assert unlabeled == MapSet.new([])
+      assert by_test == %{}
+      assert wholefile == MapSet.new([])
+    end
+
+    @tag :tmp_dir
+    test "errors (for run-all fallback) when :by_test/:wholefile are the wrong type",
+         %{tmp_dir: dir} do
+      for {label, extra} <- [
+            {"by_test-not-a-map", %{by_test: [1, 2]}},
+            {"wholefile-not-a-list", %{wholefile: %{}}}
+          ] do
+        path = Path.join(dir, "bad_new_key_#{label}.terms")
+        payload = Map.merge(%{aggregate: [1], by_file: %{}}, extra)
+        File.write!(path, :erlang.term_to_binary(payload))
+
+        assert capture_log(fn ->
+                 assert {:error, :bad_shape} = Coverage.read_dump(path)
+               end) =~ "unexpected shape"
+      end
     end
 
     @tag :tmp_dir
@@ -223,16 +257,30 @@ defmodule Mutare.CoverageTest do
     @fixture Mutare.CoverageTest.ExUnitFrameFixture
 
     setup do
-      pre = Map.new([:mutare_cov_agg, :mutare_cov_attr, :mutare_cov_unlabeled], &{&1, table?(&1)})
+      pre =
+        Map.new(
+          [
+            :mutare_cov_agg,
+            :mutare_cov_attr,
+            :mutare_cov_unlabeled,
+            :mutare_cov_test,
+            :mutare_cov_wholefile
+          ],
+          &{&1, table?(&1)}
+        )
+
       Enum.each(Map.keys(pre), &ensure_table/1)
 
       on_exit(fn ->
         # Drop our probe ids first (they may live in a table the bootstrap owns under dogfooding),
-        # then drop only the tables this test created.
+        # then drop only the tables this test created. A concrete-named fixture records @attr_id to
+        # the per-test table (module ignored in the match), so clear it by id.
         delete_key(:mutare_cov_agg, @attr_id)
         delete_key(:mutare_cov_agg, @unlabeled_id)
         delete_key(:mutare_cov_unlabeled, @unlabeled_id)
         delete_key(:mutare_cov_attr, {@fixture, @attr_id})
+        match_delete(:mutare_cov_test, {{:_, :_, @attr_id}})
+        match_delete(:mutare_cov_wholefile, {@attr_id})
         Enum.each(pre, fn {table, existed?} -> drop_table_unless(table, existed?) end)
       end)
 
@@ -287,6 +335,11 @@ defmodule Mutare.CoverageTest do
 
   defp delete_key(table, key) do
     if table?(table), do: :ets.delete(table, key)
+    :ok
+  end
+
+  defp match_delete(table, pattern) do
+    if table?(table), do: :ets.match_delete(table, pattern)
     :ok
   end
 
@@ -466,6 +519,58 @@ defmodule Mutare.CoverageTest do
       assert [%Result{status: :killed}] = run.results
       assert File.read!(Path.join(sandbox, "lib/mutare_cov.ex")) =~ "def value"
       assert File.regular?(Path.join(sandbox, "lib/__mutare__/coverage_helper.ex"))
+    end
+  end
+
+  # A single file with TWO tests, only one of which touches the mutated line. This is the case that
+  # distinguishes `:tests` (narrow to the covering test) from `:coverage` (run the whole file): the
+  # file-granular tests can't, since each of their files holds a single test. The lone mutant
+  # *survives* (the covering test asserts only that the result stays an integer), so the run always
+  # executes its full selected set — no `--max-failures 1` early abort — making the test count in
+  # the output deterministic (a killing mutant's count would be order-dependent; see the setup_all
+  # test below).
+  defp two_test_project(name) do
+    Project.build(name, %{
+      "lib/calc.ex" => "defmodule Calc do\n  def add(a, b), do: a + b\nend\n",
+      "test/calc_test.exs" => """
+      defmodule CalcTest do
+        use ExUnit.Case
+        test "covers add loosely", do: assert(is_integer(Calc.add(2, 3)))
+        test "unrelated", do: assert(1 == 1)
+      end
+      """
+    })
+  end
+
+  describe "test-case selection (:tests default, end to end)" do
+    @tag :runner
+    test "the default narrows to the covering test case within a multi-test file" do
+      %{project: project, sandbox: sandbox} = two_test_project(:tests_narrow)
+
+      # No :test_selection given ⇒ the :tests default.
+      assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: @probe)
+
+      assert [%Result{status: :survived} = result] = run.results
+      # Narrowed to `--only test:"test covers add loosely"` → ExUnit runs 1 test, not the 2-test
+      # file. Elixir <1.20 summarises as "1 test"; refute the whole-file "2 tests"/"/2 passed".
+      assert result.output =~ "1 test"
+      refute result.output =~ ~r{2 tests|/2 passed}
+    end
+
+    @tag :runner
+    test "--per-file (:coverage) opts out, running the whole covering file" do
+      %{project: project, sandbox: sandbox} = two_test_project(:tests_optout)
+
+      assert {:ok, run} =
+               Mutare.run(project,
+                 sandbox: sandbox,
+                 mutators: @probe,
+                 test_selection: :coverage
+               )
+
+      assert [%Result{status: :survived} = result] = run.results
+      # The whole covering file runs — both tests, no per-test narrowing.
+      assert result.output =~ ~r{2 tests|/2 passed}
     end
   end
 

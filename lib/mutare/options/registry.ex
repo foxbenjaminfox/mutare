@@ -157,7 +157,12 @@ defmodule Mutare.Options.Registry do
   end
 
   defp validate_test_selection!(mode),
-    do: validate!(mode, &(&1 in [:coverage, :full]), ":test_selection must be :coverage or :full")
+    do:
+      validate!(
+        mode,
+        &(&1 in [:tests, :coverage, :full]),
+        ":test_selection must be :tests, :coverage, or :full"
+      )
 
   # `:workers` defaults to `nil`, resolved here to half `System.schedulers_online/0`
   # **clamped to 1..4** (the lone computed default), so the struct always carries a
@@ -550,7 +555,7 @@ defmodule Mutare.Options.Registry do
         show: &show_only_lines/1,
         validate: &validate_only_lines!/1
       ),
-      spec(key: :test_selection, default: :coverage, validate: &validate_test_selection!/1),
+      spec(key: :test_selection, default: :tests, validate: &validate_test_selection!/1),
       spec(key: :workers, default: nil, cli: :integer, validate: &validate_workers!/1),
       spec(
         key: :partition_env,

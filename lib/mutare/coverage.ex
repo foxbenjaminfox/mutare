@@ -27,8 +27,22 @@ defmodule Mutare.Coverage do
       was covered, but *which* test owns it is unknown, so the caller runs the
       **whole suite** for it — even if `:by_file` *also* attributes it to some file,
       since that partial attribution would otherwise mask the unlabeled coverage and
-      manufacture a false survivor. `Mutare.Runner.CoverageProbe` reconciles the
-      three.
+      manufacture a false survivor.
+
+  Two more keys carry the finer **test-case** granularity `:tests` selection uses
+  (both keyed by mutant id, both empty in a dump written before this contract, so an
+  old dump degrades `:tests` to `:coverage`):
+
+    * `:by_test` — `%{mutant id => MapSet(runnable test names)}`: the individual
+      ExUnit tests (`test `/`doctest `/`property ` names) that covered each id, so a
+      mutant can run `mix test <file> --only test:<name>` instead of the whole file.
+    * `:wholefile` — the set of ids with a labeled but **non-narrowable**
+      attribution (a `setup_all` or an `on_exit`, which cover through a module-scoped
+      context, not a single runnable test). `:tests` must run the whole file for such
+      an id — narrowing to named tests would drop the covering context and
+      manufacture a false survivor.
+
+  `Mutare.Runner.CoverageProbe` reconciles them all.
 
   Why not `:cover`: its counters live in a single global table keyed
   `{module, line}` with no per-process partition, so attributing coverage to a
@@ -42,13 +56,26 @@ defmodule Mutare.Coverage do
   require Logger
 
   @typedoc """
-  The decoded dump: the process-agnostic aggregate hit set, per-test-file
-  attribution, and the unlabeled (whole-suite) hit set. All keyed by mutant id.
+  The decoded dump. Keyed by mutant id throughout:
+
+    * `aggregate` — the process-agnostic hit set (no-coverage detection).
+    * `by_file` — per-test-*file* attribution (`:coverage` selection, and the
+      `:tests` fallback).
+    * `unlabeled` — the whole-suite hit set.
+    * `by_test` — per-test-*case* attribution: `id => runnable test names` that
+      covered it (`:tests` narrowing).
+    * `wholefile` — ids with a labeled but non-narrowable attribution
+      (`setup_all`/`on_exit`), which `:tests` must not narrow to named tests.
+
+  `by_test`/`wholefile` are absent from a dump written before this contract; they
+  default to empty so an old dump still reads (degrading `:tests` to `:coverage`).
   """
   @type t :: %{
           aggregate: MapSet.t(pos_integer()),
           by_file: %{String.t() => MapSet.t(pos_integer())},
-          unlabeled: MapSet.t(pos_integer())
+          unlabeled: MapSet.t(pos_integer()),
+          by_test: %{pos_integer() => MapSet.t(String.t())},
+          wholefile: MapSet.t(pos_integer())
         }
 
   @doc """
@@ -65,12 +92,16 @@ defmodule Mutare.Coverage do
          :ok <- valid_shape(decoded) do
       %{aggregate: aggregate, by_file: by_file} = decoded
       unlabeled = Map.get(decoded, :unlabeled, [])
+      by_test = Map.get(decoded, :by_test, %{})
+      wholefile = Map.get(decoded, :wholefile, [])
 
       {:ok,
        %{
          aggregate: MapSet.new(aggregate),
          by_file: Map.new(by_file, fn {file, ids} -> {file, MapSet.new(ids)} end),
-         unlabeled: MapSet.new(unlabeled)
+         unlabeled: MapSet.new(unlabeled),
+         by_test: Map.new(by_test, fn {id, names} -> {id, MapSet.new(names)} end),
+         wholefile: MapSet.new(wholefile)
        }}
     else
       {:error, reason} ->
@@ -92,7 +123,13 @@ defmodule Mutare.Coverage do
   # never a false `:no_coverage` and never an unhandled `{:ok, term}` crashing the `with`.
   defp valid_shape(%{aggregate: aggregate, by_file: by_file} = decoded) do
     unlabeled = Map.get(decoded, :unlabeled, [])
-    if is_list(aggregate) and is_map(by_file) and is_list(unlabeled), do: :ok, else: :bad_shape
+    by_test = Map.get(decoded, :by_test, %{})
+    wholefile = Map.get(decoded, :wholefile, [])
+
+    if is_list(aggregate) and is_map(by_file) and is_list(unlabeled) and is_map(by_test) and
+         is_list(wholefile),
+       do: :ok,
+       else: :bad_shape
   end
 
   defp valid_shape(_other), do: :bad_shape

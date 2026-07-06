@@ -38,11 +38,19 @@ defmodule Mutare.Coverage.HelperTemplateTest do
   # survive across every test. `hit([777])` here runs *inside* `__ex_unit__/2`, exercising the
   # `setup_all` stacktrace-recovery tier (tier 3 of `label/0`).
   setup_all do
-    for t <- [H.agg_table(), H.attr_table(), H.unlabeled_table()] do
+    for t <- [
+          H.agg_table(),
+          H.attr_table(),
+          H.unlabeled_table(),
+          H.test_table(),
+          H.wholefile_table()
+        ] do
       if :ets.whereis(t) != :undefined, do: :ets.delete(t)
       :ets.new(t, [:named_table, :public, :set])
     end
 
+    # `:setup_all` is not a runnable test name, so a `setup_all`-covered id records to the
+    # whole-file table, never the per-test table.
     H.hit([777])
     :ok
   end
@@ -306,6 +314,71 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       assert :ets.lookup(H.agg_table(), 777) == [{777}]
     end
 
+    test "a runnable test name records the id to the per-test table (narrowable)" do
+      run_in(fn -> H.hit([111, 112]) end, label: {PerTestMod, :"test does a thing"})
+
+      # Module → file, as always (the `:coverage` superset).
+      assert :ets.lookup(H.attr_table(), {PerTestMod, 111}) == [{{PerTestMod, 111}}]
+      # …and the finer per-test key `:tests` narrows with.
+      assert :ets.lookup(H.test_table(), {PerTestMod, :"test does a thing", 111}) ==
+               [{{PerTestMod, :"test does a thing", 111}}]
+
+      assert :ets.lookup(H.test_table(), {PerTestMod, :"test does a thing", 112}) ==
+               [{{PerTestMod, :"test does a thing", 112}}]
+
+      # A narrowable id, so NOT in the whole-file table.
+      assert :ets.lookup(H.wholefile_table(), 111) == []
+    end
+
+    test "doctest and property names are runnable too" do
+      run_in(fn -> H.hit([113]) end, label: {DocMod, :"doctest DocMod.foo/1 (2)"})
+      run_in(fn -> H.hit([114]) end, label: {PropMod, :"property sorts anything"})
+
+      assert :ets.lookup(H.test_table(), {DocMod, :"doctest DocMod.foo/1 (2)", 113}) ==
+               [{{DocMod, :"doctest DocMod.foo/1 (2)", 113}}]
+
+      assert :ets.lookup(H.test_table(), {PropMod, :"property sorts anything", 114}) ==
+               [{{PropMod, :"property sorts anything", 114}}]
+
+      assert :ets.lookup(H.wholefile_table(), 113) == []
+    end
+
+    test "sibling tests in one module each reach the per-test table (dedup is per name)" do
+      # The seen-cache must not suppress the same id under a *second* test in the same module — both
+      # covering names must be recorded so `:tests` can narrow to either.
+      run_in(fn -> H.hit([115]) end, label: {SharedMod, :"test alpha"})
+      run_in(fn -> H.hit([115]) end, label: {SharedMod, :"test beta"})
+
+      assert :ets.lookup(H.test_table(), {SharedMod, :"test alpha", 115}) ==
+               [{{SharedMod, :"test alpha", 115}}]
+
+      assert :ets.lookup(H.test_table(), {SharedMod, :"test beta", 115}) ==
+               [{{SharedMod, :"test beta", 115}}]
+    end
+
+    test "a setup_all label records to the whole-file table, never the per-test table" do
+      # `:setup_all` is not a runnable test name: `hit([777])` from setup_all recorded 777 to the
+      # module (file) and to the whole-file table, and nothing to the per-test table.
+      assert :ets.lookup(H.wholefile_table(), 777) == [{777}]
+      refute Enum.any?(:ets.tab2list(H.test_table()), fn {{_m, _n, id}} -> id == 777 end)
+    end
+
+    test "an on_exit closure label records to the whole-file table, never the per-test table" do
+      # The on_exit closure frame (`:"-test …/1-fun-N-"`) is recovered for attribution but is not a
+      # runnable test name — so 861 (recorded via the real runner loop above) is whole-file, not
+      # per-test.
+      callback = apply(OnExitFixture, :"test registers on_exit", [[871]])
+      {runner, ref} = spawn_monitor(ExUnit.OnExitHandler, :on_exit_runner_loop, [])
+      send(runner, {:run, self(), callback})
+      assert_receive {^runner, _reply}
+      Process.exit(runner, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^runner, _}
+
+      assert :ets.lookup(H.attr_table(), {OnExitFixture, 871}) == [{{OnExitFixture, 871}}]
+      assert :ets.lookup(H.wholefile_table(), 871) == [{871}]
+      refute Enum.any?(:ets.tab2list(H.test_table()), fn {{_m, _n, id}} -> id == 871 end)
+    end
+
     test "hit/1 tracks ids seen by the current process" do
       # Coverage is set-like. The helper records an id once per process and then returns early for
       # repeated hits, keeping the probe closer to target timing in hot loops.
@@ -317,8 +390,12 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       assert {^tid, seen} = Process.get(:mutare_cov_seen)
       assert Map.has_key?(seen, 701)
       assert Map.has_key?(seen, 702)
-      assert Map.has_key?(seen[701], {:labeled, __MODULE__})
-      assert Map.has_key?(seen[702], {:labeled, __MODULE__})
+      # This runs in the test process, which carries a runnable test name (a `$process_label` on
+      # 1.19+, a `:"test …"` stack frame on 1.18) — so the per-process seen-key is the *per-test*
+      # form `{:test, module, name}`, not the module-only `{:labeled, module}` a non-runnable
+      # (`setup_all`/`on_exit`) label would use.
+      assert Enum.any?(Map.keys(seen[701]), &match?({:test, __MODULE__, _}, &1))
+      assert Enum.any?(Map.keys(seen[702]), &match?({:test, __MODULE__, _}, &1))
       assert :ets.lookup(H.agg_table(), 701) == [{701}]
       assert :ets.lookup(H.agg_table(), 702) == [{702}]
     end
@@ -357,6 +434,23 @@ defmodule Mutare.Coverage.HelperTemplateTest do
       assert 501 in payload.aggregate
       assert payload.by_file["lib/mutare/mutators/arithmetic.ex"] == [501]
       assert is_list(payload.unlabeled)
+    end
+
+    test "serialises per-test names (by id) and the whole-file id set", %{dump: dump} do
+      # `by_test` is built purely from the per-test table (keyed by id, module ignored) and
+      # `wholefile` purely from the whole-file table — independent of `by_file`, so no attr/agg
+      # inserts (they would pollute the shared, accumulate-only `by_file` a sibling test asserts on).
+      :ets.insert(H.test_table(), {{FakeDumpMod, :"test halves", 511}})
+      :ets.insert(H.test_table(), {{FakeDumpMod, :"test doubles", 511}})
+      :ets.insert(H.wholefile_table(), {512})
+
+      H.dump(:ignored_suite_result)
+
+      payload = dump |> File.read!() |> :erlang.binary_to_term()
+
+      # Names are strings (the `--only test:<name>` value), keyed by mutant id.
+      assert Enum.sort(payload.by_test[511]) == ["test doubles", "test halves"]
+      assert 512 in payload.wholefile
     end
 
     test "drops an id whose module cannot be loaded (source_file → nil)", %{dump: dump} do

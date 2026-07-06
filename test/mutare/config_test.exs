@@ -201,9 +201,25 @@ defmodule Mutare.ConfigTest do
       assert Config.merge([test_selection: :full], [])[:test_selection] == :full
     end
 
-    test "--no-full restores coverage selection and overrides file config" do
-      assert Config.merge([], full: false)[:test_selection] == :coverage
-      assert Config.merge([test_selection: :full], full: false)[:test_selection] == :coverage
+    test "--no-full restores the :tests default and overrides file config" do
+      assert Config.merge([], full: false)[:test_selection] == :tests
+      assert Config.merge([test_selection: :full], full: false)[:test_selection] == :tests
+    end
+
+    test "--per-file sets test_selection: :coverage; otherwise it's left to default" do
+      assert Config.merge([], per_file: true)[:test_selection] == :coverage
+      refute Keyword.has_key?(Config.merge([], []), :test_selection)
+      # file config still flows through
+      assert Config.merge([test_selection: :coverage], [])[:test_selection] == :coverage
+    end
+
+    test "--no-per-file restores the :tests default and overrides file config" do
+      assert Config.merge([], per_file: false)[:test_selection] == :tests
+      assert Config.merge([test_selection: :coverage], per_file: false)[:test_selection] == :tests
+    end
+
+    test "--full wins over --per-file when both are given" do
+      assert Config.merge([], full: true, per_file: true)[:test_selection] == :full
     end
 
     test "--keep-sandbox passes through; otherwise it's left to default" do

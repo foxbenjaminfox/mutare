@@ -43,7 +43,8 @@ defmodule Mutare.Config do
   mappings that aren't a 1:1 rename: a repeatable `--only` accumulates into `:paths`
   (each a directory or single `.ex` file, in order), `--line FILE:LINE` into
   `:only_lines`, `--skip-lifting Module.fun/arity` into `:skip_lifting`,
-  `--full`/`--no-full` resolve to `:test_selection`, and
+  `--full`/`--no-full` and `--per-file`/`--no-per-file` resolve to
+  `:test_selection`, and
   `--partition-db`/`--no-partition-db`/`--partition-env` resolve to
   `:partition_env`. A `:mutators`
   CLI value is translated from CSV into a list of names; `Mutare.Options` resolves
@@ -87,6 +88,7 @@ defmodule Mutare.Config do
     exclude: [:string, :keep],
     mutators: :string,
     full: :boolean,
+    per_file: :boolean,
     partition_db: :boolean,
     partition_env: :string,
     report: [:string, :keep]
@@ -252,14 +254,24 @@ defmodule Mutare.Config do
     end
   end
 
-  # `--full` opts out of coverage-guided test selection; `--no-full` opts back in
-  # and must override a `.mutare.exs` `test_selection: :full`. An absent flag leaves
-  # the file config / default (`:coverage`) in place.
+  # `:test_selection` is a three-level granularity ladder (`:full` ⊃ `:coverage` ⊃ `:tests`,
+  # default `:tests`); two boolean flags reach the non-default rungs, with `--full` (safest) taking
+  # precedence over `--per-file` when both are given:
+  #
+  #   * `--full` → `:full` (whole suite per covered mutant);
+  #   * `--per-file` → `:coverage` (whole covering *files*, no per-test narrowing — the opt-out for
+  #     stateful `async: false` suites where narrowing to individual tests could hide a kill);
+  #   * `--no-full` / `--no-per-file` → the `:tests` default, each a real override of a
+  #     `.mutare.exs` `test_selection:` other than `:tests`.
+  #
+  # An absent flag leaves the file config / default in place.
   defp test_selection(flags) do
-    case Keyword.fetch(flags, :full) do
-      {:ok, true} -> {:set, :full}
-      {:ok, false} -> {:set, :coverage}
-      :error -> :unset
+    cond do
+      flags[:full] == true -> {:set, :full}
+      flags[:per_file] == true -> {:set, :coverage}
+      Keyword.fetch(flags, :full) == {:ok, false} -> {:set, :tests}
+      Keyword.fetch(flags, :per_file) == {:ok, false} -> {:set, :tests}
+      true -> :unset
     end
   end
 

@@ -4138,6 +4138,57 @@ an empty dump (the capture recorded nothing → it likely failed). The rule
 throughout: never skip on doubt — run everything rather than silently drop a mutant
 from the score's denominator.
 
+**Per-test-case selection — `:tests`, the default (done).** The `{module, name}`
+process label the attribution already resolves carries *two* keys, and file-granular
+selection only ever used the `module` half (→ file). The `name` half — the runnable
+ExUnit test name — is now kept too, so a mutant can run `mix test <file> --only
+test:<name>` and execute just the covering test cases instead of the whole covering
+file. `:test_selection` became a three-rung ladder, `:full` ⊃ `:coverage` ⊃ `:tests`,
+with `:tests` the default (`--per-file` selects `:coverage`, the opt-out; `--full`
+stays the whole-suite escape hatch).
+
+Mechanism. The recorder writes the name key to `@test_table` (`{{mod, name, id}}`)
+**only when the name is runnable** — a `test `/`doctest `/`property ` prefix
+(`filterable_name?/1`, the exact space-bearing rule `test_label/2` already keys on).
+A labeled-but-not-runnable hit (`setup_all` → `:setup_all`; an `on_exit` closure →
+`-test …`) instead records its id to `@wholefile_table`. The dump gains `by_test`
+(`%{id => [name]}`) and `wholefile` (`[id]`); both default empty in `Coverage`, so an
+old dump degrades `:tests` to `:coverage`. `CoverageProbe` computes `:tests` by
+*refining* the `:coverage` outcome: a non-empty file selection narrows to
+`files ++ --only test:<name>…` **iff** the id is not in `wholefile` and has ≥1
+runnable name; everything else (`:no_coverage`, the unlabeled/degraded whole-suite
+`{:run, []}`, an id with any non-runnable attribution, or an empty name set) keeps the
+`:coverage` decision verbatim. So all of `:coverage`'s conservatism is inherited; the
+narrowing only *subtracts* sibling tests where every covering attribution is a
+concrete test.
+
+Two safety properties, both load-bearing:
+- **No false kill.** `mix test --only test:<name>` with zero matches exits `1`, which
+  our exit-code contract decodes as a *harness error* (not the `--exit-status 101`
+  kill code) — so a bad narrowing could only drop a mutant from the score, never
+  invent a kill. And it can't even do that: every emitted name ran in one of the
+  included files during the probe, so at least one test always matches and the
+  "no test executed" path is never hit. Names travel as argv list elements
+  (`["--only", "test:test foo bar"]`), so spaces need no quoting; `ExUnit.Filters`
+  splits `test:<name>` on the first `:`, so a name with a colon survives; matching is
+  exact string equality on the `:test` tag (which *is* `test.name`, the label's second
+  element — set by ExUnit's runner via `Process.set_label({case, name})`), so no
+  over-matching.
+- **The false-*survivor* it trades for (why it's opt-out-able, not forced).**
+  File-granularity ran a whole file, so a **sibling test that kills indirectly** — one
+  that fails because a covering test in the same `async: false` module ran the mutated
+  line and left corrupt shared state, without the sibling touching the line itself —
+  still ran. `:tests` drops that sibling. On a stateful, cross-test-dependent suite
+  this can turn a kill into a false survivor. It's the default on the assumption that
+  suites are predominantly `async: true` with per-test-isolated state (where a sibling
+  that never runs the line cannot observe the mutation, so nothing is lost); the
+  `setup_all`/`on_exit` → `wholefile` carve-out already keeps the module-scoped-context
+  cases whole-file, so the residual exposure is specifically test-body-to-test-body
+  shared state. `--per-file` (`:coverage`) is the documented opt-out for those suites,
+  `--full` the fully conservative one. Considered gating narrowing to `async: true`
+  modules only (the `:async` tag isn't in the process label, so the dependency-free
+  recorder can't see it without more machinery) — deferred; the opt-out covers it.
+
 **setup_all stacktrace recovery (done).** Originally `setup_all` coverage went
 straight to the unlabeled bucket → whole suite, on the premise that an unlabeled,
 caller-less process carries *no* recoverable owner. That premise is too strong:

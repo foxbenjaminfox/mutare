@@ -28,7 +28,7 @@ defmodule Mutare.Options do
           expand_uses: boolean(),
           only_files: MapSet.t() | nil,
           only_lines: MapSet.t() | nil,
-          test_selection: :coverage | :full,
+          test_selection: :tests | :coverage | :full,
           workers: pos_integer(),
           partition_env: String.t() | nil,
           timeout: pos_integer() | nil,

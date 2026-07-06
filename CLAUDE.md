@@ -97,7 +97,11 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   contention from minting false `:timeout` kills) and the runner-loop caps (`:max_survivors`).
 - **`Mutare.Coverage` / `Mutare.Coverage.Recorder`** — coverage is **self-recorded** by the
   metamutant at runtime (not `:cover`), keyed by mutant id and attributed per test process. Drives
-  `:no_coverage` and per-file test selection.
+  `:no_coverage` and test selection at three granularities (`:test_selection` — `:tests` (default,
+  per-test-case via `mix test --only test:<name>`) ⊃ `:coverage` (per-file) ⊃ `:full` (whole
+  suite)). The `{module, name}` label is kept at both file (module→file) and test-case (the
+  runnable `name`) granularity; `setup_all`/`on_exit`-covered ids can't be pinned to a runnable
+  test, so `:tests` runs their whole file.
 - **`Mutare.Poison`** (+ `Hint`) — on a failed compile, maps the error's `file:line` to mutant
   id(s), drops them via `:skip_ids`, and rebuilds (bounded). `Hint` renders a copy-pasteable
   `:skip` snippet for the one poison class that can't be auto-isolated (a macro needing a

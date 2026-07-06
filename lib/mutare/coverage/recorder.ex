@@ -59,6 +59,8 @@ defmodule Mutare.Coverage.Recorder do
   @agg_table HelperTemplate.agg_table()
   @attr_table HelperTemplate.attr_table()
   @unlabeled_table HelperTemplate.unlabeled_table()
+  @test_table HelperTemplate.test_table()
+  @wholefile_table HelperTemplate.wholefile_table()
   @dump_file HelperTemplate.dump_file()
   @helper_module :mutare_cov
 
@@ -290,6 +292,8 @@ defmodule Mutare.Coverage.Recorder do
     agg = @agg_table
     attr = @attr_table
     unlabeled_table = @unlabeled_table
+    test_table = @test_table
+    wholefile_table = @wholefile_table
 
     quote do
       if System.get_env(unquote(env_var)) not in [nil, ""] do
@@ -298,15 +302,15 @@ defmodule Mutare.Coverage.Recorder do
         # (all are created together) so the second app's setup is a no-op rather
         # than an `:ets.new` `:badarg`.
         if :ets.whereis(unquote(agg)) == :undefined do
-          :ets.new(unquote(agg), [:named_table, :public, :set, write_concurrency: true])
-          :ets.new(unquote(attr), [:named_table, :public, :set, write_concurrency: true])
-
-          :ets.new(unquote(unlabeled_table), [
-            :named_table,
-            :public,
-            :set,
-            write_concurrency: true
-          ])
+          for table <- [
+                unquote(agg),
+                unquote(attr),
+                unquote(unlabeled_table),
+                unquote(test_table),
+                unquote(wholefile_table)
+              ] do
+            :ets.new(table, [:named_table, :public, :set, write_concurrency: true])
+          end
         end
 
         :persistent_term.put(unquote(track_key), true)

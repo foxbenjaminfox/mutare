@@ -90,7 +90,7 @@ defmodule Mutare.Options.RegistryTest do
              {"expand_uses", "true"},
              {"only_files", "(all discovered files)"},
              {"only_lines", "(all lines)"},
-             {"test_selection", "coverage"},
+             {"test_selection", "tests"},
              {"workers", to_string(System.schedulers_online() |> div(2) |> min(4) |> max(1))},
              {"partition_env", "(off)"},
              {"timeout", "derived from baseline run"},
