@@ -67,6 +67,7 @@ defmodule Mutare.SandboxTest do
   end
 
   @marker ".mutare_sandbox"
+  @lock ".mutare_sandbox.lock"
 
   test "creates the sandbox and leaves an ownership marker when it is absent", context do
     sandbox = Path.join(context.base, "sandbox")
@@ -75,6 +76,81 @@ defmodule Mutare.SandboxTest do
     assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
     assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
     assert File.regular?(Path.join(sandbox, @marker))
+  end
+
+  test "acquires and releases an internal lock for an explicit sandbox", context do
+    sandbox = Path.join(context.base, "sandbox")
+
+    lock = Sandbox.acquire_lock(context.project, sandbox: sandbox)
+    lock_dir = Path.join(sandbox, @lock)
+
+    assert File.dir?(lock_dir)
+    assert File.read!(Path.join(lock_dir, "owner")) =~ "pid=#{System.pid()}"
+
+    assert :ok = Sandbox.release_lock(lock)
+    refute File.exists?(lock_dir)
+  end
+
+  test "refuses a reusable sandbox while its internal lock owner is live", context do
+    sandbox = Path.join(context.base, "sandbox")
+    lock = Sandbox.acquire_lock(context.project, sandbox: sandbox)
+
+    try do
+      assert_raise ArgumentError, ~r/already in use by Mutare process #{System.pid()}/, fn ->
+        Sandbox.acquire_lock(context.project, sandbox: sandbox)
+      end
+    after
+      Sandbox.release_lock(lock)
+    end
+  end
+
+  test "reclaims an internal lock whose recorded pid is gone", context do
+    sandbox = Path.join(context.base, "sandbox")
+    lock_dir = Path.join(sandbox, @lock)
+    File.mkdir_p!(lock_dir)
+
+    File.write!(
+      Path.join(lock_dir, "owner"),
+      "host=\npid=99999999\nstart_time=\ntoken=dead\n"
+    )
+
+    lock = Sandbox.acquire_lock(context.project, sandbox: sandbox)
+
+    try do
+      assert File.read!(Path.join(lock_dir, "owner")) =~ "pid=#{System.pid()}"
+    after
+      Sandbox.release_lock(lock)
+    end
+  end
+
+  test "does not create a lock inside a non-empty unowned sandbox path", context do
+    sandbox = Path.join(context.base, "sandbox")
+    bystander = Path.join(sandbox, "important.txt")
+    File.mkdir_p!(sandbox)
+    File.write!(bystander, "precious")
+
+    assert_refused_lock(context.project, sandbox)
+    assert File.read!(bystander) == "precious"
+    refute File.exists?(Path.join(sandbox, @lock))
+  end
+
+  test "preserves the active internal lock when resetting an owned explicit sandbox", context do
+    sandbox = Path.join(context.base, "sandbox")
+    assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+    stale = Path.join(sandbox, "stale.txt")
+    File.write!(stale, "stale")
+
+    lock = Sandbox.acquire_lock(context.project, sandbox: sandbox)
+    lock_dir = Path.join(sandbox, @lock)
+
+    try do
+      assert Sandbox.prepare(context.project, context.schema, sandbox: sandbox) == sandbox
+      assert File.dir?(lock_dir)
+      refute File.exists?(stale)
+      assert File.read!(Path.join(sandbox, "keep.txt")) == "keep"
+    after
+      Sandbox.release_lock(lock)
+    end
   end
 
   test "auto-generates a fresh sandbox path salted with the OS pid", context do
@@ -713,6 +789,15 @@ defmodule Mutare.SandboxTest do
     error =
       assert_raise ArgumentError, fn ->
         Sandbox.prepare(root, schema, sandbox: sandbox)
+      end
+
+    assert Exception.message(error) =~ "refusing to use sandbox"
+  end
+
+  defp assert_refused_lock(root, sandbox) do
+    error =
+      assert_raise ArgumentError, fn ->
+        Sandbox.acquire_lock(root, sandbox: sandbox)
       end
 
     assert Exception.message(error) =~ "refusing to use sandbox"

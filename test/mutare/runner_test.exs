@@ -57,6 +57,8 @@ defmodule Mutare.RunnerTest do
     # The boundary test is missing for gte?/2, so `>= -> >` slips through.
     assert %Result{site: %{mutator: :relational, original_form: :>=, mutated_form: :>, line: 3}} =
              survivor
+
+    refute File.exists?(Path.join(sandbox, ".mutare_sandbox.lock"))
   end
 
   test "renders the survivor as a one-line diff with a score", %{

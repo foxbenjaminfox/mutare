@@ -148,31 +148,37 @@ defmodule Mutare.Runner do
     if Schema.count(schema) == 0 do
       {:error, :nothing_to_mutate, "no mutation sites found under #{inspect(options.paths)}"}
     else
-      on_phase = Context.hook(context, :on_phase)
+      lock = Sandbox.acquire_lock(root, context)
 
-      on_phase.(:compiling)
-      compile_started = System.monotonic_time(:millisecond)
+      try do
+        on_phase = Context.hook(context, :on_phase)
 
-      # Prepare + compile, recovering from compile-poisoning by dropping the
-      # offending mutants and rebuilding. `schema` here may differ from the input
-      # (poisoners flagged), which is what the run reports against. `prepare_compiling`
-      # always hands the sandbox back, so cleanup is owned here on every exit path —
-      # the terminal-failure path and the post-run `after` alike.
-      case prepare_compiling(schema, root, context) do
-        {:error, reason, detail, sandbox} ->
-          cleanup_sandbox(sandbox, options)
-          {:error, reason, detail}
+        on_phase.(:compiling)
+        compile_started = System.monotonic_time(:millisecond)
 
-        {:ok, schema, sandbox} ->
-          # The one compile is done (the `{:compiled, ms}` covers any poison-recovery
-          # rebuilds it took). A verbose reporter renders the timing; non-verbose ignores it.
-          on_phase.({:compiled, System.monotonic_time(:millisecond) - compile_started})
-
-          try do
-            run_mutants(schema, sandbox, context)
-          after
+        # Prepare + compile, recovering from compile-poisoning by dropping the
+        # offending mutants and rebuilding. `schema` here may differ from the input
+        # (poisoners flagged), which is what the run reports against. `prepare_compiling`
+        # always hands the sandbox back, so cleanup is owned here on every exit path —
+        # the terminal-failure path and the post-run `after` alike.
+        case prepare_compiling(schema, root, context) do
+          {:error, reason, detail, sandbox} ->
             cleanup_sandbox(sandbox, options)
-          end
+            {:error, reason, detail}
+
+          {:ok, schema, sandbox} ->
+            # The one compile is done (the `{:compiled, ms}` covers any poison-recovery
+            # rebuilds it took). A verbose reporter renders the timing; non-verbose ignores it.
+            on_phase.({:compiled, System.monotonic_time(:millisecond) - compile_started})
+
+            try do
+              run_mutants(schema, sandbox, context)
+            after
+              cleanup_sandbox(sandbox, options)
+            end
+        end
+      after
+        Sandbox.release_lock(lock)
       end
     end
   end

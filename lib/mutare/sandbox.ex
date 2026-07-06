@@ -34,10 +34,11 @@ defmodule Mutare.Sandbox do
   alias Mutare.{Options, Schema}
   alias Mutare.Coverage.Recorder
   alias Mutare.Run.Context
-  alias Mutare.Sandbox.{CompilerOptions, Paths, Seed}
+  alias Mutare.Sandbox.{CompilerOptions, Lock, Paths, Seed}
   alias Mutare.Sandbox.Command.Invocation
 
-  @excluded ~w(_build .git .elixir_ls .lexical cover)
+  @lock_name ".mutare_sandbox.lock"
+  @excluded ~w(_build .git .elixir_ls .lexical cover) ++ [@lock_name]
 
   # The build environment every sandbox `mix` runs under is owned by
   # `Mutare.Sandbox.Command.Invocation` (`Invocation.mix_env/0`), which sets it on
@@ -211,6 +212,25 @@ defmodule Mutare.Sandbox do
     sandbox
   end
 
+  @doc false
+  @spec acquire_lock(Path.t(), Context.t() | Options.t() | keyword()) :: Lock.t() | nil
+  def acquire_lock(root, opts \\ []) do
+    context = Context.new(opts)
+    options = context.options
+
+    if reusable_sandbox?(options) do
+      sandbox = options.sandbox || default_sandbox(root, options.keep_sandbox)
+
+      Paths.validate!(root, sandbox)
+      ensure_lockable!(sandbox)
+      Lock.acquire(sandbox)
+    end
+  end
+
+  @doc false
+  @spec release_lock(Lock.t() | nil) :: :ok
+  def release_lock(lock), do: Lock.release(lock)
+
   @doc """
   Re-render `schema`'s metamutants into an already-prepared `sandbox`, in place.
 
@@ -308,7 +328,7 @@ defmodule Mutare.Sandbox do
       owned ->
         refuse_autogen!(sandbox)
 
-      File.ls!(sandbox) == [] ->
+      effectively_empty?(sandbox) ->
         :ok
 
       true ->
@@ -326,8 +346,11 @@ defmodule Mutare.Sandbox do
   end
 
   defp reset!(sandbox) do
-    File.rm_rf!(sandbox)
     File.mkdir_p!(sandbox)
+
+    for entry <- File.ls!(sandbox), entry != @lock_name do
+      File.rm_rf!(Path.join(sandbox, entry))
+    end
   end
 
   defp marker_path(sandbox), do: Path.join(sandbox, @marker_name)
@@ -348,6 +371,41 @@ defmodule Mutare.Sandbox do
             "collide with a live run — this is a stale leftover from a halted run (or, rarely, " <>
             "an unexpected pid+counter collision). Mutare won't wipe it automatically; delete it " <>
             "and re-run, or pass an explicit --sandbox to reuse a fixed path."
+  end
+
+  defp reusable_sandbox?(%Options{sandbox: sandbox, keep_sandbox: keep_sandbox}),
+    do: keep_sandbox or sandbox != nil
+
+  # The lock lives inside the sandbox, so a lock-only directory is still empty
+  # for adoption purposes. This is the crash-before-marker case: Mutare created
+  # the sandbox path and acquired the lock, then died before writing the ownership
+  # marker.
+  defp effectively_empty?(sandbox) do
+    sandbox
+    |> File.ls!()
+    |> Enum.reject(&(&1 == @lock_name))
+    |> Enum.empty?()
+  end
+
+  # Refuse non-empty, unowned directories before creating or reclaiming an
+  # internal lock. That keeps a user-provided sandbox scoped to that exact path
+  # without dropping a lock file into arbitrary user data.
+  defp ensure_lockable!(sandbox) do
+    case File.lstat(sandbox) do
+      {:error, :enoent} ->
+        File.mkdir_p!(sandbox)
+
+      {:ok, %File.Stat{type: :directory}} ->
+        unless owned?(sandbox) or effectively_empty?(sandbox) do
+          refuse!(sandbox, "is a non-empty directory without Mutare's ownership marker")
+        end
+
+      {:ok, %File.Stat{type: type}} ->
+        refuse!(sandbox, "is a #{type}, not a directory")
+
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "inspect sandbox", path: sandbox
+    end
   end
 
   defp copy_project(root, sandbox) do
