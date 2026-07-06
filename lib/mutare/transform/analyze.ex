@@ -631,6 +631,32 @@ defmodule Mutare.Transform.Analyze do
       else: analyzed
   end
 
+  # An interpolated quoted atom: `:"a#{x}b"` parses as `:erlang.binary_to_atom(<<segments>>,
+  # encoding)` with the parser's `:delimiter` stamped on the *call* meta (`NodeRange.get/1`
+  # keys on the same shape). Offer the whole node — `AtomLiteral` swaps it for the sentinel —
+  # then descend the content segments surgically, exactly like a sigil's: the inner `<<>>` is
+  # atom content, not a user-written bitstring, so its wrapper is never offered
+  # (BitstringLiteral collapsing it would mint a mutant misattributed to `:bitstring` with a
+  # corrupt diff) and the construction `::binary` pin doesn't apply (string content, not a
+  # construction). The `:delimiter` gate is the usual authenticity guard: a hand-written
+  # `:erlang.binary_to_atom(bin, :utf8)` call carries none and stays an ordinary call node.
+  # (No charlist twin here: a legacy `'a#{x}b'` wraps its segments in a plain *list*, which
+  # the walk never offers, so the generic clause below already handles it correctly.)
+  defp analyze(
+         {{:., _, [:erlang, :binary_to_atom]} = dot, meta, [{:<<>>, bmeta, segments}, encoding]} =
+           node,
+         :runtime,
+         mutators
+       )
+       when is_list(segments) do
+    if Keyword.has_key?(meta, :delimiter) do
+      content = {:<<>>, bmeta, Enum.map(segments, &analyze_segment(&1, :runtime, mutators))}
+      Attach.offer({dot, meta, [content, encoding]}, node, mutators)
+    else
+      do_analyze_call_node(node, mutators, %{pipe_mode: :unpiped})
+    end
+  end
+
   # A generic runtime node: offer it and descend, or route a known-macro call's arguments
   # by treatment — see `do_analyze_call_node/3`. (A sigil is offered whole then descended
   # *surgically* via `descend_sigil/2`, so an interpolated `~r/a#{b}c/` still mutates `b`

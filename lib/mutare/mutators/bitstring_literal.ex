@@ -5,7 +5,8 @@ defmodule Mutare.Mutators.BitstringLiteral do
   Not mutated — constructs that merely share the `<<…>>` AST shape:
 
     * an interpolated string (`"a\#{x}b"`) — conceptually a string, left to `StringLiteral`'s domain (which mutates the whole interpolated string to `""`/`"mutare"`, the empty-bitstring collapse being the wrong shape for it);
-    * a sigil's content (`~r/…/`, `~D[…]`) — the sigil mutators own the whole node.
+    * a sigil's content (`~r/…/`, `~D[…]`) — the sigil mutators own the whole node;
+    * an interpolated quoted atom's content (the `<<>>` inside `:"a\#{x}b"`'s `binary_to_atom` call) — atom content, owned whole by `AtomLiteral`; the analyzer never offers the wrapper here.
 
   A bitstring in a *pattern* is left alone, so a match like `<<a, b>> = bin` is not corrupted. The segment *values* still mutate independently (a byte via `Literal`, a string segment via `StringLiteral`, an expression via `Arithmetic`, a `size(expr)` arg via `Literal`).
   """

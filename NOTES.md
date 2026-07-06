@@ -7426,3 +7426,71 @@ as the sigil fix. Neither shape has surfaced in a real diff yet.
 A pure report-rendering fix; regression tests assert the corrected widths per container
 and that the exact reported shape renders clean, re-parseable diffs
 (`transform/node_range_test.exs`, `report_test.exs`).
+
+### Interpolated atoms & charlists mutate as a whole; BitstringLiteral no longer claims atom content `[done]`
+An interpolated quoted atom `:"a#{x}b"` parses as `:erlang.binary_to_atom(<<segments>>, :utf8)`
+with the parser's `:delimiter` on the *call* meta — unlike an interpolated string, whose
+`:delimiter` rides on the `<<>>` itself and is the discriminator the analyzer's three-way
+`{:<<>>, …}` split keys on (see "Three constructs share the `{:<<>>, …}` shape"). So the
+atom's inner `<<>>` looked like a bare bitstring construction: BitstringLiteral collapsed
+it to `<<>>` — a compile-clean but *misattributed* mutant (really `:"…"` → `:""`, reported
+as `:bitstring`, so `# mutare:ignore[bitstring]` semantics lied) with a corrupt diff (the
+range was the inner content's, and the patch text `<<>>`). Meanwhile the natural whole-value
+swap — the analogue of StringLiteral owning whole interpolated strings — didn't exist: no
+mutator matched the call shape.
+
+The fix is two independent halves, and it matters which half lives where:
+
+  * **Ownership is just mutator clauses.** The generic runtime walk already *offers* the
+    whole call node to every mutator; AtomLiteral now matches the `binary_to_atom` shape
+    (→ the sentinel; always applies — the runtime value is never statically `:mutare`) and
+    CharlistLiteral matches interpolated `~c`/`~C` sigil content *and* the legacy
+    `'a#{x}b'` (`List.to_charlist` call) shape (→ `~c""`/`~c"mutare"`, rendered in the
+    modern syntax). Every clause gates on `:delimiter` — the parser-authoritative "this is
+    literal syntax" stamp, same guard as StringSigilLiteral — so a hand-built call of the
+    same shape is never treated as a literal. No analyzer change was needed for charlists
+    at all: the sigil path already routes via `descend_sigil/2`, and the legacy form wraps
+    its segments in a plain *list*, which the walk descends but never offers.
+  * **The analyzer change is only for the atom's wrapper.** A dedicated `analyze/3` clause
+    (delimiter-gated, falling through to the generic call path otherwise) offers the whole
+    node and then descends the content *segments* directly — the `descend_sigil/2` move —
+    so the inner `<<>>` is never offered (no BitstringLiteral collapse) and skips the
+    construction `::binary` pin path (it's string content, not a construction; the pin was
+    a no-op there anyway since interpolation segments are bare binaries / already `::`-typed).
+
+Interior expressions kept mutating throughout (`#{x + 1}` was never the problem), and
+`Overlap` is indifferent — a whole-value swap's footprint is the whole host, not a covering
+descendant, so interior mutants survive alongside it.
+
+One report sharp edge: the *keyword-shorthand* interpolated key (`%{"k#{x}": 1}`,
+`format: :keyword` on the call meta). Sourceror's range for it stops **before** the written
+colon, while a plain keyword key's (`foo:`) includes it — so the whole-key swap would have
+patched `%{:mutare: 1}`. `NodeRange`'s `binary_to_atom` clause now bumps the end column for
+`format: :keyword`, and `Mutare.Site` recognises the shape as a keyword key, rendering both
+diff sides in keyword form (original via string surgery on `Sourceror.to_string/1`'s value
+form — move the colon — mutated via the existing `Macro.inspect_atom(:key, …)` path). Same
+class as the `trim: true` keyword-key fix, one shape further out.
+
+`~C` was a genuinely separate gap folded in here: CharlistLiteral matched only `:sigil_c`,
+so `~C"abc"` had no charlist mutants at all. It now owns both heads, preserving the head in
+the replacement (`~C` stays `~C`, like `~w`/`~W`) — and `AST.empty_collection_literal?/1`
+already listed `sigil_C`, so the guard-`in` empty-drop composed without change.
+
+The *plain* legacy `'abc'` was a third, subtler asymmetry: it parses as an ordinary list
+literal (`{:__block__, [delimiter: "'"], [charlist]}`), so it only ever got List's `[]`
+collapse — the content itself was never challenged by a sentinel the way `~c"abc"`'s is
+(a test pinning just "non-empty" killed everything on offer). Resolved as an ownership
+split rather than a handover: List keeps the empty collapse (the node *is* a list literal
+to it; CharlistLiteral emitting `~c""` too would duplicate it), and CharlistLiteral adds
+only the sentinel, keyed on the `'` delimiter (a delimiter-less `[97, 98]` stays a plain
+list). `''` gets the sentinel too — List skips the empty list, mirroring `~c""` — and
+`'mutare'` is skipped as already-sentinel. Canonical statement of the split lives in
+CharlistLiteral's moduledoc, per the ownership-split convention.
+
+The property generators' interpolated-container gen (`interp_string_gen`) now also emits
+quoted atoms and `~c` charlists, so the render/compile/baseline/activation soaks exercise
+both routes (the rendered module re-parses with the `:delimiter` both gates key on).
+Regression coverage: `mutators_literal_test.exs` (clauses incl. the no-delimiter skips),
+`transform_test.exs` (routing: whole-swap + interior, no `:bitstring`/`:list` sites),
+`transform/node_range_test.exs` (the colon bump), `report_test.exs` (clean, re-parseable
+diffs for all three forms incl. the keyword key).

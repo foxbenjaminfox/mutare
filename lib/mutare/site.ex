@@ -309,12 +309,27 @@ defmodule Mutare.Site do
   end
 
   defp keyword_key?({:__block__, meta, [atom]}) when is_atom(atom), do: meta[:format] == :keyword
+
+  # An interpolated quoted-atom key (`"k#{x}": v`) — the same keyword shorthand, parsed as an
+  # `:erlang.binary_to_atom` call (the `:delimiter` marks genuine atom syntax; its range is
+  # colon-corrected in `Mutare.Transform.NodeRange`).
+  defp keyword_key?({{:., _, [:erlang, :binary_to_atom]}, meta, _args}),
+    do: meta[:format] == :keyword and Keyword.has_key?(meta, :delimiter)
+
   defp keyword_key?(_node), do: false
 
   defp render_code(_node, _keyword_key?, false), do: nil
 
   defp render_code({:__block__, _meta, [atom]}, true, true) when is_atom(atom),
     do: Macro.inspect_atom(:key, atom)
+
+  # An interpolated atom key: `Sourceror.to_string/1` renders the *value* form (`:"k#{x}"`);
+  # move the colon to render the keyword form the source — and the colon-corrected range —
+  # uses (`"k#{x}":`).
+  defp render_code({{:., _, [:erlang, :binary_to_atom]}, _meta, _args} = node, true, true) do
+    ":" <> content = Sourceror.to_string(node)
+    content <> ":"
+  end
 
   defp render_code(node, _keyword_key?, true), do: Sourceror.to_string(node)
 

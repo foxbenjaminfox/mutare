@@ -169,6 +169,22 @@ defmodule Mutare.Transform.NodeRangeTest do
       assert literal_end_col(literal) == String.length(literal) + 1
     end
 
+    test "a keyword-shorthand interpolated atom key covers its trailing colon" do
+      # `%{"k#{x}": 1}` — Sourceror's range stops before the written colon (a plain
+      # `foo:` key includes it), so a key swap would patch `:mutare` and strand the
+      # colon (`%{:mutare: 1}`). The correction covers it; `Mutare.Site` renders both
+      # diff sides in keyword form to match.
+      {:%{}, _, [{key, _value}]} = Sourceror.parse_string!(~S|%{"k#{x}": 1}|)
+      # `"k#{x}":` spans columns 3..10 — the corrected end is one past the colon.
+      assert NodeRange.get(key).end[:column] == Sourceror.get_range(key).end[:column] + 1
+      assert NodeRange.get(key).end[:column] == 11
+    end
+
+    test "a value-form interpolated atom (no keyword shorthand) gets no colon bump" do
+      node = Sourceror.parse_string!(~S|:"a#{x}b"|)
+      assert NodeRange.get(node) == Sourceror.get_range(node)
+    end
+
     test "an interpolated heredoc (fence delimiter) is left unchanged" do
       # The fence never needs an escaped quote at the tail; `interpolated_range/3`
       # falls through for the `"""` delimiter.

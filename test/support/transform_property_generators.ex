@@ -622,10 +622,17 @@ defmodule Mutare.TransformPropertyGenerators do
   # `leaf_gen` (which feeds patterns) never produces one. `~S`/charlists never interpolate,
   # so only the `~s` and double-quoted forms are generated.
   defp interp_string_gen(vars) do
-    let {shape, inner} <- {oneof([:string, :sigil]), leaf_gen(vars)} do
+    let {shape, inner} <- {oneof([:string, :sigil, :atom, :charlist]), leaf_gen(vars)} do
       case shape do
         :string -> quote(do: "a#{unquote(inner)}b")
         :sigil -> quote(do: ~s(a#{unquote(inner)}b))
+        # The other two interpolated containers: a quoted atom (`binary_to_atom` call
+        # shape — AtomLiteral swaps it whole, its content `<<>>` must never collapse)
+        # and a `~c` sigil charlist (CharlistLiteral's interpolated arm). The rendered
+        # module re-parses with the `:delimiter` meta both routes gate on. Leaves are
+        # bounded values, so runtime atom creation in the activation soak stays finite.
+        :atom -> quote(do: :"a#{unquote(inner)}b")
+        :charlist -> quote(do: ~c"a#{unquote(inner)}b")
       end
     end
   end

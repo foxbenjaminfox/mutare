@@ -88,12 +88,20 @@ defmodule Mutare.Transform.NodeRange do
 
   # An interpolated quoted atom: `:"a#{x}b"` parses to an `:erlang.binary_to_atom`
   # call wrapping the segments in a `<<>>`; the delimiter rides on the call meta.
+  # Written keyword-shorthand (`"k#{x}": v`, `format: :keyword`) it carries a trailing
+  # colon that Sourceror's range stops short of — unlike a plain keyword key (`foo:`),
+  # whose range includes it — so the colon is covered here and `Mutare.Site` renders
+  # both diff sides in keyword form.
   defp correct(
          %Sourceror.Range{} = range,
          {{:., _, [:erlang, :binary_to_atom]}, meta, [{:<<>>, _, segments}, _encoding]}
        )
        when is_list(segments) do
-    interpolated_range(range, meta[:delimiter], segments)
+    range = interpolated_range(range, meta[:delimiter], segments)
+
+    if meta[:format] == :keyword,
+      do: %{range | end: Keyword.update!(range.end, :column, &(&1 + 1))},
+      else: range
   end
 
   defp correct(range, _node), do: range

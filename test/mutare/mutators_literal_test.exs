@@ -162,6 +162,22 @@ defmodule Mutare.MutatorsLiteralTest do
       assert AtomLiteral.mutate(:upcase) == :skip
     end
 
+    test "mutates an interpolated quoted atom as a whole (both quote styles)" do
+      assert render(AtomLiteral.mutate(parse(~S|:"a#{x}b"|))) == [":mutare"]
+      assert render(AtomLiteral.mutate(parse(~S|:"#{x}"|))) == [":mutare"]
+      assert render(AtomLiteral.mutate(parse(~S|:'a#{x}b'|))) == [":mutare"]
+    end
+
+    test "skips a binary_to_atom call that is not atom syntax (no delimiter meta)" do
+      # The parser stamps `:delimiter` only on genuine `:"…"` syntax; a hand-built call
+      # of the same shape (e.g. from a custom mutator or macro) is not an atom literal.
+      hand_built = {{:., [], [:erlang, :binary_to_atom]}, [], [{:<<>>, [], ["a"]}, :utf8]}
+      assert AtomLiteral.mutate(hand_built) == :skip
+      # A hand-*written* call parses with a wrapped `:erlang` receiver and different arg
+      # shapes, so it does not even match the interpolated-atom clause.
+      assert AtomLiteral.mutate(parse(~S|:erlang.binary_to_atom("a", :utf8)|)) == :skip
+    end
+
     test "name" do
       assert AtomLiteral.name() == :atom
     end
@@ -178,13 +194,45 @@ defmodule Mutare.MutatorsLiteralTest do
       assert render(CharlistLiteral.mutate(parse(~S|~c"abc"|))) == [~S|~c""|, ~S|~c"mutare"|]
     end
 
+    test "mutates an uppercase ~C sigil the same way, preserving the head" do
+      assert render(CharlistLiteral.mutate(parse(~S|~C"abc"|))) == [~S|~C""|, ~S|~C"mutare"|]
+    end
+
     test "drops the replacement that already equals the original" do
       assert render(CharlistLiteral.mutate(parse(~S|~c""|))) == [~S|~c"mutare"|]
       assert render(CharlistLiteral.mutate(parse(~S|~c"mutare"|))) == [~S|~c""|]
+      assert render(CharlistLiteral.mutate(parse(~S|~C""|))) == [~S|~C"mutare"|]
+      assert render(CharlistLiteral.mutate(parse(~S|~C"mutare"|))) == [~S|~C""|]
     end
 
-    test "leaves the legacy '...' form alone (owned by List, which empties it)" do
-      assert CharlistLiteral.mutate(parse("'abc'")) == :skip
+    test "mutates an interpolated ~c as a whole (both variants always apply)" do
+      assert render(CharlistLiteral.mutate(parse(~S|~c"a#{x}b"|))) == [~S|~c""|, ~S|~c"mutare"|]
+      assert render(CharlistLiteral.mutate(parse(~S|~c"#{x}"|))) == [~S|~c""|, ~S|~c"mutare"|]
+    end
+
+    test "mutates a legacy interpolated charlist, rendering ~c replacements" do
+      assert render(CharlistLiteral.mutate(parse(~S|'a#{x}b'|))) == [~S|~c""|, ~S|~c"mutare"|]
+    end
+
+    test "adds only the sentinel to a plain legacy '...' (the empty collapse is List's)" do
+      assert render(CharlistLiteral.mutate(parse("'abc'"))) == [~S|~c"mutare"|]
+      # `''` gets the sentinel too — `List` skips the empty list, mirroring `~c""`.
+      assert render(CharlistLiteral.mutate(parse("''"))) == [~S|~c"mutare"|]
+      assert CharlistLiteral.mutate(parse("'mutare'")) == :skip
+    end
+
+    test "skips a real list literal (no charlist delimiter)" do
+      assert CharlistLiteral.mutate(parse("[97, 98]")) == :skip
+      assert CharlistLiteral.mutate(parse("[a: 1]")) == :skip
+    end
+
+    test "skips a to_charlist call that is not charlist syntax (no delimiter meta)" do
+      # The parser stamps `:delimiter` only on genuine `'…'` syntax; a hand-built call of
+      # the same shape is not a charlist literal. (A hand-*written* `List.to_charlist(…)`
+      # parses with an `__aliases__` receiver and doesn't even match the clause.)
+      hand_built = {{:., [], [List, :to_charlist]}, [], [["a", {:x, [], nil}]]}
+      assert CharlistLiteral.mutate(hand_built) == :skip
+      assert CharlistLiteral.mutate(parse(~S|List.to_charlist(["a"])|)) == :skip
     end
 
     test "skips strings and other literals" do

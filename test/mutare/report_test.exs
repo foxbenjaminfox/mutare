@@ -190,6 +190,60 @@ defmodule Mutare.ReportTest do
     end
   end
 
+  # Interpolated atoms and charlists mutate as a whole (`AtomLiteral`/`CharlistLiteral`);
+  # their diffs must patch the full literal. The keyword-shorthand key form (`"k#{x}": v`)
+  # is the sharp edge: its range must cover the trailing colon and both diff sides render
+  # in keyword form (see `Mutare.Transform.NodeRange` / `Mutare.Site`).
+  describe "diff/2 of interpolated atoms and charlists" do
+    @ia_source ~S"""
+    defmodule M do
+      def f(x), do: :"pre_#{x}_post"
+      def g(x), do: %{"k#{x}": 1}
+      def h(x), do: ~c"a#{x}b"
+    end
+    """
+
+    defp ia_sites do
+      {_meta, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(@ia_source,
+          mutators: [Mutare.Mutators.AtomLiteral, Mutare.Mutators.CharlistLiteral]
+        )
+
+      sites
+    end
+
+    defp ia_site(mutator, line, mutated_code) do
+      Enum.find(
+        ia_sites(),
+        &(&1.mutator == mutator and &1.line == line and &1.mutated_code == mutated_code)
+      )
+    end
+
+    test "a whole-atom swap consumes the full interpolated literal" do
+      assert Report.diff(ia_site(:atom, 2, ":mutare"), @ia_source) ==
+               ~S|-  def f(x), do: :"pre_#{x}_post"| <>
+                 "\n" <> ~S|+  def f(x), do: :mutare|
+    end
+
+    test "a keyword-shorthand key swap consumes the colon and renders keyword form" do
+      assert Report.diff(ia_site(:atom, 3, "mutare:"), @ia_source) ==
+               ~S|-  def g(x), do: %{"k#{x}": 1}| <>
+                 "\n" <> ~S|+  def g(x), do: %{mutare: 1}|
+    end
+
+    test "an interpolated-charlist swap consumes the full sigil" do
+      assert Report.diff(ia_site(:charlist, 4, ~S|~c"mutare"|), @ia_source) ==
+               ~S|-  def h(x), do: ~c"a#{x}b"| <>
+                 "\n" <> ~S|+  def h(x), do: ~c"mutare"|
+    end
+
+    test "every mutant's patch re-parses as valid Elixir" do
+      for site <- ia_sites() do
+        assert {:ok, _} = Code.string_to_quoted(Report.patch(site, @ia_source))
+      end
+    end
+  end
+
   # Regression: a multi-line `:replace` that removes (or adds) a line in the middle
   # of the fragment — the shape an Ecto `:hosted` mutation produces when it drops one
   # `where:` from a big `from` block. A naive line-by-line pairing re-emits every line

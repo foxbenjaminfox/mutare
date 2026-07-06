@@ -345,6 +345,62 @@ defmodule Mutare.TransformTest do
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
+  test "an interpolated atom mutates as a whole; its content <<>> does not collapse" do
+    source = "defmodule A do\n  def f(b), do: :\"a\#{b + 1}c\"\nend\n"
+
+    {meta, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(source,
+        mutators: [
+          Mutare.Mutators.Arithmetic,
+          Mutare.Mutators.AtomLiteral,
+          Mutare.Mutators.BitstringLiteral
+        ]
+      )
+
+    # The whole `:"a#{b + 1}c"` swaps to the sentinel (AtomLiteral); `b + 1` inside the
+    # interpolation still mutates; the content `<<>>` is never offered to BitstringLiteral.
+    assert Enum.frequencies_by(sites, & &1.mutator) == %{atom: 1, arithmetic: 1}
+    assert %Site{mutated_code: ":mutare"} = Enum.find(sites, &(&1.mutator == :atom))
+    assert_compiles(meta)
+  end
+
+  test "interpolated charlists (sigil and legacy) mutate as a whole; interiors still mutate" do
+    source = "defmodule C do\n  def f(b), do: {~c\"a\#{b + 1}c\", 'd\#{b + 2}e'}\nend\n"
+
+    {meta, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(source,
+        mutators: [
+          Mutare.Mutators.Arithmetic,
+          Mutare.Mutators.CharlistLiteral,
+          Mutare.Mutators.BitstringLiteral,
+          Mutare.Mutators.List
+        ]
+      )
+
+    # Each form yields the empty + sentinel pair; the interiors mutate; neither the
+    # legacy segment list nor any content `<<>>` is offered to List / BitstringLiteral.
+    # (Parsed via Sourceror so the metamutant's legacy `'…'` doesn't print the
+    # single-quote deprecation warning into the test output.)
+    assert Enum.frequencies_by(sites, & &1.mutator) == %{charlist: 4, arithmetic: 2}
+    assert {:ok, _} = Sourceror.parse_string(meta)
+  end
+
+  test "a plain legacy charlist splits ownership: List empties it, CharlistLiteral sentinels it" do
+    source = "defmodule L do\n  def f, do: 'abc'\nend\n"
+
+    {meta, sites, _next_id} =
+      Mutare.Transform.transform_string_with_sites(source,
+        mutators: [Mutare.Mutators.CharlistLiteral, Mutare.Mutators.List]
+      )
+
+    assert Enum.map(sites, &{&1.mutator, &1.mutated_code}) == [
+             {:charlist, ~S|~c"mutare"|},
+             {:list, "[]"}
+           ]
+
+    assert {:ok, _} = Sourceror.parse_string(meta)
+  end
+
   test "defmacro/defmacrop bodies are compile-time and not mutated" do
     source = """
     defmodule M do
