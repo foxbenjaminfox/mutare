@@ -336,7 +336,7 @@ defmodule Mix.Tasks.Mutare do
   """
   use Mix.Task
 
-  alias Mutare.{Config, Options, Project, Report, Run, Runner, Schema}
+  alias Mutare.{Config, Lifting, Options, Project, Report, Run, Runner, Schema}
   alias Mutare.CLI
   alias Mutare.CLI.Info
   alias Mutare.Options.Registry
@@ -493,6 +493,7 @@ defmodule Mix.Tasks.Mutare do
       announce(schema, project, options)
       warn_unknown_directives(schema)
       warn_ineffective_ignores(schema)
+      warn_ineffective_skip_lifting(schema)
       enforce_strict_ignores(schema, options)
 
       # Wire the runner's live hooks (reporter/phase/start) now that the scan is done — the
@@ -711,6 +712,28 @@ defmodule Mix.Tasks.Mutare do
         :stderr,
         "warning: # mutare:ignore#{ignore_filter_label(directive)} at " <>
           "#{file}:#{directive.comment_line} suppressed no mutant" <> misplacement_label(hint)
+      )
+    end
+
+    :ok
+  end
+
+  # The `:skip_lifting` mirror of `warn_ineffective_ignores/1`: a configured entry that
+  # matched no function anywhere in the scan (`Mutare.Schema.detect_ineffective_skip_lifting`
+  # — recorded only on a full scan, so `--since`/`--only`/`--line` never false-positive).
+  # Without it a typo'd module or a wrong arity leaves the escape hatch silently inert —
+  # the user keeps hitting the baseline failure the entry was meant to avoid. Onto stderr,
+  # like the ignore diagnostics. Warning-only: `--strict-ignores` is scoped to the ignore
+  # comment namespace, and these entries live in config, not source.
+  defp warn_ineffective_skip_lifting(%Schema{ineffective_skip_lifting: []}), do: :ok
+
+  defp warn_ineffective_skip_lifting(%Schema{ineffective_skip_lifting: entries}) do
+    for entry <- entries do
+      IO.puts(
+        :stderr,
+        "warning: :skip_lifting entry #{Lifting.format_entry(entry)} matched no function — " <>
+          "check the module name and the function's written head arity " <>
+          "(default arguments count toward it)"
       )
     end
 

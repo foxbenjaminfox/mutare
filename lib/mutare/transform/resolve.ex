@@ -208,33 +208,23 @@ defmodule Mutare.Transform.Resolve do
   # A *nested* head ignores the stamp (Elixir nests the written path under the enclosing module),
   # and a dynamic head (not `__aliases__`) falls through to the bare-call clause below, so its
   # interior calls still get walked. Must precede that clause — `:defmodule` is an atom form.
-  defp walk({:defmodule, meta, [{:__aliases__, _, _} = head, body]}, env) when is_list(body) do
+  #
+  # The node itself is still stamped like any bare call (`stamp_bare_call/4`): the head stamp
+  # is *additive*, so a **shadowed** `defmodule` (`import Kernel, except: [defmodule: 2]` plus
+  # a DSL's own `defmodule` macro) keeps its import resolution and `:macro_routes` treatment
+  # exactly as it did when the bare-call clause handled this shape.
+  defp walk({:defmodule, meta, [{:__aliases__, _, _} = head, body] = args}, env)
+       when is_list(body) do
+    meta = stamp_bare_call(:defmodule, meta, args, env)
     stamped = Aliases.stamp_module(head, env.aliases)
     {:defmodule, meta, [stamped, walk(body, %{env | pipe_mode: :unpiped})]}
   end
 
   # A bare call `fun(...)`: stamp it with its resolved import (or Kernel-displacement) using
   # the current pipe context for effective arity, then — when it resolves to a known macro —
-  # its argument routing, then descend the arguments un-piped. The macro stamp runs *after*
-  # `Imports.stamp` so it can read the just-applied import / Kernel-displacement marks.
+  # its argument routing, then descend the arguments un-piped.
   defp walk({fun, meta, args}, env) when is_atom(fun) and is_list(args) do
-    meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, env.pipe_mode)
-    arity = Mutator.effective_arity(args, env.pipe_mode)
-    module_key = bare_module_key(fun, arity, meta, env)
-
-    meta =
-      MacroStamp.stamp(
-        meta,
-        module_key,
-        fun,
-        args,
-        {fun, meta, args},
-        env.macro_routes,
-        env.pipe_mode,
-        env.diag
-      )
-
-    {fun, meta, descend(args, env)}
+    {fun, stamp_bare_call(fun, meta, args, env), descend(args, env)}
   end
 
   # Any other n-ary node (`__aliases__`, operators with a tuple form, …): nothing to stamp —
@@ -244,6 +234,28 @@ defmodule Mutare.Transform.Resolve do
   defp walk({left, right}, env), do: {walk(left, env), walk(right, env)}
   defp walk(list, env) when is_list(list), do: Enum.map(list, &walk(&1, env))
   defp walk(node, _env), do: node
+
+  # The bare-call stamping shared by the generic bare-call clause and the `defmodule`
+  # clause: the resolved import (or Kernel displacement) using the current pipe context
+  # for effective arity, then — when the call resolves to a known macro — its argument
+  # routing. The macro stamp runs *after* `Imports.stamp` so it can read the just-applied
+  # import / Kernel-displacement marks.
+  defp stamp_bare_call(fun, meta, args, env) do
+    meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, env.pipe_mode)
+    arity = Mutator.effective_arity(args, env.pipe_mode)
+    module_key = bare_module_key(fun, arity, meta, env)
+
+    MacroStamp.stamp(
+      meta,
+      module_key,
+      fun,
+      args,
+      {fun, meta, args},
+      env.macro_routes,
+      env.pipe_mode,
+      env.diag
+    )
+  end
 
   defp descend(args, env), do: Enum.map(args, &walk(&1, %{env | pipe_mode: :unpiped}))
 

@@ -31,15 +31,18 @@ defmodule Mutare.Transform.Scope do
   #     scope (recomputed on entry, restored on exit) rather than recomputing it per
   #     clause/statement. `[]` is a safe default; the sole constructor primes it.
   #   * `module` — the module currently being transformed, for user options keyed
-  #     by fully-qualified `{Module, function, arity}`. `nil` outside a static
-  #     `defmodule` scope.
+  #     by fully-qualified `{Module, function, arity}`. `nil` at file top level;
+  #     `Mutare.Lifting.unresolved/0` inside a module whose `defmodule` head was dynamic
+  #     (`defmodule Module.concat(...)`) — distinct values, because a module nested under
+  #     an unresolvable parent must never resolve with the top-level rules (it could match
+  #     an unrelated module's `:skip_lifting` entry).
 
   @type t :: %__MODULE__{
           active_bound: boolean(),
           module_depth: non_neg_integer(),
           behaviours: MapSet.t(module()),
           analysis_mutators: [Mutare.Mutator.Spec.t()],
-          module: module() | nil
+          module: Mutare.Lifting.enclosing()
         }
 
   defstruct active_bound: false,

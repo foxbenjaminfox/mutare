@@ -21,6 +21,7 @@ defmodule Mutare.Transform.Config do
           mutators: [Mutare.Mutator.Spec.t()],
           skip_ids: MapSet.t(),
           skip_lifting: MapSet.t(Mutare.Lifting.skip_entry()),
+          warnings: boolean(),
           render_site_code: boolean(),
           summarize_sites: boolean(),
           prefix: String.t(),
@@ -34,6 +35,11 @@ defmodule Mutare.Transform.Config do
             mutators: [],
             skip_ids: MapSet.new(),
             skip_lifting: MapSet.new(),
+            # Whether this pass prints advisory warnings (`Resolve`'s routing advisories and
+            # `ModulePlan`'s lifting advisories). `true` for the scan/count pass; the render
+            # pass, report-time re-derivation, and poison rebuilds run the same pipeline over
+            # an already-warned source, so they pass `false` to keep each warning single-print.
+            warnings: true,
             # Whether each `Mutare.Site` records its rendered before/after diff text at build time
             # (`true`, the default), or defers it (`false`). Deferral is the scan's optimisation:
             # rendering a `Sourceror` diff per mutant dominates the build, yet only the handful of

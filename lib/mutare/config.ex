@@ -176,7 +176,11 @@ defmodule Mutare.Config do
   defp parse_mutator(name) do
     cond do
       existing = known_mutator_name(name) -> existing
-      module_alias?(name) -> Module.concat(String.split(name, "."))
+      # `Mutare.Lifting.module_alias?/1` is the one definition of "module-shaped CLI
+      # string" (gating `Module.concat/1` so only module-shaped input is interned, not
+      # arbitrary garbage) — shared with `--skip-lifting`, so the two flags accept the
+      # same module syntax.
+      Lifting.module_alias?(name) -> Module.concat(String.split(name, "."))
       true -> name
     end
   end
@@ -185,14 +189,6 @@ defmodule Mutare.Config do
   # String-compared against the live name set, so nothing is interned.
   defp known_mutator_name(name) do
     Enum.find([:builtins | Mutare.Mutators.families()], &(Atom.to_string(&1) == name))
-  end
-
-  # Whether `name` is a well-formed Elixir module alias (`Foo`, `Foo.Bar.Baz`) — every
-  # dot-separated segment an uppercase-led alias atom. Gates `Module.concat/1` so only
-  # module-shaped input is interned, not arbitrary garbage.
-  @alias_segment ~r/\A[A-Z][A-Za-z0-9_]*\z/
-  defp module_alias?(name) do
-    Enum.all?(String.split(name, "."), &Regex.match?(@alias_segment, &1))
   end
 
   # `--line FILE:LINE` scopes the run to the mutants on specific `file:line` locations —

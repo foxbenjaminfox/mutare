@@ -55,7 +55,7 @@ defmodule Mutare.Schema do
   thrown away on every healthy run.
   """
 
-  alias Mutare.{Ignore, Options, Site}
+  alias Mutare.{Ignore, Lifting, Options, Site}
   alias Mutare.Ignore.Directive
   alias Mutare.Run.Context
 
@@ -66,7 +66,8 @@ defmodule Mutare.Schema do
           sources: %{optional(String.t()) => String.t()},
           skipped: [{String.t(), term()}],
           ineffective_ignores: [{String.t(), Directive.t(), pos_integer() | nil}],
-          unknown_directives: [{String.t(), pos_integer(), String.t()}]
+          unknown_directives: [{String.t(), pos_integer(), String.t()}],
+          ineffective_skip_lifting: [Lifting.skip_entry()]
         }
 
   defstruct files: [],
@@ -75,7 +76,8 @@ defmodule Mutare.Schema do
             sources: %{},
             skipped: [],
             ineffective_ignores: [],
-            unknown_directives: []
+            unknown_directives: [],
+            ineffective_skip_lifting: []
 
   @doc """
   Build a schema by discovering files under `root`.
@@ -201,6 +203,7 @@ defmodule Mutare.Schema do
     |> assemble(counted, rendered)
     |> finalize()
     |> detect_directive_diagnostics()
+    |> detect_ineffective_skip_lifting(counted, options)
     |> restrict_lines(options.only_lines)
     |> limit(options.max_mutants)
   end
@@ -236,7 +239,8 @@ defmodule Mutare.Schema do
   # === phase 1: count ========================================================
 
   # Read and count every file's mutants in parallel throwaway workers (`count_one/3`),
-  # yielding `[{:counted, rel, source | nil, outcome}]` in **input order**. As each file's
+  # yielding `[{:counted, rel, source | nil, outcome, skip_lifting_matches}]` in **input
+  # order**. As each file's
   # result streams back it fires `:on_scan` with the running mutant tally — so live
   # progress flows *during* the (potentially long) count phase rather than in a burst
   # after it. The heavy short-lived ASTs each `count_string/2` builds die with their
@@ -276,14 +280,15 @@ defmodule Mutare.Schema do
 
     try do
       source = File.read!(file)
+      report = Mutare.Transform.count_report(source, count_opts(options, rel))
 
-      case Mutare.Transform.count_string(source, count_opts(options, rel)) do
-        0 -> {:counted, rel, source, :no_sites}
-        n -> {:counted, rel, source, {:sites, n}}
+      case report.mutants do
+        0 -> {:counted, rel, source, :no_sites, report.skip_lifting_matches}
+        n -> {:counted, rel, source, {:sites, n}, report.skip_lifting_matches}
       end
     rescue
       error in [SyntaxError, TokenMissingError, MismatchedDelimiterError] ->
-        {:counted, rel, nil, {:error, error}}
+        {:counted, rel, nil, {:error, error}, MapSet.new()}
 
       other ->
         {:raise, other, __STACKTRACE__}
@@ -298,8 +303,8 @@ defmodule Mutare.Schema do
 
   # The mutant count an outcome contributes to the running `:on_scan` tally (0 for a
   # no-site or skipped file), summed per file as `count_files/3` consumes the stream.
-  defp mutants_found({:counted, _rel, _src, {:sites, n}}), do: n
-  defp mutants_found({:counted, _rel, _src, _outcome}), do: 0
+  defp mutants_found({:counted, _rel, _src, {:sites, n}, _skips}), do: n
+  defp mutants_found({:counted, _rel, _src, _outcome, _skips}), do: 0
 
   # === phase 2: render =======================================================
 
@@ -311,10 +316,10 @@ defmodule Mutare.Schema do
   defp render_jobs(counted) do
     {jobs, _next_id} =
       Enum.flat_map_reduce(counted, 1, fn
-        {:counted, rel, source, {:sites, count}}, next_id ->
+        {:counted, rel, source, {:sites, count}, _skips}, next_id ->
           {[{rel, source, next_id, count}], next_id + count}
 
-        {:counted, _rel, _source, _outcome}, next_id ->
+        {:counted, _rel, _source, _outcome, _skips}, next_id ->
           {[], next_id}
       end)
 
@@ -400,7 +405,7 @@ defmodule Mutare.Schema do
   # compile, so `Mutare.Poison` re-derives it lazily (see `Mutare.Poison.ids/2`).
   defp assemble(rel_files, counted, rendered) do
     Enum.reduce(counted, %__MODULE__{files: rel_files}, fn
-      {:counted, rel, source, {:sites, _count}}, schema ->
+      {:counted, rel, source, {:sites, _count}, _skips}, schema ->
         {meta, sites} = Map.fetch!(rendered, rel)
 
         %{
@@ -410,11 +415,11 @@ defmodule Mutare.Schema do
             sources: Map.put(schema.sources, rel, source)
         }
 
-      {:counted, rel, source, :no_sites}, schema ->
+      {:counted, rel, source, :no_sites, _skips}, schema ->
         # mutare:ignore[map_keyword] equivalent — dedup'd input → each rel put once (see above)
         %{schema | sources: Map.put(schema.sources, rel, source)}
 
-      {:counted, rel, _source, {:error, reason}}, schema ->
+      {:counted, rel, _source, {:error, reason}, _skips}, schema ->
         %{schema | skipped: [{rel, reason} | schema.skipped]}
     end)
   end
@@ -562,6 +567,36 @@ defmodule Mutare.Schema do
       |> Enum.map(&{&1, Ignore.misplacement_hint(ast, &1, occupied)})
 
     {ineffective, Ignore.unknown_directives_from_ast(ast)}
+  end
+
+  # The `:skip_lifting` mirror of the ineffective-ignore diagnostic: record every configured
+  # entry that matched no function anywhere in the scan, so the Mix task can warn — otherwise
+  # a typo'd module or a wrong arity (`def parse(input, opts \\ [])` is arity 2 — the *written*
+  # head, not a caller's) leaves the escape hatch silently inert. Matches are unioned from the
+  # count pass, which sees every scanned file (a zero-site file included; an unparseable file
+  # contributes nothing, but it also yields no metamutant, so an entry aimed at it really is
+  # without effect).
+  #
+  # Only a *full* scan can prove an entry ineffective: `--since`/`--only`/`--line` narrow the
+  # file set, so absence there proves nothing and the diagnostic is suppressed. A poison
+  # rebuild re-records the same (deterministic) result; the Mix task warns once, after the
+  # initial build.
+  defp detect_ineffective_skip_lifting(schema, counted, %Options{} = options) do
+    configured = options.skip_lifting
+
+    if MapSet.size(configured) == 0 or options.only_files != nil or options.only_lines != nil do
+      schema
+    else
+      matched =
+        Enum.reduce(counted, MapSet.new(), fn {:counted, _rel, _src, _outcome, matches}, acc ->
+          MapSet.union(acc, matches)
+        end)
+
+      ineffective =
+        configured |> MapSet.difference(matched) |> Enum.sort_by(&Lifting.format_entry/1)
+
+      %{schema | ineffective_skip_lifting: ineffective}
+    end
   end
 
   # Cap the schema to at most `max` mutants (`--max-mutants`), keeping the first

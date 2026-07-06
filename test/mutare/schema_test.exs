@@ -701,4 +701,53 @@ defmodule Mutare.SchemaTest do
     assert Schema.count(schema) == 1
     assert schema.ineffective_ignores == []
   end
+
+  test "records :skip_lifting entries that matched no function", %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule SchemaSkipLiftA do
+      def f(x) when x > 0, do: x + 1
+      def f(x), do: x - 1
+    end
+    """)
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      schema =
+        Schema.build(root,
+          mutators: @probe,
+          skip_lifting: [
+            # Matches f/1 above — must NOT be recorded.
+            {SchemaSkipLiftA, :f, 1},
+            # Wrong arity (the *written* head arity is what matches) — recorded.
+            {SchemaSkipLiftA, :f, 2},
+            # No such module anywhere — recorded.
+            {SchemaSkipLift.Missing, :g, 1}
+          ]
+        )
+
+      assert schema.ineffective_skip_lifting == [
+               {SchemaSkipLift.Missing, "g", 1},
+               {SchemaSkipLiftA, "f", 2}
+             ]
+    end)
+  end
+
+  test "a narrowed scan records no ineffective :skip_lifting entries", %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule SchemaSkipLiftB do
+      def f(x) when x > 0, do: x + 1
+      def f(x), do: x - 1
+    end
+    """)
+
+    # `--since`/`--only`/`--line` narrow the file set, so an entry's absence there
+    # proves nothing — the diagnostic must stay silent rather than false-positive.
+    schema =
+      Schema.build(root,
+        mutators: @probe,
+        skip_lifting: [{SchemaSkipLift.Elsewhere, :g, 1}],
+        only_files: ["lib/a.ex"]
+      )
+
+    assert schema.ineffective_skip_lifting == []
+  end
 end

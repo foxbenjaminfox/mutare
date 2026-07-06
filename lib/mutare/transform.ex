@@ -205,11 +205,13 @@ defmodule Mutare.Transform do
       static args and feed their injected `import`/`alias` directives into resolution (see
       `Mutare.Transform.Uses`); `false` freezes the pre-expansion behaviour (and, with it, any
       extension `use`-expansion overrides)
-    * `:warnings` — when `true` (the default), print advisory warnings for suspect but
+    * `:warnings` — when `true` (the default), print advisory warnings: suspect but
       non-fatal extension behaviour (currently: a `:routing` classifier returning
-      `{:keyword, …}` for a non-keyword argument). Callers that re-run the pipeline over a
-      source already scanned pass `false` so each warning prints once — `Mutare.Schema`'s
-      render phase (the count phase warned) and `render_sites/2` (report-time re-derivation).
+      `{:keyword, …}` for a non-keyword argument) and the lifting advisories (a
+      `:skip_lifting` match, non-consecutive / metaprogrammed / delegated clause groups).
+      Callers that re-run the pipeline over a source already scanned pass `false` so each
+      warning prints once — `Mutare.Schema`'s render phase (the count phase warned) and
+      `render_sites/2` (report-time re-derivation).
   """
   @spec transform_string(String.t(), keyword()) :: Result.t()
   def transform_string(source, opts \\ []) when is_binary(source) do
@@ -255,7 +257,19 @@ defmodule Mutare.Transform do
   exceptions for invalid source.
   """
   @spec count_string(String.t(), keyword()) :: non_neg_integer()
-  def count_string(source, opts \\ []) when is_binary(source) do
+  def count_string(source, opts \\ []) when is_binary(source),
+    do: count_report(source, opts).mutants
+
+  @doc false
+  # `count_string/2` plus the count pass's side-channel diagnostics: the `:skip_lifting`
+  # entries the source matched, so `Mutare.Schema` can union them across all files and
+  # surface the configured entries that matched nothing anywhere (see
+  # `Mutare.Schema.detect_ineffective_skip_lifting/3`).
+  @spec count_report(String.t(), keyword()) :: %{
+          mutants: non_neg_integer(),
+          skip_lifting_matches: MapSet.t(Lifting.skip_entry())
+        }
+  def count_report(source, opts \\ []) when is_binary(source) do
     # The `:count` sink runs the same analyze → plan → emit pipeline but builds and retains no
     # `Mutare.Site` per claim — only advancing the id and tallying — so the per-mutant `Sourceror`
     # render in `Mutare.Site` is skipped. The tally is the mutant count (drift-proof: same claim
@@ -270,7 +284,7 @@ defmodule Mutare.Transform do
     if String.contains?(source, "mutare:ignore"),
       do: validate_ignore_qualifiers!(Mutare.Ignore.directives_from_ast(parsed), ctx)
 
-    ClaimState.total(ctx.claim)
+    %{mutants: ClaimState.total(ctx.claim), skip_lifting_matches: ctx.claim.skip_matches}
   end
 
   @doc """
@@ -375,6 +389,11 @@ defmodule Mutare.Transform do
       skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
       skip_lifting:
         opts |> Keyword.get(:skip_lifting, MapSet.new()) |> Lifting.validate_skip_lifting!(),
+      # Default `true`: advisory warnings print once, at scan/count time. The schema's render
+      # pass, `render_sites/2`, and poison rebuilds pass `false` (see the `:warnings` doc on
+      # `transform_string/2`). Consumed by `Resolve.annotate/3` (via `annotate_tree/4`) and
+      # `ModulePlan.build/4` (the lifting advisories), so *every* advisory honours the flag.
+      warnings: Keyword.get(opts, :warnings, true),
       # Default `true`: the public API and tests render each site's diff eagerly. A `mix mutare`
       # scan passes `false` to defer it (see `Mutare.Transform.Config`).
       render_site_code: Keyword.get(opts, :render_site_code, true),
@@ -480,7 +499,12 @@ defmodule Mutare.Transform do
     outer = ctx.scope.behaviours
     outer_mutators = ctx.scope.analysis_mutators
     outer_module = ctx.scope.module
-    module = Lifting.module_from_alias(alias_node, outer_module)
+
+    # An unresolvable (dynamic) head threads the explicit sentinel, never `nil`: `nil`
+    # means "file top level" downstream, and a literal module nested under a dynamic
+    # parent resolved with the top-level rules would match an unrelated module's
+    # `:skip_lifting` entry (see `Mutare.Lifting.unresolved/0`).
+    module = Lifting.module_from_alias(alias_node, outer_module) || Lifting.unresolved()
 
     {do_keyword, ctx} =
       transform_do_keyword(
@@ -530,18 +554,24 @@ defmodule Mutare.Transform do
   end
 
   # Plan the statement sequence, then emit it (assigning ids). The split is the
-  # whole point: `ModulePlan.build/5` decides *what* each statement is (a lifted
+  # whole point: `ModulePlan.build/4` decides *what* each statement is (a lifted
   # group, an in-place group, or another statement), id-free; emission does the
   # id-threading.
   defp transform_statements(statements, ctx) do
-    statements
-    |> ModulePlan.build(
-      ctx.scope.analysis_mutators,
-      ctx.config.file,
-      ctx.scope.module,
-      ctx.config.skip_lifting
-    )
-    |> emit_module_plan(ctx)
+    plan = ModulePlan.build(statements, ctx.scope.analysis_mutators, ctx.config, ctx.scope.module)
+    emit_module_plan(plan, record_skip_matches(ctx, plan.skip_lifting_matches))
+  end
+
+  # Accumulate the `:skip_lifting` entries this statement sequence matched onto the claim
+  # state, so `count_report/2` can hand them to `Mutare.Schema` — which unions them across
+  # the count pass and surfaces the configured entries that matched *nothing* (the
+  # ineffective-entry diagnostic, mirroring ineffective `# mutare:ignore` directives).
+  defp record_skip_matches(ctx, matches) do
+    if MapSet.size(matches) == 0 do
+      ctx
+    else
+      Ctx.update_claim(ctx, &%{&1 | skip_matches: MapSet.union(&1.skip_matches, matches)})
+    end
   end
 
   # Enter a module scope: bind its module/name + `@behaviour` set and refresh the cached, behaviour-

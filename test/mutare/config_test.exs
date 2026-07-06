@@ -95,6 +95,14 @@ defmodule Mutare.ConfigTest do
       refute Keyword.has_key?(Config.merge([], []), :skip_lifting)
     end
 
+    test "--skip-lifting keeps a doubled Elixir prefix whole" do
+      # `defmodule Elixir.Elixir.MyUse` defines `:"Elixir.Elixir.MyUse"` — `Module.concat/1`
+      # folds exactly one canonical prefix, so the spec must not be pre-stripped (that would
+      # double-fold to `MyUse`, a different module).
+      assert Config.merge([], skip_lifting: "Elixir.Elixir.MyUse.f/1")[:skip_lifting] ==
+               [{:"Elixir.Elixir.MyUse", "f", 1}]
+    end
+
     test "--skip-lifting rejects malformed entries" do
       for bad <- [
             "Mutare.Test.SkipLiftFixture",

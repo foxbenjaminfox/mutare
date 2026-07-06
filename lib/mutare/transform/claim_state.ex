@@ -10,6 +10,10 @@ defmodule Mutare.Transform.ClaimState do
   #   * `sites` — the recorded `Mutare.Site`s (reversed; the caller flips them once), the input
   #     to the report and the lazily-built manifest. Retained only by the `:render` sink.
   #   * `count` — a running mutant tally, the `:count` sink's cheap stand-in for `length(sites)`.
+  #   * `skip_matches` — the normalized `:skip_lifting` entries any statement sequence in this
+  #     pass matched (`Mutare.Transform.ModulePlan` reports them; `Mutare.Transform` unions them
+  #     in). Read by `count_report/2` so `Mutare.Schema` can surface configured entries that
+  #     matched nothing anywhere — the ineffective-entry diagnostic. Sink-independent.
   #
   # The `sink` selects what each claim *retains* — the one knob that splits a render from the
   # schema's render-free count pass:
@@ -38,10 +42,11 @@ defmodule Mutare.Transform.ClaimState do
           next_id: pos_integer(),
           group: non_neg_integer(),
           sites: [Site.t()],
-          count: non_neg_integer()
+          count: non_neg_integer(),
+          skip_matches: MapSet.t(Mutare.Lifting.skip_entry())
         }
 
-  defstruct sink: :render, next_id: 1, group: 0, sites: [], count: 0
+  defstruct sink: :render, next_id: 1, group: 0, sites: [], count: 0, skip_matches: MapSet.new()
 
   @doc """
   Claim the next id for `item`, returning `{artifacts, claim}`.

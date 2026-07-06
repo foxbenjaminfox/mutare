@@ -787,6 +787,167 @@ defmodule Mutare.LiftTest do
       assert apply(Mutare.SkipLiftNestedAliasOuter.SNAT.Inner, :f, [0]) == -1
     end
 
+    test ":skip_lifting never matches a module nested under a dynamic head" do
+      source = """
+      alias Mutare.SkipLiftDynAliasTarget, as: SDAT
+
+      defmodule Module.concat([Mutare, "SkipLiftDynParent"]) do
+        defmodule Child do
+          def f(x) when x > 0, do: x + 1
+          def f(x), do: x - 1
+        end
+
+        defmodule SDAT.Kid do
+          def g(x) when x > 0, do: x + 1
+          def g(x), do: x - 1
+        end
+      end
+      """
+
+      # Elixir defines `Mutare.SkipLiftDynParent.Child` and `Mutare.SkipLiftDynParent.SDAT.Kid`.
+      # Under an unresolvable (dynamic) parent a nested head must never resolve with the
+      # top-level rules, so neither a bare `Child` entry (aimed at a genuine top-level module)
+      # nor the alias-resolved `Mutare.SkipLiftDynAliasTarget.Kid` may match — both functions
+      # keep their lifted mutants, and no misleading skip warning is printed.
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source,
+            file: "dyn_parent_skip.ex",
+            mutators: @probe,
+            skip_lifting: [{Child, :f, 1}, {Mutare.SkipLiftDynAliasTarget.Kid, :g, 1}]
+          )
+        end)
+
+      child_lines = 5..6
+      kid_lines = 10..11
+
+      assert Enum.any?(sites, fn site -> site.kind == :lifted and site.line in child_lines end)
+      assert Enum.any?(sites, fn site -> site.kind == :lifted and site.line in kid_lines end)
+      refute log =~ "matched :skip_lifting"
+
+      compiled_modules = meta |> Mutare.Test.Compile.string() |> Enum.map(&elem(&1, 0))
+      assert Mutare.SkipLiftDynParent.Child in compiled_modules
+      assert Mutare.SkipLiftDynParent.SDAT.Kid in compiled_modules
+
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.SkipLiftDynParent.Child, :f, [2]) == 3
+      assert apply(Mutare.SkipLiftDynParent.SDAT.Kid, :g, [0]) == -1
+    end
+
+    test ":skip_lifting matches atom-named module heads" do
+      source = """
+      defmodule :mutare_skip_lift_atom_mod do
+        def f(x) when x > 0, do: x + 1
+        def f(x), do: x - 1
+      end
+      """
+
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source,
+            file: "atom_skip.ex",
+            mutators: @probe,
+            skip_lifting: [{:mutare_skip_lift_atom_mod, :f, 1}]
+          )
+        end)
+
+      skipped_lines = 2..3
+
+      refute Enum.any?(sites, fn site ->
+               site.kind == :lifted and site.line in skipped_lines
+             end)
+
+      assert Enum.any?(sites, fn site ->
+               site.kind == :in_place and site.mutator == :arithmetic and
+                 site.line in skipped_lines
+             end)
+
+      assert log =~
+               "atom_skip.ex: :mutare_skip_lift_atom_mod.f/1 matched :skip_lifting — not lifting"
+
+      compiled_modules = meta |> Mutare.Test.Compile.string() |> Enum.map(&elem(&1, 0))
+      assert :mutare_skip_lift_atom_mod in compiled_modules
+
+      Selector.put(Selector.baseline())
+      assert apply(:mutare_skip_lift_atom_mod, :f, [2]) == 3
+      assert apply(:mutare_skip_lift_atom_mod, :f, [0]) == -1
+    end
+
+    test ":skip_lifting keeps a doubled Elixir prefix whole (and folds a single one)" do
+      source = """
+      defmodule Elixir.Elixir.MutareSkipLiftDoubled do
+        def f(x) when x > 0, do: x + 1
+        def f(x), do: x - 1
+      end
+
+      defmodule Elixir.MutareSkipLiftSingle do
+        def f(x) when x > 0, do: x + 1
+        def f(x), do: x - 1
+      end
+      """
+
+      # `defmodule Elixir.Elixir.X` defines `:"Elixir.Elixir.X"` (the compiler folds exactly
+      # one canonical prefix — same rule `Module.concat/1` applies); `defmodule Elixir.X`
+      # defines plain `X`. The entries name what Elixir defines; a plain
+      # `MutareSkipLiftDoubled` entry would not (and must not) match the doubled module.
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source,
+            file: "prefix_skip.ex",
+            mutators: @probe,
+            skip_lifting: [
+              {:"Elixir.Elixir.MutareSkipLiftDoubled", :f, 1},
+              {MutareSkipLiftSingle, :f, 1}
+            ]
+          )
+        end)
+
+      doubled_lines = 2..3
+      single_lines = 7..8
+
+      refute Enum.any?(sites, fn site ->
+               site.kind == :lifted and (site.line in doubled_lines or site.line in single_lines)
+             end)
+
+      assert log =~
+               "prefix_skip.ex: Elixir.Elixir.MutareSkipLiftDoubled.f/1 matched :skip_lifting"
+
+      assert log =~ "prefix_skip.ex: MutareSkipLiftSingle.f/1 matched :skip_lifting"
+
+      compiled_modules = meta |> Mutare.Test.Compile.string() |> Enum.map(&elem(&1, 0))
+      assert :"Elixir.Elixir.MutareSkipLiftDoubled" in compiled_modules
+      assert MutareSkipLiftSingle in compiled_modules
+
+      Selector.put(Selector.baseline())
+      assert apply(:"Elixir.Elixir.MutareSkipLiftDoubled", :f, [2]) == 3
+      assert apply(MutareSkipLiftSingle, :f, [0]) == -1
+    end
+
+    test "warnings: false silences the lifting advisories but still applies the skip" do
+      source = """
+      defmodule Mutare.SkipLiftQuietFixture do
+        def f(x) when x > 0, do: x + 1
+        def f(x), do: x - 1
+      end
+      """
+
+      {{_meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source,
+            file: "quiet_skip.ex",
+            mutators: @probe,
+            warnings: false,
+            skip_lifting: [{Mutare.SkipLiftQuietFixture, :f, 1}]
+          )
+        end)
+
+      # The render pass / report-time re-derivation re-run the pipeline over an
+      # already-warned source with `warnings: false` — the skip must still apply,
+      # only the advisory is silenced (else every warning would print 2-3 times).
+      refute Enum.any?(sites, fn site -> site.kind == :lifted end)
+      refute log =~ "matched :skip_lifting"
+    end
+
     test "lifts functions whose names end in ? or ! (sanitized private names)" do
       source = """
       defmodule Mutare.OkFixture do

@@ -23,6 +23,7 @@ defmodule Mutare.Transform.ModulePlan do
   require Logger
 
   alias Mutare.Lifting
+  alias Mutare.Transform.Config
   alias Mutare.Transform.FunctionPlan
 
   @type item ::
@@ -30,28 +31,33 @@ defmodule Mutare.Transform.ModulePlan do
           | {:in_place, [Macro.t()]}
           | {:statement, Macro.t()}
 
-  @type t :: %__MODULE__{items: [item()]}
+  @type t :: %__MODULE__{
+          items: [item()],
+          skip_lifting_matches: MapSet.t(Lifting.skip_entry())
+        }
 
-  defstruct items: []
+  defstruct items: [], skip_lifting_matches: MapSet.new()
 
   @doc """
   Plan a statement sequence into classified `items`.
 
-  `file` is used only to attribute the non-consecutive-clause warning.
+  `config` supplies the `file` (attributing the advisory warnings), the
+  `skip_lifting` entry set, and the `warnings` gate — the scan/count pass warns;
+  the render pass, report-time re-derivation, and poison rebuilds re-run the same
+  pipeline and pass `warnings: false` so each advisory prints once.
+
+  `skip_lifting_matches` records the normalized entries this sequence matched, so
+  `Mutare.Schema` can union them across the count pass and surface configured
+  entries that matched nothing anywhere.
   """
-  @spec build(
-          [Macro.t()],
-          [Mutare.Mutator.Spec.t()],
-          String.t(),
-          module() | nil,
-          MapSet.t(Lifting.skip_entry())
-        ) :: t()
-  def build(statements, mutators, file, module, skip_lifting) do
+  @spec build([Macro.t()], [Mutare.Mutator.Spec.t()], Config.t(), Lifting.enclosing()) :: t()
+  def build(statements, mutators, %Config{} = config, module) do
     chunks = chunk_clause_runs(statements)
-    skipped = skipped_signatures(chunks, module, skip_lifting)
+    skipped = skipped_signatures(chunks, module, config.skip_lifting)
     non_consecutive = non_consecutive_signatures(chunks)
     metaprogrammed = metaprogrammed_heads(chunks)
     delegated = delegated_heads(chunks)
+
     # Each blocked signature gets exactly one warning, for its binding reason.
     # User-requested `:skip_lifting` wins the diagnosis: it is the most direct
     # explanation and intentionally suppresses the other lifting warnings for
@@ -62,19 +68,24 @@ defmodule Mutare.Transform.ModulePlan do
     # non-consecutive: grouping the clauses can't enable lifting (the generated
     # clauses still force in-place), so the non-consecutive advice ("group the
     # clauses") would mislead.
-    warn_skipped(skipped, module, file)
+    if config.warnings do
+      warn_skipped(skipped, module, config.file)
 
-    warn_delegated(delegated_signatures(chunks, delegated) |> without_skipped(skipped), file)
+      warn_delegated(
+        delegated_signatures(chunks, delegated) |> without_skipped(skipped),
+        config.file
+      )
 
-    warn_metaprogrammed(
-      metaprogrammed_signatures(chunks, metaprogrammed, delegated) |> without_skipped(skipped),
-      file
-    )
+      warn_metaprogrammed(
+        metaprogrammed_signatures(chunks, metaprogrammed, delegated) |> without_skipped(skipped),
+        config.file
+      )
 
-    warn_non_consecutive(
-      non_consecutive_only(non_consecutive, metaprogrammed, delegated, skipped),
-      file
-    )
+      warn_non_consecutive(
+        non_consecutive_only(non_consecutive, metaprogrammed, delegated, skipped),
+        config.file
+      )
+    end
 
     items =
       Enum.map(chunks, fn
@@ -92,7 +103,7 @@ defmodule Mutare.Transform.ModulePlan do
           )
       end)
 
-    %__MODULE__{items: items}
+    %__MODULE__{items: items, skip_lifting_matches: matched_entries(skipped, module)}
   end
 
   @doc """
@@ -226,8 +237,8 @@ defmodule Mutare.Transform.ModulePlan do
     end)
   end
 
-  defp skipped_signatures(_chunks, nil, _skip_lifting), do: MapSet.new()
-
+  # `Lifting.skip?/4` is `false` for a `nil` (top-level) or unresolved-sentinel module,
+  # so those scopes yield the empty set with no special clause here.
   defp skipped_signatures(chunks, module, skip_lifting) do
     chunks
     |> clause_group_signatures()
@@ -235,18 +246,17 @@ defmodule Mutare.Transform.ModulePlan do
     |> MapSet.new()
   end
 
-  defp warn_skipped(signatures, nil, file) do
-    warn_skipped(signatures, "unknown module", file)
+  # The normalized entries the skip set matched here. `skipped` is non-empty only for a
+  # real (resolved) module, so `module` is never `nil`/the sentinel when this builds an
+  # entry.
+  defp matched_entries(skipped, module) do
+    MapSet.new(skipped, fn {_vis, name, arity} -> {module, Atom.to_string(name), arity} end)
   end
 
-  defp warn_skipped(signatures, module, file) when is_atom(module) do
-    warn_skipped(signatures, inspect(module), file)
-  end
-
-  defp warn_skipped(signatures, module_label, file) do
+  defp warn_skipped(signatures, module, file) do
     Enum.each(signatures, fn {_vis, name, arity} ->
       Logger.warning(
-        "#{file}: #{module_label}.#{name}/#{arity} matched :skip_lifting — not lifting " <>
+        "#{file}: #{inspect(module)}.#{name}/#{arity} matched :skip_lifting — not lifting " <>
           "(no guard, head-pattern, or clause-drop mutants for it)"
       )
     end)
@@ -280,7 +290,7 @@ defmodule Mutare.Transform.ModulePlan do
   # The top-level clause-group signatures blocked from lifting by metaprogramming,
   # for the warning. Deduplicated by signature. Metaprogramming outranks
   # non-consecutiveness as the diagnosis, but yields to delegation — see the
-  # precedence note in `build/3`.
+  # precedence note in `build/4`.
   defp metaprogrammed_signatures(chunks, metaprogrammed, delegated) do
     chunks
     |> clause_group_signatures()
@@ -315,7 +325,7 @@ defmodule Mutare.Transform.ModulePlan do
 
   # The top-level clause-group signatures blocked from lifting by a defdelegate
   # sibling, for the warning. Delegation is the binding diagnosis whenever it
-  # applies — see the precedence note in `build/3`.
+  # applies — see the precedence note in `build/4`.
   defp delegated_signatures(chunks, delegated) do
     chunks
     |> clause_group_signatures()
