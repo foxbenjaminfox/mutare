@@ -486,6 +486,39 @@ defmodule Mix.Tasks.MutareTest do
       assert output =~ "[bogus]"
     end
 
+    test "--list-ignores names a scoped directive's reach" do
+      root =
+        bare_project("""
+        # mutare:ignore-file[bogus] nothing here is bogus-family, so ineffective
+        defmodule A do
+          # mutare:ignore-start table
+          def f(x), do: x + 1
+          # mutare:ignore-end
+        end
+        """)
+
+      Mix.Tasks.Mutare.run([root, "--list-ignores"])
+      output = drain_shell_info()
+
+      assert output =~ "whole file, [bogus]"
+      assert output =~ "lines 3-5, all families — table"
+      assert output =~ "active"
+      assert output =~ "ineffective"
+    end
+
+    test "--list-ignores renders a broken region pairing as a clean Mix abort" do
+      root =
+        bare_project("""
+        defmodule A do
+          # mutare:ignore-start
+          def f(x), do: x + 1
+        end
+        """)
+
+      err = assert_raise Mix.Error, fn -> Mix.Tasks.Mutare.run([root, "--list-ignores"]) end
+      assert err.message =~ "# mutare:ignore-start is never closed"
+    end
+
     test "--list-ignores renders a bad qualifier as a clean Mix abort, not a raw stacktrace" do
       # `--list-ignores`/`--dry-run` build a schema *outside* the mutation-run try/rescue, so the
       # qualifier `SpecError` must be caught at the dispatch level and surfaced as a clean Mix abort.

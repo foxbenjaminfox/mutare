@@ -357,21 +357,66 @@ regex earlier. Adding any future verb starts at `Ignore.@known_verbs` (plus its 
 
 Two consequences worth remembering:
 - **The directive boundary tightened from `\b` to `(?![\w-])`.** Under `\b`,
-  `# mutare:ignore-file` parsed as ignore-*everything* with reason `-file` (the `-` is a word
-  boundary) — precisely the silent over-suppression a future hyphenated verb must not trigger.
-  A hyphen now extends the *verb*, so the comment lands in the unknown-verb warning instead.
-  Behavior change is fail-safe (stops suppressing, starts warning) and the glued-reason shape
-  (`ignore-…` with no space) is implausible as intentional usage.
+  `# mutare:ignore-file` (then not yet a verb) parsed as ignore-*everything* with reason `-file`
+  (the `-` is a word boundary) — precisely the silent over-suppression a future hyphenated verb
+  must not trigger. A hyphen now extends the *verb*, so an unrecognized hyphenation
+  (`# mutare:ignore-lines`) lands in the unknown-verb warning instead. Behavior change is
+  fail-safe (stops suppressing, starts warning) and the glued-reason shape (`ignore-…` with no
+  space) is implausible as intentional usage. This groundwork is what later let
+  `ignore-file`/`ignore-start`/`ignore-end` (next entry) become real verbs without ambiguity —
+  the suffix alternation carries the same lookahead, so `ignore-startx` is still an unknown verb,
+  not `ignore-start` with reason `x`.
 - **The diagnostics prefilter widened from `mutare:ignore` to `mutare:`** (in
   `Schema.detect_directive_diagnostics/1`, which now runs one parse per flagged file for both the
   ineffective and unknown scans). The count-path *qualifier validation* prefilter in
-  `Transform.count_string/2` stays at `mutare:ignore` — it only feeds `validate!/3`, which only
-  reads real ignore directives.
+  `Transform.count_string/2` stays at `mutare:ignore` — it only feeds the hard validations, which
+  only read real ignore directives (every scoped verb starts with `mutare:ignore`, so the substring
+  admits those too).
 
 The warning stays **soft** (lenient like a bare-family typo, not a hard `SpecError`): an anchored
 `# mutare:` comment could in principle be prose, and — unlike a `[family:label]` on a known family
 — we cannot prove a mistake. The Jaro near-miss hint (`; did you mean # mutare:ignore?`) reuses the
 label-suggestion threshold via the shared `closest/2`.
+
+### Scoped suppression — `# mutare:ignore-file` and `-start`/`-end` regions `[done]`
+The line directive doesn't scale to a large low-value span — a literal lookup table
+(`def enc(?A), do: ?B` × 200) breeds several mutants per head and would need one trailing comment
+per line; a generated module would need hundreds. `--exclude` covers only spans that happen to be
+whole files the user is willing to split out. So two scoped verbs, both reusing the line
+directive's `[filter]`/reason grammar verbatim (`Ignore.parse_rest/1` is shared): `ignore-file`
+suppresses everywhere in the file from wherever it sits, and an `ignore-start`…`ignore-end` pair
+suppresses a region. Decisions worth remembering:
+
+- **Region bounds are inclusive of both delimiter comment lines.** A trailing
+  `x = 1 # mutare:ignore-start` covers line 1's own mutants; likewise `-end`. The alternative
+  (exclusive) makes the trailing form a no-op on its own line — surprising, and useless for the
+  one-line-table-row case. Text after `ignore-end` is prose, never parsed: the filter and reason
+  belong to the `-start` (an `-end` filter would suggest per-family region closing, which doesn't
+  exist — regions don't nest, see below).
+- **Pairing mistakes are hard `SpecError`s** (`:unmatched_end`, `:nested_region`,
+  `:unterminated_region`), not soft ineffective warnings — the one place the ignore grammar is
+  strict beyond known-family labels. The mistake is provable from the delimiters alone, and both
+  lenient readings fail the wrong way: reading an unterminated `-start` as "to end of file"
+  silently over-suppresses (the dangerous direction `parse_rest`'s malformed-filter handling
+  already refuses); reading it as nothing silently runs mutants the user asked to skip.
+  `ignore-file` is the sanctioned way to say "to end of file". Parsing itself never raises —
+  errors ride the `Directives` container (`scope_errors`) and `Ignore.validate_scopes!/2` raises
+  once a file name is in hand, on both transform paths (render, and count — where a zero-site
+  file's directives are only ever seen; same reasoning as qualifier validation, one entry up).
+  Nested `-start`s error but the open region still closes at its `-end` — the partial container
+  stays sound for any reader that proceeds past the error.
+- **Precedence: filter specificity first, then scope narrowness, then source order**
+  (`directive_for`'s `{match_specificity, scope_rank, -source_order}`). Specificity-first means a
+  file-wide `[literal:zero]` beats a line-level bare `ignore` *for that one mutant* — the
+  qualified directive is the more informative reason to record; the mutant is suppressed either
+  way (the ranking only ever picks among directives that all match). Scope rank (line 2 > region
+  1 > file 0) breaks the common tie so the most locally-written reason wins.
+- **The container split (`Directives{by_line, scoped}`)** keeps the per-site lookup a key fetch
+  and makes scoped coverage an explicit `Directive.covers?/2` scan of the (few) scoped
+  directives; `covers?` also answers the nil-line site case (`:file` yes, region no — the one
+  scope that needs no line to decide). Ineffectiveness holds scoped directives to the same bar
+  (`ignore-file` in a file with no matching mutants warns, `--strict-ignores` aborts), but the
+  misplacement *hint* is line-only — a scoped directive can't miss by one line.
 
 ### Scan is transform-bound, and the loop heap makes it worse `[resolved; was deferred]`
 

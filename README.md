@@ -91,7 +91,19 @@ Qualify a family with `:label` to suppress just one *kind* of its mutants. Here 
 def floor_zero(x), do: if(x < 0, do: 0, else: x)  # mutare:ignore[relational:<=] 0 ≤ 0 returns 0 here
 ```
 
-Each family names its own labels — `relational` → `> >= < <= == != === !==`, `literal` → `zero succ pred negate`, `return_value` → `empty sentinel` — and `mix mutare --list-mutators` prints every built-in family's labels. A qualified label that a known family doesn't declare is a hard error with a "did you mean", so a typo can't slip through as a silent no-op. The full grammar is in [`Mutare.Ignore`](https://hexdocs.pm/mutare/Mutare.Ignore.html).
+Each family names its own labels — `relational` → `> >= < <= == != === !==`, `literal` → `zero succ pred negate`, `return_value` → `empty sentinel` — and `mix mutare --list-mutators` prints every built-in family's labels. A qualified label that a known family doesn't declare is a hard error with a "did you mean", so a typo can't slip through as a silent no-op.
+
+For spans that aren't worth annotating line by line — a literal lookup table, a generated module — suppress a region with `# mutare:ignore-start` … `# mutare:ignore-end` (both take the same filter and reason, carried on the `-start`), or a whole file with `# mutare:ignore-file`:
+
+```elixir
+# mutare:ignore-start spot-checked; the round-trip property test covers the whole table
+def encode(?A), do: ?B
+def encode(?B), do: ?C
+def encode(?C), do: ?D
+# mutare:ignore-end
+```
+
+The full grammar is in [`Mutare.Ignore`](https://hexdocs.pm/mutare/Mutare.Ignore.html).
 
 ## Usage
 

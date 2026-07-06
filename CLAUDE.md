@@ -214,13 +214,16 @@ The `# mutare:ignore` directive (`Mutare.Ignore`) is parsed from Sourceror comme
 # mutare:ignore[relational:>]                suppress only the `i < j → i > j` reflection; `<=` runs
 # mutare:ignore[return_value:empty]          suppress one mutation kind by its declared label
 # mutare:ignore[literal] off-by-one is fine  filter + reason together
+# mutare:ignore-start … # mutare:ignore-end  suppress a span (delimiter lines inclusive); same filter/reason grammar, carried on the -start
+# mutare:ignore-file                         suppress the whole file (lookup tables, generated code)
 ```
 
 The `[...]` filter matches a site's `mutator` name, optionally `:`-qualified with a **variant label**
 the mutator *declares* (`variants/0`, then tags each mutation via `Mutation.tagged/2` or derives it
 with `variant/2`) — not a token derived from the rendered AST.
 Qualifiers are strict where the mistake is certain (a `[family:label]` on an active family that
-doesn't declare that label is a hard `Mutare.Ignore.SpecError`); an unknown *family* stays lenient
+doesn't declare that label is a hard `Mutare.Ignore.SpecError`, as is a broken `-start`/`-end`
+region pairing); an unknown *family* stays lenient
 (indistinguishable from a `--mutators`-excluded one). A directive that suppresses nothing is surfaced
 as `ineffective` (warned at scan time; `--strict-ignores` escalates to a non-zero abort), and the
 whole `# mutare:` comment namespace is reserved — an unrecognized verb gets the same warning/abort

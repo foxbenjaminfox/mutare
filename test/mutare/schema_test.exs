@@ -444,6 +444,51 @@ defmodule Mutare.SchemaTest do
     assert Enum.map(schema.ineffective_ignores, fn {_f, d, _h} -> d.line end) == [2, 3]
   end
 
+  test "a scoped directive rides the schema: sites in a region come back ignored, an empty ignore-file is warned",
+       %{root: root} do
+    write(root, "lib/a.ex", """
+    defmodule A do
+      def keep(x), do: x + 1
+      # mutare:ignore-start spot-checked table
+      def enc(x), do: x + 2
+      # mutare:ignore-end
+    end
+    """)
+
+    # No @probe site here at all, so the file-wide suppression is ineffective.
+    write(root, "lib/b.ex", """
+    # mutare:ignore-file generated
+    defmodule B do
+      def f(x), do: x
+    end
+    """)
+
+    schema = Schema.build(root, mutators: @probe)
+
+    by_line = Enum.group_by(schema.sites, & &1.line)
+    refute Enum.any?(by_line[2], & &1.ignored)
+    assert Enum.all?(by_line[4], & &1.ignored)
+    assert Enum.all?(by_line[4], &(&1.ignore_reason == "spot-checked table"))
+
+    assert [{"lib/b.ex", %{scope: :file}, nil}] = schema.ineffective_ignores
+  end
+
+  test "a broken region pairing aborts the scan with a located SpecError", %{root: root} do
+    # Even in a zero-site file — the count path is the only transform that sees it.
+    write(root, "lib/a.ex", """
+    defmodule A do
+      # mutare:ignore-start
+      @moduledoc "x"
+    end
+    """)
+
+    err =
+      assert_raise(Mutare.Ignore.SpecError, fn -> Schema.build(root, mutators: @probe) end)
+
+    assert err.reason == :unterminated_region
+    assert err.message =~ "lib/a.ex:2"
+  end
+
   test "ineffective directives are sorted across files (the `sources` map iterates unordered)",
        %{root: root} do
     # Past 32 keys a map is a hashmap that iterates in an *unordered* sequence, so the

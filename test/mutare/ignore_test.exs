@@ -256,6 +256,7 @@ defmodule Mutare.IgnoreTest do
   describe "directive parsing" do
     alias Mutare.Ignore
     alias Mutare.Ignore.Directive
+    alias Mutare.Ignore.Directives
 
     test "a bare directive admits every mutator and carries no reason" do
       directives = Ignore.directives("x = 1 # mutare:ignore")
@@ -400,7 +401,7 @@ defmodule Mutare.IgnoreTest do
         assert reason == nil
 
         refute Ignore.directive_for(
-                 %{1 => [%Directive{line: 1, mutators: mutators}]},
+                 %Directives{by_line: %{1 => [%Directive{line: 1, mutators: mutators}]}},
                  1,
                  :relational,
                  [">"]
@@ -491,11 +492,12 @@ defmodule Mutare.IgnoreTest do
       assert %{reason: "first"} = Ignore.directive_for(directives, 2, :relational, [">"])
     end
 
-    defp directive_on(directives, line), do: directives |> Map.fetch!(line) |> hd()
+    defp directive_on(directives, line), do: directives.by_line |> Map.fetch!(line) |> hd()
   end
 
   describe "the reserved `mutare:` namespace (unknown_directives/1, verb_hint/1)" do
     alias Mutare.Ignore
+    alias Mutare.Ignore.Directives
 
     test "a typo'd verb is reported with its comment line and head text" do
       assert Ignore.unknown_directives("x = 1 # mutare:ingore") == [{1, "mutare:ingore"}]
@@ -509,17 +511,29 @@ defmodule Mutare.IgnoreTest do
 
       assert Ignore.unknown_directives(source) == [{1, "mutare: ignore"}]
       # ...and it did not parse as a directive either — the space detaches the verb.
-      assert Ignore.directives(source) == %{}
+      assert Ignore.directives(source) == %Directives{}
     end
 
     test "a hyphen extends the verb, it never starts a reason" do
-      # A plain `\b` boundary would read `# mutare:ignore-file` as an ignore-everything
-      # directive with reason `-file` — silently suppressing the whole line. The
+      # A plain `\b` boundary would read `# mutare:ignore-lines` as an ignore-everything
+      # directive with reason `-lines` — silently suppressing the whole line. The
       # `(?![\w-])` boundary keeps it an unknown (future) verb, warned instead.
-      source = "x = 1 # mutare:ignore-file"
+      source = "x = 1 # mutare:ignore-lines"
 
-      assert Ignore.unknown_directives(source) == [{1, "mutare:ignore-file"}]
-      assert Ignore.directives(source) == %{}
+      assert Ignore.unknown_directives(source) == [{1, "mutare:ignore-lines"}]
+      assert Ignore.directives(source) == %Directives{}
+    end
+
+    test "a recognized scoped verb extended by a trailing character is unknown, not a partial match" do
+      # `ignore-startx` must not parse as `ignore-start` with reason `x` (nor `ignore-endless`
+      # as `ignore-end` with reason `less`): the `(?![\w-])` lookahead after the suffix
+      # alternation rejects both, and they land in the unknown-verb warning.
+      for verb <- ~w(ignore-startx ignore-endless ignore-files) do
+        source = "x = 1 # mutare:#{verb}"
+
+        assert Ignore.unknown_directives(source) == [{1, "mutare:#{verb}"}], verb
+        assert Ignore.directives(source) == %Directives{}, verb
+      end
     end
 
     test "a bare `# mutare:` with no verb at all is reported" do
@@ -552,10 +566,16 @@ defmodule Mutare.IgnoreTest do
     end
 
     test "verb_hint/1 suggests a near-miss verb, otherwise lists the recognized ones" do
+      recognized =
+        " (recognized: # mutare:ignore, # mutare:ignore-file, # mutare:ignore-start, " <>
+          "# mutare:ignore-end)"
+
       assert Ignore.verb_hint("mutare:ingore") == "; did you mean # mutare:ignore?"
       assert Ignore.verb_hint("mutare: ignore") == "; did you mean # mutare:ignore?"
-      assert Ignore.verb_hint("mutare:frobnicate") == " (recognized: # mutare:ignore)"
-      assert Ignore.verb_hint("mutare:") == " (recognized: # mutare:ignore)"
+      assert Ignore.verb_hint("mutare:ignore-strat") == "; did you mean # mutare:ignore-start?"
+      assert Ignore.verb_hint("mutare:ignore-fiel") == "; did you mean # mutare:ignore-file?"
+      assert Ignore.verb_hint("mutare:frobnicate") == recognized
+      assert Ignore.verb_hint("mutare:") == recognized
     end
   end
 
@@ -576,7 +596,7 @@ defmodule Mutare.IgnoreTest do
 
     defp pipe_fixture do
       ast = Sourceror.parse_string!(@pipe_source)
-      [directive] = @pipe_source |> Ignore.directives() |> Map.fetch!(3)
+      [directive] = @pipe_source |> Ignore.directives() |> Map.fetch!(:by_line) |> Map.fetch!(3)
       {ast, directive}
     end
 
@@ -613,7 +633,7 @@ defmodule Mutare.IgnoreTest do
       """
 
       ast = Sourceror.parse_string!(source)
-      [directive] = source |> Ignore.directives() |> Map.fetch!(3)
+      [directive] = source |> Ignore.directives() |> Map.fetch!(:by_line) |> Map.fetch!(3)
 
       assert Ignore.misplacement_hint(ast, directive, [{5, :arithmetic, []}]) == nil
     end
@@ -698,12 +718,307 @@ defmodule Mutare.IgnoreTest do
       lines = for n <- 1..40, do: "x#{n} = 1 # mutare:ignore[bogus#{n}]"
       source = Enum.join(lines, "\n")
       directives = Ignore.directives(source)
-      assert map_size(directives) == 40
+      assert map_size(directives.by_line) == 40
 
       occupied = for n <- 1..40, do: {n, :arithmetic, ["-"]}
 
       assert Enum.to_list(1..40) ==
                directives |> Ignore.ineffective(occupied) |> Enum.map(& &1.line)
+    end
+  end
+
+  describe "scoped directives (ignore-file, ignore-start/ignore-end)" do
+    alias Mutare.Ignore
+    alias Mutare.Ignore.Directive
+    alias Mutare.Ignore.Directives
+    alias Mutare.Ignore.SpecError
+
+    test "ignore-file takes the same filter/reason grammar and covers every line" do
+      directives =
+        Ignore.directives("""
+        # mutare:ignore-file[arithmetic] generated table
+        x = 1
+        y = 2
+        """)
+
+      assert %Directives{by_line: by_line, scoped: [d], scope_errors: []} = directives
+      assert by_line == %{}
+      assert %Directive{scope: :file, comment_line: 1, reason: "generated table"} = d
+      assert d.mutators == MapSet.new([{"arithmetic", :any}])
+
+      assert Directive.covers?(d, 1)
+      assert Directive.covers?(d, 999_999)
+      # A site with no recorded line is still in the file — the one scope that
+      # needs no line to decide.
+      assert Directive.covers?(d, nil)
+    end
+
+    test "a start/end pair forms a region spanning both delimiter lines inclusive" do
+      directives =
+        Ignore.directives("""
+        a = 1
+        # mutare:ignore-start table is spot-checked
+        b = 2
+        c = 3
+        # mutare:ignore-end
+        d = 4
+        """)
+
+      assert %Directives{scoped: [d], scope_errors: []} = directives
+
+      assert %Directive{
+               scope: {:region, 2, 5},
+               comment_line: 2,
+               mutators: :all,
+               reason: "table is spot-checked"
+             } = d
+
+      refute Directive.covers?(d, 1)
+      assert Directive.covers?(d, 2)
+      assert Directive.covers?(d, 4)
+      assert Directive.covers?(d, 5)
+      refute Directive.covers?(d, 6)
+      refute Directive.covers?(d, nil)
+    end
+
+    test "trailing delimiters cover their own code lines" do
+      directives =
+        Ignore.directives("""
+        a = 1 # mutare:ignore-start
+        b = 2 # mutare:ignore-end
+        c = 3
+        """)
+
+      assert %Directives{scoped: [%Directive{scope: {:region, 1, 2}}], scope_errors: []} =
+               directives
+    end
+
+    test "text after ignore-end is prose — the filter and reason belong to the start" do
+      directives =
+        Ignore.directives("""
+        # mutare:ignore-start[literal] the real reason
+        x = 1
+        # mutare:ignore-end of the lookup table
+        """)
+
+      assert %Directives{scoped: [d], scope_errors: []} = directives
+      assert d.mutators == MapSet.new([{"literal", :any}])
+      assert d.reason == "the real reason"
+    end
+
+    test "sequential regions pair independently" do
+      directives =
+        Ignore.directives("""
+        # mutare:ignore-start first
+        a = 1
+        # mutare:ignore-end
+        b = 2
+        # mutare:ignore-start second
+        c = 3
+        # mutare:ignore-end
+        """)
+
+      assert %Directives{scoped: [first, second], scope_errors: []} = directives
+      assert %Directive{scope: {:region, 1, 3}, reason: "first"} = first
+      assert %Directive{scope: {:region, 5, 7}, reason: "second"} = second
+    end
+
+    test "directive_for prefers the narrower scope on a specificity tie" do
+      # All three directives are unfiltered (specificity 0), so scope decides which
+      # reason is recorded: line over region over file.
+      directives =
+        Ignore.directives("""
+        # mutare:ignore-file file reason
+        # mutare:ignore-start region reason
+        x = 1 # mutare:ignore line reason
+        y = 2
+        # mutare:ignore-end
+        """)
+
+      assert %{reason: "line reason"} = Ignore.directive_for(directives, 3, :arithmetic, [])
+      assert %{reason: "region reason"} = Ignore.directive_for(directives, 4, :arithmetic, [])
+      assert %{reason: "file reason"} = Ignore.directive_for(directives, 99, :arithmetic, [])
+    end
+
+    test "filter specificity still beats scope: a qualified file directive over a bare line one" do
+      directives =
+        Ignore.directives("""
+        # mutare:ignore-file[literal:zero] file reason
+        x = 0 # mutare:ignore line reason
+        """)
+
+      assert %{reason: "file reason"} = Ignore.directive_for(directives, 2, :literal, ["zero"])
+      assert %{reason: "line reason"} = Ignore.directive_for(directives, 2, :literal, ["succ"])
+    end
+
+    test "scoped directives are held to the ineffectiveness bar, with no misplacement hint" do
+      source = """
+      # mutare:ignore-start
+      # mutare:ignore-end
+      x = 1 > 0
+      # mutare:ignore-file[relational]
+      """
+
+      ast = Sourceror.parse_string!(source)
+      directives = Ignore.directives(source)
+      # An arithmetic site on line 3: outside the (empty) region, and not admitted
+      # by the `[relational]` file filter — both scoped directives suppress nothing.
+      occupied = [{3, :arithmetic, []}]
+
+      assert [%Directive{scope: {:region, 1, 2}} = region, %Directive{scope: :file} = file] =
+               Ignore.ineffective(directives, occupied)
+
+      assert Ignore.misplacement_hint(ast, region, occupied) == nil
+      assert Ignore.misplacement_hint(ast, file, occupied) == nil
+
+      # ...and an occupied line inside the region makes it effective.
+      assert [%Directive{scope: :file}] =
+               Ignore.ineffective(directives, [{2, :arithmetic, []}])
+    end
+
+    test "a bad qualified label on a scoped directive is the same hard validate! error" do
+      vocab = Mutare.Mutators.vocabulary(Mutare.Mutators.resolve([:builtins]))
+      directives = Ignore.directives("# mutare:ignore-file[relational:lte]\nx = 1")
+
+      assert Ignore.any_qualified?(directives)
+
+      err = assert_raise(SpecError, fn -> Ignore.validate!(directives, vocab, "lib/f.ex") end)
+      assert err.reason == :unknown_variant
+    end
+
+    test "an ignore-end without an open region is a hard error" do
+      directives =
+        Ignore.directives("""
+        x = 1
+        # mutare:ignore-end
+        """)
+
+      assert %Directives{scope_errors: [{:unmatched_end, 2}]} = directives
+
+      err = assert_raise(SpecError, fn -> Ignore.validate_scopes!(directives, "lib/a.ex") end)
+      assert err.reason == :unmatched_end
+      assert err.line == 2
+      assert err.message =~ "lib/a.ex:2"
+      assert err.message =~ "without a preceding # mutare:ignore-start"
+    end
+
+    test "a nested ignore-start is a hard error; the open region still closes" do
+      directives =
+        Ignore.directives("""
+        # mutare:ignore-start
+        x = 1
+        # mutare:ignore-start
+        y = 2
+        # mutare:ignore-end
+        """)
+
+      # The outer region survives (soundness for anything that reads on), but the
+      # nested delimiter is a hard error — never silently absorbed.
+      assert %Directives{
+               scoped: [%Directive{scope: {:region, 1, 5}}],
+               scope_errors: [{:nested_region, 3, 1}]
+             } = directives
+
+      err = assert_raise(SpecError, fn -> Ignore.validate_scopes!(directives, "lib/a.ex") end)
+      assert err.reason == :nested_region
+      assert err.message =~ "opened at line 1"
+    end
+
+    test "an unterminated ignore-start is a hard error pointing at ignore-file" do
+      directives =
+        Ignore.directives("""
+        # mutare:ignore-start
+        x = 1
+        """)
+
+      assert %Directives{scoped: [], scope_errors: [{:unterminated_region, 1}]} = directives
+
+      err = assert_raise(SpecError, fn -> Ignore.validate_scopes!(directives, "lib/a.ex") end)
+      assert err.reason == :unterminated_region
+      assert err.message =~ "never closed"
+      assert err.message =~ "# mutare:ignore-file"
+    end
+
+    test "a broken pairing aborts both the render and the count transform paths" do
+      source = """
+      defmodule Ig do
+        # mutare:ignore-end
+        def a(x), do: x + 1
+      end
+      """
+
+      err =
+        assert_raise(SpecError, fn ->
+          Mutare.Transform.transform_string_with_sites(source, file: "lib/ig.ex")
+        end)
+
+      assert err.reason == :unmatched_end
+      assert err.message =~ "lib/ig.ex:2"
+
+      assert_raise(SpecError, fn -> Mutare.Transform.count_string(source, file: "lib/ig.ex") end)
+    end
+
+    test "a region marks every site between its delimiters ignored, with the start's reason" do
+      source = """
+      defmodule Ig do
+        def keep(x), do: x + 1
+        # mutare:ignore-start table is spot-checked
+        def enc(?A), do: ?B
+        def enc(?B), do: ?C
+        # mutare:ignore-end
+        def also_keep(x), do: x - 1
+      end
+      """
+
+      {meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+      {in_region, outside} = Enum.split_with(sites, &(&1.line in 3..6))
+
+      assert in_region != []
+      assert Enum.all?(in_region, & &1.ignored)
+      assert Enum.all?(in_region, &(&1.ignore_reason == "table is spot-checked"))
+
+      assert outside != []
+      refute Enum.any?(outside, & &1.ignored)
+
+      # Ignored sites are still recorded, and the metamutant still compiles.
+      assert {:ok, _} = Code.string_to_quoted(meta)
+    end
+
+    test "ignore-file marks every site in the file ignored" do
+      source = """
+      # mutare:ignore-file generated by mix gen.tables
+      defmodule Ig do
+        def a(x), do: x + 1
+
+        def b(x), do: x - 1
+      end
+      """
+
+      {_meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+
+      assert sites != []
+      assert Enum.all?(sites, & &1.ignored)
+      assert Enum.all?(sites, &(&1.ignore_reason == "generated by mix gen.tables"))
+    end
+
+    test "a filtered region suppresses only the named family; siblings still run" do
+      source = """
+      defmodule Ig do
+        # mutare:ignore-start[arithmetic] cursor math
+        def a(x), do: x + 1 > 2
+        # mutare:ignore-end
+      end
+      """
+
+      {_meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+      by_mutator = Enum.group_by(sites, & &1.mutator)
+
+      assert Enum.all?(by_mutator[:arithmetic], & &1.ignored)
+      assert Enum.all?(by_mutator[:arithmetic], &(&1.ignore_reason == "cursor math"))
+
+      others = Enum.flat_map(~w(relational conditional literal)a, &(by_mutator[&1] || []))
+      assert others != []
+      refute Enum.any?(others, & &1.ignored)
     end
   end
 
@@ -848,7 +1163,7 @@ defmodule Mutare.IgnoreTest do
 
       source = Enum.join(lines, "\n")
       directives = Ignore.directives(source)
-      assert map_size(directives) == 40
+      assert map_size(directives.by_line) == 40
 
       err = assert_raise(SpecError, fn -> validate(source) end)
       assert err.line == 1

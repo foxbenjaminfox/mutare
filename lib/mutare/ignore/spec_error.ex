@@ -1,7 +1,8 @@
 defmodule Mutare.Ignore.SpecError do
   @moduledoc """
-  Raised when a `# mutare:ignore` **variant qualifier** can't be honoured — surfaced by
-  `mix mutare` as a clean abort with a fix-it message, before any mutant runs.
+  Raised when a `# mutare:ignore` directive is provably wrong — a **variant qualifier** that
+  can't be honoured, or a broken `-start`/`-end` region pairing — surfaced by `mix mutare` as a
+  clean abort with a fix-it message, before any mutant runs.
 
   Two reasons are about a qualified `[family:label]` directive whose `label`, for a *known* family,
   can't be resolved (a typo; `file`/`line` locate the directive):
@@ -14,6 +15,17 @@ defmodule Mutare.Ignore.SpecError do
   An *unknown family* (qualified or bare) is never this error — a built-in is always known (even one
   disabled this run with `--mutators`), but a custom family not enabled this run can't be told apart
   from a typo, so it stays a soft "ineffective ignore" warning instead.
+
+  Three reasons are **region-pairing** mistakes in the scoped
+  `# mutare:ignore-start`/`# mutare:ignore-end` grammar — hard errors because the mistake is
+  provable from the delimiters alone, and every lenient reading fails the wrong way
+  (`file`/`line` locate the offending delimiter comment; `family`/`label` are `nil`):
+
+    * `:unmatched_end` — an `# mutare:ignore-end` with no open `# mutare:ignore-start`.
+    * `:nested_region` — an `# mutare:ignore-start` inside an already-open region; regions
+      don't nest.
+    * `:unterminated_region` — an `# mutare:ignore-start` never closed. To suppress through
+      the end of the file, close the region — or use `# mutare:ignore-file`.
 
   The other two are bugs in a *custom mutator's* declaration (no directive involved, so `file`/`line`
   are `nil`):
@@ -28,7 +40,14 @@ defmodule Mutare.Ignore.SpecError do
 
   defexception [:message, :reason, :file, :line, :family, :label]
 
-  @type reason :: :no_variants | :unknown_variant | :wire_unsafe_label | :unfilterable_family
+  @type reason ::
+          :no_variants
+          | :unknown_variant
+          | :unmatched_end
+          | :nested_region
+          | :unterminated_region
+          | :wire_unsafe_label
+          | :unfilterable_family
 
   @type t :: %__MODULE__{
           message: String.t(),

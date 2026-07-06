@@ -1,10 +1,16 @@
 defmodule Mutare.Ignore.Directive do
   @moduledoc false
-  # One parsed `# mutare:ignore` directive — the internal representation behind the user-facing
-  # grammar documented on `Mutare.Ignore`. Fields:
+  # One parsed suppression directive — a plain `# mutare:ignore` or a scoped
+  # `# mutare:ignore-file` / `# mutare:ignore-start`…`# mutare:ignore-end` region — the internal
+  # representation behind the user-facing grammar documented on `Mutare.Ignore`. Fields:
   #
-  #   * `line` — the suppressed source line (already resolved from trailing-vs-standalone,
-  #     including a standalone directive's read-through of a contiguous comment block).
+  #   * `scope` — the lines the directive covers: `:line` (a plain `# mutare:ignore`, covering
+  #     exactly `line`), `:file` (covering every line of the file), or `{:region, first, last}`
+  #     (a paired `-start`/`-end`, covering the two delimiter comments' lines *inclusive*).
+  #   * `line` — for `:line` scope, the suppressed source line (already resolved from
+  #     trailing-vs-standalone, including a standalone directive's read-through of a contiguous
+  #     comment block). For a scoped directive, the directive comment's own line (a region's
+  #     `first`), so line-keyed sorts stay total across scopes.
   #   * `comment_line` — the line of the directive comment itself, for messages (warnings,
   #     `SpecError`s, `--list-ignores`): with the comment-block read-through, `line` may sit
   #     several lines below the text the user needs to find.
@@ -26,7 +32,10 @@ defmodule Mutare.Ignore.Directive do
   # or `:any`.)
   @type query :: :any | [String.t()]
 
+  @type scope :: :line | :file | {:region, pos_integer(), pos_integer()}
+
   @type t :: %__MODULE__{
+          scope: scope(),
           line: pos_integer(),
           comment_line: pos_integer() | nil,
           mutators: :all | MapSet.t(entry()),
@@ -34,7 +43,41 @@ defmodule Mutare.Ignore.Directive do
           source_order: non_neg_integer()
         }
 
-  defstruct [:line, comment_line: nil, mutators: :all, reason: nil, source_order: 0]
+  defstruct [:line, scope: :line, comment_line: nil, mutators: :all, reason: nil, source_order: 0]
+
+  @doc """
+  Whether this directive's scope covers source line `line`. A `:line` directive covers exactly
+  its own resolved line; a `:file` directive covers every line; a region covers the inclusive
+  `first..last` span of its delimiter comments (so a trailing `# mutare:ignore-start` or `-end`
+  on a code line covers that line's mutants too). A site with no recorded line (`nil`) is
+  covered only by a `:file` directive — the one scope that needs no line to decide.
+  """
+  @spec covers?(t(), pos_integer() | nil) :: boolean()
+  def covers?(%__MODULE__{scope: :file}, _line), do: true
+  def covers?(%__MODULE__{}, nil), do: false
+  def covers?(%__MODULE__{scope: :line, line: own}, line), do: own == line
+
+  def covers?(%__MODULE__{scope: {:region, first, last}}, line),
+    do: line >= first and line <= last
+
+  @doc """
+  How narrowly the directive's scope targets, as an integer for ranking: `2` a single line,
+  `1` a region, `0` the whole file. `Mutare.Ignore.directive_for/4` prefers the narrower scope
+  (after match specificity) so the recorded `reason` is the most locally-written one.
+  """
+  @spec scope_rank(t()) :: 0..2
+  def scope_rank(%__MODULE__{scope: :line}), do: 2
+  def scope_rank(%__MODULE__{scope: {:region, _first, _last}}), do: 1
+  def scope_rank(%__MODULE__{scope: :file}), do: 0
+
+  @doc """
+  The directive's verb as written in source — `ignore`, `ignore-file`, or `ignore-start` —
+  for echoing the directive back in warnings and listings.
+  """
+  @spec verb(t()) :: String.t()
+  def verb(%__MODULE__{scope: :line}), do: "ignore"
+  def verb(%__MODULE__{scope: :file}), do: "ignore-file"
+  def verb(%__MODULE__{scope: {:region, _first, _last}}), do: "ignore-start"
 
   @doc """
   Render one `{family, target}` filter entry back to its `# mutare:ignore` token — bare

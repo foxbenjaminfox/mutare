@@ -10,6 +10,7 @@ defmodule Mutare.CLI.Info do
   alias Mutare.{CLI, Ignore, Mutators, Options, Project, Site}
   alias Mutare.MacroRouting.Registry, as: Macros
   alias Mutare.Ignore.Directive
+  alias Mutare.Ignore.Directives
   alias Mutare.Options.Registry
 
   # `--list-mutators`: print the built-in catalog and exit. Derived from the one
@@ -254,8 +255,7 @@ defmodule Mutare.CLI.Info do
     entries =
       for {file, source} <- schema.sources,
           String.contains?(source, "mutare:ignore"),
-          {_line, directives} <- Ignore.directives(source),
-          directive <- directives,
+          directive <- source |> Ignore.directives() |> Directives.all(),
           do: {file, directive}
 
     if entries == [] do
@@ -294,15 +294,24 @@ defmodule Mutare.CLI.Info do
     end
   end
 
-  defp format_directive(%Directive{mutators: :all, reason: nil}), do: "all families"
+  defp format_directive(%Directive{mutators: :all, reason: nil} = d),
+    do: scope_label(d) <> "all families"
 
-  defp format_directive(%Directive{mutators: :all, reason: reason}),
-    do: "all families — #{reason}"
+  defp format_directive(%Directive{mutators: :all, reason: reason} = d),
+    do: "#{scope_label(d)}all families — #{reason}"
 
-  defp format_directive(%Directive{mutators: set, reason: reason}) do
-    families = "[#{set |> Enum.map(&Directive.entry_label/1) |> Enum.sort() |> Enum.join(", ")}]"
+  defp format_directive(%Directive{mutators: set, reason: reason} = d) do
+    families =
+      "#{scope_label(d)}[#{set |> Enum.map(&Directive.entry_label/1) |> Enum.sort() |> Enum.join(", ")}]"
+
     if reason, do: "#{families} — #{reason}", else: families
   end
+
+  # The audit line names the directive's reach; a plain line directive needs no label (its
+  # comment line *is* its reach).
+  defp scope_label(%Directive{scope: :line}), do: ""
+  defp scope_label(%Directive{scope: :file}), do: "whole file, "
+  defp scope_label(%Directive{scope: {:region, first, last}}), do: "lines #{first}-#{last}, "
 
   # `--dry-run`: list the mutants that would run, by file — no compile, no tests.
   # Honours every scope flag (`--only`/`--since`/`--mutators`/`--line`/…) via the

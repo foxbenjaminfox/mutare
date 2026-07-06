@@ -16,6 +16,7 @@ defmodule Mutare.IgnorePropertyTest do
 
   alias Mutare.Ignore
   alias Mutare.Ignore.Directive
+  alias Mutare.Ignore.Directives
   alias Mutare.Ignore.SpecError
 
   @numtests 200
@@ -136,7 +137,7 @@ defmodule Mutare.IgnorePropertyTest do
   property "directive_for returns the most-specific applicable directive, ties by source order",
     numtests: @numtests do
     forall {ds, mutator, target} <- {directives_on_one_line(), one_family(), target_gen()} do
-      chosen = Ignore.directive_for(%{1 => ds}, 1, mutator, target)
+      chosen = Ignore.directive_for(%Directives{by_line: %{1 => ds}}, 1, mutator, target)
       applicable = Enum.filter(ds, &Directive.applies_to?(&1, mutator, target))
 
       case applicable do
@@ -213,7 +214,8 @@ defmodule Mutare.IgnorePropertyTest do
   property "a directive is ineffective exactly when no occupied site on its line matches it",
     numtests: @numtests do
     forall {ds, occupied} <- {directives_multiline(), occupied_gen()} do
-      ineffective = Ignore.ineffective(Enum.group_by(ds, & &1.line), occupied)
+      ineffective =
+        Ignore.ineffective(%Directives{by_line: Enum.group_by(ds, & &1.line)}, occupied)
 
       Enum.all?(ds, fn d ->
         matched =
@@ -225,5 +227,5 @@ defmodule Mutare.IgnorePropertyTest do
   end
 
   # The single directive a one-line trailing `# mutare:ignore[...]` source produces.
-  defp sole(src), do: src |> Ignore.directives() |> Map.fetch!(1) |> hd()
+  defp sole(src), do: src |> Ignore.directives() |> Map.fetch!(:by_line) |> Map.fetch!(1) |> hd()
 end

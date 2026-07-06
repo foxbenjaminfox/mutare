@@ -276,11 +276,13 @@ defmodule Mutare.Transform do
     # path as a render; see `Mutare.Transform.ClaimState`).
     {_transformed, ctx, parsed} = plan_and_emit(source, Keyword.put(opts, :sink, :count))
 
-    # Validate qualified `[family:label]` filters here too: a **zero-site** file is counted but
-    # never rendered (`transform_string/2` runs only for sited files in the two-phase build), so the
-    # count path is the only place its directives are seen — without this, a known family's bad label
-    # in such a file would silently downgrade to a soft `ineffective` warning. The substring
-    # prefilter keeps the directive prewalk off every directive-free file.
+    # Validate directives here too (region pairing + qualified `[family:label]` filters): a
+    # **zero-site** file is counted but never rendered (`transform_string/2` runs only for sited
+    # files in the two-phase build), so the count path is the only place its directives are seen —
+    # without this, a known family's bad label or a broken `-start`/`-end` pairing in such a file
+    # would silently downgrade to a soft `ineffective` warning (or less). The substring prefilter
+    # keeps the directive prewalk off every directive-free file; every scoped verb starts with
+    # `mutare:ignore`, so it admits them all.
     if String.contains?(source, "mutare:ignore"),
       do: validate_ignore_qualifiers!(Mutare.Ignore.directives_from_ast(parsed), ctx)
 
@@ -316,13 +318,18 @@ defmodule Mutare.Transform do
     Enum.reverse(ctx.claim.sites)
   end
 
-  # Hard-fail a qualified `[family:label]` filter whose family *is* in the active vocabulary but
-  # whose label can't be resolved (`Mutare.Ignore.validate!/3`) — a *known* family's bad label. An
-  # unknown family or a bare `[family]` stays a soft `ineffective` warning. Gated on a **qualified**
-  # entry actually being present, so the vocabulary (a pure function of the run-constant mutator set)
-  # is built lazily only then. Shared by the render path (`transform_string/2`) and the count path
-  # (`count_string/2`), so a bad qualifier is caught regardless of whether the file is rendered.
+  # Hard-fail the two provably-wrong directive shapes. A broken `-start`/`-end` region pairing
+  # (`Mutare.Ignore.validate_scopes!/2`) is checked first and unconditionally — it needs no
+  # vocabulary. A qualified `[family:label]` filter whose family *is* in the active vocabulary but
+  # whose label can't be resolved (`Mutare.Ignore.validate!/3`) — a *known* family's bad label — is
+  # gated on a **qualified** entry actually being present, so the vocabulary (a pure function of
+  # the run-constant mutator set) is built lazily only then. An unknown family or a bare `[family]`
+  # stays a soft `ineffective` warning. Shared by the render path (`transform_string/2`) and the
+  # count path (`count_string/2`), so a bad directive is caught regardless of whether the file is
+  # rendered.
   defp validate_ignore_qualifiers!(directives, ctx) do
+    Mutare.Ignore.validate_scopes!(directives, ctx.config.file)
+
     if Mutare.Ignore.any_qualified?(directives) do
       vocabulary = Mutare.Mutators.vocabulary(ctx.config.mutators)
       Mutare.Ignore.validate!(directives, vocabulary, ctx.config.file)
@@ -453,9 +460,10 @@ defmodule Mutare.Transform do
   end
 
   # Mark a site ignored (and record the reason) when a `# mutare:ignore` directive
-  # on its line admits its mutator *and* variant. A bare `[family]`/`:all` directive
-  # admits any variant; a qualified `[family:label]` admits only the matching mutant
-  # (the site's mutator-declared `variant` label). Untouched sites pass through.
+  # on its line — or a scoped `ignore-file`/`ignore-start` region covering it —
+  # admits its mutator *and* variant. A bare `[family]`/`:all` directive admits any
+  # variant; a qualified `[family:label]` admits only the matching mutant (the
+  # site's mutator-declared `variant` label). Untouched sites pass through.
   defp apply_ignore(site, directives) do
     case Mutare.Ignore.directive_for(directives, site.line, site.mutator, site.variant) do
       nil -> site
