@@ -60,7 +60,35 @@ defmodule Mutare.MixProject do
       deps: deps(),
       dialyzer: dialyzer(),
       docs: docs(),
-      aliases: aliases()
+      aliases: aliases(),
+      # PropCheck.App starts `PropCheck.CounterStrike`, which opens a single
+      # on-disk DETS file (`_build/propcheck.ctex` by default) at *application
+      # boot* — i.e. on every `mix test` invocation, whether or not a
+      # `:property` test actually runs. Under `mix mutare --workers N` (N > 1),
+      # several `mix test` OS processes boot concurrently against the *same*
+      # sandboxed `_build`, and concurrent DETS opens/writes corrupt that file.
+      # Once corrupted it stays corrupted on disk, so — with `--keep-sandbox`
+      # — every subsequent run (any mutant, even a future invocation) fails
+      # `PropCheck.CounterStrike.init/1` and the *entire* baseline suite reports
+      # not-green, which mutare surfaces only as undifferentiated
+      # `:harness_error` on every mutant. Found dogfooding mutare on itself
+      # (`--workers 4`); see NOTES.md "PropCheck counter-examples DETS
+      # corruption under concurrent workers". Give each `mix test` process
+      # (identified by its own BEAM's OS pid) a private counter-examples file
+      # while under mutation (`MUTARE_ACTIVE_MUTANT` is set on the baseline,
+      # the coverage probe, and every mutant run — see `test/test_helper.exs`);
+      # normal local/CI runs keep the shared, cross-run-cached default file.
+      # Placed under the sandbox's own `_build` (every sandboxed `mix test` has
+      # its cwd set there — `Sandbox.Command.Invocation`), not the OS-wide tmp
+      # dir, so an ephemeral (non-`--keep-sandbox`) sandbox's teardown
+      # (`File.rm_rf(sandbox)`) removes it too instead of leaking one file per
+      # mutant run into `/tmp` forever.
+      propcheck: [
+        counter_examples:
+          if System.get_env("MUTARE_ACTIVE_MUTANT") do
+            Path.join(File.cwd!(), "_build/propcheck-#{System.pid()}.ctex")
+          end
+      ]
     ]
   end
 

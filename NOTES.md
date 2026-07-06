@@ -7283,3 +7283,35 @@ large-project user wants the loud-failure contract. Also rejected on soundness g
 a *partial* dump from a failed probe — an id attributed to file A may also be covered by a file
 the aborted run never reached, so its covering-file set is silently incomplete and selection built
 on it can manufacture false survivors; retry-then-degrade is the sound shape.
+
+### PropCheck counter-examples DETS corruption under concurrent workers `[fixed]`
+Found dogfooding mutare on itself with `--workers 4`. `PropCheck.App` starts
+`PropCheck.CounterStrike` at *application boot* — i.e. on every `mix test` invocation,
+whether or not a `:property` test actually runs — which opens a single on-disk DETS file
+(`_build/propcheck.ctex` by default). Under `--workers N` (N > 1), several `mix test` OS
+processes boot concurrently against the *same* sandboxed `_build`, and DETS isn't safe for
+concurrent multi-process opens: the shared file gets corrupted. Once corrupted it stays
+corrupted on disk, so with `--keep-sandbox` every subsequent run — any mutant, even a future
+invocation — fails `PropCheck.CounterStrike.init/1`, and the *entire* baseline suite reports
+not-green; mutare surfaces that only as undifferentiated `:harness_error` on every mutant, with
+nothing pointing at PropCheck as the cause.
+
+Fixed in `mix.exs`'s `project/0`: give each `mix test` process a private counter-examples file
+while under mutation, via the `propcheck: [counter_examples: …]` project-config key PropCheck
+itself reads (`PropCheck.Mix.resolve_counter_examples_file/0` checks `Application.get_env(:propcheck,
+:counter_examples)` first, then falls back to this key via `Mix.Project.config()`, then the shared
+default). Keyed on `MUTARE_ACTIVE_MUTANT` (set on the baseline, the coverage probe, and every
+mutant run — see `test/test_helper.exs`) and namespaced by `System.pid()` (the invoking BEAM's own
+OS pid, stable for that process's lifetime, distinct across concurrent workers) — since each
+`mix.exs` is evaluated fresh per OS process, this reads correctly per invocation with no
+extra plumbing. Normal local/CI runs (no `MUTARE_ACTIVE_MUTANT`) fall through to `nil`, which
+resolves to the ordinary shared, cross-run-cached default file — unchanged.
+
+One follow-up caught before it shipped: the private file must live *inside* the sandbox
+(`Path.join(File.cwd!(), "_build/propcheck-#{pid}.ctex")` — every sandboxed `mix test` has its cwd
+set to the sandbox root, per `Sandbox.Command.Invocation`), not in the OS-wide tmp dir. The
+sandbox directory is a subdirectory of `System.tmp_dir!()`, not the same path, so a file written
+directly to `System.tmp_dir!()` is a *sibling* of the sandbox, not a descendant — an ephemeral
+(non-`--keep-sandbox`) sandbox's teardown (`Runner.cleanup_sandbox/2`, `File.rm_rf(sandbox)`) would
+never reach it, leaking one small DETS file into `/tmp` per mutant run (baseline + probe + every
+mutant), forever, in both sandbox modes alike.
