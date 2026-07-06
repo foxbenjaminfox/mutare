@@ -28,6 +28,39 @@ defmodule Mix.Tasks.MutareTest do
       end)
     end
 
+    test "a nonexistent --only path aborts with the target-relative hint" do
+      # `--only phoenix/lib/…` typed from one level up is the classic cwd-relative
+      # miss (paths resolve against the target project); the abort should say so.
+      root = Project.tmp_dir(:task)
+      File.mkdir_p!(Path.join(root, "lib"))
+      File.write!(Path.join(root, "lib/a.ex"), "defmodule A do\n  def f(x), do: x + 1\nend\n")
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert_raise Mix.Error, ~r/resolved relative to the target project/, fn ->
+          Mix.Tasks.Mutare.run([root, "--only", "lib/nonexistent.ex"])
+        end
+      end)
+    end
+
+    test "an existing path with no sites aborts WITHOUT the target-relative hint" do
+      # The path is fine — the file just has nothing to mutate. Suggesting a path
+      # resolution problem would mislead.
+      root = Project.tmp_dir(:task)
+      File.mkdir_p!(Path.join(root, "lib"))
+      File.write!(Path.join(root, "lib/empty.ex"), "defmodule Empty do\n  def f, do: nil\nend\n")
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        error =
+          assert_raise Mix.Error, ~r/no mutation sites/, fn ->
+            Mix.Tasks.Mutare.run([root, "--only", "lib/empty.ex"])
+          end
+
+        refute error.message =~ "resolved relative"
+      end)
+    end
+
     test "raises a clean Mix error on a bad --mutators value" do
       assert_raise Mix.Error, fn ->
         Mix.Tasks.Mutare.run([".", "--mutators", "definitely-not-a-family"])

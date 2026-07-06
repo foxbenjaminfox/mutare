@@ -37,6 +37,20 @@ defmodule Mutare.Ignore do
 
   Text after the keyword or filter is stored as the ignore reason and shown in the report.
 
+  ## A recognizable equivalent mutant: the re-stated delegate guard
+
+  A pattern worth knowing when triaging `guard_drop`/`pattern_guard` survivors in wrapper-heavy code — a thin wrapper that re-states the guard of the function it delegates to:
+
+      def sign(data, salt) when is_binary(salt),
+        do: Plug.Crypto.sign(data, salt)   # Plug.Crypto.sign/2 has the identical guard
+
+  Dropping the wrapper's guard is provably unobservable: a bad input still raises the same `FunctionClauseError`, one stack frame deeper, inside the delegate. Verify against the delegate's source (the guards must really be equivalent), then ignore with a reason naming it:
+
+      # mutare:ignore[guard_drop] Plug.Crypto.sign/2 re-checks is_binary(salt)
+      def sign(data, salt) when is_binary(salt), do: Plug.Crypto.sign(data, salt)
+
+  This shape recurs constantly in real codebases (any module wrapping a well-guarded library); recognizing it saves convincing yourself a survivor is "just uncovered" when it is actually unreachable.
+
   ## When a directive errors or does nothing
 
   An unknown label for a built-in family, including a disabled one, or an active custom family is an error. Unknown families, bare-family typos, empty filters, and malformed filters match nothing. Any directive that suppresses no mutant produces a warning; `--strict-ignores` turns that warning into a non-zero exit.

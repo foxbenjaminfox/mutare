@@ -218,8 +218,7 @@ would need the full valid-family universe and isn't worth the complexity (a CI s
 the default set, where it can't arise).
 
 ### Standalone `# mutare:ignore` placement — comment-block read-through + pipe hint `[done]`
-The Phoenix dogfooding sweep hit the same self-inflicted miss three times
-(`MUTARE-ON-PHOENIX.md`, polish items 2 and 7 — its most frequent friction): a standalone
+The Phoenix sweep hit the same self-inflicted miss three times: a standalone
 directive covered *literally the next line*, so both natural placements silently failed with
 only the ineffective warning to notice —
 
@@ -336,8 +335,7 @@ try/after — without it those modes leaked a raw stacktrace. (3) A custom **fam
 the qualifier separator, so `[ecto:query]` parses as family `ecto` + label `query` and could never
 name a whole `ecto:query` family — better to fail loud than let the filter silently match nothing.
 
-`RegexLiteral` adopted the mechanism after the Phoenix dogfooding sweep (`MUTARE-ON-PHOENIX.md`,
-polish item 10) caught its moduledoc promising a suppression its granularity couldn't deliver: one
+`RegexLiteral` adopted the mechanism after the Phoenix sweep caught its moduledoc promising a suppression its granularity couldn't deliver: one
 line's regex produced 5 killable character-class mutants plus exactly 1 provably-equivalent
 lazy-quantifier mutant, and the only available qualifier — the line-granular `[regex]` — would have
 swallowed all six. It now declares eight production-tagged labels (`pattern`/`anchor`/`class`/
@@ -3307,10 +3305,10 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
 
   **Precision (originally name-only, now `{name, arity}` + macro-body pruning).**
   The first version keyed the set by bare *name* and walked into everything,
-  which the Phoenix dogfooding sweep (`MUTARE-ON-PHOENIX.md`, polish item 6)
-  showed over-blocks badly: `Phoenix.Presence`'s `defmacro __using__` quotes
-  `def list(topic)` boilerplate destined for *other* modules, and the name-only
-  match cost the module's own, metaprogramming-free `list/2`/`get_by_key/3`
+  which the Phoenix sweep showed over-blocks badly: `Phoenix.Presence`'s
+  `defmacro __using__` quotes `def list(topic)` boilerplate destined for
+  *other* modules, and the name-only match cost the module's own,
+  metaprogramming-free `list/2`/`get_by_key/3`
   their lifting — a pattern endemic to `use`-heavy libraries (injected
   convenience wrappers deliberately reuse short names at a shifted arity,
   prepending `__MODULE__`). Two refinements, each argued against the
@@ -3388,8 +3386,7 @@ focused sub-modules under `analyze/` (`Returns`, `ClausePatterns`, `Conditions`,
   invisible to `clause_signature/1`'s grouping, so a literal sibling run looks
   complete and would lift — leaving an *unconditional* public wrapper that
   shadows the delegate clause and crashes the delegate's inputs at **baseline**,
-  no mutant active. The real break (Phoenix dogfooding — see
-  `MUTARE-ON-PHOENIX.md`'s 🔴 section), `Phoenix.Controller`:
+  no mutant active. The real break, `Phoenix.Controller`:
 
   ```elixir
   def assign(conn, fun) when is_function(fun, 1), do: assign(conn, fun.(conn.assigns))
@@ -5585,7 +5582,7 @@ in, so the env is inert. (The `subject?/1` recognizer reads `key/0` too, so
 producer and recognizer always agree within a process — needed for the
 `Manifest`/`Poison` round-trip in either context.)
 
-Verified end-to-end: a clean (`workers: 1`, generous cap) dogfood of `baseline.ex`
+Verified end-to-end: a clean (`workers: 1`, generous cap) run on `baseline.ex`
 flipped its in-process `classify/1` victims (`Enum.max→Enum.min`, `== []` polarity,
 `true→false`, `take(-20)→drop(-20)`, `20→19`) from **false survivors → clean
 kills** (8 killed/12 survived → 11/9). The unit guard is `selector_test`'s "under a
@@ -7056,7 +7053,7 @@ compiling BEAM reaps itself; verified red with the gate disarmed) and the PATH-s
 
 ### OOM containment — `:sigkilled` never retried, `:max_heap_mb` heap cap `[done]`
 
-The incident (dogfooding on Phoenix — `MUTARE-ON-PHOENIX.md`'s 🟠 section): a `guard_drop`
+The incident: a `guard_drop`
 on `Phoenix.Router.Scope.push/2` made a "normalize the shorthand, recurse" clause
 unconditionally self-recursive — each iteration wrapping the previous value in one more
 keyword list, all of it reachable, BEAM tail-call-optimized so no stack overflow ever fires.

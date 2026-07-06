@@ -146,7 +146,7 @@ defmodule Mutare.Runner do
     root = context.project.copy_root
 
     if Schema.count(schema) == 0 do
-      {:error, :nothing_to_mutate, "no mutation sites found under #{inspect(options.paths)}"}
+      {:error, :nothing_to_mutate, nothing_to_mutate_detail(options.paths, root)}
     else
       lock = Sandbox.acquire_lock(root, context)
 
@@ -180,6 +180,24 @@ defmodule Mutare.Runner do
       after
         Sandbox.release_lock(lock)
       end
+    end
+  end
+
+  # The zero-sites abort detail. When some configured path doesn't even exist under
+  # the target, the likely cause is the cwd-relative instinct (`mix mutare ./phoenix
+  # --only phoenix/lib/…` typed from one level up) — paths resolve against the target
+  # project. Name that; a bare "found nothing" leaves the user staring at a path that
+  # looks right from where they're standing. Existing-but-siteless paths (an empty
+  # dir, an excluded glob) keep the plain message — the hint would mislead there.
+  defp nothing_to_mutate_detail(paths, root) do
+    base = "no mutation sites found under #{inspect(paths)}"
+
+    if Enum.any?(paths, &(not File.exists?(Path.join(root, &1)))) do
+      base <>
+        " — note that paths (--only/:paths) are resolved relative to the target " <>
+        "project being mutated, not the directory mix was invoked from"
+    else
+      base
     end
   end
 

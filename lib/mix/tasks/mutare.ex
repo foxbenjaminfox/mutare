@@ -97,6 +97,8 @@ defmodule Mix.Tasks.Mutare do
                                           #   app's built beams on a narrowed run
                                           #   (on by default)
 
+  `--only`/`--exclude`/`--line` paths (and `:paths` in `.mutare.exs`) are resolved relative to the **target project**, not the directory `mix` was invoked from: targeting another checkout is `mix mutare ./phoenix --only lib/phoenix/naming.ex` — not `--only phoenix/lib/...`. A path that matches nothing aborts with `no mutation sites found`.
+
   ## Continuous integration
 
   By default a run exits 0 no matter how many mutants survive. CI gates add a non-zero exit when a run violates the policy you choose:
@@ -171,6 +173,12 @@ defmodule Mix.Tasks.Mutare do
                                           #   per-phase detail — compile time, baseline
                                           #   timing, coverage breakdown, timeout cap,
                                           #   worker count. (--quiet wins over it)
+
+  ### Flaky tests: expect mutation testing to find them
+
+  A mutation run re-runs your suite (or coverage-selected slices of it) far more times, in far more configurations, than normal CI does — so it is disproportionately good at *surfacing* pre-existing flaky tests. A flake at the baseline blocks the whole run (`baseline suite is not green`); one mid-run can manufacture a false kill. If your suite occasionally fails on its own, fix that first (or detect it explicitly with `--baseline-runs 2`) — it's a property of the target suite, not a Mutare failure to debug.
+
+  A related, narrower instability: a mutant on a **timeout-shaped configuration literal** (`timeout: :infinity`, a generous deadline) may be observable only under load — its verdict can honestly differ between runs because the mutated timeout only fires when something is slow. For codebases with such literals, `--kill-runs 2` requires every kill to be reproduced, surfacing that load-dependence instead of recording whichever verdict the first run happened to produce.
 
   ## Umbrella projects
 

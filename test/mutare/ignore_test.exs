@@ -197,10 +197,6 @@ defmodule Mutare.IgnoreTest do
     end
 
     test "a [regex:laziness] qualifier suppresses only the lazy-suffix mutants" do
-      # The writeup-motivating case (MUTARE-ON-PHOENIX.md item 10): one regex line
-      # with one provably-equivalent greedy→lazy mutant beside real, killable
-      # mutants. The qualifier must suppress exactly the lazy one — a bare
-      # [regex] would silently forfeit credit for the rest of the line.
       source = """
       defmodule Ig do
         def scrub(s), do: Regex.replace(~r/a+b/, s, "")   # mutare:ignore[regex:laziness]

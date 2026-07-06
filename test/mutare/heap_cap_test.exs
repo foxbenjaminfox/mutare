@@ -1,13 +1,13 @@
 defmodule Mutare.HeapCapTest do
   @moduledoc """
   A mutation can make code allocate without bound — faster than the wall-clock
-  watcher can react. The motivating incident (dogfooding on Phoenix, see
-  MUTARE-ON-PHOENIX.md): a `guard_drop` on a "normalize the shorthand, recurse"
-  helper made the clause unconditionally self-recursive, each iteration wrapping
-  the previous value in one more list — ~25GB RSS in under a second, OOM-killed
-  by the kernel. `:max_heap_mb` (`Invocation.heap_cap_env/1`) contains that shape:
-  a per-process BEAM heap cap under which the runaway *process* is killed, so the
-  mutant dies as an ordinary, fast test failure inside its own run.
+  watcher can react. The motivating incident: a `guard_drop` on a
+  "normalize the shorthand, recurse" helper made the clause unconditionally
+  self-recursive, each iteration wrapping the previous value in one more list —
+  ~25GB RSS in under a second, OOM-killed by the kernel. `:max_heap_mb`
+  (`Invocation.heap_cap_env/1`) contains that shape: a per-process BEAM heap
+  cap under which the runaway *process* is killed, so the mutant dies as an
+  ordinary, fast test failure inside its own run.
 
   The fixture reproduces the incident's growth shape (on-heap list doubling) with
   a belt-and-braces emergency bound: an absolute-size clause above the cap-kill
