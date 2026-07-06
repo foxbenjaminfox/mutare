@@ -108,8 +108,8 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --fail-on-poisoned       # exit 1 if any mutant had to be dropped
                                           #   because the mutated code would not compile
       mix mutare --fail-on-harness-error  # exit 1 if any mutant run reached no verdict
-      mix mutare --strict-ignores         # exit 1 if any `# mutare:ignore` matched
-                                          #   no mutant (a typo'd family or stale line)
+      mix mutare --strict-ignores         # exit 1 if any `# mutare:` comment matched
+                                          #   no mutant (a typo'd verb/family or stale line)
 
   Combine `--since` with CI gates to gate only the code a pull request changed, and `--quiet` to drop the live progress animation (spinner, phases, per-survivor lines); the final report (and any machine reports) will still be printed.
 
@@ -307,7 +307,8 @@ defmodule Mix.Tasks.Mutare do
         # exit 1 if any mutant's test run reached no pass/fail/timeout verdict
         fail_on_harness_error: false,
 
-        # exit 1 if any `# mutare:ignore` suppresses no mutant (a typo or stale line)
+        # exit 1 if any `# mutare:ignore` suppresses no mutant (a typo or stale
+        # line), or any `# mutare:` comment names no recognized directive
         strict_ignores: false,
         # suppress the live stderr progress (for CI / piped use)
         quiet: false,
@@ -475,6 +476,7 @@ defmodule Mix.Tasks.Mutare do
       schema = Schema.build(root, %{context | on_scan: on_scan})
       if live, do: Live.clear(live)
       announce(schema, project, options)
+      warn_unknown_directives(schema)
       warn_ineffective_ignores(schema)
       enforce_strict_ignores(schema, options)
 
@@ -660,9 +662,28 @@ defmodule Mix.Tasks.Mutare do
   defp stop_label(%Options{max_survivors: n}),
     do: " (stop after #{n} survivor#{CLI.plural(n)})"
 
+  # Warn about every comment that claims the reserved `mutare:` namespace without a
+  # recognized directive — a typo'd verb (`# mutare:ingore`), a colon-detached one
+  # (`# mutare: ignore`), or a directive from a future Mutare version (see
+  # `Mutare.Schema.detect_directive_diagnostics/1`). Onto **stderr**, like the
+  # ineffective warnings below; `--strict-ignores` turns these into a hard error too.
+  defp warn_unknown_directives(%Schema{unknown_directives: []}), do: :ok
+
+  defp warn_unknown_directives(%Schema{unknown_directives: unknown}) do
+    for {file, line, head} <- unknown do
+      IO.puts(
+        :stderr,
+        "warning: # #{head} at #{file}:#{line} is not a recognized directive" <>
+          Mutare.Ignore.verb_hint(head)
+      )
+    end
+
+    :ok
+  end
+
   # Warn about every `# mutare:ignore` that suppressed no mutant — a typo'd family
   # (`[arithmatic]`), an empty `[]`, a misplaced standalone line, or a family that
-  # produced no mutant there (see `Mutare.Schema.detect_ineffective_ignores/1`).
+  # produced no mutant there (see `Mutare.Schema.detect_directive_diagnostics/1`).
   # Onto **stderr** (like `Mutare.Report.Live`), so a machine report on stdout
   # stays clean. `--strict-ignores` then turns these into a hard error.
   defp warn_ineffective_ignores(%Schema{ineffective_ignores: []}), do: :ok
@@ -699,22 +720,41 @@ defmodule Mix.Tasks.Mutare do
     do:
       "[#{set |> Enum.map(&Mutare.Ignore.Directive.entry_label/1) |> Enum.sort() |> Enum.join(", ")}]"
 
-  # `--strict-ignores`: a directive that suppressed nothing is a hard error (the
-  # CI counterpart of the warning above), surfaced as a clean Mix failure →
-  # non-zero exit, mirroring the `--min-score` `gate/2`. The per-directive detail
-  # already printed via `warn_ineffective_ignores/1`.
-  defp enforce_strict_ignores(%Schema{ineffective_ignores: []}, _options), do: :ok
+  # `--strict-ignores`: a directive that suppressed nothing — or an unrecognized
+  # `# mutare:` comment — is a hard error (the CI counterpart of the warnings
+  # above), surfaced as a clean Mix failure → non-zero exit, mirroring the
+  # `--min-score` `gate/2`. The per-comment detail already printed via
+  # `warn_unknown_directives/1` / `warn_ineffective_ignores/1`.
+  defp enforce_strict_ignores(
+         %Schema{ineffective_ignores: [], unknown_directives: []},
+         _options
+       ),
+       do: :ok
+
   defp enforce_strict_ignores(%Schema{}, %Options{strict_ignores: false}), do: :ok
 
-  defp enforce_strict_ignores(%Schema{ineffective_ignores: ineffective}, %Options{
-         strict_ignores: true
-       }) do
-    n = length(ineffective)
+  defp enforce_strict_ignores(
+         %Schema{ineffective_ignores: ineffective, unknown_directives: unknown},
+         %Options{strict_ignores: true}
+       ) do
+    problems =
+      Enum.reject([ineffective_problem(ineffective), unknown_problem(unknown)], &is_nil/1)
 
-    Mix.raise(
-      "--strict-ignores: #{n} `# mutare:ignore` directive#{CLI.plural(n)} " <>
-        "suppressed no mutant (see the warnings above)"
-    )
+    Mix.raise("--strict-ignores: " <> Enum.join(problems, "; ") <> " (see the warnings above)")
+  end
+
+  defp ineffective_problem([]), do: nil
+
+  defp ineffective_problem(ineffective) do
+    n = length(ineffective)
+    "#{n} `# mutare:ignore` directive#{CLI.plural(n)} suppressed no mutant"
+  end
+
+  defp unknown_problem([]), do: nil
+
+  defp unknown_problem(unknown) do
+    n = length(unknown)
+    "#{n} `# mutare:` comment#{CLI.plural(n)} named no recognized directive"
   end
 
   defp report(run, %Options{} = options) do

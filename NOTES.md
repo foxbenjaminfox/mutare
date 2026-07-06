@@ -345,6 +345,34 @@ can produce the *same* candidate (a leading-`^` pattern's anchor drop coincides 
 whole-pattern `""` replacement), so candidate dedup **unions** the labels — the shared mutant
 answers to either qualifier — instead of keeping whichever pass ran first.
 
+### The `mutare:` comment namespace is reserved — unknown verbs warn `[done]`
+Forward-compat groundwork done *before* any second directive exists: a comment that claims the
+namespace (anchored `# mutare:`, same "must be the comment's purpose" rule as the directive regex)
+but spells no recognized verb is warned at scan time (`Ignore.unknown_directives_from_ast/1` →
+`Schema.detect_directive_diagnostics/1` → the Mix task's stderr warning), and `--strict-ignores`
+counts it alongside ineffective directives. Without this, a typo'd verb (`# mutare:ingore`), a
+colon-detached one (`# mutare: ignore`), or a directive from a *newer* Mutare run under an older
+version is silently inert — the same fail-silent class the ineffective warning exists for, but one
+regex earlier. Adding any future verb starts at `Ignore.@known_verbs` (plus its own parser).
+
+Two consequences worth remembering:
+- **The directive boundary tightened from `\b` to `(?![\w-])`.** Under `\b`,
+  `# mutare:ignore-file` parsed as ignore-*everything* with reason `-file` (the `-` is a word
+  boundary) — precisely the silent over-suppression a future hyphenated verb must not trigger.
+  A hyphen now extends the *verb*, so the comment lands in the unknown-verb warning instead.
+  Behavior change is fail-safe (stops suppressing, starts warning) and the glued-reason shape
+  (`ignore-…` with no space) is implausible as intentional usage.
+- **The diagnostics prefilter widened from `mutare:ignore` to `mutare:`** (in
+  `Schema.detect_directive_diagnostics/1`, which now runs one parse per flagged file for both the
+  ineffective and unknown scans). The count-path *qualifier validation* prefilter in
+  `Transform.count_string/2` stays at `mutare:ignore` — it only feeds `validate!/3`, which only
+  reads real ignore directives.
+
+The warning stays **soft** (lenient like a bare-family typo, not a hard `SpecError`): an anchored
+`# mutare:` comment could in principle be prose, and — unlike a `[family:label]` on a known family
+— we cannot prove a mistake. The Jaro near-miss hint (`; did you mean # mutare:ignore?`) reuses the
+label-suggestion threshold via the shared `closest/2`.
+
 ### Scan is transform-bound, and the loop heap makes it worse `[resolved; was deferred]`
 
 > **OUTDATED as a current-state claim (deferred-work audit, 2026-06-30):** the

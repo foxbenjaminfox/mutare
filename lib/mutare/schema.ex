@@ -65,7 +65,8 @@ defmodule Mutare.Schema do
           metamutants: %{optional(String.t()) => String.t()},
           sources: %{optional(String.t()) => String.t()},
           skipped: [{String.t(), term()}],
-          ineffective_ignores: [{String.t(), Directive.t(), pos_integer() | nil}]
+          ineffective_ignores: [{String.t(), Directive.t(), pos_integer() | nil}],
+          unknown_directives: [{String.t(), pos_integer(), String.t()}]
         }
 
   defstruct files: [],
@@ -73,7 +74,8 @@ defmodule Mutare.Schema do
             metamutants: %{},
             sources: %{},
             skipped: [],
-            ineffective_ignores: []
+            ineffective_ignores: [],
+            unknown_directives: []
 
   @doc """
   Build a schema by discovering files under `root`.
@@ -198,7 +200,7 @@ defmodule Mutare.Schema do
     rel_files
     |> assemble(counted, rendered)
     |> finalize()
-    |> detect_ineffective_ignores()
+    |> detect_directive_diagnostics()
     |> restrict_lines(options.only_lines)
     |> limit(options.max_mutants)
   end
@@ -500,42 +502,64 @@ defmodule Mutare.Schema do
     %{schema | sites: Enum.reverse(schema.sites), skipped: Enum.reverse(schema.skipped)}
   end
 
-  # Record every `# mutare:ignore` directive that suppressed no mutant
-  # (`Mutare.Ignore.ineffective/2`), so the Mix task can warn — and
-  # `--strict-ignores` can fail — on a typo'd / misplaced / family-less directive
-  # that silently did nothing. Run after `finalize/1` (sites in order) but
-  # *before* `restrict_lines`/`limit`, so detection sees the full mutation set: a
-  # `--line`/`--max-mutants` trim must not make a real directive look ineffective.
-  # Each entry carries a misplacement hint (`Ignore.misplacement_hint/3`, or
-  # `nil`): the line inside the same multi-line expression that has the mutants
-  # the directive named — the "directive on the pipe's first line" miss.
+  # Record the scan-time directive diagnostics, so the Mix task can warn — and
+  # `--strict-ignores` can fail — on a comment that silently did nothing:
   #
-  # Only files whose source contains the literal `mutare:ignore` are re-parsed;
-  # the cheap substring prefilter keeps every other file off the parse path. A
+  #   * every `# mutare:ignore` directive that suppressed no mutant
+  #     (`Mutare.Ignore.ineffective/2` — a typo'd / misplaced / family-less
+  #     directive), each with a misplacement hint (`Ignore.misplacement_hint/3`,
+  #     or `nil`): the line inside the same multi-line expression that has the
+  #     mutants the directive named — the "directive on the pipe's first line" miss;
+  #   * every comment claiming the reserved `mutare:` namespace with no recognized
+  #     directive (`Ignore.unknown_directives_from_ast/1` — a typo'd or future verb).
+  #
+  # Run after `finalize/1` (sites in order) but *before* `restrict_lines`/`limit`,
+  # so detection sees the full mutation set: a `--line`/`--max-mutants` trim must
+  # not make a real directive look ineffective.
+  #
+  # Only files whose source contains the literal `mutare:` are re-parsed; the
+  # cheap substring prefilter keeps every other file off the parse path. A
   # `sources` entry is always a file that parsed cleanly in phase 1 (an
   # unparseable file is recorded under `:skipped`, not `:sources` — see
   # `assemble/3`), so the re-parse cannot raise here.
-  defp detect_ineffective_ignores(%__MODULE__{sources: sources, sites: sites} = schema) do
+  defp detect_directive_diagnostics(%__MODULE__{sources: sources, sites: sites} = schema) do
     sites_by_file = Enum.group_by(sites, & &1.file)
 
-    ineffective =
+    diagnostics =
       for {file, source} <- sources,
           # mutare:ignore[string] equivalent — a substring prefilter; widening it only re-parses more directive-free files, and directives come from comment metadata so a string match never false-positives
-          String.contains?(source, "mutare:ignore"),
-          {directive, hint} <- file_ineffective(source, Map.get(sites_by_file, file, [])),
+          String.contains?(source, "mutare:"),
+          do: {file, file_diagnostics(source, Map.get(sites_by_file, file, []))}
+
+    ineffective =
+      for {file, {ineffective, _unknown}} <- diagnostics,
+          {directive, hint} <- ineffective,
           do: {file, directive, hint}
 
-    %{schema | ineffective_ignores: Enum.sort_by(ineffective, fn {f, d, _h} -> {f, d.line} end)}
+    unknown =
+      for {file, {_ineffective, unknown}} <- diagnostics,
+          {line, head} <- unknown,
+          do: {file, line, head}
+
+    %{
+      schema
+      | ineffective_ignores: Enum.sort_by(ineffective, fn {f, d, _h} -> {f, d.line} end),
+        unknown_directives: Enum.sort_by(unknown, fn {f, l, _h} -> {f, l} end)
+    }
   end
 
-  defp file_ineffective(source, sites) do
+  # One parse serves both diagnostics: `{ineffective_with_hints, unknown_verbs}`.
+  defp file_diagnostics(source, sites) do
     occupied = Enum.map(sites, &{&1.line, &1.mutator, &1.variant})
     ast = Sourceror.parse_string!(source)
     directives = Ignore.directives_from_ast(ast)
 
-    directives
-    |> Ignore.ineffective(occupied)
-    |> Enum.map(&{&1, Ignore.misplacement_hint(ast, &1, occupied)})
+    ineffective =
+      directives
+      |> Ignore.ineffective(occupied)
+      |> Enum.map(&{&1, Ignore.misplacement_hint(ast, &1, occupied)})
+
+    {ineffective, Ignore.unknown_directives_from_ast(ast)}
   end
 
   # Cap the schema to at most `max` mutants (`--max-mutants`), keeping the first

@@ -494,6 +494,71 @@ defmodule Mutare.IgnoreTest do
     defp directive_on(directives, line), do: directives |> Map.fetch!(line) |> hd()
   end
 
+  describe "the reserved `mutare:` namespace (unknown_directives/1, verb_hint/1)" do
+    alias Mutare.Ignore
+
+    test "a typo'd verb is reported with its comment line and head text" do
+      assert Ignore.unknown_directives("x = 1 # mutare:ingore") == [{1, "mutare:ingore"}]
+    end
+
+    test "a colon-detached verb (`mutare: ignore`) is unknown, not a silent no-op" do
+      source = """
+      # mutare: ignore
+      x = 1
+      """
+
+      assert Ignore.unknown_directives(source) == [{1, "mutare: ignore"}]
+      # ...and it did not parse as a directive either — the space detaches the verb.
+      assert Ignore.directives(source) == %{}
+    end
+
+    test "a hyphen extends the verb, it never starts a reason" do
+      # A plain `\b` boundary would read `# mutare:ignore-file` as an ignore-everything
+      # directive with reason `-file` — silently suppressing the whole line. The
+      # `(?![\w-])` boundary keeps it an unknown (future) verb, warned instead.
+      source = "x = 1 # mutare:ignore-file"
+
+      assert Ignore.unknown_directives(source) == [{1, "mutare:ignore-file"}]
+      assert Ignore.directives(source) == %{}
+    end
+
+    test "a bare `# mutare:` with no verb at all is reported" do
+      assert Ignore.unknown_directives("x = 1 # mutare:") == [{1, "mutare:"}]
+    end
+
+    test "recognized directives and mid-comment prose don't match" do
+      source = """
+      x = 1 # mutare:ignore[arithmetic] real directive, reason and all
+      # mutare:ignore
+      y = 2
+      # see mutare:ignore for details — prose, not anchored at the comment's start
+      z = 3
+      """
+
+      assert Ignore.unknown_directives(source) == []
+    end
+
+    test "several unknowns are sorted by line" do
+      source = """
+      # mutare:ingore
+      x = 1
+      y = 2 # mutare:frobnicate
+      """
+
+      assert Ignore.unknown_directives(source) == [
+               {1, "mutare:ingore"},
+               {3, "mutare:frobnicate"}
+             ]
+    end
+
+    test "verb_hint/1 suggests a near-miss verb, otherwise lists the recognized ones" do
+      assert Ignore.verb_hint("mutare:ingore") == "; did you mean # mutare:ignore?"
+      assert Ignore.verb_hint("mutare: ignore") == "; did you mean # mutare:ignore?"
+      assert Ignore.verb_hint("mutare:frobnicate") == " (recognized: # mutare:ignore)"
+      assert Ignore.verb_hint("mutare:") == " (recognized: # mutare:ignore)"
+    end
+  end
+
   describe "misplacement_hint/3 (the pipe's-first-line miss)" do
     alias Mutare.Ignore
 

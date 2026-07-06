@@ -206,6 +206,46 @@ defmodule Mix.Tasks.MutareTest do
       assert stderr =~ "warning: # mutare:ignore[bogus] at lib/a.ex:2 suppressed no mutant"
     end
 
+    test "warns on an unrecognized `mutare:` comment; --strict-ignores counts both kinds" do
+      root = Project.tmp_dir(:task)
+      File.mkdir_p!(Path.join(root, "lib"))
+
+      # Line 2: a colon-detached verb (an unrecognized `mutare:` comment, near-miss hint);
+      # line 3: a real directive with a typo'd family (ineffective). Both must warn, and
+      # --strict-ignores must count each kind in its abort message.
+      File.write!(
+        Path.join(root, "lib/a.ex"),
+        "defmodule A do\n  def f(x), do: x + 1 # mutare: ignore\n" <>
+          "  def g(x), do: x + 1 # mutare:ignore[bogus]\nend\n"
+      )
+
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      test_pid = self()
+
+      stderr =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          error =
+            assert_raise Mix.Error, fn ->
+              Mix.Tasks.Mutare.run([root, "--strict-ignores"])
+            end
+
+          send(test_pid, {:strict_unknown_error, error})
+        end)
+
+      assert_receive {:strict_unknown_error, error}
+
+      assert error.message ==
+               "--strict-ignores: 1 `# mutare:ignore` directive suppressed no mutant; " <>
+                 "1 `# mutare:` comment named no recognized directive (see the warnings above)"
+
+      assert stderr =~
+               "warning: # mutare: ignore at lib/a.ex:2 is not a recognized directive; " <>
+                 "did you mean # mutare:ignore?"
+
+      assert stderr =~ "warning: # mutare:ignore[bogus] at lib/a.ex:3 suppressed no mutant"
+    end
+
     test "announces the counted scope and configured caps before a no-site run aborts" do
       root = Project.tmp_dir(:task)
       File.mkdir_p!(Path.join(root, "lib"))

@@ -397,6 +397,38 @@ defmodule Mutare.SchemaTest do
     assert [{"lib/c.ex", %{line: 3}, _hint}] = schema.ineffective_ignores
   end
 
+  test "an unrecognized `mutare:` comment is recorded, even in a file with no `mutare:ignore`",
+       %{root: root} do
+    # The file contains no `mutare:ignore` substring at all — detection must prefilter
+    # on the wider `mutare:`, or a typo'd verb in an otherwise directive-free file
+    # would never be parsed for diagnostics.
+    write(root, "lib/u.ex", """
+    defmodule U do
+      # mutare:ingore
+      def f(a, b), do: a + b
+    end
+    """)
+
+    schema = Schema.build(root, mutators: @probe)
+
+    assert schema.unknown_directives == [{"lib/u.ex", 2, "mutare:ingore"}]
+    # The typo'd comment is not an ignore directive, so it is not *ineffective* —
+    # the unknown-verb entry is the only signal.
+    assert schema.ineffective_ignores == []
+  end
+
+  test "unknown `mutare:` comments are sorted across files", %{root: root} do
+    write(root, "lib/b.ex", "defmodule B do\n  def f(x), do: x + 1 # mutare:frobnicate\nend\n")
+    write(root, "lib/a.ex", "defmodule A do\n  def f(x), do: x + 1 # mutare: ignore\nend\n")
+
+    schema = Schema.build(root, mutators: @probe)
+
+    assert schema.unknown_directives == [
+             {"lib/a.ex", 2, "mutare: ignore"},
+             {"lib/b.ex", 2, "mutare:frobnicate"}
+           ]
+  end
+
   test "ineffective directives are ordered by line", %{root: root} do
     write(root, "lib/a.ex", """
     defmodule A do

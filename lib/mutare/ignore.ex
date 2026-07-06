@@ -55,6 +55,8 @@ defmodule Mutare.Ignore do
 
   An unknown label for a built-in family, including a disabled one, or an active custom family is an error. Unknown families, bare-family typos, empty filters, and malformed filters match nothing. Any directive that suppresses no mutant produces a warning; `--strict-ignores` turns that warning into a non-zero exit.
 
+  The `mutare:` comment namespace is reserved. A comment that starts with `# mutare:` but does not spell a recognized directive — a typo (`# mutare:ingore`), a stray space after the colon (`# mutare: ignore`), or a directive from a future Mutare version — is never silently inert: it produces the same scan-time warning, and `--strict-ignores` the same non-zero exit.
+
   Only source comments are parsed. Text such as `"# mutare:ignore"` inside a string has no effect.
   """
 
@@ -63,10 +65,28 @@ defmodule Mutare.Ignore do
   alias Mutare.Mutator
 
   # A comment whose content is the directive: `#`, optional whitespace, then
-  # `mutare:ignore` on a word boundary. Anchored at the comment's start, so the
-  # directive must be the comment's purpose — not text buried in prose. The
-  # `rest` capture is everything after the keyword (the filter and/or reason).
-  @directive ~r/\A#\s*mutare:ignore\b(?<rest>.*)/s
+  # `mutare:ignore` at the end of the verb token. Anchored at the comment's start, so
+  # the directive must be the comment's purpose — not text buried in prose. The
+  # `rest` capture is everything after the keyword (the filter and/or reason). The
+  # boundary is `(?![\w-])`, not `\b`: a hyphen extends the *verb* (`mutare:ignore-file`
+  # is an unknown verb, warned via `unknown_directives/1`), never starts a reason —
+  # a plain `\b` would silently read it as ignore-everything with reason `-file`.
+  @directive ~r/\A#\s*mutare:ignore(?![\w-])(?<rest>.*)/s
+
+  # Any comment that *claims* the reserved namespace: `#`, optional whitespace, then
+  # `mutare:`, with the same comment-start anchoring as `@directive`. A superset of
+  # `@directive` — a match no directive regex recognizes is an unknown-verb comment
+  # (see `unknown_directives/1`). Prose that merely mentions `mutare:` mid-comment
+  # does not match.
+  @namespace ~r/\A#\s*mutare:/
+
+  # The namespace head, echoed back in the unknown-verb warning: `mutare:` plus the
+  # (possibly space-detached) verb token after it, exactly as the user spaced it.
+  @head ~r/mutare:\s*(?<verb>[\w-]*)/
+
+  # Every verb the namespace recognizes today. A future directive must be added here
+  # (with its own parser) for its comments to stop being warned as unknown.
+  @known_verbs ~w(ignore)
 
   # Inside `rest`, a leading `[...]` filter group and the trailing reason. The
   # filter body is everything up to the first `]`; the reason is whatever
@@ -114,6 +134,57 @@ defmodule Mutare.Ignore do
     |> Enum.with_index()
     |> Enum.map(fn {comment, order} -> to_directive(comment, order, comment_lines) end)
     |> Enum.group_by(& &1.line)
+  end
+
+  @doc false
+  # The comments in `source` that claim the `mutare:` namespace without spelling a recognized
+  # directive, as `{comment_line, head}` pairs sorted by line — `head` is the `mutare:<verb>`
+  # text as the user wrote it (spacing preserved), for echoing back in the warning.
+  @spec unknown_directives(String.t()) :: [{pos_integer(), String.t()}]
+  def unknown_directives(source) when is_binary(source) do
+    source
+    |> Sourceror.parse_string!()
+    |> unknown_directives_from_ast()
+  end
+
+  @doc false
+  # Like `unknown_directives/1`, but for an already-parsed AST (so `Mutare.Schema` reuses the
+  # parse it needed for ineffective detection). The namespace is reserved: a comment matching
+  # the anchored `mutare:` prefix but no directive parser is a typo'd verb (`ingore`), a
+  # colon-detached one (`mutare: ignore`), or a directive this version doesn't know — each is
+  # surfaced rather than left silently inert, so a future directive (or a slip) can't read as
+  # "no directive here".
+  @spec unknown_directives_from_ast(Macro.t()) :: [{pos_integer(), String.t()}]
+  def unknown_directives_from_ast(ast) do
+    ast
+    |> comments()
+    |> Enum.filter(fn %{text: text} = comment ->
+      Regex.match?(@namespace, text) and not directive?(comment)
+    end)
+    |> Enum.map(fn %{line: line, text: text} -> {line, head(text)} end)
+    |> Enum.sort()
+  end
+
+  # The `mutare:<verb>` head of an unknown-verb comment, as written. Total for any
+  # `@namespace` match: `@head`'s verb token is `[\w-]*`, so at worst the head is
+  # a bare `mutare:`.
+  defp head(text) do
+    [head | _captures] = Regex.run(@head, text)
+    head
+  end
+
+  @doc false
+  # The actionable tail for an unknown-verb warning: `; did you mean # mutare:ignore?` when
+  # the verb is a near-miss of a recognized one (same Jaro threshold as the label
+  # suggestions), otherwise the recognized-verb list. One or the other, never both.
+  @spec verb_hint(String.t()) :: String.t()
+  def verb_hint(head) do
+    %{"verb" => verb} = Regex.named_captures(@head, head)
+
+    case closest(verb, @known_verbs) do
+      nil -> " (recognized: #{Enum.map_join(@known_verbs, ", ", &"# mutare:#{&1}")})"
+      best -> "; did you mean # mutare:#{best}?"
+    end
   end
 
   @doc false
@@ -235,13 +306,22 @@ defmodule Mutare.Ignore do
     end
   end
 
-  # A `; did you mean "x"?` clause for the closest candidate by Jaro distance, or "" when nothing
-  # is close enough (the `>= 0.8` threshold avoids a misleading suggestion for a wild typo). This
-  # fires for a *near-miss* of a declared label — `nagate` → `negate`, `tru` → `true`, or a symbol
-  # slip like `>==` → `>=`. It deliberately stays silent for a cross-*spelling* miss (a word for a
-  # symbol family, `lte` for `<=`), where no string distance is meaningful; the caller always
-  # appends the full `(known: …)` list, which is the actionable fallback in that case.
+  # A `; did you mean "x"?` clause for the closest candidate, or "" when nothing is close
+  # enough; the caller always appends the full `(known: …)` list as the fallback.
   defp suggestion(name, candidates) do
+    case closest(name, candidates) do
+      nil -> ""
+      best -> "; did you mean #{inspect(best)}?"
+    end
+  end
+
+  # The closest candidate by Jaro distance, or `nil` when nothing is close enough (the
+  # `>= 0.8` threshold avoids a misleading suggestion for a wild typo). This fires for a
+  # *near-miss* — `nagate` → `negate`, `tru` → `true`, a symbol slip like `>==` → `>=`, or
+  # a verb typo `ingore` → `ignore`. It deliberately stays silent for a cross-*spelling*
+  # miss (a word for a symbol family, `lte` for `<=`), where no string distance is
+  # meaningful; the callers' known-list fallback is the actionable hint in that case.
+  defp closest(name, candidates) do
     candidates
     |> Enum.map(&{&1, String.jaro_distance(name, &1)})
     # `>=` vs `>` at exactly 0.8 is impractical to pin with a real test: `String.jaro_distance/2`
@@ -253,8 +333,8 @@ defmodule Mutare.Ignore do
     |> Enum.filter(fn {_candidate, distance} -> distance >= 0.8 end)
     |> Enum.max_by(fn {_candidate, distance} -> distance end, fn -> nil end)
     |> case do
-      {best, _distance} -> "; did you mean #{inspect(best)}?"
-      nil -> ""
+      {best, _distance} -> best
+      nil -> nil
     end
   end
 

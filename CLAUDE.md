@@ -221,5 +221,7 @@ with `variant/2`) — not a token derived from the rendered AST.
 Qualifiers are strict where the mistake is certain (a `[family:label]` on an active family that
 doesn't declare that label is a hard `Mutare.Ignore.SpecError`); an unknown *family* stays lenient
 (indistinguishable from a `--mutators`-excluded one). A directive that suppresses nothing is surfaced
-as `ineffective` (warned at scan time; `--strict-ignores` escalates to a non-zero abort). Details in
-the `Mutare.Ignore` moduledoc.
+as `ineffective` (warned at scan time; `--strict-ignores` escalates to a non-zero abort), and the
+whole `# mutare:` comment namespace is reserved — an unrecognized verb gets the same warning/abort
+treatment, so a typo'd or future directive is never silently inert (NOTES "The `mutare:` comment
+namespace is reserved"). Details in the `Mutare.Ignore` moduledoc.
