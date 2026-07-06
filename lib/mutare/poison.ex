@@ -74,6 +74,13 @@ defmodule Mutare.Poison do
             :error -> nil
           end
 
+        # This branch only runs when `file` is absent from `cache` (the sibling clause above
+        # matches when present), so `Map.put_new/3` inserts identically here; `Map.replace/3`
+        # would just skip the insert, forcing every later duplicate-file error to retake this
+        # branch and recompute `Manifest.from_source` (a pure, deterministic parse) — a real
+        # efficiency loss, but unobservable in `ids/2`'s returned `MapSet` (the only thing a
+        # black-box test can assert on).
+        # mutare:ignore[map_keyword] equivalent, per above
         {manifest, Map.put(cache, file, manifest)}
     end
   end
@@ -99,6 +106,10 @@ defmodule Mutare.Poison do
       |> Regex.scan(line)
       |> Enum.map(fn [_match, file, num] -> {file, String.to_integer(num)} end)
     end)
+    # `ids/2` folds this list straight into a `MapSet` (order- and duplicate-insensitive), so
+    # deduping here only avoids redundant (but pure, deterministic) `manifest_for`/`ids_at_line`
+    # lookups; the returned set is identical either way.
+    # mutare:ignore[call_removal] equivalent, per above
     |> Enum.uniq()
   end
 
@@ -111,11 +122,21 @@ defmodule Mutare.Poison do
   defp error_text_lines(output) do
     output
     |> String.split("\n")
+    # Only `severity == :warning` is ever tested below; any non-`:warning` initial sentinel
+    # (this starts before the first line, so it can't itself *be* a warning) behaves
+    # identically, and `severity` itself is dropped by `elem(1)` right after the reduce.
+    # mutare:ignore[convention] equivalent, per above
     |> Enum.reduce({:error, []}, fn line, {severity, kept} ->
       severity = Output.diagnostic_severity(line) || severity
       {severity, if(severity == :warning, do: kept, else: [line | kept])}
     end)
     |> elem(1)
+    # Same reasoning as the `Enum.uniq()` above: `error_locations/1`'s caller only ever folds
+    # the file:line pairs extracted from these lines into a `MapSet` (order-insensitive), so
+    # reversing back to document order here has no observable effect on `ids/2`'s result. Kept
+    # for the (untested) documentation value of returning lines in source order to any other
+    # future caller.
+    # mutare:ignore[call_removal, collection_arity] equivalent, per above
     |> Enum.reverse()
   end
 end

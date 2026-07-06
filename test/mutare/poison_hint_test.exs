@@ -7,6 +7,15 @@ defmodule Mutare.Poison.HintTest do
   doctest Hint
 
   describe "expanding_macros/1" do
+    test "requires a binary (rejects a non-string output)" do
+      # Match the exact message (naming `expanding_macros/1` itself), not just the exception
+      # class — the body's own `String.split/2` call also raises `FunctionClauseError` for a
+      # non-binary, so asserting on class alone can't tell this guard apart from a dropped one.
+      assert_raise FunctionClauseError,
+                   "no function clause matching in Mutare.Poison.Hint.expanding_macros/1",
+                   fn -> Hint.expanding_macros(:not_a_string) end
+    end
+
     test "extracts a single macro from an expansion frame" do
       output = """
       == Compilation error in file lib/foo.ex ==
@@ -74,9 +83,49 @@ defmodule Mutare.Poison.HintTest do
     test "no expansion frame yields []" do
       assert Hint.expanding_macros("** (CompileError) undefined function foo/0") == []
     end
+
+    test "stays armed across intervening non-frame lines until the real expanding-macro frame" do
+      # A stray line between the exception header and the actual `expanding macro:` frame
+      # must not disarm the capture — otherwise the real frame right after it is missed.
+      output = """
+      ** (FunctionClauseError) no function clause matching in Size.megabytes/1
+          (stacktrace) Elixir.Kernel.some_helper/1
+          (stacktrace) Elixir.Kernel.another_helper/2
+          expanding macro: Size.megabytes/1
+          lib/usage.ex:4: Usage.limit/0
+      """
+
+      assert Hint.expanding_macros(output) == [{"Size", :megabytes}]
+    end
+
+    test "a function name starting exactly at the boundary letters 'a'/'z' is accepted" do
+      assert Hint.expanding_macros("expanding macro: Mod.amethod/1\n") == [{"Mod", :amethod}]
+      assert Hint.expanding_macros("expanding macro: Mod.zmethod/1\n") == [{"Mod", :zmethod}]
+    end
+
+    test "a function name starting one character outside a/z is rejected (no bad advice)" do
+      # Adjacent to the `?a..?z` range on either side: "`" (96, just below "a") and "{"
+      # (123, just above "z") must NOT be treated as valid function-name leads.
+      assert Hint.expanding_macros("expanding macro: Mod.`method/1\n") == []
+      assert Hint.expanding_macros("expanding macro: Mod.{method/1\n") == []
+    end
+
+    test "a function name starting with `_` is accepted (the other half of the guard)" do
+      assert Hint.expanding_macros("expanding macro: Mod._private_method/1\n") ==
+               [{"Mod", :_private_method}]
+    end
   end
 
   describe "for_compile_failure/1" do
+    test "requires a binary (rejects a non-string output)" do
+      # Same reasoning as `expanding_macros/1` above: pin the exact message (naming
+      # `for_compile_failure/1`), since a dropped guard here would still raise
+      # `FunctionClauseError` — just from the `expanding_macros/1` call inside the body.
+      assert_raise FunctionClauseError,
+                   "no function clause matching in Mutare.Poison.Hint.for_compile_failure/1",
+                   fn -> Hint.for_compile_failure(:not_a_string) end
+    end
+
     test "nil when no recognised cause" do
       assert Hint.for_compile_failure("** (CompileError) something unrelated") == nil
     end
@@ -125,6 +174,10 @@ defmodule Mutare.Poison.HintTest do
 
       assert Enum.map(specs, &{&1.name, &1.arity, &1.args}) ==
                [{:megabytes, :any, :skip}, {:field, :any, :skip}]
+
+      # The bullet list joins multiple macros with a real newline, one bullet per line — not ""
+      # (which would run every macro's bullet together) or a stray "mutare" separator.
+      assert hint =~ "  * Size.megabytes\n  * My.App.field"
     end
   end
 end

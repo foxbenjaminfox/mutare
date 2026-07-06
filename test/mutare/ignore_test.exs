@@ -263,6 +263,23 @@ defmodule Mutare.IgnoreTest do
       assert Ignore.directive_for(directives, 1, :anything)
     end
 
+    test "directives/1 requires a binary (rejects a non-string source)" do
+      assert_raise FunctionClauseError, fn -> Ignore.directives(:not_a_string) end
+    end
+
+    test "a directive trailing a block's closing `end` is found via Sourceror's :trailing_comments bucket" do
+      # Almost every other trailing directive in this suite is, per Sourceror, actually a
+      # *leading* comment of the following token (`x = 1 # mutare:ignore` attaches to the next
+      # node with `previous_eol_count: 0`) — `previous_eol_count` is what marks it "trailing",
+      # not which bucket it lands in (see `comments/1`'s moduledoc note). A comment after a
+      # block's closing `end`, with nothing following it in the file, is the one shape that
+      # really does land in Sourceror's `:trailing_comments` — exercising that code path for
+      # real (rather than `:leading_comments` alone, which every other test here happens to hit).
+      source = "if true do\n  1\nend # mutare:ignore\n"
+      directives = Ignore.directives(source)
+      assert %Directive{line: 3, mutators: :all} = directive_on(directives, 3)
+    end
+
     test "a `[...]` filter only admits the listed mutators" do
       directives = Ignore.directives("x = 1 # mutare:ignore[arithmetic, literal]")
 
@@ -330,6 +347,16 @@ defmodule Mutare.IgnoreTest do
       directives = Ignore.directives("x = 1 # mutare:ignore[relational:!==, relational:>=]")
       assert %Directive{mutators: set} = directive_on(directives, 1)
       assert set == MapSet.new([{"relational", "!=="}, {"relational", ">="}])
+    end
+
+    test "a label containing a colon is split only on the FIRST `:` (parts: 2, not 3)" do
+      # `parse_entry/1` splits on `:` with `parts: 2` precisely so a label itself containing a
+      # `:` stays whole as everything after the first colon — `String.split(token, ":", parts:
+      # 3)` would instead produce 3 pieces here, which matches neither `[family]` nor
+      # `[family, label]` and would raise `CaseClauseError`.
+      directives = Ignore.directives("x = 1 # mutare:ignore[custom:A:B]")
+      assert %Directive{mutators: set} = directive_on(directives, 1)
+      assert set == MapSet.new([{"custom", "a:b"}])
     end
 
     test "qualified and bare entries of the same family coexist" do
@@ -596,6 +623,23 @@ defmodule Mutare.IgnoreTest do
       occupied = [{1, :arithmetic, ["-"]}, {2, :arithmetic, ["-"]}, {3, :arithmetic, ["-"]}]
       assert [1, 2, 3] == directives |> Ignore.ineffective(occupied) |> Enum.map(& &1.line)
     end
+
+    test "results are sorted by line even when the directives map is large enough to hash-iterate" do
+      # As in the `validate!/3` determinism test above: a small (<= 32 key) Elixir map happens
+      # to enumerate in ascending key order regardless of the final `Enum.sort_by(& &1.line)`, so
+      # 3 lines isn't enough to distinguish the sort from a no-op/dropped call. Force the large-map
+      # representation with 40 distinct ineffective lines, scanned in a scrambled line order, and
+      # check the result still comes back strictly ascending.
+      lines = for n <- 1..40, do: "x#{n} = 1 # mutare:ignore[bogus#{n}]"
+      source = Enum.join(lines, "\n")
+      directives = Ignore.directives(source)
+      assert map_size(directives) == 40
+
+      occupied = for n <- 1..40, do: {n, :arithmetic, ["-"]}
+
+      assert Enum.to_list(1..40) ==
+               directives |> Ignore.ineffective(occupied) |> Enum.map(& &1.line)
+    end
   end
 
   describe "qualified-filter validation (strict)" do
@@ -615,29 +659,71 @@ defmodule Mutare.IgnoreTest do
     test "an unknown label on a KNOWN family raises, listing the known variants" do
       # `lte` shares no characters with any operator label, so there is no jaro near-miss; the
       # error still lists every known label as the actionable fallback (the suggestion clause is
-      # covered separately below, where a near-miss exists).
+      # covered separately below, where a near-miss exists). Pinned to the *exact* message (not
+      # just `=~` substrings) — the pieces are string-concatenated in `validate_entry!/5`, and a
+      # loose substring check can't tell a swapped concatenation order apart from the real thing.
       err = assert_raise(SpecError, fn -> validate("x # mutare:ignore[relational:lte]") end)
       assert err.reason == :unknown_variant
-      assert err.message =~ ~s("lte" is not a relational variant)
-      # the real labels are listed for the fix
-      assert err.message =~ "<="
-      # ...and no misleading "did you mean" for a word that resembles no operator symbol.
-      refute err.message =~ "did you mean"
+
+      assert err.message ==
+               "lib/f.ex:1: \"lte\" is not a relational variant in # mutare:ignore[relational:lte]" <>
+                 " (known: !=, !==, <, <=, ==, ===, >, >=)"
     end
 
     test "a near-miss label gets a 'did you mean' suggestion" do
       # `tru` is a near-miss of the declared `true`/`false` vocabulary (jaro > 0.8), so the
       # suggestion clause fires — exercising the jaro/threshold path the operator-symbol families
-      # can't reach. This is the live test of `suggestion/2`.
+      # can't reach. This is the live test of `suggestion/2`. Exact match, for the same
+      # string-concatenation-order reason as above.
       err = assert_raise(SpecError, fn -> validate("x # mutare:ignore[conditional:tru]") end)
       assert err.reason == :unknown_variant
-      assert err.message =~ ~s(did you mean "true"?)
+
+      assert err.message ==
+               "lib/f.ex:1: \"tru\" is not a conditional variant in # mutare:ignore[conditional:tru]" <>
+                 "; did you mean \"true\"? (known: false, true)"
+    end
+
+    test "the suggestion is the CLOSEST near-miss by Jaro distance, not just any of them" do
+      # `suggestion/2` filters candidates to Jaro distance >= 0.8, then picks the closest. Two
+      # candidates both clear the threshold against the typo "abcde" but at different distances
+      # ("abced" 0.933 > "abcdx" 0.867) — `Enum.max_by` must return the truly closest one; a
+      # `Enum.min_by` (or a body that ignores `distance` entirely) would pick "abcdx" instead.
+      vocabulary = %{"custom" => MapSet.new(["abced", "abcdx"])}
+      directives = Ignore.directives("x # mutare:ignore[custom:abcde]")
+
+      err =
+        assert_raise(SpecError, fn -> Ignore.validate!(directives, vocabulary, "lib/f.ex") end)
+
+      assert err.message =~ ~s(did you mean "abced"?)
+      refute err.message =~ ~s(did you mean "abcdx"?)
+    end
+
+    test "the '(known: ...)' list is sorted even when the label set is large enough to hash-iterate" do
+      # Same 32-element small-map/set threshold caveat as the two determinism tests above: the
+      # built-in families used elsewhere in this file (2-8 labels) already enumerate in sorted
+      # order regardless of `Enum.sort()` in `validate_entry!/5`'s message-building, which is
+      # exactly why `Enum.sort() → Elixir.Function.identity()` survived against them. Force a
+      # >32-label vocabulary via a synthetic family (`validate!/3` takes `vocabulary` as a plain
+      # argument, so this doesn't need a real mutator).
+      labels = for n <- 1..40, do: "z#{String.pad_leading(Integer.to_string(n), 2, "0")}"
+      vocabulary = %{"custom" => MapSet.new(labels)}
+      directives = Ignore.directives("x # mutare:ignore[custom:bogus]")
+
+      err =
+        assert_raise(SpecError, fn -> Ignore.validate!(directives, vocabulary, "lib/f.ex") end)
+
+      expected = "(known: " <> Enum.join(Enum.sort(labels), ", ") <> ")"
+      assert String.ends_with?(err.message, expected)
     end
 
     test "a family that declares no variants rejects any qualifier" do
       err = assert_raise(SpecError, fn -> validate("x # mutare:ignore[collection:map]") end)
       assert err.reason == :no_variants
-      assert err.message =~ "declares no variant labels"
+
+      assert err.message ==
+               "lib/f.ex:1: the collection mutator declares no variant labels, so " <>
+                 "# mutare:ignore[collection:map] can't select one — use the bare " <>
+                 "# mutare:ignore[collection] to suppress the whole family"
     end
 
     test "a valid qualifier validates, and neither bare nor unknown families are checked" do
@@ -678,6 +764,74 @@ defmodule Mutare.IgnoreTest do
 
       assert Mutare.Transform.count_string(clean, opts) == 0
       assert_raise SpecError, fn -> Mutare.Transform.count_string(bad, opts) end
+    end
+
+    test "the first bad qualifier raised is always the lowest source line, however the directives map iterates" do
+      # `validate!/3` explicitly sorts by line before scanning so the *reported* error is
+      # deterministic. Elixir maps with <= 32 keys happen to enumerate in ascending key order
+      # regardless (a flat-list representation), which would make this pass even with the sort
+      # dropped (`Enum.sort_by(directives, ...) → directives`/`Enum.reverse(directives)`, both
+      # observed survivors of that mutation) — so build enough distinct directive-carrying lines
+      # to force the large-map (HAMT) representation, whose iteration order is hash-based, not
+      # insertion- or key-based. Picking just *two* bad lines isn't enough either: for some
+      # arbitrary pairs, hash order happens to still visit the lower one first (observed
+      # surviving with lines 7 and 33 specifically — bad luck, not a real kill). Making *every*
+      # line bad and asserting on line 1 — the unambiguous minimum — removes that luck: line 1
+      # would have to land first in hash order among all 40 for the dropped-sort mutant to
+      # survive, which is not realistic.
+      lines = for n <- 1..40, do: "x#{n} = 1 # mutare:ignore[relational:bogus#{n}]"
+
+      source = Enum.join(lines, "\n")
+      directives = Ignore.directives(source)
+      assert map_size(directives) == 40
+
+      err = assert_raise(SpecError, fn -> validate(source) end)
+      assert err.line == 1
+    end
+
+    test "among several bad qualifiers on the SAME line, the alphabetically-first is raised, however the entry set iterates" do
+      # The inner `Enum.sort(qualified_entries(directive))` exists for the identical reason as
+      # the outer sort above — `qualified_entries/1` returns entries pulled from a `MapSet`
+      # (unordered), so without the sort the raised entry would depend on `MapSet`/`Map` hash
+      # iteration. Same 32-element threshold caveat: force it with 40 distinct qualified entries
+      # on one line, zero-padded so lexicographic order matches the intended "first" (`q01`).
+      labels =
+        for n <- 1..40, do: "relational:q#{String.pad_leading(Integer.to_string(n), 2, "0")}"
+
+      source = "x = 1 # mutare:ignore[#{Enum.join(labels, ", ")}]"
+
+      directives = Ignore.directives(source)
+      assert %{mutators: %MapSet{} = set} = directive_on(directives, 1)
+      assert MapSet.size(set) == 40
+
+      err = assert_raise(SpecError, fn -> validate(source) end)
+      assert err.label == "q01"
+    end
+  end
+
+  describe "any_qualified?/1" do
+    alias Mutare.Ignore
+
+    test "false when every directive is bare or :all" do
+      directives = Ignore.directives("a = 1 # mutare:ignore\nb = 2 # mutare:ignore[arithmetic]")
+      refute Ignore.any_qualified?(directives)
+    end
+
+    test "true when only ONE of several directives carries a qualified label (any, not all)" do
+      source = """
+      a = 1 # mutare:ignore[arithmetic]
+      b = 2 # mutare:ignore[relational:>]
+      c = 3 # mutare:ignore
+      """
+
+      assert Ignore.any_qualified?(Ignore.directives(source))
+    end
+
+    test "true when only the second directive on a shared line is qualified (any, not all)" do
+      # Two directives land on the same line (a standalone one targeting it, plus its own
+      # trailing directive); only the trailing one is qualified.
+      source = "# mutare:ignore\nx = 1 # mutare:ignore[relational:>]"
+      assert Ignore.any_qualified?(Ignore.directives(source))
     end
   end
 

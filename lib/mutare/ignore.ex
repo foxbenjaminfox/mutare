@@ -104,6 +104,12 @@ defmodule Mutare.Ignore do
     # so sort by the comment's own physical line (stable, so the rare two comments sharing a line
     # keep their gathered order). The stamped index is what `directive_for/4` ranks ties on, so
     # the sort and the index that depends on it live together here, not three frames apart.
+    # Reordering only matters when two directives land on the *same* suppressed line but come
+    # from two *different* AST nodes (the only observable effect is on the tie-break's
+    # `source_order`, compared only within one line's group) — a layout normal source can't
+    # produce (a line's own directives all land as leading/trailing comments of the one node on
+    # it, already document-ordered).
+    # mutare:ignore[call_removal] equivalent for realistic source, per above
     |> Enum.sort_by(& &1.line)
     |> Enum.with_index()
     |> Enum.map(fn {comment, order} -> to_directive(comment, order, comment_lines) end)
@@ -194,6 +200,10 @@ defmodule Mutare.Ignore do
       # `ineffective/2` warning, never a hard abort. Hard errors are reserved for a *known* family
       # with a wrong/absent label (`:none`/`:unknown_variant` below), where the mistake is certain.
       nil ->
+        # `validate!/3`'s `for` comprehension discards every `validate_entry!/5` return value and
+        # always ends with its own literal `:ok`, so this clause's return value never reaches a
+        # caller.
+        # mutare:ignore[convention, return_value] equivalent, per above
         :ok
 
       :none ->
@@ -234,6 +244,12 @@ defmodule Mutare.Ignore do
   defp suggestion(name, candidates) do
     candidates
     |> Enum.map(&{&1, String.jaro_distance(name, &1)})
+    # `>=` vs `>` at exactly 0.8 is impractical to pin with a real test: `String.jaro_distance/2`
+    # is a float computed via several divisions, and a value that mathematically converges to
+    # 0.8 lands on a *different* IEEE-754 double than the `0.8` literal here (observed:
+    # 0.7999999999999999) — so a near-miss engineered to "hit the boundary" actually falls just
+    # short and can't distinguish the two operators.
+    # mutare:ignore[relational] impractical to test at the float boundary, per above
     |> Enum.filter(fn {_candidate, distance} -> distance >= 0.8 end)
     |> Enum.max_by(fn {_candidate, distance} -> distance end, fn -> nil end)
     |> case do
@@ -338,7 +354,18 @@ defmodule Mutare.Ignore do
       Macro.prewalk(ast, [], fn
         {_form, meta, _args} = node, acc when is_list(meta) ->
           leading = Keyword.get(meta, :leading_comments, [])
+          # Sourceror always sets `:trailing_comments` (even to `[]`) on every node's meta this
+          # prewalk visits — verified across this whole file's own AST, 0 nodes missing the key —
+          # so the `[]` default here is unreachable in practice; dropping it is equivalent.
+          # mutare:ignore[default_drop] equivalent, per above
           trailing = Keyword.get(meta, :trailing_comments, [])
+          # This node's own leading/trailing relative order matters (fixed up for real by the
+          # `Enum.sort_by(& &1.line)` + stamped `source_order` in `directives_from_ast/1`), but
+          # swapping this merge to `acc ++ trailing` only reorders *this node's own pair*
+          # relative to `acc` (comments from other, already-visited nodes) — observable only if
+          # two directives from different nodes land on the identical suppressed line, which
+          # (see the `directives_from_ast/1` sort_by note above) normal source can't produce.
+          # mutare:ignore[operand_swap] equivalent, per above
           {node, leading ++ trailing ++ acc}
 
         node, acc ->
@@ -403,6 +430,12 @@ defmodule Mutare.Ignore do
   # family name.
   defp parse_filter(families) do
     families
+    # `trim: true` drops every empty string the split produces — including the run of
+    # empties a *single*-char class (no `+`) or a lazy `+?` leaves between adjacent
+    # separators — so `~r/[,\s]/` and `~r/[,\s]+?/` both trim down to the exact same
+    # result as `~r/[,\s]+/` for every input; only an empty pattern (`~r//`, splitting
+    # every character) actually differs.
+    # mutare:ignore[regex] equivalent under trim: true, per above
     |> String.split(~r/[,\s]+/, trim: true)
     |> Enum.map(&parse_entry/1)
     |> MapSet.new()
