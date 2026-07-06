@@ -74,7 +74,8 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
     call rewrite already covers.
 - **`Mutare.Schema`** — runs `Transform` across discovered files, threading **globally-unique,
   stable** mutant ids via a two-phase parallel build (count → prefix-sum → render). Honors
-  `:paths`/`:exclude`/`:only_files` (`--since`)/`:only_lines` (`--line`)/`:max_mutants`/`:skip_ids`
+  `:paths`/`:exclude`/`:only_files`/`:only_lines` (`--line` and `--since`, which both scope by
+  changed *lines*)/`:max_mutants`/`:skip_ids`
   (poison recovery; the id counter advances even for skipped ids, so ids stay stable across rebuilds).
 - **`Mutare.Manifest` / `Mutare.Metamutant`** — the lazily-built map from a metamutant line range
   back to the mutant id(s) living there, so **Poison** can attribute a compile error. Keyed by id;

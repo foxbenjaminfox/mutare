@@ -41,12 +41,44 @@ defmodule Mutare.ChangesTest do
     %{repo: repo}
   end
 
-  test "returns files changed (including uncommitted) versus a ref, relative to root", %{
+  test "returns changed lines (including uncommitted) as {file, line} pairs, relative to root", %{
     repo: repo
   } do
+    # Only line 2 (`def g, do: 3`) changed — line 1 and 3 are untouched.
     File.write!(Path.join(repo, "lib/b.ex"), "defmodule B do\n  def g, do: 3\nend\n")
 
-    assert Changes.since(repo, "HEAD") == {:ok, MapSet.new(["lib/b.ex"])}
+    assert Changes.since(repo, "HEAD") == {:ok, MapSet.new([{"lib/b.ex", 2}])}
+  end
+
+  test "reports every added line of a range, on both changed and new files", %{repo: repo} do
+    # A two-line insertion into an existing file...
+    File.write!(
+      Path.join(repo, "lib/a.ex"),
+      "defmodule A do\n  def f, do: 1\n  def g, do: 2\n  def h, do: 3\nend\n"
+    )
+
+    # ...and a whole new file (every line is an addition). It must be staged:
+    # `git diff` ignores untracked files, exactly as the old `--name-only` did.
+    File.write!(Path.join(repo, "lib/c.ex"), "defmodule C do\n  def z, do: 0\nend\n")
+    git!(repo, ["add", "lib/c.ex"])
+
+    assert Changes.since(repo, "HEAD") ==
+             {:ok,
+              MapSet.new([
+                {"lib/a.ex", 3},
+                {"lib/a.ex", 4},
+                {"lib/c.ex", 1},
+                {"lib/c.ex", 2},
+                {"lib/c.ex", 3}
+              ])}
+  end
+
+  test "a pure deletion contributes no lines (the file drops out of scope)", %{repo: repo} do
+    # Delete line 2 of a.ex, leaving only additions elsewhere absent — the diff
+    # is a pure deletion, so there is no new-side line to mutate.
+    File.write!(Path.join(repo, "lib/a.ex"), "defmodule A do\nend\n")
+
+    assert Changes.since(repo, "HEAD") == {:ok, MapSet.new()}
   end
 
   test "is empty when nothing changed", %{repo: repo} do

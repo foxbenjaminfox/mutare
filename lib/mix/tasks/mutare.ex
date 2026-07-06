@@ -83,7 +83,7 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --only lib/a --only lib/b   # ...or several paths (repeatable)
       mix mutare --exclude "lib/generated/**" --exclude lib/legacy
                                           # skip files matching globs (repeatable)
-      mix mutare --since master           # only files changed vs a git ref
+      mix mutare --since master           # only lines changed vs a git ref
       mix mutare --line lib/billing/invoice.ex:42
                                           # only the mutants on that file:line — a
                                           #   narrow rerun, e.g. to recheck one
@@ -618,7 +618,9 @@ defmodule Mix.Tasks.Mutare do
     error in ArgumentError -> Mix.raise(Exception.message(error))
   end
 
-  # `--since <ref>` restricts mutation to files changed versus that git ref.
+  # `--since <ref>` restricts mutation to the lines changed versus that git ref
+  # (the same `:only_lines` site filter `--line` uses), so a one-line edit to a
+  # large module mutates only that line, not the whole file.
   defp scope_to_changes(config, root, flags) do
     case flags[:since] do
       nil ->
@@ -626,7 +628,7 @@ defmodule Mix.Tasks.Mutare do
 
       ref ->
         case Mutare.Changes.since(root, ref) do
-          {:ok, files} -> Keyword.put(config, :only_files, files)
+          {:ok, lines} -> Keyword.put(config, :only_lines, lines)
           {:error, detail} -> Mix.raise("`--since #{ref}` failed:\n#{detail}")
         end
     end
