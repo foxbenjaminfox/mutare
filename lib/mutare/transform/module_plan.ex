@@ -22,6 +22,7 @@ defmodule Mutare.Transform.ModulePlan do
 
   require Logger
 
+  alias Mutare.Lifting
   alias Mutare.Transform.FunctionPlan
 
   @type item ::
@@ -38,28 +39,40 @@ defmodule Mutare.Transform.ModulePlan do
 
   `file` is used only to attribute the non-consecutive-clause warning.
   """
-  @spec build([Macro.t()], [Mutare.Mutator.Spec.t()], String.t()) :: t()
-  def build(statements, mutators, file) do
+  @spec build(
+          [Macro.t()],
+          [Mutare.Mutator.Spec.t()],
+          String.t(),
+          module() | nil,
+          MapSet.t(Lifting.skip_entry())
+        ) :: t()
+  def build(statements, mutators, file, module, skip_lifting) do
     chunks = chunk_clause_runs(statements)
+    skipped = skipped_signatures(chunks, module, skip_lifting)
     non_consecutive = non_consecutive_signatures(chunks)
     metaprogrammed = metaprogrammed_heads(chunks)
     delegated = delegated_heads(chunks)
     # Each blocked signature gets exactly one warning, for its binding reason.
+    # User-requested `:skip_lifting` wins the diagnosis: it is the most direct
+    # explanation and intentionally suppresses the other lifting warnings for
+    # that signature.
     # Delegation wins the diagnosis when it applies — the delegate is a concrete,
     # named sibling clause, the most specific thing we can tell the user, and no
     # other remedy restores lifting while it exists. Metaprogramming wins over
     # non-consecutive: grouping the clauses can't enable lifting (the generated
     # clauses still force in-place), so the non-consecutive advice ("group the
     # clauses") would mislead.
-    warn_delegated(delegated_signatures(chunks, delegated), file)
+    warn_skipped(skipped, module, file)
+
+    warn_delegated(delegated_signatures(chunks, delegated) |> without_skipped(skipped), file)
 
     warn_metaprogrammed(
-      metaprogrammed_signatures(chunks, metaprogrammed, delegated),
+      metaprogrammed_signatures(chunks, metaprogrammed, delegated) |> without_skipped(skipped),
       file
     )
 
     warn_non_consecutive(
-      non_consecutive_only(non_consecutive, metaprogrammed, delegated),
+      non_consecutive_only(non_consecutive, metaprogrammed, delegated, skipped),
       file
     )
 
@@ -69,7 +82,14 @@ defmodule Mutare.Transform.ModulePlan do
           {:statement, statement}
 
         {:clauses, clauses} ->
-          plan_clause_group(clauses, non_consecutive, metaprogrammed, delegated, mutators)
+          plan_clause_group(
+            clauses,
+            skipped,
+            non_consecutive,
+            metaprogrammed,
+            delegated,
+            mutators
+          )
       end)
 
     %__MODULE__{items: items}
@@ -92,7 +112,7 @@ defmodule Mutare.Transform.ModulePlan do
 
   # --- clause-group classification ------------------------------------------
 
-  defp plan_clause_group(clauses, non_consecutive, metaprogrammed, delegated, mutators) do
+  defp plan_clause_group(clauses, skipped, non_consecutive, metaprogrammed, delegated, mutators) do
     signature = clause_signature(hd(clauses))
     {_vis, name, arity} = signature
 
@@ -126,8 +146,8 @@ defmodule Mutare.Transform.ModulePlan do
     # unknowable. `collect_heads/3` owns the walk, its keying, and its pruning
     # rules (including why macro bodies — `__using__` boilerplate above all —
     # don't count).
-    if signature in non_consecutive or blocked?({name, arity}, metaprogrammed) or
-         blocked?({name, arity}, delegated) do
+    if signature in skipped or signature in non_consecutive or
+         blocked?({name, arity}, metaprogrammed) or blocked?({name, arity}, delegated) do
       {:in_place, clauses}
     else
       case FunctionPlan.plan(signature, clauses, mutators) do
@@ -196,15 +216,44 @@ defmodule Mutare.Transform.ModulePlan do
   end
 
   # The non-consecutive signatures whose binding reason really *is* being
-  # non-consecutive — i.e. not also metaprogrammed or delegated (either of which
-  # refuses lifting regardless of consecutiveness, so its warning is the accurate
-  # one). Dropping those here avoids a misleading "group the clauses" suggestion
-  # that grouping wouldn't honour.
-  defp non_consecutive_only(non_consecutive, metaprogrammed, delegated) do
-    Enum.reject(non_consecutive, fn {_vis, name, arity} ->
-      blocked?({name, arity}, metaprogrammed) or blocked?({name, arity}, delegated)
+  # non-consecutive — i.e. not also skipped, metaprogrammed, or delegated.
+  # Dropping those here avoids a misleading "group the clauses" suggestion that
+  # grouping would not honour.
+  defp non_consecutive_only(non_consecutive, metaprogrammed, delegated, skipped) do
+    Enum.reject(non_consecutive, fn {vis, name, arity} ->
+      {vis, name, arity} in skipped or blocked?({name, arity}, metaprogrammed) or
+        blocked?({name, arity}, delegated)
     end)
   end
+
+  defp skipped_signatures(_chunks, nil, _skip_lifting), do: MapSet.new()
+
+  defp skipped_signatures(chunks, module, skip_lifting) do
+    chunks
+    |> clause_group_signatures()
+    |> Enum.filter(fn {_vis, name, arity} -> Lifting.skip?(skip_lifting, module, name, arity) end)
+    |> MapSet.new()
+  end
+
+  defp warn_skipped(signatures, nil, file) do
+    warn_skipped(signatures, "unknown module", file)
+  end
+
+  defp warn_skipped(signatures, module, file) when is_atom(module) do
+    warn_skipped(signatures, inspect(module), file)
+  end
+
+  defp warn_skipped(signatures, module_label, file) do
+    Enum.each(signatures, fn {_vis, name, arity} ->
+      Logger.warning(
+        "#{file}: #{module_label}.#{name}/#{arity} matched :skip_lifting — not lifting " <>
+          "(no guard, head-pattern, or clause-drop mutants for it)"
+      )
+    end)
+  end
+
+  defp without_skipped(signatures, skipped),
+    do: Enum.reject(signatures, &MapSet.member?(skipped, &1))
 
   # Lifting is silently disabled for non-consecutive clauses, which costs that
   # function its guard and clause-drop mutants. Warn once per signature so the

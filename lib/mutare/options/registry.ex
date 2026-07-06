@@ -26,6 +26,7 @@ defmodule Mutare.Options.Registry do
   # do so at *runtime*, inside the validator bodies — so there is no compile cycle with `Mutare.Options`
   # (which compile-depends on `defaults/0` here; this module never compile-depends on it).
 
+  alias Mutare.Lifting
   alias Mutare.Sandbox.Command.Invocation
 
   # --- shared validator helpers --------------------------------------------
@@ -97,6 +98,8 @@ defmodule Mutare.Options.Registry do
   defp validate_macro_routes!(other) do
     raise ArgumentError, ":macro_routes must be a list of macro entries, got: #{inspect(other)}"
   end
+
+  defp validate_skip_lifting!(entries), do: Lifting.validate_skip_lifting!(entries)
 
   # `:extensions` (default `[]`) lists non-mutating modules implementing `Mutare.MacroRouting`,
   # `Mutare.UseExpansion`, or both, e.g. a Gettext integration. Each entry is a bare module or a
@@ -492,6 +495,10 @@ defmodule Mutare.Options.Registry do
   defp show_only_lines(nil), do: "(all lines)"
   defp show_only_lines(set), do: inspect(set)
 
+  defp show_skip_lifting(set) do
+    if MapSet.size(set) == 0, do: "(none)", else: Lifting.format(set)
+  end
+
   # --- the registry --------------------------------------------------------
 
   @doc """
@@ -518,6 +525,12 @@ defmodule Mutare.Options.Registry do
       spec(key: :exclude, default: [], validate: &validate_exclude!/1),
       spec(key: :mutators, default: nil, show: &show_mutators/1, validate: &validate_mutators!/1),
       spec(key: :macro_routes, default: [], validate: &validate_macro_routes!/1),
+      spec(
+        key: :skip_lifting,
+        default: MapSet.new(),
+        show: &show_skip_lifting/1,
+        validate: &validate_skip_lifting!/1
+      ),
       spec(
         key: :extensions,
         default: [],

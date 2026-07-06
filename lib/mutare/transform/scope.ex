@@ -30,16 +30,21 @@ defmodule Mutare.Transform.Scope do
   #     `defmodule` boundary, `Mutare.Transform` caches the enriched list here once per module
   #     scope (recomputed on entry, restored on exit) rather than recomputing it per
   #     clause/statement. `[]` is a safe default; the sole constructor primes it.
+  #   * `module` — the module currently being transformed, for user options keyed
+  #     by fully-qualified `{Module, function, arity}`. `nil` outside a static
+  #     `defmodule` scope.
 
   @type t :: %__MODULE__{
           active_bound: boolean(),
           module_depth: non_neg_integer(),
           behaviours: MapSet.t(module()),
-          analysis_mutators: [Mutare.Mutator.Spec.t()]
+          analysis_mutators: [Mutare.Mutator.Spec.t()],
+          module: module() | nil
         }
 
   defstruct active_bound: false,
             module_depth: 0,
             behaviours: MapSet.new(),
-            analysis_mutators: []
+            analysis_mutators: [],
+            module: nil
 end

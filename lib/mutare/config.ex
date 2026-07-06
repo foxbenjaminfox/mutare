@@ -14,6 +14,7 @@ defmodule Mutare.Config do
   """
 
   alias Mutare.Options.Registry
+  alias Mutare.Lifting
 
   @doc "Load `.mutare.exs` from `root`, or `[]` when it is absent."
   @spec load(Path.t()) :: keyword()
@@ -41,7 +42,8 @@ defmodule Mutare.Config do
   `Mix.Tasks.Mutare` moduledoc — this is the translation layer, so it records only the
   mappings that aren't a 1:1 rename: a repeatable `--only` accumulates into `:paths`
   (each a directory or single `.ex` file, in order), `--line FILE:LINE` into
-  `:only_lines`, `--full`/`--no-full` resolve to `:test_selection`, and
+  `:only_lines`, `--skip-lifting Module.fun/arity` into `:skip_lifting`,
+  `--full`/`--no-full` resolve to `:test_selection`, and
   `--partition-db`/`--no-partition-db`/`--partition-env` resolve to
   `:partition_env`. A `:mutators`
   CLI value is translated from CSV into a list of names; `Mutare.Options` resolves
@@ -63,6 +65,7 @@ defmodule Mutare.Config do
     |> put_unless_nil(:paths, only_paths(flags))
     |> put_unless_nil(:exclude, exclude_globs(flags))
     |> put_unless_nil(:only_lines, parse_lines(flags))
+    |> put_unless_nil(:skip_lifting, parse_skip_lifting(flags))
     |> put_translation(:test_selection, test_selection(flags))
     |> put_translation(:partition_env, partition_env(flags))
     |> put_unless_nil(:mutators, flags[:mutators] && parse_families(flags[:mutators]))
@@ -80,6 +83,7 @@ defmodule Mutare.Config do
   @cli_switches [
     only: [:string, :keep],
     line: [:string, :keep],
+    skip_lifting: [:string, :keep],
     exclude: [:string, :keep],
     mutators: :string,
     full: :boolean,
@@ -216,6 +220,16 @@ defmodule Mutare.Config do
       _ ->
         raise ArgumentError,
               "--line expects FILE:LINE (e.g. lib/foo.ex:42), got: #{inspect(spec)}"
+    end
+  end
+
+  # `--skip-lifting Module.function/arity` keeps that function's clauses in place.
+  # It is repeatable and translated into the same normalized entries the
+  # `.mutare.exs` `skip_lifting:` option accepts.
+  defp parse_skip_lifting(flags) do
+    case Keyword.get_values(flags, :skip_lifting) do
+      [] -> nil
+      specs -> Enum.map(specs, &Lifting.parse_cli_spec!/1)
     end
   end
 

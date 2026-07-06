@@ -23,6 +23,7 @@ defmodule Mutare.Options do
           exclude: [String.t()],
           mutators: [Mutare.Mutator.Spec.t()] | nil,
           macro_routes: list(),
+          skip_lifting: MapSet.t(Mutare.Lifting.skip_entry()),
           extensions: [Mutare.Extension.Spec.t()],
           expand_uses: boolean(),
           only_files: MapSet.t() | nil,

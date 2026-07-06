@@ -452,8 +452,8 @@ defmodule Mutare.Schema do
   # `mix test` OS processes (a different resource).
   defp scan_concurrency, do: System.schedulers_online()
 
-  # Forward `:mutators` (when set), `:macro_routes`, and `:extensions` to the transform. A `nil`
-  # `:mutators` lets `Mutare.Transform` use its default set (we never hard-code that default
+  # Forward `:mutators` (when set), `:macro_routes`, `:skip_lifting`, and `:extensions` to
+  # the transform. A `nil` `:mutators` lets `Mutare.Transform` use its default set (we never hard-code that default
   # here); when set it carries the resolved `Mutare.Mutator.Spec`s — including any
   # `{module, opts}` config (e.g. a mutator's `call_option_keys: false`). `:macro_routes` carries the
   # resolved `Mutare.Macro.Spec`s (known-macro argument routing), `[]` when none; `:extensions`
@@ -463,6 +463,7 @@ defmodule Mutare.Schema do
   defp transform_opts(%Options{
          mutators: mutators,
          macro_routes: macros,
+         skip_lifting: skip_lifting,
          extensions: extensions,
          expand_uses: expand_uses
        }) do
@@ -475,7 +476,8 @@ defmodule Mutare.Schema do
     extension_opts = if extensions == [], do: [], else: [extensions: extensions]
 
     # mutare:ignore[operand_swap] equivalent — disjoint keyword keys read by key, so order is irrelevant
-    mutator_opts ++ macro_opts ++ extension_opts ++ [expand_uses: expand_uses]
+    mutator_opts ++
+      macro_opts ++ extension_opts ++ [skip_lifting: skip_lifting, expand_uses: expand_uses]
   end
 
   @doc """

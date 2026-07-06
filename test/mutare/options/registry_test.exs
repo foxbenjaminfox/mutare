@@ -57,6 +57,7 @@ defmodule Mutare.Options.RegistryTest do
     refute Keyword.has_key?(switches, :mutators)
     refute Keyword.has_key?(switches, :full)
     refute Keyword.has_key?(switches, :reporters)
+    refute Keyword.has_key?(switches, :skip_lifting)
   end
 
   test "passthrough_keys/0 are exactly the cli_switches/0 keys" do
@@ -84,6 +85,7 @@ defmodule Mutare.Options.RegistryTest do
              {"exclude", "[]"},
              {"mutators", "(all built-ins — see --list-mutators)"},
              {"macro_routes", "[]"},
+             {"skip_lifting", "(none)"},
              {"extensions", "(none)"},
              {"expand_uses", "true"},
              {"only_files", "(all discovered files)"},
@@ -122,6 +124,10 @@ defmodule Mutare.Options.RegistryTest do
     options =
       Options.new(
         mutators: [:arithmetic, :relational],
+        skip_lifting: [
+          {Mutare.Test.SkipLiftFixture, :new, 4},
+          {Mutare.Test.SkipLiftFixture.Inner, "call?", 1}
+        ],
         extensions: [
           Mutare.Test.GettextLikeExtension,
           {Mutare.Test.GettextLikeExtension, domain: "errors"}
@@ -144,6 +150,9 @@ defmodule Mutare.Options.RegistryTest do
     rows = Map.new(Registry.display_rows(options))
 
     assert rows["mutators"] == "arithmetic, relational"
+
+    assert rows["skip_lifting"] ==
+             "Mutare.Test.SkipLiftFixture.new/4, Mutare.Test.SkipLiftFixture.Inner.call?/1"
 
     assert rows["extensions"] ==
              "Mutare.Test.GettextLikeExtension, " <>

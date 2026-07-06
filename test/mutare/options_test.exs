@@ -710,6 +710,46 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":skip_lifting" do
+    test "defaults to an empty MapSet" do
+      assert Options.new([]).skip_lifting == MapSet.new()
+    end
+
+    test "accepts nil, a MapSet, or a list of {module, function, arity}" do
+      expected = MapSet.new([{Mutare.Test.SkipLiftFixture, "new", 4}])
+
+      assert Options.new(skip_lifting: nil).skip_lifting == MapSet.new()
+      assert Options.new(skip_lifting: expected).skip_lifting == expected
+
+      assert Options.new(skip_lifting: [{Mutare.Test.SkipLiftFixture, :new, 4}]).skip_lifting ==
+               expected
+
+      assert Options.new(skip_lifting: [{Mutare.Test.SkipLiftFixture, "new", 4}]).skip_lifting ==
+               expected
+    end
+
+    test "rejects malformed entries" do
+      for bad <- [
+            {"Mutare.Test.SkipLiftFixture", :new, 4},
+            {Mutare.Test.SkipLiftFixture, :New, 4},
+            {Mutare.Test.SkipLiftFixture, :new, -1},
+            {Mutare.Test.SkipLiftFixture, :new, "4"},
+            {Mutare.Test.SkipLiftFixture, :new},
+            :nope
+          ] do
+        assert_raise ArgumentError, ~r/:skip_lifting entries must be/, fn ->
+          Options.new(skip_lifting: [bad])
+        end
+      end
+    end
+
+    test "rejects a non-list/non-MapSet shape" do
+      assert_raise ArgumentError, ~r/:skip_lifting must be a list or MapSet/, fn ->
+        Options.new(skip_lifting: "Mutare.Test.SkipLiftFixture.new/4")
+      end
+    end
+  end
+
   describe ":reporters" do
     test "defaults to the human reporter on stdout" do
       assert Options.new([]).reporters == [{:human, nil}]

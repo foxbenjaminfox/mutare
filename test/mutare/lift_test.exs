@@ -525,6 +525,98 @@ defmodule Mutare.LiftTest do
       assert apply(Mutare.DefdelegateArityFixture, :f, [%{a: 1}, :a]) == 1
     end
 
+    test ":skip_lifting keeps only the matching MFA in-place" do
+      source = """
+      defmodule Mutare.SkipLiftFixture do
+        def f(x) when x > 0, do: x + 1
+        def f(x), do: x - 1
+      end
+
+      defmodule Mutare.SkipLiftOtherFixture do
+        def f(x) when x > 0, do: x + 1
+        def f(x), do: x - 1
+      end
+      """
+
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source,
+            file: "skip.ex",
+            mutators: @probe,
+            skip_lifting: [{Mutare.SkipLiftFixture, :f, 1}]
+          )
+        end)
+
+      skipped_lines = 3..4
+      other_lines = 8..9
+
+      refute Enum.any?(sites, fn site -> site.kind == :lifted and site.line in skipped_lines end)
+
+      assert Enum.any?(sites, fn site ->
+               site.kind == :in_place and site.mutator == :arithmetic and
+                 site.line in skipped_lines
+             end)
+
+      assert Enum.any?(sites, fn site -> site.kind == :lifted and site.line in other_lines end)
+      assert log =~ "skip.ex: Mutare.SkipLiftFixture.f/1 matched :skip_lifting — not lifting"
+      refute log =~ "Mutare.SkipLiftOtherFixture.f/1 matched :skip_lifting"
+
+      compiled_modules = meta |> Mutare.Test.Compile.string() |> Enum.map(&elem(&1, 0))
+      assert Mutare.SkipLiftFixture in compiled_modules
+      assert Mutare.SkipLiftOtherFixture in compiled_modules
+
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.SkipLiftFixture, :f, [2]) == 3
+      assert apply(Mutare.SkipLiftFixture, :f, [0]) == -1
+      assert apply(Mutare.SkipLiftOtherFixture, :f, [2]) == 3
+      assert apply(Mutare.SkipLiftOtherFixture, :f, [0]) == -1
+    end
+
+    test ":skip_lifting resolves nested module aliases relative to the current module" do
+      source = """
+      defmodule Mutare.SkipLiftOuter do
+        def f(x) when x > 0, do: x + 1
+        def f(x), do: x - 1
+
+        defmodule Inner do
+          def f(x) when x > 0, do: x + 1
+          def f(x), do: x - 1
+        end
+      end
+      """
+
+      {{meta, sites, _next_id}, log} =
+        with_log(fn ->
+          Mutare.Transform.transform_string_with_sites(source,
+            file: "nested_skip.ex",
+            mutators: @probe,
+            skip_lifting: [{Mutare.SkipLiftOuter.Inner, :f, 1}]
+          )
+        end)
+
+      outer_lines = 3..4
+      skipped_inner_lines = 7..8
+
+      assert Enum.any?(sites, fn site -> site.kind == :lifted and site.line in outer_lines end)
+
+      refute Enum.any?(sites, fn site ->
+               site.kind == :lifted and site.line in skipped_inner_lines
+             end)
+
+      assert log =~
+               "nested_skip.ex: Mutare.SkipLiftOuter.Inner.f/1 matched :skip_lifting — not lifting"
+
+      compiled_modules = meta |> Mutare.Test.Compile.string() |> Enum.map(&elem(&1, 0))
+      assert Mutare.SkipLiftOuter in compiled_modules
+      assert Mutare.SkipLiftOuter.Inner in compiled_modules
+
+      Selector.put(Selector.baseline())
+      assert apply(Mutare.SkipLiftOuter, :f, [2]) == 3
+      assert apply(Mutare.SkipLiftOuter, :f, [0]) == -1
+      assert apply(Mutare.SkipLiftOuter.Inner, :f, [2]) == 3
+      assert apply(Mutare.SkipLiftOuter.Inner, :f, [0]) == -1
+    end
+
     test "lifts functions whose names end in ? or ! (sanitized private names)" do
       source = """
       defmodule Mutare.OkFixture do

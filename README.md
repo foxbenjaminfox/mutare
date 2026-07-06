@@ -56,6 +56,8 @@ Then run `mix mutare`.
 3. Run the suite per mutant. A baseline test run must pass; a coverage probe then maps each mutant to the test files that exercise it. Each mutant runs in a fresh `mix test` OS process with `MUTARE_ACTIVE_MUTANT` set, `:workers` at a time, each capped by a wall-clock timeout.
 4. Report. Surviving mutants are listed in an abbreviated format as the run progresses, and you get a full report, with diffs and a mutation score, at the end. You can also enable JSON, HTML, or SARIF format output.
 
+One observable difference is worth knowing when a suite is green under plain `mix test` but fails during Mutare's baseline run. Some structural mutations — especially guards, head patterns, and clause shape changes — cannot be selected with an in-place runtime `case`, so Mutare lifts the original function into a generated dispatcher and leaves a wrapper at the public function name. Normal calls see the same behavior, but exact exception metadata and stacktraces may mention an internal function such as `__mutare_name_arity_g1` instead of the source function. Tests that assert `FunctionClauseError.function`, `FunctionClauseError.arity`, or exact stacktrace frames can therefore fail only inside the Mutare sandbox. Prefer asserting the observable error/behavior rather than the rewritten internal function name. As a short-term compatibility escape hatch, `skip_lifting: [{MyApp.Mod, :fun, arity}]` or `--skip-lifting MyApp.Mod.fun/arity` keeps that function in-place; that also means Mutare will not generate guard, head-pattern, or clause-drop mutants for it.
+
 ## Features
 
 - Compile once, run N times — no per-mutant recompilation.
@@ -98,6 +100,9 @@ mix mutare                             # mutate everything under lib/
 mix mutare --only lib/billing          # scope to one path
 mix mutare --since master              # only lines changed vs a git ref
 mix mutare --mutators relational       # run one built-in family
+mix mutare --skip-lifting MyApp.Mod.fun/2
+                                       # keep one function in-place; no guard,
+                                       #   head-pattern, or clause-drop mutants
 mix mutare --min-score 70              # fail below a mutation score
 mix mutare --max-no-coverage 0         # fail on uncovered mutants
 mix mutare --fail-on-poisoned          # fail on compile-poisoned mutants
@@ -126,6 +131,9 @@ Most projects can start without configuration. Add `.mutare.exs` when you want t
     {Ecto.Query, :from, :skip},
     {MyApp.Schema, :field, 2, [:expression, :skip]}
   ],
+
+  # Keep a compatibility-sensitive function in-place.
+  skip_lifting: [{MyApp.Legacy, :parse, 1}],
 
   # CI gates.
   min_score: 70,

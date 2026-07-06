@@ -79,6 +79,37 @@ defmodule Mutare.ConfigTest do
       end
     end
 
+    test "--skip-lifting Module.function/arity becomes :skip_lifting; repeatable" do
+      assert Config.merge([], skip_lifting: "Mutare.Test.SkipLiftFixture.new/4")[:skip_lifting] ==
+               [{Mutare.Test.SkipLiftFixture, "new", 4}]
+
+      assert Config.merge([],
+               skip_lifting: "Mutare.Test.SkipLiftFixture.new/4",
+               skip_lifting: "Elixir.Mutare.Test.SkipLiftFixture.Inner.call?/1"
+             )[:skip_lifting] ==
+               [
+                 {Mutare.Test.SkipLiftFixture, "new", 4},
+                 {Mutare.Test.SkipLiftFixture.Inner, "call?", 1}
+               ]
+
+      refute Keyword.has_key?(Config.merge([], []), :skip_lifting)
+    end
+
+    test "--skip-lifting rejects malformed entries" do
+      for bad <- [
+            "Mutare.Test.SkipLiftFixture",
+            "Mutare.Test.SkipLiftFixture.new",
+            "Mutare.Test.SkipLiftFixture.new/not_an_arity",
+            "Mutare.Test.SkipLiftFixture.new/-1",
+            "not_a_module.new/4",
+            "Mutare.Test.SkipLiftFixture.New/4"
+          ] do
+        assert_raise ArgumentError, ~r/--skip-lifting expects Module.function\/arity/, fn ->
+          Config.merge([], skip_lifting: bad)
+        end
+      end
+    end
+
     test "repeated --exclude flags accumulate into a list of globs, preserving order" do
       assert Config.merge([], exclude: "lib/generated/**", exclude: "lib/legacy")[:exclude] ==
                ["lib/generated/**", "lib/legacy"]

@@ -140,7 +140,7 @@ defmodule Mutare.Transform do
       subject, catch-all coverage branch, and ordinary selector-case assembly.
   """
 
-  alias Mutare.AST
+  alias Mutare.{AST, Lifting}
   alias Mutare.Coverage.Recorder
   alias Mutare.Site
 
@@ -363,15 +363,18 @@ defmodule Mutare.Transform do
   end
 
   # The immutable transform config for one source: generated names + the resolved/validated
-  # `:mutators` and `:skip_ids`. `:mutators` may arrive as family atoms / bare modules (tests,
+  # `:mutators`, `:skip_ids`, and `:skip_lifting`. `:mutators` may arrive as family atoms / bare modules (tests,
   # the default set) or already-resolved specs (the Options/Config path); `resolve/1` is
   # idempotent on specs. A skipped id's site is still recorded (`poisoned: true`, for the
   # denominator and id stability) but emits no selector/copy, so the metamutant compiles.
+  # `:skip_lifting` is a user-facing compatibility escape hatch keyed by fully-qualified MFA.
   defp build_config(opts, names) do
     %Config{
       file: Keyword.get(opts, :file, "nofile"),
       mutators: opts |> Keyword.get(:mutators, @default_mutators) |> Mutare.Mutators.resolve(),
       skip_ids: Keyword.get(opts, :skip_ids, MapSet.new()),
+      skip_lifting:
+        opts |> Keyword.get(:skip_lifting, MapSet.new()) |> Lifting.validate_skip_lifting!(),
       # Default `true`: the public API and tests render each site's diff eagerly. A `mix mutare`
       # scan passes `false` to defer it (see `Mutare.Transform.Config`).
       render_site_code: Keyword.get(opts, :render_site_code, true),
@@ -387,7 +390,7 @@ defmodule Mutare.Transform do
   end
 
   # The per-source transform context: the config, a primed top-level (empty-behaviours) mutator
-  # scope (`put_behaviours/2` refreshes the cache at each `defmodule` boundary), and the claim
+  # scope (`put_module_behaviours/3` refreshes the cache at each `defmodule` boundary), and the claim
   # accumulator. The `:render` sink (default) builds + retains a `Mutare.Site` per claim; `:count`
   # only tallies (the schema's render-free count pass). `next_id` seeds the id span;
   # `group`/`sites`/`count` start at their struct defaults.
@@ -469,21 +472,29 @@ defmodule Mutare.Transform do
 
   # A module: transform the body of its do-block(s). The module's `@behaviour` set (stamped
   # by `Mutare.Transform.Behaviours`) is bound on `ctx` for the body and restored on the way
-  # out, so it folds onto the specs handed to analyze/plan (`put_behaviours/2` refreshes the
+  # out, so it folds onto the specs handed to analyze/plan (`put_module_behaviours/3` refreshes the
   # cached enriched list) while the body is walked. Behaviours don't inherit, so a nested
   # module that re-enters here overwrites and then restores the outer set.
   defp transform_node({:defmodule, meta, [alias_node, do_keyword]}, ctx)
        when is_list(do_keyword) do
     outer = ctx.scope.behaviours
     outer_mutators = ctx.scope.analysis_mutators
+    outer_module = ctx.scope.module
+    module = Lifting.module_from_alias(alias_node, outer_module)
 
     {do_keyword, ctx} =
-      transform_do_keyword(do_keyword, put_behaviours(ctx, Behaviours.behaviours(meta)))
+      transform_do_keyword(
+        do_keyword,
+        put_module_behaviours(ctx, module, Behaviours.behaviours(meta))
+      )
 
     # Restore only the behaviour-derived scope (behaviours don't inherit); the body's
     # id/site claims and any depth/binding changes stay as the body left them.
     restored =
-      Ctx.update_scope(ctx, &%{&1 | behaviours: outer, analysis_mutators: outer_mutators})
+      Ctx.update_scope(
+        ctx,
+        &%{&1 | behaviours: outer, analysis_mutators: outer_mutators, module: outer_module}
+      )
 
     {{:defmodule, meta, [alias_node, do_keyword]}, restored}
   end
@@ -519,23 +530,32 @@ defmodule Mutare.Transform do
   end
 
   # Plan the statement sequence, then emit it (assigning ids). The split is the
-  # whole point: `ModulePlan.build/3` decides *what* each statement is (a lifted
+  # whole point: `ModulePlan.build/5` decides *what* each statement is (a lifted
   # group, an in-place group, or another statement), id-free; emission does the
   # id-threading.
   defp transform_statements(statements, ctx) do
     statements
-    |> ModulePlan.build(ctx.scope.analysis_mutators, ctx.config.file)
+    |> ModulePlan.build(
+      ctx.scope.analysis_mutators,
+      ctx.config.file,
+      ctx.scope.module,
+      ctx.config.skip_lifting
+    )
     |> emit_module_plan(ctx)
   end
 
-  # Enter a module scope: bind its `@behaviour` set and refresh the cached, behaviour-
+  # Enter a module scope: bind its module/name + `@behaviour` set and refresh the cached, behaviour-
   # enriched mutator list (`ctx.scope.analysis_mutators`) the analyze/plan call sites read.
   # `behaviours` changes only here (and is restored on the way out), so the enrichment —
   # one fold over ~all mutators — happens once per module scope rather than once per
   # clause/statement.
-  defp put_behaviours(ctx, behaviours) do
+  defp put_module_behaviours(ctx, module, behaviours) do
     enriched = enrich_mutators(ctx.config.mutators, behaviours)
-    Ctx.update_scope(ctx, &%{&1 | behaviours: behaviours, analysis_mutators: enriched})
+
+    Ctx.update_scope(
+      ctx,
+      &%{&1 | module: module, behaviours: behaviours, analysis_mutators: enriched}
+    )
   end
 
   # Fold a `@behaviour` set onto each spec, so it carries the behaviours to every leaf

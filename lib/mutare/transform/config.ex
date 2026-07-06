@@ -5,8 +5,8 @@ defmodule Mutare.Transform.Config do
   # at the top of `Mutare.Transform.plan_and_emit/2`, and read (never rewritten) by every
   # later stage. Two roles share this struct because they share that lifetime:
   #
-  #   * pass configuration — the recorded `file`, the resolved `mutators`, and the
-  #     poison-recovery `skip_ids` to drop;
+  #   * pass configuration — the recorded `file`, the resolved `mutators`, the
+  #     poison-recovery `skip_ids` to drop, and the `skip_lifting` MFA set;
   #   * generated-name hygiene — the private-function `prefix` and the four salted variable
   #     names the lifting/selector machinery emits (`active_var`/`super_var`/`piped_var`/
   #     `cond_var`). `Mutare.Transform.Names` derives each from a scan of the source's own
@@ -20,6 +20,7 @@ defmodule Mutare.Transform.Config do
           file: String.t(),
           mutators: [Mutare.Mutator.Spec.t()],
           skip_ids: MapSet.t(),
+          skip_lifting: MapSet.t(Mutare.Lifting.skip_entry()),
           render_site_code: boolean(),
           summarize_sites: boolean(),
           prefix: String.t(),
@@ -32,6 +33,7 @@ defmodule Mutare.Transform.Config do
   defstruct file: "nofile",
             mutators: [],
             skip_ids: MapSet.new(),
+            skip_lifting: MapSet.new(),
             # Whether each `Mutare.Site` records its rendered before/after diff text at build time
             # (`true`, the default), or defers it (`false`). Deferral is the scan's optimisation:
             # rendering a `Sourceror` diff per mutant dominates the build, yet only the handful of

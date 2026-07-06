@@ -31,6 +31,14 @@ defmodule Mix.Tasks.Mutare do
 
   A run exits 0 even when mutants survive — survivors are findings to act on, not a build failure. See "Continuous integration" below to make a low score or a stale ignore exit non-zero.
 
+  ## Troubleshooting baseline-only failures
+
+  Mutare's baseline run executes the rewritten metamutant with no mutant active. For ordinary calls it should behave like your original code, but one implementation detail is observable: structural mutations that cannot be selected in-place — guards, head patterns, and clause-shape changes — are delivered by lifting the original function body into a generated dispatcher and leaving a wrapper at the source function name. If that code raises, exact exception metadata or stacktrace frames may name an internal function such as `__mutare_name_arity_g1` instead of the original function.
+
+  A test that asserts `FunctionClauseError.function`, `FunctionClauseError.arity`, or exact stacktrace frame names can therefore pass under plain `mix test` and fail only inside Mutare's baseline. Prefer asserting the observable error and module/behavior, not the rewritten internal function identity.
+
+  If you need a compatibility escape hatch while changing those tests, configure `skip_lifting: [{MyApp.Mod, :fun, arity}]` or pass `--skip-lifting MyApp.Mod.fun/arity`. That keeps the matching function in-place, which also means Mutare will not generate guard, head-pattern, or clause-drop mutants for that function.
+
   ## Suppressing a mutant
 
   Some survivors are *equivalent* mutants — the mutation cannot change observable behaviour, so no test could ever kill it — or are simply not worth a test. Silence one with a `# mutare:ignore` comment at the end of the line (or on the line just above it):
@@ -90,6 +98,9 @@ defmodule Mix.Tasks.Mutare do
                                           #   survivor (repeatable; FILE:LINE is the
                                           #   exact prefix the report prints)
       mix mutare --mutators relational,arithmetic   # only some families (see above)
+      mix mutare --skip-lifting MyApp.Mod.fun/2
+                                          # keep one function in-place; no guard,
+                                          #   head-pattern, or clause-drop mutants
       mix mutare --no-expand-uses         # don't expand `use` to discover the
                                           #   import/alias/@behaviour it injects
                                           #   (on by default; matters for Phoenix/Ecto)
@@ -244,6 +255,9 @@ defmodule Mix.Tasks.Mutare do
         # `:*` wildcards a slot: {M, :*, :skip} = whole module, {:*, name, :skip}
         # = that name in any module (a more specific line overrides)
         macro_routes: [{Ecto.Query, :from, :skip}],
+        # keep specific functions in-place when lifted function names are observable;
+        # entries are {Module, function_name_atom_or_string, arity}
+        skip_lifting: [],
         # non-mutating source-understanding modules implementing
         # Mutare.MacroRouting, Mutare.UseExpansion, or both
         extensions: [],
