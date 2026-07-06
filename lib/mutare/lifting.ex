@@ -55,17 +55,11 @@ defmodule Mutare.Lifting do
 
   @spec module_from_alias(Macro.t(), module() | nil) :: module() | nil
   def module_from_alias({:__aliases__, _meta, path}, current_module)
-      when is_list(path) and path != [] and is_atom(current_module) and not is_nil(current_module) do
-    path
-    |> qualify_path(current_module)
-    |> Module.concat()
-  end
-
-  def module_from_alias({:__aliases__, _meta, path}, nil)
       when is_list(path) and path != [] do
-    path
-    |> absolute_path()
-    |> Module.concat()
+    case module_path(path, current_module) do
+      {:ok, path} -> Module.concat(path)
+      :error -> nil
+    end
   end
 
   def module_from_alias(_alias_node, _current_module), do: nil
@@ -114,9 +108,23 @@ defmodule Mutare.Lifting do
 
   defp function_name?(name), do: Regex.match?(@function_name, name)
 
-  defp absolute_path([:"Elixir" | rest]), do: rest
-  defp absolute_path(path), do: path
+  defp module_path([:"Elixir" | rest], _current_module), do: literal_module_path(rest)
 
-  defp qualify_path([:"Elixir" | rest], _current_module), do: rest
-  defp qualify_path(path, current_module), do: [current_module | path]
+  defp module_path([{:__MODULE__, _meta, _context} | rest], current_module)
+       when is_atom(current_module) and not is_nil(current_module) do
+    if literal_path?(rest), do: {:ok, [current_module | rest]}, else: :error
+  end
+
+  defp module_path(path, current_module)
+       when is_atom(current_module) and not is_nil(current_module) do
+    if literal_path?(path), do: {:ok, [current_module | path]}, else: :error
+  end
+
+  defp module_path(path, nil), do: literal_module_path(path)
+
+  defp literal_module_path(path) do
+    if path != [] and literal_path?(path), do: {:ok, path}, else: :error
+  end
+
+  defp literal_path?(path), do: Enum.all?(path, &is_atom/1)
 end
