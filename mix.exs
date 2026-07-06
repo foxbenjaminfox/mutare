@@ -12,8 +12,12 @@ defmodule Mutare.MixProject do
   # warnings. Matched as a prefix, so a member/type/submodule reference
   # (`Mutare.Mutator.Dispatch.mutations/3`, `Mutare.Transform.Uses.Harvest`) is covered
   # by its parent's entry. Add a module here when a new `@moduledoc false` module gets
-  # referenced from a visible moduledoc (the warning tells you which).
+  # referenced from a visible moduledoc (the warning tells you which). Also covers the
+  # rare case of a *stdlib* module that's hidden the same way (`Module.ParallelChecker`,
+  # named in `Mutare.Sandbox.CompilerOptions` — internal to the Elixir compiler, no doc
+  # page of its own).
   @hidden_internal_modules ~w(
+    Module.ParallelChecker
     Mutare.Transform.Resolve
     Mutare.Transform.Uses
     Mutare.Transform.Behaviours
