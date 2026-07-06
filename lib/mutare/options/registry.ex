@@ -234,6 +234,21 @@ defmodule Mutare.Options.Registry do
         ":timeout_multiplier must be a positive number"
       )
 
+  # `nil` (the default) sets no memory cap — the historical behavior. An integer
+  # caps every BEAM process's heap in the sandbox's *runtime* runs (baseline,
+  # coverage probe, per-mutant `mix test`; never the one metamutant compile) at
+  # that many megabytes, so a mutation that allocates without bound dies as an
+  # ordinary test failure instead of racing the kernel's OOM killer for the host.
+  # See `Mutare.Sandbox.Command.Invocation.heap_cap_env/1` for the mechanism and
+  # sizing guidance (the baseline validates the cap fits the suite).
+  defp validate_max_heap!(mb),
+    do:
+      validate_nullable!(
+        mb,
+        &(is_integer(&1) and &1 > 0),
+        ":max_heap_mb must be a positive integer (megabytes) or nil"
+      )
+
   # At least one run — you always need a green check; N>1 re-runs the baseline to
   # catch a test that disagrees with itself (`Mutare.Runner.Baseline`).
   defp validate_baseline_runs!(n),
@@ -553,6 +568,13 @@ defmodule Mutare.Options.Registry do
         cli: :integer,
         show: &show_probe_timeout/1,
         validate: &validate_probe_timeout!/1
+      ),
+      spec(
+        key: :max_heap_mb,
+        default: nil,
+        cli: :integer,
+        show: &show_cap/1,
+        validate: &validate_max_heap!/1
       ),
       spec(key: :baseline_runs, default: 1, cli: :integer, validate: &validate_baseline_runs!/1),
       spec(

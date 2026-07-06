@@ -339,6 +339,22 @@ defmodule Mutare.OptionsTest do
     end
   end
 
+  describe ":max_heap_mb" do
+    test "defaults to nil (no memory cap) and accepts a positive integer (MB)" do
+      assert Options.new([]).max_heap_mb == nil
+      assert Options.new(max_heap_mb: 4096).max_heap_mb == 4096
+      assert Options.new(max_heap_mb: nil).max_heap_mb == nil
+    end
+
+    test "rejects zero, negatives, and non-integers" do
+      for bad <- [0, -5, 1.5, "4096"] do
+        assert_raise ArgumentError, ~r/:max_heap_mb must be a positive integer/, fn ->
+          Options.new(max_heap_mb: bad)
+        end
+      end
+    end
+  end
+
   describe ":timeout_multiplier" do
     test "accepts a positive number" do
       assert Options.new(timeout_multiplier: 0.5).timeout_multiplier == 0.5

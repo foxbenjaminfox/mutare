@@ -32,6 +32,12 @@ defmodule Mutare.Sandbox.Command do
       by construction it is only ever exited with after the process that would
       read it is gone — it exists so the halt has a documented, recognisable
       code rather than an arbitrary one.
+    * `sigkill_exit/0` (`137` = `128 + 9`) — the OS killed the run with SIGKILL.
+      A `:sigkilled`: a harness error by verdict (the suite never reached one),
+      but recognised by code because its dominant real-world cause — the kernel
+      OOM killer reaping a mutant whose mutation made it allocate unboundedly —
+      must **not** be retried back-to-back the way a transient harness error is
+      (see `Mutare.Runner`).
     * anything else — the suite never returned a verdict: a `:harness_error`,
       which says nothing about the mutation and is kept out of the score.
 
@@ -84,6 +90,7 @@ defmodule Mutare.Sandbox.Command do
   @timeout_exit 124
   @failure_exit 101
   @owner_lost_exit 97
+  @sigkill_exit 137
 
   # Startup work a per-mutant `mix test` can safely skip. The metamutant lib is compiled
   # **once** before any mutant runs and its sources never change between runs (the
@@ -131,6 +138,11 @@ defmodule Mutare.Sandbox.Command do
       transient contention signature (concurrent workers stampeding shared
       services at startup), kept out of the score like any harness error but named
       so the runner messages it actionably and retries it harder.
+    * `:sigkilled` — exit `sigkill_exit/0`: the OS SIGKILLed the run. A harness
+      error by verdict, but recognised so the runner *never* retries it: the
+      dominant cause is the kernel OOM killer reaping a mutant made to allocate
+      unboundedly, and re-running such a mutant re-detonates the same memory
+      blowup on the host (see `Mutare.Runner` and the `:max_heap_mb` option).
   """
   @type outcome ::
           :passed
@@ -140,6 +152,7 @@ defmodule Mutare.Sandbox.Command do
           | :suite_compile_error
           | :atom_exhausted
           | :boot_failure
+          | :sigkilled
 
   @doc "Exit code the self-halt watcher uses, signalling a timed-out mutant."
   @spec timeout_exit() :: non_neg_integer()
@@ -171,6 +184,18 @@ defmodule Mutare.Sandbox.Command do
   def failure_exit, do: @failure_exit
 
   @doc """
+  Exit code of a run the OS killed with SIGKILL (`137` = `128 + 9`).
+
+  Unlike the other codes, nothing of Mutare's *produces* it — it is the
+  kernel's, and its signature real-world producer is the OOM killer reaping a
+  mutant whose mutation made it allocate without bound. Decoded to `:sigkilled`
+  so the runner can refuse to retry it (a deterministic memory detonation
+  re-detonates) and point at the mitigation (`:max_heap_mb`).
+  """
+  @spec sigkill_exit() :: non_neg_integer()
+  def sigkill_exit, do: @sigkill_exit
+
+  @doc """
   Whether `status` is the clean-success exit code (`0`).
 
   The single home for the "zero means success" reading that every mix run which
@@ -184,10 +209,11 @@ defmodule Mutare.Sandbox.Command do
   Decode a `mix test` mutant-run exit status into its `t:outcome/0` — the single,
   total reading of this module's exit-code contract (see the moduledoc).
   """
-  @spec outcome(non_neg_integer()) :: :passed | :failed | :timeout | :harness_error
+  @spec outcome(non_neg_integer()) :: :passed | :failed | :timeout | :sigkilled | :harness_error
   def outcome(status) when status == @success_exit, do: :passed
   def outcome(status) when status == @failure_exit, do: :failed
   def outcome(status) when status == @timeout_exit, do: :timeout
+  def outcome(status) when status == @sigkill_exit, do: :sigkilled
   def outcome(_status), do: :harness_error
 
   @doc """
@@ -213,6 +239,12 @@ defmodule Mutare.Sandbox.Command do
   message and retry it better. Everything else (a lib-file compile error, a missing
   dep, no marker at all) stays `:harness_error` — fail safe: an ambiguous failure is
   never a kill.
+
+  `:sigkilled` (exit `sigkill_exit/0`) deliberately bypasses the output
+  refinements: a SIGKILLed run's output is truncated wherever the kill landed, so
+  matching banners in it would be unreliable — and none of the three markers'
+  causes exits via SIGKILL anyway (a compile error exits `1`; atom exhaustion is
+  the VM aborting itself).
   """
   @spec outcome(non_neg_integer(), String.t()) :: outcome()
   def outcome(status, output) when is_binary(output) do

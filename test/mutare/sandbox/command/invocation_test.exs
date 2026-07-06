@@ -28,8 +28,43 @@ defmodule Mutare.Sandbox.Command.InvocationTest do
     assert Invocation.timeout_env() in names
     assert Invocation.compile_timeout_env() in names
     assert Invocation.owner_watch_env() in names
+    # Carries the `:max_heap_mb` cap when that option is on.
+    assert "ELIXIR_ERL_OPTIONS" in names
     # Sourced from the accessors that build the env, so no duplicates can creep in.
     assert names == Enum.uniq(names)
+  end
+
+  describe "heap_cap_env/1 (the :max_heap_mb per-process heap cap)" do
+    setup do
+      original = System.get_env("ELIXIR_ERL_OPTIONS")
+
+      on_exit(fn ->
+        case original do
+          nil -> System.delete_env("ELIXIR_ERL_OPTIONS")
+          value -> System.put_env("ELIXIR_ERL_OPTIONS", value)
+        end
+      end)
+
+      %{original: original}
+    end
+
+    test "nil (the default) sets no cap" do
+      assert Invocation.heap_cap_env(nil) == []
+    end
+
+    test "an MB value becomes a +hmax flag in words" do
+      System.delete_env("ELIXIR_ERL_OPTIONS")
+      words = div(1024 * 1_048_576, :erlang.system_info(:wordsize))
+      assert Invocation.heap_cap_env(1024) == [{"ELIXIR_ERL_OPTIONS", "+hmax #{words}"}]
+    end
+
+    test "a pre-existing ELIXIR_ERL_OPTIONS is preserved, the cap appended after it" do
+      # Later emulator flags win, so appending keeps the user's flags *and*
+      # applies the cap on top — never silently clobbers their environment.
+      System.put_env("ELIXIR_ERL_OPTIONS", "+S 2")
+      assert [{"ELIXIR_ERL_OPTIONS", merged}] = Invocation.heap_cap_env(1)
+      assert merged =~ ~r/^\+S 2 \+hmax \d+$/
+    end
   end
 
   test "watcher AST carries the timeout env var and exit code" do

@@ -131,6 +131,16 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --probe-timeout 600000   # wall-clock cap for the coverage probe run,
                                           #   in ms (default: 10× the per-mutant cap);
                                           #   an overrun degrades to run-all selection
+      mix mutare --max-heap-mb 4096       # cap each BEAM process's heap (in MB) in the
+                                          #   baseline/probe/mutant runs — a mutation can
+                                          #   make code allocate without bound (faster
+                                          #   than the time cap can catch), and a capped
+                                          #   runaway dies as an ordinary test failure
+                                          #   instead of OOMing the machine. Size it well
+                                          #   above the suite's biggest honest process;
+                                          #   the baseline runs under the same cap, so a
+                                          #   too-small value fails fast, up front
+                                          #   (default: no cap)
       mix mutare --baseline-runs 2        # run the green baseline 2× and abort if a
                                           #   test flakes (passes once, fails once) —
                                           #   a flaky test manufactures false kills
@@ -246,6 +256,10 @@ defmodule Mix.Tasks.Mutare do
         # absolute `timeout:` in ms is given instead (then the multiplier is moot)
         timeout_multiplier: 3.0,
         timeout: nil,
+        # cap each BEAM process's heap (MB) in the baseline/probe/mutant runs, so a
+        # mutation that allocates without bound dies as an ordinary test failure
+        # instead of OOMing the machine; nil (default) is no cap
+        max_heap_mb: nil,
         # run the baseline N×, aborting if a test flakes (passes one run, fails another)
         baseline_runs: 1,
         # retry a consistently-red baseline attempt before aborting (useful for

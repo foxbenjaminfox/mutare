@@ -42,6 +42,12 @@ defmodule Mutare.Runner do
   ## Boot-failure: a known-transient harness error retried harder
 
   One harness-error *cause* is recognised by name (`Output.boot_failure?/1` → the `:boot_failure` outcome): the sandbox node dies during boot with its own diagnostic erased by a secondary `:standard_error` failure. It is almost always concurrent workers contending on shared singletons at startup (a test DB, a connection pool), so it clears on a retry that doesn't re-collide with the boot stampede. It gets its own retry budget (`@boot_failure_retries`), independent of `:harness_retries` and with a short jittered backoff, plus a *specific* warning that stops pointing at output that can't help (the real cause is unrecoverable) and names the actual contention levers — `--workers` and `--partition-db`/`--partition-env`. (Not `--harness-retries`: a `:boot_failure` draws only from its own dedicated budget, so raising that knob would not retry it more.) The verdict is unchanged (a harness error, out of the score); only the messaging and retry effort differ.
+
+  ## SIGKILL (likely OOM): a harness error never retried, and the `:max_heap_mb` cap
+
+  The mirror-image refinement: a run the OS killed with SIGKILL (exit 137, the `:sigkilled` outcome) is recognised so it is **never** retried — the opposite of `:boot_failure`. Its signature cause is the kernel OOM killer reaping a mutant whose mutation made it allocate without bound (a dropped guard turning a function unconditionally self-recursive can exhaust tens of GB in under a second — faster than any wall-clock watcher can react), and that failure is *deterministic*: a back-to-back retry re-detonates the same blowup on the host. The verdict stays a harness error (out of the score), with a specific warning naming the likely cause and the mitigation.
+
+  The mitigation is `:max_heap_mb` (`--max-heap-mb`, off by default): a per-process BEAM heap cap injected into every *runtime* sandbox run — baseline, coverage probe, per-mutant — so a runaway-allocation mutant dies as an ordinary, fast test failure inside its own run instead of endangering the host. The baseline running under the same cap validates up front that the suite itself fits under it. The one metamutant compile is deliberately not capped. Mechanism and sizing guidance: `Mutare.Sandbox.Command.Invocation.heap_cap_env/1`.
   """
 
   alias Mutare.{Options, Poison, Project, Report, Result, Run, Sandbox, Schema, Selector, Site}
@@ -64,7 +70,10 @@ defmodule Mutare.Runner do
     @enforce_keys [:sandbox, :selection, :cap, :scopes, :retries, :kill_runs]
     # `hydrate` is the deferred-diff hydrator (`Mutare.Runner.Hydrate`), or `nil` for the eager
     # path; it fills a displayed survivor's diff code in just before it reaches the reporter.
-    defstruct @enforce_keys ++ [hydrate: nil]
+    # `heap_env` is the `:max_heap_mb` heap-cap env entry (`[]` when off) appended to every
+    # per-mutant run's env — the per-task `env` carries only the partition slot, so the cap
+    # rides here with the other per-run invariants.
+    defstruct @enforce_keys ++ [hydrate: nil, heap_env: []]
   end
 
   # `sandbox` is where the run *was* materialised. For a default (throwaway) run it
@@ -123,9 +132,9 @@ defmodule Mutare.Runner do
   Custom hooks should ignore phase or detail events they do not recognise.
 
   The run uses the resolved `:test_selection`, `:workers`, `:timeout`,
-  `:timeout_multiplier`, `:baseline_runs`, `:baseline_retries`, `:kill_runs`,
-  `:confirm_timeouts`, `:harness_retries`, `:max_harness_error_rate`, and
-  `:max_survivors` options. When
+  `:timeout_multiplier`, `:max_heap_mb`, `:baseline_runs`, `:baseline_retries`,
+  `:kill_runs`, `:confirm_timeouts`, `:harness_retries`, `:max_harness_error_rate`,
+  and `:max_survivors` options. When
   `:max_survivors` stops the run early, the returned run has
   `stopped_early: true`.
   """
@@ -191,7 +200,13 @@ defmodule Mutare.Runner do
     try do
       # The baseline + coverage probe are sequential (pre-pool), so they share one
       # fixed partition (`1`) — a partitioned suite still needs a valid database.
-      fixed_env = Partitions.entry(options.partition_env, 1)
+      # Both also get the `:max_heap_mb` heap cap (`[]` when off): running the
+      # baseline under the same cap the mutants get validates up front that the
+      # suite itself fits under it — a too-small cap fails the baseline loudly
+      # instead of minting false kills mid-run. (The one metamutant compile is
+      # deliberately *not* capped — see `Invocation.heap_cap_env/1`.)
+      heap_env = Invocation.heap_cap_env(options.max_heap_mb)
+      fixed_env = Partitions.entry(options.partition_env, 1) ++ heap_env
 
       with {:ok, baseline_ms} <-
              run_baseline(
@@ -265,7 +280,8 @@ defmodule Mutare.Runner do
       scopes: scopes,
       retries: options.harness_retries,
       kill_runs: options.kill_runs,
-      hydrate: hydrate
+      hydrate: hydrate,
+      heap_env: Invocation.heap_cap_env(options.max_heap_mb)
     }
   end
 
@@ -726,13 +742,25 @@ defmodule Mutare.Runner do
   # third refinement, `:boot_failure`, *is* retried — harder than a generic
   # harness error, from its own dedicated budget — since it is a known-transient
   # startup-contention crash; see `@boot_failure_retries`.
+  #
+  # `:sigkilled` (the OS SIGKILLed the run — exit 137) is the refinement that must
+  # NOT be retried, ever: its signature cause is the kernel OOM killer reaping a
+  # mutant whose mutation made it allocate without bound, and that failure mode is
+  # *deterministic* — a back-to-back retry re-detonates the same multi-GB blowup
+  # on the host (observed live: two consecutive ~25GB RSS spikes before the retry
+  # budget ran out). The cost of not retrying the rare transient SIGKILL (an
+  # innocent run reaped under someone else's memory pressure, an external kill) is
+  # one excluded-from-score harness error; the cost of retrying a real one is the
+  # host. Fail toward the host's safety.
   defp run_mutant(%RunCtx{} = ctx, site, test_args, env) do
     result =
       ctx
       |> run_mutant_attempt(site, test_args, env, ctx.retries, @boot_failure_retries)
       |> require_unanimous_kill(ctx, site, test_args, env, ctx.kill_runs - 1)
 
-    if result.outcome in [:harness_error, :boot_failure], do: warn_harness_error(site, result)
+    if result.outcome in [:harness_error, :boot_failure, :sigkilled],
+      do: warn_harness_error(site, result)
+
     record(site, result)
   end
 
@@ -740,9 +768,11 @@ defmodule Mutare.Runner do
   # boot-failure budget. The two are decremented independently by the *current* run's
   # outcome, so a boot failure that later degrades to a plain harness error still draws
   # its general retries, and vice versa. Only the two retryable outcomes recurse; every
-  # real verdict (and the recovered kills) falls through unretried.
+  # real verdict (and the recovered kills) falls through unretried — as does
+  # `:sigkilled`, deliberately (see `run_mutant/4`: retrying a likely-OOM-killed
+  # mutant re-detonates it on the host).
   defp run_mutant_attempt(%RunCtx{} = ctx, site, test_args, env, retries, boot_retries) do
-    result = Command.timed_test(ctx.sandbox, test_args, site.id, ctx.cap, env)
+    result = Command.timed_test(ctx.sandbox, test_args, site.id, ctx.cap, env ++ ctx.heap_env)
 
     case result.outcome do
       :boot_failure when boot_retries > 0 ->
@@ -822,6 +852,24 @@ defmodule Mutare.Runner do
     )
   end
 
+  # A `:sigkilled` run also gets a *specific* message: exit 137 is the OS's, not
+  # the suite's, and its signature cause is the kernel OOM killer reaping a mutant
+  # made to allocate unboundedly. Deliberately not retried (see `run_mutant/4`),
+  # and the actionable mitigation — a per-process heap cap on the sandbox runs —
+  # is named here.
+  defp warn_harness_error(%Site{} = site, %{outcome: :sigkilled} = result) do
+    Logger.warning(
+      "#{site_ref(site)} — the OS killed the run with SIGKILL " <>
+        "(exit #{result.exit_status}). This is usually the kernel OOM killer: a mutation can " <>
+        "make code allocate without bound (e.g. a dropped guard turning a function " <>
+        "unconditionally self-recursive), exhausting memory in well under a second. Not " <>
+        "retried — a deterministic blowup would just re-detonate on this machine — and not " <>
+        "counted as killed or survived. To contain such mutants, cap the sandbox runs' " <>
+        "per-process heap with --max-heap-mb <mb> (a runaway then dies as an ordinary, fast " <>
+        "test failure instead of endangering the host)."
+    )
+  end
+
   defp warn_harness_error(%Site{} = site, result) do
     Logger.warning(
       "#{site_ref(site)} failed at the harness level " <>
@@ -849,6 +897,12 @@ defmodule Mutare.Runner do
   # refinement (`Command.outcome/2`) driving the harder retry and the specific
   # warning; it never reaches the reporters' `Result.status` vocabulary.
   defp status_for(:boot_failure), do: :harness_error
+  # An OS SIGKILL (almost always the kernel OOM killer reaping a runaway-allocation
+  # mutant) is likewise a harness error by *verdict* — the suite never reached one.
+  # The `:sigkilled` outcome is an internal refinement like `:boot_failure`, but
+  # driving the opposite retry behavior (none — see `run_mutant/4`) and its own
+  # warning; reporters never see it as a status.
+  defp status_for(:sigkilled), do: :harness_error
   # The mutation broke the test suite's own compilation — it can't even build
   # with the mutant active, so it was detected: a kill. `Command.outcome/2`
   # separates this from a genuine harness/infra compile failure (which stays

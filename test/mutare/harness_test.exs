@@ -258,5 +258,61 @@ defmodule Mutare.HarnessTest do
       # Warned exactly once (at recording), not per retry attempt.
       assert log |> String.split("died during boot") |> length() == 2
     end
+
+    # An OS SIGKILL (exit 137 = 128 + 9) — the kernel OOM killer's signature. The
+    # fixture *counts* each attempt into a file before dying, so the test can prove
+    # the mutant ran exactly once: retrying a deterministic memory detonation
+    # re-detonates it on the host, so `:sigkilled` must ignore the retry budget.
+    defp sigkilled_project(tag) do
+      Project.build(tag, %{
+        "lib/h.ex" => "defmodule H do\n  def f(a, b), do: a + b\nend\n",
+        "test/h_test.exs" => """
+        defmodule HTest do
+          use ExUnit.Case
+
+          test "f" do
+            if :persistent_term.get(:mutare_active, 0) == 1 do
+              # Count this attempt (cwd is the sandbox root), then die as the
+              # OOM killer's victim would.
+              File.write!("sigkill_attempts.log", ".", [:append])
+              System.halt(137)
+            end
+
+            assert H.f(1, 2) == 3
+          end
+        end
+        """
+      })
+    end
+
+    test "an OS SIGKILL (exit 137) is never retried, and warned as likely OOM" do
+      %{project: project, sandbox: sandbox} = sigkilled_project(:harness_runner_sigkill)
+
+      {result, log} =
+        with_log(fn ->
+          # A generous general budget proves `:sigkilled` ignores it entirely —
+          # unlike a plain harness error, which would burn all three retries here.
+          Mutare.run(
+            project,
+            [sandbox: sandbox, harness_retries: 3, max_harness_error_rate: nil] ++
+              @arithmetic_only
+          )
+        end)
+
+      assert {:ok, run} = result
+      # The verdict is unchanged — a harness error kept out of the score.
+      assert [%{status: :harness_error}] = run.results
+      assert Report.score(run.results) == 100.0
+
+      # The load-bearing assertion: exactly one attempt, despite harness_retries: 3.
+      assert File.read!(Path.join(sandbox, "sigkill_attempts.log")) == "."
+
+      # ...and the warning is the *specific* one: it names the likely cause and
+      # the mitigation, and does not send the user to truncated output.
+      assert log =~ "SIGKILL"
+      assert log =~ "OOM killer"
+      assert log =~ "--max-heap-mb"
+      refute log =~ "see the mutant's output to diagnose the sandbox"
+    end
   end
 end

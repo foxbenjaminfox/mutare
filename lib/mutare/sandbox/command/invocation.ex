@@ -35,6 +35,7 @@ defmodule Mutare.Sandbox.Command.Invocation do
   @timeout_env "MUTARE_TIMEOUT"
   @compile_timeout_env "MUTARE_COMPILE_TIMEOUT"
   @owner_watch_env "MUTARE_OWNER_WATCH"
+  @erl_options_env "ELIXIR_ERL_OPTIONS"
   @mix_env "test"
 
   @doc """
@@ -136,6 +137,8 @@ defmodule Mutare.Sandbox.Command.Invocation do
       @timeout_env,
       @compile_timeout_env,
       @owner_watch_env,
+      # Carries the `:max_heap_mb` cap (`heap_cap_env/1`) when that option is on.
+      @erl_options_env,
       Mutare.Selector.env_var(),
       Mutare.Selector.override_env(),
       Mutare.Coverage.Recorder.env_var(),
@@ -143,6 +146,54 @@ defmodule Mutare.Sandbox.Command.Invocation do
       Mutare.Coverage.Recorder.root_env(),
       Mutare.Coverage.Recorder.fixture_override_env()
     ]
+  end
+
+  @doc """
+  The env entry that caps every BEAM process's heap in a sandbox run, or `[]`
+  when `mb` is `nil` (the `:max_heap_mb` default — no cap).
+
+  The cap rides in `ELIXIR_ERL_OPTIONS` as `+hmax <words>` (the emulator's
+  default per-process `max_heap_size`, which **kills the offending process**
+  when exceeded). This is the memory analogue of the wall-clock watcher, and
+  like it needs nothing platform-specific: no cgroups, no `ulimit`, no process
+  tree to hunt down. A mutation that makes code allocate without bound (the
+  motivating incident: a dropped guard turning a function unconditionally
+  self-recursive, ~25GB RSS in under a second, OOM-killed) then dies as an
+  ordinary, fast, attributable test failure inside the run — the growing heap
+  belongs to the test process exercising the mutant — instead of racing the
+  kernel's OOM killer for the whole host.
+
+  A pre-existing `ELIXIR_ERL_OPTIONS` in Mutare's own environment is preserved
+  and the cap appended after it (later emulator flags win), so a user's flags
+  survive with the cap applied on top.
+
+  One honest limit: `max_heap_size` counts the process *heap* — lists, tuples,
+  maps, small binaries (the incident's growth shape, and the common one for
+  runaway recursion). Large (refc) binaries live off-heap and are not counted,
+  so a pure binary-append runaway is not contained by this cap.
+
+  Not applied to the one metamutant compile: the metamutant is ~25× the source
+  and the compiler's per-process memory is legitimately large — a cap sized for
+  the suite's runtime could sink the build. The runtime runs (baseline, coverage
+  probe, every per-mutant `mix test`) all get it — the baseline doubles as
+  validation that the suite itself fits under the cap, so a too-small value
+  surfaces as a red baseline up front rather than as false kills mid-run.
+  """
+  @spec heap_cap_env(pos_integer() | nil) :: [{String.t(), String.t()}]
+  def heap_cap_env(nil), do: []
+
+  def heap_cap_env(mb) when is_integer(mb) and mb > 0 do
+    words = div(mb * 1_048_576, :erlang.system_info(:wordsize))
+    flag = "+hmax #{words}"
+
+    merged =
+      case System.get_env(@erl_options_env) do
+        nil -> flag
+        "" -> flag
+        existing -> existing <> " " <> flag
+      end
+
+    [{@erl_options_env, merged}]
   end
 
   @doc """

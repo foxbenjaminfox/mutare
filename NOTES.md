@@ -6938,6 +6938,45 @@ Regression coverage: `subprocess_lifecycle_test.exs` (SIGKILL the owner mid-comp
 compiling BEAM reaps itself; verified red with the gate disarmed) and the PATH-shim gate test in
 `invocation_test.exs` (`mix/4` arms the gate on every run).
 
+### OOM containment — `:sigkilled` never retried, `:max_heap_mb` heap cap `[done]`
+
+The incident (dogfooding on Phoenix — `MUTARE-ON-PHOENIX.md`'s 🟠 section): a `guard_drop`
+on `Phoenix.Router.Scope.push/2` made a "normalize the shorthand, recurse" clause
+unconditionally self-recursive — each iteration wrapping the previous value in one more
+keyword list, all of it reachable, BEAM tail-call-optimized so no stack overflow ever fires.
+~25GB RSS in **under a second**, kernel OOM-killed (exit 137) — and then `:harness_retries`
+re-ran the identical mutant back-to-back and it detonated *again*. The wall-clock watcher
+structurally cannot help: it sleeps inside the starved VM and a sub-second blowup outraces
+any deadline it could hold. Two independent mitigations, both shipped:
+
+- **`:sigkilled` (exit 137) is decoded by name and never retried.** The mirror image of
+  `:boot_failure` (known-transient, retried *harder*): an OOM kill is deterministic given the
+  mutation, so a hot retry re-detonates on the host. The trade-off was weighed: a *transient*
+  SIGKILL (an innocent run reaped under a guilty neighbour's memory pressure, an external
+  kill) loses its retry and records one excluded-from-score harness error — cheap; retrying a
+  real one costs the machine. Fail toward the host. The verdict stays `:harness_error`; the
+  warning names the likely cause and points at `--max-heap-mb`.
+- **`:max_heap_mb` — the self-halt philosophy applied to memory.** Same reasoning that
+  rejected muontrap above (no cgroups, no process groups, no C toolchain, nothing
+  platform-specific): the emulator already owns a per-process kill switch, `+hmax`
+  (default `max_heap_size`), injected via `ELIXIR_ERL_OPTIONS` on the *runtime* runs —
+  baseline, probe, per-mutant. The runaway process (the test process exercising the mutant)
+  dies with reason `:killed` → an ordinary, fast test failure → the mutant records `:killed`
+  in milliseconds instead of racing the kernel for the host. Running the **baseline under the
+  same cap** doubles as validation: a cap too small for the suite fails loudly up front, not
+  as false kills mid-run. The one metamutant compile is deliberately uncapped (~25× sources;
+  compiler processes are legitimately huge). Opt-in (`nil` default): a cap that silently
+  killed a legitimately memory-hungry suite process would manufacture false kills, so the
+  user picks the number. Known limit (in `Invocation.heap_cap_env/1`'s doc): `max_heap_size`
+  counts the process heap — lists/tuples/maps, the runaway-recursion shape — not off-heap
+  refc binaries; a pure binary-append blowup escapes it.
+
+Regression coverage: `heap_cap_test.exs` reproduces the incident's growth shape (on-heap list
+doubling behind a droppable guard) with an intrinsic emergency bound sized *above* the cap-kill
+threshold, so the test distinguishes a working cap (process killed, no bound reached) from a
+broken one (bound reached) without ever endangering the host; `harness_test.exs` proves an
+exit-137 mutant runs exactly once despite a generous `harness_retries` budget.
+
 ### `PatternWildcard` counted a module-attribute read as a variable `[done]`
 Found running Mutare against stock phoenix_live_view: `lifecycle.ex` heads like
 `def after_render(%Socket{private: %{@lifecycle => lifecycle}} = socket)` produced two

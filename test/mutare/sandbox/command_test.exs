@@ -43,10 +43,17 @@ defmodule Mutare.Sandbox.CommandTest do
       assert Command.outcome(Command.timeout_exit()) == :timeout
     end
 
+    test "an OS SIGKILL (128 + 9, the OOM killer's signature) is :sigkilled" do
+      # A harness error by verdict, but decoded distinctly so the runner never
+      # retries it — a likely-OOM mutant re-detonates on a back-to-back re-run.
+      assert Command.outcome(Command.sigkill_exit()) == :sigkilled
+      assert Command.sigkill_exit() == 137
+    end
+
     test "every other exit code is a harness error, never a kill" do
       # 1 = compile error / missing dep / broken helper; 2 = ExUnit default were
-      # --exit-status ever dropped; 137 = 128 + SIGKILL (e.g. OOM). None is a kill.
-      for status <- [1, 2, 3, 127, 137, 255] do
+      # --exit-status ever dropped; 139 = 128 + SIGSEGV. None is a kill.
+      for status <- [1, 2, 3, 127, 139, 255] do
         assert Command.outcome(status) == :harness_error,
                "exit #{status} must not be miscounted as a kill"
       end
@@ -142,6 +149,16 @@ defmodule Mutare.Sandbox.CommandTest do
       # Contrived (a node dead at boot never filled the atom table), but precedence
       # is fail-safe toward the kill — the verdict wins over the cause label.
       assert Command.outcome(1, @atom_crash <> @boot_crash) == :atom_exhausted
+    end
+
+    test "a SIGKILL bypasses the output refinements (truncated output is unreliable)" do
+      # A SIGKILLed run's output stops wherever the kill landed, so banner-matching
+      # against it would be guesswork — and none of the markers' causes exits via
+      # SIGKILL anyway (a compile error exits 1; atom exhaustion aborts the VM itself).
+      assert Command.outcome(Command.sigkill_exit(), "") == :sigkilled
+      assert Command.outcome(Command.sigkill_exit(), @test_compile_error) == :sigkilled
+      assert Command.outcome(Command.sigkill_exit(), @atom_crash) == :sigkilled
+      assert Command.outcome(Command.sigkill_exit(), @boot_crash) == :sigkilled
     end
   end
 

@@ -85,13 +85,14 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   the owner-death watcher also prefixes `config/config.exs`, covering the one compile), and seeds
   the deps'/app's compiled `_build` so the one compile is minimal. `Command` is the **run side of the
   exit-code contract**: it runs a mutant `mix test` and decodes the exit code into a typed outcome
-  (`:passed`/`:failed`/`:timeout`/`:harness_error`, refined from output into
+  (`:passed`/`:failed`/`:timeout`/`:sigkilled`/`:harness_error`, refined from output into
   `:suite_compile_error`/`:atom_exhausted`/`:boot_failure`).
 - **`Mutare.Runner`** (+ `Baseline`, `CoverageProbe`, `Partitions`) — the orchestrator: compile
   once (recovering from poison), check the baseline is green, run a coverage probe for test
   selection, then run `:workers` mutants concurrently and map each outcome to a result status.
   Owns the retry/abort guards (`:harness_retries`, `:max_harness_error_rate`, the dedicated
-  `:boot_failure` budget, the `:confirm_timeouts` sequential re-run that keeps worker
+  `:boot_failure` budget, the never-retried `:sigkilled` OOM-kill case and its opt-in
+  `:max_heap_mb` containment, the `:confirm_timeouts` sequential re-run that keeps worker
   contention from minting false `:timeout` kills) and the runner-loop caps (`:max_survivors`).
 - **`Mutare.Coverage` / `Mutare.Coverage.Recorder`** — coverage is **self-recorded** by the
   metamutant at runtime (not `:cover`), keyed by mutant id and attributed per test process. Drives
