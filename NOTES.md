@@ -1306,8 +1306,8 @@ by a blacklist. The positions:
   the bare **and** qualified/aliased forms are both routed, and only when the call
   is genuinely `Kernel.match?` (a local `def match?/2` shadowing it is a compile
   error, so a compiling bare `match?` is unambiguous — the same soundness `Imports`
-  rests on). See "Known-macro registry" below. Found dogfooding `plug` — see
-  "Real-world poisons (plug/router)" below.
+  rests on). See "Known-macro registry" below. Found running Mutare against `plug`
+  — see "Real-world poisons (plug/router)" below.
 
 ### Data keyword/map keys mutate; only block keys are labels `[changed]`
 The pair routing (`block_key?/1` + the 2-tuple `analyze` clause) is what lets the
