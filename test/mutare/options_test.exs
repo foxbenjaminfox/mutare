@@ -27,8 +27,9 @@ defmodule Mutare.OptionsTest do
       assert options.fail_on_harness_error == false
     end
 
-    test ":workers defaults to half the scheduler count (a concrete positive integer)" do
-      assert Options.new([]).workers == max(1, div(System.schedulers_online(), 2))
+    test ":workers defaults to half the scheduler count clamped to 1..4 (a concrete positive integer)" do
+      assert Options.new([]).workers ==
+               System.schedulers_online() |> div(2) |> min(4) |> max(1)
     end
   end
 
@@ -39,7 +40,8 @@ defmodule Mutare.OptionsTest do
     end
 
     test "revalidates and fills computed defaults instead of trusting a raw struct" do
-      assert Options.new(%Options{}).workers == max(1, div(System.schedulers_online(), 2))
+      assert Options.new(%Options{}).workers ==
+               System.schedulers_online() |> div(2) |> min(4) |> max(1)
 
       assert_raise ArgumentError, ~r/:workers must be a positive integer/, fn ->
         Options.new(%Options{workers: 0})
@@ -244,8 +246,9 @@ defmodule Mutare.OptionsTest do
       end
     end
 
-    test "an explicit nil falls back to the half-the-schedulers default" do
-      assert Options.new(workers: nil).workers == max(1, div(System.schedulers_online(), 2))
+    test "an explicit nil falls back to the clamped half-the-schedulers default" do
+      assert Options.new(workers: nil).workers ==
+               System.schedulers_online() |> div(2) |> min(4) |> max(1)
     end
   end
 

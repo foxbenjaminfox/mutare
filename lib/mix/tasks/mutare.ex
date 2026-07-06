@@ -117,9 +117,10 @@ defmodule Mix.Tasks.Mutare do
 
   ## Tuning the run
 
-      mix mutare --workers 4              # run 4 mutants concurrently (default: half
-                                          #   your schedulers — each worker is a full
-                                          #   `mix test` BEAM that uses all of them)
+      mix mutare --workers 8              # run 8 mutants concurrently (default: half
+                                          #   your schedulers, capped at 4 — each worker
+                                          #   is a full `mix test` BEAM that uses all
+                                          #   of them)
       mix mutare --full                   # run the whole suite for every mutant
                                           #   (default: only the tests that cover it)
       mix mutare --no-full                # force coverage-guided selection even if
@@ -252,8 +253,8 @@ defmodule Mix.Tasks.Mutare do
         # --- how the suite runs ---
         # :coverage runs only the test files covering each mutant; :full runs all
         test_selection: :coverage,
-        # concurrent mutant runs; default: half the schedulers (each worker is a
-        # full `mix test` BEAM that itself uses every scheduler)
+        # concurrent mutant runs; default: half the schedulers, capped at 4 (each
+        # worker is a full `mix test` BEAM that itself uses every scheduler)
         workers: 4,
         # give each concurrent worker a distinct partition id under this env var
         # (1..workers), for per-worker DB isolation — read it in config/test.exs

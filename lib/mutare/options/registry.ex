@@ -156,14 +156,17 @@ defmodule Mutare.Options.Registry do
   defp validate_test_selection!(mode),
     do: validate!(mode, &(&1 in [:coverage, :full]), ":test_selection must be :coverage or :full")
 
-  # `:workers` defaults to `nil`, resolved here to *half* `System.schedulers_online/0`
-  # (floored at 1 — the lone computed default), so the struct always carries a concrete
-  # positive integer. Half, not all: each worker is a full `mix test` BEAM that itself
-  # uses every scheduler, so a worker per scheduler ran ~N× oversubscribed — inflating
-  # wall time toward the per-mutant cap and manufacturing provisional timeouts (NOTES
-  # "Timeouts — portable self-halt"). An explicit `nil` resolves the same way; any
-  # other non-positive value is rejected.
-  defp validate_workers!(nil), do: max(1, div(System.schedulers_online(), 2))
+  # `:workers` defaults to `nil`, resolved here to half `System.schedulers_online/0`
+  # **clamped to 1..4** (the lone computed default), so the struct always carries a
+  # concrete positive integer. Why that shape: each worker is a full `mix test` BEAM
+  # that itself uses every scheduler, so a parallel suite already scales with the
+  # machine on its own — extra workers only fill the utilization gaps one run leaves
+  # (boot/app-start, IO waits, the small selected-test sets), and the workers needed
+  # for that is a small constant, not a fraction of the cores. Past ~4 the
+  # oversubscription inflates wall time toward the per-mutant cap and manufactures
+  # provisional timeouts (NOTES "Parallel workers", "Timeouts — portable self-halt").
+  # An explicit `nil` resolves the same way; any other non-positive value is rejected.
+  defp validate_workers!(nil), do: System.schedulers_online() |> div(2) |> min(4) |> max(1)
 
   defp validate_workers!(workers),
     do: validate!(workers, &(is_integer(&1) and &1 > 0), ":workers must be a positive integer")

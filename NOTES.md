@@ -3692,22 +3692,40 @@ verdict path costs one extra cap per *genuine* hang (rare); a tight one silently
 corrupts the score. Two companions attack the cause so few honest runs reach the
 confirmation pass at all: the derived cap scales by half the concurrent lanes
 (`min(workers, sites)`), and the default `:workers` dropped to half the
-schedulers (see "Parallel workers"). Per-covering-file caps would be tighter and
-more precise — still a refinement.
+schedulers, later clamped at 4 (see "Parallel workers"). Per-covering-file caps
+would be tighter and more precise — still a refinement.
 
 ### Parallel workers (M4 done) `[refine]`
 The per-mutant phase runs `:workers` mutants concurrently (default: **half**
-`System.schedulers_online/0`, floored at 1) via `Task.async_stream` in the shared
-sandbox. Concurrent `mix test` in one sandbox contends on mix's build lock
+`System.schedulers_online/0`, **clamped to 1..4**) via `Task.async_stream` in the
+shared sandbox. Concurrent `mix test` in one sandbox contends on mix's build lock
 ("Waiting for lock…") and, since each spawns a full BEAM, oversubscribes CPU — a
 real overhead (4 workers gave ~2.4× in a spike; >4× observed at 16). The default
 was schedulers_online originally; it was halved after the oversubscription
 manufactured false `:timeout` kills on phoenix_live_view (see "Timeouts" round
 two) — each worker's BEAM already uses every scheduler, so a worker per scheduler
-ran ~N× oversubscribed for no throughput gain. The design's open question —
-per-worker `MIX_BUILD_PATH` vs full source copy — would remove the contention;
-deferred. (Disabling the lock outright was tried and abandoned — see "Bypassing
-Mix's build lock per mutant" above.)
+ran ~N× oversubscribed for no throughput gain. Round three recognized the halving
+had the wrong *shape*: a parallel suite already scales with the machine on its
+own, so extra workers only pay while they fill the utilization gaps one run
+leaves open — BEAM boot/app start (serial, and a big fraction of a kill's runtime
+given `--max-failures 1` early exit), IO/DB waits, and the reduced intra-run
+parallelism of small selected-test sets. The workers needed for that is a small
+*constant*, not a fraction of the cores — so `schedulers/2` was fine on a laptop
+(4–8 cores → 2–4 workers) yet still delivered all the observed pathology on big
+machines (16 cores → 8, 32 → 16: the false-timeout epidemic, ~1 GB per mutant
+BEAM compounding into OOM `:sigkilled`s, and each false `:timeout` now costing a
+full sequential cap-length confirmation re-run). Hence the clamp at 4 — the
+evidence-backed knee (~2.4× at 4, diminishing hard after) — which changes nothing
+for ≤ 8 schedulers and only reins in many-core boxes. Suites with poor
+parallelism genuinely benefit from more; that's what `--workers` is for, and
+too-low-default (slower) is a far kinder failure than too-high (false timeouts,
+OOM kills, confirmation tails). A future root fix — trimming each worker BEAM to
+`schedulers/workers` via `+S` — would remove the oversubscription itself, but it
+changes the target suite's own async concurrency semantics, too invasive for a
+default. The design's other open question — per-worker `MIX_BUILD_PATH` vs full
+source copy — would remove the lock contention; deferred. (Disabling the lock
+outright was tried and abandoned — see "Bypassing Mix's build lock per mutant"
+above.)
 
 ### Per-worker DB partitioning (`:partition_env`) `[done]`
 A suite with shared mutable state — the common case: an Ecto repo — can't have N

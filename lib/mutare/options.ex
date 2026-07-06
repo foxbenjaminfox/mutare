@@ -100,9 +100,10 @@ defmodule Mutare.Options do
 
   Accepts a keyword list or an existing `Options` struct. Raises `ArgumentError`
   on an unknown key or invalid value. `:workers` defaults to half
-  `System.schedulers_online/0` (each worker is a full `mix test` BEAM that uses
-  every scheduler), resolved here so the struct carries a concrete positive
-  integer.
+  `System.schedulers_online/0` capped at 4 (each worker is a full `mix test`
+  BEAM that uses every scheduler, so the useful concurrency is a small constant,
+  not a fraction of the cores), resolved here so the struct carries a concrete
+  positive integer.
 
       iex> opts = Mutare.Options.new(
       ...>   paths: ["lib/billing"],
@@ -139,7 +140,8 @@ defmodule Mutare.Options do
 
   # Read option `key` from `opts`, falling back to its registry default — the one place `new/1`'s
   # defaults come from, so they can't drift from `defstruct`'s. (`:workers`'s `nil` default is
-  # resolved to half `System.schedulers_online/0` inside its validator, the lone computed default.)
+  # resolved to half `System.schedulers_online/0` capped at 4 inside its validator, the lone
+  # computed default.)
   defp opt(opts, key), do: Keyword.get(opts, key, Keyword.fetch!(@field_defaults, key))
 
   defp reject_unknown!(opts) do
