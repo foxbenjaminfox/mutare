@@ -2,11 +2,25 @@ defmodule Mutare.Ignore do
   @moduledoc """
   Suppresses selected mutants with a source comment. Ignored mutants remain in the report but are excluded from the mutation score.
 
-  A trailing directive applies to its own line. A standalone directive applies to the next line:
+  A trailing directive applies to its own line. A standalone directive applies to the next line of code, reading through any comment lines in between — so it works at either end of an explanatory comment block:
 
       expression() # mutare:ignore
       # mutare:ignore
       expression()
+      # mutare:ignore[literal] checked by the boundary test;
+      # any non-empty replacement is behaviorally equivalent
+      expression()
+
+  A blank line ends the comment block: the directive then targets the blank line and suppresses nothing (warned — see below).
+
+  A directive covers exactly **one** line of code. For a multi-line expression, place it directly above the line that carries the mutated code — above the `|>` step containing it, not the pipe's first line:
+
+      digested_files
+      # mutare:ignore[atom] delivery order is discarded
+      |> Task.async_stream(&write/1, ordered: false)
+      |> Stream.run()
+
+  A directive misplaced onto an earlier line of the same expression suppresses nothing; the resulting warning points at the line that has the matching mutants.
 
   A directive may include a family filter, a reason, or both:
 
@@ -59,8 +73,17 @@ defmodule Mutare.Ignore do
   # the AST it parsed for the transform, avoiding a second `Sourceror.parse_string!` per file.
   @spec directives_from_ast(Macro.t()) :: %{pos_integer() => [Directive.t()]}
   def directives_from_ast(ast) do
-    ast
-    |> comments()
+    all = comments(ast)
+
+    # The lines occupied by *standalone* comments (`previous_eol_count > 0` ⇒ nothing else on the
+    # line): the contiguous block a standalone directive reads through to find its code line. A
+    # trailing comment's line carries code, so it must NOT be read through — hence standalone only.
+    comment_lines =
+      all
+      |> Enum.filter(&(&1.previous_eol_count > 0))
+      |> MapSet.new(& &1.line)
+
+    all
     |> Enum.filter(&directive?/1)
     # Put the directives in document (source) order, then stamp each with that order as its
     # `source_order`. `comments/1` accumulates in `prewalk` *visit* order — not document order —
@@ -69,7 +92,7 @@ defmodule Mutare.Ignore do
     # the sort and the index that depends on it live together here, not three frames apart.
     |> Enum.sort_by(& &1.line)
     |> Enum.with_index()
-    |> Enum.map(fn {comment, order} -> to_directive(comment, order) end)
+    |> Enum.map(fn {comment, order} -> to_directive(comment, order, comment_lines) end)
     |> Enum.group_by(& &1.line)
   end
 
@@ -124,7 +147,10 @@ defmodule Mutare.Ignore do
     for {_line, ds} <- Enum.sort_by(directives, fn {line, _ds} -> line end),
         directive <- ds,
         {family, label} <- Enum.sort(qualified_entries(directive)) do
-      validate_entry!(family, label, directive.line, vocabulary, file)
+      # Located at the directive comment itself, not the suppressed line — the
+      # two can be several lines apart when a comment block sits between them,
+      # and the error is about the directive's own text.
+      validate_entry!(family, label, directive.comment_line, vocabulary, file)
     end
 
     :ok
@@ -203,6 +229,66 @@ defmodule Mutare.Ignore do
   end
 
   @doc false
+  # For an *ineffective* directive: the first following line — within the multi-line expression
+  # that starts at the directive's suppressed line — carrying a mutant the directive would have
+  # suppressed, or `nil`. Powers the misplacement hint in the warning: a directive covers exactly
+  # one line, and a long pipe reads as one logical statement, so annotating it "from the top" (the
+  # directive above `digested_files`, the mutated `ordered:`/`timeout:` two `|>` steps down) is the
+  # most common miss. The scan is bounded by the expression's own span, so the hint never points
+  # into an unrelated statement further down the file.
+  @spec misplacement_hint(Macro.t(), Directive.t(), [
+          {pos_integer() | nil, atom(), Directive.query()}
+        ]) :: pos_integer() | nil
+  def misplacement_hint(ast, %Directive{} = directive, occupied) do
+    case expression_end_line(ast, directive.line) do
+      end_line when is_integer(end_line) and end_line > directive.line ->
+        occupied
+        |> Enum.filter(fn {line, mutator, target} ->
+          is_integer(line) and line > directive.line and line <= end_line and
+            Directive.applies_to?(directive, mutator, target)
+        end)
+        |> Enum.map(fn {line, _mutator, _target} -> line end)
+        |> Enum.min(fn -> nil end)
+
+      _no_multi_line_expression ->
+        nil
+    end
+  end
+
+  # The last line of the widest expression that *starts* at `line`, or `nil` when no node does
+  # (a blank line, a comment-only line, past EOF). `Sourceror.get_range/1` computes a node's start
+  # from its leftmost token, so a pipe chain's node starts at its first operand's line even though
+  # the `|>` operator meta sits further down.
+  defp expression_end_line(ast, line) do
+    {_ast, max_end} =
+      Macro.prewalk(ast, nil, fn
+        {_form, meta, _args} = node, acc when is_list(meta) ->
+          case node_range(node) do
+            %Sourceror.Range{start: start_pos, end: end_pos} ->
+              if start_pos[:line] == line,
+                do: {node, max(acc || end_pos[:line], end_pos[:line])},
+                else: {node, acc}
+
+            _no_range ->
+              {node, acc}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    max_end
+  end
+
+  # `Sourceror.get_range/1` is total over real source nodes but can return `nil` (and, defensively,
+  # raise) on synthetic/degenerate shapes; a missing range just means no hint from that node.
+  defp node_range(node) do
+    Sourceror.get_range(node)
+  rescue
+    _ -> nil
+  end
+
+  @doc false
   # The directives in `directives` that suppressed *nothing* (sorted by line): a bare-family typo,
   # a valid variant label absent on this line, an empty `[]`, a standalone directive on the wrong
   # line, or a family that produced no mutant there — every directive `Directive.applies_to?/3`
@@ -254,7 +340,7 @@ defmodule Mutare.Ignore do
 
   defp directive?(%{text: text}), do: Regex.match?(@directive, text)
 
-  defp to_directive(%{text: text} = comment, source_order) do
+  defp to_directive(%{text: text} = comment, source_order, comment_lines) do
     {mutators, reason} =
       @directive
       |> Regex.named_captures(text)
@@ -262,7 +348,8 @@ defmodule Mutare.Ignore do
       |> parse_rest()
 
     %Directive{
-      line: suppressed_line(comment),
+      line: suppressed_line(comment, comment_lines),
+      comment_line: comment.line,
       mutators: mutators,
       reason: reason,
       source_order: source_order
@@ -331,7 +418,18 @@ defmodule Mutare.Ignore do
   end
 
   # A trailing directive (no newline before it ⇒ code shares its line) suppresses
-  # its own line; a standalone one suppresses the next.
-  defp suppressed_line(%{line: line, previous_eol_count: 0}), do: line
-  defp suppressed_line(%{line: line}), do: line + 1
+  # its own line; a standalone one suppresses the next line of *code*, reading
+  # through the contiguous block of standalone comments below it — so a directive
+  # works at either end of an explanatory comment block. A blank line is not a
+  # comment line, so it ends the walk (the directive then targets the blank line,
+  # suppresses nothing, and is surfaced by `ineffective/2` — the conservative
+  # reading of a detached block).
+  defp suppressed_line(%{line: line, previous_eol_count: 0}, _comment_lines), do: line
+  defp suppressed_line(%{line: line}, comment_lines), do: next_code_line(line + 1, comment_lines)
+
+  defp next_code_line(line, comment_lines) do
+    if line in comment_lines,
+      do: next_code_line(line + 1, comment_lines),
+      else: line
+  end
 end

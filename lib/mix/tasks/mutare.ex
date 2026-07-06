@@ -660,16 +660,26 @@ defmodule Mix.Tasks.Mutare do
   defp warn_ineffective_ignores(%Schema{ineffective_ignores: []}), do: :ok
 
   defp warn_ineffective_ignores(%Schema{ineffective_ignores: ineffective}) do
-    for {file, directive} <- ineffective do
+    for {file, directive, hint} <- ineffective do
       IO.puts(
         :stderr,
         "warning: # mutare:ignore#{ignore_filter_label(directive)} at " <>
-          "#{file}:#{directive.line} suppressed no mutant"
+          "#{file}:#{directive.comment_line} suppressed no mutant" <> misplacement_label(hint)
       )
     end
 
     :ok
   end
+
+  # The "directive on the pipe's first line" miss: the mutants it named sit further
+  # down the *same* multi-line expression (`Mutare.Ignore.misplacement_hint/3`).
+  # A directive covers exactly one line, so name the line to move it above.
+  defp misplacement_label(nil), do: ""
+
+  defp misplacement_label(line),
+    do:
+      " — its matching mutants are on line #{line} of the same multi-line expression; " <>
+        "a directive covers one line, so place it directly above line #{line}"
 
   # The `[families]` a filtered directive named (sorted for a stable message), or
   # `""` for an unfiltered (`:all`) directive. A `{family, target}` entry renders

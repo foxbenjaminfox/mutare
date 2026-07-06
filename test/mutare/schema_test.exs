@@ -394,7 +394,7 @@ defmodule Mutare.SchemaTest do
     schema = Schema.build(root, mutators: @probe)
 
     assert Schema.count(schema) == 0
-    assert [{"lib/c.ex", %{line: 3}}] = schema.ineffective_ignores
+    assert [{"lib/c.ex", %{line: 3}, _hint}] = schema.ineffective_ignores
   end
 
   test "ineffective directives are ordered by line", %{root: root} do
@@ -409,7 +409,7 @@ defmodule Mutare.SchemaTest do
 
     # Both typo'd filters suppress nothing; the recorded list is line-ordered, not
     # reversed (the `for`-comprehension input order).
-    assert Enum.map(schema.ineffective_ignores, fn {_f, d} -> d.line end) == [2, 3]
+    assert Enum.map(schema.ineffective_ignores, fn {_f, d, _h} -> d.line end) == [2, 3]
   end
 
   test "ineffective directives are sorted across files (the `sources` map iterates unordered)",
@@ -431,7 +431,7 @@ defmodule Mutare.SchemaTest do
 
     schema = Schema.build(root, mutators: @probe)
 
-    got = Enum.map(schema.ineffective_ignores, fn {f, _d} -> f end)
+    got = Enum.map(schema.ineffective_ignores, fn {f, _d, _h} -> f end)
     assert got == Enum.sort(rels)
   end
 
@@ -629,8 +629,29 @@ defmodule Mutare.SchemaTest do
 
     # The `[bogus]` typo (line 2) suppressed nothing; the `[arithmetic]` (line 3)
     # matched the real arithmetic mutant on its line, so it is not flagged.
-    assert [{"lib/a.ex", %{line: 2, mutators: set}}] = schema.ineffective_ignores
+    assert [{"lib/a.ex", %{line: 2, mutators: set}, _hint}] = schema.ineffective_ignores
     assert MapSet.member?(set, {"bogus", :any})
+  end
+
+  test "an ineffective directive on a pipe's first line carries a misplacement hint",
+       %{root: root} do
+    # The directive covers the pipe's first line (4), but the arithmetic mutant
+    # lives two `|>` steps down (5) — the recorded hint names that line so the
+    # warning can say where to move the directive.
+    write(root, "lib/p.ex", """
+    defmodule P do
+      def run(list) do
+        # mutare:ignore[arithmetic]
+        list
+        |> Enum.map(fn x -> x + 1 end)
+        |> Enum.sum()
+      end
+    end
+    """)
+
+    schema = Schema.build(root, mutators: @probe)
+
+    assert [{"lib/p.ex", %{line: 4, comment_line: 3}, 5}] = schema.ineffective_ignores
   end
 
   test "ineffective detection uses the full site set, before --max-mutants trims", %{root: root} do

@@ -70,6 +70,30 @@ defmodule Mutare.IgnoreTest do
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
+    test "a standalone directive reads through a comment block to the code below" do
+      # The natural way to write a long justification is directive-first,
+      # explanation continuing below — the directive must reach the code line.
+      source = """
+      defmodule Ig do
+        # mutare:ignore[arithmetic] the +1 is a cursor advance;
+        # any off-by-one here is caught by the property test
+        def a(x), do: x + 1
+      end
+      """
+
+      {_meta, sites, _next_id} = Mutare.Transform.transform_string_with_sites(source)
+
+      arithmetic = Enum.filter(sites, &(&1.mutator == :arithmetic))
+      assert arithmetic != []
+      assert Enum.all?(arithmetic, & &1.ignored)
+
+      assert Enum.all?(
+               arithmetic,
+               &(&1.ignore_reason ==
+                   "the +1 is a cursor advance;")
+             )
+    end
+
     test "a trailing reason is captured on the site and suppresses the whole line" do
       source = """
       defmodule Ig do
@@ -323,7 +347,61 @@ defmodule Mutare.IgnoreTest do
 
     test "a standalone directive targets the next line" do
       directives = Ignore.directives("# mutare:ignore[relational] why\nx = 1")
-      assert %Directive{line: 2, reason: "why"} = directive_on(directives, 2)
+      assert %Directive{line: 2, comment_line: 1, reason: "why"} = directive_on(directives, 2)
+    end
+
+    test "a standalone directive reads through a contiguous comment block" do
+      source = """
+      # mutare:ignore[relational] reason starts here
+      # and continues on a second comment line
+      x = i < j
+      """
+
+      directives = Ignore.directives(source)
+      # Suppresses the code line (3); `comment_line` stays where the text is (1).
+      assert %Directive{line: 3, comment_line: 1} = directive_on(directives, 3)
+      assert Ignore.directive_for(directives, 3, :relational)
+    end
+
+    test "a blank line ends the comment block (fail-safe: nothing reached)" do
+      source = """
+      # mutare:ignore[relational]
+      # explanation
+
+      x = i < j
+      """
+
+      directives = Ignore.directives(source)
+      # The walk stops at the blank line (3) — the code on line 4 is NOT covered
+      # (a detached block reads as unrelated; `ineffective/2` surfaces the miss).
+      assert %Directive{line: 3} = directive_on(directives, 3)
+      refute Map.has_key?(directives, 4)
+    end
+
+    test "a trailing comment's line carries code: the read-through stops there" do
+      source = """
+      # mutare:ignore[relational]
+      x = i < j # an ordinary trailing comment
+      y = i > j
+      """
+
+      directives = Ignore.directives(source)
+      # Line 2 has code (the comment is trailing, not standalone), so it is the target.
+      assert %Directive{line: 2} = directive_on(directives, 2)
+      refute Map.has_key?(directives, 3)
+    end
+
+    test "stacked standalone directives all reach the code line below the block" do
+      source = """
+      # mutare:ignore[relational]
+      # mutare:ignore[arithmetic]
+      x = i < j
+      """
+
+      directives = Ignore.directives(source)
+      # Each directive line is itself a standalone comment the other reads through.
+      assert Ignore.directive_for(directives, 3, :relational)
+      assert Ignore.directive_for(directives, 3, :arithmetic)
     end
 
     test "the most specific matching directive's reason wins (qualified beats bare)" do
@@ -351,6 +429,66 @@ defmodule Mutare.IgnoreTest do
     end
 
     defp directive_on(directives, line), do: directives |> Map.fetch!(line) |> hd()
+  end
+
+  describe "misplacement_hint/3 (the pipe's-first-line miss)" do
+    alias Mutare.Ignore
+
+    # A long pipe reads as one logical statement, so the instinct is to annotate
+    # it "from the top" — but the mutated tokens live on a later `|>` step. The
+    # hint names that step's line so the warning corrects the instinct.
+    @pipe_source """
+    def run(list) do
+      # mutare:ignore[arithmetic]
+      list
+      |> Enum.map(fn x -> x + 1 end)
+      |> Enum.sum()
+    end
+    """
+
+    defp pipe_fixture do
+      ast = Sourceror.parse_string!(@pipe_source)
+      [directive] = @pipe_source |> Ignore.directives() |> Map.fetch!(3)
+      {ast, directive}
+    end
+
+    test "points at the pipe step carrying the mutants the directive named" do
+      {ast, directive} = pipe_fixture()
+      occupied = [{4, :arithmetic, []}, {5, :call, []}]
+
+      assert Ignore.misplacement_hint(ast, directive, occupied) == 4
+    end
+
+    test "only mutants the directive's filter admits count" do
+      {ast, directive} = pipe_fixture()
+      # A `[arithmetic]` directive misplaced above a pipe with only other-family
+      # mutants further down: no hint — the directive wouldn't have matched there.
+      occupied = [{4, :relational, []}, {5, :call, []}]
+
+      assert Ignore.misplacement_hint(ast, directive, occupied) == nil
+    end
+
+    test "the scan is bounded by the expression's own span" do
+      {ast, directive} = pipe_fixture()
+      # A matching mutant *below* the pipe (line 7+) must not be suggested — the
+      # hint would point into an unrelated statement.
+      occupied = [{8, :arithmetic, []}]
+
+      assert Ignore.misplacement_hint(ast, directive, occupied) == nil
+    end
+
+    test "no hint when the suppressed line starts no multi-line expression" do
+      source = """
+      x = 1
+      # mutare:ignore[arithmetic]
+      y = 2
+      """
+
+      ast = Sourceror.parse_string!(source)
+      [directive] = source |> Ignore.directives() |> Map.fetch!(3)
+
+      assert Ignore.misplacement_hint(ast, directive, [{5, :arithmetic, []}]) == nil
+    end
   end
 
   describe "ineffective/2 (suppressed nothing)" do

@@ -108,6 +108,40 @@ defmodule Mix.Tasks.MutareTest do
                "warning: # mutare:ignore[arithmetic, relational] at lib/a.ex:2 suppressed no mutant"
     end
 
+    test "a directive misplaced on a pipe's first line warns with the right step's line" do
+      root = Project.tmp_dir(:task)
+      File.mkdir_p!(Path.join(root, "lib"))
+
+      File.write!(Path.join(root, "lib/a.ex"), """
+      defmodule A do
+        def run(list) do
+          # mutare:ignore[arithmetic]
+          list
+          |> Enum.map(fn x -> x + 1 end)
+          |> Enum.sum()
+        end
+      end
+      """)
+
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      stderr =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          # --strict-ignores aborts right after the scan warnings, keeping this cheap.
+          assert_raise Mix.Error, ~r/--strict-ignores/, fn ->
+            Mix.Tasks.Mutare.run([root, "--strict-ignores"])
+          end
+        end)
+
+      # Located at the directive comment (line 3), naming the step that has the
+      # mutants (line 5) — the "annotate the pipe from the top" miss, corrected.
+      assert stderr =~
+               "warning: # mutare:ignore[arithmetic] at lib/a.ex:3 suppressed no mutant"
+
+      assert stderr =~ "on line 5 of the same multi-line expression"
+      assert stderr =~ "place it directly above line 5"
+    end
+
     test "--strict-ignores aborts (with a stderr warning) on an ineffective directive" do
       root = Project.tmp_dir(:task)
       File.mkdir_p!(Path.join(root, "lib"))

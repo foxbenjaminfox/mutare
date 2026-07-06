@@ -217,6 +217,36 @@ disabled by `--mutators` yields no site and a directive naming only it is flagge
 would need the full valid-family universe and isn't worth the complexity (a CI strict run uses
 the default set, where it can't arise).
 
+### Standalone `# mutare:ignore` placement — comment-block read-through + pipe hint `[done]`
+The Phoenix dogfooding sweep hit the same self-inflicted miss three times
+(`MUTARE-ON-PHOENIX.md`, polish items 2 and 7 — its most frequent friction): a standalone
+directive covered *literally the next line*, so both natural placements silently failed with
+only the ineffective warning to notice —
+
+- **directive-first, reason continuing below**: the directive's target landed on the second
+  comment line, not the code. Fixed *semantically*: a standalone directive now reads through
+  the contiguous block of standalone comments below it to the next code line, so a directive
+  works at either end of an explanatory block. Only *standalone* comment lines
+  (`previous_eol_count > 0` — nothing else on the line) are read through: a trailing comment's
+  line carries code and correctly stops the walk, and a blank line ends the block (a detached
+  block reads as unrelated; fail-safe toward running the mutant, surfaced as ineffective).
+  Emergent nicety: stacked directives each read through the other to the shared code line.
+- **directive above a multi-line pipe's first line**, mutated tokens two `|>` steps down. *Not*
+  fixed semantically on purpose — covering "the whole logical expression" would silently widen
+  every existing directive's blast radius (the dangerous direction). Instead the ineffective
+  warning now carries a **misplacement hint** (`Ignore.misplacement_hint/3`): if the directive
+  would have matched mutants on a later line *within the expression that starts at its target
+  line* (span via `Sourceror.get_range/1`, so the hint can't point into an unrelated statement),
+  the warning names that line and says to move the directive directly above it. The moduledoc
+  documents the one-line rule with the pipe example.
+
+Directives now also carry `comment_line` (where the directive text is) separately from `line`
+(what it suppresses): with the read-through the two can drift apart, and every message —
+ineffective warnings, `SpecError`s, `--list-ignores` — points at the comment, where the user
+must go to fix it. (`--list-ignores` matches schema entries by `{file, directive}` struct
+equality across two parses of the same source; both sides stamp `comment_line` identically,
+so the equality survives.)
+
 ### Per-variant `# mutare:ignore[family:label]` qualifier — mutator-declared labels `[done]`
 The `[family]` filter was all-or-nothing per family — too blunt for the common "one of these
 mutants is equivalent, the rest aren't" case. Motivating shape: `i < j` where `i`/`j` are symmetric

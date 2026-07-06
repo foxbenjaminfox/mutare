@@ -247,7 +247,9 @@ defmodule Mutare.CLI.Info do
   # `--list-ignores`: every `# mutare:ignore` in scope, flagged active or ineffective
   # (the audit view — a normal run only ever *warns* about the ineffective ones).
   def print_ignores(%Project{} = project, schema) do
-    ineffective = MapSet.new(schema.ineffective_ignores)
+    # Keyed by `{file, directive}` — the schema entries also carry the misplacement
+    # hint, which the audit view doesn't render (the run's warning already does).
+    ineffective = MapSet.new(schema.ineffective_ignores, fn {file, d, _hint} -> {file, d} end)
 
     entries =
       for {file, source} <- schema.sources,
@@ -265,7 +267,7 @@ defmodule Mutare.CLI.Info do
 
   defp print_ignore_entries(entries, ineffective) do
     entries
-    |> Enum.sort_by(fn {file, d} -> {file, d.line} end)
+    |> Enum.sort_by(fn {file, d} -> {file, d.comment_line} end)
     |> Enum.group_by(fn {file, _} -> file end)
     |> Enum.sort_by(fn {file, _} -> file end)
     |> Enum.each(fn {file, file_entries} ->
@@ -274,8 +276,10 @@ defmodule Mutare.CLI.Info do
       Enum.each(file_entries, fn {_file, directive} = entry ->
         status = if MapSet.member?(ineffective, entry), do: "ineffective", else: "active"
 
+        # The comment's own line — where the directive text is — not the
+        # (possibly comment-block-shifted) line it suppresses.
         Mix.shell().info(
-          "  #{directive.line}  #{String.pad_trailing(status, 11)}  #{format_directive(directive)}"
+          "  #{directive.comment_line}  #{String.pad_trailing(status, 11)}  #{format_directive(directive)}"
         )
       end)
     end)

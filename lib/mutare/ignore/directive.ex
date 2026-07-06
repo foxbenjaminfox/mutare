@@ -3,7 +3,11 @@ defmodule Mutare.Ignore.Directive do
   # One parsed `# mutare:ignore` directive — the internal representation behind the user-facing
   # grammar documented on `Mutare.Ignore`. Fields:
   #
-  #   * `line` — the suppressed source line (already resolved from trailing-vs-standalone).
+  #   * `line` — the suppressed source line (already resolved from trailing-vs-standalone,
+  #     including a standalone directive's read-through of a contiguous comment block).
+  #   * `comment_line` — the line of the directive comment itself, for messages (warnings,
+  #     `SpecError`s, `--list-ignores`): with the comment-block read-through, `line` may sit
+  #     several lines below the text the user needs to find.
   #   * `mutators` — `:all` (no `[...]` filter), or a `MapSet` of `{family, label}` filter entries;
   #     `family` is a mutator-name string and `label` is `:any` (a bare `[relational]`) or a
   #     variant-label string (a qualified `[relational:>]`). A site matches when some entry's family
@@ -24,12 +28,13 @@ defmodule Mutare.Ignore.Directive do
 
   @type t :: %__MODULE__{
           line: pos_integer(),
+          comment_line: pos_integer() | nil,
           mutators: :all | MapSet.t(entry()),
           reason: String.t() | nil,
           source_order: non_neg_integer()
         }
 
-  defstruct [:line, mutators: :all, reason: nil, source_order: 0]
+  defstruct [:line, comment_line: nil, mutators: :all, reason: nil, source_order: 0]
 
   @doc """
   Render one `{family, target}` filter entry back to its `# mutare:ignore` token — bare
