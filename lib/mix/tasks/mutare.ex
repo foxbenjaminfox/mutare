@@ -529,6 +529,7 @@ defmodule Mix.Tasks.Mutare do
   # them (`defer_site_code: true`) to keep the render cheap.
   defp run_check(%Project{} = project, %Context{} = context, root) do
     context = %{context | defer_site_code: true}
+    options = context.options
     {live, schema, run_context} = start_live_scan(project, context, root)
 
     try do
@@ -536,12 +537,27 @@ defmodule Mix.Tasks.Mutare do
       if live, do: Live.finish(live)
 
       case result do
-        {:ok, check} -> Info.print_check(check, project)
+        {:ok, check} -> Info.print_check(check, project, scan_degraded_uses(schema, options))
         {:error, reason, detail} -> Mix.raise(format_error(reason, detail, root))
       end
     after
       if live, do: Live.finish(live)
     end
+  end
+
+  # The module-level `use`s that failed to expand in-process during the scan, across every
+  # in-scope source — computed here (only for `--check`) rather than on the `Mutare.Schema`
+  # so a normal run pays nothing for it. `--no-expand-uses` opted out of expansion, so there
+  # is nothing to diagnose. Each entry is `%{file, module, line, reason}` (see
+  # `Mutare.Transform.Uses.degraded_uses/2`). The `"use "` substring prefilter keeps the
+  # re-parse off every file that has none; a `:sources` entry parsed cleanly in the scan.
+  defp scan_degraded_uses(%Schema{}, %Options{expand_uses: false}), do: []
+
+  defp scan_degraded_uses(%Schema{sources: sources}, %Options{extensions: extensions}) do
+    for {file, source} <- sources,
+        String.contains?(source, "use "),
+        entry <- Mutare.Transform.Uses.degraded_uses(Sourceror.parse_string!(source), extensions),
+        do: Map.put(entry, :file, file)
   end
 
   # The shared scan/live prelude of a compile-backed run (`run_mutation_testing/3` and

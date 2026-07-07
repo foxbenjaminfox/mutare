@@ -70,6 +70,7 @@ defmodule Mutare.Transform.Uses do
 
   @directives_key MetaKeys.use_directives_key()
   @behaviours_key MetaKeys.use_behaviours_key()
+  @degraded_key MetaKeys.use_degraded_key()
 
   # The module name of a nested `defmodule` we couldn't resolve to a concrete atom (a non-static
   # head, or a child of an already-unresolved parent). Expansion is *skipped* under it — see
@@ -347,16 +348,66 @@ defmodule Mutare.Transform.Uses do
   defp stamp(node, @unresolved, _env, _handlers), do: node
 
   defp stamp({:use, meta, args} = node, module, env, handlers) do
-    {directives, behaviours} = Harvest.run(node, module, env, handlers)
+    {directives, behaviours, degraded} = Harvest.run(node, module, env, handlers)
 
     meta =
       meta
       |> put_harvest(@directives_key, directives)
       |> put_harvest(@behaviours_key, behaviours)
+      |> put_degraded(degraded)
 
     {:use, meta, args}
   end
 
   defp put_harvest(meta, _key, []), do: meta
   defp put_harvest(meta, key, values), do: [{key, values} | meta]
+
+  # Stamp a degradation reason (`{module, reason}`) onto the `use` node, or leave the meta
+  # untouched when the `use` expanded. Cheap and harmless in the hot path (the key is
+  # stripped before render like every `:mutare_*` stamp); `degraded_uses/2` reads it back.
+  defp put_degraded(meta, nil), do: meta
+  defp put_degraded(meta, {_mod, _reason} = degraded), do: [{@degraded_key, degraded} | meta]
+
+  @doc """
+  The module-level `use`s in `ast` that failed to expand in-process, as
+  `[%{module: module, line: line | nil, reason: reason}]` in source order.
+
+  This runs the same `annotate/2` walk (so it sees the same module-level `use`s, with the
+  same alias resolution) and reads back the `:mutare_use_degraded` stamps. Only the two
+  module-known, unambiguous failures surface — `:not_loadable` and `:nonstatic_args` (see
+  `t:Mutare.Transform.Uses.Harvest.degradation/0`); a `use` that expanded to genuinely
+  nothing is not reported. `mix mutare --check` uses this to warn that a `:macro_routes`
+  `:skip` keyed on such a `use`'s injected macros would be dead. Best-effort and never
+  raises for the same reasons `annotate/2` doesn't.
+  """
+  @spec degraded_uses(Macro.t(), [Extension.Spec.t() | module() | {module(), keyword()}]) ::
+          [%{module: module(), line: pos_integer() | nil, reason: atom()}]
+  def degraded_uses(ast, extensions \\ []) do
+    ast
+    |> annotate(extensions)
+    |> collect_degraded()
+    |> Enum.reverse()
+  end
+
+  # Prewalk the annotated tree gathering every `:mutare_use_degraded` stamp into
+  # `[%{module, line, reason}]` (reversed — `degraded_uses/2` flips it to source order).
+  defp collect_degraded(annotated) do
+    annotated
+    |> Macro.prewalk([], fn
+      {:use, meta, _args} = node, acc when is_list(meta) ->
+        case Keyword.get(meta, @degraded_key) do
+          {mod, reason} ->
+            {node, [%{module: mod, line: line_of(meta), reason: reason} | acc]}
+
+          nil ->
+            {node, acc}
+        end
+
+      node, acc ->
+        {node, acc}
+    end)
+    |> elem(1)
+  end
+
+  defp line_of(meta), do: Keyword.get(meta, :line)
 end

@@ -349,7 +349,7 @@ defmodule Mutare.CLI.Info do
   # unknown block macros that had to be skipped wholesale and the durable `:macro_routes`
   # fix. `check` is `Mutare.Runner.check_with_schema/3`'s result
   # (`%{schema: schema, recovery: recovery | nil}`).
-  def print_check(%{schema: schema, recovery: recovery}, %Project{} = project) do
+  def print_check(%{schema: schema, recovery: recovery}, %Project{} = project, degraded_uses) do
     mutants = length(schema.sites)
     files = map_size(schema.metamutants)
 
@@ -360,7 +360,42 @@ defmodule Mutare.CLI.Info do
     )
 
     print_check_recovery(recovery)
+    print_degraded_uses(degraded_uses)
   end
+
+  # Warn about module-level `use`s the scan couldn't expand in-process (`--check` only). Each
+  # means any `:macro_routes` `:skip` keyed on what the `use` injects will silently never fire
+  # — the exact failure that's undiagnosable from a normal run. Nothing to say when every `use`
+  # expanded (the common case, so no noise).
+  defp print_degraded_uses([]), do: :ok
+
+  defp print_degraded_uses(entries) do
+    n = length(entries)
+
+    Mix.shell().info(
+      "\n#{n} module-level `use` statement#{CLI.plural(n)} could not be expanded during the " <>
+        "scan. Mutare couldn't see the import/alias each injects, so a `:macro_routes` :skip " <>
+        "keyed on those injected macros would not fire, and their DSL bodies may be mutated:\n"
+    )
+
+    entries
+    |> Enum.sort_by(&{&1.file, &1.line})
+    |> Enum.each(fn e ->
+      at = if e.line, do: "#{e.file}:#{e.line}", else: e.file
+      Mix.shell().info("  #{at}  use #{inspect(e.module)}  (#{degraded_reason(e.reason)})")
+    end)
+
+    Mix.shell().info(
+      "\nIf these `use`s bring in a DSL you need routed, ensure the module is compiled and " <>
+        "loadable (an uncompiled dependency or an external-path target is the usual cause), " <>
+        "or add a `Mutare.UseExpansion` extension for it."
+    )
+  end
+
+  defp degraded_reason(:not_loadable),
+    do: "module not loadable in the scan — an uncompiled dep or external-path target"
+
+  defp degraded_reason(:nonstatic_args), do: "its `use` arguments are not a compile-time literal"
 
   # A clean first compile: nothing to route. Say so explicitly so the preflight has a
   # clear pass signal, not just the compile line above.

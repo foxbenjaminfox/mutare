@@ -741,5 +741,74 @@ defmodule Mutare.UsesTest do
 
       refute meta =~ "mutare_use_directives"
     end
+
+    test "the degraded-use stamp is stripped before render" do
+      {meta, _sites, _next_id} =
+        Mutare.Transform.transform_string_with_sites(
+          "defmodule M do\n  use Definitely.Not.Loaded, :x\n  def f, do: 1 + 1\nend\n",
+          mutators: [Mutare.Mutators.Arithmetic]
+        )
+
+      refute meta =~ "mutare_use_degraded"
+    end
+  end
+
+  describe "degraded_uses/2 (the --check diagnostic)" do
+    defp degraded(source), do: source |> Sourceror.parse_string!() |> Uses.degraded_uses()
+
+    test "flags an unloadable module-level `use` with :not_loadable and its line" do
+      source = """
+      defmodule UsesMissing do
+        use Definitely.Not.Loaded.Anywhere, :controller
+      end
+      """
+
+      assert [%{module: Definitely.Not.Loaded.Anywhere, reason: :not_loadable, line: 2}] =
+               degraded(source)
+    end
+
+    test "flags a non-literal-argument `use` with :nonstatic_args" do
+      source = """
+      defmodule UsesDynamic do
+        use Mutare.Test.ControllerUsing, some_var
+      end
+      """
+
+      assert [%{module: Mutare.Test.ControllerUsing, reason: :nonstatic_args}] = degraded(source)
+    end
+
+    test "does NOT flag a `use` that expands cleanly (an empty expand is not a degradation)" do
+      source = """
+      defmodule UsesController do
+        use Mutare.Test.ControllerUsing
+      end
+      """
+
+      assert degraded(source) == []
+    end
+
+    test "does NOT flag a `use` nested inside a def (not a module-level directive)" do
+      source = """
+      defmodule NotModuleLevel do
+        def f do
+          use Definitely.Not.Loaded.Anywhere
+        end
+      end
+      """
+
+      assert degraded(source) == []
+    end
+
+    test "a raising __using__ is not flagged (indistinguishable from an empty expand)" do
+      # The pre-expansion gates (loadable + static args) both pass, so this is treated as a
+      # clean-but-empty expand, not a reportable degradation — the extension-covered case.
+      source = """
+      defmodule UsesRaising do
+        use Mutare.Test.RaisingUsing
+      end
+      """
+
+      assert degraded(source) == []
+    end
   end
 end

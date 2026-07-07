@@ -59,6 +59,7 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_macro_call`       — resolved `{module_key, name}` macro identity    (Resolve.MacroStamp, read by Calls.resolved_macro_call/1)
   #   * `:mutare_use_directives`   — import/alias/require a `use` injects            (Uses)
   #   * `:mutare_use_behaviours`   — `@behaviour`s a `use` injects (on the `use`)    (Uses)
+  #   * `:mutare_use_degraded`     — `{module, reason}` a `use` failed to expand     (Uses, read by `--check`)
   #   * `:mutare_behaviours`       — a `defmodule`'s behaviour MapSet               (Behaviours)
   @bookkeeping_keys [
     tag_key: :mutare_tag,
@@ -72,6 +73,7 @@ defmodule Mutare.Transform.MetaKeys do
     macro_call_key: :mutare_macro_call,
     use_directives_key: :mutare_use_directives,
     use_behaviours_key: :mutare_use_behaviours,
+    use_degraded_key: :mutare_use_degraded,
     behaviours_key: :mutare_behaviours
   ]
 

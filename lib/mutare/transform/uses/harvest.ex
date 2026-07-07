@@ -73,7 +73,8 @@ defmodule Mutare.Transform.Uses.Harvest do
   `backend:` is a module alias, not a literal) and the `Code.ensure_loaded?` check (the extension
   asserts the directives), since it never invokes `__using__`.
   """
-  @spec run(Macro.t(), module(), map(), [Extension.Spec.t()]) :: {[Macro.t()], [module()]}
+  @spec run(Macro.t(), module(), map(), [Extension.Spec.t()]) ::
+          {[Macro.t()], [module()], degradation()}
   def run(sourceror_use_node, caller_module, env, handlers) do
     case target(sourceror_use_node, env) do
       {:ok, mod, args} ->
@@ -87,8 +88,11 @@ defmodule Mutare.Transform.Uses.Harvest do
             from_extension(directives, behaviours)
         end
 
+      # An unresolvable target (aliased to something non-static, or a non-`use` shape). Not
+      # flagged as a degradation: without a concrete module there is no `:skip` route to
+      # warn about, and the false-positive risk (a module our alias env simply missed) is high.
       :error ->
-        {[], []}
+        {[], [], nil}
     end
   rescue
     # Any extension **misbehavior** — a malformed return, or a raise/throw — reaches here as a
@@ -97,46 +101,67 @@ defmodule Mutare.Transform.Uses.Harvest do
     # must surface loudly rather than degrade like an un-expandable `use`: it rides *through* the
     # otherwise catch-all rescue up to `Mutare.Schema`, which re-raises it.
     e in UseExpansion.ContractError -> reraise e, __STACKTRACE__
-    _ -> {[], []}
+    _ -> {[], [], nil}
   catch
-    _, _ -> {[], []}
+    _, _ -> {[], [], nil}
   end
+
+  @typedoc """
+  Why a module-level `use` failed to expand in-process, as `{module, reason}` — or `nil`
+  when it expanded (possibly to nothing). Only the two **module-known, unambiguous**
+  failures are reported (a `use` that loaded and expanded to genuinely no directives is
+  *not* a degradation): `:not_loadable` (the module isn't on the scan process's code path
+  — an uncompiled dep, or an external-path target) and `:nonstatic_args` (`use Foo,
+  runtime_expr` — the opts aren't a compile-time literal). Both mean any `:macro_routes`
+  `:skip` keyed on what the `use` injects will silently never fire. Read by `mix mutare
+  --check` (via `Mutare.Transform.Uses.degraded_uses/2`).
+  """
+  @type degradation :: {module(), :not_loadable | :nonstatic_args} | nil
 
   # In-process expansion: expand `mod.__using__(opts)` and harvest, the path taken when no
   # extension overrides the `use`. The static-literal opts gate and the loadability check live
   # here — an extension override needs neither (see `run/4`). `handlers` are threaded through so a
   # `use` nested in the expanded `__using__` body is *also* offered to the extensions (see `collect`).
+  # Returns `{directives, behaviours, degradation}`: the two failed gates report their reason so
+  # `--check` can name a `use` whose `:skip` route would be dead; a successful expand reports `nil`.
   defp in_process(mod, args, caller_module, env, handlers) do
-    with {:ok, opts} <- use_opts(args),
-         true <- Code.ensure_loaded?(mod) do
-      ctx = %Ctx{
-        caller: caller_module,
-        caller_aliases: env,
-        depth: 0,
-        seen: MapSet.new(),
-        handlers: handlers
-      }
+    cond do
+      not match?({:ok, _}, use_opts(args)) ->
+        {[], [], {mod, :nonstatic_args}}
 
-      {behaviour_items, directive_items} =
-        mod
-        |> expand_and_collect(opts, ctx)
-        |> Enum.split_with(&match?({:mutare_behaviour, _}, &1))
+      not Code.ensure_loaded?(mod) ->
+        {[], [], {mod, :not_loadable}}
 
-      directives = to_sourceror_directives(directive_items)
-      behaviours = Enum.map(behaviour_items, fn {:mutare_behaviour, beh} -> beh end)
-      {directives, behaviours}
-    else
-      _ -> {[], []}
+      true ->
+        {:ok, opts} = use_opts(args)
+
+        ctx = %Ctx{
+          caller: caller_module,
+          caller_aliases: env,
+          depth: 0,
+          seen: MapSet.new(),
+          handlers: handlers
+        }
+
+        {behaviour_items, directive_items} =
+          mod
+          |> expand_and_collect(opts, ctx)
+          |> Enum.split_with(&match?({:mutare_behaviour, _}, &1))
+
+        directives = to_sourceror_directives(directive_items)
+        behaviours = Enum.map(behaviour_items, fn {:mutare_behaviour, beh} -> beh end)
+        {directives, behaviours, nil}
     end
   end
 
-  # An extension override's result → the `{directives, behaviours}` harvest shape. The directives
-  # are standard-quoted (from the extension's `quote/2`), so they go through the same `to_sourceror/1`
+  # An extension override's result → the `{directives, behaviours, nil}` harvest shape (an
+  # extension supplying directives is the opposite of a degradation). The directives are
+  # standard-quoted (from the extension's `quote/2`), so they go through the same `to_sourceror/1`
   # (`Macro.to_string |> Sourceror.parse_string!`) as an in-process harvest, arriving as the
   # Sourceror directives `Resolve.register/2` folds. Behaviours are kept as bare atoms.
   defp from_extension(directives, behaviours) do
     {directives |> flatten_directives() |> to_sourceror_directives(),
-     normalize_behaviours(behaviours)}
+     normalize_behaviours(behaviours), nil}
   end
 
   # Extension behaviours arrive as resolved **module atoms** per the `Mutare.UseExpansion.Expansion`

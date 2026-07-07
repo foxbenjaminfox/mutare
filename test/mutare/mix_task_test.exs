@@ -685,6 +685,46 @@ defmodule Mix.Tasks.MutareTest do
       assert out =~ "guarded"
       assert out =~ "{:*, :guarded, :skip}"
     end
+
+    @tag :runner
+    @tag timeout: 180_000
+    test "warns about a module-level `use` that could not be expanded" do
+      # A `use Foo, @opts` compiles fine in the sandbox (the attribute resolves at compile
+      # time), but at scan time `@opts` is not a compile-time literal, so Mutare can't expand
+      # the `use` — a :skip route keyed on what MyDSL injects would be dead. --check must name
+      # it. (This is the compilable degradation; a genuinely unloadable module would fail the
+      # sandbox compile itself, aborting before the report.)
+      %{project: project, sandbox: sandbox} =
+        Project.build(:checkuse, %{
+          "lib/my_dsl.ex" => """
+          defmodule MyDSL do
+            defmacro __using__(_opts) do
+              quote do
+                import MyDSL
+              end
+            end
+
+            defmacro thing(x), do: x
+          end
+          """,
+          "lib/c.ex" => """
+          defmodule C do
+            @opts :controller
+            use MyDSL, @opts
+            def add(a, b), do: a + b
+          end
+          """
+        })
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert Mix.Tasks.Mutare.run([project, "--check", "--sandbox", sandbox]) == :ok
+      end)
+
+      out = shell_info() |> Enum.join("\n")
+      assert out =~ "could not be expanded"
+      assert out =~ "use MyDSL"
+      assert out =~ "not a compile-time literal"
+    end
   end
 
   @tag :runner
