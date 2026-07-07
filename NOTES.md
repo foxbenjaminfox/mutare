@@ -187,6 +187,39 @@ to the *real* compiler output (so a `expanding macro:` format drift is caught). 
 the only fix — `# mutare:ignore` is applied *after* rendering, so the selector is still spliced
 and the compile still fails.
 
+### First-run UX on unknown DSLs: narrate recovery, suggest routes, `--check` preflight `[done]`
+Aiming Mutare at a macro-heavy project it doesn't recognise (Absinthe, NimbleParsec, an
+in-house DSL) had a slow, silent, forgetful feedback loop. Three coupled fixes, all built on
+one new thread: a `Mutare.Runner.Recovery` struct carried through `compile_with_recovery`, and a
+`t:Mutare.Run.recovery/0` summary on the completed `Mutare.Run`.
+
+  * **Narrate recovery.** Each poison-recovery round is a *full recompile*, and up to 25 of them
+    ran behind the single "compiling metamutant (once)…" spinner — indistinguishable from a hang.
+    The runner now fires a `{:poison_round, info}` `:on_phase` event per round (dropped ids +
+    escalated blocks); `Mutare.Report.Live` leaves a permanent `⟳ compile-poison: …` line in
+    **every** mode (not just `--verbose`, unlike the `✓` phase details), so a wrong DSL guess is
+    visible while it happens.
+  * **Suggest routes after escalation.** The in-memory `skip_ids`/block escalation is rediscovered
+    from scratch on every run (it is deliberately *not* persisted — id caches are fragile across
+    edits in exactly the way name-based routes aren't, see "Unknown block macro_routes"). So on a
+    run that *recovered* by escalating an unknown block macro, `Mutare.Poison.Hint.escalation_note/1`
+    prints a copy-pasteable `{:*, :name, :skip}` `:macro_routes` snippet — the durable, name-based
+    fix — making the **user** the persistence layer. Only *escalations* earn a note (a stable
+    per-macro fact); an id-specific drop is a one-off (a custom mutator's bad code), not worth
+    pinning. Module-wildcard `:*` because an unknown DSL's module isn't resolved.
+  * **`--check` preflight.** `--dry-run` never compiles, so it can't tell a first-run user whether
+    their DSLs will build. `--check` runs the one compile (with the same recovery) and stops before
+    the baseline/per-mutant phase (`Runner.check_with_schema/3`, sharing the compile prelude
+    `with_compiled_sandbox/3` with a full run), reporting *how* it compiled and printing the route
+    suggestion. It also surfaces **degraded `use` expansions** — the failure mode where a
+    module-level `use` Mutare can't expand in-process leaves a `:skip` route keyed on its injected
+    macros dead. `Harvest.run/4` returns a degradation reason for the two *module-known,
+    unambiguous* cases only (`:not_loadable`, `:nonstatic_args`); a `use` that loads and expands to
+    genuinely nothing is **not** flagged (the "expanded but empty" and "raised" cases are
+    indistinguishable at the top level, and false positives here would be pure noise). `Uses` stamps
+    it under a stripped-before-render meta key; `Uses.degraded_uses/2` reads it back, computed only
+    for `--check` so a normal run pays nothing.
+
 ### Warn for ineffective `# mutare:ignore` directives `[done]`
 `# mutare:ignore` filtering fails **safe** — a typo'd family (`[arithmatic]`), an empty
 `[]`, a standalone directive on the wrong line, or a family that produced no mutant there
