@@ -513,9 +513,9 @@ defmodule Mix.Tasks.Mutare do
           Mix.raise(format_error(reason, detail, root))
       end
     after
-      # Backstop for an unexpected raise mid-run; `finish/1` is idempotent. A variant-label
-      # `Mutare.Ignore.SpecError` from the scan propagates through here (the live block is torn
-      # down) to `dispatch_with_options/2`, which renders it as a clean Mix abort.
+      # Backstop for an unexpected raise during the runner; `finish/1` is idempotent. A
+      # scan-time abort (a variant-label `Mutare.Ignore.SpecError`, or a `--strict-ignores`
+      # failure) is already torn down inside `start_live_scan/3` before it reaches here.
       if live, do: Live.finish(live)
     end
   end
@@ -581,6 +581,30 @@ defmodule Mix.Tasks.Mutare do
     # machine reports are untouched.
     live = maybe_start_live(options)
 
+    # The scan runs here, *before* the caller's `try/after` — so a scan-time abort (a
+    # variant-label `Mutare.Ignore.SpecError` from `Schema.build`, or a `--strict-ignores`
+    # `Mix.raise` from `enforce_strict_ignores`) would bypass that `Live.finish` and leave
+    # the live block dangling on the terminal. Own the teardown here: tear it down on any
+    # raise, then re-raise for `dispatch_with_options/2` to render as a clean Mix abort.
+    # `finish/1` is idempotent, so the caller's `after` remains a harmless backstop.
+    try do
+      scan_with_live(project, context, options, root, live)
+    rescue
+      e ->
+        if live, do: Live.finish(live)
+        reraise e, __STACKTRACE__
+    end
+  end
+
+  # The scan body of `start_live_scan/3`, wrapped by its teardown guard. Returns
+  # `{live, schema, run_context}` on success.
+  defp scan_with_live(
+         %Project{} = project,
+         %Context{} = context,
+         %Options{} = options,
+         root,
+         live
+       ) do
     # Build the cheap per-site live `summary` only when the in-flight activity line will actually
     # consume it — which needs *both*:
     #   * an **animating** (ANSI/tty) reporter — a plain piped/CI run prints only leave-behind
