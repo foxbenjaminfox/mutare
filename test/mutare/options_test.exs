@@ -524,7 +524,7 @@ defmodule Mutare.OptionsTest do
     end
 
     test "rejects malformed duration strings" do
-      for bad <- ["", "30s10m", "10d", "10M", " 10m", "0s"] do
+      for bad <- ["", "30s10m", "10d", "10M", " 10m", "10m\n", "0s"] do
         assert_raise ArgumentError, ~r/:time_budget/, fn ->
           Options.new(time_budget: bad)
         end

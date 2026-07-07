@@ -72,6 +72,7 @@ defmodule Mutare.DurationTest do
     test "surrounding or internal whitespace is rejected" do
       assert {:error, _} = Duration.parse(" 10m")
       assert {:error, _} = Duration.parse("10m ")
+      assert {:error, _} = Duration.parse("10m\n")
       assert {:error, _} = Duration.parse("1h 30m")
     end
 

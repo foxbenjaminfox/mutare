@@ -28,11 +28,11 @@ defmodule Mutare.Duration do
 
   # Anchored and all-optional: each segment is `<digits><unit>`, in descending order,
   # so a wrong order / unknown unit / unit-without-number leaves input unconsumed and
-  # `$` fails (→ no match → malformed). An all-optional match also accepts `""`, which
+  # `\\z` fails (→ no match → malformed). An all-optional match also accepts `""`, which
   # `from_captures/1` rejects as "no segment". Named groups so `Regex.named_captures`
   # always returns all three (positional `:all_but_first` drops *trailing* empties, so
   # `"10m"` would come back short).
-  @grammar ~r/^(?:(?<h>\d+)h)?(?:(?<m>\d+)m)?(?:(?<s>\d+)s)?$/
+  @grammar ~r/^(?:(?<h>\d+)h)?(?:(?<m>\d+)m)?(?:(?<s>\d+)s)?\z/
 
   @malformed ~s(must be a duration string like "10m", "90s", or "1h30m" ) <>
                ~s{(units h/m/s, in descending order, at least one)}
