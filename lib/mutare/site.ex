@@ -204,10 +204,12 @@ defmodule Mutare.Site do
   # The `original_code` renderer shared by both delete-site constructors
   # (`clause_drop/4`, `in_place_drop/5`). A `rescue` clause is a bare `->` node, which
   # `Sourceror.to_string/1` renders in call form (`->(head, body)`); render it in arrow
-  # syntax (`head -> body`) for the one-line `describe/1`/report summary. (The `-`/`+`
-  # diff reads source lines by range, so it is unaffected.) Rescue clauses carry one
-  # pattern and no `when` guard; anything else — a dropped `def`/`defp` function clause
-  # included — falls back to the default rendering.
+  # syntax (`head -> body`) for the one-line `describe/1`/report summary. A bare keyword
+  # *pair* (`select: 2`, an attributed clause drop — see `keyword_pair/1`) renders in
+  # tuple form (`{:select, 2}`) for the same reason; render the `key: value` shorthand.
+  # (The `-`/`+` diff reads source lines by range, so it is unaffected either way.) Rescue
+  # clauses carry one pattern and no `when` guard; anything else — a dropped `def`/`defp`
+  # function clause included — falls back to the default rendering.
   # Lazy mode (`render?` false) records no diff text — the scan defers it, and the report
   # re-derives it for the few sites it actually shows (see `Mutare.Runner.Hydrate`).
   defp clause_code(_node, false), do: nil
@@ -215,7 +217,12 @@ defmodule Mutare.Site do
   defp clause_code({:->, _meta, [[head], body]}, true),
     do: "#{Sourceror.to_string(head)} -> #{Sourceror.to_string(body)}"
 
-  defp clause_code(node, true), do: Sourceror.to_string(node)
+  defp clause_code(node, true) do
+    case keyword_pair(node) do
+      {:ok, key, value} -> "#{Macro.inspect_atom(:key, key)} #{Sourceror.to_string(value)}"
+      :error -> Sourceror.to_string(node)
+    end
+  end
 
   # The live-summary builders (`summary?` true) — the cheap `Macro`-rendered counterparts of
   # `describe/1`, gated to `nil` when not requested. A replacement shows `mutator  orig → mutated`;
@@ -234,11 +241,28 @@ defmodule Mutare.Site do
   # `Sourceror.to_string/1` and fine for an ephemeral one-liner (it normalises formatting, which
   # the report/JSON/SARIF can't tolerate but a spinner line can). A bare `->` clause (a dropped
   # `rescue`) renders in call form (`->(head, body)`); show it in arrow syntax, mirroring
-  # `clause_code/2`'s handling of the same shape.
+  # `clause_code/2`'s handling of the same shape. A bare keyword pair (a dropped attributed
+  # clause) renders as a tuple; show the `key: value` shorthand, mirroring `clause_code/2`.
   defp macro({:->, _meta, [[head], body]}),
     do: "#{Macro.to_string(head)} -> #{Macro.to_string(body)}"
 
-  defp macro(node), do: Macro.to_string(node)
+  defp macro(node) do
+    case keyword_pair(node) do
+      {:ok, key, value} -> "#{Macro.inspect_atom(:key, key)} #{Macro.to_string(value)}"
+      :error -> Macro.to_string(node)
+    end
+  end
+
+  # A Sourceror keyword pair — `{{:__block__, [format: :keyword, …], [atom]}, value}` — as
+  # `{:ok, key_atom, value}`, else `:error`. The shape a dropped `from`/`query` clause takes when
+  # a mutator attributes the drop to the whole pair (`Mutare.Mutator.Mutation.at_drop/1`); the
+  # summary renderers show it as `key: value` rather than the bare `{:key, value}` tuple
+  # `Sourceror`/`Macro` render for a pair outside a list.
+  defp keyword_pair({{:__block__, meta, [key]}, value}) when is_atom(key) and is_list(meta) do
+    if meta[:format] == :keyword, do: {:ok, key, value}, else: :error
+  end
+
+  defp keyword_pair(_node), do: :error
 
   @doc """
   Builds an in-place site for a return-expression replacement.

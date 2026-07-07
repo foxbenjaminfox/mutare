@@ -12,7 +12,7 @@ defmodule Mutare.Transform.Tag do
   #
   # Both work the same way: walk the guard / pattern, tag every mutatable node with
   # a unique `meta[:mutare_tag]`, and return the tagged copy plus a `{tag, original,
-  # [{mutator, mutated, note, variant}]}` per target. A caller then materialises one mutant by
+  # [%Mutare.Mutator.Dispatch.Result{}]}` per target. A caller then materialises one mutant by
   # `replace_tag/3`-ing the tagged copy. Tags are stripped before rendering
   # (`Mutare.Transform.Render`), so a leftover tag on a sibling node is harmless.
   #
@@ -58,8 +58,8 @@ defmodule Mutare.Transform.Tag do
     do: tag_pattern_targets(pattern, acc, mutators)
 
   @doc """
-  Expand a clause's accumulated `{tag, original, [{mutator, mutated, note, variant}]}` targets into
-  candidates, one per `{mutator, mutated, note, variant}` quad.
+  Expand a clause's accumulated `{tag, original, [%Mutare.Mutator.Dispatch.Result{}]}` targets into
+  candidates, one per `Result`.
 
   Targets arrive in reverse post-order (`guard_targets/3` / `pattern_literal_targets/3`
   accumulate that way); they are reversed to source order so ids land in source order.
@@ -73,10 +73,7 @@ defmodule Mutare.Transform.Tag do
   skip an unrangeable node — the tagged paths now agree.
   """
   @spec expand_targets(
-          [
-            {non_neg_integer(), Macro.t(),
-             [{module(), Macro.t(), String.t() | nil, Mutare.Mutator.Mutation.variant()}]}
-          ],
+          [{non_neg_integer(), Macro.t(), [Mutare.Mutator.Dispatch.Result.t()]}],
           function()
         ) :: [term()]
   def expand_targets(targets, build) do
@@ -86,7 +83,12 @@ defmodule Mutare.Transform.Tag do
     |> Enum.flat_map(fn {tag, original, muts} ->
       case NodeRange.get(original) do
         %{} = range ->
-          Enum.map(muts, fn {mutator, mutated, note, variant} ->
+          Enum.map(muts, fn %Dispatch.Result{
+                              spec: mutator,
+                              node: mutated,
+                              note: note,
+                              variant: variant
+                            } ->
             build.(tag, original, mutator, mutated, note, variant, range)
           end)
 
@@ -231,9 +233,9 @@ defmodule Mutare.Transform.Tag do
     tag_node(node, muts, acc)
   end
 
-  defp invalid_in_rhs_mutation?({_spec, {:%{}, _meta, _pairs}, _note, _variant}), do: true
+  defp invalid_in_rhs_mutation?(%Dispatch.Result{node: {:%{}, _meta, _pairs}}), do: true
 
-  defp invalid_in_rhs_mutation?({_spec, mutated, _note, _variant}),
+  defp invalid_in_rhs_mutation?(%Dispatch.Result{node: mutated}),
     do: AST.empty_collection_literal?(mutated)
 
   # `offer_target/3` minus the Conditional mutant forcing the node to `bool` — the redundant
@@ -243,7 +245,7 @@ defmodule Mutare.Transform.Tag do
     tag_node(node, muts, acc)
   end
 
-  defp constant_mutation?({_spec, mutated, _note, _variant}, bool),
+  defp constant_mutation?(%Dispatch.Result{node: mutated}, bool),
     do: Suppression.boolean_literal?(mutated, bool)
 
   # `offer_target/3` for an equality op *under a `not`* minus its negation-redundant
@@ -255,7 +257,7 @@ defmodule Mutare.Transform.Tag do
     tag_node(node, muts, acc)
   end
 
-  defp negation_redundant_mutation?({_spec, mutated, _note, _variant}, op),
+  defp negation_redundant_mutation?(%Dispatch.Result{node: mutated}, op),
     do: Suppression.negation_redundant?(mutated, op)
 
   # A bitstring segment `<<value::spec>>`: tag-walk the value, keep the spec raw
@@ -371,7 +373,7 @@ defmodule Mutare.Transform.Tag do
   defp literal_pattern_mutations(node, mutators) do
     node
     |> Dispatch.mutations(mutators)
-    |> Enum.filter(fn {_mutator, mutated, _note, _variant} -> literal_node?(mutated) end)
+    |> Enum.filter(fn %Dispatch.Result{node: mutated} -> literal_node?(mutated) end)
   end
 
   # The literal-valued mutations of a scalar *value* rather than the node the walk
@@ -382,7 +384,7 @@ defmodule Mutare.Transform.Tag do
   defp value_literal_mutations(value, mutators) do
     {:__block__, [], [value]}
     |> Dispatch.mutations(mutators)
-    |> Enum.filter(fn {_mutator, mutated, _note, _variant} -> literal_node?(mutated) end)
+    |> Enum.filter(fn %Dispatch.Result{node: mutated} -> literal_node?(mutated) end)
   end
 
   # NOTE (suspected-equivalent survivors, deliberately not `# mutare:ignore`d): the
@@ -443,7 +445,7 @@ defmodule Mutare.Transform.Tag do
   defp key_pattern_mutations(node, key_values, mutators) do
     node
     |> literal_pattern_mutations(mutators)
-    |> Enum.reject(fn {_mutator, mutated, _note, _variant} ->
+    |> Enum.reject(fn %Dispatch.Result{node: mutated} ->
       literal_value_in?(mutated, key_values)
     end)
   end

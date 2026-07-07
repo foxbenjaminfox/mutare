@@ -63,6 +63,17 @@ defmodule Mutare.Transform.Candidate do
     # (the `%Mutare.Mutator.Mutation{}`'s `variant`); it rides through to `Mutare.Site`, where it
     # takes precedence over the `c:Mutare.Mutator.variant/2` derivation. Default `nil` — an operator
     # family (or an untagged mutation) leaves the label to be derived from the node.
+    #
+    # `attribution` is the optional report-location override (a `%Mutare.Mutator.Mutation.Attribution{}`
+    # from `Mutare.Mutator.Mutation.at/2` / `at_drop/1`), carried when a `mutate/2` returned a
+    # **whole-node rewrite** whose textual footprint is one inner clause (the motivating case:
+    # `mutare_ecto` rebuilding a whole `from(...)` but changing only its `order_by:`). It decouples
+    # the site's *location + diff* (the clause the plugin names) from the *selector* (which still
+    # splices `original`/`mutated`, the whole node, to build the metamutant): `Candidate.Delivery`
+    # reads it and records a clause-level replace or delete `Mutare.Site` instead of one pinned to
+    # the offered node. Validated at attach time (`Attach.build_candidates/2` drops a clause that is
+    # unrangeable or escapes the node's span). Default `nil` — an ordinary mutation is reported at
+    # the offered node, exactly as before.
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
@@ -72,7 +83,8 @@ defmodule Mutare.Transform.Candidate do
             call_option_key?: boolean(),
             pin?: boolean(),
             note: String.t() | nil,
-            variant: Mutare.Mutator.Mutation.variant()
+            variant: Mutare.Mutator.Mutation.variant(),
+            attribution: Mutare.Mutator.Mutation.Attribution.t() | nil
           }
 
     defstruct [
@@ -83,7 +95,8 @@ defmodule Mutare.Transform.Candidate do
       call_option_key?: false,
       pin?: false,
       note: nil,
-      variant: nil
+      variant: nil,
+      attribution: nil
     ]
   end
 

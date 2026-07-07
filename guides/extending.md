@@ -133,6 +133,28 @@ Two optional callbacks refine how users interact with your mutator:
 - `mutate_call_option_keys?/1` lets a key-mutating family opt out of rewriting
   trailing call options like the `timeout:` in `foo(x, timeout: 5)`.
 
+### Reporting a whole-node rewrite at its clause
+
+A macro-aware mutator that rebuilds and returns a whole registered call from
+`mutate/1,2` — say it rewrites an entire multi-line `from(...)` query but only
+changed one `where:` clause — would otherwise report every mutant at the call's
+line, so `# mutare:ignore` (line-keyed) could only suppress the whole call at
+once. Wrap the return in a `Mutare.Mutator.Mutation` with an `:attribution` to
+point the report at the clause you actually changed:
+
+```elixir
+# a value flip, reported (and ignorable) at the order_by: line:
+Mutation.new(rebuilt_call, attribution: Mutation.at(order_by_value, flipped_value))
+
+# a clause drop, reported at the dropped clause's line:
+Mutation.new(rebuilt_call, attribution: Mutation.at_drop(dropped_clause))
+```
+
+The metamutant is still built from the returned node; attribution only moves the
+site's location and diff onto the named clause. Point it at a node *inside* the
+rewrite — core drops (with a warning) an attribution whose clause isn't rangeable
+or escapes the returned node's span. See `Mutare.Mutator.Mutation`.
+
 ### Testing your mutator
 
 `import Mutare.Test` in an ExUnit case. It tests at three levels: the

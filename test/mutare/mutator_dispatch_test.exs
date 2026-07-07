@@ -62,7 +62,7 @@ defmodule Mutare.MutatorDispatchTest do
   defp rendered_mutations(entry) do
     node = Mutare.AST.parse!("1")
 
-    for {_spec, mutated, _note, _variant} <- Dispatch.mutations(node, [entry]),
+    for %Dispatch.Result{node: mutated} <- Dispatch.mutations(node, [entry]),
         do: Mutare.AST.to_string(mutated)
   end
 end

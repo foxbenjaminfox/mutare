@@ -145,14 +145,21 @@ defmodule Mutare.FinalizeTest do
     end
 
     test "a mutate/1-only mutator's return funnels through finalize/2 too" do
-      assert [{spec, {:x, [], nil}, "wrapped", nil}] =
+      assert [%Dispatch.Result{spec: spec, node: {:x, [], nil}, note: "wrapped", variant: nil}] =
                Dispatch.mutations({:+, [], [1, 2]}, [LocalFinalize])
 
       assert spec.name == :local
     end
 
     test "a relayed mutation (explicit :producer) bypasses the returning mutator's finalize" do
-      assert [{producer_spec, {:relayed, [], nil}, nil, nil}] =
+      assert [
+               %Dispatch.Result{
+                 spec: producer_spec,
+                 node: {:relayed, [], nil},
+                 note: nil,
+                 variant: nil
+               }
+             ] =
                Dispatch.mutations({:+, [], [1, 2]}, [RelayingFinalize])
 
       # The host-authored sibling was skipped by finalize/2; the relayed mutation rode

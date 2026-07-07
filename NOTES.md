@@ -7504,3 +7504,56 @@ Regression coverage: `mutators_literal_test.exs` (clauses incl. the no-delimiter
 `transform_test.exs` (routing: whole-swap + interior, no `:bitstring`/`:list` sites),
 `transform/node_range_test.exs` (the colon bump), `report_test.exs` (clean, re-parseable
 diffs for all three forms incl. the keyword key).
+
+### Per-mutation report-location override: `Mutation.at/2` / `at_drop/1` `[done]`
+A macro-aware mutator that returns a **whole-node rewrite** from `mutate/1,2` — rebuild and
+return an entire registered-macro call (the `mutare_ecto` whole-`from` case) — had its site
+location and diff welded to the offered node. For a multi-line `from(...)`, every clause mutant
+(a `where:` drop, an `order_by:` flip) reported at the `from` line, and since `# mutare:ignore`
+is line-keyed, a user could only suppress the *whole* query at once. The hosted path already
+solved the location half via `MacroHost.Target.range`; the ordinary in-place path never grew the
+equivalent hook.
+
+`%Mutare.Mutator.Mutation{}` gains an optional `:attribution` (built by `Mutation.at/2` — a
+replacement clause — or `at_drop/1` — a removed clause). It decouples the three roles the offered
+node used to fuse: the node is still **spliced** to build the metamutant (unchanged), but the site
+is **located** and **diffed** at the named clause. The constraint that forced carrying *both*
+clause nodes (not just a narrowed range): `Report.patch/2` pairs `site.range` with
+`site.mutated_code`, so range and code must describe the same span — a range-only override would
+splice whole-query text over a clause and corrupt the diff. Because a whole-node rewrite's textual
+footprint is local (one clause differs), a `{original_clause, mutated_clause}` pair *does* patch
+coherently, and the plugin already holds both.
+
+Three decisions worth recording:
+
+  * **Struct, not a widened tuple, for the `Dispatch.mutations/3` result.** Attribution has to
+    survive the `%Mutation{}` → result flattening in `Dispatch`. The result was a
+    `{spec, node, note, variant}` quad pattern-matched in ~8 places (`Transform.Tag`,
+    `Captures`, `test.ex`). A 5-tuple would break each match by arity — silent
+    `FunctionClauseError`s if any were missed — so it became `%Dispatch.Result{}`: the consumers
+    that ignore attribution match `%Result{}` and read only the fields they use; the one that
+    honours it (`Analyze.Attach`) reads `:attribution`. The public `Mutare.Analyze.expression_mutations/3`
+    quad is **not** this shape (it is built by `Collect` from `Candidate.InPlace`, decoupled), so
+    the extension contract and its fixtures were untouched.
+  * **Reuse the existing delete-site machinery.** `Site.in_place_drop/5` / `delete_site/7` /
+    `operation: :delete` already existed (for `RescueDrop`), so `at_drop/1` is wiring, not new
+    delivery code. Attribution branches live entirely in `Candidate.Delivery.build_site/5`: the
+    selector still splices `c.mutated`, so attribution is a pure Site-time reinterpretation —
+    `Overlap`, id assignment, and the metamutant see the offered node exactly as before. One
+    field on `Candidate.InPlace` (`:attribution`), not three parallel nullable reporting fields,
+    so "these move together" is structural.
+  * **A containment guard, warned not raised.** Core can't prove the plugin pointed `:attribution`
+    at a clause *inside* the rewrite, but `Analyze.Attach` catches the two ways it mislocates: a
+    clause that isn't rangeable (`NodeRange.get/1` returns `nil` *or raises* on a synthesized node
+    — both collapsed by a rescue) or one whose span escapes the offered node's. Either warns and
+    falls back to attributing the offered node — a mutator bug degrades loudly but never crashes
+    the transform or emits a diff pointing at unrelated source.
+
+One accepted cosmetic wrinkle: a dropped clause that is a bare keyword pair (`select: 2`) renders
+its one-line `Site.describe/1` summary in tuple form (`{:select, 2}`), because `Sourceror.to_string`
+of a bare pair loses the `format: :keyword` presentation. The **diff** is unaffected — the delete
+branch reads raw source lines by range — and the replace path attributes to the *value* node (the
+idiomatic `order_by:`-value flip), which renders cleanly. Regression coverage:
+`attribution_test.exs` (location, clause-level diff, per-clause `# mutare:ignore`, the
+mis-attribution fallback) with fixtures `Mutare.Test.AttributedQueryMutator` /
+`MisattributedQueryMutator`.

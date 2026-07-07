@@ -23,8 +23,9 @@ defmodule Mutare.Transform.Candidate.Delivery do
   #     reports `:hosted` (so `classify_node_candidates/1` rejects it); `site/4` is never called
   #     on it.
 
+  alias Mutare.Mutator.Mutation.Attribution
   alias Mutare.Site
-  alias Mutare.Transform.Candidate
+  alias Mutare.Transform.{Candidate, NodeRange}
 
   @type node_candidate ::
           Candidate.InPlace.t()
@@ -131,6 +132,39 @@ defmodule Mutare.Transform.Candidate.Delivery do
   # Each `site_kind` knows which `Mutare.Site` constructor to call and which candidate fields it
   # reads (the constructors differ in arity and in which fields they record). `flags` is the
   # `{render?, summary?}` pair, forwarded as the two render opts.
+  # An in-place candidate whose producing mutator supplied a report-location override
+  # (`Candidate.InPlace`'s `:attribution`, validated at attach time) records the site at the named
+  # clause, not the offered node — a clause-level replace (`at/2`) or delete (`at_drop/1`). The
+  # selector is unaffected: `selector_branch/1` still splices `c.mutated` (the whole rewrite) to
+  # build the metamutant; only the recorded `Mutare.Site` moves. Any other `:in_place` candidate
+  # (an unattributed `InPlace`, or a `CasePattern`, which carries no `:attribution` field) takes the
+  # plain path below.
+  defp build_site(
+         :in_place,
+         id,
+         %Candidate.InPlace{attribution: %Attribution{} = attribution} = c,
+         file,
+         {render?, summary?}
+       ) do
+    range = NodeRange.get(attribution.original)
+
+    case attribution.mutated do
+      :drop ->
+        Site.in_place_drop(id, file, range, attribution.original, c.mutator,
+          render?: render?,
+          summary?: summary?
+        )
+
+      mutated ->
+        Site.in_place(id, file, range, attribution.original, mutated, c.mutator,
+          note: note(c),
+          variant: variant(c),
+          render?: render?,
+          summary?: summary?
+        )
+    end
+  end
+
   defp build_site(:in_place, id, c, file, {render?, summary?}),
     do:
       Site.in_place(id, file, c.range, c.original, c.mutated, c.mutator,

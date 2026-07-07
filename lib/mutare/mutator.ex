@@ -155,7 +155,11 @@ defmodule Mutare.Mutator do
       inapplicable entries before returning the list. To replace a node with the
       literal `nil`, return `Mutare.AST.literal(nil)`.
     * A `t:Mutare.Mutator.Mutation.t/0` carries a replacement plus metadata such
-      as a report note or ignore variant.
+      as a report note, an ignore variant, or an `:attribution` — a report-location
+      override (`Mutare.Mutator.Mutation.at/2` / `at_drop/1`) for a **whole-node
+      rewrite**, so a `mutate/2` that rebuilds and returns an entire registered-macro
+      call is reported at the specific inner clause it changed rather than at the
+      call's line (see `Mutare.Mutator.Mutation`).
 
   A plain map is not treated as mutation metadata because a quoted map is also a
   valid AST replacement. Selector hosts use the same forms for `:mutants`.

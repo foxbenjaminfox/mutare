@@ -10,8 +10,34 @@ defmodule Mutare.Mutator.Dispatch do
 
   alias Mutare.Mutator.{Mutation, Spec}
 
+  defmodule Result do
+    @moduledoc false
+
+    # One node-level mutation, produced by `Mutare.Mutator.Dispatch.mutations/3`. A struct rather
+    # than a bare `{spec, node, note, variant}` tuple so a producing family's optional `:attribution`
+    # (a report-location override on the whole-node rewrite path) can ride through the transform's
+    # choke points without every intermediate destructure having to grow a positional slot: the
+    # consumers that don't care (guard/pattern tagging in `Mutare.Transform.Tag`) match `%Result{}`
+    # and read only the fields they use; the one that does (`Mutare.Transform.Analyze.Attach`) reads
+    # `:attribution`. `spec` is the producing `Mutare.Mutator.Spec` (the `%Mutation{}`'s explicit
+    # `:producer` when relayed, else the returning mutator); `node` the replacement AST; `note`/`variant`
+    # the optional advisory / `# mutare:ignore` tag; `attribution` the optional
+    # `Mutare.Mutator.Mutation.Attribution` (`nil` for a bare-node or unattributed mutation).
+
+    @enforce_keys [:spec, :node]
+    defstruct [:spec, :node, note: nil, variant: nil, attribution: nil]
+
+    @type t :: %__MODULE__{
+            spec: Spec.t(),
+            node: Macro.t(),
+            note: String.t() | nil,
+            variant: Mutation.variant(),
+            attribution: Mutation.Attribution.t() | nil
+          }
+  end
+
   @doc """
-  Run every mutator over `node`, flattening to `{mutator, mutated_node, note, variant}` quads.
+  Run every mutator over `node`, flattening to `Mutare.Mutator.Dispatch.Result` structs.
 
   The single place a node meets the mutator set. Both the in-place analyzer
   (`Mutare.Transform`) and the lifted-guard planner (`Mutare.Transform.FunctionPlan`)
@@ -25,19 +51,19 @@ defmodule Mutare.Mutator.Dispatch do
   a hidden double-dispatch rule. The per-spec `context` carries the pipe mode
   **and** the spec's `:opts`/`:config`, so pipe-aware/arity-changing and configurable
   mutators both participate here. `context` defaults to `%{pipe_mode: :unpiped}`; the transform passes
-  `%{pipe_mode: :piped}` for a `|>` right-hand side. Each result is a `{spec, node, note, variant}`
-  quad: the **spec** (not the bare module), so the family name and config travel with it; the
-  `note` (`nil` unless the mutator returned a `%Mutare.Mutator.Mutation{}` with one), so a
-  per-mutant advisory rides through to the `Mutare.Site`; and the `variant` (the
-  `%Mutare.Mutator.Mutation{}`'s production-time variant tag, `nil` for a bare node), the
-  carried `# mutare:ignore` label(s) that override the derived `variant/2` at `Site` build.
+  `%{pipe_mode: :piped}` for a `|>` right-hand side. Each result is a `%Result{}`: `spec` the
+  **spec** (not the bare module), so the family name and config travel with it; `node` the
+  replacement AST; `note` (`nil` unless the mutator returned a `%Mutare.Mutator.Mutation{}` with one),
+  so a per-mutant advisory rides through to the `Mutare.Site`; `variant` (the
+  `%Mutare.Mutator.Mutation{}`'s production-time variant tag, `nil` for a bare node), the carried
+  `# mutare:ignore` label(s) that override the derived `variant/2` at `Site` build; and `attribution`
+  (the `%Mutare.Mutator.Mutation{}`'s report-location override, `nil` for a bare node).
 
-      iex> [{spec, mutated, note, variant}] = Mutare.Mutator.Dispatch.mutations({:+, [], [1, 2]}, [Mutare.Mutators.Arithmetic])
-      iex> {spec.name, mutated, note, variant}
-      {:arithmetic, {:-, [], [1, 2]}, nil, nil}
+      iex> [%Mutare.Mutator.Dispatch.Result{spec: spec, node: node}] = Mutare.Mutator.Dispatch.mutations({:+, [], [1, 2]}, [Mutare.Mutators.Arithmetic])
+      iex> {spec.name, node}
+      {:arithmetic, {:-, [], [1, 2]}}
   """
-  @spec mutations(Macro.t(), [Spec.t() | module()], Mutare.Mutator.context()) ::
-          [{Spec.t(), Macro.t(), String.t() | nil, Mutation.variant()}]
+  @spec mutations(Macro.t(), [Spec.t() | module()], Mutare.Mutator.context()) :: [Result.t()]
   def mutations(node, mutators, context \\ %{pipe_mode: :unpiped}) do
     Enum.flat_map(mutators, fn entry ->
       spec = Spec.coerce(entry)
@@ -83,21 +109,38 @@ defmodule Mutare.Mutator.Dispatch do
 
   defp tag(_spec, :skip, _context), do: []
 
-  # Pair each returned mutation with its producing spec, carrying its note and variant tag:
-  # the mutator's optional `finalize/2` funnel runs first (`finalize_mutations/3`), then
-  # `normalize_mutants/1` turns a bare node / a `%Mutation{}` into
-  # `{node, note, variant, producer}` (enforcing the enriched-mutant contract — no bare nil slot,
-  # struct required, string note), then each gains its spec — or the `%Mutation{}`'s explicit
-  # `producer` when set (the relayed-mutation attribution: the site and its ignore vocabulary
-  # belong to the family that reasoned about the mutant, not the one that returned it).
+  # Pair each returned mutation with its producing spec, carrying its note, variant tag, and
+  # report-location override: the mutator's optional `finalize/2` funnel runs first
+  # (`finalize_mutations/3`), then each element is normalized by `normalize_mutant/1` into a
+  # `{node, note, variant, producer}` quad (enforcing the enriched-mutant contract — no bare nil
+  # slot, struct required, string note) and its `:attribution` read alongside, and each becomes a
+  # `%Result{}` recorded under its spec — or the `%Mutation{}`'s explicit `producer` when set (the
+  # relayed-mutation attribution: the site and its ignore vocabulary belong to the family that
+  # reasoned about the mutant, not the one that returned it). `attribution` is the whole-node
+  # rewrite's report-location override (`nil` for a bare node or an unattributed `%Mutation{}`); it
+  # rides only this ordinary path, not the hosted quad (`normalize_target/3`), which locates via its
+  # own `Target.range`.
   defp tag(spec, mutations, context) when is_list(mutations),
     do:
       mutations
       |> finalize_mutations(spec, context)
-      |> normalize_mutants()
-      |> Enum.map(fn {node, note, variant, producer} ->
-        {producer || spec, node, note, variant}
+      |> Enum.map(fn mutation ->
+        {node, note, variant, producer} = normalize_mutant(mutation)
+
+        %Result{
+          spec: producer || spec,
+          node: node,
+          note: note,
+          variant: variant,
+          attribution: attribution_of(mutation)
+        }
       end)
+
+  # The report-location override a `%Mutation{}` carries, or `nil` for a bare-node mutation (the
+  # common case). Read separately from `normalize_mutant/1` so the shared `{node, note, variant,
+  # producer}` quad — and the hosted `:mutants` path that also uses it — stays untouched.
+  defp attribution_of(%Mutation{attribution: attribution}), do: attribution
+  defp attribution_of(_node), do: nil
 
   # Apply the spec's optional `c:Mutare.Mutator.finalize/2` hook to each produced mutation —
   # the core-guaranteed tag → filter → enrich funnel a family-rich mutator would otherwise

@@ -21,6 +21,7 @@ defmodule Mutare.Transform.Analyze.Attach do
   # "ask the mutators, build `Candidate.InPlace`s, range them" operations the descent needs.
 
   alias Mutare.Mutator.Dispatch
+  alias Mutare.Mutator.Mutation.Attribution
   alias Mutare.Transform.{Candidate, Meta, NodeRange}
 
   # Offer `raw` to the mutators; if any fire, attach their candidates — built from
@@ -42,16 +43,72 @@ defmodule Mutare.Transform.Analyze.Attach do
   def build_candidates(node, muts) do
     range = NodeRange.get(node)
 
-    Enum.map(muts, fn {mutator, mutated, note, variant} ->
+    Enum.map(muts, fn %Dispatch.Result{} = result ->
       %Candidate.InPlace{
-        mutator: mutator,
+        mutator: result.spec,
         original: node,
-        mutated: mutated,
+        mutated: result.node,
         range: range,
-        note: note,
-        variant: variant
+        note: result.note,
+        variant: result.variant,
+        attribution: checked_attribution(result.attribution, node, range)
       }
     end)
+  end
+
+  # A whole-node rewrite's `:attribution` (from `Mutare.Mutator.Mutation.at/2` / `at_drop/1`) moves
+  # the site's location and diff off the offered node onto an inner clause (`Candidate.Delivery`
+  # honours it; the metamutant is still built from the offered node's `mutated`). Core can't prove
+  # the plugin pointed it at a clause *inside* the rewrite, but it can catch the two ways it would
+  # mislocate a site: a clause that isn't rangeable (no `Mutare.Site` could be built from it) or one
+  # whose span escapes the offered node's footprint. Either is a mutator bug; warn and fall back to
+  # attributing the site to the offered node (the pre-attribution behaviour) rather than emit a diff
+  # pointing at unrelated source or crash on a nil range. `nil` (no attribution) is the common path.
+  defp checked_attribution(nil, _offered_node, _offered_range), do: nil
+
+  defp checked_attribution(
+         %Attribution{original: clause} = attribution,
+         offered_node,
+         offered_range
+       ) do
+    case safe_range(clause) do
+      nil ->
+        warn_attribution(offered_node, "its clause is not rangeable")
+        nil
+
+      clause_range ->
+        if within?(clause_range, offered_range) do
+          attribution
+        else
+          warn_attribution(offered_node, "its clause escapes the mutated node's span")
+          nil
+        end
+    end
+  end
+
+  # `Mutare.Transform.NodeRange.get/1` returns `nil` for some unrangeable nodes but *raises*
+  # (Sourceror's range arithmetic hits a `nil` line) for a synthesized node with no source meta —
+  # exactly what a mis-built attribution points at. Both mean "core can't place this clause", so
+  # collapse them to `nil` here rather than let a mutator bug crash the whole transform.
+  defp safe_range(node) do
+    NodeRange.get(node)
+  rescue
+    _ -> nil
+  end
+
+  defp within?(inner, outer) do
+    pos(inner.start) >= pos(outer.start) and pos(inner.end) <= pos(outer.end)
+  end
+
+  defp pos(loc), do: {loc[:line], loc[:column]}
+
+  defp warn_attribution(offered_node, why) do
+    IO.warn(
+      "ignoring a mutation :attribution because #{why}; the site will be reported at " <>
+        "`#{Macro.to_string(offered_node)}` instead. Point Mutation.at/2 (or at_drop/1) at a " <>
+        "clause inside the returned node.",
+      []
+    )
   end
 
   # Set a node's in-place candidate list (replacing any present; an empty list removes the key).

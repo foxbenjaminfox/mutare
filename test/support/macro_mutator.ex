@@ -152,6 +152,90 @@ defmodule Mutare.Test.SubcontractNodeMutator do
   defp reverse(:<=), do: :>=
 end
 
+defmodule Mutare.Test.AttributedQueryMutator do
+  @moduledoc """
+  A registered-macro mutator that returns **whole-`query` rewrites** but **attributes** each mutant
+  to the specific clause it changed — the reduced analog of `mutare_ecto`'s whole-`from` rewrites.
+
+  It registers `Mutare.Test.QueryDSL.query/1` `:skip` (core keeps the DSL body raw) and, for a
+  multi-clause `query(where: …, select: …)`:
+
+    * **replaces** the first clause's *value* with `:mutated`, attributed to that value via
+      `Mutare.Mutator.Mutation.at/2` (a clause-level replace site — the value node renders a clean
+      diff, mirroring `mutare_ecto` flipping an `order_by:` value), and
+    * **drops** the last clause, attributed to the whole pair via `Mutare.Mutator.Mutation.at_drop/1`
+      (a clause-level delete site — the delete diff reads the raw source line).
+
+  Both mutations splice a whole rebuilt `query(...)` into the metamutant (the `:node`); attribution
+  moves only the *report* onto the clause's own line — so a multi-line query's mutants locate, diff,
+  and `# mutare:ignore` per clause instead of all collapsing onto the `query` line. A real,
+  loadable macro (`Mutare.Test.QueryDSL.query/1`) resolves the registration by reflection.
+  """
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.MacroRouting
+
+  alias Mutare.AST
+  alias Mutare.Mutator.Mutation
+
+  @impl Mutare.Mutator
+  def name, do: :attributed_query
+
+  @impl Mutare.MacroRouting
+  def macro_routes, do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
+
+  @impl Mutare.Mutator
+  def mutate({:query, meta, [clauses]}) when is_list(clauses) and length(clauses) > 1 do
+    [{key, value} | _] = clauses
+    last = List.last(clauses)
+
+    mutated_value = AST.literal(:mutated)
+    with_replaced_first = List.replace_at(clauses, 0, {key, mutated_value})
+    without_last = Enum.drop(clauses, -1)
+
+    [
+      Mutation.new({:query, meta, [with_replaced_first]},
+        attribution: Mutation.at(value, mutated_value)
+      ),
+      Mutation.new({:query, meta, [without_last]}, attribution: Mutation.at_drop(last))
+    ]
+  end
+
+  def mutate(_node), do: :skip
+end
+
+defmodule Mutare.Test.MisattributedQueryMutator do
+  @moduledoc """
+  A registered-macro mutator that **mis-attributes** a whole-`query` rewrite — it points the
+  attribution at a synthesized node that appears nowhere in the source. Core cannot range it, so
+  `Mutare.Transform.Analyze.Attach` warns and falls back to reporting the mutant at the offered
+  `query(...)` node (the pre-attribution behaviour). Used to test that a mutator bug degrades
+  loudly-but-safely rather than mislocating a site or crashing on a nil range.
+  """
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.MacroRouting
+
+  alias Mutare.Mutator.Mutation
+
+  @impl Mutare.Mutator
+  def name, do: :misattributed_query
+
+  @impl Mutare.MacroRouting
+  def macro_routes, do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
+
+  @impl Mutare.Mutator
+  def mutate({:query, meta, [clauses]}) when is_list(clauses) and length(clauses) > 1 do
+    without_last = Enum.drop(clauses, -1)
+
+    [
+      Mutation.new({:query, meta, [without_last]},
+        attribution: Mutation.at_drop({:phantom_not_in_source, [], nil})
+      )
+    ]
+  end
+
+  def mutate(_node), do: :skip
+end
+
 defmodule Mutare.Test.UnpackMutator do
   @moduledoc """
   A **macro-aware** custom mutator for a *binding-escaping* macro, used in tests to exercise
