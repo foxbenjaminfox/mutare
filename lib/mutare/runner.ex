@@ -24,9 +24,9 @@ defmodule Mutare.Runner do
 
   ## Early stop: survivor cap (`:max_survivors`) or time budget (`:time_budget`)
 
-  Two conditions can stop the per-mutant loop before every mutant runs, whichever fires first. `:max_survivors` (`--max-survivors`) stops once that many survivors (`:survived` results) have surfaced — an iterate-and-fix workflow that wants a handful of concrete test gaps rather than a full run. `:time_budget` (`--time-budget`, a duration string like `"10m"` parsed by `Mutare.Duration`) stops once that much wall-clock elapses in the per-mutant phase — a "see what I can get in ten minutes" run. The clock starts as the phase begins (compile/baseline/probe are not charged against it) and is read when each result *lands*, which under `Task.async_stream` is exactly when a worker slot frees and the next mutant would launch — so no out-of-band timer is needed, and the stop lands at most one in-flight mutant's runtime past the budget.
+  Two conditions can stop the per-mutant loop before every mutant runs, whichever fires first. `:max_survivors` (`--max-survivors`) stops once that many survivors (`:survived` results) have surfaced — an iterate-and-fix workflow that wants a handful of concrete test gaps rather than a full run. `:time_budget` (`--time-budget`, a duration string like `"10m"` parsed by `Mutare.Duration`) stops once that much wall-clock elapses in the per-mutant phase — a "see what I can get in ten minutes" run. The clock starts as the phase begins (compile/baseline/probe are not charged against it) and is checked just before a task announces and launches a real mutant run, so ordered result buffering cannot hide an expired budget and allow more mutants to start.
 
-  Unlike `:max_mutants` (a `Mutare.Schema` cap on candidate *sites*), both leave every mutant compiled in — only the *run* halts early. The per-mutant stream is consumed `ordered: true`, so a survivor stop is deterministic: the Nth survivor in source order, regardless of which worker finished first, and the reported survivors are exactly the first N. (A time-budget stop is not deterministic — it depends on how far the run got.) Runs already in flight when either condition trips are *drained* (not killed), so the sandbox teardown never races a live `mix` subprocess. The returned run carries `stopped_early`; on an early stop the harness-error abort guard is skipped (the score is already a partial prefix — the Mix task notes it and skips the `--min-score` gate too), since aborting would discard the very survivors the user asked to find.
+  Unlike `:max_mutants` (a `Mutare.Schema` cap on candidate *sites*), both leave every mutant compiled in — only the *run* halts early. The per-mutant stream is consumed `ordered: true`, so a survivor stop is deterministic: the Nth survivor in source order, regardless of which worker finished first, and the reported survivors are exactly the first N. (A time-budget stop is not deterministic — it depends on how far the run got.) Runs already in flight when either condition trips are *drained* (not killed), so the sandbox teardown never races a live `mix` subprocess. If the budget elapses after every mutant has already launched, the result set is still complete and the run is not marked partial. Otherwise the returned run carries `stopped_early`; on an early stop the harness-error abort guard is skipped (the score is already a partial prefix — the Mix task notes it and skips the `--min-score` gate too), since aborting would discard the very survivors the user asked to find.
 
   ## Per-worker partitioning (DB isolation)
 
@@ -326,41 +326,52 @@ defmodule Mutare.Runner do
 
   # Run every site through `classify` concurrently (one partition slot per lane), reporting each
   # result as it lands, and collect in source order — stopping early at the Nth survivor
-  # (`--max-survivors`) or once the wall-clock budget elapses (`--time-budget`), whichever comes
-  # first. Returns `{results, stopped_early?}`.
+  # (`--max-survivors`) or when a task launched after the wall-clock budget elapsed
+  # (`--time-budget`) skips its real run, whichever comes first. Returns
+  # `{results, stopped_early?}`.
   defp stream_and_collect(schema, ctx, partitions, %Options{} = options, on_start, reporter) do
-    # Set once the survivor cap is reached (`collect_until_survivors/3`): tasks that start *after*
-    # it skip their real run, letting the collector **drain** the rest of the stream cheaply rather
-    # than halting it. Draining lets the already-in-flight `mix test` runs finish instead of being
-    # killed mid-write — which used to leave a dying subprocess racing the sandbox/project teardown
-    # (a flaky `File.rm_rf`). No extra mutant is actually run: at most the in-flight stragglers (≤
-    # one per worker, exactly as before) complete, and every later site comes back a trivial skip.
+    # Set once the survivor cap is reached or the launch deadline has elapsed: tasks that start
+    # *after* it skip their real run, letting the collector **drain** the rest of the stream cheaply
+    # rather than halting it. Draining lets the already-in-flight `mix test` runs finish instead of
+    # being killed mid-write — which used to leave a dying subprocess racing the sandbox/project
+    # teardown (a flaky `File.rm_rf`). No extra mutant is actually run after the cap: at most the
+    # in-flight stragglers (≤ one per worker, exactly as before) complete, and every later site comes
+    # back a trivial skip.
     capped = :atomics.new(1, signed: false)
+
+    deadline = deadline(options.time_budget)
 
     schema.sites
     |> Task.async_stream(
       fn site ->
-        if :atomics.get(capped, 1) == 1 do
-          :capped
-        else
-          on_start.(site)
-          # Check out a distinct partition for this run (and its harness retries),
-          # check it back in when done — see `Mutare.Runner.Partitions`.
-          result = Partitions.with_slot(partitions, fn env -> classify(ctx, site, env) end)
-          # Fill in a displayed survivor's deferred diff code before it reaches the reporter (and
-          # rides on into the collected results for the final/SARIF reports). A no-op on the eager
-          # path or a killed/no-coverage result — see `Mutare.Runner.Hydrate`.
-          result = Hydrate.result(ctx.hydrate, result)
+        cond do
+          :atomics.get(capped, 1) == 1 ->
+            :capped
 
-          # Under `:confirm_timeouts` a streamed `:timeout` is *provisional* — the
-          # sequential confirmation pass (`confirm_timeouts/6`) re-runs it and reports
-          # the final verdict, so no (possibly false) TIMEOUT line may land here. A
-          # straggler drained after a `--max-survivors` stop is discarded either way.
-          if result.status != :timeout or not options.confirm_timeouts do
-            reporter.(result)
-          end
+          past_deadline?(deadline) ->
+            :atomics.put(capped, 1, 1)
+            :capped
 
-          result
+          true ->
+            on_start.(site)
+            # Check out a distinct partition for this run (and its harness retries),
+            # check it back in when done — see `Mutare.Runner.Partitions`.
+            result = Partitions.with_slot(partitions, fn env -> classify(ctx, site, env) end)
+
+            # Fill in a displayed survivor's deferred diff code before it reaches the reporter (and
+            # rides on into the collected results for the final/SARIF reports). A no-op on the eager
+            # path or a killed/no-coverage result — see `Mutare.Runner.Hydrate`.
+            result = Hydrate.result(ctx.hydrate, result)
+
+            # Under `:confirm_timeouts` a streamed `:timeout` is *provisional* — the
+            # sequential confirmation pass (`confirm_timeouts/6`) re-runs it and reports
+            # the final verdict, so no (possibly false) TIMEOUT line may land here. A
+            # straggler drained after a `--max-survivors` stop is discarded either way.
+            if result.status != :timeout or not options.confirm_timeouts do
+              reporter.(result)
+            end
+
+            result
         end
       end,
       # `max_concurrency` is driven from the pool itself so it can never drift from
@@ -371,7 +382,7 @@ defmodule Mutare.Runner do
       ordered: true,
       timeout: :infinity
     )
-    |> collect_until_stop(options.max_survivors, deadline(options.time_budget), capped)
+    |> collect_until_stop(options.max_survivors, capped)
   end
 
   # The monotonic instant the wall-clock budget (`--time-budget`) expires, or nil when unset. Read
@@ -408,33 +419,32 @@ defmodule Mutare.Runner do
   end
 
   # Consume the ordered per-mutant result stream. With neither early-stop condition set we drain the
-  # whole stream; otherwise we record results until the Nth `:survived` (`--max-survivors`) or the
-  # wall-clock budget elapses (`--time-budget`) — whichever fires first — then signal `capped` (so
-  # tasks not yet started skip — see `stream_and_collect/6`) and **drain the rest** rather than
-  # halting. Returns `{results_in_source_order, stopped_early?}`.
+  # whole stream; otherwise we record results until the Nth `:survived` (`--max-survivors`) or until
+  # a task reports that it skipped because the wall-clock budget had elapsed (`--time-budget`) —
+  # whichever fires first — then signal `capped` (so tasks not yet started skip — see
+  # `stream_and_collect/6`) and **drain the rest** rather than halting. Returns
+  # `{results_in_source_order, stopped_early?}`.
   #
   # Because the stream is consumed `ordered: true`, a survivor stop is deterministic: the Nth
   # survivor *in source order*, regardless of which worker finished first, so the reported survivors
-  # are exactly the first N. The deadline is only observed when a result *lands* — which, under
-  # `Task.async_stream`, is exactly when a worker slot frees and the next mutant would launch, so
-  # checking it here gates launches at precisely the right moments (an out-of-band timer would gain
-  # nothing: nothing launches between landings). The consequence is that the stop lands at most one
-  # in-flight mutant's runtime past the deadline — the same bounded overrun the survivor path has.
+  # are exactly the first N. The deadline is observed in the task body immediately before the real
+  # run starts, rather than here, because `ordered: true` may buffer later completions while still
+  # launching replacement tasks as worker slots free. That makes launch gating independent of ordered
+  # result delivery. A complete run whose final result lands after the deadline stays complete: no
+  # task skipped, so this collector never marks it partial.
   #
-  # We drain (not halt) either way, so the in-flight `mix test` runs already started past the trigger
+  # We drain (not halt) either way, so the in-flight `mix test` runs already started before the trigger
   # finish cleanly instead of being killed mid-write; their real results are discarded, and every
   # post-trigger site comes back as a cheap `:capped` skip. Draining is what keeps the sandbox/project
   # teardown from racing a dying subprocess. See NOTES "Early stop after N survivors".
-  defp collect_until_stop(stream, nil, nil, _capped) do
-    {Enum.map(stream, fn {:ok, result} -> result end), false}
-  end
-
-  defp collect_until_stop(stream, limit, deadline, capped) do
+  defp collect_until_stop(stream, limit, capped) do
     {acc, _survivors, stopped} =
       Enum.reduce(stream, {[], 0, false}, fn
-        # A task that skipped because the cap was already set — discard.
-        {:ok, :capped}, state ->
-          state
+        # A task that skipped because the cap was already set — discard. If the collector has not
+        # already observed the trigger, this was the time-budget task that first noticed the expired
+        # launch deadline, so the reported prefix is partial.
+        {:ok, :capped}, {acc, survivors, stopped} ->
+          {acc, survivors, stopped or :atomics.get(capped, 1) == 1}
 
         # An in-flight straggler that finished its real run after the cap — drain but discard,
         # keeping the reported set to exactly the mutants evaluated before the stop.
@@ -445,7 +455,7 @@ defmodule Mutare.Runner do
           survivors = survivors + survivor_count(result)
           acc = [result | acc]
 
-          if stop_now?(survivors, limit, deadline) do
+          if stop_now?(survivors, limit) do
             :atomics.put(capped, 1, 1)
             {acc, survivors, true}
           else
@@ -456,10 +466,9 @@ defmodule Mutare.Runner do
     {Enum.reverse(acc), stopped}
   end
 
-  # Stop once the survivor cap is reached or the wall-clock budget has elapsed (either may be unset).
-  defp stop_now?(survivors, limit, deadline) do
-    (limit != nil and survivors >= limit) or past_deadline?(deadline)
-  end
+  # Stop once the survivor cap is reached. The wall-clock launch budget is enforced in the task
+  # body, where it cannot be hidden by ordered stream buffering.
+  defp stop_now?(survivors, limit), do: limit != nil and survivors >= limit
 
   defp past_deadline?(nil), do: false
   defp past_deadline?(deadline), do: System.monotonic_time(:millisecond) >= deadline

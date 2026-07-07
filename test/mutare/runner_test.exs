@@ -226,13 +226,118 @@ defmodule Mutare.RunnerTest do
       project: project,
       sandbox: sandbox
     } do
-      # Each mutant is a full `mix test` subprocess (>1s), so a 1s budget trips as soon
-      # as the first result lands — draining the rest rather than testing every mutant.
+      # With one worker, the next mutant cannot launch until the current `mix test`
+      # subprocess finishes; by then a 1s budget has elapsed, so the remaining sites
+      # skip instead of running.
       assert {:ok, run} =
-               Mutare.run(project, sandbox: sandbox, mutators: @probe, time_budget: "1s")
+               Mutare.run(project,
+                 sandbox: sandbox,
+                 mutators: @probe,
+                 workers: 1,
+                 time_budget: "1s"
+               )
 
       assert run.stopped_early == true
       assert length(run.results) < Mutare.Schema.count(run.schema)
+    end
+
+    test "does not launch additional real mutant runs after the budget elapses under ordered streaming" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:budget_launch_gate, %{
+          "lib/budget_launch_gate.ex" => """
+          defmodule BudgetLaunchGate do
+            def slow(a, b), do: a + b
+            def one(a, b), do: a + b
+            def two(a, b), do: a + b
+            def three(a, b), do: a + b
+            def four(a, b), do: a + b
+            def five(a, b), do: a + b
+            def six(a, b), do: a + b
+            def seven(a, b), do: a + b
+          end
+          """,
+          "test/budget_launch_gate_test.exs" => """
+          defmodule BudgetLaunchGateTest do
+            use ExUnit.Case
+
+            test "all arithmetic sites are covered" do
+              case System.get_env("MUTARE_ACTIVE_MUTANT", "0") do
+                "0" -> :ok
+                "1" -> Process.sleep(3_000)
+                _ -> Process.sleep(700)
+              end
+
+              assert BudgetLaunchGate.slow(2, 2) == 4
+              assert BudgetLaunchGate.one(2, 2) == 4
+              assert BudgetLaunchGate.two(2, 2) == 4
+              assert BudgetLaunchGate.three(2, 2) == 4
+              assert BudgetLaunchGate.four(2, 2) == 4
+              assert BudgetLaunchGate.five(2, 2) == 4
+              assert BudgetLaunchGate.six(2, 2) == 4
+              assert BudgetLaunchGate.seven(2, 2) == 4
+            end
+          end
+          """
+        })
+
+      {:ok, starts} = Agent.start_link(fn -> [] end)
+
+      on_start = fn site ->
+        Agent.update(starts, fn ids -> [site.id | ids] end)
+      end
+
+      assert {:ok, run} =
+               Mutare.run(project,
+                 sandbox: sandbox,
+                 mutators: [Mutare.Mutators.Arithmetic],
+                 workers: 2,
+                 time_budget: "1s",
+                 on_start: on_start
+               )
+
+      started = Agent.get(starts, fn ids -> Enum.reverse(ids) end)
+
+      assert run.stopped_early == true
+      assert Mutare.Schema.count(run.schema) >= 8
+      assert length(started) <= 3
+      assert Enum.max(started) <= 3
+    end
+
+    test "does not mark a budgeted run partial when every mutant was evaluated" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:budget_complete, %{
+          "lib/budget_complete.ex" => """
+          defmodule BudgetComplete do
+            def add(a, b), do: a + b
+          end
+          """,
+          "test/budget_complete_test.exs" => """
+          defmodule BudgetCompleteTest do
+            use ExUnit.Case
+
+            test "the only mutant run is slow but finite" do
+              if System.get_env("MUTARE_ACTIVE_MUTANT", "0") != "0" do
+                Process.sleep(1_300)
+              end
+
+              assert BudgetComplete.add(2, 2) == 4
+            end
+          end
+          """
+        })
+
+      assert {:ok, run} =
+               Mutare.run(project,
+                 sandbox: sandbox,
+                 mutators: [Mutare.Mutators.Arithmetic],
+                 workers: 1,
+                 timeout: 5_000,
+                 time_budget: "1s"
+               )
+
+      assert Mutare.Schema.count(run.schema) == 1
+      assert length(run.results) == 1
+      assert run.stopped_early == false
     end
   end
 end
