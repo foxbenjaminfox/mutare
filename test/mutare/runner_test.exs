@@ -303,6 +303,55 @@ defmodule Mutare.RunnerTest do
       assert Enum.max(started) <= 3
     end
 
+    test "does not confirm provisional timeouts after the budget elapses" do
+      marker = Project.tmp_dir(:budget_timeout_marker)
+      on_exit(fn -> File.rm_rf!(marker) end)
+
+      %{project: project, sandbox: sandbox} =
+        Project.build(:budget_timeout_confirmation, %{
+          "lib/budget_timeout_confirmation.ex" => """
+          defmodule BudgetTimeoutConfirmation do
+            def add(a, b), do: a + b
+          end
+          """,
+          "test/budget_timeout_confirmation_test.exs" => """
+          defmodule BudgetTimeoutConfirmationTest do
+            use ExUnit.Case
+
+            test "first mutant run exceeds the cap" do
+              if System.get_env("MUTARE_ACTIVE_MUTANT", "0") != "0" and
+                   not File.exists?(#{inspect(marker)}) do
+                File.write!(#{inspect(marker)}, "started")
+                Process.sleep(5_000)
+              end
+
+              assert BudgetTimeoutConfirmation.add(2, 2) == 4
+            end
+          end
+          """
+        })
+
+      {:ok, starts} = Agent.start_link(fn -> 0 end)
+
+      on_start = fn _site ->
+        Agent.update(starts, &(&1 + 1))
+      end
+
+      assert {:ok, run} =
+               Mutare.run(project,
+                 sandbox: sandbox,
+                 mutators: [Mutare.Mutators.Arithmetic],
+                 workers: 1,
+                 timeout: 2_000,
+                 time_budget: "1s",
+                 on_start: on_start
+               )
+
+      assert Agent.get(starts, & &1) == 1
+      assert [%Result{status: :timeout}] = run.results
+      assert run.stopped_early == true
+    end
+
     test "does not mark a budgeted run partial when every mutant was evaluated" do
       %{project: project, sandbox: sandbox} =
         Project.build(:budget_complete, %{

@@ -20,13 +20,13 @@ defmodule Mutare.Runner do
 
   The per-mutant phase runs `:workers` mutants concurrently (default: half `System.schedulers_online/0`, capped at 4 — each worker is a full `mix test` BEAM that itself uses every scheduler, so a parallel suite already scales with the machine and extra workers only fill the serial/IO gaps one run leaves), each its own OS process in the shared sandbox. Each run has a wall-clock cap: an explicit `:timeout` in ms, or `baseline × :timeout_multiplier` (default 3.0) scaled by half the concurrent lanes — the baseline is measured *uncontended*, so wall time under contention legitimately inflates with the lane count — with a floor. A mutation can turn a terminating loop infinite, so the run is capped; a capped run counts as `:timeout` — a kill, since the hang is observable misbehavior.
 
-  Even a scaled cap can be overrun by a slow-but-finite run, and survivors are the most exposed (a kill exits at its first failing test; a survivor must run its entire selected set). A false `:timeout` is a false kill hiding a true survivor, so by default (`:confirm_timeouts`) a streamed `:timeout` is *provisional*: after the stream drains, each timed-out mutant is re-run sequentially — no contention — with the same cap, and that verdict is recorded instead. Only a repeat overrun records `:timeout`; a genuine hang pays one extra cap. `confirm_timeouts: false` (`--no-confirm-timeouts`) records the first overrun as-is.
+  Even a scaled cap can be overrun by a slow-but-finite run, and survivors are the most exposed (a kill exits at its first failing test; a survivor must run its entire selected set). A false `:timeout` is a false kill hiding a true survivor, so by default (`:confirm_timeouts`) a streamed `:timeout` is *provisional*: after the stream drains, each timed-out mutant is re-run sequentially — no contention — with the same cap, and that verdict is recorded instead. Only a repeat overrun records `:timeout`; a genuine hang pays one extra cap. `confirm_timeouts: false` (`--no-confirm-timeouts`) records the first overrun as-is. A wall-clock `:time_budget` covers this confirmation pass too: confirmations already launched are allowed to finish, but no new confirmation run starts after the deadline.
 
   ## Early stop: survivor cap (`:max_survivors`) or time budget (`:time_budget`)
 
   Two conditions can stop the per-mutant loop before every mutant runs, whichever fires first. `:max_survivors` (`--max-survivors`) stops once that many survivors (`:survived` results) have surfaced — an iterate-and-fix workflow that wants a handful of concrete test gaps rather than a full run. `:time_budget` (`--time-budget`, a duration string like `"10m"` parsed by `Mutare.Duration`) stops once that much wall-clock elapses in the per-mutant phase — a "see what I can get in ten minutes" run. The clock starts as the phase begins (compile/baseline/probe are not charged against it) and is checked just before a task announces and launches a real mutant run, so ordered result buffering cannot hide an expired budget and allow more mutants to start.
 
-  Unlike `:max_mutants` (a `Mutare.Schema` cap on candidate *sites*), both leave every mutant compiled in — only the *run* halts early. The per-mutant stream is consumed `ordered: true`, so a survivor stop is deterministic: the Nth survivor in source order, regardless of which worker finished first, and the reported survivors are exactly the first N. (A time-budget stop is not deterministic — it depends on how far the run got.) Runs already in flight when either condition trips are *drained* (not killed), so the sandbox teardown never races a live `mix` subprocess. If the budget elapses after every mutant has already launched, the result set is still complete and the run is not marked partial. Otherwise the returned run carries `stopped_early`; on an early stop the harness-error abort guard is skipped (the score is already a partial prefix — the Mix task notes it and skips the `--min-score` gate too), since aborting would discard the very survivors the user asked to find.
+  Unlike `:max_mutants` (a `Mutare.Schema` cap on candidate *sites*), both leave every mutant compiled in — only the *run* halts early. The per-mutant stream is consumed `ordered: true`, so a survivor stop is deterministic: the Nth survivor in source order, regardless of which worker finished first, and the reported survivors are exactly the first N. (A time-budget stop is not deterministic — it depends on how far the run got.) Runs already in flight when either condition trips are *drained* (not killed), so the sandbox teardown never races a live `mix` subprocess. If the budget elapses after every mutant has already launched, the result set is still complete unless the budget also prevents a provisional timeout from being confirmed. Otherwise the returned run carries `stopped_early`; on an early stop the harness-error abort guard is skipped (the score is already budget-limited or a partial prefix — the Mix task notes it and skips the `--min-score` gate too), since aborting would discard the very survivors the user asked to find.
 
   ## Per-worker partitioning (DB isolation)
 
@@ -267,14 +267,16 @@ defmodule Mutare.Runner do
 
         on_phase.({:running, length(schema.sites)})
 
-        {results, stopped_early} =
-          stream_and_collect(schema, ctx, partitions, options, on_start, reporter)
+        deadline = deadline(options.time_budget)
 
-        results =
+        {results, stopped_early} =
+          stream_and_collect(schema, ctx, partitions, options, deadline, on_start, reporter)
+
+        {results, confirmation_stopped_early} =
           if options.confirm_timeouts do
-            confirm_timeouts(results, ctx, partitions, on_phase, on_start, reporter)
+            confirm_timeouts(results, ctx, partitions, on_phase, on_start, reporter, deadline)
           else
-            results
+            {results, false}
           end
 
         run = %Run{
@@ -282,7 +284,7 @@ defmodule Mutare.Runner do
           results: results,
           sandbox: sandbox,
           baseline_ms: baseline_ms,
-          stopped_early: stopped_early
+          stopped_early: stopped_early or confirmation_stopped_early
         }
 
         finalize_run(run, options)
@@ -329,7 +331,15 @@ defmodule Mutare.Runner do
   # (`--max-survivors`) or when a task launched after the wall-clock budget elapsed
   # (`--time-budget`) skips its real run, whichever comes first. Returns
   # `{results, stopped_early?}`.
-  defp stream_and_collect(schema, ctx, partitions, %Options{} = options, on_start, reporter) do
+  defp stream_and_collect(
+         schema,
+         ctx,
+         partitions,
+         %Options{} = options,
+         deadline,
+         on_start,
+         reporter
+       ) do
     # Set once the survivor cap is reached or the launch deadline has elapsed: tasks that start
     # *after* it skip their real run, letting the collector **drain** the rest of the stream cheaply
     # rather than halting it. Draining lets the already-in-flight `mix test` runs finish instead of
@@ -338,8 +348,6 @@ defmodule Mutare.Runner do
     # in-flight stragglers (≤ one per worker, exactly as before) complete, and every later site comes
     # back a trivial skip.
     capped = :atomics.new(1, signed: false)
-
-    deadline = deadline(options.time_budget)
 
     schema.sites
     |> Task.async_stream(
@@ -364,7 +372,7 @@ defmodule Mutare.Runner do
             result = Hydrate.result(ctx.hydrate, result)
 
             # Under `:confirm_timeouts` a streamed `:timeout` is *provisional* — the
-            # sequential confirmation pass (`confirm_timeouts/6`) re-runs it and reports
+            # sequential confirmation pass (`confirm_timeouts/7`) re-runs it and reports
             # the final verdict, so no (possibly false) TIMEOUT line may land here. A
             # straggler drained after a `--max-survivors` stop is discarded either way.
             if result.status != :timeout or not options.confirm_timeouts do
@@ -488,30 +496,50 @@ defmodule Mutare.Runner do
   # false `:timeout` is a false kill hiding a true survivor. So each timed-out mutant
   # is re-run here *sequentially* (no contention) with the same cap, and that verdict
   # recorded instead; only a repeat overrun stays `:timeout`. A genuine hang pays one
-  # extra cap — cheap next to a silently wrong score. Runs after the stream (and after
-  # a `--max-survivors` stop, whose drained stragglers were discarded, not confirmed),
-  # so a confirmed survivor can push the reported survivors past the requested cap —
-  # the honest reading of a run that was already stopped early.
-  defp confirm_timeouts(results, ctx, partitions, on_phase, on_start, reporter) do
+  # extra cap — cheap next to a silently wrong score. The same wall-clock deadline
+  # used by the async stream gates this pass too: if the budget has elapsed, the
+  # provisional timeout is reported as-is and no new `mix test` process starts. Runs
+  # after the stream (and after a `--max-survivors` stop, whose drained stragglers
+  # were discarded, not confirmed), so a confirmed survivor can push the reported
+  # survivors past the requested cap — the honest reading of a run that was already
+  # stopped early.
+  defp confirm_timeouts(results, ctx, partitions, on_phase, on_start, reporter, deadline) do
     case Enum.count(results, &(&1.status == :timeout)) do
       0 ->
-        results
+        {results, false}
 
       count ->
-        on_phase.({:confirming_timeouts, count})
+        if past_deadline?(deadline) do
+          report_unconfirmed_timeouts(results, reporter)
+          {results, true}
+        else
+          on_phase.({:confirming_timeouts, count})
 
-        Enum.map(results, fn
-          %Result{status: :timeout, site: site} ->
-            on_start.(site)
-            result = Partitions.with_slot(partitions, fn env -> classify(ctx, site, env) end)
-            result = Hydrate.result(ctx.hydrate, result)
-            reporter.(result)
-            result
+          Enum.map_reduce(results, false, fn
+            %Result{status: :timeout, site: site} = provisional, stopped ->
+              if stopped or past_deadline?(deadline) do
+                reporter.(provisional)
+                {provisional, true}
+              else
+                on_start.(site)
+                result = Partitions.with_slot(partitions, fn env -> classify(ctx, site, env) end)
+                result = Hydrate.result(ctx.hydrate, result)
+                reporter.(result)
+                {result, false}
+              end
 
-          result ->
-            result
-        end)
+            result, stopped ->
+              {result, stopped}
+          end)
+        end
     end
+  end
+
+  defp report_unconfirmed_timeouts(results, reporter) do
+    Enum.each(results, fn
+      %Result{status: :timeout} = result -> reporter.(result)
+      _result -> :ok
+    end)
   end
 
   # Per-mutant wall-clock cap. An explicit `:timeout` (ms) wins; otherwise

@@ -894,8 +894,21 @@ defmodule Mix.Tasks.Mutare do
     total = Schema.count(run.schema)
 
     "stopped #{stop_cause(options, survivors)}; evaluated #{evaluated} of #{total} " <>
-      "mutant#{CLI.plural(total)}. The mutation score above is over this partial set" <>
-      gate_skipped_note(options)
+      "mutant#{CLI.plural(total)}. " <> score_scope_note(evaluated, total, options)
+  end
+
+  defp score_scope_note(evaluated, total, %Options{} = options) when evaluated < total do
+    "The mutation score above is over this partial set" <> gate_skipped_note(options)
+  end
+
+  defp score_scope_note(_evaluated, _total, %Options{time_budget: budget} = options)
+       when is_binary(budget) do
+    "The mutation score above may include unconfirmed timeouts because the time budget " <>
+      "was reached during timeout confirmation" <> gate_skipped_note(options)
+  end
+
+  defp score_scope_note(_evaluated, _total, %Options{} = options) do
+    "The mutation score above is over this stopped run" <> gate_skipped_note(options)
   end
 
   # Which early-stop condition fired. The survivor cap stops the loop the instant the count reaches
