@@ -125,32 +125,35 @@ defmodule Mutare.Transform.Uses.Harvest do
   # Returns `{directives, behaviours, degradation}`: the two failed gates report their reason so
   # `--check` can name a `use` whose `:skip` route would be dead; a successful expand reports `nil`.
   defp in_process(mod, args, caller_module, env, handlers) do
-    cond do
-      not match?({:ok, _}, use_opts(args)) ->
+    # The two pre-expansion gates, opts evaluated once via the outer match: opts must be a
+    # compile-time literal (`use_opts/1`), then the module must be loadable. Either failing
+    # reports its reason. The literal gate is first, so a non-literal `use` is rejected
+    # without the `Code.ensure_loaded?/1` load side effect.
+    case use_opts(args) do
+      :error ->
         {[], [], {mod, :nonstatic_args}}
 
-      not Code.ensure_loaded?(mod) ->
-        {[], [], {mod, :not_loadable}}
+      {:ok, opts} ->
+        if Code.ensure_loaded?(mod) do
+          ctx = %Ctx{
+            caller: caller_module,
+            caller_aliases: env,
+            depth: 0,
+            seen: MapSet.new(),
+            handlers: handlers
+          }
 
-      true ->
-        {:ok, opts} = use_opts(args)
+          {behaviour_items, directive_items} =
+            mod
+            |> expand_and_collect(opts, ctx)
+            |> Enum.split_with(&match?({:mutare_behaviour, _}, &1))
 
-        ctx = %Ctx{
-          caller: caller_module,
-          caller_aliases: env,
-          depth: 0,
-          seen: MapSet.new(),
-          handlers: handlers
-        }
-
-        {behaviour_items, directive_items} =
-          mod
-          |> expand_and_collect(opts, ctx)
-          |> Enum.split_with(&match?({:mutare_behaviour, _}, &1))
-
-        directives = to_sourceror_directives(directive_items)
-        behaviours = Enum.map(behaviour_items, fn {:mutare_behaviour, beh} -> beh end)
-        {directives, behaviours, nil}
+          directives = to_sourceror_directives(directive_items)
+          behaviours = Enum.map(behaviour_items, fn {:mutare_behaviour, beh} -> beh end)
+          {directives, behaviours, nil}
+        else
+          {[], [], {mod, :not_loadable}}
+        end
     end
   end
 
