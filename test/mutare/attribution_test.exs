@@ -209,13 +209,13 @@ defmodule Mutare.AttributionTest do
     end
   end
 
-  describe "a clause ending in a multi-line unary `not` is not false-rejected" do
-    # Sourceror over-counts the end column of a multi-line operator-form `not X` by the width of the
-    # `not ` operator (a single-line `not X`, or a parenthesized `not(X)`, ranges correctly), while
-    # the enclosing rewrite's range is not over-counted — so a strict containment check would reject
-    # a legitimate `where: not exists(…)` clause and collapse it back onto the macro line. The span
-    # check clamps the over-counted end to the operand's real end (`mutare_ecto`'s
-    # `not exists(subquery(…))` subquery filter-drops are the motivating case).
+  describe "a clause ending in a multi-line unary negation is not false-rejected" do
+    # Sourceror over-counts the end column of a multi-line unary negation (`not X` / `!X`) by the
+    # width of the prefix operator (a single-line negation ranges correctly), while the enclosing
+    # rewrite's range is not over-counted — so a strict containment check would reject a legitimate
+    # `where: not exists(…)` clause and collapse it back onto the macro line. The span check clamps
+    # the over-counted end to the operand's real end (`mutare_ecto`'s `not exists(subquery(…))`
+    # subquery filter-drops are the motivating case).
     # A paren-less `query` call (as `mutare_ecto`'s keyword-form `from` is) whose *last* clause value
     # is a multi-line `not exists(…)`: the call's range ends at that value's real end, so the value's
     # over-counted end pushes past it — the escape a paren-wrapped `query(…)` would instead absorb.
@@ -249,6 +249,40 @@ defmodule Mutare.AttributionTest do
       drop = Enum.find(Process.get(ref), &(&1.operation == :delete))
       assert drop.line == @not_where_line
       assert drop.original_code =~ "not exists("
+    end
+
+    # `!X` shares the over-count (the `!` prefix, one column) and takes the same trailing path, so a
+    # trailing `where: !valid?(…)` clause must be kept just like the `not` form above.
+    @bang_source """
+    defmodule UsesQuery do
+      import Mutare.Test.QueryDSL
+
+      def run(x) do
+        query select: 1,
+              where:
+                !valid?(
+                  some_long_expression(x)
+                )
+      end
+    end
+    """
+
+    # `where:` is on line 6; its multi-line `!valid?(…)` value runs to line 9.
+    @bang_where_line 6
+
+    test "a trailing multi-line `!` clause is kept too — no span warning" do
+      ref = make_ref()
+
+      warning =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          Process.put(ref, sites_for(@bang_source))
+        end)
+
+      refute warning =~ "escapes the mutated node's span"
+
+      drop = Enum.find(Process.get(ref), &(&1.operation == :delete))
+      assert drop.line == @bang_where_line
+      assert drop.original_code =~ "!valid?("
     end
   end
 

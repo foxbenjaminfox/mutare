@@ -112,17 +112,17 @@ defmodule Mutare.Transform.Analyze.Attach do
     pos(inner.start) >= pos(outer.start) and pos(inner.end) <= pos(outer.end)
   end
 
-  # Sourceror over-counts the end column of a **multi-line** unary `not X` node: it adds the width of
-  # the `not ` operator to the operand's last-line end column, so `not exists(\n …\n)` reports an end
-  # a few columns past the real closing delimiter (a single-line `not X` is ranged correctly, an
-  # operator form only — a parenthesized `not(…)` is delimiter-bounded and correct — and the
-  # enclosing rewrite's own range is not over-counted). The real end of `not X` is the end of `X`, so
-  # when the clause *ends* in such a `not`, clamp to the operand's range — otherwise a legitimate
-  # `where: not exists(…)` clause is false-rejected by the containment check and collapsed back onto
-  # the macro line. Like the bare-atom trim, this only drops phantom trailing columns; the attributed
-  # clause text (`not exists(…)`) is unchanged, and it walks the same trailing path (through a keyword
-  # pair or an enclosing expression) so it fires whether the attribution points at the `not` node, its
-  # keyword pair, or an expression ending in it.
+  # Sourceror over-counts the end column of a **multi-line** unary negation (`not X` / `!X`): it adds
+  # the width of the prefix operator to the operand's last-line end column, so `not exists(\n …\n)`
+  # (or `!foo(\n …\n)`) reports an end a few columns past the real closing delimiter, while a
+  # single-line negation, and the enclosing rewrite's own range, are ranged correctly. A prefix
+  # operator ends exactly where its operand does, so when the clause *ends* in such a negation, clamp
+  # to the operand's range — otherwise a legitimate `where: not exists(…)` clause is false-rejected by
+  # the containment check and collapsed back onto the macro line. Like the bare-atom trim, this only
+  # drops phantom trailing columns and never widens the range, so clamping is always safe here (it can
+  # only *relax* containment); the attributed clause text (`not exists(…)`) is unchanged, and it walks
+  # the same trailing path (through a keyword pair or an enclosing expression) so it fires whether the
+  # attribution points at the negation node, its keyword pair, or an expression ending in it.
   defp trim_multiline_not_overrun(range, node) do
     case trailing_not_operand_end(node) do
       %Sourceror.Range{end: operand_end} ->
@@ -133,8 +133,10 @@ defmodule Mutare.Transform.Analyze.Attach do
     end
   end
 
-  # The operand range of a trailing operator-form `not X`, or `nil` if the clause does not end in one.
-  defp trailing_not_operand_end({:not, meta, [operand]}) do
+  # The operand range of a trailing unary negation (`not X` / `!X`), or `nil` if the clause does not
+  # end in one. (A parenthesized `not(X)` carries no `closing`/`parens` meta of its own, so it takes
+  # this path too; its end still clamps toward the operand, which stays a safe non-widening move.)
+  defp trailing_not_operand_end({op, meta, [operand]}) when op in [:not, :!] do
     if closing_meta?(meta), do: nil, else: safe_range(operand)
   end
 
