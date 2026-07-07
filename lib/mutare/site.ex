@@ -195,9 +195,13 @@ defmodule Mutare.Site do
   # `mutare_ecto`'s filter/bound drop) carries its `# mutare:ignore[family:label]` vocabulary just
   # like the replace path, keyed on the clause line. A delete has no `{original, mutated}` operator
   # to derive from, so only a carried label is honored (the pair is passed as both, ignored when
-  # carried is present); with no `:variant` opt (a rescue/clause drop) the variant stays `[]`.
+  # carried is present); with no `:variant` opt, or with the delivery layer's explicit
+  # `variant: nil` for an untagged drop, the variant stays `[]`.
   defp drop_variant(mutator, clause_node, opts) do
     case Keyword.fetch(opts, :variant) do
+      {:ok, nil} ->
+        Keyword.delete(opts, :variant)
+
       {:ok, carried} ->
         Keyword.put(
           opts,

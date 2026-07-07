@@ -146,7 +146,7 @@ defmodule Mutare.Transform.Candidate.Delivery do
          file,
          {render?, summary?}
        ) do
-    range = NodeRange.get(attribution.original)
+    range = c.attribution_range || NodeRange.get(attribution.original)
 
     case attribution.mutated do
       :drop ->

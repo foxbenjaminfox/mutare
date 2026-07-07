@@ -5,6 +5,19 @@ defmodule Mutare.SiteTest do
 
   doctest Mutare.Site
 
+  defmodule DerivingDropVariantMutator do
+    @behaviour Mutare.Mutator
+
+    @impl Mutare.Mutator
+    def name, do: :deriving_drop_variant
+
+    @impl Mutare.Mutator
+    def variants, do: ~w(derived)
+
+    @impl Mutare.Mutator
+    def variant(_original, _mutated), do: "derived"
+  end
+
   @range %{start: [line: 2, column: 3], end: [line: 2, column: 20]}
 
   defp clause, do: Sourceror.parse_string!("def f(_), do: :ok")
@@ -41,6 +54,13 @@ defmodule Mutare.SiteTest do
     test "defaults to no label when the drop carries no variant" do
       spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.Relational)
       site = Site.in_place_drop(1, "lib/x.ex", @range, clause(), spec)
+      assert site.variant == []
+    end
+
+    test "treats an explicit nil variant as no carried label for a drop" do
+      spec = Mutare.Mutator.Spec.for_module(DerivingDropVariantMutator)
+      site = Site.in_place_drop(1, "lib/x.ex", @range, clause(), spec, variant: nil)
+
       assert site.variant == []
     end
   end

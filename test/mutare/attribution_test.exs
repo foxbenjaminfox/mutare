@@ -162,6 +162,14 @@ defmodule Mutare.AttributionTest do
       replace = Enum.find(Process.get(ref), &(&1.operation == :replace))
       assert replace.line == @where_line
       assert replace.original_code == "y == true"
+
+      assert Mutare.Report.diff(replace, @bare_atom_source) ==
+               "-      where: y == true,\n+      where: :mutated,"
+
+      assert {:ok, _ast} =
+               replace
+               |> Mutare.Report.patch(@bare_atom_source)
+               |> Code.string_to_quoted()
     end
   end
 

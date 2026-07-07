@@ -24,6 +24,8 @@ defmodule Mutare.Transform.Analyze.Attach do
   alias Mutare.Mutator.Mutation.Attribution
   alias Mutare.Transform.{Candidate, Meta, NodeRange}
 
+  @bare_atoms [true, false, nil]
+
   # Offer `raw` to the mutators; if any fire, attach their candidates — built from
   # `raw`, so the diff renders the author's node — to `subject`, the already-analyzed
   # node whose children carry their own selectors. `subject` *is* `raw` at most sites;
@@ -44,6 +46,8 @@ defmodule Mutare.Transform.Analyze.Attach do
     range = NodeRange.get(node)
 
     Enum.map(muts, fn %Dispatch.Result{} = result ->
+      {attribution, attribution_range} = checked_attribution(result.attribution, node, range)
+
       %Candidate.InPlace{
         mutator: result.spec,
         original: node,
@@ -51,7 +55,8 @@ defmodule Mutare.Transform.Analyze.Attach do
         range: range,
         note: result.note,
         variant: result.variant,
-        attribution: checked_attribution(result.attribution, node, range)
+        attribution: attribution,
+        attribution_range: attribution_range
       }
     end)
   end
@@ -63,8 +68,10 @@ defmodule Mutare.Transform.Analyze.Attach do
   # mislocate a site: a clause that isn't rangeable (no `Mutare.Site` could be built from it) or one
   # whose span escapes the offered node's footprint. Either is a mutator bug; warn and fall back to
   # attributing the site to the offered node (the pre-attribution behaviour) rather than emit a diff
-  # pointing at unrelated source or crash on a nil range. `nil` (no attribution) is the common path.
-  defp checked_attribution(nil, _offered_node, _offered_range), do: nil
+  # pointing at unrelated source or crash on a nil range. The range is normalized here and carried
+  # with the candidate, so delivery does not recompute a Sourceror range and reintroduce a tolerated
+  # bare-atom over-count. `nil` (no attribution) is the common path.
+  defp checked_attribution(nil, _offered_node, _offered_range), do: {nil, nil}
 
   defp checked_attribution(
          %Attribution{original: clause} = attribution,
@@ -74,14 +81,16 @@ defmodule Mutare.Transform.Analyze.Attach do
     case safe_range(clause) do
       nil ->
         warn_attribution(offered_node, "its clause is not rangeable")
-        nil
+        {nil, nil}
 
       clause_range ->
-        if within?(clause_range, offered_range) do
-          attribution
+        normalized_range = trim_trailing_bare_atom_overrun(clause_range, clause)
+
+        if within?(normalized_range, offered_range) do
+          {attribution, normalized_range}
         else
           warn_attribution(offered_node, "its clause escapes the mutated node's span")
-          nil
+          {nil, nil}
         end
     end
   end
@@ -97,21 +106,56 @@ defmodule Mutare.Transform.Analyze.Attach do
   end
 
   defp within?(inner, outer) do
-    pos(inner.start) >= pos(outer.start) and end_within?(inner.end, outer.end)
+    pos(inner.start) >= pos(outer.start) and pos(inner.end) <= pos(outer.end)
   end
 
-  # The clause's end must not run past the offered node's end — except by the single trailing column
-  # of Sourceror's documented bare-atom over-count: a node ending in a bare `true`/`false`/`nil`
-  # (`where: x == true`) ranges one column wide of its true extent, while the *enclosing* rewrite's
-  # range does not, so a strict `<=` would false-reject a legitimate trailing-boolean clause (see
-  # `Mutare.Transform.NodeRange`). Allow that exact one-column overrun on the shared end line; a
-  # larger overrun still means the clause is not inside the rewrite.
-  defp end_within?(inner_end, outer_end) do
-    cond do
-      pos(inner_end) <= pos(outer_end) -> true
-      inner_end[:line] == outer_end[:line] -> inner_end[:column] - outer_end[:column] <= 1
-      true -> false
+  # Sourceror's bare-atom over-count is contagious: not only the `true`/`false`/`nil` node but also
+  # an expression or keyword pair ending in that node may report an end column one past its real
+  # textual extent. A report-location attribution is allowed to point at such an inner clause, so
+  # trim that one phantom column before the range is stored on the candidate/site. Do not do this
+  # for calls/containers/parenthesized forms with their own closing delimiter on the trailing path
+  # (`foo(true)`, `[true]`, `(x == true)`) — there the same numeric end column belongs to the
+  # delimiter and must remain part of the attributed range.
+  defp trim_trailing_bare_atom_overrun(range, node) do
+    case trailing_bare_atom_raw_range(node) do
+      %Sourceror.Range{end: raw_end} ->
+        if pos(raw_end) == pos(range.end),
+          do: %{range | end: Keyword.update!(range.end, :column, &(&1 - 1))},
+          else: range
+
+      _ ->
+        range
     end
+  end
+
+  defp trailing_bare_atom_raw_range({:__block__, meta, [atom]} = node)
+       when atom in @bare_atoms do
+    if bare_atom_written_without_delimiter?(meta) and not closing_meta?(meta),
+      do: raw_range(node),
+      else: nil
+  end
+
+  defp trailing_bare_atom_raw_range({{:__block__, _meta, [_key]}, value}),
+    do: trailing_bare_atom_raw_range(value)
+
+  defp trailing_bare_atom_raw_range({_form, meta, args}) when is_list(meta) and is_list(args) do
+    if closing_meta?(meta), do: nil, else: args |> List.last() |> trailing_bare_atom_raw_range()
+  end
+
+  defp trailing_bare_atom_raw_range(_node), do: nil
+
+  defp bare_atom_written_without_delimiter?(meta),
+    do: meta[:format] != :keyword and meta[:delimiter] in [nil, ""]
+
+  defp closing_meta?(meta),
+    do:
+      Keyword.has_key?(meta, :closing) or Keyword.has_key?(meta, :parens) or
+        Keyword.has_key?(meta, :end)
+
+  defp raw_range(node) do
+    Sourceror.get_range(node)
+  rescue
+    _ -> nil
   end
 
   defp pos(loc), do: {loc[:line], loc[:column]}

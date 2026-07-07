@@ -72,8 +72,11 @@ defmodule Mutare.Transform.Candidate do
     # splices `original`/`mutated`, the whole node, to build the metamutant): `Candidate.Delivery`
     # reads it and records a clause-level replace or delete `Mutare.Site` instead of one pinned to
     # the offered node. Validated at attach time (`Attach.build_candidates/2` drops a clause that is
-    # unrangeable or escapes the node's span). Default `nil` — an ordinary mutation is reported at
-    # the offered node, exactly as before.
+    # unrangeable or escapes the node's span). `attribution_range` is the already-normalized range
+    # validated there; delivery uses it instead of recomputing from `attribution.original`, because
+    # Sourceror can over-count a clause ending in bare `true`/`false`/`nil` by the following
+    # delimiter. Defaults `nil` — an ordinary mutation is reported at the offered node, exactly as
+    # before.
 
     @type t :: %__MODULE__{
             mutator: Mutare.Mutator.Spec.t(),
@@ -84,7 +87,8 @@ defmodule Mutare.Transform.Candidate do
             pin?: boolean(),
             note: String.t() | nil,
             variant: Mutare.Mutator.Mutation.variant(),
-            attribution: Mutare.Mutator.Mutation.Attribution.t() | nil
+            attribution: Mutare.Mutator.Mutation.Attribution.t() | nil,
+            attribution_range: Sourceror.Range.t() | nil
           }
 
     defstruct [
@@ -96,7 +100,8 @@ defmodule Mutare.Transform.Candidate do
       pin?: false,
       note: nil,
       variant: nil,
-      attribution: nil
+      attribution: nil,
+      attribution_range: nil
     ]
   end
 
