@@ -97,7 +97,21 @@ defmodule Mutare.Transform.Analyze.Attach do
   end
 
   defp within?(inner, outer) do
-    pos(inner.start) >= pos(outer.start) and pos(inner.end) <= pos(outer.end)
+    pos(inner.start) >= pos(outer.start) and end_within?(inner.end, outer.end)
+  end
+
+  # The clause's end must not run past the offered node's end — except by the single trailing column
+  # of Sourceror's documented bare-atom over-count: a node ending in a bare `true`/`false`/`nil`
+  # (`where: x == true`) ranges one column wide of its true extent, while the *enclosing* rewrite's
+  # range does not, so a strict `<=` would false-reject a legitimate trailing-boolean clause (see
+  # `Mutare.Transform.NodeRange`). Allow that exact one-column overrun on the shared end line; a
+  # larger overrun still means the clause is not inside the rewrite.
+  defp end_within?(inner_end, outer_end) do
+    cond do
+      pos(inner_end) <= pos(outer_end) -> true
+      inner_end[:line] == outer_end[:line] -> inner_end[:column] - outer_end[:column] <= 1
+      true -> false
+    end
   end
 
   defp pos(loc), do: {loc[:line], loc[:column]}

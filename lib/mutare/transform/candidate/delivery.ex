@@ -151,6 +151,8 @@ defmodule Mutare.Transform.Candidate.Delivery do
     case attribution.mutated do
       :drop ->
         Site.in_place_drop(id, file, range, attribution.original, c.mutator,
+          note: note(c),
+          variant: variant(c),
           render?: render?,
           summary?: summary?
         )

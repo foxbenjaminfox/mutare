@@ -179,14 +179,44 @@ defmodule Mutare.Site do
           keyword()
         ) :: t()
   def in_place_drop(id, file, range, clause_node, mutator, opts \\ []) do
-    delete_site(id, file, range, clause_node, mutator.name, :in_place, opts)
+    delete_site(
+      id,
+      file,
+      range,
+      clause_node,
+      mutator.name,
+      :in_place,
+      drop_variant(mutator, clause_node, opts)
+    )
+  end
+
+  # Normalize a *carried* `:variant` label list through the same `Dispatch.variant/4` path a replace
+  # site uses, so a delete site attributed to a family clause (a `Mutation.at_drop/1` — e.g.
+  # `mutare_ecto`'s filter/bound drop) carries its `# mutare:ignore[family:label]` vocabulary just
+  # like the replace path, keyed on the clause line. A delete has no `{original, mutated}` operator
+  # to derive from, so only a carried label is honored (the pair is passed as both, ignored when
+  # carried is present); with no `:variant` opt (a rescue/clause drop) the variant stays `[]`.
+  defp drop_variant(mutator, clause_node, opts) do
+    case Keyword.fetch(opts, :variant) do
+      {:ok, carried} ->
+        Keyword.put(
+          opts,
+          :variant,
+          Mutare.Mutator.Dispatch.variant(mutator, clause_node, clause_node, carried)
+        )
+
+      :error ->
+        opts
+    end
   end
 
   # The shared body of the two delete-site constructors (`clause_drop/4`, `in_place_drop/5`):
   # a `:delete` mutation removes the whole clause, so there is no mutated node, op, or code — the
   # constructors differ only in `mutator` and `kind`. One home so a change to how a delete site is
   # built (a new field, the `clause_code/1` rendering) lands once. `opts` carries the two render
-  # flags (`:render?` for the `Sourceror` `original_code`, `:summary?` for the `Macro` summary).
+  # flags (`:render?` for the `Sourceror` `original_code`, `:summary?` for the `Macro` summary), and
+  # an optional already-normalized `:variant`/`:note` an attribution drop threads through (a plain
+  # clause/rescue drop passes neither, keeping the pre-attribution `variant: []`, `note: nil`).
   defp delete_site(id, file, range, clause_node, mutator_name, kind, opts) do
     %{
       base_site(id, file, range)
@@ -197,6 +227,8 @@ defmodule Mutare.Site do
         mutated_form: nil,
         original_code: clause_code(clause_node, Keyword.get(opts, :render?, true)),
         mutated_code: "",
+        note: opts[:note],
+        variant: Keyword.get(opts, :variant, []),
         summary: delete_summary(mutator_name, clause_node, Keyword.get(opts, :summary?, false))
     }
   end
@@ -323,14 +355,22 @@ defmodule Mutare.Site do
       base_site(id, file, range)
       | mutator: mutator.name,
         kind: kind,
-        original_form: elem(original_node, 0),
-        mutated_form: elem(mutated_node, 0),
+        original_form: node_form(original_node),
+        mutated_form: node_form(mutated_node),
         original_code: render_code(original_node, keyword_key?, render?),
         mutated_code: render_code(mutated_node, keyword_key?, render?),
         summary: replace_summary(mutator.name, original_node, mutated_node, summary?),
         variant: Mutare.Mutator.Dispatch.variant(mutator, original_node, mutated_node, variant)
     }
   end
+
+  # The AST *form* (head tag) of a replaced node — `:+`/`:==` for an operator, `:__block__` for a
+  # literal. A `mutate/2` in-place original/mutated is normally a 3-tuple, but a whole-node
+  # rewrite's `:attribution` clause (`Mutare.Mutator.Mutation.at/2`) may be a bare keyword-list
+  # value (`[asc: p.title]`) or other non-tuple node; it has no head tag, so record `nil` rather
+  # than crash on `elem/2`.
+  defp node_form(node) when is_tuple(node), do: elem(node, 0)
+  defp node_form(_node), do: nil
 
   defp keyword_key?({:__block__, meta, [atom]}) when is_atom(atom), do: meta[:format] == :keyword
 

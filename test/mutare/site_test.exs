@@ -28,6 +28,23 @@ defmodule Mutare.SiteTest do
     end
   end
 
+  describe "in_place_drop/6 variant threading" do
+    # An attribution `at_drop/1` (a whole-node rewrite reported as a clause deletion — e.g.
+    # mutare_ecto's filter/bound drop) must carry its family/kind label onto the delete Site, so a
+    # `# mutare:ignore[family:label]` keyed on the clause line can suppress it, just like a replace.
+    test "threads and normalizes a carried variant label onto the delete site" do
+      spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.Relational)
+      site = Site.in_place_drop(1, "lib/x.ex", @range, clause(), spec, variant: ["Bound"])
+      assert site.variant == ["bound"]
+    end
+
+    test "defaults to no label when the drop carries no variant" do
+      spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.Relational)
+      site = Site.in_place_drop(1, "lib/x.ex", @range, clause(), spec)
+      assert site.variant == []
+    end
+  end
+
   describe "describe/1" do
     test "renders a clause-drop as a (drop) of the original clause" do
       site = Site.clause_drop(7, "lib/x.ex", @range, clause())
@@ -41,6 +58,24 @@ defmodule Mutare.SiteTest do
       site = Site.in_place(1, "lib/x.ex", @range, original, mutated, spec)
 
       assert Site.describe(site) == "relational  a >= b → a > b"
+    end
+
+    test "tolerates a non-tuple original/mutated (a bare keyword-list clause value)" do
+      # A whole-node rewrite may attribute its site to a clause value that is a bare list — e.g.
+      # `mutare_ecto` flipping an `order_by: [asc: p.id]` value via `Mutation.at/2`. Such a node
+      # has no head tag, so the `*_form` fields record `nil` rather than crashing on `elem/2`.
+      # A bare list, as an inner `order_by:` value is — not the `{:__block__, …}` a standalone
+      # parse would wrap it in (which is itself a tuple and never hit the crash).
+      {:__block__, _, [original]} = Sourceror.parse_string!("[asc: p.id]")
+      {:__block__, _, [mutated]} = Sourceror.parse_string!("[desc: p.id]")
+      spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.Relational)
+
+      site = Site.in_place(1, "lib/x.ex", @range, original, mutated, spec)
+
+      assert site.original_form == nil
+      assert site.mutated_form == nil
+      assert site.original_code == "[asc: p.id]"
+      assert site.mutated_code == "[desc: p.id]"
     end
 
     test "collapses multi-line code to a single line (the activity line is one row)" do

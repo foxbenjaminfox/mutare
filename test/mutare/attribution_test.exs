@@ -131,6 +131,40 @@ defmodule Mutare.AttributionTest do
     end
   end
 
+  describe "a clause ending in a bare true/false/nil is not false-rejected" do
+    # Sourceror over-counts a node ending in a bare `true`/`false`/`nil` by one column, while the
+    # enclosing rewrite's range is not over-counted — so a strict containment check would reject a
+    # legitimate `where: y == true` clause and collapse it back to the macro line. The span check
+    # tolerates that documented one-column overrun.
+    @bare_atom_source """
+    defmodule UsesQuery do
+      import Mutare.Test.QueryDSL
+
+      def run(y) do
+        query(
+          where: y == true,
+          select: 2
+        )
+      end
+    end
+    """
+
+    test "the attribution is kept — no span warning, site stays on the clause line" do
+      ref = make_ref()
+
+      warning =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          Process.put(ref, sites_for(@bare_atom_source))
+        end)
+
+      refute warning =~ "escapes the mutated node's span"
+
+      replace = Enum.find(Process.get(ref), &(&1.operation == :replace))
+      assert replace.line == @where_line
+      assert replace.original_code == "y == true"
+    end
+  end
+
   describe "a mis-placed attribution degrades safely" do
     test "core warns and falls back to the offered node when the clause can't be placed" do
       ref = make_ref()
