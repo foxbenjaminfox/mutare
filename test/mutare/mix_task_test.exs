@@ -1,6 +1,7 @@
 defmodule Mix.Tasks.MutareTest do
   use ExUnit.Case, async: false
 
+  alias Mutare.Report.Live
   alias Mutare.Test.{Project, Umbrella}
 
   setup do
@@ -119,6 +120,30 @@ defmodule Mix.Tasks.MutareTest do
         end)
 
       assert quiet == ""
+    end
+
+    test "finishes the live scan display when a custom mutator throws" do
+      root = bare_project("defmodule A do\n  def f(x), do: x + 1\nend\n")
+      write_config(root, "[mutators: [Mutare.Test.ThrowingScanMutator]]")
+      before = linked_pids()
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert catch_throw(Mix.Tasks.Mutare.run([root])) == :mutare_scan_throw
+      end)
+
+      assert_new_live_finished(before)
+    end
+
+    test "finishes the live scan display when a custom mutator exits" do
+      root = bare_project("defmodule A do\n  def f(x), do: x + 1\nend\n")
+      write_config(root, "[mutators: [Mutare.Test.ExitingScanMutator]]")
+      before = linked_pids()
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert catch_exit(Mix.Tasks.Mutare.run([root])) == :mutare_scan_exit
+      end)
+
+      assert_new_live_finished(before)
     end
 
     test "warns about ineffective filtered ignores with stable labels and location" do
@@ -600,6 +625,33 @@ defmodule Mix.Tasks.MutareTest do
     {_out, 0} = System.cmd("git", ["-C", root | args], stderr_to_stdout: true)
   end
 
+  defp linked_pids do
+    {:links, links} = Process.info(self(), :links)
+    links |> Enum.filter(&is_pid/1) |> MapSet.new()
+  end
+
+  defp assert_new_live_finished(before) do
+    assert {pid, %Live{finished: true, phase: :idle}} = new_live_state(before)
+
+    Process.unlink(pid)
+    Process.exit(pid, :kill)
+  end
+
+  defp new_live_state(before) do
+    linked_pids()
+    |> MapSet.difference(before)
+    |> Enum.find_value(&live_state/1)
+  end
+
+  defp live_state(pid) do
+    case :sys.get_state(pid, 100) do
+      %Live{} = state -> {pid, state}
+      _other -> nil
+    end
+  catch
+    :exit, _reason -> nil
+  end
+
   # Drain every `Mix.shell().info/1` message captured by `Mix.Shell.Process`.
   defp drain_shell_info(acc \\ []) do
     receive do
@@ -688,12 +740,12 @@ defmodule Mix.Tasks.MutareTest do
 
     @tag :runner
     @tag timeout: 180_000
-    test "warns about a module-level `use` that could not be expanded" do
-      # A `use Foo, @opts` compiles fine in the sandbox (the attribute resolves at compile
-      # time), but at scan time `@opts` is not a compile-time literal, so Mutare can't expand
-      # the `use` — a :skip route keyed on what MyDSL injects would be dead. --check must name
-      # it. (This is the compilable degradation; a genuinely unloadable module would fail the
-      # sandbox compile itself, aborting before the report.)
+    test "warns about module-level `use`s that could not be expanded" do
+      # `use(MyDSL, @opts)` and `use\tMyDSL, @opts` both compile fine in the sandbox (the
+      # attribute resolves at compile time), but at scan time `@opts` is not a compile-time
+      # literal, so Mutare can't expand the `use` — a :skip route keyed on what MyDSL injects
+      # would be dead. --check must name them. (This is the compilable degradation; a genuinely
+      # unloadable module would fail the sandbox compile itself, aborting before the report.)
       %{project: project, sandbox: sandbox} =
         Project.build(:checkuse, %{
           "lib/my_dsl.ex" => """
@@ -710,8 +762,15 @@ defmodule Mix.Tasks.MutareTest do
           "lib/c.ex" => """
           defmodule C do
             @opts :controller
-            use MyDSL, @opts
+            use(MyDSL, @opts)
             def add(a, b), do: a + b
+          end
+          """,
+          "lib/d.ex" => """
+          defmodule D do
+            @opts :controller
+            use\tMyDSL, @opts
+            def sub(a, b), do: a - b
           end
           """
         })
@@ -721,6 +780,9 @@ defmodule Mix.Tasks.MutareTest do
       end)
 
       out = shell_info() |> Enum.join("\n")
+      assert out =~ "2 module-level `use` statements"
+      assert out =~ "lib/c.ex:3"
+      assert out =~ "lib/d.ex:3"
       assert out =~ "could not be expanded"
       assert out =~ "use MyDSL"
       assert out =~ "not a compile-time literal"

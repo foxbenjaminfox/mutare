@@ -549,15 +549,23 @@ defmodule Mix.Tasks.Mutare do
   # in-scope source — computed here (only for `--check`) rather than on the `Mutare.Schema`
   # so a normal run pays nothing for it. `--no-expand-uses` opted out of expansion, so there
   # is nothing to diagnose. Each entry is `%{file, module, line, reason}` (see
-  # `Mutare.Transform.Uses.degraded_uses/2`). The `"use "` substring prefilter keeps the
-  # re-parse off every file that has none; a `:sources` entry parsed cleanly in the scan.
+  # `Mutare.Transform.Uses.degraded_uses/2`). The textual prefilter keeps the re-parse off
+  # files that have no syntax-shaped `use` token; a `:sources` entry parsed cleanly in the scan.
   defp scan_degraded_uses(%Schema{}, %Options{expand_uses: false}), do: []
 
   defp scan_degraded_uses(%Schema{sources: sources}, %Options{extensions: extensions}) do
     for {file, source} <- sources,
-        String.contains?(source, "use "),
+        source_might_contain_use?(source),
         entry <- Mutare.Transform.Uses.degraded_uses(Sourceror.parse_string!(source), extensions),
         do: Map.put(entry, :file, file)
+  end
+
+  # Elixir accepts both `use Foo` (with any whitespace, including tabs) and
+  # `use(Foo, opts)`, so the scan-time diagnostic must not key on the exact
+  # `"use "` spelling. False positives are fine: this is only a cheap --check
+  # prefilter before the real AST walk.
+  defp source_might_contain_use?(source) do
+    Regex.match?(~r/(^|[^\p{L}\p{N}_?!])use(?:\s|\()/u, source)
   end
 
   # The shared scan/live prelude of a compile-backed run (`run_mutation_testing/3` and
@@ -582,10 +590,11 @@ defmodule Mix.Tasks.Mutare do
     live = maybe_start_live(options)
 
     # The scan runs here, *before* the caller's `try/after` — so a scan-time abort (a
-    # variant-label `Mutare.Ignore.SpecError` from `Schema.build`, or a `--strict-ignores`
-    # `Mix.raise` from `enforce_strict_ignores`) would bypass that `Live.finish` and leave
-    # the live block dangling on the terminal. Own the teardown here: tear it down on any
-    # raise, then re-raise for `dispatch_with_options/2` to render as a clean Mix abort.
+    # variant-label `Mutare.Ignore.SpecError` from `Schema.build`, a `--strict-ignores`
+    # `Mix.raise` from `enforce_strict_ignores`, or a custom mutator/extension `throw`/exit)
+    # would bypass that `Live.finish` and leave the live block dangling on the terminal. Own
+    # the teardown here: tear it down on any non-successful exit, then re-raise for
+    # `dispatch_with_options/2` to render exception-shaped aborts as clean Mix failures.
     # `finish/1` is idempotent, so the caller's `after` remains a harmless backstop.
     try do
       scan_with_live(project, context, options, root, live)
@@ -593,6 +602,10 @@ defmodule Mix.Tasks.Mutare do
       e ->
         if live, do: Live.finish(live)
         reraise e, __STACKTRACE__
+    catch
+      kind, reason ->
+        if live, do: Live.finish(live)
+        :erlang.raise(kind, reason, __STACKTRACE__)
     end
   end
 

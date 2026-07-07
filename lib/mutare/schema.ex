@@ -292,6 +292,9 @@ defmodule Mutare.Schema do
 
       other ->
         {:raise, other, __STACKTRACE__}
+    catch
+      kind, reason ->
+        {:exit, kind, reason, __STACKTRACE__}
     end
   end
 
@@ -382,6 +385,8 @@ defmodule Mutare.Schema do
       {:rendered, rel, meta, sites}
     rescue
       other -> {:raise, other, __STACKTRACE__}
+    catch
+      kind, reason -> {:exit, kind, reason, __STACKTRACE__}
     end
   end
 
@@ -450,6 +455,10 @@ defmodule Mutare.Schema do
   end
 
   defp reraise_if_raised({:raise, error, stacktrace}), do: reraise(error, stacktrace)
+
+  defp reraise_if_raised({:exit, kind, reason, stacktrace}),
+    do: :erlang.raise(kind, reason, stacktrace)
+
   defp reraise_if_raised(result), do: result
 
   # The scan is CPU-bound (parse + analyze + render), so size both passes to the
