@@ -100,6 +100,26 @@ defmodule Mutare.AttributionTest do
       assert Mutare.Site.describe(drop) == "attributed_query  (drop) select: 2"
     end
 
+    test "an attributed drop preserves carried note and variant metadata" do
+      drop = Enum.find(sites_for(@source), &(&1.operation == :delete))
+
+      assert drop.note == "dropped attributed query clause"
+      assert drop.variant == ["drop"]
+    end
+
+    test "a whole keyword-pair replacement renders in key: value form" do
+      [replace] = sites_for(@source, [Mutare.Test.AttributedQueryPairMutator])
+
+      assert replace.original_code == "where: 1 == y"
+      assert replace.mutated_code == "where: :mutated"
+
+      assert Mutare.Site.describe(replace) ==
+               "attributed_query_pair  where: 1 == y → where: :mutated"
+
+      assert Mutare.Report.diff(replace, @source) ==
+               "-      where: 1 == y,\n+      where: :mutated,"
+    end
+
     test "the metamutant still splices the whole rewrite (it compiles)" do
       {metamutant, _sites, _next} =
         Mutare.Transform.transform_string_with_sites(@source,
@@ -128,6 +148,22 @@ defmodule Mutare.AttributionTest do
              "the attributed where-clause mutant should be suppressible per line"
 
       refute select_site.ignored, "the select-clause mutant on another line stays live"
+    end
+
+    test "a qualified ignore can suppress an attributed drop by its carried variant" do
+      ignored =
+        String.replace(
+          @source,
+          "select: 2",
+          "select: 2 # mutare:ignore[attributed_query:drop]"
+        )
+
+      sites = sites_for(ignored)
+      replace = Enum.find(sites, &(&1.operation == :replace))
+      drop = Enum.find(sites, &(&1.operation == :delete))
+
+      refute replace.ignored
+      assert drop.ignored
     end
   end
 

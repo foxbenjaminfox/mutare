@@ -255,7 +255,7 @@ defmodule Mutare.Site do
 
   defp clause_code(node, true) do
     case keyword_pair(node) do
-      {:ok, key, value} -> "#{Macro.inspect_atom(:key, key)} #{Sourceror.to_string(value)}"
+      {:ok, key, value} -> keyword_pair_code(key, value, &Sourceror.to_string/1)
       :error -> Sourceror.to_string(node)
     end
   end
@@ -277,28 +277,40 @@ defmodule Mutare.Site do
   # `Sourceror.to_string/1` and fine for an ephemeral one-liner (it normalises formatting, which
   # the report/JSON/SARIF can't tolerate but a spinner line can). A bare `->` clause (a dropped
   # `rescue`) renders in call form (`->(head, body)`); show it in arrow syntax, mirroring
-  # `clause_code/2`'s handling of the same shape. A bare keyword pair (a dropped attributed
-  # clause) renders as a tuple; show the `key: value` shorthand, mirroring `clause_code/2`.
+  # `clause_code/2`'s handling of the same shape. A bare keyword pair (an attributed clause)
+  # renders as a tuple; show the `key: value` shorthand, mirroring `clause_code/2`.
   defp macro({:->, _meta, [[head], body]}),
     do: "#{Macro.to_string(head)} -> #{Macro.to_string(body)}"
 
   defp macro(node) do
     case keyword_pair(node) do
-      {:ok, key, value} -> "#{Macro.inspect_atom(:key, key)} #{Macro.to_string(value)}"
+      {:ok, key, value} -> keyword_pair_code(key, value, &Macro.to_string/1)
       :error -> Macro.to_string(node)
     end
   end
 
-  # A Sourceror keyword pair — `{{:__block__, [format: :keyword, …], [atom]}, value}` — as
-  # `{:ok, key_atom, value}`, else `:error`. The shape a dropped `from`/`query` clause takes when
-  # a mutator attributes the drop to the whole pair (`Mutare.Mutator.Mutation.at_drop/1`); the
-  # summary renderers show it as `key: value` rather than the bare `{:key, value}` tuple
-  # `Sourceror`/`Macro` render for a pair outside a list.
-  defp keyword_pair({{:__block__, meta, [key]}, value}) when is_atom(key) and is_list(meta) do
-    if meta[:format] == :keyword, do: {:ok, key, value}, else: :error
+  # A Sourceror keyword pair: a two-tuple whose key node carries `format: :keyword`.
+  # This is the shape an attributed whole-clause replace/delete takes. Render it as
+  # `key: value`; otherwise Sourceror/Macro see a bare two-tuple outside a keyword list
+  # and print tuple syntax (`{:key, value}`), which is not the source fragment the report patches.
+  defp keyword_pair({key, value}) do
+    if keyword_key?(key), do: {:ok, key, value}, else: :error
   end
 
   defp keyword_pair(_node), do: :error
+
+  defp keyword_pair_code(key, value, renderer),
+    do: "#{keyword_key_code(key, renderer)} #{renderer.(value)}"
+
+  defp keyword_key_code({:__block__, _meta, [atom]}, _renderer) when is_atom(atom),
+    do: Macro.inspect_atom(:key, atom)
+
+  # An interpolated atom key renders as the value form (`:"k#{x}"`); move the leading
+  # colon to the end to recover keyword syntax (`"k#{x}":`).
+  defp keyword_key_code({{:., _, [:erlang, :binary_to_atom]}, _meta, _args} = node, renderer) do
+    ":" <> content = renderer.(node)
+    content <> ":"
+  end
 
   @doc """
   Builds an in-place site for a return-expression replacement.
@@ -337,7 +349,7 @@ defmodule Mutare.Site do
   # Render a node to source, or `nil` in lazy mode (`render?` false). The single gate the
   # node-rendering constructors share so deferral is one decision, not three.
   defp maybe_render(_node, false), do: nil
-  defp maybe_render(node, true), do: Sourceror.to_string(node)
+  defp maybe_render(node, true), do: render_source_code(node)
 
   # In-place and lifted sites differ only in `kind`: both are a node replacement
   # recorded with the original/mutated nodes, their AST *forms* (the node's head tag —
@@ -399,7 +411,14 @@ defmodule Mutare.Site do
     content <> ":"
   end
 
-  defp render_code(node, _keyword_key?, true), do: Sourceror.to_string(node)
+  defp render_code(node, _keyword_key?, true), do: render_source_code(node)
+
+  defp render_source_code(node) do
+    case keyword_pair(node) do
+      {:ok, key, value} -> keyword_pair_code(key, value, &Sourceror.to_string/1)
+      :error -> Sourceror.to_string(node)
+    end
+  end
 
   @doc """
   Returns a one-line description of a site.

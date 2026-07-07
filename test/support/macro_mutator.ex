@@ -177,8 +177,13 @@ defmodule Mutare.Test.AttributedQueryMutator do
   alias Mutare.AST
   alias Mutare.Mutator.Mutation
 
+  @drop_note "dropped attributed query clause"
+
   @impl Mutare.Mutator
   def name, do: :attributed_query
+
+  @impl Mutare.Mutator
+  def variants, do: ~w(drop)
 
   @impl Mutare.MacroRouting
   def macro_routes, do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
@@ -196,8 +201,42 @@ defmodule Mutare.Test.AttributedQueryMutator do
       Mutation.new({:query, meta, [with_replaced_first]},
         attribution: Mutation.at(value, mutated_value)
       ),
-      Mutation.new({:query, meta, [without_last]}, attribution: Mutation.at_drop(last))
+      Mutation.new({:query, meta, [without_last]},
+        note: @drop_note,
+        variant: :drop,
+        attribution: Mutation.at_drop(last)
+      )
     ]
+  end
+
+  def mutate(_node), do: :skip
+end
+
+defmodule Mutare.Test.AttributedQueryPairMutator do
+  @moduledoc """
+  Replaces a whole keyword pair inside `query/1`, while splicing the full rebuilt query.
+
+  This pins the report-rendering path for `Mutation.at/2` when the attribution target is the
+  whole pair (`where: ...`), not just its value.
+  """
+  @behaviour Mutare.Mutator
+  @behaviour Mutare.MacroRouting
+
+  alias Mutare.AST
+  alias Mutare.Mutator.Mutation
+
+  @impl Mutare.Mutator
+  def name, do: :attributed_query_pair
+
+  @impl Mutare.MacroRouting
+  def macro_routes, do: [{Mutare.Test.QueryDSL, :query, 1, :skip}]
+
+  @impl Mutare.Mutator
+  def mutate({:query, meta, [[{_key, _value} = original | rest]]}) do
+    mutated = {AST.keyword_key(:where), AST.literal(:mutated)}
+    rebuilt = {:query, meta, [[mutated | rest]]}
+
+    [Mutation.new(rebuilt, attribution: Mutation.at(original, mutated))]
   end
 
   def mutate(_node), do: :skip
