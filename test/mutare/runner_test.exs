@@ -222,13 +222,40 @@ defmodule Mutare.RunnerTest do
       assert length(run.results) < Mutare.Schema.count(run.schema)
     end
 
-    test "stops once the wall-clock budget elapses, over a partial set", %{
-      project: project,
-      sandbox: sandbox
-    } do
-      # With one worker, the next mutant cannot launch until the current `mix test`
-      # subprocess finishes; by then a 1s budget has elapsed, so the remaining sites
-      # skip instead of running.
+    test "stops once the wall-clock budget elapses, over a partial set" do
+      # A dedicated fixture whose first mutant run sleeps well past the budget, so
+      # the elapsed time does not depend on how fast `mix test` starts up. With one
+      # worker, the next mutant cannot launch until the current `mix test`
+      # subprocess finishes; by then the 1s budget has elapsed, so the remaining
+      # sites skip instead of running.
+      %{project: project, sandbox: sandbox} =
+        Project.build(:budget_elapsed_partial, %{
+          "lib/budget_elapsed_partial.ex" => """
+          defmodule BudgetElapsedPartial do
+            def a(x, y), do: x + y
+            def b(x, y), do: x + y
+            def c(x, y), do: x + y
+            def d(x, y), do: x + y
+          end
+          """,
+          "test/budget_elapsed_partial_test.exs" => """
+          defmodule BudgetElapsedPartialTest do
+            use ExUnit.Case
+
+            test "covers every arithmetic site" do
+              if System.get_env("MUTARE_ACTIVE_MUTANT", "0") != "0" do
+                Process.sleep(2_000)
+              end
+
+              assert BudgetElapsedPartial.a(2, 2) == 4
+              assert BudgetElapsedPartial.b(2, 2) == 4
+              assert BudgetElapsedPartial.c(2, 2) == 4
+              assert BudgetElapsedPartial.d(2, 2) == 4
+            end
+          end
+          """
+        })
+
       assert {:ok, run} =
                Mutare.run(project,
                  sandbox: sandbox,
