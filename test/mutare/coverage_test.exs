@@ -334,13 +334,31 @@ defmodule Mutare.CoverageTest do
   end
 
   defp delete_key(table, key) do
-    if table?(table), do: :ets.delete(table, key)
-    :ok
+    with_table(table, &:ets.delete(&1, key))
   end
 
   defp match_delete(table, pattern) do
-    if table?(table), do: :ets.match_delete(table, pattern)
-    :ok
+    with_table(table, &:ets.match_delete(&1, pattern))
+  end
+
+  defp with_table(table, fun) do
+    case :ets.whereis(table) do
+      :undefined ->
+        :ok
+
+      tid ->
+        try do
+          fun.(tid)
+          :ok
+        rescue
+          error in ArgumentError ->
+            if :ets.info(tid) == :undefined do
+              :ok
+            else
+              reraise error, __STACKTRACE__
+            end
+        end
+    end
   end
 
   # Run `fun` in a fresh process and wait for it to finish. A raw `spawn` inherits no
@@ -373,8 +391,7 @@ defmodule Mutare.CoverageTest do
   defp drop_table_unless(_table, true = _pre_existed), do: :ok
 
   defp drop_table_unless(table, false) do
-    if :ets.whereis(table) != :undefined, do: :ets.delete(table)
-    :ok
+    with_table(table, &:ets.delete/1)
   end
 
   describe "record_ast/1 (ids render as a list, never a charlist)" do
