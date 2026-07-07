@@ -40,6 +40,46 @@ defmodule Mutare.Transform.NodeRangeTest do
     assert NodeRange.get(node) == Sourceror.get_range(node)
   end
 
+  defp neg_end(code), do: NodeRange.get(Sourceror.parse_string!(code)).end
+
+  describe "multi-line unary-negation over-count" do
+    # A prefix `not X` / `!X` ends where its operand does, but Sourceror over-counts a *multi-line*
+    # one past the operand's real end (it extends by the operator's width). `get/1` clamps it back.
+    test "a multi-line `not X` ends at the operand's real end, not past it" do
+      # The operand's `)` closes on line 3 column 1, so the exclusive end is column 2 — where
+      # Sourceror reports column 5 (three past, the width of `not`).
+      assert neg_end("not exists(\n  subq(a)\n)") == [line: 3, column: 2]
+
+      raw = Sourceror.get_range(Sourceror.parse_string!("not exists(\n  subq(a)\n)")).end
+      assert raw == [line: 3, column: 5]
+    end
+
+    test "a multi-line `!X` is clamped the same way (one column of over-count)" do
+      assert neg_end("!valid?(\n  long(x)\n)") == [line: 3, column: 2]
+    end
+
+    test "a single-line negation is already exact → unchanged from Sourceror" do
+      for code <- ["not exists(bar)", "!valid?(x)"] do
+        node = Sourceror.parse_string!(code)
+        assert NodeRange.get(node) == Sourceror.get_range(node)
+      end
+    end
+
+    test "a parenthesized `not(X)` is clamped toward the operand, never past the real end" do
+      # Sourceror over-counts to column 5; the real outer `)` ends at column 3. The clamp lands at
+      # the operand's column 2 — one short of the paren but far closer than the raw over-count, and
+      # the non-widening direction keeps a containment check safe (see the `Attach` span trim).
+      node = Sourceror.parse_string!("not(exists(\n  a\n))")
+      assert NodeRange.get(node).end == [line: 3, column: 2]
+      assert Sourceror.get_range(node).end == [line: 3, column: 5]
+    end
+
+    test "another unary prefix operator (`-x`) is a passthrough, not clamped" do
+      node = Sourceror.parse_string!("-value(\n  x\n)")
+      assert NodeRange.get(node) == Sourceror.get_range(node)
+    end
+  end
+
   # A sigil whose body escapes its closing delimiter (`\/` in `~r/…/`) is stored
   # with that escape collapsed, so `Sourceror.get_range/1` ends one column short
   # per escape. `get/1` adds it back. The range starts at the `~`, so for a sigil

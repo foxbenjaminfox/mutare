@@ -59,6 +59,34 @@ defmodule Mutare.Report.SarifTest do
            }
   end
 
+  test "a multi-line negation mutant's endColumn is clamped to the operand, not past it" do
+    # Regression: Sourceror over-counts a multi-line prefix `not`/`!` end column, and the raw value
+    # used to flow verbatim into the SARIF region — pointing a few columns past the closing
+    # delimiter (here into ` do`). `Mutare.Transform.NodeRange` now clamps it to the operand's real
+    # end, so the machine reporter locates the real span.
+    src = """
+    defmodule M do
+      def run(x) do
+        if not valid?(
+             long(x)
+           ) do
+          :ok
+        end
+      end
+    end
+    """
+
+    {_mm, [site], _next} =
+      Mutare.Transform.transform_string_with_sites(src, mutators: [Mutare.Mutators.Logical])
+
+    [run] = decode([%Result{site: site, status: :survived}])["runs"]
+    region = hd(hd(run["results"])["locations"])["physicalLocation"]["region"]
+
+    # The `)` closes on line 5 column 8, so the exclusive end is column 9 (the over-count was 12).
+    assert region["endLine"] == 5
+    assert region["endColumn"] == 9
+  end
+
   test "no survivors still yields a valid log with an empty results array" do
     [run] = decode([%Result{site: site(1), status: :killed}])["runs"]
     assert run["results"] == []
