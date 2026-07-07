@@ -50,6 +50,17 @@ defmodule Mutare.ChangesTest do
     assert Changes.since(repo, "HEAD") == {:ok, MapSet.new([{"lib/b.ex", 2}])}
   end
 
+  test "parses changed lines despite user diff presentation config", %{repo: repo} do
+    git!(repo, ["config", "color.ui", "always"])
+    git!(repo, ["config", "diff.mnemonicPrefix", "true"])
+    git!(repo, ["config", "diff.srcPrefix", "old/"])
+    git!(repo, ["config", "diff.dstPrefix", "new/"])
+
+    File.write!(Path.join(repo, "lib/b.ex"), "defmodule B do\n  def g, do: 3\nend\n")
+
+    assert Changes.since(repo, "HEAD") == {:ok, MapSet.new([{"lib/b.ex", 2}])}
+  end
+
   test "reports every added line of a range, on both changed and new files", %{repo: repo} do
     # A two-line insertion into an existing file...
     File.write!(

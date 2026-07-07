@@ -383,6 +383,54 @@ defmodule Mix.Tasks.MutareTest do
       refute output =~ ~r/target\s+#{Regex.escape(second)}/
     end
 
+    test "--since intersects an explicit --line filter" do
+      root =
+        bare_project("""
+        defmodule A do
+          def f(x), do: x + 1
+          def g(x), do: x + 2
+        end
+        """)
+
+      git!(root, ["init", "-q"])
+      git!(root, ["add", "."])
+
+      git!(root, [
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=Test",
+        "commit",
+        "-q",
+        "-m",
+        "init"
+      ])
+
+      File.write!(
+        Path.join(root, "lib/a.ex"),
+        """
+        defmodule A do
+          def f(x), do: x + 9
+          def g(x), do: x + 2
+        end
+        """
+      )
+
+      Mix.Tasks.Mutare.run([
+        root,
+        "--show-config",
+        "--since",
+        "HEAD",
+        "--line",
+        "lib/a.ex:3"
+      ])
+
+      output = drain_shell_info()
+
+      assert output =~ ~r/only_lines\s+MapSet\.new\(\[\]\)/
+      refute output =~ ~s({"lib/a.ex", 2})
+    end
+
     test "--show-config scopes umbrella apps from comma-separated --app values" do
       %{umbrella: umbrella} =
         Umbrella.build(:task_scope_umbrella, %{
@@ -546,6 +594,10 @@ defmodule Mix.Tasks.MutareTest do
   # Write a `.mutare.exs` (a keyword-list literal) into a bare project's root.
   defp write_config(root, contents) do
     File.write!(Path.join(root, ".mutare.exs"), contents)
+  end
+
+  defp git!(root, args) do
+    {_out, 0} = System.cmd("git", ["-C", root | args], stderr_to_stdout: true)
   end
 
   # Drain every `Mix.shell().info/1` message captured by `Mix.Shell.Process`.

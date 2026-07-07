@@ -21,14 +21,30 @@ defmodule Mutare.Changes do
 
   Uses `git diff -U0 --relative`, run with `root` as the working dir, so it
   reports working-tree changes (committed and uncommitted) since `ref`, scoped
-  to and relative to `root`. `-U0` drops context lines so only genuinely-added
-  lines land in the set; pure deletions contribute nothing (their file drops out
-  entirely if it has no other changes). Returns `{:error, detail}` if git fails
-  (no repo, bad ref, git missing).
+  to and relative to `root`. The diff command disables presentation/user hooks
+  and pins prefixes because the output is parsed. `-U0` drops context lines so
+  only genuinely-added lines land in the set; pure deletions contribute nothing
+  (their file drops out entirely if it has no other changes). Returns
+  `{:error, detail}` if git fails (no repo, bad ref, git missing).
   """
   @spec since(Path.t(), String.t()) :: {:ok, MapSet.t()} | {:error, String.t()}
   def since(root, ref) do
-    case System.cmd("git", ["-C", root, "diff", "-U0", "--relative", ref], stderr_to_stdout: true) do
+    case System.cmd(
+           "git",
+           [
+             "-C",
+             root,
+             "diff",
+             "--no-ext-diff",
+             "--no-color",
+             "--src-prefix=a/",
+             "--dst-prefix=b/",
+             "-U0",
+             "--relative",
+             ref
+           ],
+           stderr_to_stdout: true
+         ) do
       {output, 0} ->
         {:ok, parse_diff(output)}
 

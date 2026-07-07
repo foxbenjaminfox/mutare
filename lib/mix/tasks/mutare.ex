@@ -653,7 +653,9 @@ defmodule Mix.Tasks.Mutare do
 
   # `--since <ref>` restricts mutation to the lines changed versus that git ref
   # (the same `:only_lines` site filter `--line` uses), so a one-line edit to a
-  # large module mutates only that line, not the whole file.
+  # large module mutates only that line, not the whole file. If an explicit
+  # `:only_lines` filter is already present (e.g. `--line`), `--since` narrows it
+  # by intersection rather than replacing the user's requested lines.
   defp scope_to_changes(config, root, flags) do
     case flags[:since] do
       nil ->
@@ -661,11 +663,42 @@ defmodule Mix.Tasks.Mutare do
 
       ref ->
         case Mutare.Changes.since(root, ref) do
-          {:ok, lines} -> Keyword.put(config, :only_lines, lines)
+          {:ok, lines} -> Keyword.put(config, :only_lines, intersect_only_lines(config, lines))
           {:error, detail} -> Mix.raise("`--since #{ref}` failed:\n#{detail}")
         end
     end
   end
+
+  defp intersect_only_lines(config, changed_lines) do
+    case Keyword.get(config, :only_lines) do
+      nil ->
+        changed_lines
+
+      %MapSet{} = only_lines ->
+        maybe_intersect_valid_lines(only_lines, changed_lines)
+
+      only_lines when is_list(only_lines) ->
+        maybe_intersect_valid_lines(only_lines, changed_lines)
+
+      invalid ->
+        invalid
+    end
+  end
+
+  defp maybe_intersect_valid_lines(only_lines, changed_lines) do
+    if Enum.all?(only_lines, &valid_line_filter?/1) do
+      only_lines
+      |> MapSet.new()
+      |> MapSet.intersection(changed_lines)
+    else
+      only_lines
+    end
+  end
+
+  defp valid_line_filter?({file, line}) when is_binary(file) and file != "" and is_integer(line),
+    do: line > 0
+
+  defp valid_line_filter?(_entry), do: false
 
   # --- output --------------------------------------------------------------
 
