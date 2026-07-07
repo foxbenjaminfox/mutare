@@ -121,6 +121,70 @@ defmodule Mutare.Poison.Hint do
   defp function_name?(<<c, _::binary>>) when c in ?a..?z or c == ?_, do: true
   defp function_name?(_), do: false
 
+  @doc """
+  A copy-pasteable `:macro_routes` suggestion for the block macros a *successful* run
+  had to escalate (skip wholesale) during compile-poison recovery, or `nil` when there
+  were none.
+
+  Unlike `for_compile_failure/1` — which fires on an *unrecoverable* abort — this is the
+  advice a run prints after it *recovered*: the metamutant compiled, but only because
+  Mutare guessed a DSL body could be mutated, hit poison, and skipped the block at
+  runtime. That recovery is rediscovered from scratch on every run (the dropped ids are
+  in-memory only), so we hand the user the durable, name-based fix. Each escalated macro
+  becomes a module-wildcard `{:*, :name, :skip}` route (the invocation's module is an
+  unknown DSL we don't resolve), skipping that macro name wherever it appears.
+
+  `escalations` is `Mutare.Run`'s `:recovery.escalated` (a list of
+  `t:Mutare.Run.escalation/0`).
+
+      iex> Mutare.Poison.Hint.escalation_note([%{macro: :guarded, file: "lib/x.ex", line: 3, count: 2}])
+      ...> |> String.contains?("{:*, :guarded, :skip}")
+      true
+  """
+  @spec escalation_note([Mutare.Run.escalation()]) :: String.t() | nil
+  def escalation_note([]), do: nil
+
+  def escalation_note(escalations) do
+    macros = escalations |> Enum.map(& &1.macro) |> Enum.uniq()
+
+    """
+    Mutare recovered from compile-poisoning by skipping #{macro_count(macros)} whole
+    unknown macro block#{plural(macros)} — it mutated the block body on the guess a DSL
+    unquotes it into a function, hit code that wouldn't compile, and dropped every mutant
+    in the block. That recovery is rediscovered on every run (the extra rebuilds are not
+    remembered), so pin it in .mutare.exs to skip these macros up front:
+
+    #{wildcard_snippet(macros)}
+
+    Only these macros' arguments are left unmutated; the rest of your code is still
+    mutated as usual. See `mix help mutare` for the `:macro_routes` option.\
+    """
+  end
+
+  defp macro_count([_]), do: "1"
+  defp macro_count(macros), do: "#{length(macros)}"
+
+  defp plural([_]), do: ""
+  defp plural(_macros), do: "s"
+
+  # A copy-pasteable `.mutare.exs` keyword list of module-wildcard skips — one
+  # `{:*, :name, :skip}` per escalated macro name, skipping it in any module (the
+  # invocation's module is an unknown DSL Mutare doesn't resolve to a concrete name).
+  defp wildcard_snippet(macros) do
+    entries =
+      Enum.map_join(macros, ",\n", fn macro ->
+        "        {:*, #{inspect(macro)}, :skip}"
+      end)
+
+    """
+        [
+          macro_routes: [
+    #{entries}
+          ]
+        ]\
+    """
+  end
+
   defp macro_skip_hint(macros) do
     """
     A mutation broke the build by changing an argument that a macro needs as a

@@ -537,8 +537,12 @@ defmodule Mix.Tasks.Mutare do
       if live, do: Live.finish(live)
 
       case result do
-        {:ok, run} -> report(run, options)
-        {:error, reason, detail} -> Mix.raise(format_error(reason, detail, root))
+        {:ok, run} ->
+          warn_poison_recovery(run)
+          report(run, options)
+
+        {:error, reason, detail} ->
+          Mix.raise(format_error(reason, detail, root))
       end
     after
       # Backstop for an unexpected raise mid-run; `finish/1` is idempotent. A variant-label
@@ -866,6 +870,22 @@ defmodule Mix.Tasks.Mutare do
   defp unknown_problem(unknown) do
     n = length(unknown)
     "#{n} `# mutare:` comment#{CLI.plural(n)} named no recognized directive"
+  end
+
+  # After a run that recovered from compile-poisoning by escalating (skipping wholesale)
+  # one or more unknown block macros, print the durable `:macro_routes` fix — the extra
+  # rebuilds are in-memory only and paid again every run, so pinning the routes saves them.
+  # Onto **stderr** (like the ineffective-ignore warnings), so a machine report on stdout
+  # stays clean. Only escalations earn a note: an id-specific poison drop is a one-off (a
+  # custom mutator emitting bad code), not a stable per-macro fact worth pinning.
+  defp warn_poison_recovery(%Run{recovery: nil}), do: :ok
+  defp warn_poison_recovery(%Run{recovery: %{escalated: []}}), do: :ok
+
+  defp warn_poison_recovery(%Run{recovery: %{escalated: escalated}}) do
+    case Mutare.Poison.Hint.escalation_note(escalated) do
+      nil -> :ok
+      note -> IO.puts(:stderr, "\n" <> note)
+    end
   end
 
   defp report(run, %Options{} = options) do

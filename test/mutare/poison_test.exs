@@ -310,6 +310,19 @@ defmodule Mutare.PoisonTest do
       # by `b() == 7`. A name-based tag would have poisoned these too (the regression).
       assert Enum.any?(statuses, &(:killed in &1))
       refute Enum.any?(statuses, &(:poisoned in &1 and :killed in &1))
+
+      # The run carries a recovery summary the Mix task turns into a `:macro_routes`
+      # suggestion: the `:guard` invocation was escalated (skipped wholesale), so `guarded`
+      # is named there — and only once, though the DSL has two `guarded` invocations.
+      assert %{rounds: rounds, escalated: [escalation]} = run.recovery
+      assert rounds >= 1
+      assert escalation.macro == :guarded
+      assert escalation.file == "lib/uses.ex"
+      assert escalation.count > 0
+
+      # And that summary renders the durable, name-based fix.
+      note = Mutare.Poison.Hint.escalation_note(run.recovery.escalated)
+      assert note =~ "{:*, :guarded, :skip}"
     end
 
     @tag :runner

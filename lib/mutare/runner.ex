@@ -91,6 +91,17 @@ defmodule Mutare.Runner do
     defstruct @enforce_keys ++ [hydrate: nil, heap_env: []]
   end
 
+  # The poison-recovery bookkeeping threaded through `compile_with_recovery/4`: how many
+  # rebuild rounds have run, the accumulated dropped ids (`skip_ids`, forwarded to each
+  # `Schema.rebuild`), the block-macro invocations struck once (the evidence
+  # `escalate_block_poison/3` reads), and the ones escalated wholesale. On success it is
+  # folded into the public summary (`recovery_summary/2`) that rides on `Mutare.Run`'s
+  # `:recovery` — the material the Mix task turns into a `:macro_routes` suggestion.
+  defmodule Recovery do
+    @moduledoc false
+    defstruct rounds: 0, skip_ids: MapSet.new(), struck: MapSet.new(), escalated: MapSet.new()
+  end
+
   # `sandbox` is where the run *was* materialised. For a default (throwaway) run it
   # is removed once the run completes — the path is informational, not a live dir;
   # only `--sandbox`/`--keep-sandbox` runs leave it in place. The report reads
@@ -137,6 +148,13 @@ defmodule Mutare.Runner do
 
   `:on_phase` may also receive detail events:
 
+    * `{:poison_round, info}` — one compile-poison recovery round: the compile
+      failed, the implicated mutants were dropped, and a rebuild + recompile is
+      starting. `info` is `%{dropped: [%{id: id, file: file, line: line,
+      mutator: family}], escalated: [t:Mutare.Run.escalation/0]}` — the mutants
+      dropped individually this round, and any unknown block macro escalated
+      wholesale. Fired on every round (not just verbose), since each one is a
+      full recompile the user would otherwise read as a hang.
     * `{:compiled, ms}`
     * `{:baseline_done, ms}`
     * `{:coverage_done, summary}`
@@ -157,6 +175,41 @@ defmodule Mutare.Runner do
           {:ok, run()} | error()
   def run_with_schema(%Schema{} = schema, input_root \\ ".", opts \\ []) do
     context = Context.ensure_project(Context.new(opts), input_root)
+
+    with_compiled_sandbox(schema, context, fn schema, sandbox, recovery ->
+      run_mutants(schema, sandbox, context, recovery)
+    end)
+  end
+
+  @doc """
+  Compile-only preflight (`mix mutare --check`): materialise the sandbox and run the one
+  compile — recovering from compile-poisoning exactly like a full run — then stop before
+  the baseline and the per-mutant phase.
+
+  Returns `{:ok, %{schema: schema, recovery: recovery}}`, where `schema` is the (possibly
+  rebuilt) schema the compile succeeded against and `recovery` summarises any poison
+  recovery it took (`t:Mutare.Run.recovery/0`, or `nil` when the metamutant compiled
+  clean on the first attempt). Errors are the compile-stage subset of `t:error/0`. The
+  `:on_phase` hook receives the same `:compiling` / `{:poison_round, info}` /
+  `{:compiled, ms}` events as a full run.
+  """
+  @spec check_with_schema(Schema.t(), Path.t(), Context.t() | Options.t() | keyword()) ::
+          {:ok, %{schema: Schema.t(), recovery: Run.recovery() | nil}} | error()
+  def check_with_schema(%Schema{} = schema, input_root \\ ".", opts \\ []) do
+    context = Context.ensure_project(Context.new(opts), input_root)
+
+    with_compiled_sandbox(schema, context, fn schema, _sandbox, recovery ->
+      {:ok, %{schema: schema, recovery: recovery}}
+    end)
+  end
+
+  # The shared compile prelude of `run_with_schema/3` and `check_with_schema/3`: lock,
+  # materialise, compile with poison recovery, then hand `fun.(schema, sandbox,
+  # recovery_summary)` the compiled sandbox. `schema` may differ from the input
+  # (poisoners flagged), which is what the run reports against. `prepare_compiling`
+  # always hands the sandbox back, so cleanup is owned here on every exit path — the
+  # terminal-failure path and the post-`fun` `after` alike.
+  defp with_compiled_sandbox(%Schema{} = schema, %Context{} = context, fun) do
     options = context.options
     root = context.project.copy_root
 
@@ -171,23 +224,18 @@ defmodule Mutare.Runner do
         on_phase.(:compiling)
         compile_started = System.monotonic_time(:millisecond)
 
-        # Prepare + compile, recovering from compile-poisoning by dropping the
-        # offending mutants and rebuilding. `schema` here may differ from the input
-        # (poisoners flagged), which is what the run reports against. `prepare_compiling`
-        # always hands the sandbox back, so cleanup is owned here on every exit path —
-        # the terminal-failure path and the post-run `after` alike.
         case prepare_compiling(schema, root, context) do
           {:error, reason, detail, sandbox} ->
             cleanup_sandbox(sandbox, options)
             {:error, reason, detail}
 
-          {:ok, schema, sandbox} ->
+          {:ok, schema, sandbox, recovery} ->
             # The one compile is done (the `{:compiled, ms}` covers any poison-recovery
             # rebuilds it took). A verbose reporter renders the timing; non-verbose ignores it.
             on_phase.({:compiled, System.monotonic_time(:millisecond) - compile_started})
 
             try do
-              run_mutants(schema, sandbox, context)
+              fun.(schema, sandbox, recovery_summary(recovery, schema))
             after
               cleanup_sandbox(sandbox, options)
             end
@@ -217,9 +265,10 @@ defmodule Mutare.Runner do
   end
 
   # Baseline → coverage probe → per-mutant run, against an already-compiled
-  # sandbox. Returns `{:ok, run}` or a `{:error, reason, detail}` (a red/flaky
+  # sandbox. `recovery` is the compile's poison-recovery summary (or `nil`), recorded on
+  # the returned run. Returns `{:ok, run}` or a `{:error, reason, detail}` (a red/flaky
   # baseline, or too many harness errors).
-  defp run_mutants(schema, sandbox, %Context{} = context) do
+  defp run_mutants(schema, sandbox, %Context{} = context, recovery) do
     options = context.options
     on_phase = Context.hook(context, :on_phase)
     on_start = Context.hook(context, :on_start)
@@ -284,7 +333,8 @@ defmodule Mutare.Runner do
           results: results,
           sandbox: sandbox,
           baseline_ms: baseline_ms,
-          stopped_early: stopped_early or confirmation_stopped_early
+          stopped_early: stopped_early or confirmation_stopped_early,
+          recovery: recovery
         }
 
         finalize_run(run, options)
@@ -583,21 +633,29 @@ defmodule Mutare.Runner do
   # Materialise (and **claim**) the sandbox once, then hand off to the poison-recovery
   # loop. The sandbox path is fixed here for the whole run — a poison retry re-renders the
   # rebuilt schema into this *same* dir — so there are no orphaned dirs and ownership is
-  # claimed exactly once. Returns `{:ok, schema, sandbox}` or `{:error, reason, detail,
-  # sandbox}`; either way the sandbox is handed back so `run_with_schema/3` owns cleanup
-  # uniformly (this function never cleans up itself).
+  # claimed exactly once. Returns `{:ok, schema, sandbox, recovery}` or `{:error, reason,
+  # detail, sandbox}`; either way the sandbox is handed back so `with_compiled_sandbox/3`
+  # owns cleanup uniformly (this function never cleans up itself).
   defp prepare_compiling(schema, root, %Context{} = context) do
     sandbox = Sandbox.prepare(root, schema, context)
-    deps = %{root: root, options: context.options, sandbox: sandbox}
-    compile_with_recovery(deps, schema, MapSet.new(), MapSet.new(), @poison_attempts)
+
+    deps = %{
+      root: root,
+      options: context.options,
+      sandbox: sandbox,
+      on_phase: Context.hook(context, :on_phase)
+    }
+
+    compile_with_recovery(deps, schema, %Recovery{}, @poison_attempts)
   end
 
   # Compile the materialised sandbox. A dependency-check failure stops immediately;
   # on a poisoned compile, drop the implicated mutants, rebuild + rematerialise into
   # the same sandbox, and retry — bounded by `attempts`. `deps`
-  # (`root`/`options`/`sandbox`) is fixed for the whole loop; the rest is per-round state — the
-  # `schema` rebuilt each round, accumulating `skip_ids`/`struck`, and the remaining `attempts`.
-  defp compile_with_recovery(%{sandbox: sandbox} = deps, schema, skip_ids, struck, attempts) do
+  # (`root`/`options`/`sandbox`/`on_phase`) is fixed for the whole loop; the rest is per-round
+  # state — the `schema` rebuilt each round, the accumulating `Recovery`, and the remaining
+  # `attempts`.
+  defp compile_with_recovery(%{sandbox: sandbox} = deps, schema, %Recovery{} = recovery, attempts) do
     # The compile evaluates the target's config under `MIX_ENV=test`, so a
     # partitioned config that reads the var without a default (e.g.
     # `System.fetch_env!("MIX_TEST_PARTITION")`) must see it *here* too — before
@@ -609,7 +667,7 @@ defmodule Mutare.Runner do
            deps.options.compile_timeout
          ) do
       :ok ->
-        {:ok, schema, sandbox}
+        {:ok, schema, sandbox, recovery}
 
       {:error, :compile_timed_out, output} ->
         # The compile self-halted past its wall-clock cap. Infrastructure, like a
@@ -626,12 +684,12 @@ defmodule Mutare.Runner do
           # with dropped mutant ids cannot change the copied dependency state.
           {:error, :dependency_failed, output, sandbox}
         else
-          recover_compile_poison(deps, schema, skip_ids, struck, attempts, output)
+          recover_compile_poison(deps, schema, recovery, attempts, output)
         end
     end
   end
 
-  defp recover_compile_poison(deps, schema, skip_ids, struck, attempts, output) do
+  defp recover_compile_poison(deps, schema, %Recovery{} = recovery, attempts, output) do
     sandbox = deps.sandbox
 
     # The implicated mutant ids this round, then evidence-based escalation for an
@@ -641,24 +699,82 @@ defmodule Mutare.Runner do
     # (recurs under a single drop) from one mutant's broken replacement (does not).
     # See `escalate_block_poison/3`.
     raw = Poison.ids(output, schema.metamutants)
-    {poison, struck} = escalate_block_poison(raw, schema.sites, struck)
+    {poison, struck, escalated} = escalate_block_poison(raw, schema.sites, recovery.struck)
 
-    if attempts > 0 and not MapSet.subset?(poison, skip_ids) do
+    if attempts > 0 and not MapSet.subset?(poison, recovery.skip_ids) do
+      # Narrate the round before paying for its rebuild + recompile: each round is a
+      # full recompile, and without a line per round the whole recovery hides behind
+      # the "compiling metamutant (once)…" spinner and reads as a hang.
+      deps.on_phase.({:poison_round, poison_round_info(recovery, poison, escalated, schema)})
+
       # Drop the poisoning mutants and rebuild. Ids are stable across rebuilds
       # (the transform advances its counter for skipped ids), so accumulated
       # `skip_ids` keep referring to the same mutations. Rebuild against the *same*
       # files this schema covers (not a fresh discovery), so a restricted schema
       # (`from_files/4`, `:only_files`, `:exclude`) can't silently expand. Forward
       # the original options so `:mutators` survive.
-      skip_ids = MapSet.union(skip_ids, poison)
-      schema = Schema.rebuild(schema, deps.root, deps.options, skip_ids)
+      recovery = %{
+        recovery
+        | rounds: recovery.rounds + 1,
+          skip_ids: MapSet.union(recovery.skip_ids, poison),
+          struck: struck,
+          escalated: MapSet.union(recovery.escalated, escalated)
+      }
+
+      schema = Schema.rebuild(schema, deps.root, deps.options, recovery.skip_ids)
       Sandbox.rematerialize(sandbox, schema)
-      compile_with_recovery(deps, schema, skip_ids, struck, attempts - 1)
+      compile_with_recovery(deps, schema, recovery, attempts - 1)
     else
       # Couldn't identify (or keep making progress on) the poison → give up. Hand the
       # sandbox back for the caller to clean up.
       {:error, :compile_failed, output, sandbox}
     end
+  end
+
+  # The `{:poison_round, info}` narration payload for one recovery round, fired just
+  # before the rebuild it announces: the mutants newly dropped *individually* this round
+  # (as `%{id, file, line, mutator}` descriptors, in source order — excluding the ids a
+  # block escalation swept up, which its `:escalated` entry already covers in aggregate)
+  # and the block(s) escalated wholesale this round (`t:Mutare.Run.escalation/0`).
+  defp poison_round_info(%Recovery{} = recovery, poison, escalated, schema) do
+    new_ids = MapSet.difference(poison, recovery.skip_ids)
+
+    dropped =
+      for site <- schema.sites,
+          MapSet.member?(new_ids, site.id),
+          not MapSet.member?(escalated, block_macro_key(site)),
+          do: %{id: site.id, file: site.file, line: site.line, mutator: site.mutator}
+
+    %{dropped: dropped, escalated: escalations(escalated, schema.sites)}
+  end
+
+  # Escalated block keys → display entries: one `%{macro, file, line, count}` per
+  # escalated invocation, in source order. The tag records no source line of its own, so
+  # `line` is the block's first mutant's line (`nil` when none carries one).
+  defp escalations(keys, sites) do
+    sites
+    |> Enum.filter(&MapSet.member?(keys, block_macro_key(&1)))
+    |> Enum.group_by(&block_macro_key/1)
+    |> Enum.map(fn {{file, {name, _nid}}, block_sites} ->
+      lines = block_sites |> Enum.map(& &1.line) |> Enum.reject(&is_nil/1)
+      %{macro: name, file: file, line: Enum.min(lines, fn -> nil end), count: length(block_sites)}
+    end)
+    |> Enum.sort_by(&{&1.file, &1.line})
+  end
+
+  # The public recovery summary a completed compile carries (`Mutare.Run`'s `:recovery`,
+  # and `check_with_schema/3`'s result): the rebuild-round count, every dropped mutant
+  # id, and the block macros escalated wholesale — the material the Mix task turns into
+  # a `:macro_routes` suggestion (`Mutare.Poison.Hint.escalation_note/1`). `nil` for a
+  # clean first compile, so a healthy run carries no vestigial zero-summary.
+  defp recovery_summary(%Recovery{rounds: 0}, _schema), do: nil
+
+  defp recovery_summary(%Recovery{} = recovery, schema) do
+    %{
+      rounds: recovery.rounds,
+      dropped: recovery.skip_ids,
+      escalated: escalations(recovery.escalated, schema.sites)
+    }
   end
 
   # Remove an auto-generated fresh sandbox once the run is done with it, so the
@@ -705,7 +821,9 @@ defmodule Mutare.Runner do
   # Identity is **per-invocation** — `{file, {macro_name, nid}}`, tagged on each `Site` by the
   # transform — so a poison in one `custom_dsl do … end` only ever escalates that block, never
   # a sibling invocation of the same macro that expands differently. A poison touching no block
-  # macro returns `{poison, struck}` with both unchanged (the common path).
+  # macro returns `{poison, struck, escalate}` with `poison`/`struck` unchanged and `escalate`
+  # empty (the common path). `escalate` (the keys widened *this round*) drives the
+  # `{:poison_round, …}` narration and the run's `:recovery` summary.
   defp escalate_block_poison(poison, sites, struck) do
     by_id = Map.new(sites, &{&1.id, &1})
 
@@ -726,7 +844,7 @@ defmodule Mutare.Runner do
           MapSet.member?(escalate, key),
           do: site.id
 
-    {MapSet.union(poison, MapSet.new(siblings)), MapSet.union(struck, hit)}
+    {MapSet.union(poison, MapSet.new(siblings)), MapSet.union(struck, hit), escalate}
   end
 
   # The `{file, {macro_name, nid}}` invocation a site belongs to when it lives in an

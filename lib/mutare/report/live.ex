@@ -104,6 +104,7 @@ defmodule Mutare.Report.Live do
           | {:baseline_done, non_neg_integer()}
           | {:coverage_done, map()}
           | {:run_config, map()}
+          | {:poison_round, map()}
 
   @doc """
   Records a phase transition or verbose detail event.
@@ -111,7 +112,8 @@ defmodule Mutare.Report.Live do
   Phase transitions are `:scanning`, `:compiling`, `:baseline`,
   `:coverage_probe`, and `{:running, total}`. Detail events are
   `{:compiled, ms}`, `{:baseline_done, ms}`, `{:coverage_done, summary}`, and
-  `{:run_config, cfg}`.
+  `{:run_config, cfg}`. `{:poison_round, info}` (a compile-poison recovery round)
+  leaves a permanent line in every mode, not just verbose.
   """
   @spec phase(GenServer.server(), phase_event()) :: :ok
   def phase(server, phase), do: GenServer.cast(server, {:phase, phase})
@@ -233,6 +235,20 @@ defmodule Mutare.Report.Live do
   # worker count rides onto the next `{:running, total}` label (verbose only).
   def handle_cast({:phase, {:run_config, cfg}}, state),
     do: {:noreply, %{state | run_config: cfg}}
+
+  # A compile-poison recovery round: the metamutant failed to compile, the implicated
+  # mutants were dropped, and a rebuild is starting. Unlike the verbose-only `✓` details,
+  # this leaves a permanent line in **every** mode — each round is a full recompile, so
+  # without it the whole recovery hides behind the "compiling metamutant (once)…" spinner
+  # and reads as a hang. In ANSI mode `put_line/2` lands it above the live block and
+  # re-anchors; plain mode just writes it.
+  def handle_cast({:phase, {:poison_round, info}}, state) do
+    line = poison_round_line(info)
+
+    if state.ansi,
+      do: {:noreply, put_line(state, line)},
+      else: {:noreply, plain_line(state, line)}
+  end
 
   # The post-stream timeout-confirmation pass (`Mutare.Runner`): each provisional
   # `:timeout` is re-run sequentially and its final verdict arrives as a normal
@@ -365,6 +381,29 @@ defmodule Mutare.Report.Live do
   def detail_line({:compiled, ms}), do: "  ✓ compiled in #{humanize_ms(ms)}"
   def detail_line({:baseline_done, ms}), do: "  ✓ baseline green in #{humanize_ms(ms)}"
   def detail_line({:coverage_done, summary}), do: "  ✓ " <> coverage_note(summary)
+
+  @doc """
+  Renders one compile-poison recovery round as a persistent status line: how many
+  mutants were dropped and how many block macros were escalated (skipped wholesale),
+  naming the escalated macros so the line explains *why* the compile is being retried.
+  """
+  @spec poison_round_line(map()) :: String.t()
+  def poison_round_line(%{dropped: dropped, escalated: escalated}) do
+    dropped_n = length(dropped)
+    parts = ["dropped #{dropped_n} mutant#{plural(dropped_n)}" | escalation_parts(escalated)]
+    "  ⟳ compile-poison: " <> Enum.join(parts, ", ") <> " — rebuilding…"
+  end
+
+  # The escalation clause of the poison-round line: nothing when no block was widened this
+  # round, else `skipped N macro(s): name, name` — the actionable part, since an escalated
+  # macro is the one a `:macro_routes` entry should target.
+  defp escalation_parts([]), do: []
+
+  defp escalation_parts(escalated) do
+    names = escalated |> Enum.map(&to_string(&1.macro)) |> Enum.uniq() |> Enum.join(", ")
+    n = length(escalated)
+    ["skipped #{n} unknown block macro#{plural(n)} wholesale (#{names})"]
+  end
 
   @doc "Seconds as `Ns` (under a minute) or `Nm Ss`."
   @spec humanize_secs(non_neg_integer()) :: String.t()

@@ -180,4 +180,54 @@ defmodule Mutare.Poison.HintTest do
       assert hint =~ "  * Size.megabytes\n  * My.App.field"
     end
   end
+
+  describe "escalation_note/1" do
+    test "nil when nothing was escalated" do
+      assert Hint.escalation_note([]) == nil
+    end
+
+    test "explains the recovery and emits a module-wildcard :skip snippet per macro" do
+      note =
+        Hint.escalation_note([
+          %{macro: :guarded, file: "lib/a.ex", line: 3, count: 4},
+          %{macro: :parsec, file: "lib/b.ex", line: 9, count: 2}
+        ])
+
+      assert note =~ "recovered from compile-poisoning"
+      assert note =~ "2 whole"
+      assert note =~ "rediscovered on every run"
+      assert note =~ ".mutare.exs"
+      assert note =~ "{:*, :guarded, :skip}"
+      assert note =~ "{:*, :parsec, :skip}"
+      assert note =~ "`:macro_routes`"
+    end
+
+    test "dedups a macro escalated at more than one invocation" do
+      note =
+        Hint.escalation_note([
+          %{macro: :guarded, file: "lib/a.ex", line: 3, count: 4},
+          %{macro: :guarded, file: "lib/a.ex", line: 8, count: 1}
+        ])
+
+      # One route per distinct macro name, and the singular "1 whole … block".
+      assert note =~ "1 whole"
+      routes = note |> String.split("\n") |> Enum.filter(&(&1 =~ "{:*,"))
+      assert routes == ["        {:*, :guarded, :skip}"]
+    end
+
+    test "the snippet is valid Elixir that resolves through Mutare.MacroRouting.Registry" do
+      note = Hint.escalation_note([%{macro: :guarded, file: "lib/a.ex", line: 3, count: 4}])
+
+      lines = String.split(note, "\n")
+      start = Enum.find_index(lines, &(&1 == "    ["))
+      rest = Enum.drop(lines, start)
+      stop = Enum.find_index(rest, &(&1 == "    ]"))
+      snippet = rest |> Enum.take(stop + 1) |> Enum.join("\n")
+
+      {config, _} = Code.eval_string(snippet)
+      specs = Mutare.MacroRouting.Registry.resolve(config[:macro_routes])
+
+      assert Enum.map(specs, &{&1.module, &1.name, &1.args}) == [{:*, :guarded, :skip}]
+    end
+  end
 end

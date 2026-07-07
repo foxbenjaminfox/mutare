@@ -272,6 +272,72 @@ defmodule Mutare.Report.LiveTest do
     end
   end
 
+  describe "poison_round_line/1" do
+    test "names the dropped mutant count" do
+      line =
+        Live.poison_round_line(%{
+          dropped: [%{id: 3, file: "lib/a.ex", line: 2, mutator: :arithmetic}],
+          escalated: []
+        })
+
+      assert line == "  ⟳ compile-poison: dropped 1 mutant — rebuilding…"
+    end
+
+    test "pluralises and names escalated block macros" do
+      line =
+        Live.poison_round_line(%{
+          dropped: [
+            %{id: 3, file: "lib/a.ex", line: 2, mutator: :arithmetic},
+            %{id: 4, file: "lib/a.ex", line: 3, mutator: :literal}
+          ],
+          escalated: [%{macro: :guarded, file: "lib/a.ex", line: 5, count: 6}]
+        })
+
+      assert line ==
+               "  ⟳ compile-poison: dropped 2 mutants, " <>
+                 "skipped 1 unknown block macro wholesale (guarded) — rebuilding…"
+    end
+
+    test "a round that only escalates still reads (zero individual drops)" do
+      line =
+        Live.poison_round_line(%{
+          dropped: [],
+          escalated: [
+            %{macro: :guarded, file: "lib/a.ex", line: 5, count: 6},
+            %{macro: :parsec, file: "lib/b.ex", line: 1, count: 2}
+          ]
+        })
+
+      assert line ==
+               "  ⟳ compile-poison: dropped 0 mutants, " <>
+                 "skipped 2 unknown block macros wholesale (guarded, parsec) — rebuilding…"
+    end
+  end
+
+  describe "poison-round narration (end to end)" do
+    test "leaves a permanent line in plain mode, even when not verbose" do
+      {:ok, io} = StringIO.open("")
+      {:ok, live} = Live.start_link(device: io, ansi: false, verbose: false, width: 200)
+
+      Live.phase(live, :compiling)
+
+      Live.phase(
+        live,
+        {:poison_round,
+         %{
+           dropped: [%{id: 1, file: "lib/a.ex", line: 2, mutator: :arithmetic}],
+           escalated: [%{macro: :guarded, file: "lib/a.ex", line: 5, count: 3}]
+         }}
+      )
+
+      Live.finish(live)
+      {_in, out} = StringIO.contents(io)
+
+      assert out =~ "⟳ compile-poison: dropped 1 mutant"
+      assert out =~ "skipped 1 unknown block macro wholesale (guarded)"
+    end
+  end
+
   describe "verbose mode (plain)" do
     test "non-verbose harness-error lines include the diagnostic" do
       {:ok, io} = StringIO.open("")
