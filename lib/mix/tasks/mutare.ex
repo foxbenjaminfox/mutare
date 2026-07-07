@@ -94,6 +94,11 @@ defmodule Mix.Tasks.Mutare do
       mix mutare --dry-run                # list the mutants that *would* run, by
                                           #   file — no compile, no tests. Honours
                                           #   --only/--since/--mutators/--line/etc.
+      mix mutare --check                  # compile the metamutant (with poison
+                                          #   recovery) but run no tests — a fast
+                                          #   preflight for "will my DSLs build?".
+                                          #   Prints a copy-pasteable :macro_routes
+                                          #   fix for any unknown macro it had to skip
 
   ## Choosing what to mutate
 
@@ -393,7 +398,9 @@ defmodule Mix.Tasks.Mutare do
                 list_macros: :boolean,
                 list_ignores: :boolean,
                 show_config: :boolean,
-                dry_run: :boolean
+                dry_run: :boolean,
+                # compile-only preflight: compile (with poison recovery) but run no tests
+                check: :boolean
               ]
   @parse_error_switches Enum.map(@switches, fn
                           {key, [type, :keep]} -> {key, type}
@@ -467,6 +474,7 @@ defmodule Mix.Tasks.Mutare do
         flags[:list_macros] -> Info.print_macro_registry(options)
         flags[:list_ignores] -> Info.print_ignores(project, scan(context, root))
         flags[:dry_run] -> Info.print_dry_run(project, scan(context, root))
+        flags[:check] -> run_check(project, context, root)
         true -> run_mutation_testing(project, context, root)
       end
     rescue
@@ -487,6 +495,63 @@ defmodule Mix.Tasks.Mutare do
     # info commands (`--dry-run`/`--list-ignores`) use the un-flagged context above, so they keep
     # rendering eagerly (they describe *every* site).
     context = %{context | defer_site_code: defer_site_code?(options)}
+
+    {live, schema, run_context} = start_live_scan(project, context, root)
+
+    try do
+      result = Runner.run_with_schema(schema, root, run_context)
+      # Tear the live status block down before anything else prints, so the final
+      # report / error lands on a clean terminal (the block lives on stderr).
+      if live, do: Live.finish(live)
+
+      case result do
+        {:ok, run} ->
+          warn_poison_recovery(run)
+          report(run, options)
+
+        {:error, reason, detail} ->
+          Mix.raise(format_error(reason, detail, root))
+      end
+    after
+      # Backstop for an unexpected raise mid-run; `finish/1` is idempotent. A variant-label
+      # `Mutare.Ignore.SpecError` from the scan propagates through here (the live block is torn
+      # down) to `dispatch_with_options/2`, which renders it as a clean Mix abort.
+      if live, do: Live.finish(live)
+    end
+  end
+
+  # `--check`: the compile-only preflight. Scan + compile the metamutant (with the same
+  # poison recovery a full run does), then stop before the baseline and per-mutant phase.
+  # It answers "will this project's DSLs let Mutare build?" cheaply — the value on a
+  # first run against an unfamiliar macro-heavy codebase, where the alternative is
+  # discovering poison mid-run. Shares the scan/live prelude with the full run; only the
+  # runner call and the reporting differ. Site diffs are never shown, so the scan defers
+  # them (`defer_site_code: true`) to keep the render cheap.
+  defp run_check(%Project{} = project, %Context{} = context, root) do
+    context = %{context | defer_site_code: true}
+    {live, schema, run_context} = start_live_scan(project, context, root)
+
+    try do
+      result = Runner.check_with_schema(schema, root, run_context)
+      if live, do: Live.finish(live)
+
+      case result do
+        {:ok, check} -> Info.print_check(check, project)
+        {:error, reason, detail} -> Mix.raise(format_error(reason, detail, root))
+      end
+    after
+      if live, do: Live.finish(live)
+    end
+  end
+
+  # The shared scan/live prelude of a compile-backed run (`run_mutation_testing/3` and
+  # `--check`): host-compile for `use` expansion, start the live reporter, scan with live
+  # progress, announce + emit the scan-time warnings, and wire the runner's live hooks.
+  # Returns `{live, schema, run_context}`. Callers set `context.defer_site_code` before
+  # calling (it drives the `summarize_sites` decision below and the scan's render), then
+  # own the `try/after` around the runner call and the `Live.finish` teardown.
+  defp start_live_scan(%Project{} = project, %Context{} = context, root) do
+    options = context.options
 
     # Surface first-party `use MyAppWeb, :controller` bundles: `Mutare.Transform.Uses` expands
     # `use` in-process, which needs the host app's modules loadable. Deps are already on the
@@ -510,46 +575,25 @@ defmodule Mix.Tasks.Mutare do
     summarize? = live != nil and Live.animating?(live) and context.defer_site_code
     context = %{context | summarize_sites: summarize?}
 
-    try do
-      # The scan (discovery + transform of every source) runs before the runner, so
-      # we drive its live progress directly from here — `:on_scan` updates the block
-      # per file. `clear/1` tears that block down before the count prints to stdout
-      # so the two don't collide; the runner then redraws its own phases.
-      if live, do: Live.phase(live, :scanning)
-      on_scan = if live, do: &Live.scanned(live, &1)
-      schema = Schema.build(root, %{context | on_scan: on_scan})
-      if live, do: Live.clear(live)
-      announce(schema, project, options)
-      warn_unknown_directives(schema)
-      warn_ineffective_ignores(schema)
-      warn_ineffective_skip_lifting(schema)
-      enforce_strict_ignores(schema, options)
+    # The scan (discovery + transform of every source) runs before the runner, so
+    # we drive its live progress directly from here — `:on_scan` updates the block
+    # per file. `clear/1` tears that block down before the count prints to stdout
+    # so the two don't collide; the runner then redraws its own phases.
+    if live, do: Live.phase(live, :scanning)
+    on_scan = if live, do: &Live.scanned(live, &1)
+    schema = Schema.build(root, %{context | on_scan: on_scan})
+    if live, do: Live.clear(live)
+    announce(schema, project, options)
+    warn_unknown_directives(schema)
+    warn_ineffective_ignores(schema)
+    warn_ineffective_skip_lifting(schema)
+    enforce_strict_ignores(schema, options)
 
-      # Wire the runner's live hooks (reporter/phase/start) now that the scan is done — the
-      # scan drove `:on_scan` directly above; these drive the per-mutant phase. A distinct
-      # binding (not a rebind of `context`) so it stays clear that the scan/announce above ran
-      # on the unhooked context and only the runner + report see the hooked one.
-      run_context = wire_live_hooks(context, live)
-
-      result = Runner.run_with_schema(schema, root, run_context)
-      # Tear the live status block down before anything else prints, so the final
-      # report / error lands on a clean terminal (the block lives on stderr).
-      if live, do: Live.finish(live)
-
-      case result do
-        {:ok, run} ->
-          warn_poison_recovery(run)
-          report(run, options)
-
-        {:error, reason, detail} ->
-          Mix.raise(format_error(reason, detail, root))
-      end
-    after
-      # Backstop for an unexpected raise mid-run; `finish/1` is idempotent. A variant-label
-      # `Mutare.Ignore.SpecError` from the scan propagates through here (the live block is torn
-      # down) to `dispatch_with_options/2`, which renders it as a clean Mix abort.
-      if live, do: Live.finish(live)
-    end
+    # Wire the runner's live hooks (reporter/phase/start) now that the scan is done — the
+    # scan drove `:on_scan` directly above; these drive the per-mutant phase. A distinct
+    # binding (not a rebind of `context`) so it stays clear that the scan/announce above ran
+    # on the unhooked context and only the runner + report see the hooked one.
+    {live, schema, wire_live_hooks(context, live)}
   end
 
   # The shared scan for the scan-backed info commands (`--dry-run`, `--list-ignores`):

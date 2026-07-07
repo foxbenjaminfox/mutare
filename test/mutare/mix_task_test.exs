@@ -609,6 +609,84 @@ defmodule Mix.Tasks.MutareTest do
     end
   end
 
+  describe "--check (compile-only preflight)" do
+    @tag :runner
+    @tag timeout: 180_000
+    test "a clean project reports a first-attempt compile and runs no tests" do
+      %{project: project, sandbox: sandbox} =
+        Project.build(:checkclean, %{
+          "lib/c.ex" => """
+          defmodule C do
+            def add(a, b), do: a + b
+          end
+          """
+        })
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert Mix.Tasks.Mutare.run([project, "--check", "--sandbox", sandbox]) == :ok
+      end)
+
+      out = shell_info() |> Enum.join("\n")
+      assert out =~ "metamutant compiled"
+      assert out =~ "no tests run"
+      assert out =~ "compiled on the first attempt"
+      # No baseline / per-mutant phase ran.
+      refute out =~ "baseline"
+      refute out =~ "SURVIVED"
+    end
+
+    @tag :runner
+    @tag timeout: 180_000
+    test "an escalating DSL prints the copy-pasteable macro_routes fix" do
+      # Same hostile block macro as PoisonTest: `guarded :guard do …` splices its body
+      # into a `when` guard, so the injected selector `case` poisons and the whole block
+      # is escalated (skipped wholesale). --check must name it and suggest the route.
+      %{project: project, sandbox: sandbox} =
+        Project.build(:checkdsl, %{
+          "lib/guard_dsl.ex" => """
+          defmodule GuardDSL do
+            defmacro guarded(:guard, do: body) do
+              quote do
+                def g(x) when unquote(unwrap(body)), do: x
+              end
+            end
+
+            defp unwrap({:__block__, _meta, [single]}), do: single
+            defp unwrap(other), do: other
+          end
+          """,
+          "lib/uses.ex" => """
+          defmodule Uses do
+            import GuardDSL
+
+            guarded :guard do
+              1 < 2
+            end
+          end
+          """
+        })
+
+      mutators = "relational,literal,arithmetic"
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        assert Mix.Tasks.Mutare.run([
+                 project,
+                 "--check",
+                 "--mutators",
+                 mutators,
+                 "--sandbox",
+                 sandbox
+               ]) == :ok
+      end)
+
+      out = shell_info() |> Enum.join("\n")
+      assert out =~ "poison-recovery rebuild"
+      assert out =~ "skipped wholesale"
+      assert out =~ "guarded"
+      assert out =~ "{:*, :guarded, :skip}"
+    end
+  end
+
   @tag :runner
   @tag timeout: 180_000
   test "end to end against an example: prints survivors, writes a JSON report, and gates on --min-score" do

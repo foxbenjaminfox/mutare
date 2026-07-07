@@ -343,6 +343,71 @@ defmodule Mutare.CLI.Info do
     end
   end
 
+  # `--check`: the compile-only preflight result. The metamutant compiled (poison
+  # recovery, if any, already succeeded — an unrecoverable failure aborts before here via
+  # `Mix.raise`), so this reports *how* it compiled: clean, or with recovery, naming the
+  # unknown block macros that had to be skipped wholesale and the durable `:macro_routes`
+  # fix. `check` is `Mutare.Runner.check_with_schema/3`'s result
+  # (`%{schema: schema, recovery: recovery | nil}`).
+  def print_check(%{schema: schema, recovery: recovery}, %Project{} = project) do
+    mutants = length(schema.sites)
+    files = map_size(schema.metamutants)
+
+    Mix.shell().info(
+      "✓ metamutant compiled#{CLI.scope_label(project)} — " <>
+        "#{mutants} mutant#{CLI.plural(mutants)} across #{files} file#{CLI.plural(files)}, " <>
+        "no tests run.\n"
+    )
+
+    print_check_recovery(recovery)
+  end
+
+  # A clean first compile: nothing to route. Say so explicitly so the preflight has a
+  # clear pass signal, not just the compile line above.
+  defp print_check_recovery(nil) do
+    Mix.shell().info(
+      "The metamutant compiled on the first attempt — no DSL routing needed. " <>
+        "You're ready to run `mix mutare`."
+    )
+  end
+
+  # Recovery happened: name what it cost and, when it escalated unknown block macros,
+  # print the copy-pasteable `:macro_routes` fix so the next run needn't rediscover it.
+  defp print_check_recovery(%{rounds: rounds, dropped: dropped, escalated: escalated}) do
+    Mix.shell().info(
+      "Compiled after #{rounds} poison-recovery rebuild#{CLI.plural(rounds)} " <>
+        "(#{MapSet.size(dropped)} mutant#{CLI.plural(MapSet.size(dropped))} dropped). " <>
+        "These rebuilds are paid on every run unless you pin the fix below.\n"
+    )
+
+    case escalated do
+      [] ->
+        Mix.shell().info(
+          "The dropped mutants were individual (a custom mutator emitting code that " <>
+            "won't compile), not whole DSL blocks — nothing to route."
+        )
+
+      escalations ->
+        print_check_escalations(escalations)
+    end
+  end
+
+  defp print_check_escalations(escalations) do
+    Mix.shell().info("Unknown block macros skipped wholesale:\n")
+
+    escalations
+    |> Enum.sort_by(&{&1.file, &1.line})
+    |> Enum.each(fn e ->
+      at = if e.line, do: "#{e.file}:#{e.line}", else: e.file
+      Mix.shell().info("  #{at}  #{e.macro}  (#{e.count} mutant#{CLI.plural(e.count)})")
+    end)
+
+    case Mutare.Poison.Hint.escalation_note(escalations) do
+      nil -> :ok
+      note -> Mix.shell().info("\n" <> note)
+    end
+  end
+
   defp print_dry_run_file({file, sites}) do
     Mix.shell().info("#{file}  (#{length(sites)})")
 
