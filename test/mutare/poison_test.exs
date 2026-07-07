@@ -438,6 +438,26 @@ defmodule Mutare.PoisonTest do
       refute Enum.any?(outside, &MapSet.member?(ids, &1))
     end
 
+    test "attributes a mutation in the piped value of `lhs |> macro()`" do
+      # After pipe expansion the LHS is the macro's first argument, but its selector renders on
+      # the pipe's *left* — before the RHS `query()` node. The whole `|>` must be ranged, or the
+      # poison maps to nothing and the run aborts.
+      src = """
+      defmodule R do
+        def f(a, b) do
+          (a > b) |> query()
+        end
+      end
+      """
+
+      {metamutants, sites} = transform(src, [Mutare.Mutators.Relational])
+      assert sites != []
+      expected = MapSet.new(sites, & &1.id)
+
+      assert [{{"MyDsl", :query}, ^expected}] =
+               Mutare.Poison.macro_poison(frame("expanding macro: MyDsl.query/1"), metamutants)
+    end
+
     test "spans a macro-argument literal on its own line (true call range, not child metadata)" do
       # The `1` has no `:line` metadata; the fallback must reach the closing paren to span it.
       src = """

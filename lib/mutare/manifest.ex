@@ -155,6 +155,19 @@ defmodule Mutare.Manifest do
     calls
   end
 
+  # A piped call `lhs |> fun(...)`: after pipe expansion `lhs` is `fun`'s *first* argument, so a
+  # mutation in `lhs` renders as a selector `case` on the pipe's left — *before* the RHS call
+  # node's own range. Range the whole `|>` node (its LHS-through-RHS span, via `Sourceror`)
+  # under the RHS call's name, so the piped value and every earlier stage feeding this macro are
+  # covered. Must precede the generic call clause below: `{:|>, meta, [lhs, rhs]}` also matches
+  # `{fun, _, args}` with `fun` = `:|>`, which would (harmlessly, but uselessly) range nothing.
+  defp named_call({:|>, _meta, [_lhs, rhs]} = node, names) do
+    case piped_name(rhs) do
+      nil -> nil
+      fun -> if MapSet.member?(names, fun), do: call_range(fun, node)
+    end
+  end
+
   defp named_call({fun, _meta, args} = node, names) when is_atom(fun) and is_list(args),
     do: if(MapSet.member?(names, fun), do: call_range(fun, node))
 
@@ -163,6 +176,14 @@ defmodule Mutare.Manifest do
        do: if(MapSet.member?(names, fun), do: call_range(fun, node))
 
   defp named_call(_node, _names), do: nil
+
+  # The function name of a `|>`'s right-hand stage — a call `fun(...)`, a bare `fun` (no parens,
+  # the piped value is its only argument), or a qualified `Mod.fun`. `nil` for anything that
+  # isn't a call in pipe position.
+  defp piped_name({fun, _meta, args}) when is_atom(fun) and is_list(args), do: fun
+  defp piped_name({fun, _meta, ctx}) when is_atom(fun) and is_atom(ctx), do: fun
+  defp piped_name({{:., _, [_module, fun]}, _meta, _args}) when is_atom(fun), do: fun
+  defp piped_name(_), do: nil
 
   defp call_range(name, node) do
     case Sourceror.get_range(node) do

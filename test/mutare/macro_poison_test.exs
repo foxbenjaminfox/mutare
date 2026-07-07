@@ -71,6 +71,51 @@ defmodule Mutare.MacroPoisonTest do
     assert run.recovery.rounds >= 1
   end
 
+  test "recovers a poison in the PIPED value of an inline macro (`|>`)" do
+    # `(a > b) |> query()` — after pipe expansion `a > b` is `query`'s argument, but its
+    # selector renders on the pipe's left, before the `query()` node. The fallback must range
+    # the whole pipe (not just `query()`) to attribute it, or the run aborts.
+    %{project: project, sandbox: sandbox} =
+      Project.build(:piped_dsl, %{
+        "lib/my_dsl.ex" => """
+        defmodule MyDsl do
+          defmacro query(expr) do
+            Macro.prewalk(expr, fn
+              {:case, _m, _a} -> raise "no case in a query"
+              node -> node
+            end)
+
+            quote(do: :ok)
+          end
+        end
+        """,
+        "lib/report.ex" => """
+        defmodule Report do
+          import MyDsl
+
+          def q(a, b) do
+            (a > b) |> query()
+          end
+        end
+        """,
+        "test/report_test.exs" => """
+        defmodule ReportTest do
+          use ExUnit.Case
+
+          test "q" do
+            assert Report.q(2, 1) == :ok
+          end
+        end
+        """
+      })
+
+    assert {:ok, run} =
+             Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Relational])
+
+    assert %{macro_skipped: [%{module: "MyDsl", macro: :query}]} = run.recovery
+    assert Enum.any?(run.results, &(&1.status == :poisoned))
+  end
+
   test "recovers an UNSELECTED macro poison under a scoped (--line) run" do
     # Under `:only_lines`, `schema.sites` is filtered to the selected line, but the metamutant
     # still *reserves and renders* every mutant — so an unselected `query(...)` mutant is still
