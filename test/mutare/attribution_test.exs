@@ -209,6 +209,49 @@ defmodule Mutare.AttributionTest do
     end
   end
 
+  describe "a clause ending in a multi-line unary `not` is not false-rejected" do
+    # Sourceror over-counts the end column of a multi-line operator-form `not X` by the width of the
+    # `not ` operator (a single-line `not X`, or a parenthesized `not(X)`, ranges correctly), while
+    # the enclosing rewrite's range is not over-counted — so a strict containment check would reject
+    # a legitimate `where: not exists(…)` clause and collapse it back onto the macro line. The span
+    # check clamps the over-counted end to the operand's real end (`mutare_ecto`'s
+    # `not exists(subquery(…))` subquery filter-drops are the motivating case).
+    # A paren-less `query` call (as `mutare_ecto`'s keyword-form `from` is) whose *last* clause value
+    # is a multi-line `not exists(…)`: the call's range ends at that value's real end, so the value's
+    # over-counted end pushes past it — the escape a paren-wrapped `query(…)` would instead absorb.
+    @not_source """
+    defmodule UsesQuery do
+      import Mutare.Test.QueryDSL
+
+      def run do
+        query select: 1,
+              where:
+                not exists(
+                  subquery(from(p in Post, where: p.views < 4))
+                )
+      end
+    end
+    """
+
+    # `where:` is on line 6; its multi-line `not exists(…)` value runs to line 9.
+    @not_where_line 6
+
+    test "the attributed drop is kept — no span warning, site stays on the clause line" do
+      ref = make_ref()
+
+      warning =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          Process.put(ref, sites_for(@not_source))
+        end)
+
+      refute warning =~ "escapes the mutated node's span"
+
+      drop = Enum.find(Process.get(ref), &(&1.operation == :delete))
+      assert drop.line == @not_where_line
+      assert drop.original_code =~ "not exists("
+    end
+  end
+
   describe "a mis-placed attribution degrades safely" do
     test "core warns and falls back to the offered node when the clause can't be placed" do
       ref = make_ref()

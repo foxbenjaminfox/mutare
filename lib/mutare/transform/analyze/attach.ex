@@ -84,7 +84,10 @@ defmodule Mutare.Transform.Analyze.Attach do
         {nil, nil}
 
       clause_range ->
-        normalized_range = trim_trailing_bare_atom_overrun(clause_range, clause)
+        normalized_range =
+          clause_range
+          |> trim_trailing_bare_atom_overrun(clause)
+          |> trim_multiline_not_overrun(clause)
 
         if within?(normalized_range, offered_range) do
           {attribution, normalized_range}
@@ -108,6 +111,41 @@ defmodule Mutare.Transform.Analyze.Attach do
   defp within?(inner, outer) do
     pos(inner.start) >= pos(outer.start) and pos(inner.end) <= pos(outer.end)
   end
+
+  # Sourceror over-counts the end column of a **multi-line** unary `not X` node: it adds the width of
+  # the `not ` operator to the operand's last-line end column, so `not exists(\n …\n)` reports an end
+  # a few columns past the real closing delimiter (a single-line `not X` is ranged correctly, an
+  # operator form only — a parenthesized `not(…)` is delimiter-bounded and correct — and the
+  # enclosing rewrite's own range is not over-counted). The real end of `not X` is the end of `X`, so
+  # when the clause *ends* in such a `not`, clamp to the operand's range — otherwise a legitimate
+  # `where: not exists(…)` clause is false-rejected by the containment check and collapsed back onto
+  # the macro line. Like the bare-atom trim, this only drops phantom trailing columns; the attributed
+  # clause text (`not exists(…)`) is unchanged, and it walks the same trailing path (through a keyword
+  # pair or an enclosing expression) so it fires whether the attribution points at the `not` node, its
+  # keyword pair, or an expression ending in it.
+  defp trim_multiline_not_overrun(range, node) do
+    case trailing_not_operand_end(node) do
+      %Sourceror.Range{end: operand_end} ->
+        if pos(operand_end) < pos(range.end), do: %{range | end: operand_end}, else: range
+
+      _ ->
+        range
+    end
+  end
+
+  # The operand range of a trailing operator-form `not X`, or `nil` if the clause does not end in one.
+  defp trailing_not_operand_end({:not, meta, [operand]}) do
+    if closing_meta?(meta), do: nil, else: safe_range(operand)
+  end
+
+  defp trailing_not_operand_end({{:__block__, _meta, [_key]}, value}),
+    do: trailing_not_operand_end(value)
+
+  defp trailing_not_operand_end({_form, meta, args}) when is_list(meta) and is_list(args) do
+    if closing_meta?(meta), do: nil, else: args |> List.last() |> trailing_not_operand_end()
+  end
+
+  defp trailing_not_operand_end(_node), do: nil
 
   # Sourceror's bare-atom over-count is contagious: not only the `true`/`false`/`nil` node but also
   # an expression or keyword pair ending in that node may report an end column one past its real
