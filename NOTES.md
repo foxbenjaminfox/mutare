@@ -220,6 +220,47 @@ one new thread: a `Mutare.Runner.Recovery` struct carried through `compile_with_
     it under a stripped-before-render meta key; `Uses.degraded_uses/2` reads it back, computed only
     for `--check` so a normal run pays nothing.
 
+### Macro-expansion poison fallback: recover an inline DSL macro (`from`-style) `[done]`
+Block macros were handled (escalation on a second strike); the harder, more common case is an
+*inline* macro that rewrites its argument at compile time — `Ecto.Query.from/2`, a `Size.megabytes/1`
+needing a literal, any unknown in-house `query(a > b)`. Splice a selector `case` into its argument and
+the macro raises *while expanding*. The empirical finding that drove the design: **the compiler blames
+the macro-*call* line, one line above the selector `case`** the `Manifest` records (Sourceror renders
+`query(` and the `case` on separate lines), so line-based `Poison.ids/2` maps nothing, `poison ⊆ skip_ids`
+holds trivially, and the run *aborted* — poison recovery was never even invoked for the case it most
+needs to handle.
+
+The fix is a **fallback attribution path** in `recover_compile_poison/5`, taken only when line attribution
+stalls: parse the `expanding macro: Mod.fun/arity` frame the compiler *does* emit (already extracted by
+`Hint.expanding_macros/1`, previously only to print an abort-time hint) and map it to mutant ids through the
+**metamutant** (`Poison.macro_poison/2` → `Manifest.ids_in_named_calls/2`): find every call of that name in
+the rendered metamutant of the file(s) the error touches, take its full range, and drop every mutant region
+inside it. Key decisions:
+
+  * **Attribute in metamutant space via the manifest, not the *original* source via `%Site{}`.** The first
+    cut re-scanned original sources and matched against `schema.sites` — wrong twice. (1) Under
+    `--line`/`--max-mutants` `schema.sites` is *filtered* but the metamutant still reserves/renders every id,
+    so an *unselected* macro mutant still poisons yet has no site to match → abort. (2) A literal argument on
+    its own line (`Size.megabytes(\n 5\n)`) gets no `:line` metadata from `Code.string_to_quoted`, so a
+    child-metadata line-set misses it. Both vanish in metamutant space: the manifest carries *every reserved*
+    id (like the line-based `ids/2` it backs up), and `Sourceror.get_range/1` ranges to the closing delimiter
+    (a true span, not child lines). No scan-time `macro_context` tag, no `%Site{}` change, no loadability
+    requirement — the compiler *named* the culprit, so a bare-name match is safe (not a guess).
+  * **Bare-name match + range containment**, deliberately conservative. Two same-named macros are skipped
+    together and every mutant inside a poisoning macro call is dropped — the same *bounded over-drop* blocks
+    already accept, and only ever on a real failing compile.
+  * **First-strike, wholesale, per-`{module, name}`** — no second-strike (the frame names the *macro*, not a
+    mutant, and the rejection is structural, so there is no one-off to distinguish) and no per-invocation
+    scoping (the natural fix is `{Mod, :fun, :skip}` *everywhere*, which is exactly what the frame supports).
+  * The frame carries the **module**, so the suggestion is a precise `{Module, :fun, :skip}`
+    (`Hint.macro_skip_note/1`), unlike the block case's `{:*, :name, :skip}` wildcard. A loud `⚠`
+    `{:macro_poison, …}` narration names it inline during recovery; `--check` and the end-of-run stderr note
+    surface it durably (and the old `--check` "custom mutator, nothing to route" *misdiagnosis* of these
+    drops is fixed). On the rare non-recovery (innermost frame is a library-internal macro the user never
+    wrote, so nothing matches), we still abort — with `Hint.for_compile_failure/1`'s skip snippet as before.
+  * **Consequence:** the `Size.megabytes(5)` "unrecoverable" class is now *recovered* — its literal mutant is
+    dropped `:poisoned` and the run proceeds, where it used to abort the whole run.
+
 ### Warn for ineffective `# mutare:ignore` directives `[done]`
 `# mutare:ignore` filtering fails **safe** — a typo'd family (`[arithmatic]`), an empty
 `[]`, a standalone directive on the wrong line, or a family that produced no mutant there

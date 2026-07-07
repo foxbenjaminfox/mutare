@@ -104,19 +104,19 @@ defmodule Mutare.PoisonTest do
     end
   end
 
-  describe "unrecoverable compile failure → remediation hint" do
+  describe "macro-expansion poison → fallback recovery + suggestion" do
     @tag :runner
     @tag timeout: 180_000
-    test "a macro requiring a literal arg aborts, and the captured output drives a :skip hint" do
-      # The one poison class recovery *can't* isolate: a macro that only accepts a
-      # compile-time literal (`Size.megabytes(5)`). Mutare wraps the literal in a
-      # runtime selector `case`, the macro receives that `case` AST and raises while
-      # the compiler is expanding it — and the compiler reports the macro *call* line,
-      # not the spliced selector inside it, so `Poison.ids/2` maps nothing and the run
-      # aborts. The end-to-end value of this test is the *bridge*: the real compiler
-      # output must still carry an `expanding macro:` frame, so `Mutare.Poison.Hint`
-      # can name the macro and print a `:skip` snippet. Guards against compiler-output
-      # drift the pure `HintTest` can't see.
+    test "a macro requiring a literal arg recovers via the macro-expansion fallback" do
+      # A macro that only accepts a compile-time literal (`Size.megabytes(5)`). Mutare wraps
+      # the literal in a runtime selector `case`, the macro receives that `case` AST and
+      # raises while the compiler is expanding it — and the compiler reports the macro *call*
+      # line, not the spliced selector inside it, so line-based `Poison.ids/2` maps nothing.
+      # The macro-expansion fallback then reads the `expanding macro: Size.megabytes/1` frame,
+      # drops the mutant lexically inside the `Size.megabytes(...)` call, and the rebuild
+      # compiles — recovering instead of aborting. The end-to-end value is the *bridge*: the
+      # real compiler output must carry that frame for the fallback to name the macro, a guard
+      # against compiler-output drift the pure `HintTest` can't see.
       %{project: project, sandbox: sandbox} =
         Project.build(:litmacro, %{
           "lib/size.ex" => """
@@ -126,10 +126,18 @@ defmodule Mutare.PoisonTest do
             end
           end
           """,
+          # The literal on its *own* line — so `Code.string_to_quoted` gives it no `:line`
+          # meta and the fallback must use the call's *true* range (to the closing paren),
+          # not just child metadata lines, to span it.
           "lib/usage.ex" => """
           defmodule Usage do
             require Size
-            def limit, do: Size.megabytes(5)
+
+            def limit do
+              Size.megabytes(
+                5
+              )
+            end
           end
           """,
           "test/usage_test.exs" => """
@@ -140,17 +148,19 @@ defmodule Mutare.PoisonTest do
           """
         })
 
-      # Only Literal, so the *only* mutation is the `5` at the call site — the macro
-      # definition (its body inside `quote`) has no sites, so the abort is the macro
-      # poison alone, isolated and immediate (an empty poison set ⊆ skip_ids, no retries).
-      assert {:error, :compile_failed, detail} =
+      # Only Literal, so the *only* mutation is the `5` at the call site. It can't be mutated
+      # inside the macro, so the fallback drops it (`:poisoned`) and the run completes.
+      assert {:ok, run} =
                Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Literal])
 
-      assert detail =~ "expanding macro: Size.megabytes"
+      assert Enum.any?(run.results, &(&1.status == :poisoned))
 
-      hint = Poison.Hint.for_compile_failure(detail)
-      assert hint =~ "compile-time literal"
-      assert hint =~ "{Size, :megabytes, :skip}"
+      # The frame was parsed and mapped (drift guard) and the durable, module-qualified
+      # suggestion names the macro.
+      assert %{macro_skipped: [%{module: "Size", macro: :megabytes}]} = run.recovery
+
+      assert Poison.Hint.macro_skip_note(run.recovery.macro_skipped) =~
+               "{Size, :megabytes, :skip}"
     end
   end
 
@@ -389,6 +399,82 @@ defmodule Mutare.PoisonTest do
              )
 
       refute Enum.any?(block, &(&1.status == :poisoned and &1.site.mutator != :poison))
+    end
+  end
+
+  describe "macro_poison/2 (macro-expansion fallback, metamutant space)" do
+    # Transform a source into `{%{file => metamutant}, sites}` — the real rendered metamutant
+    # the fallback attributes against (not the original), so its manifest carries every id.
+    defp transform(src, mutators) do
+      {meta, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(src, file: "lib/r.ex", mutators: mutators)
+
+      {%{"lib/r.ex" => meta}, sites}
+    end
+
+    defp frame(output_line),
+      do: "** (RuntimeError) nope\n    #{output_line}\n    lib/r.ex:2: R.f/4\n"
+
+    test "attributes the mutants inside the blamed macro's call, not siblings outside" do
+      src = """
+      defmodule R do
+        def f(a, b, c, d) do
+          x = query(a > b)
+          y = c > d
+          {x, y}
+        end
+      end
+      """
+
+      {metamutants, sites} = transform(src, [Mutare.Mutators.Relational])
+      inside = for s <- sites, s.line == 3, do: s.id
+      outside = for s <- sites, s.line == 4, do: s.id
+      assert inside != [] and outside != []
+
+      assert [{{"MyDsl", :query}, ids}] =
+               Mutare.Poison.macro_poison(frame("expanding macro: MyDsl.query/1"), metamutants)
+
+      assert ids == MapSet.new(inside)
+      refute Enum.any?(outside, &MapSet.member?(ids, &1))
+    end
+
+    test "spans a macro-argument literal on its own line (true call range, not child metadata)" do
+      # The `1` has no `:line` metadata; the fallback must reach the closing paren to span it.
+      src = """
+      defmodule R do
+        def f do
+          query(
+            1
+          )
+        end
+      end
+      """
+
+      {metamutants, sites} = transform(src, [Mutare.Mutators.Literal])
+      assert sites != []
+      expected = MapSet.new(sites, & &1.id)
+
+      assert [{{"MyDsl", :query}, ^expected}] =
+               Mutare.Poison.macro_poison(frame("expanding macro: MyDsl.query/1"), metamutants)
+    end
+
+    test "returns [] when the blamed macro name matches no call in the metamutant" do
+      {metamutants, _sites} =
+        transform("defmodule R do\n  def f(a, b), do: query(a > b)\nend\n", [
+          Mutare.Mutators.Relational
+        ])
+
+      assert Mutare.Poison.macro_poison(frame("expanding macro: Other.absent/2"), metamutants) ==
+               []
+    end
+
+    test "returns [] when the output names no expanding macro" do
+      {metamutants, _sites} =
+        transform("defmodule R do\n  def f(a, b), do: query(a > b)\nend\n", [
+          Mutare.Mutators.Relational
+        ])
+
+      assert Mutare.Poison.macro_poison("just an ordinary error", metamutants) == []
     end
   end
 end

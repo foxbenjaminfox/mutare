@@ -346,9 +346,9 @@ defmodule Mutare.CLI.Info do
   # `--check`: the compile-only preflight result. The metamutant compiled (poison
   # recovery, if any, already succeeded — an unrecoverable failure aborts before here via
   # `Mix.raise`), so this reports *how* it compiled: clean, or with recovery, naming the
-  # unknown block macros that had to be skipped wholesale and the durable `:macro_routes`
-  # fix. `check` is `Mutare.Runner.check_with_schema/3`'s result
-  # (`%{schema: schema, recovery: recovery | nil}`).
+  # unknown block macros escalated wholesale *and* the inline DSL macros the macro-expansion
+  # fallback skipped, each with its durable `:macro_routes` fix. `check` is
+  # `Mutare.Runner.check_with_schema/3`'s result (`%{schema: schema, recovery: recovery | nil}`).
   def print_check(%{schema: schema, recovery: recovery}, %Project{} = project, degraded_uses) do
     mutants = length(schema.sites)
     files = map_size(schema.metamutants)
@@ -408,24 +408,28 @@ defmodule Mutare.CLI.Info do
 
   # Recovery happened: name what it cost and, when it escalated unknown block macros,
   # print the copy-pasteable `:macro_routes` fix so the next run needn't rediscover it.
-  defp print_check_recovery(%{rounds: rounds, dropped: dropped, escalated: escalated}) do
+  defp print_check_recovery(%{rounds: rounds, dropped: dropped} = recovery) do
     Mix.shell().info(
       "Compiled after #{rounds} poison-recovery rebuild#{CLI.plural(rounds)} " <>
         "(#{MapSet.size(dropped)} mutant#{CLI.plural(MapSet.size(dropped))} dropped). " <>
         "These rebuilds are paid on every run unless you pin the fix below.\n"
     )
 
-    case escalated do
-      [] ->
-        Mix.shell().info(
-          "The dropped mutants were individual (a custom mutator emitting code that " <>
-            "won't compile), not whole DSL blocks — nothing to route."
-        )
+    escalated = Map.get(recovery, :escalated, [])
+    macro_skipped = Map.get(recovery, :macro_skipped, [])
 
-      escalations ->
-        print_check_escalations(escalations)
+    print_check_escalations(escalated)
+    print_check_macro_skips(macro_skipped)
+
+    if escalated == [] and macro_skipped == [] do
+      Mix.shell().info(
+        "The dropped mutants were individual (a custom mutator emitting code that " <>
+          "won't compile), not whole DSL blocks or macros — nothing to route."
+      )
     end
   end
+
+  defp print_check_escalations([]), do: :ok
 
   defp print_check_escalations(escalations) do
     Mix.shell().info("Unknown block macros skipped wholesale:\n")
@@ -438,6 +442,25 @@ defmodule Mutare.CLI.Info do
     end)
 
     case Mutare.Poison.Hint.escalation_note(escalations) do
+      nil -> :ok
+      note -> Mix.shell().info("\n" <> note)
+    end
+  end
+
+  # The macro-expansion fallback's skips (`--check`): name each inline DSL macro whose
+  # argument wouldn't compile with a mutation spliced in, and print the durable, module-
+  # qualified `{Module, :fun, :skip}` fix. This is what corrects the old misdiagnosis —
+  # these drops are a routable per-macro fact, not a one-off custom-mutator bug.
+  defp print_check_macro_skips([]), do: :ok
+
+  defp print_check_macro_skips(macro_skipped) do
+    Mix.shell().info("Inline DSL macros skipped wholesale (a mutation there wouldn't compile):\n")
+
+    macro_skipped
+    |> Enum.sort_by(&{&1.module, to_string(&1.macro)})
+    |> Enum.each(fn m -> Mix.shell().info("  #{m.module}.#{m.macro}") end)
+
+    case Mutare.Poison.Hint.macro_skip_note(macro_skipped) do
       nil -> :ok
       note -> Mix.shell().info("\n" <> note)
     end

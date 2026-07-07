@@ -98,18 +98,90 @@ defmodule Mutare.Manifest do
       false
   """
   @spec from_source(String.t()) :: t()
-  def from_source(metamutant_source) do
-    ast = parse(metamutant_source)
+  def from_source(metamutant_source), do: metamutant_source |> parse() |> build()
 
-    # The gate clauses read the dispatch variable by name (`<var> === <id>`), and
-    # `Mutare.Transform.Names` *salts* that name (`mutare_active` → `mutare_active_0`,
-    # …) when the source already uses it — so we recover the actual name from this
-    # metamutant rather than assume the canonical one (`active_var/1`).
+  # Region-build over an already-parsed metamutant AST. The gate clauses read the dispatch
+  # variable by name (`<var> === <id>`), and `Mutare.Transform.Names` *salts* that name
+  # (`mutare_active` → `mutare_active_0`, …) when the source already uses it — so we recover
+  # the actual name from this metamutant rather than assume the canonical one (`active_var/1`).
+  defp build(ast) do
     var = active_var(ast)
-
     {_ast, regions} = Macro.traverse(ast, [], &enter(&1, &2, var), &leave/2)
-
     %__MODULE__{regions: Enum.reverse(regions)}
+  end
+
+  @doc """
+  Mutant ids that live inside a call to one of `names`, grouped by that call's function name.
+
+  The **macro-expansion fallback**'s attribution (`Mutare.Poison.macro_poison/2`): when a
+  mutation splices a selector `case` into an argument a macro rewrites at compile time, the
+  macro raises during expansion and the compiler blames the macro *call* line — which no
+  region covers — so `ids_at_line/2` finds nothing. Given the macro name from the compiler's
+  `expanding macro:` frame, this instead finds every call of that name in the rendered
+  metamutant, takes its **full** line range (`Sourceror.get_range/1`, to the closing
+  delimiter — so a literal argument on its own line is still spanned), and collects the ids of
+  every region contained in it.
+
+  Works in **metamutant space** over *every reserved* mutant — so it is correct under
+  `--line`/`--max-mutants`, where `Mutare.Schema`'s `:sites` are filtered but the metamutant
+  still embeds (and can be poisoned by) every id. Returns `%{fun_atom => MapSet.t()}`, empty
+  when nothing matched.
+  """
+  @spec ids_in_named_calls(String.t(), MapSet.t(atom())) :: %{optional(atom()) => MapSet.t()}
+  def ids_in_named_calls(metamutant_source, names) do
+    ast = parse(metamutant_source)
+    %__MODULE__{regions: regions} = build(ast)
+
+    ast
+    |> named_call_ranges(names)
+    |> Enum.reduce(%{}, fn {name, lo, hi}, acc ->
+      ids = ids_in_range(regions, lo, hi)
+      if Enum.empty?(ids), do: acc, else: Map.update(acc, name, ids, &MapSet.union(&1, ids))
+    end)
+  end
+
+  # `{fun_name, lo, hi}` for every call — bare (`foo(a)`) or qualified (`Mod.foo(a)`) — whose
+  # name is in `names`, ranged to its closing delimiter. A call Sourceror can't range is
+  # dropped (nothing to attribute).
+  defp named_call_ranges(ast, names) do
+    {_ast, calls} =
+      Macro.prewalk(ast, [], fn node, acc ->
+        case named_call(node, names) do
+          nil -> {node, acc}
+          call -> {node, [call | acc]}
+        end
+      end)
+
+    calls
+  end
+
+  defp named_call({fun, _meta, args} = node, names) when is_atom(fun) and is_list(args),
+    do: if(MapSet.member?(names, fun), do: call_range(fun, node))
+
+  defp named_call({{:., _, [_module, fun]}, _meta, args} = node, names)
+       when is_atom(fun) and is_list(args),
+       do: if(MapSet.member?(names, fun), do: call_range(fun, node))
+
+  defp named_call(_node, _names), do: nil
+
+  defp call_range(name, node) do
+    case Sourceror.get_range(node) do
+      %{start: start, end: stop} ->
+        lo = start[:line]
+        hi = stop[:line]
+        if is_integer(lo) and is_integer(hi), do: {name, lo, hi}
+
+      _ ->
+        nil
+    end
+  end
+
+  # Every mutant id whose region is contained in `[lo, hi]` — the mutants living inside a
+  # macro call's span. Containment (not overlap): a selector `case` spliced into an argument
+  # sits wholly within the call, and dropping every mutant inside a macro that poisons is the
+  # intended wholesale skip.
+  defp ids_in_range(regions, lo, hi) do
+    for r <- regions, lo <= r.lo, r.hi <= hi, id <- r.ids, into: MapSet.new(), do: id
   end
 
   # Parse the rendered metamutant into an AST `Sourceror.get_range/1` can range.

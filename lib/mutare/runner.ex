@@ -94,12 +94,18 @@ defmodule Mutare.Runner do
   # The poison-recovery bookkeeping threaded through `compile_with_recovery/4`: how many
   # rebuild rounds have run, the accumulated dropped ids (`skip_ids`, forwarded to each
   # `Schema.rebuild`), the block-macro invocations struck once (the evidence
-  # `escalate_block_poison/3` reads), and the ones escalated wholesale. On success it is
-  # folded into the public summary (`recovery_summary/2`) that rides on `Mutare.Run`'s
-  # `:recovery` — the material the Mix task turns into a `:macro_routes` suggestion.
+  # `escalate_block_poison/3` reads), the ones escalated wholesale, and the
+  # `{module, fun}` macros the macro-expansion fallback skipped (an inline DSL macro the
+  # compiler blamed by name — see `recover_compile_poison/5`). On success it is folded into
+  # the public summary (`recovery_summary/2`) that rides on `Mutare.Run`'s `:recovery` — the
+  # material the Mix task turns into a `:macro_routes` suggestion.
   defmodule Recovery do
     @moduledoc false
-    defstruct rounds: 0, skip_ids: MapSet.new(), struck: MapSet.new(), escalated: MapSet.new()
+    defstruct rounds: 0,
+              skip_ids: MapSet.new(),
+              struck: MapSet.new(),
+              escalated: MapSet.new(),
+              macro_skips: MapSet.new()
   end
 
   # `sandbox` is where the run *was* materialised. For a default (throwaway) run it
@@ -701,24 +707,70 @@ defmodule Mutare.Runner do
     raw = Poison.ids(output, schema.metamutants)
     {poison, struck, escalated} = escalate_block_poison(raw, schema.sites, recovery.struck)
 
-    if attempts > 0 and not MapSet.subset?(poison, recovery.skip_ids) do
-      # Narrate the round before paying for its rebuild + recompile: each round is a
-      # full recompile, and without a line per round the whole recovery hides behind
-      # the "compiling metamutant (once)…" spinner and reads as a hang.
-      deps.on_phase.({:poison_round, poison_round_info(recovery, poison, escalated, schema)})
+    cond do
+      attempts <= 0 ->
+        {:error, :compile_failed, output, sandbox}
 
-      # Drop the poisoning mutants and rebuild. Ids are stable across rebuilds
-      # (the transform advances its counter for skipped ids), so accumulated
-      # `skip_ids` keep referring to the same mutations. Rebuild against the *same*
-      # files this schema covers (not a fresh discovery), so a restricted schema
-      # (`from_files/4`, `:only_files`, `:exclude`) can't silently expand. Forward
-      # the original options so `:mutators` survive.
+      not MapSet.subset?(poison, recovery.skip_ids) ->
+        do_line_recovery(deps, schema, recovery, attempts, poison, struck, escalated)
+
+      true ->
+        # Line attribution stalled — the classic sign of an inline DSL macro that rejects
+        # the spliced selector: the compiler blames the macro *call* line, which no manifest
+        # region covers, so `Poison.ids` came back empty (or only re-implicated already-
+        # dropped ids). Fall back to macro-identity attribution before giving up, so
+        # poison recovery is actually *invoked* for the case it exists to handle.
+        macro_recovery(deps, schema, recovery, attempts, output, sandbox)
+    end
+  end
+
+  # The classic line-attributed drop (built-in mutators, block escalation). Narrate the
+  # round before paying for its rebuild + recompile — each round is a full recompile, and
+  # without a line per round the whole recovery hides behind the "compiling metamutant
+  # (once)…" spinner and reads as a hang.
+  defp do_line_recovery(deps, schema, recovery, attempts, poison, struck, escalated) do
+    deps.on_phase.({:poison_round, poison_round_info(recovery, poison, escalated, schema)})
+
+    # Drop the poisoning mutants and rebuild. Ids are stable across rebuilds (the transform
+    # advances its counter for skipped ids), so accumulated `skip_ids` keep referring to the
+    # same mutations. Rebuild against the *same* files this schema covers (not a fresh
+    # discovery), so a restricted schema (`from_files/4`, `:only_files`, `:exclude`) can't
+    # silently expand. Forward the original options so `:mutators` survive.
+    recovery = %{
+      recovery
+      | rounds: recovery.rounds + 1,
+        skip_ids: MapSet.union(recovery.skip_ids, poison),
+        struck: struck,
+        escalated: MapSet.union(recovery.escalated, escalated)
+    }
+
+    schema = Schema.rebuild(schema, deps.root, deps.options, recovery.skip_ids)
+    Sandbox.rematerialize(deps.sandbox, schema)
+    compile_with_recovery(deps, schema, recovery, attempts - 1)
+  end
+
+  # The macro-expansion fallback: map the `expanding macro: Mod.fun/arity` frame(s) in the
+  # failed compile to the mutants inside those macros' calls (`Poison.macro_poison/2`)
+  # and drop them wholesale. Fires a loud `{:macro_poison, info}` warning (naming the macro +
+  # the `{Module, :fun, :skip}` fix), records the skip for the durable end-of-run suggestion,
+  # rebuilds, and recurses. If nothing new maps (the innermost frame is a library-internal
+  # macro the user never wrote, say), give up — the abort message still carries the skip hint
+  # via `Poison.Hint.for_compile_failure/1`.
+  defp macro_recovery(deps, schema, recovery, attempts, output, sandbox) do
+    matched = Poison.macro_poison(output, schema.metamutants)
+
+    macro_ids =
+      Enum.reduce(matched, MapSet.new(), fn {_macro, ids}, acc -> MapSet.union(acc, ids) end)
+
+    if matched != [] and not MapSet.subset?(macro_ids, recovery.skip_ids) do
+      deps.on_phase.({:macro_poison, macro_poison_info(matched)})
+
       recovery = %{
         recovery
         | rounds: recovery.rounds + 1,
-          skip_ids: MapSet.union(recovery.skip_ids, poison),
-          struck: struck,
-          escalated: MapSet.union(recovery.escalated, escalated)
+          skip_ids: MapSet.union(recovery.skip_ids, macro_ids),
+          macro_skips:
+            MapSet.union(recovery.macro_skips, MapSet.new(matched, fn {macro, _ids} -> macro end))
       }
 
       schema = Schema.rebuild(schema, deps.root, deps.options, recovery.skip_ids)
@@ -729,6 +781,17 @@ defmodule Mutare.Runner do
       # sandbox back for the caller to clean up.
       {:error, :compile_failed, output, sandbox}
     end
+  end
+
+  # The `{:macro_poison, info}` narration payload: one `%{module, macro, count}` entry per
+  # macro the fallback skipped this round, naming it for the loud warning line.
+  defp macro_poison_info(matched) do
+    entries =
+      Enum.map(matched, fn {{module, fun}, ids} ->
+        %{module: module, macro: fun, count: MapSet.size(ids)}
+      end)
+
+    %{macros: entries}
   end
 
   # The `{:poison_round, info}` narration payload for one recovery round, fired just
@@ -773,8 +836,19 @@ defmodule Mutare.Runner do
     %{
       rounds: recovery.rounds,
       dropped: recovery.skip_ids,
-      escalated: escalations(recovery.escalated, schema.sites)
+      escalated: escalations(recovery.escalated, schema.sites),
+      macro_skipped: macro_skips(recovery.macro_skips)
     }
+  end
+
+  # The macro-expansion fallback's skips as public summary entries: one
+  # `%{module, macro}` per `{module_string, fun}` the fallback dropped, in a stable order.
+  # `module` is the frame's module string (`"Ecto.Query"`), rendered into the durable
+  # `{Module, :fun, :skip}` suggestion by `Mutare.Poison.Hint.macro_skip_note/1`.
+  defp macro_skips(macro_skips) do
+    macro_skips
+    |> Enum.map(fn {module, fun} -> %{module: module, macro: fun} end)
+    |> Enum.sort_by(&{&1.module, to_string(&1.macro)})
   end
 
   # Remove an auto-generated fresh sandbox once the run is done with it, so the

@@ -230,4 +230,25 @@ defmodule Mutare.Poison.HintTest do
       assert Enum.map(specs, &{&1.module, &1.name, &1.args}) == [{:*, :guarded, :skip}]
     end
   end
+
+  describe "macro_skip_note/1" do
+    test "returns nil when nothing was skipped" do
+      assert Hint.macro_skip_note([]) == nil
+    end
+
+    test "suggests a copy-pasteable module-qualified {Module, :fun, :skip} route" do
+      note = Hint.macro_skip_note([%{module: "Ecto.Query", macro: :from}])
+
+      lines = String.split(note, "\n")
+      start = Enum.find_index(lines, &(&1 == "    ["))
+      rest = Enum.drop(lines, start)
+      stop = Enum.find_index(rest, &(&1 == "    ]"))
+      snippet = rest |> Enum.take(stop + 1) |> Enum.join("\n")
+
+      # Evaluates to a well-formed, module-qualified route (unlike the block case's
+      # `{:*, …}` wildcard) — the module came from the compiler's `expanding macro:` frame.
+      {config, _} = Code.eval_string(snippet)
+      assert config[:macro_routes] == [{Ecto.Query, :from, :skip}]
+    end
+  end
 end

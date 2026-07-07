@@ -30,11 +30,80 @@ defmodule Mutare.Poison do
   whose metamutant is ~40k lines took *minutes* to re-parse). Deferring it to the
   poison path removes that cost from every healthy run.
 
-  Returns an empty set when nothing could be mapped (the caller then aborts).
+  When line attribution maps nothing — the signature of an *inline* DSL macro that rejects
+  the spliced selector, where the compiler blames the macro-*call* line no manifest region
+  covers — the runner falls back to `macro_poison/2`, which attributes by the macro *name*
+  the compiler blamed (via `Mutare.Manifest.ids_in_named_calls/2`) instead of by line. Only
+  when *both* fail does the run abort.
   """
 
   alias Mutare.Manifest
+  alias Mutare.Poison.Hint
   alias Mutare.Sandbox.Command.Output
+
+  @doc """
+  The **macro-expansion fallback** attribution: mutant ids that live inside a call to a
+  macro the compiler blamed, grouped by that macro.
+
+  When a mutation splices a runtime selector `case` into an argument that a macro rewrites
+  at compile time (an `Ecto.Query.from/2`-style inline DSL, a macro needing a literal), the
+  macro raises *while expanding* and the compiler blames the **macro-call line** — one line
+  above the selector `case` the `Mutare.Manifest` knows about — so `ids/2` finds nothing and
+  the run would abort. But the failure output names the culprit in an `expanding macro:
+  Mod.fun/arity` frame (`Hint.expanding_macros/1`). This maps that name back to mutant ids
+  through the **metamutant** (`Manifest.ids_in_named_calls/2`): find every call of that name in
+  the rendered metamutant of the file(s) the error touches, and collect the ids inside its
+  span. Bare-name match (the call is usually an imported `from(...)`, not `Ecto.Query.from`),
+  so two same-named macros are skipped together — conservative, and one of them did raise.
+
+  Attributing through the metamutant + manifest (not the schema's `:sites`) is deliberate: it
+  sees *every reserved* mutant, so it is correct under `--line`/`--max-mutants` — where `:sites`
+  is filtered but the metamutant still embeds (and can be poisoned by) an unselected mutant —
+  exactly like the line-based `ids/2` it backs up.
+
+  Returns `[{{module_string, fun_atom}, MapSet.t()}]` — one entry per blamed macro that
+  matched at least one mutant — so the caller can drop the union and name each macro for the
+  narration and the `{Module, :fun, :skip}` suggestion.
+  """
+  @spec macro_poison(String.t(), %{optional(String.t()) => String.t()}) ::
+          [{{String.t(), atom()}, MapSet.t()}]
+  def macro_poison(compile_output, metamutants) do
+    macros = Hint.expanding_macros(compile_output)
+    names = MapSet.new(macros, fn {_module, fun} -> fun end)
+
+    ids_by_name =
+      compile_output
+      |> candidate_files(metamutants)
+      |> Enum.reduce(%{}, fn source, acc ->
+        merge_ids(acc, Manifest.ids_in_named_calls(source, names))
+      end)
+
+    macros
+    |> Enum.map(fn {_module, fun} = macro ->
+      {macro, Map.get(ids_by_name, fun, MapSet.new())}
+    end)
+    |> Enum.reject(fn {_macro, ids} -> Enum.empty?(ids) end)
+  end
+
+  # The metamutant sources of the file(s) the compile error names (that we actually rendered).
+  # The poison is one file (the compiler stops at the first error), and its frames reference
+  # that file — so we scan only those, never every metamutant. A frame in a dependency file
+  # (not a key here) is dropped.
+  defp candidate_files(output, metamutants) do
+    output
+    |> error_locations()
+    |> Enum.map(fn {file, _line} -> file end)
+    |> Enum.uniq()
+    |> Enum.flat_map(fn file ->
+      case Map.fetch(metamutants, file) do
+        {:ok, source} -> [source]
+        :error -> []
+      end
+    end)
+  end
+
+  defp merge_ids(acc, ids_by_name),
+    do: Map.merge(acc, ids_by_name, fn _name, a, b -> MapSet.union(a, b) end)
 
   @doc """
   Mutant ids implicated by `compile_output`, given `%{file => metamutant_source}`.

@@ -30,13 +30,24 @@ defmodule Mutare.Run do
         }
 
   @typedoc """
-  A compile-poison recovery summary: the number of rebuild `:rounds`, the set of
-  `:dropped` mutant ids, and the `:escalated` unknown block macros.
+  One inline DSL macro skipped by the macro-expansion fallback — a mutation wouldn't compile
+  inside a macro that rewrites its argument at compile time (an `Ecto.Query.from/2`-style
+  macro), so every mutant in its calls was dropped. `:module` is the macro's module string
+  (from the `expanding macro:` frame the compiler emitted, e.g. `"Ecto.Query"`) and `:macro`
+  the macro name — together the durable `{Module, :fun, :skip}` route to pin.
+  """
+  @type macro_skip :: %{module: String.t(), macro: atom()}
+
+  @typedoc """
+  A compile-poison recovery summary: the number of rebuild `:rounds`, the set of `:dropped`
+  mutant ids, the `:escalated` unknown block macros, and the `:macro_skipped` inline DSL
+  macros the macro-expansion fallback dropped wholesale.
   """
   @type recovery :: %{
           rounds: pos_integer(),
           dropped: MapSet.t(pos_integer()),
-          escalated: [escalation()]
+          escalated: [escalation()],
+          macro_skipped: [macro_skip()]
         }
 
   @enforce_keys [:schema, :results, :sandbox, :baseline_ms, :stopped_early]

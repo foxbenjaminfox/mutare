@@ -161,6 +161,50 @@ defmodule Mutare.Poison.Hint do
     """
   end
 
+  @doc """
+  A copy-pasteable `:macro_routes` suggestion for the inline DSL macros a *successful* run
+  had to skip via the macro-expansion fallback (`Mutare.Poison.macro_poison/2`), or `nil`
+  when there were none.
+
+  The sibling of `escalation_note/1` for inline macros rather than block macros: a mutation
+  wouldn't compile inside a macro that rewrites its argument at compile time, so Mutare
+  dropped that macro's mutants and rebuilt. Because the compiler *named* the macro (an
+  `expanding macro:` frame), the module is known — so unlike the block case's `{:*, …}`
+  wildcard this suggests the precise `{Module, :fun, :skip}`. That recovery is rediscovered
+  (and its rebuilds repaid) on every run, so pinning it is the durable fix.
+
+  `macro_skipped` is `Mutare.Run`'s `:recovery.macro_skipped` (a list of
+  `%{module: module_string, macro: fun_atom}`).
+
+      iex> Mutare.Poison.Hint.macro_skip_note([%{module: "Ecto.Query", macro: :from}])
+      ...> |> String.contains?("{Ecto.Query, :from, :skip}")
+      true
+  """
+  @spec macro_skip_note([%{module: String.t(), macro: atom()}]) :: String.t() | nil
+  def macro_skip_note([]), do: nil
+
+  def macro_skip_note(macro_skipped) do
+    pairs = macro_skipped |> Enum.map(&{&1.module, &1.macro}) |> Enum.uniq()
+
+    """
+    Mutare recovered from compile-poisoning by skipping #{macro_count(pairs)} inline DSL
+    macro#{plural(pairs)} — a mutation wouldn't compile inside #{one_or_them(pairs)}, so every
+    mutant in #{its_or_their(pairs)} calls was dropped. That recovery (and its extra rebuilds)
+    is repaid on every run, so pin it in .mutare.exs to skip #{one_or_them(pairs)} up front:
+
+    #{snippet(pairs)}
+
+    Only these macros' arguments are left unmutated; the rest of your code is still
+    mutated as usual. See `mix help mutare` for the `:macro_routes` option.\
+    """
+  end
+
+  defp one_or_them([_]), do: "it"
+  defp one_or_them(_), do: "them"
+
+  defp its_or_their([_]), do: "its"
+  defp its_or_their(_), do: "their"
+
   defp macro_count([_]), do: "1"
   defp macro_count(macros), do: "#{length(macros)}"
 

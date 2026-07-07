@@ -105,6 +105,7 @@ defmodule Mutare.Report.Live do
           | {:coverage_done, map()}
           | {:run_config, map()}
           | {:poison_round, map()}
+          | {:macro_poison, map()}
 
   @doc """
   Records a phase transition or verbose detail event.
@@ -112,8 +113,9 @@ defmodule Mutare.Report.Live do
   Phase transitions are `:scanning`, `:compiling`, `:baseline`,
   `:coverage_probe`, and `{:running, total}`. Detail events are
   `{:compiled, ms}`, `{:baseline_done, ms}`, `{:coverage_done, summary}`, and
-  `{:run_config, cfg}`. `{:poison_round, info}` (a compile-poison recovery round)
-  leaves a permanent line in every mode, not just verbose.
+  `{:run_config, cfg}`. `{:poison_round, info}` (a compile-poison recovery round) and
+  `{:macro_poison, info}` (the macro-expansion fallback skipping an inline DSL macro)
+  each leave a permanent line in every mode, not just verbose.
   """
   @spec phase(GenServer.server(), phase_event()) :: :ok
   def phase(server, phase), do: GenServer.cast(server, {:phase, phase})
@@ -244,6 +246,19 @@ defmodule Mutare.Report.Live do
   # re-anchors; plain mode just writes it.
   def handle_cast({:phase, {:poison_round, info}}, state) do
     line = poison_round_line(info)
+
+    if state.ansi,
+      do: {:noreply, put_line(state, line)},
+      else: {:noreply, plain_line(state, line)}
+  end
+
+  # The macro-expansion poison fallback fired: a mutation wouldn't compile inside an inline
+  # DSL macro the compiler blamed by name, so its mutants are being skipped wholesale and the
+  # metamutant rebuilt. Loud (`⚠`) and permanent in every mode — it names the macro and the
+  # copy-paste `{Module, :fun, :skip}` fix inline, so a first-run user aiming at an unknown
+  # DSL sees *why* the compile is being retried and how to pin it, not a silent hang.
+  def handle_cast({:phase, {:macro_poison, info}}, state) do
+    line = macro_poison_line(info)
 
     if state.ansi,
       do: {:noreply, put_line(state, line)},
@@ -403,6 +418,23 @@ defmodule Mutare.Report.Live do
     names = escalated |> Enum.map(&to_string(&1.macro)) |> Enum.uniq() |> Enum.join(", ")
     n = length(escalated)
     ["skipped #{n} unknown block macro#{plural(n)} wholesale (#{names})"]
+  end
+
+  @doc """
+  Renders the macro-expansion poison fallback as a loud, persistent warning: names the
+  inline DSL macro(s) whose argument wouldn't compile with a mutation spliced in, and the
+  copy-paste `{Module, :fun, :skip}` route to pin the skip up front.
+  """
+  @spec macro_poison_line(map()) :: String.t()
+  def macro_poison_line(%{macros: macros}) do
+    named = Enum.map_join(macros, ", ", fn m -> "#{m.module}.#{m.macro}" end)
+    n = length(macros)
+
+    routes =
+      Enum.map_join(macros, ", ", fn m -> "{#{m.module}, #{inspect(m.macro)}, :skip}" end)
+
+    "  ⚠ compile-poison inside macro#{plural(n)} #{named} — a mutation there won't compile; " <>
+      "skipping its mutants and rebuilding. Pin to skip up front: #{routes}"
   end
 
   @doc "Seconds as `Ns` (under a minute) or `Nm Ss`."

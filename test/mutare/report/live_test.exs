@@ -314,6 +314,32 @@ defmodule Mutare.Report.LiveTest do
     end
   end
 
+  describe "macro_poison_line/1" do
+    test "names one inline macro and its module-qualified skip route" do
+      line = Live.macro_poison_line(%{macros: [%{module: "Ecto.Query", macro: :from, count: 3}]})
+
+      assert line ==
+               "  ⚠ compile-poison inside macro Ecto.Query.from — a mutation there won't " <>
+                 "compile; skipping its mutants and rebuilding. Pin to skip up front: " <>
+                 "{Ecto.Query, :from, :skip}"
+    end
+
+    test "pluralises and lists several macros with their routes" do
+      line =
+        Live.macro_poison_line(%{
+          macros: [
+            %{module: "MyDsl", macro: :query, count: 2},
+            %{module: "Other", macro: :build, count: 1}
+          ]
+        })
+
+      assert line ==
+               "  ⚠ compile-poison inside macros MyDsl.query, Other.build — a mutation there " <>
+                 "won't compile; skipping its mutants and rebuilding. Pin to skip up front: " <>
+                 "{MyDsl, :query, :skip}, {Other, :build, :skip}"
+    end
+  end
+
   describe "poison-round narration (end to end)" do
     test "leaves a permanent line in plain mode, even when not verbose" do
       {:ok, io} = StringIO.open("")

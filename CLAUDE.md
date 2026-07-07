@@ -103,9 +103,12 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   runnable `name`) granularity; `setup_all`/`on_exit`-covered ids can't be pinned to a runnable
   test, so `:tests` runs their whole file.
 - **`Mutare.Poison`** (+ `Hint`) — on a failed compile, maps the error's `file:line` to mutant
-  id(s), drops them via `:skip_ids`, and rebuilds (bounded). `Hint` renders a copy-pasteable
-  `:skip` snippet for the one poison class that can't be auto-isolated (a macro needing a
-  compile-time literal arg).
+  id(s), drops them via `:skip_ids`, and rebuilds (bounded). When line attribution maps nothing
+  (an *inline* DSL macro like `Ecto.Query.from/2` that rejects the spliced selector, where the
+  compiler blames the macro-*call* line), a **fallback** (`macro_poison/2`, via the metamutant +
+  `Manifest.ids_in_named_calls/2`) attributes by the `expanding macro:` name the compiler emitted
+  instead, and drops that macro's mutants wholesale.
+  Only when both fail does the run abort — `Hint` then renders a copy-pasteable `:skip` snippet.
 - **`Mutare.Report`** (+ `Live`, `Json`/`Html`/`Sarif`) — the default human reporter diffs each
   surviving mutant against the **original** source and computes the score
   `killed / (total − no_coverage − ignored − poisoned − harness_error)`. `Live` is the live stderr

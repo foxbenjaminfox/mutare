@@ -976,13 +976,14 @@ defmodule Mix.Tasks.Mutare do
   # stays clean. Only escalations earn a note: an id-specific poison drop is a one-off (a
   # custom mutator emitting bad code), not a stable per-macro fact worth pinning.
   defp warn_poison_recovery(%Run{recovery: nil}), do: :ok
-  defp warn_poison_recovery(%Run{recovery: %{escalated: []}}), do: :ok
 
-  defp warn_poison_recovery(%Run{recovery: %{escalated: escalated}}) do
-    case Mutare.Poison.Hint.escalation_note(escalated) do
-      nil -> :ok
-      note -> IO.puts(:stderr, "\n" <> note)
-    end
+  defp warn_poison_recovery(%Run{recovery: recovery}) do
+    [
+      Mutare.Poison.Hint.escalation_note(Map.get(recovery, :escalated, [])),
+      Mutare.Poison.Hint.macro_skip_note(Map.get(recovery, :macro_skipped, []))
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.each(fn note -> IO.puts(:stderr, "\n" <> note) end)
   end
 
   defp report(run, %Options{} = options) do
