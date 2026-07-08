@@ -4857,12 +4857,20 @@ built-in `:timeout`/`:infinity` marks, so they wire the two calls by hand. `Conv
 deliberately *excluded* — its `:ok`↔`:error` swaps are high-signal, the opposite of the opaque
 literals the option is for. Three properties worth calling out, each a fix from review:
 
-- **Per-instance.** The marks are labeled with an internal self-mark that `ArgumentMarks.build/1`
-  *relabels to the spec's (`:as`-resolved) name*, and `self_marked?/1` reads the instance name off
-  `context.name` (added by dispatch). So two `:as` copies of the same module with different
-  `:skip_arguments` don't collide — a shared module-name label would have made both skip every
-  configured position. (Marking with a *shared* label instead — e.g. `:timeout` — is still available
-  via `argument_marks_from/2` for the cross-family built-ins.)
+- **Per-instance, and namespaced against the public label space.** The marks are labeled with an
+  internal self-mark that `ArgumentMarks.build/1` *relabels to a reserved, per-instance
+  `Mutator.self_label/1`* — the `__mutare_self__` prefix plus the spec's (`:as`-resolved) name — and
+  `self_marked?/1` reads `context.name` (added by dispatch) back through the same `self_label/1`. Two
+  properties fall out of that one label. **Per-instance:** two `:as` copies with different
+  `:skip_arguments` don't collide, because their names differ (a shared module-name label would have
+  made both skip every configured position). **Reserved:** relabeling to the *bare* name would put
+  the self-mark in the same flat atom space as public labels, so a shared/custom mark whose label
+  happened to equal a family's report name (a custom `:literal`, or an `:as` rename to `:timeout`
+  while `Literal`/`AtomLiteral` emit `:timeout` marks) would be misread as *that family's own* skip
+  request and suppress it at a position it never configured — the namespaced label keeps the two
+  spaces disjoint. (Marking with a *shared* label — e.g. `:timeout` — is still available via
+  `argument_marks_from/2` for the cross-family built-ins; those deliberately share a label, which is
+  exactly why the *self* mark must not.)
 - **Effective-index-0 works piped.** A configured `{Kernel, :to_string, 1, [0]}` suppresses
   `to_string(123)` *and* `123 |> to_string()`. The piped-receiver path resolves the RHS through
   `Resolve`'s own import/`Kernel` resolution (`bare_module_key`), not just `resolved_call/1` (which

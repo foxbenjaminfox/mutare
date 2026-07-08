@@ -1,6 +1,6 @@
 defmodule Mutare.TransformDurationTest do
   # Duration/timeout-argument suppression, the flagship user of the general argument-marking facility
-  # (`Mutare.Transform.Resolve.ArgumentMarks` + `c:Mutare.Mutator.argument_marks/1`): `Literal` and
+  # (`Mutare.Transform.Resolve.ArgumentMarks` + `c:Mutare.Mutator.argument_marks/1`): `IntegerLiteral` and
   # `AtomLiteral` ask the transform to mark the timeout positions with the `:timeout` label and
   # decline there, so a *literal* duration (an integer count of milliseconds, or `:infinity`) is left
   # unmutated — a near-unkillable equivalent mutant — while a *computed* duration, and every other
@@ -35,6 +35,21 @@ defmodule Mutare.TransformDurationTest do
     def mutate(_node), do: :skip
   end
 
+  # A mutator whose *shared* label collides with a built-in family's report name (`:integer`). Used
+  # to prove a public/shared mark is never mistaken for that family's own `:skip_arguments` self
+  # request — the self-mark is namespaced, not the bare instance name.
+  defmodule NameClashMutator do
+    @behaviour Mutare.Mutator
+    @impl true
+    def name, do: :clash
+
+    @impl true
+    def argument_marks(_config), do: [{Widget, :render, 2, [1], :integer}]
+
+    @impl true
+    def mutate(_node), do: :skip
+  end
+
   # The two value families that would otherwise fire on a duration literal: Literal on an integer
   # (succ/pred/zero), AtomLiteral on `:infinity` (→ the sentinel).
   @value [Mutare.Mutators.IntegerLiteral, Mutare.Mutators.AtomLiteral]
@@ -43,7 +58,7 @@ defmodule Mutare.TransformDurationTest do
   # elsewhere, so "no site whose original is `13579`" is an exact "the duration was held back" check.
   @marker "13579"
 
-  # One representative call per row of `Literal`'s timeout tables, with `@marker` in the duration
+  # One representative call per row of `IntegerLiteral`'s timeout tables, with `@marker` in the duration
   # position. Exercised by the "every table row" test so a typo'd row (wrong arity/index/module/fun)
   # is caught — the per-mechanism tests below can't see that, since they only touch a few rows.
   @duration_call_rows [
@@ -507,6 +522,34 @@ defmodule Mutare.TransformDurationTest do
       refute {:marking, "2", "3"} in triples
     end
 
+    test "a shared mark whose label equals a family's report name doesn't trigger its self-skip" do
+      # The `:skip_arguments` self-mark is namespaced (`Mutare.Mutator.self_label/1`), not the bare
+      # instance name — otherwise a *public* mark whose label collided with a family's report name
+      # (or an `:as` rename) would be mistaken for that family's own skip request and suppress it at a
+      # position it never configured.
+
+      # Built-in name: `NameClashMutator` marks `Widget.render/2` arg 1 with a `:integer` label, which
+      # equals `IntegerLiteral`'s report name. `IntegerLiteral` must still mutate the `2` there.
+      {_m, by_name} =
+        value_triples("def f, do: Widget.render(1, 2)", [
+          NameClashMutator,
+          Mutare.Mutators.IntegerLiteral
+        ])
+
+      assert {:integer, "2", "3"} in by_name
+
+      # Same hazard via an `:as` rename colliding with a shared label: `MarkingMutator` marks arg 1
+      # with `:pinned`, and an `IntegerLiteral` instance renamed `as: :pinned` must not read that as its own
+      # skip request.
+      {_m, by_rename} =
+        value_triples(
+          "def f, do: Widget.render(1, 2)",
+          [MarkingMutator, {Mutare.Mutators.IntegerLiteral, as: :pinned}]
+        )
+
+      assert {:pinned, "2", "3"} in by_rename
+    end
+
     test "a custom keyword-option mark works too" do
       # `Widget.stream/2`'s `:mode` option value is marked, so its literal is declined.
       {_m, triples} = value_triples("def f(e), do: Widget.stream(e, mode: 1)", [MarkingMutator])
@@ -535,7 +578,7 @@ defmodule Mutare.TransformDurationTest do
       # a `:skip_arguments` mark on its argument must hold the literal back *there* just as it does in
       # a body call. Both the def-clause guard (lifted via `FunctionPlan`) and the `case`-clause guard
       # (via `Analyze`) route through `Tag.guard_targets`, so both are covered.
-      config = [{Mutare.Mutators.Literal, skip_arguments: [{Kernel, :is_integer, 1, [0]}]}]
+      config = [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{Kernel, :is_integer, 1, [0]}]}]
 
       for guarded <- [
             "def f(x) when is_integer(123), do: x",
@@ -553,9 +596,9 @@ defmodule Mutare.TransformDurationTest do
 
       # Non-vacuous: unconfigured, the same guard literal mutates fully.
       {_m, plain} =
-        value_triples("def f(x) when is_integer(123), do: x", [Mutare.Mutators.Literal])
+        value_triples("def f(x) when is_integer(123), do: x", [Mutare.Mutators.IntegerLiteral])
 
-      assert {:literal, "123", "0"} in plain
+      assert {:integer, "123", "0"} in plain
     end
 
     test "a configured keyword-option value is left alone" do

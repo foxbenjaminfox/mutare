@@ -465,22 +465,33 @@ defmodule Mutare.Mutator do
   def marked?(_context, _label), do: false
 
   # The label a `:skip_arguments` mark carries until `Mutare.Transform.Resolve.ArgumentMarks` relabels
-  # it with the instance's name at build — so two `:as` copies of the same module don't collide on a
-  # shared module-name label.
+  # it (via `self_label/1`) at build. The relabel is to a *reserved, namespaced* label derived from
+  # the instance name — not the bare name — so two `:as` copies still don't collide with each other,
+  # while a *public* mark that happens to equal an instance's report name (a shared `:timeout`, a
+  # custom `:literal` label, an `:as` rename matching another family's label) can never be mistaken
+  # for this instance's own skip request. See NOTES "Argument marks".
   @self_mark :__mutare_self__
 
   @doc false
   @spec self_mark() :: atom()
   def self_mark, do: @self_mark
 
+  @doc false
+  # The reserved, per-instance self label a `:skip_arguments` mark is relabeled to — the
+  # `__mutare_self__` prefix keeps it out of the public label namespace (`argument_marks/1` /
+  # `marked?/2` deal in author-chosen atoms), the instance name keeps two `:as` copies distinct.
+  @spec self_label(atom()) :: atom()
+  def self_label(name), do: :"#{@self_mark}.#{name}"
+
   @doc """
   Whether the offered node sits at a position *this instance* asked to leave alone via its
   `:skip_arguments` option (`skip_arguments_marks/1`). Per-instance — a second `:as` copy of the same
-  module with different `:skip_arguments` is unaffected, because the mark is resolved to the
-  instance's own name. Total over a context without a name (the common non-configured case).
+  module with different `:skip_arguments` is unaffected, because the mark is resolved to this
+  instance's reserved `self_label/1`, not a bare atom another mutator (or option value) might share.
+  Total over a context without marks (the common non-configured case).
   """
   @spec self_marked?(context()) :: boolean()
-  def self_marked?(%{name: name} = context), do: marked?(context, name)
+  def self_marked?(%{name: name, marks: marks}), do: MapSet.member?(marks, self_label(name))
   def self_marked?(_context), do: false
 
   @doc """

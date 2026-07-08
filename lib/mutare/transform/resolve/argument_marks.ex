@@ -130,7 +130,7 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   @doc """
   Stamp a marked argument node with `labels`, reaching *inside* a unary-signed numeric literal. A
   negative (or explicitly `+`) literal parses as `{:-/:+, _, [positive_literal]}`, and the value
-  families (`Literal`/`FloatLiteral`) fire on that *inner* literal — so a bare outer stamp would let
+  families (`IntegerLiteral`/`FloatLiteral`) fire on that *inner* literal — so a bare outer stamp would let
   `MyApp.put(c, -300)` slip past a `:skip_arguments` that catches `MyApp.put(c, 300)`. Marks both the
   sign node and the inner literal; every other node is stamped as-is. Used by the positional/keyword
   stamping here and by `Mutare.Transform.Resolve`'s piped-receiver path.
@@ -149,8 +149,9 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   # Ask each mutator for its declarations, passing the instance's `config` so a configurable mutator
   # can fold in options-driven positions (e.g. `IntegerLiteral`'s `:skip_arguments`). A bare module
   # carries no config; the `init/1`-normalized `config` is used when present, else the raw `opts`. The
-  # instance's `:skip_arguments` marks are relabeled to the instance *name* so two `:as` copies of
-  # one module don't collide on a shared module-name label (`relabel_self/2`).
+  # instance's `:skip_arguments` marks are relabeled to a reserved, per-instance self label
+  # (`relabel_self/2`) so two `:as` copies don't collide and no public/shared label can be misread as
+  # an instance's own skip request.
   defp declarations(mutator) do
     module = module_of(mutator)
 
@@ -168,14 +169,17 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   defp name_of(%Mutator.Spec{name: name}), do: name
   defp name_of(module) when is_atom(module), do: module.name()
 
-  # Relabel the `:skip_arguments` self-marks (`Mutator.self_mark/0`) with the instance name, leaving
-  # shared-vocabulary labels (`:timeout`, a custom mutator's own) untouched — so a self-mark suppresses
-  # only *this* instance (`Mutator.self_marked?/1`), never a sibling `:as` copy of the same module.
+  # Relabel the `:skip_arguments` self-marks (`Mutator.self_mark/0`) to this instance's reserved,
+  # namespaced `Mutator.self_label/1`, leaving shared-vocabulary labels (`:timeout`, a custom
+  # mutator's own) untouched — so a self-mark suppresses only *this* instance
+  # (`Mutator.self_marked?/1`), never a sibling `:as` copy of the same module, and can't be confused
+  # with a public label that happens to equal the instance's report name.
   defp relabel_self(declarations, instance_name) do
     self_mark = Mutator.self_mark()
+    self_label = Mutator.self_label(instance_name)
 
     Enum.map(declarations, fn
-      {mod, fun, arity, positions, ^self_mark} -> {mod, fun, arity, positions, instance_name}
+      {mod, fun, arity, positions, ^self_mark} -> {mod, fun, arity, positions, self_label}
       other -> other
     end)
   end
