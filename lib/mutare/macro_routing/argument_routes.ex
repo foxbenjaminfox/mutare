@@ -8,7 +8,12 @@ defmodule Mutare.MacroRouting.ArgumentRoutes do
   validate this shape immediately; Mutare validates callback results again at the boundary.
   """
 
+  alias Mutare.Macro.Spec
   alias Mutare.MacroRouting.Call
+
+  # The legal argument treatments, single-sourced from `Mutare.Macro.Spec` — a module attribute (not
+  # `Spec.treatments/0` directly) so it can be used in the `in` guards of the validators below.
+  @treatments Spec.treatments()
 
   @opaque t :: %__MODULE__{
             visible: [Mutare.MacroRouting.treatment()],
@@ -104,16 +109,7 @@ defmodule Mutare.MacroRouting.ArgumentRoutes do
     end
   end
 
-  defp validate_treatment!(treatment)
-       when treatment in [
-              :expression,
-              :pattern,
-              :binding_pattern,
-              :skip,
-              :hosted,
-              :interpolated
-            ],
-       do: :ok
+  defp validate_treatment!(treatment) when treatment in @treatments, do: :ok
 
   defp validate_treatment!({:keyword, treatments}) when is_list(treatments) do
     Enum.each(treatments, &validate_treatment!/1)
@@ -123,16 +119,7 @@ defmodule Mutare.MacroRouting.ArgumentRoutes do
     raise ArgumentError, "invalid macro argument treatment: #{inspect(other)}"
   end
 
-  defp valid_treatment?(treatment)
-       when treatment in [
-              :expression,
-              :pattern,
-              :binding_pattern,
-              :skip,
-              :hosted,
-              :interpolated
-            ],
-       do: true
+  defp valid_treatment?(treatment) when treatment in @treatments, do: true
 
   defp valid_treatment?({:keyword, treatments}) when is_list(treatments),
     do: Enum.all?(treatments, &valid_treatment?/1)

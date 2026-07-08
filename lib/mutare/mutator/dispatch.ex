@@ -307,11 +307,7 @@ defmodule Mutare.Mutator.Dispatch do
           reraise error, __STACKTRACE__
 
         error ->
-          host_contract_error!(
-            module,
-            error,
-            "host/2 produced an invalid target: #{Exception.message(error)}"
-          )
+          host_callback_raised!(module, error, __STACKTRACE__)
       end
     else
       []
@@ -365,6 +361,23 @@ defmodule Mutare.Mutator.Dispatch do
       value: value,
       reason: :invalid_host_target,
       message: "#{inspect(module)} #{message}, got: #{inspect(value)}"
+  end
+
+  # `host/2` itself raised (a bug in the provider), as opposed to *returning* a malformed target
+  # (`host_contract_error!/3`). Report it as a callback failure — naming the exception rather than
+  # implying a bad return — and reraise with the provider's own stacktrace so the author sees where.
+  @spec host_callback_raised!(module(), Exception.t(), Exception.stacktrace()) :: no_return()
+  defp host_callback_raised!(module, error, stacktrace) do
+    reraise Mutare.MacroRouting.ContractError.exception(
+              provider: module,
+              callback: {:host, 2},
+              value: error,
+              reason: :host_callback_failed,
+              message:
+                "#{inspect(module)} host/2 raised #{inspect(error.__struct__)}: " <>
+                  Exception.message(error)
+            ),
+            stacktrace
   end
 
   # Normalize one mutant — a bare node, or a `%Mutare.Mutator.Mutation{}` carrying a note, a

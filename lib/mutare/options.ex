@@ -156,6 +156,13 @@ defmodule Mutare.Options do
     end
   end
 
+  # Reject an **explicit** non-list `:mutators` (`mutators: nil`, `mutators: :builtins`, …) here,
+  # before `build/1`. Load-bearing despite looking redundant with the registry's `:mutators`
+  # validator: `opt/2` reads via `Keyword.get(opts, :mutators, default)`, which can't distinguish an
+  # explicit `mutators: nil` from an omitted key (both collapse to the same `nil` default), so an
+  # explicit bogus value would otherwise resolve silently to the default instead of raising. The
+  # registry's own non-list catch-all only fires when re-validating an existing `%Options{}` struct
+  # (that path never reaches `new/1`'s keyword list). Don't delete as "dead code".
   defp reject_invalid_mutators_shape!(opts) do
     if Keyword.has_key?(opts, :mutators) and not is_list(Keyword.fetch!(opts, :mutators)) do
       raise ArgumentError,

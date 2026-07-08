@@ -253,12 +253,18 @@ defmodule Mutare.Transform.ModulePlan do
     MapSet.new(skipped, fn {_vis, name, arity} -> {module, Atom.to_string(name), arity} end)
   end
 
-  defp warn_skipped(signatures, module, file) do
+  # Warn once per blocked signature, file-prefixed. Each caller supplies the message body for a
+  # `{name, arity}` — the four lift-refusal diagnoses differ only in that text.
+  defp warn(signatures, file, message_fn) do
     Enum.each(signatures, fn {_vis, name, arity} ->
-      Logger.warning(
-        "#{file}: #{inspect(module)}.#{name}/#{arity} matched :skip_lifting — not lifting " <>
-          "(no guard, head-pattern, or clause-drop mutants for it)"
-      )
+      Logger.warning("#{file}: " <> message_fn.(name, arity))
+    end)
+  end
+
+  defp warn_skipped(signatures, module, file) do
+    warn(signatures, file, fn name, arity ->
+      "#{inspect(module)}.#{name}/#{arity} matched :skip_lifting — not lifting " <>
+        "(no guard, head-pattern, or clause-drop mutants for it)"
     end)
   end
 
@@ -269,11 +275,9 @@ defmodule Mutare.Transform.ModulePlan do
   # function its guard and clause-drop mutants. Warn once per signature so the
   # gap is visible (and actionable — grouping the clauses restores lifting).
   defp warn_non_consecutive(signatures, file) do
-    Enum.each(signatures, fn {_vis, name, arity} ->
-      Logger.warning(
-        "#{file}: clauses of #{name}/#{arity} are non-consecutive — not lifting " <>
-          "(no guard or clause-drop mutants for it); group the clauses to enable lifting"
-      )
+    warn(signatures, file, fn name, arity ->
+      "clauses of #{name}/#{arity} are non-consecutive — not lifting " <>
+        "(no guard or clause-drop mutants for it); group the clauses to enable lifting"
     end)
   end
 
@@ -303,11 +307,9 @@ defmodule Mutare.Transform.ModulePlan do
   # (the generated clauses are intentional), but the coverage gap should still be
   # visible.
   defp warn_metaprogrammed(signatures, file) do
-    Enum.each(signatures, fn {_vis, name, arity} ->
-      Logger.warning(
-        "#{file}: clauses of #{name}/#{arity} are augmented by compile-time " <>
-          "metaprogramming — not lifting (no guard or clause-drop mutants for it)"
-      )
+    warn(signatures, file, fn name, arity ->
+      "clauses of #{name}/#{arity} are augmented by compile-time " <>
+        "metaprogramming — not lifting (no guard or clause-drop mutants for it)"
     end)
   end
 
@@ -336,11 +338,9 @@ defmodule Mutare.Transform.ModulePlan do
   # invisible sibling clause, so lifting is refused and the mutant gap should be
   # visible.
   defp warn_delegated(signatures, file) do
-    Enum.each(signatures, fn {_vis, name, arity} ->
-      Logger.warning(
-        "#{file}: #{name}/#{arity} is also defined by a defdelegate — not lifting " <>
-          "(no guard or clause-drop mutants for it)"
-      )
+    warn(signatures, file, fn name, arity ->
+      "#{name}/#{arity} is also defined by a defdelegate — not lifting " <>
+        "(no guard or clause-drop mutants for it)"
     end)
   end
 

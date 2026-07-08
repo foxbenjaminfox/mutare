@@ -470,8 +470,10 @@ defmodule Mutare.MacroRouting.Registry do
   defp slots_overlap?(_left, wildcard, wildcard), do: true
   defp slots_overlap?(left, right, _wildcard), do: left == right
 
-  defp slot_covers?(wildcard, _route, wildcard), do: true
-  defp slot_covers?(host, route, _wildcard), do: host == route
+  # A host selector "covers" a route key by the exact rule a concrete call "matches" one: a wildcard
+  # slot covers/matches anything, otherwise equality. Two questions (does this resolved call hit the
+  # route? / does this host's selector claim the route?), one predicate — delegate so they can't drift.
+  defp slot_covers?(host, route, wildcard), do: slot_matches?(host, route, wildcard)
 
   defp invoke!(module, fun, arity, args) do
     apply(module, fun, args)

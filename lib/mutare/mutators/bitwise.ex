@@ -107,9 +107,7 @@ defmodule Mutare.Mutators.Bitwise do
   # `Bitwise.bor(a, b)`) is mapped to the *same* operator label via the resolved original — so
   # `[bitwise:|||]` suppresses the OR result in either form (matching Arithmetic, which labels its
   # `div`/`rem` call form). The `~~~`/`bnot` complement strip stays unlabeled (no operator result).
-  # Derived from `@op_swaps` so the operator set is single-sourced (order is irrelevant — used only
-  # for `in`/`MapSet` membership).
-  @swap_ops Map.keys(@op_swaps)
+  # (`@swap_ops`, the swap-operator set these variant callbacks read, is defined once above.)
 
   # The operator label each *resulting* bitwise function corresponds to, so a call-form swap names
   # the same variant as the operator-form swap.

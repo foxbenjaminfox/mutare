@@ -156,8 +156,7 @@ defmodule Mutare.Poison.Hint do
 
     #{wildcard_snippet(macros)}
 
-    Only these macros' arguments are left unmutated; the rest of your code is still
-    mutated as usual. See `mix help mutare` for the `:macro_routes` option.\
+    #{macro_routes_footer()}\
     """
   end
 
@@ -194,9 +193,14 @@ defmodule Mutare.Poison.Hint do
 
     #{snippet(pairs)}
 
-    Only these macros' arguments are left unmutated; the rest of your code is still
-    mutated as usual. See `mix help mutare` for the `:macro_routes` option.\
+    #{macro_routes_footer()}\
     """
+  end
+
+  # The shared closing line of both `:macro_routes` remediation notes (block + inline).
+  defp macro_routes_footer do
+    "Only these macros' arguments are left unmutated; the rest of your code is still\n" <>
+      "mutated as usual. See `mix help mutare` for the `:macro_routes` option."
   end
 
   defp one_or_them([_]), do: "it"
