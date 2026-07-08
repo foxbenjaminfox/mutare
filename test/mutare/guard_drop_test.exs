@@ -73,7 +73,7 @@ defmodule Mutare.GuardDropTest do
       """
 
       # With Integer enabled the guard is covered; without it, GuardDrop is the only signal.
-      without_integer = Mutare.Mutators.all() -- [Mutare.Mutators.Integer]
+      without_integer = Mutare.Mutators.all() -- [Mutare.Mutators.IntegerCall]
       assert [%Site{mutator: :guard_drop}] = guard_drops(src, mutators: without_integer)
     end
 

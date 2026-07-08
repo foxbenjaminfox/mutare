@@ -148,10 +148,10 @@ defmodule Mutare.PoisonTest do
           """
         })
 
-      # Only Literal, so the *only* mutation is the `5` at the call site. It can't be mutated
+      # Only IntegerLiteral, so the *only* mutation is the `5` at the call site. It can't be mutated
       # inside the macro, so the fallback drops it (`:poisoned`) and the run completes.
       assert {:ok, run} =
-               Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Literal])
+               Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.IntegerLiteral])
 
       assert Enum.any?(run.results, &(&1.status == :poisoned))
 
@@ -302,7 +302,12 @@ defmodule Mutare.PoisonTest do
           """
         })
 
-      mutators = [Mutare.Mutators.Relational, Mutare.Mutators.Literal, Mutare.Mutators.Arithmetic]
+      mutators = [
+        Mutare.Mutators.Relational,
+        Mutare.Mutators.IntegerLiteral,
+        Mutare.Mutators.Arithmetic
+      ]
+
       assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: mutators)
 
       # The two `guarded` invocations are tagged apart (same name, different nid).
@@ -382,7 +387,12 @@ defmodule Mutare.PoisonTest do
           """
         })
 
-      mutators = [Mutare.Test.PoisonMutator, Mutare.Mutators.Arithmetic, Mutare.Mutators.Literal]
+      mutators = [
+        Mutare.Test.PoisonMutator,
+        Mutare.Mutators.Arithmetic,
+        Mutare.Mutators.IntegerLiteral
+      ]
+
       assert {:ok, run} = Mutare.run(project, sandbox: sandbox, mutators: mutators)
 
       block = Enum.filter(run.results, &match?({:wrap, _}, &1.site.block_macro))
@@ -395,7 +405,7 @@ defmodule Mutare.PoisonTest do
       # `w() == 3` (eager escalation would have left them `:poisoned`, never run).
       assert Enum.any?(
                block,
-               &(&1.status == :killed and &1.site.mutator in [:arithmetic, :literal])
+               &(&1.status == :killed and &1.site.mutator in [:arithmetic, :integer])
              )
 
       refute Enum.any?(block, &(&1.status == :poisoned and &1.site.mutator != :poison))
@@ -472,7 +482,7 @@ defmodule Mutare.PoisonTest do
       end
       """
 
-      {metamutants, sites} = transform(src, [Mutare.Mutators.Literal])
+      {metamutants, sites} = transform(src, [Mutare.Mutators.IntegerLiteral])
       assert sites != []
       expected = MapSet.new(sites, & &1.id)
 
@@ -538,7 +548,7 @@ defmodule Mutare.PoisonTest do
       end
       """
 
-      {metamutants, sites} = transform(src, [Mutare.Mutators.Literal])
+      {metamutants, sites} = transform(src, [Mutare.Mutators.IntegerLiteral])
       assert sites != []
       expected = MapSet.new(sites, & &1.id)
 

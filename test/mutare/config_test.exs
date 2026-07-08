@@ -144,21 +144,21 @@ defmodule Mutare.ConfigTest do
     end
 
     test "--mutators translates a custom module name to the real module atom" do
-      # Regression: `String.to_atom/1` produced `:"Mutare.Test.BooleanMutator"`,
-      # which is *not* the module `Mutare.Test.BooleanMutator` (≡ the `:"Elixir.…"`
+      # Regression: `String.to_atom/1` produced `:"Mutare.Test.AndOrMutator"`,
+      # which is *not* the module `Mutare.Test.AndOrMutator` (≡ the `:"Elixir.…"`
       # atom), so the documented `--mutators MyApp.MyMutator` example failed to resolve.
-      assert Config.merge([], mutators: "Mutare.Test.BooleanMutator")[:mutators] ==
-               [Mutare.Test.BooleanMutator]
+      assert Config.merge([], mutators: "Mutare.Test.AndOrMutator")[:mutators] ==
+               [Mutare.Test.AndOrMutator]
     end
 
     test "--mutators mixes built-in families and custom modules" do
-      assert Config.merge([], mutators: "relational,Mutare.Test.BooleanMutator")[:mutators] ==
-               [:relational, Mutare.Test.BooleanMutator]
+      assert Config.merge([], mutators: "relational,Mutare.Test.AndOrMutator")[:mutators] ==
+               [:relational, Mutare.Test.AndOrMutator]
     end
 
     test "--mutators folds a leading Elixir. on a module name" do
-      assert Config.merge([], mutators: "Elixir.Mutare.Test.BooleanMutator")[:mutators] ==
-               [Mutare.Test.BooleanMutator]
+      assert Config.merge([], mutators: "Elixir.Mutare.Test.AndOrMutator")[:mutators] ==
+               [Mutare.Test.AndOrMutator]
     end
 
     test "--mutators reports an unknown family with the descriptive resolver error" do

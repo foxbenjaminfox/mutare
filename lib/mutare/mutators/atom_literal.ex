@@ -4,7 +4,7 @@ defmodule Mutare.Mutators.AtomLiteral do
 
   The following atoms are excluded:
 
-    * `true`, `false`, and `nil`, which are handled by literal and conditional families
+    * `true` and `false`, handled by `Mutare.Mutators.BooleanLiteral`; and `nil`, left unmutated
     * `:ok`/`:error`, `:cont`/`:halt`, and `:lt`/`:gt`, which are handled by `Mutare.Mutators.ConventionAtom`
     * block keys such as `do:`, `else:`, and `rescue:`
     * struct field names and `for` options such as `into:`, `uniq:`, and `reduce:`
@@ -21,8 +21,8 @@ defmodule Mutare.Mutators.AtomLiteral do
 
   # Convention atoms (`:ok`/`:error`, …) are owned by `Mutare.Mutators.ConventionAtom`,
   # which swaps each for its high-signal same-shape sibling rather than the sentinel — so
-  # they are excluded here, the way `true`/`false`/`nil` are deferred to `Literal`/
-  # `Conditional`. Single source of truth: the list lives with that family (the
+  # they are excluded here, the way `true`/`false` are deferred to `BooleanLiteral` (and
+  # `nil` is left alone). Single source of truth: the list lives with that family (the
   # `@sentinel AST.sentinel_atom()` pattern). As with the boolean/nil split, disabling
   # `:convention` leaves these atoms unmutated by `:atom` too.
   @convention Mutare.Mutators.ConventionAtom.members()

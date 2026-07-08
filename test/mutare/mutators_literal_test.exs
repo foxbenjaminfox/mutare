@@ -8,10 +8,11 @@ defmodule Mutare.MutatorsLiteralTest do
     AliasLiteral,
     AtomLiteral,
     BitstringLiteral,
+    BooleanLiteral,
     CharlistLiteral,
     DateTimeLiteral,
     FloatLiteral,
-    Literal,
+    IntegerLiteral,
     MapLiteral,
     RegexLiteral,
     StringLiteral,
@@ -20,36 +21,49 @@ defmodule Mutare.MutatorsLiteralTest do
     WordListLiteral
   }
 
-  describe "Literal" do
+  describe "IntegerLiteral" do
     test "mutates an integer to n+1, n-1 and 0, deduped and never itself" do
-      assert render(Literal.mutate(parse("2"))) == ["3", "1", "0"]
-      assert render(Literal.mutate(parse("1"))) == ["2", "0"]
-      assert render(Literal.mutate(parse("0"))) == ["1", "-1"]
-    end
-
-    test "flips a boolean" do
-      assert render(Literal.mutate(parse("true"))) == ["false"]
-      assert render(Literal.mutate(parse("false"))) == ["true"]
+      assert render(IntegerLiteral.mutate(parse("2"))) == ["3", "1", "0"]
+      assert render(IntegerLiteral.mutate(parse("1"))) == ["2", "0"]
+      assert render(IntegerLiteral.mutate(parse("0"))) == ["1", "-1"]
     end
 
     test "emits fresh metadata so the new value renders (not the original token)" do
       # The original carries `token: "1"`; reusing its meta would render "1". A fresh
       # literal carries only a token derived from the *new* value (see Mutare.AST.literal/1).
-      assert render(Literal.mutate(parse("1"))) == ["2", "0"]
+      assert render(IntegerLiteral.mutate(parse("1"))) == ["2", "0"]
 
-      assert Enum.all?(Literal.mutate(parse("1")), fn m ->
+      assert Enum.all?(IntegerLiteral.mutate(parse("1")), fn m ->
                match?({:__block__, [token: _], [value]} when is_integer(value), node_of(m))
              end)
     end
 
-    test "skips non-integer, non-boolean literals and operators" do
-      assert Literal.mutate(parse("1.5")) == :skip
-      assert Literal.mutate(parse(~s("s"))) == :skip
-      assert Literal.mutate({:+, [], [1, 2]}) == :skip
+    test "skips non-integer literals (booleans included) and operators" do
+      assert IntegerLiteral.mutate(parse("1.5")) == :skip
+      assert IntegerLiteral.mutate(parse(~s("s"))) == :skip
+      assert IntegerLiteral.mutate(parse("true")) == :skip
+      assert IntegerLiteral.mutate({:+, [], [1, 2]}) == :skip
     end
 
     test "name" do
-      assert Literal.name() == :literal
+      assert IntegerLiteral.name() == :integer
+    end
+  end
+
+  describe "BooleanLiteral" do
+    test "flips a boolean" do
+      assert render(BooleanLiteral.mutate(parse("true"))) == ["false"]
+      assert render(BooleanLiteral.mutate(parse("false"))) == ["true"]
+    end
+
+    test "skips non-boolean literals (nil, integers) and operators" do
+      assert BooleanLiteral.mutate(parse("1")) == :skip
+      assert BooleanLiteral.mutate(parse("nil")) == :skip
+      assert BooleanLiteral.mutate({:and, [], [true, false]}) == :skip
+    end
+
+    test "name" do
+      assert BooleanLiteral.name() == :boolean
     end
   end
 
@@ -149,7 +163,7 @@ defmodule Mutare.MutatorsLiteralTest do
       assert render(AtomLiteral.mutate(parse(":eq"))) == [":mutare"]
     end
 
-    test "skips true/false/nil (handled by Literal / Conditional, or absence)" do
+    test "skips true/false/nil (booleans handled by BooleanLiteral; nil left alone)" do
       assert AtomLiteral.mutate(parse("true")) == :skip
       assert AtomLiteral.mutate(parse("false")) == :skip
       assert AtomLiteral.mutate(parse("nil")) == :skip
@@ -1068,11 +1082,19 @@ defmodule Mutare.MutatorsLiteralTest do
   end
 
   describe "variant tagging (production-time labels)" do
-    test "Literal tags succ/pred/zero, merging both onto the collapsed mutant" do
-      assert tags(Literal.mutate(parse("3"))) == [{"4", "succ"}, {"2", "pred"}, {"0", "zero"}]
+    test "IntegerLiteral tags succ/pred/zero, merging both onto the collapsed mutant" do
+      assert tags(IntegerLiteral.mutate(parse("3"))) == [
+               {"4", "succ"},
+               {"2", "pred"},
+               {"0", "zero"}
+             ]
+
       # n = 1: `n - 1` collapses onto the `0` sentinel, so that one mutant is BOTH pred and zero.
-      assert tags(Literal.mutate(parse("1"))) == [{"2", "succ"}, {"0", ["pred", "zero"]}]
-      assert tags(Literal.mutate(parse("true"))) == [{"false", "negate"}]
+      assert tags(IntegerLiteral.mutate(parse("1"))) == [{"2", "succ"}, {"0", ["pred", "zero"]}]
+    end
+
+    test "BooleanLiteral tags the flip as negate" do
+      assert tags(BooleanLiteral.mutate(parse("true"))) == [{"false", "negate"}]
     end
 
     test "FloatLiteral tags succ/pred/zero" do

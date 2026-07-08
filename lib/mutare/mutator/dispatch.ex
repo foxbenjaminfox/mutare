@@ -536,7 +536,7 @@ defmodule Mutare.Mutator.Dispatch do
   *recording* side consistent with the *validation* side (`Mutare.Mutators.vocabulary/1`).
 
   A mutation is usually **one** kind (a single label), but may be several: a value-family mutant
-  that collapses two relationships onto one value (`Mutare.Mutators.Literal`'s deduped `1 - 1`/`0`)
+  that collapses two relationships onto one value (`Mutare.Mutators.IntegerLiteral`'s deduped `1 - 1`/`0`)
   yields `["pred", "zero"]`, and a qualifier naming *either* suppresses it. `carried`/`variant/2`
   may each be `nil`, a single label, or a list — all normalized here through `List.wrap/1`.
   """

@@ -10,7 +10,7 @@ defmodule Mutare.MutatorsCallTest do
     Collection,
     CollectionArity,
     DefaultDrop,
-    Integer,
+    IntegerCall,
     KeywordDelete,
     Math,
     MapKeyword,
@@ -1272,32 +1272,32 @@ defmodule Mutare.MutatorsCallTest do
     end
   end
 
-  describe "Integer" do
+  describe "IntegerCall" do
     test "mod ↔ floor_div swap (arity-blind rename, args preserved)" do
-      assert render(Integer.mutate(parse("Integer.mod(a, b)"))) == ["Integer.floor_div(a, b)"]
-      assert render(Integer.mutate(parse("Integer.floor_div(a, b)"))) == ["Integer.mod(a, b)"]
+      assert render(IntegerCall.mutate(parse("Integer.mod(a, b)"))) == ["Integer.floor_div(a, b)"]
+      assert render(IntegerCall.mutate(parse("Integer.floor_div(a, b)"))) == ["Integer.mod(a, b)"]
     end
 
     test "is_even ↔ is_odd swap (the guard-safe parity predicates)" do
-      assert render(Integer.mutate(parse("Integer.is_even(n)"))) == ["Integer.is_odd(n)"]
-      assert render(Integer.mutate(parse("Integer.is_odd(n)"))) == ["Integer.is_even(n)"]
+      assert render(IntegerCall.mutate(parse("Integer.is_even(n)"))) == ["Integer.is_odd(n)"]
+      assert render(IntegerCall.mutate(parse("Integer.is_odd(n)"))) == ["Integer.is_even(n)"]
     end
 
     test "skips unrelated Integer calls and other modules" do
-      assert Integer.mutate(parse("Integer.gcd(a, b)")) == :skip
-      assert Integer.mutate(parse("Integer.parse(s)")) == :skip
-      assert Integer.mutate(parse("Enum.mod(a, b)")) == :skip
-      assert Integer.mutate(parse(":math.sin(x)")) == :skip
+      assert IntegerCall.mutate(parse("Integer.gcd(a, b)")) == :skip
+      assert IntegerCall.mutate(parse("Integer.parse(s)")) == :skip
+      assert IntegerCall.mutate(parse("Enum.mod(a, b)")) == :skip
+      assert IntegerCall.mutate(parse(":math.sin(x)")) == :skip
     end
 
     test "skips non-call nodes" do
-      assert Integer.mutate(parse("a + b")) == :skip
-      assert Integer.mutate(parse("n")) == :skip
-      assert Integer.mutate(:atom) == :skip
+      assert IntegerCall.mutate(parse("a + b")) == :skip
+      assert IntegerCall.mutate(parse("n")) == :skip
+      assert IntegerCall.mutate(:atom) == :skip
     end
 
     test "name" do
-      assert Integer.name() == :integer
+      assert IntegerCall.name() == :integer_call
     end
   end
 

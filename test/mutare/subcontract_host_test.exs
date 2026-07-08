@@ -22,7 +22,7 @@ defmodule Mutare.SubcontractHostTest do
     end
 
     def suppressed(x, min) do
-      filter([:ok], x > min + 1)   # mutare:ignore[literal:succ] boundary reviewed
+      filter([:ok], x > min + 1)   # mutare:ignore[integer:succ] boundary reviewed
     end
 
     def host_suppressed(x, min) do
@@ -33,7 +33,7 @@ defmodule Mutare.SubcontractHostTest do
 
   @compile {:no_warn_undefined, Mutare.SubcontractFixture}
 
-  @mutators [:arithmetic, :literal, Mutare.Test.SubcontractHostMutator]
+  @mutators [:arithmetic, :integer, Mutare.Test.SubcontractHostMutator]
 
   setup_all do
     {metamutant, sites, _next_id} =
@@ -76,8 +76,8 @@ defmodule Mutare.SubcontractHostTest do
       # while the host's own comparison reversal stays under the host's family. All are
       # focused, scaffolding-free fragment diffs against the same hosted condition.
       arithmetic = site(sites, :arithmetic, "x > min - 1", 5)
-      succ = site(sites, :literal, "x > min + 2", 5)
-      merged = site(sites, :literal, "x > min + 0", 5)
+      succ = site(sites, :integer, "x > min + 2", 5)
+      merged = site(sites, :integer, "x > min + 0", 5)
       reversal = site(sites, :sub_host, "x < min + 1", 5)
 
       for s <- [arithmetic, succ, merged, reversal] do
@@ -96,11 +96,11 @@ defmodule Mutare.SubcontractHostTest do
     test "exactly one producer per position — no double production", %{sites: sites} do
       line5 = Enum.filter(sites, &(&1.line == 5))
 
-      # The host's reversal + arithmetic's swap + literal's succ/pred-zero: nothing else.
+      # The host's reversal + arithmetic's swap + integer's succ/pred-zero: nothing else.
       assert Enum.frequencies_by(line5, & &1.mutator) == %{
                sub_host: 1,
                arithmetic: 1,
-               literal: 2
+               integer: 2
              }
     end
 
@@ -117,11 +117,11 @@ defmodule Mutare.SubcontractHostTest do
   end
 
   describe "qualified ignores resolve against the producer's vocabulary" do
-    test "[literal:succ] suppresses only the in-island succ mutant", %{sites: sites} do
-      assert site(sites, :literal, "x > min + 2", 9).ignored
-      assert site(sites, :literal, "x > min + 2", 9).ignore_reason == "boundary reviewed"
+    test "[integer:succ] suppresses only the in-island succ mutant", %{sites: sites} do
+      assert site(sites, :integer, "x > min + 2", 9).ignored
+      assert site(sites, :integer, "x > min + 2", 9).ignore_reason == "boundary reviewed"
 
-      refute site(sites, :literal, "x > min + 0", 9).ignored
+      refute site(sites, :integer, "x > min + 0", 9).ignored
       refute site(sites, :arithmetic, "x > min - 1", 9).ignored
       refute site(sites, :sub_host, "x < min + 1", 9).ignored
     end
@@ -132,8 +132,8 @@ defmodule Mutare.SubcontractHostTest do
       assert site(sites, :sub_host, "x < min + 1", 13).ignored
 
       refute site(sites, :arithmetic, "x > min - 1", 13).ignored
-      refute site(sites, :literal, "x > min + 2", 13).ignored
-      refute site(sites, :literal, "x > min + 0", 13).ignored
+      refute site(sites, :integer, "x > min + 2", 13).ignored
+      refute site(sites, :integer, "x > min + 0", 13).ignored
     end
   end
 
@@ -146,11 +146,11 @@ defmodule Mutare.SubcontractHostTest do
       Selector.put(site(sites, :arithmetic, "x > min - 1", 5).id)
       assert F.go(1, 1) == [:ok]
 
-      # The literal pred/zero island mutant (`x > min + 0`): `2 > 1` → passes where the
+      # The integer pred/zero island mutant (`x > min + 0`): `2 > 1` → passes where the
       # baseline (`2 > 2`) drops.
       Selector.put(Selector.baseline())
       assert F.go(2, 1) == []
-      Selector.put(site(sites, :literal, "x > min + 0", 5).id)
+      Selector.put(site(sites, :integer, "x > min + 0", 5).id)
       assert F.go(2, 1) == [:ok]
 
       # The host's own reversal still switches alongside them (`1 < 2` → passes).

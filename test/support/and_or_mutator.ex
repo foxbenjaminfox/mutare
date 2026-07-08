@@ -1,13 +1,13 @@
-defmodule Mutare.Test.BooleanMutator do
+defmodule Mutare.Test.AndOrMutator do
   @moduledoc """
-  A reference custom mutator (boolean operator swaps), used in tests to exercise
-  the public `Mutare.Mutator` extension point. Mirrors the example in the
+  A reference custom mutator (logical-connective swaps: `and`↔`or`, `&&`↔`||`), used in tests to
+  exercise the public `Mutare.Mutator` extension point. Mirrors the example in the
   `Mutare.Mutator` docs.
   """
   @behaviour Mutare.Mutator
 
   @impl Mutare.Mutator
-  def name, do: :boolean
+  def name, do: :and_or
 
   @impl Mutare.Mutator
   def mutate({:and, meta, [left, right]}), do: [{:or, meta, [left, right]}]

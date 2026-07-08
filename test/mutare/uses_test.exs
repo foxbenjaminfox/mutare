@@ -703,7 +703,7 @@ defmodule Mutare.UsesTest do
 
     @schema_mutators [
       Mutare.Mutators.Arithmetic,
-      Mutare.Mutators.Literal,
+      Mutare.Mutators.IntegerLiteral,
       Mutare.Mutators.AtomLiteral
     ]
 

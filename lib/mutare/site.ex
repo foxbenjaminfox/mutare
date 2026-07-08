@@ -47,7 +47,7 @@ defmodule Mutare.Site do
     # The mutator-declared **variant label(s)** of this mutation (downcased), or `[]` when the
     # producing mutator did not opt in (no `c:Mutare.Mutator.variants/0` vocabulary) or this
     # mutation has no label (a delete site, or an unlabeled mutant). A list because one mutant may
-    # belong to several kinds (`Mutare.Mutators.Literal`'s deduped `1 - 1`/`0` is both `pred` and
+    # belong to several kinds (`Mutare.Mutators.IntegerLiteral`'s deduped `1 - 1`/`0` is both `pred` and
     # `zero`), and a qualified `# mutare:ignore[family:label]` filter matches if *any* of these
     # labels equals its token — declared by the mutator, *not* derived from the rendered AST (so
     # `relational:>` names the `>` swap, `return_value:empty` the empty constant). Set by

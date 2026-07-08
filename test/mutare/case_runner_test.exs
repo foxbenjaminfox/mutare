@@ -19,8 +19,8 @@ defmodule Mutare.CaseRunnerTest do
 
   alias Mutare.Test.Project
 
-  # Literal only, so the mutant set is the small, deterministic set of pattern-literal swaps.
-  @probe [Mutare.Mutators.Literal]
+  # IntegerLiteral only, so the mutant set is the small, deterministic set of integer-literal swaps.
+  @probe [Mutare.Mutators.IntegerLiteral]
 
   @moduletag :runner
   @moduletag timeout: 180_000
@@ -57,7 +57,7 @@ defmodule Mutare.CaseRunnerTest do
     # them via the clause-body record), and the metamutant compiled exactly once.
     assert run.results != []
     assert Enum.all?(run.results, &(&1.status == :killed))
-    assert Enum.all?(run.results, &(&1.site.line == 4 and &1.site.mutator == :literal))
+    assert Enum.all?(run.results, &(&1.site.line == 4 and &1.site.mutator == :integer))
   end
 
   test "a non-exhaustive case mutant is covered via the unmatched fallback and killed" do

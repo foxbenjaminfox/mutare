@@ -197,10 +197,10 @@ defmodule Mutare.TransformResolutionTest do
       assert "DateTime.shift(dt, hour: 10)" in mutations
     end
 
-    test "a swapped shift unit key drops the redundant AtomLiteral, but Literal still mutates the amount" do
+    test "a swapped shift unit key drops the redundant AtomLiteral, but IntegerLiteral still mutates the amount" do
       # ModeSwap rewrites the call swapping the `minute:` key, so `Overlap` prunes the
       # redundant AtomLiteral on that key (it'd raise as `:mutare:`). The amount is a
-      # different node ModeSwap leaves untouched, so Literal still mutates it.
+      # different node ModeSwap leaves untouched, so IntegerLiteral still mutates it.
       {_meta, sites, _} =
         Mutare.Transform.transform_string_with_sites(
           """
@@ -211,19 +211,19 @@ defmodule Mutare.TransformResolutionTest do
           mutators: [
             Mutare.Mutators.ModeSwap,
             Mutare.Mutators.AtomLiteral,
-            Mutare.Mutators.Literal
+            Mutare.Mutators.IntegerLiteral
           ]
         )
 
       mode_swaps = for s <- sites, s.mutator == :mode_swap, do: s.mutated_code
-      literals = for s <- sites, s.mutator == :literal, do: {s.original_code, s.mutated_code}
+      literals = for s <- sites, s.mutator == :integer, do: {s.original_code, s.mutated_code}
 
       # ModeSwap swaps the unit key both ways…
       assert "DateTime.shift(dt, second: 10)" in mode_swaps
       assert "DateTime.shift(dt, hour: 10)" in mode_swaps
       # …so the redundant AtomLiteral on the `minute:` key is pruned.
       assert Enum.filter(sites, &(&1.mutator == :atom)) == []
-      # The amount stays runtime data — Literal still mutates it.
+      # The amount stays runtime data — IntegerLiteral still mutates it.
       assert {"10", "11"} in literals
       assert {"10", "9"} in literals
     end
@@ -331,7 +331,7 @@ defmodule Mutare.TransformResolutionTest do
       # `xs |> List.first(0)` has one *visible* arg, so DefaultDrop's drop turns `[0]` into
       # `[]`. Sourceror ranges the one-element list `[0]` identically to `0`, but dropping the
       # arg is orthogonal to mutating its value — a list-valued footprint is never covering, so
-      # `Literal 0` (and `AtomLiteral :none` below) survives alongside the drop.
+      # `IntegerLiteral 0` (and `AtomLiteral :none` below) survives alongside the drop.
       {_meta, sites, _} =
         Mutare.Transform.transform_string_with_sites(
           """
@@ -342,7 +342,7 @@ defmodule Mutare.TransformResolutionTest do
           """,
           mutators: [
             Mutare.Mutators.DefaultDrop,
-            Mutare.Mutators.Literal,
+            Mutare.Mutators.IntegerLiteral,
             Mutare.Mutators.AtomLiteral
           ]
         )
@@ -350,7 +350,7 @@ defmodule Mutare.TransformResolutionTest do
       pairs = for s <- sites, do: {s.mutator, s.original_code, s.mutated_code}
 
       assert {:default_drop, "List.first(0)", "List.first()"} in pairs
-      assert {:literal, "0", "1"} in pairs
+      assert {:integer, "0", "1"} in pairs
       assert {:default_drop, "List.last(:none)", "List.last()"} in pairs
       assert {:atom, ":none", ":mutare"} in pairs
     end
@@ -570,10 +570,10 @@ defmodule Mutare.TransformResolutionTest do
             def even?(n) when I.is_even(n), do: I.mod(n, 2)
           end
           """,
-          mutators: [Mutare.Mutators.Integer]
+          mutators: [Mutare.Mutators.IntegerCall]
         )
 
-      pairs = for s <- sites, s.mutator == :integer, do: {s.original_code, s.mutated_code}
+      pairs = for s <- sites, s.mutator == :integer_call, do: {s.original_code, s.mutated_code}
       # Recognised through the alias (guard swap is lifted), and the mutant keeps `I.`.
       assert {"I.is_even(n)", "I.is_odd(n)"} in pairs
       assert {"I.mod(n, 2)", "I.floor_div(n, 2)"} in pairs
@@ -588,10 +588,10 @@ defmodule Mutare.TransformResolutionTest do
             def f(a, b), do: Integer.mod(a, b)
           end
           """,
-          mutators: [Mutare.Mutators.Integer]
+          mutators: [Mutare.Mutators.IntegerCall]
         )
 
-      refute Enum.any?(shadow_sites, &(&1.mutator == :integer))
+      refute Enum.any?(shadow_sites, &(&1.mutator == :integer_call))
     end
 
     test "a fully-qualified `Elixir.`-prefixed call mutates, keeping the prefix in the diff" do
@@ -875,11 +875,11 @@ defmodule Mutare.TransformResolutionTest do
             def f(_), do: false
           end
           """,
-          mutators: [Mutare.Mutators.Integer]
+          mutators: [Mutare.Mutators.IntegerCall]
         )
 
-      assert [%{kind: :lifted, mutator: :integer, original_code: "is_even(n)"} = site] =
-               Enum.filter(sites, &(&1.mutator == :integer))
+      assert [%{kind: :lifted, mutator: :integer_call, original_code: "is_even(n)"} = site] =
+               Enum.filter(sites, &(&1.mutator == :integer_call))
 
       assert meta =~ "import Elixir.Integer, only: [is_even: 1]"
 
@@ -942,10 +942,10 @@ defmodule Mutare.TransformResolutionTest do
             def f(_), do: 0
           end
           """,
-          mutators: [Mutare.Mutators.Integer]
+          mutators: [Mutare.Mutators.IntegerCall]
         )
 
-      site = Enum.find(sites, &(&1.mutator == :integer))
+      site = Enum.find(sites, &(&1.mutator == :integer_call))
       assert %Site{kind: :lifted, original_code: "is_even(n)", mutated_code: "is_odd(n)"} = site
       assert_compiles(meta)
     end
@@ -1125,17 +1125,19 @@ defmodule Mutare.TransformResolutionTest do
 
       {_, skipped, _} =
         Mutare.Transform.transform_string_with_sites(source,
-          mutators: [Mutare.Mutators.Literal],
+          mutators: [Mutare.Mutators.IntegerLiteral],
           macro_routes: [{:my_dsl, :filter, :any, :skip}]
         )
 
       {_, control, _} =
-        Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Literal])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IntegerLiteral]
+        )
 
       # Walking the receiver carries the macro routing in too: the `99` in the `:skip` macro is
       # left raw even though the macro call is a receiver — while unregistered it mutates.
       assert Enum.map(skipped, & &1.mutator) == []
-      assert Enum.any?(control, &(&1.mutator == :literal))
+      assert Enum.any?(control, &(&1.mutator == :integer))
     end
   end
 

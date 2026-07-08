@@ -157,17 +157,17 @@ defmodule Mutare.NoteTest do
     end
 
     test "a producer spec rides through normalize_mutant; a non-spec producer is rejected" do
-      spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.Literal)
+      spec = Mutare.Mutator.Spec.for_module(Mutare.Mutators.IntegerLiteral)
 
       assert Dispatch.normalize_mutant(%Mutation{node: 1, producer: spec}) ==
                {1, nil, nil, spec}
 
       assert_raise ArgumentError, ~r/:producer must be a Mutare.Mutator.Spec or nil/, fn ->
-        Dispatch.normalize_mutant(%Mutation{node: 1, producer: Mutare.Mutators.Literal})
+        Dispatch.normalize_mutant(%Mutation{node: 1, producer: Mutare.Mutators.IntegerLiteral})
       end
 
       assert_raise ArgumentError, ~r/:producer must be a Mutare.Mutator.Spec or nil/, fn ->
-        Mutation.new(1, producer: :literal)
+        Mutation.new(1, producer: :integer)
       end
     end
 

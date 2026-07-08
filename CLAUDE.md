@@ -181,7 +181,7 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 
 | Kind | Implement | Example fixture |
 | --- | --- | --- |
-| Node-level swap | `mutate/1` | `boolean_mutator.ex` |
+| Node-level swap | `mutate/1` | `and_or_mutator.ex` |
 | Arity-changing / pipe-aware call | `mutate/2` (reads `pipe_mode`) | — (`CollectionArity`) |
 | Configurable (`{Module, opts}`) | `mutate/2` (reads `context.opts`) | `configurable_mutator.ex` |
 | Rich option surface, parsed once per run | `init/1` → `context.config` (+ `use Mutare.Mutator.Families` for a `families:` catalog) | `init_mutator.ex` |
@@ -225,7 +225,7 @@ The `# mutare:ignore` directive (`Mutare.Ignore`) is parsed from Sourceror comme
 # mutare:ignore[arithmetic, relational]      suppress only those mutator families
 # mutare:ignore[relational:>]                suppress only the `i < j → i > j` reflection; `<=` runs
 # mutare:ignore[return_value:empty]          suppress one mutation kind by its declared label
-# mutare:ignore[literal] off-by-one is fine  filter + reason together
+# mutare:ignore[integer] off-by-one is fine  filter + reason together
 # mutare:ignore-start … # mutare:ignore-end  suppress a span (delimiter lines inclusive); same filter/reason grammar, carried on the -start
 # mutare:ignore-file                         suppress the whole file (lookup tables, generated code)
 ```

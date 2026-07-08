@@ -354,7 +354,7 @@ list result is `[]` which the filter's `]` terminator can't even spell, a negati
 not that's meaningful. The replacement: the **mutator declares its own vocabulary** and tags each
 mutation. Two optional callbacks (discovered by export, the `macro_routes/0` pattern): `variants/0` → the
 label set (a family's *public contract* — operator names `> <= ==`, or semantic kinds `empty
-sentinel` / `zero succ pred negate`), and `variant(original, mutated)` → the label(s) for one produced
+sentinel` / `zero succ pred`), and `variant(original, mutated)` → the label(s) for one produced
 mutation (a member of `variants/0`, or `nil` = unlabeled/bare-only — **or a list** when the mutation
 is several kinds at once). Classify from the
 `{original, mutated}` **pair**, never the mutated node alone — a strip (`-(a+b)` → `a+b`) emits a
@@ -363,8 +363,8 @@ is several kinds at once). Classify from the
 `Site` stores the (downcased) label **list** in a `variant` field (`[]` when unlabeled), set by
 `Mutare.Mutator.Dispatch.variant/3` from the producing `Spec`'s module (`function_exported?` guard,
 so a non-opting mutator yields `[]`; the callback's `nil`/single/list return is normalized through
-`List.wrap`). A list because one deduped mutant can be several kinds — `literal`'s `1 - 1`/`0` is both
-`pred` and `zero`, so `[literal:pred]` *and* `[literal:zero]` each suppress it. The matching is
+`List.wrap`). A list because one deduped mutant can be several kinds — `integer`'s `1 - 1`/`0` is both
+`pred` and `zero`, so `[integer:pred]` *and* `[integer:zero]` each suppress it. The matching is
 otherwise unchanged — `Directive.applies_to?/3` against the site's label list, a qualifier matching
 when its token is a **member**, `:any` a wildcard on either side. Opt-in falls straight
 out of "did the module export `variants/0`?": a family that didn't (Collection, the call families,
@@ -500,7 +500,7 @@ suppresses a region. Decisions worth remembering:
   stays sound for any reader that proceeds past the error.
 - **Precedence: filter specificity first, then scope narrowness, then source order**
   (`directive_for`'s `{match_specificity, scope_rank, -source_order}`). Specificity-first means a
-  file-wide `[literal:zero]` beats a line-level bare `ignore` *for that one mutant* — the
+  file-wide `[integer:zero]` beats a line-level bare `ignore` *for that one mutant* — the
   qualified directive is the more informative reason to record; the mutant is suppressed either
   way (the ranking only ever picks among directives that all match). Scope rank (line 2 > region
   1 > file 0) breaks the common tie so the most locally-written reason wins.
@@ -2678,7 +2678,7 @@ mutates the raw fragment — `:hosted` leaves it raw.)
     in-place selector — the same wall the host (#1) climbs for *conditions*, but here the mutants are
     core's literal families, not the extension's catalog. New value treatment `:pinned`
     (`route_macro_arg/3`): analyze the value as ordinary runtime so the configured families attach
-    their `Candidate.InPlace`s (their **own** family name reaches the Site — `:string`/`:literal`, not
+    their `Candidate.InPlace`s (their **own** family name reaches the Site — `:string`/`:integer`, not
     the host), flag those candidates `pin?`, and `emit_site/3`'s `pin_if_needed/2` wraps the built
     selector in `{:^, [], [case]}`. Contained: `pin?` defaults false and is set only by `:pinned`, so
     every existing site is byte-identical; a bare `^` is a compile error elsewhere, so `:pinned` is
@@ -4879,9 +4879,10 @@ Two more remote-call families, both on by default:
   unambiguous, and every function in a swap group exists at the same `:math` arity,
   so the renames are arity-blind. All `:math` calls are remote → never guard-legal →
   always in place.
-- **`integer`** (`Mutare.Mutators.Integer`) — `mod`↔`floor_div` (the two halves of
+- **`integer_call`** (`Mutare.Mutators.IntegerCall`) — `mod`↔`floor_div` (the two halves of
   floored division) and `is_even`↔`is_odd`; a Collection-style arity-blind remote
-  rename keyed on `{[:Integer], fun}`.
+  rename keyed on `{[:Integer], fun}`. Named `integer_call` (beside `Mutare.Mutators.IntegerLiteral`,
+  the `integer` value family) the way `string_call` sits beside `string`.
 
 **The non-obvious part: a guard-legal *qualified* macro broke the old "guard-safety
 is free" assumption.** The expanded-set note above argued no built-in can poison a
@@ -6136,7 +6137,7 @@ A `mix mutare --only lib/mutare/ignore.ex` surfaced two *corrupt survivor diffs*
 (which is built from the AST, compiles, and runs fine; only the diff a human reads
 was wrong):
 
-1. **`literal` `true → false` ate the closing paren** — `…, trim: false` (no `)`).
+1. **`boolean` `true → false` ate the closing paren** — `…, trim: false` (no `)`).
    The site's recorded `range` was one column too wide. Root cause is upstream:
    `Sourceror.get_range/1` sizes an atom literal as its name **plus one for a colon**
    (`range.ex` `do_get_range/1`, the `+1` "Just the colon" branch) — correct for a
@@ -6953,8 +6954,8 @@ interior mutant rides the host's weave). Three additive pieces:
    without it the host can't know which families are on, under what `:as` names, with which opts.
 3. **`producer:` on `%Mutation{}`** — per-mutant attribution. `Dispatch.normalize_mutant/1`
    quads carry it; `HostedEmit` records the Site under `producer || cand.mutator`, so qualified
-   ignores resolve against the producing family's vocabulary (`[literal:succ]` suppresses the
-   in-pin literal; `[my_host]` doesn't touch it). The rule is uniform: a `producer` on an
+   ignores resolve against the producing family's vocabulary (`[integer:succ]` suppresses the
+   in-pin integer; `[my_host]` doesn't touch it). The rule is uniform: a `producer` on an
    ordinary `mutate/1,2` return also re-attributes (one rule, no host-only special case).
 
 **Rejected alternative — recursive island routing:** a treatment grammar where a `:hosted`

@@ -7,7 +7,7 @@ defmodule Mutare.Ignore do
       expression() # mutare:ignore
       # mutare:ignore
       expression()
-      # mutare:ignore[literal] checked by the boundary test;
+      # mutare:ignore[integer] checked by the boundary test;
       # any non-empty replacement is behaviorally equivalent
       expression()
 
@@ -29,7 +29,7 @@ defmodule Mutare.Ignore do
       # mutare:ignore[arithmetic]                  suppress only arithmetic mutants
       # mutare:ignore[arithmetic, relational]      suppress two families
       # mutare:ignore[relational:>]                suppress only the `i > j` swap
-      # mutare:ignore[literal] off-by-one is fine  a filter and a reason together
+      # mutare:ignore[integer] off-by-one is fine  a filter and a reason together
 
   Filter entries are mutator family names from `Mutare.Mutators.families/0`, `clause_drop`, or a custom mutator's `c:Mutare.Mutator.name/0`. Without a filter, the directive suppresses every mutant on the line.
 

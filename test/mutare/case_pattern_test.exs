@@ -113,7 +113,7 @@ defmodule Mutare.CasePatternTest do
     clause_sites =
       Enum.filter(
         sites,
-        &(&1.mutator in [:literal, :relational, :pattern_swap, :pattern_wildcard, :string])
+        &(&1.mutator in [:integer, :relational, :pattern_swap, :pattern_wildcard, :string])
       )
 
     assert clause_sites != []
@@ -160,12 +160,12 @@ defmodule Mutare.CasePatternTest do
 
     test "a re-targeting mutant makes a previously-unmatched value match", %{sites: sites} do
       # `2 -> :two` becomes `3 -> :two`, so `narrow(3)` now matches instead of raising.
-      Selector.put(id(sites, :literal, "3", 34))
+      Selector.put(id(sites, :integer, "3", 34))
       assert F.narrow(3) == :two
     end
 
     test "a literal pattern mutant re-targets the clause", %{sites: sites} do
-      Selector.put(id(sites, :literal, "2", 4))
+      Selector.put(id(sites, :integer, "2", 4))
       # Clause 1 now matches 2, not 1: 1 falls through, 2 hits :one.
       assert F.classify(1) == :other
       assert F.classify(2) == :one
@@ -211,9 +211,9 @@ defmodule Mutare.CasePatternTest do
   end
 
   test "renders a case-pattern literal swap as a focused one-line diff", %{sites: sites} do
-    site = Enum.find(sites, &(&1.mutator == :literal and &1.line == 4 and &1.mutated_code == "2"))
+    site = Enum.find(sites, &(&1.mutator == :integer and &1.line == 4 and &1.mutated_code == "2"))
 
-    assert Report.header(site) == "cp.ex:4  [literal, in-place]  SURVIVED"
+    assert Report.header(site) == "cp.ex:4  [integer, in-place]  SURVIVED"
     assert Report.diff(site, @source) == "-      1 -> :one\n+      2 -> :one"
   end
 

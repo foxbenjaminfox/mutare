@@ -319,7 +319,8 @@ defmodule Mix.Tasks.MutareTest do
 
       # An opted-in family lists its `# mutare:ignore[family:label]` qualifier labels;
       # a bare-only family (no variant vocabulary) shows no label line.
-      assert output =~ "ignore labels: zero succ pred negate"
+      assert output =~ "ignore labels: zero succ pred"
+      assert output =~ "ignore labels: negate"
       assert output =~ ~r/relational\b.*\n\s+ignore labels: .*>=/
     end
   end
@@ -718,7 +719,7 @@ defmodule Mix.Tasks.MutareTest do
           """
         })
 
-      mutators = "relational,literal,arithmetic"
+      mutators = "relational,integer,arithmetic"
 
       ExUnit.CaptureIO.capture_io(:stderr, fn ->
         assert Mix.Tasks.Mutare.run([

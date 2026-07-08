@@ -7,7 +7,7 @@ defmodule Mutare.Mutators.DateTimeLiteral do
     * `~N[…]`          → +1 day             (NaiveDateTime)
     * `~U[…Z]`         → +1 day             (DateTime, UTC)
 
-  The temporal counterpart of `Mutare.Mutators.Literal`'s integer off-by-one: a one-unit shift is the boundary nudge that catches `==`/`<`/`>` comparisons and date arithmetic a too-weak suite leaves unpinned.
+  The temporal counterpart of `Mutare.Mutators.IntegerLiteral`'s off-by-one: a one-unit shift is the boundary nudge that catches `==`/`<`/`>` comparisons and date arithmetic a too-weak suite leaves unpinned.
 
   Why a shift, not a sentinel. Calendar sigils are validated at compile time (`~D[2020-13-99]` is a compile error), so a mutation must stay a valid date/time. The literal is parsed, shifted by one unit, and re-serialised, so the result is always a real calendar value.
 

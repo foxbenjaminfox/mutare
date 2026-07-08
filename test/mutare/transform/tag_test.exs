@@ -92,7 +92,7 @@ defmodule Mutare.Transform.TagTest do
 
   # One literal in any position the tag walks reach; lets the asserted sites be
   # exactly the literal sites, not perturbed by other families.
-  @literal [Mutators.Literal]
+  @literal [Mutators.IntegerLiteral]
   @atom [Mutators.AtomLiteral]
 
   defp transform(body, mutators) do
@@ -443,8 +443,8 @@ defmodule Mutare.Transform.TagTest do
 
       # Both value-position keys are offered (collision-filtered against each other,
       # so `1` never becomes the sibling `2`)…
-      assert {:literal, "1", "0"} in triples(sites)
-      assert {:literal, "2", "3"} in triples(sites)
+      assert {:integer, "1", "0"} in triples(sites)
+      assert {:integer, "2", "3"} in triples(sites)
       # …and they carry distinct tags: the `2` → `3` mutant changes only the second
       # key (`%{1 => :a, 3 => :b}`). A collision would rewrite both to the same key
       # (`%{3 => :a, 3 => :b}`) — a duplicate-key clause that also fails to compile.

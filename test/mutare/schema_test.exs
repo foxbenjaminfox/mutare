@@ -620,7 +620,7 @@ defmodule Mutare.SchemaTest do
       build = fn macros ->
         Schema.build(root,
           paths: ["lib/q.ex"],
-          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.Literal],
+          mutators: [Mutare.Mutators.Relational, Mutare.Mutators.IntegerLiteral],
           macro_routes: macros
         )
       end

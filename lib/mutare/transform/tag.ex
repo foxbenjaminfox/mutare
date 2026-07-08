@@ -480,9 +480,9 @@ defmodule Mutare.Transform.Tag do
   # literals, collection/map keys): a strictly-monotonic counter hands out one unique tag per
   # mutated node.
   #
-  # `literal 1 → 2` (on the `next + 1` below) is equivalent too — still a unique, monotonic tag
+  # `integer 1 → 2` (on the `next + 1` below) is equivalent too — still a unique, monotonic tag
   # — but left un-ignored: its sibling `1 → 0` freezes the counter (a real collision) and is
-  # genuinely killed, which a `[literal]` filter would hide. See `TagTest` moduledoc.
+  # genuinely killed, which a `[integer]` filter would hide. See `TagTest` moduledoc.
   defp tag_node(node, [], acc), do: {node, acc}
 
   defp tag_node(node, muts, {next, targets}) do

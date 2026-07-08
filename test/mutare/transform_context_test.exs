@@ -340,10 +340,12 @@ defmodule Mutare.TransformContextTest do
       """
 
       {meta, sites, _next_id} =
-        Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Literal])
+        Mutare.Transform.transform_string_with_sites(source,
+          mutators: [Mutare.Mutators.IntegerLiteral]
+        )
 
       # The `1` pattern (line 4) mutates; the diff stays focused on it (`:in_place`).
-      assert Enum.any?(sites, &(&1.mutator == :literal and &1.kind == :in_place and &1.line == 4))
+      assert Enum.any?(sites, &(&1.mutator == :integer and &1.kind == :in_place and &1.line == 4))
       assert meta =~ selector_tuple("x")
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
@@ -403,9 +405,12 @@ defmodule Mutare.TransformContextTest do
 
   describe "call-option keys: mutator-owned policy (keyword list as a call's final arg)" do
     # Bare AtomLiteral mutates call-option keys; configured with `call_option_keys: false`
-    # it skips them. `Literal` rides along so an option *value* still mutates either way.
-    @kw [Mutare.Mutators.AtomLiteral, Mutare.Mutators.Literal]
-    @kw_off [{Mutare.Mutators.AtomLiteral, call_option_keys: false}, Mutare.Mutators.Literal]
+    # it skips them. `IntegerLiteral` rides along so an option *value* still mutates either way.
+    @kw [Mutare.Mutators.AtomLiteral, Mutare.Mutators.IntegerLiteral]
+    @kw_off [
+      {Mutare.Mutators.AtomLiteral, call_option_keys: false},
+      Mutare.Mutators.IntegerLiteral
+    ]
 
     defp atom_keys(source, opts) do
       {meta, sites, _} = Mutare.Transform.transform_string_with_sites(source, opts)
@@ -434,7 +439,7 @@ defmodule Mutare.TransformContextTest do
       assert keys == []
       # values still mutate, so the call isn't left untouched
       {_m, sites, _} = Mutare.Transform.transform_string_with_sites(source, mutators: @kw_off)
-      assert Enum.any?(sites, &(&1.mutator == :literal))
+      assert Enum.any?(sites, &(&1.mutator == :integer))
       assert {:ok, _} = Code.string_to_quoted(meta)
     end
 
@@ -460,24 +465,24 @@ defmodule Mutare.TransformContextTest do
     end
 
     test "the opt is per-mutator: a different mutator's keys are unaffected" do
-      # Integer keys are Literal's; configuring AtomLiteral off leaves them mutating.
+      # Integer keys are IntegerLiteral's; configuring AtomLiteral off leaves them mutating.
       source = "defmodule N do\n  def f(x), do: foo(x, [{1, :a}])\nend\n"
 
       {_m, sites, _} = Mutare.Transform.transform_string_with_sites(source, mutators: @kw_off)
-      assert Enum.any?(sites, &(&1.mutator == :literal and &1.line == 2))
+      assert Enum.any?(sites, &(&1.mutator == :integer and &1.line == 2))
     end
 
     test "core does not interpret `call_option_keys` for a mutator without the callback" do
-      # This pair-list shape is tagged as a trailing call-options candidate, but Literal
+      # This pair-list shape is tagged as a trailing call-options candidate, but IntegerLiteral
       # does not declare the policy callback. Its similarly named opt is therefore inert.
       source = "defmodule N do\n  def f(x), do: foo(x, [{1, :a}])\nend\n"
 
       {_m, sites, _} =
         Mutare.Transform.transform_string_with_sites(source,
-          mutators: [{Mutare.Mutators.Literal, call_option_keys: false}]
+          mutators: [{Mutare.Mutators.IntegerLiteral, call_option_keys: false}]
         )
 
-      assert Enum.any?(sites, &(&1.mutator == :literal and &1.original_code == "1"))
+      assert Enum.any?(sites, &(&1.mutator == :integer and &1.original_code == "1"))
     end
 
     test "ConventionAtom can own the same positional policy" do
@@ -573,7 +578,7 @@ defmodule Mutare.TransformContextTest do
   end
 
   describe "head-pattern literal lifting" do
-    @literal [Mutare.Mutators.Literal]
+    @literal [Mutare.Mutators.IntegerLiteral]
 
     test "a literal in a def head is mutated by lifting (not in place)" do
       # A `case` selector is illegal in a pattern, so a head literal can only be
@@ -585,8 +590,8 @@ defmodule Mutare.TransformContextTest do
         Mutare.Transform.transform_string_with_sites(source, mutators: @literal)
 
       assert [
-               %Site{mutator: :literal, kind: :lifted, original_code: "1", mutated_code: "2"},
-               %Site{mutator: :literal, kind: :lifted, original_code: "1", mutated_code: "0"}
+               %Site{mutator: :integer, kind: :lifted, original_code: "1", mutated_code: "2"},
+               %Site{mutator: :integer, kind: :lifted, original_code: "1", mutated_code: "0"}
              ] =
                Enum.sort_by(sites, & &1.id)
 
@@ -601,7 +606,7 @@ defmodule Mutare.TransformContextTest do
         Mutare.Transform.transform_string_with_sites(source, mutators: @literal)
 
       # the `1` key → {2, 0}; the `2` value → {3, 1, 0}; both lifted, none in place.
-      assert Enum.all?(sites, &(&1.kind == :lifted and &1.mutator == :literal))
+      assert Enum.all?(sites, &(&1.kind == :lifted and &1.mutator == :integer))
 
       assert MapSet.new(sites, &{&1.original_code, &1.mutated_code}) ==
                MapSet.new([{"1", "2"}, {"1", "0"}, {"2", "3"}, {"2", "1"}, {"2", "0"}])
@@ -667,13 +672,13 @@ defmodule Mutare.TransformContextTest do
 
       {meta, sites, _next_id} =
         Mutare.Transform.transform_string_with_sites(source,
-          mutators: [Mutare.Mutators.Literal, Mutare.Mutators.Relational]
+          mutators: [Mutare.Mutators.IntegerLiteral, Mutare.Mutators.Relational]
         )
 
       lifted = Enum.filter(sites, &(&1.kind == :lifted and &1.operation == :replace))
       # guard `>` → {>=, <} (relational); head `0` → {1, -1} (literal). Both lifted.
       assert Enum.any?(lifted, &(&1.mutator == :relational and &1.original_form == :>))
-      assert Enum.any?(lifted, &(&1.mutator == :literal and &1.original_code == "0"))
+      assert Enum.any?(lifted, &(&1.mutator == :integer and &1.original_code == "0"))
 
       assert meta =~ ~r/def f\(mutare_arg1, mutare_arg2\) do/
       assert [{H, _}] = Mutare.Test.Compile.string(meta)
@@ -723,7 +728,7 @@ defmodule Mutare.TransformContextTest do
     end
   end
 
-  test "the default set fires the expanded families (logical, literal, conditional, …)" do
+  test "the default set fires the expanded families (logical, integer, boolean, conditional, …)" do
     source = """
     defmodule D do
       def f(a, b), do: a and b + 1
@@ -740,8 +745,10 @@ defmodule Mutare.TransformContextTest do
     assert by[:logical] == 1
     # (a and _) → true / false
     assert by[:conditional] == 2
-    # 1 → {2, 0}; true → false
-    assert by[:literal] == 3
+    # 1 → {2, 0}
+    assert by[:integer] == 2
+    # true → false
+    assert by[:boolean] == 1
     assert {:ok, _} = Code.string_to_quoted(meta)
   end
 
@@ -816,7 +823,7 @@ defmodule Mutare.TransformContextTest do
 
       {meta, sites, _next_id} =
         Mutare.Transform.transform_string_with_sites(source,
-          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.Literal]
+          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral]
         )
 
       assert meta =~ "if true do"
@@ -1033,7 +1040,7 @@ defmodule Mutare.TransformContextTest do
 
       {meta, sites, _next_id} =
         Mutare.Transform.transform_string_with_sites(source,
-          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.Literal]
+          mutators: [Mutare.Mutators.Arithmetic, Mutare.Mutators.IntegerLiteral]
         )
 
       assert meta =~ "if true do"

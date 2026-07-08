@@ -121,7 +121,7 @@ defmodule Mutare.MacroRouting.RegistryTest do
     end
 
     test "a mutator without macro_routes/0 contributes nothing" do
-      specs = Mutator.Spec.for_module(Mutare.Test.BooleanMutator)
+      specs = Mutator.Spec.for_module(Mutare.Test.AndOrMutator)
       assert Macros.from_mutators([specs]) == []
     end
 

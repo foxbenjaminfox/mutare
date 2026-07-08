@@ -221,7 +221,7 @@ defmodule Mutare.Mutators.Helpers do
   off-by-one collapses onto the zero sentinel (`n = 1` ⇒ `n - 1 = 0`) the deduped mutant carries
   *both* labels (`["pred", "zero"]`), so either qualifier suppresses it.
 
-  Shared by `Mutare.Mutators.Literal` (the integer arm — `step` 1, `zero` 0) and
+  Shared by `Mutare.Mutators.IntegerLiteral` (`step` 1, `zero` 0) and
   `Mutare.Mutators.FloatLiteral` (`step` 1.0, `zero` 0.0).
   """
   @spec numeric_mutations(number(), number(), number()) :: [Mutation.t()]

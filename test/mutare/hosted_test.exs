@@ -504,7 +504,7 @@ defmodule Mutare.HostedTest do
       {meta, sites, _next} =
         Mutare.Transform.transform_string_with_sites(@kw_source,
           file: "kw.ex",
-          mutators: [:string, :literal, :atom, Mutare.Test.HostMutator]
+          mutators: [:string, :integer, :atom, Mutare.Test.HostMutator]
         )
 
       %{meta: meta, sites: sites}
@@ -516,9 +516,9 @@ defmodule Mutare.HostedTest do
       assert Enum.any?(sites, &(&1.mutator == :string and &1.mutated_code == "\"\""))
       assert Enum.any?(sites, &(&1.mutator == :string and &1.mutated_code == "\"mutare\""))
 
-      # `count: 5` — the integer value is routed :skip, so it is left raw despite :literal
+      # `count: 5` — the integer value is routed :skip, so it is left raw despite :integer
       # being enabled (it would otherwise offer 6/4/0).
-      refute Enum.any?(sites, &(&1.mutator == :literal))
+      refute Enum.any?(sites, &(&1.mutator == :integer))
 
       # The keys `name`/`count` are field names, never mutated — even though :atom is enabled
       # and would otherwise rewrite a bare atom. This is the per-pair routing's defining
@@ -683,7 +683,7 @@ defmodule Mutare.HostedTest do
       {meta, sites, _next} =
         Mutare.Transform.transform_string_with_sites(@nested_source,
           file: "nested_kw.ex",
-          mutators: [:string, :literal, :atom, Mutare.Test.HostMutator]
+          mutators: [:string, :integer, :atom, Mutare.Test.HostMutator]
         )
 
       %{meta: meta, sites: sites}
@@ -703,8 +703,8 @@ defmodule Mutare.HostedTest do
       # mutated, even though :atom is enabled (the recursion leaves keys raw at every depth).
       refute Enum.any?(sites, &(&1.mutator == :atom))
 
-      # `count: 5` (the outer integer value) is still routed :skip — no :literal site.
-      refute Enum.any?(sites, &(&1.mutator == :literal))
+      # `count: 5` (the outer integer value) is still routed :skip — no :integer site.
+      refute Enum.any?(sites, &(&1.mutator == :integer))
     end
 
     test "the nested-keyword metamutant compiles", %{meta: meta} do
@@ -850,7 +850,7 @@ defmodule Mutare.HostedTest do
       assert_raise ArgumentError, ~r/:interpolated.*scalar.*compound/s, fn ->
         Mutare.Transform.transform_string_with_sites(source,
           file: "cp.ex",
-          mutators: [:literal, Mutare.Test.CompoundInterpolatedMutator]
+          mutators: [:integer, Mutare.Test.CompoundInterpolatedMutator]
         )
       end
     end
@@ -925,12 +925,12 @@ defmodule Mutare.HostedTest do
       {meta, sites, _next} =
         Mutare.Transform.transform_string_with_sites(source,
           file: "pc.ex",
-          mutators: [:relational, :literal, Mutare.Test.CompoundInterpolatedMutator]
+          mutators: [:relational, :integer, Mutare.Test.CompoundInterpolatedMutator]
         )
 
       # Deep mutation inside the cond's branches and condition…
       assert Enum.any?(sites, &(&1.mutator == :relational and &1.mutated_code == "a >= b"))
-      assert Enum.any?(sites, &(&1.mutator == :literal and &1.original_code == "1"))
+      assert Enum.any?(sites, &(&1.mutator == :integer and &1.original_code == "1"))
       # …the user's pin stays where it was written, selectors nest bare inside it (no re-pin).
       assert meta =~ ~r/total:\s*\^cond do/
       refute meta =~ "^^"
@@ -952,11 +952,11 @@ defmodule Mutare.HostedTest do
       {_meta, sites, _next} =
         Mutare.Transform.transform_string_with_sites(source,
           file: "pl.ex",
-          mutators: [:literal, Mutare.Test.CompoundInterpolatedMutator]
+          mutators: [:integer, Mutare.Test.CompoundInterpolatedMutator]
         )
 
-      assert Enum.any?(sites, &(&1.mutator == :literal and &1.original_code == "1"))
-      assert Enum.any?(sites, &(&1.mutator == :literal and &1.original_code == "2"))
+      assert Enum.any?(sites, &(&1.mutator == :integer and &1.original_code == "1"))
+      assert Enum.any?(sites, &(&1.mutator == :integer and &1.original_code == "2"))
     end
   end
 

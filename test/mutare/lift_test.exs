@@ -986,14 +986,14 @@ defmodule Mutare.LiftTest do
       end
       """
 
-      probe = [Mutare.Mutators.Integer, Mutare.Mutators.AliasLiteral]
+      probe = [Mutare.Mutators.IntegerCall, Mutare.Mutators.AliasLiteral]
 
       {meta, sites, _next_id} =
         Mutare.Transform.transform_string_with_sites(source, file: "intguard.ex", mutators: probe)
 
       # The guard swap is delivered by lifting...
-      assert [%Site{kind: :lifted, mutator: :integer}] =
-               Enum.filter(sites, &(&1.mutator == :integer))
+      assert [%Site{kind: :lifted, mutator: :integer_call}] =
+               Enum.filter(sites, &(&1.mutator == :integer_call))
 
       # ...and the `Integer` alias in the guard's call position is left untouched.
       assert Enum.filter(sites, &(&1.mutator == :alias)) == []
@@ -1002,7 +1002,7 @@ defmodule Mutare.LiftTest do
       assert [{Mutare.IntegerGuardFixture, _}] = Mutare.Test.Compile.string(meta)
 
       # Runtime: flipping the lifted is_odd mutant flips the parity verdict.
-      swap = Enum.find(sites, &(&1.mutator == :integer))
+      swap = Enum.find(sites, &(&1.mutator == :integer_call))
       Selector.put(Selector.baseline())
       assert apply(Mutare.IntegerGuardFixture, :parity, [2]) == :even
       Selector.put(swap.id)

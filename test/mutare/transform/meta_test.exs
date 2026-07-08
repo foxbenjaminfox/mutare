@@ -9,7 +9,7 @@ defmodule Mutare.Transform.MetaTest do
 
   # A metadata-bearing node and a bare literal (no keyword meta) — Meta must be total over both.
   defp sample_node, do: {:call, [line: 1], []}
-  defp bare, do: :literal
+  defp bare, do: :integer
 
   describe "candidate delivery" do
     test "candidates/2 reads the list for a kind, [] when absent or a bare literal" do

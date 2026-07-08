@@ -131,7 +131,7 @@ defmodule Mutare.MacroRouting do
       not a bare selector `case`. The name is the contract: the value is *interpolated data*, and
       core reuses its own mutators on it, delivering every mutation through the `^`. For a bare
       scalar (`category: "Foo"`) the configured literal families attach their ordinary mutations —
-      each Site records the owning family's name (`:string`, `:literal`, …), never the adapter's —
+      each Site records the owning family's name (`:string`, `:integer`, …), never the adapter's —
       and the selector is emitted wrapped in `^`. Its limits, precisely:
 
       * **Bare values must be scalar.** A bare compound value (a list, map, or tuple) attaches

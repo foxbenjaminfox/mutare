@@ -111,7 +111,7 @@ defmodule Mutare.Ignore.Directive do
   `name/0` still matches the downcased filter token) *and* the entry's label admits
   `target` — a bare `:any` entry admits any variant, otherwise the entry's label must be
   a **member** of the site's label list (so the deduped `1 - 1`/`0` mutant, labeled both
-  `pred` and `zero`, is suppressed by `[literal:pred]` *or* `[literal:zero]`). So an
+  `pred` and `zero`, is suppressed by `[integer:pred]` *or* `[integer:zero]`). So an
   unknown family, an unknown label, or an empty filter admits nothing
   (filtering fails safe toward *running* the mutant).
 

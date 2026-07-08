@@ -364,7 +364,7 @@ defmodule Mutare.TransformCaptureTest do
       # the literal families never see them. A body of only placeholders yields no literal
       # site; a real adjacent literal still mutates. This disambiguation is what keeps a
       # capture from being corrupted into an invalid `&0` or a wrong-position `&2`.
-      lit = [Mutare.Mutators.Literal]
+      lit = [Mutare.Mutators.IntegerLiteral]
 
       {_m, placeholder_only, _} =
         Mutare.Transform.transform_string_with_sites(

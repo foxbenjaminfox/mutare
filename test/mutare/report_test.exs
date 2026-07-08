@@ -77,7 +77,7 @@ defmodule Mutare.ReportTest do
     end
 
     test "a boolean value swap keeps the closing paren (true/false range is not over-wide)" do
-      assert Report.diff(kw_site(Mutare.Mutators.Literal, "true"), @kw_source) ==
+      assert Report.diff(kw_site(Mutare.Mutators.BooleanLiteral, "true"), @kw_source) ==
                "-  def f(x), do: String.split(x, \",\", trim: true)\n" <>
                  "+  def f(x), do: String.split(x, \",\", trim: false)"
     end
@@ -90,7 +90,7 @@ defmodule Mutare.ReportTest do
 
     test "both patched diffs re-parse as valid Elixir" do
       for {mutator, original} <- [
-            {Mutare.Mutators.Literal, "true"},
+            {Mutare.Mutators.BooleanLiteral, "true"},
             {Mutare.Mutators.AtomLiteral, "trim:"}
           ] do
         patched = Report.patch(kw_site(mutator, original), @kw_source)

@@ -11,6 +11,7 @@ defmodule Mutare.MutatorsTest do
     Arithmetic,
     AtomLiteral,
     BitstringLiteral,
+    BooleanLiteral,
     CallRemoval,
     CharlistLiteral,
     Collection,
@@ -22,9 +23,9 @@ defmodule Mutare.MutatorsTest do
     FloatLiteral,
     GuardDrop,
     IfCondition,
-    Integer,
+    IntegerCall,
+    IntegerLiteral,
     List,
-    Literal,
     Logical,
     MapKeyword,
     MapLiteral,
@@ -54,13 +55,22 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.all() ==
                [Arithmetic, OperandSwap, Mutare.Mutators.Bitwise] ++
-                 [Relational, StrictEquality, Logical, Literal, Conditional, IfCondition] ++
+                 [Relational, StrictEquality, Logical, IntegerLiteral, BooleanLiteral] ++
+                 [Conditional, IfCondition] ++
                  [List] ++
                  [Collection, CollectionArity, StringCall, StringByte, MapKeyword] ++
                  [Mutare.Mutators.KeywordDelete] ++
                  [Mutare.Mutators.MapSet, Mutare.Mutators.PeriodBoundary, TemporalOrder] ++
                  [CallRemoval, DefaultDrop] ++
-                 [ModeSwap, Numeric, Math, Integer, ConventionAtom, StringLiteral, FloatLiteral] ++
+                 [
+                   ModeSwap,
+                   Numeric,
+                   Math,
+                   IntegerCall,
+                   ConventionAtom,
+                   StringLiteral,
+                   FloatLiteral
+                 ] ++
                  [AtomLiteral] ++
                  [CharlistLiteral, WordListLiteral, StringSigilLiteral] ++
                  [MapLiteral, TupleLiteral, BitstringLiteral, Mutare.Mutators.BitstringSpec] ++
@@ -73,12 +83,12 @@ defmodule Mutare.MutatorsTest do
 
       assert Mutators.families() ==
                [:arithmetic, :operand_swap, :bitwise] ++
-                 [:relational, :strict_equality, :logical, :literal, :conditional] ++
+                 [:relational, :strict_equality, :logical, :integer, :boolean, :conditional] ++
                  [:if_condition, :list] ++
                  [:collection, :collection_arity, :string_call, :string_byte] ++
                  [:map_keyword, :keyword_delete, :map_set, :period_boundary, :temporal_order] ++
                  [:call_removal] ++
-                 [:default_drop, :mode_swap, :numeric, :math, :integer, :convention] ++
+                 [:default_drop, :mode_swap, :numeric, :math, :integer_call, :convention] ++
                  [:string, :float] ++
                  [:atom, :charlist, :word_list, :string_sigil, :map, :tuple, :bitstring] ++
                  [:bitstring_spec, :regex] ++
@@ -102,8 +112,8 @@ defmodule Mutare.MutatorsTest do
     end
 
     test "resolve/1 accepts a custom module implementing the behaviour, mixed with families" do
-      assert Mutators.resolve([:arithmetic, Mutare.Test.BooleanMutator]) |> Enum.map(& &1.module) ==
-               [Arithmetic, Mutare.Test.BooleanMutator]
+      assert Mutators.resolve([:arithmetic, Mutare.Test.AndOrMutator]) |> Enum.map(& &1.module) ==
+               [Arithmetic, Mutare.Test.AndOrMutator]
     end
 
     test "resolve/1 is idempotent: re-resolving its own output is a no-op" do
@@ -119,11 +129,11 @@ defmodule Mutare.MutatorsTest do
 
     test "resolve/1 carries {module, opts} configuration, stripping the :as name override" do
       # No init/1 on the module, so the normalized config is the opts themselves.
-      assert Mutators.resolve([{Mutare.Test.BooleanMutator, threshold: 5}]) ==
+      assert Mutators.resolve([{Mutare.Test.AndOrMutator, threshold: 5}]) ==
                [
                  %Spec{
-                   module: Mutare.Test.BooleanMutator,
-                   name: :boolean,
+                   module: Mutare.Test.AndOrMutator,
+                   name: :and_or,
                    opts: [threshold: 5],
                    config: [threshold: 5]
                  }
@@ -131,10 +141,10 @@ defmodule Mutare.MutatorsTest do
 
       # `:as` renames the family (so the same module can run twice) and never
       # reaches the mutator's opts.
-      assert Mutators.resolve([{Mutare.Test.BooleanMutator, as: :strict, threshold: 5}]) ==
+      assert Mutators.resolve([{Mutare.Test.AndOrMutator, as: :strict, threshold: 5}]) ==
                [
                  %Spec{
-                   module: Mutare.Test.BooleanMutator,
+                   module: Mutare.Test.AndOrMutator,
                    name: :strict,
                    opts: [threshold: 5],
                    config: [threshold: 5]
@@ -233,13 +243,13 @@ defmodule Mutare.MutatorsTest do
     end
 
     test "resolve/1 extends the defaults when :builtins is included with custom mutators" do
-      specs = Mutators.resolve([:builtins, Mutare.Test.BooleanMutator])
-      assert Enum.map(specs, & &1.module) == Mutators.all() ++ [Mutare.Test.BooleanMutator]
+      specs = Mutators.resolve([:builtins, Mutare.Test.AndOrMutator])
+      assert Enum.map(specs, & &1.module) == Mutators.all() ++ [Mutare.Test.AndOrMutator]
     end
 
     test "resolve/1 replaces (does not extend) when :builtins is absent" do
-      specs = Mutators.resolve([:arithmetic, Mutare.Test.BooleanMutator])
-      assert Enum.map(specs, & &1.module) == [Arithmetic, Mutare.Test.BooleanMutator]
+      specs = Mutators.resolve([:arithmetic, Mutare.Test.AndOrMutator])
+      assert Enum.map(specs, & &1.module) == [Arithmetic, Mutare.Test.AndOrMutator]
     end
 
     test "resolve/1 honours {:builtins, except: [...]}, dropping the named families" do

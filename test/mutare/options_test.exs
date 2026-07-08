@@ -672,10 +672,10 @@ defmodule Mutare.OptionsTest do
     end
 
     test "accepts {module, opts} configured entries, carrying opts onto the spec" do
-      assert Options.new(mutators: [{Mutare.Test.BooleanMutator, as: :strict, k: 1}]).mutators ==
+      assert Options.new(mutators: [{Mutare.Test.AndOrMutator, as: :strict, k: 1}]).mutators ==
                [
                  %Mutare.Mutator.Spec{
-                   module: Mutare.Test.BooleanMutator,
+                   module: Mutare.Test.AndOrMutator,
                    name: :strict,
                    opts: [k: 1],
                    config: [k: 1]

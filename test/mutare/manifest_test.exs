@@ -95,7 +95,9 @@ defmodule Mutare.ManifestTest do
       src = "defmodule D do\n  def f, do: 5\nend\n"
 
       {meta, sites, _next} =
-        Mutare.Transform.transform_string_with_sites(src, mutators: [Mutare.Mutators.Literal])
+        Mutare.Transform.transform_string_with_sites(src,
+          mutators: [Mutare.Mutators.IntegerLiteral]
+        )
 
       manifest = Manifest.from_source(meta)
 
@@ -248,7 +250,7 @@ defmodule Mutare.ManifestTest do
       # path), not a selector clause body.
       {meta, sites, _next} =
         Mutare.Transform.transform_string_with_sites(@case_src,
-          mutators: [Mutare.Mutators.Literal, Mutare.Mutators.Relational]
+          mutators: [Mutare.Mutators.IntegerLiteral, Mutare.Mutators.Relational]
         )
 
       manifest = Manifest.from_source(meta)
@@ -265,7 +267,7 @@ defmodule Mutare.ManifestTest do
     test "the whole tupled `case` is the coarse fallback for every clause-mutant id it hosts" do
       {meta, sites, _next} =
         Mutare.Transform.transform_string_with_sites(@case_src,
-          mutators: [Mutare.Mutators.Literal]
+          mutators: [Mutare.Mutators.IntegerLiteral]
         )
 
       manifest = Manifest.from_source(meta)

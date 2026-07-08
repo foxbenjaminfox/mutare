@@ -637,7 +637,7 @@ defmodule Mutare.TransformPropertyGenerators do
     end
   end
 
-  # A `<<seg0, seg1, …>>` bitstring of 1–3 segments — a byte int (Literal) or a **string
+  # A `<<seg0, seg1, …>>` bitstring of 1–3 segments — a byte int (IntegerLiteral) or a **string
   # literal** segment (StringLiteral). The string segment is the key case: untyped, it
   # defaults to a `binary` segment only as a literal, so a mutation's selector must be
   # type-pinned `::binary` or construction reverts to the integer default and raises (the
@@ -655,7 +655,7 @@ defmodule Mutare.TransformPropertyGenerators do
 
   # A `<<cp::utfN>>` constructor (utf16/utf32 optionally `-big`/`-little`/`-native`) — the one
   # generator driving `Mutare.Mutators.BitstringSpec`'s Unicode encoding (`utf8 ↔ utf16 ↔ utf32`)
-  # and byte-order (`big ↔ little`) swaps through the soaks, alongside Literal on the codepoint.
+  # and byte-order (`big ↔ little`) swaps through the soaks, alongside IntegerLiteral on the codepoint.
   # `cp ∈ 0..255` is a valid Unicode scalar under *every* encoding, so the constructor and all of
   # BitstringSpec's mutants (which share that validity domain) are total — baseline-equivalence
   # stays deterministic. A runtime constructor, so the whole `<<>>` is offered in a body and the

@@ -314,7 +314,7 @@ defmodule Mutare.Report.LiveTest do
         Live.poison_round_line(%{
           dropped: [
             %{id: 3, file: "lib/a.ex", line: 2, mutator: :arithmetic},
-            %{id: 4, file: "lib/a.ex", line: 3, mutator: :literal}
+            %{id: 4, file: "lib/a.ex", line: 3, mutator: :integer}
           ],
           escalated: [%{macro: :guarded, file: "lib/a.ex", line: 5, count: 6}]
         })

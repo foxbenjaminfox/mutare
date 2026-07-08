@@ -28,7 +28,7 @@ defmodule Mutare.SubcontractNodeTest do
     end
 
     def suppressed(x, min) do
-      dyn(x > min + 1)   # mutare:ignore[literal:succ] boundary reviewed
+      dyn(x > min + 1)   # mutare:ignore[integer:succ] boundary reviewed
     end
 
     def own_suppressed(x, min) do
@@ -39,7 +39,7 @@ defmodule Mutare.SubcontractNodeTest do
 
   @compile {:no_warn_undefined, Mutare.SubcontractNodeFixture}
 
-  @mutators [:arithmetic, :literal, Mutare.Test.SubcontractNodeMutator]
+  @mutators [:arithmetic, :integer, Mutare.Test.SubcontractNodeMutator]
 
   setup_all do
     {metamutant, sites, _next_id} =
@@ -86,8 +86,8 @@ defmodule Mutare.SubcontractNodeTest do
       # while the relayer's own comparison reversal stays under its family. All are ordinary
       # in-place whole-call rewrites of the same `dyn` call.
       arithmetic = site(sites, :arithmetic, "dyn(x > min - 1)", 5)
-      succ = site(sites, :literal, "dyn(x > min + 2)", 5)
-      merged = site(sites, :literal, "dyn(x > min + 0)", 5)
+      succ = site(sites, :integer, "dyn(x > min + 2)", 5)
+      merged = site(sites, :integer, "dyn(x > min + 0)", 5)
       reversal = site(sites, :node_sub, "dyn(x < min + 1)", 5)
 
       for s <- [arithmetic, succ, merged, reversal] do
@@ -106,12 +106,12 @@ defmodule Mutare.SubcontractNodeTest do
     test "exactly one producer per position — no double production", %{sites: sites} do
       line5 = Enum.filter(sites, &(&1.line == 5))
 
-      # The relayer's reversal + arithmetic's swap + literal's succ/pred-zero: nothing else —
+      # The relayer's reversal + arithmetic's swap + integer's succ/pred-zero: nothing else —
       # core kept the `:skip` argument raw, and the relays didn't duplicate its emission.
       assert Enum.frequencies_by(line5, & &1.mutator) == %{
                node_sub: 1,
                arithmetic: 1,
-               literal: 2
+               integer: 2
              }
     end
 
@@ -122,7 +122,7 @@ defmodule Mutare.SubcontractNodeTest do
       # sub-contracting mutator contributes nothing (no registered call, no `context.mutators`).
       line9 = Enum.filter(sites, &(&1.line == 9))
 
-      assert Enum.frequencies_by(line9, & &1.mutator) == %{arithmetic: 1, literal: 2}
+      assert Enum.frequencies_by(line9, & &1.mutator) == %{arithmetic: 1, integer: 2}
     end
 
     test "with no core families enabled, the island mutates to nothing" do
@@ -138,11 +138,11 @@ defmodule Mutare.SubcontractNodeTest do
   end
 
   describe "qualified ignores resolve against the producer's vocabulary" do
-    test "[literal:succ] suppresses only the in-island succ mutant", %{sites: sites} do
-      assert site(sites, :literal, "dyn(x > min + 2)", 13).ignored
-      assert site(sites, :literal, "dyn(x > min + 2)", 13).ignore_reason == "boundary reviewed"
+    test "[integer:succ] suppresses only the in-island succ mutant", %{sites: sites} do
+      assert site(sites, :integer, "dyn(x > min + 2)", 13).ignored
+      assert site(sites, :integer, "dyn(x > min + 2)", 13).ignore_reason == "boundary reviewed"
 
-      refute site(sites, :literal, "dyn(x > min + 0)", 13).ignored
+      refute site(sites, :integer, "dyn(x > min + 0)", 13).ignored
       refute site(sites, :arithmetic, "dyn(x > min - 1)", 13).ignored
       refute site(sites, :node_sub, "dyn(x < min + 1)", 13).ignored
     end
@@ -153,8 +153,8 @@ defmodule Mutare.SubcontractNodeTest do
       assert site(sites, :node_sub, "dyn(x < min + 1)", 17).ignored
 
       refute site(sites, :arithmetic, "dyn(x > min - 1)", 17).ignored
-      refute site(sites, :literal, "dyn(x > min + 2)", 17).ignored
-      refute site(sites, :literal, "dyn(x > min + 0)", 17).ignored
+      refute site(sites, :integer, "dyn(x > min + 2)", 17).ignored
+      refute site(sites, :integer, "dyn(x > min + 0)", 17).ignored
     end
   end
 
@@ -167,11 +167,11 @@ defmodule Mutare.SubcontractNodeTest do
       Selector.put(site(sites, :arithmetic, "dyn(x > min - 1)", 5).id)
       assert F.go(1, 1)
 
-      # The literal pred/zero island mutant (`x > min + 0`): `2 > 1` → true where the
+      # The integer pred/zero island mutant (`x > min + 0`): `2 > 1` → true where the
       # baseline (`2 > 2`) is false.
       Selector.put(Selector.baseline())
       refute F.go(2, 1)
-      Selector.put(site(sites, :literal, "dyn(x > min + 0)", 5).id)
+      Selector.put(site(sites, :integer, "dyn(x > min + 0)", 5).id)
       assert F.go(2, 1)
 
       # The relayer's own reversal still switches alongside them (`1 < 2` → true).
@@ -205,13 +205,13 @@ defmodule Mutare.SubcontractNodeTest do
       {_meta, host_sites, _next} =
         Mutare.Transform.transform_string_with_sites(host_source,
           file: "parity_host.ex",
-          mutators: [:arithmetic, :literal, Mutare.Test.SubcontractHostMutator]
+          mutators: [:arithmetic, :integer, Mutare.Test.SubcontractHostMutator]
         )
 
       {_meta, node_sites, _next} =
         Mutare.Transform.transform_string_with_sites(node_source,
           file: "parity_node.ex",
-          mutators: [:arithmetic, :literal, Mutare.Test.SubcontractNodeMutator]
+          mutators: [:arithmetic, :integer, Mutare.Test.SubcontractNodeMutator]
         )
 
       assert core_mutants(host_sites) == core_mutants(node_sites)
@@ -222,7 +222,7 @@ defmodule Mutare.SubcontractNodeTest do
     # wrapper down to the condition both share.
     defp core_mutants(sites) do
       sites
-      |> Enum.filter(&(&1.mutator in [:arithmetic, :literal]))
+      |> Enum.filter(&(&1.mutator in [:arithmetic, :integer]))
       |> Enum.map(&{&1.mutator, &1.variant, condition(&1.mutated_code)})
       |> Enum.sort()
     end

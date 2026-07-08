@@ -118,14 +118,14 @@ defmodule Mutare.TransformTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Test.BooleanMutator])
+      Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Test.AndOrMutator])
 
     # body `a and b` → in-place; guard `a and b` → lifted. The author wrote one
     # `mutate/1`; placement is decided by position.
-    assert %Site{mutator: :boolean, original_form: :and, mutated_form: :or, kind: :in_place} =
+    assert %Site{mutator: :and_or, original_form: :and, mutated_form: :or, kind: :in_place} =
              Enum.find(sites, &(&1.kind == :in_place))
 
-    assert %Site{mutator: :boolean, original_form: :and, mutated_form: :or, kind: :lifted} =
+    assert %Site{mutator: :and_or, original_form: :and, mutated_form: :or, kind: :lifted} =
              Enum.find(sites, &(&1.kind == :lifted))
 
     assert {:ok, _} = Code.string_to_quoted(meta)
@@ -305,7 +305,9 @@ defmodule Mutare.TransformTest do
     """
 
     {meta, sites, _next_id} =
-      Mutare.Transform.transform_string_with_sites(source, mutators: [Mutare.Mutators.Literal])
+      Mutare.Transform.transform_string_with_sites(source,
+        mutators: [Mutare.Mutators.IntegerLiteral]
+      )
 
     # `size(8)`'s `8` is the one spec sub-position the lifted walker descends.
     assert Enum.any?(sites, &(&1.original_code == "8"))

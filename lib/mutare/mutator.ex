@@ -14,11 +14,11 @@ defmodule Mutare.Mutator do
 
   Match the node shapes to mutate and rebuild them with the changed node. Reuse the original operand AST when possible so the mutation stays small:
 
-      defmodule MyApp.Mutators.Boolean do
+      defmodule MyApp.Mutators.AndOr do
         @behaviour Mutare.Mutator
 
         @impl true
-        def name, do: :boolean
+        def name, do: :and_or
 
         @impl true
         def mutate({:and, meta, [left, right]}), do: [{:or, meta, [left, right]}]
@@ -37,7 +37,7 @@ defmodule Mutare.Mutator do
 
   List it under `:mutators` in `.mutare.exs` alongside, or instead of, built-in family atoms:
 
-      [mutators: [:arithmetic, :relational, MyApp.Mutators.Boolean]]
+      [mutators: [:arithmetic, :relational, MyApp.Mutators.AndOr]]
 
   ## Configuring a mutator (`{module, opts}`)
 

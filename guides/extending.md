@@ -39,11 +39,11 @@ producer is `mutate/1` — match the nodes you care about, return replacements,
 `:skip` everything else:
 
 ```elixir
-defmodule MyApp.Mutators.Boolean do
+defmodule MyApp.Mutators.AndOr do
   @behaviour Mutare.Mutator
 
   @impl true
-  def name, do: :boolean
+  def name, do: :and_or
 
   @impl true
   def mutate({:and, meta, [left, right]}), do: [{:or, meta, [left, right]}]
@@ -56,7 +56,7 @@ Enable it in `.mutare.exs` — `:builtins` keeps the default families alongside
 yours:
 
 ```elixir
-[mutators: [:builtins, MyApp.Mutators.Boolean]]
+[mutators: [:builtins, MyApp.Mutators.AndOr]]
 ```
 
 Three rules keep you out of trouble; the *why* is in the `Mutare.Mutator` docs:

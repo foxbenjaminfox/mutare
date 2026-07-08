@@ -122,8 +122,8 @@ defmodule Mutare.IgnoreTest do
       assert Enum.all?(by_mutator[:arithmetic], & &1.ignored)
       assert Enum.all?(by_mutator[:arithmetic], &(&1.ignore_reason == "adding 1 is noise"))
 
-      # ...while relational/conditional/literal mutants on the same line still run.
-      others = Enum.flat_map(~w(relational conditional literal)a, &(by_mutator[&1] || []))
+      # ...while relational/conditional/integer mutants on the same line still run.
+      others = Enum.flat_map(~w(relational conditional integer)a, &(by_mutator[&1] || []))
       assert others != []
       refute Enum.any?(others, & &1.ignored)
     end
@@ -282,10 +282,10 @@ defmodule Mutare.IgnoreTest do
     end
 
     test "a `[...]` filter only admits the listed mutators" do
-      directives = Ignore.directives("x = 1 # mutare:ignore[arithmetic, literal]")
+      directives = Ignore.directives("x = 1 # mutare:ignore[arithmetic, integer]")
 
       assert Ignore.directive_for(directives, 1, :arithmetic)
-      assert Ignore.directive_for(directives, 1, :literal)
+      assert Ignore.directive_for(directives, 1, :integer)
       refute Ignore.directive_for(directives, 1, :relational)
     end
 
@@ -644,7 +644,7 @@ defmodule Mutare.IgnoreTest do
 
     test "a typo'd family is flagged (it matches no mutant on the line)" do
       directives = Ignore.directives("x = 1 # mutare:ignore[arithmatic]")
-      occupied = [{1, :arithmetic, ["-"]}, {1, :literal, ["0"]}]
+      occupied = [{1, :arithmetic, ["-"]}, {1, :integer, ["0"]}]
 
       assert [%{line: 1, mutators: set}] = Ignore.ineffective(directives, occupied)
       assert MapSet.member?(set, {"arithmatic", :any})
@@ -691,14 +691,14 @@ defmodule Mutare.IgnoreTest do
 
     test "a filter matching a present family is not flagged" do
       directives = Ignore.directives("x = 1 # mutare:ignore[arithmetic]")
-      assert Ignore.ineffective(directives, [{1, :arithmetic, ["-"]}, {1, :literal, ["0"]}]) == []
+      assert Ignore.ineffective(directives, [{1, :arithmetic, ["-"]}, {1, :integer, ["0"]}]) == []
     end
 
     test "a real but absent family (present on the line, but a different one) is flagged" do
       directives = Ignore.directives("x = 1 # mutare:ignore[arithmetic]")
 
       assert [%{line: 1}] =
-               Ignore.ineffective(directives, [{1, :relational, [">"]}, {1, :literal, ["0"]}])
+               Ignore.ineffective(directives, [{1, :relational, [">"]}, {1, :integer, ["0"]}])
     end
 
     test "results are sorted by line" do
@@ -796,13 +796,13 @@ defmodule Mutare.IgnoreTest do
     test "text after ignore-end is prose — the filter and reason belong to the start" do
       directives =
         Ignore.directives("""
-        # mutare:ignore-start[literal] the real reason
+        # mutare:ignore-start[integer] the real reason
         x = 1
         # mutare:ignore-end of the lookup table
         """)
 
       assert %Directives{scoped: [d], scope_errors: []} = directives
-      assert d.mutators == MapSet.new([{"literal", :any}])
+      assert d.mutators == MapSet.new([{"integer", :any}])
       assert d.reason == "the real reason"
     end
 
@@ -843,12 +843,12 @@ defmodule Mutare.IgnoreTest do
     test "filter specificity still beats scope: a qualified file directive over a bare line one" do
       directives =
         Ignore.directives("""
-        # mutare:ignore-file[literal:zero] file reason
+        # mutare:ignore-file[integer:zero] file reason
         x = 0 # mutare:ignore line reason
         """)
 
-      assert %{reason: "file reason"} = Ignore.directive_for(directives, 2, :literal, ["zero"])
-      assert %{reason: "line reason"} = Ignore.directive_for(directives, 2, :literal, ["succ"])
+      assert %{reason: "file reason"} = Ignore.directive_for(directives, 2, :integer, ["zero"])
+      assert %{reason: "line reason"} = Ignore.directive_for(directives, 2, :integer, ["succ"])
     end
 
     test "scoped directives are held to the ineffectiveness bar, with no misplacement hint" do
@@ -1016,7 +1016,7 @@ defmodule Mutare.IgnoreTest do
       assert Enum.all?(by_mutator[:arithmetic], & &1.ignored)
       assert Enum.all?(by_mutator[:arithmetic], &(&1.ignore_reason == "cursor math"))
 
-      others = Enum.flat_map(~w(relational conditional literal)a, &(by_mutator[&1] || []))
+      others = Enum.flat_map(~w(relational conditional integer)a, &(by_mutator[&1] || []))
       assert others != []
       refute Enum.any?(others, & &1.ignored)
     end
@@ -1129,7 +1129,7 @@ defmodule Mutare.IgnoreTest do
     test "the transform raises on a bad qualifier (end-to-end through the scan)" do
       assert_raise SpecError, fn ->
         Mutare.Transform.transform_string_with_sites(
-          "defmodule M do\n  def f, do: 1 # mutare:ignore[literal:huge]\nend\n"
+          "defmodule M do\n  def f, do: 1 # mutare:ignore[integer:huge]\nend\n"
         )
       end
     end
@@ -1222,7 +1222,8 @@ defmodule Mutare.IgnoreTest do
     test "opted-in families expose labels; others and clause_drop are :none" do
       assert @vocab["relational"] == MapSet.new(~w(> >= < <= == != === !==))
       assert @vocab["return_value"] == MapSet.new(~w(empty sentinel))
-      assert @vocab["literal"] == MapSet.new(~w(zero succ pred negate))
+      assert @vocab["integer"] == MapSet.new(~w(zero succ pred))
+      assert @vocab["boolean"] == MapSet.new(~w(negate))
       assert @vocab["collection"] == :none
       assert @vocab["clause_drop"] == :none
     end
@@ -1438,27 +1439,27 @@ defmodule Mutare.IgnoreTest do
           "defmodule L do\n  def f(x), do: x - 1\nend\n"
         )
 
-      zero_mutant = Enum.find(sites, &(&1.mutator == :literal and &1.mutated_code == "0"))
+      zero_mutant = Enum.find(sites, &(&1.mutator == :integer and &1.mutated_code == "0"))
       assert zero_mutant, "expected a 1 -> 0 literal mutant"
       assert Enum.sort(zero_mutant.variant) == ["pred", "zero"]
 
       # The sibling `1 -> 2` succ mutant is a single, distinct kind.
-      succ_mutant = Enum.find(sites, &(&1.mutator == :literal and &1.mutated_code == "2"))
+      succ_mutant = Enum.find(sites, &(&1.mutator == :integer and &1.mutated_code == "2"))
       assert succ_mutant.variant == ["succ"]
     end
 
-    test "either [literal:pred] or [literal:zero] suppresses the collapsed 1 -> 0 mutant" do
+    test "either [integer:pred] or [integer:zero] suppresses the collapsed 1 -> 0 mutant" do
       # The payoff of the dual label: the merged mutant is selectable by *either* qualifier, while
       # the unrelated `succ` mutant on the same literal keeps running.
       for label <- ~w(pred zero) do
-        src = "defmodule L do\n  def f(x), do: x - 1 # mutare:ignore[literal:#{label}]\nend\n"
+        src = "defmodule L do\n  def f(x), do: x - 1 # mutare:ignore[integer:#{label}]\nend\n"
         {_meta, sites, _} = Mutare.Transform.transform_string_with_sites(src)
 
-        zero_mutant = Enum.find(sites, &(&1.mutator == :literal and &1.mutated_code == "0"))
-        assert zero_mutant.ignored, "[literal:#{label}] should suppress the 1 -> 0 mutant"
+        zero_mutant = Enum.find(sites, &(&1.mutator == :integer and &1.mutated_code == "0"))
+        assert zero_mutant.ignored, "[integer:#{label}] should suppress the 1 -> 0 mutant"
 
-        succ_mutant = Enum.find(sites, &(&1.mutator == :literal and &1.mutated_code == "2"))
-        refute succ_mutant.ignored, "[literal:#{label}] must not touch the succ mutant"
+        succ_mutant = Enum.find(sites, &(&1.mutator == :integer and &1.mutated_code == "2"))
+        refute succ_mutant.ignored, "[integer:#{label}] must not touch the succ mutant"
       end
     end
   end
@@ -1484,7 +1485,7 @@ defmodule Mutare.IgnoreTest do
         })
 
       # Pin to a single operator-swap family so `skip/1` has exactly one mutant
-      # (the test asserts a single ignored result); the default literal mutator
+      # (the test asserts a single ignored result); the default integer-literal mutator
       # would add more, off-topic for what this checks.
       assert {:ok, run} =
                Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Arithmetic])

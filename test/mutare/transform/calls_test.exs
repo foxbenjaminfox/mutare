@@ -159,7 +159,7 @@ defmodule Mutare.Transform.CallsTest do
       assert resolved_macro("String.upcase(s)") == nil
       assert resolved_macro("filter(q, c)") == nil
       assert Calls.resolved_macro_call({:x, [], nil}) == nil
-      assert Calls.resolved_macro_call(:literal) == nil
+      assert Calls.resolved_macro_call(:integer) == nil
     end
 
     test "a name-only registry match keeps the macro identity with a nil module" do
@@ -269,7 +269,7 @@ defmodule Mutare.Transform.CallsTest do
       node = "plain(q, c)" |> Sourceror.parse_string!() |> Resolve.annotate(@skip_registry)
 
       assert Calls.macro_treatment(node) == nil
-      assert Calls.macro_treatment(:literal) == nil
+      assert Calls.macro_treatment(:integer) == nil
       assert Calls.macro_treatment({:x, [], nil}) == nil
     end
 

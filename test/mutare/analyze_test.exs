@@ -41,7 +41,7 @@ defmodule Mutare.AnalyzeTest do
   # Node-level families only: structural families (return_value, if_condition, the pattern
   # families) are contractually ignored by collect, and the call-matching families need the
   # resolver's stamps, which a bare `Sourceror.parse_string!` subtree doesn't carry.
-  @families [:arithmetic, :relational, :logical, :literal, :string, :conditional]
+  @families [:arithmetic, :relational, :logical, :integer, :string, :conditional]
 
   defp specs(names \\ @families), do: Mutare.Mutators.resolve(names)
 
@@ -153,7 +153,7 @@ defmodule Mutare.AnalyzeTest do
       {form, meta, args} = Sourceror.parse_string!("magic({1, x}, 2 + 2)")
       stamped = {form, Meta.stamp_macro_routing(meta, [:pattern, :expression]), args}
 
-      muts = Analyze.expression_mutations(stamped, specs([:literal, :arithmetic]))
+      muts = Analyze.expression_mutations(stamped, specs([:integer, :arithmetic]))
       rendered = Enum.map(muts, fn {_s, m, _n, _v} -> Sourceror.to_string(m) end)
 
       # The pattern literal `1` stays; only the expression argument mutates.
@@ -179,7 +179,7 @@ defmodule Mutare.AnalyzeTest do
     end
 
     test "clause-pattern positions are not offered (structural delivery), bodies still mutate" do
-      muts = collect("fn 1 -> 2 end", specs([:literal]))
+      muts = collect("fn 1 -> 2 end", specs([:integer]))
       rendered = Enum.map(muts, fn {_s, m, _n, _v} -> Sourceror.to_string(m) end)
 
       assert rendered != []

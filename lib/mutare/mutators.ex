@@ -26,7 +26,8 @@ defmodule Mutare.Mutators do
     relational: Mutare.Mutators.Relational,
     strict_equality: Mutare.Mutators.StrictEquality,
     logical: Mutare.Mutators.Logical,
-    literal: Mutare.Mutators.Literal,
+    integer: Mutare.Mutators.IntegerLiteral,
+    boolean: Mutare.Mutators.BooleanLiteral,
     conditional: Mutare.Mutators.Conditional,
     if_condition: Mutare.Mutators.IfCondition,
     list: Mutare.Mutators.List,
@@ -44,7 +45,7 @@ defmodule Mutare.Mutators do
     mode_swap: Mutare.Mutators.ModeSwap,
     numeric: Mutare.Mutators.Numeric,
     math: Mutare.Mutators.Math,
-    integer: Mutare.Mutators.Integer,
+    integer_call: Mutare.Mutators.IntegerCall,
     convention: Mutare.Mutators.ConventionAtom,
     string: Mutare.Mutators.StringLiteral,
     float: Mutare.Mutators.FloatLiteral,
@@ -237,9 +238,9 @@ defmodule Mutare.Mutators do
   Raises `ArgumentError` for unknown families, unsupported group options, or modules
   that do not implement the required mutator capability.
 
-      iex> specs = Mutare.Mutators.resolve([:arithmetic, {:literal, as: :literals}])
+      iex> specs = Mutare.Mutators.resolve([:arithmetic, {:integer, as: :ints}])
       iex> Enum.map(specs, &{&1.name, &1.module, &1.opts})
-      [{:arithmetic, Mutare.Mutators.Arithmetic, []}, {:literals, Mutare.Mutators.Literal, []}]
+      [{:arithmetic, Mutare.Mutators.Arithmetic, []}, {:ints, Mutare.Mutators.IntegerLiteral, []}]
 
       iex> Mutare.Mutators.resolve([:builtins]) ==
       ...>   Mutare.Mutators.resolve(Mutare.Mutators.all())

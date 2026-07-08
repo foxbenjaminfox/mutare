@@ -7,10 +7,10 @@ defmodule Mutare.TransformRedundancyTest do
   # Logical strips a `not`, Conditional forces a boolean to true/false.
   @membership [Mutare.Mutators.Relational, Mutare.Mutators.Conditional, Mutare.Mutators.Logical]
 
-  # A range guard adds Literal for the two integer endpoints; Relational and Conditional
+  # A range guard adds IntegerLiteral for the two integer endpoints; Relational and Conditional
   # exercise the enclosing membership expression.
   @range_guard [
-    Mutare.Mutators.Literal,
+    Mutare.Mutators.IntegerLiteral,
     Mutare.Mutators.Relational,
     Mutare.Mutators.Conditional
   ]
@@ -127,16 +127,16 @@ defmodule Mutare.TransformRedundancyTest do
         Mutare.Transform.transform_string_with_sites(module_source, mutators: @range_guard)
 
       range_guard_mutants =
-        for s <- sites, s.mutator in [:literal, :relational, :conditional] do
+        for s <- sites, s.mutator in [:integer, :relational, :conditional] do
           {s.mutator, s.kind, s.original_code, s.mutated_code}
         end
 
       assert range_guard_mutants == [
-               {:literal, :lifted, "1", "2"},
-               {:literal, :lifted, "1", "0"},
-               {:literal, :lifted, "10", "11"},
-               {:literal, :lifted, "10", "9"},
-               {:literal, :lifted, "10", "0"},
+               {:integer, :lifted, "1", "2"},
+               {:integer, :lifted, "1", "0"},
+               {:integer, :lifted, "10", "11"},
+               {:integer, :lifted, "10", "9"},
+               {:integer, :lifted, "10", "0"},
                {:relational, :lifted, "x in 1..10", "x not in 1..10"},
                {:conditional, :lifted, "x in 1..10", "true"},
                {:conditional, :lifted, "x in 1..10", "false"}

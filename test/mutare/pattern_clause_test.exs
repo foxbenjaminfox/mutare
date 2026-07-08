@@ -165,7 +165,7 @@ defmodule Mutare.PatternClauseTest do
     end
 
     test "a receive clause literal pattern re-targets the clause", %{sites: sites} do
-      Selector.put(id(sites, :literal, "2", 31))
+      Selector.put(id(sites, :integer, "2", 31))
       send(self(), 2)
       assert F.recv_num() == :one
     end
@@ -201,7 +201,7 @@ defmodule Mutare.PatternClauseTest do
     end
 
     test "an fn clause literal pattern re-targets the clause", %{sites: sites} do
-      Selector.put(id(sites, :literal, "2", 37))
+      Selector.put(id(sites, :integer, "2", 37))
       assert F.pick().(2) == :one
       assert F.pick().(1) == :other
     end

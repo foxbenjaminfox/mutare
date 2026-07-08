@@ -152,7 +152,7 @@ defmodule Mutare.MacroPoisonTest do
       })
 
     assert {:ok, run} =
-             Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Literal])
+             Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.IntegerLiteral])
 
     assert %{macro_skipped: [%{module: "Size", macro: :megabytes}]} = run.recovery
     assert Enum.any?(run.results, &(&1.status == :poisoned))
