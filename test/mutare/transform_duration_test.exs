@@ -599,11 +599,11 @@ defmodule Mutare.TransformDurationTest do
           ~S|def f(c), do: MyApp.put(c, "x#{5}")|,
           [
             {Mutare.Mutators.StringLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]},
-            Mutare.Mutators.Literal
+            Mutare.Mutators.IntegerLiteral
           ]
         )
 
-      assert {:literal, "5", "0"} in inner
+      assert {:integer, "5", "0"} in inner
     end
 
     test "the option is per-family: Literal's config does not silence AtomLiteral there" do
@@ -698,6 +698,44 @@ defmodule Mutare.TransformDurationTest do
         )
 
       assert strings == []
+    end
+
+    test "every value-literal family honours :skip_arguments (via the shared mixin)" do
+      # `use Mutare.Mutator.SkipArguments` gives each literal family the option, so a whole-literal
+      # argument of any type can be frozen — including the bitstring the reviewer asked about.
+      for {family, arg} <- [
+            {Mutare.Mutators.BitstringLiteral, "<<1, 2, 3>>"},
+            {Mutare.Mutators.TupleLiteral, "{1, 2}"},
+            {Mutare.Mutators.MapLiteral, "%{a: 1}"},
+            {Mutare.Mutators.List, "[1, 2, 3]"},
+            {Mutare.Mutators.CharlistLiteral, ~S|~c"abc"|},
+            {Mutare.Mutators.WordListLiteral, "~w(a b)"},
+            {Mutare.Mutators.StringSigilLiteral, "~s(hi)"},
+            {Mutare.Mutators.RegexLiteral, "~r/ab/"},
+            {Mutare.Mutators.DateTimeLiteral, "~D[2020-01-01]"},
+            {Mutare.Mutators.AliasLiteral, "Foo.Bar"}
+          ] do
+        body = "def f(c), do: MyApp.store(c, #{arg})"
+
+        {_m, skipped} = value_triples(body, [{family, skip_arguments: [{MyApp, :store, 2, [1]}]}])
+
+        assert skipped == [],
+               "expected #{inspect(family)} to hold back `#{arg}`, got #{inspect(skipped)}"
+
+        {_m, plain} = value_triples(body, [family])
+        refute plain == [], "expected #{inspect(family)} to mutate `#{arg}` unconfigured"
+      end
+    end
+
+    test "the interpolated bitstring the reviewer asked about is held back by BitstringLiteral" do
+      # `<<"foo#{bar}">>` — the whole-bitstring collapse is BitstringLiteral's, now configurable.
+      {_m, triples} =
+        value_triples(
+          ~S|def f(c, bar), do: MyApp.store(c, <<"foo#{bar}">>)|,
+          [{Mutare.Mutators.BitstringLiteral, skip_arguments: [{MyApp, :store, 2, [1]}]}]
+        )
+
+      assert triples == []
     end
   end
 

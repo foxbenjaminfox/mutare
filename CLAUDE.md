@@ -197,7 +197,7 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Selector-hosting (mutate inside a DSL fragment) | subscribe via `Mutator.MacroHost.hosted_macros/0` + implement `host/2` | `host_mutator.ex` |
 | Sub-contract an Elixir island (pin interior) to core | `Mutare.Analyze.expression_mutations/3` over `context.mutators` (in `host/2`, or in `mutate/2` at a registered macro's whole-call offer), relayed with `producer:` | `host_mutator.ex` (`SubcontractHostMutator`) / `macro_mutator.ex` (`SubcontractNodeMutator`) |
 | Deployment requirement (routed library must be loadable) | `required_modules/0` (checked once at startup, on mutators and extensions) | `environment_fixtures.ex` |
-| Leave a call-argument position alone (mark it, then decline) | `argument_marks/1` (declare `{mod, fun, arity, positions, label}`; config-aware — see `IntegerLiteral`'s `:skip_arguments` + `Mutare.Mutator.argument_marks_from/2`) + read `Mutare.Mutator.marked?/2` in `mutate/2` | `IntegerLiteral` timeout table (`transform_duration_test.exs` `MarkingMutator`) |
+| Leave a call-argument position alone (mark it, then decline) | `argument_marks/1` (declare `{mod, fun, arity, positions, label}`, config-aware) + read `Mutare.Mutator.marked?/2` in `mutate/2`; for the user-facing `:skip_arguments` option, `use Mutare.Mutator.SkipArguments` | `IntegerLiteral` timeout table; every value-literal family's `:skip_arguments` (`transform_duration_test.exs`) |
 | Per-kind `# mutare:ignore` qualifier | `variants/0` (opt-in) + tag via `Mutation.tagged/2` *or* `variant/2` | (value & operator families) |
 
 An **extension** is a non-mutating module implementing `Mutare.MacroRouting`,

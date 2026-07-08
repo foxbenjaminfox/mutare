@@ -13,6 +13,7 @@ defmodule Mutare.Mutators.StringSigilLiteral do
   The whole sigil is mutated only in runtime positions, not in patterns. The ignore variants are `empty` and `sentinel`.
   """
   @behaviour Mutare.Mutator
+  use Mutare.Mutator.SkipArguments
 
   alias Mutare.AST
   alias Mutare.Mutator.Mutation

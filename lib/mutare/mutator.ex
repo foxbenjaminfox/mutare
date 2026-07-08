@@ -72,6 +72,17 @@ defmodule Mutare.Mutator do
 
       [mutators: [..., {Mutare.Mutators.AtomLiteral, call_option_keys: false}]]
 
+  ## Leaving argument positions alone (`:skip_arguments`)
+
+  Every built-in *value-literal* family (`Literal`, `FloatLiteral`, `StringLiteral`, `AtomLiteral`, `BitstringLiteral`, `TupleLiteral`, `MapLiteral`, `List`, `CharlistLiteral`, `WordListLiteral`, `StringSigilLiteral`, `RegexLiteral`, `DateTimeLiteral`, `AliasLiteral`) accepts a `:skip_arguments` option: project-specific call-argument positions whose literal it should leave alone (the same mechanism `Literal` uses for the built-in timeout table).
+
+      [mutators: [{Mutare.Mutators.IntegerLiteral, skip_arguments: [
+        {MyApp.Cache, :put, 3, [2]},                       # a positional argument
+        {MyApp.Http, :get, 2, [{:keyword, :recv_timeout}]} # a trailing-option value
+      ]}]]
+
+  Each entry is `{module, function, arity, positions}`, where `positions` lists effective argument indices and `{:keyword, key}` option keys. The option is per-family and per-instance (two `:as` copies don't collide), and a bad index fails loudly at startup. Under the hood it is `c:argument_marks/1` + `marked?/2`; a *custom* mutator gets the same option in one line with `use Mutare.Mutator.SkipArguments`.
+
   ## Targeting a macro or DSL
 
   A mutator whose mutation depends on a macro's arguments being routed specially implements `Mutare.MacroRouting` and registers the macros from `c:Mutare.MacroRouting.macro_routes/0`. Routes may be static or use `:routing` with `c:Mutare.MacroRouting.route_arguments/2` for shape-aware classification. Listing the mutator in `:mutators` auto-registers them.

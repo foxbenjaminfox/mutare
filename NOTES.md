@@ -4835,10 +4835,16 @@ Mechanism:
   `:timeout` table (via `IntegerLiteral.timeout_marks/0`, which `AtomLiteral` reuses) so the marks survive
   either family being disabled.
 
-fold options-driven positions into its declarations. The value families (`IntegerLiteral`,
-`AtomLiteral`, `FloatLiteral`, `StringLiteral`) expose a `:skip_arguments` option
-(`[{module, function, arity, positions}]`) via `Mutator.skip_arguments_marks/1`, and read it back
-with `Mutator.self_marked?/1`. Three properties worth calling out, each a fix from review:
+**Configurable marks.** `argument_marks/1` receives the mutator instance's config, so a mutator can
+fold options-driven positions into its declarations. **Every value-literal family** exposes a
+`:skip_arguments` option (`[{module, function, arity, positions}]`) via
+`Mutator.skip_arguments_marks/1`, read back with `Mutator.self_marked?/1`. Because the wiring is
+identical boilerplate, `use Mutare.Mutator.SkipArguments` injects the `argument_marks/1` +
+`mutate/2`-gate pair — one line for `BitstringLiteral`/`TupleLiteral`/`List`/… (and any custom
+value family). `IntegerLiteral`/`AtomLiteral` don't use it: their `mutate/2` also gates on the
+built-in `:timeout`/`:infinity` marks, so they wire the two calls by hand. `ConventionAtom` is
+deliberately *excluded* — its `:ok`↔`:error` swaps are high-signal, the opposite of the opaque
+literals the option is for. Three properties worth calling out, each a fix from review:
 
 - **Per-instance.** The marks are labeled with an internal self-mark that `ArgumentMarks.build/1`
   *relabels to the spec's (`:as`-resolved) name*, and `self_marked?/1` reads the instance name off
@@ -4854,8 +4860,8 @@ with `Mutator.self_marked?/1`. Three properties worth calling out, each a fix fr
 - **Fails loud on a bad index.** A one-based typo like `[3]` for an arity-3 call (valid effective
   indices `0..2`) raises at startup rather than silently marking nothing.
 
-Adding a stdlib timeout is still a pure data edit to the built-in table; adding the option to another
-family is a two-line `argument_marks/1` + `mutate/2` pair.
+Adding a stdlib timeout is still a pure data edit to the built-in table; giving a new value family
+the option is a single `use Mutare.Mutator.SkipArguments`.
 
 Where the timeout use sits relative to the other positive exclusions: it is the **first
 signal-quality** one — every prior exclusion (struct fields, `for` options, `:uniq`, quoted data) is a

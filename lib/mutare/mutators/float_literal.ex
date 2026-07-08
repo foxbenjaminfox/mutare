@@ -9,20 +9,12 @@ defmodule Mutare.Mutators.FloatLiteral do
   Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one kind (`c:Mutare.Mutator.variants/0`): `zero`, `succ`, `pred`.
   """
   @behaviour Mutare.Mutator
+  use Mutare.Mutator.SkipArguments
 
   alias Mutare.Mutators.Helpers
 
   @impl Mutare.Mutator
   def name, do: :float
-
-  @impl Mutare.Mutator
-  def argument_marks(config), do: Mutare.Mutator.skip_arguments_marks(config)
-
-  # Decline at a user-configured `:skip_arguments` position; otherwise mutate normally.
-  @impl Mutare.Mutator
-  def mutate(node, context) do
-    if Mutare.Mutator.self_marked?(context), do: :skip, else: mutate(node)
-  end
 
   @impl Mutare.Mutator
   def mutate({:__block__, _meta, [f]}) when is_float(f),

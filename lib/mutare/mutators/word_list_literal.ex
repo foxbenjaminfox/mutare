@@ -14,6 +14,7 @@ defmodule Mutare.Mutators.WordListLiteral do
   The ignore variants are `empty` and `sentinel`.
   """
   @behaviour Mutare.Mutator
+  use Mutare.Mutator.SkipArguments
 
   alias Mutare.AST
   alias Mutare.Mutator.Mutation

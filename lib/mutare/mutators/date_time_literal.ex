@@ -14,6 +14,7 @@ defmodule Mutare.Mutators.DateTimeLiteral do
   Only non-interpolated sigils are reached (calendar sigils require literal content).
   """
   @behaviour Mutare.Mutator
+  use Mutare.Mutator.SkipArguments
 
   @sigils [:sigil_D, :sigil_T, :sigil_N, :sigil_U]
 

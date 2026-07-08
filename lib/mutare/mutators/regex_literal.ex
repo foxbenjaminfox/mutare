@@ -44,6 +44,7 @@ defmodule Mutare.Mutators.RegexLiteral do
   All mutations use one token stream that tracks escapes, character classes, group structure, and positional flags. Extended-mode comments, `(?#...)` comments, `\Q...\E` quoted spans, and control verbs are treated as non-pattern content. Tokens inside them are not mutated and do not affect grouping. Interpolated sigils are not mutated.
   """
   @behaviour Mutare.Mutator
+  use Mutare.Mutator.SkipArguments
 
   alias Mutare.AST
   alias Mutare.Mutator.Mutation

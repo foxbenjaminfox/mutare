@@ -9,6 +9,7 @@ defmodule Mutare.Mutators.StringLiteral do
   Filterable variants — qualify a `# mutare:ignore` filter with `:label` to suppress just one half (`c:Mutare.Mutator.variants/0`): `empty` (the `""`) or `sentinel` (the `"mutare"`).
   """
   @behaviour Mutare.Mutator
+  use Mutare.Mutator.SkipArguments
 
   alias Mutare.AST
   alias Mutare.Mutator.Mutation
@@ -18,15 +19,6 @@ defmodule Mutare.Mutators.StringLiteral do
 
   @impl Mutare.Mutator
   def name, do: :string
-
-  @impl Mutare.Mutator
-  def argument_marks(config), do: Mutare.Mutator.skip_arguments_marks(config)
-
-  # Decline at a user-configured `:skip_arguments` position; otherwise mutate normally.
-  @impl Mutare.Mutator
-  def mutate(node, context) do
-    if Mutare.Mutator.self_marked?(context), do: :skip, else: mutate(node)
-  end
 
   @impl Mutare.Mutator
   def mutate({:__block__, _meta, [s]}) when is_binary(s) do

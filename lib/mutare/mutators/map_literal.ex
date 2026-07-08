@@ -10,6 +10,7 @@ defmodule Mutare.Mutators.MapLiteral do
     * The RHS of a guard `in` (`when x in %{…}`) — `x in %{}` ≡ `false`, which `Mutare.Mutators.Conditional` already produces. Body `in` expressions keep the collapse because left-side evaluation is observable.
   """
   @behaviour Mutare.Mutator
+  use Mutare.Mutator.SkipArguments
 
   @impl Mutare.Mutator
   def name, do: :map
