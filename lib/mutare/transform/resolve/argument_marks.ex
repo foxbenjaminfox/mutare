@@ -253,11 +253,14 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   # --- piped receiver --------------------------------------------------------
 
   # The written function name of a pipe RHS call head (remote `Mod.fun`/`:mod.fun` or bare `fun`), or
-  # `nil` for a non-call RHS — never in `receiver_funs`, so the pre-filter rejects it.
+  # `nil` for a non-call RHS — never in `receiver_funs`, so the pre-filter rejects it. A bare RHS
+  # written *without parentheses* (`123 |> to_string`) is `{fun, meta, nil}` — a shape that is a
+  # variable *outside* pipe position but always a 0-arg call *as* a pipe RHS, so it names `fun` too
+  # (a remote head is never parenless-nil: `Mod.fun` always carries `[]`).
   defp rhs_fun({{:., _dot_meta, [_recv, fun]}, _meta, args}) when is_atom(fun) and is_list(args),
     do: fun
 
-  defp rhs_fun({fun, _meta, args}) when is_atom(fun) and is_list(args), do: fun
+  defp rhs_fun({fun, _meta, args}) when is_atom(fun) and (is_list(args) or is_nil(args)), do: fun
   defp rhs_fun(_rhs), do: nil
 
   defp pipe_offset(:piped), do: 1

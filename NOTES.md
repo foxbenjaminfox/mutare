@@ -4865,17 +4865,26 @@ literals the option is for. Three properties worth calling out, each a fix from 
   `:skip_arguments` don't collide, because their names differ (a shared module-name label would have
   made both skip every configured position). **Reserved:** relabeling to the *bare* name would put
   the self-mark in the same flat atom space as public labels, so a shared/custom mark whose label
-  happened to equal a family's report name (a custom `:literal`, or an `:as` rename to `:timeout`
-  while `Literal`/`AtomLiteral` emit `:timeout` marks) would be misread as *that family's own* skip
+  happened to equal a family's report name (a custom `:integer`, or an `:as` rename to `:timeout`
+  while `IntegerLiteral`/`AtomLiteral` emit `:timeout` marks) would be misread as *that family's own* skip
   request and suppress it at a position it never configured — the namespaced label keeps the two
   spaces disjoint. (Marking with a *shared* label — e.g. `:timeout` — is still available via
   `argument_marks_from/2` for the cross-family built-ins; those deliberately share a label, which is
   exactly why the *self* mark must not.)
-- **Effective-index-0 works piped.** A configured `{Kernel, :to_string, 1, [0]}` suppresses
-  `to_string(123)` *and* `123 |> to_string()`. The piped-receiver path resolves the RHS through
-  `Resolve`'s own import/`Kernel` resolution (`bare_module_key`), not just `resolved_call/1` (which
-  doesn't recover a bare `Kernel` call) — so the effective-index-0 contract holds for piped receivers
-  the same as written calls.
+- **Effective-index-0 works piped — including the parenless RHS.** A configured
+  `{Kernel, :to_string, 1, [0]}` suppresses `to_string(123)` *and* `123 |> to_string()`. The
+  piped-receiver path resolves the RHS through `Resolve`'s own import/`Kernel` resolution
+  (`bare_module_key`), not just `resolved_call/1` (which doesn't recover a bare `Kernel` call) — so the
+  effective-index-0 contract holds for piped receivers the same as written calls. The *parenless*
+  spelling `123 |> to_string` (or `1000 |> sleep`) is covered too, and it's a genuinely different AST
+  shape: Sourceror gives a parenless bare-name RHS `nil` args — `{fun, meta, nil}`, the same shape a
+  bare *variable* has — where a parenthesized `to_string()` gets `[]`. The generic resolve `walk/2`
+  deliberately leaves `{fun, meta, nil}` untouched (it can't tell a call from a variable outside pipe
+  position), so both the `receiver_funs` pre-filter (`ArgumentMarks.rhs_fun/1`) and `Resolve.pipe_target/2`
+  handle the `nil` shape specifically *as a pipe RHS* — where it is unambiguously a 0-visible-arg call —
+  and `pipe_target/2` stamps the RHS import itself before keying, so an imported bare name resolves there
+  too. (A *remote* parenless RHS `1000 |> Process.sleep` already carries `[]`, so only the bare-local
+  form needed the `nil` case.)
 - **Fails loud on a bad index.** A one-based typo like `[3]` for an arity-3 call (valid effective
   indices `0..2`) raises at startup rather than silently marking nothing.
 

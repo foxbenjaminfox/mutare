@@ -380,6 +380,16 @@ defmodule Mutare.Transform.Resolve do
       {bare_module_key(fun, Mutator.effective_arity(args, :piped), meta, env), fun,
        length(args) + 1}
 
+  # A bare RHS written parenless (`123 |> to_string`, `1000 |> sleep`) is `{fun, meta, nil}`, which
+  # the generic `walk/2` leaves unstamped (a bare `{fun, meta, nil}` is a variable outside pipe
+  # position, so it can't be blanket-resolved as a call). As a pipe RHS it *is* a 0-visible-arg call
+  # whose effective argument 0 is the LHS, so resolve its import here — mirroring `stamp_bare_call/4`
+  # — before keying, so an imported/`Kernel` receiver mark applies to the parenless form too.
+  defp pipe_target({fun, meta, nil}, env) when is_atom(fun) do
+    meta = Imports.stamp(fun, meta, [], env.imports, env.kernel, :piped)
+    {bare_module_key(fun, 1, meta, env), fun, 1}
+  end
+
   defp pipe_target(_rhs, _env), do: nil
 
   defp capture_arity(n) when is_integer(n) and n >= 0, do: {:ok, n}

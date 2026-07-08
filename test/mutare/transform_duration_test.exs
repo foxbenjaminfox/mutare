@@ -742,17 +742,42 @@ defmodule Mutare.TransformDurationTest do
     test "a configured effective-index-0 mark covers both the plain and piped receiver forms" do
       # `Kernel.to_string/1` arg 0 is the value in `to_string(123)` and the piped receiver in
       # `123 |> to_string()`. Both are held back — the piped receiver resolves through the same
-      # Kernel/import machinery as the written call.
+      # Kernel/import machinery as the written call. The *parenless* pipe `123 |> to_string` counts
+      # too: Sourceror gives its RHS `nil` (not `[]`) args, a shape that is a variable outside pipe
+      # position but always a 0-arg call as a pipe RHS.
       config = [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{Kernel, :to_string, 1, [0]}]}]
 
       assert value_triples("def f, do: to_string(123)", config) |> elem(1) == []
       assert value_triples("def f, do: 123 |> to_string()", config) |> elem(1) == []
+      assert value_triples("def f, do: 123 |> to_string", config) |> elem(1) == []
 
-      # …while an unconfigured Kernel call is untouched.
+      # …while an unconfigured Kernel call is untouched, in every spelling.
       assert {:integer, "123", "0"} in (value_triples("def f, do: to_string(123)", [
                                           Mutare.Mutators.IntegerLiteral
                                         ])
                                         |> elem(1))
+
+      assert {:integer, "123", "0"} in (value_triples("def f, do: 123 |> to_string", [
+                                          Mutare.Mutators.IntegerLiteral
+                                        ])
+                                        |> elem(1))
+    end
+
+    test "an imported, parenless piped receiver mark applies (the RHS import is resolved)" do
+      # A bare-name pipe RHS written without parens (`1000 |> sleep`) has `nil` args and the generic
+      # resolve walk leaves it unstamped, so the receiver path must resolve the RHS import itself.
+      # `import Process; 1000 |> sleep` is the built-in timeout table via an imported bare name…
+      assert value_triples("import Process\n  def f, do: 1000 |> sleep") |> elem(1) == []
+
+      # …and a configured `:skip_arguments` on an imported function honours the same parenless form,
+      # while the unconfigured call still mutates the receiver (not a vacuous check).
+      str = Mutare.Mutators.StringLiteral
+      body = "import String\n  def f, do: \"x\" |> trim"
+
+      assert value_triples(body, [{str, skip_arguments: [{String, :trim, 1, [0]}]}]) |> elem(1) ==
+               []
+
+      assert {:string, "\"x\"", "\"\""} in (value_triples(body, [str]) |> elem(1))
     end
 
     test "FloatLiteral and StringLiteral honour :skip_arguments too" do
