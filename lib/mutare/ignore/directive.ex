@@ -89,6 +89,18 @@ defmodule Mutare.Ignore.Directive do
   def entry_label({family, :any}), do: family
   def entry_label({family, target}), do: "#{family}:#{target}"
 
+  @doc ~S"""
+  The bracketed `[family, family:label]` filter for a directive's `mutators` — each entry via
+  `entry_label/1`, sorted for a stable message — or `""` for an unfiltered (`:all`) directive. The
+  single home for the aggregate rendering both a scan warning (`Mutare.CLI.Diagnostics`) and
+  `--list-ignores` (`Mutare.CLI.Info`) echo, so the `[...]` format can't drift between them.
+  """
+  @spec filter_label(:all | MapSet.t(entry())) :: String.t()
+  def filter_label(:all), do: ""
+
+  def filter_label(%MapSet{} = set),
+    do: "[" <> (set |> Enum.map(&entry_label/1) |> Enum.sort() |> Enum.join(", ")) <> "]"
+
   @doc """
   Whether this directive suppresses a mutant of family `mutator` whose variant is
   `target` (the site's declared `variant` label **list** — `[]` when unlabeled, one or

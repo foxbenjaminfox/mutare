@@ -370,14 +370,12 @@ defmodule Mix.Tasks.Mutare do
   """
   use Mix.Task
 
-  alias Mutare.{Config, Lifting, Options, Project, Report, Run, Runner, Schema}
+  alias Mutare.{Config, Options, Project, Runner, Schema}
   alias Mutare.CLI
-  alias Mutare.CLI.Info
+  alias Mutare.CLI.{Diagnostics, Info, Outcome}
   alias Mutare.Options.Registry
   alias Mutare.Report.Live
   alias Mutare.Run.Context
-  alias Mutare.Sandbox.DependencyDiagnostic
-  alias Mutare.Sandbox.Command.Output
 
   # The strict `OptionParser` switch list, composed from three sources so each flag's parse shape
   # lives next to its meaning: the **passthrough** option flags from `Mutare.Options.Registry`
@@ -506,11 +504,11 @@ defmodule Mix.Tasks.Mutare do
 
       case result do
         {:ok, run} ->
-          warn_poison_recovery(run)
-          report(run, options)
+          Outcome.warn_poison_recovery(run)
+          Outcome.report(run, options)
 
         {:error, reason, detail} ->
-          Mix.raise(format_error(reason, detail, root))
+          Mix.raise(Outcome.format_error(reason, detail, root))
       end
     after
       # Backstop for an unexpected raise during the runner; `finish/1` is idempotent. A
@@ -538,7 +536,7 @@ defmodule Mix.Tasks.Mutare do
 
       case result do
         {:ok, check} -> Info.print_check(check, project, scan_degraded_uses(schema, options))
-        {:error, reason, detail} -> Mix.raise(format_error(reason, detail, root))
+        {:error, reason, detail} -> Mix.raise(Outcome.format_error(reason, detail, root))
       end
     after
       if live, do: Live.finish(live)
@@ -637,10 +635,7 @@ defmodule Mix.Tasks.Mutare do
     schema = Schema.build(root, %{context | on_scan: on_scan})
     if live, do: Live.clear(live)
     announce(schema, project, options)
-    warn_unknown_directives(schema)
-    warn_ineffective_ignores(schema)
-    warn_ineffective_skip_lifting(schema)
-    enforce_strict_ignores(schema, options)
+    Diagnostics.surface(schema, options)
 
     # Wire the runner's live hooks (reporter/phase/start) now that the scan is done — the
     # scan drove `:on_scan` directly above; these drive the per-mutant phase. A distinct
@@ -848,287 +843,4 @@ defmodule Mix.Tasks.Mutare do
 
   defp budget_label(%Options{time_budget: nil}), do: ""
   defp budget_label(%Options{time_budget: budget}), do: " (time budget #{budget})"
-
-  # Warn about every comment that claims the reserved `mutare:` namespace without a
-  # recognized directive — a typo'd verb (`# mutare:ingore`), a colon-detached one
-  # (`# mutare: ignore`), or a directive from a future Mutare version (see
-  # `Mutare.Schema.detect_directive_diagnostics/1`). Onto **stderr**, like the
-  # ineffective warnings below; `--strict-ignores` turns these into a hard error too.
-  defp warn_unknown_directives(%Schema{unknown_directives: []}), do: :ok
-
-  defp warn_unknown_directives(%Schema{unknown_directives: unknown}) do
-    for {file, line, head} <- unknown do
-      IO.puts(
-        :stderr,
-        "warning: # #{head} at #{file}:#{line} is not a recognized directive" <>
-          Mutare.Ignore.verb_hint(head)
-      )
-    end
-
-    :ok
-  end
-
-  # Warn about every `# mutare:ignore` that suppressed no mutant — a typo'd family
-  # (`[arithmatic]`), an empty `[]`, a misplaced standalone line, or a family that
-  # produced no mutant there (see `Mutare.Schema.detect_directive_diagnostics/1`).
-  # Onto **stderr** (like `Mutare.Report.Live`), so a machine report on stdout
-  # stays clean. `--strict-ignores` then turns these into a hard error.
-  defp warn_ineffective_ignores(%Schema{ineffective_ignores: []}), do: :ok
-
-  defp warn_ineffective_ignores(%Schema{ineffective_ignores: ineffective}) do
-    for {file, directive, hint} <- ineffective do
-      # `Directive.verb/1` echoes the verb as written — `ignore`, `ignore-file`, or
-      # `ignore-start` — so a scoped directive's warning points at the right comment.
-      IO.puts(
-        :stderr,
-        "warning: # mutare:#{Mutare.Ignore.Directive.verb(directive)}" <>
-          "#{ignore_filter_label(directive)} at " <>
-          "#{file}:#{directive.comment_line} suppressed no mutant" <> misplacement_label(hint)
-      )
-    end
-
-    :ok
-  end
-
-  # The `:skip_lifting` mirror of `warn_ineffective_ignores/1`: a configured entry that
-  # matched no function anywhere in the scan (`Mutare.Schema.detect_ineffective_skip_lifting`
-  # — recorded only on a full scan, so `--since`/`--only`/`--line` never false-positive).
-  # Without it a typo'd module or a wrong arity leaves the escape hatch silently inert —
-  # the user keeps hitting the baseline failure the entry was meant to avoid. Onto stderr,
-  # like the ignore diagnostics. Warning-only: `--strict-ignores` is scoped to the ignore
-  # comment namespace, and these entries live in config, not source.
-  defp warn_ineffective_skip_lifting(%Schema{ineffective_skip_lifting: []}), do: :ok
-
-  defp warn_ineffective_skip_lifting(%Schema{ineffective_skip_lifting: entries}) do
-    for entry <- entries do
-      IO.puts(
-        :stderr,
-        "warning: :skip_lifting entry #{Lifting.format_entry(entry)} matched no function — " <>
-          "check the module name and the function's written head arity " <>
-          "(default arguments count toward it)"
-      )
-    end
-
-    :ok
-  end
-
-  # The "directive on the pipe's first line" miss: the mutants it named sit further
-  # down the *same* multi-line expression (`Mutare.Ignore.misplacement_hint/3`).
-  # A directive covers exactly one line, so name the line to move it above.
-  defp misplacement_label(nil), do: ""
-
-  defp misplacement_label(line),
-    do:
-      " — its matching mutants are on line #{line} of the same multi-line expression; " <>
-        "a directive covers one line, so place it directly above line #{line}"
-
-  # The `[families]` a filtered directive named (sorted for a stable message), or
-  # `""` for an unfiltered (`:all`) directive. A `{family, target}` entry renders
-  # back to its source form — `relational:>` when qualified, bare `arithmetic`
-  # otherwise — so the warning echoes what the user wrote.
-  defp ignore_filter_label(%{mutators: :all}), do: ""
-
-  defp ignore_filter_label(%{mutators: %MapSet{} = set}),
-    do:
-      "[#{set |> Enum.map(&Mutare.Ignore.Directive.entry_label/1) |> Enum.sort() |> Enum.join(", ")}]"
-
-  # `--strict-ignores`: a directive that suppressed nothing — or an unrecognized
-  # `# mutare:` comment — is a hard error (the CI counterpart of the warnings
-  # above), surfaced as a clean Mix failure → non-zero exit, mirroring the
-  # `--min-score` `gate/2`. The per-comment detail already printed via
-  # `warn_unknown_directives/1` / `warn_ineffective_ignores/1`.
-  defp enforce_strict_ignores(
-         %Schema{ineffective_ignores: [], unknown_directives: []},
-         _options
-       ),
-       do: :ok
-
-  defp enforce_strict_ignores(%Schema{}, %Options{strict_ignores: false}), do: :ok
-
-  defp enforce_strict_ignores(
-         %Schema{ineffective_ignores: ineffective, unknown_directives: unknown},
-         %Options{strict_ignores: true}
-       ) do
-    problems =
-      Enum.reject([ineffective_problem(ineffective), unknown_problem(unknown)], &is_nil/1)
-
-    Mix.raise("--strict-ignores: " <> Enum.join(problems, "; ") <> " (see the warnings above)")
-  end
-
-  defp ineffective_problem([]), do: nil
-
-  defp ineffective_problem(ineffective) do
-    n = length(ineffective)
-    "#{n} `# mutare:ignore` directive#{CLI.plural(n)} suppressed no mutant"
-  end
-
-  defp unknown_problem([]), do: nil
-
-  defp unknown_problem(unknown) do
-    n = length(unknown)
-    "#{n} `# mutare:` comment#{CLI.plural(n)} named no recognized directive"
-  end
-
-  # After a run that recovered from compile-poisoning by escalating (skipping wholesale)
-  # one or more unknown block macros, print the durable `:macro_routes` fix — the extra
-  # rebuilds are in-memory only and paid again every run, so pinning the routes saves them.
-  # Onto **stderr** (like the ineffective-ignore warnings), so a machine report on stdout
-  # stays clean. Only escalations earn a note: an id-specific poison drop is a one-off (a
-  # custom mutator emitting bad code), not a stable per-macro fact worth pinning.
-  defp warn_poison_recovery(%Run{recovery: nil}), do: :ok
-
-  defp warn_poison_recovery(%Run{recovery: recovery}) do
-    [
-      Mutare.Poison.Hint.escalation_note(Map.get(recovery, :escalated, [])),
-      Mutare.Poison.Hint.macro_skip_note(Map.get(recovery, :macro_skipped, []))
-    ]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.each(fn note -> IO.puts(:stderr, "\n" <> note) end)
-  end
-
-  defp report(run, %Options{} = options) do
-    Enum.each(options.reporters, fn {format, path} -> emit(format, path, run, options) end)
-    finish_run(run, options)
-  end
-
-  # On a complete run, apply the post-report CI gates. On an early stop
-  # (`--max-survivors`), the result set is only a partial prefix of the mutants,
-  # so a gate would be misleading — instead note what happened (on stderr, so a
-  # machine report on stdout stays clean, like `warn_ineffective_ignores/1`) and
-  # skip it.
-  defp finish_run(%Run{stopped_early: false} = run, %Options{} = options),
-    do: gate(run.results, options)
-
-  defp finish_run(%Run{stopped_early: true} = run, %Options{} = options) do
-    IO.puts(:stderr, early_stop_note(run, options))
-  end
-
-  # The partial-run note for an early stop: why it stopped, how much of the candidate
-  # set was evaluated, and — only when a CI gate was configured — that gates were
-  # skipped because the result set is partial.
-  defp early_stop_note(run, %Options{} = options) do
-    survivors = Enum.count(run.results, &(&1.status == :survived))
-    evaluated = length(run.results)
-    total = Schema.count(run.schema)
-
-    "stopped #{stop_cause(options, survivors)}; evaluated #{evaluated} of #{total} " <>
-      "mutant#{CLI.plural(total)}. " <> score_scope_note(evaluated, total, options)
-  end
-
-  defp score_scope_note(evaluated, total, %Options{} = options) when evaluated < total do
-    "The mutation score above is over this partial set" <> gate_skipped_note(options)
-  end
-
-  defp score_scope_note(_evaluated, _total, %Options{time_budget: budget} = options)
-       when is_binary(budget) do
-    "The mutation score above may include unconfirmed timeouts because the time budget " <>
-      "was reached during timeout confirmation" <> gate_skipped_note(options)
-  end
-
-  defp score_scope_note(_evaluated, _total, %Options{} = options) do
-    "The mutation score above is over this stopped run" <> gate_skipped_note(options)
-  end
-
-  # Which early-stop condition fired. The survivor cap stops the loop the instant the count reaches
-  # the limit and discards later stragglers, so `survivors == max_survivors` *exactly* on a survivor
-  # stop — when both caps are set and the count is short of the limit, the wall-clock budget must
-  # have fired. (The final clause is unreachable given `stopped_early`, but keeps the note total.)
-  defp stop_cause(%Options{max_survivors: n}, survivors) when is_integer(n) and survivors >= n,
-    do: "after finding #{survivors} survivor#{CLI.plural(survivors)} (--max-survivors #{n})"
-
-  defp stop_cause(%Options{time_budget: budget}, _survivors) when is_binary(budget),
-    do: "on reaching the time budget (--time-budget #{budget})"
-
-  defp stop_cause(%Options{max_survivors: n}, survivors),
-    do: "after finding #{survivors} survivor#{CLI.plural(survivors)} (--max-survivors #{n})"
-
-  defp gate_skipped_note(%Options{} = options) do
-    if ci_gates_configured?(options) do
-      ", so CI gates were not applied."
-    else
-      "."
-    end
-  end
-
-  # A `nil` path means stdout (the console); a path means write the rendered
-  # report to that file and note where it went.
-  defp emit(format, nil, run, options) do
-    Mix.shell().info(render_for(format, run, options))
-  end
-
-  defp emit(format, path, run, options) do
-    File.write!(path, render_for(format, run, options))
-    Mix.shell().info("wrote #{format} report to #{path}")
-  end
-
-  defp render_for(format, run, options) do
-    Options.renderer(format).render(run.results, run.schema.sources, min_score: options.min_score)
-  end
-
-  defp gate(results, %Options{} = options) do
-    case Report.gate_failures(results, options) do
-      [] ->
-        :ok
-
-      failures ->
-        Mix.raise("CI gate failed:\n" <> Enum.map_join(failures, "\n", &"  * #{&1}"))
-    end
-  end
-
-  defp ci_gates_configured?(%Options{} = options) do
-    options.min_score != nil or options.max_no_coverage != nil or options.fail_on_poisoned or
-      options.fail_on_harness_error
-  end
-
-  defp format_error(:nothing_to_mutate, detail, _root), do: detail
-
-  defp format_error(:too_many_harness_errors, detail, _root), do: detail
-
-  # A poisoned compile that recovery couldn't isolate. Lead with a remediation
-  # hint when we recognise the cause (a macro requiring a literal argument — see
-  # `Mutare.Poison.Hint`), then the raw compiler error for the full detail. The
-  # raw error can be long, so a footer points back up to the hint (the fix is at
-  # the top, but the user reads the error dump last).
-  defp format_error(:compile_failed, detail, _root) do
-    intro = "the metamutant failed to compile (compile-poisoning).\n\n"
-    tail = Output.output_tail(detail, 25)
-
-    case Mutare.Poison.Hint.for_compile_failure(detail) do
-      nil ->
-        intro <> tail
-
-      hint ->
-        footer =
-          "\n\n↑ Scroll up for how to fix this — the remediation hint is above the original error."
-
-        intro <> hint <> "\n\nOriginal compile error:\n\n" <> tail <> footer
-    end
-  end
-
-  defp format_error(:compile_timed_out, detail, _root) do
-    "the metamutant compile exceeded its wall-clock cap (:compile_timeout, " <>
-      "default 30 minutes) and halted itself.\n\n" <>
-      "A legitimate compile rarely gets near the cap — this usually means a " <>
-      "compiler pass is pathological on the generated code (see NOTES \"Type " <>
-      "inference and verification off for the metamutant compile\" for a known " <>
-      "class) or a compile-time hook is hanging. Raise the cap with " <>
-      "--compile-timeout <ms> (or `compile_timeout: nil` in .mutare.exs to " <>
-      "disable) if the compile is genuinely that slow.\n\n" <>
-      Output.output_tail(detail, 25)
-  end
-
-  defp format_error(:dependency_failed, detail, root) do
-    DependencyDiagnostic.format(detail, root)
-  end
-
-  defp format_error(:baseline_failed, detail, _root) do
-    "baseline suite is not green; mutation testing needs a passing suite.\n\n" <>
-      Output.output_tail(detail, 25)
-  end
-
-  defp format_error(:baseline_flaky, detail, _root) do
-    "baseline suite is flaky (passed on some runs, failed on others); mutation " <>
-      "testing needs a deterministically green suite — a flaky test manufactures " <>
-      "false kills. Fix or quarantine the test(s), then re-run.\n\n" <> detail
-  end
 end

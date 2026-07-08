@@ -301,9 +301,7 @@ defmodule Mutare.CLI.Info do
     do: "#{scope_label(d)}all families — #{reason}"
 
   defp format_directive(%Directive{mutators: set, reason: reason} = d) do
-    families =
-      "#{scope_label(d)}[#{set |> Enum.map(&Directive.entry_label/1) |> Enum.sort() |> Enum.join(", ")}]"
-
+    families = scope_label(d) <> Directive.filter_label(set)
     if reason, do: "#{families} — #{reason}", else: families
   end
 
