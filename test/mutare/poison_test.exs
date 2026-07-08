@@ -526,6 +526,26 @@ defmodule Mutare.PoisonTest do
       refute Enum.any?(head_ids, &MapSet.member?(ids, &1))
     end
 
+    test "finds a real macro call inside a def-head default argument" do
+      # `def limit(n \\ Size.megabytes(5))`: the head's *call shape* is skipped, but its default
+      # expression must still be searched — the `megabytes(5)` there poisons expansion too, and
+      # dropping only the outer head (not the whole head) is what keeps it reachable.
+      src = ~S"""
+      defmodule R do
+        def limit(n \\ Size.megabytes(5)) do
+          n
+        end
+      end
+      """
+
+      {metamutants, sites} = transform(src, [Mutare.Mutators.Literal])
+      assert sites != []
+      expected = MapSet.new(sites, & &1.id)
+
+      assert [{{"Size", :megabytes}, ^expected}] =
+               Mutare.Poison.macro_poison(frame("expanding macro: Size.megabytes/1"), metamutants)
+    end
+
     test "scans only the macro's call-site file, not its implementation frames" do
       # A macro defined in the target project puts frames from its *implementation* file on the
       # stack, BEFORE the `expanding macro:` marker; a same-named call there must not be swept

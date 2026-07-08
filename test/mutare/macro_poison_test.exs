@@ -71,6 +71,43 @@ defmodule Mutare.MacroPoisonTest do
     assert run.recovery.rounds >= 1
   end
 
+  test "recovers a literal-only macro poison inside a function-head default" do
+    # `def limit(n \\ Size.megabytes(5))` — the macro expands in the def head, so mutating `5`
+    # poisons there. The fallback must skip only the head's call shape, not its default, or the
+    # `megabytes(5)` inside it is unreachable and the run aborts.
+    %{project: project, sandbox: sandbox} =
+      Project.build(:head_default, %{
+        "lib/size.ex" => """
+        defmodule Size do
+          defmacro megabytes(n) when is_integer(n) do
+            quote do: unquote(n) * 1024 * 1024
+          end
+        end
+        """,
+        "lib/usage.ex" => """
+        defmodule Usage do
+          require Size
+
+          def limit(n \\\\ Size.megabytes(5)) do
+            n
+          end
+        end
+        """,
+        "test/usage_test.exs" => """
+        defmodule UsageTest do
+          use ExUnit.Case
+          test "limit", do: assert(Usage.limit() == 5 * 1024 * 1024)
+        end
+        """
+      })
+
+    assert {:ok, run} =
+             Mutare.run(project, sandbox: sandbox, mutators: [Mutare.Mutators.Literal])
+
+    assert %{macro_skipped: [%{module: "Size", macro: :megabytes}]} = run.recovery
+    assert Enum.any?(run.results, &(&1.status == :poisoned))
+  end
+
   test "recovers a poison in the PIPED value of an inline macro (`|>`)" do
     # `(a > b) |> query()` — after pipe expansion `a > b` is `query`'s argument, but its
     # selector renders on the pipe's left, before the `query()` node. The fallback must range

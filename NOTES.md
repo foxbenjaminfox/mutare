@@ -252,9 +252,11 @@ inside it. Key decisions:
     *wrong*-drop, both because a macro defined in the target project surfaces extra same-named shapes:
     (a) scan only the **call-site file** — the frame *after* each `expanding macro:` marker, not every
     stacktrace location, since the frames *before* it are the macro's own implementation file (a same-named
-    call there is unrelated); (b) skip **definition heads** — `def query(a \\ 1)` parses identically to a
-    `query(...)` call, so the manifest walk descends only into a definition's body, or a function merely
-    sharing the macro's name would have its head/default mutations dropped as poison.
+    call there is unrelated); (b) **neutralise definition heads** — `def query(a \\ 1)` parses identically to
+    a `query(...)` call, so the manifest walk opens a def head's outer call node to a `:__block__` (the head
+    name can't match) *while still traversing its default/guard expressions* — a function sharing the macro's
+    name is spared, yet a real literal-only macro inside a default (`def limit(n \\ Size.megabytes(5))`) is
+    still found.
   * **Piped calls** (`(a > b) |> query()`): after pipe expansion the LHS is the macro's first argument, but
     its selector renders on the pipe's *left*, outside the RHS call node — so a `{:|>, _, [_, rhs]}` whose
     RHS names the macro is ranged as a whole, covering the piped value and every earlier stage.

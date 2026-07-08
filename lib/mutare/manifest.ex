@@ -145,10 +145,13 @@ defmodule Mutare.Manifest do
   # dropped (nothing to attribute).
   #
   # A `def`/`defmacro` *head* is shaped exactly like a call (`def query(a \\ 1)` parses to
-  # `{:query, _, [...]}`), so we descend only into a definition's *body*, dropping its head from
-  # this walk — otherwise a function that merely shares the blamed macro's name would have its
-  # head/default/guard mutations attributed to the macro and dropped as poison. `Macro.traverse`
-  # (not `prewalk`) so the pre-hook can hand back a head-less node to keep walking.
+  # `{:query, _, [...]}`), so a function merely sharing the blamed macro's name would have its
+  # head matched and its default/guard mutations dropped as poison. We *neutralise* just the
+  # head's outer call node — replace it with a `:__block__` of its arguments — so the head name
+  # can't match, yet its default and guard expressions are still traversed: a literal-only macro
+  # inside a default (`def limit(n \\ Size.megabytes(5))`) poisons there too and must be found.
+  # `Macro.traverse` (not `prewalk`) so the pre-hook can hand back the rewritten node to keep
+  # walking.
   defp named_call_ranges(ast, names) do
     {_ast, calls} =
       Macro.traverse(ast, [], &enter_named_call(&1, &2, names), fn node, acc -> {node, acc} end)
@@ -156,9 +159,9 @@ defmodule Mutare.Manifest do
     calls
   end
 
-  defp enter_named_call({kw, meta, [_head | body]}, acc, _names)
+  defp enter_named_call({kw, meta, [head | body]}, acc, _names)
        when kw in [:def, :defp, :defmacro, :defmacrop] and is_list(body),
-       do: {{kw, meta, body}, acc}
+       do: {{kw, meta, [neutralize_head(head) | body]}, acc}
 
   defp enter_named_call(node, acc, names) do
     case named_call(node, names) do
@@ -166,6 +169,16 @@ defmodule Mutare.Manifest do
       call -> {node, [call | acc]}
     end
   end
+
+  # Open a definition head's outer call node (`f(args)` → a `:__block__` of `args`) so the head
+  # name is no longer a call to match, while its arguments — defaults, patterns — stay in the
+  # walk. A guarded head (`f(args) when g`) keeps the `when` so the guard is walked too; a
+  # non-call head shape (a no-arg `def f`) is left as-is (it can't match a call anyway).
+  defp neutralize_head({:when, meta, [call, guard]}), do: {:when, meta, [open_head(call), guard]}
+  defp neutralize_head(head), do: open_head(head)
+
+  defp open_head({_name, meta, args}) when is_list(args), do: {:__block__, meta, args}
+  defp open_head(other), do: other
 
   # A piped call `lhs |> fun(...)`: after pipe expansion `lhs` is `fun`'s *first* argument, so a
   # mutation in `lhs` renders as a selector `case` on the pipe's left — *before* the RHS call
