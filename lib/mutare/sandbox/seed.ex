@@ -6,15 +6,16 @@ defmodule Mutare.Sandbox.Seed do
   #
   #   * `dep_build/2` — the dependencies' beams (`@excluded` keeps `_build` out of the copy,
   #     so without this every test-env dep recompiles cold each run).
-  #   * `app_build/4` — the *mutated app's own* beams, so a narrow run (`--line`/`--since`/
+  #   * `app_build/5` — the *mutated app's own* beams, so a narrow run (`--line`/`--since`/
   #     `--only`, a `paths:` narrowing, or a sparse-site full run) recompiles only the
-  #     metamutant file(s), not the whole app.
+  #     metamutant file(s), not the whole app. In an umbrella it decides per app, so one
+  #     app's partial miss cold-compiles only that app, not its cleanly-seeded siblings.
   #
   # Extracted from `Mutare.Sandbox`; called from its `prepare/3` after materialisation.
 
   require Logger
 
-  alias Mutare.{Options, Schema}
+  alias Mutare.{Options, Project, Schema}
   alias Mutare.Sandbox.Command.Invocation
 
   # Seed the sandbox's `_build` with the dependencies' already-compiled artifacts
@@ -102,35 +103,49 @@ defmodule Mutare.Sandbox.Seed do
   #     the metamutant fresh and serve the stale beam (verified); the deletion is what
   #     forces the recompile.
   #
-  # Fail-safe by construction: we keep the seed **only if every** metamutant's beam was
-  # positively found and deleted (`MapSet.subset?`); on any shortfall — a beam whose
-  # recorded source we couldn't match, or any error at all — we tear the seed back down
-  # (`teardown/1`) and behave exactly as before (a cold compile). So a bug here can lose
-  # the optimisation, never produce a wrong result.
+  # Fail-safe **per app**: an app's seed is kept only if every metamutant *attributed to
+  # it* (by source-file location) was positively found and deleted (`MapSet.subset?`); on
+  # any shortfall — a beam whose recorded source we couldn't match, or any error at all —
+  # only that app's seed is torn back down (`teardown_one/1`), and it alone cold-compiles.
+  # Its cleanly-seeded siblings keep their incremental build (in an umbrella, one app's
+  # miss no longer sinks the whole umbrella). Deletion still scans the **global** metamutant
+  # set in every app, so no stale metamutant beam can survive a kept app even if attribution
+  # were wrong — attribution only ever governs keep-vs-teardown, never which beams are
+  # deleted. So a bug here can lose one app's speed-up, never produce a wrong result.
   #
   # `--no-seed-app-build` opts out wholesale (force a cold compile — a debugging escape
   # hatch for the no-op surface, or a paranoid CI).
   #
-  # Returns a `t:summary/0` describing what it did (seeded + beam counts, a fall back to a
-  # cold compile, or skipped). `Mutare.Sandbox` relays it on the `:on_phase` hook so
-  # `--verbose` can surface both the speed-up and an otherwise-silent fallback.
+  # Returns a `t:summary/0` describing what it did, which `Mutare.Sandbox` relays on the
+  # `:on_phase` hook so `--verbose` can surface both the speed-up and an otherwise-silent
+  # fallback. `project` (a `Mutare.Project` or `nil` for a single-app run) attributes each
+  # metamutant to its owning app.
   @typedoc """
   What the app-build seed did, for `--verbose` narration:
 
-    * `:seeded` — engaged; `reused`/`recompiled` are the kept vs deleted (→ recompiling)
-      beam counts.
-    * `:fallback` — attempted, then torn back down to a cold compile (a metamutant beam
-      couldn't be matched, or the seed raised). The otherwise-*silent* case worth surfacing.
+    * `:seeded` — every seedable app engaged; `reused`/`recompiled` are the summed kept vs
+      deleted (→ recompiling) beam counts.
+    * `:partial` — some apps seeded, `fell_back` others cold-compiled (an umbrella per-app
+      miss). `reused`/`recompiled` cover the apps that were kept.
+    * `:fallback` — every app that owned a metamutant was torn back down to a cold compile
+      (a metamutant beam couldn't be matched, or the seed raised). The otherwise-*silent*
+      case worth surfacing; the sole outcome for a single-app miss.
     * `:skipped` — never attempted: opted out, nothing built to reuse, or too much of the
       app mutated to be worth it. The expected default for a broad run.
   """
   @type summary ::
           %{outcome: :seeded, reused: non_neg_integer(), recompiled: non_neg_integer()}
+          | %{
+              outcome: :partial,
+              reused: non_neg_integer(),
+              recompiled: non_neg_integer(),
+              fell_back: pos_integer()
+            }
           | %{outcome: :fallback, reason: String.t()}
           | %{outcome: :skipped}
 
-  @spec app_build(Path.t(), Path.t(), Schema.t(), Options.t()) :: summary()
-  def app_build(_root, _sandbox, _schema, %Options{seed_app_build: false}),
+  @spec app_build(Path.t(), Path.t(), Schema.t(), Options.t(), Project.t() | nil) :: summary()
+  def app_build(_root, _sandbox, _schema, %Options{seed_app_build: false}, _project),
     do: %{outcome: :skipped}
 
   # Gated on the actual *outcome* (`worth_seeding?/2`), not on which flag scoped the run:
@@ -138,7 +153,7 @@ defmodule Mutare.Sandbox.Seed do
   # / `paths:` narrowing has no `:only_*` field to check). Idempotent like the dep seed
   # (only fills an app the sandbox lacks), so a `keep_sandbox` re-run's preserved `_build`
   # is untouched and only the first run seeds.
-  def app_build(root, sandbox, %Schema{metamutants: metamutants}, %Options{}) do
+  def app_build(root, sandbox, %Schema{metamutants: metamutants}, %Options{}, project) do
     mix_env = Invocation.mix_env()
     src_lib = Path.join([root, "_build", mix_env, "lib"])
     dst_lib = Path.join([sandbox, "_build", mix_env, "lib"])
@@ -149,10 +164,10 @@ defmodule Mutare.Sandbox.Seed do
           File.dir?(src),
           dst = Path.join(dst_lib, app),
           not File.exists?(dst),
-          do: {src, dst}
+          do: {app, src, dst}
 
-    # `total` (the app's compiled-beam count) drives both the worth-it gate and the
-    # reused count the `--verbose` summary reports, so compute it once, here.
+    # `total` (the app's compiled-beam count) drives the worth-it gate; the reused count the
+    # `--verbose` summary reports is summed per kept app. Compute `total` once, here.
     total = total_beams(to_seed)
 
     if worth_seeding?(map_size(metamutants), total) do
@@ -160,51 +175,125 @@ defmodule Mutare.Sandbox.Seed do
       expanded_sandbox = Path.expand(sandbox)
       meta_sources = MapSet.new(Map.keys(metamutants), &Path.join(expanded_root, &1))
 
-      case do_seed(to_seed, meta_sources, expanded_root, expanded_sandbox) do
-        # Only keep the seed if we *guaranteed* every metamutant will recompile.
-        {:ok, forced, recompiled} ->
-          if MapSet.subset?(meta_sources, forced) do
-            %{outcome: :seeded, reused: total - recompiled, recompiled: recompiled}
-          else
-            teardown(to_seed)
-            fallback("a metamutant beam's recorded source could not be matched")
-          end
+      # Attribute each metamutant to its owning app so a partial miss tears down only that
+      # app. `nil` ⇒ an unattributable shape (below); skip seeding rather than risk a no-op
+      # we can't reason about.
+      case expected_by_app(metamutants, expanded_root, project, to_seed) do
+        nil ->
+          %{outcome: :skipped}
 
-        {:error, reason} ->
-          teardown(to_seed)
-          fallback(reason)
+        expected ->
+          to_seed
+          |> Enum.map(fn {app, src, dst} ->
+            expected_app = Map.get(expected, app, MapSet.new())
+            seed_one(src, dst, expected_app, meta_sources, expanded_root, expanded_sandbox)
+          end)
+          |> aggregate()
       end
     else
       %{outcome: :skipped}
     end
   end
 
-  # The seeding work, isolated so `app_build/4`'s happy path reads as a plain `case`. Copies
-  # each seedable app into the sandbox `_build`, deletes the metamutant beams (so they
-  # recompile) and relocates manifests, returning `{:ok, forced, recompiled}` — the set of
-  # source files whose beams were forced to recompile, plus the beam-delete count the
-  # `--verbose` summary reports — or `{:error, reason}` if any file op raised/threw
-  # (→ the caller tears the seed down and cold-compiles).
-  defp do_seed(to_seed, meta_sources, expanded_root, expanded_sandbox) do
-    {forced, recompiled} =
-      Enum.reduce(to_seed, {MapSet.new(), 0}, fn {src, dst}, {found, count} ->
-        File.mkdir_p!(Path.dirname(dst))
-        File.cp_r!(src, dst)
-        {deleted, removed} = delete_metamutant_beams(dst, meta_sources)
-        relocate_manifests(dst, expanded_root, expanded_sandbox)
-        {MapSet.union(found, deleted), count + removed}
-      end)
+  # Seed one app: copy its build in, delete every metamutant beam (matched against the
+  # **global** `meta_sources`, so no stale metamutant beam can survive a kept app), relocate
+  # its manifest, then keep it only if every metamutant *attributed to this app*
+  # (`expected_app`) was positively deleted. On any shortfall — an unmatched beam, or an
+  # exception — tear this app's seed back down (`teardown_one/1`) and report a `:fallback`,
+  # so it alone cold-compiles. Returns a per-app `{:seeded, reused, recompiled}` (reused =
+  # beams kept in this app, recompiled = beams deleted) or `{:fallback, reason}`.
+  defp seed_one(src, dst, expected_app, meta_sources, expanded_root, expanded_sandbox) do
+    File.mkdir_p!(Path.dirname(dst))
+    File.cp_r!(src, dst)
+    {deleted, recompiled} = delete_metamutant_beams(dst, meta_sources)
+    relocate_manifests(dst, expanded_root, expanded_sandbox)
 
-    {:ok, forced, recompiled}
+    if MapSet.subset?(expected_app, deleted) do
+      reused = length(Path.wildcard(Path.join([dst, "ebin", "*.beam"])))
+      {:seeded, reused, recompiled}
+    else
+      teardown_one(dst)
+      {:fallback, "a metamutant beam's recorded source could not be matched"}
+    end
   rescue
-    e -> {:error, "the seed raised: " <> Exception.message(e)}
+    e ->
+      teardown_one(dst)
+      {:fallback, "the seed raised: " <> Exception.message(e)}
   catch
-    kind, reason -> {:error, "the seed aborted (#{kind} #{inspect(reason)})"}
+    kind, reason ->
+      teardown_one(dst)
+      {:fallback, "the seed aborted (#{kind} #{inspect(reason)})"}
   end
+
+  # Fold the per-app results into one summary for the `--verbose` line: all-seeded (sum the
+  # reused/recompiled counts), a mix (`:partial` — the per-app win: some kept while others
+  # cold-compile), all-fallback (`:fallback`, one reason), or nothing at all (`:skipped`).
+  defp aggregate(results) do
+    seeded = for {:seeded, reused, recompiled} <- results, do: {reused, recompiled}
+    reasons = for {:fallback, reason} <- results, do: reason
+    reused = seeded |> Enum.map(&elem(&1, 0)) |> Enum.sum()
+    recompiled = seeded |> Enum.map(&elem(&1, 1)) |> Enum.sum()
+
+    cond do
+      seeded != [] and reasons != [] ->
+        Logger.debug(
+          "Mutare: app-build seed kept #{length(seeded)} app(s); " <>
+            "#{length(reasons)} fell back to a cold compile"
+        )
+
+        %{outcome: :partial, reused: reused, recompiled: recompiled, fell_back: length(reasons)}
+
+      reasons != [] ->
+        fallback(hd(reasons))
+
+      seeded != [] ->
+        %{outcome: :seeded, reused: reused, recompiled: recompiled}
+
+      true ->
+        %{outcome: :skipped}
+    end
+  end
+
+  # Map each metamutant to the OTP-app name (its `_build/<env>/lib/<app>` dir) that owns its
+  # source, so `seed_one` can check per-app completeness. Umbrella: attribute by the
+  # `Mutare.Project` app whose `dir` is a path-prefix of the source (longest wins); a
+  # metamutant under no app dir (pathological) collapses the whole map to `nil` so the caller
+  # skips rather than risk an unreasoned no-op. Single app (or no/plain project): the lone
+  # seedable app owns every metamutant. `nil` for any other shape (no umbrella project yet
+  # more than one seedable app) — again, skip.
+  defp expected_by_app(
+         metamutants,
+         expanded_root,
+         %Project{umbrella?: true, apps: apps},
+         _to_seed
+       ) do
+    dirs =
+      apps
+      |> Enum.map(fn %{app: app, dir: dir} -> {dir, to_string(app)} end)
+      |> Enum.sort_by(fn {dir, _app} -> -byte_size(dir) end)
+
+    Enum.reduce_while(metamutants, %{}, fn {rel, _source}, acc ->
+      case Enum.find(dirs, fn {dir, _app} -> under?(rel, dir) end) do
+        {_dir, app} -> {:cont, add_source(acc, app, Path.join(expanded_root, rel))}
+        nil -> {:halt, nil}
+      end
+    end)
+  end
+
+  defp expected_by_app(metamutants, expanded_root, _project, [{app, _src, _dst}]) do
+    %{app => MapSet.new(metamutants, fn {rel, _source} -> Path.join(expanded_root, rel) end)}
+  end
+
+  defp expected_by_app(_metamutants, _expanded_root, _project, _to_seed), do: nil
+
+  defp under?(rel, dir), do: rel == dir or String.starts_with?(rel, dir <> "/")
+
+  defp add_source(acc, app, source),
+    do: Map.update(acc, app, MapSet.new([source]), &MapSet.put(&1, source))
 
   # Log the abandoned-seed cause (opt-in debug) and return the summary, so `--verbose` can
   # surface the otherwise-silent fall back to a cold compile. The tear-down itself already
-  # happened at the call site.
+  # happened per app in `seed_one/6`.
   defp fallback(reason) do
     Logger.debug("Mutare: app-build seed fell back to a cold compile — " <> reason)
     %{outcome: :fallback, reason: reason}
@@ -224,7 +313,9 @@ defmodule Mutare.Sandbox.Seed do
   # large app. Drives the worth-it gate and the reused-beam count `--verbose` reports.
   defp total_beams(to_seed) do
     to_seed
-    |> Enum.map(fn {src, _dst} -> length(Path.wildcard(Path.join([src, "ebin", "*.beam"]))) end)
+    |> Enum.map(fn {_app, src, _dst} ->
+      length(Path.wildcard(Path.join([src, "ebin", "*.beam"])))
+    end)
     |> Enum.sum()
   end
 
@@ -332,6 +423,6 @@ defmodule Mutare.Sandbox.Seed do
 
   defp rewrite_paths(term, _from, _to), do: term
 
-  # Remove seeded app builds, returning the sandbox to its unseeded (cold-compile) state.
-  defp teardown(to_seed), do: for({_src, dst} <- to_seed, do: File.rm_rf!(dst))
+  # Remove one app's seeded build, returning it to its unseeded (cold-compile) state.
+  defp teardown_one(dst), do: File.rm_rf!(dst)
 end

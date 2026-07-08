@@ -807,6 +807,83 @@ defmodule Mutare.SandboxTest do
       # Fallback means torn down: the run proceeds as a cold compile, no seeded build left.
       refute File.exists?(Path.join(sandbox, "_build/test/lib/myapp"))
     end
+
+    test "umbrella: one app's partial miss cold-compiles only that app, not its siblings" do
+      %{umbrella: umbrella, sandbox: sandbox} =
+        Umbrella.build(:seed_partial_demo, %{
+          core: %{files: %{"lib/core.ex" => "defmodule Core do\n  def f, do: 1\nend\n"}},
+          web: %{
+            deps: [:core],
+            files: %{"lib/web.ex" => "defmodule Web do\n  def g, do: 2\nend\n"}
+          }
+        })
+
+      project = Project.resolve(umbrella)
+
+      # Each app: one beam for a real file plus a spare (to clear the worth-it gate).
+      put_app_beam(umbrella, "core", "apps/core/lib/core.ex", "Core#{uniq()}")
+      put_app_beam(umbrella, "core", "apps/core/lib/core_util.ex", "CoreUtil#{uniq()}")
+      put_app_beam(umbrella, "web", "apps/web/lib/web.ex", "Web#{uniq()}")
+      put_app_beam(umbrella, "web", "apps/web/lib/web_util.ex", "WebUtil#{uniq()}")
+      put_app_manifest(umbrella, "core", [Path.expand(umbrella)])
+      put_app_manifest(umbrella, "web", [Path.expand(umbrella)])
+
+      # core's metamutant matches its beam (clean); web's metamutant has no beam (a miss).
+      schema = %Schema{
+        metamutants: %{
+          "apps/core/lib/core.ex" => "defmodule Core do\n  def f, do: 2\nend\n",
+          "apps/web/lib/web_missing.ex" => "defmodule WebMissing do\n  def h, do: 9\nend\n"
+        }
+      }
+
+      summary = capture_seed(umbrella, schema, sandbox: sandbox, project: project)
+
+      # Per-app: core kept (1 reused, 1 recompiled), web torn down — not the whole umbrella.
+      assert %{outcome: :partial, reused: 1, recompiled: 1, fell_back: 1} = summary
+
+      core_build = Path.join(sandbox, "_build/test/lib/core")
+      assert File.dir?(core_build)
+      refute beams(core_build) |> Enum.any?(&(&1 =~ "Core."))
+      assert beams(core_build) |> Enum.any?(&(&1 =~ "CoreUtil"))
+
+      # web is the only app that cold-compiles.
+      refute File.exists?(Path.join(sandbox, "_build/test/lib/web"))
+    end
+
+    test "umbrella: all apps seeding cleanly report an aggregate :seeded summary" do
+      %{umbrella: umbrella, sandbox: sandbox} =
+        Umbrella.build(:seed_clean_demo, %{
+          core: %{files: %{"lib/core.ex" => "defmodule Core do\n  def f, do: 1\nend\n"}},
+          web: %{
+            deps: [:core],
+            files: %{"lib/web.ex" => "defmodule Web do\n  def g, do: 2\nend\n"}
+          }
+        })
+
+      project = Project.resolve(umbrella)
+
+      put_app_beam(umbrella, "core", "apps/core/lib/core.ex", "Core#{uniq()}")
+      put_app_beam(umbrella, "core", "apps/core/lib/core_util.ex", "CoreUtil#{uniq()}")
+      put_app_beam(umbrella, "web", "apps/web/lib/web.ex", "Web#{uniq()}")
+      put_app_beam(umbrella, "web", "apps/web/lib/web_util.ex", "WebUtil#{uniq()}")
+      put_app_manifest(umbrella, "core", [Path.expand(umbrella)])
+      put_app_manifest(umbrella, "web", [Path.expand(umbrella)])
+
+      # One metamutant per app, each matching its beam.
+      schema = %Schema{
+        metamutants: %{
+          "apps/core/lib/core.ex" => "defmodule Core do\n  def f, do: 2\nend\n",
+          "apps/web/lib/web.ex" => "defmodule Web do\n  def g, do: 3\nend\n"
+        }
+      }
+
+      # 2 reused (the two *_util spares), 2 recompiled (core.ex + web.ex), both apps kept.
+      assert %{outcome: :seeded, reused: 2, recompiled: 2} =
+               capture_seed(umbrella, schema, sandbox: sandbox, project: project)
+
+      assert File.dir?(Path.join(sandbox, "_build/test/lib/core"))
+      assert File.dir?(Path.join(sandbox, "_build/test/lib/web"))
+    end
   end
 
   # Run `Sandbox.prepare/3` with an `:on_phase` hook and return the app-build seed's summary

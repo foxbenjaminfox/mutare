@@ -833,13 +833,25 @@ module's *compile-time* surface (macros, module attributes other modules read) s
 to compile-time dependents; correct, and usually tiny since metamutants preserve the public
 function signatures. `--no-seed-app-build` (`:seed_app_build` false) opts out wholesale —
 forcing a cold compile — as a diagnostic A/B for the no-op surface or for a paranoid CI.
-Surfaced under `--verbose` (`[done]`): `Seed.app_build/4` returns a `t:summary/0`
-(`:seeded` with reused/recompiled beam counts, a `:fallback` to a cold compile, or
-`:skipped`), which `Sandbox.prepare/3` relays on the `:on_phase` hook as
+Surfaced under `--verbose` (`[done]`): `Seed.app_build/5` returns a `t:summary/0`
+(`:seeded` with reused/recompiled beam counts, `:partial`, a `:fallback` to a cold
+compile, or `:skipped`), which `Sandbox.prepare/3` relays on the `:on_phase` hook as
 `{:seed_app_build, summary}`; `Report.Live.seed_line/1` renders a `✓`/`↺` line for the
-first two (a `:skipped` seed — the broad-run default — stays silent even in verbose), so
-both the speed-up and the otherwise-silent fallback are visible. Remaining follow-up:
-per-app (not global) teardown on a partial miss.
+first three (a `:skipped` seed — the broad-run default — stays silent even in verbose), so
+both the speed-up and the otherwise-silent fallback are visible.
+
+Per-app teardown (`[done]`): the completeness check is now **per app**, not global — a
+partial miss tears down only the app that owns the unmatched beam (`seed_one/6` +
+`aggregate/1`), so in an umbrella one app's miss no longer sinks its cleanly-seeded
+siblings (the earlier code's `teardown/1` wiped every app's seed). Each metamutant is
+attributed to its owning app by **source-file location** (`expected_by_app/4`: the
+`Mutare.Project` app whose `dir` is a path-prefix of the source; the lone app for a single
+project), which drives *keep-vs-teardown* only — deletion still scans the **global**
+metamutant set in every app, so no stale metamutant beam can survive a kept app even under
+mis-attribution (worst case an over-conservative teardown, never a no-op). An
+unattributable shape (a metamutant under no app dir, or no umbrella project yet >1 seedable
+app) collapses to `:skipped` rather than risk an unreasoned no-op. A mix of kept + fallen-
+back apps reports `:partial`.
 
 ### Compiler options for the one metamutant compile `[done]`
 The metamutant compile is a single `mix compile`, dominated by `beam_ssa_opt` on

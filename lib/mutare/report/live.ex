@@ -407,13 +407,19 @@ defmodule Mutare.Report.Live do
   @doc """
   Renders the app-build seed's outcome (`Mutare.Sandbox.Seed.summary/0`) as a persistent
   status line, or `nil` for a `:skipped` seed (the broad-run default — no line even in
-  verbose). `:seeded` shows the reused vs recompiling beam counts; `:fallback` names the
-  otherwise-silent fall back to a cold compile.
+  verbose). `:seeded` shows the reused vs recompiling beam counts; `:partial` adds how many
+  apps fell back (an umbrella per-app miss); `:fallback` names the otherwise-silent fall
+  back to a cold compile.
   """
   @spec seed_line(map()) :: String.t() | nil
   def seed_line(%{outcome: :seeded, reused: reused, recompiled: recompiled}) do
     "  ✓ reused #{reused} app beam#{plural(reused)}, recompiling " <>
       "#{recompiled} metamutant beam#{plural(recompiled)}"
+  end
+
+  def seed_line(%{outcome: :partial, reused: reused, recompiled: recompiled, fell_back: fell}) do
+    "  ↺ reused #{reused} app beam#{plural(reused)} (recompiling #{recompiled}), but " <>
+      "#{fell} app#{plural(fell)} fell back to a cold compile"
   end
 
   def seed_line(%{outcome: :fallback, reason: reason}),

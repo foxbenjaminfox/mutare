@@ -283,6 +283,11 @@ defmodule Mutare.Report.LiveTest do
                "  ✓ reused 1 app beam, recompiling 2 metamutant beams"
     end
 
+    test "a partial seed names how many apps fell back (umbrella per-app miss)" do
+      assert Live.seed_line(%{outcome: :partial, reused: 12, recompiled: 1, fell_back: 1}) ==
+               "  ↺ reused 12 app beams (recompiling 1), but 1 app fell back to a cold compile"
+    end
+
     test "a fallback names the otherwise-silent cold compile" do
       assert Live.seed_line(%{outcome: :fallback, reason: "the seed raised: boom"}) ==
                "  ↺ app-build seed fell back to a cold compile (the seed raised: boom)"

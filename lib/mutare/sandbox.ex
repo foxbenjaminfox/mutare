@@ -212,7 +212,7 @@ defmodule Mutare.Sandbox do
     # skipped) rides the `:on_phase` hook as a `{:seed_app_build, summary}` detail event, so
     # `--verbose` can surface both the speed-up and an otherwise-silent fallback. Fired here
     # (during the runner's `:compiling` phase) since this is where the seed decision is made.
-    seed_summary = Seed.app_build(root, sandbox, schema, options)
+    seed_summary = Seed.app_build(root, sandbox, schema, options, project)
     Context.hook(context, :on_phase).({:seed_app_build, seed_summary})
 
     sandbox
