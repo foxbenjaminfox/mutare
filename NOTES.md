@@ -248,7 +248,16 @@ inside it. Key decisions:
     requirement — the compiler *named* the culprit, so a bare-name match is safe (not a guess).
   * **Bare-name match + range containment**, deliberately conservative. Two same-named macros are skipped
     together and every mutant inside a poisoning macro call is dropped — the same *bounded over-drop* blocks
-    already accept, and only ever on a real failing compile.
+    already accept, and only ever on a real failing compile. But a bare-name match needs two guards against
+    *wrong*-drop, both because a macro defined in the target project surfaces extra same-named shapes:
+    (a) scan only the **call-site file** — the frame *after* each `expanding macro:` marker, not every
+    stacktrace location, since the frames *before* it are the macro's own implementation file (a same-named
+    call there is unrelated); (b) skip **definition heads** — `def query(a \\ 1)` parses identically to a
+    `query(...)` call, so the manifest walk descends only into a definition's body, or a function merely
+    sharing the macro's name would have its head/default mutations dropped as poison.
+  * **Piped calls** (`(a > b) |> query()`): after pipe expansion the LHS is the macro's first argument, but
+    its selector renders on the pipe's *left*, outside the RHS call node — so a `{:|>, _, [_, rhs]}` whose
+    RHS names the macro is ranged as a whole, covering the piped value and every earlier stage.
   * **First-strike, wholesale, per-`{module, name}`** — no second-strike (the frame names the *macro*, not a
     mutant, and the rejection is structural, so there is no one-off to distinguish) and no per-invocation
     scoping (the natural fix is `{Mod, :fun, :skip}` *everywhere*, which is exactly what the frame supports).

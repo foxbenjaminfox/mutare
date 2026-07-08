@@ -405,11 +405,13 @@ defmodule Mutare.PoisonTest do
   describe "macro_poison/2 (macro-expansion fallback, metamutant space)" do
     # Transform a source into `{%{file => metamutant}, sites}` — the real rendered metamutant
     # the fallback attributes against (not the original), so its manifest carries every id.
-    defp transform(src, mutators) do
-      {meta, sites, _next} =
-        Mutare.Transform.transform_string_with_sites(src, file: "lib/r.ex", mutators: mutators)
+    defp transform(src, mutators), do: transform_at("lib/r.ex", src, mutators)
 
-      {%{"lib/r.ex" => meta}, sites}
+    defp transform_at(file, src, mutators) do
+      {meta, sites, _next} =
+        Mutare.Transform.transform_string_with_sites(src, file: file, mutators: mutators)
+
+      {%{file => meta}, sites}
     end
 
     defp frame(output_line),
@@ -495,6 +497,63 @@ defmodule Mutare.PoisonTest do
         ])
 
       assert Mutare.Poison.macro_poison("just an ordinary error", metamutants) == []
+    end
+
+    test "ignores a definition head that shares the blamed macro's name" do
+      # `def query(a \\ (1 > 2))` parses exactly like a `query(...)` call; its default-arg
+      # mutation must NOT be attributed to the macro. Only the real `MyDsl.query(...)` counts.
+      src = ~S"""
+      defmodule R do
+        def query(a \\ (1 > 2)) do
+          a
+        end
+
+        def use_it(p, q) do
+          MyDsl.query(p > q)
+        end
+      end
+      """
+
+      {metamutants, sites} = transform(src, [Mutare.Mutators.Relational])
+      head_ids = for s <- sites, s.line == 2, do: s.id
+      call_ids = for s <- sites, s.line == 7, do: s.id
+      assert head_ids != [] and call_ids != []
+
+      assert [{{"MyDsl", :query}, ids}] =
+               Mutare.Poison.macro_poison(frame("expanding macro: MyDsl.query/1"), metamutants)
+
+      assert ids == MapSet.new(call_ids)
+      refute Enum.any?(head_ids, &MapSet.member?(ids, &1))
+    end
+
+    test "scans only the macro's call-site file, not its implementation frames" do
+      # A macro defined in the target project puts frames from its *implementation* file on the
+      # stack, BEFORE the `expanding macro:` marker; a same-named call there must not be swept
+      # in. Here the only `query(...)` call lives in the impl file — so if it were scanned we'd
+      # get its ids, but the call-site file (`lib/r.ex`, post-marker) has none.
+      {%{"lib/r.ex" => call_meta}, _} =
+        transform_at("lib/r.ex", "defmodule R do\n  def f(a, b), do: a + b\nend\n", [
+          Mutare.Mutators.Arithmetic
+        ])
+
+      {%{"lib/my_dsl.ex" => impl_meta}, impl_sites} =
+        transform_at(
+          "lib/my_dsl.ex",
+          "defmodule MyDsl do\n  defmacro query(e), do: e\n  def other(c, d), do: query(c > d)\nend\n",
+          [Mutare.Mutators.Relational]
+        )
+
+      assert impl_sites != []
+      metamutants = %{"lib/r.ex" => call_meta, "lib/my_dsl.ex" => impl_meta}
+
+      # Impl frame (pre-marker) then the call site (`lib/r.ex`, post-marker).
+      output =
+        "** (RuntimeError) boom\n" <>
+          "    lib/my_dsl.ex:3: MyDsl.\"MACRO-query\"/2\n" <>
+          "    expanding macro: MyDsl.query/1\n" <>
+          "    lib/r.ex:2: R.f/2\n"
+
+      assert Mutare.Poison.macro_poison(output, metamutants) == []
     end
   end
 end

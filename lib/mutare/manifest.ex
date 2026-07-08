@@ -143,16 +143,28 @@ defmodule Mutare.Manifest do
   # `{fun_name, lo, hi}` for every call — bare (`foo(a)`) or qualified (`Mod.foo(a)`) — whose
   # name is in `names`, ranged to its closing delimiter. A call Sourceror can't range is
   # dropped (nothing to attribute).
+  #
+  # A `def`/`defmacro` *head* is shaped exactly like a call (`def query(a \\ 1)` parses to
+  # `{:query, _, [...]}`), so we descend only into a definition's *body*, dropping its head from
+  # this walk — otherwise a function that merely shares the blamed macro's name would have its
+  # head/default/guard mutations attributed to the macro and dropped as poison. `Macro.traverse`
+  # (not `prewalk`) so the pre-hook can hand back a head-less node to keep walking.
   defp named_call_ranges(ast, names) do
     {_ast, calls} =
-      Macro.prewalk(ast, [], fn node, acc ->
-        case named_call(node, names) do
-          nil -> {node, acc}
-          call -> {node, [call | acc]}
-        end
-      end)
+      Macro.traverse(ast, [], &enter_named_call(&1, &2, names), fn node, acc -> {node, acc} end)
 
     calls
+  end
+
+  defp enter_named_call({kw, meta, [_head | body]}, acc, _names)
+       when kw in [:def, :defp, :defmacro, :defmacrop] and is_list(body),
+       do: {{kw, meta, body}, acc}
+
+  defp enter_named_call(node, acc, names) do
+    case named_call(node, names) do
+      nil -> {node, acc}
+      call -> {node, [call | acc]}
+    end
   end
 
   # A piped call `lhs |> fun(...)`: after pipe expansion `lhs` is `fun`'s *first* argument, so a

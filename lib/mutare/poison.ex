@@ -41,6 +41,10 @@ defmodule Mutare.Poison do
   alias Mutare.Poison.Hint
   alias Mutare.Sandbox.Command.Output
 
+  # The stacktrace marker separating a macro's expansion frames (above) from its call site
+  # (the next source-location frame below). Co-located with the call-site scan it drives.
+  @expanding_macro ~r/expanding macro:/
+
   @doc """
   The **macro-expansion fallback** attribution: mutant ids that live inside a call to a
   macro the compiler blamed, grouped by that macro.
@@ -85,14 +89,15 @@ defmodule Mutare.Poison do
     |> Enum.reject(fn {_macro, ids} -> Enum.empty?(ids) end)
   end
 
-  # The metamutant sources of the file(s) the compile error names (that we actually rendered).
-  # The poison is one file (the compiler stops at the first error), and its frames reference
-  # that file — so we scan only those, never every metamutant. A frame in a dependency file
-  # (not a key here) is dropped.
+  # The metamutant sources of the macro **call-site** file(s) — the source location on the frame
+  # that *follows* each `expanding macro:` marker. Deliberately not every `error_locations/1`
+  # file: a macro defined in the target project also puts frames from its *implementation* file
+  # (and Elixir internals) on the stack, *before* the marker; scanning those would drop valid
+  # mutants in an unrelated same-named call there as poison. A call-site file we didn't render
+  # (a dependency) is dropped.
   defp candidate_files(output, metamutants) do
     output
-    |> error_locations()
-    |> Enum.map(fn {file, _line} -> file end)
+    |> call_site_files()
     |> Enum.uniq()
     |> Enum.flat_map(fn file ->
       case Map.fetch(metamutants, file) do
@@ -100,6 +105,34 @@ defmodule Mutare.Poison do
         :error -> []
       end
     end)
+  end
+
+  # The file on the first source-location frame after each `expanding macro:` line — the site
+  # that invoked the macro. Frames *before* the marker are the macro's own expansion (its impl
+  # file + Elixir internals) and are ignored.
+  defp call_site_files(output) do
+    {_armed?, files} =
+      output
+      |> String.split("\n")
+      |> Enum.reduce({false, []}, fn line, {armed?, files} ->
+        cond do
+          Regex.match?(@expanding_macro, line) -> {true, files}
+          armed? -> arm_call_site(line, files)
+          true -> {false, files}
+        end
+      end)
+
+    Enum.reverse(files)
+  end
+
+  # Once armed by an `expanding macro:` marker, the next line carrying a source location is the
+  # call site: record its file and disarm. A non-location line (the marker's own blank/chatter)
+  # keeps us armed until the frame arrives.
+  defp arm_call_site(line, files) do
+    case Regex.run(Output.source_location_regex(), line) do
+      [_match, file, _num] -> {false, [file | files]}
+      _ -> {true, files}
+    end
   end
 
   defp merge_ids(acc, ids_by_name),
