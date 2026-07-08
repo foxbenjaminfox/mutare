@@ -571,6 +571,41 @@ defmodule Mutare.TransformDurationTest do
       assert {:integer, "1", "0"} in computed
     end
 
+    test "an interpolated string / atom at a configured position is held back" do
+      # Unlike a negative literal, an interpolated string/atom has no wrapper: `StringLiteral` /
+      # `AtomLiteral` fire on the argument node itself (the `<<>>` / `:erlang.binary_to_atom` call),
+      # so the mark on the argument reaches them directly — no fix needed, but pin it.
+      {_m, str} =
+        value_triples(
+          ~S|def f(c, bar), do: MyApp.put(c, "foo#{bar}")|,
+          [{Mutare.Mutators.StringLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]}]
+        )
+
+      assert str == []
+
+      {_m, atom} =
+        value_triples(
+          ~S|def f(c, bar), do: MyApp.put(c, :"foo#{bar}")|,
+          [{Mutare.Mutators.AtomLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]}]
+        )
+
+      assert atom == []
+
+      # A literal *inside* an interpolation (`#{5}`) is a nested sub-expression, so it still mutates
+      # — the same way `2` in `base * 2` does. (The mark froze the string's own mutation, not the
+      # computation embedded in it.)
+      {_m, inner} =
+        value_triples(
+          ~S|def f(c), do: MyApp.put(c, "x#{5}")|,
+          [
+            {Mutare.Mutators.StringLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]},
+            Mutare.Mutators.Literal
+          ]
+        )
+
+      assert {:literal, "5", "0"} in inner
+    end
+
     test "the option is per-family: Literal's config does not silence AtomLiteral there" do
       # Literal marks with its own label, so an atom at a Literal-configured position still mutates —
       # AtomLiteral takes `:skip_arguments` independently.
