@@ -1,0 +1,162 @@
+defmodule Mutare.Transform.Resolve.ArgumentMarks do
+  @moduledoc false
+
+  # The generic **argument-marking** facility: a way for a mutator to ask the transform to *mark*
+  # certain argument positions of certain calls, so the mutator can recognise them later and choose
+  # not to mutate there (or mutate differently). The transform stays domain-agnostic — it knows
+  # only "position P of call C carries label L" — while the *meaning* of a mark (e.g. "this is a
+  # timeout literal") lives entirely in the mutator that requested it
+  # (`c:Mutare.Mutator.argument_marks/0`). This is what replaced the hard-coded timeout table that
+  # used to live in the transform.
+  #
+  # Flow: `build/1` folds the enabled mutators' declarations into a registry keyed by the *resolved*
+  # `{module, function, arity}`. `Mutare.Transform.Resolve` calls `stamp/5` at each call it resolves,
+  # stamping the marked argument nodes' `meta[:mutare_marks]` (via `Mutare.Transform.Meta.add_marks/2`)
+  # with the union of labels. `Mutare.Transform.Analyze.Attach.offer/4` reads those marks back and
+  # hands them to the mutators as `context.marks`. The mutator (`c:Mutare.Mutator.mutate/2`) reads
+  # them and decides. See NOTES "Argument marks".
+  #
+  # Two behaviours fall out of "mark only the value node", rather than being special-cased:
+  #
+  #   * **Arity-keyed keyword options.** Keyword marks are looked up by the call's *effective* arity
+  #     just like positional ones, so `Task.async_stream/3` (fun form) and `/5` (MFA form) — whose
+  #     trailing arg is options — can be marked while `/4` — whose trailing arg is the callback
+  #     `args` list — is not, leaving a literal there to mutate.
+  #   * **Container-preserving scope.** Only the option *value* node is stamped, never the options
+  #     *list*, so a list-level mutation (`List` collapsing an explicit `[…]` to `[]`) is untouched —
+  #     a marked call behaves exactly like an unmarked one but for the held-back value.
+
+  alias Mutare.{AST, Mutator}
+  alias Mutare.Transform.{Aliases, Meta}
+
+  @typedoc "A resolved-call key: `{module_key, function, arity}` (arity is *effective* — pipe counted)."
+  @type call_key :: {Aliases.module_key(), atom(), arity()}
+
+  @typedoc """
+  The per-position label sets a call carries: `positional` maps an *effective* argument index to its
+  labels, `keyword` maps a trailing-option key to its labels.
+  """
+  @type entry :: %{
+          positional: %{arity() => MapSet.t(atom())},
+          keyword: %{atom() => MapSet.t(atom())}
+        }
+
+  @typedoc "The built registry — the resolved calls that carry marks."
+  @type registry :: %{call_key() => entry()}
+
+  @doc "The empty registry — no mutator asked to mark anything."
+  @spec empty() :: registry()
+  def empty, do: %{}
+
+  @doc """
+  Fold the enabled mutators' `c:Mutare.Mutator.argument_marks/0` declarations into a registry keyed
+  by the resolved `{module_key, function, arity}`, encoding each declared module the same way
+  `Mutare.Transform.Calls.resolved_call/1` keys on it (so a written `Process` matches a resolved
+  `[:Process]`). A mutator without the callback contributes nothing; two mutators marking the same
+  position union their labels.
+  """
+  @spec build([Mutator.Spec.t() | module()]) :: registry()
+  def build(mutators) do
+    mutators
+    |> Enum.flat_map(&declarations/1)
+    |> Enum.reduce(%{}, &add_declaration/2)
+  end
+
+  @doc """
+  Stamp the marked argument nodes of a resolved call with their labels, returning the (possibly
+  updated) argument list. `pipe_mode` is `:piped` for a `|>` stage — its receiver is effective
+  argument 0, so a marked effective index shifts one place off the visible list. Returns `args`
+  unchanged when the call carries no marks (the common path — a cheap map lookup).
+  """
+  @spec stamp([Macro.t()], Aliases.module_key(), atom(), Mutator.pipe_mode(), registry()) ::
+          [Macro.t()]
+  def stamp(args, module_key, fun, pipe_mode, registry) when is_list(args) do
+    offset = pipe_offset(pipe_mode)
+
+    case Map.get(registry, {module_key, fun, length(args) + offset}) do
+      nil -> args
+      entry -> args |> stamp_positional(entry.positional, offset) |> stamp_keyword(entry.keyword)
+    end
+  end
+
+  def stamp(args, _module_key, _fun, _pipe_mode, _registry), do: args
+
+  # --- registry build --------------------------------------------------------
+
+  defp declarations(mutator) do
+    module = module_of(mutator)
+    if function_exported?(module, :argument_marks, 0), do: module.argument_marks(), else: []
+  end
+
+  defp module_of(%Mutator.Spec{module: module}), do: module
+  defp module_of(module) when is_atom(module), do: module
+
+  # One declaration `{module, fun, arity, positions, label}` → labelled positions folded onto the
+  # resolved-call key. `positions` is a list of visible-argument *effective* indices and
+  # `{:keyword, key}` option keys.
+  defp add_declaration({module, fun, arity, positions, label}, registry) do
+    key = {Aliases.from_module(module), fun, arity}
+    entry = Map.get(registry, key, %{positional: %{}, keyword: %{}})
+    Map.put(registry, key, Enum.reduce(positions, entry, &add_position(&2, &1, label)))
+  end
+
+  defp add_position(entry, index, label) when is_integer(index),
+    do:
+      update_in(
+        entry.positional,
+        &Map.update(&1, index, MapSet.new([label]), fn s -> MapSet.put(s, label) end)
+      )
+
+  defp add_position(entry, {:keyword, key}, label) when is_atom(key),
+    do:
+      update_in(
+        entry.keyword,
+        &Map.update(&1, key, MapSet.new([label]), fn s -> MapSet.put(s, label) end)
+      )
+
+  # --- stamping --------------------------------------------------------------
+
+  defp stamp_positional(args, positional, _offset) when positional == %{}, do: args
+
+  defp stamp_positional(args, positional, offset) do
+    args
+    |> Enum.with_index()
+    |> Enum.map(fn {arg, visible_index} ->
+      case Map.get(positional, visible_index + offset) do
+        nil -> arg
+        labels -> Meta.add_marks(arg, labels)
+      end
+    end)
+  end
+
+  defp stamp_keyword(args, keyword) when keyword == %{}, do: args
+  defp stamp_keyword([], _keyword), do: []
+
+  defp stamp_keyword(args, keyword) do
+    {init, [last]} = Enum.split(args, -1)
+    init ++ [stamp_options(last, keyword)]
+  end
+
+  # The trailing options argument, in either shape: the bare `k: v` sugar (a keyword list) or an
+  # explicit `[k: v]` literal (which Sourceror wraps in a single-element `__block__`). Stamp the
+  # value of each marked key; leave the key, its neighbours, and the list wrapper untouched.
+  defp stamp_options({:__block__, meta, [inner]}, keyword) when is_list(inner),
+    do: {:__block__, meta, [stamp_options(inner, keyword)]}
+
+  defp stamp_options(kw, keyword) when is_list(kw),
+    do: Enum.map(kw, &stamp_option_pair(&1, keyword))
+
+  defp stamp_options(other, _keyword), do: other
+
+  defp stamp_option_pair({key, value}, keyword) do
+    case Map.get(keyword, AST.key_atom(key)) do
+      nil -> {key, value}
+      labels -> {key, Meta.add_marks(value, labels)}
+    end
+  end
+
+  defp stamp_option_pair(other, _keyword), do: other
+
+  defp pipe_offset(:piped), do: 1
+  defp pipe_offset(_unpiped), do: 0
+end

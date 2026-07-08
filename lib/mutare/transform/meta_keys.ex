@@ -61,9 +61,11 @@ defmodule Mutare.Transform.MetaKeys do
   #   * `:mutare_use_behaviours`   — `@behaviour`s a `use` injects (on the `use`)    (Uses)
   #   * `:mutare_use_degraded`     — `{module, reason}` a `use` failed to expand     (Uses, read by `--check`)
   #   * `:mutare_behaviours`       — a `defmodule`'s behaviour MapSet               (Behaviours)
+  #   * `:mutare_marks`            — mutator-requested position marks (label set)   (Resolve.ArgumentMarks, read by Attach.offer)
   @bookkeeping_keys [
     tag_key: :mutare_tag,
     nid_key: :mutare_nid,
+    marks_key: :mutare_marks,
     alias_key: :mutare_alias,
     import_key: :mutare_import,
     import_witness_key: :mutare_import_witness,

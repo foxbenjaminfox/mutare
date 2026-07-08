@@ -4,7 +4,7 @@ defmodule Mutare.Mutators.IntegerLiteral do
 
   Only literals in *runtime* positions are mutated, never pattern literals. Mutations that would reproduce the original value are dropped (`0` is not re-emitted for the literal `0`; `n - 1` and `0` collapse for `n = 1`).
 
-  An integer literal in a known **timeout/duration position** (`Process.sleep/1`, the third argument of `Process.send_after/3`, the `GenServer.call/3` timeout, `Task.async_stream`'s `:timeout` option, …) is left unmutated — a near-unkillable equivalent mutant that also risks minting false `:timeout` kills. This is a positional exclusion owned by the analyze pass, not this family; see `Mutare.Transform.Analyze.Durations`. A *computed* duration (`base * 2`) still mutates.
+  An integer literal in a known **timeout/duration position** (`Process.sleep/1`, the third argument of `Process.send_after/3`, the `GenServer.call/3` timeout, `Task.async_stream`'s `:timeout` option, …) is left unmutated — a near-unkillable equivalent mutant that also risks minting false `:timeout` kills. This family owns that knowledge: `c:Mutare.Mutator.argument_marks/0` asks the transform to mark those positions with the `:timeout` label, and `mutate/2` declines when the mark is present. A *computed* duration (`base * 2`) is not a literal at the marked node, so it still mutates. (`Mutare.Mutators.AtomLiteral` reuses the same table to leave `:infinity` alone there.)
 
   Integer literals are pervasive, so this is the highest-volume built-in — the cost is paid in the denominator, the benefit is catching constants the suite never pins down. The integer sibling of `Mutare.Mutators.FloatLiteral` (`step` 1, `zero` 0); the boolean flip that used to share this family now lives in `Mutare.Mutators.BooleanLiteral`.
 
@@ -14,8 +14,66 @@ defmodule Mutare.Mutators.IntegerLiteral do
 
   alias Mutare.Mutators.Helpers
 
+  # The shared mark label for a duration/timeout literal. Public so `Mutare.Mutators.AtomLiteral`
+  # reacts to the same label on the same positions (see `argument_marks/0`).
+  @timeout_mark :timeout
+
+  # The timeout/duration argument positions this family (and AtomLiteral) leaves alone, keyed by
+  # the call's **effective** arity — a piped receiver counts as argument 0, and an arity whose
+  # trailing list is data rather than options (`Task.async_stream/4`, the MFA callback-args form) is
+  # deliberately absent. `{module, function, effective_arity, [effective_index]}`.
+  @timeout_positional [
+    {Process, :sleep, 1, [0]},
+    {:timer, :sleep, 1, [0]},
+    {Process, :send_after, 3, [2]},
+    {Process, :send_after, 4, [2]},
+    {GenServer, :call, 3, [2]},
+    {GenServer, :stop, 3, [2]},
+    {Agent, :stop, 3, [2]},
+    {Supervisor, :stop, 3, [2]},
+    {Task, :await, 2, [1]},
+    {Task, :await_many, 2, [1]},
+    {Task, :yield, 2, [1]},
+    {Task, :yield_many, 2, [1]},
+    {Task, :shutdown, 2, [1]}
+  ]
+
+  # The trailing-keyword timeout *options*, keyed by effective arity for the same reason — only the
+  # option-bearing arities appear. `{module, function, effective_arity, [option_key]}`.
+  @timeout_keyword [
+    {Task, :async_stream, 3, [:timeout]},
+    {Task, :async_stream, 5, [:timeout]},
+    {Task.Supervisor, :async_stream, 4, [:timeout]},
+    {Task.Supervisor, :async_stream, 6, [:timeout]},
+    {Task, :yield_many, 2, [:timeout]}
+  ]
+
   @impl Mutare.Mutator
   def name, do: :integer
+
+  @doc """
+  The timeout/duration argument marks this family requests (the `:timeout` label). Public so
+  `Mutare.Mutators.AtomLiteral` can declare the identical positions — keeping the two value families'
+  view of "an opaque timeout literal" in one place.
+  """
+  @impl Mutare.Mutator
+  def argument_marks do
+    Enum.map(@timeout_positional, fn {mod, fun, arity, indices} ->
+      {mod, fun, arity, indices, @timeout_mark}
+    end) ++
+      Enum.map(@timeout_keyword, fn {mod, fun, arity, keys} ->
+        {mod, fun, arity, Enum.map(keys, &{:keyword, &1}), @timeout_mark}
+      end)
+  end
+
+  # Decline at a marked timeout position (an integer there is a magic duration constant the suite
+  # can't pin — a near-unkillable equivalent mutant); otherwise mutate the node normally. `mutate/2`
+  # takes precedence over `mutate/1` at dispatch, so the gate applies to every offer while the
+  # node-level `mutate/1` clauses below stay reusable (and directly callable in tests).
+  @impl Mutare.Mutator
+  def mutate(node, context) do
+    if Mutare.Mutator.marked?(context, @timeout_mark), do: :skip, else: mutate(node)
+  end
 
   @impl Mutare.Mutator
   def mutate({:__block__, _meta, [n]}) when is_integer(n), do: Helpers.numeric_mutations(n, 1, 0)

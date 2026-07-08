@@ -63,9 +63,10 @@ stages are the whole game. Each entry is a one-line role + the moduledoc to read
   - **`Analyze`** — the context-threaded recursive descent that names each position's context
     (`:runtime` / `:pattern` / `:scaffold` / `:compile_time` / …) and attaches a typed candidate to
     each mutatable node's own metadata. This is where most routing subtlety lives (patterns, pipes,
-    conditions with escaping bindings, keyword keys, macros, duration/timeout positions
-    (`Analyze.Durations` — a signal-quality exclusion, NOTES "Duration-argument literals")) — read
-    the moduledoc before editing it.
+    conditions with escaping bindings, keyword keys, macros) — read the moduledoc before editing it.
+    Positions a mutator asked to leave alone (e.g. timeout literals) are stamped in the resolve
+    pre-pass by `Resolve.ArgumentMarks` and read back as `context.marks` — a general facility, NOTES
+    "Argument marks".
   - **`ModulePlan` / `FunctionPlan` / `Candidate.*`** — the IR: statements classified into items,
     liftable clause groups, and one typed struct per legal mutation kind.
   - **Emit** (`emit/2`, plus pure helpers `ClauseAST` / `GuardBuild` / `LiftedEmit` /
@@ -196,6 +197,7 @@ contract docs on the behaviour. Capability behaviours are declared alongside `Mu
 | Selector-hosting (mutate inside a DSL fragment) | subscribe via `Mutator.MacroHost.hosted_macros/0` + implement `host/2` | `host_mutator.ex` |
 | Sub-contract an Elixir island (pin interior) to core | `Mutare.Analyze.expression_mutations/3` over `context.mutators` (in `host/2`, or in `mutate/2` at a registered macro's whole-call offer), relayed with `producer:` | `host_mutator.ex` (`SubcontractHostMutator`) / `macro_mutator.ex` (`SubcontractNodeMutator`) |
 | Deployment requirement (routed library must be loadable) | `required_modules/0` (checked once at startup, on mutators and extensions) | `environment_fixtures.ex` |
+| Leave a call-argument position alone (mark it, then decline) | `argument_marks/0` (declare `{mod, fun, arity, positions, label}`) + read `Mutare.Mutator.marked?/2` in `mutate/2` | `IntegerLiteral` timeout table (`transform_duration_test.exs` `MarkingMutator`) |
 | Per-kind `# mutare:ignore` qualifier | `variants/0` (opt-in) + tag via `Mutation.tagged/2` *or* `variant/2` | (value & operator families) |
 
 An **extension** is a non-mutating module implementing `Mutare.MacroRouting`,

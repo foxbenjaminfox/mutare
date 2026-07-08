@@ -182,4 +182,37 @@ defmodule Mutare.Transform.Meta do
     do: {form, [{MetaKeys.tag_key(), tag} | meta], args}
 
   def put_tag(node, _tag), do: node
+
+  # --- mutator-requested position marks --------------------------------------
+
+  @doc """
+  The set of position-mark labels stamped on a node (`:mutare_marks`), or an empty set for an
+  unmarked node or a bare literal. Stamped by `Mutare.Transform.Resolve.ArgumentMarks` at a position
+  some enabled mutator asked to mark (`c:Mutare.Mutator.argument_marks/0`) and surfaced to the
+  mutators as `context.marks` by `Mutare.Transform.Analyze.Attach.offer/4`.
+  """
+  # A shared empty set so the common *unmarked* node — every node but the few a mutator asked to
+  # mark — costs no allocation on the per-node offer path (the scan is heap-sensitive; NOTES "Scan
+  # is transform-bound").
+  @empty_marks MapSet.new()
+
+  @spec marks(Macro.t()) :: MapSet.t(atom())
+  def marks({_form, meta, _args}) when is_list(meta),
+    do: Keyword.get(meta, MetaKeys.marks_key(), @empty_marks)
+
+  def marks(_node), do: @empty_marks
+
+  @doc """
+  Add `labels` (an enumerable of atoms) to a node's position-mark set (`:mutare_marks`), unioning
+  with any already present. Total over a bare literal that carries no metadata (nothing to stamp).
+  """
+  @spec add_marks(Macro.t(), Enumerable.t()) :: Macro.t()
+  def add_marks({form, meta, args}, labels) when is_list(meta) do
+    merged =
+      MapSet.union(Keyword.get(meta, MetaKeys.marks_key(), MapSet.new()), MapSet.new(labels))
+
+    {form, [{MetaKeys.marks_key(), merged} | Keyword.delete(meta, MetaKeys.marks_key())], args}
+  end
+
+  def add_marks(node, _labels), do: node
 end

@@ -378,7 +378,14 @@ defmodule Mutare.Transform do
         extensions
       )
 
-    {transformed, ctx} = transform_node(annotate_tree(parsed, opts, extensions, macros), ctx)
+    # The argument-mark registry (`Mutare.Transform.Resolve.ArgumentMarks`): the positions the
+    # enabled mutators asked the transform to mark (`c:Mutare.Mutator.argument_marks/0`), stamped
+    # at each resolved call so those mutators can recognise and decline them. Domain-agnostic here —
+    # the meaning of each mark lives in the requesting mutator (e.g. `Literal`'s timeout table).
+    marks = Mutare.Transform.Resolve.ArgumentMarks.build(config.mutators)
+
+    {transformed, ctx} =
+      transform_node(annotate_tree(parsed, opts, extensions, macros, marks), ctx)
 
     {transformed, ctx, parsed}
   end
@@ -445,7 +452,7 @@ defmodule Mutare.Transform do
   # a later `import`'s module — the single fold gets it right), stamping each call with the module
   # it refers to (an aliased `S.upcase` seen as `String.upcase`, a bare imported `reject(xs, f)` as
   # `Enum.reject`) and each known-macro call with its argument routing.
-  defp annotate_tree(parsed, opts, extensions, macros) do
+  defp annotate_tree(parsed, opts, extensions, macros, marks) do
     expanded =
       if Keyword.get(opts, :expand_uses, true),
         do: Uses.annotate(parsed, extensions),
@@ -455,7 +462,8 @@ defmodule Mutare.Transform do
 
     Resolve.annotate(with_behaviours, macros,
       warnings: Keyword.get(opts, :warnings, true),
-      file: Keyword.get(opts, :file, "nofile")
+      file: Keyword.get(opts, :file, "nofile"),
+      marks: marks
     )
   end
 

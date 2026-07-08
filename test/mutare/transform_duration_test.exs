@@ -1,10 +1,39 @@
 defmodule Mutare.TransformDurationTest do
-  # Duration/timeout-argument suppression (`Mutare.Transform.Analyze.Durations`): a *literal*
-  # duration (an integer count of milliseconds, or `:infinity`) in a known timeout position is
-  # left unmutated — a near-unkillable equivalent mutant — while a *computed* duration, and every
-  # other argument, still mutates. Resolution rides on the same reader the call families use, so
-  # aliased / imported / Erlang-atom forms are recognised and a shadowing alias is not.
+  # Duration/timeout-argument suppression, the flagship user of the general argument-marking facility
+  # (`Mutare.Transform.Resolve.ArgumentMarks` + `c:Mutare.Mutator.argument_marks/0`): `Literal` and
+  # `AtomLiteral` ask the transform to mark the timeout positions with the `:timeout` label and
+  # decline there, so a *literal* duration (an integer count of milliseconds, or `:infinity`) is left
+  # unmutated — a near-unkillable equivalent mutant — while a *computed* duration, and every other
+  # argument, still mutates. Resolution rides on the same reader the call families use, so aliased /
+  # imported / Erlang-atom forms are recognised and a shadowing alias is not. The final `describe`
+  # exercises the facility itself with a custom mutator, showing it isn't timeout-specific.
   use ExUnit.Case, async: true
+
+  # A third-party mutator exercising the general facility: it marks argument 1 of `Widget.render/2`
+  # (and the `:mode` option of `Widget.stream/2`) with its *own* label, and declines integer
+  # mutations there — nothing timeout-specific, and a function core knows nothing about.
+  defmodule MarkingMutator do
+    @behaviour Mutare.Mutator
+    @impl true
+    def name, do: :marking
+
+    @impl true
+    def argument_marks do
+      [
+        {Widget, :render, 2, [1], :pinned},
+        {Widget, :stream, 2, [{:keyword, :mode}], :pinned}
+      ]
+    end
+
+    @impl true
+    def mutate(node, context) do
+      if Mutare.Mutator.marked?(context, :pinned), do: :skip, else: mutate(node)
+    end
+
+    @impl true
+    def mutate({:__block__, _meta, [n]}) when is_integer(n), do: [Mutare.AST.literal(n + 1)]
+    def mutate(_node), do: :skip
+  end
 
   # The two value families that would otherwise fire on a duration literal: Literal on an integer
   # (succ/pred/zero), AtomLiteral on `:infinity` (→ the sentinel).
@@ -332,6 +361,39 @@ defmodule Mutare.TransformDurationTest do
 
       refute Enum.any?(triples, fn {_m, o, _} -> o == "5000" end)
       assert_compiles(meta)
+    end
+  end
+
+  describe "the marking facility is general (not timeout-specific)" do
+    test "a custom mutator's declared position is marked, and it declines there" do
+      # `MarkingMutator` marks `Widget.render/2`'s arg 1 — a function core knows nothing about — so
+      # it skips the `2` while still mutating the unmarked `1` at arg 0.
+      {_m, triples} = value_triples("def f, do: Widget.render(1, 2)", [MarkingMutator])
+
+      assert {:marking, "1", "2"} in triples
+      refute Enum.any?(triples, fn {_m, original, _} -> original == "2" end)
+    end
+
+    test "a mark is opt-in per label — a mutator that didn't request it still fires there" do
+      # `IntegerLiteral` reacts to `:timeout`, not `:pinned`, so it mutates the `:pinned`-marked node
+      # normally; only `MarkingMutator` declines it. Marks are a label a mutator opts into, not a
+      # blanket suppression of the position.
+      {_m, triples} =
+        value_triples("def f, do: Widget.render(1, 2)", [
+          MarkingMutator,
+          Mutare.Mutators.IntegerLiteral
+        ])
+
+      assert {:integer, "2", "3"} in triples
+      assert {:marking, "1", "2"} in triples
+      refute {:marking, "2", "3"} in triples
+    end
+
+    test "a custom keyword-option mark works too" do
+      # `Widget.stream/2`'s `:mode` option value is marked, so its literal is declined.
+      {_m, triples} = value_triples("def f(e), do: Widget.stream(e, mode: 1)", [MarkingMutator])
+
+      refute Enum.any?(triples, fn {m, original, _} -> m == :marking and original == "1" end)
     end
   end
 

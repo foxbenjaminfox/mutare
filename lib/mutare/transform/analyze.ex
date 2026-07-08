@@ -42,7 +42,6 @@ defmodule Mutare.Transform.Analyze do
     ClausePatterns,
     Conditions,
     DefClause,
-    Durations,
     Macros,
     MatchPatterns,
     QuoteEscape,
@@ -763,7 +762,7 @@ defmodule Mutare.Transform.Analyze do
         # which analyses its args — including a real bitstring arg — correctly.
         if context.pipe_mode == :unpiped and sigil?(form) and Keyword.has_key?(meta, :delimiter),
           do: descend_sigil(node, mutators),
-          else: node |> descend_call_children(mutators, context) |> descend_receiver(mutators)
+          else: node |> recurse_runtime(mutators) |> descend_receiver(mutators)
 
       routing ->
         Macros.analyze_known_macro(__MODULE__, node, routing, mutators, context)
@@ -879,99 +878,6 @@ defmodule Mutare.Transform.Analyze do
   end
 
   defp recurse_runtime(node, mutators), do: recurse(node, :runtime, mutators)
-
-  # The children of a runtime call: the ordinary runtime descent (`recurse_runtime/2`), except
-  # that a call resolving to a known **duration/timeout position** (`Analyze.Durations`) leaves a
-  # *literal* duration argument raw (`recurse_duration_args/3`). `context` carries the pipe flag,
-  # since a `|>` stage's visible arguments are shifted one place from the call's effective
-  # signature. A non-`args` head (a bare variable read reaching the runtime clause) has nothing to
-  # classify and takes the plain path.
-  defp descend_call_children({_form, _meta, args} = node, mutators, context) when is_list(args) do
-    case Durations.classify(node, context.pipe_mode) do
-      :none -> recurse_runtime(node, mutators)
-      spec -> node |> recurse_duration_args(spec, mutators) |> CallOptions.mark()
-    end
-  end
-
-  defp descend_call_children(node, mutators, _context), do: recurse_runtime(node, mutators)
-
-  # A duration call's arguments: the *literal* duration positions are held back from mutators (no
-  # candidate, so the value families never mint the near-unkillable off-by-one / sentinel mutant
-  # there — NOTES "Duration-argument literals"), every other argument descends as ordinary
-  # runtime. `spec` (from `Durations`) names the visible positional indices and, for the trailing
-  # keyword list, the option keys that carry a duration. A *computed* duration (a variable,
-  # `@attr`, `base * 2`) is not a literal, so it descends and mutates like any other expression.
-  defp recurse_duration_args({form, meta, args}, spec, mutators) do
-    last_index = length(args) - 1
-
-    args =
-      args
-      |> Enum.with_index()
-      |> Enum.map(fn {arg, index} ->
-        cond do
-          # A trailing options keyword list — the `k: v` sugar (a bare keyword list) or an explicit
-          # `[k: v]` literal (which Sourceror wraps in a single-element `__block__`). Descend it
-          # *normally* — so the list-level mutations it would ordinarily get (notably `List`'s `[]`
-          # collapse on an explicit `[…]`) are offered exactly as on any other call — then strip only
-          # the duration option's own value candidate (`prune_duration_options/2`). Checked before
-          # the positional branch so a call whose timeout accepts *both* a bare literal and an
-          # options list (`Task.yield_many/2`) routes an options list here and a bare timeout to the
-          # positional branch below.
-          index == last_index and spec.keyword_keys != [] and trailing_options?(arg) ->
-            arg |> analyze(:runtime, mutators) |> prune_duration_options(spec.keyword_keys)
-
-          index in spec.positional ->
-            suppress_duration_value(arg, mutators)
-
-          true ->
-            analyze(arg, :runtime, mutators)
-        end
-      end)
-
-    {form, meta, args}
-  end
-
-  # A call's trailing argument as an options keyword list, in either shape it takes: the bare
-  # `k: v` sugar (a keyword list) or an explicit `[k: v]` literal (which Sourceror wraps in a
-  # single-element `__block__`). Anything else — a scalar, a variable, a non-keyword list — is not
-  # options, so the duration option handling is skipped and the argument descends normally.
-  defp trailing_options?({:__block__, _meta, [inner]}),
-    do: CallOptions.keyword_list_shaped?(inner)
-
-  defp trailing_options?(arg), do: CallOptions.keyword_list_shaped?(arg)
-
-  # After the trailing options list has been analyzed normally, strip the in-place candidate from a
-  # *duration* option's literal value — and nothing else. Scoped deliberately: the option *key*, a
-  # neighbouring option's value, and any *list-level* mutation (`List` collapsing an explicit `[…]`
-  # to `[]`) are all left exactly as the normal descent produced them — the feature suppresses the
-  # duration *value*, not the shape of the options list, and never behaves differently from an
-  # off-table call except at that one value. Walks the bare keyword list and the `__block__`-wrapped
-  # explicit-list shape alike.
-  defp prune_duration_options({:__block__, meta, [inner]}, keys) when is_list(inner),
-    do: {:__block__, meta, [prune_duration_options(inner, keys)]}
-
-  defp prune_duration_options(kw, keys) when is_list(kw),
-    do: Enum.map(kw, &prune_duration_option_pair(&1, keys))
-
-  defp prune_duration_options(other, _keys), do: other
-
-  # Clear the value's own candidate for a duration option whose value is a literal duration; leave
-  # every other pair (and a *computed* duration value) untouched. `Attach.put_candidates(value, [])`
-  # drops the in-place candidate the descent just attached — for a bare literal that is exactly the
-  # `Literal`/`AtomLiteral` mutation, the same node the positional path leaves raw.
-  defp prune_duration_option_pair({key, value}, keys) do
-    if AST.key_atom(key) in keys and Durations.suppressible_literal?(value),
-      do: {key, Attach.put_candidates(value, [])},
-      else: {key, value}
-  end
-
-  defp prune_duration_option_pair(other, _keys), do: other
-
-  # Leave a *literal* duration (an integer or `:infinity`) raw; analyze anything else as ordinary
-  # runtime. The one spot the duration suppression actually holds a node back from the mutators.
-  defp suppress_duration_value(arg, mutators) do
-    if Durations.suppressible_literal?(arg), do: arg, else: analyze(arg, :runtime, mutators)
-  end
 
   # Generic structural descent over every Sourceror node shape, re-analyzing the
   # children in the same context. Public as part of the small sub-walk API the

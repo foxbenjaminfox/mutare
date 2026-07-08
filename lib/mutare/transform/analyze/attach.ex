@@ -34,10 +34,18 @@ defmodule Mutare.Transform.Analyze.Attach do
   # `Mutare.Transform.Analyze.Macros` offers a known-macro node through here
   # (`offer(node, node, mutators, context)`).
   def offer(subject, raw, mutators, context \\ %{pipe_mode: :unpiped}) do
-    case Dispatch.mutations(raw, mutators, context) do
+    case Dispatch.mutations(raw, mutators, with_marks(context, raw)) do
       [] -> subject
       muts -> put_candidates(subject, build_candidates(raw, muts))
     end
+  end
+
+  # Surface the position marks stamped on `raw` (by `Mutare.Transform.Resolve.ArgumentMarks`, at a
+  # position some mutator asked to mark) to the mutators as `context.marks`. Added only when the
+  # node actually carries marks, so an unmarked offer — the overwhelming majority — is untouched.
+  defp with_marks(context, raw) do
+    marks = Meta.marks(raw)
+    if MapSet.size(marks) == 0, do: context, else: Map.put(context, :marks, marks)
   end
 
   # Build node-level `Candidate.InPlace`s from a node and a mutator result list — the raw

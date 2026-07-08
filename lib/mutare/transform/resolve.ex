@@ -40,7 +40,7 @@ defmodule Mutare.Transform.Resolve do
   alias Mutare.MacroRouting.Registry, as: Macros
   alias Mutare.Mutator
   alias Mutare.Transform.{Aliases, Imports, MetaKeys, ModuleScope, Uses}
-  alias Mutare.Transform.Resolve.{MacroStamp, NodeIds}
+  alias Mutare.Transform.Resolve.{ArgumentMarks, MacroStamp, NodeIds}
 
   @doc "Stamp remote calls, bare imported calls, and bare imported captures with their resolved module."
   @spec annotate(Macro.t()) :: Macro.t()
@@ -71,6 +71,7 @@ defmodule Mutare.Transform.Resolve do
       # by short name then resolves to what the compiler defines (`Outer.Foo`, not the bare `Foo`).
       module: nil,
       macro_routes: registry,
+      marks: Keyword.get(opts, :marks, ArgumentMarks.empty()),
       diag: %{
         warn?: Keyword.get(opts, :warnings, true),
         file: Keyword.get(opts, :file, "nofile")
@@ -162,7 +163,7 @@ defmodule Mutare.Transform.Resolve do
         env.diag
       )
 
-    {{:., dot_meta, [stamped, fun]}, call_meta, descend(args, env)}
+    {{:., dot_meta, [stamped, fun]}, call_meta, descend_marked(args, module_key, fun, env)}
   end
 
   # A direct Erlang/atom-module remote call `:mod.fun(...)`: the receiver is a bare (or Sourceror-
@@ -205,7 +206,7 @@ defmodule Mutare.Transform.Resolve do
             env.diag
           )
 
-        {{:., dot_meta, [mod, fun]}, call_meta, descend(args, env)}
+        {{:., dot_meta, [mod, fun]}, call_meta, descend_marked(args, module_key, fun, env)}
     end
   end
 
@@ -221,7 +222,7 @@ defmodule Mutare.Transform.Resolve do
   # head, so it opens NO scope: treating its `do` block as an Elixir module body would resolve/route
   # interior calls against a module that needn't exist. Must precede the bare-call clause below.
   defp walk({:defmodule, meta, [head, body] = args}, env) when is_list(body) do
-    meta = stamp_bare_call(:defmodule, meta, args, env)
+    {meta, _module_key} = stamp_bare_call(:defmodule, meta, args, env)
 
     body_env =
       if kernel_module_definer?(:defmodule, meta, args, env),
@@ -243,7 +244,7 @@ defmodule Mutare.Transform.Resolve do
   # gate): a displaced `defimpl` (a DSL macro over Kernel's) defines no `P.T`, so it falls back to
   # ordinary traversal in the enclosing scope. Must precede the bare-call clause.
   defp walk({:defimpl, meta, args}, env) when is_list(args) and length(args) >= 2 do
-    meta = stamp_bare_call(:defimpl, meta, args, env)
+    {meta, _module_key} = stamp_bare_call(:defimpl, meta, args, env)
     enclosing = %{env | pipe_mode: :unpiped}
 
     if kernel_module_definer?(:defimpl, meta, args, env) do
@@ -260,7 +261,8 @@ defmodule Mutare.Transform.Resolve do
   # the current pipe context for effective arity, then — when it resolves to a known macro —
   # its argument routing, then descend the arguments un-piped.
   defp walk({fun, meta, args}, env) when is_atom(fun) and is_list(args) do
-    {fun, stamp_bare_call(fun, meta, args, env), descend(args, env)}
+    {meta, module_key} = stamp_bare_call(fun, meta, args, env)
+    {fun, meta, descend_marked(args, module_key, fun, env)}
   end
 
   # Any other n-ary node (`__aliases__`, operators with a tuple form, …): nothing to stamp —
@@ -275,22 +277,26 @@ defmodule Mutare.Transform.Resolve do
   # clause: the resolved import (or Kernel displacement) using the current pipe context
   # for effective arity, then — when the call resolves to a known macro — its argument
   # routing. The macro stamp runs *after* `Imports.stamp` so it can read the just-applied
-  # import / Kernel-displacement marks.
+  # import / Kernel-displacement marks. Returns `{meta, module_key}` so the caller can also
+  # stamp any argument marks the resolved module/function carries (`descend_marked/4`).
   defp stamp_bare_call(fun, meta, args, env) do
     meta = Imports.stamp(fun, meta, args, env.imports, env.kernel, env.pipe_mode)
     arity = Mutator.effective_arity(args, env.pipe_mode)
     module_key = bare_module_key(fun, arity, meta, env)
 
-    MacroStamp.stamp(
-      meta,
-      module_key,
-      fun,
-      args,
-      {fun, meta, args},
-      env.macro_routes,
-      env.pipe_mode,
-      env.diag
-    )
+    meta =
+      MacroStamp.stamp(
+        meta,
+        module_key,
+        fun,
+        args,
+        {fun, meta, args},
+        env.macro_routes,
+        env.pipe_mode,
+        env.diag
+      )
+
+    {meta, module_key}
   end
 
   defp descend(args, env), do: Enum.map(args, &walk(&1, %{env | pipe_mode: :unpiped}))
@@ -323,6 +329,13 @@ defmodule Mutare.Transform.Resolve do
     |> Enum.drop(1)
     |> Enum.find_value(fn arg -> if is_list(arg), do: ModuleScope.for_type(arg) end)
   end
+
+  # `descend/2`, preceded by stamping any argument marks the resolved `{module_key, fun}` carries
+  # (`Mutare.Transform.Resolve.ArgumentMarks`). The marks are computed against the call's own pipe
+  # context (a piped receiver is effective arg 0), then the marked nodes are descended un-piped like
+  # every other argument — the stamp rides through untouched.
+  defp descend_marked(args, module_key, fun, env),
+    do: args |> ArgumentMarks.stamp(module_key, fun, env.pipe_mode, env.marks) |> descend(env)
 
   defp capture_arity(n) when is_integer(n) and n >= 0, do: {:ok, n}
   defp capture_arity({:__block__, _meta, [n]}) when is_integer(n) and n >= 0, do: {:ok, n}
