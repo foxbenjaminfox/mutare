@@ -26,16 +26,20 @@ defmodule Mutare.Transform.Resolve do
   # rather than two passes: a second pass would rebuild the same alias env to resolve imports.
   #
   # The env: `aliases` (the alias map), `imports` (`%{module_path => selector}`), `kernel`
-  # (the tracked `Kernel` selector, default `:all`), and `pipe_mode` (`:piped`/`:unpiped` —
-  # whether the current node is a `|>` right-hand side, so `Imports` can recover a piped call's
-  # effective arity). Bare function captures (`&fun/N`) are not calls syntactically, but when
+  # (the tracked `Kernel` selector, default `:all`), `pipe_mode` (`:piped`/`:unpiped` — whether the
+  # current node is a `|>` right-hand side, so `Imports` can recover a piped call's effective
+  # arity), and `module` (the enclosing module, `nil` at the top level — the one piece of module
+  # scope this pass tracks, so `Mutare.Transform.ModuleScope` can fold the implicit alias a nested
+  # `defmodule` introduces; a call to a sibling nested module by short name then resolves to the
+  # module Elixir defines, matching a `:macro_routes` entry keyed on it). Bare function captures
+  # (`&fun/N`) are not calls syntactically, but when
   # `fun/N` resolves to an import they get the same import stamp a synthesized `fun(args…)` probe
   # needs for capture mutation.
 
   alias Mutare.AST
   alias Mutare.MacroRouting.Registry, as: Macros
   alias Mutare.Mutator
-  alias Mutare.Transform.{Aliases, Imports, MetaKeys, Uses}
+  alias Mutare.Transform.{Aliases, Imports, MetaKeys, ModuleScope, Uses}
   alias Mutare.Transform.Resolve.{MacroStamp, NodeIds}
 
   @doc "Stamp remote calls, bare imported calls, and bare imported captures with their resolved module."
@@ -62,6 +66,10 @@ defmodule Mutare.Transform.Resolve do
       imports: %{},
       kernel: Imports.default_selector(),
       pipe_mode: :unpiped,
+      # The enclosing module (`nil` at the file top level), threaded so `ModuleScope` can fold the
+      # implicit alias Elixir introduces for a nested module — a sibling nested module referred to
+      # by short name then resolves to what the compiler defines (`Outer.Foo`, not the bare `Foo`).
+      module: nil,
       macro_routes: registry,
       diag: %{
         warn?: Keyword.get(opts, :warnings, true),
@@ -217,7 +225,17 @@ defmodule Mutare.Transform.Resolve do
        when is_list(body) do
     meta = stamp_bare_call(:defmodule, meta, args, env)
     stamped = Aliases.stamp_module(head, env.aliases)
-    {:defmodule, meta, [stamped, walk(body, %{env | pipe_mode: :unpiped})]}
+    # Track the module we're entering (so a nested body/sibling reference resolves), plus the
+    # in-body self-alias the head introduces. A non-static segment yields the unresolved sentinel,
+    # under which nested modules stay unresolved. (A fully dynamic head — `defmodule unquote(x)` —
+    # falls through to the bare-call clause and keeps the enclosing module; it can't be named.)
+    child = ModuleScope.child_module(head, env.module, env.aliases)
+
+    body_aliases =
+      ModuleScope.register_defined_module({:defmodule, [], [head]}, env.module, env.aliases)
+
+    body_env = %{env | pipe_mode: :unpiped, module: child, aliases: body_aliases}
+    {:defmodule, meta, [stamped, walk(body, body_env)]}
   end
 
   # A bare call `fun(...)`: stamp it with its resolved import (or Kernel-displacement) using
@@ -276,12 +294,13 @@ defmodule Mutare.Transform.Resolve do
     end
   end
 
-  # Extend the env from one statement: the alias env (any statement, no-op unless an `alias`)
-  # and then the import env / Kernel selector (no-op unless an `import`). Imports resolve their
-  # module through the *just-updated* alias env (an `import` is never an `alias`, so it is the
-  # env in force).
+  # Extend the env from one statement: the alias env (any statement — an explicit `alias`, or the
+  # implicit alias a nested `defmodule`/`defprotocol` introduces for its following siblings, via
+  # `ModuleScope`) and then the import env / Kernel selector (no-op unless an `import`). Imports
+  # resolve their module through the *just-updated* alias env (an `import` is never an `alias`, so
+  # it is the env in force).
   defp register(stmt, env) do
-    aliases = Aliases.register(stmt, env.aliases)
+    aliases = ModuleScope.register_lexical(stmt, env.module, env.aliases)
     {imports, kernel} = Imports.register(stmt, aliases, env.imports, env.kernel)
     env = %{env | aliases: aliases, imports: imports, kernel: kernel}
     fold_use_directives(stmt, env)

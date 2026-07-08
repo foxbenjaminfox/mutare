@@ -36,7 +36,7 @@ defmodule Mutare.Transform.Behaviours do
   # *inherit* into nested modules (each module declares its own), which falls out of
   # stamping each `defmodule` from its own body only.
 
-  alias Mutare.Transform.{Aliases, MetaKeys, Uses}
+  alias Mutare.Transform.{Aliases, MetaKeys, ModuleScope, Uses}
 
   @behaviours_key MetaKeys.behaviours_key()
 
@@ -47,7 +47,7 @@ defmodule Mutare.Transform.Behaviours do
   `Resolve.annotate/2` (which preserves the stamp when it prepends nids).
   """
   @spec annotate(Macro.t()) :: Macro.t()
-  def annotate(ast), do: walk(ast, %{})
+  def annotate(ast), do: walk(ast, nil, %{})
 
   @doc """
   The behaviour `MapSet` stamped on a module node's meta, or the empty set for any other
@@ -60,50 +60,70 @@ defmodule Mutare.Transform.Behaviours do
   # --- the walk --------------------------------------------------------------
 
   # A module scope: compute its behaviour set from its own body, stamp it, then descend the
-  # body (so nested modules are stamped too) under the alias env in force. The set is
-  # computed from the body's *direct* statements only — a nested module's `@behaviour`
-  # belongs to it, not the parent — so no behaviour leaks across the boundary.
-  defp walk({form, meta, [mod_ast, [{do_key, body}]]}, aliases)
+  # body (so nested modules are stamped too) under the alias env in force *and the enclosing
+  # module*. `module` (the parent, `nil` at the top level) lets `ModuleScope` fold the implicit
+  # alias Elixir introduces for a nested module, so a sibling nested module referenced by short
+  # name in an `@behaviour` resolves to the module actually defined (`Outer.MyBehaviour`, not the
+  # bare `MyBehaviour`). The set is computed from the body's *direct* statements only — a nested
+  # module's `@behaviour` belongs to it, not the parent — so no behaviour leaks across the boundary.
+  defp walk({form, meta, [mod_ast, [{do_key, body}]]}, module, aliases)
        when form in [:defmodule, :defprotocol] do
-    set = module_behaviours(body, aliases)
-    # Descend the body (for nested modules), folding aliases where it is a block.
-    body = walk(body, aliases)
+    child = ModuleScope.child_module(mod_ast, module, aliases)
+    # The body is walked under the child module plus the in-body self-alias the head introduces
+    # (`defmodule Foo.Bar` ⇒ `Foo => <parent>.Foo`, in scope inside the body).
+    body_aliases = ModuleScope.register_defined_module({form, meta, [mod_ast]}, module, aliases)
+    set = module_behaviours(body, child, body_aliases)
+    body = walk(body, child, body_aliases)
     meta = if MapSet.size(set) == 0, do: meta, else: [{@behaviours_key, set} | meta]
     {form, meta, [mod_ast, [{do_key, body}]]}
   end
 
-  # A statement sequence (the file top level, a module body, or any block): fold the alias
-  # env left-to-right so a `defmodule` after a top-level/preceding `alias` resolves its
-  # `@behaviour` through it, and descend each statement to reach nested modules.
-  defp walk({:__block__, meta, stmts}, aliases) when is_list(stmts) do
+  # A statement sequence (the file top level, a module body, or any block): fold the alias env
+  # left-to-right — explicit aliases *and* the implicit alias a nested `defmodule`/`defprotocol`
+  # introduces (`ModuleScope.register_lexical/3`) — so a `defmodule` after a preceding sibling or
+  # `alias` resolves its `@behaviour` through it, and descend each statement to reach nested modules.
+  defp walk({:__block__, meta, stmts}, module, aliases) when is_list(stmts) do
     {walked, _aliases} =
       Enum.map_reduce(stmts, aliases, fn stmt, aliases ->
-        {walk(stmt, aliases), Aliases.register(stmt, aliases)}
+        {walk(stmt, module, aliases), ModuleScope.register_lexical(stmt, module, aliases)}
       end)
 
     {:__block__, meta, walked}
   end
 
-  defp walk({form, meta, args}, aliases) when is_list(args),
-    do: {form, meta, Enum.map(args, &walk(&1, aliases))}
+  # A `quote` block is quoted *data*, not live statements of the enclosing module: a
+  # `defmodule … do @behaviour Foo end` inside it is only realised if/when the quote is later
+  # expanded in some caller's context, so its `@behaviour` is not this program's. Stop here —
+  # descending would compute and stamp a spurious behaviour set on the quoted `defmodule`.
+  # Mirrors the `:quote` boundary in `Resolve.walk/2` and `Uses.walk_generic/4`.
+  defp walk({:quote, _meta, _args} = node, _module, _aliases), do: node
 
-  defp walk({left, right}, aliases), do: {walk(left, aliases), walk(right, aliases)}
-  defp walk(list, aliases) when is_list(list), do: Enum.map(list, &walk(&1, aliases))
-  defp walk(other, _aliases), do: other
+  defp walk({form, meta, args}, module, aliases) when is_list(args),
+    do: {form, meta, Enum.map(args, &walk(&1, module, aliases))}
+
+  defp walk({left, right}, module, aliases),
+    do: {walk(left, module, aliases), walk(right, module, aliases)}
+
+  defp walk(list, module, aliases) when is_list(list),
+    do: Enum.map(list, &walk(&1, module, aliases))
+
+  defp walk(other, _module, _aliases), do: other
 
   # --- per-module behaviour set ----------------------------------------------
 
   # The behaviour set of one module body: fold its direct statements left-to-right (so an
   # `@behaviour` resolves through the aliases declared above it), accumulating direct
   # `@behaviour` modules (alias-resolved) and `use`-injected ones. Starts from the enclosing
-  # `outer_aliases` so a file-top alias is in scope.
-  defp module_behaviours(body, outer_aliases) do
+  # `outer_aliases` so a file-top alias is in scope; `module` (this body's own module) lets the
+  # fold register the implicit alias of a preceding sibling `defmodule` so a later `@behaviour`
+  # naming it by short name resolves.
+  defp module_behaviours(body, module, outer_aliases) do
     {set, _aliases} =
       body
       |> body_statements()
       |> Enum.reduce({MapSet.new(), outer_aliases}, fn stmt, {set, aliases} ->
         set = set |> add_direct(stmt, aliases) |> add_injected(stmt)
-        {set, Aliases.register(stmt, aliases)}
+        {set, ModuleScope.register_lexical(stmt, module, aliases)}
       end)
 
     set

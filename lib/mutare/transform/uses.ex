@@ -64,6 +64,7 @@ defmodule Mutare.Transform.Uses do
   alias Mutare.Extension
   alias Mutare.Transform.Aliases
   alias Mutare.Transform.MetaKeys
+  alias Mutare.Transform.ModuleScope
   alias Mutare.Transform.Uses.EnvMirror
   alias Mutare.Transform.Uses.Harvest
   alias Mutare.UseExpansion.Dispatch
@@ -74,8 +75,9 @@ defmodule Mutare.Transform.Uses do
 
   # The module name of a nested `defmodule` we couldn't resolve to a concrete atom (a non-static
   # head, or a child of an already-unresolved parent). Expansion is *skipped* under it — see
-  # `child_module/3` and `stamp/4`.
-  @unresolved :__mutare_unresolved__
+  # `ModuleScope.child_module/3` and `stamp/4`. Sourced from `ModuleScope` (which owns the
+  # implicit-alias vocabulary) so the sentinel Uses pattern-matches can't drift from it.
+  @unresolved ModuleScope.unresolved()
 
   @doc """
   Stamp each eligible module-level `use` node's meta with `:mutare_use_directives` — the
@@ -117,17 +119,18 @@ defmodule Mutare.Transform.Uses do
 
   # --- the module-tracking walk ----------------------------------------------
   #
-  # `Resolve` deliberately doesn't track the enclosing module, but expansion needs it (for a
-  # faithful `__CALLER__.module`), so `Uses` runs its own small walk. It also threads a
-  # lexically-scoped **alias env** (`Aliases.register/2`, folded left-to-right over a module body
-  # so a `use` sees only the aliases declared *before* it; nested scopes inherit, a child's
-  # additions don't leak) so an aliased `use` target resolves to the real module. The env mirrors
-  # **both** explicit aliases *and the implicit alias Elixir auto-introduces for a nested module a
-  # body defines* (`register_defined_module/3`): inside `Outer`, `defprotocol P` aliases `P =>
-  # Outer.P`, so a later `defimpl P, for: Integer` computes the caller `Outer.P.Integer` (not
-  # `P.Integer`) and a `defmodule U …; use U` resolves `U => Outer.U` and stamps. Only a `use`
-  # that is a **direct module-body statement** is stamped — a `use` nested in a `def` is data /
-  # invalid, never a module-level directive, so it is descended without stamping.
+  # Expansion needs the enclosing module (for a faithful `__CALLER__.module`), so `Uses` threads it
+  # as it walks. It also threads a lexically-scoped **alias env** (`Aliases.register/2`, folded
+  # left-to-right over a module body so a `use` sees only the aliases declared *before* it; nested
+  # scopes inherit, a child's additions don't leak) so an aliased `use` target resolves to the real
+  # module. The env mirrors **both** explicit aliases *and the implicit alias Elixir auto-introduces
+  # for a nested module a body defines* — the shared `ModuleScope` vocabulary
+  # (`register_lexical/3` / `register_defined_module/3`), also used by `Resolve` and `Behaviours`:
+  # inside `Outer`, `defprotocol P` aliases `P => Outer.P`, so a later `defimpl P, for: Integer`
+  # computes the caller `Outer.P.Integer` (not `P.Integer`) and a `defmodule U …; use U` resolves
+  # `U => Outer.U` and stamps. Only a `use` that is a **direct module-body statement** is stamped —
+  # a `use` nested in a `def` is data / invalid, never a module-level directive, so it is descended
+  # without stamping.
 
   # `walk_generic/4` is the structural descent for any node *except* a module-body statement
   # sequence: it routes each `defmodule`/`defprotocol`/`defimpl` body to `walk_module_body/4`
@@ -139,10 +142,10 @@ defmodule Mutare.Transform.Uses do
   # they share one clause, named exactly alike.
   defp walk_generic({form, meta, [mod_ast, [{do_key, body}]]} = node, module, env, handlers)
        when form in [:defmodule, :defprotocol] do
-    child = child_module(mod_ast, module, env)
+    child = ModuleScope.child_module(mod_ast, module, env)
+    body_env = ModuleScope.register_defined_module(node, module, env)
 
-    {form, meta,
-     [mod_ast, [{do_key, walk_module_body(body, child, body_env(node, module, env), handlers)}]]}
+    {form, meta, [mod_ast, [{do_key, walk_module_body(body, child, body_env, handlers)}]]}
   end
 
   # `defimpl P, for: T do … end` opens a module scope named `P.T` (**absolute** — never
@@ -178,7 +181,8 @@ defmodule Mutare.Transform.Uses do
   defp walk_generic({:__block__, meta, stmts}, module, env, handlers) do
     {walked, _env} =
       Enum.map_reduce(stmts, env, fn stmt, env ->
-        {walk_generic(stmt, module, env, handlers), register_lexical(stmt, module, env)}
+        {walk_generic(stmt, module, env, handlers),
+         ModuleScope.register_lexical(stmt, module, env)}
       end)
 
     {:__block__, meta, walked}
@@ -223,98 +227,12 @@ defmodule Mutare.Transform.Uses do
   # T`), so without this the later `use` would resolve its target against the wrong (un-injected)
   # env and stay unstamped.
   defp advance_env(stmt, node, module, env) do
-    env = register_lexical(stmt, module, env)
+    env = ModuleScope.register_lexical(stmt, module, env)
     node |> injected_directives() |> Enum.reduce(env, &Aliases.register/2)
   end
 
   defp injected_directives({:use, meta, _args}) when is_list(meta), do: directives(meta)
   defp injected_directives(_node), do: []
-
-  # Fold the lexical alias(es) a *source* statement introduces into the env: an explicit
-  # `alias`/`require …, as:`, **plus the implicit alias Elixir auto-introduces for a nested module
-  # it defines** (`register_defined_module/3`). Both scope to following siblings, so the unified
-  # fold keeps the env faithful for a later `use`/`defimpl` that refers to a sibling by short name.
-  defp register_lexical(stmt, module, env) do
-    # `Aliases.register/2` folds the alias a source statement introduces — a plain `alias`, or a
-    # `require Mod, as: Name` (the compiler treats it as an alias); a bare `require Mod` passes
-    # through. Then add the implicit alias a nested-module definition introduces.
-    stmt |> Aliases.register(env) |> then(&register_defined_module(stmt, module, &1))
-  end
-
-  # The env a nested module's **own body** is walked under: the parent env *plus the implicit alias
-  # the module head introduces*, which the compiler makes available inside the body itself. In
-  # `defmodule Outer do defmodule Foo.Bar do use Foo.Baz end end`, `Foo => Outer.Foo` is in scope
-  # *inside* `Foo.Bar`, so `use Foo.Baz` resolves to `Outer.Foo.Baz` and an alias-sensitive
-  # `__using__` sees it via `__CALLER__.aliases`. (`register_lexical/3` folds the same alias for the
-  # module's *following siblings*; this is the in-body half — without it a body-local `use`/call by
-  # the head's own short name resolves through an outer/top-level module or not at all.)
-  defp body_env(defmodule_node, parent, env),
-    do: register_defined_module(defmodule_node, parent, env)
-
-  # Mirror the alias Elixir auto-introduces when a module body **defines** a nested module:
-  # `defmodule Outer do defprotocol P …; defimpl P, for: Integer … end` aliases `P => Outer.P`, so
-  # the `defimpl`'s caller is `Outer.P.Integer` (not `P.Integer`); `defmodule U …; use U` aliases
-  # `U => Outer.U`, so the `use` target resolves and is stamped. The alias binds the **first**
-  # written segment to the parent-prefixed first segment (`defmodule Foo.Bar` ⇒ `Foo => Outer.Foo`,
-  # *not* `Bar => Outer.Foo.Bar` — verified against the compiler), so it is computed as the
-  # `child_module/3` of just that first segment. Stored as a path (the form `Aliases.register/2`
-  # uses) so `resolve_path/2` can extend it (`P.Sub` ⇒ `Outer.P.Sub`). Skipped for a dynamic head
-  # (`@unresolved`), an absolute `Elixir.`-led head, and an atom-named module (no segment to alias).
-  # Only `defmodule`/`defprotocol` define such an alias — `defimpl` defines `P.T` but introduces no
-  # convenient short name, so it is not a definer here.
-  defp register_defined_module({def_form, _meta, [mod_ast | _]}, module, env)
-       when def_form in [:defmodule, :defprotocol] do
-    with {:__aliases__, _, [first | _]} when is_atom(first) and first != :"Elixir" <- mod_ast,
-         full when full != @unresolved <- child_module({:__aliases__, [], [first]}, module, env),
-         path when is_list(path) <- module_path(full) do
-      Map.put(env, first, path)
-    else
-      _ -> env
-    end
-  end
-
-  defp register_defined_module(_stmt, _module, env), do: env
-
-  # A concrete Elixir module atom → its segment-atom path (`Outer.P` → `[:Outer, :P]`), the value
-  # form the alias env stores for an Elixir module. `nil` for an Erlang atom module (`:foo`, from
-  # `defmodule :foo`) — an atom has no last segment, so Elixir aliases nothing.
-  defp module_path(mod) when is_atom(mod) do
-    case Atom.to_string(mod) do
-      "Elixir." <> _ -> mod |> Module.split() |> Enum.map(&String.to_atom/1)
-      _ -> nil
-    end
-  end
-
-  # The full module name of a nested `defmodule`, best-effort: Elixir prepends the enclosing
-  # module to a nested alias. A non-static head (`__MODULE__.Child`, `unquote(mod)`, a
-  # `Module.concat(…)` call) can't be resolved to a concrete module, so it yields `@unresolved`
-  # and expansion is **skipped** inside that module (see `stamp/4`) rather than run with the wrong
-  # `__CALLER__.module` — a `__using__` that derives imports/aliases from `__CALLER__.module`
-  # would otherwise stamp directives for the *parent's* namespace. The sentinel propagates inward
-  # (an unresolved parent ⇒ unresolved child). A leading `Elixir` segment (`defmodule Elixir.Bar`)
-  # is the **absolute** escape — it defines `Bar`, never `Parent.Elixir.Bar` — so it is not
-  # prefixed. A bare-atom head (`defmodule :foo`) is itself a concrete module — atoms aren't
-  # namespaced — so it resolves to that atom (Sourceror wraps the literal as `{:__block__, _,
-  # [:foo]}`).
-  #
-  # A **top-level** (no-parent) head is resolved through the alias env — `alias RealParent, as: RP;
-  # defmodule RP.Child` defines `RealParent.Child`, so `__CALLER__.module` must be that. A **nested**
-  # head is *not* alias-resolved: Elixir prepends the parent to the *literal* segments (`defmodule
-  # RP.Child` inside `Outer` is `Outer.RP.Child`, the alias untouched), which the literal-path
-  # `Module.concat([parent | path])` already matches.
-  defp child_module({:__aliases__, _, path}, parent, env) when is_list(path) do
-    cond do
-      not Aliases.atoms?(path) -> @unresolved
-      match?([:"Elixir" | _], path) -> Module.concat(path)
-      parent == @unresolved -> @unresolved
-      parent == nil -> path |> Aliases.resolve_path(env) |> Aliases.to_module()
-      true -> Module.concat([parent | path])
-    end
-  end
-
-  defp child_module({:__block__, _, [atom]}, _parent, _env) when is_atom(atom), do: atom
-  defp child_module(atom, _parent, _env) when is_atom(atom), do: atom
-  defp child_module(_mod_ast, _parent, _env), do: @unresolved
 
   # The implementation module of a `defimpl P, for: T`: `Module.concat(P, T)` (absolute), both
   # resolved through the alias env. `@unresolved` (⇒ no stamping) unless both are statically a

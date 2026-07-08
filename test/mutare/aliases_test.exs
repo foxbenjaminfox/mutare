@@ -553,5 +553,41 @@ defmodule Mutare.AliasesTest do
 
       assert calls[:upcase] == {[:S], [:My, :Strings]}
     end
+
+    test "a call to a sibling nested module by short name resolves via the implicit alias" do
+      # Elixir auto-aliases the nested `Foo` to `Outer.Foo` for its following siblings, with no
+      # explicit `alias`. Resolution must mirror that so a `:macro_routes` entry keyed on the real
+      # module (`Outer.Foo`) matches — the built-in call families key on the literal path, so this
+      # under-approximation only bit custom routing, but the resolved key must still be faithful.
+      calls =
+        resolved("""
+        defmodule Outer do
+          defmodule Foo do
+            def bar, do: :ok
+          end
+
+          def call, do: Foo.bar()
+        end
+        """)
+
+      assert calls[:bar] == {[:Foo], [:Outer, :Foo]}
+    end
+
+    test "the implicit nested-module alias tracks multi-level nesting" do
+      calls =
+        resolved("""
+        defmodule Outer do
+          defmodule Mid do
+            defmodule Foo do
+              def bar, do: :ok
+            end
+
+            def call, do: Foo.bar()
+          end
+        end
+        """)
+
+      assert calls[:bar] == {[:Foo], [:Outer, :Mid, :Foo]}
+    end
   end
 end

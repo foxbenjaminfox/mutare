@@ -194,6 +194,46 @@ defmodule Mutare.BehavioursTest do
       assert behaviours_of(source, "Outer") == [GenServer]
       assert behaviours_of(source, "Inner") == [Enumerable]
     end
+
+    test "a `defmodule` inside a `quote` block is not stamped (quoted data, not live)" do
+      source = """
+      defmodule Real do
+        @behaviour RealBehaviour
+
+        defmacro gen do
+          quote do
+            defmodule Generated do
+              @behaviour WrongBehaviour
+            end
+          end
+        end
+      end
+      """
+
+      # The enclosing module still gathers its own direct @behaviour.
+      assert behaviours_of(source, "Real") == [RealBehaviour]
+      # The quoted `defmodule` is data — it must carry no behaviour stamp.
+      assert behaviours_of(source, "Generated") == []
+    end
+
+    test "an @behaviour naming a sibling nested module by short name resolves to the real module" do
+      source = """
+      defmodule Outer do
+        defmodule MyBehaviour do
+          @callback foo() :: :ok
+        end
+
+        defmodule Impl do
+          @behaviour MyBehaviour
+          def foo, do: :ok
+        end
+      end
+      """
+
+      # Elixir auto-aliases the nested `MyBehaviour` to `Outer.MyBehaviour` for its siblings, so
+      # `Impl`'s `@behaviour MyBehaviour` must resolve there, not to the bare `MyBehaviour`.
+      assert behaviours_of(source, "Impl") == [Outer.MyBehaviour]
+    end
   end
 
   describe "delivery — a behaviour-aware mutator via transform_string" do

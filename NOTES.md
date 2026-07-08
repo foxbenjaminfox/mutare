@@ -1990,9 +1990,10 @@ sibling by short name: `defmodule Outer do defprotocol P …; defimpl P, for: In
 computed the caller as `P.Integer` instead of **`Outer.P.Integer`** (so a `__using__` deriving
 imports from `__CALLER__.module` harvested for the wrong module), and `defmodule U …; use U` left the
 `use` **unstamped** (`U` resolved to the unloadable top-level `U`, not `Outer.U`). Fix:
-`register_defined_module/3` folds the implicit alias into the env for following siblings (via
-`register_lexical/3`, the unified source-alias + implicit-alias fold used by both the module-body
-walk and the top-level block). Subtlety verified against the compiler: the alias binds the **first**
+`Mutare.Transform.ModuleScope`'s `register_defined_module/3` folds the implicit alias into the env for
+following siblings (via `register_lexical/3`, the unified source-alias + implicit-alias fold used by
+both the module-body walk and the top-level block). (The vocabulary was later extracted into that
+shared `ModuleScope` and applied to `Resolve`/`Behaviours` too — see *Implicit nested-module alias*.) Subtlety verified against the compiler: the alias binds the **first**
 written segment to the parent-prefixed first segment — `defmodule Foo.Bar` ⇒ `Foo => Outer.Foo`, *not*
 `Bar => Outer.Foo.Bar` — so it is computed as `child_module/3` of just that first segment, stored as a
 path so `resolve_path/2` extends it. Lexical (scopes only to following siblings, like an explicit
@@ -2000,9 +2001,10 @@ alias), and skipped for a dynamic/`Elixir.`-absolute/atom-named head. `defimpl` 
 introduces no short alias, so only `defmodule`/`defprotocol` are definers. Tested in `uses_test.exs`
 (the `defimpl`-caller and short-name-`use` cases, plus the lexical-scope guard).
 
-That implicit alias is in scope for **following siblings** *and inside the module's own body* —
-`body_env/3` folds it into the env before `walk_body`, so in `defmodule Outer do defmodule Foo.Bar
-do use Foo.Baz end end`, `Foo => Outer.Foo` resolves `use Foo.Baz` to `Outer.Foo.Baz` (and an
+That implicit alias is in scope for **following siblings** *and inside the module's own body* — the
+same `ModuleScope.register_defined_module/3` folds it into the env before the body walk, so in
+`defmodule Outer do defmodule Foo.Bar do use Foo.Baz end end`, `Foo => Outer.Foo` resolves
+`use Foo.Baz` to `Outer.Foo.Baz` (and an
 alias-sensitive `__using__` sees it via `__CALLER__.aliases`). Passing only the parent env would
 resolve the body's short-name `use`/calls through an outer/top-level `Foo` or not at all.
 
@@ -2302,6 +2304,36 @@ directives vanishing). Tested in `test/mutare/behaviours_test.exs` (gathering: d
 top-level-alias/`use GenServer`/custom+transitive `use`/union/no-inherit/`expand_uses: false`; delivery:
 `mutate/2` + `return_replacements/2` fire only under the behaviour, via `test/support/behaviour_mutator.ex`
 and the `Mutare.Test.Sample{Behaviour,Using}` fixtures).
+
+### Implicit nested-module alias — shared `ModuleScope`, folded by `Resolve`/`Behaviours` too `[done]`
+Elixir auto-aliases a nested module's short name for its body and following siblings — inside
+`Outer`, `defmodule Foo …` puts `Foo => Outer.Foo` in scope, so `Foo.bar()` and `@behaviour Foo`
+resolve there with **no explicit `alias`**. Only `Uses` folded this alias (for `__CALLER__` fidelity —
+see the `use` expansion entry's *Mirror the implicit alias* passage). `Resolve` (stamps every call)
+and `Behaviours` (gathers `@behaviour`) folded **explicit** aliases only, so a sibling nested module
+referenced by short name resolved to the wrong module: in `Resolve`, `Foo.bar()` keyed on the bare
+`[:Foo]` instead of `[:Outer, :Foo]`, so a `:macro_routes` entry keyed on the real module never
+matched (the built-in call families key on the *literal* path, so they were unaffected — this only bit
+custom routing); in `Behaviours`, a nested `@behaviour MyBehaviour` was gathered as the top-level
+`MyBehaviour`, so a behaviour-gated mutator missed it. Separately, `Behaviours.walk/2` lacked the
+`:quote` boundary its two sibling walks have, so a `defmodule` written inside a `quote` block (quoted
+*data*, realised only when some caller expands it) got a **spurious** behaviour stamp.
+
+Fix: extracted the implicit-alias vocabulary out of `Uses` into `Mutare.Transform.ModuleScope`
+(`child_module/3`, `register_defined_module/3`, the combined `register_lexical/3`, and the
+`@unresolved` sentinel — `Uses` now sources its own `@unresolved` from it so the two can't drift), and
+taught `Resolve` and `Behaviours` to thread the enclosing module and fold the implicit alias through
+`ModuleScope`. Added the missing `:quote` clause to `Behaviours`. `Uses` delegates — a pure,
+behaviour-preserving move (its suite is unchanged). This **reverses** the old "`Resolve` deliberately
+doesn't track module scopes" note: `Resolve` now tracks exactly one thing, `env.module` (the enclosing
+module, `nil` at the top level), and nothing else.
+
+Residual limitation (documented, not a bug): a **fully dynamic module head** (`defmodule unquote(x)`)
+can't be named, so a static nested module under it isn't parent-prefixed by the dynamic layer — no
+correct static answer exists, and such a module can't be a macro-route/behaviour target anyway. No
+compile risk; same degradation class as the other `@unresolved` cases. Tested in `aliases_test.exs`
+(sibling + multi-level call resolution) and `behaviours_test.exs` (sibling `@behaviour`, quote
+boundary).
 
 ### GenServer return mutator — the first behaviour-gated built-in `[done]`
 The payoff of behaviour detection: `Mutare.Mutators.GenServer` (`:genserver`, default-on) mutates a
