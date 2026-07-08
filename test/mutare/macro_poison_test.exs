@@ -71,6 +71,56 @@ defmodule Mutare.MacroPoisonTest do
     assert run.recovery.rounds >= 1
   end
 
+  test "spares outer return-value mutants wrapping a tail-position macro call" do
+    # With default mutators a tail `query(a > b)` gets outer return-value selectors AND an inner
+    # argument selector. The macro rejects the argument selector; the compiler blames the macro-
+    # call line, which line attribution maps to the OUTER selector's whole-case fallback. Macro-
+    # identity attribution must win — dropping the argument mutants, not the innocent return-value
+    # ones — so those still execute rather than being wrongly reported :poisoned.
+    %{project: project, sandbox: sandbox} =
+      Project.build(:tail_dsl, %{
+        "lib/my_dsl.ex" => """
+        defmodule MyDsl do
+          defmacro query(expr) do
+            Macro.prewalk(expr, fn
+              {:case, _m, _a} -> raise "no case in a query"
+              node -> node
+            end)
+
+            quote(do: :ok)
+          end
+        end
+        """,
+        "lib/report.ex" => """
+        defmodule Report do
+          import MyDsl
+
+          def q(a, b) do
+            query(a > b)
+          end
+        end
+        """,
+        "test/report_test.exs" => """
+        defmodule ReportTest do
+          use ExUnit.Case
+
+          test "q" do
+            assert Report.q(2, 1) == :ok
+          end
+        end
+        """
+      })
+
+    assert {:ok, run} = Mutare.run(project, sandbox: sandbox)
+
+    assert %{macro_skipped: [%{module: "MyDsl", macro: :query}]} = run.recovery
+
+    # The return-value mutants wrapping the call are NOT dropped as poison — they run.
+    return_value = Enum.filter(run.results, &(&1.site.mutator == :return_value))
+    assert return_value != []
+    refute Enum.any?(return_value, &(&1.status == :poisoned))
+  end
+
   test "recovers a literal-only macro poison inside a function-head default" do
     # `def limit(n \\ Size.megabytes(5))` — the macro expands in the def head, so mutating `5`
     # poisons there. The fallback must skip only the head's call shape, not its default, or the

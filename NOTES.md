@@ -260,6 +260,14 @@ inside it. Key decisions:
   * **Piped calls** (`(a > b) |> query()`): after pipe expansion the LHS is the macro's first argument, but
     its selector renders on the pipe's *left*, outside the RHS call node — so a `{:|>, _, [_, rhs]}` whose
     RHS names the macro is ranged as a whole, covering the piped value and every earlier stage.
+  * **Inline-macro attribution beats line attribution** (`recover_compile_poison/5`). With default mutators a
+    tail-position `query(a > b)` is *also* wrapped by an outer return-value selector; the macro rejects the
+    inner argument selector, the compiler blames the macro-call line, and line attribution maps that line to
+    the **outer** selector's whole-`case` fallback — wrongly dropping the innocent return-value mutants as
+    `:poisoned` (they never run) while leaving the real poison. So the inline-macro match is tried *first*;
+    only its ids (the argument mutants inside the raising macro) are dropped. **Block-macro** mutants are
+    excluded from this priority (`inline_macro_poison/3` subtracts `block_macro`-tagged ids) — they keep
+    recovering through `escalate_block_poison/3`'s id-specific-then-wholesale second-strike path.
   * **First-strike, wholesale, per-`{module, name}`** — no second-strike (the frame names the *macro*, not a
     mutant, and the rejection is structural, so there is no one-off to distinguish) and no per-invocation
     scoping (the natural fix is `{Mod, :fun, :skip}` *everywhere*, which is exactly what the frame supports).

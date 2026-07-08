@@ -707,20 +707,28 @@ defmodule Mutare.Runner do
     raw = Poison.ids(output, schema.metamutants)
     {poison, struck, escalated} = escalate_block_poison(raw, schema.sites, recovery.struck)
 
+    # Inline-macro attribution takes **priority** over line attribution. A macro that rejects the
+    # selector spliced into its argument makes the compiler blame the macro *call* line; when that
+    # call sits inside an *outer* selector — a return-value mutant wrapping a tail-position
+    # `query(a > b)` — line attribution maps the line to that outer selector's whole-`case`
+    # fallback and would wrongly drop those valid mutants as `:poisoned` (they'd never run) while
+    # leaving the real argument poison in place. The macro-identity match names the true culprit
+    # (the argument mutants inside the raising macro), so we drop those first. Block-macro mutants
+    # are excluded here — they recover through `escalate_block_poison/3`'s second-strike path.
+    inline = inline_macro_poison(output, schema, recovery.skip_ids)
+
     cond do
       attempts <= 0 ->
         {:error, :compile_failed, output, sandbox}
+
+      inline != [] ->
+        do_macro_recovery(deps, schema, recovery, attempts, inline)
 
       not MapSet.subset?(poison, recovery.skip_ids) ->
         do_line_recovery(deps, schema, recovery, attempts, poison, struck, escalated)
 
       true ->
-        # Line attribution stalled — the classic sign of an inline DSL macro that rejects
-        # the spliced selector: the compiler blames the macro *call* line, which no manifest
-        # region covers, so `Poison.ids` came back empty (or only re-implicated already-
-        # dropped ids). Fall back to macro-identity attribution before giving up, so
-        # poison recovery is actually *invoked* for the case it exists to handle.
-        macro_recovery(deps, schema, recovery, attempts, output, sandbox)
+        {:error, :compile_failed, output, sandbox}
     end
   end
 
@@ -749,38 +757,45 @@ defmodule Mutare.Runner do
     compile_with_recovery(deps, schema, recovery, attempts - 1)
   end
 
-  # The macro-expansion fallback: map the `expanding macro: Mod.fun/arity` frame(s) in the
-  # failed compile to the mutants inside those macros' calls (`Poison.macro_poison/2`)
-  # and drop them wholesale. Fires a loud `{:macro_poison, info}` warning (naming the macro +
-  # the `{Module, :fun, :skip}` fix), records the skip for the durable end-of-run suggestion,
-  # rebuilds, and recurses. If nothing new maps (the innermost frame is a library-internal
-  # macro the user never wrote, say), give up — the abort message still carries the skip hint
-  # via `Poison.Hint.for_compile_failure/1`.
-  defp macro_recovery(deps, schema, recovery, attempts, output, sandbox) do
-    matched = Poison.macro_poison(output, schema.metamutants)
+  # The macro-expansion fallback's matches carrying *new* (not-yet-skipped) ids, with block-macro
+  # mutants removed — those recover through `escalate_block_poison/3`, and letting the inline
+  # fallback drop a block's body wholesale on the first strike would pre-empt its id-specific vs
+  # wholesale distinction. `[]` when nothing inline maps (or all its ids are already skipped),
+  # so line attribution / abort take over.
+  defp inline_macro_poison(output, schema, skip_ids) do
+    block_ids = block_macro_ids(schema.sites)
 
+    output
+    |> Poison.macro_poison(schema.metamutants)
+    |> Enum.map(fn {macro, ids} -> {macro, MapSet.difference(ids, block_ids)} end)
+    |> Enum.reject(fn {_macro, ids} -> Enum.empty?(ids) or MapSet.subset?(ids, skip_ids) end)
+  end
+
+  # The mutant ids that belong to an unknown module-level block macro (`site.block_macro` set).
+  defp block_macro_ids(sites) do
+    for %Site{block_macro: tag, id: id} <- sites, not is_nil(tag), into: MapSet.new(), do: id
+  end
+
+  # Drop the macros' argument mutants wholesale (`matched` is `inline_macro_poison/3`'s already-
+  # filtered result), record the skip for the durable `{Module, :fun, :skip}` suggestion, fire a
+  # loud `{:macro_poison, info}` warning naming the macro, and rebuild + recurse.
+  defp do_macro_recovery(deps, schema, recovery, attempts, matched) do
     macro_ids =
-      Enum.reduce(matched, MapSet.new(), fn {_macro, ids}, acc -> MapSet.union(acc, ids) end)
+      Enum.reduce(matched, MapSet.new(), fn {_m, ids}, acc -> MapSet.union(acc, ids) end)
 
-    if matched != [] and not MapSet.subset?(macro_ids, recovery.skip_ids) do
-      deps.on_phase.({:macro_poison, macro_poison_info(matched)})
+    deps.on_phase.({:macro_poison, macro_poison_info(matched)})
 
-      recovery = %{
-        recovery
-        | rounds: recovery.rounds + 1,
-          skip_ids: MapSet.union(recovery.skip_ids, macro_ids),
-          macro_skips:
-            MapSet.union(recovery.macro_skips, MapSet.new(matched, fn {macro, _ids} -> macro end))
-      }
+    recovery = %{
+      recovery
+      | rounds: recovery.rounds + 1,
+        skip_ids: MapSet.union(recovery.skip_ids, macro_ids),
+        macro_skips:
+          MapSet.union(recovery.macro_skips, MapSet.new(matched, fn {macro, _ids} -> macro end))
+    }
 
-      schema = Schema.rebuild(schema, deps.root, deps.options, recovery.skip_ids)
-      Sandbox.rematerialize(sandbox, schema)
-      compile_with_recovery(deps, schema, recovery, attempts - 1)
-    else
-      # Couldn't identify (or keep making progress on) the poison → give up. Hand the
-      # sandbox back for the caller to clean up.
-      {:error, :compile_failed, output, sandbox}
-    end
+    schema = Schema.rebuild(schema, deps.root, deps.options, recovery.skip_ids)
+    Sandbox.rematerialize(deps.sandbox, schema)
+    compile_with_recovery(deps, schema, recovery, attempts - 1)
   end
 
   # The `{:macro_poison, info}` narration payload: one `%{module, macro, count}` entry per
