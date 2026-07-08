@@ -231,33 +231,29 @@ defmodule Mutare.Transform.Resolve do
     {:defmodule, meta, [defmodule_head(head, env), walk(body, body_env)]}
   end
 
-  # `defimpl P, for: T do … end` opens the **impl module** scope `P.T` (absolute — never
-  # parent-prefixed), so its body must be walked under `P.T`, not the enclosing module (which would
-  # resolve/route a nested module or call inside the impl against the wrong module). `P`/`T` resolve
-  # through the alias env; a non-static `for:` yields the unresolved sentinel. The `defimpl` call is
-  # stamped like any bare call, and `proto`/`opts` are walked in the enclosing scope (they name the
-  # protocol/type there). Must precede the bare-call clause. Mirrors the `Uses` walk's `defimpl` split.
-  defp walk({:defimpl, meta, [proto, opts, [{do_key, body}]] = args}, env) when is_list(opts) do
+  # `defimpl P, for: T` opens the **impl module** scope `P.T` (absolute — never parent-prefixed), so
+  # its body must be walked under `P.T`, not the enclosing module (which would resolve/route a nested
+  # module or call inside the impl against the wrong one). Handles all three surface forms —
+  # `defimpl P, for: T do … end` (`[proto, opts, do-block]`), the inline `defimpl P, for: T, do: …`
+  # (`[proto, [for: …, do: …]]`), and `defimpl P do … end`/`P, do: …` (`for:` inferred → unresolved) —
+  # by scoping only the **last** argument (which always holds the `do` block) to `P.T` and walking the
+  # rest (proto, a standalone `for:`) in the enclosing scope; a standalone `for:` value is a module
+  # reference, so putting the inline form's `for:` under `P.T` too is harmless (walk never stamps a
+  # bare `__aliases__`). Gated on the call still resolving to `Kernel.defimpl` (like the `defmodule`
+  # gate): a displaced `defimpl` (a DSL macro over Kernel's) defines no `P.T`, so it falls back to
+  # ordinary traversal in the enclosing scope. Must precede the bare-call clause.
+  defp walk({:defimpl, meta, args}, env) when is_list(args) and length(args) >= 2 do
     meta = stamp_bare_call(:defimpl, meta, args, env)
-    impl = ModuleScope.impl_module(proto, ModuleScope.for_type(opts), env.aliases)
-    unpiped = %{env | pipe_mode: :unpiped}
+    enclosing = %{env | pipe_mode: :unpiped}
 
-    {:defimpl, meta,
-     [
-       walk(proto, unpiped),
-       walk(opts, unpiped),
-       [{do_key, walk(body, %{unpiped | module: impl})}]
-     ]}
-  end
-
-  # `defimpl P do … end` — the `for:` is inferred from context we don't track, so the impl module is
-  # unknown: walk the body under the unresolved sentinel (nested modules stay unresolved rather than
-  # resolve against the enclosing module).
-  defp walk({:defimpl, meta, [proto, [{do_key, body}]] = args}, env) do
-    meta = stamp_bare_call(:defimpl, meta, args, env)
-    unpiped = %{env | pipe_mode: :unpiped}
-    body_env = %{unpiped | module: ModuleScope.unresolved()}
-    {:defimpl, meta, [walk(proto, unpiped), [{do_key, walk(body, body_env)}]]}
+    if kernel_module_definer?(:defimpl, meta, args, env) do
+      impl = ModuleScope.impl_module(hd(args), defimpl_for_type(args), env.aliases)
+      {lead, [last]} = Enum.split(args, -1)
+      walked = Enum.map(lead, &walk(&1, enclosing)) ++ [walk(last, %{enclosing | module: impl})]
+      {:defimpl, meta, walked}
+    else
+      {:defimpl, meta, descend(args, env)}
+    end
   end
 
   # A bare call `fun(...)`: stamp it with its resolved import (or Kernel-displacement) using
@@ -317,6 +313,15 @@ defmodule Mutare.Transform.Resolve do
       ModuleScope.register_defined_module({:defmodule, [], [head]}, env.module, env.aliases)
 
     %{env | pipe_mode: :unpiped, module: child, aliases: aliases}
+  end
+
+  # The `for:` type of a `defimpl`, wherever it sits — a standalone opts arg (`defimpl P, for: T do
+  # … end`) or the inline combined keyword list (`defimpl P, for: T, do: …`) — or `nil` when inferred
+  # (`defimpl P do … end`), which leaves the impl module unresolved.
+  defp defimpl_for_type(args) do
+    args
+    |> Enum.drop(1)
+    |> Enum.find_value(fn arg -> if is_list(arg), do: ModuleScope.for_type(arg) end)
   end
 
   defp capture_arity(n) when is_integer(n) and n >= 0, do: {:ok, n}

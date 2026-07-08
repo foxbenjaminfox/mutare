@@ -2341,9 +2341,16 @@ miss a `:macro_routes` entry for a module that needn't even exist). Three cases 
     sets this scope, instead of a dynamic head falling through to the generic bare-call clause and
     inheriting the *enclosing* module.
   * **`defimpl P, for: T`** — opens the absolute scope `P.T`, so `Resolve` gained a `defimpl` clause
-    (mirroring the `Uses` walk) that walks the body under `impl_module(P, T)`; a nested module inside
-    resolves as `P.T.Sub`, not `Outer.Sub`. `impl_module/3`/`for_type/1` moved to `ModuleScope`
-    (shared with `Uses`); a `for:`-less or non-static impl degrades to `@unresolved`.
+    that walks the body under `impl_module(P, T)`; a nested module inside resolves as `P.T.Sub`, not
+    `Outer.Sub`. `impl_module/3`/`for_type/1` moved to `ModuleScope`; a `for:`-less or non-static
+    impl degrades to `@unresolved`. The clause scopes only the **last** argument (which always holds
+    the `do` block) to `P.T`, so it covers all three surface forms uniformly — `defimpl P, for: T do
+    … end` (`[proto, opts, do-block]`), the inline `defimpl P, for: T, do: …` (a *single* arg
+    `[for: …, do: …]`, a distinct two-element-keyword shape the earlier two-clause split missed), and
+    the `for:`-inferred `defimpl P do … end`. It is **gated on `Kernel.defimpl`** just like the
+    `defmodule` gate below: a displaced `defimpl` (`import Kernel, except: [defimpl: 3]` + a DSL's
+    own) builds no `P.T`, so it falls back to ordinary traversal in the enclosing scope rather than
+    scoping the DSL block to a nonexistent impl module.
   * **Displaced `defmodule`** (a DSL macro over Kernel's — `import Kernel, except: [defmodule: 2]`;
     `import MyDSL, only: [defmodule: 2]`) defines no module named after its head, so opening a scope
     and installing `Foo => Outer.Foo` would resolve/route interior and sibling calls against a

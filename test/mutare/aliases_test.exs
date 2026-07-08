@@ -632,6 +632,56 @@ defmodule Mutare.AliasesTest do
       assert calls[:h] == {[:Helper], [:Outer, :P, :Integer, :Helper]}
     end
 
+    test "the inline `defimpl P, for: T, do: …` form scopes its body to the impl module too" do
+      # The inline keyword form parses as `[proto, [for: T, do: body]]` (a two-element kw list), a
+      # distinct shape from the `do … end` block — its body must still resolve under `Outer.P.Integer`.
+      calls =
+        resolved("""
+        defmodule Outer do
+          defprotocol P do
+            def foo(x)
+          end
+
+          defimpl P, for: Integer, do: (
+            defmodule Helper do
+              def h, do: :ok
+            end
+
+            Helper.h()
+          )
+        end
+        """)
+
+      assert calls[:h] == {[:Helper], [:Outer, :P, :Integer, :Helper]}
+    end
+
+    test "a displaced `defimpl` (a DSL macro) opens no impl-module scope" do
+      # With Kernel's `defimpl/3` displaced, `defimpl P, for: Integer do … end` builds no `P.Integer`
+      # implementation, so its body stays in the enclosing scope — a nested `Helper` is `Outer.Helper`,
+      # not `Outer.P.Integer.Helper`.
+      calls =
+        resolved("""
+        defmodule Outer do
+          import Kernel, except: [defimpl: 3]
+          import MyDsl, only: [defimpl: 3]
+
+          defprotocol P do
+            def foo(x)
+          end
+
+          defimpl P, for: Integer do
+            defmodule Helper do
+              def h, do: :ok
+            end
+
+            def foo(_x), do: Helper.h()
+          end
+        end
+        """)
+
+      assert calls[:h] == {[:Helper], [:Outer, :Helper]}
+    end
+
     test "a displaced `defmodule` (a DSL macro) opens no module scope" do
       # With Kernel's `defmodule/2` displaced by a DSL's, `defmodule Foo do … end` defines no
       # `Outer.Foo`, so its body must not install `Foo => Outer.Foo` — `Foo.bar()` stays literal.
