@@ -127,6 +127,23 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
     end
   end
 
+  @doc """
+  Stamp a marked argument node with `labels`, reaching *inside* a unary-signed numeric literal. A
+  negative (or explicitly `+`) literal parses as `{:-/:+, _, [positive_literal]}`, and the value
+  families (`Literal`/`FloatLiteral`) fire on that *inner* literal — so a bare outer stamp would let
+  `MyApp.put(c, -300)` slip past a `:skip_arguments` that catches `MyApp.put(c, 300)`. Marks both the
+  sign node and the inner literal; every other node is stamped as-is. Used by the positional/keyword
+  stamping here and by `Mutare.Transform.Resolve`'s piped-receiver path.
+  """
+  @spec mark_argument(Macro.t(), Enumerable.t()) :: Macro.t()
+  def mark_argument({op, _meta, [{:__block__, _, [n]}]} = node, labels)
+      when op in [:-, :+] and is_number(n) do
+    {^op, meta, [inner]} = Meta.add_marks(node, labels)
+    {op, meta, [Meta.add_marks(inner, labels)]}
+  end
+
+  def mark_argument(node, labels), do: Meta.add_marks(node, labels)
+
   # --- registry build --------------------------------------------------------
 
   # Ask each mutator for its declarations, passing the instance's `config` so a configurable mutator
@@ -196,7 +213,7 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
     |> Enum.map(fn {arg, visible_index} ->
       case Map.get(positional, visible_index + offset) do
         nil -> arg
-        labels -> Meta.add_marks(arg, labels)
+        labels -> mark_argument(arg, labels)
       end
     end)
   end
@@ -223,7 +240,7 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   defp stamp_option_pair({key, value}, keyword) do
     case Map.get(keyword, AST.key_atom(key)) do
       nil -> {key, value}
-      labels -> {key, Meta.add_marks(value, labels)}
+      labels -> {key, mark_argument(value, labels)}
     end
   end
 

@@ -196,7 +196,7 @@ defmodule Mutare.TransformDurationTest do
 
       # A *computed* magnitude still mutates — only the bare literal at the position is held back.
       {_m, computed} = value_triples("def f(n), do: :timer.seconds(n * 2)")
-      assert {:literal, "2", "1"} in computed
+      assert {:integer, "2", "1"} in computed
     end
 
     test ":timer scheduling functions hold back only the delay (arg 0), not the message" do
@@ -205,7 +205,7 @@ defmodule Mutare.TransformDurationTest do
       {_m, triples} = value_triples("def f(p), do: :timer.send_after(1000, p, 999)")
 
       refute Enum.any?(triples, fn {_m, o, _} -> o == "1000" end)
-      assert {:literal, "999", "0"} in triples
+      assert {:integer, "999", "0"} in triples
     end
   end
 
@@ -335,20 +335,20 @@ defmodule Mutare.TransformDurationTest do
       {_m, four} =
         value_triples("def f(n, req), do: GenServer.multi_call(n, MyServer, req, 5000)")
 
-      refute Enum.any?(four, fn {m, o, _} -> m == :literal and o == "5000" end)
+      refute Enum.any?(four, fn {m, o, _} -> m == :integer and o == "5000" end)
 
       # …but `multi_call(nodes, name, request)` /3's third arg is the *request*, so a literal there
       # (Elixir fills the leading `nodes` default, not the trailing `timeout`) still mutates.
       {_m, three} = value_triples("def f(n), do: GenServer.multi_call(n, MyServer, 5000)")
-      assert {:literal, "5000", "0"} in three
+      assert {:integer, "5000", "0"} in three
     end
 
     test "Agent's MFA form marks the timeout (/5 index 4), not the args list (/4)" do
       # `Agent.get(agent, module, fun, args, timeout)` — the timeout is suppressed…
       {_m, with_to} = value_triples("def f(a), do: Agent.get(a, Mod, :run, [1], 5000)")
-      refute Enum.any?(with_to, fn {m, o, _} -> m == :literal and o == "5000" end)
+      refute Enum.any?(with_to, fn {m, o, _} -> m == :integer and o == "5000" end)
       # …while a literal inside the `args` list (the /4 form has no timeout) still mutates.
-      assert {:literal, "1", "0"} in with_to
+      assert {:integer, "1", "0"} in with_to
     end
   end
 
@@ -539,6 +539,36 @@ defmodule Mutare.TransformDurationTest do
         )
 
       assert triples == []
+    end
+
+    test "a negative literal at a configured position is held back (mark reaches inside the unary -)" do
+      # `-300` parses as `{:-, _, [300]}` and the value families fire on the inner positive literal,
+      # so the mark must reach it — otherwise `MyApp.put(c, -300)` slips past a skip that catches
+      # `MyApp.put(c, 300)`. Positional, keyword, and float alike (this applies to the built-in table
+      # too, since the fix is in the shared stamping).
+      for {body, cfg} <- [
+            {"def f(c), do: MyApp.put(c, -300)",
+             [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]}]},
+            {"def f(c), do: MyApp.put(c, timeout: -300)",
+             [
+               {Mutare.Mutators.IntegerLiteral,
+                skip_arguments: [{MyApp, :put, 2, [{:keyword, :timeout}]}]}
+             ]},
+            {"def f(c), do: MyApp.ratio(c, -1.5)",
+             [{Mutare.Mutators.FloatLiteral, skip_arguments: [{MyApp, :ratio, 2, [1]}]}]}
+          ] do
+        {_m, triples} = value_triples(body, cfg)
+        assert triples == [], "expected -literal held back in `#{body}`, got #{inspect(triples)}"
+      end
+
+      # A *computed* negative (`-(x + 1)`) is not a bare literal, so its sub-literal still mutates.
+      {_m, computed} =
+        value_triples(
+          "def f(c, x), do: MyApp.put(c, -(x + 1))",
+          [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]}]
+        )
+
+      assert {:integer, "1", "0"} in computed
     end
 
     test "the option is per-family: Literal's config does not silence AtomLiteral there" do

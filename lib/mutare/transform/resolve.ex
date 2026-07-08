@@ -39,7 +39,7 @@ defmodule Mutare.Transform.Resolve do
   alias Mutare.AST
   alias Mutare.MacroRouting.Registry, as: Macros
   alias Mutare.Mutator
-  alias Mutare.Transform.{Aliases, Calls, Imports, Meta, MetaKeys, ModuleScope, Uses}
+  alias Mutare.Transform.{Aliases, Calls, Imports, MetaKeys, ModuleScope, Uses}
   alias Mutare.Transform.Resolve.{ArgumentMarks, MacroStamp, NodeIds}
 
   @doc "Stamp remote calls, bare imported calls, and bare imported captures with their resolved module."
@@ -351,7 +351,7 @@ defmodule Mutare.Transform.Resolve do
         {module_key, fun, effective_arity} ->
           case ArgumentMarks.receiver_labels(module_key, fun, effective_arity, env.marks) do
             nil -> lhs
-            labels -> Meta.add_marks(lhs, labels)
+            labels -> ArgumentMarks.mark_argument(lhs, labels)
           end
 
         nil ->
