@@ -53,60 +53,17 @@ defmodule Mutare.Runner do
   """
 
   alias Mutare.{
-    Duration,
     Options,
-    Poison,
     Project,
     Report,
-    Result,
     Run,
     Sandbox,
-    Schema,
-    Selector,
-    Site
+    Schema
   }
 
   alias Mutare.Run.Context
-  alias Mutare.Runner.{Baseline, CoverageProbe, Hydrate, Partitions}
-  alias Mutare.Sandbox.{Command, CompilerOptions}
-  alias Mutare.Sandbox.Command.{Invocation, Output}
-
-  require Logger
-
-  # The per-run invariants threaded to every mutant's `classify/3` and `run_mutant/*`: the one
-  # `sandbox`, the coverage `selection`, the timeout `cap`, the umbrella `scopes`, and the
-  # initial `retries` budget. Bundled so those functions take this plus the per-task `site`/`env`
-  # rather than a long positional list — and so the general `retries` budget rides a *named*
-  # field where the public `run_mutant/4` first supplies the two budgets (`ctx.retries` and
-  # `@boot_failure_retries`), which can't then be confused. (The private `run_mutant/6` recursion
-  # does still thread both positionally, but its two recursive calls are local and obvious.)
-  defmodule RunCtx do
-    @moduledoc false
-    @enforce_keys [:sandbox, :selection, :cap, :scopes, :retries, :kill_runs]
-    # `hydrate` is the deferred-diff hydrator (`Mutare.Runner.Hydrate`), or `nil` for the eager
-    # path; it fills a displayed survivor's diff code in just before it reaches the reporter.
-    # `heap_env` is the `:max_heap_mb` heap-cap env entry (`[]` when off) appended to every
-    # per-mutant run's env — the per-task `env` carries only the partition slot, so the cap
-    # rides here with the other per-run invariants.
-    defstruct @enforce_keys ++ [hydrate: nil, heap_env: []]
-  end
-
-  # The poison-recovery bookkeeping threaded through `compile_with_recovery/4`: how many
-  # rebuild rounds have run, the accumulated dropped ids (`skip_ids`, forwarded to each
-  # `Schema.rebuild`), the block-macro invocations struck once (the evidence
-  # `escalate_block_poison/3` reads), the ones escalated wholesale, and the
-  # `{module, fun}` macros the macro-expansion fallback skipped (an inline DSL macro the
-  # compiler blamed by name — see `recover_compile_poison/5`). On success it is folded into
-  # the public summary (`recovery_summary/2`) that rides on `Mutare.Run`'s `:recovery` — the
-  # material the Mix task turns into a `:macro_routes` suggestion.
-  defmodule Recovery do
-    @moduledoc false
-    defstruct rounds: 0,
-              skip_ids: MapSet.new(),
-              struck: MapSet.new(),
-              escalated: MapSet.new(),
-              macro_skips: MapSet.new()
-  end
+  alias Mutare.Runner.{Baseline, Compile, CoverageProbe, Hydrate, Partitions, RunCtx, Stream}
+  alias Mutare.Sandbox.Command.Invocation
 
   # `sandbox` is where the run *was* materialised. For a default (throwaway) run it
   # is removed once the run completes — the path is informational, not a live dir;
@@ -235,7 +192,7 @@ defmodule Mutare.Runner do
         on_phase.(:compiling)
         compile_started = System.monotonic_time(:millisecond)
 
-        case prepare_compiling(schema, root, context) do
+        case Compile.run(schema, root, context) do
           {:error, reason, detail, sandbox} ->
             cleanup_sandbox(sandbox, options)
             {:error, reason, detail}
@@ -246,7 +203,7 @@ defmodule Mutare.Runner do
             on_phase.({:compiled, System.monotonic_time(:millisecond) - compile_started})
 
             try do
-              fun.(schema, sandbox, recovery_summary(recovery, schema))
+              fun.(schema, sandbox, Compile.summary(recovery, schema))
             after
               cleanup_sandbox(sandbox, options)
             end
@@ -327,14 +284,30 @@ defmodule Mutare.Runner do
 
         on_phase.({:running, length(schema.sites)})
 
-        deadline = deadline(options.time_budget)
+        deadline = Stream.deadline(options.time_budget)
 
         {results, stopped_early} =
-          stream_and_collect(schema, ctx, partitions, options, deadline, on_start, reporter)
+          Stream.stream_and_collect(
+            schema,
+            ctx,
+            partitions,
+            options,
+            deadline,
+            on_start,
+            reporter
+          )
 
         {results, confirmation_stopped_early} =
           if options.confirm_timeouts do
-            confirm_timeouts(results, ctx, partitions, on_phase, on_start, reporter, deadline)
+            Stream.confirm_timeouts(
+              results,
+              ctx,
+              partitions,
+              on_phase,
+              on_start,
+              reporter,
+              deadline
+            )
           else
             {results, false}
           end
@@ -371,7 +344,7 @@ defmodule Mutare.Runner do
     on_phase.({:coverage_done, Map.put(CoverageProbe.summarize(selection), :cap_ms, cap)})
 
     # Per owning app, the test dirs a whole-suite run may be narrowed to (the app +
-    # its dependents). Empty for a single project — see `broaden/3`.
+    # its dependents). Empty for a single project — see `Mutare.Runner.MutantRun`'s broadening.
     scopes =
       Project.app_test_scopes(context.project, sandbox, Path.join(sandbox, "_build/test/lib"))
 
@@ -385,84 +358,6 @@ defmodule Mutare.Runner do
       hydrate: hydrate,
       heap_env: Invocation.heap_cap_env(options.max_heap_mb)
     }
-  end
-
-  # Run every site through `classify` concurrently (one partition slot per lane), reporting each
-  # result as it lands, and collect in source order — stopping early at the Nth survivor
-  # (`--max-survivors`) or when a task launched after the wall-clock budget elapsed
-  # (`--time-budget`) skips its real run, whichever comes first. Returns
-  # `{results, stopped_early?}`.
-  defp stream_and_collect(
-         schema,
-         ctx,
-         partitions,
-         %Options{} = options,
-         deadline,
-         on_start,
-         reporter
-       ) do
-    # Set once the survivor cap is reached or the launch deadline has elapsed: tasks that start
-    # *after* it skip their real run, letting the collector **drain** the rest of the stream cheaply
-    # rather than halting it. Draining lets the already-in-flight `mix test` runs finish instead of
-    # being killed mid-write — which used to leave a dying subprocess racing the sandbox/project
-    # teardown (a flaky `File.rm_rf`). No extra mutant is actually run after the cap: at most the
-    # in-flight stragglers (≤ one per worker, exactly as before) complete, and every later site comes
-    # back a trivial skip.
-    capped = :atomics.new(1, signed: false)
-
-    schema.sites
-    |> Task.async_stream(
-      fn site ->
-        cond do
-          :atomics.get(capped, 1) == 1 ->
-            :capped
-
-          past_deadline?(deadline) ->
-            :atomics.put(capped, 1, 1)
-            :capped
-
-          true ->
-            on_start.(site)
-            # Check out a distinct partition for this run (and its harness retries),
-            # check it back in when done — see `Mutare.Runner.Partitions`.
-            result = Partitions.with_slot(partitions, fn env -> classify(ctx, site, env) end)
-
-            # Fill in a displayed survivor's deferred diff code before it reaches the reporter (and
-            # rides on into the collected results for the final/SARIF reports). A no-op on the eager
-            # path or a killed/no-coverage result — see `Mutare.Runner.Hydrate`.
-            result = Hydrate.result(ctx.hydrate, result)
-
-            # Under `:confirm_timeouts` a streamed `:timeout` is *provisional* — the
-            # sequential confirmation pass (`confirm_timeouts/7`) re-runs it and reports
-            # the final verdict, so no (possibly false) TIMEOUT line may land here. A
-            # straggler drained after a `--max-survivors` stop is discarded either way.
-            if result.status != :timeout or not options.confirm_timeouts do
-              reporter.(result)
-            end
-
-            result
-        end
-      end,
-      # `max_concurrency` is driven from the pool itself so it can never drift from
-      # the token count: the pool's non-blocking checkout relies on one token per
-      # concurrency lane. Falls back to `options.workers` when partitioning is off
-      # (no pool). See `Mutare.Runner.Partitions`.
-      max_concurrency: Partitions.max_concurrency(partitions, options.workers),
-      ordered: true,
-      timeout: :infinity
-    )
-    |> collect_until_stop(options.max_survivors, capped)
-  end
-
-  # The monotonic instant the wall-clock budget (`--time-budget`) expires, or nil when unset. Read
-  # once, here, so the clock starts as the per-mutant phase begins (compile/baseline/probe are not
-  # charged against it — the budget is "how long to spend running mutants"). The string is already
-  # validated by `Options`, so parsing cannot fail.
-  defp deadline(nil), do: nil
-
-  defp deadline(time_budget) do
-    {:ok, ms} = Duration.parse(time_budget)
-    System.monotonic_time(:millisecond) + ms
   end
 
   # A complete run applies the harness-error abort guard; an early stop
@@ -485,122 +380,6 @@ defmodule Mutare.Runner do
   defp run_baseline(on_phase, sandbox, baseline_runs, baseline_retries, env) do
     on_phase.(:baseline)
     Baseline.run(sandbox, baseline_runs, baseline_retries, env)
-  end
-
-  # Consume the ordered per-mutant result stream. With neither early-stop condition set we drain the
-  # whole stream; otherwise we record results until the Nth `:survived` (`--max-survivors`) or until
-  # a task reports that it skipped because the wall-clock budget had elapsed (`--time-budget`) —
-  # whichever fires first — then signal `capped` (so tasks not yet started skip — see
-  # `stream_and_collect/6`) and **drain the rest** rather than halting. Returns
-  # `{results_in_source_order, stopped_early?}`.
-  #
-  # Because the stream is consumed `ordered: true`, a survivor stop is deterministic: the Nth
-  # survivor *in source order*, regardless of which worker finished first, so the reported survivors
-  # are exactly the first N. The deadline is observed in the task body immediately before the real
-  # run starts, rather than here, because `ordered: true` may buffer later completions while still
-  # launching replacement tasks as worker slots free. That makes launch gating independent of ordered
-  # result delivery. A complete run whose final result lands after the deadline stays complete: no
-  # task skipped, so this collector never marks it partial.
-  #
-  # We drain (not halt) either way, so the in-flight `mix test` runs already started before the trigger
-  # finish cleanly instead of being killed mid-write; their real results are discarded, and every
-  # post-trigger site comes back as a cheap `:capped` skip. Draining is what keeps the sandbox/project
-  # teardown from racing a dying subprocess. See NOTES "Early stop after N survivors".
-  defp collect_until_stop(stream, limit, capped) do
-    {acc, _survivors, stopped} =
-      Enum.reduce(stream, {[], 0, false}, fn
-        # A task that skipped because the cap was already set — discard. If the collector has not
-        # already observed the trigger, this was the time-budget task that first noticed the expired
-        # launch deadline, so the reported prefix is partial.
-        {:ok, :capped}, {acc, survivors, stopped} ->
-          {acc, survivors, stopped or :atomics.get(capped, 1) == 1}
-
-        # An in-flight straggler that finished its real run after the cap — drain but discard,
-        # keeping the reported set to exactly the mutants evaluated before the stop.
-        {:ok, _result}, {acc, survivors, true} ->
-          {acc, survivors, true}
-
-        {:ok, result}, {acc, survivors, false} ->
-          survivors = survivors + survivor_count(result)
-          acc = [result | acc]
-
-          if stop_now?(survivors, limit) do
-            :atomics.put(capped, 1, 1)
-            {acc, survivors, true}
-          else
-            {acc, survivors, false}
-          end
-      end)
-
-    {Enum.reverse(acc), stopped}
-  end
-
-  # Stop once the survivor cap is reached. The wall-clock launch budget is enforced in the task
-  # body, where it cannot be hidden by ordered stream buffering.
-  defp stop_now?(survivors, limit), do: limit != nil and survivors >= limit
-
-  defp past_deadline?(nil), do: false
-  defp past_deadline?(deadline), do: System.monotonic_time(:millisecond) >= deadline
-
-  # 1 for a survivor (`:survived`), 0 otherwise — the only status `--max-survivors`
-  # counts. A timeout/atom-exhaustion is a kill, and no-coverage/ignored/poisoned/
-  # harness-error reached no verdict, so none of those is an "unkilled" survivor.
-  defp survivor_count(%Result{status: :survived}), do: 1
-  defp survivor_count(_result), do: 0
-
-  # A streamed `:timeout` is provisional (`:confirm_timeouts`, on by default): the cap
-  # is scaled from an *uncontended* baseline, but the stream runs `:workers` mutants
-  # wide — each a full BEAM — so a slow-but-finite run can overrun the cap without
-  # hanging. Survivors are hit hardest: a kill exits at its first failing test
-  # (`--max-failures 1`), while a survivor must run its *entire* selected set, so the
-  # slowest honest runs are exactly the ones a contended cap falsely kills — and a
-  # false `:timeout` is a false kill hiding a true survivor. So each timed-out mutant
-  # is re-run here *sequentially* (no contention) with the same cap, and that verdict
-  # recorded instead; only a repeat overrun stays `:timeout`. A genuine hang pays one
-  # extra cap — cheap next to a silently wrong score. The same wall-clock deadline
-  # used by the async stream gates this pass too: if the budget has elapsed, the
-  # provisional timeout is reported as-is and no new `mix test` process starts. Runs
-  # after the stream (and after a `--max-survivors` stop, whose drained stragglers
-  # were discarded, not confirmed), so a confirmed survivor can push the reported
-  # survivors past the requested cap — the honest reading of a run that was already
-  # stopped early.
-  defp confirm_timeouts(results, ctx, partitions, on_phase, on_start, reporter, deadline) do
-    case Enum.count(results, &(&1.status == :timeout)) do
-      0 ->
-        {results, false}
-
-      count ->
-        if past_deadline?(deadline) do
-          report_unconfirmed_timeouts(results, reporter)
-          {results, true}
-        else
-          on_phase.({:confirming_timeouts, count})
-
-          Enum.map_reduce(results, false, fn
-            %Result{status: :timeout, site: site} = provisional, stopped ->
-              if stopped or past_deadline?(deadline) do
-                reporter.(provisional)
-                {provisional, true}
-              else
-                on_start.(site)
-                result = Partitions.with_slot(partitions, fn env -> classify(ctx, site, env) end)
-                result = Hydrate.result(ctx.hydrate, result)
-                reporter.(result)
-                {result, false}
-              end
-
-            result, stopped ->
-              {result, stopped}
-          end)
-        end
-    end
-  end
-
-  defp report_unconfirmed_timeouts(results, reporter) do
-    Enum.each(results, fn
-      %Result{status: :timeout} = result -> reporter.(result)
-      _result -> :ok
-    end)
   end
 
   # Per-mutant wall-clock cap. An explicit `:timeout` (ms) wins; otherwise
@@ -638,239 +417,6 @@ defmodule Mutare.Runner do
 
   defp probe_cap(mutant_cap, %Options{}), do: mutant_cap * 10
 
-  # Materialise the schema and compile it once, recovering from compile-poisoning.
-  @poison_attempts 25
-
-  # Materialise (and **claim**) the sandbox once, then hand off to the poison-recovery
-  # loop. The sandbox path is fixed here for the whole run — a poison retry re-renders the
-  # rebuilt schema into this *same* dir — so there are no orphaned dirs and ownership is
-  # claimed exactly once. Returns `{:ok, schema, sandbox, recovery}` or `{:error, reason,
-  # detail, sandbox}`; either way the sandbox is handed back so `with_compiled_sandbox/3`
-  # owns cleanup uniformly (this function never cleans up itself).
-  defp prepare_compiling(schema, root, %Context{} = context) do
-    sandbox = Sandbox.prepare(root, schema, context)
-
-    deps = %{
-      root: root,
-      options: context.options,
-      sandbox: sandbox,
-      on_phase: Context.hook(context, :on_phase)
-    }
-
-    compile_with_recovery(deps, schema, %Recovery{}, @poison_attempts)
-  end
-
-  # Compile the materialised sandbox. A dependency-check failure stops immediately;
-  # on a poisoned compile, drop the implicated mutants, rebuild + rematerialise into
-  # the same sandbox, and retry — bounded by `attempts`. `deps`
-  # (`root`/`options`/`sandbox`/`on_phase`) is fixed for the whole loop; the rest is per-round
-  # state — the `schema` rebuilt each round, the accumulating `Recovery`, and the remaining
-  # `attempts`.
-  defp compile_with_recovery(%{sandbox: sandbox} = deps, schema, %Recovery{} = recovery, attempts) do
-    # The compile evaluates the target's config under `MIX_ENV=test`, so a
-    # partitioned config that reads the var without a default (e.g.
-    # `System.fetch_env!("MIX_TEST_PARTITION")`) must see it *here* too — before
-    # the baseline/probe that also set it — or the compile fails. Sequential like
-    # those, so the fixed partition (`1`) suffices.
-    case compile(
-           sandbox,
-           Partitions.entry(deps.options.partition_env, 1),
-           deps.options.compile_timeout
-         ) do
-      :ok ->
-        {:ok, schema, sandbox, recovery}
-
-      {:error, :compile_timed_out, output} ->
-        # The compile self-halted past its wall-clock cap. Infrastructure, like a
-        # dependency failure: there is no compiler error to attribute to a mutant,
-        # and a poison-recovery rebuild cannot make an oversized compile faster.
-        {:error, :compile_timed_out, output, sandbox}
-
-      {:error, :compile_failed, output} ->
-        dependency_issue = Output.dependency_issue(output)
-
-        if dependency_issue do
-          # Dependency validation happens before the compiler can reach a
-          # metamutant. It is infrastructure, never compile-poisoning: retrying
-          # with dropped mutant ids cannot change the copied dependency state.
-          {:error, :dependency_failed, output, sandbox}
-        else
-          recover_compile_poison(deps, schema, recovery, attempts, output)
-        end
-    end
-  end
-
-  defp recover_compile_poison(deps, schema, %Recovery{} = recovery, attempts, output) do
-    sandbox = deps.sandbox
-
-    # The implicated mutant ids this round, then evidence-based escalation for an
-    # unknown module-level block macro: a block is dropped *wholesale* only once a
-    # *second, distinct* poison lands in it after a targeted single-id drop — the
-    # only signal that distinguishes a DSL rejecting the injected selector wholesale
-    # (recurs under a single drop) from one mutant's broken replacement (does not).
-    # See `escalate_block_poison/3`.
-    raw = Poison.ids(output, schema.metamutants)
-    {poison, struck, escalated} = escalate_block_poison(raw, schema.sites, recovery.struck)
-
-    # Inline-macro attribution takes **priority** over line attribution. A macro that rejects the
-    # selector spliced into its argument makes the compiler blame the macro *call* line; when that
-    # call sits inside an *outer* selector — a return-value mutant wrapping a tail-position
-    # `query(a > b)` — line attribution maps the line to that outer selector's whole-`case`
-    # fallback and would wrongly drop those valid mutants as `:poisoned` (they'd never run) while
-    # leaving the real argument poison in place. The macro-identity match names the true culprit
-    # (the argument mutants inside the raising macro), so we drop those first. Block-macro mutants
-    # are excluded here — they recover through `escalate_block_poison/3`'s second-strike path.
-    inline = inline_macro_poison(output, schema, recovery.skip_ids)
-
-    cond do
-      attempts <= 0 ->
-        {:error, :compile_failed, output, sandbox}
-
-      inline != [] ->
-        do_macro_recovery(deps, schema, recovery, attempts, inline)
-
-      not MapSet.subset?(poison, recovery.skip_ids) ->
-        do_line_recovery(deps, schema, recovery, attempts, poison, struck, escalated)
-
-      true ->
-        {:error, :compile_failed, output, sandbox}
-    end
-  end
-
-  # The classic line-attributed drop (built-in mutators, block escalation). Narrate the
-  # round before paying for its rebuild + recompile — each round is a full recompile, and
-  # without a line per round the whole recovery hides behind the "compiling metamutant
-  # (once)…" spinner and reads as a hang.
-  defp do_line_recovery(deps, schema, recovery, attempts, poison, struck, escalated) do
-    deps.on_phase.({:poison_round, poison_round_info(recovery, poison, escalated, schema)})
-
-    # Drop the poisoning mutants and rebuild. Ids are stable across rebuilds (the transform
-    # advances its counter for skipped ids), so accumulated `skip_ids` keep referring to the
-    # same mutations. Rebuild against the *same* files this schema covers (not a fresh
-    # discovery), so a restricted schema (`from_files/4`, `:only_files`, `:exclude`) can't
-    # silently expand. Forward the original options so `:mutators` survive.
-    recovery = %{
-      recovery
-      | rounds: recovery.rounds + 1,
-        skip_ids: MapSet.union(recovery.skip_ids, poison),
-        struck: struck,
-        escalated: MapSet.union(recovery.escalated, escalated)
-    }
-
-    schema = Schema.rebuild(schema, deps.root, deps.options, recovery.skip_ids)
-    Sandbox.rematerialize(deps.sandbox, schema)
-    compile_with_recovery(deps, schema, recovery, attempts - 1)
-  end
-
-  # The macro-expansion fallback's matches carrying *new* (not-yet-skipped) ids, with block-macro
-  # mutants removed — those recover through `escalate_block_poison/3`, and letting the inline
-  # fallback drop a block's body wholesale on the first strike would pre-empt its id-specific vs
-  # wholesale distinction. `[]` when nothing inline maps (or all its ids are already skipped),
-  # so line attribution / abort take over.
-  defp inline_macro_poison(output, schema, skip_ids) do
-    block_ids = block_macro_ids(schema.sites)
-
-    output
-    |> Poison.macro_poison(schema.metamutants)
-    |> Enum.map(fn {macro, ids} -> {macro, MapSet.difference(ids, block_ids)} end)
-    |> Enum.reject(fn {_macro, ids} -> Enum.empty?(ids) or MapSet.subset?(ids, skip_ids) end)
-  end
-
-  # The mutant ids that belong to an unknown module-level block macro (`site.block_macro` set).
-  defp block_macro_ids(sites) do
-    for %Site{block_macro: tag, id: id} <- sites, not is_nil(tag), into: MapSet.new(), do: id
-  end
-
-  # Drop the macros' argument mutants wholesale (`matched` is `inline_macro_poison/3`'s already-
-  # filtered result), record the skip for the durable `{Module, :fun, :skip}` suggestion, fire a
-  # loud `{:macro_poison, info}` warning naming the macro, and rebuild + recurse.
-  defp do_macro_recovery(deps, schema, recovery, attempts, matched) do
-    macro_ids =
-      Enum.reduce(matched, MapSet.new(), fn {_m, ids}, acc -> MapSet.union(acc, ids) end)
-
-    deps.on_phase.({:macro_poison, macro_poison_info(matched)})
-
-    recovery = %{
-      recovery
-      | rounds: recovery.rounds + 1,
-        skip_ids: MapSet.union(recovery.skip_ids, macro_ids),
-        macro_skips:
-          MapSet.union(recovery.macro_skips, MapSet.new(matched, fn {macro, _ids} -> macro end))
-    }
-
-    schema = Schema.rebuild(schema, deps.root, deps.options, recovery.skip_ids)
-    Sandbox.rematerialize(deps.sandbox, schema)
-    compile_with_recovery(deps, schema, recovery, attempts - 1)
-  end
-
-  # The `{:macro_poison, info}` narration payload: one `%{module, macro, count}` entry per
-  # macro the fallback skipped this round, naming it for the loud warning line.
-  defp macro_poison_info(matched) do
-    entries =
-      Enum.map(matched, fn {{module, fun}, ids} ->
-        %{module: module, macro: fun, count: MapSet.size(ids)}
-      end)
-
-    %{macros: entries}
-  end
-
-  # The `{:poison_round, info}` narration payload for one recovery round, fired just
-  # before the rebuild it announces: the mutants newly dropped *individually* this round
-  # (as `%{id, file, line, mutator}` descriptors, in source order — excluding the ids a
-  # block escalation swept up, which its `:escalated` entry already covers in aggregate)
-  # and the block(s) escalated wholesale this round (`t:Mutare.Run.escalation/0`).
-  defp poison_round_info(%Recovery{} = recovery, poison, escalated, schema) do
-    new_ids = MapSet.difference(poison, recovery.skip_ids)
-
-    dropped =
-      for site <- schema.sites,
-          MapSet.member?(new_ids, site.id),
-          not MapSet.member?(escalated, block_macro_key(site)),
-          do: %{id: site.id, file: site.file, line: site.line, mutator: site.mutator}
-
-    %{dropped: dropped, escalated: escalations(escalated, schema.sites)}
-  end
-
-  # Escalated block keys → display entries: one `%{macro, file, line, count}` per
-  # escalated invocation, in source order. The tag records no source line of its own, so
-  # `line` is the block's first mutant's line (`nil` when none carries one).
-  defp escalations(keys, sites) do
-    sites
-    |> Enum.filter(&MapSet.member?(keys, block_macro_key(&1)))
-    |> Enum.group_by(&block_macro_key/1)
-    |> Enum.map(fn {{file, {name, _nid}}, block_sites} ->
-      lines = block_sites |> Enum.map(& &1.line) |> Enum.reject(&is_nil/1)
-      %{macro: name, file: file, line: Enum.min(lines, fn -> nil end), count: length(block_sites)}
-    end)
-    |> Enum.sort_by(&{&1.file, &1.line})
-  end
-
-  # The public recovery summary a completed compile carries (`Mutare.Run`'s `:recovery`,
-  # and `check_with_schema/3`'s result): the rebuild-round count, every dropped mutant
-  # id, and the block macros escalated wholesale — the material the Mix task turns into
-  # a `:macro_routes` suggestion (`Mutare.Poison.Hint.escalation_note/1`). `nil` for a
-  # clean first compile, so a healthy run carries no vestigial zero-summary.
-  defp recovery_summary(%Recovery{rounds: 0}, _schema), do: nil
-
-  defp recovery_summary(%Recovery{} = recovery, schema) do
-    %{
-      rounds: recovery.rounds,
-      dropped: recovery.skip_ids,
-      escalated: escalations(recovery.escalated, schema.sites),
-      macro_skipped: macro_skips(recovery.macro_skips)
-    }
-  end
-
-  # The macro-expansion fallback's skips as public summary entries: one
-  # `%{module, macro}` per `{module_string, fun}` the fallback dropped, in a stable order.
-  # `module` is the frame's module string (`"Ecto.Query"`), rendered into the durable
-  # `{Module, :fun, :skip}` suggestion by `Mutare.Poison.Hint.macro_skip_note/1`.
-  defp macro_skips(macro_skips) do
-    macro_skips
-    |> Enum.map(fn {module, fun} -> %{module: module, macro: fun} end)
-    |> Enum.sort_by(&{&1.module, to_string(&1.macro)})
-  end
-
   # Remove an auto-generated fresh sandbox once the run is done with it, so the
   # default throwaway dirs don't accumulate in the temp dir across runs. A pinned
   # `--sandbox` is the user's chosen path (left for inspection and their own reuse)
@@ -883,353 +429,6 @@ defmodule Mutare.Runner do
   end
 
   defp cleanup_sandbox(_sandbox, _options), do: :ok
-
-  # Evidence-based escalation for a poison inside an *unknown* module-level block macro
-  # (a DSL whose `do` body the transform mutates on the guess it is unquoted into a
-  # function). Two distinct failure modes both surface here, and they need opposite
-  # responses:
-  #
-  #   * **Wholesale** — the DSL rejects the injected selector `case` itself (it splices the
-  #     body into a guard/pattern/compile-time position). *Every* selector in the block will
-  #     fail, so the whole block must be dropped at once — otherwise we'd hit the next
-  #     selector round after round and could exhaust the attempt budget.
-  #   * **Id-specific** — one mutant's *replacement* is illegal (classically a custom mutator
-  #     emitting uncompilable code). Only that mutant must be dropped; its innocent
-  #     (compile-safe-by-construction) siblings in the same block should still run.
-  #
-  # The build can't tell them apart — whether an unknown DSL rejects a given selector is
-  # information that only exists at compile time. But the two modes differ in **recurrence
-  # under a single drop**: wholesale recurs (drop one selector, the next fails), id-specific
-  # does not (drop the bad mutant, the rest compile). So we escalate a block only on its
-  # **second** strike: the first poison in a block drops just the implicated id(s) and *marks
-  # the block struck* (`struck`); a later poison in an already-struck block drops *every*
-  # mutant in it — the runtime-stable equivalent of marking the macro `:skip` (the body
-  # renders raw, its mutants recorded `:poisoned`), while ids stay stable across rebuilds
-  # (unlike a true `:skip`, which would stop analyzing the body and shift later ids).
-  #
-  # Cost of the precision: a genuinely-wholesale block pays **one extra rebuild** (drop one,
-  # see it recur, escalate). Limit: two *independent* id-specific failures in one block also
-  # escalate it on the second — indistinguishable from wholesale recurrence without trying
-  # each id individually, which is exactly the budget blow-up escalation exists to prevent.
-  #
-  # Identity is **per-invocation** — `{file, {macro_name, nid}}`, tagged on each `Site` by the
-  # transform — so a poison in one `custom_dsl do … end` only ever escalates that block, never
-  # a sibling invocation of the same macro that expands differently. A poison touching no block
-  # macro returns `{poison, struck, escalate}` with `poison`/`struck` unchanged and `escalate`
-  # empty (the common path). `escalate` (the keys widened *this round*) drives the
-  # `{:poison_round, …}` narration and the run's `:recovery` summary.
-  defp escalate_block_poison(poison, sites, struck) do
-    by_id = Map.new(sites, &{&1.id, &1})
-
-    hit =
-      poison
-      |> Enum.map(&block_macro_key(by_id[&1]))
-      |> Enum.reject(&is_nil/1)
-      |> MapSet.new()
-
-    # Escalate only blocks hit this round that were *already* struck on a prior round;
-    # newly-hit blocks are merely recorded (struck for next time) and dropped per-id.
-    escalate = MapSet.intersection(hit, struck)
-
-    siblings =
-      for site <- sites,
-          key = block_macro_key(site),
-          not is_nil(key),
-          MapSet.member?(escalate, key),
-          do: site.id
-
-    {MapSet.union(poison, MapSet.new(siblings)), MapSet.union(struck, hit), escalate}
-  end
-
-  # The `{file, {macro_name, nid}}` invocation a site belongs to when it lives in an
-  # unknown block macro, else `nil` (an untagged site, or a missing id). The `nid` in
-  # the tag scopes it to the one invocation; pairing with `file` disambiguates the
-  # per-file nid counter across files.
-  defp block_macro_key(%Site{block_macro: tag, file: file}) when not is_nil(tag),
-    do: {file, tag}
-
-  defp block_macro_key(_), do: nil
-
-  # The one compilation. `Command.success?/1` owns the "0 means success" reading;
-  # `CompilerOptions` carries the diagnostics-only speed switches (the SSA alias
-  # pass off via env, the verify pass off via `compile_args/0` — free compile
-  # wins, applied only here since per-mutant runs never recompile the lib).
-  # `partition_env` is the fixed partition entry (or `[]`), so a config read at
-  # compile time finds a valid partition — see `compile_with_recovery/5`.
-  #
-  # `:compile_timeout` arms the config-hosted wall-clock watcher
-  # (`Invocation.compile_watcher_ast/0`): the compile halts *itself* with the
-  # timeout exit past the cap, which we decode here as `:compile_timed_out` —
-  # never fed to poison recovery (there is no error to attribute, and a rebuild
-  # cannot make an oversized compile faster).
-  defp compile(sandbox, partition_env, compile_timeout) do
-    {output, status} =
-      Invocation.mix(sandbox, ["compile" | CompilerOptions.compile_args()], Selector.baseline(),
-        env: CompilerOptions.compiler_env() ++ partition_env ++ cap_env(compile_timeout)
-      )
-
-    cond do
-      Command.success?(status) -> :ok
-      status == Command.timeout_exit() -> {:error, :compile_timed_out, output}
-      true -> {:error, :compile_failed, output}
-    end
-  end
-
-  defp cap_env(nil), do: []
-
-  defp cap_env(ms) when is_integer(ms),
-    do: [{Invocation.compile_timeout_env(), Integer.to_string(ms)}]
-
-  # === per-mutant runs =======================================================
-
-  defp classify(_ctx, %Site{poisoned: true} = site, _env) do
-    %Result{site: site, status: :poisoned, duration_ms: 0, output: nil}
-  end
-
-  defp classify(_ctx, %Site{ignored: true} = site, _env) do
-    %Result{site: site, status: :ignored, duration_ms: 0, output: nil}
-  end
-
-  defp classify(%RunCtx{selection: :run_all} = ctx, site, env),
-    do: run_mutant(ctx, site, broaden([], site, ctx.scopes), env)
-
-  defp classify(%RunCtx{selection: {:selective, outcomes}} = ctx, site, env) do
-    case Map.fetch(outcomes, site.id) do
-      {:ok, {:run, test_args}} ->
-        run_mutant(ctx, site, broaden(test_args, site, ctx.scopes), env)
-
-      {:ok, :no_coverage} ->
-        %Result{site: site, status: :no_coverage, duration_ms: 0, output: nil}
-
-      # `outcomes` is total over every mutant id, so this is unreachable in
-      # practice; a missing id is a bug, not a no-coverage signal — run it rather
-      # than silently drop a mutant from the score.
-      :error ->
-        run_mutant(ctx, site, broaden([], site, ctx.scopes), env)
-    end
-  end
-
-  # A whole-suite run (`[]` args) in an umbrella would run *every* app. Narrow it to
-  # the mutant's owning app + its dependents (`scopes`, the safe superset of
-  # possible killers; see `Mutare.Project.app_test_scopes/3`). A non-empty selection
-  # (coverage already attributed it to specific files) is left untouched, and an
-  # empty scope (single project, unknown app, or an unreadable graph) means run
-  # everything — never narrow on doubt.
-  defp broaden([], %Site{file: file}, scopes) when map_size(scopes) > 0 do
-    Map.get(scopes, owning_app(file, scopes), [])
-  end
-
-  defp broaden(test_args, _site, _scopes), do: test_args
-
-  # Resolve an `apps/<app>/…` sandbox path to its owning app by matching the path
-  # segment against the *known* `scopes` keys — never `String.to_atom/1` on a path
-  # segment. The segment is input-derived (a discovered file path), so minting an
-  # atom from it is unbounded-atom-table risk; matching the existing keys instead
-  # removes that risk and is exactly the lookup we want (a segment naming no scope
-  # app yields `nil` ⇒ `Map.get` default `[]` ⇒ run everything — never narrow on
-  # doubt).
-  defp owning_app(file, scopes) do
-    case Path.split(file) do
-      ["apps", app | _] -> Enum.find(Map.keys(scopes), &(to_string(&1) == app))
-      _ -> nil
-    end
-  end
-
-  # A boot-time node crash (`:boot_failure`) is a known-transient contention
-  # signature, so it gets its **own** retry budget on top of `:harness_retries`,
-  # with a short jittered backoff so the retry doesn't re-collide with the same
-  # boot stampede. Sized to the field-proven figure: 4 extra attempts (total 5)
-  # cleared it across repeated runs of a contended target.
-  @boot_failure_retries 4
-  @boot_retry_base_ms 150
-  @boot_retry_jitter_ms 350
-
-  # A `:harness_error` means the suite never reached a verdict (a compile error,
-  # a missing dep, a filesystem/lock race). Some of those are *transient*, so we
-  # re-run before recording — a fresh `mix` boot is its own natural backoff. A
-  # real verdict (passed/failed/timeout) is never retried. Exhausting the budget
-  # records the harness error as-is; the run-level guard decides if too many
-  # persisted.
-  #
-  # The two **kill** outcomes `Command.outcome/2` recovers from an otherwise-
-  # `:harness_error` exit (`:suite_compile_error`, `:atom_exhausted`) are already
-  # distinct outcomes here, so they record as kills and are never retried. The
-  # third refinement, `:boot_failure`, *is* retried — harder than a generic
-  # harness error, from its own dedicated budget — since it is a known-transient
-  # startup-contention crash; see `@boot_failure_retries`.
-  #
-  # `:sigkilled` (the OS SIGKILLed the run — exit 137) is the refinement that must
-  # NOT be retried, ever: its signature cause is the kernel OOM killer reaping a
-  # mutant whose mutation made it allocate without bound, and that failure mode is
-  # *deterministic* — a back-to-back retry re-detonates the same multi-GB blowup
-  # on the host (observed live: two consecutive ~25GB RSS spikes before the retry
-  # budget ran out). The cost of not retrying the rare transient SIGKILL (an
-  # innocent run reaped under someone else's memory pressure, an external kill) is
-  # one excluded-from-score harness error; the cost of retrying a real one is the
-  # host. Fail toward the host's safety.
-  defp run_mutant(%RunCtx{} = ctx, site, test_args, env) do
-    result =
-      ctx
-      |> run_mutant_attempt(site, test_args, env, ctx.retries, @boot_failure_retries)
-      |> require_unanimous_kill(ctx, site, test_args, env, ctx.kill_runs - 1)
-
-    if result.outcome in [:harness_error, :boot_failure, :sigkilled],
-      do: warn_harness_error(site, result)
-
-    record(site, result)
-  end
-
-  # `retries` is the general `:harness_retries` budget; `boot_retries` the dedicated
-  # boot-failure budget. The two are decremented independently by the *current* run's
-  # outcome, so a boot failure that later degrades to a plain harness error still draws
-  # its general retries, and vice versa. Only the two retryable outcomes recurse; every
-  # real verdict (and the recovered kills) falls through unretried — as does
-  # `:sigkilled`, deliberately (see `run_mutant/4`: retrying a likely-OOM-killed
-  # mutant re-detonates it on the host).
-  defp run_mutant_attempt(%RunCtx{} = ctx, site, test_args, env, retries, boot_retries) do
-    result = Command.timed_test(ctx.sandbox, test_args, site.id, ctx.cap, env ++ ctx.heap_env)
-
-    case result.outcome do
-      :boot_failure when boot_retries > 0 ->
-        Process.sleep(boot_backoff_ms())
-        run_mutant_attempt(ctx, site, test_args, env, retries, boot_retries - 1)
-
-      :harness_error when retries > 0 ->
-        run_mutant_attempt(ctx, site, test_args, env, retries - 1, boot_retries)
-
-      _ ->
-        result
-    end
-  end
-
-  # The kill-rerun layer sits outside harness retries. Each attempt first settles
-  # its own infrastructure retries above; only kill outcomes are repeated, and all
-  # attempts must kill. A passing rerun is the conservative verdict, while a
-  # persistent harness error stays an infrastructure failure.
-  defp require_unanimous_kill(result, _ctx, _site, _test_args, _env, remaining)
-       when remaining <= 0,
-       do: result
-
-  defp require_unanimous_kill(result, ctx, site, test_args, env, remaining) do
-    if kill_outcome?(result.outcome) do
-      next = run_mutant_attempt(ctx, site, test_args, env, ctx.retries, @boot_failure_retries)
-      combined = combine_attempts(result, next)
-
-      if kill_outcome?(next.outcome) do
-        require_unanimous_kill(combined, ctx, site, test_args, env, remaining - 1)
-      else
-        combined
-      end
-    else
-      result
-    end
-  end
-
-  defp combine_attempts(previous, next) do
-    %{next | duration_ms: previous.duration_ms + next.duration_ms}
-  end
-
-  defp kill_outcome?(outcome),
-    do: outcome in [:failed, :timeout, :suite_compile_error, :atom_exhausted]
-
-  defp record(%Site{} = site, result) do
-    %Result{
-      site: site,
-      status: status_for(result.outcome),
-      duration_ms: result.duration_ms,
-      output: result.output,
-      exit_status: result.exit_status
-    }
-  end
-
-  # Short jittered backoff before a boot-failure retry, so the concurrent workers
-  # don't re-stampede shared services in lockstep on the same instant.
-  defp boot_backoff_ms, do: @boot_retry_base_ms + :rand.uniform(@boot_retry_jitter_ms)
-
-  # A persistent harness error (retries exhausted) is recorded out of the score —
-  # but silence would hide infrastructure breakage behind a count buried in the
-  # summary. Warn once, naming the mutant and its exit code, so it's actionable;
-  # the full `mix` output stays on the `Mutare.Result` for inspection.
-  #
-  # A `:boot_failure` gets a *specific* message: its real cause is unrecoverable
-  # from output (the boot crash erased its own diagnostic), so rather than send the
-  # user to output that can't help, we name the actual fix — it is almost always
-  # startup contention across concurrent workers.
-  defp warn_harness_error(%Site{} = site, %{outcome: :boot_failure} = result) do
-    Logger.warning(
-      "#{site_ref(site)} — the sandbox node died during boot " <>
-        "(exit #{result.exit_status}). Its underlying error couldn't reach a torn-down " <>
-        ":standard_error, so the cause is unrecoverable from the mutant's output. This is " <>
-        "almost always resource/connection contention across concurrent workers at startup, " <>
-        "which the engine already retries harder on its own — if it persists, lower --workers " <>
-        "or partition shared services (--partition-db / --partition-env). Not counted as " <>
-        "killed or survived."
-    )
-  end
-
-  # A `:sigkilled` run also gets a *specific* message: exit 137 is the OS's, not
-  # the suite's, and its signature cause is the kernel OOM killer reaping a mutant
-  # made to allocate unboundedly. Deliberately not retried (see `run_mutant/4`),
-  # and the actionable mitigation — a per-process heap cap on the sandbox runs —
-  # is named here.
-  defp warn_harness_error(%Site{} = site, %{outcome: :sigkilled} = result) do
-    Logger.warning(
-      "#{site_ref(site)} — the OS killed the run with SIGKILL " <>
-        "(exit #{result.exit_status}). This is usually the kernel OOM killer: a mutation can " <>
-        "make code allocate without bound (e.g. a dropped guard turning a function " <>
-        "unconditionally self-recursive), exhausting memory in well under a second. Not " <>
-        "retried — a deterministic blowup would just re-detonate on this machine — and not " <>
-        "counted as killed or survived. To contain such mutants, cap the sandbox runs' " <>
-        "per-process heap with --max-heap-mb <mb> (a runaway then dies as an ordinary, fast " <>
-        "test failure instead of endangering the host)."
-    )
-  end
-
-  defp warn_harness_error(%Site{} = site, result) do
-    Logger.warning(
-      "#{site_ref(site)} failed at the harness level " <>
-        "(exit #{result.exit_status}) — the suite never reached a verdict (a compile error, " <>
-        "a missing dependency, or a filesystem/lock race). Not counted as killed or survived; " <>
-        "see the mutant's output to diagnose the sandbox."
-    )
-  end
-
-  # The `file:line: mutant id` prefix shared by both harness-error warnings.
-  defp site_ref(%Site{} = site), do: "#{site.file}:#{site.line}: mutant #{site.id}"
-
-  # Map a run's typed outcome (decoded by `Mutare.Sandbox.Command`, which owns the
-  # exit-code contract) onto a result status. A `:harness_error` — the suite never
-  # reached a verdict (compile error, missing dep, filesystem race) — is *not* a
-  # kill: it says nothing about the mutation, so it's recorded separately and kept
-  # out of the score's denominator rather than inflating the kill count.
-  defp status_for(:passed), do: :survived
-  defp status_for(:failed), do: :killed
-  defp status_for(:timeout), do: :timeout
-  defp status_for(:harness_error), do: :harness_error
-  # A boot-time node crash is a harness error by *verdict* (it says nothing about
-  # the mutation — it's startup contention), so it records under the same status
-  # and stays out of the score. The `:boot_failure` outcome is purely an internal
-  # refinement (`Command.outcome/2`) driving the harder retry and the specific
-  # warning; it never reaches the reporters' `Result.status` vocabulary.
-  defp status_for(:boot_failure), do: :harness_error
-  # An OS SIGKILL (almost always the kernel OOM killer reaping a runaway-allocation
-  # mutant) is likewise a harness error by *verdict* — the suite never reached one.
-  # The `:sigkilled` outcome is an internal refinement like `:boot_failure`, but
-  # driving the opposite retry behavior (none — see `run_mutant/4`) and its own
-  # warning; reporters never see it as a status.
-  defp status_for(:sigkilled), do: :harness_error
-  # The mutation broke the test suite's own compilation — it can't even build
-  # with the mutant active, so it was detected: a kill. `Command.outcome/2`
-  # separates this from a genuine harness/infra compile failure (which stays
-  # `:harness_error`); only a per-mutant *test-script* compile error lands here.
-  defp status_for(:suite_compile_error), do: :killed
-  # The mutation minted unbounded atoms and crashed the BEAM (atom table full) —
-  # a resource-divergence like a timeout, so a kill, recorded under its own status
-  # so the report can name the cause. `Command.outcome/2` recovers it from the
-  # otherwise-`:harness_error` exit via the VM-abort banner (`Output.atom_exhausted?/1`).
-  # Not retried (it is a verdict, not a transient infra blip): only `:harness_error`
-  # and `:boot_failure` re-run (see `run_mutant/7`).
-  defp status_for(:atom_exhausted), do: :atom_exhausted
 
   # Persistent harness errors (after per-mutant retries) hollow out the score's
   # denominator — many mutants measured nothing. Past `:max_harness_error_rate`
