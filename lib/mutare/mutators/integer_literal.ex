@@ -45,6 +45,10 @@ defmodule Mutare.Mutators.IntegerLiteral do
     {Task, :async_stream, 5, [:timeout]},
     {Task.Supervisor, :async_stream, 4, [:timeout]},
     {Task.Supervisor, :async_stream, 6, [:timeout]},
+    # `async_stream_nolink` is the unlinked twin with the identical options surface (only on
+    # `Task.Supervisor`; `Task` has no such variant).
+    {Task.Supervisor, :async_stream_nolink, 4, [:timeout]},
+    {Task.Supervisor, :async_stream_nolink, 6, [:timeout]},
     {Task, :yield_many, 2, [:timeout]}
   ]
 

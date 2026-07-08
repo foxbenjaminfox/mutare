@@ -64,6 +64,7 @@ defmodule Mutare.TransformDurationTest do
     # keyword
     "Task.async_stream(e, fun, timeout: #{@marker})",
     "Task.Supervisor.async_stream(sup, e, fun, timeout: #{@marker})",
+    "Task.Supervisor.async_stream_nolink(sup, e, fun, timeout: #{@marker})",
     "Task.yield_many(ts, timeout: #{@marker})"
   ]
 
@@ -252,6 +253,24 @@ defmodule Mutare.TransformDurationTest do
         )
 
       refute Enum.any?(opts, fn {m, o, _} -> m == :integer and o == "5000" end)
+    end
+
+    test "async_stream_nolink is covered like its linked twin, with the same /5-vs-/6 split" do
+      # The unlinked variant shares async_stream's options surface: /6 options are suppressed, /5
+      # MFA `args` data still mutates.
+      {_m, opts} =
+        value_triples(
+          "def f(sup, enum, fun), do: Task.Supervisor.async_stream_nolink(sup, enum, fun, timeout: 5000)"
+        )
+
+      refute Enum.any?(opts, fn {m, o, _} -> m == :literal and o == "5000" end)
+
+      {_m, data} =
+        value_triples(
+          "def f(sup, enum), do: Task.Supervisor.async_stream_nolink(sup, enum, Mod, :run, [timeout: 5000])"
+        )
+
+      assert {:literal, "5000", "0"} in data
     end
   end
 
