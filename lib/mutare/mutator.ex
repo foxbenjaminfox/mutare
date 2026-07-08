@@ -4,7 +4,7 @@ defmodule Mutare.Mutator do
 
   A mutator examines an AST node and returns either `:skip` or a list of mutations to generate at that site. Every mutator defines `name/0` and at least one mutation-producing callback.
 
-  You must define `name/0` to identify the mutator in reports, and at least one mutation-producing callback. The usual producer is `mutate/1` (or the pipe-aware/configurable `mutate/2`), but a `Mutare.Mutator.Structural` hook or a `c:Mutare.Mutator.MacroHost.host/2` selector host counts too — a mutator that produces *only* through one of those needs no `mutate/1`. Optionally, you may implement `variants/0` and `variant/2` to classify your mutations into kinds, `mutate_call_option_keys?/1` to control mutations of call-option names, and `argument_marks/0` to have the transform *mark* specific call-argument positions (e.g. timeout literals) that you then recognise with `marked?/2` in `mutate/2` and decline.
+  You must define `name/0` to identify the mutator in reports, and at least one mutation-producing callback. The usual producer is `mutate/1` (or the pipe-aware/configurable `mutate/2`), but a `Mutare.Mutator.Structural` hook or a `c:Mutare.Mutator.MacroHost.host/2` selector host counts too — a mutator that produces *only* through one of those needs no `mutate/1`. Optionally, you may implement `variants/0` and `variant/2` to classify your mutations into kinds, `mutate_call_option_keys?/1` to control mutations of call-option names, and `argument_marks/1` to have the transform *mark* specific call-argument positions (e.g. timeout literals) that you then recognise with `marked?/2` in `mutate/2` and decline.
 
   When both `mutate/1` and `mutate/2` are exported, Mutare calls `mutate/2`. If a mutator needs both context-free and context-aware production, call the context-free helper explicitly from `mutate/2`.
 
@@ -356,34 +356,34 @@ defmodule Mutare.Mutator do
   `GenServer.call`, `Task.await`, `Task.async_stream`'s `:timeout` option, … and skips them, so a
   near-unkillable off-by-one on a duration is never minted.
 
-  Return a list of declarations, each naming a resolved call and the positions to mark with a label:
+  Called once per resolved instance (like `c:init/1`) with that instance's `config` — so a mutator
+  can extend its built-in marks with positions from its own options. Return a list of declarations,
+  each naming a resolved call and the positions to mark with a label:
 
       @impl true
-      def argument_marks do
-        [
-          # {module, function, arity, positions, label}
-          {Process, :sleep, 1, [0], :timeout},
-          {Task, :async_stream, 3, [{:keyword, :timeout}], :timeout}
-        ]
+      def argument_marks(config) do
+        builtin() ++ Mutare.Mutator.argument_marks_from(config[:skip_arguments] || [], name())
       end
 
-  A `position` is an **effective** argument index (a piped receiver counts as index 0) or a
-  `{:keyword, key}` for a trailing-options key. Arity is effective too, so an option-bearing arity
-  (`Task.async_stream/3`, `/5`) can be marked while a same-named arity whose trailing argument is
-  ordinary data (`/4`, the MFA callback-args list) is left alone. Marks are resolved through the
-  same alias/import machinery as call matching, so aliased and imported forms are covered and a
-  shadowing alias is not. Only the named value node is marked, never an enclosing container, so
-  unrelated mutations there (e.g. `List` collapsing an options list) are untouched.
+  A declaration is `{module, function, arity, positions, label}`. A `position` is an **effective**
+  argument index (a piped receiver counts as index 0) or a `{:keyword, key}` for a trailing-options
+  key. Arity is effective too, so an option-bearing arity (`Task.async_stream/3`, `/5`) can be
+  marked while a same-named arity whose trailing argument is ordinary data (`/4`, the MFA
+  callback-args list) is left alone. Marks are resolved through the same alias/import machinery as
+  call matching, so aliased and imported forms are covered and a shadowing alias is not. Only the
+  named value node is marked, never an enclosing container, so unrelated mutations there (e.g. `List`
+  collapsing an options list) are untouched.
 
   Two mutators marking the same position union their labels; the label is a shared vocabulary, so a
   family can react to a label another declared (declare it too if that must survive the declarer
-  being disabled). A mutator without this callback asks for no marks.
+  being disabled). A mutator without this callback asks for no marks. `argument_marks_from/2` turns a
+  user-facing `{module, function, arity, positions}` list into declarations under a label.
   """
-  @callback argument_marks() :: [
+  @callback argument_marks(config :: term()) :: [
               {module(), atom(), arity(), [non_neg_integer() | {:keyword, atom()}], atom()}
             ]
 
-  @optional_callbacks argument_marks: 0,
+  @optional_callbacks argument_marks: 1,
                       finalize: 2,
                       init: 1,
                       mutate: 1,
@@ -439,7 +439,7 @@ defmodule Mutare.Mutator do
 
   @doc """
   Whether the node being offered carries the position mark `label` — i.e. sits at a position some
-  mutator requested via `c:argument_marks/0`. The reader half of the marking facility: a `mutate/2`
+  mutator requested via `c:argument_marks/1`. The reader half of the marking facility: a `mutate/2`
   checks this and returns `:skip` (or adapts) at a marked position.
 
       def mutate(node, context) do
@@ -451,6 +451,49 @@ defmodule Mutare.Mutator do
   @spec marked?(context(), atom()) :: boolean()
   def marked?(%{marks: marks}, label), do: MapSet.member?(marks, label)
   def marked?(_context, _label), do: false
+
+  @doc """
+  Turns a user-facing list of `{module, function, arity, positions}` entries into
+  `c:argument_marks/1` declarations under `label` — the helper a configurable mutator uses to expose
+  "also leave these positions alone" as an option (e.g. `skip_arguments:`). `positions` is a list of
+  effective argument indices and `{:keyword, key}` option keys, exactly as in a declaration. Raises
+  `ArgumentError` with a pointed message on a malformed entry, so a typo fails at startup rather than
+  silently marking nothing.
+
+      def argument_marks(config),
+        do: builtin() ++ Mutare.Mutator.argument_marks_from(config[:skip_arguments] || [], name())
+  """
+  @spec argument_marks_from(term(), atom()) ::
+          [{module(), atom(), arity(), [non_neg_integer() | {:keyword, atom()}], atom()}]
+  def argument_marks_from(entries, label) when is_list(entries),
+    do: Enum.map(entries, &marks_entry(&1, label))
+
+  def argument_marks_from(other, _label) do
+    raise ArgumentError,
+          "expected a list of {module, function, arity, positions} entries, got: #{inspect(other)}"
+  end
+
+  defp marks_entry({module, fun, arity, positions} = entry, label)
+       when is_atom(module) and is_atom(fun) and is_integer(arity) and arity >= 0 and
+              is_list(positions) do
+    Enum.each(positions, &valid_position!(&1, entry))
+    {module, fun, arity, positions, label}
+  end
+
+  defp marks_entry(entry, _label) do
+    raise ArgumentError,
+          "invalid argument-mark entry #{inspect(entry)}; expected " <>
+            "{module, function, arity, positions}"
+  end
+
+  defp valid_position!(index, _entry) when is_integer(index) and index >= 0, do: :ok
+  defp valid_position!({:keyword, key}, _entry) when is_atom(key), do: :ok
+
+  defp valid_position!(position, entry) do
+    raise ArgumentError,
+          "invalid position #{inspect(position)} in #{inspect(entry)}; expected a " <>
+            "non-negative index or {:keyword, key}"
+  end
 
   @doc """
   Classifies a binary operator swap for `c:variant/2`.

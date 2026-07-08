@@ -379,9 +379,9 @@ defmodule Mutare.Transform do
       )
 
     # The argument-mark registry (`Mutare.Transform.Resolve.ArgumentMarks`): the positions the
-    # enabled mutators asked the transform to mark (`c:Mutare.Mutator.argument_marks/0`), stamped
+    # enabled mutators asked the transform to mark (`c:Mutare.Mutator.argument_marks/1`), stamped
     # at each resolved call so those mutators can recognise and decline them. Domain-agnostic here —
-    # the meaning of each mark lives in the requesting mutator (e.g. `Literal`'s timeout table).
+    # the meaning of each mark lives in the requesting mutator (e.g. `IntegerLiteral`'s timeout table).
     marks = Mutare.Transform.Resolve.ArgumentMarks.build(config.mutators)
 
     {transformed, ctx} =

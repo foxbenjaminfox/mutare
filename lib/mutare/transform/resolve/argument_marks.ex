@@ -6,7 +6,7 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   # not to mutate there (or mutate differently). The transform stays domain-agnostic — it knows
   # only "position P of call C carries label L" — while the *meaning* of a mark (e.g. "this is a
   # timeout literal") lives entirely in the mutator that requested it
-  # (`c:Mutare.Mutator.argument_marks/0`). This is what replaced the hard-coded timeout table that
+  # (`c:Mutare.Mutator.argument_marks/1`). This is what replaced the hard-coded timeout table that
   # used to live in the transform.
   #
   # Flow: `build/1` folds the enabled mutators' declarations into a registry keyed by the *resolved*
@@ -61,7 +61,7 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
   def empty, do: %__MODULE__{}
 
   @doc """
-  Fold the enabled mutators' `c:Mutare.Mutator.argument_marks/0` declarations into a registry keyed
+  Fold the enabled mutators' `c:Mutare.Mutator.argument_marks/1` declarations into a registry keyed
   by the resolved `{module_key, function, arity}`, encoding each declared module the same way
   `Mutare.Transform.Calls.resolved_call/1` keys on it (so a written `Process` matches a resolved
   `[:Process]`). A mutator without the callback contributes nothing; two mutators marking the same
@@ -123,13 +123,22 @@ defmodule Mutare.Transform.Resolve.ArgumentMarks do
 
   # --- registry build --------------------------------------------------------
 
+  # Ask each mutator for its declarations, passing the instance's `config` so a configurable mutator
+  # can fold in options-driven positions (e.g. `IntegerLiteral`'s `:skip_arguments`). A bare module carries
+  # no config; the `init/1`-normalized `config` is used when present, else the raw `opts`.
   defp declarations(mutator) do
     module = module_of(mutator)
-    if function_exported?(module, :argument_marks, 0), do: module.argument_marks(), else: []
+
+    if function_exported?(module, :argument_marks, 1),
+      do: module.argument_marks(config_of(mutator)),
+      else: []
   end
 
   defp module_of(%Mutator.Spec{module: module}), do: module
   defp module_of(module) when is_atom(module), do: module
+
+  defp config_of(%Mutator.Spec{config: config}), do: config
+  defp config_of(_module), do: []
 
   # One declaration `{module, fun, arity, positions, label}` → labelled positions folded onto the
   # resolved-call key. `positions` is a list of visible-argument *effective* indices and

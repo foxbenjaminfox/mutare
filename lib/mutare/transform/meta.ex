@@ -188,7 +188,7 @@ defmodule Mutare.Transform.Meta do
   @doc """
   The set of position-mark labels stamped on a node (`:mutare_marks`), or an empty set for an
   unmarked node or a bare literal. Stamped by `Mutare.Transform.Resolve.ArgumentMarks` at a position
-  some enabled mutator asked to mark (`c:Mutare.Mutator.argument_marks/0`) and surfaced to the
+  some enabled mutator asked to mark (`c:Mutare.Mutator.argument_marks/1`) and surfaced to the
   mutators as `context.marks` by `Mutare.Transform.Analyze.Attach.offer/4`.
   """
   # A shared empty set so the common *unmarked* node — every node but the few a mutator asked to

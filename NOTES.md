@@ -4779,7 +4779,7 @@ pruned nothing before and prunes nothing now), but it makes `ModeSwap→AtomLite
 covering footprint. See "Overlap resolution" above.
 
 ### Argument marks — a mutator asks the transform to mark positions `[done]`
-A general facility: a mutator declares argument positions it wants *marked* (`argument_marks/0`), the
+A general facility: a mutator declares argument positions it wants *marked* (`argument_marks/1`), the
 transform stamps those positions during resolution, and the mutator reads the marks back at
 `mutate/2` and decides. The transform stays domain-agnostic — it knows only "position P of call C
 carries label L" — while the *meaning* lives in the mutator. `Mutare.Transform.Resolve.ArgumentMarks`
@@ -4832,8 +4832,15 @@ Mechanism:
   the value, not just the mark, is why.
 - **Opt-in per label.** A mark is a label a mutator *chose* to react to, not a blanket suppression: a
   mutator that didn't request the label still fires at the position. Both value families declare the
-  `:timeout` table (via `IntegerLiteral.argument_marks/0`, which `AtomLiteral` reuses) so the marks survive
+  `:timeout` table (via `IntegerLiteral.timeout_marks/0`, which `AtomLiteral` reuses) so the marks survive
   either family being disabled.
+
+**Configurable marks.** `argument_marks/1` receives the mutator instance's config, so a mutator can
+fold options-driven positions into its declarations. `IntegerLiteral`/`AtomLiteral` expose a
+`:skip_arguments` option (`[{module, function, arity, positions}]`) via `Mutator.argument_marks_from/2`,
+each marking with its *own* name as the label — so a configured position suppresses only that family
+(they take the option independently), a typo raises at startup, and adding a stdlib timeout stays a
+pure data edit to the built-in table.
 
 Where the timeout use sits relative to the other positive exclusions: it is the **first
 signal-quality** one — every prior exclusion (struct fields, `for` options, `:uniq`, quoted data) is a

@@ -4,7 +4,16 @@ defmodule Mutare.Mutators.IntegerLiteral do
 
   Only literals in *runtime* positions are mutated, never pattern literals. Mutations that would reproduce the original value are dropped (`0` is not re-emitted for the literal `0`; `n - 1` and `0` collapse for `n = 1`).
 
-  An integer literal in a known **timeout/duration position** (`Process.sleep/1`, the third argument of `Process.send_after/3`, the `GenServer.call/3` timeout, `Task.async_stream`'s `:timeout` option, …) is left unmutated — a near-unkillable equivalent mutant that also risks minting false `:timeout` kills. This family owns that knowledge: `c:Mutare.Mutator.argument_marks/0` asks the transform to mark those positions with the `:timeout` label, and `mutate/2` declines when the mark is present. A *computed* duration (`base * 2`) is not a literal at the marked node, so it still mutates. (`Mutare.Mutators.AtomLiteral` reuses the same table to leave `:infinity` alone there.)
+  An integer literal in a known **timeout/duration position** (`Process.sleep/1`, the third argument of `Process.send_after/3`, the `GenServer.call/3` timeout, `Task.async_stream`'s `:timeout` option, …) is left unmutated — a near-unkillable equivalent mutant that also risks minting false `:timeout` kills. This family owns that knowledge: `c:Mutare.Mutator.argument_marks/1` asks the transform to mark those positions with the `:timeout` label, and `mutate/2` declines when the mark is present. A *computed* duration (`base * 2`) is not a literal at the marked node, so it still mutates. (`Mutare.Mutators.AtomLiteral` reuses the same table to leave `:infinity` alone there.)
+
+  **Configuring extra positions.** Add project-specific positions to leave alone with the `:skip_arguments` option — a list of `{module, function, arity, positions}`, where `positions` is a list of effective argument indices and `{:keyword, key}` option keys (the same shape as the built-in table):
+
+      [mutators: [{Mutare.Mutators.IntegerLiteral, skip_arguments: [
+        {MyApp.Cache, :put, 3, [2]},                      # a TTL argument
+        {MyApp.Http, :get, 2, [{:keyword, :recv_timeout}]}
+      ]}]]
+
+  These are marked with this family's own label, so they suppress only *this* family (integers) at those positions; `Mutare.Mutators.AtomLiteral` takes the same option independently.
 
   Integer literals are pervasive, so this is the highest-volume built-in — the cost is paid in the denominator, the benefit is catching constants the suite never pins down. The integer sibling of `Mutare.Mutators.FloatLiteral` (`step` 1, `zero` 0); the boolean flip that used to share this family now lives in `Mutare.Mutators.BooleanLiteral`.
 
@@ -15,7 +24,7 @@ defmodule Mutare.Mutators.IntegerLiteral do
   alias Mutare.Mutators.Helpers
 
   # The shared mark label for a duration/timeout literal. Public so `Mutare.Mutators.AtomLiteral`
-  # reacts to the same label on the same positions (see `argument_marks/0`).
+  # reacts to the same label on the same positions (see `argument_marks/1`).
   @timeout_mark :timeout
 
   # The timeout/duration argument positions this family (and AtomLiteral) leaves alone, keyed by
@@ -56,12 +65,14 @@ defmodule Mutare.Mutators.IntegerLiteral do
   def name, do: :integer
 
   @doc """
-  The timeout/duration argument marks this family requests (the `:timeout` label). Public so
+  The built-in timeout/duration argument marks (the `:timeout` label), config-independent. Public so
   `Mutare.Mutators.AtomLiteral` can declare the identical positions — keeping the two value families'
   view of "an opaque timeout literal" in one place.
   """
-  @impl Mutare.Mutator
-  def argument_marks do
+  @spec timeout_marks() :: [
+          {module(), atom(), arity(), [non_neg_integer() | {:keyword, atom()}], atom()}
+        ]
+  def timeout_marks do
     Enum.map(@timeout_positional, fn {mod, fun, arity, indices} ->
       {mod, fun, arity, indices, @timeout_mark}
     end) ++
@@ -70,13 +81,27 @@ defmodule Mutare.Mutators.IntegerLiteral do
       end)
   end
 
+  # The built-in timeout table plus any `:skip_arguments` positions the user configured, which are
+  # marked with this family's *own name* so they suppress only `:integer` (integers) at those spots —
+  # AtomLiteral takes the option separately for atoms.
+  @impl Mutare.Mutator
+  def argument_marks(config) do
+    timeout_marks() ++ Mutare.Mutator.argument_marks_from(skip_arguments(config), name())
+  end
+
+  defp skip_arguments(config) when is_list(config), do: Keyword.get(config, :skip_arguments, [])
+  defp skip_arguments(_config), do: []
+
   # Decline at a marked timeout position (an integer there is a magic duration constant the suite
-  # can't pin — a near-unkillable equivalent mutant); otherwise mutate the node normally. `mutate/2`
-  # takes precedence over `mutate/1` at dispatch, so the gate applies to every offer while the
-  # node-level `mutate/1` clauses below stay reusable (and directly callable in tests).
+  # can't pin — a near-unkillable equivalent mutant) or a user-configured `:skip_arguments` position;
+  # otherwise mutate the node normally. `mutate/2` takes precedence over `mutate/1` at dispatch, so
+  # the gate applies to every offer while the node-level `mutate/1` clauses below stay reusable (and
+  # directly callable in tests).
   @impl Mutare.Mutator
   def mutate(node, context) do
-    if Mutare.Mutator.marked?(context, @timeout_mark), do: :skip, else: mutate(node)
+    if Mutare.Mutator.marked?(context, @timeout_mark) or Mutare.Mutator.marked?(context, name()),
+      do: :skip,
+      else: mutate(node)
   end
 
   @impl Mutare.Mutator

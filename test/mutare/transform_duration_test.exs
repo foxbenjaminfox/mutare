@@ -1,6 +1,6 @@
 defmodule Mutare.TransformDurationTest do
   # Duration/timeout-argument suppression, the flagship user of the general argument-marking facility
-  # (`Mutare.Transform.Resolve.ArgumentMarks` + `c:Mutare.Mutator.argument_marks/0`): `Literal` and
+  # (`Mutare.Transform.Resolve.ArgumentMarks` + `c:Mutare.Mutator.argument_marks/1`): `Literal` and
   # `AtomLiteral` ask the transform to mark the timeout positions with the `:timeout` label and
   # decline there, so a *literal* duration (an integer count of milliseconds, or `:infinity`) is left
   # unmutated — a near-unkillable equivalent mutant — while a *computed* duration, and every other
@@ -18,7 +18,7 @@ defmodule Mutare.TransformDurationTest do
     def name, do: :marking
 
     @impl true
-    def argument_marks do
+    def argument_marks(_config) do
       [
         {Widget, :render, 2, [1], :pinned},
         {Widget, :stream, 2, [{:keyword, :mode}], :pinned}
@@ -43,7 +43,7 @@ defmodule Mutare.TransformDurationTest do
   # elsewhere, so "no site whose original is `13579`" is an exact "the duration was held back" check.
   @marker "13579"
 
-  # One representative call per row of `Analyze.Durations`' tables, with `@marker` in the duration
+  # One representative call per row of `Literal`'s timeout tables, with `@marker` in the duration
   # position. Exercised by the "every table row" test so a typo'd row (wrong arity/index/module/fun)
   # is caught — the per-mechanism tests below can't see that, since they only touch a few rows.
   @duration_call_rows [
@@ -263,14 +263,14 @@ defmodule Mutare.TransformDurationTest do
           "def f(sup, enum, fun), do: Task.Supervisor.async_stream_nolink(sup, enum, fun, timeout: 5000)"
         )
 
-      refute Enum.any?(opts, fn {m, o, _} -> m == :literal and o == "5000" end)
+      refute Enum.any?(opts, fn {m, o, _} -> m == :integer and o == "5000" end)
 
       {_m, data} =
         value_triples(
           "def f(sup, enum), do: Task.Supervisor.async_stream_nolink(sup, enum, Mod, :run, [timeout: 5000])"
         )
 
-      assert {:literal, "5000", "0"} in data
+      assert {:integer, "5000", "0"} in data
     end
   end
 
@@ -364,11 +364,11 @@ defmodule Mutare.TransformDurationTest do
       end
 
       {_m, computed} = value_triples("def f(b), do: (b * 2) |> Process.sleep()")
-      assert {:literal, "2", "1"} in computed
+      assert {:integer, "2", "1"} in computed
 
       # A non-timeout function piped the same way is untouched (the receiver pre-filter is exact).
       {_m, other} = value_triples("def f, do: 1000 |> Integer.to_string()")
-      assert {:literal, "1000", "0"} in other
+      assert {:integer, "1000", "0"} in other
     end
 
     test "a shadowing alias resolves elsewhere and is NOT suppressed" do
@@ -434,6 +434,67 @@ defmodule Mutare.TransformDurationTest do
       {_m, triples} = value_triples("def f(e), do: Widget.stream(e, mode: 1)", [MarkingMutator])
 
       refute Enum.any?(triples, fn {m, original, _} -> m == :marking and original == "1" end)
+    end
+  end
+
+  describe "configurable skip positions (the :skip_arguments option)" do
+    test "Literal's :skip_arguments leaves the configured integer alone; unconfigured mutates it" do
+      body = "def f(c), do: MyApp.Cache.put(c, :k, 300)"
+      config = [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp.Cache, :put, 3, [2]}]}]
+
+      {meta, configured} = value_triples(body, config)
+      assert configured == []
+      assert_compiles(meta)
+
+      {_m, plain} = value_triples(body, [Mutare.Mutators.IntegerLiteral])
+      assert {:integer, "300", "0"} in plain
+    end
+
+    test "a configured keyword-option value is left alone" do
+      {_m, triples} =
+        value_triples(
+          "def f(r), do: MyApp.get(r, recv_timeout: 500)",
+          [
+            {Mutare.Mutators.IntegerLiteral,
+             skip_arguments: [{MyApp, :get, 2, [{:keyword, :recv_timeout}]}]}
+          ]
+        )
+
+      assert triples == []
+    end
+
+    test "the option is per-family: Literal's config does not silence AtomLiteral there" do
+      # Literal marks with its own label, so an atom at a Literal-configured position still mutates —
+      # AtomLiteral takes `:skip_arguments` independently.
+      {_m, triples} =
+        value_triples(
+          "def f(c), do: MyApp.put(c, :mode)",
+          [
+            {Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]},
+            Mutare.Mutators.AtomLiteral
+          ]
+        )
+
+      assert {:atom, ":mode", ":mutare"} in triples
+    end
+
+    test "AtomLiteral's :skip_arguments leaves an atom at the configured position alone" do
+      {_m, triples} =
+        value_triples(
+          "def f(c), do: MyApp.put(c, :mode)",
+          [{Mutare.Mutators.AtomLiteral, skip_arguments: [{MyApp, :put, 2, [1]}]}]
+        )
+
+      assert triples == []
+    end
+
+    test "a malformed :skip_arguments entry fails loudly" do
+      assert_raise ArgumentError, ~r/expected \{module, function, arity, positions\}/, fn ->
+        value_triples(
+          "def f, do: 1",
+          [{Mutare.Mutators.IntegerLiteral, skip_arguments: [{MyApp, :put, "bad", [1]}]}]
+        )
+      end
     end
   end
 

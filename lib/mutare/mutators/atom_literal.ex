@@ -11,7 +11,9 @@ defmodule Mutare.Mutators.AtomLiteral do
 
   Ordinary atom values, data map and keyword keys, and atoms in `case`, `receive`, and `fn` patterns remain eligible. Keys in a trailing call-options list are also mutated by default. Configure `{Mutare.Mutators.AtomLiteral, call_option_keys: false}` to exclude those keys.
 
-  `:infinity` in a known **timeout/duration position** (e.g. the `Task.await/2` or `GenServer.stop/3` timeout) is left unmutated. This family reuses `Mutare.Mutators.IntegerLiteral`'s timeout table (via `c:Mutare.Mutator.argument_marks/0`) so the two value families agree on which positions hold an opaque timeout literal, and declines when the `:timeout` mark is present. A *non-duration* sibling atom in the same call still mutates: `GenServer.stop(s, :normal, :infinity)` mutates the `:normal` reason but not the `:infinity` timeout.
+  `:infinity` in a known **timeout/duration position** (e.g. the `Task.await/2` or `GenServer.stop/3` timeout) is left unmutated. This family reuses `Mutare.Mutators.IntegerLiteral`'s timeout table (via `c:Mutare.Mutator.argument_marks/1`) so the two value families agree on which positions hold an opaque timeout literal, and declines when the `:timeout` mark is present. A *non-duration* sibling atom in the same call still mutates: `GenServer.stop(s, :normal, :infinity)` mutates the `:normal` reason but not the `:infinity` timeout.
+
+  Add project-specific positions to leave alone with the `:skip_arguments` option (a list of `{module, function, arity, positions}`, as in `Mutare.Mutators.IntegerLiteral`) — an atom at such a position is skipped outright, since the position, not the value, is what the user pinned.
 
   Interpolated quoted atoms (`:"a\#{x}b"`) are mutated as a whole to the sentinel — their runtime value can never statically be `:mutare`, so the swap always applies — while the expressions inside the interpolation stay eligible for their own mutations, mirroring how `Mutare.Mutators.StringLiteral` treats interpolated strings.
   """
@@ -37,21 +39,32 @@ defmodule Mutare.Mutators.AtomLiteral do
     not (Keyword.keyword?(opts) and Keyword.get(opts, :call_option_keys, true) == false)
   end
 
-  # Reuse `IntegerLiteral`'s timeout table so `:infinity` is left alone at exactly the positions `IntegerLiteral`
-  # leaves a numeric duration alone. Declaring it here too (rather than reading `IntegerLiteral`'s marks)
-  # keeps the suppression working when `:integer` is disabled but `:atom` is not — the mark must
-  # exist for this family to react to it. `IntegerLiteral.argument_marks/0` is a pure table, callable
-  # whether or not `IntegerLiteral` is an active mutator.
+  # Reuse `IntegerLiteral`'s timeout table so `:infinity` is left alone at exactly the positions
+  # `IntegerLiteral` leaves a numeric duration alone. Declaring it here too (rather than reading
+  # `IntegerLiteral`'s marks) keeps the suppression working when `:integer` is disabled but `:atom`
+  # is not — the mark must exist for this family to react to it. `IntegerLiteral.timeout_marks/0` is
+  # a pure table, callable whether or not `IntegerLiteral` is an active mutator. The
+  # `:skip_arguments` option adds this family's own positions (marked with its own name), independent
+  # of `IntegerLiteral`'s.
   @impl Mutare.Mutator
-  def argument_marks, do: Mutare.Mutators.IntegerLiteral.argument_marks()
+  def argument_marks(config) do
+    Mutare.Mutators.IntegerLiteral.timeout_marks() ++
+      Mutare.Mutator.argument_marks_from(skip_arguments(config), name())
+  end
 
-  # Decline only for `:infinity` at a marked timeout position — the "wait forever" duration, not a
-  # value to perturb. A *different* atom at the same position is not a duration and still mutates
-  # (`Task.shutdown(t, :brutal_kill)` keeps its `:brutal_kill` mutant), which is why the gate reads
-  # the value and not just the mark. `mutate/2` takes precedence at dispatch.
+  defp skip_arguments(config) when is_list(config), do: Keyword.get(config, :skip_arguments, [])
+  defp skip_arguments(_config), do: []
+
+  # Decline for `:infinity` at a marked timeout position — the "wait forever" duration, not a value
+  # to perturb (a *different* atom there is not a duration and still mutates, e.g.
+  # `Task.shutdown(t, :brutal_kill)`) — and for *any* atom at a user-configured `:skip_arguments`
+  # position (the user pinned the position, whatever the value). `mutate/2` takes precedence at
+  # dispatch.
   @impl Mutare.Mutator
   def mutate(node, context) do
-    if infinity_timeout?(node, context), do: :skip, else: mutate(node)
+    if Mutare.Mutator.marked?(context, name()) or infinity_timeout?(node, context),
+      do: :skip,
+      else: mutate(node)
   end
 
   defp infinity_timeout?({:__block__, _meta, [:infinity]}, context),
