@@ -589,5 +589,65 @@ defmodule Mutare.AliasesTest do
 
       assert calls[:bar] == {[:Foo], [:Outer, :Mid, :Foo]}
     end
+
+    test "a module under a non-static head is not aliased to the wrong parent" do
+      # `defmodule __MODULE__.Foo` can't be named statically, so a nested `Bar` inside must NOT be
+      # resolved to `Outer.Bar` (the compiler defines `Outer.Foo.Bar`) — it stays the literal `Bar`.
+      calls =
+        resolved("""
+        defmodule Outer do
+          defmodule __MODULE__.Foo do
+            defmodule Bar do
+              def baz, do: :ok
+            end
+
+            def call, do: Bar.baz()
+          end
+        end
+        """)
+
+      assert calls[:baz] == {[:Bar], [:Bar]}
+    end
+
+    test "a nested module inside a defimpl body resolves against the impl module (P.T)" do
+      # `defimpl P, for: Integer` opens the module scope `Outer.P.Integer`, so a nested `Helper`
+      # resolves there — not against the enclosing `Outer`.
+      calls =
+        resolved("""
+        defmodule Outer do
+          defprotocol P do
+            def foo(x)
+          end
+
+          defimpl P, for: Integer do
+            defmodule Helper do
+              def h, do: :ok
+            end
+
+            def foo(_x), do: Helper.h()
+          end
+        end
+        """)
+
+      assert calls[:h] == {[:Helper], [:Outer, :P, :Integer, :Helper]}
+    end
+
+    test "a displaced `defmodule` (a DSL macro) opens no module scope" do
+      # With Kernel's `defmodule/2` displaced by a DSL's, `defmodule Foo do … end` defines no
+      # `Outer.Foo`, so its body must not install `Foo => Outer.Foo` — `Foo.bar()` stays literal.
+      calls =
+        resolved("""
+        defmodule Outer do
+          import Kernel, except: [defmodule: 2]
+          import MyDsl, only: [defmodule: 2]
+
+          defmodule Foo do
+            def call, do: Foo.bar()
+          end
+        end
+        """)
+
+      assert calls[:bar] == {[:Foo], [:Foo]}
+    end
   end
 end

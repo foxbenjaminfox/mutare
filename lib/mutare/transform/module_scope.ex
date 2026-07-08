@@ -23,6 +23,7 @@ defmodule Mutare.Transform.ModuleScope do
   # `register_lexical/3` is the combined "explicit alias then implicit module alias" fold each
   # walk applies at every statement in a scope.
 
+  alias Mutare.AST
   alias Mutare.Transform.Aliases
 
   # The module name of a nested `defmodule` we couldn't resolve to a concrete atom (a non-static
@@ -104,6 +105,28 @@ defmodule Mutare.Transform.ModuleScope do
   def child_module({:__block__, _, [atom]}, _parent, _env) when is_atom(atom), do: atom
   def child_module(atom, _parent, _env) when is_atom(atom), do: atom
   def child_module(_mod_ast, _parent, _env), do: @unresolved
+
+  @doc """
+  The implementation module a `defimpl P, for: T` opens: `Module.concat(P, T)` (absolute — never
+  parent-prefixed), both resolved through the alias `env`. `unresolved/0` unless both are statically
+  a single concrete module — a list `for:`, a missing `for:`, or a non-static type degrades. This is
+  the module scope a `defimpl` body is walked under (a nested module inside resolves as `P.T.Sub`).
+  """
+  @spec impl_module(Macro.t(), Macro.t() | nil, map()) :: module() | atom()
+  def impl_module(proto, type, env) do
+    # `Aliases.resolve_node/2` returns a concrete module atom or `nil` (non-static), so both parts
+    # resolving to a non-`nil` module is exactly the resolvable case.
+    proto_mod = Aliases.resolve_node(proto, env)
+    type_mod = type && Aliases.resolve_node(type, env)
+
+    if not is_nil(proto_mod) and not is_nil(type_mod),
+      do: Module.concat(proto_mod, type_mod),
+      else: @unresolved
+  end
+
+  @doc "The `for:` value of a `defimpl` opts list, or `nil`. Reads Sourceror's wrapped key."
+  @spec for_type(Macro.t()) :: Macro.t() | nil
+  def for_type(opts), do: AST.opts_get(opts, :for)
 
   # A concrete Elixir module atom → its segment-atom path (`Outer.P` → `[:Outer, :P]`), the value
   # form the alias env stores for an Elixir module. `nil` for an Erlang atom module (`:foo`, from

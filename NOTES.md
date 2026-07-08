@@ -2328,12 +2328,39 @@ behaviour-preserving move (its suite is unchanged). This **reverses** the old "`
 doesn't track module scopes" note: `Resolve` now tracks exactly one thing, `env.module` (the enclosing
 module, `nil` at the top level), and nothing else.
 
-Residual limitation (documented, not a bug): a **fully dynamic module head** (`defmodule unquote(x)`)
-can't be named, so a static nested module under it isn't parent-prefixed by the dynamic layer — no
-correct static answer exists, and such a module can't be a macro-route/behaviour target anyway. No
-compile risk; same degradation class as the other `@unresolved` cases. Tested in `aliases_test.exs`
-(sibling + multi-level call resolution) and `behaviours_test.exs` (sibling `@behaviour`, quote
-boundary).
+**Getting `env.module` right when *entering* a scope.** Folding the implicit alias against
+`env.module` only works if every scope sets the *correct* enclosing module before its body/siblings
+are folded — otherwise a nested module is parent-prefixed to the wrong module (and can then match or
+miss a `:macro_routes` entry for a module that needn't even exist). Three cases beyond a plain static
+`defmodule` need care, all handled in `Resolve`:
+
+  * **Non-static head** (`defmodule __MODULE__.Foo`, `Module.concat(…)`) — can't be named, so the
+    body enters under the `@unresolved` sentinel and a nested `defmodule Bar` stays its literal
+    `[:Bar]` rather than resolving to the enclosing `Outer.Bar` (the compiler defines `Outer.Foo.Bar`,
+    which no static answer produces). The `defmodule` clause was **broadened to match any head** so it
+    sets this scope, instead of a dynamic head falling through to the generic bare-call clause and
+    inheriting the *enclosing* module.
+  * **`defimpl P, for: T`** — opens the absolute scope `P.T`, so `Resolve` gained a `defimpl` clause
+    (mirroring the `Uses` walk) that walks the body under `impl_module(P, T)`; a nested module inside
+    resolves as `P.T.Sub`, not `Outer.Sub`. `impl_module/3`/`for_type/1` moved to `ModuleScope`
+    (shared with `Uses`); a `for:`-less or non-static impl degrades to `@unresolved`.
+  * **Displaced `defmodule`** (a DSL macro over Kernel's — `import Kernel, except: [defmodule: 2]`;
+    `import MyDSL, only: [defmodule: 2]`) defines no module named after its head, so opening a scope
+    and installing `Foo => Outer.Foo` would resolve/route interior and sibling calls against a
+    nonexistent module. Both the body scope (the `defmodule` clause) and the sibling alias
+    (`register/2`) are gated on the call still resolving to `Kernel.defmodule`
+    (`kernel_module_definer?/4`, via the existing `bare_module_key/4`); a displaced definer falls back
+    to ordinary traversal.
+
+The displaced-definer gate is **`Resolve`-only**: `Behaviours` threads only the alias env, not the
+import env, so it can't distinguish a displaced `defmodule` from a real one without adding import
+tracking — disproportionate for the near-impossible case of gathering `@behaviour` off a DSL block
+that displaces `defmodule` *and* cross-references its name as a behaviour. `Behaviours`'s
+non-static-head and `defimpl` handling is already safe (both degrade to `@unresolved` via
+`child_module/3`).
+
+Tested in `aliases_test.exs` (sibling + multi-level resolution; the non-static-head, `defimpl`-body,
+and displaced-`defmodule` cases) and `behaviours_test.exs` (sibling `@behaviour`, quote boundary).
 
 ### GenServer return mutator — the first behaviour-gated built-in `[done]`
 The payoff of behaviour detection: `Mutare.Mutators.GenServer` (`:genserver`, default-on) mutates a

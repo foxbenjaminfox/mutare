@@ -209,33 +209,55 @@ defmodule Mutare.Transform.Resolve do
     end
   end
 
-  # A `defmodule Alias do … end`: stamp the *head* `__aliases__` node with the module its path
-  # resolves to under the alias env (same `:mutare_alias` contract as a remote call's module),
-  # so `Mutare.Lifting.module_from_alias/2` can resolve a **top-level** aliased head to the module
-  # Elixir actually defines (`alias Real.Parent, as: RP; defmodule RP.Child` → `Real.Parent.Child`).
-  # A *nested* head ignores the stamp (Elixir nests the written path under the enclosing module),
-  # and a dynamic head (not `__aliases__`) falls through to the bare-call clause below, so its
-  # interior calls still get walked. Must precede that clause — `:defmodule` is an atom form.
-  #
-  # The node itself is still stamped like any bare call (`stamp_bare_call/4`): the head stamp
-  # is *additive*, so a **shadowed** `defmodule` (`import Kernel, except: [defmodule: 2]` plus
-  # a DSL's own `defmodule` macro) keeps its import resolution and `:macro_routes` treatment
-  # exactly as it did when the bare-call clause handled this shape.
-  defp walk({:defmodule, meta, [{:__aliases__, _, _} = head, body] = args}, env)
-       when is_list(body) do
+  # A `defmodule … do … end`: stamp the head (an `__aliases__` head with its resolved module — the
+  # same `:mutare_alias` contract as a remote call's — so `Mutare.Lifting.module_from_alias/2` can
+  # resolve a top-level aliased head like `alias Real.Parent, as: RP; defmodule RP.Child`; a dynamic
+  # head is *walked* so its interior calls resolve), then — **only for a genuine `Kernel.defmodule`**
+  # — open the module scope its body is walked under: the module entered (`ModuleScope.child_module/3`,
+  # the unresolved sentinel for a non-static head like `__MODULE__.Sub`, under which nested modules
+  # stay unresolved rather than resolve against the enclosing module) plus the in-body self-alias the
+  # head introduces. A **displaced** `defmodule` (a DSL macro imported over Kernel's — `import Kernel,
+  # except: [defmodule: 2]` + `import MyDSL, only: [defmodule: 2]`) defines no module named after its
+  # head, so it opens NO scope: treating its `do` block as an Elixir module body would resolve/route
+  # interior calls against a module that needn't exist. Must precede the bare-call clause below.
+  defp walk({:defmodule, meta, [head, body] = args}, env) when is_list(body) do
     meta = stamp_bare_call(:defmodule, meta, args, env)
-    stamped = Aliases.stamp_module(head, env.aliases)
-    # Track the module we're entering (so a nested body/sibling reference resolves), plus the
-    # in-body self-alias the head introduces. A non-static segment yields the unresolved sentinel,
-    # under which nested modules stay unresolved. (A fully dynamic head — `defmodule unquote(x)` —
-    # falls through to the bare-call clause and keeps the enclosing module; it can't be named.)
-    child = ModuleScope.child_module(head, env.module, env.aliases)
 
-    body_aliases =
-      ModuleScope.register_defined_module({:defmodule, [], [head]}, env.module, env.aliases)
+    body_env =
+      if kernel_module_definer?(:defmodule, meta, args, env),
+        do: module_body_env(head, env),
+        else: %{env | pipe_mode: :unpiped}
 
-    body_env = %{env | pipe_mode: :unpiped, module: child, aliases: body_aliases}
-    {:defmodule, meta, [stamped, walk(body, body_env)]}
+    {:defmodule, meta, [defmodule_head(head, env), walk(body, body_env)]}
+  end
+
+  # `defimpl P, for: T do … end` opens the **impl module** scope `P.T` (absolute — never
+  # parent-prefixed), so its body must be walked under `P.T`, not the enclosing module (which would
+  # resolve/route a nested module or call inside the impl against the wrong module). `P`/`T` resolve
+  # through the alias env; a non-static `for:` yields the unresolved sentinel. The `defimpl` call is
+  # stamped like any bare call, and `proto`/`opts` are walked in the enclosing scope (they name the
+  # protocol/type there). Must precede the bare-call clause. Mirrors the `Uses` walk's `defimpl` split.
+  defp walk({:defimpl, meta, [proto, opts, [{do_key, body}]] = args}, env) when is_list(opts) do
+    meta = stamp_bare_call(:defimpl, meta, args, env)
+    impl = ModuleScope.impl_module(proto, ModuleScope.for_type(opts), env.aliases)
+    unpiped = %{env | pipe_mode: :unpiped}
+
+    {:defimpl, meta,
+     [
+       walk(proto, unpiped),
+       walk(opts, unpiped),
+       [{do_key, walk(body, %{unpiped | module: impl})}]
+     ]}
+  end
+
+  # `defimpl P do … end` — the `for:` is inferred from context we don't track, so the impl module is
+  # unknown: walk the body under the unresolved sentinel (nested modules stay unresolved rather than
+  # resolve against the enclosing module).
+  defp walk({:defimpl, meta, [proto, [{do_key, body}]] = args}, env) do
+    meta = stamp_bare_call(:defimpl, meta, args, env)
+    unpiped = %{env | pipe_mode: :unpiped}
+    body_env = %{unpiped | module: ModuleScope.unresolved()}
+    {:defimpl, meta, [walk(proto, unpiped), [{do_key, walk(body, body_env)}]]}
   end
 
   # A bare call `fun(...)`: stamp it with its resolved import (or Kernel-displacement) using
@@ -277,6 +299,26 @@ defmodule Mutare.Transform.Resolve do
 
   defp descend(args, env), do: Enum.map(args, &walk(&1, %{env | pipe_mode: :unpiped}))
 
+  # The head of a `defmodule`: an `__aliases__` head is *stamped* with its resolved module (for
+  # `Mutare.Lifting`; no descent — it's a module path), a non-`__aliases__` (dynamic) head is a live
+  # expression, so it is walked so its interior calls resolve.
+  defp defmodule_head({:__aliases__, _, _} = head, env),
+    do: Aliases.stamp_module(head, env.aliases)
+
+  defp defmodule_head(head, env), do: walk(head, %{env | pipe_mode: :unpiped})
+
+  # The env a genuine `Kernel.defmodule` body is walked under: the enclosing env plus the module it
+  # enters (`child_module/3` — the unresolved sentinel for a non-static head) and the in-body
+  # self-alias the head introduces.
+  defp module_body_env(head, env) do
+    child = ModuleScope.child_module(head, env.module, env.aliases)
+
+    aliases =
+      ModuleScope.register_defined_module({:defmodule, [], [head]}, env.module, env.aliases)
+
+    %{env | pipe_mode: :unpiped, module: child, aliases: aliases}
+  end
+
   defp capture_arity(n) when is_integer(n) and n >= 0, do: {:ok, n}
   defp capture_arity({:__block__, _meta, [n]}) when is_integer(n) and n >= 0, do: {:ok, n}
   defp capture_arity(_node), do: :error
@@ -295,16 +337,35 @@ defmodule Mutare.Transform.Resolve do
   end
 
   # Extend the env from one statement: the alias env (any statement — an explicit `alias`, or the
-  # implicit alias a nested `defmodule`/`defprotocol` introduces for its following siblings, via
-  # `ModuleScope`) and then the import env / Kernel selector (no-op unless an `import`). Imports
-  # resolve their module through the *just-updated* alias env (an `import` is never an `alias`, so
-  # it is the env in force).
+  # implicit alias a *genuine* nested `defmodule`/`defprotocol` introduces for its following
+  # siblings) and then the import env / Kernel selector (no-op unless an `import`). Imports resolve
+  # their module through the *just-updated* alias env (an `import` is never an `alias`, so it is the
+  # env in force).
   defp register(stmt, env) do
-    aliases = ModuleScope.register_lexical(stmt, env.module, env.aliases)
+    aliases =
+      stmt
+      |> Aliases.register(env.aliases)
+      |> maybe_register_defined_module(stmt, env)
+
     {imports, kernel} = Imports.register(stmt, aliases, env.imports, env.kernel)
     env = %{env | aliases: aliases, imports: imports, kernel: kernel}
     fold_use_directives(stmt, env)
   end
+
+  # Fold the implicit alias a nested module definition introduces for its following siblings — but
+  # only for a **genuine** `Kernel.defmodule`/`defprotocol`. A displaced definer (a DSL macro over
+  # Kernel's) defines no module named after its head, so installing `Head => Parent.Head` would
+  # resolve later siblings to a module that needn't exist. Every other statement passes through.
+  defp maybe_register_defined_module(aliases, {form, meta, args} = stmt, env)
+       when form in [:defmodule, :defprotocol] and is_list(args) do
+    stamped = Imports.stamp(form, meta, args, env.imports, env.kernel, :unpiped)
+
+    if kernel_module_definer?(form, stamped, args, env),
+      do: ModuleScope.register_defined_module(stmt, env.module, aliases),
+      else: aliases
+  end
+
+  defp maybe_register_defined_module(aliases, _stmt, _env), do: aliases
 
   # A `use` node stamped by `Mutare.Transform.Uses` carries the `import`/`alias` directives it
   # injects. Fold each through `register/2` in source order (so an injected alias-then-import
@@ -371,6 +432,14 @@ defmodule Mutare.Transform.Resolve do
 
   defp kernel_export?(fun, arity),
     do: function_exported?(Kernel, fun, arity) or macro_exported?(Kernel, fun, arity)
+
+  # Whether a `defmodule`/`defprotocol` call is the genuine `Kernel` macro — the only form that
+  # defines a module Elixir auto-aliases and scopes. `meta` must already carry the `Imports` stamp
+  # (`bare_module_key/4` reads it). A displaced definer (`import Kernel, except: [defmodule: 2]` +
+  # a DSL's own `defmodule`) resolves to that DSL module (or `nil`), never `[:Kernel]`, so its head
+  # neither opens a module scope nor installs an implicit alias.
+  defp kernel_module_definer?(form, meta, args, env),
+    do: bare_module_key(form, Mutator.effective_arity(args, :unpiped), meta, env) == [:Kernel]
 
   # === quote data ============================================================
 
