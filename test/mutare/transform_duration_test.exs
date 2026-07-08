@@ -53,14 +53,40 @@ defmodule Mutare.TransformDurationTest do
     "Process.send_after(pid, msg, #{@marker})",
     "Process.send_after(pid, msg, #{@marker}, abs: true)",
     "GenServer.call(pid, msg, #{@marker})",
+    "GenServer.multi_call(ts, sup, msg, #{@marker})",
     "GenServer.stop(pid, :normal, #{@marker})",
+    "Agent.get(pid, fun, #{@marker})",
+    "Agent.get(pid, IO, :puts, [], #{@marker})",
+    "Agent.get_and_update(pid, fun, #{@marker})",
+    "Agent.get_and_update(pid, IO, :puts, [], #{@marker})",
+    "Agent.update(pid, fun, #{@marker})",
+    "Agent.update(pid, IO, :puts, [], #{@marker})",
     "Agent.stop(pid, :normal, #{@marker})",
     "Supervisor.stop(sup, :normal, #{@marker})",
+    "DynamicSupervisor.stop(sup, :normal, #{@marker})",
     "Task.await(t, #{@marker})",
     "Task.await_many(ts, #{@marker})",
     "Task.yield(t, #{@marker})",
     "Task.yield_many(ts, #{@marker})",
     "Task.shutdown(t, #{@marker})",
+    # duration constructors
+    ":timer.seconds(#{@marker})",
+    ":timer.minutes(#{@marker})",
+    ":timer.hours(#{@marker})",
+    ":timer.hms(0, 0, #{@marker})",
+    # :timer scheduling functions (delay is arg 0)
+    ":timer.apply_after(#{@marker}, fun)",
+    ":timer.apply_after(#{@marker}, IO, :puts, [])",
+    ":timer.apply_interval(#{@marker}, fun)",
+    ":timer.apply_interval(#{@marker}, IO, :puts, [])",
+    ":timer.send_after(#{@marker}, msg)",
+    ":timer.send_after(#{@marker}, pid, msg)",
+    ":timer.send_interval(#{@marker}, msg)",
+    ":timer.send_interval(#{@marker}, pid, msg)",
+    ":timer.exit_after(#{@marker}, :reason)",
+    ":timer.exit_after(#{@marker}, pid, :reason)",
+    ":timer.kill_after(#{@marker})",
+    ":timer.kill_after(#{@marker}, pid)",
     # keyword
     "Task.async_stream(e, fun, timeout: #{@marker})",
     "Task.Supervisor.async_stream(sup, e, fun, timeout: #{@marker})",
@@ -149,6 +175,37 @@ defmodule Mutare.TransformDurationTest do
 
       assert {:integer, "1000", "999"} in triples
       assert {:integer, "0", "1"} in triples
+    end
+
+    test ":timer duration constructors leave every magnitude argument alone" do
+      # `:timer.seconds/minutes/hours` are `N * 1000/60000/…`: the argument is a duration magnitude
+      # wherever the result flows, so it is held back just like a bare millisecond literal — closing
+      # the gap where `Process.sleep(:timer.seconds(5))` would otherwise mutate the `5` that
+      # `Process.sleep(5000)` does not. `:timer.hms/3` holds back all three (h, m, s).
+      for body <- [
+            "def f, do: :timer.seconds(5)",
+            "def f, do: :timer.minutes(1)",
+            "def f, do: :timer.hours(2)",
+            "def f, do: :timer.hms(0, 1, 30)",
+            "def f, do: Process.sleep(:timer.seconds(5))"
+          ] do
+        {meta, triples} = value_triples(body)
+        assert triples == []
+        assert_compiles(meta)
+      end
+
+      # A *computed* magnitude still mutates — only the bare literal at the position is held back.
+      {_m, computed} = value_triples("def f(n), do: :timer.seconds(n * 2)")
+      assert {:literal, "2", "1"} in computed
+    end
+
+    test ":timer scheduling functions hold back only the delay (arg 0), not the message" do
+      # The delay is `:timer`'s *first* argument (unlike `Process.send_after`'s third), so a literal
+      # message/reason elsewhere still mutates.
+      {_m, triples} = value_triples("def f(p), do: :timer.send_after(1000, p, 999)")
+
+      refute Enum.any?(triples, fn {_m, o, _} -> o == "1000" end)
+      assert {:literal, "999", "0"} in triples
     end
   end
 
@@ -271,6 +328,27 @@ defmodule Mutare.TransformDurationTest do
         )
 
       assert {:integer, "5000", "0"} in data
+    end
+
+    test "GenServer.multi_call carries a timeout only at /4, not /3 (whose 3rd arg is the request)" do
+      # `multi_call(nodes, name, request, timeout)` — /4 index 3 is the timeout, suppressed…
+      {_m, four} =
+        value_triples("def f(n, req), do: GenServer.multi_call(n, MyServer, req, 5000)")
+
+      refute Enum.any?(four, fn {m, o, _} -> m == :literal and o == "5000" end)
+
+      # …but `multi_call(nodes, name, request)` /3's third arg is the *request*, so a literal there
+      # (Elixir fills the leading `nodes` default, not the trailing `timeout`) still mutates.
+      {_m, three} = value_triples("def f(n), do: GenServer.multi_call(n, MyServer, 5000)")
+      assert {:literal, "5000", "0"} in three
+    end
+
+    test "Agent's MFA form marks the timeout (/5 index 4), not the args list (/4)" do
+      # `Agent.get(agent, module, fun, args, timeout)` — the timeout is suppressed…
+      {_m, with_to} = value_triples("def f(a), do: Agent.get(a, Mod, :run, [1], 5000)")
+      refute Enum.any?(with_to, fn {m, o, _} -> m == :literal and o == "5000" end)
+      # …while a literal inside the `args` list (the /4 form has no timeout) still mutates.
+      assert {:literal, "1", "0"} in with_to
     end
   end
 

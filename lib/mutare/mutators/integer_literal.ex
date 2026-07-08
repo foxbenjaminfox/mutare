@@ -37,14 +37,48 @@ defmodule Mutare.Mutators.IntegerLiteral do
     {Process, :send_after, 3, [2]},
     {Process, :send_after, 4, [2]},
     {GenServer, :call, 3, [2]},
+    # `multi_call/3` is `(nodes, name, request)` — the third arg is the request, not the timeout, so
+    # only `/4` `(nodes, name, request, timeout)` carries one.
+    {GenServer, :multi_call, 4, [3]},
     {GenServer, :stop, 3, [2]},
+    # Agent's `get`/`get_and_update`/`update` carry a trailing timeout: the fun form at `/3` (index 2)
+    # and the MFA form at `/5` (index 4 — the `args` list at index 3 is data and still mutates).
+    {Agent, :get, 3, [2]},
+    {Agent, :get, 5, [4]},
+    {Agent, :get_and_update, 3, [2]},
+    {Agent, :get_and_update, 5, [4]},
+    {Agent, :update, 3, [2]},
+    {Agent, :update, 5, [4]},
     {Agent, :stop, 3, [2]},
     {Supervisor, :stop, 3, [2]},
+    {DynamicSupervisor, :stop, 3, [2]},
     {Task, :await, 2, [1]},
     {Task, :await_many, 2, [1]},
     {Task, :yield, 2, [1]},
     {Task, :yield_many, 2, [1]},
-    {Task, :shutdown, 2, [1]}
+    {Task, :shutdown, 2, [1]},
+    # Duration *constructors*, not timeout positions: `:timer.seconds(5)` is `5 * 1000`, so every
+    # argument is a magnitude that is opaque wherever the result flows — the `5` in
+    # `Process.sleep(:timer.seconds(5))` is as unmutatable as the `5000` in `Process.sleep(5000)`.
+    {:timer, :seconds, 1, [0]},
+    {:timer, :minutes, 1, [0]},
+    {:timer, :hours, 1, [0]},
+    {:timer, :hms, 3, [0, 1, 2]},
+    # `:timer` scheduling functions — the delay/interval is always the *first* argument (index 0),
+    # unlike `Process.send_after`'s third. (`apply_after/2` and `apply_interval/2`, the fun forms,
+    # are OTP 27+; harmless where absent, since the match is syntactic against the target's source.)
+    {:timer, :apply_after, 2, [0]},
+    {:timer, :apply_after, 4, [0]},
+    {:timer, :apply_interval, 2, [0]},
+    {:timer, :apply_interval, 4, [0]},
+    {:timer, :send_after, 2, [0]},
+    {:timer, :send_after, 3, [0]},
+    {:timer, :send_interval, 2, [0]},
+    {:timer, :send_interval, 3, [0]},
+    {:timer, :exit_after, 2, [0]},
+    {:timer, :exit_after, 3, [0]},
+    {:timer, :kill_after, 1, [0]},
+    {:timer, :kill_after, 2, [0]}
   ]
 
   # The trailing-keyword timeout *options*, keyed by effective arity for the same reason — only the
